@@ -12,10 +12,10 @@
  * ⚠️ **Script-only, imported by no route, no job and no bundle.** Nothing here
  * reads `process.env`, opens a client, touches Firestore or reads a clock:
  * every instant and every count it renders arrives inside the plan it was
- * handed. Its only value imports are three pure modules of this app (the item
- * mapper's attribute helper, the two publish error classes and the shared CLI
- * error describer); everything from the IO modules is `import type`, which is
- * erased.
+ * handed. Its only value imports are four pure modules of this app (the item
+ * mapper's attribute helper, the two publish error classes, the shared CLI
+ * error describer and the three routes' own doc-id predicate); everything from
+ * the IO modules is `import type`, which is erased.
  *
  * ## The redaction is an ALLOW-LIST, and that is the whole design
  *
@@ -89,6 +89,7 @@ import {
 import { ArgumentoInvalidoError, descreverErro } from '../pedidos/importarPedidoCli';
 import type { VerdictoFolha } from '../taxonomia/categorias';
 import type { AtributosProjetados } from '../taxonomia/dto';
+import { naoDocId } from './corpoPublicacao';
 import {
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
@@ -188,26 +189,6 @@ export const MSG_STATUS_INVALIDO = `--status aceita apenas ${Object.values(
   SHOPEE_ITEM_STATUS_WRITABLE,
 ).join(' e ')}.`;
 
-/**
- * A value that cannot be a Firestore document id.
- *
- * ⚠️ The rule is `apps/mercado-livre/lib/marketplace/core/linkRefs.ts`'s
- * `naoDocId`, measured there against a real `firebase-admin` Firestore: `''`
- * throws "Path must be a non-empty string", `'a/b'` throws on the component
- * count, and `'a/b/c'` does NOT throw — it resolves to a document two levels
- * below the collection we meant, which comes back as a puzzling 404. Rejecting
- * the separator outright covers all three with one condition.
- *
- * ⚠️ A LOCAL predicate rather than an import of the `publicar` route's body
- * reader: this side reads `process.argv`, where the value is always a string,
- * this app has no shared doc-id helper today, and the two surfaces are written
- * in the same wave. Collapsing both onto one export is a one-line follow-up,
- * recorded in this PR's handoff rather than left to be noticed.
- */
-function naoEhDocId(v: string): boolean {
-  return v.length === 0 || v.includes('/');
-}
-
 function valorDe(nome: string, inline: string | undefined, proximo: string | undefined): string {
   const bruto = (inline ?? proximo)?.trim();
   if (bruto == null || bruto.length === 0 || bruto.startsWith('--')) {
@@ -216,12 +197,24 @@ function valorDe(nome: string, inline: string | undefined, proximo: string | und
   return bruto;
 }
 
-/** A doc id: trimmed, then checked. */
+/**
+ * A doc id: trimmed, then checked with {@link naoDocId} — `./corpoPublicacao`'s
+ * export, the SAME predicate the three step-11 routes read their bodies with.
+ * It takes `unknown`, so an argv value, always a string, is assignable as-is.
+ *
+ * ⚠️ ONE spelling, and the reason is measured rather than stylistic. This file
+ * used to carry a local copy of the rule, and it had already drifted at birth:
+ * it refused `''` and the separator but NOT the two relative names, so
+ * `--produto ..` passed argument validation and reached `produtos/../prodshopee`.
+ * `.doc('..')` does not throw locally — it resolves — so the operator got a
+ * server-side `INVALID_ARGUMENT` instead of the sentence below, which is the one
+ * thing this check exists to produce.
+ */
 function docIdDe(nome: string, inline: string | undefined, proximo: string | undefined): string {
   const valor = valorDe(nome, inline, proximo);
-  if (naoEhDocId(valor)) {
+  if (naoDocId(valor)) {
     throw new ArgumentoInvalidoError(
-      `--${nome} ${valor} não é um id de documento: uma barra "/" aponta para outra coleção.`,
+      `--${nome} ${valor} não é um id de documento: "/", "." e ".." endereçam outro caminho.`,
     );
   }
   return valor;

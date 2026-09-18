@@ -39,6 +39,7 @@ import {
 import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
 
 import type { AtributosProjetados } from '../taxonomia/dto';
+import { naoDocId } from './corpoPublicacao';
 import {
   ETAPA_PUBLICACAO,
   MOTIVO_PROBLEMA_PUBLICACAO,
@@ -74,6 +75,13 @@ const FONTE_SCRIPT = readFileSync(
   new URL('../../../scripts/publicar-anuncio.ts', import.meta.url),
   'utf8',
 );
+
+/**
+ * The CLI half read as TEXT. A behavioural test cannot see a SECOND copy of a
+ * rule — only that whichever copy ran gave the right answer — and a second copy
+ * of the doc-id rule is exactly what this file used to carry.
+ */
+const FONTE_CLI = readFileSync(new URL('./publicarAnuncioCli.ts', import.meta.url), 'utf8');
 
 const INTEGRACAO_ID = 'int-1';
 const PRODUTO_ID = 'prod-pai-1';
@@ -460,6 +468,42 @@ describe('lerArgsPublicar', () => {
     expect(() => lerArgsPublicar(['--integracao', INTEGRACAO_ID, '--produto', 'a/b/c'])).toThrow(
       /não é um id de documento/,
     );
+  });
+
+  it('⚠️ o PAR relativo: "." e ".." são recusados — a cópia local os aceitava', () => {
+    // A cópia local que este módulo carregava recusava `''` e a barra e mais nada,
+    // então `--produto ..` passava pela validação e chegava em
+    // `produtos/../prodshopee`. O `.doc('..')` do admin NÃO lança localmente — ele
+    // resolve —, e o operador recebia um INVALID_ARGUMENT do servidor no lugar
+    // desta frase. Uma regra só, a de `./corpoPublicacao`.
+    expect(naoDocId('.')).toBe(true);
+    expect(naoDocId('..')).toBe(true);
+    expect(() => lerArgsPublicar(['--integracao', INTEGRACAO_ID, '--produto', '..'])).toThrow(
+      /não é um id de documento/,
+    );
+    expect(() => lerArgsPublicar(['--integracao', '.', '--produto', PRODUTO_ID])).toThrow(
+      /não é um id de documento/,
+    );
+    expect(() =>
+      lerArgsPublicar(['--integracao', INTEGRACAO_ID, '--produto', PRODUTO_ID, '--link', '..']),
+    ).toThrow(ArgumentoInvalidoError);
+  });
+
+  it('⚠️ NEAR-MISS: um id com pontos NO MEIO continua aceito', () => {
+    // A regra são os dois nomes relativos INTEIROS, nunca "contém ponto": um id de
+    // documento com ponto é legítimo, e recusá-lo seria a mesma falha ao contrário.
+    for (const aceito of ['prod.pai.1', '.oculto', 'v1.2', '...']) {
+      const cmd = lerArgsPublicar(['--integracao', INTEGRACAO_ID, '--produto', aceito]);
+      expect(cmd.kind === 'publicar' && cmd.args.produtoId).toBe(aceito);
+    }
+  });
+
+  it('⛔ a regra de doc id é IMPORTADA, e este módulo não declara uma segunda', () => {
+    // O defeito não foi a predicate errada, foi HAVER DUAS: as cópias derivam para
+    // o plausível e continuam verdes. Só o texto do módulo vê a segunda nascer.
+    expect(FONTE_CLI).toContain("import { naoDocId } from './corpoPublicacao'");
+    expect(FONTE_CLI).not.toMatch(/function\s+\w*DocId\w*\s*\(/);
+    expect(FONTE_CLI).not.toContain('naoEhDocId');
   });
 
   it('--status aceita só NORMAL e UNLIST — sem alias e sem case fold', () => {
