@@ -99,6 +99,10 @@ const INVENTARIO = {
   'apps/shopee/lib/shopee/produtos/mapeamento.ts':
     'Shopee listing import (#1517). Adds the reservation BACK into `quantidade` (Σ `seller_stock[].stock` is the BUYABLE count, i.e. `disponivel`). Floored with `reservaEfetiva` on the one branch that reads it — the overwrite of an existing row — so a stored negative cannot shrink the ERP count below Shopee’s on every re-import (#931); on the create branch the reserve is a literal 0. Pure: it plans the number and writes nothing.',
 
+  // ---- A DIFFERENT reservation, named only to be told apart ---------------
+  'apps/shopee/lib/shopee/estoque/reservaPromocao.ts':
+    '⚠️ NOT this reservation. Shopee’s `total_reserved_stock` is a PROMOTION reserve that sets a FLOOR the stock sender clamps UP to, whereas `quantidadeReservada` is SUBTRACTED to get availability — two numbers with the same name pulling in OPPOSITE directions, which is exactly why the file is inventoried: the disclaimer has to be a reviewed artifact rather than folklore, and the two must never be summed, compared or folded into one another. The ERP counter is named once, in that sentence, and touched nowhere else — the quantity reaches this module already computed and already floored by `packages/data/src/admin/estoque/quantidades.ts`, and every function here only ever RAISES it. Pure: no Firestore, no clock, and no arithmetic on the ERP reservation at all.',
+
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
     'Read-free WriteBatch: `increment` followed by `FieldValue.maximum(0)` on the same doc, so the stored counter cannot land below zero.',
