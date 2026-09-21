@@ -854,7 +854,7 @@ export async function applyFamilyStatusAndFold(
 
 /** Identity of one member link across the family: its child produto + doc id. */
 function chaveMembro(memberProdutoId: string, memberDocId: string): string {
-  return `${memberProdutoId} ${memberDocId}`;
+  return `${memberProdutoId}\u0000${memberDocId}`;
 }
 
 /**

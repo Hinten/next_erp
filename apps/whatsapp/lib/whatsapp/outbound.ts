@@ -59,19 +59,28 @@
  * callbacks (they can't locate the message until re-anchor completes), so we
  * accept this narrow tail.
  */
-import type { Firestore, Transaction } from 'firebase-admin/firestore';
+import { randomUUID } from 'node:crypto';
+import type { Firestore, Transaction, Timestamp, DocumentData } from 'firebase-admin/firestore';
 import {
   arquivoCollection,
   conversaCollection,
   mensagemCollection,
+  whatsappMensagemCollection,
+  whatsappIdentidadeCollection,
+  clienteCollection,
+  integracaoCollection,
 } from '@delfrance/data/admin/collections';
 import {
   FILETYPE,
+  INTEGRACAO_TIPO,
   ORIGEM_CONVERSA,
   TIPO_MENSAGEM,
   ESTADO_ENVIO,
   idFromRef,
   type Filetype,
+  type Integracao,
+  type WhatsappDestino,
+  mesmoDestinoWhatsapp,
 } from '@delfrance/schemas';
 import {
   WhatsAppHttpError,
@@ -80,7 +89,8 @@ import {
   type WhatsAppClient,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
-import { fromNumberFromSenderId, mensagemDocId } from './ids';
+import { mensagemDocId } from './ids';
+import { telefoneAtual } from './contatos';
 import {
   WhatsappContaNotConfiguredError,
   WhatsappTokenMissingError,
@@ -137,6 +147,7 @@ export type OutboundResult =
 type MediaType = SendMediaInput['type'];
 
 type SendSpec =
+  | { kind: 'template'; templateName: string }
   | { kind: 'text'; text: string }
   | { kind: 'media'; type: MediaType; link: string; caption: string | null };
 
@@ -146,22 +157,47 @@ function skip(reason: string): OutboundResult {
   return { kind: 'skipped', reason };
 }
 
-/**
- * Patch the ORIGINAL doc to `estadoEnvio = erro` + the error text (the `error`
- * field) and return an `error` result. Deterministic — the sweep only re-drives
- * `salva`, so `erro` is terminal (an operator resends). A transient failure of
- * the merge itself propagates so the trigger retries.
- */
+type FailureGuard =
+  | {
+      kind: 'snapshot';
+      mensagemUpdateTime: Timestamp | undefined;
+      conversaUpdateTime: Timestamp | undefined;
+    }
+  | { kind: 'claim'; claimId: string };
+
+/** A stale failure cannot overwrite a newer edit/claim or resurrect a re-anchored message. */
 async function failMensagem(
   db: Firestore,
   conversaId: string,
   mensagemId: string,
   message: string,
+  guard: FailureGuard,
 ): Promise<OutboundResult> {
-  await mensagemCollection.merge(db, { conversaId }, mensagemId, {
-    estadoEnvio: ESTADO_ENVIO.erro,
-    error: message,
+  const applied = await db.runTransaction(async (tx) => {
+    const ref = mensagemCollection.docRef(db, { conversaId }, mensagemId);
+    const snap = await tx.get(ref);
+    if (!snap.exists || snap.data()?.mid != null) return false;
+    if (guard.kind === 'snapshot') {
+      const conversation = await tx.get(conversaCollection.docRef(db, {}, conversaId));
+      if (
+        !guard.mensagemUpdateTime ||
+        !snap.updateTime?.isEqual(guard.mensagemUpdateTime) ||
+        !guard.conversaUpdateTime ||
+        !conversation.updateTime?.isEqual(guard.conversaUpdateTime)
+      )
+        return false;
+    } else if (
+      snap.data()?.whatsappEnvioClaimId !== guard.claimId ||
+      snap.data()?.estadoEnvio !== ESTADO_ENVIO.enviando
+    )
+      return false;
+    tx.update(
+      ref,
+      mensagemCollection.parseMerge({ estadoEnvio: ESTADO_ENVIO.erro, error: message }),
+    );
+    return true;
   });
+  if (!applied) return skip('mensagem alterada; erro da tentativa anterior ignorado');
   console.error('[whatsapp] envio outbound falhou', { conversaId, mensagemId, message });
   return { kind: 'error', reason: message };
 }
@@ -184,7 +220,12 @@ function mediaTypeForFiletype(filetype: Filetype): MediaType {
  */
 async function resolveSendSpec(
   db: Firestore,
-  doc: { conteudo: string | null; anexoStorage?: string | null; anexoDescription?: string | null },
+  doc: {
+    whatsappTemplate?: string | null;
+    conteudo: string | null;
+    anexoStorage?: string | null;
+    anexoDescription?: string | null;
+  },
 ): Promise<SendSpec> {
   const anexoRef = typeof doc.anexoStorage === 'string' ? doc.anexoStorage : null;
   if (anexoRef) {
@@ -214,6 +255,8 @@ async function resolveSendSpec(
     };
   }
 
+  if (typeof doc.whatsappTemplate === 'string' && doc.whatsappTemplate)
+    return { kind: 'template', templateName: doc.whatsappTemplate };
   const text = doc.conteudo;
   if (!text || text.trim() === '') {
     throw new OutboundSendError('Mensagem sem conteúdo para envio.');
@@ -222,14 +265,22 @@ async function resolveSendSpec(
 }
 
 /** Transmit the spec, returning the wamid Meta assigns. */
-async function performSend(client: WhatsAppClient, to: string, spec: SendSpec): Promise<string> {
+async function performSend(
+  client: WhatsAppClient,
+  destino: WhatsappDestino,
+  spec: SendSpec,
+): Promise<string> {
+  const recipient = destino.tipo === 'bsuid' ? { recipient: destino.valor } : { to: destino.valor };
+  if (spec.kind === 'template') {
+    return (await client.sendTemplate({ ...recipient, templateName: spec.templateName })).messageId;
+  }
   if (spec.kind === 'text') {
-    const res = await client.sendText({ to, text: spec.text });
+    const res = await client.sendText({ ...recipient, text: spec.text });
     return res.messageId;
   }
   // Audio has no caption on the Graph API — omit it there.
   const res = await client.sendMedia({
-    to,
+    ...recipient,
     type: spec.type,
     link: spec.link,
     caption: spec.type === 'audio' ? undefined : (spec.caption ?? undefined),
@@ -280,6 +331,11 @@ async function reanchor(
   try {
     await db.runTransaction(async (txn: Transaction) => {
       txn.create(newRef, data);
+      txn.set(whatsappMensagemCollection.docRef(db, {}, newId), {
+        integracaoId: contaId,
+        conversaId,
+        mensagemId: newId,
+      });
       txn.delete(oldRef);
     });
   } catch (err) {
@@ -311,9 +367,11 @@ async function markReadNewestInbound(
   db: Firestore,
   conversaId: string,
   client: WhatsAppClient,
+  identidadeId: string,
 ): Promise<void> {
   const snap = await mensagemCollection
     .ref(db, { conversaId })
+    .where('whatsappIdentidadeId', '==', identidadeId)
     .where('estadoEnvio', '==', ESTADO_ENVIO.recebido)
     .orderBy('timestamp', 'desc')
     .limit(1)
@@ -355,7 +413,9 @@ export interface DispatchOptions {
   claimEnviando?: boolean;
 }
 
-type ClaimResult = { kind: 'claimed' } | { kind: 'skip'; reason: string };
+type ClaimResult =
+  | { kind: 'claimed'; destino: WhatsappDestino; raw: DocumentData; claimId: string }
+  | { kind: 'skip'; reason: string };
 
 /** Whether a doc in this state (with `mid == null`) may be claimed for sending. */
 function isClaimable(estadoEnvio: number, claimEnviando: boolean): boolean {
@@ -379,6 +439,9 @@ async function claimOutbound(
   conversaId: string,
   mensagemId: string,
   claimEnviando: boolean,
+  expectedUpdateTime: Timestamp | undefined,
+  integracaoId: string,
+  preparedAccount: Pick<Integracao, 'phoneNumberId' | 'portfolioId'>,
 ): Promise<ClaimResult> {
   const ref = mensagemCollection.docRef(db, { conversaId }, mensagemId);
   return db.runTransaction(async (txn: Transaction) => {
@@ -390,11 +453,95 @@ async function claimOutbound(
     );
     if (fresh.mid != null) return { kind: 'skip', reason: 'mensagem já processada' };
     if (!isClaimable(fresh.estadoEnvio, claimEnviando)) return { kind: 'skip', reason: 'claimed' };
+    const conversationSnap = await txn.get(conversaCollection.docRef(db, {}, conversaId));
+    const conversation = conversationSnap.exists
+      ? conversaCollection.parseRead(conversationSnap.data())
+      : null;
+    const destination = fresh.whatsappDestino;
+    if (
+      !conversation ||
+      !destination ||
+      !mesmoDestinoWhatsapp(destination, conversation.whatsappDestino) ||
+      idFromRef(conversation.integracaoOuterRef ?? '') !== integracaoId ||
+      fresh.whatsappIntegracaoId !== integracaoId
+    ) {
+      txn.update(ref, {
+        estadoEnvio: ESTADO_ENVIO.erro,
+        error: 'O destino WhatsApp mudou. Revise e envie novamente.',
+      });
+      return { kind: 'skip', reason: 'destino alterado' };
+    }
+    const accountSnap = await txn.get(integracaoCollection.docRef(db, {}, integracaoId));
+    const account = accountSnap.exists ? integracaoCollection.parseRead(accountSnap.data()) : null;
+    if (!account || account.tipo !== INTEGRACAO_TIPO.whatsapp) {
+      txn.update(ref, {
+        estadoEnvio: ESTADO_ENVIO.erro,
+        error: 'Integração WhatsApp indisponível. Revise a conta antes de enviar.',
+      });
+      return { kind: 'skip', reason: 'integração indisponível' };
+    }
+    // The context loader caches account configuration. A changed number or
+    // portfolio invalidates the client prepared outside the transaction.
+    if (
+      account.phoneNumberId !== preparedAccount.phoneNumberId ||
+      account.portfolioId !== preparedAccount.portfolioId
+    ) {
+      return { kind: 'skip', reason: 'configuração alterada; aguarda nova tentativa' };
+    }
+    const identity = await txn.get(
+      whatsappIdentidadeCollection.docRef(db, {}, destination.identidadeId),
+    );
+    const identityData = identity.data();
+    const clienteId = idFromRef(conversation.clienteOuterRef ?? '');
+    const cliente = clienteId ? await txn.get(clienteCollection.docRef(db, {}, clienteId)) : null;
+    const expectedScope = destination.tipo === 'bsuid' ? account.portfolioId : integracaoId;
+    if (
+      !identity.exists ||
+      identityData?.ativa !== true ||
+      identityData?.clienteId !== clienteId ||
+      !cliente?.exists ||
+      !expectedScope ||
+      identityData?.escopo !== expectedScope ||
+      identityData?.tipo !== destination.tipo ||
+      identityData?.valor !== destination.valor ||
+      (destination.tipo === 'telefone' &&
+        telefoneAtual(clienteCollection.parseRead(cliente.data())) !==
+          identityData?.telefoneClienteNoVinculo)
+    ) {
+      txn.update(ref, {
+        estadoEnvio: ESTADO_ENVIO.erro,
+        error: 'Identidade WhatsApp inativa ou incompatível. Revise o vínculo antes de enviar.',
+      });
+      return { kind: 'skip', reason: 'identidade inativa' };
+    }
+    if (
+      !fresh.whatsappTemplate &&
+      (conversation.whatsappDestino?.ultimaMensagemEm ?? 0) + 86400000 <= Date.now()
+    ) {
+      txn.update(ref, {
+        estadoEnvio: ESTADO_ENVIO.erro,
+        error: 'Janela de atendimento encerrada. Envie a mensagem padrão.',
+      });
+      return { kind: 'skip', reason: 'janela encerrada' };
+    }
+    if (expectedUpdateTime && !snap.updateTime?.isEqual(expectedUpdateTime))
+      return { kind: 'skip', reason: 'conteúdo alterado; aguarda nova tentativa' };
     // Flip to `enviando` (a no-op for an already-`enviando` sweep re-drive).
-    txn.set(ref, mensagemCollection.parseMerge({ estadoEnvio: ESTADO_ENVIO.enviando }), {
-      merge: true,
-    });
-    return { kind: 'claimed' };
+    const claimId = randomUUID();
+    txn.set(
+      ref,
+      mensagemCollection.parseMerge({
+        estadoEnvio: ESTADO_ENVIO.enviando,
+        whatsappEnvioClaimId: claimId,
+      }),
+      { merge: true },
+    );
+    return {
+      kind: 'claimed',
+      destino: destination,
+      raw: { ...snap.data()!, whatsappEnvioClaimId: claimId },
+      claimId,
+    };
   });
 }
 
@@ -440,28 +587,7 @@ export async function dispatchOutbound(
   );
   if (conversa.origem !== ORIGEM_CONVERSA.whatsapp) return skip(`origem ${conversa.origem}`);
 
-  // 3. Recipient + owning account (deterministic gaps → erro, no retry).
-  if (!conversa.sender_id) {
-    return failMensagem(db, conversaId, mensagemId, 'Conversa sem sender_id — envio impossível.');
-  }
-  const to = fromNumberFromSenderId(conversa.sender_id);
-  if (!to) {
-    return failMensagem(db, conversaId, mensagemId, 'sender_id sem número de destino.');
-  }
-  if (!conversa.integracaoOuterRef) {
-    return failMensagem(db, conversaId, mensagemId, 'Conversa sem integracaoOuterRef.');
-  }
-  const contaId = idFromRef(conversa.integracaoOuterRef);
-  if (!contaId) {
-    return failMensagem(
-      db,
-      conversaId,
-      mensagemId,
-      `integracaoOuterRef inválido: ${conversa.integracaoOuterRef}`,
-    );
-  }
-
-  // 4. Fresh re-read: the authoritative content + an early skip. This does NOT
+  // 3. Fresh re-read: the authoritative content + an early skip. This does NOT
   //    mutate — the CLAIM (step 7) is the concurrency guard. Reading before the
   //    read-only setup lets build-client / resolveSendSpec fail transiently while
   //    the doc stays `salva` (a fast trigger-retry, not a 15-min sweep wait).
@@ -474,20 +600,59 @@ export async function dispatchOutbound(
   if (fresh.mid != null || !isClaimable(fresh.estadoEnvio, claimEnviando)) {
     return skip('mensagem já processada');
   }
-  const freshRaw = freshSnap.data();
+
+  const failureGuard: FailureGuard = {
+    kind: 'snapshot',
+    mensagemUpdateTime: freshSnap.updateTime,
+    conversaUpdateTime: convSnap.updateTime,
+  };
+
+  // 4. Recipient + owning account (deterministic gaps → erro, no retry).
+  if (!conversa.whatsappDestino)
+    return failMensagem(
+      db,
+      conversaId,
+      mensagemId,
+      'Conversa sem identidade WhatsApp vinculada.',
+      failureGuard,
+    );
+  if (!conversa.integracaoOuterRef) {
+    return failMensagem(
+      db,
+      conversaId,
+      mensagemId,
+      'Conversa sem integracaoOuterRef.',
+      failureGuard,
+    );
+  }
+  const contaId = idFromRef(conversa.integracaoOuterRef ?? '');
+  if (!contaId) {
+    return failMensagem(
+      db,
+      conversaId,
+      mensagemId,
+      `integracaoOuterRef inválido: ${conversa.integracaoOuterRef}`,
+      failureGuard,
+    );
+  }
 
   // 5. Build the client (missing token / misconfigured conta → erro, no retry;
   //    a transient Firestore read propagates so the trigger retries).
   let client: WhatsAppClient;
+  let preparedAccount: Pick<Integracao, 'phoneNumberId' | 'portfolioId'>;
   try {
     const ctx = await deps.loadContext(db, contaId);
     client = await ctx.buildClient();
+    preparedAccount = {
+      phoneNumberId: ctx.conta.phoneNumberId,
+      portfolioId: ctx.conta.portfolioId,
+    };
   } catch (err) {
     if (
       err instanceof WhatsappTokenMissingError ||
       err instanceof WhatsappContaNotConfiguredError
     ) {
-      return failMensagem(db, conversaId, mensagemId, err.message);
+      return failMensagem(db, conversaId, mensagemId, err.message, failureGuard);
     }
     throw err;
   }
@@ -500,7 +665,7 @@ export async function dispatchOutbound(
     spec = await resolveSendSpec(db, fresh);
   } catch (err) {
     if (err instanceof OutboundSendError) {
-      return failMensagem(db, conversaId, mensagemId, err.message);
+      return failMensagem(db, conversaId, mensagemId, err.message, failureGuard);
     }
     throw err; // OutboundTransientError + transient Firestore → Eventarc retries.
   }
@@ -509,7 +674,15 @@ export async function dispatchOutbound(
   //    (see claimOutbound). A prior success DELETED the original, or a concurrent
   //    dispatcher already claimed it — either way the loser exits here without
   //    sending. This closes the concurrent double-send.
-  const claim = await claimOutbound(db, conversaId, mensagemId, claimEnviando);
+  const claim = await claimOutbound(
+    db,
+    conversaId,
+    mensagemId,
+    claimEnviando,
+    freshSnap.updateTime,
+    contaId,
+    preparedAccount,
+  );
   if (claim.kind === 'skip') return skip(claim.reason);
 
   // 8. Transmit. A Graph HTTP failure (WhatsAppHttpError) is terminal → erro (bad
@@ -519,18 +692,21 @@ export async function dispatchOutbound(
   //    re-drives the transient case; `failMensagem` moves the terminal case to `erro`.
   let wamid: string;
   try {
-    wamid = await performSend(client, to, spec);
+    wamid = await performSend(client, claim.destino, spec);
   } catch (err) {
     if (err instanceof WhatsAppNetworkError) throw err;
     if (err instanceof WhatsAppHttpError) {
-      return failMensagem(db, conversaId, mensagemId, err.message);
+      return failMensagem(db, conversaId, mensagemId, err.message, {
+        kind: 'claim',
+        claimId: claim.claimId,
+      });
     }
     throw err;
   }
 
   // 9. Re-anchor (transient Firestore → throw → retry) + best-effort mark-read.
-  await reanchor(db, conversaId, mensagemId, contaId, wamid, freshRaw);
-  await markReadNewestInbound(db, conversaId, client);
+  await reanchor(db, conversaId, mensagemId, contaId, wamid, claim.raw);
+  await markReadNewestInbound(db, conversaId, client, claim.destino.identidadeId);
 
   return { kind: 'sent', wamid, mensagemId: mensagemDocId(contaId, wamid) };
 }

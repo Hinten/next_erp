@@ -22,6 +22,8 @@ describe('buildTextMensagem (#529 outbound text shape)', () => {
       // `user_id` above stays the operator's uid, which is what keeps the #529
       // sender's discriminator and the bubble's outbound side both unchanged.
       clienteMensagemOuterRef: null,
+      whatsappDestino: null,
+      whatsappIntegracaoId: null,
       urlAvatar: null,
       midGroup: null,
       error: null,

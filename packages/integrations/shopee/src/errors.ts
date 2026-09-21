@@ -271,12 +271,64 @@ const KIND_BY_CODE = new Map<string, ShopeeErrorKind>(
   } satisfies Record<string, ShopeeErrorKind>),
 );
 
-/** Shopee's `error` string → what to do about it, on this surface. */
+/**
+ * Exactly ONE leading `<module>.` segment, removed — for LOOKUP only.
+ *
+ * Shopee prints the same code both ways, often on the same page: `unlist_item`'s
+ * error list says `error_param` while its own Error example prints
+ * `{"error": "product.error_param"}`; `delete_item` does the same;
+ * `add_item`'s list carries `product.error_busi`; `get_channel_list` carries
+ * `common.invalid_shop`; `get_order_list` carries `order.order_list_invalid_time`.
+ * Without this, a `product.error_limit` classifies as `'other'` — the DAILY
+ * quota read as a plain failure and retried immediately, burning the ladder.
+ *
+ * ⚠️ It is a SECOND lookup, never a rewrite. {@link classifyShopeeError} tries
+ * the FULL string first, so a code Shopee spells with a dot of its own
+ * (`error.param`, the underscore typo on `add_item`'s stock list) can never be
+ * re-read as the module `error` plus the code `param`. And
+ * {@link ShopeeApiError.code} keeps the VERBATIM string, because that is what
+ * the app logs and what the publish classifier keys on.
+ *
+ * ⚠️ Exactly ONE segment. `a.b.error_limit` strips to `b.error_limit`, which
+ * misses the table and stays `'other'`; a greedy strip (`/^.*\./`) would make
+ * any suffix match, so a provider code that merely ENDS in a known one would be
+ * put on a ladder it does not belong on. A near-miss test pins it.
+ *
+ * @returns the remainder, or `null` when there is no prefix to remove — which
+ * includes `'product.'` (the prefix IS the whole code). `null` rather than `''`
+ * on purpose: `KIND_BY_CODE.get('')` is a live lookup, and an empty key is one
+ * table entry away from classifying every prefix-only code as something.
+ */
+export function shopeeCodeSemPrefixoDeModulo(code: string): string | null {
+  const m = /^[a-z][a-z0-9_]*\.(?=.)/.exec(code);
+  return m === null ? null : code.slice(m[0].length);
+}
+
+/**
+ * Shopee's `error` string → what to do about it, on this surface.
+ *
+ * ⚠️ The module prefix is tolerated by trying the stripped code SECOND, and the
+ * `error_auth` surface gate applies to both spellings: `product.error_auth` on a
+ * business call is *Invalid sign* — a defect on OUR side — and must not
+ * disconnect a healthy conta.
+ *
+ * ⚠️ `upload_image`'s two `access_token` errors (`error_param: There is no
+ * access_token in query.` and `error_auth: Invalid access_token.`) stay
+ * `'other'` on a business call, deliberately: that page is `type=Public` and a
+ * token complaint from it means the SIGNING MODE is wrong here, not that the
+ * seller's authorization died. `respond.ts` maps a reauth verdict to a
+ * reconnect prompt, which is precisely the wrong instruction to give an
+ * operator whose conta is fine.
+ */
 export function classifyShopeeError(code: string, surface: ShopeeSurface): ShopeeErrorKind {
-  if (code === SHOPEE_AMBIGUOUS_AUTH_CODE) {
+  const semPrefixo = shopeeCodeSemPrefixoDeModulo(code);
+  if (code === SHOPEE_AMBIGUOUS_AUTH_CODE || semPrefixo === SHOPEE_AMBIGUOUS_AUTH_CODE) {
     return surface === SHOPEE_SURFACE.auth ? SHOPEE_ERROR_KIND.reauth : SHOPEE_ERROR_KIND.other;
   }
-  return KIND_BY_CODE.get(code) ?? SHOPEE_ERROR_KIND.other;
+  const direto = KIND_BY_CODE.get(code);
+  if (direto !== undefined) return direto;
+  const indireto = semPrefixo === null ? undefined : KIND_BY_CODE.get(semPrefixo);
+  return indireto ?? SHOPEE_ERROR_KIND.other;
 }
 
 /** The envelope fields {@link shopeeErrorFromEnvelope} reads. */
@@ -302,6 +354,11 @@ export interface ShopeeErrorContext {
  * a credential: the token endpoints carry the credential in
  * `access_token`/`refresh_token`, which are absent from a failing body and are
  * never read here.
+ *
+ * ⚠️ `code` is `env.error` VERBATIM, module prefix and all. The prefix tolerance
+ * in {@link classifyShopeeError} is a lookup and never a rewrite: the publish
+ * classifier and every log line read the raw string, and normalising it here
+ * would make a grep for what Shopee actually sent come up empty. A test pins it.
  */
 export function shopeeErrorFromEnvelope(
   env: ShopeeErrorEnvelope,

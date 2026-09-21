@@ -1,10 +1,11 @@
 'use client';
 
+import { useFormContext } from 'react-hook-form';
 import { TextInput } from '@mantine/core';
 import { normalizeTelefone } from '@delfrance/core/phone';
 import type { FieldRenderProps } from '@delfrance/ui';
 
-const DEFAULT_HINT = 'Com DDD — salvo com o código do país (55…)';
+const DEFAULT_HINT = 'Com DDD; para números internacionais, inclua + e o código do país';
 
 export interface TelefoneTextInputProps {
   value: string;
@@ -19,7 +20,7 @@ export interface TelefoneTextInputProps {
 
 /**
  * Phone input for the standardized wire format (digits-only E.164 without
- * '+', WhatsApp wa_id compatible). Typing is restricted to digits; when the
+ * '+', WhatsApp wa_id compatible). Typing keeps digits and an optional leading +; when the
  * normalized value differs from what was typed, the description previews
  * what will be persisted. The value itself is NEVER mutated here — blurring
  * through a legacy doc must not dirty it; normalization happens at save
@@ -43,11 +44,14 @@ export function TelefoneTextInput({
       label={label}
       description={preview ?? description ?? DEFAULT_HINT}
       value={value}
-      onChange={(e) => onChange(e.currentTarget.value.replace(/\D/g, ''))}
+      onChange={(e) => {
+        const next = e.currentTarget.value;
+        onChange(`${next.trimStart().startsWith('+') ? '+' : ''}${next.replace(/\D/g, '')}`);
+      }}
       onBlur={onBlur}
       error={error}
-      maxLength={16}
-      inputMode="numeric"
+      maxLength={32}
+      inputMode="tel"
       disabled={disabled}
       required={required}
     />
@@ -91,3 +95,17 @@ export function TelefoneField({
  */
 export const prepareForSaveTelefone = (v: unknown): unknown =>
   typeof v === 'string' && v !== '' ? normalizeTelefone(v) : v;
+
+/** Persisted cliente phones carry a country code after the pre-cutover phone migration. */
+export function ClienteTelefoneField(props: FieldRenderProps) {
+  const form = useFormContext();
+  const canonical = !form.getFieldState(props.name).isDirty;
+  const value =
+    typeof props.value === 'string' &&
+    props.value !== '' &&
+    canonical &&
+    !props.value.startsWith('+')
+      ? `+${props.value}`
+      : props.value;
+  return <TelefoneField {...props} value={value} />;
+}

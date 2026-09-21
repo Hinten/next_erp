@@ -1,5 +1,5 @@
 /**
- * Server-owned maintenance of `produtos.integracoesComProduto` (#920).
+ * Mercado Livre's binding of `produtos.integracoesComProduto` (#920).
  *
  * That array is the ANCHOR PRE-FILTER both ML sweeps start from —
  * `bulkEstoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each open
@@ -15,9 +15,9 @@
  * `estado !== 'c'`); `publicado` is an ERP CATALOGUE flag answering a different
  * question, and gating on it dropped every unpublished produto with a live
  * listing — server-side, with no skip row (#804's class 1). That makes the
- * accuracy of this array even more load-bearing than the paragraph below says:
- * it is now the ONLY server-side term standing between a live anúncio and the
- * sweep, and the per-listing gates decide the rest.
+ * accuracy of this array even more load-bearing than the failure asymmetry
+ * says: it is now the ONLY server-side term standing between a live anúncio and
+ * the sweep, and the per-listing gates decide the rest.
  *
  * It used to be maintained by hand at six scattered call sites, and only ever
  * REMOVED by deriving it from the sibling `marketplace` array
@@ -28,124 +28,76 @@
  * from the LINK SUBCOLLECTIONS instead, so `marketplace` + `marketplaceIds` can
  * die on their own and this array survives as a permanent, app-owned denorm.
  *
- * ## The failure asymmetry that governs every decision here
+ * ## What lives where since #1519
  *
- * A FALSE POSITIVE (conta listed, no live link) costs one skipped sweep row —
- * `buildSendTasks` rungs out at `'sem-link'`, `precoPlan` at `SEM_LINK`. No ML
- * call, no write, no error. A FALSE NEGATIVE (live link, no array entry) is a
- * SILENT stock + price outage: the produto is never selected and nothing logs a
- * reason. So when in doubt, over-include.
+ * The channel-neutral half — the conta-ref folds, the payload-only plan, the
+ * `arrayUnion` add and the guarded remove — moved to
+ * `@delfrance/data/admin/produtos`, where Shopee's link trigger reaches it too.
+ * ⚠️ **The reasoning moved with it**: the failure asymmetry (a false positive
+ * costs one skipped sweep row, a false negative is a silent stock + price
+ * outage — when in doubt, over-include), the race discipline of the two writes,
+ * and why only the array key is ever written. Read that header before changing
+ * anything here.
  *
- * ## Race discipline (root CLAUDE.md rule 7 / ADR 0011)
- *
- * - The ADD is **tier 0**: `arrayUnion` is commutative and idempotent, so an
- *   Eventarc redelivery or a concurrent publish costs nothing. Nothing to lose.
- * - The REMOVE reads before it writes, so it is **tier 1**: it runs inside
- *   `runTransaction` and re-derives membership from the `tx.get` result. A
- *   concurrent publish landing in the queried range fails the version check and
- *   the callback re-runs — re-checking a predicate against a binding read taken
- *   OUTSIDE the transaction would not be a guard at all.
- * - Never resurrect a produto: `onProdutoDeleted`'s cascade deletes these links,
- *   so both paths narrow `NOT_FOUND` and return.
- *
- * ## What is deliberately NOT written
- *
- * Only the array key. No `ultimaModificacao`, no `timestamp` — those feed the
- * TableView update monitors (`limit(1)` descending), and churning them on every
- * publish would make the produtos list flash for an edit no operator made. For
- * the same reason `integracoesComProduto` belongs in
- * `PRODUTO_HISTORY_IGNORE_FIELDS` (`apps/functions/src/produtos/onProdutoChanged.ts`).
+ * What stays is everything ML-shaped: the two link subcollections, the survivor
+ * queries behind a removal, and the variação fallback that resolves a
+ * pre-backfill row's conta through its parent link. `planLinkChange` below is a
+ * three-argument binding over the promoted core, which takes a fourth: the
+ * reader that says where THIS channel keeps its conta ref.
  */
 
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import { linkHasLiveListing, variacaoLinkHasListing } from '@delfrance/schemas';
 import {
-  linkHasLiveListing,
-  parseRef,
-  toOuterRef,
-  toOuterRefOrNull,
-  variacaoLinkHasListing,
-} from '@delfrance/schemas';
-import {
-  produtoCollection,
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 // The narrow subpath, not the `@delfrance/data/admin` barrel: this module sits
 // in the Cloud Functions ENTRYPOINT graph, and the barrel drags the whole admin
 // surface (notifications, cache, pipelines, reconcile) in behind two predicates.
-import { isNotFound } from '@delfrance/data/admin/grpcErrors';
+import {
+  adicionarConta as adicionarContaCore,
+  contaIdFromRef,
+  contaRefForms,
+  planLinkChange as planLinkChangeCore,
+  removerContaSeOrfa as removerContaSeOrfaCore,
+  type SentinelasDeArray,
+} from '@delfrance/data/admin/produtos';
 
 import { parsePmlOuterRef } from '../core/linkRefs';
 
-/** The produto field this module owns. */
-const CAMPO = 'integracoesComProduto';
+export { contaIdFromRef, contaRefForms } from '@delfrance/data/admin/produtos';
+
+/**
+ * The array sentinels the promoted writers cannot import for themselves:
+ * `packages/data/src/admin/**` may only `import type` from `firebase-admin`
+ * (`adminBundleSafety.test.ts`), so the runtime values are supplied here, at
+ * the app boundary — the same seam `escreverAviso`'s `increment` uses.
+ */
+const SENTINELAS: SentinelasDeArray = {
+  arrayUnion: (id) => FieldValue.arrayUnion(id),
+  arrayRemove: (id) => FieldValue.arrayRemove(id),
+};
 
 /* --------------------------------------------------------------------------
  * Pure helpers
  * ------------------------------------------------------------------------ */
 
 /**
- * The integração doc id a stored `contaOuterRef` points at, or `null`.
- *
- * The array stores BARE doc ids while the link docs store REF strings — an
- * asymmetry every reader depends on (`arrayContains(integracaoId)`), so this is
- * the one place the two representations meet. Tolerates both stored ref forms,
- * matching `refMatchesIntegracao` (`linkRefs.ts`): the canonical
- * `documents/integracao/<id>` every app writes, and the bare `integracao/<id>`
- * readers accept defensively.
- *
- * Non-throwing by construction (`toOuterRefOrNull`): a permanently malformed
- * ref must degrade to "conta not resolvable" and not ride the Eventarc retry
- * forever. The collection check keeps a ref pointing somewhere else from being
- * read as a conta.
- */
-export function contaIdFromRef(raw: unknown): string | null {
-  const ref = toOuterRefOrNull(raw);
-  if (ref == null) return null;
-  const { collection, id } = parseRef(ref);
-  if (collection !== 'integracao' || id.length === 0) return null;
-  return id;
-}
-
-/** Both accepted stored forms of a conta ref — `endsWith` is not a Firestore predicate. */
-export function contaRefForms(integracaoId: string): [string, string] {
-  return [toOuterRef(`integracao/${integracaoId}`), `integracao/${integracaoId}`];
-}
-
-/**
  * What a link write means for the array, decided from the event payload ALONE.
  *
- * Returning `{ add: [], check: [] }` is the fast path, and it is load-bearing:
- * link docs are rewritten constantly for reasons that cannot move membership —
- * every stock-send error and price writeback merges `estado`/`errors`/
- * `ultimaModificacao` through `mergeIfExists`. Those events must cost zero
- * reads and zero writes, so callers must consult this BEFORE touching the db.
- *
- * `check` is "this conta may have lost its last listing" — a candidate for
- * removal, never a decision. Only the transaction that re-reads the surviving
- * links may decide that.
+ * The ML binding of the promoted core: this channel keeps its conta ref on the
+ * link doc's `contaOuterRef`. Reading any other field name here would resolve
+ * `null` on both sides, take the zero-cost fast path, and turn the trigger into
+ * a silent no-op — which is why the core takes the reader as a required
+ * parameter rather than defaulting to this one (#1519).
  */
 export function planLinkChange(
   before: Record<string, unknown> | null,
   after: Record<string, unknown> | null,
   counts: (link: Record<string, unknown> | null) => boolean,
 ): { add: string[]; check: string[] } {
-  const contaBefore = before == null ? null : contaIdFromRef(before.contaOuterRef);
-  const contaAfter = after == null ? null : contaIdFromRef(after.contaOuterRef);
-  const countedBefore = contaBefore != null && counts(before);
-  const countsNow = contaAfter != null && counts(after);
-
-  // Same conta, same membership contribution: nothing this write can change.
-  if (contaBefore === contaAfter && countedBefore === countsNow) return { add: [], check: [] };
-
-  const add = countsNow && contaAfter != null ? [contaAfter] : [];
-  // The old conta is worth re-checking only if THIS doc used to contribute to
-  // it and just stopped — either because the ref was re-pointed elsewhere or
-  // because the link no longer counts. A doc that never contributed cannot have
-  // been the conta's last listing, so checking it would only buy a transaction.
-  const perdeuAContribuicao = countedBefore && (contaBefore !== contaAfter || !countsNow);
-  const check = contaBefore != null && perdeuAContribuicao ? [contaBefore] : [];
-  return { add, check };
+  return planLinkChangeCore(before, after, counts, (link) => contaIdFromRef(link.contaOuterRef));
 }
 
 /**
@@ -244,58 +196,29 @@ export async function resolverContaRefDaVariacao(
 }
 
 /**
- * Add a conta to the produto's array. Tier 0 — `arrayUnion`, no read, no
- * precondition, safe to replay.
- *
- * Returns false when the produto is gone: the cascade beat us and re-creating
- * it as a husk carrying one field would be far worse than a missing entry.
+ * Add a conta to the produto's array — the promoted tier-0 write, bound to this
+ * app's `FieldValue`. See the core module for the race discipline.
  */
-export async function adicionarConta(
+export function adicionarConta(
   db: Firestore,
   produtoId: string,
   integracaoId: string,
 ): Promise<boolean> {
-  try {
-    await produtoCollection
-      .docRef(db, {}, produtoId)
-      .update({ [CAMPO]: FieldValue.arrayUnion(integracaoId) });
-    return true;
-  } catch (err) {
-    if (isNotFound(err)) return false;
-    throw err;
-  }
+  return adicionarContaCore(db, produtoId, integracaoId, SENTINELAS);
 }
 
 /**
- * Drop a conta from the produto's array, but ONLY once a transactional re-read
- * proves it holds no qualifying link for that conta any more.
- *
- * Tier 1. `sobrevivem` runs inside the transaction and its verdict comes from
- * the `tx.get` result, never from anything captured before `runTransaction` —
- * OCC retries re-run the callback but re-apply the closure verbatim, so a
- * predicate evaluated outside would be re-applied over the winner. The query
- * read-set is what makes a concurrent publish abort this attempt instead of
- * silently losing to it, which matters because losing here is the silent-outage
- * direction.
+ * Drop a conta from the produto's array once `sobrevivem` proves, inside the
+ * transaction, that no qualifying link is left — the promoted tier-1 write,
+ * bound to this app's `FieldValue`.
  */
-export async function removerContaSeOrfa(
+export function removerContaSeOrfa(
   db: Firestore,
   produtoId: string,
   integracaoId: string,
   sobrevivem: (tx: FirebaseFirestore.Transaction) => Promise<boolean>,
 ): Promise<boolean> {
-  try {
-    return await db.runTransaction(async (tx) => {
-      if (await sobrevivem(tx)) return false;
-      tx.update(produtoCollection.docRef(db, {}, produtoId), {
-        [CAMPO]: FieldValue.arrayRemove(integracaoId),
-      });
-      return true;
-    });
-  } catch (err) {
-    if (isNotFound(err)) return false;
-    throw err;
-  }
+  return removerContaSeOrfaCore(db, produtoId, integracaoId, sobrevivem, SENTINELAS);
 }
 
 /**

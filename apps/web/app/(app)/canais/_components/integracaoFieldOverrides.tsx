@@ -147,6 +147,7 @@ export const CAMPOS_POR_CANAL = {
   whatsapp: [
     'wa_id',
     'waba_id',
+    'portfolioId',
     'phoneNumberId',
     'numero',
     'verificado',

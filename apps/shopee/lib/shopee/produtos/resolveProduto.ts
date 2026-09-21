@@ -119,7 +119,7 @@ interface LinhaDeLink {
  * ⚠️ It NEVER deletes. The log line carries the count and the chosen id, and no
  * body.
  */
-function escolherLink(
+export function escolherLink(
   linhas: readonly LinhaDeLink[],
   contexto: Record<string, unknown>,
 ): LinhaDeLink | null {
@@ -136,7 +136,7 @@ function escolherLink(
   return escolhido;
 }
 
-function linhasDeGrupo(snap: {
+export function linhasDeGrupo(snap: {
   docs: ReadonlyArray<{
     id: string;
     data: () => unknown;

@@ -192,6 +192,13 @@ export const clienteSchema = z.object({
     .nullable()
     .default(null)
     .describe('Telefone'),
+  /** Editable contact history. These numbers are inactive and never routing aliases. */
+  telefonesAdicionais: z
+    .array(z.string().regex(/^[1-9]\d{9,14}$/, 'telefone inválido (10 a 15 dígitos)'))
+    .default([])
+    .describe('Telefones adicionais (histórico)'),
+  /** Monotonic: a deliberately empty phone must not be filled by an old import. */
+  telefoneGerenciado: z.boolean().default(false),
   observacoesInternas: z
     .string()
     .max(255)

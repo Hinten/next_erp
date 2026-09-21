@@ -39,7 +39,7 @@
 import { type Firestore, FieldValue } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { notificacaoShopeeCollection } from '@delfrance/data/admin/collections';
-import type { EstadoFrete } from '@delfrance/schemas';
+import type { EstadoAnuncioShopee, EstadoFrete } from '@delfrance/schemas';
 import {
   asInt,
   asMillis,
@@ -87,6 +87,16 @@ import type {
 import type { AcaoPagamentosShopee } from '../pedidos/pagamentoTx';
 import type { AcaoFreteShopee } from '../pedidos/freteTx';
 import type { AlvoDeRastreioShopee, ResultadoRastreioShopee } from '../pedidos/rastrearPedido';
+// ⚠️ TYPE-ONLY, and it has to stay that way for the reason the `../pedidos/`
+// block above states: `anuncios/pushAnuncio.ts` imports `@delfrance/schemas` and
+// `@delfrance/data/admin/collections` as VALUES, and the receiver route's Next
+// bundle must not carry them. A test bans any static VALUE import from
+// `../anuncios/` in this file.
+import type {
+  AcaoPushAnuncio,
+  AlvoDePushDeAnuncioShopee,
+  ResultadoPushAnuncio,
+} from '../anuncios/pushAnuncio';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -496,6 +506,7 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * | `ack`   | nothing | recognised, and there is genuinely nothing to do |
  * | `pedido`| a pedido | the order import (step 5) — code 3, the only one |
  * | `frete` | one pedido | the shipment merge (step 7) — codes 4, 30 and 47 |
+ * | `anuncio`| one link doc + maybe an aviso | the violation / scheduled-publish handlers (step 11) — codes 16 and 27 |
  * | `parado`| one doc | data-bearing, the owning step is not built yet |
  *
  * ⚠️ **Keyed on the push code, never on `push_api_id`.** The comment beside
@@ -515,7 +526,14 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * revision of this table had ever listed. They arrived as `desconhecido`,
  * parked, and are listed below because of it.
  */
-export type DestinoPush = 'conta' | 'ack' | 'pedido' | 'frete' | 'parado' | 'desconhecido';
+export type DestinoPush =
+  | 'conta'
+  | 'ack'
+  | 'pedido'
+  | 'frete'
+  | 'anuncio'
+  | 'parado'
+  | 'desconhecido';
 
 const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   // ---- authorization (the conta arms) ------------------------------------
@@ -555,10 +573,16 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   30: 'frete', // push_api_id 33 — package_fulfillment_status_push
   47: 'frete', // push_api_id 44 — package_info_push
 
+  // ---- the anuncio arm (step 11) ------------------------------------------
+  // ⚠️ TWO codes, ONE destino, for the frete block's reason: they differ only in
+  // WHAT happened, both name an ITEM, and both are answered by one
+  // `get_item_base_info` for that item. Two destinos would be two arms that must
+  // never disagree.
+  16: 'anuncio', // push_api_id 18 — violation_item_push
+  27: 'anuncio', // push_api_id 30 — item_scheduled_publish_failed_push
+
   // ---- data-bearing, handler pending -------------------------------------
   15: 'parado', // shipping document status
-  16: 'parado', // item violation
-  27: 'parado', // scheduled publish failed
   29: 'parado', // push_api_id 32 — return_updates_push
   10: 'parado', // webchat — an ERP System app cannot subscribe to it at all
   24: 'parado', // push_api_id 27 — booking_trackingno_push
@@ -571,12 +595,11 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
  * ⚠️ There is deliberately no row for **3** any more: the order import IS built
  * (step 5), so a `motivoDoParque(3)` could only answer the "código novo"
  * fallback — a sentence that would be false about the one code this channel
- * handles most. Step 7 removed **4**, **30** and **47** for the same reason.
+ * handles most. Step 7 removed **4**, **30** and **47** for the same reason, and
+ * step 11 removed **16** and **27**.
  */
 const MOTIVO_PARADO: Readonly<Record<number, string>> = {
   15: 'status do documento de envio — o handler é o passo 15',
-  16: 'violação de anúncio — o handler é o passo 11',
-  27: 'publicação agendada falhou — o handler é o passo 11',
   29: 'atualização de devolução — o handler é o passo 17',
   10: 'chat — o handler é o passo 16, condicionado à liberação da Chat API',
   // ⚠️ RE-PARKED by step 7, not handled, and the reason is the wire.
@@ -727,6 +750,42 @@ export type ShopeeProcessOutcome =
       reason: string;
       sintetica: boolean;
     }
+  /**
+   * A listing push ran (step 11, codes 16 and 27). `produtoId`/`estadoAnuncio`
+   * are non-null HERE although the handler declares them nullable: the one
+   * action that answers `null` for both is `ignorado-sem-vinculo`, and the arm
+   * turns that into a `parado` before building this outcome — the same
+   * narrowing-at-the-arm the `pedido` and `frete` outcomes above do.
+   */
+  | {
+      kind: 'anuncio';
+      /**
+       * ⚠️ Named `acaoAnuncio` and NOT `acao`, deliberately.
+       * `handleNotificationTask` reads the result with structural `in` checks,
+       * and the `pedido` outcome already carries an `acao` — so an `acao` here
+       * would make `'acao' in r.result` true for TWO different unions and put an
+       * import action in the anúncio column of the task log. The #1087 shape,
+       * and the exact lesson {@link AcaoFreteShopee}'s own field records above.
+       */
+      acaoAnuncio: AcaoPushAnuncio;
+      /** ⚠️ `itemIdAnuncio`, NOT `itemId`, for the same reason and pre-emptively. */
+      itemIdAnuncio: number;
+      produtoId: string;
+      estadoAnuncio: EstadoAnuncioShopee;
+      /** A COUNT, never a body — the violation rows this delivery recorded. */
+      violacoes: number;
+      /** A TRANSITION: `true` only when a row was OPEN and this delivery closed it. */
+      avisoResolvido: boolean;
+      detail: string;
+    }
+  /**
+   * A listing push hit a PRECONDITION (a dead grant, an unreadable or absent
+   * credential, a conta that vanished, an exhausted daily quota). Deferred —
+   * daily × 7, then park. Its OWN kind rather than `sem-conta`, because `kind`
+   * is what the task log prints and "the conta needs a human" is not "this shop
+   * maps to no integração".
+   */
+  | { kind: 'anuncio-adiado'; shopId: number; itemIdAnuncio: number; reason: string }
   /** Exactly one named shop maps to no active integração YET — a defer. */
   | { kind: 'sem-conta'; shopId: number; reason: string }
   /** Terminal: no handler for this code yet, or a permanent import failure. */
@@ -758,6 +817,16 @@ export interface ShopeeProcessDeps {
    * {@link defaultProcessDeps}.
    */
   rastrearPedido?: (db: Firestore, alvo: AlvoDeRastreioShopee) => Promise<ResultadoRastreioShopee>;
+  /**
+   * The codes-16/27 arm (step 11). OPTIONAL for the same reason
+   * {@link importarPedido} is (every conta-arm test stays drivable without a
+   * shop-scoped client), and LAZY for the same reason — see
+   * {@link defaultProcessDeps}.
+   */
+  tratarPushDeAnuncio?: (
+    db: Firestore,
+    alvo: AlvoDePushDeAnuncioShopee,
+  ) => Promise<ResultadoPushAnuncio>;
 }
 
 export const defaultProcessDeps: ShopeeProcessDeps = {
@@ -790,6 +859,15 @@ export const defaultProcessDeps: ShopeeProcessDeps = {
     const { rastrearPedidoShopee } = await import('../pedidos/rastrearPedido');
     return rastrearPedidoShopee(db, alvo);
   },
+  // ⚠️ The same lazy arrow over a DYNAMIC import, for the same reason:
+  // `anuncios/pushAnuncio` reaches the link collection, the avisos writer, the
+  // Shopee context loader and every schema they touch. The functions bundle pays
+  // for it (the inline proof in `apps/shopee/functions/DEPLOY.md` greps for the
+  // name); the receiver does not.
+  tratarPushDeAnuncio: async (db, alvo) => {
+    const { tratarPushDeAnuncio } = await import('../anuncios/pushAnuncio');
+    return tratarPushDeAnuncio(db, alvo);
+  },
 };
 
 // ── the code-3 arm: a failure → a disposition ───────────────────────────────
@@ -819,14 +897,28 @@ const ACAO_FRETE_PACOTE_AUSENTE: Exclude<ResultadoRastreioShopee['acao'], AcaoFr
   'ignorado-pacote-ausente';
 
 /**
+ * The listing handler's one action the ARM decides about, written as a literal
+ * for the reason {@link ACAO_FRETE_SEM_PEDIDO} is, and typed so a rename in
+ * `anuncios/pushAnuncio.ts` fails to compile here instead of silently never
+ * matching.
+ *
+ * ⚠️ It cannot be IMPORTED either: `anuncios/pushAnuncio` exports its
+ * `ACAO_PUSH_ANUNCIO` companion, but it is reached through a dynamic import so
+ * the receiver bundle never carries the anúncio tree — a static
+ * `import { ACAO_PUSH_ANUNCIO }` would pull the whole module in for one string.
+ */
+const ACAO_ANUNCIO_SEM_VINCULO: AcaoPushAnuncio = 'ignorado-sem-vinculo';
+
+/**
  * Every park/defer reason this arm BUILDS starts here, so one log filter finds
  * them all.
  *
  * ⚠️ "BUILDS" is the whole qualifier, and there is exactly ONE exception: the
- * `sem-conta` defer reason is a SHARED template emitted verbatim by all three
- * arms (conta, code 3, frete) — unprefixed, byte-identical — so a deferred row
- * of that kind is told apart by its `kind` + `code`, never by its reason string.
- * Prefixing two of the three would make the third the odd one out instead.
+ * `sem-conta` defer reason is a SHARED template emitted verbatim by all four
+ * arms (conta, code 3, frete, anúncio) — unprefixed, byte-identical — so a
+ * deferred row of that kind is told apart by its `kind` + `code`, never by its
+ * reason string. Prefixing three of the four would make the fourth the odd one
+ * out instead.
  */
 const PREFIXO_MOTIVO_CODE3 = 'push_code 3:';
 
@@ -836,6 +928,13 @@ const PREFIXO_MOTIVO_CODE3 = 'push_code 3:';
  * reason carries no prefix on any arm.
  */
 const PREFIXO_MOTIVO_FRETE = 'rastreio:';
+
+/**
+ * Every park/defer reason the LISTING arm (codes 16/27) BUILDS starts here. Same
+ * one exception as {@link PREFIXO_MOTIVO_CODE3}: the shared `sem-conta` reason
+ * carries no prefix on any arm.
+ */
+const PREFIXO_MOTIVO_ANUNCIO = 'anuncio:';
 
 /**
  * Admin-SDK Firestore and Cloud Tasks failures surface as `Error`s carrying a
@@ -1041,6 +1140,24 @@ export function disposicaoDaFalhaDeImportacao(err: unknown): DisposicaoDaFalha {
  */
 export function disposicaoDaFalhaDeRastreio(err: unknown): DisposicaoDaFalha {
   return comPrefixo(classificarFalhaShopee(err), PREFIXO_MOTIVO_FRETE);
+}
+
+/**
+ * Classify a failure of the LISTING handlers (step 11, codes 16 and 27).
+ *
+ * **The same table again**, for {@link disposicaoDaFalhaDeRastreio}'s stated
+ * reason: every arm classifies by error CLASS, and `get_item_base_info` /
+ * `get_item_violation_info`'s api-specific errors all land on arms that already
+ * exist. Forking it would give this repo a third copy of an order-sensitive
+ * `instanceof` ladder whose ordering is load-bearing.
+ *
+ * ⚠️ What differs is the PREFIX and nothing else. `error_item_not_found` never
+ * reaches here: the handler RETURNS `ignorado-removido` for it, exactly as the
+ * importer returns `ignorado-inexistente` — a listing Shopee no longer has is a
+ * VERDICT about that listing, not a failure of the delivery.
+ */
+export function disposicaoDaFalhaDeAnuncio(err: unknown): DisposicaoDaFalha {
+  return comPrefixo(classificarFalhaShopee(err), PREFIXO_MOTIVO_ANUNCIO);
 }
 
 /**
@@ -1398,12 +1515,146 @@ export async function processNotificationPayload(
     };
   }
 
+  // ---- codes 16 / 27 — the listing arm (step 11) --------------------------
+  //
+  // ⚠️ The push is a POINTER, never a payload — the shipment arm's rule one
+  // collection over. Nothing below reads `item_status`, `deboost` or a detail row
+  // as DATA: the handler re-reads `get_item_base_info` for the named item and
+  // writes THAT, which is what makes two contradicting deliveries about one
+  // listing produce byte-identical writes. The two detail arrays travel only as
+  // the violation pull's FALLBACK, and the STATUS never comes from them.
+  //
+  // ⚠️ Its position is load-bearing for the frete block's reason: the ladder
+  // below tests `payload.code`, not `destino`, and has no `default`, so an arm
+  // placed AFTER the code-12 test would never run and a code-16 delivery would be
+  // processed by the authorization arms. The `restante` line after this block is
+  // what makes that a compile error rather than a silent one.
+  if (destino === 'anuncio') {
+    const shopId = payload.shopId;
+    if (shopId == null) {
+      // ⚠️ PARK, never defer: both pages document `shop_id` on the ENVELOPE, so a
+      // push without one is a provider or producer defect — there is nothing to
+      // look up and nothing to wait for.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_ANUNCIO} push de anúncio sem shop_id — nada a resolver`,
+      };
+    }
+
+    // ⚠️ DYNAMIC, and for the same reason `importarPedido` is: the parser is
+    // pure, but it lives in a module that imports `@delfrance/schemas` and
+    // `@delfrance/data/admin/collections` as VALUES — the exact tree this
+    // module's receiver bundle must not carry. A test bans any static value
+    // import from `../anuncios/` in this file.
+    const { alvoDoPushDeAnuncio } = await import('../anuncios/pushAnuncio');
+    const alvo = alvoDoPushDeAnuncio(payload.code, payload.data ?? {});
+    if (!alvo.ok) {
+      // An unusable `item_id` is a permanent fact about THIS delivery — the item
+      // IS the resource on both codes — so it parks. The refusal carries field
+      // paths and fixed prose only, never a value (#1015).
+      return { kind: 'parado', motivo: `${PREFIXO_MOTIVO_ANUNCIO} ${alvo.motivo}` };
+    }
+
+    const integracaoId = await findIntegracaoByShopId(db, shopId);
+    if (integracaoId == null) {
+      // ⚠️ The SAME `sem-conta` kind the code-3 and frete arms use, and the same
+      // reading: a push for a shop with no ACTIVE integração is most often a
+      // DEACTIVATED conta, which does hold link documents — so a re-drive inside
+      // the seven-day window lands the violation on a real produto. The code-2
+      // inversion does not apply: connecting a conta does not make a violation
+      // false, the listing really is banned and its deadline is still running.
+      return {
+        kind: 'sem-conta',
+        shopId,
+        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+      };
+    }
+
+    // ⚠️ DYNAMIC for the same reason, and it is the ONE reader of the two
+    // deboost spellings this channel has: `push 18`'s own page contradicts itself
+    // (`deboost_details` in the table, `deboosted_details` in sample 3), so the
+    // arm must not re-spell either key.
+    const { detalhesDeDeboost, detalhesDeStatus } = await import('../anuncios/violacoesAnuncio');
+    const dados = payload.data ?? {};
+
+    let resultado: ResultadoPushAnuncio;
+    try {
+      // Optional in the interface so the conta arms stay drivable without it; on
+      // this arm it is always present (the default is the real handler) and a
+      // caller that removed it should fail loudly.
+      const tratar = deps.tratarPushDeAnuncio ?? defaultProcessDeps.tratarPushDeAnuncio!;
+      resultado = await tratar(db, {
+        integracaoId,
+        shopId,
+        itemId: alvo.itemId,
+        code: alvo.code,
+        agendadoParaMs: alvo.agendadoParaMs,
+        nowMs,
+        diagnostico: alvo.diagnostico,
+        // ⚠️ The ENVELOPE's clock, ALREADY milliseconds (`parseNotificationBody`
+        // converts once), passed VERBATIM — `null` included. The handler is what
+        // decides to OMIT the aviso key rather than reset a watermark with it.
+        carimboMs: payload.timestamp,
+        detalhesDoPush: {
+          status: detalhesDeStatus(dados),
+          deboost: detalhesDeDeboost(dados),
+        },
+      });
+    } catch (err) {
+      // ⚠️ ONE narrow catch, and it narrows in `disposicaoDaFalhaDeAnuncio`
+      // (rule 6): every class it does not name is RETHROWN from there, so this
+      // block cannot swallow a coding bug.
+      const disposicao = disposicaoDaFalhaDeAnuncio(err);
+      if (disposicao.tipo === 'throw') throw err;
+      if (disposicao.tipo === 'park') return { kind: 'parado', motivo: disposicao.reason };
+      return {
+        kind: 'anuncio-adiado',
+        shopId,
+        itemIdAnuncio: alvo.itemId,
+        reason: disposicao.reason,
+      };
+    }
+
+    if (resultado.acao === ACAO_ANUNCIO_SEM_VINCULO) {
+      // ⚠️ The handler RETURNS this rather than throwing, because "this conta
+      // manages no such listing" is a permanent fact about ONE item — and the
+      // disposition is ours. It PARKS naming the item, which is the only place an
+      // operator ever sees that a push arrived for a listing the ERP does not own.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_ANUNCIO} item ${String(alvo.itemId)} sem vínculo nesta conta`,
+      };
+    }
+
+    if (resultado.produtoId == null || resultado.estadoAnuncio == null) {
+      // The narrowing, done HERE rather than by widening the outcome. The
+      // handler's contract is "null only on `ignorado-sem-vinculo`" — which the
+      // branch above already took — so this park is unreachable while that holds,
+      // and is a visible terminal row the day it stops holding.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_ANUNCIO} tratamento devolveu "${resultado.acao}" sem produtoId/estadoAnuncio — contrato do handler violado`,
+      };
+    }
+
+    return {
+      kind: 'anuncio',
+      acaoAnuncio: resultado.acao,
+      itemIdAnuncio: resultado.itemId,
+      produtoId: resultado.produtoId,
+      estadoAnuncio: resultado.estadoAnuncio,
+      violacoes: resultado.violacoes,
+      avisoResolvido: resultado.avisoResolvido,
+      detail: resultado.detail,
+    };
+  }
+
   // ⚠️ NOT decoration. The ladder below tests `payload.code`, not `destino`, and
-  // has no `default`: a SEVENTH `DestinoPush` added to DISPATCH without an arm
+  // has no `default`: an EIGHTH `DestinoPush` added to DISPATCH without an arm
   // of its own would fall through and be processed by the authorization arms.
-  // With `ack`, `parado`, `desconhecido`, `pedido` and `frete` all returned
-  // above, the only value left is `'conta'` — so this line stops compiling the
-  // day that stops being true.
+  // With `ack`, `parado`, `desconhecido`, `pedido`, `frete` and `anuncio` all
+  // returned above, the only value left is `'conta'` — so this line stops
+  // compiling the day that stops being true.
   const restante: 'conta' = destino;
   void restante;
 
@@ -1577,6 +1828,11 @@ export function toDisposition(outcome: ShopeeProcessOutcome): NotificationDispos
     // merge from an order import and from an aviso.
     case 'frete':
       return { kind: 'resolve', label: 'frete' };
+    // ⚠️ Its own LABEL too, so the sweep's `outcomes` map separates a violation
+    // from an import, a shipment and an aviso — one label over two meanings is
+    // the #1087 shape, and it reports success for work that never happened.
+    case 'anuncio':
+      return { kind: 'resolve', label: 'anuncio' };
     // The defers: a human connecting the conta (or re-consenting, or fixing a
     // credential) clears it, and that may be tomorrow — the hourly lane would
     // park it ~6 h in (#808). A daily Shopee quota rides the same lane because
@@ -1587,6 +1843,10 @@ export function toDisposition(outcome: ShopeeProcessOutcome): NotificationDispos
     // it, and the daily lane is what brings this delivery back to apply the
     // package once it exists.
     case 'frete-adiado':
+    // A code 16/27 whose conta needs a human (a dead grant, an unreadable
+    // credential) or whose daily quota is spent: the same lane, and the reason
+    // names the class.
+    case 'anuncio-adiado':
       return { kind: 'defer', reason: outcome.reason };
     case 'parado':
       return { kind: 'park', reason: outcome.motivo };
@@ -1637,6 +1897,23 @@ export interface TaskResult {
    * one, where it is the BACKSTOP's own verdict.
    */
   acaoFrete?: AcaoFreteShopee;
+  /**
+   * The Shopee `item_id` a code-16/27 delivery names (#1519, step 11).
+   *
+   * ⚠️ Not buyer data, for {@link orderSn}'s reason: it is already stored in the
+   * clear as a segment of the `notificacoesShopee` doc id
+   * (`16:<loja>:<item_id>:<carimbo>`) and `redact.ts` keeps it in the wire corpus
+   * deliberately.
+   */
+  itemIdAnuncio?: number;
+  /**
+   * The listing handler's verdict (#1519, step 11) — an enum token, so
+   * `violacao-registrada` / `deboost-registrado` / `anuncio-normalizado` are
+   * filterable in the task log without opening a document.
+   *
+   * ⚠️ `acaoAnuncio`, never `acao`, for {@link acaoFrete}'s reason.
+   */
+  acaoAnuncio?: AcaoPushAnuncio;
 }
 
 /**
@@ -1753,6 +2030,11 @@ export async function handleNotificationTask(
   // outcome already carries an `acao` of its OWN vocabulary, so an `acao` here
   // would put an import action in the frete column of the task log (#1087).
   const acaoFrete = r.result && 'acaoFrete' in r.result ? (r.result.acaoFrete ?? null) : null;
+  // ⚠️ Read structurally too, and deliberately NOT `acao`/`itemId`: the `pedido`
+  // outcome already carries an `acao`, and a bare `itemId` would be the same trap
+  // one collection down the day another arm gains one (#1087).
+  const itemIdAnuncio = r.result && 'itemIdAnuncio' in r.result ? r.result.itemIdAnuncio : null;
+  const acaoAnuncio = r.result && 'acaoAnuncio' in r.result ? r.result.acaoAnuncio : null;
   return {
     outcome: r.outcome,
     ...(r.payload ? { code: r.payload.code } : {}),
@@ -1765,6 +2047,8 @@ export async function handleNotificationTask(
     ...(acaoPagamentos != null ? { acaoPagamentos } : {}),
     ...(packageNumber != null ? { packageNumber } : {}),
     ...(acaoFrete != null ? { acaoFrete } : {}),
+    ...(itemIdAnuncio != null ? { itemIdAnuncio } : {}),
+    ...(acaoAnuncio != null ? { acaoAnuncio } : {}),
   };
 }
 

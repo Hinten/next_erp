@@ -156,6 +156,7 @@ export default function ClientesPage() {
           )}
           copyHref="/clientes/novo"
           fields={{
+            telefoneGerenciado: { hidden: true },
             tipo: {
               renderCell: (value) =>
                 value ? (

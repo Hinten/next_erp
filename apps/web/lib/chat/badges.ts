@@ -7,7 +7,12 @@
  *    message came from the customer (`estadoEnvio == recebido`) — i.e. the ones
  *    still awaiting the operator's reply.
  */
-import { ESTADO_ENVIO, type Mensagem } from '@delfrance/schemas';
+import {
+  ESTADO_ENVIO,
+  ORIGEM_CONVERSA,
+  type OrigemConversa,
+  type Mensagem,
+} from '@delfrance/schemas';
 
 /**
  * Format a badge count the legacy way: hidden (`null`) at zero, the number up
@@ -34,7 +39,20 @@ export function formatBadgeCount(n: number): string | null {
  * preview cache is the budget's backbone.
  */
 export function countAwaitingReply(
-  lastMessages: ReadonlyArray<Pick<Mensagem, 'estadoEnvio'> | null | undefined>,
+  lastMessages: ReadonlyArray<
+    | (Pick<Mensagem, 'estadoEnvio'> &
+        Partial<Pick<Mensagem, 'user_id' | 'clienteMensagemOuterRef'>>)
+    | null
+    | undefined
+  >,
+  contexts: ReadonlyArray<{ origem: OrigemConversa; customerUid?: string | null }> = [],
 ): number {
-  return lastMessages.filter((m) => m != null && m.estadoEnvio === ESTADO_ENVIO.recebido).length;
+  return lastMessages.filter((m, index) => {
+    if (!m) return false;
+    if (m.clienteMensagemOuterRef) return true;
+    const ctx = contexts[index];
+    if (ctx?.origem === ORIGEM_CONVERSA.whatsapp)
+      return !!ctx.customerUid && m.user_id === ctx.customerUid;
+    return m.estadoEnvio === ESTADO_ENVIO.recebido;
+  }).length;
 }

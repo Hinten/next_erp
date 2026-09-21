@@ -13,6 +13,7 @@
     "test:tasks": "vitest run --config vitest.tasks.config.ts",
     "oauth:url": "dotenv -e ../../.env.local -- tsx scripts/oauth-url.ts",
     "importar:anuncio": "dotenv -e ../../.env.local -- tsx scripts/importar-anuncio.ts",
+    "publicar:anuncio": "dotenv -e ../../.env.local -- tsx scripts/publicar-anuncio.ts",
     "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
     "liquidar:pagamentos": "dotenv -e ../../.env.local -- tsx scripts/liquidar-pagamentos.ts",
     "rastrear:pedido": "dotenv -e ../../.env.local -- tsx scripts/rastrear-pedido.ts",

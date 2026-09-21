@@ -161,7 +161,12 @@ export function ConversaActionsMenu({
     }
     setBusy(true);
     try {
-      await whatsappClient.templateMessage(conversaId);
+      await whatsappClient.templateMessage(conversaId, {
+        whatsappDestino: conversa.whatsappDestino ?? null,
+        whatsappIntegracaoId: conversa.integracaoOuterRef
+          ? idFromRef(conversa.integracaoOuterRef)
+          : null,
+      });
       notifications.show({
         color: 'teal',
         title: 'Mensagem padrão enviada',

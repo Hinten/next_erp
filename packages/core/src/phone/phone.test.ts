@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatTelefone,
+  formatTelefoneInternacional,
   formatTelefoneLocal,
   isValidTelefone,
   localTelefone,
   localTelefoneOrNull,
   normalizeTelefone,
+  normalizeTelefoneInternacional,
   telefoneQueryShapes,
 } from './index';
 
@@ -42,10 +44,31 @@ describe('normalizeTelefone', () => {
     expect(normalizeTelefone('+1 415 555 26711')).toBe('141555526711'); // strips '+', already 12 digits
   });
 
+  it('preserves an explicit foreign country code on an 11-digit number', () => {
+    expect(normalizeTelefone('+1 415 555 2671')).toBe('14155552671');
+    expect(normalizeTelefone('14155552671')).toBe('5514155552671');
+  });
+
   it('leaves too-short inputs as bare digits (schema rejects them)', () => {
     expect(normalizeTelefone('99998888')).toBe('99998888');
     expect(normalizeTelefone('')).toBe('');
   });
+});
+
+describe('normalizeTelefoneInternacional', () => {
+  it('preserves provider country codes independently of their length', () => {
+    expect(normalizeTelefoneInternacional('14155552671')).toBe('14155552671');
+    expect(normalizeTelefoneInternacional('+55 (11) 99999-8888')).toBe('5511999998888');
+    expect(normalizeTelefoneInternacional('551199998888')).toBe('551199998888');
+    expect(normalizeTelefoneInternacional('5511999998888')).not.toBe(
+      normalizeTelefoneInternacional('551199998888'),
+    );
+  });
+
+  it.each(['', 'US.13491208655302741918', '11*****8888', '123', '0123456789'])(
+    'rejects non-phone identity %s',
+    (value) => expect(normalizeTelefoneInternacional(value)).toBeNull(),
+  );
 });
 
 describe('isValidTelefone', () => {
@@ -88,6 +111,7 @@ describe('telefoneQueryShapes', () => {
 
   it('returns a single shape for non-BR numbers', () => {
     expect(telefoneQueryShapes('441632960961')).toEqual(['441632960961']);
+    expect(telefoneQueryShapes('+1 415 555 2671')).toEqual(['14155552671']);
   });
 
   it('returns an empty array for empty input', () => {
@@ -177,5 +201,20 @@ describe('formatTelefone', () => {
 
   it('is stable under repeated formatting of an already-masked value', () => {
     expect(formatTelefone(formatTelefone('5511999998888'))).toBe('(11) 99999-8888');
+  });
+});
+
+describe('formatTelefoneInternacional', () => {
+  it('retains the explicit country code and only masks a canonical Brazilian subscriber', () => {
+    expect(formatTelefoneInternacional('14155552671')).toBe('+14155552671');
+    expect(formatTelefoneInternacional('+1 (415) 555-2671')).toBe('+14155552671');
+    expect(formatTelefoneInternacional('5514155552671')).toBe('+55 (14) 15555-2671');
+    expect(formatTelefoneInternacional('5511999998888')).toBe('+55 (11) 99999-8888');
+    expect(formatTelefoneInternacional('551199998888')).toBe('+55 (11) 9999-8888');
+    expect(formatTelefoneInternacional('441632960961')).toBe('+441632960961');
+  });
+  it('does not reinterpret an opaque identity or incomplete phone', () => {
+    expect(formatTelefoneInternacional('bsuid-123')).toBe('bsuid-123');
+    expect(formatTelefoneInternacional('123')).toBe('123');
   });
 });
