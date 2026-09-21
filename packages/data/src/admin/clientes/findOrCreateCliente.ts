@@ -50,17 +50,17 @@
  *    historical, which makes it a migration question, never a race.)
  */
 
-import type { DocumentData, Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore, Timestamp } from 'firebase-admin/firestore';
 import {
   CLIENTE_MATCH_KEY,
   type Cliente,
   type ClienteMatchKey,
   type ClienteResolveFields,
+  buildClienteTelefonePatch,
   emailLookupShapes,
   identityValue,
   isSameCliente,
   isSameEmail,
-  isSameTelefone,
   normalizeDocumento,
   normalizeNome,
   sanitizeTelefone,
@@ -69,6 +69,7 @@ import {
 } from '@delfrance/schemas';
 import { clienteCollection } from '../collections';
 import { otherOwnerOfMlId } from './otherOwnerOfMlId';
+import { isFailedPrecondition } from '../grpcErrors';
 
 /**
  * Rows fetched per leg before the cascade gives up and creates. See
@@ -151,6 +152,7 @@ export interface ClienteIdMercadoLivreConflito {
 interface ClienteCandidate {
   readonly id: string;
   readonly data: Cliente;
+  readonly updateTime: Timestamp;
 }
 
 /**
@@ -184,6 +186,7 @@ async function pageCandidates(
     .map((doc) => ({
       id: doc.id,
       data: clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id)),
+      updateTime: doc.updateTime,
     }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
@@ -259,12 +262,12 @@ export function buildClienteUpdatePatch(
     patch.idMercadoLivre = idMl;
   }
 
-  // `isSameTelefone` treats the legacy raw 10/11-digit BR shape and the
-  // normalized `55…` shape as ONE number, so a match never triggers a rewrite.
-  const telefone = sanitizeTelefone(fields.telefone);
-  if (telefone != null && !isSameTelefone(old.telefone, fields.telefone)) {
-    patch.telefone = telefone;
-  }
+  // An order observes a phone; it cannot undo a human/WhatsApp choice or turn
+  // a retired number back into the current one on a delayed replay.
+  Object.assign(
+    patch,
+    buildClienteTelefonePatch(old, { tipo: 'observar', telefone: fields.telefone }),
+  );
 
   // `identityValue`, not a bare null check: `clienteSchema.email` is
   // `.email()`, which REJECTS `''` and `'   '`. Passing one straight through
@@ -318,6 +321,21 @@ interface CascadeLeg {
  * any of them was never right.
  */
 export async function findOrCreateCliente(
+  db: Firestore,
+  input: FindOrCreateClienteInput,
+): Promise<FindOrCreateClienteResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await findOrCreateClienteOnce(db, input);
+    } catch (err) {
+      // Re-run both identity resolution and patch derivation. Re-applying the
+      // losing patch could fill a phone another writer deliberately cleared.
+      if (!isFailedPrecondition(err) || attempt >= 2) throw err;
+    }
+  }
+}
+
+async function findOrCreateClienteOnce(
   db: Firestore,
   input: FindOrCreateClienteInput,
 ): Promise<FindOrCreateClienteResult> {
@@ -484,10 +502,11 @@ export async function findOrCreateCliente(
     if (outroDono != null && vaiCarimbar) delete patch.idMercadoLivre;
 
     if (Object.keys(patch).length > 0) {
-      await clienteCollection.merge(db, {}, alvo.id, {
-        ...patch,
-        ultimaModificacao: nowMs,
-      });
+      await clienteCollection
+        .docRef(db, {}, alvo.id)
+        .update(clienteCollection.parseMerge({ ...patch, ultimaModificacao: nowMs }), {
+          lastUpdateTime: alvo.updateTime,
+        });
     }
     return {
       clienteId: alvo.id,

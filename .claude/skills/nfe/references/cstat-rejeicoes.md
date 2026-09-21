@@ -182,7 +182,16 @@ correto; não crie ramo próprio.
 ⚠️ **Em homologação isso colide com a rejeição 597** ("NF-e emitida em ambiente
 de homologação com CNPJ do destinatário diferente de 99999999000191"): 597 exige
 um CNPJ que a LCC-RFB rejeita, porque `99999999000191` é um placeholder que não
-consta no cadastro da Receita. Ver `homologacao.md`.
+consta no cadastro da Receita.
+
+⚠️ **Nem os CNPJs de teste OFICIAIS resolvem**, e isso foi MEDIDO: a SEFAZ
+publica uma tabela "CNPJs alfa cadastrados no CCC de homologação" (material da
+NT 2026.004), e emitir para `PC3D315K000193` voltou 181 igual
+([run 35605049930](https://github.com/Hinten/next_erp/actions/runs/35605049930),
+2026-09-21). O **CCC** é o cadastro dos estados; a RV consulta a **LCC-RFB**,
+a réplica federal — uma linha num não implica linha no outro. **Não gaste quota
+tentando outro CNPJ.** A única saída conhecida é um destinatário **CPF** (tag
+`E03`), fora do escopo da regra. Detalhes em `homologacao.md`.
 
 ## cStats novos por NT (consolidado)
 

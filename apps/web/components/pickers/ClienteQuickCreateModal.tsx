@@ -29,16 +29,23 @@ import { PERM } from '@delfrance/auth';
 import {
   TIPO_CLIENTE,
   type Endereco,
+  type Cliente,
   TIPO_CLIENTE_LABELS,
   clienteSchema,
   refineClienteTipoDocumento,
   tipoClienteSchema,
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
-import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
-import { formatTelefone, normalizeTelefone } from '@delfrance/core/phone';
+import { formatCNPJ, formatCPF, validateCNPJ } from '@delfrance/core/documents';
+import { formatTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
-import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
+import { deriveClienteTelefonePatch } from '@/lib/clientes/formFields';
+import {
+  TelefonesAdicionaisInput,
+  prepareForSaveTelefonesAdicionais,
+} from '@/components/inputs/TelefonesAdicionaisInput';
+import { WhatsappClientHttpError, WhatsappClientNetworkError } from '@/lib/whatsapp/client';
+import { TelefoneTextInput, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
 import {
   type ClienteDedupInput,
@@ -78,6 +85,11 @@ export interface ClienteQuickCreateModalProps {
 const quickCreateSchema = clienteSchema
   .pick({ cpf_cnpj: true, idEstrangeiro: true, ie: true, email: true, telefone: true })
   .extend({
+    telefone: z.preprocess(prepareForSaveTelefone, clienteSchema.shape.telefone),
+    telefonesAdicionais: z.preprocess(
+      prepareForSaveTelefonesAdicionais,
+      clienteSchema.shape.telefonesAdicionais,
+    ),
     tipo: tipoClienteSchema.default('0'),
     nome: z.string().min(1, 'Obrigatório').max(255),
   })
@@ -144,18 +156,24 @@ function CandidateRow({ candidate, onUse }: { candidate: DedupCandidate; onUse: 
 }
 
 /** Cliente resolved by the modal form, with the CNPJ-resolved address to review. */
-interface QuickCreateResolved {
+export interface QuickCreateResolved {
   id: string;
   nome: string;
   endereco: ClienteCnpjEndereco | null;
 }
 
-function QuickCreateForm({
+export function ClienteQuickCreateForm({
   onResolved,
   onCancel,
+  initialValues,
+  onCreate,
+  saveLabel = 'Criar',
 }: {
   onResolved: (picked: QuickCreateResolved) => void;
   onCancel: () => void;
+  initialValues?: Partial<Cliente>;
+  onCreate?: (cliente: Cliente) => Promise<{ id: string }>;
+  saveLabel?: string;
 }) {
   const db = getFirebaseFirestore();
   const { user } = useAuth();
@@ -182,13 +200,26 @@ function QuickCreateForm({
   const form = useForm<QuickCreateInput, unknown, QuickCreateOutput>({
     resolver: zodResolver(quickCreateSchema),
     defaultValues: {
-      tipo: '0',
-      nome: '',
+      tipo: initialValues?.tipo ?? '0',
+      nome: initialValues?.nome ?? '',
       cpf_cnpj: null,
       idEstrangeiro: null,
       ie: null,
       email: null,
       telefone: null,
+      telefonesAdicionais: [],
+      ...(initialValues
+        ? {
+            cpf_cnpj: initialValues.cpf_cnpj ?? null,
+            email: initialValues.email ?? null,
+            telefone: initialValues.telefone
+              ? initialValues.telefone.startsWith('+')
+                ? initialValues.telefone
+                : `+${initialValues.telefone}`
+              : null,
+            telefonesAdicionais: initialValues.telefonesAdicionais ?? [],
+          }
+        : {}),
     },
     mode: 'onBlur',
   });
@@ -239,10 +270,13 @@ function QuickCreateForm({
     // surfaces a red notification and never hits the API. The modal feeds back
     // via notifications (not an inline field error, which renders unreliably
     // inside the Mantine Modal portal) — matching the green/yellow success ones.
-    if (!/^\d{14}$/.test(cnpj)) {
+    // ⚠️ `validateCNPJ`, never `^\d{14}$` — see `CnpjLookupField`: the numeric
+    // gate refused a valid alphanumeric CNPJ (RFB IN 2.229/2024) and told the
+    // operator their CNPJ was wrong.
+    if (!validateCNPJ(cnpj)) {
       notifications.show({
         color: 'red',
-        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+        message: 'Informe um CNPJ válido (14 caracteres) para buscar os dados.',
       });
       return;
     }
@@ -251,13 +285,18 @@ function QuickCreateForm({
       const outcome = await resolveCnpj(cnpj, nfe, filialId);
       if (!outcome.ok) {
         notifications.show({
-          color: 'red',
+          // ⚠️ `sem-base-publica` is a YELLOW notice, not a red one: the CNPJ is
+          // valid, the public base simply does not answer for the alphanumeric
+          // shape, and there is nothing for the operator to correct.
+          color: outcome.reason === 'sem-base-publica' ? 'yellow' : 'red',
           message:
             outcome.reason === 'network'
               ? 'Falha de rede ao consultar o CNPJ.'
               : outcome.reason === 'invalid-response'
                 ? 'Resposta inválida da API de CNPJ.'
-                : 'CNPJ não encontrado na base pública.',
+                : outcome.reason === 'sem-base-publica'
+                  ? 'CNPJ alfanumérico: a base pública não responde por ele. Preencha os dados manualmente.'
+                  : 'CNPJ não encontrado na base pública.',
         });
         return;
       }
@@ -303,20 +342,24 @@ function QuickCreateForm({
       // IE is a PJ concept — only persist it for Pessoa Jurídica (tipo '1').
       ie: values.tipo === TIPO_CLIENTE.pessoaJuridica ? values.ie || null : null,
       email: values.email || null,
-      telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
+      telefone: values.telefone || null,
+      telefonesAdicionais: values.telefonesAdicionais,
       // Nullish stamps — saveRecord fills create + last-modified at write time.
       timestamp: null,
       ultimaModificacao: null,
     });
-    const { id } = await saveRecord<typeof clienteSchema, Record<string, unknown>>({
-      db,
-      collection: clienteCollection,
-      pathContext: {},
-      values: doc as Record<string, unknown>,
-      dirtyFields: {},
-      currentUserUid: user?.uid ?? '',
-      stampUnit: 'ms',
-    });
+    const { id } = onCreate
+      ? await onCreate(doc)
+      : await saveRecord<typeof clienteSchema, Record<string, unknown>>({
+          db,
+          collection: clienteCollection,
+          pathContext: {},
+          values: doc as Record<string, unknown>,
+          dirtyFields: {},
+          currentUserUid: user?.uid ?? '',
+          stampUnit: 'ms',
+          deriveTransactionPatch: deriveClienteTelefonePatch,
+        });
     // Hand the created cliente + its resolved address up; the modal opens the
     // endereço review in place (no more new-tab relay).
     onResolved({ id, nome: doc.nome ?? '', endereco: pendingEnderecoRef.current });
@@ -326,7 +369,10 @@ function QuickCreateForm({
     setSubmitError(null);
     try {
       // Always re-check at submit — never trust the (debounced) live result.
-      const result = await checkClienteDuplicates(db, toDedupInput(values));
+      const result = await checkClienteDuplicates(
+        db,
+        toDedupInput({ ...values, telefone: values.telefone ? `+${values.telefone}` : null }),
+      );
       checkSeq.current++; // invalidate in-flight live checks
       setDedup(result);
       if (result.blocking.length > 0) {
@@ -343,7 +389,11 @@ function QuickCreateForm({
       }
       await doCreate(values);
     } catch (err) {
-      if (err instanceof FirebaseError) {
+      if (
+        err instanceof FirebaseError ||
+        err instanceof WhatsappClientHttpError ||
+        err instanceof WhatsappClientNetworkError
+      ) {
         setSubmitError(err.message);
         return;
       }
@@ -499,7 +549,9 @@ function QuickCreateForm({
 
         {enderecoFound && (
           <Alert color="blue" icon={<IconMapPin size={16} />} title="Endereço encontrado">
-            O endereço deste CNPJ será oferecido para revisão ao criar ou usar o cliente.
+            {onCreate
+              ? 'Após vincular, abra o cadastro do cliente para revisar este endereço.'
+              : 'O endereço deste CNPJ será oferecido para revisão ao criar ou usar o cliente.'}
           </Alert>
         )}
 
@@ -530,13 +582,27 @@ function QuickCreateForm({
           name="telefone"
           render={({ field, fieldState }) => (
             <TelefoneTextInput
-              value={field.value ?? ''}
+              value={typeof field.value === 'string' ? field.value : ''}
               onChange={(next) => field.onChange(next === '' ? null : next)}
               onBlur={() => {
                 field.onBlur();
                 runLiveCheck();
               }}
-              label="Telefone"
+              label="Telefone principal"
+              error={fieldState.error?.message}
+            />
+          )}
+        />
+
+        <Controller
+          control={form.control}
+          name="telefonesAdicionais"
+          render={({ field, fieldState }) => (
+            <TelefonesAdicionaisInput
+              errorTree={fieldState.error}
+              value={field.value}
+              onChange={field.onChange}
+              disabled={submitting}
               error={fieldState.error?.message}
             />
           )}
@@ -605,9 +671,11 @@ function QuickCreateForm({
         {submitError && <Alert color="red">{submitError}</Alert>}
 
         <Group justify="space-between" align="center">
-          <Anchor component={Link} href="/clientes/novo" target="_blank" size="xs" c="dimmed">
-            Precisa de mais campos? Abrir cadastro completo
-          </Anchor>
+          {!onCreate && (
+            <Anchor component={Link} href="/clientes/novo" target="_blank" size="xs" c="dimmed">
+              Precisa de mais campos? Abrir cadastro completo
+            </Anchor>
+          )}
           <Group>
             <Button variant="default" onClick={onCancel} disabled={submitting}>
               Cancelar
@@ -625,7 +693,7 @@ function QuickCreateForm({
               </Button>
             ) : (
               <Button type="submit" loading={submitting} disabled={blocked}>
-                Criar
+                {saveLabel}
               </Button>
             )}
           </Group>
@@ -762,7 +830,7 @@ export function ClienteQuickCreateModal({
         )}
         {opened && phase.step === 'form' && (
           <div onSubmit={(e) => e.stopPropagation()}>
-            <QuickCreateForm onResolved={handleClienteResolved} onCancel={onClose} />
+            <ClienteQuickCreateForm onResolved={handleClienteResolved} onCancel={onClose} />
           </div>
         )}
       </Modal>

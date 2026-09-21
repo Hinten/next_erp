@@ -43,12 +43,56 @@ const PADROES: readonly { readonly re: RegExp; readonly rotulo: string }[] = [
   // Chave de acesso — 44 digits, and it EMBEDS the CNPJ at positions 7-20, so
   // printing one leaks the issuer just as surely as printing the CNPJ itself.
   { re: /(?<!\d)\d{44}(?!\d)/g, rotulo: '[chave]' },
-  // CNPJ, punctuated then bare.
+  // The alfa chave (NT 2026.004): positions 6-17 are the emitente CNPJ's body.
+  // Before the CNPJ rules, so none of them can eat a slice of one.
+  { re: /(?<![0-9A-Z])[0-9]{6}[0-9A-Z]{12}[0-9]{26}(?![0-9A-Z])/g, rotulo: '[chave]' },
+  // CNPJ, punctuated then bare — numeric, then the alfa forms of each.
   { re: /(?<!\d)\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}(?!\d)/g, rotulo: '[CNPJ]' },
+  {
+    re: /(?<![0-9A-Z])[0-9A-Z]{2}\.[0-9A-Z]{3}\.[0-9A-Z]{3}\/[0-9A-Z]{4}-[0-9]{2}(?![0-9A-Z])/g,
+    rotulo: '[CNPJ]',
+  },
   { re: /(?<!\d)\d{14}(?!\d)/g, rotulo: '[CNPJ]' },
+  // ⚠️ NUMERIC RAIZ + ALFA ORDEM — `[0-9]{11}[A-Z][0-9]{2}`, and it must sit HERE,
+  // above the CPF rules. RFB IN 2.229/2024 keeps an existing company's numeric
+  // raiz and issues an alphanumeric *ordem* to each new establishment, so
+  // `12345678` + `000A` + DV is not an exotic shape — it is the alfa CNPJ we are
+  // most likely to ever see, since new branches of existing companies far
+  // outnumber brand-new companies.
+  //
+  // Without this rule the bare CPF rule below claims the leading eleven digits:
+  // `12345678000A12` printed as `[CPF]A12` — mislabelled, and the last three
+  // characters UNREDACTED, in the module whose whole job is that they are not.
+  //
+  // ⚠️ This is the ONLY collision of its kind, which is what makes the rule
+  // complete rather than a patch. The CPF rule needs an 11-digit run bounded by
+  // non-digits, and inside `[0-9A-Z]{12}[0-9]{2}` there are just three candidate
+  // offsets: a run at 0-10 needs a non-digit at 11 (this case), while runs at
+  // 1-11 and 2-12 are each followed by a DV digit, so `(?!\d)` refuses them.
+  { re: /(?<![0-9A-Z])[0-9]{11}[A-Z][0-9]{2}(?![0-9A-Z])/g, rotulo: '[CNPJ]' },
   // CPF, punctuated then bare. A destinatário can be a person.
   { re: /(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)/g, rotulo: '[CPF]' },
   { re: /(?<!\d)\d{11}(?!\d)/g, rotulo: '[CPF]' },
+  // ⚠️ BARE ALFA CNPJ (RFB IN 2.229/2024) — `[0-9A-Z]{12}[0-9]{2}`, and it must
+  // come LAST. Its shape is ambiguous with a label glued to a CPF:
+  // `CPF12345678909` is also twelve [0-9A-Z] followed by two digits, and nothing
+  // lexical tells the two apart. Running after the CPF rules resolves it by
+  // CONSUMPTION — that text is already `CPF[CPF]` by the time this is reached,
+  // and the `[` breaks the run. Reordering these entries silently relabels every
+  // glued CPF as a CNPJ; the near-miss cases in the test pin it.
+  //
+  // ⚠️ It keeps a `(?<![0-9A-Z])` lookbehind, and that is load-bearing for the
+  // FIXED-WIDTH property this whole table rests on. Dropped once during
+  // development: `nProt`/`nRec` are 15 digits, so a boundary-less 14-char rule
+  // matched their tail and `protocolo 135260000012345` printed as `1[CNPJ]` —
+  // destroying the one identifier that correlates a run with a document.
+  //
+  // ⚠️ Known, accepted hole: a LETTER label flush against an alfa CNPJ
+  // (`CNPJPC3D315K000193`) is not masked, because the lookbehind cannot tell the
+  // label from the value. The numeric rules do not have this problem — their
+  // `(?<!\d)` ignores letters. Closing it needs a label allow-list, not a wider
+  // character class; the fixed-width guarantee is worth more than this case.
+  { re: /(?<![0-9A-Z])[0-9A-Z]{12}[0-9]{2}(?![0-9A-Z])/g, rotulo: '[CNPJ]' },
 ];
 
 /**

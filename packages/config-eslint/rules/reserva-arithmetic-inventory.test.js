@@ -138,6 +138,8 @@ const INVENTARIO = {
     'Shopee listing import (#1517), the I/O half. `lerLinhaDeEstoque` answers the stored reservation RAW (a missing/non-numeric field reads as 0, a stored negative is carried through intact) because its only consumer is the pure planner in `mapeamento.ts`, which floors it with `reservaEfetiva` — one floor, in one place, and the evidence #931 wants is not laundered on the way there. This file does no arithmetic on the value at all, and it never WRITES the counter: the overwrite arm is a merge naming only `quantidade` + `ultimaModificacao` (the picking flow owns the reserve), and the create arm writes the plan’s literal 0.',
 
   // ---- Declarations, display, diagnostics — no arithmetic -----------------
+  'apps/whatsapp/lib/whatsapp/vinculos.ts':
+    '#1084: the conflict message "A conversa reservada..." refers to the transactionally claimed canonical WhatsApp conversation. This is conversation-identity terminology only: no stock reservation is read, written, or used in arithmetic.',
   'packages/schemas/src/produto/collection/historicoEstoque.ts':
     'Ledger schema: declares `movimentoReservada` / `saldoReservada`. No arithmetic.',
   'packages/schemas/src/pedido/collection/pedido.ts':

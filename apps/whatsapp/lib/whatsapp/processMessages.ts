@@ -1,20 +1,9 @@
 /**
- * Inbound `messages`-field processor for the WhatsApp Cloud API webhook (#527).
- * Port of `.old/packages/canais_de_venda/whatsapp_cloud_api/lib/src/notificacoes/
- * messages.dart` (lines 15–327 + 474–535): resolve the owning account, find/create
- * the contact, create-or-reopen the `chat` conversa in a transaction, attach the
- * `mensagem` (downloading + caching media), then run the daily auto-reply and the
- * anonymous-name fixup.
- *
- * ── Idempotency (the #527 goal) ────────────────────────────────────────────────
- * Everything is keyed on DETERMINISTIC ids so a redelivered webhook — or a task
- * retry — converges on the same documents instead of forking:
- *  - conversa doc id  = `conversaDocId(contaId, senderId(displayPhone, from))`;
- *  - mensagem doc id  = `mensagemDocId(contaId, message.id)` (the Meta wamid);
- *  - the "nova conversa" event id is fixed (`evento_nova`); a reopen event is
- *    keyed to the triggering wamid (`evento_reaberto_<wamid>`);
- *  - the daily auto-reply is keyed to the UTC day (`autoreply_<kind>_<yyyy-mm-dd>`).
- * A create that loses a race hits ALREADY_EXISTS (gRPC 6) and is ignored.
+ * Inbound WhatsApp processing. Identity claims resolve the ERP cliente and a
+ * transactional integration + cliente reservation selects its canonical chat.
+ * Unknown contacts retain messages/media for explicit operator identification.
+ * Message IDs remain deterministic on integration + wamid; no usuario is created.
+ * The one-time migration imports claims for old chats before writers start.
  *
  * ── `ultima_modificacao` recency bump ──────────────────────────────────────────
  * A real inbound message stamps the conversa's `ultima_modificacao` so it
@@ -57,39 +46,53 @@
  * operator-timezone skew (an 08:00 typed by a UTC-3 operator compares as ~11:06).
  * We decode ONLY via `decodeHorarioMs` and never re-derive the ms by hand.
  */
+import { isDeepStrictEqual } from 'node:util';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import {
   conversaCollection,
   integracaoCollection,
   mensagemCollection,
+  whatsappMensagemCollection,
+  whatsappVinculoCollection,
+  whatsappVinculoMensagemCollection,
+  whatsappConversaCollection,
+  clienteCollection,
 } from '@delfrance/data/admin/collections';
 import {
   TIPO_MENSAGEM,
   ESTADO_CONVERSA,
   ESTADO_ENVIO,
   INTEGRACAO_TIPO,
+  ORIGEM_CONVERSA,
   decodeHorarioMs,
   podeReabrirConversa,
   toOuterRef,
+  toOuterRefOrNull,
   type HorarioWhatsapp,
   type Integracao,
   type PeriodoWhatsapp,
   type TipoMensagem,
+  type WhatsappDestino,
+  mesmoDestinoWhatsapp,
+  idFromRef,
 } from '@delfrance/schemas';
 import {
   valuePayloadSchema,
   type IncomingMessage,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
-import { corToEtiquetaArgb } from '@delfrance/core/cor';
+import { normalizeTelefoneInternacional } from '@delfrance/core/phone';
 import { type ContaIdLookup, readContaIdByWaId, readWhatsappConta } from './contaCache';
-import { conversaDocId, mensagemDocId, senderId } from './ids';
+import { mensagemDocId } from './ids';
 import {
-  clienteOuterRef,
-  discoverUserByPhoneNumber,
-  fixConversaAnonima,
-  usuarioOuterRef,
-} from './discoverUser';
+  identidadesDoContato,
+  conversaWhatsappKey,
+  resolverContatoWhatsapp,
+  aplicarTransicaoWhatsapp,
+  WhatsappVinculoConflitoError,
+  type ContatoWhatsapp,
+} from './contatos';
+import { guardarContatoPendente } from './vinculos';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
 import { processStatuses, type StatusesReport } from './processStatus';
 
@@ -105,6 +108,12 @@ export interface WhatsappProcessDeps {
   mediaContext(db: Firestore, contaId: string): Promise<MediaCacheContext>;
 }
 
+/** Internal replay authority, supplied only by the retained-contact replay worker. */
+export interface HistoricoManualRetido {
+  vinculoId: string;
+  revision: number;
+}
+
 /**
  * What ONE inbound message did. Every value is an existing branch of
  * `processInboundMessage` — nothing here is invented for the log.
@@ -113,7 +122,9 @@ type InboundMessageOutcome =
   | 'mensagem' // the mensagem was written or updated
   | 'redelivery' // an existing mensagem at/after this timestamp — idempotent skip
   | 'echo' // outbound echo (the change also carries `statuses`) — conversa only
-  | 'spam'; // the spam-conversa guard suppressed it
+  | 'spam'
+  | 'pending'
+  | 'unidentified';
 
 /**
  * What the whole `messages`-field change did.
@@ -225,6 +236,7 @@ export type ProcessOutcome =
   // a `fail` WRITES a Firestore document carrying the whole `reason` as `erro`,
   // so the record already exists. `done` and `dropped` persist nothing, which is
   // why only those two need a filterable token in the log.
+  | { kind: 'parked'; reason: string }
   | { kind: 'failed'; reason: string }; // persist as `failed`, sweep re-drives
 
 /** Owning-account resolution for an inbound change. */
@@ -256,6 +268,7 @@ function toEpochMs(v: unknown): number | null {
  * image/document/sticker→`f` (arquivo), everything else (text/reaction/…)→`c`.
  */
 function tipoForMessage(message: IncomingMessage): TipoMensagem {
+  if (message.type === 'system') return TIPO_MENSAGEM.evento;
   if (message.audio) return TIPO_MENSAGEM.audio;
   if (message.video) return TIPO_MENSAGEM.video;
   if (message.image || message.document || message.sticker) return TIPO_MENSAGEM.arquivo;
@@ -317,6 +330,8 @@ export async function processMessagesField(
   db: Firestore,
   rawValue: unknown,
   deps: WhatsappProcessDeps,
+  sourceNotificationId: string | null = null,
+  historicoManualRetido?: HistoricoManualRetido,
 ): Promise<ProcessOutcome> {
   const parsed = valuePayloadSchema.safeParse(rawValue);
   if (!parsed.success) {
@@ -362,8 +377,19 @@ export async function processMessagesField(
         report.malformados += 1;
         continue;
       }
-      seen.add(await processInboundMessage(db, deps, { contaId, conta, value, message, incoming }));
+      seen.add(
+        await processInboundMessage(db, deps, {
+          contaId,
+          conta,
+          value,
+          message,
+          incoming,
+          sourceNotificationId,
+          historicoManualRetido,
+        }),
+      );
     }
+    if (seen.has('unidentified')) report.malformados += 1;
     mensagens = report;
   }
   const statuses = value.statuses ? await processStatuses(db, contaId, value) : null;
@@ -393,6 +419,11 @@ export async function processMessagesField(
   // an overstatement and needs no seventh member: `mensagens.malformados` rides
   // out beside `detail` and says so — the same division of labour that lets
   // `statuses` mean "a batch ran" without claiming any of it landed.
+  if (seen.has('pending'))
+    return {
+      kind: 'parked',
+      reason: 'Contato aguardando vínculo com cliente; mensagens e anexos retidos.',
+    };
   return { kind: 'processed', contaId, detail, mensagens, statuses };
 }
 
@@ -404,209 +435,303 @@ interface InboundArgs {
   value: ReturnType<typeof valuePayloadSchema.parse>;
   message: IncomingMessage;
   incoming: boolean;
+  sourceNotificationId: string | null;
+  historicoManualRetido?: HistoricoManualRetido;
+}
+
+type ClienteConversaReplay = { clienteId: string; conversaId: string };
+type ValidarReplay = (tx: Transaction, planned?: ClienteConversaReplay) => Promise<void>;
+
+/** The same proof is checked before processing and inside EVERY replay write transaction. */
+async function validarHistoricoManualRetido(
+  db: Firestore,
+  tx: Transaction,
+  authority: HistoricoManualRetido,
+  contaId: string,
+  message: IncomingMessage,
+  expected?: ClienteConversaReplay,
+): Promise<ClienteConversaReplay> {
+  const pending = await tx.get(whatsappVinculoCollection.docRef(db, {}, authority.vinculoId));
+  const binding = pending.data();
+  if (
+    !pending.exists ||
+    typeof binding?.decididoPor !== 'string' ||
+    !binding.decididoPor ||
+    binding.revision !== authority.revision ||
+    !['recuperando', 'erro'].includes(String(binding.estado)) ||
+    binding.integracaoId !== contaId ||
+    typeof binding.clienteId !== 'string' ||
+    !binding.clienteId ||
+    typeof binding.conversaId !== 'string' ||
+    !binding.conversaId ||
+    (expected != null &&
+      (binding.clienteId !== expected.clienteId || binding.conversaId !== expected.conversaId))
+  )
+    throw new WhatsappVinculoConflitoError(
+      'A decisão de vínculo mudou. Recarregue o contato antes de recuperar o histórico.',
+    );
+  const { clienteId, conversaId } = binding;
+  const [retained, chat, canonical, cliente, integration] = await Promise.all([
+    tx.get(
+      whatsappVinculoMensagemCollection.docRef(
+        db,
+        { vinculoId: authority.vinculoId },
+        mensagemDocId(contaId, message.id),
+      ),
+    ),
+    tx.get(conversaCollection.docRef(db, {}, conversaId)),
+    tx.get(whatsappConversaCollection.docRef(db, {}, conversaWhatsappKey(contaId, clienteId))),
+    tx.get(clienteCollection.docRef(db, {}, clienteId)),
+    tx.get(integracaoCollection.docRef(db, {}, contaId)),
+  ]);
+  const stored = valuePayloadSchema.safeParse(retained.data()?.value);
+  const retainedMessage = stored.success
+    ? stored.data.messages?.find((item) => item?.id === message.id)
+    : null;
+  if (
+    !retained.exists ||
+    retained.data()?.processada !== false ||
+    !isDeepStrictEqual(retainedMessage, message) ||
+    !cliente.exists ||
+    !integration.exists ||
+    integration.data()?.tipo !== INTEGRACAO_TIPO.whatsapp ||
+    !chat.exists ||
+    chat.data()?.origem !== ORIGEM_CONVERSA.whatsapp ||
+    toOuterRefOrNull(chat.data()?.clienteOuterRef) !==
+      toOuterRefOrNull(clienteCollection.docPath({}, clienteId)) ||
+    toOuterRefOrNull(chat.data()?.integracaoOuterRef) !==
+      toOuterRefOrNull(integracaoCollection.docPath({}, contaId)) ||
+    !canonical.exists ||
+    canonical.data()?.integracaoId !== contaId ||
+    canonical.data()?.clienteId !== clienteId ||
+    canonical.data()?.conversaId !== conversaId
+  )
+    throw new WhatsappVinculoConflitoError(
+      'A decisão de vínculo não autoriza recuperar esta mensagem. Recarregue o contato.',
+    );
+  return { clienteId, conversaId };
 }
 
 async function processInboundMessage(
   db: Firestore,
   deps: WhatsappProcessDeps,
-  { contaId, conta, value, message, incoming }: InboundArgs,
-): Promise<InboundMessageOutcome> {
-  const displayPhone = value.metadata.display_phone_number;
-  const from = message.from;
-  const timestampMs = waTimestampToMs(message.timestamp);
-  const prazoMs = timestampMs + DAY_MS;
-
-  const fromName = value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? null;
-  const user = await discoverUserByPhoneNumber(db, from, fromName);
-
-  const sender = senderId(displayPhone, from);
-  const conversaId = conversaDocId(contaId, sender);
-
-  const { skipMensagem, conversaNome, bumpedUltimaModificacao } = await upsertConversa(db, {
+  {
     contaId,
     conta,
-    conversaId,
-    sender,
-    from,
-    phoneNumberId: value.metadata.phone_number_id,
-    userName: user.usuario.nome,
-    userId: user.id,
-    clienteId: user.clienteId,
-    timestampMs,
-    prazoMs,
-    wamid: message.id,
-  });
-
-  // Outbound echo (statuses present) or a spam conversa → no mensagem, no reply.
-  // Reported apart: both wrote no mensagem, but for entirely different reasons.
+    value,
+    message,
+    incoming,
+    sourceNotificationId,
+    historicoManualRetido,
+  }: InboundArgs,
+): Promise<InboundMessageOutcome> {
   if (!incoming) return 'echo';
+  // Refuse stale tasks before identity resolution can alter a client/destination.
+  // This early read is only a fast failure: each later write rechecks the proof.
+  const replayBinding = historicoManualRetido
+    ? await db.runTransaction((tx) =>
+        validarHistoricoManualRetido(db, tx, historicoManualRetido, contaId, message),
+      )
+    : undefined;
+  const validarReplay: ValidarReplay | undefined = historicoManualRetido
+    ? async (tx, planned = replayBinding!) => {
+        if (
+          planned.clienteId !== replayBinding!.clienteId ||
+          planned.conversaId !== replayBinding!.conversaId
+        )
+          throw new WhatsappVinculoConflitoError(
+            'A identidade resolveu para outra conversa. Revise o vínculo antes de recuperar.',
+          );
+        await validarHistoricoManualRetido(
+          db,
+          tx,
+          historicoManualRetido,
+          contaId,
+          message,
+          replayBinding,
+        );
+      }
+    : undefined;
+  const prior = await whatsappMensagemCollection
+    .docRef(db, {}, mensagemDocId(contaId, message.id))
+    .get();
+  if (prior.exists) {
+    const mapped = whatsappMensagemCollection.parseRead(prior.data());
+    if (replayBinding && mapped.conversaId !== replayBinding.conversaId)
+      throw new WhatsappVinculoConflitoError('A mensagem já pertence a outra conversa vinculada.');
+    const stored = await mensagemCollection
+      .docRef(db, { conversaId: mapped.conversaId }, mapped.mensagemId)
+      .get();
+    if (mapped.integracaoId !== contaId || !stored.exists || stored.data()?.mid !== message.id) {
+      throw new WhatsappVinculoConflitoError(
+        'O registro da mensagem aponta para um histórico inconsistente.',
+      );
+    }
+    const conversation = await conversaCollection.docRef(db, {}, mapped.conversaId).get();
+    if (!conversation.exists)
+      throw new WhatsappVinculoConflitoError('A conversa original da mensagem foi removida.');
+    // A manual recovery accepted this retained content as history only. Original
+    // notification redrives cannot later turn it into a fresh service-window event.
+    if (mapped.historicoManual) {
+      if (validarReplay) await db.runTransaction((tx) => validarReplay(tx));
+      return 'redelivery';
+    }
+    const destination = conversaCollection.parseRead(conversation.data()).whatsappDestino;
+    if (message.type !== 'system')
+      await bumpUltimaModificacao(
+        db,
+        mapped.conversaId,
+        waTimestampToMs(message.timestamp),
+        validarReplay,
+      );
+    if (
+      message.type !== 'system' &&
+      destination?.identidadeId === stored.data()?.whatsappIdentidadeId &&
+      destination?.ultimaMensagemEm === waTimestampToMs(message.timestamp)
+    ) {
+      await enviarMsgAutomatica(db, conta, mapped.conversaId, destination, validarReplay);
+    }
+    return 'redelivery';
+  }
+  const profile =
+    value.contacts?.find(
+      (contact) =>
+        (message.from_user_id && contact.user_id === message.from_user_id) ||
+        (message.from && contact.wa_id === message.from),
+    ) ??
+    (!message.from && !message.from_user_id && value.contacts?.length === 1
+      ? value.contacts[0]
+      : undefined);
+  const contato: ContatoWhatsapp = {
+    integracaoId: contaId,
+    portfolioId: conta.portfolioId,
+    bsuid: message.system?.previous_user_id ?? message.from_user_id ?? profile?.user_id ?? null,
+    telefone: normalizeTelefoneInternacional(message.from ?? profile?.wa_id ?? ''),
+    nome: profile?.profile?.name ?? null,
+    timestamp: waTimestampToMs(message.timestamp),
+  };
+  if (!contato.bsuid && !contato.telefone) return 'unidentified';
+  const mensagemDoCliente = message.type !== 'system';
+  const transition =
+    message.type === 'system' &&
+    message.system &&
+    ['user_changed_number', 'user_changed_user_id'].includes(message.system.type);
+  const resolved = transition
+    ? await aplicarTransicaoWhatsapp(db, contato, message.system!, validarReplay)
+    : await resolverContatoWhatsapp(
+        db,
+        contato,
+        validarReplay,
+        // Provider events can identify a contact, but cannot open a service window.
+        mensagemDoCliente ? {} : { ultimaMensagemEm: null },
+      );
+  if (resolved.kind === 'pending') {
+    if (historicoManualRetido) {
+      // A human may recover retained history without reactivating a retired
+      // sender or approving an obsolete phone transition. The message transaction
+      // revalidates that decision; no destination/window/identity mutation follows.
+      const wrote = await createOrUpdateMensagem(db, deps, {
+        contaId,
+        conversaId: replayBinding!.conversaId,
+        clienteId: replayBinding!.clienteId,
+        identidadeId: identidadesDoContato(contato)[0]?.id ?? null,
+        message,
+        timestampMs: contato.timestamp,
+        historicoManualRetido,
+        somenteHistorico: true,
+      });
+      return wrote ? 'mensagem' : 'redelivery';
+    }
+    await guardarContatoPendente(
+      db,
+      contato,
+      resolved.motivo,
+      value,
+      message,
+      () => deps.mediaContext(db, contaId),
+      sourceNotificationId,
+    );
+    return 'pending';
+  }
+  const { conversaId, clienteId, nome } = resolved;
+  if (
+    replayBinding &&
+    (clienteId !== replayBinding.clienteId || conversaId !== replayBinding.conversaId)
+  )
+    throw new WhatsappVinculoConflitoError(
+      'A identidade resolveu para outra conversa. Revise o vínculo antes de recuperar.',
+    );
+  const { skipMensagem, bumpedUltimaModificacao } = await upsertConversa(db, {
+    conversaId,
+    timestampMs: contato.timestamp,
+    userName: nome,
+    wamid: message.id,
+    validarReplay,
+    mensagemDoCliente,
+  });
   if (skipMensagem) return 'spam';
-
-  // ⚠️ This boolean used to be discarded — so an idempotent redelivery that
-  // wrote NOTHING and a real inbound message produced a byte-identical log line.
-  // It is propagated for REPORTING only; see the bump below, which must stay
-  // ungated.
   const wrote = await createOrUpdateMensagem(db, deps, {
     contaId,
     conversaId,
-    userId: user.id,
+    clienteId,
+    identidadeId: identidadesDoContato(contato)[0]!.id,
     message,
-    timestampMs,
+    timestampMs: contato.timestamp,
+    historicoManualRetido,
   });
-
-  // Resurface the conversa on a real inbound message. The create/reopen paths
-  // already stamped `ultima_modificacao` inside the upsert txn; the other paths
-  // (in-order-non-reopenable, out-of-order) need this separate guarded merge.
-  // Deliberately NOT gated on the mensagem write being fresh: if this bump
-  // throws transiently AFTER the mensagem landed, the task retry arrives as an
-  // idempotent redelivery — gating on "wrote" would then skip the bump forever
-  // and the conversa would never resurface. The bump is monotonic (no-op when
-  // the stored value is already >= timestampMs), so re-running it on a true
-  // redelivery costs one transactional read and changes nothing.
-  if (!bumpedUltimaModificacao) {
-    await bumpUltimaModificacao(db, conversaId, timestampMs);
+  if (mensagemDoCliente && !bumpedUltimaModificacao)
+    await bumpUltimaModificacao(db, conversaId, contato.timestamp, validarReplay);
+  // A replay for an old identity may enrich history; it must not send a reply to the new identity.
+  if (mensagemDoCliente && resolved.destino.ultimaMensagemEm === contato.timestamp) {
+    await enviarMsgAutomatica(db, conta, conversaId, resolved.destino, validarReplay);
   }
-
-  await enviarMsgAutomatica(db, conta, conversaId, from);
-
-  // Best-effort (legacy caught + logged the same way): a failure here never
-  // blocks message ingestion.
-  try {
-    await fixConversaAnonima(db, conversaId, { nome: conversaNome }, user);
-  } catch (err) {
-    if (!(err instanceof Error)) throw err;
-    console.error('[whatsapp] fixConversaAnonima falhou', { message: err.message });
-  }
-
   return wrote ? 'mensagem' : 'redelivery';
 }
 
-/* --------------------------- conversa create/reopen ----------------------- */
-
-interface UpsertArgs {
-  contaId: string;
-  conta: Integracao;
-  conversaId: string;
-  sender: string;
-  from: string;
-  phoneNumberId: string;
-  userName: string;
-  userId: string;
-  /** `clientes/<id>` behind the sender, or null when unresolvable. */
-  clienteId: string | null;
-  timestampMs: number;
-  prazoMs: number;
-  wamid: string;
-}
-
-/**
- * Transactionally create-or-reopen the conversa (messages.dart:63-141).
- *  - absent  → create per the legacy field list + a `Nova conversa` event;
- *  - spam    → skip the whole message (return `skipMensagem: true`);
- *  - out-of-order (timestamp ≤ ultimaModificacaoIntegracao) → no conversa update,
- *    but the mensagem is still written (return `skipMensagem: false`);
- *  - reopenable state → naoRespondido + fresh 24h prazo + a `reaberto` event.
- *
- * `bumpedUltimaModificacao` reports whether the create/reopen txn already
- * stamped `ultima_modificacao = timestampMs`, so `processInboundMessage` can
- * skip the separate guarded merge on those paths (they wrote it inline).
- */
+/** The identity transaction already reserved and created this conversation. */
 async function upsertConversa(
   db: Firestore,
-  args: UpsertArgs,
-): Promise<{ skipMensagem: boolean; conversaNome: string; bumpedUltimaModificacao: boolean }> {
-  const convRef = conversaCollection.docRef(db, {}, args.conversaId);
-
-  return db.runTransaction(async (txn: Transaction) => {
-    const snap = await txn.get(convRef);
-
-    if (!snap.exists) {
-      const data = conversaCollection.parse({
-        atendido: false,
-        data_cadastro: args.timestampMs,
-        // Recency field carried from creation (legacy stamped it on every save);
-        // ultimaModificacaoIntegracao is the separate inbound out-of-order guard.
-        ultima_modificacao: args.timestampMs,
-        ultimaModificacaoIntegracao: args.timestampMs,
-        origem: 'whatsapp',
-        sender_id: args.sender,
-        nome: args.userName,
-        usarioOuterRef: usuarioOuterRef(args.userId),
-        // The same contact as a `clientes` ref — the field the inbox's Cliente
-        // filter matches, and the one every ML importer writes (#768). Both are
-        // stored: `usarioOuterRef` still drives the thread's bubble direction
-        // and the legacy readers.
-        //
-        // ⚠️ CREATE only. The three update branches below each document what
-        // they deliberately do and do not write — one of them writes NOTHING on
-        // purpose, because that freeze is what lets a late message reopen a
-        // finalized ticket. Stamping a field into that branch would change
-        // reopen semantics for an unrelated reason. Conversas created before
-        // this field existed are the backfill's job, not the webhook's.
-        clienteOuterRef: args.clienteId != null ? clienteOuterRef(args.clienteId) : null,
-        integracaoOuterRef: `documents/integracao/${args.contaId}`,
-        id: args.phoneNumberId,
-        prazo_resposta: args.prazoMs,
-        // ⚠️ CONVERTED, not copied. `integracao.cor` is a 24-bit RGB int; `cor_etiqueta`
-        // is a 32-bit ARGB `Color.value`, and the chat etiqueta filter matches its
-        // palette with an exact `==`. A raw copy paints the right colour but is
-        // selectable by no etiqueta at all. See `corToEtiquetaArgb`.
-        cor_etiqueta: corToEtiquetaArgb(args.conta.cor) ?? 0,
-        externalLink: `https://api.whatsapp.com/send?phone=${args.from}`,
-        estadoConversa: ESTADO_CONVERSA.naoRespondido,
-      });
-      txn.set(convRef, data);
-      writeEvent(db, txn, args.conversaId, 'evento_nova', {
-        conteudo: `Nova conversa iniciada por ${args.userName}.`,
-        timestampMs: args.timestampMs,
-      });
-      return { skipMensagem: false, conversaNome: args.userName, bumpedUltimaModificacao: true };
-    }
-
-    const existing = conversaCollection.parseRead(
-      snap.data(),
-      conversaCollection.docPath({}, args.conversaId),
-    );
-
-    if (existing.estadoConversa === ESTADO_CONVERSA.spam) {
-      return { skipMensagem: true, conversaNome: existing.nome, bumpedUltimaModificacao: false };
-    }
-
-    const lastMod = toEpochMs(existing.ultimaModificacaoIntegracao);
-    const shouldUpdate = lastMod == null || args.timestampMs > lastMod;
-    if (!shouldUpdate) {
-      // Stale/out-of-order: leave the conversa untouched, still write the
-      // mensagem. `ultima_modificacao` is left to the separate guarded merge,
-      // which never moves it backwards.
-      return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: false };
-    }
-
-    if (podeReabrirConversa(existing.estadoConversa)) {
-      const patch = conversaCollection.parseMerge({
-        // Bump the recency field alongside the reopen (see the header note).
-        ultima_modificacao: args.timestampMs,
+  args: {
+    conversaId: string;
+    timestampMs: number;
+    userName: string;
+    wamid: string;
+    validarReplay?: ValidarReplay;
+    mensagemDoCliente: boolean;
+  },
+): Promise<{ skipMensagem: boolean; bumpedUltimaModificacao: boolean }> {
+  const ref = conversaCollection.docRef(db, {}, args.conversaId);
+  return db.runTransaction(async (txn) => {
+    const snap = await txn.get(ref);
+    await args.validarReplay?.(txn);
+    if (!snap.exists)
+      throw new WhatsappVinculoConflitoError(
+        'A conversa vinculada foi removida durante o recebimento.',
+      );
+    const existing = conversaCollection.parseRead(snap.data());
+    if (existing.estadoConversa === ESTADO_CONVERSA.spam)
+      return { skipMensagem: true, bumpedUltimaModificacao: false };
+    const last = toEpochMs(existing.ultimaModificacaoIntegracao);
+    if (
+      args.mensagemDoCliente &&
+      (last == null || args.timestampMs > last) &&
+      podeReabrirConversa(existing.estadoConversa)
+    ) {
+      txn.update(ref, {
+        ultima_modificacao: Math.max(args.timestampMs, toEpochMs(existing.ultima_modificacao) ?? 0),
         ultimaModificacaoIntegracao: args.timestampMs,
         estadoConversa: ESTADO_CONVERSA.naoRespondido,
-        prazo_resposta: args.prazoMs,
       });
-      txn.set(convRef, patch, { merge: true });
-      writeEvent(db, txn, args.conversaId, `evento_reaberto_${args.wamid}`, {
-        conteudo: `Atendimento do ${args.userName} reaberto automaticamente após nova mensagem do cliente.`,
+      writeEvent(db, txn, args.conversaId, 'evento_reaberto_' + args.wamid, {
+        conteudo:
+          'Atendimento do ' +
+          args.userName +
+          ' reaberto automaticamente após nova mensagem do cliente.',
         timestampMs: args.timestampMs,
       });
-      return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: true };
+      return { skipMensagem: false, bumpedUltimaModificacao: true };
     }
-    // In-order + NOT reopenable (e.g. emResposta): legacy assigns
-    // ultimaModificacaoIntegracao in memory but never `.save()`s on this branch
-    // (messages.dart:133-135) — the stored guard FREEZES until the next
-    // create/reopen write. That no-save quirk is load-bearing: it is what lets
-    // a late out-of-order customer message still reopen a since-finalized
-    // ticket. Persisting the guard here would silently change the reopen
-    // semantics, so we deliberately write NOTHING to it (parity over tidiness).
-    // The recency `ultima_modificacao` bump is orthogonal and handled by the
-    // separate guarded merge — a new customer message on an in-progress ticket
-    // SHOULD resurface it.
-    return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: false };
+    return { skipMensagem: false, bumpedUltimaModificacao: false };
   });
 }
 
@@ -625,10 +750,12 @@ async function bumpUltimaModificacao(
   db: Firestore,
   conversaId: string,
   timestampMs: number,
+  validarReplay?: ValidarReplay,
 ): Promise<void> {
   const convRef = conversaCollection.docRef(db, {}, conversaId);
   await db.runTransaction(async (txn: Transaction) => {
     const snap = await txn.get(convRef);
+    await validarReplay?.(txn);
     if (!snap.exists) return;
     const existing = conversaCollection.parseRead(
       snap.data(),
@@ -663,9 +790,12 @@ function writeEvent(
 /* ----------------------------- mensagem upsert ---------------------------- */
 
 interface MensagemArgs {
+  identidadeId: string | null;
+  somenteHistorico?: boolean;
+  historicoManualRetido?: HistoricoManualRetido;
   contaId: string;
   conversaId: string;
-  userId: string;
+  clienteId: string;
   message: IncomingMessage;
   timestampMs: number;
 }
@@ -684,25 +814,19 @@ interface MensagemArgs {
 async function createOrUpdateMensagem(
   db: Firestore,
   deps: WhatsappProcessDeps,
-  { contaId, conversaId, userId, message, timestampMs }: MensagemArgs,
+  {
+    contaId,
+    conversaId,
+    clienteId,
+    identidadeId,
+    message,
+    timestampMs,
+    historicoManualRetido,
+    somenteHistorico,
+  }: MensagemArgs,
 ): Promise<boolean> {
   const msgId = mensagemDocId(contaId, message.id);
   const msgRef = mensagemCollection.docRef(db, { conversaId }, msgId);
-
-  const oldSnap = await msgRef.get();
-  let dataCadastroMs = timestampMs;
-  if (oldSnap.exists) {
-    const old = mensagemCollection.parseRead(
-      oldSnap.data(),
-      mensagemCollection.docPath({ conversaId }, msgId),
-    );
-    const oldTs = toEpochMs(old.timestamp);
-    if (oldTs != null && oldTs >= timestampMs) return false; // same or newer → idempotent skip
-    // Preserve the original create time across an update (keep-old-value); the
-    // codec tolerates a stray ISO value on the stored field via `toEpochMs`.
-    const oldCadastro = toEpochMs(old.data_cadastro);
-    if (oldCadastro != null) dataCadastroMs = oldCadastro;
-  }
 
   // Media — resolve the account's Graph client + bucket only when needed.
   let ctx: MediaCacheContext | null = null;
@@ -712,12 +836,14 @@ async function createOrUpdateMensagem(
   const fields: Record<string, unknown> = {
     estadoEnvio: ESTADO_ENVIO.recebido,
     tipo: tipoForMessage(message),
-    conteudo: message.text?.body ?? null,
-    user_id: userId,
-    usarioMensagemOuterRef: usuarioOuterRef(userId),
+    conteudo: message.text?.body ?? message.system?.body ?? null,
+    whatsappIdentidadeId: identidadeId,
+    user_id: null,
+    usarioMensagemOuterRef: null,
+    clienteMensagemOuterRef: 'documents/clientes/' + clienteId,
     mid: message.id,
     midGroup: msgId,
-    data_cadastro: dataCadastroMs,
+    data_cadastro: timestampMs,
     timestamp: timestampMs,
   };
 
@@ -758,8 +884,36 @@ async function createOrUpdateMensagem(
   const referral = mapReferral(message);
   if (referral) fields.referral = referral;
 
-  await msgRef.set(mensagemCollection.parse(fields));
-  return true;
+  return db.runTransaction(async (tx) => {
+    const current = await tx.get(msgRef);
+    const mapRef = whatsappMensagemCollection.docRef(db, {}, msgId);
+    const currentMap = await tx.get(mapRef);
+    if (historicoManualRetido)
+      await validarHistoricoManualRetido(db, tx, historicoManualRetido, contaId, message, {
+        clienteId,
+        conversaId,
+      });
+    if (currentMap.exists && currentMap.data()?.conversaId !== conversaId) {
+      throw new WhatsappVinculoConflitoError('A mensagem já pertence a outra conversa canônica.');
+    }
+    const old = current.exists ? mensagemCollection.parseRead(current.data()) : null;
+    tx.set(mapRef, {
+      integracaoId: contaId,
+      conversaId,
+      mensagemId: msgRef.id,
+      historicoManual: somenteHistorico === true || currentMap.data()?.historicoManual === true,
+    });
+    if (old && (toEpochMs(old.timestamp) ?? 0) >= timestampMs) return false;
+    tx.set(
+      msgRef,
+      mensagemCollection.parse({
+        ...fields,
+        data_cadastro: toEpochMs(old?.data_cadastro) ?? timestampMs,
+      }),
+      { merge: true },
+    );
+    return true;
+  });
 }
 
 /** The `documents/chat/<c>/mensagem/<m>` outer ref of a prior message doc. */
@@ -858,68 +1012,47 @@ async function enviarMsgAutomatica(
   db: Firestore,
   conta: Integracao,
   conversaId: string,
-  to: string,
+  destino: WhatsappDestino,
+  validarReplay?: ValidarReplay,
 ): Promise<void> {
-  void to; // recipient is derived by PR-3 from the conversa; kept for signature parity
   if (!conta.horario_funcionamento) return;
-
   const now = new Date();
   const aberto = estaAberto(conta, now);
-
-  const convSnap = await conversaCollection.docRef(db, {}, conversaId).get();
-  if (!convSnap.exists) return;
-  const conversa = conversaCollection.parseRead(
-    convSnap.data(),
-    conversaCollection.docPath({}, conversaId),
-  );
-
-  if (conta.mensagem_inatividade && !aberto) {
-    const last = toEpochMs(conversa.recebido_fora_atendimento);
-    if (last == null || now.getTime() - last >= DAY_MS) {
-      await writeAutoReply(db, conversaId, conta.mensagem_inatividade, now, 'fora');
-      // The auto-reply is fresh activity → also bump the recency field (its own
-      // timestamp, always ≥ the inbound message ts, so no backward-move guard
-      // is needed here).
-      await conversaCollection.merge(db, {}, conversaId, {
-        recebido_fora_atendimento: now.getTime(),
-        ultima_modificacao: now.getTime(),
-      });
-    }
-  } else if (conta.mensagem_automatica && aberto) {
-    const last = toEpochMs(conversa.recebido_durante_atendimento);
-    if (last == null || now.getTime() - last >= DAY_MS) {
-      await writeAutoReply(db, conversaId, conta.mensagem_automatica, now, 'dentro');
-      await conversaCollection.merge(db, {}, conversaId, {
-        recebido_durante_atendimento: now.getTime(),
-        ultima_modificacao: now.getTime(),
-      });
-    }
-  }
-}
-
-/** Write the outbound auto-reply doc (idempotent per UTC day). */
-async function writeAutoReply(
-  db: Firestore,
-  conversaId: string,
-  texto: string,
-  now: Date,
-  kind: 'dentro' | 'fora',
-): Promise<void> {
-  const dayKey = now.toISOString().slice(0, 10); // yyyy-mm-dd (UTC) — a doc-id key, not a datetime field
-  const id = `autoreply_${kind}_${dayKey}`;
-  const data = mensagemCollection.parse({
-    estadoEnvio: ESTADO_ENVIO.salva, // salva + tipo 'c' → PR-3 sends it
-    tipo: 'c',
-    conteudo: texto,
-    data_cadastro: now.getTime(),
-    timestamp: now.getTime(),
+  const texto = aberto ? conta.mensagem_automatica : conta.mensagem_inatividade;
+  if (!texto) return;
+  const kind = aberto ? 'dentro' : 'fora';
+  const field = aberto ? 'recebido_durante_atendimento' : 'recebido_fora_atendimento';
+  const id =
+    'autoreply_' + kind + '_' + now.toISOString().slice(0, 10) + '_' + destino.identidadeId;
+  const convRef = conversaCollection.docRef(db, {}, conversaId);
+  const msgRef = mensagemCollection.docRef(db, { conversaId }, id);
+  await db.runTransaction(async (tx) => {
+    const conv = await tx.get(convRef);
+    const message = await tx.get(msgRef);
+    await validarReplay?.(tx);
+    if (!conv.exists || message.exists) return;
+    const current = conversaCollection.parseRead(conv.data());
+    if (!mesmoDestinoWhatsapp(current.whatsappDestino, destino)) return;
+    if ((current.whatsappDestino?.ultimaMensagemEm ?? 0) + DAY_MS <= now.getTime()) return;
+    const last = toEpochMs(current[field]);
+    if (last != null && now.getTime() - last < DAY_MS) return;
+    tx.create(
+      msgRef,
+      mensagemCollection.parse({
+        tipo: TIPO_MENSAGEM.comum,
+        estadoEnvio: ESTADO_ENVIO.salva,
+        conteudo: texto,
+        timestamp: now.getTime(),
+        data_cadastro: now.getTime(),
+        whatsappDestino: current.whatsappDestino,
+        whatsappIntegracaoId: idFromRef(current.integracaoOuterRef ?? ''),
+      }),
+    );
+    tx.update(convRef, {
+      [field]: now.getTime(),
+      ultima_modificacao: Math.max(toEpochMs(current.ultima_modificacao) ?? 0, now.getTime()),
+    });
   });
-  try {
-    await mensagemCollection.docRef(db, { conversaId }, id).create(data);
-  } catch (err) {
-    if (err instanceof Error && (err as { code?: unknown }).code === 6) return; // already sent today
-    throw err;
-  }
 }
 
 /* ------------------------------- estaAberto ------------------------------- */

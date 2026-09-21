@@ -97,3 +97,4 @@ export {
   relatorioEnvioPrecoMercadoLivreCollection,
 } from './envioPrecoMercadoLivreCollection';
 export { avisoCollection } from './avisoCollection';
+export * from './whatsappContatoCollection';

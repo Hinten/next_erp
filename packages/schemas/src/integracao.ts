@@ -220,7 +220,22 @@ export const integracaoSchema = z
     tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
     padrao: z.boolean().default(false),
     nome: z.string().min(1).max(255),
-    cpf_cnpj: z.string().max(18).regex(/^\d*$/, 'apenas números').nullable().default(null),
+    // ⚠️ `[0-9A-Z]`, not `\d`: this is the `<infIntermed>` CNPJ — the marketplace
+    // that brokered the sale, i.e. a COUNTERPARTY, and RFB IN 2.229/2024 issues
+    // alphanumeric CNPJs to newly registered ones. (`filial.cnpj` stays
+    // numeric-only on purpose: that is OUR emitente, existing CNPJs never change
+    // format, and the chave de acesso builder still asserts digits for it.)
+    // ⚠️ Same shape as `endereco.cpf_cnpj` / `bandeiraCartao.cnpj_instituicao`,
+    // and for the same reason: no refine backs it, so the regex is the whole
+    // guard and it must not be looser than the alfa CNPJ it exists to accept.
+    // The three agree deliberately — a field on the looser `^[0-9A-Z]*$` beside
+    // two on this one is the drift a reviewer cannot see.
+    cpf_cnpj: z
+      .string()
+      .max(18)
+      .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
+      .nullable()
+      .default(null),
     idCadIntTran: z.string().max(60).nullable().default(null),
     ativo: z.boolean().default(true),
     cor: z.number().int().nullable().default(null),
@@ -332,6 +347,7 @@ export const integracaoSchema = z
      * in; nullable like every other per-channel field so non-WhatsApp docs parse.
      */
     waba_id: z.string().nullable().default(null),
+    portfolioId: z.string().nullable().default(null).describe('ID do portfólio empresarial Meta'),
     /**
      * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
      * connected phone number. Nullable here like every other per-channel

@@ -76,12 +76,24 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 }
 
 /**
- * NF-e chave de acesso: exactly 44 digits. Shared source for every place
- * that validates a chave string (pedido `chNFeReferenciadas`, UI inputs).
- * Keep byte-identical to the pattern historically inlined at those call
- * sites (`/^\d{44}$/`) — see the anchor test in `nfe.test.ts`.
+ * NF-e chave de acesso: 44 characters, of which positions 6–17 may be
+ * alphanumeric. Shared source for every place that validates a chave string
+ * (pedido `chNFeReferenciadas`, UI inputs, the generator's NFref guard).
+ *
+ * ⚠️ **Mirrors the XSD facet exactly** — `TChNFe` in
+ * `packages/integrations/nfe/generated/moc7.0/schemas/tiposBasico_v4.00.xsd` is
+ * `[0-9]{6}[0-9A-Z]{12}[0-9]{26}`, widened by NT 2026.004 (CNPJ Alfanumérico,
+ * RFB IN 2.229/2024). A chave is `cUF(2) + AAMM(4) + CNPJ(14) + mod(2) +
+ * série(3) + nNF(9) + tpEmis(1) + cNF(8) + DV(1)`, so the alphanumeric window is
+ * the CNPJ's 12-character BODY only: its two check digits, and everything after
+ * them, stay numeric.
+ *
+ * ⚠️ Deliberately NOT a blanket `[0-9A-Z]{44}`. The positional form is what
+ * SEFAZ publishes, and it keeps rejecting letters everywhere they are still
+ * forbidden — a looser pattern would accept a chave SEFAZ refuses, which is the
+ * failure this constant exists to prevent.
  */
-export const CHAVE_NFE_REGEX = /^\d{44}$/;
+export const CHAVE_NFE_REGEX = /^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$/;
 
 /**
  * `<ICMSTot>` totals lifted out of the authorized XML into modeled numeric

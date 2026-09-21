@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
+import { CHAVE_NFE_REGEX } from './nfe';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth, matching
 // the Flutter `EasyFirebase` declaration `perm: 'nf1'` on `EnviNFeMsg`
@@ -87,8 +88,16 @@ export const ESTADO_ENVI_NFE_MSG = {
  * comes later when those flows are wired.
  */
 export const enviNfeMsgSchema = z.object({
-  /** Chaves this msg covers. Phase A always single-element; batch is N. */
-  targetsChnfe: z.array(z.string().length(44)).default([]).describe('Chaves NF-e'),
+  /**
+   * Chaves this msg covers. Phase A always single-element; batch is N.
+   *
+   * ⚠️ `CHAVE_NFE_REGEX`, not a bare `.length(44)`: a length check already
+   * ACCEPTED the alphanumeric chave (RFB IN 2.229/2024), so this is a
+   * TIGHTENING rather than part of the alfa widening — it costs nothing here
+   * because every value is one we emitted through the chave builder, and it
+   * refuses the 44 characters of garbage the old rule did not.
+   */
+  targetsChnfe: z.array(z.string().regex(CHAVE_NFE_REGEX)).default([]).describe('Chaves NF-e'),
   /** SEFAZ lote id. Set on autorizarLote messages; null on cons*. */
   idLote: z.number().int().nullable().describe('Lote'),
   /** '0' async / '1' sync. Set on autorizarLote messages. */

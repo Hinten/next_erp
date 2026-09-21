@@ -105,6 +105,8 @@ const SENT_CLIENTE: Cliente = {
   isUF: SENT_CLIENTE_ISUF,
   email: SENT_CLIENTE_EMAIL,
   telefone: null,
+  telefonesAdicionais: [],
+  telefoneGerenciado: false,
   observacoesInternas: null,
   timestamp: null,
   userCliente: null,

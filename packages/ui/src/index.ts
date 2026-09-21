@@ -88,6 +88,7 @@ export {
   saveRecord,
   type SaveRecordInput,
   type SaveRecordResult,
+  type DeriveTransactionPatch,
 } from './object/saveRecord';
 export {
   resolveStampFields,

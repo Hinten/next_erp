@@ -70,6 +70,21 @@ export interface detEvento_e110140 {
   versao: string;
 }
 
+export interface TRSAKeyValueType {
+  Modulus: string;
+  Exponent: string;
+}
+
+export interface TEvento_infEvento_infPAA_PAASignature {
+  SignatureValue: string;
+  RSAKeyValue: TRSAKeyValueType;
+}
+
+export interface TEvento_infEvento_infPAA {
+  CNPJPAA: string;
+  PAASignature: TEvento_infEvento_infPAA_PAASignature;
+}
+
 export interface TEvento_infEvento {
   cOrgao: '11' | '12' | '13' | '14' | '15' | '16' | '17' | '21' | '22' | '23' | '24' | '25' | '26' | '27' | '28' | '29' | '31' | '32' | '33' | '35' | '41' | '42' | '43' | '50' | '51' | '52' | '53' | '90' | '91' | '92';
   tpAmb: '1' | '2';
@@ -81,6 +96,7 @@ export interface TEvento_infEvento {
   nSeqEvento: string;
   verEvento: string;
   detEvento: string;
+  infPAA?: TEvento_infEvento_infPAA;
   Id: string;
 }
 
@@ -165,7 +181,7 @@ export interface TNFe_infNFe_ide {
   indFinal: '0' | '1';
   indPres: '0' | '1' | '2' | '3' | '4' | '5' | '9';
   indIntermed?: '0' | '1';
-  procEmi: '0' | '1' | '2' | '3';
+  procEmi: '0' | '1' | '2' | '3' | '4';
   verProc: string;
   dhCont?: string;
   xJust?: string;
@@ -1481,6 +1497,16 @@ export interface TNFe_infNFe_agropecuario {
   guiaTransito?: TNFe_infNFe_agropecuario_guiaTransito;
 }
 
+export interface TNFe_infNFe_infPAA_PAASignature {
+  SignatureValue: string;
+  RSAKeyValue: TRSAKeyValueType;
+}
+
+export interface TNFe_infNFe_infPAA {
+  CNPJPAA: string;
+  PAASignature: TNFe_infNFe_infPAA_PAASignature;
+}
+
 export interface TNFe_infNFe {
   ide: TNFe_infNFe_ide;
   emit: TNFe_infNFe_emit;
@@ -1502,6 +1528,7 @@ export interface TNFe_infNFe {
   infRespTec?: TInfRespTec;
   infSolicNFF?: TNFe_infNFe_infSolicNFF;
   agropecuario?: TNFe_infNFe_agropecuario;
+  infPAA?: TNFe_infNFe_infPAA;
   versao: string;
   Id: string;
 }
@@ -1769,6 +1796,18 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'dest', kind: 'element', type: 'detEvento_e110140_dest', optional: false, list: false },
     { name: 'versao', kind: 'attribute', type: '#string', optional: false, list: false },
   ],
+  TRSAKeyValueType: [
+    { name: 'Modulus', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'Exponent', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TEvento_infEvento_infPAA_PAASignature: [
+    { name: 'SignatureValue', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'RSAKeyValue', kind: 'element', type: 'TRSAKeyValueType', optional: false, list: false },
+  ],
+  TEvento_infEvento_infPAA: [
+    { name: 'CNPJPAA', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'PAASignature', kind: 'element', type: 'TEvento_infEvento_infPAA_PAASignature', optional: false, list: false },
+  ],
   TEvento_infEvento: [
     { name: 'cOrgao', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'tpAmb', kind: 'element', type: '#string', optional: false, list: false },
@@ -1780,6 +1819,7 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'nSeqEvento', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'verEvento', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'detEvento', kind: 'element', type: '#raw', optional: false, list: false },
+    { name: 'infPAA', kind: 'element', type: 'TEvento_infEvento_infPAA', optional: true, list: false },
     { name: 'Id', kind: 'attribute', type: '#string', optional: false, list: false },
   ],
   TEvento: [
@@ -3038,6 +3078,14 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'defensivo', kind: 'element', type: 'TNFe_infNFe_agropecuario_defensivo', optional: true, list: true, choiceGroup: 26 },
     { name: 'guiaTransito', kind: 'element', type: 'TNFe_infNFe_agropecuario_guiaTransito', optional: true, list: false, choiceGroup: 26 },
   ],
+  TNFe_infNFe_infPAA_PAASignature: [
+    { name: 'SignatureValue', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'RSAKeyValue', kind: 'element', type: 'TRSAKeyValueType', optional: false, list: false },
+  ],
+  TNFe_infNFe_infPAA: [
+    { name: 'CNPJPAA', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'PAASignature', kind: 'element', type: 'TNFe_infNFe_infPAA_PAASignature', optional: false, list: false },
+  ],
   TNFe_infNFe: [
     { name: 'ide', kind: 'element', type: 'TNFe_infNFe_ide', optional: false, list: false },
     { name: 'emit', kind: 'element', type: 'TNFe_infNFe_emit', optional: false, list: false },
@@ -3059,6 +3107,7 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'infRespTec', kind: 'element', type: 'TInfRespTec', optional: true, list: false },
     { name: 'infSolicNFF', kind: 'element', type: 'TNFe_infNFe_infSolicNFF', optional: true, list: false },
     { name: 'agropecuario', kind: 'element', type: 'TNFe_infNFe_agropecuario', optional: true, list: false },
+    { name: 'infPAA', kind: 'element', type: 'TNFe_infNFe_infPAA', optional: true, list: false },
     { name: 'versao', kind: 'attribute', type: '#string', optional: false, list: false },
     { name: 'Id', kind: 'attribute', type: '#string', optional: false, list: false },
   ],

@@ -134,10 +134,30 @@ export const enderecoSchema = z.object({
   pais: z.string().nullable().default(null).describe('País'),
   // Recebedor (NFe destinatário, opcional)
   nome: z.string().max(255).nullable().default(null).describe('Nome do recebedor'),
+  // ⚠️ `[0-9A-Z]`, not `\d`: this is the NF-e **destinatário / recebedor**, i.e. a
+  // COUNTERPARTY, and RFB IN 2.229/2024 issues alphanumeric CNPJs to newly
+  // registered establishments. `cliente.cpf_cnpj` and `integracao.cpf_cnpj` are
+  // the same class and already widened; `filial.cnpj` is NOT, because that is
+  // our own emitente (see its comment).
+  // ⚠️ No `validateCpfCnpj` refine, deliberately, though `cliente.cpf_cnpj`
+  // carries one: this field never had one, so adding it here is a TIGHTENING on
+  // the legacy corpus rather than part of the alfa widening — a stored endereço
+  // with a typo'd document would start failing `parseRead` and take the pedido
+  // screen with it. Read-tolerance for legacy shapes is mandatory (root
+  // CLAUDE.md rule 8); the validation belongs to whoever decides to clean the
+  // corpus.
+  // ⚠️ Letters only in the ALFA CNPJ SHAPE, not everywhere. `^[0-9A-Z]*$` — the
+  // spelling `cliente.cpf_cnpj` uses — would also accept `ABCDEFGHIJK` and
+  // `12ABC34501DEFG`, and `cliente` can afford that because it carries a
+  // `validateCpfCnpj` refine behind it. This field does NOT (see below), so the
+  // regex is the whole guard, and the old `\d*` at least guaranteed a 14-char
+  // value was numeric. The `\d*` alternative keeps every legacy value — empty,
+  // partial, full — so rule 8 read-tolerance is untouched; the second branch
+  // adds exactly `[0-9A-Z]{12}[0-9]{2}` and nothing wider.
   cpf_cnpj: z
     .string()
     .max(18)
-    .regex(/^\d*$/, 'apenas números')
+    .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
     .nullable()
     .default(null)
     .describe('CPF/CNPJ do recebedor'),

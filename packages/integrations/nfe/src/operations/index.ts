@@ -18,6 +18,8 @@
  * signed byte stream (re-parsing invalidates the digest), so its NFe slice
  * stays string-based.
  */
+import { normalizeDocumento } from '@delfrance/core/documents';
+
 import {
   buildCancelamentoDetEvento,
   buildCancelamentoEvento,
@@ -213,7 +215,11 @@ export async function consultarCadastro(
   args: { readonly uf: string; readonly cnpj: string },
 ): Promise<ConsultaCadastroResult> {
   const uf = args.uf.toUpperCase();
-  const cnpj = args.cnpj.replace(/\D/g, '');
+  // ⚠️ Normalise punctuation, never strip letters: `TCnpjVar` in the layout-2.00
+  // conscad pack is `[0-9A-Z]{12}[0-9]{2}` since NT 2026.004, and a
+  // `replace(/\D/g, '')` here turned an alphanumeric CNPJ into a short numeric
+  // string that then failed the request's own XSD check.
+  const cnpj = normalizeDocumento(args.cnpj);
   // cUF (IBGE 2-digit) for the required `<nfeCabecMsg>` SOAP Header.
   const cUF = UF_TO_IBGE[uf as keyof typeof UF_TO_IBGE];
   if (!cUF) throw new NFeXmlError(`UF inválida para Consulta Cadastro: ${uf}`);

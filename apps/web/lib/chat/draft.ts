@@ -58,3 +58,20 @@ export function setDraft(conversaId: string, text: string): void {
 export function clearDraft(conversaId: string): void {
   setDraft(conversaId, '');
 }
+
+/** Transfer an old conversation draft only when it cannot replace another draft. */
+export function preserveAliasedDraft(
+  sourceId: string,
+  targetId: string,
+): 'none' | 'moved' | 'conflict' {
+  if (sourceId === targetId) return 'none';
+  const source = getDraft(sourceId);
+  if (!source) return 'none';
+  const target = getDraft(targetId);
+  if (target && target !== source) return 'conflict';
+  setDraft(targetId, source);
+  // Verify storage accepted the copy before removing the original (private mode).
+  if (getDraft(targetId) !== source) return 'conflict';
+  clearDraft(sourceId);
+  return 'moved';
+}

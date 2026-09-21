@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatCNPJ,
   formatCPF,
+  formatCpfCnpj,
   normalizeDocumento,
   validateCNPJ,
   validateCPF,
@@ -161,5 +162,44 @@ describe('normalizeDocumento', () => {
 
   it('maps an empty string to an empty string', () => {
     expect(normalizeDocumento('')).toBe('');
+  });
+});
+
+describe('formatCpfCnpj', () => {
+  it('formats a CPF and a CNPJ by length, punctuated or not', () => {
+    expect(formatCpfCnpj(VALID_CPF)).toBe(VALID_CPF_FORMATTED);
+    expect(formatCpfCnpj(VALID_CNPJ)).toBe(VALID_CNPJ_FORMATTED);
+    expect(formatCpfCnpj(` ${VALID_CNPJ_FORMATTED} `)).toBe(VALID_CNPJ_FORMATTED);
+  });
+
+  it('masks an alphanumeric CNPJ POSITIONALLY — the bug the three copies had', () => {
+    // Two of the copies this replaces stripped non-digits first, which leaves
+    // `12ABC34501DE35` NINE digits long — matching no document facet, so it fell
+    // through and printed mangled. ⚠️ The count is `14 − (letters)`, and the
+    // dangerous arity is exactly THREE: `12ABC678000190` strips to eleven digits
+    // and renders as a valid-looking CPF. On a DANFE that is somebody else's
+    // document, which is the version of this bug nobody would notice.
+    expect(formatCpfCnpj(VALID_CNPJ_ALPHA)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
+    expect(formatCpfCnpj('12abc34501de35')).toBe(VALID_CNPJ_ALPHA_FORMATTED);
+    expect(formatCpfCnpj(VALID_CNPJ_ALPHA_FORMATTED)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
+  });
+
+  it('⚠️ NEAR-MISS: it FORMATS, it does not validate — a bad DV still masks', () => {
+    // `formatCpfCnpj` answers "how is this written down" and `validateCpfCnpj`
+    // answers "is this real". A formatter that blanked an invalid stored value
+    // would make a bad row invisible on the very screen meant to show it.
+    expect(validateCpfCnpj('12ABC34501DE99')).toBe(false);
+    expect(formatCpfCnpj('12ABC34501DE99')).toBe('12.ABC.345/01DE-99');
+  });
+
+  it('⚠️ NEAR-MISS: the two check digits must be NUMERIC — 14 letters is not a CNPJ', () => {
+    expect(formatCpfCnpj('ABCDEFGHIJKLMN')).toBe('ABCDEFGHIJKLMN');
+  });
+
+  it('returns anything of the wrong length exactly as given', () => {
+    expect(formatCpfCnpj('123')).toBe('123');
+    expect(formatCpfCnpj('')).toBe('');
+    // Untouched, punctuation and all — never the normalised form.
+    expect(formatCpfCnpj('(11) 3322-4455')).toBe('(11) 3322-4455');
   });
 });
