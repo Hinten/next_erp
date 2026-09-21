@@ -46,12 +46,27 @@ describe('bandeiraCartaoSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects non-digit cnpj_instituicao', () => {
+  it('rejects a PUNCTUATED cnpj_instituicao — the stored form is unpunctuated', () => {
     expect(
       bandeiraCartaoSchema.safeParse({
         ...MINIMAL,
         cnpj_instituicao: '12.345.678/0001-90',
       }).success,
+    ).toBe(false);
+  });
+
+  it('accepts an ALPHANUMERIC cnpj_instituicao (RFB IN 2.229/2024)', () => {
+    // `<card><CNPJ>` is the credenciadora — a COUNTERPARTY, which is exactly who
+    // the Receita issues alphanumeric CNPJs to. Under the old `^\d*$` a new
+    // acquirer could not be registered at all.
+    expect(
+      bandeiraCartaoSchema.safeParse({ ...MINIMAL, cnpj_instituicao: '12ABC34501DE35' }).success,
+    ).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: lowercase is refused — the canonical stored form is uppercase', () => {
+    expect(
+      bandeiraCartaoSchema.safeParse({ ...MINIMAL, cnpj_instituicao: '12abc34501de35' }).success,
     ).toBe(false);
   });
 

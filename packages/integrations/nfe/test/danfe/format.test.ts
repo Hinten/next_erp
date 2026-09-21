@@ -28,10 +28,32 @@ describe('danfe/format', () => {
     expect(onlyDigits(grouped)).toBe(CHAVE);
   });
 
+  it('groups an ALPHANUMERIC chave without dropping its letters', () => {
+    // Positions 6–17 are the emitente CNPJ, which RFB IN 2.229/2024 allows to be
+    // alphanumeric. The previous `onlyDigits` here silently dropped those
+    // letters, so the DANFE printed a SHORT chave regrouped out of alignment —
+    // a fiscal document showing a key that matches no NF-e.
+    const alfa = `3526051${'4'}2ABC66000187550010000000071000000001`;
+    expect(alfa).toHaveLength(44);
+    const grouped = formatChaveAcesso(alfa);
+    expect(grouped.split(' ')).toHaveLength(11);
+    expect(grouped.replace(/ /g, '')).toBe(alfa);
+    // ⚠️ NEAR-MISS: it still strips PUNCTUATION, so a re-grouped chave
+    // round-trips — that is the property `onlyDigits` was there for.
+    expect(formatChaveAcesso(grouped)).toBe(grouped);
+  });
+
   it('masks CPF (11) and CNPJ (14); falls back to raw otherwise', () => {
     expect(formatCpfCnpj('12345678909')).toBe('123.456.789-09');
     expect(formatCpfCnpj('14200166000187')).toBe('14.200.166/0001-87');
     expect(formatCpfCnpj('123')).toBe('123');
+  });
+
+  it('masks an ALPHANUMERIC CNPJ positionally, on every DANFE renderer at once', () => {
+    // The local copy stripped non-digits first, so `12ABC34501DE35` came out
+    // eleven digits long and printed as somebody's CPF. Shared with
+    // `@delfrance/core/documents` now, so there is one rule to read.
+    expect(formatCpfCnpj('12ABC34501DE35')).toBe('12.ABC.345/01DE-35');
   });
 
   it('formats CEP and phone numbers', () => {

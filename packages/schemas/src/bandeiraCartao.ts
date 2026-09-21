@@ -65,10 +65,20 @@ export const BANDEIRA_LABELS: Record<Bandeira, string> = BANDEIRA_LABEL_MAP;
 export const bandeiraCartaoSchema = z.object({
   ehCredito: z.boolean().describe('Cartão de crédito'),
   nome: z.string().min(1).max(255).describe('Nome'),
+  // ⚠️ `[0-9A-Z]`, not `\d`: this is `<card><CNPJ>`, the credenciadora / payment
+  // institution — a COUNTERPARTY, and RFB IN 2.229/2024 issues alphanumeric
+  // CNPJs to newly registered establishments. The NF-e `cardSchema` takes a bare
+  // string and the XSD facet does the checking, so nothing downstream had to
+  // move.
+  // ⚠️ This field is the STRICTER of two spellings of the same value:
+  // `pedido/collection/pagamento.ts`'s `cartao.cnpj_instituicao` carries no
+  // regex at all, so a value this catalogue refuses can still reach a pedido.
+  // Widening here narrows that gap rather than closing it — closing it means
+  // deciding which of the two is authoritative, which is not this change.
   cnpj_instituicao: z
     .string()
     .max(14)
-    .regex(/^\d*$/, 'apenas números')
+    .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
     .nullable()
     .describe('CNPJ da instituição'),
   bandeira: bandeiraSchema.nullable().describe('Bandeira'),

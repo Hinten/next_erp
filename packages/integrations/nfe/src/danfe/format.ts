@@ -31,11 +31,18 @@ export function cutString(value: string, length: number): string {
 }
 
 /**
- * Group the 44-digit chave de acesso into eleven blocks of four
+ * Group the 44-character chave de acesso into eleven blocks of four
  * (`AAAA BBBB … KKKK`) for human reading. Mirrors `formataChaveDeAcesso`.
+ *
+ * ⚠️ It strips punctuation, **not letters**. The chave is not 44 digits:
+ * positions 6–17 carry the emitente CNPJ, which RFB IN 2.229/2024 allows to be
+ * alphanumeric (`CHAVE_NFE_REGEX` in `@delfrance/schemas` is the shape). An
+ * `onlyDigits` here dropped those letters, so the DANFE printed a SHORT chave
+ * regrouped out of alignment — a legally reproduced fiscal document showing a
+ * key that matches no NF-e, with nothing failing anywhere.
  */
 export function formatChaveAcesso(value: string): string {
-  const chave = onlyDigits(value);
+  const chave = value.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
   const groups: string[] = [];
   for (let i = 0; i < chave.length; i += 4) {
     groups.push(chave.slice(i, i + 4));
@@ -44,19 +51,16 @@ export function formatChaveAcesso(value: string): string {
 }
 
 /**
- * Format a CPF (11 digits) or CNPJ (14 digits). Falls back to the raw input
- * when the digit count matches neither (the layout never hides the value).
+ * Format a CPF or a CNPJ; the raw input comes back when it is neither, so the
+ * layout never hides a value it cannot read.
+ *
+ * ⚠️ Re-exported from `@delfrance/core/documents`, and the local copy it
+ * replaces was WRONG: it ran `onlyDigits` first, so an alphanumeric CNPJ
+ * (RFB IN 2.229/2024) lost its letters, came out eleven digits long and printed
+ * on all five DANFE renderers and the ZPL label as somebody's **CPF**. Nothing
+ * failed — a plausible-looking document appeared on a fiscal document.
  */
-export function formatCpfCnpj(value: string): string {
-  const d = onlyDigits(value);
-  if (d.length === 11) {
-    return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
-  }
-  if (d.length === 14) {
-    return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
-  }
-  return value;
-}
+export { formatCpfCnpj } from '@delfrance/core/documents';
 
 /** Format a CEP (`00000-000`); falls back to the raw input when not 8 digits. */
 export function formatCep(value: string): string {

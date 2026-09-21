@@ -134,10 +134,22 @@ export const enderecoSchema = z.object({
   pais: z.string().nullable().default(null).describe('País'),
   // Recebedor (NFe destinatário, opcional)
   nome: z.string().max(255).nullable().default(null).describe('Nome do recebedor'),
+  // ⚠️ `[0-9A-Z]`, not `\d`: this is the NF-e **destinatário / recebedor**, i.e. a
+  // COUNTERPARTY, and RFB IN 2.229/2024 issues alphanumeric CNPJs to newly
+  // registered establishments. `cliente.cpf_cnpj` and `integracao.cpf_cnpj` are
+  // the same class and already widened; `filial.cnpj` is NOT, because that is
+  // our own emitente (see its comment).
+  // ⚠️ No `validateCpfCnpj` refine, deliberately, though `cliente.cpf_cnpj`
+  // carries one: this field never had one, so adding it here is a TIGHTENING on
+  // the legacy corpus rather than part of the alfa widening — a stored endereço
+  // with a typo'd document would start failing `parseRead` and take the pedido
+  // screen with it. Read-tolerance for legacy shapes is mandatory (root
+  // CLAUDE.md rule 8); the validation belongs to whoever decides to clean the
+  // corpus.
   cpf_cnpj: z
     .string()
     .max(18)
-    .regex(/^\d*$/, 'apenas números')
+    .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
     .nullable()
     .default(null)
     .describe('CPF/CNPJ do recebedor'),

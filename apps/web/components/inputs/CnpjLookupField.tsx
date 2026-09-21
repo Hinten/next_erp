@@ -6,6 +6,7 @@ import { notifications } from '@mantine/notifications';
 import { IconSearch } from '@tabler/icons-react';
 import { useFormContext } from 'react-hook-form';
 import type { FieldRenderProps } from '@delfrance/ui';
+import { validateCNPJ } from '@delfrance/core/documents';
 import { CpfCnpjTextInput } from './CpfCnpjInput';
 import { type ClienteCnpjEndereco, cleanCnpj } from '@/lib/clientes/consultaCnpj';
 import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
@@ -94,15 +95,20 @@ export function CnpjLookupField({
   const offeredRef = useRef(false);
 
   const doc = (value as string | null | undefined) ?? '';
-  // BrasilAPI keys off the 14-digit numeric CNPJ; gate the button on that —
+  // ⚠️ The gate is "is this a CNPJ", never "can BrasilAPI answer for it" —
   // regardless of the selected tipo (a valid CNPJ is lookable from any tipo).
-  const isCnpj = /^\d{14}$/.test(cleanCnpj(doc));
+  // It used to be `^\d{14}$`, which disabled the lookup for a perfectly valid
+  // alphanumeric CNPJ (RFB IN 2.229/2024) and blamed the CNPJ for it. Two things
+  // were lost, and the second is the expensive one: the message said "informe um
+  // CNPJ válido" about a valid CNPJ, and `onCnpjLookedUp` never fired, so the
+  // duplicate-cliente warning was silently off for the whole alfa population.
+  const isCnpj = validateCNPJ(cleanCnpj(doc));
 
   async function buscarDados() {
     // Validate on click (the button is always enabled): an invalid/empty CNPJ
     // surfaces the message and never hits the API.
     if (!isCnpj) {
-      setLookupError('Informe um CNPJ válido (14 dígitos) para buscar os dados.');
+      setLookupError('Informe um CNPJ válido (14 caracteres) para buscar os dados.');
       return;
     }
     // Let the page check whether a cliente with this CNPJ already exists — done
@@ -118,7 +124,12 @@ export function CnpjLookupField({
             ? 'Falha de rede ao consultar o CNPJ.'
             : outcome.reason === 'invalid-response'
               ? 'Resposta inválida da API de CNPJ.'
-              : 'CNPJ não encontrado na base pública.',
+              : outcome.reason === 'sem-base-publica'
+                ? // ⚠️ Not "not found": the CNPJ is valid and the lookup never
+                  // ran. Blaming the document for a gap in the base is how an
+                  // operator ends up retyping a correct value.
+                  'CNPJ alfanumérico: a base pública não responde por ele. Preencha os dados manualmente.'
+                : 'CNPJ não encontrado na base pública.',
         );
         return;
       }

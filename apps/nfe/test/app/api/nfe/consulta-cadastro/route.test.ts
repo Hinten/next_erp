@@ -142,6 +142,31 @@ describe('POST /api/nfe/consulta-cadastro', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts an ALPHANUMERIC cnpj and forwards it verbatim to SEFAZ', async () => {
+    // ⚠️ This gate stung the most: everything behind it was already
+    // alfa-correct, and Consulta Cadastro is the ONLY registry that can answer
+    // for an alphanumeric CNPJ (RFB IN 2.229/2024) — BrasilAPI cannot.
+    const res = await POST(req({ cnpj: '12ABC34501DE35', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(consultarCadastro)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cnpj: '12ABC34501DE35' }),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: 400 when the two CHECK DIGITS are letters', async () => {
+    // The shape is `[0-9A-Z]{12}[0-9]{2}`, never `[0-9A-Z]{14}` — the DVs stay
+    // numeric. A rule that accepted fourteen letters would hand SEFAZ a value
+    // its own XSD facet refuses.
+    const res = await POST(req({ cnpj: '12ABC34501DEFG', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(400);
+  });
+
+  it('⚠️ NEAR-MISS: 400 on a lowercase cnpj — the canonical form is uppercase', async () => {
+    const res = await POST(req({ cnpj: '12abc34501de35', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(400);
+  });
+
   it('400 when filialId is missing', async () => {
     const res = await POST(req({ cnpj: CNPJ, uf: 'SP' }));
     expect(res.status).toBe(400);
