@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { telefoneQueryShapes } from '@delfrance/core/phone';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   arquivoCollection,
@@ -392,7 +393,7 @@ export async function detalheVinculoWhatsapp(db: Firestore, id: string, cursor?:
   const candidates = pendencia.telefone
     ? await clienteCollection
         .ref(db, {})
-        .where('telefone', '==', pendencia.telefone)
+        .where('telefone', 'in', telefoneQueryShapes('+' + pendencia.telefone))
         .limit(20)
         .get()
     : null;

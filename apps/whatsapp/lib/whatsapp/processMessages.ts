@@ -611,13 +611,20 @@ async function processInboundMessage(
     timestamp: waTimestampToMs(message.timestamp),
   };
   if (!contato.bsuid && !contato.telefone) return 'unidentified';
+  const mensagemDoCliente = message.type !== 'system';
   const transition =
     message.type === 'system' &&
     message.system &&
     ['user_changed_number', 'user_changed_user_id'].includes(message.system.type);
   const resolved = transition
     ? await aplicarTransicaoWhatsapp(db, contato, message.system!, validarReplay)
-    : await resolverContatoWhatsapp(db, contato, validarReplay);
+    : await resolverContatoWhatsapp(
+        db,
+        contato,
+        validarReplay,
+        // Provider events can identify a contact, but cannot open a service window.
+        mensagemDoCliente ? {} : { ultimaMensagemEm: null },
+      );
   if (resolved.kind === 'pending') {
     if (historicoManualRetido) {
       // A human may recover retained history without reactivating a retired
@@ -660,6 +667,7 @@ async function processInboundMessage(
     userName: nome,
     wamid: message.id,
     validarReplay,
+    mensagemDoCliente,
   });
   if (skipMensagem) return 'spam';
   const wrote = await createOrUpdateMensagem(db, deps, {
@@ -671,10 +679,10 @@ async function processInboundMessage(
     timestampMs: contato.timestamp,
     historicoManualRetido,
   });
-  if (!bumpedUltimaModificacao)
+  if (mensagemDoCliente && !bumpedUltimaModificacao)
     await bumpUltimaModificacao(db, conversaId, contato.timestamp, validarReplay);
   // A replay for an old identity may enrich history; it must not send a reply to the new identity.
-  if (!transition && resolved.destino.ultimaMensagemEm === contato.timestamp) {
+  if (mensagemDoCliente && resolved.destino.ultimaMensagemEm === contato.timestamp) {
     await enviarMsgAutomatica(db, conta, conversaId, resolved.destino, validarReplay);
   }
   return wrote ? 'mensagem' : 'redelivery';
@@ -689,6 +697,7 @@ async function upsertConversa(
     userName: string;
     wamid: string;
     validarReplay?: ValidarReplay;
+    mensagemDoCliente: boolean;
   },
 ): Promise<{ skipMensagem: boolean; bumpedUltimaModificacao: boolean }> {
   const ref = conversaCollection.docRef(db, {}, args.conversaId);
@@ -703,7 +712,11 @@ async function upsertConversa(
     if (existing.estadoConversa === ESTADO_CONVERSA.spam)
       return { skipMensagem: true, bumpedUltimaModificacao: false };
     const last = toEpochMs(existing.ultimaModificacaoIntegracao);
-    if ((last == null || args.timestampMs > last) && podeReabrirConversa(existing.estadoConversa)) {
+    if (
+      args.mensagemDoCliente &&
+      (last == null || args.timestampMs > last) &&
+      podeReabrirConversa(existing.estadoConversa)
+    ) {
       txn.update(ref, {
         ultima_modificacao: Math.max(args.timestampMs, toEpochMs(existing.ultima_modificacao) ?? 0),
         ultimaModificacaoIntegracao: args.timestampMs,

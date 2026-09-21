@@ -229,6 +229,7 @@ export async function resolverContatoWhatsapp(
   db: Firestore,
   contato: ContatoWhatsapp,
   validarReplay?: ValidarReplayContato,
+  options: { ultimaMensagemEm?: number | null } = {},
 ): Promise<ResolucaoContato> {
   if (contato.bsuid && !contato.portfolioId)
     return {
@@ -275,14 +276,17 @@ export async function resolverContatoWhatsapp(
       !specs.some((spec, index) => spec.tipo === 'telefone' && ignorePhone(index))
         ? await clientesPorTelefone(tx, db, contato.telefone)
         : null;
-    const manuallyConfirmed = effectiveIdentities.some(
-      (identity) => identity?.ativa && identity.confirmadaManualmente,
+    // Only the received phone's own confirmation can override its cadastro ambiguity.
+    // A reviewed BSUID may ignore the specific phone aliases filtered above, not new ones.
+    const phoneManuallyConfirmed = effectiveIdentities.some(
+      (identity) =>
+        identity?.tipo === 'telefone' && identity.ativa && identity.confirmadaManualmente,
     );
-    if (!manuallyConfirmed && candidates && candidates.size > 1)
+    if (!phoneManuallyConfirmed && candidates && candidates.size > 1)
       return { kind: 'pending', motivo: 'Telefone corresponde a vários clientes.' };
     const candidateId = candidates?.docs[0]?.id ?? null;
     let clienteId = [...ids][0] ?? null;
-    if (!manuallyConfirmed && clienteId && candidateId && clienteId !== candidateId)
+    if (!phoneManuallyConfirmed && clienteId && candidateId && clienteId !== candidateId)
       return {
         kind: 'pending',
         motivo: 'Telefone e identidade WhatsApp indicam clientes diferentes.',
@@ -323,6 +327,7 @@ export async function resolverContatoWhatsapp(
       conta,
       primary,
       primaryStored?.ativa !== false,
+      options,
     );
     await validarReplay?.(tx, { clienteId, conversaId: prepared.conversaId });
     // No reads after this point.

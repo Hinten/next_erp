@@ -14,7 +14,13 @@ import {
 } from '@delfrance/data/admin/collections';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
-import { buildClienteTelefonePatch, ESTADO_ENVIO, INTEGRACAO_TIPO } from '@delfrance/schemas';
+import {
+  buildClienteTelefonePatch,
+  ESTADO_CONVERSA,
+  ESTADO_ENVIO,
+  INTEGRACAO_TIPO,
+  TIPO_MENSAGEM,
+} from '@delfrance/schemas';
 import {
   aplicarTransicaoWhatsapp,
   conversaWhatsappKey,
@@ -162,6 +168,88 @@ afterAll(async () => {
 });
 
 describe('WhatsApp identity and linkage against Firestore transactions', () => {
+  it.each(
+    ['customer_identity_changed', 'future_provider_event'].flatMap((systemType) =>
+      ['none', 'expired', 'same-timestamp'].map((history) => ({ systemType, history })),
+    ),
+  )(
+    '$systemType preserves the $history customer window, including redelivery',
+    async ({ systemType, history }) => {
+      await seedCliente();
+      await integracaoCollection.docRef(db, {}, accountId).update({
+        horario_funcionamento: [],
+        mensagem_inatividade: 'Recebemos sua mensagem.',
+      });
+      const timestamp = Math.floor(Date.now() / 1000) * 1000;
+      const previousClock =
+        history === 'none' ? null : timestamp - (history === 'expired' ? 2 * 86400000 : 0);
+      if (previousClock != null) {
+        const resolved = await resolverContatoWhatsapp(db, contato({ timestamp: previousClock }));
+        expect(resolved.kind).toBe('resolved');
+        if (resolved.kind !== 'resolved') throw new Error('Fixture contact did not resolve.');
+        await conversaCollection.docRef(db, {}, resolved.conversaId).update({
+          estadoConversa: ESTADO_CONVERSA.atendimentoFinalizado,
+        });
+      }
+      const value = {
+        ...payload('wamid.system', contato({ timestamp })),
+        messages: [
+          {
+            id: 'wamid.system',
+            from: A,
+            timestamp: String(timestamp / 1000),
+            type: 'system',
+            system: { type: systemType, body: 'Provider identity notice' },
+          },
+        ],
+      };
+      expect((await processMessagesField(db, value, deps)).kind).toBe('processed');
+      expect((await processMessagesField(db, value, deps)).kind).toBe('processed');
+      const chats = await conversaCollection.ref(db, {}).get();
+      expect(chats.size).toBe(1);
+      const chat = chats.docs[0]!;
+      expect(chat.data()).toMatchObject({
+        prazo_resposta: previousClock == null ? null : previousClock + 86400000,
+        whatsappDestino: { ultimaMensagemEm: previousClock },
+        ...(previousClock == null
+          ? {}
+          : {
+              estadoConversa: ESTADO_CONVERSA.atendimentoFinalizado,
+              ultima_modificacao: previousClock,
+              ultimaModificacaoIntegracao: previousClock,
+            }),
+      });
+      const messages = await mensagemCollection.ref(db, { conversaId: chat.id }).get();
+      expect(messages.docs.filter((d) => d.id.startsWith('autoreply_'))).toHaveLength(0);
+      expect(messages.docs.filter((d) => d.id.startsWith('evento_reaberto_'))).toHaveLength(0);
+      expect(messages.docs.filter((d) => d.data().mid === 'wamid.system')).toHaveLength(1);
+      expect(messages.docs.find((d) => d.data().mid === 'wamid.system')?.data().tipo).toBe(
+        TIPO_MENSAGEM.evento,
+      );
+
+      // A real customer message still opens the window, reopens service and replies.
+      expect(
+        (
+          await processMessagesField(
+            db,
+            payload('wamid.customer', contato({ timestamp: timestamp + 1000 })),
+            deps,
+          )
+        ).kind,
+      ).toBe('processed');
+      expect((await chat.ref.get()).data()).toMatchObject({
+        estadoConversa: ESTADO_CONVERSA.naoRespondido,
+        prazo_resposta: timestamp + 1000 + 86400000,
+        whatsappDestino: { ultimaMensagemEm: timestamp + 1000 },
+      });
+      expect(
+        (await mensagemCollection.ref(db, { conversaId: chat.id }).get()).docs.filter((d) =>
+          d.id.startsWith('autoreply_'),
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
   it('two simultaneous messages and redelivery create one conversation and two messages', async () => {
     await seedCliente();
     const results = await Promise.all([
@@ -693,6 +781,61 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     ).toBe('pending');
     expect((await whatsappConversaCollection.ref(db, {}).get()).size).toBe(2);
   });
+  it.each([false, true])(
+    'a reviewed BSUID does not claim a new contradictory phone without an identity (ambiguous=%s)',
+    async (ambiguous) => {
+      await seedCliente('cliente-a', null);
+      await seedCliente('cliente-b', A);
+      const reviewed = contato({ bsuid: 'business-user-A' });
+      const bsuidId = await seedIdentity('cliente-a', reviewed, 'bsuid');
+      const reviewedPhoneId = await seedIdentity('cliente-b', reviewed, 'telefone');
+      const id = await park(reviewed);
+      const linked = await confirmarVinculoWhatsapp(
+        db,
+        id,
+        existingChoice('cliente-a', 'review-one-phone'),
+        'operator',
+      );
+
+      // The exact phone approved by the operator still continues the canonical chat.
+      expect(await resolverContatoWhatsapp(db, { ...reviewed, timestamp: T + 1000 })).toMatchObject(
+        {
+          kind: 'resolved',
+          clienteId: 'cliente-a',
+          conversaId: linked.conversaId,
+        },
+      );
+      const bsuidRef = whatsappIdentidadeCollection.docRef(db, {}, bsuidId);
+      const reviewedPhoneRef = whatsappIdentidadeCollection.docRef(db, {}, reviewedPhoneId);
+      const chatRef = conversaCollection.docRef(db, {}, linked.conversaId);
+      const beforeBsuid = await bsuidRef.get();
+      const beforeReviewedPhone = await reviewedPhoneRef.get();
+      const beforeChat = await chatRef.get();
+
+      await seedCliente('cliente-c', B);
+      if (ambiguous) await seedCliente('cliente-d', B);
+      const newPhoneRef = whatsappIdentidadeCollection.docRef(
+        db,
+        {},
+        identidadeWhatsappId(accountId, 'telefone', B),
+      );
+      expect((await newPhoneRef.get()).exists).toBe(false);
+      expect(
+        await resolverContatoWhatsapp(db, { ...reviewed, telefone: B, timestamp: T + 2000 }),
+      ).toEqual({
+        kind: 'pending',
+        motivo: ambiguous
+          ? 'Telefone corresponde a vários clientes.'
+          : 'Telefone e identidade WhatsApp indicam clientes diferentes.',
+      });
+      expect((await newPhoneRef.get()).exists).toBe(false);
+      expect((await bsuidRef.get()).updateTime).toEqual(beforeBsuid.updateTime);
+      expect((await reviewedPhoneRef.get()).updateTime).toEqual(beforeReviewedPhone.updateTime);
+      expect((await chatRef.get()).updateTime).toEqual(beforeChat.updateTime);
+      expect((await whatsappConversaCollection.ref(db, {}).get()).size).toBe(1);
+    },
+  );
+
   it('a stale manual phone edit conflicts after the webhook wins and its reviewed retry preserves both histories', async () => {
     await seedCliente();
     await resolverContatoWhatsapp(db, contato());
