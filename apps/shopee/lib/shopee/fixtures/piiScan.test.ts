@@ -27,9 +27,15 @@ function cpfSintetico(base: string): string {
   return `${base}${String(d1)}${String(dv([...digitos, d1]))}`;
 }
 
-/** Same idea for a CNPJ: the documented weights, an invented base. */
+/**
+ * Same idea for a CNPJ: the documented weights, an invented base.
+ *
+ * ⚠️ Each position enters as `charCode - 48`, which is the ALPHANUMERIC rule
+ * (RFB IN 2.229/2024) and is identical to the digit value for `0`–`9` — so one
+ * helper serves both shapes and there is no second copy to drift.
+ */
 function cnpjSintetico(base: string): string {
-  const digitos = [...base].map(Number);
+  const digitos = [...base].map((c) => c.charCodeAt(0) - 48);
   const dv = (nums: readonly number[]): number => {
     const pesos =
       nums.length === 12
@@ -47,6 +53,8 @@ const CPF_FALSO = cpfSintetico('123456789');
 const CNPJ_FALSO = cnpjSintetico('123456780001');
 /** The repo's canonical fake CNPJ (`11222333000181`), for the `payment_info` leg. */
 const CNPJ_PAGAMENTO_FALSO = cnpjSintetico('112223330001');
+/** An ALPHANUMERIC CNPJ with valid check digits — the shape `order_sn` collides with. */
+const CNPJ_ALFA_FALSO = cnpjSintetico('12ABC34501DE');
 
 function pontuarCpf(cpf: string): string {
   return `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}`;
@@ -214,6 +222,43 @@ describe('patternFindings', () => {
     ).toEqual([]);
   });
 
+  it('pega um CNPJ ALFANUMÉRICO sem pontuação (IN RFB 2.229/2024)', () => {
+    // Um `\d{14}` dá o arquivo por limpo enquanto ele ainda carrega o documento.
+    const achados = patternFindings({ obs: `fornecedor ${CNPJ_ALFA_FALSO}` });
+    expect(achados.map((f) => f.kind)).toContain('cnpj');
+  });
+
+  it('⚠️ NEAR-MISS: um `order_sn` de 14 caracteres terminado em dois dígitos NÃO é achado', () => {
+    // A forma alfanumérica é EXATAMENTE a de um id da Shopee — `260910KJBHUJ12`
+    // são doze [0-9A-Z] e dois dígitos —, então aqui a forma não decide sozinha:
+    // o que separa um CNPJ de qualquer outro id de 14 caracteres é o módulo 11.
+    // Sem isso, ~1 em 13 `order_sn` reprova o corpus (`cnpj` está em
+    // KINDS_QUE_REPROVAM).
+    expect(
+      scanForPiiReprovavel({ response: { order_list: [{ order_sn: '260910KJBHUJ12' }] } }),
+    ).toEqual([]);
+    // E o par: o MESMO campo carregando um CNPJ alfa de verdade ainda reprova.
+    expect(
+      scanForPiiReprovavel({
+        response: { order_list: [{ order_sn: CNPJ_ALFA_FALSO }] },
+      }).map((f) => f.kind),
+    ).toEqual(['cnpj']);
+  });
+
+  it('⚠️ NEAR-MISS: a exigência de DV vale só para a regra COM letra — a numérica segue incondicional', () => {
+    // O resíduo aceito de sempre: um id de exatamente 14 dígitos é um falso
+    // positivo barulhento, revisado a olho. Exigir DV ali calaria também um CNPJ
+    // forjado que vazou, que é o que este scanner existe para achar.
+    expect(patternFindings({ doc: '12345678000191' }).map((f) => f.kind)).toEqual(['cnpj']);
+    // E o alfa de DV errado, do outro lado da mesma linha, não reporta nada.
+    expect(patternFindings({ doc: '12ABC34501DE99' })).toEqual([]);
+  });
+
+  it('um CNPJ numérico válido reporta UMA vez, não duas', () => {
+    // As duas regras `cnpj` sem pontuação são disjuntas pelo `(?=[0-9A-Z]*[A-Z])`.
+    expect(patternFindings({ doc: CNPJ_FALSO }).map((f) => f.kind)).toEqual(['cnpj']);
+  });
+
   it('CONTROLE B (sabidamente bom) — dado de produto limpo não reporta nada', () => {
     expect(
       patternFindings({
@@ -279,6 +324,8 @@ describe('os CPF/CNPJ sintéticos deste arquivo', () => {
     expect(CPF_FALSO).toBe('12345678909');
     expect(CPF_FALSO).toHaveLength(11);
     expect(CNPJ_FALSO).toHaveLength(14);
+    // O CNPJ alfanumérico do arquivo — o mesmo valor que `cliente.test.ts` fixa.
+    expect(CNPJ_ALFA_FALSO).toBe('12ABC34501DE35');
     // O CNPJ canônico falso do repositório, derivado e não colado.
     expect(CNPJ_PAGAMENTO_FALSO).toBe('11222333000181');
     // NEAR-MISS: um DV errado NÃO é o que este helper produz.
