@@ -12,9 +12,10 @@ name: CI — Shopee
 # their own gate. Step 22 (#1530) may move the offline job in here when it adds
 # the Firestore-only emulator job; until then the smaller blast radius wins.
 #
-# ⚠️ ONE job, TWO suite files (5 tests) since step 9: the receiver round trip
-# (`app/api/webhooks/shopee/route.tasks.test.ts`, 3) and the mass-import one
-# (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2). Adding a file with
+# ⚠️ ONE job, THREE suite files (6 tests) since step 11: the receiver round trip
+# (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
+# (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2) and the push-16 one
+# (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1). Adding a file with
 # the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
 # name, no new row in the gate manifest.
 #
@@ -160,6 +161,19 @@ on:
       - 'packages/schemas/src/storage/**' # the arquivo shapes the photo unit writes
       - 'packages/schemas/src/importacaoShopee.ts' # the mass-import job document
       - 'packages/data/src/admin/hash.ts' # sha256Hex — every deterministic produto id
+      # Step 11 (publicar anúncio) resolves the listing's `tax_info` through
+      # the NF-e imposto cascade, promoted out of apps/nfe into packages/data.
+      # Only the publish route and the rehearsal CLI reach it, through
+      # lib/shopee/anuncios/lerImpostoDoProduto.ts — NOT the functions bundle —
+      # so a change to the cascade, to its handles, to any of the four tax
+      # schemas it reads or to the operação scoping tiers 2 and 3 can break the
+      # publish path, and none of those paths is covered by an entry above.
+      - 'packages/data/src/admin/imposto/**'
+      - 'packages/schemas/src/imposto/**' # impostoSchema itself, plus cClassTrib
+      - 'packages/schemas/src/impostoProduto.ts'
+      - 'packages/schemas/src/impostoCategoria.ts'
+      - 'packages/schemas/src/regraImposto.ts'
+      - 'packages/schemas/src/operacao.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

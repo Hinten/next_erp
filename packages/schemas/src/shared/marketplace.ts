@@ -265,8 +265,14 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // (get_kit_item_limit), composition frozen after create. survey C §7.
     kitVirtual: 'sim',
     // unlist_item {unlist:false} re-lists (guide 221 §6) — but its own error list
-    // carries `error_set_normal_unlisted_item`; step 11 verifies live before this
-    // row flips implementado.
+    // carries `error_set_normal_unlisted_item`. Step 11 MEASURED it live on the SG
+    // SANDBOX shop, 2026-09-17: {unlist:false} re-listed a SELLER-created UNLIST
+    // item (success_list: 1, no failures), so that is the first door and
+    // `update_item {item_status: 'NORMAL'}` is the built fallback.
+    // ⚠️ Only HALF settled. The Shopee PRE-LAUNCH UNLIST — the state that actually
+    // answers `error_set_normal_unlisted_item` — cannot be produced on that shop,
+    // and an SG sandbox answer is evidence about the API, never about BR.
+    // `implementado` stays `false` until step 22 regardless.
     pausarAnuncio: 'sim',
     estoque: {
       suporte: 'sim',
