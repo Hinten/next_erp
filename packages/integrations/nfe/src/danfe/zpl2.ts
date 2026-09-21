@@ -43,6 +43,9 @@ const BOX_PAD_MM = 1.3; // box inner top/bottom padding
 /** Max chars for a razão social / nome so the right-aligned value clears the label. */
 const NAME_MAX = 36;
 
+/** Code 128 subset C takes digit pairs only — see the barcode block below. */
+const ALL_DIGITS = /^\d+$/;
+
 /**
  * Strip the two ZPL control prefixes from field data so a stray `^`/`~` in a
  * razão social or endereço can't terminate the field or inject a command.
@@ -94,17 +97,25 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   centered(y, 'DANFE SIMPLIFICADO - ETIQUETA', H_TITLE);
   y += 6;
 
-  // Centered Code 128. `^BC` defaults to subset B (one wide symbol per digit);
-  // the `>;` prefix forces **subset C** so the 44-digit chave packs two digits
-  // per symbol — half the width, and the printed width becomes deterministic.
-  // Module (narrow-bar) width scales with dpi (~0.25 mm).
+  // Centered Code 128. `^BC` defaults to subset B (one symbol per character);
+  // the `>;` prefix forces **subset C**, which packs two characters per symbol
+  // — half the width, and a deterministic printed width.
+  //
+  // ⚠️ Subset C is NUMERIC-ONLY: it encodes digit PAIRS and cannot represent a
+  // letter at all. Since RFB IN 2.229/2024 the chave's positions 6–17 carry the
+  // emitente CNPJ, which may be alphanumeric, so subset C is only available
+  // when this particular chave happens to be all digits. Pick per chave rather
+  // than assuming — and size the symbol for the subset actually chosen, or the
+  // centring maths silently disagrees with what the printer emits.
   const moduleDots = Math.max(2, Math.round(0.25 * dpm));
-  const dataSymbols = Math.ceil(model.chave.length / 2);
-  // (start C + data + checksum) × 11 modules + 13-module stop pattern.
+  const subsetC = ALL_DIGITS.test(model.chave);
+  const dataSymbols = subsetC ? Math.ceil(model.chave.length / 2) : model.chave.length;
+  // (start + data + checksum) × 11 modules + 13-module stop pattern.
   const barModules = (dataSymbols + 2) * 11 + 13;
   const barWidthDots = barModules * moduleDots;
   const bcX = Math.max(mm(MARGIN_MM), Math.round((widthDots - barWidthDots) / 2));
-  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD>;${model.chave}^FS`);
+  const bcPrefix = subsetC ? '>;' : '';
+  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD${bcPrefix}${model.chave}^FS`);
   y += 12;
   centered(y, formatChaveAcesso(model.chave), H_CHAVE);
   y += 5;

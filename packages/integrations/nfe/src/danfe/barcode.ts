@@ -1,5 +1,5 @@
 /**
- * Code 128 barcode rendering for the DANFE — the 44-digit chave de acesso.
+ * Code 128 barcode rendering for the DANFE — the 44-character chave de acesso.
  *
  * Uses bwip-js, which carries its own raster (no `node-canvas`/system libs), so
  * it stays a clean Node dependency. The PNG buffer is embedded into the pdfkit
@@ -12,10 +12,16 @@
 import bwipjs from 'bwip-js/node';
 
 /**
- * Render `data` as a Code 128 barcode PNG. For the all-numeric 44-digit chave
- * bwip-js auto-selects subset C (two digits per symbol), the most compact
+ * Render `data` as a Code 128 barcode PNG. For an all-numeric 44-character
+ * chave bwip-js auto-selects subset C (two digits per symbol), the most compact
  * encoding. `includetext: false` — the DANFE prints the grouped chave as its
  * own text line beneath the bars.
+ *
+ * ⚠️ Pass the chave WHOLE. Positions 6–17 are the emitente CNPJ, alphanumeric
+ * since RFB IN 2.229/2024, and bwip-js chooses subsets per run — so the letters
+ * encode correctly here without any caller doing anything. The ZPL label cannot
+ * (`^BC` picks one subset for the whole symbol; see `./zpl2`), and stripping
+ * them to "help" is what printed a wrong barcode on a fiscal document.
  */
 export function code128Png(data: string): Promise<Buffer> {
   return bwipjs.toBuffer({

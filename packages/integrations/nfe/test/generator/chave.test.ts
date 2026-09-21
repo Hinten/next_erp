@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
+import { validateCNPJ } from '@delfrance/core/documents';
 import {
   aammFromDate,
   composeChave,
@@ -26,8 +28,11 @@ describe('computeCDV', () => {
     expect(computeCDV('0'.repeat(42) + '6')).toBe(0);
   });
 
-  it('rejects non-43-digit input', () => {
+  it('rejects wrong-length input, and lowercase at any position', () => {
     expect(() => computeCDV('123')).toThrow(NFeChaveError);
+    // Lowercase is rejected even at 43 chars: the chave's alfa window is
+    // `[0-9A-Z]`, so a lowercase value is not merely invalid, it is
+    // non-canonical — see the note on `filialSchema.cnpj`.
     expect(() => computeCDV('a'.repeat(43))).toThrow(NFeChaveError);
   });
 });
@@ -165,7 +170,126 @@ describe('extractCNFFromChave', () => {
     expect(() => extractCNFFromChave('1'.repeat(45))).toThrow(NFeChaveError);
   });
 
-  it('rejects non-digit input', () => {
+  it('rejects lowercase, and a letter outside the alfa window', () => {
     expect(() => extractCNFFromChave('a'.repeat(44))).toThrow(NFeChaveError);
+    // A letter at position 20 (the `mod` field) is outside positions 6–17.
+    expect(() => extractCNFFromChave(`432601PC3D315K000193A5001000000007100000001` + '2')).toThrow(
+      NFeChaveError,
+    );
+  });
+});
+
+/**
+ * CNPJ alfanumérico (RFB IN 2.229/2024 · NF-e NT 2026.004) on the EMITENTE.
+ *
+ * The chave's alphanumeric window is **exactly positions 6–17** — the CNPJ's
+ * 12-character body. Its two check digits and every other field stay numeric,
+ * which is what `CHAVE_NFE_REGEX` spells out.
+ *
+ * ⚠️ The DV rule is `ASCII − 48` per character, NOT `Number(c)`. `Number('A')`
+ * is `NaN`, which propagated through the whole sum and made `cDV.toString()`
+ * the literal string `'NaN'` — a 46-character chave carrying `<cDV>NaN</cDV>`
+ * with nothing throwing. Every expectation below is pinned against
+ * `dvOracle`, a deliberately DIFFERENT formulation of the same rule (left to
+ * right, with an explicit alphabet lookup instead of `charCodeAt`), so the two
+ * agreeing means more than the implementation agreeing with itself.
+ */
+describe('chave with an ALPHANUMERIC emitente CNPJ', () => {
+  /** `index === ASCII − 48`, so '0'→0 … '9'→9 and 'A'→17 … 'Z'→42. */
+  const ALPHA = '0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+  function dvOracle(chave43: string): number {
+    const n = chave43.length;
+    let soma = 0;
+    for (let i = 0; i < n; i++) {
+      const valor = ALPHA.indexOf(chave43[i]!);
+      expect(valor).toBeGreaterThanOrEqual(0);
+      soma += valor * (((n - 1 - i) % 8) + 2);
+    }
+    const resto = soma % 11;
+    return resto <= 1 ? 0 : 11 - resto;
+  }
+
+  // Real rows from SEFAZ's published alfa-CNPJ table, the same values
+  // `test/xsd/cnpj-alfanumerico.test.ts` pins. `MMH9SKDL539Y64` is the sharp
+  // one — a letter at body position 11, immediately before the check digits.
+  const RS = { cUF: '43', cnpj: 'PC3D315K000193' } as const;
+  const MG = { cUF: '31', cnpj: 'MMH9SKDL539Y64' } as const;
+
+  const partsFor = (uf: string, cnpj: string) =>
+    ({
+      cUF: uf,
+      aamm: '2601',
+      cnpjOrCpf: cnpj,
+      mod: '55' as const,
+      serie: '001',
+      nNF: '000000007',
+      tpEmis: '1',
+      cNF: '00000001',
+    }) as const;
+
+  it('the independent oracle reproduces the known-good NUMERIC DV', () => {
+    // Validates the oracle itself before anything below leans on it: this is
+    // the same 43-digit fixture the `computeCDV` golden test uses, DV = 8.
+    expect(dvOracle('3520071420016600018755001000000007100000001')).toBe(8);
+  });
+
+  it.each([
+    [RS.cUF, RS.cnpj, 2],
+    [MG.cUF, MG.cnpj, 4],
+  ])('composeChave(%s, %s) yields a 44-char chave with cDV %i', (uf, cnpj, expectedDV) => {
+    const { chave, cDV } = composeChave(partsFor(uf, cnpj));
+
+    expect(chave).toHaveLength(44);
+    expect(cDV).toBe(expectedDV);
+    expect(dvOracle(chave.slice(0, 43))).toBe(expectedDV);
+    expect(CHAVE_NFE_REGEX.test(chave)).toBe(true);
+    // The CNPJ lands in positions 6–17 plus its two numeric DVs — the window
+    // every `chave.slice(6, 20)` consumer reads back out.
+    expect(chave.slice(6, 20)).toBe(cnpj);
+    expect(validateCNPJ(cnpj)).toBe(true);
+  });
+
+  it('the letters PARTICIPATE in the DV — the near-miss', () => {
+    // Same chave, one letter changed. If the alfa positions were being
+    // dropped, coerced to NaN or otherwise ignored, these would collide.
+    const a = composeChave(partsFor(RS.cUF, 'PC3D315K000193')).cDV;
+    const b = composeChave(partsFor(RS.cUF, 'QC3D315K000193')).cDV;
+    expect(a).not.toBe(b);
+  });
+
+  it('survives the re-emission round trip', () => {
+    // `extractCNFFromChave` is on the retry path in `orchestrator/emitir.ts`;
+    // a numeric-only guard there threw AFTER a successful first emit.
+    const { chave } = composeChave(partsFor(RS.cUF, RS.cnpj));
+    expect(extractCNFFromChave(chave)).toBe('00000001');
+  });
+
+  it('rejects a lowercase CNPJ — the canonical form is uppercase', () => {
+    expect(() => composeChave(partsFor(RS.cUF, 'pc3d315k000193'))).toThrow(NFeChaveError);
+  });
+
+  it('rejects a letter in either CNPJ check-digit position', () => {
+    // `[0-9A-Z]{12}[0-9]{2}`, never `[0-9A-Z]{14}`.
+    expect(() => composeChave(partsFor(RS.cUF, 'PC3D315K0001A3'))).toThrow(NFeChaveError);
+    expect(() => composeChave(partsFor(RS.cUF, 'PC3D315K00019A'))).toThrow(NFeChaveError);
+  });
+
+  it('rejects a letter in a field that is NOT the CNPJ', () => {
+    expect(() => composeChave({ ...partsFor(RS.cUF, RS.cnpj), cUF: '4A' })).toThrow(NFeChaveError);
+    expect(() => composeChave({ ...partsFor(RS.cUF, RS.cnpj), serie: '0A1' })).toThrow(
+      NFeChaveError,
+    );
+    expect(() => composeChave({ ...partsFor(RS.cUF, RS.cnpj), cNF: '0000000A' })).toThrow(
+      NFeChaveError,
+    );
+  });
+
+  it('a CPF emitente zero-padded to 14 still composes', () => {
+    // Produtor Rural: `generator/index.ts` pads an 11-digit CPF to 14, which is
+    // a subset of `[0-9A-Z]{12}[0-9]{2}` — no separate arm needed.
+    const { chave } = composeChave(partsFor('35', '00052998224725'));
+    expect(chave).toHaveLength(44);
+    expect(CHAVE_NFE_REGEX.test(chave)).toBe(true);
   });
 });

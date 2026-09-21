@@ -49,14 +49,22 @@ vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
 > check digits stay numeric. `validateCNPJ` in `@delfrance/core/documents` already
 > implements it (módulo 11 weighting each character by `charCodeAt − 48`) and is
 > the canonical implementation — reuse it, never re-derive it.
-> ⚠️ **Existing CNPJs never become alphanumeric**; only newly registered ones do.
-> So our own emitente CNPJ (and its A1 cert) stay numeric, and we never generate
-> an alfa chave — but we must accept alfa from every counterparty.
-> ⚠️ The schema layer is done; the **application** layer is only partly migrated.
-> Still numeric-only at the time of writing: `filial.cnpj` and
-> `integracao.cpf_cnpj` (Zod `/^\d*$/`), the filial `CnpjInput`, the CNPJ lookup
-> gates, `CHAVE_NFE_REGEX`, `raizCnpj` in the Simples apuração, the Melhor Envio
-> PJ/PF split, and the `\d{14}` PII-redaction regexes. See the plan in #1612.
+> ⚠️ **Existing CNPJs never become alphanumeric**; only newly registered ones do,
+> so our own emitente CNPJ will not change format on its own — it becomes real
+> the day a NEW filial is opened. The application nonetheless supports it end to
+> end since #1619: `filial.cnpj` accepts `[0-9A-Z]{12}[0-9]{2}`, `computeCDV`
+> weights by `ASCII − 48`, and the DANFE/ZPL renderers carry the letters through
+> to the barcode. We must of course still accept alfa from every counterparty.
+> ✅ **The migration is COMPLETE.** Both the schema and the application layer
+> are migrated: #1615 (schema pack), #1616 + #1618 (every counterparty field,
+> the PII-redaction regexes, `raizCnpj`, the Melhor Envio PJ/PF split, the CNPJ
+> lookup gates), #1620 (the homologação fixture) and #1619 (the emitente —
+> `filial.cnpj`, the chave de acesso and its DV, the filial `CnpjInput`, the
+> DANFE chave and its Code 128 subset). ⚠️ Two things stay numeric-only ON
+> PURPOSE and are not gaps: `filial.ie`/`iest`/`imun` (Inscrição Estadual is a
+> state register, untouched by IN 2.229/2024) and `consultaCnpj.ts`'s BrasilAPI
+> gate (the public base genuinely cannot answer for an alfa CNPJ — SEFAZ
+> Consulta Cadastro is the only registry that can).
 
 ## 2025 — the big year
 

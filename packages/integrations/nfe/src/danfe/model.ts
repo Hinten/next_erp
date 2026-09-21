@@ -28,7 +28,6 @@ import type {
   TProcEvento,
   TRetEnvEvento,
 } from '../types/nfe-schema';
-import { onlyDigits } from './format';
 
 /** A structured address (raw values — the renderers format cep/fone). */
 export interface DanfeEndereco {
@@ -327,7 +326,16 @@ function mapIssqn(t: TNFe_infNFe_total_ISSQNtot | undefined): DanfeIssqn | null 
 function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel {
   const { ide, emit, dest, cobr } = infNFe;
   return {
-    chave: onlyDigits(infNFe.Id),
+    // ⚠️ `replace(/^NFe/, '')`, NEVER `onlyDigits`. The intent is only to drop
+    // the `NFe` prefix off the Id attribute; `onlyDigits` also stripped the
+    // LETTERS out of the chave body (positions 6–17 carry the emitente CNPJ,
+    // alphanumeric since RFB IN 2.229/2024). `formatChaveAcesso` was hardened
+    // to preserve them and carries a comment describing exactly that failure —
+    // but it was handed an already-stripped value one line up, so the
+    // protection was void: every DANFE renderer printed a SHORT chave and
+    // encoded a WRONG Code 128 barcode on a legally reproduced fiscal
+    // document, with nothing failing anywhere.
+    chave: infNFe.Id.replace(/^NFe/, ''),
     homologacao: ide.tpAmb === '2',
     ide: {
       natOp: ide.natOp,

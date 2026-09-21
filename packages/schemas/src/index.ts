@@ -765,7 +765,14 @@ export {
   type MotivoIncidente,
 } from './motivoIncidente';
 
-export { filial, filialSchema, filialMeta, type Filial } from './filial';
+export {
+  filial,
+  filialSchema,
+  filialFormSchema,
+  refineFilialCnpj,
+  filialMeta,
+  type Filial,
+} from './filial';
 
 export {
   certificadoSecretoSchema,

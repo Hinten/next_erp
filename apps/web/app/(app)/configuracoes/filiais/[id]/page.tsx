@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { filialSchema } from '@delfrance/schemas';
+import { filialFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -36,7 +36,7 @@ export default function FilialPage() {
 
       <FilialTabs filialId={params.id}>
         <ObjectView
-          schema={filialSchema}
+          schema={filialFormSchema}
           collection={filialCollection}
           db={db}
           currentUserUid={user?.uid ?? ''}
