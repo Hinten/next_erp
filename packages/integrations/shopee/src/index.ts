@@ -40,6 +40,17 @@
  *
  * ⚠️ `call.ts` is internal and deliberately NOT re-exported: it is the shared
  * transport `oauth.ts` and `api.ts` are both built on, not a public surface.
+ * ⚠️ That is also why the multipart types (`ShopeeMultipartBody`,
+ * `ShopeeMultipartFile`) stay unexported from here: only `api.ts` may build a
+ * request, and the ONE upload it builds is
+ * {@link ShopeePartnerClient.uploadImage}.
+ *
+ * ⚠️ These six re-exports are WILDCARD, so every step-11 addition — the twelve
+ * operations, their wire-shaped request interfaces, the response schemas and the
+ * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
+ * here. A NEW MODULE would need one; a new export inside these six does not, and
+ * a test in `test/api.test.ts` pins the twelve operation names so a rename cannot
+ * silently drop one from the public surface.
  */
 
 export * from './errors';

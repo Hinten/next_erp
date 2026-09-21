@@ -9,10 +9,14 @@
  *
  * ⚠️ The `instanceof` chain runs MOST-DERIVED FIRST, and on this channel that is
  * not cosmetic. `ShopeeConfigError`, `ShopeeSchemaError`, `ShopeeNetworkError`,
- * `ShopeeHttpError` and (since step 9) `ShopeeImportBlockedError` all extend
+ * `ShopeeHttpError`, (since step 9) `ShopeeImportBlockedError` and (since step
+ * 11) `ShopeePublishBlockedError` + `ShopeePublishRejectedError` all extend
  * `ShopeeError` **directly** — they are NOT `ShopeeApiError` subclasses — while
  * `ShopeeReauthRequiredError` and `ShopeeRateLimitError` are. Testing the base
- * class first would collapse six distinct diagnoses into one 500.
+ * class first would collapse eight distinct diagnoses into one 500.
+ *
+ * The three PER-ITEM refusals — one import, two publish — sit together at the
+ * bottom of the chain and all three above the base `ShopeeError` arm.
  */
 import { NextResponse } from 'next/server';
 import {
@@ -25,6 +29,7 @@ import {
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 
+import { ShopeePublishBlockedError, ShopeePublishRejectedError } from '../anuncios/errosPublicacao';
 import { ShopeeImportBlockedError } from '../produtos/errosImportacao';
 import { ShopeeCredencialInvalidaError } from './credentialStore';
 import { ShopeeContaNotConfiguredError } from './shopee';
@@ -41,13 +46,15 @@ import {
  * (re-exported by `../env`), which is exactly why there is a single class rather
  * than an app-local copy.
  *
- * ⚠️ `ShopeeImportBlockedError` is the sixth app-local class and the one
- * exception to that sentence: it DOES extend `ShopeeError`, so the base arm
- * already answers the boolean for it. It joins this union anyway — not for the
- * guard, but so `toResponse` can read `err.motivo` / `err.itemId` without a
- * cast. The import runs ONE way (`respond.ts` → `produtos/`): every module under
- * `produtos/` is Next-free because the Cloud Functions bundle reaches it, and
- * this file imports `next/server`.
+ * ⚠️ The THREE per-item refusals are the exception to that sentence:
+ * `ShopeeImportBlockedError` (step 9) and `ShopeePublishBlockedError` /
+ * `ShopeePublishRejectedError` (step 11) DO extend `ShopeeError`, so the base
+ * arm already answers the boolean for them. They join this union anyway — not
+ * for the guard, but so `toResponse` can read `err.motivo` / `err.etapa` /
+ * `err.problemas` without a cast. The import runs ONE way (`respond.ts` →
+ * `produtos/`, `anuncios/`): every module under those folders is Next-free
+ * because the Cloud Functions bundle reaches them, and this file imports
+ * `next/server`.
  */
 type KnownError =
   | ShopeeContaNotConfiguredError
@@ -56,6 +63,8 @@ type KnownError =
   | ShopeeContaSemShopIdError
   | ShopeeRefreshEmAndamentoError
   | ShopeeImportBlockedError
+  | ShopeePublishBlockedError
+  | ShopeePublishRejectedError
   | ShopeeError;
 
 /** A Shopee body is unbounded; a log line is not. Enough to identify it. */
@@ -73,6 +82,8 @@ export function isShopeeError(err: unknown): err is KnownError {
     // handle it?", and the answer for a blocked import must not depend on
     // noticing which base class it happens to extend.
     err instanceof ShopeeImportBlockedError ||
+    err instanceof ShopeePublishBlockedError ||
+    err instanceof ShopeePublishRejectedError ||
     err instanceof ShopeeError
   );
 }
@@ -223,6 +234,52 @@ function toResponse(err: KnownError): NextResponse {
     return NextResponse.json(
       { error: err.message, code: 'SHOPEE_HTTP_ERROR', upstreamStatus: err.httpStatus },
       { status: 502 },
+    );
+  }
+  if (err instanceof ShopeePublishBlockedError) {
+    // ⚠️ ABOVE the base `ShopeeError` arm it extends, for the reason spelled out
+    // on the import arm below: a per-PRODUTO refusal reported as `SHOPEE_ERROR`
+    // 500 reads as OUR outage, and the operator would never learn which produto
+    // was refused or which field refused it. 422 and not 400: the request is
+    // well-formed and may be retried unchanged once the cause is fixed (a weight
+    // filled in, a mandatory attribute answered).
+    //
+    // ⚠️ NOTHING was sent to Shopee for this produto — that is the contract this
+    // class carries, and it is what lets the caller retry from a clean state.
+    // `problemas[].mensagem` is a MECHANISM sentence, capped at construction
+    // (see the class docblock); the body says nothing the error does not.
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: 'SHOPEE_PUBLISH_BLOCKED',
+        motivo: err.motivo,
+        produtoId: err.produtoId,
+        itemId: err.itemId,
+        problemas: err.problemas,
+      },
+      { status: 422 },
+    );
+  }
+  if (err instanceof ShopeePublishRejectedError) {
+    // The post-write twin: Shopee refused a call and the refusal was classified
+    // onto request fields. `etapa` is the load-bearing extra — it says what
+    // exists on the channel NOW (a rejection at `init_tier_variation` leaves an
+    // UNLIST item with no models), which no HTTP status can carry.
+    //
+    // ⚠️ `shopeeCode` is Shopee's own string VERBATIM, prefix and all, exactly as
+    // the `ShopeeApiError` arm reports its `code`. The stripped form is a
+    // classification detail and never leaves the classifier.
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: 'SHOPEE_PUBLISH_REJECTED',
+        etapa: err.etapa,
+        shopeeCode: err.shopeeCode,
+        produtoId: err.produtoId,
+        itemId: err.itemId,
+        problemas: err.problemas,
+      },
+      { status: 422 },
     );
   }
   if (err instanceof ShopeeImportBlockedError) {

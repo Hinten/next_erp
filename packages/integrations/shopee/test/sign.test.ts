@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
+import { type ShopeeMultipartBody, shopeeCall } from '../src/call';
 import {
   SHOPEE_SIGN_WINDOW_SECONDS,
   type ShopeeQueryValue,
@@ -293,6 +295,96 @@ describe('signedQuery', () => {
         expect(comArray.get('sign')).toBe(semArray.get('sign'));
         expect(comArray.getAll('item_status')).toHaveLength(3);
       }
+    });
+  });
+
+  /* ------------------------------------------------------------------------ */
+  /*        O corpo NÃO é assinado — nem o JSON, nem o multipart (passo 11)     */
+  /* ------------------------------------------------------------------------ */
+
+  describe('o corpo multipart não entra na base string', () => {
+    // ⚠️ `sign.ts` não muda no passo 11, e ESTA é a afirmação que o prova. A base
+    // string (`baseStringFor`) lê partner_id, path e timestamp (+ token e id) e
+    // nunca o corpo — mas `signedQuery` sequer RECEBE um corpo, de modo que a
+    // única forma de observar o invariante é pelo transporte, mandando dois
+    // corpos diferentes e comparando os dois `sign`.
+    const UPLOAD_PATH = '/api/v2/media_space/upload_image';
+    const OUTRO_PATH = '/api/v2/media_space/upload_video';
+
+    const corpo = (bytes: readonly number[], filename: string): ShopeeMultipartBody => ({
+      file: {
+        field: 'image',
+        filename,
+        contentType: 'image/png',
+        bytes: new Uint8Array(bytes),
+      },
+    });
+
+    async function assinarUpload(
+      multipart: ShopeeMultipartBody,
+      path = UPLOAD_PATH,
+    ): Promise<string> {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: '',
+              message: null,
+              warning: null,
+              request_id: 'req-sign',
+              response: {},
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      );
+      await shopeeCall(
+        {
+          partnerId: DOC_PARTNER_ID,
+          partnerKey: TEST_PARTNER_KEY,
+          apiHost: 'https://partner.test-stable.shopeemobile.com',
+          fetch: fetchMock,
+          now: () => 1_655_714_431_000,
+        },
+        {
+          method: 'POST',
+          path,
+          call: { class: 'public' },
+          schema: z.object({}).passthrough(),
+          surface: 'business',
+          multipart,
+        },
+      );
+      const assinatura = new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('sign');
+      expect(assinatura).not.toBeNull();
+      return assinatura!;
+    }
+
+    it('T3 — PAIR: dois BYTES diferentes produzem o MESMO sign', async () => {
+      // A assinatura cobre partner_id + path + timestamp e mais nada. Quem
+      // "consertar" isso passando o corpo para a base string quebra TODAS as
+      // chamadas de uma vez, e a Shopee responde `error_sign` — que se lê como
+      // problema de credencial, não como um refactor de ontem.
+      const a = await assinarUpload(corpo([1, 2, 3], 'a.png'));
+      const b = await assinarUpload(corpo([9, 9, 9, 9, 9], 'b.png'));
+      expect(a).toBe(b);
+    });
+
+    it('T4 — ⛔ NEAR-MISS: um PATH diferente produz um sign DIFERENTE', async () => {
+      // Sem este par, o T3 passaria até com uma assinatura calculada sobre
+      // NADA. O path é o que precisa continuar dentro da base string.
+      const a = await assinarUpload(corpo([1, 2, 3], 'a.png'), UPLOAD_PATH);
+      const b = await assinarUpload(corpo([1, 2, 3], 'a.png'), OUTRO_PATH);
+      expect(a).not.toBe(b);
+      expect(a).toBe(
+        signBaseString(
+          publicBaseString({
+            partnerId: DOC_PARTNER_ID,
+            path: UPLOAD_PATH,
+            timestamp: DOC_TIMESTAMP,
+          }),
+          TEST_PARTNER_KEY,
+        ),
+      );
     });
   });
 

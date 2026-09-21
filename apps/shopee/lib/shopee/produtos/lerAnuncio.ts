@@ -29,6 +29,7 @@
 import {
   SHOPEE_ERROR_KIND,
   ShopeeApiError,
+  shopeeCodeSemPrefixoDeModulo,
   type ShopeeClient,
   type ShopeeItemBaseInfo,
 } from '@delfrance/integrations-shopee';
@@ -92,10 +93,20 @@ export async function lerAnuncioShopee(client: ShopeeClient, itemId: number): Pr
     // ⚠️ `error_item_not_found` on the ENVELOPE of a one-id call is that id's
     // verdict, and nothing wider: the batch form only raises it when EVERY id of
     // the call is unknown, and here there is exactly one.
+    //
+    // ⚠️ The bare code OR its one-segment-stripped form, through the PACKAGE's
+    // `shopeeCodeSemPrefixoDeModulo` — the one stripper, never a second. The
+    // sandbox probe MEASURED the `product.` prefix arriving on the live wire
+    // (2026-09-17) and `ShopeeApiError.code` keeps the envelope string VERBATIM,
+    // so comparing the bare code alone RETHROWS a verdict this read owns: the
+    // listing answers a 422 `item-nao-encontrado` on one spelling and a 5xx on
+    // the other. `reverificarAnuncio.ts` and `pushAnuncio.ts` narrow the same
+    // refusal of the same call the same way.
     if (
       err instanceof ShopeeApiError &&
       err.kind === SHOPEE_ERROR_KIND.other &&
-      err.code === CODIGO_ITEM_NAO_ENCONTRADO
+      (err.code === CODIGO_ITEM_NAO_ENCONTRADO ||
+        shopeeCodeSemPrefixoDeModulo(err.code) === CODIGO_ITEM_NAO_ENCONTRADO)
     ) {
       throw new ShopeeImportBlockedError(
         MOTIVO_IMPORT_BLOQUEADO.itemNaoEncontrado,

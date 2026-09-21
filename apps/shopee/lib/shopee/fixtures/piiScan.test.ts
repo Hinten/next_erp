@@ -178,6 +178,164 @@ describe('redactionResidue', () => {
   });
 });
 
+/* -------------------------------------------------------------------------- */
+/*  A prosa do provedor sobre o ANÚNCIO de um vendedor (push 16 /             */
+/*  get_item_violation_info) — o par CONTROLE A / CONTROLE B do passo 11.     */
+/*                                                                            */
+/*  ⚠️ Os dois corpos moram INLINE, e de propósito: `__wire__/` guarda corpos  */
+/*  de RESPOSTA, um envelope de push não é uma resposta, e não temos nenhuma   */
+/*  captura real destas duas formas — uma amostra de página de documentação    */
+/*  não é wire. Inline, o par exercita cada entrada nova do denylist sem       */
+/*  prometer ao corpus um arquivo que ninguém capturou (registro 88).          */
+/* -------------------------------------------------------------------------- */
+
+/** Frases inventadas, reconhecíveis, e sem CPF/telefone/e-mail/endereço dentro. */
+const SENTINELA_RAZAO = 'PROSA-RAZAO: o titulo deste anuncio copia o de outra loja';
+const SENTINELA_SUGESTAO = 'PROSA-SUGESTAO: mova o anuncio para a categoria sugerida';
+const SENTINELA_FALHA = 'PROSA-FALHA: detalhe do erro que atingiu este item';
+
+/**
+ * O envelope do `push 16` (`violation_item_push`), não redigido.
+ *
+ * ⚠️ A grafia do contêiner de deboost aqui é `deboosted_details` — a da AMOSTRA
+ * da própria página, que discorda da tabela de parâmetros (`deboost_details`,
+ * usada no corpo de `get_item_violation_info` abaixo). As duas aparecem neste
+ * arquivo porque é exatamente o que uma entrada de UM segmento compra: a folha é
+ * pega sob qualquer um dos dois pais, e nenhuma grafia precisa ser adivinhada.
+ */
+const PUSH_16_CRU: WireValue = {
+  code: 16,
+  shop_id: 987654,
+  timestamp: 1_760_000_000,
+  data: {
+    item_id: 2500139861,
+    item_name: 'Camiseta lisa infantil',
+    item_status: 'BANNED',
+    deboost: false,
+    item_status_details: [
+      {
+        violation_type: 'Spam',
+        violation_reason: SENTINELA_RAZAO,
+        suggestion: SENTINELA_SUGESTAO,
+        fix_deadline_time: 1_760_500_000,
+        update_time: 1_760_000_000,
+      },
+    ],
+    deboosted_details: [
+      {
+        violation_type: 'Mall Listing Improvement',
+        violation_reason: SENTINELA_RAZAO,
+        suggestion: SENTINELA_SUGESTAO,
+        fix_deadline_time: null,
+        update_time: 1_760_000_000,
+        suggested_category: [
+          { category_id: 100005, category_name: 'Health' },
+          { category_id: 107478, category_name: 'Personal Care' },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * Uma resposta de `get_item_violation_info`, não redigida — a gêmea do envelope
+ * acima, e a única das duas que carrega `fail_message`.
+ *
+ * ⚠️ Sem a chave `error`: o corpo de SUCESSO medido na sandbox não a traz
+ * (registro 73). A falha parcial aqui é EM BANDA, dentro de `item_list[]`
+ * (`fail_error` + `fail_message`), e não uma `failure_list` separada.
+ */
+const VIOLATION_INFO_CRU: WireValue = {
+  response: {
+    item_list: [
+      {
+        item_id: 2500139861,
+        item_name: 'Camiseta lisa infantil',
+        item_status: 'NORMAL',
+        deboost: true,
+        item_status_details: [],
+        deboost_details: [
+          {
+            violation_type: 'Other Listing Improvement',
+            violation_reason: SENTINELA_RAZAO,
+            suggestion: SENTINELA_SUGESTAO,
+            fix_deadline_time: null,
+            update_time: 1_760_000_000,
+            suggested_category: null,
+          },
+        ],
+        fail_error: 'error_item_not_found',
+        fail_message: SENTINELA_FALHA,
+      },
+    ],
+  },
+};
+
+describe('a prosa do provedor sobre um anúncio', () => {
+  it('CONTROLE A (sabidamente ruim) — um push 16 não redigido reporta CADA folha de prosa', () => {
+    const paths = redactionResidue(PUSH_16_CRU).map((f) => f.path);
+
+    expect(paths).toContain('data.item_status_details.*.violation_reason');
+    expect(paths).toContain('data.item_status_details.*.suggestion');
+    // ⚠️ O contêiner com a OUTRA grafia, pego pela mesma entrada de um segmento.
+    expect(paths).toContain('data.deboosted_details.*.violation_reason');
+    expect(paths).toContain('data.deboosted_details.*.suggestion');
+    expect(redactionResidue(PUSH_16_CRU).every((f) => f.kind === 'unredacted-path')).toBe(true);
+  });
+
+  it('CONTROLE A — o corpo de get_item_violation_info reporta a mesma prosa E o fail_message', () => {
+    const paths = redactionResidue(VIOLATION_INFO_CRU).map((f) => f.path);
+    const prefixo = 'response.item_list.*.';
+
+    expect(paths).toContain(`${prefixo}deboost_details.*.violation_reason`);
+    expect(paths).toContain(`${prefixo}deboost_details.*.suggestion`);
+    expect(paths).toContain(`${prefixo}fail_message`);
+  });
+
+  it('⚠️ NEAR-MISS: o que o denylist MANTÉM de propósito não é acusado em nenhum dos dois', () => {
+    // `violation_type` é um vocabulário FECHADO de sete valores e é o que
+    // `params.violacao` do aviso renderiza; `suggested_category` é a taxonomia,
+    // o campo mais acionável do push; `fail_error` é um CÓDIGO, não prosa; e
+    // `item_name` não é pessoa — `name` é casado por sufixo, `item_name` não.
+    const push = redactionResidue(PUSH_16_CRU).map((f) => f.path);
+    expect(push).not.toContain('data.item_status_details.*.violation_type');
+    expect(push).not.toContain('data.deboosted_details.*.suggested_category.*.category_name');
+    expect(push).not.toContain('data.deboosted_details.*.suggested_category.*.category_id');
+    expect(push).not.toContain('data.item_name');
+    expect(push).not.toContain('data.item_id');
+
+    const info = redactionResidue(VIOLATION_INFO_CRU).map((f) => f.path);
+    expect(info).not.toContain('response.item_list.*.fail_error');
+    expect(info).not.toContain('response.item_list.*.violation_type');
+  });
+
+  it('CONTROLE B (sabidamente bom) — os dois corpos redigidos são ponto fixo e não reportam nada', () => {
+    expect(redactionResidue(redactWireBody(PUSH_16_CRU))).toEqual([]);
+    expect(redactionResidue(redactWireBody(VIOLATION_INFO_CRU))).toEqual([]);
+    // …e nenhuma das duas camadas reprova o que o próprio redator produziu.
+    expect(scanForPiiReprovavel(redactWireBody(PUSH_16_CRU))).toEqual([]);
+    expect(scanForPiiReprovavel(redactWireBody(VIOLATION_INFO_CRU))).toEqual([]);
+  });
+
+  it('CONTROLE B — a redação apaga a PROSA e preserva o que a fixture existe para provar', () => {
+    // O ponto do par: se a redação levasse `violation_type` ou
+    // `suggested_category` junto, a fixture deixaria de provar a única coisa que
+    // o passo 11 lê dela.
+    const redigido = JSON.stringify(redactWireBody(PUSH_16_CRU));
+
+    for (const sentinela of [SENTINELA_RAZAO, SENTINELA_SUGESTAO]) {
+      expect(redigido).not.toContain(sentinela);
+    }
+    expect(redigido).toContain('"violation_type":"Spam"');
+    expect(redigido).toContain('"category_name":"Personal Care"');
+    expect(redigido).toContain('"item_name":"Camiseta lisa infantil"');
+
+    const redigidoInfo = JSON.stringify(redactWireBody(VIOLATION_INFO_CRU));
+    expect(redigidoInfo).not.toContain(SENTINELA_FALHA);
+    expect(redigidoInfo).toContain('"fail_error":"error_item_not_found"');
+  });
+});
+
 describe('patternFindings', () => {
   it('CONTROLE A — pega dado pessoal numa chave que denylist nenhum anteciparia', () => {
     // O ponto desta camada: a CHAVE é inocente, a prosa não é.
