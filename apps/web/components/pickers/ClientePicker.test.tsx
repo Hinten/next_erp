@@ -86,6 +86,45 @@ describe('manual cliente phone search', () => {
     expect(describeClienteOption(data, 'Maria')).not.toContain('Histórico inativo');
   });
 
+  it.each([
+    { name: 'absent', history: {} },
+    { name: 'null', history: { telefonesAdicionais: null } },
+  ])('selects a raw legacy cliente with $name phone history', ({ history }) => {
+    // Pipeline snapshots return raw Firestore rows, without schema defaults.
+    mocks.primaryRows = [
+      {
+        id: 'legacy-cliente',
+        data: {
+          nome: 'Cliente legado',
+          cpf_cnpj: '52998224725',
+          telefone: null,
+          ...history,
+        },
+      },
+    ];
+    const change = vi.fn();
+    render(
+      <MantineTestProvider>
+        <ClientePicker
+          fieldName="legacy-cliente-test"
+          value={null}
+          onChange={change}
+          allowCreate={false}
+        />
+      </MantineTestProvider>,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Cliente' }));
+    const option = screen.getByRole('option', { name: /Cliente legado/ });
+    expect(option.textContent).toContain('52998224725');
+    expect(option.textContent).toContain('Sem telefone principal');
+    expect(option.textContent).not.toContain('Histórico inativo');
+    fireEvent.click(option);
+    expect(change).toHaveBeenCalledWith(
+      'documents/clientes/legacy-cliente',
+      expect.objectContaining({ label: 'Cliente legado' }),
+    );
+  });
+
   it.each([true, false])(
     'finds an inactive phone beyond the initial list, deduplicates and requires selection (pipelines=%s)',
     async (pipelines) => {

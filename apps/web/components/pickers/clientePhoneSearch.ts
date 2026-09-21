@@ -31,7 +31,10 @@ export function clientePhoneSearchQuery(db: Firestore, term: string) {
 
 export function describeClienteOption(cliente: Cliente, term: string): string | undefined {
   const shapes = clientePhoneSearchShapes(term);
-  const historicalMatch = cliente.telefonesAdicionais.some((phone) => shapes.includes(phone));
+  // Pipeline rows can predate this field and bypass the schema's default.
+  const historicalMatch =
+    Array.isArray(cliente.telefonesAdicionais) &&
+    cliente.telefonesAdicionais.some((phone) => shapes.includes(phone));
   return (
     [
       cliente.cpf_cnpj || cliente.idEstrangeiro,
