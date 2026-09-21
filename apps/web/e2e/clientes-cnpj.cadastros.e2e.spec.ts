@@ -92,8 +92,18 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     // hits the API.
     await button.click();
     await expect(
-      page.getByText('Informe um CNPJ válido (14 dígitos) para buscar os dados.'),
+      page.getByText('Informe um CNPJ válido (14 caracteres) para buscar os dados.'),
     ).toBeVisible();
+    expect(apiCalled).toBe(false);
+
+    // ⚠️ An ALPHANUMERIC CNPJ (RFB IN 2.229/2024) is a VALID CNPJ, so the gate
+    // opens — and the message must stop blaming the document. BrasilAPI keys off
+    // the numeric CNPJ and cannot answer for this shape: that is a gap in the
+    // base, not something the operator can correct by retyping. The lookup says
+    // so, and still never calls out.
+    await fillField(page, 'CPF / CNPJ', '12ABC34501DE35');
+    await button.click();
+    await expect(page.getByText('a base pública não responde por ele')).toBeVisible();
     expect(apiCalled).toBe(false);
   });
 
