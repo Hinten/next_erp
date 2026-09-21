@@ -32,8 +32,8 @@ mkdirSync(deployDir, { recursive: true });
 // 1. Bundle the function (single self-contained ESM file).
 const region = await bundle(join(deployDir, 'index.js'));
 
-// 2. Minimal, workspace-free package.json — the 2 runtime deps only
-//    (firebase-admin / firebase-functions). No devDependencies, no `workspace:*`,
+// 2. Minimal, workspace-free package.json — the 3 runtime deps only
+//    (firebase-admin / firebase-functions / @google-cloud/firestore). No devDependencies, no `workspace:*`,
 //    no build script, so the gen2 buildpack `npm install` resolves cleanly.
 const realPkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
 const deployPkg = {
