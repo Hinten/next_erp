@@ -271,7 +271,10 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // differently for one CNPJ is exactly a replica that has not converged.
   // Implantação teste 01/09/2026 — the day before the flapping started.
   // 181 (RV 12E02-10) is the destinatário twin; it blocked the SEFAZ-SP suites
-  // from 2026-09-17 until the fixture moved to an official CCC test CNPJ (#1612).
+  // from 2026-09-17 until the fixture's destinatário moved to a PESSOA FÍSICA
+  // (CPF, tag E03), which the rule does not reach at all (#1612). ⚠️ An official
+  // CCC test CNPJ was tried FIRST and drew 181 too — the CCC is the states'
+  // register and the RV queries the federal LCC-RFB — so do not re-try one.
   //
   // ⚠️ That fix does NOT reach this test, and the reason is the tag. 12E02-10
   // reads the DESTINATÁRIO (E02) and was answered by changing who we sell to;
@@ -280,9 +283,11 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // unrelated in what it takes to clear them.
   //
   // ⚠️ The skip condition below therefore stays as it is, `&& !isFatalRun`: the
-  // FATAL runs keep probing for the cadastro healing, and unlike the old 181 —
-  // whose CNPJ was a reserved placeholder that would never be registered — this
-  // one demonstrably heals; it has returned `100` on its own. Keep probing.
+  // FATAL runs keep probing for the cadastro healing. 181 was not cleared by any
+  // cadastro converging — it was left behind, by emitting to a tag the rule does
+  // not read — and that door does not exist here, because the emitente is our
+  // own certificate. What is left for 178 IS the replica converging, and it
+  // demonstrably does: it has returned `100` on its own. Keep probing.
   //
   // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
   // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the

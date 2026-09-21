@@ -277,6 +277,14 @@ describe('buildDest — endereco.codigoMunicipio', () => {
  * against a placeholder). So `<CNPJ>` is no longer proven by a real SEFAZ round
  * trip, and it has to be proven here instead: coverage moved rather than
  * disappeared, which is the whole condition on that fixture change.
+ *
+ * ⚠️ Only HALF of that condition needed new code, and the honest accounting is
+ * worth keeping. The document-element selection below was pinned nowhere before
+ * this PR. The other coverage the fixture change gives up — that `IE_SENTINELA`
+ * never reaches the signed XML — was ALREADY banked by the `indIEDest` block
+ * above, which drives a pessoa jurídica through five casings of the sentinel and
+ * asserts the same `'9'` + absent `<IE>`. A near-miss restating it here was
+ * dropped rather than kept: one claim, one test.
  */
 describe('buildDest — the document element per tipo', () => {
   it('pessoaJuridica emits <CNPJ>, never <CPF>', () => {
@@ -287,8 +295,11 @@ describe('buildDest — the document element per tipo', () => {
 
   it('an ALPHANUMERIC CNPJ rides the same element, un-mangled', () => {
     // RFB IN 2.229/2024. Nothing here may strip a letter: `TCnpj` is
-    // `[0-9A-Z]{12}[0-9]{2}`, and a stripped value would be an eleven-character
-    // string that the XSD reads as a malformed document rather than as a CPF.
+    // `[0-9A-Z]{12}[0-9]{2}`, and stripping leaves `14 − (letters)` digits —
+    // NINE for this value, which matches no document facet at all. ⚠️ The
+    // dangerous arity is exactly THREE letters: `12ABC678000190` strips to
+    // eleven digits, which a length-driven formatter renders as somebody's CPF.
+    // Either way the output is a document that was never stored.
     const out = dest({ tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: '12ABC34501DE35' });
     expect(out.CNPJ).toBe('12ABC34501DE35');
   });
@@ -297,17 +308,5 @@ describe('buildDest — the document element per tipo', () => {
     const out = dest({ tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '12345678909', ie: null });
     expect(out.CPF).toBe('12345678909');
     expect(out.CNPJ).toBeUndefined();
-  });
-
-  it('⚠️ NEAR-MISS: the sentinel on a PJ still yields indIEDest=9 and NO <IE>', () => {
-    // The other property the live lane proved on every round trip: that
-    // `IE_SENTINELA` never reaches the signed XML.
-    const out = dest({
-      tipo: TIPO_CLIENTE.pessoaJuridica,
-      cpf_cnpj: '11222333000181',
-      ie: IE_SENTINELA.naoContribuinte,
-    });
-    expect(out.indIEDest).toBe('9');
-    expect(out.IE).toBeUndefined();
   });
 });

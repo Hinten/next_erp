@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { validateCNPJ } from '@delfrance/core/documents';
-import { IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 
 import { generateNFe } from '../../src/generator';
 import { NFeXsdValidationError, validateXsd } from '../../src/xsd';
@@ -37,16 +37,17 @@ async function errosDePattern(cpfCnpj: string): Promise<string[]> {
   // CNPJ we may use with cStat 181 — see the fixture's own comment), so without
   // this override the alfa value would land in `<CPF>`, whose facet is
   // `[0-9]{11}`, and the test would report a pattern error that says nothing
-  // about `TCnpj`. The sentinel comes with it, because a PJ with no `ie` is a
-  // different rung of `buildDest`'s ladder.
+  // about `TCnpj`.
+  //
+  // ⚠️ `ie` is deliberately NOT overridden. An earlier revision set the
+  // não-contribuinte sentinel here and claimed a PJ with no `ie` was a different
+  // rung — it is not: `classifyIe(null)` answers `'ausente'`, and `parties.ts`
+  // folds `'ausente'` and `'naoContribuinte'` into the same `indIEDest='9'` arm
+  // with no `<IE>`. The override was inert, and an inert line that claims to be
+  // load-bearing is the thing the next reader trips over.
   const out = generateNFe({
     ...base,
-    cliente: {
-      ...base.cliente,
-      tipo: TIPO_CLIENTE.pessoaJuridica,
-      cpf_cnpj: cpfCnpj,
-      ie: IE_SENTINELA.naoContribuinte,
-    },
+    cliente: { ...base.cliente, tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: cpfCnpj },
   });
   try {
     await validateXsd('NFe', out.nfeXml);
