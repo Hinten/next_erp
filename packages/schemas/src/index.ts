@@ -492,6 +492,21 @@ export {
 } from './backfillPedidosShopee';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated Shopee stock-sync sweeps (master-plan step 12,
+  // #1520), twin of estoqueMercadoLivreSync below. Bare schema+meta (perms 0n),
+  // not a DomainSchema — see the NOTE at the bottom of estoqueShopeeSync.ts.
+  // ⚠️ Every stamp here is MILLISECONDS, unlike the ML twin's microseconds:
+  // apps/shopee keeps microseconds to its one avisos module.
+  modoVarreduraEstoqueSchema,
+  MODO_VARREDURA_ESTOQUE,
+  estoqueShopeeSyncSchema,
+  estoqueShopeeSyncMeta,
+  type ModoVarreduraEstoque,
+  type EstoqueShopeeSync,
+} from './estoqueShopeeSync';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the checkpoint/progress
   // doc for the Shopee "Importar todos os anúncios" mass-import job
   // (master-plan step 9, #1517), twin of importacaoMercadoLivre above. Bare

@@ -72,10 +72,14 @@ const INVENTARIO = {
     'Defines `reservaEfetiva` (the single floor) and `estoqueDisponivel`. The schema deliberately carries NO `.min(0)` — it failed the whole document in `parseSoftRead`.',
 
   // ---- Reads it, floors via reservaEfetiva / estoqueDisponivel -----------
+  'packages/data/src/admin/estoque/quantidades.ts':
+    'The PROMOTED marketplace quantity core (#1520 R9) — the same sweep math, now shared by Mercado Livre and Shopee. Every availability read goes through `estoqueDisponivel`; `desfazerMovimento` may synthesize a negative reservation on purpose (it is arithmetic, not a stored value) and that floor downstream is the ONLY thing keeping it harmless, pinned by a test.',
+  'packages/data/src/admin/estoque/ledger.ts':
+    'Declares `MovimentoDaJanela.dr`, the window ledger’s SIGNED change in the reservation. Types only — no implementation, no arithmetic; each channel supplies its own aggregate and `quantidades.ts` above is what subtracts the value.',
   'apps/mercado-livre/lib/marketplace/importacao/importCore.ts':
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
   'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts':
-    'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
+    'After the #1520 promotion this file no longer does the arithmetic — it SUPPLIES it. The joins `select` the raw counter into the rows the quantity core reads, and the ledger pre-pass sums `movimentoReservada` into a SIGNED per-window delta that is deliberately NOT floored (flooring one leg of a movement would destroy units). Every availability read, and the negative reservation the window-start reconstruction may synthesize on purpose, now live in `packages/data/src/admin/estoque/quantidades.ts` above.',
   'apps/mercado-livre/lib/marketplace/estoque/estoqueRetryRefresh.ts':
     'Retry refresh reads the stored reservation from each deduplicated estoque document, tolerantly coerces a missing/non-finite value to zero, and computes availability only through `estoqueDisponivel`, so a negative reservation cannot invent stock.',
   'apps/mercado-livre/lib/marketplace/anuncios/upSoleMember.ts':
