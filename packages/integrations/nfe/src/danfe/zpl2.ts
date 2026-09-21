@@ -18,6 +18,7 @@ import {
   cutString,
   formatCep,
   formatChaveAcesso,
+  NFeDanfeFormatError,
   formatCpfCnpj,
   formatDate,
   formatMoney,
@@ -43,7 +44,7 @@ const BOX_PAD_MM = 1.3; // box inner top/bottom padding
 /** Max chars for a razão social / nome so the right-aligned value clears the label. */
 const NAME_MAX = 36;
 
-/** Code 128 subset C takes digit pairs only — see the barcode block below. */
+/** Code 128 subset C takes digit pairs only — see the guard in the renderer. */
 const ALL_DIGITS = /^\d+$/;
 
 /**
@@ -61,6 +62,39 @@ type Row =
   | { kind: 'wrap'; text: string; lines: number };
 
 export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}): string {
+  // ⚠️ NUMERIC CHAVE ONLY, and this refusal is deliberate.
+  //
+  // The label's barcode is Code 128 **subset C**, which encodes digit PAIRS and
+  // cannot represent a letter at all. Since RFB IN 2.229/2024 the chave's
+  // positions 6–17 carry the emitente CNPJ and may be alphanumeric.
+  //
+  // Encoding those in subset B instead is not a fix: it doubles the symbol
+  // count (44 instead of 22) while the module width stays on the fixed 0.25 mm
+  // rule, so the symbol becomes 1038 dots on a 799-dot label at 203 dpi (1557
+  // on 1181 at 300 dpi). The printer clips everything past `^PW`, so the
+  // checksum and stop pattern never print and the barcode is UNSCANNABLE —
+  // and `bcX`'s `Math.max` clamp hides it, because the emitted x still looks
+  // plausible.
+  //
+  // The real fix is mixed subsets (C for the numeric head and tail, B for the
+  // 12-character body — 30 data symbols, 365 modules, 730 dots at 203 dpi,
+  // which fits). That needs ZPL's mid-string switch-back-to-C invocation code
+  // verified against Zebra's `^BC` reference and a proof on real hardware, so
+  // it is a follow-up rather than a guess: a wrong invocation code prints a
+  // wrong barcode silently, which is the very failure this guard prevents.
+  //
+  // Meanwhile `renderSimplificado` (PDF) is the same etiqueta and IS
+  // alfa-correct — `barcode.ts` hands bwip-js the whole chave and bwip-js picks
+  // subsets itself.
+  if (!ALL_DIGITS.test(model.chave)) {
+    throw new NFeDanfeFormatError(
+      `A etiqueta ZPL não suporta uma chave alfanumérica (${model.chave}): o ` +
+        'código de barras usa Code 128 subset C, que só aceita dígitos. Use o ' +
+        'DANFE Simplificado em PDF (format=simplificado), que imprime a mesma ' +
+        'etiqueta com a chave completa.',
+    );
+  }
+
   const dpi = opts.dpi ?? 203;
   const dpm = dpi / 25.4;
   const mm = (v: number): number => Math.round(v * dpm);
@@ -97,25 +131,21 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   centered(y, 'DANFE SIMPLIFICADO - ETIQUETA', H_TITLE);
   y += 6;
 
-  // Centered Code 128. `^BC` defaults to subset B (one symbol per character);
-  // the `>;` prefix forces **subset C**, which packs two characters per symbol
-  // — half the width, and a deterministic printed width.
+  // Centered Code 128. `^BC` defaults to subset B (one wide symbol per
+  // character); the `>;` prefix forces **subset C** so the 44-digit chave packs
+  // two digits per symbol — half the width, and the printed width becomes
+  // deterministic. Module (narrow-bar) width scales with dpi (~0.25 mm).
   //
-  // ⚠️ Subset C is NUMERIC-ONLY: it encodes digit PAIRS and cannot represent a
-  // letter at all. Since RFB IN 2.229/2024 the chave's positions 6–17 carry the
-  // emitente CNPJ, which may be alphanumeric, so subset C is only available
-  // when this particular chave happens to be all digits. Pick per chave rather
-  // than assuming — and size the symbol for the subset actually chosen, or the
-  // centring maths silently disagrees with what the printer emits.
+  // ⚠️ Subset C is what makes the symbol FIT, and it is numeric-only. An alfa
+  // chave is refused at the top of this function rather than encoded here —
+  // see that guard for why, and for the follow-up that lifts it.
   const moduleDots = Math.max(2, Math.round(0.25 * dpm));
-  const subsetC = ALL_DIGITS.test(model.chave);
-  const dataSymbols = subsetC ? Math.ceil(model.chave.length / 2) : model.chave.length;
-  // (start + data + checksum) × 11 modules + 13-module stop pattern.
+  const dataSymbols = Math.ceil(model.chave.length / 2);
+  // (start C + data + checksum) × 11 modules + 13-module stop pattern.
   const barModules = (dataSymbols + 2) * 11 + 13;
   const barWidthDots = barModules * moduleDots;
   const bcX = Math.max(mm(MARGIN_MM), Math.round((widthDots - barWidthDots) / 2));
-  const bcPrefix = subsetC ? '>;' : '';
-  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD${bcPrefix}${model.chave}^FS`);
+  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD>;${model.chave}^FS`);
   y += 12;
   centered(y, formatChaveAcesso(model.chave), H_CHAVE);
   y += 5;

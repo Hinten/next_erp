@@ -19,9 +19,13 @@ import bwipjs from 'bwip-js/node';
  *
  * ⚠️ Pass the chave WHOLE. Positions 6–17 are the emitente CNPJ, alphanumeric
  * since RFB IN 2.229/2024, and bwip-js chooses subsets per run — so the letters
- * encode correctly here without any caller doing anything. The ZPL label cannot
- * (`^BC` picks one subset for the whole symbol; see `./zpl2`), and stripping
- * them to "help" is what printed a wrong barcode on a fiscal document.
+ * encode correctly here without any caller doing anything, and stripping them
+ * to "help" is what printed a wrong barcode on a fiscal document.
+ *
+ * ⚠️ This makes the PDF renderers the only alfa-capable etiqueta today: the
+ * ZPL label (`./zpl2`) is pinned to Code 128 subset C, which is numeric-only,
+ * and REFUSES an alfa chave rather than emitting a symbol too wide for the
+ * label. See the guard in `renderSimplificadoZpl`.
  */
 export function code128Png(data: string): Promise<Buffer> {
   return bwipjs.toBuffer({
