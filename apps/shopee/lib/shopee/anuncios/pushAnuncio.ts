@@ -82,6 +82,10 @@ import {
   type MotivoAvisoAnuncio,
 } from './avisoAnuncio';
 import { resolverLinkPorItemId, type LinkDeAnuncio } from './linkAnuncio';
+// ⚠️ ONE reader and ONE comparison for `violations`, shared with the re-verify —
+// ruling O10 gives the stamp a single meaning, and two private copies agreeing by
+// comment is exactly the drift the root CLAUDE.md names.
+import { mesmasViolacoes, violacoesArmazenadas } from './reverificarAnuncio';
 import { agendadoParaMsDe, estadoDoAnuncio, type LeituraDeAnuncio } from './statusAnuncio';
 import {
   detalhesDeDeboost,
@@ -140,6 +144,9 @@ export type AlvoDoPushDeAnuncio =
       /**
        * Code 27 only: the push's `scheduled_publish_time` in MILLISECONDS.
        * `null` on code 16 and on a code 27 that carried no usable schedule.
+       *
+       * ⚠️ DIAGNOSTIC only — no writer reads it. See
+       * {@link AlvoDePushDeAnuncioShopee.agendadoParaMs}.
        */
       readonly agendadoParaMs: number | null;
       readonly diagnostico: DiagnosticoPushDeAnuncio;
@@ -210,8 +217,9 @@ export function alvoDoPushDeAnuncio(
     itemId,
     code,
     // ⚠️ Code 27 ONLY. Push 18 documents no schedule, and lifting one from a body
-    // that is not supposed to carry it would stamp `agendamentoFalhouEm` from a
-    // field nobody can source.
+    // that is not supposed to carry it would report `temAgendamento` off a field
+    // nobody can source. It reaches no Firestore write on either code — the
+    // handler stamps `agendamentoFalhouEm` from the delivery clock.
     agendadoParaMs:
       code === CODE_AGENDAMENTO ? agendadoParaMsDe(lido.data.scheduled_publish_time) : null,
     diagnostico: diagnosticoDe(data),
@@ -266,7 +274,13 @@ export interface AlvoDePushDeAnuncioShopee {
   readonly shopId: number;
   readonly itemId: number;
   readonly code: number;
-  /** Code 27's scheduled instant, MILLISECONDS. See {@link AlvoDoPushDeAnuncio}. */
+  /**
+   * Code 27's scheduled instant, MILLISECONDS. See {@link AlvoDoPushDeAnuncio}.
+   *
+   * ⚠️ **DIAGNOSTIC only, and only as a boolean.** It is not written anywhere:
+   * `agendamentoFalhouEm` carries the delivery clock (the field's documented
+   * meaning), so the one place this value is read is the log's `temAgendamento`.
+   */
   readonly agendadoParaMs: number | null;
   /** The task's ONE clock read, MILLISECONDS. */
   readonly nowMs: number;
@@ -552,15 +566,23 @@ interface EfeitoDeAviso {
  *    and ZERO writes; the arm parks naming the item, which is what tells an
  *    operator a listing exists at Shopee and should be imported.
  * 2. `get_item_base_info` — **the authoritative read**. Not there ⇒
- *    `ignorado-removido`: `{ estadoAnuncio: 'removido', violacoesLidasEm,
+ *    `ignorado-removido`: `{ estadoAnuncio: 'removido', violacoesLidasEm?,
  *    ultimaModificacao }` and the aviso resolves with `anuncio-removido`.
  *    ⚠️ **No `item_status` is written on that arm**: the handler did not READ
  *    one, and writing a status it invented is precisely the legacy defect.
  * 3. `get_item_violation_info` — best-effort ({@link lerViolacoes}).
  * 4. The fold, then ONE flat patch:
- *    `{ item_status, estadoAnuncio, deboost, violations, violacoesLidasEm,
+ *    `{ item_status, estadoAnuncio, deboost, violations, violacoesLidasEm?,
  *    ultimaModificacao }`. `item_status` comes from the READ, never from the push
  *    body.
+ *    ⚠️ **`violacoesLidasEm` is CONDITIONAL — the `?` is the whole point.** The
+ *    field means "when the stored `violations` list last CHANGED"
+ *    (`shopeeLink.ts`, ruling O10), one meaning shared with the re-verify, so a
+ *    delivery whose rows equal the stored ones leaves it where it was. The
+ *    comparison is {@link mesmasViolacoes}, IMPORTED from `reverificarAnuncio.ts`
+ *    — there is exactly one `violations` comparison in this folder. Everything
+ *    else in the patch is unconditional: this arm re-fetches rather than diffing,
+ *    so it always writes its reading.
  * 5. The aviso, exactly one of:
  *    - a `kind: 'status'` row, or `banido`/`removido` ⇒ raise `violacao` with the
  *      FIRST `violation_type` and the FIRST `fix_deadline_time`;
@@ -586,6 +608,17 @@ interface EfeitoDeAviso {
  * be worse than none. What `item_status` and `scheduled_publish_time` hold after
  * a failed scheduled publish is UNVERIFIED and load-bearing: whatever the read
  * says is written, and nothing is inferred.
+ *
+ * ⚠️ **`agendamentoFalhouEm` is the DELIVERY clock (`nowMs`), never the
+ * schedule.** `shopeeLink.ts` declares the field as "when a SCHEDULED publish was
+ * reported as failed", and that is the instant the report reached us — not
+ * `scheduled_publish_time`, which is when the publish was DUE. The two are
+ * different quantities and one field cannot carry both. Writing the schedule also
+ * made the stamp ERASABLE: `agendadoParaMsDe` answers `null` for an absent,
+ * zero-filled or pre-2020 value and the write is a plain overwrite, so a second
+ * code 27 with no usable schedule wiped the first one's record. The schedule
+ * survives as a BOOLEAN on the diagnostic log (`temAgendamento`) and nowhere
+ * else.
  *
  * **Idempotence is by re-fetch.** A replayed delivery re-reads the same state,
  * produces an identical patch, and the aviso's own event-clock watermark answers
@@ -624,9 +657,22 @@ export async function tratarPushDeAnuncio(
     // ONE arm for both codes: the fold's own `ausente` reading is `removido`, and
     // stamping `agendamentoFalhouEm` onto a listing Shopee no longer has would be
     // a stamp on a ghost.
+    //
+    // ⚠️ The SAME compare as the code-16 arm below (ruling O10): a listing Shopee
+    // no longer has reports no violations, so the reading here is the EMPTY list.
+    // It supersedes a stored list that had rows — that is a change, and the stamp
+    // moves — while a link that already carried none is untouched, which is what
+    // keeps a replayed delivery from writing a stamp per replay. The stored rows
+    // themselves are KEPT (the design's patch for this arm is
+    // `{ estadoAnuncio, violacoesLidasEm, ultimaModificacao }`, and the re-verify's
+    // `arquivarRemovido` keeps them too): they are the only surviving record of
+    // what the listing was refused for.
+    const armazenadasNoRemovido = violacoesArmazenadas(link.raw);
+    const mudouNoRemovido =
+      armazenadasNoRemovido === null || !mesmasViolacoes(armazenadasNoRemovido, []);
     await escreverLink(db, link, {
       estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
-      violacoesLidasEm: nowMs,
+      ...(mudouNoRemovido ? { violacoesLidasEm: nowMs } : {}),
       ultimaModificacao: nowMs,
     });
     const resolvido = await resolverAvisoDeAnuncio(
@@ -660,10 +706,17 @@ export async function tratarPushDeAnuncio(
       item_status: itemStatus,
       estadoAnuncio: estado,
       deboost,
-      // The instant the publish was DUE, as the push named it — not the delivery
-      // clock, which rides `ultimaModificacao`. A newer code 27 supersedes an
-      // older schedule whatever it carries, so this is a plain overwrite.
-      agendamentoFalhouEm: alvo.agendadoParaMs,
+      // ⚠️ The DELIVERY clock — "when a scheduled publish was reported as
+      // failed", which is what `shopeeLink.ts` declares the field to mean and
+      // what step 21 will render. It is deliberately NOT the push's
+      // `scheduled_publish_time` (the instant the publish was DUE): that is a
+      // second, different quantity, and writing it here made one stored number
+      // mean two things to two readers. It is also never `null` —
+      // `agendadoParaMsDe` answers null for an absent, zero-filled or pre-2020
+      // schedule, and this is a plain overwrite, so a code 27 carrying no usable
+      // schedule ERASED the stamp an earlier one wrote and left the link with no
+      // record that a scheduled publish had failed at all.
+      agendamentoFalhouEm: nowMs,
       ultimaModificacao: nowMs,
     });
     const efeito = await levantar(db, alvo, link, {
@@ -692,6 +745,19 @@ export async function tratarPushDeAnuncio(
   const leituraViolacoes = await lerViolacoes(client, alvo);
   const { violacoes, descartadas } = leituraViolacoes;
 
+  // ⚠️ `violacoesLidasEm` means "when the stored `violations` list last CHANGED"
+  // (`shopeeLink.ts`, ruling O10) — ONE meaning for both writers. So the stamp is
+  // conditional on the SAME comparison the re-verify runs, imported from it
+  // rather than re-derived: a code 16 whose rows equal the stored ones leaves the
+  // stamp exactly where it was. An unreadable stored value (`null`) counts as
+  // DIFFERENT, so a garbage array is replaced rather than compared against.
+  // ⚠️ Only the STAMP is conditional. The push path always writes its reading —
+  // `item_status`, `estadoAnuncio`, `deboost` and `violations` ride every
+  // delivery, unchanged values included — because this arm re-fetches rather than
+  // diffing, and a patch built from a fresh authoritative read is what makes a
+  // replay idempotent.
+  const armazenadas = violacoesArmazenadas(link.raw);
+  const violacoesMudaram = armazenadas === null || !mesmasViolacoes(armazenadas, violacoes);
   await escreverLink(db, link, {
     // ⚠️ THE READ, never `data.item_status`. A push that says `BANNED` about a
     // listing the pull reads as `NORMAL` writes `NORMAL`.
@@ -699,7 +765,7 @@ export async function tratarPushDeAnuncio(
     estadoAnuncio: estado,
     deboost,
     violations: [...violacoes],
-    violacoesLidasEm: nowMs,
+    ...(violacoesMudaram ? { violacoesLidasEm: nowMs } : {}),
     ultimaModificacao: nowMs,
   });
 
@@ -885,7 +951,11 @@ function registrar(alvo: AlvoDePushDeAnuncioShopee, r: LinhaDeResultado): Result
     temDetalhesDeDeboost: alvo.diagnostico.temDetalhesDeDeboost,
     grafiaDeboosted: alvo.diagnostico.grafiaDeboosted,
     divergePushVsPull: claimou !== temLinhas,
-    agendadoParaMs: alvo.agendadoParaMs,
+    // ⚠️ A BOOLEAN, never the instant. The schedule is not written anywhere any
+    // more (`agendamentoFalhouEm` carries the delivery clock), so the only thing
+    // left worth knowing is whether the delivery carried a usable one at all —
+    // and this line is ids, counts, enum tokens and booleans by rule.
+    temAgendamento: alvo.agendadoParaMs !== null,
     temCarimbo: alvo.carimboMs !== null,
     avisoResultado: r.avisoResultado,
     avisoResolvido: r.avisoResolvido,

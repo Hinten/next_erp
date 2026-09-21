@@ -198,8 +198,15 @@ function booleanoOuNull(bruto: unknown): boolean | null {
  * An absent or `null` field is the EMPTY list: `violations` is written even when
  * there is nothing wrong (the legacy `errors`-style field), so "no rows" and
  * "never written" are the same fact here.
+ *
+ * ⚠️ Exported for `pushAnuncio.ts`, which owes the SAME comparison under ruling
+ * O10 — `violacoesLidasEm` means "when the stored list last changed" for both
+ * writers. One reader and one comparison, never a second pair that agrees by
+ * comment.
  */
-function violacoesArmazenadas(raw: Record<string, unknown>): readonly ShopeeViolacao[] | null {
+export function violacoesArmazenadas(
+  raw: Record<string, unknown>,
+): readonly ShopeeViolacao[] | null {
   const bruto: unknown = raw.violations;
   if (bruto === null || bruto === undefined) return [];
   if (!Array.isArray(bruto)) return null;
@@ -472,11 +479,13 @@ export async function reverificarAnuncioShopee(
   if (link.estadoAnuncio !== estado) patch.estadoAnuncio = estado;
   if (booleanoOuNull(link.raw.deboost) !== deboost) patch.deboost = deboost;
   if (textoOuNull(link.raw.condition) !== condicao) patch.condition = condicao;
-  // ⚠️ `violacoesLidasEm` rides ONLY with a CHANGED list. Stamping it on every
-  // healthy re-verify would make `ignorado-sem-mudanca` unreachable and turn a
-  // read-only diagnostic into a write per button press — so the field means
-  // "when the stored violation reading last MOVED". The `removido` arm below
-  // stamps it unconditionally, where the design is explicit.
+  // ⚠️ `violacoesLidasEm` rides ONLY with a CHANGED list — the meaning
+  // `shopeeLink.ts` now declares for the field, "when the stored `violations`
+  // list last CHANGED", and which `pushAnuncio.ts` honours through this same
+  // comparison (ruling O10). Stamping it on every healthy re-verify would make
+  // `ignorado-sem-mudanca` unreachable and turn a read-only diagnostic into a
+  // write per button press. The `removido` arm below stamps it unconditionally,
+  // where the design is explicit.
   if (violacoesLidas && (armazenadas === null || !mesmasViolacoes(armazenadas, violacoes))) {
     patch.violations = violacoes;
     patch.violacoesLidasEm = deps.nowMs;

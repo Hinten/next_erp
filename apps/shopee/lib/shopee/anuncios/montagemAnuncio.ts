@@ -18,6 +18,15 @@
  *    A pause is the operator's (the legacy hardcoded `"NORMAL"` on every save and
  *    silently re-listed paused items); price and stock are steps 12/13 and are
  *    absent from `update_item`'s own table.
+ *    ⚠️ **A field that never rides an update cannot refuse one**, so FIVE members
+ *    of the vocabulary below are CREATE-ONLY and are gated on `!ehAtualizacao`:
+ *    `sem-preco`, `filho-sem-preco`, `preco-fora-da-faixa` (no `original_price`),
+ *    `estoque-abaixo-do-minimo` (no `seller_stock`) and `marca-sem-nome` (both
+ *    `brand` children are required on create and optional on update, so an
+ *    unresolvable name merely OMITS the block). Every other refusal applies to
+ *    both bodies. Refusing an update over a field it does not send makes the
+ *    produto permanently unpublishable-and-unupdatable — which is precisely what
+ *    the price pair did to a produto with no entry in the conta's tabela normal.
  * 2. **`item_sku` and `gtin_code` are OMITTED when the ERP has no value**, never
  *    sent blank or as a placeholder — both are fields `guide 221 §5` names as
  *    deletable by an empty string.
@@ -709,30 +718,42 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   const precoProprio =
     tabela === null ? null : numeroPositivo(produto.precos?.[tabela]?.valor ?? null);
   const preco = args.temFilhos ? numeroPositivo(args.precoDoPrimeiroFilho) : precoProprio;
-  if (preco === null) {
-    problemas.push(
-      args.temFilhos
-        ? problema(
-            'original_price',
-            MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
-            'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
-              'descartável do item',
-          )
-        : problema(
-            'original_price',
-            MOTIVO_PUBLICACAO_BLOQUEADA.semPreco,
-            'o produto não tem preço na tabela normal da conta',
-          ),
-    );
-  } else if (!dentroDaFaixa(preco, bandas.priceLimit)) {
-    problemas.push(
-      problema(
-        'original_price',
-        MOTIVO_PUBLICACAO_BLOQUEADA.precoForaDaFaixa,
-        `o preço ${String(preco)} está fora da faixa da categoria ` +
-          `(${descreverFaixa(bandas.priceLimit)})`,
-      ),
-    );
+  // ⚠️ CREATE-only, all three — the same rule the `seller_stock` refusal below
+  // already follows, and for the same reason: `original_price` is absent from
+  // `update_item`'s table (point 1 of the module docblock) and `atualizar`
+  // carries no such key, so an update sends no price and there is nothing to
+  // refuse. Gating them on the create is what keeps a produto with no entry in
+  // the conta's tabela normal — a step-9 import, an unset `tabelaNormalOuterRef`,
+  // a price living in another lista — UPDATABLE at all: without it `montarAnuncio`
+  // returned a blocking problema, `aplicarPublicacao` raised
+  // `ShopeePublishBlockedError` before the first Shopee call, and an operator
+  // fixing a description or refreshing photos got a 422 `sem-preco`.
+  if (!args.ehAtualizacao) {
+    if (preco === null) {
+      problemas.push(
+        args.temFilhos
+          ? problema(
+              'original_price',
+              MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+              'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
+                'descartável do item',
+            )
+          : problema(
+              'original_price',
+              MOTIVO_PUBLICACAO_BLOQUEADA.semPreco,
+              'o produto não tem preço na tabela normal da conta',
+            ),
+      );
+    } else if (!dentroDaFaixa(preco, bandas.priceLimit)) {
+      problemas.push(
+        problema(
+          'original_price',
+          MOTIVO_PUBLICACAO_BLOQUEADA.precoForaDaFaixa,
+          `o preço ${String(preco)} está fora da faixa da categoria ` +
+            `(${descreverFaixa(bandas.priceLimit)})`,
+        ),
+      );
+    }
   }
 
   /* -------------------------------- stock ---------------------------------- */

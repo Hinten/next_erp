@@ -594,6 +594,62 @@ describe('montarAnuncio — a banda de estoque da loja', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*              (5b) as três recusas de preço são CREATE-only                  */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — o preço não recusa um update', () => {
+  // ⚠️ `update_item` não carrega `original_price` (ponto 1 do docblock do módulo,
+  // e `atualizar` não tem a chave), então recusar um update por preço tornava um
+  // produto sem entrada na tabela normal da conta — um import do passo 9, um
+  // `tabelaNormalOuterRef` em branco, um preço que mora em outra lista —
+  // impossível de ATUALIZAR: nem descrição, nem fotos, nem o leg de tiers.
+  it('PAR: um update sem preço nenhum não produz problema e não manda original_price', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: null }), link: link(), ehAtualizacao: true }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('sem-preco');
+    expect(montado.problemas).toEqual([]);
+    expect(Object.keys(montado.atualizar ?? {})).not.toContain('original_price');
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO produto sem preço ainda recusa um CREATE', () => {
+    const montado = montarAnuncio(args({ produto: produto({ precos: null }) }));
+    expect(motivos(montado.problemas)).toContain('sem-preco');
+  });
+
+  it('PAR: um update com preço fora da faixa da categoria não produz problema', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: produto({ precos: { [TABELA_NORMAL]: { valor: 5000 } } }),
+        link: link(),
+        ehAtualizacao: true,
+      }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('preco-fora-da-faixa');
+    expect(Object.keys(montado.atualizar ?? {})).not.toContain('original_price');
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO preço fora da faixa ainda recusa um CREATE', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: { [TABELA_NORMAL]: { valor: 5000 } } }) }),
+    );
+    expect(motivos(montado.problemas)).toContain('preco-fora-da-faixa');
+  });
+
+  it('PAR: filho-sem-preco também é create-only', () => {
+    const atualizar = montarAnuncio(
+      args({ temFilhos: true, precoDoPrimeiroFilho: null, link: link(), ehAtualizacao: true }),
+    );
+    expect(motivos(atualizar.problemas)).not.toContain('filho-sem-preco');
+
+    // ⚠️ NEAR-MISS: o descartável do primeiro filho só existe no create, e lá ele
+    // continua sendo obrigatório.
+    const criar = montarAnuncio(args({ temFilhos: true, precoDoPrimeiroFilho: null }));
+    expect(motivos(criar.problemas)).toContain('filho-sem-preco');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                   (6) a quantidade ciente de kit — P2 §3.3                  */
 /* -------------------------------------------------------------------------- */
 

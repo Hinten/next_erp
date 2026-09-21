@@ -359,12 +359,24 @@ export const produtoShopeeLinkSchema = z
      * all-or-nothing, so a partial one is never sent.
      */
     taxInfoOmitido: z.string().nullable().default(null),
-    /** MILLISECONDS. When a violation READ last landed (re-verify, push 16). */
+    /**
+     * MILLISECONDS. When the stored `violations` list last CHANGED — written by
+     * the re-verify and by push 16, and by both under the same rule.
+     *
+     * ⚠️ **An identical reading does NOT move it.** The two writers compare the
+     * list they are about to store against the stored one (`mesmasViolacoes`, one
+     * comparison shared by both) and stamp only on a difference, so the field
+     * answers "since when has this been the picture", never "when did we last
+     * look". That is what keeps the re-verify's `ignorado-sem-mudanca` reachable
+     * and what stops a healthy button press writing a document per press.
+     */
     violacoesLidasEm: z.number().int().nullable().default(null),
     /**
-     * MILLISECONDS. When a SCHEDULED publish was reported as failed (push 27).
+     * MILLISECONDS. When a SCHEDULED publish was **reported** as failed — the
+     * instant push 27 was processed, never the `scheduled_publish_time` the
+     * publish was due at.
      * ⚠️ The push carries no reason and there is no success push, so this stamp
-     * says only *that* it failed — never why.
+     * says only *that* it failed — never why, and never when it was meant to run.
      */
     agendamentoFalhouEm: z.number().int().nullable().default(null),
   })

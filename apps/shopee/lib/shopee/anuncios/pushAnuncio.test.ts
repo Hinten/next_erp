@@ -807,13 +807,18 @@ describe('o aviso', () => {
     // UMA chamada: o code 27 não lê violação nenhuma.
     expect(cli.chamadas.map((c) => c.op)).toEqual(['get_item_base_info']);
     expect(r.violacoesLidas).toBe(false);
+    // ⚠️ O carimbo é o relógio da ENTREGA (`nowMs`) — "quando uma publicação
+    // agendada foi REPORTADA como falha", que é o que `shopeeLink.ts` declara —
+    // e NUNCA o `scheduled_publish_time`, que é quando ela estava marcada. São
+    // duas grandezas diferentes e um campo só não carrega as duas.
     expect(patchDoLink(db)).toEqual({
       item_status: 'UNLIST',
       estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado,
       deboost: false,
-      agendamentoFalhouEm: AGENDADO_S * 1000,
+      agendamentoFalhouEm: AGORA_MS,
       ultimaModificacao: AGORA_MS,
     });
+    expect(patchDoLink(db).agendamentoFalhouEm).not.toBe(AGENDADO_S * 1000);
     expect(db.store[AVISO_PATH]?.data).toMatchObject({
       motivo: MOTIVO_AVISO_ANUNCIO.agendamentoFalhou,
       params: { violacao: 'publicação agendada falhou' },
@@ -822,9 +827,38 @@ describe('o aviso', () => {
     });
   });
 
-  it('14 — uma reentrega idêntica produz o MESMO patch e o aviso responde ignorado', async () => {
-    // Idempotência por RE-BUSCA: a mesma leitura produz o mesmo patch, e a marca
-    // d'água do relógio do evento derruba a segunda entrega.
+  it('13b — ⚠️ NEAR-MISS: um code 27 SEM agendamento utilizável carimba nowMs e NÃO apaga o anterior', async () => {
+    // `agendadoParaMsDe` responde null para um valor ausente, zero-filled ou
+    // pré-2020, e a escrita é uma sobrescrita simples: carimbar o agendamento
+    // fazia um segundo code 27 sem horário utilizável APAGAR o registro que o
+    // primeiro deixou, e o vínculo ficava sem prova nenhuma de que uma publicação
+    // agendada havia falhado.
+    const db = new FakeDb();
+    semearLink(db, { agendamentoFalhouEm: AGORA_MS - 86_400_000 });
+    const cli = clienteQueResponde({ base: [linhaBase({ item_status: 'UNLIST' })] });
+
+    const entrega = alvoDoCorpo(27, { item_id: ITEM_ID, scheduled_publish_time: 0 });
+    expect(entrega.agendadoParaMs).toBeNull();
+
+    await tratarPushDeAnuncio(asDb(db), entrega, {
+      clientFor: () => Promise.resolve(cli.client),
+      increment,
+    });
+
+    const patch = patchDoLink(db);
+    expect(patch.agendamentoFalhouEm).toBe(AGORA_MS);
+    expect(patch.agendamentoFalhouEm).not.toBeNull();
+    expect(db.store[LINK_PATH]?.data).toMatchObject({ agendamentoFalhouEm: AGORA_MS });
+  });
+
+  it('14 — uma reentrega idêntica reescreve a MESMA leitura, sem mover violacoesLidasEm, e o aviso responde ignorado', async () => {
+    // Idempotência por RE-BUSCA: a mesma leitura produz a mesma leitura escrita,
+    // e a marca d'água do relógio do evento derruba a segunda entrega.
+    //
+    // ⚠️ PAR (regra O10): a segunda entrega é o primeiro patch MENOS
+    // `violacoesLidasEm` — o campo significa "quando a lista armazenada MUDOU",
+    // e na reentrega ela não mudou. Todo o resto continua sendo reescrito: este
+    // braço re-busca em vez de diffar, então sempre grava a sua leitura.
     const db = new FakeDb();
     semearLink(db);
     const deps = {
@@ -845,12 +879,53 @@ describe('o aviso', () => {
     const segunda = await tratarPushDeAnuncio(asDb(db), entrega, deps);
     const patch2 = db.writes.filter((w) => w.path === LINK_PATH).at(-1)?.patch;
 
-    expect(patch2).toEqual(patch1);
+    // A primeira entrega MOVE o carimbo: o vínculo não tinha lista nenhuma.
+    expect(patch1).toMatchObject({ violacoesLidasEm: AGORA_MS });
+    // A segunda não: as linhas são as mesmas.
+    expect(patch2).not.toHaveProperty('violacoesLidasEm');
+    const { violacoesLidasEm: _carimbo, ...semCarimbo } = patch1 as Record<string, unknown>;
+    expect(patch2).toEqual(semCarimbo);
     expect(primeira.avisoResultado).toBe('criado');
     // ⚠️ `ignorado`, não `repetido`: o mesmo `relogioEvento` não é mais fresco que
     // o armazenado, e `ocorrencias` não se move.
     expect(segunda.avisoResultado).toBe('ignorado');
     expect(db.store[AVISO_PATH]?.data).toMatchObject({ ocorrencias: 1 });
+  });
+
+  it('14b — ⚠️ NEAR-MISS: uma linha com violation_type DIFERENTE move violacoesLidasEm', async () => {
+    // O par de 14 mostra que o fold APLICA; este mostra onde ele PARA. Se a
+    // comparação dobrasse demais — ignorando o tipo, por exemplo — uma violação
+    // nova entraria com o carimbo da antiga, e o painel do operador diria que a
+    // leitura é de dias atrás.
+    const db = new FakeDb();
+    semearLink(db);
+    const primeiroCli = clienteQueResponde({
+      base: [linhaBase({ item_status: 'BANNED' })],
+      violacao: [linhaViolacao()],
+    });
+    const entrega = alvoDoCorpo(16, corpoPush16());
+    const ultimoPatch = (): Record<string, unknown> | undefined =>
+      db.writes.filter((w) => w.path === LINK_PATH).at(-1)?.patch;
+    await tratarPushDeAnuncio(asDb(db), entrega, {
+      clientFor: () => Promise.resolve(primeiroCli.client),
+      increment,
+    });
+    expect(ultimoPatch()).toMatchObject({ violacoesLidasEm: AGORA_MS });
+
+    const DEPOIS_MS = AGORA_MS + 60_000;
+    const segundoCli = clienteQueResponde({
+      base: [linhaBase({ item_status: 'BANNED' })],
+      violacao: [
+        linhaViolacao({ item_status_details: [detalhe({ violation_type: 'Prohibited' })] }),
+      ],
+    });
+    await tratarPushDeAnuncio(
+      asDb(db),
+      alvo({ ...entrega, nowMs: DEPOIS_MS, carimboMs: DEPOIS_MS }),
+      { clientFor: () => Promise.resolve(segundoCli.client), increment },
+    );
+
+    expect(ultimoPatch()).toMatchObject({ violacoesLidasEm: DEPOIS_MS });
   });
 });
 
@@ -975,13 +1050,51 @@ describe('a listagem que a Shopee não tem mais', () => {
     });
 
     expect(r.acao).toBe(ACAO_PUSH_ANUNCIO.ignoradoRemovido);
+    // ⚠️ PAR (regra O10): o vínculo semeado não tinha violação nenhuma, e a
+    // leitura de um anúncio que a Shopee não tem mais também é a lista VAZIA —
+    // nada mudou, então `violacoesLidasEm` não se move. O braço abaixo mostra o
+    // outro lado.
+    expect(patchDoLink(db)).toEqual({
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      ultimaModificacao: AGORA_MS,
+    });
+    // Nenhuma chamada de violação: não há listagem sobre a qual perguntar.
+    expect(cli.chamadas.map((c) => c.op)).toEqual(['get_item_base_info']);
+  });
+
+  it('⚠️ um vínculo que TINHA violações move violacoesLidasEm ao virar removido', async () => {
+    // O outro lado do par: a lista armazenada deixa de descrever qualquer coisa
+    // quando o anúncio some, e isso É uma mudança. As linhas em si ficam — são o
+    // único registro do que a listagem foi recusada por ser.
+    const db = new FakeDb();
+    semearLink(db, {
+      violations: [
+        {
+          violation_type: 'Spam',
+          violation_reason: PROSA_RAZAO,
+          suggestion: PROSA_SUGESTAO,
+          fix_deadline_time: PRAZO_MS,
+          update_time: PRAZO_MS,
+          kind: 'status',
+          days_to_fix: null,
+          suggested_category: null,
+        },
+      ],
+    });
+    const cli = clienteQueResponde({ base: erroApi('error_item_not_found') });
+
+    await tratarPushDeAnuncio(asDb(db), alvoDoCorpo(16, corpoPush16()), {
+      clientFor: () => Promise.resolve(cli.client),
+      increment,
+    });
+
     expect(patchDoLink(db)).toEqual({
       estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
       violacoesLidasEm: AGORA_MS,
       ultimaModificacao: AGORA_MS,
     });
-    // Nenhuma chamada de violação: não há listagem sobre a qual perguntar.
-    expect(cli.chamadas.map((c) => c.op)).toEqual(['get_item_base_info']);
+    // E as linhas armazenadas NÃO são apagadas.
+    expect(db.store[LINK_PATH]?.data).toHaveProperty('violations');
   });
 
   it('⚠️ o código com prefixo de módulo é o MESMO veredito', async () => {
