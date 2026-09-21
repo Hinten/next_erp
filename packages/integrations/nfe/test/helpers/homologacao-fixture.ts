@@ -22,7 +22,6 @@ import {
   type Imposto,
 } from '../../src/tribute';
 import {
-  IE_SENTINELA,
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
   ORIGEM,
@@ -194,13 +193,11 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      // The fixture's cliente carries the NAO CONTRIBUINTE sentinel, so
-      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
-      // 696 then demands indFinal='1' — i.e. the operation must be
-      // marked as final-consumer. Flipping this to `true` satisfies
-      // the cross-field consistency check and matches the semantics
-      // of the fixture (a marketplace-style sale to an end consumer
-      // without state inscription).
+      // The destinatário is a PESSOA FÍSICA with no IE, so `buildDest` stamps
+      // indIEDest='9' (não contribuinte). SEFAZ rule 696 then demands
+      // indFinal='1' — the operation must be marked as final-consumer. This
+      // satisfies that cross-field check and matches what the fixture MEANS: a
+      // marketplace-style sale to an end consumer without state inscription.
       ehConsumidorFinal: true,
       padrao: false,
       ativo: true,
@@ -222,20 +219,44 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       ultimaModificacao: null,
     },
     cliente: {
-      tipo: TIPO_CLIENTE.pessoaJuridica,
+      tipo: TIPO_CLIENTE.pessoaFisica,
       // dest.xNome is replaced by the homologação literal — cliente.nome
       // here exists only for completeness; sanitization is exercised by
       // the address fields above.
       nome: 'CLIENTE HOMOLOGACAO',
-      cpf_cnpj: '99999999000191',
+      // ⚠️ A CPF destinatário (tag E03), and the reason is MEASURED, not a
+      // preference. NT 2026.007's RV 12E02-10 reads *"se informado CNPJ do
+      // Destinatário (tag: E02)"*, so a pessoa física is outside the rule
+      // entirely — which is why `apps/nfe`'s `orchestrator.homologacao` and
+      // `epec.homologacao`, which always built a PF destinatário, kept emitting
+      // through the whole 181 outage. This is their exact document.
+      //
+      // ⚠️ THE OFFICIAL CNPJ ROUTE WAS TRIED FIRST AND SEFAZ REFUSED IT. Run
+      // 35605049930 emitted with `PC3D315K000193` — a real row from SEFAZ's own
+      // published "CNPJs alfa cadastrados no CCC de homologação" table — and got
+      // cStat **181** again. That settles the open question in #1612: the table
+      // is the **CCC**, the states' shared register, while 12E02-10 queries the
+      // **LCC-RFB**, the federal one, and a CCC row does NOT imply an LCC-RFB
+      // row. Do not re-try a CNPJ here: every attempt spends quota at a
+      // rate-limited endpoint and feeds the 656 ban path.
+      cpf_cnpj: '12345678909',
       idEstrangeiro: null,
-      // The NAO CONTRIBUINTE sentinel rather than `null`. Both now reach
-      // indIEDest='9', but the sentinel says explicitly what this fixture
-      // MEANS — a marketplace sale to an end consumer without state
-      // inscription — instead of relying on the ladder's default for an
-      // unclassified cliente. It also makes every live homologação
-      // round-trip prove the sentinel never reaches the signed XML.
-      ie: IE_SENTINELA.naoContribuinte,
+      // ⚠️ `null`, not `IE_SENTINELA.naoContribuinte`, because the destinatário
+      // is a pessoa física: `buildDest`'s ladder answers indIEDest='9' from
+      // `tipo` alone (`!ehPJ`), so the sentinel would be inert here rather than
+      // load-bearing, and a stray IE on a PF is one of the shapes
+      // `parties.test.ts` exists to refuse.
+      //
+      // ⚠️ WHAT THIS COSTS, so nobody has to rediscover it: the live lane no
+      // longer exercises `buildDest`'s pessoaJuridica branch — `<CNPJ>` instead
+      // of `<CPF>` — nor the `IE_SENTINELA` round-trip that proved the sentinel
+      // never reaches the signed XML. Both moved OFFLINE rather than
+      // disappearing: `test/generator/parties.test.ts` pins the tag selection and
+      // the whole indIEDest ladder including the sentinel, and
+      // `test/xsd/cnpj-alfanumerico.test.ts` overrides `tipo` back to PJ so the
+      // alfa `<CNPJ>` still meets the real XSD facet. The live emission is what
+      // could not be kept: SEFAZ refuses every CNPJ we are allowed to use.
+      ie: null,
       imun: null,
       isUF: null,
       email: null,

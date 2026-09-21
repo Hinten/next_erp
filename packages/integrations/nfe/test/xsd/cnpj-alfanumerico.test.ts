@@ -18,10 +18,30 @@
 import { describe, expect, it } from 'vitest';
 
 import { validateCNPJ } from '@delfrance/core/documents';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 
 import { generateNFe } from '../../src/generator';
 import { NFeXsdValidationError, validateXsd } from '../../src/xsd';
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
+
+/**
+ * Every XSD error whose message names a `pattern` facet, for one generated XML.
+ *
+ * ⚠️ The filter is the point. The generator emits an UNSIGNED `<NFe>` and the
+ * schema requires `<Signature>`, so a bare `resolves.toBeUndefined()` fails for a
+ * reason that has nothing to do with the document fields.
+ */
+async function errosDePatternDe(nfeXml: string): Promise<string[]> {
+  try {
+    await validateXsd('NFe', nfeXml);
+    return [];
+  } catch (err) {
+    if (err instanceof NFeXsdValidationError) {
+      return err.errors.map((e) => e.message).filter((m) => m.includes("facet 'pattern'"));
+    }
+    throw err;
+  }
+}
 
 /** Every XSD error whose message names a `pattern` facet. */
 async function errosDePattern(cpfCnpj: string): Promise<string[]> {
@@ -31,16 +51,24 @@ async function errosDePattern(cpfCnpj: string): Promise<string[]> {
     cnpj: '99999999000191',
     ie: '111111111',
   });
-  const out = generateNFe({ ...base, cliente: { ...base.cliente, cpf_cnpj: cpfCnpj } });
-  try {
-    await validateXsd('NFe', out.nfeXml);
-    return [];
-  } catch (err) {
-    if (err instanceof NFeXsdValidationError) {
-      return err.errors.map((e) => e.message).filter((m) => m.includes("facet 'pattern'"));
-    }
-    throw err;
-  }
+  // ⚠️ `tipo` is forced back to PESSOA JURÍDICA here, and that is load-bearing:
+  // the shared fixture's destinatário is a pessoa física (SEFAZ rejects every
+  // CNPJ we may use with cStat 181 — see the fixture's own comment), so without
+  // this override the alfa value would land in `<CPF>`, whose facet is
+  // `[0-9]{11}`, and the test would report a pattern error that says nothing
+  // about `TCnpj`.
+  //
+  // ⚠️ `ie` is deliberately NOT overridden. An earlier revision set the
+  // não-contribuinte sentinel here and claimed a PJ with no `ie` was a different
+  // rung — it is not: `classifyIe(null)` answers `'ausente'`, and `parties.ts`
+  // folds `'ausente'` and `'naoContribuinte'` into the same `indIEDest='9'` arm
+  // with no `<IE>`. The override was inert, and an inert line that claims to be
+  // load-bearing is the thing the next reader trips over.
+  const out = generateNFe({
+    ...base,
+    cliente: { ...base.cliente, tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: cpfCnpj },
+  });
+  return errosDePatternDe(out.nfeXml);
 }
 
 describe('CNPJ alfanumérico — XSD gate (NT 2026.004 / PL_010d)', () => {
@@ -104,6 +132,31 @@ describe('CNPJ alfanumérico — XSD gate (NT 2026.004 / PL_010d)', () => {
  * to — and both used `replace(/\D/g, '')`, which ate the letters and then
  * rejected the wreckage.
  */
+/**
+ * The counterpart to `errosDePattern`'s `tipo` override, and the reason it needs
+ * one: the shared fixture's destinatário is a PESSOA FÍSICA, so every case above
+ * validates a document the live lane does NOT emit.
+ *
+ * ⚠️ Without this, the `<CPF>`-shaped `<dest>` that `emission.homologacao` and
+ * `rtc.homologacao` actually send would meet a schema for the first time AT
+ * SEFAZ. That is the one thing this package is built not to do — a
+ * schema-invalid document reaching SEFAZ feeds the 656 ban path (root
+ * `CLAUDE.md`), which is why the alfa CNPJ fix had to be the XSD pack rather
+ * than a bypass. The same reasoning applies to the shape we swapped IN.
+ */
+describe('the fixture as the live lane emits it', () => {
+  it('the untouched PF fixture is XSD-clean', async () => {
+    const out = generateNFe(
+      buildHomologacaoFixture({ numeracao: 1, serie: 2, cnpj: '99999999000191', ie: '111111111' }),
+    );
+    // `<CPF>` is `[0-9]{11}` and `<CNPJ>` is absent — the document SEFAZ has been
+    // accepting live since the destinatário moved off the CNPJ tag.
+    expect(out.nfeXml).toContain('<CPF>12345678909</CPF>');
+    expect(out.nfeXml).not.toContain('<dest><CNPJ>');
+    await expect(errosDePatternDe(out.nfeXml)).resolves.toEqual([]);
+  });
+});
+
 describe('CNPJ alfanumérico — the generator guards', () => {
   function fixtureComCnpjFab(cnpjFab: string) {
     const base = buildHomologacaoFixture({
