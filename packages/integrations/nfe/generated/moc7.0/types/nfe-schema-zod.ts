@@ -11,6 +11,9 @@ import type {
   detEvento_e110111,
   detEvento_e110140_dest,
   detEvento_e110140,
+  TRSAKeyValueType,
+  TEvento_infEvento_infPAA_PAASignature,
+  TEvento_infEvento_infPAA,
   TEvento_infEvento,
   TEvento,
   TEnvEvento,
@@ -153,6 +156,8 @@ import type {
   TNFe_infNFe_agropecuario_defensivo,
   TNFe_infNFe_agropecuario_guiaTransito,
   TNFe_infNFe_agropecuario,
+  TNFe_infNFe_infPAA_PAASignature,
+  TNFe_infNFe_infPAA,
   TNFe_infNFe,
   TNFe_infNFeSupl,
   TNFe,
@@ -235,6 +240,21 @@ export const detEvento_e110140Schema: z.ZodType<detEvento_e110140> = z.lazy(() =
   versao: z.string(),
 })) as z.ZodType<detEvento_e110140>;
 
+export const TRSAKeyValueTypeSchema: z.ZodType<TRSAKeyValueType> = z.lazy(() => z.object({
+  Modulus: z.string(),
+  Exponent: z.string(),
+})) as z.ZodType<TRSAKeyValueType>;
+
+export const TEvento_infEvento_infPAA_PAASignatureSchema: z.ZodType<TEvento_infEvento_infPAA_PAASignature> = z.lazy(() => z.object({
+  SignatureValue: z.string(),
+  RSAKeyValue: z.lazy(() => TRSAKeyValueTypeSchema),
+})) as z.ZodType<TEvento_infEvento_infPAA_PAASignature>;
+
+export const TEvento_infEvento_infPAASchema: z.ZodType<TEvento_infEvento_infPAA> = z.lazy(() => z.object({
+  CNPJPAA: z.string(),
+  PAASignature: z.lazy(() => TEvento_infEvento_infPAA_PAASignatureSchema),
+})) as z.ZodType<TEvento_infEvento_infPAA>;
+
 export const TEvento_infEventoSchema: z.ZodType<TEvento_infEvento> = z.lazy(() => z.object({
   cOrgao: z.enum(['11', '12', '13', '14', '15', '16', '17', '21', '22', '23', '24', '25', '26', '27', '28', '29', '31', '32', '33', '35', '41', '42', '43', '50', '51', '52', '53', '90', '91', '92']),
   tpAmb: z.enum(['1', '2']),
@@ -246,6 +266,7 @@ export const TEvento_infEventoSchema: z.ZodType<TEvento_infEvento> = z.lazy(() =
   nSeqEvento: z.string(),
   verEvento: z.string(),
   detEvento: z.string(),
+  infPAA: z.lazy(() => TEvento_infEvento_infPAASchema).optional(),
   Id: z.string(),
 })) as z.ZodType<TEvento_infEvento>;
 
@@ -330,7 +351,7 @@ export const TNFe_infNFe_ideSchema: z.ZodType<TNFe_infNFe_ide> = z.lazy(() => z.
   indFinal: z.enum(['0', '1']),
   indPres: z.enum(['0', '1', '2', '3', '4', '5', '9']),
   indIntermed: z.enum(['0', '1']).optional(),
-  procEmi: z.enum(['0', '1', '2', '3']),
+  procEmi: z.enum(['0', '1', '2', '3', '4']),
   verProc: z.string(),
   dhCont: z.string().optional(),
   xJust: z.string().optional(),
@@ -1646,6 +1667,16 @@ export const TNFe_infNFe_agropecuarioSchema: z.ZodType<TNFe_infNFe_agropecuario>
   guiaTransito: z.lazy(() => TNFe_infNFe_agropecuario_guiaTransitoSchema).optional(),
 })) as z.ZodType<TNFe_infNFe_agropecuario>;
 
+export const TNFe_infNFe_infPAA_PAASignatureSchema: z.ZodType<TNFe_infNFe_infPAA_PAASignature> = z.lazy(() => z.object({
+  SignatureValue: z.string(),
+  RSAKeyValue: z.lazy(() => TRSAKeyValueTypeSchema),
+})) as z.ZodType<TNFe_infNFe_infPAA_PAASignature>;
+
+export const TNFe_infNFe_infPAASchema: z.ZodType<TNFe_infNFe_infPAA> = z.lazy(() => z.object({
+  CNPJPAA: z.string(),
+  PAASignature: z.lazy(() => TNFe_infNFe_infPAA_PAASignatureSchema),
+})) as z.ZodType<TNFe_infNFe_infPAA>;
+
 export const TNFe_infNFeSchema: z.ZodType<TNFe_infNFe> = z.lazy(() => z.object({
   ide: z.lazy(() => TNFe_infNFe_ideSchema),
   emit: z.lazy(() => TNFe_infNFe_emitSchema),
@@ -1667,6 +1698,7 @@ export const TNFe_infNFeSchema: z.ZodType<TNFe_infNFe> = z.lazy(() => z.object({
   infRespTec: z.lazy(() => TInfRespTecSchema).optional(),
   infSolicNFF: z.lazy(() => TNFe_infNFe_infSolicNFFSchema).optional(),
   agropecuario: z.lazy(() => TNFe_infNFe_agropecuarioSchema).optional(),
+  infPAA: z.lazy(() => TNFe_infNFe_infPAASchema).optional(),
   versao: z.string(),
   Id: z.string(),
 })) as z.ZodType<TNFe_infNFe>;

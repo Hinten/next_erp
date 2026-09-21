@@ -23,7 +23,7 @@ substitute.
 | **`2026.007 v1.00`** | **teste 01/09/2026 · prod 03/11/2026** | **Emissão por Contribuinte exclusivo do IBS/CBS + RVs de cadastro LCC-RFB** | **MAJOR para os testes live.** §5.10 obriga todo CNPJ citado (emitente `C02`, destinatário `E02`, retirada `F02`, entrega `G02`, autor de evento) a existir na **LCC-RFB** — réplica nacional do cadastro CNPJ da RFB — e a estar `02-Ativa`. Novos cStat **178–186**, numa faixa que nenhuma tabela pública catalogava. É a causa do `181` em `emission.homologacao` e do `178` em SVC-AN (#1471, #1612). Também permite NF-e **sem IE** para contribuinte exclusivo de IBS/CBS (RVs C17-11/42/43, C18-50) e veda NFC-e a esse emitente. Detalhe em `cstat-rejeicoes.md` §178–186. |
 | `2026.006 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Baixar do portal e vendorar antes de assumir irrelevância. |
 | `2026.005 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Idem. |
-| `2026.004 v1.00` | — | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | Schema regen needed (codegen.md). Affects chave structure if alfanumérico estende-se a NF-e. |
+| **`2026.004 v1.01`** | **teste 01/06/2026 · prod 01/07/2026** | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | ✅ **Schema pack trocado e tipos regerados** — `PL_010d_v1.03` vendorado, substituindo `PL_010c` (ver `sources/nt/2026/` e o `MANIFEST.json`). `TCnpj`/`TCnpjVar` → `[0-9A-Z]{12}[0-9]{2}`, `TCnpjOpc` → `[0-9]{0}|[0-9A-Z]{12}[0-9]{2}`, `TChNFe` → `[0-9]{6}[0-9A-Z]{12}[0-9]{26}`, `infNFe/@Id` idem. ⚠️ A janela alfanumérica da chave é **exatamente as posições 6–17** (o corpo de 12 caracteres do CNPJ); os 2 DV do CNPJ e todo o resto seguem numéricos — por isso os consumidores de `chave.slice(6,20)` continuam corretos. O pacote traz de carona o grupo PAA da NT 2026.001 (`infPAA`/`PAASignature`). Pinado por `test/xsd/cnpj-alfanumerico.test.ts`. |
 | `2026.003 v1.00` | — | ⚠️ **não vendorada — atribuição não verificada** | Esta linha dizia "DANFE Simplificado Tipo 2", mas esse é o assunto da **2026.002** (verificado na capa do PDF vendorado). Sem o PDF da 2026.003 não há como dizer do que ela trata. |
 | `2026.002 v1.00` | Maio/2026 | **Operações de vendas presenciais e não presenciais com impressão do DANFE Simplificado Tipo 2** | Out of scope — layout **NFC-e** (modelo 65). Nosso DANFE modelo 55 está em `references/danfe.md`; o Tipo 2 simplificado não. ⚠️ Corrigido: a tabela antes marcava esta linha como "tbd" e atribuía o assunto à 2026.003. Título lido da capa de `sources/nt/2026/NT_2026.002_v1.00.pdf`. |
 | `2026.001 v1.00` | — | PAA — Pagamento Antecipado de Adquirente | New flow related to RTC; cross-reference with `rtc-ibs-cbs-is.md` (gPagAntecipado Grupo BC). |
@@ -43,10 +43,20 @@ vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
 
 > **CNPJ Alfanumérico**: a separate companion document
 > `DFe NTCJ 2025.001 CNPJ Alfa v1.00` (under `nt/2025/`) introduces the
-> alphanumeric CNPJ format. Production for CNPJ alfa starts mid-2026; the
-> NFe schemas were updated by NT 2026.004. If the project uses CNPJ
-> validation regex anywhere, audit for `[0-9]{14}` patterns that need to
-> become `[0-9A-Z]{14}`.
+> alphanumeric CNPJ format (RFB Instrução Normativa 2.229/2024). The NF-e
+> schemas were updated by NT 2026.004 and **the pack swap is done** (row above).
+> ⚠️ The correct shape is `[0-9A-Z]{12}[0-9]{2}` — **not** `[0-9A-Z]{14}`: the two
+> check digits stay numeric. `validateCNPJ` in `@delfrance/core/documents` already
+> implements it (módulo 11 weighting each character by `charCodeAt − 48`) and is
+> the canonical implementation — reuse it, never re-derive it.
+> ⚠️ **Existing CNPJs never become alphanumeric**; only newly registered ones do.
+> So our own emitente CNPJ (and its A1 cert) stay numeric, and we never generate
+> an alfa chave — but we must accept alfa from every counterparty.
+> ⚠️ The schema layer is done; the **application** layer is only partly migrated.
+> Still numeric-only at the time of writing: `filial.cnpj` and
+> `integracao.cpf_cnpj` (Zod `/^\d*$/`), the filial `CnpjInput`, the CNPJ lookup
+> gates, `CHAVE_NFE_REGEX`, `raizCnpj` in the Simples apuração, the Melhor Envio
+> PJ/PF split, and the `\d{14}` PII-redaction regexes. See the plan in #1612.
 
 ## 2025 — the big year
 

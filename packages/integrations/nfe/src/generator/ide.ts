@@ -5,7 +5,7 @@
  * value the XML serializer can emit. See
  * `.claude/skills/nfe/references/leiaute.md` for field-by-field meaning.
  */
-import type { UF } from '@delfrance/schemas';
+import { CHAVE_NFE_REGEX, type UF } from '@delfrance/schemas';
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
@@ -68,12 +68,22 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
   const finNFe = (input.operacao.finNFe ?? 1).toString() as TNFe_infNFe_ide['finNFe'];
 
   // NFref (BA) — referenced NF-es (devolução finNFe=4 / complementar finNFe=2).
-  // Each must be a 44-digit chave; a malformed one is an upstream data error we
-  // surface here rather than letting SEFAZ reject the whole lote (rejection 269).
+  // Each must be a 44-character chave; a malformed one is an upstream data error
+  // we surface here rather than letting SEFAZ reject the whole lote (269).
+  //
+  // ⚠️ Uses the SHARED `CHAVE_NFE_REGEX` rather than a local copy. This used to
+  // inline `/^\d{44}$/`, a second copy of the same predicate the pedido layer
+  // already applies to this very array — so when NT 2026.004 made the chave
+  // alphanumeric (positions 6–17, the emitente CNPJ's body), fixing one copy
+  // would have left the other rejecting valid chaves from a counterparty with an
+  // alfa CNPJ. One predicate, one place (root CLAUDE.md).
   const nfRefs = (input.chNFeReferenciadas ?? []).filter((c): c is string => !!c);
   for (const chave of nfRefs) {
-    if (!/^\d{44}$/.test(chave)) {
-      throw new NFeIdeError(`chNFeReferenciada inválida (esperado 44 dígitos): '${chave}'`);
+    if (!CHAVE_NFE_REGEX.test(chave)) {
+      throw new NFeIdeError(
+        `chNFeReferenciada inválida (esperado 44 caracteres no formato ` +
+          `${CHAVE_NFE_REGEX.source}): '${chave}'`,
+      );
     }
   }
 

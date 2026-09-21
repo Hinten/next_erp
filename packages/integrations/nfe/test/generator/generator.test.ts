@@ -347,10 +347,21 @@ describe('generateNFe', () => {
       expect(generateNFe(BASE_INPUT).nfeXml).not.toContain('<NFref>');
     });
 
-    it('throws on a malformed chave (not 44 digits) before contacting SEFAZ', () => {
+    it('throws on a malformed chave before contacting SEFAZ', () => {
       expect(() => generateNFe({ ...BASE_INPUT, chNFeReferenciadas: ['123'] })).toThrow(
-        /44 dígitos/,
+        /chNFeReferenciada inválida/,
       );
+    });
+
+    // ⚠️ "44 digits" stopped being the rule with NT 2026.004: positions 6–17 of
+    // a chave are the emitente CNPJ's body, which may now be alphanumeric. The
+    // guard delegates to the shared CHAVE_NFE_REGEX, so a chave from a
+    // counterparty with an alfa CNPJ must pass while a letter outside that
+    // window must not. See test/xsd/cnpj-alfanumerico.test.ts for the pair.
+    it('rejects a 44-character chave with a letter outside the CNPJ body', () => {
+      expect(() =>
+        generateNFe({ ...BASE_INPUT, chNFeReferenciadas: [`${'1'.repeat(43)}A`] }),
+      ).toThrow(/chNFeReferenciada inválida/);
     });
   });
 

@@ -110,20 +110,37 @@ describe('nfeSchema', () => {
 });
 
 describe('CHAVE_NFE_REGEX', () => {
-  it('matches exactly 44 digits and nothing else', () => {
+  it('matches a 44-character chave and nothing else', () => {
     expect(CHAVE_NFE_REGEX.test('1'.repeat(44))).toBe(true);
     expect(CHAVE_NFE_REGEX.test('35260514200166000187550010000000071000000018')).toBe(true);
     expect(CHAVE_NFE_REGEX.test('1'.repeat(43))).toBe(false);
     expect(CHAVE_NFE_REGEX.test('1'.repeat(45))).toBe(false);
-    expect(CHAVE_NFE_REGEX.test(`${'1'.repeat(43)}A`)).toBe(false);
     expect(CHAVE_NFE_REGEX.test('')).toBe(false);
   });
 
-  it('stays byte-identical to the historical inline pattern', () => {
-    // Several call sites (pedido pageModel, UI inputs) replaced an inline
-    // /^\d{44}$/ with this constant — keep the source stable so behavior
-    // (and any future rules-gen consumption) never drifts.
-    expect(CHAVE_NFE_REGEX.source).toBe('^\\d{44}$');
+  // NT 2026.004 / RFB IN 2.229-2024. The alphanumeric window is the emitente
+  // CNPJ's 12-character body — positions 6–17 — and nothing else.
+  it('accepts letters in the CNPJ body (positions 6–17)', () => {
+    const alfa = `432601PC3D315K0001${'9'.repeat(26)}`;
+    expect(alfa).toHaveLength(44);
+    expect(CHAVE_NFE_REGEX.test(alfa)).toBe(true);
+  });
+
+  it('rejects letters OUTSIDE that window — where SEFAZ still forbids them', () => {
+    // cUF/AAMM prefix (0–5)
+    expect(CHAVE_NFE_REGEX.test(`43260A${'1'.repeat(38)}`)).toBe(false);
+    // the CNPJ's two check digits (18–19) and everything after
+    expect(CHAVE_NFE_REGEX.test(`432601PC3D315K0001A${'9'.repeat(25)}`)).toBe(false);
+    expect(CHAVE_NFE_REGEX.test(`${'1'.repeat(43)}A`)).toBe(false);
+    // lowercase is never accepted
+    expect(CHAVE_NFE_REGEX.test(`432601pc3d315k0001${'9'.repeat(26)}`)).toBe(false);
+  });
+
+  it('mirrors the TChNFe XSD facet byte for byte', () => {
+    // ⚠️ This constant is a copy of a SEFAZ facet, so the anchor is the SCHEMA,
+    // not our history: `TChNFe` in tiposBasico_v4.00.xsd. If the two ever
+    // disagree we accept chaves SEFAZ rejects, or reject ones it accepts.
+    expect(CHAVE_NFE_REGEX.source).toBe('^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$');
     expect(CHAVE_NFE_REGEX.flags).toBe('');
   });
 });
