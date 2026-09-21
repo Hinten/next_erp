@@ -22,7 +22,6 @@ import {
   type Imposto,
 } from '../../src/tribute';
 import {
-  IE_SENTINELA,
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
   ORIGEM,
@@ -126,7 +125,12 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     cEAN: 'SEM GTIN',
     xProd: 'Mercadoria com acentuação — ÁÉÍÓÚ@#$%',
     NCM: '61099000',
-    CFOP: '5102',
+    // ⚠️ THIS is the CFOP the generator reads (`det.ts`). The
+    // `operacao.cfop` / `cfopInterestadual` pair below is consulted only by the
+    // orchestrator (`generator-input.ts`), so changing those alone changes
+    // nothing in the emitted XML. `6102` because the destinatário is now an
+    // RS contribuinte and the emitente is SP — an INTERSTATE resale.
+    CFOP: '6102',
     uCom: 'UN',
     qCom: 1,
     vUnCom: 1500,
@@ -194,14 +198,14 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      // The fixture's cliente carries the NAO CONTRIBUINTE sentinel, so
-      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
-      // 696 then demands indFinal='1' — i.e. the operation must be
-      // marked as final-consumer. Flipping this to `true` satisfies
-      // the cross-field consistency check and matches the semantics
-      // of the fixture (a marketplace-style sale to an end consumer
-      // without state inscription).
-      ehConsumidorFinal: true,
+      // ⚠️ `false` since the destinatário became a CCC-registered CONTRIBUINTE.
+      // It used to be `true` and had to be: the cliente carried the NAO
+      // CONTRIBUINTE sentinel, `buildDest` stamped indIEDest='9', and SEFAZ rule
+      // 696 then demands indFinal='1'. Now the cliente carries a real IE, so
+      // indIEDest flips to '1' (`parties.ts`) and the operation is a resale to a
+      // reseller — indFinal='0'. The two must move TOGETHER: leaving this `true`
+      // beside a real IE claims a contribuinte bought as an end consumer.
+      ehConsumidorFinal: false,
       padrao: false,
       ativo: true,
       movimentaEstoque: true,
@@ -227,15 +231,49 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       // here exists only for completeness; sanitization is exercised by
       // the address fields above.
       nome: 'CLIENTE HOMOLOGACAO',
-      cpf_cnpj: '99999999000191',
+      // ⚠️ An OFFICIAL SEFAZ homologação test CNPJ, from the published
+      // "CNPJs alfa cadastrados no CCC de homologação" table — the RS row. It
+      // replaces `99999999000191`, which cStat 597 demands and which
+      // NT 2026.007's RV 12E02-10 rejects with **181**: the LCC-RFB query hits
+      // the real Receita register, and a reserved test CNPJ is not in it.
+      //
+      // ⚠️ Every official row in that table is ALPHANUMERIC, which is why the
+      // fixture fix and the `PL_010d_v1.03` schema pack turned out to be one
+      // problem (#1615): before the swap, `TCnpj` was `[0-9]{14}` and this value
+      // died in `validateXsd` locally. `test/xsd/cnpj-alfanumerico.test.ts` pins
+      // six of the rows, this one included, against both the vendored facet and
+      // our own ASCII-48 check digits.
+      //
+      // ⚠️ The table is the **CCC** (the states' shared register) while
+      // RV 12E02-10 queries the **LCC-RFB** (the federal one). They are not the
+      // same register, and no document states that a CCC row implies an LCC-RFB
+      // row — the live run is the experiment that settles it. If 181 comes back
+      // anyway, that distinction is the explanation and #1612 stays open.
+      cpf_cnpj: 'PC3D315K000193',
       idEstrangeiro: null,
-      // The NAO CONTRIBUINTE sentinel rather than `null`. Both now reach
-      // indIEDest='9', but the sentinel says explicitly what this fixture
-      // MEANS — a marketplace sale to an end consumer without state
-      // inscription — instead of relying on the ladder's default for an
-      // unclassified cliente. It also makes every live homologação
-      // round-trip prove the sentinel never reaches the signed XML.
-      ie: IE_SENTINELA.naoContribuinte,
+      // ⚠️ The CCC row's real IE, replacing `IE_SENTINELA.naoContribuinte`.
+      // The published CNPJs are registered CONTRIBUINTES, so keeping the
+      // sentinel would stamp indIEDest='9' and draw cStat **300**
+      // (NT 2025.001: "tipo da IE difere de Não Contribuinte") — trading one
+      // cadastral rejection for another. A real IE makes `parties.ts` stamp
+      // indIEDest='1' and emit `<IE>`; `idDest` flips to '2' on its own from
+      // `destUF !== filialUF` (`ide.ts`). Neither needs an edit here.
+      //
+      // ⚠️ The live coverage this loses is the sentinel round-trip: the fixture
+      // no longer proves `IE_SENTINELA` never reaches the signed XML. That
+      // property is pinned offline in the parties tests, and it is the cheaper
+      // side of the trade — the alternative is no live emission at all.
+      //
+      // ⚠️ THE IE IS THE WEAKEST VALUE IN THIS FIXTURE, and it is written down
+      // here so the first live failure is read correctly. It is 8 digits, taken
+      // from the CCC table's own column, while a PRODUCTION RS inscrição is 10
+      // (`NNN/NNNNNNN`). A homologação register is synthetic and need not follow
+      // the production mask, so this is not evidence of an error — but if the
+      // run comes back with an IE-shaped rejection (cStat 301/302/304, or
+      // "IE do destinatário inválida"), the IE is the FIRST suspect and the CNPJ
+      // is not. A cStat 181 means the opposite: the CNPJ reached the LCC-RFB
+      // query and the CCC-vs-LCC-RFB distinction above is the explanation.
+      ie: '18001360',
       imun: null,
       isUF: null,
       email: null,
@@ -252,10 +290,14 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       numero: '100',
       bairro: 'Jardim Paulistano (zona oeste)',
       complemento: 'Apto 101 — Bloco B [acentos: éáí] @$%',
-      cep: '01001000',
-      codigoMunicipio: '3550308',
-      cidade: 'São Paulo',
-      estado: UF_SIGLA.SP,
+      // ⚠️ RS, matching the CCC row's UF. The destinatário's UF is what makes
+      // the operation interstate (`idDest='2'`) and what SEFAZ cross-checks
+      // against the IE — an SP address beside an RS inscrição is a rejection of
+      // its own.
+      cep: '90010000',
+      codigoMunicipio: '4314902',
+      cidade: 'Porto Alegre',
+      estado: UF_SIGLA.RS,
       cPais: '1058',
       pais: 'BRASIL',
       nome: null,

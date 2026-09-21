@@ -182,7 +182,15 @@ correto; não crie ramo próprio.
 ⚠️ **Em homologação isso colide com a rejeição 597** ("NF-e emitida em ambiente
 de homologação com CNPJ do destinatário diferente de 99999999000191"): 597 exige
 um CNPJ que a LCC-RFB rejeita, porque `99999999000191` é um placeholder que não
-consta no cadastro da Receita. Ver `homologacao.md`.
+consta no cadastro da Receita.
+
+⚠️ **A saída não é inventar outro CNPJ — a SEFAZ publica CNPJs de teste
+OFICIAIS**, um por UF, na tabela "CNPJs alfa cadastrados no CCC de homologação"
+(material da NT 2026.004). Todos são **alfanuméricos**, e usá-los é um pacote:
+IE real da linha, endereço na mesma UF, CFOP interestadual e
+`ehConsumidorFinal: false`. A tabela, as seis linhas fixadas em teste e a
+distinção **CCC ≠ LCC-RFB** (que é o que pode fazer 181 voltar mesmo assim) estão
+em `homologacao.md`.
 
 ## cStats novos por NT (consolidado)
 
