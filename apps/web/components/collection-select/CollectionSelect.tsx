@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Pill, PillsInput, Select, Stack, Text, type ComboboxData } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
-import type { WhereFilterOp } from 'firebase/firestore';
+import type { Firestore, Query, WhereFilterOp } from 'firebase/firestore';
 import type { ZodObject, ZodRawShape, z } from 'zod';
 import {
   type CollectionHandle,
@@ -68,6 +68,10 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * entries cache just the label.
    */
   optionHintField?: string;
+  /** Additional exact-match search (for array fields, for example). Always bounded by its caller. */
+  extraSearchQuery?: (db: Firestore, term: string) => Query<z.infer<S>> | null;
+  /** Richer option description; receives the debounced term to identify a historical match. */
+  optionDescription?: (data: z.infer<S>, term: string) => string | undefined;
   /**
    * Per-field equality/comparison filters AND-combined onto the option query
    * (e.g. exclude kits with `[{ field: 'ehKit', op: 'eq', value: false }]`).
@@ -158,6 +162,8 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   limit = DEFAULT_LIMIT,
   orderBy,
   optionHintField,
+  extraSearchQuery,
+  optionDescription,
   filters,
   excludeIds,
 }: CollectionSelectProps<S>) {
@@ -228,7 +234,18 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   // the active one receives a non-null argument.
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
-  const listData = (pipeline ? fromPipeline : fromQuery).data;
+  const extraQuery = useMemo(
+    () => (term && !locked ? (extraSearchQuery?.(db, term) ?? null) : null),
+    [db, term, locked, extraSearchQuery],
+  );
+  const fromExtra = useSnapshot<z.infer<S>>(extraQuery);
+  const primaryData = (pipeline ? fromPipeline : fromQuery).data;
+  const listData = useMemo(() => {
+    if (!extraQuery) return primaryData;
+    const unique = new Map((primaryData ?? []).map((row) => [row.id, row]));
+    for (const row of fromExtra.loading ? [] : (fromExtra.data ?? [])) unique.set(row.id, row);
+    return [...unique.values()];
+  }, [primaryData, extraQuery, fromExtra.data, fromExtra.loading]);
 
   // The saved value may point to a doc outside the limited list — fetch it
   // directly so its label still renders.
@@ -254,14 +271,16 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   // id → hint lookup for renderOption (recents entries carry no hint).
   const optionHints = useMemo(() => {
-    if (!optionHintField) return null;
+    if (!optionHintField && !optionDescription) return null;
     const hints: Record<string, string> = {};
     for (const row of listData ?? []) {
-      const hintValue = readLabelField(row.data, optionHintField);
+      const hintValue = optionDescription
+        ? optionDescription(row.data, term)
+        : readLabelField(row.data, optionHintField!);
       if (hintValue) hints[row.id] = hintValue;
     }
     return hints;
-  }, [listData, optionHintField]);
+  }, [listData, optionHintField, optionDescription, term]);
 
   const data: ComboboxData = useMemo(() => {
     if (term !== '') {
@@ -338,7 +357,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       onBlur={onBlur}
       required={required}
       disabled={disabled}
-      error={error}
+      error={error ?? fromExtra.error?.message}
       searchable
       searchValue={searchValue}
       onSearchChange={setSearchValue}

@@ -126,6 +126,18 @@ const PATHSPECS = [
  * 2 event-clock watermark, 3 tell the human.
  */
 const INVENTARIO = {
+  'apps/whatsapp/lib/whatsapp/contatos.ts':
+    'B — identity proofs, cliente phone snapshot and canonical claim are re-read inside the transaction. Deterministic identity/conversation keys serialize races; provider transitions require an active predecessor, its stored phone and an advancing event timestamp. Retained-message replay also checks the current human decision and planned client/chat before identity writes. No provider I/O inside the transaction.',
+  'apps/whatsapp/lib/whatsapp/vinculos.ts':
+    'C — media is cached before parking; message ID deduplicates retention. Manual decisions re-read pending revision, identity ownership, customer duplicates and canonical claim in one transaction; a conflicting operator receives an explicit conflict.',
+  'apps/whatsapp/lib/whatsapp/vinculoReplay.ts':
+    'B — each message is acknowledged only after successful effects and a transaction revalidates the same human decision/revision. Final resolution reads the binding and remaining pending messages inside the transaction, preventing new arrivals from being hidden by completion.',
+  'apps/whatsapp/lib/whatsapp/processStatus.ts':
+    'B — immutable provider status is applied against the message mapping and current delivery watermark read inside the transaction. Watermark advances with max and the existing stale-transition matrix guards older updates.',
+  'apps/whatsapp/app/api/whatsapp/template-message/route.ts':
+    'B — operator destination/revision and integration are compared with the conversation read inside the transaction before the outbound template is created. The shared sender repeats identity validation immediately before Graph.',
+  'apps/web/lib/chat/whatsappMensagemWrite.ts':
+    'B — browser reads current conversation and compares the rendered destination revision and integration before atomically creating the outgoing message snapshots; conflicts preserve the operator draft.',
   'packages/data/src/admin/cargoClaims/service.ts':
     'Class B: every transition re-reads operation and global control. Commands are guarded by target snapshot version; claims pages hold a lease longer than worker lifetime and checkpoints compare owner, phase and cursor. Actor authority is re-derived inside start and commit. Auth I/O stays outside transactions.',
   // ---- A — every input re-derived from a `tx.get` inside the callback -----
@@ -164,7 +176,7 @@ const INVENTARIO = {
   'packages/data/src/admin/oauthState/store.ts':
     '`:99` redeems the single-use OAuth nonce: every branch is re-derived from the `tx.get` snapshot, so two callbacks racing one nonce contend on OCC and the loser is REJECTED — the intended outcome here.',
   'apps/whatsapp/lib/whatsapp/outbound.ts':
-    'Two sites. `:277` is tier 0 — `create` + `delete` with no read at all, where `create` IS the precondition (`ALREADY_EXISTS` is caught and treated as "a redelivery re-anchored this send"). `:380` claims the mensagem by re-reading it and re-checking `mid` + `isClaimable` on the fresh doc.',
+    'B/C — claim rereads message updateTime, canonical destination revision, active identity tuple, cliente snapshot and fresh integration/portfolio against the loaded Graph context. Re-anchor uses create precondition and atomically writes wamid mapping. Failure before claim compares message+chat updateTime; failure after claim requires the UUID that owns the sending attempt, so it cannot overwrite a newer attempt or recreate the re-anchored document.',
 
   // ---- B/C — outside input reaches the write; the guard is named ----------
   // ⚠️ A file with sites in BOTH classes is filed HERE, never under A. The
@@ -224,7 +236,7 @@ const INVENTARIO = {
   'apps/mercado-livre/lib/marketplace/chat/orderMessageImport.ts':
     'C — two ML reads (the by-id message, then the whole paged pack thread) precede the transaction, so the conversa patch is built entirely from outside input. Tier 2 in **ms**, same field and same shape as the WhatsApp inbound guard below: re-reads the conversa with `tx.get` and drops the patch when the incoming `ultimaModificacaoIntegracao` is strictly older than the stored one. ⚠️ The watermark is `max(newest message, conversation_status.status_date)`, NOT the message time alone — a thread going `blocked` usually carries no new message, and a message-only clock would let a stale `active` snapshot land afterwards and reopen a closed thread (#817 by another road). The mensagens are written OUTSIDE the transaction on purpose: keyed by ML id, they can only add history, never contradict whatever the newer snapshot decided.',
   'apps/whatsapp/lib/whatsapp/processMessages.ts':
-    'Two sites, both tier 2 in **ms**. `:342` upserts the conversa behind the `ultimaModificacaoIntegracao` out-of-order guard; `:436` bumps `ultima_modificacao` only forwards (`current >= incoming` returns). Both re-read the conversa and compare against that snapshot.',
+    'B/C — provider payload and cached media arrive before tx; tx rereads canonical chat/message mapping, guards event time and monotonic recency. Manual replay revalidates the human decision/revision, canonical reservation and exact retained payload; history-only recovery writes no identity, destination or recency. Auto-reply compares current recipient/window and daily marker inside its tx.',
   'apps/nfe/lib/nfe/handlers/runApuracaoSimples.ts':
     'One site (`gravarApuracao`, #1491), class **B**. The apuração decides OUTSIDE the callback — the RBT12 comes from a Pipelines aggregate that cannot run inside a transaction, and the whole batch of filiais is planned before any write. The value that must not be stale is `recalculoAutomatico`: it authorises PUBLISHING a new alíquota, a human can toggle it on the filial screen at any moment, and the aggregate takes long enough for that to happen mid-run. Guard, named: `recalculoAutomatico` is re-read with `tx.get` INSIDE the callback and `estadoDaApuracao` is re-derived from that snapshot, never from the `FilialParaApuracao` captured before the aggregate — so an operator revoking authorisation while the sum runs cannot have a rate published underneath them. The RBT12 itself is deliberately NOT re-derived: it is a read-only aggregate over a closed window (the twelve months BEFORE the competência), so it cannot change under the transaction, and re-running it per OCC attempt would buy nothing. Both writes share the one transaction — the `apuracoes/{YYYY-MM}` record and the config patch cannot half-land, which matters because the record is the audit trail for the rate the config publishes. Idempotent by construction: the apuração document id IS the competência, so a re-run of the same month overwrites its own record instead of accumulating duplicates.',
   'apps/functions/src/estoques/aplicarEstoque.ts':

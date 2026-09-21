@@ -63,6 +63,8 @@ const CLIENTE: Cliente = {
   isUF: null,
   email: null,
   telefone: null,
+  telefonesAdicionais: [],
+  telefoneGerenciado: false,
   observacoesInternas: null,
   timestamp: null,
   userCliente: null,

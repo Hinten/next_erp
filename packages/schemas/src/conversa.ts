@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { whatsappDestinoSchema } from './whatsappContato';
 import { millisSinceEpoch } from './shared/datetime';
 import { outerRefLooseSchema, outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
@@ -115,6 +116,7 @@ export function podeReabrirConversa(estado: EstadoConversa): boolean {
  * stay opaque pass-through; UI surfaces the IDs and resolves names lazily.
  */
 export const conversaSchema = z.object({
+  whatsappDestino: whatsappDestinoSchema.nullable().optional(),
   id: z.string().nullable().default(null),
   sender_id: z.string().nullable().default(null),
   estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
@@ -204,6 +206,7 @@ export type Conversa = z.infer<typeof conversaSchema>;
 
 export const conversaMeta: CollectionMetadata = {
   collectionPath: 'chat',
+  serverOwnedFields: ['whatsappDestino'],
   permissions: {
     read: PERM_CONVERSA_READ,
     write: PERM_CONVERSA_WRITE,
@@ -348,6 +351,11 @@ export const TIPO_MENSAGEM = {
  * `Mensagem extends _MensagemModel` from the Flutter atendimento package.
  */
 export const mensagemSchema = z.object({
+  whatsappIdentidadeId: z.string().nullable().optional(),
+  whatsappTemplate: z.string().nullable().optional(),
+  whatsappEnvioClaimId: z.string().nullable().optional(),
+  whatsappIntegracaoId: z.string().nullable().default(null),
+  whatsappDestino: whatsappDestinoSchema.nullable().default(null),
   estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
   tipo: tipoMensagemSchema.default('c'),
   conteudo: z.string().nullable().default(null),
@@ -516,6 +524,7 @@ export type Mensagem = z.infer<typeof mensagemSchema>;
 
 export const mensagemMeta: CollectionMetadata = {
   collectionPath: 'chat/{conversaId}/mensagem',
+  serverOwnedFields: ['whatsappIdentidadeId', 'whatsappTemplate', 'whatsappEnvioClaimId'],
   permissions: {
     read: PERM_MENSAGEM_READ,
     write: PERM_MENSAGEM_WRITE,

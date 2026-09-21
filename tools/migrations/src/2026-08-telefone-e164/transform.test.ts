@@ -67,6 +67,21 @@ describe('planTelefone', () => {
     });
   });
 
+  it('preserves explicit international context for 10/11-digit foreign numbers', () => {
+    expect(planTelefone('+1 415 555 2671', { internacional: true })).toMatchObject({
+      to: '14155552671',
+    });
+    expect(planTelefone('14155552671', { internacional: true })).toMatchObject({
+      action: 'skip',
+      reason: SKIP_REASON.alreadyNormalized,
+    });
+    expect(planTelefone('11999998888')).toMatchObject({ to: '5511999998888' });
+    expect(planTelefone('BSUID-14155552671', { internacional: true })).toMatchObject({
+      action: 'skip',
+      reason: SKIP_REASON.invalid,
+    });
+  });
+
   it('treats absent, empty and non-string as nothing to do', () => {
     for (const value of [null, undefined, '', '   ', 11999998888, {}, []]) {
       expect(planTelefone(value)).toMatchObject({ action: 'skip', reason: SKIP_REASON.empty });

@@ -32,6 +32,10 @@ import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
+import {
+  persistWhatsappMensagens,
+  WhatsappDestinoAlteradoError,
+} from '@/lib/chat/whatsappMensagemWrite';
 import { composerGate } from '@/lib/chat/composerGate';
 import { confirmacaoEnvio } from '@/lib/chat/confirmacaoEnvio';
 import { enviaPorRota } from '@/lib/chat/transporteEnvio';
@@ -430,11 +434,14 @@ function ComposerInput({
         const write = buildTextMensagem({ text: body, uid, now: Date.now() });
         sentIds.push(docId);
         addOptimistic(makeOptimistic(docId, write));
-        await setDoc(mensagemCollection.docRef(db, { conversaId }, docId), write);
+        if (conversa.origem === ORIGEM_CONVERSA.whatsapp)
+          await persistWhatsappMensagens(db, conversaId, conversa, [{ id: docId, data: write }]);
+        else await setDoc(mensagemCollection.docRef(db, { conversaId }, docId), write);
       } else {
         // Media — the caption (composer text) rides on the FIRST attachment; the
         // rest carry no caption. Each attachment is its own outbound mensagem
         // (anexoStorage dual-write so the #529 sender transmits the file).
+        const writes: Array<{ id: string; data: ReturnType<typeof buildMediaMensagem> }> = [];
         for (let i = 0; i < attachmentsToSend.length; i++) {
           const a = attachmentsToSend[i]!;
           const caption = i === 0 && body !== '' ? body : null;
@@ -448,8 +455,13 @@ function ComposerInput({
           });
           sentIds.push(docId);
           addOptimistic(makeOptimistic(docId, write));
-          await setDoc(mensagemCollection.docRef(db, { conversaId }, docId), write);
+          writes.push({ id: docId, data: write });
         }
+        if (conversa.origem === ORIGEM_CONVERSA.whatsapp)
+          await persistWhatsappMensagens(db, conversaId, conversa, writes);
+        else
+          for (const write of writes)
+            await setDoc(mensagemCollection.docRef(db, { conversaId }, write.id), write.data);
       }
       // Clear the composer ONLY after the awaited writes succeed. The optimistic
       // bubbles already carry the content, so this still empties the input on a
@@ -470,7 +482,7 @@ function ComposerInput({
       ) {
         setSendError(err.message);
         for (const id of sentIds) markOptimisticError(id);
-      } else if (err instanceof FirebaseError) {
+      } else if (err instanceof FirebaseError || err instanceof WhatsappDestinoAlteradoError) {
         setSendError(err.message);
         for (const id of sentIds) markOptimisticError(id);
       } else {

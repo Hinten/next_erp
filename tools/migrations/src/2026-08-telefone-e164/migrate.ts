@@ -4,6 +4,7 @@ import {
   type Query,
   type QueryDocumentSnapshot,
 } from 'firebase-admin/firestore';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 import {
   isMainModule,
   type MigrationContext,
@@ -139,8 +140,16 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     for await (const docs of pagesByDocId(ctx.db.collectionGroup(target.collectionGroup))) {
       for (const doc of docs) {
         docsScanned += 1;
-        const stored = readNested(doc.data() as Record<string, unknown>, target.field);
-        const plan = planTelefone(stored);
+        const data = doc.data() as Record<string, unknown>;
+        const stored = readNested(data, target.field);
+        const explicitInternational =
+          typeof stored === 'string' && stored.trimStart().startsWith('+');
+        const international =
+          target.name === 'clientes' &&
+          (data.tipo === TIPO_CLIENTE.estrangeiro ||
+            data.telefoneGerenciado === true ||
+            explicitInternational);
+        const plan = planTelefone(stored, { internacional: international });
         const field = target.field.join('.');
         if (plan.action === 'skip') {
           // An absent field is the overwhelming majority on a collection group
@@ -150,9 +159,17 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
           }
           continue;
         }
+        // Persist known international context for a short foreign number: a
+        // second pass must not guess BR from a digits-only +1 result.
+        const patch: Record<string, unknown> = buildUpdate(target.field, plan.to);
+        if (target.name === 'clientes' && international) patch.telefoneGerenciado = true;
+        const changed = await ctx.writer.updateGuarded(doc.ref, patch, doc.updateTime);
+        if (!changed) {
+          ctx.sink.skip(doc.ref.path, field, stored, 'documento alterado depois da leitura');
+          continue;
+        }
         ctx.sink.change(doc.ref.path, field, plan.from, plan.to);
         docsChanged += 1;
-        await ctx.writer.update(doc.ref, buildUpdate(target.field, plan.to));
       }
     }
   }

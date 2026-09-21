@@ -8,22 +8,20 @@ import { FirebaseError } from 'firebase/app';
 import { IconMapPin, IconUserExclamation } from '@tabler/icons-react';
 import { clienteFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
-import { CnpjLookupConfigProvider, CnpjLookupField } from '@/components/inputs/CnpjLookupField';
-import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
+import { CnpjLookupConfigProvider } from '@/components/inputs/CnpjLookupField';
+import {
+  CLIENTE_FORM_FIELDS,
+  deriveClienteTelefonePatch,
+  prepareClienteCopy,
+} from '@/lib/clientes/formFields';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { useAuth } from '@/lib/auth';
+import { PERM } from '@delfrance/auth';
+import { useAuth, usePermission } from '@/lib/auth';
 import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
 import { type DedupCandidate, checkClienteDuplicates } from '@/lib/clientes/dedup';
 import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { stashEnderecoForCliente } from '@/lib/clientes/pendingEndereco';
-
-// Module-level: ObjectView identity-tracks `fields`. The CNPJ "buscar dados"
-// affordance (PJ only) gets its filial + address-offer wiring from context.
-const CLIENTE_FORM_FIELDS = {
-  cpf_cnpj: { renderInput: CnpjLookupField },
-  telefone: { renderInput: TelefoneField, prepareForSave: prepareForSaveTelefone },
-};
 
 export default function NovoClientePage() {
   // `useSearchParams` (prefill from the chat side panel) requires a Suspense
@@ -38,6 +36,7 @@ export default function NovoClientePage() {
 function NovoClienteForm() {
   const router = useRouter();
   const { user } = useAuth();
+  const { allowed: canWrite } = usePermission(PERM.cliente.write);
   const filialId = useDefaultFilialId();
   // Optional prefill from the chat side panel's "Criar cliente" link:
   // `?userCliente=<documents/usuarios/uid>&nome=<conversa nome>`. `userCliente`
@@ -150,11 +149,16 @@ function NovoClienteForm() {
             'timestamp',
             'ultimaModificacao',
             'userCliente',
+            'telefoneGerenciado',
             'isUF',
             'idEstrangeiro',
           ]}
           fields={CLIENTE_FORM_FIELDS}
+          transformCopiedValues={prepareClienteCopy}
+          deriveTransactionPatch={deriveClienteTelefonePatch}
           saveLabel="Criar"
+          canEdit={canWrite}
+          readOnly={!canWrite}
           showSaveAndContinue={false}
           onSaved={handleSaved}
         />

@@ -21,7 +21,10 @@ export function MensagemQuote({
   onNavigate?: (id: string) => void;
 }) {
   const { referenced, loading } = useMensagemRef(refPath);
-  const autor = useAutorNome(referenced?.mensagem.user_id);
+  const autor = useAutorNome(
+    referenced?.mensagem.user_id,
+    referenced?.mensagem.clienteMensagemOuterRef,
+  );
 
   if (loading) return <Skeleton height={34} radius="sm" />;
   if (!referenced) {

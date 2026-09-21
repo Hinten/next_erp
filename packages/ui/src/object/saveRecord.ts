@@ -27,6 +27,12 @@ export type TransactionWrite =
   | { type: 'update'; ref: DocumentReference<unknown>; data: Record<string, unknown> }
   | { type: 'delete'; ref: DocumentReference<unknown> };
 
+/** Pure delta derived from the current document on every transaction attempt. */
+export type DeriveTransactionPatch = (
+  current: Readonly<Record<string, unknown>> | null,
+  patch: Readonly<Record<string, unknown>>,
+) => Record<string, unknown>;
+
 export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, unknown>> {
   db: Firestore;
   collection: CollectionHandle<S>;
@@ -62,6 +68,8 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    * one should pass `type: 'update'`, which fails NOT_FOUND instead.
    */
   siblingWrites?: (id: string) => TransactionWrite[];
+  /** Additional validated fields, recomputed from the transaction's fresh read. */
+  deriveTransactionPatch?: DeriveTransactionPatch;
   /**
    * Wire unit for create/last-modified stamps, resolved from the schema by the
    * caller (ObjectView reads the field descriptor). `'iso'` (the default)
@@ -283,24 +291,34 @@ export async function saveRecord<
   const guarded = isUpdate && input.baseline != null;
   const ignored = new Set([...ALWAYS_IGNORED, ...(input.ignoreFields ?? [])]);
 
-  await runTransaction(input.db, async (tx: Transaction) => {
-    if (guarded) {
+  const committedPatch = await runTransaction(input.db, async (tx: Transaction) => {
+    let current: Record<string, unknown> | null = null;
+    if (guarded || (isUpdate && input.deriveTransactionPatch)) {
       const snap = await tx.get(ref);
       if (!snap.exists()) throw new RecordConflictError(null, [], true);
-      const current = snap.data() as Record<string, unknown>;
-      const fields = conflictingFields(input.baseline!, current, patch, ignored);
-      if (fields.length > 0) throw new RecordConflictError(current, fields);
+      current = snap.data() as Record<string, unknown>;
+      if (guarded) {
+        const fields = conflictingFields(input.baseline!, current, patch, ignored);
+        if (fields.length > 0) throw new RecordConflictError(current, fields);
+      }
     }
+
+    // A fresh object per attempt: a losing attempt's derived history must never
+    // become input to its retry. The callback cannot perform reads or writes.
+    const effectivePatch =
+      writeMainDoc && input.deriveTransactionPatch
+        ? { ...patch, ...input.deriveTransactionPatch(current, { ...patch }) }
+        : { ...patch };
 
     if (writeMainDoc) {
       if (isUpdate) {
         // tx.update bypasses the Firestore converter (only set/add invoke it).
         // The dirty-field patch already passed zodResolver per-field on the
         // client, so we accept the partial write as-is.
-        tx.update(ref, patch as never);
+        tx.update(ref, effectivePatch as never);
       } else {
         // Full create — runs through the converter, which calls schema.parse.
-        tx.set(ref, input.values as never);
+        tx.set(ref, effectivePatch as never);
       }
     }
 
@@ -312,7 +330,8 @@ export async function saveRecord<
       else if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
       else tx.set(w.ref as DocumentReference, w.data as never);
     }
+    return effectivePatch;
   });
 
-  return { id: ref.id, patch };
+  return { id: ref.id, patch: committedPatch as Partial<T> | T };
 }
