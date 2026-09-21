@@ -625,26 +625,99 @@ describe('prepararPublicacao — as duas recusas de produto', () => {
     expect(db.writes).toEqual([]);
   });
 
-  it('um KIT é recusado com produto-e-kit; um kit VIRTUAL publica normalmente', async () => {
+  it('⚠️ PAR: um produto ehKit com vínculo ORDINÁRIO publica, com o estoque dos componentes', async () => {
+    // O apagão do catálogo legado que o passo 11 tinha: o ERP tem MILHARES de
+    // produtos `ehKit` que o app legado publicava como anúncios comuns, e
+    // recusá-los por esse flag os tornava permanentemente impublicáveis.
     const db = new FakeDb();
-    semearCatalogo(db, { ehKit: true, componentesKit: { 'comp-1': { quantidade: 1 } } });
-    const fake = clienteFake();
-    await expect(
-      prepararPublicacao(deps(db, fake), entrada(), resolvedorQueRecusa()),
-    ).rejects.toMatchObject({ motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit });
-
-    // ⚠️ PAR/CONTRA-EXEMPLO: `ehKitVirtual` é um anúncio comum cujo estoque
-    // DERIVA dos componentes — recusá-lo tornaria todo produto de estoque
-    // derivado impublicável.
-    const db2 = new FakeDb();
-    semearCatalogo(db2, { ehKitVirtual: true, componentesKit: { 'comp-1': { quantidade: 2 } } });
-    db2.seed('produtos/comp-1/estoques/e1', {
+    semearCatalogo(db, { ehKit: true, componentesKit: { 'comp-1': { quantidade: 2 } } });
+    semearLink(db, { kitNativo: false });
+    db.seed('produtos/comp-1/estoques/e1', {
       depositoOuterRef: DEPOSITO,
       quantidade: 9,
       quantidadeReservada: 0,
     });
+
     const contexto = await prepararPublicacao(
-      deps(db2, clienteFake()),
+      deps(db, clienteFake()),
+      entrada(),
+      resolvedorQueRecusa(),
+    );
+    expect(contexto?.disponivelByProdutoId).toEqual({ 'comp-1': 9 });
+  });
+
+  it('um vínculo legado, sem o campo kitNativo, publica igual — é o corpo importado antes do passo 12', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, { ehKit: true, componentesKit: { 'comp-1': { quantidade: 2 } } });
+    semearLink(db);
+    db.seed('produtos/comp-1/estoques/e1', {
+      depositoOuterRef: DEPOSITO,
+      quantidade: 9,
+      quantidadeReservada: 0,
+    });
+
+    const contexto = await prepararPublicacao(
+      deps(db, clienteFake()),
+      entrada(),
+      resolvedorQueRecusa(),
+    );
+    expect(contexto?.disponivelByProdutoId).toEqual({ 'comp-1': 9 });
+  });
+
+  it('o vínculo com kitNativo true é recusado com produto-e-kit, e o campo é kitNativo', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, { ehKit: true, componentesKit: { 'comp-1': { quantidade: 1 } } });
+    semearLink(db, { kitNativo: true });
+    const fake = clienteFake();
+
+    await expect(
+      prepararPublicacao(deps(db, fake), entrada(), resolvedorQueRecusa()),
+    ).rejects.toMatchObject({
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
+      problemas: [{ campo: 'kitNativo' }],
+    });
+    expect(fake.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: na PRIMEIRA publicação, um ehKitVirtual é recusado, e o campo é ehKitVirtual', async () => {
+    // Sem vínculo não há o que a Shopee tenha reportado, e `ehKitVirtual` é a
+    // afirmação do próprio ERP de que o MARKETPLACE resolve a composição — o
+    // que na Shopee é `add_kit_item`, o passo 19.
+    const db = new FakeDb();
+    semearCatalogo(db, {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { 'comp-1': { quantidade: 1 } },
+    });
+    const fake = clienteFake();
+
+    await expect(
+      prepararPublicacao(deps(db, fake), entrada(), resolvedorQueRecusa()),
+    ).rejects.toMatchObject({
+      motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
+      problemas: [{ campo: 'ehKitVirtual' }],
+    });
+    expect(fake.ops).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('e com vínculo ordinário o MESMO ehKitVirtual publica — o vínculo é a autoridade', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { 'comp-1': { quantidade: 2 } },
+    });
+    semearLink(db, { kitNativo: false });
+    db.seed('produtos/comp-1/estoques/e1', {
+      depositoOuterRef: DEPOSITO,
+      quantidade: 9,
+      quantidadeReservada: 0,
+    });
+
+    const contexto = await prepararPublicacao(
+      deps(db, clienteFake()),
       entrada(),
       resolvedorQueRecusa(),
     );

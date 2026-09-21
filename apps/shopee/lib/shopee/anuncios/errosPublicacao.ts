@@ -148,8 +148,17 @@ export type MotivoPublicacaoBloqueada =
    */
   | 'produto-e-filho'
   /**
-   * The produto is a kit. Kit publishing is its own step; refused here so a kit
-   * is never published as if it were a plain produto.
+   * The listing is a **NATIVE Shopee kit** — `kitNativo` on the stored link
+   * (what Shopee reported about the live listing), or `ehKitVirtual` on a first
+   * publish. Kit publishing is its own step (`add_kit_item`), so it is refused
+   * here rather than published as if it were a plain produto.
+   *
+   * ⚠️ **NOT the ERP's `ehKit`**, which publishes as an ordinary listing whose
+   * quantity merely derives from its components. Step 11 keyed this member on
+   * that flag and blocked the entire legacy kit catalogue; step 12 (#1520)
+   * narrowed the predicate. The SLUG is deliberately unchanged — it is
+   * persisted in `falhaPublicacao.problemas[]`, so renaming it would orphan
+   * every stored refusal.
    */
   | 'produto-e-kit';
 

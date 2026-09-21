@@ -113,15 +113,19 @@ import {
 /**
  * The produto graph, projected to exactly what the ITEM payload reads.
  *
- * ⚠️ `ehKit` and `ehKitVirtual` are NOT two spellings of one thing and this
- * module treats them oppositely. `ehKit` is a Shopee KIT (`add_kit_item`), which
- * is step 19 — refused here as `produto-e-kit` so a kit is never published as if
- * it were a plain produto. `ehKitVirtual` is an ERP produto whose stock DERIVES
- * from its components and which publishes as an ordinary listing; its only
- * consequence here is that the publish quantity takes the kit branch — that
- * fold now lives in `../estoque/quantidadeEstoque` and is re-exported from this
- * module. Keying the refusal on both would make every component-stocked produto
- * unpublishable.
+ * ⚠️ **`ehKit` does NOT refuse anything here** (corrected in step 12, #1520).
+ * It is the ERP's "assembled from `componentesKit`, availability derived from
+ * the components" flag (`produto/collection/produto.ts:102-108`), and such a
+ * produto publishes as an ORDINARY Shopee listing — the legacy app published
+ * thousands of them. Its only consequence in this module is that the publish
+ * quantity takes the kit branch, a fold that now lives in
+ * `../estoque/quantidadeEstoque` and is re-exported from here.
+ *
+ * What `produto-e-kit` refuses is a **NATIVE Shopee kit** (`add_kit_item`,
+ * step 19), decided by {@link kitNativoDoAnuncio}: the stored link's
+ * `kitNativo` on a republish, `ehKitVirtual` on a first publish. Step 11 keyed
+ * that refusal on `ehKit` alone, which made the entire legacy kit catalogue
+ * permanently unpublishable.
  */
 export interface ProdutoParaPublicar {
   readonly id: string;
@@ -166,6 +170,20 @@ export interface LinkListagemLido {
   readonly attributes: readonly unknown[] | null;
   readonly logistic_info: readonly unknown[] | null;
   readonly estadoAnuncio: EstadoAnuncioShopee | null;
+  /**
+   * What SHOPEE reported about the live listing (`tag.kit`), three-valued and
+   * read by {@link kitNativoDoAnuncio} — the ONE field that refuses a publish
+   * as `produto-e-kit`.
+   *
+   * ⚠️ **OPTIONAL, not merely nullable, and the two are different facts.**
+   * `null` is a link this repo read back and recorded as "not a kit-tagged
+   * listing"; an ABSENT key is a link document written before step 12 declared
+   * the field at all, which is most of the corpus. Both publish — the
+   * comparison is `=== true` — but the type admits the absence the stored
+   * documents actually contain instead of asking every caller to invent a
+   * reading for it.
+   */
+  readonly kitNativo?: boolean | null;
 }
 
 /**
@@ -484,6 +502,59 @@ export function preOrderParaPublicar(
 export { quantidadeParaPublicarShopee };
 
 /* -------------------------------------------------------------------------- */
+/*                           The native-kit predicate                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether this listing is a **NATIVE Shopee kit** — the only thing
+ * `produto-e-kit` refuses.
+ *
+ * ONE definition, called by BOTH producers of that refusal: {@link
+ * montarAnuncio} below and `recusarProdutoNaoPublicavel` in
+ * `publicarAnuncio.ts`. They are two sites deciding one thing, which is exactly
+ * the shape that drifts when it is written twice.
+ *
+ * ⚠️ **`produto.ehKit` NEVER refuses.** It is the ERP's "assembled from
+ * components" flag, and the ERP holds thousands of such produtos that the
+ * legacy app published to Shopee as ORDINARY listings. Step 11 keyed the
+ * refusal on it alone and so blocked the whole legacy kit catalogue from being
+ * re-published; step 12 (#1520) narrows it to the two arms below.
+ *
+ * - **A link exists — a republish.** `link.kitNativo` is what Shopee itself
+ *   reported about the live listing (`tag.kit`, folded by `ehKitDe` in
+ *   `../produtos/itemLido.ts`), so on an update it is the only statement about
+ *   the listing that is not a guess, and it WINS over anything the produto
+ *   says. `false` and an absent/`null` reading both publish: nothing in this
+ *   catalogue is a native kit today, and a link imported before the field
+ *   existed must not be read as one.
+ * - **No link — a first publish.** `produto.ehKitVirtual` is the ERP's own
+ *   statement that the MARKETPLACE resolves the composition
+ *   (`produto/collection/produto.ts:105-110`), which on Shopee means
+ *   `add_kit_item` — step 19. The invariant `ehKit === false ⇒
+ *   ehKitVirtual === false` (`apps/functions/src/produtos/onProdutoDeleted.ts:52-54`)
+ *   means this arm can only ever fire on a kit, so an ordinary produto is never
+ *   touched by it.
+ *
+ * ⚠️ It is deliberately **not** the same predicate as the stock sweep's
+ * (`../estoque/podeEnviarEstoque.ts`), which reads the link's field and nothing
+ * else. That module only ever runs over rows that HAVE a link, so a create arm
+ * there would be unreachable code — and worse, it would invite `ehKitVirtual`
+ * into a decision where the link is already the authority. Two rules, each
+ * total over the inputs it actually meets, each pinned by its own tests; not
+ * one rule copied into two files.
+ *
+ * Both parameters are typed loosely because the values arrive from stored
+ * documents and the comparison is `=== true`: a string `'true'`, a `1` and an
+ * absent key all read as "not a native kit".
+ */
+export function kitNativoDoAnuncio(
+  link: { readonly kitNativo?: unknown } | null,
+  produto: { readonly ehKitVirtual?: unknown },
+): boolean {
+  return link !== null ? link.kitNativo === true : produto.ehKitVirtual === true;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                 The mapper                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -510,12 +581,12 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
       ),
     );
   }
-  if (produto.ehKit) {
+  if (kitNativoDoAnuncio(link, produto)) {
     problemas.push(
       problema(
         null,
         MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
-        'o produto é um kit — publicar kit na Shopee é outro passo (add_kit_item)',
+        'o anúncio é um kit NATIVO da Shopee — publicar kit é outro passo (add_kit_item)',
       ),
     );
   }
