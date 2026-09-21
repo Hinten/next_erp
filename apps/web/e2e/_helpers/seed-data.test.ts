@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { e2ePrefix, fixtureClienteCnpj } from './seed-data';
+import { e2ePrefix, filialSeedCnpj, fixtureClienteCnpj } from './seed-data';
 
 /**
  * Backstop for the fixture-namespace shape (`e2e-<runId>-w<worker>-<tag>`).
@@ -142,6 +142,46 @@ describe('e2ePrefix', () => {
     const long = prefixFor('2', 'pedpag');
 
     expect(sweepDeletes(short, long)).toBe(false);
+  });
+
+  /**
+   * ⚠️ Every FILIAL CNPJ the seeder writes must be checksum-valid, and the
+   * reason is not tidiness. Since #1619 `filialFormSchema` carries a checksum,
+   * so a filial seeded with an invalid CNPJ cannot be saved back through the
+   * form — and the symptom surfaces far away from here: `filiais.cadastros`'s
+   * "edits a filial and saves" went red on the CNPJ field while editing the
+   * Nome Fantasia, a test that has nothing to do with CNPJs. The seeder used
+   * `String(10000000000000 + i)` and three hand-written literals, none of them
+   * real CNPJs.
+   *
+   * Checked with `isValidCnpj` above — this file's deliberately independent
+   * mod-11 implementation, so this asserts against the RULE rather than
+   * against `validTestCnpj` agreeing with itself.
+   */
+  describe('seeded filial CNPJs are checksum-valid', () => {
+    it('the generated ones, across the seeded range', () => {
+      const seen = new Set<string>();
+      for (let i = 1; i <= 20; i += 1) {
+        const cnpj = filialSeedCnpj(i);
+        expect(cnpj, `filialSeedCnpj(${i})`).toHaveLength(14);
+        expect(isValidCnpj(cnpj), `filialSeedCnpj(${i}) = ${cnpj}`).toBe(true);
+        seen.add(cnpj);
+      }
+      // Distinct per filial: a 14-digit seed would collapse them all to
+      // `0000000000xx`, since `validTestCnpj` keeps only the LAST 12 chars.
+      expect(seen.size).toBe(20);
+    });
+
+    it('every hand-written cnpj literal in the seeder', () => {
+      const src = readFileSync(join(E2E_DIR, '_helpers', 'seed-data.ts'), 'utf8');
+      const literals = [...src.matchAll(/\bcnpj: '(\d+)'/g)].map((m) => m[1]!);
+      // Anti-vacuity: a regex that matched nothing would assert over an empty
+      // list. Three filial literals live in the seeder today.
+      expect(literals.length).toBeGreaterThanOrEqual(3);
+      for (const cnpj of literals) {
+        expect(isValidCnpj(cnpj), `seed-data.ts carries an invalid CNPJ: ${cnpj}`).toBe(true);
+      }
+    });
   });
 
   it('has no run-scoped-only cliente CNPJ left in the seeder', () => {

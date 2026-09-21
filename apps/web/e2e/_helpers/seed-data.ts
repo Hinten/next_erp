@@ -122,6 +122,25 @@ export function validTestCnpj(seedDigits: string): string {
 }
 
 /**
+ * The CNPJ for seeded filial `i` — checksum-VALID, and it has to be.
+ *
+ * ⚠️ This used to be `String(10000000000000 + i)`, which is not a real CNPJ.
+ * That was harmless only while nothing validated our own emitente: #1619 put a
+ * checksum on `filialFormSchema`, and an invalid stored CNPJ then blocks
+ * saving the filial at all — so `filiais.cadastros.e2e.spec.ts`'s "edits a
+ * filial and saves" failed on the CNPJ field while editing the Nome Fantasia.
+ * A seed that cannot be saved back through the form is not a valid fixture.
+ *
+ * ⚠️ The seed passed to `validTestCnpj` must be **12 digits**: it keeps the
+ * LAST 12 characters, so a 14-digit seed loses its leading digits and every
+ * filial collapses to `0000000000xx`. `100000000000 + i` keeps the values
+ * recognisable as the old `10000000000i` family and distinct per `i`.
+ */
+export function filialSeedCnpj(i: number): string {
+  return validTestCnpj(String(100000000000 + i));
+}
+
+/**
  * The CNPJ every fixture cliente carries — run- AND worker-scoped.
  *
  * ⚠️ The worker half is what keeps the quick-create dedup spec honest, and it
@@ -623,7 +642,7 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
       razaoSocial: `${prefix}-${pad(i)}`,
       fantasia: i % 2 === 0 ? `${prefix}-${pad(i)} fantasia` : null,
       cnae: null,
-      cnpj: String(10000000000000 + i),
+      cnpj: filialSeedCnpj(i),
       ie: String(100000000 + i),
       iest: null,
       imun: null,
@@ -680,7 +699,7 @@ async function seedIntegracaoFixtures(
       razaoSocial: `${prefix}-ref-filial`,
       fantasia: null,
       cnae: null,
-      cnpj: '99999999999999',
+      cnpj: '99999999999962',
       ie: '999999999',
       iest: null,
       imun: null,
@@ -1252,7 +1271,7 @@ export async function seedIntFreteFixtures(
       razaoSocial: `${prefix}-ref-filial`,
       fantasia: null,
       cnae: null,
-      cnpj: '99999999999999',
+      cnpj: '99999999999962',
       ie: '999999999',
       iest: null,
       imun: null,
@@ -2375,7 +2394,7 @@ export async function seedEnviNfeFixtures(prefix: string): Promise<{
       razaoSocial: filialId,
       fantasia: null,
       cnae: null,
-      cnpj: '77000000000101',
+      cnpj: '77000000000116',
       ie: '770000001',
       iest: null,
       imun: null,
