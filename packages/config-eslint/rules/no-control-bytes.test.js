@@ -69,10 +69,14 @@ function scanSources() {
     let conteudo;
     try {
       conteudo = readFileSync(resolve(REPO_ROOT, file));
-    } catch {
+    } catch (err) {
       // A tracked path missing from the working tree (a symbolic link to a
-      // directory, a broken checkout) is not this guard's business.
-      continue;
+      // directory, a broken checkout) is not this guard's business — those
+      // surface as the three errno codes below. Anything else (a permission
+      // error, an I/O failure) must not read as "no control bytes here".
+      const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined;
+      if (code === 'ENOENT' || code === 'EISDIR' || code === 'ELOOP') continue;
+      throw err;
     }
     arquivos.push(file);
     for (let i = 0; i < conteudo.length; i += 1) {
