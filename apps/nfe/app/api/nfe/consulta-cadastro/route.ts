@@ -58,7 +58,14 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const querySchema = z.object({
-  cnpj: z.string().regex(/^\d{14}$/, 'cnpj deve ter 14 dígitos'),
+  // ⚠️ `[0-9A-Z]{12}[0-9]{2}`, not `\d{14}`: RFB IN 2.229/2024. This gate stung
+  // the most of the lot, because everything BEHIND it was already alfa-correct
+  // and SEFAZ Consulta Cadastro is the only registry that can answer for an
+  // alphanumeric CNPJ at all — BrasilAPI cannot. The two check digits stay
+  // numeric, which is why this is not `[0-9A-Z]{14}`.
+  cnpj: z
+    .string()
+    .regex(/^[0-9A-Z]{12}[0-9]{2}$/, 'cnpj deve ter 14 caracteres (12 alfanuméricos + 2 dígitos)'),
   uf: z.string().regex(/^[A-Za-z]{2}$/, 'uf deve ter 2 letras'),
   // filialId is REQUIRED in v1 — the lookup signs the mTLS handshake with this
   // filial's cert, and the home-UF restriction is checked against the runtime.

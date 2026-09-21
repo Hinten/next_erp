@@ -97,6 +97,37 @@ export function formatCNPJ(input: string): string {
   return `${v.slice(0, 2)}.${v.slice(2, 5)}.${v.slice(5, 8)}/${v.slice(8, 12)}-${v.slice(12)}`;
 }
 
+/**
+ * Format a CPF (`000.000.000-00`) or a CNPJ (`00.000.000/0000-00`) from a
+ * combined field, by LENGTH after {@link normalizeDocumento} — 11 → CPF,
+ * 14 → CNPJ. Anything else is returned exactly as given: a display helper
+ * never hides a value it does not understand.
+ *
+ * ⚠️ The CNPJ mask is positional, never digit-driven, so the alphanumeric CNPJ
+ * (RFB IN 2.229/2024) masks correctly: `12ABC678000190` → `12.ABC.678/0001-90`.
+ * The three copies this replaces did not agree on that — two of them stripped
+ * non-digits first, which mangles an alfa CNPJ into a shorter string.
+ * ⚠️ The count is `14 − (letters)`, so what the mangled value LOOKS like varies:
+ * `12ABC678000190` has three letters and strips to ELEVEN digits, which a
+ * length-driven formatter renders as somebody's CPF, while `12ABC34501DE35` has
+ * five and strips to nine, which matches no document at all. Both are wrong; the
+ * three-letter arity is the one that produces a plausible-looking lie.
+ * Both were green, both were commented, and neither
+ * could be diffed against the third by eye (root CLAUDE.md: extract it instead
+ * of writing the rule twice).
+ *
+ * ⚠️ It does NOT validate. `formatCpfCnpj` answers "how is this written down",
+ * `validateCpfCnpj` answers "is this a real document"; a screen that needs both
+ * asks both, because a display that silently blanks an invalid stored value is
+ * how a bad row stops being visible.
+ */
+export function formatCpfCnpj(value: string): string {
+  const v = normalizeDocumento(value.trim());
+  if (/^\d{11}$/.test(v)) return formatCPF(v);
+  if (/^[A-Z0-9]{12}\d{2}$/.test(v)) return formatCNPJ(v);
+  return value;
+}
+
 export const brDocumentProvider: DocumentProvider = {
   id: 'br',
   validateIndividual: validateCPF,

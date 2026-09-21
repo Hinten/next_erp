@@ -65,10 +65,32 @@ export const BANDEIRA_LABELS: Record<Bandeira, string> = BANDEIRA_LABEL_MAP;
 export const bandeiraCartaoSchema = z.object({
   ehCredito: z.boolean().describe('Cartão de crédito'),
   nome: z.string().min(1).max(255).describe('Nome'),
+  // ⚠️ `[0-9A-Z]`, not `\d`: this is `<card><CNPJ>`, the credenciadora / payment
+  // institution — a COUNTERPARTY, and RFB IN 2.229/2024 issues alphanumeric
+  // CNPJs to newly registered establishments. The NF-e `cardSchema` takes a bare
+  // string and the XSD facet does the checking, so nothing downstream had to
+  // move.
+  // ⚠️ This field is the STRICTER of two spellings of the same value:
+  // `pedido/collection/pagamento.ts`'s `cartao.cnpj_instituicao` carries no
+  // regex at all, so a value this catalogue refuses can still reach a pedido.
+  // Widening here narrows that gap rather than closing it — closing it means
+  // deciding which of the two is authoritative, which is not this change.
+  // ⚠️ Letters only in the ALFA CNPJ SHAPE, not everywhere. `^[0-9A-Z]*$` — the
+  // spelling `cliente.cpf_cnpj` uses — would also accept `ABCDEFGHIJK` and
+  // `12ABC34501DEFG`, and `cliente` can afford that because it carries a
+  // `validateCpfCnpj` refine behind it. This field does NOT (see below), so the
+  // regex is the whole guard, and the old `\d*` at least guaranteed a 14-char
+  // value was numeric. The `\d*` alternative keeps every legacy value — empty,
+  // partial, full — so rule 8 read-tolerance is untouched; the second branch
+  // adds exactly `[0-9A-Z]{12}[0-9]{2}` and nothing wider.
+  // ⚠️ It matters more here than elsewhere: `generator-input.ts` copies this
+  // value into `<card><CNPJ>` VERBATIM, with no re-check, so a letter in a DV
+  // position would store cleanly in the catalogue and first surface at XSD
+  // validation or at SEFAZ — at emission time rather than at the form.
   cnpj_instituicao: z
     .string()
     .max(14)
-    .regex(/^\d*$/, 'apenas números')
+    .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
     .nullable()
     .describe('CNPJ da instituição'),
   bandeira: bandeiraSchema.nullable().describe('Bandeira'),

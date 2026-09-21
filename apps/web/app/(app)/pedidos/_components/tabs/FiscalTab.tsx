@@ -15,7 +15,7 @@ import {
 } from '@mantine/core';
 import { Controller, type UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
-import type { Pedido } from '@delfrance/schemas';
+import { CHAVE_NFE_REGEX, type Pedido } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
@@ -138,15 +138,19 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
         )}
         {chNFeList.map((value, index) => {
           const current = value ?? '';
-          // Same rule the save-blocking page-model check uses (`^\d{44}$`), so the
-          // per-input hint and the submit guard agree — a 44-char non-numeric value
-          // is flagged here, not only at save.
-          const invalid = current !== '' && !/^\d{44}$/.test(current);
+          // ⚠️ The SHARED constant, so this agrees with the save-blocking
+          // page-model check by construction. It stopped agreeing the moment
+          // `pageModel.ts` moved to `CHAVE_NFE_REGEX` (positions 6–17 may be
+          // letters, RFB IN 2.229/2024) while this copy still said `^\d{44}$`:
+          // a valid alfa chave showed a red field error on a form that SAVED
+          // successfully. A comment claiming two rules match is the smell —
+          // there is one rule now.
+          const invalid = current !== '' && !CHAVE_NFE_REGEX.test(current);
           return (
             <Group key={index} align="end">
               <TextInput
                 style={{ flex: 1 }}
-                label={index === 0 ? 'Chave de acesso (44 dígitos)' : undefined}
+                label={index === 0 ? 'Chave de acesso (44 caracteres)' : undefined}
                 value={current}
                 onChange={(e) => {
                   const next = [...chNFeList];
@@ -154,7 +158,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
                   updateChNFe(next);
                 }}
                 maxLength={44}
-                error={invalid ? 'Deve ter 44 dígitos numéricos' : undefined}
+                error={invalid ? 'Deve ter 44 caracteres no formato da chave de acesso' : undefined}
                 disabled={disabled}
               />
               <ActionIcon

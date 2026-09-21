@@ -225,10 +225,15 @@ export const integracaoSchema = z
     // alphanumeric CNPJs to newly registered ones. (`filial.cnpj` stays
     // numeric-only on purpose: that is OUR emitente, existing CNPJs never change
     // format, and the chave de acesso builder still asserts digits for it.)
+    // ⚠️ Same shape as `endereco.cpf_cnpj` / `bandeiraCartao.cnpj_instituicao`,
+    // and for the same reason: no refine backs it, so the regex is the whole
+    // guard and it must not be looser than the alfa CNPJ it exists to accept.
+    // The three agree deliberately — a field on the looser `^[0-9A-Z]*$` beside
+    // two on this one is the drift a reviewer cannot see.
     cpf_cnpj: z
       .string()
       .max(18)
-      .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
+      .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
       .nullable()
       .default(null),
     idCadIntTran: z.string().max(60).nullable().default(null),

@@ -36,7 +36,7 @@ import {
   tipoClienteSchema,
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
-import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
+import { formatCNPJ, formatCPF, validateCNPJ } from '@delfrance/core/documents';
 import { formatTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { deriveClienteTelefonePatch } from '@/lib/clientes/formFields';
@@ -270,10 +270,13 @@ export function ClienteQuickCreateForm({
     // surfaces a red notification and never hits the API. The modal feeds back
     // via notifications (not an inline field error, which renders unreliably
     // inside the Mantine Modal portal) — matching the green/yellow success ones.
-    if (!/^\d{14}$/.test(cnpj)) {
+    // ⚠️ `validateCNPJ`, never `^\d{14}$` — see `CnpjLookupField`: the numeric
+    // gate refused a valid alphanumeric CNPJ (RFB IN 2.229/2024) and told the
+    // operator their CNPJ was wrong.
+    if (!validateCNPJ(cnpj)) {
       notifications.show({
         color: 'red',
-        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+        message: 'Informe um CNPJ válido (14 caracteres) para buscar os dados.',
       });
       return;
     }
@@ -282,13 +285,18 @@ export function ClienteQuickCreateForm({
       const outcome = await resolveCnpj(cnpj, nfe, filialId);
       if (!outcome.ok) {
         notifications.show({
-          color: 'red',
+          // ⚠️ `sem-base-publica` is a YELLOW notice, not a red one: the CNPJ is
+          // valid, the public base simply does not answer for the alphanumeric
+          // shape, and there is nothing for the operator to correct.
+          color: outcome.reason === 'sem-base-publica' ? 'yellow' : 'red',
           message:
             outcome.reason === 'network'
               ? 'Falha de rede ao consultar o CNPJ.'
               : outcome.reason === 'invalid-response'
                 ? 'Resposta inválida da API de CNPJ.'
-                : 'CNPJ não encontrado na base pública.',
+                : outcome.reason === 'sem-base-publica'
+                  ? 'CNPJ alfanumérico: a base pública não responde por ele. Preencha os dados manualmente.'
+                  : 'CNPJ não encontrado na base pública.',
         });
         return;
       }

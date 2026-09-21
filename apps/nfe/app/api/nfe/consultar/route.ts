@@ -8,6 +8,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
 import { NFeCertError, consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
@@ -21,10 +22,11 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const querySchema = z.object({
-  chave: z
-    .string()
-    .length(44)
-    .regex(/^\d{44}$/, 'chave must be 44 digits'),
+  // ⚠️ The shared constant, not a local `\d{44}`: the chave's positions 6–17 are
+  // the emitente CNPJ, which RFB IN 2.229/2024 allows to be alphanumeric.
+  // `CHAVE_NFE_REGEX` mirrors the XSD's own `TChNFe` facet and is strictly
+  // NARROWER than the old rule outside that window, so this is a drop-in.
+  chave: z.string().regex(CHAVE_NFE_REGEX, 'chave deve ter 44 caracteres no formato da NF-e'),
 });
 
 export async function GET(req: Request): Promise<NextResponse> {
