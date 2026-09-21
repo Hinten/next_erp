@@ -16,14 +16,17 @@ import {
   SHOPEE_GET_CHANNEL_LIST_PATH,
   SHOPEE_GET_ITEM_BASE_INFO_PATH,
   SHOPEE_GET_ITEM_LIMIT_PATH,
+  SHOPEE_GET_ITEM_PROMOTION_PATH,
   SHOPEE_GET_ITEM_LIST_PATH,
   SHOPEE_GET_ITEM_VIOLATION_INFO_PATH,
   SHOPEE_GET_KIT_ITEM_INFO_PATH,
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_MODEL_LIST_PATH,
   SHOPEE_GET_PACKAGE_DETAIL_PATH,
+  SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
+  SHOPEE_GET_WAREHOUSE_DETAIL_PATH,
   SHOPEE_INIT_TIER_VARIATION_PATH,
   SHOPEE_ITEM_BASE_INFO_MAX_IDS,
   SHOPEE_ITEM_ID_LIST_ENCODING,
@@ -39,6 +42,7 @@ import {
   SHOPEE_UNLIST_ITEM_PATH,
   SHOPEE_UPDATE_ITEM_PATH,
   SHOPEE_UPDATE_MODEL_PATH,
+  SHOPEE_UPDATE_STOCK_PATH,
   SHOPEE_UPDATE_TIER_VARIATION_PATH,
   SHOPEE_UPLOAD_IMAGE_PATH,
   type ShopeeAddItemRequest,
@@ -48,6 +52,7 @@ import {
   type ShopeeModelRequest,
   type ShopeePartnerConfig,
   type ShopeeStandardiseTierRequest,
+  type ShopeeUpdateStockEntry,
   type UploadImageParams,
   createShopeeClient,
   createShopeePartnerClient,
@@ -57,6 +62,7 @@ import {
 import {
   SHOPEE_ERROR_KIND,
   ShopeeApiError,
+  ShopeeApiPartialError,
   ShopeeConfigError,
   ShopeeHttpError,
   ShopeeRateLimitError,
@@ -71,16 +77,20 @@ import * as pacote from '../src/index';
 import {
   SHOPEE_CONDITION,
   SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_ITEM_VIOLATION_MAX_IDS,
   SHOPEE_MODEL_MAX_PER_ITEM,
   SHOPEE_MODEL_SKU_MAX_LENGTH,
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_FIELD,
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_WAREHOUSE_TYPE,
+  shopeeUpdateStockSchema,
 } from '../src/types';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
@@ -2586,6 +2596,8 @@ function ids(n: number): number[] {
 /** O CÓDIGO-FONTE do cliente, para a asserção que só a fonte pode fazer. */
 const FONTE_API = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 const FONTE_API_TEST = readFileSync(new URL('./api.test.ts', import.meta.url), 'utf8');
+/** E o dos SCHEMAS, para as duas constantes que precisam continuar SEPARADAS. */
+const FONTE_TYPES = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 
 describe('get_item_list', () => {
   it('31 — vai por GET, shop-signed, sem corpo, no seu caminho e com os comuns na query', async () => {
@@ -4111,6 +4123,616 @@ describe('upload_image — o único multipart do pacote', () => {
     expect(res.response.image_info?.image_id).toBe('img-1');
     expect(res.response.image_info_list?.[1]?.error).toBe('error_param');
     expect((fetchMock.mock.calls[0]![1]?.body as FormData).get('scene')).toBe('desc');
+  });
+});
+
+/* -------------------------- the stock sync (step 12) ---------------------- */
+
+/** Um sucesso limpo: `error` vazio e as DUAS listas presentes. */
+const UPDATE_STOCK_BODY = {
+  request_id: 'req-update-stock',
+  error: '',
+  message: '',
+  response: {
+    failure_list: [],
+    success_list: [{ model_id: MODEL_ID, location_id: 'SGZ', stock: 7 }],
+  },
+};
+
+/**
+ * A COEXISTÊNCIA que motiva o passo inteiro: um `error` não vazio chegando
+ * JUNTO com o detalhe por modelo. A própria página documenta
+ * `error_busi_update_stock_failed: Update stock failed, please check
+ * failure_list for detailed reason`, e `failure_list` mora sob `response`.
+ */
+const UPDATE_STOCK_PARCIAL_BODY = {
+  request_id: 'req-update-stock-parcial',
+  error: 'error_busi_update_stock_failed',
+  message: 'Update stock failed, please check failure_list for detailed reason',
+  response: {
+    failure_list: [
+      {
+        model_id: MODEL_ID,
+        failed_reason: 'error_auth: Total stock must be more than reserved stock.',
+      },
+    ],
+    success_list: [{ model_id: MODEL_ID + 1, location_id: 'SGZ', stock: 3 }],
+  },
+};
+
+/** Uma falha ORDINÁRIA: `error` não vazio e NENHUM `response`. */
+const UPDATE_STOCK_FALHA_SECA_BODY = {
+  request_id: 'req-update-stock-seca',
+  error: 'error_item_not_found',
+  message: 'Item not found.',
+};
+
+const ITEM_PROMOTION_BODY = {
+  request_id: 'req-item-promotion',
+  error: '',
+  message: '',
+  response: {
+    success_list: [
+      {
+        item_id: ITEM_ID,
+        promotion: [
+          {
+            promotion_type: 'Discount Promotions',
+            promotion_id: 649305216139969,
+            model_id: MODEL_ID,
+            start_time: 1650609000,
+            end_time: 1650616200,
+            promotion_staging: 'ongoing',
+            promotion_stock_info_v2: { summary_info: { total_reserved_stock: 4 } },
+          },
+        ],
+      },
+    ],
+    failure_list: [],
+  },
+};
+
+/** A amostra da PÁGINA de `get_shop_holiday_mode`, sob um envelope de sucesso. */
+const HOLIDAY_MODE_BODY = {
+  request_id: 'req-holiday',
+  error: '',
+  message: '',
+  response: {
+    holiday_mode_on: true,
+    holiday_mode_mtime: 1763435974,
+    holiday_mode_type: 1,
+    holiday_mode_start_time: 1770883200,
+    holiday_mode_end_time: 1773305999,
+    holiday_mode_description: '"Spring Festival"',
+    debug_msg: '""',
+  },
+};
+
+/** ⚠️ O `response` é um ARRAY de topo — o único do pacote. */
+const WAREHOUSE_BODY = {
+  request_id: 'req-warehouse',
+  error: '',
+  message: '',
+  response: [
+    {
+      warehouse_id: 6,
+      warehouse_name: 'warehouse1',
+      warehouse_type: 1,
+      location_id: 'IDZ',
+      address_id: 118454205,
+      region: 'ID',
+      holiday_mode_state: 0,
+    },
+  ],
+};
+
+/** Um corpo de FALHA com o código pedido — a forma ordinária de uma recusa. */
+function erroBody(code: string, message = 'sem detalhe'): Record<string, unknown> {
+  return { request_id: 'req-erro', error: code, message };
+}
+
+/** Um `stock_list` de N modelos distintos, todos SEM `location_id`. */
+function modelos(n: number, stock = 1): ShopeeUpdateStockEntry[] {
+  return Array.from({ length: n }, (_, i) => ({
+    model_id: MODEL_ID + i,
+    seller_stock: [{ stock }],
+  }));
+}
+
+describe('update_stock — a ÚNICA escrita do passo 12', () => {
+  it('92 — POSTa item_id + stock_list com model_id 0 PRESERVADO e devolve o envelope INTEIRO', async () => {
+    // ⚠️ `model_id: 0` É o item sem modelos, e a amostra de requisição da
+    // própria página o imprime. Um `if (model_id)` em qualquer ponto do caminho
+    // o descartaria, e a escrita do item simples voltaria como o erro de
+    // estrutura espelhado.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const res = await createShopeeClient(shopConfig(fetchMock)).updateStock({
+      item_id: ITEM_ID,
+      stock_list: [{ model_id: 0, seller_stock: [{ location_id: 'SGZ', stock: 0 }] }],
+    });
+
+    // ESCRITA: o envelope chega inteiro — `warning` é canal de falha parcial.
+    expect(res.error).toBe('');
+    expect(res.response.success_list[0]?.model_id).toBe(MODEL_ID);
+    expect(res.response.failure_list).toEqual([]);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('POST');
+    expect(url.pathname).toBe(SHOPEE_UPDATE_STOCK_PATH);
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+
+    const corpo = JSON.parse(String(init?.body)) as {
+      item_id: number;
+      stock_list: { model_id: number; seller_stock: { location_id?: string; stock: number }[] }[];
+    };
+    expect(corpo.item_id).toBe(ITEM_ID);
+    expect(corpo.stock_list).toHaveLength(1);
+    // As DUAS âncoras do zero: o id do modelo e o próprio estoque.
+    expect(corpo.stock_list[0]!.model_id).toBe(0);
+    expect(corpo.stock_list[0]!.seller_stock[0]!.stock).toBe(0);
+    expect(corpo.stock_list[0]!.seller_stock[0]!.location_id).toBe('SGZ');
+  });
+
+  it('93 — PAR: stock 0 é ACEITO; NEAR-MISS: stock −1 e 1.5 são RECUSADOS antes de qualquer fetch', async () => {
+    // ⚠️ O par inteiro do `announcement 1445`: zerar um anúncio é a coisa mais
+    // comum que este passo faz, então o guarda é NÃO-negativo. Trocá-lo pelo
+    // positivo tornaria "tirar de estoque" inexprimível — e um teste que só
+    // mostrasse o −1 recusado não diria isso.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: [{ model_id: MODEL_ID, seller_stock: [{ stock: 0 }] }],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const negativo = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [{ model_id: MODEL_ID, seller_stock: [{ stock: -1 }] }],
+      }),
+    );
+    expect(negativo).toBeInstanceOf(ShopeeConfigError);
+    const fracionario = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [{ model_id: MODEL_ID, seller_stock: [{ stock: 1.5 }] }],
+      }),
+    );
+    expect(fracionario).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('94 — PAR: 50 modelos passam; NEAR-MISS: 51 recusam', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: modelos(SHOPEE_UPDATE_STOCK_MAX_MODELS),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const demais = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: modelos(SHOPEE_UPDATE_STOCK_MAX_MODELS + 1),
+      }),
+    );
+    expect(demais).toBeInstanceOf(ShopeeConfigError);
+    expect((demais as Error).message).toContain(String(SHOPEE_UPDATE_STOCK_MAX_MODELS));
+    // A borda de baixo, que a mesma frase da página declara.
+    expect(await erroDe(client.updateStock({ item_id: ITEM_ID, stock_list: [] }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('95 — NEAR-MISS: dois model_id 7 são RECUSADOS nomeando a posição; PAR: 7 e 8 passam', async () => {
+    // ⚠️ As DUAS listas de resultado são chaveadas só por `model_id`, então duas
+    // entradas para um modelo voltam irreconciliáveis mesmo no caminho feliz —
+    // o argumento de `assertUnlistItemParams`, verbatim.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const repetido = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [
+          { model_id: 7, seller_stock: [{ stock: 1 }] },
+          { model_id: 7, seller_stock: [{ stock: 2 }] },
+        ],
+      }),
+    );
+    expect(repetido).toBeInstanceOf(ShopeeConfigError);
+    expect((repetido as Error).message).toContain('stock_list[1].model_id');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: [
+        { model_id: 7, seller_stock: [{ stock: 1 }] },
+        { model_id: 8, seller_stock: [{ stock: 2 }] },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('96 — NEAR-MISS: location_id em umas entradas e não em outras é RECUSADO; PAR: todas-com e todas-sem passam', async () => {
+    // ⚠️ `faq 61`: uma escrita multi-armazém tem de subir TODOS os `location_id`
+    // numa chamada só, e `error_param: Can not update item with different stock
+    // structure` é PEGAJOSO por anúncio. A metade que dá para checar sem uma
+    // leitura é esta: a chamada ser internamente consistente.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const mista = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [
+          { model_id: MODEL_ID, seller_stock: [{ location_id: 'SGZ', stock: 1 }] },
+          { model_id: MODEL_ID + 1, seller_stock: [{ stock: 2 }] },
+        ],
+      }),
+    );
+    expect(mista).toBeInstanceOf(ShopeeConfigError);
+    // ⚠️ E um `location_id` EM BRANCO conta como ausente — senão a estrutura
+    // sairia "consistente" com uma string que a Shopee não sabe ler.
+    const embranco = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [
+          { model_id: MODEL_ID, seller_stock: [{ location_id: 'SGZ', stock: 1 }] },
+          { model_id: MODEL_ID + 1, seller_stock: [{ location_id: '  ', stock: 2 }] },
+        ],
+      }),
+    );
+    expect(embranco).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR 1: todas COM.
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: [
+        { model_id: MODEL_ID, seller_stock: [{ location_id: 'SGZ', stock: 1 }] },
+        { model_id: MODEL_ID + 1, seller_stock: [{ location_id: 'BRFSP1', stock: 2 }] },
+      ],
+    });
+    // PAR 2: todas SEM.
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: [
+        { model_id: MODEL_ID, seller_stock: [{ stock: 1 }] },
+        { model_id: MODEL_ID + 1, seller_stock: [{ stock: 2 }] },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('97 — recusa um seller_stock VAZIO e um item_id 0, sempre antes do fetch', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const semEstoque = await erroDe(
+      client.updateStock({
+        item_id: ITEM_ID,
+        stock_list: [{ model_id: MODEL_ID, seller_stock: [] }],
+      }),
+    );
+    expect(semEstoque).toBeInstanceOf(ShopeeConfigError);
+    expect((semEstoque as Error).message).toContain('seller_stock');
+
+    // ⚠️ `item_id` é POSITIVO — 0 nunca é um anúncio. É o único ponto desta
+    // validação onde o zero é recusado, e o contraste com `model_id` é o ponto.
+    const semItem = await erroDe(
+      client.updateStock({
+        item_id: 0,
+        stock_list: [{ model_id: 0, seller_stock: [{ stock: 1 }] }],
+      }),
+    );
+    expect(semItem).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // NEAR-MISS: o MESMO corpo com um item_id válido passa — só o item_id era o problema.
+    await client.updateStock({
+      item_id: ITEM_ID,
+      stock_list: [{ model_id: 0, seller_stock: [{ stock: 1 }] }],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('98 — a COEXISTÊNCIA: o erro chega como ShopeeApiPartialError com o failure_list dentro', async () => {
+    // ⚠️ Pelo caminho REAL do transporte — a flag `payloadNoErro` está no call
+    // site, não no teste. Sem ela a atribuição por modelo seria descartada no
+    // throw, e um lote de cinquenta em que UM modelo estava dentro de uma
+    // promoção falharia como um bloco só: o defeito do Flutter legado, verbatim.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(UPDATE_STOCK_PARCIAL_BODY),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateStock({
+        item_id: ITEM_ID,
+        stock_list: modelos(2),
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    // Continua uma FALHA, e continua a MESMA falha da classe base.
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_busi_update_stock_failed');
+
+    // O payload sobrevive ao throw, e é RE-PARSEADO, nunca convertido por asserção.
+    const parsed = shopeeUpdateStockSchema.parse((erro as ShopeeApiPartialError).parsed);
+    expect(parsed.response.failure_list).toHaveLength(1);
+    expect(parsed.response.failure_list[0]!.model_id).toBe(MODEL_ID);
+    expect(parsed.response.failure_list[0]!.failed_reason).toContain('reserved stock');
+    // E o que DEU certo também: uma escrita parcial tem as duas metades.
+    expect(parsed.response.success_list[0]!.model_id).toBe(MODEL_ID + 1);
+  });
+
+  it('99 — NEAR-MISS: uma falha SEM `response` cai na classe BASE, mesmo com a flag ligada', async () => {
+    // ⚠️ O par do 98. A flag é CEGA A CÓDIGO: o que decide se o payload viaja é
+    // o schema da operação ter parseado aquele corpo. Um `error_item_not_found`
+    // seco — a forma ordinária de um throttle ou de uma autorização morta — sai
+    // exatamente da classe de que sempre saiu.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(UPDATE_STOCK_FALHA_SECA_BODY),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateStock({
+        item_id: ITEM_ID,
+        stock_list: modelos(1),
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeApiError).code).toBe('error_item_not_found');
+  });
+
+  it('100 — um `error` de traço continua FALHA: updateStock não ganhou nenhuma tolerância de VALOR', async () => {
+    // ⚠️ A amostra da página imprime um traço no `error` — o mesmo placeholder
+    // de autoria que `add_item` e `get_model_list` carregam, e a nenhum deles o
+    // passo 11 deu tolerância. Lê-lo como sucesso faria uma escrita RECUSADA
+    // pela Shopee chegar ao app como se tivesse valido.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...UPDATE_STOCK_BODY, error: '-' }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateStock({
+        item_id: ITEM_ID,
+        stock_list: modelos(1),
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('-');
+
+    // ⚠️ Asserção de FONTE, e é ela que fecha o buraco: a tolerância de CHAVE
+    // ausente continua existindo UMA vez no arquivo inteiro (em
+    // `getItemViolationInfo`, onde foi MEDIDA), e o bloco de `updateStock` não a
+    // menciona. Um segundo call site passaria por todo teste de comportamento
+    // acima — os corpos deles TÊM a chave `error` — e alargaria em silêncio o
+    // único ponto do pacote onde um corpo injulgável vira sucesso.
+    const tolerancia = 'erroAusenteEhSucesso';
+    expect(FONTE_API.split(tolerancia).length - 1).toBe(1);
+    const inicio = FONTE_API.indexOf('updateStock: async');
+    const fim = FONTE_API.indexOf('getItemPromotion: async');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    const bloco = FONTE_API.slice(inicio, fim);
+    expect(bloco).toContain('payloadNoErro: true');
+    expect(bloco).not.toContain(tolerancia);
+    // E a flag NOVA também é de uma operação só.
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(1);
+  });
+});
+
+describe('as TRÊS leituras do passo 12', () => {
+  it('101 — getItemPromotion vai por GET, com item_id_list em vírgula nua, e DESEMBRULHA', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ITEM_PROMOTION_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getItemPromotion({
+      itemIds: [ITEM_ID, ITEM_ID_2],
+    });
+
+    // LEITURA: o envelope NÃO chega ao chamador.
+    expect('error' in payload).toBe(false);
+    expect(payload.success_list[0]?.item_id).toBe(ITEM_ID);
+    // ⚠️ `promotion_id` é STRING — `uint64` desde 2026-07-31.
+    expect(payload.success_list[0]?.promotion[0]?.promotion_id).toBe('649305216139969');
+    expect(payload.failure_list).toEqual([]);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe(SHOPEE_GET_ITEM_PROMOTION_PATH);
+    expect(url.searchParams.get('item_id_list')).toBe(`${String(ITEM_ID)},${String(ITEM_ID_2)}`);
+    expect(url.searchParams.get('item_id_list')).toBe(
+      encodeShopeeIdList([ITEM_ID, ITEM_ID_2], SHOPEE_ITEM_ID_LIST_ENCODING),
+    );
+  });
+
+  it('102 — NEAR-MISS entre operações: getItemPromotion RECUSA o id repetido que getItemBaseInfo ACEITA', async () => {
+    // ⚠️ A mesma lista, duas páginas, duas respostas. `get_item_promotion`
+    // documenta `error_param: Repeat item_id.`; `get_item_base_info` não, e quem
+    // chama lá já reconcilia por `item_id`. Um guarda compartilhado entre as
+    // duas estaria errado de um dos lados, e nenhum teste de uma página só diria
+    // qual.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ITEM_BASE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getItemBaseInfo({ itemIds: [ITEM_ID, ITEM_ID] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const repetido = await erroDe(client.getItemPromotion({ itemIds: [ITEM_ID, ITEM_ID] }));
+    expect(repetido).toBeInstanceOf(ShopeeConfigError);
+    expect((repetido as Error).message).toContain('item_id_list[1]');
+    // As duas bordas, pelas mesmas duas pontas.
+    expect(await erroDe(client.getItemPromotion({ itemIds: [] }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(
+      await erroDe(client.getItemPromotion({ itemIds: ids(SHOPEE_ITEM_PROMOTION_MAX_IDS + 1) })),
+    ).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('103 — getShopHolidayMode vai por GET sem parâmetro nenhum além dos comuns, e DESEMBRULHA', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(HOLIDAY_MODE_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getShopHolidayMode();
+
+    // ⚠️ ENVELOPADO, contra o que o seam do passo 12 desenhou: os sete campos
+    // vêm sob `response`. Uma leitura plana devolveria `undefined` em todos.
+    expect(payload.holiday_mode_on).toBe(true);
+    expect(payload.holiday_mode_type).toBe(1);
+    expect(payload.holiday_mode_description).toBe('"Spring Festival"');
+    expect(payload.debug_msg).toBe('""');
+    // LEITURA: o `error` do envelope não atravessa...
+    expect('error' in payload).toBe(false);
+    // ...e `warning` não é declarado NO PAYLOAD tampouco. A página não tem esse
+    // campo, e um declarado aqui apareceria como `null` mesmo sem vir no corpo —
+    // um campo que a Shopee nunca manda lido como "sem aviso".
+    expect('warning' in payload).toBe(false);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe(SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH);
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+  });
+
+  it('104 — getWarehouseDetail devolve a LISTA, com location_id STRING, e só manda warehouse_type quando pedido', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(WAREHOUSE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const semParam = await client.getWarehouseDetail();
+    expect(semParam.kind).toBe('lista');
+    if (semParam.kind !== 'lista') throw new Error('esperava a lista');
+    // ⚠️ STRING opaca (`IDZ`, `SGZ`, `BRFSP1`) — é o valor que `update_stock`
+    // ecoa de volta, e nada aqui o lê como número.
+    expect(semParam.armazens[0]?.location_id).toBe('IDZ');
+    expect(typeof semParam.armazens[0]?.location_id).toBe('string');
+    expect(semParam.armazens[0]?.warehouse_id).toBe(6);
+
+    // ⚠️ Sem parâmetro, NENHUMA chave `warehouse_type` sai: a página aplica o
+    // default dela. Uma cópia do default aqui seria um segundo lugar para ele
+    // estar errado.
+    const url1 = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect([...url1.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(url1.searchParams.has('warehouse_type')).toBe(false);
+    expect(url1.pathname).toBe(SHOPEE_GET_WAREHOUSE_DETAIL_PATH);
+
+    // PAR: quando pedido, sai.
+    await client.getWarehouseDetail({ warehouseType: SHOPEE_WAREHOUSE_TYPE.retorno });
+    const url2 = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(url2.searchParams.get('warehouse_type')).toBe('2');
+  });
+
+  it('105 — PAR: o código COM e SEM prefixo de módulo dobram igual, carregando o código VERBATIM', async () => {
+    // ⚠️ A amostra da própria página mostra `warehouse.error_not_in_whitelist`
+    // como a resposta de uma loja NORMAL: tratá-lo como falha faria o caso comum
+    // ler como chamada quebrada. A Shopee imprime as duas grafias, então as duas
+    // dobram — mas o que o chamador registra é o código que CHEGOU.
+    const comPrefixo = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(erroBody('warehouse.error_not_in_whitelist')),
+    );
+    const semPrefixo = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(erroBody('error_not_in_whitelist')),
+    );
+    const semArmazem = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(erroBody('warehouse.error_can_not_find_warehouse')),
+    );
+
+    const a = await createShopeeClient(shopConfig(comPrefixo)).getWarehouseDetail();
+    const b = await createShopeeClient(shopConfig(semPrefixo)).getWarehouseDetail();
+    const c = await createShopeeClient(shopConfig(semArmazem)).getWarehouseDetail();
+
+    for (const r of [a, b, c]) expect(r.kind).toBe('sem-multi-armazem');
+    if (a.kind !== 'sem-multi-armazem' || b.kind !== 'sem-multi-armazem') {
+      throw new Error('esperava a dobra');
+    }
+    expect(a.code).toBe('warehouse.error_not_in_whitelist');
+    expect(b.code).toBe('error_not_in_whitelist');
+  });
+
+  it('106 — NEAR-MISS: qualquer OUTRO erro da mesma chamada é RELANÇADO', async () => {
+    // ⚠️ A dobra são exatamente dois códigos. Alargá-la para "qualquer
+    // ShopeeApiError" faria um 500, uma autorização morta ou um throttle serem
+    // reportados como "esta loja não tem multi-armazém" — e a varredura seguiria
+    // escrevendo estoque sem `location_id` numa loja que exige um.
+    const servidor = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(erroBody('error_server')),
+    );
+    const erro = await erroDe(createShopeeClient(shopConfig(servidor)).getWarehouseDetail());
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_server');
+
+    // NEAR-MISS mais próximo: um código do MESMO módulo cujo sufixo não está na
+    // lista continua subindo, prefixo e tudo.
+    const vizinho = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(erroBody('warehouse.error_param')),
+    );
+    expect(
+      await erroDe(createShopeeClient(shopConfig(vizinho)).getWarehouseDetail()),
+    ).toBeInstanceOf(ShopeeApiError);
+
+    // E um erro que NEM é da Shopee (HTTP puro) também sobe, intocado.
+    const http = vi.fn<typeof globalThis.fetch>(async () => new Response('nada', { status: 503 }));
+    expect(await erroDe(createShopeeClient(shopConfig(http)).getWarehouseDetail())).toBeInstanceOf(
+      ShopeeHttpError,
+    );
+  });
+
+  it('107 — um array VAZIO sem erro dobra também, com o code vazio — distinguível na leitura', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ request_id: 'req-vazio', error: '', message: '', response: [] }),
+    );
+    const r = await createShopeeClient(shopConfig(fetchMock)).getWarehouseDetail();
+    expect(r.kind).toBe('sem-multi-armazem');
+    if (r.kind !== 'sem-multi-armazem') throw new Error('esperava a dobra');
+    // ⚠️ "Nada a mapear" é a mesma INSTRUÇÃO que a recusa de whitelist, e o
+    // `code` vazio é o que mantém as duas distinguíveis num log.
+    expect(r.code).toBe('');
+  });
+});
+
+describe('a superfície pública do passo 12', () => {
+  it('108 — as QUATRO operações e os QUATRO caminhos saem pelo index do pacote', async () => {
+    // ⚠️ `index.ts` re-exporta por WILDCARD, então nenhuma adição do passo 12
+    // precisou de linha lá — mas um rename silencioso tiraria uma operação da
+    // superfície pública sem quebrar nada dentro do pacote.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPDATE_STOCK_BODY));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+
+    const operacoes = [
+      'updateStock',
+      'getItemPromotion',
+      'getShopHolidayMode',
+      'getWarehouseDetail',
+    ] as const;
+    for (const nome of operacoes) expect(typeof client[nome]).toBe('function');
+
+    const caminhos = [
+      pacote.SHOPEE_UPDATE_STOCK_PATH,
+      pacote.SHOPEE_GET_ITEM_PROMOTION_PATH,
+      pacote.SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH,
+      pacote.SHOPEE_GET_WAREHOUSE_DETAIL_PATH,
+    ];
+    expect(new Set(caminhos).size).toBe(4);
+    for (const caminho of caminhos) expect(caminho.startsWith('/api/v2/')).toBe(true);
+
+    // ⚠️ Os DOIS cinquentas são constantes SEPARADAS de propósito: uma limita o
+    // lote de `update_stock`, a outra é o teto de modelos POR ITEM na criação.
+    // São iguais hoje, e uma sonda que mova uma não pode mover a outra.
+    expect(pacote.SHOPEE_UPDATE_STOCK_MAX_MODELS).toBe(SHOPEE_UPDATE_STOCK_MAX_MODELS);
+    expect(pacote.SHOPEE_MODEL_MAX_PER_ITEM).toBe(SHOPEE_MODEL_MAX_PER_ITEM);
+    expect(FONTE_TYPES).toContain('export const SHOPEE_UPDATE_STOCK_MAX_MODELS');
+    expect(FONTE_TYPES).toContain('export const SHOPEE_MODEL_MAX_PER_ITEM');
+    // E a dobra do armazém é do PACOTE, para que nenhum app compare strings de erro.
+    expect([...pacote.SHOPEE_WAREHOUSE_SEM_ACESSO]).toHaveLength(2);
   });
 });
 
