@@ -10,7 +10,11 @@
  * pass exists, and `telefoneQueryShapes` searches both shapes until it has run.
  */
 
-import { isValidTelefone, normalizeTelefone } from '@delfrance/core/phone';
+import {
+  isValidTelefone,
+  normalizeTelefone,
+  normalizeTelefoneInternacional,
+} from '@delfrance/core/phone';
 
 /**
  * Why a stored value was left alone.
@@ -51,7 +55,10 @@ export type TelefonePlan =
  * project until the cutover switches it off — a single early run does not
  * converge the collection; the authoritative run is the one inside the window.
  */
-export function planTelefone(stored: unknown): TelefonePlan {
+export function planTelefone(
+  stored: unknown,
+  options: { internacional?: boolean } = {},
+): TelefonePlan {
   if (typeof stored !== 'string') {
     return { action: 'skip', reason: SKIP_REASON.empty, value: stored };
   }
@@ -63,8 +70,10 @@ export function planTelefone(stored: unknown): TelefonePlan {
     return { action: 'skip', reason: SKIP_REASON.masked, value: stored };
   }
 
-  const normalized = normalizeTelefone(value);
-  if (!isValidTelefone(normalized)) {
+  const normalized = options.internacional
+    ? normalizeTelefoneInternacional(value)
+    : normalizeTelefone(value);
+  if (normalized === null || !isValidTelefone(normalized)) {
     return { action: 'skip', reason: SKIP_REASON.invalid, value: stored };
   }
   if (normalized === stored) {

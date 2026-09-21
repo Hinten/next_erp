@@ -332,6 +332,7 @@ export const integracaoSchema = z
      * in; nullable like every other per-channel field so non-WhatsApp docs parse.
      */
     waba_id: z.string().nullable().default(null),
+    portfolioId: z.string().nullable().default(null).describe('ID do portfólio empresarial Meta'),
     /**
      * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
      * connected phone number. Nullable here like every other per-channel

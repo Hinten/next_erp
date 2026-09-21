@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { whatsappFields } from '../whatsapp/_components/whatsappFieldOverrides';
 import { integracaoSchema } from '@delfrance/schemas';
 
 import {
@@ -50,6 +51,7 @@ const ML_EXCLUDED_ANTES = [
   'tenant_id',
   'wa_id',
   'waba_id',
+  'portfolioId',
   'phoneNumberId',
   'numero',
   'verificado',
@@ -74,6 +76,7 @@ const BALCAO_EXCLUDED_ANTES = [
   'tenant_id',
   'wa_id',
   'waba_id',
+  'portfolioId',
   'phoneNumberId',
   'numero',
   'verificado',
@@ -267,5 +270,19 @@ describe('integracaoFieldsCompartilhados', () => {
     for (const cfg of Object.values(comSecao)) expect(cfg.section).toBe('Geral');
     const semSecao = integracaoFieldsCompartilhados();
     for (const cfg of Object.values(semSecao)) expect(cfg.section).toBeUndefined();
+  });
+});
+
+describe('WhatsApp business portfolio field', () => {
+  it('offers the BSUID scope in the Cloud API connection tab only for WhatsApp', () => {
+    expect(whatsappFields.portfolioId).toMatchObject({
+      label: 'ID do portfólio empresarial Meta',
+      section: 'Conexão (Cloud API)',
+      hint: expect.stringContaining('BSUID'),
+    });
+    expect(integracaoExcludedFields('whatsapp')).not.toContain('portfolioId');
+    for (const owner of [null, 'mercadoLivre', 'shopee', 'amazon', 'magalu'] as const) {
+      expect(integracaoExcludedFields(owner)).toContain('portfolioId');
+    }
   });
 });

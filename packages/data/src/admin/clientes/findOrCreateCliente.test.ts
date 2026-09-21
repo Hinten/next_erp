@@ -23,6 +23,8 @@ function matchClause(fieldValue: unknown, op: string, value: unknown): boolean {
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
+  readonly versions = new Map<string, number>();
+  beforeUpdate: (() => void) | null = null;
   private autoN = 0;
   /** Rows examined by the last `.get()` — proves `.limit()` actually applied. */
   lastPageSize = 0;
@@ -42,6 +44,8 @@ class FakeDb {
   }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    const key = `${path}/${id}`;
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
   }
   seedMany(path: string, docs: Array<[string, DocData]>): void {
     for (const [id, data] of docs) this.seed(path, id, data);
@@ -53,7 +57,7 @@ class FakeDb {
     return this.col(path).size;
   }
 
-  private query(entries: Array<[string, DocData]>) {
+  private query(path: string, entries: Array<[string, DocData]>) {
     const self = this;
     const rowsIn = self.docOrder === 'reverse' ? [...entries].reverse() : entries;
     const clauses: Array<[string, string, unknown]> = [];
@@ -75,7 +79,12 @@ class FakeDb {
         self.lastPageSize = rows.length;
         self.queryCount += 1;
         return {
-          docs: rows.map(([id, d]) => ({ id, data: () => d, exists: true })),
+          docs: rows.map(([id, d]) => ({
+            id,
+            data: () => d,
+            exists: true,
+            updateTime: self.versions.get(`${path}/${id}`),
+          })),
           empty: rows.length === 0,
         };
       },
@@ -95,17 +104,23 @@ class FakeDb {
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
           },
-          update: async (patch: DocData) => {
-            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
+          update: async (patch: DocData, precondition?: { lastUpdateTime?: number }) => {
+            const before = self.beforeUpdate;
+            self.beforeUpdate = null;
+            before?.();
+            if (precondition?.lastUpdateTime !== self.versions.get(`${path}/${docId}`)) {
+              throw Object.assign(new Error('concurrent update'), { code: 9 });
+            }
+            self.seed(path, docId, { ...(col.get(docId) ?? {}), ...patch });
           },
         };
       },
       where: (field: string, op: string, value: unknown) =>
-        self.query([...col.entries()]).where(field, op, value),
-      limit: (n: number) => self.query([...col.entries()]).limit(n),
+        self.query(path, [...col.entries()]).where(field, op, value),
+      limit: (n: number) => self.query(path, [...col.entries()]).limit(n),
       add: async (data: DocData) => {
         const id = `auto-${++self.autoN}`;
-        col.set(id, { ...data });
+        self.seed(path, id, { ...data });
         return { id };
       },
     };
@@ -474,6 +489,38 @@ describe('findOrCreateCliente — cascade and stamps', () => {
 /* ------------------------------ telefone hygiene --------------------------- */
 
 describe('findOrCreateCliente — telefone hygiene', () => {
+  it('does not replace an existing primary with a different order phone', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: '5511888887777' });
+    await findOrCreateCliente(db(fake), {
+      fields: fields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')?.telefone).toBe('5511888887777');
+  });
+
+  it('re-resolves after losing to a deliberate phone clear instead of refilling it', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: null });
+    fake.beforeUpdate = () =>
+      fake.seed(CLIENTES, 'cli-a', {
+        nome: 'Ana',
+        cpf_cnpj: CPF_A,
+        telefone: null,
+        telefoneGerenciado: true,
+        telefonesAdicionais: [],
+      });
+    await findOrCreateCliente(db(fake), {
+      fields: fields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({
+      telefone: null,
+      telefoneGerenciado: true,
+    });
+    expect(fake.queryCount).toBeGreaterThan(1);
+  });
+
   it('drops a MASKED telefone on the CREATE path instead of throwing', async () => {
     // Before #786 the `*` skip existed only on the merge path: on create,
     // `normalizeTelefone` stripped the mask down to 6 digits, which failed
@@ -608,7 +655,7 @@ describe('findOrCreateCliente — telefone hygiene', () => {
     });
   });
 
-  it('writes a genuinely different telefone', async () => {
+  it('keeps the primary when an old order observes a different telefone', async () => {
     const fake = new FakeDb();
     fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: TELEFONE_RAW });
 
@@ -617,7 +664,7 @@ describe('findOrCreateCliente — telefone hygiene', () => {
       nowMs: NOW_MS,
     });
 
-    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({ telefone: '5511777776666' });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({ telefone: TELEFONE_RAW });
   });
 });
 

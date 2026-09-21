@@ -15,22 +15,35 @@ import { valuePayloadSchema } from '@delfrance/integrations-whatsapp-cloud-api';
 // `merge` that captures the patch the processor writes.
 const h = vi.hoisted(() => ({
   get: vi.fn<() => Promise<{ exists: boolean; data: () => Record<string, unknown> }>>(),
-  merge: vi.fn<(...args: unknown[]) => Promise<void>>(),
+  merge: vi.fn<(...args: unknown[]) => void>(),
+  mapGet: vi.fn(),
+  messageRef: vi.fn(),
+  mapRef: vi.fn(),
 }));
 
 vi.mock('@delfrance/data/admin/collections', () => ({
   mensagemCollection: {
-    docRef: () => ({ get: h.get }),
+    docRef: h.messageRef,
     docPath: () => 'chat/c1/mensagem/m1',
     parseRead: (data: Record<string, unknown>) => data,
-    merge: h.merge,
+    parseMerge: (data: Record<string, unknown>) => data,
+  },
+  whatsappMensagemCollection: {
+    docRef: h.mapRef,
+    parseRead: (data: Record<string, unknown>) => data,
   },
 }));
 
 const { processStatuses } = await import('./processStatus');
 type StatusesReport = Awaited<ReturnType<typeof processStatuses>>;
 
-const db = {} as Firestore;
+const db = {
+  runTransaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+    fn({
+      get: (ref: { get: () => Promise<unknown> }) => ref.get(),
+      update: h.merge,
+    }),
+} as unknown as Firestore;
 
 /** The stored outbound mensagem this status lands on. */
 function stored(estadoEnvio: number, lastExternalUpdateDateTime: number | null) {
@@ -111,11 +124,21 @@ function report(counts: Partial<StatusesReport>): StatusesReport {
 /** The patch `processStatuses` wrote, or undefined if it wrote nothing. */
 function writtenPatch(): Record<string, unknown> | undefined {
   const call = h.merge.mock.calls[0];
-  return call ? (call[3] as Record<string, unknown>) : undefined;
+  return call ? (call[1] as Record<string, unknown>) : undefined;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.messageRef.mockReturnValue({ get: h.get });
+  h.mapRef.mockReturnValue({ get: h.mapGet });
+  h.mapGet.mockResolvedValue({
+    exists: true,
+    data: () => ({
+      integracaoId: 'conta-1',
+      conversaId: 'canonical-existing-chat',
+      mensagemId: 'historical-message-id',
+    }),
+  });
 });
 
 describe('processStatuses — estadoEnvio mapping', () => {
@@ -344,5 +367,44 @@ describe('processStatuses — a status this pipeline does not model', () => {
     expect(r).toEqual(report({ aplicados: 1, malformados: 1 }));
     // `malformados` is the FOURTH fate and joins the sum.
     expect(r.aplicados + r.naoEncontrados + r.staleIgnorados + r.malformados).toBe(2);
+  });
+});
+
+describe('processStatuses — canonical message location', () => {
+  it.each([{ recipient_user_id: 'BR.changed.identity' }, { recipient_id: '14155552671' }])(
+    'uses the wamid registry after recipient changes: %j',
+    async (recipient) => {
+      stored(ESTADO_ENVIO.enviando, null);
+      const value = valuePayloadSchema.parse({
+        messaging_product: 'whatsapp',
+        metadata: { display_phone_number: 'different-business-phone', phone_number_id: 'pn-1' },
+        statuses: [
+          { id: 'wamid.TEST', status: 'delivered', timestamp: String(STATUS_SEC), ...recipient },
+        ],
+      });
+      expect(await processStatuses(db, 'conta-1', value)).toEqual(report({ aplicados: 1 }));
+      expect(h.messageRef).toHaveBeenCalledWith(
+        db,
+        { conversaId: 'canonical-existing-chat' },
+        'historical-message-id',
+      );
+    },
+  );
+
+  it('does not guess a chat from the recipient when its wamid registry is missing', async () => {
+    h.mapGet.mockResolvedValue({ exists: false, data: () => undefined });
+    expect(await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC))).toEqual(
+      report({ naoEncontrados: 1 }),
+    );
+    expect(h.messageRef).not.toHaveBeenCalled();
+  });
+
+  it('never moves the watermark backwards while applying a stale forward transition', async () => {
+    stored(ESTADO_ENVIO.enviando, LAST_STALE);
+    await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
+    expect(writtenPatch()).toMatchObject({
+      estadoEnvio: ESTADO_ENVIO.enviado,
+      lastExternalUpdateDateTime: LAST_STALE,
+    });
   });
 });

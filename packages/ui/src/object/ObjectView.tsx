@@ -44,6 +44,7 @@ import {
   NothingChangedError,
   RecordConflictError,
   saveRecord,
+  type DeriveTransactionPatch,
   type TransactionWrite,
 } from './saveRecord';
 import { useServerTruthSeed } from './useServerTruthSeed';
@@ -90,6 +91,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   /** undefined ⇒ create mode. */
   recordId?: string;
   defaultValues?: Partial<z.infer<S>>;
+  /** Prepare a copy's form seed before validation; omit identities and retain input provenance. */
+  transformCopiedValues?: (source: Readonly<Record<string, unknown>>) => Record<string, unknown>;
 
   /** Hide these field keys completely (e.g. embeddings). */
   excludedFields?: string[];
@@ -118,6 +121,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `undefined` (Firestore rejects it). Must be pure.
    */
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+  /** Pure domain delta computed from the latest document inside each save attempt. */
+  deriveTransactionPatch?: DeriveTransactionPatch;
 
   /**
    * Cross-document validation run alongside the schema resolver (after each
@@ -290,11 +295,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   pathContext = {},
   recordId,
   defaultValues,
+  transformCopiedValues,
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
   persistentSections,
   deriveOnSave,
+  deriveTransactionPatch,
   validate,
   transientFields = [],
   transactionWrites,
@@ -506,7 +513,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     form.reset({
       ...emptyDefaults,
       ...(defaultValues ?? {}),
-      ...source,
+      ...(transformCopiedValues ? transformCopiedValues(source) : source),
     } as FieldValues);
   }, [copySnap.data?.id]);
 
@@ -625,6 +632,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // transaction as the document — the full `values` carry them; the hook
         // turns them into sibling writes keyed by the resolved record id.
         siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
+        deriveTransactionPatch,
         currentUserUid,
         // ADR 0011 tier 3. "Salvar mesmo assim" does NOT come through here with
         // the guard off — it comes through with `baseline.current` already
@@ -644,7 +652,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         modifiedAtField: stampFields.modifiedAtField ?? false,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
-      form.reset(values as typeof raw);
+      const committedValues = { ...values, ...(result.patch as Record<string, unknown>) };
+      form.reset(committedValues as typeof raw);
       // Re-base the tier-3 baseline onto what we just wrote: after a successful
       // save, the version the operator last knew IS this one.
       //
@@ -673,7 +682,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // staged child documents). Runs on BOTH save paths; a failure surfaces
       // in the form alert and skips onSaved (the record itself is saved — the
       // user can retry just the sibling step by saving again).
-      await onAfterSave?.(result.id, values);
+      await onAfterSave?.(result.id, committedValues);
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {

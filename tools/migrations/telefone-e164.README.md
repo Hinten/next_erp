@@ -71,6 +71,15 @@ web form — strictly worse than leaving it alone. Those rows want a human.
 Foreign numbers already carry their own country code (12+ digits), so they take
 the `already-normalized` branch and are never touched.
 
+**Short international numbers (#1084):** for `clientes`, explicit `+`,
+`tipo == Estrangeiro`, or `telefoneGerenciado == true` selects the international
+normalizer: `+1 415 555 2671` becomes `14155552671`, never `5514155552671`.
+When a changed cliente uses this context the pass also records
+`telefoneGerenciado: true`, so a second pass retains the context after removing
+the `+`. A bare 10/11-digit number with no context remains ambiguous and follows
+the historical BR assumption; audit/review these before applying. This flag is
+not proof that the person owns a WhatsApp number.
+
 ## Running it
 
 Dry-run by default; `--project` is required and never inferred. Every intended

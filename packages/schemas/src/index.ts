@@ -28,6 +28,7 @@ export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 export * from './accessOperation';
 export * from './shared/accessRead';
 
+export * from './whatsappContato';
 export {
   notificacaoResilienciaStatusSchema,
   NOTIFICACAO_RESILIENCIA_STATUS,
@@ -97,6 +98,13 @@ export {
   type ClienteMatchKey,
   type ClienteResolveFields,
 } from './clienteIdentity';
+
+export {
+  buildClienteTelefonePatch,
+  ClienteTelefoneConflitoError,
+  type ClienteTelefoneState,
+  type ClienteTelefoneChange,
+} from './clienteTelefone';
 
 // The shared "is this provider value usable, or is it a redaction?" rule.
 // Provider-neutral on purpose: every marketplace that hides buyer data outside

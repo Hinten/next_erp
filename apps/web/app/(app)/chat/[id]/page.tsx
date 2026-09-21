@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { Suspense, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Badge, Box, Group, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_CONVERSA_LABELS, ORIGEM_LABELS } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { ConversaAliasRedirect, ConversaContinuity } from '../_components/ConversaContinuity';
 import { ChatInboxShell } from '../_components/ChatInboxShell';
 import { ConversaSidePanel } from '../_components/ConversaSidePanel';
 import { ConversaActionsMenu } from '../_components/actions/ConversaActionsMenu';
@@ -31,12 +32,15 @@ export default function ConversaDetailPage() {
         {error && <Alert color="red">{error.message}</Alert>}
         {loading && <Skeleton height={64} m="md" />}
         {!loading && !data && (
-          <Alert color="yellow" m="md">
-            Conversa não encontrada.
-          </Alert>
+          <Suspense fallback={<Skeleton height={40} />}>
+            <ConversaAliasRedirect conversaId={params.id} />
+          </Suspense>
         )}
         {!loading && data && (
           <>
+            <Suspense fallback={null}>
+              <ConversaContinuity />
+            </Suspense>
             <Box
               p="md"
               style={{
