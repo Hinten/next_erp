@@ -8,6 +8,13 @@
  * `e2ePrefix()`, so a single prefix sweep cleans the whole suite without
  * tracking ids.
  */
+import { createHash } from 'node:crypto';
+import {
+  clienteSchema,
+  integracaoSchema,
+  INTEGRACAO_TIPO,
+  whatsappIdentidadeSchema,
+} from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
 import { db } from '@delfrance/test-fixtures';
 import { getRunId, workerIndex } from './run-id';
@@ -891,6 +898,10 @@ export async function seedMensagem(
       conteudo: data.conteudo,
       canal: 0,
       user_id: data.userId ?? null,
+      clienteMensagemOuterRef:
+        (data.estadoEnvio ?? 7) === 7 && !data.userId
+          ? `documents/clientes/${conversaId}-cliente`
+          : null,
       mid: null,
       midGroup: null,
       resposta: null,
@@ -927,6 +938,72 @@ export async function seedMensagem(
  */
 const PRAZO_BACKDATE_MS = 365 * 24 * 60 * 60 * 1000;
 
+/** Fully linked local fixtures; inactive integration has no provider credential. */
+function whatsappFixtureIds(prefix: string, conversaId: string) {
+  const integracaoId = `${prefix}-chat-integracao`;
+  const clienteId = `${conversaId}-cliente`;
+  const portfolioId = `${prefix}-chat-portfolio`;
+  const bsuid = `${conversaId}-bsuid`;
+  // Test fixture wire IDs match the resolver's length-preserving JSON tuple hash.
+  const digest = (parts: string[]) =>
+    createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+  return {
+    integracaoId,
+    clienteId,
+    portfolioId,
+    bsuid,
+    identidadeId: digest([portfolioId, 'bsuid', bsuid]),
+    claimId: digest([integracaoId, clienteId]),
+  };
+}
+
+function seedWhatsappFixtureBindings(
+  batch: FirebaseFirestore.WriteBatch,
+  prefix: string,
+  conversaId: string,
+  now: number,
+) {
+  const ids = whatsappFixtureIds(prefix, conversaId);
+  batch.set(
+    db().collection('integracao').doc(ids.integracaoId),
+    integracaoSchema.parse({
+      nome: ids.integracaoId,
+      tipo: INTEGRACAO_TIPO.whatsapp,
+      ativo: false,
+      portfolioId: ids.portfolioId,
+    }),
+  );
+  batch.set(
+    db().collection('clientes').doc(ids.clienteId),
+    clienteSchema.parse({ nome: ids.clienteId, telefoneGerenciado: true }),
+  );
+  batch.set(
+    db().collection('whatsappIdentidades').doc(ids.identidadeId),
+    whatsappIdentidadeSchema.parse({
+      escopo: ids.portfolioId,
+      tipo: 'bsuid',
+      valor: ids.bsuid,
+      clienteId: ids.clienteId,
+      ativa: true,
+    }),
+  );
+  batch.set(db().collection('whatsappConversas').doc(ids.claimId), {
+    integracaoId: ids.integracaoId,
+    clienteId: ids.clienteId,
+    conversaId,
+  });
+  return {
+    integracaoOuterRef: `documents/integracao/${ids.integracaoId}`,
+    clienteOuterRef: `documents/clientes/${ids.clienteId}`,
+    whatsappDestino: {
+      tipo: 'bsuid',
+      valor: ids.bsuid,
+      identidadeId: ids.identidadeId,
+      revision: 1,
+      ultimaMensagemEm: now,
+    },
+  };
+}
 export async function seedConversas(prefix: string): Promise<SeededChat> {
   const now = Date.now();
   const vermelhaId = `${prefix}-conv-vermelha`;
@@ -980,7 +1057,11 @@ export async function seedConversas(prefix: string): Promise<SeededChat> {
     base(azulId, 1, CHAT_ETIQUETA_BLUE, 1),
   ];
   const batch = db().batch();
-  for (const r of rows) batch.set(db().collection('chat').doc(r.id), r.doc);
+  for (const r of rows)
+    batch.set(db().collection('chat').doc(r.id), {
+      ...r.doc,
+      ...seedWhatsappFixtureBindings(batch, prefix, r.id, now),
+    });
   await batch.commit();
 
   await seedMensagem(vermelhaId, `${prefix}-msg-001`, {
@@ -1082,8 +1163,14 @@ export async function seedSearchMessages(
     mensagensId: null,
   });
   const batch = db().batch();
-  batch.set(db().collection('chat').doc(oldConversaId), convDoc(oldConversaId));
-  batch.set(db().collection('chat').doc(recentConversaId), convDoc(recentConversaId));
+  batch.set(db().collection('chat').doc(oldConversaId), {
+    ...convDoc(oldConversaId),
+    ...seedWhatsappFixtureBindings(batch, prefix, oldConversaId, oldTs),
+  });
+  batch.set(db().collection('chat').doc(recentConversaId), {
+    ...convDoc(recentConversaId),
+    ...seedWhatsappFixtureBindings(batch, prefix, recentConversaId, recentTs),
+  });
   await batch.commit();
 
   await seedMensagem(oldConversaId, oldMsgId, {
@@ -1132,8 +1219,15 @@ export async function cleanupConversas(prefix: string): Promise<void> {
   for (const convDoc of snap.docs) {
     const msgs = await convDoc.ref.collection('mensagem').get();
     await deleteChunked(msgs.docs.map((m) => m.ref));
+    const ids = whatsappFixtureIds(prefix, convDoc.id);
+    await deleteChunked([
+      db().collection('whatsappIdentidades').doc(ids.identidadeId),
+      db().collection('whatsappConversas').doc(ids.claimId),
+      db().collection('clientes').doc(ids.clienteId),
+    ]);
   }
   await deleteChunked(snap.docs.map((d) => d.ref));
+  await db().collection('integracao').doc(`${prefix}-chat-integracao`).delete();
 }
 
 /**

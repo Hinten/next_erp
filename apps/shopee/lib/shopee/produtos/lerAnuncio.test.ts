@@ -202,6 +202,66 @@ describe('as duas recusas que esta leitura decide sozinha', () => {
     });
   });
 
+  it('⚠️ PAR: a grafia com prefixo de módulo dobra igual à nua', async () => {
+    // A sonda mediu o prefixo `product.` chegando no fio de verdade
+    // (2026-09-17), e `ShopeeApiError.code` guarda a string do envelope VERBATIM:
+    // comparar só o código nu re-lançava um veredito que esta leitura é dona de
+    // decidir — 422 numa grafia, 5xx na outra. A narrowing passa pelo
+    // `shopeeCodeSemPrefixoDeModulo` do PACOTE, nunca por um segundo removedor.
+    const dobro = criarCliente({
+      base: () => {
+        throw new ShopeeApiError('item desconhecido', {
+          code: 'product.error_item_not_found',
+          kind: SHOPEE_ERROR_KIND.other,
+          httpStatus: 200,
+          path: '/api/v2/product/get_item_base_info',
+        });
+      },
+    });
+
+    await expect(lerAnuncioShopee(dobro.client, ITEM_ID)).rejects.toMatchObject({
+      motivo: MOTIVO_IMPORT_BLOQUEADO.itemNaoEncontrado,
+      mensagem: MSG_ITEM_NAO_ENCONTRADO,
+    });
+  });
+
+  it('⚠️ NEAR-MISS: um OUTRO código com prefixo continua subindo intacto', async () => {
+    // O removedor tira UM segmento, não "qualquer coisa até o último ponto": um
+    // strip guloso faria qualquer código que meramente TERMINE em um conhecido
+    // cair na escada errada.
+    const dobro = criarCliente({
+      base: () => {
+        throw new ShopeeApiError('parâmetro inválido', {
+          code: 'product.error_param',
+          kind: SHOPEE_ERROR_KIND.other,
+          httpStatus: 200,
+          path: '/api/v2/product/get_item_base_info',
+        });
+      },
+    });
+
+    await expect(lerAnuncioShopee(dobro.client, ITEM_ID)).rejects.not.toBeInstanceOf(
+      ShopeeImportBlockedError,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: um strip GULOSO não vale — a.product.error_item_not_found sobe intacto', async () => {
+    const dobro = criarCliente({
+      base: () => {
+        throw new ShopeeApiError('item desconhecido', {
+          code: 'a.product.error_item_not_found',
+          kind: SHOPEE_ERROR_KIND.other,
+          httpStatus: 200,
+          path: '/api/v2/product/get_item_base_info',
+        });
+      },
+    });
+
+    await expect(lerAnuncioShopee(dobro.client, ITEM_ID)).rejects.not.toBeInstanceOf(
+      ShopeeImportBlockedError,
+    );
+  });
+
   it('um kit sem product_info vira kit-sem-detalhe', async () => {
     const dobro = criarCliente({
       base: () => payload(LINHA_KIT),

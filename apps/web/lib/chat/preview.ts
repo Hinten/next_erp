@@ -18,7 +18,10 @@ import { mensagemEhNossa } from './direcao';
  * (structural) or any partial with these fields, so tests can pass minimal
  * fixtures.
  */
-export type PreviewMensagem = { estadoEnvio?: Mensagem['estadoEnvio'] } & Pick<
+export type PreviewMensagem = {
+  estadoEnvio?: Mensagem['estadoEnvio'];
+  clienteMensagemOuterRef?: Mensagem['clienteMensagemOuterRef'];
+} & Pick<
   Mensagem,
   | 'tipo'
   | 'conteudo'

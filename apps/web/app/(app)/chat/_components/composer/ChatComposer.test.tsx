@@ -10,7 +10,7 @@ const { batchSet, batchCommit, newDocIdMock, uploadFileMock, setDocMock, respond
     batchCommit: vi.fn(async () => undefined),
     newDocIdMock: vi.fn(() => 'evt-id'),
     uploadFileMock: vi.fn(),
-    setDocMock: vi.fn(async () => undefined),
+    setDocMock: vi.fn(async (_ref: unknown, _data: unknown) => undefined),
     responderConversa: vi.fn(),
   }));
 
@@ -47,6 +47,22 @@ vi.mock('firebase/firestore', async (importActual) => {
     ...actual,
     writeBatch: () => ({ set: batchSet, commit: batchCommit }),
     setDoc: setDocMock,
+    runTransaction: async (
+      _db: unknown,
+      callback: (tx: {
+        get: () => Promise<{ data: () => Conversa }>;
+        set: (ref: unknown, data: unknown) => void;
+      }) => Promise<void>,
+    ) => {
+      const writes: Array<[unknown, unknown]> = [];
+      await callback({
+        get: async () => ({ data: () => conversaFull }),
+        set: (ref, data) => {
+          writes.push([ref, data]);
+        },
+      });
+      for (const [ref, data] of writes) await setDocMock(ref, data);
+    },
     arrayUnion: (v: unknown) => ({ __arrayUnion: v }),
   };
 });
@@ -67,6 +83,14 @@ const conversaEnter: Conversa = conversaSchema.parse({
   usuarios: [],
   estadoConversa: 1,
   origem: 'whatsapp',
+  integracaoOuterRef: 'documents/integracao/wa1',
+  whatsappDestino: {
+    tipo: 'telefone',
+    valor: '5511999998888',
+    identidadeId: 'wa-contact',
+    revision: 1,
+    ultimaMensagemEm: 1,
+  },
   nome: 'Cliente',
 });
 
@@ -75,6 +99,14 @@ const conversaFull: Conversa = conversaSchema.parse({
   usuarios: ['op1'],
   estadoConversa: 1,
   origem: 'whatsapp',
+  integracaoOuterRef: 'documents/integracao/wa1',
+  whatsappDestino: {
+    tipo: 'telefone',
+    valor: '5511999998888',
+    identidadeId: 'wa-contact',
+    revision: 1,
+    ultimaMensagemEm: 1,
+  },
   nome: 'Cliente',
 });
 
@@ -304,6 +336,14 @@ describe('ChatComposer — send capability (#817)', () => {
           usuarios: ['op1'],
           estadoConversa: 1,
           origem: 'whatsapp',
+          integracaoOuterRef: 'documents/integracao/wa1',
+          whatsappDestino: {
+            tipo: 'telefone',
+            valor: '5511999998888',
+            identidadeId: 'wa-contact',
+            revision: 1,
+            ultimaMensagemEm: 1,
+          },
           nome: 'Cliente',
           respostaBloqueada: 'Prazo de resposta encerrado',
         })}

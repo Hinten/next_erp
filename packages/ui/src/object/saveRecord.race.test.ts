@@ -128,6 +128,34 @@ beforeEach(() => {
 });
 
 describe('saveRecord — tier 3 concurrency guard (#824)', () => {
+  it('re-derives history on OCC retry and reports only the winning patch', async () => {
+    db.seed(DOC_PATH, { ...BASELINE, historico: ['primeiro'] });
+    let fired = false;
+    db.occ.beforeCommit = async () => {
+      if (fired) return;
+      fired = true;
+      db.occ.beforeCommit = null;
+      await db.occ.runTransaction(async (tx) => {
+        tx.update(db.docRef(DOC_PATH) as never, { historico: ['primeiro', 'concorrente'] });
+      });
+    };
+    const derive = vi.fn((current: Readonly<Record<string, unknown>> | null) => ({
+      historico: [...(current?.historico as string[]), 'nosso'],
+    }));
+    const result = await save({ baseline: BASELINE, deriveTransactionPatch: derive });
+    expect(derive).toHaveBeenCalledTimes(2);
+    expect(result.patch).toMatchObject({ historico: ['primeiro', 'concorrente', 'nosso'] });
+    expect(db.read(DOC_PATH)).toMatchObject(result.patch);
+  });
+
+  it('refuses a user-field conflict before calling the derivation', async () => {
+    db.seed(DOC_PATH, { nome: 'P', precos: { varejo: 120, atacado: 80 } });
+    const derive = vi.fn(() => ({ historico: [] }));
+    await expect(
+      save({ baseline: BASELINE, deriveTransactionPatch: derive }),
+    ).rejects.toBeInstanceOf(RecordConflictError);
+    expect(derive).not.toHaveBeenCalled();
+  });
   it('refuses when another writer changed a field this save writes', async () => {
     // A got there first: `varejo` is now 120.
     db.seed(DOC_PATH, { nome: 'P', precos: { varejo: 120, atacado: 80 } });

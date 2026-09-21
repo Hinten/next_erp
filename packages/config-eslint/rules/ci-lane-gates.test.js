@@ -110,7 +110,12 @@ const LANES = {
     // firebase.e2e.json serves the `storage` functions codebase FROM SOURCE, so a
     // functions-only PR must run this lane — nothing else exercises those
     // callables and triggers.
-    roots: ['@delfrance/web', '@delfrance/functions'],
+    roots: [
+      '@delfrance/web',
+      '@delfrance/functions',
+      '@delfrance/whatsapp-app',
+      '@delfrance/migrations',
+    ],
     jobs: [
       {
         id: 'e2e-emulator',

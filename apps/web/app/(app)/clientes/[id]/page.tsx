@@ -8,8 +8,8 @@ import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { clienteFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
-import { CnpjLookupConfigProvider, CnpjLookupField } from '@/components/inputs/CnpjLookupField';
-import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
+import { CnpjLookupConfigProvider } from '@/components/inputs/CnpjLookupField';
+import { CLIENTE_FORM_FIELDS, deriveClienteTelefonePatch } from '@/lib/clientes/formFields';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
@@ -17,13 +17,6 @@ import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
 import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { popEnderecoForCliente } from '@/lib/clientes/pendingEndereco';
 import { EnderecosSection } from './_components/EnderecosSection';
-
-// Module-level: ObjectView identity-tracks `fields`. The CNPJ "buscar dados"
-// affordance (PJ only) gets its filial + address-offer wiring from context.
-const CLIENTE_FORM_FIELDS = {
-  cpf_cnpj: { renderInput: CnpjLookupField },
-  telefone: { renderInput: TelefoneField, prepareForSave: prepareForSaveTelefone },
-};
 
 export default function ClientePage() {
   const params = useParams<{ id: string }>();
@@ -74,10 +67,12 @@ export default function ClientePage() {
             'timestamp',
             'ultimaModificacao',
             'userCliente',
+            'telefoneGerenciado',
             'isUF',
             'idEstrangeiro',
           ]}
           fields={CLIENTE_FORM_FIELDS}
+          deriveTransactionPatch={deriveClienteTelefonePatch}
           saveLabel="Salvar alterações"
           canEdit={canWrite}
           readOnly={!canWrite}

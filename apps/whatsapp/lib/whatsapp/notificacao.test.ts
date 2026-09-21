@@ -3,22 +3,8 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { ESTADO_ENVIO, encodeHorarioMs } from '@delfrance/schemas';
 
-// Isolate the messages pipeline from contact resolution + media storage (both
-// have their own suites). The conta lookup, conversa/mensagem writes, status
-// matrix, auto-reply dedupe and the sweep all run REAL against the fake db.
-vi.mock('./discoverUser', () => ({
-  // `clienteId` is part of the contract now (#1159) — a mock that omits it lets
-  // the conversa writer's null branch pass for the wrong reason.
-  discoverUserByPhoneNumber: vi.fn(async () => ({
-    id: 'user-1',
-    usuario: { nome: 'Fulano' },
-    clienteId: 'cliente-1',
-  })),
-  fixConversaAnonima: vi.fn(async () => {}),
-  usuarioOuterRef: (id: string) => `documents/usuarios/${id}`,
-  clienteOuterRef: (id: string) => `documents/clientes/${id}`,
-}));
-
+// Only media storage is stubbed. The contact resolver, canonical registries,
+// pending persistence, conversation lifecycle and status processing run real.
 const media = vi.hoisted(() => ({
   getAndUploadMedia: vi.fn(
     async (_ctx: unknown, mediaId: string) => `documents/arquivos/wa_${mediaId}`,
@@ -33,7 +19,11 @@ const {
   parseWebhookBody,
   reprocessNotifications,
 } = await import('./notificacao');
-const { discoverUserByPhoneNumber } = await import('./discoverUser');
+const { conversaWhatsappKey, identidadeWhatsappId } = await import('./contatos');
+const { confirmarVinculoWhatsapp, confirmarVinculoSchema } = await import('./vinculos');
+const { replayVinculoWhatsapp } = await import('./vinculoReplay');
+const { processMessagesField } = await import('./processMessages');
+const { WhatsappVinculoConflitoError } = await import('./contatos');
 const { conversaDocId, mensagemDocId, senderId } = await import('./ids');
 
 /* ----------------------------- fake Firestore ---------------------------- */
@@ -45,6 +35,7 @@ function matches(data: DocData, clauses: Clause[]): boolean {
   return clauses.every((c) => {
     const v = data[c.field];
     if (c.op === '==') return v === c.value;
+    if (c.op === 'in') return Array.isArray(c.value) && c.value.includes(v);
     if (c.op === '<') return typeof v === 'number' && v < (c.value as number);
     return false;
   });
@@ -53,6 +44,8 @@ function matches(data: DocData, clauses: Clause[]): boolean {
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   private autoN = 0;
+  beforeDocRead?: (path: string, id: string) => void;
+  beforeTransaction?: () => void;
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -64,6 +57,13 @@ class FakeDb {
   }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    // Imported outbound messages already have the migration's wamid registry.
+    if (path === CONV_PATH && typeof data.mid === 'string')
+      this.col('whatsappMensagens').set(mensagemDocId(CONTA, data.mid), {
+        integracaoId: CONTA,
+        conversaId: CONV_ID,
+        mensagemId: id,
+      });
   }
   docs(path: string): Map<string, DocData> {
     return this.col(path);
@@ -85,7 +85,21 @@ class FakeDb {
           );
         }
         if (lim != null) rows = rows.slice(0, lim);
-        return { docs: rows.map(([id, d]) => ({ id, data: () => d, exists: true })) };
+        return {
+          size: rows.length,
+          empty: rows.length === 0,
+          docs: rows.map(([id, d]) => ({
+            id,
+            data: () => d,
+            exists: true,
+            ref: {
+              update: async (patch: DocData) => {
+                if (!col.has(id)) throw new Error('document not found');
+                col.set(id, { ...col.get(id), ...patch });
+              },
+            },
+          })),
+        };
       },
     });
     return {
@@ -93,7 +107,14 @@ class FakeDb {
         const docId = id ?? `auto-${++self.autoN}`;
         return {
           id: docId,
-          get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
+          get: async () => {
+            self.beforeDocRead?.(path, docId);
+            return { exists: col.has(docId), id: docId, data: () => col.get(docId) };
+          },
+          update: async (data: DocData) => {
+            if (!col.has(docId)) throw new Error('document not found');
+            col.set(docId, { ...col.get(docId), ...data });
+          },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
           },
@@ -117,13 +138,23 @@ class FakeDb {
   }
 
   async runTransaction<T>(fn: (txn: unknown) => Promise<T>): Promise<T> {
+    this.beforeTransaction?.();
+    const writes: Array<() => Promise<void>> = [];
     const txn = {
       get: (ref: { get: () => Promise<unknown> }) => ref.get(),
       set: (ref: { set: (d: DocData, o?: unknown) => Promise<void> }, d: DocData, o?: unknown) => {
-        void ref.set(d, o);
+        writes.push(() => ref.set(d, o));
+      },
+      update: (ref: { set: (d: DocData, o?: unknown) => Promise<void> }, d: DocData) => {
+        writes.push(() => ref.set(d, { merge: true }));
+      },
+      create: (ref: { create: (d: DocData) => Promise<void> }, d: DocData) => {
+        writes.push(() => ref.create(d));
       },
     };
-    return fn(txn);
+    const result = await fn(txn);
+    for (const write of writes) await write();
+    return result;
   }
 }
 
@@ -143,6 +174,13 @@ const OUT_MSG_ID_FOR_REPLAY = mensagemDocId(CONTA, 'wamid.OUT');
 
 function seedConta(db: FakeDb, over: DocData = {}): void {
   db.seed(INTEG, CONTA, { tipo: 6, wa_id: PNID, nome: 'WA', cor: 5, ...over });
+  db.seed('clientes', 'cliente-1', { nome: 'Fulano', telefone: FROM, telefoneGerenciado: true });
+  // The migration reserves the historical chat id; new inbound must continue it.
+  db.seed('whatsappConversas', conversaWhatsappKey(CONTA, 'cliente-1'), {
+    integracaoId: CONTA,
+    clienteId: 'cliente-1',
+    conversaId: CONV_ID,
+  });
 }
 
 /**
@@ -462,8 +500,9 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
     });
     const r = await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps);
     expect(r).toMatchObject({ outcome: 'done', detail: 'echo' });
-    // The conversa IS touched (and gets its `nova conversa` event), but the echo
-    // must not land as an inbound mensagem.
+    // An echo changes only the located outbound message; it does not resolve a contact.
+    expect(db.docs('chat').size).toBe(0);
+    expect(db.docs('whatsappIdentidades').size).toBe(0);
     expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(false);
     // ⚠️ `echo` outranks `statuses` in the priority chain, so this arm used to
     // HIDE the status work entirely. The report rides out regardless of which arm
@@ -680,7 +719,7 @@ describe('conversa create / reopen / spam', () => {
     const conv = db.docs('chat').get(CONV_ID)!;
     expect(conv.origem).toBe('whatsapp');
     expect(conv.estadoConversa).toBe(0);
-    expect(conv.sender_id).toBe(SENDER);
+    expect(conv.sender_id).toBeNull();
     // `conta.cor` is a 24-bit RGB int; `cor_etiqueta` is a 32-bit ARGB
     // `Color.value`, so the importer LIFTS it (`corToEtiquetaArgb`) instead of
     // copying. A raw 5 here would paint correctly but never equal any of the
@@ -884,6 +923,12 @@ describe('mensagem dedup + media population', () => {
   it('mid+timestamp dedup: an existing doc at/after the timestamp is not overwritten', async () => {
     const db = new FakeDb();
     seedConta(db);
+    db.seed('chat', CONV_ID, {
+      origem: 'whatsapp',
+      clienteOuterRef: 'documents/clientes/cliente-1',
+      integracaoOuterRef: 'documents/integracao/' + CONTA,
+      ultima_modificacao: 1700000000000,
+    });
     const msgId = mensagemDocId(CONTA, 'wamid.A');
     // Seed an existing doc whose ISO timestamp equals the incoming message ts
     // (1700000000 s) — a redelivery → the dedup skips the overwrite.
@@ -952,8 +997,27 @@ describe('auto-reply in/out of hours + daily dedupe', () => {
   it('in-hours → writes an outbound (salva, tipo c) mensagem_automatica + stamps the conversa', async () => {
     const db = new FakeDb();
     seedConta(db, horarioConta());
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-    const reply = db.docs(CONV_PATH).get(`autoreply_dentro_${dayKey}`)!;
+    await handleNotificationTask(
+      asDb(db),
+      messagesPayload(
+        inboundValue({
+          messages: [
+            {
+              from: FROM,
+              id: 'wamid.A',
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: 'text',
+              text: { body: 'oi' },
+            },
+          ],
+        }),
+      ),
+      0,
+      deps,
+    );
+    const reply = db
+      .docs(CONV_PATH)
+      .get(`autoreply_dentro_${dayKey}_${identidadeWhatsappId(CONTA, 'telefone', FROM)}`)!;
     expect(reply.conteudo).toBe('Olá! (dentro)');
     expect(reply.estadoEnvio).toBe(1); // salva → PR-3 sends it (tipo 'c' ≠ 'e')
     expect(reply.tipo).toBe('c');
@@ -967,8 +1031,29 @@ describe('auto-reply in/out of hours + daily dedupe', () => {
     vi.setSystemTime(new Date('2026-07-15T20:00:00Z'));
     const db = new FakeDb();
     seedConta(db, horarioConta());
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-    expect(db.docs(CONV_PATH).get(`autoreply_fora_${dayKey}`)!.conteudo).toBe('Fora do horário.');
+    await handleNotificationTask(
+      asDb(db),
+      messagesPayload(
+        inboundValue({
+          messages: [
+            {
+              from: FROM,
+              id: 'wamid.A',
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: 'text',
+              text: { body: 'oi' },
+            },
+          ],
+        }),
+      ),
+      0,
+      deps,
+    );
+    expect(
+      db
+        .docs(CONV_PATH)
+        .get(`autoreply_fora_${dayKey}_${identidadeWhatsappId(CONTA, 'telefone', FROM)}`)!.conteudo,
+    ).toBe('Fora do horário.');
   });
 
   it('daily dedupe: no reply when the conversa already got one today', async () => {
@@ -981,14 +1066,52 @@ describe('auto-reply in/out of hours + daily dedupe', () => {
       ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
       recebido_durante_atendimento: NOW.toISOString(), // already replied today
     });
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-    expect(db.docs(CONV_PATH).has(`autoreply_dentro_${dayKey}`)).toBe(false);
+    await handleNotificationTask(
+      asDb(db),
+      messagesPayload(
+        inboundValue({
+          messages: [
+            {
+              from: FROM,
+              id: 'wamid.A',
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: 'text',
+              text: { body: 'oi' },
+            },
+          ],
+        }),
+      ),
+      0,
+      deps,
+    );
+    expect(
+      db
+        .docs(CONV_PATH)
+        .has(`autoreply_dentro_${dayKey}_${identidadeWhatsappId(CONTA, 'telefone', FROM)}`),
+    ).toBe(false);
   });
 
   it('no auto-reply when the account has no horario_funcionamento', async () => {
     const db = new FakeDb();
     seedConta(db); // no horario_funcionamento
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    await handleNotificationTask(
+      asDb(db),
+      messagesPayload(
+        inboundValue({
+          messages: [
+            {
+              from: FROM,
+              id: 'wamid.A',
+              timestamp: String(Math.floor(Date.now() / 1000)),
+              type: 'text',
+              text: { body: 'oi' },
+            },
+          ],
+        }),
+      ),
+      0,
+      deps,
+    );
     expect([...db.docs(CONV_PATH).keys()].some((k) => k.startsWith('autoreply_'))).toBe(false);
   });
 });
@@ -1225,82 +1348,603 @@ describe('reprocessNotifications', () => {
   });
 });
 
-/* ------------------- conversa.clienteOuterRef (#1159) -------------------- */
-
-describe('conversa.clienteOuterRef', () => {
-  // The inbox Cliente filter matches ONE field. ML importers write
-  // `clienteOuterRef`; WhatsApp wrote only `usarioOuterRef`, so no cliente
-  // filter could ever return both. These pin the WhatsApp half.
-  //
-  // ⚠️ This suite's fake `matches()` returns false for any op it does not
-  // implement, `in` included — so `discoverUser`\u2019s phone lookup never matches
-  // here and resolution always lands on the create branch. That is the branch
-  // under test; the other three are covered in `discoverUser.test.ts`, whose
-  // fake evaluates `in` for real.
-
-  it('a new conversa carries the cliente the contact resolution produced', async () => {
+describe('inbound contacts resolve to clientes', () => {
+  it('continues the reserved historical chat and authors the message as cliente without a usuario', async () => {
     const db = new FakeDb();
     seedConta(db);
-
     await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-
-    const conv = db.docs('chat').get(CONV_ID)!;
-    expect(conv.clienteOuterRef).toBe('documents/clientes/cliente-1');
-  });
-
-  it('writes null — never a fabricated ref — when the cliente is unresolvable', async () => {
-    // `clienteId: null` means "unknown", and the only honest thing to store is
-    // nothing. Deriving a ref from the usuario id instead would point the filter
-    // at a `clientes` doc that does not exist.
-    const db = new FakeDb();
-    seedConta(db);
-    vi.mocked(discoverUserByPhoneNumber).mockResolvedValueOnce({
-      id: 'user-1',
-      usuario: { nome: 'Fulano' },
-      clienteId: null,
-    } as unknown as Awaited<ReturnType<typeof discoverUserByPhoneNumber>>);
-
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-
-    const conv = db.docs('chat').get(CONV_ID)!;
-    expect(conv.clienteOuterRef).toBeNull();
-    // ...and the conversa is still created — an unknown cliente is not a reason
-    // to drop a customer message.
-    expect(conv.origem).toBe('whatsapp');
-  });
-
-  it('keeps usarioOuterRef alongside it — this ADDS a field, it replaces nothing', async () => {
-    // The thread still derives bubble direction from `usarioOuterRef`, and the
-    // legacy readers still expect it. Dropping it here would be a silent
-    // regression in a place no cliente-filter test would notice.
-    const db = new FakeDb();
-    seedConta(db);
-
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-
-    const conv = db.docs('chat').get(CONV_ID)!;
-    expect(conv.usarioOuterRef).toBe('documents/usuarios/user-1');
-    expect(conv.clienteOuterRef).toBe('documents/clientes/cliente-1');
-  });
-
-  it('does NOT stamp an existing conversa — create only', async () => {
-    // The three update branches each document what they deliberately do and do
-    // not write, and one of them writes NOTHING on purpose: that freeze is what
-    // lets a late message reopen a finalized ticket. Backfilling this field
-    // through them would change reopen semantics for an unrelated reason.
-    const db = new FakeDb();
-    seedConta(db);
-    db.seed('chat', CONV_ID, {
-      estadoConversa: 2, // atendimentoFinalizado (reopenable)
-      sender_id: SENDER,
-      nome: 'Fulano',
-      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+    expect(db.docs('chat').get(CONV_ID)).toMatchObject({
+      clienteOuterRef: 'documents/clientes/cliente-1',
+      usarioOuterRef: null,
+      sender_id: null,
     });
+    expect(db.docs(CONV_PATH).get(mensagemDocId(CONTA, 'wamid.A'))).toMatchObject({
+      clienteMensagemOuterRef: 'documents/clientes/cliente-1',
+      usarioMensagemOuterRef: null,
+      user_id: null,
+    });
+    expect(db.docs('usuarios').size).toBe(0);
+    expect(db.docs('clientes').size).toBe(1);
+    expect(db.docs('chat').size).toBe(1);
+  });
 
+  it('retains an unknown contact for manual identification without creating cliente, usuario or chat', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.docs('clientes').clear();
+    const result = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(result).toMatchObject({ kind: 'parked', outcome: 'parked' });
+    expect(db.docs('whatsappVinculos').size).toBe(1);
+    expect(db.docs('chat').size).toBe(0);
+    expect(db.docs('usuarios').size).toBe(0);
+    expect(db.docs('clientes').size).toBe(0);
+  });
+
+  it('parks an ambiguous phone instead of arbitrarily choosing a cliente', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('clientes', 'cliente-2', { nome: 'Outro', telefone: FROM });
+    const result = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(result).toMatchObject({ kind: 'parked', outcome: 'parked' });
+    expect(db.docs('chat').size).toBe(0);
+    expect(db.docs('whatsappIdentidades').size).toBe(0);
+  });
+
+  it('accepts a known BSUID with the phone hidden and preserves the same chat', async () => {
+    const db = new FakeDb();
+    seedConta(db, { portfolioId: 'portfolio-1' });
+    const bsuid = 'BR.identity.with.hidden.phone';
+    db.seed('whatsappIdentidades', identidadeWhatsappId('portfolio-1', 'bsuid', bsuid), {
+      escopo: 'portfolio-1',
+      tipo: 'bsuid',
+      valor: bsuid,
+      clienteId: 'cliente-1',
+      ativa: true,
+    });
+    const value = inboundValue({
+      contacts: [{ user_id: bsuid, profile: { name: 'Fulano' } }],
+      messages: [
+        {
+          from_user_id: bsuid,
+          id: 'wamid.BSUID',
+          timestamp: '1700000000',
+          type: 'text',
+          text: { body: 'oi sem telefone' },
+        },
+      ],
+    });
+    expect((await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps)).outcome).toBe(
+      'done',
+    );
+    expect(db.docs('chat').get(CONV_ID)).toMatchObject({
+      clienteOuterRef: 'documents/clientes/cliente-1',
+      whatsappDestino: { tipo: 'bsuid', valor: bsuid },
+    });
+    expect(db.docs(CONV_PATH).get(mensagemDocId(CONTA, 'wamid.BSUID'))?.conteudo).toBe(
+      'oi sem telefone',
+    );
+    expect(db.docs('chat').size).toBe(1);
+  });
+});
+
+describe('pending contact retention', () => {
+  it('keeps text and cached media once across retries while awaiting manual identification', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.docs('clientes').clear();
+    const body = messagesPayload(
+      inboundValue({
+        messages: [
+          {
+            from: FROM,
+            id: 'wamid.PENDING.MEDIA',
+            timestamp: '1700000000',
+            type: 'image',
+            image: { id: 'retained-image', caption: 'Comprovante' },
+          },
+        ],
+      }),
+    );
+    await handleNotificationTask(asDb(db), body, 0, deps);
+    await handleNotificationTask(asDb(db), body, 0, deps);
+    const [pendingId, pending] = [...db.docs('whatsappVinculos')][0]!;
+    expect(pending).toMatchObject({ quantidadeMensagens: 1, estado: 'aguardando', telefone: FROM });
+    const messages = db.docs(`whatsappVinculos/${pendingId}/mensagens`);
+    expect(messages.size).toBe(1);
+    expect([...messages.values()][0]).toMatchObject({
+      conteudo: 'Comprovante',
+      arquivoId: 'wa_retained-image',
+      anexoTipo: 'image',
+      processada: false,
+    });
+    expect(media.getAndUploadMedia).toHaveBeenCalledWith(expect.anything(), 'retained-image');
+    expect(db.docs(NOTIF).get('wamid.PENDING.MEDIA')).toMatchObject({ status: 'parked' });
+    expect(db.docs('chat').size).toBe(0);
+  });
+
+  it('matches a provider international number exactly without adding the Brazilian country code', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('clientes', 'cliente-1', {
+      nome: 'Cliente internacional',
+      telefone: '14155552671',
+      telefoneGerenciado: true,
+    });
+    db.seed('clientes', 'br-near-miss', { nome: 'Cliente brasileiro', telefone: '5514155552671' });
+    const value = inboundValue({
+      contacts: [{ wa_id: '14155552671', profile: { name: 'Cliente internacional' } }],
+      messages: [
+        {
+          from: '14155552671',
+          id: 'wamid.INTERNATIONAL',
+          timestamp: '1700000000',
+          type: 'text',
+          text: { body: 'Hello' },
+        },
+      ],
+    });
+    expect((await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps)).outcome).toBe(
+      'done',
+    );
+    expect(db.docs('chat').get(CONV_ID)).toMatchObject({
+      clienteOuterRef: 'documents/clientes/cliente-1',
+      whatsappDestino: { tipo: 'telefone', valor: '14155552671' },
+    });
+    expect(db.docs('whatsappVinculos').size).toBe(0);
+  });
+});
+
+describe('identity transitions and redelivery continuity', () => {
+  it('applies a parked number-change event after manual confirmation of its predecessor', async () => {
+    const db = new FakeDb();
+    seedConta(db, { portfolioId: 'portfolio-1' });
+    const newPhone = '5511888888888';
+    const newBsuid = 'BR.NEW.IDENTITY';
+    const payload = messagesPayload(
+      inboundValue({
+        contacts: undefined,
+        messages: [
+          {
+            from: FROM,
+            id: 'wamid.TRANSITION',
+            timestamp: '1700000000',
+            type: 'system',
+            system: {
+              type: 'user_changed_number',
+              user_id: newBsuid,
+              wa_id: newPhone,
+              body: 'Phone number changed',
+            },
+          },
+        ],
+      }),
+    );
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('parked');
+    const pendingId = [...db.docs('whatsappVinculos').keys()][0]!;
+    await confirmarVinculoWhatsapp(
+      asDb(db),
+      pendingId,
+      confirmarVinculoSchema.parse({
+        requestId: 'confirm-transition',
+        revision: 0,
+        choice: { kind: 'existing', clienteId: 'cliente-1' },
+      }),
+      'operator-1',
+    );
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('done');
+    expect(db.docs('clientes').get('cliente-1')).toMatchObject({
+      telefone: newPhone,
+      telefonesAdicionais: [FROM],
+    });
+    expect(
+      db.docs('whatsappIdentidades').get(identidadeWhatsappId(CONTA, 'telefone', FROM))?.ativa,
+    ).toBe(false);
+    expect(
+      db.docs('whatsappIdentidades').get(identidadeWhatsappId('portfolio-1', 'bsuid', newBsuid)),
+    ).toMatchObject({ clienteId: 'cliente-1', ativa: true });
+    expect(db.docs('chat').get(CONV_ID)).toMatchObject({
+      whatsappDestino: { tipo: 'bsuid', valor: newBsuid, ultimaMensagemEm: null },
+    });
+    expect(db.docs('chat').size).toBe(1);
+  });
+
+  it('acknowledges a previously stored wamid without parking it again after its phone was retired', async () => {
+    const db = new FakeDb();
+    seedConta(db);
     await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    db.docs('clientes').get('cliente-1')!.telefone = '5511888888888';
+    db.docs('whatsappIdentidades').get(identidadeWhatsappId(CONTA, 'telefone', FROM))!.ativa =
+      false;
+    const result = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(result).toMatchObject({ outcome: 'done', detail: 'redelivery' });
+    expect(db.docs('whatsappVinculos').size).toBe(0);
+    expect(db.docs('chat').size).toBe(1);
+    expect(db.docs('clientes').get('cliente-1')!.telefone).toBe('5511888888888');
+  });
+});
 
-    const conv = db.docs('chat').get(CONV_ID)!;
-    expect(conv.estadoConversa).toBe(0); // the reopen DID happen...
-    expect(conv.clienteOuterRef).toBeUndefined(); // ...without stamping the field
+describe('manual replay of a superseded phone transition', () => {
+  const NEW_PRINCIPAL = '5511777777777';
+  const OBSOLETE_NEW_PHONE = '5511888888888';
+  const SYSTEM_WAMID = 'wamid.OBSOLETE.TRANSITION';
+  const SYSTEM_ID = mensagemDocId(CONTA, SYSTEM_WAMID);
+
+  async function pendingTransition() {
+    const db = new FakeDb();
+    seedConta(db, { portfolioId: 'portfolio-1' });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    db.docs('clientes').get('cliente-1')!.telefone = NEW_PRINCIPAL;
+    db.docs('clientes').get('cliente-1')!.telefonesAdicionais = [FROM];
+    const value = inboundValue({
+      contacts: undefined,
+      messages: [
+        {
+          from: FROM,
+          id: SYSTEM_WAMID,
+          timestamp: '1700000001',
+          type: 'system',
+          system: {
+            type: 'user_changed_number',
+            wa_id: OBSOLETE_NEW_PHONE,
+            body: 'Phone number changed',
+          },
+        },
+      ],
+    });
+    const payload = messagesPayload(value);
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('parked');
+    const pendingId = [...db.docs('whatsappVinculos').keys()][0]!;
+    await confirmarVinculoWhatsapp(
+      asDb(db),
+      pendingId,
+      confirmarVinculoSchema.parse({
+        requestId: 'accept-history-only',
+        revision: 0,
+        choice: { kind: 'existing', clienteId: 'cliente-1' },
+      }),
+      'operator-1',
+    );
+    const binding = db.docs('whatsappVinculos').get(pendingId)!;
+    const manualReplay = { vinculoId: pendingId, revision: Number(binding.revision) };
+    return { db, pendingId, value, payload, manualReplay };
+  }
+
+  it('recovers history after a human link without applying the obsolete transition', async () => {
+    const { db, pendingId, payload } = await pendingTransition();
+    const beforeCliente = structuredClone(db.docs('clientes').get('cliente-1'));
+    const beforeChat = structuredClone(db.docs('chat').get(CONV_ID));
+    const beforeIdentities = structuredClone([...db.docs('whatsappIdentidades')]);
+    const redrive = vi.fn(async () => handleNotificationTask(asDb(db), payload, 0, deps));
+    const result = await replayVinculoWhatsapp(asDb(db), pendingId, deps, redrive);
+    expect(result).toMatchObject({ kind: 'processed', detail: 'mensagens' });
+    expect(db.docs(CONV_PATH).get(SYSTEM_ID)).toMatchObject({
+      mid: SYSTEM_WAMID,
+      tipo: 'e',
+      conteudo: 'Phone number changed',
+      clienteMensagemOuterRef: 'documents/clientes/cliente-1',
+      usarioMensagemOuterRef: null,
+    });
+    expect(db.docs('whatsappMensagens').get(SYSTEM_ID)).toMatchObject({
+      integracaoId: CONTA,
+      conversaId: CONV_ID,
+      mensagemId: SYSTEM_ID,
+    });
+    expect(db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.processada).toBe(
+      true,
+    );
+    expect(db.docs('whatsappVinculos').get(pendingId)?.estado).toBe('resolvido');
+    expect(db.docs('clientes').get('cliente-1')).toEqual(beforeCliente);
+    expect(db.docs('clientes').get('cliente-1')?.telefone).toBe(NEW_PRINCIPAL);
+    expect([...db.docs('whatsappIdentidades')]).toEqual(beforeIdentities);
+    expect(db.docs('chat').get(CONV_ID)).toEqual(beforeChat);
+    expect(redrive).toHaveBeenCalledTimes(1);
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('done');
+    expect(db.docs('whatsappVinculos').get(pendingId)?.estado).toBe('resolvido');
+    expect([...db.docs(CONV_PATH).values()].filter((row) => row.mid === SYSTEM_WAMID)).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not acknowledge a retained message after the source redrive changes the decision', async () => {
+    const { db, pendingId, manualReplay } = await pendingTransition();
+    const redrive = async () => {
+      Object.assign(db.docs('whatsappVinculos').get(pendingId)!, {
+        revision: manualReplay.revision + 1,
+        estado: 'aguardando',
+      });
+    };
+    await expect(replayVinculoWhatsapp(asDb(db), pendingId, deps, redrive)).rejects.toBeInstanceOf(
+      WhatsappVinculoConflitoError,
+    );
+    expect(db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.processada).toBe(
+      false,
+    );
+    expect(db.docs('whatsappVinculos').get(pendingId)).toMatchObject({
+      revision: manualReplay.revision + 1,
+      estado: 'aguardando',
+    });
+  });
+
+  it('normal webhook processing never obtains the history-only authority from a manual binding', async () => {
+    const { db, pendingId, payload } = await pendingTransition();
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('parked');
+    expect(db.docs(CONV_PATH).has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.processada).toBe(
+      false,
+    );
+    expect(db.docs('clientes').get('cliente-1')?.telefone).toBe(NEW_PRINCIPAL);
+  });
+
+  it('rechecks authority after the message transaction starts, preserving a newer decision', async () => {
+    const { db, pendingId, value, manualReplay } = await pendingTransition();
+    const currentRevision = manualReplay.revision;
+    db.beforeDocRead = (path, id) => {
+      if (path !== CONV_PATH || id !== SYSTEM_ID) return;
+      db.beforeDocRead = undefined;
+      db.docs('whatsappVinculos').get(pendingId)!.revision = currentRevision + 1;
+    };
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, manualReplay),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('clientes').get('cliente-1')?.telefone).toBe(NEW_PRINCIPAL);
+  });
+
+  it.each([
+    { revision: 100 },
+    { decididoPor: null },
+    { decididoPor: '' },
+    { estado: 'aguardando' },
+    { clienteId: 'different-customer' },
+    { conversaId: 'different-chat' },
+    { integracaoId: 'different-integration' },
+  ])('rejects stale or incomplete manual authority: %j', async (patch) => {
+    const { db, pendingId, value, manualReplay } = await pendingTransition();
+    Object.assign(db.docs('whatsappVinculos').get(pendingId)!, patch);
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, manualReplay),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(SYSTEM_ID)).toBe(false);
+  });
+
+  it('requires the exact retained system message, not merely the same external ID', async () => {
+    const { db, pendingId, value, manualReplay } = await pendingTransition();
+    const retained = db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)!;
+    retained.value = inboundValue({
+      messages: [
+        {
+          from: FROM,
+          id: SYSTEM_WAMID,
+          timestamp: '1700000001',
+          type: 'system',
+          system: { type: 'user_changed_number', wa_id: '5511666666666' },
+        },
+      ],
+    });
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, manualReplay),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(SYSTEM_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(SYSTEM_ID)).toBe(false);
+  });
+});
+
+describe('manual recovery of retained messages from a retired phone', () => {
+  it('recovers old text while keeping the retired alias and current destination unchanged', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    const newPhone = '5511777777777';
+    const oldIdentityId = identidadeWhatsappId(CONTA, 'telefone', FROM);
+    const newIdentityId = identidadeWhatsappId(CONTA, 'telefone', newPhone);
+    Object.assign(db.docs('clientes').get('cliente-1')!, {
+      telefone: newPhone,
+      telefonesAdicionais: [FROM],
+    });
+    Object.assign(db.docs('whatsappIdentidades').get(oldIdentityId)!, {
+      ativa: false,
+      sucessoraId: newIdentityId,
+      ultimaTransicaoEm: 1700000002000,
+    });
+    db.seed('whatsappIdentidades', newIdentityId, {
+      escopo: CONTA,
+      tipo: 'telefone',
+      valor: newPhone,
+      clienteId: 'cliente-1',
+      ativa: true,
+      telefoneClienteNoVinculo: newPhone,
+      ultimaTransicaoEm: 1700000002000,
+    });
+    db.docs('chat').get(CONV_ID)!.whatsappDestino = {
+      tipo: 'telefone',
+      valor: newPhone,
+      identidadeId: newIdentityId,
+      revision: 2,
+      ultimaMensagemEm: 1700000002000,
+      ultimaIdentificacaoEm: 1700000002000,
+    };
+    const value = inboundValue({
+      messages: [
+        {
+          from: FROM,
+          id: 'wamid.RETIRED.TEXT',
+          timestamp: '1700000001',
+          type: 'text',
+          text: { body: 'Mensagem retida antes da troca.' },
+        },
+      ],
+    });
+    const payload = messagesPayload(value);
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('parked');
+    const pendingId = [...db.docs('whatsappVinculos').keys()][0]!;
+    await confirmarVinculoWhatsapp(
+      asDb(db),
+      pendingId,
+      confirmarVinculoSchema.parse({
+        requestId: 'recover-retired-history',
+        revision: 0,
+        choice: { kind: 'existing', clienteId: 'cliente-1' },
+      }),
+      'operator-1',
+    );
+    const beforeCliente = structuredClone(db.docs('clientes').get('cliente-1'));
+    const beforeChat = structuredClone(db.docs('chat').get(CONV_ID));
+    const beforeIdentities = structuredClone([...db.docs('whatsappIdentidades')]);
+    const redrive = vi.fn(async () => handleNotificationTask(asDb(db), payload, 0, deps));
+    expect((await replayVinculoWhatsapp(asDb(db), pendingId, deps, redrive)).kind).toBe(
+      'processed',
+    );
+    const msgId = mensagemDocId(CONTA, 'wamid.RETIRED.TEXT');
+    expect(db.docs(CONV_PATH).get(msgId)).toMatchObject({
+      conteudo: 'Mensagem retida antes da troca.',
+      tipo: 'c',
+      clienteMensagemOuterRef: 'documents/clientes/cliente-1',
+    });
+    expect(db.docs('whatsappMensagens').get(msgId)).toMatchObject({ historicoManual: true });
+    expect(db.docs('whatsappVinculos').get(pendingId)?.estado).toBe('resolvido');
+    expect(db.docs('whatsappIdentidades').get(oldIdentityId)?.ativa).toBe(false);
+    expect([...db.docs('whatsappIdentidades')]).toEqual(beforeIdentities);
+    expect(db.docs('clientes').get('cliente-1')).toEqual(beforeCliente);
+    expect(db.docs('chat').get(CONV_ID)).toEqual(beforeChat);
+    expect((await handleNotificationTask(asDb(db), payload, 0, deps)).outcome).toBe('done');
+    expect(db.docs('chat').get(CONV_ID)).toEqual(beforeChat);
+  });
+});
+
+describe('resolved replay cannot outlive its manual decision', () => {
+  const WAMID = 'wamid.MANUALLY.RESOLVED';
+  const MSG_ID = mensagemDocId(CONTA, WAMID);
+
+  async function resolvedPending() {
+    const db = new FakeDb();
+    seedConta(db);
+    db.docs('clientes').get('cliente-1')!.telefone = null;
+    const value = inboundValue({
+      messages: [
+        {
+          from: FROM,
+          id: WAMID,
+          timestamp: '1700000001',
+          type: 'text',
+          text: { body: 'Mensagem já identificada manualmente.' },
+        },
+      ],
+    });
+    expect((await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps)).outcome).toBe(
+      'parked',
+    );
+    const pendingId = [...db.docs('whatsappVinculos').keys()][0]!;
+    await confirmarVinculoWhatsapp(
+      asDb(db),
+      pendingId,
+      confirmarVinculoSchema.parse({
+        requestId: 'link-known-message',
+        revision: 0,
+        choice: { kind: 'existing', clienteId: 'cliente-1' },
+      }),
+      'operator-1',
+    );
+    const authority = {
+      vinculoId: pendingId,
+      revision: Number(db.docs('whatsappVinculos').get(pendingId)!.revision),
+    };
+    return { db, value, pendingId, authority };
+  }
+
+  it('valid resolved replay keeps normal message semantics separate from history-only recovery', async () => {
+    const { db, value, authority } = await resolvedPending();
+    expect((await processMessagesField(asDb(db), value, deps, null, authority)).kind).toBe(
+      'processed',
+    );
+    expect(db.docs(CONV_PATH).get(MSG_ID)).toMatchObject({
+      conteudo: 'Mensagem já identificada manualmente.',
+      clienteMensagemOuterRef: 'documents/clientes/cliente-1',
+    });
+    expect(db.docs('whatsappMensagens').get(MSG_ID)?.historicoManual).toBe(false);
+  });
+
+  it('rejects an already-stale replay before resolving identity or changing a conversation', async () => {
+    const { db, value, pendingId, authority } = await resolvedPending();
+    const beforeChat = structuredClone(db.docs('chat').get(CONV_ID));
+    const beforeIdentities = structuredClone([...db.docs('whatsappIdentidades')]);
+    db.docs('whatsappVinculos').get(pendingId)!.revision = authority.revision + 1;
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, authority),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(MSG_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(MSG_ID)).toBe(false);
+    expect(db.docs('chat').get(CONV_ID)).toEqual(beforeChat);
+    expect([...db.docs('whatsappIdentidades')]).toEqual(beforeIdentities);
+  });
+
+  it.each([
+    [2, 'identity resolver'],
+    [3, 'conversation update'],
+    [4, 'message write'],
+  ])('rejects a decision changed before transaction %i (%s)', async (at) => {
+    const { db, value, pendingId, authority } = await resolvedPending();
+    let transactions = 0;
+    db.beforeTransaction = () => {
+      transactions += 1;
+      if (transactions === at)
+        db.docs('whatsappVinculos').get(pendingId)!.revision = authority.revision + 1;
+    };
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, authority),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(transactions).toBe(at);
+    expect(db.docs(CONV_PATH).has(MSG_ID)).toBe(false);
+    expect(db.docs('whatsappMensagens').has(MSG_ID)).toBe(false);
+  });
+
+  it('does not redirect a resolved replay to another client after its first proof', async () => {
+    const { db, value, pendingId, authority } = await resolvedPending();
+    const beforeChat = structuredClone(db.docs('chat').get(CONV_ID));
+    let transactions = 0;
+    db.beforeTransaction = () => {
+      transactions += 1;
+      if (transactions === 2)
+        Object.assign(db.docs('whatsappVinculos').get(pendingId)!, {
+          revision: authority.revision + 1,
+          clienteId: 'cliente-2',
+          conversaId: 'chat-2',
+        });
+    };
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, authority),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(MSG_ID)).toBe(false);
+    expect(db.docs('chat/chat-2/mensagem').size).toBe(0);
+    expect(db.docs('chat').get(CONV_ID)).toEqual(beforeChat);
+  });
+
+  it('guards the planned destination even if an identity was rebound without changing the pending revision', async () => {
+    const { db, value, authority } = await resolvedPending();
+    const otherChat = 'chat-2';
+    db.seed('clientes', 'cliente-2', { nome: 'Outro cliente', telefone: FROM });
+    db.seed('chat', otherChat, {
+      origem: 'whatsapp',
+      clienteOuterRef: 'documents/clientes/cliente-2',
+      integracaoOuterRef: 'documents/integracao/' + CONTA,
+    });
+    db.seed('whatsappConversas', conversaWhatsappKey(CONTA, 'cliente-2'), {
+      integracaoId: CONTA,
+      clienteId: 'cliente-2',
+      conversaId: otherChat,
+    });
+    Object.assign(
+      db.docs('whatsappIdentidades').get(identidadeWhatsappId(CONTA, 'telefone', FROM))!,
+      { clienteId: 'cliente-2', telefoneClienteNoVinculo: FROM },
+    );
+    const beforeOther = structuredClone(db.docs('chat').get(otherChat));
+    await expect(
+      processMessagesField(asDb(db), value, deps, null, authority),
+    ).rejects.toBeInstanceOf(WhatsappVinculoConflitoError);
+    expect(db.docs(CONV_PATH).has(MSG_ID)).toBe(false);
+    expect(db.docs('chat/chat-2/mensagem').size).toBe(0);
+    expect(db.docs('chat').get(otherChat)).toEqual(beforeOther);
   });
 });

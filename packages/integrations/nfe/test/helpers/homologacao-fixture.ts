@@ -261,6 +261,8 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       isUF: null,
       email: null,
       telefone: null,
+      telefonesAdicionais: [],
+      telefoneGerenciado: false,
       observacoesInternas: null,
       timestamp: null,
       userCliente: null,

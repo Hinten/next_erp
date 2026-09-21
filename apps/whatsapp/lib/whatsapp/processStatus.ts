@@ -1,24 +1,10 @@
 /**
- * Delivery-status processor for the WhatsApp Cloud API webhook (#527). Port of
- * `_processarStatus` (`.old/.../whatsapp_cloud_api/lib/src/notificacoes/
- * messages.dart:329-472`): each `statuses[]` entry advances the matching
- * OUTBOUND mensagem's `estadoEnvio`, guarded by a forward-only transition matrix
- * and the `lastExternalUpdateDateTime` out-of-order guard, appending any error
- * entries.
- *
- * ── Locating the mensagem (PR-3 contract) ─────────────────────────────────────
- * Legacy located the message by a collection-group query on `mid == status.id`.
- * This port instead reads the DETERMINISTIC doc directly:
- *   conversaId = conversaDocId(contaId, senderId(displayPhone, status.recipient_id))
- *   msgId      = mensagemDocId(contaId, status.id)
- * This requires PR-3's outbound sender to store each sent message at
- * `chat/{conversaId}/mensagem/{mensagemDocId(contaId, sendWamid)}` with
- * `mid = sendWamid` (re-anchoring the doc id to the wamid the Graph API returns).
- * A status whose message isn't found is logged, COUNTED and skipped (legacy
- * behaviour) — a soft miss, never a throw. See {@link StatusesReport}.
+ * Delivery receipts resolve integration + wamid through whatsappMensagens.
+ * Recipient phones and integration display names never reconstruct chat paths.
+ * Status transitions and their event watermark commit in the same transaction.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { mensagemCollection } from '@delfrance/data/admin/collections';
+import { mensagemCollection, whatsappMensagemCollection } from '@delfrance/data/admin/collections';
 import { ESTADO_ENVIO, type EstadoEnvioMensagem } from '@delfrance/schemas';
 import {
   narrowWaStatus,
@@ -27,7 +13,7 @@ import {
   type WaStatus,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
-import { conversaDocId, mensagemDocId, senderId } from './ids';
+import { mensagemDocId } from './ids';
 
 type ValuePayload = ReturnType<typeof valuePayloadSchema.parse>;
 
@@ -201,7 +187,6 @@ export async function processStatuses(
   contaId: string,
   value: ValuePayload,
 ): Promise<StatusesReport> {
-  const displayPhone = value.metadata.display_phone_number;
   const statuses = value.statuses ?? [];
   const valueErrors = value.errors ?? null;
   const out: StatusesReport = {
@@ -237,106 +222,112 @@ export async function processStatuses(
       out.desconhecidos += 1;
     }
 
-    const sender = senderId(displayPhone, status.recipient_id);
-    const conversaId = conversaDocId(contaId, sender);
-    const msgId = mensagemDocId(contaId, status.id);
-    const ref = mensagemCollection.docRef(db, { conversaId }, msgId);
+    const applied = await db.runTransaction(
+      async (tx): Promise<'aplicados' | 'naoEncontrados' | 'staleIgnorados'> => {
+        const map = await tx.get(
+          whatsappMensagemCollection.docRef(db, {}, mensagemDocId(contaId, status.id)),
+        );
+        if (!map.exists) return 'naoEncontrados';
+        const location = whatsappMensagemCollection.parseRead(map.data());
+        const ref = mensagemCollection.docRef(
+          db,
+          { conversaId: location.conversaId },
+          location.mensagemId,
+        );
+        const snap = await tx.get(ref);
+        if (!snap.exists) return 'naoEncontrados';
+        const mensagem = mensagemCollection.parseRead(snap.data());
+        const statusTs = waTimestampToMs(status.timestamp);
+        const lastMs = toEpochMs(mensagem.lastExternalUpdateDateTime);
 
-    const snap = await ref.get();
-    if (!snap.exists) {
-      // ⚠️ Keep BOTH: the counter carries the RATE, this line carries the `mid`.
-      // Chasing down which message the id derivation missed needs the mid, so the
-      // warn is not made redundant by the count beside it.
-      console.warn('[whatsapp] status ignorado — mensagem não encontrada', { mid: status.id });
-      out.naoEncontrados += 1;
-      continue;
-    }
-    const mensagem = mensagemCollection.parseRead(
-      snap.data(),
-      mensagemCollection.docPath({ conversaId }, msgId),
+        // Out-of-order guard: only when the incoming status is NOT newer than the
+        // last applied one does the forward-only matrix gate it.
+        if (
+          lastMs != null &&
+          lastMs >= statusTs &&
+          !shouldApplyStale(estadoWa, mensagem.estadoEnvio)
+        ) {
+          return 'staleIgnorados';
+        }
+
+        // millisecondsSinceEpoch INT wire format (#484/#486); `statusTs` is already ms.
+        const patch: Record<string, unknown> = {
+          lastExternalUpdateDateTime: Math.max(lastMs ?? 0, statusTs),
+        };
+        switch (estadoWa) {
+          case 'sent':
+            patch.estadoEnvio = ESTADO_ENVIO.enviando;
+            break;
+          case 'delivered':
+            patch.estadoEnvio = ESTADO_ENVIO.enviado;
+            break;
+          case 'read':
+            patch.estadoEnvio = ESTADO_ENVIO.recebido;
+            patch.visualizado = statusTs;
+            break;
+          case 'failed':
+            patch.estadoEnvio = ESTADO_ENVIO.erro;
+            break;
+          case 'deleted':
+            // ⚠️ Persisted-state change (was `desconhecido` via the `default`).
+            // `excluido` had no writer anywhere in the repo, yet the thread already
+            // renders it (`ConversaTile.tsx`, `MensagemStatusIcon.tsx`) — the
+            // messaging layer was waiting for exactly this. Messages already stamped
+            // `desconhecido` by a previous `deleted` keep that value until their next
+            // status update; nothing backfills them.
+            patch.estadoEnvio = ESTADO_ENVIO.excluido;
+            break;
+          case WA_STATUS_DESCONHECIDO:
+            // ⚠️ Deliberately writes NO `estadoEnvio`. The watermark above still
+            // advances (we did learn Meta emitted an event at this instant) and
+            // `desconhecidos` still counts it — but the STATE is not ours to guess.
+            //
+            // This arm was a `default` stamping `ESTADO_ENVIO.desconhecido`, and its
+            // stated reason — "rather than leaving `estadoEnvio` unset" — cannot
+            // apply here: `processStatuses` returns early when the doc does not
+            // exist, so the mensagem ALWAYS has a state already. Writing the
+            // sentinel therefore never fills a gap; it can only DESTROY a state we
+            // know, and nothing backfills `estadoEnvio`.
+            //
+            // That would be the NORMAL path, not a rare one. The out-of-order guard
+            // consults `shouldApplyStale` only when the incoming status is NOT
+            // newer, so a status Meta adds LATER in the lifecycle (a post-`read`
+            // event, say) carries the newest timestamp, bypasses the guard, and
+            // would collapse a message the customer demonstrably READ into "we have
+            // no idea" — permanently.
+            //
+            // It also moved an outbound mensagem OUT of `ESTADO_ENVIO_SAIDA`
+            // (salva/enviando/enviado/erro — `desconhecido` is not a member).
+            // `mensagemEhNossa` returns early for WhatsApp so the bubble does not
+            // flip today, but its documented fallback for an unknown origem is
+            // `ehEstadoDeSaida`, which would put one of OUR messages on the
+            // contact's side.
+            //
+            // Same principle as `narrowWaStatus` being exact: a confident wrong
+            // state is worse than an honest unknown — and here the honest answer is
+            // to keep the last state we actually understood and say so in the log.
+            break;
+        }
+
+        const errors = [...(mensagem.errors ?? [])];
+        if (status.errors) for (const e of status.errors) errors.push(mapError(e));
+        // A same-index entry in the top-level `value.errors` forces `erro` too.
+        if (valueErrors) {
+          const ve = valueErrors[i];
+          if (ve != null) {
+            patch.estadoEnvio = ESTADO_ENVIO.erro;
+            errors.push(mapError(ve));
+          }
+        }
+        if (errors.length > 0) patch.errors = errors;
+
+        tx.update(ref, mensagemCollection.parseMerge(patch));
+        return 'aplicados';
+      },
     );
-
-    const statusTs = waTimestampToMs(status.timestamp);
-    const lastMs = toEpochMs(mensagem.lastExternalUpdateDateTime);
-
-    // Out-of-order guard: only when the incoming status is NOT newer than the
-    // last applied one does the forward-only matrix gate it.
-    if (lastMs != null && lastMs >= statusTs && !shouldApplyStale(estadoWa, mensagem.estadoEnvio)) {
-      out.staleIgnorados += 1;
-      continue;
-    }
-
-    // millisecondsSinceEpoch INT wire format (#484/#486); `statusTs` is already ms.
-    const patch: Record<string, unknown> = { lastExternalUpdateDateTime: statusTs };
-    switch (estadoWa) {
-      case 'sent':
-        patch.estadoEnvio = ESTADO_ENVIO.enviando;
-        break;
-      case 'delivered':
-        patch.estadoEnvio = ESTADO_ENVIO.enviado;
-        break;
-      case 'read':
-        patch.estadoEnvio = ESTADO_ENVIO.recebido;
-        patch.visualizado = statusTs;
-        break;
-      case 'failed':
-        patch.estadoEnvio = ESTADO_ENVIO.erro;
-        break;
-      case 'deleted':
-        // ⚠️ Persisted-state change (was `desconhecido` via the `default`).
-        // `excluido` had no writer anywhere in the repo, yet the thread already
-        // renders it (`ConversaTile.tsx`, `MensagemStatusIcon.tsx`) — the
-        // messaging layer was waiting for exactly this. Messages already stamped
-        // `desconhecido` by a previous `deleted` keep that value until their next
-        // status update; nothing backfills them.
-        patch.estadoEnvio = ESTADO_ENVIO.excluido;
-        break;
-      case WA_STATUS_DESCONHECIDO:
-        // ⚠️ Deliberately writes NO `estadoEnvio`. The watermark above still
-        // advances (we did learn Meta emitted an event at this instant) and
-        // `desconhecidos` still counts it — but the STATE is not ours to guess.
-        //
-        // This arm was a `default` stamping `ESTADO_ENVIO.desconhecido`, and its
-        // stated reason — "rather than leaving `estadoEnvio` unset" — cannot
-        // apply here: `processStatuses` returns early when the doc does not
-        // exist, so the mensagem ALWAYS has a state already. Writing the
-        // sentinel therefore never fills a gap; it can only DESTROY a state we
-        // know, and nothing backfills `estadoEnvio`.
-        //
-        // That would be the NORMAL path, not a rare one. The out-of-order guard
-        // consults `shouldApplyStale` only when the incoming status is NOT
-        // newer, so a status Meta adds LATER in the lifecycle (a post-`read`
-        // event, say) carries the newest timestamp, bypasses the guard, and
-        // would collapse a message the customer demonstrably READ into "we have
-        // no idea" — permanently.
-        //
-        // It also moved an outbound mensagem OUT of `ESTADO_ENVIO_SAIDA`
-        // (salva/enviando/enviado/erro — `desconhecido` is not a member).
-        // `mensagemEhNossa` returns early for WhatsApp so the bubble does not
-        // flip today, but its documented fallback for an unknown origem is
-        // `ehEstadoDeSaida`, which would put one of OUR messages on the
-        // contact's side.
-        //
-        // Same principle as `narrowWaStatus` being exact: a confident wrong
-        // state is worse than an honest unknown — and here the honest answer is
-        // to keep the last state we actually understood and say so in the log.
-        break;
-    }
-
-    const errors = [...(mensagem.errors ?? [])];
-    if (status.errors) for (const e of status.errors) errors.push(mapError(e));
-    // A same-index entry in the top-level `value.errors` forces `erro` too.
-    if (valueErrors) {
-      const ve = valueErrors[i];
-      if (ve != null) {
-        patch.estadoEnvio = ESTADO_ENVIO.erro;
-        errors.push(mapError(ve));
-      }
-    }
-    if (errors.length > 0) patch.errors = errors;
-
-    await mensagemCollection.merge(db, { conversaId }, msgId, patch);
-    out.aplicados += 1;
+    out[applied] += 1;
+    if (applied === 'naoEncontrados')
+      console.warn('[whatsapp] status ignorado — mensagem não encontrada', { mid: status.id });
   }
 
   return out;

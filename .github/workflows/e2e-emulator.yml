@@ -114,7 +114,7 @@ jobs:
         run: |
           if ! node .github/scripts/e2e-affected.mjs \
                  --lane emulator \
-                 --roots @delfrance/web @delfrance/functions \
+                 --roots @delfrance/web @delfrance/functions @delfrance/whatsapp-app @delfrance/migrations \
                  --self .github/workflows/e2e-emulator.yml \
                  --files "${{ steps.collect.outputs.files }}"
           then
@@ -313,6 +313,17 @@ jobs:
           NEXT_PUBLIC_FIREBASE_APP_ID: '1:000000000000:web:demo'
           E2E_SOURCEMAPS: 'true'
         run: pnpm --filter @delfrance/web exec next build
+
+      - name: WhatsApp transactions and migration on Firestore
+        # The migration requires writers/triggers stopped. A separate emulator
+        # lifetime also prevents delayed delete cascades from a previous fixture
+        # from deleting a newly seeded conversation with the same imported ID.
+        run: |
+          firebase emulators:exec \
+            --config firebase.e2e.json \
+            --project demo-erp \
+            --only firestore \
+            "pnpm --filter @delfrance/whatsapp-app --fail-if-no-match exec vitest run --config vitest.firestore.config.ts"
 
       - name: e2e (estoque) on the emulators
         # emulators:exec boots the suite and exports FIRESTORE_EMULATOR_HOST /

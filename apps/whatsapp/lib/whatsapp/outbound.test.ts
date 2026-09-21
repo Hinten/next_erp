@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Firestore } from 'firebase-admin/firestore';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timestamp, type Firestore } from 'firebase-admin/firestore';
 import {
   WhatsAppHttpError,
   WhatsAppNetworkError,
@@ -43,7 +43,12 @@ interface Op {
 
 interface FakeDoc {
   id: string;
-  get(): Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
+  get(): Promise<{
+    exists: boolean;
+    id: string;
+    data: () => DocData | undefined;
+    updateTime: Timestamp | undefined;
+  }>;
   set(data: DocData, opts?: { merge?: boolean }): Promise<void>;
   create(data: DocData): Promise<void>;
   delete(): Promise<void>;
@@ -52,6 +57,8 @@ interface FakeDoc {
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   private autoN = 0;
+  private version = 0;
+  private readonly versions = new WeakMap<DocData, Timestamp>();
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -63,6 +70,7 @@ class FakeDb {
   }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    this.versions.set(data, Timestamp.fromMillis(++this.version));
   }
   docs(path: string): Map<string, DocData> {
     return this.col(path);
@@ -71,13 +79,25 @@ class FakeDb {
   private makeDoc(col: Map<string, DocData>, id: string): FakeDoc {
     return {
       id,
-      get: async () => ({ exists: col.has(id), id, data: () => col.get(id) }),
+      get: async () => {
+        const data = col.get(id);
+        return {
+          exists: data !== undefined,
+          id,
+          data: () => data,
+          updateTime: data ? this.versions.get(data) : undefined,
+        };
+      },
       set: async (data, opts) => {
-        col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
+        const next = opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data };
+        col.set(id, next);
+        this.versions.set(next, Timestamp.fromMillis(++this.version));
       },
       create: async (data) => {
         if (col.has(id)) throw Object.assign(new Error('already exists'), { code: 6 });
-        col.set(id, { ...data });
+        const next = { ...data };
+        col.set(id, next);
+        this.versions.set(next, Timestamp.fromMillis(++this.version));
       },
       delete: async () => {
         col.delete(id);
@@ -165,6 +185,9 @@ class FakeDb {
       create: (ref: FakeDoc, data: DocData) => {
         ops.push({ type: 'create', ref, data });
       },
+      update: (ref: FakeDoc, data: DocData) => {
+        ops.push({ type: 'set', ref, data, opts: { merge: true } });
+      },
       set: (ref: FakeDoc, data: DocData, opts?: { merge?: boolean }) => {
         ops.push({ type: 'set', ref, data, opts });
       },
@@ -193,9 +216,10 @@ const asDb = (db: FakeDb) => db as unknown as Firestore;
 /* ------------------------------ fake client ------------------------------ */
 
 function fakeClient(
-  overrides: Partial<Record<'sendText' | 'sendMedia' | 'markRead', unknown>> = {},
+  overrides: Partial<Record<'sendText' | 'sendMedia' | 'sendTemplate' | 'markRead', unknown>> = {},
 ) {
   return {
+    sendTemplate: vi.fn(async () => ({ messageId: 'wamid.SENT' })),
     sendText: vi.fn(async () => ({ messageId: 'wamid.SENT' })),
     sendMedia: vi.fn(async () => ({ messageId: 'wamid.SENT' })),
     markRead: vi.fn(async () => {}),
@@ -207,6 +231,7 @@ function fakeDeps(client: ReturnType<typeof fakeClient>, buildClientError?: Erro
   return {
     loadContext: vi.fn(async () => ({
       integracaoId: CONTA,
+      conta: { phoneNumberId: 'phone-id', portfolioId: 'portfolio-1' },
       buildClient: async () => {
         if (buildClientError) throw buildClientError;
         return client as never;
@@ -226,17 +251,44 @@ const CHAT = 'chat';
 const MSG_COL = `chat/${CONV_ID}/mensagem`;
 const ARQ = 'arquivos';
 
+const DESTINO = {
+  tipo: 'telefone',
+  valor: FROM,
+  identidadeId: 'identity-1',
+  revision: 1,
+  ultimaMensagemEm: Date.parse('2026-07-15T11:00:00Z'),
+};
+
 function seedWhatsappConversa(db: FakeDb, conversaId = CONV_ID): void {
+  db.seed('integracao', CONTA, { tipo: 6, phoneNumberId: 'phone-id', portfolioId: 'portfolio-1' });
+  db.seed('clientes', 'cliente-1', { nome: 'Fulano', telefone: FROM });
+  db.seed('whatsappIdentidades', DESTINO.identidadeId, {
+    escopo: CONTA,
+    tipo: 'telefone',
+    valor: FROM,
+    clienteId: 'cliente-1',
+    ativa: true,
+    telefoneClienteNoVinculo: FROM,
+  });
   db.seed(CHAT, conversaId, {
     origem: 'whatsapp',
     sender_id: SENDER,
     integracaoOuterRef: `documents/integracao/${CONTA}`,
+    clienteOuterRef: 'documents/clientes/cliente-1',
+    whatsappDestino: DESTINO,
     nome: 'Fulano',
   });
 }
 
 // `timestamp` is millisecondsSinceEpoch INT now (#484/#486).
 const TS_NOON = Date.parse('2026-07-15T12:00:00.000Z');
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(TS_NOON);
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function outboundDoc(extra: DocData = {}): DocData {
   return {
@@ -245,6 +297,8 @@ function outboundDoc(extra: DocData = {}): DocData {
     conteudo: 'Olá cliente',
     mid: null,
     timestamp: TS_NOON,
+    whatsappDestino: DESTINO,
+    whatsappIntegracaoId: CONTA,
     ...extra,
   };
 }
@@ -586,11 +640,13 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'orig-1', outboundDoc());
     db.seed(MSG_COL, 'in-old', {
       estadoEnvio: 7,
+      whatsappIdentidadeId: DESTINO.identidadeId,
       mid: 'wamid.old',
       timestamp: Date.parse('2026-07-15T11:00:00.000Z'),
     });
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
+      whatsappIdentidadeId: DESTINO.identidadeId,
       mid: 'wamid.new',
       timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
@@ -612,6 +668,7 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'orig-1', outboundDoc());
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
+      whatsappIdentidadeId: DESTINO.identidadeId,
       mid: 'wamid.new',
       timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
@@ -641,6 +698,7 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'orig-1', outboundDoc());
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
+      whatsappIdentidadeId: DESTINO.identidadeId,
       mid: 'wamid.new',
       timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
@@ -780,5 +838,264 @@ describe('sweepStaleOutbound', () => {
       mid: 'wamid.LIVE',
       estadoEnvio: 2,
     });
+  });
+});
+
+describe('dispatchOutbound — accepted identity snapshot', () => {
+  it.each([
+    ['revision', { ...DESTINO, revision: 2 }],
+    ['recipient', { ...DESTINO, valor: '14155552671', identidadeId: 'identity-2' }],
+    ['missing snapshot', null],
+  ])(
+    'marks the message as an error if its %s no longer matches the chat',
+    async (_kind, destination) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      const data = outboundDoc({ whatsappDestino: destination });
+      db.seed(MSG_COL, 'm1', data);
+      const client = fakeClient();
+      const result = await dispatchOutbound(asDb(db), CONV_ID, 'm1', data, fakeDeps(client));
+      expect(result).toMatchObject({ kind: 'skipped', reason: 'destino alterado' });
+      expect(db.docs(MSG_COL).get('m1')).toMatchObject({ estadoEnvio: 4 });
+      expect(client.sendText).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['revoked', 'cliente phone cleared', 'cliente changed'])(
+    'refuses %s identity despite an unchanged destination snapshot',
+    async (change) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      if (change === 'revoked')
+        db.docs('whatsappIdentidades').get(DESTINO.identidadeId)!.ativa = false;
+      if (change === 'cliente phone cleared') db.docs('clientes').get('cliente-1')!.telefone = null;
+      if (change === 'cliente changed')
+        db.docs('whatsappIdentidades').get(DESTINO.identidadeId)!.clienteId = 'cliente-2';
+      db.seed(MSG_COL, 'm1', outboundDoc());
+      const client = fakeClient();
+      expect(
+        await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client)),
+      ).toMatchObject({ kind: 'skipped', reason: 'identidade inativa' });
+      expect(client.sendText).not.toHaveBeenCalled();
+      expect(db.docs(MSG_COL).get('m1')).toMatchObject({ estadoEnvio: 4 });
+    },
+  );
+
+  it('revalidates the recipient after asynchronous context loading before claiming the send', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    const client = fakeClient();
+    const deps = fakeDeps(client);
+    deps.loadContext = vi.fn(async () => {
+      db.docs('chat').get(CONV_ID)!.whatsappDestino = { ...DESTINO, revision: 2 };
+      return {
+        integracaoId: CONTA,
+        conta: { phoneNumberId: 'phone-id', portfolioId: 'portfolio-1' },
+        buildClient: async () => client,
+      };
+    }) as unknown as OutboundDeps['loadContext'];
+    expect(await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), deps)).toMatchObject({
+      kind: 'skipped',
+      reason: 'destino alterado',
+    });
+    expect(client.sendText).not.toHaveBeenCalled();
+  });
+
+  it('does not send free text after the customer window expires', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    vi.setSystemTime(TS_NOON + 86400000);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    const client = fakeClient();
+    expect(
+      await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client)),
+    ).toMatchObject({ kind: 'skipped', reason: 'janela encerrada' });
+    expect(client.sendText).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'sends BSUID without a phone (template=%s) and records canonical wamid location',
+    async (template) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      const destination = { ...DESTINO, tipo: 'bsuid', valor: 'BR.hidden.phone.identity' };
+      db.docs('chat').get(CONV_ID)!.whatsappDestino = destination;
+      db.seed('whatsappIdentidades', DESTINO.identidadeId, {
+        tipo: 'bsuid',
+        escopo: 'portfolio-1',
+        valor: destination.valor,
+        ativa: true,
+        clienteId: 'cliente-1',
+      });
+      db.docs('clientes').get('cliente-1')!.telefone = null;
+      const data = outboundDoc({
+        whatsappDestino: destination,
+        ...(template ? { whatsappTemplate: 'reabertura_conversa' } : {}),
+      });
+      if (template) vi.setSystemTime(TS_NOON + 86400000);
+      db.seed(MSG_COL, 'm1', data);
+      const client = fakeClient();
+      expect(await dispatchOutbound(asDb(db), CONV_ID, 'm1', data, fakeDeps(client))).toMatchObject(
+        { kind: 'sent', wamid: 'wamid.SENT' },
+      );
+      expect(template ? client.sendTemplate : client.sendText).toHaveBeenCalledWith(
+        template
+          ? { recipient: destination.valor, templateName: 'reabertura_conversa' }
+          : { recipient: destination.valor, text: 'Olá cliente' },
+      );
+      expect(db.docs('whatsappMensagens').get(mensagemDocId(CONTA, 'wamid.SENT'))).toEqual({
+        integracaoId: CONTA,
+        conversaId: CONV_ID,
+        mensagemId: mensagemDocId(CONTA, 'wamid.SENT'),
+      });
+    },
+  );
+
+  it('never marks an older identity message as read on the current recipient', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    db.seed(MSG_COL, 'old-identity', {
+      estadoEnvio: 7,
+      mid: 'wamid.OLD.IDENTITY',
+      timestamp: TS_NOON,
+      whatsappIdentidadeId: 'revoked-identity',
+    });
+    const client = fakeClient();
+    await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client));
+    expect(client.markRead).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatchOutbound — identity scope and prepared account', () => {
+  it.each([
+    ['scope', { escopo: 'other-integration' }],
+    ['type', { tipo: 'bsuid' }],
+    ['value', { valor: '5511888888888' }],
+  ])(
+    'rejects an identity whose %s disagrees with the accepted destination',
+    async (_field, patch) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      Object.assign(db.docs('whatsappIdentidades').get(DESTINO.identidadeId)!, patch);
+      db.seed(MSG_COL, 'm1', outboundDoc());
+      const client = fakeClient();
+      expect(
+        await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client)),
+      ).toMatchObject({ kind: 'skipped', reason: 'identidade inativa' });
+      expect(client.sendText).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['another portfolio', 'missing cliente'])(
+    'refuses BSUID sends for %s even if its snapshot is unchanged',
+    async (change) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      const destino = { ...DESTINO, tipo: 'bsuid', valor: 'BR.hidden.identity' };
+      db.docs(CHAT).get(CONV_ID)!.whatsappDestino = destino;
+      db.seed('whatsappIdentidades', destino.identidadeId, {
+        escopo: change === 'another portfolio' ? 'portfolio-2' : 'portfolio-1',
+        tipo: 'bsuid',
+        valor: destino.valor,
+        clienteId: 'cliente-1',
+        ativa: true,
+      });
+      if (change === 'missing cliente') db.docs('clientes').delete('cliente-1');
+      const data = outboundDoc({ whatsappDestino: destino });
+      db.seed(MSG_COL, 'm1', data);
+      const client = fakeClient();
+      expect(await dispatchOutbound(asDb(db), CONV_ID, 'm1', data, fakeDeps(client))).toMatchObject(
+        { kind: 'skipped', reason: 'identidade inativa' },
+      );
+      expect(client.sendText).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['phoneNumberId', 'portfolioId'])(
+    'does not use a cached client after its %s changed',
+    async (field) => {
+      const db = new FakeDb();
+      seedWhatsappConversa(db);
+      db.docs('integracao').get(CONTA)![field] = 'changed';
+      db.seed(MSG_COL, 'm1', outboundDoc());
+      const client = fakeClient();
+      expect(
+        await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client)),
+      ).toMatchObject({ kind: 'skipped', reason: 'configuração alterada; aguarda nova tentativa' });
+      expect(db.docs(MSG_COL).get('m1')!.estadoEnvio).toBe(1);
+      expect(client.sendText).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('dispatchOutbound — stale failure ownership', () => {
+  it('does not mark a newer message edit as failed after stale context loading fails', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    const client = fakeClient();
+    const deps = {
+      loadContext: vi.fn(async () => {
+        db.seed(MSG_COL, 'm1', outboundDoc({ conteudo: 'Corrigido por outro operador' }));
+        throw new WhatsappTokenMissingError('old context failure');
+      }),
+    };
+    const result = await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), deps);
+    expect(result).toMatchObject({
+      kind: 'skipped',
+      reason: 'mensagem alterada; erro da tentativa anterior ignorado',
+    });
+    expect(db.docs(MSG_COL).get('m1')).toMatchObject({
+      estadoEnvio: 1,
+      conteudo: 'Corrigido por outro operador',
+    });
+    expect(db.docs(MSG_COL).get('m1')).not.toHaveProperty('error');
+    expect(client.sendText).not.toHaveBeenCalled();
+  });
+
+  it('does not resurrect the original message if another dispatcher already re-anchored it', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    const deps = {
+      loadContext: vi.fn(async () => {
+        db.docs(MSG_COL).delete('m1');
+        db.seed(MSG_COL, 'anchored', outboundDoc({ estadoEnvio: 2, mid: 'wamid.WINNER' }));
+        throw new WhatsappTokenMissingError('old context failure');
+      }),
+    };
+    expect((await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), deps)).kind).toBe(
+      'skipped',
+    );
+    expect(db.docs(MSG_COL).has('m1')).toBe(false);
+    expect(db.docs(MSG_COL).get('anchored')).toMatchObject({ mid: 'wamid.WINNER', estadoEnvio: 2 });
+  });
+
+  it('does not apply a terminal failure from an older claim over a newer send attempt', async () => {
+    const db = new FakeDb();
+    seedWhatsappConversa(db);
+    db.seed(MSG_COL, 'm1', outboundDoc());
+    const client = fakeClient({
+      sendText: vi.fn(async () => {
+        const originalClaim = db.docs(MSG_COL).get('m1')!.whatsappEnvioClaimId;
+        expect(typeof originalClaim).toBe('string');
+        db.seed(
+          MSG_COL,
+          'm1',
+          outboundDoc({ estadoEnvio: 2, whatsappEnvioClaimId: 'newer-attempt' }),
+        );
+        throw new WhatsAppHttpError('sendText', 400, 'old attempt rejected');
+      }),
+    });
+    expect(
+      (await dispatchOutbound(asDb(db), CONV_ID, 'm1', outboundDoc(), fakeDeps(client))).kind,
+    ).toBe('skipped');
+    expect(db.docs(MSG_COL).get('m1')).toMatchObject({
+      estadoEnvio: 2,
+      whatsappEnvioClaimId: 'newer-attempt',
+    });
+    expect(db.docs(MSG_COL).get('m1')).not.toHaveProperty('error');
   });
 });

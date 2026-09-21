@@ -65,6 +65,11 @@ export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollec
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
+export {
+  impostoCategoriaCollection,
+  impostoProdutoCollection,
+  regraImpostoCollection,
+} from './impostoCollection';
 export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
 export { pagamentoCollection } from './pagamentoCollection';
@@ -91,3 +96,4 @@ export {
   relatorioEnvioPrecoMercadoLivreCollection,
 } from './envioPrecoMercadoLivreCollection';
 export { avisoCollection } from './avisoCollection';
+export * from './whatsappContatoCollection';

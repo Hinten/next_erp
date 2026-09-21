@@ -165,6 +165,8 @@ const ALLOWED_STRICT = {
   // No `shopee` entry, deliberately: that package declares RESPONSE shapes only
   // (its outbound bodies are plain objects built in `oauth.ts`, with no schema),
   // so there is nothing there for which strictness would be the right direction.
+  // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
+  // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
 };
 
 /**

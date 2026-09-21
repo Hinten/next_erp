@@ -49,6 +49,8 @@ function cliente(overrides: Partial<Cliente> = {}): Cliente {
     isUF: null,
     email: null,
     telefone: null,
+    telefonesAdicionais: [],
+    telefoneGerenciado: false,
     observacoesInternas: null,
     timestamp: null,
     userCliente: null,

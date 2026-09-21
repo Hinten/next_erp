@@ -14,7 +14,7 @@ import {
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 import { z } from 'zod';
-import { ESTADO_FRETE } from '@delfrance/schemas';
+import { ESTADO_ANUNCIO_SHOPEE, ESTADO_FRETE } from '@delfrance/schemas';
 
 // Type-only — erased at compile time, so it does not defeat the mocks below.
 import type { ShopeeNotificationPayload } from './notificacao';
@@ -23,6 +23,7 @@ import type {
   ResultadoImportacaoPedidoShopee,
 } from '../pedidos/importarPedido';
 import type { AlvoDeRastreioShopee, ResultadoRastreioShopee } from '../pedidos/rastrearPedido';
+import type { AlvoDePushDeAnuncioShopee, ResultadoPushAnuncio } from '../anuncios/pushAnuncio';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import {
@@ -63,7 +64,16 @@ vi.mock('../core/contaCache', () => ({
   readConta: (db: unknown, id: string) => h.readConta(db, id),
 }));
 
-vi.mock('../avisos/autorizacao', () => ({
+// ⚠️ SPREAD over the real module, not a two-key replacement. Since step 11 the
+// `anuncio` arm dynamically imports `../anuncios/pushAnuncio`, whose graph
+// reaches `anuncios/avisoAnuncio.ts` → the µs seam this module also exports
+// (`agoraUsDe` / `depsDeEscrita` / `prazoUsDe`). A factory that returned only the
+// two spies would make that import resolve to a mock WITHOUT them, and the
+// failure would land at module load of a file this suite never means to exercise
+// — for a reason nothing in the assertion says. The two named below are still
+// the spies; everything else is the real thing.
+vi.mock('../avisos/autorizacao', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   avisarDesautorizacao: (...args: unknown[]) => h.avisarDesautorizacao(...(args as [])),
   resolverAvisosDeAutorizacao: (...args: unknown[]) => h.resolverAvisos(...(args as [])),
 }));
@@ -112,6 +122,10 @@ const PACOTE = 'OFG242672552205937';
 const PACOTE_2 = 'OFG199593509207187';
 /** An invented carrier code. Never a real one, and never a logged VALUE. */
 const RASTREIO = 'BR000000001BR';
+/** The wave's `item_id` fixture — the doc-sample shape, never a real listing. */
+const ITEM_ID = 2500139861;
+/** A second one, so "two pushes about two listings" is expressible. */
+const ITEM_ID_2 = 2500139862;
 const AGORA_MS = 1_700_000_000_000;
 
 function resultadoDeImportacao(
@@ -182,12 +196,47 @@ const rastrearPedido = vi.fn(
     resultadoDeRastreio(),
 );
 
+/**
+ * The step-11 handler's happy path: the link resolved, the base info read, one
+ * violation recorded. `avisoResolvido` is `false` here on purpose — a resolve is
+ * a TRANSITION, and every test that wants one says so.
+ */
+function resultadoDeAnuncio(over: Partial<ResultadoPushAnuncio> = {}): ResultadoPushAnuncio {
+  return {
+    kind: 'anuncio',
+    acao: 'violacao-registrada',
+    itemId: ITEM_ID,
+    produtoId: 'prod-abc',
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.banido,
+    deboost: false,
+    violacoes: 1,
+    violacoesLidas: true,
+    avisoResultado: 'criado',
+    avisoResolvido: false,
+    detail: 'violacao-registrada',
+    ...over,
+  };
+}
+
+/**
+ * The codes-16/27 seam. Injected on EVERY call in this file for the same reason
+ * {@link importarPedido} and {@link rastrearPedido} are: a routing bug that
+ * reaches the listing handler from another code is caught here instead of
+ * dynamically importing the real anúncio tree (which would open a Firestore and a
+ * Shopee client).
+ */
+const tratarPushDeAnuncio = vi.fn(
+  async (_db: Firestore, _alvo: AlvoDePushDeAnuncioShopee): Promise<ResultadoPushAnuncio> =>
+    resultadoDeAnuncio(),
+);
+
 const deps = {
   partnerClient: () => ({ getShopsByPartner: async () => ({}) }) as never,
   increment: (by: number) => by,
   nowMs: () => AGORA_MS,
   importarPedido,
   rastrearPedido,
+  tratarPushDeAnuncio,
 };
 
 function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificationPayload {
@@ -211,6 +260,8 @@ beforeEach(() => {
   importarPedido.mockImplementation(async () => resultadoDeImportacao());
   rastrearPedido.mockReset();
   rastrearPedido.mockImplementation(async () => resultadoDeRastreio());
+  tratarPushDeAnuncio.mockReset();
+  tratarPushDeAnuncio.mockImplementation(async () => resultadoDeAnuncio());
   h.find.mockResolvedValue(null);
   h.readConta.mockResolvedValue(null);
   h.resolverAvisos.mockResolvedValue({ expiracao: true, desautorizacao: false });
@@ -783,10 +834,14 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     [4, 'frete'],
     [30, 'frete'],
     [47, 'frete'],
+    // ⚠️ O passo 11 tirou 16 e 27 do bloco parado e as duas linhas de
+    // `MOTIVO_PARADO` correspondentes foram APAGADAS: DOIS codes, UM destino.
+    // Eles diferem só no QUE aconteceu; os dois nomeiam um ITEM, os dois são
+    // PONTEIROS, e um único `get_item_base_info` responde pelos dois.
+    [16, 'anuncio'],
+    [27, 'anuncio'],
     [10, 'parado'],
     [15, 'parado'],
-    [16, 'parado'],
-    [27, 'parado'],
     [29, 'parado'],
     // ⚠️ 24 e 25 (booking) chegaram no teste de sandbox de 2026-09-09 SEM estar
     // (o 24 continua parado depois do passo 7 — RE-parado, com motivo novo)
@@ -859,6 +914,18 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     for (const code of [4, 30, 47]) {
       expect(destinoDoCodigo(code)).toBe('frete');
       expect(motivoDoParque(code)).not.toContain('passo 7');
+    }
+  });
+
+  // ⚠️ O TERCEIRO par da mesma família — o passo 5 escreveu um pelo code 3, o
+  // passo 7 pelos três do frete, e agora o passo 11 pelos dois do anúncio. Com os
+  // handlers construídos as linhas 16 e 27 de `MOTIVO_PARADO` foram APAGADAS,
+  // então `motivoDoParque(16)` só pode responder o texto de fallback ("código
+  // novo") — uma frase falsa a respeito de codes que este canal processa.
+  it('os codes 16 e 27 têm handler — vão para o anúncio, não para o parque', () => {
+    for (const code of [16, 27]) {
+      expect(destinoDoCodigo(code)).toBe('anuncio');
+      expect(motivoDoParque(code)).not.toContain('passo 11');
     }
   });
 
@@ -962,6 +1029,35 @@ describe('toDisposition', () => {
       }),
     ).toEqual({ kind: 'defer', reason: 'rastreio: pedido ainda não existe' });
   });
+
+  // ⚠️ Passo 11 (#1519): rótulo PRÓPRIO de novo, porque o mapa `outcomes` da
+  // varredura é o que separa uma violação de anúncio de uma importação, de uma
+  // fusão de remessa e de um aviso. Um rótulo cobrindo dois significados reporta
+  // sucesso para trabalho que nunca aconteceu (a forma do #1087).
+  it('anuncio ⇒ resolve rotulado "anuncio" — nem "pedido", nem "frete", nem "aviso"', () => {
+    const d = toDisposition({
+      kind: 'anuncio',
+      acaoAnuncio: 'violacao-registrada',
+      itemIdAnuncio: ITEM_ID,
+      produtoId: 'prod-abc',
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.banido,
+      violacoes: 1,
+      avisoResolvido: false,
+      detail: 'violacao-registrada',
+    });
+    expect(d).toEqual({ kind: 'resolve', label: 'anuncio' });
+  });
+
+  it('anuncio-adiado ⇒ defer, com a razão que nomeia a classe', () => {
+    expect(
+      toDisposition({
+        kind: 'anuncio-adiado',
+        shopId: SHOP_ID,
+        itemIdAnuncio: ITEM_ID,
+        reason: 'anuncio: ShopeeReauthRequiredError',
+      }),
+    ).toEqual({ kind: 'defer', reason: 'anuncio: ShopeeReauthRequiredError' });
+  });
 });
 
 // ── processNotificationPayload ──────────────────────────────────────────────
@@ -1013,10 +1109,11 @@ describe('processNotificationPayload — a ordem das portas', () => {
 
   // ⚠️ O 3 SAIU desta lista no passo 5 — ele agora resolve a conta de propósito.
   // ⚠️ E 4, 30 e 47 saíram no passo 7, pela mesma razão e com a mesma nota: eles
-  // resolvem a conta porque têm handler. O 24 FICA — a booking continua sem
-  // passo dono. Todo o resto continua tendo de parar antes de qualquer leitura:
-  // um code sem handler não pode custar uma consulta ao Firestore por entrega.
-  it.each([10, 15, 16, 24, 25, 27, 29, 999])(
+  // resolvem a conta porque têm handler. ⚠️ E 16 e 27 saíram no passo 11, pela
+  // mesma razão ainda. O 24 FICA — a booking continua sem passo dono. Todo o
+  // resto continua tendo de parar antes de qualquer leitura: um code sem handler
+  // não pode custar uma consulta ao Firestore por entrega.
+  it.each([10, 15, 24, 25, 29, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
@@ -1985,6 +2082,482 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
   });
 });
 
+describe('codes 16/27 — o braço do anúncio (passo 11)', () => {
+  /**
+   * Um `push 18` real: code 16, `item_id`, `item_status`, `deboost` (STRING na
+   * amostra) e a lista de detalhes de status. Nada disso é escrito — o handler
+   * re-lê `get_item_base_info` — e as duas listas viajam só como fallback do pull
+   * de violações.
+   */
+  function push16(data: Record<string, unknown> = {}) {
+    return payload({
+      code: 16,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: {
+        item_id: ITEM_ID,
+        item_name: 'Camiseta',
+        item_status: 'BANNED',
+        deboost: 'false',
+        item_status_details: [
+          {
+            violation_type: 'Prohibited',
+            violation_reason: 'texto do provedor',
+            suggestion: 'texto do provedor',
+            fix_deadline_time: 1_760_000_000,
+          },
+        ],
+        ...data,
+      },
+    });
+  }
+  /** Um `push 30` real: code 27, `item_id` e `scheduled_publish_time` (SEGUNDOS). */
+  function push27(data: Record<string, unknown> = {}) {
+    return payload({
+      code: 27,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: {
+        item_id: ITEM_ID,
+        item_name: 'Camiseta',
+        scheduled_publish_time: 1_760_000_500,
+        ...data,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+  });
+
+  // 1
+  it('(1) code 16 chama tratarPushDeAnuncio com a integração da loja, o item, o carimbo do envelope e UM relógio', async () => {
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    expect(h.find).toHaveBeenCalledTimes(1);
+    expect(h.find).toHaveBeenCalledWith(db, SHOP_ID);
+    expect(tratarPushDeAnuncio).toHaveBeenCalledTimes(1);
+    const [, alvo] = tratarPushDeAnuncio.mock.calls[0]!;
+    expect(alvo).toMatchObject({
+      integracaoId: INTEGRACAO_ID,
+      shopId: SHOP_ID,
+      itemId: ITEM_ID,
+      code: 16,
+      // ⚠️ MILISSEGUNDOS nos dois, e são relógios DIFERENTES: `nowMs` é o do
+      // handler (`deps.nowMs()`) e `carimboMs` é o do ENVELOPE, que vira a marca
+      // d'água do aviso. `parseNotificationBody` já converteu o segundo uma vez.
+      nowMs: AGORA_MS,
+      carimboMs: AGORA_MS,
+      // Code 16 não documenta agendamento nenhum.
+      agendadoParaMs: null,
+    });
+    // Três BOOLEANOS, e nada mais — o que o push alega, para a linha de log.
+    expect(alvo.diagnostico).toEqual({
+      temDetalhesDeStatus: true,
+      temDetalhesDeDeboost: false,
+      grafiaDeboosted: false,
+    });
+    expect(out.kind).toBe('anuncio');
+  });
+
+  // 1b — as DUAS grafias de deboost, e a que NÃO conta
+  it('(1b) ⚠️ PAR: as duas grafias de deboost chegam ao handler; NEAR-MISS: a singular `deboost_detail` não', async () => {
+    // A própria página do `push 18` se contradiz: a tabela de parâmetros diz
+    // `deboost_details` e a amostra 3 manda `deboosted_details`. O braço não
+    // re-soletra nenhuma das duas — ele chama o ÚNICO leitor do canal.
+    const linha = { violation_type: 'Deboost', suggested_category: 'x' };
+    await processNotificationPayload(db, push16({ deboost_details: [linha] }), deps);
+    await processNotificationPayload(db, push16({ deboosted_details: [linha] }), deps);
+    // …e a quase-falha: a forma SINGULAR não é nenhuma das duas grafias.
+    await processNotificationPayload(db, push16({ deboost_detail: [linha] }), deps);
+
+    const alvos = tratarPushDeAnuncio.mock.calls.map(([, a]) => a);
+    expect(alvos[0]!.detalhesDoPush.deboost).toEqual([linha]);
+    expect(alvos[1]!.detalhesDoPush.deboost).toEqual([linha]);
+    expect(alvos[2]!.detalhesDoPush.deboost).toEqual([]);
+    // A grafia usada é o único registro de qual delas o fio da BR manda.
+    expect(alvos.map((a) => a.diagnostico.grafiaDeboosted)).toEqual([false, true, false]);
+    expect(alvos.map((a) => a.diagnostico.temDetalhesDeDeboost)).toEqual([true, true, false]);
+    // E a lista de STATUS continua sendo a do argumento 1, sempre.
+    expect(alvos[0]!.detalhesDoPush.status).toHaveLength(1);
+  });
+
+  // 2
+  it('(2) code 27 leva o `scheduled_publish_time` em MILLIS; code 16 leva null', async () => {
+    await processNotificationPayload(db, push27(), deps);
+    await processNotificationPayload(db, push16(), deps);
+
+    const alvos = tratarPushDeAnuncio.mock.calls.map(([, a]) => a);
+    expect(alvos.map((a) => a.code)).toEqual([27, 16]);
+    // 1_760_000_500 s → ms. Sem o ×1000 seria 1970, e o carimbo
+    // `agendamentoFalhouEm` apontaria para uma publicação que nunca houve.
+    expect(alvos[0]!.agendadoParaMs).toBe(1_760_000_500_000);
+    expect(alvos[1]!.agendadoParaMs).toBeNull();
+  });
+
+  // 3
+  it('(3) sem `shop_id` ⇒ parado com prefixo `anuncio:`, e tratarPushDeAnuncio NUNCA foi chamado', async () => {
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 16, shopId: null, timestamp: AGORA_MS, data: { item_id: ITEM_ID } }),
+      deps,
+    );
+
+    expect(out).toEqual({ kind: 'parado', motivo: expect.stringContaining('sem shop_id') });
+    expect(out.kind === 'parado' && out.motivo.startsWith('anuncio:')).toBe(true);
+    expect(toDisposition(out).kind).toBe('park');
+    // PARA, nunca ADIA: as duas páginas documentam `shop_id` no envelope, então
+    // um push sem ele é defeito do provedor ou do produtor — nada a resolver.
+    expect(tratarPushDeAnuncio).not.toHaveBeenCalled();
+    expect(h.find).not.toHaveBeenCalled();
+  });
+
+  // 4
+  it('(4) sem `item_id` ⇒ parado — e o zero-fill da Shopee conta como ausência', async () => {
+    const semItem = await processNotificationPayload(
+      db,
+      payload({ code: 16, shopId: SHOP_ID, timestamp: AGORA_MS, data: { item_name: 'x' } }),
+      deps,
+    );
+    expect(semItem).toEqual({
+      kind: 'parado',
+      motivo: 'anuncio: push de anúncio sem item_id — nada a resolver',
+    });
+
+    // ⚠️ NEAR-MISS: `0` é o zero-fill de um numérico ausente neste fio, e um 0
+    // chegando ao resolvedor consultaria um `item_id: 0` guardado — um vínculo
+    // que não prende listagem nenhuma (a armadilha do `model_id: 0`, uma coleção
+    // ao lado). Ele PARA junto com os ausentes.
+    const zero = await processNotificationPayload(db, push16({ item_id: 0 }), deps);
+    expect(zero).toEqual({
+      kind: 'parado',
+      motivo: 'anuncio: push de anúncio sem item_id — nada a resolver',
+    });
+
+    // …e o par que tem de continuar PASSANDO: um item_id positivo em STRING
+    // (#1087 — o corpo do push é JSON cru que nenhum schema de operação coagiu).
+    const texto = await processNotificationPayload(db, push16({ item_id: String(ITEM_ID) }), deps);
+    expect(texto.kind).toBe('anuncio');
+    expect(tratarPushDeAnuncio.mock.calls.at(-1)![1].itemId).toBe(ITEM_ID);
+  });
+
+  // 5
+  it('(5) uma loja não mapeada ⇒ sem-conta ⇒ defer, e NENHUMA chamada à Shopee', async () => {
+    h.find.mockResolvedValue(null);
+
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    // ⚠️ DEFER, e a inversão do code 2 não se aplica: conectar uma conta não
+    // torna uma violação FALSA — a listagem está mesmo banida e o prazo dela
+    // continua correndo. O que torna o defer certo é o outro lado: um push para
+    // uma loja sem integração ATIVA é, na maioria das vezes, uma conta
+    // DESATIVADA, que TEM documentos de vínculo — então uma re-condução dentro
+    // dos sete dias cai num produto real.
+    expect(out).toEqual({
+      kind: 'sem-conta',
+      shopId: SHOP_ID,
+      reason: expect.stringContaining(String(SHOP_ID)),
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'defer', reason: expect.any(String) });
+    // O handler jamais foi invocado, então nenhuma chamada à Shopee saiu.
+    expect(tratarPushDeAnuncio).not.toHaveBeenCalled();
+  });
+
+  // 6
+  it('(6) `ignorado-sem-vinculo` ⇒ parado NOMEANDO o item', async () => {
+    tratarPushDeAnuncio.mockResolvedValue(
+      resultadoDeAnuncio({
+        acao: 'ignorado-sem-vinculo',
+        produtoId: null,
+        estadoAnuncio: null,
+        violacoes: 0,
+        violacoesLidas: false,
+        avisoResultado: null,
+        detail: 'ignorado-sem-vinculo:item sem vínculo nesta conta',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    // O handler DEVOLVE isso em vez de lançar: "esta conta não gerencia esta
+    // listagem" é um fato permanente sobre UM item, e a disposição é nossa. A
+    // linha parada é o único lugar em que um operador vê que chegou um push para
+    // uma listagem que o ERP não tem.
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: `anuncio: item ${String(ITEM_ID)} sem vínculo nesta conta`,
+    });
+    expect(toDisposition(out).kind).toBe('park');
+  });
+
+  // 6b — o estreitamento do contrato, visível em vez de silencioso
+  it('(6b) um resultado sem produtoId numa ação que promete um PARA — contrato violado, visível', async () => {
+    tratarPushDeAnuncio.mockResolvedValue(
+      resultadoDeAnuncio({ acao: 'anuncio-normalizado', produtoId: null, estadoAnuncio: null }),
+    );
+
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: expect.stringContaining('contrato do handler'),
+    });
+  });
+
+  // 7
+  it('(7) uma falha transitória SOBE, e sobe o erro ORIGINAL', async () => {
+    const err = new ShopeeNetworkError('ECONNRESET');
+    tratarPushDeAnuncio.mockRejectedValueOnce(err);
+
+    await expect(processNotificationPayload(db, push16(), deps)).rejects.toBe(err);
+  });
+
+  // 8
+  it('(8) `ShopeeSchemaError` ⇒ parado com CAMINHOS de campo, e nenhum valor', async () => {
+    tratarPushDeAnuncio.mockRejectedValueOnce(
+      new ShopeeSchemaError('resposta fora do schema', {
+        campos: ['response.item_list[].item_status'],
+        httpStatus: 200,
+        path: '/api/v2/product/get_item_base_info',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    expect(out.kind).toBe('parado');
+    const motivo = out.kind === 'parado' ? out.motivo : '';
+    expect(motivo).toContain('response.item_list[].item_status');
+    expect(motivo).toContain('/api/v2/product/get_item_base_info');
+    // ⚠️ Nenhum VALOR: nem a prosa do provedor que o push trouxe, nem o nome do
+    // item (#1015 — caminhos, nunca conteúdo).
+    expect(motivo).not.toContain('texto do provedor');
+    expect(motivo).not.toContain('Camiseta');
+  });
+
+  // 9
+  it('(9) a cota DIÁRIA adia; um limite de RAJADA sobe', async () => {
+    const diario = new ShopeeRateLimitError('cota diária', {
+      ...initApi('error_limit', SHOPEE_ERROR_KIND.daily),
+      kind: SHOPEE_ERROR_KIND.daily,
+    });
+    tratarPushDeAnuncio.mockRejectedValueOnce(diario);
+    const adiado = await processNotificationPayload(db, push16(), deps);
+    expect(adiado).toEqual({
+      kind: 'anuncio-adiado',
+      shopId: SHOP_ID,
+      itemIdAnuncio: ITEM_ID,
+      reason: expect.stringContaining('cota diária'),
+    });
+    expect(toDisposition(adiado).kind).toBe('defer');
+
+    const rajada = new ShopeeRateLimitError('limite curto', {
+      ...initApi('error_rate_limit', SHOPEE_ERROR_KIND.burst),
+      kind: SHOPEE_ERROR_KIND.burst,
+      retryAfterSeconds: 60,
+    });
+    tratarPushDeAnuncio.mockRejectedValueOnce(rajada);
+    await expect(processNotificationPayload(db, push16(), deps)).rejects.toBe(rajada);
+  });
+
+  // 10
+  it.each([
+    ['sem shop_id', () => payload({ code: 16, shopId: null, timestamp: AGORA_MS, data: {} })],
+    [
+      'sem item_id',
+      () => payload({ code: 27, shopId: SHOP_ID, timestamp: AGORA_MS, data: { item_name: 'x' } }),
+    ],
+  ])(
+    '(10) ⚠️ toda razão de parque deste braço começa com `anuncio:` (%s)',
+    async (_n, constroi) => {
+      const out = await processNotificationPayload(db, constroi(), deps);
+      expect(out.kind).toBe('parado');
+      expect(out.kind === 'parado' && out.motivo.startsWith('anuncio: ')).toBe(true);
+    },
+  );
+
+  it('(10b) ⚠️ e toda razão de ADIAMENTO vinda de uma FALHA também', async () => {
+    tratarPushDeAnuncio.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const out = await processNotificationPayload(db, push16(), deps);
+    expect(out.kind).toBe('anuncio-adiado');
+    expect(out.kind === 'anuncio-adiado' && out.reason.startsWith('anuncio: ')).toBe(true);
+
+    // …e a quase-falha que separa os TRÊS prefixos: o braço do frete usa o seu.
+    rastrearPedido.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const doFrete = await processNotificationPayload(
+      db,
+      payload({
+        code: 4,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { ordersn: ORDER_SN, package_number: PACOTE },
+      }),
+      deps,
+    );
+    expect(doFrete.kind).toBe('frete-adiado');
+    expect(doFrete.kind === 'frete-adiado' && doFrete.reason.startsWith('rastreio: ')).toBe(true);
+  });
+
+  // 11
+  it('(11) ⚠️ a EXCEÇÃO que os docblocks nomeiam: o `sem-conta` deste braço também não leva prefixo', async () => {
+    h.find.mockResolvedValue(null);
+
+    const doAnuncio = await processNotificationPayload(db, push16(), deps);
+    const doCode3 = await processNotificationPayload(
+      db,
+      payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+
+    expect(doAnuncio.kind).toBe('sem-conta');
+    expect(doCode3.kind).toBe('sem-conta');
+    const razaoAnuncio = doAnuncio.kind === 'sem-conta' ? doAnuncio.reason : '';
+    const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
+    // O template é COMPARTILHADO pelos QUATRO braços: as razões são a mesma
+    // string, e nenhuma começa por um prefixo de braço. Quem responde "qual braço
+    // escreveu esta linha adiada" é o `kind` + o `code`, nunca o texto.
+    expect(razaoAnuncio).toBe(razaoCode3);
+    expect(razaoAnuncio.startsWith('anuncio: ')).toBe(false);
+    // ÂNCORA: a razão nomeia a loja — sem isto a negativa acima passaria com ''.
+    expect(razaoAnuncio).toContain(String(SHOP_ID));
+
+    // QUASE-ERRO: uma razão que este braço CONSTRÓI leva o prefixo mesmo com a
+    // loja não mapeada, porque ela é decidida antes da busca da conta.
+    const construida = await processNotificationPayload(db, push16({ item_id: 0 }), deps);
+    expect(construida).toEqual({
+      kind: 'parado',
+      motivo: 'anuncio: push de anúncio sem item_id — nada a resolver',
+    });
+  });
+
+  // 12
+  it('(12) uma entrega bem-sucedida ⇒ kind `anuncio` ⇒ resolve rotulado "anuncio"', async () => {
+    tratarPushDeAnuncio.mockResolvedValue(
+      resultadoDeAnuncio({
+        acao: 'anuncio-normalizado',
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+        violacoes: 0,
+        avisoResultado: null,
+        avisoResolvido: true,
+        detail: 'anuncio-normalizado',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push16(), deps);
+
+    expect(out).toEqual({
+      kind: 'anuncio',
+      acaoAnuncio: 'anuncio-normalizado',
+      itemIdAnuncio: ITEM_ID,
+      produtoId: 'prod-abc',
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      violacoes: 0,
+      avisoResolvido: true,
+      detail: 'anuncio-normalizado',
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'anuncio' });
+    // ⚠️ `acaoAnuncio` / `itemIdAnuncio`, jamais `acao` / `itemId`: o outcome
+    // `pedido` já carrega um `acao` de OUTRO vocabulário e a leitura é por `in`.
+    expect(Object.prototype.hasOwnProperty.call(out, 'acao')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(out, 'itemId')).toBe(false);
+  });
+
+  // 13
+  it('(13) ⚠️ o braço emite ZERO linhas de log — nada do push atravessa para um logger', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // Uma entrega feliz, um parque e um adiamento — os três caminhos que
+    // terminam com alguma coisa a dizer.
+    const feliz = await processNotificationPayload(db, push16(), deps);
+    tratarPushDeAnuncio.mockResolvedValue(
+      resultadoDeAnuncio({ acao: 'ignorado-sem-vinculo', produtoId: null, estadoAnuncio: null }),
+    );
+    const parado = await processNotificationPayload(db, push27(), deps);
+    tratarPushDeAnuncio.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const adiado = await processNotificationPayload(db, push16(), deps);
+
+    // ÂNCORA: as três entregas realmente ACONTECERAM.
+    expect([feliz.kind, parado.kind, adiado.kind]).toEqual(['anuncio', 'parado', 'anuncio-adiado']);
+
+    // ⚠️ ZERO. A ÚNICA linha por entrega é a do handler (`anuncios/pushAnuncio.ts`);
+    // o braço repetindo qualquer coisa a dobraria.
+    expect(info.mock.calls).toEqual([]);
+    expect(warn.mock.calls).toEqual([]);
+    expect(error.mock.calls).toEqual([]);
+
+    // …e a metade de CONTEÚDO da mesma propriedade, para o dia em que o braço
+    // ganhar uma linha: a prosa do provedor está na denylist do `redact.ts` e não
+    // pode viajar nela.
+    const tudo = [...info.mock.calls, ...warn.mock.calls, ...error.mock.calls]
+      .map((args) => args.map((a) => JSON.stringify(a) ?? '').join(' '))
+      .join(' | ');
+    for (const proibido of ['texto do provedor', 'violation_reason', 'suggestion', 'Camiseta']) {
+      expect(tudo).not.toContain(proibido);
+    }
+  });
+
+  // 14 — O PAR DOBRA-IGUAL, e a sua quase-falha.
+  it('(14) ⚠️ DOIS pushes com valores PRÓPRIOS diferentes produzem o MESMO argumento de handler', async () => {
+    // O push é um PONTEIRO: nada do corpo dele decide coisa alguma. Estes dois
+    // discordam em `item_status`, em `deboost` e nas listas de detalhe — tudo o
+    // que um leitor ingênuo copiaria para o patch — e apontam para o MESMO item.
+    await processNotificationPayload(db, push16(), deps);
+    await processNotificationPayload(
+      db,
+      payload({
+        code: 16,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS + 5_000,
+        data: {
+          item_id: ITEM_ID,
+          item_status: 'NORMAL',
+          deboost: 'true',
+          deboosted_details: [{ violation_type: 'Deboost' }],
+        },
+      }),
+      deps,
+    );
+
+    const [a, b] = tratarPushDeAnuncio.mock.calls.map(([, alvo]) => alvo);
+    // O que o handler recebe para DECIDIR — a identidade — é idêntico. O
+    // `diagnostico`, o `carimboMs` e `detalhesDoPush` (que só viram log e
+    // fallback) são o que difere, e é por isso que estão separados do resto.
+    const identidade = (alvo: AlvoDePushDeAnuncioShopee) => ({
+      integracaoId: alvo.integracaoId,
+      shopId: alvo.shopId,
+      itemId: alvo.itemId,
+    });
+    expect(identidade(a!)).toEqual(identidade(b!));
+    // …e nenhum valor do push atravessou para a identidade.
+    expect(JSON.stringify(identidade(a!))).not.toContain('BANNED');
+    expect(JSON.stringify(identidade(b!))).not.toContain('NORMAL');
+
+    // ⚠️ A QUASE-FALHA: um item DIFERENTE tem de produzir um argumento diferente.
+    // Sem ela o teste acima passaria também se a identidade fosse constante.
+    tratarPushDeAnuncio.mockClear();
+    await processNotificationPayload(db, push16({ item_id: ITEM_ID_2 }), deps);
+    const c = tratarPushDeAnuncio.mock.calls[0]![1];
+    expect(identidade(c)).not.toEqual(identidade(a!));
+    expect(c.itemId).toBe(ITEM_ID_2);
+  });
+});
+
 describe('code 1 — reautorização RESOLVE os avisos da loja', () => {
   it('chama resolverAvisosDeAutorizacao uma vez por loja mapeada', async () => {
     h.find.mockImplementation(async (_db, shopId) => (shopId === 111 ? 'int-1' : 'int-2'));
@@ -2339,6 +2912,22 @@ describe('a fiação do pipeline', () => {
     expect(fonte).toContain("await import('../pedidos/fretePushShopee')");
   });
 
+  // ⚠️ O gêmeo do passo 11, e ele precisa da sua PRÓPRIA negativa: o
+  // `not.toMatch` do primeiro teste cobre `../pedidos/` e NADA mais, então nada
+  // impediria um `import { tratarPushDeAnuncio } from '../anuncios/pushAnuncio'`
+  // no topo — que arrastaria `@delfrance/schemas` e
+  // `@delfrance/data/admin/collections` como VALORES para o bundle Next de um
+  // endpoint que só enfileira. São DOIS literais porque o braço alcança dois
+  // módulos: o parser/handler e o leitor das duas grafias de deboost.
+  it('o default de tratarPushDeAnuncio existe e é PREGUIÇOSO — nada de import estático de anuncios/', () => {
+    expect(typeof defaultProcessDeps.tratarPushDeAnuncio).toBe('function');
+
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain("await import('../anuncios/pushAnuncio')");
+    expect(fonte).toContain("await import('../anuncios/violacoesAnuncio')");
+    expect(fonte).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'\.\.\/anuncios\//m);
+  });
+
   // ⚠️ D9 — a linha que transforma um SÉTIMO membro de `DestinoPush` sem braço
   // próprio em erro de compilação. A escada abaixo do braço de frete testa
   // `payload.code`, não `destino`, e não tem `default`: um destino novo cairia
@@ -2585,5 +3174,88 @@ describe('handleNotificationTask — `acaoFrete` e `packageNumber` no TaskResult
     // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
     expect(r.kind).toBe('pedido');
     expect(r.orderSn).toBe(ORDER_SN);
+  });
+});
+
+// ── handleNotificationTask — `acaoAnuncio` / `itemIdAnuncio` (#1519, passo 11) ──
+
+describe('handleNotificationTask — `acaoAnuncio` e `itemIdAnuncio` no TaskResult', () => {
+  it('⚠️ o veredito do handler de anúncio e o item_id chegam ao log da tarefa', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    tratarPushDeAnuncio.mockResolvedValue(
+      resultadoDeAnuncio({ acao: 'deboost-registrado', detail: 'deboost-registrado' }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      {
+        code: 16,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { item_id: ITEM_ID, item_status: 'NORMAL', deboost: 'true' },
+      },
+      0,
+      deps,
+    );
+
+    expect(r.outcome).toBe('done');
+    expect(r.kind).toBe('anuncio');
+    expect(r.acaoAnuncio).toBe('deboost-registrado');
+    expect(r.itemIdAnuncio).toBe(ITEM_ID);
+    // ⚠️ `acaoAnuncio` / `itemIdAnuncio`, jamais `acao` / `itemId`: o outcome
+    // `pedido` já carrega um `acao` de OUTRO vocabulário, e
+    // `handleNotificationTask` lê por `in` — um `acao` aqui poria uma ação de
+    // importação na coluna do anúncio (a forma do #1087).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acao')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(r, 'itemId')).toBe(false);
+  });
+
+  it('⚠️ quando o handler NÃO roda, as chaves ficam AUSENTES — não `null`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    const fake = new FakeDb();
+
+    // Uma entrega code 3 não nomeia item nenhum: o handler de anúncio não roda.
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    // "não rodou" e "rodou e não mudou nada" são fatos diferentes, e uma chave
+    // ausente é como este repo escreve o primeiro (regra 7, `camposInformados`).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoAnuncio')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(r, 'itemIdAnuncio')).toBe(false);
+    // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
+    expect(r.kind).toBe('pedido');
+    expect(r.orderSn).toBe(ORDER_SN);
+    expect(tratarPushDeAnuncio).not.toHaveBeenCalled();
+  });
+
+  // ⚠️ O par do adiamento: o `itemIdAnuncio` viaja também numa linha ADIADA, que
+  // é onde um operador procura "qual listagem ficou presa".
+  it('⚠️ o item_id chega ao TaskResult também num `anuncio-adiado`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    tratarPushDeAnuncio.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 27, shopId: SHOP_ID, timestamp: AGORA_MS, data: { item_id: ITEM_ID } },
+      0,
+      deps,
+    );
+
+    expect(r.outcome).toBe('deferred');
+    expect(r.kind).toBe('anuncio-adiado');
+    expect(r.itemIdAnuncio).toBe(ITEM_ID);
+    // Um adiamento não tem veredito de handler — a chave fica ausente.
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoAnuncio')).toBe(false);
   });
 });

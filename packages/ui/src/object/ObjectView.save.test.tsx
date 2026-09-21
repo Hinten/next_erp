@@ -85,6 +85,47 @@ beforeEach(() => {
 });
 
 describe('ObjectView save flow', () => {
+  it('resets the form and after-save values to the committed transactional derivation', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice', email: 'before@example.com' } },
+      loading: false,
+      error: undefined,
+    };
+    const derive = vi.fn(() => ({ email: 'committed@example.com' }));
+    const onAfterSave = vi.fn();
+    saveRecordMock.mockResolvedValueOnce({
+      id: 'EXISTING',
+      patch: { nome: 'Updated', email: 'committed@example.com' },
+    });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          deriveTransactionPatch={derive}
+          onAfterSave={onAfterSave}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Updated' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
+    });
+    expect(saveRecordMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deriveTransactionPatch: derive }),
+    );
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe(
+      'committed@example.com',
+    );
+    expect(onAfterSave).toHaveBeenCalledWith('EXISTING', {
+      nome: 'Updated',
+      email: 'committed@example.com',
+    });
+  });
+
   it('submit on a pristine update form skips saveRecord and shows a yellow toast', async () => {
     docState.current = {
       data: { id: 'EXISTING', data: { nome: 'Alice', email: 'a@x.com' } },
