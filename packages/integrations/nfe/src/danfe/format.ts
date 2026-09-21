@@ -56,9 +56,14 @@ export function formatChaveAcesso(value: string): string {
  *
  * ⚠️ Re-exported from `@delfrance/core/documents`, and the local copy it
  * replaces was WRONG: it ran `onlyDigits` first, so an alphanumeric CNPJ
- * (RFB IN 2.229/2024) lost its letters, came out eleven digits long and printed
- * on all five DANFE renderers and the ZPL label as somebody's **CPF**. Nothing
- * failed — a plausible-looking document appeared on a fiscal document.
+ * (RFB IN 2.229/2024) lost its letters and printed mangled on all five DANFE
+ * renderers and the ZPL label.
+ * ⚠️ The count is `14 − (letters)`, so what the mangled value LOOKS like varies:
+ * `12ABC678000190` has three letters and strips to ELEVEN digits, which a
+ * length-driven formatter renders as somebody's CPF, while `12ABC34501DE35` has
+ * five and strips to nine, which matches no document at all. Both are wrong; the
+ * three-letter arity is the one that produces a plausible-looking lie.
+ * Nothing failed either way — on a fiscal document.
  */
 export { formatCpfCnpj } from '@delfrance/core/documents';
 

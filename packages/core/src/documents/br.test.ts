@@ -174,8 +174,11 @@ describe('formatCpfCnpj', () => {
 
   it('masks an alphanumeric CNPJ POSITIONALLY — the bug the three copies had', () => {
     // Two of the copies this replaces stripped non-digits first, which leaves
-    // `12ABC34501DE35` eleven digits long and renders it as a CPF:
-    // `123.450.135` + `-??`. On a DANFE that is somebody else's document.
+    // `12ABC34501DE35` NINE digits long — matching no document facet, so it fell
+    // through and printed mangled. ⚠️ The count is `14 − (letters)`, and the
+    // dangerous arity is exactly THREE: `12ABC678000190` strips to eleven digits
+    // and renders as a valid-looking CPF. On a DANFE that is somebody else's
+    // document, which is the version of this bug nobody would notice.
     expect(formatCpfCnpj(VALID_CNPJ_ALPHA)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
     expect(formatCpfCnpj('12abc34501de35')).toBe(VALID_CNPJ_ALPHA_FORMATTED);
     expect(formatCpfCnpj(VALID_CNPJ_ALPHA_FORMATTED)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
