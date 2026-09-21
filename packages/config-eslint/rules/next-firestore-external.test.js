@@ -98,7 +98,14 @@ const KNOWN_NEXT_APPS = [
  * reaches the modules it is meant to police".
  */
 const KNOWN_IMPORTERS = {
-  '@google-cloud/firestore': ['apps/mercado-livre'],
+  // `apps/shopee` joined the day its stock discovery landed
+  // (`lib/shopee/estoque/descobertaEstoque.ts`, #1520): it imports the pipelines
+  // subpath directly, exactly like `apps/mercado-livre`'s stock sweep, and hits
+  // the identical double-instance hazard if the `serverExternalPackages` entry
+  // is ever "tidied" away. Listing it here is what keeps the walk non-vacuous
+  // for this app — without it the two assertions below would pass over an empty
+  // set for `apps/shopee` and say nothing at all.
+  '@google-cloud/firestore': ['apps/mercado-livre', 'apps/shopee'],
 };
 
 /**
