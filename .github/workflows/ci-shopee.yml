@@ -12,10 +12,11 @@ name: CI — Shopee
 # their own gate. Step 22 (#1530) may move the offline job in here when it adds
 # the Firestore-only emulator job; until then the smaller blast radius wins.
 #
-# ⚠️ ONE job, THREE suite files (6 tests) since step 11: the receiver round trip
+# ⚠️ ONE job, FOUR suite files (7 tests) since step 12: the receiver round trip
 # (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
-# (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2) and the push-16 one
-# (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1). Adding a file with
+# (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
+# (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1) and the stock one
+# (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1). Adding a file with
 # the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
 # name, no new row in the gate manifest.
 #
@@ -38,10 +39,19 @@ name: CI — Shopee
 #     → resolverContexto → loadShopeeContext refuses on `tipo`
 #     → the job doc stamped `failed` on the FIRST attempt (retryCount 0)
 #
-# ⚠️ That second path is NOT a push delivery, and the wrong-tipo conta is chosen
-# for the same reason the unmapped shop is: the refusal PRECEDES any client, so
-# the dispatch writes a document having made zero Shopee calls — by call order,
-# not by a mock.
+# and, since step 12 (#1520), the THIRD queue end to end:
+#
+#   a seeded prodshopee link + a task carrying MORE models than update_stock
+#     → createShopeeStockTaskScheduler()    the real region-qualified queue name
+#     → Cloud Tasks emulator → Functions emulator
+#     → sendShopeeStock                     the real deployed onTaskDispatched
+#     → the payload refused ABOVE the Shopee client
+#     → the link stamped `estoqueRecusaCodigo: 'erp:task-excede-limite'`
+#
+# ⚠️ That second path is NOT a push delivery, and neither is the third. The
+# wrong-tipo conta, the unmapped shop and the over-sized task are all chosen for
+# the same reason: the refusal PRECEDES any client, so the dispatch writes a
+# document having made zero Shopee calls — by call order, not by a mock.
 #
 # OFFLINE BY CONSTRUCTION — no Shopee credentials, ever. Shopee DOES have a
 # sandbox, so the danger here is not "there is nowhere safe to call": it is that
@@ -89,13 +99,14 @@ name: CI — Shopee
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
 #     the digest.
-#   - None of the seven `onSchedule` triggers. MEASURED: the functions emulator
-#     logs each of them as "ignored because the pubsub emulator does not exist
-#     or is not running", so this lane loads them and never runs them. Their
-#     bodies are covered by the unit suites in `CI test`, and their trigger
-#     OPTIONS — cron, timeZone, timeoutSeconds, the exact `secrets:` set — by
-#     apps/shopee/functions/src/index.test.ts, whose exhaustiveness test over
-#     `__endpoint` is what keeps that set of seven honest as it grows.
+#   - None of the TEN `onSchedule` triggers — seven, plus step 12's three stock
+#     sweeps. MEASURED: the functions emulator logs each of them as "ignored
+#     because the pubsub emulator does not exist or is not running", so this lane
+#     loads them and never runs them. Their bodies are covered by the unit suites
+#     in `CI test`, and their trigger OPTIONS — cron, timeZone, timeoutSeconds,
+#     the exact `secrets:` set — by apps/shopee/functions/src/index.test.ts,
+#     whose exhaustiveness test over `__endpoint` is what keeps that set honest
+#     as it grows.
 #     What nothing here proves is that Cloud Scheduler actually fires them.
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
@@ -174,6 +185,13 @@ on:
       - 'packages/schemas/src/impostoCategoria.ts'
       - 'packages/schemas/src/regraImposto.ts'
       - 'packages/schemas/src/operacao.ts'
+      # Step 12 (sincronizar estoque) reaches two more paths that NO entry above
+      # covers: the sync state document's schema, and the marketplace stock core
+      # promoted out of apps/mercado-livre — the three sweeps, the chunker and
+      # the sender all read it and the functions bundle links it in, so a change
+      # to either breaks this lane without touching apps/shopee/** at all.
+      - 'packages/schemas/src/estoqueShopeeSync.ts'
+      - 'packages/data/src/admin/estoque/**'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'
@@ -314,12 +332,13 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # All three triggers in the codebase declare both of these as `secrets:`,
-      # and demo-erp has no Secret Manager. Invented values are safe AND
-      # sufficient: the exercised path (an unknown push_code) parks before any
-      # Shopee call, and an invented key cannot sign a call that Shopee would
-      # answer. ⚠️ The vitest fetch kill-switch does NOT cover the emulator's
-      # own process — see the OFFLINE note at the top of this file.
+      # THIRTEEN of the codebase's fourteen triggers declare both of these as
+      # `secrets:` — the exception is the one Firestore trigger, which never
+      # calls Shopee — and demo-erp has no Secret Manager. Invented values are
+      # safe AND sufficient: every exercised path refuses before any Shopee call,
+      # and an invented key cannot sign a call that Shopee would answer.
+      # ⚠️ The vitest fetch kill-switch does NOT cover the emulator's own
+      # process — see the OFFLINE note at the top of this file.
       #
       # ⚠️ EXPECTED NOISE, not a failure: because the two names are declared as
       # `secrets:`, the functions emulator still tries Secret Manager first and
@@ -342,6 +361,15 @@ jobs:
       # problem, though it would look like one. The test asserts `204` BEFORE it
       # starts polling Firestore so the failure names itself.
       SHOPEE_PUSH_CALLBACK_URL: http://localhost:3009/api/webhooks/shopee
+      # Step 12's master valve, and the stock suite needs it ON: unset, the
+      # handler answers `pulado` at step 0.5 and writes NOTHING, so the suite's
+      # poll would expire on a timeout instead of failing on a wrong value.
+      # ⚠️ Must stay a QUOTED YAML string — the reader is a strict `=== '1'`,
+      # and unquoted YAML types it as an integer.
+      # ⚠️ Turning the valve on here writes to no marketplace. The exercised path
+      # is a task carrying more models than `update_stock` accepts, refused
+      # ABOVE the client — same call-order argument as the other two suites.
+      SHOPEE_STOCK_SYNC_ENABLED: '1'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
