@@ -20,6 +20,7 @@ import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
 
 import { runShopeeAuthorizationExpirySweep } from '../../lib/shopee/conta/expiracaoSweep';
 import { shopeeConfig } from '../../lib/shopee/env';
+import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
 import { runShopeeEscrowSettlement } from '../../lib/shopee/pedidos/liquidacaoSweep';
 import {
   RESERVA_TRAVADA_FLAG_ENV,
@@ -41,6 +42,7 @@ import { createShopeeTaskScheduler } from '../../lib/shopee/shopeeTasks';
 import { getDb } from './lib/admin';
 import * as massImportHandlers from './processMassImport';
 import * as notificationHandlers from './processNotification';
+import * as stockSendHandlers from './sendStock';
 
 /**
  * Shopee Cloud Functions (gen2), codebase `shopee`. Deployed as a
@@ -91,21 +93,37 @@ import * as notificationHandlers from './processNotification';
  * `index.test.ts` gained the third map, `GATILHOS`. The failure that hole hides
  * is the silent one — an `onDocument*` that omits `database` deploys fine,
  * binds to the non-existent `(default)` and NEVER FIRES.
+ *
+ * Master plan step 12 (#1520) adds the THIRD Cloud Tasks queue
+ * (`sendShopeeStock`, ./sendStock) and THREE more `onSchedule`s
+ * (./sweepStock) — the stock sync, and the first thing in this codebase that
+ * writes a QUANTITY to Shopee. The sweeps discover what moved in the ERP and
+ * enqueue one task per `update_stock` call; the queue sends it and records the
+ * outcome on the link document. ⚠️ Like the mass import, the queue re-enqueues
+ * onto ITSELF — twice, for a paused conta and for a 429 — so its rename-safety
+ * assertion protects the MIDDLE of a run, not its start. ⚠️ And unlike every
+ * other tier here, the monthly `sweepShopeeStockReconciliacao` is the ONLY one
+ * that can see a listing whose ERP stock never moved, which is why it ships ON
+ * with no flag of its own: the single valve `SHOPEE_STOCK_SYNC_ENABLED` covers
+ * all four, and a second flag would let the corrector be off while an operator
+ * believed stock sync was on.
  */
 
 /**
  * The Shopee partner credentials, bound to every trigger that can reach a
  * PUBLIC-signed Shopee call.
  *
- * ⚠️ It covers the seven `onSchedule` triggers in THIS file only. The TWO queue
- * functions — `processShopeeNotification` (./processNotification) and
- * `processShopeeMassImport` (./processMassImport, master plan step 9) — each
- * declare their own copy of the same two names, each pinned by its own module's
- * test, so this constant does not by itself stop a NEW trigger picking a
- * different subset; the exact-set assertions do, and `index.test.ts` makes them
- * mandatory for both families: `AGENDAMENTOS` plus its exhaustiveness test for
- * the schedules, `FILAS` plus its own for the queues. Either map missing an
- * export is what keeps the count from silently going stale again.
+ * ⚠️ It covers the seven `onSchedule` triggers defined in THIS file only. The
+ * THREE queue functions — `processShopeeNotification` (./processNotification),
+ * `processShopeeMassImport` (./processMassImport, master plan step 9) and
+ * `sendShopeeStock` (./sendStock, step 12) — and the three step-12 sweeps
+ * (./sweepStock) each declare their own copy of the same two names, each pinned
+ * by its own module's test, so this constant does not by itself stop a NEW
+ * trigger picking a different subset; the exact-set assertions do, and
+ * `index.test.ts` makes them mandatory for both families: `AGENDAMENTOS` plus
+ * its exhaustiveness test for the schedules, `FILAS` plus its own for the
+ * queues. Either map missing an export is what keeps the count from silently
+ * going stale again.
  *
  * ⚠️ Without these the sweep and the conta arms of the queue handlers throw
  * `ShopeeConfigError` on their first call, which the pipeline treats as
@@ -152,6 +170,29 @@ if (!(SHOPEE_MASS_IMPORT_QUEUE in massImportHandlers)) {
 
 /** The queue-based mass product import (one dispatch at a time, self-continued). */
 export { processShopeeMassImport } from './processMassImport';
+
+// The same rename-safety assertion for the THIRD queue of this codebase (master
+// plan step 12's stock push). Its OWN `if`, never folded into a loop over the
+// three: the message has to name the FILE to fix, and the three constants live
+// in three different modules.
+//
+// ⚠️ This one carries the mass import's hazard TWICE OVER. The handler
+// re-enqueues onto its own queue from two arms — the pause rung (the conta was
+// paused between the plan and the dispatch) and the burst arm (a 429) — so a
+// half-rename does not break the first dispatch, it breaks the sweep MID-RUN:
+// the tasks that went out before the pause landed, the re-enqueued ones aim at
+// a queue that does not exist, and every surface still reports success while
+// those listings keep the quantity they had.
+if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/sendStock.ts must export a ' +
+      `handler named '${SHOPEE_STOCK_SEND_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_STOCK_SEND_QUEUE constant together.',
+  );
+}
+
+/** The queue-based stock push — one task, one `update_stock`, self-re-enqueued. */
+export { sendShopeeStock } from './sendStock';
 
 // Master plan step 11 (#1519): the Shopee half of `produtos.integracoesComProduto`,
 // derived from the `prodshopee` links. No `secrets:` — it never calls Shopee.
@@ -833,3 +874,23 @@ export const sweepShopeeStuckReservations = onSchedule(
     }
   },
 );
+
+/**
+ * The THREE STOCK-SYNC SWEEPS (master plan step 12, #1520) — the quarter-hourly
+ * incremental tier, the nightly diário and the monthly reconciliação, all three
+ * over ONE function and defined in ./sweepStock.
+ *
+ * They live in their own module rather than inline here because the three share
+ * an options builder and a summary logger, and because the incremental one
+ * skips two slots of its own cron IN CODE (02:10 is the diário's, the 1st's
+ * 03:10 the reconciliação's) — logic a schedule declaration cannot carry.
+ *
+ * ⚠️ All three ENQUEUE, onto `sendShopeeStock` above: the same
+ * `TASKS_INVOKER_SA` requirement as the lost-push sweep, the backfill and the
+ * settlement sweep, and the list is AUTHORITATIVE.
+ */
+export {
+  sweepShopeeStock,
+  sweepShopeeStockDaily,
+  sweepShopeeStockReconciliacao,
+} from './sweepStock';

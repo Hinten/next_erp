@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 
+import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
 import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
@@ -66,9 +67,13 @@ const {
   processShopeeMassImport,
   processShopeeNotification,
   reprocessShopeeNotifications,
+  sendShopeeStock,
   sweepShopeeAuthorizationExpiry,
   sweepShopeeEscrowSettlement,
   sweepShopeeLostPushes,
+  sweepShopeeStock,
+  sweepShopeeStockDaily,
+  sweepShopeeStockReconciliacao,
   sweepShopeeStuckReservations,
   onProdutoShopeeLinkChanged,
 } = modulo;
@@ -94,6 +99,9 @@ const AGENDAMENTOS = {
   backfillShopeeOrders,
   sweepShopeeEscrowSettlement,
   sweepShopeeStuckReservations,
+  sweepShopeeStock,
+  sweepShopeeStockDaily,
+  sweepShopeeStockReconciliacao,
 } as const;
 
 /**
@@ -110,12 +118,19 @@ const AGENDAMENTOS = {
  * explicit timeout and the ≤ 1800 s ladder below all applied to it the moment it
  * was added here, with no new assertion written.
  *
+ * The THIRD arrived in step 12 (`sendShopeeStock`, the stock push) and landed
+ * COVERED for the same reason — the exact-secrets set, the explicit timeout and
+ * the ≤ 1800 s ladder all applied to it the moment it was added here, with no
+ * new assertion written. Its own numbers (120 s, and that the handler never
+ * sets `ignoreSyncFlag`) are in `sendStock.test.ts`.
+ *
  * Each queue's per-option assertions stay in its own sibling file
- * (`processNotification.test.ts`, `processMassImport.test.ts`), which mock their
- * channels; what lives HERE is the cross-cutting set — the exact secrets, the
- * retry cap, the timeout, the ladder — plus the completeness check.
+ * (`processNotification.test.ts`, `processMassImport.test.ts`,
+ * `sendStock.test.ts`), which mock their channels; what lives HERE is the
+ * cross-cutting set — the exact secrets, the retry cap, the timeout, the ladder
+ * — plus the completeness check.
  */
-const FILAS = { processShopeeNotification, processShopeeMassImport } as const;
+const FILAS = { processShopeeNotification, processShopeeMassImport, sendShopeeStock } as const;
 
 /**
  * Every FIRESTORE-TRIGGER export of this codebase — the third sibling of
@@ -403,6 +418,72 @@ describe('sweepShopeeStuckReservations', () => {
   });
 });
 
+describe('sweepShopeeStock (incremental, passo 12)', () => {
+  it('roda a cada quarto de hora nos minutos :10 :25 :40 :55', () => {
+    // ⚠️ Os MINUTOS são escolhidos, não herdados. Os sete agendamentos que esta
+    // codebase já roda ocupam :00, :15, :20, :30 e :45 — e todos sacam de UM
+    // orçamento de rate limit de parceiro que a Shopee não publica — então
+    // `:10/:25/:40/:55` é o único quarto de hora que não colide com nenhum. A
+    // sobreposição aceita e nomeada é segunda 05:10, com o
+    // `monitorShopeePushConfig`, que é um único GET Public.
+    expect(gatilhoDe(sweepShopeeStock).schedule).toBe('10,25,40,55 * * * *');
+    expect(gatilhoDe(sweepShopeeStock).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ NÃO é `5,20,35,50` — a quase-colisão medida', () => {
+    // O par de quase-falha, e ele existe porque o primeiro desenho ERA este: a
+    // varredura de pushes perdidos roda `20 */2 * * *`, então `:20` colide com
+    // ela em toda hora par. As duas leriam idênticas numa revisão e o custo é
+    // invisível — duas famílias de chamadas Shopee no mesmo minuto, no mesmo
+    // orçamento não publicado.
+    expect(gatilhoDe(sweepShopeeStock).schedule).not.toBe('5,20,35,50 * * * *');
+  });
+
+  it('tem timeoutSeconds 540 — N contas × páginas × enfileiramentos sequenciais', () => {
+    // Pior caso por tick: N contas, cada uma com as páginas de descoberta
+    // limitadas por `MAX_PAGES_PER_SWEEP` e até `maxTasksPerSweep()`
+    // enfileiramentos SEQUENCIAIS no Cloud Tasks. O padrão gen2 de 60 s não
+    // absorve isso, e 540 é o mesmo teto das outras varreduras por conta.
+    expect(endpointOf(sweepShopeeStock).timeoutSeconds).toBe(540);
+  });
+});
+
+describe('sweepShopeeStockDaily (diário, passo 12)', () => {
+  it('roda 02:10 America/Sao_Paulo', () => {
+    // O slot é DELE: o wrapper incremental pula exatamente este tick em código,
+    // porque um cron não consegue dizer "a cada quarto de hora EXCETO este".
+    // Assim os dois nunca disputam os limites, o documento de estado nem a
+    // continuação de uma mesma conta.
+    expect(gatilhoDe(sweepShopeeStockDaily).schedule).toBe('10 2 * * *');
+    expect(gatilhoDe(sweepShopeeStockDaily).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ NÃO roda às 02:00 — o minuto é o que separa os dois blocos de horário', () => {
+    // `'0 2 * * *'` é o cron do gêmeo do Mercado Livre e é o que uma cópia
+    // traria junto. Aqui ele cairia no minuto :00, que já é um minuto ocupado
+    // nesta codebase, e faria os pulos em código do incremental — que testam a
+    // faixa [10, 25) — deixarem de casar com o slot do diário.
+    expect(gatilhoDe(sweepShopeeStockDaily).schedule).not.toBe('0 2 * * *');
+  });
+});
+
+describe('sweepShopeeStockReconciliacao (mensal, passo 12)', () => {
+  it('roda 03:10 America/Sao_Paulo no dia 1', () => {
+    expect(gatilhoDe(sweepShopeeStockReconciliacao).schedule).toBe('10 3 1 * *');
+    expect(gatilhoDe(sweepShopeeStockReconciliacao).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ NÃO é um cron DIÁRIO — um caractere separa uma passagem mensal de trinta', () => {
+    // `'10 3 * * *'` está a um caractere e leria igual. A reconciliação FORÇA o
+    // envio de toda família descoberta (`changedSinceMs = -1`), então rodá-la
+    // todo dia é trinta varreduras completas do catálogo por mês contra um
+    // limite de chamadas que a Shopee não publica — e não traria informação
+    // nova, porque é justamente a deriva lenta que ela corrige.
+    expect(gatilhoDe(sweepShopeeStockReconciliacao).schedule).not.toBe('10 3 * * *');
+    expect(gatilhoDe(sweepShopeeStockReconciliacao).schedule).not.toBe('10 3 1 * 1');
+  });
+});
+
 describe('onProdutoShopeeLinkChanged', () => {
   it('escuta produtos/{produtoId}/prodshopee/{linkId}', () => {
     // ⚠️ Pinned against the HANDLE's own path, not a second literal. The leaf
@@ -640,17 +721,27 @@ describe('processShopeeMassImport', () => {
     // `onTaskDispatched` que ninguém pusesse no mapa subiria, receberia
     // despachos e teria as suas opções lidas por NADA. Esta asserção é o que
     // torna o mapa um fato verificável em vez de uma lista que alguém lembrou
-    // de crescer: as duas filas são exportadas, são DISTINTAS entre si, e o
-    // módulo não exporta uma terceira (isso é do teste de exaustividade acima).
+    // de crescer: as filas são exportadas, são DISTINTAS entre si, e o módulo
+    // não exporta uma a mais (isso é do teste de exaustividade acima).
+    //
+    // ⚠️ O passo 12 trouxe a TERCEIRA (`sendShopeeStock`) e é por isto que os
+    // dois literais abaixo moram aqui: um mapa que cresce sem que a contagem
+    // cresça junto volta a ser uma lista, e a asserção passaria descrevendo
+    // uma codebase que não existe mais.
     const comFila = Object.entries(modulo as unknown as Record<string, unknown>)
       .filter(([, valor]) => {
         const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
         return endpoint !== undefined && endpoint.taskQueueTrigger !== undefined;
       })
       .map(([nome]) => nome);
-    expect(comFila.sort()).toEqual(['processShopeeMassImport', 'processShopeeNotification']);
-    expect(Object.keys(FILAS)).toHaveLength(2);
+    expect(comFila.sort()).toEqual([
+      'processShopeeMassImport',
+      'processShopeeNotification',
+      'sendShopeeStock',
+    ]);
+    expect(Object.keys(FILAS)).toHaveLength(3);
     expect(processShopeeMassImport).not.toBe(processShopeeNotification);
+    expect(sendShopeeStock).not.toBe(processShopeeMassImport);
   });
 
   it('o nome do export é exatamente SHOPEE_MASS_IMPORT_QUEUE', () => {
@@ -663,5 +754,49 @@ describe('processShopeeMassImport', () => {
     expect(SHOPEE_MASS_IMPORT_QUEUE in modulo).toBe(true);
     expect((modulo as unknown as Record<string, unknown>)[SHOPEE_MASS_IMPORT_QUEUE]).toBeDefined();
     expect(SHOPEE_MASS_IMPORT_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
+  });
+});
+
+describe('sendShopeeStock (passo 12)', () => {
+  it('é a TERCEIRA fila, e o nome do export é exatamente SHOPEE_STOCK_SEND_QUEUE', () => {
+    // Gêmea das duas asserções acima, e aqui o risco é o MAIOR dos três: esta
+    // função reenfileira contra a PRÓPRIA fila em dois braços — a conta pausada
+    // e o 429 — então um rename pela metade não quebra o primeiro despacho,
+    // quebra a varredura NO MEIO. As tasks que saíram antes da pausa chegaram,
+    // as reenfileiradas miram uma fila que não existe, e toda superfície segue
+    // reportando sucesso enquanto aqueles anúncios ficam com a quantidade
+    // antiga. `index.ts` afirma o par na carga do módulo (a análise de codebase
+    // do Firebase falha alto); isto fixa a mesma propriedade offline.
+    expect(SHOPEE_STOCK_SEND_QUEUE in modulo).toBe(true);
+    expect((modulo as unknown as Record<string, unknown>)[SHOPEE_STOCK_SEND_QUEUE]).toBeDefined();
+    expect(SHOPEE_STOCK_SEND_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
+    expect(SHOPEE_STOCK_SEND_QUEUE).not.toBe(SHOPEE_MASS_IMPORT_QUEUE);
+  });
+
+  it('a terceira trava de rename é um `if` PRÓPRIO que nomeia o seu arquivo', () => {
+    // ⚠️ O que está sendo fixado não é "existe uma trava" — é que ela nomeia o
+    // ARQUIVO a consertar. Um laço sobre as três constantes satisfaria qualquer
+    // asserção de "o par foi comparado" e produziria uma mensagem com o caminho
+    // INTERPOLADO; quem lê o erro no meio de um deploy precisa do caminho
+    // literal, e as três constantes moram em três módulos diferentes.
+    //
+    // A asserção é textual porque a propriedade é textual: a frase inteira,
+    // caminho incluído, tem de existir como UM literal. Um
+    // `` `…drift: functions/src/${arquivo} must export…` `` não contém esta
+    // substring, e é exatamente esse o mutante.
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+
+    expect(fonte).toContain(
+      "'[shopee] function-name drift: functions/src/sendStock.ts must export a '",
+    );
+    expect(fonte).toContain('if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers))');
+    // ÂNCORA: as três travas são três, e cada uma nomeia um arquivo diferente —
+    // uma frase que aparecesse duas vezes seria uma cópia que esqueceu o nome.
+    const travas = fonte.match(/function-name drift: functions\/src\/[A-Za-z]+\.ts/g) ?? [];
+    expect(travas.sort()).toEqual([
+      'function-name drift: functions/src/processMassImport.ts',
+      'function-name drift: functions/src/processNotification.ts',
+      'function-name drift: functions/src/sendStock.ts',
+    ]);
   });
 });
