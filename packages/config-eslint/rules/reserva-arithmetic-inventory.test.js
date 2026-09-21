@@ -92,6 +92,8 @@ const INVENTARIO = {
     'Movement editor. Local input state only; availability preview goes through `estoqueDisponivel`.',
   'apps/web/lib/reports/productLocation.ts':
     'Product-location report. Displays the stored reservation verbatim and computes availability through `estoqueDisponivel`, so a negative stored value stays visible without inventing stock.',
+  'apps/shopee/lib/shopee/produtos/mapeamento.ts':
+    'Shopee listing import (#1517). Adds the reservation BACK into `quantidade` (Σ `seller_stock[].stock` is the BUYABLE count, i.e. `disponivel`). Floored with `reservaEfetiva` on the one branch that reads it — the overwrite of an existing row — so a stored negative cannot shrink the ERP count below Shopee’s on every re-import (#931); on the create branch the reserve is a literal 0. Pure: it plans the number and writes nothing.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
@@ -122,6 +124,8 @@ const INVENTARIO = {
     'Second copy of `readEstoque`, same contract.',
   'apps/functions/src/estoques/aplicarBalanco.ts':
     'Passes the stored counters into `planejarItemBalanco` straight off `.data()`, uncoerced on purpose — `finalizePlan` owns both the coercion and the `>= 0` sanity check.',
+  'apps/shopee/lib/shopee/produtos/estoquePrecos.ts':
+    'Shopee listing import (#1517), the I/O half. `lerLinhaDeEstoque` answers the stored reservation RAW (a missing/non-numeric field reads as 0, a stored negative is carried through intact) because its only consumer is the pure planner in `mapeamento.ts`, which floors it with `reservaEfetiva` — one floor, in one place, and the evidence #931 wants is not laundered on the way there. This file does no arithmetic on the value at all, and it never WRITES the counter: the overwrite arm is a merge naming only `quantidade` + `ultimaModificacao` (the picking flow owns the reserve), and the create arm writes the plan’s literal 0.',
 
   // ---- Declarations, display, diagnostics — no arithmetic -----------------
   'apps/whatsapp/lib/whatsapp/vinculos.ts':
