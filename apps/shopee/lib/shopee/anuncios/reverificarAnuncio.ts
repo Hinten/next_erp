@@ -67,6 +67,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import {
   SHOPEE_ERROR_KIND,
   ShopeeApiError,
+  shopeeCodeSemPrefixoDeModulo,
   type ShopeeClient,
   type ShopeeItemViolationRow,
 } from '@delfrance/integrations-shopee';
@@ -281,15 +282,25 @@ async function clienteShopee(
 }
 
 /**
- * ⚠️ Byte-identical to `produtos/lerAnuncio.ts`'s narrowing: on a ONE-id call
- * `error_item_not_found` on the ENVELOPE is that id's verdict and nothing wider,
- * because the batch form only raises it when EVERY id of the call is unknown.
+ * The bare code OR its one-segment-stripped form.
+ *
+ * On a ONE-id call `error_item_not_found` on the ENVELOPE is that id's verdict
+ * and nothing wider, because the batch form only raises it when EVERY id of the
+ * call is unknown.
+ *
+ * ⚠️ The stripper is not decoration: the sandbox probe MEASURED the `product.`
+ * prefix arriving on the live wire (2026-09-17), and `ShopeeApiError.code` keeps
+ * the envelope string VERBATIM, so a comparison against the bare code alone
+ * RETHROWS a verdict this handler owns — the listing folds to `removido` on one
+ * spelling and 5xxs on the other. `pushAnuncio.ts` narrows the same refusal of
+ * the same call the same way.
  */
 function ehItemNaoEncontrado(err: unknown): boolean {
   return (
     err instanceof ShopeeApiError &&
     err.kind === SHOPEE_ERROR_KIND.other &&
-    err.code === CODIGO_ITEM_NAO_ENCONTRADO
+    (err.code === CODIGO_ITEM_NAO_ENCONTRADO ||
+      shopeeCodeSemPrefixoDeModulo(err.code) === CODIGO_ITEM_NAO_ENCONTRADO)
   );
 }
 

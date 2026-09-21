@@ -130,7 +130,20 @@ export interface AnuncioStatusListing {
   readonly motivo: string | null;
   /** Operator-facing pt-BR — always present, always safe to render. */
   readonly mensagem: string;
-  /** ⚠️ The READ-BACK's raw `item_status`, never the request. `null` when none was read. */
+  /**
+   * ⚠️ The raw `item_status` — **never the request**, and never `success_list[].unlist`.
+   *
+   * On a row that reached the read-back it is what the READ-BACK reported. On a
+   * `pulado` / `nao-tentado` / `sem-leitura-apos` row nothing was read, so it is
+   * the STORED reading (`statusArmazenado`) — the pre-action value, carried so the
+   * panel has something to show for a row that changed nothing. `null` only when
+   * the stored document held no usable string.
+   *
+   * ⚠️ So a caller rendering it as "what the listing is now" is right for an
+   * attempted row and stale for a skipped one; the discriminator is `outcome`,
+   * not this field. The shape is field-for-field parity with the ML envelope's
+   * `linhaPulada`, which a test pins.
+   */
   readonly statusFinal: string | null;
   readonly estadoAnuncio: EstadoAnuncioShopee | null;
   /** ⚠️ Permanently `null` — Shopee has no listing families. See the header. */

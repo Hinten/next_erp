@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -329,5 +331,42 @@ describe('shopeeErrorFromEnvelope', () => {
     });
     expect(err.message).not.toContain('—');
     expect(err.kind).toBe('transient');
+  });
+});
+
+describe('a classification key never carries a module prefix', () => {
+  // ⚠️ Esta é a PREMISSA que torna a ordem das duas buscas de
+  // `classifyShopeeError` (string cheia primeiro, depois a sem prefixo)
+  // inobservável hoje: nenhuma chave da tabela tem ponto, então para um código
+  // prefixado a primeira busca sempre erra e para um código nu a segunda nunca
+  // acontece. Trocar a ordem não muda nada — e é exatamente por isso que uma
+  // entrada com ponto, no dia em que alguém a acrescentar, tem de doer AQUI.
+  const FONTE_ERROS = readFileSync(new URL('../src/errors.ts', import.meta.url), 'utf8');
+
+  const tabela = (() => {
+    const inicio = FONTE_ERROS.indexOf('const KIND_BY_CODE = new Map');
+    const fim = FONTE_ERROS.indexOf('satisfies Record<string, ShopeeErrorKind>', inicio);
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    return FONTE_ERROS.slice(inicio, fim);
+  })();
+
+  const chaves = [...tabela.matchAll(/^\s{4}([^\s:]+):\s*SHOPEE_ERROR_KIND\./gm)].map((m) => m[1]!);
+
+  it('ÂNCORA — a fatia lida é mesmo a tabela, com as chaves que ela tem hoje', () => {
+    // Sem isto, um `indexOf` que deslizasse deixaria a asserção abaixo passar
+    // sobre uma lista VAZIA.
+    expect(chaves).toContain('refresh_token_expired');
+    expect(chaves).toContain('error_limit');
+    expect(chaves.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it('nenhuma chave da tabela tem `.` — e por isso as duas grafias concordam', () => {
+    expect(chaves.filter((chave) => chave.includes('.'))).toEqual([]);
+    for (const chave of chaves) {
+      expect(classifyShopeeError(`product.${chave}`, SHOPEE_SURFACE.business)).toBe(
+        classifyShopeeError(chave, SHOPEE_SURFACE.business),
+      );
+    }
   });
 });

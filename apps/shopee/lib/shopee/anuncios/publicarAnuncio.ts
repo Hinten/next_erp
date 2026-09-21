@@ -84,7 +84,13 @@ import {
 
 import { ShopeeImportBlockedError } from '../produtos/errosImportacao';
 import { lerLinhaDeEstoque } from '../produtos/estoquePrecos';
-import { itemStatusDe, type ItemLido, type MemoDeCategorias } from '../produtos/itemLido';
+import {
+  ehKitDe,
+  itemStatusDe,
+  temModelosDe,
+  type ItemLido,
+  type MemoDeCategorias,
+} from '../produtos/itemLido';
 import { lerAnuncioShopee } from '../produtos/lerAnuncio';
 import { aplicarLinkDaListagem } from '../produtos/links';
 import { itemStatusDeLink } from '../produtos/mapeamento';
@@ -237,6 +243,16 @@ export interface ResultadoPublicacao {
   readonly avisoResolvido: boolean;
   /** `false` when the read-back could not find the listing (eventual consistency). */
   readonly leituraDeVolta: boolean;
+  /**
+   * Shopee calls spent by **`aplicar` only** — the budget signal, like
+   * `reverificarAnuncio.ts`'s field of the same name.
+   *
+   * ⚠️ It does NOT include what `preparar` paid for (`get_item_limit`,
+   * `get_attribute_tree`, `get_channel_list` and the brand paging): the figure
+   * lives on the APPLIER's result, and `preparar` is write-free and reusable.
+   * Inside `aplicar` every step is counted per CALL — the read-back included,
+   * which is two for a kit or an item with models.
+   */
   readonly chamadasShopee: number;
 }
 
@@ -1056,6 +1072,36 @@ async function escreverWriteBack2(
  * that can fail it — a Firestore outage and a patch that does not validate — are
  * both worth surfacing on their own.
  */
+/**
+ * The problemas the stamp stores — the ERROR'S OWN list whenever it has one.
+ *
+ * ⚠️ `problemasDeErroShopee` answers `[]` for anything that is not a
+ * `ShopeeApiError`, and the two classes that already CARRY a populated list are
+ * exactly those two: the re-list refusal (`relistar`, both doors refusing) and a
+ * block raised from the FRESH tree by the model leg. Reading only the classifier
+ * made the stamp contradict its own `mensagem` — "1 problema" beside an empty
+ * `problemas[]` — and dropped the only text that names WHICH field or which tier
+ * position failed, which is all the operator has to act on.
+ */
+function problemasDaFalha(err: ShopeeError): readonly ProblemaPublicacao[] {
+  if (err instanceof ShopeePublishRejectedError) return err.problemas;
+  if (err instanceof ShopeePublishBlockedError) return err.problemas;
+  return problemasDeErroShopee(err);
+}
+
+/**
+ * What the stamp's `erro` field carries: Shopee's own code whenever there is
+ * one, so the row can be looked up and grouped by it, and the class name only
+ * when the failure is ours. ⚠️ A `ShopeePublishRejectedError` HAS the code — in
+ * `shopeeCode` — and storing its class name instead left the code reachable only
+ * by reading the `mensagem` prose.
+ */
+function codigoDaFalha(err: ShopeeError): string {
+  if (err instanceof ShopeeApiError) return err.code;
+  if (err instanceof ShopeePublishRejectedError) return err.shopeeCode;
+  return err.name;
+}
+
 async function carimbarFalhaDePublicacao(
   deps: PublicarAnuncioDeps,
   args: {
@@ -1451,7 +1497,7 @@ export async function aplicarPublicacao(
     // exactly the class an operator's panel has to show. A Firestore error is
     // NOT one — it would most likely fail the stamp too.
     if (err instanceof ShopeeError) {
-      const problemas = problemasDeErroShopee(err);
+      const problemas = problemasDaFalha(err);
       // The model leg is the ONE step whose exact call the applier cannot know;
       // everywhere else the cursor already is the call.
       const etapaReal = etapa === ETAPA_PUBLICACAO.getModelList ? etapaDaFalha(err, etapa) : etapa;
@@ -1460,7 +1506,7 @@ export async function aplicarPublicacao(
         linkDocId,
         itemId,
         etapa: etapaReal,
-        erro: err instanceof ShopeeApiError ? err.code : err.name,
+        erro: codigoDaFalha(err),
         mensagem: err.message,
         problemas,
       });
@@ -1608,7 +1654,14 @@ async function lerDeVolta(
   itemId: number,
 ): Promise<{ readonly item: ItemLido | null; readonly chamadas: number }> {
   try {
-    return { item: await lerAnuncioShopee(deps.client, itemId), chamadas: 1 };
+    const item = await lerAnuncioShopee(deps.client, itemId);
+    // ⚠️ The read-back is ONE call only for a plain listing. `lerAnuncioShopee`
+    // spends a SECOND — `get_kit_item_info` for a kit, `get_model_list` for an
+    // item with models — and both of its predicates read fields of the row that
+    // decided it, so they answer the same here as they did there. A hardcoded
+    // `1` made the publisher's `chamadasShopee` incomparable with the same figure
+    // in `reverificarAnuncio.ts`, which counts per call.
+    return { item, chamadas: ehKitDe(item.base) || temModelosDe(item) ? 2 : 1 };
   } catch (err) {
     if (!(err instanceof ShopeeImportBlockedError)) throw err;
     console.warn('[shopee/anuncios] leitura de volta não encontrou o anúncio recém-publicado', {

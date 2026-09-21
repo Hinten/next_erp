@@ -356,6 +356,42 @@ describe('definirStatusAnunciosShopee — a releitura manda', () => {
     expect(linhaDe(res, PRODUTO_A).estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
   });
 
+  it('⚠️ PAUSAR cujo eco diria UNLIST e cuja RELEITURA diz NORMAL: vale a releitura', async () => {
+    // O par acima roda `reativar`, onde o eco (`unlist: false`) e a releitura
+    // (NORMAL) CONCORDAM — qualquer escritor derivado do pedido passa por ele. Aqui
+    // os dois DIVERGEM: a Shopee aceitou o unlist e a releitura ainda reporta
+    // NORMAL (elas são eventualmente consistentes), e o que se grava é o que se
+    // LEU. Um `acao === pausar ? 'UNLIST' : 'NORMAL'` gravaria um estado que
+    // ninguém observou.
+    const db = new FakeDb();
+    semearTudo(db, PRODUTO_A, ITEM_A, ESTADO_ANUNCIO_SHOPEE.ativo);
+    const fake = clienteFake({
+      unlist: () => envelopeUnlist([ITEM_A]),
+      base: () => releitura([linhaBase(ITEM_A, { item_status: SHOPEE_ITEM_STATUS.normal })]),
+    });
+
+    const res = await definirStatusAnunciosShopee(
+      asDb(db),
+      entrada({ acao: PAUSAR }),
+      deps(fake.client),
+    );
+
+    expect(patchesDoLink(db, PRODUTO_A)).toEqual([
+      {
+        item_status: SHOPEE_ITEM_STATUS.normal,
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+        deboost: false,
+        // O ERP aceitou a pausa — isto é a INTENÇÃO, e não o estado lido.
+        pausadoPeloErp: true,
+        ultimaModificacao: AGORA,
+      },
+    ]);
+    expect(linhaDe(res, PRODUTO_A).statusFinal).toBe(SHOPEE_ITEM_STATUS.normal);
+    expect(linhaDe(res, PRODUTO_A).estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
+    // E a divergência aparece na mensagem, em vez de sumir.
+    expect(linhaDe(res, PRODUTO_A).mensagem).toContain('"ativo"');
+  });
+
   it('a releitura é UMA chamada get_item_base_info com os ids aceitos, nunca get_item_list', async () => {
     const db = new FakeDb();
     semearTudo(db, PRODUTO_A, ITEM_A);

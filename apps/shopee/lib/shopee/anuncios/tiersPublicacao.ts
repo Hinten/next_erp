@@ -33,7 +33,11 @@
  * {@link mesmoModelo} decides that a STORED child link and a LIVE Shopee model
  * are the same model. What it treats as EQUAL: the same `model_id` however much
  * the `model_sku` was renamed at Seller Centre and however the options were
- * re-ordered (rung 1 dominates). What must stay DISTINCT: `'az-p'` vs `'AZ-P'`
+ * re-ordered — rung 1 dominates, and it dominates because
+ * {@link reconciliarModelos} applies the rungs as PASSES over the candidate set
+ * (rung 1 for every child, then rung 2, then rung 3), never as a fall-through
+ * inside one `find`; a per-candidate fall-through hands the decision to
+ * `get_model_list`'s row order. What must stay DISTINCT: `'az-p'` vs `'AZ-P'`
  * (rung 2 is byte-exact — no trim, no case fold), two EMPTY skus (emptiness is
  * not an identity), and `tier_index` `[0,1]` vs `[1,0]` (rung 3 is
  * element-wise and ORDERED, never a sorted or set comparison). The pair and the
@@ -882,28 +886,40 @@ export function requisicaoDeModelo(modelo: ModeloMontado): ShopeeModelRequest {
 /**
  * Is this STORED child link the same model as this LIVE Shopee model?
  *
- * Three rungs, FIRST HIT WINS, and every one of them exact:
+ * Three rungs — {@link DEGRAUS_DO_MODELO} — and every one of them exact:
  *
  * 1. a non-zero stored `modelId` equal to `vivo.model_id` — `0` is Shopee's
  *    "this item has no variation" sentinel and binds nothing;
  * 2. both `model_sku` non-empty **after no normalisation at all** and `===`;
  * 3. `tierIndex` and `tier_index` of the same length and element-wise equal.
  *
+ * ⚠️ This answers ONE pair. It is deliberately NOT how the reconciler chooses a
+ * binding: {@link reconciliarModelos} runs the rungs as PASSES over the whole
+ * live list, because asking "does ANY rung hit?" per candidate lets a weaker
+ * rung on an earlier row beat rung 1 on a later one, and the row order is
+ * Shopee's, not ours.
+ *
  * ⚠️ PAIR (rung 1 dominates): a model renamed at Seller Centre and re-ordered is
  * still the same model. ⚠️ NEAR-MISSES: `'az-p'` is not `'AZ-P'`; two empty skus
  * are not an identity; `[0,1]` is not `[1,0]`. The module docblock says why a
  * softer fold rewrites the wrong child's link.
  */
+const DEGRAUS_DO_MODELO: readonly ((a: ModeloArmazenado, v: ShopeeModel) => boolean)[] = [
+  // 1. the stored id. `0` binds nothing — it is Shopee's "no variation" sentinel.
+  (a, v) => a.modelId !== 0 && a.modelId === v.model_id,
+  // 2. both skus non-empty and byte-equal. No trim, no case fold.
+  (a, v) =>
+    a.modelSku !== null &&
+    a.modelSku.length > 0 &&
+    v.model_sku !== null &&
+    v.model_sku.length > 0 &&
+    a.modelSku === v.model_sku,
+  // 3. the coordinate, element-wise and ORDERED.
+  (a, v) => mesmoTierIndex(a.tierIndex, v.tier_index),
+];
+
 export function mesmoModelo(armazenado: ModeloArmazenado, vivo: ShopeeModel): boolean {
-  if (armazenado.modelId !== 0 && armazenado.modelId === vivo.model_id) return true;
-
-  const nosso = armazenado.modelSku;
-  const deles = vivo.model_sku;
-  if (nosso !== null && nosso.length > 0 && deles !== null && deles.length > 0 && nosso === deles) {
-    return true;
-  }
-
-  return mesmoTierIndex(armazenado.tierIndex, vivo.tier_index);
+  return DEGRAUS_DO_MODELO.some((degrau) => degrau(armazenado, vivo));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -972,26 +988,56 @@ export function reconciliarModelos(args: ArgsReconciliar): PlanoDeModelos {
 
   const porProduto = new Map(args.armazenados.map((a) => [a.produtoId, a]));
   const casados = new Map<number, ModeloMontado>();
-  const novos: ModeloMontado[] = [];
 
-  for (const montado of args.montados) {
-    const armazenado = porProduto.get(montado.produtoId);
-    let achado = armazenado
-      ? vivos.find((v) => !casados.has(v.model_id) && mesmoModelo(armazenado, v))
-      : undefined;
-    if (!achado) {
-      const sintetico: ModeloArmazenado = {
-        produtoId: montado.produtoId,
-        linkDocId: montado.linkDocId ?? '',
-        modelId: 0,
-        modelSku: montado.model_sku ?? null,
-        tierIndex: montado.tier_index,
-      };
-      achado = vivos.find((v) => !casados.has(v.model_id) && mesmoModelo(sintetico, v));
+  // ⚠️ The rungs are PASSES over the whole candidate set, never a fall-through
+  // inside one `find`. Evaluated per live candidate, a WEAKER rung matching an
+  // EARLIER row beats rung 1 matching a LATER one — so the binding would be
+  // decided by `get_model_list`'s row order, which Shopee promises nothing
+  // about. A stored `tier_index` that went stale while the stored `model_id` is
+  // still live (an option re-ordered or deleted at Seller Centre, the window
+  // every republish operates in) then binds two children to each other's
+  // models: `update_tier_variation` is told to SWAP two live models and
+  // `update_model` to swap their skus, and every later stock/price push for a
+  // variação lands on the wrong line. Rung 1 first, across EVERY child: an id
+  // that is live is not a stale id.
+  const pendentes = args.montados.map((montado) => ({
+    montado,
+    armazenado: porProduto.get(montado.produtoId) ?? null,
+    // The synthetic candidate — a child whose link is new, or whose stored id an
+    // earlier `init_tier_variation` invalidated. Its `modelId` is `0`, so its
+    // rung 1 binds nothing and only the sku/coordinate passes can hit.
+    sintetico: {
+      produtoId: montado.produtoId,
+      linkDocId: montado.linkDocId ?? '',
+      modelId: 0,
+      modelSku: montado.model_sku ?? null,
+      tierIndex: montado.tier_index,
+    } satisfies ModeloArmazenado,
+  }));
+
+  /** Pass order: the three STORED rungs, then the synthetic sku and coordinate. */
+  const passes: readonly { readonly degrau: number; readonly sintetico: boolean }[] = [
+    { degrau: 0, sintetico: false },
+    { degrau: 1, sintetico: false },
+    { degrau: 2, sintetico: false },
+    { degrau: 1, sintetico: true },
+    { degrau: 2, sintetico: true },
+  ];
+
+  const restantes = new Set(pendentes);
+  for (const passe of passes) {
+    for (const pendente of [...restantes]) {
+      const candidato = passe.sintetico ? pendente.sintetico : pendente.armazenado;
+      if (candidato === null) continue;
+      const casa = DEGRAUS_DO_MODELO[passe.degrau]!;
+      const achado = vivos.find((v) => !casados.has(v.model_id) && casa(candidato, v));
+      if (achado === undefined) continue;
+      casados.set(achado.model_id, pendente.montado);
+      restantes.delete(pendente);
     }
-    if (achado) casados.set(achado.model_id, montado);
-    else novos.push(montado);
   }
+
+  const novos: readonly ModeloMontado[] = [...restantes].map((p) => p.montado);
 
   const modelList = vivos.map((vivo) => {
     const nosso = casados.get(vivo.model_id);

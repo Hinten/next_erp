@@ -816,6 +816,134 @@ describe('reconciliarModelos — o model_list sai do get_model_list FRESCO', () 
     expect(divergente.acao).toBe('update');
   });
 
+  it('⚠️ o degrau 1 vence a ORDEM das linhas: os dois get_model_list dão o MESMO plano', () => {
+    // O operador re-ordenou as opções no Seller Centre para [Verde, Azul] depois
+    // da última publicação: os dois modelos VIVOS mantiveram o id e trocaram de
+    // coordenada, então o `tierIndex` ARMAZENADO de cada filho está velho
+    // enquanto o `modelId` armazenado continua vivo. Os degraus avaliados por
+    // CANDIDATO fariam o degrau 3 de uma linha ANTERIOR ganhar do degrau 1 de uma
+    // linha POSTERIOR — e quem decidiria seria a ordem das linhas do
+    // `get_model_list`, sobre a qual a Shopee não promete nada.
+    const VERDE = MODEL_ID;
+    const AZUL = MODEL_ID + 1;
+    const vivoVerde = modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' });
+    const vivoAzul = modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' });
+
+    const montagem = montarTiers(
+      args({
+        grupos: [corComDuas],
+        viva: arvore(['Verde', 'Azul'], [vivoVerde, vivoAzul]),
+        filhos: [
+          filho({
+            produtoId: 'p-azul',
+            sku: 'AZ',
+            linkDocId: 'l-azul',
+            variacoesUid: [varianteFakePath('g-cor', 'v-azul')],
+          }),
+          filho({
+            produtoId: 'p-verde',
+            sku: 'VD',
+            linkDocId: 'l-verde',
+            variacoesUid: [varianteFakePath('g-cor', 'v-verde')],
+          }),
+        ],
+      }),
+    );
+    expect(montagem.problemas).toEqual([]);
+
+    const armazenados: readonly ModeloArmazenado[] = [
+      // as coordenadas GUARDADAS são as de antes da re-ordenação
+      { produtoId: 'p-azul', linkDocId: 'l-azul', modelId: AZUL, modelSku: 'AZ', tierIndex: [0] },
+      {
+        produtoId: 'p-verde',
+        linkDocId: 'l-verde',
+        modelId: VERDE,
+        modelSku: 'VD',
+        tierIndex: [1],
+      },
+    ];
+    const plano = (ordem: readonly ShopeeModel[]) =>
+      reconciliarModelos({
+        montados: montagem.modelos,
+        armazenados,
+        viva: arvore(['Verde', 'Azul'], ordem),
+        profundidadeNossa: 1,
+      });
+
+    const porCoordenada = plano([vivoVerde, vivoAzul]);
+    const porOutraOrdem = plano([vivoAzul, vivoVerde]);
+
+    // O plano é o MESMO nas duas leituras, a menos da ordem das linhas re-listadas.
+    const chave = (p: ReturnType<typeof plano>) => ({
+      acao: p.acao,
+      modelList: [...p.modelList].sort((a, b) => a.model_id - b.model_id),
+      atualizarSku: p.atualizarSku,
+      novos: p.novos,
+      modelosSemFilho: p.modelosSemFilho,
+    });
+    expect(chave(porCoordenada)).toEqual(chave(porOutraOrdem));
+
+    // E o plano certo é "não mexe em nada": cada filho já está no seu modelo.
+    expect(porCoordenada.acao).toBe('nenhuma');
+    expect(porCoordenada.atualizarSku).toEqual([]);
+    expect([...porCoordenada.modelList].sort((a, b) => a.model_id - b.model_id)).toEqual([
+      { model_id: VERDE, tier_index: [0] },
+      { model_id: AZUL, tier_index: [1] },
+    ]);
+  });
+
+  it('⚠️ o model_list nunca põe dois modelos na MESMA coordenada', () => {
+    // O mesmo estado do teste acima com UM filho só: se o degrau 3 do link velho
+    // casasse com o modelo que ocupa hoje aquela coordenada, o `model_list` sairia
+    // com dois model_id na mesma posição — e o `update_tier_variation` seria um
+    // sobrescrevendo o outro.
+    const VERDE = MODEL_ID;
+    const AZUL = MODEL_ID + 1;
+    const vivoVerde = modeloVivo({ model_id: VERDE, tier_index: [0], model_sku: 'VD' });
+    const vivoAzul = modeloVivo({ model_id: AZUL, tier_index: [1], model_sku: 'AZ' });
+
+    const montagem = montarTiers(
+      args({
+        grupos: [corComDuas],
+        viva: arvore(['Verde', 'Azul'], [vivoVerde, vivoAzul]),
+        filhos: [
+          filho({
+            produtoId: 'p-azul',
+            sku: 'AZ',
+            linkDocId: 'l-azul',
+            variacoesUid: [varianteFakePath('g-cor', 'v-azul')],
+          }),
+        ],
+      }),
+    );
+    expect(montagem.problemas).toEqual([]);
+
+    for (const ordem of [
+      [vivoVerde, vivoAzul],
+      [vivoAzul, vivoVerde],
+    ]) {
+      const plano = reconciliarModelos({
+        montados: montagem.modelos,
+        armazenados: [
+          {
+            produtoId: 'p-azul',
+            linkDocId: 'l-azul',
+            modelId: AZUL,
+            modelSku: 'AZ',
+            tierIndex: [0],
+          },
+        ],
+        viva: arvore(['Verde', 'Azul'], ordem),
+        profundidadeNossa: 1,
+      });
+      const coordenadas = plano.modelList.map((l) => JSON.stringify(l.tier_index));
+      expect(new Set(coordenadas).size).toBe(coordenadas.length);
+      // e o filho continua casado com o SEU modelo, nunca com o vizinho
+      expect(plano.atualizarSku).toEqual([]);
+      expect(plano.modelosSemFilho.map((m) => m.model_id)).toEqual([VERDE]);
+    }
+  });
+
   it('um filho sem sku NÃO produz update_model — a string vazia DELETA', () => {
     const r = montarTiers(
       args({

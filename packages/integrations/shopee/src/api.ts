@@ -2132,7 +2132,13 @@ function assertAddItemParams(req: ShopeeAddItemRequest): void {
  */
 function assertUpdateItemParams(req: ShopeeUpdateItemRequest): void {
   assertIdPositivo('item_id', req.item_id);
-  const mutaveis = Object.keys(req).filter((chave) => chave !== 'item_id');
+  // ⚠️ Counted over DEFINED VALUES, never over keys: `exactOptionalPropertyTypes`
+  // is off in this repo, so `item_name: nome ?? undefined` is legal TypeScript and
+  // `Object.keys` would count it — while `JSON.stringify` drops it and posts the
+  // `{item_id}` body this very guard exists to refuse.
+  const mutaveis = Object.entries(req).filter(
+    ([chave, valor]) => chave !== 'item_id' && valor !== undefined,
+  );
   if (mutaveis.length === 0) {
     throw new ShopeeConfigError(
       'update_item precisa de ao menos um campo além de item_id — um corpo só com o id gasta a chamada e não muda nada.',
@@ -2193,7 +2199,7 @@ function assertModelListParams(
     if (model.weight !== undefined) assertPositivoFinito(`${onde}.weight`, model.weight);
     assertTierIndex(onde, model.tier_index, opcoes.tiers);
     // ⚠️ Joined on a NUL so `[1,11]` and `[11,1]` cannot collide with `[1,1,1]`.
-    const chave = model.tier_index.join(' ');
+    const chave = model.tier_index.join('\u0000');
     if (combinacoes.has(chave)) {
       throw new ShopeeConfigError(
         `${onde}.tier_index repete uma combinação já usada (${JSON.stringify(model.tier_index)}) — dois modelos na mesma combinação é um sobrescrevendo o outro.`,
@@ -2287,7 +2293,11 @@ function assertStandardiseTiers(
  *
  * ⚠️ The duplicate-`model_id` refusal is Shopee's own
  * (`error_duplicate_modelid: The model_id is duplicate`), caught here so it costs
- * no call.
+ * no call. The duplicate-`tier_index` one is ours, and it is the same refusal
+ * {@link assertModelListParams} makes for the two CREATE containers: this list
+ * is a FULL-LIST replace, so two models landing on one combination is one
+ * silently taking the other's position — and Shopee's own message would name
+ * neither.
  */
 function assertUpdateTierVariationParams(req: ShopeeUpdateTierVariationRequest): void {
   assertIdPositivo('item_id', req.item_id);
@@ -2303,6 +2313,7 @@ function assertUpdateTierVariationParams(req: ShopeeUpdateTierVariationRequest):
       );
     }
     const vistos = new Set<number>();
+    const combinacoes = new Set<string>();
     req.model_list.forEach((model, posicao) => {
       const onde = `model_list[${String(posicao)}]`;
       assertIdPositivo(`${onde}.model_id`, model.model_id);
@@ -2313,6 +2324,14 @@ function assertUpdateTierVariationParams(req: ShopeeUpdateTierVariationRequest):
       }
       vistos.add(model.model_id);
       assertTierIndex(onde, model.tier_index, req.standardise_tier_variation);
+      // ⚠️ Same delimiter, same reason as `assertModelListParams`.
+      const chave = model.tier_index.join('\u0000');
+      if (combinacoes.has(chave)) {
+        throw new ShopeeConfigError(
+          `${onde}.tier_index repete uma combinação já usada (${JSON.stringify(model.tier_index)}) — esta lista SUBSTITUI a do anúncio, então dois modelos na mesma combinação é um tomando a posição do outro.`,
+        );
+      }
+      combinacoes.add(chave);
     });
   }
   if (req.standardise_tier_variation !== undefined) {

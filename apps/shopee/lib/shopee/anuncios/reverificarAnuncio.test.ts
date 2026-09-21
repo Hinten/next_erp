@@ -442,6 +442,52 @@ describe('reverificarAnuncioShopee — a listagem que a Shopee não tem mais', (
     expect(db.store[CAMINHO_LINK]?.data.item_status).toBe('NORMAL');
   });
 
+  it('⚠️ o código com PREFIXO DE MÓDULO é o MESMO veredito', async () => {
+    // A sonda mediu o prefixo `product.` real no fio (2026-09-17) e
+    // `ShopeeApiError.code` guarda a string do envelope VERBATIM — comparar só a
+    // forma nua devolveria um 5xx para a listagem que a Shopee apagou, deixando
+    // `estadoAnuncio` no valor velho e o aviso aberto.
+    const db = new FakeDb();
+    semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo, item_status: 'NORMAL' });
+    const fake = clienteFake({
+      base: () => {
+        throw erroApi('product.error_item_not_found');
+      },
+    });
+
+    const res = await reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client));
+
+    expect(res).toMatchObject({
+      acao: ACAO_REVERIFICACAO.removido,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+      itemStatus: null,
+    });
+    expect(patchesDoLink(db)).toEqual([
+      {
+        estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+        violacoesLidasEm: AGORA,
+        ultimaModificacao: AGORA,
+      },
+    ]);
+  });
+
+  it('⚠️ QUASE: um código de DOIS prefixos NÃO é removido — ele SOBE', async () => {
+    // A tira remove UM segmento só, de propósito: uma tira gulosa faria qualquer
+    // código que apenas TERMINE em `error_item_not_found` apagar um anúncio vivo.
+    const db = new FakeDb();
+    semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });
+    const fake = clienteFake({
+      base: () => {
+        throw erroApi('a.product.error_item_not_found');
+      },
+    });
+
+    await expect(reverificarAnuncioShopee(asDb(db), alvo(), deps(fake.client))).rejects.toThrow(
+      ShopeeApiError,
+    );
+    expect(db.patches).toEqual([]);
+  });
+
   it('⚠️ NEAR-MISS: uma leitura VAZIA (nenhuma linha para o id) é o MESMO removido', async () => {
     const db = new FakeDb();
     semearLink(db, { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo });

@@ -3298,6 +3298,33 @@ describe('add_item / update_item', () => {
     expect(erro).toBeInstanceOf(ShopeeConfigError);
     expect((erro as Error).message).toContain('item_id');
     expect(fetchMock).not.toHaveBeenCalled();
+
+    // ⚠️ QUASE-ERRO: uma chave PRESENTE com valor `undefined` é o MESMO corpo na
+    // rede — `JSON.stringify` a descarta e o que sai é `{"item_id":N}`. O repo não
+    // liga `exactOptionalPropertyTypes`, então `item_name: nome ?? undefined`
+    // compila, e uma guarda que contasse CHAVES deixaria passar exatamente a
+    // chamada gasta que ela existe para recusar.
+    const soUndefined = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateItem({
+        item_id: ITEM_ID,
+        item_name: undefined,
+      }),
+    );
+
+    expect(soUndefined).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: a MESMA chave com valor de verdade passa, e o corpo leva os dois campos.
+    await createShopeeClient(shopConfig(fetchMock)).updateItem({
+      item_id: ITEM_ID,
+      item_name: 'Camiseta de teste',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      item_id: ITEM_ID,
+      item_name: 'Camiseta de teste',
+    });
   });
 
   it('59 — addItem ACEITA brand_id 0 ("No Brand") e value_id 0 com original_value_name', async () => {
@@ -3603,6 +3630,28 @@ describe('tiers e modelos', () => {
     expect(erro).toBeInstanceOf(ShopeeConfigError);
     expect((erro as Error).message).toContain('tier_index');
     expect(fetchMock).not.toHaveBeenCalled();
+
+    // ⚠️ QUASE-ERRO: a chave do Set é um FOLD, e o par acima sozinho não mostra
+    // onde ele PARA. `[1,11]` e `[11,1]` são combinações DIFERENTES e precisam
+    // PASSAR: um separador que dobrasse (`join('')`) continuaria recusando o par
+    // acima e passaria a recusar, antes da rede, uma grade legítima de dois tiers
+    // com 12+ opções.
+    const client = createShopeeClient(shopConfig(fetchMock));
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([1, 11]), modelo([11, 1])],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // E em `add_model`, onde nenhum tier declarado limita o COMPRIMENTO do
+    // índice: `[1,2]` e `[12]` só não colidem porque o separador não some.
+    await client.addModel({
+      item_id: ITEM_ID,
+      model_list: [modelo([1, 2]), modelo([12])],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('70 — initTierVariation recusa tier_index de comprimento diferente do número de tiers', async () => {
@@ -3664,6 +3713,34 @@ describe('tiers e modelos', () => {
     expect(erro).toBeInstanceOf(ShopeeConfigError);
     expect((erro as Error).message).toContain('repetido');
     expect(fetchMock).not.toHaveBeenCalled();
+
+    // ⚠️ E a COORDENADA repetida, que a Shopee não recusa por nome nenhum: esta
+    // lista SUBSTITUI a do anúncio, então dois modelos na mesma combinação é um
+    // tomando a posição do outro, em silêncio.
+    const coordenadaRepetida = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateTierVariation({
+        item_id: ITEM_ID,
+        model_list: [
+          { model_id: MODEL_ID, tier_index: [1] },
+          { model_id: MODEL_ID + 1, tier_index: [1] },
+        ],
+      }),
+    );
+
+    expect(coordenadaRepetida).toBeInstanceOf(ShopeeConfigError);
+    expect((coordenadaRepetida as Error).message).toContain('tier_index');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: as MESMAS duas linhas em coordenadas diferentes passam.
+    await createShopeeClient(shopConfig(fetchMock)).updateTierVariation({
+      item_id: ITEM_ID,
+      model_list: [
+        { model_id: MODEL_ID, tier_index: [1] },
+        { model_id: MODEL_ID + 1, tier_index: [2] },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('73 — updateTierVariation recusa uma chamada sem model_list e sem standardise_tier_variation', async () => {

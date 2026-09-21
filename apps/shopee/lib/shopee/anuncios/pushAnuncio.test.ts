@@ -376,15 +376,34 @@ describe('tratarPushDeAnuncio — code 16', () => {
     semearLink(db);
     const cli = clienteQueResponde({ base: [linhaBase({ item_status: 'NORMAL' })] });
 
-    const r = await tratarPushDeAnuncio(asDb(db), alvoDoCorpo(16, corpoPush16()), {
-      clientFor: () => Promise.resolve(cli.client),
-      increment,
-    });
+    // ⚠️ O corpo carrega `item_status_details[]`, como uma entrega de push 18 de
+    // verdade: sem ele `detalhesDoPush.status` fica VAZIO e todo leitor derivado
+    // do push que o alvo alcança responde a mesma coisa que o correto, de graça.
+    const r = await tratarPushDeAnuncio(
+      asDb(db),
+      alvoDoCorpo(16, corpoPush16({ item_status_details: [detalhe()] })),
+      {
+        clientFor: () => Promise.resolve(cli.client),
+        increment,
+      },
+    );
 
-    expect(patchDoLink(db)).toMatchObject({
+    const patch = patchDoLink(db);
+    expect(patch).toMatchObject({
       item_status: 'NORMAL',
       estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
     });
+    expect(patch.item_status).toBe('NORMAL');
+    expect(JSON.stringify(patch)).not.toContain('BANNED');
+    // E o conjunto de chaves é FECHADO: nada levantado de `detalhesDoPush` entra.
+    expect(Object.keys(patch).sort()).toEqual([
+      'deboost',
+      'estadoAnuncio',
+      'item_status',
+      'ultimaModificacao',
+      'violacoesLidasEm',
+      'violations',
+    ]);
     expect(r.estadoAnuncio).toBe(ESTADO_ANUNCIO_SHOPEE.ativo);
     expect(JSON.stringify(db.store[LINK_PATH]?.data)).not.toContain('BANNED');
     // A ORDEM é parte do contrato: a leitura autoritativa vem antes do detalhe.

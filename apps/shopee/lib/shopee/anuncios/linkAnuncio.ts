@@ -25,9 +25,13 @@
  * verbatim. **Step 11 declares no new index.**
  *
  * {@link lerLinksDeVariacao} pays the same way: one `produtos (paiId ==)` query
- * (the composite `jaTemFilhos` already rides) plus one unfiltered `variashopee`
- * read per child. For a 50-model listing that is **1 + 1 + 50 = 52 document
- * reads** on one operator action — stated here so nobody discovers it later.
+ * (the composite `jaTemFilhos` already rides) — which itself answers ONE
+ * DOCUMENT PER CHILD — plus one unfiltered `variashopee` read per child, awaited
+ * in sequence. For a 50-model listing that is **51 sequential round trips and at
+ * least 100 documents read** on one operator action ("at least", because a child
+ * carrying links for a second conta answers more rows and they are filtered in
+ * memory). Enterprise bills data SCANNED, so the DOCUMENT count is the number
+ * that matters — stated here so nobody discovers it later.
  *
  * ## ⚠️ Duplicates: lexically FIRST, one log line, NEVER a delete
  *

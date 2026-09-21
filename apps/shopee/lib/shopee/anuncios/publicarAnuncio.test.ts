@@ -768,6 +768,53 @@ describe('aplicarPublicacao — a ORDEM dos onze passos', () => {
     expect(fake.ops).not.toContain('unlist_item');
     expect(fake.ops.some((o) => o.startsWith('esperar'))).toBe(false);
     expect(r.modelos.acao).toBe('update');
+
+    // ⚠️ `chamadasShopee` conta o APLICAR chamada a chamada, e a leitura de volta
+    // de um anúncio COM modelos são DUAS (`get_item_base_info` + `get_model_list`).
+    // Um `1` fixo ali fazia o número desta publicação não poder ser comparado com o
+    // do `reverificarAnuncio.ts`, que conta honesto.
+    const chamadasDoAplicar = fake.ops.slice(fake.ops.indexOf('update_item'));
+    expect(r.chamadasShopee).toBe(chamadasDoAplicar.length);
+    expect(r.chamadasShopee).toBe(7);
+  });
+
+  it('⚠️ um bloqueio vindo da ÁRVORE FRESCA carimba a falha COM os problemas', async () => {
+    // A árvore viva volta com a opção do índice 0 ilegível (nome vazio, id 0), que
+    // é uma posição que não pode ser reescrita — `montarTiers` recusa DEPOIS que o
+    // `update_item` já entrou. `ShopeePublishBlockedError` não é um
+    // `ShopeeApiError`, e o classificador respondia `[]` para ele: o carimbo
+    // dizia "1 problema" e guardava lista vazia, perdendo o ÚNICO texto que
+    // nomeia QUAL posição de QUAL tier falhou.
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearLink(db);
+    db.seed(`produtos/${FILHO}/variashopee/v-1`, {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: `documents/${CAMINHO_LINK}`,
+      model_id: MODEL_A,
+      tier_index: [0],
+      model_status: SHOPEE_MODEL_STATUS.normal,
+    });
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getModelList: () =>
+        ({
+          tier_variation: [{ name: 'Cor', option_list: [{ option: '' }, { option: 'Azul' }] }],
+          standardise_tier_variation: null,
+          model: [modelo()],
+        }) as unknown as ShopeeModelList,
+    });
+
+    const { plano } = await planejar(db, fake);
+    await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toMatchObject({
+      name: 'ShopeePublishBlockedError',
+    });
+
+    const carimbo = patchesDoLink(db).at(-1)?.falhaPublicacao as Record<string, unknown>;
+    expect(carimbo).toMatchObject({ em: AGORA, erro: 'ShopeePublishBlockedError' });
+    expect(carimbo.problemas).toHaveLength(1);
+    expect((carimbo.problemas as { campo: string }[])[0]?.campo).not.toBe('');
   });
 
   it('um update sem nada a mudar no leg de modelos NÃO manda nada', async () => {
@@ -823,6 +870,11 @@ describe('aplicarPublicacao — sem fotos utilizáveis', () => {
 
 describe('aplicarPublicacao — a retentativa fiscal C13', () => {
   const OPERACAO_DEPS = { operacaoOuterRef: OPERACAO };
+  /** Two NCMs that must never be confused: the family's, and a child's. */
+  const NCM_DO_PAI = '61091000';
+  const NCM_DO_FILHO = '62034200';
+  /** `idRefSchema` refuses the `documents/` prefix on a STORED ref. */
+  const REF_OPERACAO_CURTA = 'operacao/op-1';
 
   function semearImposto(db: FakeDb): void {
     // A operação existe mas o bundle não resolve imposto nenhum: o corpo sai
@@ -840,6 +892,36 @@ describe('aplicarPublicacao — a retentativa fiscal C13', () => {
       },
     };
   }
+
+  it('⚠️ o bloco fiscal é resolvido para o produto PAI, nunca para um filho', async () => {
+    // `tax_info` é item-level: não existe bloco fiscal por modelo em lugar nenhum
+    // do fio. Passar `filhos[0]?.produtoId ?? entrada.produtoId` resolveria a
+    // cascata do FILHO — e como o fixture padrão não tem operação nenhuma, nada
+    // do que existe hoje notaria. Os dois documentos abaixo DISCORDAM de
+    // propósito.
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearImposto(db);
+    db.seed(`produtos/${PAI}/imposto/imp-pai`, {
+      impostoOpercaoOuterRef: REF_OPERACAO_CURTA,
+      origem: '0',
+      NCM: NCM_DO_PAI,
+    });
+    db.seed(`produtos/${FILHO}/imposto/imp-filho`, {
+      impostoOpercaoOuterRef: REF_OPERACAO_CURTA,
+      origem: '0',
+      NCM: NCM_DO_FILHO,
+    });
+    const fake = clienteFake();
+
+    const { plano, contexto } = await planejar(db, fake, OPERACAO_DEPS);
+
+    expect(contexto.imposto.imposto?.NCM).toBe(NCM_DO_PAI);
+    expect(db.caminhos).toContain(`produtos/${PAI}/imposto`);
+    expect(db.caminhos).not.toContain(`produtos/${FILHO}/imposto`);
+    expect(JSON.stringify(plano.item.criar.tax_info ?? {})).not.toContain(NCM_DO_FILHO);
+  });
 
   it('reenvia UMA vez, sem a chave tax_info, e carimba recusado-incompleto', async () => {
     const db = new FakeDb();
@@ -1177,6 +1259,10 @@ describe('aplicarPublicacao — o carimbo de falha', () => {
     // ⚠️ O item_id JÁ está gravado — é isso que torna a próxima publicação um
     // UPDATE que roda o leg de modelos de novo.
     expect(patches[0]).toMatchObject({ item_id: ITEM_ID });
+    // E a lista nunca sai vazia ao lado de uma mensagem que conta problemas.
+    expect(
+      (patches[1]?.falhaPublicacao as { problemas?: unknown[] } | undefined)?.problemas,
+    ).toHaveLength(1);
   });
 
   it('uma falha em add_item sem vínculo pré-existente não carimba nada e relança', async () => {
@@ -1324,6 +1410,17 @@ describe('aplicarPublicacao — a relistagem', () => {
     });
     expect(updates).toBe(1);
     expect(fake.ops.filter((o) => o === 'unlist_item')).toHaveLength(1);
+
+    // ⚠️ E o carimbo carrega a lista do PRÓPRIO erro, mais o código da Shopee no
+    // campo `erro`. `ShopeePublishRejectedError` não é um `ShopeeApiError`, então
+    // o classificador respondia `[]` — um carimbo dizendo "1 problema" ao lado de
+    // uma lista vazia, e o nome da CLASSE onde deveria estar o código.
+    const carimbo = patchesDoLink(db).at(-1)?.falhaPublicacao as Record<string, unknown>;
+    expect(carimbo).toMatchObject({
+      etapa: 'relistagem',
+      erro: 'product.error_set_normal_unlisted_item',
+    });
+    expect(carimbo.problemas).toHaveLength(1);
   });
 
   it('uma recusa que NÃO é a de relistagem não tenta a segunda porta', async () => {
