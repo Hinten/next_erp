@@ -53,6 +53,23 @@ const PADROES: readonly { readonly re: RegExp; readonly rotulo: string }[] = [
     rotulo: '[CNPJ]',
   },
   { re: /(?<!\d)\d{14}(?!\d)/g, rotulo: '[CNPJ]' },
+  // ⚠️ NUMERIC RAIZ + ALFA ORDEM — `[0-9]{11}[A-Z][0-9]{2}`, and it must sit HERE,
+  // above the CPF rules. RFB IN 2.229/2024 keeps an existing company's numeric
+  // raiz and issues an alphanumeric *ordem* to each new establishment, so
+  // `12345678` + `000A` + DV is not an exotic shape — it is the alfa CNPJ we are
+  // most likely to ever see, since new branches of existing companies far
+  // outnumber brand-new companies.
+  //
+  // Without this rule the bare CPF rule below claims the leading eleven digits:
+  // `12345678000A12` printed as `[CPF]A12` — mislabelled, and the last three
+  // characters UNREDACTED, in the module whose whole job is that they are not.
+  //
+  // ⚠️ This is the ONLY collision of its kind, which is what makes the rule
+  // complete rather than a patch. The CPF rule needs an 11-digit run bounded by
+  // non-digits, and inside `[0-9A-Z]{12}[0-9]{2}` there are just three candidate
+  // offsets: a run at 0-10 needs a non-digit at 11 (this case), while runs at
+  // 1-11 and 2-12 are each followed by a DV digit, so `(?!\d)` refuses them.
+  { re: /(?<![0-9A-Z])[0-9]{11}[A-Z][0-9]{2}(?![0-9A-Z])/g, rotulo: '[CNPJ]' },
   // CPF, punctuated then bare. A destinatário can be a person.
   { re: /(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)/g, rotulo: '[CPF]' },
   { re: /(?<!\d)\d{11}(?!\d)/g, rotulo: '[CPF]' },

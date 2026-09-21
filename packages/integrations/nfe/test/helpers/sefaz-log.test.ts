@@ -32,6 +32,22 @@ describe('redigirIdentificadores', () => {
       );
     });
 
+    // ⚠️ The shape RFB IN 2.229 gives a NEW ESTABLISHMENT of an existing company:
+    // the numeric raiz is kept and only the ordem goes alphanumeric. Before the
+    // dedicated rule this was eaten by the bare CPF pattern and printed as
+    // `[CPF]A12` — mislabelled, with three characters left in the clear.
+    it('masks a CNPJ with a numeric raiz and an alphanumeric ordem', () => {
+      expect(redigirIdentificadores('Emitente 12345678000A12 irregular')).toBe(
+        'Emitente [CNPJ] irregular',
+      );
+    });
+
+    // The near-miss that pins WHY that rule sits above the CPF ones: a label
+    // glued to a real CPF must still come out as a CPF, not a CNPJ.
+    it('still labels a glued CPF as a CPF, not as the new CNPJ shape', () => {
+      expect(redigirIdentificadores('dest CPF12345678909 invalido')).toBe('dest CPF[CPF] invalido');
+    });
+
     it('masks a chave whose emitente CNPJ body is alphanumeric', () => {
       const chave = `432601PC3D315K0001${'9'.repeat(26)}`;
       expect(chave).toHaveLength(44);
