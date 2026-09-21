@@ -40,12 +40,13 @@ gêmeo do emitente) está em `cstat-rejeicoes.md`.
 com CNPJ do destinatário diferente de `99999999000191`" (NT 2011.002, opcional
 por UF), que torna `99999999000191` o CNPJ *sancionado* para testes. Ele não
 consta na Receita, então 597 exige exatamente o que 12E02-10 rejeita. Conciliar
-as duas é da SEFAZ. ⚠️ **Mas isso NÃO quer dizer que não haja CNPJ de
-destinatário utilizável** — uma revisão anterior desta página afirmava isso e
-estava errada: a saída são os CNPJs de teste que a própria SEFAZ publica, logo
-abaixo.
+as duas é da SEFAZ. ⚠️ **E isso vale inclusive para os CNPJs de teste OFICIAIS
+que a SEFAZ publica** — foram medidos e também levam 181; ver logo abaixo. Um
+destinatário **CPF** é a única saída que funciona hoje.
 
-⚠️ **A SEFAZ publica CNPJs de teste OFICIAIS, e é essa a saída.** A tabela
+⚠️ **A SEFAZ publica CNPJs de teste OFICIAIS — e eles NÃO resolvem o 181.**
+Vale conhecê-los mesmo assim, porque a tentativa foi feita e o resultado é o
+dado mais importante desta página. A tabela
 *"CNPJs alfa cadastrados no CCC de homologação"* (portal da NF-e, no material da
 **NT 2026.004 — CNPJ Alfanumérico**) lista CNPJs registrados no **CCC** de
 homologação, um por UF. Seis deles estão fixados em
@@ -83,20 +84,33 @@ schema-inválido nunca deve chegar à SEFAZ (alimenta o caminho de banimento 656
 `operacao.cfop` / `cfopInterestadual` é consultado só pelo orquestrador
 (`generator-input.ts`), então trocar só esses dois não muda nada no XML.
 
-⚠️ **CCC ≠ LCC-RFB.** A tabela é do **CCC**, o cadastro compartilhado dos
-estados; a RV 12E02-10 consulta a **LCC-RFB**, a réplica do cadastro federal.
-Nenhum documento afirma que uma linha no CCC implica uma linha na LCC-RFB — só
-uma emissão ao vivo resolve. Se voltar 181 mesmo assim, é essa a explicação.
+⚠️⚠️ **MEDIDO EM 2026-09-21: o CNPJ oficial do CCC também leva 181.** A run
+[35605049930](https://github.com/Hinten/next_erp/actions/runs/35605049930) emitiu
+com `PC3D315K000193` e a SEFAZ-SP respondeu
+`cStat=181 "CNPJ […] do destinatário não cadastrado na Receita Federal"`.
 
-A saída alternativa, se a oficial não bastar:
+Isso resolve a pergunta que só uma emissão podia responder: **CCC ≠ LCC-RFB.** A
+tabela é do **CCC**, o cadastro compartilhado dos estados; a RV 12E02-10 consulta
+a **LCC-RFB**, a réplica do cadastro federal. Uma linha no CCC **não** implica uma
+linha na LCC-RFB. ⚠️ **Não tente outro CNPJ da tabela** — cada tentativa gasta
+quota de um endpoint que limita taxa (`656 Consumo Indevido`) para reencontrar o
+mesmo 181. A tabela continua útil para o que ela realmente prova: o gate XSD e os
+nossos dígitos verificadores aceitam dados publicados pela própria SEFAZ.
+
+A saída que FUNCIONA:
 
 - **Destinatário pessoa física (CPF, tag `E03`).** A RV é condicionada a *"se
   informado CNPJ do Destinatário (tag: E02)"*, então um CPF fica fora do escopo
   de 181/182. É o que `apps/nfe/test/lib/nfe/{orchestrator,epec}.homologacao.test.ts`
   fazem (`tipo: '0'`, CPF `12345678909`, com `ehConsumidorFinal: true` para
   limpar a rejeição 696 de `indIEDest='9'`) — e é por isso que esses suites
-  continuaram passando quando os de CNPJ quebraram. O custo é perder a cobertura
-  viva do ramo `pessoaJuridica` de `buildDest`.
+  continuaram passando quando os de CNPJ quebraram — **é o que o fixture
+  compartilhado passou a usar**. O custo é perder a cobertura VIVA do ramo
+  `pessoaJuridica` de `buildDest` (`<CNPJ>` em vez de `<CPF>`) e o round-trip do
+  `IE_SENTINELA`; as duas mudaram de lugar em vez de sumir —
+  `test/generator/parties.test.ts` fixa a escolha do elemento e a escada inteira
+  do `indIEDest`, e `test/xsd/cnpj-alfanumerico.test.ts` força o `tipo` de volta
+  para PJ para que o `<CNPJ>` alfanumérico continue encarando a facet real.
 - **Um CNPJ real de terceiro** foi descartado: amarra o CI à situação cadastral
   de outra empresa (RV 12E02-20, cStat 182, derruba a suíte quando ela sai de
   `02-Ativa`) e este repositório é público.
@@ -106,10 +120,11 @@ A saída alternativa, se a oficial não bastar:
 nessas posições segue válido — não troque os quatro de uma vez.
 
 Estado atual no repo: `emission.homologacao` e `rtc.homologacao` voltaram a rodar
-— `buildHomologacaoFixture` usa o CNPJ oficial do CCC de **RS**
-(`PC3D315K000193`) com a IE da linha, endereço em Porto Alegre, CFOP `6102` e
-`ehConsumidorFinal: false`. O helper `lcc-rfb-bloqueio.ts`, que suspendia as duas
-suítes, **foi removido** (#1612).
+— o destinatário de `buildHomologacaoFixture` agora é **pessoa física**
+(`tipo: '0'`, CPF `12345678909`, `ie: null`, `ehConsumidorFinal: true`), o mesmo
+documento que `orchestrator.homologacao` e `epec.homologacao` sempre usaram. O
+helper `lcc-rfb-bloqueio.ts`, que suspendia as duas suítes, **foi removido**
+(#1612).
 
 A emissão do `svc.homologacao` continua suspensa desde 03/09/2026 pelo **178**
 (RV 12C02-10) em #1471, e a correção acima **não a alcança**: 12C02-10 lê o

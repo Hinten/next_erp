@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { validateCNPJ } from '@delfrance/core/documents';
+import { IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
 
 import { generateNFe } from '../../src/generator';
 import { NFeXsdValidationError, validateXsd } from '../../src/xsd';
@@ -31,7 +32,22 @@ async function errosDePattern(cpfCnpj: string): Promise<string[]> {
     cnpj: '99999999000191',
     ie: '111111111',
   });
-  const out = generateNFe({ ...base, cliente: { ...base.cliente, cpf_cnpj: cpfCnpj } });
+  // ⚠️ `tipo` is forced back to PESSOA JURÍDICA here, and that is load-bearing:
+  // the shared fixture's destinatário is a pessoa física (SEFAZ rejects every
+  // CNPJ we may use with cStat 181 — see the fixture's own comment), so without
+  // this override the alfa value would land in `<CPF>`, whose facet is
+  // `[0-9]{11}`, and the test would report a pattern error that says nothing
+  // about `TCnpj`. The sentinel comes with it, because a PJ with no `ie` is a
+  // different rung of `buildDest`'s ladder.
+  const out = generateNFe({
+    ...base,
+    cliente: {
+      ...base.cliente,
+      tipo: TIPO_CLIENTE.pessoaJuridica,
+      cpf_cnpj: cpfCnpj,
+      ie: IE_SENTINELA.naoContribuinte,
+    },
+  });
   try {
     await validateXsd('NFe', out.nfeXml);
     return [];

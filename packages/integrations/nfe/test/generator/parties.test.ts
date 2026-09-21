@@ -266,3 +266,48 @@ describe('buildDest — endereco.codigoMunicipio', () => {
     expect(() => buildDest(cliente(), endereco, 'producao', false)).toThrow(/got ""/);
   });
 });
+
+/**
+ * Which document element `buildDest` emits for each `tipo`.
+ *
+ * ⚠️ This block is the OFFLINE home of coverage the live homologação lane used
+ * to carry. `buildHomologacaoFixture`'s destinatário moved to a pessoa física
+ * because NT 2026.007's RV 12E02-10 rejects every CNPJ we are allowed to emit to
+ * (cStat 181 — measured against SEFAZ's own published CCC test CNPJ, not just
+ * against a placeholder). So `<CNPJ>` is no longer proven by a real SEFAZ round
+ * trip, and it has to be proven here instead: coverage moved rather than
+ * disappeared, which is the whole condition on that fixture change.
+ */
+describe('buildDest — the document element per tipo', () => {
+  it('pessoaJuridica emits <CNPJ>, never <CPF>', () => {
+    const out = dest({ tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: '11222333000181' });
+    expect(out.CNPJ).toBe('11222333000181');
+    expect(out.CPF).toBeUndefined();
+  });
+
+  it('an ALPHANUMERIC CNPJ rides the same element, un-mangled', () => {
+    // RFB IN 2.229/2024. Nothing here may strip a letter: `TCnpj` is
+    // `[0-9A-Z]{12}[0-9]{2}`, and a stripped value would be an eleven-character
+    // string that the XSD reads as a malformed document rather than as a CPF.
+    const out = dest({ tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: '12ABC34501DE35' });
+    expect(out.CNPJ).toBe('12ABC34501DE35');
+  });
+
+  it('pessoaFisica emits <CPF>, never <CNPJ>', () => {
+    const out = dest({ tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '12345678909', ie: null });
+    expect(out.CPF).toBe('12345678909');
+    expect(out.CNPJ).toBeUndefined();
+  });
+
+  it('⚠️ NEAR-MISS: the sentinel on a PJ still yields indIEDest=9 and NO <IE>', () => {
+    // The other property the live lane proved on every round trip: that
+    // `IE_SENTINELA` never reaches the signed XML.
+    const out = dest({
+      tipo: TIPO_CLIENTE.pessoaJuridica,
+      cpf_cnpj: '11222333000181',
+      ie: IE_SENTINELA.naoContribuinte,
+    });
+    expect(out.indIEDest).toBe('9');
+    expect(out.IE).toBeUndefined();
+  });
+});

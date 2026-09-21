@@ -184,13 +184,14 @@ de homologação com CNPJ do destinatário diferente de 99999999000191"): 597 ex
 um CNPJ que a LCC-RFB rejeita, porque `99999999000191` é um placeholder que não
 consta no cadastro da Receita.
 
-⚠️ **A saída não é inventar outro CNPJ — a SEFAZ publica CNPJs de teste
-OFICIAIS**, um por UF, na tabela "CNPJs alfa cadastrados no CCC de homologação"
-(material da NT 2026.004). Todos são **alfanuméricos**, e usá-los é um pacote:
-IE real da linha, endereço na mesma UF, CFOP interestadual e
-`ehConsumidorFinal: false`. A tabela, as seis linhas fixadas em teste e a
-distinção **CCC ≠ LCC-RFB** (que é o que pode fazer 181 voltar mesmo assim) estão
-em `homologacao.md`.
+⚠️ **Nem os CNPJs de teste OFICIAIS resolvem**, e isso foi MEDIDO: a SEFAZ
+publica uma tabela "CNPJs alfa cadastrados no CCC de homologação" (material da
+NT 2026.004), e emitir para `PC3D315K000193` voltou 181 igual
+([run 35605049930](https://github.com/Hinten/next_erp/actions/runs/35605049930),
+2026-09-21). O **CCC** é o cadastro dos estados; a RV consulta a **LCC-RFB**,
+a réplica federal — uma linha num não implica linha no outro. **Não gaste quota
+tentando outro CNPJ.** A única saída conhecida é um destinatário **CPF** (tag
+`E03`), fora do escopo da regra. Detalhes em `homologacao.md`.
 
 ## cStats novos por NT (consolidado)
 
