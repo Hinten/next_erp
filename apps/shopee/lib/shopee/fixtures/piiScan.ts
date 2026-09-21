@@ -27,6 +27,8 @@
  * REPORT how many masked leaves it holds, which is a fact about Shopee, not a
  * defect in the fixture.
  */
+import { validateCNPJ } from '@delfrance/core/documents';
+
 import { type WireValue, ehValorMascarado, redactWireBody } from './redact';
 
 export interface PiiFinding {
@@ -62,25 +64,63 @@ const PLACEHOLDER_VALUES: ReadonlySet<string> = new Set([
   '0'.repeat(44),
 ]);
 
+interface Padrao {
+  readonly kind: PiiFinding['kind'];
+  readonly re: RegExp;
+  /**
+   * When present, a match counts only where this confirms it — for the one
+   * shape that cannot be told from an id by its characters alone.
+   */
+  readonly confirma?: (casado: string) => boolean;
+}
+
 /**
  * ⚠️ **The bare-digit CPF/CNPJ patterns are the one place this scanner diverges
  * from Mercado Livre's**, which refuses them because an unpunctuated CPF is
  * indistinguishable from an ML resource id. The divergence is deliberate and
  * narrow: these patterns only ever see STRING leaves, and every Shopee id in
  * this corpus (`item_id`, `model_id`, `order_item_id`, `line_item_id`,
- * `promotion_id`, `logistics_channel_id`) arrives as a JSON **number**, while
- * `order_sn` and `package_number` carry letters. The residual is a Shopee page
- * that ever QUOTES an id of exactly 11 or 14 digits: that is a loud false
- * positive on a fixture, fixed by reviewing the body and, if it is really an id,
- * by naming its path here — never by deleting the pattern, which is the only
- * cover an unpunctuated document has in free text.
+ * `promotion_id`, `logistics_channel_id`) arrives as a JSON **number**. The
+ * residual is a Shopee page that ever QUOTES an id of exactly 11 or 14 digits:
+ * that is a loud false positive on a fixture, reviewed by hand and never fixed
+ * by deleting the pattern, which is the only cover an unpunctuated document has
+ * in free text.
+ *
+ * ⚠️ **The ALPHANUMERIC CNPJ cannot ride that argument** (RFB IN 2.229/2024:
+ * `[0-9A-Z]{12}[0-9]{2}`, the two check digits still numeric). `order_sn` and
+ * `package_number` are STRINGS of exactly that shape — `260910KJBHUJ12` is
+ * twelve `[0-9A-Z]` then two digits — so "every Shopee id arrives as a number"
+ * stops being true the moment letters are allowed, and roughly one `order_sn`
+ * in thirteen ends in two digits. An earlier revision of this paragraph offered
+ * "naming its path here" as the remedy; there was never a mechanism for it, and
+ * a path allow-list is the wrong one anyway — it would have to grow with every
+ * 14-character uppercase SKU.
+ *
+ * So the letter-bearing rule additionally requires **valid mod-11 check
+ * digits**, which is the only thing that separates a CNPJ from any other
+ * 14-character id. It costs the scanner nothing real: the Receita issues no
+ * CNPJ with wrong DVs, so a document that actually leaked passes it by
+ * construction. ⚠️ The purely numeric rule stays UNCONDITIONAL — it is the
+ * pre-alfa rule byte for byte, and putting the checksum on it too would quietly
+ * stop reporting a fabricated-looking `\d{14}` this corpus used to catch.
  */
-const PATTERNS: readonly { readonly kind: PiiFinding['kind']; readonly re: RegExp }[] = [
+const PATTERNS: readonly Padrao[] = [
   { kind: 'email', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { kind: 'cpf', re: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/ },
   { kind: 'cpf', re: /(?<!\d)\d{11}(?!\d)/ },
-  { kind: 'cnpj', re: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/ },
+  // Punctuated, alfa-aware: no Shopee id is ever written this way, so the shape
+  // decides on its own.
+  { kind: 'cnpj', re: /\b[0-9A-Z]{2}\.[0-9A-Z]{3}\.[0-9A-Z]{3}\/[0-9A-Z]{4}-[0-9]{2}\b/ },
   { kind: 'cnpj', re: /(?<!\d)\d{14}(?!\d)/ },
+  {
+    kind: 'cnpj',
+    // ⚠️ The `(?=[0-9A-Z]*[A-Z])` keeps this rule DISJOINT from the numeric one
+    // above — without it a purely numeric CNPJ files the same finding twice. It
+    // cannot see past the fourteenth character, because the trailing
+    // `(?![0-9A-Z])` is what ends the run.
+    re: /(?<![0-9A-Z])(?=[0-9A-Z]*[A-Z])[0-9A-Z]{12}[0-9]{2}(?![0-9A-Z])/,
+    confirma: validateCNPJ,
+  },
   { kind: 'phone', re: /\(\d{2}\)\s?\d{4,5}-\d{4}/ },
   {
     kind: 'endereco',
@@ -141,6 +181,26 @@ export function redactionResidue(value: WireValue): PiiFinding[] {
   return findings;
 }
 
+/**
+ * Does any occurrence of `re` in `texto` satisfy `confirma`? Not the first one:
+ * a line can carry an id and a document, and testing only the leading match
+ * would let the id hide the document behind it.
+ *
+ * ⚠️ The `g` flag is built HERE, per call, and never stored on the shared
+ * `PATTERNS` entry — `RegExp.test` on a global regex advances `lastIndex`, so a
+ * reused one answers differently on alternate nodes.
+ */
+function algumCasoConfirmado(
+  re: RegExp,
+  texto: string,
+  confirma: (casado: string) => boolean,
+): boolean {
+  for (const [casado] of texto.matchAll(new RegExp(re.source, `${re.flags}g`))) {
+    if (confirma(casado)) return true;
+  }
+  return false;
+}
+
 /** Free-text pattern hits, plus the informational `masked` count. */
 export function patternFindings(value: WireValue): PiiFinding[] {
   const findings: PiiFinding[] = [];
@@ -163,8 +223,9 @@ export function patternFindings(value: WireValue): PiiFinding[] {
       // else beside the stars (`'CPF 123.456.789-09 (****)'`). Stopping here
       // would make one `*` anywhere a way to hide every other pattern.
     }
-    for (const { kind, re } of PATTERNS) {
-      if (re.test(node)) findings.push({ path: path.join('.'), kind });
+    for (const { kind, re, confirma } of PATTERNS) {
+      const bateu = confirma ? algumCasoConfirmado(re, node, confirma) : re.test(node);
+      if (bateu) findings.push({ path: path.join('.'), kind });
     }
   }
 

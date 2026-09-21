@@ -220,7 +220,17 @@ export const integracaoSchema = z
     tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
     padrao: z.boolean().default(false),
     nome: z.string().min(1).max(255),
-    cpf_cnpj: z.string().max(18).regex(/^\d*$/, 'apenas números').nullable().default(null),
+    // ⚠️ `[0-9A-Z]`, not `\d`: this is the `<infIntermed>` CNPJ — the marketplace
+    // that brokered the sale, i.e. a COUNTERPARTY, and RFB IN 2.229/2024 issues
+    // alphanumeric CNPJs to newly registered ones. (`filial.cnpj` stays
+    // numeric-only on purpose: that is OUR emitente, existing CNPJs never change
+    // format, and the chave de acesso builder still asserts digits for it.)
+    cpf_cnpj: z
+      .string()
+      .max(18)
+      .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
+      .nullable()
+      .default(null),
     idCadIntTran: z.string().max(60).nullable().default(null),
     ativo: z.boolean().default(true),
     cor: z.number().int().nullable().default(null),
