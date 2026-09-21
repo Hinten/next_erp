@@ -16,7 +16,6 @@ function onlyDigits(value: string): string {
   return value.replace(/\D/g, '');
 }
 
-/** Strip CPF/CNPJ punctuation (`.` `/` `-` and spaces) but keep digits + letters. */
 /**
  * Format a CPF or a CNPJ. Re-exported from `@delfrance/core/documents` rather
  * than reimplemented here — same as `formatTelefone` below.
@@ -24,7 +23,9 @@ function onlyDigits(value: string): string {
  * ⚠️ This file's copy was the CORRECT one of three: it masked the CNPJ
  * positionally, so the alphanumeric CNPJ (RFB IN 2.229/2024) came out right,
  * while the DANFE renderers' copy and `PedidoCells`' copy both stripped
- * non-digits first and rendered `12ABC678000190` as an eleven-digit **CPF**.
+ * non-digits first and rendered `12ABC678000190` as an eleven-digit **CPF** —
+ * that value has exactly three letters, which is the arity that strips to a
+ * CPF-shaped lie rather than to visible garbage.
  * Being right was not enough: nothing could tell the three apart, and a
  * reviewer cannot diff them by eye. The shared version is the same rule with
  * one place to read it.

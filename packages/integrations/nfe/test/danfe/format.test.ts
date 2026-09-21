@@ -50,9 +50,10 @@ describe('danfe/format', () => {
   });
 
   it('masks an ALPHANUMERIC CNPJ positionally, on every DANFE renderer at once', () => {
-    // The local copy stripped non-digits first, so `12ABC34501DE35` came out
-    // eleven digits long and printed as somebody's CPF. Shared with
-    // `@delfrance/core/documents` now, so there is one rule to read.
+    // The local copy stripped non-digits first, so this value came out NINE
+    // digits long and printed mangled — and a three-letter one such as
+    // `12ABC678000190` came out eleven and printed as somebody's CPF. Shared
+    // with `@delfrance/core/documents` now, so there is one rule to read.
     expect(formatCpfCnpj('12ABC34501DE35')).toBe('12.ABC.345/01DE-35');
   });
 

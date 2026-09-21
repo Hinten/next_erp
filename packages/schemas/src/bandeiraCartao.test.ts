@@ -70,6 +70,24 @@ describe('bandeiraCartaoSchema', () => {
     ).toBe(false);
   });
 
+  it('⚠️ NEAR-MISS: letters ONLY in the alfa CNPJ shape, and never in the DVs', () => {
+    // No `validateCpfCnpj` refine backs this field, so the regex is the whole
+    // guard — and `generator-input.ts` copies the value into `<card><CNPJ>`
+    // verbatim, so anything it accepts reaches the signed XML unre-checked.
+    for (const bad of ['ABCDEFGHIJKLMN', '12ABC34501DEFG', 'ABCDEFGHIJK', 'A']) {
+      expect(
+        bandeiraCartaoSchema.safeParse({ ...MINIMAL, cnpj_instituicao: bad }).success,
+        bad,
+      ).toBe(false);
+    }
+    // Every purely numeric value the old `\d*` took is still taken.
+    for (const ok of ['', '1122233300018', '11222333000181']) {
+      expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, cnpj_instituicao: ok }).success, ok).toBe(
+        true,
+      );
+    }
+  });
+
   it('rejects tarifa < 0', () => {
     expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, tarifa: -1 }).success).toBe(false);
   });
