@@ -3961,18 +3961,25 @@ describe('as duas LEITURAS do passo 11', () => {
     expect(payload.item_list[0]?.item_status).toBe('BANNED');
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // ⚠️ Asserção de FONTE, e ela é o contrato inteiro: a flag vale para UMA
-    // operação. Um segundo call site a copiando passaria por todos os testes de
-    // comportamento deste arquivo — cada operação é testada com corpos que TÊM
-    // `error` — e alargaria em silêncio o único ponto do pacote onde um corpo
-    // injulgável pode virar sucesso.
+    // ⚠️ Asserção de FONTE, e ela é o contrato inteiro: a flag vale para as
+    // operações onde o corpo SEM `error` foi MEDIDO — esta (sandbox 2026-09-17,
+    // registro 73) e `getShopHolidayMode` (sandbox 2026-09-21, sonda do passo 12,
+    // P2 — o teste 103b pina o corpo vivo). Um terceiro call site a copiando
+    // passaria por todos os testes de comportamento deste arquivo — cada
+    // operação é testada com corpos que TÊM `error` — e alargaria em silêncio os
+    // únicos pontos do pacote onde um corpo injulgável pode virar sucesso.
     const ocorrencias = FONTE_API.split('erroAusenteEhSucesso').length - 1;
-    expect(ocorrencias).toBe(1);
+    expect(ocorrencias).toBe(2);
     const inicio = FONTE_API.indexOf('getItemViolationInfo: async');
     const fim = FONTE_API.indexOf('getChannelList: async');
     expect(inicio).toBeGreaterThan(-1);
     expect(fim).toBeGreaterThan(inicio);
     expect(FONTE_API.slice(inicio, fim)).toContain('erroAusenteEhSucesso: true');
+    const inicioFerias = FONTE_API.indexOf('getShopHolidayMode: async');
+    const fimFerias = FONTE_API.indexOf('getWarehouseDetail: async');
+    expect(inicioFerias).toBeGreaterThan(-1);
+    expect(fimFerias).toBeGreaterThan(inicioFerias);
+    expect(FONTE_API.slice(inicioFerias, fimFerias)).toContain('erroAusenteEhSucesso: true');
   });
 
   it('83 — getChannelList vai por GET sem parâmetro nenhum além dos comuns, e o size_id continua STRING', async () => {
@@ -4205,6 +4212,25 @@ const HOLIDAY_MODE_BODY = {
     holiday_mode_end_time: 1773305999,
     holiday_mode_description: '"Spring Festival"',
     debug_msg: '""',
+  },
+};
+
+/**
+ * ⚠️ O corpo de SUCESSO VIVO, medido no sandbox em 2026-09-21 (sonda do passo 12,
+ * P2 e a verificação da limpeza): as chaves de topo são SÓ `request_id` e
+ * `response` — sem `error`, sem `message`, sem `debug_msg` dentro — e `type` é 0
+ * enquanto `on` é false. A amostra da página (acima) tem `error: ''`; a loja real
+ * não manda a chave. É a mesma classe do registro 73 (`get_item_violation_info`).
+ */
+const HOLIDAY_MODE_BODY_VIVO = {
+  request_id: 'req-holiday-vivo',
+  response: {
+    holiday_mode_on: false,
+    holiday_mode_mtime: 1763435974,
+    holiday_mode_type: 0,
+    holiday_mode_start_time: 0,
+    holiday_mode_end_time: 0,
+    holiday_mode_description: '',
   },
 };
 
@@ -4510,13 +4536,14 @@ describe('update_stock — a ÚNICA escrita do passo 12', () => {
     expect((erro as ShopeeApiError).code).toBe('-');
 
     // ⚠️ Asserção de FONTE, e é ela que fecha o buraco: a tolerância de CHAVE
-    // ausente continua existindo UMA vez no arquivo inteiro (em
-    // `getItemViolationInfo`, onde foi MEDIDA), e o bloco de `updateStock` não a
-    // menciona. Um segundo call site passaria por todo teste de comportamento
-    // acima — os corpos deles TÊM a chave `error` — e alargaria em silêncio o
-    // único ponto do pacote onde um corpo injulgável vira sucesso.
+    // ausente existe DUAS vezes no arquivo inteiro (em `getItemViolationInfo` e
+    // em `getShopHolidayMode`, onde foi MEDIDA nas duas — testes 82 e 103b), e o
+    // bloco de `updateStock` não a menciona. Um terceiro call site passaria por
+    // todo teste de comportamento acima — os corpos deles TÊM a chave `error` —
+    // e alargaria em silêncio os únicos pontos do pacote onde um corpo
+    // injulgável vira sucesso.
     const tolerancia = 'erroAusenteEhSucesso';
-    expect(FONTE_API.split(tolerancia).length - 1).toBe(1);
+    expect(FONTE_API.split(tolerancia).length - 1).toBe(2);
     const inicio = FONTE_API.indexOf('updateStock: async');
     const fim = FONTE_API.indexOf('getItemPromotion: async');
     expect(inicio).toBeGreaterThan(-1);
@@ -4602,6 +4629,42 @@ describe('as TRÊS leituras do passo 12', () => {
     expect(init?.body).toBeUndefined();
     expect(url.pathname).toBe(SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH);
     expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+  });
+
+  it('103b — getShopHolidayMode aceita o corpo VIVO sem `error` (medido) e continua recusando um corpo sem `response`', async () => {
+    // O PAR: o corpo que a loja real manda — sem a chave `error` — é sucesso.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(HOLIDAY_MODE_BODY_VIVO),
+    );
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getShopHolidayMode();
+    expect(payload.holiday_mode_on).toBe(false);
+    expect(payload.holiday_mode_type).toBe(0);
+    expect(payload.debug_msg).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // O QUASE-IGUAL: sem `error` E sem `response` continua injulgável — a
+    // tolerância não vira "qualquer JSON é sucesso".
+    const semNada = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ request_id: 'req-vazio' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(semNada)).getShopHolidayMode(),
+    ).rejects.toBeInstanceOf(ShopeeSchemaError);
+
+    // E um `error` PRESENTE e não vazio continua sendo erro, com o código.
+    const comErro = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-erro',
+        error: 'error_shop_not_exists',
+        message: 'x',
+        response: {},
+      }),
+    );
+    const erro = await createShopeeClient(shopConfig(comErro))
+      .getShopHolidayMode()
+      .catch((e: unknown) => e);
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_shop_not_exists');
   });
 
   it('104 — getWarehouseDetail devolve a LISTA, com location_id STRING, e só manda warehouse_type quando pedido', async () => {

@@ -3505,6 +3505,16 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         call: await signedCall(),
         schema: shopeeShopHolidayModeSchema,
         surface: SHOPEE_SURFACE.business,
+        // ⚠️ The SECOND of the two absent-key tolerances in this file (the
+        // first is `getItemViolationInfo`, register 73). MEASURED on the
+        // sandbox 2026-09-21 (step 12's probe, P2): the SUCCESS body is
+        // `{request_id, response: {holiday_mode_on, …}}` with NO `error` and NO
+        // `message` key, and stage 1 refused it with `campos=["error"]` on every
+        // read — which would have turned the conta gate `loja-em-ferias` and the
+        // sender's holiday arm into a permanent read failure. The tolerance
+        // still requires a `response` object, so a body carrying neither key
+        // stays refused — see the option's docblock in `call.ts`.
+        erroAusenteEhSucesso: true,
         // ⚠️ No `query` key at all: the page's Request params section is EMPTY,
         // the `getChannelList` precedent.
       });
