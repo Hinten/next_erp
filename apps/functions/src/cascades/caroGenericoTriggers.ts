@@ -108,11 +108,12 @@ import {
  * each declaration in `packages/schemas`.
  *
  * `filiais` deliberately has no cascade either (#1626). Its descendants now
- * include the append-only `enviNfe` and `inutilizacao` audit logs, the A1
+ * include signed/protocol-bearing `enviNfe` and `inutilizacao` records, the A1
  * `certificadoSecreto`, `nfeconfig`, and nested Simples apuracoes. Cascading a
- * root delete would destroy signed/protocol history and the certificate later
- * NF-e operations still need. `filialMeta.permissions.delete = null` blocks
- * the client delete at the generated-rules layer instead.
+ * root delete would destroy data that later NF-e operations and fiscal audits
+ * still need. `filialMeta.permissions.delete = null` blocks deletion of the
+ * root at the generated-rules layer instead; descendant metas continue to own
+ * their direct update/delete policies.
  */
 export const onIntegracaoDeleted = defineCascadeCaroGenerico(integracaoMeta);
 export const onIntFreteDeleted = defineCascadeCaroGenerico(intFreteMeta);

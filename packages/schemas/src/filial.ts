@@ -137,11 +137,13 @@ export const filialMeta: CollectionMetadata = {
   permissions: {
     read: PERM_CONFIG_READ,
     write: PERM_CONFIG_WRITE,
-    // A filial roots durable fiscal descendants: signed SEFAZ audit messages,
-    // inutilizacao protocols, the A1 secret and Simples apuracoes. Deleting the
-    // root either orphans that history or, with a subtree cascade, destroys it.
-    // #1626 therefore denies every client delete (including `su`); Admin SDK
-    // operations remain possible only as an explicit server-side decision.
+    // A filial root anchors durable fiscal descendants: signed SEFAZ messages,
+    // inutilizacao protocols, the A1 secret and Simples apuracoes. Deleting
+    // this root would orphan that history; cascading it would destroy it.
+    // #1626 therefore denies client deletion of the root (including `su`). It
+    // deliberately adds no retirement/deactivation flow and does not change
+    // direct CRUD policies of descendant collections. The Admin SDK remains
+    // available only for an explicit server-side operation.
     delete: null,
   },
   defaultQuery: {

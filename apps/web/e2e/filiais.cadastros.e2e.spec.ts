@@ -268,6 +268,7 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
 
   test('does not expose hard delete on either the list or detail', async ({ page }) => {
     await page.goto('/configuracoes/filiais');
+    await applyTextFilter(page, 'Razão Social', row(7));
     await expectRowVisible(page, row(7));
     await selectRowByText(page, row(7));
     await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
