@@ -190,6 +190,50 @@ describe('CNPJ alfanumérico — the generator guards', () => {
     expect(() => generateNFe(fixtureComCnpjFab('PC3D315K000194'))).toThrow(/PC3D315K000194/);
   });
 
+  /**
+   * The EMITENTE half (#1619). Everything above this point is a counterparty;
+   * `buildHomologacaoFixture` already takes the emitente `{ cnpj, ie }`, so an
+   * alfa emitente is a fixture argument rather than new machinery.
+   *
+   * ⚠️ XSD validation is NOT the gate here and cannot be: the vendored
+   * `TCnpj` facet has been `[0-9A-Z]{12}[0-9]{2}` since the PL_010d swap, and
+   * the codegen drops `xs:pattern` entirely, so a broken emitente would sail
+   * through this file. What these assert is that the GENERATOR produces the
+   * right document at all — a 44-character chave whose `Id` and `<emit><CNPJ>`
+   * agree, which is precisely what `computeCDV` returning the string `'NaN'`
+   * used to destroy.
+   */
+  describe('an ALPHANUMERIC emitente (filial)', () => {
+    const EMITENTE_ALFA = 'PC3D315K000193';
+
+    const gerar = () =>
+      generateNFe(
+        buildHomologacaoFixture({
+          numeracao: 1,
+          serie: 2,
+          cnpj: EMITENTE_ALFA,
+          ie: '111111111',
+        }),
+      );
+
+    it('emits <emit><CNPJ> un-mangled and a 44-character Id that agrees with it', () => {
+      const out = gerar();
+
+      expect(out.nfeXml).toContain(`<emit><CNPJ>${EMITENTE_ALFA}</CNPJ>`);
+      expect(out.chave).toHaveLength(44);
+      expect(out.chave.slice(6, 20)).toBe(EMITENTE_ALFA);
+      expect(out.nfeXml).toContain(`<infNFe Id="NFe${out.chave}"`);
+      // The failure this guards: `Number('A')` → NaN → a 46-char chave whose
+      // last three characters are the literal string 'NaN'.
+      expect(out.chave).not.toContain('NaN');
+      expect(/^\d$/.test(out.chave.slice(-1))).toBe(true);
+    });
+
+    it('is XSD-clean — TCnpj on C02 and TChNFe on the Id', async () => {
+      await expect(errosDePatternDe(gerar().nfeXml)).resolves.toEqual([]);
+    });
+  });
+
   it('accepts a 44-char chNFeReferenciada whose CNPJ body is alphanumeric', () => {
     const base = buildHomologacaoFixture({
       numeracao: 1,

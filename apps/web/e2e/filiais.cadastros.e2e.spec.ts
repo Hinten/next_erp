@@ -149,6 +149,53 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expectRowVisible(page, nome);
   });
 
+  /**
+   * CNPJ alfanumérico on our own emitente (RFB IN 2.229/2024 · #1619).
+   *
+   * This is the one step the offline suites cannot show. The filial `CnpjInput`
+   * used to `replace(/\D/g, '')` on every keystroke, so an operator typing
+   * `PC3D315K000193` watched the letters vanish and landed on `3315000193` —
+   * which `filialSchema` (`max(18)`, no minimum, no checksum) saved without a
+   * word. Only a real browser typing into the real field proves that is gone.
+   */
+  test('creates a filial with an ALPHANUMERIC CNPJ, un-truncated', async ({ page }) => {
+    const nome = `${prefix}-alfa`;
+    const cnpjAlfa = 'PC3D315K000193';
+    await page.goto('/configuracoes/filiais/novo');
+    await fillField(page, 'Razão Social', nome);
+    await fillField(page, 'CNPJ', cnpjAlfa);
+    // The letters survive typing — this is the assertion the old input failed.
+    await expect(page.getByLabel('CNPJ', { exact: true })).toHaveValue(cnpjAlfa);
+    await fillField(page, 'Inscrição Estadual', '123456789');
+    await fillSede(page);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) =>
+        /^\/configuracoes\/filiais\/[^/]+$/.test(url.pathname) &&
+        url.pathname !== '/configuracoes/filiais/novo',
+      { timeout: 15_000 },
+    );
+    // …and survive the Firestore round trip, in the canonical uppercase form
+    // that `inutilizar.ts` and `filial-cert.ts` compare byte-for-byte against a
+    // CNPJ sliced out of a chave.
+    await expectFieldAfterReload(page, 'CNPJ', cnpjAlfa);
+    await expect
+      .poll(() => docExistsByField('filiais', 'cnpj', cnpjAlfa), { timeout: 15_000 })
+      .toBe(true);
+  });
+
+  test('rejects a filial whose alphanumeric CNPJ has a bad check digit', async ({ page }) => {
+    // The near-miss: one digit off `PC3D315K000193`. `filialSchema` accepts it
+    // (read-tolerance), `filialFormSchema` is what refuses to save it.
+    await page.goto('/configuracoes/filiais/novo');
+    await fillField(page, 'Razão Social', `${prefix}-alfa-dv`);
+    await fillField(page, 'CNPJ', 'PC3D315K000194');
+    await fillSede(page);
+    await clickSave(page, 'Criar');
+    await expectFieldError(page, 'CNPJ');
+    await expect(page).toHaveURL(/\/configuracoes\/filiais\/novo$/);
+  });
+
   test('rejects creating a filial with an empty Razão Social', async ({ page }) => {
     await page.goto('/configuracoes/filiais/novo');
     await fillField(page, 'CNPJ', '11222333000181');

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { validateCNPJ } from '@delfrance/core/documents';
 import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { enderecoSchema } from './endereco';
@@ -25,7 +26,35 @@ export const filialSchema = z.object({
     .describe(
       '{"label":"CNAE","hint":"Classificação Nacional de Atividades Econômicas, informado pelo contador"}',
     ),
-  cnpj: z.string().max(18).regex(/^\d*$/, 'apenas números').describe('CNPJ'),
+  // ⚠️ Letters only in the ALFA CNPJ SHAPE — the same narrow spelling as
+  // `endereco.cpf_cnpj`, `bandeiraCartao.cnpj_instituicao` and
+  // `integracao.cpf_cnpj`, never `cliente.ts`'s wider `^[0-9A-Z]*$` (that one
+  // can afford it only because a `validateCpfCnpj` refine sits behind it).
+  //
+  // ⚠️ This regex IS the canonical-form guarantee for our own emitente, not
+  // merely input validation. `[0-9A-Z]` excludes lowercase and punctuation on
+  // READ as well as write, and two consumers compare this value byte-for-byte
+  // against a CNPJ sliced straight out of a chave — which the XSD facet
+  // guarantees is uppercase:
+  //   · `apps/nfe/lib/nfe/orchestrator/inutilizar.ts` — `chave.slice(6, 20) ===
+  //     filial.cnpj`, the OWNERSHIP check for legacy pre-`filialId` docs. A
+  //     non-canonical row answers "not ours", the already-authorized pre-check
+  //     passes, and we inutilizar a range containing an authorized NF-e.
+  //   · `apps/nfe/lib/nfe/filial-cert.ts` — `where('cnpj', '==', …)` is exact,
+  //     so a non-canonical row resolves no A1 certificate.
+  // Neither failure names the case mismatch as its cause. Widening this to
+  // accept lowercase would reopen both.
+  //
+  // The CHECKSUM lives on `filialFormSchema` instead, not here: this is also
+  // the READ schema (root CLAUDE.md rule 8 — read-tolerance for stored shapes),
+  // and `CnpjInput` used to truncate a pasted alfa CNPJ, so a short value may
+  // already be stored. `.max(18)` stays: rules-gen emits maxLength and drops
+  // regex patterns, so keeping it leaves both rulesets untouched.
+  cnpj: z
+    .string()
+    .max(18)
+    .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
+    .describe('CNPJ'),
   ie: z.string().regex(/^\d*$/, 'apenas números').describe('Inscrição Estadual'),
   iest: z
     .string()
@@ -57,6 +86,51 @@ export const filialSchema = z.object({
 });
 
 export type Filial = z.infer<typeof filialSchema>;
+
+/**
+ * Cross-field rule: our own emitente CNPJ must be present and checksum-valid.
+ *
+ * ⚠️ Deliberately NOT on `filialSchema` itself, exactly as
+ * `refineClienteTipoDocumento` is kept off `clienteSchema`. `filialSchema` is
+ * also the READ schema, and the filial `CnpjInput` used to `replace(/\D/g,'')`
+ * a pasted alphanumeric CNPJ — which `max(18)` with no minimum and no checksum
+ * saved cleanly — so a truncated value may already be stored. A refine on the
+ * base schema would make `parseRead` throw on that row, including inside the
+ * A1-certificate resolution path. Read-tolerance for stored shapes is root
+ * CLAUDE.md rule 8; the form simply refuses to save it again.
+ *
+ * ⚠️ The empty-string case is load-bearing, not defensive: `cnpj` is a required
+ * string whose `^(\d*|…)$` regex accepts `''`, so today a filial saves with no
+ * CNPJ at all and the only complaint arrives from
+ * `packages/integrations/nfe/src/generator/index.ts` at EMISSION time.
+ */
+export function refineFilialCnpj(data: { cnpj?: string | null }, ctx: z.RefinementCtx): void {
+  const cnpj = data.cnpj;
+  if (cnpj === undefined || cnpj === null) return;
+  if (cnpj === '') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cnpj'],
+      message: 'Informe o CNPJ da filial.',
+    });
+    return;
+  }
+  if (!validateCNPJ(cnpj)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cnpj'],
+      message: 'CNPJ inválido (14 caracteres; pode conter letras maiúsculas).',
+    });
+  }
+}
+
+/**
+ * Filial schema **for the ObjectView form only** — `filialSchema` plus the
+ * checksum refine above. The registry / rules-gen use the plain `filialSchema`
+ * (a `ZodEffects` has no `.shape`), and only the filial FORM validates with
+ * this variant. Mirrors `clienteFormSchema` / `clienteSchema`.
+ */
+export const filialFormSchema = filialSchema.superRefine(refineFilialCnpj);
 
 export const filialMeta: CollectionMetadata = {
   collectionPath: 'filiais',
