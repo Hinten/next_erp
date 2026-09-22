@@ -298,7 +298,7 @@ describe('PedidoForm — persistent lazy Incidentes tab', () => {
     expect(guardState.dirty).toBe(false);
   });
 
-  it('validates the pedido before attempting the incidente flush', async () => {
+  it('flushes incidentes from an invalid pedido but keeps the pedido blocked', async () => {
     const onSubmit = vi.fn(async () => true);
     render(
       <MantineTestProvider>
@@ -312,14 +312,53 @@ describe('PedidoForm — persistent lazy Incidentes tab', () => {
     );
     fireEvent.click(screen.getByRole('tab', { name: 'Incidentes' }));
     fireEvent.change(screen.getByLabelText('Rascunho incidente'), {
-      target: { value: 'não deve salvar ainda' },
+      target: { value: 'deve salvar mesmo assim' },
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
 
-    await waitFor(() => expect(notificationShow).toHaveBeenCalled());
-    expect(incidenteStub.order).toEqual([]);
+    await waitFor(() => expect(incidenteStub.order).toEqual(['incidente']));
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Incidente salvo; pedido inválido', color: 'yellow' }),
+    );
+    expect(notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'red', message: expect.stringContaining('Principal') }),
+    );
+  });
+
+  it('prioritizes an incidente conflict even when the pedido is invalid', async () => {
+    incidenteStub.flushResult = false;
+    const onSubmit = vi.fn(async () => true);
+    render(
+      <MantineTestProvider>
+        <PedidoForm
+          defaultValues={{ ehSaida: true, itens: {} } as unknown as Pedido}
+          pedidoId="ped-invalido"
+          ehSaida
+          onSubmit={onSubmit}
+        />
+      </MantineTestProvider>,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Incidentes' }));
+    fireEvent.change(screen.getByLabelText('Rascunho incidente'), {
+      target: { value: 'com conflito' },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Principal' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+
+    expect(await screen.findByText('Conflito no incidente')).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('tab', { name: /^Incidentes/ }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(notificationShow).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Incidente não salvo', color: 'red' }),
+    );
+    expect(notificationShow).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Incidente salvo; pedido inválido' }),
+    );
   });
 
   it('blocks the pedido save, reopens Incidentes and preserves its error when flush fails', async () => {

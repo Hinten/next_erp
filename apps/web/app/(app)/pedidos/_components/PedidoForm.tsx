@@ -108,6 +108,8 @@ export interface PedidoFormProps {
   ) => Promise<void | boolean>;
 }
 
+type IncidenteFlushResult = 'none' | 'saved' | 'blocked';
+
 const EMPTY_DEFAULTS: PedidoFormState = {
   id: null,
   ehSaidaOriginal: null,
@@ -386,6 +388,40 @@ export function PedidoForm({
     }
   }, [liveEstado, form]);
 
+  async function flushIncidentesPendentes(): Promise<IncidenteFlushResult> {
+    if (!incidenteDirty) return 'none';
+
+    const flush = incidenteFlushRef.current;
+    if (!flush) {
+      selectTab('incidentes');
+      setSubmitError(
+        'A edição de incidente ainda está carregando. Revise a aba Incidentes e tente novamente.',
+      );
+      return 'blocked';
+    }
+
+    try {
+      const flushed = await flush();
+      if (!flushed) {
+        selectTab('incidentes');
+        notifications.show({
+          color: 'red',
+          title: 'Incidente não salvo',
+          message: 'Revise o erro na aba Incidentes antes de salvar o pedido.',
+        });
+        return 'blocked';
+      }
+      return 'saved';
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        selectTab('incidentes');
+        setSubmitError(err.message);
+        return 'blocked';
+      }
+      throw err;
+    }
+  }
+
   // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
   // navigates away; "Salvar e continuar editando" reloads in place. The footer's
   // continue button runs the same RHF validation programmatically with the
@@ -394,28 +430,9 @@ export function PedidoForm({
     setSubmitError(null);
     let incidenteSaved = false;
     try {
-      if (incidenteDirty) {
-        const flush = incidenteFlushRef.current;
-        if (!flush) {
-          selectTab('incidentes');
-          setSubmitError(
-            'A edição de incidente ainda está carregando. Revise a aba Incidentes e tente novamente.',
-          );
-          return;
-        }
-
-        const flushed = await flush();
-        if (!flushed) {
-          selectTab('incidentes');
-          notifications.show({
-            color: 'red',
-            title: 'Incidente não salvo',
-            message: 'Revise o erro na aba Incidentes antes de salvar o pedido.',
-          });
-          return;
-        }
-        incidenteSaved = true;
-      }
+      const incidenteResult = await flushIncidentesPendentes();
+      if (incidenteResult === 'blocked') return;
+      incidenteSaved = incidenteResult === 'saved';
 
       const saved = await onSubmit(
         values,
@@ -450,11 +467,24 @@ export function PedidoForm({
     }
   }
 
-  // Invalid submit. Without this, an error on a non-active tab is silent: RHF
-  // blocks the save and the inline message sits in a hidden panel. Jump to the
-  // first erroring tab and name the offenders in a red toast — the same
-  // behavior ObjectView gives its tabbed forms.
-  function onInvalid(errors: FieldErrors<PedidoFormState>) {
+  // Invalid pedido fields still block the pedido write, but they must not make
+  // incidente operations unreachable: legacy pedidos may lack fields the
+  // current editor requires, and operators still need to record or delete an
+  // incidente on those documents. Flush the independent subcollection first,
+  // then keep the pedido on screen and route to its validation errors.
+  async function onInvalid(errors: FieldErrors<PedidoFormState>) {
+    setSubmitError(null);
+    const incidenteResult = await flushIncidentesPendentes();
+    if (incidenteResult === 'blocked') return;
+
+    if (incidenteResult === 'saved') {
+      notifications.show({
+        color: 'yellow',
+        title: 'Incidente salvo; pedido inválido',
+        message: 'O incidente foi gravado, mas corrija os campos do pedido antes de salvá-lo.',
+      });
+    }
+
     const summary = summarizePedidoErrors(Object.keys(errors));
     if (summary.firstTab && (!activeTab || !summary.errorTabValues.has(activeTab))) {
       setActiveTab(summary.firstTab);

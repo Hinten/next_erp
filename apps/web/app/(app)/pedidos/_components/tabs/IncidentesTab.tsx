@@ -222,9 +222,11 @@ function IncidentesManager({
     () => editingBase != null && !valuesEqual(form, formFromIncidente(editingBase)),
     [form, editingBase],
   );
-  const draftDirty =
-    editing !== null &&
-    (editing.id === null ? !valuesEqual(form, EMPTY_INCIDENTE_FORM) : baselineDiffers);
+  // Opening a create card is itself pending work. All incidente fields are
+  // optional and `tipo` already has a valid default, so comparing a new draft
+  // with EMPTY_INCIDENTE_FORM would let the shared pedido save discard a valid
+  // default-only incidente without ever calling the flush.
+  const draftDirty = editing !== null && (editing.id === null || baselineDiffers);
   const hasPendingChanges = draftDirty || pendingDeleteIds.size > 0;
 
   useEffect(() => {

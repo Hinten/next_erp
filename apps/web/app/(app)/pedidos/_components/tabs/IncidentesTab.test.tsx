@@ -305,6 +305,24 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     expect(saveEditMock).not.toHaveBeenCalled();
   });
 
+  it('treats an untouched create card as pending and persists its valid defaults', async () => {
+    snapState.current = { data: [], loading: false, error: undefined };
+    render(tab());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Novo incidente' }));
+
+    expect(screen.getByText('Alterações não salvas')).toBeDefined();
+    expect(await flushIncidentes()).toBe(true);
+    expect(saveIncidenteMock).toHaveBeenCalledTimes(1);
+    expect(saveIncidenteMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        pedidoId: 'ped-1',
+        incidenteId: null,
+        incidente: expect.objectContaining({ tipo: TIPO_INCIDENTE.devolucao }),
+      }),
+    );
+  });
+
   it('stages a deletion, supports undo and only deletes during the shared flush', async () => {
     snapState.current = snapshotOf(incidente());
     render(tab());
