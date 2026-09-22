@@ -864,6 +864,26 @@ describe('shopeeLink.ts — o texto do arquivo', () => {
     expect(FONTE).toMatch(/never[\s*]+computed in this schema/);
   });
 
+  it('a fórmula do conjunto de pulo no docblock traz a GUARDA das duas metades nulas e a dobra dos dois lados', () => {
+    // A revisão do PR #1623 achou este docblock descrevendo o predicado de
+    // ANTES da decisão B: sem a guarda "pelo menos uma leitura gravada" e sem
+    // `ouNulo` — lido ao pé da letra, um carimbo null/null contra leituras
+    // ausentes travava o anúncio para sempre, que é exatamente o defeito que
+    // foi corrigido, documentado como o comportamento. O código é a regra
+    // (`pularPorRecusaAnterior`); isto prende só que o TEXTO não volte atrás.
+    expect(FONTE).toContain("typeof estoqueRecusaEm === 'number'");
+    expect(FONTE).toContain("typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte");
+    expect(FONTE).toMatch(
+      /ouNulo\(estoqueRecusaEstado\) !== null\s*\*\s*\|\| ouNulo\(estoqueRecusaItemStatus\) !== null\)/,
+    );
+    expect(FONTE).toContain('ouNulo(estoqueRecusaEstado)     === ouNulo(link.estadoAnuncio)');
+    expect(FONTE).toContain('ouNulo(estoqueRecusaItemStatus) === ouNulo(link.item_status)');
+    expect(FONTE).toContain('apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts');
+    // O NEAR-MISS: a fórmula antiga, sem a dobra, não pode sobreviver.
+    expect(FONTE).not.toContain('estoqueRecusaEstado     === link.estadoAnuncio');
+    expect(FONTE).not.toContain('estoqueRecusaEm  != null');
+  });
+
   it('o docblock não chama o code 6 de push moderno', () => {
     // A correção é barata de escrever e barata de perder: sem isto, a próxima
     // revisão do docblock volta a apontar o leitor para um push aposentado.
