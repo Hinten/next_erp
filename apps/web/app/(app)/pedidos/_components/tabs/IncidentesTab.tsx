@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from 'react';
 import {
   Alert,
   Badge,
@@ -8,8 +8,8 @@ import {
   Card,
   Divider,
   Group,
-  Modal,
   Select,
+  SimpleGrid,
   Skeleton,
   Stack,
   Switch,
@@ -18,6 +18,7 @@ import {
   Title,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import { IconArrowBackUp, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import {
   ORIGEM_INCIDENTE,
@@ -84,7 +85,17 @@ export interface IncidentesTabProps {
    * integração, which is why the panel is conditional rather than always shown.
    */
   integracaoId?: string | null;
+  /** Publishes pending add/edit/delete work to PedidoForm's shared leave guard. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Registers the save-time callback used by PedidoForm. The persistent tab
+   * keeps this registration alive after the operator opens another tab.
+   */
+  flushRef?: MutableRefObject<IncidenteFlush | null>;
 }
+
+/** Returns false when validation, a conflict or Firestore blocks the pedido save. */
+export type IncidenteFlush = () => Promise<boolean>;
 
 /**
  * Whether this incidente is a Mercado Livre claim we can query.
@@ -106,7 +117,13 @@ function claimIdDoIncidente(inc: {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-export function IncidentesTab({ disabled, pedidoId, integracaoId }: IncidentesTabProps) {
+export function IncidentesTab({
+  disabled,
+  pedidoId,
+  integracaoId,
+  onDirtyChange,
+  flushRef,
+}: IncidentesTabProps) {
   if (!pedidoId) {
     return (
       <Text c="dimmed" size="sm">
@@ -114,17 +131,29 @@ export function IncidentesTab({ disabled, pedidoId, integracaoId }: IncidentesTa
       </Text>
     );
   }
-  return <IncidentesManager pedidoId={pedidoId} disabled={disabled} integracaoId={integracaoId} />;
+  return (
+    <IncidentesManager
+      pedidoId={pedidoId}
+      disabled={disabled}
+      integracaoId={integracaoId}
+      onDirtyChange={onDirtyChange}
+      flushRef={flushRef}
+    />
+  );
 }
 
 function IncidentesManager({
   pedidoId,
   disabled,
   integracaoId,
+  onDirtyChange,
+  flushRef,
 }: {
   pedidoId: string;
   disabled?: boolean;
   integracaoId?: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
+  flushRef?: MutableRefObject<IncidenteFlush | null>;
 }) {
   const q = useMemo(() => {
     const base = incidenteCollection.ref(getFirebaseFirestore(), { pedidoId });
@@ -142,8 +171,9 @@ function IncidentesManager({
   const [form, setForm] = useState<IncidenteFormState>(EMPTY_INCIDENTE_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  // Deletes follow the editor-wide staged-deletion rule: keep the row visible,
+  // offer undo, and apply the removal only through PedidoForm's shared save.
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(() => new Set());
   const [conflict, setConflict] = useState<{
     /** The version the operator reviewed. Null only on the create path, which never conflicts. */
     baseline: Incidente | null;
@@ -191,6 +221,21 @@ function IncidentesManager({
   const baselineDiffers = useMemo(
     () => editingBase != null && !valuesEqual(form, formFromIncidente(editingBase)),
     [form, editingBase],
+  );
+  const draftDirty =
+    editing !== null &&
+    (editing.id === null ? !valuesEqual(form, EMPTY_INCIDENTE_FORM) : baselineDiffers);
+  const hasPendingChanges = draftDirty || pendingDeleteIds.size > 0;
+
+  useEffect(() => {
+    onDirtyChange?.(hasPendingChanges);
+  }, [hasPendingChanges, onDirtyChange]);
+  useEffect(
+    () => () => {
+      // Do not leave PedidoForm's shared guard armed if the whole form unmounts.
+      onDirtyChange?.(false);
+    },
+    [onDirtyChange],
   );
   const seedFromServerTruth = useCallback(() => {
     if (!live || editingId === null) return;
@@ -251,78 +296,81 @@ function IncidentesManager({
    * the one they just read in the conflict modal instead, so an override never
    * clobbers an edit nobody has seen.
    */
-  async function commitIncidente(baseline: Incidente | null): Promise<boolean> {
-    if (!editing) return false;
-    const incidenteId = editing.id;
-    // ⚠️ No fallback to a baseline-less update. Without a baseline there is
-    // nothing to compare, and a save that cannot be guarded must not happen —
-    // falling through to `incidenteDataFromForm(form, null, …)` here would
-    // write an EMPTY document over a real one. `openEdit` always sets `base`,
-    // so this is a bug guard, not a path.
-    if (incidenteId !== null && baseline === null) {
-      setSaveError('Ainda carregando a versão mais recente do incidente — tente novamente.');
-      return false;
-    }
-    setSaving(true);
-    setSaveError(null);
-    try {
-      if (incidenteId === null || baseline === null) {
-        // CREATE: the op mints the id and stamps `timestamp`, and there is no
-        // stored document for the whole-document `set` to regress.
-        await saveIncidente(createClientPedidoPort(getFirebaseFirestore()), {
-          pedidoId,
-          incidenteId: null,
-          incidente: incidenteDataFromForm(form, null, nowMicros()),
-        });
-      } else {
-        await saveIncidenteEdit(
-          createClientIncidentePort(getFirebaseFirestore(), pedidoId, incidenteId),
-          { form, baseline },
-        );
-      }
-      setConflict(null);
-      setEditing(null);
-      return true;
-    } catch (err) {
-      if (err instanceof IncidenteConflictError) {
-        // Changed remotely on a field this save writes → let the operator review
-        // the diff and decide. Never a silent overwrite (tier 3).
-        setConflict({
-          baseline,
-          current: err.current,
-          campos: err.campos,
-          bloqueouAgora: err.bloqueouAgora,
-        });
+  const commitIncidente = useCallback(
+    async (baseline: Incidente | null): Promise<boolean> => {
+      if (!editing) return false;
+      const incidenteId = editing.id;
+      // ⚠️ No fallback to a baseline-less update. Without a baseline there is
+      // nothing to compare, and a save that cannot be guarded must not happen —
+      // falling through to `incidenteDataFromForm(form, null, …)` here would
+      // write an EMPTY document over a real one. `openEdit` always sets `base`,
+      // so this is a bug guard, not a path.
+      if (incidenteId !== null && baseline === null) {
+        setSaveError('Ainda carregando a versão mais recente do incidente — tente novamente.');
         return false;
       }
-      if (err instanceof IncidenteMissingError) {
+      setSaving(true);
+      setSaveError(null);
+      try {
+        if (incidenteId === null || baseline === null) {
+          // CREATE: the op mints the id and stamps `timestamp`, and there is no
+          // stored document for the whole-document `set` to regress.
+          await saveIncidente(createClientPedidoPort(getFirebaseFirestore()), {
+            pedidoId,
+            incidenteId: null,
+            incidente: incidenteDataFromForm(form, null, nowMicros()),
+          });
+        } else {
+          await saveIncidenteEdit(
+            createClientIncidentePort(getFirebaseFirestore(), pedidoId, incidenteId),
+            { form, baseline },
+          );
+        }
         setConflict(null);
-        setSaveError(err.message);
-        return false;
+        setEditing(null);
+        return true;
+      } catch (err) {
+        if (err instanceof IncidenteConflictError) {
+          // Changed remotely on a field this save writes → let the operator review
+          // the diff and decide. Never a silent overwrite (tier 3).
+          setConflict({
+            baseline,
+            current: err.current,
+            campos: err.campos,
+            bloqueouAgora: err.bloqueouAgora,
+          });
+          return false;
+        }
+        if (err instanceof IncidenteMissingError) {
+          setConflict(null);
+          setSaveError(err.message);
+          return false;
+        }
+        if (err instanceof FirebaseError) {
+          setSaveError(err.message);
+          return false;
+        }
+        throw err;
+      } finally {
+        setSaving(false);
       }
-      if (err instanceof FirebaseError) {
-        setSaveError(err.message);
-        return false;
-      }
-      throw err;
-    } finally {
-      setSaving(false);
-    }
-  }
+    },
+    [editing, form, pedidoId],
+  );
 
-  async function handleSave() {
-    if (!editing) return;
+  const saveDraft = useCallback(async (): Promise<boolean> => {
+    if (!editing || !draftDirty) return true;
     if (rowDeleted) {
       setSaveError(new IncidenteMissingError().message);
-      return;
+      return false;
     }
     const validationError = validateIncidenteForm(form);
     if (validationError) {
       setSaveError(validationError);
-      return;
+      return false;
     }
-    await commitIncidente(editing.base);
-  }
+    return commitIncidente(editing.base);
+  }, [commitIncidente, draftDirty, editing, form, rowDeleted]);
 
   /**
    * "Salvar mesmo assim": override the version the operator JUST reviewed by
@@ -334,38 +382,105 @@ function IncidentesManager({
     await commitIncidente(conflict.current);
   }
 
-  async function handleDelete() {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      await deleteIncidente(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        incidenteId: deleteTarget,
-      });
-      setDeleteTarget(null);
-    } finally {
-      setDeleting(false);
-    }
+  function togglePendingDelete(id: string) {
+    setSaveError(null);
+    setPendingDeleteIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
+
+  const flushPending = useCallback(async (): Promise<boolean> => {
+    if (!(await saveDraft())) return false;
+    if (pendingDeleteIds.size === 0) return true;
+
+    setSaving(true);
+    setSaveError(null);
+    const remaining = new Set(pendingDeleteIds);
+    try {
+      for (const incidenteId of pendingDeleteIds) {
+        await deleteIncidente(createClientPedidoPort(getFirebaseFirestore()), {
+          pedidoId,
+          incidenteId,
+        });
+        remaining.delete(incidenteId);
+      }
+      setPendingDeleteIds(new Set());
+      return true;
+    } catch (err) {
+      // Successfully deleted rows leave the staged set even if a later delete
+      // fails, so retrying cannot present already-committed work as pending.
+      setPendingDeleteIds(new Set(remaining));
+      if (err instanceof FirebaseError) {
+        setSaveError(`Não foi possível excluir um incidente: ${err.message}`);
+        return false;
+      }
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }, [pendingDeleteIds, pedidoId, saveDraft]);
+
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = flushPending;
+    const ref = flushRef;
+    return () => {
+      ref.current = null;
+    };
+  }, [flushPending, flushRef]);
 
   const resFieldsDisabled = disabled || resolucaoLocked;
 
+  function cancelEditing() {
+    setEditing(null);
+    setConflict(null);
+    setSaveError(null);
+  }
+
   return (
-    <Stack>
-      <Group justify="space-between" align="center">
-        <Title order={3}>Incidentes</Title>
-        {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled}>
-            + Adicionar incidente
-          </Button>
-        )}
+    <Stack gap="lg">
+      <Group justify="space-between" align="flex-start" wrap="wrap">
+        <Stack gap={4}>
+          <Group gap="xs">
+            <Title order={3}>Incidentes</Title>
+            <Badge color="gray" variant="light">
+              {loading ? '…' : (data?.length ?? 0)}
+            </Badge>
+          </Group>
+          <Text c="dimmed" size="sm" maw={640}>
+            Inclusões, edições e exclusões marcadas serão salvas junto com o pedido.
+          </Text>
+        </Stack>
+        <Button
+          type="button"
+          leftSection={<IconPlus size={16} />}
+          onClick={openAdd}
+          disabled={disabled || editing !== null || saving}
+        >
+          Novo incidente
+        </Button>
       </Group>
 
       {editing && (
-        <Card withBorder>
-          <Stack gap="sm">
-            <Text fw={500}>{editing.id ? 'Editar incidente' : 'Novo incidente'}</Text>
-            <Group grow align="flex-start">
+        <Card withBorder padding="lg" bg="var(--mantine-color-blue-light)">
+          <Stack gap="md">
+            <Group justify="space-between" align="center">
+              <Stack gap={2}>
+                <Text fw={600}>{editing.id ? 'Editar incidente' : 'Novo incidente'}</Text>
+                <Text size="xs" c="dimmed">
+                  Conclua ou cancele esta edição antes de escolher outro incidente.
+                </Text>
+              </Stack>
+              {draftDirty && (
+                <Badge color="orange" variant="filled">
+                  Alterações não salvas
+                </Badge>
+              )}
+            </Group>
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
               <Select
                 label="Tipo"
                 data={tipoOptions}
@@ -381,7 +496,7 @@ function IncidentesManager({
                 onChange={(v) => setForm((f) => ({ ...f, origem: v ?? '' }))}
                 disabled={disabled}
               />
-            </Group>
+            </SimpleGrid>
             <Textarea
               label="Motivo"
               maxLength={2000}
@@ -428,7 +543,7 @@ function IncidentesManager({
 
             {form.registrarResolucao && (
               <Stack gap="sm">
-                <Group grow align="flex-start">
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
                   <Select
                     label="Tipo de resolução"
                     placeholder="Selecione"
@@ -451,7 +566,7 @@ function IncidentesManager({
                     clearable
                     disabled={resFieldsDisabled}
                   />
-                </Group>
+                </SimpleGrid>
                 <CurrencyInput
                   label="Despesa da resolução"
                   value={form.resValor}
@@ -486,12 +601,12 @@ function IncidentesManager({
               </Alert>
             )}
             {saveError && <Alert color="red">{saveError}</Alert>}
-            <Group justify="flex-end">
-              <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Text size="xs" c="dimmed">
+                Use “Salvar alterações” no rodapé para gravar este incidente e o pedido.
+              </Text>
+              <Button type="button" variant="default" onClick={cancelEditing} disabled={saving}>
                 Cancelar
-              </Button>
-              <Button onClick={handleSave} loading={saving} disabled={disabled || rowDeleted}>
-                Salvar
               </Button>
             </Group>
           </Stack>
@@ -499,36 +614,57 @@ function IncidentesManager({
       )}
 
       {error && <Alert color="red">{error.message}</Alert>}
+      {!editing && saveError && <Alert color="red">{saveError}</Alert>}
       {loading && <Skeleton height={64} />}
       {!loading && data && data.length === 0 && (
-        <Text c="dimmed" size="sm">
-          Nenhum incidente registrado neste pedido.
-        </Text>
+        <Card withBorder padding="lg">
+          <Stack gap={4} align="center">
+            <Text fw={500}>Nenhum incidente registrado</Text>
+            <Text c="dimmed" size="sm" ta="center">
+              Use “Novo incidente” para registrar uma ocorrência neste pedido.
+            </Text>
+          </Stack>
+        </Card>
       )}
       {!loading &&
-        data?.map(({ id, data: inc }) => (
-          <Card key={id} withBorder>
-            <Group justify="space-between" align="flex-start">
-              <Stack gap={2}>
-                <Group gap="xs">
-                  <Text fw={500}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
-                  {inc.resolucao && (
-                    <Badge color="green" variant="light">
-                      {TIPO_RESOLUCAO_LABELS[inc.resolucao.tipo] ?? 'Resolvido'}
-                    </Badge>
-                  )}
-                </Group>
-                <Text size="xs" c="dimmed">
-                  {inc.origem != null ? ORIGEM_INCIDENTE_LABELS[inc.origem] : 'Sem origem'} ·{' '}
-                  {formatMicros(inc.timestamp)}
-                </Text>
-                {inc.motivoDoIncidente && <Text size="sm">{inc.motivoDoIncidente}</Text>}
-                {inc.comentarios && (
-                  <Text size="sm" c="dimmed">
-                    {inc.comentarios}
+        data?.map(({ id, data: inc }) => {
+          const markedForDeletion = pendingDeleteIds.has(id);
+          const claimId = claimIdDoIncidente(inc);
+
+          return (
+            <Card
+              key={id}
+              withBorder
+              padding="lg"
+              opacity={markedForDeletion ? 0.72 : 1}
+              bg={markedForDeletion ? 'var(--mantine-color-orange-light)' : undefined}
+            >
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <Stack gap={4} maw={720}>
+                  <Group gap="xs">
+                    <Text fw={600}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
+                    {inc.resolucao && (
+                      <Badge color="green" variant="light">
+                        {TIPO_RESOLUCAO_LABELS[inc.resolucao.tipo] ?? 'Resolvido'}
+                      </Badge>
+                    )}
+                    {markedForDeletion && (
+                      <Badge color="orange" variant="filled">
+                        Será excluído
+                      </Badge>
+                    )}
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {inc.origem != null ? ORIGEM_INCIDENTE_LABELS[inc.origem] : 'Sem origem'} ·{' '}
+                    {formatMicros(inc.timestamp)}
                   </Text>
-                )}
-                {/* ⚠️ The ML claim id was stored but never rendered, so an
+                  {inc.motivoDoIncidente && <Text size="sm">{inc.motivoDoIncidente}</Text>}
+                  {inc.comentarios && (
+                    <Text size="sm" c="dimmed">
+                      {inc.comentarios}
+                    </Text>
+                  )}
+                  {/* ⚠️ The ML claim id was stored but never rendered, so an
                     imported incidente was indistinguishable from a hand-typed
                     one. It is also the key the panel below queries on.
 
@@ -540,46 +676,64 @@ function IncidentesManager({
                     incidente as Mercado Livre. A mislabelled id is worse than an
                     unlabelled one, and the legacy export is read-tolerant
                     territory (root `CLAUDE.md` rule 8). */}
-                {claimIdDoIncidente(inc) != null ? (
-                  <Text size="xs" c="dimmed">
-                    ML #{inc.externalId}
-                  </Text>
-                ) : (
-                  inc.externalId && (
+                  {claimId != null ? (
                     <Text size="xs" c="dimmed">
-                      Ref. externa: {inc.externalId}
+                      ML #{inc.externalId}
                     </Text>
-                  )
-                )}
-              </Stack>
-              <Group gap="xs">
-                <Button
-                  size="xs"
-                  variant="light"
-                  onClick={() => openEdit(id, inc)}
-                  disabled={disabled}
-                >
-                  Editar
-                </Button>
-                <Button
-                  size="xs"
-                  variant="light"
-                  color="red"
-                  onClick={() => setDeleteTarget(id)}
-                  disabled={disabled}
-                >
-                  Excluir
-                </Button>
+                  ) : (
+                    inc.externalId && (
+                      <Text size="xs" c="dimmed">
+                        Ref. externa: {inc.externalId}
+                      </Text>
+                    )
+                  )}
+                </Stack>
+                <Group gap="xs">
+                  {markedForDeletion ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="light"
+                      color="orange"
+                      leftSection={<IconArrowBackUp size={14} />}
+                      onClick={() => togglePendingDelete(id)}
+                      disabled={disabled || saving}
+                    >
+                      Desfazer
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="subtle"
+                        leftSection={<IconPencil size={14} />}
+                        onClick={() => openEdit(id, inc)}
+                        disabled={disabled || editing !== null || saving}
+                      >
+                        Editar
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={() => togglePendingDelete(id)}
+                        disabled={disabled || editing !== null || saving}
+                      >
+                        Excluir
+                      </Button>
+                    </>
+                  )}
+                </Group>
               </Group>
-            </Group>
-            {(() => {
-              const claimId = claimIdDoIncidente(inc);
-              return claimId != null && integracaoId ? (
+              {!markedForDeletion && claimId != null && integracaoId ? (
                 <ReclamacaoMlPanel claimId={claimId} integracaoId={integracaoId} />
-              ) : null;
-            })()}
-          </Card>
-        ))}
+              ) : null}
+            </Card>
+          );
+        })}
 
       <IncidenteConflictModal
         opened={conflict !== null}
@@ -591,25 +745,6 @@ function IncidentesManager({
         onForceSave={handleForceSave}
         onCancel={() => setConflict(null)}
       />
-
-      <Modal
-        opened={deleteTarget !== null}
-        onClose={() => setDeleteTarget(null)}
-        title="Excluir incidente"
-        centered
-      >
-        <Stack>
-          <Text>Tem certeza que deseja excluir este incidente?</Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteTarget(null)} disabled={deleting}>
-              Cancelar
-            </Button>
-            <Button color="red" onClick={handleDelete} loading={deleting}>
-              Excluir
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
     </Stack>
   );
 }

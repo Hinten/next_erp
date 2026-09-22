@@ -128,6 +128,7 @@ export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps
         <Title order={3}>Devolução</Title>
         <Group gap="xs">
           <Button
+            type="button"
             size="xs"
             variant="default"
             onClick={() => setRows((prev) => [...prev, newAvulsoRow()])}
@@ -135,7 +136,12 @@ export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps
           >
             + Produto avulso
           </Button>
-          <Button size="xs" onClick={() => setOriginModalOpen(true)} disabled={disabled}>
+          <Button
+            type="button"
+            size="xs"
+            onClick={() => setOriginModalOpen(true)}
+            disabled={disabled}
+          >
             + Adicionar pedido
           </Button>
         </Group>
@@ -297,6 +303,7 @@ function DevolucaoRowEditor({
       <Table.Td>
         <Tooltip label={row._delete ? 'Desfazer' : 'Remover'} withArrow>
           <ActionIcon
+            type="button"
             variant="subtle"
             color={row._delete ? 'gray' : 'red'}
             onClick={() => onToggleDelete(row.rowId)}

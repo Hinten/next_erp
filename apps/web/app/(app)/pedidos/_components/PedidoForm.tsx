@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Tabs, Text } from '@mantine/core';
+import { Alert, Badge, Tabs, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
@@ -37,11 +37,12 @@ import {
   EstoqueSyncTab,
   FiscalTab,
   FreteTab,
-  IncidentesTab,
   ModificacoesTab,
   PlaceholderTab,
   PrincipalTab,
 } from './tabs';
+import { LazyIncidentesTab } from './tabs/LazyIncidentesTab';
+import type { IncidenteFlush } from './tabs/IncidentesTab';
 import { BloqueioMarketplaceAlert } from './BloqueioMarketplaceAlert';
 import { PagamentosSection } from './PagamentosSection';
 import { PedidoFooter } from './PedidoFooter';
@@ -103,7 +104,7 @@ export interface PedidoFormProps {
   onSubmit: (
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
-    opts: { continueEditing: boolean },
+    opts: { continueEditing: boolean; incidenteSaved: boolean },
   ) => Promise<void | boolean>;
 }
 
@@ -313,6 +314,12 @@ export function PedidoForm({
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('principal');
+  // Incidentes is the one persistent pedido tab. It is not even imported until
+  // the first activation, then remains mounted so its draft, listener and flush
+  // callback survive navigation through the other tabs.
+  const [incidentesOpened, setIncidentesOpened] = useState(false);
+  const [incidenteDirty, setIncidenteDirty] = useState(false);
+  const incidenteFlushRef = useRef<IncidenteFlush | null>(null);
   const db = useMemo(() => getFirebaseFirestore(), []);
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
@@ -342,7 +349,16 @@ export function PedidoForm({
   // Warn before navigating away from an unsaved pedido. The schema-driven
   // screens get this from ObjectView; PedidoForm is a custom form, so wire the
   // shared guard directly.
-  useUnsavedChangesGuard(form.formState.isDirty);
+  useUnsavedChangesGuard(form.formState.isDirty || incidenteDirty);
+
+  const handleIncidenteDirtyChange = useCallback((dirty: boolean) => {
+    setIncidenteDirty(dirty);
+  }, []);
+
+  function selectTab(next: string | null) {
+    if (next === 'incidentes') setIncidentesOpened(true);
+    setActiveTab(next);
+  }
 
   // Paint the first emission, then correct to server truth once — the same
   // contract ObjectView follows, wired here because this form takes
@@ -372,16 +388,47 @@ export function PedidoForm({
 
   // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
   // navigates away; "Salvar e continuar editando" reloads in place. The footer's
-  // continue button runs the second RHF submit programmatically, so the page's
-  // onSubmit gets `continueEditing` without a shared ref.
+  // continue button runs the same RHF validation programmatically with the
+  // explicit `continueEditing` intent.
   async function handleSubmit(values: Pedido, continueEditing: boolean) {
     setSubmitError(null);
+    let incidenteSaved = false;
     try {
+      if (incidenteDirty) {
+        const flush = incidenteFlushRef.current;
+        if (!flush) {
+          selectTab('incidentes');
+          setSubmitError(
+            'A edição de incidente ainda está carregando. Revise a aba Incidentes e tente novamente.',
+          );
+          return;
+        }
+
+        const flushed = await flush();
+        if (!flushed) {
+          selectTab('incidentes');
+          notifications.show({
+            color: 'red',
+            title: 'Incidente não salvo',
+            message: 'Revise o erro na aba Incidentes antes de salvar o pedido.',
+          });
+          return;
+        }
+        incidenteSaved = true;
+      }
+
       const saved = await onSubmit(
         values,
         form.formState.dirtyFields as Readonly<Record<string, unknown>>,
-        { continueEditing },
+        { continueEditing, incidenteSaved },
       );
+      if (saved === false && incidenteSaved) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Incidente salvo; pedido pendente',
+          message: 'O incidente foi gravado, mas o pedido ainda precisa ser revisado e salvo.',
+        });
+      }
       // "Salvar e continuar editando" stays on the page; re-baseline the form to
       // the just-saved values so it's no longer dirty — otherwise the unsaved-
       // changes guard would prompt on the next navigation (and a hard reload here
@@ -392,7 +439,11 @@ export function PedidoForm({
       }
     } catch (err) {
       if (err instanceof FirebaseError) {
-        setSubmitError(err.message);
+        setSubmitError(
+          incidenteSaved
+            ? `O incidente foi salvo, mas o pedido não pôde ser salvo: ${err.message}`
+            : err.message,
+        );
         return;
       }
       throw err;
@@ -409,6 +460,14 @@ export function PedidoForm({
       setActiveTab(summary.firstTab);
     }
     notifications.show({ color: 'red', message: summary.message });
+  }
+
+  function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
+    void form.handleSubmit((values) => handleSubmit(values, false), onInvalid)(event);
+  }
+
+  function handleSaveAndContinue() {
+    void form.handleSubmit((values) => handleSubmit(values, true), onInvalid)();
   }
 
   // Tabs containing invalid fields. Read the `formState.errors` proxy during
@@ -501,7 +560,7 @@ export function PedidoForm({
     // hidden tab (see ObjectView's form for the full story).
     <form
       noValidate
-      onSubmit={form.handleSubmit((values) => handleSubmit(values, false), onInvalid)}
+      onSubmit={handleFormSubmit}
       // Flex column that fills the page (the page Stack sets a viewport-tall
       // min-height): the tab area grows so the sticky footer is pushed to the
       // bottom even when a tab's content is short — it no longer floats up.
@@ -525,7 +584,15 @@ export function PedidoForm({
       <BloqueioMarketplaceAlert bloqueio={defaultValues ?? undefined} />
 
       <div style={{ flex: '1 0 auto', minHeight: 0 }}>
-        <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
+        <Tabs
+          value={activeTab}
+          onChange={selectTab}
+          keepMounted={false}
+          // Inactive ordinary tabs still unmount. The Incidentes panel opts into
+          // keepMounted below, and display-none keeps its effects alive as well
+          // as its React state (Mantine's Activity mode suspends effects).
+          keepMountedMode="display-none"
+        >
           <Tabs.List>
             <Tabs.Tab value="principal" {...tabErrorProps('principal')}>
               Principal
@@ -546,7 +613,19 @@ export function PedidoForm({
             )}
             {visibleTabs.has('incidentes') && (
               <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
-                Incidentes
+                <span>Incidentes</span>
+                {incidenteDirty && (
+                  <Badge
+                    component="span"
+                    size="xs"
+                    color="orange"
+                    variant="light"
+                    ml="xs"
+                    aria-label="alterações de incidente não salvas"
+                  >
+                    Pendente
+                  </Badge>
+                )}
               </Tabs.Tab>
             )}
             {visibleTabs.has('devolucao') && (
@@ -631,19 +710,23 @@ export function PedidoForm({
           )}
 
           {visibleTabs.has('incidentes') && (
-            <Tabs.Panel value="incidentes" pt="md">
-              <IncidentesTab
-                pedidoId={pedidoId}
-                disabled={disabled}
-                // ⚠️ The ML claim lives on the account the pedido came through.
-                // Absent for a pedido with no integração, which is exactly when
-                // the panel must not render.
-                integracaoId={
-                  defaultValues?.integracaoPedidoOuterRef
-                    ? idFromRef(defaultValues.integracaoPedidoOuterRef)
-                    : null
-                }
-              />
+            <Tabs.Panel value="incidentes" pt="md" keepMounted>
+              {incidentesOpened && (
+                <LazyIncidentesTab
+                  pedidoId={pedidoId}
+                  disabled={disabled}
+                  onDirtyChange={handleIncidenteDirtyChange}
+                  flushRef={incidenteFlushRef}
+                  // ⚠️ The ML claim lives on the account the pedido came through.
+                  // Absent for a pedido with no integração, which is exactly when
+                  // the panel must not render.
+                  integracaoId={
+                    defaultValues?.integracaoPedidoOuterRef
+                      ? idFromRef(defaultValues.integracaoPedidoOuterRef)
+                      : null
+                  }
+                />
+              )}
             </Tabs.Panel>
           )}
 
@@ -699,11 +782,7 @@ export function PedidoForm({
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}
         ehSaida={!isEntrada}
-        onSaveAndContinue={
-          pedidoId
-            ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)
-            : undefined
-        }
+        onSaveAndContinue={pedidoId ? handleSaveAndContinue : undefined}
       />
     </form>
   );

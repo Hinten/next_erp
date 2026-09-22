@@ -142,8 +142,23 @@ export function EditarPedidoView() {
   async function handleSubmit(
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
-    opts: { continueEditing: boolean },
+    opts: { continueEditing: boolean; incidenteSaved: boolean },
   ): Promise<boolean> {
+    const pedidoPatch = buildPedidoPatch(values, dirtyFields);
+
+    // The shared footer also commits Incidentes. When that is the only pending
+    // work, there is no pedido write (and therefore no PedidoNothingChangedError)
+    // but the action is still a successful save with the usual navigation
+    // semantics.
+    if (Object.keys(pedidoPatch).length === 0 && opts.incidenteSaved) {
+      if (opts.continueEditing) {
+        notifications.show({ color: 'green', message: cfg.savedToast });
+      } else {
+        router.replace(cfg.listPath);
+      }
+      return true;
+    }
+
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     //
@@ -175,7 +190,7 @@ export function EditarPedidoView() {
     // in the patch — rather than being appended by the port — so the "salvar e
     // continuar editando" re-baseline below picks it up and the next save doesn't
     // read it as a remote change.
-    const patch = marcarInteracaoDoUsuario(buildPedidoPatch(values, dirtyFields));
+    const patch = marcarInteracaoDoUsuario(pedidoPatch);
     const port = createClientPedidoPort(getFirebaseFirestore());
     try {
       // An estado change is recorded in `historicoEstadoPedido` by the
