@@ -168,9 +168,9 @@ describe('filialMeta', () => {
     expect(filialMeta.collectionPath).toBe('filiais');
   });
 
-  it('reuses the configuracoes BigInt permission bits', () => {
+  it('reuses configuracoes for read/write and denies every client delete', () => {
     expect(filialMeta.permissions.read).toBe(1n << 40n);
     expect(filialMeta.permissions.write).toBe(1n << 41n);
-    expect(filialMeta.permissions.delete).toBe(1n << 41n);
+    expect(filialMeta.permissions.delete).toBeNull();
   });
 });

@@ -272,7 +272,8 @@ service cloud.firestore {
     match /filiais/{docId} {
       allow read: if isSuperUser() || p('d_configuracoes', 1);
       allow create, update: if isSuperUser() || p('d_configuracoes', 2);
-      allow delete: if isSuperUser() || p('d_configuracoes', 2);
+      // Client delete disabled by collection metadata — no su bypass.
+      allow delete: if false;
     }
 
     match /filiais/{filialId}/enviNfe/{docId} {

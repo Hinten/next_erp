@@ -13,10 +13,10 @@ import {
   expectRowHidden,
   expectRowVisible,
   firstRowText,
+  selectRowByText,
 } from './helpers/table-view';
 import {
   clickSave,
-  confirmDelete,
   expectFieldAfterReload,
   expectFieldError,
   fillField,
@@ -27,7 +27,7 @@ import { warmRoutes } from './helpers/warmup';
 /**
  * End-to-end coverage for the `/configuracoes/filiais` TableView + ObjectView
  * flow, driven by the `filialSchema`. Exercises listing, per-column
- * filtering, sorting, create/edit/delete, the nested `sede` (endereço)
+ * filtering, sorting, create/edit, the hard-delete prohibition, the nested `sede` (endereço)
  * fieldset, schema-validation feedback, the unsaved-changes guard, URL
  * query-param persistence and the placeholder tabs. Runs serially — later
  * steps consume earlier state.
@@ -266,12 +266,15 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(simples).toHaveAttribute('aria-selected', 'true');
   });
 
-  test('deletes a filial through the typed-confirm modal', async ({ page }) => {
+  test('does not expose hard delete on either the list or detail', async ({ page }) => {
+    await page.goto('/configuracoes/filiais');
+    await expectRowVisible(page, row(7));
+    await selectRowByText(page, row(7));
+    await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
+
     await page.goto(`/configuracoes/filiais/${row(7)}`);
-    await confirmDelete(page);
-    await page.waitForURL(/\/configuracoes\/filiais$/, { timeout: 15_000 });
-    await applyTextFilter(page, 'Razão Social', row(7));
-    await expectEmptyState(page);
+    await expect(page.getByRole('heading', { name: 'Filial' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
   });
 
   test('keeps column filters in the URL query string', async ({ page }) => {

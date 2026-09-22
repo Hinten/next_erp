@@ -106,6 +106,13 @@ import {
  * `pedidos` and `clientes` declare a cascade and will stay orphaned — both
  * carry fiscal data an emitted NF-e still depends on. The reasoning lives at
  * each declaration in `packages/schemas`.
+ *
+ * `filiais` deliberately has no cascade either (#1626). Its descendants now
+ * include the append-only `enviNfe` and `inutilizacao` audit logs, the A1
+ * `certificadoSecreto`, `nfeconfig`, and nested Simples apuracoes. Cascading a
+ * root delete would destroy signed/protocol history and the certificate later
+ * NF-e operations still need. `filialMeta.permissions.delete = null` blocks
+ * the client delete at the generated-rules layer instead.
  */
 export const onIntegracaoDeleted = defineCascadeCaroGenerico(integracaoMeta);
 export const onIntFreteDeleted = defineCascadeCaroGenerico(intFreteMeta);

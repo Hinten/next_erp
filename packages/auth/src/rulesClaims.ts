@@ -41,7 +41,7 @@ export function rulesClaimsFromBits(bits: bigint): Record<string, number> {
 /**
  * Reverse map for the rules generator: which claim key + action constant
  * guards a given permission bit. Metas may reuse one bit across actions
- * (cargo/filial/usuario `delete: PERM_CONFIG_WRITE` → `{d_configuracoes, 2}`;
+ * (cargo/usuario `delete: PERM_CONFIG_WRITE` → `{d_configuracoes, 2}`;
  * tokenMelEnv `read: PERM_FRETE_WRITE` → `{d_frete, 2}`) — bit identity
  * resolves those naturally. Throws on a bit outside PERM so a bad meta fails
  * at generate time, not as a silently-denied rule.

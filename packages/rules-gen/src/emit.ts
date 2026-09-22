@@ -177,7 +177,7 @@ export function emitRules(
 
 function matchBlock(
   collectionPath: string,
-  perms: { read: ClaimCheck; write: ClaimCheck; delete: ClaimCheck },
+  perms: { read: ClaimCheck; write: ClaimCheck; delete: ClaimCheck | null },
   validatorName: string | null,
   serverOwnedFields: ReadonlyArray<string>,
   serverOwned: boolean,
@@ -233,9 +233,16 @@ function matchBlock(
       `      allow create, update: if isSuperUser() || p('${perms.write.claim}', ${perms.write.k});`,
     );
   }
-  lines.push(
-    `      allow delete: if isSuperUser() || p('${perms.delete.claim}', ${perms.delete.k});`,
-  );
+  if (perms.delete === null) {
+    // Explicit rather than relying on implicit default-deny: this is a domain
+    // policy, and the generated diff must make the missing `su` bypass visible.
+    lines.push('      // Client delete disabled by collection metadata — no su bypass.');
+    lines.push('      allow delete: if false;');
+  } else {
+    lines.push(
+      `      allow delete: if isSuperUser() || p('${perms.delete.claim}', ${perms.delete.k});`,
+    );
+  }
   lines.push('    }');
   return lines;
 }
