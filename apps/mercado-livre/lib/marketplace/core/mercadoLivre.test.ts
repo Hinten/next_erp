@@ -105,12 +105,9 @@ describe('mercadoLivreAccountBag', () => {
   it('carries only user_id', () => {
     const bag = mercadoLivreAccountBag({
       user_id: 42,
-      // Extra passthrough / typed fields the bag must NOT leak — including the
-      // dropped legacy Mercado-Shops refs a Flutter-written doc still carries.
+      // Other channel fields must not leak into the Mercado Livre account bag.
       shop_id: 99,
       tabelaNormalOuterRef: 'listaDePrecos/normal',
-      tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1',
-      tabelaMercadoShopsPromocionalOuterRef: 'listaDePrecos/ms2',
     } as unknown as Integracao);
     expect(bag).toEqual({ user_id: 42 });
   });
@@ -152,15 +149,14 @@ describe('loadMercadoLivreContext', () => {
       tipo: 1,
       user_id: 7,
       shop_id: 123, // some other channel's field — must not leak into the bag
-      tabelaMercadoShopsOuterRef: 'listaDePrecos/ms1', // dropped legacy field — must not leak either
     });
 
     const ctx = await loadMercadoLivreContext(db, 'int-1');
     const channelCtx = await ctx.resolveChannelContext(1_000);
 
     // ⚠️ Destructured so the `toEqual` below stays EXHAUSTIVE over the data half
-    // — that is what catches `shop_id` / the dropped legacy ref leaking into the
-    // bag. Comparing the whole object would need the function listed too, and
+    // — that is what catches `shop_id` leaking into the bag. Comparing the
+    // whole object would need the function listed too, and
     // `expect.any(Function)` would quietly accept a new stray field beside it.
     const { getAccessToken, ...dados } = channelCtx;
 

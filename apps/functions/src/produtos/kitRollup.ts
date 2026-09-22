@@ -247,9 +247,8 @@ async function carregarRaiz(db: Firestore, rootId: string): Promise<Raiz | null>
   // ⚠️ Projected like every other read here. This one runs at the TOP of every
   // dispatch AND again before each self-continuation, so on the ~2 000-kit
   // catalogue an unprojected version pulled the whole root document — including
-  // `fotos` and the marketplace denorms — about
-  // fourteen times per fan-out, for five numbers and a `paiId`. Enterprise bills
-  // data scanned.
+  // large media and integration arrays — about fourteen times per fan-out, for
+  // five numbers and a `paiId`. Enterprise bills data scanned.
   const [snap] = await db.getAll(produtoCollection.docRef(db, {}, rootId), {
     fieldMask: [...CAMPOS_MEDIDAS],
   });

@@ -12,7 +12,7 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * FaixaTaxaFixaPeso — faixa de peso com taxa fixa, embutida em
  * `FormulaCalculoPreco.faixasTaxaFixaPeso`. Mirrors o model Flutter.
  */
-export const faixaTaxaFixaPesoSchema = z.object({
+export const faixaTaxaFixaPesoSchema = z.strictObject({
   pesoMinKg: z.number(),
   pesoMaxKg: z.number(),
   taxaFixa: z.number(),
@@ -25,7 +25,7 @@ export type FaixaTaxaFixaPeso = z.infer<typeof faixaTaxaFixaPesoSchema>;
  *  M = comissão marketplace, I = imposto, F = frete, K = marketing.
  * Mirrors `FormulaCalculoPreco` em `.old/packages/produtos/lib/src/models.dart`.
  */
-export const formulaCalculoPrecoSchema = z.object({
+export const formulaCalculoPrecoSchema = z.strictObject({
   limiar: z.number(),
   formula: z.string().min(1),
   taxaFixa: z.number().default(0),
@@ -43,7 +43,7 @@ export type FormulaCalculoPreco = z.infer<typeof formulaCalculoPrecoSchema>;
  * FormulasPorCategoria — bucket de fórmulas associadas a uma categoria.
  * Mirrors `FormulasPorCategoria`.
  */
-export const formulasPorCategoriaSchema = z.object({
+export const formulasPorCategoriaSchema = z.strictObject({
   name: z.string(),
   formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
 });

@@ -338,10 +338,7 @@ describe('POST body — the single-role mint', () => {
     ]);
   });
 
-  it('⚠️ writes no docId INTO the record — the stored schema is passthrough', async () => {
-    // `usuarioTesteMercadoLivreSchema` is `.passthrough()`, so a docId that
-    // reached the store would be persisted as a record field and every
-    // assertion above would still pass.
+  it('⚠️ writes no read-side docId into the strict stored record', async () => {
     h.storeList.mockResolvedValue([]);
 
     await POST(postBody({ role: 'comprador' }));

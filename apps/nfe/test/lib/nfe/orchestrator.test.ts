@@ -2134,6 +2134,11 @@ describe('buildPaymentsFromPagamentos', () => {
           tpIntegra: '2',
           cnpj_instituicao: '99999999000191',
           bandeira: '03',
+          numeroCartao: null,
+          cAut: null,
+          tarifa: null,
+          tarifaFixa: null,
+          prazoRecebimento: null,
         },
       }),
     ]);
@@ -2152,7 +2157,16 @@ describe('buildPaymentsFromPagamentos', () => {
         valor: 75.5,
         forma_de_pagamento: FORMA_PAGAMENTO.outros,
         descricaoPagamento: 'Bonificacao',
-        cartao: { tpIntegra: '2', cnpj_instituicao: '99999999000191' },
+        cartao: {
+          tpIntegra: '2',
+          cnpj_instituicao: '99999999000191',
+          bandeira: null,
+          numeroCartao: null,
+          cAut: null,
+          tarifa: null,
+          tarifaFixa: null,
+          prazoRecebimento: null,
+        },
       }),
     ]);
     expect(out[0]?.card).toBeUndefined();

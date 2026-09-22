@@ -264,21 +264,19 @@ export const LIQUIDACAO_FONTE = {
  * heuristic reads a seconds value as 1970 and would make every stored stamp look
  * older than every incoming one for ever.
  */
-export const liquidacaoPagamentoSchema = z
-  .object({
-    /**
-     * `get_escrow_list.payout_amount` VERBATIM — the unit (cents vs units) is
-     * unresolved on Shopee's own page, so nothing converts it. The sweep logs
-     * it beside `escrowAmount` and their ratio; that is what will answer it.
-     */
-    payoutAmount: z.number().nullable().default(null),
-    /** `escrow_release_time` (wire SECONDS) converted ONCE at the write (µs). */
-    escrowReleaseTimeUs: microsSinceEpoch('Liberação do escrow').nullable().default(null),
-    /** When OUR sweep stamped it (µs) — excluded from the no-change comparison. */
-    liquidadoEmUs: microsSinceEpoch('Liquidado em').nullable().default(null),
-    fonte: liquidacaoFonteSchema.nullable().default(null),
-  })
-  .passthrough();
+export const liquidacaoPagamentoSchema = z.strictObject({
+  /**
+   * `get_escrow_list.payout_amount` VERBATIM — the unit (cents vs units) is
+   * unresolved on Shopee's own page, so nothing converts it. The sweep logs
+   * it beside `escrowAmount` and their ratio; that is what will answer it.
+   */
+  payoutAmount: z.number().nullable().default(null),
+  /** `escrow_release_time` (wire SECONDS) converted ONCE at the write (µs). */
+  escrowReleaseTimeUs: microsSinceEpoch('Liberação do escrow').nullable().default(null),
+  /** When OUR sweep stamped it (µs) — excluded from the no-change comparison. */
+  liquidadoEmUs: microsSinceEpoch('Liquidado em').nullable().default(null),
+  fonte: liquidacaoFonteSchema.nullable().default(null),
+});
 export type LiquidacaoPagamento = z.infer<typeof liquidacaoPagamentoSchema>;
 
 /**
@@ -290,26 +288,24 @@ export type LiquidacaoPagamento = z.infer<typeof liquidacaoPagamentoSchema>;
  * can be re-argued from stored data instead of from a live re-read. Whichever
  * fee columns a future step decides to sum, the answer is already on disk.
  */
-export const marketplacePagamentoTaxasSchema = z
-  .object({
-    /** Shopee `net_commission_fee ?? commission_fee`. */
-    comissao: z.number().nullable().default(null),
-    /** Shopee `net_service_fee ?? service_fee`. */
-    servico: z.number().nullable().default(null),
-    /** Shopee `seller_transaction_fee` — NEVER `credit_card_transaction_fee`, which is a rollup. */
-    transacaoVendedor: z.number().nullable().default(null),
-    /** Shopee `campaign_fee`. */
-    campanha: z.number().nullable().default(null),
-    /** Shopee `shipping_seller_protection_fee_amount`. */
-    protecaoFrete: z.number().nullable().default(null),
-    /** Shopee `seller_order_processing_fee` (ORDER level, not the item-level twin). */
-    processamento: z.number().nullable().default(null),
-    /** Shopee `total_adjustment_amount`. */
-    ajustes: z.number().nullable().default(null),
-    /** Shopee `seller_return_refund`. */
-    devolucoes: z.number().nullable().default(null),
-  })
-  .passthrough();
+export const marketplacePagamentoTaxasSchema = z.strictObject({
+  /** Shopee `net_commission_fee ?? commission_fee`. */
+  comissao: z.number().nullable().default(null),
+  /** Shopee `net_service_fee ?? service_fee`. */
+  servico: z.number().nullable().default(null),
+  /** Shopee `seller_transaction_fee` — NEVER `credit_card_transaction_fee`, which is a rollup. */
+  transacaoVendedor: z.number().nullable().default(null),
+  /** Shopee `campaign_fee`. */
+  campanha: z.number().nullable().default(null),
+  /** Shopee `shipping_seller_protection_fee_amount`. */
+  protecaoFrete: z.number().nullable().default(null),
+  /** Shopee `seller_order_processing_fee` (ORDER level, not the item-level twin). */
+  processamento: z.number().nullable().default(null),
+  /** Shopee `total_adjustment_amount`. */
+  ajustes: z.number().nullable().default(null),
+  /** Shopee `seller_return_refund`. */
+  devolucoes: z.number().nullable().default(null),
+});
 export type MarketplacePagamentoTaxas = z.infer<typeof marketplacePagamentoTaxasSchema>;
 
 /**
@@ -340,23 +336,21 @@ export type MarketplacePagamentoTaxas = z.infer<typeof marketplacePagamentoTaxas
  * produce an EMPTY patch instead of a write, which is what keeps
  * `onPagamentoChanged` from filing a history row per redelivery.
  */
-export const marketplacePagamentoSchema = z
-  .object({
-    tipo: marketplacePedidoTipoSchema,
-    /** The provider's order identifier, VERBATIM (Shopee `order_sn`). */
-    orderSn: z.string().nullable().default(null),
-    /** The buyer's checkout total — the figure `valor` is taken from. */
-    buyerTotalAmount: z.number().nullable().default(null),
-    /** Escrow as of this read; documented to MOVE until the order completes. */
-    escrowAmount: z.number().nullable().default(null),
-    escrowAmountAfterAdjustment: z.number().nullable().default(null),
-    /** Pre-clamp `tarifas` — see the header. */
-    tarifasBrutas: z.number().nullable().default(null),
-    taxas: marketplacePagamentoTaxasSchema.nullable().default(null),
-    /** The ORDER clock of the delivery that wrote this block (µs) — never `nowUs`. */
-    atualizadoEm: microsSinceEpoch('Marketplace atualizado em').nullable().default(null),
-  })
-  .passthrough();
+export const marketplacePagamentoSchema = z.strictObject({
+  tipo: marketplacePedidoTipoSchema,
+  /** The provider's order identifier, VERBATIM (Shopee `order_sn`). */
+  orderSn: z.string().nullable().default(null),
+  /** The buyer's checkout total — the figure `valor` is taken from. */
+  buyerTotalAmount: z.number().nullable().default(null),
+  /** Escrow as of this read; documented to MOVE until the order completes. */
+  escrowAmount: z.number().nullable().default(null),
+  escrowAmountAfterAdjustment: z.number().nullable().default(null),
+  /** Pre-clamp `tarifas` — see the header. */
+  tarifasBrutas: z.number().nullable().default(null),
+  taxas: marketplacePagamentoTaxasSchema.nullable().default(null),
+  /** The ORDER clock of the delivery that wrote this block (µs) — never `nowUs`. */
+  atualizadoEm: microsSinceEpoch('Marketplace atualizado em').nullable().default(null),
+});
 export type MarketplacePagamento = z.infer<typeof marketplacePagamentoSchema>;
 
 /**
@@ -365,8 +359,9 @@ export type MarketplacePagamento = z.infer<typeof marketplacePagamentoSchema>;
  * `.old/packages/pedido/lib/src/models.dart:24`). Mirrors
  * `packages/pedido/lib/src/models.dart` Pagamento — all 19 legacy fields
  * (`.old` `models.dart:1802-1993`, confirmed against every producer by the
- * #463 parity audit) are enumerated below. `cartao` / `cheque` stay
- * `z.unknown()`: they round-trip an opaque embedded map, not a reference.
+ * #463 parity audit) are enumerated below. `cartao` / `cheque` use their typed,
+ * strict embedded schemas so known legacy coercions remain readable without
+ * persisting arbitrary properties.
  *
  * Two fields are NOT legacy — `marketplace` and `liquidacao` (#1514, step 6):
  * the marketplace's own money for this payment, and what it actually released.
@@ -392,8 +387,14 @@ export const pagamentoSchema = z.object({
   metodoPagamentoOuterRef: outerRefSchema.nullable().default(null),
   forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
   status_pagamento: statusPagamentoSchema.nullable().default(null),
-  cartao: z.unknown().nullable().default(null),
-  cheque: z.unknown().nullable().default(null),
+  cartao: z
+    .lazy(() => cartaoSchema)
+    .nullable()
+    .default(null),
+  cheque: z
+    .lazy(() => chequeSchema)
+    .nullable()
+    .default(null),
   descricaoPagamento: z.string().nullable().default(null),
   valor: z.number().min(0),
   parcelas: z.number().int().min(1).default(1),
@@ -429,32 +430,28 @@ export type Pagamento = z.infer<typeof pagamentoSchema>;
 
 /**
  * `pagamento.cartao` — embedded card detail (NOT a collection; stored as a nested
- * map in the pagamento doc, where `pagamentoSchema` keeps it as opaque
- * pass-through). Mirrors Flutter's `Cartao` (`models.dart:2205`). Only `bandeira`
+ * map in the pagamento doc). Mirrors Flutter's `Cartao` (`models.dart:2205`). Only `bandeira`
  * / `numeroCartao` / `cAut` are editable in the form today; `tpIntegra` is fixed
  * to `'2'` (não integrado) and `cnpj_instituicao` / `tarifa` / `tarifaFixa` /
  * `prazoRecebimento` come from the bandeira catalog (`bandeirasCartao`) — they are
- * preserved on edit but not yet auto-filled here (follow-up). `.passthrough()`
- * keeps any legacy field; `.catch` keeps a legacy-shaped value from failing the
- * whole parse on load.
+ * preserved on edit but not yet auto-filled here (follow-up). `.catch` keeps a
+ * legacy-shaped known value from failing the whole parse on load.
  */
-export const cartaoSchema = z
-  .object({
-    tpIntegra: z.string().default('2'),
-    bandeira: bandeiraSchema.nullable().catch(null).default(null),
-    numeroCartao: z.string().nullable().catch(null).default(null),
-    cAut: z.string().nullable().catch(null).default(null),
-    cnpj_instituicao: z.string().nullable().catch(null).default(null),
-    tarifa: z.number().nullable().catch(null).default(null),
-    tarifaFixa: z.number().nullable().catch(null).default(null),
-    prazoRecebimento: z.number().nullable().catch(null).default(null),
-  })
-  .passthrough();
+export const cartaoSchema = z.strictObject({
+  tpIntegra: z.string().default('2'),
+  bandeira: bandeiraSchema.nullable().catch(null).default(null),
+  numeroCartao: z.string().nullable().catch(null).default(null),
+  cAut: z.string().nullable().catch(null).default(null),
+  cnpj_instituicao: z.string().nullable().catch(null).default(null),
+  tarifa: z.number().nullable().catch(null).default(null),
+  tarifaFixa: z.number().nullable().catch(null).default(null),
+  prazoRecebimento: z.number().nullable().catch(null).default(null),
+});
 export type Cartao = z.infer<typeof cartaoSchema>;
 
 /**
- * `pagamento.cheque` — embedded cheque detail (NOT a collection; nested map,
- * pass-through on `pagamentoSchema`). Mirrors Flutter's `Cheque`
+ * `pagamento.cheque` — embedded cheque detail (NOT a collection; nested map).
+ * Mirrors Flutter's `Cheque`
  * (`models.dart:2298`). The multi-cheque parcela split is done by the web form
  * (`buildChequeSplitPagamentos`), not here.
  *
@@ -469,18 +466,16 @@ export type Cartao = z.infer<typeof cartaoSchema>;
  * as UTC, landing 3h early: local midnight becomes the previous day. The µs
  * migration's `--report-only` counts exactly that shape (#155).
  */
-export const chequeSchema = z
-  .object({
-    banco: z.string().nullable().catch(null).default(null),
-    agencia: z.string().nullable().catch(null).default(null),
-    conta: z.string().nullable().catch(null).default(null),
-    numero: z.number().int().nullable().catch(null).default(null),
-    titular: z.string().max(255).nullable().catch(null).default(null),
-    cpf_cnpj: z.string().max(18).nullable().catch(null).default(null),
-    telefone: z.string().max(16).nullable().catch(null).default(null),
-    bomPara: microsSinceEpoch('Bom para').nullable().catch(null).default(null),
-  })
-  .passthrough();
+export const chequeSchema = z.strictObject({
+  banco: z.string().nullable().catch(null).default(null),
+  agencia: z.string().nullable().catch(null).default(null),
+  conta: z.string().nullable().catch(null).default(null),
+  numero: z.number().int().nullable().catch(null).default(null),
+  titular: z.string().max(255).nullable().catch(null).default(null),
+  cpf_cnpj: z.string().max(18).nullable().catch(null).default(null),
+  telefone: z.string().max(16).nullable().catch(null).default(null),
+  bomPara: microsSinceEpoch('Bom para').nullable().catch(null).default(null),
+});
 export type Cheque = z.infer<typeof chequeSchema>;
 
 export const pagamentoMeta: CollectionMetadata = {

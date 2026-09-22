@@ -789,9 +789,9 @@ const SUFIXO_DUPLICATA = ' (cópia)';
  *   would name a produto that is not its parent.
  * - `codFornecedor` — the supplier's code for that one stocked item.
  *
- * **Marketplace links** (`marketplace`/`marketplaceIds`/`integracoesComProduto`/
- * `statusProdutosMarketplace`) — copying a live external listing id onto a new
- * produto would make two documents claim the same anúncio. ⚠️ The anúncios
+ * **Marketplace links** (`integracoesComProduto`) — copying a live external
+ * listing association onto a new produto would make two documents claim the
+ * same anúncio. ⚠️ The anúncios
  * THEMSELVES are the produto's `PRODUTO_SUBCOLLECTION_NAMES` subcollections and
  * are never cloned at all: {@link buildDuplicarProdutoWriteOps} emits no
  * subcollection path except the produto's own `extraData`/`imposto`, which is
@@ -821,9 +821,6 @@ function limparParaDuplicar(dados: Produto): Record<string, unknown> {
     gtin: null,
     codPai: null,
     codFornecedor: null,
-    marketplace: [],
-    marketplaceIds: null,
-    statusProdutosMarketplace: null,
     integracoesComProduto: [],
     fotos: null,
     videos: null,
@@ -964,8 +961,7 @@ export function ehFamiliaDeUmParaDuplicar(
  * produto save uses, so their wire shapes cannot drift from those.
  *
  * ⚠️ `googleMerchantData.id` is cleared: that is the Google Merchant OFFER id,
- * an external identifier for one produto, and the reasoning that clears
- * `marketplaceIds` applies to it unchanged. `title` stays — operator copy, not
+ * an external identifier for one produto. `title` stays — operator copy, not
  * an identifier.
  *
  * ⚠️ Each cloned `imposto` row is re-stamped `now` (`timestamp: null` makes

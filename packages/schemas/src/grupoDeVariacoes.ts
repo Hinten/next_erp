@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { integracaoTipoSchema } from './integracao';
+import { linkVariacoesShopeeSchema } from './produto/collection/shopeeLinkVariacoes';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a
 // circular dep.
@@ -36,7 +37,7 @@ export const TIPO_VARIACAO_LABELS: Record<TipoVariacao, string> = {
  * ExternalVariacaoLink — embedded inside `Variante.externalVariacaoLinks`.
  * Mirrors the Flutter `ExternalVariacaoLink` model.
  */
-export const externalVariacaoLinkSchema = z.object({
+export const externalVariacaoLinkSchema = z.strictObject({
   tipo: integracaoTipoSchema,
   integracaoId: z.string().min(1),
   externalId: z.string().min(1),
@@ -50,7 +51,7 @@ export type ExternalVariacaoLink = z.infer<typeof externalVariacaoLinkSchema>;
  * Variante — single variation entry embedded inside `GrupoDeVariacoes.variacoes`.
  * Mirrors the Flutter `Variante` model.
  */
-export const varianteSchema = z.object({
+export const varianteSchema = z.strictObject({
   id: z.string().min(1),
   nome: z.string().min(1),
   codigo: z.string().nullable().optional(),
@@ -64,9 +65,8 @@ export type Variante = z.infer<typeof varianteSchema>;
 /**
  * GrupoDeVariacoes — collection of variation groups (Tamanho, Cor, etc).
  * Mirrors `GrupoDeVariacoes` in `packages/produtos/lib/src/models.dart`.
- * Marketplace link arrays (Shopee / Loja Integrada / Amazon) stay
- * pass-through because the Flutter app continues to author them; the
- * Next-rewrite UI only needs to read/write the core fields for now.
+ * Shopee links are typed. Loja Integrada and Amazon remain legacy JSON until
+ * those channels define their own contracts.
  */
 export const grupoDeVariacoesSchema = z.object({
   nome: z.string().min(1),
@@ -86,11 +86,9 @@ export const grupoDeVariacoesSchema = z.object({
   variacoesIds: z.array(z.string()).default([]),
   variacoes: z.array(varianteSchema).nullable().optional(),
 
-  // Marketplace integration link arrays — pass-through. The migrated corpus
-  // authors these; surfaced as opaque arrays here.
-  linksVariacoesShopee: z.array(z.unknown()).nullable().optional(),
-  linksVariacoesli: z.array(z.unknown()).nullable().optional(),
-  linksVariacoesAmazon: z.array(z.unknown()).nullable().optional(),
+  linksVariacoesShopee: z.array(linkVariacoesShopeeSchema).nullable().optional(),
+  linksVariacoesli: z.array(z.json()).nullable().optional(),
+  linksVariacoesAmazon: z.array(z.json()).nullable().optional(),
 });
 
 export type GrupoDeVariacoes = z.infer<typeof grupoDeVariacoesSchema>;

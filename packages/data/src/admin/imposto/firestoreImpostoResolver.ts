@@ -80,10 +80,9 @@ function warnDropped(path: string, error: ZodError): void {
  * handles; the resolver itself is the pure cascade in `resolverImposto.ts`.
  *
  * ⚠️ The produto doc is read RAW (`snap.data()`), never validated. The cascade
- * reads `produto.NCM` and `produto.categoriaProdutoOuterRef`, and NEITHER is a
- * declared field of `produtoSchema` — both ride its `.passthrough()`. A
- * validated read would be wrong in principle, and a soft read would warn once
- * per produto for documents that are perfectly fine.
+ * reads the legacy `produto.NCM`, which is not a declared field of
+ * `produtoSchema`. A parsed read would strip that key before the fiscal cascade
+ * can inspect it, so this boundary deliberately receives the raw document.
  */
 export function createFirestoreImpostoResolver(
   db: Firestore,

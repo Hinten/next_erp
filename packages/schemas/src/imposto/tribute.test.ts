@@ -4,9 +4,11 @@ import {
   CSOSN_LABELS,
   CST_ICMS_LABELS,
   CST_PIS_COFINS_LABELS,
+  configuracaoIBSCBSDraftSchema,
   configuracaoIBSCBSSchema,
   configuracaoICMSSchema,
   impostoSchema,
+  impostoPersistidoSchema,
   indEscalaField,
   indEscalaFromScalar,
   nveField,
@@ -75,11 +77,38 @@ describe('impostoSchema — per-item Imposto', () => {
     expect(parsed.configuracaoPIS?.pPIS).toBe(1.65);
   });
 
-  it('holds configuracaoIBSCBS leniently (a PARTIAL RTC blob parses verbatim)', () => {
+  it('accepts a known partial RTC draft', () => {
     const imp = { origem: '0', configuracaoIBSCBS: { CST: '000' } };
     const parsed = impostoSchema.parse(imp);
-    // z.unknown — the half-filled blob survives, the strict check is at emit.
     expect(parsed.configuracaoIBSCBS).toEqual({ CST: '000' });
+    expect(configuracaoIBSCBSDraftSchema.safeParse({ CST: '000', pCBS: null }).success).toBe(true);
+  });
+
+  it('rejects unknown fields in a persisted imposto snapshot', () => {
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoIBSCBS: { CST: '000', campoExtra: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoICMS: { crt: '1', csosn: '101', csosn101: { pCredSN: 1, extra: true } },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoPISST: { compoeTotalNota: true, pPIS: 1.65, vAliqProd: null, extra: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      impostoPersistidoSchema.safeParse({
+        origem: '0',
+        configuracaoPISST: { compoeTotalNota: true, pPIS: 1.65, vAliqProd: null },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects a non-4-digit CFOP', () => {
@@ -103,6 +132,11 @@ describe('configuracaoIBSCBSSchema — Reforma Tributária', () => {
       is: { CSTIS: '000', cClassTribIS: '000000' },
     };
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(false);
+  });
+
+  it('rejects an incomplete draft at the emission boundary', () => {
+    expect(configuracaoIBSCBSDraftSchema.safeParse({ CST: '000' }).success).toBe(true);
+    expect(configuracaoIBSCBSSchema.safeParse({ CST: '000' }).success).toBe(false);
   });
 
   // CST↔cClassTrib structural rule (#333)

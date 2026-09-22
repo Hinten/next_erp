@@ -107,17 +107,21 @@ describe('clausesForSchema', () => {
  * `pedidos/{pedidoId}/pagamentos` is one of the five `VALIDATOR_WHITELIST`
  * entries, so every nullable field added to `pagamentoSchema` costs one clause
  * in BOTH rulesets and both committed snapshots (#1533's class). Step 6 (#1514)
- * added exactly two — asserted here, at the generator, so the cost of a third is
- * visible where it is incurred rather than only in a snapshot diff.
+ * added two. The typed `cartao` and `cheque` maps add two more — asserted here,
+ * at the generator, so their rules cost and shape cannot drift silently.
  */
 describe('clausesForSchema(pagamentoSchema) — the step-6 marketplace fields', () => {
   const mapClauses = clausesForSchema(pagamentoSchema).filter((cl) => cl.expr.includes('is map'));
 
-  it('emits ONE `is map` clause for `liquidacao` and one for `marketplace`, and no others', () => {
-    // Exhaustive, not `toContain`: `cartao` and `cheque` are `z.unknown()` and
-    // must stay unconstrained (they round-trip opaque legacy maps), so a third
-    // `is map` here would mean a field silently changed shape.
-    expect(mapClauses.map((cl) => cl.field)).toEqual(['liquidacao', 'marketplace']);
+  it('emits one `is map` clause for each typed embedded map, and no others', () => {
+    // Exhaustive, not `toContain`: the generator validates only the top-level
+    // map shape, while Zod enforces each embedded object's strict fields.
+    expect(mapClauses.map((cl) => cl.field)).toEqual([
+      'cartao',
+      'cheque',
+      'liquidacao',
+      'marketplace',
+    ]);
   });
 
   it('guards each one behind hasAny and lets null through (both are nullable)', () => {

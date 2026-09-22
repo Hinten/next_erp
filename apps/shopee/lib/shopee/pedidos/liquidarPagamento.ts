@@ -80,6 +80,7 @@ import { pagamentoCollection } from '@delfrance/data/admin/collections';
 import {
   LIQUIDACAO_FONTE,
   MARKETPLACE_PEDIDO_TIPO,
+  type MarketplacePagamento,
   type MarketplacePagamentoTaxas,
 } from '@delfrance/schemas';
 import type { ShopeeEscrowDetail } from '@delfrance/integrations-shopee';
@@ -322,19 +323,20 @@ export function preverLiquidacaoShopee(
 
   if (diario !== undefined) {
     // REBUILT, not patched: `update` replaces the whole map at a top-level key,
-    // so the stored half (`tipo`, `orderSn`, `atualizadoEm`, and anything a
-    // later step adds behind `.passthrough()`) has to be carried over
-    // explicitly. `atualizadoEm` is the ORDER clock and this sweep has none — it
-    // keeps whatever the last delivery stamped.
-    const base = marketplaceArmazenado ?? {};
-    const marketplace: Record<string, unknown> = { ...base, ...diario };
-    // ⚠️ `tipo` is the one REQUIRED field of `marketplacePagamentoSchema`, and a
-    // pagamento whose import could not read an escrow has `marketplace: null` —
-    // so the sweep may genuinely be the first writer of this map. Both fallbacks
-    // are facts the sweep knows for certain (it is settling THIS Shopee order);
-    // a stored value always wins.
-    if (textoDe(marketplace.tipo) === null) marketplace.tipo = MARKETPLACE_PEDIDO_TIPO.shopee;
-    if (textoDe(marketplace.orderSn) === null) marketplace.orderSn = orderSn;
+    // so the known stored half (`orderSn` and `atualizadoEm`) has to be carried
+    // over explicitly. Never spread the raw map back into a write: soft reads
+    // deliberately expose an incompatible nested object unchanged, while the
+    // persisted marketplace diary is now strict.
+    //
+    // `atualizadoEm` is the ORDER clock and this sweep has none, so it keeps the
+    // finite value the last delivery stamped. The channel and fallback order id
+    // are facts this Shopee-only sweep knows without trusting legacy metadata.
+    const marketplace: MarketplacePagamento = {
+      tipo: MARKETPLACE_PEDIDO_TIPO.shopee,
+      orderSn: textoDe(marketplaceArmazenado?.orderSn) ?? orderSn,
+      ...diario,
+      atualizadoEm: numeroFinito(marketplaceArmazenado?.atualizadoEm),
+    };
     patch.marketplace = marketplace;
   }
   if (tarifas !== undefined) patch.tarifas = tarifas;
