@@ -35,7 +35,7 @@ re-readable source).
 ## The lifecycle (happy path)
 
 ```
-1. GENERATE   build infNFe XML from order data; compute the 44-digit chave
+1. GENERATE   build infNFe XML from order data; compute the 44-char chave
 2. SIGN       enveloped XMLDSig over <infNFe> with the A1 certificate
 3. SEND       SOAP to NfeAutorizacao — enviNFe lote (1–50 NF-e)
                  lote = 1  → indSinc=1 (mandatory since 03/11/2025; NT 2025.001)
@@ -95,7 +95,7 @@ re-readable source).
 
 | File | Use for |
 |---|---|
-| `references/chave-acesso.md` | 44-digit key composition + módulo-11 DV |
+| `references/chave-acesso.md` | 44-char key composition + módulo-11 DV (alfa at 6–17) |
 | `references/assinatura.md` | XMLDSig signing rules, certificate, A1/A3 |
 | `references/webservices.md` | SOAP services, sync/async lote flow, leiautes |
 | `references/sincrono-vs-assincrono.md` | NT 2025.001 sync-when-lote-1 in depth |

@@ -352,7 +352,8 @@ export interface VirtualColumnFilter {
     /**
      * Selectable child fields. `numeric: true` coerces the term to a number for
      * the equality match (e.g. `numeracao`); leave it off for string fields
-     * like a 44-digit `chave`, which must NOT be parsed as a number.
+     * like a 44-character `chave`, which must NOT be parsed as a number —
+     * and cannot be since NT 2026.004, where positions 6-17 may hold `A-Z`.
      */
     readonly fields: ReadonlyArray<{ value: string; label: string; numeric?: boolean }>;
   };

@@ -190,7 +190,7 @@ sandbox.
 
 ## NF-e key on the label (#209)
 
-When the pedido has an authorized NF-e (modelo 55), its 44-digit **chave** is
+When the pedido has an authorized NF-e (modelo 55), its 44-character **chave** is
 sent as `invoice.key` on the cart item and flips `non_commercial` **off** — most
 carriers reject a commercial shipment without it. Absent → `non_commercial: true`
 (declaração de conteúdo). The chave is resolved by

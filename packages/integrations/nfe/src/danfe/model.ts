@@ -170,7 +170,7 @@ export interface DanfeProtocolo {
 }
 
 export interface DanfeModel {
-  /** 44-digit chave de acesso (no `NFe` prefix, no formatting). */
+  /** 44-character chave de acesso (no `NFe` prefix, no formatting). */
   readonly chave: string;
   /** `true` when `tpAmb === '2'` — drives the "SEM VALOR FISCAL" watermark. */
   readonly homologacao: boolean;
@@ -438,7 +438,7 @@ export interface CceRetorno {
   readonly dhRegEvento: string | null;
   /** Event protocolo (`nProt`), or null. */
   readonly nProt: string | null;
-  /** 44-digit chave the event was bound to, or null. */
+  /** 44-character chave the event was bound to, or null. */
   readonly chNFe: string | null;
 }
 

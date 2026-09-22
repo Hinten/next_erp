@@ -87,6 +87,6 @@ NF-e (even after a lost response) collides on the natural key.
 
 ## Use in the XML
 
-- `<infNFe Id="NFe<44-digit-chave>" versao="4.00">` — the `Id` attribute is the
+- `<infNFe Id="NFe<44-char-chave>" versao="4.00">` — the `Id` attribute is the
   literal `NFe` + the chave.
 - The signature `<Reference URI="#NFe<chave>">` points at that `Id`.
