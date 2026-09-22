@@ -5,7 +5,7 @@
  * byte-for-byte, onto our field names (`packages/schemas/src/pedido/collection/pagamento.ts`).
  *
  * Pure — no IO, no `Date.now()`. `nowUs` is threaded in by the caller
- * (`ultimaModificacao`'s `DateTime.now()` fallback).
+ * (the provider watermark's `DateTime.now()` fallback and local recency).
  */
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
@@ -37,6 +37,7 @@ export interface MappedPagamentoFields {
   duplicata: boolean;
   tarifas: number;
   ultimaModificacao: number;
+  lastProviderUpdate: number;
   dataCadastro: number | null;
   dataAprovacao: number | null;
 }
@@ -193,8 +194,8 @@ export function mlPaymentToPagamento(args: {
 
   const mercadoLivrePaymentType = payment.payment_type ?? payment.payment_type_id ?? null;
 
-  // last_modified ?? date_last_updated ?? DateTime.now() (models.dart:4477).
-  const ultimaModificacao =
+  // Provider resource clock: last_modified ?? date_last_updated ?? now.
+  const lastProviderUpdate =
     coerceToMicros(payment.last_modified) ?? coerceToMicros(payment.date_last_updated) ?? nowUs;
 
   const tarifas = computeTarifas(payment);
@@ -223,7 +224,9 @@ export function mlPaymentToPagamento(args: {
     aVista: !(installments != null && installments > 1),
     duplicata: false,
     tarifas,
-    ultimaModificacao,
+    // Local recency and provider ordering are deliberately separate clocks.
+    ultimaModificacao: nowUs,
+    lastProviderUpdate,
     dataCadastro: coerceToMicros(payment.date_created),
     dataAprovacao: coerceToMicros(payment.date_approved),
   };
@@ -254,7 +257,7 @@ function existingField(existing: Record<string, unknown>, key: string): unknown 
  *    the incoming value wins UNLESS it's null, in which case the stored value
  *    survives. This only actually changes behavior for the nullable mapped
  *    keys (`status_pagamento`, `cartao`, `descricaoPagamento`, `tarifas`,
- *    `ultimaModificacao`, `dataCadastro`, `dataAprovacao`) — every OTHER
+ *    `ultimaModificacao`, `lastProviderUpdate`, `dataCadastro`, `dataAprovacao`) — every OTHER
  *    stored field (`metodoPagamentoOuterRef`, `cheque`, `juros`, `nFat`,
  *    `vencimento`, `dataCancelamento`, and any legacy passthrough field)
  *    is a key `mapped` never sets at all, so it simply survives via the
@@ -286,7 +289,11 @@ export function mergePagamentoUpdate(
     cartao: mapped.cartao ?? existingField(existing, 'cartao'),
     descricaoPagamento: mapped.descricaoPagamento ?? existingField(existing, 'descricaoPagamento'),
     tarifas: mapped.tarifas ?? existingField(existing, 'tarifas'),
-    ultimaModificacao: mapped.ultimaModificacao ?? existingField(existing, 'ultimaModificacao'),
+    ultimaModificacao: Math.max(
+      coerceToMicros(existing.ultimaModificacao) ?? mapped.ultimaModificacao,
+      mapped.ultimaModificacao,
+    ),
+    lastProviderUpdate: mapped.lastProviderUpdate ?? existingField(existing, 'lastProviderUpdate'),
     dataCadastro: mapped.dataCadastro ?? existingField(existing, 'dataCadastro'),
     dataAprovacao: mapped.dataAprovacao ?? existingField(existing, 'dataAprovacao'),
   };

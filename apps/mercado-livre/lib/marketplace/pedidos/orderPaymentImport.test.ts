@@ -650,6 +650,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
       id: '800',
       valor: 999,
       ultimaModificacao: Date.parse('2026-07-22T00:00:00.000Z') * 1000,
+      lastProviderUpdate: Date.parse('2026-07-22T00:00:00.000Z') * 1000,
     });
 
     const api = makeApi({
@@ -661,7 +662,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     expect(db.docs('pedidos/PED-STALE/pagamentos').get(pagId)!.valor).toBe(999); // untouched
   });
 
-  it('proceeds when the stored pagamento has a null ultimaModificacao (null-tolerant)', async () => {
+  it('initializes a null provider watermark without falling back to local recency', async () => {
     const db = makeDb();
     seedPedido(db, 'PED-NULLSTALE');
     seedOrderMl(db, 'PED-NULLSTALE', '112', { id: 112 });
@@ -669,14 +670,19 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     db.seed('pedidos/PED-NULLSTALE/pagamentos', pagId, {
       id: '801',
       valor: 50,
-      ultimaModificacao: null,
+      ultimaModificacao: Date.parse('2030-01-01T00:00:00.000Z') * 1000,
+      lastProviderUpdate: null,
     });
 
     const api = makeApi({ 801: payment({ id: 801, order_id: 112, transaction_amount: 200 }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 801);
 
     expect(res.skipped).toBeNull();
-    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)!.valor).toBe(200);
+    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)).toMatchObject({
+      valor: 200,
+      lastProviderUpdate: Date.parse('2026-07-20T10:00:00.000Z') * 1000,
+      ultimaModificacao: Date.parse('2030-01-01T00:00:00.000Z') * 1000,
+    });
   });
 
   it('every read inside the transaction happens before the first write', async () => {

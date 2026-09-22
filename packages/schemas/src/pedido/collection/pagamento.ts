@@ -249,9 +249,10 @@ export const LIQUIDACAO_FONTE = {
  * released. Nested inside `marketplace` the two would overwrite each other on
  * every delivery.
  *
- * ⚠️ **A DIARY, never a GUARD**, and deliberately NOT in
- * `pagamentoMeta.serverOwnedFields` (there is none) — the same argument
- * `capturaComprador` carries on the pedido: forging it unblocks nothing. Every
+ * ⚠️ **A DIARY, never a GUARD**, and deliberately NOT listed in
+ * `pagamentoMeta.serverOwnedFields` (which protects only
+ * `lastProviderUpdate`) — the same argument `capturaComprador` carries on the
+ * pedido: forging it unblocks nothing. Every
  * settlement decision is re-derived inside the transaction from the FRESH
  * `get_escrow_list` row plus the stored `escrowReleaseTimeUs` it compares
  * against; a later step that wants to GATE on this block must first move the
@@ -313,10 +314,11 @@ export type MarketplacePagamentoTaxas = z.infer<typeof marketplacePagamentoTaxas
  * mirroring what `pedido.marketplace` does for the order's lifecycle.
  *
  * ⚠️ **A DIARY, never a GUARD** (same rule as `pedido.marketplace`, and
- * deliberately NOT `serverOwnedFields`): `valor` is the buyer-facing figure the
- * NF-e sums and `tarifas` is what the ERP charges — both live at the top level
- * and neither is derived from this block at read time. Everything here is
- * re-derived from the FRESH escrow payload on every write.
+ * deliberately NOT listed in `pagamentoMeta.serverOwnedFields`, which protects
+ * only `lastProviderUpdate`): `valor` is the buyer-facing figure the NF-e sums
+ * and `tarifas` is what the ERP charges — both live at the top level and neither
+ * is derived from this block at read time. Everything here is re-derived from
+ * the FRESH escrow payload on every write.
  *
  * ⚠️ **Written by BOTH Shopee writers, from the SAME pure functions.** The
  * order-import task builds it when it maps the payment; the weekly settlement
@@ -417,6 +419,12 @@ export const pagamentoSchema = z.object({
   // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
   vencimento: microsSinceEpoch('Vencimento').nullable().default(null),
   ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+  /**
+   * Provider resource clock (µs). Missing/null means no trusted provider event
+   * has won yet; server importers initialize it with the next valid delivery.
+   * Never compare this clock with `ultimaModificacao`, which is local recency.
+   */
+  lastProviderUpdate: microsSinceEpoch('Última atualização do provedor').nullable().optional(),
   dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
   dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
@@ -485,6 +493,7 @@ export const pagamentoMeta: CollectionMetadata = {
     write: PERM_PAGAMENTO_WRITE,
     delete: PERM_PAGAMENTO_DELETE,
   },
+  serverOwnedFields: ['lastProviderUpdate'],
 };
 
 export const pagamento = { schema: pagamentoSchema, meta: pagamentoMeta };

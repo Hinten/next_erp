@@ -163,6 +163,7 @@ describe('marketplacePedidoSchema', () => {
     // makes it a guard, it moves into this list and pays the ruleset regen.
     expect(pedidoMeta.serverOwnedFields).not.toContain('marketplace');
     expect(pedidoMeta.serverOwnedFields).not.toContain('capturaComprador');
+    expect(pedidoMeta.serverOwnedFields).toContain('lastMarketplaceUpdate');
   });
 
   it('rejects unknown diary properties', () => {

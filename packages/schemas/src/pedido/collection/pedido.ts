@@ -675,6 +675,9 @@ export const pedidoMeta: CollectionMetadata = {
     'disputaAbertaEm',
     'devolucaoAbertaEm',
     'bloqueiosLiberados',
+    // Provider event-clock watermark. Client creates may omit/seed null, but
+    // only server importers may advance, change or remove it afterwards.
+    'lastMarketplaceUpdate',
   ],
 };
 

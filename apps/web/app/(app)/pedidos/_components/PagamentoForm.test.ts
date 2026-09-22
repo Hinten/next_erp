@@ -7,6 +7,7 @@ import {
   isChequeSplit,
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
+  pagamentoPatchFromForm,
   remainingToPay,
   sumPagamentosPagos,
   validatePagamentoForm,
@@ -151,21 +152,110 @@ describe('pagamentoDataFromForm', () => {
     expect(data).toMatchObject({ duplicata: false, aVista: true });
   });
 
-  it('preserves modeled out-of-form fields and nulls a stale card for a non-card forma', () => {
+  it('never copies integration fields or dates from the base projection', () => {
     const base = {
       cartao: { bandeira: 'visa' },
       cheque: null,
       metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
       dataCadastro: 42,
     } as unknown as Pagamento;
-    // forma defaults to Dinheiro → the card map is reset (forma-managed), but the
-    // out-of-band fields survive.
+    // forma defaults to Dinheiro → the form-owned card map is reset, while
+    // out-of-band fields are deliberately absent from the projection.
     const data = pagamentoDataFromForm(form({ valor: 5 }), base);
-    expect(data).toMatchObject({
+    expect(data.cartao).toBeNull();
+    expect(data).not.toHaveProperty('metodoPagamentoOuterRef');
+    expect(data).not.toHaveProperty('dataCadastro');
+  });
+});
+
+describe('pagamentoPatchFromForm', () => {
+  const baseline = {
+    forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    valor: 10,
+    parcelas: 1,
+    descricaoPagamento: 'original',
+    vencimento: null,
+    aVista: true,
+    duplicata: false,
+    nFat: null,
+    cartao: null,
+    cheque: null,
+    marketplace: { tipo: 'shopee', orderSn: 'S1' },
+    liquidacao: { payoutAmount: 9 },
+    metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
+    lastProviderUpdate: 123,
+    ultimaModificacao: 456,
+    dataCadastro: 789,
+  } as unknown as Pagamento;
+
+  it('contains only edited form-owned fields', () => {
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.dinheiro),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'alterada',
+      }),
+      baseline,
+    );
+    expect(patch).toEqual({ descricaoPagamento: 'alterada' });
+    for (const forbidden of [
+      'marketplace',
+      'liquidacao',
+      'metodoPagamentoOuterRef',
+      'lastProviderUpdate',
+      'ultimaModificacao',
+      'dataCadastro',
+    ]) {
+      expect(patch).not.toHaveProperty(forbidden);
+    }
+  });
+
+  it('emits intentional resets when the payment method changes', () => {
+    const cardBaseline = {
+      ...baseline,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      parcelas: 3,
+      aVista: false,
+      cartao: { tpIntegra: '2', numeroCartao: '4111' },
+    } as Pagamento;
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.dinheiro),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'original',
+      }),
+      cardBaseline,
+    );
+    expect(patch).toMatchObject({
+      forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+      parcelas: 1,
+      aVista: true,
       cartao: null,
-      metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
-      dataCadastro: 42,
     });
+  });
+
+  it('treats cartao as one top-level block', () => {
+    const cardBaseline = {
+      ...baseline,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      cartao: { tpIntegra: '2', numeroCartao: '4111', cAut: 'OLD' },
+    } as Pagamento;
+    const patch = pagamentoPatchFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.cartao_credito),
+        status: String(STATUS_PAGAMENTO.aprovado),
+        valor: 10,
+        descricao: 'original',
+        numeroCartao: '4111',
+        cAut: 'NEW',
+      }),
+      cardBaseline,
+    );
+    expect(Object.keys(patch)).toContain('cartao');
+    expect(patch.cartao).toMatchObject({ numeroCartao: '4111', cAut: 'NEW' });
   });
 });
 
@@ -243,9 +333,8 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
   it('⚠️ PIX has no card group but IS card-like to the NF-e: a stored cartao SURVIVES the round trip', () => {
     // A marketplace importer (Shopee) writes a `cartao` on a forma-17 leg:
     // `tpIntegra '2'` + the processor's CNPJ + the authorization code. The form
-    // hides the group — there is no card DETAIL to edit — but `savePagamento`
-    // is a full `set`, so nulling it here would destroy the block and the NF-e
-    // would refuse the nota with cStat 391.
+    // hides the group — there is no card DETAIL to edit — so the projection
+    // preserves the block and the patch omits it when unchanged.
     const cartao = {
       tpIntegra: '2',
       bandeira: null,
