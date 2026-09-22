@@ -481,11 +481,27 @@ export const produtoShopeeLinkSchema = z
      * The stock gate skips this listing when EITHER mechanism says so:
      *
      * ```
-     * pular = (estoqueRecusaAte != null && nowMs < estoqueRecusaAte)
-     *      || (estoqueRecusaEm  != null
-     *          && estoqueRecusaEstado     === link.estadoAnuncio
-     *          && estoqueRecusaItemStatus === link.item_status)
+     * ouNulo(v) = v === undefined ? null : v   // the ONE normalisation, BOTH sides
+     *
+     * // TIME half
+     * pular = (typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte)
+     * // STATE half
+     *      || (typeof estoqueRecusaEm === 'number'
+     *          && (ouNulo(estoqueRecusaEstado) !== null
+     *              || ouNulo(estoqueRecusaItemStatus) !== null)   // ≥ 1 RECORDED reading
+     *          && ouNulo(estoqueRecusaEstado)     === ouNulo(link.estadoAnuncio)
+     *          && ouNulo(estoqueRecusaItemStatus) === ouNulo(link.item_status))
      * ```
+     *
+     * ⚠️ The at-least-one-recorded-reading guard exists because
+     * `estoqueRecusaEm` is also stamped by a PARTIAL send, which records no
+     * reading at all: without it a null/null stamp on a link whose two readings
+     * are null or absent compares `null === null` twice (after the fold) and
+     * latches the listing FOR EVER, since neither half can ever move to lift it.
+     *
+     * ⚠️ `pularPorRecusaAnterior` in `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`
+     * is the implementation this block DESCRIBES — never the other way round. When
+     * the two disagree, the code is the rule and this text is the defect.
      *
      * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
      * halves — either one moving LIFTS the skip.** That is the whole design:

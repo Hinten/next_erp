@@ -14,6 +14,7 @@ import { componentesKitSchema } from '@delfrance/schemas';
 import type { FaixaDto } from '../taxonomia/limites';
 import {
   deveEnviarFamiliaShopee,
+  opcoesPublicacaoShopee,
   opcoesShopee,
   quantidadeDoMembroShopee,
   quantidadeParaPublicarShopee,
@@ -83,7 +84,7 @@ afterEach(() => {
 describe('quantidadeParaPublicarShopee — PAR: a ligação ao núcleo responde os MESMOS números', () => {
   // Cada caso abaixo é uma entrada que `montagemAnuncio.test.ts` já fixava
   // ANTES da mudança, com o valor que a implementação local respondia. O corpo
-  // agora é `quantidadeParaEnvioCore` + `opcoesShopee`; o que estes doze casos
+  // agora é `quantidadeParaEnvioCore` + `opcoesPublicacaoShopee`; o que estes doze casos
   // provam é que a troca não moveu nenhum resultado.
 
   it('um kit usa o mínimo dos componentes e NÃO soma o estoque próprio', () => {
@@ -228,22 +229,94 @@ describe('opcoesShopee — pularKitVirtual é PINADO em false', () => {
   });
 });
 
-describe('opcoesShopee — a escotilha do estoque próprio do kit', () => {
-  it('PAR: com SHOPEE_STOCK_KIT_INCLUI_PROPRIO=1 o próprio SOMA a um kit CONSTRANGIDO', () => {
+describe('a escotilha do estoque próprio do kit — SÓ a sincronização, NUNCA a criação', () => {
+  // ⚠️ Este bloco foi REESCRITO em 2026-09-22 (revisão do PR #1623). O seu
+  // antigo "PAR" chamava `quantidadeParaPublicarShopee` com a flag ligada e
+  // esperava 7 (4 + 3) — ou seja, fixava como COMPORTAMENTO o defeito que a
+  // revisão encontrou: uma variável de SINCRONIZAÇÃO mudando o `seller_stock`
+  // do `add_item`. O passo 11 desenhou a quantidade de criação SEM gancho de
+  // estoque próprio; a flag só pode mover o que o `update_stock` envia. O PAR
+  // agora mora na ligação da varredura, e a criação virou o NEAR-MISS.
+  //
+  // O kit: componentes que permitem 10 (comp-a 20 / 2, comp-b 10 / 1) e 7 de
+  // estoque próprio — os números que o bot mediu (10 sem a flag, 17 com ela).
+  const COMPONENTES_DE_10 = [
+    { parentId: 'comp-a', quantidade: 20, quantidadeReservada: 0 },
+    { parentId: 'comp-b', quantidade: 10, quantidadeReservada: 0 },
+  ];
+  const kitNaVarredura = membro({
+    produtoId: 'kit-1',
+    ehKit: true,
+    componentesKit: COMPONENTES,
+    estoque: { quantidade: 7, quantidadeReservada: 0 },
+    componentEstoques: COMPONENTES_DE_10,
+  });
+  const kitNaCriacao = {
+    ehKit: true,
+    componentesKit: COMPONENTES,
+    ownDisponivel: 7,
+    disponivelByProdutoId: { 'comp-a': 20, 'comp-b': 10 },
+  };
+  const semBanda = { bandaMax: null, kitNativo: false };
+
+  it('⚠️ PAR: com SHOPEE_STOCK_KIT_INCLUI_PROPRIO=1 a VARREDURA soma o próprio a um kit CONSTRANGIDO (10 + 7 = 17)', () => {
     vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', '1');
     expect(opcoesShopee(null).incluirEstoqueProprioDoKit).toBe(true);
-    expect(
-      publicar({
-        ehKit: true,
-        componentesKit: COMPONENTES,
-        ownDisponivel: 3,
-        disponivelByProdutoId: { 'comp-a': 9, 'comp-b': 5 },
-      }),
-    ).toBe(7); // 4 (o mínimo) + 3 (o próprio)
+    expect(quantidadeDoMembroShopee(kitNaVarredura, semBanda)).toBe(17);
+    // A chamada que a varredura e o envio manual fazem de fato.
+    expect(quantidadesDaFamiliaShopee({ anchor: kitNaVarredura, children: [] }).get('kit-1')).toBe(
+      17,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: com a MESMA flag a CRIAÇÃO continua em 10 — o próprio nunca entra no seller_stock do add_item', () => {
+    vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', '1');
+    expect(opcoesPublicacaoShopee(null).incluirEstoqueProprioDoKit).toBe(false);
+    expect(publicar(kitNaCriacao)).toBe(10);
+    // O mesmo kit, a mesma flag, as duas ligações lado a lado: a divergência
+    // é exatamente o estoque próprio, e é a ACEITA (a sincronização sobe o
+    // anúncio no primeiro envio que o cobrir).
+    expect(quantidadeDoMembroShopee(kitNaVarredura, semBanda)).toBe(17);
+  });
+
+  it('sem a flag (AUSENTE), criação e varredura concordam: 10 e 10', () => {
+    vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', undefined);
+    expect(publicar(kitNaCriacao)).toBe(10);
+    expect(quantidadeDoMembroShopee(kitNaVarredura, semBanda)).toBe(10);
+    expect(quantidadesDaFamiliaShopee({ anchor: kitNaVarredura, children: [] }).get('kit-1')).toBe(
+      10,
+    );
+  });
+
+  it('as duas ligações diferem em UM campo só: desligada são iguais campo a campo, ligada só o gancho muda', () => {
+    vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', undefined);
+    expect(opcoesPublicacaoShopee(10)).toEqual(opcoesShopee(10));
+    vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', '1');
+    expect(opcoesPublicacaoShopee(10)).toEqual({
+      ...opcoesShopee(10),
+      incluirEstoqueProprioDoKit: false,
+    });
+    // O teto e o pino do kit virtual continuam vindo de `opcoesShopee`.
+    expect(opcoesPublicacaoShopee(10).estoqueMax).toBe(10);
+    expect(opcoesPublicacaoShopee(null).estoqueMax).toBe(Number.POSITIVE_INFINITY);
+    expect(opcoesPublicacaoShopee(null).pularKitVirtual).toBe(false);
   });
 
   it('⚠️ NEAR-MISS: com a mesma flag o próprio NÃO é somado duas vezes num kit SEM constrangimento', () => {
+    // Movido para a VARREDURA — a única ligação onde a flag ainda age; na
+    // criação ela está pinada e este caso passaria sem provar nada.
     vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', '1');
+    expect(
+      quantidadeDoMembroShopee(
+        membro({
+          ehKit: true,
+          componentesKit: COMPONENTES_LIVRES,
+          estoque: { quantidade: 3, quantidadeReservada: 0 },
+          componentEstoques: [{ parentId: 'comp-a', quantidade: 100, quantidadeReservada: 0 }],
+        }),
+        semBanda,
+      ),
+    ).toBe(3);
     expect(
       publicar({
         ehKit: true,
@@ -258,14 +331,10 @@ describe('opcoesShopee — a escotilha do estoque próprio do kit', () => {
     for (const valor of ['', '0', 'true', 'sim']) {
       vi.stubEnv('SHOPEE_STOCK_KIT_INCLUI_PROPRIO', valor);
       expect(opcoesShopee(null).incluirEstoqueProprioDoKit).toBe(false);
-      expect(
-        publicar({
-          ehKit: true,
-          componentesKit: COMPONENTES,
-          ownDisponivel: 3,
-          disponivelByProdutoId: { 'comp-a': 9, 'comp-b': 5 },
-        }),
-      ).toBe(4);
+      // A varredura é onde "desligada" se VÊ — a criação é pinada e responderia
+      // 10 com qualquer valor.
+      expect(quantidadeDoMembroShopee(kitNaVarredura, semBanda)).toBe(10);
+      expect(publicar(kitNaCriacao)).toBe(10);
     }
   });
 });

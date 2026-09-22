@@ -228,6 +228,17 @@ export function concurrentDispatches(): number {
  * Add a kit's OWN stock to the minimum of its components' — default OFF, i.e.
  * the same arithmetic the publish direction has always used.
  *
+ * ⚠️ **A SYNC knob, and only a sync knob.** It moves the quantity
+ * `update_stock` sends — the sweep and the manual push — and NEVER the
+ * create-time `seller_stock` of `add_item`: the publish binding
+ * (`opcoesPublicacaoShopee` in `./quantidadeEstoque`) pins it `false` whatever
+ * this answers. Step 11 designed the publish fold with no own-stock hook, the
+ * models path (`filhoParaPublicar`) has none either, and at create the lower
+ * number is the safe one — so turning this on must not silently change what a
+ * new listing is created with. The price, ACCEPTED: with it ON, a kit listing
+ * is created at the component minimum and the sync raises it by the kit's own
+ * stock the first time it sends that listing.
+ *
  * Scoped to Shopee: the shared core takes it as a required parameter precisely
  * so each channel answers it from its own name and its own default.
  */

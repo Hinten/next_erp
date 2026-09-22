@@ -480,6 +480,17 @@ export function preOrderParaPublicar(
  * something the compiler checks. The band's maximum still clamps DOWN and the
  * minimum still never clamps UP; {@link montarAnuncio} raises
  * `estoque-abaixo-do-minimo` for the latter, as before.
+ *
+ * ⚠️ **Sharing the fold is NOT sharing the kit own-stock knob.**
+ * `SHOPEE_STOCK_KIT_INCLUI_PROPRIO` moves the sync only — the sweep and the
+ * manual push — and never the create-time `seller_stock` built here: the
+ * function binds the core through `opcoesPublicacaoShopee`, which pins that
+ * parameter `false`, so a kit is still created at the minimum over its
+ * components exactly as step 11 designed (no own-stock hook), and a kit
+ * published as a no-model item agrees with a kit published as a MODEL, whose
+ * `seller_stock` `filhoParaPublicar` (`./publicarAnuncio`) folds with no hook
+ * either. With the knob ON, the sync raises a new kit listing by its own stock
+ * on its first send — accepted; `opcoesPublicacaoShopee`'s docblock says why.
  */
 export { quantidadeParaPublicarShopee };
 

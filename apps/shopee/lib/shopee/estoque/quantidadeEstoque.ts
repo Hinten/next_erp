@@ -8,8 +8,9 @@
  * there when Shopee needed the same answers Mercado Livre had been computing
  * since #678. What a channel owns is not the formula but its **parameters**:
  * which environment names it reads, what it pins, and what ceiling applies to
- * the listing in front of it. That is {@link opcoesShopee}, and it is the whole
- * of Shopee's half.
+ * the listing in front of it. That is {@link opcoesShopee} — and its create-time
+ * twin {@link opcoesPublicacaoShopee}, which differs in exactly one pinned
+ * field — and it is the whole of Shopee's half.
  *
  * ⚠️ **ONE function, TWO bindings — the #1369 lesson, applied before it bites.**
  * The alternative was a second copy of the fold under `apps/shopee`, with a
@@ -25,7 +26,9 @@
  * - **`incluirEstoqueProprioDoKit`** — `SHOPEE_STOCK_KIT_INCLUI_PROPRIO`,
  *   shipping OFF. A Shopee-scoped flag: the Mercado Livre variable of the same
  *   shape must not steer this channel, which is exactly what a shared reader
- *   inside the core would have caused.
+ *   inside the core would have caused. ⚠️ It is a **SYNC-only** knob: it
+ *   moves what `update_stock` sends and never the create-time `seller_stock`,
+ *   because {@link opcoesPublicacaoShopee} pins it `false` — see there for why.
  * - **`pularKitVirtual`** — **PINNED `false`**, never read from the
  *   environment. "Publish no quantity for this produto" is *inexpressible* on
  *   this wire: `seller_stock` is REQUIRED per model on `init_tier_variation`
@@ -74,10 +77,14 @@ import type { FaixaDto } from '../taxonomia/limites';
 import { kitIncluiEstoqueProprio, limiarEstoqueAlto } from './constantesEstoque';
 
 /**
- * Shopee's three parameters for the shared quantity fold.
+ * Shopee's three parameters for the shared quantity fold — the **SYNC**
+ * binding: every quantity `update_stock` sends goes through here.
  *
  * `bandaMax` is the listing's category ceiling, or `null` when none resolved —
  * see the module header for why that becomes `Infinity` and never `0`.
+ *
+ * The create path does NOT call this directly: it goes through
+ * {@link opcoesPublicacaoShopee}, which differs in exactly one field.
  */
 export function opcoesShopee(bandaMax: number | null): OpcoesDeQuantidade {
   return {
@@ -87,6 +94,47 @@ export function opcoesShopee(bandaMax: number | null): OpcoesDeQuantidade {
     pularKitVirtual: false,
     estoqueMax: bandaMax ?? Number.POSITIVE_INFINITY,
   };
+}
+
+/**
+ * The **PUBLISH** binding — {@link opcoesShopee} with the kit own-stock knob
+ * PINNED `false`. Its one caller is {@link quantidadeParaPublicarShopee}, i.e.
+ * the create-time `seller_stock` of `add_item`.
+ *
+ * ⚠️ **`SHOPEE_STOCK_KIT_INCLUI_PROPRIO` is a SYNC-only knob.** It moves what
+ * `update_stock` sends — the sweep and the manual push, both through
+ * {@link quantidadesDaFamiliaShopee} — and never what a create publishes. Three
+ * reasons, each sufficient on its own:
+ *
+ * 1. **Step 11 designed the publish fold with NO own-stock hook**, on purpose
+ *    (its docblock said so, and step 11 added no env var). Before this pin the
+ *    two bindings shared one reader, so turning a knob documented as sync
+ *    configuration silently changed the create path: a kit whose components
+ *    allow 10 and which holds 7 of its own was CREATED at 17 instead of 10.
+ * 2. **The models path has no hook either.** `filhoParaPublicar`
+ *    (`anuncios/publicarAnuncio.ts`) folds each child's `seller_stock` as the
+ *    component minimum or, failing that, its own stock — never the sum, and
+ *    with no environment read. An env-steered item-level number would make one
+ *    create answer two different arithmetics for a kit, depending on whether it
+ *    publishes as a listing or as a model.
+ * 3. **At create, the lower number is the safe one.** Overselling across
+ *    channels is unrecoverable; publishing the component minimum and letting
+ *    the sync raise it is the conservative direction.
+ *
+ * ⚠️ **The price, ACCEPTED:** with the knob ON, a kit listing is created at the
+ * component minimum and the sync raises it by the kit's own stock the first
+ * time it SENDS that listing — until then publish and sync disagree by exactly
+ * `ownDisponivel`. With the knob OFF (the default) the two bindings answer the
+ * same object, field for field.
+ *
+ * ⚠️ **The spread comes FIRST and the pin LAST.** Written the other way round
+ * the spread overwrites the pin, and the object reads exactly like this one.
+ * That is why the pin has a name and a home instead of being spelled inline at
+ * the call site; `quantidadeEstoque.test.ts`'s near-miss (the same env, the
+ * publish answers 10) is what goes red if the order flips or the pin is lost.
+ */
+export function opcoesPublicacaoShopee(bandaMax: number | null): OpcoesDeQuantidade {
+  return { ...opcoesShopee(bandaMax), incluirEstoqueProprioDoKit: false };
 }
 
 /**
@@ -117,9 +165,18 @@ function bandaFinita(banda: FaixaDto | null): number | null {
  * arrives from a soft-parsed document on this side of the seam, so the
  * tolerance belongs on this side too.
  *
- * Everything else is {@link opcoesShopee} over the shared core. It answers
- * `number | null`, and the `?? 0` tail is the TYPE's, not a behaviour: the only
- * producer of `null` is the virtual-kit skip, which this channel pins off.
+ * ⚠️ **The kit own-stock knob never reaches here.** A kit is CREATED at the
+ * minimum over its components (or at its own stock when no component
+ * constrains), whatever `SHOPEE_STOCK_KIT_INCLUI_PROPRIO` says: that knob moves
+ * the SWEEP and the manual push only, never the create-time `seller_stock`.
+ * {@link opcoesPublicacaoShopee} holds the pin and the reasons, and the price —
+ * with the knob ON, the first sync send of a new kit listing raises it by
+ * `ownDisponivel` — is accepted there.
+ *
+ * Everything else is {@link opcoesPublicacaoShopee} over the shared core. It
+ * answers `number | null`, and the `?? 0` tail is the TYPE's, not a behaviour:
+ * the only producer of `null` is the virtual-kit skip, which this channel pins
+ * off.
  */
 export function quantidadeParaPublicarShopee(args: {
   readonly ehKit: boolean;
@@ -139,7 +196,7 @@ export function quantidadeParaPublicarShopee(args: {
         ownDisponivel: proprio,
         disponivelByProdutoId: args.disponivelByProdutoId,
       },
-      opcoesShopee(bandaFinita(args.banda)),
+      opcoesPublicacaoShopee(bandaFinita(args.banda)),
     ) ?? 0
   );
 }
