@@ -70,6 +70,14 @@ export function describeFilter(
 
   if (options?.formatValue) return `${label}: ${options.formatValue(value)}`;
 
+  // ⚠️ Must sit ABOVE everything below it. `isNull` carries `value: null`, which
+  // the branches that follow would each answer wrongly and confidently: the
+  // `boolean` branch prints `Não` (`null !== true`), the `enum` branch prints
+  // the raw `null` through `String(value)`, and the final fallthrough prints
+  // `Cliente: null`. A column supplying `formatValue` (both /pedidos ref filters
+  // do) never reaches here; this is the phrase every other column gets.
+  if (op === 'isNull') return `${label}: (vazio)`;
+
   // Membership against a candidate list. Labels when the virtual column
   // declared its options, a bare count when it did not — a row of raw
   // Firestore ids would be worse than no chip at all.

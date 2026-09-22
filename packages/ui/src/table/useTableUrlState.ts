@@ -73,6 +73,9 @@ const FILTER_OPS = new Set<ColumnFilterOp>([
   'array-contains-any',
 
   'between',
+  // The null filter. It carries no value, so it round-trips as a bare
+  // `?<field>=isNull:` — see `encodeFilterValue` and the decode branch below.
+  'isNull',
 ]);
 
 /**
@@ -85,6 +88,17 @@ const FILTER_OPS = new Set<ColumnFilterOp>([
  * one candidate into two; every other op stringifies its scalar as before.
  */
 export function encodeFilterValue(value: ColumnFilterValue): string {
+  // ⚠️ `isNull` carries no operand, and the empty string is the point: the
+  // default `String(value.value)` below would emit the four characters `null`,
+  // which `parseFiltersFromParams` hands back as a string (or, on a datetime
+  // column, as `0`) — a filter that works on click and silently means something
+  // else after a reload.
+  //
+  // ⚠️ The caller writes `${op}:${encodeFilterValue(v)}`, so an empty encode
+  // still yields `isNull:` — and that trailing colon is LOAD-BEARING:
+  // `parseFiltersFromParams` drops any param with no `:` in it. Do not
+  // "simplify" this to emit a bare `isNull`.
+  if (value.op === 'isNull') return '';
   if (value.op === 'between') {
     // `..` separates the bounds. Both are numbers or plain strings here (a
     // range is only offered for numeric and datetime kinds), so neither can
@@ -162,6 +176,15 @@ export function parseFiltersFromParams(
       // `expandColumnFilter` emits the single predicate it has.
       if (lo === null && hi === null) continue;
       out[key] = { op, value: lo, valueTo: hi };
+      continue;
+    }
+    if (op === 'isNull') {
+      // Decoded by the OP, ahead of the coerce-by-`kind` ladder below, because
+      // the value is the op's and not the descriptor's. ⚠️ Order matters: the
+      // ladder would turn the empty payload into `''` on a string column and
+      // into `0` on a datetime one — `Number('')` is `0`, not `NaN`, so it
+      // sails past the `Number.isNaN` guard and becomes a silent `eq 0`.
+      out[key] = { op, value: null };
       continue;
     }
     if (op === 'array-contains-any') {
