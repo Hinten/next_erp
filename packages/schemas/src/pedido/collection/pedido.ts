@@ -632,7 +632,7 @@ export const pedidoMeta: CollectionMetadata = {
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 50,
-    // The nine columns legacy showed, plus `disputa` (#1322).
+    // The nine columns legacy showed, plus `disputa` (#1322) and `integracao`.
     // ⚠️ `disputa` is declared in `PedidosListView` but was never listed HERE,
     // so it rendered on no fresh browser — the ColumnPicker was its only route
     // on screen, and that picker is going away. Its own docstring calls this
@@ -647,6 +647,10 @@ export const pedidoMeta: CollectionMetadata = {
       'nf',
       'disputa',
       'cliente',
+      // Carries the Canal filter. A TableView filter affordance lives in a
+      // column header, so an operator who works one marketplace at a time
+      // cannot narrow the list without this column being on screen.
+      'integracao',
       'expedicao',
       'vlr',
       'frete',

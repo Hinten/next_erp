@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import { ESTADO_NFE } from '@delfrance/schemas';
-import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
+import type { Integracao, NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
 
 // Hoisted, mutable state objects so each test can swap the value the mocked
 // hooks return before re-rendering. Mirrors the pattern in
@@ -104,7 +104,8 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
+import { ClienteCell, FreteCell, ImpCell, IntegracaoCell, NFCell, VlrCell } from './PedidoCells';
+import type { IntegracaoLookup } from './integracaoLookup';
 import { NFE_LISTENER_UNSEEN_MS, __resetLatestNfeMemo } from './useLatestNfe';
 
 function wrap(node: React.ReactNode) {
@@ -516,6 +517,68 @@ describe('ClienteCell — static cached read', () => {
       />,
     );
     expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+});
+
+describe('IntegracaoCell — page-wide lookup, no per-row read', () => {
+  const integracao = (nome: string, tipo: number, cor: number | null) =>
+    ({ nome, tipo, cor, ativo: true }) as unknown as Integracao;
+
+  const lookup = (
+    status: IntegracaoLookup['status'],
+    entries: Array<[string, Integracao]> = [],
+  ): IntegracaoLookup => ({ rows: [], byId: new Map(entries), status });
+
+  const pedido = (ref: unknown) => ({ integracaoPedidoOuterRef: ref }) as unknown as Pedido;
+
+  afterEach(() => {
+    dereferenceMock.mockReset();
+  });
+
+  it('renders a dash when the pedido carries no integração', () => {
+    dereferenceMock.mockReturnValue(null);
+    wrap(<IntegracaoCell pedido={pedido(null)} lookup={lookup('success')} />);
+    expect(screen.getByText('—')).toBeTruthy();
+  });
+
+  it('shows a skeleton while the shared lookup is in flight', () => {
+    // ⚠️ Status first: an empty `byId` while pending must NOT read as
+    // "this integração does not exist".
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    const { container } = wrap(
+      <IntegracaoCell pedido={pedido('documents/integracao/ml-1')} lookup={lookup('pending')} />,
+    );
+    expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+
+  it('says the lookup is unavailable when the read failed, not that the id is unknown', () => {
+    // A user without `PERM.integracao.read` gets `permission-denied`, which
+    // leaves `byId` empty — a system problem, reported as one.
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    wrap(<IntegracaoCell pedido={pedido('documents/integracao/ml-1')} lookup={lookup('error')} />);
+    expect(screen.getByText('indisponível')).toBeTruthy();
+  });
+
+  it('flags an id the loaded lookup genuinely does not hold', () => {
+    dereferenceMock.mockReturnValue({ id: 'gone' });
+    wrap(
+      <IntegracaoCell
+        pedido={pedido('documents/integracao/gone')}
+        lookup={lookup('success', [['ml-1', integracao('ML Principal', 1, null)]])}
+      />,
+    );
+    expect(screen.getByText('desconhecida')).toBeTruthy();
+  });
+
+  it('renders the channel name once the lookup resolves it', () => {
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    wrap(
+      <IntegracaoCell
+        pedido={pedido('documents/integracao/ml-1')}
+        lookup={lookup('success', [['ml-1', integracao('ML Principal', 1, 0x1e88e5)]])}
+      />,
+    );
+    expect(screen.getByText('ML Principal')).toBeTruthy();
   });
 });
 
