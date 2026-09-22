@@ -96,8 +96,11 @@ export function EnviNfeFilterBar({ onApply, disabled }: EnviNfeFilterBarProps) {
             chave carregam o corpo do CNPJ do emitente e podem conter A-Z. Este
             campo já aceitava isso — valida por `CHAVE_NFE_REGEX` — e era só o
             texto que dizia ao operador que uma chave alfanumérica válida estava
-            errada. A mensagem de erro nomeia a FORMA, não só o comprimento,
-            porque o regex também recusa minúsculas e pontuação em 44 caracteres.
+            errada. A mensagem de erro nomeia a FORMA, não só o comprimento, e
+            nomeia a JANELA: `CHAVE_NFE_REGEX` aceita A-Z somente nas posições
+            7 a 18 (1-indexadas). Dizer apenas "números e A-Z" descreveria uma
+            forma mais frouxa do que a validada — o mesmo defeito de "44
+            dígitos", só que mais estreito.
           */}
           {mode === 'chave' && (
             <TextInput
@@ -106,7 +109,9 @@ export function EnviNfeFilterBar({ onApply, disabled }: EnviNfeFilterBarProps) {
               value={term}
               onChange={(e) => setTerm(e.currentTarget.value.trim())}
               error={
-                chaveInvalid ? 'Chave inválida: 44 caracteres, apenas números e A-Z' : undefined
+                chaveInvalid
+                  ? 'Chave inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente)'
+                  : undefined
               }
               disabled={disabled}
               w={380}

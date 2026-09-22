@@ -42,7 +42,11 @@ describe('EnviNfeFilterBar', () => {
 
     fireEvent.change(input, { target: { value: '123' } });
     expect(aplicar).toHaveProperty('disabled', true);
-    expect(screen.getByText('Chave inválida: 44 caracteres, apenas números e A-Z')).toBeDefined();
+    expect(
+      screen.getByText(
+        'Chave inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente)',
+      ),
+    ).toBeDefined();
 
     fireEvent.change(input, { target: { value: VALID_CHAVE } });
     expect(aplicar).toHaveProperty('disabled', false);

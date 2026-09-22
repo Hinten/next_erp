@@ -100,13 +100,16 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
   // per-input hint). ⚠️ 44 CHARACTERS, not digits: positions 6-17 are the
   // emitente CNPJ body and may hold A-Z (NT 2026.004). The regex has been right
   // since #1619; the message below had not caught up, so an operator with a
-  // valid alfa chave was told to count digits.
+  // valid alfa chave was told to count digits. The message names the WINDOW
+  // too: A-Z is legal only at positions 7-18 (1-indexed), so "números e A-Z"
+  // alone would describe a looser shape than the regex enforces.
   if (
     (data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !CHAVE_NFE_REGEX.test(c))
   ) {
     issues.push({
       path: 'chNFeReferenciadas',
-      message: 'Chave de acesso referenciada inválida: 44 caracteres, apenas números e A-Z.',
+      message:
+        'Chave de acesso referenciada inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente).',
     });
   }
 

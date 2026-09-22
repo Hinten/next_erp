@@ -54,6 +54,12 @@ function cnpjFor(worker: string | undefined): string {
  */
 function isValidCnpj(cnpj: string): boolean {
   if (!/^[0-9A-Z]{12}\d{2}$/.test(cnpj)) return false;
+  // ⚠️ Repdigits are banned by the rule, not by the checksum. `00000000000000`
+  // computes DVs of `00` and would otherwise pass here — then be rejected by
+  // the schema the seeded documents are read through, which is the worst place
+  // to find out. Every other repdigit (`11111111111111` and friends) fails the
+  // mod-11 anyway, so this guard earns its keep on exactly one value.
+  if (/^(\d)\1{13}$/.test(cnpj)) return false;
   const dv = (chars: string, weights: number[]): number => {
     const sum = weights.reduce((acc, w, k) => acc + (chars.charCodeAt(k) - 48) * w, 0);
     const rest = sum % 11;
@@ -219,20 +225,31 @@ describe('e2ePrefix', () => {
     it('accepts a checksum-valid ALPHANUMERIC CNPJ', () => {
       // The other half of the near-miss pair: the widened validator must not
       // just stop rejecting letters, it must compute the right DVs for them.
-      // `12ABC678000` + ordem/DV below is checked with the ASCII-48 weighting.
-      const base = '12ABC6780001';
-      const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
-      const dv = (chars: string, weights: number[]): number => {
-        const sum = weights.reduce((acc, w, k) => acc + (chars.charCodeAt(k) - 48) * w, 0);
-        return sum % 11 < 2 ? 0 : 11 - (sum % 11);
-      };
-      const d1 = dv(base, w1);
-      const valid = `${base}${d1}${dv(`${base}${d1}`, [6, ...w1])}`;
-      expect(isValidCnpj(valid), valid).toBe(true);
-      // …and a one-character near-miss on the same value must stay rejected.
-      expect(isValidCnpj(`${valid.slice(0, 13)}${(Number(valid[13]) + 1) % 10}`)).toBe(false);
+      //
+      // ⚠️ The expected values are LITERALS, deliberately. Deriving them here
+      // with a copy of the same `dv` would pin `isValidCnpj` against a
+      // transcription of itself — the exact objection this file's JSDoc raises
+      // about reusing `validateCNPJ`. Both literals below are checked against
+      // the rule: base `12ABC6780001` weighted by ASCII-48 gives DV1 0, then
+      // `12ABC67800010` gives DV2 7. `12ABC34501DE35` is RFB's own published
+      // alphanumeric example from IN 2.229/2024.
+      expect(isValidCnpj('12ABC678000107')).toBe(true);
+      expect(isValidCnpj('12ABC34501DE35')).toBe(true);
+      // A one-character near-miss on the check digits must stay rejected.
+      expect(isValidCnpj('12ABC678000108')).toBe(false);
+      // …and so must a near-miss in the alfa body, which changes the sum.
+      expect(isValidCnpj('12ABD678000107')).toBe(false);
       // Lowercase is not a valid CNPJ character, and must not be folded in.
-      expect(isValidCnpj(valid.toLowerCase())).toBe(false);
+      expect(isValidCnpj('12abc678000107')).toBe(false);
+    });
+
+    it('rejects the all-zero CNPJ even though it satisfies the checksum', () => {
+      // `00000000000000` computes DVs of `00`, so only the repdigit ban stops
+      // it. Pinned separately because it is the single value where this
+      // validator would otherwise disagree with `@delfrance/core`'s
+      // `validateCNPJ`, and a backstop that disagrees with the schema its
+      // seeds are read through is worse than no backstop.
+      expect(isValidCnpj('00000000000000')).toBe(false);
     });
   });
 
