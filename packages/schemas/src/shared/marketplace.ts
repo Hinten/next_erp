@@ -201,6 +201,36 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     kitVirtual: 'nao',
     // `PUT /items/{id}` with `status: 'paused' | 'active'`, shipped in #1412.
     pausarAnuncio: 'sim',
+    // Measured live on the SG SANDBOX shop, 2026-09-21, through the shipped step-12
+    // package ops, with Lucas’s explicit go and a `delete_item` cleanup. Every
+    // line names the probe that answers it; a line reading NAO MEDIDO says what is
+    // still owed rather than keeping a guess.
+    //   stock: 0 on UPDATE   — aceito                                          (P6)
+    //   stock: 1 vs min_limit — NAO MEDIDO: the sandbox category declares no
+    //     stock_limit at all (min_limit and max_limit both null), so the band
+    //     could not be exercised; `bandaMax` is nullable in practice.          (P7)
+    //   echo vs read-back    — iguais (but the read-back stays the authority:
+    //     step 11 measured a STALE `update_item` echo)                         (P4)
+    //   update_time moveu    — nao; faq 180 is right and the API page is wrong,
+    //     so `get_item_list?update_time_from` detects no stock drift.          (P5)
+    //   stock_list PARCIAL   — omitidos preservados (the #831 shape answered NO
+    //     for stock), so one item’s models may be split across calls.          (P8)
+    //   um modelo invalido   — so failure_list, on an HTTP 200 whose `error` is
+    //     the EMPTY string: `error_busi_update_stock_failed` never fired, so the
+    //     happy-path envelope is the primary attribution path.                 (P9)
+    //   sem promocao         — an EMPTY `promotion` array. Which of the two
+    //     declared `total_reserved_stock` positions is live stays UNVERIFIED — the
+    //     sandbox carries no Discount module (guide 644).                      (P1)
+    //   feriado PARCIAL      — nao bloqueia, so the `loja-em-ferias` conta gate is
+    //     rightly FULL-only.                                                  (P10)
+    //   feriado TOTAL        — NAO MEDIDO: a FULL holiday cannot be set over an
+    //     active PARTIAL one (numeric refusal `10002`); transicao — NAO MEDIDO, and
+    //     `error_holiday_mode_change_stock` has never been seen.              (P10)
+    //   warehouse            — sem-multi-armazem, refused PREFIXED on the wire as
+    //     `warehouse.error_not_in_whitelist`.                                  (P3)
+    // ⚠️ An SG sandbox answer is evidence about the API, never about BR: the
+    //    promotion regime, kits and multi-warehouse are not rehearsable there.
+    // `implementado` stays `false` until step 22.
     estoque: {
       suporte: 'sim',
       // One `PUT /items/{id}` per listing; two calls on a multiorigin conta
