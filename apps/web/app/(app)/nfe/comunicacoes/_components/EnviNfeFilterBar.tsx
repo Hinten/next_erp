@@ -91,13 +91,23 @@ export function EnviNfeFilterBar({ onApply, disabled }: EnviNfeFilterBarProps) {
             disabled={disabled}
             size="sm"
           />
+          {/*
+            ⚠️ Caracteres, não dígitos. Desde a NT 2026.004 as posições 6–17 da
+            chave carregam o corpo do CNPJ do emitente e podem conter A-Z. Este
+            campo já aceitava isso — valida por `CHAVE_NFE_REGEX` — e era só o
+            texto que dizia ao operador que uma chave alfanumérica válida estava
+            errada. A mensagem de erro nomeia a FORMA, não só o comprimento,
+            porque o regex também recusa minúsculas e pontuação em 44 caracteres.
+          */}
           {mode === 'chave' && (
             <TextInput
               label="Chave NF-e"
-              placeholder="44 dígitos"
+              placeholder="44 caracteres"
               value={term}
               onChange={(e) => setTerm(e.currentTarget.value.trim())}
-              error={chaveInvalid ? 'A chave tem exatamente 44 dígitos' : undefined}
+              error={
+                chaveInvalid ? 'Chave inválida: 44 caracteres, apenas números e A-Z' : undefined
+              }
               disabled={disabled}
               w={380}
             />

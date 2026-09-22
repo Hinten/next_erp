@@ -39,13 +39,23 @@ function cnpjFor(worker: string | undefined): string {
 }
 
 /**
- * Independent mod-11 CNPJ check — deliberately NOT reusing `validTestCnpj`,
- * which is the function under test.
+ * Independent mod-11 CNPJ check — deliberately NOT reusing `validTestCnpj` (the
+ * function under test) nor `validateCNPJ` from `@delfrance/core/documents` (the
+ * implementation the seeder's consumers run). Both would make this assert that
+ * an implementation agrees with itself; the point is to assert the RULE.
+ *
+ * ⚠️ Alphanumeric-aware, and it has to be. This used to gate on `/^\d{14}$/`
+ * with `Number(digits[k])`, so it answered `false` for a perfectly VALID alfa
+ * CNPJ — a backstop that would have failed a correct seed and passed an
+ * incorrect one. The rule since RFB IN 2.229/2024: the first 12 positions may
+ * be `[0-9A-Z]`, the two check digits stay numeric, and every character enters
+ * the sum as `charCode - 48` (identical to its value for `0-9`, which is why
+ * numeric CNPJs are unaffected).
  */
 function isValidCnpj(cnpj: string): boolean {
-  if (!/^\d{14}$/.test(cnpj)) return false;
-  const dv = (digits: string, weights: number[]): number => {
-    const sum = weights.reduce((acc, w, k) => acc + Number(digits[k]) * w, 0);
+  if (!/^[0-9A-Z]{12}\d{2}$/.test(cnpj)) return false;
+  const dv = (chars: string, weights: number[]): number => {
+    const sum = weights.reduce((acc, w, k) => acc + (chars.charCodeAt(k) - 48) * w, 0);
     const rest = sum % 11;
     return rest < 2 ? 0 : 11 - rest;
   };
@@ -174,13 +184,55 @@ describe('e2ePrefix', () => {
 
     it('every hand-written cnpj literal in the seeder', () => {
       const src = readFileSync(join(E2E_DIR, '_helpers', 'seed-data.ts'), 'utf8');
-      const literals = [...src.matchAll(/\bcnpj: '(\d+)'/g)].map((m) => m[1]!);
+      // ⚠️ `[0-9A-Z]`, not `\d`. The harvest used to be digits-only, which made
+      // this backstop blind to exactly the case it now has to catch: an
+      // alphanumeric literal was not FAILED, it was silently skipped, so an
+      // invalid alfa CNPJ would have sailed through into the seeds.
+      const literals = [...src.matchAll(/\bcnpj: '([0-9A-Z]+)'/g)].map((m) => m[1]!);
       // Anti-vacuity: a regex that matched nothing would assert over an empty
       // list. Three filial literals live in the seeder today.
+      //
+      // ⚠️ The scan is deliberately FILE-WIDE, not filial-scoped. Every `cnpj:`
+      // literal here happens to be a filial today, but the checksum rule is the
+      // same for any of them, and narrowing the regex to filial call sites would
+      // re-open the blind spot this test exists to close. Note `cpf_cnpj:` is
+      // NOT harvested — `\b` does not fire between `_` and `c` — so a CPF is
+      // excluded by accident rather than by design. Do not rely on that: a
+      // 14-character `cpf_cnpj:` literal would go unchecked.
       expect(literals.length).toBeGreaterThanOrEqual(3);
       for (const cnpj of literals) {
         expect(isValidCnpj(cnpj), `seed-data.ts carries an invalid CNPJ: ${cnpj}`).toBe(true);
       }
+    });
+
+    it('the harvest itself sees an alphanumeric literal', () => {
+      // ⚠️ Guards the guard. The assertion above cannot distinguish "every
+      // literal is valid" from "the regex matched nothing alphanumeric", and
+      // that indistinguishability WAS the bug. So pin the harvest against a
+      // synthetic source: an invalid alfa literal must be found, and must fail.
+      const fakeSrc = "  cnpj: '12ABC678000X99',\n  cnpj: '99999999999962',\n";
+      const literals = [...fakeSrc.matchAll(/\bcnpj: '([0-9A-Z]+)'/g)].map((m) => m[1]!);
+      expect(literals).toEqual(['12ABC678000X99', '99999999999962']);
+      expect(isValidCnpj('12ABC678000X99')).toBe(false);
+    });
+
+    it('accepts a checksum-valid ALPHANUMERIC CNPJ', () => {
+      // The other half of the near-miss pair: the widened validator must not
+      // just stop rejecting letters, it must compute the right DVs for them.
+      // `12ABC678000` + ordem/DV below is checked with the ASCII-48 weighting.
+      const base = '12ABC6780001';
+      const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+      const dv = (chars: string, weights: number[]): number => {
+        const sum = weights.reduce((acc, w, k) => acc + (chars.charCodeAt(k) - 48) * w, 0);
+        return sum % 11 < 2 ? 0 : 11 - (sum % 11);
+      };
+      const d1 = dv(base, w1);
+      const valid = `${base}${d1}${dv(`${base}${d1}`, [6, ...w1])}`;
+      expect(isValidCnpj(valid), valid).toBe(true);
+      // …and a one-character near-miss on the same value must stay rejected.
+      expect(isValidCnpj(`${valid.slice(0, 13)}${(Number(valid[13]) + 1) % 10}`)).toBe(false);
+      // Lowercase is not a valid CNPJ character, and must not be folded in.
+      expect(isValidCnpj(valid.toLowerCase())).toBe(false);
     });
   });
 

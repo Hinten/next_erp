@@ -94,15 +94,19 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     });
   }
 
-  // Every referenced NF-e access key (`chNFeReferenciadas`) must be a 44-digit
-  // chave — an invalid one is accepted by the form today and only fails at NF-e
-  // emission. Block the save here (the Fiscal tab also shows a per-input hint).
+  // Every referenced NF-e access key (`chNFeReferenciadas`) must match
+  // `CHAVE_NFE_REGEX` — an invalid one is accepted by the form today and only
+  // fails at NF-e emission. Block the save here (the Fiscal tab also shows a
+  // per-input hint). ⚠️ 44 CHARACTERS, not digits: positions 6-17 are the
+  // emitente CNPJ body and may hold A-Z (NT 2026.004). The regex has been right
+  // since #1619; the message below had not caught up, so an operator with a
+  // valid alfa chave was told to count digits.
   if (
     (data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !CHAVE_NFE_REGEX.test(c))
   ) {
     issues.push({
       path: 'chNFeReferenciadas',
-      message: 'Chave de acesso referenciada deve ter 44 dígitos.',
+      message: 'Chave de acesso referenciada inválida: 44 caracteres, apenas números e A-Z.',
     });
   }
 

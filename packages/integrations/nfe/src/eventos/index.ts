@@ -36,12 +36,12 @@ export class NFeEventoError extends Error {
 }
 
 export interface CancelamentoEventoInput {
-  /** 44-digit chave de acesso of the authorized NF-e. */
+  /** 44-character chave de acesso of the authorized NF-e. */
   readonly chNFe: string;
   /** Órgão (IBGE cUF 2-digit) — the autorizadora UF. */
   readonly cOrgao: string;
   readonly tpAmb: TpAmb;
-  /** Emitter CNPJ (14 digits). */
+  /** Emitter CNPJ, 14 characters — the first 12 may be `A-Z` (NT 2026.004). */
   readonly cnpj: string;
   /** Authorization protocol from the original emission (`protNFe.infProt.nProt`). */
   readonly nProt: string;
@@ -89,7 +89,7 @@ export function buildCancelamentoDetEvento(input: {
  */
 export function buildCancelamentoEvento(input: CancelamentoEventoInput): string {
   if (input.chNFe.length !== 44) {
-    throw new NFeEventoError(`chNFe must be 44 digits, got ${input.chNFe.length}`);
+    throw new NFeEventoError(`chNFe must be 44 characters, got ${input.chNFe.length}`);
   }
   const nSeq = input.nSeqEvento ?? 1;
   const id = `ID${TP_EVENTO_CANCELAMENTO}${input.chNFe}${String(nSeq).padStart(2, '0')}`;
@@ -133,12 +133,12 @@ export const XCONDUSO_CCE =
   'implique mudança do remetente ou do destinatário; III - a data de emissão ou de saída.';
 
 export interface CCeEventoInput {
-  /** 44-digit chave de acesso of the authorized NF-e. */
+  /** 44-character chave de acesso of the authorized NF-e. */
   readonly chNFe: string;
   /** Órgão (IBGE cUF 2-digit) — the autorizadora UF. */
   readonly cOrgao: string;
   readonly tpAmb: TpAmb;
-  /** Emitter CNPJ (14 digits). */
+  /** Emitter CNPJ, 14 characters — the first 12 may be `A-Z` (NT 2026.004). */
   readonly cnpj: string;
   /**
    * Correction text. SEFAZ requires 15–1000 chars. The API route validates the
@@ -178,7 +178,7 @@ export function buildCCeDetEvento(input: { readonly xCorrecao: string }): string
  */
 export function buildCCeEvento(input: CCeEventoInput): string {
   if (input.chNFe.length !== 44) {
-    throw new NFeEventoError(`chNFe must be 44 digits, got ${input.chNFe.length}`);
+    throw new NFeEventoError(`chNFe must be 44 characters, got ${input.chNFe.length}`);
   }
   const nSeq = input.nSeqEvento ?? 1;
   const id = `ID${TP_EVENTO_CCE}${input.chNFe}${String(nSeq).padStart(2, '0')}`;
@@ -212,10 +212,10 @@ export const C_ORGAO_AMBIENTE_NACIONAL = '91';
 
 /** The NF-e summary the EPEC detEvento carries (e110140 XSD). */
 export interface EpecEventoInput {
-  /** 44-digit chave de acesso of the contingency (tpEmis=4) NF-e. */
+  /** 44-character chave de acesso of the contingency (tpEmis=4) NF-e. */
   readonly chNFe: string;
   readonly tpAmb: TpAmb;
-  /** Emitter CNPJ (14 digits). */
+  /** Emitter CNPJ, 14 characters — the first 12 may be `A-Z` (NT 2026.004). */
   readonly cnpj: string;
   /** Emitter IE. */
   readonly ie: string;
@@ -282,7 +282,7 @@ export function buildEpecDetEvento(input: EpecEventoInput): string {
  */
 export function buildEpecEvento(input: EpecEventoInput): string {
   if (input.chNFe.length !== 44) {
-    throw new NFeEventoError(`chNFe must be 44 digits, got ${input.chNFe.length}`);
+    throw new NFeEventoError(`chNFe must be 44 characters, got ${input.chNFe.length}`);
   }
   const nSeq = input.nSeqEvento ?? 1;
   const id = `ID${TP_EVENTO_EPEC}${input.chNFe}${String(nSeq).padStart(2, '0')}`;

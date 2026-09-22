@@ -36,13 +36,13 @@ describe('EnviNfeFilterBar', () => {
     wrap(<EnviNfeFilterBar onApply={onApply} />);
 
     const aplicar = screen.getByRole('button', { name: 'Aplicar' });
-    const input = screen.getByPlaceholderText('44 dígitos');
+    const input = screen.getByPlaceholderText('44 caracteres');
 
     expect(aplicar).toHaveProperty('disabled', true);
 
     fireEvent.change(input, { target: { value: '123' } });
     expect(aplicar).toHaveProperty('disabled', true);
-    expect(screen.getByText('A chave tem exatamente 44 dígitos')).toBeDefined();
+    expect(screen.getByText('Chave inválida: 44 caracteres, apenas números e A-Z')).toBeDefined();
 
     fireEvent.change(input, { target: { value: VALID_CHAVE } });
     expect(aplicar).toHaveProperty('disabled', false);
@@ -55,7 +55,7 @@ describe('EnviNfeFilterBar', () => {
     const onApply = vi.fn();
     wrap(<EnviNfeFilterBar onApply={onApply} />);
 
-    fireEvent.change(screen.getByPlaceholderText('44 dígitos'), {
+    fireEvent.change(screen.getByPlaceholderText('44 caracteres'), {
       target: { value: VALID_CHAVE },
     });
     fireEvent.click(screen.getByRole('radio', { name: 'ID pedido' }));
@@ -72,7 +72,7 @@ describe('EnviNfeFilterBar', () => {
     const onApply = vi.fn();
     wrap(<EnviNfeFilterBar onApply={onApply} />);
 
-    fireEvent.change(screen.getByPlaceholderText('44 dígitos'), {
+    fireEvent.change(screen.getByPlaceholderText('44 caracteres'), {
       target: { value: VALID_CHAVE },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
@@ -106,7 +106,7 @@ describe('EnviNfeFilterBar', () => {
     const onApply = vi.fn();
     wrap(<EnviNfeFilterBar onApply={onApply} />);
 
-    const input = screen.getByPlaceholderText('44 dígitos');
+    const input = screen.getByPlaceholderText('44 caracteres');
     fireEvent.change(input, { target: { value: VALID_CHAVE } });
     fireEvent.click(screen.getByRole('button', { name: 'Limpar' }));
 
