@@ -386,10 +386,11 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await page.getByRole('tab', { name: 'Pagamento' }).click();
     await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'Editar' }).click();
+    const pagamentoModal = page.getByLabel('Pagamento', { exact: true });
     await page.getByLabel('Descrição').fill('edição local');
 
     await pagamentoRef.update({ descricaoPagamento: 'edição remota' });
-    await page.getByRole('button', { name: 'Salvar alterações' }).click();
+    await pagamentoModal.getByRole('button', { name: 'Salvar alterações' }).click();
     await expect(page.getByText('Pagamento alterado', { exact: true })).toBeVisible();
     await expect(page.getByRole('cell', { name: 'descricaoPagamento' })).toBeVisible();
 
@@ -414,7 +415,10 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'Excluir' }).click();
     await pagamentoRef.update({ valor: 11 });
-    await page.getByRole('button', { name: 'Excluir', exact: true }).click();
+    await page
+      .getByLabel('Excluir pagamento')
+      .getByRole('button', { name: 'Excluir', exact: true })
+      .click();
     await expect(page.getByText('Pagamento alterado — exclusão cancelada')).toBeVisible();
     await expect.poll(async () => (await pagamentoRef.get()).exists).toBe(true);
   });
