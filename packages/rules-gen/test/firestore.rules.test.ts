@@ -323,6 +323,99 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     }
   });
 
+  describe('server-owned provider watermarks', () => {
+    const pedidoWriter = () => db({ d_pedido: 2 });
+    const pagamentoWriter = () => db({ d_pagamento: 2 });
+    const su = () => db(rulesClaimsFromBits((1n << 128n) - 1n));
+
+    it('allows clients to omit or create the watermarks as null', async () => {
+      await assertSucceeds(
+        setDoc(doc(pedidoWriter(), 'pedidos/wm-null'), {
+          estado: 'iniciado',
+          ehSaida: true,
+          lastMarketplaceUpdate: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(pagamentoWriter(), 'pedidos/wm-null/pagamentos/p-null'), {
+          valor: 10,
+          lastProviderUpdate: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(pagamentoWriter(), 'pedidos/wm-null/pagamentos/p-absent'), { valor: 10 }),
+      );
+    });
+
+    it('denies forged watermark values on create for normal and super users', async () => {
+      for (const [client, id] of [
+        [pedidoWriter(), 'normal'],
+        [su(), 'su'],
+      ] as const) {
+        await assertFails(
+          setDoc(doc(client, `pedidos/wm-forge-${id}`), {
+            estado: 'iniciado',
+            ehSaida: true,
+            lastMarketplaceUpdate: 1_700_000_000_000_000,
+          }),
+        );
+      }
+      for (const [client, id] of [
+        [pagamentoWriter(), 'normal'],
+        [su(), 'su'],
+      ] as const) {
+        await assertFails(
+          setDoc(doc(client, `pedidos/wm-forge/pagamentos/p-${id}`), {
+            valor: 10,
+            lastProviderUpdate: 1_700_000_000_000_000,
+          }),
+        );
+      }
+    });
+
+    it('denies changing, clearing or removing either watermark while normal fields remain writable', async () => {
+      await seed('pedidos/wm-upd', {
+        estado: 'iniciado',
+        ehSaida: true,
+        lastMarketplaceUpdate: 1_700_000_000_000_000,
+      });
+      await seed('pedidos/wm-upd/pagamentos/p1', {
+        valor: 10,
+        lastProviderUpdate: 1_700_000_000_000_000,
+      });
+
+      for (const client of [pedidoWriter(), su()]) {
+        const ref = doc(client, 'pedidos/wm-upd');
+        await assertFails(updateDoc(ref, { lastMarketplaceUpdate: 1_800_000_000_000_000 }));
+        await assertFails(updateDoc(ref, { lastMarketplaceUpdate: null }));
+        await assertFails(updateDoc(ref, { lastMarketplaceUpdate: deleteField() }));
+      }
+      for (const client of [pagamentoWriter(), su()]) {
+        const ref = doc(client, 'pedidos/wm-upd/pagamentos/p1');
+        await assertFails(updateDoc(ref, { lastProviderUpdate: 1_800_000_000_000_000 }));
+        await assertFails(updateDoc(ref, { lastProviderUpdate: null }));
+        await assertFails(updateDoc(ref, { lastProviderUpdate: deleteField() }));
+      }
+
+      await assertSucceeds(updateDoc(doc(pedidoWriter(), 'pedidos/wm-upd'), { foiImpresso: true }));
+      await assertSucceeds(
+        updateDoc(doc(pagamentoWriter(), 'pedidos/wm-upd/pagamentos/p1'), { valor: 20 }),
+      );
+    });
+
+    it('allows the rules-bypassing admin fixture to write both watermarks', async () => {
+      await seed('pedidos/wm-admin', {
+        estado: 'iniciado',
+        ehSaida: true,
+        lastMarketplaceUpdate: 1_700_000_000_000_000,
+      });
+      await seed('pedidos/wm-admin/pagamentos/p1', {
+        valor: 10,
+        lastProviderUpdate: 1_700_000_000_000_000,
+      });
+    });
+  });
+
   describe('server-owned metodo_pgto.user_id (meta.serverOwnedFields) — #1034', () => {
     // The Mercado Pago sibling of the `integracao` case below: `user_id` is the
     // COLLECTOR id an inbound payment notification resolves the account by, so a

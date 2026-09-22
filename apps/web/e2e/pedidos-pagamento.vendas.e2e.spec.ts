@@ -356,6 +356,69 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .toEqual([expectedRow, expectedRow, expectedRow]);
   });
 
+  test('reviews a concurrent edit, force-saves only its patch, and blocks a concurrent delete', async ({
+    page,
+  }) => {
+    const pagamentoId = 'concorrente';
+    const pagamentoRef = db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .collection('pagamentos')
+      .doc(pagamentoId);
+    await pagamentoRef.set({
+      id: pagamentoId,
+      forma_de_pagamento: 1,
+      status_pagamento: 4,
+      valor: 10,
+      parcelas: 1,
+      descricaoPagamento: 'original',
+      aVista: true,
+      duplicata: false,
+      cartao: null,
+      cheque: null,
+      marketplace: { tipo: 'shopee', orderSn: 'S1' },
+      liquidacao: null,
+      dataCadastro: Date.now() * 1000,
+      ultimaModificacao: Date.now() * 1000,
+    });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+    await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Editar' }).click();
+    await page.getByLabel('Descrição').fill('edição local');
+
+    await pagamentoRef.update({ descricaoPagamento: 'edição remota' });
+    await page.getByRole('button', { name: 'Salvar alterações' }).click();
+    await expect(page.getByText('Pagamento alterado', { exact: true })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'descricaoPagamento' })).toBeVisible();
+
+    // Disjoint provider data lands after the reviewed version. The force-save
+    // re-baselines only the conflicting field, so the marketplace block survives.
+    await pagamentoRef.update({ 'marketplace.orderSn': 'S2' });
+    await page.getByRole('button', { name: 'Salvar mesmo assim' }).click();
+    await expect(page.getByText('Pagamento alterado', { exact: true })).toHaveCount(0);
+    await expect
+      .poll(async () => {
+        const data = (await pagamentoRef.get()).data();
+        return {
+          descricao: data?.descricaoPagamento,
+          orderSn: data?.marketplace?.orderSn,
+        };
+      })
+      .toEqual({ descricao: 'edição local', orderSn: 'S2' });
+
+    // Reload so the delete confirmation starts from the newest snapshot.
+    await page.reload();
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+    await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Excluir' }).click();
+    await pagamentoRef.update({ valor: 11 });
+    await page.getByRole('button', { name: 'Excluir', exact: true }).click();
+    await expect(page.getByText('Pagamento alterado — exclusão cancelada')).toBeVisible();
+    await expect.poll(async () => (await pagamentoRef.get()).exists).toBe(true);
+  });
+
   // DEPLOY GATE — keep this LAST in the serial describe. Since #308 the estado
   // reconcile is server-owned (the `reconciliarPagamentoPedido` callable), and
   // this is the ONLY check here that catches "the callable was never deployed":

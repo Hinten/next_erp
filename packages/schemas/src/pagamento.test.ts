@@ -9,6 +9,7 @@ import {
   marketplacePagamentoSchema,
   marketplacePagamentoTaxasSchema,
   metodoPagamentoSchema,
+  pagamentoMeta,
   pagamentoSchema,
   statusToEstadoPedido,
   sumPagamentosPagos,
@@ -45,6 +46,18 @@ describe('pagamentoSchema', () => {
     const cartao = { last4: '1234', bandeira: 'visa' };
     const out = pagamentoSchema.parse({ valor: 50, cartao });
     expect(out.cartao).toEqual(cartao);
+  });
+
+  it('keeps lastProviderUpdate optional/null for legacy docs and server-owned', () => {
+    expect(pagamentoSchema.parse({ valor: 1 })).not.toHaveProperty('lastProviderUpdate');
+    expect(
+      pagamentoSchema.parse({ valor: 1, lastProviderUpdate: null }).lastProviderUpdate,
+    ).toBeNull();
+    expect(
+      pagamentoSchema.parse({ valor: 1, lastProviderUpdate: 1_700_000_000_000_000 })
+        .lastProviderUpdate,
+    ).toBe(1_700_000_000_000_000);
+    expect(pagamentoMeta.serverOwnedFields).toContain('lastProviderUpdate');
   });
 
   // No `.passthrough()` (#463): an unmodeled key is stripped on a lenient

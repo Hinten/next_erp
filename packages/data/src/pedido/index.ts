@@ -28,6 +28,9 @@ export {
   type ConfirmarEntregaResultado,
   PedidoConflictError,
   PedidoNothingChangedError,
+  PagamentoConflictError,
+  PagamentoNothingChangedError,
+  type SavePagamentoArgs,
 } from './usecases';
 export {
   PEDIDO_COUNTER_DOC_ID,

@@ -416,6 +416,12 @@ export const pagamentoSchema = z.object({
   // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
   vencimento: microsSinceEpoch('Vencimento').nullable().default(null),
   ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+  /**
+   * Provider resource clock (µs). Missing/null means no trusted provider event
+   * has won yet; server importers initialize it with the next valid delivery.
+   * Never compare this clock with `ultimaModificacao`, which is local recency.
+   */
+  lastProviderUpdate: microsSinceEpoch('Última atualização do provedor').nullable().optional(),
   dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
   dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
@@ -490,6 +496,7 @@ export const pagamentoMeta: CollectionMetadata = {
     write: PERM_PAGAMENTO_WRITE,
     delete: PERM_PAGAMENTO_DELETE,
   },
+  serverOwnedFields: ['lastProviderUpdate'],
 };
 
 export const pagamento = { schema: pagamentoSchema, meta: pagamentoMeta };

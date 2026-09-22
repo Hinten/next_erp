@@ -368,7 +368,8 @@ describe('mpPaymentToPagamento — datetime → microseconds', () => {
     });
     expect(pagamento.dataCadastro).toBe(1_672_531_200_000_000);
     expect(pagamento.dataAprovacao).toBe(1_672_617_600_000_000);
-    expect(pagamento.ultimaModificacao).toBe(1_672_704_000_000_000);
+    expect(pagamento.ultimaModificacao).toBe(NOW_MICROS);
+    expect(pagamento.lastProviderUpdate).toBe(1_672_704_000_000_000);
   });
 
   it('handles an offset ISO string', () => {
@@ -377,10 +378,11 @@ describe('mpPaymentToPagamento — datetime → microseconds', () => {
     expect(pagamento.dataCadastro).toBe(Date.parse(iso) * 1000);
   });
 
-  it('ultimaModificacao falls back date_last_updated → date_created → now', () => {
-    expect(map({ date_created: '2023-01-01T00:00:00.000Z' }).pagamento.ultimaModificacao).toBe(
+  it('lastProviderUpdate falls back date_last_updated → date_created → now', () => {
+    expect(map({ date_created: '2023-01-01T00:00:00.000Z' }).pagamento.lastProviderUpdate).toBe(
       1_672_531_200_000_000,
     );
+    expect(map({}).pagamento.lastProviderUpdate).toBe(NOW_MICROS);
     expect(map({}).pagamento.ultimaModificacao).toBe(NOW_MICROS);
   });
 
@@ -474,6 +476,7 @@ describe('mpPaymentToPagamento — every output is wire-valid', () => {
     expect(parsed.valor).toBe(pagamento.valor);
     expect(parsed.status_pagamento).toBe(pagamento.status_pagamento);
     expect(parsed.ultimaModificacao).toBe(pagamento.ultimaModificacao);
+    expect(parsed.lastProviderUpdate).toBe(pagamento.lastProviderUpdate);
     expect(parsed.dataAprovacao).toBe(pagamento.dataAprovacao);
     expect(parsed.metodoPagamentoOuterRef).toBe(OUTER_REF);
   });

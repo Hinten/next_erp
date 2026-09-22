@@ -7,6 +7,7 @@ import {
   chequeSchema,
   isPagamentoPagante,
   sumPagamentosPagos,
+  valuesEqual,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
@@ -281,10 +282,8 @@ function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<s
  * on one of these formas with no `cartao` is SEFAZ cStat 391, no nota at all.
  * PIX is the odd one out: it is card-like to the fisco but has no card DETAIL
  * to show, so {@link pagamentoFieldVisibility} hides the group — and a hidden
- * group must be PRESERVED, never nulled, or the operator's next save on an
- * imported marketplace PIX payment silently destroys the block the marketplace
- * importer learned (the Shopee order import writes one for forma 17, and
- * `savePagamento` is a full `set`).
+ * group must be PRESERVED, never nulled. The edit projection omits an unchanged
+ * stored block, while a create carries the block returned below.
  */
 const FORMAS_COM_CARD_NA_NFE: ReadonlySet<number> = new Set<number>([
   FORMA_PAGAMENTO.cartao_credito,
@@ -327,9 +326,8 @@ function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<s
 }
 
 /**
- * Build the full pagamento record handed to `savePagamento`. Spreads the existing
- * doc first so the passthrough/out-of-band fields (`metodoPagamentoOuterRef`,
- * `dataCadastro`, `dataAprovacao`, …) survive, then overrides the edited fields.
+ * Build only the form-owned pagamento fields. Provider/integration fields,
+ * identifiers, creation/approval dates and watermarks are deliberately absent.
  * The `cartao` / `cheque` maps are rebuilt for their forma; `cheque` and a
  * non-card-like `cartao` are reset to `null`, while a card-LIKE forma whose card
  * group is hidden (PIX) keeps the stored block — see {@link cartaoComGrupoOculto}.
@@ -344,7 +342,6 @@ export function pagamentoDataFromForm(
   const vis = pagamentoFieldVisibility(form.forma);
   const duplicata = vis.duplicata ? form.duplicata : false;
   return {
-    ...((base as unknown as Record<string, unknown>) ?? {}),
     forma_de_pagamento: Number(form.forma) as FormaPagamento,
     status_pagamento: form.status === '' ? null : (Number(form.status) as StatusPagamento),
     valor: form.valor ?? 0,
@@ -360,12 +357,27 @@ export function pagamentoDataFromForm(
     nFat: vis.nFat ? trimToNull(form.nFat) : null,
     // ⚠️ Hidden ≠ absent. For a card-LIKE forma whose group this form does not
     // show — PIX, forma 17 — the stored block is carried through instead of
-    // nulled: `savePagamento` is a full `set`, so a `null` here DESTROYS a
-    // `cartao` the Shopee importer learned, and the NF-e then refuses the nota
-    // with cStat 391. See {@link cartaoComGrupoOculto}.
+    // nulled. The patch builder below then omits it when unchanged. See
+    // {@link cartaoComGrupoOculto}.
     cartao: vis.cartao ? buildCartao(form, base) : cartaoComGrupoOculto(form, base),
     cheque: vis.cheque ? buildCheque(form, base) : null,
   };
+}
+
+/**
+ * Project an edit into the smallest safe top-level patch. Nested `cartao` and
+ * `cheque` are intentionally compared as blocks: a concurrent change anywhere
+ * in one of them must conflict before the editor overwrites that block.
+ */
+export function pagamentoPatchFromForm(
+  form: PagamentoFormState,
+  baseline: Pagamento,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(pagamentoDataFromForm(form, baseline)).filter(
+      ([field, value]) => !valuesEqual(baseline[field as keyof Pagamento], value),
+    ),
+  );
 }
 
 /**
