@@ -67,7 +67,12 @@ const SIGNATURE_ROOM_MM = 11;
 /** Code 128 strip height. Kept compact so a maximal reverse label still fits. */
 const BARCODE_H_MM = 10;
 
-const INNER_W_MM = LABEL_W_MM - 2 * SIDE_MM;
+/**
+ * Usable width between the side margins — and the width of the barcode box, so
+ * it is what divides a Code 128 symbol's module count into an X-dimension. See
+ * `barcode.ts`'s `MIN_MODULE_MM`: narrowing this narrows every bar.
+ */
+export const INNER_W_MM = LABEL_W_MM - 2 * SIDE_MM;
 
 /**
  * Advance of one text line, in mm. Helvetica's ascent+descent is ~0.925em and

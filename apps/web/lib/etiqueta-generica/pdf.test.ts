@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { encodeCode128C } from './barcode';
-import { CHAVE, COM_NFE_MODEL, MINIMAL_MODEL } from './fixtures';
+import { encodeCode128 } from './barcode';
+import { ALFA_CHAVE, CHAVE, COM_NFE_ALFA_MODEL, COM_NFE_MODEL, MINIMAL_MODEL } from './fixtures';
 import { renderEtiquetaGenericaPdf } from './pdf';
 
 /**
@@ -48,7 +48,7 @@ describe('renderEtiquetaGenericaPdf', () => {
   });
 
   it('draws the Code 128 as vector bars — one filled rect per bar', async () => {
-    const bars = encodeCode128C(CHAVE)!.bars.length;
+    const bars = encodeCode128(CHAVE)!.bars.length;
     const withNfe = (await pdfSource(COM_NFE_MODEL)).match(/ re\b/g) ?? [];
     const withoutNfe = (await pdfSource(MINIMAL_MODEL)).match(/ re\b/g) ?? [];
 
@@ -56,5 +56,19 @@ describe('renderEtiquetaGenericaPdf', () => {
     expect(withoutNfe).toHaveLength(1);
     // With one: the border plus every bar of the symbol.
     expect(withNfe).toHaveLength(1 + bars);
+  });
+
+  it('draws a real barcode for an alphanumeric chave instead of a blank gap', async () => {
+    // ⚠️ THE regression this PR exists for. The subset-C-only encoder returned
+    // null here, `pdf.ts` did `if (!symbol) break;`, and the label printed with
+    // a 10mm hole where the barcode belongs — silently, no throw, no toast. So
+    // the assertion that matters is not "more rects than the border": it is
+    // that the count matches the real symbol.
+    const bars = encodeCode128(ALFA_CHAVE)!.bars.length;
+    const rects = (await pdfSource(COM_NFE_ALFA_MODEL)).match(/ re\b/g) ?? [];
+    expect(rects).toHaveLength(1 + bars);
+    // And it is genuinely wider than the numeric one — mixed subsets cost
+    // symbols, which is the trade this accepts.
+    expect(bars).toBeGreaterThan(encodeCode128(CHAVE)!.bars.length);
   });
 });
