@@ -131,6 +131,16 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       await assertFails(getDoc(doc(db({ d_frete: 1 }), 'int_frete/i1/tokenMelEnv/t1')));
       await assertSucceeds(getDoc(doc(db({ d_frete: 2 }), 'int_frete/i1/tokenMelEnv/t1')));
     });
+
+    it('filiais stay client-editable but deny delete even to superuser', async () => {
+      const path = 'filiais/f-no-delete';
+      const writer = db({ d_configuracoes: 2 });
+
+      await assertSucceeds(setDoc(doc(writer, path), { razaoSocial: 'Filial preservada' }));
+      await assertSucceeds(updateDoc(doc(writer, path), { fantasia: 'Editada' }));
+      await assertFails(deleteDoc(doc(writer, path)));
+      await assertFails(deleteDoc(doc(db({ su: true }), path)));
+    });
   });
 
   describe('produto validator', () => {
