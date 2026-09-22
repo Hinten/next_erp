@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { CHAVE, COM_NFE_MODEL, LONG_STRINGS_MODEL, MAXIMAL_MODEL, MINIMAL_MODEL } from './fixtures';
+import {
+  ALFA_CHAVE,
+  CHAVE,
+  COM_NFE_ALFA_MODEL,
+  COM_NFE_MODEL,
+  LONG_STRINGS_MODEL,
+  MAXIMAL_MODEL,
+  MINIMAL_MODEL,
+} from './fixtures';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, type EtiquetaOp } from './layout';
+import { EtiquetaGenericaFormatError } from './errors';
 import { renderEtiquetaGenericaZpl } from './zpl2';
 
 describe('renderEtiquetaGenericaZpl', () => {
@@ -61,6 +70,32 @@ describe('renderEtiquetaGenericaZpl', () => {
     // `>;` switches Code 128 to subset C: two digits per symbol, half the width.
     expect(zpl).toContain(`^FD>;${CHAVE}^FS`);
     expect(zpl).toMatch(/\^BY[2-9]\^BCN/);
+  });
+
+  it('refuses an alphanumeric chave instead of printing an unscannable symbol', () => {
+    // The printer encodes `^BCN` itself from the `>;` subset-C prefix, so an
+    // alfa chave cannot be handed to it — see the guard's comment in zpl2.ts.
+    // Refusing is the point: `genericLabelProvider` turns this into a red toast
+    // naming the PDF, which beats a label that looks fine and will not scan.
+    expect(() => renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL)).toThrow(
+      EtiquetaGenericaFormatError,
+    );
+    try {
+      renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL);
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof EtiquetaGenericaFormatError)) throw err;
+      // The message has to name both the offending value and the way out, or
+      // the operator cannot act on it.
+      expect(err.message).toContain(ALFA_CHAVE);
+      expect(err.message).toContain('PDF');
+    }
+  });
+
+  it('still renders a label with no NF-e at all, alfa guard notwithstanding', () => {
+    // The guard keys on the chave, not on its absence — a pedido with no
+    // authorized NF-e must not start throwing.
+    expect(() => renderEtiquetaGenericaZpl(MINIMAL_MODEL)).not.toThrow();
   });
 
   it('draws no barcode when the pedido has no authorized NF-e', () => {

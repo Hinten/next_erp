@@ -13,7 +13,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { EtiquetaGenericaFormatError } from '../lib/etiqueta-generica/errors';
 import {
+  COM_NFE_ALFA_MODEL,
   COM_NFE_MODEL,
   LONG_STRINGS_MODEL,
   MAXIMAL_MODEL,
@@ -31,6 +33,10 @@ const OUT_DIR = join(process.cwd(), 'etiqueta-samples');
 const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
   ['minima', MINIMAL_MODEL],
   ['com-nfe', COM_NFE_MODEL],
+  // ⚠️ Renders a PDF but NO .zpl — the ZPL label refuses an alphanumeric chave
+  // on purpose (Code 128 subset C is numeric-only). The run below reports that
+  // refusal rather than hiding it, so the asymmetry is visible in the output.
+  ['com-nfe-alfa', COM_NFE_ALFA_MODEL],
   ['reverso', REVERSO_MODEL],
   ['retirada-na-loja', RETIRADA_MODEL],
   ['maxima', MAXIMAL_MODEL],
@@ -39,10 +45,23 @@ const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
 
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
+  let written = 0;
   for (const [name, model] of SAMPLES) {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
-    writeFileSync(join(OUT_DIR, `etiqueta-${name}.zpl`), renderEtiquetaGenericaZpl(model), 'utf8');
+    let zplNote = '';
+    try {
+      writeFileSync(
+        join(OUT_DIR, `etiqueta-${name}.zpl`),
+        renderEtiquetaGenericaZpl(model),
+        'utf8',
+      );
+      written += 2;
+    } catch (err) {
+      if (!(err instanceof EtiquetaGenericaFormatError)) throw err;
+      zplNote = ' — no .zpl: ZPL refuses an alfa chave, print the PDF';
+      written += 1;
+    }
     const { contentHeightMm, scale, slack } = buildEtiquetaGenericaLayout(model);
     const fill = ((contentHeightMm / LABEL_H_MM) * 100).toFixed(0);
     const squeeze = [
@@ -52,10 +71,10 @@ async function main(): Promise<void> {
       .filter(Boolean)
       .join(', ');
     process.stdout.write(
-      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})\n`,
+      `etiqueta-${name} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})${zplNote}\n`,
     );
   }
-  process.stdout.write(`\nWrote ${SAMPLES.length * 2} samples to ${OUT_DIR}\n`);
+  process.stdout.write(`\nWrote ${written} samples to ${OUT_DIR}\n`);
 }
 
 await main();

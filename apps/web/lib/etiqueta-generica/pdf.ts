@@ -13,7 +13,7 @@
  * bundle. `unit: 'mm'` matches the layout spec 1:1, and the page format is the
  * 100×150mm the print agent hard-codes for its `etq` printer.
  */
-import { encodeCode128C } from './barcode';
+import { encodeCode128 } from './barcode';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, LABEL_W_MM } from './layout';
 import type { EtiquetaGenericaModel } from './model';
 
@@ -49,9 +49,13 @@ export async function renderEtiquetaGenericaPdf(model: EtiquetaGenericaModel): P
         });
         break;
       case 'barcode': {
-        const symbol = encodeCode128C(op.data);
-        // An unencodable payload drops the barcode rather than printing a wrong
-        // one — the human-readable chave below it still carries the value.
+        // Mixed subsets, so an alphanumeric chave encodes here — unlike the
+        // ZPL label, which refuses it. Vector bars, so the extra symbols just
+        // make each one thinner rather than overrunning anything.
+        const symbol = encodeCode128(op.data);
+        // A payload outside printable ASCII still drops the barcode rather than
+        // printing a wrong one — the human-readable chave below it carries the
+        // value either way.
         if (!symbol) break;
         const moduleMm = op.w / symbol.modules;
         for (const bar of symbol.bars) {

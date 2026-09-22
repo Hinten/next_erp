@@ -8,8 +8,26 @@
  */
 import type { EtiquetaGenericaAddress, EtiquetaGenericaModel } from './model';
 
-/** A real-shaped 44-digit chave (SP, CNPJ, modelo 55). */
+/** A real-shaped all-numeric chave (SP, CNPJ, modelo 55). */
 export const CHAVE = '35260114200166000187550010000000123456789012';
+
+/**
+ * The WORST-CASE alphanumeric chave (NT 2026.004): all twelve positions of the
+ * emitente CNPJ body are letters, so subset C cannot absorb any of them. That
+ * is the widest symbol the label can be asked to print — 365 modules — and it
+ * is deliberately the fixture the render tests use, because a mixed CNPJ is
+ * strictly narrower (any digits at the tail of the alfa window merge into the
+ * numeric run that follows).
+ */
+export const ALFA_CHAVE = '352601ABCDEFGHIJKL87550010000001234567890120';
+
+/**
+ * The alfa shape actually most likely in the wild: RFB IN 2.229/2024 keeps an
+ * existing company's numeric raiz and issues an alphanumeric *ordem* to each
+ * new establishment, so a single letter near the end of the CNPJ body is the
+ * common case, not twelve.
+ */
+export const ALFA_ORDEM_CHAVE = '35260114200166000A87550010000001234567890129';
 
 const ENDERECO_CLIENTE: EtiquetaGenericaAddress = {
   logradouro: 'Rua das Palmeiras',
@@ -54,6 +72,16 @@ export const COM_NFE_MODEL: EtiquetaGenericaModel = {
   ...BASE,
   nfeNumero: 4821,
   nfeChave: CHAVE,
+};
+
+/**
+ * Same label with an ALPHANUMERIC chave. The PDF must encode this in mixed
+ * subsets; the ZPL must refuse it — see `zpl2.ts`.
+ */
+export const COM_NFE_ALFA_MODEL: EtiquetaGenericaModel = {
+  ...BASE,
+  nfeNumero: 4822,
+  nfeChave: ALFA_CHAVE,
 };
 
 /** Reverse shipment: "Retirada" at the customer, "Entrega" at the filial sede. */
