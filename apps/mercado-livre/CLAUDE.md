@@ -165,10 +165,9 @@ The per-surface notes below stay the authority on behaviour.
   buyer record says `role: 'comprador'` whether it sits at the pair's bare `comprador`
   document or an additional mint's `comprador-<mlUserId>`, so the records alone cannot
   tell "the new buyer landed beside the old one" from "it landed on top of it" from "it
-  was never created". Nothing may write `docId` back: the stored schema is
-  `.passthrough()`, so a `docId` reaching `put`/`create` is persisted silently as a
-  record field. `toRecord` is the only producer of a written record and returns a bare
-  record; the doc id is attached AFTER the write.
+  was never created". Nothing may write `docId` back: the stored schema is strict,
+  `toRecord` is the only producer of a written record and returns a bare record, and
+  the doc id is attached only AFTER a read.
   ⚠️ **`credencialRevogada` is also apps/web's CAPABILITY PROBE — never drop it, never
   make it optional.** Before the single-role mint this route ignored its body entirely,
   so a backend older than that answers a `{role}` POST by running the PAIR bootstrap:

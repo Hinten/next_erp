@@ -71,9 +71,9 @@
  *     if (pagamentosInstances[pagamento.id!] == null){
  *       // CREATE at the deterministic id
  *     } else if ((pagamentosInstances[pagamento.id!]?.ultimaModificacao?.compareTo(pagamento.ultimaModificacao!) ?? -1) < 0){
- *       // UPDATE — stored ultimaModificacao is OLDER than incoming → overwrite
+ *       // Legacy compared ultimaModificacao; this port compares the provider watermark.
  *     }
- *     // else: stored ultimaModificacao >= incoming → skip, no write
+ *     // else: stored provider watermark >= incoming → skip, no write
  *   }
  *   ```
  *   This whole loop sits INSIDE the same inner gate as the item merge — a
@@ -258,7 +258,7 @@ interface PaymentReadBundle {
   /** The stored doc's raw fields (default `{}` when absent) — the merge base
    * for `mergePagamentoUpdate` on the UPDATE branch below. */
   existingRaw: Record<string, unknown>;
-  existingUltimaModificacao: number | null;
+  existingLastProviderUpdate: number | null;
 }
 
 interface OrderReadBundle {
@@ -422,7 +422,7 @@ export async function discoverPedidoMercadoLivre(
           ref: pagRef,
           exists: pagSnap.exists,
           existingRaw: pagRaw ?? {},
-          existingUltimaModificacao: readMicrosField(pagRaw, 'ultimaModificacao'),
+          existingLastProviderUpdate: readMicrosField(pagRaw, 'lastProviderUpdate'),
         });
       }
 
@@ -551,8 +551,8 @@ export async function discoverPedidoMercadoLivre(
         });
         const shouldWrite =
           !p.exists ||
-          p.existingUltimaModificacao == null ||
-          p.existingUltimaModificacao < mapped.ultimaModificacao;
+          p.existingLastProviderUpdate == null ||
+          p.existingLastProviderUpdate < mapped.lastProviderUpdate;
         if (shouldWrite) {
           // The stored side goes through the soft (read) parse before merging:
           // since `pagamentoSchema` dropped `.passthrough()` (#463), a legacy

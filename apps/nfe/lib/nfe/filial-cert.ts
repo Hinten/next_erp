@@ -117,9 +117,16 @@ export async function resolveFilialRuntime(
 }
 
 /**
- * Resolve the runtime for a filial identified by **CNPJ** (14 digits) — used by
- * the by-chave consulta, which has no filialId but carries the emit CNPJ in the
- * chave (positions 6–20). Single-field equality query → Firestore auto-index.
+ * Resolve the runtime for a filial identified by **CNPJ** (14 characters) —
+ * used by the by-chave consulta, which has no filialId but carries the emit
+ * CNPJ in the chave (positions 6–20). Single-field equality query → Firestore
+ * auto-index.
+ *
+ * ⚠️ Characters, not digits, and this function is why `filial.cnpj` has a
+ * canonical form. Positions 6–17 of that window are the CNPJ body and may hold
+ * `A-Z` (NT 2026.004), so the value sliced out of the chave is compared
+ * BYTE-EXACT against the stored one by the `where('cnpj', '==')` below. A
+ * stored CNPJ that differs by case or punctuation resolves no filial at all.
  */
 export async function resolveFilialRuntimeByCnpj(
   fs: Firestore,

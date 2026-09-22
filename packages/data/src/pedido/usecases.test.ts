@@ -3,6 +3,8 @@ import { ESTADO_PEDIDO, pedidoMeta } from '@delfrance/schemas';
 import type { Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
+  PagamentoConflictError,
+  PagamentoNothingChangedError,
   PedidoConflictError,
   PedidoNothingChangedError,
   buildIncidenteOp,
@@ -130,6 +132,9 @@ function fakePort(
       newId: () => 'newid',
       async updatePedido(_id, apply) {
         out = apply(current);
+      },
+      async transact({ reads, apply }) {
+        committed.push(...apply(new Map(reads.map((path) => [path, current]))));
       },
       async commit(ops) {
         committed.push(...ops);
@@ -437,7 +442,7 @@ describe('pagamentos', () => {
 
   it('buildPagamentoOp creates with a fresh id + dataCadastro + ultimaModificacao', () => {
     const { port } = fakePort(null, 555);
-    const op = buildPagamentoOp(port, 'ped1', null, pgto);
+    const op = buildPagamentoOp(port, 'ped1', pgto);
     expect(op).toEqual({
       type: 'set',
       path: 'pedidos/ped1/pagamentos/newid',
@@ -445,27 +450,120 @@ describe('pagamentos', () => {
     });
   });
 
-  it('buildPagamentoOp updates at the given id WITHOUT touching dataCadastro', () => {
-    const { port } = fakePort(null, 555);
-    const op = buildPagamentoOp(port, 'ped1', 'pg1', { ...pgto, dataCadastro: 1 });
-    expect(op.path).toBe('pedidos/ped1/pagamentos/pg1');
-    expect((op as { data: Record<string, unknown> }).data).toMatchObject({
-      dataCadastro: 1,
-      ultimaModificacao: 555,
-    });
-  });
-
-  it('savePagamento commits one set op', async () => {
+  it('savePagamento create commits one set op', async () => {
     const { port, committed } = fakePort(null);
-    await savePagamento(port, { pedidoId: 'ped1', pagamento: pgto });
+    await savePagamento(port, { mode: 'create', pedidoId: 'ped1', pagamento: pgto });
     expect(committed()).toHaveLength(1);
     expect(committed()[0]?.type).toBe('set');
   });
 
-  it('deletePagamento commits one delete op at the doc path', async () => {
-    const { port, committed } = fakePort(null);
-    await deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1' });
+  it('blocks an edit when the same patched field changed remotely', async () => {
+    const baseline = { ...pgto, descricaoPagamento: 'original' };
+    const current = { ...baseline, descricaoPagamento: 'remota' };
+    const { port, committed } = fakePort(current);
+
+    await expect(
+      savePagamento(port, {
+        mode: 'update',
+        pedidoId: 'ped1',
+        pagamentoId: 'pg1',
+        patch: { descricaoPagamento: 'local' },
+        baseline,
+      }),
+    ).rejects.toMatchObject({
+      name: 'PagamentoConflictError',
+      current,
+      fields: ['descricaoPagamento'],
+    });
+    expect(committed()).toEqual([]);
+  });
+
+  it('preserves a concurrent disjoint field and updates only the explicit patch', async () => {
+    const baseline = { ...pgto, descricaoPagamento: 'original', marketplace: { orderSn: 'A' } };
+    const current = { ...baseline, marketplace: { orderSn: 'B' }, ultimaModificacao: 800 };
+    const { port, committed } = fakePort(current, 700);
+
+    await savePagamento(port, {
+      mode: 'update',
+      pedidoId: 'ped1',
+      pagamentoId: 'pg1',
+      patch: { descricaoPagamento: 'local' },
+      baseline,
+    });
+
+    expect(committed()).toEqual([
+      {
+        type: 'update',
+        path: 'pedidos/ped1/pagamentos/pg1',
+        data: { descricaoPagamento: 'local', ultimaModificacao: 800 },
+      },
+    ]);
+  });
+
+  it('treats a missing pagamento as a conflict', async () => {
+    const { port } = fakePort(null);
+    await expect(
+      savePagamento(port, {
+        mode: 'update',
+        pedidoId: 'ped1',
+        pagamentoId: 'pg1',
+        patch: { valor: 90 },
+        baseline: pgto,
+      }),
+    ).rejects.toBeInstanceOf(PagamentoConflictError);
+  });
+
+  it('does not write an empty or ineffective patch', async () => {
+    const { port, committed } = fakePort(pgto);
+    await expect(
+      savePagamento(port, {
+        mode: 'update',
+        pedidoId: 'ped1',
+        pagamentoId: 'pg1',
+        patch: {},
+        baseline: pgto,
+      }),
+    ).rejects.toBeInstanceOf(PagamentoNothingChangedError);
+    await expect(
+      savePagamento(port, {
+        mode: 'update',
+        pedidoId: 'ped1',
+        pagamentoId: 'pg1',
+        patch: { valor: pgto.valor },
+        baseline: pgto,
+      }),
+    ).rejects.toBeInstanceOf(PagamentoNothingChangedError);
+    expect(committed()).toEqual([]);
+  });
+
+  it('a reviewed force-save still detects a third change', async () => {
+    const reviewed = { ...pgto, descricaoPagamento: 'segunda versão' };
+    const third = { ...reviewed, descricaoPagamento: 'terceira versão' };
+    const { port } = fakePort(third);
+    await expect(
+      savePagamento(port, {
+        mode: 'update',
+        pedidoId: 'ped1',
+        pagamentoId: 'pg1',
+        patch: { descricaoPagamento: 'local' },
+        baseline: reviewed,
+      }),
+    ).rejects.toMatchObject({ fields: ['descricaoPagamento'], current: third });
+  });
+
+  it('deletePagamento deletes only when the full baseline still matches', async () => {
+    const { port, committed } = fakePort(pgto);
+    await deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1', baseline: pgto });
     expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/pagamentos/pg1' }]);
+  });
+
+  it('deletePagamento refuses to delete after any concurrent change', async () => {
+    const current = { ...pgto, marketplace: { orderSn: 'novo' } };
+    const { port, committed } = fakePort(current);
+    await expect(
+      deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1', baseline: pgto }),
+    ).rejects.toMatchObject({ name: 'PagamentoConflictError', current });
+    expect(committed()).toEqual([]);
   });
 
   it('saveChequeSplit commits one set op per pagamento, each with a fresh id', async () => {
@@ -475,6 +573,7 @@ describe('pagamentos', () => {
       now: () => 555,
       newId: () => `id${++n}`,
       async updatePedido() {},
+      async transact() {},
       async commit(ops) {
         committed.push(...ops);
       },

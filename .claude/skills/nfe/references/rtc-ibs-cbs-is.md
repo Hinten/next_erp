@@ -243,7 +243,7 @@ gCompraGov (0-1)            BB01
 │                                  2=recebimento do pagamento c/ fornecimento já realizado
 │                                  3=fornecimento c/ pagamento já realizado
 │                                  4=recebimento do pagamento c/ fornecimento posterior
-└── refDFeAnt (0-99)        BB05   chave de acesso do DFe anterior (44 dígitos)
+└── refDFeAnt (0-99)        BB05   chave de acesso do DFe anterior (44 caracteres)
                                    obrigatório para tpOperGov 2 e 4
 ```
 

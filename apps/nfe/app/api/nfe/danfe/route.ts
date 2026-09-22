@@ -82,8 +82,12 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (e instanceof NFeDanfeError) {
       return authError(422, { error: e.message });
     }
-    // Corrupted persisted XML (malformed date lexical) — deterministic
-    // "not renderable", same 422 semantics as NFeDanfeError, not a 500.
+    // Deterministic "not renderable", same 422 semantics as NFeDanfeError and
+    // not a 500. Two causes today: corrupted persisted XML (malformed date
+    // lexical), and `format=zpl2` for a nota whose chave is alphanumeric — the
+    // Zebra label's Code 128 subset C is numeric-only, so it refuses rather
+    // than printing a clipped symbol. Both messages tell the operator what to
+    // do, so they are passed through verbatim.
     if (e instanceof NFeDanfeFormatError) {
       return authError(422, { error: e.message });
     }

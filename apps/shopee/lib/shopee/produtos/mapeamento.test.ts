@@ -563,9 +563,6 @@ describe('mapearProdutoPai — o documento', () => {
   it('⛔ nunca escreve os campos de PESO MORTO nem as flags proibidas', () => {
     const mapa = mapearProdutoPai(argsPai({ entrada: item({ price_info: PRECO_BRL }) }));
     for (const proibido of [
-      'marketplace',
-      'marketplaceIds',
-      'statusProdutosMarketplace',
       'integracoesComProduto',
       'permiteVendaSemEstoque',
       'ofereceFreteGratis',

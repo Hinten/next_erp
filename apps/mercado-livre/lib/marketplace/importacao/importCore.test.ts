@@ -975,13 +975,6 @@ describe('assembleVariationChildPlan — variacaoMercadoLivre link', () => {
   });
 });
 
-describe('assembleVariationChildPlan — denorm', () => {
-  it('denorm carries the variation id + the parent ML item id', () => {
-    const plan = assembleVariationChildPlan(childArgs());
-    expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
-  });
-});
-
 /* -------------------------------------------------------------------------- */
 /*               User-Products (family_name) mode — #521                     */
 /* -------------------------------------------------------------------------- */
@@ -1038,26 +1031,6 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     expect(plan.link.itemId).toBe('MLB4455667788');
   });
 
-  it('denorm carries the exact isUserProductModel relevantData marker (byte-match Flutter ProdMarketplace.relevantData)', () => {
-    const plan = assembleVariationChildPlan(
-      childArgs({
-        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
-        up: {
-          itemId: 'MLB4455667788',
-          status: null,
-          subStatus: null,
-          userProductId: null,
-          moderacoes: [],
-        },
-      }),
-    );
-    expect(plan.denorm).toEqual({
-      externalId: 'MLB4455667788',
-      externalParentId: 'MLB123',
-      relevantData: { isUserProductModel: true },
-    });
-  });
-
   it('child sku is always the member own SELLER_SKU (D-C) — never a family/parent sku fallback', () => {
     const plan = assembleVariationChildPlan(
       childArgs({
@@ -1075,12 +1048,10 @@ describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
     expect(plan.link.sku).toBe('MEMBER-SKU');
   });
 
-  it('up: null (#520 variations[] mode) regression — numeric id, itemId preserved-or-null, no relevantData key', () => {
+  it('up: null (#520 variations[] mode) regression — numeric id and itemId preserved-or-null', () => {
     const plan = assembleVariationChildPlan(childArgs());
     expect(plan.link.id).toBe(999);
     expect(plan.link.itemId).toBeNull();
-    expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
-    expect(plan.denorm).not.toHaveProperty('relevantData');
   });
 });
 

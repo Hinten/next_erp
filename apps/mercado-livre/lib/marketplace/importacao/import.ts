@@ -45,7 +45,7 @@
  * minting a duplicate. See `resolveUpParentOverride` below; inert when absent.
  */
 import { createHash } from 'node:crypto';
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   type MappedUpMember,
   type MercadoLivreApi,
@@ -315,8 +315,8 @@ export async function importProduto(
   // always resolves/creates the shared grupoDeVariacoes/Variante taxonomy.
   const ownsChildren = hasVariations || isUserProduct;
   // The parent-level mapped shape for a User-Products family: `mlItemId` is
-  // stamped with the FAMILY id (parity — `link.id`/`denormItemId` become the
-  // family id), everything else (nome from family_name, dims, price,
+  // stamped with the FAMILY id (`link.id` becomes the family id), everything
+  // else (nome from family_name, dims, price,
   // isUserProductModel, …) is unchanged from the plain item mapping above.
   // Simple/variations[] keep using `mapped` itself — this branch is additive,
   // never touched by those paths.
@@ -598,39 +598,6 @@ export async function importProduto(
     .docRef(db, { produtoId }, linkDocId)
     .set(produtoMercadoLivreLinkCollection.parse(plan.link));
 
-  // Legacy denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
-  // this repo, deleted at the decommission. Canonical note on `produtoSchema`;
-  // do not repair, do not add a reader).
-  //
-  // Runs after the produto exists (create sets it first). arrayUnion is tier 0
-  // — commutative and idempotent — which is what these two arrays need, and NOT
-  // because a second app writes them: the Flutter app is not a live writer here
-  // (rule 8). The real concurrency is ours. Three in-repo writers touch these
-  // same fields on this same produto doc — `itemsStatusSync.ts:469-475`
-  // arrayUnions them, the UP takeover in `importMigration.ts:534-550` rewrites
-  // them, and a Cloud Tasks retry or the reprocess sweep re-drives THIS import.
-  // Secondary: a migrated produto arrives carrying legacy entries for other
-  // contas, which arrayUnion likewise leaves alone. The same tier-0 argument is
-  // made honestly in `importPhotos.ts:154` and `integracoesComProduto.ts:31`.
-  // User-Products stamps
-  // `relevantData.isUserProductModel` on the PARENT's own entry too (parity —
-  // `ProdMarketplace.relevantData`, `models.dart:2333`); omitted for simple/
-  // variations[] so their denorm shape stays byte-identical.
-  //
-  // ⚠️ `integracoesComProduto` is NOT stamped here (#920) — the link `.set()`
-  // above is what puts the produto in it, via
-  // `onProdutoMercadoLivreLinkChanged`. That is the point: the array now
-  // follows the links, so an import path that forgets to stamp can no longer
-  // leave a listing invisible to both sweeps.
-  await produtoCollection.docRef(db, {}, produtoId).update({
-    marketplace: FieldValue.arrayUnion({
-      integracaoUid: integracaoId,
-      externalId: plan.denormItemId,
-      ...(isUserProduct ? { relevantData: { isUserProductModel: true } } : {}),
-    }),
-    marketplaceIds: FieldValue.arrayUnion(plan.denormItemId),
-  });
-
   // Children (#520 legacy variations[] / #521 User-Products member), run after
   // the parent's own produto/link exist (children reference the parent link's
   // outer-ref). No-op ({ total: 0, created: 0 }) for a simple listing.
@@ -753,8 +720,8 @@ export async function importProduto(
       let imported = 0;
       let created = 0;
       // Deliberately SEQUENTIAL: every sibling merges the SAME family parent
-      // (produto fill-null, PML link spread-set, denorm arrayUnion, taxonomy
-      // tx) — concurrency would only buy tx-contention retries and
+      // (produto fill-null, PML link spread-set, taxonomy tx) — concurrency
+      // would only buy tx-contention retries and
       // ALREADY_EXISTS churn on shared docs. The cap (60) bounds the worst
       // case, and a request killed mid-loop recovers by re-importing (every
       // write is idempotent/convergent).

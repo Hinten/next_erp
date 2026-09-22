@@ -40,13 +40,14 @@ export class PedidoReconcileNotFoundError extends Error {
  * `descricaoPagamento`, the out-of-band `cartao` / `cheque` /
  * `metodoPagamentoOuterRef` / `dataCadastro`, …). Without the inversion a
  * redelivery would rebuild the doc from the mapper output and wipe those edits.
- * `ultimaModificacao` is gateway-owned AND the update-if-newer key, so it lands
- * from the incoming doc as-is (never re-stamped to `now`).
+ * `lastProviderUpdate` is the update-if-newer key. `ultimaModificacao` remains
+ * local recency and is made monotonic on every winning write.
  */
 const GATEWAY_OWNED = [
   'valor',
   'status_pagamento',
   'ultimaModificacao',
+  'lastProviderUpdate',
   'dataAprovacao',
   'dataCancelamento',
   'tarifas',
@@ -140,7 +141,7 @@ function applyEstadoTransition(
  *  1. reads the pedido (missing → {@link PedidoReconcileNotFoundError});
  *  2. reads ALL pagamentos of the pedido in-tx;
  *  3. **update-if-newer guard** — if the stored pagamento at `pagamentoId` is at
- *     least as fresh as the incoming one (`ultimaModificacao` µs), returns
+ *     least as fresh as the incoming one (`lastProviderUpdate` µs), returns
  *     `{ transition: null, skippedStale: true }` WITHOUT writing (drops stale /
  *     duplicate redeliveries idempotently);
  *  4. upserts the incoming pagamento at the FIXED id `pagamentoId`: on an UPDATE
@@ -164,8 +165,8 @@ function applyEstadoTransition(
  * Returns the new estado (or `null` when the pagamento was written but no estado
  * transition applies), plus whether the delivery was skipped as stale.
  *
- * Datetime units: `ultimaModificacao` / `dataCadastro` are MICROSECONDS since
- * epoch (`nowMicros()`), the pagamento/pedido standard.
+ * Datetime units: `lastProviderUpdate` / `ultimaModificacao` / `dataCadastro`
+ * are MICROSECONDS since epoch (`nowMicros()`), the pagamento/pedido standard.
  */
 export async function reconcilePedidoFromPagamento(
   db: FirebaseAdminFirestore,
@@ -188,11 +189,16 @@ export async function reconcilePedidoFromPagamento(
     const existing = pagamentosSnap.docs.find((d) => d.id === pagamentoId) ?? null;
 
     // Update-if-newer guard: a stored pagamento at least as fresh as the incoming
-    // one (same or newer `ultimaModificacao`) means this is a stale/duplicate
+    // one (same or newer `lastProviderUpdate`) means this is a stale/duplicate
     // delivery — skip without writing (idempotent redelivery).
+    //
+    // Missing/null deliberately means "no trusted provider event has won yet":
+    // accept the first delivery and seed the watermark. Never fall back to
+    // `ultimaModificacao`; legacy values may come from a human edit, which would
+    // recreate #361 by blocking a legitimate provider delivery indefinitely.
     if (existing) {
-      const existingMod = existing.get('ultimaModificacao');
-      const incomingMod = pagamento.ultimaModificacao;
+      const existingMod = existing.get('lastProviderUpdate');
+      const incomingMod = pagamento.lastProviderUpdate;
       if (
         typeof existingMod === 'number' &&
         typeof incomingMod === 'number' &&
@@ -228,6 +234,16 @@ export async function reconcilePedidoFromPagamento(
       // (the field the list sorts by; buildPagamentoOp mints it on create).
       toWrite = { ...pagamento };
       if (toWrite.dataCadastro == null) toWrite.dataCadastro = nowMicros();
+    }
+    const writeNow = nowMicros();
+    const storedModification = existing?.get('ultimaModificacao');
+    toWrite.ultimaModificacao = Math.max(
+      typeof storedModification === 'number' ? storedModification : writeNow,
+      typeof pagamento.ultimaModificacao === 'number' ? pagamento.ultimaModificacao : writeNow,
+      writeNow,
+    );
+    if (typeof toWrite.lastProviderUpdate !== 'number') {
+      toWrite.lastProviderUpdate = writeNow;
     }
     const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, pagamentoId);
     tx.set(pagamentoRef, pagamentoCollection.parse(toWrite) as DocumentData);

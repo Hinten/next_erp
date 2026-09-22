@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
@@ -327,8 +327,6 @@ const MODERACAO_ARMAZENADA = {
 function seedLink(db: FakeDb, link: DocData = {}, produto: DocData = {}): void {
   db.seed('produtos', PRODUTO, {
     nome: 'Camiseta',
-    marketplace: [{ integracaoUid: CONTA, externalId: ITEM }],
-    marketplaceIds: [ITEM],
     integracoesComProduto: [CONTA],
     ...produto,
   });
@@ -369,8 +367,6 @@ function seedFamily(
 ): void {
   db.seed('produtos', PRODUTO, {
     nome: 'Camiseta',
-    marketplace: [{ integracaoUid: CONTA, externalId: FAMILY }],
-    marketplaceIds: [FAMILY],
     integracoesComProduto: [CONTA],
     ...produto,
   });
@@ -440,7 +436,7 @@ describe('syncItemStatus — resolution (link-first)', () => {
 });
 
 describe('syncItemStatus — link sync', () => {
-  it('active → paused: syncs estado + raw status/sub_status + ensures parent denorm', async () => {
+  it('active → paused: syncs estado + raw status/sub_status', async () => {
     const db = new FakeDb();
     seedLink(db);
     const out = await syncItemStatus(
@@ -455,19 +451,9 @@ describe('syncItemStatus — link sync', () => {
       status: 'paused',
       sub_status: ['out_of_stock'],
     });
-    // estado changed → non-cancel ensure-present (idempotent arrayUnion).
-    const denorm = db.updates.find((u) => u.path === `produtos/${PRODUTO}`);
-    expect(denorm).toBeDefined();
-    expect((denorm!.patch.marketplaceIds as FieldValue).isEqual(FieldValue.arrayUnion(ITEM))).toBe(
-      true,
-    );
-    // #920: not in the patch any more — the same estado change that gets here
-    // also merges onto the link doc, and `onProdutoMercadoLivreLinkChanged`
-    // derives the array from that.
-    expect(denorm!.patch).not.toHaveProperty('integracoesComProduto');
   });
 
-  it('sub_status-only change (estado unchanged): syncs raw fields, NO parent denorm write', async () => {
+  it('sub_status-only change (estado unchanged): syncs raw fields', async () => {
     const db = new FakeDb();
     seedLink(db, { status: 'active', sub_status: null });
     const out = await syncItemStatus(
@@ -481,8 +467,6 @@ describe('syncItemStatus — link sync', () => {
       estado: 'p',
       sub_status: ['catalog_boost_opportunity'],
     });
-    // estado did not change → parent arrays untouched.
-    expect(db.updates.find((u) => u.path === `produtos/${PRODUTO}`)).toBeUndefined();
   });
 
   it('no change at all → unchanged (idempotent, no write)', async () => {
@@ -585,47 +569,12 @@ describe('syncItemStatus — re-arms a latched listing (#781)', () => {
 });
 
 describe('syncItemStatus — cancel (closed)', () => {
-  it('closed → estado cancelado + key-based denorm removal', async () => {
+  it('closed → estado cancelado', async () => {
     const db = new FakeDb();
     seedLink(db);
     const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
-    // Parent denorm entry for this listing removed (plain arrays, not arrayRemove).
-    // `integracoesComProduto` is deliberately UNTOUCHED (#920): dropping the
-    // conta is the link trigger's call, made from the surviving links inside a
-    // transaction, not this function's from the `marketplace` array.
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [],
-      marketplaceIds: [],
-      integracoesComProduto: [CONTA],
-    });
-  });
-
-  // Since #920 this only pins the `marketplace`/`marketplaceIds` filtering —
-  // `integracoesComProduto` is untouched here either way. The equivalent
-  // "keep the conta while another listing survives" rule now lives in
-  // `sobrevivemLinksDoProduto` (integracoesComProduto.test.ts).
-  it('cancel keeps the integração when another listing of it remains', async () => {
-    const db = new FakeDb();
-    seedLink(
-      db,
-      {},
-      {
-        marketplace: [
-          { integracaoUid: CONTA, externalId: ITEM },
-          { integracaoUid: CONTA, externalId: 'MLB999' },
-        ],
-        marketplaceIds: [ITEM, 'MLB999'],
-        integracoesComProduto: [CONTA],
-      },
-    );
-    await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [{ integracaoUid: CONTA, externalId: 'MLB999' }],
-      marketplaceIds: ['MLB999'],
-      integracoesComProduto: [CONTA], // still has MLB999
-    });
   });
 });
 
@@ -636,7 +585,7 @@ describe('syncItemStatus — cancel (closed)', () => {
  * which is what made every republish a `PUT` against a listing ML had deleted.
  */
 describe('syncItemStatus — removed by moderation (#1226)', () => {
-  it('under_review + forbidden → estado rm + the same denorm removal a cancel does', async () => {
+  it('under_review + forbidden → estado rm', async () => {
     const db = new FakeDb();
     seedLink(db);
 
@@ -662,13 +611,6 @@ describe('syncItemStatus — removed by moderation (#1226)', () => {
       status: 'under_review',
       sub_status: ['forbidden'],
     });
-    // ⚠️ The listing is over, so the produto must leave the denorm exactly as a
-    // cancel makes it — otherwise both sweeps keep selecting it for ever.
-    // `integracoesComProduto` stays the link trigger's call (#920).
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [],
-      marketplaceIds: [],
-    });
   });
 
   /**
@@ -690,56 +632,11 @@ describe('syncItemStatus — removed by moderation (#1226)', () => {
       );
 
       expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'v' });
-      // Still in the denorm — the sweeps must keep reaching it. Asserted as
-      // "not the REMOVAL shape": the live arm goes through `arrayUnion`, which
-      // this fake stores as an unresolved transform rather than a plain array.
-      expect(db.docData('produtos', PRODUTO)).not.toMatchObject({ marketplaceIds: [] });
     }
   });
 });
 
-describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', () => {
-  it('cancel: denorm write fails, then a retry reconciles — the link never advances ahead of the denorm', async () => {
-    const db = new FakeDb();
-    seedLink(db);
-    db.failUpdates.set(`produtos/${PRODUTO}`, 1); // parent denorm update throws once
-
-    // Attempt 1: denorm runs FIRST and throws → the whole sync throws and, crucially,
-    // the link estado is NOT advanced (so a retry still sees a change to reconcile).
-    await expect(
-      syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' })),
-    ).rejects.toThrow(/unavailable/);
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' }); // NOT 'c'
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [{ integracaoUid: CONTA, externalId: ITEM }], // entry still present
-    });
-
-    // Retry: the denorm update succeeds → both the parent and the link reconcile.
-    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
-    expect(out).toBe('synced');
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c' });
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [],
-      marketplaceIds: [],
-      integracoesComProduto: [CONTA], // link-trigger-owned since #920
-    });
-  });
-
-  it('non-cancel reactivation: denorm write fails, then a retry reconciles (link not advanced)', async () => {
-    const db = new FakeDb();
-    seedLink(db, { estado: 'pa', status: 'paused' });
-    db.failUpdates.set(`produtos/${PRODUTO}`, 1);
-
-    await expect(
-      syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'active' })),
-    ).rejects.toThrow(/unavailable/);
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' }); // not advanced to 'p'
-
-    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'active' }));
-    expect(out).toBe('synced');
-    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
-  });
-
+describe('syncItemStatus — orphan parent', () => {
   it('orphan link (parent produto missing) → link still synced, no throw, no parent write', async () => {
     const db = new FakeDb();
     // Seed ONLY the link doc — the parent produto is gone (delete-cascade window).
@@ -762,18 +659,8 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
 describe('applyItemStatusToLink — the link is the anchor', () => {
   const target = { produtoId: PRODUTO, linkDocId: 'link1', itemId: ITEM };
 
-  it('a deleted link stops the write BEFORE the parent denorm is touched', async () => {
+  it('a deleted link stops the write', async () => {
     const db = new FakeDb();
-    // The produto survives with its denorm arrays already emptied (an operator
-    // unlinked the listing); the link doc is gone. The denorm must stay empty —
-    // `updateParentDenorm` would otherwise arrayUnion the entries straight back,
-    // advertising a listing whose link no longer exists.
-    db.seed('produtos', PRODUTO, {
-      nome: 'Camiseta',
-      marketplace: [],
-      marketplaceIds: [],
-      integracoesComProduto: [],
-    });
 
     const applied = await applyItemStatusToLink(
       asDb(db),
@@ -784,11 +671,6 @@ describe('applyItemStatusToLink — the link is the anchor', () => {
     );
 
     expect(applied).toBe(false);
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({
-      marketplace: [],
-      marketplaceIds: [],
-      integracoesComProduto: [],
-    });
     // And no ghost link doc was created on the way out.
     expect(db.docData(LINK_PATH, 'link1')).toBeUndefined();
   });
@@ -809,16 +691,15 @@ describe('applyItemStatusToLink — the link is the anchor', () => {
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
   });
 
-  it('skipDenorm still guards the link — no ghost, and still false', async () => {
+  it('still guards a removed link — no ghost, and returns false', async () => {
     const db = new FakeDb();
-    db.seed('produtos', PRODUTO, { nome: 'Camiseta', marketplace: [] });
 
     const applied = await applyItemStatusToLink(
       asDb(db),
       CONTA,
       target,
       { status: 'active', sub_status: null },
-      { nowMs: 1_700_000_000_000, skipDenorm: true },
+      { nowMs: 1_700_000_000_000 },
     );
 
     expect(applied).toBe(false);
@@ -901,8 +782,6 @@ describe('syncItemStatus — migration deferrals each name themselves (#441)', (
     // The listing's own status is NOT touched — we did not sync it, and claiming
     // otherwise is the failure mode this whole outcome union exists to prevent.
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ status: 'active' });
-    // No parent denorm write: 'am' is not a cancel and those arrays are dead weight.
-    expect(db.updates.map((u) => u.path)).toEqual([`${LINK_PATH}/link1`]);
   });
 
   it('uptin-tagged item → deferred-migration-uptin, a DIFFERENT outcome, also stamped', async () => {
@@ -1141,11 +1020,9 @@ describe('syncItemStatus — User-Products family members (#1142)', () => {
 
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
     expect(out).toBe('synced-member'); // recorded, family summary unmoved
-    // The produto keeps its denorm entry: nothing was cancelled.
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
   });
 
-  it('the LAST member closing cancels the family and removes the FAMILY-keyed denorm entry', async () => {
+  it('the LAST member closing cancels the family', async () => {
     const db = new FakeDb();
     seedFamily(db, [
       { itemId: MEMBER_A, child: 'childA' },
@@ -1156,9 +1033,6 @@ describe('syncItemStatus — User-Products family members (#1142)', () => {
 
     expect(out).toBe('synced-family');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
-    // ⚠️ Keyed on the FAMILY id — publish/import stamped it that way. Keying on the
-    // member id would leave this array untouched and the removal a silent no-op.
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
   });
 
   it('a never-observed member blocks the cancel — unknown is not dead', async () => {
@@ -1259,9 +1133,6 @@ describe('syncItemStatus — concurrent family members (rule 7)', () => {
     // And the family reflects the LIVE member, not the stale all-closed view.
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
     expect(aOut).not.toBe('link-removido');
-
-    // The denorm entry survives: nothing was cancelled.
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [FAMILY] });
   });
 
   it('the LAST member closing still cancels, even when a sibling commits mid-flight', async () => {
@@ -1279,7 +1150,6 @@ describe('syncItemStatus — concurrent family members (rule 7)', () => {
     await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
 
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplace: [], marketplaceIds: [] });
   });
 });
 
@@ -1365,7 +1235,6 @@ describe('syncItemStatus — a family whose parent carries a MEMBER id (#1142)',
         { itemId: MEMBER_B, child: 'childB' },
       ],
       { id: MEMBER_A, ...link },
-      { marketplace: [{ integracaoUid: CONTA, externalId: MEMBER_A }], marketplaceIds: [MEMBER_A] },
     );
   }
 
@@ -1401,7 +1270,6 @@ describe('syncItemStatus — a family whose parent carries a MEMBER id (#1142)',
     await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
 
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
-    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [MEMBER_A] });
   });
 
   it('folds to the family summary once every member agrees', async () => {

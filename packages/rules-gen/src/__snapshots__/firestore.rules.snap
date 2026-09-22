@@ -101,6 +101,8 @@ service cloud.firestore {
     // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_pedidos_pagamentos(d, c) {
       return (!c.hasAny(['aVista']) || d.get('aVista', null) is bool)
+        && (!c.hasAny(['cartao']) || (d.get('cartao', null) == null || d.get('cartao', null) is map))
+        && (!c.hasAny(['cheque']) || (d.get('cheque', null) == null || d.get('cheque', null) is map))
         && (!c.hasAny(['dataAprovacao']) || (d.get('dataAprovacao', null) == null || d.get('dataAprovacao', null) is int))
         && (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['dataCancelamento']) || (d.get('dataCancelamento', null) == null || d.get('dataCancelamento', null) is int))
@@ -108,6 +110,7 @@ service cloud.firestore {
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
+        && (!c.hasAny(['lastProviderUpdate']) || (d.get('lastProviderUpdate', null) == null || d.get('lastProviderUpdate', null) is int))
         && (!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))
         && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
@@ -141,8 +144,6 @@ service cloud.firestore {
         && (!c.hasAny(['gtin']) || (d.get('gtin', null) == null || d.get('gtin', null) is string && d.get('gtin', null).size() <= 255))
         && (!c.hasAny(['integracoesComProduto']) || d.get('integracoesComProduto', null) is list)
         && (!c.hasAny(['larguraCm']) || (d.get('larguraCm', null) == null || d.get('larguraCm', null) is number))
-        && (!c.hasAny(['marketplace']) || d.get('marketplace', null) is list)
-        && (!c.hasAny(['marketplaceIds']) || (d.get('marketplaceIds', null) == null || d.get('marketplaceIds', null) is list))
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 100)
         && (!c.hasAny(['ofereceFreteGratis']) || d.get('ofereceFreteGratis', null) is bool)
         && (!c.hasAny(['ordem']) || (d.get('ordem', null) == null || d.get('ordem', null) is int))
@@ -155,7 +156,6 @@ service cloud.firestore {
         && (!c.hasAny(['propagatePriceToChildren']) || d.get('propagatePriceToChildren', null) is bool)
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
-        && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
         && (!c.hasAny(['tabelaDeMedidasModaUid']) || (d.get('tabelaDeMedidasModaUid', null) == null || d.get('tabelaDeMedidasModaUid', null) is string))
         && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
@@ -272,7 +272,8 @@ service cloud.firestore {
     match /filiais/{docId} {
       allow read: if isSuperUser() || p('d_configuracoes', 1);
       allow create, update: if isSuperUser() || p('d_configuracoes', 2);
-      allow delete: if isSuperUser() || p('d_configuracoes', 2);
+      // Client delete disabled by collection metadata — no su bypass.
+      allow delete: if false;
     }
 
     match /filiais/{filialId}/enviNfe/{docId} {
@@ -387,8 +388,8 @@ service cloud.firestore {
 
     match /pedidos/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
-      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['bloqueiosLiberados']) || request.resource.data.get('bloqueiosLiberados', null) == null) && (!request.resource.data.keys().hasAny(['dataIndisponivelEstoque']) || request.resource.data.get('dataIndisponivelEstoque', null) == null) && (!request.resource.data.keys().hasAny(['dataRemocaoEstoque']) || request.resource.data.get('dataRemocaoEstoque', null) == null) && (!request.resource.data.keys().hasAny(['devolucaoAbertaEm']) || request.resource.data.get('devolucaoAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['disputaAbertaEm']) || request.resource.data.get('disputaAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null);
-      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['bloqueiosLiberados', 'dataIndisponivelEstoque', 'dataRemocaoEstoque', 'devolucaoAbertaEm', 'disputaAbertaEm', 'estoqueAplicado']);
+      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['bloqueiosLiberados']) || request.resource.data.get('bloqueiosLiberados', null) == null) && (!request.resource.data.keys().hasAny(['dataIndisponivelEstoque']) || request.resource.data.get('dataIndisponivelEstoque', null) == null) && (!request.resource.data.keys().hasAny(['dataRemocaoEstoque']) || request.resource.data.get('dataRemocaoEstoque', null) == null) && (!request.resource.data.keys().hasAny(['devolucaoAbertaEm']) || request.resource.data.get('devolucaoAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['disputaAbertaEm']) || request.resource.data.get('disputaAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null) && (!request.resource.data.keys().hasAny(['lastMarketplaceUpdate']) || request.resource.data.get('lastMarketplaceUpdate', null) == null);
+      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['bloqueiosLiberados', 'dataIndisponivelEstoque', 'dataRemocaoEstoque', 'devolucaoAbertaEm', 'disputaAbertaEm', 'estoqueAplicado', 'lastMarketplaceUpdate']);
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
@@ -443,8 +444,8 @@ service cloud.firestore {
 
     match /pedidos/{pedidoId}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
-      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['lastProviderUpdate']) || request.resource.data.get('lastProviderUpdate', null) == null);
+      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastProviderUpdate']);
       allow delete: if isSuperUser() || p('d_pagamento', 4);
     }
 

@@ -8,8 +8,30 @@
  */
 import type { EtiquetaGenericaAddress, EtiquetaGenericaModel } from './model';
 
-/** A real-shaped 44-digit chave (SP, CNPJ, modelo 55). */
+/** A real-shaped all-numeric chave (SP, CNPJ, modelo 55). */
 export const CHAVE = '35260114200166000187550010000000123456789012';
+
+/**
+ * A worst-case alphanumeric chave (NT 2026.004): all twelve positions of the
+ * emitente CNPJ body are letters, so subset C cannot absorb any of them. At
+ * 365 modules it ties the widest symbol the label can be asked to print, and
+ * it is deliberately the fixture the render tests use.
+ *
+ * ⚠️ "Worst case" is a claim about the whole 4096-arrangement space, not about
+ * this string, so `barcode.test.ts` SWEEPS that space instead of trusting this
+ * comment — which is how the bound got caught being wrong once already. Before
+ * `segment()` learned to spill an odd run's first digit, a CNPJ whose last
+ * letter sat at position 16 reached 376 modules and this fixture did not.
+ */
+export const ALFA_CHAVE = '352601ABCDEFGHIJKL87550010000001234567890120';
+
+/**
+ * The alfa shape actually most likely in the wild: RFB IN 2.229/2024 keeps an
+ * existing company's numeric raiz and issues an alphanumeric *ordem* to each
+ * new establishment, so a single letter near the end of the CNPJ body is the
+ * common case, not twelve.
+ */
+export const ALFA_ORDEM_CHAVE = '35260114200166000A87550010000001234567890129';
 
 const ENDERECO_CLIENTE: EtiquetaGenericaAddress = {
   logradouro: 'Rua das Palmeiras',
@@ -54,6 +76,16 @@ export const COM_NFE_MODEL: EtiquetaGenericaModel = {
   ...BASE,
   nfeNumero: 4821,
   nfeChave: CHAVE,
+};
+
+/**
+ * Same label with an ALPHANUMERIC chave. The PDF must encode this in mixed
+ * subsets; the ZPL must refuse it — see `zpl2.ts`.
+ */
+export const COM_NFE_ALFA_MODEL: EtiquetaGenericaModel = {
+  ...BASE,
+  nfeNumero: 4822,
+  nfeChave: ALFA_CHAVE,
 };
 
 /** Reverse shipment: "Retirada" at the customer, "Entrega" at the filial sede. */

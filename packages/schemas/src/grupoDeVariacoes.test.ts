@@ -50,6 +50,10 @@ describe('varianteSchema', () => {
     expect(varianteSchema.safeParse({ id: 'v1' }).success).toBe(false);
     expect(varianteSchema.parse({ id: 'v1', nome: 'Azul' }).id).toBe('v1');
   });
+
+  it('rejects unknown properties', () => {
+    expect(varianteSchema.safeParse({ id: 'v1', nome: 'Azul', extra: true }).success).toBe(false);
+  });
 });
 
 describe('externalVariacaoLinkSchema', () => {
@@ -69,6 +73,32 @@ describe('externalVariacaoLinkSchema', () => {
         integracaoId: 'i1',
         externalId: 'x',
       }).success,
+    ).toBe(false);
+  });
+
+  it('rejects unknown properties', () => {
+    expect(
+      externalVariacaoLinkSchema.safeParse({
+        tipo: 5,
+        integracaoId: 'i1',
+        externalId: 'x',
+        extra: true,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('legacy marketplace variation JSON', () => {
+  it('accepts JSON for LI/Amazon and rejects runtime-only values', () => {
+    expect(
+      grupoDeVariacoesSchema.safeParse({
+        nome: 'Cor',
+        linksVariacoesli: [{ legacy: ['v1', 1, null] }],
+        linksVariacoesAmazon: ['legacy-id'],
+      }).success,
+    ).toBe(true);
+    expect(
+      grupoDeVariacoesSchema.safeParse({ nome: 'Cor', linksVariacoesli: [undefined] }).success,
     ).toBe(false);
   });
 });

@@ -31,12 +31,33 @@ const COMPLEX_FIELDS = new Set([
   'chNFeReferenciadas',
 ]);
 
-function labelFor(field: string): string {
-  const shape = pedidoSchema.shape as Record<string, ZodTypeAny | undefined>;
+function labelFor(schema: ZodTypeAny, field: string): string {
+  const shape = (schema as { shape?: Record<string, ZodTypeAny | undefined> }).shape ?? {};
   const zt = shape[field];
   // `.describe()` may be a plain label or a JSON-encoded hint (datetime fields) —
   // parseZodDescription returns the clean label either way.
   return (zt && parseZodDescription(zt).label) || field;
+}
+
+/** Build conflict rows for any schema-backed record and an explicit field set. */
+export function recordConflictFields(
+  schema: ZodTypeAny,
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+  fields: ReadonlyArray<string>,
+  patch: Record<string, unknown>,
+): ConflictField[] {
+  return fields.map((field) => ({
+    field,
+    label: labelFor(schema, field),
+    complex:
+      COMPLEX_FIELDS.has(field) ||
+      isComplexValue(baseline[field]) ||
+      isComplexValue(current[field]),
+    loaded: baseline[field] ?? null,
+    server: current[field] ?? null,
+    overwritten: Object.prototype.hasOwnProperty.call(patch, field),
+  }));
 }
 
 const isComplexValue = (v: unknown): boolean => v !== null && typeof v === 'object';
@@ -54,15 +75,11 @@ export function conflictFields(
   current: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): ConflictField[] {
-  return remotelyChangedFields(baseline, current).map((field) => ({
-    field,
-    label: labelFor(field),
-    complex:
-      COMPLEX_FIELDS.has(field) ||
-      isComplexValue(baseline[field]) ||
-      isComplexValue(current[field]),
-    loaded: baseline[field] ?? null,
-    server: current[field] ?? null,
-    overwritten: Object.prototype.hasOwnProperty.call(patch, field),
-  }));
+  return recordConflictFields(
+    pedidoSchema,
+    baseline,
+    current,
+    remotelyChangedFields(baseline, current),
+    patch,
+  );
 }

@@ -14,6 +14,12 @@ export interface PedidoConflictModalProps {
   onCancel: () => void;
 }
 
+export interface RecordConflictModalProps extends PedidoConflictModalProps {
+  entityLabel: string;
+  title: string;
+  actionLabel?: string;
+}
+
 function formatValue(v: unknown): string {
   if (v === null || v === undefined) return '(vazio)';
   if (typeof v === 'boolean') return v ? 'Sim' : 'Não';
@@ -29,20 +35,23 @@ function formatValue(v: unknown): string {
  * would overwrite, then lets the user re-save overriding the version they just
  * reviewed ("salvar mesmo assim") or cancel. The F3 follow-up to the F2 guard.
  */
-export function PedidoConflictModal({
+export function RecordConflictModal({
   opened,
   fields,
   saving,
   onForceSave,
   onCancel,
-}: PedidoConflictModalProps) {
+  entityLabel,
+  title,
+  actionLabel = 'Salvar mesmo assim',
+}: RecordConflictModalProps) {
   const anyOverwritten = fields.some((f) => f.overwritten);
 
   return (
-    <Modal opened={opened} onClose={onCancel} title="Pedido alterado" centered size="lg">
+    <Modal opened={opened} onClose={onCancel} title={title} centered size="lg">
       <Stack>
         <Alert color={anyOverwritten ? 'red' : 'yellow'} icon={<IconAlertTriangle size={18} />}>
-          Este pedido foi alterado desde que você o abriu.{' '}
+          {entityLabel} foi alterado desde que você o abriu.{' '}
           {anyOverwritten
             ? 'Salvar vai SOBRESCREVER alterações marcadas abaixo.'
             : 'Suas alterações não sobrescrevem as mudanças abaixo.'}
@@ -86,14 +95,30 @@ export function PedidoConflictModal({
         )}
 
         <Group justify="flex-end">
-          <Button variant="default" onClick={onCancel} disabled={saving}>
+          <Button type="button" variant="default" onClick={onCancel} disabled={saving}>
             Cancelar
           </Button>
-          <Button color={anyOverwritten ? 'red' : 'orange'} onClick={onForceSave} loading={saving}>
-            Salvar mesmo assim
+          <Button
+            type="button"
+            color={anyOverwritten ? 'red' : 'orange'}
+            onClick={onForceSave}
+            loading={saving}
+          >
+            {actionLabel}
           </Button>
         </Group>
       </Stack>
     </Modal>
+  );
+}
+
+export function PedidoConflictModal(props: PedidoConflictModalProps) {
+  return (
+    <RecordConflictModal
+      {...props}
+      entityLabel="Este pedido"
+      title="Pedido alterado"
+      actionLabel="Salvar mesmo assim"
+    />
   );
 }

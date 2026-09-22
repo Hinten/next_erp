@@ -168,9 +168,7 @@ export { onIntegracaoMercadoLivreChanged } from './onIntegracaoMercadoLivreChang
  * The two link triggers that own `produtos.integracoesComProduto` (#920) — the
  * anchor pre-filter both ML sweeps open with. They replace six hand-written
  * stamp sites and, crucially, they derive the array from the LINK
- * subcollections rather than from the sibling `marketplace` array, which is
- * what lets `marketplace` + `marketplaceIds` be retired on their own at the
- * Flutter decommission (#431 lock 2).
+ * subcollections rather than from retired sibling produto fields (#431 lock 2).
  *
  * Same "no rename-safety assertion" reasoning as the triggers above: Eventarc
  * binds a document path and neither feeds a queue. Both bind no secrets (see

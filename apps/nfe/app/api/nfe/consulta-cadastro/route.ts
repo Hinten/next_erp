@@ -7,7 +7,9 @@
  * fiscal-mutation path, so transport failures and unsupported UFs degrade
  * gracefully (200 with `supported:false` / `degraded:true`) instead of 5xx.
  *
- * Body (JSON, POST): `{ cnpj: <14 digits>, uf: <2 letters>, filialId: <id> }`. POST
+ * Body (JSON, POST): `{ cnpj: <14 chars>, uf: <2 letters>, filialId: <id> }` — the
+ * first 12 may be `A-Z` since NT 2026.004, which is what the schema below
+ * enforces. POST
  * (not GET) keeps the queried CNPJ out of the URL — query strings leak into access
  * logs, proxies and browser history. filialId REQUIRED in v1 — the lookup signs the
  * mTLS handshake with that filial's A1 cert.

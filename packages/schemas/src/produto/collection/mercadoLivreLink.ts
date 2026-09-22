@@ -696,10 +696,9 @@ export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSc
  * more" — the two ways an ML listing ends, and the only two.
  *
  * ⚠️ ONE definition, because the question is asked in three places that must
- * agree: {@link linkHasLiveListing} (which drives `produtos.integracoesComProduto`
- * and therefore both sweeps' coverage) and `itemsStatusSync`'s two legacy-denorm
- * arms, two of which used to spell it as a bare `'c'` literal. A per-site test
- * is how the second member of this set would get missed on one of them.
+ * agree: {@link linkHasLiveListing}, which drives
+ * `produtos.integracoesComProduto` and therefore both sweeps' coverage. Keeping
+ * the fold named prevents callers from treating only bare `'c'` as terminal.
  *
  * They stay DISTINCT estados despite folding together here — see
  * {@link ESTADO_PUBLICACAO_ML}: `cancelado` is the seller closing a listing,
@@ -726,9 +725,9 @@ export function estadoEncerraAnuncio(estado: unknown): boolean {
  * This is the membership predicate behind `produtos.integracoesComProduto` — the
  * anchor pre-filter both ML sweeps start from (`bulkEstoquePlan.fetchStockFamilies`
  * S1, `precoPlan.fetchPrecoPage`). It reproduces the semantics the old
- * `marketplace` array carried, so moving maintenance into a trigger (#920) is not
- * also a behaviour change: an entry only ever appeared after a publish/import
- * returned an ML item id, and `removeMarketplaceEntry` dropped it on cancel.
+ * retired legacy binding carried, so moving maintenance into a trigger (#920)
+ * is not also a behaviour change: membership starts after publish/import returns
+ * an ML item id and ends when the link reaches a terminal state.
  *
  * ⚠️ Cancelling does NOT delete the link doc — `itemsStatusSync` merges
  * `estado: 'c'` and the doc survives with its `id` intact. A trigger keyed on

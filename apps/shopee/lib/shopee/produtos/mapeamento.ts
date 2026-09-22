@@ -544,9 +544,7 @@ function planejarEstoque(args: {
 /**
  * One listing → the PARENT produto's write.
  *
- * ⚠️ Never writes `marketplace`, `marketplaceIds`, `statusProdutosMarketplace`
- * (all three DEAD WEIGHT with no query consumers and no index — `produto.ts`
- * says "Never add a reader"), `integracoesComProduto` (no Shopee link trigger
+ * ⚠️ Never writes `integracoesComProduto` (no Shopee link trigger
  * exists; the recorded cost is a missing badge in `/produtos` until steps
  * 11/12), `permiteVendaSemEstoque` (slated for removal),
  * `ofereceFreteGratis` (the legacy derived it from `logistic_info.every(is_free)`

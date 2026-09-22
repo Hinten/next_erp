@@ -44,7 +44,7 @@ export const pagamentoHistorySource: ModificationHistorySource = {
    * ignoring it would buy nothing, while recording it makes a backdated payment
    * visible.
    */
-  ignoreFields: ['id', 'ultimaModificacao'],
+  ignoreFields: ['id', 'ultimaModificacao', 'lastProviderUpdate'],
   resolve(params) {
     // Both wildcards are always present at runtime; the Record index type
     // can't know that (same cast as `onEstoqueDeleted`).

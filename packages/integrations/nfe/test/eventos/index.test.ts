@@ -42,7 +42,7 @@ describe('buildCancelamentoEvento', () => {
     expect(id).toHaveLength(2 + 6 + 44 + 2);
   });
 
-  it('throws NFeEventoError when chNFe is not 44 digits', () => {
+  it('throws NFeEventoError when chNFe is not 44 characters', () => {
     expect(() => buildCancelamentoEvento({ ...baseInput(), chNFe: '123' })).toThrow(NFeEventoError);
   });
 
@@ -141,7 +141,7 @@ describe('buildCCeEvento', () => {
     expect(id).toHaveLength(2 + 6 + 44 + 2);
   });
 
-  it('throws NFeEventoError when chNFe is not 44 digits', () => {
+  it('throws NFeEventoError when chNFe is not 44 characters', () => {
     expect(() => buildCCeEvento({ ...cceInput(), chNFe: '123' })).toThrow(NFeEventoError);
   });
 
@@ -219,7 +219,7 @@ describe('buildEpecEvento', () => {
     expect(xml).toContain('<cOrgaoAutor>35</cOrgaoAutor>');
   });
 
-  it('throws NFeEventoError when chNFe is not 44 digits', () => {
+  it('throws NFeEventoError when chNFe is not 44 characters', () => {
     expect(() => buildEpecEvento({ ...epecInput(), chNFe: '123' })).toThrow(NFeEventoError);
   });
 });
