@@ -661,7 +661,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     expect(db.docs('pedidos/PED-STALE/pagamentos').get(pagId)!.valor).toBe(999); // untouched
   });
 
-  it('proceeds when the stored pagamento has a null provider watermark', async () => {
+  it('initializes a null provider watermark without falling back to local recency', async () => {
     const db = makeDb();
     seedPedido(db, 'PED-NULLSTALE');
     seedOrderMl(db, 'PED-NULLSTALE', '112', { id: 112 });
@@ -677,7 +677,11 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 801);
 
     expect(res.skipped).toBeNull();
-    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)!.valor).toBe(200);
+    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)).toMatchObject({
+      valor: 200,
+      lastProviderUpdate: Date.parse('2026-07-20T10:00:00.000Z') * 1000,
+      ultimaModificacao: Date.parse('2030-01-01T00:00:00.000Z') * 1000,
+    });
   });
 
   it('every read inside the transaction happens before the first write', async () => {

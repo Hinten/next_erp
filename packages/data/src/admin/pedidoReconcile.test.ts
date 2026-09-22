@@ -435,6 +435,37 @@ describe('reconcilePedidoFromPagamento', () => {
     });
   });
 
+  it('initializes a missing provider watermark without inferring one from local recency', async () => {
+    const humanFuture = 2_000_000_000_000_000;
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: humanFuture,
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+        ultimaModificacao: T_OLD,
+        lastProviderUpdate: T_OLD,
+      }),
+    });
+
+    expect(result.skippedStale).toBe(false);
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({
+      valor: 40,
+      status_pagamento: STATUS_PAGAMENTO.pendente,
+      lastProviderUpdate: T_OLD,
+      ultimaModificacao: humanFuture,
+    });
+  });
+
   it('writes the pagamento but does NOT transition an estado outside AUTO_ESTADO_SOURCES', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': {

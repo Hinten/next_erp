@@ -191,6 +191,11 @@ export async function reconcilePedidoFromPagamento(
     // Update-if-newer guard: a stored pagamento at least as fresh as the incoming
     // one (same or newer `lastProviderUpdate`) means this is a stale/duplicate
     // delivery — skip without writing (idempotent redelivery).
+    //
+    // Missing/null deliberately means "no trusted provider event has won yet":
+    // accept the first delivery and seed the watermark. Never fall back to
+    // `ultimaModificacao`; legacy values may come from a human edit, which would
+    // recreate #361 by blocking a legitimate provider delivery indefinitely.
     if (existing) {
       const existingMod = existing.get('lastProviderUpdate');
       const incomingMod = pagamento.lastProviderUpdate;

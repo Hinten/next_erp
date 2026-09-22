@@ -392,6 +392,11 @@ function changedFields(
   return [...fields].filter((field) => !valuesEqual(baseline[field], current[field]));
 }
 
+/**
+ * Local recency is deliberately non-regressing, even when a stored client clock
+ * is in the future. External event ordering never consults this field; provider
+ * importers use `lastProviderUpdate` instead.
+ */
 function monotonicPagamentoModification(current: Record<string, unknown>, now: number): number {
   const stored = current.ultimaModificacao;
   return typeof stored === 'number' && Number.isFinite(stored) ? Math.max(stored, now) : now;
@@ -436,7 +441,12 @@ export async function savePagamento(port: PedidoDataPort, args: SavePagamentoArg
   });
 }
 
-/** Delete only when the entire document still matches the confirmed baseline. */
+/**
+ * Delete only when the entire document still matches the confirmed baseline.
+ * This is intentionally stricter than edit conflict detection: provider-owned
+ * fields are part of the comparison because any write after confirmation must
+ * cancel a destructive action and make the operator review the fresh snapshot.
+ */
 export async function deletePagamento(
   port: PedidoDataPort,
   args: { pedidoId: string; pagamentoId: string; baseline: Record<string, unknown> },
