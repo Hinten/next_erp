@@ -602,6 +602,7 @@ function ItemRow({
             </Stack>
             <Tooltip label="Trocar produto" withArrow>
               <ActionIcon
+                type="button"
                 variant="subtle"
                 color="gray"
                 onClick={clearProduto}
@@ -739,6 +740,7 @@ function ItemRow({
       <Table.Td>
         <Tooltip label={marked ? 'Desfazer' : 'Remover'} withArrow>
           <ActionIcon
+            type="button"
             color={marked ? 'gray' : 'red'}
             variant="subtle"
             onClick={toggleDelete}

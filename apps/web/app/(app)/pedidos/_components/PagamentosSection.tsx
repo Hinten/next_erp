@@ -327,7 +327,7 @@ export function PagamentosSection({
           )}
         </Group>
         {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled || reconciling}>
+          <Button type="button" size="xs" onClick={openAdd} disabled={disabled || reconciling}>
             + Adicionar pagamento
           </Button>
         )}
@@ -389,6 +389,7 @@ export function PagamentosSection({
                 rightSection={
                   <Tooltip label={`Preencher com o valor restante (${brl(remaining)})`} withArrow>
                     <ActionIcon
+                      type="button"
                       variant="subtle"
                       aria-label="Preencher com o valor restante"
                       disabled={disabled || remaining <= 0}
@@ -663,10 +664,21 @@ export function PagamentosSection({
             )}
             {saveError && <Alert color="red">{saveError}</Alert>}
             <Group justify="flex-end">
-              <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => setEditing(null)}
+                disabled={saving}
+              >
                 Cancelar
               </Button>
-              <Button onClick={handleSave} loading={saving} disabled={disabled} color="green">
+              <Button
+                type="button"
+                onClick={handleSave}
+                loading={saving}
+                disabled={disabled}
+                color="green"
+              >
                 {editing.id ? 'Salvar alterações' : 'Adicionar'}
               </Button>
             </Group>
@@ -716,10 +728,15 @@ export function PagamentosSection({
         <Stack>
           <Text>Tem certeza que deseja excluir este pagamento?</Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+            >
               Cancelar
             </Button>
-            <Button color="red" onClick={handleDelete} loading={deleting}>
+            <Button type="button" color="red" onClick={handleDelete} loading={deleting}>
               Excluir
             </Button>
           </Group>
@@ -800,10 +817,17 @@ function PagamentoRow({
         <Table.Td align="right">{pagamento.parcelas}</Table.Td>
         <Table.Td>
           <Group gap="xs">
-            <Button size="xs" variant="light" onClick={onEdit} disabled={disabled}>
+            <Button type="button" size="xs" variant="light" onClick={onEdit} disabled={disabled}>
               Editar
             </Button>
-            <Button size="xs" variant="light" color="red" onClick={onDelete} disabled={disabled}>
+            <Button
+              type="button"
+              size="xs"
+              variant="light"
+              color="red"
+              onClick={onDelete}
+              disabled={disabled}
+            >
               Excluir
             </Button>
           </Group>
