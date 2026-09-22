@@ -77,6 +77,29 @@ describe('ClienteColumnFilter', () => {
     expect(segmentChecked('Anônimo')).toBe(true);
   });
 
+  it('binds every segment to a clickable <label>, which is what the e2e helper drives', () => {
+    // ⚠️ Cross-layer contract, and the one this file CANNOT otherwise catch.
+    // Mantine renders each segment as a visually hidden radio input (0×0,
+    // `opacity: 0`) plus a real `<label>`. jsdom has no visibility or
+    // hit-testing model, so `fireEvent.click` on the input works here and the
+    // same locator times out under Playwright with "element is not visible" —
+    // which is exactly what reddened `vendas-2 / e2e`.
+    //
+    // `applySegmentedFilter` (apps/web/e2e/helpers/table-view.ts) therefore
+    // resolves the input by role+name and clicks `label[for=<its id>]`. That
+    // hop only works while the markup keeps both halves, so pin them here
+    // rather than in a lane that costs a full staging run to discover.
+    renderFilter();
+    for (const name of ['Cliente', 'Anônimo']) {
+      const radio = screen.getByRole('radio', { name });
+      expect(radio.id, `segment "${name}" needs an id to bind a label to`).toBeTruthy();
+      expect(
+        document.querySelector(`label[for="${radio.id}"]`),
+        `segment "${name}" needs a label bound to its input`,
+      ).not.toBeNull();
+    }
+  });
+
   it('Limpar drops the filter and returns to the Cliente segment', () => {
     const onChange = renderFilter({ op: 'isNull', value: null });
     fireEvent.click(screen.getByRole('button', { name: 'Limpar' }));

@@ -162,6 +162,23 @@ export async function applySelectFilter(
  * Open a column's filter popover and pick one segment of a `SegmentedControl`
  * (the NF and Cliente popovers on /pedidos use one to switch input mode). The
  * segment applies on change; no Apply click needed.
+ *
+ * ⚠️ The radio input is NOT clickable. Mantine renders each segment as a
+ * visually hidden `<input type="radio">` (0×0, `opacity: 0`) plus a real
+ * `<label>` carrying the text. `getByRole('radio')` resolves the input — that
+ * is where its accessible name comes from — but Playwright refuses to click
+ * something that is not visible (`element is not visible`, then a 30s timeout).
+ * The label is the clickable surface, so start from the role+name and hop to
+ * the label bound to that input.
+ *
+ * ⚠️ A component test cannot catch this: jsdom has no visibility or
+ * hit-testing model, so `fireEvent.click` on the same hidden input works there.
+ * `ClienteColumnFilter.test.tsx` passes and always did.
+ *
+ * `label` cannot be located by its text instead — `hasText` is a substring
+ * match and a popover routinely holds other labels (the Cliente popover has
+ * `Filtrar por cliente`), so asking for `Cliente` would resolve two and fail
+ * strict mode.
  */
 export async function applySegmentedFilter(
   page: Page,
@@ -169,8 +186,16 @@ export async function applySegmentedFilter(
   segmentLabel: string,
 ): Promise<void> {
   const popover = await openColumnFilter(page, columnLabel);
-  // Mantine renders each segment as a radio input labelled by its own text.
-  await popover.getByRole('radio', { name: segmentLabel, exact: true }).click();
+  const radio = popover.getByRole('radio', { name: segmentLabel, exact: true });
+  const id = await radio.getAttribute('id');
+  expect(
+    id,
+    `SegmentedControl segment "${segmentLabel}" has no id to bind a label to`,
+  ).toBeTruthy();
+  await popover.locator(`label[for="${id}"]`).click();
+  // The click landed on a label, so assert the control actually switched rather
+  // than trusting that the event reached the input.
+  await expect(radio).toBeChecked();
 }
 
 /**
