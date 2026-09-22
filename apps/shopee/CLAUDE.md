@@ -195,6 +195,15 @@ a page of the 3-day queue irreversibly.
 - `functions/src/processMassImport.ts` — the SECOND `onTaskDispatched` (one at
   a time, 300 s, a 3-attempt ladder); enqueued by TWO identities because it
   re-enqueues itself.
+- `app/api/marketplace/shopee/publicar/route.ts` — step 11's publish
+  (`PERM.integracao.write`): 200 with the summary built BY NAME, 400 for a bad
+  body, 404 `SHOPEE_ANUNCIO_NAO_ENCONTRADO`; it is the composition root for the
+  clock, the wait and the partner client, because `anuncios/` builds none.
+- `app/api/marketplace/shopee/enviar-estoque/route.ts` — step 12's manual stock
+  push (`PERM.integracao.write`): **200 even when every listing failed** (a
+  per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
+  call, 400 `SHOPEE_CONTA_SEM_DEPOSITO`; oversize is refused on the DEDUPED
+  count and never truncated.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -371,16 +380,17 @@ a page of the 3-day queue irreversibly.
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
 - `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
-  avisos, and the second of the **three** modules in this app that write to the
-  avisos inbox (`autorizacao.ts`, this one, and step 8's `reservaTravada.ts`). It
+  avisos, and the second of the **five** modules in this app that write to the
+  avisos inbox (`autorizacao.ts`, this one, step 8's `reservaTravada.ts`, step
+  11's `anuncios/avisoAnuncio.ts` and step 12's `estoque/avisoEstoque.ts`). It
   holds NO `millisToMicros`: it takes the µs helpers from
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **34** suites in this app drive, and since step 8 it has a suite of its OWN.
+  **57** suites in this app drive, and since step 8 it has a suite of its OWN.
   ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9). Step 9 extended the double ADDITIVELY: an
+  step 8, 34 after step 9, 57 today). Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
   per snapshot plus the `update(patch, { lastUpdateTime })` PRECONDITION that
@@ -409,7 +419,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **six** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **eight** dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -418,14 +428,18 @@ a page of the 3-day queue irreversibly.
   `varrer-reservas.ts` (step 8) rehearses the weekly stuck-reservation sweep
   across every active conta — or one, with `--integracao` — and
   `importar-anuncio.ts` (step 9) imports ONE named anúncio through the real
-  step-9 path; the last five **dry-run by default**, `--live` to write. Their
+  step-9 path, `publicar-anuncio.ts` (step 11) publishes ONE named produto as a
+  listing, and `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
+  produtos; the last seven **dry-run by default**, `--live` to write. Their
   pure halves
   (arg parsing, the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
   `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts` and
-  `lib/shopee/pedidos/varrerReservasCli.ts` and
-  `lib/shopee/produtos/importarAnuncioCli.ts`
+  `lib/shopee/pedidos/varrerReservasCli.ts`,
+  `lib/shopee/produtos/importarAnuncioCli.ts`,
+  `lib/shopee/anuncios/publicarAnuncioCli.ts` and
+  `lib/shopee/estoque/enviarEstoqueCli.ts`
   **because `scripts/` is outside
   this app's vitest `include`**, so logic written in a script file can never be
   tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
@@ -765,8 +779,10 @@ step 6's `sweepShopeeEscrowSettlement` reads money that Shopee exposes only once
 the escrow is RELEASED — no push was ever sent for it, so none was ever missed.
 It is documented under **Payments and settlement**, not here; filing it as a
 fifth backstop would make "a way a push never arrives" mean nothing. The honest
-count is seven `onSchedule` triggers in `functions/src/index.ts`, with
-`index.test.ts` pinning seven distinct crons.
+count is **ten** `onSchedule` triggers — seven in `functions/src/index.ts` plus
+step 12's three stock sweeps in `functions/src/sweepStock.ts` — with
+`index.test.ts` pinning ten distinct crons. `ci-shopee.yml` says TEN too; the
+two must never disagree.
 
 ⚠️ **Step 8's sweep IS a backstop by that same criterion, and it is the only one
 that reaches past three days.** A subscription Shopee SUSPENDS loses every push
@@ -1446,22 +1462,29 @@ read by nothing.
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 11 that job runs
-**three suite FILES and six tests**
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 12 that job runs
+**four suite FILES and seven tests**
 (`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
 `lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
-`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1) — still one job, still
-one check name, no new gate-manifest row.
+`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
+`lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1) — still one job, still
+one check name, no new gate-manifest row. The lane's header carries the same
+pair of numbers.
 
 Four **push deliveries** go through the receiver hop: an unknown push code
 (→ `parked`); since step 5 a **code 3**, since step 7 a **code 4** and since
 step 11 a **code 16**, naming a shop that maps to no integração (→ `deferred`). Step 9's file is a different
 hop: enqueue → the tasks emulator → the real `processShopeeMassImport` → a
-seeded job stamped `failed`. All five are chosen for the same reason — the only
-outcomes that write a document with NO Shopee call: the mass-import one seeds an
+seeded job stamped `failed`. Step 12's is a THIRD hop: enqueue → the tasks
+emulator → the real `sendShopeeStock` → a seeded LINK document stamped
+`erp:task-excede-limite`, from a 51-model task the chunker cuts. All six are
+chosen for the same reason — the only outcomes that write a document with NO
+Shopee call: the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
-reached the network would show a 30 s backoff instead).
+reached the network would show a 30 s backoff instead); the stock one refuses at
+rung 1, which sits ABOVE the pause gate, above the context load and above the
+client, so the guarantee there is CALL ORDER and never a mock.
 ⚠️ The lane's fetch kill-switch lives in the VITEST process and does **not**
 cover the dispatched function, which runs in the emulator's own process, so a
 code-3 case that reached `importarPedidoShopee` — or a code-4 one that reached
@@ -1492,7 +1515,10 @@ importer's graph reaches further than any step before it:
 `packages/schemas/src/grupoDeVariacoes.ts`, `packages/schemas/src/categoria.ts`,
 `packages/schemas/src/storage/**`, `packages/schemas/src/importacaoShopee.ts`
 and `packages/data/src/admin/hash.ts` (the why of each is a comment beside it
-in the lane).
+in the lane). **Step 12 grew it by exactly two** —
+`packages/schemas/src/estoqueShopeeSync.ts` (the sync state doc) and
+`packages/data/src/admin/estoque/**` (the promoted stock core) — for a closure
+of **44** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -1541,7 +1567,7 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other five CLIs are **dry-run by default** and, like `oauth:url`, are
+The other seven CLIs are **dry-run by default** and, like `oauth:url`, are
 **never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
 output and the runbook for each live in `scripts/README.md`:
 
@@ -1551,6 +1577,8 @@ pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao <integracao
 pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao <integracaoId> --order-sn <orderSn>
 pnpm --filter @delfrance/shopee-app varrer:reservas
 pnpm --filter @delfrance/shopee-app importar:anuncio --integracao <integracaoId> --item <item_id>
+pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao <integracaoId> --produto <produtoId>
+pnpm --filter @delfrance/shopee-app enviar:estoque --integracao <integracaoId> --produto <produtoId>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1560,9 +1588,14 @@ for one order — the same `get_package_detail` pull and the same pure predictio
 code-4/30/47 delivery runs, plus what the code-3 backstop would fold from the
 same order; the fourth (step 8) rehearses the weekly stuck-reservation sweep
 across **every** active conta by default, `--integracao <id>` to scope it to one;
-and the fifth (step 9) imports ONE named anúncio through the real step-9 path —
-the dry run prints the PLAN, `--live` writes it.
-All five still CALL Shopee in dry-run — what they do not do is write.
+the fifth (step 9) imports ONE named anúncio through the real step-9 path —
+the dry run prints the PLAN, `--live` writes it; the sixth (step 11) plans the
+publication of ONE produto; and the seventh (step 12) plans the stock push for
+up to 50 named produtos, `--produto` repeated, one flag per anchor.
+All seven still CALL Shopee in dry-run — what they do not do is write, with ONE
+documented exception: `publicar:anuncio` UPLOADS the pictures in both modes,
+because `montarAnuncio` needs real `image_id`s to build a body at all.
+`enviar:estoque`'s dry run calls `get_item_promotion` and nothing else.
 ⚠️ Against the **SGD sandbox** `importar:anuncio` plans no price
 (`precoIgnorado: moeda-nao-brl`) — the rule working; `scripts/README.md` §11.5
 lists the expected caveats.
