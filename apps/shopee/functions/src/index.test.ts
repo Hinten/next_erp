@@ -420,14 +420,69 @@ describe('sweepShopeeStuckReservations', () => {
 
 describe('sweepShopeeStock (incremental, passo 12)', () => {
   it('roda a cada quarto de hora nos minutos :10 :25 :40 :55', () => {
-    // ⚠️ Os MINUTOS são escolhidos, não herdados. Os sete agendamentos que esta
-    // codebase já roda ocupam :00, :15, :20, :30 e :45 — e todos sacam de UM
-    // orçamento de rate limit de parceiro que a Shopee não publica — então
-    // `:10/:25/:40/:55` é o único quarto de hora que não colide com nenhum. A
-    // sobreposição aceita e nomeada é segunda 05:10, com o
-    // `monitorShopeePushConfig`, que é um único GET Public.
+    // ⚠️ Os MINUTOS são escolhidos, não herdados, e DUAS sobreposições semanais
+    // são aceitas. Dos sete agendamentos que esta codebase já roda, CINCO fixam
+    // um minuto — :00 (expiração), :10 (liquidação, segundas 05:10), :20
+    // (pushes perdidos), :40 (reservas travadas, segundas 04:40) e :45 (monitor
+    // de push, DIÁRIO às 05:45) — e dois são intervalos sem minuto fixo
+    // (`every 30 minutes`, `every 15 minutes`). O conjunto ocupado é, portanto,
+    // {:00, :10, :15, :20, :30, :40, :45}, e `:10/:25/:40/:55` encontra dois
+    // deles: segunda 05:10 com `sweepShopeeEscrowSettlement` (até 300
+    // `get_escrow_detail` por conta) e segunda 04:40 com
+    // `sweepShopeeStuckReservations` (até 204 `get_order_detail` por conta).
+    // Ambas são semanais e ambas sacam do mesmo orçamento por APLICAÇÃO; a
+    // saída sem colisão nenhuma é `12,27,42,57`. ⚠️ `monitorShopeePushConfig`
+    // NÃO é vizinho deste tique: ele roda `45 5 * * *`.
     expect(gatilhoDe(sweepShopeeStock).schedule).toBe('10,25,40,55 * * * *');
     expect(gatilhoDe(sweepShopeeStock).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ as sobreposições são DERIVADAS dos crons, não afirmadas no comentário', () => {
+    // O comentário acima já esteve errado três vezes (um vizinho trocado, dois
+    // minutos ausentes do conjunto "ocupado" e uma sobreposição não nomeada), e
+    // um comentário é o único registro de por que estes quatro minutos foram
+    // sacados de um orçamento que a Shopee não publica. Isto o deriva.
+    const minutosFixos = new Map<string, number[]>();
+    for (const [nome, fn] of Object.entries(AGENDAMENTOS)) {
+      const campo = (gatilhoDe(fn).schedule ?? '').split(' ')[0] ?? '';
+      // `every 30 minutes` e `every 15 minutes` não ancoram minuto nenhum.
+      if (!/^\d+(,\d+)*$/.test(campo)) continue;
+      minutosFixos.set(
+        nome,
+        campo.split(',').map((m) => Number(m)),
+      );
+    }
+    // Os dois `every N minutes` não ancoram minuto nenhum.
+    expect([...minutosFixos.keys()].sort()).toEqual(
+      [
+        'monitorShopeePushConfig',
+        'sweepShopeeAuthorizationExpiry',
+        'sweepShopeeEscrowSettlement',
+        'sweepShopeeLostPushes',
+        'sweepShopeeStock',
+        'sweepShopeeStockDaily',
+        'sweepShopeeStockReconciliacao',
+        'sweepShopeeStuckReservations',
+      ].sort(),
+    );
+
+    // As três varreduras de estoque são a MESMA família (o tique incremental
+    // pula os slots 02:10 e 03:10 em código), então os vizinhos são os outros.
+    const daFamilia = new Set([
+      'sweepShopeeStock',
+      'sweepShopeeStockDaily',
+      'sweepShopeeStockReconciliacao',
+    ]);
+    const doTique = new Set([10, 25, 40, 55]);
+    const vizinhos = [...minutosFixos.entries()]
+      .filter(([nome, minutos]) => !daFamilia.has(nome) && minutos.some((m) => doTique.has(m)))
+      .map(([nome]) => nome)
+      .sort();
+    // ⚠️ EXATAMENTE os dois semanais que o comentário nomeia — e o monitor de
+    // push NÃO está entre eles (`45 5 * * *`, diário).
+    expect(vizinhos).toEqual(['sweepShopeeEscrowSettlement', 'sweepShopeeStuckReservations']);
+    expect(minutosFixos.get('monitorShopeePushConfig')).toEqual([45]);
+    expect(minutosFixos.get('sweepShopeeStock')).toEqual([...doTique]);
   });
 
   it('⚠️ NÃO é `5,20,35,50` — a quase-colisão medida', () => {
@@ -588,9 +643,11 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
 
   it('os agendamentos são DISTINTOS — nenhum PAR compartilha um cron', () => {
     // All-pairs, not "the first two differ": a copy-paste that left two of the
-    // seven on the same cron would satisfy every per-function assertion above
+    // TEN on the same cron would satisfy every per-function assertion above
     // taken one at a time, and would run one of them twice while the other
-    // never ran at all.
+    // never ran at all. ⚠️ TEN since step 12 added the three stock sweeps —
+    // which are also the likeliest copy-paste pair in the map, since they are
+    // three wrappers over one function.
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
     expect(new Set(crons).size).toBe(crons.length);
   });

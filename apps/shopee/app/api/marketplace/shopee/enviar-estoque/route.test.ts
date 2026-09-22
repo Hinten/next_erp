@@ -17,6 +17,7 @@ import { SHOPEE_ENVIO_ESTOQUE_MAX_PRODUTOS } from '@/lib/shopee/estoque/constant
 import {
   CHAVES_DA_LISTAGEM,
   CHAVES_DO_ENVELOPE,
+  CHAVES_DO_MODELO,
   CHAVES_DO_RESUMO,
   CHAVES_SEM_ENVIO,
   type EnvioEstoqueResponse,
@@ -125,7 +126,28 @@ function respostaDouble(): EnvioEstoqueResponse {
         motivo: null,
         mensagem: 'ok',
         quantidade: 7,
-        variacoes: [],
+        // ⚠️ O nível mais interno, e o único que carrega as palavras da própria
+        // Shopee (`codigo` é o `failed_reason` VERBATIM). Um `variacoes: []`
+        // deixava a projeção de modelo sem nenhuma asserção, e a verificação de
+        // vazamento sobre o corpo inteiro só enxerga uma STRING plantada — por
+        // isso há também uma chave numérica aqui.
+        variacoes: [
+          {
+            modelId: 2000458802,
+            produtoId: 'prod-filho',
+            varLinkDocId: 'varlink-1',
+            quantidadeSolicitada: 7,
+            quantidadeEnviada: 7,
+            resultado: 'enviado',
+            motivo: null,
+            codigo: null,
+            mensagem: '',
+            clampado: false,
+            piso: null,
+            inventadoNoModelo: 'NÃO PODE VAZAR',
+            inventadoNumeroNoModelo: 42,
+          },
+        ],
         modelosRecusados: 0,
         clampados: 0,
         rearme: null,
@@ -369,7 +391,7 @@ describe('(4) o envelope — R-12 a R-15', () => {
     expect(body.resumo.falhas).toBe(body.listings.length);
   });
 
-  it('R-13 — os conjuntos de chaves são montados POR NOME nos QUATRO níveis', async () => {
+  it('R-13 — os conjuntos de chaves são montados POR NOME nos CINCO níveis', async () => {
     h.enviar.mockResolvedValue(respostaDouble());
 
     const res = await POST(req(corpoValido(), AUTORIZADO));
@@ -379,6 +401,9 @@ describe('(4) o envelope — R-12 a R-15', () => {
     expect(Object.keys(body.resumo as object).sort()).toEqual([...CHAVES_DO_RESUMO].sort());
     const listings = body.listings as Record<string, unknown>[];
     expect(Object.keys(listings[0] ?? {}).sort()).toEqual([...CHAVES_DA_LISTAGEM].sort());
+    const variacoes = (listings[0]?.variacoes ?? []) as Record<string, unknown>[];
+    expect(variacoes).toHaveLength(1);
+    expect(Object.keys(variacoes[0] ?? {}).sort()).toEqual([...CHAVES_DO_MODELO].sort());
     const semEnvio = body.produtosSemEnvio as Record<string, unknown>[];
     expect(Object.keys(semEnvio[0] ?? {}).sort()).toEqual([...CHAVES_SEM_ENVIO].sort());
     expect(JSON.stringify(body)).not.toContain('NÃO PODE VAZAR');
@@ -461,7 +486,13 @@ describe('(5) os erros — R-16 a R-20', () => {
   });
 
   it('R-17 — a COTA DIÁRIA responde 200 com pausadoAte', async () => {
+    // ⚠️ O `pausadoAte` é a metade que o título nomeia e que ninguém afirmava.
+    // O remetente CONTÉM a cota diária — ele arma a pausa e DEVOLVE
+    // `descartado` + `cota-diaria` + a virada, sem lançar — então o envelope
+    // precisa carimbar a virada, ou o diálogo responde 200 "nada foi enviado"
+    // sem poder dizer que a conta está bloqueada até a virada da cota.
     semearProdutoELink(db);
+    const virada = Date.now() + 3_000;
     h.enviar.mockImplementation(
       comRemetente({
         outcome: 'descartado',
@@ -470,7 +501,7 @@ describe('(5) os erros — R-16 a R-20', () => {
         modelos: [],
         quantidadeEnviada: 0,
         chamadasShopee: 1,
-        pausadoAte: Date.now() + 3_000,
+        pausadoAte: virada,
       }),
     );
 
@@ -479,6 +510,47 @@ describe('(5) os erros — R-16 a R-20', () => {
 
     expect(res.status).toBe(200);
     expect(body.listings[0]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.cotaDiaria);
+    expect(body.pausadoAte).toBe(new Date(virada).toISOString());
+  });
+
+  it('R-17b — ⚠️ NEAR-MISS: um envio LIMPO responde 200 com pausadoAte NULO', async () => {
+    // O contraste do teste acima: o carimbo não é decoração do envelope, ele
+    // sai do veredito do remetente.
+    semearProdutoELink(db);
+    h.enviar.mockImplementation(
+      comRemetente({
+        outcome: 'enviado',
+        motivo: null,
+        codigo: null,
+        modelos: [],
+        quantidadeEnviada: 7,
+        chamadasShopee: 1,
+        pausadoAte: null,
+      }),
+    );
+
+    const res = await POST(req(corpoValido(), AUTORIZADO));
+    const body = (await res.json()) as EnvioEstoqueResponse;
+
+    expect(res.status).toBe(200);
+    expect(body.pausadoAte).toBeNull();
+  });
+
+  it('R-17c — ⚠️ M-102: reenviarComErro do CORPO chega ao orquestrador, nos dois valores', async () => {
+    // A bandeira existe para que um operador que acabou de consertar o anúncio
+    // no Seller Centre force a tentativa: o conjunto de pulo é um trinco por
+    // anúncio e, sem o bypass, ele espera a impressão digital mudar sozinha.
+    // Um `false` fixo aqui seria um botão inerte atrás de um 200.
+    semearProdutoELink(db);
+    h.enviar.mockResolvedValue(respostaDouble());
+
+    expect((await POST(req(corpoValido({ reenviarComErro: true }), AUTORIZADO))).status).toBe(200);
+    expect((await POST(req(corpoValido(), AUTORIZADO))).status).toBe(200);
+
+    const chamadas = h.enviar.mock.calls as unknown as Parameters<
+      ModuloManual['enviarEstoqueManualShopee']
+    >[];
+    expect(chamadas.map((c) => c[1].reenviarComErro)).toEqual([true, false]);
   });
 
   it('R-18 — a classe de guarda mapeia {status, code, ...extra} e nada mais', async () => {

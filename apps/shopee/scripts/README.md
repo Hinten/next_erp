@@ -1193,7 +1193,8 @@ through the real handler.
 
 The live printout is shorter and different on purpose: the header counters
 (`enviados`, `pulados`, `falhas`, `não tentados`, `pausado até`), then one row
-per listing with its `outcome`, its motivo and the rendered message, then one
+per listing — `produtoId`, the produto's **name**, `anuncioId`, its `outcome`
+and the counts — followed by its motivo and the rendered message, then one
 `model …` line per model with `pedida=` / `enviada=` / the per-model result /
 `clampado piso=` / Shopee's verbatim code, and finally
 `### produtos sem envio`. Everything there comes from what Shopee ANSWERED —
@@ -1217,7 +1218,11 @@ SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
   document, prints the pause and **proceeds**, because inspecting a paused conta
   is exactly what a dry run is for. Under `--live` you then get a page of
   `nao-tentado` rows carrying `pausadoAte` — the refusing scheduler's answer,
-  per listing. The two surfaces still agree on the exit code.
+  per listing. The two surfaces still agree on the exit code. ⚠️ The pause is
+  printed, not honoured: the shop-signed client is built and the dry run's one
+  `get_item_promotion` per ≤50 listings is still spent, so that a paused conta
+  gets its real `piso` column. What the 409 saves on the web surface, this one
+  deliberately does not.
 - **`kit-derivado`** on a **native Shopee kit** (`link.kitNativo === true`). An
   ERP `ehKit` produto is an ordinary listing and IS sent, at its
   component-derived quantity — that is what the `kit` block prints.

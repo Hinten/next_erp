@@ -145,9 +145,17 @@ and skip `get_model_list` entirely on this path.
 that is **per APP**, shared by every conta and every Shopee call this monorepo
 makes; reading it only when Shopee actually complains is N plus the refusals.
 The ladder is: refusal → one `get_item_promotion` → `aplicarPiso` per model →
-ONE retry of the SAME `update_stock` with the FULL clamped `stock_list` → a
-second arm-A refusal is terminal `piso-de-reserva-nao-atendido`. So
-`chamadasShopee` is 0–3, and 3 means the floor path ran.
+ONE retry of the SAME `update_stock` → a second arm-A refusal is terminal
+`piso-de-reserva-nao-atendido`. ⚠️ **The retry's list depends on WHICH of the
+floor path's two entries fired**: an ENVELOPE-level arm-A refusal re-sends the
+FULL clamped `stock_list` (nothing landed), while a 200 whose `failure_list`
+names the floor re-sends **only the refused models** (the rest already landed) —
+see the per-model paragraph after the arm table. So
+`chamadasShopee` is **0–4**: 1 is the ordinary send, 3 is the floor path, and 4
+is a floor path whose clamped re-send was refused by an arm that spends a call
+of its own (today only arm G's one `get_shop_holiday_mode` — `pisoJaTentado`
+guards arm A, not arm G). Nothing but the floor path reaches 3, so a 3 **or a
+4** still says the floor path ran.
 
 Three refinements the seam did not state and the code does:
 
@@ -237,7 +245,17 @@ second** (`podeEnviarEstoque.ts:245`):
   `.nullable().default(null)` column before its first write looks exactly like
   an absent key, which is the one equality that has to hold; `'pausado'` vs
   `'ativo'` must stay distinct, and two different readings are two different
-  facts.
+  facts. ⚠️ **And the STATE half arms only when at least ONE of the two RECORDED
+  readings is non-null.** A stamp that wrote down no state at all — the PARTIAL
+  writer records `estoqueRecusaEm` and neither half, and `escreverNoLink` is a
+  merge — would otherwise meet `null === null` twice on any link whose two
+  readings are absent (every link a clean send has just cleared, every step-9
+  import that folded an unknown status) and latch `recusa-anterior` with nothing
+  left that could move to lift it. So **a partial never arms the skip**, which
+  is what its writer's docblock has always claimed; the price is the
+  false-negative direction — a terminal refusal on a link with no readings at
+  all re-sends once per tick, one call, counted per motivo — against a listing
+  that silently stops syncing for ever.
 
 ⚠️ Stamp **both** halves on a refusal, exactly as read, `null` included.
 Inventing a value arms a skip against a reading nobody took; omitting one leaves
@@ -256,19 +274,38 @@ SECOND lookup that never rewrites `ShopeeApiError.code`.
 The arm table (`enviarEstoque.ts:386`) walks **A → K in one declared order**, and
 that order is load-bearing three times over:
 
-| arm    | what it is                                                  | what it does                                                |
-| ------ | ----------------------------------------------------------- | ----------------------------------------------------------- |
-| **A**  | the reserved floor, MESSAGE-matched and code-blind          | read the floor, clamp UP, retry ONCE                        |
-| **G**  | holiday mode, above every other `error_auth` meaning        | pause the CONTA until the holiday ends, or `pausaFeriasH()` |
-| **F1** | a stock location this integração cannot address             | pause the CONTA                                             |
-| **F2** | the listing's stock structure is not the one we sent        | terminal per listing                                        |
-| **E**  | the shop's own shape (five codes + two message needles)     | pause the CONTA, with the slug that says which              |
-| **B**  | a promotion holds the listing                               | a TIME skip, `SHOPEE_STOCK_PROMOCAO_RETRY_MIN`              |
-| **C**  | models where there are none, or none where there are models | terminal per listing                                        |
-| **D**  | identity — whose listing is it, does it exist               | terminal per listing                                        |
-| **H**  | the listing is locked against edits                         | terminal per listing                                        |
-| **J**  | Shopee's own hiccup                                         | THROW; the queue owns the retry                             |
-| **K**  | a code nobody taught us                                     | recorded with the raw code, never retried                   |
+| arm    | what it is                                                                                                 | what it does (on the ENVELOPE)                                                                    |
+| ------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **3**  | ⚠️ NOT a lettered arm — `ShopeeContaNotConfiguredError` at the step-3 context load, before any Shopee call | `descartado` + `conta-nao-configurada`; `lastError` on the STATE doc, **no link write**, no pause |
+| **A**  | the reserved floor, MESSAGE-matched and code-blind                                                         | read the floor, clamp UP, retry ONCE (TWO entries — below)                                        |
+| **G**  | holiday mode, above every other `error_auth` meaning                                                       | pause the CONTA until the holiday ends, or `pausaFeriasH()`                                       |
+| **F1** | a stock location this integração cannot address                                                            | pause the CONTA                                                                                   |
+| **F2** | the listing's stock structure is not the one we sent                                                       | terminal per listing                                                                              |
+| **E**  | the shop's own shape (five codes + two message needles)                                                    | pause the CONTA, with the slug that says which                                                    |
+| **B**  | a promotion holds the listing                                                                              | a TIME skip, `SHOPEE_STOCK_PROMOCAO_RETRY_MIN`                                                    |
+| **C**  | models where there are none, or none where there are models                                                | terminal per listing                                                                              |
+| **D**  | identity — whose listing is it, does it exist                                                              | terminal per listing                                                                              |
+| **H**  | the listing is locked against edits                                                                        | terminal per listing                                                                              |
+| **J**  | Shopee's own hiccup                                                                                        | THROW; the queue owns the retry                                                                   |
+| **K**  | a code nobody taught us                                                                                    | recorded with the raw code, never retried                                                         |
+
+⚠️ **The first row is NOT part of the A → K walk, and that is why it is spelled
+out here.** `ShopeeContaNotConfiguredError` extends `Error` and not the package's
+base class, so it can never reach the ladder at all: it is raised by the step-3
+context load, which sits above every `try` the ladder owns. Until it was
+contained it escaped the dispatched function, the queue re-drove it three times
+and dead-lettered it — no `lastError`, no motivo, no row anywhere. It is the
+CONTA arms' shape minus the pause: the class plus its message land on the state
+document through `registrarErroDaConta`, **nothing at all lands on the link**
+(a conta-level condition is not a listing state, so no fingerprint and no
+`estoqueRecusa*`), no window is armed (a human clears this, it does not expire),
+and every model of the payload is reported `sem-resposta` carrying the motivo.
+Resolving is SUCCESS to the queue; the next sweep re-plans the listing once the
+conta is configured. Everything else raised at step 3 still RETHROWS — a
+`ShopeeConfigError` is a CALLER bug and must never be contained, and an unknown
+class is a bug. The manual push cannot reach this arm at all: it supplies its own
+`clientFor` and its route loads the context first, and `paraOutcomeDeEnvio` maps
+`descartado` + a motivo to `nao-tentado` either way.
 
 The three order constraints, in the code's own words: **A first and code-blind**,
 because one floor refusal arrives under `error.param`; **G above E and F1**,
@@ -282,6 +319,42 @@ error and each `failure_list` entry's free-text `failed_reason`, discriminated o
 the ACTION rather than on the motivo — three arms act on the CONTA and the rest
 on the LISTING. A second copy keyed on the same codes is exactly the drift the
 root `CLAUDE.md` names.
+
+⚠️ **…and the "what it does" column above is the ENVELOPE consumer's alone.**
+The per-model consumer REDUCES and never ACTS — with exactly ONE exception,
+arm A. Every other arm is terminal for that model, with the verbatim
+`failed_reason` on the child link. Three consequences a reader must not have to
+derive:
+
+- **arm A DOES read the floor there — the floor path has TWO entries.** Probe
+  **P9** measured the per-model refusal as the PRIMARY shape (HTTP 200,
+  `error: ''`, both lists), so a floor only the error ladder could reach would
+  be a floor that, on the measured wire, nothing ever reads. The two entries
+  differ in ONE thing, the retry's list: the envelope entry re-sends the FULL
+  clamped `stock_list`, the per-model entry re-sends **only the refused
+  models**, because the others were already ACCEPTED by the very call that
+  refused these — and P8's "a partial `stock_list` leaves the omitted models
+  untouched" is what makes the narrow list safe. The one-`update_stock`
+  contract reads "one per ATTEMPT"; the envelope entry already spends a second
+  one. Entry is gated on at least one `failure_list` line CLASSIFYING as arm A,
+  through the same table that names the motivo — an identity refusal such as
+  `model ID not exist in sku` buys no promotion read. A failing floor read, an
+  empty floor map and a floor that moves nothing all fall back to writing the
+  first envelope as it stood: the refused models keep
+  `piso-de-reserva-nao-atendido` plus the child diagnostic, the accepted ones
+  keep their landing, and the listing is a PARTIAL rather than a listing-level
+  refusal. ⚠️ Only in those fallbacks, and on a clamped re-send refused a second
+  time, is that motivo final — and only then does its rendered sentence
+  (refused _even when raised to the floor_) describe what happened; read the
+  stored `estoqueRecusaCodigo` beside it either way;
+- **the CONTA arms pause nothing there** — they reduce to their own slug on the
+  model's row;
+- **only the MESSAGE needles are reachable there.** The free text is handed in
+  as the code as well, so `nu` is the whole sentence and anything a needle
+  gates on a CODE (arm D's `error_param` ∧ `repeat|wrong model_id`, arms F1/G's
+  `error_auth` pairs) can never fire per model. That is why the one per-model
+  reason the probe measured — `model ID not exist in sku` — has its own
+  code-blind needle in arm D.
 
 ### Burst is a re-enqueue; daily is a clock
 
@@ -575,9 +648,10 @@ git grep -c "\.collection(" -- 'apps/shopee/lib/shopee/estoque/descobertaEstoque
 Every document addressed **by id** still goes through `produtoCollection.docRef`
 or the typed link handles, including in the tests: that grep carries no
 `:(exclude)*.test.ts`, so writing a diagnostic the obvious way would make the
-verification the first violation. The two `collectionGroup` sources and the
-correlated-subquery source carry their own one-line exemptions at
-`descobertaEstoque.ts:247` and `:674`.
+verification the first violation. The two `collectionGroup` sources — one of
+them the correlated subquery — carry their own one-line exemptions at
+`descobertaEstoque.ts:247` and `:674`. **Two exemptions, two anchors**: there is
+no third source.
 
 Two more rules the folder holds by construction:
 

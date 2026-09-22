@@ -25,12 +25,30 @@ import { getDb } from './lib/admin';
  * | `sweepShopeeStockDaily` | `10 2 * * *` | diário |
  * | `sweepShopeeStockReconciliacao` | `10 3 1 * *` | reconciliação |
  *
- * ⚠️ **The minutes are chosen, not inherited.** The seven schedules this
- * codebase already runs occupy `:00`, `:15`, `:20`, `:30` and `:45`, and all of
- * them draw on ONE undocumented partner rate-limit budget; `:10/:25/:40/:55`
- * collides with none of them. One overlap is accepted and named: on Mondays at
- * 05:10 the incremental tick shares its minute with `monitorShopeePushConfig`
- * (`10 5 * * 1`), which is a single Public GET.
+ * ⚠️ **The minutes are chosen, not inherited, and TWO weekly overlaps are
+ * accepted.** The seven schedules this codebase already runs draw on ONE
+ * undocumented partner rate-limit budget. Five of them pin a minute —
+ * `sweepShopeeAuthorizationExpiry` `:00`, `sweepShopeeLostPushes` `:20`,
+ * `monitorShopeePushConfig` `:45`, `sweepShopeeEscrowSettlement` `:10` (Mondays
+ * 05:10) and `sweepShopeeStuckReservations` `:40` (Mondays 04:40) — while
+ * `reprocessShopeeNotifications` (`every 30 minutes`) and `backfillShopeeOrders`
+ * (`every 15 minutes`) are UNANCHORED interval schedules with no fixed minute
+ * at all. So the occupied set is `{:00, :10, :15, :20, :30, :40, :45}` and
+ * `:10/:25/:40/:55` meets two of them, both weekly and both named here:
+ *
+ * | when | neighbour | what it costs |
+ * |---|---|---|
+ * | Mon 05:10 | `sweepShopeeEscrowSettlement` | up to `MAX_LIQUIDACOES_POR_TICK` (300) Shop-signed `get_escrow_detail` calls plus up to 20 list pages, per conta |
+ * | Mon 04:40 | `sweepShopeeStuckReservations` | up to 204 batched `get_order_detail` calls, per conta |
+ *
+ * Both are per-CONTA and Shop-signed, against the same per-APPLICATION budget
+ * this tick spends, so neither is free — they are accepted because they are
+ * WEEKLY (two minutes out of ~10 000 ticks) and because the incremental tick's
+ * own spend is bounded by `SHOPEE_STOCK_MAX_TASKS_PER_SWEEP`. ⚠️ Moving off
+ * them is `12,27,42,57`, which clears every fixed minute above INCLUDING the
+ * `:20` lost-push slot that ruled out `5,20,35,50` in the first place; do not
+ * "simplify" back to a quarter-hour boundary. `monitorShopeePushConfig` runs
+ * `45 5 * * *` — DAILY, at `:45` — and can never share a minute with this tick.
  *
  * ⚠️ **The incremental wrapper skips its OWN 02:10 and day-1 03:10 slots, in
  * code.** A single cron line cannot express "every quarter-hour EXCEPT these

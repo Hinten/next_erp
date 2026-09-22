@@ -10,7 +10,8 @@ import {
 } from '@delfrance/integrations-shopee';
 import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
 
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import {
   ENVIO_MANUAL_MAX_TENTATIVAS,
   ENVIO_MANUAL_RETRY_DELAY_MS,
@@ -24,6 +25,7 @@ import {
 import {
   CHAVES_DA_LISTAGEM,
   CHAVES_DO_ENVELOPE,
+  CHAVES_DO_MODELO,
   CHAVES_DO_RESUMO,
   CHAVES_SEM_ENVIO,
   MENSAGEM_ENVIO_LIMPO,
@@ -359,27 +361,128 @@ describe('enviarEstoqueManualShopee — a escada', () => {
     ).rejects.toBeInstanceOf(ShopeeConfigError);
   });
 
-  it('11 — um token morto interrompe a corrida inteira em vez de virar linha', async () => {
+  it('11 — um reauth que ESCAPA do remetente interrompe a corrida inteira', async () => {
+    // ⚠️ O título nomeia a metade que este teste realmente cobre. O remetente
+    // CONTÉM um token morto do `update_stock` (ele grava `lastError` na conta e
+    // devolve `erro-registrado`/`reauth`), então o único reauth que chega aqui
+    // é um que escapou de dentro dele — hoje o da leitura de promoção do braço
+    // A, que relança de propósito. O par está no teste 11b.
+    // Largura 1: com duas esteiras a segunda linha já passou da guarda antes da
+    // primeira lançar, e o que se mede aqui é a guarda, não o escalonamento.
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
     const db = new FakeDb();
-    semear(db, ['prod-1']);
-    const { deps } = montarDeps(db, [familia('prod-1')], () =>
-      Promise.reject(
-        new ShopeeReauthRequiredError('reconecte', {
-          code: 'error_auth',
-          kind: SHOPEE_ERROR_KIND.reauth,
-          httpStatus: 200,
-          path: '/api/v2/product/update_stock',
-        }),
-      ),
+    semear(db, ['prod-1', 'prod-2', 'prod-3']);
+    const { deps, chamadas } = montarDeps(
+      db,
+      [familia('prod-1'), familia('prod-2'), familia('prod-3')],
+      () =>
+        Promise.reject(
+          new ShopeeReauthRequiredError('reconecte', {
+            code: 'error_auth',
+            kind: SHOPEE_ERROR_KIND.reauth,
+            httpStatus: 200,
+            path: '/api/v2/product/get_item_promotion',
+          }),
+        ),
     );
 
     await expect(
       enviarEstoqueManualShopee(
         asDb(db),
-        { integracaoId: INT, produtoIds: ['prod-1'], reenviarComErro: false },
+        { integracaoId: INT, produtoIds: ['prod-1', 'prod-2', 'prod-3'], reenviarComErro: false },
         deps,
       ),
     ).rejects.toBeInstanceOf(ShopeeReauthRequiredError);
+    // ⚠️ "Interrompe" é uma afirmação sobre o que NÃO rodou depois. O pool
+    // espera seus trabalhadores antes de propagar, e o aborto é armado ANTES do
+    // relance — sem isso as linhas restantes continuariam chamando
+    // `update_stock` e gravando vínculos DEPOIS da rota já ter respondido o
+    // erro, em envios que envelope nenhum relata.
+    // Só a primeira linha foi tentada — duas vezes, pela escada curta do
+    // empurrão manual, e nunca prod-2 ou prod-3.
+    expect(new Set(chamadas.map((c) => c.tarefa.produtoId))).toEqual(new Set(['prod-1']));
+  });
+
+  it('11c — ⚠️ o aborto alcança as ESTEIRAS IRMÃS, não só a linha seguinte', async () => {
+    // O que a largura 1 não consegue mostrar. Com duas esteiras sobre o MESMO
+    // cursor, `Promise.all` entrega a rejeição na primeira e deixa a outra
+    // seguir puxando itens: ela continuaria chamando `update_stock` e gravando
+    // vínculos DEPOIS de a rota ter respondido o erro, em envios que envelope
+    // nenhum relata — porque, numa rejeição, `montarResposta` nunca roda.
+    // A correção é dupla: `abortado` ANTES do relance (as iterações seguintes
+    // curto-circuitam) e `allSettled` (o pool espera as esteiras antes de
+    // propagar), de modo que o teste pode afirmar o que NÃO rodou.
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '2');
+    const db = new FakeDb();
+    const ids = ['prod-1', 'prod-2', 'prod-3', 'prod-4', 'prod-5', 'prod-6'];
+    semear(db, ids);
+    const { deps, chamadas } = montarDeps(
+      db,
+      ids.map((id) => familia(id)),
+      // O envio que DÁ certo é lento de propósito: ele deixa a esteira irmã
+      // estacionada no instante em que a primeira lança, que é exatamente a
+      // janela em que a corrida órfã acontece.
+      (c) =>
+        c.tarefa.produtoId === 'prod-1'
+          ? Promise.reject(
+              new ShopeeReauthRequiredError('reconecte', {
+                code: 'error_auth',
+                kind: SHOPEE_ERROR_KIND.reauth,
+                httpStatus: 200,
+                path: '/api/v2/product/get_item_promotion',
+              }),
+            )
+          : new Promise((resolve) => setTimeout(() => resolve(resultadoEnviado()), 5)),
+    );
+
+    await expect(
+      enviarEstoqueManualShopee(
+        asDb(db),
+        { integracaoId: INT, produtoIds: ids, reenviarComErro: false },
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(ShopeeReauthRequiredError);
+
+    // A propriedade: depois que a corrida RESPONDEU, nada mais é tentado.
+    const noMomentoDaRejeicao = chamadas.length;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(chamadas).toHaveLength(noMomentoDaRejeicao);
+    expect(new Set(chamadas.map((c) => c.tarefa.produtoId))).toEqual(new Set(['prod-1', 'prod-2']));
+  });
+
+  it('11b — ⚠️ PAR: um token morto que o remetente CONTÉM vira linha e não para nada', async () => {
+    // A outra metade. `processShopeeStockSendTask` narra o reauth do próprio
+    // `update_stock`, grava o erro na conta e devolve SUCESSO à fila — de modo
+    // que, no empurrão manual, ele é uma linha `falha`/`reauth` e as demais
+    // continuam. Sem este par, o teste 11 lê como "todo reauth para a corrida",
+    // que é falso na superfície que mais importa.
+    const db = new FakeDb();
+    semear(db, ['prod-1', 'prod-2']);
+    const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
+      Promise.resolve(
+        resultadoEnviado({
+          outcome: OUTCOME_ENVIO_ESTOQUE.erroRegistrado,
+          motivo: MOTIVO_ESTOQUE_SHOPEE.reauth,
+          codigo: 'error_auth',
+          modelos: [],
+          quantidadeEnviada: 0,
+        }),
+      ),
+    );
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
+      deps,
+    );
+
+    expect(chamadas).toHaveLength(2);
+    expect(res.listings.map((l) => [l.outcome, l.motivo])).toEqual([
+      ['falha', MOTIVO_ESTOQUE_SHOPEE.reauth],
+      ['falha', MOTIVO_ESTOQUE_SHOPEE.reauth],
+    ]);
+    expect(res.pausadoAte).toBeNull();
   });
 });
 
@@ -463,7 +566,7 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
     const db = new FakeDb();
     semear(db, ['prod-1', 'prod-2']);
     db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: AGORA_MS + 300_000 });
-    const { deps } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
+    const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
       Promise.reject(
         new ShopeeRateLimitError('limite', {
           code: 'error_rate_limit',
@@ -475,14 +578,21 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
       ),
     );
 
+    // ⚠️ Largura 1 DE VERDADE: sem o stub, `concorrenciaEnvioManual()` responde
+    // 2 (os padrões da regra C-w), as duas linhas correm concorrentes e o teste
+    // passa porque AMBAS caem na mesma rajada — nunca porque a segunda viu o
+    // aborto da primeira, que é o mecanismo que o título nomeia.
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
+
     const res = await enviarEstoqueManualShopee(
       asDb(db),
       { integracaoId: INT, produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
-      // Largura 1 para que a segunda linha veja o aborto da primeira.
       { ...deps },
     );
 
     expect(res.pausadoAte).toBe(new Date(AGORA_MS + 300_000).toISOString());
+    // O mecanismo, e não só o resultado: a segunda linha nunca foi tentada.
+    expect(chamadas).toHaveLength(1);
     for (const l of res.listings) {
       expect(l.outcome).toBe('nao-tentado');
       expect(l.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaPausada);
@@ -513,6 +623,100 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
     expect(res.pausadoAte).not.toBeNull();
     // Muito além dos 5 s do cabeçalho: é a virada diária.
     expect(new Date(res.pausadoAte ?? '').getTime() - AGORA_MS).toBeGreaterThan(5 * 60 * 1000);
+  });
+
+  it('18b — ⚠️ o remetente REAL CONTÉM a cota diária, e o envelope ainda carimba pausadoAte', async () => {
+    // O teste 18 injeta um remetente que REJEITA — um caminho que a produção
+    // nunca toma. O remetente real trata a cota diária internamente: ele arma a
+    // pausa e DEVOLVE `descartado` + `cota-diaria` + a virada, sem lançar nada.
+    // Então o degrau `ShopeeRateLimitError` daqui jamais a vê, e casar um único
+    // slug (`conta-pausada`) respondia 200 com `pausadoAte: null` enquanto o
+    // documento de estado que esta mesma chamada acabara de escrever dizia que
+    // a conta está bloqueada até a virada da cota.
+    const db = new FakeDb();
+    semear(db, ['prod-1']);
+    db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: null, pauseCount: 0 });
+    const cliente = {
+      updateStock: () =>
+        Promise.reject(
+          new ShopeeRateLimitError('cota', {
+            code: 'error_daily_quota',
+            kind: SHOPEE_ERROR_KIND.daily,
+            httpStatus: 429,
+            path: '/api/v2/product/update_stock',
+            retryAfterSeconds: 30,
+          }),
+        ),
+    } as unknown as ShopeeClient;
+    const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1'], reenviarComErro: false },
+      // ⚠️ SEM `enviarTarefa`: é o `processShopeeStockSendTask` de verdade.
+      { ...deps, enviarTarefa: undefined, client: cliente, increment },
+    );
+
+    expect(res.listings[0]?.outcome).toBe('nao-tentado');
+    expect(res.listings[0]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.cotaDiaria);
+    // O carimbo que faltava — e o documento de estado concorda com ele.
+    expect(res.pausadoAte).toBe(new Date(proximaViradaDaCotaMs(AGORA_MS)).toISOString());
+    const estado = db.store[`estoqueShopeeSync/${INT}`]?.data as Record<string, unknown>;
+    expect(estado.pausadoAte).toBe(proximaViradaDaCotaMs(AGORA_MS));
+  });
+
+  it('18c — ⚠️ e ela ABORTA o resto: a segunda linha não é nem tentada', async () => {
+    // O mesmo veredito do remetente, agora com a costura injetada para poder
+    // CONTAR as tentativas. Largura 1 para que a segunda linha veja o aborto.
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
+    const db = new FakeDb();
+    semear(db, ['prod-1', 'prod-2']);
+    const { deps, chamadas } = montarDeps(db, [familia('prod-1'), familia('prod-2')], () =>
+      Promise.resolve(
+        resultadoEnviado({
+          outcome: OUTCOME_ENVIO_ESTOQUE.descartado,
+          motivo: MOTIVO_ESTOQUE_SHOPEE.cotaDiaria,
+          codigo: 'error_daily_quota',
+          modelos: [],
+          quantidadeEnviada: 0,
+          pausadoAte: proximaViradaDaCotaMs(AGORA_MS),
+        }),
+      ),
+    );
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
+      deps,
+    );
+
+    expect(chamadas).toHaveLength(1);
+    expect(res.pausadoAte).toBe(new Date(proximaViradaDaCotaMs(AGORA_MS)).toISOString());
+    expect(res.listings[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaPausada);
+  });
+
+  it('19b — ⚠️ M-112: o agendador do empurrão recusa com a classe que o remetente ESTREITA', async () => {
+    // A costura do enfileiramento, atravessada de verdade: o degrau de pausa do
+    // remetente real chama `scheduler.enqueue`, e `agendadorQueRecusa` precisa
+    // rejeitar com `ShopeeStockTasksDisabledError` — a ÚNICA classe que
+    // `reenfileirarComAtraso` estreita. Com a classe compartilhada
+    // (`ShopeeTasksDisabledError`) o erro atravessa tudo sem classificação: nem
+    // uma é `ShopeeError`, então ele sairia pelo `throw err` do pool e a corrida
+    // inteira REJEITARIA em vez de devolver a linha.
+    const db = new FakeDb();
+    semear(db, ['prod-1']);
+    db.seed(`estoqueShopeeSync/${INT}`, { pausadoAte: AGORA_MS + 600_000, pauseCount: 1 });
+    const { deps } = montarDeps(db, [familia('prod-1')], () => Promise.resolve(resultadoEnviado()));
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1'], reenviarComErro: false },
+      { ...deps, enviarTarefa: undefined, increment },
+    );
+
+    expect(res.listings[0]?.outcome).toBe('nao-tentado');
+    expect(res.listings[0]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaPausada);
+    expect(res.pausadoAte).toBe(new Date(AGORA_MS + 600_000).toISOString());
   });
 
   it('19 — a válvula de filas fechada vira nao-tentado/conta-pausada e aborta', async () => {
@@ -694,7 +898,7 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
     );
   }
 
-  it('26 — os conjuntos de chaves são exatamente as constantes exportadas', async () => {
+  it('26 — os CINCO conjuntos de chaves são exatamente as constantes exportadas', async () => {
     const res = await envelopeCompleto();
     expect(Object.keys(res).sort()).toEqual([...CHAVES_DO_ENVELOPE].sort());
     expect(Object.keys(res.resumo).sort()).toEqual([...CHAVES_DO_RESUMO].sort());
@@ -702,6 +906,11 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
       [...CHAVES_DA_LISTAGEM].sort(),
     );
     expect(Object.keys(res.produtosSemEnvio[0] ?? {}).sort()).toEqual([...CHAVES_SEM_ENVIO].sort());
+    // O quinto nível — o das linhas de MODELO, que carregam as palavras da
+    // própria Shopee em `codigo`. As quatro listas acima não o enxergam.
+    expect(Object.keys(res.listings[0]?.variacoes[0] ?? {}).sort()).toEqual(
+      [...CHAVES_DO_MODELO].sort(),
+    );
   });
 
   it('27 — clampados e modelosRecusados vêm das linhas de modelo do remetente', async () => {
@@ -720,20 +929,35 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
   });
 
   it('29 — toda mensagem é o texto do mapa (ou a frase do envio limpo), nunca o slug', async () => {
+    // ⚠️ prod-4 existe para que ao menos UMA linha chegue aqui com um motivo
+    // NÃO nulo vindo do remetente — é a única que atravessa `mensagemDe` com um
+    // motivo em mãos. Sem ela as três linhas eram: um envio limpo (motivo
+    // nulo), um pulo (a mensagem é do planejador) e um produto não encontrado
+    // (uma consulta direta ao mapa), e nenhuma delas enxerga a função.
     const db = new FakeDb();
-    semear(db, ['prod-1', 'prod-2', 'prod-3']);
+    semear(db, ['prod-1', 'prod-2', 'prod-3', 'prod-4']);
     const { deps } = montarDeps(
       db,
       [
         familia('prod-1'),
         familia('prod-2', { link: { estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.banido } }),
+        familia('prod-4'),
       ],
-      () => Promise.resolve(resultadoEnviado()),
+      (c) =>
+        Promise.resolve(
+          c.tarefa.produtoId === 'prod-4'
+            ? resultadoEnviado({ motivo: MOTIVO_ESTOQUE_SHOPEE.clampadoNaReserva })
+            : resultadoEnviado(),
+        ),
     );
 
     const res = await enviarEstoqueManualShopee(
       asDb(db),
-      { integracaoId: INT, produtoIds: ['prod-1', 'prod-2', 'prod-3'], reenviarComErro: false },
+      {
+        integracaoId: INT,
+        produtoIds: ['prod-1', 'prod-2', 'prod-3', 'prod-4'],
+        reenviarComErro: false,
+      },
       deps,
     );
 
@@ -741,7 +965,10 @@ describe('enviarEstoqueManualShopee — o envelope', () => {
       ...res.listings.map((l) => [l.motivo, l.mensagem] as const),
       ...res.produtosSemEnvio.map((p) => [p.motivo, p.mensagem] as const),
     ];
-    expect(textos.length).toBeGreaterThan(2);
+    expect(textos.length).toBeGreaterThan(3);
+    // A linha com motivo NÃO nulo existe, e o par (motivo nulo) também.
+    expect(textos.some(([m]) => m === MOTIVO_ESTOQUE_SHOPEE.clampadoNaReserva)).toBe(true);
+    expect(textos.some(([m]) => m === null)).toBe(true);
     for (const [motivo, mensagem] of textos) {
       expect(mensagem).not.toBe(motivo);
       expect(mensagem).toBe(

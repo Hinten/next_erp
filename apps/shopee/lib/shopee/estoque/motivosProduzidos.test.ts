@@ -80,6 +80,13 @@ function grafiasDe(objeto: string, chave: string, slug: string): readonly string
  * e ninguém notou" é toda a diferença que este teste existe para marcar. Um
  * membro que ganhar um produtor deve SAIR daqui — a segunda asserção abaixo é o
  * que obriga isso, porque um membro produzido E liberado faz o teste falhar.
+ *
+ * ⚠️ `contaNaoConfigurada` esteve aqui e SAIU em 2026-09-22. Ele foi registrado
+ * pela onda 7 como ACHADO, não como projeto: `ShopeeContaNotConfiguredError` não
+ * estende `ShopeeError`, então a recusa de `loadShopeeContext` subia do passo 3
+ * do remetente e a fila a mandava para a carta morta sem escrever nada. O braço
+ * de contenção no passo 3 lhe deu produtor, e esta segunda asserção é o que
+ * obrigou a remoção da linha.
  */
 const ORFAOS_AUTORIZADOS: Readonly<Record<string, string>> = {
   // Nenhuma banda de categoria viaja no payload v1 da tarefa, então o remetente
@@ -88,13 +95,6 @@ const ORFAOS_AUTORIZADOS: Readonly<Record<string, string>> = {
   // cru da Shopee, como evidência. Documentado em `enviarEstoque.ts`.
   pisoAcimaDaBanda:
     'sem produtor no v1: nenhuma banda viaja na tarefa, e um excesso real vira braço K.',
-  // `ShopeeContaNotConfiguredError` não estende `ShopeeError`, então a recusa de
-  // `loadShopeeContext` no passo 3 do remetente SOBE da função e é a escada da
-  // fila que a reprocessa — ela nunca é arquivada como recusa DO ANÚNCIO. O
-  // membro existe para a tela renderizar uma linha que outra superfície venha a
-  // escrever. ⚠️ Registrado como achado no relatório da onda 7, não como projeto.
-  contaNaoConfigurada:
-    'sem produtor: a recusa de contexto sobe da função em vez de virar recusa do anúncio.',
 };
 
 describe('todo motivo de estoque declarado tem um PRODUTOR fora de errosEstoque.ts', () => {
@@ -123,6 +123,11 @@ describe('todo motivo de estoque declarado tem um PRODUTOR fora de errosEstoque.
     // ⚠️ A metade que mantém a lista honesta. Sem ela, uma autorização escrita
     // hoje sobrevive para sempre e o membro que finalmente ganhou um produtor
     // continua dispensado de tê-lo — o teste volta a ser um comentário.
+    //
+    // ⚠️ E o CONTEÚDO da lista, fixado: hoje ela tem exatamente UM membro.
+    // `contaNaoConfigurada` saiu quando o passo 3 lhe deu produtor, e sem esta
+    // linha uma autorização nova entra sem que ninguém a note na revisão.
+    expect(Object.keys(ORFAOS_AUTORIZADOS)).toEqual(['pisoAcimaDaBanda']);
     const fontes = fontesQuePodemProduzir(['errosEstoque.ts']);
     const jaProduzidos: string[] = [];
     for (const [chave, razao] of Object.entries(ORFAOS_AUTORIZADOS)) {

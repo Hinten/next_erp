@@ -132,7 +132,28 @@ runConfig:
 #                           only one and the two surfaces disagree about the same
 #                           account; `node tools/deploy-env/preflight.mjs shopee`
 #                           prints the deploy-shell half.
-#                           ⚠️ These three are plain console variables and get NO
+#   SHOPEE_STOCK_KIT_INCLUI_PROPRIO
+#                           OPTIONAL — off by default. ⚠️⚠️ Read on TWO surfaces
+#                           and the ONLY one here that changes the QUANTITY sent
+#                           to Shopee: the sweep (nested functions) and the
+#                           manual push/CLI (this backend) call the SAME
+#                           `quantidadesDaFamiliaShopee`, each in its own
+#                           process. `.env.example` and functions/DEPLOY.md list
+#                           it under the functions-only block, so setting it ONLY
+#                           there makes the sweep and the button send DIFFERENT
+#                           numbers for the same produto, each `update_stock`
+#                           overwriting the other with no signal. Set it in both
+#                           places or in neither.
+#   SHOPEE_STOCK_RATE_PAUSE_MIN
+#                           OPTIONAL — default 5 (minutes). Read on TWO surfaces
+#                           for the same reason: the manual push runs the real
+#                           send handler in process, so a burst with no
+#                           `Retry-After` is paused with THIS value here too.
+#   SHOPEE_STOCK_PROMOCAO_RETRY_MIN
+#                           OPTIONAL — default 60 (minutes). Two surfaces again:
+#                           it is the manual push that stamps `estoqueRecusaAte`
+#                           when Shopee refuses a listing held by a promotion.
+#                           ⚠️ These six are plain console variables and get NO
 #                           `env:` row below, deliberately: `envInt` treats a
 #                           blank exactly as unset, so a `value: ''` row would be
 #                           behaviourally identical to no row while adding

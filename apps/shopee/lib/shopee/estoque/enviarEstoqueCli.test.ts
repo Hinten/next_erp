@@ -50,6 +50,7 @@ import {
   MSG_PRODUTO_OBRIGATORIO,
   USO_ENVIAR_ESTOQUE,
   descreverErroEnvio,
+  ehRecusaAntesDaShopee,
   dobraDeKit,
   lerArgsEnviarEstoque,
   modelosRecusadosDoEnvio,
@@ -669,6 +670,25 @@ describe('renderizarResultadoEnvio', () => {
     expect(texto).toContain('### produtos sem envio: NENHUM');
   });
 
+  it('⚠️ a linha do anúncio carrega o NOME do produto, como a de "sem envio"', () => {
+    // Os dois cabeçalhos de arquivo afirmam que o nome é impresso de propósito
+    // — "a única coisa que deixa um humano distinguir uma linha da outra" — e o
+    // relatório do --live era a única das quatro superfícies que identificava
+    // uma linha ENVIADA só pelo id opaco do documento.
+    const linhas = renderizarResultadoEnvio(
+      envelope({ listings: [listagem({ produtoNome: 'Camiseta Polo Azul' })] }),
+    );
+    const linhaDoAnuncio = linhas.find((l) => l.includes(String(ITEM_ID))) ?? '';
+    expect(linhaDoAnuncio).toContain('Camiseta Polo Azul');
+
+    // ⚠️ NEAR-MISS: sem nome, a coluna existe e diz "sem nome" — a mesma
+    // convenção da tabela de "produtos sem envio", nunca um branco.
+    const semNome = renderizarResultadoEnvio(
+      envelope({ listings: [listagem({ produtoNome: null })] }),
+    ).find((l) => l.includes(String(ITEM_ID)));
+    expect(semNome).toContain('sem nome');
+  });
+
   it('⚠️ um envio LIMPO com clampe continua "enviado" — o motivo é uma anotação', () => {
     const texto = renderizarResultadoEnvio(
       envelope({
@@ -852,6 +872,36 @@ describe('descreverErroEnvio', () => {
     expect(linhas.join('\n')).toContain('a recusa é anterior');
     // ⚠️ `extra` é um saco sem tipo: ele NÃO é impresso.
     expect(linhas.join('\n')).not.toContain('nao-deve-sair');
+  });
+
+  it('⚠️ PAR/NEAR-MISS: ehRecusaAntesDaShopee cobre as DUAS classes e nada mais', () => {
+    // O predicado que o `catch` do script consulta para NÃO acrescentar "nada
+    // garante que nada foi escrito" a uma recusa que aconteceu antes de
+    // qualquer chamada — a mesma afirmação que `descreverErroEnvio` já imprime
+    // duas linhas acima, e que as duas contradiziam uma à outra.
+    expect(ehRecusaAntesDaShopee(new ArgumentoInvalidoError(MSG_PRODUTO_OBRIGATORIO))).toBe(true);
+    expect(
+      ehRecusaAntesDaShopee(
+        new ShopeeEnvioEstoqueGuardError(
+          CODIGO_GUARDA_ENVIO.contaSemDeposito,
+          MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.semDeposito],
+        ),
+      ),
+    ).toBe(true);
+    // NEAR-MISS: tudo que pode ter chegado à Shopee fica de fora — inclusive um
+    // erro de API cujo `update_stock` já pode ter caído.
+    expect(
+      ehRecusaAntesDaShopee(
+        new ShopeeApiError('recusou', {
+          code: 'error_param',
+          kind: SHOPEE_ERROR_KIND.other,
+          httpStatus: 200,
+          path: '/api/v2/product/update_stock',
+        }),
+      ),
+    ).toBe(false);
+    expect(ehRecusaAntesDaShopee(new TypeError('bug nosso'))).toBe(false);
+    expect(ehRecusaAntesDaShopee(null)).toBe(false);
   });
 
   it('um erro da Shopee sai por CLASSE + code/path, sem corpo nenhum', () => {

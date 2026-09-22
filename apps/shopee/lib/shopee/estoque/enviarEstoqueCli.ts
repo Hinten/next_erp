@@ -768,9 +768,17 @@ export function resumoDoPlano(plano: PlanoDeEnvioEstoque): Record<string, unknow
   };
 }
 
+/**
+ * ⚠️ The produto's NAME is a column here, exactly as in
+ * {@link linhasDeSemEnvio} below and in the dry-run plan. Both file headers
+ * argue it is printed deliberately — "the one thing that lets a human tell one
+ * row from another" — and without it the `--live` report was the one of the
+ * four surfaces that identified a SENT row by opaque doc id alone.
+ */
 function linhaDeListagem(l: EnvioEstoqueListing): string {
   return (
-    `  ${l.produtoId.padEnd(24)}${(l.anuncioId ?? TRACO).padEnd(14)}${l.outcome.padEnd(14)}` +
+    `  ${l.produtoId.padEnd(24)}${(l.produtoNome ?? 'sem nome').padEnd(28)}` +
+    `${(l.anuncioId ?? TRACO).padEnd(14)}${l.outcome.padEnd(14)}` +
     `qtd=${num(l.quantidade).padEnd(8)}modelos=${String(l.variacoes.length).padEnd(5)}` +
     `recusados=${String(l.modelosRecusados).padEnd(5)}clampados=${String(l.clampados)}`
   );
@@ -915,4 +923,23 @@ export function descreverErroEnvio(err: unknown): string[] {
     ];
   }
   return descreverErro(err);
+}
+
+/**
+ * Whether a failure is one this surface raises BEFORE any Shopee call.
+ *
+ * ⚠️ It exists so the script's top-level `catch` and {@link descreverErroEnvio}
+ * cannot drift: that function already prints *"Nada foi enviado: a recusa é
+ * anterior a qualquer chamada à Shopee"* for the guard class, and the script
+ * used to follow it, two lines later, with *"Nada garante que nada foi escrito"*
+ * — two sentences contradicting each other about the same failure. One
+ * predicate, both readers.
+ *
+ * The two members: an {@link ArgumentoInvalidoError} (the args never reached
+ * Firestore) and a `ShopeeEnvioEstoqueGuardError` (the depósito guard, raised
+ * above `createShopClient`, and the route's pause pre-check). Everything else —
+ * including every Shopee class — may have landed a write.
+ */
+export function ehRecusaAntesDaShopee(err: unknown): boolean {
+  return err instanceof ArgumentoInvalidoError || err instanceof ShopeeEnvioEstoqueGuardError;
 }

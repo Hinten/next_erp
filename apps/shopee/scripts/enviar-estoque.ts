@@ -39,8 +39,16 @@
  * run PROCEEDS: the handler's refusing scheduler turns a pause into per-listing
  * `nao-tentado` rows carrying `pausadoAte`, which tells the operator more than a
  * single refusal would — and inspecting a paused conta is exactly what a dry run
- * is for. The client is still built AFTER that read, so nothing is minted for a
- * conta that turns out to be paused and the read costs no Shopee call.
+ * is for.
+ *
+ * ⚠️ **The read happens first so the pause can be REPORTED, and nothing more.**
+ * The client is built in BOTH modes, whatever that read said, and the dry run
+ * then spends its one `get_item_promotion` per ≤50 planned listings — the
+ * `piso` column is the whole point of the rehearsal, and a paused conta's
+ * floors are exactly as worth seeing as a live one's. So a paused conta here
+ * costs one Firestore read, one token read and that promotion call. Nothing is
+ * WRITTEN and no `update_stock` is sent; it is the 409's provider-call saving
+ * that this surface deliberately does not have.
  *
  * ## What it prints, and what it must never print
  *
@@ -66,9 +74,9 @@
  * a stack.
  */
 import {
-  ArgumentoInvalidoError,
   USO_ENVIAR_ESTOQUE,
   descreverErroEnvio,
+  ehRecusaAntesDaShopee,
   lerArgsEnviarEstoque,
   montarPlanoDeEnvio,
   renderizarPlanoDeEnvio,
@@ -188,9 +196,10 @@ async function main(): Promise<void> {
   // measured against the logical instant.
   const nowMs = Date.now();
 
-  // Read BEFORE the client is built: a paused conta must not mint a shop-signed
-  // client, and the read itself costs no Shopee call. It is reported, not
-  // refused — see the header.
+  // Read BEFORE the plan so the pause can be REPORTED in the preamble — it is
+  // reported, never refused (see the header). ⚠️ It does NOT gate anything
+  // below: the client is built and the floor is read in both modes.
+  // The read itself costs no Shopee call.
   const estado = await lerEstadoEstoque(db, integracaoId);
   aviso(
     `  pausado ......... ${
@@ -214,7 +223,9 @@ async function main(): Promise<void> {
     );
   }
 
-  // ONE shop-signed client for the whole run, built after the pause read.
+  // ONE shop-signed client for the whole run. ⚠️ Built UNCONDITIONALLY — the
+  // pause above is printed, not honoured, so this is minted for a paused conta
+  // too, which is what lets the dry run show that conta its real `piso` column.
   const client = ctx.createShopClient();
 
   /* --------------------------------- dry-run -------------------------------- */
@@ -321,7 +332,13 @@ await main().catch((err: unknown) => {
   // Narrow enough to be useful and never wide enough to print a payload — the
   // whole table is `descreverErroEnvio`, which is unit-tested.
   for (const linha of descreverErroEnvio(err)) aviso(linha);
-  if (!(err instanceof ArgumentoInvalidoError)) {
+  // ⚠️ The guard class joins `ArgumentoInvalidoError` in the exemption, through
+  // ONE predicate the renderer shares: both are raised BEFORE any Shopee call on
+  // this surface (the depósito guard sits above `createShopClient`), so the
+  // paragraph below would contradict `descreverErroEnvio`'s own "Nada foi
+  // enviado: a recusa é anterior a qualquer chamada à Shopee." two lines
+  // earlier.
+  if (!ehRecusaAntesDaShopee(err)) {
     aviso('');
     aviso(
       'Nada garante que nada foi escrito: um erro DEPOIS de um update_stock deixa a quantidade no lugar.',

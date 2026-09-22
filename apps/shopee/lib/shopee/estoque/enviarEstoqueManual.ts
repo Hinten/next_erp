@@ -181,10 +181,11 @@ export interface EnvioEstoqueResponse {
 /**
  * The key sets, declared as data.
  *
- * ⚠️ FOUR lists, not one: a key added to a per-listing row would still leave
- * through an envelope-only assertion, and these rows carry the provider's own
- * per-model attribution. The route builds its body BY NAME at both levels and
- * the tests compare `Object.keys().sort()` against these.
+ * ⚠️ FIVE lists, not one: a key added to a per-listing row would still leave
+ * through an envelope-only assertion, and the per-MODEL rows are the level that
+ * carries the provider's own attribution — its verbatim `failed_reason` in
+ * `codigo`. The route builds its body BY NAME at every level and the tests
+ * compare `Object.keys().sort()` against these.
  */
 export const CHAVES_DO_ENVELOPE = [
   'canal',
@@ -217,6 +218,30 @@ export const CHAVES_DA_LISTAGEM = [
 ] as const;
 
 export const CHAVES_SEM_ENVIO = ['produtoId', 'produtoNome', 'motivo', 'mensagem'] as const;
+
+/**
+ * The per-MODEL row — the eleven keys of `LinhaDeModeloEnviada`.
+ *
+ * ⚠️ This is the level the other four cannot see. A response double whose
+ * `variacoes` is empty leaves the route's innermost projection unasserted, and
+ * a leak check over the whole body only catches a planted STRING — a number or
+ * a boolean added here sails through it. It is also the level that holds
+ * Shopee's own words (`codigo` is the verbatim `failed_reason`), so a key added
+ * upstream and forwarded blindly is how provider prose leaves the building.
+ */
+export const CHAVES_DO_MODELO = [
+  'modelId',
+  'produtoId',
+  'varLinkDocId',
+  'quantidadeSolicitada',
+  'quantidadeEnviada',
+  'resultado',
+  'motivo',
+  'codigo',
+  'mensagem',
+  'clampado',
+  'piso',
+] as const;
 
 /**
  * The ONE sentence a clean send gets.
@@ -277,6 +302,16 @@ export interface ArgsEnvioManual {
 /**
  * The bounded pool. ~30 lines here rather than a shared helper because this app
  * has none yet; promote it the day a second folder needs one.
+ *
+ * ⚠️ **`allSettled`, never `all`.** `Promise.all` settles on the FIRST
+ * rejection while every sibling worker keeps pulling off the shared cursor, so
+ * a throw would let the run answer its caller — the route has already built and
+ * flushed its error body by then — while later listings were still calling
+ * `update_stock` and patching link documents, in a response that reports
+ * neither. Waiting for all of them costs nothing, because the one caller that
+ * throws sets its abort flag first and every remaining iteration
+ * short-circuits. The first rejection, in WORKER order, is then rethrown
+ * unchanged.
  */
 async function executarEmPool<T>(
   itens: readonly T[],
@@ -294,7 +329,12 @@ async function executarEmPool<T>(
     }
   };
   const trabalhadores = Math.min(Math.max(1, largura), Math.max(1, itens.length));
-  await Promise.all(Array.from({ length: trabalhadores }, () => trabalhador()));
+  const saidas = await Promise.allSettled(
+    Array.from({ length: trabalhadores }, () => trabalhador()),
+  );
+  for (const saida of saidas) {
+    if (saida.status === 'rejected') throw saida.reason;
+  }
 }
 
 /**
@@ -736,9 +776,17 @@ export async function enviarEstoqueManualShopee(
         modelosRecusados: r.modelos.filter((m) => m.resultado === RESULTADO_MODELO.recusado).length,
         clampados: r.modelos.filter((m) => m.clampado).length,
       };
-      if (outcome === 'nao-tentado' && motivo === MOTIVO_ESTOQUE_SHOPEE.contaPausada) {
+      // ⚠️ On the PAUSE the handler reports, whichever slug it carries — never
+      // on `conta-pausada` alone. The handler CONTAINS a daily quota (it arms
+      // the pause itself and RETURNS `descartado` + `cota-diaria` + the
+      // rollover), and so do the holiday, warehouse and shop-shape arms: none
+      // of those ever throws, so the `ShopeeRateLimitError` rung below cannot
+      // see them. Matching one slug left the run going and answered a 200 whose
+      // `pausadoAte` was `null` while the state document this very call had
+      // just written said the conta is blocked until the quota rolls over.
+      if (outcome === 'nao-tentado' && r.pausadoAte !== null) {
         abortado = true;
-        if (r.pausadoAte !== null) pausadoAte = iso(r.pausadoAte);
+        pausadoAte = iso(r.pausadoAte);
       }
     } catch (err) {
       // ⚠️ MOST DERIVED FIRST. All three of these sit in one `instanceof` chain
@@ -758,7 +806,16 @@ export async function enviarEstoqueManualShopee(
       // A dead grant stops the WHOLE run: every remaining listing would fail
       // identically, and the only useful answer is "reconnect the conta", which
       // the route renders as its own status.
-      if (err instanceof ShopeeReauthRequiredError) throw err;
+      //
+      // ⚠️ `abortado` FIRST, on both rethrows. The pool waits for its workers,
+      // but the siblings are still pulling off the shared cursor while this one
+      // unwinds: without the flag they would keep spending `update_stock` calls
+      // for a run whose answer is already decided, and those sends would appear
+      // in no envelope at all, since a throw means `montarResposta` never runs.
+      if (err instanceof ShopeeReauthRequiredError) {
+        abortado = true;
+        throw err;
+      }
       // A caller bug (a malformed request WE built) must never be contained as a
       // provider condition — it is the one exclusion from the package's base.
       if (err instanceof ShopeeError && !(err instanceof ShopeeConfigError)) {
@@ -766,6 +823,7 @@ export async function enviarEstoqueManualShopee(
         resolvidas[indice] = { ...base, outcome: 'falha', motivo, mensagem: mensagemDe(motivo) };
         return;
       }
+      abortado = true;
       throw err;
     }
   });
