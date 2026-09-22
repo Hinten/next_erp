@@ -22,7 +22,7 @@ export interface CpfCnpjTextInputProps {
 /** Strip a typed/pasted value down to the clean wire format (uppercase
  *  alphanumeric, max 14). Punctuation, spaces and lowercase are removed, so a
  *  pasted `95.473.997/0001-03` becomes `95473997000103`. */
-function cleanDocumento(input: string): string {
+export function cleanDocumento(input: string): string {
   return input
     .toUpperCase()
     .replace(/[^0-9A-Z]/g, '')

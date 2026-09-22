@@ -44,7 +44,7 @@ describe('pedidoPageIssues', () => {
     ).not.toContain('ehSaida');
   });
 
-  it('flags a referenced NF-e key that is not 44 digits', () => {
+  it('flags a referenced NF-e key that does not match CHAVE_NFE_REGEX', () => {
     const base = { itens: { p1: [{ quantidade: 1 }] }, integracaoPedidoOuterRef: 'x' };
     const valid = '1'.repeat(44);
     // 43 / 45 digits and a non-digit value all fail.
@@ -57,7 +57,7 @@ describe('pedidoPageIssues', () => {
     expect(paths({ ...base, chNFeReferenciadas: [`${'1'.repeat(43)}A`] })).toContain(
       'chNFeReferenciadas',
     );
-    // A valid 44-digit chave, plus empty/null entries, raise no issue.
+    // A valid chave, plus empty/null entries, raise no issue.
     expect(paths({ ...base, chNFeReferenciadas: [valid, '', null] })).not.toContain(
       'chNFeReferenciadas',
     );

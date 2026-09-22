@@ -120,7 +120,10 @@ function trailWrites(writes: FakeWrites, trail: PedidoTrail) {
 
 /** Build a valid `Pagamento` (defaults applied) with the given overrides. */
 function mkPagamento(overrides: Partial<Pagamento> & { valor: number }): Pagamento {
-  return pagamentoSchema.parse(overrides);
+  return pagamentoSchema.parse({
+    ...overrides,
+    lastProviderUpdate: overrides.lastProviderUpdate ?? overrides.ultimaModificacao ?? T_NEW,
+  });
 }
 
 const PEDIDO_ID = 'p1';
@@ -182,8 +185,9 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({
       valor: 100,
       status_pagamento: STATUS_PAGAMENTO.aprovado,
-      ultimaModificacao: T_NEW,
+      lastProviderUpdate: T_NEW,
     });
+    expect(store['pedidos/p1/pagamentos/pay1']!.ultimaModificacao).toBeGreaterThanOrEqual(T_NEW);
     // First-seen dataCadastro stamped on create.
     expect(typeof store['pedidos/p1/pagamentos/pay1']!.dataCadastro).toBe('number');
 
@@ -293,7 +297,8 @@ describe('reconcilePedidoFromPagamento', () => {
     // Gateway-owned fields advanced to the incoming values.
     expect(stored.valor).toBe(100);
     expect(stored.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
-    expect(stored.ultimaModificacao).toBe(T_NEW);
+    expect(stored.ultimaModificacao).toBeGreaterThanOrEqual(T_NEW);
+    expect(stored.lastProviderUpdate).toBe(T_NEW);
     // Operator-edited / out-of-band fields survive the redelivery untouched.
     expect(stored.nFat).toBe('NF-123');
     expect(stored.vencimento).toBe(T_OLD);
@@ -342,13 +347,14 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(stored).not.toHaveProperty('someRetiredLegacyField');
   });
 
-  it('skips a stale delivery (existing ultimaModificacao newer) without writing', async () => {
+  it('skips a stale delivery (existing lastProviderUpdate newer) without writing', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
       'pedidos/p1/pagamentos/pay1': {
         valor: 60,
         status_pagamento: STATUS_PAGAMENTO.aprovado,
         ultimaModificacao: T_NEW,
+        lastProviderUpdate: T_NEW,
       },
     });
 
@@ -358,7 +364,8 @@ describe('reconcilePedidoFromPagamento', () => {
       pagamento: mkPagamento({
         valor: 100,
         status_pagamento: STATUS_PAGAMENTO.aprovado,
-        ultimaModificacao: T_OLD, // older than the stored 5000
+        ultimaModificacao: T_NEW + 1_000_000, // local recency is deliberately irrelevant
+        lastProviderUpdate: T_OLD,
       }),
     });
 
@@ -370,13 +377,14 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
   });
 
-  it('treats an idempotent redelivery (same id + same ultimaModificacao) as stale', async () => {
+  it('treats an idempotent redelivery (same provider watermark) as stale', async () => {
     const { db, writes } = makeDb({
       'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
       'pedidos/p1/pagamentos/pay1': {
         valor: 100,
         status_pagamento: STATUS_PAGAMENTO.aprovado,
         ultimaModificacao: T_NEW,
+        lastProviderUpdate: T_NEW,
       },
     });
 
@@ -386,13 +394,76 @@ describe('reconcilePedidoFromPagamento', () => {
       pagamento: mkPagamento({
         valor: 100,
         status_pagamento: STATUS_PAGAMENTO.aprovado,
-        ultimaModificacao: T_NEW, // equal → not newer → skip
+        ultimaModificacao: T_NEW + 1_000_000,
+        lastProviderUpdate: T_NEW, // equal → not newer → skip
       }),
     });
 
     expect(result).toEqual({ transition: null, skippedStale: true });
     expect(writes.sets).toHaveLength(0);
     expect(writes.updates).toHaveLength(0);
+  });
+
+  it('a future human ultimaModificacao neither blocks the provider nor regresses', async () => {
+    const humanFuture = 2_000_000_000_000_000;
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+        ultimaModificacao: humanFuture,
+        lastProviderUpdate: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_NEW,
+        lastProviderUpdate: T_NEW,
+      }),
+    });
+
+    expect(result.skippedStale).toBe(false);
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      lastProviderUpdate: T_NEW,
+      ultimaModificacao: humanFuture,
+    });
+  });
+
+  it('initializes a missing provider watermark without inferring one from local recency', async () => {
+    const humanFuture = 2_000_000_000_000_000;
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: humanFuture,
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+        ultimaModificacao: T_OLD,
+        lastProviderUpdate: T_OLD,
+      }),
+    });
+
+    expect(result.skippedStale).toBe(false);
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({
+      valor: 40,
+      status_pagamento: STATUS_PAGAMENTO.pendente,
+      lastProviderUpdate: T_OLD,
+      ultimaModificacao: humanFuture,
+    });
   });
 
   it('writes the pagamento but does NOT transition an estado outside AUTO_ESTADO_SOURCES', async () => {

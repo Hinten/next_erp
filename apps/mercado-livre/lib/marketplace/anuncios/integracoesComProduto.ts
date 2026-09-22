@@ -19,14 +19,9 @@
  * says: it is now the ONLY server-side term standing between a live anúncio and
  * the sweep, and the per-listing gates decide the rest.
  *
- * It used to be maintained by hand at six scattered call sites, and only ever
- * REMOVED by deriving it from the sibling `marketplace` array
- * (`itemsStatusSync.removeMarketplaceEntry`, `importMigration.applyMarketplaceDeletion`).
- * That coupling is why the three legacy denorm arrays were an all-or-nothing
- * cluster: dropping `marketplace` at the Flutter decommission would have made
- * `integracoesComProduto` append-only (#431 lock 2). This module re-derives it
- * from the LINK SUBCOLLECTIONS instead, so `marketplace` + `marketplaceIds` can
- * die on their own and this array survives as a permanent, app-owned denorm.
+ * It used to be maintained by hand at scattered call sites and derived from
+ * retired legacy produto fields. This module instead re-derives it from the
+ * link subcollections, so it survives as a permanent app-owned denorm.
  *
  * ## What lives where since #1519
  *

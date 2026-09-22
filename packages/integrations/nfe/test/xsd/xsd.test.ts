@@ -158,7 +158,8 @@ describe('validateXsd — envEvento (cancelamento, signed)', () => {
 
   it('rejects a chNFe of the wrong length', async () => {
     // Corrupt the chNFe value after signing — XSD validation is structural
-    // (it checks the 44-digit pattern, not the digest).
+    // (it checks the TChNFe pattern — 44 characters, alfa window at 6-17 —
+    // not the digest).
     const bad = signedEnvEvento().replace(
       `<chNFe>${CHAVE}</chNFe>`,
       `<chNFe>${CHAVE.slice(0, 43)}</chNFe>`,

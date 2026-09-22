@@ -70,12 +70,6 @@
  * now WRITES `'am'` from them (`stampAguardandoMigracao`), so the value has a
  * producer again for the three rungs that still gate on it.
  *
- * A cancel removes the PARENT produto's denorm entry (`removeMarketplaceEntry`
- * below) but does not walk down to the variation-children produtos. That sweep
- * was once deferred to #438; it is now moot rather than pending — the whole
- * denorm cluster is deleted at the cutover (#992), and leaving stale entries
- * behind is already the norm everywhere else (canonical note on `produtoSchema`).
- *
  * #441 (UP migration takeover): a `variations_migration_source`-tagged listing
  * that has gone `closed` is the ML-side signal that a legacy `variations[]`
  * listing finished migrating to User-Products — `migrationRunner`, when
@@ -102,8 +96,8 @@
  * only when every observed member is closed, and never while one was never
  * observed.
  */
-import { type DocumentReference, FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { ESTADO_PUBLICACAO_ML, estadoEncerraAnuncio, type MlModeracao } from '@delfrance/schemas';
+import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
+import { ESTADO_PUBLICACAO_ML, type MlModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
   type MlModeration,
@@ -112,10 +106,7 @@ import {
   estadoFromMlStatus,
   itemStockLivesOnChildren,
 } from '@delfrance/integrations-mercado-livre';
-import {
-  produtoCollection,
-  produtoMercadoLivreLinkCollection,
-} from '@delfrance/data/admin/collections';
+import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from '../core/mercadoLivre';
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
@@ -177,7 +168,7 @@ export type MigrationRunner = (
 ) => Promise<void>;
 
 export type ItemsSyncOutcome =
-  | 'synced' // the link (and maybe parent denorm) was updated
+  | 'synced' // the link was updated
   | 'synced-family' // a UP family MEMBER moved and the family's summary changed with it
   | 'synced-member' // the member was recorded, but the family's summary did not move
   | 'unchanged' // estado/status/sub_status all already current (idempotent no-op)
@@ -363,19 +354,17 @@ function fetchModeracoes(api: ItemsSyncApi, itemId: string, item: MlItem): Promi
 }
 
 /**
- * Write one already-decided status onto a parent link, with the #781 re-arm and
- * the coarse-transition denorm gate.
+ * Write one already-decided status onto a parent link, with the #781 re-arm.
  *
  * Shared by both paths so a family and a simple listing converge through
  * IDENTICAL rules — the two differ only in where the status came from (the
- * fetched item vs the fold) and in `denormItemId`, which must be the key the
- * denorm was originally stamped with.
+ * fetched item vs the fold).
  */
 async function applyResolvedStatus(
   db: Firestore,
   integracaoId: string,
   link: ResolvedLink,
-  denormItemId: string,
+  itemId: string,
   status: string | null,
   subStatus: string[] | null,
   userProductId: string | null,
@@ -432,15 +421,10 @@ async function applyResolvedStatus(
   const applied = await applyItemStatusToLink(
     db,
     integracaoId,
-    { produtoId: link.produtoId, linkDocId: link.docId, itemId: denormItemId },
+    { produtoId: link.produtoId, linkDocId: link.docId, itemId },
     { status, sub_status: subStatus },
     {
       nowMs: Date.now(),
-      // The denorm is a COARSE-transition-only write (legacy gate) — skip it when
-      // only status/sub_status/errors moved. Also skipped outright when the parent
-      // carries no `id`: there would be no key to union or remove by, and inventing
-      // one is how the arrays grow entries nothing can ever match.
-      skipDenorm: !estadoChanged || denormItemId === '',
       // `userProductId` is fill-only: never write null over a stored id because
       // this particular response omitted it. The field is an identity, not an
       // observation — and it collides with neither of the other two keys.
@@ -609,12 +593,6 @@ export async function applyMemberStatusAndFold(
  * prevent. Here every member is written and the summary derived in the same
  * atomic view.
  *
- * ⚠️ The denorm key is the PARENT link's own `id`, never a member's. Publish and
- * import both stamped `produtos.marketplace` with the family id (member ids go
- * on the CHILD produtos, in a different shape), so keying on a member would
- * `arrayUnion` an entry nothing ever removes AND leave the cancel arm's
- * `externalId` filter matching nothing — a removal that silently no-ops.
- *
  * ⚠️ A member the caller could NOT read must simply be left out of `observados`.
  * It then folds from disk like any sibling, and if that leaves it never observed
  * the fold declines to conclude — which is the correct answer. Passing it in with
@@ -652,7 +630,6 @@ export async function applyFamilyStatusAndFold(
     { produtoId: target.produtoId },
     target.linkDocId,
   );
-  const produtoRef = produtoCollection.docRef(db, {}, target.produtoId);
   const siblingQuery = familyMemberQuery(db, target.pmlOuterRef);
   const porChave = new Map<string, ObservedMember>(
     observados.map((o) => [chaveMembro(o.memberProdutoId, o.memberDocId), o]),
@@ -670,11 +647,7 @@ export async function applyFamilyStatusAndFold(
     // input below is re-derived from THESE — never from `link.data` or
     // `member.raw`, which were captured before the ML fetch and are stale by
     // exactly the width of that round trip.
-    const [members, parentSnap, produtoSnap] = await Promise.all([
-      tx.get(siblingQuery),
-      tx.get(parentRef),
-      tx.get(produtoRef),
-    ]);
+    const [members, parentSnap] = await Promise.all([tx.get(siblingQuery), tx.get(parentRef)]);
     if (!parentSnap.exists) {
       return { outcome: 'link-removido', estado: null, status: null, subStatus: null };
     }
@@ -801,35 +774,6 @@ export async function applyFamilyStatusAndFold(
       };
     }
 
-    // ⚠️ The denorm key is the PARENT link's own `id`, never a member's.
-    // Publish and import both stamped `produtos.marketplace` with the family id
-    // (member ids go on the CHILD produtos, in a different shape), so keying on the
-    // member would arrayUnion an entry nothing ever removes AND leave the cancel
-    // arm's `externalId` filter matching nothing.
-    const familyItemId = typeof parent.id === 'string' ? parent.id : '';
-    if (estadoChanged && familyItemId !== '' && produtoSnap.exists) {
-      // Same transaction as the link write, so the denorm-first ordering
-      // `applyItemStatusToLink` needs does not apply here: there is no window in
-      // which one landed and the other did not.
-      const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
-      // ⚠️ `estadoEncerraAnuncio`, not an `=== cancelado` test: a moderation
-      // removal (#1226) ends the listing exactly as a cancel does, and the two
-      // denorm arms must not disagree with `linkHasLiveListing` about which
-      // estados mean "gone".
-      if (estadoEncerraAnuncio(estado)) {
-        const patch = removeMarketplaceEntry(produtoRaw, integracaoId, familyItemId);
-        if (patch) tx.update(produtoRef, patch);
-      } else {
-        tx.update(produtoRef, {
-          marketplace: FieldValue.arrayUnion({
-            integracaoUid: integracaoId,
-            externalId: familyItemId,
-          }),
-          marketplaceIds: FieldValue.arrayUnion(familyItemId),
-        });
-      }
-    }
-
     tx.update(parentRef, {
       estado,
       status: folded.status,
@@ -941,12 +885,12 @@ async function stampAguardandoMigracao(db: Firestore, link: ResolvedLink): Promi
   );
 }
 
-/** The link doc one status refresh targets, plus the ML item id the denorm keys on. */
+/** The link doc one status refresh targets, plus the ML item id for diagnostics. */
 export interface LinkStatusTarget {
   produtoId: string;
   /** The `produtoMercadoLivre` doc id under that produto. */
   linkDocId: string;
-  /** ML item id — the parent denorm's array key. */
+  /** ML item id included in warnings when the link disappeared. */
   itemId: string;
 }
 
@@ -959,41 +903,14 @@ export interface ApplyItemStatusOpts {
    * the derived `'p'`), `errors`, and so on.
    */
   extra?: Record<string, unknown>;
-  /** Skip the parent denorm when the caller knows `estado` did not change. */
-  skipDenorm?: boolean;
 }
 
 /**
- * Write one ML item's lifecycle status onto its link doc, plus the parent
- * produto's legacy marketplace denorm. Extracted so the `items` webhook and
+ * Write one ML item's lifecycle status onto its link doc. Extracted so the `items` webhook and
  * the stock sender's terminal 4xx branch (#781) refresh a listing IDENTICALLY —
  * the sender learns the listing's real state from ML instead of leaving a stale
  * `status: 'active'` behind, which is what made a rejected send retry forever.
  *
- * Callers that already hold the link's current values pass `skipDenorm` to keep
- * the legacy coarse-transition gate; callers that do not (the stock sender never
- * reads the link — its payload carries the writeback target) simply let the
- * denorm run, which is idempotent on replay.
- *
- * ORDER MATTERS: the two writes are not atomic and idempotency is keyed on the
- * link doc's estado/status/sub_status, so the link merge MUST be the LAST write.
- * If it ran first, a transient failure of the denorm write would leave the link
- * already at the new estado — a retry would then see `unchanged` and never
- * reconcile the parent, permanently stranding a cancelled listing in the arrays.
- * Denorm-first keeps both writes idempotent on replay (arrayUnion no-ops;
- * removeMarketplaceEntry returns null once the entry is gone), and the link only
- * advances once the denorm has succeeded.
- *
- * The denormalized arrays are DEPRECATED (the link subcollections resolve
- * linkage now) but kept in the exact shape publish/import stamp, which is also
- * the shape the migrated corpus carries — see the canonical cluster note on `produtoSchema` and #992, which tracks
- * deleting all three fields in one piece after the cutover.
- *
- * This path does not write the third cluster member, the legacy
- * `statusProdutosMarketplace` inactive-map — and neither does publish. It is
- * NOT unwritten repo-wide, though: `importMigration.applyMarketplaceDeletion`
- * stamps a `deleted: true` entry when it prunes a fully-migrated legacy source
- * listing. Adding a write here would be a new divergence, not parity with it.
  */
 export async function applyItemStatusToLink(
   db: Firestore,
@@ -1004,19 +921,8 @@ export async function applyItemStatusToLink(
 ): Promise<boolean> {
   const estado = estadoFromMlStatus(item.status, item.sub_status ?? null);
 
-  // THE LINK IS THE ANCHOR — check it before touching anything else. The denorm
-  // has to run BEFORE the link write (see the ordering note above), which means
-  // that without this guard a link deleted between planning and here would still
-  // get its parent's `marketplace`/`marketplaceIds`/`integracoesComProduto`
-  // arrays re-stamped by `arrayUnion` — advertising a listing whose link no
-  // longer exists. `mergeIfExists` would then discard the link write and leave
-  // exactly the half-applied state it was added to prevent.
-  //
-  // This is a guard, not an atomic gate: a delete landing between this read and
-  // the writes below still half-applies. Closing that window entirely needs both
-  // writes in one transaction — a bigger change than this one, and the residual
-  // race is the same denorm drift the arrays already tolerate (they are
-  // DEPRECATED). `mergeIfExists` still backstops the link half.
+  // The link is the anchor: a queued writeback must not recreate a link deleted
+  // after it was planned.
   const linkSnap = await produtoMercadoLivreLinkCollection
     .docRef(db, { produtoId: target.produtoId }, target.linkDocId)
     .get();
@@ -1028,10 +934,6 @@ export async function applyItemStatusToLink(
       itemId: target.itemId,
     });
     return false;
-  }
-
-  if (opts.skipDenorm !== true) {
-    await updateParentDenorm(db, target.produtoId, integracaoId, target.itemId, estado);
   }
 
   // `mergeIfExists`, never `merge`: `target` was resolved earlier (a queued task
@@ -1055,15 +957,12 @@ export async function applyItemStatusToLink(
     // The guard above saw the link; it was deleted while these writes ran. Rare
     // enough to deserve its own line — this is the residual race, not the
     // ordinary "already gone" case.
-    console.warn(
-      '[mercado-livre] link do anúncio removido DURANTE o writeback — denorm do pai pode ter sido aplicado',
-      {
-        integracaoId,
-        produtoId: target.produtoId,
-        linkDocId: target.linkDocId,
-        itemId: target.itemId,
-      },
-    );
+    console.warn('[mercado-livre] link do anúncio removido DURANTE o writeback', {
+      integracaoId,
+      produtoId: target.produtoId,
+      linkDocId: target.linkDocId,
+      itemId: target.itemId,
+    });
   }
   return applied;
 }
@@ -1203,107 +1102,6 @@ async function resolveLink(
     candidatos: snap.size,
   });
   return null;
-}
-
-/**
- * Maintain the parent produto's legacy marketplace arrays on an estado change:
- * ensure-present on a live transition (idempotent arrayUnion), key-based removal
- * on a cancel (a dead listing must stop being advertised).
- *
- * ⛔ Both arrays are DEAD WEIGHT — no query consumers, deleted at the
- * decommission (#992; audited in #961). Canonical note on `produtoSchema`.
- * `removeMarketplaceEntry` below does read them, but only to compute their own
- * next value — maintenance, not consumption. This cancel branch is the ONLY
- * thing that ever shrinks them; a link doc deleted any other way leaves them
- * stale forever, deliberately.
- *
- * A missing parent doc
- * is a no-op for BOTH branches (legacy `if (produtoPai == null) return`,
- * tasks.dart:1056-1059) — a link can outlive its produto during the delete
- * cascade window, and admin `update()` would otherwise throw NOT_FOUND (never
- * resurrect a deleted produto via a denorm write).
- */
-async function updateParentDenorm(
-  db: Firestore,
-  produtoId: string,
-  integracaoId: string,
-  itemId: string,
-  estado: string,
-): Promise<void> {
-  const ref = produtoCollection.docRef(db, {}, produtoId);
-  const snap = await ref.get();
-  if (!snap.exists) return;
-  // Shared with `linkHasLiveListing` and the family arm above — see there.
-  if (estadoEncerraAnuncio(estado)) {
-    const patch = removeMarketplaceEntry(
-      (snap.data() ?? {}) as Record<string, unknown>,
-      integracaoId,
-      itemId,
-    );
-    if (patch) await ref.update(patch);
-    return;
-  }
-  await ref.update({
-    marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: itemId }),
-    marketplaceIds: FieldValue.arrayUnion(itemId),
-  });
-}
-
-/**
- * Remove this listing's denorm entry keyed by `(integracaoUid, externalId)` —
- * a read-modify-write (NOT `arrayRemove`, which needs an exact object match and
- * would miss a Flutter-written entry carrying extra fields).
- * Returns null when nothing matched (no write needed).
- *
- * ⚠️ This used to also drop the conta from `integracoesComProduto` when no other
- * listing survived, and THAT is what coupled the three arrays: the conta was
- * only ever removable by re-deriving it from `marketplace`, so `marketplace`
- * could not be retired without leaving the array append-only (#431 lock 2).
- * `onProdutoMercadoLivreLinkChanged` owns the conta now — the same cancel that
- * gets here also merges `estado: 'c'` onto the link doc, and the trigger
- * re-derives membership from the surviving links inside a transaction.
- *
- * Do not reintroduce the field here. Two writers deciding "no listing survives"
- * from different sources is how a conta gets dropped while one is still live,
- * and that failure is silent: the sweeps simply stop selecting the produto.
- *
- * ⛔ Nor should the two arrays it DOES still touch grow any new maintenance:
- * they are dead weight with no query consumers, deleted at the decommission
- * (#961). The read-modify-write here is the field maintaining itself, not a
- * consumer. Extending this to prune on link deletion would be machinery built
- * to be thrown away.
- */
-function removeMarketplaceEntry(
-  raw: Record<string, unknown>,
-  integracaoId: string,
-  itemId: string,
-): Record<string, unknown> | null {
-  const marketplace = asObjectArray(raw.marketplace);
-  const marketplaceIds = asStringArray(raw.marketplaceIds);
-
-  const nextMarketplace = marketplace.filter(
-    (e) => !(e.integracaoUid === integracaoId && e.externalId === itemId),
-  );
-  const nextIds = marketplaceIds.filter((id) => id !== itemId);
-
-  const changed =
-    nextMarketplace.length !== marketplace.length || nextIds.length !== marketplaceIds.length;
-  if (!changed) return null;
-
-  return {
-    marketplace: nextMarketplace,
-    marketplaceIds: nextIds,
-  };
-}
-
-function asObjectArray(v: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(v) ? v.filter((e): e is Record<string, unknown> => isPlainObject(e)) : [];
-}
-function asStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : [];
-}
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return v != null && typeof v === 'object' && !Array.isArray(v);
 }
 
 function stringArraysEqual(a: string[] | null, b: string[] | null): boolean {

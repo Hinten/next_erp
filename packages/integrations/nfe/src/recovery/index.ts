@@ -30,8 +30,28 @@ import { classifyCStat, type SefazOutcome } from '../state';
 /** Match the `nRec` slug SEFAZ embeds in `xMotivo` on cStat 204/205/218/539. */
 export const RE_NREC = /nRec:(\d+)/;
 
-/** Match the `chNFe` slug SEFAZ embeds in `xMotivo` on cStat 539. */
-export const RE_CHNFE = /chNFe:(\d+)/;
+/**
+ * Match the `chNFe` slug SEFAZ embeds in `xMotivo` on cStat 539.
+ *
+ * ⚠️ `[0-9A-Z]{44}`, never `\d+`. Since RFB IN 2.229/2024 the chave's positions
+ * 6–17 carry the emitente CNPJ and may be alphanumeric. With `\d+` an alfa
+ * chave captured only the six digits before the first letter — and the result
+ * was **truthy**, so `recoverFrom539` sailed past its `if (!recoveredChave)`
+ * guard, looked `'432601'` up in the audit log, found nothing and called
+ * `markAsLost`. On an alfa emitente that turned EVERY cStat 539 from an
+ * automatic recovery into a terminal error needing manual SEFAZ-portal work —
+ * on the one path whose whole purpose is not losing an authorized NF-e — and
+ * the operator-facing message named a 6-character "chave" that pointed nowhere
+ * near the cause.
+ *
+ * ⚠️ The length is anchored at 44 deliberately: a bare `[0-9A-Z]+` would run
+ * past the closing bracket on a malformed `xMotivo`. Shape validation beyond
+ * the length is `CHAVE_NFE_REGEX`'s job, not this extractor's — here a
+ * near-miss must fail to match so the caller takes its "sem marcador" branch.
+ *
+ * ⚠️ `RE_NREC` stays `\d+` on purpose: `nRec` is a lote receipt, always numeric.
+ */
+export const RE_CHNFE = /chNFe:([0-9A-Z]{44})/;
 
 /**
  * Extract the `nRec` (lote receipt) and `chNFe` (server-truth chave)
@@ -40,6 +60,7 @@ export const RE_CHNFE = /chNFe:(\d+)/;
  * Example inputs SEFAZ has been seen to produce:
  *   - `'Rejeição: Duplicidade de NF-e [nRec:351000000000123]'`
  *   - `'Rejeição: Duplicidade NF-e com diferença na chave [chNFe:35200714200166000187550010000000071000000017][nRec:351000000000123]'`
+ *   - the same with an ALFA emitente: `[chNFe:432601PC3D315K000193550010000000071000000012]`
  *
  * Both markers are optional — older NTs sometimes omit `nRec`.
  */

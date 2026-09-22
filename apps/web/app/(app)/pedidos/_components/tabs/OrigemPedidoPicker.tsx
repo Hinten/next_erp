@@ -159,6 +159,7 @@ function OrigemPedidoList({
                 </Group>
               </Stack>
               <Button
+                type="button"
                 size="xs"
                 aria-label={`Adicionar ${r.data.numero ?? r.id}`}
                 onClick={() => onPick({ id: r.id, data: r.data })}
@@ -170,7 +171,7 @@ function OrigemPedidoList({
         </Stack>
       </ScrollArea.Autosize>
       <Group justify="flex-end">
-        <Button variant="default" onClick={onClose}>
+        <Button type="button" variant="default" onClick={onClose}>
           Fechar
         </Button>
       </Group>

@@ -27,6 +27,18 @@ describe('impostoProdutoSchema', () => {
     expect(out.configuracaoICMS).toEqual({ crt: '1', csosn: '102' });
   });
 
+  it('keeps a half-typed RTC draft in this resolver tier', () => {
+    const configuracaoIBSCBS = {
+      CST: '00',
+      cClassTrib: '0001',
+      vBC: -1,
+      is: { CSTIS: '2', cClassTribIS: '21', pIS: -1 },
+    };
+
+    const out = impostoProdutoSchema.parse({ configuracaoIBSCBS });
+    expect(out.configuracaoIBSCBS).toEqual(configuracaoIBSCBS);
+  });
+
   // The regression pin for #466. `_$ImpostoToJson` writes `NVE` as a
   // `List<String>?` and `indEscala` as a `bool?`; this schema typed both
   // `z.string()`, so a migrated doc failed the parse — and

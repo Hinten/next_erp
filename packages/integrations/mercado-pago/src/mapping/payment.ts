@@ -164,10 +164,13 @@ export function mpPaymentToPagamento(
         numeroCartao: payment.card?.last_four_digits ?? null,
         bandeira: null,
         cAut: payment.authorization_code ?? null,
+        tarifa: null,
+        tarifaFixa: null,
+        prazoRecebimento: null,
       }
     : null;
 
-  const ultimaModificacao =
+  const lastProviderUpdate =
     isoToMicros(payment.date_last_updated) ?? isoToMicros(payment.date_created) ?? opts.nowMicros;
 
   const pagamento: Pagamento = {
@@ -193,7 +196,8 @@ export function mpPaymentToPagamento(
     // `null` is the value, not merely what compiles.
     marketplace: null,
     liquidacao: null,
-    ultimaModificacao,
+    ultimaModificacao: opts.nowMicros,
+    lastProviderUpdate,
     dataCancelamento: null,
     dataAprovacao: isoToMicros(payment.date_approved),
     dataCadastro: isoToMicros(payment.date_created),

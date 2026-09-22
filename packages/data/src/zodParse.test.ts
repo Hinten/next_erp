@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { integracaoSchema, pedidoSchema } from '@delfrance/schemas';
 import { parseForWrite, parseMergePatch, parseSoftRead } from './zodParse';
 
 /**
@@ -32,6 +33,11 @@ const passthrough = z
 const withNestedArray = z.object({
   nome: z.string(),
   itens: z.array(z.object({ sku: z.string() })).default([]),
+});
+
+const withStrictNestedArray = z.object({
+  nome: z.string(),
+  itens: z.array(z.strictObject({ sku: z.string() })).default([]),
 });
 
 describe('parseForWrite', () => {
@@ -74,6 +80,27 @@ describe('parseForWrite', () => {
     });
     expect(out.itens[0]).not.toHaveProperty('bogusItemKey');
   });
+
+  it('throws for an unmodelled key on a strict nested item', () => {
+    expect(() =>
+      parseForWrite(withStrictNestedArray, {
+        nome: 'Ana',
+        itens: [{ sku: 'A1', bogusItemKey: 'x' }],
+      }),
+    ).toThrow(/nrecognized/);
+  });
+
+  it('rejects retired integração fields through the registered document write path', () => {
+    expect(() =>
+      parseForWrite(integracaoSchema, {
+        nome: 'Conta',
+        tabelaMercadoShopsOuterRef: 'documents/listaDePrecos/ms1',
+      }),
+    ).toThrow(/nrecognized/);
+    expect(() => parseForWrite(integracaoSchema, { nome: 'Conta', token_id: 'secret' })).toThrow(
+      /nrecognized/,
+    );
+  });
 });
 
 describe('parseMergePatch', () => {
@@ -83,6 +110,21 @@ describe('parseMergePatch', () => {
 
   it('THROWS on an unmodelled key, same as the full write', () => {
     expect(() => parseMergePatch(strip, { apelido: 'X' })).toThrow(/nrecognized/);
+  });
+
+  it('rejects an unknown property nested inside a registered document patch', () => {
+    expect(() =>
+      parseMergePatch(integracaoSchema, {
+        tabelasAtacado: [
+          {
+            listaDePrecoAtacadoOuterRef: 'documents/listaDePrecos/lp1',
+            min_count: 1,
+            max_count: 10,
+            extra: true,
+          },
+        ],
+      }),
+    ).toThrow(/nrecognized/);
   });
 });
 
@@ -96,5 +138,22 @@ describe('parseSoftRead', () => {
     >;
     expect(out.nome).toBe('Ana');
     expect(out).not.toHaveProperty('apelido');
+  });
+
+  it('strips retired root fields but falls back to raw data for a strict nested mismatch', () => {
+    const integracao = parseSoftRead(
+      integracaoSchema,
+      { nome: 'Conta', token_id: 'legacy-secret' },
+      'integracao/i1',
+    ) as Record<string, unknown>;
+    expect(integracao).not.toHaveProperty('token_id');
+
+    const pedidoRaw = {
+      estado: 'pago',
+      integracaoPedidoOuterRef: 'documents/integracao/x',
+      itens: { p1: [{ precoDeVenda: 10, quantidade: 1, retiredNestedField: true }] },
+    };
+    const pedido = parseSoftRead(pedidoSchema, pedidoRaw, 'pedidos/p1') as unknown;
+    expect(pedido).toBe(pedidoRaw);
   });
 });

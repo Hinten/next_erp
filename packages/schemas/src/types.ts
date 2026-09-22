@@ -102,11 +102,16 @@ export interface CollectionMetadata {
    * Permission bits required to read/write/delete. BigInt literals so we can
    * express permission sets larger than 53 bits (Firestore claims store them
    * as strings).
+   *
+   * `delete: null` is an explicit client-side deny, including the `su`
+   * break-glass claim. The Admin SDK still bypasses Firestore rules. Use it
+   * when a collection remains client-editable but its root document carries
+   * durable descendants that a client must never orphan or destroy.
    */
   permissions: {
     read: bigint;
     write: bigint;
-    delete: bigint;
+    delete: bigint | null;
   };
   /**
    * Cascade declarations: subcollection paths that must be deleted with the

@@ -221,7 +221,7 @@ export function buildGeneratorInput(
   }
 
   // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
-  // stores chaves in `chNFeReferenciadas` (44-digit validated on the FiscalTab);
+  // stores chaves in `chNFeReferenciadas` (CHAVE_NFE_REGEX-validated on the FiscalTab);
   // buildIde re-validates each and throws on a malformed one.
   const rawRefs = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
   const chNFeReferenciadas = Array.isArray(rawRefs)

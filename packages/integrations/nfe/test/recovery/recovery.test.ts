@@ -50,6 +50,49 @@ describe('extractMarkers', () => {
     expect(RE_NREC.exec('[nRec:351000000000123]')?.[1]).toBe('351000000000123');
     expect(RE_CHNFE.exec(`[chNFe:${CHAVE}]`)?.[1]).toBe(CHAVE);
   });
+
+  /**
+   * CNPJ alfanumérico on the emitente (RFB IN 2.229/2024 · #1619).
+   *
+   * ⚠️ This is the cStat 539 ANTI-LOSS path, and the old `/chNFe:(\d+)/`
+   * failed it in the worst possible way: it captured only the six digits
+   * before the first letter and returned a value that was **truthy**, so
+   * `recoverFrom539` passed its `if (!recoveredChave)` guard, missed the audit
+   * log and marked an authorized NF-e as lost. A falsy result would at least
+   * have taken the honest "sem marcador" branch.
+   */
+  describe('an ALPHANUMERIC chave in xMotivo', () => {
+    const CHAVE_ALFA = '432601PC3D315K000193550010000000071000000012';
+
+    it('survives extraction whole — not truncated at the first letter', () => {
+      const { nRec, chNFe } = extractMarkers(
+        `Rejeição: Duplicidade NF-e com diferença na chave [chNFe:${CHAVE_ALFA}][nRec:351000000000123]`,
+      );
+      expect(chNFe).toBe(CHAVE_ALFA);
+      expect(chNFe).toHaveLength(44);
+      // The exact regression: `\d+` stopped at the 'P' of PC3D315K000193.
+      expect(chNFe).not.toBe('432601');
+      // `nRec` is numeric and must keep working beside it.
+      expect(nRec).toBe('351000000000123');
+    });
+
+    it('still matches a purely numeric chave — the control', () => {
+      expect(RE_CHNFE.exec(`[chNFe:${CHAVE}]`)?.[1]).toBe(CHAVE);
+    });
+
+    /**
+     * The near-miss. A short or lowercase value must yield **null**, so the
+     * caller takes its "sem marcador" branch rather than looking up a wrong
+     * chave — falsy is the safe failure here, truthy-but-wrong is not.
+     */
+    it.each([
+      ['too short', '432601PC3D315K0001935500100000000710000000'],
+      ['lowercase', '432601pc3d315k000193550010000000071000000012'],
+      ['punctuated', '432601-PC3D315K000193550010000000071000000'],
+    ])('yields null for a %s chave', (_label, bad) => {
+      expect(extractMarkers(`[chNFe:${bad}][nRec:351000000000123]`).chNFe).toBeNull();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
