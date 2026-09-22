@@ -18,7 +18,7 @@
  *
  * A fifth leg, `idMercadoLivre`, was added for the ML chat import. A pre-sale
  * question carries none of the original four — no CPF, no phone, no e-mail — so
- * every leg skipped and the cascade fell through to the blind create below,
+ * every leg skipped and the old cascade fell through to a blind create,
  * producing one junk cliente per question notification whose telefone/email
  * legs then poisoned later order imports. The ML buyer id is the only identity
  * such a contact has, and it is a STRONG key: a marketplace account, not a
@@ -35,13 +35,16 @@
  * what keeps this subtree importable from a browser bundle's dependency graph
  * without dragging firebase-admin in (`../adminBundleSafety.test.ts`).
  *
- * Two residual behaviours, stated rather than hidden:
+ * The resolver is transactional. A deterministic side index reserves every
+ * strong identity while preserving the migrated cliente ids: concurrent
+ * deliveries of one new buyer contend on the same index document, and the
+ * losing transaction re-runs the whole cascade against the winner's cliente.
+ * The index is advisory rather than blindly authoritative — every referenced
+ * cliente is re-read and must still own the identity, so a manual edit or delete
+ * is repaired lazily instead of poisoning all future imports.
  *
- *  - `clienteCollection.add` is a blind create, so two concurrent imports for
- *    the same new buyer both create. The real fix is root `CLAUDE.md` rule 7
- *    tier 0 — a deterministic doc id keyed on the normalized document — but
- *    cliente doc ids are shared with the migrated corpus, so that is a
- *    wire-format change and out of scope here.
+ * One historical behaviour remains, stated rather than hidden:
+ *
  *  - The legacy app ran the ORIGINAL unguarded cascade, with telefone and
  *    e-mail populated, and the rows it merged wrongly arrive that way in the
  *    corpus. This module cannot unpick them — a wrong merge is not detectable
@@ -50,10 +53,12 @@
  *    historical, which makes it a migration question, never a race.)
  */
 
-import type { DocumentData, Firestore, Timestamp } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore, Transaction } from 'firebase-admin/firestore';
 import {
   CLIENTE_MATCH_KEY,
   type Cliente,
+  type ClienteIdentidade,
+  type ClienteIdentidadeTipo,
   type ClienteMatchKey,
   type ClienteResolveFields,
   buildClienteTelefonePatch,
@@ -67,9 +72,13 @@ import {
   shouldUpdateName,
   telefoneLookupShapes,
 } from '@delfrance/schemas';
-import { clienteCollection } from '../collections';
-import { otherOwnerOfMlId } from './otherOwnerOfMlId';
-import { isFailedPrecondition } from '../grpcErrors';
+import { clienteCollection, clienteIdentidadeCollection } from '../collections';
+import {
+  buildClienteIdentidadeData,
+  clienteIdentidadesDosCampos,
+  clientePossuiIdentidade,
+  type ClienteIdentidadeSpec,
+} from './clienteIdentidade';
 
 /**
  * Rows fetched per leg before the cascade gives up and creates. See
@@ -83,6 +92,18 @@ export interface FindOrCreateClienteInput {
   readonly nowMs: number;
   /** Candidates examined per leg. Defaults to 10. */
   readonly candidateLimit?: number;
+}
+
+/**
+ * A marketplace observation cannot mint a cliente from weak signals alone.
+ * Manual web creation and WhatsApp confirmation use different flows and are
+ * deliberately unaffected by this server-side importer guard.
+ */
+export class ClienteSemIdentidadeForteError extends Error {
+  constructor() {
+    super('Não é possível criar cliente de marketplace sem uma identidade forte.');
+    this.name = 'ClienteSemIdentidadeForteError';
+  }
 }
 
 /**
@@ -152,7 +173,6 @@ export interface ClienteIdMercadoLivreConflito {
 interface ClienteCandidate {
   readonly id: string;
   readonly data: Cliente;
-  readonly updateTime: Timestamp;
 }
 
 /**
@@ -170,23 +190,24 @@ interface ClienteCandidate {
  * across pages.
  */
 async function pageCandidates(
+  tx: Transaction,
   db: Firestore,
   field: ClienteMatchKey,
   op: '==' | 'in',
   value: string | readonly string[],
   limit: number,
 ): Promise<ClienteCandidate[]> {
-  const snap = await clienteCollection
-    .ref(db, {})
-    .where(field, op, Array.isArray(value) ? [...value] : value)
-    .limit(limit)
-    .get();
+  const snap = await tx.get(
+    clienteCollection
+      .ref(db, {})
+      .where(field, op, Array.isArray(value) ? [...value] : value)
+      .limit(limit),
+  );
 
   return snap.docs
     .map((doc) => ({
       id: doc.id,
       data: clienteCollection.parseRead(doc.data(), clienteCollection.docPath({}, doc.id)),
-      updateTime: doc.updateTime,
     }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
@@ -324,23 +345,103 @@ export async function findOrCreateCliente(
   db: Firestore,
   input: FindOrCreateClienteInput,
 ): Promise<FindOrCreateClienteResult> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await findOrCreateClienteOnce(db, input);
-    } catch (err) {
-      // Re-run both identity resolution and patch derivation. Re-applying the
-      // losing patch could fill a phone another writer deliberately cleared.
-      if (!isFailedPrecondition(err) || attempt >= 2) throw err;
-    }
-  }
+  const identidadeSpecs = clienteIdentidadesDosCampos(input.fields);
+  // Stable across Firestore's callback retries. `tx.create` makes an accidental
+  // collision fail rather than overwrite, while the identity docs are what make
+  // two different generated ids for the same buyer converge.
+  const novoClienteId = clienteCollection.newDocId(db, {});
+  return db.runTransaction((tx) =>
+    findOrCreateClienteTx(tx, db, input, identidadeSpecs, novoClienteId),
+  );
 }
 
-async function findOrCreateClienteOnce(
+interface IdentidadeLida {
+  readonly spec: ClienteIdentidadeSpec;
+  readonly stored: ClienteIdentidade | null;
+  readonly owners: readonly string[];
+}
+
+function uniqueSorted(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort();
+}
+
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function mergeCandidates(...groups: readonly ClienteCandidate[][]): ClienteCandidate[] {
+  const byId = new Map<string, ClienteCandidate>();
+  for (const group of groups) {
+    for (const candidate of group) byId.set(candidate.id, candidate);
+  }
+  return [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+function specFor(
+  specs: readonly ClienteIdentidadeSpec[],
+  tipo: ClienteIdentidadeTipo,
+): ClienteIdentidadeSpec | null {
+  return specs.find((spec) => spec.tipo === tipo) ?? null;
+}
+
+async function findOrCreateClienteTx(
+  tx: Transaction,
   db: Firestore,
   input: FindOrCreateClienteInput,
+  identidadeSpecs: readonly ClienteIdentidadeSpec[],
+  novoClienteId: string,
 ): Promise<FindOrCreateClienteResult> {
   const { fields, nowMs } = input;
   const limit = input.candidateLimit ?? DEFAULT_CANDIDATE_LIMIT;
+
+  /* ------------------------------- read phase ------------------------------ */
+
+  // Deterministic order matters on the server SDK's pessimistic transactions:
+  // two payloads sharing multiple identities must acquire the same refs in the
+  // same order rather than needlessly deadlocking and retrying.
+  const identidadeSnaps = [];
+  for (const spec of identidadeSpecs) {
+    identidadeSnaps.push(await tx.get(clienteIdentidadeCollection.docRef(db, {}, spec.id)));
+  }
+  const identidadesStored = identidadeSnaps.map((snap, index) =>
+    snap.exists
+      ? clienteIdentidadeCollection.parseRead(
+          snap.data(),
+          clienteIdentidadeCollection.docPath({}, identidadeSpecs[index]!.id),
+        )
+      : null,
+  );
+  const indexedClienteIds = uniqueSorted(
+    identidadesStored.flatMap((identity) => identity?.clienteIds ?? []),
+  );
+  const indexedClienteSnaps = [];
+  for (const id of indexedClienteIds) {
+    indexedClienteSnaps.push(await tx.get(clienteCollection.docRef(db, {}, id)));
+  }
+  const indexedCandidates = new Map<string, ClienteCandidate>();
+  for (let i = 0; i < indexedClienteSnaps.length; i += 1) {
+    const snap = indexedClienteSnaps[i]!;
+    const id = indexedClienteIds[i]!;
+    if (!snap.exists) continue;
+    indexedCandidates.set(id, {
+      id,
+      data: clienteCollection.parseRead(snap.data(), clienteCollection.docPath({}, id)),
+    });
+  }
+
+  // Validate every advisory owner against the live cliente. Missing docs and
+  // identities changed by a human are pruned when the index is written below.
+  const identidadesLidas: IdentidadeLida[] = identidadeSpecs.map((spec, index) => ({
+    spec,
+    stored: identidadesStored[index] ?? null,
+    owners: uniqueSorted(
+      (identidadesStored[index]?.clienteIds ?? []).filter((id) => {
+        const candidate = indexedCandidates.get(id);
+        return candidate != null && clientePossuiIdentidade(candidate.data, spec);
+      }),
+    ),
+  }));
+  const identitiesById = new Map(identidadesLidas.map((identity) => [identity.spec.id, identity]));
 
   const telefoneShapes = telefoneLookupShapes(fields.telefone);
   const emailShapes = emailLookupShapes(fields.email);
@@ -419,6 +520,9 @@ async function findOrCreateClienteOnce(
   const rejected: RejectedClienteCandidate[] = [];
   let matched: ClienteCandidate | null = null;
   let matchedBy: ClienteMatchKey | null = null;
+  const observedOwners = new Map<string, Set<string>>(
+    identidadeSpecs.map((spec) => [spec.id, new Set(identitiesById.get(spec.id)?.owners ?? [])]),
+  );
   /**
    * Every doc the `idMercadoLivre` leg saw, or `null` when that leg never ran
    * (no incoming id, or a higher leg matched first and broke the loop).
@@ -432,7 +536,26 @@ async function findOrCreateClienteOnce(
 
   for (const leg of legs) {
     if (leg.value == null) continue;
-    const candidates = await pageCandidates(db, leg.key, leg.op, leg.value, limit);
+    const queried = await pageCandidates(tx, db, leg.key, leg.op, leg.value, limit);
+    const identitySpec =
+      leg.key === CLIENTE_MATCH_KEY.cpfCnpj ||
+      leg.key === CLIENTE_MATCH_KEY.idEstrangeiro ||
+      leg.key === CLIENTE_MATCH_KEY.idMercadoLivre
+        ? specFor(identidadeSpecs, leg.key)
+        : null;
+    if (identitySpec != null) {
+      const observed = observedOwners.get(identitySpec.id)!;
+      for (const candidate of queried) {
+        if (clientePossuiIdentidade(candidate.data, identitySpec)) observed.add(candidate.id);
+      }
+    }
+    const indexed =
+      identitySpec == null
+        ? []
+        : (identitiesById.get(identitySpec.id)?.owners ?? [])
+            .map((id) => indexedCandidates.get(id))
+            .filter((candidate): candidate is ClienteCandidate => candidate != null);
+    const candidates = mergeCandidates(queried, indexed);
     if (leg.key === CLIENTE_MATCH_KEY.idMercadoLivre) {
       mlLegOwners = candidates.map((c) => c.id);
     }
@@ -453,8 +576,36 @@ async function findOrCreateClienteOnce(
     if (matched) break;
   }
 
+  // A higher-priority fiscal key may have matched before the ML leg. Preserve
+  // the existing collision behaviour with a transaction-local lookup — never a
+  // read outside this callback whose answer could become stale on retry.
+  const idMlSpec = specFor(identidadeSpecs, 'idMercadoLivre');
+  if (idMlSpec != null && mlLegOwners == null) {
+    const queried = await pageCandidates(
+      tx,
+      db,
+      CLIENTE_MATCH_KEY.idMercadoLivre,
+      '==',
+      idMlSpec.valorNormalizado,
+      limit,
+    );
+    const observed = observedOwners.get(idMlSpec.id)!;
+    for (const candidate of queried) {
+      if (clientePossuiIdentidade(candidate.data, idMlSpec)) observed.add(candidate.id);
+    }
+    const indexed = (identitiesById.get(idMlSpec.id)?.owners ?? [])
+      .map((id) => indexedCandidates.get(id))
+      .filter((candidate): candidate is ClienteCandidate => candidate != null);
+    mlLegOwners = mergeCandidates(queried, indexed).map((candidate) => candidate.id);
+  }
+
   const telefone = sanitizeTelefone(fields.telefone);
   const dropped = fields.telefone != null && telefone == null ? ['telefone'] : [];
+
+  let selectedId: string;
+  let selectedCliente: Cliente;
+  let created: boolean;
+  let idMercadoLivreConflito: ClienteIdMercadoLivreConflito | null;
 
   if (matched) {
     const alvo = matched;
@@ -479,14 +630,7 @@ async function findOrCreateClienteOnce(
     const vaiCarimbar = typeof idMlPatch === 'string';
     let outroDono: string | null = null;
     if (vaiCarimbar) {
-      outroDono =
-        mlLegOwners != null
-          ? // Case B, free: no row the leg returned can BE `alvo` — an accepted
-            // row ends the cascade at that leg, and `isSameCliente` is
-            // deterministic, so a rejected one cannot be accepted lower down.
-            (mlLegOwners.find((id) => id !== alvo.id) ?? null)
-          : // Case A: the leg never ran, so nobody has asked yet.
-            await otherOwnerOfMlId(db, idMlPatch as string, alvo.id);
+      outroDono = mlLegOwners?.find((id) => id !== alvo.id) ?? null;
     } else if (mlLegOwners != null) {
       // Nothing to stamp — but the leg's page is already in hand, so a
       // PRE-EXISTING duplicate costs nothing to notice and is otherwise
@@ -497,78 +641,77 @@ async function findOrCreateClienteOnce(
       outroDono = mlLegOwners.find((id) => id !== alvo.id) ?? null;
     }
 
-    const idMercadoLivreConflito =
+    idMercadoLivreConflito =
       outroDono == null ? null : { outroCliente: outroDono, carimboRecusado: vaiCarimbar };
     if (outroDono != null && vaiCarimbar) delete patch.idMercadoLivre;
 
     if (Object.keys(patch).length > 0) {
-      await clienteCollection
-        .docRef(db, {}, alvo.id)
-        .update(clienteCollection.parseMerge({ ...patch, ultimaModificacao: nowMs }), {
-          lastUpdateTime: alvo.updateTime,
-        });
+      const parsed = clienteCollection.parseMerge({ ...patch, ultimaModificacao: nowMs });
+      tx.update(clienteCollection.docRef(db, {}, alvo.id), parsed as DocumentData);
     }
-    return {
-      clienteId: alvo.id,
-      created: false,
-      matchedBy,
-      rejected,
-      dropped,
-      idMercadoLivreConflito,
-    };
+    selectedId = alvo.id;
+    selectedCliente = { ...alvo.data, ...patch, ultimaModificacao: nowMs } as Cliente;
+    created = false;
+  } else {
+    if (identidadeSpecs.length === 0) throw new ClienteSemIdentidadeForteError();
+
+    // The same ambiguity, on the create path — and it is the SHARPER half. Any
+    // current ML owner is incompatible (or it would have matched), so the new
+    // cliente is created WITHOUT that key and the conflict remains explicit.
+    const idMlNovo = identityValue(fields.idMercadoLivre);
+    const outroDonoNoCreate = idMlNovo == null ? null : (mlLegOwners?.[0] ?? null);
+    idMercadoLivreConflito =
+      outroDonoNoCreate == null ? null : { outroCliente: outroDonoNoCreate, carimboRecusado: true };
+
+    selectedCliente = clienteCollection.parse({
+      tipo: fields.tipo,
+      nome: normalizeNome(fields.nome),
+      cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
+      idEstrangeiro: fields.idEstrangeiro,
+      idMercadoLivre: outroDonoNoCreate == null ? idMlNovo : null,
+      ie: fields.ie,
+      telefone,
+      email: identityValue(fields.email),
+      timestamp: nowMs,
+      ultimaModificacao: nowMs,
+    } satisfies DocumentData);
+    selectedId = novoClienteId;
+    created = true;
+    tx.create(clienteCollection.docRef(db, {}, selectedId), selectedCliente as DocumentData);
   }
 
-  // The same ambiguity, on the create path — and it is the SHARPER half. Every
-  // leg with a value has run by now (nothing matched, so the loop never broke),
-  // which means `mlLegOwners` is non-null whenever an id came in: any row it
-  // holds is a doc that carries this id and that `isSameCliente` REFUSED to
-  // merge with. Stamping the id onto a brand-new document anyway would mint the
-  // second owner outright.
-  //
-  // So the cliente is still created — the pedido needs one — but without the
-  // key, and the conflict is reported. That the two rows disagree on a fiscal
-  // document while sharing an ML account is a human's call: one buyer who
-  // changed their CPF, or one account used by two people.
-  //
-  // Free, like case B above: no query, just the page the leg already fetched.
-  const idMlNovo = identityValue(fields.idMercadoLivre);
-  const outroDonoNoCreate = idMlNovo == null ? null : (mlLegOwners?.[0] ?? null);
-  const conflitoNoCreate =
-    outroDonoNoCreate == null ? null : { outroCliente: outroDonoNoCreate, carimboRecusado: true };
+  /* ------------------------------ write phase ------------------------------ */
 
-  const ref = await clienteCollection.add(db, {}, {
-    tipo: fields.tipo,
-    // Normalized, and `null` rather than blanks: `clienteSchema.nome` accepts
-    // any string, so a whitespace-only payload would otherwise be stored as-is.
-    nome: normalizeNome(fields.nome),
-    // Stored canonical, matching what the cpf_cnpj leg queries. A punctuated
-    // value would not round-trip clienteSchema's `^[0-9A-Z]*$` at all.
-    cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
-    idEstrangeiro: fields.idEstrangeiro,
-    // `identityValue`, not a bare `?? null`: it trims (so the value round-trips
-    // the cascade leg, which queries the trimmed form) AND it collapses both
-    // `undefined` — the field is optional on `ClienteResolveFields` — and a
-    // blank string to `null`, which is what the Firebase SDK requires, since it
-    // rejects `undefined` in addDoc/setDoc.
-    idMercadoLivre: outroDonoNoCreate == null ? idMlNovo : null,
-    ie: fields.ie,
-    // `sanitizeTelefone`, not `normalizeTelefone`: a masked value (`11*****8888`)
-    // would otherwise be stripped to 6 digits and throw a ZodError inside
-    // `add`, aborting the whole import as if it were transient.
-    telefone,
-    // `''` fails `clienteSchema.email`'s `.email()` check — same reason as the
-    // patch path above.
-    email: identityValue(fields.email),
-    timestamp: nowMs,
-    ultimaModificacao: nowMs,
-  } satisfies DocumentData);
+  // Add every exact owner observed by the fallback queries, not only the row we
+  // selected. That preserves intentional CPF forks while making the side index
+  // complete enough for a normalized idEstrangeiro spelling on the next run.
+  for (const identity of identidadesLidas) {
+    const owners = observedOwners.get(identity.spec.id)!;
+    if (clientePossuiIdentidade(selectedCliente, identity.spec)) owners.add(selectedId);
+    else owners.delete(selectedId);
+    const clienteIds = uniqueSorted(owners);
+    const storedIds = uniqueSorted(identity.stored?.clienteIds ?? []);
+    if (
+      identity.stored != null &&
+      identity.stored.tipo === identity.spec.tipo &&
+      sameStrings(storedIds, clienteIds)
+    ) {
+      continue;
+    }
+    tx.set(
+      clienteIdentidadeCollection.docRef(db, {}, identity.spec.id),
+      clienteIdentidadeCollection.parse(
+        buildClienteIdentidadeData(identity.spec, clienteIds, nowMs),
+      ),
+    );
+  }
 
   return {
-    clienteId: ref.id,
-    created: true,
-    matchedBy: null,
+    clienteId: selectedId,
+    created,
+    matchedBy: created ? null : matchedBy,
     rejected,
     dropped,
-    idMercadoLivreConflito: conflitoNoCreate,
+    idMercadoLivreConflito,
   };
 }
