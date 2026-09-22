@@ -182,8 +182,8 @@ export const MOTIVO_NAO_BR = 'nao-br';
  *
  * `null` unless BOTH the name and the document pass. One of the two is not a
  * partial capture: `findOrCreateCliente` has no strong key to match a
- * name-without-document on, so it would `add` blind — and the next delivery
- * would add again, one junk cliente per push.
+ * name-without-document on and refuses a new cliente for it. Returning `null`
+ * here keeps that permanent provider-data gap out of the write path entirely.
  *
  * ⚠️ The name is `recipient_address.name`. Shopee's detail carries no buyer
  * LEGAL name at all; for a BR order Shopee requires the recipient's CPF, so

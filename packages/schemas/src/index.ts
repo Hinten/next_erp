@@ -75,6 +75,13 @@ export {
   type TipoCliente,
 } from './cliente';
 
+export {
+  clienteIdentidadeSchema,
+  clienteIdentidadeTipoSchema,
+  type ClienteIdentidade,
+  type ClienteIdentidadeTipo,
+} from './clienteIdentidade';
+
 // The shared cliente-resolution DECISION (#786): telefone/e-mail are signals,
 // cpf_cnpj/idEstrangeiro are identity. Consumed by the web dedup screen and by
 // every unattended server importer, so the two can never drift apart again.

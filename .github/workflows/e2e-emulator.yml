@@ -180,7 +180,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install firebase-tools (pinned)
-        run: npm i -g firebase-tools@15.15.0
+        run: npm i -g firebase-tools@15.25.0
 
       # Not the Playwright container here (that image lacks the JVM), so unlike the
       # staging lanes this one fetches Chromium and its apt system libraries itself.

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Firestore, Query, type DocumentReference } from 'firebase-admin/firestore';
+import { Firestore, Query, Transaction, type DocumentReference } from 'firebase-admin/firestore';
 import {
   clienteCollection,
   conversaCollection,
@@ -894,7 +894,7 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     expect((await clienteRef.get()).data()).toEqual(afterReview);
   });
 
-  it('an importer retries its real stale snapshot and cannot restore a phone the operator intentionally cleared', async () => {
+  it('serializes an importer with an operator clear and never restores the reviewed phone on replay', async () => {
     await seedCliente('cliente-a', null);
     const cpf = '52998224725';
     const clienteRef = clienteCollection.docRef(db, {}, 'cliente-a');
@@ -908,13 +908,14 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     const snapshotReleased = new Promise<void>((resolve) => {
       releaseSnapshot = resolve;
     });
-    const originalGet = Query.prototype.get;
+    const originalGet = Transaction.prototype.get;
     let observedReads = 0;
-    const getSpy = vi.spyOn(Query.prototype, 'get').mockImplementation(async function (
-      this: Query,
+    const getSpy = vi.spyOn(Transaction.prototype, 'get').mockImplementation(async function (
+      this: Transaction,
+      target: Parameters<Transaction['get']>[0],
     ) {
-      const snapshot = await originalGet.call(this);
-      if (this.isEqual(expectedQuery)) {
+      const snapshot = await originalGet.call(this, target as never);
+      if (target instanceof Query && target.isEqual(expectedQuery)) {
         observedReads++;
         if (observedReads === 1) {
           snapshotRead();
@@ -938,21 +939,41 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     const importing = findOrCreateCliente(db, input);
     try {
       await readReached;
-      const current = await clienteRef.get();
+      const editingSnapshot = await clienteRef.get();
+      const firstClear = clienteRef
+        .update(
+          buildClienteTelefonePatch(editingSnapshot.data()!, {
+            tipo: 'manual',
+            patch: { telefone: null, telefonesAdicionais: [] },
+          }),
+          { lastUpdateTime: editingSnapshot.updateTime! },
+        )
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+      releaseSnapshot();
+
+      expect(await importing).toMatchObject({ clienteId: 'cliente-a', created: false });
+      // The server transaction held the cliente read lock; the operator's stale
+      // precondition therefore loses visibly instead of silently overwriting.
+      expect(await firstClear).toMatchObject({ code: 9 });
+
+      const reviewed = await clienteRef.get();
       await clienteRef.update(
-        buildClienteTelefonePatch(current.data()!, {
+        buildClienteTelefonePatch(reviewed.data()!, {
           tipo: 'manual',
           patch: { telefone: null, telefonesAdicionais: [] },
         }),
-        { lastUpdateTime: current.updateTime! },
+        { lastUpdateTime: reviewed.updateTime! },
       );
-      releaseSnapshot();
-      expect(await importing).toMatchObject({ clienteId: 'cliente-a', created: false });
-      expect(observedReads).toBe(2);
+      expect(observedReads).toBe(1);
       const afterRace = await clienteRef.get();
       expect(afterRace.data()).toMatchObject({
         telefone: null,
-        telefonesAdicionais: [],
+        // The serialized import observed A first; the later human clear keeps
+        // that former primary as history while marking the primary managed.
+        telefonesAdicionais: [A],
         telefoneGerenciado: true,
       });
       expect(await findOrCreateCliente(db, input)).toMatchObject({
