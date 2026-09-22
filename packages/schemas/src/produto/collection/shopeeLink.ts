@@ -442,7 +442,11 @@ export const produtoShopeeLinkSchema = z
      * the child rows self-expiring and costs no second writer).
      */
     estoqueEnviadoEm: z.number().int().nullable().default(null),
-    /** The quantity SENT for the no-model listing, or the maximum sent across the models. */
+    /**
+     * The quantity SENT for the no-model listing, or the **SUM** sent across
+     * the accepted models — never a maximum, and never the echo Shopee sends
+     * back. A twenty-model family at 5 each stores 100.
+     */
     estoqueEnviado: z.number().int().nullable().default(null),
     /** How many models the last `update_stock` call carried. */
     estoqueModelosEnviados: z.number().int().nullable().default(null),

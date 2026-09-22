@@ -40,7 +40,11 @@ describe('deveEnviarFamiliaCore — the high-stock rule and its guard', () => {
     );
   });
 
-  it('the guard is symmetric: 95 → 110 sends too', () => {
+  it('⚠️ NEAR-MISS for the `atual` spelling: 95 → 110 sends too (the guard is symmetric)', () => {
+    // THE other half of the crossing guard, and the only case that sees it. A
+    // rule written as `atual <= limiar` answers the SAME as `min(...)` for every
+    // falling pair — including the 110 → 95 above — so a RISE is the one
+    // movement where the wrong spelling is visible at all.
     expect(deveEnviarFamiliaCore(mapa([['PROD', 110]]), mapa([['PROD', 95]]), true, LIMIAR)).toBe(
       true,
     );

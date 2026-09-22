@@ -47,7 +47,10 @@
  *     with a delay rather than sleeping or failing: a delayed re-enqueue
  *     consumes no queue attempt, which is the only way to express "wait six
  *     hours" without burning the three the queue allows.
- * 3.  the client.
+ * 3.  the client — and the ONE refusal that never reaches the error ladder
+ *     below, because `ShopeeContaNotConfiguredError` does not descend from the
+ *     package's base class: a conta unconfigured between the plan and the
+ *     dispatch is recorded on the CONTA and discarded, never retried.
  * 4.  ONE `update_stock`.
  * 5.  attribution by `model_id`, then the write-backs.
  *
@@ -66,6 +69,15 @@
  * prints it between H and J. That is forced, not chosen: the class extends
  * `ShopeeApiError`, so it must be narrowed first or it never matches at all.
  * The letter order governs the lettered arms only.
+ *
+ * ⚠️ …and because it sits there, it is gated on the CODE and not on the class
+ * alone. The transport builds that subclass for any refusal whose body happens
+ * to re-parse, code-blind by design, so a class-only test would put a conta-wide
+ * verdict (holiday, penalty, warehouse block) and every terminal identity
+ * refusal through the attribution path instead: no conta pause, no fingerprint,
+ * and Shopee's own code replaced by `erp:modelo-sem-resposta`. A partial that is
+ * not the declared code falls through to the lettered arms carrying the SAME
+ * error.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -87,7 +99,7 @@ import { z } from 'zod';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import type { AvisoDeps } from '../avisos/autorizacao';
-import { loadShopeeContext } from '../core/shopee';
+import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
 import { validationPaths } from '../core/validationIssues';
 import { avisarEstoqueAcimaDoDisponivel, resolverEstoqueAcimaDoDisponivel } from './avisoEstoque';
 import {
@@ -107,6 +119,7 @@ import {
   MOTIVO_ESTOQUE_SHOPEE,
   RESULTADO_MODELO,
   ShopeeStockTasksDisabledError,
+  limitarMensagemEstoque,
   type LinhaDeModeloEnviada,
   type MotivoEstoqueShopee,
 } from './errosEstoque';
@@ -245,7 +258,15 @@ export interface ResultadoEnvioEstoqueShopee {
   readonly modelos: readonly LinhaDeModeloEnviada[];
   /** The sum of what was SENT for the accepted models — never the echo. */
   readonly quantidadeEnviada: number;
-  /** How many Shopee calls this task actually made (0, 1, 2 or 3). */
+  /**
+   * How many Shopee calls this task actually made — **0 to 4**.
+   *
+   * 1 is the ordinary send; 3 is the floor path (send → `get_item_promotion` →
+   * clamped re-send), and 4 is that same path whose clamped re-send was refused
+   * by an arm that spends a call of its own — today only arm G's one
+   * `get_shop_holiday_mode`. Nothing but the floor path reaches 3, so a 3 or a 4
+   * still says the floor path ran.
+   */
   readonly chamadasShopee: number;
   /** MS. Set when this task armed or observed a conta pause. */
   readonly pausadoAte: number | null;
@@ -333,15 +354,28 @@ type Classificacao =
   /** Arm K — a code nobody taught us. Recorded, never retried. */
   | { readonly arm: 'desconhecida' };
 
-/** Arm E — the five codes, each with the slug an operator reads. */
-const FORMA_DE_LOJA_POR_CODIGO: Record<string, MotivoEstoqueShopee> = {
-  // [sic] — Shopee's own spelling of "update".
-  error_wms_shop_block_upate_stock: MOTIVO_ESTOQUE_SHOPEE.lojaArmazem,
-  error_busi_cannot_edit_vsku: MOTIVO_ESTOQUE_SHOPEE.lojaVsku,
-  error_seller_under_penalty: MOTIVO_ESTOQUE_SHOPEE.lojaComPenalidade,
-  error_perm_non_admin: MOTIVO_ESTOQUE_SHOPEE.semPermissao,
-  cnsc_shop_block: MOTIVO_ESTOQUE_SHOPEE.lojaCnscNaoMigrada,
-};
+/**
+ * Arm E — the five codes, each with the slug an operator reads.
+ *
+ * ⚠️ A `Map`, not a plain object, and not for style — the package states the
+ * same rule over the same class of input (`errors.ts:280-287`). Both lookups
+ * below are keyed by text that arrives VERBATIM from Shopee (an envelope
+ * `error`, or a free-text `failed_reason` handed in as the code), so on an
+ * object literal `FORMA_DE_LOJA_POR_CODIGO['constructor']` answers
+ * `Object.prototype.constructor` — a truthy FUNCTION that passes
+ * `!== undefined`, takes arm E and pauses the whole conta for 24 h on a string
+ * nobody taught us.
+ */
+const FORMA_DE_LOJA_POR_CODIGO: ReadonlyMap<string, MotivoEstoqueShopee> = new Map(
+  Object.entries({
+    // [sic] — Shopee's own spelling of "update".
+    error_wms_shop_block_upate_stock: MOTIVO_ESTOQUE_SHOPEE.lojaArmazem,
+    error_busi_cannot_edit_vsku: MOTIVO_ESTOQUE_SHOPEE.lojaVsku,
+    error_seller_under_penalty: MOTIVO_ESTOQUE_SHOPEE.lojaComPenalidade,
+    error_perm_non_admin: MOTIVO_ESTOQUE_SHOPEE.semPermissao,
+    cnsc_shop_block: MOTIVO_ESTOQUE_SHOPEE.lojaCnscNaoMigrada,
+  } satisfies Record<string, MotivoEstoqueShopee>),
+);
 
 /** Arm B — the three promotion hard blocks, Shopee's spellings verbatim [sic]. */
 const CODIGOS_DE_PROMOCAO: readonly string[] = [
@@ -356,12 +390,20 @@ const CODIGOS_DE_FORMA_DE_MODELO: readonly string[] = [
   'error_edit_item_stock_for_item_has_model',
 ];
 
-/** Arm D — who the listing belongs to, or whether it exists at all. */
-const IDENTIDADE_POR_CODIGO: Record<string, MotivoEstoqueShopee> = {
-  error_item_not_belong_shop: MOTIVO_ESTOQUE_SHOPEE.anuncioDeOutraLoja,
-  error_item_not_found: MOTIVO_ESTOQUE_SHOPEE.anuncioInexistente,
-  error_nil_shopid_or_itemid: MOTIVO_ESTOQUE_SHOPEE.anuncioInexistente,
-};
+/**
+ * Arm D — who the listing belongs to, or whether it exists at all.
+ *
+ * ⚠️ A `Map` for the same reason as {@link FORMA_DE_LOJA_POR_CODIGO}: an object
+ * literal answers `Object.prototype` members for `__proto__`, `toString` and
+ * friends, and a provider string is not a trusted key.
+ */
+const IDENTIDADE_POR_CODIGO: ReadonlyMap<string, MotivoEstoqueShopee> = new Map(
+  Object.entries({
+    error_item_not_belong_shop: MOTIVO_ESTOQUE_SHOPEE.anuncioDeOutraLoja,
+    error_item_not_found: MOTIVO_ESTOQUE_SHOPEE.anuncioInexistente,
+    error_nil_shopid_or_itemid: MOTIVO_ESTOQUE_SHOPEE.anuncioInexistente,
+  } satisfies Record<string, MotivoEstoqueShopee>),
+);
 
 /**
  * THE table. One walk, one declared order, used by BOTH the error ladder and
@@ -409,7 +451,7 @@ function classificarCodigoDeEstoque(
   }
 
   // ---- E: the shop's own shape. Above J. ----
-  const forma = FORMA_DE_LOJA_POR_CODIGO[nu];
+  const forma = FORMA_DE_LOJA_POR_CODIGO.get(nu);
   if (forma !== undefined) return { arm: 'forma-de-loja', motivo: forma };
   if (msg.includes('cnsc shop not upgraded')) {
     return { arm: 'forma-de-loja', motivo: MOTIVO_ESTOQUE_SHOPEE.lojaCnscNaoMigrada };
@@ -427,9 +469,20 @@ function classificarCodigoDeEstoque(
   }
 
   // ---- D: identity. ----
-  const identidade = IDENTIDADE_POR_CODIGO[nu];
+  const identidade = IDENTIDADE_POR_CODIGO.get(nu);
   if (identidade !== undefined) return { arm: 'terminal', motivo: identidade };
   if (nu === 'error_param' && (msg.includes('repeat model_id') || msg.includes('wrong model_id'))) {
+    return { arm: 'terminal', motivo: MOTIVO_ESTOQUE_SHOPEE.modeloInvalido };
+  }
+  // ⚠️ CODE-BLIND, like arm A, and it is the only per-model reason text the
+  // sandbox probe actually measured: P9 answered `failed_reason: "model ID not
+  // exist in sku"` on a 200 envelope, and ruling O2 binds that text to THIS arm.
+  // The two needles above cannot serve it — they require `error_param`, and on
+  // the per-model path the free text is handed in as the code, so `nu` is the
+  // sentence itself and never a code. Without this line the one measured
+  // refusal lands in arm K and the operator reads "a code the ERP has not
+  // classified" instead of "re-import the listing to refresh the model links".
+  if (msg.includes('model id not exist')) {
     return { arm: 'terminal', motivo: MOTIVO_ESTOQUE_SHOPEE.modeloInvalido };
   }
 
@@ -448,6 +501,26 @@ function classificarCodigoDeEstoque(
 }
 
 /**
+ * The ONE code the page documents as carrying a `failure_list` beside a
+ * non-empty `error` — the whole reason `payloadNoErro` exists on this operation.
+ */
+const CODIGO_PARCIAL_DECLARADO = 'error_busi_update_stock_failed';
+
+/**
+ * Whether a {@link ShopeeApiPartialError} is the partial the seam declares, or
+ * merely an ordinary refusal whose body happened to re-parse.
+ *
+ * ⚠️ The transport's flag is CODE-BLIND by design, so the class is evidence
+ * that the payload survived — never evidence of what the refusal MEANS. Only
+ * the declared code may take the attribution path; everything else belongs to
+ * the lettered arms, which is where the conta pauses and the fingerprints live.
+ */
+function ehParcialDeclarado(err: ShopeeApiPartialError): boolean {
+  const nu = shopeeCodeSemPrefixoDeModulo(err.code) ?? err.code;
+  return nu === CODIGO_PARCIAL_DECLARADO;
+}
+
+/**
  * The per-model half: a `failed_reason` TEXT through the SAME table, reduced to
  * a motivo.
  *
@@ -455,6 +528,27 @@ function classificarCodigoDeEstoque(
  * arguments — the message needles are what actually match — and `kind` is
  * `other`, because one refused model of a partially accepted call is never a
  * reason to retry the whole task.
+ *
+ * ⚠️ **This half REDUCES and never ACTS — with exactly ONE exception, arm A.**
+ * The table's three conta arms pause nothing here: a conta-wide verdict
+ * arriving as one line of a `failure_list` becomes that model's own row and
+ * nothing else. But a `piso`-classified line DOES route, through
+ * {@link caminhoDoPisoPorModelo}, because probe **P9** measured the per-model
+ * refusal as the PRIMARY shape this provider uses (HTTP 200, `error: ''`, BOTH
+ * lists populated) — so a floor only the ERROR ladder could reach would be a
+ * floor that, on the measured wire, nothing ever reads. The floor path
+ * therefore has **TWO entries**: the envelope ladder's arm A, whose retry
+ * carries the FULL clamped list, and this one, whose retry carries ONLY the
+ * refused models (the accepted ones must not be republished).
+ *
+ * ⚠️ So `piso-de-reserva-nao-atendido` is terminal here only AFTER that path
+ * has run. On the FIRST pass it is the provisional reading of a line that is
+ * about to be clamped and retried; it stands as the final motivo when the floor
+ * read fails, when the floor map comes back empty, when no model moves, or when
+ * the clamped re-send is refused again — and only then does
+ * `MENSAGEM_POR_MOTIVO`'s sentence (refused *even when raised to the floor*)
+ * describe what actually happened. Read the stored `estoqueRecusaCodigo` (the
+ * verbatim `failed_reason`) beside it either way.
  */
 function motivoDoModeloRecusado(texto: string): MotivoEstoqueShopee {
   const c = classificarCodigoDeEstoque(texto, texto, SHOPEE_ERROR_KIND.other);
@@ -797,6 +891,73 @@ async function pausarConta(
 }
 
 /**
+ * Step 3's ONE contained refusal — the conta stopped being configured between
+ * the plan and the dispatch.
+ *
+ * The sweep's conta gates refuse before a task is ever enqueued, so the only way
+ * to arrive here is for the `shop_id`, the credential or the depósito to be
+ * removed while this task sat in the queue. `ShopeeContaNotConfiguredError`
+ * extends `Error` and NOT the package's base class, so before this arm existed
+ * it escaped the handler, the queue re-drove it three times and dead-lettered
+ * it: no `lastError`, no motivo, no row anywhere a human looks.
+ *
+ * ⚠️ It is the CONTA-pause arms' shape MINUS the pause, and the omissions are
+ * the design:
+ *
+ * - **nothing is written to any link document.** A conta that is not configured
+ *   is not a property of this listing, so a fingerprint here would arm a skip
+ *   the next `item_status` change silently clears — the same argument
+ *   {@link pausarConta} makes, and the reason there is no `estoqueRecusa*` and
+ *   no `ate` on this path;
+ * - **no pause is armed.** A pause expires; this condition is cleared by a human
+ *   finishing the integração, and an armed window would make every task in
+ *   flight answer `conta-pausada` instead of the motivo that names the cause;
+ * - **resolving is SUCCESS to the queue.** Retrying cannot configure a conta,
+ *   and the next sweep re-plans the listing the moment it is.
+ *
+ * Every model of the payload is reported `sem-resposta` carrying the motivo:
+ * nothing was sent and nothing was refused, which is exactly that third state.
+ * ⚠️ Their `codigo` stays `null` — that field holds Shopee's own spelling, and
+ * Shopee never saw this task. The ERP's own `erp:<motivo>` rides the RESULT,
+ * where the field's contract admits it.
+ */
+async function descartarContaNaoConfigurada(
+  db: Firestore,
+  payload: PayloadDeEnvio,
+  deps: EnvioEstoqueDeps,
+  err: ShopeeContaNotConfiguredError,
+): Promise<ResultadoEnvioEstoqueShopee> {
+  const motivo = MOTIVO_ESTOQUE_SHOPEE.contaNaoConfigurada;
+  const mensagem = MENSAGEM_POR_MOTIVO[motivo];
+  // The CLASS plus its message, capped at the same bound a stored problema
+  // takes: `lastError` is read on the conta screen, and the class name is what
+  // says which of the loader's two refusals fired.
+  await registrarErroDaConta(
+    db,
+    payload.integracaoId,
+    limitarMensagemEstoque(`${err.name}: ${err.message}`),
+    deps.nowMs,
+  );
+  return resultado(OUTCOME_ENVIO_ESTOQUE.descartado, {
+    motivo,
+    codigo: codigoDoErp(motivo),
+    modelos: payload.modelos.map((m) => ({
+      modelId: m.modelId,
+      produtoId: m.produtoId,
+      varLinkDocId: m.varLinkDocId,
+      quantidadeSolicitada: m.quantidade,
+      quantidadeEnviada: null,
+      resultado: RESULTADO_MODELO.semResposta,
+      motivo,
+      codigo: null,
+      mensagem,
+      clampado: false,
+      piso: null,
+    })),
+  });
+}
+
+/**
  * The write-backs for an envelope that was read: clean, or partial.
  *
  * ⚠️ CLEAN means every model of the payload was ACCEPTED — no refusal, no
@@ -894,8 +1055,11 @@ async function gravarEnvelope(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Arm A, LAZILY: read the promotions, raise every model to its reserved floor,
- * and try the SAME call once more with the FULL clamped list.
+ * Arm A's FIRST entry — the ENVELOPE one, LAZILY: read the promotions, raise
+ * every model to its reserved floor, and try the SAME call once more with the
+ * FULL clamped list. (The second entry is {@link caminhoDoPisoPorModelo}, for
+ * the 200-with-`failure_list` shape the probe measured; it differs only in
+ * which models the retry carries.)
  *
  * ⚠️ ONE `get_item_promotion` and ONE retry. There is no loop here and no
  * second read: a second arm-A refusal after a clamp means the floor we computed
@@ -1017,6 +1181,15 @@ async function avisarDoClamp(
   let escolhido: { produtoId: string; piso: number; disponivel: number; folga: number } | null =
     null;
   for (const linha of a.linhas) {
+    // ⚠️ A clamp that was REFUSED raises nothing. The rendered sentence says
+    // "o estoque foi enviado no valor da reserva", and a row is keyed on the
+    // model's produto and resolved only by a later CLEAN unclamped send — so on
+    // a clamped retry Shopee refused, an unresolved aviso would stand in an
+    // inbox with no dismiss button asserting a send that never landed.
+    // `clampado` is stamped on the refused branch too, deliberately (the row
+    // must say what was attempted), which is exactly why the test cannot be
+    // `clampado` alone.
+    if (linha.resultado !== RESULTADO_MODELO.enviado) continue;
     if (!linha.clampado) continue;
     const clamp = clamps.get(linha.modelId);
     if (clamp === undefined || clamp.piso === null) continue;
@@ -1042,6 +1215,183 @@ async function avisarDoClamp(
     },
     depsDeAviso(ctx.deps),
   );
+}
+
+/**
+ * Whether this envelope carries at least ONE `failure_list` line the arm table
+ * files under the reserved floor.
+ *
+ * ⚠️ Asked through {@link classificarCodigoDeEstoque}, never through a second
+ * predicate of its own: the walk that DECIDES to read the floor and the walk
+ * that names the motivo must be the same walk of the same table, or the entry
+ * condition and the diagnosis are free to drift apart — which is the whole
+ * reason that table has one copy.
+ */
+function algumaRecusaDePiso(envelope: ShopeeUpdateStock): boolean {
+  for (const linha of envelope.failure_list) {
+    const texto = linha.failed_reason ?? '';
+    if (classificarCodigoDeEstoque(texto, texto, SHOPEE_ERROR_KIND.other).arm === 'piso') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Attribution and the write-backs for an envelope Shopee ANSWERED — plus the
+ * ONE routing decision that cannot be taken after those writes have landed.
+ *
+ * ⚠️ BOTH readers of a 200-shaped body come through here — the happy path and
+ * arm I's declared partial — so the floor's second entry cannot be wired into
+ * one and forgotten in the other. `pisoJaTentado` is what keeps it
+ * non-recursive: the retry inside either floor path re-enters with it set.
+ */
+async function atribuirEGravar(
+  ctx: Contexto,
+  envelope: ShopeeUpdateStock,
+  pisoJaTentado: boolean,
+): Promise<ResultadoEnvioEstoqueShopee> {
+  const a = atribuirPorModelo(ctx.payload, envelope, null);
+  if (!pisoJaTentado && algumaRecusaDePiso(envelope)) {
+    return caminhoDoPisoPorModelo(ctx, envelope, a);
+  }
+  return gravarEnvelope(ctx, a, false);
+}
+
+/**
+ * Arm A's SECOND entry: the floor, reached from a **200 whose `failure_list`
+ * names it per model** — the shape probe P9 measured as the PRIMARY one.
+ *
+ * ⚠️ The retry carries **ONLY the refused models**, and that is the one
+ * difference from {@link caminhoDoPiso}. The other models of this same call
+ * were already ACCEPTED, so re-sending them would republish a number Shopee has
+ * already stored; P8 measured that a partial `stock_list` leaves the omitted
+ * models untouched, which is exactly what makes the narrow list safe. The
+ * "one `update_stock` per task" contract reads "one per ATTEMPT" — the envelope
+ * path already spends a second one.
+ *
+ * ⚠️ A model refused for something OTHER than the floor is re-sent too, at its
+ * own unchanged quantity: it costs no extra call, and its row then says what
+ * the latest attempt learned rather than what the first one did. The ENTRY
+ * condition is still one `piso` line — {@link algumaRecusaDePiso} — so an
+ * identity-only refusal never buys a promotion read.
+ *
+ * ⚠️ Every way the floor cannot help falls back to writing the FIRST envelope
+ * exactly as it stood: a failing read, an empty map, and a floor that moves
+ * nothing (the retry body would be byte-identical to the call just refused).
+ * The refused models keep `piso-de-reserva-nao-atendido` and the child
+ * diagnostic, the accepted ones keep their landing, and the listing is a
+ * PARTIAL — never a listing-level refusal, because part of this call really did
+ * land.
+ *
+ * ⚠️ A rate limit or a reauth during the floor read RETHROWS, as it does on the
+ * envelope path: recording a transport condition as a verdict about the listing
+ * would be the permanent mistake, and the first call's accepted models are
+ * simply re-sent — the payload travels verbatim and `update_stock` is
+ * idempotent at Shopee. ⚠️ **Where that rethrow LANDS differs between the two
+ * entries, and this one is the better landing.** This entry runs inside rung
+ * 4's own `try`, so the throw re-enters the LADDER: a burst limit pauses the
+ * conta and re-enqueues with a delay, consuming no queue attempt, and a dead
+ * token is recorded on the CONTA. The envelope entry is already inside the
+ * ladder, so its rethrow leaves the handler and spends one of the queue's three
+ * attempts on waiting. Neither writes anything to the listing, which is the
+ * property that matters.
+ */
+async function caminhoDoPisoPorModelo(
+  ctx: Contexto,
+  primeiro: ShopeeUpdateStock,
+  a: Atribuicao,
+): Promise<ResultadoEnvioEstoqueShopee> {
+  const recusados = new Set<number>();
+  for (const linha of primeiro.failure_list) recusados.add(linha.model_id);
+
+  let promocoes;
+  try {
+    ctx.chamadas.n += 1;
+    promocoes = await ctx.client.getItemPromotion({ itemIds: [ctx.payload.itemId] });
+  } catch (err) {
+    if (err instanceof ShopeeRateLimitError) throw err;
+    if (err instanceof ShopeeReauthRequiredError) throw err;
+    if (err instanceof ShopeeApiError) return gravarEnvelope(ctx, a, false);
+    throw err;
+  }
+
+  const pisos = pisoPorModelo(promocoes, ctx.payload.itemId);
+  if (pisos.size === 0) return gravarEnvelope(ctx, a, false);
+
+  const clamps = new Map<number, ClampDoModelo>();
+  const quantidades = new Map<number, number>();
+  const reenviados = new Set<number>();
+  const lista: { model_id: number; seller_stock: { stock: number }[] }[] = [];
+  let algumMoveu = false;
+  for (const m of ctx.payload.modelos) {
+    if (!recusados.has(m.modelId)) continue;
+    // ⚠️ `pisos.get(id) ?? null`, never `|| null`: model_id 0 is a legitimate
+    // key and a floor of 0 is a real answer, not an absence.
+    const piso = pisos.get(m.modelId) ?? null;
+    const aplicado = aplicarPiso(m.quantidade, piso);
+    clamps.set(m.modelId, { piso, clampado: aplicado.clampado, solicitada: m.quantidade });
+    quantidades.set(m.modelId, aplicado.valor);
+    reenviados.add(m.modelId);
+    if (aplicado.clampado) algumMoveu = true;
+    lista.push({ model_id: m.modelId, seller_stock: [{ stock: aplicado.valor }] });
+  }
+
+  if (!algumMoveu) return gravarEnvelope(ctx, a, false);
+
+  let segundo;
+  try {
+    ctx.chamadas.n += 1;
+    const resposta = await ctx.client.updateStock({
+      item_id: ctx.payload.itemId,
+      stock_list: lista,
+    });
+    segundo = resposta.response;
+  } catch (err) {
+    if (!(err instanceof ShopeeError)) throw err;
+    return tratarErroDoEnvio(err, ctx, true);
+  }
+
+  // The payload's own quantities are what get RECORDED, so the clamped values
+  // have to travel with them: a row must say what was sent, not what was asked.
+  const clampado: PayloadDeEnvio = {
+    ...ctx.payload,
+    modelos: ctx.payload.modelos.map((m) => ({
+      ...m,
+      quantidade: quantidades.get(m.modelId) ?? m.quantidade,
+    })),
+  };
+  const b = atribuirPorModelo(clampado, mesclarEnvelopes(primeiro, segundo, reenviados), clamps);
+
+  await avisarDoClamp(ctx, b, clamps);
+  return gravarEnvelope(ctx, b, true);
+}
+
+/**
+ * The retry's two lists laid OVER the first call's, model by model.
+ *
+ * ⚠️ A model that was re-sent is described by the SECOND answer and only by it;
+ * a model that was not keeps the FIRST. Concatenating the four lists raw would
+ * leave an accepted-then-refused model in both, and `atribuirPorModelo` reads
+ * the refusal first — so the merge, not the reader, is where the precedence
+ * belongs.
+ */
+function mesclarEnvelopes(
+  primeiro: ShopeeUpdateStock,
+  segundo: ShopeeUpdateStock,
+  reenviados: ReadonlySet<number>,
+): ShopeeUpdateStock {
+  return {
+    ...primeiro,
+    success_list: [
+      ...primeiro.success_list.filter((l) => !reenviados.has(l.model_id)),
+      ...segundo.success_list,
+    ],
+    failure_list: [
+      ...primeiro.failure_list.filter((l) => !reenviados.has(l.model_id)),
+      ...segundo.failure_list,
+    ],
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1114,13 +1464,27 @@ async function tratarErroDoEnvio(
   }
 
   // ---- arm I: the documented coexisting-error partial ----
-  if (err instanceof ShopeeApiPartialError) {
+  //
+  // ⚠️ Gated on the CODE, exactly as the seam's arm-I row declares
+  // (`ShopeeApiPartialError` **with** `error_busi_update_stock_failed`). The
+  // class alone is not the test: the transport builds this subclass for ANY
+  // refusal whose body happens to carry a parseable `response`
+  // (`call.ts:250-255` says so — the flag is code-blind on purpose and leaves
+  // the code decision to the caller). A bare `instanceof` here would therefore
+  // swallow every conta-level verdict below — a holiday, a penalty, a
+  // warehouse block — into a listing-level `enviado-parcial` with no pause, and
+  // every terminal identity refusal into one with no fingerprint, so the skip
+  // set never latches and the listing is re-sent every tick.
+  if (err instanceof ShopeeApiPartialError && ehParcialDeclarado(err)) {
     // ⚠️ RE-PARSED, never cast: `parsed` is `unknown` on purpose and a cast here
     // is the exact shape `no-unvalidated-response` exists to ban.
     const relido = shopeeUpdateStockSchema.safeParse(err.parsed);
     if (relido.success) {
-      const a = atribuirPorModelo(ctx.payload, relido.data.response, null);
-      return gravarEnvelope(ctx, a, false);
+      // ⚠️ Through the SAME reader as the happy path, `pisoJaTentado` and all:
+      // a declared partial is the same 200-shaped body arriving by a different
+      // door, and its `failure_list` can name the floor exactly as one on the
+      // happy path can.
+      return atribuirEGravar(ctx, relido.data.response, pisoJaTentado);
     }
     // A partial whose payload does not re-parse tells us nothing per model;
     // it is exactly as unrecognised as an unknown code.
@@ -1338,7 +1702,22 @@ export async function processShopeeStockSendTask(
   }
 
   // ---- 3. the client ----
-  const client = await clienteDeEstoque(db, payload.integracaoId, deps);
+  //
+  // ⚠️ EXACTLY ONE class is contained here, and everything else still rethrows.
+  // `ShopeeContaNotConfiguredError` is the loader's "this conta cannot be used
+  // at all" and a human clears it, so three queue attempts and a dead-letter buy
+  // nothing and record nothing. A `ShopeeConfigError` from the same call is a
+  // CALLER bug (a backend missing a variable) and must never be filed as a conta
+  // condition; an unknown class is a bug too. Both keep the queue's ladder.
+  let client: ShopeeClient;
+  try {
+    client = await clienteDeEstoque(db, payload.integracaoId, deps);
+  } catch (err) {
+    if (!(err instanceof ShopeeContaNotConfiguredError)) throw err;
+    const r = await descartarContaNaoConfigurada(db, payload, deps, err);
+    console.warn(TAG_LOG, linhaDeLog(payload, deps, r));
+    return r;
+  }
   const ctx: Contexto = { db, payload, deps, alvo, estado, client, chamadas };
 
   // ---- 4. ONE update_stock. No `location_id` key: this channel's contas are
@@ -1354,8 +1733,7 @@ export async function processShopeeStockSendTask(
         seller_stock: [{ stock: m.quantidade }],
       })),
     });
-    const a = atribuirPorModelo(payload, resposta.response, null);
-    r = await gravarEnvelope(ctx, a, false);
+    r = await atribuirEGravar(ctx, resposta.response, false);
   } catch (err) {
     // Same narrow as the floor path's: every failure `update_stock` can produce
     // descends from the package's own base class, and anything that does not is

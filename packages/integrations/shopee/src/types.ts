@@ -2866,12 +2866,15 @@ export const SHOPEE_UPDATE_STOCK_MAX_MODELS = 50;
  * The floor of a stock value on the wire — `0` is a legal quantity on an
  * UPDATE, not an absence.
  *
- * ⚠️ It exists so a caller can say "zero the listing" without reaching for a
- * bare literal, and so the guard on the way out is `>= 0` rather than the
- * `> 0` every other id-shaped field uses. `update_stock`'s own response sample
- * prints `"stock": 0`, and announcement 1445 (BR) is the behaviour that makes
- * it load-bearing: Shopee RESTORES stock by itself when an earlier order is
- * cancelled, so keeping a sold-out listing at zero is the integrator's job.
+ * ⚠️ It NAMES the floor; it does not enforce it. The outgoing guard on
+ * `seller_stock[].stock` is `assertIdNaoNegativo` — `>= 0` **and** a safe
+ * integer, which is why the check is not a bare comparison against this
+ * constant — and a reader comparing the two must not be told otherwise.
+ * `update_stock`'s own response sample prints `"stock": 0`, probe P6 measured a
+ * `stock: 0` update accepted live, and announcement 1445 (BR) is the behaviour
+ * that makes the value load-bearing: Shopee RESTORES stock by itself when an
+ * earlier order is cancelled, so keeping a sold-out listing at zero is the
+ * integrator's job.
  */
 export const SHOPEE_STOCK_MIN_WIRE = 0;
 

@@ -168,6 +168,17 @@ export interface OpcoesDoMembroShopee {
  * the ONLY producer of it is a native Shopee kit. The shared core cannot answer
  * `null` for this channel (see {@link opcoesShopee}), so the two `null` sources
  * can never be confused.
+ *
+ * ⚠️ **No production caller today, and that is a fact about the BINDING, not a
+ * leftover.** The three quantity call sites — the sweep, the manual push and the
+ * CLI — all go through {@link quantidadesDaFamiliaShopee}, which takes a row and
+ * no per-listing options, and the native-kit refusal is enforced one layer up by
+ * `podeEnviarEstoqueShopee`'s rung 3 (which produces the `kit-derivado` slug a
+ * `null` quantity could not). This seam is kept for the per-LISTING binding a
+ * band-aware or link-aware caller will need — `bandaMax` is `null` at sweep time
+ * by design (probe P7-pre / ruling O3) — so do not go looking for the call site,
+ * and do not read this as a second, competing statement of the `kitNativo` rule:
+ * the enforcing copy is the gate's.
  */
 export function quantidadeDoMembroShopee(
   member: MembroDaFamilia,
@@ -214,7 +225,10 @@ export function quantidadesAnterioresShopee(
  *
  * ⚠️ The core compares `min(anterior, atual)`, never `atual` alone: `110 → 95`
  * must send, because that is the movement walking a listing INTO the danger
- * zone. Read ADR 0014 before touching the core; nothing here can change it.
+ * zone — and `95 → 110` must send too, which is the `atual` near-miss, because
+ * on a FALLING quantity `min` and `atual` are the same number and only a RISE
+ * tells the two spellings apart. Read ADR 0014 before touching the core;
+ * nothing here can change it.
  */
 export function deveEnviarFamiliaShopee(
   quantidadesAtuais: ReadonlyMap<string, number>,

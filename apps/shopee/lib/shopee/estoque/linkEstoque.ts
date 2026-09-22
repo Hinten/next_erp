@@ -203,7 +203,15 @@ export interface AlvoDaVariacao {
 export interface EnvioLimpo {
   /** MILLISECONDS — the tick's instant, read once by the caller. */
   readonly nowMs: number;
-  /** What was SENT: the no-model listing's quantity, or the maximum across models. */
+  /**
+   * What was SENT: the no-model listing's quantity, or the **SUM** across the
+   * accepted models.
+   *
+   * ⚠️ A sum, not a maximum — it is `ResultadoEnvioEstoqueShopee.quantidadeEnviada`
+   * verbatim, which accumulates over the accepted models, and the total is what
+   * a diff against the ledger wants. A twenty-model family at 5 each stores
+   * 100, never 5.
+   */
   readonly quantidade: number;
   /** How many models this `update_stock` call carried. */
   readonly modelos: number;
@@ -348,8 +356,10 @@ async function escreverNaVariacao(
  *
  * ⚠️ **The one clearer.** It stamps `estoqueEnviadoEm` and nulls all six
  * `estoqueRecusa*` fields — `null`, never absent, because a reader must be able
- * to tell "diagnosed and then fixed" from "never diagnosed", and because the
- * skip set is armed by a NON-null `estoqueRecusaEm`.
+ * to tell "diagnosed and then fixed" from "never diagnosed", and because
+ * nulling all six is what clears BOTH halves of the skip set at once: the TIME
+ * mechanism reads `estoqueRecusaAte`, and the STATE one needs a non-null
+ * `estoqueRecusaEm` beside at least one recorded reading.
  *
  * Resolves `false` when the link was already gone.
  */
@@ -385,8 +395,26 @@ export async function registrarEnvioLimpo(
  *
  * ⚠️ It writes NO fingerprint and NO `estoqueRecusaAte`. A partial is not a
  * property of the listing's state: re-sending the same listing in the next tick
- * is exactly what should happen, and arming a skip here would suppress the
- * retry that fixes it.
+ * is what should happen, and arming a skip here would suppress the retry that
+ * fixes it.
+ *
+ * ⚠️ **And it really does not arm one — that is a property of the GATE, not of
+ * this key set.** The state mechanism never asked whether the two halves were
+ * WRITTEN; it compares them. What makes the omission mean what it says is
+ * `pularPorRecusaAnterior`'s requirement that at least ONE of the two RECORDED
+ * readings be non-null (`podeEnviarEstoque.ts`): this patch records neither, so
+ * the STATE half cannot fire whatever the link happens to read. That closes the
+ * corner a merge would otherwise open — on a link whose `estadoAnuncio` and
+ * `item_status` both read null or absent (every link a clean send has just
+ * cleared, and every step-9 import that folded an unknown status) the stamped
+ * `estoqueRecusaEm` used to meet `null === null` on both halves and latch
+ * `recusa-anterior` for ever, with nothing left that could move to lift it.
+ *
+ * ⚠️ A STALE fingerprint left by an earlier refusal survives this merge and is
+ * still compared — that is deliberate and is the same rule as everywhere else:
+ * a recorded reading is lifted by the reading MOVING, and a partial moves
+ * nothing. Do not "improve" this writer by nulling the two halves; the gate,
+ * not the patch, is where "no recorded state" is decided.
  *
  * Resolves `false` when the link was already gone.
  */

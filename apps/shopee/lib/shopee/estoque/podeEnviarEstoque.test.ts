@@ -286,10 +286,16 @@ describe('pularPorRecusaAnterior — o mecanismo de ESTADO', () => {
   it('⚠️ PAR: um campo AUSENTE e um carimbo null são o MESMO estado ⇒ pula', () => {
     // A `.nullable().default(null)` column before its first write looks exactly
     // like an absent key. Both sides are normalised, so the two agree.
+    //
+    // ⚠️ Uma das metades GRAVADAS é não-nula de propósito. São DUAS regras
+    // diferentes e nenhuma implica a outra: o fold é o que torna a AUSÊNCIA
+    // comparável (este par), e a cláusula da "pelo menos uma leitura gravada"
+    // é o que impede o fold de comparar DUAS ausências (o near-miss abaixo).
     const alvo = {
-      // `estadoAnuncio` and `item_status` are deliberately not written at all.
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      // `item_status` é deliberadamente não escrito.
       estoqueRecusaEm: AGORA - 1_000,
-      estoqueRecusaEstado: null,
+      estoqueRecusaEstado: ESTADO_ANUNCIO_SHOPEE.ativo,
       estoqueRecusaItemStatus: null,
     };
     expect(pularPorRecusaAnterior(link(alvo), AGORA)).toBe(true);
@@ -299,23 +305,64 @@ describe('pularPorRecusaAnterior — o mecanismo de ESTADO', () => {
     });
     // ...and the mirror image: a written null against an absent stamp.
     const espelho = {
-      estadoAnuncio: null,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
       item_status: null,
       estoqueRecusaEm: AGORA - 1_000,
+      estoqueRecusaEstado: ESTADO_ANUNCIO_SHOPEE.ativo,
+      // `estoqueRecusaItemStatus` ausente — a outra ponta do mesmo fold.
     };
     expect(pularPorRecusaAnterior(link(espelho), AGORA)).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS (este teste foi INVERTIDO): as DUAS metades GRAVADAS nulas NÃO pulam', () => {
+    // ⚠️ INVERTIDO por decisão do dono (L2-1, 2026-09-22). Antes este caso
+    // vinha junto do par acima e afirmava `true`. Ele afirmava um DEFEITO: um
+    // carimbo sem nenhuma leitura gravada — o que `registrarEnvioParcial`
+    // escreve, e o que uma recusa terminal num link sem leituras escreve —
+    // encontrava `null === null` nas duas metades e travava `recusa-anterior`
+    // PARA SEMPRE, porque nenhuma das metades tem para onde se mexer.
+    // O mecanismo de ESTADO só arma quando ao menos UMA leitura foi gravada.
+    const semLeituraNenhuma = {
+      // `estadoAnuncio` e `item_status` nunca foram escritos no vínculo.
+      estoqueRecusaEm: AGORA - 1_000,
+      estoqueRecusaEstado: null,
+      estoqueRecusaItemStatus: null,
+    };
+    expect(pularPorRecusaAnterior(link(semLeituraNenhuma), AGORA)).toBe(false);
+    expect(veredito(semLeituraNenhuma)).toEqual({ enviar: true });
+
+    // ...e a mesma impressão vazia contra um vínculo que JÁ LÊ ('ativo', null)
+    // também envia: quem não gravou leitura nenhuma não tem o que comparar.
+    const lendoAtivo = {
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      item_status: null,
+      estoqueRecusaEm: AGORA - 1_000,
+      estoqueRecusaEstado: null,
+      estoqueRecusaItemStatus: null,
+    };
+    expect(pularPorRecusaAnterior(link(lendoAtivo), AGORA)).toBe(false);
+    expect(veredito(lendoAtivo)).toEqual({ enviar: true });
+
+    // ...e o carimbo com as duas metades AUSENTES é o mesmo caso (o fold).
+    expect(
+      pularPorRecusaAnterior(link({ estadoAnuncio: null, estoqueRecusaEm: AGORA - 1_000 }), AGORA),
+    ).toBe(false);
   });
 
   it('⚠️ NEAR-MISS: null e a string vazia NÃO são o mesmo estado ⇒ ENVIA', () => {
     // Nothing is trimmed, lower-cased or coerced: two RECORDED READINGS are
     // compared for identity, never for likeness.
+    // ⚠️ `estoqueRecusaEstado` é não-nulo e BATE, de modo que a decisão fica
+    // inteiramente na outra metade — `'' !== null`. Com as duas metades
+    // gravadas nulas o veredito seria `false` pela cláusula da leitura
+    // gravada, e esta linha não provaria nada sobre o fold.
     expect(
       pularPorRecusaAnterior(
         link({
-          estadoAnuncio: '',
+          estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
           item_status: '',
           estoqueRecusaEm: AGORA - 1_000,
-          estoqueRecusaEstado: null,
+          estoqueRecusaEstado: ESTADO_ANUNCIO_SHOPEE.ativo,
           estoqueRecusaItemStatus: null,
         }),
         AGORA,

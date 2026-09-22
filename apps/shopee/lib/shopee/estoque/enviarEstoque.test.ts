@@ -5,6 +5,7 @@ import {
   SHOPEE_ERROR_KIND,
   ShopeeApiError,
   ShopeeApiPartialError,
+  ShopeeConfigError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
@@ -20,6 +21,9 @@ import {
 // cannot show any of it.
 import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
+// ⚠️ A classe REAL do carregador de contexto: o estreitamento do passo 3 é um
+// `instanceof`, e um sósia com o mesmo `name` passaria por ele sem ser ela.
+import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import { chaveEstoqueAcimaDoDisponivel } from './avisoEstoque';
 import {
   MAX_MODELOS_POR_TASK,
@@ -30,6 +34,9 @@ import {
   ratePauseMin,
 } from './constantesEstoque';
 import { MOTIVO_ESTOQUE_SHOPEE, RESULTADO_MODELO } from './errosEstoque';
+// ⚠️ O portão REAL, para aferir sobre o documento MESCLADO o que o conjunto de
+// chaves de um patch nunca pode mostrar (teste 26b).
+import { podeEnviarEstoqueShopee } from './podeEnviarEstoque';
 import type { TarefaDeEstoqueShopee } from './planoEstoque';
 import type { AgendadorEstoqueShopee, OpcoesDeEnfileiramento } from './shopeeStockTasks';
 import {
@@ -543,6 +550,108 @@ describe('rung 2 — a conta pausada', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  (4b) o passo 3 — a conta que deixou de estar configurada                   */
+/* -------------------------------------------------------------------------- */
+
+describe('rung 3 — a conta desconfigurada entre o plano e o despacho', () => {
+  /** Um `clientFor` que RECUSA, para aferir o passo 3 sem cliente nenhum. */
+  function clientForQueRecusa(err: Error) {
+    return vi.fn(async (): Promise<ShopeeClient> => {
+      throw err;
+    });
+  }
+
+  it('17b — ⚠️ PAR: uma conta DESCONFIGURADA no passo 3 vira descarte na CONTA, sem tocar o anúncio', async () => {
+    // ⚠️ `ShopeeContaNotConfiguredError` estende `Error`, NÃO `ShopeeError`, e a
+    // carga do contexto fica ACIMA de qualquer `try` da escada. Sem este braço
+    // a recusa SOBE da função despachada, a fila a reprocessa três vezes e a
+    // manda para a carta morta: nenhum `lastError`, nenhum motivo, nenhuma
+    // linha em lugar nenhum que um humano leia. As portas de conta da varredura
+    // recusam ANTES de enfileirar, então esta é a única janela em que ela cabe.
+    const err = new ShopeeContaNotConfiguredError(`Integração ${INTEGRACAO} não é do tipo Shopee.`);
+    const clientFor = clientForQueRecusa(err);
+    const c = cenario({}, { clientFor });
+
+    const r = await correr(c);
+
+    expect(clientFor).toHaveBeenCalledTimes(1);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.descartado);
+    expect(r.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaNaoConfigurada);
+    expect(r.codigo).toBe(`erp:${MOTIVO_ESTOQUE_SHOPEE.contaNaoConfigurada}`);
+    // Zero chamadas Shopee — por ORDEM de chamada, não por um mock.
+    expect(c.client.ordem).toEqual([]);
+    expect(r.chamadasShopee).toBe(0);
+    expect(r.quantidadeEnviada).toBe(0);
+    // Nenhuma pausa é armada: esta condição não vence, um humano a resolve.
+    expect(r.pausadoAte).toBeNull();
+    expect(c.scheduler.chamadas).toEqual([]);
+
+    // A CONTA guarda o fato — a classe mais a mensagem — e só os três campos
+    // de `registrarErroDaConta`: um `pausaMotivo` aqui faria toda tarefa em voo
+    // responder `conta-pausada` em vez do motivo que nomeia a causa.
+    const escrita = unicaEscrita(c.db, CAMINHO_ESTADO);
+    expect(Object.keys(escrita).sort()).toEqual(['lastError', 'lastErrorAtMs', 'lastSweepAtMs']);
+    expect(escrita.lastError).toBe(
+      `ShopeeContaNotConfiguredError: Integração ${INTEGRACAO} não é do tipo Shopee.`,
+    );
+    expect(escrita.lastErrorAtMs).toBe(AGORA_MS);
+
+    // E NADA no vínculo: uma conta desconfigurada não é propriedade deste
+    // anúncio, então uma impressão digital aqui armaria um pulo que a próxima
+    // mudança de `item_status` limpa sozinha.
+    expect(patchesEm(c.db, CAMINHO_LINK)).toEqual([]);
+    expect(c.db.writes.filter((w) => w.path === CAMINHO_LINK)).toEqual([]);
+    expect(patchesEm(c.db, CAMINHO_VAR_A)).toEqual([]);
+    expect(patchesEm(c.db, CAMINHO_VAR_B)).toEqual([]);
+
+    // Toda linha de modelo é `sem-resposta` COM o motivo: nada foi enviado e
+    // nada foi recusado, que é exatamente esse terceiro estado.
+    expect(r.modelos).toHaveLength(2);
+    expect(r.modelos.map((l) => l.modelId)).toEqual([MODELO_A, MODELO_B]);
+    expect(r.modelos.map((l) => l.quantidadeSolicitada)).toEqual([7, 3]);
+    for (const linha of r.modelos) {
+      expect(linha.resultado).toBe(RESULTADO_MODELO.semResposta);
+      expect(linha.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaNaoConfigurada);
+      expect(linha.quantidadeEnviada).toBeNull();
+      // O código do modelo é a grafia da SHOPEE, e a Shopee não viu esta tarefa.
+      expect(linha.codigo).toBeNull();
+      expect(linha.clampado).toBe(false);
+      expect(linha.piso).toBeNull();
+      expect(linha.mensagem.length).toBeGreaterThan(20);
+    }
+  });
+
+  it('17c — ⚠️ NEAR-MISS: um Error comum no passo 3 SOBE (a fila reprocessa um defeito)', async () => {
+    // A metade que mostra onde o estreitamento PARA. `err instanceof Error` é o
+    // pai de toda exceção: com ele no lugar da classe, QUALQUER defeito nosso
+    // nesta linha viraria um descarte nomeado, silencioso e contado como
+    // sucesso pela fila.
+    const c = cenario({}, { clientFor: clientForQueRecusa(new Error('boom')) });
+
+    await expect(correr(c)).rejects.toThrow('boom');
+
+    expect(c.db.writes.filter((w) => w.path === CAMINHO_ESTADO)).toEqual([]);
+    expect(patchesEm(c.db, CAMINHO_LINK)).toEqual([]);
+  });
+
+  it('17d — ⚠️ NEAR-MISS: um ShopeeConfigError no passo 3 SOBE — nunca é contido', async () => {
+    // A MESMA chamada pode levantar esta classe (`shopeeConfig()` roda dentro
+    // de `loadShopeeContext`), e ela é um defeito do CHAMADOR: um backend sem
+    // variável. Arquivá-la como condição da conta escreveria um `lastError` por
+    // conta enquanto nada sincroniza — o argumento do #778, verbatim.
+    const c = cenario(
+      {},
+      { clientFor: clientForQueRecusa(new ShopeeConfigError('SHOPEE_PARTNER_ID ausente')) },
+    );
+
+    await expect(correr(c)).rejects.toBeInstanceOf(ShopeeConfigError);
+
+    expect(c.db.writes.filter((w) => w.path === CAMINHO_ESTADO)).toEqual([]);
+    expect(patchesEm(c.db, CAMINHO_LINK)).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  (5) a atribuição por model_id                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -672,6 +781,34 @@ describe('rung 6 — as escritas de volta', () => {
     const patch = unicoPatch(c.db, CAMINHO_LINK);
     expect(Object.hasOwn(patch, 'estoqueEnviadoEm')).toBe(false);
     expect(patch.estoqueRecusaMotivo).toBe(MOTIVO_ESTOQUE_SHOPEE.envioParcial);
+  });
+
+  it('26b — ⚠️ a PROPRIEDADE do parcial: o anúncio NÃO é pulado no tique seguinte', async () => {
+    // L2-1. O que o teste 26 não consegue ver: o portão não pergunta se as
+    // metades da impressão foram ESCRITAS, ele as COMPARA — e `escreverNoLink`
+    // é um MERGE. Num vínculo sem `estadoAnuncio` e sem `item_status` (todo
+    // vínculo que um envio limpo acabou de zerar, e todo import do passo 9 que
+    // foldou um status desconhecido) o `estoqueRecusaEm` que o parcial carimba
+    // encontrava `null === null` nas duas metades e travava `recusa-anterior`
+    // PARA SEMPRE — nenhuma das duas tem para onde se mexer. Aqui a
+    // propriedade é aferida de ponta a ponta: o remetente REAL grava, e o
+    // portão REAL lê o documento MESCLADO.
+    const c = cenario({
+      updateStock: [
+        envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, 'error_item_uneditable']] }),
+      ],
+    });
+    // O vínculo sem leitura nenhuma — o caso que travava.
+    c.db.seed(CAMINHO_LINK, { item_id: ITEM_ID });
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    const armazenado = c.db.store[CAMINHO_LINK]?.data as Record<string, unknown>;
+    expect(armazenado.estoqueRecusaEm).toBe(AGORA_MS);
+    expect(podeEnviarEstoqueShopee(armazenado, {}, { nowMs: AGORA_MS + 1_000 })).toEqual({
+      enviar: true,
+    });
   });
 
   it('27 — PARCIAL: uma recusa por modelo recusado, no FILHO, com o texto VERBATIM', async () => {
@@ -870,6 +1007,71 @@ describe('a escada de erros — a ordem das classes', () => {
     expect(unicoPatch(c.db, CAMINHO_VAR_B).estoqueRecusaCodigo).toBe('error_item_uneditable');
   });
 
+  it('38b — ⚠️ NEAR-MISS: um PARCIAL com código de CONTA pausa a conta, não vira parcial', async () => {
+    // O braço I é aferido pelo CÓDIGO, não pela classe. O transporte constrói
+    // `ShopeeApiPartialError` para QUALQUER recusa cujo corpo reanalise (a
+    // flag `payloadNoErro` é cega ao código de propósito), então um
+    // `instanceof` sozinho engoliria todo veredito de CONTA — aqui, férias —
+    // num `enviado-parcial` sem pausa nenhuma.
+    const parcial = new ShopeeApiPartialError('loja em férias', {
+      code: 'product.error_holiday_mode_change_stock',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: CAMINHO,
+      parsed: {
+        request_id: 'req-3',
+        error: 'product.error_holiday_mode_change_stock',
+        message: 'loja em férias',
+        warning: null,
+        response: { success_list: [], failure_list: [] },
+      },
+    });
+    const c = cenario({
+      updateStock: [parcial],
+      ferias: { holiday_mode_on: true, holiday_mode_end_time: null },
+    });
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.descartado);
+    expect(r.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.lojaEmFerias);
+    expect(r.pausadoAte).toBe(AGORA_MS + pausaFeriasH());
+    expect(c.client.ordem).toEqual(['updateStock', 'getShopHolidayMode']);
+    expect(unicaEscrita(c.db, CAMINHO_ESTADO)).toMatchObject({
+      pausaMotivo: 'loja-em-ferias',
+      pausaCodigo: 'product.error_holiday_mode_change_stock',
+    });
+  });
+
+  it('38c — ⚠️ NEAR-MISS: um PARCIAL com código TERMINAL grava a impressão digital', async () => {
+    // A outra metade do mesmo risco: sem a aferição pelo código, uma recusa de
+    // identidade viraria `enviado-parcial` SEM as duas metades da impressão,
+    // o conjunto de pulo nunca armaria e o anúncio seria reenviado a cada tick.
+    const parcial = new ShopeeApiPartialError('item não existe', {
+      code: 'product.error_item_not_found',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: CAMINHO,
+      parsed: {
+        request_id: 'req-4',
+        error: 'product.error_item_not_found',
+        message: 'item não existe',
+        warning: null,
+        response: { success_list: [], failure_list: [] },
+      },
+    });
+    const c = cenario({ updateStock: [parcial] });
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.erroRegistrado);
+    expect(r.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.anuncioInexistente);
+    const patch = unicoPatch(c.db, CAMINHO_LINK);
+    expect(patch.estoqueRecusaCodigo).toBe('product.error_item_not_found');
+    expect(patch.estoqueRecusaEstado).toBe(ESTADO_ANUNCIO);
+    expect(patch.estoqueRecusaItemStatus).toBe(ITEM_STATUS);
+  });
+
   it('39 — um ShopeeNetworkError SOBE (a fila é dona dele)', async () => {
     const c = cenario({ updateStock: [new ShopeeNetworkError('conexão caiu')] });
     await expect(correr(c)).rejects.toBeInstanceOf(ShopeeNetworkError);
@@ -917,6 +1119,16 @@ const TABELA: readonly LinhaDaTabela[] = [
     titulo: 'G · error_auth + "holiday mode" é FÉRIAS, não forma de loja (M-70)',
     codigo: 'shop.error_auth',
     mensagem: 'cannot update while holiday mode is on',
+    outcome: 'descartado',
+    motivo: MOTIVO_ESTOQUE_SHOPEE.lojaEmFerias,
+  },
+  {
+    // ⚠️ M-70, a linha que a de cima NÃO cobre: esta mensagem casa com G **e**
+    // com F1 ao mesmo tempo, então só a POSIÇÃO de G decide. A de cima casa um
+    // braço só e sobrevive a G descer para baixo de F1/E.
+    titulo: 'G · "holiday mode" + "location_id" na MESMA mensagem ⇒ FÉRIAS (M-70, a posição)',
+    codigo: 'shop.error_auth',
+    mensagem: 'no permission for this location_id while shop is in holiday mode',
     outcome: 'descartado',
     motivo: MOTIVO_ESTOQUE_SHOPEE.lojaEmFerias,
   },
@@ -1077,11 +1289,47 @@ const TABELA: readonly LinhaDaTabela[] = [
     outcome: 'erro-registrado',
     motivo: MOTIVO_ESTOQUE_SHOPEE.anuncioNaoEditavel,
   },
+  // ---- D: a agulha CEGA AO CÓDIGO, a única razão por modelo que a sonda mediu ----
+  {
+    titulo: 'D · "model ID not exist in sku" ⇒ modelo-invalido, sem exigir error_param (O2/P9)',
+    codigo: 'product.error_param_qualquer',
+    mensagem: 'model ID not exist in sku',
+    outcome: 'erro-registrado',
+    motivo: MOTIVO_ESTOQUE_SHOPEE.modeloInvalido,
+  },
   // ---- K ----
   {
     titulo: 'K · um código que ninguém ensinou é recusa-desconhecida, NUNCA uma re-tentativa',
     codigo: 'product.error_brand_new_thing',
     mensagem: 'something nobody documented',
+    outcome: 'erro-registrado',
+    motivo: MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida,
+  },
+  // ---- K · as chaves de Object.prototype ----
+  //
+  // ⚠️ PAR/NEAR-MISS de mesa: `constructor`, `toString` e `__proto__` são
+  // membros HERDADOS de qualquer objeto literal, então as duas tabelas de
+  // consulta (E e D) responderiam um valor TRUTHY para eles — no braço E isso
+  // é uma pausa de 24 h da conta inteira por um texto que ninguém ensinou.
+  // Só um `Map` responde `undefined`. O contraste é a linha K acima.
+  {
+    titulo: 'K · "constructor" NÃO acha a tabela do braço E (Map, não objeto literal)',
+    codigo: 'constructor',
+    mensagem: 'nada',
+    outcome: 'erro-registrado',
+    motivo: MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida,
+  },
+  {
+    titulo: 'K · "toString" também não',
+    codigo: 'toString',
+    mensagem: 'nada',
+    outcome: 'erro-registrado',
+    motivo: MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida,
+  },
+  {
+    titulo: 'K · "__proto__" também não',
+    codigo: '__proto__',
+    mensagem: 'nada',
     outcome: 'erro-registrado',
     motivo: MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida,
   },
@@ -1133,6 +1381,121 @@ describe('a tabela dos braços, na ordem declarada', () => {
     expect(erros).toHaveLength(1);
     expect(JSON.stringify(erros)).toContain('product.error_brand_new_thing');
   });
+
+  it('43b — ⚠️ uma chave de Object.prototype NÃO pausa a conta nem gasta chamada', async () => {
+    // O custo concreto do objeto literal: `FORMA_DE_LOJA_POR_CODIGO` responderia
+    // `Object.prototype.constructor` — uma FUNÇÃO truthy — e o braço E pausaria
+    // a conta INTEIRA por 24 h, com a função gravada como motivo.
+    const c = cenario({ updateStock: [apiError('constructor', 'nada')] });
+
+    const r = await correr(c);
+
+    expect(r.pausadoAte).toBeNull();
+    expect(c.db.writes.filter((w) => w.path === CAMINHO_ESTADO)).toEqual([]);
+    expect(c.client.getShopHolidayMode).not.toHaveBeenCalled();
+    expect(unicoPatch(c.db, CAMINHO_LINK).estoqueRecusaMotivo).toBe(
+      MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  (8b) a MESMA tabela, do lado dos modelos (`failed_reason`)                 */
+/* -------------------------------------------------------------------------- */
+
+describe('a tabela dos braços — o consumidor por modelo', () => {
+  /**
+   * Um envelope 200 com A aceito e B recusado pelo texto dado (a forma P9).
+   * `depois` planeja as respostas de `update_stock` SEGUINTES — só o texto do
+   * piso compra uma, porque só ele entra no caminho do piso.
+   */
+  function parcialCom(texto: string, depois: readonly unknown[] = []) {
+    return cenario({
+      updateStock: [envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, texto]] }), ...depois],
+      promocao: promocoes([[MODELO_B, 50]]),
+      ferias: { holiday_mode_on: true, holiday_mode_end_time: null },
+    });
+  }
+
+  it('43c — ⚠️ PAR: "model ID not exist in sku" ⇒ modelo-invalido (a razão que a sonda mediu)', async () => {
+    // Ruling O2: a ÚNICA razão por modelo já vista na rede. Em K o operador lê
+    // "um código que o ERP ainda não classificou"; em D ele lê "reimporte o
+    // anúncio para atualizar os vínculos de modelo", que é a ação certa.
+    const c = parcialCom('model ID not exist in sku');
+
+    const r = await correr(c);
+
+    expect(r.modelos[1]?.resultado).toBe(RESULTADO_MODELO.recusado);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.modeloInvalido);
+  });
+
+  it('43d — ⚠️ NEAR-MISS: "wrong model_id" sozinho NÃO é modelo-invalido por modelo', async () => {
+    // As duas agulhas antigas do braço D exigem o código `error_param`, e do
+    // lado dos modelos o texto livre CHEGA COMO CÓDIGO — `nu` é a frase
+    // inteira, nunca `error_param`. Elas servem o envelope e só ele (a linha
+    // 'D · error_param + "wrong model_id"' da tabela acima é o par). Por isso a
+    // agulha nova é cega ao código, e esta linha prova que ela não foi
+    // generalizada sem querer.
+    const c = parcialCom('wrong model_id');
+
+    const r = await correr(c);
+
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida);
+  });
+
+  it('43e — ⚠️ INVERTIDO: o piso por MODELO NÃO é terminal — ele LÊ o piso e re-tenta', async () => {
+    // ⚠️ Este teste afirmava exatamente o contrário até 2026-09-22 — "nenhuma
+    // leitura de promoção, nenhum clamp" — e o que ele fixava era um DEFEITO.
+    // A sonda P9 mediu que a recusa por MODELO é a forma PRIMÁRIA deste
+    // provedor (HTTP 200, `error` vazio, as DUAS listas), de modo que um piso
+    // que só a escada de ERRO alcançasse seria um piso que, na rede medida,
+    // nada jamais lê: `reservaPromocao.ts`, `get_item_promotion` e o aviso de
+    // clamp ficariam todos inalcançáveis. A decisão do dono (L1-1) deu ao
+    // caminho do piso uma SEGUNDA entrada; o que ela re-envia e o que ela NÃO
+    // re-envia está no bloco "a SEGUNDA entrada" mais abaixo.
+    const c = parcialCom('Can not update item with stock less than reserved stock', [
+      envelope({ sucesso: [MODELO_B] }),
+    ]);
+
+    const r = await correr(c);
+
+    expect(c.client.getItemPromotion).toHaveBeenCalledTimes(1);
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion', 'updateStock']);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.clampadoNaReserva);
+    expect(r.modelos[1]?.piso).toBe(50);
+    expect(r.modelos[1]?.clampado).toBe(true);
+  });
+
+  it('43f — ⚠️ NEAR-MISS: um braço de CONTA por modelo REDUZ a um motivo e não pausa nada', async () => {
+    // A mesma tabela, ação diferente — a discriminação é a AÇÃO, não o motivo.
+    // Um `failed_reason` que casa com o braço E (a forma da loja) vira a linha
+    // do modelo e jamais uma pausa da conta inteira. ⚠️ Só as agulhas de
+    // MENSAGEM chegam aqui: tudo que o braço exige por CÓDIGO é inalcançável do
+    // lado dos modelos, porque o texto livre entra como código e `nu` é a
+    // frase inteira.
+    const c = parcialCom('normal stock must be equal to 0 for this shop');
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.pausadoAte).toBeNull();
+    expect(c.db.writes.filter((w) => w.path === CAMINHO_ESTADO)).toEqual([]);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.lojaFbs);
+  });
+
+  it('43g — ⚠️ uma chave de Object.prototype como `failed_reason` grava a recusa do filho', async () => {
+    // Num objeto literal, `MENSAGEM_POR_MOTIVO[<função>]` é `undefined` e a
+    // escrita de volta MORRE dentro de `limitarMensagemEstoque` — depois do
+    // `update_stock` ter caído na Shopee e sem gravar documento nenhum.
+    const c = parcialCom('constructor');
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.recusaDesconhecida);
+    expect(typeof unicoPatch(c.db, CAMINHO_LINK).estoqueRecusaMensagem).toBe('string');
+    expect(unicoPatch(c.db, CAMINHO_VAR_B).estoqueRecusaCodigo).toBe('constructor');
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1164,6 +1527,17 @@ describe('o caminho do piso (braço A)', () => {
     expect(r.modelos[0]?.clampado).toBe(true);
     expect(r.modelos[0]?.piso).toBe(12);
     expect(r.modelos[1]?.clampado).toBe(false);
+    // ⚠️ M-81b. Um clamp é um ENVIO com anotação, nunca uma recusa: três
+    // consumidores leem `resultado` (as escritas nos filhos, `modelosRecusados`
+    // no envelope manual e a coluna do CLI), então um modelo clampado e ACEITO
+    // marcado como `recusado` seria relatado como recusa em toda superfície.
+    expect(r.modelos.map((m) => m.resultado)).toEqual([
+      RESULTADO_MODELO.enviado,
+      RESULTADO_MODELO.enviado,
+    ]);
+    expect(r.modelos[0]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.clampadoNaReserva);
+    // E nada foi gravado como recusa no filho clampado.
+    expect(patchesEm(c.db, CAMINHO_VAR_A)).toEqual([]);
   });
 
   it('45 — ⚠️ NEAR-MISS: uma leitura de piso VAZIA é TERMINAL, nunca um clamp a zero', async () => {
@@ -1283,6 +1657,66 @@ describe('o caminho do piso (braço A)', () => {
     expect(avisos).toHaveLength(1);
   });
 
+  it('50b — ⚠️ NEAR-MISS: um clamp RECUSADO não levanta aviso nenhum', async () => {
+    // O texto renderizado afirma que "o estoque foi enviado no valor da
+    // reserva". Numa re-tentativa clampada que a Shopee RECUSOU nada foi
+    // enviado — e a linha só é fechada por um envio limpo futuro, numa coleção
+    // sem botão de dispensar, então ela ficaria de pé afirmando o contrário.
+    // `clampado` continua `true` na linha recusada (ela diz o que foi
+    // TENTADO), e é por isso que o teste do aviso não pode ser `clampado` só.
+    const c = cenario({
+      updateStock: [
+        apiError('error.param', 'less than reserved stock'),
+        // A re-tentativa clampada volta na forma que a sonda mediu (P9): HTTP
+        // 200, `error` VAZIO, e todos os modelos em `failure_list`.
+        envelope({
+          falhas: [
+            [MODELO_A, 'error_item_uneditable'],
+            [MODELO_B, 'error_item_uneditable'],
+          ],
+        }),
+      ],
+      promocao: promocoes([
+        [MODELO_A, 12],
+        [MODELO_B, 30],
+      ]),
+    });
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.modelos.every((m) => m.resultado === RESULTADO_MODELO.recusado)).toBe(true);
+    expect(r.modelos.every((m) => m.clampado)).toBe(true);
+    expect(Object.keys(c.db.store).filter((p) => p.startsWith('avisos/'))).toEqual([]);
+  });
+
+  it('50c — ⚠️ PAR: com um clampado aceito e outro recusado, o aviso é o do ACEITO', async () => {
+    // O contraste de 50b: o aviso continua saindo, e a linha escolhida é a que
+    // realmente caiu na Shopee — nunca a maior folga entre as recusadas.
+    const c = cenario({
+      updateStock: [
+        apiError('error.param', 'less than reserved stock'),
+        envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, 'error_item_uneditable']] }),
+      ],
+      // B teria a MAIOR folga (3 -> 30), mas foi recusado; A (7 -> 12) vence.
+      promocao: promocoes([
+        [MODELO_A, 12],
+        [MODELO_B, 30],
+      ]),
+    });
+
+    await correr(c);
+
+    const avisos = Object.keys(c.db.store).filter((p) => p.startsWith('avisos/'));
+    expect(avisos).toEqual([`avisos/${chaveEstoqueAcimaDoDisponivel(INTEGRACAO, FILHO_A)}`]);
+    const doc = c.db.store[avisos[0] ?? '']?.data as Record<string, unknown>;
+    expect(doc.params).toEqual({
+      anuncio: String(ITEM_ID),
+      reservado: '12',
+      disponivel: '7',
+    });
+  });
+
   it('51 — ⚠️ PAR/NEAR-MISS: um envio limpo RESOLVE o aviso; um envio CLAMPADO não', async () => {
     // A linha mais importante do tipo: este envio é a ÚNICA coisa que fecha a
     // linha, e uma que fica de pé sobrevive 90 dias numa coleção sem botão de
@@ -1333,6 +1767,215 @@ describe('o caminho do piso (braço A)', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  (9b) o caminho do piso — a SEGUNDA entrada (a recusa POR MODELO, forma P9) */
+/* -------------------------------------------------------------------------- */
+
+describe('o caminho do piso — a SEGUNDA entrada (a recusa por MODELO)', () => {
+  /** O texto do piso, na grafia que a documentação da Shopee traz. */
+  const PISO = 'seller stock can not be less than reserved stock';
+
+  it('51b — ⚠️ PAR: um 200 com o piso na `failure_list` lê o piso e re-envia SÓ o recusado', async () => {
+    // A diferença ÚNICA entre as duas entradas do braço A. Na entrada do
+    // ENVELOPE nada caiu, então a re-tentativa leva a lista INTEIRA (teste 44);
+    // aqui A já foi ACEITO por esta mesma chamada, e re-enviá-lo republicaria
+    // um número que o provedor já guardou. A sonda P8 mediu que um
+    // `stock_list` parcial deixa os modelos omitidos intactos, que é o que
+    // torna a lista estreita segura.
+    const c = cenario({
+      updateStock: [
+        envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, PISO]] }),
+        envelope({ sucesso: [MODELO_B] }),
+      ],
+      promocao: promocoes([[MODELO_B, 50]]),
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion', 'updateStock']);
+    expect(listaEnviada(c.client, 1)).toEqual([[MODELO_B, 50]]);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviado);
+    expect(r.chamadasShopee).toBe(3);
+    expect(r.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.clampadoNaReserva);
+    // O aceito da PRIMEIRA chamada continua aceito e SEM anotação de clamp; o
+    // clampado da segunda é um ENVIO anotado, nunca uma recusa.
+    expect(r.modelos.map((m) => m.resultado)).toEqual([
+      RESULTADO_MODELO.enviado,
+      RESULTADO_MODELO.enviado,
+    ]);
+    expect(r.modelos[0]?.clampado).toBe(false);
+    expect(r.modelos[0]?.quantidadeEnviada).toBe(7);
+    expect(r.modelos[1]?.clampado).toBe(true);
+    expect(r.modelos[1]?.piso).toBe(50);
+    expect(r.modelos[1]?.quantidadeEnviada).toBe(50);
+    // O vínculo foi LIMPO (nada sobrou como recusa) e o filho não levou recusa.
+    expect(unicoPatch(c.db, CAMINHO_LINK).estoqueEnviadoEm).toBe(AGORA_MS);
+    expect(patchesEm(c.db, CAMINHO_VAR_B)).toEqual([]);
+    // ...e saiu UM aviso, no produto do modelo que realmente foi clampado.
+    expect(Object.keys(c.db.store).filter((p) => p.startsWith('avisos/'))).toEqual([
+      `avisos/${chaveEstoqueAcimaDoDisponivel(INTEGRACAO, FILHO_B)}`,
+    ]);
+  });
+
+  it('51c — ⚠️ NEAR-MISS: um mapa de piso VAZIO é terminal PARA O MODELO, sem re-tentativa', async () => {
+    // O módulo não aprendeu nada, então não há com o que re-tentar. E o que se
+    // grava é o PARCIAL que já existia: parte desta chamada caiu de verdade, e
+    // transformá-la numa recusa de LISTAGEM apagaria esse fato e armaria uma
+    // impressão digital sobre um envio que aconteceu.
+    const c = cenario({
+      updateStock: [envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, PISO]] })],
+      promocao: { success_list: [{ item_id: ITEM_ID, promotion: [] }], failure_list: [] },
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion']);
+    expect(c.client.updateStock).toHaveBeenCalledTimes(1);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.chamadasShopee).toBe(2);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.pisoDeReservaNaoAtendido);
+    expect(r.modelos[1]?.piso).toBeNull();
+    expect(r.modelos[1]?.clampado).toBe(false);
+    const patch = unicoPatch(c.db, CAMINHO_LINK);
+    expect(patch.estoqueRecusaMotivo).toBe(MOTIVO_ESTOQUE_SHOPEE.envioParcial);
+    expect(Object.hasOwn(patch, 'estoqueRecusaEstado')).toBe(false);
+    expect(unicoPatch(c.db, CAMINHO_VAR_B).estoqueRecusaCodigo).toBe(PISO);
+  });
+
+  it('51d — ⚠️ NEAR-MISS: uma recusa de IDENTIDADE não compra leitura de promoção nenhuma', async () => {
+    // A condição de entrada é uma linha que CLASSIFICA no braço A, pela mesma
+    // tabela que nomeia o motivo — não "houve alguma recusa". Uma promoção
+    // está planejada de propósito: se a entrada fosse ampla, ela seria lida.
+    const c = cenario({
+      updateStock: [
+        envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, 'model ID not exist in sku']] }),
+      ],
+      promocao: promocoes([[MODELO_B, 50]]),
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.getItemPromotion).not.toHaveBeenCalled();
+    expect(c.client.ordem).toEqual(['updateStock']);
+    expect(r.chamadasShopee).toBe(1);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.modeloInvalido);
+  });
+
+  it('51e — ⚠️ NEAR-MISS: um piso que NÃO MOVE nada não gasta a re-tentativa', async () => {
+    // D7, agora nesta entrada também: o corpo da re-tentativa seria idêntico
+    // ao da chamada que a Shopee acabou de recusar.
+    const c = cenario({
+      updateStock: [envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, PISO]] })],
+      // B pede 3 e o piso é 2 — `aplicarPiso` não levanta nada.
+      promocao: promocoes([[MODELO_B, 2]]),
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion']);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.modelos[1]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.pisoDeReservaNaoAtendido);
+    expect(Object.keys(c.db.store).filter((p) => p.startsWith('avisos/'))).toEqual([]);
+  });
+
+  it('51f — ⚠️ um limite de taxa DURANTE a leitura do piso NÃO vira veredito do anúncio', async () => {
+    // D6. Um 429 ali é uma condição de TRANSPORTE, não um veredito sobre o
+    // anúncio: gravá-lo seria um `piso-de-reserva-nao-atendido` permanente.
+    // ⚠️ O relançamento desta entrada cai na ESCADA (ela vive dentro do try da
+    // rung 4), e não direto na fila como o da entrada do envelope — e isso é
+    // MELHOR, não uma divergência a corrigir: a conta pausa e a tarefa é
+    // re-enfileirada COM ATRASO, sem consumir tentativa, enquanto a fila
+    // gastaria uma das três esperando. Em ambas as portas o anúncio não
+    // recebe escrita nenhuma, que é a propriedade que importa.
+    const c = cenario({
+      updateStock: [envelope({ sucesso: [MODELO_A], falhas: [[MODELO_B, PISO]] })],
+      promocao: burst(),
+    });
+
+    const r = await correr(c);
+
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.pausadoReenfileirado);
+    expect(r.codigo).toBe('error_rate_limit');
+    expect(r.pausadoAte).toBe(AGORA_MS + ratePauseMin() * 60 * 1_000);
+    expect(c.scheduler.chamadas).toHaveLength(1);
+    // ⚠️ E NADA foi escrito no anúncio nem no filho — nenhuma das duas
+    // travessias grava um veredito sobre a listagem.
+    expect(patchesEm(c.db, CAMINHO_LINK)).toEqual([]);
+    expect(patchesEm(c.db, CAMINHO_VAR_B)).toEqual([]);
+  });
+
+  it('51g — ⚠️ o PARCIAL DECLARADO (braço I) passa pelo MESMO leitor e também lê o piso', async () => {
+    // Os dois leitores de um corpo com forma de 200 — o caminho feliz e o
+    // braço I — atravessam a mesma função de propósito: um parcial declarado é
+    // o mesmo corpo chegando por outra porta, e a `failure_list` dele pode
+    // nomear o piso exatamente como a do caminho feliz.
+    const parcial = new ShopeeApiPartialError('parcial', {
+      code: 'error_busi_update_stock_failed',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: CAMINHO,
+      parsed: {
+        request_id: 'req-9',
+        error: 'error_busi_update_stock_failed',
+        message: 'parcial',
+        warning: null,
+        response: {
+          success_list: [{ model_id: MODELO_A, location_id: null, stock: 7 }],
+          failure_list: [{ model_id: MODELO_B, failed_reason: PISO }],
+        },
+      },
+    });
+    const c = cenario({
+      updateStock: [parcial, envelope({ sucesso: [MODELO_B] })],
+      promocao: promocoes([[MODELO_B, 50]]),
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion', 'updateStock']);
+    expect(listaEnviada(c.client, 1)).toEqual([[MODELO_B, 50]]);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviado);
+    expect(r.modelos[1]?.clampado).toBe(true);
+  });
+
+  it('51h — ⚠️ `pisoJaTentado` ATRAVESSA o braço I: a re-tentativa clampada não relê o piso', async () => {
+    // A entrada do ENVELOPE dispara, a re-tentativa clampada volta como um
+    // PARCIAL DECLARADO ainda recusando o piso — e o braço I reentra no mesmo
+    // leitor com `pisoJaTentado` já verdadeiro. Sem essa passagem seriam duas
+    // leituras de promoção e uma terceira `update_stock` por tarefa, e o
+    // contrato "exatamente UMA re-tentativa" morreria em silêncio.
+    const segundoParcial = new ShopeeApiPartialError('parcial', {
+      code: 'error_busi_update_stock_failed',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: CAMINHO,
+      parsed: {
+        request_id: 'req-10',
+        error: 'error_busi_update_stock_failed',
+        message: 'parcial',
+        warning: null,
+        response: {
+          success_list: [{ model_id: MODELO_B, location_id: null, stock: 3 }],
+          failure_list: [{ model_id: MODELO_A, failed_reason: `still ${PISO}` }],
+        },
+      },
+    });
+    const c = cenario({
+      updateStock: [apiError('error.param', PISO), segundoParcial],
+      promocao: promocoes([[MODELO_A, 12]]),
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.getItemPromotion).toHaveBeenCalledTimes(1);
+    expect(c.client.updateStock).toHaveBeenCalledTimes(2);
+    expect(c.client.ordem).toEqual(['updateStock', 'getItemPromotion', 'updateStock']);
+    expect(r.outcome).toBe(OUTCOME_ENVIO_ESTOQUE.enviadoParcial);
+    expect(r.modelos[0]?.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.pisoDeReservaNaoAtendido);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  (10) férias, o log, e a disciplina de origem                               */
 /* -------------------------------------------------------------------------- */
 
@@ -1348,6 +1991,32 @@ describe('o braço G — férias', () => {
 
     expect(r.pausadoAte).toBe(fimEmSegundos * 1000);
     expect(c.client.getShopHolidayMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('52b — ⚠️ o teto de `chamadasShopee` é QUATRO, não três', async () => {
+    // O piso gasta 3 (envio → promoção → re-envio clampado) e a re-tentativa
+    // clampada pode ser recusada por um braço que gasta uma chamada dele —
+    // hoje só G. `pisoJaTentado` protege o braço A, não o G, e é por isso que
+    // o quarto existe. A leitura útil continua "3 ou 4 ⇒ o piso rodou".
+    const c = cenario({
+      updateStock: [
+        apiError('error.param', 'less than reserved stock'),
+        apiError('error_holiday_mode_change_stock', 'shop is in holiday mode'),
+      ],
+      promocao: promocoes([[MODELO_A, 30]]),
+      ferias: { holiday_mode_on: true, holiday_mode_end_time: null },
+    });
+
+    const r = await correr(c);
+
+    expect(c.client.ordem).toEqual([
+      'updateStock',
+      'getItemPromotion',
+      'updateStock',
+      'getShopHolidayMode',
+    ]);
+    expect(r.chamadasShopee).toBe(4);
+    expect(r.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.lojaEmFerias);
   });
 
   it('53 — ⚠️ NEAR-MISS: um fim JÁ PASSADO cai na pausa fixa, não no passado', async () => {
