@@ -92,6 +92,28 @@ describe('renderEtiquetaGenericaZpl', () => {
     }
   });
 
+  it('refuses an ODD-length digit chave, which subset C also cannot encode', () => {
+    // ⚠️ Not hypothetical bookkeeping. Before mixed subsets the encoder
+    // returned null here and the barcode was dropped; the widened encoder
+    // returns a real symbol, so without the length half of the guard this
+    // renderer would size its width math from that symbol and then emit
+    // `^FD>;<43 digits>` — a field the printer's subset-C prefix cannot encode,
+    // scanning as something other than the chave.
+    const odd = '3526011420016600018755001000000012345678901';
+    expect(odd).toHaveLength(43);
+    expect(() => renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: odd })).toThrow(
+      EtiquetaGenericaFormatError,
+    );
+  });
+
+  it('does not throw on an empty chave — the layout emits no barcode for it', () => {
+    // The guard keys on the same truthiness as `layout.ts`. A `!= null` check
+    // would throw on a label the PDF renders perfectly well, naming an empty
+    // value the operator cannot act on.
+    const zpl = renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: '' });
+    expect(zpl).not.toContain('^BCN');
+  });
+
   it('still renders a label with no NF-e at all, alfa guard notwithstanding', () => {
     // The guard keys on the chave, not on its absence — a pedido with no
     // authorized NF-e must not start throwing.

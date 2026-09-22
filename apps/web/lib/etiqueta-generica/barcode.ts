@@ -36,6 +36,11 @@
  * change that narrows the box fails loudly instead of printing an unscannable
  * symbol. A real alfa CNPJ usually does better than the worst case: any digits
  * at the end of the alfa window merge into the numeric tail's subset-C run.
+ *
+ * ⚠️ 365 is the worst case over ALL 4096 letter/digit arrangements of the alfa
+ * window, not just the one the fixture happens to use — `barcode.test.ts`
+ * sweeps that space rather than trusting a hand-picked shape. See the odd-run
+ * note in `segment()` for the arrangement that used to exceed it.
  */
 
 /**
@@ -114,15 +119,11 @@ function isDigit(ch: string): boolean {
   return ch >= '0' && ch <= '9';
 }
 
-/**
- * Length of the EVEN-length digit run starting at `i` — what subset C could
- * take from there. An odd run gives up its last digit, which the caller then
- * encodes in B.
- */
-function evenDigitRun(data: string, i: number): number {
+/** Length of the digit run starting at `i`. */
+function digitRun(data: string, i: number): number {
   let n = 0;
   while (i + n < data.length && isDigit(data[i + n]!)) n += 1;
-  return n - (n % 2);
+  return n;
 }
 
 /**
@@ -139,7 +140,32 @@ function segment(data: string): Segment[] {
   const segs: Segment[] = [];
   let i = 0;
   while (i < data.length) {
-    const even = evenDigitRun(data, i);
+    const run = digitRun(data, i);
+    const even = run - (run % 2);
+
+    // ⚠️ An ODD digit run that reaches the end of the payload gives up its
+    // first digit, not its last, and the difference is 11 modules.
+    //
+    // One digit of an odd run has to land in B either way. Spilling the LAST
+    // one closes the C run early and then pays a CODE_B switch to carry that
+    // single character — two extra symbols. Spilling the FIRST one lets it
+    // join the B segment already in progress (there always is one: a run only
+    // starts odd because a non-digit preceded it) and the C run then ends
+    // exactly at the payload's end — one extra symbol.
+    //
+    // This is what makes 365 modules the real worst case for a 44-character
+    // chave rather than a number that happens to hold for the fixtures. An
+    // alfa CNPJ whose LAST letter sits at position 16 leaves a 27-digit run to
+    // the end; stranding its tail cost 376 modules (X-dimension 0.2394 mm
+    // instead of 0.2466 mm over the 90 mm box). Short odd runs already behaved
+    // this way, but only by accident — `even` fell under the 4-digit threshold
+    // below — so the rule is stated here instead of emerging from it.
+    if (run > 1 && run % 2 === 1 && i + run === data.length) {
+      appendToB(segs, data[i]!);
+      i += 1;
+      continue;
+    }
+
     const atStart = i === 0;
     const atEnd = i + even === data.length;
     const worthwhile = atStart || atEnd ? 2 : 4;
@@ -148,12 +174,17 @@ function segment(data: string): Segment[] {
       i += even;
       continue;
     }
-    const last = segs[segs.length - 1];
-    if (last?.set === 'B') last.text += data[i]!;
-    else segs.push({ set: 'B', text: data[i]! });
+    appendToB(segs, data[i]!);
     i += 1;
   }
   return segs;
+}
+
+/** Add one character to the trailing B segment, opening one if needed. */
+function appendToB(segs: Segment[], ch: string): void {
+  const last = segs[segs.length - 1];
+  if (last?.set === 'B') last.text += ch;
+  else segs.push({ set: 'B', text: ch });
 }
 
 /**

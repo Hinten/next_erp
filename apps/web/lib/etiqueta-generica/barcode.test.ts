@@ -75,15 +75,53 @@ describe('encodeCode128', () => {
       expect(symbol!.modules).toBeLessThan(encodeCode128(ALFA_CHAVE)!.modules);
     });
 
-    it('stays above the scannable narrow-bar floor inside the label box', () => {
-      // ⚠️ The constraint the layout has to keep satisfying. The worst-case
-      // symbol over the 90mm barcode box is ~0.247mm per module — under GS1's
-      // 0.250mm general-distribution nominal, over the ~0.19mm a handheld
-      // needs. If a future layout narrows the box, this fails instead of
-      // shipping an unscannable label.
-      const moduleMm = INNER_W_MM / encodeCode128(ALFA_CHAVE)!.modules;
+    it('stays above the scannable narrow-bar floor at the REAL maximum', () => {
+      // ⚠️ Swept, not hand-picked. A floor test whose job is to fail when a
+      // future layout narrows the barcode box is only worth anything if it is
+      // evaluated at the widest symbol the label can actually be asked to
+      // print — and a fixture is a guess at that, not a proof. This asserted
+      // one fixture at first and was wrong by 11 modules: an alfa CNPJ whose
+      // last letter sits at position 16 reached 376 modules (0.2394mm) while
+      // ALFA_CHAVE sat at 365, so the guard was pinned to a symbol narrower
+      // than reality.
+      //
+      // All 4096 letter/digit arrangements of the alfa window, which is the
+      // whole space a real emitente CNPJ can occupy.
+      let widest = 0;
+      let worstChave = '';
+      for (let mask = 0; mask < 4096; mask += 1) {
+        let body = '';
+        for (let bit = 0; bit < 12; bit += 1) body += (mask >> bit) & 1 ? 'A' : '7';
+        const chave = `352601${body}87550010000001234567890120`;
+        const symbol = encodeCode128(chave);
+        expect(symbol, chave).not.toBeNull();
+        if (symbol!.modules > widest) {
+          widest = symbol!.modules;
+          worstChave = chave;
+        }
+      }
+
+      // The bound `fixtures.ts` and `barcode.ts` both claim, now executable.
+      expect(widest, `widest arrangement was ${worstChave}`).toBe(365);
+      // ALFA_CHAVE must keep TYING it, or the render fixtures stop exercising
+      // the case the PDF assertions are supposed to cover.
+      expect(encodeCode128(ALFA_CHAVE)!.modules).toBe(widest);
+
+      const moduleMm = INNER_W_MM / widest;
       expect(moduleMm).toBeGreaterThan(MIN_MODULE_MM);
+      // Under GS1's 0.250mm general-distribution nominal, over the ~0.19mm a
+      // handheld needs.
       expect(moduleMm).toBeCloseTo(0.247, 3);
+    });
+
+    it('spills an odd trailing digit run from its head, not its tail', () => {
+      // The arrangement that used to cost 11 extra modules: the last letter of
+      // the CNPJ body sits at position 16, leaving a 27-digit run to the end.
+      // Stranding its last digit paid a CODE_B switch to carry one character;
+      // spilling the first lets it join the B segment already open.
+      const chave = '352601A777A77777A787550010000001234567890120';
+      expect(chave).toHaveLength(44);
+      expect(encodeCode128(chave)!.modules).toBe(365);
     });
   });
 

@@ -12,12 +12,16 @@ import type { EtiquetaGenericaAddress, EtiquetaGenericaModel } from './model';
 export const CHAVE = '35260114200166000187550010000000123456789012';
 
 /**
- * The WORST-CASE alphanumeric chave (NT 2026.004): all twelve positions of the
- * emitente CNPJ body are letters, so subset C cannot absorb any of them. That
- * is the widest symbol the label can be asked to print — 365 modules — and it
- * is deliberately the fixture the render tests use, because a mixed CNPJ is
- * strictly narrower (any digits at the tail of the alfa window merge into the
- * numeric run that follows).
+ * A worst-case alphanumeric chave (NT 2026.004): all twelve positions of the
+ * emitente CNPJ body are letters, so subset C cannot absorb any of them. At
+ * 365 modules it ties the widest symbol the label can be asked to print, and
+ * it is deliberately the fixture the render tests use.
+ *
+ * ⚠️ "Worst case" is a claim about the whole 4096-arrangement space, not about
+ * this string, so `barcode.test.ts` SWEEPS that space instead of trusting this
+ * comment — which is how the bound got caught being wrong once already. Before
+ * `segment()` learned to spill an odd run's first digit, a CNPJ whose last
+ * letter sat at position 16 reached 376 modules and this fixture did not.
  */
 export const ALFA_CHAVE = '352601ABCDEFGHIJKL87550010000001234567890120';
 
