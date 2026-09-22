@@ -25,39 +25,31 @@ import { z } from 'zod';
  * identify them): the legacy types both ids as non-nullable ints, so `0` is the
  * only expressible "custom". Never refused here, never defaulted away.
  *
- * ⚠️ Deliberately NOT wired into `grupoDeVariacoesSchema`, whose
- * `linksVariacoesShopee` stays `z.array(z.unknown()).nullable().optional()`.
- * `grupoDeVariacoesMeta` IS registered in `ALL_DOMAINS`, so typing the field in
- * place would move a generated validator and both rules-gen snapshots for a
- * field no Firestore rule needs to see. A bare const beside it regenerates
- * nothing — the same position `shopeeLink.ts` already holds.
+ * This schema is wired into `grupoDeVariacoesSchema`; stored mappings reject
+ * unknown properties instead of carrying provider-unrelated metadata.
  */
 
 /** One Shopee tier OPTION of a {@link linkVariacoesShopeeSchema} entry. */
-export const linkVariacaoOpcaoShopeeSchema = z
-  .object({
-    /** `0` = a CUSTOM option; the name is then the only identity it has. */
-    shopee_option_id: z.number().int(),
-    shopee_option_name: z.string(),
-    /** ERP Variante ids — a LIST, bare ids, MANY per option (trap 3). */
-    arakene_variation_id: z.array(z.string()),
-  })
-  .passthrough();
+export const linkVariacaoOpcaoShopeeSchema = z.strictObject({
+  /** `0` = a CUSTOM option; the name is then the only identity it has. */
+  shopee_option_id: z.number().int(),
+  shopee_option_name: z.string(),
+  /** ERP Variante ids — a LIST, bare ids, MANY per option (trap 3). */
+  arakene_variation_id: z.array(z.string()),
+});
 export type LinkVariacaoOpcaoShopee = z.infer<typeof linkVariacaoOpcaoShopeeSchema>;
 
 /** One `(integração, Shopee category)` mapping on a `grupoDeVariacoes` doc. */
-export const linkVariacoesShopeeSchema = z
-  .object({
-    /** The LEAF category's display name — what the operator picked in the Flutter form. */
-    name: z.string(),
-    category_id: z.number().int(),
-    /** `0` = a CUSTOM variation (trap: `0` is a value, never an absence). */
-    variation_id: z.number().int(),
-    /** A SCALAR int despite the plural name — the group id (trap 1). */
-    variation_group_list: z.number().int(),
-    /** A BARE integração doc id, stored verbatim — never an outer-ref path (trap 2). */
-    integracaoShopeeId: z.string().min(1),
-    variationOptions: z.array(linkVariacaoOpcaoShopeeSchema).default([]),
-  })
-  .passthrough();
+export const linkVariacoesShopeeSchema = z.strictObject({
+  /** The LEAF category's display name — what the operator picked in the Flutter form. */
+  name: z.string(),
+  category_id: z.number().int(),
+  /** `0` = a CUSTOM variation (trap: `0` is a value, never an absence). */
+  variation_id: z.number().int(),
+  /** A SCALAR int despite the plural name — the group id (trap 1). */
+  variation_group_list: z.number().int(),
+  /** A BARE integração doc id, stored verbatim — never an outer-ref path (trap 2). */
+  integracaoShopeeId: z.string().min(1),
+  variationOptions: z.array(linkVariacaoOpcaoShopeeSchema).default([]),
+});
 export type LinkVariacoesShopee = z.infer<typeof linkVariacoesShopeeSchema>;

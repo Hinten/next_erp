@@ -71,56 +71,15 @@
  * child — the "CHILD continuity for free" this module relies on instead of
  * replicating legacy's `oldProdutoVariacao` short-circuit.
  *
- * ---- `applyMarketplaceDeletion` — ported from
- * `.old/packages/produtos/lib/src/models.dart:1132-1178`, pinned by
- * `produto_marketplace_delete_test.dart`.
- *
- * ⛔ All THREE fields it maintains — `marketplace`, `marketplaceIds` and
- * `statusProdutosMarketplace` — are DEAD WEIGHT: no query consumers in this
- * repo, deleted in one piece at the decommission (#992; canonical note on
- * `produtoSchema`). This function reads them, but only to compute their own next
- * value: maintenance, not consumption. The legacy-parity detail below is
- * preserved because it still runs until then, NOT because the shape is worth
- * defending: do not extend it, and do not add a reader.
- *
- * Quotes (produto_marketplace_delete_test.dart):
- *  - test 1: a `marketplace` entry `{integracaoUid: 'integracoes/ml123',
- *    externalId: 'MLB_PARENT'}` deleted by target `{integracaoUid: 'ml123',
- *    externalId: 'MLB_PARENT'}` (integração compared by LAST PATH SEGMENT only,
- *    tolerating an `integracoes/` prefix on either side) ends up empty, and
- *    `statusProdutosMarketplace['integracoes/ml123_MLB_PARENT'].deleted` is
- *    `true` — the status key uses the MATCHED ENTRY's own raw `integracaoUid`
- *    (prefix and all), not the target's.
- *  - test 2: a variant entry `{integracaoUid: 'ml123', externalParentId:
- *    'MLB_PARENT', externalId: 'MLB_VAR_1'}` matches a target whose
- *    `externalId` equals the variant's `externalParentId` (not its own
- *    `externalId`) — `matchExternalParentId`, defaulted `true` at every legacy
- *    call site including the migration one (`tasks.dart:981-988`) — and the
- *    status key is `'ml123_MLB_VAR_1'` (the MATCHED entry's own externalId).
- *  - test 3: no integração match ⇒ returns the produto UNCHANGED (`identical`)
- *    — ported here as returning `null` so the caller skips a no-op write.
- * `marketplaceIds` is filtered (last-segment-tolerant) then de-duplicated,
- * insertion order preserved (`.toSet().toList()`).
- *
- * ⚠️ The port deliberately DROPS legacy's `integracoesComProduto` recompute
- * (#920). It was one of the two paths that derived that array from
- * `marketplace` — the coupling that made the three arrays an all-or-nothing
- * cluster (#431 lock 2) — and it also carried a latent bug: `lastSegment()`
- * normalized the entries it MATCHED on but not the ids it WROTE, so a
- * path-form `integracaoUid` produced an array entry no reader's
- * `arrayContains(<bare id>)` could ever match. `onProdutoMercadoLivreLinkChanged`
- * owns the array now, and `pruneMigratedSource` deletes the source link in the
- * same batch as this patch, which is the event that drives it.
- *
  * ---- Prune gating — verified directly against `tasks.dart:960-1012` (NOT
- * just the summarized version): the denorm-cleanup + SOURCE PML deletion
- * (:975-999) are gated on "every `variacaoMercadoLivre` link that still points
+ * just the summarized version): SOURCE PML deletion is gated on "every
+ * `variacaoMercadoLivre` link that still points
  * at the source PML is one we're deleting this run" — but the final loop that
  * deletes each `Ci`'s OLD link (:1003-1006) sits OUTSIDE that gate, applied
  * UNCONDITIONALLY to every entry this run resolved. So a PARTIAL migration
  * (one sibling variation not yet covered by `new_items`) still deletes the
- * OLD links this run replaced — only the source PML doc + its denorm entry
- * survive when the source listing isn't fully migrated yet.
+ * OLD links this run replaced — only the source PML doc survives when the
+ * source listing isn't fully migrated yet.
  *
  * ---- Error path — ported from `tasks.dart:1015-1027`, narrowed per this
  * repo's no-generic-catch rule: ANY throw during the migration stamps the
@@ -135,14 +94,13 @@ import type { Firestore } from 'firebase-admin/firestore';
 import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { toOuterRef } from '@delfrance/schemas';
 import {
-  produtoCollection,
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { type ImportDeps, importProduto } from './import';
 import { type ImportOptions, MercadoLivreImportError } from './importCore';
-import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
+import { refMatchesIntegracao } from '../core/linkRefs';
 
 /** Every import side-effect OFF (#441) — the migration only converges existing
  * ERP data onto the new listing ids; it never (re)writes stock/price/photos/
@@ -289,14 +247,7 @@ export async function handleUptinMigration(
     }
 
     if (oldLinksToDelete.length > 0) {
-      await pruneMigratedSource(
-        db,
-        sourceLink,
-        sourcePmlOuterRef,
-        oldLinksToDelete,
-        integracaoId,
-        itemId,
-      );
+      await pruneMigratedSource(db, sourceLink, sourcePmlOuterRef, oldLinksToDelete);
     }
   } catch (err) {
     try {
@@ -393,8 +344,6 @@ async function pruneMigratedSource(
   sourceLink: UptinSourceLink,
   sourcePmlOuterRef: string,
   oldLinksToDelete: ReadonlyArray<{ produtoId: string; docId: string }>,
-  integracaoId: string,
-  itemId: string,
 ): Promise<void> {
   const allLinksSnap = await variacaoMercadoLivreLinkCollection
     .groupQuery(db)
@@ -404,27 +353,11 @@ async function pruneMigratedSource(
   const fullyMigrated =
     allLinksSnap.docs.length > 0 && allLinksSnap.docs.every((d) => deletedIds.has(d.id));
 
-  // ONE atomic WriteBatch for the whole prune — legacy commits the denorm
-  // update + source-PML delete + every old-link delete together
-  // (tasks.dart:966-1009), so a mid-prune failure can't strand a half-pruned
-  // state (e.g. the source PML gone but old links orphaned).
+  // ONE atomic WriteBatch for the source-PML and old-link deletions, so a
+  // mid-prune failure cannot strand a half-pruned state.
   const batch = db.batch();
 
   if (fullyMigrated) {
-    const sourceProdutoRef = produtoCollection.docRef(db, {}, sourceLink.produtoId);
-    const sourceProdutoSnap = await sourceProdutoRef.get();
-    if (sourceProdutoSnap.exists) {
-      const raw = (sourceProdutoSnap.data() ?? {}) as Record<string, unknown>;
-      const sourceExternalId = asStringId(sourceLink.raw.id) ?? itemId;
-      const patch = applyMarketplaceDeletion(raw, {
-        integracaoUid: integracaoId,
-        externalId: sourceExternalId,
-      });
-      // Same cast precedent as importTaxonomia's tx writes — WriteBatch.update
-      // wants UpdateData's template-literal key type, which a concrete
-      // interface can't satisfy structurally.
-      if (patch) batch.update(sourceProdutoRef, patch as FirebaseFirestore.DocumentData);
-    }
     batch.delete(
       produtoMercadoLivreLinkCollection.docRef(
         db,
@@ -464,95 +397,6 @@ async function stampSourceError(
   );
 }
 
-/* --------------------------- applyMarketplaceDeletion --------------------- */
-
-interface MarketplaceDeletionTarget {
-  integracaoUid: string;
-  externalId: string;
-}
-
-interface MarketplaceDeletionPatch {
-  marketplace: Array<Record<string, unknown>>;
-  marketplaceIds: string[];
-  statusProdutosMarketplace: Record<string, unknown>;
-}
-
-/**
- * `StatusProdMarketplace.deleted()`'s exact wire JSON — the generated Dart
- * `toJson` (models.g.dart `_$StatusProdMarketplaceToJson`) writes `error`,
- * `enviarEstoque`, `retries` and `autoImport` UNCONDITIONALLY (explicit nulls;
- * only `deleted` sits behind `writeNotNull`), so byte-parity keeps the nulls.
- *
- * ⚠️ DECIDED, do not "clean this up" (#825, owner decision 2026-08-11). This is
- * the ONLY place in the repo that writes `statusProdutosMarketplace`, and the
- * field has ZERO readers in the new stack — legacy used it as a per-listing
- * stock-send circuit breaker (`StatusProdMarketplace.podeEnviarEstoque`), a gate
- * the new sender replaced with ML's own listing status (`bulkEstoquePlan.ts`).
- * The write is kept anyway, deliberately: it is one of the three fields
- * `applyMarketplaceDeletion` returns in a single patch, faithful to the Dart
- * original, and dropping just this member would make the port diverge for no
- * gain while leaving the decommission (#992) to remember that one of three was
- * already gone. It dies with the other two, in one commit, after the cutover.
- */
-const DELETED_STATUS_PRODUTO_MARKETPLACE = {
-  error: false,
-  enviarEstoque: false,
-  retries: null,
-  autoImport: null,
-  deleted: true,
-};
-
-/**
- * TS port of `Produto.applyMarketplaceDeletion`
- * (`.old/packages/produtos/lib/src/models.dart:1132-1178`) — see the module
- * doc for the pinned test-verified semantics. Returns null when nothing in
- * `marketplace` matches `target` (mirrors Dart's `identical(updated, produto)`
- * short-circuit), so the caller can skip a no-op write.
- */
-function applyMarketplaceDeletion(
-  produtoRaw: Record<string, unknown>,
-  target: MarketplaceDeletionTarget,
-): MarketplaceDeletionPatch | null {
-  const marketplace = asObjectArray(produtoRaw.marketplace);
-  if (marketplace.length === 0) return null;
-
-  const targetIntegracao = lastSegment(target.integracaoUid);
-  const shouldDelete = (entry: Record<string, unknown>): boolean => {
-    const entryIntegracao =
-      typeof entry.integracaoUid === 'string' ? lastSegment(entry.integracaoUid) : null;
-    if (entryIntegracao == null || entryIntegracao !== targetIntegracao) return false;
-    if (entry.externalId === target.externalId) return true;
-    if (entry.externalParentId != null && entry.externalParentId === target.externalId) return true;
-    return false;
-  };
-
-  const removed = marketplace.filter(shouldDelete);
-  if (removed.length === 0) return null;
-
-  const updatedMarketplace = marketplace.filter((e) => !shouldDelete(e));
-  const removedExternalIds = new Set(removed.map((e) => String(e.externalId)));
-
-  const marketplaceIds = uniqueFirstSeen(
-    asStringArray(produtoRaw.marketplaceIds).filter(
-      (id) => !removedExternalIds.has(lastSegment(id)),
-    ),
-  );
-  const existingStatus = isPlainObject(produtoRaw.statusProdutosMarketplace)
-    ? produtoRaw.statusProdutosMarketplace
-    : {};
-  const statusProdutosMarketplace: Record<string, unknown> = { ...existingStatus };
-  for (const entry of removed) {
-    const key = `${String(entry.integracaoUid)}_${String(entry.externalId)}`;
-    statusProdutosMarketplace[key] = DELETED_STATUS_PRODUTO_MARKETPLACE;
-  }
-
-  return {
-    marketplace: updatedMarketplace,
-    marketplaceIds,
-    statusProdutosMarketplace,
-  };
-}
-
 /* ------------------------------- small helpers ----------------------------- */
 
 function asStringId(v: unknown): string | null {
@@ -581,22 +425,4 @@ function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | 
   if (i === -1 || i + 3 >= segs.length) return null;
   if (segs[i + 2] !== 'produtoMercadoLivre') return null;
   return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
-}
-
-function asObjectArray(v: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(v) ? v.filter((e): e is Record<string, unknown> => isPlainObject(e)) : [];
-}
-
-function asStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((e): e is string => typeof e === 'string') : [];
-}
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return v != null && typeof v === 'object' && !Array.isArray(v);
-}
-
-/** Insertion-order de-dup (`Set` preserves first-seen order) — same shape as
- * `import.ts`'s private `uniqueFirstSeen`, duplicated for the same reason. */
-function uniqueFirstSeen(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }

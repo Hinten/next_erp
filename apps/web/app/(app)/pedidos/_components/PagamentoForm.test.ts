@@ -151,7 +151,7 @@ describe('pagamentoDataFromForm', () => {
     expect(data).toMatchObject({ duplicata: false, aVista: true });
   });
 
-  it('preserves the passthrough metodoPagamentoOuterRef + dataCadastro from base, and nulls a stale card for a non-card forma', () => {
+  it('preserves modeled out-of-form fields and nulls a stale card for a non-card forma', () => {
     const base = {
       cartao: { bandeira: 'visa' },
       cheque: null,
@@ -214,7 +214,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
         titular: 'Fulano',
         cpfCnpj: '12345678900',
         telefone: '11999999999',
-        bomPara: 1234,
+        bomPara: 1_700_000_000_000_000,
       }),
       null,
     );
@@ -226,7 +226,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
       titular: 'Fulano',
       cpf_cnpj: '12345678900',
       telefone: '5511999999999',
-      bomPara: 1234,
+      bomPara: 1_700_000_000_000_000,
     });
     expect(data.cartao).toBeNull();
   });

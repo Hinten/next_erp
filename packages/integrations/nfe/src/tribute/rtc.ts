@@ -25,8 +25,8 @@ import {
 import type { TIS, TTribNFe } from '../types/nfe-schema';
 
 /**
- * Strict-parse a stored `configuracaoIBSCBS` blob (held as `z.unknown` on
- * `impostoSchema`) into the typed RTC config. Throws a clear error when RTC
+ * Strict-parse a stored, known-field partial `configuracaoIBSCBS` draft into
+ * the complete typed RTC config. Throws a clear error when RTC
  * emission is on for an item but its registered config is incomplete/invalid —
  * surfaced to the operator at emit time, never silently emitting bad values.
  */

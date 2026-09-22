@@ -3,6 +3,8 @@ import {
   FORMA_PAGAMENTO,
   LIQUIDACAO_FONTE,
   STATUS_PAGAMENTO,
+  cartaoSchema,
+  chequeSchema,
   isPagamentoPagante,
   liquidacaoFonteSchema,
   liquidacaoPagamentoSchema,
@@ -41,10 +43,32 @@ describe('pagamentoSchema', () => {
     }
   });
 
-  it('keeps cartao/cheque untyped (z.unknown() opaque fields)', () => {
-    const cartao = { last4: '1234', bandeira: 'visa' };
-    const out = pagamentoSchema.parse({ valor: 50, cartao });
+  it('accepts the observed typed card and cheque shapes', () => {
+    const cartao = {
+      tpIntegra: '2',
+      bandeira: '01',
+      numeroCartao: '1234',
+      cAut: 'AUTH-1',
+      cnpj_instituicao: '12345678000190',
+      tarifa: 2.5,
+      tarifaFixa: 0.5,
+      prazoRecebimento: 30,
+    };
+    const cheque = {
+      banco: '001',
+      agencia: '1234',
+      conta: '98765',
+      numero: 42,
+      titular: 'Cliente',
+      cpf_cnpj: '12345678909',
+      telefone: '5511999999999',
+      bomPara: 1_757_500_000_000_000,
+    };
+    const out = pagamentoSchema.parse({ valor: 50, cartao, cheque });
     expect(out.cartao).toEqual(cartao);
+    expect(out.cheque).toEqual(cheque);
+    expect(cartaoSchema.safeParse({ ...cartao, metadata: true }).success).toBe(false);
+    expect(chequeSchema.safeParse({ ...cheque, metadata: true }).success).toBe(false);
   });
 
   // No `.passthrough()` (#463): an unmodeled key is stripped on a lenient
@@ -251,19 +275,25 @@ describe('pagamentoSchema — marketplace + liquidacao (step 6)', () => {
     expect(validado.marketplace).toBeNull(); // the anchor: `.partial()` alone WOULD have
   });
 
-  it('keeps an unknown NESTED key (passthrough) but throws on an unknown TOP-LEVEL one', () => {
-    // The two halves are one decision: the blocks mirror a provider payload
-    // that grows without telling us, so an unmodeled escrow field must survive
-    // a re-write; the document's own top level must not.
-    const comExtra = {
-      valor: 31.99,
-      marketplace: { ...MARKETPLACE_SG, campoNovoDoShopee: 'x' },
-      liquidacao: { ...LIQUIDACAO_SG, campoNovoDaLiquidacao: 7 },
-    };
-    const parsed = pagamentoSchema.strict().parse(comExtra);
-    expect(parsed.marketplace).toMatchObject({ campoNovoDoShopee: 'x' });
-    expect(parsed.liquidacao).toMatchObject({ campoNovoDaLiquidacao: 7 });
-    // The anchor: the SAME parse refuses an unknown key one level up.
+  it('rejects unknown nested and top-level keys', () => {
+    expect(
+      pagamentoSchema.safeParse({
+        valor: 31.99,
+        marketplace: { ...MARKETPLACE_SG, campoNovoDoShopee: 'x' },
+      }).success,
+    ).toBe(false);
+    expect(
+      pagamentoSchema.safeParse({
+        valor: 31.99,
+        liquidacao: { ...LIQUIDACAO_SG, campoNovoDaLiquidacao: 7 },
+      }).success,
+    ).toBe(false);
+    expect(
+      marketplacePagamentoSchema.safeParse({
+        ...MARKETPLACE_SG,
+        taxas: { ...TAXAS_SG, campoNovo: 1 },
+      }).success,
+    ).toBe(false);
     const top = pagamentoSchema
       .strict()
       .safeParse({ valor: 31.99, liquidacaoShopee: LIQUIDACAO_SG });

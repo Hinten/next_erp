@@ -8,6 +8,8 @@ import {
   isPagamentoPagante,
   sumPagamentosPagos,
   type FormaPagamento,
+  type Cartao,
+  type Cheque,
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
@@ -118,9 +120,8 @@ export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   quantidadeIntervalo: 1,
 };
 
-/** Populate the form from an existing pagamento doc (edit mode). The embedded
- * `cartao` / `cheque` maps are opaque (`z.unknown()`) on the doc, so parse them
- * leniently — a missing or legacy-shaped object just yields empty fields. */
+/** Populate the form from an existing pagamento doc (edit mode). Re-parse the
+ * embedded blocks defensively because a soft-read may return a raw legacy doc. */
 export function formFromPagamento(p: Pagamento): PagamentoFormState {
   const cartao = cartaoSchema.safeParse(p.cartao);
   const cheque = chequeSchema.safeParse(p.cheque);
@@ -241,28 +242,19 @@ export function validatePagamentoForm(form: PagamentoFormState): string | null {
   return null;
 }
 
-/** Narrow an opaque (`z.unknown()`) value to a plain object for spreading; any
- * non-object (null, array, primitive) yields `{}`. */
-function asRecord(v: unknown): Record<string, unknown> {
-  return v != null && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
-
 /**
- * Build the embedded `cartao` map from the form (card formas only). Spreads any
- * existing card first for legacy pass-through keys, then overrides the known
- * fields from the form — `bandeira` + the catalog fields (`tarifa`, `tarifaFixa`,
+ * Build the embedded `cartao` map from the form (card formas only). Preserves
+ * known existing fields, then overrides them from the form — `bandeira` + the catalog fields (`tarifa`, `tarifaFixa`,
  * `cnpj_instituicao`, `prazoRecebimento`) are either the values preserved by
  * `formFromPagamento` from the existing doc, or whatever a fresh
  * `bandeirasCartao` pick resolved into the form (see the `CollectionSelect` in
  * `PagamentosSection`). `tpIntegra` stays `'2'` (não integrado) unless the base
  * set it.
  */
-function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
-  return {
+function buildCartao(form: PagamentoFormState, base: Pagamento | null): Cartao {
+  return cartaoSchema.parse({
     tpIntegra: '2',
-    ...asRecord(base?.cartao),
+    ...(base?.cartao ?? {}),
     bandeira: form.bandeira === '' ? null : form.bandeira,
     numeroCartao: trimToNull(form.numeroCartao),
     cAut: trimToNull(form.cAut),
@@ -270,7 +262,7 @@ function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<s
     tarifa: form.tarifa,
     tarifaFixa: form.tarifaFixa,
     prazoRecebimento: form.prazoRecebimento,
-  };
+  });
 }
 
 /**
@@ -297,24 +289,18 @@ const FORMAS_COM_CARD_NA_NFE: ReadonlySet<number> = new Set<number>([
  * card-like forma (preserve), `null` for anything else (a forma switch away
  * from a card really must clear a stale card).
  */
-function cartaoComGrupoOculto(
-  form: PagamentoFormState,
-  base: Pagamento | null,
-): Record<string, unknown> | null {
+function cartaoComGrupoOculto(form: PagamentoFormState, base: Pagamento | null): Cartao | null {
   if (!FORMAS_COM_CARD_NA_NFE.has(Number(form.forma))) return null;
-  const stored = base?.cartao;
-  return stored != null && typeof stored === 'object' && !Array.isArray(stored)
-    ? (stored as Record<string, unknown>)
-    : null;
+  return base?.cartao ?? null;
 }
 
 /** Build the embedded `cheque` map from the form (cheque forma only). */
-function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
+function buildCheque(form: PagamentoFormState, base: Pagamento | null): Cheque {
   const numeroStr = form.numeroCheque.trim();
   const numero = Number(numeroStr);
   const telefoneStr = trimToNull(form.telefone);
-  return {
-    ...asRecord(base?.cheque),
+  return chequeSchema.parse({
+    ...(base?.cheque ?? {}),
     banco: trimToNull(form.banco),
     agencia: trimToNull(form.agencia),
     conta: trimToNull(form.conta),
@@ -323,12 +309,12 @@ function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<s
     cpf_cnpj: trimToNull(form.cpfCnpj),
     telefone: telefoneStr ? normalizeTelefone(telefoneStr) : null,
     bomPara: form.bomPara,
-  };
+  });
 }
 
 /**
  * Build the full pagamento record handed to `savePagamento`. Spreads the existing
- * doc first so the passthrough/out-of-band fields (`metodoPagamentoOuterRef`,
+ * doc first so modeled fields not owned by this form (`metodoPagamentoOuterRef`,
  * `dataCadastro`, `dataAprovacao`, …) survive, then overrides the edited fields.
  * The `cartao` / `cheque` maps are rebuilt for their forma; `cheque` and a
  * non-card-like `cartao` are reset to `null`, while a card-LIKE forma whose card
@@ -402,7 +388,7 @@ export function buildChequeSplitPagamentos(
   const initialBomPara = form.bomPara;
   const perRowValor = roundReais((form.valor ?? 0) / n);
   const template = pagamentoDataFromForm(form, base);
-  const chequeTemplate = template.cheque as Record<string, unknown>;
+  const chequeTemplate = template.cheque as Cheque;
   return Array.from({ length: n }, (_, i) => ({
     ...template,
     parcelas: 1,

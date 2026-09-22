@@ -204,7 +204,7 @@ describe('liquidarPagamentoShopee — o caminho feliz', () => {
     expect(db.opLog.filter((o) => o.op === 'get')).toHaveLength(1);
   });
 
-  it('27. a metade do `marketplace` que a TAREFA escreveu sobrevive ao rebuild', async () => {
+  it('27. a metade conhecida do `marketplace` sobrevive e extras legados são descartados', async () => {
     // `update` mascara na CHAVE de topo e substitui o mapa inteiro, então o
     // diário tem de ser reconstruído a partir do que está gravado. `tipo`,
     // `orderSn` e `atualizadoEm` não são derivados do escrow — e `atualizadoEm`
@@ -222,7 +222,7 @@ describe('liquidarPagamentoShopee — o caminho feliz', () => {
           tarifasBrutas: 1,
           taxas: null,
           atualizadoEm: RELOGIO_DA_ORDEM_US,
-          // Uma chave desconhecida, que só existe por causa do `.passthrough()`.
+          // Uma chave legada desconhecida que a leitura tolerante ainda expõe.
           campoDeUmPassoFuturo: 'x',
         },
       }),
@@ -233,10 +233,11 @@ describe('liquidarPagamentoShopee — o caminho feliz', () => {
     const mk = doc(db).marketplace as Record<string, unknown>;
     expect(mk.tipo).toBe(MARKETPLACE_PEDIDO_TIPO.shopee);
     expect(mk.orderSn).toBe(ORDER_SN);
-    // ⛔ MUTANTE: dropar a metade gravada re-dataria o diário com o relógio
-    // errado e perderia a chave desconhecida.
+    // ⛔ MUTANTE: dropar a metade conhecida re-dataria o diário com o relógio
+    // errado. A chave desconhecida, ao contrário, não pode voltar à escrita
+    // depois que o diário persistido passou a ser estrito.
     expect(mk.atualizadoEm).toBe(RELOGIO_DA_ORDEM_US);
-    expect(mk.campoDeUmPassoFuturo).toBe('x');
+    expect(mk).not.toHaveProperty('campoDeUmPassoFuturo');
     // …e o dinheiro do escrow FOI atualizado, que é o ponto da varredura.
     expect(mk.escrowAmount).toBe(30.7);
     expect(mk.buyerTotalAmount).toBe(31.99);

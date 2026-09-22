@@ -58,8 +58,9 @@ export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
  * `configuracaoISSQN`, `retencao`, `configuracaoIBSCBS`) are **typed**
  * (`taxConfigFields`, shared with the tribute engine via `@delfrance/schemas`)
  * rather than pass-through — there is no circular dep (schemas is a leaf, the
- * NF-e package depends on it). `configuracaoIBSCBS` (RTC) stays lenient so a
- * half-filled blob never fails the parse.
+ * NF-e package depends on it). `configuracaoIBSCBS` (RTC) restricts the key set
+ * while leaving code formats and numeric ranges to the emission boundary, so a
+ * half-typed draft never drops this tier from the resolver cascade.
  */
 export const impostoProdutoSchema = z.object({
   id: z.string().nullable().default(null),

@@ -67,7 +67,7 @@ export const INTEGRACAO_TIPO_LABELS: Record<IntegracaoTipo, string> = {
  * open/close pair. Both are `DateTime`, required (never null) in the Dart
  * model — modeled here with the numeric-epoch standard (`millisSinceEpoch`).
  */
-export const horarioWhatsappSchema = z.object({
+export const horarioWhatsappSchema = z.strictObject({
   abertura: millisSinceEpoch(),
   fechamento: millisSinceEpoch(),
 });
@@ -157,7 +157,7 @@ export function decodeHorarioMs(ms: number): { hour: number; minute: number } {
  * explicit `null` on the wire; `toJson` (`_toJsonHorario`) only emits the
  * populated days.
  */
-export const periodoWhatsappSchema = z.object({
+export const periodoWhatsappSchema = z.strictObject({
   domingo: horarioWhatsappSchema.nullish(),
   segunda: horarioWhatsappSchema.nullish(),
   terca: horarioWhatsappSchema.nullish(),
@@ -211,217 +211,208 @@ export const MODO_ENVIO_MERCADO_LIVRE = {
 
 /**
  * Integracao — collection `integracao`. Mirrors
- * `packages/canal_de_vendas/lib/src/models.dart`. Outer references
- * remain pass-through; the UI surfaces them as ids and resolves
- * lookups lazily.
+ * `packages/canal_de_vendas/lib/src/models.dart`. The root remains a plain
+ * strip-policy object so reads omit retired fields while write helpers reject
+ * them.
  */
-export const integracaoSchema = z
-  .object({
-    tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
-    padrao: z.boolean().default(false),
-    nome: z.string().min(1).max(255),
-    // ⚠️ `[0-9A-Z]`, not `\d`: this is the `<infIntermed>` CNPJ — the marketplace
-    // that brokered the sale, i.e. a COUNTERPARTY, and RFB IN 2.229/2024 issues
-    // alphanumeric CNPJs to newly registered ones. (`filial.cnpj` stays
-    // numeric-only on purpose: that is OUR emitente, existing CNPJs never change
-    // format, and the chave de acesso builder still asserts digits for it.)
-    // ⚠️ Same shape as `endereco.cpf_cnpj` / `bandeiraCartao.cnpj_instituicao`,
-    // and for the same reason: no refine backs it, so the regex is the whole
-    // guard and it must not be looser than the alfa CNPJ it exists to accept.
-    // The three agree deliberately — a field on the looser `^[0-9A-Z]*$` beside
-    // two on this one is the drift a reviewer cannot see.
-    cpf_cnpj: z
-      .string()
-      .max(18)
-      .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
-      .nullable()
-      .default(null),
-    idCadIntTran: z.string().max(60).nullable().default(null),
-    ativo: z.boolean().default(true),
-    cor: z.number().int().nullable().default(null),
+export const integracaoSchema = z.object({
+  tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
+  padrao: z.boolean().default(false),
+  nome: z.string().min(1).max(255),
+  // ⚠️ `[0-9A-Z]`, not `\d`: this is the `<infIntermed>` CNPJ — the marketplace
+  // that brokered the sale, i.e. a COUNTERPARTY, and RFB IN 2.229/2024 issues
+  // alphanumeric CNPJs to newly registered ones. (`filial.cnpj` stays
+  // numeric-only on purpose: that is OUR emitente, existing CNPJs never change
+  // format, and the chave de acesso builder still asserts digits for it.)
+  // ⚠️ Same shape as `endereco.cpf_cnpj` / `bandeiraCartao.cnpj_instituicao`,
+  // and for the same reason: no refine backs it, so the regex is the whole
+  // guard and it must not be looser than the alfa CNPJ it exists to accept.
+  // The three agree deliberately — a field on the looser `^[0-9A-Z]*$` beside
+  // two on this one is the drift a reviewer cannot see.
+  cpf_cnpj: z
+    .string()
+    .max(18)
+    .regex(/^(\d*|[0-9A-Z]{12}\d{2})$/, 'apenas números, ou um CNPJ alfanumérico')
+    .nullable()
+    .default(null),
+  idCadIntTran: z.string().max(60).nullable().default(null),
+  ativo: z.boolean().default(true),
+  cor: z.number().int().nullable().default(null),
 
-    /**
-     * Shipping-modality code for imports, legacy `INTEGRACAO_FRETE` enum
-     * (`packages/global/lib/src/constantes.dart`). Legacy serializes this enum
-     * as a STRING (`'0'`–`'4'`, `'9'`), never a number — the previous
-     * `z.number().int()` typing failed `parseRead` on real legacy docs (#465
-     * finding).
-     */
-    modalidadeFreteImportacao: z.enum(['0', '1', '2', '3', '4', '9']).nullable().default(null),
+  /**
+   * Shipping-modality code for imports, legacy `INTEGRACAO_FRETE` enum
+   * (`packages/global/lib/src/constantes.dart`). Legacy serializes this enum
+   * as a STRING (`'0'`–`'4'`, `'9'`), never a number — the previous
+   * `z.number().int()` typing failed `parseRead` on real legacy docs (#465
+   * finding).
+   */
+  modalidadeFreteImportacao: z.enum(['0', '1', '2', '3', '4', '9']).nullable().default(null),
 
-    /**
-     * The marketplace seller id this account maps to (Mercado Livre's numeric
-     * `user_id`), denormalized onto the doc so an inbound webhook can resolve
-     * its owning integração with a single equality query — the old
-     * `ContaMercadoLivre.user_id` (int?, models.dart:199). Null for channels
-     * that don't carry one. Stamped at OAuth exchange; migrated accounts the
-     * legacy app connected already carry it (legacy wire parity).
-     */
-    user_id: z.number().int().nullable().default(null),
+  /**
+   * The marketplace seller id this account maps to (Mercado Livre's numeric
+   * `user_id`), denormalized onto the doc so an inbound webhook can resolve
+   * its owning integração with a single equality query — the old
+   * `ContaMercadoLivre.user_id` (int?, models.dart:199). Null for channels
+   * that don't carry one. Stamped at OAuth exchange; migrated accounts the
+   * legacy app connected already carry it (legacy wire parity).
+   */
+  user_id: z.number().int().nullable().default(null),
 
-    /**
-     * Mercado Livre — the `shipping.mode` every publish from this conta sends.
-     *
-     * Read at publish time (`publicar/route.ts` → `PublishDeps`), exactly like
-     * `depositoOuterRef` and `operacaoOuterRef` below: the conta is already
-     * loaded by `loadMercadoLivreContext`, so this costs no extra read.
-     *
-     * ⚠️ Has NO legacy counterpart — the Flutter app never sent a `shipping`
-     * node either, which is why every ERP-published listing lands as "a
-     * combinar". Do not look for a parity reference in `.old/`.
-     *
-     * See {@link modoEnvioMercadoLivreSchema} for why null ≠ `'not_specified'`.
-     */
-    modoEnvioMercadoLivre: modoEnvioMercadoLivreSchema.nullable().default(null),
+  /**
+   * Mercado Livre — the `shipping.mode` every publish from this conta sends.
+   *
+   * Read at publish time (`publicar/route.ts` → `PublishDeps`), exactly like
+   * `depositoOuterRef` and `operacaoOuterRef` below: the conta is already
+   * loaded by `loadMercadoLivreContext`, so this costs no extra read.
+   *
+   * ⚠️ Has NO legacy counterpart — the Flutter app never sent a `shipping`
+   * node either, which is why every ERP-published listing lands as "a
+   * combinar". Do not look for a parity reference in `.old/`.
+   *
+   * See {@link modoEnvioMercadoLivreSchema} for why null ≠ `'not_specified'`.
+   */
+  modoEnvioMercadoLivre: modoEnvioMercadoLivreSchema.nullable().default(null),
 
-    // NOTE: `ContaMercadoLivre.preferenciasProdutoMercadoLivre` (an embedded
-    // object of 10 boolean import/overwrite toggles — importarCategorias,
-    // importarNovosProdutos, importarEstoque, importarFotos, importarPreco,
-    // atualizarProdutoMl, atualizarProdutoPai, sobrescreverEstoque,
-    // sobrescreverFotos, sobrescreverPreco) is NEVER USED in the legacy
-    // Flutter app per owner decision 2026-07-15. It is not modeled here and
-    // will NOT be ported; any legacy doc that happens to carry it rides
-    // `.passthrough()` untouched.
+  // NOTE: `ContaMercadoLivre.preferenciasProdutoMercadoLivre` (an embedded
+  // object of 10 boolean import/overwrite toggles — importarCategorias,
+  // importarNovosProdutos, importarEstoque, importarFotos, importarPreco,
+  // atualizarProdutoMl, atualizarProdutoPai, sobrescreverEstoque,
+  // sobrescreverFotos, sobrescreverPreco) is NEVER USED in the legacy
+  // Flutter app per owner decision 2026-07-15. It is not modeled here and
+  // will NOT be ported; a legacy read simply strips it.
 
-    // Per-channel flat account fields (parity audit #289) — one per
-    // marketplace, nullable so every OTHER channel's docs still parse.
-    /**
-     * Shopee — `ContaShopee.shop_id` (int?), the connected shop's numeric id.
-     */
-    shop_id: z.number().int().nullable().default(null),
-    /**
-     * Shopee — `ContaShopee.main_account_id` (int?), the parent Shopee
-     * account id a shop belongs to (multi-shop merchants).
-     */
-    main_account_id: z.number().int().nullable().default(null),
-    /**
-     * Shopee — `ContaShopee.tabelasAtacado` (`AtacadoShopee[]?`), wholesale
-     * price-tier rules: each entry maps a `[min_count, max_count]` quantity
-     * band to its own price table.
-     */
-    tabelasAtacado: z
-      .array(
-        z.object({
-          listaDePrecoAtacadoOuterRef: outerRefSchema,
-          min_count: z.number().int(),
-          max_count: z.number().int(),
-        }),
-      )
-      .nullable()
-      .default(null),
-    /**
-     * Amazon — `ContaAmazon.selling_partner_id` (string?), the SP-API seller
-     * id.
-     */
-    selling_partner_id: z.string().nullable().default(null),
-    /**
-     * Magalu — `ContaMagalu.tenant_id` (string?), the Magalu Open API tenant
-     * id.
-     */
-    tenant_id: z.string().nullable().default(null),
+  // Per-channel flat account fields (parity audit #289) — one per
+  // marketplace, nullable so every OTHER channel's docs still parse.
+  /**
+   * Shopee — `ContaShopee.shop_id` (int?), the connected shop's numeric id.
+   */
+  shop_id: z.number().int().nullable().default(null),
+  /**
+   * Shopee — `ContaShopee.main_account_id` (int?), the parent Shopee
+   * account id a shop belongs to (multi-shop merchants).
+   */
+  main_account_id: z.number().int().nullable().default(null),
+  /**
+   * Shopee — `ContaShopee.tabelasAtacado` (`AtacadoShopee[]?`), wholesale
+   * price-tier rules: each entry maps a `[min_count, max_count]` quantity
+   * band to its own price table.
+   */
+  tabelasAtacado: z
+    .array(
+      z.strictObject({
+        listaDePrecoAtacadoOuterRef: outerRefSchema,
+        min_count: z.number().int(),
+        max_count: z.number().int(),
+      }),
+    )
+    .nullable()
+    .default(null),
+  /**
+   * Amazon — `ContaAmazon.selling_partner_id` (string?), the SP-API seller
+   * id.
+   */
+  selling_partner_id: z.string().nullable().default(null),
+  /**
+   * Magalu — `ContaMagalu.tenant_id` (string?), the Magalu Open API tenant
+   * id.
+   */
+  tenant_id: z.string().nullable().default(null),
 
-    /**
-     * WhatsApp — `Conta_Whatsapp.wa_id` (string?), legacy source
-     * `packages/canais_de_venda/whatsapp/lib/src/models.dart`. NOTE: despite
-     * the name, the legacy inbound webhook pipeline resolves an account by
-     * `wa_id == metadata.phone_number_id` (the WhatsApp Cloud API webhook
-     * payload field) — so this carries the PHONE NUMBER ID, not the
-     * WhatsApp Business Account ID. Do not "fix" this; #527's inbound
-     * resolution depends on matching legacy exactly.
-     */
-    wa_id: z.string().nullable().default(null),
-    /**
-     * WhatsApp — `Conta_Whatsapp.phoneNumberId` (string?), the phone number
-     * id from the WhatsApp Business Cloud API (Meta Graph). Distinct field
-     * from `wa_id` above only in name — legacy populates both with the same
-     * value; kept as two separate fields for wire parity.
-     */
-    phoneNumberId: z.string().nullable().default(null),
-    /**
-     * WhatsApp — the true WhatsApp Business Account id (WABA id). Distinct from
-     * `wa_id` above: despite its name, `wa_id` carries the webhook payload's
-     * `metadata.phone_number_id` (used ONLY for inbound account resolution) and
-     * is NEVER a WABA id. `waba_id` is the account-level Graph node id, used
-     * ONLY for account-level Graph calls — e.g. `GET /{waba_id}/subscribed_apps`
-     * (the webhook-subscription health check). Null until an operator fills it
-     * in; nullable like every other per-channel field so non-WhatsApp docs parse.
-     */
-    waba_id: z.string().nullable().default(null),
-    portfolioId: z.string().nullable().default(null).describe('ID do portfólio empresarial Meta'),
-    /**
-     * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
-     * connected phone number. Nullable here like every other per-channel
-     * field so non-WhatsApp `integracao` docs still parse.
-     */
-    numero: z.string().nullable().default(null),
-    /**
-     * WhatsApp — `Conta_Whatsapp.verificado` (bool?, legacy default
-     * `false`): whether the number completed the Cloud API verification
-     * flow.
-     */
-    verificado: z.boolean().nullable().default(false),
-    /**
-     * WhatsApp — `Conta_Whatsapp.mensagem_automatica` (string?, max 255):
-     * daily auto-reply sent during business hours (`horario_funcionamento`).
-     */
-    mensagem_automatica: z.string().max(255).nullable().default(null),
-    /**
-     * WhatsApp — `Conta_Whatsapp.mensagem_inatividade` (string?, max 255):
-     * daily auto-reply sent OUTSIDE business hours.
-     */
-    mensagem_inatividade: z.string().max(255).nullable().default(null),
-    /**
-     * WhatsApp — `Conta_Whatsapp.horario_funcionamento`
-     * (`List<Periodo_Whatsapp>?`): the weekly business-hours schedule.
-     * Legacy (de)serializes it as a JSON array via
-     * `_fromJsonListPeriodo`/`_toJsonListPeriodo`, one `Periodo_Whatsapp`
-     * entry per array item.
-     */
-    horario_funcionamento: z.array(periodoWhatsappSchema).nullable().default(null),
+  /**
+   * WhatsApp — `Conta_Whatsapp.wa_id` (string?), legacy source
+   * `packages/canais_de_venda/whatsapp/lib/src/models.dart`. NOTE: despite
+   * the name, the legacy inbound webhook pipeline resolves an account by
+   * `wa_id == metadata.phone_number_id` (the WhatsApp Cloud API webhook
+   * payload field) — so this carries the PHONE NUMBER ID, not the
+   * WhatsApp Business Account ID. Do not "fix" this; #527's inbound
+   * resolution depends on matching legacy exactly.
+   */
+  wa_id: z.string().nullable().default(null),
+  /**
+   * WhatsApp — `Conta_Whatsapp.phoneNumberId` (string?), the phone number
+   * id from the WhatsApp Business Cloud API (Meta Graph). Distinct field
+   * from `wa_id` above only in name — legacy populates both with the same
+   * value; kept as two separate fields for wire parity.
+   */
+  phoneNumberId: z.string().nullable().default(null),
+  /**
+   * WhatsApp — the true WhatsApp Business Account id (WABA id). Distinct from
+   * `wa_id` above: despite its name, `wa_id` carries the webhook payload's
+   * `metadata.phone_number_id` (used ONLY for inbound account resolution) and
+   * is NEVER a WABA id. `waba_id` is the account-level Graph node id, used
+   * ONLY for account-level Graph calls — e.g. `GET /{waba_id}/subscribed_apps`
+   * (the webhook-subscription health check). Null until an operator fills it
+   * in; nullable like every other per-channel field so non-WhatsApp docs parse.
+   */
+  waba_id: z.string().nullable().default(null),
+  portfolioId: z.string().nullable().default(null).describe('ID do portfólio empresarial Meta'),
+  /**
+   * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
+   * connected phone number. Nullable here like every other per-channel
+   * field so non-WhatsApp `integracao` docs still parse.
+   */
+  numero: z.string().nullable().default(null),
+  /**
+   * WhatsApp — `Conta_Whatsapp.verificado` (bool?, legacy default
+   * `false`): whether the number completed the Cloud API verification
+   * flow.
+   */
+  verificado: z.boolean().nullable().default(false),
+  /**
+   * WhatsApp — `Conta_Whatsapp.mensagem_automatica` (string?, max 255):
+   * daily auto-reply sent during business hours (`horario_funcionamento`).
+   */
+  mensagem_automatica: z.string().max(255).nullable().default(null),
+  /**
+   * WhatsApp — `Conta_Whatsapp.mensagem_inatividade` (string?, max 255):
+   * daily auto-reply sent OUTSIDE business hours.
+   */
+  mensagem_inatividade: z.string().max(255).nullable().default(null),
+  /**
+   * WhatsApp — `Conta_Whatsapp.horario_funcionamento`
+   * (`List<Periodo_Whatsapp>?`): the weekly business-hours schedule.
+   * Legacy (de)serializes it as a JSON array via
+   * `_fromJsonListPeriodo`/`_toJsonListPeriodo`, one `Periodo_Whatsapp`
+   * entry per array item.
+   */
+  horario_funcionamento: z.array(periodoWhatsappSchema).nullable().default(null),
 
-    // NOTE: `Conta_Whatsapp.permanent_token` is deliberately NOT modeled here
-    // (this is a client-readable doc) — it lives in the admin-only
-    // `credenciaisWhatsapp` subcollection defined below (mirrors the
-    // `credenciais` OAuth-token pattern). Legacy stored the two-step
-    // registration `pin` in plaintext ON this client-readable account doc; we
-    // deliberately do NOT — the 6-digit `pin` lives ONLY in the admin-only
-    // `credenciaisWhatsapp.pin` field (below), alongside the permanent token.
-    // The PIN/SMS number-registration sub-flow
-    // (`RegistrarPinDialog`/`VerificarCodigoDialog`) is now ported — see the
-    // apps/whatsapp verificacao/registro routes.
+  // NOTE: `Conta_Whatsapp.permanent_token` is deliberately NOT modeled here
+  // (this is a client-readable doc) — it lives in the admin-only
+  // `credenciaisWhatsapp` subcollection defined below (mirrors the
+  // `credenciais` OAuth-token pattern). Legacy stored the two-step
+  // registration `pin` in plaintext ON this client-readable account doc; we
+  // deliberately do NOT — the 6-digit `pin` lives ONLY in the admin-only
+  // `credenciaisWhatsapp.pin` field (below), alongside the permanent token.
+  // The PIN/SMS number-registration sub-flow
+  // (`RegistrarPinDialog`/`VerificarCodigoDialog`) is now ported — see the
+  // apps/whatsapp verificacao/registro routes.
 
-    // NOTE: Loja Integrada's `ContaLojaIntegrada.token_id` (the per-account
-    // static `chave_api`) is deliberately NOT modeled as a typed field here —
-    // #356 tracks moving it into the admin-only `credenciais` store below
-    // instead of a client-readable account field. A legacy doc that already
-    // carries it rides `.passthrough()` untouched in the meantime.
+  // NOTE: Loja Integrada's static key is deliberately NOT modeled on this
+  // client-readable document. A future implementation must introduce it
+  // directly in admin-only storage.
 
-    // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM).
-    // Nullable so a legacy integração without a given ref (e.g. a marketplace
-    // channel with no filial) still reads/saves; the balcão form requires the
-    // ones it needs at the field level.
-    filialIntegracaoPedidoOuterRef: outerRefSchema.nullable().default(null),
-    tabelaNormalOuterRef: outerRefSchema.nullable().default(null),
-    tabelaPromocionalOuterRef: outerRefSchema.nullable().default(null),
-    // The legacy `tabelaMercadoShopsOuterRef` / `tabelaMercadoShopsPromocionalOuterRef`
-    // pair is deliberately NOT modeled: Mercado Shops was discontinued by ML on
-    // 2025-12-31, and neither app ever consumed the refs. Legacy docs still
-    // carrying them ride `.passthrough()` untouched.
-    operacaoOuterRef: outerRefSchema.nullable().default(null),
-    operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
-    depositoOuterRef: outerRefSchema.nullable().default(null),
+  // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM).
+  // Nullable so a legacy integração without a given ref (e.g. a marketplace
+  // channel with no filial) still reads/saves; the balcão form requires the
+  // ones it needs at the field level.
+  filialIntegracaoPedidoOuterRef: outerRefSchema.nullable().default(null),
+  tabelaNormalOuterRef: outerRefSchema.nullable().default(null),
+  tabelaPromocionalOuterRef: outerRefSchema.nullable().default(null),
+  operacaoOuterRef: outerRefSchema.nullable().default(null),
+  operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
+  depositoOuterRef: outerRefSchema.nullable().default(null),
 
-    // System stamps — `dataCadastro` create-only (nullish coalesce) and
-    // `ultimaModificacao` on every write; both stamped by `saveRecord`.
-    dataCadastro: millisSinceEpoch().nullable().default(null),
-    // `.default(null)`, never a bare `.optional()`: the TableView update-
-    // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
-    // which EXCLUDES documents missing the key — so a dropped key hides the
-    // row from the staleness check, silently. Pinned by
-    // `defaultQuery.sortKeyPresence.test.ts`.
-    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
-  })
-  .passthrough();
+  // System stamps — `dataCadastro` create-only (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
+  dataCadastro: millisSinceEpoch().nullable().default(null),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
+});
 
 export type Integracao = z.infer<typeof integracaoSchema>;
 
@@ -544,15 +535,12 @@ export const brandShopee = { schema: brandShopeeSchema, meta: brandShopeeMeta };
  * store, `credenciaisWhatsapp` and `certificadoSecreto` stay deny-all — do not
  * copy the ML exception here. The genuinely divergent per-channel
  * identity/config (`shop_id` / `main_account_id` / `tabelasAtacado`,
- * `selling_partner_id`, `tenant_id`, the Mercado Shops table refs) is
+ * `selling_partner_id`, `tenant_id`) is
  * account-level data and lives as flat fields on the `integracao` doc
  * instead, not here — see `integracaoSchema`; the Shopee brand cache lives in
  * the `integracao/{integracaoId}/brandshopee` subcollection
- * (`brandShopeeSchema`, defined earlier in this file). Loja Integrada's
- * static API key (`token_id`) is the one
- * exception left to do: it is not yet ported to a typed field anywhere, and
- * #356 tracks moving it into THIS admin-only store rather than the
- * client-readable `integracao` doc.
+ * (`brandShopeeSchema`, defined earlier in this file). Any future Loja
+ * Integrada static key belongs directly in an admin-only store.
  */
 export const credenciaisIntegracaoSchema = z
   .object({
@@ -724,24 +712,22 @@ export const tokenDuravel = { schema: tokenDuravelSchema, meta: tokenDuravelMeta
  * Meta requires the SAME pin to register it again, so it must be persisted
  * alongside the permanent token that authorizes the call.
  */
-export const credenciaisWhatsappSchema = z
-  .object({
-    permanent_token: z.string().min(1),
-    phoneNumberId: z.string().nullable().default(null),
-    wa_id: z.string().nullable().default(null),
-    /**
-     * The 6-digit two-step registration PIN (re-register capability): Meta
-     * requires the SAME pin to re-register a number once 2FA is set. Stored
-     * here (admin-only) alongside `permanent_token`, never on the account doc.
-     */
-    pin: z
-      .string()
-      .regex(/^\d{6}$/)
-      .nullable()
-      .default(null),
-    createdAt: millisSinceEpoch().nullable().default(null),
-  })
-  .passthrough();
+export const credenciaisWhatsappSchema = z.strictObject({
+  permanent_token: z.string().min(1),
+  phoneNumberId: z.string().nullable().default(null),
+  wa_id: z.string().nullable().default(null),
+  /**
+   * The 6-digit two-step registration PIN (re-register capability): Meta
+   * requires the SAME pin to re-register a number once 2FA is set. Stored
+   * here (admin-only) alongside `permanent_token`, never on the account doc.
+   */
+  pin: z
+    .string()
+    .regex(/^\d{6}$/)
+    .nullable()
+    .default(null),
+  createdAt: millisSinceEpoch().nullable().default(null),
+});
 export type CredenciaisWhatsapp = z.infer<typeof credenciaisWhatsappSchema>;
 
 export const credenciaisWhatsappMeta: CollectionMetadata = {
@@ -832,39 +818,37 @@ export const USUARIO_TESTE_LIMITE_POR_CONTA = 10;
  * same response shape a failed `.parse()` would echo — the exact way #1015 leaked
  * an OAuth token response into Cloud Logging.
  */
-export const usuarioTesteMercadoLivreSchema = z
-  .object({
-    /** Which side of the test transaction this account plays. */
-    role: usuarioTesteRoleSchema,
-    /** ML user id — the numeric `id` from `POST /users/test_user`. */
-    id: z.number().int(),
-    /** ML nickname, e.g. `TESTUSER1234` / `TETE8127263`. */
-    nickname: z.string().min(1),
-    /**
-     * ML-generated password. Unrecoverable: ML exposes no endpoint that returns
-     * it again, so this field IS the record of record.
-     */
-    password: z.string().min(1),
-    /** Site the user operates on — always `MLB` for this repo. */
-    site_id: z.string().min(1),
-    /** `active` on a healthy account; ML may return others. */
-    site_status: z.string().nullable().default(null),
-    /**
-     * ML's synthetic address for the account, when the mint response carries
-     * one. Useful because the e-mail verification code is the last 4–6 digits of
-     * {@link id}, not something delivered to a real inbox.
-     */
-    email: z.string().nullable().default(null),
-    /** When this repo minted the user, ms since epoch. */
-    createdAt: millisSinceEpoch().nullable().default(null),
-    /**
-     * ML `user_id` of the account whose token minted this one. Recorded because
-     * the mint flow then WIPES that account's credential, so this is the only
-     * remaining trace of which conta consumed one of its ten slots.
-     */
-    createdByUserId: z.number().int().nullable().default(null),
-  })
-  .passthrough();
+export const usuarioTesteMercadoLivreSchema = z.strictObject({
+  /** Which side of the test transaction this account plays. */
+  role: usuarioTesteRoleSchema,
+  /** ML user id — the numeric `id` from `POST /users/test_user`. */
+  id: z.number().int(),
+  /** ML nickname, e.g. `TESTUSER1234` / `TETE8127263`. */
+  nickname: z.string().min(1),
+  /**
+   * ML-generated password. Unrecoverable: ML exposes no endpoint that returns
+   * it again, so this field IS the record of record.
+   */
+  password: z.string().min(1),
+  /** Site the user operates on — always `MLB` for this repo. */
+  site_id: z.string().min(1),
+  /** `active` on a healthy account; ML may return others. */
+  site_status: z.string().nullable().default(null),
+  /**
+   * ML's synthetic address for the account, when the mint response carries
+   * one. Useful because the e-mail verification code is the last 4–6 digits of
+   * {@link id}, not something delivered to a real inbox.
+   */
+  email: z.string().nullable().default(null),
+  /** When this repo minted the user, ms since epoch. */
+  createdAt: millisSinceEpoch().nullable().default(null),
+  /**
+   * ML `user_id` of the account whose token minted this one. Recorded because
+   * the mint flow then WIPES that account's credential, so this is the only
+   * remaining trace of which conta consumed one of its ten slots.
+   */
+  createdByUserId: z.number().int().nullable().default(null),
+});
 export type UsuarioTesteMercadoLivre = z.infer<typeof usuarioTesteMercadoLivreSchema>;
 
 export const usuarioTesteMercadoLivreMeta: CollectionMetadata = {

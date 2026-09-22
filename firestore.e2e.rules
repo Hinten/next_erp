@@ -100,6 +100,8 @@ service cloud.firestore {
     // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_pedidos_pagamentos(d, c) {
       return (!c.hasAny(['aVista']) || d.get('aVista', null) is bool)
+        && (!c.hasAny(['cartao']) || (d.get('cartao', null) == null || d.get('cartao', null) is map))
+        && (!c.hasAny(['cheque']) || (d.get('cheque', null) == null || d.get('cheque', null) is map))
         && (!c.hasAny(['dataAprovacao']) || (d.get('dataAprovacao', null) == null || d.get('dataAprovacao', null) is int))
         && (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['dataCancelamento']) || (d.get('dataCancelamento', null) == null || d.get('dataCancelamento', null) is int))
@@ -140,8 +142,6 @@ service cloud.firestore {
         && (!c.hasAny(['gtin']) || (d.get('gtin', null) == null || d.get('gtin', null) is string && d.get('gtin', null).size() <= 255))
         && (!c.hasAny(['integracoesComProduto']) || d.get('integracoesComProduto', null) is list)
         && (!c.hasAny(['larguraCm']) || (d.get('larguraCm', null) == null || d.get('larguraCm', null) is number))
-        && (!c.hasAny(['marketplace']) || d.get('marketplace', null) is list)
-        && (!c.hasAny(['marketplaceIds']) || (d.get('marketplaceIds', null) == null || d.get('marketplaceIds', null) is list))
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 100)
         && (!c.hasAny(['ofereceFreteGratis']) || d.get('ofereceFreteGratis', null) is bool)
         && (!c.hasAny(['ordem']) || (d.get('ordem', null) == null || d.get('ordem', null) is int))
@@ -154,7 +154,6 @@ service cloud.firestore {
         && (!c.hasAny(['propagatePriceToChildren']) || d.get('propagatePriceToChildren', null) is bool)
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
-        && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
         && (!c.hasAny(['tabelaDeMedidasModaUid']) || (d.get('tabelaDeMedidasModaUid', null) == null || d.get('tabelaDeMedidasModaUid', null) is string))
         && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))

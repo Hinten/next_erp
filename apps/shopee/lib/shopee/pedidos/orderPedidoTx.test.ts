@@ -461,7 +461,12 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
   });
 
   it('o CONJUNTO de linhas é append-only: a identidade da linha armazenada sobrevive', async () => {
-    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 99, custo: 7, imposto: 3 };
+    const jaGravado = {
+      ...itemDe(0, 'prod-antigo'),
+      precoDeVenda: 99,
+      custo: 7,
+      imposto: { origem: '0' as const },
+    };
     const db = pedidoArmazenado({
       itens: { 'prod-antigo': [jaGravado] },
       itensIds: ['prod-antigo'],
@@ -480,7 +485,7 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
       ordem: 0,
       ensureUniqueId: jaGravado.ensureUniqueId,
       custo: 7,
-      imposto: 3,
+      imposto: { origem: '0' },
       timestamp: jaGravado.timestamp,
     });
     // …no line is removed, and only the genuinely new one is appended.

@@ -164,6 +164,9 @@ export function mpPaymentToPagamento(
         numeroCartao: payment.card?.last_four_digits ?? null,
         bandeira: null,
         cAut: payment.authorization_code ?? null,
+        tarifa: null,
+        tarifaFixa: null,
+        prazoRecebimento: null,
       }
     : null;
 

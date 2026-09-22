@@ -92,22 +92,26 @@ describe('linkVariacoesShopeeSchema', () => {
     ).toEqual(['v1']);
   });
 
-  it('uma chave desconhecida sobrevive ao passthrough, no elemento e na opção', () => {
-    const parsed = linkVariacoesShopeeSchema.parse({
-      ...ELEMENTO_LEGADO,
-      _campoFuturo: 'x',
-      variationOptions: [
-        {
-          shopee_option_id: 0,
-          shopee_option_name: 'Azul',
-          arakene_variation_id: ['v1'],
-          _extraDaOpcao: 'y',
-        },
-      ],
-    });
-    expect((parsed as Record<string, unknown>)._campoFuturo).toBe('x');
-    const opcao = parsed.variationOptions[0] as Record<string, unknown> | undefined;
-    expect(opcao?._extraDaOpcao).toBe('y');
+  it('recusa uma chave desconhecida no elemento e na opção', () => {
+    expect(
+      linkVariacoesShopeeSchema.safeParse({
+        ...ELEMENTO_LEGADO,
+        _campoFuturo: 'x',
+      }).success,
+    ).toBe(false);
+    expect(
+      linkVariacoesShopeeSchema.safeParse({
+        ...ELEMENTO_LEGADO,
+        variationOptions: [
+          {
+            shopee_option_id: 0,
+            shopee_option_name: 'Azul',
+            arakene_variation_id: ['v1'],
+            _extraDaOpcao: 'y',
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it('variationOptions ausente vira lista vazia', () => {
@@ -122,14 +126,17 @@ describe('linkVariacoesShopeeSchema', () => {
 });
 
 describe('grupoDeVariacoesSchema.linksVariacoesShopee', () => {
-  it('continua aceitando unknown[] — o schema novo NÃO foi ligado ao grupo', () => {
-    // Se alguém ligar `linkVariacoesShopeeSchema` no campo, este teste cai — e é
-    // esse o aviso: `grupoDeVariacoesMeta` é registrado, então tipar o campo no
-    // lugar move um validador gerado e os dois snapshots de rules-gen.
+  it('usa o schema Shopee tipado e estrito', () => {
     const parsed = grupoDeVariacoesSchema.parse({
       nome: 'Cor',
-      linksVariacoesShopee: [{ lixo: true }, 42, 'nada a ver'],
+      linksVariacoesShopee: [ELEMENTO_LEGADO],
     });
-    expect(parsed.linksVariacoesShopee).toEqual([{ lixo: true }, 42, 'nada a ver']);
+    expect(parsed.linksVariacoesShopee).toEqual([ELEMENTO_LEGADO]);
+    expect(
+      grupoDeVariacoesSchema.safeParse({
+        nome: 'Cor',
+        linksVariacoesShopee: [{ ...ELEMENTO_LEGADO, lixo: true }],
+      }).success,
+    ).toBe(false);
   });
 });
