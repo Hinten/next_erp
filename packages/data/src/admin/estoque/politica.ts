@@ -30,10 +30,17 @@ export const ESTOQUE_MIN = 0;
  * listing sitting comfortably high on BOTH sides of the movement cannot oversell
  * inside a 15-minute window, so it waits for the daily pass.
  *
- * ⚠️ `min(anterior, atual)`, never `atual` alone. `110 → 95` must send; gating on
- * the current value would skip exactly the movement that walks a listing INTO
- * the danger zone. This is the single most likely line here to be "simplified"
- * into a real oversell — see ADR 0014.
+ * ⚠️ `min(anterior, atual)`, never `atual` alone. This is the single most
+ * likely line here to be "simplified" into a real oversell — see ADR 0014 — and
+ * it takes TWO examples to pin, because for a FALLING quantity `min` and
+ * `atual` are the same number:
+ *  - `110 → 95` must send. That is the `anterior` near-miss: gating on the
+ *    PREVIOUS value alone would skip exactly the movement that walks a listing
+ *    INTO the danger zone, and the next sale oversells;
+ *  - `95 → 110` must send too. That is the `atual` one, and the ONLY direction
+ *    in which the wrong spelling is visible at all — it reads as "already
+ *    high, not worth the fast lane" and the listing keeps showing the lower
+ *    number until the nightly pass.
  *
  * ⚠️ `limiar` is a REQUIRED parameter, not an env read, because each channel
  * names and defaults its own high-stock threshold; passing a channel's reader

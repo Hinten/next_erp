@@ -9,6 +9,7 @@ import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 // that handle, and a mocked writer cannot show either.
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { MOTIVO_ESTOQUE_SHOPEE } from './errosEstoque';
+import { podeEnviarEstoqueShopee } from './podeEnviarEstoque';
 import {
   CAMPOS_DO_PATCH_DE_ESTOQUE,
   codigoDoErp,
@@ -209,9 +210,9 @@ describe('registrarEnvioParcial', () => {
   });
 
   it('8 — não escreve NENHUMA das metades da impressão digital nem estoqueRecusaAte', async () => {
-    // Um parcial não é uma propriedade do ESTADO do anúncio: reenviar o mesmo
-    // anúncio no próximo tique é exatamente o que deve acontecer, e armar o
-    // conjunto de pulo aqui suprimiria a tentativa que conserta.
+    // ⚠️ Este teste fixa as SETE CHAVES da costura congelada, e só isso. Ele
+    // NÃO prova que o anúncio volta a ser enviado: esse é um veredito do portão
+    // sobre o documento MESCLADO, e quem o exercita é o teste 8b logo abaixo.
     const db = new FakeDb();
     semearLink(db);
 
@@ -230,6 +231,56 @@ describe('registrarEnvioParcial', () => {
       'estoqueRecusaMotivo',
       'ultimaModificacao',
     ]);
+  });
+
+  it('8b — a PROPRIEDADE, sobre o documento MESCLADO: um parcial não arma o pulo', async () => {
+    // O que o teste 8 não consegue ver. O mecanismo de ESTADO do portão não
+    // pergunta se as metades foram ESCRITAS — ele compara as duas leituras
+    // GRAVADAS com as duas leituras ATUAIS, e `escreverNoLink` é um MERGE, de
+    // modo que uma impressão antiga sobrevive ao parcial. Aqui a impressão
+    // anterior aponta para uma leitura DIFERENTE da atual, e por isso o
+    // reenvio acontece.
+    //
+    // ⚠️ E ela sobrevive DE PROPÓSITO: uma leitura gravada só é levantada pela
+    // leitura se MEXER, e um parcial não mexe em nenhuma. O caso das DUAS
+    // leituras nulas é o teste 8c — ele não arma mais, e a razão está no
+    // portão, não neste patch.
+    const db = new FakeDb();
+    db.seed(CAMINHO_LINK, {
+      item_id: 2_500_139_861,
+      estadoAnuncio: 'ativo',
+      item_status: 'NORMAL',
+      // A recusa anterior foi tirada quando o anúncio estava PAUSADO.
+      estoqueRecusaEm: AGORA_MS - 60_000,
+      estoqueRecusaEstado: 'pausado',
+      estoqueRecusaItemStatus: 'UNLIST',
+    });
+
+    await registrarEnvioParcial(asDb(db), ALVO, parcial);
+
+    const armazenado = db.store[CAMINHO_LINK]?.data as Record<string, unknown>;
+    expect(podeEnviarEstoqueShopee(armazenado, {}, { nowMs: AGORA_MS })).toEqual({ enviar: true });
+  });
+
+  it('8c — ⚠️ o caso das DUAS leituras nulas: o parcial continua NÃO armando o pulo', async () => {
+    // O canto que o docblock deste escritor sempre afirmou e que o portão não
+    // sustentava: num vínculo sem `estadoAnuncio` e sem `item_status` — todo
+    // vínculo que um envio limpo acabou de zerar, e todo import do passo 9 que
+    // foldou um status desconhecido — o `estoqueRecusaEm` que este patch
+    // carimba encontrava `null === null` nas DUAS metades e travava
+    // `recusa-anterior` indefinidamente, sem nada que pudesse se mexer para
+    // levantá-lo. A decisão do dono (L2-1) foi exigir ao menos UMA leitura
+    // GRAVADA, e é por isso que o patch de sete chaves do teste 8 significa o
+    // que diz.
+    const db = new FakeDb();
+    db.seed(CAMINHO_LINK, { item_id: 2_500_139_861 });
+
+    await registrarEnvioParcial(asDb(db), ALVO, parcial);
+
+    const armazenado = db.store[CAMINHO_LINK]?.data as Record<string, unknown>;
+    expect(armazenado.estoqueRecusaEm).toBe(AGORA_MS);
+    expect(Object.hasOwn(armazenado, 'estoqueRecusaEstado')).toBe(false);
+    expect(podeEnviarEstoqueShopee(armazenado, {}, { nowMs: AGORA_MS })).toEqual({ enviar: true });
   });
 
   it('9 — a mensagem passa pelo cap ÚNICO do módulo de erros', async () => {

@@ -77,7 +77,10 @@
  * ## The skip set — TWO mechanisms, one fold
  *
  * See {@link pularPorRecusaAnterior}. `||` between the mechanisms, `&&`
- * between the two fingerprint halves: **either half moving LIFTS the skip.**
+ * between the two fingerprint halves: **either half moving LIFTS the skip** —
+ * and the STATE half only arms at all when at least ONE of the two RECORDED
+ * readings is non-null, so a stamp that wrote down no state cannot latch a
+ * listing on `null === null`.
  *
  * ⚠️ **Nobody writes a clear.** The four `item_status` writers (the publish
  * read-back, the pause, the re-verify and both push handlers) lift the skip by
@@ -212,6 +215,7 @@ export function podeEnviarEstoqueShopee(
  * ```
  * pular = (typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte)   // TIME
  *      || (typeof estoqueRecusaEm  === 'number'                                // STATE
+ *          && (estoqueRecusaEstado !== null || estoqueRecusaItemStatus !== null)
  *          && estoqueRecusaEstado      === estadoAnuncio
  *          && estoqueRecusaItemStatus  === item_status)
  * ```
@@ -220,6 +224,21 @@ export function podeEnviarEstoqueShopee(
  * halves.** Either half moving lifts the skip — that is the whole design, and
  * an `||` there would latch a listing until BOTH halves moved, which for a
  * refusal caused by the state itself is "for ever".
+ *
+ * ⚠️ **A fingerprint whose two RECORDED halves are BOTH null arms nothing.**
+ * That clause is not a tidy-up: without it the STATE mechanism fires on a
+ * comparison nobody made. `estoqueRecusaEm` alone is stamped by writers that
+ * record no reading at all (`registrarEnvioParcial`), and `undefined` folds to
+ * `null` on both sides — so on a link whose `estadoAnuncio` and `item_status`
+ * are both absent (every link a clean send has just cleared, and every step-9
+ * import that folded an unknown status) `null === null` twice over and the
+ * listing would latch INDEFINITELY, because neither half can ever move to lift
+ * it. Requiring one recorded reading makes the mechanism mean what its name
+ * says: *this* listing was refused in *this* observed state. The cost is the
+ * FALSE-NEGATIVE direction — a terminal refusal taken on a link with no
+ * readings at all re-sends once per tick until a reading appears — which is one
+ * call per listing per tick, visible in the per-motivo counters, against a
+ * silent permanent stop.
  *
  * ⚠️ **Strictly `<` on the TIME half.** At exactly `estoqueRecusaAte` the wait
  * is over; `<=` would hold the listing for one more tick at the only instant
@@ -241,6 +260,11 @@ export function podeEnviarEstoqueShopee(
  * readings such as `pausado` vs `ativo`. Nothing is trimmed, lower-cased or
  * coerced: these are two RECORDED READINGS being compared for identity, not
  * two spellings of one value.
+ *
+ * ⚠️ The fold is what makes absence comparable; the non-null clause above is
+ * what stops it comparing TWO absences. Both are needed and neither implies the
+ * other: a recorded `('ativo', null)` against a link reading `('ativo',
+ * absent)` still skips, because one recorded reading is real.
  */
 export function pularPorRecusaAnterior(link: LinkParaEstoque, nowMs: number): boolean {
   // ⚠️ No `Number.isFinite` guard, deliberately: a `NaN` expiry falls out of
@@ -250,10 +274,15 @@ export function pularPorRecusaAnterior(link: LinkParaEstoque, nowMs: number): bo
   if (typeof ate === 'number' && nowMs < ate) return true;
 
   if (typeof link.estoqueRecusaEm !== 'number') return false;
-  return (
-    ouNulo(link.estoqueRecusaEstado) === ouNulo(link.estadoAnuncio) &&
-    ouNulo(link.estoqueRecusaItemStatus) === ouNulo(link.item_status)
-  );
+
+  // ⚠️ At least ONE reading must actually have been recorded. A stamp with two
+  // null halves is a refusal whose state nobody wrote down — see the docblock:
+  // comparing it would latch on `null === null` and nothing could ever lift it.
+  const estadoGravado = ouNulo(link.estoqueRecusaEstado);
+  const statusGravado = ouNulo(link.estoqueRecusaItemStatus);
+  if (estadoGravado === null && statusGravado === null) return false;
+
+  return estadoGravado === ouNulo(link.estadoAnuncio) && statusGravado === ouNulo(link.item_status);
 }
 
 /**

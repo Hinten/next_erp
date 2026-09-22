@@ -564,7 +564,20 @@ describe('planoEstoque — o portão por anúncio', () => {
   });
 
   it('`ignorarRecusa` CHEGA ao portão — a mesma família recusa sem ele e envia com ele', () => {
-    const row = familia({ links: [link({ estoqueRecusaEm: AGORA - 1_000 })] });
+    // ⚠️ A impressão digital tem de carregar ao menos UMA leitura GRAVADA: o
+    // mecanismo de ESTADO do portão não arma com as duas metades nulas (L2-1),
+    // ou um carimbo que não anotou estado nenhum travaria o anúncio para
+    // sempre. Sem isso este vínculo simplesmente ENVIA e o teste não teria o
+    // que dispensar.
+    const row = familia({
+      links: [
+        link({
+          item_status: 'NORMAL',
+          estoqueRecusaEm: AGORA - 1_000,
+          estoqueRecusaItemStatus: 'NORMAL',
+        }),
+      ],
+    });
     const quantidades = new Map([[ANCORA, 7]]);
 
     const sem = montar(row, quantidades);

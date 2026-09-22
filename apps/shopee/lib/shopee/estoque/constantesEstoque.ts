@@ -120,9 +120,11 @@ export function dailyWindowHours(): number {
  *
  * ⚠️ The rule compares `min(anterior, atual)`, never `atual` alone — gating on
  * the current value would skip `110 → 95`, which is exactly the movement that
- * walks a listing into the danger zone. The arithmetic itself lives in the
- * shared core (`deveEnviarFamiliaCore`); this reader only supplies its `limiar`.
- * ADR 0014.
+ * walks a listing into the danger zone; and `95 → 110` must send as well, which
+ * is the `atual` near-miss, since on a falling quantity `min` and `atual` agree
+ * and only a RISE separates the two spellings. The arithmetic itself lives in
+ * the shared core (`deveEnviarFamiliaCore`); this reader only supplies its
+ * `limiar`. ADR 0014.
  */
 export function limiarEstoqueAlto(): number {
   return envInt('SHOPEE_STOCK_LIMIAR_ALTO', 100);

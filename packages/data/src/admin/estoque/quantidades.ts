@@ -34,7 +34,9 @@
  * simplifications and are not:
  *  - the high-stock skip compares `min(anterior, atual)`, never `atual` alone —
  *    gating on the current value would skip 110 → 95, the movement that walks a
- *    listing into the danger zone (that one lives in `./politica`);
+ *    listing into the danger zone (that one lives in `./politica`). ⚠️ `110 → 95`
+ *    is the `anterior` near-miss; the `atual` one is `95 → 110`, which must send
+ *    too, because on a falling quantity `min` and `atual` agree;
  *  - {@link quantidadesAnterioresCore} OMITS a member it cannot reconstruct
  *    rather than falling back to the current row. **The omission IS the
  *    mechanism**: a missing entry is read as *unknown* and SENDS, while a

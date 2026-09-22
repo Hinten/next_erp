@@ -635,6 +635,44 @@ describe('runShopeeStockSweep — truncamento', () => {
     expect(Object.keys(escritas[0] ?? {})).not.toContain('cursorMs');
   });
 
+  it('16b — ⚠️ M-39: a continuação carrega o MODO DO TIQUE, não um literal', async () => {
+    // Os testes 15 e 16 rodam no modo `incremental` e afirmam `incremental`, de
+    // modo que um literal fixo é indistinguível do parâmetro. Aqui o tique é
+    // DIÁRIO: se a continuação nascesse `incremental`, o próximo tique a
+    // retomaria com a política errada e o pulo de estoque alto suprimiria
+    // exatamente as linhas que a passagem noturna existe para enviar — e
+    // `movimentosDesdeMs` viria junto, já que o diário não consulta o livro.
+    vi.stubEnv('SHOPEE_STOCK_MAX_TASKS_PER_SWEEP', '1');
+    const db = new FakeDb();
+    db.seed(`${INTEGRACAO_PATH}/${INT}`, contaDoc());
+    const { deps } = montarDeps({
+      paginas: [pagina([familiaQueEnvia(), familiaQueEnvia({ anchorId: 'prod-b' })])],
+    });
+
+    const res = await runShopeeStockSweep(asDb(db), MODO_VARREDURA_ESTOQUE.diario, deps);
+
+    expect(res.contas[0]?.truncated).toBe(true);
+    expect(escritasDeEstado(db)[0]?.continuacao).toMatchObject({
+      modo: MODO_VARREDURA_ESTOQUE.diario,
+    });
+  });
+
+  it('16c — ⚠️ PAR: o mesmo para a RECONCILIAÇÃO', async () => {
+    vi.stubEnv('SHOPEE_STOCK_MAX_TASKS_PER_SWEEP', '1');
+    const db = new FakeDb();
+    db.seed(`${INTEGRACAO_PATH}/${INT}`, contaDoc());
+    const { deps } = montarDeps({
+      paginas: [pagina([familiaQueEnvia(), familiaQueEnvia({ anchorId: 'prod-b' })])],
+    });
+
+    const res = await runShopeeStockSweep(asDb(db), MODO_VARREDURA_ESTOQUE.reconciliacao, deps);
+
+    expect(res.contas[0]?.truncated).toBe(true);
+    expect(escritasDeEstado(db)[0]?.continuacao).toMatchObject({
+      modo: MODO_VARREDURA_ESTOQUE.reconciliacao,
+    });
+  });
+
   it('17 — NEAR-MISS: drenado na página 10 exata NÃO trunca e carimba o cursor', async () => {
     // The page cap is checked only when a NEXT page exists. Ten pages that
     // drain are a complete sweep, not a truncated one.
