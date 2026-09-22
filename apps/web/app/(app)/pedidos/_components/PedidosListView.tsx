@@ -27,7 +27,7 @@ import {
   VlrCell,
 } from './PedidoCells';
 import { ContingenciaBanner } from './ContingenciaBanner';
-import { ClienteColumnFilter } from './ClienteColumnFilter';
+import { ClienteColumnFilter, formatClienteFilterValue } from './ClienteColumnFilter';
 import { EmitirLoteDialog } from './EmitirLoteDialog';
 import { NfColumnFilter } from './NfColumnFilter';
 import { PedidoRowReadsContext, usePedidoRowReadPrefetch } from './rowReadPrefetch';
@@ -119,6 +119,10 @@ export const PEDIDO_VIRTUAL_COLUMNS: ReadonlyArray<VirtualColumn<Pedido>> = [
       renderFilter: ({ value, onChange }) => (
         <ClienteColumnFilter value={value} onChange={onChange} />
       ),
+      // Without this the chip printed the stored value verbatim — either the
+      // whole `documents/clientes/<id>` path, or (for the Anônimo filter, which
+      // carries `null`) the word `null`.
+      formatValue: formatClienteFilterValue,
     },
   },
   {
