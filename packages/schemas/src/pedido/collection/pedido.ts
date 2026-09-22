@@ -109,20 +109,13 @@ export const ESTADO_PEDIDO = {
  * #462 parity audit). `imposto` is a point-in-time fiscal snapshot, not a
  * reference, and therefore uses the recursively strict persisted variant.
  *
- * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
- * `parseSoftRead` (`@delfrance/data`) tolerates an unmodeled key here: it
- * strips it silently rather than throwing, which is what keeps a legacy
- * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
- * 8). ⚠️ On WRITE, `parseForWrite`/`parseMergePatch`'s strict re-check (same
- * package, `zodParse.ts`) is **top-level only** — it diffs `Object.keys` of
- * the caller's `pedidoSchema` input against the parsed output, and Zod's
- * `.strict()` does not recurse into a nested schema. A pedido write with an
- * unmodeled key on an ITEM inside `itens`/`itensDevolvidos` does not throw:
- * `itens` itself is present on both sides, so nothing looks dropped at the
- * top level, and the item-level key is silently stripped the same way a
- * lenient read strips one. This schema's own `.strict()` (exercised directly
- * in `pedido.test.ts`) is therefore not a shape any production write path
- * actually applies.
+ * The item is a closed persisted shape: the #462 parity audit enumerated all
+ * 13 legacy ItemDoPedido keys, and #469 closes the embedded fiscal snapshot
+ * through `impostoPersistidoSchema`. Direct parses and registered writes reject
+ * unknown item or fiscal keys instead of silently stripping them. On READ, an
+ * incompatible nested legacy shape makes `parseSoftRead` return the complete
+ * raw pedido unchanged; it preserves the corpus document but intentionally
+ * applies none of this schema's defaults or coercions to that fallback value.
  */
 export const itemDoPedidoSchema = z.strictObject({
   produtoUid: z.string().nullable().default(null),

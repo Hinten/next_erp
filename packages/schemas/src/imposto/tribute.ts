@@ -905,85 +905,41 @@ export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
 
 /**
  * Known, partially filled RTC fields accepted while an operator is editing a
- * fiscal configuration. Emission still validates the completed value through
- * {@link configuracaoIBSCBSSchema}; this schema only replaces the former
- * unrestricted `unknown` storage slot.
+ * fiscal configuration. These drafts deliberately validate only the primitive
+ * value kinds, not code lengths or numeric ranges: rejecting a half-typed value
+ * here makes the imposto resolver silently fall through to a lower fiscal tier.
+ * Emission validates codes, ranges and completeness through
+ * {@link configuracaoIBSCBSSchema}, where an invalid value fails loudly. This
+ * schema narrows the former unrestricted `unknown` slot to the known key set.
  */
 export const configuracaoISRtcDraftSchema = z.object({
-  CSTIS: z
-    .string()
-    .regex(/^\d{3}$/)
-    .optional()
-    .nullable(),
-  cClassTribIS: z
-    .string()
-    .regex(/^\d{6}$/)
-    .optional()
-    .nullable(),
-  vBCIS: z.number().nonnegative().optional().nullable(),
-  pIS: z.number().nonnegative().optional().nullable(),
-  pISEspec: z.number().nonnegative().optional().nullable(),
-  uTrib: z.string().min(1).max(6).optional().nullable(),
-  qTrib: z.number().nonnegative().optional().nullable(),
+  CSTIS: z.string().optional().nullable(),
+  cClassTribIS: z.string().optional().nullable(),
+  vBCIS: z.number().optional().nullable(),
+  pIS: z.number().optional().nullable(),
+  pISEspec: z.number().optional().nullable(),
+  uTrib: z.string().optional().nullable(),
+  qTrib: z.number().optional().nullable(),
 });
 export type ConfiguracaoISRtcDraft = z.infer<typeof configuracaoISRtcDraftSchema>;
 
 export const configuracaoIBSCBSDraftSchema = z.object({
-  CST: z
-    .string()
-    .regex(/^\d{3}$/)
-    .optional()
-    .nullable(),
-  cClassTrib: z
-    .string()
-    .regex(/^\d{6}$/)
-    .optional()
-    .nullable(),
-  vBC: z.number().nonnegative().optional().nullable(),
-  pIBSUF: z.number().nonnegative().optional().nullable(),
-  pIBSMun: z.number().nonnegative().optional().nullable(),
-  pCBS: z.number().nonnegative().optional().nullable(),
+  CST: z.string().optional().nullable(),
+  cClassTrib: z.string().optional().nullable(),
+  vBC: z.number().optional().nullable(),
+  pIBSUF: z.number().optional().nullable(),
+  pIBSMun: z.number().optional().nullable(),
+  pCBS: z.number().optional().nullable(),
   is: configuracaoISRtcDraftSchema.optional().nullable(),
 });
 export type ConfiguracaoIBSCBSDraft = z.infer<typeof configuracaoIBSCBSDraftSchema>;
 
 /** Strict persisted counterpart of the editable RTC draft. */
-export const configuracaoIBSCBSDraftPersistidoSchema = z.strictObject({
-  CST: z
-    .string()
-    .regex(/^\d{3}$/)
-    .optional()
-    .nullable(),
-  cClassTrib: z
-    .string()
-    .regex(/^\d{6}$/)
-    .optional()
-    .nullable(),
-  vBC: z.number().nonnegative().optional().nullable(),
-  pIBSUF: z.number().nonnegative().optional().nullable(),
-  pIBSMun: z.number().nonnegative().optional().nullable(),
-  pCBS: z.number().nonnegative().optional().nullable(),
-  is: z
-    .strictObject({
-      CSTIS: z
-        .string()
-        .regex(/^\d{3}$/)
-        .optional()
-        .nullable(),
-      cClassTribIS: z
-        .string()
-        .regex(/^\d{6}$/)
-        .optional()
-        .nullable(),
-      vBCIS: z.number().nonnegative().optional().nullable(),
-      pIS: z.number().nonnegative().optional().nullable(),
-      pISEspec: z.number().nonnegative().optional().nullable(),
-      uTrib: z.string().min(1).max(6).optional().nullable(),
-      qTrib: z.number().nonnegative().optional().nullable(),
-    })
-    .optional()
-    .nullable(),
-});
+export const configuracaoIBSCBSDraftPersistidoSchema = configuracaoIBSCBSDraftSchema
+  .extend({
+    is: configuracaoISRtcDraftSchema.strict().optional().nullable(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
@@ -1009,9 +965,10 @@ export function normalizeNCM(value: string | null | undefined): string | null {
  * `origem` + `configuracao*`; the other fields (`cfop`, `NCM`, …) are stamped so
  * the orchestrator can read everything-fiscal from one blob.
  *
- * `configuracaoIBSCBS` uses the known-field draft schema so a half-filled RTC
- * blob does not fail merely for being incomplete. The complete shape is
- * `configuracaoIBSCBSSchema`, enforced at emit by `parseRtcConfig`.
+ * `configuracaoIBSCBS` uses the known-field draft schema so a half-filled or
+ * temporarily malformed RTC value cannot make the resolver fall through to a
+ * lower tier. The complete shape is `configuracaoIBSCBSSchema`, enforced at
+ * emit by `parseRtcConfig`.
  */
 export const impostoSchema = z.object({
   origem: origemSchema,

@@ -84,6 +84,22 @@ describe('impostoSchema — per-item Imposto', () => {
     expect(configuracaoIBSCBSDraftSchema.safeParse({ CST: '000', pCBS: null }).success).toBe(true);
   });
 
+  it('keeps half-typed RTC values in the current fiscal tier', () => {
+    const draft = {
+      CST: '00',
+      cClassTrib: '0001',
+      vBC: -1,
+      pIBSUF: -0.1,
+      is: { CSTIS: '2', cClassTribIS: '21', pIS: -1, uTrib: '' },
+    };
+
+    expect(impostoSchema.safeParse({ origem: '0', configuracaoIBSCBS: draft }).success).toBe(true);
+    expect(
+      impostoPersistidoSchema.safeParse({ origem: '0', configuracaoIBSCBS: draft }).success,
+    ).toBe(true);
+    expect(configuracaoIBSCBSSchema.safeParse(draft).success).toBe(false);
+  });
+
   it('rejects unknown fields in a persisted imposto snapshot', () => {
     expect(
       impostoPersistidoSchema.safeParse({

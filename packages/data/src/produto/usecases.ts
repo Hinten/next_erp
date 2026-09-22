@@ -311,10 +311,11 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
 
 /**
  * True when the Reforma Tributária blob (`configuracaoIBSCBS`) carries at least
- * one non-null value. It is held leniently (`z.unknown` in `taxConfigFields`)
- * so a half-filled RTC blob never fails the parse — so a row whose ONLY content
- * is RTC config must still persist, or `impostoCarriesInfo` would drop it. A
- * toggled-on-but-empty blob (all null) counts as empty.
+ * one non-null value. `taxConfigFields` restricts the RTC key set but leaves
+ * code formats and numeric ranges lenient until emission, so a row whose ONLY
+ * content is a half-filled RTC draft must still persist or
+ * `impostoCarriesInfo` would drop it. A toggled-on-but-empty blob (all null)
+ * counts as empty.
  */
 function rtcConfigHasValue(imp: ImpostoProduto): boolean {
   return hasNonNullLeaf((imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS);
