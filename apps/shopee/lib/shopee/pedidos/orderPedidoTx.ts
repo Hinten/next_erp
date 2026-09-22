@@ -11,8 +11,8 @@
  * halves of the same payload disagree, plus three more watermark comparisons
  * that can only ever disagree with the first.
  *
- * The consequence the caller must honour: `findOrCreateCliente` is a blind `add`
- * and cannot join a transaction, so the cliente and the endereço are resolved
+ * The consequence the caller must honour: `findOrCreateCliente` owns a separate
+ * identity-index transaction, so the cliente and the endereço are resolved
  * BEFORE this call and only their outer-refs ride the single pedido write, as
  * fill-once fields re-checked against this transaction's own snapshot.
  *

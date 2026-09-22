@@ -191,6 +191,18 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   purpose; the reasoning is recorded at each `cascade:` declaration in
   `packages/schemas`. (`chat/{conversaId}/mensagem` used to be listed here; it is
   enforced as of #980 — see `onConversaDeleted` above.)
+- ⚠️ **`filiais` deliberately has NO delete-cascade trigger either** (#1626).
+  Its live subtree is broader than the original #517 inventory:
+  `enviNfe` (signed SEFAZ request/response records), `inutilizacao` (signed
+  requests + protocols), `nfeconfig`, admin-only `certificadoSecreto`, and
+  `simplesnacional/default/apuracoes`. The stored A1 is also resolved directly
+  by `filialId` for later NF-e operations. A cascade would destroy fiscal data;
+  a parent-only delete would orphan it. The chosen root policy is therefore no
+  client hard delete: `filialMeta.permissions.delete = null`, emitted as
+  `allow delete: if false` with no `su` bypass. This root guard does not make
+  descendants immutable — their metas own their direct update/delete policy —
+  and #1626 adds no in-product retirement/deactivation path. Do not add
+  `onFilialDeleted` to the caro-generico list.
 - ⚠️ **None of the ten cascades may use `db.recursiveDelete` (#728).** It
   issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
   LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*

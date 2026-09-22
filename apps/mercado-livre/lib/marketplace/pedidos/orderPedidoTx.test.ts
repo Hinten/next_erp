@@ -1035,7 +1035,7 @@ describe('discoverPedidoMercadoLivre — clock model', () => {
     expect(db.docs('pedidos').get(pedidoId)!.lastMarketplaceUpdate).toBe(storedMs);
   });
 
-  it('reads a legacy ISO-STRING pagamento ultimaModificacao as a real timestamp', async () => {
+  it('accepts the first provider event even when human ultimaModificacao is newer', async () => {
     const db = new FakeDb();
     const pagId = makePagamentoIdMercadoLivre(CONTA_ID, 555);
     const order = makeOrder({
@@ -1064,9 +1064,12 @@ describe('discoverPedidoMercadoLivre — clock model', () => {
       baseArgs(db, { orders: [order], itensByOrderId: new Map([[9002, []]]) }),
     );
 
-    // A raw numeric read returns null for a string, and null means PROCEED — so
-    // the stale 999 used to land. Coerced, the stored (newer) row is kept.
-    expect(db.docs(`pedidos/${pedidoId}/pagamentos`).get(pagId)!.valor).toBe(100);
+    const stored = db.docs(`pedidos/${pedidoId}/pagamentos`).get(pagId)!;
+    expect(stored.valor).toBe(999);
+    expect(stored.lastProviderUpdate).toBe(Date.parse('2026-01-05T00:00:00.000Z') * 1000);
+    expect(stored.ultimaModificacao as number).toBeGreaterThanOrEqual(
+      Date.parse('2026-01-08T00:00:00.000Z') * 1000,
+    );
   });
 });
 

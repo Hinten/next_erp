@@ -50,12 +50,6 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'componentesKitKeys',
   'fotosArquivosIds',
   'integracoesComProduto',
-  'marketplace',
-  // Sibling of `marketplace` above and written by the same five stamps, but it
-  // was missing here — so the one array generated history rows while the other
-  // did not (#961). Both are legacy denorms with no query consumers; their churn
-  // is never an operator edit.
-  'marketplaceIds',
   // ⚠️ OUTLIVES THE FIELD ON PURPOSE. `nome_embedding` was dropped from
   // `produtoSchema`, and removing this entry with it looks obvious and is
   // backwards: this list is what protects the SWEEP that removes the stored key.
@@ -72,7 +66,6 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   //
   // Delete this entry only AFTER that sweep has run (see the migration issue).
   'nome_embedding',
-  'statusProdutosMarketplace',
   'timestamp',
   'ultimaModificacao',
 ];

@@ -4,8 +4,8 @@
  * READ-ONLY. Samples a few live docs per validator-whitelisted collection and
  * reports the actual runtime shape (`number` / `iso-string` / `Timestamp` /
  * `null`) of every schema-declared datetime field, plus any datetime-shaped
- * value discovered nested where the schema doesn't declare one (this is how an
- * out-of-band `Cheque.bomPara` ISO value would surface).
+ * value discovered nested where the schema doesn't declare one. A legacy
+ * `Cheque.bomPara` ISO value now appears on its declared field row.
  *
  * Why it was built (#155): to confirm on real data what the datetime fields carry
  * before the rules-gen `format:'date-time'` skip was retired. That question is
@@ -289,8 +289,14 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
   // Explicit ISO-exception check (acceptance criterion of #483).
   lines.push('');
   lines.push('### ISO-exception check');
-  const bomPara: DiscoveredReport[] = [];
+  const bomPara: Array<{ path: string; shape: ValueShape; count: number }> = [];
   for (const report of reports) {
+    for (const field of report.fields) {
+      if (field.path.split('.').pop()?.replace(/\[\]$/, '') !== 'bomPara') continue;
+      for (const [shape, count] of field.shapeCounts) {
+        bomPara.push({ path: field.path, shape, count });
+      }
+    }
     for (const d of report.discovered) {
       if (d.path.split('.').pop()?.replace(/\[\]$/, '') === 'bomPara') {
         bomPara.push(d);
@@ -303,7 +309,7 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
         .map((d) => `\`${d.path}\` ${d.shape}×${d.count}`)
         .join(
           ', ',
-        )}. (New schema writes µs-int via \`microsSinceEpoch()\`; a legacy ISO string here is the documented exception.)`,
+        )}. (The schema writes µs-int via \`microsSinceEpoch()\`; a legacy ISO string here is the documented exception.)`,
     );
   } else {
     lines.push(

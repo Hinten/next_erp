@@ -20,7 +20,8 @@
  *
  * Preview any output at https://labelary.com before a physical run.
  */
-import { encodeCode128C } from './barcode';
+import { encodeCode128 } from './barcode';
+import { EtiquetaGenericaFormatError } from './errors';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, LABEL_W_MM } from './layout';
 import type { EtiquetaGenericaModel } from './model';
 
@@ -42,10 +43,64 @@ function sanitize(text: string): string {
   return text.replace(/[\^~]/g, ' ');
 }
 
+/**
+ * ⚠️ The ZPL label is the ONE surface that still cannot carry an alphanumeric
+ * chave, and the asymmetry with `./pdf` is deliberate rather than an oversight.
+ *
+ * This renderer does not draw the bars: it emits `^BCN` with the `>;` subset-C
+ * prefix and lets the PRINTER encode. Subset C is numeric-only, so an alfa
+ * chave needs a mid-string switch to subset B and back — and the switch-back
+ * invocation code could not be verified against Zebra's `^BC` reference, so
+ * emitting a guess would print a wrong barcode silently. Encoding the whole
+ * chave in subset B instead is not a fix either: it doubles the symbol count
+ * while `^BY` stays whole-dot, so the symbol overruns the 90 mm box and the
+ * printer clips the checksum and stop pattern past `^PW`.
+ *
+ * ⚠️ So do NOT delete this guard just because `encodeCode128` now handles alfa.
+ * It does — but only for `./pdf`, which draws its own bars from the module
+ * geometry and needs no printer cooperation. Here the encoder is consulted for
+ * WIDTH ONLY; the bytes that reach the Zebra are `op.data` verbatim. Dropping
+ * the guard would hand the printer a payload its `>;` prefix cannot represent.
+ *
+ * Tracked for real mixed-subset ZPL by #1624, which is blocked on hardware
+ * validation, not on this code.
+ */
+const ALL_DIGITS = /^\d+$/;
+
+/**
+ * What the printer's `>;` subset-C encoding can actually represent: digits, in
+ * an EVEN count, since subset C packs two per symbol.
+ *
+ * ⚠️ The length half is not decoration. Before mixed subsets, `encodeCode128C`
+ * returned `null` for an odd digit count and the renderer's `if (!symbol)
+ * break;` dropped the barcode. The widened encoder returns a real symbol for
+ * it, so without this check the renderer would size its width math from a
+ * mixed-subset symbol and then hand the printer `^FD>;<odd digits>` — a field
+ * `>;` cannot encode, producing a barcode that scans as something other than
+ * the chave. That is worse than the blank gap this PR set out to remove.
+ *
+ * ⚠️ Keyed on the same truthiness as `layout.ts`'s `if (model.nfeChave)`. An
+ * empty string is not a chave, and the layout emits no barcode op for it; a
+ * `!= null` check here would instead throw `chave inválida ()` on a label the
+ * PDF renders perfectly well.
+ */
+function zplCanEncode(chave: string): boolean {
+  return ALL_DIGITS.test(chave) && chave.length % 2 === 0;
+}
+
 export function renderEtiquetaGenericaZpl(
   model: EtiquetaGenericaModel,
   opts: EtiquetaZplOptions = {},
 ): string {
+  if (model.nfeChave && !zplCanEncode(model.nfeChave)) {
+    throw new EtiquetaGenericaFormatError(
+      `A etiqueta ZPL não suporta esta chave (${model.nfeChave}): o código de ` +
+        'barras usa Code 128 subset C, que só aceita um número PAR de dígitos. ' +
+        'Uma chave alfanumérica (NT 2026.004) é o caso normal aqui. Imprima a ' +
+        'etiqueta em PDF, que traz o mesmo layout com o código de barras completo.',
+    );
+  }
+
   const dpi = opts.dpi ?? 203;
   const dotsPerMm = dpi / 25.4;
   const mm = (v: number): number => Math.round(v * dotsPerMm);
@@ -92,9 +147,12 @@ export function renderEtiquetaGenericaZpl(
         break;
       }
       case 'barcode': {
-        const symbol = encodeCode128C(op.data);
-        // Same rule as the PDF: an unencodable payload drops the barcode rather
-        // than printing a wrong one — the human-readable chave still carries it.
+        // Width math only — the bars come from the printer's own `^BCN`. The
+        // guard at the top of this function has already refused anything the
+        // `>;` subset-C prefix cannot represent (letters AND odd lengths), so
+        // reaching here means `op.data` really is an even digit string and a
+        // `null` would be a payload bug, not an alfa chave.
+        const symbol = encodeCode128(op.data);
         if (!symbol) break;
         // The module width has to be a whole number of dots, so the printed
         // symbol is narrower than the space reserved for it. Centre it in that
@@ -102,8 +160,8 @@ export function renderEtiquetaGenericaZpl(
         const moduleDots = Math.max(2, Math.floor(mm(op.w) / symbol.modules));
         const barcodeDots = moduleDots * symbol.modules;
         const x = mm(op.x) + Math.round((mm(op.w) - barcodeDots) / 2);
-        // `>;` forces subset C, matching what `encodeCode128C` counted: the
-        // 44-digit chave packs two digits per symbol instead of one.
+        // `>;` forces subset C, matching what `encodeCode128` counted for an
+        // all-digit payload: two digits per symbol instead of one.
         out.push(`^FO${x},${mm(op.y)}^BY${moduleDots}^BCN,${mm(op.h)},N,N,N^FD>;${op.data}^FS`);
         break;
       }

@@ -19,10 +19,8 @@ import { getDb } from './lib/admin';
  * (same split as `onIntegracaoMercadoLivreChanged` / `intFreteSync.ts`).
  *
  * Why it exists: that array is the anchor pre-filter both ML sweeps open with,
- * and it was only ever REMOVED by deriving it from the sibling `marketplace`
- * array. Breaking that coupling is what lets `marketplace` + `marketplaceIds` +
- * the stamping die at the Flutter decommission instead of inside the cutover
- * window (#431 lock 2).
+ * and its former removal path depended on retired sibling produto fields.
+ * Breaking that coupling made this trigger the single owner (#431 lock 2).
  *
  * ⚠️ Targets the repo's NAMED `default` Firestore database (root gotcha); an
  * `onDocument*` that omits `database` binds to `(default)` and NEVER fires. The

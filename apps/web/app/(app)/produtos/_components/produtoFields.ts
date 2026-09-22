@@ -281,9 +281,6 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   // `componentesKit` renders in the Kit tab; `componentesKitKeys` is the denorm
   // the delete-guard queries — derived in `deriveOnSave`, never rendered.
   'componentesKitKeys',
-  'marketplace',
-  'marketplaceIds',
-  'statusProdutosMarketplace',
   'integracoesComProduto',
   'fotosArquivosIds',
   'paiId',

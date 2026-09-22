@@ -17,10 +17,10 @@
  *  5. the freight block, then the items (the items' cross-check log needs the
  *     freight figure, and only the freight mapper knows a Shopee `0` from an
  *     absence);
- *  6. the buyer — `findOrCreateCliente` is a blind `add` and cannot join a
- *     transaction, so the cliente and the endereço are resolved HERE and only
- *     their outer-refs ride the pedido write, as fill-once fields the
- *     transaction re-checks against its own snapshot;
+ *  6. the buyer — `findOrCreateCliente` owns its identity-index transaction,
+ *     separate from the pedido transaction, so the cliente and endereço are
+ *     resolved HERE and only their outer-refs ride the pedido write, as
+ *     fill-once fields the transaction re-checks against its own snapshot;
  *  7. the pedido transaction;
  *  8. the PAGAMENTO transaction (#1514, step 6) — a second, separate one, run
  *     unless the pedido write came out `ignorado-obsoleto`. ⚠️ It is NOT skipped

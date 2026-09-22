@@ -3,6 +3,7 @@ import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { freteDoPedidoSchema } from '../../shared/frete';
 import { outerRefSchema } from '../../shared/outerRef';
+import { impostoPersistidoSchema } from '../../imposto/tribute';
 // One-way edge: `incidente.ts` imports nothing from here, so this cannot cycle.
 import { acaoBloqueadaSchema } from './incidente';
 
@@ -105,28 +106,18 @@ export const ESTADO_PEDIDO = {
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido — all 13 legacy fields
  * (`.old` `models.dart:57–195`) are enumerated below (confirmed 100% by the
- * #462 parity audit). `imposto` stays `z.unknown()`: it round-trips a
- * point-in-time `Imposto` (produto subcollection) snapshot, not a reference,
- * and full modeling is tracked separately (the sibling "nested strictness
- * gap" issue — that issue also covers making this schema itself reject an
- * unknown key on write, see the note below).
+ * #462 parity audit). `imposto` is a point-in-time fiscal snapshot, not a
+ * reference, and therefore uses the recursively strict persisted variant.
  *
- * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
- * `parseSoftRead` (`@delfrance/data`) tolerates an unmodeled key here: it
- * strips it silently rather than throwing, which is what keeps a legacy
- * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
- * 8). ⚠️ On WRITE, `parseForWrite`/`parseMergePatch`'s strict re-check (same
- * package, `zodParse.ts`) is **top-level only** — it diffs `Object.keys` of
- * the caller's `pedidoSchema` input against the parsed output, and Zod's
- * `.strict()` does not recurse into a nested schema. A pedido write with an
- * unmodeled key on an ITEM inside `itens`/`itensDevolvidos` does not throw:
- * `itens` itself is present on both sides, so nothing looks dropped at the
- * top level, and the item-level key is silently stripped the same way a
- * lenient read strips one. This schema's own `.strict()` (exercised directly
- * in `pedido.test.ts`) is therefore not a shape any production write path
- * actually applies.
+ * The item is a closed persisted shape: the #462 parity audit enumerated all
+ * 13 legacy ItemDoPedido keys, and #469 closes the embedded fiscal snapshot
+ * through `impostoPersistidoSchema`. Direct parses and registered writes reject
+ * unknown item or fiscal keys instead of silently stripping them. On READ, an
+ * incompatible nested legacy shape makes `parseSoftRead` return the complete
+ * raw pedido unchanged; it preserves the corpus document but intentionally
+ * applies none of this schema's defaults or coercions to that fallback value.
  */
-export const itemDoPedidoSchema = z.object({
+export const itemDoPedidoSchema = z.strictObject({
   produtoUid: z.string().nullable().default(null),
   ordem: z.number().int().default(1),
   ensureUniqueId: z.string().nullable().default(null),
@@ -145,7 +136,7 @@ export const itemDoPedidoSchema = z.object({
   quantidade: z.number().min(0),
   custo: z.number().nullable().default(null),
   timestamp: microsSinceEpoch().nullable().default(null),
-  imposto: z.unknown().nullable().default(null),
+  imposto: impostoPersistidoSchema.nullable().default(null),
 });
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
@@ -166,7 +157,7 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  * without it the appended units sell with no movement at all (overselling). See
  * `detectarCrescimentoLegado` in `apps/functions`.
  */
-export const estoqueAplicadoSchema = z.object({
+export const estoqueAplicadoSchema = z.strictObject({
   /** Depósito that received the applied movements (id, not a path). */
   depositoId: z.string(),
   /** Operação that authorized them (audit — reversal uses the maps, not config). */
@@ -228,28 +219,26 @@ export const MARKETPLACE_PEDIDO_TIPO = {
  * marketplace re-import would otherwise write a phantom "Sistema" audit row and
  * raise a phantom conflict in an open editor.
  */
-export const marketplacePedidoSchema = z
-  .object({
-    tipo: marketplacePedidoTipoSchema,
-    /** The provider's `order_status`, VERBATIM. Never an enum — see above. */
-    status: z.string().nullable().default(null),
-    /**
-     * When the provider stamped that status (µs). Same value as
-     * `pedido.lastMarketplaceUpdate` — that one is the WATERMARK the importer
-     * compares, this one is what a screen renders.
-     */
-    statusEm: microsSinceEpoch('Status do marketplace em').nullable().default(null),
-    /**
-     * `null` = we did not ask (or the provider does not answer); `[]` = we asked
-     * and the order carries none. The distinction is the whole value of the
-     * field, so do not collapse it to an empty array.
-     */
-    pendingTerms: z.array(z.string()).nullable().default(null),
-    completedScenario: z.string().nullable().default(null),
-    cancelReason: z.string().nullable().default(null),
-    cancelBy: z.string().nullable().default(null),
-  })
-  .passthrough();
+export const marketplacePedidoSchema = z.strictObject({
+  tipo: marketplacePedidoTipoSchema,
+  /** The provider's `order_status`, VERBATIM. Never an enum — see above. */
+  status: z.string().nullable().default(null),
+  /**
+   * When the provider stamped that status (µs). Same value as
+   * `pedido.lastMarketplaceUpdate` — that one is the WATERMARK the importer
+   * compares, this one is what a screen renders.
+   */
+  statusEm: microsSinceEpoch('Status do marketplace em').nullable().default(null),
+  /**
+   * `null` = we did not ask (or the provider does not answer); `[]` = we asked
+   * and the order carries none. The distinction is the whole value of the
+   * field, so do not collapse it to an empty array.
+   */
+  pendingTerms: z.array(z.string()).nullable().default(null),
+  completedScenario: z.string().nullable().default(null),
+  cancelReason: z.string().nullable().default(null),
+  cancelBy: z.string().nullable().default(null),
+});
 export type MarketplacePedido = z.infer<typeof marketplacePedidoSchema>;
 
 /** Where the buyer capture stands for one pedido. */
@@ -292,17 +281,15 @@ export const CAPTURA_COMPRADOR_ESTADO = {
  * verdicts only (`'nome:mascarado'`, `'cpf_cnpj:invalido'`, `'regiao:nao-br'`).
  * **Never a value**, masked or not, and never a length or a prefix of one.
  */
-export const capturaCompradorSchema = z
-  .object({
-    estado: capturaCompradorEstadoSchema,
-    /** The provider `order_status` observed at the last attempt. */
-    statusObservado: z.string().nullable().default(null),
-    /** When that attempt ran (µs, wall clock). */
-    em: microsSinceEpoch('Captura do comprador em').nullable().default(null),
-    tentativas: z.number().int().min(0).default(0),
-    camposRecusados: z.array(z.string()).nullable().default(null),
-  })
-  .passthrough();
+export const capturaCompradorSchema = z.strictObject({
+  estado: capturaCompradorEstadoSchema,
+  /** The provider `order_status` observed at the last attempt. */
+  statusObservado: z.string().nullable().default(null),
+  /** When that attempt ran (µs, wall clock). */
+  em: microsSinceEpoch('Captura do comprador em').nullable().default(null),
+  tentativas: z.number().int().min(0).default(0),
+  camposRecusados: z.array(z.string()).nullable().default(null),
+});
 export type CapturaComprador = z.infer<typeof capturaCompradorSchema>;
 
 /**
@@ -692,6 +679,9 @@ export const pedidoMeta: CollectionMetadata = {
     'disputaAbertaEm',
     'devolucaoAbertaEm',
     'bloqueiosLiberados',
+    // Provider event-clock watermark. Client creates may omit/seed null, but
+    // only server importers may advance, change or remove it afterwards.
+    'lastMarketplaceUpdate',
   ],
 };
 

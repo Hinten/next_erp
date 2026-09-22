@@ -3,7 +3,7 @@
  *
  * The single source of truth for the **anti-loss persistence invariant**:
  * an NF-e document is written to Firestore with `estado='enviando'` and
- * its computed `chave` (44 digits) and signed `xml_assinado` **before**
+ * its computed `chave` (44 characters) and signed `xml_assinado` **before**
  * the SOAP send. From that moment on, a crash anywhere is recoverable
  * by either the inline `consultarSituacaoNFe` (called on
  * `recover-via-consulta` outcomes) or the `processar-pendentes` cron.

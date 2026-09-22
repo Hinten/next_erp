@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { CHAVE, COM_NFE_MODEL, LONG_STRINGS_MODEL, MAXIMAL_MODEL, MINIMAL_MODEL } from './fixtures';
+import {
+  ALFA_CHAVE,
+  CHAVE,
+  COM_NFE_ALFA_MODEL,
+  COM_NFE_MODEL,
+  LONG_STRINGS_MODEL,
+  MAXIMAL_MODEL,
+  MINIMAL_MODEL,
+} from './fixtures';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, type EtiquetaOp } from './layout';
+import { EtiquetaGenericaFormatError } from './errors';
 import { renderEtiquetaGenericaZpl } from './zpl2';
 
 describe('renderEtiquetaGenericaZpl', () => {
@@ -61,6 +70,54 @@ describe('renderEtiquetaGenericaZpl', () => {
     // `>;` switches Code 128 to subset C: two digits per symbol, half the width.
     expect(zpl).toContain(`^FD>;${CHAVE}^FS`);
     expect(zpl).toMatch(/\^BY[2-9]\^BCN/);
+  });
+
+  it('refuses an alphanumeric chave instead of printing an unscannable symbol', () => {
+    // The printer encodes `^BCN` itself from the `>;` subset-C prefix, so an
+    // alfa chave cannot be handed to it — see the guard's comment in zpl2.ts.
+    // Refusing is the point: `genericLabelProvider` turns this into a red toast
+    // naming the PDF, which beats a label that looks fine and will not scan.
+    expect(() => renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL)).toThrow(
+      EtiquetaGenericaFormatError,
+    );
+    try {
+      renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL);
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof EtiquetaGenericaFormatError)) throw err;
+      // The message has to name both the offending value and the way out, or
+      // the operator cannot act on it.
+      expect(err.message).toContain(ALFA_CHAVE);
+      expect(err.message).toContain('PDF');
+    }
+  });
+
+  it('refuses an ODD-length digit chave, which subset C also cannot encode', () => {
+    // ⚠️ Not hypothetical bookkeeping. Before mixed subsets the encoder
+    // returned null here and the barcode was dropped; the widened encoder
+    // returns a real symbol, so without the length half of the guard this
+    // renderer would size its width math from that symbol and then emit
+    // `^FD>;<43 digits>` — a field the printer's subset-C prefix cannot encode,
+    // scanning as something other than the chave.
+    const odd = '3526011420016600018755001000000012345678901';
+    expect(odd).toHaveLength(43);
+    expect(() => renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: odd })).toThrow(
+      EtiquetaGenericaFormatError,
+    );
+  });
+
+  it('does not throw on an empty chave — the layout emits no barcode for it', () => {
+    // The guard keys on the same truthiness as `layout.ts`. A `!= null` check
+    // would throw on a label the PDF renders perfectly well, naming an empty
+    // value the operator cannot act on.
+    const zpl = renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: '' });
+    expect(zpl).not.toContain('^BCN');
+  });
+
+  it('still renders a label with no NF-e at all, alfa guard notwithstanding', () => {
+    // The guard keys on the chave, not on its absence — a pedido with no
+    // authorized NF-e must not start throwing.
+    expect(() => renderEtiquetaGenericaZpl(MINIMAL_MODEL)).not.toThrow();
   });
 
   it('draws no barcode when the pedido has no authorized NF-e', () => {

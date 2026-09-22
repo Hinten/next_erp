@@ -1,5 +1,9 @@
 /**
- * Chave de acesso da NF-e (44 digits) + módulo-11 check digit.
+ * Chave de acesso da NF-e (44 characters) + módulo-11 check digit.
+ *
+ * ⚠️ Characters, not digits. Since NT 2026.004 (CNPJ Alfanumérico, RFB IN
+ * 2.229/2024) positions 6–17 carry the emitente CNPJ's body and may hold `A-Z`;
+ * every other field stays numeric. `CHAVE_NFE_REGEX` is the shape of record.
  *
  * See `.claude/skills/nfe/references/chave-acesso.md`. The chave is computed
  * **before** sending so the doc can be persisted with its anti-loss anchor:
@@ -46,8 +50,13 @@ export interface ChaveParts {
 }
 
 /**
- * Build the first 43 digits of the chave from its component parts.
- * Throws when any part has the wrong length or contains non-digit chars.
+ * Build the first 43 characters of the chave from its component parts.
+ *
+ * Throws when any part has the wrong length, or holds a character its own field
+ * does not allow — which is NOT the same rule for every field. `cnpjOrCpf` is
+ * checked against `CNPJ_OR_CPF_14`, where a letter in the first twelve
+ * positions is legal; the other seven fields go through `assertDigits` and stay
+ * strictly numeric.
  */
 export function composeChave43(parts: ChaveParts): string {
   assertDigits('cUF', parts.cUF, 2);
@@ -108,7 +117,7 @@ export function computeCDV(chave43: string): number {
   return resto <= 1 ? 0 : 11 - resto;
 }
 
-/** Compose the full 44-digit chave including its check digit. */
+/** Compose the full 44-character chave including its check digit. */
 export function composeChave(parts: ChaveParts): { chave: string; cDV: number } {
   const chave43 = composeChave43(parts);
   const cDV = computeCDV(chave43);

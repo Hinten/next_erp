@@ -331,43 +331,138 @@ export async function deleteIncidente(
 const PAGAMENTO_PATH = (pedidoId: string, docId: string): string =>
   `pedidos/${pedidoId}/pagamentos/${docId}`;
 
-/**
- * Build a set-op for a pagamento. Create (`pagamentoId` null → mint an id +
- * stamp `dataCadastro`, the field the list sorts by) or update (id given →
- * preserve the caller-supplied `dataCadastro` + the passthrough `cartao` /
- * `cheque` / `metodoPagamentoOuterRef`, which the editor spreads from the
- * existing doc). Always stamps `ultimaModificacao`. The adapter's `set` runs
- * through the Zod converter (validates + fills defaults). No auto-`estado` side
- * effect (legacy `statusToEstadoPedido` stays a TODO).
- */
+/** Build a create-only pagamento set-op with a fresh id and both local stamps. */
 export function buildPagamentoOp(
   port: PedidoDataPort,
   pedidoId: string,
-  pagamentoId: string | null,
   pagamento: Record<string, unknown>,
 ): PedidoWriteOp {
-  const id = pagamentoId ?? port.newId();
-  const data: Record<string, unknown> = { ...pagamento, ultimaModificacao: port.now() };
-  if (pagamentoId === null) data.dataCadastro = port.now();
+  const id = port.newId();
+  const now = port.now();
+  const data: Record<string, unknown> = {
+    ...pagamento,
+    ultimaModificacao: now,
+    dataCadastro: now,
+  };
   return { type: 'set', path: PAGAMENTO_PATH(pedidoId, id), data };
 }
 
-/** Create (no `pagamentoId`) or update a pagamento. */
-export async function savePagamento(
-  port: PedidoDataPort,
-  args: { pedidoId: string; pagamentoId?: string | null; pagamento: Record<string, unknown> },
-): Promise<void> {
-  await port.commit([
-    buildPagamentoOp(port, args.pedidoId, args.pagamentoId ?? null, args.pagamento),
-  ]);
+/** A pagamento edit lost its optimistic-concurrency comparison. */
+export class PagamentoConflictError extends Error {
+  constructor(
+    readonly current: PedidoDocData,
+    readonly fields: ReadonlyArray<string>,
+  ) {
+    super(
+      current === null
+        ? 'O pagamento não existe mais — pode ter sido excluído.'
+        : 'O pagamento foi alterado por outra pessoa. Revise antes de salvar.',
+    );
+    this.name = 'PagamentoConflictError';
+  }
 }
 
-/** Delete a pagamento. */
+/** Thrown when an edit contains no effective pagamento changes. */
+export class PagamentoNothingChangedError extends Error {
+  constructor() {
+    super('Nenhuma alteração no pagamento para salvar.');
+    this.name = 'PagamentoNothingChangedError';
+  }
+}
+
+export type SavePagamentoArgs =
+  | {
+      mode: 'create';
+      pedidoId: string;
+      pagamento: Record<string, unknown>;
+    }
+  | {
+      mode: 'update';
+      pedidoId: string;
+      pagamentoId: string;
+      patch: Record<string, unknown>;
+      baseline: Record<string, unknown>;
+    };
+
+function changedFields(
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+  fields: Iterable<string>,
+): string[] {
+  return [...fields].filter((field) => !valuesEqual(baseline[field], current[field]));
+}
+
+/**
+ * Local recency is deliberately non-regressing, even when a stored client clock
+ * is in the future. External event ordering never consults this field; provider
+ * importers use `lastProviderUpdate` instead.
+ */
+function monotonicPagamentoModification(current: Record<string, unknown>, now: number): number {
+  const stored = current.ultimaModificacao;
+  return typeof stored === 'number' && Number.isFinite(stored) ? Math.max(stored, now) : now;
+}
+
+/** Create a full pagamento or update only an explicitly edited patch. */
+export async function savePagamento(port: PedidoDataPort, args: SavePagamentoArgs): Promise<void> {
+  if (args.mode === 'create') {
+    await port.commit([buildPagamentoOp(port, args.pedidoId, args.pagamento)]);
+    return;
+  }
+
+  const patchKeys = Object.keys(args.patch);
+  if (patchKeys.length === 0) throw new PagamentoNothingChangedError();
+
+  const path = PAGAMENTO_PATH(args.pedidoId, args.pagamentoId);
+  await port.transact({
+    reads: [path],
+    apply(docs) {
+      const current = docs.get(path) ?? null;
+      if (current === null) throw new PagamentoConflictError(null, patchKeys);
+
+      const conflicts = changedFields(args.baseline, current, patchKeys);
+      if (conflicts.length > 0) throw new PagamentoConflictError(current, conflicts);
+
+      const effectivePatch = Object.fromEntries(
+        Object.entries(args.patch).filter(([field, value]) => !valuesEqual(current[field], value)),
+      );
+      if (Object.keys(effectivePatch).length === 0) throw new PagamentoNothingChangedError();
+
+      return [
+        {
+          type: 'update',
+          path,
+          data: {
+            ...effectivePatch,
+            ultimaModificacao: monotonicPagamentoModification(current, port.now()),
+          },
+        },
+      ];
+    },
+  });
+}
+
+/**
+ * Delete only when the entire document still matches the confirmed baseline.
+ * This is intentionally stricter than edit conflict detection: provider-owned
+ * fields are part of the comparison because any write after confirmation must
+ * cancel a destructive action and make the operator review the fresh snapshot.
+ */
 export async function deletePagamento(
   port: PedidoDataPort,
-  args: { pedidoId: string; pagamentoId: string },
+  args: { pedidoId: string; pagamentoId: string; baseline: Record<string, unknown> },
 ): Promise<void> {
-  await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
+  const path = PAGAMENTO_PATH(args.pedidoId, args.pagamentoId);
+  await port.transact({
+    reads: [path],
+    apply(docs) {
+      const current = docs.get(path) ?? null;
+      if (current === null) throw new PagamentoConflictError(null, Object.keys(args.baseline));
+      const fields = new Set([...Object.keys(args.baseline), ...Object.keys(current)]);
+      const conflicts = changedFields(args.baseline, current, fields);
+      if (conflicts.length > 0) throw new PagamentoConflictError(current, conflicts);
+      return [{ type: 'delete', path }];
+    },
+  });
 }
 
 /**
@@ -382,7 +477,7 @@ export async function saveChequeSplit(
   args: { pedidoId: string; pagamentos: Record<string, unknown>[] },
 ): Promise<void> {
   await port.commit(
-    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, null, pagamento)),
+    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, pagamento)),
   );
 }
 

@@ -18,19 +18,16 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * 0/sub-cent entries at the form (clearing the input removes the entry instead
  * of storing 0).
  */
-export const precoSchema = z
-  .object({ valor: z.number().min(0.01, 'O preço mínimo é R$ 0,01') })
-  .passthrough();
+export const precoSchema = z.strictObject({
+  valor: z.number().min(0.01, 'O preço mínimo é R$ 0,01'),
+});
 
 export type Preco = z.infer<typeof precoSchema>;
 
 /**
  * Produto schema. Parity with `packages/produtos/lib/src/models.dart`
  * for the fields this app reads/writes today. `componentesKit`, `anexos`,
- * `fotos` and `videos` are typed against their own schemas; the marketplace
- * integrations (`marketplace`, `statusProdutosMarketplace`) stay loosely typed
- * `unknown` at the field level — the Flutter app continues to author those,
- * and we surface them when their vertical lands.
+ * `fotos` and `videos` are typed against their own schemas.
  *
  * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
  * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
@@ -208,56 +205,11 @@ export const produtoSchema = z.object({
   grupoDeVariacoesUid: z.array(z.string()).nullable().default(null),
   variacoesUid: z.array(z.string()).nullable().default(null),
 
-  // Pass-through complex structures (kits, marketplace bindings, media).
+  // Complex structures (kits, marketplace bindings, media).
   componentesKitKeys: z.array(z.string()).nullable().default(null),
   componentesKit: componentesKitSchema.nullable().default(null),
   integracoesComProduto: z.array(z.string()).default([]),
 
-  /**
-   * ⛔ DEAD WEIGHT — no query consumers, deleted at the Flutter decommission
-   * (#992). Do not build on these three.
-   *
-   * "No query consumers" precisely: nothing in this repo filters, projects or
-   * orders by them, and no code reads one to make a decision about anything
-   * else. They ARE read in four places — `stampChildMarketplace`,
-   * `removeMarketplaceEntry`, `applyMarketplaceDeletion` and the publish
-   * read-clean-write — but only to compute the next value of the same field.
-   * That is maintenance, not consumption, and it all dies with the field.
-   *
-   * They are Firestore **Standard**-edition workarounds. `marketplace` was a
-   * map so the old app could find a produto AND learn which channel an id
-   * belonged to **without a join**; `marketplaceIds` was its flat index. On
-   * **Enterprise** both questions have direct answers: the link
-   * subcollections are collection-group-indexed by `id`/`itemId` (12 call
-   * sites, e.g. `orderProdutoResolve.ts`), and the channel is simply the
-   * subcollection's NAME. CLAUDE.md's "re-derive it, don't transcribe it"
-   * applies literally here.
-   *
-   * ⚠️ **Never add a reader.** Nothing in this repo queries them — and
-   * nothing can afford to: `firestore.indexes.json` declares **no index on
-   * either**, so on Enterprise a query would silently full-scan `produtos`
-   * and bill the data. Resolve produto-by-item-id through the link
-   * subcollection instead.
-   *
-   * The only real consumer was ever the deployed Flutter backend, which does
-   * not survive the cutover — so as of the owner decision on 2026-08-10 these
-   * have no consumer in any window. The writes are kept purely so the
-   * decommission can delete the whole cluster in one piece — tracked in
-   * **#992**, which carries the full removal list. (#431, which used to hold
-   * that job, is closed.) The `statusProdutosMarketplace` write in
-   * `importMigration.applyMarketplaceDeletion` is kept on the same grounds and
-   * for the same window — decided explicitly in #825, not by omission.
-   *
-   * ⚠️ And they are already unreliable, which is why nobody should try to
-   * repair them: an entry is **never removed when a link doc is deleted** (no
-   * code does that, by design); legacy's own ML order probe omits
-   * `relevantData` while several writers include it, so `array-contains` —
-   * which compares the whole map — misses them; and `marketplaceIds` drifts
-   * from `marketplace` by construction. Details and the audit: #961.
-   */
-  marketplaceIds: z.array(z.string()).nullable().default(null),
-  marketplace: z.array(z.unknown()).default([]),
-  statusProdutosMarketplace: z.record(z.string(), z.unknown()).nullable().default(null),
   fotos: z.array(fotoSchema).nullable().default(null),
   videos: z.array(videoSchema).nullable().default(null),
   anexos: z.array(anexoSchema).nullable().default(null),

@@ -150,7 +150,10 @@ import {
   ensureEndereco,
   shipmentToEnderecoFields,
 } from './orderCliente';
-import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
+import {
+  ClienteSemIdentidadeForteError,
+  findOrCreateCliente,
+} from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
 import {
   discoverPedidoMercadoLivre,
@@ -779,17 +782,31 @@ async function applyClienteStep(args: {
     throw err;
   }
 
-  const { clienteId, rejected, dropped, idMercadoLivreConflito } = await findOrCreateCliente(db, {
-    // Spread only when we have one: omitting the key says "no evidence", which
-    // is what `ClienteResolveFields.idMercadoLivre` being optional means. An
-    // explicit `null` would assert an absence this path is in no position to
-    // assert once ML has told us the buyer.
-    fields:
-      buyerUserId == null
-        ? clienteFields
-        : { ...clienteFields, idMercadoLivre: String(buyerUserId) },
-    nowMs,
-  });
+  let clienteResolvido: Awaited<ReturnType<typeof findOrCreateCliente>>;
+  try {
+    clienteResolvido = await findOrCreateCliente(db, {
+      // Spread only when we have one: omitting the key says "no evidence", which
+      // is what `ClienteResolveFields.idMercadoLivre` being optional means. An
+      // explicit `null` would assert an absence this path is in no position to
+      // assert once ML has told us the buyer.
+      fields:
+        buyerUserId == null
+          ? clienteFields
+          : { ...clienteFields, idMercadoLivre: String(buyerUserId) },
+      nowMs,
+    });
+  } catch (err) {
+    if (err instanceof ClienteSemIdentidadeForteError) {
+      // Permanent provider-data gap, not a transient task failure. The pedido
+      // remains importable and unlinked, matching Shopee's masked-buyer path.
+      console.warn('[mercado-livre] cliente não vinculado — identidade forte ausente', {
+        orderId,
+      });
+      return pedido;
+    }
+    throw err;
+  }
+  const { clienteId, rejected, dropped, idMercadoLivreConflito } = clienteResolvido;
   if (rejected.length > 0) {
     // A telefone/e-mail hit whose document contradicts the buyer's. Before #786
     // this merged silently and overwrote the other person's cpf_cnpj; now it is

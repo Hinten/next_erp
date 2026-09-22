@@ -266,7 +266,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install firebase-tools (pinned)
-        run: npm i -g firebase-tools@15.15.0
+        run: npm i -g firebase-tools@15.25.0
 
       - name: Run rules suite on the emulator
         # Demo-project mode → no real credentials, nothing touches staging.

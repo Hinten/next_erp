@@ -14,7 +14,11 @@ const ENTRY_BASE = {
 describe('pagamentoHistorySource', () => {
   it('has the fixed subcolecao/ignoreFields', () => {
     expect(pagamentoHistorySource.subcolecao).toBe('pagamentos');
-    expect(pagamentoHistorySource.ignoreFields).toEqual(['id', 'ultimaModificacao']);
+    expect(pagamentoHistorySource.ignoreFields).toEqual([
+      'id',
+      'ultimaModificacao',
+      'lastProviderUpdate',
+    ]);
   });
 
   it('is bound to the PEDIDO root — rows land under the pedido, not the pagamento', () => {
@@ -64,14 +68,23 @@ describe('pagamentoHistorySource', () => {
     expect(entry?.changes.valor).toEqual({ old: 100, new: 250 });
   });
 
-  it('writes NO row for a content-identical re-import (only the stamp moved)', () => {
-    // The ML importer does a wholesale `tx.set` and advances `ultimaModificacao`
-    // as its update-if-newer key; ignoring that stamp is what makes a repeated
-    // import silent instead of one row per poll.
+  it('writes NO row when only local/provider clocks move', () => {
     const entry = buildModificationEntry({
       ...ENTRY_BASE,
-      before: { id: 'pag1', status_pagamento: 3, valor: 100, ultimaModificacao: 1 },
-      after: { id: 'pag1', status_pagamento: 3, valor: 100, ultimaModificacao: 999 },
+      before: {
+        id: 'pag1',
+        status_pagamento: 3,
+        valor: 100,
+        ultimaModificacao: 1,
+        lastProviderUpdate: 10,
+      },
+      after: {
+        id: 'pag1',
+        status_pagamento: 3,
+        valor: 100,
+        ultimaModificacao: 999,
+        lastProviderUpdate: 20,
+      },
       ignore: pagamentoHistorySource.ignoreFields,
       path: 'pedidos/ped1/pagamentos/pag1',
       subcolecao: 'pagamentos',

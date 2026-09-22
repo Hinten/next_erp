@@ -69,9 +69,8 @@
  *    makes a stale-closure bug visible at all;
  *  - {@link FakeDb.occ}, exposed so a test can hold one attempt at
  *    `db.occ.beforeCommit` and read `db.occ.txLog` for the abort;
- *  - `collection().add()`, the blind create `defineAdminCollection().add()`
- *    performs — `findOrCreateCliente` has no deterministic cliente id, by
- *    design, so the order importer reaches it;
+ *  - `collection().add()`, used by the remaining admin collection writers that
+ *    intentionally allocate an auto id outside a transaction;
  *  - {@link FakeDb.opLog}, every read and write in CALL order (`get` from the
  *    doc ref, the writes from the engine at staging time), so a test can assert
  *    that a byte-identical replay wrote NOTHING and that a create used
@@ -670,11 +669,7 @@ export class FakeDb {
       // ⚠️ The UNLIMITED chain, and it is deliberate: the order backfill
       // enumerates every active conta with `where().where().get()` and no cap.
       get: () => buscar(),
-      /**
-       * The blind create `defineAdminCollection().add()` performs — a fresh auto
-       * id, no read, nothing to race with. `findOrCreateCliente` is the caller
-       * that needs it: it has no deterministic cliente id, by design.
-       */
+      /** A fresh auto id for `defineAdminCollection().add()` writers. */
       add: (data: DocData) => {
         const id = `auto-${String((this.autoId += 1))}`;
         const caminho = `${colPath}/${id}`;

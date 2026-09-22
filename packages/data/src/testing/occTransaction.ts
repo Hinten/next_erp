@@ -18,7 +18,7 @@
  * Models the three Admin SDK properties the previous non-isolated fakes did
  * not, and that issue #791 is entirely about:
  *
- *  1. **Snapshot reads.** `tx.get` records the version of what it read. Because
+ *  1. **Snapshot reads.** `tx.get` / `tx.getAll` record the version of what they read. Because
  *     writes are buffered until commit, a read never observes this
  *     transaction's own pending writes — matching the real Admin SDK.
  *  2. **Buffered writes + a commit-time version check.** Writes land at commit,
@@ -60,7 +60,7 @@
 export type OccWriteKind = 'set' | 'create' | 'update' | 'delete';
 export type OccOpKind = 'get' | OccWriteKind;
 
-/** Anything `tx.get` accepts: a fake doc ref, or a fake collection ref. */
+/** Anything `tx.get` / `tx.getAll` accepts: a fake doc ref, or a fake collection ref. */
 export interface OccReadable<T> {
   /** Firestore path. Segment parity decides doc (EVEN) vs collection (ODD). */
   readonly path: string;
@@ -90,6 +90,7 @@ export interface OccPrecondition {
 
 export interface OccTransaction {
   get: <T>(target: OccReadable<T>) => Promise<T>;
+  getAll: <T>(...targets: OccReadable<T>[]) => Promise<T[]>;
   set: (ref: OccRef, data: Record<string, unknown>) => void;
   create: (ref: OccRef, data: Record<string, unknown>) => void;
   update: (ref: OccRef, patch: Record<string, unknown>, precondition?: OccPrecondition) => void;
@@ -174,6 +175,8 @@ function parentCollection(docPath: string): string {
 export class OccEngine {
   /** One entry per attempt — `begin` / `commit` / `abort`. Assert retries on it. */
   readonly txLog: OccAttemptLogEntry[] = [];
+  /** Number of batched document reads requested by callbacks. */
+  getAllCount = 0;
 
   /**
    * Await point between "the callback returned" and "the buffered writes
@@ -241,6 +244,17 @@ export class OccEngine {
           }
           readVersions.set(target.path, this.version(target.path));
           return target.get();
+        },
+        getAll: async (...targets) => {
+          if (wroteAlready) {
+            throw new Error('read after write in transaction (Admin SDK invariant)');
+          }
+          this.getAllCount += 1;
+          for (const target of targets) {
+            assertPath(target, 'getAll');
+            readVersions.set(target.path, this.version(target.path));
+          }
+          return Promise.all(targets.map((target) => target.get()));
         },
         set: (ref, data) => stage('set', ref, data),
         create: (ref, data) => stage('create', ref, data),

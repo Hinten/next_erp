@@ -288,7 +288,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install firebase-tools (pinned)
-        run: npm i -g firebase-tools@15.15.0
+        run: npm i -g firebase-tools@15.25.0
 
       - name: Build functions bundle
         run: pnpm --filter @delfrance/functions build
