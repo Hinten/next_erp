@@ -16,6 +16,7 @@ import {
   ENVIO_MANUAL_MAX_TENTATIVAS,
   ENVIO_MANUAL_RETRY_DELAY_MS,
   STOCK_SEND_MAX_ATTEMPTS,
+  ratePauseMin,
 } from './constantesEstoque';
 import {
   OUTCOME_ENVIO_ESTOQUE,
@@ -597,6 +598,89 @@ describe('enviarEstoqueManualShopee — os limites de taxa', () => {
       expect(l.outcome).toBe('nao-tentado');
       expect(l.motivo).toBe(MOTIVO_ESTOQUE_SHOPEE.contaPausada);
     }
+  });
+
+  /**
+   * O braço que o teste 17 não alcança. Lá o documento de estado já traz uma
+   * pausa armada e a releitura responde; aqui a rajada ESCAPA do remetente
+   * antes de a pausa ser armada, o documento está VAZIO e a janela é DERIVADA.
+   *
+   * ⚠️ O relógio decorrido é de propósito NÃO-epoch (0, 1, 2…) e o `nowMs` é
+   * fixo. `pausadoAte` é um instante que o envelope renderiza em ISO, então só
+   * pode partir do instante LÓGICO: somado ao relógio decorrido, o mesmo
+   * `Retry-After` vira um carimbo de 1970. Com um relógio decorrido que também
+   * fosse epoch, a troca passaria despercebida — por isso ele não é.
+   */
+  function rajadaQueEscapa(retryAfterSeconds?: number) {
+    const db = new FakeDb();
+    semear(db, ['prod-1', 'prod-2']);
+    let decorrido = 0;
+    const montado = montarDeps(
+      db,
+      [familia('prod-1'), familia('prod-2')],
+      () =>
+        Promise.reject(
+          new ShopeeRateLimitError('limite', {
+            code: 'error_rate_limit',
+            kind: SHOPEE_ERROR_KIND.burst,
+            httpStatus: 429,
+            path: '/api/v2/product/update_stock',
+            ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+          }),
+        ),
+      {
+        agora: () => {
+          const lido = decorrido;
+          decorrido += 1;
+          return lido;
+        },
+      },
+    );
+    return { db, ...montado };
+  }
+
+  it('17b — ⚠️ PAR: uma rajada que escapa ANTES de armar a pausa carimba nowMs + Retry-After, nunca o relógio decorrido', async () => {
+    // Largura 1, para que a segunda linha veja o aborto da primeira.
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
+    const { db, deps, chamadas } = rajadaQueEscapa(60);
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
+      deps,
+    );
+
+    // A premissa do braço: não havia pausa armada para a releitura devolver.
+    expect(db.store[`estoqueShopeeSync/${INT}`]).toBeUndefined();
+    expect(res.pausadoAte).toBe(new Date(AGORA_MS + 60 * 1_000).toISOString());
+    expect(chamadas).toHaveLength(1);
+    expect(res.listings.map((l) => [l.produtoId, l.outcome, l.motivo])).toEqual([
+      ['prod-1', 'nao-tentado', MOTIVO_ESTOQUE_SHOPEE.contaPausada],
+      ['prod-2', 'nao-tentado', MOTIVO_ESTOQUE_SHOPEE.contaPausada],
+    ]);
+  });
+
+  it('17c — QUASE-PAR: sem Retry-After a mesma rajada carimba nowMs + ratePauseMin() minutos, não os 60 s do par', async () => {
+    vi.stubEnv('SHOPEE_STOCK_MANUAL_CONCURRENCY', '1');
+    // 7, e não o padrão 5: prova que o botão configurado é lido, não um número fixo.
+    vi.stubEnv('SHOPEE_STOCK_RATE_PAUSE_MIN', '7');
+    expect(ratePauseMin()).toBe(7);
+    const { db, deps, chamadas } = rajadaQueEscapa();
+
+    const res = await enviarEstoqueManualShopee(
+      asDb(db),
+      { integracaoId: INT, produtoIds: ['prod-1', 'prod-2'], reenviarComErro: false },
+      deps,
+    );
+
+    expect(db.store[`estoqueShopeeSync/${INT}`]).toBeUndefined();
+    expect(res.pausadoAte).toBe(new Date(AGORA_MS + 7 * 60 * 1_000).toISOString());
+    expect(res.pausadoAte).not.toBe(new Date(AGORA_MS + 60 * 1_000).toISOString());
+    expect(chamadas).toHaveLength(1);
+    expect(res.listings.map((l) => [l.produtoId, l.outcome, l.motivo])).toEqual([
+      ['prod-1', 'nao-tentado', MOTIVO_ESTOQUE_SHOPEE.contaPausada],
+      ['prod-2', 'nao-tentado', MOTIVO_ESTOQUE_SHOPEE.contaPausada],
+    ]);
   });
 
   it('18 — a COTA DIÁRIA usa a virada importada, não o cabeçalho', async () => {

@@ -721,6 +721,11 @@ gate. In short:
   resolver's cost), 120 (`deps.retryCount` is logged with no consumer), 121 (the
   tasks emulator ignores `scheduleDelaySeconds`), 122 (a model in neither list
   routes to the partial writer).
+- **The manual push's deadline is per LISTING, not per request**: the budget is
+  checked between listings, never during one, and the transport sets no fetch
+  timeout, so a hung call inside the last listing is unbounded — the 180 s
+  `timeoutSeconds` in `apps/shopee/apphosting.yaml` is headroom for its two
+  ladder attempts, not a bound.
 - **Open questions with no owner yet**: 97 (the real burst ceiling and daily
   quota, per APP — a support ticket), 98's third `promotion_id: wireInt()` site
   on live order-import traffic, 100 (a shared `pool.ts`), 101, 102, 109 (a kit

@@ -665,8 +665,7 @@ export async function enviarEstoqueManualShopee(
   for (const produtoId of solicitados) {
     const row = rowPorAnchor.get(produtoId);
     if (row === undefined) {
-      // The by-ids reader silently omits a document that does not exist, and an
-      // anchor can also be a variation CHILD, which owns no listing.
+      // No row: the requested document does not exist.
       produtosSemEnvio.push({
         produtoId,
         produtoNome: nomeDe(produtoId),
@@ -739,10 +738,13 @@ export async function enviarEstoqueManualShopee(
     // A burst the handler ARMED is already on the state document, and that is
     // the window actually enforced; re-read it rather than guessing. One that
     // escaped before arming leaves nothing there, so the header (or the
-    // configured pause) is the honest fallback.
+    // configured pause) is the honest fallback — counted from the LOGICAL
+    // instant, like the daily arm and the comparison above: this is an epoch
+    // stamp the envelope renders, and the elapsed reader is only ever
+    // subtracted from itself (module docblock).
     const estado = await lerEstadoEstoque(db, args.integracaoId);
     if (estado.pausadoAte !== null && estado.pausadoAte > deps.nowMs) return estado.pausadoAte;
-    return deps.agora() + (err.retryAfterSeconds ?? ratePauseMin() * 60) * MS_POR_SEGUNDO;
+    return deps.nowMs + (err.retryAfterSeconds ?? ratePauseMin() * 60) * MS_POR_SEGUNDO;
   };
 
   await executarEmPool(paraEnviar, concorrenciaEnvioManual(), async ({ entrada, indice }) => {

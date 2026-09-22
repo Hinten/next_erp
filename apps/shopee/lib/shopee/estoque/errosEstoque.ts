@@ -217,7 +217,7 @@ export const MENSAGEM_POR_MOTIVO: Record<MotivoEstoqueShopee, string> = {
   'task-excede-limite':
     'O anúncio tem mais modelos do que cabem em uma chamada, e a sobra foi dividida em outra parte. Nenhuma quantidade se perde; esta linha existe só para a divisão ficar visível.',
   'produto-nao-encontrado':
-    'O produto pedido não foi encontrado no ERP, ou não é o produto âncora da família. Confira o identificador enviado; nada foi buscado na Shopee por ele.',
+    'O produto pedido não foi encontrado no ERP. Confira o identificador enviado; nada foi buscado na Shopee por ele.',
   // ---- conta side ----
   'sem-shop-id':
     'A conta não guarda o identificador da loja na Shopee, então nenhuma chamada pode ser assinada. Refaça a autorização da conta no ERP.',

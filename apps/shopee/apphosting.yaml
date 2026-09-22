@@ -45,8 +45,13 @@ runConfig:
   # budget (SHOPEE_STOCK_MANUAL_DEADLINE_MS, default 120 s) is the real
   # guarantee — it reports the remainder as `nao-tentado` in a partial envelope
   # instead of letting the request die — and this ceiling sits ABOVE it so the
-  # DEADLINE, not the platform, is what ends the request. Same argument and the
-  # same number as apps/mercado-livre/apphosting.yaml, for the same route shape.
+  # DEADLINE, not the platform, is what ends the request. That guarantee is per
+  # LISTING, not per request: the budget is checked between listings, never
+  # during one, and the transport sets no fetch timeout, so a single hung call
+  # is the residual (the same one apps/shopee/CLAUDE.md records for the token
+  # refresh) and the 60 s above the budget is headroom for the last listing's
+  # two ladder attempts, not a bound. Same argument and the same number as
+  # apps/mercado-livre/apphosting.yaml, for the same route shape.
   timeoutSeconds: 180
 # ⚠️ That `timeoutSeconds` is NEW, and it replaces a paragraph that claimed the
 # opposite. Until step 12 every route here WAS a fast Firestore read/write plus
