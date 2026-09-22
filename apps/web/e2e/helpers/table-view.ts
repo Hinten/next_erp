@@ -179,6 +179,15 @@ export async function applySelectFilter(
  * match and a popover routinely holds other labels (the Cliente popover has
  * `Filtrar por cliente`), so asking for `Cliente` would resolve two and fail
  * strict mode.
+ *
+ * ⚠️ Nothing inside the popover can be asserted AFTER the click, and that is
+ * structural rather than a timing problem: a segment that applies a filter puts
+ * the new query in flight, `showSkeleton` goes true, and `TableView` swaps the
+ * whole `<Table>` — header, filter popovers and all — for skeletons
+ * (`TableView.tsx`, the `showSkeleton` branch). `FilterPopover` keeps `opened`
+ * in local state, so it remounts closed. The caller's row assertions are what
+ * prove the filter landed; `applySelectFilter` above has always worked this way
+ * for the same reason.
  */
 export async function applySegmentedFilter(
   page: Page,
@@ -193,19 +202,21 @@ export async function applySegmentedFilter(
     `SegmentedControl segment "${segmentLabel}" has no id to bind a label to`,
   ).toBeTruthy();
   await popover.locator(`label[for="${id}"]`).click();
-  // The click landed on a label, so assert the control actually switched rather
-  // than trusting that the event reached the input.
-  await expect(radio).toBeChecked();
 }
 
 /**
  * Dismiss whatever filter popover is open.
  *
- * ⚠️ Needed between two filters that apply on CHANGE (a Select, a segmented
- * control), because those popovers have no "Aplicar" to close them — unlike the
- * text and numeric bodies, whose Apply button dismisses the popover itself.
- * Leaving one open makes the next `Filtrar <label>` click ambiguous: it is both
- * a click-outside for the open popover and the trigger for the new one.
+ * Belt-and-braces for the filters that apply on CHANGE (a Select, a segmented
+ * control), which have no "Aplicar" to dismiss themselves — unlike the text and
+ * numeric bodies, whose Apply button closes the popover.
+ *
+ * Usually there is nothing left to close: applying a filter puts the query in
+ * flight, and `TableView` swaps the whole table away for skeletons while it
+ * loads, taking every popover with it. This covers the case where it does not —
+ * a result served straight from cache, where `loading` never flips — so the
+ * next `Filtrar <label>` click is unambiguously a trigger rather than also a
+ * click-outside for a popover that is still open.
  *
  * Two presses: the first closes an inline Select listbox if one is still
  * expanded, the second the popover. Both are no-ops when nothing is open.
