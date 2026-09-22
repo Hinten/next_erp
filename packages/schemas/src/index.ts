@@ -952,8 +952,12 @@ export {
   // RTC (IBS/CBS/IS)
   configuracaoISRtcSchema,
   configuracaoIBSCBSSchema,
+  configuracaoISRtcDraftSchema,
+  configuracaoIBSCBSDraftSchema,
+  configuracaoIBSCBSDraftPersistidoSchema,
   // canonical per-item Imposto
   impostoSchema,
+  impostoPersistidoSchema,
   normalizeNCM,
   // label maps
   CRT_LABELS,
@@ -1001,7 +1005,10 @@ export {
   type Retencao,
   type ConfiguracaoISRtc,
   type ConfiguracaoIBSCBS,
+  type ConfiguracaoISRtcDraft,
+  type ConfiguracaoIBSCBSDraft,
   type Imposto,
+  type ImpostoPersistido,
 } from './imposto/tribute';
 
 export {

@@ -304,7 +304,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
         titular: 'Fulano',
         cpfCnpj: '12345678900',
         telefone: '11999999999',
-        bomPara: 1234,
+        bomPara: 1_700_000_000_000_000,
       }),
       null,
     );
@@ -316,7 +316,7 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
       titular: 'Fulano',
       cpf_cnpj: '12345678900',
       telefone: '5511999999999',
-      bomPara: 1234,
+      bomPara: 1_700_000_000_000_000,
     });
     expect(data.cartao).toBeNull();
   });

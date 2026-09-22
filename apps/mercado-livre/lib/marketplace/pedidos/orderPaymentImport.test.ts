@@ -7,6 +7,7 @@ import {
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  BANDEIRA,
   ESTADOS_PEDIDO_RESERVA,
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
@@ -713,7 +714,7 @@ describe('importPagamentoMercadoLivre — update-merge (existing pagamento)', ()
       aVista: false,
       duplicata: true,
       status_pagamento: STATUS_PAGAMENTO.pendente,
-      cartao: { tpIntegra: '2', bandeira: 5, numeroCartao: 'OLD-CARD' },
+      cartao: { tpIntegra: '2', bandeira: BANDEIRA.diners, numeroCartao: 'OLD-CARD' },
       descricaoPagamento: 'old desc',
       // Realistic µs values — pagamentoSchema's tolerant datetime reader
       // normalizes small numbers as ms (×1000), so a toy value like `12345`
@@ -751,7 +752,16 @@ describe('importPagamentoMercadoLivre — update-merge (existing pagamento)', ()
     expect(stored.aVista).toBe(true);
     expect(stored.duplicata).toBe(false);
     // nullable mapped fields: mapped is null here → the stored value survives.
-    expect(stored.cartao).toEqual({ tpIntegra: '2', bandeira: 5, numeroCartao: 'OLD-CARD' });
+    expect(stored.cartao).toEqual({
+      tpIntegra: '2',
+      bandeira: BANDEIRA.diners,
+      numeroCartao: 'OLD-CARD',
+      cAut: null,
+      cnpj_instituicao: null,
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
+    });
     expect(stored.dataAprovacao).toBe(Date.parse('2026-06-15T00:00:00.000Z') * 1000);
     // fields the mapper never sets at all: untouched.
     expect(stored.metodoPagamentoOuterRef).toBe('documents/metodo_pgto/abc');

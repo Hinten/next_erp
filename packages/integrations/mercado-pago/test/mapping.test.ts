@@ -310,6 +310,9 @@ describe('mpPaymentToPagamento — cartao block', () => {
       numeroCartao: '1234',
       bandeira: null,
       cAut: 'AUTH99',
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
     });
   });
 
@@ -325,6 +328,9 @@ describe('mpPaymentToPagamento — cartao block', () => {
       numeroCartao: '9876',
       bandeira: null,
       cAut: null,
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
     });
   });
 
@@ -336,6 +342,9 @@ describe('mpPaymentToPagamento — cartao block', () => {
       numeroCartao: null,
       bandeira: null,
       cAut: null,
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
     });
   });
 

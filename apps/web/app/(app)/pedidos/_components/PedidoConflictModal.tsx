@@ -95,10 +95,15 @@ export function RecordConflictModal({
         )}
 
         <Group justify="flex-end">
-          <Button variant="default" onClick={onCancel} disabled={saving}>
+          <Button type="button" variant="default" onClick={onCancel} disabled={saving}>
             Cancelar
           </Button>
-          <Button color={anyOverwritten ? 'red' : 'orange'} onClick={onForceSave} loading={saving}>
+          <Button
+            type="button"
+            color={anyOverwritten ? 'red' : 'orange'}
+            onClick={onForceSave}
+            loading={saving}
+          >
             {actionLabel}
           </Button>
         </Group>

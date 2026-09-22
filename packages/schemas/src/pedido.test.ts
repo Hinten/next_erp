@@ -4,6 +4,7 @@ import {
   ESTADO_BUCKET_LABELS,
   MARKETPLACE_PEDIDO_TIPO,
   bucketOf,
+  estoqueAplicadoSchema,
   itemDoPedidoSchema,
   itemSubtotal,
   pedidoMeta,
@@ -164,6 +165,15 @@ describe('marketplacePedidoSchema', () => {
     expect(pedidoMeta.serverOwnedFields).not.toContain('capturaComprador');
     expect(pedidoMeta.serverOwnedFields).toContain('lastMarketplaceUpdate');
   });
+
+  it('rejects unknown diary properties', () => {
+    expect(
+      pedidoSchema.safeParse({
+        ...baseInput,
+        marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, status: 'READY_TO_SHIP', extra: 1 },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('capturaCompradorSchema', () => {
@@ -209,18 +219,47 @@ describe('capturaCompradorSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects unknown capture properties', () => {
+    expect(
+      pedidoSchema.safeParse({
+        ...baseInput,
+        capturaComprador: { estado: CAPTURA_COMPRADOR_ESTADO.pendente, documento: '***' },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('itemDoPedidoSchema', () => {
-  it('silently strips a genuinely unknown key on a lenient (read) parse', () => {
-    const parsed = itemDoPedidoSchema.parse({ ...baseItem, someRetiredLegacyField: 'whatever' });
-    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
+  it('rejects a genuinely unknown key', () => {
+    expect(
+      itemDoPedidoSchema.safeParse({ ...baseItem, someUnknownField: 'whatever' }).success,
+    ).toBe(false);
   });
 
-  it('rejects a genuinely unknown key on a strict (write) parse', () => {
-    expect(() =>
-      itemDoPedidoSchema.strict().parse({ ...baseItem, someUnknownField: 'whatever' }),
-    ).toThrow(/nrecognized/);
+  it('accepts a typed persisted imposto and rejects unknown nested fiscal fields', () => {
+    expect(itemDoPedidoSchema.safeParse({ ...baseItem, imposto: { origem: '0' } }).success).toBe(
+      true,
+    );
+    expect(
+      itemDoPedidoSchema.safeParse({
+        ...baseItem,
+        imposto: { origem: '0', configuracaoPIS: { CST: '01', campoExtra: true } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('estoqueAplicadoSchema', () => {
+  const valid = {
+    depositoId: 'dep-1',
+    operacaoId: 'op-1',
+    ehSaida: true,
+  };
+
+  it('accepts a representative value and rejects unknown properties', () => {
+    expect(estoqueAplicadoSchema.safeParse(valid).success).toBe(true);
+    expect(estoqueAplicadoSchema.safeParse({ ...valid, extra: true }).success).toBe(false);
   });
 });
 

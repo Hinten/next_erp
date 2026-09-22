@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import type { FormEvent } from 'react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { FirebaseError } from 'firebase/app';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ESTADO_FRETE, type EstadoFrete, TIPO_INCIDENTE, type Incidente } from '@delfrance/schemas';
 import { IncidenteConflictError, IncidenteMissingError } from '@/lib/pedidos/saveIncidenteEdit';
-import { IncidentesTab } from './IncidentesTab';
+import { IncidentesTab, type IncidenteFlush } from './IncidentesTab';
 
 // #374: legacy `bloquear` (`pedidoCadastro.dart:1437-1450`) locks the 3
 // incidente-level fields — Tipo, Motivo, Comentários — once the resolução's
@@ -129,17 +131,28 @@ describe('IncidentesTab — incidente-level fields honour the resolução lock (
 
 const { saveIncidenteEdit } = await import('@/lib/pedidos/saveIncidenteEdit');
 const saveEditMock = vi.mocked(saveIncidenteEdit);
-const { saveIncidente } = await import('@delfrance/data/pedido');
+const { deleteIncidente, saveIncidente } = await import('@delfrance/data/pedido');
 const saveIncidenteMock = vi.mocked(saveIncidente);
+const deleteIncidenteMock = vi.mocked(deleteIncidente);
+
+const flushRef: { current: IncidenteFlush | null } = { current: null };
 
 // A FRESH element per render: React bails out of a re-render when handed the
 // referentially identical element, so a module-level constant would make
 // `rerender` a no-op and every "the snapshot changed" assertion vacuous.
 const tab = () => (
   <MantineTestProvider>
-    <IncidentesTab pedidoId="ped-1" />
+    <IncidentesTab pedidoId="ped-1" flushRef={flushRef} />
   </MantineTestProvider>
 );
+
+async function flushIncidentes(): Promise<boolean> {
+  let flushed = false;
+  await act(async () => {
+    flushed = (await flushRef.current?.()) ?? false;
+  });
+  return flushed;
+}
 
 function snapshotOf(inc: Incidente) {
   return { data: [{ id: 'inc-1', data: inc }], loading: false, error: undefined };
@@ -163,10 +176,13 @@ function openEditor(inc: Incidente) {
 const motivoInput = () => screen.getByLabelText('Motivo') as HTMLTextAreaElement;
 
 beforeEach(() => {
+  flushRef.current = null;
   saveEditMock.mockReset();
   saveEditMock.mockResolvedValue({});
   saveIncidenteMock.mockReset();
   saveIncidenteMock.mockResolvedValue(undefined);
+  deleteIncidenteMock.mockReset();
+  deleteIncidenteMock.mockResolvedValue(undefined);
 });
 
 describe('IncidentesTab — the resolução lock re-arms from live data (#1250)', () => {
@@ -193,7 +209,7 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     fireEvent.change(motivoInput(), { target: { value: 'Motivo digitado' } });
     push(incidente({ resolucao: withResolucaoFrete(ESTADO_FRETE.postado) }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    expect(await flushIncidentes()).toBe(true);
     await screen.findByRole('button', { name: 'Editar' });
 
     // The guarded path, never the whole-document `set`.
@@ -211,7 +227,7 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     saveEditMock.mockRejectedValueOnce(
       new IncidenteConflictError(remoto, ['motivoDoIncidente'], false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    expect(await flushIncidentes()).toBe(false);
 
     expect(await screen.findByText('Incidente alterado')).toBeDefined();
     // Both sides of the diff, under the schema's own `.describe()` label.
@@ -231,6 +247,7 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
 
   it('names the frete lock in the modal when it armed while the form was open', async () => {
     openEditor(incidente({ resolucao: withResolucaoFrete(ESTADO_FRETE.iniciado) }));
+    fireEvent.change(motivoInput(), { target: { value: 'Motivo digitado' } });
     saveEditMock.mockRejectedValueOnce(
       new IncidenteConflictError(
         incidente({ resolucao: withResolucaoFrete(ESTADO_FRETE.postado) }),
@@ -238,7 +255,7 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
         true,
       ),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    expect(await flushIncidentes()).toBe(false);
 
     expect(await screen.findByText(/frete da resolução avançou/i)).toBeDefined();
     // A resolução-only conflict must still SHOW something: rendering both sides
@@ -257,20 +274,92 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     expect(
       screen.getByText(/foi excluído por outra pessoa enquanto você o editava/i),
     ).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Salvar' })).toHaveProperty('disabled', true);
+    expect(await flushIncidentes()).toBe(false);
+    expect(screen.getByText(new IncidenteMissingError().message)).toBeDefined();
     expect(saveEditMock).not.toHaveBeenCalled();
     expect(new IncidenteMissingError().name).toBe('IncidenteMissingError');
+  });
+
+  it('keeps the draft open when Firestore rejects the shared flush', async () => {
+    openEditor(incidente());
+    fireEvent.change(motivoInput(), { target: { value: 'Motivo pendente' } });
+    saveEditMock.mockRejectedValueOnce(new FirebaseError('permission-denied', 'Sem permissão'));
+
+    expect(await flushIncidentes()).toBe(false);
+
+    expect(screen.getByText('Sem permissão')).toBeDefined();
+    expect(motivoInput().value).toBe('Motivo pendente');
+    expect(screen.getByText('Alterações não salvas')).toBeDefined();
   });
 
   it('still creates through the whole-document set — nothing stored to regress', async () => {
     snapState.current = snapshotOf(incidente());
     render(tab());
-    fireEvent.click(screen.getByRole('button', { name: '+ Adicionar incidente' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
-    await screen.findByRole('button', { name: '+ Adicionar incidente' });
+    fireEvent.click(screen.getByRole('button', { name: 'Novo incidente' }));
+    fireEvent.change(motivoInput(), { target: { value: 'Novo motivo' } });
+    expect(await flushIncidentes()).toBe(true);
+    await screen.findByRole('button', { name: 'Novo incidente' });
 
     expect(saveIncidenteMock).toHaveBeenCalledTimes(1);
     expect(saveIncidenteMock.mock.calls[0]?.[1]?.incidenteId).toBeNull();
     expect(saveEditMock).not.toHaveBeenCalled();
+  });
+
+  it('treats an untouched create card as pending and persists its valid defaults', async () => {
+    snapState.current = { data: [], loading: false, error: undefined };
+    render(tab());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Novo incidente' }));
+
+    expect(screen.getByText('Alterações não salvas')).toBeDefined();
+    expect(await flushIncidentes()).toBe(true);
+    expect(saveIncidenteMock).toHaveBeenCalledTimes(1);
+    expect(saveIncidenteMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        pedidoId: 'ped-1',
+        incidenteId: null,
+        incidente: expect.objectContaining({ tipo: TIPO_INCIDENTE.devolucao }),
+      }),
+    );
+  });
+
+  it('stages a deletion, supports undo and only deletes during the shared flush', async () => {
+    snapState.current = snapshotOf(incidente());
+    render(tab());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    expect(screen.getByText('Será excluído')).toBeDefined();
+    expect(deleteIncidenteMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Desfazer' }));
+    expect(screen.queryByText('Será excluído')).toBeNull();
+    expect(await flushIncidentes()).toBe(true);
+    expect(deleteIncidenteMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    expect(await flushIncidentes()).toBe(true);
+    expect(deleteIncidenteMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pedidoId: 'ped-1', incidenteId: 'inc-1' }),
+    );
+  });
+
+  it('does not submit the outer pedido form from inline actions', () => {
+    const onSubmit = vi.fn((event: FormEvent) => event.preventDefault());
+    snapState.current = snapshotOf(incidente());
+    render(
+      <MantineTestProvider>
+        <form onSubmit={onSubmit}>
+          <IncidentesTab pedidoId="ped-1" flushRef={flushRef} />
+        </form>
+      </MantineTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Desfazer' }));
+
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
