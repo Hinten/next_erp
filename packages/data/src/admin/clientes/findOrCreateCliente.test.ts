@@ -803,6 +803,15 @@ describe('buildClienteUpdatePatch', () => {
     ).not.toHaveProperty('idEstrangeiro');
   });
 
+  it.each(['', '...'])('does not persist an unusable document %j on update', (documento) => {
+    const patch = buildClienteUpdatePatch(
+      { nome: 'Ana Maria Souza', cpf_cnpj: null, idEstrangeiro: null } as never,
+      fields({ cpf_cnpj: documento, idEstrangeiro: documento }),
+    );
+    expect(patch).not.toHaveProperty('cpf_cnpj');
+    expect(patch).not.toHaveProperty('idEstrangeiro');
+  });
+
   it('does not wipe a stored tipo when the caller does not know one', () => {
     expect(buildClienteUpdatePatch(stored, fields({ tipo: null }))).not.toHaveProperty('tipo');
   });
@@ -959,6 +968,81 @@ describe('findOrCreateCliente — transactional strong-identity index', () => {
       tipo: 'cpf_cnpj',
       clienteIds: [result.clienteId],
       ultimaModificacao: NOW_MS,
+    });
+  });
+
+  it('reads every indexed owner in one batch so a compatible fork beyond the query limit wins', async () => {
+    const fake = new FakeDb();
+    const incoming = fields({ idMercadoLivre: ML_BUYER_A });
+    const cpfSpec = clienteIdentidadesDosCampos(fields())[0]!;
+    const conflictingOwners = Array.from({ length: 11 }, (_, index) => {
+      const id = `cli-conflict-${String(index).padStart(2, '0')}`;
+      fake.seed(CLIENTES, id, {
+        nome: `Conta ${index}`,
+        cpf_cnpj: CPF_A,
+        idMercadoLivre: ML_BUYER_B,
+      });
+      return id;
+    });
+    const compatibleId = 'cli-z-compatible';
+    fake.seed(CLIENTES, compatibleId, {
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+    const indexedOwners = [...conflictingOwners, compatibleId].sort();
+    fake.seed(CLIENTE_IDENTIDADES, cpfSpec.id, {
+      tipo: cpfSpec.tipo,
+      clienteIds: indexedOwners,
+      ultimaModificacao: 1,
+    });
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: incoming,
+      nowMs: NOW_MS,
+      candidateLimit: 1,
+    });
+
+    expect(result).toMatchObject({
+      clienteId: compatibleId,
+      created: false,
+      matchedBy: 'cpf_cnpj',
+    });
+    expect(fake.occ.getAllCount).toBe(1);
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, cpfSpec.id)?.clienteIds).toEqual(indexedOwners);
+  });
+
+  it.each(['', '...'])('does not treat an unusable cpf_cnpj %j as a cascade key', async (cpf) => {
+    const fake = new FakeDb();
+    const stranger = { nome: 'Carlos Pereira', cpf_cnpj: '' };
+    fake.seed(CLIENTES, 'cli-stranger', stranger);
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: fields({ nome: 'Ana Maria Souza', cpf_cnpj: cpf, idMercadoLivre: ML_BUYER_A }),
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({ created: true, matchedBy: null, rejected: [] });
+    expect(result.clienteId).not.toBe('cli-stranger');
+    expect(fake.storedDoc(CLIENTES, 'cli-stranger')).toEqual(stranger);
+    expect(fake.storedDoc(CLIENTES, result.clienteId)).toMatchObject({
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: null,
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('keeps an empty cpf_cnpj distinct from a real one', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-blank', { nome: 'Sem documento', cpf_cnpj: '' });
+    fake.seed(CLIENTES, 'cli-real', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+
+    const result = await findOrCreateCliente(db(fake), { fields: fields(), nowMs: NOW_MS });
+
+    expect(result).toMatchObject({ clienteId: 'cli-real', matchedBy: 'cpf_cnpj' });
+    expect(fake.storedDoc(CLIENTES, 'cli-blank')).toEqual({
+      nome: 'Sem documento',
+      cpf_cnpj: '',
     });
   });
 

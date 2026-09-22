@@ -22,7 +22,7 @@ export function clienteIdentidadeId(tipo: ClienteIdentidadeTipo, valorNormalizad
   return sha256Hex(JSON.stringify([ID_NAMESPACE, tipo, valorNormalizado]));
 }
 
-function documentoNormalizado(value: unknown): string | null {
+export function documentoNormalizado(value: unknown): string | null {
   const present = identityValue(value);
   if (present == null) return null;
   return identityValue(normalizeDocumento(present));

@@ -55,6 +55,15 @@ describe('clienteIdentidadeId', () => {
     const specs = clienteIdentidadesDosCampos(fields({ idMercadoLivre: ' 301-110805 ' }));
     expect(specs[0]?.valorNormalizado).toBe('301-110805');
   });
+
+  it.each(['', '   ', '.-/', ' / . '])(
+    'treats a blank or punctuation-only document %j as absent',
+    (documento) => {
+      expect(clienteIdentidadesDosCampos(fields({ cpf_cnpj: documento }))).toEqual([]);
+      expect(clienteIdentidadesDosCampos(fields({ idEstrangeiro: documento }))).toEqual([]);
+      expect(clienteIdentidadesDosCampos(fields({ cpf_cnpj: CPF }))).toHaveLength(1);
+    },
+  );
 });
 
 describe('clientePossuiIdentidade', () => {

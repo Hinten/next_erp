@@ -66,7 +66,6 @@ import {
   identityValue,
   isSameCliente,
   isSameEmail,
-  normalizeDocumento,
   normalizeNome,
   sanitizeTelefone,
   shouldUpdateName,
@@ -77,6 +76,7 @@ import {
   buildClienteIdentidadeData,
   clienteIdentidadesDosCampos,
   clientePossuiIdentidade,
+  documentoNormalizado,
   type ClienteIdentidadeSpec,
 } from './clienteIdentidade';
 
@@ -252,11 +252,15 @@ export function buildClienteUpdatePatch(
     patch.nome = nome;
   }
 
-  if (fields.cpf_cnpj != null && identityValue(old.cpf_cnpj) == null) {
-    patch.cpf_cnpj = normalizeDocumento(fields.cpf_cnpj);
+  const cpfCnpj = documentoNormalizado(fields.cpf_cnpj);
+  if (cpfCnpj != null && identityValue(old.cpf_cnpj) == null) {
+    patch.cpf_cnpj = cpfCnpj;
   }
 
-  if (fields.idEstrangeiro != null && identityValue(old.idEstrangeiro) == null) {
+  if (
+    documentoNormalizado(fields.idEstrangeiro) != null &&
+    identityValue(old.idEstrangeiro) == null
+  ) {
     patch.idEstrangeiro = fields.idEstrangeiro;
   }
 
@@ -414,10 +418,13 @@ async function findOrCreateClienteTx(
   const indexedClienteIds = uniqueSorted(
     identidadesStored.flatMap((identity) => identity?.clienteIds ?? []),
   );
-  const indexedClienteSnaps = [];
-  for (const id of indexedClienteIds) {
-    indexedClienteSnaps.push(await tx.get(clienteCollection.docRef(db, {}, id)));
-  }
+  // Do not apply `candidateLimit` here. The side index is the complete owner
+  // set used both to find a compatible CPF fork beyond a query page and to
+  // prune every stale association. Truncating it would make both operations
+  // silently incomplete; `getAll` bounds the network cost to one RPC instead.
+  const indexedClienteRefs = indexedClienteIds.map((id) => clienteCollection.docRef(db, {}, id));
+  const indexedClienteSnaps =
+    indexedClienteRefs.length === 0 ? [] : await tx.getAll(...indexedClienteRefs);
   const indexedCandidates = new Map<string, ClienteCandidate>();
   for (let i = 0; i < indexedClienteSnaps.length; i += 1) {
     const snap = indexedClienteSnaps[i]!;
@@ -452,14 +459,17 @@ async function findOrCreateClienteTx(
       op: '==',
       // Query the canonical form — the only one clienteSchema's regex accepts,
       // and therefore the only one this app ever writes.
-      value: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
+      value: documentoNormalizado(fields.cpf_cnpj),
     },
     {
       key: CLIENTE_MATCH_KEY.idEstrangeiro,
       op: '==',
       // Queried RAW: the field has no schema regex, so there is no stored
       // canonical form to query. Normalizing here would miss every existing row.
-      value: identityValue(fields.idEstrangeiro),
+      value:
+        documentoNormalizado(fields.idEstrangeiro) == null
+          ? null
+          : identityValue(fields.idEstrangeiro),
     },
     {
       key: CLIENTE_MATCH_KEY.idMercadoLivre,
@@ -666,8 +676,9 @@ async function findOrCreateClienteTx(
     selectedCliente = clienteCollection.parse({
       tipo: fields.tipo,
       nome: normalizeNome(fields.nome),
-      cpf_cnpj: fields.cpf_cnpj != null ? normalizeDocumento(fields.cpf_cnpj) : null,
-      idEstrangeiro: fields.idEstrangeiro,
+      cpf_cnpj: documentoNormalizado(fields.cpf_cnpj),
+      idEstrangeiro:
+        documentoNormalizado(fields.idEstrangeiro) == null ? null : fields.idEstrangeiro,
       idMercadoLivre: outroDonoNoCreate == null ? idMlNovo : null,
       ie: fields.ie,
       telefone,
