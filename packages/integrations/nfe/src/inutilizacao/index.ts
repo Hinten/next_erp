@@ -35,7 +35,7 @@ export interface InutilizacaoInput {
   readonly cUF: string;
   /** Year as 2 digits (e.g. `'26'` for 2026). */
   readonly ano: string;
-  /** Emitter CNPJ (14 digits). */
+  /** Emitter CNPJ, 14 characters — the first 12 may be `A-Z` (NT 2026.004). */
   readonly cnpj: string;
   readonly serie: number;
   readonly nNFIni: number;
