@@ -158,6 +158,48 @@ export async function applySelectFilter(
   await popover.getByRole('option', { name: optionLabel, exact: true }).click();
 }
 
+/**
+ * Open a column's filter popover and pick one segment of a `SegmentedControl`
+ * (the NF and Cliente popovers on /pedidos use one to switch input mode). The
+ * segment applies on change; no Apply click needed.
+ */
+export async function applySegmentedFilter(
+  page: Page,
+  columnLabel: string,
+  segmentLabel: string,
+): Promise<void> {
+  const popover = await openColumnFilter(page, columnLabel);
+  // Mantine renders each segment as a radio input labelled by its own text.
+  await popover.getByRole('radio', { name: segmentLabel, exact: true }).click();
+}
+
+/**
+ * Dismiss whatever filter popover is open.
+ *
+ * ⚠️ Needed between two filters that apply on CHANGE (a Select, a segmented
+ * control), because those popovers have no "Aplicar" to close them — unlike the
+ * text and numeric bodies, whose Apply button dismisses the popover itself.
+ * Leaving one open makes the next `Filtrar <label>` click ambiguous: it is both
+ * a click-outside for the open popover and the trigger for the new one.
+ *
+ * Two presses: the first closes an inline Select listbox if one is still
+ * expanded, the second the popover. Both are no-ops when nothing is open.
+ */
+export async function closeColumnFilter(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+}
+
+/**
+ * The active-filter chip row's text for one chip, asserted by its phrase.
+ *
+ * ⚠️ Scoped to the chip row, never `page`: a chip's phrase carries its column
+ * label, which also appears in the table header and inside the filter popover.
+ */
+export function activeFilterChip(page: Page, text: string) {
+  return page.getByLabel('Filtros ativos').getByText(text, { exact: true });
+}
+
 /** Open a column's filter popover and click "Limpar". */
 export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
   const popover = await openColumnFilter(page, columnLabel);
