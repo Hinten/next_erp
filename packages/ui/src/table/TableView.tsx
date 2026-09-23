@@ -903,6 +903,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * scanned" (root CLAUDE.md, #785) — so a second range cannot be served by
    * leading the sort with it, and pretending otherwise would just move the scan.
    * The UI should keep one range active; this makes the query honest either way.
+   *
+   * ⚠️ `between` ONLY — never widen this to the other UI-only op. `isNull`
+   * expands to an `eq`, which is an EQUALITY: forcing it to lead the `orderBy`
+   * would break the very composite-index match it already rides
+   * (`(ehSaida, <field>, timestamp)`) and turn a served query into a scan.
    */
   const rangeFilterField = useMemo(
     () => Object.entries(serverFilters).find(([, v]) => v.op === 'between')?.[0],

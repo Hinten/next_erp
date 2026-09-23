@@ -1,7 +1,15 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { Pill, PillsInput, Select, Stack, Text, type ComboboxData } from '@mantine/core';
+import {
+  Pill,
+  PillsInput,
+  Select,
+  Stack,
+  Text,
+  type ComboboxData,
+  type ComboboxProps,
+} from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import type { Firestore, Query, WhereFilterOp } from 'firebase/firestore';
 import type { ZodObject, ZodRawShape, z } from 'zod';
@@ -89,6 +97,23 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * `limit` rows.
    */
   excludeIds?: string[];
+  /**
+   * Passed through to the inner `<Select>`'s dropdown.
+   *
+   * ⚠️ The one caller that needs it is a TableView column-filter popover, and it
+   * needs `{ withinPortal: false }`. Mantine portals a dropdown by default, and
+   * inside a `Popover.Dropdown` that is fatal twice over: clicking an option
+   * reads as a click-outside and closes the popover before the pick lands, and
+   * the e2e helpers — which scope every control to
+   * `getByRole('dialog', { name: 'Filtrar <label>' })` — cannot reach a listbox
+   * that renders outside the dialog. `ColumnFilter.tsx`'s own inputs all set it
+   * for exactly these reasons.
+   *
+   * ⚠️ Deliberately NOT the default. Every other caller is a form picker inside
+   * a scrolling modal, where the portal is what keeps the dropdown from being
+   * clipped.
+   */
+  comboboxProps?: ComboboxProps;
 }
 
 /** Fallback-query operator for each comparison filter op (substring ops are pipeline-only). */
@@ -166,6 +191,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   optionDescription,
   filters,
   excludeIds,
+  comboboxProps,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -351,6 +377,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     <Select
       label={label}
       description={hint}
+      comboboxProps={comboboxProps}
       data={data}
       value={selectedId}
       onChange={handleChange}

@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { pedidoMeta, pedidoSchema } from '@delfrance/schemas';
 import { extractFieldsFromSchema } from '@delfrance/ui';
 
-import { PEDIDO_ROW_LINK_COLUMN, PEDIDO_VIRTUAL_COLUMNS } from './PedidosListView';
+import { PEDIDO_ROW_LINK_COLUMN, pedidoVirtualColumns } from './PedidosListView';
 
 /**
  * Guards the invariant that let the `disputa` column ship invisible.
  *
- * `disputa` (#1322) is declared in `PEDIDO_VIRTUAL_COLUMNS` with a `renderCell`
+ * `disputa` (#1322) is declared in the virtual-column list with a `renderCell`
  * and a `dependsOn`, but its key was never added to
  * `pedidoMeta.defaultQuery.columns` — and `TableView` derives the visible set
  * from `defaultQuery.columns`, not from the virtual-column list. So on a fresh
@@ -20,7 +20,11 @@ import { PEDIDO_ROW_LINK_COLUMN, PEDIDO_VIRTUAL_COLUMNS } from './PedidosListVie
  */
 describe('pedidos list column set', () => {
   const declared = pedidoMeta.defaultQuery?.columns ?? [];
-  const virtualKeys = PEDIDO_VIRTUAL_COLUMNS.map((c) => c.key);
+  // The factory's argument only feeds cell/chip CLOSURES; every key, `dependsOn`
+  // and `filter` is declared unconditionally, which is what makes an empty
+  // lookup a faithful stand-in here.
+  const columns = pedidoVirtualColumns({ rows: [], byId: new Map(), status: 'success' });
+  const virtualKeys = columns.map((c) => c.key);
 
   // TableView's OWN visibility rule, not `Object.keys(schema.shape)`: a listed
   // key whose descriptor is `kind === 'unknown'` is skipped and renders nowhere
@@ -35,7 +39,7 @@ describe('pedidos list column set', () => {
     const unreachable = virtualKeys.filter((k) => !declared.includes(k));
     expect(
       unreachable,
-      'declared in PEDIDO_VIRTUAL_COLUMNS but missing from pedidoMeta.defaultQuery.columns — they render nowhere',
+      'declared in pedidoVirtualColumns but missing from pedidoMeta.defaultQuery.columns — they render nowhere',
     ).toEqual([]);
   });
 
@@ -53,9 +57,7 @@ describe('pedidos list column set', () => {
     // A visible virtual column WITHOUT `dependsOn` disables the Pipelines
     // `select()` entirely (TableView `selectFields`), turning every row into a
     // full-document read on the heaviest collection in the app.
-    const undeclared = PEDIDO_VIRTUAL_COLUMNS.filter((c) => c.dependsOn === undefined).map(
-      (c) => c.key,
-    );
+    const undeclared = columns.filter((c) => c.dependsOn === undefined).map((c) => c.key);
     expect(
       undeclared,
       'missing dependsOn — this silently disables the select() projection',

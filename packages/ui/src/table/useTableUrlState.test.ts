@@ -57,6 +57,15 @@ describe('parseFiltersFromParams', () => {
     expect(parse('ativo=eq:true')).toEqual({ ativo: { op: 'eq', value: true } });
   });
 
+  it('decodes isNull by the OP, never by the field kind', () => {
+    // It carries no operand, so the coerce-by-`kind` ladder must not see it:
+    // a string column would yield `''`, a datetime one `0` (`Number('')` is 0,
+    // not NaN) and a boolean one `false`. Full coverage in `isNullFilter.test.ts`.
+    expect(parse('nome=isNull:')).toEqual({ nome: { op: 'isNull', value: null } });
+    expect(parse('timestamp=isNull:')).toEqual({ timestamp: { op: 'isNull', value: null } });
+    expect(parse('ativo=isNull:')).toEqual({ ativo: { op: 'isNull', value: null } });
+  });
+
   it('preserves a subfield-encoded subcollection-lookup value verbatim', () => {
     // The NF filter encodes `"<subfield>:<term>"`; the leading op is split off,
     // the rest (which itself contains a colon) stays intact as the value.
@@ -118,6 +127,17 @@ describe('encodeFilterValue ⇄ parseFiltersFromParams round trip', () => {
     // widen the filter — hence the per-element percent-encoding.
     const v: ColumnFilterValue = { op: 'array-contains-any', value: ['a,b', 'c'] };
     expect(roundTrip('canais', v)).toEqual(v);
+  });
+
+  it('restores the null filter, and never folds it onto the string "null"', () => {
+    // `String(null)` is the four characters an `{op:'eq', value:null}` encoding
+    // would have written, and decoding that back gives a STRING filter that
+    // matches nothing while looking active. The two must stay distinct.
+    expect(roundTrip('nome', { op: 'isNull', value: null })).toEqual({
+      op: 'isNull',
+      value: null,
+    });
+    expect(parse('nome=eq:null')).toEqual({ nome: { op: 'eq', value: 'null' } });
   });
 
   it('leaves scalar values untouched', () => {

@@ -22,7 +22,9 @@ import {
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
   type EstadoNFe,
+  INTEGRACAO_TIPO_LABELS,
   type IntegracaoFrete,
+  type IntegracaoTipo,
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
@@ -58,6 +60,8 @@ import {
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
+import type { IntegracaoLookup } from './integracaoLookup';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
@@ -361,6 +365,73 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
       >
         {nome}
       </Anchor>
+    </Tooltip>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               IntegracaoCell                               */
+/*                                                                            */
+/*  The pedido's canal de venda. Takes the lookup as a PROP rather than       */
+/*  calling `useIntegracoes` itself: the list resolves it once for the whole  */
+/*  page and hands the same map to every row, so the column costs one extra   */
+/*  projected scalar and ZERO extra Firestore reads. Mirrors                  */
+/*  `ProdutoIntegracoesCell` on /produtos.                                    */
+/* -------------------------------------------------------------------------- */
+
+export function IntegracaoCell({ pedido, lookup }: { pedido: Pedido; lookup: IntegracaoLookup }) {
+  const db = getFirebaseFirestore();
+  const id = useMemo(
+    // ⚠️ Through the deref helper, never `split('/').pop()` — that is what
+    // tolerates the legacy ref shapes the imported corpus carries.
+    () => dereferenceOuterRef(db, pedido.integracaoPedidoOuterRef)?.id ?? null,
+    [db, pedido.integracaoPedidoOuterRef],
+  );
+
+  if (id === null) return <Text c="dimmed">{DASH}</Text>;
+
+  // ⚠️ An empty `byId` means three different things — still loading, the read
+  // was denied, or the collection really is empty — and a renderer that cannot
+  // tell them apart reports a system problem as a data problem. Branch on the
+  // status first (`useIntegracoes`' own docstring says so).
+  if (lookup.status === 'pending') {
+    // Badge-sized, so the column does not reflow when the lookup lands.
+    return <Skeleton h={20} w={72} radius="xl" />;
+  }
+  if (lookup.status === 'error') {
+    return (
+      <Tooltip label="Não foi possível carregar os canais de venda." withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          indisponível
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  const integracao = lookup.byId.get(id);
+  if (!integracao) {
+    return (
+      <Tooltip label={`Integração não encontrada (${id})`} withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          desconhecida
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  // No registered `cor` → a neutral badge rather than an invented colour.
+  const style = integracaoBadgeStyle(integracao.cor);
+  const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
+  return (
+    <Tooltip label={`${integracao.nome} (${tipoLabel})`} withArrow>
+      <Badge
+        size="sm"
+        variant={style ? 'filled' : 'light'}
+        color={style ? undefined : 'gray'}
+        style={style ?? undefined}
+      >
+        {integracao.nome}
+      </Badge>
     </Tooltip>
   );
 }

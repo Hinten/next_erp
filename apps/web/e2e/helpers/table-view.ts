@@ -158,6 +158,84 @@ export async function applySelectFilter(
   await popover.getByRole('option', { name: optionLabel, exact: true }).click();
 }
 
+/**
+ * Open a column's filter popover and pick one segment of a `SegmentedControl`
+ * (the NF and Cliente popovers on /pedidos use one to switch input mode). The
+ * segment applies on change; no Apply click needed.
+ *
+ * ⚠️ The radio input is NOT clickable. Mantine renders each segment as a
+ * visually hidden `<input type="radio">` (0×0, `opacity: 0`) plus a real
+ * `<label>` carrying the text. `getByRole('radio')` resolves the input — that
+ * is where its accessible name comes from — but Playwright refuses to click
+ * something that is not visible (`element is not visible`, then a 30s timeout).
+ * The label is the clickable surface, so start from the role+name and hop to
+ * the label bound to that input.
+ *
+ * ⚠️ A component test cannot catch this: jsdom has no visibility or
+ * hit-testing model, so `fireEvent.click` on the same hidden input works there.
+ * `ClienteColumnFilter.test.tsx` passes and always did.
+ *
+ * `label` cannot be located by its text instead — `hasText` is a substring
+ * match and a popover routinely holds other labels (the Cliente popover has
+ * `Filtrar por cliente`), so asking for `Cliente` would resolve two and fail
+ * strict mode.
+ *
+ * ⚠️ Nothing inside the popover can be asserted AFTER the click, and that is
+ * structural rather than a timing problem: a segment that applies a filter puts
+ * the new query in flight, `showSkeleton` goes true, and `TableView` swaps the
+ * whole `<Table>` — header, filter popovers and all — for skeletons
+ * (`TableView.tsx`, the `showSkeleton` branch). `FilterPopover` keeps `opened`
+ * in local state, so it remounts closed. The caller's row assertions are what
+ * prove the filter landed; `applySelectFilter` above has always worked this way
+ * for the same reason.
+ */
+export async function applySegmentedFilter(
+  page: Page,
+  columnLabel: string,
+  segmentLabel: string,
+): Promise<void> {
+  const popover = await openColumnFilter(page, columnLabel);
+  const radio = popover.getByRole('radio', { name: segmentLabel, exact: true });
+  const id = await radio.getAttribute('id');
+  expect(
+    id,
+    `SegmentedControl segment "${segmentLabel}" has no id to bind a label to`,
+  ).toBeTruthy();
+  await popover.locator(`label[for="${id}"]`).click();
+}
+
+/**
+ * Dismiss whatever filter popover is open.
+ *
+ * Belt-and-braces for the filters that apply on CHANGE (a Select, a segmented
+ * control), which have no "Aplicar" to dismiss themselves — unlike the text and
+ * numeric bodies, whose Apply button closes the popover.
+ *
+ * Usually there is nothing left to close: applying a filter puts the query in
+ * flight, and `TableView` swaps the whole table away for skeletons while it
+ * loads, taking every popover with it. This covers the case where it does not —
+ * a result served straight from cache, where `loading` never flips — so the
+ * next `Filtrar <label>` click is unambiguously a trigger rather than also a
+ * click-outside for a popover that is still open.
+ *
+ * Two presses: the first closes an inline Select listbox if one is still
+ * expanded, the second the popover. Both are no-ops when nothing is open.
+ */
+export async function closeColumnFilter(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+}
+
+/**
+ * The active-filter chip row's text for one chip, asserted by its phrase.
+ *
+ * ⚠️ Scoped to the chip row, never `page`: a chip's phrase carries its column
+ * label, which also appears in the table header and inside the filter popover.
+ */
+export function activeFilterChip(page: Page, text: string) {
+  return page.getByLabel('Filtros ativos').getByText(text, { exact: true });
+}
+
 /** Open a column's filter popover and click "Limpar". */
 export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
   const popover = await openColumnFilter(page, columnLabel);

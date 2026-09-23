@@ -76,23 +76,34 @@ export type FilterableField = Pick<
  * `undefined` and drop the filter entirely.
  */
 /**
- * Ops a column filter may carry. A superset of `PipelineFilterOp`: `between` is
- * a UI-ONLY op that expands to two real predicates at query-build time.
+ * Ops a column filter may carry. A superset of `PipelineFilterOp`: `between` and
+ * `isNull` are UI-ONLY ops that become real predicates at query-build time.
  *
- * It is deliberately NOT added to `PipelineFilterOp`. The data layer's op set
- * describes what Firestore can be asked directly; `between` is a presentation
- * of two of those, and letting it reach `buildPipeline` would mean teaching the
- * query builder about a second operand it has no field for. Expansion happens
- * in exactly one place — {@link expandColumnFilter}.
+ * Neither is added to `PipelineFilterOp`, and for the same reason. The data
+ * layer's op set describes what Firestore can be asked directly; `between` is a
+ * presentation of two of those and `isNull` is a presentation of one, and
+ * letting either reach `buildPipeline` would mean teaching the query builder
+ * about an operand shape it has no field for. Expansion happens in exactly one
+ * place — {@link expandColumnFilter}.
+ *
+ * ⚠️ `isNull` exists because the VALUE cannot carry the distinction on its own.
+ * `{ op: 'eq', value: null }` works on click and then dies in the URL:
+ * `encodeFilterValue` stringifies it to `"null"` and `parseFiltersFromParams`
+ * coerces by the field's `kind`, so a string column hydrates back the literal
+ * string `'null'` and a datetime column hydrates back `0`. Carrying the intent
+ * in the OP makes the round trip lossless, and — because this union widens while
+ * {@link expandColumnFilter} still returns `PipelineFilterOp` — makes every
+ * consumer that forgot about it a compile error rather than a silent no-op.
  */
-export type ColumnFilterOp = PipelineFilterOp | 'between';
+export type ColumnFilterOp = PipelineFilterOp | 'between' | 'isNull';
 
 export interface ColumnFilterValue {
   op: ColumnFilterOp;
   value: string | number | boolean | null | ReadonlyArray<string>;
   /**
    * Upper bound. `between` only, and required there — the lower bound rides
-   * `value`. Anything else must leave it undefined.
+   * `value`. Anything else must leave it undefined (`isNull` included; it
+   * carries `value: null` and nothing else).
    */
   valueTo?: string | number | null;
 }
@@ -112,11 +123,25 @@ export interface ColumnFilterValue {
  * arrived degrades to the single bound it does have rather than emitting a
  * comparison against `undefined`, which would match nothing and look like an
  * empty result set.
+ *
+ * `isNull` expands to a single `eq null`, which Firestore answers from the
+ * index like any other equality (it is live in `produto.paiId` and
+ * `aviso.resolvidoEm`). ⚠️ It is an EQUALITY, not an inequality — so it must
+ * never be fed to `TableView`'s range-forced-sort logic, which exists to make an
+ * inequality lead the `orderBy`. Forcing a sort here would break the very
+ * composite-index match the filter rides.
+ *
+ * ⚠️ `eq null` matches a field stored as null, NOT a field that is absent.
+ * Every writer in this repo materializes its optional fields
+ * (`.nullable().default(null)`), so the gap is legacy-import corpus only.
  */
 export function expandColumnFilter(
   field: string,
   v: ColumnFilterValue,
 ): Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> {
+  if (v.op === 'isNull') {
+    return [{ field, op: 'eq', value: null }];
+  }
   if (v.op !== 'between') {
     return [{ field, op: v.op, value: v.value }];
   }

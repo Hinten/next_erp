@@ -1918,6 +1918,155 @@ export async function cleanupPedidoImpressaoFixtures(prefix: string): Promise<vo
 }
 
 /**
+ * Fixtures for the `/pedidos` LIST FILTER suite (Canal + Cliente → Anônimo).
+ *
+ * TWO integrações and THREE saída pedidos, chosen so each filter has both a
+ * match and a non-match and so the two filters cross:
+ *
+ *   | pedido | canal | cliente |
+ *   |--------|-------|---------|
+ *   | `-001` | A     | set     |
+ *   | `-002` | B     | set     |
+ *   | `-003` | A     | **null**|
+ *
+ * `-003` is the point: `clientePedidoOuterRef: null` is what a marketplace
+ * import writes when the buyer was redacted, and it is the only state the
+ * Anônimo filter can find.
+ *
+ * ⚠️ `timestamp` and `ultimaModificacao` are stamped in µs on every doc.
+ * `/pedidos` sorts `timestamp desc`, and Firestore `orderBy` SKIPS a document
+ * missing the sort field — an unstamped fixture is invisible to the list and the
+ * spec fails with nothing on screen to explain it.
+ *
+ * ⚠️ These go in through the Admin SDK, which bypasses Zod, so every field the
+ * list reads is written explicitly rather than left to a schema default.
+ */
+export async function seedPedidoFiltroFixtures(prefix: string): Promise<{
+  clienteId: string;
+  canalAId: string;
+  canalANome: string;
+  canalBId: string;
+  canalBNome: string;
+  comClienteCanalA: string;
+  comClienteCanalB: string;
+  anonimoCanalA: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const canalAId = `${prefix}-int-a`;
+  const canalBId = `${prefix}-int-b`;
+  const comClienteCanalA = `${prefix}-001`;
+  const comClienteCanalB = `${prefix}-002`;
+  const anonimoCanalA = `${prefix}-003`;
+  const now = Date.now();
+  const nowMicros = millisToMicros(now);
+
+  const pedidoBase = {
+    ehSaida: true,
+    estado: 'iniciado',
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    valorCobrado: 10,
+    timestamp: nowMicros,
+    ultimaModificacao: nowMicros,
+    freteInicial: null,
+    foiImpresso: false,
+    dtImpressao: null,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    vendedorPedidoOuterRef: null,
+    operacaoPedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+    observacoesInternas: null,
+  };
+
+  const integracaoBase = {
+    padrao: false,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: now,
+  };
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteId,
+    cpf_cnpj: fixtureClienteCnpj(),
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: now,
+    ultimaModificacao: now,
+    userCliente: null,
+  });
+  // Two DIFFERENT tipos, so the option labels differ by more than the nome and
+  // a locator cannot match the wrong one by accident.
+  batch.set(db().collection('integracao').doc(canalAId), {
+    ...integracaoBase,
+    tipo: 7, // balcao
+    nome: canalAId,
+  });
+  batch.set(db().collection('integracao').doc(canalBId), {
+    ...integracaoBase,
+    tipo: 1, // mercadoLivre
+    nome: canalBId,
+  });
+  batch.set(db().collection('pedidos').doc(comClienteCanalA), {
+    ...pedidoBase,
+    numero: comClienteCanalA,
+    integracaoPedidoOuterRef: `documents/integracao/${canalAId}`,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+  });
+  batch.set(db().collection('pedidos').doc(comClienteCanalB), {
+    ...pedidoBase,
+    numero: comClienteCanalB,
+    integracaoPedidoOuterRef: `documents/integracao/${canalBId}`,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+  });
+  batch.set(db().collection('pedidos').doc(anonimoCanalA), {
+    ...pedidoBase,
+    numero: anonimoCanalA,
+    integracaoPedidoOuterRef: `documents/integracao/${canalAId}`,
+    // ⚠️ Explicit null, not an absent key: Firestore `== null` matches a stored
+    // null and NOT a missing field, so omitting it would make the pedido
+    // invisible to the very filter under test.
+    clientePedidoOuterRef: null,
+  });
+  await batch.commit();
+
+  return {
+    clienteId,
+    canalAId,
+    canalANome: canalAId,
+    canalBId,
+    canalBNome: canalBId,
+    comClienteCanalA,
+    comClienteCanalB,
+    anonimoCanalA,
+  };
+}
+
+/** Teardown for `seedPedidoFiltroFixtures` (sweeps by the run prefix). */
+export async function cleanupPedidoFiltroFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoFixtures(prefix);
+}
+
+/**
  * Fixtures for the pedido **Frete tab** suite: everything
  * `seedPedidoFixtures` provides plus
  *   - one endereço under the cliente (CEP inside the motoboy faixa below);

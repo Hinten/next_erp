@@ -77,6 +77,18 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
     case 'eq':
       // eq null matches missing/null; otherwise strict equality.
       return (value) => (f.value === null ? value == null : value === f.value);
+    case 'isNull':
+      // `expandColumnFilter` turns this into `eq null` server-side, so the two
+      // branches must agree — hence `== null`, matching the `eq` case above
+      // rather than a stricter `=== null` that would disagree with its own
+      // sibling.
+      //
+      // ⚠️ One knowing divergence from the server, inherited from `eq`: this
+      // also matches an ABSENT field, while Firestore's `equal(f, null)` does
+      // not (a missing field has no index entry). Both branches are reachable
+      // only on the classic / `queryOverride` transports, where the whole page
+      // window is already in memory; the Pipelines path never runs this.
+      return (value) => value == null;
     case 'lt': {
       const bound = Number(f.value);
       return (value) => value != null && Number(value) < bound;
