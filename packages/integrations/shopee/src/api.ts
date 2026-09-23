@@ -106,13 +106,25 @@
  * here rather than guessed — its ONE page samples three encodings — and it is
  * one literal: {@link SHOPEE_ITEM_ID_LIST_ENCODING}.
  *
- * ⚠️ Four boundary operations of the same module are deliberately NOT built:
- * `get_item_promotion` (volatile promotion state, and `get_model_list` already
- * hands one `promotion_id` per model), `get_item_extra_info` (sales/views/likes
- * have no sink in this ERP), `search_item` (it cannot enumerate a catalogue —
- * its own `error_param` demands a name or an attribute filter — and carries
- * neither `update_time` nor `tag.kit`) and `upload_image` (step 9 only
- * DOWNLOADS `image_url`).
+ * ⚠️ Three boundary operations of the same module are deliberately NOT built:
+ * `get_item_extra_info` (sales/views/likes have no sink in this ERP),
+ * `search_item` (it cannot enumerate a catalogue — its own `error_param` demands
+ * a name or an attribute filter — and carries neither `update_time` nor
+ * `tag.kit`) and `upload_image` (step 9 only DOWNLOADS `image_url`; step 11
+ * builds it on the PARTNER client).
+ *
+ * ⚠️ **`get_item_promotion` was the fourth refusal here and step 12 BUILT it**,
+ * because both halves of the refusal turned out to be wrong about the page.
+ * "`get_model_list` already hands one `promotion_id` per model" — `guide 221 §4`
+ * says that field carries only ONE of several concurrent promotions, so a model
+ * under two of them reads as being under one. And the id itself: `promotion_id`
+ * was REMOVED from `get_item_base_info` on 2026-04-03 and is documented
+ * deprecated + `uint64` on `get_model_list`, so the surviving copy is both
+ * partial and unsafe to read as a number. "Volatile promotion state" was never
+ * the question either — what step 12 needs is the per-model RESERVED FLOOR
+ * (`faq 59`: a listing inside a promotion refuses a stock below what the
+ * promotion holds), and `promotion_stock_info_v2` is the only place it is
+ * published. See {@link ShopeeClient.getItemPromotion}.
  *
  * ## The listing writes (step 11)
  *
@@ -141,16 +153,48 @@
  * samples, `file` in the Java one) and {@link SHOPEE_TIER_MAX_OPTIONS} (20 and 50
  * on the same two pages — MEASURED at 50 on the sandbox, 2026-09-17).
  *
+ * ## The stock sync (step 12)
+ *
+ * Four more: the ONE write (`update_stock`) and three reads that decide whether
+ * the write may go out at all (`get_item_promotion`, `get_shop_holiday_mode`,
+ * `get_warehouse_detail`).
+ *
+ * ⚠️ `update_stock` is the first operation in this package whose `error`
+ * COEXISTS with its payload: its own list documents
+ * `error_busi_update_stock_failed: Update stock failed, please check
+ * failure_list for detailed reason`, and `failure_list` lives under `response`.
+ * It is still a FAILURE — the transport's `payloadNoErro` merely stops throwing
+ * the evidence away, handing a `ShopeeApiPartialError` that carries the parsed
+ * body. The whole point is per-model attribution: without it a batch of fifty in
+ * which one model sat inside a promotion fails as one lump, which is the legacy
+ * Flutter defect verbatim.
+ *
+ * ⚠️ `getWarehouseDetail` is the ONE operation here that FOLDS an error into a
+ * value. `warehouse.error_not_in_whitelist` is what the page's own sample shows
+ * an ordinary shop receiving, so treating it as a failure would make "this shop
+ * has no multi-warehouse regime" — the common case — read as a broken call. The
+ * fold is exactly two codes ({@link SHOPEE_WAREHOUSE_SEM_ACESSO}) and everything
+ * else rethrows.
+ *
+ * ⚠️ Its payload is a top-level ARRAY under `response` — the only one in this
+ * package.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
-import { SHOPEE_SURFACE, ShopeeConfigError } from './errors';
+import {
+  SHOPEE_SURFACE,
+  ShopeeApiError,
+  ShopeeConfigError,
+  shopeeCodeSemPrefixoDeModulo,
+} from './errors';
 import type { ShopeeHosts } from './hosts';
 import type { SignedCall } from './sign';
 import {
   SHOPEE_CONDITION,
   SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_ITEM_VIOLATION_MAX_IDS,
   SHOPEE_MODEL_MAX_PER_ITEM,
@@ -158,11 +202,13 @@ import {
   SHOPEE_TIER_MAX_LEVELS,
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
   SHOPEE_UPLOAD_IMAGE_FIELD,
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_WAREHOUSE_SEM_ACESSO,
   type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
   type ShopeeBrandList,
@@ -177,6 +223,7 @@ import {
   type ShopeeItemBaseInfo,
   type ShopeeItemLimit,
   type ShopeeItemList,
+  type ShopeeItemPromotionPayload,
   type ShopeeItemStatusWritable,
   type ShopeeItemViolationInfo,
   type ShopeeItemWriteResponse,
@@ -188,14 +235,18 @@ import {
   type ShopeeOrderList,
   type ShopeePackageDetail,
   type ShopeeProfile,
+  type ShopeeShopHolidayMode,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
   type ShopeeTierWriteResponse,
   type ShopeeUnlistItemResponse,
+  type ShopeeUpdateStockResponse,
   type ShopeeUploadImageResponse,
   type ShopeeUploadImageScene,
   type ShopeeUploadImageSigning,
   type ShopeeVariations,
+  type ShopeeWarehouse,
+  type ShopeeWarehouseType,
   type ShopeeWriteAck,
   shopeeAppPushConfigSchema,
   shopeeAttributeTreeSchema,
@@ -209,6 +260,7 @@ import {
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
+  shopeeItemPromotionSchema,
   shopeeItemViolationInfoSchema,
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
@@ -219,12 +271,15 @@ import {
   shopeeOrderListSchema,
   shopeePackageDetailSchema,
   shopeeProfileSchema,
+  shopeeShopHolidayModeSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
   shopeeUnlistItemSchema,
+  shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
   shopeeVariationsSchema,
+  shopeeWarehouseDetailSchema,
   shopeeWriteAckSchema,
 } from './types';
 
@@ -301,6 +356,32 @@ export const SHOPEE_GET_CHANNEL_LIST_PATH = '/api/v2/logistics/get_channel_list'
  * default rests on and {@link UploadImageParams.signing} for the escape hatch.
  */
 export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
+
+/* -------------------------- the stock sync (step 12) ---------------------- */
+
+/**
+ * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
+ * models per call.
+ *
+ * ⚠️ The ONE operation in this package whose `error` COEXISTS with its payload:
+ * `error_busi_update_stock_failed` is documented as *"please check
+ * failure_list"*, and `failure_list` rides under `response`. Its call site is
+ * therefore the ONLY `payloadNoErro` in this file — see
+ * {@link ShopeeClient.updateStock}.
+ */
+export const SHOPEE_UPDATE_STOCK_PATH = '/api/v2/product/update_stock';
+/**
+ * `GET` — Shop-signed (`method: 2` on the page, against prose that reads POST).
+ * WRAPPED. 1…{@link SHOPEE_ITEM_PROMOTION_MAX_IDS} item ids.
+ */
+export const SHOPEE_GET_ITEM_PROMOTION_PATH = '/api/v2/product/get_item_promotion';
+/** `GET` — Shop-signed. WRAPPED. Takes NO parameters at all. */
+export const SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH = '/api/v2/shop/get_shop_holiday_mode';
+/**
+ * `GET` — Shop-signed. WRAPPED, and the payload is a top-level ARRAY — the only
+ * one in this package.
+ */
+export const SHOPEE_GET_WAREHOUSE_DETAIL_PATH = '/api/v2/shop/get_warehouse_detail';
 
 /** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
 export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
@@ -1212,6 +1293,86 @@ export interface GetItemViolationInfoParams {
   readonly itemIds: readonly number[];
 }
 
+/* -------------------------- the stock sync (step 12) ---------------------- */
+
+/**
+ * One `seller_stock` entry of an `update_stock` model.
+ *
+ * ⚠️ `location_id` is a short OPAQUE STRING (`SGZ`, `IDZ`, `BRFSP1`), never a
+ * number, and it is OPTIONAL: a shop outside the multi-warehouse whitelist has
+ * no location to name. Whether it rides is decided per CALL and not per entry —
+ * see {@link assertUpdateStockParams} rung 5.
+ */
+export interface ShopeeSellerStockEntry {
+  readonly location_id?: string;
+  /**
+   * The new stock for this model at this location.
+   *
+   * ⚠️ `0` IS legal on an UPDATE and is the whole point of `announcement 1445`
+   * for a BR shop: zeroing a listing is how it goes out of stock. The guard is
+   * therefore NON-negative, never positive.
+   */
+  readonly stock: number;
+}
+
+/** One model of an `update_stock` call. */
+export interface ShopeeUpdateStockEntry {
+  /**
+   * ⚠️ ALWAYS sent. `0` IS the no-model item — Shopee's own request sample
+   * prints `"model_id": 0` — so a truthiness check that drops it turns the
+   * simple-item write into `error_edit_item_stock_for_item_has_model`'s mirror.
+   * A real id on a no-model item is the equally hard opposite error.
+   */
+  readonly model_id: number;
+  readonly seller_stock: readonly ShopeeSellerStockEntry[];
+}
+
+/** `update_stock` — ONE item, 1…{@link SHOPEE_UPDATE_STOCK_MAX_MODELS} models. */
+export interface ShopeeUpdateStockRequest {
+  readonly item_id: number;
+  readonly stock_list: readonly ShopeeUpdateStockEntry[];
+}
+
+/**
+ * `get_item_promotion` — 1…{@link SHOPEE_ITEM_PROMOTION_MAX_IDS} items.
+ *
+ * ⚠️ Duplicates REFUSED — the near-miss against {@link GetItemBaseInfoParams}
+ * and {@link GetItemViolationInfoParams}, which both allow them. This page's own
+ * error list carries `error_param: Repeat item_id.`; theirs do not.
+ */
+export interface GetItemPromotionParams {
+  readonly itemIds: readonly number[];
+}
+
+/**
+ * `get_warehouse_detail` — the one optional parameter of the whole step.
+ *
+ * ⚠️ Omitted entirely when not supplied: the page documents its own default
+ * (1, the pickup warehouse), so sending a copy of that default here would be a
+ * second place for it to be wrong.
+ */
+export interface GetWarehouseDetailParams {
+  readonly warehouseType?: ShopeeWarehouseType;
+}
+
+/**
+ * What {@link ShopeeClient.getWarehouseDetail} answers: a list, or the typed
+ * statement that this shop has no multi-warehouse regime.
+ *
+ * ⚠️ The fold lives HERE, in the package, so that no app ever string-matches a
+ * Shopee error code. `warehouse.error_not_in_whitelist` is what the page's own
+ * sample shows an ORDINARY shop receiving — treating it as a failure would make
+ * the common case read as a broken call — and `error_can_not_find_warehouse` is
+ * the same statement from the other side (no legal warehouse address).
+ *
+ * ⚠️ An error-free EMPTY array folds here too, with `code: ''`. "Nothing to map"
+ * and "a regime we must refuse to write into" are the same instruction to the
+ * sender; the empty `code` is what keeps them distinguishable in a log.
+ */
+export type ShopeeWarehouseDetail =
+  | { readonly kind: 'lista'; readonly armazens: readonly ShopeeWarehouse[] }
+  | { readonly kind: 'sem-multi-armazem'; readonly code: string };
+
 /** The shop credentials `upload_image` needs ONLY under `signing: 'shop'`. */
 export interface ShopeeShopAuth {
   readonly accessToken: string;
@@ -1657,6 +1818,84 @@ export interface ShopeeClient {
    * would send a size the seller never picked.
    */
   getChannelList(): Promise<ShopeeChannelList>;
+
+  /* ------------------------ the stock sync (step 12) ---------------------- */
+
+  /**
+   * Set the stock of 1…{@link SHOPEE_UPDATE_STOCK_MAX_MODELS} models of ONE
+   * item — the WHOLE envelope, like every write here.
+   *
+   * ⚠️ **A non-empty `error` arrives WITH the per-model detail on this page**,
+   * and that is the reason this operation exists in the shape it does. Its own
+   * list documents `error_busi_update_stock_failed: Update stock failed, please
+   * check failure_list for detailed reason`, and `failure_list` lives under
+   * `response`. So this is the ONE call site carrying the transport's
+   * `payloadNoErro`: the throw stays a throw, and the thrown
+   * `ShopeeApiPartialError` carries the parsed body so the caller can attribute
+   * the refusal to the models it actually hit. Everything else — a throttle, a
+   * dead authorization, a body with no `response` — throws the ordinary class,
+   * because the operation schema refuses those bodies and nothing is attached.
+   *
+   * ⚠️ It does NOT catch. A caller that needs the per-model verdicts narrows on
+   * the subclass; a caller that only needs "did it land" sees a failure, which
+   * is what it is.
+   *
+   * ⚠️ And a 200 with an EMPTY `error` can still carry a non-empty
+   * `failure_list` — the `unlist_item` hazard on a second page. Whoever writes
+   * the result back reads both lists, never just the absence of a throw.
+   */
+  updateStock(body: ShopeeUpdateStockRequest): Promise<ShopeeUpdateStockResponse>;
+
+  /**
+   * Every live and upcoming promotion of 1…50 items — UNWRAPPED, like every
+   * read.
+   *
+   * ⚠️ Step 12 reads exactly one thing from it: the per-model RESERVED FLOOR
+   * (`promotion_stock_info_v2`, through `reservadoDaPromocao`), because a
+   * listing inside a promotion refuses any stock below what the promotion holds
+   * (`faq 59`). `get_model_list`'s `promotion_id` cannot answer that question —
+   * it carries only ONE of several concurrent promotions (`guide 221 §4`) and no
+   * stock at all.
+   *
+   * ⚠️ Duplicate `item_id` is REFUSED here and ALLOWED by
+   * {@link ShopeeClient.getItemBaseInfo}: this page's own error list carries
+   * `error_param: Repeat item_id.` and theirs do not.
+   *
+   * ⚠️ `promotion_id` comes back a STRING and must stay one — it is `uint64`
+   * since 2026-07-31, so a number would lose precision above 2^53 on ids this
+   * package never does arithmetic with anyway.
+   */
+  getItemPromotion(p: GetItemPromotionParams): Promise<ShopeeItemPromotionPayload>;
+
+  /**
+   * Whether the SHOP is on holiday mode — UNWRAPPED, and it takes NO parameters
+   * at all (the page's Request-params section is empty), the
+   * {@link ShopeeClient.getChannelList} precedent.
+   *
+   * ⚠️ `holiday_mode_type` reads backwards: `1` is PARTIAL (orders still
+   * arrive), `0` is FULL. {@link SHOPEE_HOLIDAY_MODE_TYPE} names both so nobody
+   * has to remember which way round it goes, and it is only meaningful while
+   * `holiday_mode_on` is true.
+   */
+  getShopHolidayMode(): Promise<ShopeeShopHolidayMode>;
+
+  /**
+   * The shop's warehouses — or the typed statement that it has none.
+   *
+   * ⚠️ **The ONE operation in this package that folds an error into a value**,
+   * and the fold is exactly {@link SHOPEE_WAREHOUSE_SEM_ACESSO}: the page's own
+   * sample shows `warehouse.error_not_in_whitelist` as what an ORDINARY shop
+   * receives, so a shop with no multi-warehouse regime would otherwise read as a
+   * broken call on every sweep. Every other `ShopeeApiError` — and every other
+   * class — rethrows untouched.
+   *
+   * ⚠️ The module prefix is tolerated: the code matches verbatim OR after
+   * `shopeeCodeSemPrefixoDeModulo`, because Shopee prints both spellings.
+   *
+   * ⚠️ `location_id` is a short opaque STRING and is the value `update_stock`
+   * echoes back; nothing here parses it as a number.
+   */
+  getWarehouseDetail(p?: GetWarehouseDetailParams): Promise<ShopeeWarehouseDetail>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -2415,6 +2654,101 @@ function assertItemViolationParams(p: GetItemViolationInfoParams): void {
   });
 }
 
+/* ---------------- the stock sync (step 12) — the bound guards ------------- */
+
+/**
+ * Every `update_stock` bound, all five checked BEFORE any fetch.
+ *
+ * ⚠️ Rung 3, the duplicate `model_id`: `error_param: Repeat model_id.` is on
+ * this page's own error list, and BOTH result lists are keyed on `model_id`
+ * ALONE — so two entries for one model come back unreconcilable even on the
+ * success path. Verbatim the {@link assertUnlistItemParams} argument.
+ *
+ * ⚠️ Rung 4 uses {@link assertIdNaoNegativo} and NEVER
+ * {@link assertIdPositivo}: `stock: 0` is legal on an update (the page's own
+ * request sample prints it, and `announcement 1445` is the BR case), so a
+ * positive guard here would make "take this listing out of stock" — the single
+ * most common thing this whole step does — unexpressible.
+ *
+ * ⚠️ Rung 5, the location structure: `error_param: Can not update item with
+ * different stock structure…` is STICKY per listing, and `faq 61` requires a
+ * multi-warehouse write to upload EVERY `location_id` in ONE call. Whether this
+ * item needs locations at all is a question only a read can answer; whether THIS
+ * call is internally consistent is not, so that half is checked here.
+ */
+function assertUpdateStockParams(req: ShopeeUpdateStockRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+
+  const quantidade = req.stock_list.length;
+  if (quantidade < 1 || quantidade > SHOPEE_UPDATE_STOCK_MAX_MODELS) {
+    throw new ShopeeConfigError(
+      `stock_list deve conter de 1 a ${String(SHOPEE_UPDATE_STOCK_MAX_MODELS)} modelos (recebido: ${String(quantidade)}).`,
+    );
+  }
+
+  const vistos = new Set<number>();
+  // ⚠️ Contado sobre a chamada INTEIRA, não por entrada: a Shopee recusa um
+  // corpo em que alguns `seller_stock` nomeiam o armazém e outros não.
+  let comLocation = 0;
+  let semLocation = 0;
+
+  req.stock_list.forEach((entrada, posicao) => {
+    const onde = `stock_list[${String(posicao)}]`;
+    // ⚠️ `0` É o item sem modelos — daí o guarda NÃO-negativo também aqui.
+    assertIdNaoNegativo(`${onde}.model_id`, entrada.model_id);
+    if (vistos.has(entrada.model_id)) {
+      throw new ShopeeConfigError(
+        `${onde}.model_id repetido (${String(entrada.model_id)}) — as duas listas de resultado são chaveadas só por model_id.`,
+      );
+    }
+    vistos.add(entrada.model_id);
+
+    if (entrada.seller_stock.length < 1) {
+      throw new ShopeeConfigError(`${onde}.seller_stock deve conter ao menos uma entrada.`);
+    }
+    entrada.seller_stock.forEach((estoque, indice) => {
+      assertIdNaoNegativo(`${onde}.seller_stock[${String(indice)}].stock`, estoque.stock);
+      if (estoque.location_id === undefined || estoque.location_id.trim() === '') {
+        semLocation += 1;
+      } else {
+        comLocation += 1;
+      }
+    });
+  });
+
+  if (comLocation > 0 && semLocation > 0) {
+    throw new ShopeeConfigError(
+      `stock_list mistura entradas com e sem location_id (${String(comLocation)} com, ${String(semLocation)} sem) — a Shopee exige a MESMA estrutura de estoque na chamada inteira.`,
+    );
+  }
+}
+
+/**
+ * Every `get_item_promotion` bound.
+ *
+ * ⚠️ Duplicates REFUSED, the NEAR-MISS against {@link assertItemBaseInfoParams}
+ * and {@link assertItemViolationParams}, which both allow them: this page's own
+ * error list carries `error_param: Repeat item_id.` and theirs do not.
+ */
+function assertItemPromotionParams(p: GetItemPromotionParams): void {
+  const quantidade = p.itemIds.length;
+  if (quantidade < 1 || quantidade > SHOPEE_ITEM_PROMOTION_MAX_IDS) {
+    throw new ShopeeConfigError(
+      `item_id_list deve conter de 1 a ${String(SHOPEE_ITEM_PROMOTION_MAX_IDS)} itens (recebido: ${String(quantidade)}).`,
+    );
+  }
+  const vistos = new Set<number>();
+  p.itemIds.forEach((itemId, posicao) => {
+    assertIdPositivo(`item_id_list[${String(posicao)}]`, itemId);
+    if (vistos.has(itemId)) {
+      throw new ShopeeConfigError(
+        `item_id_list[${String(posicao)}] repetido (${String(itemId)}) — esta página recusa ids repetidos (error_param: Repeat item_id.).`,
+      );
+    }
+    vistos.add(itemId);
+  });
+}
+
 /**
  * Every `upload_image` bound, checked BEFORE any fetch — including the one the
  * signing switch owes.
@@ -3121,6 +3455,120 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         // the `getLostPushMessages` precedent.
       });
       return res.response;
+    },
+
+    /* ---------------------- the stock sync (step 12) --------------------- */
+
+    updateStock: async (body) => {
+      assertUpdateStockParams(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_STOCK_PATH,
+        call: await signedCall(),
+        schema: shopeeUpdateStockSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ The ONE `payloadNoErro` in this package, and the only place it may
+        // appear. It does NOT change the verdict — a non-empty `error` is still
+        // a failure and still throws — it only stops the parsed body being
+        // discarded at the throw site, because THIS page documents
+        // `error_busi_update_stock_failed` as "please check failure_list" and
+        // `failure_list` rides under `response`. See the flag's docblock in
+        // `call.ts` for why it is neither of the other two tolerances.
+        payloadNoErro: true,
+        body,
+      });
+    },
+
+    getItemPromotion: async (p) => {
+      assertItemPromotionParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ITEM_PROMOTION_PATH,
+        call: await signedCall(),
+        schema: shopeeItemPromotionSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          // ⚠️ The SAME literal `getItemBaseInfo` uses. This page is in fact one
+          // of the two siblings that sample a BARE COMMA, which is what
+          // SHOPEE_ITEM_ID_LIST_ENCODING already defaults to.
+          item_id_list: encodeShopeeIdList(p.itemIds),
+        },
+      });
+      // A READ: unwrapped, like every other read in this file.
+      return res.response;
+    },
+
+    getShopHolidayMode: async () => {
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH,
+        call: await signedCall(),
+        schema: shopeeShopHolidayModeSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ The SECOND of the two absent-key tolerances in this file (the
+        // first is `getItemViolationInfo`, register 73). MEASURED on the
+        // sandbox 2026-09-21 (step 12's probe, P2): the SUCCESS body is
+        // `{request_id, response: {holiday_mode_on, …}}` with NO `error` and NO
+        // `message` key, and stage 1 refused it with `campos=["error"]` on every
+        // read — which would have turned the conta gate `loja-em-ferias` and the
+        // sender's holiday arm into a permanent read failure. The tolerance
+        // still requires a `response` object, so a body carrying neither key
+        // stays refused — see the option's docblock in `call.ts`.
+        erroAusenteEhSucesso: true,
+        // ⚠️ No `query` key at all: the page's Request params section is EMPTY,
+        // the `getChannelList` precedent.
+      });
+      // ⚠️ WRAPPED, against the step-12 seam's own sketch: the page's
+      // `response_params` declares `response` as an OBJECT carrying the seven
+      // fields, and its response sample nests them under it. A flat reading
+      // would have answered `undefined` for every one of them.
+      return res.response;
+    },
+
+    getWarehouseDetail: async (p) => {
+      let res;
+      try {
+        res = await shopeeCall(transport, {
+          method: 'GET',
+          path: SHOPEE_GET_WAREHOUSE_DETAIL_PATH,
+          call: await signedCall(),
+          schema: shopeeWarehouseDetailSchema,
+          surface: SHOPEE_SURFACE.business,
+          query: {
+            // ⚠️ `undefined` emits NO key — `signedQuery` drops it — which is
+            // exactly what "let the page apply its own default of 1" means.
+            warehouse_type: p?.warehouseType,
+          },
+        });
+      } catch (err: unknown) {
+        // ⚠️ Rule 6 narrow: ONLY a ShopeeApiError, and only the two codes the
+        // page itself documents as an ordinary shop's answer. Anything else —
+        // a throttle, a dead authorization, a schema failure, a network error —
+        // is rethrown untouched, because folding those would report "no
+        // multi-warehouse regime" for a call that never got an answer.
+        if (!(err instanceof ShopeeApiError)) throw err;
+        // ⚠️ A DOBRA, e o que ela iguala: o PREFIXO DE MÓDULO, dos dois lados.
+        // A Shopee imprime `warehouse.error_not_in_whitelist` e
+        // `error_not_in_whitelist` para o mesmo fato, então normalizar só o
+        // código que chegou não bastaria — a lista é escrita com prefixo.
+        // O que continua DISTINTO é todo o resto do sufixo: um
+        // `warehouse.error_param` do mesmo módulo, um `error_server`, um
+        // throttle. Nada aqui compara por "começa com" nem por substring.
+        const semPrefixo = (code: string): string => shopeeCodeSemPrefixoDeModulo(code) ?? code;
+        const alvo = semPrefixo(err.code);
+        if (!SHOPEE_WAREHOUSE_SEM_ACESSO.some((code) => semPrefixo(code) === alvo)) throw err;
+        // ⚠️ O código VERBATIM, não o normalizado: quem lê o log precisa ver a
+        // grafia que a Shopee mandou de fato.
+        return { kind: 'sem-multi-armazem', code: err.code };
+      }
+
+      const armazens = res.response;
+      // ⚠️ An error-free EMPTY array is the same instruction to the sender as
+      // the whitelist refusal — there is no location to name — and the empty
+      // `code` is what keeps the two distinguishable in a log.
+      return armazens.length === 0
+        ? { kind: 'sem-multi-armazem', code: '' }
+        : { kind: 'lista', armazens };
     },
   };
 }

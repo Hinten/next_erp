@@ -527,6 +527,10 @@ describe('aplicarModelos — o create com filhos', () => {
         model_status: SHOPEE_MODEL_STATUS.normal,
         promotion_id: null,
         modeloAusenteEm: null,
+        // Step 12's two child diagnostics — born null, stamped only by the stock
+        // sender's refusal write-back (`variacaoShopeeLinkSchema`).
+        estoqueRecusaEm: null,
+        estoqueRecusaCodigo: null,
       },
     ]);
     expect(docsEm(db, FILHO_B)[0]?.model_id).toBe(MODEL_B);

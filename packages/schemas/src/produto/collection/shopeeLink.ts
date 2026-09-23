@@ -16,9 +16,21 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * `models.odm.g.dart`, #289) already cover the Firestore rules (client reads,
  * parent produto permissions); these typed shapes exist for the Admin-SDK
  * writer (step 11's publish flow), which bypasses rules but must not drift from
- * the Flutter wire format. Everything step 11 (#1519) adds below is a BARE
- * const on these same two shapes — no `*Meta`, no PERM, no validator
- * whitelist ⇒ **no ruleset regeneration**.
+ * the Flutter wire format. Everything step 11 (#1519) and step 12 (#1520) add
+ * below is a BARE const on these same two shapes — no `*Meta`, no PERM, no
+ * validator whitelist ⇒ **no ruleset regeneration**.
+ *
+ * ## The writer inventory, whole
+ *
+ * Only three groups of fields have more than one writer, and none of the three
+ * overlap:
+ *  - **`item_status` + `estadoAnuncio`** — FOUR writers, enumerated on
+ *    {@link shopeeItemStatusSchema} below;
+ *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
+ *    sender. Nothing clears them but the sender's own clean-send path;
+ *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import.
+ * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
+ * fingerprint and never writes either, so it can never race the four above.
  *
  * Wire notes (from the parity audit, #289 + #363, corrected by #1519):
  *  - `violations` is what Shopee says is wrong with this listing. The legacy
@@ -63,7 +75,12 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * All four write only what they just READ from the one authoritative call, so a
  * replay in any order converges. An earlier revision of this docblock called the
  * field push-only (true before step 9), then said TWO writers (true before step
- * 11). ⚠️ The legacy handler FABRICATED `"UNLIST"` because the retired code-6
+ * 11). ⚠️ STILL FOUR after step 12 (#1520): the stock sender READS this field
+ * into `estoqueRecusaItemStatus` and never writes it — which is also what lets
+ * any of the four LIFT a stock refusal simply by doing its job (see
+ * {@link produtoShopeeLinkSchema}'s `estoqueRecusaEstado`).
+ *
+ * ⚠️ The legacy handler FABRICATED `"UNLIST"` because the retired code-6
  * push carried no status at all; push 18 carries the real one and the handler
  * still re-reads it — `guide 18` / `guide 746`: a push never replaces the API.
  *
@@ -379,6 +396,141 @@ export const produtoShopeeLinkSchema = z
      * says only *that* it failed — never why, and never when it was meant to run.
      */
     agendamentoFalhouEm: z.number().int().nullable().default(null),
+
+    // === step 12 (#1520) — the STOCK SYNC's write-backs: ten `estoque*`
+    // scalars plus one schema flag. Same rule as the step-11 block above — bare
+    // consts on this `.passthrough()` shape ⇒ no ruleset regeneration — and the
+    // same nullable/default discipline, so a link step 9 imported keeps parsing
+    // and a merge that does not name a field leaves it alone.
+    //
+    // ⚠️ FLAT is not a style choice. The sender writes through the handle's
+    // `mergeIfExists`, which rejects a nested object or a dotted key outright,
+    // so a tidier `ultimoEnvioDeEstoque { … }` block is INEXPRESSIBLE on that
+    // path — the identical constraint that keeps {@link ultimaPublicacao} off
+    // it. Ten flat scalars is the cost of writing through a handle that refuses
+    // to resurrect a link doc someone deleted while the task sat in the queue.
+    //
+    // ⚠️ Every stamp below is MILLISECONDS.
+
+    /**
+     * Whether SHOPEE reports this listing as a kit item (`tag.kit` on
+     * `get_item_base_info` / `get_item_list`).
+     *
+     * ⚠️ **This is NOT `produto.ehKit`.** The ERP has thousands of `ehKit`
+     * produtos that are ORDINARY Shopee listings and whose stock is sent at the
+     * component-derived quantity; conflating the two is a total, silent stock
+     * outage for the whole legacy kit catalogue.
+     *
+     * Stamped on BOTH branches by step 9's import (`true` for a kit, `false`
+     * for an ordinary listing) from `ehKitDe()` (`produtos/itemLido.ts`), which
+     * already computes it and throws it away — so the field converges to DATA on
+     * every import rather than staying three-valued for ever.
+     *
+     * `null` = a link imported before step 12 — **it SENDS**, which is the safe
+     * direction, because no native Shopee kit exists in this catalogue today.
+     * Only `kitNativo === true` refuses.
+     */
+    kitNativo: z.boolean().nullable().default(null),
+    /**
+     * MILLISECONDS. The last time this listing was **FULLY** in sync — written
+     * by a CLEAN send and by nothing else.
+     *
+     * ⚠️ A PARTIAL send deliberately leaves it alone: "fully in sync" is the
+     * operator's real question, and it is also the anchor a child row's
+     * visibility is compared against (a per-model refusal is legible exactly
+     * while the child's `estoqueRecusaEm` is at least this value, which makes
+     * the child rows self-expiring and costs no second writer).
+     */
+    estoqueEnviadoEm: z.number().int().nullable().default(null),
+    /**
+     * The quantity SENT for the no-model listing, or the **SUM** sent across
+     * the accepted models — never a maximum, and never the echo Shopee sends
+     * back. A twenty-model family at 5 each stores 100.
+     */
+    estoqueEnviado: z.number().int().nullable().default(null),
+    /** How many models the last `update_stock` call carried. */
+    estoqueModelosEnviados: z.number().int().nullable().default(null),
+    /** MILLISECONDS. When the last refusal landed — including a partial one. */
+    estoqueRecusaEm: z.number().int().nullable().default(null),
+    /**
+     * Shopee's error code **VERBATIM, prefix and all**, or `erp:<motivo>` when
+     * the refusal is ours rather than Shopee's.
+     *
+     * ⚠️ Stored unstripped on purpose. The prefix is part of what Shopee
+     * answered, and a code rewritten at the write side can never be matched back
+     * against the provider's own documentation; the stripped form is a second
+     * LOOKUP beside the verbatim one, never a replacement for it.
+     */
+    estoqueRecusaCodigo: z.string().nullable().default(null),
+    /**
+     * Why the send was refused, in this app's own vocabulary — a
+     * `MotivoEstoqueShopee` slug.
+     *
+     * ⚠️ A loose string, not an enum, for the reason
+     * {@link produtoShopeeLinkSchema}'s `falhaPublicacao.motivo` is one: the
+     * closed vocabulary lives beside the sender that writes it, and a slug added
+     * there must not need a schema change to be persisted.
+     */
+    estoqueRecusaMotivo: z.string().nullable().default(null),
+    /** The rendered pt-BR sentence for the operator, capped at the publisher's problem-message length. */
+    estoqueRecusaMensagem: z.string().nullable().default(null),
+    /**
+     * The folded `estadoAnuncio` **at refusal time** — half of the refusal
+     * fingerprint, and the field that documents the whole skip set.
+     *
+     * The stock gate skips this listing when EITHER mechanism says so:
+     *
+     * ```
+     * ouNulo(v) = v === undefined ? null : v   // the ONE normalisation, BOTH sides
+     *
+     * // TIME half
+     * pular = (typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte)
+     * // STATE half
+     *      || (typeof estoqueRecusaEm === 'number'
+     *          && (ouNulo(estoqueRecusaEstado) !== null
+     *              || ouNulo(estoqueRecusaItemStatus) !== null)   // ≥ 1 RECORDED reading
+     *          && ouNulo(estoqueRecusaEstado)     === ouNulo(link.estadoAnuncio)
+     *          && ouNulo(estoqueRecusaItemStatus) === ouNulo(link.item_status))
+     * ```
+     *
+     * ⚠️ The at-least-one-recorded-reading guard exists because
+     * `estoqueRecusaEm` is also stamped by a PARTIAL send, which records no
+     * reading at all: without it a null/null stamp on a link whose two readings
+     * are null or absent compares `null === null` twice (after the fold) and
+     * latches the listing FOR EVER, since neither half can ever move to lift it.
+     *
+     * ⚠️ `pularPorRecusaAnterior` in `apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts`
+     * is the implementation this block DESCRIBES — never the other way round. When
+     * the two disagree, the code is the rule and this text is the defect.
+     *
+     * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
+     * halves — either one moving LIFTS the skip.** That is the whole design:
+     * **nobody writes a clear.** The four `item_status` writers enumerated on
+     * {@link shopeeItemStatusSchema} lift it by doing their job, so the refusal
+     * expires against the reading that caused it instead of against a clock or a
+     * second writer that could disagree.
+     *
+     * ⚠️ The rule is READ by the app (`podeEnviarEstoqueShopee`) and is **never
+     * computed in this schema** — it needs a clock, and every schema in this file
+     * is pure.
+     *
+     * A loose string rather than {@link estadoAnuncioShopeeSchema} on purpose:
+     * it is a recorded READING to compare against, not a state to act on, and a
+     * stored value this app later stops recognising must still compare equal to
+     * itself.
+     */
+    estoqueRecusaEstado: z.string().nullable().default(null),
+    /** The raw `item_status` at refusal time — the other fingerprint half. Loose for the same reason. */
+    estoqueRecusaItemStatus: z.string().nullable().default(null),
+    /**
+     * MILLISECONDS. The TIME half of the skip set: skip until this instant.
+     *
+     * ⚠️ Written only by the promotion arm, and it exists because **a promotion
+     * ending moves no `item_status`** — a fingerprint-based skip would latch for
+     * ever on a listing whose reserved stock simply expired. Strictly `<`
+     * against the clock, so the instant itself already releases.
+     */
+    estoqueRecusaAte: z.number().int().nullable().default(null),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;
@@ -406,6 +558,29 @@ export const variacaoShopeeLinkSchema = z
      * clears the stamp.
      */
     modeloAusenteEm: z.number().int().nullable().default(null),
+
+    // === step 12 (#1520) — two DIAGNOSTIC fields, never a gate.
+    //
+    // A refusal is per MODEL, and without a per-model row an operator sees "the
+    // item was refused" with no way to know which of up to fifty models caused
+    // it. Nothing reads them to decide whether to send.
+    //
+    // ⚠️ **ZERO clearing writes.** Clearing on success would cost one update per
+    // model per send, on every listing, several times an hour. Instead the row
+    // SELF-EXPIRES by comparison: a reader shows it only while
+    // `estoqueRecusaEm >= (parent.estoqueEnviadoEm ?? 0)`. Because a PARTIAL
+    // send never stamps the parent's `estoqueEnviadoEm`, a current diagnosis
+    // stays visible and a stale one vanishes the moment the item next syncs
+    // cleanly — at the cost of no second writer at all.
+
+    /** MILLISECONDS. When this MODEL was refused. Written only on a per-model refusal. */
+    estoqueRecusaEm: z.number().int().nullable().default(null),
+    /**
+     * The model's own `failed_reason`, **VERBATIM** — Shopee's string exactly as
+     * it arrived, prefix and all, for the same reason the parent's
+     * `estoqueRecusaCodigo` is stored unstripped.
+     */
+    estoqueRecusaCodigo: z.string().nullable().default(null),
   })
   .passthrough();
 export type VariacaoShopeeLink = z.infer<typeof variacaoShopeeLinkSchema>;
@@ -437,6 +612,14 @@ export type MotivoAnuncioNaoMovivel =
  * the backend refuses, or a backend refusing what the UI presents as available.
  * {@link AcaoStatusAnuncio} is REUSED from the ML link module for the same
  * reason — the file name is ML-ish, the VALUE must not fork.
+ *
+ * ⚠️ **Not to be reused for stock.** Step 12's `podeEnviarEstoqueShopee`
+ * (`apps/shopee/lib/shopee/estoque/`) answers a DIFFERENT question — "may we
+ * write a QUANTITY" rather than "may we change this listing's STATUS" — and
+ * deliberately diverges: `banido` refuses in both, but `pausado` refuses here
+ * (`ja-pausado`) and **SENDS** there, because an unlisted listing carries no
+ * stock refusal and a stale number oversells the moment it is re-listed. The two
+ * folds live apart on purpose; neither is the other's shortcut.
  *
  * ⚠️ **This is a cheap pre-filter on a possibly-stale reading, never the guard.**
  * Shopee's own `failure_list` is the authority and it refuses things this

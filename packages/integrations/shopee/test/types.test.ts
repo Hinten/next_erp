@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SHOPEE_CONDITION,
+  SHOPEE_HOLIDAY_MODE_TYPE,
   SHOPEE_INVOICE_ISSUER,
   SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_ITEM_VIOLATION_MAX_IDS,
   SHOPEE_LOGISTICS_FEE_TYPE,
@@ -14,20 +16,28 @@ import {
   SHOPEE_MODEL_SKU_MAX_LENGTH,
   SHOPEE_NESTING_AMBIGUOUS_KEYS,
   SHOPEE_PACKAGE_FULFILLMENT_STATUS,
+  SHOPEE_PROMOTION_STAGING,
   SHOPEE_SHOP_STATUS,
+  SHOPEE_STOCK_MIN_WIRE,
   SHOPEE_TIER_MAX_LEVELS,
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_TRACKING_LOGISTICS_STATUS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
   SHOPEE_UPLOAD_IMAGE_FIELD,
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE,
   SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_WAREHOUSE_SEM_ACESSO,
+  SHOPEE_WAREHOUSE_TYPE,
   type ShopeeNestingAmbiguousKey,
+  type ShopeePromocaoDeItem,
   dataOp,
   flatOp,
+  idOpacoExato,
+  reservadoDaPromocao,
   shopeeAppPushConfigSchema,
   shopeeAtributoSchema,
   shopeeAttributeTreeSchema,
@@ -44,12 +54,14 @@ import {
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
+  shopeeItemPromotionSchema,
   shopeeItemViolationInfoSchema,
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
   shopeeModelListSchema,
+  shopeeModelSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeePackageDetailItemSchema,
@@ -57,14 +69,20 @@ import {
   shopeePackageDetailSchema,
   shopeePackageItemSchema,
   shopeeProfileSchema,
+  shopeePromocaoDeItemSchema,
+  shopeeShopHolidayModePayloadSchema,
+  shopeeShopHolidayModeSchema,
   shopeeShopInfoSchema,
   shopeeShopStatusSchema,
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
   shopeeTokenResponseSchema,
   shopeeUnlistItemSchema,
+  shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
   shopeeVariationsSchema,
+  shopeeWarehouseDetailSchema,
+  shopeeWarehouseSchema,
   shopeeWriteAckSchema,
   wrappedOp,
 } from '../src/types';
@@ -2209,14 +2227,25 @@ describe('as quatro leituras de item (passo 9)', () => {
     expect(arvore.variation_option_list[0]!.variation_option_id).toBe(0);
   });
 
-  it('23 — `promotion_id` é lido como número e o tipo o expõe — nenhum consumidor o grava', () => {
-    // ⚠️ É um uint64 desde 2026-07-31. Acima de 2^53 o valor já chega corrompido
-    // do `JSON.parse`, e `.int()` aceitaria o resultado. Por isso ele é LIDO e
-    // descartado, nunca armazenado.
+  it('23 — `promotion_id` é lido como STRING OPACA — e a página inteira sobrevive a um uint64', () => {
+    // ⚠️ ESTA asserção foi INVERTIDA no passo 12, e a inversão é o conserto de um
+    // defeito real, não um afrouxamento. Enquanto o campo era `wireInt()`, o
+    // docblock já dizia que ele é um uint64 desde 2026-07-31 — e o código fazia
+    // a coisa insegura assim mesmo. Zod 4 responde `too_big` acima de 2^53, e
+    // `promotion_id` viaja DENTRO de `get_model_list`: UM id grande derrubaria a
+    // página inteira (a importação do passo 9 e a reconciliação de modelos do
+    // passo 11 com ela), não só o campo. Agora ele é `shopeeIdOpaco()`.
     const lido = shopeeModelListSchema.parse(
       corpoModelList({ model: [{ model_id: MODEL_ID, promotion_id: '104993304719361' }] }),
     );
-    expect(lido.response.model[0]!.promotion_id).toBe(104_993_304_719_361);
+    expect(lido.response.model[0]!.promotion_id).toBe('104993304719361');
+    expect(typeof lido.response.model[0]!.promotion_id).toBe('string');
+
+    // O número da amostra da própria página chega com os MESMOS dígitos.
+    const comoNumero = shopeeModelListSchema.parse(
+      corpoModelList({ model: [{ model_id: MODEL_ID, promotion_id: 104_993_304_719_361 }] }),
+    );
+    expect(comoNumero.response.model[0]!.promotion_id).toBe('104993304719361');
   });
 
   it('24 — `shopee_stock[].stock` como STRING e como INT dão o mesmo número', () => {
@@ -2338,14 +2367,24 @@ describe('as quatro leituras de item (passo 9)', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * O trecho do passo 11 — do marcador de seção até o fim do arquivo.
+ * O trecho do passo 11 — do marcador de seção dele até o marcador do passo 12.
  *
- * ⚠️ Separado do `SECAO_PASSO_9` de propósito: aquele fatia até o FIM DO ARQUIVO
- * e por isso passou a cobrir este passo também (o que é bom para a proibição do
- * `z.number()` cru), mas uma asserção sobre ESTA seção não pode depender de onde
- * a anterior termina.
+ * ⚠️ Ele ia até o FIM DO ARQUIVO, e o passo 12 acabou de provar por que isso é
+ * uma armadilha pela SEGUNDA vez — é a mesma que o `SECAO_PASSO_9` documenta.
+ * Com o fim aberto, tudo que o passo 12 declarasse passaria a responder pelas
+ * asserções de fonte do passo 11: um `z.number()` cru no passo 12 seria acusado
+ * como defeito do 11, e — pior — um `not.toContain` do 11 passaria a proibir
+ * prosa da seção seguinte. Cada passo fatia a SUA seção.
+ *
+ * ⚠️ O bloco `the stock bounds (step 12)` fica DENTRO deste recorte de
+ * propósito: os limites de fio moram todos juntos, num bloco só, e é lá que o
+ * passo 12 pôs os dele. Quem asserta sobre os limites do passo 12 usa
+ * {@link SECAO_LIMITES_12}, que os recorta por nome.
  */
-const SECAO_PASSO_11 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The listing writes (step 11)'));
+const SECAO_PASSO_11 = FONTE_TYPES.slice(
+  FONTE_TYPES.indexOf('The listing writes (step 11)'),
+  FONTE_TYPES.indexOf('The stock sync (step 12)'),
+);
 
 function trechoDoPasso11(de: string, ate: string): string {
   const inicio = SECAO_PASSO_11.indexOf(de);
@@ -3237,5 +3276,530 @@ describe('as escritas de anúncio (passo 11)', () => {
     expect(codigo.length).toBeGreaterThan(1000);
     expect(codigo).toContain('wireInt()');
     expect(codigo).toContain('wireNumber()');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O trecho do passo 12 — a seção de estoque, do marcador dela até o fim do
+ * arquivo, MAIS o bloco de limites, que fica lá em cima junto com os outros
+ * limites de fio.
+ *
+ * ⚠️ São DOIS recortes porque o passo 12 declara em dois lugares de propósito:
+ * os limites moram todos no mesmo bloco (um limite solto perto do schema que o
+ * usa é como se perde a conta de quais existem), e os schemas moram no fim.
+ * Colá-los aqui é o que deixa uma asserção falar do passo inteiro sem varrer o
+ * passo 11 junto.
+ */
+const SECAO_ESTOQUE_12 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The stock sync (step 12)'));
+const SECAO_LIMITES_12 = FONTE_TYPES.slice(
+  FONTE_TYPES.indexOf('the stock bounds (step 12)'),
+  FONTE_TYPES.indexOf('the envelope-only writes'),
+);
+const SECAO_PASSO_12 = `${SECAO_LIMITES_12}\n${SECAO_ESTOQUE_12}`;
+
+/**
+ * A amostra de resposta da PÁGINA de `update_stock`, VERBATIM.
+ *
+ * ⚠️ Ela imprime `"-"` em TODOS os campos do envelope, inclusive em `error`.
+ * Isso é o placeholder de autoria da doc que `add_item` e `get_model_list`
+ * também carregam, e o módulo não tem tolerância nenhuma para ele: `'-'` é uma
+ * string NÃO-VAZIA, portanto uma FALHA para quem julga o transporte. O schema
+ * só tem de entregá-la intacta.
+ */
+const AMOSTRA_UPDATE_STOCK = {
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: '-',
+  response: {
+    failure_list: [{ model_id: 0, failed_reason: '-' }],
+    success_list: [{ model_id: 0, location_id: '-', stock: 0 }],
+  },
+};
+
+/**
+ * A amostra da PÁGINA de `get_item_promotion`, com o `item_id` e os `model_id`
+ * trocados pelos ids de fixture — a mesma troca que {@link AMOSTRA_ADD_ITEM}
+ * faz. Todo o resto (o `promotion_id`, os instantes, os preços, a posição do
+ * `total_reserved_stock`) é o que a página imprime.
+ *
+ * ⚠️ A amostra aninha `total_reserved_stock` DENTRO de `summary_info`; a tabela
+ * de resposta da MESMA página o põe um nível acima. As duas posições estão
+ * declaradas e `reservadoDaPromocao` é quem escolhe.
+ */
+const AMOSTRA_ITEM_PROMOTION = {
+  error: '',
+  message: '',
+  warning: '',
+  request_id: 'c878e05df6313b180d40ba67cac74caf',
+  response: {
+    success_list: [
+      {
+        item_id: ITEM_ID,
+        promotion: [
+          {
+            promotion_type: 'Discount Promotions',
+            promotion_id: 649305216139969,
+            model_id: MODEL_ID,
+            start_time: 1650609000,
+            end_time: 1650616200,
+            promotion_price_info: [{ promotion_price: 160 }],
+            promotion_staging: 'upcoming',
+            promotion_stock_info_v2: { summary_info: { total_reserved_stock: 0 } },
+          },
+          {
+            promotion_type: 'Discount Promotions',
+            promotion_id: 649305216139969,
+            model_id: MODEL_ID + 1,
+            start_time: 1650609000,
+            end_time: 1650616200,
+            promotion_price_info: [{ promotion_price: 160 }],
+            promotion_staging: 'upcoming',
+            promotion_stock_info_v2: { summary_info: { total_reserved_stock: 20 } },
+          },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * A amostra da PÁGINA de `get_shop_holiday_mode`, VERBATIM.
+ *
+ * ⚠️ Ela prova o ponto que o seam do passo 12 errou: os sete campos vêm
+ * ANINHADOS sob `response`, e não planos. E repare que ela imprime um `error`
+ * de falha junto com um corpo completo — mais um lugar onde quem julga sucesso
+ * é o transporte.
+ *
+ * ⚠️ `holiday_mode_description` e `debug_msg` chegam com aspas LITERAIS dentro
+ * da string; é o que a página imprime e não é papel deste schema limpar.
+ */
+const AMOSTRA_HOLIDAY_MODE = {
+  error: 'error_shop_not_exists',
+  message: 'Invalid partner_id or shopid.',
+  request_id: '6745b892295d750abf83a29430510400',
+  response: {
+    holiday_mode_on: true,
+    holiday_mode_mtime: 1763435974,
+    holiday_mode_type: 1,
+    holiday_mode_start_time: 1770883200,
+    holiday_mode_end_time: 1773305999,
+    holiday_mode_description: '"Spring Festival"',
+    debug_msg: '""',
+  },
+};
+
+/**
+ * A amostra da PÁGINA de `get_warehouse_detail`, VERBATIM — endereço e tudo.
+ *
+ * ⚠️ O `response` dela é um ARRAY de topo, o único do pacote, e o `error` que a
+ * acompanha é `warehouse.error_not_in_whitelist`: a própria página documenta o
+ * caso comum (loja sem multi-armazém) imprimindo o erro ao lado de uma lista.
+ *
+ * ⚠️ O endereço (`state`, `city`, `district`, `town`, `address`, `zipcode`,
+ * `state_code`) é de DOCUMENTAÇÃO e fica aqui só para provar que ele atravessa
+ * pelo `.passthrough()` sem que nada o declare.
+ */
+const AMOSTRA_WAREHOUSE = {
+  request_id: '16488d76e337c606s5504f26',
+  error: 'warehouse.error_not_in_whitelist',
+  message: 'Your shop is not in multi-warehouse whitelist.',
+  response: [
+    {
+      warehouse_id: 6,
+      warehouse_name: 'warehouse1',
+      warehouse_type: 1,
+      location_id: 'IDZ',
+      address_id: 118454205,
+      region: 'ID',
+      state: 'ACEH',
+      city: 'KAB. ACEH UTARA',
+      district: 'Mato Grosso',
+      town: 'Av Maria H A dos Santos',
+      address: 'Parque Sagrada Família',
+      zipcode: '24379',
+      state_code: '12345',
+      holiday_mode_state: 0,
+    },
+  ],
+};
+
+/** Uma promoção mínima, para as asserções que só falam de UMA posição. */
+function promocao(extra: Record<string, unknown> = {}): ShopeePromocaoDeItem {
+  return shopeePromocaoDeItemSchema.parse({ model_id: MODEL_ID, ...extra });
+}
+
+describe('a sincronização de estoque (passo 12)', () => {
+  it('1 — a amostra da PÁGINA de update_stock parseia, e `error: "-"` continua a STRING `-`', () => {
+    const lido = shopeeUpdateStockSchema.parse(AMOSTRA_UPDATE_STOCK);
+    // ⚠️ Nenhuma tolerância: `'-'` é não-vazio, logo é FALHA para o transporte.
+    // Se este schema o traduzisse para `''`, uma escrita recusada pela Shopee
+    // chegaria ao app como sucesso.
+    expect(lido.error).toBe('-');
+    expect(lido.error).not.toBe('');
+    expect(lido.response.failure_list[0]!.model_id).toBe(0);
+    expect(lido.response.failure_list[0]!.failed_reason).toBe('-');
+    expect(lido.response.success_list[0]!.location_id).toBe('-');
+    expect(lido.response.success_list[0]!.stock).toBe(0);
+  });
+
+  it('2 — as duas listas de update_stock chegam `[]` quando o corpo as OMITE', () => {
+    // ⚠️ `.default([])` e não `.nullable()`: quem varre `failure_list` para
+    // saber o que foi recusado tem de conseguir varrer sempre. Um `undefined`
+    // aqui vira um `?.forEach` que não roda, e "nenhum modelo foi recusado" é
+    // exatamente a metade silenciosa de uma escrita parcial.
+    const lido = shopeeUpdateStockSchema.parse({ error: '', response: {} });
+    expect(lido.response.failure_list).toEqual([]);
+    expect(lido.response.success_list).toEqual([]);
+  });
+
+  it('3 — um `success_list` sem `location_id`/`stock` parseia com os dois em null', () => {
+    // A página diz que os dois voltam "in pairs" e só "if seller stock is used
+    // in the request": um eco enxuto é um SUCESSO documentado.
+    const lido = shopeeUpdateStockSchema.parse({
+      error: '',
+      response: { success_list: [{ model_id: MODEL_ID }] },
+    });
+    expect(lido.response.success_list[0]!.location_id).toBeNull();
+    expect(lido.response.success_list[0]!.stock).toBeNull();
+    // ÂNCORA: `stock: 0` NÃO é a mesma coisa que ausente.
+    const comZero = shopeeUpdateStockSchema.parse({
+      error: '',
+      response: { success_list: [{ model_id: MODEL_ID, stock: 0 }] },
+    });
+    expect(comZero.response.success_list[0]!.stock).toBe(0);
+  });
+
+  it('4 — a amostra da PÁGINA de get_item_promotion parseia, com `promotion_id` STRING', () => {
+    const lido = shopeeItemPromotionSchema.parse(AMOSTRA_ITEM_PROMOTION);
+    expect(lido.response.success_list).toHaveLength(1);
+    expect(lido.response.success_list[0]!.item_id).toBe(ITEM_ID);
+    expect(lido.response.success_list[0]!.promotion).toHaveLength(2);
+    const p = lido.response.success_list[0]!.promotion[0]!;
+    expect(p.promotion_id).toBe('649305216139969');
+    expect(typeof p.promotion_id).toBe('string');
+    expect(p.promotion_staging).toBe(SHOPEE_PROMOTION_STAGING.upcoming);
+    expect(p.start_time).toBe(1650609000);
+    expect(p.promotion_price_info?.[0]!.promotion_price).toBe(160);
+    // `failure_list` ausente na amostra vira `[]`, nunca undefined.
+    expect(lido.response.failure_list).toEqual([]);
+  });
+
+  it('5 — PAR: as DUAS posições documentadas de `total_reserved_stock` dão o MESMO número', () => {
+    // ⚠️ A mesma página declara o campo em dois lugares — a amostra o aninha em
+    // `summary_info`, a tabela de resposta o põe um nível acima — e os dois
+    // significam a mesma coisa. `reservadoDaPromocao` é o ÚNICO leitor, e é por
+    // isso que existe: sem ele, metade dos chamadores leria uma das posições e
+    // acharia que a promoção não segura nada.
+    const aninhado = promocao({
+      promotion_stock_info_v2: { summary_info: { total_reserved_stock: 7 } },
+    });
+    const irmao = promocao({ promotion_stock_info_v2: { total_reserved_stock: 7 } });
+    expect(reservadoDaPromocao(aninhado)).toBe(7);
+    expect(reservadoDaPromocao(irmao)).toBe(7);
+    expect(reservadoDaPromocao(aninhado)).toBe(reservadoDaPromocao(irmao));
+  });
+
+  it('6 — ⛔ QUASE-IGUAL: NENHUMA das duas posições ⇒ `null`, que NÃO é `0`', () => {
+    // ⚠️ A direção que importa. `0` significa "a promoção não segura nada" e
+    // autoriza vender tudo; `null` significa "a página não disse". Dobrar os
+    // dois no mesmo valor é o único erro aqui que VENDE A MAIS.
+    expect(reservadoDaPromocao(promocao())).toBeNull();
+    expect(reservadoDaPromocao(promocao({ promotion_stock_info_v2: {} }))).toBeNull();
+    expect(reservadoDaPromocao(promocao())).not.toBe(0);
+
+    // ⛔ QUASE-IGUAL 2 (o `??` contra o `||`): um `0` ANINHADO é uma resposta,
+    // não uma ausência, e tem de vencer o irmão. Com `||` este caso cairia para
+    // o 5 e o chamador acharia que há estoque preso onde não há.
+    const zeroAninhado = promocao({
+      promotion_stock_info_v2: {
+        summary_info: { total_reserved_stock: 0 },
+        total_reserved_stock: 5,
+      },
+    });
+    expect(reservadoDaPromocao(zeroAninhado)).toBe(0);
+    expect(reservadoDaPromocao(zeroAninhado)).not.toBe(5);
+
+    // ÂNCORA: com o aninhado NULO, o irmão é quem responde.
+    const soIrmao = promocao({
+      promotion_stock_info_v2: {
+        summary_info: { total_reserved_stock: null },
+        total_reserved_stock: 5,
+      },
+    });
+    expect(reservadoDaPromocao(soIrmao)).toBe(5);
+  });
+
+  it('7 — um `promotion_id` uint64 em forma de STRING atravessa com os dígitos EXATOS', () => {
+    const p = promocao({ promotion_id: '18446744073709551615' });
+    expect(p.promotion_id).toBe('18446744073709551615');
+    expect(idOpacoExato('18446744073709551615')).toBe(true);
+  });
+
+  it('8 — um `promotion_id` uint64 em forma de NÚMERO parseia (sem `too_big`) e NÃO é exato', () => {
+    // ⚠️ Este é o defeito que o passo 12 consertou, e ele tem DUAS metades.
+    // (a) Sob `wireInt()` a página INTEIRA caía: Zod 4 responde `too_big` acima
+    // de 2^53. Agora o corpo parseia.
+    const corpo = JSON.parse(
+      '{"error":"","response":{"success_list":[{"item_id":1,"promotion":[{"promotion_id":9007199254740993}]}]}}',
+    ) as unknown;
+    const lido = shopeeItemPromotionSchema.safeParse(corpo);
+    expect(lido.error?.issues.map((i) => `${i.path.join('.')}:${i.code}`) ?? []).toEqual([]);
+    expect(lido.success).toBe(true);
+
+    // (b) ...mas o valor JÁ chegou arredondado do `JSON.parse`, e nenhum
+    // preprocess pode desfazer isso. Os dígitos são plausíveis e NÃO são o id.
+    expect(lido.data!.response.success_list[0]!.promotion[0]!.promotion_id).toBe(
+      '9007199254740992',
+    );
+    expect(idOpacoExato(JSON.parse('9007199254740993'))).toBe(false);
+  });
+
+  it('9 — PAR: um id SEGURO é exato como número e como string; ⛔ QUASE-IGUAL: um acima de 2^53 não', () => {
+    expect(idOpacoExato(ITEM_ID)).toBe(true);
+    expect(idOpacoExato(String(ITEM_ID))).toBe(true);
+    // Uma string NUNCA é inexata — a Shopee a entregou com aspas, portanto
+    // intacta, e `idOpacoExato` só sabe falar de números.
+    expect(idOpacoExato('x')).toBe(true);
+    expect(idOpacoExato(null)).toBe(true);
+    // ⛔ O limite: o maior seguro passa, o seguinte não.
+    expect(idOpacoExato(Number.MAX_SAFE_INTEGER)).toBe(true);
+    expect(idOpacoExato(Number.MAX_SAFE_INTEGER + 2)).toBe(false);
+  });
+
+  it('10 — um modelo com `promotion_id` uint64 parseia e TODO o resto continua legível', () => {
+    // ⚠️ A razão de o conserto ter valido a pena: `promotion_id` viaja dentro de
+    // `shopeeModelSchema`, e sob `wireInt()` UM id grande derrubaria o modelo
+    // inteiro — sku, estoque, preço — por causa de um campo que ninguém grava.
+    const modelo = shopeeModelSchema.parse(
+      JSON.parse(
+        '{"model_id":2000458802,"model_sku":"SKU-AZUL-M","promotion_id":9007199254740993,"has_promotion":true,"weight":"0.35"}',
+      ),
+    );
+    expect(modelo.promotion_id).toBe('9007199254740992');
+    expect(modelo.model_id).toBe(2000458802);
+    expect(modelo.model_sku).toBe('SKU-AZUL-M');
+    expect(modelo.has_promotion).toBe(true);
+    expect(modelo.weight).toBe('0.35');
+  });
+
+  it('11 — a amostra da PÁGINA de get_shop_holiday_mode parseia — e ela é EMBRULHADA', () => {
+    // ⚠️ O seam do passo 12 descreveu esta operação como PLANA. A página é quem
+    // manda, e a amostra dela aninha os sete campos sob `response`.
+    const lido = shopeeShopHolidayModeSchema.parse(AMOSTRA_HOLIDAY_MODE);
+    expect(lido.response.holiday_mode_on).toBe(true);
+    expect(lido.response.holiday_mode_type).toBe(SHOPEE_HOLIDAY_MODE_TYPE.parcial);
+    expect(lido.response.holiday_mode_mtime).toBe(1763435974);
+    expect(lido.response.holiday_mode_start_time).toBe(1770883200);
+    expect(lido.response.holiday_mode_end_time).toBe(1773305999);
+    expect(lido.response.holiday_mode_description).toBe('"Spring Festival"');
+    expect(lido.response.debug_msg).toBe('""');
+    // A página não declara `warning`; o envelope o dá como null sem reclamar.
+    expect(lido.warning).toBeNull();
+  });
+
+  it('12 — ⛔ QUASE-IGUAL: o MESMO corpo em forma PLANA (sem `response`) FALHA', () => {
+    // ⚠️ Embrulhado e plano são dois corpos a uma chamada de distância, e é o
+    // schema da operação que tem de saber qual é — o mesmo argumento do
+    // `dataOp`. Se esta declaração estivesse errada, o feriado da loja leria
+    // `null` em tudo e o portão diria "não há feriado" para sempre.
+    const plano = { ...AMOSTRA_HOLIDAY_MODE.response, error: '', request_id: 'req-plano' };
+    const recusado = shopeeShopHolidayModeSchema.safeParse(plano);
+    expect(recusado.success).toBe(false);
+    expect(recusado.error?.issues.map((i) => i.path.join('.'))).toContain('response');
+
+    // ÂNCORA: o MESMO corpo plano parseia no schema do PAYLOAD, que é só o miolo.
+    const miolo = shopeeShopHolidayModePayloadSchema.parse(AMOSTRA_HOLIDAY_MODE.response);
+    expect(miolo.holiday_mode_on).toBe(true);
+  });
+
+  it('13 — `holiday_mode_type` 0 e 1 parseiam, e a constante nomeia a polaridade da PÁGINA', () => {
+    // ⚠️ Os números leem ao CONTRÁRIO: o MAIOR é o estado mais brando. Uma
+    // constante com a polaridade trocada é um portão que fecha a loja no
+    // feriado parcial e a deixa aberta no total.
+    expect(SHOPEE_HOLIDAY_MODE_TYPE.total).toBe(0);
+    expect(SHOPEE_HOLIDAY_MODE_TYPE.parcial).toBe(1);
+    for (const tipo of [0, 1]) {
+      const lido = shopeeShopHolidayModePayloadSchema.parse({
+        holiday_mode_on: true,
+        holiday_mode_type: tipo,
+      });
+      expect(lido.holiday_mode_type).toBe(tipo);
+    }
+    // A citação da página fica no docblock, e é ela que prova a polaridade.
+    expect(SECAO_LIMITES_12).toContain('1: Partial Holiday');
+    expect(SECAO_LIMITES_12).toContain('0: Full Holiday');
+  });
+
+  it('14 — a amostra da PÁGINA de get_warehouse_detail parseia como ARRAY, `location_id` STRING', () => {
+    const lido = shopeeWarehouseDetailSchema.parse(AMOSTRA_WAREHOUSE);
+    expect(Array.isArray(lido.response)).toBe(true);
+    expect(lido.response).toHaveLength(1);
+    const w = lido.response[0]!;
+    // ⚠️ `IDZ` — um código curto e opaco. Sob `wireInt()` ele não seria só
+    // impreciso: não é número nenhum, e a página inteira cairia.
+    expect(w.location_id).toBe('IDZ');
+    expect(typeof w.location_id).toBe('string');
+    expect(w.warehouse_type).toBe(SHOPEE_WAREHOUSE_TYPE.coleta);
+    expect(w.holiday_mode_state).toBe(0);
+    expect(w.warehouse_id).toBe(6);
+    // O endereço atravessa sem que nada o declare.
+    expect((w as Record<string, unknown>).zipcode).toBe('24379');
+    // E o `error` que a página imprime ao lado da lista chega intacto.
+    expect(lido.error).toBe(SHOPEE_WAREHOUSE_SEM_ACESSO[0]);
+  });
+
+  it('15 — ⛔ QUASE-IGUAL: o MESMO corpo sob um payload OBJETO FALHA', () => {
+    // ⚠️ A única operação do pacote cujo `response` é um array de topo. Array e
+    // objeto não são intercambiáveis, e quem sabe qual é tem de ser o schema.
+    const comoObjeto = wrappedOp(z.object({ warehouse_list: z.array(shopeeWarehouseSchema) }));
+    const recusado = comoObjeto.safeParse(AMOSTRA_WAREHOUSE);
+    expect(recusado.success).toBe(false);
+
+    // ÂNCORA (o caminho inverso): um `response` OBJETO falha no schema de array.
+    const inverso = shopeeWarehouseDetailSchema.safeParse({
+      error: '',
+      response: { warehouse_list: [] },
+    });
+    expect(inverso.success).toBe(false);
+    expect(inverso.error?.issues.map((i) => i.path.join('.'))).toContain('response');
+  });
+
+  it('16 — os quatro campos novos de get_shop_info default para `null` quando AUSENTES', () => {
+    // ⚠️ `null` aqui é "a página não disse", jamais `false`: três deles só voltam
+    // para as lojas que eles descrevem, e a amostra da página não imprime
+    // nenhum. Um portão que lesse `null` como `false` decidiria sobre um fato
+    // que nunca chegou.
+    const lido = shopeeShopInfoSchema.parse(SHOP_INFO);
+    expect(lido.is_upgraded_cbsc).toBeNull();
+    expect(lido.is_mart_shop).toBeNull();
+    expect(lido.is_outlet_shop).toBeNull();
+    expect(lido.mart_outlet_structure_type).toBeNull();
+    // ⛔ QUASE-IGUAL: nulo NÃO é falso, e o teste tem de dizer isso.
+    expect(lido.is_mart_shop).not.toBe(false);
+  });
+
+  it('17 — ...e chegam quando PRESENTES, inclusive `false` e a estrutura de armazém', () => {
+    const lido = shopeeShopInfoSchema.parse({
+      ...SHOP_INFO,
+      is_upgraded_cbsc: false,
+      is_mart_shop: true,
+      is_outlet_shop: false,
+      mart_outlet_structure_type: 'warehouse_mart_shop',
+    });
+    expect(lido.is_upgraded_cbsc).toBe(false);
+    expect(lido.is_upgraded_cbsc).not.toBeNull();
+    expect(lido.is_mart_shop).toBe(true);
+    expect(lido.is_outlet_shop).toBe(false);
+    expect(lido.mart_outlet_structure_type).toBe('warehouse_mart_shop');
+
+    // ⚠️ LOOSE de propósito: uma quinta estrutura tem de custar UMA decisão de
+    // portão, nunca a leitura de loja de que toda tela de conta depende.
+    const desconhecida = shopeeShopInfoSchema.parse({
+      ...SHOP_INFO,
+      mart_outlet_structure_type: 'estrutura_que_ainda_nao_existe',
+    });
+    expect(desconhecida.mart_outlet_structure_type).toBe('estrutura_que_ainda_nao_existe');
+  });
+
+  it('18 — cada limite do passo 12 está FIXADO, e cada um cita a sua página', () => {
+    expect(SHOPEE_UPDATE_STOCK_MAX_MODELS).toBe(50);
+    expect(SHOPEE_STOCK_MIN_WIRE).toBe(0);
+    expect(SHOPEE_ITEM_PROMOTION_MAX_IDS).toBe(50);
+    expect(SHOPEE_HOLIDAY_MODE_TYPE).toEqual({ total: 0, parcial: 1 });
+    expect(SHOPEE_WAREHOUSE_TYPE).toEqual({ coleta: 1, retorno: 2 });
+    expect(SHOPEE_PROMOTION_STAGING).toEqual({ ongoing: 'ongoing', upcoming: 'upcoming' });
+    expect([...SHOPEE_WAREHOUSE_SEM_ACESSO]).toEqual([
+      'warehouse.error_not_in_whitelist',
+      'warehouse.error_can_not_find_warehouse',
+    ]);
+
+    // ⚠️ `SHOPEE_STOCK_MIN_WIRE` é ZERO, e zero é uma QUANTIDADE — não uma
+    // ausência e não o `> 0` que todo campo com cara de id usa. Zerar um anúncio
+    // é a operação normal quando a Shopee devolve estoque sozinha ao cancelar um
+    // pedido (anúncio 1445 BR).
+    expect(SHOPEE_STOCK_MIN_WIRE).not.toBe(1);
+
+    // As citações de página, que são o que impede um literal de virar palpite.
+    expect(SECAO_LIMITES_12).toContain('Length should be between 1 to 50.');
+    expect(SECAO_LIMITES_12).toContain('can send 1 to 50 items');
+    expect(SECAO_LIMITES_12).toContain('Pickup Warehouse');
+    expect(SECAO_LIMITES_12).toContain('multi-warehouse');
+    expect(SECAO_LIMITES_12).toContain('ongoing/upcoming');
+  });
+
+  it('19 — `SHOPEE_UPDATE_STOCK_MAX_MODELS` e `SHOPEE_MODEL_MAX_PER_ITEM` são declarados SEPARADAMENTE', () => {
+    // ⚠️ Os dois valem 50 HOJE e vêm de páginas DIFERENTES: um limita quantos
+    // modelos cabem numa escrita de estoque, o outro quantos modelos um item
+    // pode TER. Uma constante só — ou uma definida em termos da outra — faria a
+    // próxima medição mexer nas duas de uma vez, e uma delas ficaria errada sem
+    // que nada falhasse.
+    expect(SHOPEE_UPDATE_STOCK_MAX_MODELS).toBe(SHOPEE_MODEL_MAX_PER_ITEM);
+    const codigo = semComentarios(FONTE_TYPES);
+    expect(codigo).toContain('export const SHOPEE_UPDATE_STOCK_MAX_MODELS = 50;');
+    expect(codigo).toContain('export const SHOPEE_MODEL_MAX_PER_ITEM = 50;');
+    // ⛔ QUASE-IGUAL: nenhuma das duas é definida em termos da outra.
+    expect(codigo).not.toContain('SHOPEE_UPDATE_STOCK_MAX_MODELS = SHOPEE_MODEL_MAX_PER_ITEM');
+    expect(codigo).not.toContain('SHOPEE_MODEL_MAX_PER_ITEM = SHOPEE_UPDATE_STOCK_MAX_MODELS');
+    // E os DOIS docblocks dizem que a igualdade de hoje é coincidência.
+    expect(SECAO_LIMITES_12).toContain('SHOPEE_MODEL_MAX_PER_ITEM');
+    expect(SECAO_PASSO_11).toContain('SHOPEE_UPDATE_STOCK_MAX_MODELS');
+  });
+
+  it('20 — nenhum schema do passo 12 declara um `z.number()` CRU', () => {
+    // O mesmo invariante que `integration-response-numbers-tolerant.test.js`
+    // guarda no repo, aplicado a ESTA seção (#1087).
+    const codigo = semComentarios(SECAO_PASSO_12);
+    expect(codigo.split('\n').filter((linha) => /z\.number\(\)/.test(linha))).toEqual([]);
+    // ÂNCORA: a seção foi mesmo encontrada e tem números dentro.
+    expect(codigo.length).toBeGreaterThan(1000);
+    expect(codigo).toContain('wireInt()');
+    expect(SECAO_ESTOQUE_12.length).toBeGreaterThan(1000);
+    expect(SECAO_LIMITES_12.length).toBeGreaterThan(500);
+  });
+
+  it('21 — o docblock de `promotion_id` diz que o campo é uma STRING OPACA', () => {
+    // ⚠️ Este arquivo já viveu o contrário: o docblock avisava do uint64 e o
+    // código usava `wireInt()` assim mesmo. A asserção existe para que as duas
+    // metades não possam voltar a discordar em silêncio.
+    const doc = FONTE_TYPES.slice(
+      FONTE_TYPES.indexOf('One model (variation) of an item.'),
+      FONTE_TYPES.indexOf('export const shopeeModelSchema'),
+    );
+    expect(doc.length).toBeGreaterThan(200);
+    expect(doc).toContain('OPAQUE STRING');
+    expect(doc).toContain('uint64');
+    // ⛔ QUASE-IGUAL: a afirmação antiga — que ele é lido como número — saiu.
+    expect(doc).not.toContain('read as a number');
+    // ⚠️ O escopo é a SEÇÃO DO PASSO 9, não o arquivo. Há um SEGUNDO
+    // `promotion_id: wireInt()` no módulo, na linha de item de
+    // `get_order_detail` (a seção de pedidos), e ele NÃO é deste passo: mexer
+    // nele mudaria o que a importação de pedidos — que tem tráfego real — lê
+    // hoje. Ele carrega a MESMA classe de id e portanto o mesmo risco; está
+    // registrado no relatório do passo 12 em vez de consertado de carona.
+    expect(semComentarios(SECAO_PASSO_9)).not.toContain('promotion_id: wireInt()');
+    expect(semComentarios(SECAO_PASSO_9)).toContain('promotion_id: shopeeIdOpaco()');
+  });
+
+  it('22 — as três posições de `location_id` são STRING, nunca número', () => {
+    // ⚠️ `location_id` é o valor que amarra a escrita multi-armazém: ele sai no
+    // pedido, volta no eco de `update_stock` e é listado por
+    // `get_warehouse_detail`. Se UMA das três o lesse como número, as outras
+    // duas comparariam contra outra coisa — e `IDZ` nem número é.
+    const doWarehouse =
+      shopeeWarehouseDetailSchema.parse(AMOSTRA_WAREHOUSE).response[0]!.location_id;
+    const doEco = shopeeUpdateStockSchema.parse({
+      error: '',
+      response: { success_list: [{ model_id: MODEL_ID, location_id: 'IDZ', stock: 3 }] },
+    }).response.success_list[0]!.location_id;
+    expect(doWarehouse).toBe('IDZ');
+    expect(doEco).toBe('IDZ');
+    expect(doWarehouse).toBe(doEco);
+    // ⛔ QUASE-IGUAL: um código de outra região NÃO é o mesmo lugar.
+    const outro = shopeeWarehouseSchema.parse({ warehouse_id: 7, location_id: 'SGZ' });
+    expect(outro.location_id).toBe('SGZ');
+    expect(outro.location_id).not.toBe(doWarehouse);
   });
 });

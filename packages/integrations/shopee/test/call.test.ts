@@ -8,7 +8,13 @@ import {
   type ShopeeWarning,
   shopeeCall,
 } from '../src/call';
-import { ShopeeApiError, ShopeeNetworkError, ShopeeSchemaError } from '../src/errors';
+import {
+  ShopeeApiError,
+  ShopeeApiPartialError,
+  ShopeeNetworkError,
+  ShopeeRateLimitError,
+  ShopeeSchemaError,
+} from '../src/errors';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -395,5 +401,199 @@ describe('shopeeCall — a tolerância por operação para um `error` AUSENTE', 
 
     expect(erro).toBeInstanceOf(ShopeeApiError);
     expect((erro as ShopeeApiError).code).toBe('error_param');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        `payloadNoErro` — o erro e a carga no MESMO corpo, por operação       */
+/* -------------------------------------------------------------------------- */
+
+const ESTOQUE_PATH = '/api/v2/product/update_stock';
+const MODEL_ID = 2000458802;
+
+/**
+ * O schema da OPERAÇÃO, montado como o `wrappedOp` do `types.ts` monta os de
+ * verdade: o envelope INTEIRO mais o `response`.
+ *
+ * ⚠️ `response` é EXIGIDO, sem default — é isso que faz um corpo de falha comum
+ * (uma cota diária, uma autorização morta) reprovar aqui e sair pela classe de
+ * sempre. A tolerância não é uma escolha do transporte: é o schema da operação
+ * decidindo se aquele corpo tem carga.
+ */
+const estoqueSchema = z
+  .object({
+    request_id: z.string().nullable().default(null),
+    error: z.string(),
+    message: z.string().nullable().default(null),
+    warning: z.string().nullable().default(null),
+    response: z
+      .object({
+        failure_list: z
+          .array(
+            z
+              .object({
+                model_id: z.number(),
+                failed_reason: z.string().nullable().default(null),
+              })
+              .passthrough(),
+          )
+          .default([]),
+        success_list: z.array(z.object({ model_id: z.number() }).passthrough()).default([]),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+/**
+ * O corpo que a própria página do `update_stock` descreve: o `error` de lote
+ * CONVIVENDO com o `failure_list` que o explica — *"Update stock failed, please
+ * check failure_list for detailed reason"*.
+ */
+function corpoParcial(error = 'error_busi_update_stock_failed') {
+  return {
+    error,
+    message: 'Update stock failed, please check failure_list for detailed reason',
+    warning: null,
+    request_id: 'req-estoque',
+    response: {
+      failure_list: [
+        { model_id: MODEL_ID, failed_reason: 'Total stock must be more than reserved stock.' },
+      ],
+      success_list: [],
+    },
+  };
+}
+
+function chamarEstoque(
+  fetchImpl: typeof globalThis.fetch,
+  opcoes: { readonly payloadNoErro?: boolean } = {},
+) {
+  return shopeeCall(transporte(fetchImpl), {
+    method: 'POST',
+    path: ESTOQUE_PATH,
+    call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+    schema: estoqueSchema,
+    surface: 'business',
+    body: {
+      item_id: 2500139861,
+      stock_list: [{ model_id: MODEL_ID, seller_stock: [{ stock: 3 }] }],
+    },
+    ...opcoes,
+  });
+}
+
+describe('shopeeCall — `payloadNoErro`, a carga que viaja junto com a falha', () => {
+  it('T13 — PAR: com a flag, um `error` de lote chega como ShopeeApiPartialError com o failure_list dentro', async () => {
+    // ⚠️ Sem isto o `shopeeErrorFromEnvelope` joga o corpo fora e sobram
+    // code/message/requestId/warning — o item inteiro falha como um bloco só,
+    // sem atribuição por modelo. É o defeito do app legado, letra por letra.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpoParcial()));
+    const erro = await chamarEstoque(fetchMock, { payloadNoErro: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    // ⚠️ Continua sendo uma FALHA da família de sempre: a flag não muda veredicto
+    // nenhum, só para de descartar a prova.
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_busi_update_stock_failed');
+    expect((erro as ShopeeApiError).kind).toBe('other');
+    expect((erro as ShopeeApiError).requestId).toBe('req-estoque');
+
+    // A carga é a saída do schema da OPERAÇÃO, envelope incluído — exatamente o
+    // que o caminho de sucesso teria devolvido.
+    const carga = estoqueSchema.parse((erro as ShopeeApiPartialError).parsed);
+    expect(carga.response.failure_list).toHaveLength(1);
+    expect(carga.response.failure_list[0]!.model_id).toBe(MODEL_ID);
+    expect(carga.response.success_list).toEqual([]);
+    expect(carga.error).toBe('error_busi_update_stock_failed');
+  });
+
+  it('T14 — ⛔ QUASE-IGUAL: SEM a flag, o MESMO corpo é a classe BASE e não carrega `parsed`', async () => {
+    // O par do T13. A tolerância é opt-in por CALL SITE: se ela virasse global,
+    // toda operação passaria a carregar corpo de falha em log e em erro, e nada
+    // além desta linha diria isso.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpoParcial()));
+    const erro = await chamarEstoque(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect(erro).not.toHaveProperty('parsed');
+    expect((erro as ShopeeApiError).code).toBe('error_busi_update_stock_failed');
+  });
+
+  it('T15 — ⛔ QUASE-IGUAL: com a flag, um erro cujo corpo NÃO é o da operação cai na classe BASE', async () => {
+    // ⚠️ A condição inteira da tolerância. `wrappedOp` exige `response`, e um
+    // corpo de falha comum não traz nenhum — então o schema reprova e a flag não
+    // fabrica carga nenhuma. Construir o parcial mesmo com o parse falhando
+    // entregaria `parsed: undefined` a um chamador que já o narrou.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'error_param',
+        message: 'Wrong model_id.',
+        warning: null,
+        request_id: 'req-estoque',
+      }),
+    );
+    const erro = await chamarEstoque(fetchMock, { payloadNoErro: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeApiError).code).toBe('error_param');
+  });
+
+  it('T16 — ⛔ QUASE-IGUAL: um envelope de SUCESSO com a flag volta normalmente, nunca como parcial', async () => {
+    // ⚠️ O ramo parcial vive DEPOIS do veredicto `error === ''` e só no lado da
+    // falha. Movê-lo para cima transformaria toda resposta boa numa exceção.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: '',
+        message: null,
+        warning: null,
+        request_id: 'req-estoque',
+        response: { failure_list: [], success_list: [{ model_id: MODEL_ID }] },
+      }),
+    );
+    const res = await chamarEstoque(fetchMock, { payloadNoErro: true });
+
+    expect(res.response.success_list).toHaveLength(1);
+    expect(res.error).toBe('');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('T17 — a flag é CEGA ao código: o mesmo corpo com `product.` na frente se comporta igual', async () => {
+    // ⚠️ A Shopee imprime o mesmo código das duas formas, às vezes na mesma
+    // página. Quem decide o que é parcial é a OPERAÇÃO, não o transporte — e o
+    // `code` continua verbatim, com prefixo, porque é o que o app loga.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoParcial('product.error_busi_update_stock_failed')),
+    );
+    const erro = await chamarEstoque(fetchMock, { payloadNoErro: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeApiError).code).toBe('product.error_busi_update_stock_failed');
+    expect(
+      estoqueSchema.parse((erro as ShopeeApiPartialError).parsed).response.failure_list,
+    ).toHaveLength(1);
+  });
+
+  it('T18 — ⛔ QUASE-IGUAL: um limite de requisições com a flag continua ShopeeRateLimitError', async () => {
+    // ⚠️ O parcial SUBSTITUI a subclasse que o envelope teria produzido, de modo
+    // que as classes não se excluem por construção — o que guarda esta quina é o
+    // SCHEMA: um corpo estrangulado não traz `response` e reprova. Se um dia a
+    // Shopee mandar `response` junto com `error_limit`, a escada que ler só a
+    // classe perde a cota diária; quem precisa do veredicto de retentativa lê
+    // `kind`. Esta linha é o aviso, e ela falha no dia em que a quina mudar.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'error_limit',
+        message: 'The total API call number made by your APP has reached the daily API call limit',
+        warning: null,
+        request_id: 'req-estoque',
+      }),
+    );
+    const erro = await chamarEstoque(fetchMock, { payloadNoErro: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeRateLimitError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeRateLimitError).kind).toBe('daily');
   });
 });

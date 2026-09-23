@@ -91,6 +91,7 @@ export const TIPO_AVISO_LABELS = {
   pedidoPrecisaDecisao: 'Pedido aguardando decisão',
   anuncioComViolacao: 'Anúncio com violação',
   jobConcluidoComFalhas: 'Processamento concluído com falhas',
+  estoqueAcimaDoDisponivel: 'Estoque enviado acima do disponível',
 } as const;
 
 /**
@@ -107,6 +108,35 @@ export const TIPO_AVISO_LABELS = {
  * The list starts small on purpose: v1 wires no producer (the Shopee sweep needs
  * `apps/shopee/functions/`, created in that plan's step 3), so these are the
  * shapes the first producers will claim, not a speculative catalogue.
+ *
+ * ---
+ *
+ * **`estoqueAcimaDoDisponivel`** (Shopee step 12, #1520) — a marketplace
+ * promotion has reserved more units of a listing than the ERP actually has, and
+ * the stock we sent was clamped UP to the reservation rather than refused. The
+ * operator can fix it: end the promotion, reduce its reserved stock in the
+ * channel's own console, or restock.
+ *
+ *  - **Name is CHANNEL-NEUTRAL on purpose.** The condition is not Shopee's — any
+ *    channel that lets a promotion hold stock can produce it — and `canal`
+ *    already carries which one did. A `shopee…` prefix here would force a second
+ *    tipo, a second wording and a second resolver the first time another channel
+ *    needed the same sentence. None of the existing nine fits:
+ *    `anuncioComViolacao` means the channel took the listing down,
+ *    `pedidoPrecisaDecisao` is per pedido, `jobConcluidoComFalhas` is per job.
+ *  - **Machine resolver** (this docblock's own rule, above): **the next send of
+ *    the same `(conta, produto)` that needed no clamp**, with
+ *    `resolucaoMotivo: 'estoque-dentro-do-disponivel'`. It reports a TRANSITION,
+ *    so a listing that quietly comes back within its reservation closes its own
+ *    aviso without anyone looking.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId })`
+ *    — deliberately **no `janela`**. The promotion changes underneath us, so a
+ *    windowed key would make the resolver compute a key that was never created
+ *    and the row would stand until retention swept it.
+ *  - **Severity `atencao`**, never `critico`: nothing is down, and `critico`
+ *    escalates out of the app.
+ *  - **`params` are NUMBERS only** — `anuncio`, `reservado`, `disponivel`. No
+ *    provider prose, no promotion body, no produto name.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -119,6 +149,7 @@ export const tipoAvisoSchema = z
     'pedidoPrecisaDecisao',
     'anuncioComViolacao',
     'jobConcluidoComFalhas',
+    'estoqueAcimaDoDisponivel',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -134,6 +165,7 @@ export const TIPO_AVISO = {
   pedidoPrecisaDecisao: 'pedidoPrecisaDecisao',
   anuncioComViolacao: 'anuncioComViolacao',
   jobConcluidoComFalhas: 'jobConcluidoComFalhas',
+  estoqueAcimaDoDisponivel: 'estoqueAcimaDoDisponivel',
 } as const satisfies Record<string, TipoAviso>;
 
 /* -------------------------------------------------------------------------- */

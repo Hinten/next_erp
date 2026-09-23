@@ -17,6 +17,7 @@
     "./admin/avisos": "./src/admin/avisos/index.ts",
     "./admin/clientes": "./src/admin/clientes/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
+    "./admin/estoque": "./src/admin/estoque/index.ts",
     "./admin/grpcErrors": "./src/admin/grpcErrors.ts",
     "./admin/imposto": "./src/admin/imposto/index.ts",
     "./admin/notifications": "./src/admin/notifications/index.ts",

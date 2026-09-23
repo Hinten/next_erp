@@ -107,6 +107,53 @@ export function dataOp<S extends z.ZodType>(inner: S) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                        Ids that must never be numbers                      */
+/* -------------------------------------------------------------------------- */
+
+/** The preprocess step of {@link shopeeIdOpaco} — a JSON number becomes its digits. */
+function paraIdOpaco(v: unknown): unknown {
+  return typeof v === 'number' ? String(v) : v;
+}
+
+/**
+ * A provider id that must never become a JS number, read as a STRING.
+ *
+ * ⚠️ NOT `wireInt()`, and the difference is a whole page rather than one field.
+ * `wireInt()` is `z.preprocess(toNumberish, z.number().int())`
+ * (`packages/core/src/wire/index.ts`), and Zod 4's `.int()` answers `too_big`
+ * above `Number.MAX_SAFE_INTEGER` — so a uint64 id declared `wireInt()` does not
+ * lose precision quietly, it FAILS the parse of the body that carries it.
+ * `promotion_id` became a uint64 on 2026-07-31 and rides two pages this package
+ * reads ({@link shopeeModelSchema} and {@link shopeePromocaoDeItemSchema}), so
+ * both would go down on the first big id Shopee mints.
+ *
+ * ⚠️ It cannot REPAIR a big number: by the time the preprocess runs, `JSON.parse`
+ * has already rounded it. `String(9007199254740993)` is `'9007199254740992'`, a
+ * plausible id that is not the one Shopee sent. That is what
+ * {@link idOpacoExato} is for — the value still parses (one field never costs a
+ * page) and a caller that stores or compares one can ask whether it is exact.
+ *
+ * The `.nullable().default(null)` sits OUTSIDE the preprocess, which is the
+ * `wireInt().nullable().default(null)` idiom the rest of this module uses: an
+ * absent key reads as `null` without the effect ever running.
+ */
+export function shopeeIdOpaco() {
+  return z.preprocess(paraIdOpaco, z.string()).nullable().default(null);
+}
+
+/**
+ * `true` when an opaque id arrived in a form that survived `JSON.parse` exactly:
+ * a string (Shopee quoted it), or a number inside the safe range.
+ *
+ * `false` means a NUMERIC id above `Number.MAX_SAFE_INTEGER` arrived and is
+ * already rounded — the digits {@link shopeeIdOpaco} produced are not the id.
+ * Diagnostics only: nothing in step 12 stores a `promotion_id`.
+ */
+export function idOpacoExato(bruto: unknown): boolean {
+  return typeof bruto !== 'number' || Number.isSafeInteger(bruto);
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                    Enums                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -180,7 +227,17 @@ export type ShopeeRefreshResponse = z.infer<typeof shopeeRefreshResponseSchema>;
 /*                              The read endpoints                            */
 /* -------------------------------------------------------------------------- */
 
-/** `GET /api/v2/shop/get_shop_info` — FLAT (no `response` wrapper). */
+/**
+ * `GET /api/v2/shop/get_shop_info` — FLAT (no `response` wrapper).
+ *
+ * ⚠️ The four last fields are the SHOP-level gates of the stock sync (step 12),
+ * all four confirmed on the page's own Response params (read 2026-09-21). They
+ * are `.nullable().default(null)` because the page returns three of them only
+ * for the shop kinds they describe: `mart_outlet_structure_type` is documented
+ * "(Only returned when requesting a Mart or Outlet Shop)", and the shop sample
+ * prints neither it nor `is_mart_shop`/`is_outlet_shop`. A gate that reads
+ * `null` must therefore mean "not stated", never "false".
+ */
 export const shopeeShopInfoSchema = flatOp({
   shop_name: z.string(),
   region: z.string(),
@@ -193,6 +250,19 @@ export const shopeeShopInfoSchema = flatOp({
   merchant_id: wireInt().nullable().default(null),
   is_sip: z.boolean().nullable().default(null),
   shop_fulfillment_flag: z.string().nullable().default(null),
+  /** "whether this merchant is upgraded to CBSC, including CNSC and KRSC." */
+  is_upgraded_cbsc: z.boolean().nullable().default(null),
+  /** "Indicates whether the current shop is a Mart Shop." */
+  is_mart_shop: z.boolean().nullable().default(null),
+  /** "Indicates whether the current shop is an Outlet Shop." */
+  is_outlet_shop: z.boolean().nullable().default(null),
+  /**
+   * `normal_mart_shop` | `warehouse_mart_shop` | `normal_outlet_shop` |
+   * `warehouse_outlet_shop` — LOOSE for {@link shopeeItemListRowSchema}'s
+   * reason: an unknown value must cost one gate decision, never the shop read
+   * that every conta screen depends on.
+   */
+  mart_outlet_structure_type: z.string().nullable().default(null),
 });
 export type ShopeeShopInfo = z.infer<typeof shopeeShopInfoSchema>;
 
@@ -2374,11 +2444,16 @@ export type ShopeeStandardiseTierVariation = z.infer<typeof shopeeStandardiseTie
 /**
  * One model (variation) of an item.
  *
- * ⚠️ `promotion_id` is declared and READ so a body carrying it parses — and it
- * is NEVER stored. It became a **uint64** on 2026-07-31: a value above 2^53
- * cannot survive `JSON.parse` into a `number`, and `z.number().int()` would
- * accept the already-corrupted result. It is also volatile promotion state,
- * re-readable from `get_item_promotion` at any time.
+ * ⚠️ `promotion_id` is an OPAQUE STRING ({@link shopeeIdOpaco}), never a number,
+ * and it is still NEVER stored. It became a **uint64** on 2026-07-31, and under
+ * the `wireInt()` it carried until step 12 that was a live parse hazard rather
+ * than a precision one: Zod 4's `.int()` answers `too_big` above
+ * `Number.MAX_SAFE_INTEGER`, so ONE big id would have failed the whole
+ * `get_model_list` page — step 9's import and step 11's model reconciliation
+ * with it. The docblock said so and the code did the unsafe thing anyway; step
+ * 12 made the code agree. A number that arrived already rounded still parses,
+ * and {@link idOpacoExato} is how a caller asks. The value remains volatile
+ * promotion state, re-readable from `get_item_promotion` at any time.
  *
  * ⚠️ `model_status` is a LOOSE `z.string()`, not the two-value enum: the LINK
  * schema is where that enum lives, and an unknown value must cost ONE item's
@@ -2391,7 +2466,7 @@ export const shopeeModelSchema = z
   .object({
     model_id: wireInt(),
     tier_index: z.array(wireInt()).default([]),
-    promotion_id: wireInt().nullable().default(null),
+    promotion_id: shopeeIdOpaco(),
     has_promotion: z.boolean().nullable().default(null),
     model_sku: z.string().nullable().default(null),
     model_status: z.string().nullable().default(null),
@@ -2696,6 +2771,13 @@ export const SHOPEE_TIER_MAX_OPTIONS = 50;
 /**
  * `add_model.model_list` limits [1,50]; `update_model.model` "between 1 to 50";
  * `init_tier_variation.model` "model number at most 50".
+ *
+ * ⚠️ The CREATE-side bound, and it is NOT
+ * {@link SHOPEE_UPDATE_STOCK_MAX_MODELS} even though both read 50 today. This
+ * one bounds how many models an item may be GIVEN; that one bounds how many
+ * fit in ONE stock write. They are stated by different pages, and a probe that
+ * moves one must not move the other — so they are two constants, and a test
+ * pins that they are separately declared.
  */
 export const SHOPEE_MODEL_MAX_PER_ITEM = 50;
 
@@ -2767,6 +2849,97 @@ export type ShopeeUploadImageScene =
  */
 export const SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO: ShopeeUploadImageScene =
   SHOPEE_UPLOAD_IMAGE_SCENE.normal;
+
+/* ---------------------- the stock bounds (step 12) ------------------------ */
+
+/**
+ * `update_stock.stock_list`: "Length should be between 1 to 50."
+ *
+ * ⚠️ The batch bound of ONE stock write, and deliberately a different constant
+ * from {@link SHOPEE_MODEL_MAX_PER_ITEM}, which bounds how many models an item
+ * may HAVE. An item at the model ceiling still takes exactly one call today;
+ * the day either page moves, only the one that moved changes here.
+ */
+export const SHOPEE_UPDATE_STOCK_MAX_MODELS = 50;
+
+/**
+ * The floor of a stock value on the wire — `0` is a legal quantity on an
+ * UPDATE, not an absence.
+ *
+ * ⚠️ It NAMES the floor; it does not enforce it. The outgoing guard on
+ * `seller_stock[].stock` is `assertIdNaoNegativo` — `>= 0` **and** a safe
+ * integer, which is why the check is not a bare comparison against this
+ * constant — and a reader comparing the two must not be told otherwise.
+ * `update_stock`'s own response sample prints `"stock": 0`, probe P6 measured a
+ * `stock: 0` update accepted live, and announcement 1445 (BR) is the behaviour
+ * that makes the value load-bearing: Shopee RESTORES stock by itself when an
+ * earlier order is cancelled, so keeping a sold-out listing at zero is the
+ * integrator's job.
+ */
+export const SHOPEE_STOCK_MIN_WIRE = 0;
+
+/** `get_item_promotion.item_id_list`: "Item ID list, can send 1 to 50 items." */
+export const SHOPEE_ITEM_PROMOTION_MAX_IDS = 50;
+
+/**
+ * `get_shop_holiday_mode.holiday_mode_type` — "1: Partial Holiday: seller can
+ * still receive orders during partial holiday / 0: Full Holiday: seller can not
+ * receive orders during full holiday".
+ *
+ * ⚠️ Named because the numbers read BACKWARDS: the bigger number is the milder
+ * state. The page also says "only when holiday_mode_on = true will the
+ * holiday_mode_type work", so the value means nothing on its own.
+ */
+export const SHOPEE_HOLIDAY_MODE_TYPE = { total: 0, parcial: 1 } as const;
+export type ShopeeHolidayModeType =
+  (typeof SHOPEE_HOLIDAY_MODE_TYPE)[keyof typeof SHOPEE_HOLIDAY_MODE_TYPE];
+
+/**
+ * `get_warehouse_detail.warehouse_type` — "1: Pickup Warehouse - 2: Return
+ * Warehouse", "Default value is 1 (Pickup Warehouse)".
+ */
+export const SHOPEE_WAREHOUSE_TYPE = { coleta: 1, retorno: 2 } as const;
+export type ShopeeWarehouseType =
+  (typeof SHOPEE_WAREHOUSE_TYPE)[keyof typeof SHOPEE_WAREHOUSE_TYPE];
+
+/**
+ * The two `get_warehouse_detail` codes that mean "this shop has no
+ * multi-warehouse regime", rather than "the read failed".
+ *
+ * - `warehouse.error_not_in_whitelist` — "This error will show if your shop has
+ *   no permission to access multi-warehouse". It is the page's OWN response
+ *   sample, i.e. the expected answer for an ordinary shop.
+ * - `warehouse.error_can_not_find_warehouse` — "This error will show if there
+ *   is no legal warehouse address for given shop id".
+ *
+ * ⚠️ Both spellings carry the `warehouse.` module prefix, which
+ * `shopeeCodeSemPrefixoDeModulo` (`errors.ts`) strips for a SECOND lookup — the
+ * caller matches verbatim first, then stripped, and never rewrites the code it
+ * reports. Every OTHER code on that page is a real failure and must be rethrown
+ * (rule 6): a shop that silently reads as "no multi-warehouse" when the call
+ * merely failed would take the single-location write path against a
+ * multi-location listing.
+ */
+export const SHOPEE_WAREHOUSE_SEM_ACESSO = [
+  'warehouse.error_not_in_whitelist',
+  'warehouse.error_can_not_find_warehouse',
+] as const;
+export type ShopeeWarehouseSemAcesso = (typeof SHOPEE_WAREHOUSE_SEM_ACESSO)[number];
+
+/**
+ * `get_item_promotion.promotion_staging` — "Could be ongoing/upcoming".
+ *
+ * ⚠️ The field stays a LOOSE `z.string()` on the schema: a third staging value
+ * must cost one branch, never the page. This constant is how a caller names the
+ * two documented ones.
+ *
+ * ⚠️ `upcoming` is not decoration. `has_promotion` on a model is documented
+ * ONGOING-only, so it cannot rule out a promotion that has already reserved
+ * stock for a window that has not started.
+ */
+export const SHOPEE_PROMOTION_STAGING = { ongoing: 'ongoing', upcoming: 'upcoming' } as const;
+export type ShopeePromotionStaging =
+  (typeof SHOPEE_PROMOTION_STAGING)[keyof typeof SHOPEE_PROMOTION_STAGING];
 
 /* ------------------------- the envelope-only writes ----------------------- */
 
@@ -3398,3 +3571,305 @@ export type ShopeeUploadImage = z.infer<typeof shopeeUploadImagePayloadSchema>;
 /** `POST /api/v2/media_space/upload_image` — WRAPPED under `response`. */
 export const shopeeUploadImageSchema = wrappedOp(shopeeUploadImagePayloadSchema);
 export type ShopeeUploadImageResponse = z.infer<typeof shopeeUploadImageSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                         The stock sync (step 12)                           */
+/* -------------------------------------------------------------------------- */
+
+/* ------------------------------ update_stock ------------------------------ */
+
+/**
+ * `update_stock`'s payload — the FOURTH partial-failure encoding in the Product
+ * module, and the only one whose failure and its detail can arrive TOGETHER.
+ *
+ * ⚠️ `error` and the lists COEXIST here. The page's own error list carries
+ * `error_busi_update_stock_failed` — "Update stock failed, please check
+ * failure_list for detailed reason" — so the envelope says the call failed while
+ * `response.failure_list` says WHICH models did. The transport throws on any
+ * non-empty `error`, so the body would ordinarily be discarded before anyone
+ * could read that attribution; `call.ts` keeps it for this operation alone and
+ * the sender narrows on the subclass that carries it. NOTHING here tolerates the
+ * error: this schema parses a failing body exactly as it parses a succeeding
+ * one, and judging success stays the transport's job.
+ *
+ * ⚠️ Both arrays `.default([])` rather than `.nullable()`, the
+ * {@link shopeeUnlistItemPayloadSchema} rule: an absent `failure_list` means
+ * "nothing failed", and a `null` would make every caller write `?? []` — one of
+ * which will forget. On this page, forgetting reads as "no model was refused",
+ * which is the silent half of a partial write.
+ *
+ * ⚠️ `success_list[].stock` and `.location_id` are "returned in pairs" and only
+ * "if seller stock is used in the request", so both are nullable: a body that
+ * confirms the models without echoing the numbers is a documented success, not a
+ * malformed one. Whether those echoed numbers are the REQUEST or the shop's
+ * stored state is UNVERIFIED — the sandbox probe settles it, and nothing here
+ * assumes either.
+ *
+ * ⚠️ NO per-element `.catch(null)`: each row is two or three scalars keyed on
+ * `model_id`, and a sentinel row with no `model_id` is unreconcilable — the
+ * {@link shopeeUnlistItemPayloadSchema} argument, with the same conclusion.
+ */
+export const shopeeUpdateStockPayloadSchema = z
+  .object({
+    failure_list: z
+      .array(
+        z
+          .object({
+            model_id: wireInt(),
+            failed_reason: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    success_list: z
+      .array(
+        z
+          .object({
+            model_id: wireInt(),
+            /** "This field and the stock field are returned in pairs". */
+            location_id: z.string().nullable().default(null),
+            /** "returned if seller stock is used in the request". */
+            stock: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeUpdateStock = z.infer<typeof shopeeUpdateStockPayloadSchema>;
+
+/**
+ * `POST /api/v2/product/update_stock` — WRAPPED under `response`.
+ *
+ * ⚠️ Its client method answers THIS, the whole envelope, not the unwrapped
+ * payload: a write's `warning` is a partial-failure channel and the caller has
+ * to see it. The three READS of step 12 unwrap; this write does not.
+ */
+export const shopeeUpdateStockSchema = wrappedOp(shopeeUpdateStockPayloadSchema);
+export type ShopeeUpdateStockResponse = z.infer<typeof shopeeUpdateStockSchema>;
+
+/* --------------------------- get_item_promotion --------------------------- */
+
+/**
+ * One promotion of one model, as `get_item_promotion` reports it.
+ *
+ * ⚠️ `promotion_id` is `uint64` on the page and therefore an OPAQUE STRING here
+ * ({@link shopeeIdOpaco}); a `wireInt()` would fail the whole page on the first
+ * id above 2^53.
+ *
+ * ⚠️ `start_time` / `end_time` are SECONDS. Every Shopee document in this
+ * channel stores MILLISECONDS, and the conversion belongs to the app.
+ *
+ * ⚠️ The stock a promotion holds back arrives in TWO documented positions, and
+ * BOTH are declared. The page's response table renders `summary_info` and
+ * `total_reserved_stock` as SIBLINGS under `promotion_stock_info_v2`; its own
+ * JSON sample nests the number inside `summary_info`. This is the `gtin_limit`
+ * situation — both positions travel to the caller and
+ * {@link reservadoDaPromocao} is the ONE reader that decides which wins. Folding
+ * them here would hide which one a live shop actually sends, which is still an
+ * open probe question.
+ *
+ * ⚠️ `promotion_price_info` is carried and never read by this step — the floor
+ * is about quantities, not prices. Declared rather than left to
+ * `.passthrough()`, so a later price step can reach it typed.
+ *
+ * ⚠️ `promotion_type` and `promotion_staging` are LOOSE strings
+ * ({@link SHOPEE_PROMOTION_STAGING} names the two documented staging values): a
+ * new promotion kind must cost one branch, never the page.
+ */
+export const shopeePromocaoDeItemSchema = z
+  .object({
+    promotion_type: z.string().nullable().default(null),
+    promotion_id: shopeeIdOpaco(),
+    model_id: wireInt().nullable().default(null),
+    /** SECONDS. */
+    start_time: wireInt().nullable().default(null),
+    /** SECONDS. */
+    end_time: wireInt().nullable().default(null),
+    promotion_price_info: z
+      .array(z.object({ promotion_price: wireNumber().nullable().default(null) }).passthrough())
+      .nullable()
+      .default(null),
+    /** `ongoing` | `upcoming` — LOOSE. */
+    promotion_staging: z.string().nullable().default(null),
+    promotion_stock_info_v2: z
+      .object({
+        /** The SAMPLE's position. */
+        summary_info: z
+          .object({ total_reserved_stock: wireInt().nullable().default(null) })
+          .passthrough()
+          .nullable()
+          .default(null),
+        /** ⚠️ The response TABLE's position, one level up. Declared, never folded. */
+        total_reserved_stock: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeePromocaoDeItem = z.infer<typeof shopeePromocaoDeItemSchema>;
+
+/**
+ * The stock a promotion is holding back on one model — the NESTED position
+ * first, then the sibling one level up, else `null`.
+ *
+ * ⚠️ ONE reader, because the page states the field twice and the two positions
+ * mean the same thing. `null` is "the page said nothing", never zero: a caller
+ * that read a missing value as `0` would compute a floor of zero and conclude
+ * every write is safe, which is the one direction that oversells.
+ *
+ * ⚠️ `??`, not `||`: a legitimate `0` is falsy, and on this field `0` is the
+ * common answer (a promotion holding nothing back). `||` would fall through from
+ * a nested `0` to the sibling and then to `null`.
+ */
+export function reservadoDaPromocao(p: ShopeePromocaoDeItem): number | null {
+  return (
+    p.promotion_stock_info_v2?.summary_info?.total_reserved_stock ??
+    p.promotion_stock_info_v2?.total_reserved_stock ??
+    null
+  );
+}
+
+/**
+ * The inner payload of `get_item_promotion` — success and failure per ITEM.
+ *
+ * ⚠️ Both lists `.default([])`, {@link shopeeUpdateStockPayloadSchema}'s reason.
+ *
+ * ⚠️ `promotion` is `.default([])` too: an item with no promotion is the
+ * ordinary case, and it must read as an empty list rather than as an absence a
+ * caller could mistake for "unknown".
+ */
+export const shopeeItemPromotionPayloadSchema = z
+  .object({
+    success_list: z
+      .array(
+        z
+          .object({
+            item_id: wireInt(),
+            promotion: z.array(shopeePromocaoDeItemSchema).default([]),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    failure_list: z
+      .array(
+        z
+          .object({
+            item_id: wireInt(),
+            failed_reason: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeItemPromotionPayload = z.infer<typeof shopeeItemPromotionPayloadSchema>;
+
+/** `GET /api/v2/product/get_item_promotion` — WRAPPED under `response`. */
+export const shopeeItemPromotionSchema = wrappedOp(shopeeItemPromotionPayloadSchema);
+export type ShopeeItemPromotionResponse = z.infer<typeof shopeeItemPromotionSchema>;
+
+/* ------------------------- get_shop_holiday_mode -------------------------- */
+
+/**
+ * The inner payload of `get_shop_holiday_mode`.
+ *
+ * ⚠️ WRAPPED under `response`, NOT flat — read off the cached page on
+ * 2026-09-21: its Response params declare `response` as an object with these
+ * seven children, and its response sample prints them nested inside it. The
+ * step-12 seam described this operation as FLAT; the page is the arbiter and
+ * says otherwise, so its client method unwraps like the other two reads here.
+ *
+ * ⚠️ The page declares NO `warning` field at all — the only step-12 operation
+ * that does not. Nothing is lost: the envelope defaults it to `null`, so a body
+ * that omits it parses and a body that grows one is carried.
+ *
+ * ⚠️ `holiday_mode_type` means nothing unless `holiday_mode_on` is true ("only
+ * when holiday_mode_on = true will the holiday_mode_type work"), and its
+ * polarity reads backwards — {@link SHOPEE_HOLIDAY_MODE_TYPE} names it. Whether
+ * a PARTIAL holiday actually refuses a stock write is UNVERIFIED; declaring the
+ * field is what makes the question askable.
+ *
+ * ⚠️ The three time fields are SECONDS, like every other Shopee timestamp.
+ *
+ * ⚠️ `debug_msg` is the seventh field and is declared rather than left to
+ * `.passthrough()`: it is the only place the page explains a body that is
+ * otherwise empty, and a caller cannot log what it cannot reach typed.
+ */
+export const shopeeShopHolidayModePayloadSchema = z
+  .object({
+    holiday_mode_on: z.boolean().nullable().default(null),
+    /** SECONDS — "The last time the holiday mode was modifies" [sic]. */
+    holiday_mode_mtime: wireInt().nullable().default(null),
+    /** 1 PARTIAL · 0 FULL. See {@link SHOPEE_HOLIDAY_MODE_TYPE}. */
+    holiday_mode_type: wireInt().nullable().default(null),
+    /** SECONDS. */
+    holiday_mode_start_time: wireInt().nullable().default(null),
+    /** SECONDS. */
+    holiday_mode_end_time: wireInt().nullable().default(null),
+    holiday_mode_description: z.string().nullable().default(null),
+    debug_msg: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeShopHolidayMode = z.infer<typeof shopeeShopHolidayModePayloadSchema>;
+
+/** `GET /api/v2/shop/get_shop_holiday_mode` — WRAPPED under `response`. */
+export const shopeeShopHolidayModeSchema = wrappedOp(shopeeShopHolidayModePayloadSchema);
+export type ShopeeShopHolidayModeResponse = z.infer<typeof shopeeShopHolidayModeSchema>;
+
+/* -------------------------- get_warehouse_detail -------------------------- */
+
+/**
+ * One warehouse address of the shop.
+ *
+ * ⚠️ `location_id` is a SHORT OPAQUE STRING (`IDZ`, `SGZ`) and is NEVER
+ * `wireInt()` — "Different location_ids represent that your addresses are in
+ * different item stocks". It is the value a stock write echoes back, and the one
+ * a multi-warehouse write has to carry for EVERY location in a single call.
+ *
+ * ⚠️ `holiday_mode_state` is per ADDRESS and has four values — "0: not in
+ * holiday mode 1: holiday mode active 2: holiday mode is turning of [sic] 3:
+ * holiday mode is turning on". It is a different fact from the SHOP's holiday
+ * mode; which of the four refuses a stock write is UNVERIFIED.
+ *
+ * The rest of the address (`state`, `city`, `district`, `town`, `address`,
+ * `zipcode`, `state_code`) is deliberately left to `.passthrough()`: nothing in
+ * this channel reads a seller's postal address, and declaring it would invite a
+ * reader.
+ */
+export const shopeeWarehouseSchema = z
+  .object({
+    warehouse_id: wireInt(),
+    warehouse_name: z.string().nullable().default(null),
+    /** 1 pickup · 2 return. See {@link SHOPEE_WAREHOUSE_TYPE}. */
+    warehouse_type: wireInt().nullable().default(null),
+    /** ⚠️ A STRING. See the block comment. */
+    location_id: z.string().nullable().default(null),
+    address_id: wireInt().nullable().default(null),
+    region: z.string().nullable().default(null),
+    /** 0 none · 1 active · 2 turning OFF · 3 turning ON. */
+    holiday_mode_state: wireInt().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeWarehouse = z.infer<typeof shopeeWarehouseSchema>;
+
+/**
+ * `GET /api/v2/shop/get_warehouse_detail` — WRAPPED, and its payload is a
+ * top-level ARRAY.
+ *
+ * ⚠️ The only operation in this package whose `response` is an array rather than
+ * an object, and the two are NOT interchangeable: the same body under an object
+ * payload fails, which a near-miss pins. Which shape an operation has is the
+ * schema's to state — the {@link dataOp} rule — so no caller has to know.
+ *
+ * ⚠️ Its ordinary answer for a normal shop is an ERROR, not a list:
+ * {@link SHOPEE_WAREHOUSE_SEM_ACESSO}. That fold lives in the client method, so
+ * that no app string-matches a wire code.
+ *
+ * ⚠️ The type of the FOLD — the `lista` / `sem-multi-armazem` union the method
+ * answers — is `api.ts`'s and is deliberately NOT declared here, so the two
+ * names cannot collide through the package's wildcard re-exports.
+ */
+export const shopeeWarehouseDetailSchema = wrappedOp(z.array(shopeeWarehouseSchema));
+export type ShopeeWarehouseDetailResponse = z.infer<typeof shopeeWarehouseDetailSchema>;

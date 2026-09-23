@@ -92,9 +92,9 @@ import {
   type EstadoAnuncioShopee,
   type Foto,
   ESTADO_ANUNCIO_SHOPEE,
-  kitEstoqueDisponivel,
 } from '@delfrance/schemas';
 
+import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
 import { EIXOS_PACOTE_SHOPEE_INVERSO } from '../produtos/eixos';
 import type { AtributosProjetados } from '../taxonomia/dto';
 import type { VerdictoFolha } from '../taxonomia/categorias';
@@ -118,8 +118,9 @@ import {
  * is step 19 — refused here as `produto-e-kit` so a kit is never published as if
  * it were a plain produto. `ehKitVirtual` is an ERP produto whose stock DERIVES
  * from its components and which publishes as an ordinary listing; its only
- * consequence here is that {@link quantidadeParaPublicarShopee} takes the kit
- * branch. Keying the refusal on both would make every component-stocked produto
+ * consequence here is that the publish quantity takes the kit branch — that
+ * fold now lives in `../estoque/quantidadeEstoque` and is re-exported from this
+ * module. Keying the refusal on both would make every component-stocked produto
  * unpublishable.
  */
 export interface ProdutoParaPublicar {
@@ -467,51 +468,31 @@ export function preOrderParaPublicar(
 }
 
 /**
- * The kit-aware quantity, floored and clamped DOWN — never up.
+ * The kit-aware publish quantity — **MOVED** to
+ * `../estoque/quantidadeEstoque` (step 12, #1520) and re-exported from here so
+ * every importer and both step-11 suites are untouched.
  *
- * ```
- * disponivel = (ehKit || ehKitVirtual)
- *   ? (kitEstoqueDisponivel(componentesKit, disponivelByProdutoId) ?? ownDisponivel)
- *   : ownDisponivel
- * ```
+ * It moved because the fold stopped being a publish detail: the stock sync
+ * needs the same number for `update_stock`, and Mercado Livre has been
+ * computing it since #678. All three now call ONE implementation in
+ * `@delfrance/data/admin/estoque`, with each channel supplying its own
+ * parameters — which is what turns "two files that claim to agree" into
+ * something the compiler checks. The band's maximum still clamps DOWN and the
+ * minimum still never clamps UP; {@link montarAnuncio} raises
+ * `estoque-abaixo-do-minimo` for the latter, as before.
  *
- * ⚠️ **It never raises a quantity to the band's minimum**, and that is the whole
- * point (O3). The shop's `stock_limit.min_limit` was measured at **2** on
- * 2026-09-17 and Shopee refused a create at `1` outright; clamping UP would
- * publish an availability the operator never authorised, and overselling across
- * channels is unrecoverable. Below the minimum, {@link montarAnuncio} raises
- * `estoque-abaixo-do-minimo` naming the band instead. The band's MAXIMUM is
- * clamped, because there the safe direction is down.
- *
- * ⚠️ Two deliberate divergences from Mercado Livre's `quantidadeParaEnvio`, both
- * because that function lives in an APP and reads ML-scoped environment this app
- * must not inherit: **no own-stock hook** (there is no
- * `MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO` here and step 11 adds no env var), and
- * **no virtual-kit skip** — `seller_stock` is REQUIRED per model on
- * `init_tier_variation` / `add_model`, so "do not send a quantity" is not
- * expressible on this wire.
+ * ⚠️ **Sharing the fold is NOT sharing the kit own-stock knob.**
+ * `SHOPEE_STOCK_KIT_INCLUI_PROPRIO` moves the sync only — the sweep and the
+ * manual push — and never the create-time `seller_stock` built here: the
+ * function binds the core through `opcoesPublicacaoShopee`, which pins that
+ * parameter `false`, so a kit is still created at the minimum over its
+ * components exactly as step 11 designed (no own-stock hook), and a kit
+ * published as a no-model item agrees with a kit published as a MODEL, whose
+ * `seller_stock` `filhoParaPublicar` (`./publicarAnuncio`) folds with no hook
+ * either. With the knob ON, the sync raises a new kit listing by its own stock
+ * on its first send — accepted; `opcoesPublicacaoShopee`'s docblock says why.
  */
-export function quantidadeParaPublicarShopee(args: {
-  readonly ehKit: boolean;
-  readonly ehKitVirtual: boolean;
-  readonly componentesKit: ComponentesKit | null;
-  readonly ownDisponivel: number;
-  readonly disponivelByProdutoId: Record<string, number | null | undefined>;
-  readonly banda: FaixaDto | null;
-}): number {
-  const proprio = Number.isFinite(args.ownDisponivel) ? args.ownDisponivel : 0;
-  let disponivel: number;
-  if (args.ehKit || args.ehKitVirtual) {
-    const min = kitEstoqueDisponivel(args.componentesKit, args.disponivelByProdutoId);
-    disponivel = min ?? proprio;
-  } else {
-    disponivel = proprio;
-  }
-  const inteiro = Math.max(Math.floor(disponivel), 0);
-  const max = args.banda?.max;
-  if (typeof max === 'number' && Number.isFinite(max)) return Math.min(inteiro, max);
-  return inteiro;
-}
+export { quantidadeParaPublicarShopee };
 
 /* -------------------------------------------------------------------------- */
 /*                                 The mapper                                 */

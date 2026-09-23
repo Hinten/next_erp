@@ -23,6 +23,13 @@
  * a `response` object, so a body with NEITHER key stays unjudgeable and stays
  * refused, exactly as without the flag.
  *
+ * ⚠️ A THIRD per-operation flag sits beside those two and is NOT a third
+ * exception: {@link ShopeeCallParams.payloadNoErro} leaves the verdict alone and
+ * changes only what the thrown error CARRIES. On `update_stock` the failure code
+ * and its per-model `failure_list` arrive in the same body, so the flag attaches
+ * the parsed payload to a `ShopeeApiPartialError` — still a failure, with the
+ * evidence still attached.
+ *
  * ## Why the body is parsed TWICE
  *
  * Stage 1 parses the envelope alone; stage 2 parses the operation schema. That
@@ -54,6 +61,7 @@ import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import {
   SHOPEE_ERROR_KIND,
+  ShopeeApiPartialError,
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
@@ -212,6 +220,40 @@ interface ShopeeCallBase<S extends z.ZodType> {
    * is never reached and the `error === ''` verdict throws as always.
    */
   readonly erroAusenteEhSucesso?: boolean;
+  /**
+   * Carry the PARSED payload on a non-empty `error`. The call still FAILS.
+   *
+   * ⚠️ For `update_stock`, whose own error list reads
+   * `error_busi_update_stock_failed: Update stock failed, please check
+   * failure_list for detailed reason` — and `failure_list` lives under
+   * `response`. The thrown {@link ShopeeApiError} carries only
+   * code/message/requestId/warning, so without this flag the per-model
+   * attribution is thrown away at the throw site and the whole item fails as
+   * one lump. That is the legacy Flutter defect verbatim.
+   *
+   * ⚠️ The THIRD per-operation tolerance, and the only one that does not touch
+   * the VERDICT. Deliberately NOT {@link emptyErrorAliases} (which widens which
+   * VALUES count as success) and NOT {@link erroAusenteEhSucesso} (which covers
+   * a key that is absent): this one keeps the failure a failure and merely
+   * stops discarding the evidence. A SUCCESS envelope never takes this path,
+   * and the flag changes neither of the other two verdicts — three tests pin
+   * all three statements.
+   *
+   * ⚠️ It is well-defined because the operation schemas COMPOSE the envelope
+   * (`wrappedOp`/`flatOp`/`dataOp` all spread `envelopeShape`), so re-reading
+   * the same response text with {@link ShopeeCallBase.schema} IS the stage-2
+   * parse below — one `text`, still no second network call. When that parse
+   * fails, nothing is attached and the ordinary error is thrown: a failing body
+   * carrying no `response` at all — the ordinary shape of a throttle or a dead
+   * authorization — stays exactly the class it was.
+   *
+   * ⚠️ The flag is CODE-BLIND on purpose. The transport does not know which
+   * codes an operation considers partial (`update_stock` alone has four
+   * spellings of the reserved-stock floor and two readings of `error_inner`),
+   * and a code table here would be a second place to keep the operation's
+   * vocabulary. The caller narrows on {@link ShopeeApiPartialError} and decides.
+   */
+  readonly payloadNoErro?: boolean;
 }
 
 /**
@@ -445,11 +487,33 @@ export async function shopeeCall<S extends z.ZodType>(
   // carry one and why the tolerance is per operation.
   const sucesso = envelope.error === '' || (p.emptyErrorAliases?.includes(envelope.error) ?? false);
   if (!sucesso) {
-    throw shopeeErrorFromEnvelope(envelope, {
+    const falha = shopeeErrorFromEnvelope(envelope, {
       path: p.path,
       httpStatus: res.status,
       surface: p.surface,
       retryAfterSeconds,
+    });
+
+    // ⚠️ The THIRD per-operation tolerance — see `payloadNoErro`. It runs ONLY
+    // on the failure path and only when the flag is set, so the verdict above
+    // is untouched: a success never reaches here, and an operation without the
+    // flag throws `falha` exactly as before.
+    //
+    // ⚠️ The message and the classification are the BASE error's, read back off
+    // the object rather than rebuilt. Reconstructing them here would be a second
+    // copy of `shopeeErrorFromEnvelope`'s formatting, free to drift — and the
+    // one thing that must never differ between the two classes is how the same
+    // envelope reads.
+    const parcial = p.payloadNoErro === true ? lerRespostaJson(text, p.schema) : null;
+    if (parcial === null || !parcial.ok) throw falha;
+    throw new ShopeeApiPartialError(falha.message, {
+      code: falha.code,
+      kind: falha.kind,
+      httpStatus: falha.httpStatus,
+      path: falha.path,
+      requestId: falha.requestId,
+      warning: falha.warning,
+      parsed: parcial.data,
     });
   }
 

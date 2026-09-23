@@ -27,6 +27,7 @@
     "@delfrance/integrations-shopee": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",
+    "@google-cloud/firestore": "^8.6.0",
     "firebase-admin": "catalog:",
     "firebase-functions": "catalog:",
     "next": "16.2.6",

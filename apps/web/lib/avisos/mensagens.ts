@@ -94,6 +94,13 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `${p(params, 'job')} terminou com ${p(params, 'falhas')} falha(s) de ` +
       `${p(params, 'total')} item(ns). Abra o relatório para ver os motivos.`,
   },
+  [TIPO_AVISO.estoqueAcimaDoDisponivel]: {
+    titulo: 'Estoque enviado acima do disponível',
+    corpo: (params) =>
+      `O anúncio ${p(params, 'anuncio')} teve ${p(params, 'reservado')} unidade(s) reservadas ` +
+      `para uma promoção, mas o ERP tem ${p(params, 'disponivel')}. O estoque foi enviado no ` +
+      'valor da reserva. Reduza a reserva ou reponha o estoque.',
+  },
 };
 
 /**
