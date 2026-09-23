@@ -116,7 +116,8 @@ jobs:
           # the runner installs Claude Code fresh, so it never sees your local
           # `~/.claude/settings.json`, and an unpinned lane can change models on a
           # Claude Code release with no change here. Exact API id, not a selector
-          # shorthand like `opus[1m]`.
+          # shorthand like `opus[1m]`. See claude-code-review.yml before bumping:
+          # `claude-opus-5-5` was tried there and reverted.
           claude_args: |
-            --model claude-opus-5-5
+            --model claude-opus-5
 
