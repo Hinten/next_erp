@@ -92,6 +92,7 @@ export { backfillPedidosShopeeCollection } from './backfillPedidosShopeeCollecti
 export { liquidacaoShopeeCollection } from './liquidacaoShopeeCollection';
 export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
+export { estoqueShopeeSyncCollection } from './estoqueShopeeSyncCollection';
 export {
   envioPrecoMercadoLivreCollection,
   relatorioEnvioPrecoMercadoLivreCollection,

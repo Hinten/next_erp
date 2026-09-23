@@ -563,6 +563,150 @@ describe('variacaoShopeeLinkSchema — modeloAusenteEm', () => {
   });
 });
 
+describe('produtoShopeeLinkSchema — os onze campos do passo 12 (estoque)', () => {
+  const NOVOS_12 = [
+    'kitNativo',
+    'estoqueEnviadoEm',
+    'estoqueEnviado',
+    'estoqueModelosEnviados',
+    'estoqueRecusaEm',
+    'estoqueRecusaCodigo',
+    'estoqueRecusaMotivo',
+    'estoqueRecusaMensagem',
+    'estoqueRecusaEstado',
+    'estoqueRecusaItemStatus',
+    'estoqueRecusaAte',
+  ] as const;
+
+  const LINK_ANTIGO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica Azul',
+    item_id: ITEM_ID,
+    item_status: 'NORMAL',
+  };
+
+  it('um link anterior ao passo 12 continua a fazer parse — e cada campo novo entra null', () => {
+    const parsed = produtoShopeeLinkSchema.parse(LINK_ANTIGO) as Record<string, unknown>;
+    expect(NOVOS_12).toHaveLength(11);
+    for (const campo of NOVOS_12) {
+      expect(parsed).toHaveProperty(campo);
+      expect(parsed[campo]).toBeNull();
+      // `undefined` seria rejeitado pelo SDK do Firebase num addDoc/setDoc.
+      expect(parsed[campo]).not.toBeUndefined();
+    }
+  });
+
+  it('um envio LIMPO faz round-trip: carimbo, quantidades e nenhuma recusa', () => {
+    const doc = {
+      ...LINK_ANTIGO,
+      kitNativo: false,
+      estoqueEnviadoEm: 1_758_000_900_000,
+      estoqueEnviado: 12,
+      estoqueModelosEnviados: 3,
+      estoqueRecusaEm: null,
+      estoqueRecusaCodigo: null,
+      estoqueRecusaMotivo: null,
+      estoqueRecusaMensagem: null,
+      estoqueRecusaEstado: null,
+      estoqueRecusaItemStatus: null,
+      estoqueRecusaAte: null,
+    };
+    expect(produtoShopeeLinkSchema.parse(doc)).toMatchObject(doc);
+  });
+
+  it('uma RECUSA faz round-trip com a impressão digital inteira e o código VERBATIM', () => {
+    const doc = {
+      ...LINK_ANTIGO,
+      estoqueRecusaEm: 1_758_000_900_000,
+      // ⚠️ VERBATIM: o prefixo faz parte do que a Shopee respondeu.
+      estoqueRecusaCodigo: 'product.error_busi_update_stock_failed',
+      estoqueRecusaMotivo: 'anuncio-banido',
+      estoqueRecusaMensagem: 'A Shopee recusou o envio de estoque deste anúncio.',
+      estoqueRecusaEstado: 'banido',
+      estoqueRecusaItemStatus: 'BANNED',
+      estoqueRecusaAte: null,
+    };
+    const parsed = produtoShopeeLinkSchema.parse(doc);
+    expect(parsed).toMatchObject(doc);
+    // O prefixo sobrevive — nada reescreve o código no lado da escrita.
+    expect(parsed.estoqueRecusaCodigo).toContain('product.');
+  });
+
+  it('um bloqueio por promoção guarda o lado TEMPORAL do pulo, sem impressão digital', () => {
+    // Uma promoção terminando não move `item_status`, então a impressão digital
+    // latiria para sempre — por isso este braço usa `estoqueRecusaAte`.
+    const parsed = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      estoqueRecusaEm: 1_758_000_900_000,
+      estoqueRecusaMotivo: 'bloqueado-por-promocao',
+      estoqueRecusaAte: 1_758_004_500_000,
+    });
+    expect(parsed.estoqueRecusaAte).toBe(1_758_004_500_000);
+    expect(parsed.estoqueRecusaEstado).toBeNull();
+    expect(parsed.estoqueRecusaItemStatus).toBeNull();
+  });
+
+  it('✅ kitNativo aceita true, false e null — os três são leituras distintas', () => {
+    for (const valor of [true, false, null]) {
+      const parsed = produtoShopeeLinkSchema.parse({ ...LINK_ANTIGO, kitNativo: valor });
+      expect(parsed.kitNativo).toBe(valor);
+    }
+    // ⚠️ `null` (um link anterior ao passo 12) NÃO é `false` no papel, mas ambos
+    // ENVIAM: só `true` recusa. A assimetria é deliberada — um falso positivo
+    // custa uma linha pulada, um falso negativo é apagão de estoque silencioso
+    // no catálogo legado inteiro de kits do ERP.
+    expect(produtoShopeeLinkSchema.parse(LINK_ANTIGO).kitNativo).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: kitNativo recusa uma string — é três-valorado, nunca um slug', () => {
+    for (const valor of ['true', 'kit', '1', 1]) {
+      expect(produtoShopeeLinkSchema.safeParse({ ...LINK_ANTIGO, kitNativo: valor }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  it('estoqueRecusaEstado e estoqueRecusaItemStatus são strings SOLTAS, não os enums', () => {
+    // São LEITURAS gravadas para comparar contra si mesmas, não estados a agir.
+    // Um valor que este app deixe de reconhecer ainda tem de comparar igual.
+    const parsed = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      estoqueRecusaEstado: 'um_estado_que_ainda_nao_existe',
+      estoqueRecusaItemStatus: 'DELETED',
+    });
+    expect(parsed.estoqueRecusaEstado).toBe('um_estado_que_ainda_nao_existe');
+    // `DELETED` é a grafia pré-2024 que `shopeeItemStatusSchema` recusa — e que
+    // um corpus migrado ainda guarda. Como impressão digital ela tem de passar.
+    expect(parsed.estoqueRecusaItemStatus).toBe('DELETED');
+    expect(shopeeItemStatusSchema.safeParse('DELETED').success).toBe(false);
+  });
+});
+
+describe('variacaoShopeeLinkSchema — os dois campos do passo 12', () => {
+  const BASE_FILHO = {
+    contaVariacaoShopeeOuterRef: CONTA_REF,
+    produtoShopeeOuterRef: 'documents/produtos/p1/prodshopee/l1',
+    model_id: MODEL_ID,
+  };
+
+  it('entram null num link antigo e guardam a recusa por MODELO quando escritos', () => {
+    const antigo = variacaoShopeeLinkSchema.parse(BASE_FILHO);
+    expect(antigo.estoqueRecusaEm).toBeNull();
+    expect(antigo.estoqueRecusaCodigo).toBeNull();
+
+    const recusado = variacaoShopeeLinkSchema.parse({
+      ...BASE_FILHO,
+      estoqueRecusaEm: 1_758_000_900_000,
+      estoqueRecusaCodigo: 'product.error_busi_model_stock_invalid',
+    });
+    expect(recusado.estoqueRecusaEm).toBe(1_758_000_900_000);
+    // VERBATIM, prefixo e tudo — igual ao campo do pai.
+    expect(recusado.estoqueRecusaCodigo).toBe('product.error_busi_model_stock_invalid');
+    // O doc filho continua existindo: a linha é diagnóstica, nunca um delete.
+    expect(recusado.model_id).toBe(MODEL_ID);
+  });
+});
+
 describe('podeMoverAnuncioShopee', () => {
   type Caso = {
     acao: AcaoStatusAnuncio;
@@ -699,6 +843,45 @@ describe('shopeeLink.ts — o texto do arquivo', () => {
       expect(FONTE).not.toContain(proibido);
     }
     expect(FONTE).toContain('MILLISECONDS');
+  });
+
+  it('o inventário de escritores do cabeçalho continua exato depois do passo 12', () => {
+    // A frase é a única coisa que diz a quem lê o arquivo quantos escritores
+    // cada grupo tem. Ela já esteve errada duas vezes (o docblock de
+    // `item_status` chamou o campo de push-only, depois disse DOIS escritores),
+    // e um comentário que afirma o que OUTRO módulo faz é exatamente o cheiro
+    // do #1369 — por isso está presa aqui.
+    expect(FONTE).toContain('## The writer inventory, whole');
+    // Os quatro escritores de `item_status` continuam QUATRO: o remetente de
+    // estoque lê o campo para a impressão digital e nunca o escreve.
+    expect(FONTE).toContain('⚠️ FOUR writers now');
+    expect(FONTE).toContain('STILL FOUR after step 12');
+    // Os dez escalares de estoque têm UM escritor, e `kitNativo` tem UM.
+    expect(FONTE).toContain('**the ten `estoque*` scalars** (step 12) — **ONE** writer');
+    expect(FONTE).toContain('**`kitNativo`** (step 12) — **ONE** writer');
+    // E a regra do conjunto de pulo é documentada aqui mas calculada no app.
+    expect(FONTE).toMatch(/is READ by the app[\s*]+\(`podeEnviarEstoqueShopee`\)/);
+    expect(FONTE).toMatch(/never[\s*]+computed in this schema/);
+  });
+
+  it('a fórmula do conjunto de pulo no docblock traz a GUARDA das duas metades nulas e a dobra dos dois lados', () => {
+    // A revisão do PR #1623 achou este docblock descrevendo o predicado de
+    // ANTES da decisão B: sem a guarda "pelo menos uma leitura gravada" e sem
+    // `ouNulo` — lido ao pé da letra, um carimbo null/null contra leituras
+    // ausentes travava o anúncio para sempre, que é exatamente o defeito que
+    // foi corrigido, documentado como o comportamento. O código é a regra
+    // (`pularPorRecusaAnterior`); isto prende só que o TEXTO não volte atrás.
+    expect(FONTE).toContain("typeof estoqueRecusaEm === 'number'");
+    expect(FONTE).toContain("typeof estoqueRecusaAte === 'number' && nowMs < estoqueRecusaAte");
+    expect(FONTE).toMatch(
+      /ouNulo\(estoqueRecusaEstado\) !== null\s*\*\s*\|\| ouNulo\(estoqueRecusaItemStatus\) !== null\)/,
+    );
+    expect(FONTE).toContain('ouNulo(estoqueRecusaEstado)     === ouNulo(link.estadoAnuncio)');
+    expect(FONTE).toContain('ouNulo(estoqueRecusaItemStatus) === ouNulo(link.item_status)');
+    expect(FONTE).toContain('apps/shopee/lib/shopee/estoque/podeEnviarEstoque.ts');
+    // O NEAR-MISS: a fórmula antiga, sem a dobra, não pode sobreviver.
+    expect(FONTE).not.toContain('estoqueRecusaEstado     === link.estadoAnuncio');
+    expect(FONTE).not.toContain('estoqueRecusaEm  != null');
   });
 
   it('o docblock não chama o code 6 de push moderno', () => {

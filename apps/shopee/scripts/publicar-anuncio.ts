@@ -62,6 +62,10 @@
  * BOTH modes, and it is not an inconsistency: `prepararPublicacao` throws them
  * before a plan exists, so there is no plan to print. Every refusal that
  * survives into a plan is printed and answers 0.
+ * ⚠️ `produto-e-kit` is the NATIVE Shopee kit (`kitNativo` on the stored link,
+ * or `ehKitVirtual` on a first publish), never the ERP's `ehKit` — an ERP kit
+ * dry-runs and publishes like any other produto, with the component-derived
+ * quantity. Narrowed in step 12 (#1520); step 11 refused on `ehKit` alone.
  */
 import {
   ArgumentoInvalidoError,

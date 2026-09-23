@@ -58,6 +58,8 @@ const INVENTORY = {
     'The Shopee push notification handler. Enqueued by the receiver route only.',
   'apps/shopee/functions/src/processMassImport.ts':
     'The Shopee mass product import ("importar todos os anuncios", master-plan step 9). Enqueued by the /importar-todos route under the App Hosting runtime SA and re-enqueued by ITSELF — for every scan/drain continuation AND for the rate-limit pause (scheduleDelaySeconds) — so two identities dispatch it.',
+  'apps/shopee/functions/src/sendStock.ts':
+    'The Shopee stock push (master-plan step 12). Enqueued by the three onSchedule stock sweeps (functions runtime SA) and self-re-enqueued on a rate-limit pause — the burst arm and the pause rung both re-enqueue onto this queue with scheduleDelaySeconds — so two identities dispatch it. The manual push (/enviar-estoque) runs IN-PROCESS and never enqueues.',
 
   // ---- codebase `whatsapp` ------------------------------------------------
   'apps/whatsapp/functions/src/processNotification.ts':

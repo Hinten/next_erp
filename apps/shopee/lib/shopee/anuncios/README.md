@@ -151,9 +151,20 @@ sends no stock at all.
 
 The quantity itself comes from `quantidadeParaPublicarShopee`, which CLAMPS DOWN
 at `stockLimit.max` and **never UP** to `min` — clamping up would publish a
-number the ERP does not have. `ehKitVirtual` only changes which components the
-quantity derives from; `ehKit` is a Shopee native kit (`add_kit_item`, step 19)
-and is refused outright as `produto-e-kit`.
+number the ERP does not have.
+
+⚠️ **An ERP kit is an ordinary Shopee listing, and it publishes.** `ehKit` means
+"assembled from `componentesKit`, availability derived from the components"; the
+ERP holds thousands of them and the legacy app published them to Shopee as plain
+listings. All `ehKit` does here is send the component-derived quantity. What
+`produto-e-kit` refuses is a **native Shopee kit** (`add_kit_item`, step 19),
+decided by `kitNativoDoAnuncio` in `montagemAnuncio.ts`: on a republish the
+stored link's `kitNativo` — what Shopee itself reported about the live listing
+(`tag.kit`) — and on a first publish the produto's `ehKitVirtual`, the ERP's own
+statement that the marketplace resolves the composition. `false`, `null` and an
+absent key all publish, because no native kit exists in this catalogue today.
+The same predicate is called by BOTH producers of the refusal (the mapper and
+`publicarAnuncio.ts`'s pre-write throw), which is what stops the two drifting.
 
 ### The update sequence: full lists, and `item_status` is never sent
 
@@ -531,8 +542,9 @@ So nobody reads a gap as a bug:
 - **`size_chart_info` (step 18).** Never sent. A chart set in Seller Centre
   survives a republish because `update_item` is field-wise. ⚠️ `size_chart` is
   an image id on write and a URL on read — never round-trip it.
-- **Publishing a kit ON Shopee (step 19).** `ehKit` is refused as
-  `produto-e-kit`; a VIRTUAL kit publishes normally.
+- **Publishing a kit ON Shopee (step 19).** A NATIVE Shopee kit is refused as
+  `produto-e-kit` — `kitNativo` on the stored link, or `ehKitVirtual` on a first
+  publish. An ordinary ERP `ehKit` produto publishes like any other.
 - **`apps/web` (step 21)** — the produto tab, the `anuncioStatus` provider row
   and the registry rows. The three routes and the CLI land HERE.
 - **`batch_add_item`**, and authoring `scheduled_publish_time` (it is READ, for
@@ -563,6 +575,13 @@ So nobody reads a gap as a bug:
 
 The step-11 continuation of the master plan's settle-live register. ✅ = closed
 by the 2026-09-17 sandbox probe; ⏳ = open, with what would settle it.
+
+⚠️ **Correction (step 12, 2026-09-21).** The step-11 `produto-e-kit` refusal
+keyed on `ehKit` alone and blocked the legacy kit catalogue from ever being
+re-published; it is narrowed to the native-kit predicate (`kitNativoDoAnuncio`),
+at both producers. The first republish after that change can create listings for
+produtos that were previously unpublishable — it is a deliberate correction, not
+a regression.
 
 | #   | item                                                                                                                                | state                                                                                                                                                                           |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

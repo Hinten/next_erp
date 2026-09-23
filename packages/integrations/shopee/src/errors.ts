@@ -181,6 +181,48 @@ export class ShopeeRateLimitError extends ShopeeApiError {
 }
 
 /**
+ * Shopee answered with a non-empty `error` AND the operation payload came in the
+ * SAME body — the failure and its per-item detail together.
+ *
+ * ⚠️ It is a FAILURE, exactly like its base class. The subclass exists so the
+ * evidence is not discarded, never to read a failure as a success: the one
+ * operation that produces it (`update_stock`) is documented with
+ * `error_busi_update_stock_failed: Update stock failed, please check
+ * failure_list for detailed reason`, and `failure_list` lives under `response`.
+ * Only a call carrying the transport's `payloadNoErro` tolerance can produce
+ * one, and only when the operation's own schema parsed that body.
+ *
+ * ⚠️ ORDER — this is the whole hazard. It extends {@link ShopeeApiError},
+ * exactly as {@link ShopeeReauthRequiredError} (`:143`) and
+ * {@link ShopeeRateLimitError} (`:165`) do, so a bare
+ * `err instanceof ShopeeApiError` placed ABOVE a narrowing arm swallows all
+ * three. Every ladder tests the rate limit FIRST, then the reauth, then this
+ * one, and the base class LAST — the lesson `apps/shopee` has already written
+ * down at three call sites. A test asserts the ORDER, not just the classes.
+ *
+ * ⚠️ And the classes are NOT mutually exclusive by construction: the transport
+ * builds this one INSTEAD of whichever subclass the envelope would otherwise
+ * have produced, so a ladder that needs the retry verdict reads {@link kind}
+ * rather than assuming a partial can never be a throttle. Nothing reaches that
+ * corner today — a throttled or dead-authorization body carries no `response`
+ * and therefore fails the operation schema — and a test pins it.
+ *
+ * ⚠️ `parsed` is `unknown` deliberately. The transport does not know WHICH
+ * operation schema it ran; the narrowing caller does, and it holds the schema's
+ * own output type. The value is the whole operation body, envelope included —
+ * byte for byte what the success path would have returned.
+ */
+export class ShopeeApiPartialError extends ShopeeApiError {
+  readonly parsed: unknown;
+
+  constructor(message: string, init: ShopeeApiErrorInit & { readonly parsed: unknown }) {
+    super(message, init);
+    this.name = 'ShopeeApiPartialError';
+    this.parsed = init.parsed;
+  }
+}
+
+/**
  * The body did not match the schema that describes it — or a 2xx carried no JSON
  * at all.
  *

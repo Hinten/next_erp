@@ -125,7 +125,11 @@ import {
 import { criarLeitorDeImpostoShopee } from './lerImpostoDoProduto';
 import { lerLinksDeVariacao, resolverLinkPorProduto, type LinkDeVariacao } from './linkAnuncio';
 import { aplicarModelos, type ResultadoModelos } from './modelosPublicacao';
-import type { LinkListagemLido, ProdutoParaPublicar } from './montagemAnuncio';
+import {
+  kitNativoDoAnuncio,
+  type LinkListagemLido,
+  type ProdutoParaPublicar,
+} from './montagemAnuncio';
 import {
   planejarPublicacao,
   type ContextoPublicacao,
@@ -279,6 +283,20 @@ function booleano(bruto: unknown): boolean {
   return bruto === true;
 }
 
+/**
+ * A stored three-valued boolean, kept three-valued.
+ *
+ * ⚠️ Not {@link booleano}: that one folds every non-`true` reading to `false`,
+ * which is right for an ERP flag with a schema default and WRONG for a field
+ * whose `null` means "this listing was never read back" — the reading and the
+ * absence of a reading are different facts, and only this projection preserves
+ * them. The refusal that consumes it compares `=== true` either way; what the
+ * fold would destroy is every later reader's ability to tell the two apart.
+ */
+function booleanoOuNull(bruto: unknown): boolean | null {
+  return typeof bruto === 'boolean' ? bruto : null;
+}
+
 function listaDeTextos(bruto: unknown): readonly string[] {
   if (!Array.isArray(bruto)) return [];
   return bruto.filter((s): s is string => typeof s === 'string' && s.length > 0);
@@ -382,6 +400,10 @@ function produtoParaPublicar(id: string, raw: Record<string, unknown>): ProdutoP
  * ⚠️ `estadoAnuncio` arrives ALREADY folded by `linkAnuncio.ts` (an unrecognised
  * stored value reads as `null`), which is what lets `montarAnuncio` refuse a
  * `removido` listing without a second copy of that fold.
+ *
+ * ⚠️ `kitNativo` is read THREE-valued and never coerced — it is what Shopee
+ * reported about the live listing, and it is the authority behind
+ * `produto-e-kit` on every republish.
  */
 function linkListagemLido(
   raw: Record<string, unknown>,
@@ -398,6 +420,7 @@ function linkListagemLido(
       ? (raw.logistic_info as readonly unknown[])
       : null,
     estadoAnuncio,
+    kitNativo: booleanoOuNull(raw.kitNativo),
   };
 }
 
@@ -442,12 +465,17 @@ export function criarResolvedorDePublicacao(
  * that call is a full-list replace, so a stale tree in the plan is the
  * omission-deletes defect.
  *
- * Two refusals are raised BEFORE anything else is read, because both are
- * properties of the produto and nothing later can change them — a variation
- * child (`paiId`) and a Shopee kit (`ehKit`, which is step 19's `add_kit_item`).
- * `montarAnuncio` produces both again from the same fields, so the plan is
- * consistent either way; raising here is what stops a refused publish paying for
- * a channel list and a picture upload.
+ * Two refusals are raised as early as they can be DECIDED — a variation child
+ * (`paiId`) and a NATIVE Shopee kit ({@link kitNativoDoAnuncio}, step 19's
+ * `add_kit_item`). ⚠️ That is after the link read rather than before it, because
+ * the kit arm's authority on a republish is the link's `kitNativo` (what Shopee
+ * itself reported), so deciding earlier would mean deciding on the produto's
+ * `ehKit` — the step-11 defect that made the whole legacy kit catalogue
+ * unpublishable. The cost is ONE document read on a refused publish; the photo
+ * resolver, the channel list and the taxonomy are all still untouched.
+ * `montarAnuncio` produces both refusals again from the same fields, so the plan
+ * is consistent either way; raising here is what stops a refused publish paying
+ * for a channel list and a picture upload.
  *
  * @returns `null` when this conta has nothing to publish onto — the produto does
  *   not exist, or a `linkDocId` was named and does not belong to this conta.
@@ -464,23 +492,29 @@ export async function prepararPublicacao(
   const raw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
   const produto = produtoParaPublicar(entrada.produtoId, raw);
 
-  recusarProdutoNaoPublicavel(produto);
-
   const linkResolvido = await resolverLinkPorProduto(
     db,
     deps.integracaoId,
     entrada.produtoId,
     entrada.linkDocId ?? null,
   );
+  const link =
+    linkResolvido === null
+      ? null
+      : linkListagemLido(linkResolvido.raw, linkResolvido.estadoAnuncio);
+
+  // The kit arm reads the LINK, so this cannot run before the resolver — see the
+  // function's docblock. It still runs before every other read and before the
+  // first Shopee call, and it keeps its precedence over the 404 below: a produto
+  // that may never be published this way is told so, whichever linkDocId the
+  // caller named.
+  recusarProdutoNaoPublicavel(produto, link);
+
   // A named link that resolves to nothing is a 404, not a first publish: the
   // conta filter runs FIRST inside the resolver, so an id can only ever narrow
   // within what this conta already owns.
   if (linkResolvido === null && textoUtilizavel(entrada.linkDocId) !== null) return null;
 
-  const link =
-    linkResolvido === null
-      ? null
-      : linkListagemLido(linkResolvido.raw, linkResolvido.estadoAnuncio);
   const ehAtualizacao = link !== null && link.item_id !== null;
 
   const descricao = await lerDescricao(db, entrada.produtoId);
@@ -558,14 +592,24 @@ export async function prepararPublicacao(
 }
 
 /**
- * The two refusals that are about the PRODUTO and not about a field.
+ * The two refusals that are about the PRODUTO (and, for the kit one, about the
+ * listing it already has) rather than about a field of the payload.
  *
- * ⚠️ `ehKit` alone, never `ehKitVirtual`: a Shopee kit is `add_kit_item`
- * (step 19) and is refused, while a VIRTUAL kit is an ordinary listing whose
- * quantity merely DERIVES from its components. Keying the refusal on both would
- * make every component-stocked produto unpublishable.
+ * ⚠️ **`ehKit` does not appear here** — corrected in step 12 (#1520). The ERP's
+ * `ehKit` produtos publish as ordinary Shopee listings and there are thousands
+ * of them; only a NATIVE Shopee kit is refused, and {@link kitNativoDoAnuncio}
+ * is the ONE predicate that decides it, shared with `montarAnuncio` so the two
+ * producers of `produto-e-kit` cannot drift apart.
+ *
+ * `campo` names the field the operator must look at, and it therefore follows
+ * the arm the predicate took: the link's `kitNativo` on a republish, the
+ * produto's `ehKitVirtual` on a first publish. Both spellings are pinned by
+ * tests, because nothing in the type system ties a label to a branch.
  */
-function recusarProdutoNaoPublicavel(produto: ProdutoParaPublicar): void {
+function recusarProdutoNaoPublicavel(
+  produto: ProdutoParaPublicar,
+  link: LinkListagemLido | null,
+): void {
   const problemas: ProblemaDeBloqueio[] = [];
   if (produto.paiId !== null) {
     problemas.push({
@@ -576,11 +620,13 @@ function recusarProdutoNaoPublicavel(produto: ProdutoParaPublicar): void {
         'que leva as variações como modelos',
     });
   }
-  if (produto.ehKit) {
+  if (kitNativoDoAnuncio(link, produto)) {
     problemas.push({
-      campo: 'ehKit',
+      campo: link !== null ? 'kitNativo' : 'ehKitVirtual',
       motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
-      mensagem: `o produto ${produto.id} é um kit — a Shopee cria kits por add_kit_item, não por add_item`,
+      mensagem:
+        `o anúncio do produto ${produto.id} é um kit NATIVO da Shopee — ` +
+        'a Shopee cria kits por add_kit_item, não por add_item',
     });
   }
   if (temProblemaDeBloqueio(problemas)) {

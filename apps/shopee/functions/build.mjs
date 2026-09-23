@@ -58,7 +58,20 @@ export async function bundle(outfile) {
     format: 'esm',
     target: 'node20',
     outfile,
-    external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
+    // @google-cloud/firestore stays EXTERNAL (never bundled): the stock sync
+    // (lib/shopee/estoque/, step 12) imports pipeline builders from
+    // `@google-cloud/firestore/pipelines`, and a bundled copy would be a SECOND
+    // instance beside firebase-admin's — the Pipelines API overloads every stage on
+    // `instanceof`, so a cross-copy expression is silently reinterpreted as an
+    // options object (the ML precedent in apps/mercado-livre/functions/build.mjs).
+    external: [
+      'firebase-admin',
+      'firebase-admin/*',
+      'firebase-functions',
+      'firebase-functions/*',
+      '@google-cloud/firestore',
+      '@google-cloud/firestore/*',
+    ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
       'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),

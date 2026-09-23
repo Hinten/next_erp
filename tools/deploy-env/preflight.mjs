@@ -173,7 +173,20 @@ const CODEBASES = {
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'SHOPEE_TASKS_REGION',
     backendManifest: 'apps/shopee/apphosting.yaml',
-    deployShell: {},
+    // Step 12 (#1520) gave this codebase its first `onTaskDispatched.rateLimits`,
+    // so it joins `mercado-livre` above in the deploy-shell family: these two are
+    // read from the DEPLOYING shell and baked into the queue by firebase-tools'
+    // local trigger analysis — NOT an esbuild define, so `inlined` does not move.
+    // ⚠️ `SHOPEE_STOCK_CONCURRENT_DISPATCHES` is read on TWO surfaces: here (the
+    // queue) and on App Hosting, where it is the ceiling the manual push clamps
+    // its own concurrency to. Setting it in only one of the two leaves the
+    // surfaces disagreeing about the same account.
+    // ⚠️ Source of truth: `envInt(...)` in constantesEstoque.ts, drift-checked.
+    deployShell: {
+      SHOPEE_STOCK_CONCURRENT_DISPATCHES: '2',
+      SHOPEE_STOCK_DISPATCHES_PER_SECOND: '2',
+    },
+    deployShellSource: 'apps/shopee/lib/shopee/estoque/constantesEstoque.ts',
     runtimeOverrides: ['SHOPEE_TASKS_REGION'],
   },
   nfe: {
