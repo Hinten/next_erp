@@ -35,6 +35,7 @@ vi.mock('./orderCliente', () => {
 // Promoted out of ./orderCliente by #786 — the resolution is shared with every
 // other channel importer now.
 vi.mock('@delfrance/data/admin/clientes', () => ({
+  ClienteSemIdentidadeForteError: class ClienteSemIdentidadeForteError extends Error {},
   findOrCreateCliente: vi.fn(),
 }));
 vi.mock('./orderPedidoTx', () => ({
@@ -54,7 +55,10 @@ import {
   ensureEndereco,
   shipmentToEnderecoFields,
 } from './orderCliente';
-import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
+import {
+  ClienteSemIdentidadeForteError,
+  findOrCreateCliente,
+} from '@delfrance/data/admin/clientes';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { POLITICA_FRESCOR_TOPICO_SHIPMENTS, freteRecebidoEhMaisNovo } from './orderShipmentMapping';
@@ -996,6 +1000,36 @@ describe('importPedidoMercadoLivre — cliente', () => {
     expect(findOrCreateCliente).not.toHaveBeenCalled();
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ clientePedidoOuterRef: null });
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('continues the order without a cliente when no strong identity can create one', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const order = makeOrder({ id: 1 });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+    vi.mocked(billingInfoToClienteFields).mockReturnValue({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Pessoa sem documento',
+      cpf_cnpj: null,
+      idEstrangeiro: null,
+      ie: null,
+      telefone: '5511999998888',
+      email: 'pessoa@example.com',
+    });
+    vi.mocked(findOrCreateCliente).mockRejectedValueOnce(new ClienteSemIdentidadeForteError());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', created: true, semEnvio: false, skipped: null });
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ clientePedidoOuterRef: null });
+    expect(warn).toHaveBeenCalledWith(
+      '[mercado-livre] cliente não vinculado — identidade forte ausente',
+      { orderId: 1 },
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('pessoa@example.com');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('5511999998888');
   });
 
   it("supplies the buyer's idMercadoLivre — the strongest key this path holds (#1087)", async () => {

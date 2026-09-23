@@ -397,7 +397,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install firebase-tools (pinned)
-        run: npm i -g firebase-tools@15.15.0
+        run: npm i -g firebase-tools@15.25.0
 
       # ⚠️ `pnpm --filter <name-that-matches-nothing>` prints "No projects
       # matched the filters" and exits ZERO — verified. A typo in the run step
@@ -495,7 +495,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install firebase-tools (pinned)
-        run: npm i -g firebase-tools@15.15.0
+        run: npm i -g firebase-tools@15.25.0
 
       # `predeploy` hooks do NOT run under emulators:exec, so the artifact has to
       # be built explicitly. ⚠️ `build.mjs` alone emits only dist/index.js —

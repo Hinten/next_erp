@@ -5,6 +5,7 @@
  */
 export {
   buildClienteUpdatePatch,
+  ClienteSemIdentidadeForteError,
   findOrCreateCliente,
   type FindOrCreateClienteInput,
   type FindOrCreateClienteResult,
