@@ -3,15 +3,16 @@
 Dev-only CLIs. **Never run by an agent** (root `CLAUDE.md` rule 8) — a human
 runs them, from this worktree, against the project the environment points at.
 
-| script                   | what it does                                          | writes?                   |
-| ------------------------ | ----------------------------------------------------- | ------------------------- |
-| `oauth-url.ts`           | mints a Shopee consent URL without the web UI         | one `oauthState` document |
-| `importar-pedido.ts`     | imports ONE order through the real step-5 path        | only with `--live`        |
-| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)       | only with `--live`        |
-| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)    | only with `--live`        |
-| `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8) | only with `--live`        |
-| `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path      | only with `--live`        |
-| `publicar-anuncio.ts`    | publishes ONE produto through the real step-11 path   | only with `--live`        |
+| script                   | what it does                                                       | writes?                   |
+| ------------------------ | ------------------------------------------------------------------ | ------------------------- |
+| `oauth-url.ts`           | mints a Shopee consent URL without the web UI                      | one `oauthState` document |
+| `importar-pedido.ts`     | imports ONE order through the real step-5 path                     | only with `--live`        |
+| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)                    | only with `--live`        |
+| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)                 | only with `--live`        |
+| `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8)              | only with `--live`        |
+| `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path                   | only with `--live`        |
+| `publicar-anuncio.ts`    | publishes ONE produto through the real step-11 path                | only with `--live`        |
+| `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1009,6 +1010,15 @@ reached", not "how bad is the refusal". ⚠️ Under `--live` a refusal is not c
 either, and the transcript adds `Nada garante que nada foi criado` plus
 `releia com --dry-run`.
 
+⚠️ **"Native kit" is the whole rule, and step 12 corrected the code to match
+this sentence.** `produto-e-kit` = a NATIVE Shopee kit = `link.kitNativo ===
+true` on a republish, or `produto.ehKitVirtual === true` on a first publish.
+`produto.ehKit` **never** refuses a publish: an ERP kit publishes as an ordinary
+Shopee listing with the component-derived quantity. Until step 12 the refusal
+keyed on `ehKit` alone, so a produto this paragraph said would publish did not —
+the slug is unchanged, its meaning narrowed, and the first republish after that
+fix can create listings for produtos previously unpublishable.
+
 ### 12.5 Caveats you should expect to see (none of these is a bug)
 
 - **THE DRY RUN UPLOADS ITS PICTURES.** Said again because it surprises
@@ -1047,3 +1057,195 @@ either, and the transcript adds `Nada garante que nada foi criado` plus
   header line tells you which sequence would actually run.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it publishes
   on a real marketplace, and in either mode it uploads pictures to Shopee.
+
+---
+
+## `enviar:estoque` — rehearsing the first quantity WRITE
+
+`publicar:anuncio` above writes a listing. This one writes a **number on a
+listing that already exists**, which is the one Shopee write an operator will
+run again every day. `enviarEstoqueManualShopee` normally runs from the
+`enviar-estoque` route; this script drives **the same module** from a terminal
+against up to 50 named produtos, so the channel's first `update_stock` is
+deliberate and observable instead of arriving on an HTTP call nobody was
+watching.
+
+It is also the only place the whole PLAN is printed. The dry run stops one step
+short of the sender — `buscarFamiliasShopeePorIds` →
+`quantidadesDaFamiliaShopee` → `montarTarefasDeEstoqueShopee` plus one
+`get_item_promotion` for the floor column — and renders exactly the tasks the
+live path would enqueue. That is not a re-implementation: it is the live path's
+own planner, minus the writer, and the two branches load **different modules**
+(`lib/shopee/estoque/enviarEstoqueCli.ts:19-30`), so the dry run cannot reach a
+sender even by accident. The reasoning behind every line it prints is
+`lib/shopee/estoque/README.md`.
+
+### 13.1 Environment
+
+Same `.env.local` as every other script here (`dotenv -e ../../.env.local -- tsx
+…`), and the same variables as §1. Step 12 adds **no variable this command
+reads** — its `SHOPEE_STOCK_*` knobs belong to the nested Cloud Functions
+codebase (`functions/DEPLOY.md`). What it needs are two things on the
+**integração document**:
+
+| field on `integracao/{id}` | what its absence does                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `depositoOuterRef`         | **refused**, `SHOPEE_CONTA_SEM_DEPOSITO`: with no depósito there is no quantity to derive, so the command stops rather than sending a guess |
+| an authorized `shop_id`    | a conta connected by MAIN ACCOUNT can sign nothing Shop-scoped; the script prints a re-consent instruction and exits `1`, never a stack     |
+
+⚠️ **This CLI IGNORES `SHOPEE_STOCK_SYNC_ENABLED`**, on purpose, and the
+preamble prints the raw value beside that sentence
+(`scripts/enviar-estoque.ts:155-160`). That variable is the master valve of the
+three **scheduled** sweeps and of the `sendShopeeStock` queue; the manual push
+passes `ignoreSyncFlag: true` because the button has to work before the
+automatic sync is switched on. So a project with the sweeps OFF still sends from
+here.
+
+⚠️ **This CLI writes on the real marketplace**, so the project the environment
+points at decides which shop receives the quantity. Read the preamble — mode,
+project, database, `SHOPEE_SANDBOX`, the integração, the produto list, the valve
+— before you let it continue, exactly as in §1.
+
+### 13.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:estoque --integracao int-1 --produto prod-1
+```
+
+```
+--integracao <id>     obrigatório — o documento da integração Shopee.
+--produto <id>        obrigatório e REPETÍVEL — o produto ÂNCORA da família.
+--reenviar-com-erro   ignora a impressão digital da última recusa, e SÓ ela.
+--dry-run             É O PADRÃO.
+--live                a única forma de enviar.
+--project <id>        sobrescreve FIREBASE_PROJECT_ID antes de abrir o admin.
+--json                resumo redigido em JSON no stdout; cabeçalho no stderr.
+--help, -h            sai com 0 antes de tocar env, Firestore ou Shopee.
+```
+
+| flag                  | meaning                                                                                                                                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>`   | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                      |
+| `--produto <id>`      | **required and REPEATABLE** — the family **ANCHOR**, never a variação. ⚠️ **No comma-separated form**, because a comma is a legal character in a document id. Deduped in flag order |
+| `--reenviar-com-erro` | bypasses the per-link **skip set** and NOTHING else. A removed, banned, in-review, native-kit or id-less listing still refuses with it on                                           |
+| `--dry-run`           | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                  |
+| `--live`              | the only opt-in to a real quantity write                                                                                                                                            |
+| `--project <id>`      | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                               |
+| `--json`              | the same REDACTED summary as one parseable document on stdout, preamble on stderr                                                                                                   |
+| `--help`, `-h`        | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                      |
+
+⚠️ **The cap is 50 produtos, counted AFTER the duplicates are removed**
+(`SHOPEE_ENVIO_ESTOQUE_MAX_PRODUTOS`). 51 flags naming 50 distinct produtos is
+ACCEPTED; 51 distinct ones is refused by this command's own argument error, with
+the usage — not by the module, which would answer a server-misconfiguration
+error, the wrong sentence for a human who typed one flag too many.
+
+⚠️ A bare `--` is refused, and no command in this file carries one (see the note
+at the top).
+
+**What the dry run calls, and what it can never call.** It reads
+`produtoCollection.docRef(…).get()` once per requested id (for the name),
+`buscarFamiliasShopeePorIds`, `quantidadesDaFamiliaShopee`,
+`montarTarefasDeEstoqueShopee`, `lerEstadoEstoque`, and
+`client.getItemPromotion` chunked at `SHOPEE_ITEM_PROMOTION_MAX_IDS`. It never
+reaches `enviarEstoqueManualShopee`, `processShopeeStockSendTask`,
+`update_stock`, any scheduler or any Firestore write — the sender module is not
+even imported on that path, and a test over the script's raw text is what keeps
+it that way.
+
+### 13.3 What to read in the output
+
+A header, then one block per anúncio, then the skips. The whole rendering is an
+**allow-list** — named fields only, never a raw payload — so it is safe to paste
+into an issue. Keep it that way if you extend it.
+
+| line                                                | what it tells you                                                                                                                                                                                                                                             |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `integração` / `solicitados` / `famílias lidas`     | what you asked for and how many family rows discovery returned. `famílias lidas` below `solicitados` means an anchor came back with no row — it is reported as a skip, never dropped silently.                                                                |
+| `anúncios no plano` / `modelos no plano`            | how many `update_stock` calls a live run would make, and how many models ride in them. One call per **listing**, never per model.                                                                                                                             |
+| `orçamento da task`                                 | the encoded-body budget and the warning threshold. A listing above the warning prints `⚠️ acima do aviso` on its own `tamanho` line; at 50 models a real payload is ~6 KiB against 80 KiB, so this is a drift backstop, not a bound.                          |
+| `### anúncio i/N — <produtoId>`                     | one block per planned listing: `produto` (with its name), `anúncio` (the `item_id`), `vínculo` (the `prodshopee` document), `estado`, `kit nativo` and `parte P/T`.                                                                                           |
+| `parte 1/1`                                         | the normal case. `1/2` means the listing's models exceeded the wire's 50-model ceiling and were split across two tasks — possible only on drifted link data, and safe, because a partial `stock_list` leaves the omitted models untouched.                    |
+| `modelos (N)` — the table                           | `model_id · produto · qtd · envia · piso · banda · clampeado`. ⚠️ `qtd` is the planner's **unclamped** number and `envia` is what would actually go — read them as a pair. `model_id 0` is the no-model listing, a real id, never "no model".                 |
+| `piso` / `clampeado: piso`                          | the reserved floor `get_item_promotion` reported for that model. `clampeado: piso` means **Shopee has promised more units than you hold** and the send would be raised to the floor — the thing this column exists to show.                                   |
+| `banda` — always `—` today                          | the category's `stock_limit.max`. **Nothing resolves a band on this path**, deliberately: filling it would cost one `get_item_limit` per listing. The column is the seam a future band read plugs into, so `clampeado` can only say `piso` or `nenhum` today. |
+| `kit <produtoId> — a conta que produz a quantidade` | for an ERP kit, one line per component (`disponivel`, `por kit`, `limita`) and then `min =`. This is the whole arithmetic behind the number, printed rather than asserted.                                                                                    |
+| `### pulos (N) — não seriam enviados`               | one line per refusal or annotation: produto, anúncio, motivo slug, the rendered pt-BR message, and `model=` / `modelos=` when the line is about one model or about a chunk.                                                                                   |
+| `### totais por motivo`                             | the same skips folded by motivo, each marked `recusa` or `aviso `. ⚠️ `clampado-na-reserva` is an **aviso**, not a `recusa` — counting `motivo !== null` as a failure reports every clamped send as one.                                                      |
+
+⚠️ **A dry run cannot tell you what Shopee currently shows.** It prints what the
+ERP would send and what the promotion read says the floor is; only a live send
+plus a read-back proves what the listing now holds. And do not look for
+`update_time` to confirm anything — a stock write does **not** move it
+(measured, probe P5), so `get_item_list?update_time_from` can neither detect
+Shopee-side drift nor confirm your write.
+
+### 13.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:estoque --integracao int-1 --produto prod-1 --live
+```
+
+⚠️ **`--live` writes a REAL quantity** on a real listing, and it force-sends:
+the manual path passes `ignoreSyncFlag: true`, so the master valve does not
+protect you here. It also writes the link documents' eleven stock fields
+through the real handler.
+
+The live printout is shorter and different on purpose: the header counters
+(`enviados`, `pulados`, `falhas`, `não tentados`, `pausado até`), then one row
+per listing — `produtoId`, the produto's **name**, `anuncioId`, its `outcome`
+and the counts — followed by its motivo and the rendered message, then one
+`model …` line per model with `pedida=` / `enviada=` / the per-model result /
+`clampado piso=` / Shopee's verbatim code, and finally
+`### produtos sem envio`. Everything there comes from what Shopee ANSWERED —
+`enviada=` is what was sent, never echoed back out of `success_list`.
+
+**The exit codes.**
+
+| code | when                                                                                                                                                                 |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | any envelope, **including one where every listing failed** — a per-listing refusal is DATA, and the route answers `200` there, so the two surfaces must not disagree |
+| `0`  | a dry run that plans nothing at all                                                                                                                                  |
+| `0`  | `--help`                                                                                                                                                             |
+| `1`  | a bad command line (`--live --dry-run`, a missing `--produto`, more than 50 distinct ids); prints THIS command's usage                                               |
+| `1`  | a conta with no `shop_id`, printed as a re-consent instruction rather than a stack                                                                                   |
+| `1`  | any throw: the depósito guard by CLASS plus its `code`, then the Shopee ladder by class plus code/path. ⚠️ Never a payload, and never the guard's `extra` bag        |
+
+### 13.5 Caveats you should expect to see (none of these is a bug)
+
+- **A paused conta is REPORTED, not refused.** The route answers `409
+SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
+  document, prints the pause and **proceeds**, because inspecting a paused conta
+  is exactly what a dry run is for. Under `--live` you then get a page of
+  `nao-tentado` rows carrying `pausadoAte` — the refusing scheduler's answer,
+  per listing. The two surfaces still agree on the exit code. ⚠️ The pause is
+  printed, not honoured: the shop-signed client is built and the dry run's one
+  `get_item_promotion` per ≤50 listings is still spent, so that a paused conta
+  gets its real `piso` column. What the 409 saves on the web surface, this one
+  deliberately does not.
+- **`kit-derivado`** on a **native Shopee kit** (`link.kitNativo === true`). An
+  ERP `ehKit` produto is an ordinary listing and IS sent, at its
+  component-derived quantity — that is what the `kit` block prints.
+- **`recusa-anterior`** on a listing that has not changed state since its last
+  refusal. That is the skip set working: it lifts on a state change or on a
+  clock, and `--reenviar-com-erro` bypasses it (and nothing else).
+- **`clampado-na-reserva` plus an aviso.** A clamp is an ANNOTATION on a
+  SUCCESSFUL send, and it raises `estoqueAcimaDoDisponivel` in the operator
+  inbox for the MODEL's produto. The row closes itself on the next clean,
+  unclamped send of the same produto — nothing else closes it.
+- **`bloqueado-por-promocao`** clears itself after `SHOPEE_STOCK_PROMOCAO_RETRY_MIN`
+  minutes. A promotion ending moves no `item_status`, so this one is a TIME
+  skip, not a fingerprint skip.
+- **A whole conta skipped** as `loja-fbs`, `multi-armazem`, `loja-cbsc`,
+  `loja-outlet`, `loja-banida-ou-congelada` or `loja-em-ferias`. Those are the
+  conta gates, decided once per run before any listing is read.
+- **`envio-parcial`** when one model of fifty is refused: the listing keeps the
+  models Shopee accepted and the refusal is recorded per model. It deliberately
+  does **not** stamp `estoqueEnviadoEm`, so the next tick re-sends.
+- **The plan is PROVISIONAL about the floor.** `get_item_promotion` is read once,
+  before the send; a promotion that starts between the two answers a refusal the
+  sender handles by re-reading the floor and retrying ONCE.
+- **`produtoNome` costs one extra document read per requested id** (up to 50, in
+  parallel). It buys the name in every row; nothing else reads it.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
+  quantities on a real marketplace, and even a dry run calls Shopee.

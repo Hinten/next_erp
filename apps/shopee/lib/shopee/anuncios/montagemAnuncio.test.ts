@@ -17,6 +17,7 @@ import {
   atributosParaPublicar,
   condicaoDoProduto,
   dimensaoParaPublicar,
+  kitNativoDoAnuncio,
   montarAnuncio,
   pesoParaPublicar,
   preOrderParaPublicar,
@@ -99,6 +100,8 @@ const LINK: LinkListagemLido = {
   attributes: null,
   logistic_info: null,
   estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+  /** An ordinary listing — what every link in this catalogue reads back as. */
+  kitNativo: false,
 };
 
 function link(over: Partial<LinkListagemLido> = {}): LinkListagemLido {
@@ -366,8 +369,8 @@ const RECUSAS: readonly CasoDeRecusa[] = [
   },
   {
     motivo: MOTIVO_PUBLICACAO_BLOQUEADA.produtoEKit,
-    rotulo: 'o produto é um kit',
-    args: args({ produto: produto({ ehKit: true }) }),
+    rotulo: 'o vínculo diz que a Shopee monta o anúncio como kit NATIVO',
+    args: args({ produto: produto({ ehKit: true }), link: link({ kitNativo: true }) }),
   },
 ];
 
@@ -732,6 +735,136 @@ describe('quantidadeParaPublicarShopee', () => {
         banda: null,
       }),
     ).toBe(4);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        (6b) o kit NATIVO — a recusa que o passo 12 estreitou (#1520)        */
+/* -------------------------------------------------------------------------- */
+
+const COMPONENTES = {
+  'comp-a': { quantidade: 2, limitarEstoque: true },
+  'comp-b': { quantidade: 1, limitarEstoque: true },
+} as unknown as ProdutoParaPublicar['componentesKit'];
+
+/** min(floor(9/2), floor(5/1)) = 4 — o estoque derivado dos componentes. */
+const DISPONIVEL_DOS_COMPONENTES = { 'comp-a': 9, 'comp-b': 5 };
+const ESTOQUE_DERIVADO = 4;
+
+/** Um kit do ERP: montado a partir de componentes, anúncio COMUM na Shopee. */
+function kitDoErp(over: Partial<ProdutoParaPublicar> = {}): ProdutoParaPublicar {
+  return produto({ ehKit: true, componentesKit: COMPONENTES, ...over });
+}
+
+/** Um vínculo gravado ANTES do passo 12: a chave `kitNativo` simplesmente não existe. */
+const LINK_SEM_O_CAMPO: LinkListagemLido = {
+  item_id: ITEM_ID,
+  item_name: null,
+  description: null,
+  category_id: CATEGORIA_FOLHA,
+  brand_id: null,
+  attributes: null,
+  logistic_info: null,
+  estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+};
+
+describe('kitNativoDoAnuncio', () => {
+  it('⚠️ PAR: com vínculo, kitNativo true recusa e kitNativo false NÃO recusa', () => {
+    expect(kitNativoDoAnuncio({ kitNativo: true }, { ehKitVirtual: false })).toBe(true);
+    expect(kitNativoDoAnuncio({ kitNativo: false }, { ehKitVirtual: false })).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: "true", 1, null e a chave AUSENTE não recusam — a comparação é === true', () => {
+    expect(kitNativoDoAnuncio({ kitNativo: 'true' }, { ehKitVirtual: false })).toBe(false);
+    expect(kitNativoDoAnuncio({ kitNativo: 1 }, { ehKitVirtual: false })).toBe(false);
+    expect(kitNativoDoAnuncio({ kitNativo: null }, { ehKitVirtual: false })).toBe(false);
+    expect(kitNativoDoAnuncio({}, { ehKitVirtual: false })).toBe(false);
+  });
+
+  it('com vínculo, o vínculo é a AUTORIDADE — ehKitVirtual do produto não é fallback', () => {
+    expect(kitNativoDoAnuncio({ kitNativo: false }, { ehKitVirtual: true })).toBe(false);
+    expect(kitNativoDoAnuncio({ kitNativo: null }, { ehKitVirtual: true })).toBe(false);
+  });
+
+  it('⚠️ PAR: sem vínculo, ehKitVirtual recusa; sem ele, a primeira publicação segue', () => {
+    expect(kitNativoDoAnuncio(null, { ehKitVirtual: true })).toBe(true);
+    expect(kitNativoDoAnuncio(null, { ehKitVirtual: false })).toBe(false);
+    expect(kitNativoDoAnuncio(null, {})).toBe(false);
+  });
+});
+
+describe('montarAnuncio — o apagão do catálogo legado de kits', () => {
+  it('⚠️ PAR: um produto ehKit com vínculo ORDINÁRIO publica, com o estoque dos componentes', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: kitDoErp(),
+        link: link({ kitNativo: false }),
+        ownDisponivel: 100,
+        disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+      }),
+    );
+
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.seller_stock).toEqual([{ stock: ESTOQUE_DERIVADO }]);
+  });
+
+  it('um vínculo sem o campo, ou com ele em null, também publica — é o corpo legado inteiro', () => {
+    for (const vinculo of [LINK_SEM_O_CAMPO, link({ kitNativo: null })]) {
+      const montado = montarAnuncio(
+        args({
+          produto: kitDoErp(),
+          link: vinculo,
+          ownDisponivel: 100,
+          disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+        }),
+      );
+      expect(motivos(montado.problemas)).not.toContain('produto-e-kit');
+      expect(montado.criar.seller_stock).toEqual([{ stock: ESTOQUE_DERIVADO }]);
+    }
+  });
+
+  it('sem vínculo, um kit COMUM do ERP publica — ehKit sozinho NUNCA recusa', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: kitDoErp(),
+        link: null,
+        ownDisponivel: 100,
+        disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+      }),
+    );
+
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.seller_stock).toEqual([{ stock: ESTOQUE_DERIVADO }]);
+  });
+
+  it('⚠️ NEAR-MISS: sem vínculo, um ehKitVirtual É recusado — é o kit que a Shopee monta', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: kitDoErp({ ehKitVirtual: true }),
+        link: null,
+        ownDisponivel: 100,
+        disponivelByProdutoId: DISPONIVEL_DOS_COMPONENTES,
+      }),
+    );
+
+    expect(motivos(montado.problemas)).toContain('produto-e-kit');
+  });
+
+  it('⚠️ os DOIS produtores de produto-e-kit chamam O MESMO predicado (M-30)', () => {
+    const pasta = fileURLToPath(new URL('.', import.meta.url));
+    const mapeador = readFileSync(`${pasta}montagemAnuncio.ts`, { encoding: 'utf8' });
+    const publicador = readFileSync(`${pasta}publicarAnuncio.ts`, { encoding: 'utf8' });
+
+    // UMA declaração, aqui; o outro produtor importa e chama.
+    expect(mapeador.match(/export function kitNativoDoAnuncio\(/g)).toHaveLength(1);
+    expect(publicador).not.toContain('function kitNativoDoAnuncio');
+    expect(publicador).toContain('kitNativoDoAnuncio,');
+    expect(publicador).toContain('kitNativoDoAnuncio(link, produto)');
+
+    // E nenhum dos dois volta a decidir a recusa pelo flag do ERP.
+    for (const fonte of [mapeador, publicador]) {
+      expect(fonte).not.toContain('if (produto.ehKit)');
+    }
   });
 });
 

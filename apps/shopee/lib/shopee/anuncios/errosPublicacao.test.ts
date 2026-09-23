@@ -66,6 +66,10 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
     // membro seja renomeado nos DOIS lugares de uma vez — que é exatamente o
     // refactor silencioso que órfã toda linha já escrita. A igualdade de
     // conjunto contra literais é o que fica vermelho aí.
+    // ⚠️ `produto-e-kit` teve o PREDICADO estreitado no passo 12 (#1520) — hoje
+    // ele é o kit NATIVO da Shopee (`kitNativo` no vínculo, `ehKitVirtual` na
+    // primeira publicação), nunca o `ehKit` do ERP. O SLUG não mudou, e é por
+    // isso que as recusas já gravadas continuam legíveis.
     expect([...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA)].sort()).toEqual([
       'atributo-obrigatorio',
       'categoria-invalida',

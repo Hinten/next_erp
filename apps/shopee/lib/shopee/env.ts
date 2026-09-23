@@ -24,6 +24,13 @@
  *    by the nested functions codebase, not Shopee CONFIGURATION this app hands
  *    to the package, and the blank-guard rule below buys an `=== '1'`
  *    comparison nothing.
+ *  - `lib/shopee/estoque/constantesEstoque.ts` — the step-12 stock knobs
+ *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family** and
+ *    the only other one that is a family rather than a single read. It goes
+ *    through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which
+ *    already treat a blank value as unset, so the rule below would buy it
+ *    nothing; that file's own docblock states the split and is PATH-BOUND to
+ *    `tools/deploy-env/preflight.mjs`.
  *
  * The nested `functions/` codebase reads more of it still (`options.ts`,
  * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a
