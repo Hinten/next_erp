@@ -7,6 +7,7 @@ import type { IntegracaoRow } from '@/lib/data/useIntegracoes';
 
 import { IntegracaoColumnFilter } from './IntegracaoColumnFilter';
 import {
+  SEM_CANAL_LABEL,
   formatIntegracaoFilterValue,
   integracaoIdFromOuterRef,
   integracaoOuterRef,
@@ -122,6 +123,29 @@ describe('formatIntegracaoFilterValue', () => {
     // `documents/integracao/<id>`.
     const denied = { rows: [], byId: new Map(), status: 'error' as const };
     expect(formatIntegracaoFilterValue(integracaoOuterRef('ml-1'), denied)).toBe('ml-1');
+  });
+
+  it('names the empty state instead of printing the word "null"', () => {
+    // ⚠️ Dead today — nothing emits `isNull` on this column — and pinned anyway.
+    // Without the guard, `String(null)` is `'null'`, which has no slash, so the
+    // id extractor hands it back verbatim, `byId` misses and `?? id` prints it:
+    // the chip would read `Canal: null` the day a "sem canal" option ships.
+    // `describeFilter` cannot cover for it either — it short-circuits on
+    // `formatValue` above its own `isNull` branch.
+    expect(formatIntegracaoFilterValue(null, lookup)).toBe(SEM_CANAL_LABEL);
+  });
+
+  it('never folds the empty state onto a channel whose id is the word "null"', () => {
+    // The near-miss. An id is a string and could be anything; discriminating on
+    // `value === null` — the type, not the text — is what keeps them apart.
+    const rows = [row('null', 'Canal Chamado Null', 1, true)];
+    const odd = {
+      rows,
+      byId: new Map(rows.map((r) => [r.id, r.data])),
+      status: 'success' as const,
+    };
+    expect(formatIntegracaoFilterValue(integracaoOuterRef('null'), odd)).toBe('Canal Chamado Null');
+    expect(formatIntegracaoFilterValue(null, odd)).toBe(SEM_CANAL_LABEL);
   });
 
   it('keeps two channels with the same id prefix distinct', () => {

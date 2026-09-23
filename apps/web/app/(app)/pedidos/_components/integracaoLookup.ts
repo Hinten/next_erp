@@ -42,6 +42,9 @@ export function integracaoIdFromOuterRef(value: unknown): string {
   return slash < 0 ? raw : raw.slice(slash + 1);
 }
 
+/** What the chip says for a Canal filter matching pedidos with no integração. */
+export const SEM_CANAL_LABEL = 'Sem canal';
+
 /**
  * Chip text for the active Canal filter: the channel's name, falling back to its
  * bare id.
@@ -51,8 +54,19 @@ export function integracaoIdFromOuterRef(value: unknown): string {
  * on first paint, so the map is populated before a chip can render. It exists
  * for the denied-read case, where printing a raw id still beats printing the
  * whole stored path.
+ *
+ * ⚠️ The `null` branch is DEAD TODAY and deliberately here anyway: nothing emits
+ * `isNull` on this column yet. Without it, the day a "sem canal" option ships
+ * the chip would read `Canal: null` — `String(null)` is `'null'`, which has no
+ * slash so `integracaoIdFromOuterRef` returns it verbatim, `byId` misses, and
+ * `?? id` hands the word straight back. That is the exact defect the rest of
+ * this change removes, re-created one option later. `describeFilter` cannot
+ * save it either: it short-circuits on `formatValue` ABOVE its own
+ * `isNull → (vazio)` branch, so a column that supplies a formatter owns the
+ * empty case outright. `formatClienteFilterValue` guards it the same way.
  */
 export function formatIntegracaoFilterValue(value: unknown, lookup: IntegracaoLookup): string {
+  if (value === null) return SEM_CANAL_LABEL;
   const id = integracaoIdFromOuterRef(value);
   return lookup.byId.get(id)?.nome ?? id;
 }
