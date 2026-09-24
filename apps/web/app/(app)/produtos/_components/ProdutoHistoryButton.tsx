@@ -18,6 +18,7 @@ import {
 } from '@delfrance/data';
 import { formatReais } from '@delfrance/core';
 import { microsToDate } from '@delfrance/core/datetime';
+import { CAMPO_HISTORICO_PRECO_CUSTO } from '@delfrance/schemas';
 import { historicoModificacoesCollection } from '@/lib/data/historicoModificacoesCollection';
 import {
   buildCustoHistoryRows,
@@ -42,9 +43,6 @@ const dateFmt = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle
  * of guessing at a runtime error code from the failed RPC.
  */
 const USING_FIRESTORE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true';
-
-/** `historicoDeModificacoes.campos` entry each kind's changes live under. */
-const CHANGED_FIELD = { preco: 'precos', custo: 'custo' } as const;
 
 interface HistoryState {
   open: boolean;
@@ -92,7 +90,8 @@ export function ProdutoHistoryButton({
   async function open() {
     setState({ open: true, loading: true, rows: [], error: null });
     try {
-      const entries = await fetchHistoryEntries(db, produtoId, CHANGED_FIELD[kind]);
+      // The same constant the TTL retention keeps forever — see `historyRoots.ts`.
+      const entries = await fetchHistoryEntries(db, produtoId, CAMPO_HISTORICO_PRECO_CUSTO[kind]);
       const rows =
         kind === 'preco'
           ? buildPrecoHistoryRows(entries, listaId ?? '')

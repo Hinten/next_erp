@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { type Firestore, getFirestore } from 'firebase-admin/firestore';
+import { type Firestore, Timestamp, getFirestore } from 'firebase-admin/firestore';
+import { RETENCAO_HISTORICO_PRODUTO_DIAS } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
 import { recordProdutoModificationAndPropagate } from './onProdutoChanged';
@@ -380,6 +381,61 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(entries).toHaveLength(1);
     const entry = entries[0]!.data();
     expect(entry.campos).toEqual(['nome']);
+  });
+
+  // The TTL policy on `historicoDeModificacoes` only fires on a real Timestamp —
+  // a numeric epoch is silently ignored and the row lives forever. The unit tests
+  // prove a Date is stamped; only a round trip through the SDK proves what LANDS.
+  it('stamps an ordinary entry with a Timestamp expiry the TTL policy can act on', async () => {
+    const db = getDb();
+    const produtoId = freshId('ttl');
+    const eventId = freshId('evt');
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      produtoId,
+      { nome: 'Antes', paiId: null },
+      { nome: 'Depois', paiId: null },
+      eventId,
+      EVENT_TIME_MICROS,
+    );
+
+    const stored = (
+      await db
+        .collection('produtos')
+        .doc(produtoId)
+        .collection('historicoDeModificacoes')
+        .doc(eventId)
+        .get()
+    ).get('expiraEm');
+    expect(stored).toBeInstanceOf(Timestamp);
+    expect((stored as Timestamp).toMillis()).toBe(
+      EVENT_TIME_MICROS / 1000 + RETENCAO_HISTORICO_PRODUTO_DIAS * 86_400_000,
+    );
+  });
+
+  it('stores no expiry on a price/cost entry, which is kept forever', async () => {
+    const db = getDb();
+    const produtoId = freshId('ttlkeep');
+    const eventId = freshId('evt');
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      produtoId,
+      { nome: 'P', paiId: null, custo: 10 },
+      { nome: 'P', paiId: null, custo: 12 },
+      eventId,
+      EVENT_TIME_MICROS,
+    );
+
+    const snap = await db
+      .collection('produtos')
+      .doc(produtoId)
+      .collection('historicoDeModificacoes')
+      .doc(eventId)
+      .get();
+    expect(snap.get('campos')).toEqual(['custo']);
+    expect(snap.get('expiraEm')).toBeUndefined();
   });
 
   it('is a no-op for a delete event (after undefined) — no entry, no propagation', async () => {
