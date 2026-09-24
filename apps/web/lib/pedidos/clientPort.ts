@@ -12,6 +12,7 @@ import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import type { PedidoDevolucaoDataPort, PedidoDocData, PedidoWriteOp } from '@delfrance/data/pedido';
 import { ESTADO_NFE, TIPO_NFE, type EstadoPedido } from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
+import { retryReconcile } from '@/lib/pedidos/reconcileRetry';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
@@ -66,8 +67,14 @@ function refForPath(db: Firestore, path: string): DocumentReference {
  * — concurrent reconciles (two tabs, two sessions) settled on a stale `estado`.
  * The callable's Admin-SDK transaction reads the pedido AND every pagamento
  * together. No explicit timeout: the 70s callable default absorbs a gen2 cold
- * start. Failures arrive as a `FirebaseError` (FunctionsError) the callers narrow
- * on.
+ * start.
+ *
+ * A transient failure (a dropped connection, a 503 while gen2 scales) is retried
+ * up to 3 attempts by `retryReconcile` (#703) — safe because the reconcile is
+ * idempotent (a re-run re-derives the same `estado` and writes nothing); see
+ * `./reconcileRetry` for which codes qualify and why `deadline-exceeded` does
+ * not. Failures still arrive as a `FirebaseError` (FunctionsError) the callers
+ * narrow on — the final attempt's original error.
  */
 export function callReconciliarPagamentoPedido(
   pedidoId: string,
@@ -76,7 +83,7 @@ export function callReconciliarPagamentoPedido(
     getFirebaseFunctions(),
     'reconciliarPagamentoPedido',
   );
-  return fn({ pedidoId }).then((res) => res.data);
+  return retryReconcile(() => fn({ pedidoId }).then((res) => res.data));
 }
 
 /**
