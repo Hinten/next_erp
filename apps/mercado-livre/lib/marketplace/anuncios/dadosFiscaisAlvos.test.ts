@@ -80,7 +80,7 @@ describe('alvosFiscaisArmazenados — the SKUs of an existing anúncio (#745)', 
         titulo: 'Camiseta básica',
         pai: null,
         link: { colecao: 'produtoMercadoLivre', produtoId: PAI, docId: LINK },
-        registrado: { sku: 'SKU-PAI', itemId: 'MLB1' },
+        registrado: { sku: 'SKU-PAI', itemId: 'MLB1', variationId: null },
       }),
     ]);
   });
@@ -101,7 +101,7 @@ describe('alvosFiscaisArmazenados — the SKUs of an existing anúncio (#745)', 
     ]);
     // The pai rides along for the weight/cost fallback.
     expect(alvos[0]!.pai).toMatchObject({ sku: 'SKU-PAI' });
-    expect(alvos[1]!.registrado).toEqual({ sku: 'SKU-G', itemId: null });
+    expect(alvos[1]!.registrado).toEqual({ sku: 'SKU-G', itemId: null, variationId: null });
   });
 
   it('legacy variations[]: the PARENT link’s item, with each child’s ML variation id', async () => {
@@ -148,6 +148,25 @@ describe('alvosFiscaisArmazenados — the SKUs of an existing anúncio (#745)', 
       link: { id: '4260899048783356' },
     });
     expect(alvos.map((a) => a.produtoId)).toEqual(['filho-g']);
+  });
+
+  it('⚠️ a legacy variation #707 PRUNED is skipped — publish never meets one either', async () => {
+    // The prune keeps the doc AND its numeric `id`; only the marker says ML
+    // deleted the variation. Linking a SKU to it would be an `erro` on every re-send.
+    h.membros = [
+      {
+        id: 'v-m',
+        parentId: 'filho-m',
+        data: { id: 555, status: 'closed', sub_status: ['deleted'] },
+      },
+      { id: 'v-g', parentId: 'filho-g', data: { id: 556 } },
+    ];
+    const alvos = await alvosFiscaisArmazenados(db, {
+      produtoId: PAI,
+      linkDocId: LINK,
+      link: { id: 'MLB777' },
+    });
+    expect(alvos.map((a) => [a.produtoId, a.variationId])).toEqual([['filho-g', 556]]);
   });
 
   it('a missing produto yields nothing to send', async () => {

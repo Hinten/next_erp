@@ -433,7 +433,8 @@ export const ESTADO_DADOS_FISCAIS_ML = {
  * writes its own equally true outcome. `.nullable().optional()` because the
  * client never writes them and every link that predates #745 lacks them.
  *
- * `dadosFiscaisSku` + `dadosFiscaisItemId` record the SKU ↔ item LINK ML
+ * `dadosFiscaisSku` + `dadosFiscaisItemId` + `dadosFiscaisVariationId` record
+ * the SKU ↔ item (↔ legacy variation) LINK ML
  * confirmed; while both still match, a re-send skips the link call.
  * `podeFaturar` is ML's own `can_invoice` answer — `null` when never asked or
  * when the read failed, never a guessed `false`.
@@ -444,6 +445,13 @@ const dadosFiscaisMlFields = {
   dadosFiscaisMotivo: z.string().nullable().optional(),
   dadosFiscaisSku: z.string().nullable().optional(),
   dadosFiscaisItemId: z.string().nullable().optional(),
+  /**
+   * The legacy `variations[].id` the SKU was linked with, as text; `null` for a
+   * simple item or a User-Products member. Part of the skip key: a legacy
+   * variation ML recreated keeps its SKU and its item but gets a NEW id, and a
+   * link left naming the dead one is invisible to every later run.
+   */
+  dadosFiscaisVariationId: z.string().nullable().optional(),
   dadosFiscaisEm: millisSinceEpoch().nullable().optional(),
   podeFaturar: z.boolean().nullable().optional(),
 };

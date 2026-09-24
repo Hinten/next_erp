@@ -102,7 +102,12 @@ export interface AlvoFiscal {
   readonly variationId: number | string | null;
   readonly link: LinkFiscal;
   /** The SKU ↔ item pair the link doc already records (`dadosFiscaisSku`/`ItemId`). */
-  readonly registrado: { readonly sku: string | null; readonly itemId: string | null };
+  readonly registrado: {
+    readonly sku: string | null;
+    readonly itemId: string | null;
+    /** The legacy variation id, as text — see {@link variacaoComoTexto}. */
+    readonly variationId: string | null;
+  };
 }
 
 export interface ResumoDadosFiscais {
@@ -142,6 +147,8 @@ export function registradoFiscal(
   return {
     sku: typeof raw?.dadosFiscaisSku === 'string' ? raw.dadosFiscaisSku : null,
     itemId: typeof raw?.dadosFiscaisItemId === 'string' ? raw.dadosFiscaisItemId : null,
+    variationId:
+      typeof raw?.dadosFiscaisVariationId === 'string' ? raw.dadosFiscaisVariationId : null,
   };
 }
 
@@ -221,7 +228,14 @@ export async function enviarDadosFiscais(
 
     try {
       await registrarSku(api, montado.body);
-      const jaVinculado = alvo.registrado.sku === sku && alvo.registrado.itemId === alvo.itemId;
+      // ⚠️ The VARIATION is part of the key, not just SKU + item: a legacy
+      // variation ML recreated (a #831 partial PUT deleted it, the next publish
+      // re-added it) keeps both and gets a new id, and a skip keyed on the pair
+      // would leave ML's link naming the dead one for every run after.
+      const jaVinculado =
+        alvo.registrado.sku === sku &&
+        alvo.registrado.itemId === alvo.itemId &&
+        alvo.registrado.variationId === variacaoComoTexto(alvo.variationId);
       if (!jaVinculado) {
         await api.linkFiscalInformationItem({
           sku,
@@ -248,6 +262,7 @@ export async function enviarDadosFiscais(
     await carimbar(alvo, ESTADO_DADOS_FISCAIS_ML.enviado, null, {
       dadosFiscaisSku: sku,
       dadosFiscaisItemId: alvo.itemId,
+      dadosFiscaisVariationId: variacaoComoTexto(alvo.variationId),
       podeFaturar,
     });
   }
@@ -266,6 +281,15 @@ function resumoSemOperacao(alvos: readonly AlvoFiscal[]): ResumoDadosFiscais {
     })),
     erros: [],
   };
+}
+
+/**
+ * A legacy variation id as the text the link doc stores. ML hands it as a
+ * number and the stored links hold a number, so it is normalised once here and
+ * the skip key never compares `555` against `'555'`.
+ */
+function variacaoComoTexto(variationId: number | string | null): string | null {
+  return variationId == null ? null : String(variationId);
 }
 
 /** PUT first (a re-send is the common case); POST only when ML does not know the SKU. */

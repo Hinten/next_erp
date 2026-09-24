@@ -27,6 +27,7 @@ import { type Produto, toOuterRef } from '@delfrance/schemas';
 import { isFamilyId } from '../core/linkRefs';
 import { type AlvoFiscal, registradoFiscal } from './dadosFiscais';
 import { familyMemberQuery } from './upMemberLink';
+import { SUB_STATUS_VARIACAO_REMOVIDA } from './variacoesFantasma';
 
 export async function alvosFiscaisArmazenados(
   db: Firestore,
@@ -70,6 +71,13 @@ export async function alvosFiscaisArmazenados(
     const childId = d.ref.parent?.parent?.id;
     if (childId == null) continue;
 
+    // #707's phantom prune marks a legacy variation ML deleted — and KEEPS the
+    // doc, numeric `id` included. Publish never meets one (it builds from the
+    // `variations[]` ML echoes), so neither may this: linking a SKU to a deleted
+    // variation is an `erro` on every re-send and a wasted PUT + link.
+    if (Array.isArray(raw.sub_status) && raw.sub_status.includes(SUB_STATUS_VARIACAO_REMOVIDA)) {
+      continue;
+    }
     const itemDoMembro = typeof raw.itemId === 'string' && raw.itemId !== '' ? raw.itemId : null;
     const variacaoLegada = typeof raw.id === 'number' ? raw.id : null;
     let itemId: string;

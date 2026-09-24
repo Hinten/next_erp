@@ -86,7 +86,7 @@ function alvo(
     itemId: `MLB${produtoId.replace(/\D/g, '') || '1'}`,
     variationId: null,
     link: { colecao: 'variacaoMercadoLivre', produtoId, docId: `v-${produtoId}` },
-    registrado: { sku: null, itemId: null },
+    registrado: { sku: null, itemId: null, variationId: null },
     ...resto,
   };
 }
@@ -132,6 +132,7 @@ describe('enviarDadosFiscais — the happy path', () => {
       dadosFiscaisEm: 1_700_000_000_000,
       dadosFiscaisSku: 'SKU-p1',
       dadosFiscaisItemId: 'MLB1',
+      dadosFiscaisVariationId: null,
       podeFaturar: true,
     });
   });
@@ -216,7 +217,7 @@ describe('enviarDadosFiscais — upsert', () => {
 
 describe('enviarDadosFiscais — the link call', () => {
   it('is SKIPPED while the link doc already records this exact SKU ↔ item pair', async () => {
-    const a = alvo('p1', { registrado: { sku: 'SKU-p1', itemId: 'MLB1' } });
+    const a = alvo('p1', { registrado: { sku: 'SKU-p1', itemId: 'MLB1', variationId: null } });
     const api = makeApi();
     await enviarDadosFiscais(deps(dbCom(a), api), [a]);
     expect(api.updateFiscalInformation).toHaveBeenCalled();
@@ -224,13 +225,41 @@ describe('enviarDadosFiscais — the link call', () => {
   });
 
   it.each([
-    ['the SKU changed', { sku: 'SKU-antigo', itemId: 'MLB1' }],
-    ['the item changed', { sku: 'SKU-p1', itemId: 'MLB999' }],
+    ['the SKU changed', { sku: 'SKU-antigo', itemId: 'MLB1', variationId: null }],
+    ['the item changed', { sku: 'SKU-p1', itemId: 'MLB999', variationId: null }],
   ])('is made again when %s', async (_caso, registrado) => {
     const a = alvo('p1', { registrado });
     const api = makeApi();
     await enviarDadosFiscais(deps(dbCom(a), api), [a]);
     expect(api.linkFiscalInformationItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ is made again when ML RECREATED the legacy variation — same SKU, same item, new id', async () => {
+    // A #831 partial PUT deleted the variation and the next publish re-added
+    // it: SKU and item unchanged, `variations[].id` new. Keyed on the pair
+    // alone, the skip would leave ML's link naming the dead variation forever.
+    const a = alvo('p1', {
+      variationId: 777,
+      registrado: { sku: 'SKU-p1', itemId: 'MLB1', variationId: '555' },
+    });
+    const db = dbCom(a);
+    const api = makeApi();
+    await enviarDadosFiscais(deps(db, api), [a]);
+    expect(api.linkFiscalInformationItem).toHaveBeenCalledWith(
+      expect.objectContaining({ variationId: 777 }),
+    );
+    // …and the NEW id is what the link doc now records, so the next run skips.
+    expect(db.docs.get(linkPath(a))).toMatchObject({ dadosFiscaisVariationId: '777' });
+  });
+
+  it('the same legacy variation id — recorded as text, sent as a number — is still a match', async () => {
+    const a = alvo('p1', {
+      variationId: 555,
+      registrado: { sku: 'SKU-p1', itemId: 'MLB1', variationId: '555' },
+    });
+    const api = makeApi();
+    await enviarDadosFiscais(deps(dbCom(a), api), [a]);
+    expect(api.linkFiscalInformationItem).not.toHaveBeenCalled();
   });
 });
 
@@ -382,12 +411,16 @@ describe('enviarDadosFiscais — failures never stop the run, and never fail it'
 });
 
 describe('registradoFiscal', () => {
-  it('reads the stored pair; a link that predates #745 has none', () => {
-    expect(registradoFiscal({ dadosFiscaisSku: 'S', dadosFiscaisItemId: 'MLB1' })).toEqual({
-      sku: 'S',
-      itemId: 'MLB1',
-    });
-    expect(registradoFiscal({})).toEqual({ sku: null, itemId: null });
-    expect(registradoFiscal(undefined)).toEqual({ sku: null, itemId: null });
+  it('reads the stored triple; a link that predates #745 has none', () => {
+    expect(
+      registradoFiscal({
+        dadosFiscaisSku: 'S',
+        dadosFiscaisItemId: 'MLB1',
+        dadosFiscaisVariationId: '555',
+      }),
+    ).toEqual({ sku: 'S', itemId: 'MLB1', variationId: '555' });
+    const vazio = { sku: null, itemId: null, variationId: null };
+    expect(registradoFiscal({})).toEqual(vazio);
+    expect(registradoFiscal(undefined)).toEqual(vazio);
   });
 });

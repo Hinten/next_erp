@@ -3448,7 +3448,11 @@ describe('publishProduto — per-SKU fiscal data for ML’s Faturador (#745)', (
       variationId: 555,
     });
     const varLink = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]!;
-    expect(varLink).toMatchObject({ dadosFiscaisEstado: 'enviado', dadosFiscaisSku: 'SKU-1-M' });
+    expect(varLink).toMatchObject({
+      dadosFiscaisEstado: 'enviado',
+      dadosFiscaisSku: 'SKU-1-M',
+      dadosFiscaisVariationId: '555',
+    });
   });
 
   it('a User-Products family: one SKU per MEMBER, each linked to its OWN item', async () => {
