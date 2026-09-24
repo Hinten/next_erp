@@ -50,6 +50,12 @@ export function isRetryableReconcileError(err: unknown): boolean {
  * Run `fn` with `retryAsync`'s defaults (3 attempts, jittered 400ms → 800ms).
  * The final attempt's ORIGINAL error propagates, so callers keep narrowing on
  * `FirebaseError` exactly as before.
+ *
+ * Deliberately NO `isCancelled`: if the Pagamentos tab unmounts mid-backoff, the
+ * remaining attempts still run and a final failure still toasts. That is the
+ * point — the pagamento is committed, the estado is genuinely stale whether or
+ * not the tab is still open, and `notifications` is global, so abandoning the
+ * retry on unmount would only drop the one signal that a human must settle it.
  */
 export function retryReconcile<T>(fn: () => Promise<T>): Promise<T> {
   return retryAsync(fn, { isRetryable: isRetryableReconcileError });
