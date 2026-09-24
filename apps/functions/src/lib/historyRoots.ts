@@ -6,8 +6,10 @@ import {
 } from '@delfrance/data/admin/collections';
 import {
   CAMPO_HISTORICO_PRECO_CUSTO,
-  RETENCAO_HISTORICO_PEDIDO_DIAS,
+  RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
+  expiraEmApos,
+  expiraEmAposAnos,
 } from '@delfrance/schemas';
 
 import type { ModificationEntry, ModificationHistoryRoot } from './modificationHistory';
@@ -43,7 +45,7 @@ export const PRODUTO_HISTORY_ROOT: ModificationHistoryRoot = {
   historyCollection: historicoModificacaoCollection,
   parentIdParam: 'produtoId',
   retencao: {
-    dias: RETENCAO_HISTORICO_PRODUTO_DIAS,
+    expiraEm: (eventoMs) => expiraEmApos(eventoMs, RETENCAO_HISTORICO_PRODUTO_DIAS),
     manter: (entry) =>
       ehExclusao(entry) ||
       entry.campos.includes(CAMPO_HISTORICO_PRECO_CUSTO.preco) ||
@@ -60,15 +62,15 @@ export const PRODUTO_HISTORY_ROOT: ModificationHistoryRoot = {
  * leave `requireParentExists` OFF, because here a row that outlives its pedido is
  * the only surviving record that the order existed and who removed it.
  *
- * Retention: six years (`RETENCAO_HISTORICO_PEDIDO_DIAS` says why six), and a
- * delete row never expires, for the reason above.
+ * Retention: six CALENDAR years (`RETENCAO_HISTORICO_PEDIDO_ANOS` says why six,
+ * and why not 2190 days), and a delete row never expires, for the reason above.
  */
 export const PEDIDO_HISTORY_ROOT: ModificationHistoryRoot = {
   parentCollection: pedidoCollection,
   historyCollection: historicoModificacaoPedidoCollection,
   parentIdParam: 'pedidoId',
   retencao: {
-    dias: RETENCAO_HISTORICO_PEDIDO_DIAS,
+    expiraEm: (eventoMs) => expiraEmAposAnos(eventoMs, RETENCAO_HISTORICO_PEDIDO_ANOS),
     manter: ehExclusao,
   },
 };
