@@ -15,9 +15,9 @@
  *
  * ---- Template and provenance. Every stage below mirrors Mercado Livre's
  * `apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts` — the join
- * thunks (`:630-798`), the S6 projection (`:873-899`), `fetchStockFamilies`
- * (`:877-936`), `fetchStockFamiliesByIds` (`:995-1027`) and
- * `fetchMovimentosDaJanela` (`:1164-1208`). The ARITHMETIC those two channels
+ * thunks (`stockJoinBuilders`), the S6 projection inside `fetchStockFamilies`,
+ * `fetchStockFamilies` itself, `fetchStockFamiliesByIds` and
+ * `fetchMovimentosDaJanela`. The ARITHMETIC those two channels
  * share was promoted to `@delfrance/data/admin/estoque` (#1520 R9); the
  * PIPELINES were not and could not be — `packages/data` declares no dependency
  * on the admin SDK's Pipelines package, and an import there would fail nothing
@@ -36,7 +36,8 @@
  *    which did not itself sell waits for the monthly reconciliação pass, which
  *    force-sends (`changedSinceMs = -1`).
  *
- * ---- Discovery scope (#1087 / #804, `bulkEstoquePlan.ts:65-80`). The S1 anchor
+ * ---- Discovery scope (#1087 / #804; the "Discovery scope" section of
+ * `bulkEstoquePlan.ts`'s module docblock). The S1 anchor
  * terms are `paiId == null` plus `integracoesComProduto array-contains <conta>`
  * — and deliberately **NOT** `publicado == true`. That array is the produto-side
  * denorm of the CHANNEL's publication status, maintained by the link triggers,
@@ -52,8 +53,14 @@
  * ---- Index ledger (ruling C-p: this step declares **ZERO** new entries;
  * Enterprise auto-creates none and an unindexed predicate silently full-scans,
  * billed by data scanned):
- *  - S1 anchors ride `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`
- *    — the entry the Mercado Livre sweeps already run in production;
+ *  - S1 anchors were designed to ride
+ *    `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`, the entry
+ *    Mercado Livre's `bulkEstoquePlan.ts` names for its own S1. ⚠️ The staging
+ *    measurement of 2026-09-23 found the planner on
+ *    `produtos(paiId, integracoesComProduto, nome)` instead, range-bounding
+ *    `paiId == null` only, with the conta term a residual filter over the index
+ *    rows — the same shape as Mercado Livre's, tracked for both channels as
+ *    #1638;
  *  - the `estoques` joins ride the existing COLLECTION_GROUP
  *    `estoques(parentId ASC, depositoOuterRef ASC, ultimaModificacao ASC)` and
  *    the COLLECTION-scope `estoques(depositoOuterRef ASC, ultimaModificacao ASC)`;
@@ -130,7 +137,21 @@ export interface ArgsBuscarFamiliasShopeePorIds {
   readonly integracaoId: string;
   /** Depósito doc id — both accepted `depositoOuterRef` encodings are derived. */
   readonly depositoId: string;
-  /** Family ANCHOR ids, already resolved from any selected variation child. */
+  /**
+   * The ids to read, used VERBATIM as the `documents()` source: each one is read
+   * as its OWN family anchor, and callers must pass anchors.
+   *
+   * ⚠️ Nothing on the manual path resolves a variation child to its anchor —
+   * `enviarEstoqueManualShopee` and the `enviar:estoque` CLI hand over the
+   * deduped request exactly as it arrived. A child id therefore comes back as a
+   * row whose `anchorId` IS the child: the child's own `integracoesComProduto`,
+   * the child's own `prodshopee` links and, as `children`, the produtos whose
+   * `paiId` is the child. The listing link lives on the anchor (the link trigger
+   * stamps the conta onto the produto that owns the `prodshopee` document), so
+   * the planner normally answers `conta-fora-do-produto` (or `sem-link`),
+   * nothing is sent, and the manual push reports the id in `produtosSemEnvio`.
+   * An id with no document yields no row at all (`documents()` omits it).
+   */
   readonly produtoIds: readonly string[];
 }
 
@@ -169,7 +190,8 @@ function fonteDeProdutos(db: Firestore) {
  * (the `outerRef.ts` invariant: readers tolerate the bare form).
  *
  * ⚠️ It is a THUNK for the usual reason (a Pipeline expression object may not be
- * reused across stages, `bulkEstoquePlan.ts:628-629`), and it is declared HERE
+ * reused across stages — see `stockJoinBuilders` in `bulkEstoquePlan.ts`), and
+ * it is declared HERE
  * rather than inside {@link construtoresDeJuncao} because the ledger pre-pass
  * needs the same disjunction and takes none of the other joins. The template
  * spells it twice and says in a comment that the two agree; two encodings that
@@ -196,7 +218,8 @@ function depMatchDe(depositoId: string) {
  * later.
  *
  * Every builder is a THUNK: a Pipeline expression object may not be reused
- * across stages (`bulkEstoquePlan.ts:628-629`), so each call mints a fresh one.
+ * across stages (see `stockJoinBuilders` in `bulkEstoquePlan.ts`), so each call
+ * mints a fresh one.
  *
  * ⚠️ Unlike Mercado Livre's `linkJoin`, **neither Shopee link probe carries a
  * `where`** and neither is filtered by conta — the conta is compared IN MEMORY
@@ -205,7 +228,8 @@ function depMatchDe(depositoId: string) {
  * compiles to a collection-GROUP index scan with the parent as a RESIDUAL
  * filter — every family's link documents scanned per row — while a probe with no
  * `where` compiles to a partition-bounded `TableScan` over the one produto's
- * subcollection (`bulkEstoquePlan.ts:113-121`). Declaring the index is not
+ * subcollection (the "Index ledger" section of `bulkEstoquePlan.ts`'s module
+ * docblock). Declaring the index is not
  * deploying it, and deploying belongs to a human window. ⚠️ Written-down
  * reversal condition: if the MEDIAN number of `prodshopee` documents per produto
  * on staging exceeds **2**, declare the COLLECTION-scope entries, deploy them in
@@ -268,7 +292,8 @@ function construtoresDeJuncao(db: Firestore, depositoId: string) {
   // ⚠️ `coalesce`, never `ifNull`: an ABSENT field passes straight through
   // `ifNull`, so a produto that never had `componentesKitKeys` would bind the
   // variable to nothing and the `length()` guard above would throw rather than
-  // short-circuit (`bulkEstoquePlan.ts:845-847`).
+  // short-circuit (the `conditional` in `stockJoinBuilders`' `compEstoques`,
+  // `bulkEstoquePlan.ts`).
   const kitKeysDefine = (name: string) =>
     pipelines.coalesce(pipelines.field('componentesKitKeys'), pipelines.array([])).as(name);
 
@@ -632,7 +657,8 @@ function coagirMembro(produtoId: string, raw: Record<string, unknown>): MembroDa
  * moved inside the window. `anterior = atual − Σmovimento` then falls out
  * locally, for every family, at no per-family cost.
  *
- * It is the same grouped aggregate Mercado Livre runs (`:1164-1208`), typed
+ * It is the same grouped aggregate Mercado Livre runs (`fetchMovimentosDaJanela`
+ * in `bulkEstoquePlan.ts`), typed
  * against the PROMOTED `FetchMovimentosDaJanela`. Only the types moved: the
  * implementation is a Pipelines execution and pipelines do not move.
  *
