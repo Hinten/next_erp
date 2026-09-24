@@ -33,6 +33,7 @@ import {
   AMBIENTE_NFE,
   CRT,
   CSOSN,
+  CST_PIS_COFINS,
   ESTADO_NFE,
   type NFeConfig,
 } from '@delfrance/schemas';
@@ -142,6 +143,19 @@ function impostoCsosn900Parcial(): Record<string, unknown> {
  */
 function impostoRtcRascunho(): Record<string, unknown> {
   return { ...impostoCsosn102(), configuracaoIBSCBS: { CST: '000' } };
+}
+
+/**
+ * Stamped imposto whose PIS CST 49 carries BOTH rates. It passes impostoSchema
+ * (confPISSchema has no pair rule), but PISOutr is an XSD choice —
+ * `(vBC + pPIS)` or `(qBCProd + vAliqProd)` — so the engine refuses it at
+ * build time (#509).
+ */
+function impostoPisAmbasAliquotas(): Record<string, unknown> {
+  return {
+    ...impostoCsosn102(),
+    configuracaoPIS: { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.1 },
+  };
 }
 
 const SEED_NFE_CONFIG: NFeConfig = {
@@ -1018,6 +1032,47 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
     const goods = out.results.filter((r) => r.pedidoId !== 'PED-BADTAX');
+    expect(goods.map((r) => nnfOf(r)).sort()).toEqual(['000000001', '000000002']);
+  });
+
+  it('rejects a both-rates PISOutr config before allocation — no nNF consumed, no placeholder (#509)', async () => {
+    // The same pre-flight as the partial CSOSN 900 case above, reached by the
+    // PIS/COFINS pair choice: the counter advances by 2 (not 3, as it does for
+    // the generate/sign failure), and PED-BADPIS leaves no placeholder behind.
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-BADPIS', filialId: 'F-1', imposto: impostoPisAmbasAliquotas() },
+        { pedidoId: 'PED-GOOD2', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-GOOD',
+      'PED-BADPIS',
+      'PED-GOOD2',
+    ]);
+
+    expect(out.results).toHaveLength(3);
+    const bad = out.results.find((r) => r.pedidoId === 'PED-BADPIS')!;
+    expect('errorCode' in bad ? bad.errorCode : null).toBe('NFeOrchestratorError');
+    const badMessage = 'errorMessage' in bad ? bad.errorMessage : '';
+    expect(badMessage).toMatch(/^pedido 'PED-BADPIS' item 0 \(produto 'P-1'\): PIS CST=49/);
+    expect(badMessage).toMatch(/not both/);
+    // No placeholder: the bad pedido was failed before it was counted as fresh.
+    expect(docs['pedidos/PED-BADPIS/nfev4/s1']).toBeUndefined();
+    expect(events.some((e) => e.startsWith('set:pedidos/PED-BADPIS/'))).toBe(false);
+    // Only the two good pedidos were allocated, generated and sent.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(2);
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
+    const goods = out.results.filter((r) => r.pedidoId !== 'PED-BADPIS');
     expect(goods.map((r) => nnfOf(r)).sort()).toEqual(['000000001', '000000002']);
   });
 

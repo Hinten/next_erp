@@ -953,3 +953,249 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
     expect(msg).toBe(orchestratorMessage(() => assertItemsBuildable(bundle, items, false)));
   });
 });
+
+// ---------------------------------------------------------------------------
+// PIS/COFINS item ↔ ICMSTot (#509 — MOC 7.0 Anexo I rules 602/603: ICMSTot
+// vPIS/vCOFINS must equal Σ of the item values). These go through the REAL
+// buildGeneratorInput → aggregateTotals/buildTotalXml, never a hand-written
+// golden, so they prove what the wire carries.
+// ---------------------------------------------------------------------------
+
+/** The item() default imposto (CSOSN 102) carrying the given PIS/COFINS configs. */
+function impostoPisCofins(
+  configuracaoPIS: Record<string, unknown> | null,
+  configuracaoCOFINS: Record<string, unknown> | null,
+): FiscalItem['imposto'] {
+  return {
+    origem: ORIGEM.nacional,
+    unidade: 'UN',
+    NCM: '61091000',
+    cfop: '5102',
+    configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+    configuracaoPIS,
+    configuracaoCOFINS,
+  } as never;
+}
+
+/**
+ * Three items, one per PIS/COFINS shape:
+ *  - A: 3 × 100 with a unit discount of 10 → net base 270 (gross 300);
+ *    CST 49 by percent (PISOutr/COFINSOutr `vBC + p`).
+ *  - B: 1 × 50; CST 01 (PISAliq/COFINSAliq). Its raw vPIS is 0.825, which the
+ *    item rounds to 0.82 — so Σ of the ROUNDED item values (3.89) differs from
+ *    the rounded raw Σ (3.8952 → 3.90), and the totals pin tells them apart.
+ *  - C: 3 × 20; CST 99 per unit (PISOutr/COFINSOutr `qBCProd + vAliqProd`).
+ */
+const PIS_ITENS: FiscalItem[] = [
+  item({
+    produtoUid: 'a',
+    itemIndex: 0,
+    precoDeVenda: 100,
+    quantidade: 3,
+    descontoUnitario: 10,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1 },
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 3 },
+    ),
+  }),
+  item({
+    produtoUid: 'b',
+    itemIndex: 1,
+    precoDeVenda: 50,
+    quantidade: 1,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+    ),
+  }),
+  item({
+    produtoUid: 'c',
+    itemIndex: 2,
+    precoDeVenda: 20,
+    quantidade: 3,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.1234 },
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.5 },
+    ),
+  }),
+];
+
+/** The same items with the given PIS/COFINS configs on every one of them. */
+function comPisCofins(
+  configuracaoPIS: Record<string, unknown> | null,
+  configuracaoCOFINS: Record<string, unknown> | null,
+): FiscalItem[] {
+  return PIS_ITENS.map((it) => ({
+    ...it,
+    imposto: impostoPisCofins(configuracaoPIS, configuracaoCOFINS),
+  }));
+}
+
+/** Empty pagamentos → tPag 90, so the Σ vPag guard is skipped unless a test adds one. */
+function buildPis(items: ReadonlyArray<FiscalItem>, pedido: Record<string, unknown> = {}) {
+  return buildGeneratorInput(fullBundle({ pagamentos: [], pedido }), items, 7, 1, 'homologacao');
+}
+
+/** The ONE `<tag>` value in `xml`, as a number — fails when absent or repeated. */
+function valorUnico(xml: string, tag: string): number {
+  const valores = [...xml.matchAll(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'g'))].map((m) =>
+    Number(m[1]),
+  );
+  expect(valores, `exactly one <${tag}>`).toHaveLength(1);
+  return valores[0]!;
+}
+
+describe('PIS/COFINS item ↔ ICMSTot (cStat 602/603)', () => {
+  it('ICMSTot vPIS/vCOFINS equal Σ of the item values the dets carry', () => {
+    const out = buildPis(PIS_ITENS);
+    for (const tag of ['vPIS', 'vCOFINS']) {
+      const somaItens = roundReais(
+        out.itens.reduce((sum, gi) => sum + valorUnico(gi.impostoXml, tag), 0),
+      );
+      expect(valorUnico(out.totalXml, tag), tag).toBe(somaItens);
+    }
+    // Explicit, so the equality above cannot hold vacuously at 0 = 0. vPIS =
+    // 2.70 + 0.82 + 0.37 (Σ of the ROUNDED item values — the raw Σ is 3.90);
+    // vCOFINS = 8.10 + 3.80 + 1.50.
+    expect(valorUnico(out.totalXml, 'vPIS')).toBe(3.89);
+    expect(valorUnico(out.totalXml, 'vCOFINS')).toBe(13.4);
+    // A: the percent base is the net-of-unit-discount 270, not the gross 300.
+    expect(out.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>270.00</vBC><pPIS>1.0000</pPIS><vPIS>2.70</vPIS></PISOutr>',
+    );
+    expect(out.itens[0]!.impostoXml).toContain(
+      '<COFINSOutr><CST>49</CST><vBC>270.00</vBC><pCOFINS>3.0000</pCOFINS><vCOFINS>8.10</vCOFINS></COFINSOutr>',
+    );
+    // C: per unit — qBCProd is the item quantity, never a hardcoded 1.
+    expect(out.itens[2]!.impostoXml).toContain(
+      '<PISOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.1234</vAliqProd><vPIS>0.37</vPIS></PISOutr>',
+    );
+  });
+
+  it('the item base ignores the apportioned descontoTotal — A keeps vBC 270.00 (parity with PISAliq and RTC)', () => {
+    const semDesconto = buildPis(PIS_ITENS);
+    const comDesconto = buildPis(PIS_ITENS, { descontoTotal: 40 });
+    // The order discount DID reach the det: A's vDesc is its unit discount (30)
+    // plus its share of the 40 (28.42 of it, over the net 380).
+    expect(comDesconto.itens[0]!.vDesc).toBe(58.42);
+    expect(comDesconto.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>270.00</vBC><pPIS>1.0000</pPIS><vPIS>2.70</vPIS></PISOutr>',
+    );
+    // ...and the total still sums the same item values, discount or not.
+    expect(valorUnico(comDesconto.totalXml, 'vPIS')).toBe(valorUnico(semDesconto.totalXml, 'vPIS'));
+    expect(valorUnico(comDesconto.totalXml, 'vCOFINS')).toBe(
+      valorUnico(semDesconto.totalXml, 'vCOFINS'),
+    );
+  });
+
+  it('vNF and the Σ vPag guard are unaffected: vNF has no PIS/COFINS term', () => {
+    const comPis = buildPis(PIS_ITENS);
+    const semPis = buildPis(comPisCofins(null, null));
+    // Σ gross (300 + 50 + 60) − Σ vDesc (30) = 380, with or without PIS.
+    expect(valorUnico(comPis.totalXml, 'vNF')).toBe(380);
+    expect(valorUnico(semPis.totalXml, 'vNF')).toBe(380);
+    // The contrast that makes the equality above meaningful.
+    expect(valorUnico(comPis.totalXml, 'vPIS')).toBeGreaterThan(0);
+    expect(valorUnico(semPis.totalXml, 'vPIS')).toBe(0);
+    // A payment of exactly the goods total passes the guard with PIS non-zero.
+    const pago = buildGeneratorInput(
+      fullBundle({ pagamentos: [{ valor: 380, forma_de_pagamento: FORMA_PAGAMENTO.pix }] }),
+      PIS_ITENS,
+      7,
+      1,
+      'homologacao',
+    );
+    expect(pago.pagXml).toContain('<vPag>380.00</vPag>');
+  });
+
+  it('qBCProd equals the det quantity: genItems qTrib === quantidade, carried at 4 decimals', () => {
+    const out = buildPis(PIS_ITENS);
+    out.itens.forEach((gi, i) => {
+      expect(gi.qTrib).toBe(PIS_ITENS[i]!.quantidade);
+    });
+    expect(out.itens[2]!.impostoXml).toContain('<PISOutr><CST>99</CST><qBCProd>3.0000</qBCProd>');
+    expect(out.itens[2]!.impostoXml).toContain(
+      '<COFINSOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.5000</vAliqProd><vCOFINS>1.50</vCOFINS></COFINSOutr>',
+    );
+    // Near-miss: a fractional quantity is carried as-is, not rounded to a unit.
+    const fracionado = buildPis([{ ...PIS_ITENS[2]!, quantidade: 2.5, vProd: 50, vProdBruto: 50 }]);
+    expect(fracionado.itens[0]!.qTrib).toBe(2.5);
+    expect(fracionado.itens[0]!.impostoXml).toContain(
+      '<qBCProd>2.5000</qBCProd><vAliqProd>0.1234</vAliqProd><vPIS>0.31</vPIS>',
+    );
+    expect(valorUnico(fracionado.totalXml, 'vPIS')).toBe(0.31);
+  });
+
+  it('zero default: CST 49 with no rates gives a totalXml byte-equal to null PIS/COFINS', () => {
+    const semAliquota = buildPis(
+      comPisCofins(
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+      ),
+    );
+    const nulos = buildPis(comPisCofins(null, null));
+    expect(semAliquota.totalXml).toBe(nulos.totalXml);
+    expect(semAliquota.totalXml).toContain('<vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>');
+    // The dets still carry the XSD-mandated zero PISOutr/COFINSOutr shape.
+    expect(semAliquota.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>0.00</vBC><pPIS>0.0000</pPIS><vPIS>0.00</vPIS></PISOutr>',
+    );
+  });
+});
+
+describe('assertItemsBuildable — PIS/COFINS configs the engine refuses (#509)', () => {
+  const CST_49 = CST_PIS_COFINS.outrasOperacoesSaida;
+
+  function mensagem(
+    configuracaoPIS: Record<string, unknown> | null,
+    configuracaoCOFINS: Record<string, unknown> | null,
+  ): string {
+    const items = [item({ imposto: impostoPisCofins(configuracaoPIS, configuracaoCOFINS) })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    // The pre-flight IS generation's projection: same class, same message.
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+    return msg;
+  }
+
+  it('PIS CST 49 with BOTH pPIS and vAliqProd → NFeOrchestratorError naming the item', () => {
+    const msg = mensagem({ CST: CST_49, pPIS: 0.65, vAliqProd: 0.1 }, null);
+    expect(msg.startsWith(`${ITEM_PREFIX} PIS CST=49 (PISOutr)`)).toBe(true);
+    expect(msg).toMatch(/PIS CST=49/);
+    expect(msg).toMatch(/not both/);
+  });
+
+  it('COFINS-only both-rates (PIS valid) names COFINS, not PIS', () => {
+    const msg = mensagem({ CST: CST_49, pPIS: 0.65 }, { CST: CST_49, pCOFINS: 3, vAliqProd: 0.1 });
+    expect(msg.startsWith(`${ITEM_PREFIX} COFINS CST=49 (COFINSOutr)`)).toBe(true);
+    expect(msg).toMatch(/not both/);
+  });
+
+  it.each([
+    {
+      caso: 'CST 01 without pPIS',
+      pis: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+      expected: `${ITEM_PREFIX} PIS CST=01 requires \`pPIS\``,
+    },
+    {
+      caso: 'CST 03 without vAliqProd',
+      pis: { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade },
+      expected: `${ITEM_PREFIX} PIS CST=03 requires \`vAliqProd\``,
+    },
+  ])('$caso → NFeOrchestratorError carrying the engine message', ({ pis, expected }) => {
+    expect(mensagem(pis, null)).toBe(expected);
+  });
+
+  it('near-miss: one rate alone, or both at 0, builds', () => {
+    const bundle = bundleWith(OP);
+    for (const pis of [
+      { CST: CST_49, pPIS: 0.65 },
+      { CST: CST_49, vAliqProd: 0.1 },
+      { CST: CST_49, pPIS: 0, vAliqProd: 0 },
+      { CST: CST_49, pPIS: 0, vAliqProd: 0.1 },
+    ]) {
+      const items = [item({ imposto: impostoPisCofins(pis, null) })];
+      expect(assertItemsBuildable(bundle, items, false), JSON.stringify(pis)).toBeUndefined();
+    }
+  });
+});
