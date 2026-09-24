@@ -31,6 +31,7 @@ import { PedidoConflictModal } from './PedidoConflictModal';
 import { conflictFields } from './conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { marcarInteracaoDoUsuario } from '@/lib/pedidos/interacaoDoUsuario';
+import { reconciliarEstadoSeTotalMudou } from '@/lib/pedidos/reconciliarAposSalvarPedido';
 import { StatusBadge } from './StatusBadge';
 import { DIRECAO, direcaoOf } from './direcao';
 import { DirecaoBadge } from './DirecaoBadge';
@@ -196,7 +197,12 @@ export function EditarPedidoView() {
       // An estado change is recorded in `historicoEstadoPedido` by the
       // `onPedidoEstadoChanged` Cloud Function, which observes this very write —
       // nothing to append from here.
-      await savePedido(port, { pedidoId: params.id, patch, baseline });
+      const salvo = await savePedido(port, { pedidoId: params.id, patch, baseline });
+      // A save that moved the total re-derives `estado` from the payments (#703).
+      // Not awaited: navigation must not wait on a callable cold start. When the
+      // editor stays open, the new estado arrives through the live snapshot, and
+      // the baseline refresh above keeps it from reading as a conflict.
+      void reconciliarEstadoSeTotalMudou(params.id, salvo);
       await registrarTrocaIncidentesIfNeeded(port, patch, loaded);
       await promptEmitirIfEntradaPaga(patch, baseline);
       if (opts.continueEditing) {
@@ -247,11 +253,12 @@ export function EditarPedidoView() {
     try {
       // As in handleSubmit: an estado change is recorded in historicoEstadoPedido
       // by the `onPedidoEstadoChanged` Cloud Function observing this write.
-      await savePedido(port, {
+      const salvo = await savePedido(port, {
         pedidoId: params.id,
         patch: conflict.patch,
         baseline: conflict.current,
       });
+      void reconciliarEstadoSeTotalMudou(params.id, salvo);
       await registrarTrocaIncidentesIfNeeded(port, conflict.patch, conflict.current);
       await promptEmitirIfEntradaPaga(conflict.patch, conflict.current);
       setConflict(null);

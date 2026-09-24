@@ -403,6 +403,16 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
   estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
+  The pedido editor calls it too, after a save that moved `valorCobrado`, with
+  `aposAlterarTotal: true` (#703) — the server then reconciles only while
+  the estado IT reads still lets the total move (so a Mercado Livre pedido
+  promoted to `emProcessamento` in the gap is left alone) AND the pedido's
+  integração `tipo` is not a marketplace (whose ladder owns the estado —
+  otherwise an ML pedido still in `carrinho` with an `aprovado` pagamento
+  would jump to `pago` past #791's prerequisites). ⚠️ Deploy this BEFORE
+  the web that sends the flag: an older deploy strips the unknown key and
+  reconciles unguarded. The web retries transient failures (≤3 attempts) —
+  safe only because the reconcile is idempotent.
 - **`finalizarBalanco`** (`onCall`) + **`processarBalanco`** (`onTaskDispatched`)
   — the server-owned stock-apply half of the balanço feature (#458), replacing a
   legacy Flutter finalize that wrote client-supplied quantities straight to

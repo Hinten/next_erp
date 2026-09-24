@@ -659,6 +659,138 @@ describe('reconcilePedidoEstado', () => {
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado' });
   });
 
+  describe('aposAlterarTotal — the reconcile after a total change (#703)', () => {
+    const pagoPela = (valor: number) => ({
+      'pedidos/p1/pagamentos/pay1': {
+        valor,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    it('settles a carrinho pedido whose new total the payments now cover', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': { estado: 'carrinho', valorCobrado: 10 },
+        ...pagoPela(10),
+      });
+
+      const result = await reconcilePedidoEstado(db, {
+        pedidoId: PEDIDO_ID,
+        aposAlterarTotal: true,
+      });
+
+      expect(result).toEqual({ transition: 'pago' });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+    });
+
+    it('⚠️ leaves a pedido the ML import promoted to emProcessamento untouched', async () => {
+      // #703 blocker 1: a partial payment would move it to aguardando, after
+      // which ML's advance guards (keyed on the `emProcessamento` literal) can
+      // never move it to `pago`. The gate reads the estado from THIS transaction.
+      const { db, store, writes } = makeDb({
+        'pedidos/p1': { estado: 'emProcessamento', valorCobrado: 100 },
+        ...pagoPela(40),
+      });
+
+      const result = await reconcilePedidoEstado(db, {
+        pedidoId: PEDIDO_ID,
+        aposAlterarTotal: true,
+      });
+
+      expect(result).toEqual({ transition: null });
+      expect(store['pedidos/p1']!.estado).toBe('emProcessamento');
+      expect(writes.updates).toHaveLength(0);
+    });
+
+    it('still throws for a pedido that is gone', async () => {
+      const { db } = makeDb({});
+      await expect(
+        reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID, aposAlterarTotal: true }),
+      ).rejects.toBeInstanceOf(PedidoReconcileNotFoundError);
+    });
+
+    describe('the channel gate — a marketplace pedido is never reconciled from a total change', () => {
+      const carrinhoPagoVia = (integracao: Record<string, unknown> | null) => ({
+        'pedidos/p1': {
+          estado: 'carrinho',
+          valorCobrado: 10,
+          integracaoPedidoOuterRef: 'documents/integracao/int1',
+        },
+        ...(integracao ? { 'integracao/int1': integracao } : {}),
+        ...pagoPela(10),
+      });
+
+      it('⚠️ leaves an ML pedido in carrinho alone even though its payment covers the total', async () => {
+        // The #791 window: ML's payments topic stored an aprovado pagamento but
+        // `podeAvancarParaPago` (emProcessamento + cliente + endereço + frete) did
+        // not hold yet. `carrinho` passes the items-editable gate and is in
+        // AUTO_ESTADO_SOURCES — without this gate an item edit jumps it to `pago`.
+        const { db, store, writes } = makeDb(carrinhoPagoVia({ tipo: 1 })); // mercadoLivre
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('carrinho');
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('NEAR-MISS: settles the same pedido when its channel is the balcão', async () => {
+        const { db, store } = makeDb(carrinhoPagoVia({ tipo: 7 })); // balcao
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: 'pago' });
+        expect(store['pedidos/p1']!.estado).toBe('pago');
+      });
+
+      it.each([
+        ['the integração no longer exists', null],
+        ['its tipo is outside the enum', { tipo: 99 }],
+        ['its tipo is missing', {}],
+      ])('fails closed (no write) when %s', async (_caso, integracao) => {
+        const { db, writes } = makeDb(carrinhoPagoVia(integracao));
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: null });
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('NEAR-MISS: the pagamento path (no flag) still reconciles the ML pedido', async () => {
+        // The channel gate is opt-in like the estado gate: the Pagamentos tab's
+        // behaviour is unchanged by this PR, exposure included.
+        const { db, store } = makeDb(carrinhoPagoVia({ tipo: 1 }));
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: 'pago' });
+        expect(store['pedidos/p1']!.estado).toBe('pago');
+      });
+    });
+
+    it('NEAR-MISS: without the flag (the pagamento path) the same pedido still transitions', async () => {
+      // Pins that the gate is opt-in: the Pagamentos tab's behaviour is unchanged.
+      const { db, store } = makeDb({
+        'pedidos/p1': { estado: 'emProcessamento', valorCobrado: 100 },
+        ...pagoPela(40),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
+  });
+
   it('is a no-op (no write, no história) when no pagamento exists yet', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': { estado: 'iniciado', valorCobrado: 100 },

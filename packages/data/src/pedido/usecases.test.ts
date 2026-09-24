@@ -14,6 +14,7 @@ import {
   confirmarEntregaPedido,
   deleteIncidente,
   deletePagamento,
+  deveReconciliarAposSalvar,
   isIgnoredForConcurrency,
   nextPedidoEstado,
   remotelyChangedFields,
@@ -383,6 +384,93 @@ describe('savePedido', () => {
     const { port, written } = fakePort(reviewed, 5);
     await savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline: reviewed });
     expect(written()).toEqual({ numero: 'B', ultimaModificacao: 5 });
+  });
+
+  describe('the result the estado reconcile is decided from (#703)', () => {
+    const carrinho = { numero: 'A', estado: ESTADO_PEDIDO.carrinho, valorCobrado: 20 };
+    const save = (stored: Record<string, unknown>, patch: Record<string, unknown>) =>
+      savePedido(fakePort(stored).port, { pedidoId: 'x', patch, baseline: stored });
+
+    it('reports a total that moved', async () => {
+      await expect(save(carrinho, { valorCobrado: 10 })).resolves.toEqual({
+        totalMudou: true,
+        estadoGravado: ESTADO_PEDIDO.carrinho,
+      });
+    });
+
+    it('does NOT report a total that rode the patch unchanged (an edit reverted before saving)', async () => {
+      // `buildPedidoPatch` copies `valorCobrado` whenever the items are dirty, so
+      // its presence in the patch proves nothing — only the stored value does.
+      await expect(save(carrinho, { valorCobrado: 20, numero: 'B' })).resolves.toMatchObject({
+        totalMudou: false,
+      });
+    });
+
+    it('does NOT report a total when the patch never carried one', async () => {
+      await expect(save(carrinho, { numero: 'B' })).resolves.toMatchObject({ totalMudou: false });
+    });
+
+    it('⚠️ NEAR-MISS: a one-cent change is still a change', async () => {
+      // No fold: 20 vs 20.01 must not collapse into "unchanged".
+      await expect(save(carrinho, { valorCobrado: 20.01 })).resolves.toMatchObject({
+        totalMudou: true,
+      });
+    });
+
+    it('takes estadoGravado from the patch when it carries one, else from the STORED doc', async () => {
+      await expect(
+        save(carrinho, { valorCobrado: 10, estado: ESTADO_PEDIDO.pago }),
+      ).resolves.toMatchObject({ estadoGravado: ESTADO_PEDIDO.pago });
+      // The ML-import race: the editor loaded `carrinho`, the import promoted the
+      // pedido, and `EditarPedidoView` refreshed the undirty `estado` in the
+      // baseline from the live snapshot — so the save COMMITS, and the result must
+      // report the estado it committed on, not the one the form was opened with.
+      const promovido = { ...carrinho, estado: ESTADO_PEDIDO.emProcessamento };
+      await expect(save(promovido, { valorCobrado: 10 })).resolves.toMatchObject({
+        estadoGravado: ESTADO_PEDIDO.emProcessamento,
+      });
+    });
+
+    it('reports a null estadoGravado for a value outside the enum', async () => {
+      await expect(
+        save({ ...carrinho, estado: 'legadoDesconhecido' }, { valorCobrado: 10 }),
+      ).resolves.toMatchObject({ estadoGravado: null });
+    });
+  });
+});
+
+describe('deveReconciliarAposSalvar (#703)', () => {
+  it('reconciles a total change while the items are still editable', () => {
+    for (const estado of [
+      ESTADO_PEDIDO.iniciado,
+      ESTADO_PEDIDO.carrinho,
+      ESTADO_PEDIDO.escolhendoFormaDePagamento,
+    ]) {
+      expect(deveReconciliarAposSalvar({ totalMudou: true, estadoGravado: estado })).toBe(true);
+    }
+  });
+
+  it('⚠️ does NOT reconcile a pedido the ML import moved to emProcessamento under the editor', () => {
+    // #703 blocker 1: once off `emProcessamento`, ML can never advance it to `pago`.
+    expect(
+      deveReconciliarAposSalvar({
+        totalMudou: true,
+        estadoGravado: ESTADO_PEDIDO.emProcessamento,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT reconcile past the cart phase, or with no estado to judge', () => {
+    for (const estado of [ESTADO_PEDIDO.pago, ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento]) {
+      expect(deveReconciliarAposSalvar({ totalMudou: true, estadoGravado: estado })).toBe(false);
+    }
+    expect(deveReconciliarAposSalvar({ totalMudou: true, estadoGravado: null })).toBe(false);
+  });
+
+  it('does NOT reconcile when the total did not move', () => {
+    expect(
+      deveReconciliarAposSalvar({ totalMudou: false, estadoGravado: ESTADO_PEDIDO.carrinho }),
+    ).toBe(false);
   });
 });
 
