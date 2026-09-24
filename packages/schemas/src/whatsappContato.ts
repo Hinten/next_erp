@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ttlExpiry } from './shared/ttl';
 
 /** Destination accepted by the operator/identity resolver, never inferred by the sender. */
 export const whatsappDestinoSchema = z.object({
@@ -75,6 +76,15 @@ export const whatsappVinculoMensagemSchema = z.object({
   arquivoId: z.string().nullable().default(null),
   anexoTipo: z.string().nullable().default(null),
   processada: z.boolean().default(false),
+  /**
+   * TTL expiry (`./shared/ttl`), stamped in the SAME write that sets
+   * `processada: true` (`vinculoReplay.ts`): by then the message lives in the
+   * chat, and this copy only holds the raw provider payload — personal data kept
+   * for nothing. An unprocessed message is never stamped: it is the only copy.
+   * ⚠️ The `mensagens` group is shared with `whatsappConversaAliases/{id}/mensagens`,
+   * which must never be stamped.
+   */
+  expiraEm: ttlExpiry().nullable().optional(),
 });
 export const whatsappVinculoListaSchema = z.object({
   items: z.array(whatsappVinculoResumoSchema),
