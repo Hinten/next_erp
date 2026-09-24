@@ -2191,12 +2191,6 @@
       "fieldPath": "expiraEm",
       "ttl": true,
       "indexes": []
-    },
-    {
-      "collectionGroup": "ttlProbe",
-      "fieldPath": "expiraEm",
-      "ttl": false,
-      "indexes": []
     }
   ]
 }
