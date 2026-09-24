@@ -41,6 +41,7 @@ import {
 import { DEFAULT_LISTING_TYPE } from '@/lib/mercado-livre/listingFields';
 import {
   anuncioRemovidoPorModeracao,
+  dadosFiscaisSummary,
   estadoLabel,
   publishSummary,
   refMatchesIntegracao,
@@ -286,6 +287,8 @@ export function MercadoLivreEditor({
   const [rechecking, setRechecking] = useState<string | null>(null);
   /** The link doc whose status change is in flight, if any — single-flight. */
   const [alterandoStatus, setAlterandoStatus] = useState<string | null>(null);
+  /** The link doc whose fiscal-data send is in flight, if any (#745). */
+  const [enviandoDadosFiscais, setEnviandoDadosFiscais] = useState<string | null>(null);
   /**
    * The pause the operator is being asked to confirm, if any.
    *
@@ -766,6 +769,47 @@ export function MercadoLivreEditor({
   }
 
   /**
+   * (Re-)send ONE listing's per-SKU fiscal data to ML's Faturador (#745).
+   *
+   * Every publish already does this; the button exists for the change ML never
+   * hears about otherwise — an imposto edit. A SKU ML refuses or that we skip
+   * is DATA in the answer, not an HTTP error, so the toast is yellow rather
+   * than red: the listing itself is fine, and the line names what to fix.
+   */
+  async function handleEnviarDadosFiscais(integracaoId: string, linkDocId: string) {
+    if (!client) return;
+    setEnviandoDadosFiscais(linkDocId);
+    try {
+      const { dadosFiscais } = await client.enviarDadosFiscais({
+        integracaoId,
+        produtoId,
+        linkDocId,
+      });
+      const limpo = dadosFiscais.omitidos.length === 0 && dadosFiscais.erros.length === 0;
+      notifications.show({
+        color: limpo ? 'green' : 'yellow',
+        title: 'Dados fiscais enviados ao Mercado Livre',
+        message: dadosFiscaisSummary(dadosFiscais),
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setEnviandoDadosFiscais(null);
+    }
+  }
+
+  /**
    * Pause or reactivate ONE listing on Mercado Livre.
    *
    * ⚠️ The toast reports what ML CONFIRMED, never the action requested: the
@@ -1134,6 +1178,13 @@ export function MercadoLivreEditor({
                       : undefined
                   }
                   alterandoStatus={alterandoStatus}
+                  // Same bit the backend route enforces (#745).
+                  onEnviarDadosFiscais={
+                    client && canPublish
+                      ? (contaId, linkId) => void handleEnviarDadosFiscais(contaId, linkId)
+                      : undefined
+                  }
+                  enviandoDadosFiscais={enviandoDadosFiscais}
                   onAbrirAnuncio={(integracaoId, linkDocId) =>
                     void handleAbrirAnuncio(integracaoId, linkDocId)
                   }

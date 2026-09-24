@@ -20,7 +20,9 @@ import { warmRoutes } from './helpers/warmup';
  * locally and no staging deploy is needed — exactly what
  * `produto-estoque.emulator.e2e.spec.ts` does for `aplicarEstoque`. One test per
  * `reconcileEstado()` call site in `PagamentosSection.tsx`: `handleSave`,
- * `PagamentoRow.handleStatusChange` and `handleDelete`.
+ * `PagamentoRow.handleStatusChange` and `handleDelete` — plus the pedido
+ * editor's own save, which re-runs the reconcile when it moved `valorCobrado`
+ * (#703, `aposAlterarTotal`).
  *
  * ⚠️ In the emulator, Admin SDK seed writes ALSO fire the pedido triggers, so
  * the fixture pedido is seeded at `estado: 'iniciado'` with ZERO pagamentos (a
@@ -32,11 +34,28 @@ import { warmRoutes } from './helpers/warmup';
 test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
   const prefix = e2ePrefix('ped-reconcile');
   const pedidoId = `${prefix}-001`;
+  /** The seeded items (1 × R$ 10,00) — restored in `beforeEach`, because the
+   *  editor-save test changes the quantity. */
+  let itensSemeados: Record<string, unknown> = {};
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     const fixtures = await seedPedidoFixtures(prefix);
     const produtoId = fixtures.produtoPath.split('/')[1]!;
+    itensSemeados = {
+      [produtoId]: [
+        {
+          produtoUid: produtoId,
+          ordem: 1,
+          sku: fixtures.produtoSku,
+          nomeDeVenda: fixtures.produtoNome,
+          precoDeVenda: 10,
+          descontoUnitario: 0,
+          quantidade: 1,
+          custo: null,
+        },
+      ],
+    };
 
     await db()
       .collection('pedidos')
@@ -48,20 +67,7 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
         integracaoPedidoOuterRef: `documents/${fixtures.integracaoPath}`,
         clientePedidoOuterRef: `documents/${fixtures.clientePath}`,
         operacaoPedidoOuterRef: `documents/${fixtures.operacaoPath}`,
-        itens: {
-          [produtoId]: [
-            {
-              produtoUid: produtoId,
-              ordem: 1,
-              sku: fixtures.produtoSku,
-              nomeDeVenda: fixtures.produtoNome,
-              precoDeVenda: 10,
-              descontoUnitario: 0,
-              quantidade: 1,
-              custo: null,
-            },
-          ],
-        },
+        itens: itensSemeados,
         itensIds: [produtoId],
         descontoTotal: 0,
         valorCobrado: 10,
@@ -77,8 +83,12 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     test.setTimeout(300_000);
     // Reset estado FIRST, then drop the subcollections (the order the staging
     // sibling uses): every test starts from `iniciado` with no leftover
-    // pagamentos or history.
-    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
+    // pagamentos or history. The items and total ride the SAME update — a
+    // second update would fire a second CloudEvent (hazard (b) below).
+    await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado', itens: itensSemeados, valorCobrado: 10 });
     await limparSubcolecoes();
   });
 
@@ -199,5 +209,37 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     await expect(linhaPagamento(page)).toHaveCount(0, { timeout: 30_000 });
 
     await expect.poll(getEstado, { timeout: 30_000 }).toBe('aguardandoConfirmacaoDePagamento');
+  });
+
+  test('editor save: raising the total to what was already paid settles it as "pago" (#703)', async ({
+    page,
+  }) => {
+    // A R$ 20,00 payment whose own reconcile never ran — seeded through the
+    // Admin SDK, which calls no callable, so the pedido is still `iniciado` at
+    // R$ 10,00. Before #703 only a PAGAMENTO mutation re-derived the estado, so
+    // an item edit crossing the paid sum left it stale.
+    await db().collection('pedidos').doc(pedidoId).collection('pagamentos').doc('pago-antes').set({
+      id: 'pago-antes',
+      forma_de_pagamento: 1,
+      status_pagamento: 4, // aprovado — counts toward the paid sum
+      valor: 20,
+      parcelas: 1,
+      aVista: true,
+      duplicata: false,
+      cartao: null,
+      cheque: null,
+    });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 30_000 });
+    const qtyInput = page.getByLabel('Quantidade item 1', { exact: true });
+    await qtyInput.fill('2');
+    await qtyInput.blur();
+    await expect(page.getByTestId('footer-total')).toHaveText(/20[.,]00/);
+    await page.getByRole('button', { name: 'Salvar e continuar editando' }).click();
+
+    // The save committed valorCobrado = 20, then the editor called the callable
+    // with the items-editable gate; `iniciado` passes it, and 20 ≥ 20.
+    await expect.poll(getEstado, { timeout: 30_000 }).toBe('pago');
   });
 });

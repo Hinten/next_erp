@@ -22,6 +22,7 @@
  *  - **§6** pins that a throw is described by CLASS plus `code`/`path`, and
  *    never by a payload.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
@@ -37,6 +38,7 @@ import {
   RESULTADO_MODELO,
   ShopeeEnvioEstoqueGuardError,
   type LinhaDeModeloEnviada,
+  type MotivoEstoqueShopee,
 } from './errosEstoque';
 import type {
   EnvioEstoqueListing,
@@ -61,13 +63,15 @@ import {
   resumoDoPlano,
   type EntradaDoPlano,
 } from './enviarEstoqueCli';
-import type {
-  LinhaDeFamiliaShopee,
-  LinkShopeeCru,
-  MembroDaFamilia,
-  ResultadoDoPlanoShopee,
-  TarefaDeEstoqueShopee,
+import {
+  montarTarefasDeEstoqueShopee,
+  type LinhaDeFamiliaShopee,
+  type LinkShopeeCru,
+  type MembroDaFamilia,
+  type ResultadoDoPlanoShopee,
+  type TarefaDeEstoqueShopee,
 } from './planoEstoque';
+import { quantidadesDaFamiliaShopee } from './quantidadeEstoque';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — invented ids only. Never a real partner, shop, item or seller.  */
@@ -556,6 +560,44 @@ describe('montarPlanoDeEnvio', () => {
     );
   });
 
+  it('PAR/QUASE: só um documento INEXISTENTE é produto-nao-encontrado — uma VARIAÇÃO volta como linha e o planejador a recusa por outro motivo', () => {
+    // A frase de `produto-nao-encontrado` diz só "não foi encontrado no ERP", e
+    // é isto que a torna verdadeira: o leitor por ids não aplica predicado de
+    // âncora, então o id de uma variação existente VOLTA como linha e cai num
+    // degrau do planejador REAL — `conta-fora-do-produto` quando a variação não
+    // carrega a conta (o gatilho da Shopee só carimba o produto do vínculo, a
+    // âncora), `sem-link` quando carrega mas não tem vínculo próprio.
+    const opcoes = {
+      integracaoId: INTEGRACAO,
+      sweepId: 'ensaio-1',
+      sweepComputadoEmMs: AGORA,
+      nowMs: AGORA,
+    };
+    const daVariacao = (row: LinhaDeFamiliaShopee): EntradaDoPlano => ({
+      produtoId: row.anchorId,
+      produtoNome: null,
+      row,
+      plano: montarTarefasDeEstoqueShopee(row, quantidadesDaFamiliaShopee(row), opcoes),
+    });
+    const variacao = { anchorId: 'prod-filho', anchor: membro('prod-filho'), links: [] };
+
+    const p = montarPlanoDeEnvio(
+      [
+        entrada({ produtoId: 'prod-sumido', produtoNome: null, row: null, plano: null }),
+        daVariacao(familia({ ...variacao, integracoesComProduto: [] })),
+        daVariacao(familia(variacao)),
+      ],
+      { integracaoId: INTEGRACAO, pisoPorItem: SEM_PISO },
+    );
+
+    expect(p.pulos.map((pulo) => [pulo.produtoId, pulo.motivo])).toEqual([
+      ['prod-sumido', MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+      ['prod-filho', MOTIVO_ESTOQUE_SHOPEE.contaForaDoProduto],
+      ['prod-filho', MOTIVO_ESTOQUE_SHOPEE.semLink],
+    ]);
+    expect(p.familias).toBe(2);
+  });
+
   it('os totais agrupam por motivo e o "recusa" vem de ehRecusa, nunca de uma lista de slugs', () => {
     const pulo = (motivo: (typeof MOTIVO_ESTOQUE_SHOPEE)[keyof typeof MOTIVO_ESTOQUE_SHOPEE]) => ({
       produtoId: ANCORA,
@@ -919,5 +961,321 @@ describe('descreverErroEnvio', () => {
     expect(texto).toContain('code=error_param');
     expect(texto).toContain('path=/api/v2/product/update_stock');
     expect(texto).not.toMatch(/token|partner_key|shop_id/i);
+  });
+});
+
+/* ========================================================================== */
+/*  8 · as tabelas: nenhuma célula encosta na seguinte, seja qual for o id    */
+/* ========================================================================== */
+
+describe('as tabelas impressas — cada coluna medida pelo que ela imprime', () => {
+  // O ensaio de 2026-09-23/24 em staging: o id de um produto que o passo 9
+  // importou tem 64 caracteres hex, e a largura FIXA pensada para um id curto
+  // do Firestore colou o id em `qtd` no plano, no nome na linha do anúncio e em
+  // `pedida=` em toda linha de modelo.
+
+  /** O id que o passo 9 cunharia para o anúncio de fixture: um sha256, 64 hex. */
+  const ID_LONGO = createHash('sha256')
+    .update(`shopee|${INTEGRACAO}|${String(ITEM_ID)}`)
+    .digest('hex');
+  /** O tamanho de um id automático do Firestore. */
+  const ID_CURTO = 'Ab3dE5fG7hJ9kL1mN2pQ';
+
+  /** As células de uma linha: a tabela as separa por 2+ brancos, e nenhuma célula tem dois seguidos. */
+  const celulas = (linha: string): string[] => linha.trim().split(/\s{2,}/);
+  /** Os tokens separados por branco — um número colado a um id não é um token. */
+  const tokens = (linha: string): string[] => linha.trim().split(/\s+/);
+  /** Onde cada célula COMEÇA — a coluna que o olho do operador segue. */
+  const inicios = (linha: string): number[] =>
+    [...linha.matchAll(/(?:^|\s{2,})(\S)/g)].map((m) => m.index + m[0].length - 1);
+
+  const linhaQueComeca = (linhas: readonly string[], prefixo: string): string =>
+    linhas.find((l) => l.trimStart().startsWith(prefixo)) ?? '';
+
+  it('PAR: no PLANO, um id de 64 caracteres deixa um vão antes de "qtd" e cada número é o seu próprio token', () => {
+    expect(ID_LONGO).toHaveLength(64);
+    const p = montarPlanoDeEnvio(
+      [
+        entrada({
+          produtoId: ID_LONGO,
+          plano: plano({
+            tarefas: [
+              tarefa({
+                produtoId: ID_LONGO,
+                modelos: [
+                  { modelId: MODEL_A, produtoId: ID_LONGO, varLinkDocId: 'var-a', quantidade: 2 },
+                ],
+              }),
+            ],
+          }),
+        }),
+      ],
+      { integracaoId: INTEGRACAO, pisoPorItem: SEM_PISO },
+    );
+    const linhas = renderizarPlanoDeEnvio(p);
+    const cabecalho = linhaQueComeca(linhas, 'model_id');
+    const doModelo = linhaQueComeca(linhas, String(MODEL_A));
+
+    expect(celulas(doModelo)).toEqual([String(MODEL_A), ID_LONGO, '2', '2', '—', '—', 'nenhum']);
+    expect(tokens(doModelo)).toEqual(celulas(doModelo));
+    expect(inicios(doModelo)).toEqual(inicios(cabecalho));
+  });
+
+  it('QUASE: no PLANO, um id de 20 caracteres continua alinhado sob o cabeçalho — e uma célula "—" também', () => {
+    expect(ID_CURTO).toHaveLength(20);
+    const p = montarPlanoDeEnvio(
+      [
+        entrada({
+          plano: plano({
+            tarefas: [
+              tarefa({
+                modelos: [
+                  { modelId: MODEL_A, produtoId: ID_CURTO, varLinkDocId: 'var-a', quantidade: 7 },
+                  { modelId: MODEL_B, produtoId: ID_CURTO, varLinkDocId: 'var-b', quantidade: 12 },
+                ],
+              }),
+            ],
+          }),
+        }),
+      ],
+      { integracaoId: INTEGRACAO, pisoPorItem: pisos({ [MODEL_A]: 9 }) },
+    );
+    const linhas = renderizarPlanoDeEnvio(p);
+    const cabecalho = linhaQueComeca(linhas, 'model_id');
+    const comPiso = linhaQueComeca(linhas, String(MODEL_A));
+    const semPiso = linhaQueComeca(linhas, String(MODEL_B));
+
+    expect(celulas(comPiso)).toEqual([String(MODEL_A), ID_CURTO, '7', '9', '9', '—', 'piso']);
+    expect(celulas(semPiso)).toEqual([String(MODEL_B), ID_CURTO, '12', '12', '—', '—', 'nenhum']);
+    expect(inicios(comPiso)).toEqual(inicios(cabecalho));
+    expect(inicios(semPiso)).toEqual(inicios(cabecalho));
+  });
+
+  it('PAR: no --live, um id de 64 caracteres não encosta no NOME na linha do anúncio nem em "pedida=" na do modelo', () => {
+    const linhas = renderizarResultadoEnvio(
+      envelope({
+        listings: [
+          listagem({
+            produtoId: ID_LONGO,
+            produtoNome: 'Cotton T-shirt',
+            quantidade: 18,
+            variacoes: [
+              modeloEnviado({ produtoId: ID_LONGO, quantidadeSolicitada: 2, quantidadeEnviada: 2 }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const doAnuncio = linhaQueComeca(linhas, ID_LONGO);
+    const doModelo = linhaQueComeca(linhas, 'model ');
+
+    expect(celulas(doAnuncio)).toEqual([
+      ID_LONGO,
+      'Cotton T-shirt',
+      String(ITEM_ID),
+      'enviado',
+      'qtd=18',
+      'modelos=1',
+      'recusados=0',
+      'clampados=0',
+    ]);
+    expect(tokens(doAnuncio)).toContain(ID_LONGO);
+    expect(tokens(doAnuncio)).toContain('qtd=18');
+    expect(celulas(doModelo)).toEqual([
+      `model ${String(MODEL_A)}`,
+      ID_LONGO,
+      'pedida=2',
+      'enviada=2',
+      'enviado',
+    ]);
+    expect(tokens(doModelo)).toEqual([
+      'model',
+      String(MODEL_A),
+      ID_LONGO,
+      'pedida=2',
+      'enviada=2',
+      'enviado',
+    ]);
+  });
+
+  it('QUASE: no --live, ids de 20 caracteres e células "—" seguem em coluna ATRAVÉS dos anúncios', () => {
+    const linhas = renderizarResultadoEnvio(
+      envelope({
+        listings: [
+          listagem({
+            produtoId: ID_CURTO,
+            variacoes: [modeloEnviado({ produtoId: ID_CURTO })],
+          }),
+          listagem({
+            produtoId: ANCORA,
+            produtoNome: null,
+            anuncioId: null,
+            outcome: 'falha',
+            quantidade: null,
+            modelosRecusados: 1,
+            variacoes: [
+              modeloEnviado({
+                modelId: MODEL_B,
+                quantidadeEnviada: null,
+                resultado: RESULTADO_MODELO.recusado,
+                codigo: 'error_param',
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const anuncio1 = linhaQueComeca(linhas, ID_CURTO);
+    const anuncio2 = linhaQueComeca(linhas, ANCORA);
+    const modelo1 = linhaQueComeca(linhas, `model ${String(MODEL_A)}`);
+    const modelo2 = linhaQueComeca(linhas, `model ${String(MODEL_B)}`);
+
+    expect(celulas(anuncio2)).toEqual([
+      ANCORA,
+      'sem nome',
+      '—',
+      'falha',
+      'qtd=—',
+      'modelos=1',
+      'recusados=1',
+      'clampados=0',
+    ]);
+    expect(inicios(anuncio2)).toEqual(inicios(anuncio1));
+    expect(celulas(modelo2)).toEqual([
+      `model ${String(MODEL_B)}`,
+      ANCORA,
+      'pedida=7',
+      'enviada=—',
+      'recusado',
+      'error_param',
+    ]);
+    // A primeira linha de modelo não tem a célula final (nem clampe nem código):
+    // as cinco colunas que as duas têm começam no mesmo lugar.
+    expect(inicios(modelo2).slice(0, 5)).toEqual(inicios(modelo1));
+  });
+
+  it('PAR: pulos, totais e "sem envio" — um id de 64 caracteres e o motivo do tamanho da largura antiga (28)', () => {
+    const LONGO_28 = MOTIVO_ESTOQUE_SHOPEE.pisoDeReservaNaoAtendido;
+    const LONGO_31 = MOTIVO_ESTOQUE_SHOPEE.estruturaDeEstoqueDivergente;
+    expect(LONGO_28).toHaveLength(28);
+    const pulo = (produtoId: string, itemId: number | null, motivo: MotivoEstoqueShopee) => ({
+      produtoId,
+      linkDocId: null,
+      itemId,
+      modelId: null,
+      modelosAfetados: null,
+      motivo,
+      mensagem: MENSAGEM_POR_MOTIVO[motivo],
+    });
+    const p = montarPlanoDeEnvio(
+      [
+        entrada({
+          plano: plano({
+            tarefas: [],
+            pulos: [pulo(ID_LONGO, ITEM_ID, LONGO_28), pulo(ANCORA, null, LONGO_31)],
+          }),
+        }),
+      ],
+      { integracaoId: INTEGRACAO, pisoPorItem: SEM_PISO },
+    );
+    const linhas = renderizarPlanoDeEnvio(p);
+
+    expect(celulas(linhaQueComeca(linhas, ID_LONGO))).toEqual([
+      ID_LONGO,
+      String(ITEM_ID),
+      LONGO_28,
+      MENSAGEM_POR_MOTIVO[LONGO_28],
+    ]);
+    expect(celulas(linhaQueComeca(linhas, ANCORA))).toEqual([
+      ANCORA,
+      '—',
+      LONGO_31,
+      MENSAGEM_POR_MOTIVO[LONGO_31],
+    ]);
+    expect(inicios(linhaQueComeca(linhas, ANCORA))).toEqual(
+      inicios(linhaQueComeca(linhas, ID_LONGO)),
+    );
+    expect(celulas(linhaQueComeca(linhas, LONGO_28))).toEqual([
+      LONGO_28,
+      '1',
+      'recusa',
+      MENSAGEM_POR_MOTIVO[LONGO_28],
+    ]);
+    expect(celulas(linhaQueComeca(linhas, LONGO_31))).toEqual([
+      LONGO_31,
+      '1',
+      'recusa',
+      MENSAGEM_POR_MOTIVO[LONGO_31],
+    ]);
+
+    const semEnvioLonga = linhaQueComeca(
+      renderizarResultadoEnvio(
+        envelope({
+          produtosSemEnvio: [
+            semEnvio({
+              produtoId: ID_LONGO,
+              motivo: MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
+              mensagem: MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+            }),
+          ],
+        }),
+      ),
+      ID_LONGO,
+    );
+    expect(celulas(semEnvioLonga)).toEqual([
+      ID_LONGO,
+      'sem nome',
+      MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado,
+      MENSAGEM_POR_MOTIVO[MOTIVO_ESTOQUE_SHOPEE.produtoNaoEncontrado],
+    ]);
+  });
+
+  it('PAR: a dobra do kit com um componente de 64 caracteres deixa um vão antes de "disponivel="', () => {
+    const kit = membro(ANCORA, {
+      ehKit: true,
+      componentesKit: componentes({ [ID_LONGO]: { quantidade: 2 }, 'comp-2': { quantidade: 1 } }),
+      componentEstoques: [
+        { estoqueDocId: 'e1', parentId: ID_LONGO, quantidade: 14, quantidadeReservada: 0 },
+        { estoqueDocId: 'e2', parentId: 'comp-2', quantidade: 9, quantidadeReservada: 0 },
+      ],
+    });
+    const linhas = renderizarPlanoDeEnvio(
+      montarPlanoDeEnvio([entrada({ row: familia({ anchor: kit }) })], {
+        integracaoId: INTEGRACAO,
+        pisoPorItem: SEM_PISO,
+      }),
+    );
+    const longa = linhaQueComeca(linhas, ID_LONGO);
+    const curta = linhaQueComeca(linhas, 'comp-2');
+
+    expect(celulas(longa)).toEqual([ID_LONGO, 'disponivel=14', 'por kit=2', 'limita: sim']);
+    expect(celulas(curta)).toEqual(['comp-2', 'disponivel=9', 'por kit=1', 'limita: sim']);
+    expect(inicios(curta)).toEqual(inicios(longa));
+  });
+
+  it('⚠️ nenhuma linha dos dois relatórios termina em branco — uma célula final vazia não deixa rastro', () => {
+    // O modelo LIMPO não tem clampe nem código: a célula final vazia deixava a
+    // linha terminando no preenchimento da coluna anterior.
+    const plano1 = montarPlanoDeEnvio([entrada()], {
+      integracaoId: INTEGRACAO,
+      pisoPorItem: pisos({ [MODEL_A]: 9 }),
+    });
+    const vivo = envelope({
+      listings: [
+        listagem({
+          clampados: 1,
+          variacoes: [
+            modeloEnviado(),
+            modeloEnviado({ modelId: MODEL_B, clampado: true, piso: 9, quantidadeEnviada: 9 }),
+          ],
+        }),
+      ],
+      produtosSemEnvio: [semEnvio()],
+    });
+    const todas = [...renderizarPlanoDeEnvio(plano1), ...renderizarResultadoEnvio(vivo)];
+
+    for (const linha of todas) expect(linha, JSON.stringify(linha)).toBe(linha.trimEnd());
+    // ÂNCORA: o clampe continua impresso — o negativo acima não é vácuo.
+    expect(todas.join('\n')).toContain('clampado piso=9');
   });
 });

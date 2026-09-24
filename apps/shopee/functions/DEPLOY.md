@@ -12,14 +12,21 @@ from `apps/mercado-livre/functions`.
 > push rules. No config in this channel declares a `firestore`/`storage` block,
 > so none of them can.
 
-## ⚠️ The config exists; the deploy has never been run
+## ⚠️ Deployed to STAGING (2026-09-24); never to production
 
-`firebase.shopee.deploy.json` shipped in step 3 (#1511) — **inert**. A config
-file deploys nothing on its own, and the deploy itself stays a manual,
-coordinated human step (root `CLAUDE.md` rule 8). What master-plan **step 22
-(#1530)** still owns is the ROLLOUT: `firebase.shopee.json` (the Firestore-only
-emulator config) and the second lane job, `apphosting.yaml`'s `vpcAccess` and the
-real `SHOPEE_TASKS_REGION` value, and flipping `implementado`.
+`firebase.shopee.deploy.json` shipped in step 3 (#1511). A config file deploys
+nothing on its own, and the deploy itself stays a manual, coordinated human step
+(root `CLAUDE.md` rule 8). A human ran it against the STAGING project on
+2026-09-24, in one session of two runs: the first hit the firebase-tools bug
+documented below, beside the `TASKS_INVOKER_SA` sections (**the first deploy of
+a NEW queue crashes on the enqueuer binding**), and the re-run after the
+per-queue enqueuer grants finished clean. All fourteen functions landed, with
+the stock valve `SHOPEE_STOCK_SYNC_ENABLED` off.
+**Production is a separate project and has never received this codebase.** What
+master-plan **step 22 (#1530)** still owns is the production ROLLOUT:
+`firebase.shopee.json` (the Firestore-only emulator config) and the second lane
+job, `apphosting.yaml`'s `vpcAccess` and the real `SHOPEE_TASKS_REGION` value,
+and flipping `implementado`.
 
 Nothing here is blocked on that rollout: until the queue exists the receiver
 falls back to persisting each push as `failed` and the 30-minute sweep drains it,
@@ -63,6 +70,13 @@ the bundle, proven before the first deploy.
 > unannounced (root `CLAUDE.md` rule 8). Export `TASKS_INVOKER_SA` and
 > `FUNCTIONS_REGION` first (both below); the preflight refuses the deploy
 > without them.
+>
+> ⚠️ **Into a project that does not hold these queues yet** — production's first
+> deploy, or any deploy that adds a queue — read **the first deploy of a NEW
+> queue crashes on the enqueuer binding** under the IAM section below FIRST.
+> On firebase-tools 15.28.2 that deploy reports an error for every queue function,
+> with a misleading organization-policy message, and the fix is one `gcloud`
+> grant per queue per identity plus a re-run.
 
 ```bash
 # from the repo root
@@ -214,8 +228,9 @@ knobs follow the rule above, but:
   shell (the queue's ceiling) **and** the App Hosting console, where it also
   caps the manual push's in-process concurrency
   (`Math.max(1, Math.min(manualConcurrencyRaw(), concurrentDispatches()))`,
-  `apps/shopee/lib/shopee/estoque/enviarEstoqueManual.ts:308`). Keep the two
-  values in step or the button and the queue disagree about the same number.
+  `concorrenciaEnvioManual` in `apps/shopee/lib/shopee/estoque/enviarEstoqueManual.ts`).
+  Keep the two values in step or the button and the queue disagree about the
+  same number.
 - ⚠️⚠️ **`SHOPEE_STOCK_KIT_INCLUI_PROPRIO`, `SHOPEE_STOCK_RATE_PAUSE_MIN` and
   `SHOPEE_STOCK_PROMOCAO_RETRY_MIN` are read in TWO homes as well** — here and
   in the App Hosting console — because the manual push runs the REAL send
@@ -227,11 +242,19 @@ knobs follow the rule above, but:
   offers it, commented) makes the unattended sweep and the operator's button
   send DIFFERENT numbers for the same produto, each `update_stock` overwriting
   the other with no signal anywhere. Set it in both homes or in neither.
+  ⚠️ It moves the SYNC only — the sweeps and the manual push — and never the
+  create-time `seller_stock`: the publish route runs on the same App Hosting
+  backend, and `opcoesPublicacaoShopee` pins the knob off there whatever either
+  home says.
 - **`SHOPEE_STOCK_MANUAL_DEADLINE_MS` and `SHOPEE_STOCK_MANUAL_CONCURRENCY`
   belong to App Hosting**, not here: the manual push runs in the Next process.
   `apps/shopee/apphosting.yaml`'s header documents them and
   `runConfig.timeoutSeconds: 180` deliberately sits ABOVE the deadline, so what
-  ends a long request is the deadline and not the platform.
+  normally ends a long request is the deadline and not the platform. ⚠️ That
+  guarantee is per LISTING, not per request: the budget is checked between
+  listings, never during one, and the transport sets no fetch timeout, so a call
+  that hangs inside a listing already started is bounded only by the platform's
+  180 s — which ends the request with no envelope at all.
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
@@ -337,7 +360,9 @@ the wipe. Create `apps/shopee/functions/.env.deploy` (gitignored):
 # CLOCK, not a state fingerprint.
 # SHOPEE_STOCK_PROMOCAO_RETRY_MIN=60
 # Adds the kit's OWN stock to the minimum over its components. Off = the same
-# arithmetic publishing has always used.
+# arithmetic publishing has always used. It moves the SYNC only (the sweeps and
+# the manual push), never the create-time seller_stock: publishing pins it off
+# (`opcoesPublicacaoShopee`).
 # ⚠️ Read on BOTH surfaces: set the SAME value in the App Hosting console, or
 # the sweep and the manual button send different quantities for one produto.
 # SHOPEE_STOCK_KIT_INCLUI_PROPRIO=1
@@ -522,6 +547,50 @@ Verify it took, with nobody having run gcloud — **once per queue function**:
 and
 `gcloud run services get-iam-policy sendShopeeStock --region=<region>`.
 
+### ⚠️ firebase-tools 15.28.2: the first deploy of a NEW queue crashes on the enqueuer binding
+
+Measured on the staging deploy of 2026-09-24, and **not specific to Shopee**:
+the first deploy of ANY codebase's brand-new task queue whose function declares
+`invoker` hits it — and in this repo every functions codebase's `build.mjs`
+inlines `invoker` from `TASKS_INVOKER_SA`. No deploy path pins firebase-tools
+— the CI emulator lanes pin their own version and never deploy — so this is the
+deploying machine's CLI: check whether a newer release fixed it before relying
+on the workaround.
+
+- **The mechanism.** `cloudtasks.setEnqueuer` (firebase-tools
+  `lib/gcp/cloudtasks.js`) runs `existing.bindings.filter(...)` over the queue's
+  IAM policy. A brand-new queue's `getIamPolicy` answers `{"etag":"ACAB"}` with
+  **no `bindings` key**, so it throws
+  `Cannot read properties of undefined (reading 'filter')`.
+- **The misleading symptom.** The deploy prints "Unable to set the invoker for
+  the IAM policy … `roles/functions.admin` … organization policy" for EVERY queue
+  function. It reads like a permissions problem and is not one.
+- **What lands anyway.** The functions, the queues and the `roles/run.invoker`
+  bindings on the Cloud Run services. What is MISSING is only the queue-level
+  `roles/cloudtasks.enqueuer` binding — the enqueue leg.
+- **Re-running alone does not help.** The deploy never passes `assumeEmpty`, so
+  a retry reads the same binding-less policy and crashes identically.
+
+The workaround — **once per new queue, per identity** named in
+`TASKS_INVOKER_SA`:
+
+```bash
+gcloud tasks queues add-iam-policy-binding <queue> \
+  --location=<region> --project=<project-id> \
+  --member="serviceAccount:<sa>" \
+  --role=roles/cloudtasks.enqueuer
+```
+
+then re-run the SAME deploy: the policy now has a `bindings` array, so the
+deploy re-applies `TASKS_INVOKER_SA` authoritatively and finishes clean. For this
+codebase a first deploy means up to three queues (`processShopeeNotification`,
+`processShopeeMassImport`, `sendShopeeStock`) × each identity in the list; a
+later deploy that adds a queue pays it for that queue only. ⚠️ Production is a
+separate project, so its first deploy hits this for every queue — put the grants
+in the window's runbook. Verify the enqueue leg, which the `run` check above
+cannot see: `gcloud tasks queues get-iam-policy <queue> --location=<region>`
+must list `roles/cloudtasks.enqueuer` for every identity in `TASKS_INVOKER_SA`.
+
 ### ⚠️ Since step 4 the SCHEDULED functions enqueue too (#1512), since step 9 a queue function enqueues ITSELF (#1517), and since step 12 three more schedules and a third self-enqueuer (#1520)
 
 `sweepShopeeLostPushes` and `backfillShopeeOrders` both enqueue onto
@@ -554,8 +623,8 @@ export TASKS_INVOKER_SA="<apphosting-runtime-sa>,<functions-runtime-sa>"
 
 The prose above already told you to list the functions SA "because a handler
 that re-enqueues makes it one". Two schedules now do, and since step 9 so does a
-queue handler. ⚠️ Granting this is
-**step 22's action** (#1530) — nothing here has been deployed, and an agent
+queue handler. ⚠️ Granting this on PRODUCTION is **step 22's action** (#1530)
+— this codebase has reached only staging (once, on 2026-09-24), and an agent
 never runs it (root `CLAUDE.md` rule 8). The failure it prevents is silent in
 the worst direction: the enqueue succeeds, Cloud Tasks dispatches with an OIDC
 token the service refuses (`403 run.routes.invoke`), and no failure document is
@@ -663,31 +732,45 @@ only THEN register the push callback URL with Shopee (#1534). Registering first
 means every delivery arrives at a backend whose queue does not exist — each one
 persisted as `failed` and drained late, at best.
 
-⚠️ **One unknown for the FIRST deploy after step 11: Eventarc.** This codebase
-has never held an `onDocument*` trigger, so whether the project needs Eventarc
-and Pub-Sub APIs enabled (and the Eventarc service agent granted) before
+⚠️ **Eventarc for the first Firestore trigger (step 11) — settled on STAGING,
+still open for PRODUCTION.** Whether a project needs Eventarc and Pub-Sub APIs
+enabled (and the Eventarc service agent granted) before
 `onProdutoShopeeLinkChanged` can be created is **not settled by anything in this
 repo** — no test, no emulator and no CI lane exercises it, because the functions
-emulator never runs a Firestore trigger here. It is a **migration-window fact**
-(root `CLAUDE.md` rule 8, register item 81): surfaced here, settled by the first
-deploy, **never run by an agent**. If that deploy refuses the trigger, the other
-thirteen functions are unaffected — the failure is per-function — and enabling
-the
-APIs plus re-running the same deploy is the whole remedy. Nothing else in the
-channel depends on it: the badge on `/produtos` is step 21's surface, and it is
-not rendered yet.
+emulator never runs a Firestore trigger here. The staging deploy of 2026-09-24
+answered it for THAT project: firebase-tools enabled `eventarc.googleapis.com`
+itself and generated the Eventarc service identity, the trigger was created, and
+its first live run stamped the conta onto `integracoesComProduto`. ⚠️ Production
+is a separate project and inherits none of staging's API state, so there it is
+still a **migration-window fact** (root `CLAUDE.md` rule 8, register item 81),
+settled by that project's first deploy and **never run by an agent**. If that
+deploy refuses the trigger, the other thirteen functions are unaffected — the
+failure is per-function — and enabling the APIs plus re-running the same deploy
+is the whole remedy. ⚠️ **But a refused trigger is no longer cosmetic.** Since
+step 12 the stock discovery's S1 anchor term is
+`integracoesComProduto array-contains <conta>`, so a produto the trigger never
+stamped is invisible to every stock sweep, and the manual push answers
+`conta-fora-do-produto` for it; the `/produtos` "Canais de venda" column reads
+the same array.
 
-⚠️ **A SECOND unknown for the first deploy after step 12: Cloud Scheduler and
-Cloud Tasks enablement.** This codebase has never deployed an `onSchedule` or an
-`onTaskDispatched` to a live project — it has never been deployed at all — and
-step 12 adds **three** new schedules and a **third** queue at once. Whether the
-project needs the Cloud Scheduler and Cloud Tasks APIs enabled, and their
-service agents granted, before those four can be created is **not settled by
-anything in this repo**: the functions emulator logs every schedule as "ignored
-because the pubsub emulator does not exist", and the tasks lane runs against an
-emulated queue that no IAM layer touches. It is a **migration-window fact**
-(root `CLAUDE.md` rule 8, register item 92): surfaced here, settled by the first
-deploy, **never run by an agent**. The remedy, if it bites, is the same shape as
-the Eventarc one — enable the APIs, re-run the same deploy — and the failure is
-again per-function, so the three stock sweeps and the stock queue can refuse
-while everything else lands.
+⚠️ **Cloud Scheduler and Cloud Tasks enablement (step 12) — settled on STAGING,
+still open for PRODUCTION.** Step 12 added **three** schedules and a **third**
+queue at once, and whether a project needs the Cloud Scheduler and Cloud Tasks
+APIs enabled, and their service agents granted, before they can be created is
+**not settled by anything in this repo**: the functions emulator logs every
+schedule as "ignored because the pubsub emulator does not exist", and the tasks
+lane runs against an emulated queue that no IAM layer touches. The staging
+deploy of 2026-09-24 — this codebase's first deploy anywhere — created all ten
+schedules and all three queues with **no manual API enablement**. Its one
+failure was not an enablement problem: it was the queue-IAM crash documented
+beside the `TASKS_INVOKER_SA` sections (firebase-tools 15.28.2), cleared by the
+per-queue `gcloud` grant and a re-run. ⚠️ Staging did NOT show two things: the
+SCHEDULED path end to end — a sweep enqueuing onto `sendShopeeStock` through a
+real queue, dispatched with the OIDC invoker, which needs
+`SHOPEE_STOCK_SYNC_ENABLED=1` in the functions deploy env and a redeploy, a
+human's call — and anything about the PRODUCTION project. There it stays a
+**migration-window fact** (root `CLAUDE.md` rule 8, register item 92), settled
+by that project's first deploy and **never run by an agent**. The remedy, if
+enablement does bite there, is the same shape as the Eventarc one — enable the
+APIs, re-run the same deploy — and the failure is again per-function, so the
+three stock sweeps and the stock queue can refuse while everything else lands.

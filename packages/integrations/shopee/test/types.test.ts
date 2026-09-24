@@ -1020,6 +1020,116 @@ describe('o detalhe do pedido (get_order_detail)', () => {
     expect(itens[1]?.model_id).toBeNull();
   });
 
+  it('`promotion_id` acima de 2^53 NÃO derruba a página — vira a MESMA string opaca das outras duas posições', () => {
+    // ⚠️ O terceiro sítio do defeito que o passo 12 consertou em `get_model_list`
+    // e `get_item_promotion`. `promotion_id` é uint64 desde 2026-07-31, e sob
+    // `wireInt()` o `.int()` do Zod 4 responde `too_big` acima de 2^53 — o que
+    // derrubava o `get_order_detail` INTEIRO, e com ele a importação do pedido
+    // (tráfego real), por um campo que ela nem lê.
+    const grande = JSON.parse('9007199254740993') as number;
+    const corpo = corpoDetalhe(
+      linhaDetalhe({
+        item_list: [
+          {
+            item_id: 2500139861,
+            model_id: 2000458802,
+            model_sku: 'SKU-AZUL-M',
+            model_quantity_purchased: 2,
+            promotion_type: 'flash_sale',
+            promotion_id: grande,
+          },
+        ],
+      }),
+    );
+    const lido = shopeeOrderDetailSchema.safeParse(corpo);
+    expect(lido.error?.issues.map((i) => `${i.path.join('.')}:${i.code}`) ?? []).toEqual([]);
+    expect(lido.success).toBe(true);
+
+    const item = lido.data!.response.order_list[0]!.item_list![0]!;
+    // O número JÁ chegou arredondado do `JSON.parse`; nenhum preprocess desfaz
+    // isso, e `idOpacoExato` é quem diz. O que importa aqui é que a linha parseia.
+    expect(item.promotion_id).toBe('9007199254740992');
+    expect(idOpacoExato(grande)).toBe(false);
+    // ...e TODO o resto da linha continua legível.
+    expect(item.item_id).toBe(2500139861);
+    expect(item.model_id).toBe(2000458802);
+    expect(item.model_sku).toBe('SKU-AZUL-M');
+    expect(item.model_quantity_purchased).toBe(2);
+    expect(item.promotion_type).toBe('flash_sale');
+
+    // PAR com as outras duas posições: o MESMO valor cru dá a MESMA string.
+    const doModelo = shopeeModelSchema.parse({ model_id: 2000458802, promotion_id: grande });
+    const daPromocao = shopeePromocaoDeItemSchema.parse({
+      model_id: 2000458802,
+      promotion_id: grande,
+    });
+    expect(item.promotion_id).toBe(doModelo.promotion_id);
+    expect(item.promotion_id).toBe(daPromocao.promotion_id);
+
+    // Em forma de STRING, um uint64 atravessa com os dígitos EXATOS.
+    const citado = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({ item_list: [{ item_id: 1, promotion_id: '18446744073709551615' }] }),
+      ),
+    );
+    expect(citado.response.order_list[0]!.item_list![0]!.promotion_id).toBe('18446744073709551615');
+  });
+
+  it('PAR: um `promotion_id` pequeno como NÚMERO e CITADO dá a mesma string; ⛔ QUASE-IGUAL: a string não é dobrada como número', () => {
+    const linhas = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          item_list: [
+            { item_id: 1, promotion_id: 123_456_789_012_345 },
+            { item_id: 2, promotion_id: '123456789012345' },
+            { item_id: 3, promotion_id: '0123456789012345' },
+          ],
+        }),
+      ),
+    ).response.order_list[0]!.item_list!;
+    // PAR: número e string do mesmo id são o mesmo id opaco.
+    expect(linhas[0]!.promotion_id).toBe('123456789012345');
+    expect(typeof linhas[0]!.promotion_id).toBe('string');
+    expect(linhas[1]!.promotion_id).toBe(linhas[0]!.promotion_id);
+    // ⛔ QUASE-IGUAL: o preprocess só transforma NÚMERO em dígitos; uma string
+    // passa intacta. Um id opaco com zero à esquerda é OUTRO id — sob
+    // `wireInt()` os dois virariam o mesmo número.
+    expect(linhas[2]!.promotion_id).toBe('0123456789012345');
+    expect(linhas[2]!.promotion_id).not.toBe(linhas[0]!.promotion_id);
+  });
+
+  it('`promotion_id` ausente e `null` são null; o `0` do pedido de sandbox é um VALOR (`"0"`), não ausência', () => {
+    // ⚠️ O pedido de sandbox SG manda `promotion_id: 0` num item sem promoção.
+    // O schema não decide que zero é "sem promoção" — quem decidiria é um
+    // leitor, e hoje nenhum lê o campo. Ausente e `null` continuam `null`.
+    const linhas = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          item_list: [
+            { item_id: 1 },
+            { item_id: 2, promotion_id: null },
+            { item_id: 3, promotion_id: 0 },
+          ],
+        }),
+      ),
+    ).response.order_list[0]!.item_list!;
+    expect(linhas[0]!.promotion_id).toBeNull();
+    expect(linhas[1]!.promotion_id).toBeNull();
+    expect(linhas[2]!.promotion_id).toBe('0');
+    expect(linhas[2]!.promotion_id).not.toBeNull();
+  });
+
+  it('nenhuma das três posições de `promotion_id` no módulo é `wireInt()`', () => {
+    // O backstop de fonte: o teste 21 do passo 12 fatia só a seção do passo 9, e
+    // foi exatamente assim que este terceiro sítio sobreviveu ao conserto dos
+    // outros dois. Aqui o escopo é o ARQUIVO inteiro, só as linhas de código.
+    const codigo = semComentarios(FONTE_TYPES);
+    expect(codigo).not.toContain('promotion_id: wireInt()');
+    expect(
+      codigo.split('\n').filter((l) => l.includes('promotion_id: shopeeIdOpaco()')),
+    ).toHaveLength(3);
+  });
+
   it('`edt` carrega o TIPO que chegou, seja ele qual for — é o que responde o registro', () => {
     // O request pede o token `edt`; a resposta traz `edt_from`/`edt_to` e nenhum
     // `edt`. Carregado como `unknown` para que o leitor logue o tipo UMA vez, sem
@@ -3773,12 +3883,12 @@ describe('a sincronização de estoque (passo 12)', () => {
     expect(doc).toContain('uint64');
     // ⛔ QUASE-IGUAL: a afirmação antiga — que ele é lido como número — saiu.
     expect(doc).not.toContain('read as a number');
-    // ⚠️ O escopo é a SEÇÃO DO PASSO 9, não o arquivo. Há um SEGUNDO
-    // `promotion_id: wireInt()` no módulo, na linha de item de
-    // `get_order_detail` (a seção de pedidos), e ele NÃO é deste passo: mexer
-    // nele mudaria o que a importação de pedidos — que tem tráfego real — lê
-    // hoje. Ele carrega a MESMA classe de id e portanto o mesmo risco; está
-    // registrado no relatório do passo 12 em vez de consertado de carona.
+    // ⚠️ O escopo é a SEÇÃO DO PASSO 9, não o arquivo. O terceiro sítio — a
+    // linha de item de `get_order_detail`, na seção de pedidos — ficou fora do
+    // passo 12 por estar na importação de pedidos (tráfego real) e foi
+    // consertado num follow-up dele. O backstop do ARQUIVO inteiro é o teste
+    // "nenhuma das três posições de `promotion_id`…", no describe do detalhe do
+    // pedido; este continua fatiando só o passo 9.
     expect(semComentarios(SECAO_PASSO_9)).not.toContain('promotion_id: wireInt()');
     expect(semComentarios(SECAO_PASSO_9)).toContain('promotion_id: shopeeIdOpaco()');
   });

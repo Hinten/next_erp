@@ -104,6 +104,10 @@ export interface ContaPanelProps {
   onDefinirStatus?: (integracaoId: string, linkDocId: string, acao: AcaoStatusAnuncio) => void;
   /** The link doc whose status change is in flight, across every account. */
   alterandoStatus: string | null;
+  /** #745. Undefined when there is no client or the operator lacks `PERM.integracao.write`. */
+  onEnviarDadosFiscais?: (integracaoId: string, linkDocId: string) => void;
+  /** The link doc whose fiscal-data send is in flight, across every account. */
+  enviandoDadosFiscais: string | null;
   onAbrirAnuncio: (integracaoId: string, linkDocId: string) => void;
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   onLoadingChange: (linkDocId: string, loading: boolean) => void;
@@ -149,6 +153,8 @@ export function ContaPanel({
   onReverificar,
   onDefinirStatus,
   alterandoStatus,
+  onEnviarDadosFiscais,
+  enviandoDadosFiscais,
   onAbrirAnuncio,
   onDirtyChange,
   onLoadingChange,
@@ -321,6 +327,10 @@ export function ContaPanel({
               }
               alterandoStatus={alterandoStatus === l.id}
               statusBusy={alterandoStatus !== null}
+              onEnviarDadosFiscais={
+                onEnviarDadosFiscais ? () => onEnviarDadosFiscais(conta.id, l.id) : undefined
+              }
+              enviandoDadosFiscais={enviandoDadosFiscais === l.id}
             />
           );
         })}

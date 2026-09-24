@@ -344,9 +344,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   `ultimaModificacao`, so omitting any of them means every stock-moving save
   leaves a second, "Sistema"-attributed phantom row (#972's failure, one trail
   later).
-  ⚠️ **TTL is not available on this collection** (#651): a Firestore TTL policy
-  needs a native `timestamp`-typed field, and `historicoModificacaoSchema.timestamp`
-  is an **int** (`microsSinceEpoch`). Retention needs a sweep, not a policy.
+  **Retention is a Firestore TTL policy** (#651) on a SEPARATE field, `expiraEm`
+  — a real `Timestamp` (`ttlExpiry()` in `@delfrance/schemas`), because the
+  policy ignores the int `timestamp`. `recordModification` stamps it from each
+  root's REQUIRED `retencao` (`historyRoots.ts`): produto 365 days, pedido six
+  years; `delete` rows and produto `precos`/`custo` rows get NO stamp and live
+  forever. The policy itself sits in `firestore.indexes.json` (`TTL_POLICIES`).
 - ⚠️ **The whole modification-history family uses
   `onDocumentWrittenWithAuthContext`**, including the three produto triggers,
   which were plain `onDocumentWritten` before. `resolveUsuarioOuterRef`
@@ -403,6 +406,16 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
   estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
+  The pedido editor calls it too, after a save that moved `valorCobrado`, with
+  `aposAlterarTotal: true` (#703) — the server then reconciles only while
+  the estado IT reads still lets the total move (so a Mercado Livre pedido
+  promoted to `emProcessamento` in the gap is left alone) AND the pedido's
+  integração `tipo` is not a marketplace (whose ladder owns the estado —
+  otherwise an ML pedido still in `carrinho` with an `aprovado` pagamento
+  would jump to `pago` past #791's prerequisites). ⚠️ Deploy this BEFORE
+  the web that sends the flag: an older deploy strips the unknown key and
+  reconciles unguarded. The web retries transient failures (≤3 attempts) —
+  safe only because the reconcile is idempotent.
 - **`finalizarBalanco`** (`onCall`) + **`processarBalanco`** (`onTaskDispatched`)
   — the server-owned stock-apply half of the balanço feature (#458), replacing a
   legacy Flutter finalize that wrote client-supplied quantities straight to

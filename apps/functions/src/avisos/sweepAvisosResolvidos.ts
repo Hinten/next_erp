@@ -8,23 +8,24 @@ import { getDb } from '../lib/admin';
  * Retention for the operator notification inbox: delete RESOLVED avisos once
  * they are old enough that nobody is going to look them up.
  *
- * ## Why a sweep and not a TTL policy
+ * ## Why a sweep and not a TTL policy — a cost call, not a capability gap
  *
- * A TTL would have to key on a field, and the only always-present candidate is
- * `criadoEm` — which would silently expire a still-OPEN aviso, exactly the ones
- * that matter (an authorization warning legitimately stands for 200 days before
- * its window arrives). Deleting on `resolvidoEm` is the correct predicate and a
- * TTL cannot express "only if this other field is set".
+ * A TTL policy COULD express this. A TTL only deletes documents that carry its
+ * field, so `resolverAviso` could stamp an `expiraEm` (`ttlExpiry()` in
+ * `@delfrance/schemas`) 90 days after `resolvidoEm` and a reopen could clear it
+ * — `criadoEm` stays wrong as the key, since it would expire still-OPEN avisos
+ * (an authorization warning legitimately stands for 200 days). The repo now does
+ * exactly that for four collection groups (`TTL_POLICIES`, #651).
  *
- * Three more reasons, all cheap to state and expensive to rediscover:
- *   - `firestore.indexes.json` has 142 indexes and ZERO `fieldOverrides`; a TTL
- *     would be its first, and the Firebase CLI does NOT remove a TTL policy when
- *     you delete the block — it warns and leaves production auto-deleting.
- *     Turning one off needs an explicit `ttl: false`.
- *   - TTL deletes bill as Managed Delete Units with no free grant.
- *   - The repo's house pattern for bounded-lifetime data is deliberately not TTL
- *     (`oauthState` uses a fixed doc id so a new attempt overwrites the old,
- *     explicitly justified as "no TTL policy and no sweep to deploy").
+ * This sweep stays because it already works and the swap would cost more than it
+ * saves: a schema field, a stamp on resolve, a clear on reopen, their tests —
+ * against one small indexed query a day. Revisit if the volume changes. Two facts
+ * for whoever does:
+ *   - TTL deletes bill as Managed Delete Units with no free grant — the same
+ *     deletes this sweep already pays for, minus its scan.
+ *   - Removing a policy's block from `firestore.indexes.json` does NOT remove the
+ *     policy: without `--force` the CLI only warns (or asks), and the database
+ *     keeps auto-deleting. Turn one off with an explicit `"ttl": false` first.
  *
  * ## Why retention is not optional
  *

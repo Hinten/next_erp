@@ -1,5 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Firestore, Query, Transaction, type DocumentReference } from 'firebase-admin/firestore';
+import {
+  Firestore,
+  Query,
+  Timestamp,
+  Transaction,
+  type DocumentReference,
+} from 'firebase-admin/firestore';
 import {
   clienteCollection,
   conversaCollection,
@@ -19,6 +25,7 @@ import {
   ESTADO_CONVERSA,
   ESTADO_ENVIO,
   INTEGRACAO_TIPO,
+  RETENCAO_VINCULO_WHATSAPP_DIAS,
   TIPO_MENSAGEM,
 } from '@delfrance/schemas';
 import {
@@ -402,6 +409,13 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     expect((await replayVinculoWhatsapp(db, id, deps, redrive)).kind).toBe('processed');
     const stored = await whatsappVinculoMensagemCollection.ref(db, { vinculoId: id }).get();
     expect(stored.docs.map((d) => d.data().processada)).toEqual([true]);
+    // Processed ⇒ the retained copy is redundant, so the same write starts its
+    // TTL clock — as a real Timestamp, since the policy ignores a numeric epoch.
+    const expiraEm = stored.docs[0]!.get('expiraEm');
+    expect(expiraEm).toBeInstanceOf(Timestamp);
+    const diasAteExpirar = ((expiraEm as Timestamp).toMillis() - Date.now()) / 86_400_000;
+    expect(diasAteExpirar).toBeGreaterThan(RETENCAO_VINCULO_WHATSAPP_DIAS - 1);
+    expect(diasAteExpirar).toBeLessThanOrEqual(RETENCAO_VINCULO_WHATSAPP_DIAS);
     expect((await whatsappVinculoCollection.docRef(db, {}, id).get()).data()?.estado).toBe(
       'resolvido',
     );
@@ -450,6 +464,8 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     );
     const pending = await whatsappVinculoMensagemCollection.ref(db, { vinculoId: id }).get();
     expect(pending.docs[0]!.data().processada).toBe(false);
+    // Not processed ⇒ still the ONLY copy of the message: it must never expire.
+    expect(pending.docs[0]!.get('expiraEm')).toBeUndefined();
     expect((await replayVinculoWhatsapp(db, id, deps, redrive)).kind).toBe('processed');
     const messages = await mensagemCollection.ref(db, { conversaId: linked.conversaId }).get();
     expect(messages.docs.filter((d) => d.data().mid === 'wamid.parked')).toHaveLength(1);

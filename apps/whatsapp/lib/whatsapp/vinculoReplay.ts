@@ -3,6 +3,7 @@ import {
   whatsappVinculoCollection,
   whatsappVinculoMensagemCollection,
 } from '@delfrance/data/admin/collections';
+import { RETENCAO_VINCULO_WHATSAPP_DIAS, expiraEmApos } from '@delfrance/schemas';
 import { WhatsappVinculoConflitoError } from './contatos';
 import {
   processMessagesField,
@@ -70,7 +71,13 @@ export async function replayVinculoWhatsapp(
             throw new WhatsappVinculoConflitoError(
               'A decisão de vínculo mudou durante a recuperação. Revise o contato.',
             );
-          if (retained.data()?.processada !== true) tx.update(child, { processada: true });
+          // The copy is redundant from here on (the message is in the chat), so
+          // the same write starts its TTL clock — see `expiraEm` in the schema.
+          if (retained.data()?.processada !== true)
+            tx.update(child, {
+              processada: true,
+              expiraEm: expiraEmApos(Date.now(), RETENCAO_VINCULO_WHATSAPP_DIAS),
+            });
         });
         recovered = true;
       } finally {

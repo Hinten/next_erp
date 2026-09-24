@@ -2225,3 +2225,94 @@ export const ML_MODERATION_ELEMENT = {
   pergunta: 'QUE',
   avaliacao: 'REV',
 } as const;
+
+// ---------------------------------------------------------------------------
+// Faturador — per-SKU fiscal data (`items/fiscal_information`, #745)
+// ---------------------------------------------------------------------------
+
+/**
+ * `tax_information` of a `single` fiscal SKU — the subset this port sends.
+ *
+ * ⚠️ `csosn` and `tax_rule_id` are MUTUALLY EXCLUSIVE by regime: Simples
+ * Nacional sends `csosn` and leaves the rule blank; Regime Normal sends the id
+ * of a tax-rule group created through `/users/{id}/invoices/tax_rules`. This
+ * port emits Simples only (the NF-e engine's own `CRT` is `1`), so the type
+ * carries no `tax_rule_id`, and no `fci`/`med_*`/`resale` either — nothing in
+ * the ERP's data model holds them.
+ */
+export interface MlFiscalTaxInformation {
+  ncm: string;
+  origin_type: 'manufacturer' | 'reseller' | 'imported';
+  /** The ICMS origem digit, `'0'`–`'8'`. */
+  origin_detail: string;
+  csosn: string;
+  cest?: string;
+  ex_tipi?: string;
+  ean?: string;
+  /** Kilograms, at most 3 decimals. */
+  net_weight?: number;
+  /** Kilograms, at most 3 decimals. */
+  gross_weight?: number;
+}
+
+/**
+ * Body of `POST /items/fiscal_information` (and, without `sku`, of the full
+ * `PUT /items/fiscal_information/{sku}` replace).
+ *
+ * `register_type` is undocumented; every example in ML's reference sends
+ * `'final'`, so this port does too.
+ */
+export interface MlFiscalInformationBody {
+  sku: string;
+  title: string;
+  type: 'single';
+  register_type: 'final';
+  measurement_unit?: string;
+  cost?: number;
+  tax_information: MlFiscalTaxInformation;
+}
+
+/**
+ * ML's record of one fiscal SKU (the 201 of the create, the 200 of the PUT).
+ * Tolerant: only what a caller reads is named, and `can_resale` /
+ * `errors_resale` (the B2B resale block) ride through `.passthrough()`.
+ */
+export const mlFiscalInformationSchema = z
+  .object({
+    seller_id: z.union([z.string(), z.number()]).nullable().optional(),
+    sku: z.string().nullable().optional(),
+    type: z.string().nullable().optional(),
+    register_type: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlFiscalInformation = z.infer<typeof mlFiscalInformationSchema>;
+
+/**
+ * `POST /items/fiscal_information/items` — the SKU ↔ listing link. `status` is
+ * `"active"` in every sample.
+ */
+export const mlFiscalInformationLinkSchema = z
+  .object({
+    sku: z.string().nullable().optional(),
+    item_id: z.string().nullable().optional(),
+    // `""` when the item has no variations; a number-or-string id otherwise.
+    variation_id: z.union([z.string(), z.number()]).nullable().optional(),
+    status: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlFiscalInformationLink = z.infer<typeof mlFiscalInformationLinkSchema>;
+
+/**
+ * `GET /can_invoice/items/{id}[/variations/{vid}]` — whether ML's Faturador
+ * holds everything it needs to invoice the listing. On an item WITH variations
+ * `status` is true only once every variation qualifies, and the answer carries
+ * no list of what is missing.
+ */
+export const mlCanInvoiceSchema = z
+  .object({
+    item_id: z.string().nullable().optional(),
+    variation_id: z.union([z.string(), z.number()]).nullable().optional(),
+    status: z.boolean().nullable().optional(),
+  })
+  .passthrough();
+export type MlCanInvoice = z.infer<typeof mlCanInvoiceSchema>;
