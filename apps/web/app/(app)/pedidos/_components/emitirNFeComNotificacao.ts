@@ -5,10 +5,14 @@
  * views, the edit page's "Emitir NF-e" button and the entrada post-save prompt:
  * a red "não está logado" toast when there's no client, `emitir(pedidoId)`, a
  * COPYABLE success toast (SEFAZ outcomes — cStat/xMotivo — must be
- * copy-pasteable for diagnosis) and the copyable error path.
+ * copy-pasteable for diagnosis) and the copyable error path — which, for a
+ * rejection that needs context (cStat 805, #852), reads the rejected NF-e and
+ * the cliente first so the toast can say what to fix and link the cadastro.
  */
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
-import { notificationForNFeError, notificationForNFeResult } from '@/lib/nfe/errors';
+import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { carregadorContextoRejeicao } from '@/lib/nfe/contextoRejeicao';
+import { notificationForNFeErrorComContexto, notificationForNFeResult } from '@/lib/nfe/errors';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -32,7 +36,14 @@ export async function emitirNFeComNotificacao(
     // The repo's established narrowing for this exact call (see
     // lib/nfe/bulkEmit.ts): the typed NFe errors all extend Error and
     // `notificationForNFeError` narrows them further; non-Error throws rethrow.
+    // The loader only runs for a cStat that needs context (805) — every other
+    // error maps synchronously, without a read.
     if (!(err instanceof Error)) throw err;
-    showErrorNotification(notificationForNFeError(err));
+    showErrorNotification(
+      await notificationForNFeErrorComContexto(
+        err,
+        carregadorContextoRejeicao(getFirebaseFirestore()),
+      ),
+    );
   }
 }

@@ -34,7 +34,6 @@
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { Pedido } from '@delfrance/schemas';
@@ -42,7 +41,19 @@ import type { Pedido } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
+import { clienteQueryKey } from '@/lib/data/readClienteByRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+
+/**
+ * The cliente key and its ONE reader live in `@/lib/data/readClienteByRef`
+ * since #852 — a plain module, so `lib/nfe`'s rejection-context loader can share
+ * them without this file's `'use client'` graph. Re-exported here so
+ * `PedidoCells` (`ClienteCell`, NFCell's `OrientacaoRejeicaoCliente`),
+ * `OrigemPedidoPicker` and the tests keep importing them from this module. The
+ * batch below seeds the key; see that module for the #1303 provenance rule every
+ * consumer must keep.
+ */
+export { clienteQueryKey, readClienteByRef } from '@/lib/data/readClienteByRef';
 
 /**
  * How long a cell will wait for the page-level batch before falling back to its
@@ -75,11 +86,6 @@ export function usePedidoRowReads(): RowReadsStatus {
   return useContext(PedidoRowReadsContext);
 }
 
-/** The TanStack key `ClienteCell` reads its cliente under. */
-export function clienteQueryKey(path: string): readonly unknown[] {
-  return ['cliente', path];
-}
-
 /**
  * The TanStack key `FreteCell` / `EtiquetaRowAction` read the tipo under.
  *
@@ -103,30 +109,6 @@ export function clienteQueryKey(path: string): readonly unknown[] {
 export function intFreteTipoQueryKey(path: string): readonly unknown[] {
   return ['intFreteTipo', path];
 }
-
-/**
- * Read ONE cliente exactly as the batch reads them, so every consumer of
- * {@link clienteQueryKey} fills that key with the same provenance. There are
- * three today — `ClienteCell`, `OrigemPedidoPicker` and this batch — and a key
- * written by one and read by another is only safe while they agree.
- *
- * ⚠️ Guards the collection rather than assuming it. `dereferenceOuterRef`
- * accepts three legacy ref shapes and nothing guarantees the path addresses
- * `clientes`; reading `clienteCollection.docRef(db, {}, ref.id)` for a ref that
- * points elsewhere would silently fetch a DIFFERENT document that happens to
- * share an id. Anything outside `clientes` is read as the ref given.
- */
-export async function readClienteByRef<T>(
-  db: Firestore,
-  ref: DocumentReference,
-): Promise<T | null> {
-  const target =
-    ref.parent.id === CLIENTES_COLLECTION_ID ? clienteCollection.docRef(db, {}, ref.id) : ref;
-  const snap = await getDoc(target);
-  return (snap.data() as T | undefined) ?? null;
-}
-
-const CLIENTES_COLLECTION_ID = 'clientes';
 
 /** `clientes/abc` → `abc`. Returns null for anything that is not a doc path. */
 function idFromPath(path: string): string | null {

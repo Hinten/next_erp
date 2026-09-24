@@ -12,15 +12,31 @@
  * without reaching a different terminal state.
  */
 import { useEffect, useState } from 'react';
-import { Badge, Button, Group, Loader, Modal, ScrollArea, Stack, Text } from '@mantine/core';
+import Link from 'next/link';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Anchor,
+  Badge,
+  Button,
+  Group,
+  Loader,
+  Modal,
+  ScrollArea,
+  Stack,
+  Text,
+} from '@mantine/core';
 import {
   isNFeEmitError,
   type NFeBatchEmitResult,
   type NFeEmitError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
+import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
+import { carregadorContextoRejeicao } from '@/lib/nfe/contextoRejeicao';
+import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 
 import { BUCKET_META, BUCKET_ORDER, classifyEmitResult } from './emitirLoteBuckets';
 
@@ -148,22 +164,67 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
 function ResultRow({ result }: { readonly result: NFeEmitResult | NFeEmitError }) {
   const color = BUCKET_META[classifyEmitResult(result)].color;
   return (
-    <Group justify="space-between" wrap="nowrap" gap="xs">
-      <Text size="sm" fw={500} truncate maw={140}>
-        {result.pedidoId}
-      </Text>
-      <Group
-        gap="xs"
-        wrap="nowrap"
-        style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}
-      >
-        <Badge size="sm" color={color} variant="light">
-          {isNFeEmitError(result) ? result.errorCode : result.cStat}
-        </Badge>
-        <Text size="xs" c="dimmed" truncate maw={300}>
-          {isNFeEmitError(result) ? result.errorMessage : result.xMotivo}
+    <Stack gap={2}>
+      <Group justify="space-between" wrap="nowrap" gap="xs">
+        <Text size="sm" fw={500} truncate maw={140}>
+          {result.pedidoId}
         </Text>
+        <Group
+          gap="xs"
+          wrap="nowrap"
+          style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}
+        >
+          <Badge size="sm" color={color} variant="light">
+            {isNFeEmitError(result) ? result.errorCode : result.cStat}
+          </Badge>
+          <Text size="xs" c="dimmed" truncate maw={300}>
+            {isNFeEmitError(result) ? result.errorMessage : result.xMotivo}
+          </Text>
+        </Group>
       </Group>
-    </Group>
+      {!isNFeEmitError(result) &&
+        result.estado === ESTADO_NFE.rejeitada &&
+        rejeicaoPrecisaContexto(result.cStat) && <OrientacaoRejeicaoLote result={result} />}
+    </Stack>
+  );
+}
+
+/**
+ * The cStat 805 guidance under one lote row (#852) — the same loader and pure
+ * mapping as the toasts and the NF column. Needed HERE because a lote spanning
+ * filiais goes out as single-member sync chunks, so an 805 lands in this modal,
+ * and the NF column's HoverCard sits unreachable behind it.
+ *
+ * Batch results are already Zod-parsed (`nfeBatchEmitResultSchema`) and carry
+ * both ids, so nothing is re-validated. Renders NOTHING while loading and on a
+ * query error — the raw cStat/xMotivo row above stays either way. (The loader
+ * degrades a `FirebaseError` itself; anything it rethrows lands in the query's
+ * error state, never out of the dialog.)
+ */
+function OrientacaoRejeicaoLote({ result }: { readonly result: NFeEmitResult }) {
+  const { pedidoId, nfeId, cStat } = result;
+  const { data, isError } = useQuery({
+    queryKey: ['nfeContextoRejeicao', pedidoId, nfeId],
+    queryFn: () => carregadorContextoRejeicao(getFirebaseFirestore())({ pedidoId, nfeId }),
+    staleTime: 0,
+    // ⚠️ 0: re-emitting a rejeitada nota REUSES its nfeId, so a context cached
+    // from one run would describe the previous attempt on the next.
+    gcTime: 0,
+    retry: false,
+  });
+
+  const orientacao = orientacaoRejeicaoNFe(cStat, isError ? null : (data ?? null));
+  if (orientacao == null) return null;
+  return (
+    <Stack gap={2} pl="xs">
+      <Text size="xs" c={orientacao.cor}>
+        {orientacao.texto}
+      </Text>
+      {orientacao.link && (
+        <Anchor component={Link} href={orientacao.link.href} size="xs">
+          {orientacao.link.label}
+        </Anchor>
+      )}
+    </Stack>
   );
 }

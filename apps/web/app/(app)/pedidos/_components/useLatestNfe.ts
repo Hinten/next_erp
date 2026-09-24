@@ -59,6 +59,8 @@ import type { NotaFiscalEletronica } from '@delfrance/schemas';
 import { useAuth } from '@/lib/auth';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { lerDestinatarioDoNfev4, type DestinatarioNFe } from '@/lib/nfe/destinatarioNFe';
+import { rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 
 /**
  * How far outside the viewport a row still counts as "visible". One screen of
@@ -101,11 +103,16 @@ export const NFE_MEMO_MAX = 400;
  * `xml_epec_proc` and `xml_assinado`, and a `procNFe` runs to tens of KB — so
  * remembering 400 full docs would pin double-digit MB of XML the badge never
  * looks at, for the lifetime of the tab.
+ *
+ * `destinatario` (#852) is the one field DERIVED from that XML: the three
+ * scalars the cStat 805 guidance needs (`idDest`, `indIEDest`, the destinatário
+ * UF), read once here so the memo holds them and never the XML itself. `null`
+ * for every other cStat, so no other badge ever pays for a parse.
  */
 export type NfeBadge = Pick<
   NotaFiscalEletronica,
   'estado' | 'tpEmis' | 'cStat' | 'xMotivo' | 'numeracao' | 'chave' | 'error'
->;
+> & { readonly destinatario: DestinatarioNFe | null };
 
 function toBadge(doc: NotaFiscalEletronica): NfeBadge {
   return {
@@ -116,6 +123,9 @@ function toBadge(doc: NotaFiscalEletronica): NfeBadge {
     numeracao: doc.numeracao,
     chave: doc.chave,
     error: doc.error,
+    // A DOMParser pass — hence gated on the cStat, and called only from the
+    // `settledBadge` memo in `useLatestNfe`, once per snapshot.
+    destinatario: rejeicaoPrecisaContexto(doc.cStat) ? lerDestinatarioDoNfev4(doc) : null,
   };
 }
 
@@ -277,6 +287,18 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   const { data, loading, fromCache } = useSnapshot<NotaFiscalEletronica>(query);
   const settled = query !== null && !loading && data !== undefined;
 
+  // ONE projection per snapshot, shared by the remember-effect and the settled
+  // return below. `toBadge` may run a DOMParser pass (a cStat 805 doc, #852), so
+  // it must not run per render nor once per call site. The row object's
+  // identity only changes when `useSnapshot` delivers a new snapshot.
+  // ⚠️ Unconditional and ABOVE the effect and every early return — a hook placed
+  // after one would break the Rules of Hooks the first time a row settles.
+  const settledRow = data?.[0];
+  const settledBadge = useMemo(
+    () => (settledRow ? toBadge(settledRow.data) : undefined),
+    [settledRow],
+  );
+
   useEffect(() => {
     // ⚠️ Only SERVER truth is worth remembering. `persistentLocalCache` makes
     // `onSnapshot` emit `fromCache: true` first, and for a query nothing has
@@ -285,22 +307,20 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
     // dash. Rendering it below is fine (it is corrected within the same
     // listener); persisting it is not.
     if (!settled || fromCache !== false) return;
-    const row = data?.[0];
     // Only the badge projection — never the document, which carries the XML.
     rememberLatestNfe(uid, pedidoId, {
-      badge: row ? toBadge(row.data) : undefined,
-      id: row?.id,
+      badge: settledBadge,
+      id: settledRow?.id,
     });
-  }, [settled, fromCache, data, pedidoId, uid]);
+  }, [settled, fromCache, settledRow, settledBadge, pedidoId, uid]);
 
   if (settled) {
-    const row = data?.[0];
     return {
       ref,
       status: 'ready',
-      badge: row ? toBadge(row.data) : undefined,
-      doc: row?.data,
-      latestId: row?.id,
+      badge: settledBadge,
+      doc: settledRow?.data,
+      latestId: settledRow?.id,
     };
   }
   // Subscribing (or torn down) with a remembered value: repaint it rather than

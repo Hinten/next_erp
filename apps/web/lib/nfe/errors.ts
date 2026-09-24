@@ -6,6 +6,10 @@
  *
  * Kept separate from the React component so the mapping can be unit
  * tested without a DOM.
+ *
+ * This is also the ONE place a cStat maps to operator guidance: the toast
+ * helpers, the NF column's HoverCard and the lote dialog all call
+ * `orientacaoRejeicaoNFe` here rather than keeping a second mapper (#852).
  */
 import {
   NFeAuthError,
@@ -20,12 +24,181 @@ import {
   NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import {
+  ESTADO_NFE,
+  IE_SENTINELA,
+  TIPO_CLIENTE,
+  normalizarIe,
+  type TipoCliente,
+} from '@delfrance/schemas';
+import { z } from 'zod';
+
+import { ID_DEST, IND_IE_DEST, type DestinatarioNFe, type IdDest } from './destinatarioNFe';
+
+/** An in-app route the notification offers under its message. */
+export interface NotificationLink {
+  readonly href: string;
+  readonly label: string;
+}
 
 export interface NotificationShape {
   readonly title: string;
   readonly message: string;
   readonly color: 'green' | 'teal' | 'blue' | 'yellow' | 'red' | 'gray';
+  /**
+   * Optional navigation rendered below the message — today only the cliente's
+   * cadastro on a cStat 805 rejection (#852). Absent on every other shape.
+   */
+  readonly link?: NotificationLink | null;
+}
+
+/**
+ * cStat 805 — "A SEFAZ do destinatário não permite Contribuinte Isento de
+ * Inscrição Estadual". Rule E16a-30 (Obrig.; NT 2025.001 v1.03 widened it to
+ * idDest 1 OR 2 in 17 UFs, keyed on the destinatário's UF) plus E16a-35
+ * (Facult., idDest=1 at the UF's discretion). The one rejection whose guidance
+ * needs more than the error itself: WHAT was sent (the signed XML) and WHO the
+ * cliente is (the cadastro) — see `.claude/skills/nfe/references/`.
+ */
+export const CSTAT_DESTINATARIO_ISENTO_RECUSADO = '805';
+
+/**
+ * Does this cStat's guidance need the rejected NF-e + cliente context? An
+ * EXACT match — `'8050'`, `' 805'` and `'085'` are other codes, not this one.
+ * The gate that keeps every other rejection from paying for extra reads.
+ */
+export function rejeicaoPrecisaContexto(cStat: string | null | undefined): boolean {
+  return cStat === CSTAT_DESTINATARIO_ISENTO_RECUSADO;
+}
+
+/** What the cliente cadastro says TODAY — each field `null` when unknown or not a string. */
+export interface CadastroClienteRejeicao {
+  readonly nome: string | null;
+  readonly tipo: TipoCliente | null;
+  readonly ie: string | null;
+}
+
+export interface ClienteDaRejeicao {
+  /** The `d_cliente` doc id, from the pedido's `clientePedidoOuterRef`. */
+  readonly id: string;
+  /** `null` = the read failed or the doc is missing — the id-only link survives. */
+  readonly cadastro: CadastroClienteRejeicao | null;
+}
+
+export interface ContextoRejeicaoNFe {
+  /** From the rejected nfev4 doc's signed XML; `null` = unreadable → generic toast. */
+  readonly destinatario: DestinatarioNFe | null;
+  /** `null` = the pedido has no cliente ref (or it did not resolve) → no link. */
+  readonly cliente: ClienteDaRejeicao | null;
+}
+
+export interface OrientacaoRejeicao {
+  /**
+   * `corrigirCadastro` — the cadastro still declares ISENTO (or is unknown): fix it.
+   * `reemitir` — the cadastro was already changed: only a new emission is missing.
+   */
+  readonly situacao: 'corrigirCadastro' | 'reemitir';
+  readonly titulo: string;
+  readonly texto: string;
+  readonly cor: 'red' | 'yellow';
+  readonly link: NotificationLink | null;
+}
+
+/**
+ * Would the cadastro AS IT STANDS still produce `indIEDest='2'`? The web mirror
+ * of the generator's ladder — `classifyIe` + `buildDest` in
+ * `packages/integrations/nfe/src/generator/parties.ts`: '2' is reachable ONLY
+ * for a pessoa jurídica whose `ie` normalises to `IE_SENTINELA.isento`. A
+ * PF/estrangeiro, a `NAO CONTRIBUINTE` or a blank `ie` all yield '9', and
+ * anything else yields '1'. (The ladder's first rung — exterior → '9' — is
+ * idDest=3, which never gets this far: see `ID_DEST_COM_ORIENTACAO_805`.)
+ *
+ * Mirrored, not imported: `apps/web` cannot import the generator (only the
+ * http-provider subpath is allowed), and moving the predicate into
+ * `packages/schemas` would widen this web-only change's CI into the NF-e lanes.
+ * ⚠️ If that ladder changes, change this with it — the near-miss tests in
+ * `errors.test.ts` pin both sides of the fold. A drift costs a wrong "já
+ * alterado" hint, never a wrong fiscal document.
+ */
+export function cadastroAindaDeclaraIsento(c: CadastroClienteRejeicao): boolean {
+  return c.tipo === TIPO_CLIENTE.pessoaJuridica && normalizarIe(c.ie) === IE_SENTINELA.isento;
+}
+
+/**
+ * Which operations get the 805 guidance — the owner-decision knob (#852):
+ * internal AND interstate, following NT 2025.001 v1.03 E16a-30 (idDest 1 ou 2).
+ * idDest=3 (exterior) and anything unknown fall back to the generic toast.
+ */
+const ID_DEST_COM_ORIENTACAO_805: ReadonlySet<IdDest> = new Set<IdDest>([
+  ID_DEST.interna,
+  ID_DEST.interestadual,
+]);
+
+/**
+ * Operator guidance for a rejection that needs context — today only cStat 805
+ * sent with `indIEDest='2'` on an internal or interstate operation. `null` for
+ * everything else, which keeps the caller on its generic text.
+ *
+ * The copy is PAST tense about what was sent ("A NF-e foi enviada com …") and
+ * never states today's cadastro as fact: when the cadastro no longer declares
+ * ISENTO it switches to the `reemitir` variant; when it is unknown it falls
+ * back to the fix-it text, which is true either way.
+ */
+export function orientacaoRejeicaoNFe(
+  cStat: string | null | undefined,
+  contexto: ContextoRejeicaoNFe | null,
+): OrientacaoRejeicao | null {
+  if (!rejeicaoPrecisaContexto(cStat)) return null;
+  const destinatario = contexto?.destinatario ?? null;
+  if (destinatario == null) return null;
+  if (destinatario.indIEDest !== IND_IE_DEST.isento) return null;
+  if (!ID_DEST_COM_ORIENTACAO_805.has(destinatario.idDest)) return null;
+
+  const cliente = contexto?.cliente ?? null;
+  const nomeCadastro = cliente?.cadastro?.nome?.trim() ?? '';
+  const nome = nomeCadastro === '' ? null : nomeCadastro;
+  const uf = destinatario.uf;
+
+  const quem = nome ? `o cliente ${nome}` : 'o cliente deste pedido';
+  const sefaz = uf ? `a SEFAZ-${uf}` : 'a SEFAZ do destinatário';
+  const onde =
+    destinatario.idDest === ID_DEST.interna
+      ? ' não aceita em operação interna'
+      : uf
+        ? ', UF do destinatário, não aceita em operação interestadual'
+        : ' não aceita em operação interestadual';
+  const fato =
+    `A NF-e foi enviada com ${quem} marcado como Isento de inscrição estadual, ` +
+    `o que ${sefaz}${onde}.`;
+
+  const link: NotificationLink | null = cliente
+    ? {
+        href: `/clientes/${cliente.id}`,
+        label: nome ? `Abrir cadastro de ${nome}` : 'Abrir cadastro do cliente',
+      }
+    : null;
+
+  if (cliente?.cadastro != null && !cadastroAindaDeclaraIsento(cliente.cadastro)) {
+    return {
+      situacao: 'reemitir',
+      titulo: 'Cadastro do cliente já alterado',
+      texto: `${fato} O cadastro já não está como Isento: emita a NF-e novamente.`,
+      cor: 'yellow',
+      link,
+    };
+  }
+  return {
+    situacao: 'corrigirCadastro',
+    titulo: 'Inscrição estadual do cliente recusada pela SEFAZ',
+    texto:
+      `${fato} Corrija o cadastro: informe a inscrição estadual do cliente (o botão ` +
+      '"Buscar dados do CNPJ" do cadastro tenta obtê-la na SEFAZ) ou, se ele não for ' +
+      'contribuinte do ICMS, preencha o campo Inscrição estadual com ' +
+      `"${IE_SENTINELA.naoContribuinte}" (venda a não contribuinte exige operação de ` +
+      'consumidor final). Depois emita a NF-e novamente.',
+    cor: 'red',
+    link,
+  };
 }
 
 /**
@@ -107,9 +280,28 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
  * Narrows via `instanceof` on the typed error classes exported from
  * `@delfrance/integrations-nfe`. Returns a generic fallback for
  * anything that doesn't match.
+ *
+ * `contexto` only matters for an `NFeRejectedError` whose cStat has
+ * guidance (`orientacaoRejeicaoNFe`): the verbatim `cStat=…: <xMotivo>`
+ * prefix stays — SEFAZ outcomes must remain copy-pasteable — and the
+ * guidance follows after ' — ', with the cadastro link. The toast stays
+ * red for both variants. Without guidance the shape is exactly the
+ * generic one.
  */
-export function notificationForNFeError(err: unknown): NotificationShape {
+export function notificationForNFeError(
+  err: unknown,
+  contexto: ContextoRejeicaoNFe | null = null,
+): NotificationShape {
   if (err instanceof NFeRejectedError) {
+    const orientacao = orientacaoRejeicaoNFe(err.cStat, contexto);
+    if (orientacao != null) {
+      return {
+        title: orientacao.titulo,
+        message: `cStat=${err.cStat}: ${err.xMotivo} — ${orientacao.texto}`,
+        color: 'red',
+        link: orientacao.link,
+      };
+    }
     return {
       title: 'SEFAZ rejeitou a NF-e',
       message: `cStat=${err.cStat}: ${err.xMotivo}`,
@@ -208,4 +400,45 @@ export function notificationForNFeError(err: unknown): NotificationShape {
     message: err instanceof Error ? err.message : 'Falha desconhecida ao emitir NF-e.',
     color: 'red',
   };
+}
+
+/**
+ * Loads the context `orientacaoRejeicaoNFe` needs for one rejected emission.
+ * Injected so this module stays pure; the Firestore-backed implementation is
+ * `carregadorContextoRejeicao` (`./contextoRejeicao`).
+ */
+export type CarregarContextoRejeicao = (alvo: {
+  readonly pedidoId: string;
+  readonly nfeId: string;
+}) => Promise<ContextoRejeicaoNFe>;
+
+/**
+ * The two ids the 422 emit body carries (the route returns the full
+ * `EmitResult`). Validated locally: `nfeEmitResultSchema` is not re-exported
+ * from the http-provider subpath, and exporting it would touch an nfe-live path.
+ */
+const alvoRejeicaoSchema = z.object({
+  pedidoId: z.string().min(1),
+  nfeId: z.string().min(1),
+});
+
+/**
+ * `notificationForNFeError`, plus the context lookup for the rejections that
+ * need it. The loader runs ONLY for an `NFeRejectedError` whose cStat passes
+ * `rejeicaoPrecisaContexto` AND whose body names both the pedido and the nfev4
+ * doc — every other error resolves to the synchronous mapping without a read.
+ * A loader rejection propagates: the Firestore-backed one already degrades a
+ * `FirebaseError` to a partial context, so what reaches here is a bug.
+ */
+export async function notificationForNFeErrorComContexto(
+  err: unknown,
+  carregar: CarregarContextoRejeicao,
+): Promise<NotificationShape> {
+  if (!(err instanceof NFeRejectedError) || !rejeicaoPrecisaContexto(err.cStat)) {
+    return notificationForNFeError(err);
+  }
+  const alvo = alvoRejeicaoSchema.safeParse(err.body);
+  if (!alvo.success) return notificationForNFeError(err);
+  const contexto = await carregar({ pedidoId: alvo.data.pedidoId, nfeId: alvo.data.nfeId });
+  return notificationForNFeError(err, contexto);
 }
