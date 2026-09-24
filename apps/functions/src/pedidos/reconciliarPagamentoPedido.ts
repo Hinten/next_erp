@@ -11,8 +11,9 @@ const reconciliarInputSchema = z.object({
   pedidoId: z.string().min(1),
   // Set by the pedido editor after a save that moved `valorCobrado` (#703): only
   // reconcile while the estado read in the transaction still lets the total
-  // move. Defaults to false, so the Pagamentos tab's call is unchanged.
-  somenteSeItensEditaveis: z.boolean().default(false),
+  // move AND the pedido's channel is not a marketplace (whose ladder owns the
+  // estado). Defaults to false, so the Pagamentos tab's call is unchanged.
+  aposAlterarTotal: z.boolean().default(false),
 });
 
 export interface ReconciliarPagamentoPedidoResult {
@@ -34,7 +35,7 @@ export interface ReconciliarPagamentoPedidoResult {
  * manual — see the "Deploying" section in `apps/functions/CLAUDE.md`).
  *
  * Second caller (#703): the pedido editor, after a save that moved
- * `valorCobrado`, with `somenteSeItensEditaveis: true`. ⚠️ Deploy this BEFORE the
+ * `valorCobrado`, with `aposAlterarTotal: true`. ⚠️ Deploy this BEFORE the
  * web that sends it — an older deploy strips the unknown key (non-strict Zod)
  * and reconciles unguarded; the web's own gate then only narrows that window.
  */
@@ -59,9 +60,9 @@ export const reconciliarPagamentoPedido = onCall(async (request) => {
     // system-caused. The operator is still captured in the log line below.
     const result = await reconcilePedidoEstado(getDb(), {
       pedidoId: parsed.data.pedidoId,
-      somenteSeItensEditaveis: parsed.data.somenteSeItensEditaveis,
+      aposAlterarTotal: parsed.data.aposAlterarTotal,
     });
-    const origem = parsed.data.somenteSeItensEditaveis ? 'total' : 'pagamento';
+    const origem = parsed.data.aposAlterarTotal ? 'total' : 'pagamento';
     logger.info(
       `reconciliarPagamentoPedido: ${parsed.data.pedidoId} → ${result.transition ?? '(sem transição)'} (por ${request.auth.uid}, após ${origem})`,
     );

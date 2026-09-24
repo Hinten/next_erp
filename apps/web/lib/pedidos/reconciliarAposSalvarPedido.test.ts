@@ -33,7 +33,7 @@ describe('reconciliarEstadoSeTotalMudou (#703)', () => {
   it('asks the server to reconcile with the items-editable gate when the total moved', async () => {
     callMock.mockResolvedValue({ transition: ESTADO_PEDIDO.pago });
     await reconciliarEstadoSeTotalMudou('p1', MUDOU_NO_CARRINHO);
-    expect(callMock).toHaveBeenCalledWith('p1', { somenteSeItensEditaveis: true });
+    expect(callMock).toHaveBeenCalledWith('p1', { aposAlterarTotal: true });
     expect(showMock).not.toHaveBeenCalled();
   });
 

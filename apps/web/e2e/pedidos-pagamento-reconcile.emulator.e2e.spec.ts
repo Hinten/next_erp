@@ -22,7 +22,7 @@ import { warmRoutes } from './helpers/warmup';
  * `reconcileEstado()` call site in `PagamentosSection.tsx`: `handleSave`,
  * `PagamentoRow.handleStatusChange` and `handleDelete` — plus the pedido
  * editor's own save, which re-runs the reconcile when it moved `valorCobrado`
- * (#703, `somenteSeItensEditaveis`).
+ * (#703, `aposAlterarTotal`).
  *
  * ⚠️ In the emulator, Admin SDK seed writes ALSO fire the pedido triggers, so
  * the fixture pedido is seeded at `estado: 'iniciado'` with ZERO pagamentos (a

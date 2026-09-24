@@ -331,7 +331,9 @@ function resultadoDoSave(
  * then would move it off `emProcessamento` — after which ML can never advance it
  * to `pago` (#703 blocker 1). The callable re-applies the same gate inside its
  * own transaction; this one only avoids calling it, and bounds the window when
- * the deployed callable is older than the web.
+ * the deployed callable is older than the web. The callable ALSO refuses any
+ * marketplace pedido (`reconcilePedidoEstado`'s channel gate) — a gate that
+ * needs the integração's `tipo`, so it lives only on the server.
  */
 export function deveReconciliarAposSalvar(resultado: SavePedidoResultado): boolean {
   return (

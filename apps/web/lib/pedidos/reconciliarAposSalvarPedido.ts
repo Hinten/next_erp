@@ -12,9 +12,12 @@ const RECONCILE_TOTAL_ERROR_ID = 'pedido-reconcile-total-falhou';
  * the next payment change.
  *
  * Decided from the save's own committed read (`deveReconciliarAposSalvar`), and
- * the server re-applies the same gate inside its transaction
- * (`somenteSeItensEditaveis`) — the Mercado Livre import can promote a pedido to
- * `emProcessamento` in the gap, and reconciling it then strands it.
+ * the server re-applies that estado gate inside its transaction
+ * (`aposAlterarTotal`) — the Mercado Livre import can promote a pedido to
+ * `emProcessamento` in the gap, and reconciling it then strands it. The server
+ * alone also refuses every MARKETPLACE pedido, since only it reads the
+ * integração's `tipo`: a marketplace's estado is its channel ladder, not the
+ * payment sum, so the client never needs to know which channel it saved.
  *
  * Best-effort, like the Pagamentos tab's reconcile: the pedido is already saved,
  * so a failure is never a save error — but it is surfaced, because only a human
@@ -27,7 +30,7 @@ export async function reconciliarEstadoSeTotalMudou(
 ): Promise<void> {
   if (!deveReconciliarAposSalvar(resultado)) return;
   try {
-    await callReconciliarPagamentoPedido(pedidoId, { somenteSeItensEditaveis: true });
+    await callReconciliarPagamentoPedido(pedidoId, { aposAlterarTotal: true });
   } catch (err) {
     if (!(err instanceof FirebaseError)) throw err;
     console.error('reconciliarPagamentoPedido (após salvar o pedido) falhou', err);

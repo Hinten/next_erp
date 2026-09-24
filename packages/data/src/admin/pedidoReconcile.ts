@@ -7,6 +7,9 @@ import type {
 } from 'firebase-admin/firestore';
 import {
   ESTADO_FRETE,
+  ehMarketplace,
+  idFromRef,
+  integracaoTipoSchema,
   isFreteMarketplaceOwned,
   nowMicros,
   podeAutorizarDespacho,
@@ -18,7 +21,7 @@ import {
 } from '@delfrance/schemas';
 
 import { nextPedidoEstado } from '../pedido/usecases';
-import { pagamentoCollection, pedidoCollection } from './collections';
+import { integracaoCollection, pagamentoCollection, pedidoCollection } from './collections';
 
 /**
  * Thrown when the reconcile targets a pedido that no longer exists. The webhook
@@ -305,33 +308,46 @@ export async function reconcilePedidoFromPagamento(
  * only surviving attribution for this path is the `logger.info` line in
  * `reconciliarPagamentoPedido.ts`, which ages out with log retention.
  *
- * `somenteSeItensEditaveis` serves the OTHER caller: a pedido save that moved
+ * `aposAlterarTotal` serves the OTHER caller: a pedido save that moved
  * `valorCobrado` (#703, `deveReconciliarAposSalvar`). It returns
- * `{ transition: null }` without writing unless the estado read by THIS
- * transaction still lets the editor change the total (`!travarInclusaoProduto`).
- * That is the one place the gate can hold: a Mercado Livre pedido promoted from
- * `carrinho` to `emProcessamento` between the operator's save and this call
- * must stay there, because ML's advance guards only move a pedido FROM
- * `emProcessamento` — reconciling it off that estado strands it (#703 blocker 1).
- * The pagamento path never sets the flag, so its behaviour is unchanged.
+ * `{ transition: null }` without writing unless, per THIS transaction's reads:
+ *
+ *  1. the estado still lets the editor change the total
+ *     (`!travarInclusaoProduto`). A Mercado Livre pedido promoted from
+ *     `carrinho` to `emProcessamento` between the operator's save and this call
+ *     must stay there: ML's advance guards only move a pedido FROM
+ *     `emProcessamento`, so reconciling it off that estado strands it (#703
+ *     blocker 1);
+ *  2. the pedido's channel is NOT a marketplace ({@link canalDecideOEstado}).
+ *     Gate 1 alone leaves the other half of the same hazard open: the ML
+ *     payments topic stores an `aprovado` pagamento on a pedido still in
+ *     `carrinho`/`escolhendoFormaDePagamento` and advances nothing until
+ *     `podeAvancarParaPago` holds (#791). An item edit in that window would
+ *     jump the pedido straight to `pago` past those prerequisites — and `pago`
+ *     authorizes dispatch and NF-e, and leaves the ML pre-payment ladder for
+ *     good. A marketplace pedido's estado is the channel's ladder, not the
+ *     payment sum (#703's verdict), so this path leaves it alone entirely.
+ *
+ * The pagamento path never sets the flag, so its behaviour is unchanged — it
+ * still carries both exposures, and that is a separate decision.
  */
 export async function reconcilePedidoEstado(
   db: FirebaseAdminFirestore,
-  input: { pedidoId: string; somenteSeItensEditaveis?: boolean },
+  input: { pedidoId: string; aposAlterarTotal?: boolean },
 ): Promise<{ transition: EstadoPedido | null }> {
-  const { pedidoId, somenteSeItensEditaveis = false } = input;
+  const { pedidoId, aposAlterarTotal = false } = input;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
     const pedidoSnap = await tx.get(pedidoRef);
     if (!pedidoSnap.exists) throw new PedidoReconcileNotFoundError(pedidoId);
-    // Re-derived from the tx read on every attempt (root CLAUDE.md rule 7): the
-    // caller's own read of the estado is exactly what the race makes stale.
-    if (
-      somenteSeItensEditaveis &&
-      travarInclusaoProduto(pedidoSnap.get('estado') as EstadoPedido)
-    ) {
-      return { transition: null };
+    // Both gates are re-derived from this transaction's reads on every attempt
+    // (root CLAUDE.md rule 7): the caller's own read is what the race makes stale.
+    if (aposAlterarTotal) {
+      if (travarInclusaoProduto(pedidoSnap.get('estado') as EstadoPedido)) {
+        return { transition: null };
+      }
+      if (await canalDecideOEstado(tx, db, pedidoSnap)) return { transition: null };
     }
 
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
@@ -345,4 +361,36 @@ export async function reconcilePedidoEstado(
     const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
     return { transition };
   });
+}
+
+/**
+ * Whether the pedido's sales channel owns its `estado` — i.e. it is NOT one of
+ * the three known non-marketplace integração tipos (`nenhuma`, `whatsapp`,
+ * `balcao`). Reads the integração inside the caller's transaction.
+ *
+ * The discriminator is the referenced integração's `tipo`, never the ref's
+ * presence: the pedido form REQUIRES `integracaoPedidoOuterRef` on a manual
+ * sale too (`apps/mercado-livre/CLAUDE.md`), and `lastMarketplaceUpdate` is
+ * blind to every ML pedido the legacy importer wrote (#703's verdict comment).
+ * `tipo` is the same numeric wire enum in the legacy corpus.
+ *
+ * Fails CLOSED — answers "the channel decides" — whenever it cannot tell: an
+ * integração that no longer exists, or a `tipo` outside the enum. The cost of
+ * that answer is only the pre-#703 behaviour (estado stale until the next
+ * pagamento change, fixable by hand); the cost of the opposite is a stranded or
+ * prematurely-`pago` marketplace order. A pedido with no integração at all was
+ * never written by a marketplace importer, so it proceeds.
+ */
+async function canalDecideOEstado(
+  tx: Transaction,
+  db: FirebaseAdminFirestore,
+  pedidoSnap: DocumentSnapshot,
+): Promise<boolean> {
+  const ref: unknown = pedidoSnap.get('integracaoPedidoOuterRef');
+  const integracaoId = typeof ref === 'string' ? idFromRef(ref) : '';
+  if (integracaoId === '') return false;
+  const integracaoSnap = await tx.get(integracaoCollection.docRef(db, {}, integracaoId));
+  if (!integracaoSnap.exists) return true;
+  const tipo = integracaoTipoSchema.safeParse(integracaoSnap.get('tipo'));
+  return !tipo.success || ehMarketplace(tipo.data);
 }
