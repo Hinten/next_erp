@@ -34,6 +34,7 @@ import type {
   MercadoLivreChartDomain,
   MercadoLivreChartSpecs,
   MercadoLivreConta,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioPrecoResult,
   MercadoLivreIaModelos,
@@ -173,6 +174,8 @@ export type {
   MercadoLivreChartValidationError,
   MercadoLivreConselhoParcial,
   MercadoLivreConta,
+  MercadoLivreDadosFiscaisResumo,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueListing,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioEstoqueSemEnvio,
@@ -360,6 +363,16 @@ export interface MercadoLivreClient {
     produtoId: string;
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
+  /**
+   * (Re-)send ONE anúncio's per-SKU fiscal data to ML's Faturador without
+   * republishing it (PERM.integracao.write, #745) — after an imposto edit, say.
+   * A SKU ML refuses is DATA in the summary, never an HTTP error.
+   */
+  enviarDadosFiscais(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<MercadoLivreEnviarDadosFiscaisResult>;
   /**
    * PAUSE or REACTIVATE listings on Mercado Livre (PERM.integracao.write).
    *
@@ -1050,6 +1063,12 @@ export function createMercadoLivreClient(config: {
       call(
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         wire.reverificarResultSchema,
+        input,
+      ),
+    enviarDadosFiscais: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/dados-fiscais',
+        wire.enviarDadosFiscaisResultSchema,
         input,
       ),
     definirStatusAnuncios: ({ signal, ...input }) =>

@@ -8,7 +8,9 @@
  * the historical behaviour (the conta's first link doc, else a new one).
  * Requires `PERM.integracao.write`.
  *
- * Responses: 200 `{ itemId, estado, permalink }`; 404 when `linkDocId` names a
+ * Responses: 200 `{ itemId, estado, permalink, …, dadosFiscais }` (the per-SKU
+ * fiscal registration summary, #745 — best-effort, never a failure status);
+ * 404 when `linkDocId` names a
  * doc this produto does not have or that belongs to another conta; 422
  * `ML_PUBLISH_BLOCKED` with the validation issues (missing price/category/
  * photos…); ML/API errors map through `mercadoLivreErrorResponse` (reauth →
@@ -107,6 +109,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         // The seller whose items the User-Products orphan sweep enumerates —
         // same source `/importar` uses for the family fan-out.
         sellerUserId: asNumberOrNull(ctx.conta.user_id),
+        // #745 — the operação the per-SKU fiscal data resolves through: the one
+        // the order importer stamps on every ML pedido, so the nota's own.
+        operacaoOuterRef: asStringOrNull(ctx.conta.operacaoOuterRef),
         // `safeParse`, not a cast: `ctx.conta` is untyped passthrough, and a
         // doc carrying a mode this build does not know (a value added later, a
         // legacy shape) must degrade to "send no shipping node" rather than

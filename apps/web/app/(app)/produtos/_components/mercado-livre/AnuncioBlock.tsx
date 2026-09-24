@@ -123,6 +123,15 @@ export interface AnuncioBlockProps {
   alterandoStatus: boolean;
   /** ANY listing's status change is in flight — the action is single-flight. */
   statusBusy: boolean;
+  /**
+   * (Re-)send this listing's per-SKU fiscal data to ML's Faturador without
+   * republishing (#745) — after an imposto edit, say. Undefined hides the
+   * control: no client, or the operator lacks `PERM.integracao.write`, the bit
+   * the backend route enforces.
+   */
+  onEnviarDadosFiscais?: () => void;
+  /** This listing's fiscal-data send is in flight. */
+  enviandoDadosFiscais: boolean;
 }
 
 export function AnuncioBlock({
@@ -165,6 +174,8 @@ export function AnuncioBlock({
   onDefinirStatus,
   alterandoStatus,
   statusBusy,
+  onEnviarDadosFiscais,
+  enviandoDadosFiscais,
 }: AnuncioBlockProps) {
   // A listing ML has never accepted. `''` counts as never published, matching
   // the backend's own `link.id !== ''` test: the schema permits it and the
@@ -335,6 +346,20 @@ export function AnuncioBlock({
             disabled={Boolean(disabled) || loading || (statusBusy && !alterandoStatus)}
           >
             {acaoDeStatus === ACAO_STATUS_ANUNCIO.pausar ? 'Pausar anúncio' : 'Reativar anúncio'}
+          </Button>
+        )}
+        {/* #745 — every publish already sends the fiscal data; this re-sends it
+            after an imposto edit, which ML would otherwise never hear about.
+            Only for a listing ML knows: there is no item to link a SKU to yet. */}
+        {onEnviarDadosFiscais && !isFirstPublish && !removido && (
+          <Button
+            type="button"
+            variant="default"
+            onClick={onEnviarDadosFiscais}
+            loading={enviandoDadosFiscais}
+            disabled={Boolean(disabled) || loading}
+          >
+            Enviar dados fiscais
           </Button>
         )}
         {/* For a listing Mercado Livre has never seen, or one it has REMOVED.

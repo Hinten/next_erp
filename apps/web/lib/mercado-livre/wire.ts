@@ -58,6 +58,20 @@ export const contaSchema = z.object({
 });
 export type MercadoLivreConta = z.infer<typeof contaSchema>;
 
+/**
+ * The per-SKU fiscal registration summary (#745) — a publish's, or the
+ * "Enviar dados fiscais" route's. A refused SKU is DATA here, never an HTTP
+ * failure: the listing itself is fine either way.
+ */
+export const dadosFiscaisResumoSchema = z.object({
+  enviados: z.number(),
+  omitidos: z.array(
+    z.object({ produtoId: z.string(), sku: z.string().nullable(), motivo: z.string() }),
+  ),
+  erros: z.array(z.object({ produtoId: z.string(), sku: z.string(), mensagem: z.string() })),
+});
+export type MercadoLivreDadosFiscaisResumo = z.infer<typeof dadosFiscaisResumoSchema>;
+
 export const publicarResultSchema = z.object({
   /** The parent link's external id — a FAMILY id under User Products (#798). */
   itemId: z.string(),
@@ -75,8 +89,18 @@ export const publicarResultSchema = z.object({
   itemIds: z.array(z.string()).optional(),
   /** Items closed because their ERP variação no longer exists (UP only). */
   orfaosEncerrados: z.array(z.string()).optional(),
+  /**
+   * The per-SKU fiscal registration with ML's Faturador (#745). Optional for the
+   * same reason as the two above — an older deployed backend answers without it.
+   */
+  dadosFiscais: dadosFiscaisResumoSchema.optional(),
 });
 export type MercadoLivrePublicarResult = z.infer<typeof publicarResultSchema>;
+
+export const enviarDadosFiscaisResultSchema = z.object({
+  dadosFiscais: dadosFiscaisResumoSchema,
+});
+export type MercadoLivreEnviarDadosFiscaisResult = z.infer<typeof enviarDadosFiscaisResultSchema>;
 
 /** One member of a re-verified User-Products family (#1142). */
 export const reverificarMembroSchema = z.object({

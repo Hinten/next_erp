@@ -20,3 +20,11 @@ export {
   type ResolverBundle,
 } from './resolverImposto';
 export { createFirestoreImpostoResolver, lerResolverBundle } from './firestoreImpostoResolver';
+export {
+  criarLeitorDeImpostoPorOperacao,
+  MOTIVO_LEITURA_IMPOSTO,
+  type DepsLeitorDeImposto,
+  type LeitorDeImpostoPorOperacao,
+  type LeituraImposto,
+  type MotivoLeituraImposto,
+} from './leitorPorOperacao';
