@@ -3659,6 +3659,92 @@ export type ShopeeUpdateStock = z.infer<typeof shopeeUpdateStockPayloadSchema>;
 export const shopeeUpdateStockSchema = wrappedOp(shopeeUpdateStockPayloadSchema);
 export type ShopeeUpdateStockResponse = z.infer<typeof shopeeUpdateStockSchema>;
 
+/* ------------------------- update_price (step 13) ------------------------- */
+
+/**
+ * `update_price.price_list`: "Length should be between 1 to 50."
+ *
+ * ⚠️ Its OWN constant, and deliberately NOT {@link SHOPEE_UPDATE_STOCK_MAX_MODELS}
+ * even though both read 50 today — the rule {@link SHOPEE_MODEL_MAX_PER_ITEM}'s
+ * docblock states. This one bounds how many models fit in ONE price write; that
+ * one bounds ONE stock write. Two pages state them, and a probe that moves one
+ * must not move the other.
+ */
+export const SHOPEE_UPDATE_PRICE_MAX_MODELS = 50;
+
+/**
+ * `update_price`'s payload (`api v2.product.update_price`) — the per-model
+ * result of setting the shelf price of ONE item.
+ *
+ * ⚠️ The documented partial failure is a SUCCESS envelope: the page's response
+ * sample carries `error: ""` with BOTH lists populated, and — unlike
+ * {@link shopeeUpdateStockPayloadSchema} — this page's error list has no "check
+ * failure_list" code, so nothing documents a non-empty `error` arriving WITH the
+ * lists. Step 12's probe P9 measured the stock twin answering a mixed batch that
+ * way (HTTP 200, `error: ''`, both lists); for price the same shape is
+ * UNVERIFIED until step 13's probe P9/P10 runs it. Whoever writes the result
+ * back reads BOTH lists, never the absence of a throw.
+ *
+ * ⚠️ Both arrays `.default([])` rather than `.nullable()`, for
+ * {@link shopeeUpdateStockPayloadSchema}'s reason: an absent `failure_list` means
+ * "nothing failed", and a `null` would make every caller write `?? []` — one of
+ * which will forget, and forgetting reads as "no model was refused".
+ *
+ * ⚠️ `failed_reason` is FREE TEXT. The page enumerates no values (its sample
+ * says `"fail"`; the stock sibling measured `"model ID not exist in sku"`), so it
+ * is classified by the app and stored verbatim — never matched here.
+ *
+ * ⚠️ `success_list[].original_price` is a FLOAT in the listing currency's MAJOR
+ * units — two decimals in BR and in SG, the page verbatim — read by
+ * `wireNumber()`, never `wireInt()`: a quoted `"12.5"` is a price, and an integer
+ * reader would fail the whole page on the first centavo. Nullable, because a
+ * confirmation without the number is a documented success. Whether the echo is
+ * the REQUEST or the STORED value is UNVERIFIED — the probe settles it, and
+ * nothing here assumes either.
+ *
+ * ⚠️ `model_id` is `0` for a no-model item — the page's own echo keys that row
+ * as `0` — so it is read as an integer with no positivity check. NO per-element
+ * `.catch(null)`: a row with no `model_id` is unreconcilable (the
+ * {@link shopeeUnlistItemPayloadSchema} argument).
+ */
+export const shopeeUpdatePricePayloadSchema = z
+  .object({
+    failure_list: z
+      .array(
+        z
+          .object({
+            model_id: wireInt(),
+            /** FREE TEXT — classified by the app, stored verbatim. */
+            failed_reason: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    success_list: z
+      .array(
+        z
+          .object({
+            model_id: wireInt(),
+            /** The echo — a FLOAT in major units; request vs stored is UNVERIFIED. */
+            original_price: wireNumber().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeUpdatePrice = z.infer<typeof shopeeUpdatePricePayloadSchema>;
+
+/**
+ * `POST /api/v2/product/update_price` — WRAPPED under `response`.
+ *
+ * ⚠️ Its client method answers THIS, the whole envelope, not the unwrapped
+ * payload — {@link shopeeUpdateStockSchema}'s rule: a write's `warning` is a
+ * partial-failure channel and the caller has to see it.
+ */
+export const shopeeUpdatePriceSchema = wrappedOp(shopeeUpdatePricePayloadSchema);
+export type ShopeeUpdatePriceResponse = z.infer<typeof shopeeUpdatePriceSchema>;
+
 /* --------------------------- get_item_promotion --------------------------- */
 
 /**

@@ -23,6 +23,7 @@ import {
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_TRACKING_LOGISTICS_STATUS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_PRICE_MAX_MODELS,
   SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
   SHOPEE_UPLOAD_IMAGE_FIELD,
@@ -78,6 +79,8 @@ import {
   shopeeTierWriteSchema,
   shopeeTokenResponseSchema,
   shopeeUnlistItemSchema,
+  shopeeUpdatePricePayloadSchema,
+  shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
   shopeeVariationsSchema,
@@ -3911,5 +3914,253 @@ describe('a sincronização de estoque (passo 12)', () => {
     const outro = shopeeWarehouseSchema.parse({ warehouse_id: 7, location_id: 'SGZ' });
     expect(outro.location_id).toBe('SGZ');
     expect(outro.location_id).not.toBe(doWarehouse);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O bloco de `update_price` na FONTE — do marcador dele até o `get_item_promotion`
+ * seguinte. Ele mora DENTRO de {@link SECAO_ESTOQUE_12} (que vai até o fim do
+ * arquivo), então o invariante "nenhum `z.number()` cru" do passo 12 já o cobre;
+ * este recorte é o que deixa uma asserção falar SÓ do passo 13.
+ */
+const INICIO_PRECO_13 = FONTE_TYPES.indexOf('update_price (step 13)');
+const SECAO_PRECO_13 = FONTE_TYPES.slice(
+  INICIO_PRECO_13,
+  FONTE_TYPES.indexOf('get_item_promotion', INICIO_PRECO_13),
+);
+
+/**
+ * A FORMA da amostra de resposta da página de `update_price`, como o E1 §2.3 a
+ * transcreve: `error: ""` com as DUAS listas preenchidas, `failed_reason: "fail"`
+ * e uma linha de eco com `model_id: 0` (o item sem modelo). Os ids são os de
+ * fixture e o preço é o `11.11` do exemplo do `guide 223 §2.1`.
+ */
+const AMOSTRA_UPDATE_PRICE = {
+  error: '',
+  message: '',
+  warning: '',
+  request_id: 'req-update-price',
+  response: {
+    failure_list: [{ model_id: MODEL_ID, failed_reason: 'fail' }],
+    success_list: [{ model_id: 0, original_price: 11.11 }],
+  },
+};
+
+/** Uma resposta de `update_price` com o `response` dado. */
+function precoComResposta(response: Record<string, unknown>) {
+  return shopeeUpdatePriceSchema.parse({ error: '', request_id: 'req-preco', response });
+}
+
+describe('update_price (passo 13)', () => {
+  it('1 — a amostra da página parseia: `error: ""` COM as duas listas, cada uma lida por `model_id`', () => {
+    const lido = shopeeUpdatePriceSchema.parse(AMOSTRA_UPDATE_PRICE);
+    // ⚠️ A falha parcial documentada é um envelope de SUCESSO. Quem grava o
+    // resultado tem de varrer as duas listas; a ausência de exceção não diz nada.
+    expect(lido.error).toBe('');
+    expect(lido.response.failure_list).toEqual([{ model_id: MODEL_ID, failed_reason: 'fail' }]);
+    expect(lido.response.success_list).toEqual([{ model_id: 0, original_price: 11.11 }]);
+    // O método devolve o ENVELOPE inteiro: o `warning` é um canal de falha parcial.
+    expect(lido.warning).toBe('');
+    // O tipo do eco é número-ou-nulo — nunca string, nunca inteiro obrigatório.
+    const eco: number | null = lido.response.success_list[0]!.original_price;
+    expect(eco).toBe(11.11);
+  });
+
+  it('2 — ⛔ QUASE-IGUAL: o MESMO corpo PLANO (sem `response`) FALHA, e um `error` não-vazio atravessa INTACTO', () => {
+    // Embrulhado e plano estão a uma chamada de distância; é o schema da
+    // operação que sabe qual é.
+    const plano = { ...AMOSTRA_UPDATE_PRICE.response, error: '', request_id: 'req-plano' };
+    const recusado = shopeeUpdatePriceSchema.safeParse(plano);
+    expect(recusado.success).toBe(false);
+    expect(recusado.error?.issues.map((i) => i.path.join('.'))).toContain('response');
+    // ÂNCORA: o miolo sozinho parseia no schema do PAYLOAD.
+    expect(
+      shopeeUpdatePricePayloadSchema.parse(AMOSTRA_UPDATE_PRICE.response).success_list,
+    ).toHaveLength(1);
+
+    // Julgar sucesso é do transporte: o schema entrega um `error` de falha como
+    // ele veio, sem traduzi-lo para `''`.
+    const falha = shopeeUpdatePriceSchema.parse({
+      ...AMOSTRA_UPDATE_PRICE,
+      error: 'product.error_update_price_fail',
+    });
+    expect(falha.error).toBe('product.error_update_price_fail');
+    expect(falha.error).not.toBe('');
+  });
+
+  it('3 — PAR: as duas listas AUSENTES leem igual a `[]`; ⛔ QUASE-IGUAL: o default é POR LISTA e não apaga a vizinha', () => {
+    // ⚠️ `.default([])` e não `.nullable()` (M6): um `failure_list` ausente é
+    // "nada falhou", e quem varre a lista tem de conseguir varrer sempre. Sem o
+    // default, o corpo inteiro cairia; com `.nullable().default(null)`, cada
+    // chamador escreveria `?? []` — e o que esquecer leria "nenhum modelo foi
+    // recusado", a metade silenciosa de uma escrita parcial.
+    const vazio = precoComResposta({});
+    expect(vazio.response.failure_list).toEqual([]);
+    expect(vazio.response.success_list).toEqual([]);
+    const explicito = precoComResposta({ failure_list: [], success_list: [] });
+    expect(vazio.response).toEqual(explicito.response);
+
+    // ⛔ Só a lista AUSENTE ganha o default; a presente chega com a sua linha.
+    const soSucesso = precoComResposta({
+      success_list: [{ model_id: MODEL_ID, original_price: 49.9 }],
+    });
+    expect(soSucesso.response.failure_list).toEqual([]);
+    expect(soSucesso.response.success_list).toEqual([{ model_id: MODEL_ID, original_price: 49.9 }]);
+    const soFalha = precoComResposta({
+      failure_list: [{ model_id: MODEL_ID, failed_reason: 'fail' }],
+    });
+    expect(soFalha.response.success_list).toEqual([]);
+    expect(soFalha.response.failure_list).toHaveLength(1);
+  });
+
+  it('4 — PAR: `failed_reason` AUSENTE e `null` leem `null`; ⛔ QUASE-IGUAL: `""` continua `""` e o texto livre vem VERBATIM', () => {
+    const ausente = precoComResposta({ failure_list: [{ model_id: MODEL_ID }] });
+    const nulo = precoComResposta({ failure_list: [{ model_id: MODEL_ID, failed_reason: null }] });
+    expect(ausente.response.failure_list[0]!.failed_reason).toBeNull();
+    expect(nulo.response.failure_list[0]!.failed_reason).toBeNull();
+
+    // ⛔ Uma string vazia é uma RESPOSTA (vazia), não uma ausência: o schema não
+    // dobra `""` em `null`, e não apara nem normaliza o texto que o app classifica.
+    const vazia = precoComResposta({ failure_list: [{ model_id: MODEL_ID, failed_reason: '' }] });
+    expect(vazia.response.failure_list[0]!.failed_reason).toBe('');
+    expect(vazia.response.failure_list[0]!.failed_reason).not.toBeNull();
+    const texto = '  model ID not exist in sku ';
+    const verbatim = precoComResposta({
+      failure_list: [{ model_id: MODEL_ID, failed_reason: texto }],
+    });
+    expect(verbatim.response.failure_list[0]!.failed_reason).toBe(texto);
+  });
+
+  it('5 — PAR: o eco `original_price` NÚMERO 12.5 e STRING "12.5" leem 12.5; ⛔ QUASE-IGUAL: "doze", "12,5", "" e "0x1F" são RECUSADOS', () => {
+    // ⚠️ M7: o eco é um FLOAT em unidades maiores (duas casas no BR e em SG).
+    // Sob `wireInt()` os dois lados deste par cairiam — `12.5` não é inteiro —
+    // e a resposta INTEIRA da escrita viraria um erro de schema.
+    const numero = precoComResposta({
+      success_list: [{ model_id: MODEL_ID, original_price: 12.5 }],
+    });
+    const aspas = precoComResposta({
+      success_list: [{ model_id: MODEL_ID, original_price: '12.5' }],
+    });
+    expect(numero.response.success_list[0]!.original_price).toBe(12.5);
+    expect(aspas.response.success_list[0]!.original_price).toBe(12.5);
+    expect(aspas.response.success_list[0]!.original_price).toBe(
+      numero.response.success_list[0]!.original_price,
+    );
+    // Duas casas atravessam exatas, com ou sem aspas.
+    expect(
+      precoComResposta({ success_list: [{ model_id: MODEL_ID, original_price: '49.99' }] }).response
+        .success_list[0]!.original_price,
+    ).toBe(49.99);
+
+    // ⛔ Tolerância não é coerção: nada que não seja inequivocamente UM número
+    // vira preço. `"12,5"` é o caso pt-BR — a Shopee nunca o manda, e se mandasse
+    // ler 125 ou 12 seria inventar um valor.
+    for (const ruim of ['doze', '12,5', '', '0x1F', '1 000']) {
+      const r = shopeeUpdatePriceSchema.safeParse({
+        error: '',
+        response: { success_list: [{ model_id: MODEL_ID, original_price: ruim }] },
+      });
+      expect(r.success, `original_price ${JSON.stringify(ruim)} não pode parsear`).toBe(false);
+      expect(r.error?.issues.map((i) => i.path.join('.'))).toContain(
+        'response.success_list.0.original_price',
+      );
+    }
+  });
+
+  it('6 — PAR: o eco AUSENTE e `null` leem `null`; ⛔ QUASE-IGUAL: um eco `0` é ZERO, não ausência', () => {
+    // Uma confirmação sem o número é um sucesso documentado.
+    const ausente = precoComResposta({ success_list: [{ model_id: MODEL_ID }] });
+    const nulo = precoComResposta({ success_list: [{ model_id: MODEL_ID, original_price: null }] });
+    expect(ausente.response.success_list[0]!.original_price).toBeNull();
+    expect(nulo.response.success_list[0]!.original_price).toBeNull();
+    // ⛔ `0` é um número que o app compara (e recusa); lê-lo como `null` o
+    // esconderia de quem verifica o eco.
+    const zero = precoComResposta({ success_list: [{ model_id: MODEL_ID, original_price: 0 }] });
+    expect(zero.response.success_list[0]!.original_price).toBe(0);
+    expect(zero.response.success_list[0]!.original_price).not.toBeNull();
+  });
+
+  it('7 — `model_id: 0` (o item SEM modelo) parseia nas DUAS listas, e `model_id` continua INTEIRO', () => {
+    // ⚠️ O próprio eco da página chaveia a linha sem modelo como `0`: um leitor
+    // com checagem de positividade derrubaria a resposta do item simples.
+    const lido = precoComResposta({
+      failure_list: [{ model_id: 0, failed_reason: 'fail' }],
+      success_list: [{ model_id: 0, original_price: 10 }],
+    });
+    expect(lido.response.failure_list[0]!.model_id).toBe(0);
+    expect(lido.response.success_list[0]!.model_id).toBe(0);
+    // Um `model_id` entre aspas é o mesmo id (a tolerância do pacote inteiro).
+    expect(
+      precoComResposta({ success_list: [{ model_id: String(MODEL_ID) }] }).response.success_list[0]!
+        .model_id,
+    ).toBe(MODEL_ID);
+
+    // ⛔ O inverso de M7: o `model_id` NÃO ganha a tolerância de float do eco.
+    // Um id fracionário não é id nenhum, e a linha não é reconciliável.
+    for (const ruim of [MODEL_ID + 0.5, '2000458802.5', null]) {
+      expect(
+        shopeeUpdatePriceSchema.safeParse({
+          error: '',
+          response: { success_list: [{ model_id: ruim, original_price: 10 }] },
+        }).success,
+        `model_id ${JSON.stringify(ruim)} não pode parsear`,
+      ).toBe(false);
+    }
+  });
+
+  it('8 — uma chave desconhecida SOBREVIVE no envelope, no payload e em cada linha (passthrough)', () => {
+    const lido = shopeeUpdatePriceSchema.parse({
+      error: '',
+      campo_do_envelope: 'e',
+      response: {
+        campo_do_payload: 'p',
+        failure_list: [{ model_id: MODEL_ID, failed_reason: 'fail', campo_da_falha: 'f' }],
+        success_list: [{ model_id: 0, original_price: 11.11, currency: 'BRL' }],
+      },
+    });
+    expect((lido as Record<string, unknown>).campo_do_envelope).toBe('e');
+    expect((lido.response as Record<string, unknown>).campo_do_payload).toBe('p');
+    expect((lido.response.failure_list[0] as Record<string, unknown>).campo_da_falha).toBe('f');
+    expect((lido.response.success_list[0] as Record<string, unknown>).currency).toBe('BRL');
+  });
+
+  it('9 — `SHOPEE_UPDATE_PRICE_MAX_MODELS` é 50 e é declarado SEPARADAMENTE de `SHOPEE_UPDATE_STOCK_MAX_MODELS`', () => {
+    // ⚠️ Os dois valem 50 HOJE e vêm de páginas DIFERENTES: um limita uma
+    // escrita de preço, o outro uma de estoque. Uma constante só — ou uma
+    // definida em termos da outra — faria a próxima medição mexer nas duas.
+    expect(SHOPEE_UPDATE_PRICE_MAX_MODELS).toBe(50);
+    expect(SHOPEE_UPDATE_PRICE_MAX_MODELS).toBe(SHOPEE_UPDATE_STOCK_MAX_MODELS);
+    const codigo = semComentarios(FONTE_TYPES);
+    expect(codigo).toContain('export const SHOPEE_UPDATE_PRICE_MAX_MODELS = 50;');
+    // ⛔ QUASE-IGUAL: nenhuma das duas é definida em termos da outra.
+    expect(codigo).not.toContain('SHOPEE_UPDATE_PRICE_MAX_MODELS = SHOPEE_UPDATE_STOCK_MAX_MODELS');
+    expect(codigo).not.toContain('SHOPEE_UPDATE_STOCK_MAX_MODELS = SHOPEE_UPDATE_PRICE_MAX_MODELS');
+    // E o docblock diz que a igualdade de hoje é coincidência, citando a página.
+    expect(SECAO_PRECO_13).toContain('SHOPEE_UPDATE_STOCK_MAX_MODELS');
+    expect(SECAO_PRECO_13).toContain('Length should be between 1 to 50.');
+  });
+
+  it('10 — o bloco mora entre o estoque e o `get_item_promotion`, e o eco é `wireNumber()` na FONTE', () => {
+    // ÂNCORA: o recorte foi achado e tem corpo.
+    expect(INICIO_PRECO_13).toBeGreaterThan(-1);
+    expect(SECAO_PRECO_13.length).toBeGreaterThan(1000);
+    expect(INICIO_PRECO_13).toBeGreaterThan(
+      FONTE_TYPES.indexOf('export type ShopeeUpdateStockResponse'),
+    );
+    expect(INICIO_PRECO_13).toBeLessThan(
+      FONTE_TYPES.indexOf('export const shopeeItemPromotionPayloadSchema'),
+    );
+
+    const codigo = semComentarios(SECAO_PRECO_13);
+    expect(codigo).toContain('original_price: wireNumber().nullable().default(null)');
+    // ⛔ QUASE-IGUAL (M7 na fonte): o leitor inteiro no eco é o defeito.
+    expect(codigo).not.toContain('original_price: wireInt()');
+    expect(codigo.split('\n').filter((linha) => /z\.number\(\)/.test(linha))).toEqual([]);
+    // As citações que impedem o docblock de virar palpite.
+    expect(SECAO_PRECO_13).toContain('api v2.product.update_price');
+    expect(SECAO_PRECO_13).toContain('FREE TEXT');
+    expect(SECAO_PRECO_13).toContain('UNVERIFIED');
   });
 });
