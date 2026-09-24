@@ -17,7 +17,9 @@ import {
   MODALIDADE_FRETE,
   IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
+  camposProdutoFiscal,
   ehMarketplace,
+  gtinFiscal,
   type Filial,
   type FreteDoPedido,
   type Integracao,
@@ -288,19 +290,23 @@ export function buildGenItems(
   const vDescByIndex = apportionDescontos(items, bundle);
   return items.map((it, i) => {
     const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
-    const cfop = it.imposto[cfopField] ?? bundle.operacao[cfopField];
+    // The per-field operação fallback is SHARED (`@delfrance/schemas`, #745): a
+    // marketplace registering this produto's fiscal data must say what this nota
+    // says. The throws stay here — absence is the nota's decision to make.
+    const campos = camposProdutoFiscal(it.imposto, bundle.operacao);
+    const cfop = campos[cfopField];
     if (!cfop) {
       throw new NFeOrchestratorError(
         `${where}: no ${cfopField} — neither imposto.${cfopField} nor operacao.${cfopField} is set`,
       );
     }
-    const NCM = it.imposto.NCM ?? bundle.operacao.NCM;
+    const NCM = campos.NCM;
     if (!NCM) {
       throw new NFeOrchestratorError(
         `${where}: no NCM — neither imposto.NCM nor operacao.NCM is set`,
       );
     }
-    const unidade = it.imposto.unidade ?? bundle.operacao.unidade;
+    const unidade = campos.unidade;
     if (!unidade) {
       throw new NFeOrchestratorError(
         `${where}: no unidade — neither imposto.unidade nor operacao.unidade is set`,
@@ -308,10 +314,10 @@ export function buildGenItems(
     }
     // CEST is optional — required only when the product is in the CEST
     // list. Item wins, operação as fallback, omit when neither set.
-    const CEST = it.imposto.CEST ?? bundle.operacao.CEST;
+    const CEST = campos.CEST;
 
     const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
-    const cEAN = it.gtin && /^\d{8,14}$/.test(it.gtin) ? it.gtin : 'SEM GTIN';
+    const cEAN = gtinFiscal(it.gtin) ?? 'SEM GTIN';
     const vDesc = vDescByIndex[i]!;
     if (vDesc > it.vProdBruto) {
       throw new NFeOrchestratorError(

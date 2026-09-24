@@ -1034,6 +1034,15 @@ export {
 } from './imposto/tribute';
 
 export {
+  // The nota's per-field operação fallback + cEAN rule, shared with the
+  // marketplaces' fiscal registration (#745).
+  camposProdutoFiscal,
+  gtinFiscal,
+  type CamposProdutoFiscal,
+  type OperacaoCamposFiscais,
+} from './imposto/camposProdutoFiscal';
+
+export {
   // RTC cClassTrib/CST seed + validator (#333)
   CCLASSTRIB_SEED,
   CST_IBSCBS_CODES,
