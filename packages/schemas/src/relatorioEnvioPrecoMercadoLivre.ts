@@ -139,7 +139,7 @@ export const relatorioEnvioPrecoSchema = z
     linhas: z.record(z.string(), linhaRelatorioEnvioPrecoSchema).default({}),
     timestamp: millisSinceEpoch('Gerado em').nullable().default(null),
     /**
-     * TTL expiry (`./shared/ttl`) — one day after its run's, re-stamped on every
+     * TTL expiry (`./shared/ttl`) — a week after its run's, re-stamped on every
      * shard write. ⚠️ The `relatorios` group is SHARED with
      * `balanco/{id}/relatorios`, whose writer never stamps it: the policy is safe
      * there only as long as that stays true.

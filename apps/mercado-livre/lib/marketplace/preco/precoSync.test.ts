@@ -2073,7 +2073,7 @@ describe('cancelPriceSyncJob', () => {
 });
 
 // Firestore TTL policy on `enviosPrecoMercadoLivre` and `relatorios`: a run
-// expires 180 days after it starts, its shards one day later. Every stamp is
+// expires 180 days after it starts, its shards a week later. Every stamp is
 // keyed on the run's `startedAt`, never on a clock read, so the checkpoint
 // writer, the terminal row and a retry all agree on the same instant.
 describe('TTL expiry (expiraEm)', () => {
@@ -2094,7 +2094,7 @@ describe('TTL expiry (expiraEm)', () => {
     expect((job.expiraEm as Date).getTime()).toBe(job.startedAt + 180 * DIA_MS);
   });
 
-  it('stamps every checkpoint shard one day after its run, from startedAt — not the clock', async () => {
+  it('stamps every checkpoint shard a week after its run, from startedAt — not the clock', async () => {
     const db = new FakeDb();
     // startedAt is deliberately far from CLOCK_NOW: a shard keyed on the
     // dispatch clock instead of the run would land on a different instant.
@@ -2113,7 +2113,7 @@ describe('TTL expiry (expiraEm)', () => {
     expect(shards.length).toBeGreaterThan(0);
     for (const shard of shards) {
       expect(expiraEmDe(shard)).toBeInstanceOf(Date);
-      expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 181 * DIA_MS);
+      expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
     }
   });
 
@@ -2125,7 +2125,7 @@ describe('TTL expiry (expiraEm)', () => {
     await cancelPriceSyncJob(asDb(db), { jobId: 'ttl2', integracaoId: CONTA });
 
     const [shard] = [...db.docs(relPath('ttl2')).values()];
-    expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 181 * DIA_MS);
+    expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
   });
 
   it('never gives a shard an expiry before its run’s', () => {

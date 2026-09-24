@@ -269,9 +269,10 @@ export const envioPrecoMercadoLivreSchema = z.object({
   erro: z.string().nullable().default(null),
   /**
    * TTL expiry (`./shared/ttl`): stamped once, at creation, 180 days after the
-   * run starts. Its report shards expire a day LATER, so the history list can
-   * never offer a run whose CSV is already gone. Absent on runs created before
-   * the policy — those are kept.
+   * run starts; its report shards a week later. The TTL deletes the two in no
+   * guaranteed order, so it is the history route — hiding a run once this has
+   * passed — that keeps a truncated CSV off the list, not the margin. Absent on
+   * runs created before the policy: those are kept.
    */
   expiraEm: ttlExpiry().nullable().optional(),
 });

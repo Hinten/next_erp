@@ -165,13 +165,22 @@ export function expiraEmDoEnvio(startedAtMs: number): Date {
 }
 
 /**
- * TTL expiry of a run's report shards: one day AFTER the run. The two are
- * deleted independently and in no guaranteed order, so a shard that went first
- * would leave the history list offering a run whose CSV comes back truncated.
- * With the run always first, the worst case is a day of unreachable shards.
+ * How long a run's report shards outlive the run. Not what keeps a truncated CSV
+ * off the history list — the TTL deletes the two independently, in no order and
+ * "typically within 24 hours" (Firestore promises no upper bound), so no margin
+ * can GUARANTEE the run goes first. The history route does that, by hiding a run
+ * once its `expiraEm` passes (`ttlExpirado`). The margin only covers a download
+ * started from a list loaded just before that instant; unreachable shards cost
+ * next to nothing, so it is generous.
  */
+export const MARGEM_RELATORIO_ENVIO_PRECO_DIAS = 7;
+
+/** TTL expiry of a run's report shards: {@link MARGEM_RELATORIO_ENVIO_PRECO_DIAS} after the run's. */
 export function expiraEmDoRelatorio(startedAtMs: number): Date {
-  return expiraEmApos(startedAtMs, RETENCAO_ENVIO_PRECO_ML_DIAS + 1);
+  return expiraEmApos(
+    startedAtMs,
+    RETENCAO_ENVIO_PRECO_ML_DIAS + MARGEM_RELATORIO_ENVIO_PRECO_DIAS,
+  );
 }
 
 /** `startPriceSyncJob` guard — this integração already has a `running` job. */
