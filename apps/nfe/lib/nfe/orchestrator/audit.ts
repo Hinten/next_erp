@@ -28,6 +28,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { EmitResult } from './bundle';
+import { NFeOrchestratorError } from './errors';
 
 /** A filial's `enviNfe` audit-log subcollection, via the validated handle. */
 export function enviNfeCollection(fs: Firestore, filialId: string) {
@@ -327,15 +328,30 @@ export async function persistPatch(
   await nfeRef.set(buildPersistData(patch, extras), { merge: true });
 }
 
+/**
+ * Ties a `persistPatchUnlessFinal` write to ONE lote (#512): the reply being
+ * persisted answers the lote whose `idLote` the doc was stamped with before
+ * the send, and is stale for a doc a newer lote has re-stamped since.
+ */
+export interface PersistGuard {
+  /** The lote this write answers, as stamped on the nfev4 doc (`String(idLote)`). */
+  readonly expectedIdLote: string;
+}
+
 /** Outcome of `persistPatchUnlessFinal` — either written, or skipped with the doc's live truth. */
 export type GuardedPersistResult =
   | { readonly written: true }
   | {
       readonly written: false;
-      /** The doc's CURRENT terminal estado that blocked the write. */
+      /**
+       * The doc's CURRENT estado that blocked the write — final, or re-stamped
+       * by a newer lote (only under a {@link PersistGuard}).
+       */
       readonly estadoAtual: EstadoNFe;
       readonly cStatAtual: string | null;
       readonly xMotivoAtual: string | null;
+      /** The doc's CURRENT `nRec` — a newer lote's receipt when one re-stamped it. */
+      readonly nRecAtual: string | null;
     };
 
 /**
@@ -350,6 +366,15 @@ export type GuardedPersistResult =
  * the doc's real state. Otherwise it writes exactly what `persistPatch` writes
  * (shared `buildPersistData` mapping).
  *
+ * With a `guard` — #512's `persistLoteSemRecibo` (emitir.ts), writing a lote
+ * reply that carried no `infRec` to every member — the write is ALSO skipped
+ * when the stored `idLote` differs from `guard.expectedIdLote` (a stored
+ * `null` included): a newer lote re-stamped the doc, so this reply is stale
+ * for it. Under a guard a MISSING doc throws `NFeOrchestratorError` and
+ * nothing is written — every member was anchored before the send, so a merge
+ * would only mint a partial doc; without a guard it is written as before.
+ * Every check is decided on the `tx.get` snapshot, never on a pre-read.
+ *
  * `reconcileByRecibo` / `runProcessarPendentes` deliberately stay on the plain
  * `persistPatch`: their in-flight queries already filter to non-final docs and
  * their write cadence is task/sweep-paced, so the plain merge is enough there.
@@ -359,17 +384,32 @@ export async function persistPatchUnlessFinal(
   nfeRef: FirebaseFirestore.DocumentReference,
   patch: NFeStatePatch,
   extras?: Record<string, unknown>,
+  guard?: PersistGuard,
 ): Promise<GuardedPersistResult> {
   return await fs.runTransaction(async (tx): Promise<GuardedPersistResult> => {
     const snap = await tx.get(nfeRef);
+    if (!snap.exists && guard != null) {
+      // Thrown inside the callback: the transaction aborts (a non-Firestore
+      // error is never retried) with no write.
+      throw new NFeOrchestratorError(
+        `nfev4 ${nfeRef.path} ausente ao gravar o retorno do lote ${guard.expectedIdLote} — nada gravado`,
+      );
+    }
     if (snap.exists) {
       const current = nfev4Collection.parseRead(snap.data(), nfeRef.path);
-      if (isEstadoFinalNFe(current.estado) && current.estado !== patch.estado) {
+      const finalBlocks = isEstadoFinalNFe(current.estado) && current.estado !== patch.estado;
+      // `idLote` is stamped as `String(idLote)`; String() on both sides keeps a
+      // read-tolerated legacy number comparable.
+      const superseded =
+        guard != null &&
+        (current.idLote == null || String(current.idLote) !== String(guard.expectedIdLote));
+      if (finalBlocks || superseded) {
         return {
           written: false,
           estadoAtual: current.estado,
           cStatAtual: current.cStat ?? null,
           xMotivoAtual: current.xMotivo ?? null,
+          nRecAtual: current.nRec ?? null,
         };
       }
     }
