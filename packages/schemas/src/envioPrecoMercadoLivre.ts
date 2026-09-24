@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { ttlExpiry } from './shared/ttl';
 
 /**
  * `enviosPrecoMercadoLivre` (TOP-LEVEL) — the checkpoint/progress doc for the
@@ -266,5 +267,12 @@ export const envioPrecoMercadoLivreSchema = z.object({
   finishedAt: millisSinceEpoch().nullable().default(null),
   /** Set only on `status: 'failed'` — the error that exhausted the retries. */
   erro: z.string().nullable().default(null),
+  /**
+   * TTL expiry (`./shared/ttl`): stamped once, at creation, 180 days after the
+   * run starts. Its report shards expire a day LATER, so the history list can
+   * never offer a run whose CSV is already gone. Absent on runs created before
+   * the policy — those are kept.
+   */
+  expiraEm: ttlExpiry().nullable().optional(),
 });
 export type EnvioPrecoMercadoLivre = z.infer<typeof envioPrecoMercadoLivreSchema>;

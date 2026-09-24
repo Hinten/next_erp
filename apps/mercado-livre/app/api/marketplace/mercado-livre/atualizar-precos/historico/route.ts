@@ -3,8 +3,9 @@
  * — the conta's PAST price-sync runs, newest first. Requires
  * `PERM.integracao.read`.
  *
- * Why it exists: the job docs were already durable and are never deleted (no TTL
- * policy, no purge sweep), but nothing could reach a FINISHED one. `…/status` is
+ * Why it exists: the job docs were already durable — kept 180 days by a Firestore
+ * TTL policy (`expiraEmDoEnvio` in `precoSync.ts`; their report shards a day
+ * longer) — but nothing could reach a FINISHED one. `…/status` is
  * keyed by an explicit `jobId` that only ever lived in React state, and
  * `…/jobs-em-andamento` is deliberately RUNNING-only — its docblock spells out
  * the trade it accepted ("a job that FINISHED while the page was closed is not
