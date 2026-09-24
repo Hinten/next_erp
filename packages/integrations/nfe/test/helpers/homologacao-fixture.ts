@@ -134,10 +134,12 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     uTrib: 'UN',
     qTrib: 1,
     vUnTrib: 1500,
-    impostoXml: buildImpostoXml(imposto, { vProd: 1500 }, { emitRtc }),
+    // qTrib matches the det's qCom/qTrib above: it is the per-unit PIS/COFINS
+    // qBCProd, so the default (null PIS/COFINS) fixture's XML is unchanged.
+    impostoXml: buildImpostoXml(imposto, { vProd: 1500, qTrib: 1 }, { emitRtc }),
   } as const;
 
-  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, { emitRtc });
+  const totals = aggregateTotals([{ item: { vProd: 1500, qTrib: 1 }, imposto }], {}, { emitRtc });
 
   return {
     ambiente: 'homologacao',

@@ -4,6 +4,9 @@
  * Public entry points for the NF-e orchestrator:
  *
  *   - `buildImpostoXml(imposto, item)`  per-item `<imposto>` XML
+ *   - `computePisCofinsItemValues(imposto, item)`
+ *                                       the item's vPIS / vCOFINS (the
+ *                                       values `buildImpostoXml` emits)
  *   - `aggregateTotals(items)`          ICMSTot aggregation
  *   - `buildTotalXml(totals)`           `<total>` XML
  *   - `buildTranspXml(opts?)`           `<transp>` XML
@@ -17,7 +20,7 @@
  * is Phase D; the dispatcher throws `NFeTributeError` if a non-SN CRT
  * arrives.
  */
-export { buildImpostoXml, NFeTributeError } from './imposto';
+export { buildImpostoXml, computePisCofinsItemValues, NFeTributeError } from './imposto';
 export {
   aggregateISSQN,
   aggregateRetTrib,

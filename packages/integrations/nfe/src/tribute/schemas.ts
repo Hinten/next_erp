@@ -84,5 +84,14 @@ export {
 export const tributeItemSchema = z.object({
   /** Pre-rounded item line total: `(precoDeVenda - desconto) × qCom`. */
   vProd: z.number().nonnegative(),
+  /**
+   * The det's `<qTrib>` — the item quantity. It is the `qBCProd` ("Quantidade
+   * Vendida", NT 2011/004) of the per-unit PIS/COFINS groups: PISQtde /
+   * COFINSQtde (CST 03) and the `(qBCProd + vAliqProd)` branch of PISOutr /
+   * COFINSOutr (CST 49–99). `nullish` because only a per-unit rate reads it —
+   * a caller that configures one without passing the quantity gets an
+   * `NFeTributeError` naming `qTrib`, never a silent `qBCProd` of 1.
+   */
+  qTrib: z.number().nonnegative().nullish(),
 });
 export type TributeItem = z.infer<typeof tributeItemSchema>;
