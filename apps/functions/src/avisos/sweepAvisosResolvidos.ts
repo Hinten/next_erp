@@ -25,7 +25,8 @@ import { getDb } from '../lib/admin';
  *     deletes this sweep already pays for, minus its scan.
  *   - Removing a policy's block from `firestore.indexes.json` does NOT remove the
  *     policy: without `--force` the CLI only warns (or asks), and the database
- *     keeps auto-deleting. Turn one off with an explicit `"ttl": false` first.
+ *     keeps auto-deleting. Turn one off with an explicit `"ttl": false` first
+ *     (verified on staging, #1639), and delete the entry only after that deploy.
  *
  * ## Why retention is not optional
  *

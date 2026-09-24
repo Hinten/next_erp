@@ -359,7 +359,9 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `@delfrance/schemas` (`ttl.policies.test.ts` pairs the two). Only stamped docs
   expire, so a row to keep simply gets no stamp. ⚠️ Never key a policy on an
   existing date field: legacy `chat/*/mensagem.createdAt` is a Timestamp, and a
-  policy there would wipe the imported chat history.
+  policy there would wipe the imported chat history. ⚠️ To turn one OFF, set
+  `"ttl": false`, deploy, and only THEN delete the entry: deleting the block alone
+  leaves the policy deleting in production (verified both ways on staging, #1639).
 - **New CRUD screen** (`TableView` + `ObjectView`) → the `schema-driven-crud`
   skill. **New page or form in `apps/web`** → `apps/web/CLAUDE.md`.
 - **New channel webhook or OAuth callback** → its **own app**,
