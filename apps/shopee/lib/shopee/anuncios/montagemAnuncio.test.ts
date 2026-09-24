@@ -1174,3 +1174,51 @@ describe('montarAnuncio — image_id_list', () => {
     expect(montado.criar.image.image_id_list).toEqual(['c', 'a', 'b']);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*    (13) o preço do item passa por precoDaTabela — passo 13 (#1521), M16     */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — o preço do item é lido por precoDaTabela', () => {
+  // O leitor da tabela é UM, compartilhado com o envio de preço do passo 13 e
+  // com o Mercado Livre: `roundReais` ao centavo e positividade DEPOIS do
+  // arredondamento. O passo 11 mandava o valor armazenado cru.
+  it('PAR: 10.567 na tabela normal sai 10.57 no original_price do add_item', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: { [TABELA_NORMAL]: { valor: 10.567 } } }) }),
+    );
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.original_price).toBe(10.57);
+  });
+
+  it('⚠️ NEAR-MISS: 10.5 já está no centavo e sai 10.5 — intacto, nunca 10.50 virando outra coisa', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: { [TABELA_NORMAL]: { valor: 10.5 } } }) }),
+    );
+    expect(montado.criar.original_price).toBe(10.5);
+  });
+
+  it('⚠️ 0.004 agora é sem-preco — a positividade é checada DEPOIS do arredondamento (antes ia ao fio como 0.004)', () => {
+    // Sem faixa de preço na categoria, nada mais recusaria: é o leitor que diz
+    // "não há preço".
+    const montado = montarAnuncio(
+      args({
+        produto: produto({ precos: { [TABELA_NORMAL]: { valor: 0.004 } } }),
+        limites: limites({ priceLimit: null }),
+      }),
+    );
+    expect(motivos(montado.problemas)).toContain('sem-preco');
+    expect(montado.criar.original_price).toBe(0);
+  });
+
+  it('⚠️ NEAR-MISS: 0.005 arredonda para 0.01, que É um preço — publica sem recusa', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: produto({ precos: { [TABELA_NORMAL]: { valor: 0.005 } } }),
+        limites: limites({ priceLimit: null }),
+      }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('sem-preco');
+    expect(montado.criar.original_price).toBe(0.01);
+  });
+});
