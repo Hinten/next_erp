@@ -3,8 +3,9 @@
  * — the conta's PAST price-sync runs, newest first. Requires
  * `PERM.integracao.read`.
  *
- * Why it exists: the job docs were already durable and are never deleted (no TTL
- * policy, no purge sweep), but nothing could reach a FINISHED one. `…/status` is
+ * Why it exists: the job docs were already durable — kept 180 days by a Firestore
+ * TTL policy (`expiraEmDoEnvio` in `precoSync.ts`; their report shards a week
+ * longer) — but nothing could reach a FINISHED one. `…/status` is
  * keyed by an explicit `jobId` that only ever lived in React state, and
  * `…/jobs-em-andamento` is deliberately RUNNING-only — its docblock spells out
  * the trade it accepted ("a job that FINISHED while the page was closed is not
@@ -25,6 +26,7 @@
  */
 import { NextResponse } from 'next/server';
 import { envioPrecoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import { ttlExpirado } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -64,6 +66,8 @@ export const CAMPOS_PROJETADOS = [
   'updatedAt',
   'finishedAt',
   'erro',
+  // Read, never returned: it decides whether the run is offered at all (below).
+  'expiraEm',
 ] as const;
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -105,11 +109,20 @@ export async function GET(req: Request): Promise<NextResponse> {
     .limit(limite)
     .get();
 
-  const envios = snap.docs.map((doc) => {
+  // A run past its TTL expiry is hidden even though it may still be readable:
+  // the TTL deletes the run and its report shards independently, in no order and
+  // with no upper bound on the lag, so an expired run can outlive its shards and
+  // would be offered with a truncated CSV. Hiding it on `expiraEm` is what makes
+  // that impossible; the shards' extra week only covers a download started just
+  // before this instant. Filtered AFTER the limit, so an expiry at the tail can
+  // return fewer than `limite` runs — the oldest are the ones that expire.
+  const agora = Date.now();
+  const envios = snap.docs.flatMap((doc) => {
     const job = envioPrecoMercadoLivreCollection.parseRead(
       doc.data(),
       envioPrecoMercadoLivreCollection.docPath({}, doc.id),
     );
+    if (ttlExpirado(job.expiraEm, agora)) return [];
     return {
       jobId: doc.id,
       integracaoId: job.integracaoId,

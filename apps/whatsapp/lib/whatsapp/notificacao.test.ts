@@ -1632,6 +1632,11 @@ describe('manual replay of a superseded phone transition', () => {
     expect(db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.processada).toBe(
       true,
     );
+    // The same acknowledgement starts the retained copy's TTL clock (as a Date,
+    // which the SDK stores as the Timestamp the policy needs).
+    expect(
+      db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.expiraEm,
+    ).toBeInstanceOf(Date);
     expect(db.docs('whatsappVinculos').get(pendingId)?.estado).toBe('resolvido');
     expect(db.docs('clientes').get('cliente-1')).toEqual(beforeCliente);
     expect(db.docs('clientes').get('cliente-1')?.telefone).toBe(NEW_PRINCIPAL);
@@ -1659,6 +1664,10 @@ describe('manual replay of a superseded phone transition', () => {
     expect(db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.processada).toBe(
       false,
     );
+    // Not acknowledged ⇒ still the only copy: no TTL stamp.
+    expect(
+      db.docs('whatsappVinculos/' + pendingId + '/mensagens').get(SYSTEM_ID)?.expiraEm,
+    ).toBeUndefined();
     expect(db.docs('whatsappVinculos').get(pendingId)).toMatchObject({
       revision: manualReplay.revision + 1,
       estado: 'aguardando',

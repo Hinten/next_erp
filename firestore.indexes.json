@@ -2167,5 +2167,36 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "historicoDeModificacoes",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "enviosPrecoMercadoLivre",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "relatorios",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "mensagens",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "ttlProbe",
+      "fieldPath": "expiraEm",
+      "ttl": false,
+      "indexes": []
+    }
+  ]
 }

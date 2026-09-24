@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { microsSinceEpoch } from './datetime';
 import { outerRefSchema } from './outerRef';
+import { ttlExpiry } from './ttl';
+
+/**
+ * The `campos` entries a produto's price and cost history live under — what the
+ * "Histórico de preço/custo" button queries (`array-contains`) AND what the TTL
+ * retention keeps forever. One constant for both, so the retention can never
+ * expire a row the button still expects to find.
+ */
+export const CAMPO_HISTORICO_PRECO_CUSTO = { preco: 'precos', custo: 'custo' } as const;
 
 /**
  * ONE `historicoDeModificacoes` entry — the unified, field-level modification
@@ -67,6 +76,13 @@ export const historicoModificacaoSchema = z
      * inventing one would corrupt the trail this collection exists to be.
      */
     usuarioOuterRef: outerRefSchema.nullable().optional(),
+    /**
+     * TTL expiry (`./ttl`) — a real `Timestamp`, stamped by the trigger from the
+     * event time plus the root's retention. ABSENT on every row that must never
+     * expire: `delete` rows (#648 restores from them), produto rows touching
+     * {@link CAMPO_HISTORICO_PRECO_CUSTO}, and rows written before the policy.
+     */
+    expiraEm: ttlExpiry().nullable().optional(),
   })
   .passthrough();
 

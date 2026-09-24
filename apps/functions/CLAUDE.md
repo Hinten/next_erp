@@ -344,9 +344,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   `ultimaModificacao`, so omitting any of them means every stock-moving save
   leaves a second, "Sistema"-attributed phantom row (#972's failure, one trail
   later).
-  ⚠️ **TTL is not available on this collection** (#651): a Firestore TTL policy
-  needs a native `timestamp`-typed field, and `historicoModificacaoSchema.timestamp`
-  is an **int** (`microsSinceEpoch`). Retention needs a sweep, not a policy.
+  **Retention is a Firestore TTL policy** (#651) on a SEPARATE field, `expiraEm`
+  — a real `Timestamp` (`ttlExpiry()` in `@delfrance/schemas`), because the
+  policy ignores the int `timestamp`. `recordModification` stamps it from each
+  root's REQUIRED `retencao` (`historyRoots.ts`): produto 365 days, pedido six
+  years; `delete` rows and produto `precos`/`custo` rows get NO stamp and live
+  forever. The policy itself sits in `firestore.indexes.json` (`TTL_POLICIES`).
 - ⚠️ **The whole modification-history family uses
   `onDocumentWrittenWithAuthContext`**, including the three produto triggers,
   which were plain `onDocumentWritten` before. `resolveUsuarioOuterRef`

@@ -351,6 +351,15 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
   via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
   bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
+- **Data that should expire → a Firestore TTL policy**, a `fieldOverrides` entry
+  (`"ttl": true`) in `firestore.indexes.json` that deploys with the indexes
+  (verified on Enterprise, #1639). The field is always a NEW `expiraEm:
+  ttlExpiry()` stamped by the writer — a real `Timestamp`, because the policy
+  silently ignores our numeric epochs — plus a `TTL_POLICIES` row in
+  `@delfrance/schemas` (`ttl.policies.test.ts` pairs the two). Only stamped docs
+  expire, so a row to keep simply gets no stamp. ⚠️ Never key a policy on an
+  existing date field: legacy `chat/*/mensagem.createdAt` is a Timestamp, and a
+  policy there would wipe the imported chat history.
 - **New CRUD screen** (`TableView` + `ObjectView`) → the `schema-driven-crud`
   skill. **New page or form in `apps/web`** → `apps/web/CLAUDE.md`.
 - **New channel webhook or OAuth callback** → its **own app**,
