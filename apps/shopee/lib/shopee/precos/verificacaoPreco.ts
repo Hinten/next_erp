@@ -25,10 +25,12 @@
  * the echo side, which would find nothing and report a landed write as
  * unanswered. The reverse holds too: on an item WITH models a `null` echo
  * answers no model at all — it is never guessed onto the one sent model it
- * could plausibly be, nor onto the first. A numbered echo on a no-model send
- * (the price page's own sample prints the zero; the wire never did) answers
- * nothing either: the rule is the measured absence, and a flip would be the
- * ONE branch of {@link modeloDoEco}.
+ * could plausibly be, nor onto the first. A numbered `0` echo on a no-model
+ * send (the price page's own sample prints it; the wire never did) is ALSO
+ * accepted as that entry's echo (ruling D-10): a no-model send carries one
+ * entry, so the zero can only be its answer, and calling a landed write
+ * unanswered is the worse error. Both rules live in the ONE branch of
+ * {@link modeloDoEco}.
  *
  * Whether a send was a no-model one is read off `enviados` itself: exactly one
  * entry, at `SHOPEE_PRECO_MODEL_ID_SEM_MODELO`. That is sound because the

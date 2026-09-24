@@ -75,7 +75,7 @@ describe('shopeeExcludedFields', () => {
     }
   });
 
-  it('hides tabelasAtacado until step 13 owns a real editor for it', () => {
+  it('hides tabelasAtacado until the step that sends wholesale owns a real editor for it', () => {
     // `ObjectView` would render it as raw JSON in a text input — an editor that
     // can only corrupt the value.
     expect(shopeeExcludedFields).toContain('tabelasAtacado');

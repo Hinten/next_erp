@@ -31,6 +31,12 @@
  *    already treat a blank value as unset, so the rule below would buy it
  *    nothing; that file's own docblock states the split and is PATH-BOUND to
  *    `tools/deploy-env/preflight.mjs`.
+ *  - `lib/shopee/precos/constantesPreco.ts` — the step-13 price knobs
+ *    (`SHOPEE_PRICE_*`), the app's **third `process.env` reader family**, and
+ *    the only file under `precos/` that reads the environment at all. Same
+ *    `envInt` family and the same reason the rule below would buy it nothing;
+ *    unlike the stock file it is NOT path-bound to the preflight, because no
+ *    price queue rate is env-driven.
  *
  * The nested `functions/` codebase reads more of it still (`options.ts`,
  * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a

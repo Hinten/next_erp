@@ -419,7 +419,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **eight** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **nine** dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -429,8 +429,9 @@ a page of the 3-day queue irreversibly.
   across every active conta — or one, with `--integracao` — and
   `importar-anuncio.ts` (step 9) imports ONE named anúncio through the real
   step-9 path, `publicar-anuncio.ts` (step 11) publishes ONE named produto as a
-  listing, and `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
-  produtos; the last seven **dry-run by default**, `--live` to write. Their
+  listing, `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
+  produtos and `enviar-precos.ts` (step 13) their prices; the last eight
+  **dry-run by default**, `--live` to write. Their
   pure halves
   (arg parsing, the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
@@ -1387,6 +1388,9 @@ The first SENDER of a quantity. Reasoning: `estoque/README.md`.
    env, never a branch in code. ⚠️ `SHOPEE_SANDBOX` is therefore **opt-in**
    (exactly `'1'`), the OPPOSITE polarity of `MELHOR_ENVIO_SANDBOX`: an unset
    value on a deployed backend must mean production.
+   ⚠️ ONE exception: step 13's price region gate lets the SG sandbox shop
+   rehearse a price push, keyed on the RESOLVED sandbox host, so a
+   production host can never reach it.
 
 ## Env added by step 3
 
@@ -1567,7 +1571,7 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other seven CLIs are **dry-run by default** and, like `oauth:url`, are
+The other eight CLIs are **dry-run by default** and, like `oauth:url`, are
 **never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
 output and the runbook for each live in `scripts/README.md`:
 
@@ -1579,6 +1583,7 @@ pnpm --filter @delfrance/shopee-app varrer:reservas
 pnpm --filter @delfrance/shopee-app importar:anuncio --integracao <integracaoId> --item <item_id>
 pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao <integracaoId> --produto <produtoId>
 pnpm --filter @delfrance/shopee-app enviar:estoque --integracao <integracaoId> --produto <produtoId>
+pnpm --filter @delfrance/shopee-app enviar:precos --integracao <integracaoId> --produto <produtoId>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1591,8 +1596,9 @@ across **every** active conta by default, `--integracao <id>` to scope it to one
 the fifth (step 9) imports ONE named anúncio through the real step-9 path —
 the dry run prints the PLAN, `--live` writes it; the sixth (step 11) plans the
 publication of ONE produto; and the seventh (step 12) plans the stock push for
-up to 50 named produtos, `--produto` repeated, one flag per anchor.
-All seven still CALL Shopee in dry-run — what they do not do is write, with ONE
+up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
+(step 13) does the same for prices (`--baixar-preco` allows a decrease).
+All eight still CALL Shopee in dry-run — what they do not do is write, with ONE
 documented exception: `publicar:anuncio` UPLOADS the pictures in both modes,
 because `montarAnuncio` needs real `image_id`s to build a body at all.
 `enviar:estoque`'s dry run calls `get_item_promotion` and nothing else.
