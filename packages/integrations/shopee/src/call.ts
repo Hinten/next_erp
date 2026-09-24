@@ -25,9 +25,10 @@
  *
  * ⚠️ A THIRD per-operation flag sits beside those two and is NOT a third
  * exception: {@link ShopeeCallParams.payloadNoErro} leaves the verdict alone and
- * changes only what the thrown error CARRIES. On `update_stock` the failure code
- * and its per-model `failure_list` arrive in the same body, so the flag attaches
- * the parsed payload to a `ShopeeApiPartialError` — still a failure, with the
+ * changes only what the thrown error CARRIES. On `update_stock` (documented) and
+ * `update_price` (measured on the sandbox, step 13) the failure code and its
+ * per-model `failure_list` arrive in the same body, so the flag attaches the
+ * parsed payload to a `ShopeeApiPartialError` — still a failure, with the
  * evidence still attached.
  *
  * ## Why the body is parsed TWICE
@@ -230,6 +231,11 @@ interface ShopeeCallBase<S extends z.ZodType> {
    * code/message/requestId/warning, so without this flag the per-model
    * attribution is thrown away at the throw site and the whole item fails as
    * one lump. That is the legacy Flutter defect verbatim.
+   *
+   * ⚠️ And for `update_price`, on MEASUREMENT rather than documentation: its
+   * page has no such code, yet step 13's sandbox probe (2026-09-24) received
+   * `product.error_update_price_fail` together with a populated `failure_list`.
+   * Two call sites, then — each one measured or documented, never inferred.
    *
    * ⚠️ The THIRD per-operation tolerance, and the only one that does not touch
    * the VERDICT. Deliberately NOT {@link emptyErrorAliases} (which widens which

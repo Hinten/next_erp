@@ -3591,15 +3591,17 @@ export type ShopeeUploadImageResponse = z.infer<typeof shopeeUploadImageSchema>;
 
 /**
  * `update_stock`'s payload — the FOURTH partial-failure encoding in the Product
- * module, and the only one whose failure and its detail can arrive TOGETHER.
+ * module, and the first whose failure and its detail can arrive TOGETHER (step
+ * 13's probe found {@link shopeeUpdatePricePayloadSchema} doing the same).
  *
  * ⚠️ `error` and the lists COEXIST here. The page's own error list carries
  * `error_busi_update_stock_failed` — "Update stock failed, please check
  * failure_list for detailed reason" — so the envelope says the call failed while
  * `response.failure_list` says WHICH models did. The transport throws on any
  * non-empty `error`, so the body would ordinarily be discarded before anyone
- * could read that attribution; `call.ts` keeps it for this operation alone and
- * the sender narrows on the subclass that carries it. NOTHING here tolerates the
+ * could read that attribution; `call.ts` keeps it for this operation (and, since
+ * step 13, for `update_price`) and the sender narrows on the subclass that
+ * carries it. NOTHING here tolerates the
  * error: this schema parses a failing body exactly as it parses a succeeding
  * one, and judging success stays the transport's job.
  *
@@ -3676,14 +3678,18 @@ export const SHOPEE_UPDATE_PRICE_MAX_MODELS = 50;
  * `update_price`'s payload (`api v2.product.update_price`) — the per-model
  * result of setting the shelf price of ONE item.
  *
- * ⚠️ The documented partial failure is a SUCCESS envelope: the page's response
- * sample carries `error: ""` with BOTH lists populated, and — unlike
- * {@link shopeeUpdateStockPayloadSchema} — this page's error list has no "check
- * failure_list" code, so nothing documents a non-empty `error` arriving WITH the
- * lists. Step 12's probe P9 measured the stock twin answering a mixed batch that
- * way (HTTP 200, `error: ''`, both lists); for price the same shape is
- * UNVERIFIED until step 13's probe P9/P10 runs it. Whoever writes the result
- * back reads BOTH lists, never the absence of a throw.
+ * ⚠️ A partial failure arrives in TWO shapes, both MEASURED on the SG sandbox
+ * (step 13's probe, 2026-09-24). The documented one is a SUCCESS envelope: the
+ * page's response sample carries `error: ""` with BOTH lists populated, and P9
+ * (one valid model + one bogus) answered exactly that — HTTP 200, `error: ""`,
+ * one row in each list. The UNDOCUMENTED one is a FAILURE envelope carrying the
+ * lists: a bogus `model_id` on a no-model item (P4c-bogus) answered
+ * `product.error_update_price_fail` AND a populated `failure_list` in the same
+ * body — the page has no "check failure_list" code, and the wire sent the
+ * coexistence anyway. So `call.ts` keeps this body on the throw, as it does for
+ * {@link shopeeUpdateStockPayloadSchema}, and this schema parses a failing body
+ * exactly as it parses a succeeding one. Whoever writes the result back reads
+ * BOTH lists, never the absence of a throw.
  *
  * ⚠️ Both arrays `.default([])` rather than `.nullable()`, for
  * {@link shopeeUpdateStockPayloadSchema}'s reason: an absent `failure_list` means
@@ -3698,14 +3704,27 @@ export const SHOPEE_UPDATE_PRICE_MAX_MODELS = 50;
  * units — two decimals in BR and in SG, the page verbatim — read by
  * `wireNumber()`, never `wireInt()`: a quoted `"12.5"` is a price, and an integer
  * reader would fail the whole page on the first centavo. Nullable, because a
- * confirmation without the number is a documented success. Whether the echo is
- * the REQUEST or the STORED value is UNVERIFIED — the probe settles it, and
+ * confirmation without the number is a documented success. On every write the
+ * probe saw accepted, echo == request == read-back, so whether the echo is the
+ * REQUEST or the STORED value is still UNVERIFIED — the two never differed — and
  * nothing here assumes either.
  *
- * ⚠️ `model_id` is `0` for a no-model item — the page's own echo keys that row
- * as `0` — so it is read as an integer with no positivity check. NO per-element
- * `.catch(null)`: a row with no `model_id` is unreconcilable (the
- * {@link shopeeUnlistItemPayloadSchema} argument).
+ * ⚠️ `model_id` is read as an integer with no positivity check, and the two
+ * lists DISAGREE about its presence — measured, not documented:
+ * - `failure_list[].model_id` is REQUIRED. P4c-bogus measured it a number on
+ *   the refused row, and a refusal that cannot be attributed is unreconcilable
+ *   (the {@link shopeeUnlistItemPayloadSchema} argument).
+ * - `success_list[].model_id` is `.nullable().default(null)`. On a NO-model item
+ *   the success entry carries ONLY `original_price` — no `model_id` key at all,
+ *   whether the request sent `model_id: 0` or omitted it (probe P4/P4c). The
+ *   page's own sample keys that row as `0`, which is NOT what the wire sends:
+ *   under a required `model_id` the shipped op threw `ShopeeSchemaError` on a
+ *   write that had LANDED. A has-model echo keeps its integer, a `0` stays `0`,
+ *   and a non-numeric id is still refused — only ABSENCE reads as `null`, and
+ *   the app matches a no-model item's echo by that absence, never by `=== 0`.
+ *
+ * NO per-element `.catch(null)` on either list: a malformed row is not an
+ * absent one, and folding it would hide a shape change behind a `null`.
  */
 export const shopeeUpdatePricePayloadSchema = z
   .object({
@@ -3713,6 +3732,7 @@ export const shopeeUpdatePricePayloadSchema = z
       .array(
         z
           .object({
+            /** REQUIRED — measured a number on the refused row (probe P4c-bogus). */
             model_id: wireInt(),
             /** FREE TEXT — classified by the app, stored verbatim. */
             failed_reason: z.string().nullable().default(null),
@@ -3724,7 +3744,8 @@ export const shopeeUpdatePricePayloadSchema = z
       .array(
         z
           .object({
-            model_id: wireInt(),
+            /** ABSENT on a no-model item's echo (probe P4/P4c) — `null`, never `0`. */
+            model_id: wireInt().nullable().default(null),
             /** The echo — a FLOAT in major units; request vs stored is UNVERIFIED. */
             original_price: wireNumber().nullable().default(null),
           })

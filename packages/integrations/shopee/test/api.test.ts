@@ -70,6 +70,7 @@ import {
   ShopeeConfigError,
   ShopeeHttpError,
   ShopeeRateLimitError,
+  ShopeeReauthRequiredError,
   ShopeeSchemaError,
 } from '../src/errors';
 import { resolveShopeeHosts } from '../src/hosts';
@@ -95,6 +96,7 @@ import {
   SHOPEE_UPLOAD_IMAGE_SCENE,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
   SHOPEE_WAREHOUSE_TYPE,
+  shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
 } from '../src/types';
 
@@ -4556,8 +4558,10 @@ describe('update_stock — a ÚNICA escrita do passo 12', () => {
     const bloco = FONTE_API.slice(inicio, fim);
     expect(bloco).toContain('payloadNoErro: true');
     expect(bloco).not.toContain(tolerancia);
-    // E a flag NOVA também é de uma operação só.
-    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(1);
+    // E a flag NOVA mora em exatamente DUAS operações: esta e `updatePrice`, onde
+    // a sonda do passo 13 MEDIU o erro chegando junto com o `failure_list`
+    // (T-P6/T-P17 fixam o outro call site).
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
   });
 });
 
@@ -4881,12 +4885,14 @@ const UPDATE_PRICE_PARCIAL_BODY = {
 
 /**
  * Um `error` não vazio JUNTO com as listas — o que ESTA página não documenta (não
- * há nela um código "check failure_list"). Se um dia chegar, é falha da chamada
- * INTEIRA, da classe base.
+ * há nela um código "check failure_list") e o que a sonda do passo 13 MEDIU no
+ * sandbox SG (P4c-bogus): `product.error_update_price_fail`, com o prefixo de
+ * módulo, e um `failure_list` preenchido cujo `model_id` é um NÚMERO. Os ids são
+ * os de fixture; o texto do motivo é o da amostra da página.
  */
 const UPDATE_PRICE_ERRO_COM_LISTAS_BODY = {
   request_id: 'req-update-price-erro',
-  error: 'error_update_price_fail',
+  error: 'product.error_update_price_fail',
   message: 'Update price failed, please try later.',
   response: {
     failure_list: [{ model_id: MODEL_ID, failed_reason: 'fail' }],
@@ -5061,11 +5067,12 @@ describe('update_price (passo 13)', () => {
     expect(leituras).toStrictEqual([null, null, 'model ID not exist in sku']);
   });
 
-  it('T-P6 — um `error` não vazio COM as listas é ShopeeApiError da classe BASE, NUNCA ShopeeApiPartialError', async () => {
-    // ⚠️ O par do teste 98. Lá a página do ESTOQUE documenta "check
-    // failure_list" e a flag do transporte carrega o payload no throw; AQUI a
-    // página não documenta código nenhum assim, então um `error` não vazio é
-    // falha da chamada INTEIRA — mesmo que o corpo traga listas.
+  it('T-P6 — um `error` não vazio COM as listas (sonda P4c-bogus) é ShopeeApiPartialError e CARREGA as listas; NEAR-MISS: a falha SECA e a de `response` ilegível saem da classe BASE', async () => {
+    // ⚠️ O par do teste 98, INVERTIDO pela sonda do passo 13 (B-2). A página do
+    // PREÇO não documenta um código "check failure_list" — por isso a operação
+    // saiu SEM a flag —, mas o sandbox respondeu `product.error_update_price_fail`
+    // JUNTO com um `failure_list` preenchido. Sem a flag, a atribuição por modelo
+    // morria no throw e o item inteiro falhava como um bloco só.
     const comListas = vi.fn<typeof globalThis.fetch>(async () =>
       jsonResponse(UPDATE_PRICE_ERRO_COM_LISTAS_BODY),
     );
@@ -5075,21 +5082,58 @@ describe('update_price (passo 13)', () => {
         price_list: precos(1),
       }),
     );
+    expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    // Continua uma FALHA da família de sempre — a flag não muda veredicto nenhum.
     expect(erro).toBeInstanceOf(ShopeeApiError);
-    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
     expect(erro).not.toBeInstanceOf(ShopeeRateLimitError);
-    expect((erro as ShopeeApiError).code).toBe('error_update_price_fail');
+    // O código VERBATIM, com o prefixo; fora de `KIND_BY_CODE` ⇒ `other` (o app
+    // o classifica — B-3).
+    expect((erro as ShopeeApiError).code).toBe('product.error_update_price_fail');
+    expect((erro as ShopeeApiError).kind).toBe(SHOPEE_ERROR_KIND.other);
+    expect((erro as ShopeeApiError).requestId).toBe('req-update-price-erro');
 
-    // PAR: a falha SECA (sem `response`) sai da MESMA classe.
+    // A carga sobrevive ao throw, e é RE-PARSEADA, nunca convertida por asserção.
+    const carga = shopeeUpdatePriceSchema.parse((erro as ShopeeApiPartialError).parsed);
+    expect(carga.error).toBe('product.error_update_price_fail');
+    expect(carga.response.failure_list).toStrictEqual([
+      { model_id: MODEL_ID, failed_reason: 'fail' },
+    ]);
+    expect(carga.response.success_list).toStrictEqual([]);
+
+    // NEAR-MISS 1: a falha SECA (sem `response`) sai da classe BASE, sem carga —
+    // a flag é CEGA ao código, e é o schema da operação que decide se há carga.
     const seca = vi.fn<typeof globalThis.fetch>(async () =>
-      jsonResponse(erroBody('error_item_not_found', 'Item_id is not found.')),
+      jsonResponse(
+        erroBody('product.error_update_price_fail', 'Update price failed, please try later.'),
+      ),
     );
     const erroSeco = await erroDe(
       createShopeeClient(shopConfig(seca)).updatePrice({ item_id: ITEM_ID, price_list: precos(1) }),
     );
     expect(erroSeco).toBeInstanceOf(ShopeeApiError);
     expect(erroSeco).not.toBeInstanceOf(ShopeeApiPartialError);
-    expect((erroSeco as ShopeeApiError).code).toBe('error_item_not_found');
+    expect(erroSeco).not.toHaveProperty('parsed');
+    expect((erroSeco as ShopeeApiError).code).toBe('product.error_update_price_fail');
+
+    // NEAR-MISS 2: um `response` que o schema RECUSA (a linha de falha sem
+    // `model_id`, que é EXIGIDO lá) também sai da classe BASE — nem um parcial
+    // sem carga, nem um ShopeeSchemaError que enterraria o código da recusa.
+    const ilegivel = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...UPDATE_PRICE_ERRO_COM_LISTAS_BODY,
+        response: { failure_list: [{ failed_reason: 'fail' }], success_list: [] },
+      }),
+    );
+    const erroIlegivel = await erroDe(
+      createShopeeClient(shopConfig(ilegivel)).updatePrice({
+        item_id: ITEM_ID,
+        price_list: precos(1),
+      }),
+    );
+    expect(erroIlegivel).toBeInstanceOf(ShopeeApiError);
+    expect(erroIlegivel).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect(erroIlegivel).not.toBeInstanceOf(ShopeeSchemaError);
+    expect((erroIlegivel as ShopeeApiError).code).toBe('product.error_update_price_fail');
   });
 
   it('T-P7 — PAR: `product.error_rate_limit` e `error_rate_limit` são throttle `burst`; NEAR-MISS: `product.error_limit` é `daily`', async () => {
@@ -5324,15 +5368,17 @@ describe('update_price (passo 13)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(aceitos.length);
   });
 
-  it('T-P17 — FONTE: o bloco `updatePrice: async` não carrega NENHUMA tolerância do transporte, e mora FORA do recorte do estoque', () => {
+  it('T-P17 — FONTE: o bloco `updatePrice: async` carrega `payloadNoErro: true` e NENHUMA tolerância de VEREDICTO, e mora FORA do recorte do estoque', () => {
     // ⚠️ Asserção de FONTE, o par do teste 100. As tolerâncias do transporte são
-    // por operação e cada uma tem os seus call sites MEDIDOS; esta página não
-    // documenta nem o código "check failure_list" nem um corpo sem `error`. Uma
-    // cópia do bloco do estoque passaria por todo teste de comportamento cujo
-    // corpo não traga listas junto de um erro — e o 100 sozinho NÃO pegaria o
-    // método morando no recorte dele: esse recorte (`updateStock: async` →
-    // `getItemPromotion: async`) continua contendo a flag e não a tolerância de
-    // chave, com ou sem o preço lá dentro. Daí a asserção de LUGAR abaixo.
+    // por operação e cada uma tem os seus call sites MEDIDOS: a de CARGA
+    // (`payloadNoErro`) a sonda do passo 13 mediu aqui — o erro chegou junto com
+    // o `failure_list` (T-P6) —, e as duas de VEREDICTO (chave ausente, valor
+    // apelidado) nada mediu nesta página. Um teste de comportamento cujo corpo
+    // não traga listas junto de um erro passaria com ou sem a flag — e o 100
+    // sozinho NÃO pegaria o método morando no recorte dele: esse recorte
+    // (`updateStock: async` → `getItemPromotion: async`) continua contendo a
+    // flag e não a tolerância de chave, com ou sem o preço lá dentro. Daí a
+    // asserção de LUGAR abaixo.
     const marcador = 'updatePrice: async';
     expect(FONTE_API.split(marcador).length - 1).toBe(1);
     const inicio = FONTE_API.indexOf(marcador);
@@ -5348,12 +5394,17 @@ describe('update_price (passo 13)', () => {
     const guarda = bloco.indexOf('assertUpdatePriceParams(body)');
     expect(guarda).toBeGreaterThan(-1);
     expect(guarda).toBeLessThan(bloco.indexOf('shopeeCall('));
-    for (const tolerancia of ['payloadNoErro', 'erroAusenteEhSucesso', 'emptyErrorAliases']) {
+    // A flag de CARGA, exatamente UMA vez, e DENTRO da chamada ao transporte.
+    expect(bloco.split('payloadNoErro: true').length - 1).toBe(1);
+    expect(bloco.indexOf('payloadNoErro: true')).toBeGreaterThan(bloco.indexOf('shopeeCall('));
+    // ⛔ QUASE-IGUAL: nenhuma das duas tolerâncias de VEREDICTO.
+    for (const tolerancia of ['erroAusenteEhSucesso', 'emptyErrorAliases']) {
       expect(bloco).not.toContain(tolerancia);
     }
-    // As contagens do ARQUIVO inteiro não se moveram com o passo 13.
+    // As contagens do ARQUIVO inteiro: a de chave ausente não se moveu com o
+    // passo 13; a de carga foi de 1 para 2 — este call site.
     expect(FONTE_API.split('erroAusenteEhSucesso').length - 1).toBe(2);
-    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(1);
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
 
     // O LUGAR: depois da última leitura do passo 12, e NUNCA dentro do recorte
     // que o teste 100 lê.
@@ -5397,5 +5448,114 @@ describe('update_price (passo 13)', () => {
     expect(corpoDoGuarda).toContain('SHOPEE_UPDATE_PRICE_MAX_MODELS');
     expect(corpoDoGuarda).not.toContain('SHOPEE_UPDATE_STOCK_MAX_MODELS');
     expect(corpoDoGuarda).toContain('roundReais(');
+  });
+
+  it('T-P20 — a ORDEM das classes com a flag: PAR — throttle e reauth SEM `response` continuam a SUBCLASSE; NEAR-MISS — o MESMO throttle COM as listas vira ShopeeApiPartialError de `kind` `burst`', async () => {
+    // ⚠️ O transporte classifica o envelope PRIMEIRO (`shopeeErrorFromEnvelope`)
+    // e só DEPOIS tenta a carga; quando a carga parseia, o parcial SUBSTITUI a
+    // subclasse (o docblock de ShopeeApiPartialError e o T18 do `call.test.ts`).
+    // Na forma ORDINÁRIA — throttle e autorização morta não trazem `response` —
+    // o schema da operação reprova e a subclasse sai intacta, flag ou não.
+    const casos = [
+      ['error_rate_limit', ShopeeRateLimitError, SHOPEE_ERROR_KIND.burst],
+      ['product.error_limit', ShopeeRateLimitError, SHOPEE_ERROR_KIND.daily],
+      ['shop_access_expired', ShopeeReauthRequiredError, SHOPEE_ERROR_KIND.reauth],
+    ] as const;
+    for (const [code, classe, kind] of casos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(erroBody(code)));
+      const erro = await erroDe(
+        createShopeeClient(shopConfig(fetchMock)).updatePrice({
+          item_id: ITEM_ID,
+          price_list: precos(1),
+        }),
+      );
+      expect(erro, code).toBeInstanceOf(classe);
+      expect(erro, code).not.toBeInstanceOf(ShopeeApiPartialError);
+      expect((erro as ShopeeApiError).kind, code).toBe(kind);
+      expect((erro as ShopeeApiError).code, code).toBe(code);
+    }
+
+    // ⛔ NEAR-MISS — a QUINA: o MESMO `error_rate_limit`, agora COM as listas.
+    // Chega como ShopeeApiPartialError, NÃO como ShopeeRateLimitError, e o
+    // veredicto de retentativa sobrevive só em `kind`. Quem monta a escada do
+    // preço lê `kind` DENTRO do braço parcial; uma escada que lesse só a classe
+    // trataria um throttle como uma recusa por modelo. Se o transporte um dia
+    // passar a preferir a subclasse, ESTA linha vermelha — e o braço do
+    // remetente muda junto.
+    const throttleComListas = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...UPDATE_PRICE_ERRO_COM_LISTAS_BODY,
+        error: 'error_rate_limit',
+        message: 'sem detalhe',
+      }),
+    );
+    const quina = await erroDe(
+      createShopeeClient(shopConfig(throttleComListas)).updatePrice({
+        item_id: ITEM_ID,
+        price_list: precos(1),
+      }),
+    );
+    expect(quina).toBeInstanceOf(ShopeeApiPartialError);
+    expect(quina).not.toBeInstanceOf(ShopeeRateLimitError);
+    expect((quina as ShopeeApiPartialError).kind).toBe(SHOPEE_ERROR_KIND.burst);
+    expect((quina as ShopeeApiPartialError).code).toBe('error_rate_limit');
+    expect(
+      shopeeUpdatePriceSchema.parse((quina as ShopeeApiPartialError).parsed).response.failure_list,
+    ).toHaveLength(1);
+  });
+
+  it('T-P21 — PAR: o eco VIVO de um item SEM modelo (só `original_price`, sonda P4c) é DEVOLVIDO com `model_id: null`; NEAR-MISS: um eco com `model_id` NÃO numérico continua ShopeeSchemaError', async () => {
+    // ⚠️ B-1, pelo transporte REAL. A operação publicada exigia `model_id` no
+    // `success_list` e lançou `ShopeeSchemaError
+    // campos=["response.success_list[].model_id"]` numa escrita que tinha
+    // ATERRISSADO (read-back == pedido) — o pior dos dois erros: o preço mudou
+    // na Shopee e o app registraria falha.
+    const vivo = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-preco-vivo',
+        error: '',
+        message: '',
+        warning: '',
+        response: { success_list: [{ original_price: 13.4 }] },
+      }),
+    );
+    const res = await createShopeeClient(shopConfig(vivo)).updatePrice({
+      item_id: ITEM_ID,
+      price_list: [{ model_id: 0, original_price: 13.4 }],
+    });
+    expect(res.error).toBe('');
+    expect(res.response.failure_list).toStrictEqual([]);
+    expect(res.response.success_list).toStrictEqual([{ model_id: null, original_price: 13.4 }]);
+    // Tipado: `number | null` — o casamento do item sem modelo é pela AUSÊNCIA.
+    const id: number | null = res.response.success_list[0]!.model_id;
+    expect(id).toBeNull();
+    expect(id).not.toBe(0);
+
+    // PAR: o eco de um item COM modelo continua chaveado pelo inteiro.
+    const comModelo = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpoComEco(13.4)));
+    const resModelo = await createShopeeClient(shopConfig(comModelo)).updatePrice({
+      item_id: ITEM_ID,
+      price_list: [{ model_id: MODEL_ID, original_price: 13.4 }],
+    });
+    expect(resModelo.response.success_list[0]!.model_id).toBe(MODEL_ID);
+
+    // ⛔ NEAR-MISS: a tolerância é de AUSÊNCIA, não de lixo — um `model_id` que
+    // veio e não é número recusa o corpo, em vez de virar "item sem modelo".
+    const lixo = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-preco-lixo',
+        error: '',
+        message: '',
+        response: { success_list: [{ model_id: 'abc', original_price: 13.4 }] },
+      }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(lixo)).updatePrice({
+        item_id: ITEM_ID,
+        price_list: [{ model_id: MODEL_ID, original_price: 13.4 }],
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeSchemaError).campos.join(' ')).toContain('model_id');
   });
 });

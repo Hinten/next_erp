@@ -185,10 +185,16 @@ export class ShopeeRateLimitError extends ShopeeApiError {
  * SAME body — the failure and its per-item detail together.
  *
  * ⚠️ It is a FAILURE, exactly like its base class. The subclass exists so the
- * evidence is not discarded, never to read a failure as a success: the one
- * operation that produces it (`update_stock`) is documented with
- * `error_busi_update_stock_failed: Update stock failed, please check
- * failure_list for detailed reason`, and `failure_list` lives under `response`.
+ * evidence is not discarded, never to read a failure as a success. TWO
+ * operations produce it, for two different kinds of reason:
+ * - `update_stock` — DOCUMENTED: `error_busi_update_stock_failed: Update stock
+ *   failed, please check failure_list for detailed reason`, and `failure_list`
+ *   lives under `response`.
+ * - `update_price` — MEASURED, against its own page: the page documents no such
+ *   code, and step 13's sandbox probe (2026-09-24) still received
+ *   `product.error_update_price_fail` WITH a populated `failure_list` in the same
+ *   body.
+ *
  * Only a call carrying the transport's `payloadNoErro` tolerance can produce
  * one, and only when the operation's own schema parsed that body.
  *
@@ -205,7 +211,10 @@ export class ShopeeRateLimitError extends ShopeeApiError {
  * have produced, so a ladder that needs the retry verdict reads {@link kind}
  * rather than assuming a partial can never be a throttle. Nothing reaches that
  * corner today — a throttled or dead-authorization body carries no `response`
- * and therefore fails the operation schema — and a test pins it.
+ * and therefore fails the operation schema — and a test pins it. The corner
+ * itself is pinned too, on `update_price`: a throttle code arriving WITH the
+ * lists comes out as THIS class carrying `kind: 'burst'`, never as
+ * {@link ShopeeRateLimitError}.
  *
  * ⚠️ `parsed` is `unknown` deliberately. The transport does not know WHICH
  * operation schema it ran; the narrowing caller does, and it holds the schema's

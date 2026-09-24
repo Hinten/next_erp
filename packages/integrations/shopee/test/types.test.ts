@@ -4099,13 +4099,26 @@ describe('update_price (passo 13)', () => {
 
     // ⛔ O inverso de M7: o `model_id` NÃO ganha a tolerância de float do eco.
     // Um id fracionário não é id nenhum, e a linha não é reconciliável.
-    for (const ruim of [MODEL_ID + 0.5, '2000458802.5', null]) {
+    for (const ruim of [MODEL_ID + 0.5, '2000458802.5']) {
       expect(
         shopeeUpdatePriceSchema.safeParse({
           error: '',
           response: { success_list: [{ model_id: ruim, original_price: 10 }] },
         }).success,
         `model_id ${JSON.stringify(ruim)} não pode parsear`,
+      ).toBe(false);
+    }
+    // ⚠️ `null` saiu do laço do `success_list` com a sonda do passo 13 (B-1): lá
+    // a AUSÊNCIA do `model_id` é a forma MEDIDA do eco de um item sem modelo, e o
+    // teste 11 a fixa. No `failure_list` o `model_id` continua EXIGIDO — `null`,
+    // fracionário ou ausente, a linha de recusa é recusada.
+    for (const ruim of [MODEL_ID + 0.5, '2000458802.5', null, undefined]) {
+      expect(
+        shopeeUpdatePriceSchema.safeParse({
+          error: '',
+          response: { failure_list: [{ model_id: ruim, failed_reason: 'fail' }] },
+        }).success,
+        `failure_list model_id ${JSON.stringify(ruim)} não pode parsear`,
       ).toBe(false);
     }
   });
@@ -4162,5 +4175,75 @@ describe('update_price (passo 13)', () => {
     expect(SECAO_PRECO_13).toContain('api v2.product.update_price');
     expect(SECAO_PRECO_13).toContain('FREE TEXT');
     expect(SECAO_PRECO_13).toContain('UNVERIFIED');
+  });
+
+  it('11 — PAR: o eco de um item SEM modelo chega SEM `model_id` (sonda P4c) e lê `null`, igual a um `null` explícito; ⛔ QUASE-IGUAL: um eco COM modelo mantém o inteiro, e `0` continua `0`', () => {
+    // ⚠️ B-1: a forma VIVA, medida no sandbox SG — a linha de sucesso de um item
+    // sem modelo traz SÓ `original_price`, com `model_id: 0` enviado e com ele
+    // omitido. Sob um `model_id` exigido a operação lançava ShopeeSchemaError
+    // (`response.success_list[].model_id`) numa escrita que tinha ATERRISSADO.
+    const vivo = shopeeUpdatePriceSchema.parse({
+      error: '',
+      message: '',
+      warning: '',
+      request_id: 'req-preco-vivo',
+      response: { success_list: [{ original_price: 13.4 }] },
+    });
+    expect(vivo.response.success_list).toEqual([{ model_id: null, original_price: 13.4 }]);
+    expect(vivo.response.failure_list).toEqual([]);
+    // Tipado: o id do eco é `number | null` em tempo de compilação.
+    const id: number | null = vivo.response.success_list[0]!.model_id;
+    expect(id).toBeNull();
+    // PAR: um `null` explícito lê IGUAL à ausência.
+    const nulo = precoComResposta({ success_list: [{ model_id: null, original_price: 13.4 }] });
+    expect(nulo.response.success_list[0]).toEqual(vivo.response.success_list[0]);
+
+    // ⛔ QUASE-IGUAL: um eco COM modelo mantém o inteiro, e o `0` da amostra da
+    // página continua ZERO — não vira ausência. Quem casa o eco do item sem
+    // modelo casa pela AUSÊNCIA; aqui `0` e `null` são coisas diferentes.
+    const comModelo = precoComResposta({
+      success_list: [{ model_id: MODEL_ID, original_price: 13.4 }],
+    });
+    expect(comModelo.response.success_list[0]!.model_id).toBe(MODEL_ID);
+    const zero = precoComResposta({ success_list: [{ model_id: 0, original_price: 13.4 }] });
+    expect(zero.response.success_list[0]!.model_id).toBe(0);
+    expect(zero.response.success_list[0]!.model_id).not.toBeNull();
+    // Entre aspas é o mesmo id (a tolerância do pacote inteiro), nunca `null`.
+    const aspas = precoComResposta({
+      success_list: [{ model_id: String(MODEL_ID), original_price: 13.4 }],
+    });
+    expect(aspas.response.success_list[0]!.model_id).toBe(MODEL_ID);
+  });
+
+  it('12 — ⛔ QUASE-IGUAL: a tolerância é SÓ de AUSÊNCIA — um `model_id` NÃO numérico no eco continua RECUSADO', () => {
+    // O `.nullable().default(null)` do B-1 cobre a chave que NÃO veio. Uma chave
+    // que veio com lixo é outra coisa: um formato novo, e lê-lo como "item sem
+    // modelo" casaria o eco com a linha errada.
+    for (const ruim of ['abc', '', 'null', '0x1F', '2000458802.5', MODEL_ID + 0.5, true, {}]) {
+      const r = shopeeUpdatePriceSchema.safeParse({
+        error: '',
+        response: { success_list: [{ model_id: ruim, original_price: 13.4 }] },
+      });
+      expect(r.success, `eco model_id ${JSON.stringify(ruim)} não pode parsear`).toBe(false);
+      expect(r.error?.issues.map((i) => i.path.join('.'))).toContain(
+        'response.success_list.0.model_id',
+      );
+    }
+  });
+
+  it('13 — FONTE: só o `model_id` do `success_list` é anulável; o do `failure_list` continua `wireInt()` puro, e o docblock cita a sonda', () => {
+    const codigo = semComentarios(SECAO_PRECO_13);
+    const inicioFalha = codigo.indexOf('failure_list:');
+    const inicioSucesso = codigo.indexOf('success_list:');
+    expect(inicioFalha).toBeGreaterThan(-1);
+    expect(inicioSucesso).toBeGreaterThan(inicioFalha);
+    const falha = codigo.slice(inicioFalha, inicioSucesso);
+    const sucesso = codigo.slice(inicioSucesso);
+    expect(falha).toContain('model_id: wireInt(),');
+    expect(falha).not.toContain('model_id: wireInt().nullable()');
+    expect(sucesso).toContain('model_id: wireInt().nullable().default(null),');
+    expect(codigo.split('model_id: wireInt().nullable()').length - 1).toBe(1);
+    // A citação que impede o docblock de virar palpite.
+    expect(SECAO_PRECO_13).toContain('P4c');
   });
 });

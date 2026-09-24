@@ -179,6 +179,15 @@
  * ⚠️ Its payload is a top-level ARRAY under `response` — the only one in this
  * package.
  *
+ * ## The price sync (step 13)
+ *
+ * One more write, `update_price`, and the SECOND operation whose `error`
+ * COEXISTS with its payload — not on its page's word (it documents no "check
+ * failure_list" code) but on the sandbox's: the step-13 probe received
+ * `product.error_update_price_fail` WITH a populated `failure_list`. So it
+ * carries the transport's `payloadNoErro` too, and a failing body that parses
+ * reaches the caller as a `ShopeeApiPartialError`.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -368,10 +377,12 @@ export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
  * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
  * models per call.
  *
- * ⚠️ The ONE operation in this package whose `error` COEXISTS with its payload:
+ * ⚠️ The FIRST operation in this package whose `error` COEXISTS with its
+ * payload, and the only one whose page documents it:
  * `error_busi_update_stock_failed` is documented as *"please check
  * failure_list"*, and `failure_list` rides under `response`. Its call site is
- * therefore the ONLY `payloadNoErro` in this file — see
+ * therefore one of the TWO `payloadNoErro` sites in this file — the other is
+ * {@link SHOPEE_UPDATE_PRICE_PATH}'s, on measurement — see
  * {@link ShopeeClient.updateStock}.
  */
 export const SHOPEE_UPDATE_STOCK_PATH = '/api/v2/product/update_stock';
@@ -392,15 +403,19 @@ export const SHOPEE_GET_WAREHOUSE_DETAIL_PATH = '/api/v2/shop/get_warehouse_deta
 
 /**
  * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
- * models per call — {@link SHOPEE_UPDATE_STOCK_PATH}'s shape, and deliberately
- * NOT its error handling.
+ * models per call — {@link SHOPEE_UPDATE_STOCK_PATH}'s shape, and, on
+ * MEASUREMENT, its error handling too.
  *
- * ⚠️ NOT a `payloadNoErro` operation. That flag exists because the stock page
- * documents a code telling the caller to "check failure_list"; this page's
- * error list has NO such code, and its own response sample prints the partial
- * failure as a SUCCESS envelope — `error: ""` with both lists. So a non-empty
- * `error` here is a whole-call failure and throws the ordinary class, and the
- * per-model refusals are read off the 200 — see {@link ShopeeClient.updatePrice}.
+ * ⚠️ A `payloadNoErro` operation, although its PAGE says otherwise. The page's
+ * error list has no "check failure_list" code and its response sample prints the
+ * partial failure as a SUCCESS envelope — `error: ""` with both lists — so the
+ * shipped op went out WITHOUT the flag. Step 13's sandbox probe (2026-09-24)
+ * then measured the other shape as well: a bogus `model_id` on a no-model item
+ * (P4c-bogus) answered `product.error_update_price_fail` AND a populated
+ * `failure_list` in the same body, and without the flag those rows died at the
+ * throw site. So a partial arrives BOTH ways — the 200's `failure_list` and a
+ * `ShopeeApiPartialError` carrying the lists — see
+ * {@link ShopeeClient.updatePrice}.
  *
  * ⚠️ And NONE of its codes joins `KIND_BY_CODE` (`errors.ts`, register 101):
  * `error_update_price_fail`, `error_system_busy` and this page's `error_inner`
@@ -1405,12 +1420,15 @@ export type ShopeeWarehouseDetail =
 export interface ShopeeUpdatePriceEntry {
   /**
    * ⚠️ ALWAYS sent. `0` IS the no-model item — the page's param table says "0
-   * for no model item" and its own response sample keys that row as `0` — so a
-   * truthiness check that drops it turns the simple-item write into
-   * `error_edit_item_price_for_item_has_model`'s mirror. The guide's worked
-   * example OMITS the key instead; which forms this page accepts is UNVERIFIED
-   * until the step-13 probe, and `0` is the form with the page behind it (and
-   * the one step 12 measured on the stock twin).
+   * for no model item". The guide's worked example OMITS the key instead, and
+   * step 13's probe measured BOTH forms accepted on a no-model item (P4, P6:
+   * read-back == request); `0` stays the one this package sends, because it is
+   * the form with the page behind it (and the one step 12 measured on the stock
+   * twin).
+   *
+   * ⚠️ The ECHO does not mirror it: that item's `success_list` entry comes back
+   * with NO `model_id` key at all (P4c), which the response schema reads as
+   * `null` — see `shopeeUpdatePricePayloadSchema`.
    */
   readonly model_id: number;
   /**
@@ -1883,8 +1901,9 @@ export interface ShopeeClient {
    * and that is the reason this operation exists in the shape it does. Its own
    * list documents `error_busi_update_stock_failed: Update stock failed, please
    * check failure_list for detailed reason`, and `failure_list` lives under
-   * `response`. So this is the ONE call site carrying the transport's
-   * `payloadNoErro`: the throw stays a throw, and the thrown
+   * `response`. So this is the FIRST call site carrying the transport's
+   * `payloadNoErro` (the second, on measurement, is
+   * {@link ShopeeClient.updatePrice}): the throw stays a throw, and the thrown
    * `ShopeeApiPartialError` carries the parsed body so the caller can attribute
    * the refusal to the models it actually hit. Everything else — a throttle, a
    * dead authorization, a body with no `response` — throws the ordinary class,
@@ -1957,19 +1976,32 @@ export interface ShopeeClient {
    * Set the SHELF price (`original_price`) of 1…{@link SHOPEE_UPDATE_PRICE_MAX_MODELS}
    * models of ONE item — the WHOLE envelope, like every write here.
    *
-   * ⚠️ **A 200 with `error: ''` can carry a non-empty `failure_list`**, and on
-   * this page that is the ONLY documented partial shape: the response sample
-   * prints `error: ""` with both lists, and step 12's probe measured the stock
-   * twin answering a mixed batch exactly that way. So whoever writes the result
-   * back reads BOTH lists, never the absence of a throw — a model in neither
-   * list was not confirmed.
+   * ⚠️ **A partial refusal arrives in TWO shapes, both measured** (step 13's
+   * sandbox probe, 2026-09-24):
+   * - RETURNED — a 200 with `error: ''` carrying a non-empty `failure_list`
+   *   (P9: one valid model + one bogus). The page's own sample prints this one.
+   * - THROWN — a non-empty `error` WITH the lists in the same body (P4c-bogus:
+   *   `product.error_update_price_fail` + a populated `failure_list`). The page
+   *   documents no such code, so this op first shipped without the flag; it now
+   *   carries the transport's `payloadNoErro`, exactly like
+   *   {@link ShopeeClient.updateStock}, and the body arrives as a
+   *   `ShopeeApiPartialError` whose `parsed` re-parses with
+   *   `shopeeUpdatePriceSchema`.
    *
-   * ⚠️ Unlike {@link ShopeeClient.updateStock} it does NOT carry the transport's
-   * failure-list flag: this page documents no "check failure_list" code, so a
-   * non-empty `error` is a whole-call failure and throws the ordinary
-   * `ShopeeApiError` (a throttle its `ShopeeRateLimitError`), with no payload
-   * attached. Whether Shopee ever sends a non-empty `error` WITH the lists here
-   * is UNVERIFIED; the flip, if the probe finds it, is the flag plus its pins.
+   * Either way whoever writes the result back reads BOTH lists, never the
+   * absence of a throw — a model in neither list was not confirmed. A failing
+   * body with NO parseable `response` (the ordinary throttle, a dead
+   * authorization, a refusal code sent without the lists) throws the ordinary
+   * class, `ShopeeRateLimitError`/`ShopeeReauthRequiredError` included.
+   *
+   * ⚠️ The flag is code-blind, so the partial class REPLACES whichever subclass
+   * the envelope would have produced: a throttle code arriving WITH the lists
+   * is a `ShopeeApiPartialError` whose `kind` is `burst`/`daily`. A ladder that
+   * needs the retry verdict reads `kind` inside the partial arm, not only the
+   * class.
+   *
+   * ⚠️ A no-model item's success entry carries NO `model_id` (P4c) and reads as
+   * `null` — match it by that absence, never by `=== 0`.
    *
    * ⚠️ It does NOT round. A price with a third decimal is REFUSED before the
    * fetch ({@link assertUpdatePriceParams} rung 5): rounding is the caller's
@@ -3609,9 +3641,11 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         call: await signedCall(),
         schema: shopeeUpdateStockSchema,
         surface: SHOPEE_SURFACE.business,
-        // ⚠️ The ONE `payloadNoErro` in this package, and the only place it may
-        // appear. It does NOT change the verdict — a non-empty `error` is still
-        // a failure and still throws — it only stops the parsed body being
+        // ⚠️ One of the TWO `payloadNoErro` sites in this package (the other is
+        // the step-13 price write, on measurement), and the only places it may
+        // appear.
+        // It does NOT change the verdict — a non-empty `error` is still a
+        // failure and still throws — it only stops the parsed body being
         // discarded at the throw site, because THIS page documents
         // `error_busi_update_stock_failed` as "please check failure_list" and
         // `failure_list` rides under `response`. See the flag's docblock in
@@ -3717,16 +3751,20 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
 
     updatePrice: async (body) => {
       assertUpdatePriceParams(body);
-      // ⚠️ A WRITE: the whole envelope comes back, and neither transport
-      // tolerance rides here — a non-empty `error` throws the ordinary class,
-      // and a partial refusal is the 200's `failure_list`. See the path's
-      // docblock for why this is not the stock twin's shape.
+      // ⚠️ A WRITE: the whole envelope comes back. No VERDICT tolerance rides
+      // here — a non-empty `error` still throws — but the payload one does:
+      // step 13's sandbox probe (P4c-bogus) received
+      // `product.error_update_price_fail` WITH a populated `failure_list`, and
+      // without the flag those per-model rows were discarded at the throw
+      // site. The page documents no such code; the wire sent it anyway. See the
+      // path's docblock.
       return shopeeCall(transport, {
         method: 'POST',
         path: SHOPEE_UPDATE_PRICE_PATH,
         call: await signedCall(),
         schema: shopeeUpdatePriceSchema,
         surface: SHOPEE_SURFACE.business,
+        payloadNoErro: true,
         body,
       });
     },
