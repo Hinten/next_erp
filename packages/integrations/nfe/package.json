@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./http-provider": "./src/http-provider/index.ts",
+    "./code128": "./src/code128/index.ts",
     "./danfe": "./src/danfe/index.ts",
     "./test-helpers/homologacao-seed": "./test/helpers/homologacao-seed.ts",
     "./test-helpers/pfx-fixture": "./test/helpers/pfx-fixture.ts",

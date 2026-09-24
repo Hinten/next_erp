@@ -132,7 +132,7 @@ export function wrapText(
   return out.length > 0 ? out : [''];
 }
 
-/** The 44-digit chave in eleven blocks of four, for human reading. */
+/** The 44-character chave in eleven blocks of four, for human reading. */
 export function groupChave(chave: string): string {
   return (chave.match(/.{1,4}/g) ?? []).join(' ');
 }
@@ -154,7 +154,7 @@ export type EtiquetaOp =
       bold: boolean;
       align: 'left' | 'center';
     }
-  /** Code 128 strip. `data` is the raw payload (digits only, for subset C). */
+  /** Code 128 strip. `data` is the raw 44-character NF-e chave, possibly alphanumeric. */
   | { readonly kind: 'barcode'; x: number; y: number; w: number; h: number; data: string };
 
 export interface EtiquetaGenericaLayout {

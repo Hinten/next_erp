@@ -4,8 +4,9 @@
  * This is **net-new** vs. the legacy Flutter package, whose "etiqueta" was a
  * small PDF. ZPL is emitted directly so a 10×15 cm label streams to a Zebra
  * over raw TCP/USB with no rasterisation: native scalable font (`^A0N`), native
- * Code 128 (`^BCN`) of the 44-digit chave, and `^GB` boxes that mirror the PDF's
- * bordered sections. `^CI28` selects UTF-8 so the Portuguese accents survive.
+ * Code 128 (`^BCN`) of the 44-character chave, and `^GB` boxes that mirror the
+ * PDF's bordered sections. `^CI28` selects UTF-8 so the Portuguese accents
+ * survive.
  *
  * `dpi` defaults to **203** (8 dots/mm → ~800×1200 dots for 10×15 cm); pass
  * `300` for the 12 dots/mm head (~1200×1800). All layout is authored in
@@ -13,6 +14,7 @@
  *
  * Paste the output into https://labelary.com to preview before a physical run.
  */
+import { encodeChaveNfeZpl } from '../code128';
 import type { DanfeModel, DanfeEndereco } from './model';
 import {
   cutString,
@@ -44,9 +46,6 @@ const BOX_PAD_MM = 1.3; // box inner top/bottom padding
 /** Max chars for a razão social / nome so the right-aligned value clears the label. */
 const NAME_MAX = 36;
 
-/** Code 128 subset C takes digit pairs only — see the guard in the renderer. */
-const ALL_DIGITS = /^\d+$/;
-
 /**
  * Strip the two ZPL control prefixes from field data so a stray `^`/`~` in a
  * razão social or endereço can't terminate the field or inject a command.
@@ -62,36 +61,11 @@ type Row =
   | { kind: 'wrap'; text: string; lines: number };
 
 export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}): string {
-  // ⚠️ NUMERIC CHAVE ONLY, and this refusal is deliberate.
-  //
-  // The label's barcode is Code 128 **subset C**, which encodes digit PAIRS and
-  // cannot represent a letter at all. Since RFB IN 2.229/2024 the chave's
-  // positions 6–17 carry the emitente CNPJ and may be alphanumeric.
-  //
-  // Encoding those in subset B instead is not a fix: it doubles the symbol
-  // count (44 instead of 22) while the module width stays on the fixed 0.25 mm
-  // rule, so the symbol becomes 1038 dots on a 799-dot label at 203 dpi (1557
-  // on 1181 at 300 dpi). The printer clips everything past `^PW`, so the
-  // checksum and stop pattern never print and the barcode is UNSCANNABLE —
-  // and `bcX`'s `Math.max` clamp hides it, because the emitted x still looks
-  // plausible.
-  //
-  // The real fix is mixed subsets (C for the numeric head and tail, B for the
-  // 12-character body — 30 data symbols, 365 modules, 730 dots at 203 dpi,
-  // which fits). That needs ZPL's mid-string switch-back-to-C invocation code
-  // verified against Zebra's `^BC` reference and a proof on real hardware, so
-  // it is a follow-up rather than a guess: a wrong invocation code prints a
-  // wrong barcode silently, which is the very failure this guard prevents.
-  //
-  // Meanwhile `renderSimplificado` (PDF) is the same etiqueta and IS
-  // alfa-correct — `barcode.ts` hands bwip-js the whole chave and bwip-js picks
-  // subsets itself.
-  if (!ALL_DIGITS.test(model.chave)) {
+  const code128 = encodeChaveNfeZpl(model.chave);
+  if (!code128) {
     throw new NFeDanfeFormatError(
-      `A etiqueta ZPL não suporta uma chave alfanumérica (${model.chave}): o ` +
-        'código de barras usa Code 128 subset C, que só aceita dígitos. Use o ' +
-        'DANFE Simplificado em PDF (format=simplificado), que imprime a mesma ' +
-        'etiqueta com a chave completa.',
+      `A etiqueta ZPL recebeu uma chave NF-e inválida (${model.chave}); esperado: ` +
+        '6 dígitos, 12 caracteres 0-9/A-Z do corpo do CNPJ e 26 dígitos.',
     );
   }
 
@@ -131,21 +105,21 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   centered(y, 'DANFE SIMPLIFICADO - ETIQUETA', H_TITLE);
   y += 6;
 
-  // Centered Code 128. `^BC` defaults to subset B (one wide symbol per
-  // character); the `>;` prefix forces **subset C** so the 44-digit chave packs
-  // two digits per symbol — half the width, and the printed width becomes
-  // deterministic. Module (narrow-bar) width scales with dpi (~0.25 mm).
-  //
-  // ⚠️ Subset C is what makes the symbol FIT, and it is numeric-only. An alfa
-  // chave is refused at the top of this function rather than encoded here —
-  // see that guard for why, and for the follow-up that lifts it.
+  // Centered Code 128. A numeric chave keeps the historical `>;` subset-C
+  // payload byte-for-byte. An NT 2026.004 chave uses the Zebra-documented
+  // C/B/C invocation sequence from `encodeChaveNfeZpl`: `>;`, `>6`, `>5`.
+  // Module (narrow-bar) width scales with dpi (~0.25 mm).
   const moduleDots = Math.max(2, Math.round(0.25 * dpm));
-  const dataSymbols = Math.ceil(model.chave.length / 2);
-  // (start C + data + checksum) × 11 modules + 13-module stop pattern.
-  const barModules = (dataSymbols + 2) * 11 + 13;
-  const barWidthDots = barModules * moduleDots;
+  const barWidthDots = code128.modules * moduleDots;
   const bcX = Math.max(mm(MARGIN_MM), Math.round((widthDots - barWidthDots) / 2));
-  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD>;${model.chave}^FS`);
+  const quietDots = 10 * moduleDots;
+  if (code128.kind === 'mixed' && (bcX < quietDots || bcX + barWidthDots + quietDots > widthDots)) {
+    throw new NFeDanfeFormatError(
+      `A etiqueta ZPL não comporta a chave ${model.chave} em ${dpi} dpi com as ` +
+        'zonas de silêncio obrigatórias do Code 128.',
+    );
+  }
+  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD${code128.payload}^FS`);
   y += 12;
   centered(y, formatChaveAcesso(model.chave), H_CHAVE);
   y += 5;
