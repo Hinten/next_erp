@@ -36,9 +36,12 @@
  *
  * ---- Price source (owner-locked): the price pushed is the conta's tabela
  * normal entry, `produto.precos[<tabelaNormalId>].valor`, `roundReais`'d at
- * plan time. `propagatePriceToChildren: true` (the schema default) prices the
- * WHOLE family from the ANCHOR produto; `false` prices each User-Products
- * variation item from the CHILD's own `precos` entry (missing → that child
+ * plan time by `precoDaTabela` (`@delfrance/schemas`, the reader every sending
+ * channel shares — positivity is checked AFTER rounding, so a stored sub-centavo
+ * value is `PRECO_NAO_ENCONTRADO`, never a zero price).
+ * `propagatePriceToChildren: true` (the schema default) prices the WHOLE
+ * family from the ANCHOR produto; `false` prices each User-Products variation
+ * item from the CHILD's own `precos` entry (missing → that child
  * skips `PRECO_NAO_ENCONTRADO`, its siblings still draft). Legacy-model
  * listings ALWAYS send the anchor price regardless of the flag — ML legacy
  * variations only accept one uniform family price — and the draft carries NO
@@ -75,12 +78,12 @@
  * `envInt` (call time, never module load); pure mechanics stay code constants.
  */
 import { FieldPath, type Firestore } from 'firebase-admin/firestore';
-import { roundReais } from '@delfrance/core/money';
 import {
   ESTADO_PUBLICACAO_ML,
   type EnvioPrecoFilaItem,
   type EnvioPrecoSkip,
   moderacaoRemoveuAnuncio,
+  precoDaTabela,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -510,7 +513,7 @@ export function buildPrecoDrafts(
   row: PrecoFamilyRow,
   opts: BuildPrecoDraftsOpts,
 ): BuildPrecoDraftsResult {
-  const anchorPreco = precoPositivo(row.precos, opts.tabelaNormalId);
+  const anchorPreco = precoDaTabela(row.precos, opts.tabelaNormalId);
   const propagate = row.propagatePriceToChildren !== false;
 
   if (row.links.length === 0) {
@@ -616,7 +619,7 @@ export function buildPrecoDrafts(
         );
         continue;
       }
-      const preco = propagate ? anchorPreco : precoPositivo(child.precos, opts.tabelaNormalId);
+      const preco = propagate ? anchorPreco : precoDaTabela(child.precos, opts.tabelaNormalId);
       for (const varLink of matched) {
         if (varLink.itemId == null) {
           skips.push(
@@ -736,23 +739,8 @@ export function podeEnviarPreco(
 
 /* --------------------------------- helpers --------------------------------- */
 
-/**
- * The tabela's price off a raw `precos` map: a finite `valor > 0` →
- * `roundReais`'d (the ONE sanctioned rounding), anything else → null
- * (`PRECO_NAO_ENCONTRADO` downstream). Tolerates junk entries — legacy docs
- * can hold non-object values under a tabela key.
- */
-function precoPositivo(precos: PrecoFamilyRow['precos'], tabelaId: string): number | null {
-  const entry = precos?.[tabelaId];
-  if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const valor = (entry as { valor?: unknown }).valor;
-  return typeof valor === 'number' && Number.isFinite(valor) && valor > 0
-    ? roundReais(valor)
-    : null;
-}
-
 /** Narrow a raw `precos` field to the row's map shape — map-level narrowing only;
- * entry values are re-checked at use (`precoPositivo`). */
+ * entry values are re-checked at use (`precoDaTabela`, `@delfrance/schemas`). */
 function coercePrecos(v: unknown): PrecoFamilyRow['precos'] {
   return v != null && typeof v === 'object' && !Array.isArray(v)
     ? (v as PrecoFamilyRow['precos'])

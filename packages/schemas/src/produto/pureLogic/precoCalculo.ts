@@ -267,6 +267,59 @@ export function diffPrecos(oldPrecos: PrecosMap, newPrecos: PrecosMap): PrecoCha
 }
 
 // ---------------------------------------------------------------------------
+// The price a channel SENDS: the tabela reader + the skip-if-equal fold
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE reader of "the price of this produto in that tabela", for every
+ * channel that SENDS it (Mercado Livre's price plan, Shopee's price sync).
+ * Pure and total — no clock, no Firestore — so both backends share it instead
+ * of each keeping a private copy that drifts.
+ *
+ * Returns `null` ("no price" — `PRECO_NAO_ENCONTRADO` / `preco-nao-encontrado`
+ * downstream) for: a null or empty `tabelaId`; a `precos` that is not a plain
+ * object (null, a scalar, an array); a tabela with no OWN entry (an inherited
+ * key never counts, so a tabela id of `__proto__` or `toString` is `null`); an
+ * entry that is not an object (legacy docs can hold a bare number under a
+ * tabela key); a `valor` that is not a finite NUMBER — a string `'10'` is
+ * `null`, never coerced.
+ *
+ * Otherwise the value is `roundReais`'d (the ONE sanctioned money rounding) and
+ * ⚠️ positivity is checked AFTER rounding: a stored `0.004` rounds to `0` and is
+ * "no price", never a zero price (every downstream reader would treat a `0` as
+ * real, and a marketplace validator refuses it). `0.005` rounds to `0.01` and is
+ * a price.
+ */
+export function precoDaTabela(precos: unknown, tabelaId: string | null): number | null {
+  if (tabelaId === null || tabelaId === '') return null;
+  if (precos === null || typeof precos !== 'object' || Array.isArray(precos)) return null;
+  if (!Object.hasOwn(precos, tabelaId)) return null;
+  const entry: unknown = (precos as Record<string, unknown>)[tabelaId];
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const valor = (entry as { valor?: unknown }).valor;
+  if (typeof valor !== 'number' || !Number.isFinite(valor)) return null;
+  const arredondado = roundReais(valor);
+  return arredondado > 0 ? arredondado : null;
+}
+
+/**
+ * THE skip-if-equal fold: is the price a channel currently shows (`atual`) the
+ * same, in reais, as the price we would send (`alvo`)? A `true` SKIPS the
+ * send, so folding too much silently drops a real price edit.
+ *
+ * EQUAL: two numbers whose `roundReais` agree — `10.004 ≡ 10`,
+ * `0.1 + 0.2 ≡ 0.3` (float residue is not an edit).
+ * DISTINCT: anything one centavo apart after rounding — `49.99 ≠ 50`,
+ * `49.991 ≠ 50` (a tolerance of `< 0.01` would equate these: 0.009 apart, yet
+ * they round to different centavos), `11.10 ≠ 11.11`.
+ * `null` (the current price is unknown or unreadable) never equals anything —
+ * an unknown price is never "already correct".
+ */
+export function mesmoPrecoEmReais(atual: number | null, alvo: number): boolean {
+  return atual !== null && roundReais(atual) === roundReais(alvo);
+}
+
+// ---------------------------------------------------------------------------
 // Kit cost
 // ---------------------------------------------------------------------------
 
