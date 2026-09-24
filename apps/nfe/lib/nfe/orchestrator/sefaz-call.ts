@@ -20,13 +20,28 @@ import type { ContingencyTarget, NFeRuntime } from '../runtime';
  */
 export type SefazService = keyof SvcServiceUrls;
 
-/** Resolve the authorizer (URLs + mTLS agent) that owns a `tpEmis`. */
-export function sefazTarget(rt: NFeRuntime, tpEmis: TpEmis): ContingencyTarget {
-  if (tpEmis === 6) return rt.svc('svc-an');
-  if (tpEmis === 7) return rt.svc('svc-rs');
+/** The authorizer that owns a `tpEmis`: the home SEFAZ, SVC-AN or SVC-RS. */
+export type Autorizador = 'home' | 'svc-an' | 'svc-rs';
+
+/**
+ * WHICH authorizer owns a `tpEmis` — the routing decision alone, without a
+ * runtime. `sefazTarget` resolves it to URLs; a caller that only needs to tell
+ * two authorizers apart (the sweep's per-authorizer consSit breaker, #513)
+ * keys on it, so the two can never disagree about where a tpEmis goes.
+ */
+export function autorizadorDe(tpEmis: TpEmis): Autorizador {
+  if (tpEmis === 6) return 'svc-an';
+  if (tpEmis === 7) return 'svc-rs';
   // 1 (normal), 4 (EPEC full NF-e) and the paper-form modes (2/5) all
   // authorize at the home SEFAZ.
-  return { endpoints: rt.endpoints, agent: rt.agent };
+  return 'home';
+}
+
+/** Resolve the authorizer (URLs + mTLS agent) that owns a `tpEmis`. */
+export function sefazTarget(rt: NFeRuntime, tpEmis: TpEmis): ContingencyTarget {
+  const autorizador = autorizadorDe(tpEmis);
+  if (autorizador === 'home') return { endpoints: rt.endpoints, agent: rt.agent };
+  return rt.svc(autorizador);
 }
 
 /** Build the `SefazCall` for one service on the authorizer that owns `tpEmis`. */

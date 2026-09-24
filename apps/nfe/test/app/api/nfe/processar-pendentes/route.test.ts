@@ -10,7 +10,10 @@
  *     persisted tpEmis (SVC doc → SVC consulta URL);
  *   - the docs an async lote reply WITHOUT infRec leaves behind (#512) are
  *     consulted by chave only once their own pacing says so, and a refused
- *     fresh member (rejeitada / error) is never scanned at all.
+ *     fresh member (rejeitada / error) is never scanned at all;
+ *   - the consSit breaker of the 104-without-our-protNFe branch (#513) spans
+ *     the due lotes of one filial, never another filial's — a 656 all of
+ *     them, an outage only those at the same authorizer (home / SVC-AN).
  * Auth, runtime, Firestore and the EPEC transmit are mocked; the scan logic,
  * `loadNfeConfigForEmission` and `sefazCallFor` run REAL against an in-memory
  * fake that supports `collectionGroup`.
@@ -135,9 +138,13 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
 
   function collectionGroup(groupId: string) {
     let estados: unknown[] | null = null;
+    // Any other `field == value` (reconcileByRecibo's `nRec == …`): without it
+    // every lote's query would return every seeded member.
+    const iguais: Array<readonly [string, unknown]> = [];
     const q = {
-      where(field: string, _op: string, value: unknown) {
+      where(field: string, op: string, value: unknown) {
         if (field === 'estado') estados = value as unknown[];
+        else if (op === '==') iguais.push([field, value]);
         return q;
       },
       limit(_n: number) {
@@ -147,6 +154,9 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         const items = Object.entries(docs)
           .filter(([k, v]) => v != null && k.split('/').at(-2) === groupId)
           .filter(([, v]) => !estados || estados.includes((v as { estado?: unknown }).estado))
+          .filter(([, v]) =>
+            iguais.every(([f, valor]) => (v as Record<string, unknown>)[f] === valor),
+          )
           .map(([k, v]) => ({
             id: k.split('/').pop()!,
             ref: ref(k),
@@ -173,6 +183,20 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         },
       }),
       collectionGroup,
+      // The seam the REAL guarded persist (`persistPatchUnlessFinal`) uses —
+      // the 104-without-our-protNFe branch (#513) writes through it.
+      async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+        type Ref = ReturnType<typeof ref> & {
+          get(): Promise<unknown>;
+          set(data: Record<string, unknown>, opt?: { merge?: boolean }): Promise<void>;
+        };
+        return fn({
+          get: (r: Ref) => r.get(),
+          set: (r: Ref, data: Record<string, unknown>, opt?: { merge?: boolean }) => {
+            void r.set(data, opt);
+          },
+        });
+      },
     } as never,
     docs,
     writes,
@@ -859,5 +883,188 @@ describe('POST /api/nfe/processar-pendentes — docs an async lote without infRe
     expect(body).toEqual({ scanned: 5, recovered: 3, stillPending: 2, errors: [] });
     expect(consultedChaves().sort()).toEqual([chaveDe(45), chaveDe(46), chaveDe(47)]);
     expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #513 — the consSit breaker of the 104-without-our-protNFe branch spans the
+// later lotes of one sweep. A 656 spans every lote of the FILIAL: the throttle
+// is per CNPJ+IP, so a 656 on one lote's missing chave must stop the consSit
+// for the filial's next lotes. An outage spans only the filial's lotes at the
+// SAME authorizer: the home SEFAZ being down says nothing about SVC-AN.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — the consSit breaker spans the lotes of a filial (#513)', () => {
+  /** `chaveDe(nNF)` with its tpEmis digit (position 35, index 34) set to `tpEmis`. */
+  function chaveComTpEmis(nNF: number, tpEmis: number): string {
+    const c = chaveDe(nNF);
+    return c.slice(0, 34) + String(tpEmis) + c.slice(35);
+  }
+
+  /** A due in-flight member of lote `nRec` (home SEFAZ, tpEmis 1, unless told otherwise). */
+  function membroDoLote(
+    nNF: number,
+    nRec: string,
+    filialId: string,
+    tpEmis = 1,
+  ): Record<string, unknown> {
+    return stuckDoc({ tpEmis, chave: chaveComTpEmis(nNF, tpEmis), nRec, filialId });
+  }
+
+  /** The consSit requests the sweep made, as `[chave, url]` — the url names the authorizer. */
+  function consSitFeitas(): Array<readonly [string, string]> {
+    return vi
+      .mocked(consultarSituacaoNFe)
+      .mock.calls.map(([call, body]) => [body.chave, call.url] as const);
+  }
+
+  /** consSit answering 108 (serviço paralisado) for `chave` — trips the `indisponivel` breaker. */
+  function servicoParalisado(chave: string): never {
+    return {
+      ...consSitRet('108', false),
+      chNFe: chave,
+      xMotivo: 'Servico Paralisado Momentaneamente',
+    } as never;
+  }
+
+  /** A processed lote (104) whose reply carries NO protNFe at all. */
+  function processadoSemProtocolo(nRec: string): never {
+    return {
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SP_NFE_PL_009_V4',
+      nRec,
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-06-11T09:00:00-03:00',
+    } as never;
+  }
+
+  /** consSit answering 656 (consumo indevido) for `chave`. */
+  function consumoIndevido(chave: string): never {
+    return {
+      ...consSitRet('656', false),
+      chNFe: chave,
+      xMotivo: 'Rejeicao: Consumo Indevido',
+    } as never;
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('consSit on lote 1 answers 656 → lote 2 of the SAME filial goes terminal with NO consSit; another filial is still consulted', async () => {
+    const { fs, docs } = fakeFirestore({
+      [pathDe(61)]: membroDoLote(61, 'REC-A', 'F-1'),
+      [pathDe(62)]: membroDoLote(62, 'REC-B', 'F-1'),
+      // Near-miss: a different filial (another CNPJ) is not throttled by F-1's 656.
+      [pathDe(63)]: membroDoLote(63, 'REC-C', 'F-2'),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === chaveDe(61) ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // Each lote consulted by receipt once; A + B terminal (errored folds into
+    // recovered here), C approved.
+    expect(body).toEqual({ scanned: 3, recovered: 3, stillPending: 0, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // ONE consSit for F-1 (the 656), none for lote 2 — and F-2's is still made.
+    expect(consultedChaves()).toEqual([chaveDe(61), chaveDe(63)]);
+
+    const a = docs[pathDe(61)] as { estado: string; cStat: string; xMotivo: string };
+    expect(a).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(a.xMotivo).toContain('cStat 656');
+    const b = docs[pathDe(62)] as { estado: string; cStat: string; xMotivo: string };
+    expect(b).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(b.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+    expect(b.xMotivo).toContain(chaveDe(61));
+    expect((docs[pathDe(63)] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+  });
+
+  it('an OUTAGE (consSit 108) on a home-SEFAZ lote → the filial’s next HOME lote (tpEmis 4) is counted with NO consSit; its SVC-AN lote (tpEmis 6) is still consulted', async () => {
+    const home1 = chaveComTpEmis(71, 1);
+    const svcAn = chaveComTpEmis(72, 6);
+    const { fs, docs } = fakeFirestore({
+      [pathDe(71)]: membroDoLote(71, 'REC-A', 'F-1', 1),
+      // Near-miss: same filial, ANOTHER authorizer — not suppressed by the home outage.
+      [pathDe(72)]: membroDoLote(72, 'REC-B', 'F-1', 6),
+      // The equal pair: same filial, the SAME authorizer (4 authorizes at home too).
+      [pathDe(73)]: membroDoLote(73, 'REC-C', 'F-1', 4),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === home1 ? servicoParalisado(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // 71 and 73 stay counted (pending); 72 is approved.
+    expect(body).toEqual({ scanned: 3, recovered: 1, stillPending: 2, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // One consSit at the home SEFAZ (the outage), one at SVC-AN — none for 73.
+    expect(consSitFeitas()).toEqual([
+      [home1, 'https://example/sefaz/cons'],
+      [svcAn, 'https://example/svc-an/cons'],
+    ]);
+
+    expect(docs[pathDe(71)]).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '104',
+      retries: 1,
+    });
+    expect(docs[pathDe(72)]).toMatchObject({ estado: ESTADO_NFE.aprovada, cStat: '100' });
+    // Counted without a call — the xMotivo says which sighting it was.
+    const c = docs[pathDe(73)] as {
+      estado: string;
+      cStat: string;
+      retries: number;
+      xMotivo: string;
+    };
+    expect(c).toMatchObject({ estado: ESTADO_NFE.aguardandoResposta, cStat: '104', retries: 1 });
+    expect(c.xMotivo).toMatch(/consulta 1\//);
+  });
+
+  it('a 656 on a home-SEFAZ lote still stops the consSit of the filial’s SVC-AN lote — consumo indevido stays filial-wide', async () => {
+    const home = chaveComTpEmis(81, 1);
+    const { fs, docs } = fakeFirestore({
+      [pathDe(81)]: membroDoLote(81, 'REC-D', 'F-1', 1),
+      [pathDe(82)]: membroDoLote(82, 'REC-E', 'F-1', 6),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === home ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ scanned: 2, recovered: 2, stillPending: 0, errors: [] });
+    // ONE consSit — the 656 at home; none at SVC-AN.
+    expect(consSitFeitas()).toEqual([[home, 'https://example/sefaz/cons']]);
+    const b = docs[pathDe(82)] as { estado: string; cStat: string; xMotivo: string };
+    expect(b).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(b.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
   });
 });

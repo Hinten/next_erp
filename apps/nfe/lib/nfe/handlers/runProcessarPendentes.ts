@@ -39,9 +39,10 @@ import {
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
 import { reconcileCartaCorrecaoVinculo } from '../orchestrator/carta-correcao';
 import { transmitirPosEpec } from '../orchestrator/epec';
+import type { BloqueioConsSit } from '../orchestrator/lote-sem-protocolo';
 import { recover539IfNeeded } from '../orchestrator/recover539';
 import { reconcileByRecibo } from '../orchestrator/reconcile';
-import { sefazCallFor } from '../orchestrator/sefaz-call';
+import { autorizadorDe, sefazCallFor } from '../orchestrator/sefaz-call';
 
 export interface ProcessarPendentesParams {
   readonly batchSize?: number;
@@ -352,7 +353,23 @@ export async function runProcessarPendentes(args: {
   // the attempt cap, and re-stamps each doc's `proximaConsultaEm`. The backstop
   // does NOT re-enqueue a Cloud Task — its own cadence (gated by the refreshed
   // `proximaConsultaEm`) is the recovery when the primary task path is lost.
+  //
+  // The consSit breaker of the 104-without-our-protNFe branch (#513) is kept
+  // across the lotes of this run, not reset per lote, at two scopes:
+  //  - `consumo-indevido` per FILIAL: the 656 throttle is per CNPJ+IP, so after
+  //    one consSit answered 656 the filial's next lotes must not consult by
+  //    chave either;
+  //  - `indisponivel` per filial + AUTHORIZER (`autorizadorDe`, the routing
+  //    `sefazCallFor` uses): a lote's consSit goes to the authorizer that owns
+  //    its tpEmis, so the home SEFAZ being down says nothing about SVC-AN /
+  //    SVC-RS, and must not suppress the consSit of a lote emitted there.
+  // Residual (follow-up): a reconcile that THROWS loses the breaker it tripped
+  // — the catch below has no result to read it from.
+  const consumoIndevidoPorFilial = new Map<string, BloqueioConsSit>();
+  const indisponivelPorAutorizador = new Map<string, BloqueioConsSit>();
   for (const [nRec, info] of dueLotes) {
+    const tpEmis = info.tpEmis as TpEmis;
+    const autorizador = `${info.filialId}|${autorizadorDe(tpEmis)}`;
     try {
       const rt = await resolveFilialRuntime(fs, baseRt, info.filialId);
       const r = await reconcileByRecibo({
@@ -360,9 +377,19 @@ export async function runProcessarPendentes(args: {
         rt,
         filialId: info.filialId,
         nRec,
-        tpEmis: info.tpEmis as TpEmis,
+        tpEmis,
         attempt: 0,
+        bloqueioConsSit:
+          consumoIndevidoPorFilial.get(info.filialId) ??
+          indisponivelPorAutorizador.get(autorizador) ??
+          null,
       });
+      const bloqueio = r.bloqueioConsSit;
+      if (bloqueio?.tipo === 'consumo-indevido') {
+        consumoIndevidoPorFilial.set(info.filialId, bloqueio);
+      } else if (bloqueio?.tipo === 'indisponivel') {
+        indisponivelPorAutorizador.set(autorizador, bloqueio);
+      }
       recovered += r.recovered + r.errored;
       stillPending += r.stillPending;
     } catch (e) {
