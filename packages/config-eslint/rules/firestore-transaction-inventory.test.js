@@ -230,7 +230,7 @@ const INVENTARIO = {
   'apps/web/lib/checkout/saveCheckout.ts':
     'Two sites; phase 2 is class B and was the #1005 fix. Both re-read the pedido and re-derive their estado decision from that snapshot rather than from what phase 1 saw — the phases are separated by an `await`, so the pedido can move between them.',
   'packages/data/src/admin/pedidoReconcile.ts':
-    'Two sites (`:180`, `:288`). B by necessity — the browser SDK cannot read a query inside a transaction, so the ADMIN copy re-reads the whole pagamento collection with `tx.get` and re-derives `valorPago` from it; the estado transition is decided on the tx-fresh pedido.',
+    'Two sites (`:180`, `:288`). B by necessity — the browser SDK cannot read a query inside a transaction, so the ADMIN copy re-reads the whole pagamento collection with `tx.get` and re-derives `valorPago` from it; the estado transition is decided on the tx-fresh pedido. The #703 `somenteSeItensEditaveis` gate (the reconcile after a pedido save moved `valorCobrado`) is read off that same tx-fresh pedido, never off the caller: a Mercado Livre import promoting the pedido to `emProcessamento` between the save and this call must turn it into a no-op.',
   'packages/ui/src/object/saveRecord.ts':
     'The ERP’s universal ObjectView save. Tier 3: re-reads the doc and raises `RecordConflictError` when a field the operator touched changed since the form was seeded (#1006). ⚠️ The `tx.get` sits inside `if (guarded)`, so a create — and an update that opted out via `disableConcurrencyGuard` — commits with an empty read set; that is correct, because OCC with nothing to compare only buys latency.',
   'apps/mercado-livre/lib/marketplace/claims/claimImport.ts':

@@ -659,6 +659,70 @@ describe('reconcilePedidoEstado', () => {
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado' });
   });
 
+  describe('somenteSeItensEditaveis — the reconcile after a total change (#703)', () => {
+    const pagoPela = (valor: number) => ({
+      'pedidos/p1/pagamentos/pay1': {
+        valor,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    it('settles a carrinho pedido whose new total the payments now cover', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': { estado: 'carrinho', valorCobrado: 10 },
+        ...pagoPela(10),
+      });
+
+      const result = await reconcilePedidoEstado(db, {
+        pedidoId: PEDIDO_ID,
+        somenteSeItensEditaveis: true,
+      });
+
+      expect(result).toEqual({ transition: 'pago' });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+    });
+
+    it('⚠️ leaves a pedido the ML import promoted to emProcessamento untouched', async () => {
+      // #703 blocker 1: a partial payment would move it to aguardando, after
+      // which ML's advance guards (keyed on the `emProcessamento` literal) can
+      // never move it to `pago`. The gate reads the estado from THIS transaction.
+      const { db, store, writes } = makeDb({
+        'pedidos/p1': { estado: 'emProcessamento', valorCobrado: 100 },
+        ...pagoPela(40),
+      });
+
+      const result = await reconcilePedidoEstado(db, {
+        pedidoId: PEDIDO_ID,
+        somenteSeItensEditaveis: true,
+      });
+
+      expect(result).toEqual({ transition: null });
+      expect(store['pedidos/p1']!.estado).toBe('emProcessamento');
+      expect(writes.updates).toHaveLength(0);
+    });
+
+    it('still throws for a pedido that is gone', async () => {
+      const { db } = makeDb({});
+      await expect(
+        reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID, somenteSeItensEditaveis: true }),
+      ).rejects.toBeInstanceOf(PedidoReconcileNotFoundError);
+    });
+
+    it('NEAR-MISS: without the flag (the pagamento path) the same pedido still transitions', async () => {
+      // Pins that the gate is opt-in: the Pagamentos tab's behaviour is unchanged.
+      const { db, store } = makeDb({
+        'pedidos/p1': { estado: 'emProcessamento', valorCobrado: 100 },
+        ...pagoPela(40),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
+  });
+
   it('is a no-op (no write, no história) when no pagamento exists yet', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': { estado: 'iniciado', valorCobrado: 100 },

@@ -75,15 +75,20 @@ function refForPath(db: Firestore, path: string): DocumentReference {
  * `./reconcileRetry` for which codes qualify and why `deadline-exceeded` does
  * not. Failures still arrive as a `FirebaseError` (FunctionsError) the callers
  * narrow on — the final attempt's original error.
+ *
+ * `somenteSeItensEditaveis` is the pedido editor's flag after a save that moved
+ * `valorCobrado` (#703): the server then reconciles only while the estado IT
+ * reads still lets the total move — see `reconcilePedidoEstado`.
  */
 export function callReconciliarPagamentoPedido(
   pedidoId: string,
+  opts: { somenteSeItensEditaveis?: boolean } = {},
 ): Promise<{ transition: EstadoPedido | null }> {
-  const fn = httpsCallable<{ pedidoId: string }, { transition: EstadoPedido | null }>(
-    getFirebaseFunctions(),
-    'reconciliarPagamentoPedido',
-  );
-  return retryReconcile(() => fn({ pedidoId }).then((res) => res.data));
+  const fn = httpsCallable<
+    { pedidoId: string; somenteSeItensEditaveis?: boolean },
+    { transition: EstadoPedido | null }
+  >(getFirebaseFunctions(), 'reconciliarPagamentoPedido');
+  return retryReconcile(() => fn({ pedidoId, ...opts }).then((res) => res.data));
 }
 
 /**

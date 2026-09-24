@@ -11,6 +11,7 @@ import {
   nowMicros,
   podeAutorizarDespacho,
   sumPagamentosPagos,
+  travarInclusaoProduto,
   type EstadoFrete,
   type EstadoPedido,
   type Pagamento,
@@ -303,17 +304,35 @@ export async function reconcilePedidoFromPagamento(
  * import were null before and after. Until that is revisited (issue #711), the
  * only surviving attribution for this path is the `logger.info` line in
  * `reconciliarPagamentoPedido.ts`, which ages out with log retention.
+ *
+ * `somenteSeItensEditaveis` serves the OTHER caller: a pedido save that moved
+ * `valorCobrado` (#703, `deveReconciliarAposSalvar`). It returns
+ * `{ transition: null }` without writing unless the estado read by THIS
+ * transaction still lets the editor change the total (`!travarInclusaoProduto`).
+ * That is the one place the gate can hold: a Mercado Livre pedido promoted from
+ * `carrinho` to `emProcessamento` between the operator's save and this call
+ * must stay there, because ML's advance guards only move a pedido FROM
+ * `emProcessamento` — reconciling it off that estado strands it (#703 blocker 1).
+ * The pagamento path never sets the flag, so its behaviour is unchanged.
  */
 export async function reconcilePedidoEstado(
   db: FirebaseAdminFirestore,
-  input: { pedidoId: string },
+  input: { pedidoId: string; somenteSeItensEditaveis?: boolean },
 ): Promise<{ transition: EstadoPedido | null }> {
-  const { pedidoId } = input;
+  const { pedidoId, somenteSeItensEditaveis = false } = input;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
     const pedidoSnap = await tx.get(pedidoRef);
     if (!pedidoSnap.exists) throw new PedidoReconcileNotFoundError(pedidoId);
+    // Re-derived from the tx read on every attempt (root CLAUDE.md rule 7): the
+    // caller's own read of the estado is exactly what the race makes stale.
+    if (
+      somenteSeItensEditaveis &&
+      travarInclusaoProduto(pedidoSnap.get('estado') as EstadoPedido)
+    ) {
+      return { transition: null };
+    }
 
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
     const valorPago = sumPagamentosPagos(

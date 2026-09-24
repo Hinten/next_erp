@@ -13,6 +13,8 @@ export type {
 export {
   buildPedidoPatch,
   savePedido,
+  deveReconciliarAposSalvar,
+  type SavePedidoResultado,
   isIgnoredForConcurrency,
   remotelyChangedFields,
   buildIncidenteOp,
