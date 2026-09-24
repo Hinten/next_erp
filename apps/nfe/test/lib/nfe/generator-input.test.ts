@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
 import {
+  CRT,
+  CSOSN,
+  CST_PIS_COFINS,
   MODALIDADE_FRETE,
   ORIGEM,
   FORMA_PAGAMENTO,
@@ -14,10 +17,12 @@ import {
 
 import {
   apportionDescontos,
+  assertItemsBuildable,
   buildGeneratorInput,
   buildGenItems,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
+import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 /**
  * Regression tests for the discount handling in the NF-e generator input.
@@ -29,15 +34,22 @@ import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bun
  *    dropped, overstating `vNF` and mismatching payments → cStat 865).
  */
 
-/** Minimal bundle carrying only the fields buildGenItems/apportionDescontos read. */
+/**
+ * Minimal bundle carrying only the fields buildGenItems/apportionDescontos read,
+ * plus the two UFs `isInterstateFor` compares (assertItemsBuildable derives
+ * interstate itself). Both default to 'SP' — an intra-state sale.
+ */
 function bundleWith(
   operacao: Record<string, unknown>,
   pedido: Record<string, unknown> = {},
+  ufs: { readonly dest?: string; readonly sede?: string } = {},
 ): PedidoBundle {
   return {
     pedidoId: 'PED-TEST',
     operacao,
     pedido,
+    enderecoDest: { estado: ufs.dest ?? 'SP' },
+    filial: { sede: { estado: ufs.sede ?? 'SP' } },
   } as unknown as PedidoBundle;
 }
 
@@ -763,5 +775,181 @@ describe('frete-emitente with no composing item (review fix)', () => {
     expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(
       /nenhum item compõe o total/,
     );
+  });
+});
+
+/**
+ * CSOSN 900 with a PARTIAL 'ICMS próprio' group — vBC/pICMS/vICMS but no modBC.
+ * `impostoSchema` accepts it (every csosn900 member is optional); only the
+ * engine's build-time XSD-group guard rejects it (#506).
+ */
+const IMPOSTO_900_PARCIAL = {
+  origem: ORIGEM.nacional,
+  unidade: 'UN',
+  NCM: '61091000',
+  cfop: '5102',
+  configuracaoICMS: {
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.outros,
+    csosn900: { vBC: 100, pICMS: 18, vICMS: 18 },
+  },
+} as const;
+
+/** The `where` buildGenItems stamps on every per-item error for `item({})`. */
+const ITEM_PREFIX = "pedido 'PED-TEST' item 0 (produto 'prod-1'):";
+
+/** The NFeOrchestratorError message `fn` throws; any other throw propagates. */
+function orchestratorMessage(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (err) {
+    if (err instanceof NFeOrchestratorError) return err.message;
+    throw err;
+  }
+  return expect.fail('expected an NFeOrchestratorError, nothing was thrown');
+}
+
+describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', () => {
+  it('passes for a buildable item and leaves the generation projection unchanged', () => {
+    const items = [item({ precoDeVenda: 100, quantidade: 2, descontoUnitario: 10 })];
+    const bundle = bundleWith(OP);
+    const before = buildGenItems(items, bundle, false);
+    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+    expect(buildGenItems(items, bundle, false)).toEqual(before);
+  });
+
+  it('wraps a partial CSOSN 900 group as NFeOrchestratorError prefixed with pedido/item/produto', () => {
+    const msg = orchestratorMessage(() =>
+      assertItemsBuildable(
+        bundleWith(OP),
+        [item({ imposto: IMPOSTO_900_PARCIAL as never })],
+        false,
+      ),
+    );
+    expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
+    expect(msg).toContain("CSOSN '900'");
+    expect(msg).toContain('ICMS próprio missing: modBC');
+  });
+
+  it('keeps generation precedence — a desconto error wins over a partial 900 on the same item', () => {
+    // descontoTotal blows past the gross value AND the imposto is unbuildable:
+    // buildGenItems checks vDesc before it builds the imposto, and so must the
+    // pre-flight, or the operator would be told about the wrong defect first.
+    const items = [
+      item({ precoDeVenda: 10, quantidade: 1, imposto: IMPOSTO_900_PARCIAL as never }),
+    ];
+    const bundle = bundleWith(OP, { descontoTotal: 999 });
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    expect(msg).toMatch(/desconto .* exceeds the gross item value/);
+    expect(msg).not.toContain('CSOSN');
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+  });
+
+  it('derives interstate from the bundle UFs, exactly as generation does', () => {
+    // item() stamps only `cfop`; this operação has no cfopInterestadual either,
+    // so an interstate sale has no CFOP to project — an intra-state one does.
+    const opSemInterestadual = { cfop: '5102', NCM: '61091000', unidade: 'UN' };
+    const items = [item({})];
+    expect(assertItemsBuildable(bundleWith(opSemInterestadual), items, false)).toBeUndefined();
+    const msg = orchestratorMessage(() =>
+      assertItemsBuildable(bundleWith(opSemInterestadual, {}, { dest: 'RJ' }), items, false),
+    );
+    expect(msg).toBe(
+      `${ITEM_PREFIX} no cfopInterestadual — neither imposto.cfopInterestadual nor operacao.cfopInterestadual is set`,
+    );
+  });
+
+  it('wraps an invalid RTC config (RTC on) as NFeOrchestratorError, like any stored tribute defect', () => {
+    // `parseRtcConfig` throws the engine's NFeTributeError: a draft
+    // configuracaoIBSCBS is an operator-fixable stored config exactly like a
+    // partial CSOSN 900 group, so it gets the same item prefix and the same 400.
+    const items = [
+      item({
+        imposto: {
+          origem: ORIGEM.nacional,
+          unidade: 'UN',
+          NCM: '61091000',
+          cfop: '5102',
+          configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+          configuracaoIBSCBS: { CST: '000' }, // a draft: no cClassTrib, no rates
+        } as never,
+      }),
+    ];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, true));
+    expect(msg.startsWith(`${ITEM_PREFIX} Invalid configuracaoIBSCBS`)).toBe(true);
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false, true)));
+    // Near-miss: the same item with RTC off never reads the draft, so it passes —
+    // the pre-flight honours the filial's emitRtc like generation does.
+    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+  });
+
+  it('converts ONLY the engine tribute errors — any other throw from the engine propagates untouched (rule 6)', () => {
+    // A fault that is not an in-repo tribute class — standing in for an engine
+    // bug — raised from INSIDE buildImpostoXml: the engine's input parse reads
+    // configuracaoICMS.csosn, and this getter throws there. It must surface
+    // as-is (same class, no item prefix), not be relabelled operator-fixable.
+    const fault = new RangeError('unexpected engine fault (test)');
+    const imposto = {
+      origem: ORIGEM.nacional,
+      unidade: 'UN',
+      NCM: '61091000',
+      cfop: '5102',
+      configuracaoICMS: {
+        crt: CRT.simplesNacional,
+        get csosn(): string {
+          throw fault;
+        },
+      },
+    };
+    const items = [item({ imposto: imposto as never })];
+    const bundle = bundleWith(OP);
+    for (const run of [
+      () => assertItemsBuildable(bundle, items, false),
+      () => buildGenItems(items, bundle, false),
+    ]) {
+      expect(run).toThrow(RangeError);
+      expect(run).toThrow(/^unexpected engine fault \(test\)$/);
+      expect(run).not.toThrow(NFeOrchestratorError);
+    }
+  });
+
+  it('wraps a TributeFormatError (a computed value the wire cannot carry) as NFeOrchestratorError', () => {
+    // No stored config reaches TributeFormatError directly. The engine's Zod
+    // parse already rejects a negative, non-finite or missing required input,
+    // and the optional members are null-guarded before they are formatted.
+    // What is left is a COMPUTED value leaving the double range. PIS CST 01 derives vPIS = vProd × pPIS /
+    // 100, so a finite, nonnegative (schema-valid) vProd of Number.MAX_VALUE
+    // overflows it to Infinity, which `fmtMoney` refuses. That exercises the
+    // real `buildImpostoXml` path, with no mock.
+    const imposto = {
+      origem: ORIGEM.nacional,
+      unidade: 'UN',
+      NCM: '61091000',
+      cfop: '5102',
+      configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+    };
+    const overflowing = [item({ precoDeVenda: Number.MAX_VALUE, imposto: imposto as never })];
+    const bundle = bundleWith(OP);
+    const expected = `${ITEM_PREFIX} vPIS must be finite, got Infinity`;
+    expect(orchestratorMessage(() => assertItemsBuildable(bundle, overflowing, false))).toBe(
+      expected,
+    );
+    expect(orchestratorMessage(() => buildGenItems(overflowing, bundle, false))).toBe(expected);
+    // Near-miss: the same imposto on an ordinary price builds, so the overflow,
+    // not the config, is what trips the format check.
+    const ordinary = [item({ precoDeVenda: 100, imposto: imposto as never })];
+    expect(assertItemsBuildable(bundle, ordinary, false)).toBeUndefined();
+  });
+
+  it('buildGenItems at generation time surfaces the same NFeOrchestratorError', () => {
+    const items = [item({ imposto: IMPOSTO_900_PARCIAL as never })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => buildGenItems(items, bundle, false));
+    expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
+    expect(msg).toContain("CSOSN '900'");
+    expect(msg).toContain('ICMS próprio missing: modBC');
+    expect(msg).toBe(orchestratorMessage(() => assertItemsBuildable(bundle, items, false)));
   });
 });

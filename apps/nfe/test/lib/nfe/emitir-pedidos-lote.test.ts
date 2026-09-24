@@ -28,7 +28,14 @@ import {
   generateNFe,
   signNFe,
 } from '@delfrance/integrations-nfe';
-import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import {
+  CONTINGENCIA_MODO,
+  AMBIENTE_NFE,
+  CRT,
+  CSOSN,
+  ESTADO_NFE,
+  type NFeConfig,
+} from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
@@ -111,6 +118,32 @@ function impostoCsosn102(): Record<string, unknown> {
   };
 }
 
+/**
+ * An imposto that passes impostoSchema (every 900 member is optional) but that
+ * the engine's XSD-group guard rejects: CSOSN 900 'ICMS próprio' opened
+ * without modBC (#506).
+ */
+function impostoCsosn900Parcial(): Record<string, unknown> {
+  return {
+    ...impostoCsosn102(),
+    configuracaoICMS: {
+      crt: CRT.simplesNacional,
+      csosn: CSOSN.outros,
+      csosn900: { vBC: 1500, pICMS: 18, vICMS: 270 }, // no modBC
+    },
+  };
+}
+
+/**
+ * Stamped imposto whose RTC config is a draft: no cClassTrib, no rates. It
+ * passes impostoSchema; with the filial's RTC switch on, the engine rejects it
+ * at build time (NFeTributeError → NFeOrchestratorError), with it off the
+ * draft is never read.
+ */
+function impostoRtcRascunho(): Record<string, unknown> {
+  return { ...impostoCsosn102(), configuracaoIBSCBS: { CST: '000' } };
+}
+
 const SEED_NFE_CONFIG: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
@@ -121,6 +154,14 @@ const SEED_NFE_CONFIG: NFeConfig = {
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
   timestamp: null,
+};
+
+/** A filial in EPEC contingency: its NF-es are tpEmis 4 and live at the `s4` slot. */
+const EPEC_NFE_CONFIG: NFeConfig = {
+  ...SEED_NFE_CONFIG,
+  contingencia_modo: CONTINGENCIA_MODO.epec,
+  contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
+  contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
 };
 
 function filialDoc(): Record<string, unknown> {
@@ -209,6 +250,8 @@ interface PedidoSpec {
   readonly existingNFe?: Record<string, unknown>;
   /** If `true`, the item's xProd is the sentinel so generateNFe throws for this pedido. */
   readonly failGenerate?: boolean;
+  /** Override for the item's stamped imposto; defaults to `impostoCsosn102()`. */
+  readonly imposto?: Record<string, unknown>;
 }
 
 function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
@@ -223,7 +266,7 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
           precoDeVenda: 1500,
           quantidade: 1,
           descontoUnitario: 0,
-          imposto: impostoCsosn102(),
+          imposto: spec.imposto ?? impostoCsosn102(),
         },
       ],
     },
@@ -933,6 +976,290 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(badDoc?.chave).toBeNull();
     expect(badDoc?.numeracao).toBe(2);
   });
+
+  it('rejects an unbuildable tax config before allocation — no nNF consumed, no placeholder (#506)', async () => {
+    // Contrast with the generate/sign failure above: an imposto that passes
+    // impostoSchema but fails the engine's XSD-group guard (a partial CSOSN 900
+    // 'ICMS próprio') is caught by the batch tribute pre-flight, and
+    // runChunkAllocateTx fails the member BEFORE counting it as fresh — so the
+    // counter advances by 2, not 3, and the bad pedido leaves no chave-less
+    // placeholder behind.
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-BADTAX', filialId: 'F-1', imposto: impostoCsosn900Parcial() },
+        { pedidoId: 'PED-GOOD2', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-GOOD',
+      'PED-BADTAX',
+      'PED-GOOD2',
+    ]);
+
+    expect(out.results).toHaveLength(3);
+    const bad = out.results.find((r) => r.pedidoId === 'PED-BADTAX')!;
+    expect('errorCode' in bad ? bad.errorCode : null).toBe('NFeOrchestratorError');
+    expect('errorMessage' in bad ? bad.errorMessage : '').toMatch(
+      /^pedido 'PED-BADTAX' item 0 \(produto 'P-1'\): .*CSOSN '900'.*ICMS próprio missing: modBC$/,
+    );
+    // No placeholder: the bad pedido was failed before it was counted as fresh.
+    expect(docs['pedidos/PED-BADTAX/nfev4/s1']).toBeUndefined();
+    expect(events.some((e) => e.startsWith('set:pedidos/PED-BADTAX/'))).toBe(false);
+    // Only the two good pedidos were allocated, generated and sent.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(2);
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
+    const goods = out.results.filter((r) => r.pedidoId !== 'PED-BADTAX');
+    expect(goods.map((r) => nnfOf(r)).sort()).toEqual(['000000001', '000000002']);
+  });
+
+  /**
+   * The two unbuildable-config classes the batch pre-flight holds back (#506).
+   * Both pass impostoSchema, so prep succeeds and only the engine finds out; the
+   * mixed-batch verdict below must not depend on which one it is.
+   */
+  const UNBUILDABLE = [
+    {
+      what: 'a partial CSOSN 900 group',
+      imposto: impostoCsosn900Parcial,
+      emitRtc: false,
+      reason: /CSOSN '900'.*ICMS próprio missing: modBC$/,
+    },
+    {
+      what: 'a draft configuracaoIBSCBS with RTC on',
+      imposto: impostoRtcRascunho,
+      emitRtc: true,
+      reason: /Invalid configuracaoIBSCBS \(RTC emission is on for this item\): /,
+    },
+  ];
+
+  it.each(UNBUILDABLE)(
+    'fails an unbuildable member ($what) only where it would regenerate — skip and stored-bytes members keep today’s behaviour (#506)',
+    async ({ imposto, emitRtc, reason }) => {
+      // Every member below except PED-FRESH resolves to the SAME unbuildable live
+      // imposto (an unstamped item is re-resolved on every call, so a config
+      // edited after emission gets here). Only PED-REJ would generate — its
+      // rejeitada doc regenerates under its own numeração — so only PED-REJ may
+      // fail; the others never build a projection.
+      const events: string[] = [];
+      const STORED_XML =
+        `<NFe><infNFe Id="NFe${fakeChave(7, 9)}">…stored…</infNFe>` +
+        '<Signature><SignedInfo><Reference><DigestValue>D==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+      const base = {
+        serie: 1,
+        tpEmis: '1',
+        idLote: '3',
+        retries: 0,
+        data_emissao: new Date().toISOString(),
+      };
+      const { fs, docs } = fakeFirestore({
+        events,
+        pedidos: [
+          { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+          {
+            pedidoId: 'PED-CRASH',
+            filialId: 'F-1',
+            imposto: imposto(),
+            existingNFe: {
+              ...base,
+              numeracao: 7,
+              estado: ESTADO_NFE.enviando, // anchor committed, send/outcome lost
+              chave: fakeChave(7, 9),
+              cStat: null,
+              xMotivo: null,
+              nRec: null,
+              xml_assinado: STORED_XML,
+            },
+          },
+          {
+            pedidoId: 'PED-BLOCKED',
+            filialId: 'F-1',
+            imposto: imposto(),
+            existingNFe: {
+              ...base,
+              numeracao: 5,
+              estado: ESTADO_NFE.aprovada,
+              chave: fakeChave(5, 1),
+              cStat: '100', // bloqueada → skip
+              xMotivo: 'Autorizado o uso da NF-e',
+              nRec: 'OLD',
+              xml_assinado: null,
+            },
+          },
+          {
+            pedidoId: 'PED-INFLIGHT',
+            filialId: 'F-1',
+            imposto: imposto(),
+            existingNFe: {
+              ...base,
+              numeracao: 6,
+              estado: ESTADO_NFE.aguardandoResposta,
+              chave: fakeChave(6, 2),
+              cStat: null,
+              xMotivo: null,
+              nRec: 'RECIBO-OLD', // sent → skip, the reconciler confirms it
+              xml_assinado: '<signed/>',
+            },
+          },
+          {
+            pedidoId: 'PED-REJ',
+            filialId: 'F-1',
+            imposto: imposto(),
+            existingNFe: {
+              ...base,
+              numeracao: 8,
+              estado: ESTADO_NFE.rejeitada,
+              chave: fakeChave(8, 3),
+              cStat: '225', // not bloqueada → reuse numeração 8 and REGENERATE
+              xMotivo: 'Rejeicao: Falha no Schema XML',
+              nRec: null,
+              xml_assinado: '<signed/>',
+            },
+          },
+          // An approved EPEC lives at the tpEmis-4 slot, which only a filial in
+          // EPEC contingency addresses — so it sits on F-2 (its own chunk), and
+          // its doc is seeded at `s4` below.
+          { pedidoId: 'PED-EPEC', filialId: 'F-2', imposto: imposto() },
+        ],
+        nfeConfigByFilial: {
+          'F-1': { ...SEED_NFE_CONFIG, emitirReformaTributaria: emitRtc },
+          'F-2': { ...EPEC_NFE_CONFIG, emitirReformaTributaria: emitRtc },
+        },
+      });
+      const EPEC_DOC = {
+        ...base,
+        numeracao: 9,
+        tpEmis: 4,
+        estado: ESTADO_NFE.epecAprovado,
+        // cUF + AAMM + CNPJ + mod + serie + nNF 9 + tpEmis 4 + cNF + DV
+        chave: '352606' + '14200166000187' + '55' + '001' + '000000009' + '4' + '00000004' + '8',
+        cStat: '136',
+        xMotivo: 'Evento registrado, mas nao vinculado a NF-e',
+        nRec: null,
+        xml_assinado: '<signed/>',
+        xml_epec_proc: '<procEventoNFe>…</procEventoNFe>',
+      };
+      docs['pedidos/PED-EPEC/nfev4/s4'] = EPEC_DOC;
+      autorizarLoteAsync('RECIBO-1');
+
+      const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+        'PED-FRESH',
+        'PED-CRASH',
+        'PED-BLOCKED',
+        'PED-INFLIGHT',
+        'PED-REJ',
+        'PED-EPEC',
+      ]);
+
+      expect(out.results).toHaveLength(6);
+      const byId = (id: string) => out.results.find((r) => r.pedidoId === id)!;
+      // The skip members come back exactly as before: their persisted state.
+      expect(byId('PED-BLOCKED')).toMatchObject({ estado: ESTADO_NFE.aprovada, reused: true });
+      expect(byId('PED-INFLIGHT')).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'RECIBO-OLD',
+        reused: true,
+      });
+      // The approved EPEC too — no error, no EPEC evento, no write, no nNF.
+      expect(byId('PED-EPEC')).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: true });
+      expect('errorCode' in byId('PED-EPEC')).toBe(false);
+      expect(vi.mocked(enviarEpec)).not.toHaveBeenCalled();
+      expect(events.some((e) => e.startsWith('set:pedidos/PED-EPEC/'))).toBe(false);
+      expect(docs['pedidos/PED-EPEC/nfev4/s4']).toBe(EPEC_DOC);
+      expect(
+        (docs['filiais/F-2/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+      ).toBe(0);
+      // The crash-window member rode the lote with its STORED bytes.
+      expect(byId('PED-CRASH')).toMatchObject({ estado: ESTADO_NFE.aguardandoResposta });
+      expect('errorCode' in byId('PED-CRASH')).toBe(false);
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+      const loteArg = vi.mocked(autorizarLote).mock.calls[0]![1] as { NFe: readonly string[] };
+      expect(loteArg.NFe).toHaveLength(2);
+      expect(loteArg.NFe).toContain(STORED_XML);
+      expect((docs['pedidos/PED-CRASH/nfev4/s1'] as { xml_assinado: unknown }).xml_assinado).toBe(
+        STORED_XML,
+      );
+      // Only the regenerating member fails, and it regenerates nothing.
+      const rej = byId('PED-REJ');
+      expect(rej).toMatchObject({ errorCode: 'NFeOrchestratorError' });
+      const rejMessage = 'errorMessage' in rej ? rej.errorMessage : '';
+      expect(rejMessage.startsWith("pedido 'PED-REJ' item 0 (produto 'P-1'): ")).toBe(true);
+      expect(rejMessage).toMatch(reason);
+      expect(events.some((e) => e.startsWith('set:pedidos/PED-REJ/'))).toBe(false);
+      expect(docs['pedidos/PED-REJ/nfev4/s1']).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        numeracao: 8,
+      });
+      // Only PED-FRESH was generated and consumed an nNF.
+      expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(generateNFe).mock.calls[0]![0].numeracao).toBe(1);
+      expect(
+        (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+      ).toBe(1);
+    },
+  );
+});
+
+describe('emitirPedidosLote — the tribute pre-flight honours the filial emitRtc (#506)', () => {
+  it('RTC on: a draft configuracaoIBSCBS fails that member before allocation — no nNF, no placeholder', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-OK', filialId: 'F-1' },
+        { pedidoId: 'PED-RTC', filialId: 'F-1', imposto: impostoRtcRascunho() },
+      ],
+      nfeConfigByFilial: { 'F-1': { ...SEED_NFE_CONFIG, emitirReformaTributaria: true } },
+    });
+    autorizarLoteAsync('RECIBO-1');
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-OK', 'PED-RTC']);
+
+    expect(out.results).toHaveLength(2);
+    const rtc = out.results.find((r) => r.pedidoId === 'PED-RTC')!;
+    // parseRtcConfig throws the engine's NFeTributeError, so the draft is the
+    // same operator-fixable per-item 400 as a partial CSOSN 900 group.
+    expect(rtc).toMatchObject({ errorCode: 'NFeOrchestratorError' });
+    expect('errorMessage' in rtc ? rtc.errorMessage : '').toMatch(
+      /^pedido 'PED-RTC' item 0 \(produto 'P-1'\): Invalid configuracaoIBSCBS \(RTC emission is on for this item\): /,
+    );
+    // The verdict is CARRIED to the chunk transaction, which classified its
+    // (absent) nfev4 doc first and failed it before counting it as fresh.
+    expect(events).toContain('get:pedidos/PED-RTC/nfev4/s1');
+    expect(events.some((e) => e.startsWith('set:pedidos/PED-RTC/'))).toBe(false);
+    expect(docs['pedidos/PED-RTC/nfev4/s1']).toBeUndefined();
+    // Only PED-OK consumed an nNF.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(1);
+  });
+
+  it('RTC off (near-miss): the same draft is never read — the pedido emits', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [{ pedidoId: 'PED-RTC', filialId: 'F-1', imposto: impostoRtcRascunho() }],
+    });
+    autorizarLoteAsync('RECIBO-1');
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-RTC']);
+
+    expect(out.results).toHaveLength(1);
+    expect('errorCode' in out.results[0]!).toBe(false);
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(1);
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+  });
 });
 
 describe('emitirPedidosLote — partial-failure aggregation', () => {
@@ -1002,13 +1329,6 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
 // ---------------------------------------------------------------------------
 
 describe('emitirPedidosLote — contingência EPEC', () => {
-  const EPEC_NFE_CONFIG: NFeConfig = {
-    ...SEED_NFE_CONFIG,
-    contingencia_modo: CONTINGENCIA_MODO.epec,
-    contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
-    contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
-  };
-
   const EPEC_CHAVE = '35260614200166000187550010000000091400000010';
 
   /** signNFe output parseable by the REAL extractEpecInputFromNFe. */

@@ -77,7 +77,18 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    engine `impostoSchema`** (an invalid stamp is re-resolved and
    replaced — #398). When nothing resolves, emission fails loudly:
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
-   bad sub-field (invalid stamp) — no silent fallback. The subcollection
+   bad sub-field (invalid stamp) — no silent fallback. An `imposto` that
+   passes `impostoSchema` but fails a build-time tribute guard (e.g. a
+   partial ICMSSN900/500 group, or a draft `configuracaoIBSCBS` with RTC
+   on) is **not** re-resolved: it fails as
+   `NFeOrchestratorError` naming pedido/item/produto (400; batch errorCode
+   `'NFeOrchestratorError'`) with no número consumed (#506) — single path:
+   inside the allocation tx, generated before its first write; batch: a
+   pre-flight after prep whose verdict `runChunkAllocateTx` applies before
+   counting the member. ⚠️ Only a pedido that would GENERATE may fail on it —
+   never pre-flight in `prepareEmission`: a bloqueada / in-flight nRec /
+   EPEC-approved / crash-window nfev4 doc must return or retransmit as before,
+   whatever the live config now says. The subcollection
    names are the LEGACY Flutter wire names on purpose (#423) — the migrated
    corpus carries those names, so legacy tax config resolves natively (scope keys:
    produto = typo `impostoOpercaoOuterRef`, categoria =

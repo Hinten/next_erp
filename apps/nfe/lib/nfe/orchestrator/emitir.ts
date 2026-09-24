@@ -68,7 +68,7 @@ import {
   persistPatch,
   swapAnchorForProc,
 } from './audit';
-import { buildGeneratorInput } from './generator-input';
+import { assertItemsBuildable, buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
 import { noopTaskScheduler, type TaskScheduler } from '../tasks';
 
@@ -117,6 +117,14 @@ export type TxOutcome =
  * stable nfev4 doc id. Pure (no SOAP, no Firestore writes). Throws
  * `NFeBlockedError` when `bloquearEmissaoNFe` is set so the batch path
  * can classify the pedido into the "Não emitidas" bucket cleanly.
+ *
+ * ⚠️ It deliberately does NOT dry-run the per-item tribute projection (#506):
+ * prep runs before the nfev4 doc is classified, so a pre-flight here would
+ * also gate the branches that never generate — bloqueada/autorizada,
+ * in-flight nRec, epecAprovado, and the #396 stored-bytes retransmit — on a
+ * live imposto config edited after emission. The batch path pre-flights in
+ * `emitirPedidosLote` and applies the verdict only where the chunk
+ * transaction would allocate or regenerate; the single path needs none.
  */
 export async function prepareEmission(
   fs: Firestore,
@@ -237,6 +245,54 @@ export async function prepareEmission(
     nfeRef,
     nfeConfigRef,
   };
+}
+
+/**
+ * Tribute pre-flight for ONE batch member (#506). An imposto can pass
+ * `impostoSchema` yet still be unbuildable — a partial ICMSSN500/900
+ * sub-group, a missing CSOSN sub-config, a CFOP/NCM/unidade neither tier sets
+ * — and only generation finds out. On the batch path that is too late:
+ * `processChunk` allocates in `runChunkAllocateTx` (4a) and generates only
+ * afterwards (4b), so the throw would consume an nNF and leave a chave-less
+ * placeholder needing fix + re-emit or inutilização.
+ *
+ * So this dry-runs the exact per-item projection generation runs
+ * (`assertItemsBuildable` → `buildGenItems`, same `items`, same `emitRtc`) and
+ * RETURNS the operator-fixable failure instead of throwing it: prep runs
+ * before the chunk transaction classifies the nfev4 doc, and only a member
+ * that would allocate or regenerate may be failed by it (see
+ * `runChunkAllocateTx`). Every stored-config defect the engine reports —
+ * including a draft `configuracaoIBSCBS` while RTC is on — arrives as an
+ * `NFeTributeError`/`TributeFormatError` that `buildGenItems` has already
+ * turned into an `NFeOrchestratorError`, so it is carried like any other.
+ * Anything else is not operator-fixable and propagates (rule 6): it fails the
+ * member in prep whatever its nfev4 doc holds, so a new engine throw that
+ * should be carried must be one of those tribute classes, never a plain
+ * `Error`.
+ *
+ * The single path does not call this: `runAllocateGenerateSignTx` generates
+ * inside its transaction, after classifying, before its first `tx.set` — so
+ * the same error aborts it with nothing written.
+ */
+function tributePreflight(prep: EmissionPrep): NFeOrchestratorError | null {
+  try {
+    assertItemsBuildable(prep.bundle, prep.items, prep.emitRtc);
+    return null;
+  } catch (err) {
+    if (err instanceof NFeOrchestratorError) return err;
+    throw err;
+  }
+}
+
+/**
+ * A batch member between prep and the chunk transaction: its prep plus the
+ * tribute pre-flight verdict (`tributePreflight`) — `null` when every item
+ * builds.
+ */
+export interface BatchMemberPrep {
+  readonly prep: EmissionPrep;
+  readonly pedidoId: string;
+  readonly buildError: NFeOrchestratorError | null;
 }
 
 /**
@@ -446,6 +502,11 @@ export async function runAllocateGenerateSignTx(
     const reuseCNF = reuse && existing.chave ? extractCNFFromChave(existing.chave) : undefined;
     const idLote = cfg.idLote + 1;
 
+    // Generate BEFORE the first tx.set: an unbuildable item (#506 — e.g. a
+    // partial ICMSSN900 group, surfaced by buildGenItems as a 400
+    // NFeOrchestratorError) aborts the transaction with nothing written, so
+    // this path needs no prep-phase pre-flight and only the branch that
+    // actually generates can be failed by the live imposto config.
     const { chave, signedXml, docData } = buildNfeDocWrite(
       bundle,
       items,
@@ -478,6 +539,18 @@ export async function runAllocateGenerateSignTx(
 /** One classified pedido from the chunk allocation transaction. */
 export type ChunkMember =
   | { skip: true; pedidoId: string; prep: EmissionPrep; existing: NotaFiscalEletronica }
+  | {
+      /**
+       * Would allocate (fresh) or regenerate (reuse), but its tribute
+       * pre-flight failed (#506): no nNF counted, no placeholder, no
+       * regenerate — `processChunk` reports `buildError` as this member's
+       * EmitError. A skip or stored-bytes member never lands here.
+       */
+      skip: true;
+      pedidoId: string;
+      prep: EmissionPrep;
+      buildError: NFeOrchestratorError;
+    }
   | {
       /**
        * Crash-window doc (#396): anchor committed (chave + xml_assinado) but
@@ -560,7 +633,11 @@ export function buildPlaceholderNfeDoc(
  *
  *   1. read `NFeConfig` once + every pedido's nfev4 doc;
  *   2. classify — bloqueada → skip (jaAprovadas bucket); existing
- *      non-bloqueada doc → reuse its numeração; absent → fresh;
+ *      non-bloqueada doc → reuse its numeração; absent → fresh. A member
+ *      that would reuse or go fresh but carries a pre-flight `buildError`
+ *      (#506) is failed HERE instead, before it is counted — it burns no nNF
+ *      and gets no placeholder. Skip and stored-bytes members ignore it:
+ *      they never generate, so the live config cannot fail them;
  *   3. bulk-allocate contiguous `nNF` for **exactly the fresh count** (the
  *      `proxima_numeracao_batch_transaction` technique) — skip/reuse burn
  *      no slot, so no `inutNFe` gap;
@@ -575,7 +652,7 @@ export function buildPlaceholderNfeDoc(
 export async function runChunkAllocateTx(
   fs: Firestore,
   filialId: string,
-  group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
+  group: ReadonlyArray<BatchMemberPrep>,
 ): Promise<{ members: ChunkMember[]; idLote: number }> {
   const nfeConfigRef = nfeConfigCollection.docRef(fs, { filialId }, DEFAULT_NFE_CONFIG_DOC_ID);
   return fs.runTransaction(async (tx) => {
@@ -638,6 +715,20 @@ export async function runChunkAllocateTx(
           signedXml: existing.xml_assinado,
         });
         storedStamps.push(sp.prep.nfeRef);
+        continue;
+      }
+      // Tribute pre-flight verdict (#506) — checked only NOW, after every
+      // branch that never generates, and before this member is counted into
+      // `freshCount` / `placeholders`: an unbuildable fresh or reuse member
+      // would otherwise take an nNF (and a chave-less placeholder) that 4b's
+      // generation then throws on.
+      if (sp.buildError != null) {
+        members.push({
+          skip: true,
+          pedidoId: sp.pedidoId,
+          prep: sp.prep,
+          buildError: sp.buildError,
+        });
         continue;
       }
 
@@ -987,27 +1078,34 @@ export async function emitirPedidosLote(
   // 1. Prepare every pedido in parallel. prepareEmission failures
   //    (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
   //    NFeOrchestratorError) become per-pedido EmitError entries — the
-  //    pedido never reaches a lote.
+  //    pedido never reaches a lote. The tribute pre-flight (#506) runs here
+  //    too, but its NFeOrchestratorError is CARRIED, not thrown: only the
+  //    chunk transaction knows whether the member would generate at all.
   // One read context for the whole batch — dedups the shared filial /
   // operação / regras reads and shares one imposto resolver per
   // operacaoId across all pedidos (PR-δ).
   const ctx = createBatchReadContext();
-  const preps = await Promise.allSettled(pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)));
+  const preps = await Promise.allSettled(
+    pedidoIds.map(async (pedidoId): Promise<BatchMemberPrep> => {
+      const prep = await prepareEmission(fs, rt, pedidoId, ctx);
+      return { prep, pedidoId, buildError: tributePreflight(prep) };
+    }),
+  );
   const results: Array<EmitResult | EmitError> = [];
-  const successPreps: Array<{ prep: EmissionPrep; pedidoId: string }> = [];
+  const successPreps: BatchMemberPrep[] = [];
   preps.forEach((p, i) => {
     const pedidoId = pedidoIds[i]!;
     if (p.status === 'rejected') {
       results.push(toEmitError(pedidoId, p.reason));
     } else {
-      successPreps.push({ prep: p.value, pedidoId });
+      successPreps.push(p.value);
     }
   });
   if (successPreps.length === 0) return { results };
 
   // 2. Group by filialId — each filial has its own NFeConfig + idLote
   //    counter. Mirrors the Flutter outer loop at tasks.dart:134.
-  const groups = new Map<string, Array<{ prep: EmissionPrep; pedidoId: string }>>();
+  const groups = new Map<string, BatchMemberPrep[]>();
   for (const sp of successPreps) {
     const filialId = sp.prep.bundle.filialId;
     const arr = groups.get(filialId) ?? [];
@@ -1016,10 +1114,7 @@ export async function emitirPedidosLote(
   }
 
   // 3. Sub-chunk each filial group into runs of ≤20 (Flutter parity).
-  const chunks: Array<{
-    filialId: string;
-    group: Array<{ prep: EmissionPrep; pedidoId: string }>;
-  }> = [];
+  const chunks: Array<{ filialId: string; group: BatchMemberPrep[] }> = [];
   for (const [filialId, group] of groups) {
     for (let i = 0; i < group.length; i += MAX_PEDIDOS_PER_CHUNK) {
       chunks.push({
@@ -1060,7 +1155,7 @@ export async function processChunk(
   fs: Firestore,
   baseRt: NFeBaseRuntime,
   filialId: string,
-  group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
+  group: ReadonlyArray<BatchMemberPrep>,
   scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<Array<EmitResult | EmitError>> {
   // The chunk is single-filial — resolve its A1 cert (or env fallback) once
@@ -1082,10 +1177,15 @@ export async function processChunk(
   const storedMembers: Array<Extract<ChunkMember, { reuseStored: true }>> = [];
   for (const m of members) {
     if (m.skip) {
-      // Mirrors Flutter's `jaAprovadas` short-circuit (tasks.dart:159) —
-      // a bloqueada/aprovada/cancelada nfev4 lands in the "Não emitidas"
-      // bucket instead of riding the lote.
-      txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
+      if ('buildError' in m) {
+        // #506 — failed by the tribute pre-flight before any nNF was counted.
+        txResults.push(toEmitError(m.pedidoId, m.buildError));
+      } else {
+        // Mirrors Flutter's `jaAprovadas` short-circuit (tasks.dart:159) —
+        // a bloqueada/aprovada/cancelada nfev4 lands in the "Não emitidas"
+        // bucket instead of riding the lote.
+        txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
+      }
     } else if (m.reuseStored) {
       storedMembers.push(m);
     } else {
