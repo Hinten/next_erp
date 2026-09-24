@@ -80,6 +80,12 @@ import {
   resolveSkuPaiAtributo,
 } from './publishCore';
 import { garantirMembroUnico } from './upSoleMemberWrite';
+import {
+  type AlvoFiscal,
+  type ResumoDadosFiscais,
+  enviarDadosFiscais,
+  registradoFiscal,
+} from './dadosFiscais';
 import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
 import { readListaDePrecos } from './listaDePrecosCache';
 import {
@@ -123,6 +129,13 @@ export interface PublishDeps {
    * without it), never anything else.
    */
   sellerUserId?: number | null;
+  /**
+   * The conta's `operacaoOuterRef` — what the per-SKU fiscal registration
+   * (#745) resolves each `Imposto` through, because it is the operação every ML
+   * order importer stamps on the pedido and so the one the nota uses. Null or
+   * absent reports every SKU `omitido` and makes no fiscal call at all.
+   */
+  operacaoOuterRef?: string | null;
   /** Listing type for FIRST publishes (link doc value wins on re-publish). */
   listingTypeId?: string | null;
   /**
@@ -158,6 +171,12 @@ export interface PublishResult {
   itemIds: string[];
   /** Items closed because their ERP variation no longer exists (UP only). */
   orfaosEncerrados: string[];
+  /**
+   * The per-SKU fiscal registration with ML's Faturador (#745). Best-effort:
+   * a refusal here never fails the publish — it is reported, and stamped on
+   * each SKU's link.
+   */
+  dadosFiscais: ResumoDadosFiscais;
 }
 
 export async function publishProduto(deps: PublishDeps, produtoId: string): Promise<PublishResult> {
@@ -775,6 +794,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // Variation links live under each CHILD produto, keyed back to the parent
   // link doc — matched by seller_custom_field (= the child produto id).
+  /** One fiscal SKU per variation ML confirmed (#745), collected as its link lands. */
+  const alvosFiscaisLegado: AlvoFiscal[] = [];
   for (const respVar of family ? [] : (item.variations ?? [])) {
     const childId = respVar.seller_custom_field;
     if (!childId) continue;
@@ -806,6 +827,19 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         sku: child.produto.sku ?? null,
       }),
     );
+    const childDoc = children.find((c) => c.id === childId);
+    if (childDoc) {
+      alvosFiscaisLegado.push({
+        produtoId: childId,
+        produto: childDoc.data,
+        pai: produto,
+        titulo: item.title ?? null,
+        itemId: item.id,
+        variationId: typeof respVar.id === 'number' ? respVar.id : null,
+        link: { colecao: 'variacaoMercadoLivre', produtoId: childId, docId: varDocId },
+        registrado: registradoFiscal(existing?.raw),
+      });
+    }
   }
 
   // ---- Description (link's own text wins; else the produto's extraData) ---
@@ -889,12 +923,59 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }
   }
 
+  // ---- Per-SKU fiscal data for ML's Faturador (#745) ----------------------
+  // Runs LAST, when the listing is already correct: no ML refusal here fails the
+  // publish (each is recorded on its SKU's link). One SKU per ERP produto ML now holds — every member of a
+  // UP family, every legacy variation, or the produto itself for a simple item.
+  const alvosFiscais: AlvoFiscal[] = family
+    ? family.written.flatMap((m, i): AlvoFiscal[] => {
+        const childDoc = children.find((c) => c.id === m.produtoId);
+        if (!childDoc) return [];
+        const state = upMembers.find((u) => u.produtoId === m.produtoId);
+        return [
+          {
+            produtoId: m.produtoId,
+            produto: childDoc.data,
+            pai: produto,
+            titulo: family.items[i]?.title ?? null,
+            itemId: m.itemId,
+            // Each UP member is its own item — there is no variation id to link.
+            variationId: null,
+            link: {
+              colecao: 'variacaoMercadoLivre',
+              produtoId: m.produtoId,
+              docId: m.varLinkDocId,
+            },
+            registrado: registradoFiscal(state?.raw),
+          },
+        ];
+      })
+    : children.length > 0
+      ? alvosFiscaisLegado
+      : [
+          {
+            produtoId,
+            produto,
+            pai: null,
+            titulo: item.title ?? null,
+            itemId: item.id,
+            variationId: null,
+            link: { colecao: 'produtoMercadoLivre', produtoId, docId: linkDocId },
+            registrado: registradoFiscal(linkDoc?.data),
+          },
+        ];
+  const dadosFiscais = await enviarDadosFiscais(
+    { db, api, operacaoOuterRef: deps.operacaoOuterRef ?? null },
+    alvosFiscais,
+  );
+
   return {
     itemId: parentExternalId,
     estado,
     permalink: item.permalink ?? null,
     itemIds: family ? family.itemIds : [item.id],
     orfaosEncerrados,
+    dadosFiscais,
   };
 }
 

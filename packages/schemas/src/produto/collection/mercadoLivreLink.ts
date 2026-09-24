@@ -402,6 +402,52 @@ export function moderacaoRemoveuAnuncio(
   return status === 'under_review' && (subStatus ?? []).includes('forbidden');
 }
 
+/**
+ * Outcome of the last per-SKU fiscal registration with ML's Faturador
+ * (`items/fiscal_information`, #745): `enviado` (registered and linked),
+ * `omitido` (deliberately not sent — the reason says which data is missing),
+ * `erro` (ML refused, or the call failed).
+ */
+export const estadoDadosFiscaisMlSchema = z.enum(['enviado', 'omitido', 'erro']);
+export type EstadoDadosFiscaisMl = z.infer<typeof estadoDadosFiscaisMlSchema>;
+
+/** Named members of {@link estadoDadosFiscaisMlSchema}. */
+export const ESTADO_DADOS_FISCAIS_ML = {
+  enviado: 'enviado',
+  omitido: 'omitido',
+  erro: 'erro',
+} as const satisfies Record<string, EstadoDadosFiscaisMl>;
+
+/**
+ * The fiscal-registration record, spread into BOTH link schemas: onto the
+ * parent `produtoMercadoLivre` link for a simple item, onto the child's
+ * `variacaoMercadoLivre` link for a legacy variation or a User-Products member —
+ * one fiscal SKU per ERP produto that carries a `SELLER_SKU`.
+ *
+ * ⚠️ FLAT scalars on purpose: these are written through `update()`-backed
+ * patches and `assertFlatUpdatePatch` throws on a nested object.
+ *
+ * ⚠️ One writer — `enviarDadosFiscais` in `apps/mercado-livre` — and every value
+ * is derived from the calls that same run just made, so there is nothing to
+ * lose a race with (root `CLAUDE.md` rule 7, tier 0): a concurrent publish
+ * writes its own equally true outcome. `.nullable().optional()` because the
+ * client never writes them and every link that predates #745 lacks them.
+ *
+ * `dadosFiscaisSku` + `dadosFiscaisItemId` record the SKU ↔ item LINK ML
+ * confirmed; while both still match, a re-send skips the link call.
+ * `podeFaturar` is ML's own `can_invoice` answer — `null` when never asked or
+ * when the read failed, never a guessed `false`.
+ */
+const dadosFiscaisMlFields = {
+  dadosFiscaisEstado: estadoDadosFiscaisMlSchema.nullable().optional(),
+  /** pt-BR: why it was `omitido`, or ML's message when it was an `erro`. */
+  dadosFiscaisMotivo: z.string().nullable().optional(),
+  dadosFiscaisSku: z.string().nullable().optional(),
+  dadosFiscaisItemId: z.string().nullable().optional(),
+  dadosFiscaisEm: millisSinceEpoch().nullable().optional(),
+  podeFaturar: z.boolean().nullable().optional(),
+};
+
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
 export const produtoMercadoLivreLinkSchema = z
   .object({
@@ -563,6 +609,9 @@ export const produtoMercadoLivreLinkSchema = z
 
     ultimaModificacao: millisSinceEpoch().nullable().default(null),
     dataCadastro: millisSinceEpoch().nullable().default(null),
+
+    /** Simple item only — see {@link dadosFiscaisMlFields}. */
+    ...dadosFiscaisMlFields,
   })
   .passthrough();
 export type ProdutoMercadoLivreLink = z.infer<typeof produtoMercadoLivreLinkSchema>;
@@ -687,6 +736,9 @@ export const variacaoMercadoLivreLinkSchema = z
      * a member IS its own item, ever populates this.
      */
     moderacoes: z.array(mlModeracaoSchema).nullable().default(null),
+
+    /** This child's own fiscal SKU — see {@link dadosFiscaisMlFields}. */
+    ...dadosFiscaisMlFields,
   })
   .passthrough();
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;
