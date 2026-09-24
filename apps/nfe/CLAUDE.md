@@ -102,6 +102,13 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `NODE_ENV='test'` passthrough — the transport one deliberately has none,
    because `nfe-live` runs the live homologação suites through Vitest, so a
    test escape there would disable the guard in the one job that reaches SEFAZ.
+   A third transport guard, `assertSafeEndpointForTransport`, judges the URL
+   rather than the label: a produção-only SEFAZ host is refused unless
+   `NFE_ALLOW_PRODUCAO=true`, and a `tpAmb='2'` call aimed at one is always
+   refused. ⚠️ Both NF-e `vitest.config.ts` files pin `NFE_AMBIENTE=homologacao`
+   and `NFE_ALLOW_PRODUCAO=''` AFTER the `.env`/shell spreads, so no Vitest run
+   can reach produção from a local `.env.local`; a test needing produção
+   semantics uses `vi.stubEnv` inside the test.
 9. **Never log raw error objects or cert/XML-bearing values in NF-e code
    paths; never read `NFE_CERT_*` env vars outside the unified loader.**
    Use `safeErrorShape(err)` for catch blocks and

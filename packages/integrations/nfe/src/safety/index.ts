@@ -18,9 +18,17 @@
  * So anything that can reach the network calls {@link assertSafeTpAmbForTransport}
  * instead, which honours `NFE_ALLOW_PRODUCAO` and nothing else.
  *
- *   assertSafeTpAmb              — the NF-e generator, before any work.
- *   assertSafeTpAmbForTransport  — every SOAP operation, immediately before the POST.
+ * ⚠️ That guard judges the call's `tpAmb` LABEL, and the label and the URL are
+ * independent fields of `SefazCall`: `{ tpAmb: '2', url: <produção host> }` sails
+ * through it. {@link assertSafeEndpointForTransport} closes that by judging the
+ * destination itself.
+ *
+ *   assertSafeTpAmb                 — the NF-e generator, before any work.
+ *   assertSafeTpAmbForTransport     — every SOAP operation, immediately before the POST.
+ *   assertSafeEndpointForTransport  — the same boundaries, on the URL rather than the label.
  */
+
+import { sefazHostsFor } from '../endpoints';
 
 export class NFeProductionGuardError extends Error {
   constructor(message: string) {
@@ -81,6 +89,64 @@ export function assertSafeTpAmbForTransport(tpAmb: TpAmb): void {
       "Use tpAmb='2' (homologação) for non-production work. " +
       'NODE_ENV=test does NOT clear this guard: the live CI suites are themselves ' +
       'Vitest, so a test passthrough here would be no guard at all.',
+  );
+}
+
+let producaoOnlyHosts: ReadonlySet<string> | null = null;
+
+/**
+ * Hostnames that serve ONLY produção: every produção host in the endpoint
+ * tables minus any host a homologação table also routes to. Lazy + memoised —
+ * the tables are static.
+ *
+ * The subtraction is load-bearing: `cad.svrs.rs.gov.br` answers Consulta Cadastro
+ * for BOTH ambientes (see `sefazHostsFor`), so treating it as produção would block
+ * legitimate homologação traffic. On such a shared host only the `tpAmb` label —
+ * {@link assertSafeTpAmbForTransport} — can tell the two apart.
+ */
+export function producaoOnlySefazHosts(): ReadonlySet<string> {
+  if (producaoOnlyHosts == null) {
+    const homologacao = sefazHostsFor('homologacao');
+    producaoOnlyHosts = new Set(
+      [...sefazHostsFor('producao')].filter((host) => !homologacao.has(host)),
+    );
+  }
+  return producaoOnlyHosts;
+}
+
+/** Lower-cased hostname without a trailing root dot, or `null` when `url` is not a URL. */
+function sefazHostOf(url: string): string | null {
+  if (!URL.canParse(url)) return null;
+  return new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * The transport guard on the DESTINATION rather than the label. Call it next to
+ * {@link assertSafeTpAmbForTransport}, immediately before anything that can put
+ * bytes on the wire to SEFAZ.
+ *
+ * For a produção-only SEFAZ host ({@link producaoOnlySefazHosts}):
+ *   - `tpAmb='2'` always throws — the label says homologação while the URL says
+ *     produção, and no env var makes that disagreement safe to send;
+ *   - `tpAmb='1'` throws unless `NFE_ALLOW_PRODUCAO === 'true'` (the same opt-in
+ *     as the label guard, and likewise no `NODE_ENV='test'` passthrough).
+ *
+ * Any other URL (homologação hosts, the shared dual-ambiente host, test fakes
+ * such as `https://example/…`) is left to the label guard.
+ */
+export function assertSafeEndpointForTransport(url: string, tpAmb: TpAmb): void {
+  const host = sefazHostOf(url);
+  if (host == null || !producaoOnlySefazHosts().has(host)) return;
+  if (tpAmb === '2') {
+    throw new NFeProductionGuardError(
+      `tpAmb='2' (homologação) aimed at the produção-only SEFAZ host '${host}': ` +
+        'the ambiente label and the URL disagree, refusing to send.',
+    );
+  }
+  if (process.env.NFE_ALLOW_PRODUCAO === 'true') return;
+  throw new NFeProductionGuardError(
+    `The produção-only SEFAZ host '${host}' requires NFE_ALLOW_PRODUCAO=true. ` +
+      'NODE_ENV=test does NOT clear this guard.',
   );
 }
 

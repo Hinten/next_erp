@@ -27,7 +27,7 @@ import { rootCertificates } from 'node:tls';
 import { HttpClient } from 'soap';
 
 import type { NFeCertificate } from '../cert';
-import { assertSafeTpAmbForTransport, type TpAmb } from '../safety';
+import { assertSafeEndpointForTransport, assertSafeTpAmbForTransport, type TpAmb } from '../safety';
 import { validateXsd, type XsdRootKey } from '../xsd';
 
 const NFE_WSDL_BASE = 'http://www.portalfiscal.inf.br/nfe/wsdl';
@@ -415,6 +415,7 @@ async function postSoapValidated(
   dadosMsg: string,
 ): Promise<PostResult> {
   assertSafeTpAmbForTransport(call.tpAmb);
+  assertSafeEndpointForTransport(call.url, call.tpAmb);
   await validateXsd(contract.requestRoot, dadosMsg);
   const result = await postSoap({
     url: call.url,
@@ -494,6 +495,7 @@ export async function nfeConsultaCadastro(
   cUF: string,
 ): Promise<PostResult> {
   assertSafeTpAmbForTransport(call.tpAmb);
+  assertSafeEndpointForTransport(call.url, call.tpAmb);
   return postSoap({
     url: call.url,
     operation: 'NFeConsultaCadastro',

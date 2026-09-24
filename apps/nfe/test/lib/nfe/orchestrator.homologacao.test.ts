@@ -473,6 +473,11 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
+    // Tripwire before any SEFAZ call: this suite must only ever talk to
+    // homologação. The vitest config pins NFE_AMBIENTE; this fails loudly if
+    // that pin (or the runtime's ambiente → tpAmb derivation) ever regresses.
+    expect(rt.ambiente).toBe('homologacao');
+    expect(rt.tpAmb).toBe('2');
     // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
     // "SEFAZ-SP HOM status gate" step runs operations.homologacao
     // immediately before this suite and short-circuits the whole job

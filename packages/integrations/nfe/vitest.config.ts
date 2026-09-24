@@ -15,6 +15,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    env: { ...envFromFiles, ...process.env },
+    // ⚠️ The two NF-e keys are pinned AFTER both spreads, on purpose: neither a
+    // repo-root `.env.local` nor the shell can point a Vitest run in this package at
+    // SEFAZ produção. A test that needs produção semantics stubs them inside the
+    // test (`vi.stubEnv`, as `test/safety/safety.test.ts` does).
+    // `test/safety/test-env-pin.test.ts` proves the pin holds.
+    env: { ...envFromFiles, ...process.env, NFE_AMBIENTE: 'homologacao', NFE_ALLOW_PRODUCAO: '' },
   },
 });

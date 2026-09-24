@@ -2,9 +2,18 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getAnEndpoints,
+  getEndpoints,
+  getSvcEndpoints,
+  sefazHostsFor,
+  supportedUFs,
+} from '../../src/endpoints/index';
+import {
+  assertSafeEndpointForTransport,
   assertSafeTpAmb,
   assertSafeTpAmbForTransport,
   NFeProductionGuardError,
+  producaoOnlySefazHosts,
   tpAmbFromAmbiente,
 } from '../../src/safety/index';
 
@@ -110,6 +119,118 @@ describe('assertSafeTpAmbForTransport', () => {
 });
 
 /**
+ * The destination guard. `SefazCall.tpAmb` and `SefazCall.url` are independent
+ * fields, so the label guard above passes `{ tpAmb: '2', url: <produção> }`.
+ *
+ * ⚠️ Like the label guard's tests, these do NOT stub `NODE_ENV` — Vitest's ambient
+ * `'test'` is the condition the live CI suites run under.
+ */
+describe('assertSafeEndpointForTransport', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Every (label, URL) pair the endpoint tables hold for one ambiente. */
+  function tableUrls(ambiente: 'producao' | 'homologacao'): Array<[string, string]> {
+    const out: Array<[string, string]> = [];
+    const add = (tag: string, table: object) => {
+      for (const [service, url] of Object.entries(table)) {
+        if (typeof url === 'string') out.push([`${tag}.${service}`, url]);
+      }
+    };
+    for (const uf of supportedUFs()) add(uf, getEndpoints(uf, ambiente));
+    add('SVC-AN', getSvcEndpoints('svc-an', ambiente));
+    add('SVC-RS', getSvcEndpoints('svc-rs', ambiente));
+    add('AN', getAnEndpoints(ambiente));
+    return out;
+  }
+
+  const hostOf = (url: string) => new URL(url).hostname.toLowerCase();
+
+  it('pins the hosts that serve BOTH ambientes — a new one must be a conscious decision', () => {
+    const homologacao = sefazHostsFor('homologacao');
+    const shared = [...sefazHostsFor('producao')].filter((h) => homologacao.has(h)).sort();
+    // RS points Consulta Cadastro at the same URL for both ambientes; only the
+    // tpAmb label can tell them apart there, so the host guard must stand aside.
+    expect(shared).toEqual(['cad.svrs.rs.gov.br']);
+    expect(producaoOnlySefazHosts().has('cad.svrs.rs.gov.br')).toBe(false);
+  });
+
+  it('treats every other produção host as produção-only (anti-vacuity)', () => {
+    const producaoOnly = producaoOnlySefazHosts();
+    expect(producaoOnly.size).toBeGreaterThan(10);
+    for (const [where, url] of tableUrls('producao')) {
+      if (hostOf(url) === 'cad.svrs.rs.gov.br') continue;
+      expect(producaoOnly.has(hostOf(url)), where).toBe(true);
+    }
+  });
+
+  it("refuses tpAmb='2' on every produção-only URL, even with NFE_ALLOW_PRODUCAO=true", () => {
+    vi.stubEnv('NFE_ALLOW_PRODUCAO', 'true');
+    let checked = 0;
+    for (const [where, url] of tableUrls('producao')) {
+      if (!producaoOnlySefazHosts().has(hostOf(url))) continue;
+      expect(() => assertSafeEndpointForTransport(url, '2'), where).toThrow(
+        /label and the URL disagree/,
+      );
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(50);
+  });
+
+  it("refuses tpAmb='1' on every produção-only URL without the opt-in, under NODE_ENV=test", () => {
+    expect(process.env.NODE_ENV).toBe('test');
+    for (const v of ['1', 'yes', 'TRUE', 'false', '']) {
+      vi.stubEnv('NFE_ALLOW_PRODUCAO', v);
+      for (const [where, url] of tableUrls('producao')) {
+        if (!producaoOnlySefazHosts().has(hostOf(url))) continue;
+        expect(() => assertSafeEndpointForTransport(url, '1'), `${where} ${v}`).toThrow(
+          NFeProductionGuardError,
+        );
+      }
+    }
+  });
+
+  it("allows tpAmb='1' on a produção-only URL only with NFE_ALLOW_PRODUCAO=true", () => {
+    vi.stubEnv('NFE_ALLOW_PRODUCAO', 'true');
+    const url = getEndpoints('SP', 'producao').NfeAutorizacao;
+    expect(() => assertSafeEndpointForTransport(url, '1')).not.toThrow();
+  });
+
+  it('near-miss: every homologação URL passes with the homologação label', () => {
+    // Includes the shared RS Consulta Cadastro URL — the one byte-identical to its
+    // produção twin — which is exactly why the host set is a DIFFERENCE.
+    const urls = tableUrls('homologacao');
+    expect(urls.length).toBeGreaterThan(50);
+    for (const [where, url] of urls) {
+      expect(() => assertSafeEndpointForTransport(url, '2'), where).not.toThrow();
+    }
+  });
+
+  it('cannot be dodged by host case or a trailing root dot', () => {
+    for (const url of [
+      'https://NFE.FAZENDA.SP.GOV.BR/ws/nfeautorizacao4.asmx',
+      'https://nfe.fazenda.sp.gov.br./ws/nfeautorizacao4.asmx',
+      'https://nfe.fazenda.sp.gov.br:443/ws/some-unlisted-service.asmx',
+    ]) {
+      expect(() => assertSafeEndpointForTransport(url, '2'), url).toThrow(NFeProductionGuardError);
+    }
+  });
+
+  it('leaves non-SEFAZ destinations (test fakes, garbage) to the label guard', () => {
+    for (const url of [
+      'https://example/svc',
+      'https://sefaz.example.invalid/NfeAutorizacao',
+      'https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeautorizacao4.asmx',
+      'not a url',
+      '',
+    ]) {
+      expect(() => assertSafeEndpointForTransport(url, '2'), url).not.toThrow();
+    }
+  });
+});
+
+/**
  * Wiring: the SOAP layer must use the TRANSPORT variant at every POST.
  *
  * Without this the two functions above can both be correct while `soap/index.ts`
@@ -146,6 +267,15 @@ describe('the SOAP layer is wired to the transport guard', () => {
       guards,
       `${posts} postSoap() call site(s) but ${guards} assertSafeTpAmbForTransport() call(s). ` +
         'Every boundary that can reach SEFAZ must be guarded immediately before the POST.',
+    ).toBe(posts);
+
+    // The label guard alone trusts `call.tpAmb`, which is independent of `call.url`
+    // — so every boundary also judges the destination. Same derived count.
+    const endpointGuards = (code.match(/assertSafeEndpointForTransport\(/g) ?? []).length;
+    expect(
+      endpointGuards,
+      `${posts} postSoap() call site(s) but ${endpointGuards} assertSafeEndpointForTransport() ` +
+        'call(s). A tpAmb label cannot prove where the bytes go; guard the URL at every boundary.',
     ).toBe(posts);
 
     // ...and none of them may use the permissive variant, whose NODE_ENV='test'
