@@ -4,8 +4,10 @@
  * a doc that reached a final estado DIFFERENT from the patch's mid-flight is
  * never overwritten (`written: false` + the doc's live truth); everything
  * else writes exactly what `persistPatch` writes (shared mapping). Under a
- * `PersistGuard` (#512) a doc re-stamped by a newer lote is skipped the same
- * way, and a missing doc is refused instead of written.
+ * `PersistGuard` a doc on which any stated condition fails is skipped the
+ * same way — re-stamped by a newer lote (#512), or another receipt, another
+ * `retries` or no longer in flight (#513) — and a missing doc is refused
+ * instead of written.
  *
  * Firestore is faked at the `runTransaction` seam; `nfev4Collection`
  * parseRead/parseMerge are passthrough mocks so the shapes stay visible.
@@ -23,7 +25,11 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 import type { NFeStatePatch } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
-import { persistPatch, persistPatchUnlessFinal } from '../../../lib/nfe/orchestrator/audit';
+import {
+  type PersistGuard,
+  persistPatch,
+  persistPatchUnlessFinal,
+} from '../../../lib/nfe/orchestrator/audit';
 import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 const NFE_REF = { path: 'pedidos/PED-1/nfev4/s1' } as never;
@@ -245,6 +251,150 @@ describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
 
     await expect(p).rejects.toBeInstanceOf(NFeOrchestratorError);
     await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*lote 12/);
+    expect(txSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('persistPatchUnlessFinal with a #513 PersistGuard (receipt + retries + in flight)', () => {
+  /** reconcileLoteSemProtocolo's counted write, decided on a doc read at retries 3. */
+  const GUARD = { expectedNRec: 'REC-1', expectedRetries: 3, requireInFlight: true } as const;
+  const contada = (): NFeStatePatch =>
+    patchOf({
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '104',
+      xMotivo: 'Lote processado | protNFe desta chave ausente (consulta 4/10)',
+      retries: 4,
+      action: 'recover-via-consulta',
+    });
+  /** The stored doc the counted write was decided on — every condition holds. */
+  const premissa = {
+    estado: ESTADO_NFE.aguardandoResposta,
+    nRec: 'REC-1',
+    retries: 3,
+    cStat: '104',
+    xMotivo: 'Lote processado',
+  };
+
+  it('every condition holds on the stored doc → writes', async () => {
+    const { fs, txSet } = fakeFs(premissa);
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, contada(), undefined, GUARD);
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+    expect(txSet.mock.calls[0]![1]).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      retries: 4,
+    });
+  });
+
+  // Each condition alone: a stored doc on which it HOLDS writes; its near-miss
+  // is refused with the live doc — and every other field stays as the premise.
+  it.each<[string, PersistGuard, Record<string, unknown>, Record<string, unknown>]>([
+    ['expectedNRec', { expectedNRec: 'REC-1' }, { nRec: 'REC-1' }, { nRec: 'REC-2' }],
+    ['expectedNRec (stored null)', { expectedNRec: 'REC-1' }, { nRec: 'REC-1' }, { nRec: null }],
+    ['expectedRetries', { expectedRetries: 3 }, { retries: 3 }, { retries: 4 }],
+    [
+      'expectedRetries (legacy null = 0)',
+      { expectedRetries: 0 },
+      { retries: null },
+      { retries: 1 },
+    ],
+    [
+      'requireInFlight (enviando / error)',
+      { requireInFlight: true },
+      { estado: ESTADO_NFE.enviando },
+      { estado: ESTADO_NFE.error, cStat: '656' },
+    ],
+    [
+      'requireInFlight (aguardandoResposta / rejeitada)',
+      { requireInFlight: true },
+      { estado: ESTADO_NFE.aguardandoResposta },
+      { estado: ESTADO_NFE.rejeitada, cStat: '217' },
+    ],
+  ])(
+    '%s: holds → writes; near-miss → NO write, the live doc returned',
+    async (_c, guard, ok, quase) => {
+      const passa = fakeFs({ ...premissa, ...ok });
+      expect(await persistPatchUnlessFinal(passa.fs, NFE_REF, contada(), undefined, guard)).toEqual(
+        {
+          written: true,
+        },
+      );
+      expect(passa.txSet).toHaveBeenCalledTimes(1);
+
+      const vivo = { ...premissa, ...quase };
+      const falha = fakeFs(vivo);
+      expect(await persistPatchUnlessFinal(falha.fs, NFE_REF, contada(), undefined, guard)).toEqual(
+        {
+          written: false,
+          estadoAtual: vivo.estado,
+          cStatAtual: vivo.cStat,
+          xMotivoAtual: vivo.xMotivo,
+          nRecAtual: vivo.nRec,
+        },
+      );
+      expect(falha.txSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a condition the guard OMITS is not checked (the #512 guard ignores nRec / retries / estado)', async () => {
+    const { fs, txSet } = fakeFs({
+      estado: ESTADO_NFE.error,
+      idLote: '12',
+      nRec: 'OUTRO',
+      retries: 7,
+    });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, contada(), undefined, {
+      expectedIdLote: '12',
+    });
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('combined with expectedIdLote: all hold → writes; any ONE failing → NO write', async () => {
+    const combinada = { ...GUARD, expectedIdLote: '12' } as const;
+    const base = { ...premissa, idLote: '12' };
+
+    const ok = fakeFs(base);
+    expect(await persistPatchUnlessFinal(ok.fs, NFE_REF, contada(), undefined, combinada)).toEqual({
+      written: true,
+    });
+
+    for (const quase of [
+      { idLote: '13' },
+      { nRec: 'REC-2' },
+      { retries: 4 },
+      { estado: ESTADO_NFE.error },
+    ]) {
+      const falha = fakeFs({ ...base, ...quase });
+      const r = await persistPatchUnlessFinal(falha.fs, NFE_REF, contada(), undefined, combinada);
+      expect(r.written).toBe(false);
+      expect(falha.txSet).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a FINAL estado still refuses first, whatever the guard says', async () => {
+    const { fs, txSet } = fakeFs({ ...premissa, estado: ESTADO_NFE.aprovada, cStat: '100' });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, contada(), undefined, {
+      expectedNRec: 'REC-1',
+      expectedRetries: 3,
+    });
+
+    expect(r).toMatchObject({ written: false, estadoAtual: ESTADO_NFE.aprovada });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a missing doc under a #513 guard → rejects NFeOrchestratorError naming the receipt, nothing written', async () => {
+    const { fs, txSet } = fakeFs(null);
+
+    const p = persistPatchUnlessFinal(fs, NFE_REF, contada(), undefined, GUARD);
+
+    await expect(p).rejects.toBeInstanceOf(NFeOrchestratorError);
+    await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*recibo REC-1/);
     expect(txSet).not.toHaveBeenCalled();
   });
 });
