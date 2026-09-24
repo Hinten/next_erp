@@ -428,7 +428,8 @@ default** (PR #313). What exists:
   **no XSD regen** was needed for the core layout.
 - **Builders** in `packages/integrations/nfe/src/tribute/rtc.ts`:
   `buildIBSCBS` (item Grupo UB), `buildIS` (item IS), `computeRtcItemValues`
-  (shared item↔total math), `parseRtcConfig` (strict build-time validation).
+  (shared item↔total math), `parseRtcConfig` (strict build-time validation;
+  throws `NFeTributeError`, so `apps/nfe` reports a draft as a per-item 400).
   Only the **"tributação integral"** shape is modelled (CST + cClassTrib +
   IBS-UF/Mun + CBS); diferimento / redução / monofásica / crédito presumido
   are follow-ups.

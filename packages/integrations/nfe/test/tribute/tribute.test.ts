@@ -16,6 +16,7 @@ import {
   aggregateRetTrib,
   aggregateTotals,
   buildImpostoXml,
+  buildIS,
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
@@ -23,6 +24,8 @@ import {
   fmtRate,
   NFeTributeError,
   TributeFormatError,
+  type ConfiguracaoICMS,
+  type ConfiguracaoISRtc,
   type ConfiguracaoISSQN,
   type Imposto,
   type Retencao,
@@ -30,7 +33,16 @@ import {
 // Not on the barrel (only `buildPagXml` is) — reached directly so the typed
 // <pag> value can be asserted without widening the package's public surface.
 import { buildPagObject } from '../../src/tribute/pag';
-import { IND_INCENTIVO, IND_ISS, ORIGEM } from '@delfrance/schemas';
+import {
+  confICMSSN500Schema,
+  confICMSSN900Schema,
+  CSOSN,
+  IND_INCENTIVO,
+  IND_ISS,
+  MOD_BC,
+  MOD_BCST,
+  ORIGEM,
+} from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -149,6 +161,24 @@ function impostoFor500(): Imposto {
   });
 }
 
+/** Capture the message of the NFeTributeError buildImpostoXml throws. */
+function tributeErrorMessage(imposto: Imposto): string {
+  try {
+    buildImpostoXml(imposto, item1500);
+  } catch (err) {
+    if (err instanceof NFeTributeError) return err.message;
+    throw err;
+  }
+  throw new Error('expected buildImpostoXml to throw NFeTributeError');
+}
+
+/** The `<ICMS>…</ICMS>` slice of a built `<imposto>`, for exact-byte pins. */
+function icmsXmlOf(impostoXml: string): string {
+  const match = /<ICMS>.*?<\/ICMS>/.exec(impostoXml);
+  if (match == null) throw new Error('expected an <ICMS> group in the built <imposto>');
+  return match[0];
+}
+
 // ---------------------------------------------------------------------------
 // CSOSN dispatcher — one test per variant
 // ---------------------------------------------------------------------------
@@ -211,17 +241,18 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
 
   it('CSOSN 500 → ICMSSN500 (ST já retido)', async () => {
     const xml = buildImpostoXml(impostoFor500(), item1500);
-    expect(xml).toContain('<ICMSSN500>');
-    expect(xml).toContain('<vBCSTRet>1500.00</vBCSTRet>');
-    expect(xml).toContain('<pST>18.0000</pST>');
-    expect(xml).toContain('<vICMSSTRet>270.00</vICMSSTRet>');
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<vBCSTRet>1500.00</vBCSTRet><pST>18.0000</pST><vICMSSTRet>270.00</vICMSSTRet>' +
+        '</ICMSSN500></ICMS>',
+    );
     await assertXsdValid(xml);
   });
 
-  it('CSOSN 900 → ICMSSN900 (kitchen sink, all optional)', async () => {
+  it('CSOSN 900 → ICMSSN900 (own ICMS + crédito SN groups)', async () => {
     const imposto = impostoFor('900', {
       csosn900: {
-        modBC: '3',
+        modBC: MOD_BC.valorOperacao,
         vBC: 1500,
         pICMS: 18,
         vICMS: 270,
@@ -230,9 +261,88 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
       },
     });
     const xml = buildImpostoXml(imposto, item1500);
-    expect(xml).toContain('<ICMSSN900>');
-    expect(xml).toContain('<vBC>1500.00</vBC>');
-    expect(xml).toContain('<vICMS>270.00</vICMS>');
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>3</modBC><vBC>1500.00</vBC><pICMS>18.0000</pICMS><vICMS>270.00</vICMS>' +
+        '<pCredSN>1.2500</pCredSN><vCredICMSSN>18.75</vCredICMSSN>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // Characterization pins (#506): the exact <ICMS> bytes with every XSD
+  // sub-group of ICMSSN500 / ICMSSN900 complete and every optional member set,
+  // in the XSD sequence order — so a group guard can be shown not to move a
+  // byte of a valid config.
+  it('CSOSN 500 → ICMSSN500 with every group complete (incl. vICMSSubstituto)', async () => {
+    const imposto = impostoFor(CSOSN.icmsCobradoAnteriormente, {
+      csosn500: {
+        vBCSTRet: 1500,
+        pST: 20,
+        vICMSSubstituto: 120,
+        vICMSSTRet: 180,
+        vBCFCPSTRet: 1500,
+        pFCPSTRet: 2,
+        vFCPSTRet: 30,
+        pRedBCEfet: 10,
+        vBCEfet: 1350,
+        pICMSEfet: 18,
+        vICMSEfet: 243,
+      },
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        // ICMS-ST retido
+        '<vBCSTRet>1500.00</vBCSTRet><pST>20.0000</pST>' +
+        '<vICMSSubstituto>120.00</vICMSSubstituto><vICMSSTRet>180.00</vICMSSTRet>' +
+        // FCP-ST retido
+        '<vBCFCPSTRet>1500.00</vBCFCPSTRet><pFCPSTRet>2.0000</pFCPSTRet>' +
+        '<vFCPSTRet>30.00</vFCPSTRet>' +
+        // ICMS efetivo
+        '<pRedBCEfet>10.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 900 → ICMSSN900 with every group complete and every optional set', async () => {
+    const imposto = impostoFor(CSOSN.outros, {
+      csosn900: {
+        modBC: MOD_BC.valorOperacao,
+        vBC: 1350,
+        pRedBC: 10,
+        pICMS: 18,
+        vICMS: 243,
+        modBCST: MOD_BCST.margemValorAgregado,
+        pMVAST: 40,
+        pRedBCST: 10,
+        vBCST: 1890,
+        pICMSST: 18,
+        vICMSST: 97.2,
+        vBCFCPST: 1890,
+        pFCPST: 2,
+        vFCPST: 37.8,
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+      },
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        // ICMS próprio
+        '<modBC>3</modBC><vBC>1350.00</vBC><pRedBC>10.0000</pRedBC>' +
+        '<pICMS>18.0000</pICMS><vICMS>243.00</vICMS>' +
+        // ICMS-ST
+        '<modBCST>4</modBCST><pMVAST>40.0000</pMVAST><pRedBCST>10.0000</pRedBCST>' +
+        '<vBCST>1890.00</vBCST><pICMSST>18.0000</pICMSST><vICMSST>97.20</vICMSST>' +
+        // FCP-ST (nested inside the ST sequence)
+        '<vBCFCPST>1890.00</vBCFCPST><pFCPST>2.0000</pFCPST><vFCPST>37.80</vFCPST>' +
+        // crédito SN
+        '<pCredSN>1.2500</pCredSN><vCredICMSSN>18.75</vCredICMSSN>' +
+        '</ICMSSN900></ICMS>',
+    );
     await assertXsdValid(xml);
   });
 
@@ -702,17 +812,6 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
     },
   );
 
-  /** Capture the message of the NFeTributeError buildImpostoXml throws. */
-  function tributeErrorMessage(imposto: Imposto): string {
-    try {
-      buildImpostoXml(imposto, item1500);
-    } catch (err) {
-      if (err instanceof NFeTributeError) return err.message;
-      throw err;
-    }
-    throw new Error('expected buildImpostoXml to throw NFeTributeError');
-  }
-
   // Each single-field-present and each two-fields-present combination rejects.
   it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
     // Annotated `readonly string[]`: `trio` is a union across CASES, so the
@@ -744,6 +843,479 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
       for (const m of missing) expect(missingClause).toContain(m);
       for (const p of present) expect(missingClause).not.toContain(p);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ICMSSN500 / ICMSSN900 XSD sub-groups all-or-nothing (#506)
+//
+// Each `xs:sequence minOccurs="0"` sub-group is emitted complete or omitted;
+// anything in between is rejected at build time by ONE NFeTributeError naming
+// every incomplete group and its missing REQUIRED members, in XSD order. The
+// fixtures below are transcribed from leiauteNFe_v4.00.xsd (ICMSSN500
+// L4142-4230, ICMSSN900 L4231-4377), not from the engine's own tables.
+// ---------------------------------------------------------------------------
+
+type ConfSN500 = NonNullable<ConfiguracaoICMS['csosn500']>;
+type ConfSN900 = NonNullable<ConfiguracaoICMS['csosn900']>;
+
+/**
+ * Parse a #506 group error into `{ group label → missing required members }`,
+ * keys in message order. Splits on the message's own separators (' — ', '; ',
+ * ' missing: ', ', ') so assertions compare exact field tokens: the names are
+ * prefixes of one another (vICMS ⊂ vICMSST ⊂ vICMSSTRet, vICMSSubstituto,
+ * vICMSEfet), so a `toContain` would pass on the wrong field.
+ */
+function missingByGroup(message: string): Record<string, string[]> {
+  const parts = message.split(' — ');
+  if (parts.length !== 2) throw new Error(`expected exactly one ' — ' in: ${message}`);
+  const out: Record<string, string[]> = {};
+  for (const clause of parts[1]!.split('; ')) {
+    const halves = clause.split(' missing: ');
+    if (halves.length !== 2) throw new Error(`malformed clause '${clause}' in: ${message}`);
+    const [label, fields] = halves as [string, string];
+    if (label in out) throw new Error(`group '${label}' reported twice in: ${message}`);
+    out[label] = fields.split(', ');
+  }
+  return out;
+}
+
+/** Build, expect the #506 group error for `csosn`, and parse its clauses. */
+function groupViolations(csosn: string, imposto: Imposto): Record<string, string[]> {
+  const message = tributeErrorMessage(imposto);
+  expect(message).toMatch(
+    new RegExp(`^CSOSN '${csosn}': XSD sub-groups must be emitted complete or omitted — `),
+  );
+  return missingByGroup(message);
+}
+
+function imposto500(sub: ConfSN500): Imposto {
+  return impostoFor(CSOSN.icmsCobradoAnteriormente, { csosn500: sub });
+}
+function imposto900(sub: ConfSN900): Imposto {
+  return impostoFor(CSOSN.outros, { csosn900: sub });
+}
+
+/** `sub` with `field` removed (the key gone, not nulled). */
+function without<T extends object>(sub: T, field: keyof T): T {
+  const copy: Partial<T> = { ...sub };
+  delete copy[field];
+  return copy as T;
+}
+
+/**
+ * `present` with every OTHER member of the sub-config's schema set to an
+ * explicit `null` — the shape a STORED config has. Every csosn500/csosn900
+ * member is `.optional().nullable()` and the web imposto editor writes `null`
+ * for a cleared field, so a real document carries `pICMS: null` where
+ * `without()` leaves the key out. `shape` is the Zod object's `.shape`, so the
+ * padding follows the schema rather than this file's fixtures.
+ */
+function nullPadded<T extends object>(shape: Record<keyof T, unknown>, present: T): T {
+  const nulls = Object.fromEntries(Object.keys(shape).map((key) => [key, null]));
+  return { ...nulls, ...present } as T;
+}
+
+/**
+ * Cartesian product of per-group options into named sub-configs; an option
+ * named '' is the group left absent.
+ */
+function variants<T extends object>(
+  axes: ReadonlyArray<ReadonlyArray<readonly [string, Partial<T>]>>,
+): Array<[string, T]> {
+  const rows = axes.reduce<Array<[string[], Partial<T>]>>(
+    (acc, axis) =>
+      acc.flatMap(([names, sub]) =>
+        axis.map(([name, part]): [string[], Partial<T>] => [
+          name === '' ? names : [...names, name],
+          { ...sub, ...part },
+        ]),
+      ),
+    [[[], {}]],
+  );
+  return rows.map(([names, sub]) => [names.join(' + ') || 'no groups', sub as T]);
+}
+
+// One complete instance of each group's REQUIRED members (the characterization
+// pins' values); optional members are layered on per test.
+const SN500_GROUP = {
+  stRet: { vBCSTRet: 1500, pST: 20, vICMSSTRet: 180 },
+  fcpStRet: { vBCFCPSTRet: 1500, pFCPSTRet: 2, vFCPSTRet: 30 },
+  efet: { pRedBCEfet: 10, vBCEfet: 1350, pICMSEfet: 18, vICMSEfet: 243 },
+} satisfies Record<string, ConfSN500>;
+const SN900_GROUP = {
+  proprio: { modBC: MOD_BC.valorOperacao, vBC: 1350, pICMS: 18, vICMS: 243 },
+  st: { modBCST: MOD_BCST.margemValorAgregado, vBCST: 1890, pICMSST: 18, vICMSST: 97.2 },
+  fcpSt: { vBCFCPST: 1890, pFCPST: 2, vFCPST: 37.8 },
+  credSN: { pCredSN: 1.25, vCredICMSSN: 18.75 },
+} satisfies Record<string, ConfSN900>;
+
+/** Every group complete and every optional member set. */
+const SN500_FULL: ConfSN500 = {
+  ...SN500_GROUP.stRet,
+  vICMSSubstituto: 120,
+  ...SN500_GROUP.fcpStRet,
+  ...SN500_GROUP.efet,
+};
+const SN900_FULL: ConfSN900 = {
+  ...SN900_GROUP.proprio,
+  pRedBC: 10,
+  ...SN900_GROUP.st,
+  pMVAST: 40,
+  pRedBCST: 10,
+  ...SN900_GROUP.fcpSt,
+  ...SN900_GROUP.credSN,
+};
+
+const ST_900_REQUIRED = ['modBCST', 'vBCST', 'pICMSST', 'vICMSST'];
+
+describe('buildImpostoXml — ICMSSN500/ICMSSN900 XSD groups all-or-nothing (#506)', () => {
+  // -- rejections -----------------------------------------------------------
+
+  // Dropping ONE required member from the fully-populated config names exactly
+  // that group and that field: the other (complete) groups add no clause.
+  it.each([
+    ['ICMS próprio', 'modBC'],
+    ['ICMS próprio', 'vBC'],
+    ['ICMS próprio', 'pICMS'],
+    ['ICMS próprio', 'vICMS'],
+    ['ICMS-ST', 'modBCST'],
+    ['ICMS-ST', 'vBCST'],
+    ['ICMS-ST', 'pICMSST'],
+    ['ICMS-ST', 'vICMSST'],
+    ['FCP-ST', 'vBCFCPST'],
+    ['FCP-ST', 'pFCPST'],
+    ['FCP-ST', 'vFCPST'],
+    ['crédito SN', 'pCredSN'],
+    ['crédito SN', 'vCredICMSSN'],
+  ] as const)('CSOSN 900: %s without %s → names only that field', (label, field) => {
+    const imposto = imposto900(without(SN900_FULL, field));
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(groupViolations('900', imposto)).toEqual({ [label]: [field] });
+  });
+
+  it.each([
+    ['ICMS-ST retido', 'vBCSTRet'],
+    ['ICMS-ST retido', 'pST'],
+    ['ICMS-ST retido', 'vICMSSTRet'],
+    ['FCP-ST retido', 'vBCFCPSTRet'],
+    ['FCP-ST retido', 'pFCPSTRet'],
+    ['FCP-ST retido', 'vFCPSTRet'],
+    ['ICMS efetivo', 'pRedBCEfet'],
+    ['ICMS efetivo', 'vBCEfet'],
+    ['ICMS efetivo', 'pICMSEfet'],
+    ['ICMS efetivo', 'vICMSEfet'],
+  ] as const)('CSOSN 500: %s without %s → names only that field', (label, field) => {
+    const imposto = imposto500(without(SN500_FULL, field));
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(groupViolations('500', imposto)).toEqual({ [label]: [field] });
+  });
+
+  // A partial group with every other group absent — including an OPTIONAL
+  // member on its own, which still opens its group and forces the required ones.
+  const PARTIAL_900: ReadonlyArray<readonly [string, ConfSN900, Record<string, string[]>]> = [
+    [
+      'vBC but no pICMS (the #506 report)',
+      { modBC: MOD_BC.valorOperacao, vBC: 1500, vICMS: 270 },
+      { 'ICMS próprio': ['pICMS'] },
+    ],
+    ['pRedBC alone', { pRedBC: 10 }, { 'ICMS próprio': ['modBC', 'vBC', 'pICMS', 'vICMS'] }],
+    ['pMVAST alone', { pMVAST: 40 }, { 'ICMS-ST': ST_900_REQUIRED }],
+    ['pRedBCST alone', { pRedBCST: 10 }, { 'ICMS-ST': ST_900_REQUIRED }],
+    // The FCP-ST sequence is NESTED inside the ST one (xsd:4345-4361 within
+    // 4295-4362): a complete trio with no ST group is schema-invalid, and only
+    // the ST clause is reported — the trio itself is complete. #507 let it by.
+    ['complete FCP-ST trio with no ST group', SN900_GROUP.fcpSt, { 'ICMS-ST': ST_900_REQUIRED }],
+    ['pCredSN alone', { pCredSN: 1.25 }, { 'crédito SN': ['vCredICMSSN'] }],
+    ['vCredICMSSN alone', { vCredICMSSN: 18.75 }, { 'crédito SN': ['pCredSN'] }],
+  ];
+  it.each(PARTIAL_900)('CSOSN 900: %s → rejected', (_name, sub, expected) => {
+    expect(groupViolations('900', imposto900(sub))).toEqual(expected);
+  });
+
+  const PARTIAL_500: ReadonlyArray<readonly [string, ConfSN500, Record<string, string[]>]> = [
+    [
+      'vICMSSubstituto alone',
+      { vICMSSubstituto: 120 },
+      { 'ICMS-ST retido': ['vBCSTRet', 'pST', 'vICMSSTRet'] },
+    ],
+    [
+      'vBCEfet alone',
+      { vBCEfet: 1350 },
+      { 'ICMS efetivo': ['pRedBCEfet', 'pICMSEfet', 'vICMSEfet'] },
+    ],
+  ];
+  it.each(PARTIAL_500)('CSOSN 500: %s → rejected', (_name, sub, expected) => {
+    expect(groupViolations('500', imposto500(sub))).toEqual(expected);
+  });
+
+  // Every violation lands in ONE error, clauses in XSD document order.
+  it('CSOSN 900: two incomplete groups → one error, clauses in XSD order', () => {
+    const imposto = imposto900({ vBC: 1500, pCredSN: 1.25 });
+    const message = tributeErrorMessage(imposto);
+    expect(message).toBe(
+      "CSOSN '900': XSD sub-groups must be emitted complete or omitted — " +
+        'ICMS próprio missing: modBC, pICMS, vICMS; crédito SN missing: vCredICMSSN',
+    );
+    const violations = missingByGroup(message);
+    expect(Object.keys(violations)).toEqual(['ICMS próprio', 'crédito SN']);
+  });
+
+  it('CSOSN 900: a partial FCP-ST trio with no ST group → the ST clause, then the FCP-ST one', () => {
+    const violations = groupViolations('900', imposto900({ vBCFCPST: 1890 }));
+    expect(Object.keys(violations)).toEqual(['ICMS-ST', 'FCP-ST']);
+    expect(violations).toEqual({ 'ICMS-ST': ST_900_REQUIRED, 'FCP-ST': ['pFCPST', 'vFCPST'] });
+  });
+
+  it('CSOSN 500: all three groups incomplete → three clauses in XSD order', () => {
+    const violations = groupViolations(
+      '500',
+      imposto500({ pST: 20, pFCPSTRet: 2, vICMSEfet: 243 }),
+    );
+    expect(Object.keys(violations)).toEqual(['ICMS-ST retido', 'FCP-ST retido', 'ICMS efetivo']);
+    expect(violations).toEqual({
+      'ICMS-ST retido': ['vBCSTRet', 'vICMSSTRet'],
+      'FCP-ST retido': ['vBCFCPSTRet', 'vFCPSTRet'],
+      'ICMS efetivo': ['pRedBCEfet', 'vBCEfet', 'pICMSEfet'],
+    });
+  });
+
+  // Near-misses on the presence test (`!= null`). A numeric 0 is PRESENT, so on
+  // its own it opens the group: these fail against a `!value` regression, which
+  // would read the lone 0 as absent and let the group through. The modBC '0'
+  // row cannot catch `!value` ('0' is a truthy string) — it catches a numeric
+  // coercion (`Number(v) === 0`, `v === '0'`) that would drop MOD_BC's '0'.
+  it.each([
+    ['{ pRedBC: 0 } alone (optional member)', { pRedBC: 0 }, ['modBC', 'vBC', 'pICMS', 'vICMS']],
+    ['{ vICMS: 0 } alone (required member)', { vICMS: 0 }, ['modBC', 'vBC', 'pICMS']],
+    [
+      '{ modBC: MOD_BC.margemValorAgregado } alone',
+      { modBC: MOD_BC.margemValorAgregado },
+      ['vBC', 'pICMS', 'vICMS'],
+    ],
+  ] as const)('CSOSN 900: %s → rejected (0 is present)', (_name, sub, missing) => {
+    expect(groupViolations('900', imposto900(sub))).toEqual({ 'ICMS próprio': [...missing] });
+  });
+
+  // Scope near-miss: <ICMS> and <ISSQN> are an xs:choice and ISSQN wins, so a
+  // partial ICMS group on an ISSQN item is never built — hence never validated.
+  it('ISSQN item carrying a partial csosn900 → no throw, <ISSQN> and no <ICMS>', async () => {
+    const imposto: Imposto = { ...imposto900({ vBC: 1500 }), configuracaoISSQN: issqnFor() };
+    let xml = '';
+    expect(() => {
+      xml = buildImpostoXml(imposto, { vProd: 500 });
+    }).not.toThrow();
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+
+  // -- complete variants: emitted, exactly the configured tags, XSD-valid -----
+
+  // Absent is legal for every group.
+  it.each([
+    [CSOSN.icmsCobradoAnteriormente, { csosn500: {} }, 'ICMSSN500'],
+    [CSOSN.outros, { csosn900: {} }, 'ICMSSN900'],
+  ] as const)('CSOSN %s with no groups at all → orig + CSOSN only', async (csosn, extra, tag) => {
+    const xml = buildImpostoXml(impostoFor(csosn, extra), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      `<ICMS><${tag}><orig>0</orig><CSOSN>${csosn}</CSOSN></${tag}></ICMS>`,
+    );
+    await assertXsdValid(xml);
+  });
+
+  /** Build `sub`, assert each of its members — and no other — is emitted, then round-trip. */
+  async function expectCompleteVariant(imposto: Imposto, sub: object, all: object): Promise<void> {
+    const xml = buildImpostoXml(imposto, item1500);
+    const icms = icmsXmlOf(xml);
+    const present = Object.keys(sub);
+    // `<name>` with its closing '>' is an exact tag match (no prefix collision).
+    for (const f of present) expect(icms).toContain(`<${f}>`);
+    for (const f of Object.keys(all).filter((k) => !present.includes(k))) {
+      expect(icms).not.toContain(`<${f}>`);
+    }
+    await assertXsdValid(xml);
+  }
+
+  // ICMSSN500: every subset of its three groups, ICMS-ST retido with and
+  // without its optional vICMSSubstituto.
+  it.each(
+    variants<ConfSN500>([
+      [
+        ['', {}],
+        ['ICMS-ST retido', SN500_GROUP.stRet],
+        ['ICMS-ST retido + vICMSSubstituto', { ...SN500_GROUP.stRet, vICMSSubstituto: 120 }],
+      ],
+      [
+        ['', {}],
+        ['FCP-ST retido', SN500_GROUP.fcpStRet],
+      ],
+      [
+        ['', {}],
+        ['ICMS efetivo', SN500_GROUP.efet],
+      ],
+    ]),
+  )('CSOSN 500 complete variant: %s', async (_name, sub) => {
+    await expectCompleteVariant(imposto500(sub), sub, SN500_FULL);
+  });
+
+  // ICMSSN900: own ICMS × ICMS-ST (bare, with its optionals, with the nested
+  // FCP-ST trio) × crédito SN.
+  it.each(
+    variants<ConfSN900>([
+      [
+        ['', {}],
+        ['ICMS próprio', SN900_GROUP.proprio],
+        ['ICMS próprio + pRedBC', { ...SN900_GROUP.proprio, pRedBC: 10 }],
+      ],
+      [
+        ['', {}],
+        ['ICMS-ST', SN900_GROUP.st],
+        ['ICMS-ST + pMVAST + pRedBCST', { ...SN900_GROUP.st, pMVAST: 40, pRedBCST: 10 }],
+        ['ICMS-ST + FCP-ST', { ...SN900_GROUP.st, ...SN900_GROUP.fcpSt }],
+      ],
+      [
+        ['', {}],
+        ['crédito SN', SN900_GROUP.credSN],
+      ],
+    ]),
+  )('CSOSN 900 complete variant: %s', async (_name, sub) => {
+    await expectCompleteVariant(imposto900(sub), sub, SN900_FULL);
+  });
+
+  // The emit side of the presence near-misses: a COMPLETE group holding a 0 (or
+  // modBC '0') member is emitted as-is and validates.
+  it('CSOSN 900: complete own group with vICMS 0, pRedBC 0 and modBC 0 → emitted', async () => {
+    const imposto = imposto900({
+      ...SN900_GROUP.proprio,
+      modBC: MOD_BC.margemValorAgregado,
+      pRedBC: 0,
+      vICMS: 0,
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>0</modBC><vBC>1350.00</vBC><pRedBC>0.0000</pRedBC>' +
+        '<pICMS>18.0000</pICMS><vICMS>0.00</vICMS>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 500: complete ICMS efetivo group with pRedBCEfet 0 → emitted', async () => {
+    const xml = buildImpostoXml(imposto500({ ...SN500_GROUP.efet, pRedBCEfet: 0 }), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<pRedBCEfet>0.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // -- explicit null: the STORED shape ----------------------------------------
+  //
+  // Every fixture above leaves an absent member's key out, but a stored config
+  // carries `field: null` (see `nullPadded`). Presence is `!= null`, so a null
+  // member must read exactly like a missing key: it neither opens a group nor
+  // completes one. A `!== undefined` regression counts every null as present;
+  // the partial-group and lone-null tests below fail against it, and the
+  // all-null / complete-group ones pin the emit side of the same fold.
+
+  it('CSOSN 900 with EVERY schema member null → orig + CSOSN only', async () => {
+    const sub = nullPadded<ConfSN900>(confICMSSN900Schema.shape, {});
+    // The padding covers exactly the members the fully-populated fixture sets.
+    expect(Object.keys(sub).sort()).toEqual(Object.keys(SN900_FULL).sort());
+    const xml = buildImpostoXml(imposto900(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN></ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 500 with EVERY schema member null → orig + CSOSN only', async () => {
+    const sub = nullPadded<ConfSN500>(confICMSSN500Schema.shape, {});
+    expect(Object.keys(sub).sort()).toEqual(Object.keys(SN500_FULL).sort());
+    const xml = buildImpostoXml(imposto500(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN></ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // The null twin of the `{ vICMS: 0 } alone` near-miss: a lone 0 opens its
+  // group, a lone null (one cleared field, every other key never written) does
+  // not — for every member, required and optional alike.
+  it.each(Object.keys(confICMSSN900Schema.shape))(
+    'CSOSN 900: { %s: null } alone → no group opened, orig + CSOSN only',
+    (field) => {
+      const xml = buildImpostoXml(imposto900({ [field]: null }), item1500);
+      expect(icmsXmlOf(xml)).toBe(
+        '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN></ICMSSN900></ICMS>',
+      );
+    },
+  );
+
+  it.each(Object.keys(confICMSSN500Schema.shape))(
+    'CSOSN 500: { %s: null } alone → no group opened, orig + CSOSN only',
+    (field) => {
+      const xml = buildImpostoXml(imposto500({ [field]: null }), item1500);
+      expect(icmsXmlOf(xml)).toBe(
+        '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN></ICMSSN500></ICMS>',
+      );
+    },
+  );
+
+  it("CSOSN 900: complete 'ICMS próprio', every other member null → only that group", async () => {
+    const sub = nullPadded(confICMSSN900Schema.shape, SN900_GROUP.proprio);
+    const xml = buildImpostoXml(imposto900(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>3</modBC><vBC>1350.00</vBC><pICMS>18.0000</pICMS><vICMS>243.00</vICMS>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it("CSOSN 500: only 'ICMS efetivo' filled, every other member null → only that group", async () => {
+    const sub = nullPadded(confICMSSN500Schema.shape, SN500_GROUP.efet);
+    const xml = buildImpostoXml(imposto500(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<pRedBCEfet>10.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // The rejection side: a partial group padded with nulls names exactly the
+  // members the key-absent version names — a null member is still missing.
+  it.each(PARTIAL_900)(
+    'CSOSN 900: %s, every other member null → rejected',
+    (_name, sub, expected) => {
+      expect(
+        groupViolations('900', imposto900(nullPadded(confICMSSN900Schema.shape, sub))),
+      ).toEqual(expected);
+    },
+  );
+
+  it.each(PARTIAL_500)(
+    'CSOSN 500: %s, every other member null → rejected',
+    (_name, sub, expected) => {
+      expect(
+        groupViolations('500', imposto500(nullPadded(confICMSSN500Schema.shape, sub))),
+      ).toEqual(expected);
+    },
+  );
+
+  it('CSOSN 500: all three groups incomplete, the gaps null → three clauses, only the null members', () => {
+    const sub = nullPadded(confICMSSN500Schema.shape, { pST: 20, pFCPSTRet: 2, vICMSEfet: 243 });
+    expect(groupViolations('500', imposto500(sub))).toEqual({
+      'ICMS-ST retido': ['vBCSTRet', 'vICMSSTRet'],
+      'FCP-ST retido': ['vBCFCPSTRet', 'vFCPSTRet'],
+      'ICMS efetivo': ['pRedBCEfet', 'vBCEfet', 'pICMSEfet'],
+    });
   });
 });
 
@@ -1126,15 +1698,21 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
     await assertRtcXsdValid(xml, imposto);
   });
 
-  it('throws when emitRtc is on but the registered config is incomplete', () => {
+  it('throws NFeTributeError when emitRtc is on but the registered config is incomplete', () => {
     const imposto = {
       origem: '0',
       configuracaoICMS: { crt: '1', csosn: '102' },
       configuracaoIBSCBS: { CST: '000' }, // missing cClassTrib + rates
     } as unknown as Imposto;
-    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(
-      /configuracaoIBSCBS/,
-    );
+    // The engine's operator-fixable class, like a partial ICMSSN900 group — a
+    // plain Error would escape every caller that narrows on the in-repo classes
+    // (#506). The item builder and the totals aggregator share `parseRtcConfig`.
+    const build = () => buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/^Invalid configuracaoIBSCBS \(RTC emission is on for this item\): /);
+    expect(() =>
+      aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, { emitRtc: true }),
+    ).toThrow(NFeTributeError);
   });
 
   it('throws when an IS sub-config is configured without a rate', () => {
@@ -1150,7 +1728,18 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
         is: { CSTIS: '000', cClassTribIS: '000001' }, // no pIS / pISEspec+qTrib
       },
     } as unknown as Imposto;
-    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(/IS requires/);
+    const build = () => buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/IS requires/);
+  });
+
+  it("buildIS's backstop (unreachable through the schema refine) is an NFeTributeError too", () => {
+    // `configuracaoISRtcSchema` rejects a rate-less IS before buildIS runs, so
+    // only a direct call reaches the backstop.
+    const rateless = { CSTIS: '000', cClassTribIS: '000001' } as unknown as ConfiguracaoISRtc;
+    const build = () => buildIS(rateless, 1500);
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/^buildIS: IS requires pIS \(ad valorem\) or pISEspec \+ qTrib/);
   });
 });
 
