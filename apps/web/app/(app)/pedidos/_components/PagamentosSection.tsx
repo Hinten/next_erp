@@ -214,8 +214,12 @@ export function PagamentosSection({
   //
   // Best-effort: the pagamento itself is already committed, so a failed reconcile must
   // not surface as a save error — but it IS surfaced loudly, because the estado is now
-  // genuinely stale and only a human can settle it. `functions/not-found` in particular
-  // means the callable was never deployed (deploy is manual — apps/functions/CLAUDE.md).
+  // genuinely stale and only a human can settle it. A transient failure has already
+  // been retried by the time it lands here (`callReconciliarPagamentoPedido`, #703), so
+  // the toast means the call failed 3 times or failed deterministically — the spinner
+  // stays up across the backoff because the refcount only drops in `finally`.
+  // `functions/not-found` in particular means the callable was never deployed (deploy
+  // is manual — apps/functions/CLAUDE.md).
   async function reconcileEstado() {
     reconcilesEmVoo.current += 1;
     setReconciling(true);
