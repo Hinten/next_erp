@@ -2171,7 +2171,7 @@
     {
       "collectionGroup": "ttlProbe",
       "fieldPath": "expiraEm",
-      "ttl": true,
+      "ttl": false,
       "indexes": []
     }
   ]
