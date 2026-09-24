@@ -175,6 +175,18 @@ describe('MENSAGEM_POR_MOTIVO', () => {
     expect(MENSAGEM_POR_MOTIVO['cota-diaria']).toContain('UTC+8');
     expect(MENSAGEM_POR_MOTIVO['bloqueado-por-promocao']).toContain('60 minutos');
   });
+
+  it('8b — ⛔ `produto-nao-encontrado` promete SÓ o que o caminho faz: o documento não existe', () => {
+    // O leitor por ids do envio manual não aplica predicado de âncora, então o
+    // id de uma VARIAÇÃO volta como linha e o planejador a recusa por outro
+    // motivo (`conta-fora-do-produto` ou `sem-link` — `enviarEstoqueCli.test.ts`
+    // fixa isso no planejador real). Uma versão anterior desta frase acrescentava
+    // "ou não é o produto âncora da família", e mandava o operador procurar uma
+    // causa que este motivo nunca tem.
+    const frase = MENSAGEM_POR_MOTIVO['produto-nao-encontrado'];
+    expect(frase).toContain('não foi encontrado no ERP');
+    expect(frase).not.toMatch(/âncora|varia/i);
+  });
 });
 
 describe('ehRecusa / MOTIVOS_QUE_ANOTAM', () => {

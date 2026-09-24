@@ -42,6 +42,29 @@ export interface ModificationEntry {
    * distinguishable from a genuine system write.
    */
   usuarioOuterRef: string | null;
+  /**
+   * TTL expiry (`@delfrance/schemas` `ttlExpiry`) — set by {@link comRetencao}
+   * inside {@link recordModification}, never by a builder. Absent on every row
+   * the root keeps forever.
+   */
+  expiraEm?: Date;
+}
+
+/**
+ * How long a root's rows live before the Firestore TTL policy on
+ * `historicoDeModificacoes` deletes them. Only STAMPED rows expire, so
+ * `manter` is how a root keeps a row forever: it simply gets no `expiraEm`.
+ */
+export interface RetencaoHistorico {
+  /**
+   * The expiry for a row whose EVENT (its `timestamp`, not the write) happened
+   * at `eventoMs`. A function rather than a day count because the roots measure
+   * differently: produto in days, pedido in calendar years
+   * (`RETENCAO_HISTORICO_PEDIDO_ANOS` says why days would fall short).
+   */
+  expiraEm(eventoMs: number): Date;
+  /** Rows this root keeps forever. */
+  manter(entry: ModificationEntry): boolean;
 }
 
 /**
@@ -61,6 +84,26 @@ export interface ModificationHistoryRoot {
   historyCollection: AdminCollectionHandle<z.ZodTypeAny>;
   /** Wildcard name both handles (and `event.params`) key the root id under. */
   parentIdParam: string;
+  /**
+   * TTL retention — REQUIRED, so a new root cannot compile without deciding
+   * how long its rows live (the policy covers the whole collection group).
+   */
+  retencao: RetencaoHistorico;
+}
+
+/**
+ * Stamp the TTL expiry the root's {@link RetencaoHistorico} asks for. Pure, and
+ * derived from the EVENT time (`entry.timestamp`, µs) — so a redelivered event
+ * rewrites a content-identical row, expiry included.
+ */
+export function comRetencao(
+  entry: ModificationEntry,
+  retencao: RetencaoHistorico,
+): ModificationEntry {
+  if (retencao.manter(entry)) return entry;
+  // µs → ms rounds UP: a retention is a minimum, so the stamp may land a
+  // fraction of a millisecond late but never early.
+  return { ...entry, expiraEm: retencao.expiraEm(Math.ceil(entry.timestamp / 1000)) };
 }
 
 /**
@@ -136,8 +179,10 @@ export async function recordModification(
     if (!parentSnap.exists) return false;
   }
 
+  // The ONE place every history row is written, so the TTL stamp lives here and
+  // no caller can build a row that skips it.
   const ref = root.historyCollection.docRef(db, { [root.parentIdParam]: parentId }, entry.eventId);
-  await ref.set(root.historyCollection.parse(entry) as DocumentData);
+  await ref.set(root.historyCollection.parse(comRetencao(entry, root.retencao)) as DocumentData);
   return true;
 }
 

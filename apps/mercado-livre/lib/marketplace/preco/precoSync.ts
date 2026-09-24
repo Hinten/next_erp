@@ -78,6 +78,8 @@ import {
   type LinhaRelatorioEnvioPreco,
   RELATORIO_ENVIO_PRECO_ERRO_MAX,
   RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+  RETENCAO_ENVIO_PRECO_ML_DIAS,
+  expiraEmApos,
   idFromRef,
   relatorioEnvioPrecoRowKey,
   relatorioEnvioPrecoShardId,
@@ -151,6 +153,35 @@ export const priceSyncTaskSchema = z
   })
   .passthrough();
 export type PriceSyncTaskPayload = z.infer<typeof priceSyncTaskSchema>;
+
+/**
+ * TTL expiry of a run (`enviosPrecoMercadoLivre`, Firestore TTL policy in
+ * `firestore.indexes.json`): {@link RETENCAO_ENVIO_PRECO_ML_DIAS} after it
+ * starts. Keyed on `startedAt`, never on a clock read, so every writer of the
+ * same run derives the same instant.
+ */
+export function expiraEmDoEnvio(startedAtMs: number): Date {
+  return expiraEmApos(startedAtMs, RETENCAO_ENVIO_PRECO_ML_DIAS);
+}
+
+/**
+ * How long a run's report shards outlive the run. Not what keeps a truncated CSV
+ * off the history list — the TTL deletes the two independently, in no order and
+ * "typically within 24 hours" (Firestore promises no upper bound), so no margin
+ * can GUARANTEE the run goes first. The history route does that, by hiding a run
+ * once its `expiraEm` passes (`ttlExpirado`). The margin only covers a download
+ * started from a list loaded just before that instant; unreachable shards cost
+ * next to nothing, so it is generous.
+ */
+export const MARGEM_RELATORIO_ENVIO_PRECO_DIAS = 7;
+
+/** TTL expiry of a run's report shards: {@link MARGEM_RELATORIO_ENVIO_PRECO_DIAS} after the run's. */
+export function expiraEmDoRelatorio(startedAtMs: number): Date {
+  return expiraEmApos(
+    startedAtMs,
+    RETENCAO_ENVIO_PRECO_ML_DIAS + MARGEM_RELATORIO_ENVIO_PRECO_DIAS,
+  );
+}
 
 /** `startPriceSyncJob` guard — this integração already has a `running` job. */
 export class PriceSyncAlreadyRunningError extends Error {
@@ -228,6 +259,7 @@ export async function startPriceSyncJob(
       startedBy: args.startedBy,
       startedAt: now,
       updatedAt: now,
+      expiraEm: expiraEmDoEnvio(now),
     },
   );
   return { jobId: ref.id };
@@ -408,6 +440,7 @@ export async function finalizePriceSyncJob(
         relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
           linhas: { [relatorioEnvioPrecoRowKey(derivado.linha)]: derivado.linha },
           timestamp: final.updatedAt,
+          expiraEm: expiraEmDoRelatorio(job.startedAt),
         }) as DocumentData,
         { merge: true },
       );
@@ -827,6 +860,7 @@ export async function processPriceSyncJob(
             // what proves it against a real Firestore.
             linhas,
             timestamp: nowMs,
+            expiraEm: expiraEmDoRelatorio(job.startedAt),
           }) as DocumentData,
           { merge: true },
         );

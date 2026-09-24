@@ -69,8 +69,11 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    (`apps/functions/src/options.ts`).
 3. **Deploy `firestore.indexes.json` before any data lands.** Enterprise
    auto-creates zero indexes and an unindexed query does not fail — it full-scans
-   and bills data scanned, so the mistake surfaces on the invoice. Set **TTL
-   policies, PITR and backup schedules** here too: an export carries none of them.
+   and bills data scanned, so the mistake surfaces on the invoice. The **TTL
+   policies ride this same deploy**: they are `fieldOverrides` entries (`"ttl":
+   true`) in `firestore.indexes.json`, verified on the Enterprise staging database
+   in PR #1639, with `TTL_POLICIES` in `@delfrance/schemas` as the registry. Set
+   **PITR and backup schedules** here too: an export carries none of them.
 4. **Deploy `firestore.rules`** — the production ruleset. Never
    `firestore.e2e.rules`, which opens every `e2e_`-prefixed collection.
 5. **Enable PITR on `legacy-prod`.** This is what makes a consistent

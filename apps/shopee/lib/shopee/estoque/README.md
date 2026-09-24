@@ -9,9 +9,15 @@ where it is cheaper". The reconciled design, the sandbox WRITE probe of
 2026-09-21 and the wave reports that produced this folder are in the step-12
 review directory named by the PR that closed #1520.
 
-Everything here is **offline-verified only**. The probe measured the wire
-through the package's own operations against the **SG sandbox** shop; no module
-in this folder has ever run against a BR shop, staging or production, and the
+Everything here was **offline-verified**, and then rehearsed ONCE on STAGING
+(2026-09-24) against the **SG sandbox** shop: `enviar:estoque` dry-run then
+`--live` — one listing, ten models, ONE `update_stock`, 10/10 accepted, the
+link write-back stamped, and `get_model_list` reading back exactly what was
+sent — plus a changed-quantity round trip. The probe before it measured the
+wire through the package's own operations against the same shop. No module in
+this folder has run against a BR shop or production, and the SCHEDULED path —
+a sweep enqueuing onto `sendShopeeStock` through a real Cloud Tasks queue —
+has not run anywhere yet (it needs the valve on and a redeploy). The
 `README`'s last section says what that leaves open.
 
 ## The sixteen modules, in five families
@@ -193,7 +199,7 @@ minimum: the quantity sent is the ERP's, clamped UP or not at all.
 
 ### ONE quantity function, two bindings
 
-`quantidadeParaPublicarShopee` (`quantidadeEstoque.ts:124`) is the body that
+`quantidadeParaPublicarShopee` (in `quantidadeEstoque.ts`) is the body that
 used to live in `anuncios/montagemAnuncio.ts`, **moved byte-identically**, and
 `montagemAnuncio.ts` re-exports it so step 11's importers did not change. The
 proof the move was behaviour-free is that the two step-11 suites are
@@ -202,11 +208,23 @@ proof the move was behaviour-free is that the two step-11 suites are
 default turned into an explicit parameter, and `bulkEstoquePlan.ts` re-exports
 it byte-compatibly with its four suites likewise unedited.
 
+⚠️ The two bindings are `opcoesShopee` (the SYNC — the sweep and the manual
+push, through `quantidadesDaFamiliaShopee`) and `opcoesPublicacaoShopee` (the
+CREATE — what `quantidadeParaPublicarShopee` reads today; the pin landed after
+the move, so its body is no longer byte-identical to the moved one), and they
+differ in exactly ONE pinned field, the kit own-stock knob below. The band's
+maximum is an ARGUMENT, not a binding difference — publish passes one, the sync
+passes none. So publish and sync agree on the FOLD, not on every number.
+
 ⚠️ **ERP kits SEND.** An `ehKit` produto is an ordinary Shopee listing and goes
 at its component-derived quantity — the minimum over components, optionally plus
-the kit's own stock under `SHOPEE_STOCK_KIT_INCLUI_PROPRIO`. Only a **native
-Shopee kit** is skipped, and the predicate for that is `link.kitNativo === true`
-and nothing else (`podeEnviarEstoque.ts`, rung 3).
+the kit's own stock under `SHOPEE_STOCK_KIT_INCLUI_PROPRIO`. ⚠️ That knob moves
+the SYNC only (the sweeps and the manual push), never the create-time
+`seller_stock`: `opcoesPublicacaoShopee` pins it off, so with it ON a new kit
+listing is created at the component minimum and the first sync send raises it
+by the kit's own stock. Only a **native Shopee kit** is skipped, and the
+predicate for that is `link.kitNativo === true` and nothing else
+(`podeEnviarEstoque.ts`, rung 3).
 
 ⚠️ **Step 11's publish refusal was wrong and is fixed here.** It keyed
 `produto-e-kit` on `produto.ehKit` alone, so thousands of ordinary ERP kits could
@@ -226,13 +244,13 @@ and has no fallback, so every refusal renders a pt-BR sentence at the point it
 is decided. `apps/web` must not re-word a slug and must not add a second cap —
 `limitarMensagemEstoque` is the one, at 500 characters.
 
-⚠️ **Count refusals through `ehRecusa` (`:314`), never by re-listing slugs.**
+⚠️ **Count refusals through `ehRecusa` (same file), never by re-listing slugs.**
 `clampado-na-reserva` is an ANNOTATION on a SUCCESSFUL send —
-`MOTIVOS_QUE_ANOTAM` (`:309`) holds exactly that one member — so reading
+`MOTIVOS_QUE_ANOTAM` (same file) holds exactly that one member — so reading
 `motivo !== null` as "it failed" reports every clamped send as a failure.
 
 The skip set itself is **two mechanisms, `||` between them and `&&` inside the
-second** (`podeEnviarEstoque.ts:245`):
+second** (`pularPorRecusaAnterior` in `podeEnviarEstoque.ts`):
 
 - **TIME** — `estoqueRecusaAte`, strict `<`, for a refusal no reading will ever
   lift. Today that is the promotion arm alone: a promotion ending moves no
@@ -271,8 +289,9 @@ bare `param`. The classifier therefore consults BOTH forms — the stripped one
 against the table's keys, the VERBATIM one for storage — and the stripper is a
 SECOND lookup that never rewrites `ShopeeApiError.code`.
 
-The arm table (`enviarEstoque.ts:386`) walks **A → K in one declared order**, and
-that order is load-bearing three times over:
+The arm table (`classificarCodigoDeEstoque` in `enviarEstoque.ts`) walks
+**A → K in one declared order**, and that order is load-bearing three times
+over:
 
 | arm    | what it is                                                                                                 | what it does (on the ENVELOPE)                                                                    |
 | ------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -412,7 +431,7 @@ CODE, which is the thing a caller can depend on.
 
 Three residuals of the manual path, recorded rather than fixed:
 
-- `bandaPorItem` (`enviarEstoqueCli.ts:440`) is an OPTIONAL plan input with **no
+- `bandaPorItem` (in `enviarEstoqueCli.ts`) is an OPTIONAL plan input with **no
   producer today** — resolving a real band would need one `get_item_limit` per
   listing — so the `banda` clamp arm has never run outside a fixture and the
   plan's `banda` column reads `—`;
@@ -420,15 +439,16 @@ Three residuals of the manual path, recorded rather than fixed:
   requested id, in parallel and unmeasured. It is step 11's `nomeDoProduto`
   precedent; a batched `getAll` would be one round trip, but the shared test
   double has no such member;
-- `MENSAGEM_ENVIO_LIMPO` (`enviarEstoqueManual.ts:230`) is the ONE sentence
+- `enviarEstoqueManual.ts`'s `MENSAGEM_ENVIO_LIMPO` is the ONE sentence
   outside `MENSAGEM_POR_MOTIVO`, for `motivo === null` only — that map is a
   vocabulary of refusals plus one annotation and deliberately has no member for
   "it worked".
 
 ⚠️ The manual push's concurrency is **clamped by the queue's own knob**:
 `Math.max(1, Math.min(manualConcurrencyRaw(), concurrentDispatches()))`
-(`enviarEstoqueManual.ts:308`). So `SHOPEE_STOCK_CONCURRENT_DISPATCHES` has two
-homes — the deploy shell and the App Hosting console — and they must agree.
+(`enviarEstoqueManual.ts`'s `concorrenciaEnvioManual`). So
+`SHOPEE_STOCK_CONCURRENT_DISPATCHES` has two homes — the deploy shell and the
+App Hosting console — and they must agree.
 
 ### An absent `estadoAnuncio` is VIVO
 
@@ -577,10 +597,10 @@ what stops a deleted link being resurrected as a ghost holding only these eleven
 keys and none of the schema's required ones; all four writers resolve `false`
 rather than throwing when that happens.
 
-`codigoDoErp` (`:284`) is the ONE producer of the `erp:<motivo>` spelling. Never
-re-type that prefix at a call site: the field is a loose string no reader parses
-today, which is exactly how one fact ends up stored as `erp-`, `erp/` and `erp:`
-in one collection with nothing failing.
+`codigoDoErp` (also in `linkEstoque.ts`) is the ONE producer of the
+`erp:<motivo>` spelling. Never re-type that prefix at a call site: the field is
+a loose string no reader parses today, which is exactly how one fact ends up
+stored as `erp-`, `erp/` and `erp:` in one collection with nothing failing.
 
 ⚠️ **The ACCEPTED split-listing race.** Parts of one listing are independent
 tasks, and each write-back is a full overwrite of the same eleven parent fields,
@@ -633,8 +653,8 @@ no pipeline surface on a `defineAdminCollection` handle, and ML's
 `db.pipeline()['collection'](…)` would satisfy the regex while defeating the
 guard, which is precisely the anti-pattern the raw-text discipline exists to
 prevent. So the exemption is granted ONCE, in one centralised thunk
-(`descobertaEstoque.ts:162-163`), and the verification is two commands rather
-than one:
+(`fonteDeProdutos` in `descobertaEstoque.ts`), and the verification is two
+commands rather than one:
 
 ```bash
 # 1. every other file in the folder must be clean
@@ -649,18 +669,22 @@ Every document addressed **by id** still goes through `produtoCollection.docRef`
 or the typed link handles, including in the tests: that grep carries no
 `:(exclude)*.test.ts`, so writing a diagnostic the obvious way would make the
 verification the first violation. The two `collectionGroup` sources — one of
-them the correlated subquery — carry their own one-line exemptions at
-`descobertaEstoque.ts:247` and `:674`. **Two exemptions, two anchors**: there is
-no third source.
+them the correlated subquery — carry their own one-line exemptions in
+`descobertaEstoque.ts`, one in `construtoresDeJuncao`'s `compEstoques` and one
+in `buscarMovimentosDaJanela`. **Two exemptions, two anchors**: there is no
+third source.
 
 Two more rules the folder holds by construction:
 
-- **ZERO new Firestore indexes** (ruling C-p). S1 rides
-  `produtos(paiId, integracoesComProduto, __name__)`; the `estoques` joins and
-  the ledger aggregate ride existing collection-group entries; and the two link
-  probes carry **no `where` at all**, so there is no index to ride and none to
-  miss. ⚠️ On Enterprise a missing index does not throw — it full-scans and bills
-  the scan — so the reversal condition is written down rather than assumed
+- **ZERO new Firestore indexes** (ruling C-p). S1 was designed to ride
+  `produtos(paiId, integracoesComProduto, __name__)` — ⚠️ the staging
+  measurement found the planner on `produtos(paiId, integracoesComProduto, nome)`
+  instead, range-bounding `paiId == null` only, with the conta term a residual
+  filter (**#1638**); the `estoques` joins and the ledger aggregate ride
+  existing collection-group entries; and the two link probes carry **no
+  `where` at all**, so there is no index to ride and none to miss. ⚠️ On
+  Enterprise a missing index does not throw — it full-scans and bills the scan
+  — so the reversal condition is written down rather than assumed
   (**register 112**).
 - **No multi-document atomic write anywhere in this folder.** Every write is a
   `merge`, a `mergeIfExists` or a `FieldValue.increment`, so no row is owed in
@@ -690,7 +714,7 @@ Two more rules the folder holds by construction:
 
 ## What is UNVERIFIED and what settles it
 
-The settle-live register for step 12 is **items 90–122**, and the authoritative
+The settle-live register for step 12 is **items 90–126**, and the authoritative
 table — same numbers, same statuses — is the Built-12 bullet in
 `.master_plans/shopee/shopee-marketplace-integration.md` §4. None of them is a
 gate. In short:
@@ -712,10 +736,24 @@ gate. In short:
   9's ledger hole reaches), 111 (the scan cost of the two correlated MAX
   aggregates — the build-phase gate), 112 (whether the four indexes are
   DEPLOYED, not merely declared), 113 (whether any produto carries more than 50
-  `variashopee` docs).
+  `variashopee` docs). ⚠️ The measurement of 2026-09-23/24 answered 111 in
+  SHAPE — S3's MAX seeks are cheap, an idle tick's cost is the anchor FETCH that
+  runs before S4, and S1 does not range-bound the conta term, the same shape as
+  Mercado Livre's, tracked for both channels as **#1638**. For 112 it proved
+  `estoques(depositoOuterRef, ultimaModificacao)` (#110), the group index
+  `estoques(parentId, depositoOuterRef, ultimaModificacao)` (#109) and
+  `produtos(paiId, nome)` deployed and used on STAGING; S1 rode
+  `produtos(paiId, integracoesComProduto, nome)` rather than #108
+  `(paiId, integracoesComProduto, __name__)`, so #108's deployment is unproven;
+  and #137 (`historicoEstoque`) was not exercised, because the reconciliação
+  runs no ledger aggregate. Production is unchecked. 113 stays open: staging
+  holds one listing with ten models.
 - **Settled only by the first deploy, and it is migration-window work** (root
   `CLAUDE.md` rule 8, never an agent): 92 (Cloud Scheduler / Cloud Tasks
-  enablement for three new schedules and a third queue).
+  enablement for three new schedules and a third queue) — settled on STAGING by
+  the deploy of 2026-09-24, which created every schedule and queue with no
+  manual API enablement; still open for the separate PRODUCTION project. See
+  `functions/DEPLOY.md` § Cutover.
 - **Design bets and recorded residuals, all visible in code**: 117 (the accepted
   split-listing race), 118 (the diário window's missing overlap), 119 (the aviso
   resolver's cost), 120 (`deps.retryCount` is logged with no consumer), 121 (the
@@ -723,29 +761,36 @@ gate. In short:
   routes to the partial writer).
 - **The manual push's deadline is per LISTING, not per request**: the budget is
   checked between listings, never during one, and the transport sets no fetch
-  timeout, so a hung call inside the last listing is unbounded — the 180 s
-  `timeoutSeconds` in `apps/shopee/apphosting.yaml` is headroom for its two
+  timeout, so a call that hangs inside a listing already started is bounded only
+  by the platform — `runConfig.timeoutSeconds: 180` in
+  `apps/shopee/apphosting.yaml`, which ends the request with no envelope at all.
+  The 60 s above the default budget is headroom for the last listing's two
   ladder attempts, not a bound.
 - **Open questions with no owner yet**: 97 (the real burst ceiling and daily
-  quota, per APP — a support ticket), 98's third `promotion_id: wireInt()` site
-  on live order-import traffic, 100 (a shared `pool.ts`), 101, 102, 109 (a kit
+  quota, per APP — a support ticket), 100 (a shared `pool.ts`), 101, 102, 109 (a kit
   `item_id` on `update_stock` — step 19's probe), 93 (the preflight path
   binding).
+- **Raised by the staging deploy and rehearsal of 2026-09-24**: 123 (the
+  discovery cost shape shared with Mercado Livre — **#1638**), 124 (the
+  firebase-tools 15.28.2 crash on the first deploy of a NEW queue — see
+  `functions/DEPLOY.md`), 125 (a local run against a post-2024 project needs
+  `FIREBASE_STORAGE_BUCKET` — see `.env.example`), 126 (the scheduled path — a
+  sweep enqueuing onto `sendShopeeStock` through a real queue — not yet run on
+  staging; it needs the valve ON and a redeploy). 98 is closed at all three
+  `promotion_id` sites.
 
-Two further things nothing in this folder can settle, and both are FINDINGS
-rather than open questions:
+One member still has no producer, and it is a FINDING rather than an open
+question:
 
-- **`contaNaoConfigurada` has no producer.** `ShopeeContaNotConfiguredError`
-  extends `Error` rather than `ShopeeError`, and the client is built outside any
-  try, so a misconfigured conta throws out of the dispatched function into the
-  queue's three-attempt ladder and dead-letters instead of being filed as a
-  listing refusal. The options are to narrow that class at the client step, to
-  drop the member, or to keep it for a future conta-screen writer.
-- **`pisoAcimaDaBanda` has no producer either, BY DESIGN** — no band travels in
-  the v1 payload.
+- **`pisoAcimaDaBanda` has no producer, BY DESIGN** — no band travels in the v1
+  payload.
 
-Both are authorised, with a one-line reason each, in `motivosProduzidos.test.ts`,
-which walks all 47 members and **fails the day either gains a producer while
-still on that list** — so the allow-list cannot rot in the direction that
-matters. Every other member of `MOTIVO_ESTOQUE_SHOPEE` and all four
-`MOTIVOS_DE_PAUSA` have a real producer today.
+It is the one entry on `motivosProduzidos.test.ts`'s allow-list, with its
+reason, and that test walks all 47 members and **fails the day it gains a
+producer while still on that list** — so the allow-list cannot rot in the
+direction that matters. `contaNaoConfigurada` sat there until step 12's
+review gave it a producer: the sender narrows
+`ShopeeContaNotConfiguredError` at step 3 and resolves `descartado` +
+`conta-nao-configurada`, with `lastError` on the state doc and no link write.
+Every other member of `MOTIVO_ESTOQUE_SHOPEE` and all four `MOTIVOS_DE_PAUSA`
+have a real producer today.

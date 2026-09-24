@@ -149,6 +149,7 @@ export function publishSummary(result: {
   estado: string;
   itemIds?: string[];
   orfaosEncerrados?: string[];
+  dadosFiscais?: DadosFiscaisResumo;
 }): string {
   const count = result.itemIds?.length ?? 1;
   const head =
@@ -156,6 +157,37 @@ export function publishSummary(result: {
       ? `${count} anúncios (1 por variação) — ${estadoLabel(result.estado)}.`
       : `Anúncio ${result.itemId} — ${estadoLabel(result.estado)}.`;
   const closed = result.orfaosEncerrados?.length ?? 0;
-  if (closed === 0) return head;
-  return `${head} ${closed} ${closed === 1 ? 'anúncio encerrado' : 'anúncios encerrados'} (variação removida).`;
+  const fiscal = result.dadosFiscais ? ` ${dadosFiscaisSummary(result.dadosFiscais)}` : '';
+  if (closed === 0) return `${head}${fiscal}`;
+  return `${head} ${closed} ${closed === 1 ? 'anúncio encerrado' : 'anúncios encerrados'} (variação removida).${fiscal}`;
+}
+
+/** The per-SKU fiscal registration summary (#745), as the wire carries it. */
+export interface DadosFiscaisResumo {
+  enviados: number;
+  omitidos: ReadonlyArray<{ sku: string | null; motivo: string }>;
+  erros: ReadonlyArray<{ sku: string; mensagem: string }>;
+}
+
+/**
+ * One line for the fiscal data ML's Faturador now holds (#745) — shared by the
+ * publish toast and the "Enviar dados fiscais" button.
+ *
+ * The counts, then the FIRST problem verbatim: a refused or skipped SKU is the
+ * one thing the operator has to act on (a missing NCM, a Regime Normal imposto,
+ * an ML refusal naming the field), and the full list is on each variação's
+ * link. A publish is never failed by this — the listing itself is fine.
+ */
+export function dadosFiscaisSummary(resumo: DadosFiscaisResumo): string {
+  const partes = [`${resumo.enviados} ${resumo.enviados === 1 ? 'SKU enviado' : 'SKUs enviados'}`];
+  if (resumo.omitidos.length > 0) partes.push(`${resumo.omitidos.length} omitido(s)`);
+  if (resumo.erros.length > 0) partes.push(`${resumo.erros.length} com erro`);
+  const primeiroErro = resumo.erros[0];
+  const primeiraOmissao = resumo.omitidos[0];
+  const detalhe = primeiroErro
+    ? ` — ${primeiroErro.sku}: ${primeiroErro.mensagem}`
+    : primeiraOmissao
+      ? ` — ${primeiraOmissao.sku ?? 'sem SKU'}: ${primeiraOmissao.motivo}`
+      : '';
+  return `Dados fiscais: ${partes.join(', ')}${detalhe}.`;
 }

@@ -31,6 +31,8 @@ const DOC_PROJETADO: Record<string, unknown> = {
   updatedAt: 2000,
   finishedAt: 3000,
   erro: null,
+  // A stored TTL expiry (read to hide an expired run; never in the response).
+  expiraEm: new Date(Date.UTC(2027, 0, 1)),
 };
 
 describe('the historico projection', () => {

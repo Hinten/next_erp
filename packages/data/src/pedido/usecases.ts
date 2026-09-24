@@ -3,7 +3,9 @@ import {
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
   bloqueioFinalizarAtivo,
+  estadoPedidoSchema,
   seedFreteInicial,
+  travarInclusaoProduto,
   valuesEqual,
   type BloqueioPedido,
   type EstadoPedido,
@@ -250,6 +252,9 @@ export function remotelyChangedFields(
  * of clobbered blindly. Always stamps a fresh `ultimaModificacao` on the write
  * (after the no-op check, so an unchanged save still throws
  * `PedidoNothingChangedError`).
+ *
+ * Returns what the committed write did to the two inputs of the payment-driven
+ * estado rule — see {@link SavePedidoResultado} / {@link deveReconciliarAposSalvar}.
  */
 export async function savePedido(
   port: PedidoDataPort,
@@ -259,16 +264,83 @@ export async function savePedido(
     /** The pedido document as loaded into the editor — the concurrency baseline. */
     baseline: Record<string, unknown>;
   },
-): Promise<void> {
+): Promise<SavePedidoResultado> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
+  // Reassigned on EVERY run of `apply`: a transaction retry re-runs the callback
+  // against a fresh read, and only the last run is the one that committed.
+  const lido: { current?: Record<string, unknown> } = {};
   await port.updatePedido(args.pedidoId, (current) => {
     if (current === null) throw new PedidoConflictError(null);
     if (remotelyChangedFields(args.baseline, current).length > 0) {
       throw new PedidoConflictError(current);
     }
+    lido.current = current;
     return { ...args.patch, ultimaModificacao: port.now() };
   });
+  if (lido.current === undefined) {
+    // A port that resolves without running `apply` broke its contract — there is
+    // no committed read to answer from, and guessing would decide a reconcile.
+    throw new Error('savePedido: updatePedido resolved without running apply');
+  }
+  return resultadoDoSave(args.patch, lido.current);
+}
+
+/**
+ * What a committed {@link savePedido} did to the two inputs of the
+ * payment-driven estado rule (`nextPedidoEstado`), read off the SAME transaction
+ * that committed it (#703).
+ */
+export interface SavePedidoResultado {
+  /**
+   * `valorCobrado` rode the patch AND differs from the stored value it replaced.
+   * `buildPedidoPatch` adds it whenever items / desconto / frete / devolução are
+   * dirty, including an edit the operator reverted — so presence alone proves
+   * nothing and the stored value is the comparison.
+   */
+  totalMudou: boolean;
+  /**
+   * The estado the pedido holds after the write: the patch's when it carried
+   * one, else the stored one. `null` when neither is a valid `EstadoPedido`.
+   */
+  estadoGravado: EstadoPedido | null;
+}
+
+function resultadoDoSave(
+  patch: Record<string, unknown>,
+  current: Record<string, unknown>,
+): SavePedidoResultado {
+  // A plain `!==`, never a fold: a false "changed" costs one idempotent
+  // reconcile that writes nothing, while a false "unchanged" is the stale estado
+  // this result exists to prevent.
+  const totalMudou = 'valorCobrado' in patch && patch.valorCobrado !== current.valorCobrado;
+  const estado = estadoPedidoSchema.safeParse('estado' in patch ? patch.estado : current.estado);
+  return { totalMudou, estadoGravado: estado.success ? estado.data : null };
+}
+
+/**
+ * Whether a pedido save must re-derive `estado` from the payments (#703): the
+ * total moved, so the sum it was compared against is gone.
+ *
+ * ⚠️ Gated on the estados where the editor lets the total move at all
+ * (`!travarInclusaoProduto` — the cart/checkout phase plus `error`), read off the
+ * COMMITTED write rather than the editor's copy. The gate is not decoration: a
+ * Mercado Livre pedido in `carrinho` can be promoted to `emProcessamento` by the
+ * ML import while an operator edits its items, and the save still commits
+ * (`estado` isn't dirty, so the baseline takes the live value). Reconciling it
+ * then would move it off `emProcessamento` — after which ML can never advance it
+ * to `pago` (#703 blocker 1). The callable re-applies the same gate inside its
+ * own transaction; this one only avoids calling it, and bounds the window when
+ * the deployed callable is older than the web. The callable ALSO refuses any
+ * marketplace pedido (`reconcilePedidoEstado`'s channel gate) — a gate that
+ * needs the integração's `tipo`, so it lives only on the server.
+ */
+export function deveReconciliarAposSalvar(resultado: SavePedidoResultado): boolean {
+  return (
+    resultado.totalMudou &&
+    resultado.estadoGravado !== null &&
+    !travarInclusaoProduto(resultado.estadoGravado)
+  );
 }
 
 // ---------------------------------------------------------------------------

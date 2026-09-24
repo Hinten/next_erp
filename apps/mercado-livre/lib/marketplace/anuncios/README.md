@@ -12,6 +12,23 @@ its status and moderation state current. The inverse direction (ML → ERP) is
 - `publishUserProduct.ts` — User-Products fan-out (one ML item per variation,
   shared family).
 
+**Per-SKU fiscal data for ML's Faturador (#745)**
+
+- `dadosFiscais.ts` — registers each SKU at `/items/fiscal_information` (a `PUT`,
+  and a `POST` only for a SKU ML does not know), links it to its item, reads `can_invoice`, and
+  stamps the outcome on the SKU's link (`dadosFiscais*`, `podeFaturar`). Runs
+  LAST in every publish and behind the "Enviar dados fiscais" route; an ML
+  refusal never fails a publish (a Firestore error or a bug still throws — rule 6).
+- `dadosFiscaisPayload.ts` — pure body builder. ⚠️ The `Imposto` comes from the
+  NF-e's own cascade (`criarLeitorDeImpostoPorOperacao`, bound to the conta's
+  `operacaoOuterRef` — the operação every ML pedido is stamped with), and the
+  per-field operação fallback + cEAN rule from `camposProdutoFiscal` /
+  `gtinFiscal` in `@delfrance/schemas`. Never a local copy: what ML invoices
+  must be what our nota says. Simples only (`csosn`); a kit is ONE `single`
+  SKU, like our nota's one line; `origin_type` comes from the resolved CFOP.
+- `dadosFiscaisAlvos.ts` — the same SKUs rebuilt from the STORED links, for the
+  manual re-send.
+
 **User-Products family**
 
 - `upMemberLink.ts` — resolves a UP family from one member's ML item id.

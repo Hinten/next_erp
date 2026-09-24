@@ -22,6 +22,23 @@ export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 
+// Firestore TTL policies: the one Timestamp-typed field, its retention per
+// writer, and the registry `firestore.indexes.json` must match.
+export {
+  TTL_FIELD,
+  TTL_POLICIES,
+  RETENCAO_ENVIO_PRECO_ML_DIAS,
+  RETENCAO_HISTORICO_PEDIDO_ANOS,
+  RETENCAO_HISTORICO_PRODUTO_DIAS,
+  RETENCAO_VINCULO_WHATSAPP_DIAS,
+  expiraEmApos,
+  expiraEmAposAnos,
+  ttlExpirado,
+  ttlExpiry,
+  type TimestampLike,
+  type TtlPolicy,
+} from './shared/ttl';
+
 // The four LOCAL resilience fields shared by every failures-only inbound-webhook
 // notification collection. Exported so a NEW channel's schema can spread the same
 // block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
@@ -1032,6 +1049,15 @@ export {
   type Imposto,
   type ImpostoPersistido,
 } from './imposto/tribute';
+
+export {
+  // The nota's per-field operação fallback + cEAN rule, shared with the
+  // marketplaces' fiscal registration (#745).
+  camposProdutoFiscal,
+  gtinFiscal,
+  type CamposProdutoFiscal,
+  type OperacaoCamposFiscais,
+} from './imposto/camposProdutoFiscal';
 
 export {
   // RTC cClassTrib/CST seed + validator (#333)

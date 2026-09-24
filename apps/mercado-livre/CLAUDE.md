@@ -1064,6 +1064,25 @@ makes it the inert fixture the notification suite keys ~20 tests on
 (`INERT_TOPIC` in `notificacao.test.ts`, pinned by its own guard) — every other
 quiet-looking topic is a handler waiting to happen.
 
+### Per-SKU fiscal data for ML's Faturador (#745)
+
+Every publish ends by registering each SKU with `items/fiscal_information` and
+linking it to its item; `POST /dados-fiscais` re-sends from the stored links.
+Reasoning: `lib/marketplace/anuncios/README.md`. The rules a change must keep:
+
+- ⚠️ **Send what OUR nota says.** The `Imposto` comes from the NF-e's own cascade
+  (`@delfrance/data/admin/imposto`) through the conta's `operacaoOuterRef`, and
+  the per-field operação fallback + cEAN rule from `camposProdutoFiscal` /
+  `gtinFiscal` (`@delfrance/schemas`). A local copy of either is the drift the
+  root `CLAUDE.md` names.
+- ⚠️ **Best-effort toward ML** — it runs last, and no ML refusal fails a publish
+  (a Firestore error or a bug still throws, rule 6); a refusal
+  is `dadosFiscaisEstado: 'erro'` on the SKU's link, a FIELD beside `errors`,
+  which it must never touch (the #781 latch reads those).
+- Simples only (`csosn`); Regime Normal's `tax_rule_id` waits for the NF-e to
+  support CRT 3. A kit is ONE `single` SKU. `origin_type` is derived from the
+  resolved CFOP, never guessed. No operação on the conta ⇒ zero calls.
+
 ## Env
 
 See the repo-root `.env.example` (Mercado Livre section; the OAuth client SECRET and

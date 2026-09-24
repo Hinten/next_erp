@@ -114,10 +114,10 @@ export function producaoOnlySefazHosts(): ReadonlySet<string> {
   return producaoOnlyHosts;
 }
 
-/** Lower-cased hostname without a trailing root dot, or `null` when `url` is not a URL. */
+/** Lower-cased hostname without trailing root dots, or `null` when `url` is not a URL. */
 function sefazHostOf(url: string): string | null {
   if (!URL.canParse(url)) return null;
-  return new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+  return new URL(url).hostname.toLowerCase().replace(/\.+$/, '');
 }
 
 /**
@@ -133,6 +133,15 @@ function sefazHostOf(url: string): string | null {
  *
  * Any other URL (homologação hosts, the shared dual-ambiente host, test fakes
  * such as `https://example/…`) is left to the label guard.
+ *
+ * ⚠️ A DENYLIST of the hosts our own endpoint tables name. It catches a label/table
+ * mix-up — a produção URL built into a homologação call, or the reverse opt-in
+ * forgotten — not an adversarial URL: an IP literal or an unlisted alias of a
+ * produção host passes it. The shared `cad.svrs.rs.gov.br` is also the PRODUÇÃO
+ * Consulta Cadastro host of every SVRS-delegated UF (their homologação sits on
+ * `cad-homologacao`), so a produção-table Consulta Cadastro under the '2' label is
+ * guarded by the label alone there — acceptable: Consulta Cadastro carries no
+ * `tpAmb` and has no fiscal effect.
  */
 export function assertSafeEndpointForTransport(url: string, tpAmb: TpAmb): void {
   const host = sefazHostOf(url);

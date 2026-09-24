@@ -171,8 +171,15 @@ export function promocaoRetryMin(): number {
  * The manual push's budget, in milliseconds — an ELAPSED-clock bound.
  *
  * It sits BELOW the App Hosting request ceiling on purpose, so the thing that
- * ends a long manual push is this deadline (which answers a rendered envelope)
- * and not the platform (which answers nothing at all).
+ * normally ends a long manual push is this deadline (which answers a rendered
+ * envelope) and not the platform (which answers nothing at all).
+ *
+ * ⚠️ That guarantee is per LISTING, not per request. The budget is checked
+ * BETWEEN listings, never during one, and the transport sets no fetch timeout,
+ * so a call that hangs inside a listing already started is bounded only by the
+ * platform (`runConfig.timeoutSeconds` in `apps/shopee/apphosting.yaml`). The
+ * gap between this default and that ceiling is headroom for the last listing's
+ * two ladder attempts, not a bound.
  */
 export function manualDeadlineMs(): number {
   return envInt('SHOPEE_STOCK_MANUAL_DEADLINE_MS', 120000);

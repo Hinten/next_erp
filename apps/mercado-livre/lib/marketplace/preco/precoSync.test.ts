@@ -29,6 +29,8 @@ import {
   type PriceSyncApi,
   type PriceSyncRunDeps,
   cancelPriceSyncJob,
+  expiraEmDoEnvio,
+  expiraEmDoRelatorio,
   finalizePriceSyncJob,
   processPriceSyncJob,
   startPriceSyncJob,
@@ -2067,5 +2069,69 @@ describe('cancelPriceSyncJob', () => {
         updatedAt: CLOCK_NOW,
       }),
     ).resolves.toBe('stamped');
+  });
+});
+
+// Firestore TTL policy on `enviosPrecoMercadoLivre` and `relatorios`: a run
+// expires 180 days after it starts, its shards a week later. Every stamp is
+// keyed on the run's `startedAt`, never on a clock read, so the checkpoint
+// writer, the terminal row and a retry all agree on the same instant.
+describe('TTL expiry (expiraEm)', () => {
+  const DIA_MS = 86_400_000;
+  const relPath = (jobId: string) => `${JOBS_PATH}/${jobId}/relatorios`;
+  const expiraEmDe = (doc: DocData | undefined) => (doc as { expiraEm?: unknown })?.expiraEm;
+
+  it('stamps a new run 180 days after it starts, as a Date the SDK stores as a Timestamp', async () => {
+    const db = new FakeDb();
+    const { jobId } = await startPriceSyncJob(asDb(db), {
+      integracaoId: CONTA,
+      baixarPreco: false,
+      startedBy: 'u',
+    });
+    const job = db.docs(JOBS_PATH).get(jobId) as { startedAt: number; expiraEm: unknown };
+
+    expect(job.expiraEm).toBeInstanceOf(Date);
+    expect((job.expiraEm as Date).getTime()).toBe(job.startedAt + 180 * DIA_MS);
+  });
+
+  it('stamps every checkpoint shard a week after its run, from startedAt — not the clock', async () => {
+    const db = new FakeDb();
+    // startedAt is deliberately far from CLOCK_NOW: a shard keyed on the
+    // dispatch clock instead of the run would land on a different instant.
+    const startedAt = CLOCK_NOW - 30 * DIA_MS;
+    seedJob(db, 'ttl1', {
+      fila: [draft('MLB1')],
+      planejamentoConcluido: true,
+      startedAt,
+    });
+    seedLink(db, 'MLB1');
+    const api = makeApi({ MLB1: mlItem('MLB1') });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'ttl1', integracaoId: CONTA }, 0);
+
+    const shards = [...db.docs(relPath('ttl1')).values()];
+    expect(shards.length).toBeGreaterThan(0);
+    for (const shard of shards) {
+      expect(expiraEmDe(shard)).toBeInstanceOf(Date);
+      expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
+    }
+  });
+
+  it('stamps the terminal cancel row’s shard the same way', async () => {
+    const db = new FakeDb();
+    const startedAt = CLOCK_NOW - 5 * DIA_MS;
+    seedJob(db, 'ttl2', { startedAt });
+
+    await cancelPriceSyncJob(asDb(db), { jobId: 'ttl2', integracaoId: CONTA });
+
+    const [shard] = [...db.docs(relPath('ttl2')).values()];
+    expect((expiraEmDe(shard) as Date).getTime()).toBe(startedAt + 187 * DIA_MS);
+  });
+
+  it('never gives a shard an expiry before its run’s', () => {
+    const startedAt = CLOCK_NOW;
+    expect(expiraEmDoRelatorio(startedAt).getTime()).toBeGreaterThan(
+      expiraEmDoEnvio(startedAt).getTime(),
+    );
   });
 });

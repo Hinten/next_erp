@@ -17,9 +17,11 @@ import {
 import { getEndpoints } from '../../src/endpoints/index';
 
 describe('vitest env pin — homologação only', () => {
-  it('pins NFE_AMBIENTE to homologação and NFE_ALLOW_PRODUCAO off', () => {
+  it('pins NFE_AMBIENTE to homologação and NFE_ALLOW_PRODUCAO to the empty string', () => {
     expect(process.env.NFE_AMBIENTE).toBe('homologacao');
-    expect(process.env.NFE_ALLOW_PRODUCAO).not.toBe('true');
+    // `''`, not merely "not 'true'": CI never sets the key, so an absent pin
+    // (undefined) must fail here too.
+    expect(process.env.NFE_ALLOW_PRODUCAO).toBe('');
   });
 
   it("the label guard refuses tpAmb='1' under the ambient env", () => {

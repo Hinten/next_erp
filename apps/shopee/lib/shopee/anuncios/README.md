@@ -537,8 +537,15 @@ caps row's `implementado` stays `false` regardless (step 22 flips it).
 So nobody reads a gap as a bug:
 
 - **Stock (step 12) and price (step 13).** `update_model` cannot carry either
-  anyway. `quantidadeParaPublicarShopee` is the ONE function step 12's sender
-  must agree with — the #1087 lesson.
+  anyway. `quantidadeParaPublicarShopee` and step 12's sender must agree **on
+  the fold** — both run the shared core's kit arithmetic through Shopee's two
+  bindings in `estoque/quantidadeEstoque.ts`, never a second copy (the #1087
+  lesson) — and deliberately NOT on every number. The kit own-stock knob
+  `SHOPEE_STOCK_KIT_INCLUI_PROPRIO` is SYNC-only: `opcoesPublicacaoShopee` pins
+  it off at create, so with it ON the sender adds a kit's own stock on top of
+  the number the listing was created with. (The category band's maximum is the
+  other parameter the two do not share: publish clamps down to it, and the
+  sync reads no band.)
 - **`size_chart_info` (step 18).** Never sent. A chart set in Seller Centre
   survives a republish because `update_item` is field-wise. ⚠️ `size_chart` is
   an image id on write and a URL on read — never round-trip it.
