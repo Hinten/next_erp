@@ -211,6 +211,7 @@ describe('assertSafeEndpointForTransport', () => {
     for (const url of [
       'https://NFE.FAZENDA.SP.GOV.BR/ws/nfeautorizacao4.asmx',
       'https://nfe.fazenda.sp.gov.br./ws/nfeautorizacao4.asmx',
+      'https://nfe.fazenda.sp.gov.br../ws/nfeautorizacao4.asmx',
       'https://nfe.fazenda.sp.gov.br:443/ws/some-unlisted-service.asmx',
     ]) {
       expect(() => assertSafeEndpointForTransport(url, '2'), url).toThrow(NFeProductionGuardError);

@@ -442,7 +442,7 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
       'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103', filialId: null }),
     });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
-    vi.mocked(resolveFilialRuntimeByCnpj).mockResolvedValue(fakeRuntime());
+    vi.mocked(resolveFilialRuntimeByCnpj).mockResolvedValueOnce(fakeRuntime());
     vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
 
     const res = await POST(req());
