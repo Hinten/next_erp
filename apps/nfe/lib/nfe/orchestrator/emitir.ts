@@ -4,6 +4,7 @@ import { nfeConfigCollection, nfev4Collection } from '@delfrance/data/admin/coll
 import {
   applyOutcome,
   autorizarLote,
+  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   extractCNFFromChave,
@@ -17,11 +18,13 @@ import {
   resolveTpEmis,
   sanitizeNFeText,
   signNFe,
+  type NFeStatePatch,
   type SefazCall,
   type SefazOutcome,
   type TpEmis,
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
+import { nowMicros } from '@delfrance/core/datetime';
 import {
   bloqueioNFeAtivo,
   CONTINGENCIA_MODO,
@@ -66,6 +69,7 @@ import {
   existingToEmitResult,
   outcomeFromConsReci,
   persistPatch,
+  persistPatchUnlessFinal,
   swapAnchorForProc,
 } from './audit';
 import { assertItemsBuildable, buildGeneratorInput } from './generator-input';
@@ -375,6 +379,14 @@ export function buildNfeDocWrite(
  * this predicate so they can never disagree on what counts as a crash window.
  * Docs WITH an nRec never reach it (the in-flight gates skip them first);
  * the `!nRec` clause keeps the predicate order-independent anyway.
+ *
+ * ⚠️ Nor does a #512 no-receipt member whose LOTE cStat was 103/104/105
+ * (`patchForLoteSemRecibo`): the doc matches this predicate's shape, but it
+ * carries a `STATUS_BLOQUEADORES` cStat, so both emit paths stop at
+ * `isBloqueada` BEFORE this branch. An operator re-emit of it is a no-op — the
+ * persisted doc comes back `reused` (the web dialog's "Em processamento") with
+ * no SEFAZ call and no regeneration — and only the backstop sweep's
+ * `consSitNFe(chave)` ever recovers it.
  */
 function isCrashWindowAnchor(
   existing: NotaFiscalEletronica | null,
@@ -1146,6 +1158,221 @@ export async function emitirPedidosLote(
 }
 
 /**
+ * How long a #396 crash-window member waits, after a lote-level cStat=656,
+ * before the backstop sweep may consult it: the ~1h per-(CNPJ, IP) "consumo
+ * indevido" throttle window (`packages/integrations/nfe/src/state/consumo-indevido.ts`
+ * header) — `.claude/skills/nfe/references/cstat-rejeicoes.md` §656, step 3
+ * (wait before the next call). A consult inside the window only earns another
+ * 656. Stamped as `proximaConsultaEm` (µs) via `persistPatchUnlessFinal`'s extras.
+ */
+export const CONSUMO_INDEVIDO_ESPERA_MS = 60 * 60_000;
+
+/** What `patchForLoteSemRecibo` decides for one lote member. */
+export interface LoteSemReciboPatch {
+  readonly patch: NFeStatePatch;
+  /**
+   * Explicit wait (ms) before the backstop sweep may consult the member, or
+   * `null` to keep `buildPersistData`'s own pacing: task delay + grace for an
+   * `aguardandoResposta` patch, and a `null` `proximaConsultaEm` for any other
+   * estado — which takes a FINAL one (`rejeitada`/`error`) out of the scan, but
+   * leaves an `enviando` one to the sweep's legacy due-fallback
+   * (`isStuckEnviando`), which picks it up on its next tick.
+   */
+  readonly consultaDelayMs: number | null;
+}
+
+/**
+ * `TStat` is `[0-9]{3,4}` (`tiposBasico_v4.00.xsd`). A lote cStat outside it —
+ * an empty `<cStat/>`, non-numeric text — is not a SEFAZ verdict at all, and
+ * `classifyCStat` would file it under the generic `rejeitada`.
+ */
+const CSTAT_TSTAT = /^\d{3,4}$/;
+
+/**
+ * Patch for ONE member of an async lote (indSinc='0') whose `retEnviNFe` came
+ * back WITHOUT `infRec` (#512): SEFAZ answered but issued no receipt, so there
+ * is nothing to consult by recibo. XSD `TRetEnviNFe` makes `infRec` optional
+ * for exactly this — only a received lote (103) carries it; any other cStat
+ * means the lote itself was refused (`.claude/skills/nfe/references/webservices.md:111`).
+ *
+ * Built from the LOTE cStat/xMotivo with `nRec`/`tMed` always null — NOT via
+ * `outcomeFromRetEnviNFe`, which prefers `retEnvi.protNFe` (the XSD allows one,
+ * so it would smear a single protocol over every member) and lifts `nRec` from
+ * an xMotivo `[nRec:…]` marker (a possibly FOREIGN receipt, which would route
+ * the doc into another lote's reconcile). Neither is read here.
+ *
+ * A cStat that is not `TStat`-shaped ({@link CSTAT_TSTAT}) is an anomaly,
+ * decided BEFORE classification. Otherwise an EXHAUSTIVE switch over
+ * `classifyCStat` — a new `CStatCategory` fails typecheck in the `never`
+ * default — because the global state machine is right for per-NF-e replies
+ * and wrong for this one:
+ *  - a per-NF-e verdict (100/150, 101/151, 102, 110/301/302) or an anomaly
+ *    (104, 107, duplicidade, a malformed cStat) as the LOTE cStat says nothing
+ *    about any member: the doc stays `enviando` with the cStat recorded —
+ *    never `aprovada` without a proc, never a número-reusing `rejeitada`. A
+ *    re-emit then either reports it (a `STATUS_BLOQUEADORES` cStat — 100/101/
+ *    102/104/150/151 — stops it at `isBloqueada`) or retransmits the SAME
+ *    stored bytes as a #396 crash-window anchor (every other one); it never
+ *    regenerates. The doc has no `proximaConsultaEm`, so the sweep's legacy
+ *    due-fallback (`isStuckEnviando`) picks it up on its next tick — today at
+ *    once, because that fallback `Date.parse`s the stored ms NUMBER, gets NaN
+ *    and treats it as stuck (a separate, pre-existing defect) — and its
+ *    consSit learns the real status. Deferring to the sweep is deliberate and
+ *    differs from `applyAutorizadoOutcome`'s INLINE consult: inline recovery
+ *    for an N-member lote is an N-call consult fan-out inside the request —
+ *    the #77 consumo-indevido vector;
+ *  - 103/105/106 → `aguardandoResposta`, paced by `buildPersistData` (103/105
+ *    are bloqueadores too: see `isCrashWindowAnchor`);
+ *  - a lote refusal is CONCLUSIVE for a FRESH member (its bytes were never
+ *    sent before, so the número is free): paralisado (108/109/113/114) and
+ *    rejections → `rejeitada`, whose re-emit reuses numeração/série/cNF;
+ *    656 → `error`;
+ *  - …but NOT for a #396 crash-window member (`storedBytes`): an earlier
+ *    transmission of those exact bytes may already be authorized, and a
+ *    `rejeitada`/`error` doc takes the REGENERATE branch on the next emit,
+ *    overwriting the anchor. Any refusal keeps it an anchor
+ *    (`aguardandoResposta`, no nRec); on 656 its consult waits
+ *    `CONSUMO_INDEVIDO_ESPERA_MS`.
+ */
+export function patchForLoteSemRecibo(
+  retEnvi: Pick<TRetEnviNFe, 'cStat' | 'xMotivo'>,
+  opts: { readonly storedBytes: boolean },
+): LoteSemReciboPatch {
+  const base = applyOutcome(
+    { estado: ESTADO_NFE.enviando, retries: 0 },
+    { cStat: retEnvi.cStat, xMotivo: retEnvi.xMotivo, nRec: null, tMed: null },
+  );
+  const ancora: NFeStatePatch = {
+    ...base,
+    estado: ESTADO_NFE.aguardandoResposta,
+    retries: 0,
+    action: 'recover-via-consulta',
+  };
+  const emVoo: NFeStatePatch = {
+    ...base,
+    estado: ESTADO_NFE.enviando,
+    retries: 0,
+    action: 'recover-via-consulta',
+  };
+  // Before the switch: `classifyCStat('')` / `('abc')` is 'rejeitada', which
+  // would make a FRESH member número-reusing on a reply that says nothing.
+  if (!CSTAT_TSTAT.test(retEnvi.cStat)) {
+    return { patch: emVoo, consultaDelayMs: null };
+  }
+  const categoria = classifyCStat(retEnvi.cStat);
+  switch (categoria) {
+    case 'autorizada':
+    case 'cancelada':
+    case 'inutilizada':
+    case 'denegada':
+    case 'lote-processado':
+    case 'servico-em-operacao':
+    case 'duplicidade':
+      return { patch: emVoo, consultaDelayMs: null };
+    case 'lote-recebido':
+    case 'lote-pendente':
+    case 'lote-nao-localizado':
+      return { patch: base, consultaDelayMs: null };
+    case 'servico-paralisado':
+      return {
+        patch: opts.storedBytes
+          ? ancora
+          : { ...base, estado: ESTADO_NFE.rejeitada, action: 'done-rejected' },
+        consultaDelayMs: null,
+      };
+    case 'consumo-indevido':
+      return opts.storedBytes
+        ? { patch: { ...ancora, action: 'backoff' }, consultaDelayMs: CONSUMO_INDEVIDO_ESPERA_MS }
+        : { patch: base, consultaDelayMs: null };
+    case 'rejeitada-schema':
+    case 'rejeitada-certificado':
+    case 'rejeitada-ambiente':
+    case 'rejeitada':
+      return { patch: opts.storedBytes ? ancora : base, consultaDelayMs: null };
+    default: {
+      const _exhaustive: never = categoria;
+      throw new NFeOrchestratorError(
+        `patchForLoteSemRecibo: categoria de cStat não tratada '${String(_exhaustive)}'`,
+      );
+    }
+  }
+}
+
+/**
+ * Persist the #512 no-infRec outcome on every lote member — one guarded write
+ * each (`persistPatchUnlessFinal` with this chunk's idLote). During the SOAP
+ * round-trip every member looks like a crash-window anchor, so a concurrent
+ * re-emit may have retransmitted it in ANOTHER lote, or it went final; the
+ * guard re-derives both from `tx.get` and skips the write (rule 7), and the
+ * member reports the doc's live truth instead — as `reused: true`, the
+ * `existingToEmitResult` precedent: that state was written by ANOTHER run, so
+ * apps/web's `classifyEmitResult` must never count, say, a concurrent emit's
+ * `aprovada` as THIS run's success. Per-member isolation: SEFAZ has already
+ * answered and the reply is audited per chave, so one failed write fails only
+ * its pedido.
+ */
+async function persistLoteSemRecibo(args: {
+  readonly fs: Firestore;
+  readonly toSend: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string; chave: string }>;
+  /** nfev4 paths of the #396 crash-window members (sent with their STORED bytes). */
+  readonly storedPaths: ReadonlySet<string>;
+  readonly retEnvi: TRetEnviNFe;
+  readonly idLote: number;
+}): Promise<Array<EmitResult | EmitError>> {
+  const { fs, toSend, storedPaths, retEnvi, idLote } = args;
+  if (retEnvi.protNFe) {
+    console.warn(
+      `[nfe/orchestrator] lote ${idLote}: retEnviNFe cStat=${retEnvi.cStat} carries a ` +
+        `protNFe but no infRec — protNFe ignored for all ${toSend.length} member(s)`,
+    );
+  }
+  const expectedIdLote = String(idLote);
+  const settled = await Promise.allSettled(
+    toSend.map(async (s): Promise<EmitResult> => {
+      const { patch, consultaDelayMs } = patchForLoteSemRecibo(retEnvi, {
+        storedBytes: storedPaths.has(s.prep.nfeRef.path),
+      });
+      const extras =
+        consultaDelayMs != null
+          ? { proximaConsultaEm: nowMicros() + consultaDelayMs * 1000 }
+          : undefined;
+      const r = await persistPatchUnlessFinal(fs, s.prep.nfeRef, patch, extras, {
+        expectedIdLote,
+      });
+      if (r.written) {
+        return {
+          nfeId: s.prep.nfeRef.id,
+          pedidoId: s.pedidoId,
+          estado: patch.estado,
+          chave: s.chave,
+          nRec: null,
+          cStat: patch.cStat,
+          xMotivo: patch.xMotivo,
+          reused: false,
+        };
+      }
+      console.debug(
+        `[nfe/orchestrator] lote ${idLote}: ${s.prep.nfeRef.path} changed mid-flight ` +
+          `(estado=${r.estadoAtual}) — reply not persisted, reporting the live doc`,
+      );
+      return {
+        nfeId: s.prep.nfeRef.id,
+        pedidoId: s.pedidoId,
+        estado: r.estadoAtual,
+        chave: s.chave,
+        nRec: r.nRecAtual,
+        cStat: r.cStatAtual ?? '',
+        xMotivo: r.xMotivoAtual ?? '',
+        reused: true,
+      };
+    }),
+  );
+  return settled.map((o, i) =>
+    o.status === 'fulfilled' ? o.value : toEmitError(toSend[i]!.pedidoId, o.reason),
+  );
+}
+
+/**
  * Process one (filial, ≤20-pedido) chunk: bulk-allocate numeração for the
  * chunk in one transaction, then generate + sign + persist each NF-e
  * per-pedido OUTSIDE the tx (isolated failures), call autorizarLote once
@@ -1295,6 +1522,8 @@ export async function processChunk(
   //     nRec + proximaConsultaEm (seeded by SEFAZ's tMed), enqueue ONE Cloud
   //     Task to reconcile the whole lote by receipt, and return at once. No
   //     in-request poll (the ~88 s block is gone — issue "processo congelado").
+  //     A reply WITHOUT infRec carries no receipt: it is persisted per member
+  //     by persistLoteSemRecibo (#512) and enqueues nothing.
   let protNFeArr: NonNullable<TRetEnviNFe['protNFe']>[] = [];
   if (indSinc === '0') {
     const nRec = retEnvi.infRec?.nRec ?? null;
@@ -1317,21 +1546,20 @@ export async function processChunk(
       ),
     );
     if (!nRec) {
-      // SEFAZ accepted but gave no nRec — exceptional. Each pedido stays
-      // aguardandoResposta; there's nothing to consult by recibo, so the
-      // backstop sweep recovers via consSit(chave).
-      for (const s of toSend) {
-        txResults.push({
-          nfeId: s.prep.nfeRef.id,
-          pedidoId: s.pedidoId,
-          estado: ESTADO_NFE.aguardandoResposta,
-          chave: s.chave,
-          nRec: null,
-          cStat: retEnvi.cStat,
-          xMotivo: retEnvi.xMotivo,
-          reused: false,
-        });
-      }
+      // No infRec → SEFAZ issued no receipt (#512): the lote itself was refused
+      // (108/109/113/114, 656, a lote-level rejection) or the reply is anomalous.
+      // Persist each member's outcome NOW (see patchForLoteSemRecibo) — nothing
+      // to enqueue, no recibo to consult; whatever stays in flight is recovered
+      // by the backstop sweep's consSit(chave).
+      txResults.push(
+        ...(await persistLoteSemRecibo({
+          fs,
+          toSend,
+          storedPaths: new Set(storedMembers.map((m) => m.prep.nfeRef.path)),
+          retEnvi,
+          idLote: sharedIdLote,
+        })),
+      );
       return txResults;
     }
     // Persist aguardandoResposta + nRec + proximaConsultaEm on each doc

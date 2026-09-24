@@ -259,6 +259,40 @@ contingency. It covers both `nfev4` lotes and `cartacorrecao` records, and is
 gated per-doc by `proximaConsultaEm`, so it never consults ahead of a task's
 schedule. No `gcloud scheduler` job to wire — it deploys with the codebase.
 
+**Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
+carries no `nRec`, so there is nothing to consult by recibo: `processChunk`
+persists one disposition per member at emit time (`patchForLoteSemRecibo`,
+written by `persistLoteSemRecibo` through `persistPatchUnlessFinal` guarded by
+the chunk's `idLote`, so a doc a newer lote re-stamped or one that went final is
+left alone and reported `reused` with its live state, never as this run's
+outcome), enqueues **no** task and makes no SEFAZ call beyond the lote
+itself. The disposition comes from the LOTE cStat alone — a `protNFe` in that
+reply and an xMotivo `[nRec:…]` marker are both ignored. A **fresh** member's
+refusal is conclusive, because its bytes were never sent before and the número
+is free: 656 → `error`; 108/109/113/114 and every rejection (4-digit cStats
+included) → `rejeitada`, keeping SEFAZ's cStat/xMotivo; the sweep never scans
+either. A **#396 crash-window** member (retransmitted with its STORED bytes)
+stays an anchor on ANY refusal — `aguardandoResposta`, cStat recorded, no
+`nRec` — since an earlier send of those exact bytes may already be authorized
+and a `rejeitada`/`error` doc would regenerate over them; on 656 its
+`proximaConsultaEm` is pushed out 1 h (`CONSUMO_INDEVIDO_ESPERA_MS`, the
+consumo-indevido window), otherwise the default pacing applies. 103/105/106 →
+`aguardandoResposta`, paced as usual. A per-NF-e verdict (100/150, 101/151, 102,
+110/301/302) or an anomaly (104, 107, duplicidade, or a cStat that is not the
+XSD's 3–4 digits, such as an empty `<cStat/>`) at LOTE level says nothing about
+any member: the doc stays `enviando` with the cStat recorded — never `aprovada`
+without a proc, never a número-reusing `rejeitada`. These `enviando`
+dispositions carry no `proximaConsultaEm`, so the sweep's legacy due-fallback
+(`isStuckEnviando`) picks them up on its next tick — today immediately, because
+`runProcessarPendentes` hands it the stored `ultima_modificacao` ms NUMBER,
+which `Date.parse` turns into NaN and treats as stuck (a separate, pre-existing
+defect). ⚠️ A member whose lote cStat was 103/104/105 carries a
+`STATUS_BLOQUEADORES` cStat, so both emit paths stop at `isBloqueada` before the
+#396 crash-window branch: an operator re-emit is a no-op (reported `reused`,
+"Em processamento") and only the sweep recovers it. Every in-flight disposition
+is recovered by the sweep's `consSitNFe(chave)`, once per doc when due; never
+inline, which for a 20-member lote would be the #77 fan-out.
+
 `POST /api/nfe/processar-pendentes` still exists, but only as a **manual/ops
 trigger** for that same core (`lib/nfe/handlers/runProcessarPendentes.ts`),
 behind a normal Firebase user token + `PERM.fiscal.write`.
