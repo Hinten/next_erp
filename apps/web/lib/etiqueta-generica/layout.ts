@@ -132,7 +132,7 @@ export function wrapText(
   return out.length > 0 ? out : [''];
 }
 
-/** The 44-digit chave in eleven blocks of four, for human reading. */
+/** The 44-character chave in eleven blocks of four, for human reading. */
 export function groupChave(chave: string): string {
   return (chave.match(/.{1,4}/g) ?? []).join(' ');
 }

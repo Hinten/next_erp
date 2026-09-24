@@ -1,0 +1,75 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderEtiquetaGenericaZpl > keeps the numeric ZPL byte-identical at 203 dpi 1`] = `
+"^XA
+^CI28
+^PW799
+^LL1199
+^LH0,0
+^FO1,1^GB796,1196,3^FS
+^FO40,43^A0N,31^FB719,1,0,C,0^FDPedido 12345^FS
+^FO41,43^A0N,31^FB719,1,0,C,0^FDPedido 12345^FS
+^FO40,74^A0N,26^FB719,1,0,C,0^FDMotoboy Centro (Motoboy)^FS
+^FO41,74^A0N,26^FB719,1,0,C,0^FDMotoboy Centro (Motoboy)^FS
+^FO40,100^A0N,26^FB719,1,0,C,0^FDNFe nº: 4821^FS
+^FO41,100^A0N,26^FB719,1,0,C,0^FDNFe nº: 4821^FS
+^FO123,166^BY2^BCN,80,N,N,N^FD>;35260114200166000187550010000000123456789012^FS
+^FO40,246^A0N,18^FB719,1,0,C,0^FD3526 0114 2001 6600 0187 5500 1000 0000 1234 5678 9012^FS
+^FO3,286^GB794,3,3^FS
+^FO40,307^A0N,26^FB719,1,0,L,0^FDCliente: Maria Aparecida de Souza^FS
+^FO40,333^A0N,26^FB719,1,0,L,0^FDFone: (11) 98765-4321^FS
+^FO3,380^GB794,3,3^FS
+^FO40,441^A0N,31^FB719,1,0,C,0^FDEntrega^FS
+^FO41,441^A0N,31^FB719,1,0,C,0^FDEntrega^FS
+^FO40,481^A0N,26^FB719,1,0,L,0^FDLogradouro: Rua das Palmeiras, 1250^FS
+^FO40,507^A0N,26^FB719,1,0,L,0^FDBairro: Jardim Paulista^FS
+^FO40,533^A0N,26^FB719,1,0,L,0^FDComplemento: Apto 74B^FS
+^FO40,559^A0N,26^FB719,1,0,L,0^FDCidade: São Paulo - SP^FS
+^FO40,585^A0N,26^FB719,1,0,L,0^FDCEP: 01415-002^FS
+^FO3,672^GB794,3,3^FS
+^FO40,733^A0N,31^FB719,1,0,C,0^FDComprovante de recebimento^FS
+^FO41,733^A0N,31^FB719,1,0,C,0^FDComprovante de recebimento^FS
+^FO40,772^A0N,26^FB719,1,0,L,0^FDNome legível: _________________________________^FS
+^FO40,799^A0N,26^FB719,1,0,L,0^FDCPF / RG: ____________________________________^FS
+^FO40,825^A0N,26^FB719,1,0,L,0^FDData: ____/____/______^FS
+^FO40,939^A0N,26^FB719,1,0,L,0^FD_____________________________________________^FS
+^FO40,965^A0N,21^FB719,1,0,C,0^FDAssinatura do recebedor^FS
+^XZ"
+`;
+
+exports[`renderEtiquetaGenericaZpl > keeps the numeric ZPL byte-identical at 300 dpi 1`] = `
+"^XA
+^CI28
+^PW1181
+^LL1772
+^LH0,0
+^FO2,2^GB1177,1767,4^FS
+^FO59,63^A0N,46^FB1063,1,0,C,0^FDPedido 12345^FS
+^FO60,63^A0N,46^FB1063,1,0,C,0^FDPedido 12345^FS
+^FO59,109^A0N,38^FB1063,1,0,C,0^FDMotoboy Centro (Motoboy)^FS
+^FO60,109^A0N,38^FB1063,1,0,C,0^FDMotoboy Centro (Motoboy)^FS
+^FO59,148^A0N,38^FB1063,1,0,C,0^FDNFe nº: 4821^FS
+^FO60,148^A0N,38^FB1063,1,0,C,0^FDNFe nº: 4821^FS
+^FO175,246^BY3^BCN,118,N,N,N^FD>;35260114200166000187550010000000123456789012^FS
+^FO59,364^A0N,27^FB1063,1,0,C,0^FD3526 0114 2001 6600 0187 5500 1000 0000 1234 5678 9012^FS
+^FO4,422^GB1173,4,4^FS
+^FO59,453^A0N,38^FB1063,1,0,L,0^FDCliente: Maria Aparecida de Souza^FS
+^FO59,492^A0N,38^FB1063,1,0,L,0^FDFone: (11) 98765-4321^FS
+^FO4,562^GB1173,4,4^FS
+^FO59,652^A0N,46^FB1063,1,0,C,0^FDEntrega^FS
+^FO60,652^A0N,46^FB1063,1,0,C,0^FDEntrega^FS
+^FO59,710^A0N,38^FB1063,1,0,L,0^FDLogradouro: Rua das Palmeiras, 1250^FS
+^FO59,749^A0N,38^FB1063,1,0,L,0^FDBairro: Jardim Paulista^FS
+^FO59,787^A0N,38^FB1063,1,0,L,0^FDComplemento: Apto 74B^FS
+^FO59,826^A0N,38^FB1063,1,0,L,0^FDCidade: São Paulo - SP^FS
+^FO59,864^A0N,38^FB1063,1,0,L,0^FDCEP: 01415-002^FS
+^FO4,993^GB1173,4,4^FS
+^FO59,1084^A0N,46^FB1063,1,0,C,0^FDComprovante de recebimento^FS
+^FO60,1084^A0N,46^FB1063,1,0,C,0^FDComprovante de recebimento^FS
+^FO59,1142^A0N,38^FB1063,1,0,L,0^FDNome legível: _________________________________^FS
+^FO59,1180^A0N,38^FB1063,1,0,L,0^FDCPF / RG: ____________________________________^FS
+^FO59,1219^A0N,38^FB1063,1,0,L,0^FDData: ____/____/______^FS
+^FO59,1387^A0N,38^FB1063,1,0,L,0^FD_____________________________________________^FS
+^FO59,1426^A0N,31^FB1063,1,0,C,0^FDAssinatura do recebedor^FS
+^XZ"
+`;

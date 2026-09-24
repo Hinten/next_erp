@@ -18,11 +18,10 @@
  * label with a 10 mm blank gap and no way to scan it.
  *
  * Switching subsets mid-symbol needs nothing but the table below: value 100 is
- * CODE B (from C) and value 99 is CODE C (from B). That is why this is possible
- * here while the DANFE ZPL etiqueta stays blocked on #1624 — a Zebra encodes
- * `^BC` natively, so THAT path needs ZPL's mid-string invocation code, which
- * could not be verified. This module emits the bars itself, so it needs no
- * printer cooperation at all. `./zpl2` therefore still refuses an alfa chave.
+ * CODE B (from C) and value 99 is CODE C (from B). This module emits the bars
+ * itself for the vector PDF. The sibling ZPL renderer delegates the same split
+ * to the printer through the browser-safe `@delfrance/integrations-nfe/code128`
+ * encoder and Zebra's `>6`/`>5` invocation codes.
  *
  * Widths, for the 44-character chave at the label's 90 mm barcode box:
  *

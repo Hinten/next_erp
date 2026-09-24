@@ -13,7 +13,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { EtiquetaGenericaFormatError } from '../lib/etiqueta-generica/errors';
 import {
   COM_NFE_ALFA_MODEL,
   COM_NFE_MODEL,
@@ -33,9 +32,6 @@ const OUT_DIR = join(process.cwd(), 'etiqueta-samples');
 const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
   ['minima', MINIMAL_MODEL],
   ['com-nfe', COM_NFE_MODEL],
-  // ⚠️ Renders a PDF but NO .zpl — the ZPL label refuses an alphanumeric chave
-  // on purpose (Code 128 subset C is numeric-only). The run below reports that
-  // refusal rather than hiding it, so the asymmetry is visible in the output.
   ['com-nfe-alfa', COM_NFE_ALFA_MODEL],
   ['reverso', REVERSO_MODEL],
   ['retirada-na-loja', RETIRADA_MODEL],
@@ -49,17 +45,15 @@ async function main(): Promise<void> {
   for (const [name, model] of SAMPLES) {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
-    let zplNote = '';
-    try {
+    const zplName = name === 'com-nfe-alfa' ? `etiqueta-${name}-203.zpl` : `etiqueta-${name}.zpl`;
+    writeFileSync(join(OUT_DIR, zplName), renderEtiquetaGenericaZpl(model), 'utf8');
+    written += 2;
+    if (name === 'com-nfe-alfa') {
       writeFileSync(
-        join(OUT_DIR, `etiqueta-${name}.zpl`),
-        renderEtiquetaGenericaZpl(model),
+        join(OUT_DIR, `etiqueta-${name}-300.zpl`),
+        renderEtiquetaGenericaZpl(model, { dpi: 300 }),
         'utf8',
       );
-      written += 2;
-    } catch (err) {
-      if (!(err instanceof EtiquetaGenericaFormatError)) throw err;
-      zplNote = ' — no .zpl: ZPL refuses an alfa chave, print the PDF';
       written += 1;
     }
     const { contentHeightMm, scale, slack } = buildEtiquetaGenericaLayout(model);
@@ -71,7 +65,7 @@ async function main(): Promise<void> {
       .filter(Boolean)
       .join(', ');
     process.stdout.write(
-      `etiqueta-${name} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})${zplNote}\n`,
+      `etiqueta-${name} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})\n`,
     );
   }
   process.stdout.write(`\nWrote ${written} samples to ${OUT_DIR}\n`);

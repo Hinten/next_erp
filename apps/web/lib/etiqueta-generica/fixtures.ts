@@ -79,8 +79,8 @@ export const COM_NFE_MODEL: EtiquetaGenericaModel = {
 };
 
 /**
- * Same label with an ALPHANUMERIC chave. The PDF must encode this in mixed
- * subsets; the ZPL must refuse it — see `zpl2.ts`.
+ * Same label with an ALPHANUMERIC chave. Both PDF and ZPL encode it in mixed
+ * subsets; this is the widest valid chave fixture for the two renderers.
  */
 export const COM_NFE_ALFA_MODEL: EtiquetaGenericaModel = {
   ...BASE,

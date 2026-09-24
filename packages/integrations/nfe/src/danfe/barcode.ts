@@ -22,10 +22,9 @@ import bwipjs from 'bwip-js/node';
  * encode correctly here without any caller doing anything, and stripping them
  * to "help" is what printed a wrong barcode on a fiscal document.
  *
- * ⚠️ This makes the PDF renderers the only alfa-capable etiqueta today: the
- * ZPL label (`./zpl2`) is pinned to Code 128 subset C, which is numeric-only,
- * and REFUSES an alfa chave rather than emitting a symbol too wide for the
- * label. See the guard in `renderSimplificadoZpl`.
+ * The ZPL label (`./zpl2`) reaches the same result through Zebra's native
+ * mixed-subset invocation codes; this PNG path still hands the whole chave to
+ * bwip-js and never tries to reproduce those switches itself.
  */
 export function code128Png(data: string): Promise<Buffer> {
   return bwipjs.toBuffer({
