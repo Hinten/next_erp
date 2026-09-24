@@ -151,11 +151,26 @@ export const MOD_BC_LABELS: Record<ModBC, string> = {
   '3': '3 - Valor da Operação',
 };
 
-/** modBCST — Modalidade de determinação da BC do ICMS ST. */
-export const modBCSTSchema = z.enum(['0', '1', '2', '3', '4', '5']);
+/**
+ * modBCST — Modalidade de determinação da BC do ICMS ST (N18).
+ *
+ * `'6'` (Valor da Operação) was added by NT 2019.001 (§1.6 "Criação de Novo
+ * Valor para o Campo N18" and §6 "Alteração de Leiaute", read at v1.70), and
+ * the vendored `leiauteNFe_v4.00.xsd` enumerates `0`..`6` at all eight
+ * `modBCST` sites (#509). Missing it was not a UI gap: a stored config holding
+ * `'6'` failed every collection schema that spreads `taxConfigFields`, so the
+ * imposto resolver dropped the whole doc and emitted the item against a LOWER
+ * tier — a wrong NF-e with no error.
+ */
+export const modBCSTSchema = z.enum(['0', '1', '2', '3', '4', '5', '6']);
 export type ModBCST = z.infer<typeof modBCSTSchema>;
 
-/** Named members of {@link modBCSTSchema}; names from {@link MOD_BCST_LABELS}. */
+/**
+ * Named members of {@link modBCSTSchema}; names from {@link MOD_BCST_LABELS}.
+ * ⚠️ `satisfies Record<string, ModBCST>` checks each VALUE, never that every
+ * member has a name — a new enum member must be added here by hand. The
+ * completeness guard in `tribute.test.ts` is what fails when one is not.
+ */
 export const MOD_BCST = {
   precoTabeladoOuMaximoSugerido: '0',
   listaNegativa: '1',
@@ -163,6 +178,7 @@ export const MOD_BCST = {
   listaNeutra: '3',
   margemValorAgregado: '4',
   pauta: '5',
+  valorOperacao: '6',
 } as const satisfies Record<string, ModBCST>;
 
 export const MOD_BCST_LABELS: Record<ModBCST, string> = {
@@ -172,6 +188,7 @@ export const MOD_BCST_LABELS: Record<ModBCST, string> = {
   '3': '3 - Lista Neutra (valor)',
   '4': '4 - Margem Valor Agregado (%)',
   '5': '5 - Pauta (valor)',
+  '6': '6 - Valor da Operação',
 };
 
 /**
