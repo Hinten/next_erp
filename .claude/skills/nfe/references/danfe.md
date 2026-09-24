@@ -20,10 +20,10 @@ EspecificaçõesTécnicas - Danfe-Código-Barras-2.pdf`).
   document. In **homologação** (`tpAmb=2`) it carries a **"SEM VALOR FISCAL"**
   watermark (see `homologacao.md`).
 - **Barcode = Code 128 of the 44-character chave.** A numeric chave uses subset
-  C end-to-end. An NT 2026.004 alphanumeric chave uses C/B/C: the numeric
-  prefix, the 12-character CNPJ body, then the numeric suffix. **No QR code** —
-  the QR is NFC-e (model 65) only, via `infNFeSupl/qrCode`, and is out of scope
-  here.
+  C end-to-end. Under NT 2026.004, positions 6–17 may contain `A`–`Z`: ZPL uses
+  mixed C/B/C for the numeric prefix, 12-character CNPJ body and numeric suffix;
+  PDF delegates subset selection to bwip-js. **No QR code** — the QR is NFC-e
+  (model 65) only, via `infNFeSupl/qrCode`, and is out of scope here.
 - **Build the chave text grouped** in eleven blocks of four for human reading.
 
 ## Orientations / formats

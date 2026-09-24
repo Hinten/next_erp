@@ -154,7 +154,7 @@ export type EtiquetaOp =
       bold: boolean;
       align: 'left' | 'center';
     }
-  /** Code 128 strip. `data` is the raw payload (digits only, for subset C). */
+  /** Code 128 strip. `data` is the raw 44-character NF-e chave, possibly alphanumeric. */
   | { readonly kind: 'barcode'; x: number; y: number; w: number; h: number; data: string };
 
 export interface EtiquetaGenericaLayout {
