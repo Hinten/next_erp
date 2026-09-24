@@ -12,7 +12,7 @@
  * ## ⚠️ ONE clearer, and it is the CLEAN send
  *
  * {@link registrarEnvioLimpo} is the only function that writes `null` to the
- * six `estoqueRecusa*` fields, and it writes ALL six: its patch is TOTAL over
+ * seven `estoqueRecusa*` fields, and it writes ALL seven: its patch is TOTAL over
  * {@link CAMPOS_DO_PATCH_DE_ESTOQUE} and the compiler checks that — a name
  * added to the list without a value here does not compile, and a value whose
  * name is not on the list does not compile either.
@@ -354,10 +354,10 @@ async function escreverNaVariacao(
 /**
  * A CLEAN send: every model Shopee answered about was accepted.
  *
- * ⚠️ **The one clearer.** It stamps `estoqueEnviadoEm` and nulls all six
+ * ⚠️ **The one clearer.** It stamps `estoqueEnviadoEm` and nulls all seven
  * `estoqueRecusa*` fields — `null`, never absent, because a reader must be able
  * to tell "diagnosed and then fixed" from "never diagnosed", and because
- * nulling all six is what clears BOTH halves of the skip set at once: the TIME
+ * nulling all seven is what clears BOTH halves of the skip set at once: the TIME
  * mechanism reads `estoqueRecusaAte`, and the STATE one needs a non-null
  * `estoqueRecusaEm` beside at least one recorded reading.
  *

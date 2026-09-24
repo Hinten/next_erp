@@ -123,9 +123,10 @@ function paraIdOpaco(v: unknown): unknown {
  * (`packages/core/src/wire/index.ts`), and Zod 4's `.int()` answers `too_big`
  * above `Number.MAX_SAFE_INTEGER` — so a uint64 id declared `wireInt()` does not
  * lose precision quietly, it FAILS the parse of the body that carries it.
- * `promotion_id` became a uint64 on 2026-07-31 and rides two pages this package
- * reads ({@link shopeeModelSchema} and {@link shopeePromocaoDeItemSchema}), so
- * both would go down on the first big id Shopee mints.
+ * `promotion_id` became a uint64 on 2026-07-31 and rides three pages this
+ * package reads ({@link shopeeModelSchema}, {@link shopeePromocaoDeItemSchema}
+ * and {@link shopeeOrderItemSchema}), so all three would go down on the first
+ * big id Shopee mints.
  *
  * ⚠️ It cannot REPAIR a big number: by the time the preprocess runs, `JSON.parse`
  * has already rounded it. `String(9007199254740993)` is `'9007199254740992'`, a
@@ -147,7 +148,8 @@ export function shopeeIdOpaco() {
  *
  * `false` means a NUMERIC id above `Number.MAX_SAFE_INTEGER` arrived and is
  * already rounded — the digits {@link shopeeIdOpaco} produced are not the id.
- * Diagnostics only: nothing in step 12 stores a `promotion_id`.
+ * Diagnostics only: nothing that reads one of the three pages stores its
+ * `promotion_id`.
  */
 export function idOpacoExato(bruto: unknown): boolean {
   return typeof bruto !== 'number' || Number.isSafeInteger(bruto);
@@ -1014,7 +1016,16 @@ export const shopeeOrderItemSchema = z
     add_on_deal_id: wireInt().nullable().default(null),
     /** Lossy by design: an item in several promotions shows only the top one. */
     promotion_type: z.string().nullable().default(null),
-    promotion_id: wireInt().nullable().default(null),
+    /**
+     * ⚠️ An OPAQUE STRING ({@link shopeeIdOpaco}), never a number: `uint64` since
+     * 2026-07-31. Under `wireInt()`, one id above 2^53 failed Zod's `.int()` with
+     * `too_big`, and that failed the WHOLE `get_order_detail` page — the order
+     * import with it — over a field the import never reads. Real ids are ~15
+     * digits today (below 2^53), so this is precautionary. A JSON number above
+     * 2^53 still arrives already rounded ({@link idOpacoExato}). Lossy like
+     * `promotion_type`: an item in several promotions shows only the top one.
+     */
+    promotion_id: shopeeIdOpaco(),
     order_item_id: wireInt().nullable().default(null),
     line_item_id: wireInt().nullable().default(null),
     promotion_group_id: wireInt().nullable().default(null),

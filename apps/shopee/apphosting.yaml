@@ -118,12 +118,15 @@ runConfig:
 #                           never a silent drop.
 #   SHOPEE_STOCK_MANUAL_DEADLINE_MS
 #                           OPTIONAL — the manual stock push's wall-clock budget
-#                           in ms (default 120000). It is what ENDS that request:
-#                           whatever has not been sent when it expires comes back
-#                           as `nao-tentado` in a partial envelope. ⚠️ Keep it
-#                           BELOW runConfig.timeoutSeconds above, or the platform
-#                           kills the request first and the operator gets no
-#                           envelope at all — which is the whole point of the 180.
+#                           in ms (default 120000). It is what normally ENDS that
+#                           request: every listing not yet started when it
+#                           expires comes back as `nao-tentado` in a partial
+#                           envelope. Per LISTING, not per request — see the
+#                           runConfig comment above for the hung-call residual.
+#                           ⚠️ Keep it BELOW runConfig.timeoutSeconds above, or
+#                           the platform kills the request first and the
+#                           operator gets no envelope at all — which is the
+#                           whole point of the 180.
 #   SHOPEE_STOCK_MANUAL_CONCURRENCY
 #                           OPTIONAL — how many listings that push sends in
 #                           parallel (default 2). CLAMPED to
@@ -149,6 +152,13 @@ runConfig:
 #                           numbers for the same produto, each `update_stock`
 #                           overwriting the other with no signal. Set it in both
 #                           places or in neither.
+#                           ⚠️ It moves the SYNC only (the sweeps + the manual
+#                           push), never the create-time seller_stock. This
+#                           backend runs BOTH the manual push and the publish
+#                           route (step 11), and the knob still moves only the
+#                           push: `opcoesPublicacaoShopee` pins it off at create,
+#                           so a kit is published at its component minimum and
+#                           the first sync send adds the kit's own stock.
 #   SHOPEE_STOCK_RATE_PAUSE_MIN
 #                           OPTIONAL — default 5 (minutes). Read on TWO surfaces
 #                           for the same reason: the manual push runs the real

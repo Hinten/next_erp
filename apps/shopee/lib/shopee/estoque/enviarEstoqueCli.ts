@@ -50,6 +50,10 @@
  * catalogue value that can be looked up in the provider's own documentation,
  * while the sentence beside it is always `MENSAGEM_POR_MOTIVO`'s, i.e. ours.
  *
+ * Every table goes through ONE layout, {@link alinharTabela}, which sizes each
+ * column from the cells it actually renders: a Shopee-imported produto's id is
+ * 64 hex characters, and no fixed width chosen for a short id survives it.
+ *
  * ## ⚠️ The band column is structurally present and empty today
  *
  * The v1 task payload carries no band, so the sender resolves none and nothing
@@ -84,6 +88,7 @@ import {
   RESULTADO_MODELO,
   ShopeeEnvioEstoqueGuardError,
   ehRecusa,
+  type LinhaDeModeloEnviada,
   type MotivoEstoqueShopee,
 } from './errosEstoque';
 import type {
@@ -628,6 +633,54 @@ function rotulo(nome: string, valor: string): string {
   return `  ${nome.padEnd(20, '.')} ${valor}`;
 }
 
+/** What separates two adjacent cells of every table below. Never empty. */
+const ENTRE_COLUNAS = '  ';
+
+/** A cell's width in CODE POINTS, so a name outside the BMP is not counted twice. */
+function larguraDe(celula: string): number {
+  return [...celula].length;
+}
+
+/**
+ * The ONE layout every table this module prints goes through: each column but
+ * the last is padded to the widest cell actually rendered in it — a header row
+ * counts like any other row — and adjacent cells are separated by
+ * {@link ENTRE_COLUNAS}. The last column is free text (a sentence, a code) and
+ * is never padded, and the line is right-trimmed so an empty trailing cell
+ * leaves no trailing blanks.
+ *
+ * ⚠️ **Sized from the values, never from a fixed width.** The tables used to
+ * pad every id to a width chosen for a short Firestore id, but a produto the
+ * step-9 importer created carries a 64-character hex id (a digest of the conta
+ * and the `item_id`). A value as wide as its column leaves no gap at all, so on
+ * the first staging rehearsal the produto id ran straight into `qtd` in the
+ * plan, into the produto's name on the `--live` listing line and into
+ * `pedida=` on every model line — and the same held for the two motivo slugs
+ * at least as wide as their own fixed column. A width derived from the
+ * rendered cells cannot be outgrown by any of them.
+ *
+ * Rows come back in the order given, so a report that interleaves two tables
+ * (the `--live` listing lines and their model lines) aligns each set on its own
+ * and weaves them back by index.
+ *
+ * Layout only: it prints exactly the cells it is handed, so the allow-list of
+ * what may be printed stays with the callers that build those cells.
+ */
+function alinharTabela(recuo: string, linhas: readonly (readonly string[])[]): string[] {
+  const larguras: number[] = [];
+  for (const linha of linhas) {
+    linha.forEach((celula, i) => {
+      if (i < linha.length - 1) larguras[i] = Math.max(larguras[i] ?? 0, larguraDe(celula));
+    });
+  }
+  return linhas.map((linha) => {
+    const celulas = linha.map((celula, i) =>
+      i < linha.length - 1 ? celula + ' '.repeat((larguras[i] ?? 0) - larguraDe(celula)) : celula,
+    );
+    return `${recuo}${celulas.join(ENTRE_COLUNAS)}`.trimEnd();
+  });
+}
+
 /** The dry-run report. Every value is read off the plan — nothing is recomputed. */
 export function renderizarPlanoDeEnvio(plano: PlanoDeEnvioEstoque): string[] {
   const linhas: string[] = [
@@ -662,24 +715,32 @@ export function renderizarPlanoDeEnvio(plano: PlanoDeEnvioEstoque): string[] {
     );
     linhas.push(`  modelos (${String(l.modelos.length)}):`);
     linhas.push(
-      `    ${'model_id'.padEnd(14)}${'produto'.padEnd(24)}${'qtd'.padEnd(8)}${'envia'.padEnd(8)}${'piso'.padEnd(8)}${'banda'.padEnd(8)}clampeado`,
+      ...alinharTabela('    ', [
+        ['model_id', 'produto', 'qtd', 'envia', 'piso', 'banda', 'clampeado'],
+        ...l.modelos.map((m) => [
+          String(m.modelId),
+          m.produtoId,
+          String(m.quantidade),
+          String(m.envia),
+          num(m.piso),
+          num(m.bandaMax),
+          m.clampeado,
+        ]),
+      ]),
     );
-    for (const m of l.modelos) {
-      linhas.push(
-        `    ${String(m.modelId).padEnd(14)}${m.produtoId.padEnd(24)}${String(m.quantidade).padEnd(8)}${String(
-          m.envia,
-        ).padEnd(8)}${num(m.piso).padEnd(8)}${num(m.bandaMax).padEnd(8)}${m.clampeado}`,
-      );
-    }
     for (const kit of l.kits) {
       linhas.push(`  kit ${kit.produtoId} — a conta que produz a quantidade:`);
-      for (const c of kit.componentes) {
-        linhas.push(
-          `    ${c.componenteId.padEnd(24)}disponivel=${num(c.disponivel).padEnd(8)}por kit=${String(
-            c.porKit,
-          ).padEnd(6)}limita: ${simNao(c.limita)}`,
-        );
-      }
+      linhas.push(
+        ...alinharTabela(
+          '    ',
+          kit.componentes.map((c) => [
+            c.componenteId,
+            `disponivel=${num(c.disponivel)}`,
+            `por kit=${String(c.porKit)}`,
+            `limita: ${simNao(c.limita)}`,
+          ]),
+        ),
+      );
       linhas.push(`    min = ${num(kit.min)}`);
     }
     linhas.push('');
@@ -690,22 +751,31 @@ export function renderizarPlanoDeEnvio(plano: PlanoDeEnvioEstoque): string[] {
       ? '### pulos: NENHUM'
       : `### pulos (${String(plano.pulos.length)}) — não seriam enviados`,
   );
-  for (const p of plano.pulos) {
-    const alvo = p.modelId === null ? '' : ` model=${String(p.modelId)}`;
-    const quantos = p.modelosAfetados === null ? '' : ` modelos=${String(p.modelosAfetados)}`;
-    linhas.push(
-      `  ${p.produtoId.padEnd(24)}${(p.anuncioId ?? TRACO).padEnd(14)}${p.motivo.padEnd(28)}${p.mensagem}${alvo}${quantos}`,
-    );
-  }
+  linhas.push(
+    ...alinharTabela(
+      '  ',
+      plano.pulos.map((p) => {
+        const alvo = p.modelId === null ? '' : ` model=${String(p.modelId)}`;
+        const quantos = p.modelosAfetados === null ? '' : ` modelos=${String(p.modelosAfetados)}`;
+        return [p.produtoId, p.anuncioId ?? TRACO, p.motivo, `${p.mensagem}${alvo}${quantos}`];
+      }),
+    ),
+  );
 
   if (plano.totaisPorMotivo.length > 0) {
     linhas.push('');
     linhas.push('### totais por motivo');
-    for (const t of plano.totaisPorMotivo) {
-      linhas.push(
-        `  ${t.motivo.padEnd(28)}${String(t.total).padEnd(6)}${t.recusa ? 'recusa' : 'aviso '}  ${t.mensagem}`,
-      );
-    }
+    linhas.push(
+      ...alinharTabela(
+        '  ',
+        plano.totaisPorMotivo.map((t) => [
+          t.motivo,
+          String(t.total),
+          t.recusa ? 'recusa' : 'aviso',
+          t.mensagem,
+        ]),
+      ),
+    );
   }
   return linhas;
 }
@@ -769,23 +839,42 @@ export function resumoDoPlano(plano: PlanoDeEnvioEstoque): Record<string, unknow
 }
 
 /**
+ * The cells of one `--live` listing line.
+ *
  * ⚠️ The produto's NAME is a column here, exactly as in
- * {@link linhasDeSemEnvio} below and in the dry-run plan. Both file headers
+ * {@link celulasDeSemEnvio} below and in the dry-run plan. Both file headers
  * argue it is printed deliberately — "the one thing that lets a human tell one
  * row from another" — and without it the `--live` report was the one of the
  * four surfaces that identified a SENT row by opaque doc id alone.
  */
-function linhaDeListagem(l: EnvioEstoqueListing): string {
-  return (
-    `  ${l.produtoId.padEnd(24)}${(l.produtoNome ?? 'sem nome').padEnd(28)}` +
-    `${(l.anuncioId ?? TRACO).padEnd(14)}${l.outcome.padEnd(14)}` +
-    `qtd=${num(l.quantidade).padEnd(8)}modelos=${String(l.variacoes.length).padEnd(5)}` +
-    `recusados=${String(l.modelosRecusados).padEnd(5)}clampados=${String(l.clampados)}`
-  );
+function celulasDaListagem(l: EnvioEstoqueListing): string[] {
+  return [
+    l.produtoId,
+    l.produtoNome ?? 'sem nome',
+    l.anuncioId ?? TRACO,
+    l.outcome,
+    `qtd=${num(l.quantidade)}`,
+    `modelos=${String(l.variacoes.length)}`,
+    `recusados=${String(l.modelosRecusados)}`,
+    `clampados=${String(l.clampados)}`,
+  ];
 }
 
-function linhasDeSemEnvio(p: EnvioEstoqueSemEnvio): string {
-  return `  ${p.produtoId.padEnd(24)}${(p.produtoNome ?? 'sem nome').padEnd(28)}${p.motivo.padEnd(28)}${p.mensagem}`;
+/** The cells of one `--live` model line; the clamp and Shopee's code share the free last cell. */
+function celulasDoModelo(m: LinhaDeModeloEnviada): string[] {
+  const clampe = m.clampado ? `clampado piso=${num(m.piso)}` : '';
+  return [
+    `model ${String(m.modelId)}`,
+    m.produtoId,
+    `pedida=${String(m.quantidadeSolicitada)}`,
+    `enviada=${num(m.quantidadeEnviada)}`,
+    m.resultado,
+    [clampe, m.codigo ?? ''].filter((parte) => parte !== '').join(' '),
+  ];
+}
+
+function celulasDeSemEnvio(p: EnvioEstoqueSemEnvio): string[] {
+  return [p.produtoId, p.produtoNome ?? 'sem nome', p.motivo, p.mensagem];
 }
 
 /**
@@ -814,24 +903,28 @@ export function renderizarResultadoEnvio(resposta: EnvioEstoqueResponse): string
     '',
     `### anúncios (${String(resposta.listings.length)})`,
   ];
-  for (const l of resposta.listings) {
-    linhas.push(linhaDeListagem(l));
+  // Two tables woven into one listing: the listing lines align with each
+  // other and the model lines with each other, across EVERY listing, so a
+  // model column does not jump between two listings of one report.
+  const listagens = alinharTabela('  ', resposta.listings.map(celulasDaListagem));
+  const modelos = alinharTabela(
+    '      ',
+    resposta.listings.flatMap((l) => l.variacoes.map(celulasDoModelo)),
+  );
+  let inicioDosModelos = 0;
+  resposta.listings.forEach((l, i) => {
+    linhas.push(listagens[i] ?? '');
     linhas.push(`      ${l.motivo ?? 'limpo'} — ${l.mensagem}`);
-    for (const m of l.variacoes) {
-      linhas.push(
-        `      model ${String(m.modelId).padEnd(14)}${m.produtoId.padEnd(24)}` +
-          `pedida=${String(m.quantidadeSolicitada).padEnd(8)}enviada=${num(m.quantidadeEnviada).padEnd(8)}` +
-          `${m.resultado.padEnd(14)}${m.clampado ? `clampado piso=${num(m.piso)} ` : ''}${m.codigo ?? ''}`,
-      );
-    }
-  }
+    linhas.push(...modelos.slice(inicioDosModelos, inicioDosModelos + l.variacoes.length));
+    inicioDosModelos += l.variacoes.length;
+  });
   linhas.push('');
   linhas.push(
     resposta.produtosSemEnvio.length === 0
       ? '### produtos sem envio: NENHUM'
       : `### produtos sem envio (${String(resposta.produtosSemEnvio.length)})`,
   );
-  for (const p of resposta.produtosSemEnvio) linhas.push(linhasDeSemEnvio(p));
+  linhas.push(...alinharTabela('  ', resposta.produtosSemEnvio.map(celulasDeSemEnvio)));
   return linhas;
 }
 

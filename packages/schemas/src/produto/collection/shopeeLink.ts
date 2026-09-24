@@ -505,10 +505,17 @@ export const produtoShopeeLinkSchema = z
      *
      * ⚠️ `||` between the two mechanisms, **`&&` between the two fingerprint
      * halves — either one moving LIFTS the skip.** That is the whole design:
-     * **nobody writes a clear.** The four `item_status` writers enumerated on
-     * {@link shopeeItemStatusSchema} lift it by doing their job, so the refusal
-     * expires against the reading that caused it instead of against a clock or a
-     * second writer that could disagree.
+     * **nobody writes a clear to lift it.** The four `item_status` writers
+     * enumerated on {@link shopeeItemStatusSchema} lift it by doing their job, so
+     * the refusal expires against the reading that caused it instead of against a
+     * clock or a second writer that could disagree. The stock sender's clean-send
+     * write-back (`registrarEnvioLimpo`, `apps/shopee/lib/shopee/estoque/linkEstoque.ts`)
+     * does null every `estoqueRecusa*` field, but only after a send has already
+     * happened. When the skip had lifted and let that send through, the clear
+     * follows the lift. When the manual push's `reenviarComErro` bypassed a skip
+     * that was still armed, the clear is what disarms it — and only after that
+     * operator-forced send succeeded. Either way it is the one clear, and nothing
+     * ever writes it IN ORDER to lift a skip.
      *
      * ⚠️ The rule is READ by the app (`podeEnviarEstoqueShopee`) and is **never
      * computed in this schema** — it needs a clock, and every schema in this file
