@@ -7,7 +7,9 @@ import {
   custoDoKit,
   diffPrecos,
   evaluateFormula,
+  mesmoPrecoEmReais,
   pesoDoKit,
+  precoDaTabela,
   resolveComponentCusto,
   resolveComponentPeso,
   samePrecos,
@@ -286,5 +288,101 @@ describe('resolveComponentPeso', () => {
 
   it('treats 0 as a real weight, not "missing"', () => {
     expect(resolveComponentPeso('c', { c: 0 }, {}, 0.3)).toBe(0);
+  });
+});
+
+/**
+ * `precoDaTabela` is a TRANSFORM (rounding) whose output a sender compares, and
+ * `mesmoPrecoEmReais` is THE fold that decides "already at that price — skip".
+ * Every fold case below has a near-miss beside it that must stay distinct
+ * (root `CLAUDE.md`, the equivalence-fold rule; `equivalence-fold-inventory`).
+ */
+describe('precoDaTabela — the price a channel sends, read off `precos`', () => {
+  it('rounds with roundReais: EQUAL pair 10.004 → 10, NEAR-MISS 24.015 → 24.02 (never 24.01)', () => {
+    expect(precoDaTabela({ t: { valor: 10.004 } }, 't')).toBe(10);
+    expect(precoDaTabela({ t: { valor: 10 } }, 't')).toBe(10);
+    // The roundReais doc's own up-lean: the double under 24.015 sits a hair above.
+    expect(precoDaTabela({ t: { valor: 24.015 } }, 't')).toBe(24.02);
+    expect(precoDaTabela({ t: { valor: 24.015 } }, 't')).not.toBe(24.01);
+  });
+
+  it('checks positivity AFTER rounding: 0.004 → null, NEAR-MISS 0.005 → 0.01 (a price)', () => {
+    expect(precoDaTabela({ t: { valor: 0.004 } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: { valor: 0.005 } }, 't')).toBe(0.01);
+  });
+
+  it('never coerces: a string valor "10" → null, NEAR-MISS the number 10 → 10', () => {
+    expect(precoDaTabela({ t: { valor: '10' } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: { valor: 10 } }, 't')).toBe(10);
+  });
+
+  it('refuses a non-finite, zero or negative valor', () => {
+    expect(precoDaTabela({ t: { valor: Number.NaN } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: { valor: Number.POSITIVE_INFINITY } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: { valor: 0 } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: { valor: -1 } }, 't')).toBeNull();
+    expect(precoDaTabela({ t: {} }, 't')).toBeNull();
+  });
+
+  it('returns null for a null or empty tabela id', () => {
+    expect(precoDaTabela({ t: { valor: 10 } }, null)).toBeNull();
+    expect(precoDaTabela({ '': { valor: 10 } }, '')).toBeNull();
+  });
+
+  it('tolerates junk shapes: a non-object precos or entry, an array, a missing tabela', () => {
+    expect(precoDaTabela(null, 't')).toBeNull();
+    expect(precoDaTabela(undefined, 't')).toBeNull();
+    expect(precoDaTabela(10, 't')).toBeNull();
+    expect(precoDaTabela([{ valor: 1 }], '0')).toBeNull();
+    expect(precoDaTabela({ t: 5 }, 't')).toBeNull();
+    expect(precoDaTabela({ t: [{ valor: 1 }] }, 't')).toBeNull();
+    expect(precoDaTabela({ outra: { valor: 10 } }, 't')).toBeNull();
+  });
+
+  it('reads OWN entries only: a `__proto__` / inherited tabela → null, NEAR-MISS an own one → its price', () => {
+    // A plain object: `precos.__proto__` is Object.prototype, which has no `valor`.
+    expect(precoDaTabela({ t: { valor: 10 } }, '__proto__')).toBeNull();
+    expect(precoDaTabela({ t: { valor: 10 } }, 'toString')).toBeNull();
+    // A prototype that DOES carry a `valor` / a tabela: only an own-property read refuses it.
+    const protoComValor: unknown = Object.create({ valor: 10 });
+    expect(precoDaTabela(protoComValor, '__proto__')).toBeNull();
+    const herdado: unknown = Object.create({ t: { valor: 10 } });
+    expect(precoDaTabela(herdado, 't')).toBeNull();
+    const proprio: Record<string, unknown> = Object.create({ t: { valor: 99 } });
+    proprio.t = { valor: 10 };
+    expect(precoDaTabela(proprio, 't')).toBe(10);
+  });
+});
+
+describe('mesmoPrecoEmReais — THE skip-if-equal fold', () => {
+  it('EQUAL pair: 10.004 ≡ 10 and 0.1 + 0.2 ≡ 0.3 (float residue is not an edit)', () => {
+    expect(mesmoPrecoEmReais(10, 10.004)).toBe(true);
+    expect(mesmoPrecoEmReais(10.004, 10)).toBe(true);
+    expect(mesmoPrecoEmReais(0.1 + 0.2, 0.3)).toBe(true);
+  });
+
+  it('EQUAL pair across a rounding UP: 49.999 ≡ 50 and 10.006 ≡ 10.01 (a truncating fold would split them)', () => {
+    expect(mesmoPrecoEmReais(49.999, 50)).toBe(true);
+    expect(mesmoPrecoEmReais(10.006, 10.01)).toBe(true);
+  });
+
+  it('NEAR-MISS: one centavo apart stays DISTINCT — 49.99 ≠ 50, 11.10 ≠ 11.11', () => {
+    expect(mesmoPrecoEmReais(49.99, 50)).toBe(false);
+    expect(mesmoPrecoEmReais(11.1, 11.11)).toBe(false);
+  });
+
+  it('NEAR-MISS: 49.991 ≠ 50 — 0.009 apart, yet different centavos (a `< 0.01` tolerance would equate them)', () => {
+    expect(mesmoPrecoEmReais(49.991, 50)).toBe(false);
+  });
+
+  it('NEAR-MISS at the up-lean: 24.015 ≠ 24.01 (it rounds to 24.02), EQUAL pair 24.015 ≡ 24.02', () => {
+    expect(mesmoPrecoEmReais(24.015, 24.01)).toBe(false);
+    expect(mesmoPrecoEmReais(24.015, 24.02)).toBe(true);
+  });
+
+  it('null never equals anything: mesmoPrecoEmReais(null, 10) is false, NEAR-MISS (10, 10) is true', () => {
+    expect(mesmoPrecoEmReais(null, 10)).toBe(false);
+    expect(mesmoPrecoEmReais(null, 0)).toBe(false);
+    expect(mesmoPrecoEmReais(10, 10)).toBe(true);
   });
 });

@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches|mesmoPrecoEmReais)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -111,6 +111,10 @@ const INVENTARIO = {
     '`searchRegexMatches` filters collection-group rows and `firstSearchRegexMatch` locates the snippet window. Equal: canonical accent variants. Distinct: punctuation and different base letters. Near-miss: `globalSearch.test.ts` — "keeps accent-only folding narrower than punctuation and letter changes".',
   'apps/web/lib/chat/highlight.tsx':
     '`findSearchRegexMatches` maps folded matches back to original UTF-16 spans. Equal: canonical accent variants, including decomposed marks. Distinct: punctuation and different base letters. Near-miss: `highlight.test.tsx` — "does not highlight accent-fold near misses"; the paired decomposed test proves the original bytes reconstruct exactly.',
+  'apps/shopee/lib/shopee/precos/decisaoPreco.ts':
+    'CALLS `mesmoPrecoEmReais(lido.precoAnterior, alvo.precoAlvo)` as gate G5 of the Shopee price push (step 13, #1521): a `true` settles that model `pulado preco-igual` — it leaves the `price_list`, nothing is written to Shopee or to a link, and a crash replay of a landed send reads the same way — so folding too much drops a real price edit behind a green run. The fold is the definer’s, applied verbatim (no pre-rounding, no tolerance of its own). Equal: the same centavo after rounding — `10.004` ≡ `10`. Distinct: one centavo apart — `49.99` ≠ `50` is SENT; a `null` current price (unreadable on Shopee) never equals, so it reaches the decrease guard (`preco-atual-ilegivel`) or, with `baixarPreco`, is sent. The decrease guard and the ratio beside it compare `centavosDeReais`, not the fold. Near-miss: `decisaoPreco.test.ts` — "⚠️ QUASE-IGUAL — atual `49.99` e alvo `50` ficam a UM centavo ⇒ ENVIADO (uma dobra larga demais engoliria a edição)", paired with "⚠️ PAR — atual `10.004` e alvo `10` caem no MESMO centavo ⇒ `pulado preco-igual`, sem corpo"; the null arm is "⚠️ (M30) — preço atual ILEGÍVEL com a guarda ligada ⇒ `pulado preco-atual-ilegivel`, sem corpo".',
+  'apps/shopee/lib/shopee/precos/verificacaoPreco.ts':
+    'CALLS `mesmoPrecoEmReais(eco, precoAlvo)` to decide whether Shopee CONFIRMED the price we sent (Shopee step 13, #1521): a `true` certifies an accepted `update_price`, a `false` answers `falha preco-nao-atualizado` WITHOUT a link stamp — so folding too much certifies a price Shopee does not show, and folding too little fails a landed write. Equal: exactly the definer\'s reach — the echo (or, under `releitura`, the fresh shelf price) and the target agree after `roundReais`: `"12.5"` (already read `12.5` by the package) ≡ `12.5`, `20.004` ≡ `20`. Distinct: one centavo apart — `12.49` ≠ `12.5`, `12.01` ≠ `12`, and ⚠️ `49.991` ≠ `50` (a `< 0.01` tolerance would equate them); a `null` ECHO price is never compared (counted in `ecosNulos`, never a divergence), while a `null` or absent READ-BACK price IS a divergence (the fold\'s own `null` rule). ⚠️ The file also decides WHICH echo row is compared (seam C-4, `modeloDoEco`): a no-model echo is matched by its ABSENT `model_id` (measured) or the page sample `0` (ruling D-10 — a no-model send carries one entry), and a `null` or `0` echo on a has-model send is matched to no sent model. Near-miss: `verificacaoPreco.test.ts` — "NEAR-MISS: UM centavo de diferença é DIVERGENTE — 12.49 vs 12.5, e 49.991 vs 50 (0.009 apart, que uma tolerância < 0.01 igualaria)" and "NEAR-MISS: a read-back ONE centavo off diverges (12.49 vs 12.5), even beside an echo that agrees", paired with "EQUAL PAIR: o eco igual confirma — 12.5 enviado vs o eco "12.5" (já lido 12.5 pelo pacote), e 20 vs 20.004 pela dobra em reais"; the row matcher is pinned by "EQUAL PAIR (C-4): o eco SEM `model_id` de um item SEM modelo é o eco do `0` enviado — igual confirma, diferente DIVERGE (prova que casou)" against "NEAR-MISS (C-4): um eco SEM `model_id` quando DOIS modelos foram enviados não casa com NENHUM — nunca adivinhado, mesmo com um preço que divergiria".',
 
   // ---- The helpers themselves --------------------------------------------
   'packages/schemas/src/produto/pureLogic/familia.ts':
@@ -125,6 +129,8 @@ const INVENTARIO = {
     'Uses the DERIVE only, to stage the promoted survivor sku when the last variation is deleted and that row becomes the sole member. Not a comparison — it produces the value written, and the document takes the same value from the `espelhoDoPai` spread.',
   'packages/core/src/decimal/index.ts':
     'Defines `localizarDecimal` / `parseDecimalPtBr` / `parseCentesimos`. Own tests carry both directions, incl. the ambiguous forms each REFUSES to fold (`1.234,5`, three decimals).',
+  'packages/schemas/src/produto/pureLogic/precoCalculo.ts':
+    'DEFINES `mesmoPrecoEmReais(atual, alvo)`, the skip-if-equal fold of SHOPEE’s price sync (step 13, #1521) — not of every channel that sends a price: Mercado Livre’s price sender keeps its own equivalent copy in `apps/mercado-livre/lib/marketplace/preco/precoDraftSend.ts` — `priceFieldMatches` (`roundReais(raw) === preco`, behind its gate-2 variations skip and its gate-7 verifier), plus the single-price gate 2’s `currentListingPrice(item) === draft.preco` — equivalent today only because ML’s target is already rounded by `precoDaTabela`. That file does not name this helper, so a change to this fold’s reach does NOT move ML’s; routing ML through the helper is a follow-up, and would earn it a line here. A `true` means "the marketplace already shows this price" and the send is SKIPPED, so folding too much drops a real price edit behind a green run. Equal: two numbers whose `roundReais` agree — `10.004` ≡ `10`, `0.1 + 0.2` ≡ `0.3`, `49.999` ≡ `50`, `24.015` ≡ `24.02` (the rounding reads the double, so the up-lean counts). Distinct: anything one centavo apart after rounding — `49.99` ≠ `50`, `11.10` ≠ `11.11`, `24.015` ≠ `24.01`, and ⚠️ `49.991` ≠ `50`, which a `< 0.01` tolerance would equate (0.009 apart, different centavos); a `null` current price never equals anything. `roundReais` itself does NOT join the pattern (≈46 importers, the rejected band), and neither does `precoDaTabela` defined beside it — a transform (reads + rounds), not an equality. Near-miss: `precoCalculo.test.ts` — "NEAR-MISS: 49.991 ≠ 50 — 0.009 apart, yet different centavos (a `< 0.01` tolerance would equate them)" and "NEAR-MISS: one centavo apart stays DISTINCT — 49.99 ≠ 50, 11.10 ≠ 11.11", paired with "EQUAL pair: 10.004 ≡ 10 and 0.1 + 0.2 ≡ 0.3 (float residue is not an edit)" and "EQUAL pair across a rounding UP: 49.999 ≡ 50 and 10.006 ≡ 10.01 (a truncating fold would split them)".',
   'packages/ai/src/text.ts':
     'Defines `normalizeLoose` (trim, pt-BR lowercase, NFD, strip diacritics). The one place the fold’s exact reach is specified.',
   'packages/data/src/pipeline-queries.ts':
@@ -206,6 +212,19 @@ describe('every file folding a value to decide sameness is inventoried', () => {
     expect(regex.test('deepEqualityHint')).toBe(false);
     expect(regex.test('parseDecimalPtBrasil(x)')).toBe(false);
     expect(regex.test('localizarDecimalPlaces(x)')).toBe(false);
+  });
+
+  it('⚠️ matches the price fold `mesmoPrecoEmReais` and NOT its lookalikes or `roundReais`', () => {
+    // The same two controls for the step-13 addition: the helper must match, a
+    // longer name built on it must not, and `roundReais` must stay OUT — its
+    // ≈46 importers are the false-positive band this guard refuses.
+    const regex = new RegExp(PATTERN);
+
+    expect(regex.test('if (mesmoPrecoEmReais(atual, alvo)) return pulado;')).toBe(true);
+
+    expect(regex.test('mesmoPrecoEmReaisOuCentavos(x)')).toBe(false);
+    expect(regex.test('const r = roundReais(valor);')).toBe(false);
+    expect(regex.test('precoDaTabela(produto.precos, tabelaId)')).toBe(false);
   });
 
   it('⚠️ still covers the file the guard was written for', () => {

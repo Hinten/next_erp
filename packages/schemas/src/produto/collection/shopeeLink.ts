@@ -16,21 +16,24 @@ import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink'
  * `models.odm.g.dart`, #289) already cover the Firestore rules (client reads,
  * parent produto permissions); these typed shapes exist for the Admin-SDK
  * writer (step 11's publish flow), which bypasses rules but must not drift from
- * the Flutter wire format. Everything step 11 (#1519) and step 12 (#1520) add
- * below is a BARE const on these same two shapes — no `*Meta`, no PERM, no
- * validator whitelist ⇒ **no ruleset regeneration**.
+ * the Flutter wire format. Everything step 11 (#1519), step 12 (#1520) and
+ * step 13 (#1521) add below is a BARE const on these same two shapes — no
+ * `*Meta`, no PERM, no validator whitelist ⇒ **no ruleset regeneration**.
  *
  * ## The writer inventory, whole
  *
- * Only three groups of fields have more than one writer, and none of the three
- * overlap:
+ * Four groups of fields have a named writer set, and none of the four overlap:
  *  - **`item_status` + `estadoAnuncio`** — FOUR writers, enumerated on
  *    {@link shopeeItemStatusSchema} below;
  *  - **the ten `estoque*` scalars** (step 12) — **ONE** writer, the stock
  *    sender. Nothing clears them but the sender's own clean-send path;
- *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import.
+ *  - **`kitNativo`** (step 12) — **ONE** writer, step 9's product import;
+ *  - **the ten `preco*` scalars** (step 13) — **ONE** writer, the price
+ *    sender; nothing clears them but its clean send; none is ever read to
+ *    decide a send. Six sit on the item doc, four on each model doc.
  * The stock sender READS `item_status` and `estadoAnuncio` into its refusal
  * fingerprint and never writes either, so it can never race the four above.
+ * The price sender writes neither.
  *
  * Wire notes (from the parity audit, #289 + #363, corrected by #1519):
  *  - `violations` is what Shopee says is wrong with this listing. The legacy
@@ -538,6 +541,94 @@ export const produtoShopeeLinkSchema = z
      * against the clock, so the instant itself already releases.
      */
     estoqueRecusaAte: z.number().int().nullable().default(null),
+
+    // === step 13 (#1521) — the PRICE SYNC's write-backs: six `preco*` scalars
+    // here and four on each `variashopee`. Same rule as the step-12 block above —
+    // bare consts on this `.passthrough()` shape ⇒ no ruleset regeneration — the
+    // same nullable/default discipline, and FLAT for the same `mergeIfExists`
+    // reason.
+    //
+    // ⚠️ DIAGNOSTICS and the push-22 correlation record — NEVER a gate. No reader
+    // decides whether to send from any of them: the price sender reads the live
+    // price from Shopee on every send, and that fresh read is the authority.
+    // That is also their rule-7 tier: no field decides a send, so no transaction
+    // guards them. A lost race between two senders on one item (the manual push
+    // against the job) can still leave a stale DIAGNOSTIC, and it stays stale
+    // until the next send that CHANGES the price — a `preco-igual` send writes
+    // nothing. A future reader that DECIDES from them has to re-decide that
+    // tier (register 142).
+    //
+    // ⚠️ ONE writer, ONE clearer: the price sender writes all ten, and nothing
+    // nulls the refusal fields but its own CLEAN send, whose patch names every
+    // one of the six below. These outcomes write NOTHING here, deliberately:
+    //  - `preco-igual` (Shopee already shows the target price, so nothing was
+    //    sent) never stamps success — an equal reading may be a Seller Centre
+    //    edit that happens to match, and stamping it would attribute the
+    //    seller's price to this ERP;
+    //  - a PROMOTION lock never stamps a refusal — the listing is not wrong, the
+    //    price is simply frozen while the promotion runs;
+    //  - an echo / read-back MISMATCH never stamps either side — Shopee said yes
+    //    to a price it does not then show, which is neither a success nor a
+    //    refusal this doc could explain;
+    //  - a skip, a pause and a rethrown error leave every field alone.
+    //
+    // ⚠️ `ultimaModificacao` is NOT declared, on purpose (register 141). The doc
+    // already carries it as an undeclared pass-through that publish and pause
+    // write in MILLISECONDS, and the price sender is its third writer, in the
+    // same unit; the legacy app wrote a Dart `DateTime` there, so declaring it
+    // would force a Timestamp-or-number union onto every reader.
+    //
+    // ⚠️ Every stamp below is MILLISECONDS.
+
+    /**
+     * The price THIS ERP sent and Shopee accepted — ML's `precoPublicado` twin —
+     * for a **NO-MODEL** listing only, `roundReais`'d in the listing currency.
+     *
+     * ⚠️ Never the echo Shopee sends back, and never an observed price: a send
+     * that found the price already equal writes nothing. A HAS-MODEL listing
+     * leaves it `null` — its prices live one per model, on each `variashopee`
+     * ({@link variacaoShopeeLinkSchema}'s `precoEnviado`).
+     */
+    precoEnviado: z.number().nullable().default(null),
+    /**
+     * MILLISECONDS. The last time the price sender left the WHOLE item in sync:
+     * every model it sent was accepted and verified, and every other targeted
+     * model already carried its price.
+     *
+     * ⚠️ A PARTIAL send never stamps it, and neither does a run that sent
+     * nothing because every price was already equal (`preco-igual`).
+     */
+    precoEnviadoEm: z.number().int().nullable().default(null),
+    /**
+     * MILLISECONDS. When the last item-level refusal landed — including a
+     * partial send whose refused model was a stamping class. A partial leaves
+     * {@link precoEnviadoEm} alone.
+     *
+     * ⚠️ A reader shows the item's refusal only while
+     * `precoRecusaEm >= (precoEnviadoEm ?? 0)`. The clean send's `null` clear
+     * is not enough on its own: a refusal whose write-back lands AFTER a newer
+     * clean clear stands beside the newer {@link precoEnviadoEm}, and the stamp
+     * comparison — the model rows' rule — is what hides it.
+     */
+    precoRecusaEm: z.number().int().nullable().default(null),
+    /**
+     * Shopee's error code **VERBATIM, prefix and all**, or `erp:<motivo>` when
+     * the refusal is ours rather than Shopee's (the ratio check, a currency
+     * mismatch, a structural refusal). Stored unstripped for the reason
+     * `estoqueRecusaCodigo` is.
+     */
+    precoRecusaCodigo: z.string().nullable().default(null),
+    /**
+     * Why the send was refused, in this app's own vocabulary — a
+     * `MotivoPrecoShopee` slug, rendered to pt-BR at READ time. A loose string,
+     * not an enum, for the reason `falhaPublicacao.motivo` is one.
+     */
+    precoRecusaMotivo: z.string().nullable().default(null),
+    /**
+     * The refusal's message — Shopee's own when Shopee refused — capped at the
+     * same length as `estoqueRecusaMensagem`.
+     */
+    precoRecusaMensagem: z.string().nullable().default(null),
   })
   .passthrough();
 export type ProdutoShopeeLink = z.infer<typeof produtoShopeeLinkSchema>;
@@ -588,6 +679,39 @@ export const variacaoShopeeLinkSchema = z
      * `estoqueRecusaCodigo` is stored unstripped.
      */
     estoqueRecusaCodigo: z.string().nullable().default(null),
+
+    // === step 13 (#1521) — four PRICE fields per MODEL, never a gate: the same
+    // ONE writer (the price sender) and the same rule-7 tier as the six on
+    // {@link produtoShopeeLinkSchema}, whose block states both.
+    //
+    // ⚠️ Unlike the stock pair above, a model's refusal is compared against its
+    // OWN success stamp, on this SAME doc: each model gets its own success pair
+    // on every accepted send, so a reader shows the refusal only while
+    // `precoRecusaEm >= (precoEnviadoEm ?? 0)`. It self-expires the moment the
+    // model is next accepted, with **ZERO clearing writes** on the child — the
+    // only clearer in the price sync is the item doc's clean-send patch.
+
+    /**
+     * The price THIS ERP sent and Shopee accepted for this MODEL (`roundReais`'d,
+     * listing currency) — never the echo, and never an observed price: a model
+     * already at its target price is not written.
+     */
+    precoEnviado: z.number().nullable().default(null),
+    /** MILLISECONDS. When {@link precoEnviado} was written. */
+    precoEnviadoEm: z.number().int().nullable().default(null),
+    /**
+     * MILLISECONDS. When this MODEL was refused. Written only on a per-model
+     * refusal of a stamping class — a promotion lock and an echo / read-back
+     * mismatch never stamp it.
+     */
+    precoRecusaEm: z.number().int().nullable().default(null),
+    /**
+     * Shopee's `failed_reason` or refusal code **VERBATIM**, prefix and all, or
+     * the sender's `erp:<motivo>` when the refusal is ours — a model is also
+     * stamped with the call's top-level code or a refused read's, not only with
+     * its own row's reason.
+     */
+    precoRecusaCodigo: z.string().nullable().default(null),
   })
   .passthrough();
 export type VariacaoShopeeLink = z.infer<typeof variacaoShopeeLinkSchema>;

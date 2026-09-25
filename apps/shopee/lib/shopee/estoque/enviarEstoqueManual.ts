@@ -55,6 +55,7 @@ import { produtoCollection } from '@delfrance/data/admin/collections';
 import { idFromRef } from '@delfrance/schemas';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
+import { executarEmPool } from '../core/pool';
 import {
   ENVIO_MANUAL_MAX_TENTATIVAS,
   ENVIO_MANUAL_RETRY_DELAY_MS,
@@ -298,44 +299,6 @@ export interface ArgsEnvioManual {
 /* -------------------------------------------------------------------------- */
 /*                              the small helpers                              */
 /* -------------------------------------------------------------------------- */
-
-/**
- * The bounded pool. ~30 lines here rather than a shared helper because this app
- * has none yet; promote it the day a second folder needs one.
- *
- * ⚠️ **`allSettled`, never `all`.** `Promise.all` settles on the FIRST
- * rejection while every sibling worker keeps pulling off the shared cursor, so
- * a throw would let the run answer its caller — the route has already built and
- * flushed its error body by then — while later listings were still calling
- * `update_stock` and patching link documents, in a response that reports
- * neither. Waiting for all of them costs nothing, because the one caller that
- * throws sets its abort flag first and every remaining iteration
- * short-circuits. The first rejection, in WORKER order, is then rethrown
- * unchanged.
- */
-async function executarEmPool<T>(
-  itens: readonly T[],
-  largura: number,
-  executar: (item: T, indice: number) => Promise<void>,
-): Promise<void> {
-  let proximo = 0;
-  const trabalhador = async (): Promise<void> => {
-    for (;;) {
-      const indice = proximo;
-      proximo += 1;
-      const item = itens[indice];
-      if (item === undefined) return;
-      await executar(item, indice);
-    }
-  };
-  const trabalhadores = Math.min(Math.max(1, largura), Math.max(1, itens.length));
-  const saidas = await Promise.allSettled(
-    Array.from({ length: trabalhadores }, () => trabalhador()),
-  );
-  for (const saida of saidas) {
-    if (saida.status === 'rejected') throw saida.reason;
-  }
-}
 
 /**
  * ⚠️ CLAMPED to the queue's own width, never merely defaulted to it. A burst

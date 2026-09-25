@@ -13,6 +13,7 @@ runs them, from this worktree, against the project the environment points at.
 | `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path                   | only with `--live`        |
 | `publicar-anuncio.ts`    | publishes ONE produto through the real step-11 path                | only with `--live`        |
 | `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path | only with `--live`        |
+| `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1249,3 +1250,182 @@ SHOPEE_CONTA_PAUSADA` before any provider call; this command reads the state
   parallel). It buys the name in every row; nothing else reads it.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   quantities on a real marketplace, and even a dry run calls Shopee.
+
+---
+
+## `enviar:precos` — rehearsing the first PRICE write
+
+`enviar:estoque` above writes a quantity. This one writes a **price on a listing
+that already exists** — the one Shopee write where a wrong number is accepted
+with a `200` and sold at. `enviarPrecoManualShopee` normally runs from the
+`enviar-precos` route; this script drives **the same module** from a terminal
+against up to 50 named produtos, so the channel's first `update_price` is
+deliberate and observable.
+
+It is also the only place the whole per-model DECISION is printed before
+anything is sent. The dry run resolves each produto to its family anchor, reads
+the families, plans and prices every listing, reads each listing fresh and asks
+`decidirEnvioDePreco` — the SAME pure function the live sender obeys — what it
+would do. The two branches load **different modules**: the dry run imports the
+sender and the manual run for their types only, and a test over the raw text of
+both files keeps it that way. The reasoning behind every line it prints is
+`lib/shopee/precos/README.md`.
+
+### 14.1 Environment
+
+Same `.env.local` as every other script here, and the same variables as §1. Step
+13's two manual knobs (`SHOPEE_PRICE_MANUAL_DEADLINE_MS`,
+`SHOPEE_PRICE_MANUAL_CONCURRENCY`) are read by the `--live` run exactly as the
+route reads them; there is **no master valve** for price — every send is an
+operator's act. The preamble prints, on stderr and BEFORE anything is read:
+
+| line              | what it tells you                                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `modo`            | `DRY-RUN` or `LIVE — VAI ESCREVER PREÇO DE VERDADE`.                                                                                                           |
+| `projeto`         | the project the admin app resolved — the one whose data is read and, under `--live`, written.                                                                  |
+| `database`        | `default` unless `FIREBASE_DATABASE_ID` says otherwise.                                                                                                        |
+| `SHOPEE_SANDBOX`  | the RAW value, spelled out when unset or blank. Only exactly `1` is the sandbox.                                                                               |
+| `ambiente Shopee` | the resolved verdict: `SANDBOX` or `PRODUÇÃO`.                                                                                                                 |
+| `host da API`     | the RESOLVED API host — the second half of the region override.                                                                                                |
+| `override SG`     | `ATIVO` only when the flag is on AND the host is the sandbox host (`overrideDeSandboxAtivo`, the verdict's own predicate). Otherwise only a BR shop is priced. |
+| `tabela normal`   | the conta's `tabelaNormalOuterRef`; blank means the conta is refused below.                                                                                    |
+| `pausado`         | the stock sync's pause, with its motive — REPORTED, never honoured here (§14.5).                                                                               |
+| `região`          | printed after the verdict: the shop's region, its currency and the max/min ratio between one listing's variations (BR 4×, SG 5×).                              |
+
+⚠️ **The conta verdict runs FIRST, in both modes.** A shop outside Brazil
+(unless the override is active), a cross-border, banned or frozen shop, a conta
+with no `shop_id`, no normal price table or no usable credential is REFUSED
+before any listing is read. The command prints the refusal with the code the
+route would answer — `422 SHOPEE_PRECO_CONTA_RECUSADA`, or `400
+SHOPEE_CONTA_SEM_TABELA_NORMAL` for the missing table — and exits `0`: the route
+answers that refusal as a response, and the two surfaces agree.
+
+⚠️ **This CLI writes on the real marketplace**, so the project the environment
+points at decides which shop receives the price. Read the preamble before you
+let it continue, exactly as in §1.
+
+### 14.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:precos --integracao int-1 --produto prod-1
+```
+
+```
+--integracao <id>     obrigatório — o documento da integração Shopee.
+--produto <id>        obrigatório e REPETÍVEL — a âncora OU uma variação.
+--baixar-preco        AUTORIZA reduzir o preço. Sem ela, uma redução é pulada.
+--dry-run             É O PADRÃO.
+--live                a única forma de enviar.
+--project <id>        sobrescreve FIREBASE_PROJECT_ID antes de abrir o admin.
+--json                resumo redigido em JSON no stdout; cabeçalho no stderr.
+--help, -h            sai com 0 antes de tocar env, Firestore ou Shopee.
+```
+
+| flag                | meaning                                                                                                                                                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                                                                |
+| `--produto <id>`    | **required and REPEATABLE**. Unlike `enviar:estoque`, a **variação** is accepted: it resolves to its family anchor, and a variação beside its own anchor is ONE family. ⚠️ **No comma-separated form**. Deduped in flag order |
+| `--baixar-preco`    | turns the decrease guard OFF. Without it a lower price — and a listing whose current price Shopee does not report — is SKIPPED. ⚠️ It takes no value: `--baixar-preco=false` is REFUSED, never read as "present"              |
+| `--dry-run`         | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                                            |
+| `--live`            | the only opt-in to a real price write                                                                                                                                                                                         |
+| `--project <id>`    | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                                                                         |
+| `--json`            | the same REDACTED summary as one parseable document on stdout, preamble on stderr                                                                                                                                             |
+| `--help`, `-h`      | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                                                                |
+
+⚠️ **The cap is 50 produtos, counted AFTER the duplicates are removed**
+(`SHOPEE_ENVIO_PRECO_MAX_PRODUTOS`). 51 flags naming 50 distinct produtos is
+ACCEPTED; 51 distinct ones is refused by this command's own argument error.
+
+**What the dry run calls, and what it can never call.** Firestore: one masked
+read of the requested produtos (`nome`, `paiId`), one more for the names of
+anchors nobody requested, and `lerFamiliasDePrecoPorIds`. Shopee:
+`get_shop_info` (the verdict, cached with the stock sync's), ONE batched
+`get_item_base_info` for every planned listing, and one `get_model_list` per
+listing with variations — the listings are read one after another. A listing
+with no tabela price for any model is decided without being read. It never
+reaches `enviarPrecoManualShopee`, `enviarPrecoDoItem`, `update_price`, any link
+write-back or any Firestore write.
+
+### 14.3 What to read in the output
+
+A header, then one block per listing, then the plan's skips and the produtos
+that reached no listing. The whole rendering is an **allow-list** — named fields
+only, never a raw payload — so it is safe to paste into an issue.
+
+| line                                             | what it tells you                                                                                                                                                                                                                         |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `região` / `moeda` / `razão máxima`              | the verdict's context. ⚠️ **Every price below is in `moeda`** — no currency symbol is printed beside a number, because on the SG sandbox it is `SGD` and an `R$` there would be a lie.                                                    |
+| `baixar preço`                                   | whether the decrease guard is on. Off (`AUTORIZADO`) only with `--baixar-preco`.                                                                                                                                                          |
+| `enviaria` / `pularia` / `recusaria`             | MODEL rows per decision, over every listing read. One `update_price` per listing, never per model.                                                                                                                                        |
+| `### anúncio i/N — <produtoId>`                  | one block per listing: `produto` (the anchor, with its name), `anúncio` (the `item_id`), `vínculo`, `variações`, and the listing's `decisão` — for `enviaria`, how many models the ONE `update_price` would carry (the body is the diff). |
+| `modelos (N)` — the table                        | `model_id · variação · anterior · alvo · decisão · motivo`. `anterior` is Shopee's shelf price now, `alvo` the tabela price. ⚠️ `model_id 0` is the no-model listing, a real id.                                                          |
+| `preco-igual`                                    | already equal to the centavo — nothing is sent for that model, and nothing is stamped.                                                                                                                                                    |
+| `preco-menor-bloqueado` / `preco-atual-ilegivel` | the decrease guard: rerun with `--baixar-preco` if the reduction is intended.                                                                                                                                                             |
+| `razao-de-precos-excedida`                       | the listing would end with a max/min ratio above the region's multiple — judged against the models NOT sent too, at their current prices. Shopee's own answer to this is a generic refusal, so this line is the only place you learn why. |
+| `moeda-divergente` / `modelo-ausente`            | the listing is not in the conta's currency, or a linked variation no longer exists on Shopee — reimport the listing.                                                                                                                      |
+| `### pulos do plano`                             | listings refused before any read: `kit-derivado` (a native Shopee kit), `sem-item-id`, `anuncio-removido`, `sem-modelos`, `forma-de-modelo-divergente`, `modelos-excedem-limite` (`modelos=` says how many).                              |
+| `### produtos sem envio`                         | a requested produto that reaches no listing: `produto-nao-encontrado`, or `sem-link` (no listing of THIS conta).                                                                                                                          |
+
+⚠️ **A dry run is not a cheaper `--live`.** A promotion lock, the category's
+price band, a per-model `failure_list` and the echo check only exist once
+Shopee has been asked. A clean rehearsal says "nothing we can see refuses this",
+never "this will land".
+
+### 14.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:precos --integracao int-1 --produto prod-1 --live
+```
+
+⚠️ **`--live` writes a REAL price** on a real listing — the route's own run,
+with the same deadline, pool and retry ladder — and writes the link documents'
+price fields through the real sender. Add `--baixar-preco` only when a lower
+price is intended.
+
+The live printout is one row PER MODEL: `produto`, its name, `anúncio`,
+`variação`, the `resultado` (`enviado` / `pulado` / `falha` / `nao-tentado`),
+`anterior`, what was `enviado`, the motivo (`limpo` on a clean send) and the
+rendered sentence, with Shopee's verbatim code in brackets when it answered one;
+then `### produtos sem envio`. The header counts ROWS, so a three-model listing
+contributes three. A row reads `enviado` only after Shopee's echo matched what
+was sent — and do not look at `update_time` to confirm it: a price write does
+**not** move it (probe P5).
+
+**The exit codes.**
+
+| code | when                                                                                                                                           |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | any envelope, **including one where every row failed** — and one a quota pause or a dead grant cut short (`nao-tentado` rows, the route's 200) |
+| `0`  | a dry run that plans nothing at all                                                                                                            |
+| `0`  | a conta the verdict refuses — printed with the route's code (§14.1)                                                                            |
+| `0`  | `--help`                                                                                                                                       |
+| `1`  | a bad command line; prints THIS command's usage                                                                                                |
+| `1`  | any throw, described by CLASS plus Shopee's `code`/`path`. ⚠️ Never a payload, and never the guard's `extra` bag                               |
+
+### 14.5 Caveats you should expect to see (none of these is a bug)
+
+- **SGD is not BRL.** The only sandbox shop is SG: under the override the ERP's
+  tabela number is sent AS Singapore dollars. That is the rehearsal working, not
+  a conversion — BRL, BR's 4× and BR's price band cannot be rehearsed before
+  production.
+- **A paused conta is REPORTED, not refused.** The route answers a `409` with
+  `SHOPEE_CONTA_PAUSADA` before any provider call; this command prints the stock
+  sync's pause and **proceeds** — the dry run still reads, and under `--live` a
+  throttled send comes back as `nao-tentado conta-pausada` rows carrying
+  `pausadoAte`. Price READS that pause and never writes it.
+- **Do not re-import between hand-setting a price and the live send.** On a BR
+  shop the import's default `sobrescreverPreco: true` overwrites the ERP's
+  normal-table price with Shopee's — the opposite direction from this command.
+  (On the SGD sandbox the import plans no price at all, §11.5 — do not rely on
+  that either.)
+- **`bloqueado-por-promocao` / `preco-riscado`** are SKIPS with no link stamp: a
+  promotion locks the price from its scheduled start (Shopee's faq 140) and the
+  next run simply tries again.
+- **`preco-recusado`** is Shopee's one generic answer for a ratio violation, a
+  deleted listing or a variation structure that changed — the sentence lists
+  the measured causes. Rerun the dry run: the ratio line above catches the first
+  one before the wire.
+- **A variação requested alone** prints its ANCHOR's listing: the price is per
+  model, so the whole listing is read and decided together.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
+  prices on a real marketplace, and even a dry run calls Shopee.

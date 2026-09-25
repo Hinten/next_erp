@@ -1658,3 +1658,120 @@ describe('resolverFotosDaPublicacao — as imagens de opção do tier 1', () => 
     expect(fotos.passes).toEqual([{ cap: null, fotos: 1 }]);
   });
 });
+
+/* ========================================================================== */
+/*  (15) o preço do FILHO passa por precoDaTabela — passo 13 (#1521), M16/M17  */
+/* ========================================================================== */
+
+describe('publicar — o preço do filho é lido por precoDaTabela', () => {
+  /** The body of the ONE `init_tier_variation` the fake received. */
+  function modelosDoInit(fake: ClienteFake): unknown {
+    const corpo = fake.corpos.find((c) => 'model' in c && 'standardise_tier_variation' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum init_tier_variation foi enviado');
+    return corpo.model;
+  }
+
+  function corpoDoAddItem(fake: ClienteFake): Record<string, unknown> {
+    const corpo = fake.corpos.find((c) => 'item_name' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum add_item foi enviado');
+    return corpo;
+  }
+
+  /**
+   * A live listing that has NO models yet (published without variations, the
+   * produto gained a child since): the update's FRESH reading is empty, so the
+   * leg answers `init` and the child's price rides `init_tier_variation`. Every
+   * later reading is the model the init just minted.
+   *
+   * ⚠️ That is the path where a child priced `0` really REACHED the wire before
+   * step 13: an update carries no item-level price refusal (they are CREATE-only),
+   * so nothing but the tier mapper's `filho-sem-preco` stands in the way.
+   */
+  function leituraVaziaPrimeiro(): (p: { itemId: number }) => ShopeeModelList {
+    let chamadas = 0;
+    return () => {
+      chamadas += 1;
+      return chamadas === 1 ? modelList([]) : modelList();
+    };
+  }
+
+  function semearUpdateComFilhoNovo(db: FakeDb, valor: number): void {
+    semearCatalogo(db);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor } } });
+    semearLink(db);
+  }
+
+  it('PAR: um filho a 10.567 chega ao init_tier_variation como 10.57 — e o descartável do add_item também', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor: 10.567 } } });
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano, contexto } = await planejar(db, fake);
+    expect(contexto.filhos[0]?.preco).toBe(10.57);
+    expect(plano.problemas).toEqual([]);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 10.57 })]);
+    expect(corpoDoAddItem(fake).original_price).toBe(10.57);
+  });
+
+  it('⚠️ NEAR-MISS: um filho a 10.5 já está no centavo e chega intacto', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor: 10.5 } } });
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 10.5 })]);
+  });
+
+  it('⚠️ um filho a 0 (ou 0.004, ou negativo) agora é RECUSADO com filho-sem-preco — antes ia ao fio como original_price no init_tier_variation', async () => {
+    for (const valor of [0, 0.004, -5]) {
+      const db = new FakeDb();
+      semearUpdateComFilhoNovo(db, valor);
+      const fake = clienteFake({
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(true);
+      expect(contexto.filhos[0]?.preco).toBeNull();
+      // O MAPEADOR DE TIERS recusa (`campo: 'model'`) — num update não há recusa
+      // de preço no nível do item, então sem ela o 0 era enviado.
+      expect(plano.problemas).toEqual([
+        expect.objectContaining({
+          campo: 'model',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        }),
+      ]);
+
+      await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+        ShopeePublishBlockedError,
+      );
+      expect(fake.ops).not.toContain('update_item');
+      expect(fake.ops).not.toContain('init_tier_variation');
+      expect(db.writes).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO filho a 0.01 é ENVIADO — um centavo é preço', async () => {
+    const db = new FakeDb();
+    semearUpdateComFilhoNovo(db, 0.01);
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getModelList: leituraVaziaPrimeiro(),
+    });
+
+    const { plano, contexto } = await planejar(db, fake);
+    expect(contexto.filhos[0]?.preco).toBe(0.01);
+    expect(plano.problemas).toEqual([]);
+    const r = await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(r.modelos.acao).toBe('init');
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 0.01 })]);
+  });
+});

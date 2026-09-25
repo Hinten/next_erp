@@ -92,6 +92,7 @@ import {
   type EstadoAnuncioShopee,
   type Foto,
   ESTADO_ANUNCIO_SHOPEE,
+  precoDaTabela,
 } from '@delfrance/schemas';
 
 import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
@@ -766,9 +767,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* -------------------------------- price --------------------------------- */
 
-  const tabela = args.tabelaNormalId;
-  const precoProprio =
-    tabela === null ? null : numeroPositivo(produto.precos?.[tabela]?.valor ?? null);
+  // ⚠️ `precoDaTabela` (`@delfrance/schemas`) is the ONE reader of "the price of
+  // this produto in that tabela" for every channel that SENDS one (step 13,
+  // #1521): rounded to the centavo through `roundReais`, and positive AFTER
+  // rounding — a stored `0.004` is no price at all, never a `0.004` on the wire.
+  // The first child's price arrives already read through it
+  // (`publicarAnuncio.ts`'s `filhoParaPublicar`), so the child arm only guards.
+  const precoProprio = precoDaTabela(produto.precos, args.tabelaNormalId);
   const preco = args.temFilhos ? numeroPositivo(args.precoDoPrimeiroFilho) : precoProprio;
   // ⚠️ CREATE-only, all three — the same rule the `seller_stock` refusal below
   // already follows, and for the same reason: `original_price` is absent from

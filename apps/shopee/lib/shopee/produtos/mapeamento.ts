@@ -323,15 +323,29 @@ export interface VeredictoDePreco {
   readonly motivo: MotivoPrecoIgnorado | null;
 }
 
+/** A finite number strictly above zero — Shopee's zero-fill reads as "not a price". */
+function numeroPositivo(valor: number | null | undefined): valor is number {
+  return typeof valor === 'number' && Number.isFinite(valor) && valor > 0;
+}
+
 /**
- * The FIRST `price_info[]` entry whose currency is exactly `BRL`, reduced to one
- * number.
+ * **The shelf price** of ONE `price_info[]` entry — `original_price` when it is
+ * a finite number above zero, else `current_price` under the same test, else
+ * `null`.
+ *
+ * Currency-agnostic, no minimum and no rounding: it answers "which of the two
+ * wire numbers is the shelf price", and each reader applies its own rules on
+ * top. It has TWO readers, and it exists so they cannot disagree about the
+ * answer: step 9's import ({@link precoBrlDe}, which picks the `BRL` entry
+ * first and then applies `precoSchema`'s minimum), and step 13's price push,
+ * which reads it as the COMPARAND — the price Shopee holds now, against which
+ * the ERP's price is judged equal or not.
  *
  * ⚠️ `original_price` is the shelf price and `current_price` the promotion, so
  * `original_price` WINS whenever it is a usable price — that is the whole point
  * of the rejected promotional arm (see the module header): a lower
  * `current_price` is a deal the operator did not author in the ERP, and it must
- * not become the produto's normal price.
+ * not become the produto's normal price, nor the number a push compares against.
  *
  * ⚠️ **Deviation from the literal `original_price ?? current_price`**, and it is
  * deliberate: Shopee zero-fills, so a listing with no promotion can answer
@@ -343,16 +357,30 @@ export interface VeredictoDePreco {
  * over a shelf price, because a shop with a real `original_price` always has a
  * positive one.
  */
+export function precoDePrateleiraDe(entrada: ShopeePriceInfo): number | null {
+  if (numeroPositivo(entrada.original_price)) return entrada.original_price;
+  if (numeroPositivo(entrada.current_price)) return entrada.current_price;
+  return null;
+}
+
+/**
+ * The FIRST `price_info[]` entry whose currency is exactly `BRL`, reduced to one
+ * number through {@link precoDePrateleiraDe} — whose docblock carries why the
+ * shelf price wins and why a zero-filled `original_price` falls through.
+ *
+ * On top of that shared answer this reader owns two rules of its own: the `BRL`
+ * pick, and `precoSchema`'s `min(0.01)` ({@link PRECO_MINIMO}) — a smaller value
+ * would THROW at parse time, so it is refused here as `valor-abaixo-do-minimo`,
+ * and so is an entry with no positive price at all.
+ */
 export function precoBrlDe(
   precos: readonly ShopeePriceInfo[] | null | undefined,
 ): VeredictoDePreco {
   if (precos == null || precos.length === 0) return { valor: null, motivo: 'sem-price-info' };
   const entrada = precos.find((p) => p.currency === MOEDA_IMPORTADA);
   if (entrada === undefined) return { valor: null, motivo: 'moeda-nao-brl' };
-  const original = entrada.original_price;
-  const usavel = typeof original === 'number' && Number.isFinite(original) && original > 0;
-  const valor = usavel ? original : entrada.current_price;
-  if (typeof valor !== 'number' || !Number.isFinite(valor) || valor < PRECO_MINIMO) {
+  const valor = precoDePrateleiraDe(entrada);
+  if (valor == null || valor < PRECO_MINIMO) {
     return { valor: null, motivo: 'valor-abaixo-do-minimo' };
   }
   return { valor, motivo: null };

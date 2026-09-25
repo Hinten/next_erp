@@ -68,6 +68,7 @@ import {
   kitEstoqueDisponivel,
   parseFakePath,
   parseRef,
+  precoDaTabela,
   toOuterRef,
   varianteFakePath,
   type ComponentesKit,
@@ -714,10 +715,11 @@ async function filhoParaPublicar(
     gtin: textoOuNull(filho.raw.gtin),
     ordem: ordemDeProduto(filho.raw.ordem),
     variacoesUid: listaDeTextos(filho.raw.variacoesUid),
-    preco:
-      tabelaNormalId === null
-        ? null
-        : numeroOuNull(precosDeProduto(filho.raw.precos)?.[tabelaNormalId]?.valor),
+    // ⚠️ The shared tabela reader (step 13, #1521): rounded to the centavo, and
+    // positive AFTER rounding. A child priced `0` (or `0.004`) is `null` here, so
+    // `montarTiers` refuses it as `filho-sem-preco` instead of putting
+    // `original_price: 0` on an `init_tier_variation` / `add_model` body.
+    preco: precoDaTabela(filho.raw.precos, tabelaNormalId),
     estoque: chao(derivado ?? proprio),
     fotos: fotosDeProduto(filho.raw.fotos).fotos,
     linkModelId: link?.modelId ?? null,
