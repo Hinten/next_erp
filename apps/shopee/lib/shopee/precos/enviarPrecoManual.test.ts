@@ -1028,6 +1028,85 @@ describe('enviarPrecoManualShopee — `pausa` e `fatal` encerram o RESTO e ainda
       expect.objectContaining({ erro: 'ShopeeReauthRequiredError: expirada' }),
     );
   });
+
+  it.each([
+    ['a de 60 s chega PRIMEIRO, a de 30 s depois', 60, 30],
+    ['a de 30 s chega PRIMEIRO, a de 60 s depois', 30, 60],
+  ])(
+    'LARGURA 2: duas pausas simultâneas (%s) ⇒ `pausadoAte` é o fim MAIS TARDIO, em qualquer ordem de chegada',
+    async (_nome, primeira, segunda) => {
+      vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+      const m = mundo();
+      const ids = semearAnchors(m, 2);
+      // Both items are IN FLIGHT (sent) before either answers.
+      m.enviar.mockImplementation(async (item: ItemDePreco) => {
+        const chegaPrimeiro = item.itemId === ITEM + 1;
+        await new Promise((resolve) => setTimeout(resolve, chegaPrimeiro ? 1 : 8));
+        return pausaBurst(chegaPrimeiro ? primeira : segunda);
+      });
+
+      const r = await rodar(m, ids);
+
+      expect(m.enviar).toHaveBeenCalledTimes(2);
+      expect(r.pausadoAte).toBe(new Date(AGORA + 60_000).toISOString());
+    },
+  );
+
+  const fatalReauth = (): ResultadoEnvioPreco => ({
+    tipo: 'fatal',
+    motivo: 'reauth',
+    erro: 'ShopeeReauthRequiredError: expirada',
+    chamadasShopee: 1,
+  });
+
+  it.each([
+    [
+      'um FATAL e depois uma PAUSA',
+      fatalReauth,
+      () => pausaBurst(30),
+      [
+        ['nao-tentado', 'conta-pausada', 'error_rate_limit'],
+        ['nao-tentado', 'reauth', null],
+        ['nao-tentado', 'reauth', null],
+      ],
+    ],
+    [
+      'uma PAUSA e depois um FATAL',
+      () => pausaBurst(30),
+      fatalReauth,
+      [
+        ['nao-tentado', 'reauth', null],
+        ['nao-tentado', 'conta-pausada', 'error_rate_limit'],
+        ['nao-tentado', 'conta-pausada', null],
+      ],
+    ],
+  ])(
+    'LARGURA 3: o PRIMEIRO aborto vence — %s ⇒ o item ainda lendo o preço sai `nao-tentado` com o motivo do PRIMEIRO',
+    async (_nome, primeiro, segundo, esperadas) => {
+      vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '3');
+      vi.stubEnv('SHOPEE_STOCK_CONCURRENT_DISPATCHES', '3');
+      const m = mundo();
+      const ids = semearAnchors(m, 3);
+      // Item 2 answers FIRST (1 ms), item 1 SECOND (8 ms); item 3 is still
+      // reading its price (20 ms) when both have aborted the run.
+      m.enviar.mockImplementation(async (item: ItemDePreco) => {
+        const chegaPrimeiro = item.itemId === ITEM + 1;
+        await new Promise((resolve) => setTimeout(resolve, chegaPrimeiro ? 1 : 8));
+        return chegaPrimeiro ? primeiro() : segundo();
+      });
+      const precosReais = m.lerPrecos.getMockImplementation();
+      m.lerPrecos.mockImplementation(async (db: unknown, lidos: readonly string[]) => {
+        if (lidos.includes('prod-2')) await new Promise((resolve) => setTimeout(resolve, 20));
+        if (precosReais === undefined) throw new Error('fixture: leitor de preços ausente');
+        return precosReais(db, lidos);
+      });
+
+      const r = await rodar(m, ids);
+
+      expect(m.enviar).toHaveBeenCalledTimes(2);
+      expect(r.listings.map((l) => [l.outcome, l.motivo, l.codigo])).toEqual(esperadas);
+    },
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1109,6 +1188,16 @@ describe('enviarPrecoManualShopee — o envelope', () => {
 
     await expect(rodar(m, ids)).rejects.toBeInstanceOf(ShopeeConfigError);
     expect(m.db.leiturasEmLote).toEqual([]);
+  });
+
+  it(`PAR do teto: EXATAMENTE ${String(SHOPEE_ENVIO_PRECO_MAX_PRODUTOS)} distintos rodam — o teto do envio é o MESMO que a rota aceita`, async () => {
+    const m = mundo();
+    const ids = semearAnchors(m, SHOPEE_ENVIO_PRECO_MAX_PRODUTOS);
+
+    const r = await rodar(m, ids);
+
+    expect(r.solicitados).toBe(SHOPEE_ENVIO_PRECO_MAX_PRODUTOS);
+    expect(m.enviar).toHaveBeenCalledTimes(SHOPEE_ENVIO_PRECO_MAX_PRODUTOS);
   });
 
   it('um contexto de OUTRA conta é recusado antes de qualquer leitura', async () => {
@@ -1498,5 +1587,55 @@ describe('enviarPrecoManualShopee — o S1 da superfície MARCA o aborto (L4-F1)
       ['nao-tentado', 'conta-pausada', null],
     ]);
     expect(r.pausadoAte).toBe(new Date(AGORA + 30_000).toISOString());
+  });
+
+  it.each([
+    ['um `ShopeeConfigError` (bug NOSSO)', (): Error => new ShopeeConfigError('configuração')],
+    [
+      'a classe de GUARDA',
+      (): Error => new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaPausada, 'pausada'),
+    ],
+  ])(
+    'LARGURA 2: %s no item 1 aborta — os itens 3..6 nunca são enviados, e o erro sobe como ele mesmo',
+    async (_nome, fabricar) => {
+      vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+      const m = mundo();
+      const ids = semearAnchors(m, 6);
+      const erro = fabricar();
+      m.roteiro.set(ITEM, [() => erro]);
+
+      await expect(rodar(m, ids)).rejects.toBe(erro);
+
+      const enviados = m.enviar.mock.calls.map((c) => c[0].itemId);
+      expect(enviados.length).toBeLessThanOrEqual(2);
+      expect(enviados.filter((id) => id >= ITEM + 2)).toEqual([]);
+    },
+  );
+
+  it('QUASE-IGUAL: um irmão que PAUSA durante a ESPERA da tentativa 2 NÃO a cancela — a tentativa 1 já chamou a Shopee, então a linha é o que a tentativa 2 de fato fez (nunca um `nao-tentado` que pode mentir)', async () => {
+    vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+    const m = mundo();
+    const ids = semearAnchors(m, 2);
+    let tentativasDoItem1 = 0;
+    m.enviar.mockImplementation(async (item: ItemDePreco) => {
+      if (item.itemId === ITEM + 1) {
+        // The sibling pauses 2 ms in — while item 1 is in its 20 ms retry wait.
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        return pausaBurst(30);
+      }
+      tentativasDoItem1 += 1;
+      if (tentativasDoItem1 === 1) throw erroShopee('error_system_busy');
+      return enviado(item);
+    });
+    const esperar = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+
+    const r = await rodar(m, ids, { esperar });
+
+    expect(esperar).toHaveBeenCalledTimes(1);
+    expect(m.enviar.mock.calls.filter((c) => c[0].itemId === ITEM)).toHaveLength(2);
+    expect(r.listings.map((l) => [l.outcome, l.motivo, l.codigo])).toEqual([
+      ['enviado', null, null],
+      ['nao-tentado', 'conta-pausada', 'error_rate_limit'],
+    ]);
   });
 });

@@ -295,6 +295,11 @@ describe('criarLeitorDeBaseEmLote — falhas', () => {
   const reemitiveis: readonly [string, () => unknown][] = [
     ['rede', () => new ShopeeNetworkError('conexão reiniciada')],
     ['HTTP 503 sem envelope', () => new ShopeeHttpError('503', { httpStatus: 503, path: CAMINHO })],
+    // ⚠️ PAR da borda: o 5xx COMEÇA no 500 — o seu QUASE-IGUAL (499) está em `memorizadas`.
+    [
+      'HTTP 500 sem envelope (a borda do 5xx)',
+      () => new ShopeeHttpError('500', { httpStatus: 500, path: CAMINHO }),
+    ],
     [
       'erro Shopee de kind transient',
       () => apiError('error_system_busy', SHOPEE_ERROR_KIND.transient),
@@ -323,6 +328,11 @@ describe('criarLeitorDeBaseEmLote — falhas', () => {
   const memorizadas: readonly [string, () => unknown][] = [
     ['HTTP 429 sem envelope', () => new ShopeeHttpError('429', { httpStatus: 429, path: CAMINHO })],
     ['HTTP 403 sem envelope', () => new ShopeeHttpError('403', { httpStatus: 403, path: CAMINHO })],
+    // ⚠️ QUASE-IGUAL da borda: um abaixo do 500 ainda NÃO é 5xx — o PAR (500) está em `reemitiveis`.
+    [
+      'HTTP 499 sem envelope (um abaixo da borda do 5xx)',
+      () => new ShopeeHttpError('499', { httpStatus: 499, path: CAMINHO }),
+    ],
     ['cota diária', cotaDiaria],
     ['autorização revogada', reauth],
     ['recusa determinística (kind other)', () => apiError('error_param')],

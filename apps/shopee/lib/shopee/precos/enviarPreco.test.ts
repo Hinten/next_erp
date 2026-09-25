@@ -835,6 +835,26 @@ describe('enviarPrecoDoItem — G9, a escada da escrita', () => {
     expect(c.db.writes).toEqual([]);
   });
 
+  it('19b — ⚠️ PAR (C-5): um PARCIAL de `kind: daily` ⇒ `pausa cota-diaria` até a virada, SEM escrita — nem o modelo que o eco confirmou', async () => {
+    // The transport copies `kind` onto the partial class, so a daily-quota
+    // refusal whose body re-parses arrives HERE, not as a `ShopeeRateLimitError`.
+    const c = cenarioComModelos({
+      updatePrice: [parcial('error_limit', { sucesso: [[MODELO_A, 12]] }, SHOPEE_ERROR_KIND.daily)],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(), c.deps);
+
+    expect(r).toEqual({
+      tipo: 'pausa',
+      pausa: 'cota-diaria',
+      ate: proximaViradaDaCotaMs(AGORA_MS),
+      retryAfterSeconds: null,
+      codigo: 'error_limit',
+      chamadasShopee: 2,
+    });
+    expect(c.db.writes).toEqual([]);
+  });
+
   it('20 — ⚠️ PAR (C-5): o `ShopeeRateLimitError` comum de rajada dá a MESMA pausa, levando o `Retry-After`', async () => {
     const c = cenarioComModelos({ updatePrice: [burst(7)] });
 
@@ -1057,6 +1077,33 @@ describe('enviarPrecoDoItem — G10, a atribuição por modelo', () => {
     expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A]);
   });
 
+  it('30b — um 200 cuja `failure_list` nomeia A com a razão VAZIA ⇒ o `codigo` do RESULTADO é o do carimbo (`erp:recusa-desconhecida`), o da LINHA é nulo', async () => {
+    const c = cenarioComModelos({ updatePrice: [envelope({ falhas: [[MODELO_A, '']] })] });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    // "The code the refusal is known by" — the one the item doc was stamped with.
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: 'erp:recusa-desconhecida',
+      mensagem: null,
+      carimbado: true,
+    });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: null,
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({
+      precoRecusaCodigo: 'erp:recusa-desconhecida',
+    });
+    expect(unicoPatch(c.db, CAMINHO_LINK)).toMatchObject({
+      precoRecusaCodigo: 'erp:recusa-desconhecida',
+      precoRecusaMotivo: 'recusa-desconhecida',
+    });
+  });
+
   it('31 — ⚠️ QUASE-IGUAL (C-4): num item COM modelos um eco SEM `model_id` não é atribuído a ninguém — cada enviado lê `modelo-sem-resposta`, nunca um palpite', async () => {
     const c = cenarioComModelos({ updatePrice: [envelope({ sucesso: [[null, 12]] })] });
 
@@ -1235,6 +1282,43 @@ describe('enviarPrecoDoItem — a razão DESCONHECIDA de um modelo cede ao códi
       precoRecusaMotivo: 'recusa-desconhecida',
       precoRecusaMensagem: null,
     });
+  });
+
+  it('32f′ — ⛔ QUASE-IGUAL do 32f: código de topo DESCONHECIDO e a razão VAZIA ⇒ `falha recusa-desconhecida`, a linha com `codigo: null`, o filho e o item carimbados com o código do TOPO verbatim — nunca `erp:`', async () => {
+    const c = cenarioComModelos({
+      updatePrice: [parcial('product.error_nunca_visto', { falhas: [[MODELO_A, '']] })],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: 'product.error_nunca_visto',
+      mensagem: null,
+      carimbado: true,
+    });
+    // The row keeps what Shopee said about the MODEL — nothing.
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: null,
+    });
+    expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toEqual({
+      precoRecusaEm: AGORA_MS,
+      precoRecusaCodigo: 'product.error_nunca_visto',
+      ultimaModificacao: AGORA_MS,
+    });
+    expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+      precoRecusaEm: AGORA_MS,
+      precoRecusaCodigo: 'product.error_nunca_visto',
+      precoRecusaMotivo: 'recusa-desconhecida',
+      precoRecusaMensagem: null,
+      ultimaModificacao: AGORA_MS,
+    });
+    // A Shopee refusal is never recorded under OUR code.
+    expect(JSON.stringify(c.db.writes)).not.toContain('erp:');
   });
 
   /** A top-level reading with NO code — a shape the transport never builds (`error: ''` is a success there). */
