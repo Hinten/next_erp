@@ -124,7 +124,7 @@ phase the work so the debris-producing deletes are covered first.
   produto-**edit** sibling of #136 (which covers produto-**delete**). When an edit
   removes a photo/video, the `fotos`/`videos` array is rewritten without the entry
   but the arquivo is left behind. Rather than wait for Phase 2 to *rediscover* this
-  via the regex pipeline + owner lookup, the trigger diffs `before`/`after` media
+  via the paged candidate scan + owner lookup, the trigger diffs `before`/`after` media
   refs (`reconcileProdutoMediaMarks`, exported for the emulator suite) and **marks**
   each removed arquivo (`markedForDeletionAt = now`); a re-added ref clears the mark.
   The mark is only a **signal** — the delete is deferred to Phase 2's
@@ -140,11 +140,11 @@ phase the work so the debris-producing deletes are covered first.
 `onSchedule`, every 48h, three bounded passes:
 
 - **Marked-for-deletion sweep** (`sweepMarkedForDeletion`) — the back half of the
-  eager reap above: delete arquivos `onProdutoMediaChanged` flagged
+  eager reap above: delete arquivos `onProdutoMediaChanged` or `onMensagemDeleted` flagged
   (`markedForDeletionAt < cutoff`, past a **short** `ARQUIVO_MARKED_GRACE_HOURS`
   grace, default 1h, oldest-first — single-field index `arquivos(markedForDeletionAt)`),
-  **re-verifying** via `resolveReferencedArquivoRefs` that the owning produto still
-  doesn't reference them (a missed unmark clears the mark instead of deleting). A
+  **re-verifying** the owner document or global mensagem refcount (a missed unmark
+  clears the mark instead of deleting). A
   plain admin range query (no pipeline → emulator-testable), so it runs first and
   cheapest. This makes the common "photo edited out" case prompt; the unreferenced
   sweep below is now the **backstop** (produto deletes until #136, console edits,
@@ -157,29 +157,23 @@ phase the work so the debris-producing deletes are covered first.
   delete the doc (an abandoned create-first upload), or self-heal to `'finalized'`
   if the object is present. Subsumes #189's product-image phantoms.
 - **Unreferenced-arquivo sweep** (`sweepUnreferencedArquivos`) — the **backstop** for
-  product photos + videos (`produtos/<id>/originals|videos`) past the grace window that
-  **no produto references**, that the eager `onProdutoMediaChanged` mark missed: a
-  produto deleted entirely (until #136), a Firestore-console edit, or a dropped trigger
-  delivery. Candidates come from a
-  **regex pipeline** (`regexContains('filepath', …) AND criadoEm < cutoff`, sorted,
-  on the `arquivos(criadoEm)` index) — server-side scoped so non-product docs are
-  never loaded. The reference check is an **owner-document lookup**, not a
-  collection scan: a product arquivo encodes its owner `produtoId` in its storage
-  path, so `resolveReferencedArquivoRefs` reads ONLY the produtos owning the
-  candidate batch — one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`
-  — making it O(distinct produtos), never O(all produtos). Deleting the doc lets
-  `onArquivoDeleted` free the bytes.
+  owner media (`produtos`/`tabMedi`) and mensagem media (`whatsapp`/`chat`) past the
+  grace window with no live reference. Candidates come from a bounded, round-robin
+  classic query ordered by document id; ownership and age are classified in code.
+  Owner references still use batched owner-document lookups. Mensagem references use
+  an indexed `collectionGroup('mensagem')` OR query over the six supported fields and
+  both OuterRef encodings. Its final refcount and arquivo delete happen in one Admin
+  transaction, paired with arquivo-anchor reads in inbound/outbound mensagem writers.
+  Deleting the doc lets `onArquivoDeleted` free the bytes.
 
-**Emulator note.** The candidate scan is a Firestore **pipeline** (regex on
-`filepath`), which needs Enterprise + `@google-cloud/firestore` v8 (firebase-admin
-v14, scoped to `apps/functions`) and does **not** run in the emulator. So both the
-candidate fetch and the owner lookup are **seams** (`fetchCandidates` /
-`resolveReferenced`) the emulator suite overrides — it exercises the delete loop +
-the real `resolveReferencedArquivoRefs` (plain `getAll`), while the pipeline is
-validated live. The earlier storage-orphan sweep was dropped: create-first
-guarantees an object always has a doc, so object-with-no-doc can't arise.
-`criadoEm` is microseconds-since-epoch (schema default `nowMicros()`), so the grace
-window is a numeric range query.
+**Emulator note.** The sweep uses classic Admin queries only. Its page scan, owner
+lookup, global mensagem lookup and transactional final decision therefore run in the
+Firestore emulator. Enterprise still requires the six explicit single-field
+collection-group indexes for the mensagem OR query; `check-sweep-indexes.mjs` validates
+their real-environment usage with Query Explain. The earlier storage-orphan scan was
+dropped: create-first guarantees an object always has a doc, so object-with-no-doc
+cannot arise. `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`),
+so the grace window is compared in code for the round-robin candidate page.
 
 **Coverage caveat.** The candidate scan still re-reads the oldest docs, so a large
 head of long-lived referenced photos can starve newer orphans; a persisted
@@ -269,13 +263,11 @@ in Phase 1. Phase 2 **implemented** as
 back half — re-verifies the owner before deleting), the phantom-doc sweep, and the
 unreferenced-arquivo sweep (now the backstop), all oldest-first with the grace window
 excluded in the query. The unreferenced check is an owner-document lookup
-(`resolveReferencedArquivoRefs` reads only the produtos owning the candidate batch
-via `getAll`), which replaced the original full-`produtos` pipeline anti-join; the
-candidate scan is a regex pipeline that scopes server-side to product photos/videos
-(so firebase-admin v14 / `@google-cloud/firestore` v8 stays required). Both sweep
-queries are index-backed via declared `firestore.indexes.json` entries (Enterprise
-auto-creates none). The delete loop + `resolveReferencedArquivoRefs` are emulator-
-tested via seams; the pipeline is live-validated. A coverage follow-up (persisted
-round-robin cursor for the candidate scan) is tracked in #234. Phase 3 blocked on
-the `apps/integrations` remote-delist design. Refs #136,
+(`resolveReferencedArquivoRefs` reads only the owners in the candidate batch via
+`getAll`), which replaced the original full-`produtos` pipeline anti-join. The
+candidate scan is now a persisted round-robin classic query (#234). Mensagem-owned
+media adds a collection-group OR refcount, six declared indexes, the eager
+`onMensagemDeleted` marker and a transactional final decision. All sweep paths are
+emulator-testable; Query Explain validates index use in the Enterprise environment.
+Phase 3 remains blocked on the `apps/integrations` remote-delist design. Refs #136,
 #95, #135, #202, #234.

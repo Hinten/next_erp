@@ -1,4 +1,11 @@
-import { FieldPath, type DocumentReference, type Firestore } from 'firebase-admin/firestore';
+import {
+  FieldPath,
+  Filter,
+  type DocumentReference,
+  type Firestore,
+  type Query,
+  type Transaction,
+} from 'firebase-admin/firestore';
 import type { Storage } from 'firebase-admin/storage';
 import { getStorage } from 'firebase-admin/storage';
 import { logger } from 'firebase-functions';
@@ -6,6 +13,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import {
   arquivoCollection,
   arquivoOrphanSweepStateCollection,
+  mensagemCollection,
   produtoCollection,
   tabelaDeMedidasCollection,
 } from '@delfrance/data/admin/collections';
@@ -13,8 +21,11 @@ import { coerceToMicros } from '@delfrance/core/datetime';
 import {
   ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
   ARQUIVOS_COLLECTION,
+  MENSAGEM_ARQUIVO_REF_FIELDS,
   type MediaOwnerCollection,
+  mensagemArquivoRefValues,
   nowMicros,
+  parseMensagemMediaDir,
   parseOwnedMediaDir,
 } from '@delfrance/schemas';
 
@@ -26,6 +37,7 @@ type Bucket = ReturnType<Storage['bucket']>;
 // Bound each pass so neither can blow the function budget; the every-48h schedule
 // drains a backlog over several runs.
 const BATCH_LIMIT = 100;
+const MENSAGEM_REFERENCE_CONCURRENCY = 8;
 
 // Admin handles keyed by media-owner collection — the sweep/reaper read a
 // candidate's owner doc to see which arquivos it still references.
@@ -37,8 +49,8 @@ const OWNER_HANDLES = {
 /**
  * Grace window in **microseconds** below which a doc is still considered "in
  * flight" — create-first writes the doc, THEN uploads, AND an arquivo is
- * unreferenced until its produto is saved — so a young doc may not yet have its
- * object / its produto link. Read per call (not at module load) so the emulator
+ * unreferenced until its owner or mensagem is saved — so a young doc may not yet
+ * have its object / reference. Read per call (not at module load) so the emulator
  * suite can drop it to 0. 48h by default; non-numeric/negative falls back to 48h.
  */
 function orphanGraceMicros(): number {
@@ -49,8 +61,8 @@ function orphanGraceMicros(): number {
 
 /**
  * Grace window in **microseconds** for a MARKED arquivo (`markedForDeletionAt`,
- * set by `onProdutoMediaChanged`). The mark is a deliberate signal — the trigger
- * saw the ref removed in a produto save — so this is **short** by default (1h, a
+ * set by an eager owner/mensagem trigger). The mark is a deliberate signal — a
+ * trigger saw a ref removed — so this is **short** by default (1h, a
  * brief buffer for a quick undo/re-add) versus the 48h orphan grace. Read per
  * call so the emulator suite can drop it to 0. `ARQUIVO_MARKED_GRACE_HOURS`
  * overrides; non-numeric/negative falls back to 1h.
@@ -172,6 +184,87 @@ export function resolveReferencedArquivoRefs(
   return resolveReferencedRefs(db, 'produtos', produtoIds);
 }
 
+/**
+ * The indexed collection-group query used for mensagem-owned media refcounts.
+ * Each field accepts both ref encodings carried by the imported corpus.
+ */
+export function buildMensagemArquivoReferenceQuery(db: Firestore, arquivoId: string): Query {
+  const values = [...mensagemArquivoRefValues(arquivoId)];
+  const filters = MENSAGEM_ARQUIVO_REF_FIELDS.map((field) => Filter.where(field, 'in', values));
+  return mensagemCollection
+    .groupQuery(db)
+    .where(Filter.or(...filters))
+    .select(...MENSAGEM_ARQUIVO_REF_FIELDS)
+    .limit(1);
+}
+
+async function mensagemArquivoIsReferenced(
+  db: Firestore,
+  arquivoId: string,
+  tx?: Transaction,
+): Promise<boolean> {
+  const query = buildMensagemArquivoReferenceQuery(db, arquivoId);
+  const snapshot = tx ? await tx.get(query) : await query.get();
+  return !snapshot.empty;
+}
+
+/**
+ * Resolve which candidate ids have at least one live mensagem reference.
+ * Queries are independent but bounded so one 100-row sweep page never fans out
+ * 100 simultaneous collection-group reads.
+ */
+export async function resolveMensagemArquivoReferences(
+  db: Firestore,
+  arquivoIds: string[],
+): Promise<Set<string>> {
+  const ids = [...new Set(arquivoIds)];
+  const referenced = new Set<string>();
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < ids.length) {
+      const index = cursor;
+      cursor += 1;
+      const id = ids[index]!;
+      if (await mensagemArquivoIsReferenced(db, id)) referenced.add(id);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MENSAGEM_REFERENCE_CONCURRENCY, ids.length) }, worker),
+  );
+  return referenced;
+}
+
+export type MensagemArquivoReconcileOutcome = 'deleted' | 'referenced' | 'missing' | 'out-of-scope';
+
+/**
+ * Final, race-safe deletion decision for one mensagem-owned arquivo.
+ *
+ * Class A transaction: the candidate doc and the global mensagem refcount query
+ * are both read inside the callback. Message writers read this same anchor in
+ * their own transaction before creating refs. Firestore OCC/serializable
+ * retries therefore prevent either interleaving from committing a dangling ref.
+ */
+export function reconcileMensagemArquivoCandidate(
+  db: Firestore,
+  ref: DocumentReference,
+): Promise<MensagemArquivoReconcileOutcome> {
+  return db.runTransaction(async (tx) => {
+    const arquivo = await tx.get(ref);
+    if (!arquivo.exists) return 'missing';
+    const data = arquivo.data() ?? {};
+    if (!parseMensagemMediaDir(data.filepath as string | null | undefined)) {
+      if (data.markedForDeletionAt != null) tx.update(ref, { markedForDeletionAt: null });
+      return 'out-of-scope';
+    }
+    if (await mensagemArquivoIsReferenced(db, ref.id, tx)) {
+      if (data.markedForDeletionAt != null) tx.update(ref, { markedForDeletionAt: null });
+      return 'referenced';
+    }
+    tx.delete(ref);
+    return 'deleted';
+  });
+}
+
 /** One raw `arquivos` doc read during a round-robin page scan (pre age/scope filter). */
 interface ArquivoPageRow {
   ref: DocumentReference;
@@ -191,6 +284,9 @@ type ResolveReferenced = (
   ownerCollection: MediaOwnerCollection,
   ownerIds: string[],
 ) => Promise<ReadonlySet<string>>;
+
+/** Resolves which mensagem-media Arquivo ids currently have a live reference. */
+type ResolveMensagemReferenced = (arquivoIds: string[]) => Promise<ReadonlySet<string>>;
 
 /**
  * Default page fetch: a plain **classic** query ordered by
@@ -225,11 +321,10 @@ async function fetchArquivoPage(db: Firestore, lastKey: string | null): Promise<
 }
 
 /**
- * Unreferenced-arquivo sweep: delete product media (photos / videos / anexos)
- * older than the grace window that **no produto references** — e.g. a photo
- * removed from a produto in an edit (the `fotos[]` entry goes away but nothing
- * deletes the arquivo doc), or a produto deleted entirely. Deleting the doc lets
- * `onArquivoDeleted` free the object + cascade any derivatives.
+ * Unreferenced-arquivo sweep: delete owner media (photos / videos / anexos) and
+ * mensagem media (`whatsapp/` / `chat/`) older than the grace window when no
+ * live owner/mensagem references them. Deleting the doc lets `onArquivoDeleted`
+ * free the object + cascade any derivatives.
  *
  * **Round-robin paging (#234).** The old oldest-`criadoEm`-first scan always
  * re-read the same head of the collection, so once the catalog accumulated more
@@ -257,6 +352,8 @@ export async function sweepUnreferencedArquivos(
   // signature parity with sweepPhantomDocs and the reconcile call site.
   fetchPage: FetchArquivoPage = fetchArquivoPage,
   resolveReferenced: ResolveReferenced = (coll, ids) => resolveReferencedRefs(db, coll, ids),
+  resolveMensagemReferenced: ResolveMensagemReferenced = (ids) =>
+    resolveMensagemArquivoReferences(db, ids),
 ): Promise<number> {
   const cutoff = nowMicros() - orphanGraceMicros();
   const cursorSnap = await arquivoOrphanSweepStateCollection
@@ -271,13 +368,17 @@ export async function sweepUnreferencedArquivos(
 
   // Derive each candidate's owner from its filepath; group distinct ids per
   // owner collection for one batched lookup each.
-  const items: { ref: DocumentReference; refPath: string }[] = [];
+  const ownerItems: { ref: DocumentReference; refPath: string }[] = [];
+  const mensagemItems: { ref: DocumentReference; id: string }[] = [];
   const idsByOwner = new Map<MediaOwnerCollection, Set<string>>();
   for (const row of page) {
     if (row.criadoEm === null || row.criadoEm >= cutoff) continue; // too young (or unknown age) — never sweep
     const parsed = parseOwnedMediaDir(row.filepath);
-    if (!parsed) continue; // not owner media (derivative, generic media/, unknown root)
-    items.push({ ref: row.ref, refPath: `${ARQUIVOS_COLLECTION}/${row.id}` });
+    if (!parsed) {
+      if (parseMensagemMediaDir(row.filepath)) mensagemItems.push({ ref: row.ref, id: row.id });
+      continue; // derivative, generic media/, or unknown root
+    }
+    ownerItems.push({ ref: row.ref, refPath: `${ARQUIVOS_COLLECTION}/${row.id}` });
     let set = idsByOwner.get(parsed.ownerCollection);
     if (!set) {
       set = new Set();
@@ -290,24 +391,50 @@ export async function sweepUnreferencedArquivos(
   for (const [coll, ids] of idsByOwner) {
     for (const r of await resolveReferenced(coll, [...ids])) referencedRefs.add(r);
   }
+  const referencedMensagemIds = await resolveMensagemReferenced(mensagemItems.map((i) => i.id));
 
-  let deleted = 0;
-  let kept = 0;
-  let failed = 0;
-  for (const { ref, refPath } of items) {
+  let ownerDeleted = 0;
+  let ownerReferenced = 0;
+  let ownerFailed = 0;
+  let mensagemDeleted = 0;
+  let mensagemReferenced = 0;
+  let mensagemMissing = 0;
+  let mensagemOutOfScope = 0;
+  let mensagemFailed = 0;
+  for (const { ref, refPath } of ownerItems) {
     try {
       if (referencedRefs.has(refPath)) {
-        kept += 1;
+        ownerReferenced += 1;
         continue;
       }
       // Unreferenced + past grace → delete the doc; onArquivoDeleted frees the
       // object and cascades derivatives.
       await ref.delete();
-      deleted += 1;
+      ownerDeleted += 1;
     } catch (err) {
       if (!isGrpcLikeError(err)) throw err;
-      failed += 1;
+      ownerFailed += 1;
       logger.error(`sweepUnreferencedArquivos: ${ref.id} failed`, err);
+    }
+  }
+
+  for (const { ref, id } of mensagemItems) {
+    try {
+      if (referencedMensagemIds.has(id)) {
+        mensagemReferenced += 1;
+        continue;
+      }
+      // The outside query is only a cheap pre-filter. The delete verdict is
+      // always recomputed transactionally to close the query→delete race.
+      const outcome = await reconcileMensagemArquivoCandidate(db, ref);
+      if (outcome === 'deleted') mensagemDeleted += 1;
+      else if (outcome === 'missing') mensagemMissing += 1;
+      else if (outcome === 'referenced') mensagemReferenced += 1;
+      else mensagemOutOfScope += 1;
+    } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
+      mensagemFailed += 1;
+      logger.error(`sweepUnreferencedArquivos: mensagem arquivo ${ref.id} failed`, err);
     }
   }
 
@@ -318,19 +445,17 @@ export async function sweepUnreferencedArquivos(
   });
 
   logger.info(
-    `sweepUnreferencedArquivos: ${page.length} scanned, ${items.length} candidates, ${deleted} deleted, ${kept} kept, ${failed} failed, cursor ${lastKey ?? '(start)'} -> ${nextKey ?? '(wrapped)'}`,
+    `sweepUnreferencedArquivos: ${page.length} scanned; owner candidates=${ownerItems.length} referenced=${ownerReferenced} deleted=${ownerDeleted} failed=${ownerFailed}; mensagem candidates=${mensagemItems.length} referenced=${mensagemReferenced} deleted=${mensagemDeleted} missing=${mensagemMissing} outOfScope=${mensagemOutOfScope} failed=${mensagemFailed}; cursor ${lastKey ?? '(start)'} -> ${nextKey ?? '(wrapped)'}`,
   );
-  return deleted;
+  return ownerDeleted + mensagemDeleted + mensagemMissing;
 }
 
 /**
- * Marked-for-deletion sweep: delete `arquivos` docs `onProdutoMediaChanged`
- * stamped with `markedForDeletionAt` (a photo/video removed from a produto in an
- * edit) once they're past the short marked-grace window — but **re-verifying**
- * the owning produto still doesn't reference the arquivo first (defence against a
- * missed unmark when the photo was re-added). Deleting the doc lets
- * `onArquivoDeleted` free the object + cascade the 3 derivatives; a still-
- * referenced doc has its mark cleared instead.
+ * Marked-for-deletion sweep: delete `arquivos` docs stamped by the eager owner
+ * or mensagem triggers once they're past the short grace window — but only
+ * after re-verifying the owner or the global mensagem references. Deleting the
+ * doc lets `onArquivoDeleted` free the object; a still-referenced doc has its
+ * mark cleared instead.
  *
  * This is the **eager** cleanup path's back half — the trigger captures the
  * removal cheaply at edit time, so this sweep is a plain admin range query
@@ -357,11 +482,16 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
   // Re-verify against the owning docs in one batched lookup per owner collection:
   // derive each candidate's owner from its filepath, resolve the refs those owners
   // still hold, then delete only the genuinely-unreferenced ones.
-  const items: { ref: DocumentReference; refPath: string; owned: boolean }[] = [];
+  const items: {
+    ref: DocumentReference;
+    refPath: string;
+    scope: 'owner' | 'mensagem' | 'unknown';
+  }[] = [];
   const idsByOwner = new Map<MediaOwnerCollection, Set<string>>();
   for (const doc of marked.docs) {
     const filepath = (doc.data().filepath as string | null | undefined) ?? null;
     const parsed = parseOwnedMediaDir(filepath);
+    const mensagem = parseMensagemMediaDir(filepath);
     if (parsed) {
       let set = idsByOwner.get(parsed.ownerCollection);
       if (!set) {
@@ -373,7 +503,7 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
     items.push({
       ref: doc.ref,
       refPath: `${ARQUIVOS_COLLECTION}/${doc.id}`,
-      owned: parsed !== null,
+      scope: parsed ? 'owner' : mensagem ? 'mensagem' : 'unknown',
     });
   }
 
@@ -382,31 +512,47 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
     for (const r of await resolveReferencedRefs(db, coll, [...ids])) referencedRefs.add(r);
   }
 
-  let deleted = 0;
-  let cleared = 0;
+  let ownerDeleted = 0;
+  let ownerCleared = 0;
+  let mensagemDeleted = 0;
+  let mensagemCleared = 0;
+  let unknownCleared = 0;
   let failed = 0;
-  for (const { ref, refPath, owned } of items) {
+  for (const { ref, refPath, scope } of items) {
     try {
+      if (scope === 'mensagem') {
+        const outcome = await reconcileMensagemArquivoCandidate(db, ref);
+        if (outcome === 'deleted' || outcome === 'missing') mensagemDeleted += 1;
+        else {
+          mensagemCleared += 1;
+          if (outcome === 'out-of-scope') {
+            logger.warn(
+              `sweepMarkedForDeletion: ${ref.id} changed out of mensagem-media scope — clearing, not deleting`,
+            );
+          }
+        }
+        continue;
+      }
       // Owner not derivable (filepath isn't `produtos/<id>/…` or `tabMedi/<id>/…`
       // — legacy / console / bad data the trigger's owner-media guard now blocks):
       // we can't re-verify ownership, so NEVER delete it. Clear the mark + warn so it
       // stops re-querying instead of being reaped blind.
-      if (!owned) {
+      if (scope === 'unknown') {
         await ref.update({ markedForDeletionAt: null });
-        cleared += 1;
+        unknownCleared += 1;
         logger.warn(
-          `sweepMarkedForDeletion: ${ref.id} marked but filepath is not owner media (produtos/tabMedi) — clearing, not deleting`,
+          `sweepMarkedForDeletion: ${ref.id} marked but filepath is outside governed media — clearing, not deleting`,
         );
         continue;
       }
       // Referenced again (a re-add whose unmark was missed) → clear + keep.
       if (referencedRefs.has(refPath)) {
         await ref.update({ markedForDeletionAt: null });
-        cleared += 1;
+        ownerCleared += 1;
         continue;
       }
       await ref.delete();
-      deleted += 1;
+      ownerDeleted += 1;
     } catch (err) {
       if (!isGrpcLikeError(err)) throw err;
       failed += 1;
@@ -414,17 +560,17 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
     }
   }
   logger.info(
-    `sweepMarkedForDeletion: ${marked.size} candidates, ${deleted} deleted, ${cleared} cleared, ${failed} failed`,
+    `sweepMarkedForDeletion: ${marked.size} candidates; owner=${items.filter((item) => item.scope === 'owner').length} deleted=${ownerDeleted} unmarked=${ownerCleared}; mensagem=${items.filter((item) => item.scope === 'mensagem').length} deleted=${mensagemDeleted} unmarked=${mensagemCleared}; outsideScope=${items.filter((item) => item.scope === 'unknown').length} unmarked=${unknownCleared}; failed=${failed}`,
   );
-  return deleted;
+  return ownerDeleted + mensagemDeleted;
 }
 
 /**
  * Scheduled (every 48h) arquivo orphan reconciliation. Three bounded passes, each
  * isolating per-item failures: the **marked** sweep first (cheapest — an indexed
  * query over what `onProdutoMediaChanged` already flagged), then the phantom-doc
- * sweep, then the unreferenced-arquivo backstop (which reads only the produtos
- * owning the current candidate batch).
+ * sweep, then the unreferenced-arquivo backstop (owner lookups plus indexed,
+ * globally shared mensagem refcounts).
  */
 export const reconcileArquivoOrphans = onSchedule(
   { schedule: 'every 48 hours', memory: '512MiB' },

@@ -6,9 +6,9 @@ description: >-
   and when extending file handling to a new entity, or touching the storage
   Cloud Functions / orphan sweeps. Triggers on: arquivo(s), upload, foto/photo,
   vídeo/video, anexo/attachment, storage, file, media, PhotoManager,
-  VideoManager, uploadProductImage, uploadProductVideo, uploadFile, uploadFromUrl,
+  VideoManager, uploadProductImage, uploadProductVideo, uploadChatFile, uploadFile, uploadFromUrl,
   arquivoOuterRef, buildFotoRefs, derivative/thumbnail, orphan sweep,
-  onArquivoDeleted, onProdutoMediaChanged, markedForDeletionAt, resizeProductImage,
+  onArquivoDeleted, onProdutoMediaChanged, onMensagemDeleted, markedForDeletionAt, resizeProductImage,
   reconcileArquivoOrphans, content-addressed, create-first, doc-anchored.
 ---
 
@@ -16,8 +16,8 @@ description: >-
 
 How to upload, display, remove and delete files in this ERP, which helpers and
 components already exist to reuse, and how the delete/maintenance machinery works
-so you don't leak orphaned Storage objects. **The system is produto-only today**
-but is built to extend — §9 is the recipe for wiring it into another entity.
+so you don't leak orphaned Storage objects. It supports owner-scoped produto/tabMedi
+media and globally shared WhatsApp/chat mensagem media; §9 is the recipe for extending it.
 
 The deep *why* and the full lifecycle diagrams live in
 `apps/docs/src/content/docs/architecture/arquivo-lifecycle.md` and
@@ -44,21 +44,26 @@ arquivos either (`freight-integrations` skill).
   cascades). **Never delete a Storage object directly.**
 - **Create-first** — the client writes the doc *before* uploading the bytes, so a
   dead upload leaves a detectable *phantom doc*, never an orphan object.
-- **Content-addressed** — the doc id is `sha512(bytes)` (hex). Re-uploading
-  identical bytes is a no-op (dedup): `putArquivo` sees the doc already exists and
-  reuses it.
+- **Content-addressed** — ids derive from `sha512(bytes)` (hex). Re-uploading
+  identical bytes in the same namespace is a no-op: the create-first core sees the
+  doc already exists and reuses it. New chat uploads use `chat_<hash>` to avoid
+  colliding with generic `<hash>` uploads.
 - **Product-scoped** — product files live under `produtos/<produtoId>/…` with a
   product-scoped doc id (`<produtoId>_<hash>`); no cross-product sharing, so
   deletion is owner-scoped and needs no refcount table.
+- **Mensagem-shared** — `whatsapp/<contaId>/<mediaId>` and `chat/<hash>.<ext>`
+  files may be referenced by many messages/conversations. Delete only after the
+  six-field global refcount query; message writers and the final sweep decision
+  both read the arquivo anchor transactionally.
 
 ## 3. Architecture map
 
 | Layer | Path | Holds |
 | --- | --- | --- |
-| **Client upload** | `packages/storage` (`@delfrance/storage`) | `uploadProductImage/Video`, `uploadFile`, `uploadFromUrl`, `putArquivo` (create-first), the client `arquivoCollection` handle, `sha512Hex` |
-| **Schema + paths + ref shapes** | `packages/schemas/src/storage/{arquivo,storagePaths,foto,video}.ts` + `produto/collection/embedded/anexo.ts` | `arquivoSchema`, path/id builders, `Foto`/`Video`/`Anexo` wire shapes, `buildFotoRefs` |
+| **Client upload** | `packages/storage` (`@delfrance/storage`) | `uploadProductImage/Video`, `uploadChatFile`, `uploadFile`, `uploadFromUrl`, the private create-first core, client `arquivoCollection`, `sha512Hex` |
+| **Schema + paths + ref shapes** | `packages/schemas/src/storage/{arquivo,storagePaths,foto,video}.ts`, `mensagemArquivoRefs.ts` + produto anexo | `arquivoSchema`, path/id builders/parsers, the six mensagem fields/extractor, `Foto`/`Video`/`Anexo`, `buildFotoRefs` |
 | **Admin handles** | `@delfrance/data/admin/collections` | `arquivoCollection`, `produtoCollection` (Admin SDK, converter-less) |
-| **Server (functions)** | `apps/functions/src/{arquivos,product-images}` | the 5 Cloud Functions: finalize/resize, the deletion cascade, the eager reaper, the 48h sweeps |
+| **Server (functions)** | `apps/functions/src/{arquivos,product-images}` | finalize/resize, doc-anchored deletion, eager owner/mensagem marks, and 48h sweeps |
 | **Produto UI** | `apps/web/app/(app)/produtos/_components/{PhotoManager,VideoManager}.tsx` | the canonical media editors (dropzone, reorder, thumbnails, staged delete) |
 
 ## 4. Client: upload a file
@@ -73,6 +78,7 @@ the create-first + dedup core — and return `UploadResult = { id, arquivo }`.
 | `uploadProductImage` | `produtoId, bytes, contentType, originalFilename?` | `produtos/<id>/originals/<hash>.<ext>` · `<id>_<hash>` | throws if not `image/*`; sets `resizeState:'pending'` → resize trigger generates derivatives |
 | `uploadTabMediImage` | `tabMediId, bytes, contentType, originalFilename?` | `tabMedi/<id>/originals/<hash>.<ext>` · `<id>_<hash>` | throws if not `image/*`; sets `resizeState:'pending'` — resized exactly like a product image |
 | `uploadProductVideo` | `produtoId, bytes, contentType, originalFilename?` | `produtos/<id>/videos/<hash>.<ext>` · `<id>_<hash>` | throws if not `video/*`; **not** resized |
+| `uploadChatFile` | `bytes, contentType, originalFilename?` | `chat/<hash>.<ext>` · `chat_<hash>` | composer-only namespace; create-first + content dedup; legacy unprefixed docs remain readable |
 | `uploadFile` | `bytes, contentType, filepath?, originalFilename?` | `<filepath ?? media>/<hash>[.ext]` · `<hash>` | generic media; `filetype` derived via `filetypeFromMime` |
 | `uploadFromUrl` | `url, filepath?, originalFilename?` | (fetches, then `uploadFile`) | importing a marketplace image |
 
@@ -87,9 +93,10 @@ the object→doc tag.
 
 Path/id math (pure, no Firebase) lives in `packages/schemas/src/storage/storagePaths.ts`:
 `productOriginalPath`, `productVideoPath`, `productDerivativePath`, `mediaPath`,
+`whatsappMediaPath`, `whatsappArquivoId`, `chatMediaPath`, `chatArquivoId`,
 `ownedArquivoId`, `productArquivoId`, `tabMediArquivoId`, `derivativeArquivoId`,
 `parseOwnedOriginalPath`, `parseOwnedMediaDir`, `isWatchedOriginal`,
-`isDerivativeName`, `ownedDerivativePath`, `tabMediOriginalPath`,
+`isDerivativeName`, `parseMensagemMediaDir`, `ownedDerivativePath`, `tabMediOriginalPath`,
 `firebaseDownloadUrl`, `normalizeName`, `PRODUCT_IMAGE_VARIANTS` (`200`/`400`/`jpeg`).
 
 ⚠️ The **owner-aware** names are the live ones: `isWatchedOriginal` matches
@@ -197,8 +204,8 @@ editor's `PhotoManager` was the only reader that gated on doc existence.
     `reconcileProductImages` pick them up.
   - `criadoEm` µs-since-epoch, required, default `nowMicros()` (sweeps range-query
     it).
-  - `markedForDeletionAt` µs or `null` (default) — set by `onProdutoMediaChanged`
-    when a photo/video is edited out, cleared on re-add.
+  - `markedForDeletionAt` µs or `null` (default) — set by eager owner-media
+    triggers and `onMensagemDeleted`, cleared on re-add or any live global ref.
 
 ## 8. Delete signals & maintenance
 
@@ -206,24 +213,27 @@ editor's `PhotoManager` was the only reader that gated on doc existence.
 `onArquivoDeleted` trigger frees the Storage object (and cascades derivatives).
 Deleting a Storage object directly leaves a dangling doc — don't.
 
-Five Cloud Functions own the server side (codebase `storage`, region `FUNCTIONS_REGION`,
-`apps/functions/src/index.ts`):
+The storage lifecycle functions (codebase `storage`, region `FUNCTIONS_REGION`,
+`apps/functions/src/index.ts`) include:
 
 | Function | Trigger | Job |
 | --- | --- | --- |
 | `resizeProductImage` | `onObjectFinalized` | `uploadState→'finalized'` + generate 200/400/jpeg derivatives |
 | `reconcileProductImages` | `onSchedule` 48h | backfill derivatives the trigger missed (`where resizeState=='pending'`) |
 | `onArquivoDeleted` | `onDocumentDeleted('arquivos/{id}')` | free the object + cascade derivatives (with a dedup-resurrection guard) |
-| `onProdutoMediaChanged` | `onDocumentUpdated('produtos/{id}')` | **eagerly mark** a removed photo/video's arquivo for deletion (clears on re-add) |
+| `onProdutoMediaChanged` / `onTabMediMediaChanged` | owner updates | eagerly mark removed owner media (clear on re-add) |
+| `onMensagemDeleted` | mensagem delete | mark governed `whatsapp/` / `chat/` media; never delete shared media directly |
 | `reconcileArquivoOrphans` | `onSchedule` 48h | `sweepMarkedForDeletion` → `sweepPhantomDocs` → `sweepUnreferencedArquivos` |
 
 The common case — a photo edited out of a produto — is handled **eagerly**:
-`onProdutoMediaChanged` → `reconcileProdutoMediaMarks` diffs `fotos`+`videos`
+`onProdutoMediaChanged` → `reconcileProdutoMediaMarks` diffs `fotos`+`videos`+`anexos`
 (`MEDIA_FIELDS`) by `arquivoOuterRef` and stamps `markedForDeletionAt`; the
 **short-grace** `sweepMarkedForDeletion` (default 1h) deletes it after re-verifying
-the produto still doesn't reference it. The expensive `sweepUnreferencedArquivos`
-(regex pipeline, 48h) is the **backstop** for produto deletes, console edits and
-missed deliveries. See the architecture doc for the flow/state diagrams.
+the owner still doesn't reference it. `onMensagemDeleted` extracts the six supported
+ref fields and marks only exact mensagem-media roots. The 48h
+`sweepUnreferencedArquivos` round-robins every arquivo as a backstop. Owner candidates
+use direct owner reads; mensagem candidates use an indexed collection-group OR query
+with bounded concurrency and repeat the final check inside an Admin transaction.
 
 Grace windows (env, read per-call): `ARQUIVO_ORPHAN_GRACE_HOURS` (48),
 `ARQUIVO_MARKED_GRACE_HOURS` (1); all sweeps bounded at `BATCH_LIMIT=100`.
@@ -243,19 +253,16 @@ Wiring files onto, say, `pedidos` or `clientes`:
    galleries, else follow their pattern for a new manager. Wire via `ObjectView`
    `renderInput` + `section` + `prepareForSave: stripMarkedForDeletion`. Upload
    through the §4 helpers — never hand-roll.
-4. **🔴 Deletion — the trap.** The sweeps are **produto-scoped**:
-   `fetchUnreferencedCandidates` only matches `produtos/<id>/(originals|videos)`
-   (via `parseProductMediaDir`), and `resolveReferencedArquivoRefs` reads produto
-   `fotos`/`videos`/`anexos`. **A new entity's files are NOT auto-reaped.** You must
-   either (a) extend `parseProductMediaDir` + the candidate query + `resolveReferenced`
-   to cover the new owner, and/or (b) add an eager trigger modeled on
-   `onProdutoMediaChanged` (diff the entity's ref array → mark). Skip this and you
+4. **🔴 Deletion — the trap.** The sweep recognises only registered ownership
+   models: owner paths parsed by `parseOwnedMediaDir`, and mensagem-global paths
+   parsed by `parseMensagemMediaDir` plus the centralized six-field inventory.
+   **A new root/entity is NOT auto-reaped.** Extend the right parser + reference
+   resolver, add an eager mark trigger when possible, and close the write/delete
+   race when refs are globally shared. Skip this and you
    create **silent orphans** that nothing ever cleans up. If you knowingly defer
    it, say so and open an issue — don't leave it implicit.
 
-The produto-*delete* cascade (`onDocumentDeleted('produtos/{id}')`, #136) and a
-generic `anexos` uploader are the known next steps in this space — start from the
-patterns above.
+Start from the owner-scoped or globally-shared pattern above; do not mix them.
 
 ## 10. Server-side reuse
 
@@ -268,18 +275,18 @@ patterns above.
 - **`getDb()`** (`apps/functions/src/lib/admin.ts`) → the **named `'default'`**
   database (`FIREBASE_DATABASE_ID ?? 'default'`) — Firestore Enterprise, never
   `(default)`.
-- **Reusable cores** (call instead of re-deriving): `resolveReferencedArquivoRefs(db, produtoIds)`
-  (field-masked `getAll`, O(distinct owners)), the sweep functions, the idempotent
+- **Reusable cores** (call instead of re-deriving): `resolveReferencedRefs`,
+  `resolveMensagemArquivoReferences`, `extractMensagemArquivoIds`, the sweep functions, the idempotent
   `processProductOriginal(bucket, db, name)` (shared by the trigger + reconcile),
   `markUploadFinalized`, `arquivoIdForObject`.
 
 ## 11. Pitfalls
 
 - **Firestore Enterprise**: the DB is named `'default'`; it **auto-creates no
-  indexes**. All three sweep queries are declared in `firestore.indexes.json` —
-  `arquivos(uploadState, criadoEm)`, `arquivos(criadoEm)`,
-  `arquivos(markedForDeletionAt)` — and must be deployed:
-  `firebase deploy --only firestore:indexes` (Lucas's job — shared infra).
+  indexes**. `firestore.indexes.json` declares the two arquivo sweep indexes plus
+  six single-field `COLLECTION_GROUP` indexes for the mensagem refcount OR query.
+  Deploy is a coordinated human operation; verify live with
+  `scripts/check-sweep-indexes.mjs` Query Explain before functions deployment.
 - **`.nullable().default(null)`, never bare `.optional()`** — Firebase JS SDK v12
   rejects `undefined` in `setDoc`/`addDoc`.
 - **Rules**: the `arquivos` rules block is **permission-only** over a
@@ -304,6 +311,9 @@ patterns above.
   emulator without a seam, though `fetchPage`/`resolveReferenced` stay overridable
   for cursor-mechanics unit tests. Grace envs are set to `0` in tests so
   freshly-written docs qualify.
+- Mensagem lifecycle tests cover all six ref fields, both OuterRef encodings,
+  sharing across conversations, mark-only deletion, last-ref cleanup, and both
+  sweep/message race orders. Query Explain cannot run in the emulator.
 - **Shared-emulator-bucket isolation**: the emulator bucket is shared across test
   files and there's no per-test teardown, so bucket-listing assertions are
   order-fragile — **delete any stray object you write** after your assertions
@@ -313,5 +323,5 @@ patterns above.
 
 - `apps/docs/src/content/docs/architecture/arquivo-lifecycle.md` — the flow + state-machine + coverage diagrams.
 - `apps/docs/src/content/docs/adr/0010-produto-deletion-lifecycle.md` — the design decisions.
-- `apps/functions/CLAUDE.md` — operational notes for the 5 functions + deploy gotchas.
+- `apps/functions/CLAUDE.md` — operational notes for the functions + deploy gotchas.
 - `schema-driven-crud` skill — for the surrounding form/`ObjectView` mechanics.

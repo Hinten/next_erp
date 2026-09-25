@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -55,23 +55,29 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   resurrected phantom). Writes never touch `produtos` → no self-retrigger. Plain admin
   writes (no pipeline) → fully emulator-testable. All three media kinds are product-scoped
   (`produtos/<id>/originals|videos|anexos`). Targets the named `default` database (gotcha #8).
+- **`onMensagemDeleted`** (`onDocumentDeleted('chat/{conversaId}/mensagem/{mensagemId}')`)
+  — extracts the six supported arquivo refs, de-duplicates both legacy ref encodings, and
+  stamps `markedForDeletionAt` only on governed `whatsapp/` / `chat/` media. It never
+  deletes directly because one arquivo may be shared across messages or conversations;
+  the scheduled sweep performs the global recheck. This also makes the conversa cascade
+  naturally mark every referenced attachment as it removes the mensagem subtree.
 - **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, **three**
   bounded passes (ADR 0010 Phase 2), all **oldest-first** and excluding the grace
   window **in the query**. **Marked sweep** (`sweepMarkedForDeletion`, runs first —
   cheapest): `arquivos where markedForDeletionAt<cutoff orderBy markedForDeletionAt asc`
   (single-field index `arquivos(markedForDeletionAt)`, short grace
   `ARQUIVO_MARKED_GRACE_HOURS` default 1h) — deletes what `onProdutoMediaChanged`
-  flagged, re-verifying via `resolveReferencedArquivoRefs` that the owner produto still
-  doesn't reference it (a missed unmark clears the mark instead). Plain query, no
-  pipeline → emulator-testable. **Phantom-doc sweep** (`sweepPhantomDocs`):
+  flagged, re-verifying owner refs with `resolveReferencedArquivoRefs` and mensagem refs
+  with an indexed collection-group OR query (a live ref clears the mark instead). Plain
+  Admin queries, no pipeline → emulator-testable. **Phantom-doc sweep** (`sweepPhantomDocs`):
   `arquivos where uploadState=='pending' AND criadoEm<cutoff orderBy criadoEm asc`
   (composite index `arquivos(uploadState, criadoEm)`) whose object never arrived →
   delete the doc (or self-heal to `'finalized'` if the object IS present).
   **Unreferenced sweep** (`sweepUnreferencedArquivos`, the **backstop** for what the
-  eager mark missed): product media (`produtos/<id>/originals|videos|anexos`) past
-  the grace window that **no produto references** → delete (then `onArquivoDeleted` frees
-  the object + cascades any derivatives) — a produto deleted entirely (until #136), a console
-  edit, or a dropped trigger delivery. **Round-robin paging (#234)**: candidates come
+  eager mark missed): owner media (`produtos|tabMedi`) and mensagem media
+  (`whatsapp/<contaId>` / `chat`) past the grace window with no live reference → delete
+  (then `onArquivoDeleted` frees the object + cascades any derivatives). **Round-robin
+  paging (#234)**: candidates come
   from `fetchArquivoPage`, a **classic** `orderBy(FieldPath.documentId())` query
   (Firestore's always-available native ordering, no declared index) paginated with
   `startAfter(lastKey)` — no pipeline, no server-side age/ownership filter. The
@@ -89,16 +95,19 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   batch (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
   O(distinct produtos), never O(all produtos). Both the page fetch and the owner
   lookup are **seams** (`fetchPage` / `resolveReferenced`) the emulator suite can
-  override, though neither needs a pipeline anymore — the default page fetch runs in
-  the emulator too. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
+  override, though neither needs a pipeline anymore. Mensagem candidates use up to six
+  collection-group field indexes with bounded concurrency; the final query + arquivo-doc
+  delete is repeated inside an Admin transaction. Inbound and outbound mensagem writers
+  read the same arquivo anchor in their own transaction, closing both delete/create race
+  orders. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
   microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
-  — the two remaining sweep indexes (`arquivos(uploadState, criadoEm)` +
-  `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
-  be deployed (`firebase deploy --only firestore:indexes`); verify usage live with
-  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`). The unreferenced
-  sweep's own scan needs no index (document-key ordering is native), so it is
-  deliberately NOT covered by that script.
+  — the two arquivo sweep indexes (`arquivos(uploadState, criadoEm)` +
+  `arquivos(markedForDeletionAt)`) and the six single-field `mensagem` collection-group
+  indexes are declared in `firestore.indexes.json` and must be deployed manually;
+  verify usage live with `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
+  The round-robin arquivo page scan itself needs no index (document-key ordering is
+  native); the diagnostic covers the mensagem refcount query that each candidate uses.
 
 - **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — the
   authoritative produto delete cascade (#226/#136/#199), core
@@ -456,7 +465,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the
-  orphan sweep imports pipeline builders from `@google-cloud/firestore/pipelines`),
+  balanço aggregate imports builders from `@google-cloud/firestore/pipelines`),
   and `sharp` are `external`; everything else (incl. `@delfrance/data`,
   `@delfrance/schemas`) is inlined.
 - The function **region is inlined at build time** (`build.mjs`, esbuild

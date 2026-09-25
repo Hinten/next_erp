@@ -73,33 +73,17 @@ import {
  * other three are left unbudgeted on purpose — a two-document subtree cannot
  * truncate, and `retry: true` there would only redeliver permanent failures.
  *
- * ## ⚠️ What this cascade does NOT reclaim: the Storage half (#980)
+ * ## How the Storage half is reclaimed
  *
- * It reclaims the Firestore subtree and nothing else. A `mensagem` carries six
- * outer refs into the **top-level** `arquivos` collection (`anexoStorage`, plus
- * `audio.audio`, `image.image`, `video.video`, `sticker.sticker`,
- * `genericDocument.genericDocument`). Those docs are not under the conversa, so
- * the walk never reaches them — and nothing else does either: WhatsApp media
- * lands at `whatsapp/<contaId>/<mediaId>`, while `parseOwnedMediaDir` knows only
- * the `produtos` and `tabMedi` roots, so `reconcileArquivoOrphans` returns
- * `null` on those paths and skips them by construction. This is the `arquivos`
- * skill's §9 step-4 trap, pre-dating this cascade: that media was never
- * auto-reaped.
- *
- * ⚠️ **Do NOT "fix" this by extending the cascade to delete the referenced
- * arquivos.** `arquivoDocId(mediaId)` is deterministic per Meta media id and the
- * cache-hit branch in `apps/whatsapp/lib/whatsapp/media.ts` deliberately reuses
- * ONE doc across messages — and across conversas. A per-message delete would
- * take a live attachment out from under another thread. Reclaiming them needs
- * refcounting (a `chat` collection-group query), which is a sweep feature, not a
- * cascade one — tracked in #1207.
- *
- * What this cascade DOES change is discoverability: the leak already existed,
- * but the `mensagem` docs at least still pointed at the blobs. After this, the
- * pointers are gone and the remainder is unreferenced from anywhere. That is a
- * deliberate, recorded remainder — not an oversight — and the reason it is
- * accepted is that the alternative (keep orphaning entire message histories to
- * preserve a breadcrumb no sweep reads) is strictly worse.
+ * A `mensagem` may carry six outer refs into the top-level `arquivos`
+ * collection. Those docs are not descendants of the conversa and may be shared
+ * across mensagens/conversas, so this cascade must not delete them directly.
+ * Instead, every leaf deletion fires `onMensagemDeleted`, which marks only
+ * governed `whatsapp/` / `chat/` media. `reconcileArquivoOrphans` performs the
+ * global collection-group refcount and deletes the arquivo doc only when no
+ * mensagem references it; `onArquivoDeleted` then frees Storage. The final
+ * refcount + delete is transactional, paired with arquivo-anchor reads in both
+ * inbound and outbound mensagem writers, so the cascade cannot race a new ref.
  *
  * ## Deliberately NOT here
  *

@@ -9,7 +9,7 @@ import { reconcileMediaMarks } from './mediaMarks';
  * removed/re-added: thin wrapper over {@link reconcileMediaMarks}. The complement
  * to the scheduled `sweepUnreferencedArquivos` — it captures the removal at edit
  * time (the event already carries before/after) instead of rediscovering it later
- * via the regex pipeline + owner lookup; that sweep stays as the backstop for
+ * via the paged candidate scan + owner lookup; that sweep stays as the backstop for
  * produto DELETES (until #136), manual console edits and missed trigger
  * deliveries.
  *

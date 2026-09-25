@@ -8,9 +8,9 @@
  *
  * Contract parity with the client uploader + the resize function
  * (`apps/functions/.../processOriginal.ts`):
- *  - content-addressed doc id → dedup: if the doc already exists the bytes are
- *    already in Storage, so we only `arrayUnion` the new `externalIds` (never
- *    clobber the shared array) and skip the re-upload;
+ *  - content-addressed doc id → dedup: a complete existing anchor skips the
+ *    upload and only `arrayUnion`s new `externalIds` (never clobbering the
+ *    shared array); an incomplete anchor replays the idempotent upload;
  *  - create-first: the anchor doc is written (`uploadState: 'pending'`, `url: null`)
  *    BEFORE the bytes, so a crash mid-upload leaves a phantom the orphan sweep
  *    reaps rather than an orphaned object;
