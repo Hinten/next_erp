@@ -23,16 +23,23 @@ import {
   ShopeeRefreshEmAndamentoError,
   ShopeeSemCredencialError,
 } from '../core/tokenStore';
+import { MOTIVOS_DE_PAUSA } from '../estoque/constantesEstoque';
 import {
   __resetCachesDeContaEstoqueForTests,
   avaliarContaParaEstoque,
 } from '../estoque/contaEstoque';
 import { FakeDb, asDb } from '../testing/fakeDb';
-import { MOTIVO_PRECO_SHOPEE } from './errosPreco';
+import {
+  CODIGO_GUARDA_PRECO,
+  MENSAGEM_POR_MOTIVO_PRECO,
+  MOTIVO_PRECO_SHOPEE,
+  ShopeeEnvioPrecoGuardError,
+} from './errosPreco';
 import {
   MOEDA_E_MULTIPLO_POR_REGIAO,
   avaliarContaParaPreco,
   ehContaInutilizavel,
+  exigirContaParaPreco,
   overrideDeSandboxAtivo,
   type ContaParaPreco,
   type ContextoContaPreco,
@@ -803,5 +810,334 @@ describe('T-R6 — a fonte não lê o ambiente (M28)', () => {
 
   it('a flag chega pela config: a fonte importa `shopeeConfig` de `../env`', () => {
     expect(FONTE).toMatch(/import \{[^}]*\bshopeeConfig\b[^}]*\} from '\.\.\/env';/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            exigirContaParaPreco — the ONE conta ladder (review 2, R-1)       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The ladder BOTH price routes run. Its arms are tested HERE, once, so the
+ * manual push and the job's start are covered by one set — including the two
+ * the start route's suite never reached (its verdict is a canned mock whose
+ * only refusal carries `regiao: 'SG'` and `erro: null`): a refusal WITHOUT a
+ * region, and a refusal WITH a logged class. Review 2 put the same mutant into
+ * both old copies' 422 arm and only the manual route's suite killed it.
+ */
+describe('exigirContaParaPreco — a ÚNICA escada de conta das duas rotas (R-1)', () => {
+  const TAG = '[teste] escada de conta';
+
+  interface Montagem {
+    readonly banco: FakeDb;
+    readonly cli: ClienteFake;
+    /** How many times the conta's `createShopClient` ran. */
+    readonly criados: () => number;
+  }
+
+  /** The context `loadShopeeContext` answers — a healthy BR conta by default. */
+  function montar(
+    contaOver: Record<string, unknown> = {},
+    opcoes: {
+      readonly loja?: () => ShopeeShopInfo;
+      readonly criar?: () => ShopeeClient;
+    } = {},
+  ): Montagem {
+    const banco = new FakeDb();
+    const cli = clienteFake(opcoes.loja);
+    let criados = 0;
+    h.loadCtx.mockResolvedValue({
+      integracaoId: INT,
+      conta: {
+        tipo: 9,
+        shop_id: SHOP,
+        nome: 'Loja teste',
+        tabelaNormalOuterRef: TABELA,
+        ...contaOver,
+      },
+      config: CONFIG_PRODUCAO,
+      createShopClient: () => {
+        criados += 1;
+        return (opcoes.criar ?? (() => cli.client))();
+      },
+    });
+    return { banco, cli, criados: () => criados };
+  }
+
+  function pausar(banco: FakeDb, pausadoAte: number, pausaMotivo: string): void {
+    banco.seed(`estoqueShopeeSync/${INT}`, { pausadoAte, pausaMotivo });
+  }
+
+  /** The guard the ladder threw — anything else (a resolve, another class) fails the case. */
+  async function recusa(p: Promise<unknown>): Promise<ShopeeEnvioPrecoGuardError> {
+    const err = await p.then(
+      () => new Error('esperava uma recusa da escada, veio aprovada'),
+      (e: unknown) => e,
+    );
+    if (err instanceof ShopeeEnvioPrecoGuardError) return err;
+    throw err;
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('aprovada ⇒ devolve o ctx carregado e o contexto do veredito; o veredito recebe shop_id, a tabela VERBATIM, o instante e a config do ctx', async () => {
+    const m = montar();
+    const banco = asDb(m.banco);
+    const avaliar = vi.fn(avaliarContaParaPreco);
+
+    const r = await exigirContaParaPreco(banco, INT, { nowMs: AGORA, tagLog: TAG, avaliar });
+
+    expect(h.loadCtx.mock.calls).toEqual([[banco, INT]]);
+    expect(r.ctx.conta.nome).toBe('Loja teste');
+    expect(r.contexto).toMatchObject({
+      integracaoId: INT,
+      regiao: 'BR',
+      moeda: 'BRL',
+      multiplo: 4,
+      tabelaNormalId: 'lp-1',
+    });
+    expect(avaliar).toHaveBeenCalledTimes(1);
+    const [, contaAvaliada, deps] = avaliar.mock.calls[0]!;
+    expect(contaAvaliada).toEqual({
+      integracaoId: INT,
+      shopId: SHOP,
+      tabelaNormalOuterRef: TABELA,
+    });
+    expect(deps.nowMs).toBe(AGORA);
+    expect(deps.config).toBe(CONFIG_PRODUCAO);
+    // The verdict's one cached read, and the ONE client the accepted context carries.
+    expect(lidas(m.cli)).toBe(1);
+    expect(m.criados()).toBe(1);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('sem `avaliar` o veredito é o avaliarContaParaPreco REAL (a loja SG em produção recusa com a região)', async () => {
+    const m = montar({}, { loja: () => lojaInfo({ region: 'SG' }) });
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.extra).toMatchObject({ motivo: 'regiao-nao-suportada', regiao: 'SG' });
+  });
+
+  it('a conta inexistente: o erro do carregador SOBE intacto — o 404 é do `shopeeErrorResponse` de cada rota', async () => {
+    const ausente = new ShopeeContaNotConfiguredError('Integração int-1 não encontrada.');
+    h.loadCtx.mockRejectedValue(ausente);
+
+    await expect(exigirContaParaPreco(db(), INT, { nowMs: AGORA, tagLog: TAG })).rejects.toBe(
+      ausente,
+    );
+  });
+
+  it.each([
+    ['só espaços', '  '],
+    ['vazia', ''],
+    ['null', null],
+    ['ausente', undefined],
+    ['um número', 7],
+  ])(
+    'PAR — tabela %s ⇒ 400 SHOPEE_CONTA_SEM_TABELA_NORMAL sem extra; a pausa nem é lida, zero cliente, zero veredito',
+    async (_nome, ref) => {
+      const m = montar({ tabelaNormalOuterRef: ref });
+      const avaliar = vi.fn(avaliarContaParaPreco);
+
+      const err = await recusa(
+        exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG, avaliar }),
+      );
+
+      expect(err.code).toBe(CODIGO_GUARDA_PRECO.contaSemTabelaNormal);
+      expect(err.status).toBe(400);
+      expect(err.message).toBe(MENSAGEM_POR_MOTIVO_PRECO['sem-tabela-normal']);
+      expect(Object.keys(err.extra)).toEqual([]);
+      expect(m.banco.caminhos).toEqual([]);
+      expect(avaliar).not.toHaveBeenCalled();
+      expect(m.criados()).toBe(0);
+    },
+  );
+
+  it('QUASE-IGUAL — uma tabela PREENCHIDA com espaços em volta passa do degrau: a pausa é lida e o veredito recebe a ref sem aparar', async () => {
+    const ref = ` ${TABELA} `;
+    const m = montar({ tabelaNormalOuterRef: ref });
+    const avaliar = vi.fn<typeof avaliarContaParaPreco>(() =>
+      Promise.resolve({
+        ok: false,
+        motivo: MOTIVO_PRECO_SHOPEE.regiaoNaoSuportada,
+        regiao: 'SG',
+        erro: null,
+      }),
+    );
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG, avaliar }),
+    );
+
+    expect(err.status).toBe(422);
+    expect(m.banco.caminhos).toContain(`estoqueShopeeSync/${INT}`);
+    expect(avaliar.mock.calls[0]![1].tabelaNormalOuterRef).toBe(ref);
+  });
+
+  it('a ORDEM: tabela em branco E conta pausada ⇒ o 400 da tabela (a tabela vem primeiro)', async () => {
+    const m = montar({ tabelaNormalOuterRef: null });
+    pausar(m.banco, AGORA + 600_000, MOTIVOS_DE_PAUSA.burst);
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.code).toBe(CODIGO_GUARDA_PRECO.contaSemTabelaNormal);
+  });
+
+  it.each([MOTIVOS_DE_PAUSA.burst, MOTIVOS_DE_PAUSA.cotaDiaria])(
+    'PAR — pausa de COTA `%s` ativa ⇒ 409 SHOPEE_CONTA_PAUSADA com EXATAMENTE {pausadoAte ISO}, sem veredito e sem cliente',
+    async (motivo) => {
+      const m = montar();
+      pausar(m.banco, AGORA + 600_000, motivo);
+      const avaliar = vi.fn(avaliarContaParaPreco);
+
+      const err = await recusa(
+        exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG, avaliar }),
+      );
+
+      expect(err.code).toBe(CODIGO_GUARDA_PRECO.contaPausada);
+      expect(err.status).toBe(409);
+      expect(err.message).toBe(MENSAGEM_POR_MOTIVO_PRECO['conta-pausada']);
+      expect(err.extra).toEqual({ pausadoAte: new Date(AGORA + 600_000).toISOString() });
+      expect(Object.keys(err.extra)).toEqual(['pausadoAte']);
+      expect(avaliar).not.toHaveBeenCalled();
+      expect(m.criados()).toBe(0);
+      expect(m.cli.ops).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['uma pausa de FÉRIAS igualmente ativa', AGORA + 600_000, MOTIVOS_DE_PAUSA.lojaEmFerias],
+    ['a pausa de cota que termina EXATAMENTE agora', AGORA, MOTIVOS_DE_PAUSA.burst],
+  ])('QUASE-IGUAL — %s não para o preço: o veredito roda e aprova', async (_nome, ate, motivo) => {
+    const m = montar();
+    pausar(m.banco, ate, motivo);
+
+    const r = await exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG });
+
+    expect(r.contexto.regiao).toBe('BR');
+  });
+
+  it('PAR — recusa COM região ⇒ 422 SHOPEE_PRECO_CONTA_RECUSADA, extra EXATAMENTE {motivo, mensagem, regiao}, e nenhum log', async () => {
+    const m = montar({}, { loja: () => lojaInfo({ is_cb: true }) });
+    const mensagem = MENSAGEM_POR_MOTIVO_PRECO['loja-cross-border'];
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.code).toBe(CODIGO_GUARDA_PRECO.contaRecusada);
+    expect(err.status).toBe(422);
+    expect(err.message).toBe(mensagem);
+    expect(err.extra).toEqual({ motivo: 'loja-cross-border', mensagem, regiao: 'BR' });
+    expect(Object.keys(err.extra).sort()).toEqual(['mensagem', 'motivo', 'regiao']);
+    expect(m.cli.ops).toEqual(['get_shop_info']);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ QUASE-IGUAL (R-1, o braço `regiao === null`) — recusa ANTES da loja (sem shop_id) ⇒ a chave `regiao` é OMITIDA, nunca null', async () => {
+    const m = montar({ shop_id: null });
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.status).toBe(422);
+    // `toEqual` would read `regiao: undefined` as absent — the KEYS are the claim.
+    expect(Object.keys(err.extra).sort()).toEqual(['mensagem', 'motivo']);
+    expect(err.extra['motivo']).toBe('sem-shop-id');
+    expect(err.extra['mensagem']).toBe(MENSAGEM_POR_MOTIVO_PRECO['sem-shop-id']);
+    expect(m.criados()).toBe(0);
+    expect(m.cli.ops).toEqual([]);
+  });
+
+  it('⚠️ (R-1, o braço `erro !== null`) — uma classe de CONTA ao construir o cliente ⇒ 422 conta-nao-configurada; classe e mensagem vão ao LOG sob a tag, nunca à recusa', async () => {
+    const segredo = 'Integração int-1 conectada por conta principal 424242';
+    const m = montar(
+      {},
+      {
+        criar: () => {
+          throw new ShopeeContaSemShopIdError(segredo);
+        },
+      },
+    );
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.status).toBe(422);
+    expect(Object.keys(err.extra).sort()).toEqual(['mensagem', 'motivo']);
+    expect(err.extra).toEqual({
+      motivo: 'conta-nao-configurada',
+      mensagem: MENSAGEM_POR_MOTIVO_PRECO['conta-nao-configurada'],
+    });
+    const recusaInteira = JSON.stringify({ message: err.message, extra: err.extra });
+    expect(recusaInteira).not.toContain('ShopeeContaSemShopIdError');
+    expect(recusaInteira).not.toContain('424242');
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(`${TAG}: conta recusada (conta-nao-configurada)`, {
+      integracaoId: INT,
+      erro: `ShopeeContaSemShopIdError: ${segredo}`,
+    });
+  });
+
+  it('o veredito que diz `sem-tabela-normal` (uma ref que não nomeia documento) é o 400 da tabela, SEM extra, nunca o 422', async () => {
+    const m = montar({ tabelaNormalOuterRef: '///' });
+
+    const err = await recusa(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    );
+
+    expect(err.code).toBe(CODIGO_GUARDA_PRECO.contaSemTabelaNormal);
+    expect(err.status).toBe(400);
+    expect(Object.keys(err.extra)).toEqual([]);
+    expect(m.cli.ops).toEqual([]);
+  });
+
+  it('QUASE-IGUAL — uma falha que NÃO é de conta (a concessão expirou na leitura da loja) SOBE intacta: nem 422, nem log', async () => {
+    const expirou = new ShopeeReauthRequiredError('expirou', {
+      code: 'error_auth',
+      kind: SHOPEE_ERROR_KIND.reauth,
+      httpStatus: 403,
+      path: '/api/v2/shop/get_shop_info',
+    });
+    const m = montar(
+      {},
+      {
+        loja: () => {
+          throw expirou;
+        },
+      },
+    );
+
+    await expect(
+      exigirContaParaPreco(asDb(m.banco), INT, { nowMs: AGORA, tagLog: TAG }),
+    ).rejects.toBe(expirou);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('a ordem no TEXTO da única cópia: conta → tabela → pausa → veredito', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./regiaoPreco.ts', import.meta.url)), 'utf8');
+    const corpo = fonte.slice(fonte.indexOf('export async function exigirContaParaPreco'));
+    const posicoes = [
+      'loadShopeeContext(db, integracaoId)',
+      'CODIGO_GUARDA_PRECO.contaSemTabelaNormal,',
+      'pausaDeCotaParaPreco(',
+      'await avaliar(',
+    ].map((trecho) => corpo.indexOf(trecho));
+
+    expect(posicoes.every((p) => p > 0)).toBe(true);
+    expect([...posicoes].sort((a, b) => a - b)).toEqual(posicoes);
   });
 });

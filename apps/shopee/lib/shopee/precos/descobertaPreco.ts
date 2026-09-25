@@ -5,8 +5,10 @@
  * list of anchors (`lerFamiliasDePrecoPorIds`, the manual push), and "what do
  * these produtos' `precos` say NOW" (`lerPrecosDosProdutos`, the SEND-time read
  * — reconcile C-d: the manual push prices each item immediately before sending
- * it, and the second PR's job reuses the same reader at drain time). The second
- * PR adds the account-wide paged reader over the SAME per-anchor join.
+ * it, and the second PR's job reuses the same reader at drain time), and "which
+ * families does this CONTA hold, one keyset page at a time"
+ * (`lerPaginaDeFamiliasDePreco`, the account-wide job) — over the SAME
+ * per-anchor join.
  *
  * The shapes it returns are `./planoPreco`'s ({@link FamiliaDePreco},
  * {@link LinkPrecoCru}, {@link FilhoDePreco}); nothing is re-declared here.
@@ -48,6 +50,13 @@
  * promoted pool, because this sits in front of a human on a request capped at
  * fifty produtos.
  *
+ * The paged reader replaces step 1 — and only step 1 — with **ONE classic
+ * query** over the conta's anchors (`paiId == null`, `integracoesComProduto
+ * array-contains <conta>`, ordered by document id, keyset-paged, masked to
+ * `precos`), then runs step 2 unchanged per anchor of the page. Its cost is
+ * 1 query + per anchor (1 + 1 + #children) small reads; see
+ * {@link lerPaginaDeFamiliasDePreco} for the index it rides.
+ *
  * Step 1 IS {@link lerPrecosDosProdutos} — the same masked key read the push
  * repeats per item at send time, so the anchor's plan-time `precos` and an
  * item's send-time `precos` are read through one function, one mask and one
@@ -62,13 +71,14 @@
  * green, and decides wrong. The lists are declared ONCE and both the query
  * mask and the projection copy iterate them, so the two cannot disagree.
  */
-import type { DocumentData, Firestore } from 'firebase-admin/firestore';
+import { type DocumentData, FieldPath, type Firestore } from 'firebase-admin/firestore';
 
 import {
   produtoCollection,
   produtoShopeeLinkCollection,
   variacaoShopeeLinkCollection,
 } from '@delfrance/data/admin/collections';
+import { ShopeeConfigError } from '@delfrance/integrations-shopee';
 
 import { executarEmPool } from '../core/pool';
 import type { VarLinkShopeeCru } from '../core/vinculosShopee';
@@ -114,8 +124,9 @@ const CAMPOS_DO_PRODUTO = ['precos'] as const;
 
 /**
  * How many anchors are joined at once. A bound of this module's own, not an
- * operator knob: each join is 2 + #children small reads, and the request
- * that drives it is already capped at fifty produtos.
+ * operator knob: each join is 2 + #children small reads, and both callers are
+ * already capped at fifty anchors — the manual request by its body limit, the
+ * job by its page limit.
  */
 const LARGURA_DA_JUNCAO = 4;
 
@@ -143,11 +154,12 @@ function porId(a: string, b: string): number {
 
 /**
  * **The ONE per-anchor join** — the only definition the by-ids reader and the
- * second PR's paged reader use, so the family a human pushes and the family
- * the job sends are read identically (step 12's "one join, two readers").
+ * paged reader use, so the family a human pushes and the family the job sends
+ * are read identically (step 12's "one join, two readers").
  *
  * `precosDoAnchor` arrives from the caller's own anchor read, which already
- * paid for it.
+ * paid for it — the batch key read on one path, the page query on the other,
+ * both masked to the same {@link CAMPOS_DO_PRODUTO}.
  */
 async function lerFamiliaDePreco(
   db: Firestore,
@@ -281,4 +293,100 @@ export async function lerFamiliasDePrecoPorIds(
     if (familia !== undefined) familias.set(familia.anchorId, familia);
   }
   return familias;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               THE PAGED READER                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ONE keyset page of a conta's families — the account-wide job (#1521, the
+ * second PR; reconcile C-r). The reader never drains: the job plans one page
+ * per dispatch, stores `nextAfterAnchorId` as its cursor and hands it back as
+ * `afterAnchorId` on the next one.
+ *
+ * - **The anchor terms** are `paiId == null` plus `integracoesComProduto
+ *   array-contains <integracaoId>` — the Mercado Livre price page's terms, and
+ *   step 12's stock discovery's. That array is the produto-side denorm the
+ *   Shopee link trigger keeps (step 11): the conta is in it while the produto
+ *   holds a listing on it that is not `removido`, so an UNLISTED listing is
+ *   still discovered (the planner refuses only a deleted one) and a removed one
+ *   is not. The planner compares the conta per link anyway; this term only
+ *   decides which ANCHORS are worth joining.
+ * - **The order is the document id and the cursor is its VALUE**
+ *   (`startAfter(<anchor id>)`, never a snapshot): ids are unique, so the
+ *   keyset needs no tuple, and an anchor that left the conta between two
+ *   dispatches does not break the walk — the next page starts after its id
+ *   whether or not the query would still return it.
+ * - **The index** it rides already exists:
+ *   `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`, the entry
+ *   Mercado Livre's price page names. No new produtos index (C-r). ⚠️ The
+ *   composite declares `integracoesComProduto` with an `order`, not an
+ *   `arrayConfig`, and the staging measurement of 2026-09-23 found step 12's
+ *   identical anchor terms planned as a `paiId` range with the conta term a
+ *   RESIDUAL filter — the cost question #1638 tracks for both channels. This
+ *   page inherits that residual, unchanged; it is a measurement, not a change
+ *   this module can make.
+ * - **Masked to `precos`**, the same {@link CAMPOS_DO_PRODUTO} the by-ids
+ *   reader's key read uses, so the page's `precos` IS the family's — no second
+ *   read of the anchors.
+ * - Per anchor, the ONE shared join ({@link lerFamiliaDePreco}), bounded by the
+ *   same pool width. `familias` comes back in the page's KEY order whatever
+ *   order the joins finish in.
+ * - `nextAfterAnchorId` is the page's last anchor id when the page came back
+ *   FULL, `null` otherwise. A conta whose anchor count is an exact multiple of
+ *   `pageLimit` therefore pays ONE extra, empty page before the `null` — the
+ *   price of never needing a count.
+ * - ⚠️ `pageLimit` must be a positive integer, or this throws
+ *   `ShopeeConfigError` before any read: a limit of `0` would answer an empty
+ *   page with a `null` cursor, and the job would read that as a conta with
+ *   nothing to send — a COMPLETED run that sent nothing.
+ * - A read failure propagates: nothing is caught here.
+ */
+export async function lerPaginaDeFamiliasDePreco(
+  db: Firestore,
+  args: {
+    readonly integracaoId: string;
+    readonly afterAnchorId: string | null;
+    readonly pageLimit: number;
+  },
+): Promise<{
+  readonly familias: readonly FamiliaDePreco[];
+  readonly nextAfterAnchorId: string | null;
+}> {
+  const { integracaoId, afterAnchorId, pageLimit } = args;
+  if (!Number.isSafeInteger(pageLimit) || pageLimit < 1) {
+    throw new ShopeeConfigError(
+      `lerPaginaDeFamiliasDePreco: pageLimit deve ser um inteiro positivo (recebido: ${JSON.stringify(pageLimit)}).`,
+    );
+  }
+
+  let consulta = produtoCollection
+    .ref(db, {})
+    .where('paiId', '==', null)
+    .where('integracoesComProduto', 'array-contains', integracaoId)
+    .orderBy(FieldPath.documentId())
+    .select(...CAMPOS_DO_PRODUTO)
+    .limit(pageLimit);
+  if (afterAnchorId !== null) consulta = consulta.startAfter(afterAnchorId);
+  const pagina = await consulta.get();
+
+  const ancoras = pagina.docs;
+  const lidas: (FamiliaDePreco | undefined)[] = new Array<FamiliaDePreco | undefined>(
+    ancoras.length,
+  );
+  await executarEmPool(ancoras, LARGURA_DA_JUNCAO, async (ancora, indice) => {
+    lidas[indice] = await lerFamiliaDePreco(
+      db,
+      ancora.id,
+      projetar(ancora.data(), CAMPOS_DO_PRODUTO).precos,
+    );
+  });
+
+  const familias = lidas.filter((familia): familia is FamiliaDePreco => familia !== undefined);
+  const cheia = ancoras.length === pageLimit;
+  return {
+    familias,
+    nextAfterAnchorId: cheia ? (ancoras[ancoras.length - 1]?.id ?? null) : null,
+  };
 }

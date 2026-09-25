@@ -204,6 +204,10 @@ a page of the 3-day queue irreversibly.
   per-listing refusal is DATA), 409 `SHOPEE_CONTA_PAUSADA` before any provider
   call, 400 `SHOPEE_CONTA_SEM_DEPOSITO`; oversize is refused on the DEDUPED
   count and never truncated.
+- `functions/src/processPriceSync.ts` — `processShopeePriceSync`, the FOURTH
+  `onTaskDispatched` (after the push, the mass import and step 12's
+  `sendStock.ts`): step 13's `atualizar-precos` job, one dispatch at a time,
+  300 s, 3 attempts, re-enqueued by the job itself.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -387,10 +391,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **57** suites in this app drive, and since step 8 it has a suite of its OWN.
-  ⚠️ Re-derive the number, never increment it:
+  **72** suites in this app name (70 drive it), and since step 8 it has a
+  suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 today). Step 9 extended the double ADDITIVELY: an
+  step 8, 34 after step 9, 57 after step 12, 72 today — the two
+  `*.tasks.test.ts` suites it counts name the double in a docblock only).
+  Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
   per snapshot plus the `update(patch, { lastUpdateTime })` PRECONDITION that
@@ -1362,6 +1368,28 @@ The first SENDER of a quantity. Reasoning: `estoque/README.md`.
 - Shopee restores stock on a cancellation (announcement 1445), so the monthly
   reconciliação is an obligation, not a backstop.
 
+## Price sync (`lib/shopee/precos/`, step 13)
+
+The first SENDER of a price. Reasoning: `precos/README.md`.
+
+- No clock, no `next/server`, no µs (`deps.nowMs` / `deps.agora`); ONE
+  `runTransaction`, the job's class-B finalize.
+- The unit is the WHOLE item: read, decided and ratio-checked together
+  (BR 4×, SG 5×, over sent ∪ unsent-current models); the body is the diff.
+- `tabelaNormal` via `precoDaTabela`, `roundReais`'d, read at SEND (push) or
+  DRAIN (job) time, never at plan; compared to step 9's `precoDePrateleiraDe`.
+- BR only, cross-border (`is_cb`) refused; a rowed non-`BR` region only under
+  `SHOPEE_SANDBOX === '1'` on the RESOLVED sandbox host (rule 6's exception).
+- Promotions: send and classify, never pre-skip; a lock skips with NO link
+  stamp. `error_update_price_fail` is a stamped `preco-recusado`, never a
+  retry (probe B-3).
+- Manual only (`enviar-precos`; the `atualizar-precos` job, TTL 180 days,
+  report shards 187). Push 22 stays `ack`: Seller Centre edits fire it too.
+- ONE conta ladder for both routes, `exigirContaParaPreco`. In the job a
+  cancel lets only the listing in flight finish; the report counters are
+  tier-0 `increment`/`maximum`, the plan checkpoint tier-1 `lastUpdateTime`;
+  a stamped `erro` never carries Shopee's text.
+
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
@@ -1465,12 +1493,13 @@ read by nothing.
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 12 that job runs
-**four suite FILES and seven tests**
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 13 that job runs
+**five suite FILES and ten tests**
 (`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
 `lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
 `lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
-`lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1) — still one job, still
+`lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1,
+`lib/shopee/precos/atualizarPrecos.tasks.test.ts` ×3) — still one job, still
 one check name, no new gate-manifest row. The lane's header carries the same
 pair of numbers.
 
@@ -1480,9 +1509,13 @@ step 11 a **code 16**, naming a shop that maps to no integração (→ `deferred
 hop: enqueue → the tasks emulator → the real `processShopeeMassImport` → a
 seeded job stamped `failed`. Step 12's is a THIRD hop: enqueue → the tasks
 emulator → the real `sendShopeeStock` → a seeded LINK document stamped
-`erp:task-excede-limite`, from a 51-model task the chunker cuts. All six are
-chosen for the same reason — the only outcomes that write a document with NO
-Shopee call: the mass-import one seeds an
+`erp:task-excede-limite`, from a 51-model task the chunker cuts. Step 13's is
+a FOURTH: the real `processShopeePriceSync` takes a job whose anchors all skip
+at PLAN time to `completed` (the drain's lazy client is never built), answers
+`noop` once cancelled and fails a wrong-`tipo` conta. All nine are
+chosen for the same reason — each is decided with NO Shopee call; eight write
+a document, and the cancelled job's dispatch writes NOTHING (a sentinel job
+behind it proves it ran): the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
 reached the network would show a 30 s backoff instead); the stock one refuses at
@@ -1520,8 +1553,9 @@ importer's graph reaches further than any step before it:
 and `packages/data/src/admin/hash.ts` (the why of each is a comment beside it
 in the lane). **Step 12 grew it by exactly two** —
 `packages/schemas/src/estoqueShopeeSync.ts` (the sync state doc) and
-`packages/data/src/admin/estoque/**` (the promoted stock core) — for a closure
-of **44** entries today.
+`packages/data/src/admin/estoque/**` (the promoted stock core). **Step 13
+grew it by exactly four** — the job schema, the two Mercado Livre schemas it
+reuses and `shared/ttl.ts` — for a closure of **48** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 

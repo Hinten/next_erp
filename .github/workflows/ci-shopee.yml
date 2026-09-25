@@ -12,11 +12,12 @@ name: CI — Shopee
 # their own gate. Step 22 (#1530) may move the offline job in here when it adds
 # the Firestore-only emulator job; until then the smaller blast radius wins.
 #
-# ⚠️ ONE job, FOUR suite files (7 tests) since step 12: the receiver round trip
+# ⚠️ ONE job, FIVE suite files (10 tests) since step 13: the receiver round trip
 # (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
 # (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
-# (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1) and the stock one
-# (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1). Adding a file with
+# (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1), the stock one
+# (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1) and the price-job one
+# (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3). Adding a file with
 # the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
 # name, no new row in the gate manifest.
 #
@@ -48,10 +49,21 @@ name: CI — Shopee
 #     → the payload refused ABOVE the Shopee client
 #     → the link stamped `estoqueRecusaCodigo: 'erp:task-excede-limite'`
 #
-# ⚠️ That second path is NOT a push delivery, and neither is the third. The
-# wrong-tipo conta, the unmapped shop and the over-sized task are all chosen for
-# the same reason: the refusal PRECEDES any client, so the dispatch writes a
-# document having made zero Shopee calls — by call order, not by a mock.
+# and, since step 13 (#1521), the FOURTH queue end to end:
+#
+#   a `running` enviosPrecoShopee job whose four anchors all skip at PLAN time
+#     → createShopeePriceSyncScheduler()    the real region-qualified queue name
+#     → Cloud Tasks emulator → Functions emulator
+#     → processShopeePriceSync              the real deployed onTaskDispatched
+#     → the classic keyset discovery across TWO pages + the batch checkpoint
+#     → the job doc `completed` through the class-B finalize transaction
+#   plus a cancelled job answering `noop` and a wrong-tipo conta `failed`.
+#
+# ⚠️ That second path is NOT a push delivery, and neither are the third and the
+# fourth. The wrong-tipo conta, the unmapped shop, the over-sized task and the
+# plan-time skips are all chosen for the same reason: the refusal PRECEDES any
+# client, so the dispatch writes a document having made zero Shopee calls — by
+# call order, not by a mock.
 #
 # OFFLINE BY CONSTRUCTION — no Shopee credentials, ever. Shopee DOES have a
 # sandbox, so the danger here is not "there is nowhere safe to call": it is that
@@ -78,11 +90,13 @@ name: CI — Shopee
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts, and
-#     the FIVE Shopee composites deploy in the migration window (#1532):
+#     the SEVEN Shopee composites deploy in the migration window (#1532):
 #     notificacoesShopee (status, processedAt); integracao (tipo, shop_id,
 #     ativo); prodshopee (item_id, contaProdutoShopeeOuterRef) collection-group;
-#     variashopee (model_id, contaVariacaoShopeeOuterRef) collection-group; and
-#     importacoesShopee (integracaoId, status), step 9's.
+#     variashopee (model_id, contaVariacaoShopeeOuterRef) collection-group;
+#     importacoesShopee (integracaoId, status), step 9's; and step 13's two
+#     enviosPrecoShopee ones, (integracaoId, status) for the one-active guard
+#     and (integracaoId, startedAt DESC) for the history route.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
 #     emulator — dispatch is pure FIFO (firebase-tools#8254, open). ⚠️ This
 #     channel no longer "sets no delay": the notification scheduler still sets
@@ -92,9 +106,14 @@ name: CI — Shopee
 #     dispatches immediately, so a test asserting the pause would pass for the
 #     wrong reason. What the mass-import round trip proves is the FIRST-ATTEMPT
 #     failed stamp, never the pause; the pause is pinned offline in
-#     apps/shopee/lib/shopee/produtos/importacaoMassa.test.ts. `retryConfig` and
-#     `rateLimits` are asserted off `__endpoint` in processNotification.test.ts
-#     and processMassImport.test.ts.
+#     apps/shopee/lib/shopee/produtos/importacaoMassa.test.ts. Step 13's price
+#     scheduler sets one too — the burst pause (retryAfterSeconds ??
+#     ratePauseMin() × 60) and the daily-quota park (`retomarEm`) — and its
+#     round trip exercises neither, for the same reason; both are pinned offline
+#     in apps/shopee/lib/shopee/precos/atualizarPrecos.test.ts. `retryConfig`
+#     and `rateLimits` are asserted off `__endpoint` in
+#     processNotification.test.ts, processMassImport.test.ts and
+#     processPriceSync.test.ts.
 #   - The push HMAC against Shopee's own signer. `guide 18`'s vectors are pinned
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
@@ -192,6 +211,19 @@ on:
       # to either breaks this lane without touching apps/shopee/** at all.
       - 'packages/schemas/src/estoqueShopeeSync.ts'
       - 'packages/data/src/admin/estoque/**'
+      # Step 13 (#1521, the account-wide price job) writes one document and its
+      # report shards through three schemas NO entry above covers — its own, and
+      # the two it REUSES from Mercado Livre under their ML names:
+      # `envioPrecoMercadoLivre.ts` for the skip and failure sample rows, and
+      # `relatorioEnvioPrecoMercadoLivre.ts` for the shared report shard. Plus
+      # the TTL module: every job doc and every shard is stamped `expiraEm`
+      # through its `expiraEmApos` + `RETENCAO_ENVIO_PRECO_SHOPEE_DIAS`, and the
+      # job schema and the shared report-shard schema validate that stamp with
+      # its `ttlExpiry()` (the reused skip/failure rows carry no stamp).
+      - 'packages/schemas/src/envioPrecoShopee.ts'
+      - 'packages/schemas/src/envioPrecoMercadoLivre.ts'
+      - 'packages/schemas/src/relatorioEnvioPrecoMercadoLivre.ts'
+      - 'packages/schemas/src/shared/ttl.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'
@@ -332,7 +364,7 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # THIRTEEN of the codebase's fourteen triggers declare both of these as
+      # FOURTEEN of the codebase's fifteen triggers declare both of these as
       # `secrets:` — the exception is the one Firestore trigger, which never
       # calls Shopee — and demo-erp has no Secret Manager. Invented values are
       # safe AND sufficient: every exercised path refuses before any Shopee call,
@@ -370,6 +402,12 @@ jobs:
       # is a task carrying more models than `update_stock` accepts, refused
       # ABOVE the client — same call-order argument as the other two suites.
       SHOPEE_STOCK_SYNC_ENABLED: '1'
+      # Step 13's price job pages two anchors per dispatch here, so its round trip
+      # (`precos/atualizarPrecos.tasks.test.ts`, case 1) really crosses a page
+      # boundary and a self re-enqueue with four anchors. The suite throws a
+      # named precondition error when this is not '2'. A QUOTED string, like the
+      # valve above; it writes to no marketplace (every anchor is a plan-time skip).
+      SHOPEE_PRICE_PAGE_LIMIT: '2'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6

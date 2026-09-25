@@ -34,6 +34,11 @@
  * regiao?}` (its `sem-tabela-normal` rung is the 400 of rung 11) → 14. the run
  * ⇒ 200, built BY NAME at every level.
  *
+ * Rungs 10–13 are ONE call, `exigirContaParaPreco` (`precos/regiaoPreco.ts`) —
+ * the conta ladder the job's start (`atualizar-precos`) runs too. It lives in
+ * one place so the two buttons cannot drift apart on the same conta; this
+ * route keeps only its body rungs, its catch and the run.
+ *
  * ⚠️ **Rungs 11–12 cost ZERO provider calls and build NO client.** The pause is
  * the stock sync's, READ and never written, and only its two QUOTA motives stop
  * a price push (a holiday stock pause does not). The verdict (rung 13) is where
@@ -66,20 +71,10 @@ import {
   naoDocId,
 } from '@/lib/shopee/anuncios/corpoPublicacao';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
-import { loadShopeeContext } from '@/lib/shopee/core/shopee';
-import { lerEstadoEstoque } from '@/lib/shopee/estoque/estadoEstoque';
 import { SHOPEE_ENVIO_PRECO_MAX_PRODUTOS } from '@/lib/shopee/precos/constantesPreco';
-import {
-  enviarPrecoManualShopee,
-  pausaDeCotaParaPreco,
-} from '@/lib/shopee/precos/enviarPrecoManual';
-import {
-  CODIGO_GUARDA_PRECO,
-  MOTIVO_PRECO_SHOPEE,
-  ShopeeEnvioPrecoGuardError,
-  mensagemDoMotivoDePreco,
-} from '@/lib/shopee/precos/errosPreco';
-import { avaliarContaParaPreco } from '@/lib/shopee/precos/regiaoPreco';
+import { enviarPrecoManualShopee } from '@/lib/shopee/precos/enviarPrecoManual';
+import { ShopeeEnvioPrecoGuardError } from '@/lib/shopee/precos/errosPreco';
+import { avaliarContaParaPreco, exigirContaParaPreco } from '@/lib/shopee/precos/regiaoPreco';
 import { MSG_BODY_INVALIDO, lerJsonDoCorpo } from '@/lib/shopee/produtos/corpoImportacao';
 
 export const dynamic = 'force-dynamic';
@@ -161,58 +156,12 @@ export async function POST(req: Request): Promise<NextResponse> {
   const db = getAdminFirestore();
 
   try {
-    const ctx = await loadShopeeContext(db, integracaoId);
-
-    const tabelaRef = ctx.conta.tabelaNormalOuterRef;
-    if (typeof tabelaRef !== 'string' || tabelaRef.trim() === '') {
-      throw new ShopeeEnvioPrecoGuardError(
-        CODIGO_GUARDA_PRECO.contaSemTabelaNormal,
-        mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.semTabelaNormal),
-      );
-    }
-
-    const pausadoAte = pausaDeCotaParaPreco(await lerEstadoEstoque(db, integracaoId), nowMs);
-    if (pausadoAte !== null) {
-      throw new ShopeeEnvioPrecoGuardError(
-        CODIGO_GUARDA_PRECO.contaPausada,
-        mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.contaPausada),
-        { pausadoAte: new Date(pausadoAte).toISOString() },
-      );
-    }
-
-    const veredito = await avaliarContaParaPreco(
-      db,
-      {
-        integracaoId,
-        shopId: ctx.conta.shop_id ?? null,
-        tabelaNormalOuterRef: tabelaRef,
-      },
-      {
-        nowMs,
-        // The context already loaded is the client's source — built lazily by
-        // the verdict, only when the shop read or the accepted context needs it.
-        clientFor: () => Promise.resolve().then(() => ctx.createShopClient()),
-        config: ctx.config,
-      },
-    );
-    if (!veredito.ok) {
-      const mensagem = mensagemDoMotivoDePreco(veredito.motivo);
-      if (veredito.erro !== null) {
-        // The class and message are for the log — never for the body.
-        console.warn(`${TAG_LOG}: conta recusada (${veredito.motivo})`, {
-          integracaoId,
-          erro: veredito.erro,
-        });
-      }
-      if (veredito.motivo === MOTIVO_PRECO_SHOPEE.semTabelaNormal) {
-        throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaSemTabelaNormal, mensagem);
-      }
-      throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaRecusada, mensagem, {
-        motivo: veredito.motivo,
-        mensagem,
-        ...(veredito.regiao === null ? {} : { regiao: veredito.regiao }),
-      });
-    }
+    // Rungs 10–13: the ONE conta ladder, shared with `atualizar-precos`.
+    const { ctx, contexto } = await exigirContaParaPreco(db, integracaoId, {
+      nowMs,
+      tagLog: TAG_LOG,
+      avaliar: avaliarContaParaPreco,
+    });
 
     const resposta = await enviarPrecoManualShopee(
       db,
@@ -221,7 +170,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         nowMs,
         agora: () => Date.now(),
         esperar: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-        contexto: veredito.contexto,
+        contexto,
         contaNome: typeof ctx.conta.nome === 'string' ? ctx.conta.nome : null,
       },
     );

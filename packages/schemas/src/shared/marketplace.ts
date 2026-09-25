@@ -317,7 +317,35 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
       // is why every reader folds the module prefix on BOTH sides.
       multiDeposito: 'sim',
     },
-    enviarPreco: 'sim', // update_price, one item ≤50 models, 2 decimals in BR, LOCKED during a promotion
+    // Measured live on the SG SANDBOX shop, 2026-09-24, through the shipped step-13
+    // `updatePrice` plus raw signed calls, with Lucas’s explicit go and a
+    // `delete_item` cleanup of both throwaway UNLIST items. Same format as the
+    // stock lines above: each names its probe, and NAO MEDIDO says what is owed.
+    //   region / is_cb       — "SG" / false; the sandbox flag and the RESOLVED
+    //     apiHost agree, which is what the region gate's one override keys on (P0)
+    //   price_limit          — null: the sandbox category declares no band    (P1)
+    //   original_price       — no zero-fill on a fresh item. ⚠️ has_promotion
+    //     read TRUE on an item with no promotion at all: never a gate.        (P2)
+    //   model_id sem modelo  — 0 and an omitted key both land, but the success
+    //     entry carries NO model_id key at all (the schema reads it as null) (P4/P6)
+    //   update_time moveu    — nao: it confirms no price write               (P5)
+    //   terceira decimal     — arredondada half-up; the validator never sends one (P7)
+    //   price_list PARCIAL   — the unsent sibling keeps its price, so the body
+    //     carries only the models whose price changes                        (P8)
+    //   um modelo invalido   — HTTP 200 with `error: ''` and BOTH lists       (P9)
+    //   error + listas       — COEXIST (a bogus model on a no-model item), so
+    //     updatePrice carries payloadNoErro                              (P4c-bogus)
+    //   error_update_price_fail — Shopee's ONE answer, never transient, to a ratio
+    //     breach (against an UNSENT sibling too: 4.5× aceito, 5.5× recusado on SG),
+    //     a deleted item, a has-model item without a model and all-bogus models;
+    //     `error_edit_item_price_for_item_has_model` never fired (P10/P11/P11b/P12/P15)
+    //   promocoes, BRL, o 4× do BR, price_limit do BR, push 22 — NAO MEDIDO: an SG
+    //     sandbox answer is evidence about the API, never about BR (no Discount
+    //     module, no BR shop). MODEL_UNAVAILABLE — NAO MEDIDO (P14 not run).
+    // update_price: one item, ≤ 50 models, 2 decimals. Locked by MOST promotion types
+    // from SCHEDULED on (faq 140) — not wholesale, selling price, add-on main, PwP,
+    // the gift. `implementado` stays `false` until step 22.
+    enviarPreco: 'sim',
     importarPedido: 'sim',
     // No payment push, and no gateway-shaped payment resource — but a BR
     // per-order one DOES exist: get_order_detail.payment_info[] (per NT
