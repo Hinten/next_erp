@@ -42,6 +42,7 @@ import {
   AMBIENTE_NFE,
   CRT,
   CSOSN,
+  CST_PIS_COFINS,
   ESTADO_NFE,
   FORMA_PAGAMENTO,
   MOD_BC,
@@ -145,6 +146,11 @@ const CSOSN_900_PARCIAL = {
 
 /** The default PED-1 with its one item's `configuracaoICMS` replaced. */
 function pedidoComICMS(configuracaoICMS: Record<string, unknown>): Record<string, unknown> {
+  return pedidoComImposto({ ...impostoCsosn102(), configuracaoICMS });
+}
+
+/** The default PED-1 with its one item's stamped `imposto` replaced. */
+function pedidoComImposto(imposto: Record<string, unknown>): Record<string, unknown> {
   return {
     ehSaida: true,
     estado: 'pago',
@@ -156,7 +162,7 @@ function pedidoComICMS(configuracaoICMS: Record<string, unknown>): Record<string
           precoDeVenda: 1500,
           quantidade: 1,
           descontoUnitario: 0,
-          imposto: { ...impostoCsosn102(), configuracaoICMS },
+          imposto,
         },
       ],
     },
@@ -1309,6 +1315,67 @@ describe('emitirPedido — guards', () => {
     const impostoXml = vi.mocked(generateNFe).mock.calls[0]![0].itens[0]!.impostoXml;
     expect(impostoXml).toContain('<ICMSSN900><orig>0</orig><CSOSN>900</CSOSN><modBC>3</modBC>');
     expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
+  });
+
+  it('throws NFeOrchestratorError before any write when PIS CST 49 carries both pPIS and vAliqProd — no número consumed (#509)', async () => {
+    // PISOutr is an XSD choice — `(vBC + pPIS)` or `(qBCProd + vAliqProd)` —
+    // and impostoSchema cannot see that, so the resolver keeps the stamp; only
+    // the engine refuses it, inside the allocation transaction, where
+    // buildGenItems runs BEFORE the first tx.set.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+      pedido: pedidoComImposto({
+        ...impostoCsosn102(),
+        configuracaoPIS: {
+          CST: CST_PIS_COFINS.outrasOperacoesSaida,
+          pPIS: 0.65,
+          vAliqProd: 0.1,
+        },
+      }),
+    });
+
+    const error = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NFeOrchestratorError);
+    const message = (error as NFeOrchestratorError).message;
+    expect(message).toMatch(/^pedido 'PED-1' item 0 \(produto 'P-1'\): PIS CST=49 \(PISOutr\)/);
+    expect(message).toMatch(/not both/);
+
+    // Nothing written: no nfev4 anchor/placeholder, no counter advance.
+    expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+    expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+    expect(docs['filiais/F-1/nfeconfig/default']).toMatchObject({
+      numeracao_atual: 41,
+      idLote: 6,
+    });
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+  });
+
+  it('lets a single-rate PISOutr through — one número, ICMSTot vPIS = the item vPIS (#509)', async () => {
+    // Near-miss of the case above: the same CST 49 with pPIS alone builds, and
+    // the total carries the item value (cStat 602), not a hardcoded 0.00.
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+      pedido: pedidoComImposto({
+        ...impostoCsosn102(),
+        configuracaoPIS: { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65 },
+      }),
+    });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aguardandoResposta);
+    expect(docs['filiais/F-1/nfeconfig/default']?.numeracao_atual).toBe(42); // 41 + 1
+    const input = vi.mocked(generateNFe).mock.calls[0]![0];
+    expect(input.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>1500.00</vBC><pPIS>0.6500</pPIS><vPIS>9.75</vPIS></PISOutr>',
+    );
+    expect(input.totalXml).toContain('<vPIS>9.75</vPIS><vCOFINS>0.00</vCOFINS>');
   });
 
   it('throws NFeBlockedError when pedido.ehSaida contradicts operacao.tipo (#398)', async () => {

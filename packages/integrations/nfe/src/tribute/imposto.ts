@@ -14,6 +14,9 @@
  *   - missing required sub-config for the active CSOSN
  *   - incomplete XSD sub-group (CSOSN 201/202/203/500/900)
  *   - unknown CSOSN value
+ *   - a PIS/COFINS config the XSD cannot carry: CST 01/02 without its rate,
+ *     CST 03 without `vAliqProd`, a per-unit rate without the item `qTrib`,
+ *     or a CST 49–99 config with BOTH a percent and a per-unit rate
  *   - an incomplete/invalid `configuracaoIBSCBS` while `emitRtc` is on
  *     (thrown by `rtc.ts`)
  */
@@ -26,6 +29,8 @@ import {
   type ConfiguracaoICMS,
   type ConfiguracaoIPI,
   type ConfiguracaoISSQN,
+  type CstPisCofins,
+  type Imposto,
   type Origem,
   type TributeItem,
   CRT,
@@ -40,7 +45,12 @@ import type {
   TNFe_infNFe_det_imposto_ICMS,
   TNFe_infNFe_det_imposto_ISSQN,
   TNFe_infNFe_det_imposto_COFINS,
+  TNFe_infNFe_det_imposto_COFINS_COFINSOutr,
   TNFe_infNFe_det_imposto_PIS,
+  TNFe_infNFe_det_imposto_PIS_PISAliq,
+  TNFe_infNFe_det_imposto_PIS_PISNT,
+  TNFe_infNFe_det_imposto_PIS_PISOutr,
+  TNFe_infNFe_det_imposto_PIS_PISQtde,
 } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
 import { NFeTributeError } from './errors';
@@ -466,64 +476,144 @@ function buildISSQN(cfg: ConfiguracaoISSQN): TNFe_infNFe_det_imposto_ISSQN {
 // PIS / COFINS dispatchers
 // ---------------------------------------------------------------------------
 
-function buildPIS(cfg: ConfPIS | null | undefined, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
-  // Default for SN: PIS NT (CST 07 — não tributado).
-  if (cfg == null) return { PISNT: { CST: '07' } };
-  return buildPISByCST(cfg, item);
+// The CSTs each group carries, read off the codegen — i.e. the XSD's own
+// enumerations. COFINS enumerates the same four sets as PIS.
+type CstPisCofinsAliq = TNFe_infNFe_det_imposto_PIS_PISAliq['CST'];
+type CstPisCofinsQtde = TNFe_infNFe_det_imposto_PIS_PISQtde['CST'];
+type CstPisCofinsNT = TNFe_infNFe_det_imposto_PIS_PISNT['CST'];
+type CstPisCofinsOutr = TNFe_infNFe_det_imposto_PIS_PISOutr['CST'];
+
+/** PISOutr / COFINSOutr's `xs:choice` after `<CST>`: exactly one base sequence. */
+type PisCofinsOutrBase =
+  | { readonly modo: 'valor'; readonly vBC: number; readonly aliquota: number }
+  | { readonly modo: 'quantidade'; readonly qBCProd: number; readonly vAliqProd: number };
+
+/**
+ * One PIS or COFINS item computation: which XSD group, its operands and its
+ * value. `cst` keeps the switch-narrowed wire literal, so the builders map it
+ * onto the codegen types without a cast.
+ */
+type PisCofinsCalc =
+  | { readonly grupo: 'NT'; readonly cst: CstPisCofinsNT; readonly valor: 0 }
+  | {
+      readonly grupo: 'Aliq';
+      readonly cst: CstPisCofinsAliq;
+      readonly vBC: number;
+      readonly aliquota: number;
+      readonly valor: number;
+    }
+  | {
+      readonly grupo: 'Qtde';
+      readonly cst: CstPisCofinsQtde;
+      readonly qBCProd: number;
+      readonly vAliqProd: number;
+      readonly valor: number;
+    }
+  | {
+      readonly grupo: 'Outr';
+      readonly cst: CstPisCofinsOutr;
+      readonly base: PisCofinsOutrBase;
+      readonly valor: number;
+    };
+
+type PisCofinsTributo = 'PIS' | 'COFINS';
+
+/**
+ * The per-unit groups' `qBCProd` is the item quantity (the det's `<qTrib>`,
+ * "Quantidade Vendida" per NT 2011/004) — never a default of 1, which would
+ * silently tax one unit of a multi-unit line.
+ */
+function requireQTrib(tributo: PisCofinsTributo, cst: CstPisCofins, item: TributeItem): number {
+  if (item.qTrib == null) {
+    throw new NFeTributeError(
+      `${tributo} CST=${cst} por unidade (vAliqProd) requires the item quantity \`qTrib\``,
+    );
+  }
+  return item.qTrib;
 }
 
-function buildCOFINS(
-  cfg: ConfCOFINS | null | undefined,
+/**
+ * `pPIS` / `pCOFINS` go on the wire as TDec_0302a04 — at most three integer
+ * digits. The stored schema has no upper bound, so a stray rate of 1000+ would
+ * only be caught by the pre-send XSD gate, after a número was allocated. Fail at
+ * build time instead, where the batch pre-flight turns it into a per-member 400.
+ */
+function requireRateFits(
+  tributo: PisCofinsTributo,
+  cst: CstPisCofins,
+  rateName: string,
+  aliquota: number,
+): number {
+  if (aliquota >= 1000) {
+    throw new NFeTributeError(
+      `${tributo} CST=${cst}: \`${rateName}\` ${aliquota} does not fit the XSD rate ` +
+        'format (TDec_0302a04, at most 999.9999)',
+    );
+  }
+  return aliquota;
+}
+
+/**
+ * The ONE PIS/COFINS computation — the item builders and
+ * {@link computePisCofinsItemValues} both read it, so the emitted `<vPIS>` /
+ * `<vCOFINS>` and every total summed from the helper cannot drift apart.
+ *
+ * Every value is computed from the RAW configured operands and only the result
+ * is rounded (`roundReais`) — the convention `computeRtcItemValues` / IS share.
+ * The wire shows the operands at 4 decimals, so an operand with more decimals
+ * can make the visible product differ from the emitted value by a cent; no
+ * SEFAZ rule compares them, only Σ items against ICMSTot (602/603).
+ *
+ * - **Aliq (01/02)**: `vBC` = the item base, `valor` = vBC × rate / 100. A
+ *   missing rate throws.
+ * - **Qtde (03)**: `qBCProd` = the item `qTrib`, `valor` = qBCProd × vAliqProd.
+ *   A missing `vAliqProd` or `qTrib` throws.
+ * - **NT (04–09)**: no value.
+ * - **Outr (49–99)**: the XSD `xs:choice` — `(vBC + rate)` or
+ *   `(qBCProd + vAliqProd)`, never both. A rate counts as configured only when
+ *   it is > 0: stored docs legitimately hold an explicit 0 (e.g. for the Shopee
+ *   `tax_info` block), and 0 must keep meaning "nothing configured". Both
+ *   configured throws; neither emits the zero `(vBC + rate)` shape, which the
+ *   XSD requires even when nothing is due.
+ *
+ * Both `vBC` and `qBCProd` are DERIVED from the item — `confPIS`/`confCOFINS`
+ * carry only `{ CST, rate, vAliqProd }` — so a config-level half pair cannot
+ * exist; the only reachable half is a per-unit rate with no `qTrib`.
+ */
+function calcPisCofins(
+  tributo: PisCofinsTributo,
+  cst: CstPisCofins,
+  aliquota: number | null | undefined,
+  vAliqProd: number | null | undefined,
   item: TributeItem,
-): TNFe_infNFe_det_imposto_COFINS {
-  // Default for SN: COFINS NT (CST 07).
-  if (cfg == null) return { COFINSNT: { CST: '07' } };
-  return buildCOFINSByCST(cfg, item);
-}
-
-function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
-  switch (cfg.CST) {
+): PisCofinsCalc {
+  const rateName = tributo === 'PIS' ? 'pPIS' : 'pCOFINS';
+  switch (cst) {
     case CST_PIS_COFINS.tributavelAliquotaBasica:
     case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
-      // PISAliq — needs vBC + pPIS + vPIS. vBC = vProd (Simples Nacional
-      // common posture); pPIS from config; vPIS = vBC × pPIS / 100.
-      if (cfg.pPIS == null) {
-        throw new NFeTributeError(`PIS CST=${cfg.CST} requires \`pPIS\``);
+      if (aliquota == null) {
+        throw new NFeTributeError(`${tributo} CST=${cst} requires \`${rateName}\``);
       }
+      requireRateFits(tributo, cst, rateName, aliquota);
+      // vBC = the item base (Simples Nacional common posture).
       const vBC = item.vProd;
-      const vPIS = roundReais((vBC * cfg.pPIS) / 100);
-      return {
-        PISAliq: {
-          CST: cfg.CST,
-          vBC: fmtMoneyOpt('vBC', vBC)!,
-          pPIS: fmtRateOpt('pPIS', cfg.pPIS)!,
-          vPIS: fmtMoneyOpt('vPIS', vPIS)!,
-        },
-      };
+      return { grupo: 'Aliq', cst, vBC, aliquota, valor: roundReais((vBC * aliquota) / 100) };
     }
     case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
-      // PISQtde — by quantity (vAliqProd × qBCProd).
-      if (cfg.vAliqProd == null) {
-        throw new NFeTributeError('PIS CST=03 requires `vAliqProd`');
+      if (vAliqProd == null) {
+        throw new NFeTributeError(`${tributo} CST=${cst} requires \`vAliqProd\``);
       }
-      return {
-        PISQtde: {
-          CST: '03',
-          qBCProd: '1.0000',
-          vAliqProd: cfg.vAliqProd.toFixed(4),
-          vPIS: fmtMoneyOpt('vPIS', cfg.vAliqProd)!,
-        },
-      };
+      const qBCProd = requireQTrib(tributo, cst, item);
+      return { grupo: 'Qtde', cst, qBCProd, vAliqProd, valor: roundReais(qBCProd * vAliqProd) };
     }
     case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
     case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
     case CST_PIS_COFINS.tributavelAliquotaZero:
     case CST_PIS_COFINS.isentaContribuicao:
     case CST_PIS_COFINS.semIncidenciaContribuicao:
-    case CST_PIS_COFINS.suspensaoContribuicao: {
-      // PISNT — não tributado.
-      return { PISNT: { CST: cfg.CST } };
-    }
+    case CST_PIS_COFINS.suspensaoContribuicao:
+      // Não tributado — the group carries the CST alone.
+      return { grupo: 'NT', cst, valor: 0 };
     case CST_PIS_COFINS.outrasOperacoesSaida:
     case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
     case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
@@ -548,100 +638,157 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
     case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
     case CST_PIS_COFINS.outrasOperacoesEntrada:
     case CST_PIS_COFINS.outrasOperacoes: {
-      // PISOutr — outras operações. SEFAZ XSD models PISOutr as
-      // CST, then xs:choice ( vBC + pPIS | qBCProd + vAliqProd ), then vPIS.
-      // Codegen-emitted type has all four as optional, but xmllint-wasm
-      // (and SEFAZ) reject omitting the choice — the validator says
-      // "vPIS not expected, expected vBC or qBCProd". For SN flows
-      // that arrive here without a configured rate, emit the
-      // value-based variant with zeros.
-      return {
-        PISOutr: {
-          CST: cfg.CST,
-          vBC: '0.00',
-          pPIS: '0.0000',
-          vPIS: '0.00',
-        },
-      };
+      const porValor = aliquota != null && aliquota > 0;
+      const porQtde = vAliqProd != null && vAliqProd > 0;
+      if (porValor && porQtde) {
+        // Mirrors buildIPI's IPITrib choice: a doomed shape fails at build
+        // time rather than as a SEFAZ schema rejection.
+        throw new NFeTributeError(
+          `${tributo} CST=${cst} (${tributo}Outr) must carry exactly one of ` +
+            `\`(vBC + ${rateName})\` or \`(qBCProd + vAliqProd)\`, not both — ` +
+            `configure \`${rateName}\` or \`vAliqProd\``,
+        );
+      }
+      if (porQtde) {
+        const qBCProd = requireQTrib(tributo, cst, item);
+        return {
+          grupo: 'Outr',
+          cst,
+          base: { modo: 'quantidade', qBCProd, vAliqProd },
+          valor: roundReais(qBCProd * vAliqProd),
+        };
+      }
+      if (porValor) {
+        requireRateFits(tributo, cst, rateName, aliquota);
+        const vBC = item.vProd;
+        return {
+          grupo: 'Outr',
+          cst,
+          base: { modo: 'valor', vBC, aliquota },
+          valor: roundReais((vBC * aliquota) / 100),
+        };
+      }
+      // Nothing configured: the XSD still demands one choice branch before
+      // <vPIS>/<vCOFINS> (omitting it fails "vPIS not expected, expected vBC
+      // or qBCProd"), so emit the value branch with zeros.
+      return { grupo: 'Outr', cst, base: { modo: 'valor', vBC: 0, aliquota: 0 }, valor: 0 };
     }
   }
 }
 
-function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_imposto_COFINS {
-  switch (cfg.CST) {
-    case CST_PIS_COFINS.tributavelAliquotaBasica:
-    case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
-      if (cfg.pCOFINS == null) {
-        throw new NFeTributeError(`COFINS CST=${cfg.CST} requires \`pCOFINS\``);
+function calcPIS(cfg: ConfPIS, item: TributeItem): PisCofinsCalc {
+  return calcPisCofins('PIS', cfg.CST, cfg.pPIS, cfg.vAliqProd, item);
+}
+
+function calcCOFINS(cfg: ConfCOFINS, item: TributeItem): PisCofinsCalc {
+  return calcPisCofins('COFINS', cfg.CST, cfg.pCOFINS, cfg.vAliqProd, item);
+}
+
+/**
+ * Per-item `vPIS` / `vCOFINS` — the exact values `buildImpostoXml` emits for
+ * the same config and item, and the single source for any caller that must
+ * agree with them (the ICMSTot sums SEFAZ checks against the items, 602/603).
+ * A null config is the SN default (PISNT/COFINSNT CST 07), which carries no
+ * value: 0. Throws `NFeTributeError` exactly where the builder would.
+ */
+export function computePisCofinsItemValues(
+  imposto: Imposto,
+  item: TributeItem,
+): { vPIS: number; vCOFINS: number } {
+  const pis = imposto.configuracaoPIS;
+  const cofins = imposto.configuracaoCOFINS;
+  return {
+    vPIS: pis == null ? 0 : calcPIS(pis, item).valor,
+    vCOFINS: cofins == null ? 0 : calcCOFINS(cofins, item).valor,
+  };
+}
+
+function buildPIS(cfg: ConfPIS | null | undefined, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
+  // Default for SN: PIS NT (CST 07 — não tributado).
+  if (cfg == null) return { PISNT: { CST: '07' } };
+  const calc = calcPIS(cfg, item);
+  switch (calc.grupo) {
+    case 'NT':
+      return { PISNT: { CST: calc.cst } };
+    case 'Aliq':
+      return {
+        PISAliq: {
+          CST: calc.cst,
+          vBC: fmtMoney('vBC', calc.vBC),
+          pPIS: fmtRate('pPIS', calc.aliquota),
+          vPIS: fmtMoney('vPIS', calc.valor),
+        },
+      };
+    case 'Qtde':
+      return {
+        PISQtde: {
+          CST: calc.cst,
+          qBCProd: fmtQuantity('qBCProd', calc.qBCProd),
+          vAliqProd: fmtQuantity('vAliqProd', calc.vAliqProd),
+          vPIS: fmtMoney('vPIS', calc.valor),
+        },
+      };
+    case 'Outr': {
+      // Exactly one choice sequence; the META walker emits XSD order.
+      const outr: TNFe_infNFe_det_imposto_PIS_PISOutr = {
+        CST: calc.cst,
+        vPIS: fmtMoney('vPIS', calc.valor),
+      };
+      if (calc.base.modo === 'valor') {
+        outr.vBC = fmtMoney('vBC', calc.base.vBC);
+        outr.pPIS = fmtRate('pPIS', calc.base.aliquota);
+      } else {
+        outr.qBCProd = fmtQuantity('qBCProd', calc.base.qBCProd);
+        outr.vAliqProd = fmtQuantity('vAliqProd', calc.base.vAliqProd);
       }
-      const vBC = item.vProd;
-      const vCOFINS = roundReais((vBC * cfg.pCOFINS) / 100);
+      return { PISOutr: outr };
+    }
+  }
+}
+
+function buildCOFINS(
+  cfg: ConfCOFINS | null | undefined,
+  item: TributeItem,
+): TNFe_infNFe_det_imposto_COFINS {
+  // Default for SN: COFINS NT (CST 07).
+  if (cfg == null) return { COFINSNT: { CST: '07' } };
+  const calc = calcCOFINS(cfg, item);
+  switch (calc.grupo) {
+    case 'NT':
+      return { COFINSNT: { CST: calc.cst } };
+    case 'Aliq':
       return {
         COFINSAliq: {
-          CST: cfg.CST,
-          vBC: fmtMoneyOpt('vBC', vBC)!,
-          pCOFINS: fmtRateOpt('pCOFINS', cfg.pCOFINS)!,
-          vCOFINS: fmtMoneyOpt('vCOFINS', vCOFINS)!,
+          CST: calc.cst,
+          vBC: fmtMoney('vBC', calc.vBC),
+          pCOFINS: fmtRate('pCOFINS', calc.aliquota),
+          vCOFINS: fmtMoney('vCOFINS', calc.valor),
         },
       };
-    }
-    case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
-      if (cfg.vAliqProd == null) {
-        throw new NFeTributeError('COFINS CST=03 requires `vAliqProd`');
-      }
+    case 'Qtde':
       return {
         COFINSQtde: {
-          CST: '03',
-          qBCProd: '1.0000',
-          vAliqProd: cfg.vAliqProd.toFixed(4),
-          vCOFINS: fmtMoneyOpt('vCOFINS', cfg.vAliqProd)!,
+          CST: calc.cst,
+          qBCProd: fmtQuantity('qBCProd', calc.qBCProd),
+          vAliqProd: fmtQuantity('vAliqProd', calc.vAliqProd),
+          vCOFINS: fmtMoney('vCOFINS', calc.valor),
         },
       };
+    case 'Outr': {
+      // Same XSD choice as PISOutr above.
+      const outr: TNFe_infNFe_det_imposto_COFINS_COFINSOutr = {
+        CST: calc.cst,
+        vCOFINS: fmtMoney('vCOFINS', calc.valor),
+      };
+      if (calc.base.modo === 'valor') {
+        outr.vBC = fmtMoney('vBC', calc.base.vBC);
+        outr.pCOFINS = fmtRate('pCOFINS', calc.base.aliquota);
+      } else {
+        outr.qBCProd = fmtQuantity('qBCProd', calc.base.qBCProd);
+        outr.vAliqProd = fmtQuantity('vAliqProd', calc.base.vAliqProd);
+      }
+      return { COFINSOutr: outr };
     }
-    case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
-    case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
-    case CST_PIS_COFINS.tributavelAliquotaZero:
-    case CST_PIS_COFINS.isentaContribuicao:
-    case CST_PIS_COFINS.semIncidenciaContribuicao:
-    case CST_PIS_COFINS.suspensaoContribuicao:
-      return { COFINSNT: { CST: cfg.CST } };
-    // All remaining cases fall through to COFINSOutr (credit/presumed + acquisition + others)
-    case CST_PIS_COFINS.outrasOperacoesSaida:
-    case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoExclusivoExportacao:
-    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoNaoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoPresumidoExclusivoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoPresumidoExclusivoNaoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoPresumidoExclusivoExportacao:
-    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInterno:
-    case CST_PIS_COFINS.creditoPresumidoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoPresumidoNaoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInternoEExportacao:
-    case CST_PIS_COFINS.creditoPresumidoOutrasOperacoes:
-    case CST_PIS_COFINS.aquisicaoSemDireitoCredito:
-    case CST_PIS_COFINS.aquisicaoComIsencao:
-    case CST_PIS_COFINS.aquisicaoComSuspensao:
-    case CST_PIS_COFINS.aquisicaoAliquotaZero:
-    case CST_PIS_COFINS.aquisicaoSemIncidencia:
-    case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
-    case CST_PIS_COFINS.outrasOperacoesEntrada:
-    case CST_PIS_COFINS.outrasOperacoes:
-    default:
-      // COFINSOutr — same XSD shape + same posture as PISOutr above:
-      // emit vBC + pCOFINS + vCOFINS with zeros so xmllint-wasm /
-      // SEFAZ accept the xs:choice.
-      return {
-        COFINSOutr: {
-          CST: cfg.CST,
-          vBC: '0.00',
-          pCOFINS: '0.0000',
-          vCOFINS: '0.00',
-        },
-      };
   }
 }
 

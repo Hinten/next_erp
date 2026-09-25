@@ -276,6 +276,7 @@ export {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  computePisCofinsItemValues,
   configuracaoICMSSchema,
   confCOFINSSchema,
   confPISSchema,

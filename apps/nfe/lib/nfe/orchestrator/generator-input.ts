@@ -113,11 +113,19 @@ export function buildGeneratorInput(
   const totals = aggregateTotals(
     // `vProd` = GROSS (rolls into ICMSTot.vProd = Σ wire <vProd>); `vBaseTributavel`
     // = net-of-unit-discount base for the RTC total (matches the per-item base
-    // buildGenItems passes to buildImpostoXml). vNF subtracts `vDesc` below.
+    // buildGenItems passes to buildImpostoXml) — also the PIS/COFINS percent
+    // base, so ICMSTot vPIS/vCOFINS equal Σ item values (602/603). vNF
+    // subtracts `vDesc` below. `qTrib` is the det's `<qTrib>`, the per-unit
+    // PIS/COFINS `qBCProd` (same `it.quantidade` buildItemImpostoXml passes).
     // `indTot` mirrors the det projection (same `indTotFor`) so the wire flag
     // and the ICMSTot gating can never diverge.
     items.map((it) => ({
-      item: { vProd: it.vProdBruto, vBaseTributavel: it.vProd, indTot: indTotFor(it) },
+      item: {
+        vProd: it.vProdBruto,
+        vBaseTributavel: it.vProd,
+        qTrib: it.quantidade,
+        indTot: indTotFor(it),
+      },
       imposto: it.imposto,
     })),
     { vFrete, vDesc },
@@ -386,7 +394,12 @@ export function buildGenItems(
  */
 function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): string {
   try {
-    return buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc });
+    // `qTrib` is the per-unit PIS/COFINS `qBCProd` (CST 03, and CST 49–99 with
+    // `vAliqProd`); it equals the det's `<qTrib>` by construction — both come
+    // from `it.quantidade`. The PIS/COFINS percent base stays `it.vProd` (net
+    // of the unit discount), in parity with PISAliq and RTC, and is the same
+    // `vBaseTributavel` the aggregateTotals item above sums from.
+    return buildImpostoXml(it.imposto, { vProd: it.vProd, qTrib: it.quantidade }, { emitRtc });
   } catch (err) {
     if (err instanceof NFeTributeError || err instanceof TributeFormatError) {
       throw new NFeOrchestratorError(`${where}: ${err.message}`);
