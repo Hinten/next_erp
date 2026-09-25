@@ -23,10 +23,16 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 
 import {
   autorizarLote,
+  classifyCStat,
   consultarLote,
+  consultarSituacaoNFe,
   enviarEpec,
   generateNFe,
+  nextConsultaDelayMs,
+  RECONCILE_SWEEP_GRACE_MS,
   signNFe,
+  type CStatCategory,
+  type NextAction,
 } from '@delfrance/integrations-nfe';
 import {
   CONTINGENCIA_MODO,
@@ -35,10 +41,17 @@ import {
   CSOSN,
   CST_PIS_COFINS,
   ESTADO_NFE,
+  type EstadoNFe,
   type NFeConfig,
 } from '@delfrance/schemas';
 
-import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
+import {
+  CONSUMO_INDEVIDO_ESPERA_MS,
+  emitirPedido,
+  emitirPedidosLote,
+  NFeOrchestratorError,
+  patchForLoteSemRecibo,
+} from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 import type { ConsultaTaskInput, TaskScheduler } from '../../../lib/nfe/tasks';
 import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
@@ -573,6 +586,28 @@ function autorizarLoteAsync(nRec: string): void {
   } as never);
 }
 
+/**
+ * An async (N>1) lote reply WITHOUT `infRec` (#512): SEFAZ answered but issued
+ * no receipt — the lote itself was refused, or the reply is anomalous. `extra`
+ * adds fields the XSD allows beside it (e.g. a stray `protNFe`).
+ */
+function autorizarLoteAsyncSemRecibo(
+  cStat: string,
+  xMotivo: string,
+  extra: Record<string, unknown> = {},
+): void {
+  vi.mocked(autorizarLote).mockResolvedValue({
+    versao: '4.00',
+    tpAmb: '2',
+    verAplic: 'TEST',
+    cStat,
+    xMotivo,
+    cUF: '35',
+    dhRecbto: new Date().toISOString(),
+    ...extra,
+  } as never);
+}
+
 beforeEach(() => {
   // Fixtures have no per-filial stored cert — emit with the env cert via the
   // fallback (per-filial resolution is covered in filial-cert.test.ts).
@@ -636,6 +671,18 @@ describe('emitirPedidosLote — single filial happy path', () => {
       ],
     });
     autorizarLoteAsync('RECIBO-1'); // cStat=103, nRec=RECIBO-1, tMed='1'
+    // Record each transaction's window over `writes` (the fake's tx.set lands
+    // synchronously, so every write made while a callback runs falls inside).
+    const txWindows: Array<readonly [number, number]> = [];
+    const runTx = fs.runTransaction;
+    fs.runTransaction = async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
+      const start = writes.length;
+      try {
+        return await runTx(fn);
+      } finally {
+        txWindows.push([start, writes.length]);
+      }
+    };
     const { scheduler, enqueued } = recordingScheduler();
     const before = Date.now();
     const out = await emitirPedidosLote(
@@ -667,7 +714,30 @@ describe('emitirPedidosLote — single filial happy path', () => {
       expect(w).toBeDefined();
       expect(w?.data.estado).toBe(ESTADO_NFE.aguardandoResposta);
       expect(typeof w?.data.proximaConsultaEm).toBe('number');
+      // #512 regression pin for the nRec path: exactly ONE merge write per doc
+      // (the full-overwrite doc writes before the send are not merges),
+      // carrying exactly this key set (captured on the pre-#512 code), plus the
+      // single enqueue asserted above — and that merge lands OUTSIDE every
+      // transaction, i.e. it is still the plain unguarded `persistPatch`, not
+      // #512's `persistPatchUnlessFinal`.
+      const merges = writes.filter((x) => x.path === `pedidos/${pedidoId}/nfev4/s1` && x.merge);
+      expect(merges).toHaveLength(1);
+      expect(Object.keys(merges[0]!.data).sort()).toEqual([
+        'cStat',
+        'estado',
+        'nRec',
+        'proximaConsultaEm',
+        'retries',
+        'ultima_modificacao',
+        'xMotivo',
+      ]);
+      const at = writes.indexOf(merges[0]!);
+      expect(txWindows.some(([start, end]) => at >= start && at < end)).toBe(false);
     }
+    // Near-miss guard for the pin above: the allocation tx IS seen, and its
+    // placeholder writes fall inside its window.
+    expect(txWindows).toHaveLength(1);
+    expect(txWindows[0]![1]).toBeGreaterThan(txWindows[0]![0]);
   });
 });
 
@@ -1503,5 +1573,1126 @@ describe('emitirPedidosLote — contingência EPEC', () => {
     expect('estado' in fresh ? fresh.estado : null).toBe(ESTADO_NFE.epecAprovado);
     // The approved EPEC's doc was not touched by the batch.
     expect(events.filter((e) => e === 'set:pedidos/PED-PENDING/nfev4/s4')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #512 — an async lote (indSinc='0') whose retEnviNFe carries NO infRec: SEFAZ
+// answered but issued no receipt. Each member's outcome is persisted at emit
+// time (patchForLoteSemRecibo → persistLoteSemRecibo); nothing is enqueued and
+// no SEFAZ call is made beyond the lote itself.
+// ---------------------------------------------------------------------------
+
+describe('#512 — async lote reply without nRec', () => {
+  const LOTE_PEDIDOS = ['PED-1', 'PED-2', 'PED-3'] as const;
+  const nfePath = (pedidoId: string) => `pedidos/${pedidoId}/nfev4/s1`;
+
+  /**
+   * Every #512 case is an ASYNC lote to the homologação fake: the one
+   * autorizarLote SefazCall carries tpAmb '2', the fake runtime's host and
+   * indSinc '0' (a single NF-e would take the sync path instead).
+   */
+  function expectAsyncHomologacaoCall(): void {
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    const [call, args] = vi.mocked(autorizarLote).mock.calls[0]!;
+    expect(call.tpAmb).toBe('2');
+    expect(call.url.startsWith('https://example/')).toBe(true);
+    expect(args.indSinc).toBe('0');
+  }
+
+  /** Emit three FRESH pedidos of one filial against a no-infRec reply. */
+  async function emitThreeFresh(cStat: string, xMotivo: string) {
+    const { fs, docs, writes } = fakeFirestore({
+      events: [],
+      pedidos: LOTE_PEDIDOS.map((pedidoId) => ({ pedidoId, filialId: 'F-1' })),
+    });
+    autorizarLoteAsyncSemRecibo(cStat, xMotivo);
+    const { scheduler, enqueued } = recordingScheduler();
+    const before = Date.now();
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS], scheduler);
+    const after = Date.now();
+    const docOf = (pedidoId: string) => docs[nfePath(pedidoId)] as Record<string, unknown>;
+    const resultOf = (pedidoId: string) => out.results.find((r) => r.pedidoId === pedidoId)!;
+    /**
+     * The #512 reply write: the ONE merge onto a fresh member's doc — the
+     * placeholder and the generated doc before the send are full overwrites.
+     */
+    const replyWriteOf = (pedidoId: string) => {
+      const merges = writes.filter((w) => w.path === nfePath(pedidoId) && w.merge);
+      expect(merges).toHaveLength(1);
+      return merges[0]!.data;
+    };
+    return { fs, out, docs, writes, enqueued, before, after, docOf, resultOf, replyWriteOf };
+  }
+
+  /** Every nfev4 write of the run (placeholders, generated docs, reply merges). */
+  const nfev4Writes = (writes: ReadonlyArray<{ path: string; data: Record<string, unknown> }>) =>
+    writes.filter((w) => w.path.includes('/nfev4/'));
+
+  /** The estados a lote-level reply must never stamp on a member it says nothing about. */
+  const ESTADOS_VEREDITO: ReadonlyArray<EstadoNFe> = [
+    ESTADO_NFE.aprovada,
+    ESTADO_NFE.cancelada,
+    ESTADO_NFE.numeracaoInutilizada,
+    ESTADO_NFE.rejeitada,
+  ];
+
+  /** No receipt → nothing to reconcile by recibo, and no in-request consSit fan-out. */
+  function expectNoConsultNoEnqueue(enqueued: readonly ConsultaTaskInput[]): void {
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(enqueued).toEqual([]);
+  }
+
+  describe('patchForLoteSemRecibo (pure) — fresh vs stored-bytes member', () => {
+    interface Esperado {
+      readonly estado: EstadoNFe;
+      readonly action: NextAction;
+      readonly consultaDelayMs: number | null;
+    }
+    const EM_VOO: Esperado = {
+      estado: ESTADO_NFE.enviando,
+      action: 'recover-via-consulta',
+      consultaDelayMs: null,
+    };
+    const ANCORA: Esperado = {
+      estado: ESTADO_NFE.aguardandoResposta,
+      action: 'recover-via-consulta',
+      consultaDelayMs: null,
+    };
+    const REJEITADA: Esperado = {
+      estado: ESTADO_NFE.rejeitada,
+      action: 'done-rejected',
+      consultaDelayMs: null,
+    };
+    const AGUARDANDO_POLL: Esperado = {
+      estado: ESTADO_NFE.aguardandoResposta,
+      action: 'poll-lote',
+      consultaDelayMs: null,
+    };
+    const both = (e: Esperado) => ({ fresh: e, stored: e });
+    /** A foreign receipt marker in xMotivo — must NEVER be lifted into nRec. */
+    const MARKER = 'Rejeicao: Duplicidade de NF-e [nRec:351000000000123]';
+
+    const TABELA: ReadonlyArray<{
+      readonly cStat: string;
+      readonly xMotivo?: string;
+      readonly retries?: number;
+      readonly fresh: Esperado;
+      readonly stored: Esperado;
+    }> = [
+      // A received / pending / unknown lote stays awaiting SEFAZ either way.
+      { cStat: '103', ...both(AGUARDANDO_POLL) },
+      { cStat: '105', retries: 1, ...both(AGUARDANDO_POLL) },
+      { cStat: '106', ...both(ANCORA) },
+      // Serviço paralisado (SVC 113/114 included): conclusive for a fresh
+      // member, never for a crash-window anchor.
+      { cStat: '108', fresh: REJEITADA, stored: ANCORA },
+      { cStat: '109', fresh: REJEITADA, stored: ANCORA },
+      { cStat: '113', fresh: REJEITADA, stored: ANCORA },
+      { cStat: '114', fresh: REJEITADA, stored: ANCORA },
+      // NEAR-MISS of 108: 107 (serviço em operação) is an anomaly, not a refusal.
+      { cStat: '107', ...both(EM_VOO) },
+      // 656: a fresh member is error; an anchor waits out the ~1h throttle.
+      {
+        cStat: '656',
+        fresh: { estado: ESTADO_NFE.error, action: 'backoff', consultaDelayMs: null },
+        stored: {
+          estado: ESTADO_NFE.aguardandoResposta,
+          action: 'backoff',
+          consultaDelayMs: CONSUMO_INDEVIDO_ESPERA_MS,
+        },
+      },
+      // NEAR-MISS of 656: a generic rejection, no 1h wait.
+      { cStat: '1656', fresh: REJEITADA, stored: ANCORA },
+      // Per-NF-e verdicts as the LOTE cStat say nothing about any member —
+      // never aprovada / cancelada / numeracaoInutilizada / rejeitada.
+      ...['100', '150', '101', '151', '102', '110', '301', '302'].map((cStat) => ({
+        cStat,
+        ...both(EM_VOO),
+      })),
+      // NEAR-MISSES of 100/101/102/110: 4-digit codes are plain rejections.
+      ...['1100', '1101', '1102', '1110'].map((cStat) => ({
+        cStat,
+        fresh: REJEITADA,
+        stored: ANCORA,
+      })),
+      // NEAR-MISSES of the width rows on the other side: a cStat that is not
+      // `TStat` ([0-9]{3,4}) at all — an empty `<cStat/>`, non-numeric text —
+      // is an anomaly, never the generic 'rejeitada' classifyCStat files it
+      // under (which would make a FRESH member número-reusing).
+      ...['', 'abc'].map((cStat) => ({ cStat, ...both(EM_VOO) })),
+      // Lote-level rejections (schema, certificate, ambiente, generic, 4-digit).
+      ...['225', '215', '252', '280', '297', '999', '1115'].map((cStat) => ({
+        cStat,
+        fresh: REJEITADA,
+        stored: ANCORA,
+      })),
+      // Anomalies carrying a [nRec:…] marker: the marker is NOT lifted.
+      ...['104', '204', '539'].map((cStat) => ({ cStat, xMotivo: MARKER, ...both(EM_VOO) })),
+    ];
+
+    const CASOS = TABELA.flatMap((linha) =>
+      (['fresh', 'stored'] as const).map((origem) => ({
+        titulo: `${linha.cStat === '' ? '<cStat vazio>' : linha.cStat} (${origem}) → estado ${linha[origem].estado}`,
+        cStat: linha.cStat,
+        xMotivo: linha.xMotivo ?? `xMotivo do lote ${linha.cStat}`,
+        retries: linha.retries ?? 0,
+        storedBytes: origem === 'stored',
+        esperado: linha[origem],
+      })),
+    );
+
+    it('CONSUMO_INDEVIDO_ESPERA_MS is the ~1h consumo-indevido window', () => {
+      expect(CONSUMO_INDEVIDO_ESPERA_MS).toBe(3_600_000);
+    });
+
+    it('the table reaches every CStatCategory (the switch is exhaustive by type; this pins it at runtime)', () => {
+      // `satisfies Record<CStatCategory, 1>`: a new union member without a key
+      // here fails TYPECHECK, so this list can never silently lag the union.
+      const TODAS = Object.keys({
+        autorizada: 1,
+        cancelada: 1,
+        inutilizada: 1,
+        denegada: 1,
+        'lote-recebido': 1,
+        'lote-processado': 1,
+        'lote-pendente': 1,
+        'lote-nao-localizado': 1,
+        'servico-em-operacao': 1,
+        'servico-paralisado': 1,
+        duplicidade: 1,
+        'rejeitada-schema': 1,
+        'rejeitada-certificado': 1,
+        'rejeitada-ambiente': 1,
+        'consumo-indevido': 1,
+        rejeitada: 1,
+      } satisfies Record<CStatCategory, 1>);
+      const alcancadas = new Set(TABELA.map((l) => classifyCStat(l.cStat)));
+      expect([...alcancadas].sort()).toEqual([...TODAS].sort());
+    });
+
+    it.each(CASOS)('$titulo', ({ cStat, xMotivo, retries, storedBytes, esperado }) => {
+      const { patch, consultaDelayMs } = patchForLoteSemRecibo({ cStat, xMotivo }, { storedBytes });
+      expect(patch).toEqual({
+        estado: esperado.estado,
+        cStat,
+        xMotivo,
+        retries,
+        nRec: null,
+        action: esperado.action,
+        tMed: null,
+      });
+      expect(consultaDelayMs).toBe(esperado.consultaDelayMs);
+    });
+  });
+
+  it('108 on an all-fresh lote → every member rejeitada with SEFAZ’s cStat/xMotivo; no consult, nothing enqueued', async () => {
+    const X = 'Servico Paralisado Momentaneamente (curto prazo)';
+    const { out, writes, enqueued, docOf, resultOf, replyWriteOf } = await emitThreeFresh('108', X);
+
+    expectAsyncHomologacaoCall();
+    const loteNFe = vi.mocked(autorizarLote).mock.calls[0]![1].NFe;
+    expect(out.results).toHaveLength(3);
+    for (const pedidoId of LOTE_PEDIDOS) {
+      const doc = docOf(pedidoId);
+      expect(resultOf(pedidoId)).toEqual({
+        nfeId: 's1',
+        pedidoId,
+        estado: ESTADO_NFE.rejeitada,
+        chave: doc.chave,
+        nRec: null,
+        cStat: '108',
+        xMotivo: X,
+        reused: false,
+      });
+      expect(doc).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        cStat: '108',
+        xMotivo: X,
+        retries: 0,
+        proximaConsultaEm: null,
+        nRec: null,
+      });
+      // The reply write adds no nRec key (no receipt exists) …
+      expect(replyWriteOf(pedidoId)).not.toHaveProperty('nRec');
+      // … and never touches the anchor: the doc still holds the exact bytes
+      // the lote carried.
+      expect(typeof doc.xml_assinado).toBe('string');
+      expect(loteNFe).toContain(doc.xml_assinado);
+    }
+    // One enviNfe audit row per chave, recording the lote reply (no receipt).
+    const auditRows = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(auditRows).toHaveLength(3);
+    expect(auditRows.flatMap((w) => w.data.targetsChnfe as string[]).sort()).toEqual(
+      LOTE_PEDIDOS.map((p) => docOf(p).chave as string).sort(),
+    );
+    for (const row of auditRows) {
+      expect(row.data).toMatchObject({ cStat: '108', xMotivo: X, nRec: null, indSinc: '0' });
+    }
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it.each(['108', '109', '113', '114'])(
+    'lote cStat %s (serviço paralisado, no infRec) → every fresh member rejeitada; persisted = returned estado',
+    async (cStat) => {
+      const { enqueued, docOf, resultOf } = await emitThreeFresh(
+        cStat,
+        `Servico paralisado (${cStat})`,
+      );
+
+      expectAsyncHomologacaoCall();
+      for (const pedidoId of LOTE_PEDIDOS) {
+        const r = resultOf(pedidoId);
+        expect(r).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat, nRec: null });
+        expect(docOf(pedidoId)).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat });
+        expect(docOf(pedidoId).estado).toBe('estado' in r ? r.estado : null);
+      }
+      expectNoConsultNoEnqueue(enqueued);
+    },
+  );
+
+  it('656 on an all-fresh lote → every member error, not scanned (proximaConsultaEm null); no consult, nothing enqueued', async () => {
+    const X = 'Rejeicao: Consumo Indevido';
+    const { enqueued, docOf, resultOf } = await emitThreeFresh('656', X);
+
+    expectAsyncHomologacaoCall();
+    for (const pedidoId of LOTE_PEDIDOS) {
+      expect(resultOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.error,
+        cStat: '656',
+        xMotivo: X,
+        nRec: null,
+        reused: false,
+      });
+      expect(docOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.error,
+        cStat: '656',
+        xMotivo: X,
+        proximaConsultaEm: null,
+        nRec: null,
+      });
+    }
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it.each([
+    { cStat: '225', xMotivo: 'Rejeicao: Falha no Schema XML do lote de NFe' },
+    { cStat: '252', xMotivo: 'Rejeicao: Ambiente informado diverge do Ambiente de recebimento' },
+    { cStat: '999', xMotivo: 'Rejeicao: Erro nao catalogado (lote)' },
+  ])(
+    'unexpected lote rejection $cStat → every fresh member rejeitada, cStat/xMotivo persisted verbatim',
+    async ({ cStat, xMotivo }) => {
+      const { enqueued, docOf, resultOf } = await emitThreeFresh(cStat, xMotivo);
+
+      expectAsyncHomologacaoCall();
+      for (const pedidoId of LOTE_PEDIDOS) {
+        expect(resultOf(pedidoId)).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat, xMotivo });
+        expect(docOf(pedidoId)).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat,
+          xMotivo,
+          proximaConsultaEm: null,
+        });
+      }
+      expectNoConsultNoEnqueue(enqueued);
+    },
+  );
+
+  it('103 WITHOUT infRec → aguardandoResposta paced by buildPersistData’s own delay; nothing enqueued', async () => {
+    const X = 'Lote recebido com sucesso';
+    const { enqueued, before, after, docOf, resultOf } = await emitThreeFresh('103', X);
+    // The real defaults buildPersistData applies: first-consult delay (no tMed)
+    // plus the sweep grace.
+    const esperaMs = nextConsultaDelayMs(0, null) + RECONCILE_SWEEP_GRACE_MS;
+
+    expectAsyncHomologacaoCall();
+    for (const pedidoId of LOTE_PEDIDOS) {
+      expect(resultOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '103',
+        nRec: null,
+      });
+      const doc = docOf(pedidoId);
+      expect(doc).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '103',
+        retries: 0,
+        nRec: null,
+      });
+      expect(doc.proximaConsultaEm as number).toBeGreaterThanOrEqual((before + esperaMs) * 1000);
+      expect(doc.proximaConsultaEm as number).toBeLessThanOrEqual((after + esperaMs) * 1000);
+    }
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it('105 WITHOUT infRec → aguardandoResposta with retries 1, paced as poll attempt 1; nothing enqueued', async () => {
+    const X = 'Lote em processamento';
+    const { enqueued, before, after, docOf, resultOf } = await emitThreeFresh('105', X);
+    const esperaMs = nextConsultaDelayMs(1, null) + RECONCILE_SWEEP_GRACE_MS;
+
+    expectAsyncHomologacaoCall();
+    for (const pedidoId of LOTE_PEDIDOS) {
+      expect(resultOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '105',
+        nRec: null,
+      });
+      const doc = docOf(pedidoId);
+      expect(doc).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '105',
+        retries: 1,
+        nRec: null,
+      });
+      expect(doc.proximaConsultaEm as number).toBeGreaterThanOrEqual((before + esperaMs) * 1000);
+      expect(doc.proximaConsultaEm as number).toBeLessThanOrEqual((after + esperaMs) * 1000);
+    }
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it.each([
+    // STATUS_BLOQUEADORES members: the recorded cStat makes a re-emit report
+    // the doc instead of resending an unknown outcome.
+    { cStat: '100', xMotivo: 'Autorizado o uso da NF-e', reemissao: 'reportada' },
+    { cStat: '101', xMotivo: 'Cancelamento de NF-e homologado', reemissao: 'reportada' },
+    { cStat: '102', xMotivo: 'Inutilizacao de numero homologado', reemissao: 'reportada' },
+    // NEAR-MISS: 110 is not a bloqueador, so the in-flight doc is a #396 anchor
+    // — a re-emit retransmits the SAME bytes, never regenerates under the
+    // possibly-denied número.
+    { cStat: '110', xMotivo: 'Uso Denegado', reemissao: 'bytesGuardados' },
+  ] as const)(
+    'per-NF-e verdict $cStat as the LOTE cStat → every member stays enviando with it recorded; nothing final, no proc',
+    async ({ cStat, xMotivo, reemissao }) => {
+      const { fs, out, writes, enqueued, docOf, resultOf, replyWriteOf } = await emitThreeFresh(
+        cStat,
+        xMotivo,
+      );
+
+      expectAsyncHomologacaoCall();
+      const loteNFe = vi.mocked(autorizarLote).mock.calls[0]![1].NFe;
+      expect(out.results).toHaveLength(3);
+      for (const pedidoId of LOTE_PEDIDOS) {
+        const doc = docOf(pedidoId);
+        expect(resultOf(pedidoId)).toEqual({
+          nfeId: 's1',
+          pedidoId,
+          estado: ESTADO_NFE.enviando,
+          chave: doc.chave,
+          nRec: null,
+          cStat,
+          xMotivo,
+          reused: false,
+        });
+        expect(doc).toMatchObject({
+          estado: ESTADO_NFE.enviando,
+          cStat,
+          xMotivo,
+          retries: 0,
+          nRec: null,
+          proximaConsultaEm: null,
+          xml_nfe_proc: null,
+        });
+        expect(replyWriteOf(pedidoId)).not.toHaveProperty('nRec');
+        expect(typeof doc.xml_assinado).toBe('string');
+        expect(loteNFe).toContain(doc.xml_assinado);
+      }
+      expectNoConsultNoEnqueue(enqueued);
+
+      // Re-emit the same pedidos (an operator retry, or a double click).
+      const gerados = vi.mocked(generateNFe).mock.calls.length;
+      const assinados = LOTE_PEDIDOS.map((p) => docOf(p).xml_assinado);
+      const again = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS]);
+
+      expect(again.results).toHaveLength(3);
+      // Nothing is ever regenerated: no new bytes, no new número.
+      expect(vi.mocked(generateNFe).mock.calls.length).toBe(gerados);
+      if (reemissao === 'reportada') {
+        // No blind resend of an unknown outcome: the recorded cStat blocks it.
+        expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+        for (const pedidoId of LOTE_PEDIDOS) {
+          expect(again.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+            estado: ESTADO_NFE.enviando,
+            cStat,
+            reused: true,
+          });
+        }
+      } else {
+        expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
+        const segundoLote = vi.mocked(autorizarLote).mock.calls[1]![1].NFe;
+        expect([...segundoLote].sort()).toEqual([...loteNFe].sort());
+      }
+      expect(LOTE_PEDIDOS.map((p) => docOf(p).xml_assinado)).toEqual(assinados);
+      // Across BOTH runs no nfev4 write stamps a verdict or a proc.
+      for (const w of nfev4Writes(writes)) {
+        expect(ESTADOS_VEREDITO).not.toContain(w.data.estado);
+        expect(w.data.xml_nfe_proc ?? null).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    { cStat: '103', xMotivo: 'Lote recebido com sucesso', estado: ESTADO_NFE.aguardandoResposta },
+    { cStat: '104', xMotivo: 'Lote processado', estado: ESTADO_NFE.enviando },
+    { cStat: '105', xMotivo: 'Lote em processamento', estado: ESTADO_NFE.aguardandoResposta },
+  ] as const)(
+    'a no-receipt $cStat member is a STATUS_BLOQUEADORES doc: a re-emit on EITHER path reports it reused — no SEFAZ call, no regeneration',
+    async ({ cStat, xMotivo, estado }) => {
+      const { fs, writes, docOf } = await emitThreeFresh(cStat, xMotivo);
+      // Precondition: the shape isCrashWindowAnchor would match (in flight, no
+      // nRec, chave + anchor) — but with a bloqueador cStat recorded.
+      for (const pedidoId of LOTE_PEDIDOS) {
+        expect(docOf(pedidoId)).toMatchObject({ estado, cStat, nRec: null });
+        expect(typeof docOf(pedidoId).chave).toBe('string');
+        expect(typeof docOf(pedidoId).xml_assinado).toBe('string');
+      }
+      const gerados = vi.mocked(generateNFe).mock.calls.length;
+      const assinados = LOTE_PEDIDOS.map((p) => docOf(p).xml_assinado);
+      const escritas = writes.length;
+
+      // Batch path (runChunkAllocateTx) …
+      const lote = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS]);
+      // … and the single-pedido path (runAllocateGenerateSignTx).
+      const single = await emitirPedido(fs as never, fakeRuntime(), 'PED-1');
+
+      for (const r of [...lote.results, single]) {
+        // In flight + reused: the web dialog's "Em processamento", never a
+        // fresh failure nor a success.
+        expect('errorCode' in r).toBe(false);
+        expect(r).toMatchObject({
+          estado,
+          cStat,
+          xMotivo,
+          nRec: null,
+          chave: docOf(r.pedidoId).chave,
+          reused: true,
+        });
+      }
+      expect(lote.results).toHaveLength(3);
+      // The lote of the FIRST run is the only SEFAZ call ever made.
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      // No regeneration and no write on any member: the anchors are untouched.
+      expect(vi.mocked(generateNFe).mock.calls.length).toBe(gerados);
+      expect(LOTE_PEDIDOS.map((p) => docOf(p).xml_assinado)).toEqual(assinados);
+      expect(nfev4Writes(writes.slice(escritas))).toEqual([]);
+    },
+  );
+
+  it('lote-level 204 whose xMotivo carries an [nRec:…] marker → the marker is never lifted into any nRec', async () => {
+    const MARKER_NREC = '351000000000123';
+    const X = `Rejeicao: Duplicidade de NF-e [nRec:${MARKER_NREC}]`;
+    const { writes, enqueued, docOf, resultOf, replyWriteOf } = await emitThreeFresh('204', X);
+
+    expectAsyncHomologacaoCall();
+    for (const pedidoId of LOTE_PEDIDOS) {
+      expect(resultOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.enviando,
+        cStat: '204',
+        xMotivo: X,
+        nRec: null,
+      });
+      expect(docOf(pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.enviando,
+        cStat: '204',
+        xMotivo: X,
+        nRec: null,
+        proximaConsultaEm: null,
+      });
+      expect(replyWriteOf(pedidoId)).not.toHaveProperty('nRec');
+    }
+    // Not on a member doc, and not on an audit row either.
+    expect(writes.some((w) => w.data.nRec === MARKER_NREC)).toBe(false);
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it('a stray protNFe beside a lote-level 104 with no infRec is ignored — no member aprovada, no proc; one redacted warn', async () => {
+    const { fs, docs, writes } = fakeFirestore({
+      events: [],
+      pedidos: LOTE_PEDIDOS.map((pedidoId) => ({ pedidoId, filialId: 'F-1' })),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const PROT_XMOTIVO = 'Autorizado o uso da NF-e (protocolo avulso)';
+    let alvo = '';
+    vi.mocked(autorizarLote).mockImplementation(async (_call, args) => {
+      // A protocol for the FIRST member only — smeared over the chunk it would
+      // approve every member without a proc.
+      alvo = generatedChaves.find((c) => args.NFe[0]!.includes(c)) ?? '';
+      return {
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'TEST',
+        cStat: '104',
+        xMotivo: 'Lote processado',
+        cUF: '35',
+        dhRecbto: new Date().toISOString(),
+        protNFe: {
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'TEST',
+            chNFe: alvo,
+            dhRecbto: new Date().toISOString(),
+            cStat: '100',
+            xMotivo: PROT_XMOTIVO,
+            nProt: '135000000000001',
+            digVal: 'fake-digval',
+          },
+        },
+      } as never;
+    });
+    const { scheduler, enqueued } = recordingScheduler();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS], scheduler);
+
+    expectAsyncHomologacaoCall();
+    expect(alvo).toHaveLength(44);
+    const loteNFe = vi.mocked(autorizarLote).mock.calls[0]![1].NFe;
+    for (const pedidoId of LOTE_PEDIDOS) {
+      const doc = docs[nfePath(pedidoId)] as Record<string, unknown>;
+      // The LOTE's cStat (104) is recorded — never the protocol's 100.
+      expect(doc).toMatchObject({
+        estado: ESTADO_NFE.enviando,
+        cStat: '104',
+        xMotivo: 'Lote processado',
+        xml_nfe_proc: null,
+        nRec: null,
+      });
+      expect(typeof doc.xml_assinado).toBe('string');
+      expect(loteNFe).toContain(doc.xml_assinado);
+      expect(out.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.enviando,
+        cStat: '104',
+      });
+    }
+    for (const w of nfev4Writes(writes)) {
+      expect(w.data.estado).not.toBe(ESTADO_NFE.aprovada);
+      expect(w.data.xml_nfe_proc ?? null).toBeNull();
+    }
+    // apps/nfe rule 9: one single-template warn — cStat, idLote, count; never
+    // the protocol's xMotivo nor its chave.
+    const protWarns = warn.mock.calls
+      .map((c) => c.map(String).join(' '))
+      .filter((m) => m.includes('protNFe'));
+    expect(protWarns).toHaveLength(1);
+    expect(protWarns[0]).toContain('cStat=104');
+    expect(protWarns[0]).not.toContain(PROT_XMOTIVO);
+    expect(protWarns[0]).not.toContain(alvo);
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  it('WIDTH pin, not a SEFAZ scenario: a 4-digit lote cStat 1115 is persisted verbatim on every member and audit row', async () => {
+    const X = 'Rejeicao: codigo de quatro digitos (pin de largura)';
+    const { writes, enqueued, docOf, resultOf } = await emitThreeFresh('1115', X);
+
+    expectAsyncHomologacaoCall();
+    for (const pedidoId of LOTE_PEDIDOS) {
+      expect(docOf(pedidoId)).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat: '1115' });
+      expect(resultOf(pedidoId)).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat: '1115' });
+    }
+    const auditRows = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(auditRows).toHaveLength(3);
+    for (const row of auditRows) expect(row.data.cStat).toBe('1115');
+    expectNoConsultNoEnqueue(enqueued);
+  });
+
+  describe('processChunk → persistLoteSemRecibo wiring', () => {
+    const STORED_CHAVE = '35260514200166000187550010000000007100000009';
+    const STORED_XML =
+      `<NFe><infNFe Id="NFe${STORED_CHAVE}">…stored…</infNFe>` +
+      '<Signature><SignedInfo><Reference><DigestValue>D==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+    const PARALISADO = 'Servico Paralisado Momentaneamente (curto prazo)';
+
+    /**
+     * A FRESH pedido plus a #396 crash-window one (anchor committed, send /
+     * outcome lost) — seeded like the bulk-numeração #396 test.
+     */
+    function seedMixedChunkPedidos(): PedidoSpec[] {
+      return [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        {
+          pedidoId: 'PED-CRASH',
+          filialId: 'F-1',
+          existingNFe: {
+            numeracao: 7,
+            serie: 1,
+            tpEmis: '1',
+            estado: ESTADO_NFE.enviando, // #396: anchor committed, send/outcome lost
+            chave: STORED_CHAVE,
+            idLote: '3',
+            cStat: null,
+            xMotivo: null,
+            nRec: null,
+            retries: 0,
+            data_emissao: new Date().toISOString(),
+            xml_assinado: STORED_XML,
+          },
+        },
+      ];
+    }
+    function seedMixedChunk() {
+      return fakeFirestore({ events: [], pedidos: seedMixedChunkPedidos() });
+    }
+
+    /** The async lote reply of the race cases: 108, no infRec. */
+    function respostaParalisado(): never {
+      return {
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'TEST',
+        cStat: '108',
+        xMotivo: PARALISADO,
+        cUF: '35',
+        dhRecbto: new Date().toISOString(),
+      } as never;
+    }
+
+    it.each([
+      {
+        cStat: '225',
+        xMotivo: 'Rejeicao: Falha no Schema XML do lote de NFe',
+        estadoFresh: ESTADO_NFE.rejeitada,
+        esperaMs: nextConsultaDelayMs(0, null) + RECONCILE_SWEEP_GRACE_MS,
+      },
+      {
+        cStat: '108',
+        xMotivo: PARALISADO,
+        estadoFresh: ESTADO_NFE.rejeitada,
+        esperaMs: nextConsultaDelayMs(0, null) + RECONCILE_SWEEP_GRACE_MS,
+      },
+      {
+        cStat: '656',
+        xMotivo: 'Rejeicao: Consumo Indevido',
+        estadoFresh: ESTADO_NFE.error,
+        esperaMs: CONSUMO_INDEVIDO_ESPERA_MS,
+      },
+    ])(
+      'only the STORED-bytes member stays an anchor on lote cStat $cStat — the fresh one takes the refusal',
+      async ({ cStat, xMotivo, estadoFresh, esperaMs }) => {
+        const { fs, docs, writes } = seedMixedChunk();
+        autorizarLoteAsyncSemRecibo(cStat, xMotivo);
+        const { scheduler, enqueued } = recordingScheduler();
+        const before = Date.now();
+        const out = await emitirPedidosLote(
+          fs as never,
+          fakeRuntime(),
+          ['PED-FRESH', 'PED-CRASH'],
+          scheduler,
+        );
+        const after = Date.now();
+
+        expectAsyncHomologacaoCall();
+        expect(vi.mocked(autorizarLote).mock.calls[0]![1].NFe).toContain(STORED_XML);
+        // Only the fresh member was generated; the crash one never was.
+        expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(generateNFe).mock.calls.some((c) => c[0]?.numeracao === 7)).toBe(false);
+
+        const fresh = docs[nfePath('PED-FRESH')] as Record<string, unknown>;
+        expect(fresh).toMatchObject({
+          estado: estadoFresh,
+          cStat,
+          xMotivo,
+          proximaConsultaEm: null,
+        });
+        expect(out.results.find((r) => r.pedidoId === 'PED-FRESH')).toMatchObject({
+          estado: estadoFresh,
+          cStat,
+          xMotivo,
+          nRec: null,
+        });
+        // No write on the anchor ever carried an nRec (no receipt exists).
+        const crashWrites = writes.filter((w) => w.path === nfePath('PED-CRASH'));
+        expect(crashWrites.length).toBeGreaterThan(0);
+        expect(crashWrites.some((w) => 'nRec' in w.data)).toBe(false);
+
+        const crash = docs[nfePath('PED-CRASH')] as Record<string, unknown>;
+        expect(crash).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat,
+          xMotivo,
+          nRec: null,
+          xml_assinado: STORED_XML,
+        });
+        expect(crash.proximaConsultaEm as number).toBeGreaterThanOrEqual(
+          (before + esperaMs) * 1000,
+        );
+        expect(crash.proximaConsultaEm as number).toBeLessThanOrEqual((after + esperaMs) * 1000);
+        expect(out.results.find((r) => r.pedidoId === 'PED-CRASH')).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat,
+          nRec: null,
+        });
+        expectNoConsultNoEnqueue(enqueued);
+      },
+    );
+
+    it('108 on a REGENERATED reuse member + a crash-window member → the reuse one ends rejeitada with its NEW bytes, the anchor keeps its STORED bytes', async () => {
+      // A REUSE member (rejeitada earlier → regenerated under its own número
+      // and cNF), seeded like the bulk-numeração reuse test.
+      const REUSE_CHAVE = fakeChave(5, 42);
+      const OLD_XML = `<NFe><infNFe Id="NFe${REUSE_CHAVE}">…rejected bytes…</infNFe></NFe>`;
+      const { fs, docs } = fakeFirestore({
+        events: [],
+        pedidos: [
+          {
+            pedidoId: 'PED-REUSE',
+            filialId: 'F-1',
+            existingNFe: {
+              numeracao: 5,
+              serie: 1,
+              tpEmis: '1',
+              estado: ESTADO_NFE.rejeitada,
+              chave: REUSE_CHAVE,
+              idLote: '2',
+              cStat: '225', // not bloqueada → regenerate, reusing nNF 5 + cNF
+              xMotivo: 'Rejeicao: Falha no Schema XML',
+              nRec: null,
+              retries: 0,
+              data_emissao: new Date().toISOString(),
+              xml_assinado: OLD_XML,
+            },
+          },
+          ...seedMixedChunkPedidos().filter((p) => p.pedidoId === 'PED-CRASH'),
+        ],
+      });
+      autorizarLoteAsyncSemRecibo('108', PARALISADO);
+      const { scheduler, enqueued } = recordingScheduler();
+
+      const out = await emitirPedidosLote(
+        fs as never,
+        fakeRuntime(),
+        ['PED-REUSE', 'PED-CRASH'],
+        scheduler,
+      );
+
+      expectAsyncHomologacaoCall();
+      // Only the reuse member was regenerated — under its OWN nNF and cNF.
+      expect(vi.mocked(generateNFe)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(generateNFe).mock.calls[0]![0]).toMatchObject({
+        numeracao: 5,
+        cNF: REUSE_CHAVE.slice(35, 43),
+      });
+      expect(generatedChaves).toEqual([REUSE_CHAVE]);
+      const reuse = docs[nfePath('PED-REUSE')] as Record<string, unknown>;
+      const novosBytes = reuse.xml_assinado as string;
+      expect(novosBytes).not.toBe(OLD_XML);
+      // The lote carried the NEW reuse bytes and the anchor's STORED ones.
+      expect([...vi.mocked(autorizarLote).mock.calls[0]![1].NFe].sort()).toEqual(
+        [novosBytes, STORED_XML].sort(),
+      );
+      // Its new bytes were never sent before, so the refusal is conclusive for
+      // it: rejeitada, keeping the NEW bytes — never the old ones back.
+      expect(reuse).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        cStat: '108',
+        xMotivo: PARALISADO,
+        numeracao: 5,
+        chave: REUSE_CHAVE,
+        nRec: null,
+        proximaConsultaEm: null,
+      });
+      expect(out.results.find((r) => r.pedidoId === 'PED-REUSE')).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        chave: REUSE_CHAVE,
+        cStat: '108',
+        nRec: null,
+        reused: false,
+      });
+      // The crash-window member (near-miss: same reply, same fresh-looking
+      // shape) stays an anchor with the bytes it was sent with.
+      const crash = docs[nfePath('PED-CRASH')] as Record<string, unknown>;
+      expect(crash).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '108',
+        nRec: null,
+      });
+      expect(crash.xml_assinado).toBe(STORED_XML);
+      expect(out.results.find((r) => r.pedidoId === 'PED-CRASH')).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '108',
+        reused: false,
+      });
+      // Neither member took a fresh número.
+      expect(
+        (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+      ).toBe(0);
+      expectNoConsultNoEnqueue(enqueued);
+    });
+
+    it('a member a NEWER lote re-stamped mid-flight is not written — its result is the live doc (reused), receipt included', async () => {
+      const { fs, docs } = fakeFirestore({
+        events: [],
+        pedidos: LOTE_PEDIDOS.map((pedidoId) => ({ pedidoId, filialId: 'F-1' })),
+      });
+      let restamped: Record<string, unknown> | null = null;
+      vi.mocked(autorizarLote).mockImplementation(async () => {
+        // A concurrent re-emit retransmitted PED-3 in ANOTHER lote while this
+        // one was in flight — and that lote got a receipt.
+        restamped = {
+          ...docs[nfePath('PED-3')],
+          idLote: '999',
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat: '103',
+          xMotivo: 'Lote recebido com sucesso',
+          nRec: 'OUTRO',
+        };
+        docs[nfePath('PED-3')] = restamped;
+        return respostaParalisado();
+      });
+      const { scheduler, enqueued } = recordingScheduler();
+
+      const out = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS], scheduler);
+
+      expectAsyncHomologacaoCall();
+      expect(restamped).not.toBeNull();
+      expect(docs[nfePath('PED-3')]).toBe(restamped);
+      // The live doc belongs to the OTHER lote's run, so it is reported the way
+      // the dedup branch reports a doc it did not write (`reused: true`). The
+      // web dialog buckets on exactly these fields: no errorCode, the estado,
+      // and `reused`.
+      const skipped = out.results.find((r) => r.pedidoId === 'PED-3')!;
+      expect('errorCode' in skipped).toBe(false);
+      expect(skipped).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '103',
+        nRec: 'OUTRO',
+        reused: true,
+      });
+      // Members still on this chunk's idLote are written — and they ARE this
+      // run's outcome (near-miss of the skipped member).
+      for (const pedidoId of ['PED-1', 'PED-2']) {
+        expect(docs[nfePath(pedidoId)]).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '108',
+        });
+        expect(out.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          reused: false,
+        });
+      }
+      expectNoConsultNoEnqueue(enqueued);
+    });
+
+    it('656: the anchor’s 1 h pacing binds only the sweep — an immediate operator re-emit retransmits its STORED bytes and gets a receipt', async () => {
+      const { fs, docs } = seedMixedChunk();
+      autorizarLoteAsyncSemRecibo('656', 'Rejeicao: Consumo Indevido');
+      const { scheduler, enqueued } = recordingScheduler();
+      const before = Date.now();
+      await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-CRASH'], scheduler);
+      const after = Date.now();
+
+      expect(docs[nfePath('PED-FRESH')]).toMatchObject({
+        estado: ESTADO_NFE.error,
+        cStat: '656',
+        proximaConsultaEm: null,
+      });
+      const crash = docs[nfePath('PED-CRASH')] as Record<string, unknown>;
+      expect(crash).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '656',
+        nRec: null,
+        xml_assinado: STORED_XML,
+      });
+      expect(crash.proximaConsultaEm as number).toBeGreaterThanOrEqual(
+        (before + CONSUMO_INDEVIDO_ESPERA_MS) * 1000,
+      );
+      expect(crash.proximaConsultaEm as number).toBeLessThanOrEqual(
+        (after + CONSUMO_INDEVIDO_ESPERA_MS) * 1000,
+      );
+      expect(enqueued).toEqual([]);
+
+      // The operator re-emits right away: the emit path does NOT wait out the
+      // anchor's `proximaConsultaEm` (that gates the sweep's consult only), so
+      // the stored bytes go out again at once.
+      autorizarLoteAsync('RECIBO-2');
+      const again = await emitirPedidosLote(
+        fs as never,
+        fakeRuntime(),
+        ['PED-FRESH', 'PED-CRASH'],
+        scheduler,
+      );
+
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
+      const segundo = vi.mocked(autorizarLote).mock.calls[1]![1];
+      expect(segundo.idLote).toBe('2');
+      expect(segundo.NFe).toContain(STORED_XML);
+      // The anchor was never regenerated — in either run.
+      expect(vi.mocked(generateNFe).mock.calls.some((c) => c[0]?.numeracao === 7)).toBe(false);
+      expect(docs[nfePath('PED-CRASH')]).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'RECIBO-2',
+        idLote: '2',
+        xml_assinado: STORED_XML,
+      });
+      expect(again.results.find((r) => r.pedidoId === 'PED-CRASH')).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'RECIBO-2',
+        reused: false,
+      });
+      // The error member regenerated under its OWN número — no second nNF.
+      expect(
+        (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+      ).toBe(1);
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]).toMatchObject({ filialId: 'F-1', nRec: 'RECIBO-2', attempt: 0 });
+    });
+
+    it('a member that went FINAL mid-flight (aprovada + proc) is not overwritten — its result is aprovada, reused (never this run’s success)', async () => {
+      const { fs, docs, writes } = fakeFirestore({
+        events: [],
+        pedidos: LOTE_PEDIDOS.map((pedidoId) => ({ pedidoId, filialId: 'F-1' })),
+      });
+      const PROC = '<nfeProc>…PED-2…</nfeProc>';
+      let aprovadoEm = -1;
+      vi.mocked(autorizarLote).mockImplementation(async () => {
+        // A concurrent consSit authorized PED-2 and swapped its anchor for the
+        // proc while this lote was in flight. idLote is UNCHANGED, so only the
+        // final-estado guard can refuse the write (near-miss of the re-stamp race).
+        docs[nfePath('PED-2')] = {
+          ...docs[nfePath('PED-2')],
+          estado: ESTADO_NFE.aprovada,
+          cStat: '100',
+          xMotivo: 'Autorizado o uso da NF-e',
+          xml_nfe_proc: PROC,
+          xml_assinado: null,
+        };
+        aprovadoEm = writes.length;
+        return respostaParalisado();
+      });
+      const { scheduler, enqueued } = recordingScheduler();
+
+      const out = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS], scheduler);
+
+      expectAsyncHomologacaoCall();
+      expect(aprovadoEm).toBeGreaterThanOrEqual(0);
+      expect(writes.slice(aprovadoEm).some((w) => w.path === nfePath('PED-2'))).toBe(false);
+      expect(docs[nfePath('PED-2')]).toMatchObject({
+        estado: ESTADO_NFE.aprovada,
+        cStat: '100',
+        idLote: '1',
+        xml_nfe_proc: PROC,
+        xml_assinado: null,
+      });
+      // A concurrent run authorized it, so this run reports it `reused` — the
+      // web dialog then buckets it "Não emitidas", never "Sucesso" (its
+      // classifyEmitResult reads exactly: no errorCode, estado, reused).
+      const skipped = out.results.find((r) => r.pedidoId === 'PED-2')!;
+      expect('errorCode' in skipped).toBe(false);
+      expect(skipped).toMatchObject({
+        estado: ESTADO_NFE.aprovada,
+        cStat: '100',
+        nRec: null,
+        reused: true,
+      });
+      for (const pedidoId of ['PED-1', 'PED-3']) {
+        expect(docs[nfePath(pedidoId)]).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '108',
+        });
+        expect(out.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '108',
+          reused: false,
+        });
+      }
+      expectNoConsultNoEnqueue(enqueued);
+    });
+
+    it('a member whose doc VANISHED mid-flight fails typed (NFeOrchestratorError) and is not resurrected — the others persist', async () => {
+      const { fs, docs, writes } = fakeFirestore({
+        events: [],
+        pedidos: LOTE_PEDIDOS.map((pedidoId) => ({ pedidoId, filialId: 'F-1' })),
+      });
+      let apagadoEm = -1;
+      vi.mocked(autorizarLote).mockImplementation(async () => {
+        delete docs[nfePath('PED-2')];
+        apagadoEm = writes.length;
+        return respostaParalisado();
+      });
+      const { scheduler, enqueued } = recordingScheduler();
+
+      const out = await emitirPedidosLote(fs as never, fakeRuntime(), [...LOTE_PEDIDOS], scheduler);
+
+      expectAsyncHomologacaoCall();
+      expect(out.results).toHaveLength(3);
+      const perdido = out.results.find((r) => r.pedidoId === 'PED-2')!;
+      expect(perdido).toMatchObject({ pedidoId: 'PED-2', errorCode: 'NFeOrchestratorError' });
+      expect('estado' in perdido).toBe(false);
+      expect('errorMessage' in perdido ? perdido.errorMessage : '').toMatch(
+        /pedidos\/PED-2\/nfev4\/s1 ausente ao gravar o retorno do lote 1 /,
+      );
+      // No partial doc minted by a merge onto the missing path.
+      expect(apagadoEm).toBeGreaterThanOrEqual(0);
+      expect(nfePath('PED-2') in docs).toBe(false);
+      expect(writes.slice(apagadoEm).some((w) => w.path === nfePath('PED-2'))).toBe(false);
+      for (const pedidoId of ['PED-1', 'PED-3']) {
+        expect(docs[nfePath(pedidoId)]).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '108',
+        });
+        expect(out.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '108',
+          nRec: null,
+        });
+      }
+      expectNoConsultNoEnqueue(enqueued);
+    });
+  });
+
+  it('#506 × #512: an unbuildable member is still diverted before allocation when the lote reply has no receipt (108)', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-BADTAX', filialId: 'F-1', imposto: impostoCsosn900Parcial() },
+        { pedidoId: 'PED-GOOD2', filialId: 'F-1' },
+      ],
+    });
+    const X = 'Servico Paralisado Momentaneamente (curto prazo)';
+    autorizarLoteAsyncSemRecibo('108', X);
+    const { scheduler, enqueued } = recordingScheduler();
+
+    const out = await emitirPedidosLote(
+      fs as never,
+      fakeRuntime(),
+      ['PED-GOOD', 'PED-BADTAX', 'PED-GOOD2'],
+      scheduler,
+    );
+
+    expect(out.results).toHaveLength(3);
+    // The pre-flight verdict (#506) is untouched by the #512 branch.
+    const bad = out.results.find((r) => r.pedidoId === 'PED-BADTAX')!;
+    expect(bad).toMatchObject({ errorCode: 'NFeOrchestratorError' });
+    expect('estado' in bad).toBe(false);
+    expect('errorMessage' in bad ? bad.errorMessage : '').toMatch(
+      /^pedido 'PED-BADTAX' item 0 \(produto 'P-1'\): .*CSOSN '900'.*ICMS próprio missing: modBC$/,
+    );
+    expect(docs[nfePath('PED-BADTAX')]).toBeUndefined();
+    expect(events.some((e) => e.startsWith('set:pedidos/PED-BADTAX/'))).toBe(false);
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(2);
+    // The two buildable members rode ONE async lote and took the #512 disposition.
+    expectAsyncHomologacaoCall();
+    expect(vi.mocked(autorizarLote).mock.calls[0]![1].NFe).toHaveLength(2);
+    for (const pedidoId of ['PED-GOOD', 'PED-GOOD2']) {
+      expect(docs[nfePath(pedidoId)]).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        cStat: '108',
+        xMotivo: X,
+        nRec: null,
+        proximaConsultaEm: null,
+      });
+      expect(out.results.find((r) => r.pedidoId === pedidoId)).toMatchObject({
+        estado: ESTADO_NFE.rejeitada,
+        cStat: '108',
+        nRec: null,
+        reused: false,
+      });
+    }
+    expectNoConsultNoEnqueue(enqueued);
   });
 });

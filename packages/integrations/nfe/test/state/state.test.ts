@@ -50,6 +50,26 @@ describe('classifyCStat', () => {
     ['215', 'rejeitada-schema'],
     ['225', 'rejeitada-schema'],
     ['999', 'rejeitada'],
+    // WIDTH pins (#512): `TStat` is `[0-9]{3,4}` (tiposBasico_v4.00.xsd), and
+    // the NT 2025.002 IBS/CBS codes are 4 digits. Each row is also a NEAR-MISS
+    // of a 3-digit code it must NOT be confused with: 100/101/102/108/110/656
+    // by SUFFIX (1100…1656) and by PREFIX (1000…6560; 110 is a prefix of
+    // 1100–1110 too), and the 290–298 numeric range by magnitude (2900) — so an
+    // `endsWith`, a `startsWith`, or a range test without an upper bound reds
+    // here.
+    ['1115', 'rejeitada'],
+    ['1100', 'rejeitada'],
+    ['1101', 'rejeitada'],
+    ['1102', 'rejeitada'],
+    ['1108', 'rejeitada'],
+    ['1110', 'rejeitada'],
+    ['1656', 'rejeitada'],
+    ['1000', 'rejeitada'],
+    ['1010', 'rejeitada'],
+    ['1020', 'rejeitada'],
+    ['1080', 'rejeitada'],
+    ['6560', 'rejeitada'],
+    ['2900', 'rejeitada'],
   ] as const)('classifies %s as %s', (cStat, expected) => {
     expect(classifyCStat(cStat)).toBe(expected);
   });
@@ -76,6 +96,9 @@ describe('cStatToEstado', () => {
   });
   it('151 (cancelamento fora de prazo) → cancelada', () => {
     expect(cStatToEstado('151')).toBe(ESTADO_NFE.cancelada);
+  });
+  it('a 4-digit cStat (1115) → rejeitada (#512 width pin)', () => {
+    expect(cStatToEstado('1115')).toBe(ESTADO_NFE.rejeitada);
   });
 });
 
@@ -125,6 +148,9 @@ describe('nextAction', () => {
   });
   it('656 (consumo indevido) → backoff', () => {
     expect(nextAction('656', 0)).toBe('backoff');
+  });
+  it('a 4-digit cStat (1115) → done-rejected (#512 width pin)', () => {
+    expect(nextAction('1115', 0)).toBe('done-rejected');
   });
 });
 

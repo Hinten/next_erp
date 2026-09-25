@@ -3,7 +3,9 @@
  * `persistPatch`. The guard runs a transaction that re-reads the nfev4 doc:
  * a doc that reached a final estado DIFFERENT from the patch's mid-flight is
  * never overwritten (`written: false` + the doc's live truth); everything
- * else writes exactly what `persistPatch` writes (shared mapping).
+ * else writes exactly what `persistPatch` writes (shared mapping). Under a
+ * `PersistGuard` (#512) a doc re-stamped by a newer lote is skipped the same
+ * way, and a missing doc is refused instead of written.
  *
  * Firestore is faked at the `runTransaction` seam; `nfev4Collection`
  * parseRead/parseMerge are passthrough mocks so the shapes stay visible.
@@ -22,6 +24,7 @@ import type { NFeStatePatch } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
 import { persistPatch, persistPatchUnlessFinal } from '../../../lib/nfe/orchestrator/audit';
+import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 const NFE_REF = { path: 'pedidos/PED-1/nfev4/s1' } as never;
 
@@ -67,6 +70,7 @@ describe('persistPatchUnlessFinal', () => {
       estadoAtual: ESTADO_NFE.cancelada,
       cStatAtual: '101',
       xMotivoAtual: 'Cancelamento de NF-e homologado',
+      nRecAtual: null,
     });
     expect(txSet).not.toHaveBeenCalled();
   });
@@ -140,5 +144,107 @@ describe('persistPatchUnlessFinal', () => {
     const { ultima_modificacao: _p, ...plainRest } = plainData;
     expect(guardedRest).toEqual(plainRest);
     expect(plainSet.mock.calls[0]![1]).toEqual({ merge: true });
+  });
+});
+
+describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
+  const GUARD = { expectedIdLote: '12' } as const;
+  /** A lote-level refusal with no infRec, as #512 writes it to a fresh member. */
+  const loteReply = (): NFeStatePatch =>
+    patchOf({
+      estado: ESTADO_NFE.rejeitada,
+      cStat: '225',
+      xMotivo: 'Rejeição: Falha no Schema XML da NFe',
+      action: 'done-rejected',
+    });
+
+  it('stored idLote EQUAL to the expected one → writes', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.enviando, idLote: '12', nRec: null });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+    expect(txSet.mock.calls[0]![1]).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat: '225' });
+  });
+
+  it('NEAR-MISS: a newer lote re-stamped the doc → NO write, result carries the live doc incl. its nRec', async () => {
+    const { fs, txSet } = fakeFs({
+      estado: ESTADO_NFE.aguardandoResposta,
+      idLote: '13',
+      nRec: 'OUTRO',
+      cStat: '103',
+      xMotivo: 'Lote recebido com sucesso',
+    });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    expect(r).toEqual({
+      written: false,
+      estadoAtual: ESTADO_NFE.aguardandoResposta,
+      cStatAtual: '103',
+      xMotivoAtual: 'Lote recebido com sucesso',
+      nRecAtual: 'OUTRO',
+    });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a stored idLote of null counts as superseded → NO write', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.enviando, idLote: null });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    expect(r).toMatchObject({ written: false, estadoAtual: ESTADO_NFE.enviando, nRecAtual: null });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a read-tolerated legacy NUMBER idLote equal to the expected one → writes (String() on both sides)', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.enviando, idLote: 12 });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('guard omitted → idLote is ignored, a different stored lote still writes (as before #512)', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.enviando, idLote: '13', nRec: 'OUTRO' });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply());
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a FINAL estado with an EQUAL idLote → still NO write (the final guard wins)', async () => {
+    const { fs, txSet } = fakeFs({
+      estado: ESTADO_NFE.aprovada,
+      idLote: '12',
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+    });
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    expect(r).toEqual({
+      written: false,
+      estadoAtual: ESTADO_NFE.aprovada,
+      cStatAtual: '100',
+      xMotivoAtual: 'Autorizado o uso da NF-e',
+      nRecAtual: null,
+    });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a missing doc WITH a guard → rejects NFeOrchestratorError, nothing written', async () => {
+    // Near-miss of 'a missing doc → writes' above: without a guard the same
+    // missing doc IS written.
+    const { fs, txSet } = fakeFs(null);
+
+    const p = persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
+
+    await expect(p).rejects.toBeInstanceOf(NFeOrchestratorError);
+    await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*lote 12/);
+    expect(txSet).not.toHaveBeenCalled();
   });
 });
