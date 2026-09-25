@@ -1,7 +1,10 @@
+import { isValidElement } from 'react';
 import { describe, expect, it } from 'vitest';
-import { pedidoMeta, pedidoSchema } from '@delfrance/schemas';
+import type { SnapshotRow } from '@delfrance/data/hooks';
+import { pedidoMeta, pedidoSchema, type Pedido } from '@delfrance/schemas';
 import { extractFieldsFromSchema } from '@delfrance/ui';
 
+import { NFCell } from './PedidoCells';
 import { PEDIDO_ROW_LINK_COLUMN, pedidoVirtualColumns } from './PedidosListView';
 
 /**
@@ -71,5 +74,25 @@ describe('pedidos list column set', () => {
     // that the key RESOLVES — never that it is among the visible columns, which
     // is exactly the gap this covers.
     expect(declared).toContain(PEDIDO_ROW_LINK_COLUMN);
+  });
+
+  it('NF column projects the cliente ref AND hands it to NFCell (#852)', () => {
+    // NFCell's prop is OPTIONAL — so its 19 test renders compile unchanged —
+    // which means dropping this wiring would fail nothing else: the 805
+    // guidance would silently lose the cliente's name and cadastro link.
+    const nf = columns.find((c) => c.key === 'nf');
+    expect(nf?.dependsOn).toContain('clientePedidoOuterRef');
+
+    const ref = 'documents/clientes/cli-1';
+    const row = {
+      id: 'p1',
+      path: 'pedidos/p1',
+      data: { clientePedidoOuterRef: ref } as unknown as Pedido,
+    } satisfies SnapshotRow<Pedido>;
+    const cell = nf?.renderCell(row);
+    expect(isValidElement(cell)).toBe(true);
+    if (!isValidElement<{ pedidoId: string; clientePedidoOuterRef?: unknown }>(cell)) return;
+    expect(cell.type).toBe(NFCell);
+    expect(cell.props).toEqual({ pedidoId: 'p1', clientePedidoOuterRef: ref });
   });
 });

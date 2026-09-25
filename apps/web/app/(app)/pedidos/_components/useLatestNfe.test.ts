@@ -4,6 +4,8 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
+import { nfeAssinadoXml } from '@/lib/nfe/nfeAssinadoFixture';
+
 import {
   NFE_LISTENER_IDLE_MS,
   NFE_LISTENER_UNSEEN_MS,
@@ -350,5 +352,115 @@ describe('useLatestNfe', () => {
     // `p0` was evicted; the most recent one survives.
     expect(renderHook(() => useLatestNfe('p0')).result.current.status).not.toBe('ready');
     expect(renderHook(() => useLatestNfe(`p${NFE_MEMO_MAX}`)).result.current.status).toBe('ready');
+  });
+});
+
+describe('useLatestNfe — the cStat 805 destinatário on the badge (#852)', () => {
+  // Homologação fixture (`<tpAmb>2</tpAmb>`): an internal operation whose
+  // destinatário was sent as Isento — exactly what SEFAZ answers with 805.
+  const XML_805 = nfeAssinadoXml({ idDest: '1', indIEDest: '2', ufDest: 'SP' });
+
+  function rejeitadaRow(cStat: string): SnapshotRow<NotaFiscalEletronica>[] {
+    return [
+      {
+        id: 'nfe-1',
+        path: 'pedidos/p1/nfev4/nfe-1',
+        data: {
+          estado: ESTADO_NFE.rejeitada,
+          numeracao: 7,
+          cStat,
+          xMotivo: 'Rejeição',
+          xml_assinado: XML_805,
+          xml_nfe_proc: null,
+        } as NotaFiscalEletronica,
+      },
+    ];
+  }
+
+  /** Mount on screen and deliver one SERVER snapshot (so the memo records it). */
+  function settleWith(rows: SnapshotRow<NotaFiscalEletronica>[]) {
+    intersecting.current = true;
+    const hook = renderHook(() => useLatestNfe('p1'));
+    snapState.current = { data: rows, loading: false, error: undefined, fromCache: false };
+    act(() => hook.rerender());
+    return hook;
+  }
+
+  beforeEach(() => {
+    __resetLatestNfeMemo();
+    useSnapshotSpy.mockClear();
+    intersecting.current = null;
+    uid.current = 'user-a';
+    snapState.current = { data: undefined, loading: true, error: undefined };
+  });
+
+  it('carries the three scalars for an 805, and null for any other cStat', () => {
+    expect(XML_805).toContain('<tpAmb>2</tpAmb>');
+    const h805 = settleWith(rejeitadaRow('805'));
+    expect(h805.result.current.badge?.destinatario).toEqual({
+      idDest: '1',
+      indIEDest: '2',
+      uf: 'SP',
+    });
+    h805.unmount();
+
+    // Same XML, another rejection: the badge never pays for a parse.
+    __resetLatestNfeMemo();
+    const h226 = settleWith(rejeitadaRow('226'));
+    expect(h226.result.current.badge?.destinatario).toBeNull();
+  });
+
+  it('parses an 805 snapshot exactly ONCE across re-renders — effect and render share the memo', () => {
+    // `toBadge` used to run at two call sites (the remember-effect and the
+    // settled return) and again on every render. A DOMParser pass per render
+    // per 805 row is what the single `settledBadge` memo exists to prevent.
+    const parse = vi.spyOn(DOMParser.prototype, 'parseFromString');
+    try {
+      const { result, rerender } = settleWith(rejeitadaRow('805'));
+      for (let i = 0; i < 4; i += 1) act(() => rerender());
+      expect(result.current.badge?.destinatario?.uf).toBe('SP');
+      expect(parse).toHaveBeenCalledTimes(1);
+
+      // A NEW snapshot (new row identity) is a new parse — once.
+      snapState.current = {
+        data: rejeitadaRow('805'),
+        loading: false,
+        error: undefined,
+        fromCache: false,
+      };
+      act(() => rerender());
+      act(() => rerender());
+      expect(parse).toHaveBeenCalledTimes(2);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('never parses for a non-805 snapshot', () => {
+    const parse = vi.spyOn(DOMParser.prototype, 'parseFromString');
+    try {
+      const { rerender } = settleWith(rejeitadaRow('226'));
+      act(() => rerender());
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('the remembered badge keeps the destinatário and never the XML', () => {
+    const first = settleWith(rejeitadaRow('805'));
+    first.unmount();
+
+    // Remount with no settled snapshot: the badge now comes from the memo.
+    snapState.current = { data: undefined, loading: true, error: undefined };
+    const { result } = renderHook(() => useLatestNfe('p1'));
+    expect(result.current.doc).toBeUndefined();
+    const badge = result.current.badge;
+    expect(badge?.destinatario).toEqual({ idDest: '1', indIEDest: '2', uf: 'SP' });
+
+    // The memo holds the projection only — the reason the field is scalars.
+    const serialised = JSON.stringify(badge);
+    expect(serialised).not.toContain('<NFe');
+    expect(serialised).not.toContain('infNFe');
   });
 });

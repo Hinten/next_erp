@@ -15,6 +15,7 @@
 import { type ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { FirebaseError } from 'firebase/app';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -37,6 +38,7 @@ import { microsToMillis } from '@delfrance/core/datetime';
 import { formatReais } from '@delfrance/core/money';
 import { formatCpfCnpj } from '@delfrance/core/documents';
 import {
+  Alert,
   Anchor,
   Badge,
   Box,
@@ -60,10 +62,14 @@ import {
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { ehRefDeCliente } from '@/lib/data/readClienteByRef';
 import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
 import type { IntegracaoLookup } from './integracaoLookup';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { cadastroClienteRejeicao } from '@/lib/nfe/contextoRejeicao';
+import type { DestinatarioNFe } from '@/lib/nfe/destinatarioNFe';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
+import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
@@ -98,7 +104,8 @@ function formatMicros(us: number | null | undefined): string {
 /*  (ordered by `ultima_modificacao` desc, limit 1 — see `useLatestNfe`, which */
 /*  owns the query and its viewport gate). Hovering the badge opens a          */
 /*  HoverCard with the Estado, cStat, xMotivo, Número, Chave and Erro fields — */
-/*  each copyable via an icon button when present.                            */
+/*  each copyable via an icon button when present. A cStat that needs context */
+/*  (805, #852) adds the operator guidance right under Estado.                */
 /* -------------------------------------------------------------------------- */
 
 const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
@@ -115,7 +122,19 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
   [ESTADO_NFE.error]: 'red',
 };
 
-export function NFCell({ pedidoId }: { pedidoId: string }) {
+export function NFCell({
+  pedidoId,
+  clientePedidoOuterRef,
+}: {
+  pedidoId: string;
+  /**
+   * The pedido's cliente — only the cStat 805 guidance reads it, to name the
+   * cliente and link its cadastro. OPTIONAL: without it the guidance still
+   * renders, as "o cliente deste pedido" with no link. `PedidosListView`
+   * passes it (pinned by `PedidosListView.columns.test.ts`).
+   */
+  clientePedidoOuterRef?: Pedido['clientePedidoOuterRef'] | null;
+}) {
   const { ref, status, badge: latest, doc, latestId } = useLatestNfe(pedidoId);
   const router = useRouter();
 
@@ -186,6 +205,16 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Text>
             <Text size="sm">{label}</Text>
           </Group>
+
+          {/* Guidance ABOVE the raw cStat/xMotivo rows, which stay: SEFAZ's own
+              words remain on screen and copyable. */}
+          {rejeicaoPrecisaContexto(latest.cStat) && (
+            <OrientacaoRejeicaoCliente
+              cStat={latest.cStat}
+              destinatario={latest.destinatario}
+              clientePedidoOuterRef={clientePedidoOuterRef ?? null}
+            />
+          )}
 
           {latest.cStat != null && (
             <Group gap="xs" wrap="nowrap">
@@ -304,6 +333,84 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   );
 }
 
+/**
+ * The cStat 805 guidance inside NFCell's HoverCard (#852): the same pure
+ * `orientacaoRejeicaoNFe` the toasts and the lote dialog call, fed by the
+ * badge's `destinatario` (what was SENT, from the signed XML) and the cliente
+ * cadastro (what it says NOW). Renders nothing when the mapping has no guidance
+ * — e.g. an 805 whose XML did not carry `indIEDest=2`.
+ *
+ * Mounts only while an 805 badge's dropdown is open (Mantine mounts dropdown
+ * children on open), so the cliente read below costs one `getDoc` per
+ * hover-open of an 805 row, and nothing on any other row.
+ */
+function OrientacaoRejeicaoCliente({
+  cStat,
+  destinatario,
+  clientePedidoOuterRef,
+}: {
+  readonly cStat: string | null;
+  readonly destinatario: DestinatarioNFe | null;
+  readonly clientePedidoOuterRef: Pedido['clientePedidoOuterRef'] | null;
+}) {
+  const db = getFirebaseFirestore();
+  const rowReads = usePedidoRowReads();
+  const ref = useMemo(() => {
+    if (clientePedidoOuterRef == null) return null;
+    let deref: DocumentReference | null;
+    try {
+      deref = dereferenceOuterRef(db, clientePedidoOuterRef);
+    } catch (err) {
+      // A legacy opaque `{ path }` ref with an odd segment count makes `doc()`
+      // throw synchronously — here, during render. Degrade exactly like the
+      // loader (`contextoRejeicao.ts`): "o cliente deste pedido", no link.
+      if (err instanceof FirebaseError) return null;
+      throw err;
+    }
+    // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens — the
+    // same id under another collection is a different document. Anything else
+    // is "o cliente deste pedido" with no link, and reads nothing.
+    return deref != null && ehRefDeCliente(deref) ? deref : null;
+  }, [db, clientePedidoOuterRef]) as DocumentReference<ClienteDoc> | null;
+  const path = ref?.path ?? null;
+
+  const { data, isError } = useQuery<ClienteDoc | null>({
+    // ⚠️ The SAME key and reader as `ClienteCell` — one provenance (#1303).
+    queryKey: clienteQueryKey(path ?? ''),
+    queryFn: async () => (ref ? readClienteByRef<ClienteDoc>(db, ref) : null),
+    enabled: !!ref && rowReads === 'settled',
+    // ⚠️ 0, not ClienteCell's 5 min: the guidance switches to "Cadastro do
+    // cliente já alterado" once the cadastro stops declaring ISENTO, and a
+    // cadastro fixed a minute ago must show it. Each hover-open of an 805 badge
+    // re-reads the cliente, which also refreshes ClienteCell's shared entry.
+    staleTime: 0,
+  });
+
+  // Unknown while loading or on error — the mapping then keeps the fix-it text,
+  // which is true either way. Re-checked field by field: the shared key can hold
+  // a RAW soft-read document, and a non-string `ie` would throw in `normalizarIe`.
+  const cadastro = !isError && data ? cadastroClienteRejeicao(data) : null;
+  const orientacao = orientacaoRejeicaoNFe(cStat, {
+    destinatario,
+    cliente: ref ? { id: ref.id, cadastro } : null,
+  });
+  if (orientacao == null) return null;
+  return (
+    <Alert color={orientacao.cor} title={orientacao.titulo} p="xs">
+      <Stack gap={4}>
+        <Text size="xs">{orientacao.texto}</Text>
+        {/* No stopPropagation of its own: the dropdown's Stack already stops the
+            row click for everything inside it. */}
+        {orientacao.link && (
+          <Anchor component={Link} href={orientacao.link.href} size="xs">
+            {orientacao.link.label}
+          </Anchor>
+        )}
+      </Stack>
+    </Alert>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                ClienteCell                                 */
 /*                                                                            */
@@ -314,10 +421,15 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
 /*  cliente share the cached fetch.                                           */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The cliente fields read under `clienteQueryKey` — by `ClienteCell` and by
+ * NFCell's `OrientacaoRejeicaoCliente` (which also needs `ie`, #852).
+ */
 interface ClienteDoc {
   readonly nome?: string | null;
   readonly cpf_cnpj?: string | null;
   readonly tipo?: TipoCliente | null;
+  readonly ie?: string | null;
 }
 
 export function ClienteCell({ pedido }: { pedido: Pedido }) {

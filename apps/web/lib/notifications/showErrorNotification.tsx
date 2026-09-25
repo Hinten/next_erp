@@ -13,9 +13,14 @@
  *
  * `message` is a string so the copy button can write it to clipboard.
  * Callers needing rich JSX should call `notifications.show()` directly.
+ * The one structured extra is an optional `link` — an in-app route rendered
+ * under the message (today the cliente's cadastro on a cStat 805 rejection,
+ * #852). Clicking it dismisses the toast; it never enters the copied text,
+ * which stays `${title}: ${message}`.
  */
 import type { ReactNode } from 'react';
-import { ActionIcon, CopyButton, Group, Text, Tooltip } from '@mantine/core';
+import Link from 'next/link';
+import { ActionIcon, Anchor, CopyButton, Group, Text, Tooltip } from '@mantine/core';
 import type { MantineColor } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy } from '@tabler/icons-react';
@@ -27,6 +32,12 @@ export interface CopyableNotificationConfig {
   readonly message: string;
   readonly color?: MantineColor;
   readonly autoClose?: number;
+  /**
+   * In-app navigation rendered below the message. Structurally the same as
+   * `NotificationLink` in `@/lib/nfe/errors`, so a `NotificationShape` flows
+   * through whole without this module depending on the NF-e one.
+   */
+  readonly link?: { readonly href: string; readonly label: string } | null;
 }
 
 /** Back-compat alias — the config shape predates the generic entry. */
@@ -54,7 +65,7 @@ export function showCopyableNotification(config: CopyableNotificationConfig): vo
   const id = makeId();
   const autoClose = config.autoClose ?? DEFAULT_AUTO_CLOSE;
   const color = config.color ?? 'gray';
-  const { title, message } = config;
+  const { title, message, link } = config;
 
   // Shared props re-passed on every show/update so the title-wrap style and
   // close button persist while the user hovers to read a long message —
@@ -79,11 +90,28 @@ export function showCopyableNotification(config: CopyableNotificationConfig): vo
     >
       {/* `minWidth: 0` lets this flex item shrink so the text wraps instead of
           overflowing; the body scrolls past MESSAGE_MAX_HEIGHT while the copy
-          button (a sibling) stays pinned top-right and never scrolls away. */}
-      <div style={{ flex: 1, minWidth: 0, maxHeight: MESSAGE_MAX_HEIGHT, overflowY: 'auto' }}>
-        <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-          {message}
-        </Text>
+          button (a sibling) stays pinned top-right and never scrolls away. The
+          link sits OUTSIDE the scrolling box, so a long message never hides it. */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ maxHeight: MESSAGE_MAX_HEIGHT, overflowY: 'auto' }}>
+          <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {message}
+          </Text>
+        </div>
+        {link ? (
+          // Navigating away leaves nothing for the toast to say — dismiss it
+          // rather than let it follow the operator onto the cadastro page.
+          <Anchor
+            component={Link}
+            href={link.href}
+            size="sm"
+            display="inline-block"
+            mt={4}
+            onClick={() => notifications.hide(id)}
+          >
+            {link.label}
+          </Anchor>
+        ) : null}
       </div>
       <CopyButton value={`${title}: ${message}`} timeout={1500}>
         {({ copied, copy }) => (
