@@ -23,14 +23,21 @@ vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: vi.fn() }));
 vi.mock('@/lib/nfe/orchestrator/epec', () => ({ transmitirPosEpec: vi.fn() }));
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
-  return { ...actual, consultarSituacaoNFe: vi.fn() };
+  // Both SEFAZ consult bindings are mocked: an offline test must never reach
+  // the real transport, even at a fake `https://example/…` host.
+  return { ...actual, consultarLote: vi.fn(), consultarSituacaoNFe: vi.fn() };
+});
+vi.mock('@/lib/nfe/filial-cert', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/filial-cert')>();
+  return { ...actual, resolveFilialRuntimeByCnpj: vi.fn() };
 });
 
-import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
+import { consultarLote, consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
@@ -142,7 +149,16 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
   return {
     fs: {
       doc: (p: string) => ref(p),
-      collection: (p: string) => ({ doc: (id: string) => ref(`${p}/${id}`) }),
+      collection: (p: string) => ({
+        doc: (id: string) => ref(`${p}/${id}`),
+        // The receipt path audits each consult as a new enviNfe doc.
+        async add(data: Record<string, unknown>) {
+          const path = `${p}/auto-${writes.length}`;
+          writes.push({ path, data });
+          docs[path] = data;
+          return ref(path);
+        },
+      }),
       collectionGroup,
     } as never,
     docs,
@@ -383,16 +399,64 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     );
   });
 
-  it('preserves the nRec saved on cStat=103 — a consSit outcome carries no receipt', async () => {
+  it('a stuck doc with nRec + filialId is reconciled by receipt, never consSit — and keeps its nRec', async () => {
+    // This case used to reach the REAL consultarLote (the binding was not
+    // mocked) and passed only because the sweep's catch swallowed the transport
+    // failure. It now asserts the receipt path actually ran.
     const { fs, docs } = fakeFirestore({
       'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103' }),
     });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockResolvedValue({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SVC_AN',
+      nRec: 'REC-103',
+      cStat: '105',
+      xMotivo: 'Lote em processamento',
+      cUF: '35',
+      dhRecbto: '2026-06-11T09:00:00-03:00',
+    } as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, stillPending: 1, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tpAmb: '2', url: 'https://example/svc-an/ret' }),
+      { nRec: 'REC-103' },
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    const doc = docs['pedidos/PED-2/nfev4/s6'] as { cStat: string; retries: number; nRec: string };
+    expect(doc.cStat).toBe('105');
+    expect(doc.retries).toBe(1);
+    expect(doc.nRec).toBe('REC-103');
+  });
+
+  it('preserves the nRec saved on cStat=103 when a legacy doc (no filialId) is recovered by consSit', async () => {
+    // No filialId → the receipt path cannot resolve a cert, so the sweep consults
+    // by chave with the cert resolved from the emit CNPJ inside the chave.
+    const { fs, docs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103', filialId: null }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(resolveFilialRuntimeByCnpj).mockResolvedValueOnce(fakeRuntime());
     vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
 
     const res = await POST(req());
-    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
 
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, recovered: 1, errors: [] });
+    expect(vi.mocked(resolveFilialRuntimeByCnpj)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      CHAVE.slice(6, 20),
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
     // persistPatch omits nRec when the patch lacks one — the receipt the
     // lote response saved must survive the recovery merge.
     expect((docs['pedidos/PED-2/nfev4/s6'] as { nRec: string }).nRec).toBe('REC-103');

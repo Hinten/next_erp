@@ -43,6 +43,7 @@ export {
   getConsultaCadastroEndpoint,
   getEndpoints,
   getSvcEndpoints,
+  sefazHostsFor,
   supportedUFs,
   svcAuthorizerForUF,
   type Ambiente,
@@ -124,8 +125,10 @@ export {
 // Safety guard
 export {
   NFeProductionGuardError,
+  assertSafeEndpointForTransport,
   assertSafeTpAmb,
   assertSafeTpAmbForTransport,
+  producaoOnlySefazHosts,
   tpAmbFromAmbiente,
   type TpAmb,
 } from './safety';

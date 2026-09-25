@@ -562,3 +562,33 @@ export function getConsultaCadastroEndpoint(uf: string, ambiente: Ambiente): str
 export function supportedUFs(): string[] {
   return Object.keys(ENDPOINTS);
 }
+
+/**
+ * Every hostname the tables above route `ambiente` traffic to — the per-UF
+ * normal-mode tables (Consulta Cadastro included), the shared SVRS/SVAN
+ * normal-mode authorizers, SVC-AN, SVC-RS and the Ambiente Nacional.
+ * Lower-cased, so it compares against `new URL(url).hostname`.
+ *
+ * The transport guard (`src/safety`) derives its produção-only host list from
+ * the difference of the two ambientes. ⚠️ The difference, not the produção set
+ * alone: RS points Consulta Cadastro at `cad.svrs.rs.gov.br` for BOTH ambientes
+ * (see the RS block above), so that host legitimately carries homologação
+ * traffic and only the `tpAmb` label can tell the two apart there.
+ */
+export function sefazHostsFor(ambiente: Ambiente): ReadonlySet<string> {
+  const tables: readonly object[] = [
+    ...Object.values(ENDPOINTS).flatMap((t) => (t ? [t[ambiente]] : [])),
+    SVRS_NORMAL_ENDPOINTS[ambiente],
+    SVAN_NORMAL_ENDPOINTS[ambiente],
+    SVC_AN_ENDPOINTS[ambiente],
+    SVC_RS_ENDPOINTS[ambiente],
+    AN_ENDPOINTS[ambiente],
+  ];
+  const hosts = new Set<string>();
+  for (const table of tables) {
+    for (const url of Object.values(table) as unknown[]) {
+      if (typeof url === 'string') hosts.add(new URL(url).hostname.toLowerCase());
+    }
+  }
+  return hosts;
+}

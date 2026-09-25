@@ -30,8 +30,10 @@
  * **Homologação-only, by construction**: every URL comes from
  * `getSvcEndpoints(<authorizer>, 'homologacao')` — the produção table is
  * never referenced — and every `SefazCall` carries `tpAmb: '2'` (the
- * pipeline's `assertSafeTpAmb` additionally rejects tpAmb='1' without
- * `NFE_ALLOW_PRODUCAO`). The fixture's `ambiente` is `'homologacao'`.
+ * transport's `assertSafeTpAmbForTransport` additionally rejects tpAmb='1'
+ * without `NFE_ALLOW_PRODUCAO`, NODE_ENV=test notwithstanding, and
+ * `assertSafeEndpointForTransport` refuses any produção-only host). The
+ * fixture's `ambiente` is `'homologacao'`.
  *
  * These status checks deliberately do NOT live in ci-nfe.yml's "status
  * gate" step: an SVC outage must fail only this suite, never block the
