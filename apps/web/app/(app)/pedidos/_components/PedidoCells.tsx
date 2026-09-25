@@ -15,6 +15,7 @@
 import { type ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { FirebaseError } from 'firebase/app';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -355,8 +356,17 @@ function OrientacaoRejeicaoCliente({
   const db = getFirebaseFirestore();
   const rowReads = usePedidoRowReads();
   const ref = useMemo(() => {
-    const deref =
-      clientePedidoOuterRef == null ? null : dereferenceOuterRef(db, clientePedidoOuterRef);
+    if (clientePedidoOuterRef == null) return null;
+    let deref: DocumentReference | null;
+    try {
+      deref = dereferenceOuterRef(db, clientePedidoOuterRef);
+    } catch (err) {
+      // A legacy opaque `{ path }` ref with an odd segment count makes `doc()`
+      // throw synchronously — here, during render. Degrade exactly like the
+      // loader (`contextoRejeicao.ts`): "o cliente deste pedido", no link.
+      if (err instanceof FirebaseError) return null;
+      throw err;
+    }
     // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens — the
     // same id under another collection is a different document. Anything else
     // is "o cliente deste pedido" with no link, and reads nothing.

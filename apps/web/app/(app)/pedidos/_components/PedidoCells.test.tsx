@@ -1,3 +1,5 @@
+import { Component, type ReactNode } from 'react';
+import { FirebaseError } from 'firebase/app';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -694,6 +696,64 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), OUTRO_REF);
       expect(clienteQueryOptions(OUTRO_PATH)).toEqual([]);
       expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+    });
+
+    it('a legacy ref that dereference cannot resolve (FirebaseError) degrades to "o cliente deste pedido" instead of throwing in render', async () => {
+      // An opaque `{ path }` ref with an odd segment count makes the real `doc()`
+      // throw `FirebaseError invalid-argument` synchronously — inside this cell's
+      // render. The loader already degrades this case; the HoverCard must too.
+      const REF_IMPAR = { path: 'clientes' };
+      dereferenceMock.mockImplementation(() => {
+        throw new FirebaseError('invalid-argument', 'odd number of path segments');
+      });
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(
+        <NFCell
+          pedidoId="p1"
+          clientePedidoOuterRef={REF_IMPAR as unknown as Pedido['clientePedidoOuterRef']}
+        />,
+      );
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      expect(alert.textContent).toContain('o cliente deste pedido');
+      expect(alert.textContent).not.toContain('ACME LTDA');
+      expect(within(alert).queryByRole('link')).toBeNull();
+      expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), REF_IMPAR);
+      expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+    });
+
+    it('near-miss: a NON-Firebase error from dereference still propagates (narrowed, not swallowed)', async () => {
+      class Boundary extends Component<{ children: ReactNode }, { error: unknown }> {
+        override state = { error: null as unknown };
+        static getDerivedStateFromError(error: unknown) {
+          return { error };
+        }
+        override render() {
+          return this.state.error != null ? (
+            <div data-testid="boundary">{String(this.state.error)}</div>
+          ) : (
+            this.props.children
+          );
+        }
+      }
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      dereferenceMock.mockImplementation(() => {
+        throw new TypeError('a bug, not a legacy ref');
+      });
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(
+        <Boundary>
+          <NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />
+        </Boundary>,
+      );
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+
+      expect((await screen.findByTestId('boundary')).textContent).toContain(
+        'a bug, not a legacy ref',
+      );
+      consoleError.mockRestore();
     });
 
     it('switches to the "já alterado" variant once the cadastro no longer declares ISENTO', async () => {
