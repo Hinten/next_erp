@@ -83,14 +83,15 @@ class AgendadorFirebasePrecoShopee implements AgendadorPrecoShopee {
 
   /**
    * ⚠️ `scheduleDelaySeconds` is OMITTED entirely when the caller did not ask
-   * for one, rather than passed as an explicit `undefined`: the option object is
-   * forwarded to Cloud Tasks, and "no delay" and "a delay of undefined" are not
-   * the same request. Two arms of the job ask for one — the burst pause
-   * (`Retry-After`, else the stock sync's own pause length) and the daily park
-   * (the next 00:00 UTC+8 plus jitter) — and a delayed re-enqueue is how either
-   * is expressed without spending one of the queue's three attempts on waiting.
-   * An explicit `0` IS a value and travels as one: the test is `!== undefined`,
-   * never truthiness.
+   * for one, rather than passed as an explicit `undefined` — kept omitted so the
+   * call site does not rely on the SDK treating `undefined` as absent (the
+   * pinned firebase-admin does, today; nothing here should depend on it). Three
+   * arms of the job ask for a delay — the burst pause (`Retry-After`, else the
+   * stock sync's own pause length), the daily park (until `retomarEm`, plus
+   * jitter) and a parked job's dispatch delivered early (the rest of the wait,
+   * plus jitter) — and a delayed re-enqueue is how each is expressed without
+   * spending one of the queue's three attempts on waiting. An explicit `0` IS a
+   * value and travels as one: the test is `!== undefined`, never truthiness.
    */
   async enqueue(
     payload: EnvioPrecoShopeeTaskPayload,

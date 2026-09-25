@@ -895,15 +895,23 @@ describe('(5) aborts e erros — R-17 a R-20', () => {
     expect(fonte).not.toContain(['SHOPEE', 'ENVIO', 'ESTOQUE', 'MAX', 'PRODUTOS'].join('_'));
   });
 
-  it('R-20 — a ordem das guardas no TEXTO: tabela → pausa → veredito → envio', () => {
+  it('R-20 — a ordem das guardas no TEXTO: a escada de conta (UMA chamada) → envio; a rota não carrega cópia de degrau', () => {
     const fonte = readFileSync(new URL('./route.ts', import.meta.url), 'utf8');
-    const posicoes = [
-      'CODIGO_GUARDA_PRECO.contaSemTabelaNormal,',
-      'pausaDeCotaParaPreco(',
-      'avaliarContaParaPreco(',
-      'enviarPrecoManualShopee(',
-    ].map((trecho) => fonte.indexOf(trecho, fonte.indexOf('export async function POST')));
+    const corpo = fonte.slice(fonte.indexOf('export async function POST'));
+    const posicoes = ['exigirContaParaPreco(', 'enviarPrecoManualShopee('].map((trecho) =>
+      corpo.indexOf(trecho),
+    );
     expect(posicoes.every((p) => p > 0)).toBe(true);
     expect([...posicoes].sort((a, b) => a - b)).toEqual(posicoes);
+    // tabela → pausa → veredito is the ONE ladder's order, pinned in
+    // `regiaoPreco.test.ts`; a rung spelled here again is the second copy R-1 removed.
+    for (const degrau of [
+      'loadShopeeContext(',
+      'CODIGO_GUARDA_PRECO.',
+      'pausaDeCotaParaPreco(',
+      'avaliarContaParaPreco(',
+    ]) {
+      expect(corpo).not.toContain(degrau);
+    }
   });
 });

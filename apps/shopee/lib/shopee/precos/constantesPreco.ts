@@ -238,8 +238,9 @@ const MS_POR_HORA = MINUTOS_POR_HORA * SEGUNDOS_POR_MINUTO * MS_POR_SEGUNDO;
  * bypassed every terminal stamp — and the next start reclaims it instead of
  * refusing with 409 for ever. Six hours is far beyond one dispatch (300 s) times
  * the queue's whole ladder. ⚠️ A PARKED job is exempt while its `retomarEm`
- * lies ahead (the job module's orphan predicate): its `updatedAt` legitimately
- * stops moving for up to a day.
+ * lies ahead OR less than an hour behind (the job module's orphan predicate,
+ * `ehJobOrfao`): its `updatedAt` legitimately stops moving for up to a day, and
+ * the resume lands at `retomarEm` plus a jitter and the queue's own latency.
  */
 export const ENVIO_PRECO_ORFAO_MS = 6 * MS_POR_HORA;
 

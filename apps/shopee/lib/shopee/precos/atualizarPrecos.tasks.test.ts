@@ -74,10 +74,19 @@
  *       the four rows land in ONE shard from at least two separate checkpoints,
  *       so a `{ merge: true }` that replaced `linhas` instead of merging it
  *       would leave only the last page's rows — the property Mercado Livre
- *       needed a separate `precoRelatorio.firestore.test.ts` for.
+ *       needed a separate `precoRelatorio.firestore.test.ts` for. The same
+ *       two PLAN checkpoints are where a real engine applies the job's
+ *       counter transforms (`increment` / `maximum` — `relatorioLinhas` must
+ *       come out at the four rows) and honours the plan checkpoint's
+ *       `lastUpdateTime` precondition on its happy path: a precondition the
+ *       engine refused would answer `noop` and leave the job `running`, and
+ *       the poll would time out.
  *   (e) the class-B finalize (`completed`, the cancel, the first-attempt
  *       `failed`) through a REAL transaction, including the synthetic row and
- *       `filaRestante` it derives from its own snapshot.
+ *       the `relatorioLinhas` / `relatorioShards` it derives from its own
+ *       snapshot. (Not `filaRestante`: every finalize here meets an EMPTY
+ *       `fila`, so the stored value is 0 before and after — its derivation is
+ *       pinned offline, in `atualizarPrecos.test.ts`.)
  *   (f) the TTL stamps as REAL `Timestamp`s: the job's 180 days after
  *       `startedAt` and every shard's 187 — including the shards the DISPATCHED
  *       function wrote, which is the half of the TTL no offline test can read
@@ -610,7 +619,9 @@ describe.skipIf(!EMULATED || !TASKS)(
         relatorioCompleto: false,
         finishedAt: agoraMs + 1,
         updatedAt: agoraMs + 1,
-        // Derived INSIDE the transaction from its own snapshot.
+        // The report counters are derived INSIDE the transaction from its own
+        // snapshot (0 → 1). `filaRestante` was 0 before the cancel too, so it
+        // proves nothing here; the offline suite pins its derivation.
         filaRestante: 0,
         relatorioLinhas: 1,
         relatorioShards: 1,
@@ -731,7 +742,9 @@ describe.skipIf(!EMULATED || !TASKS)(
         falhas: 0,
         fila: [],
         afterAnchorId: null,
-        // The class-B finalize's own derivations, from its snapshot.
+        // The class-B finalize's report counters, derived from its snapshot
+        // (0 → 1). `filaRestante` is 0 on both sides of this stamp (nothing
+        // was planned), so the offline suite is what pins its derivation.
         filaRestante: 0,
         relatorioLinhas: 1,
         relatorioShards: 1,
@@ -742,7 +755,10 @@ describe.skipIf(!EMULATED || !TASKS)(
       // The MECHANISM is named in the stamp — that sentence is the whole of
       // what an operator sees on the card. `loadShopeeContext`'s `tipo` check
       // raises `Integração <id> não é do tipo Shopee.`, so this proves WHICH
-      // arm fired, not merely that something failed.
+      // arm fired, not merely that something failed. (That message reaches the
+      // stamp because its class is one of this app's OWN conta classes, whose
+      // text the app composes from its own ids — `erroDaFalha`; a Shopee
+      // error's message never does.)
       expect(typeof job.erro).toBe('string');
       expect(String(job.erro)).toContain('não é do tipo Shopee');
       expect(String(job.erro)).toContain(CONTA_OUTRO_TIPO);

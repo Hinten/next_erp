@@ -391,11 +391,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **71** suites in this app drive, and since step 8 it has a suite of its OWN.
-  ⚠️ Re-derive the number, never increment it:
+  **72** suites in this app name (70 drive it), and since step 8 it has a
+  suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 after step 12, 71 today). Step 9 extended the
-  double ADDITIVELY: an
+  step 8, 34 after step 9, 57 after step 12, 72 today — the two
+  `*.tasks.test.ts` suites it counts name the double in a docblock only).
+  Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
   per snapshot plus the `update(patch, { lastUpdateTime })` PRECONDITION that
@@ -1384,6 +1385,10 @@ The first SENDER of a price. Reasoning: `precos/README.md`.
   retry (probe B-3).
 - Manual only (`enviar-precos`; the `atualizar-precos` job, TTL 180 days,
   report shards 187). Push 22 stays `ack`: Seller Centre edits fire it too.
+- ONE conta ladder for both routes, `exigirContaParaPreco`. In the job a
+  cancel lets only the listing in flight finish; the report counters are
+  tier-0 `increment`/`maximum`, the plan checkpoint tier-1 `lastUpdateTime`;
+  a stamped `erro` never carries Shopee's text.
 
 ## Rules specific to this app
 
@@ -1508,8 +1513,9 @@ emulator → the real `sendShopeeStock` → a seeded LINK document stamped
 a FOURTH: the real `processShopeePriceSync` takes a job whose anchors all skip
 at PLAN time to `completed` (the drain's lazy client is never built), answers
 `noop` once cancelled and fails a wrong-`tipo` conta. All nine are
-chosen for the same reason — the only outcomes that write a document with NO
-Shopee call: the mass-import one seeds an
+chosen for the same reason — each is decided with NO Shopee call; eight write
+a document, and the cancelled job's dispatch writes NOTHING (a sentinel job
+behind it proves it ran): the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
 reached the network would show a 30 s backoff instead); the stock one refuses at
@@ -1547,8 +1553,9 @@ importer's graph reaches further than any step before it:
 and `packages/data/src/admin/hash.ts` (the why of each is a comment beside it
 in the lane). **Step 12 grew it by exactly two** —
 `packages/schemas/src/estoqueShopeeSync.ts` (the sync state doc) and
-`packages/data/src/admin/estoque/**` (the promoted stock core) — for a closure
-of **44** entries today.
+`packages/data/src/admin/estoque/**` (the promoted stock core). **Step 13
+grew it by exactly four** — the job schema, the two Mercado Livre schemas it
+reuses and `shared/ttl.ts` — for a closure of **48** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 

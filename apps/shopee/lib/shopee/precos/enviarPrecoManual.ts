@@ -154,7 +154,6 @@ import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { naoDocId } from '../anuncios/corpoPublicacao';
 import { executarEmPool } from '../core/pool';
 import { MOTIVOS_DE_PAUSA, ratePauseMin } from '../estoque/constantesEstoque';
-import { estaPausada, type EstadoEstoqueLido } from '../estoque/estadoEstoque';
 import {
   ENVIO_PRECO_MANUAL_MAX_TENTATIVAS,
   ENVIO_PRECO_MANUAL_RETRY_DELAY_MS,
@@ -338,30 +337,11 @@ export interface DepsEnvioPrecoManual {
   readonly enviar?: typeof enviarPrecoDoItem;
 }
 
-/* -------------------------------------------------------------------------- */
-/*                        the quota pause the route reads                      */
-/* -------------------------------------------------------------------------- */
-
 /**
- * The instant the conta's QUOTA pause ends, when one is active — else `null`.
- *
- * Price READS the stock sync's pause and never writes it (reconcile C-l): the
- * per-APPLICATION rate limit is one limiter for both syncs. But only the two
- * QUOTA motives are a price pause — a holiday or a blocked-shop stock pause is a
- * stock refusal, and a price push against that shop is still legitimate.
- *
- * ⚠️ A pause with NO motive stored is not a price pause either: the stock
- * writers always stamp one, so a bare `pausadoAte` is a document this reader
- * does not understand, and refusing an operator on it would be a guess.
+ * The quota-pause reader moved to `./regiaoPreco` (beside the conta ladder that
+ * reads it); re-exported here so every existing importer keeps its path.
  */
-export function pausaDeCotaParaPreco(estado: EstadoEstoqueLido, nowMs: number): number | null {
-  const motivo = estado.pausaMotivo;
-  const deCota = motivo === MOTIVOS_DE_PAUSA.burst || motivo === MOTIVOS_DE_PAUSA.cotaDiaria;
-  // `estaPausada` is the stock sync's own "still paused" rule, imported rather
-  // than re-spelled, so the two surfaces cannot disagree about the edge instant.
-  if (!deCota || !estaPausada(estado, nowMs)) return null;
-  return estado.pausadoAte;
-}
+export { pausaDeCotaParaPreco } from './regiaoPreco';
 
 /* -------------------------------------------------------------------------- */
 /*                                  the rows                                   */

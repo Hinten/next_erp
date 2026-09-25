@@ -24,9 +24,11 @@
  * regiao?}` → 12. the job (409 `SHOPEE_PRICE_SYNC_RUNNING` when a live run
  * exists) → 13. the first enqueue → 202 `{jobId}`.
  *
- * Rungs 9–11 are the manual push's own (`enviar-precos/route.ts`), in its
- * order and with its codes: one conta answers the same refusal whichever of
- * the two buttons the operator pressed.
+ * Rungs 8–11 are ONE call, `exigirContaParaPreco` (`precos/regiaoPreco.ts`) —
+ * the conta ladder the manual push (`enviar-precos`) runs too, so one conta
+ * answers the same refusal whichever of the two buttons the operator pressed.
+ * This route keeps only its body rungs, the valve before the ladder, its catch
+ * and the job.
  *
  * ## ⚠️ The valve is read BEFORE anything else (rung 6)
  *
@@ -50,9 +52,10 @@
  *
  * So an enqueue that fails has a document to stamp `failed` — through the job's
  * ONE terminal transaction, with one `job-interrompido` report row — instead
- * of a 503 and nothing to look at. The stamped `erro` names the error's CLASS,
- * never its message: the field is persisted and rendered to the operator, and
- * a transport message can carry a URL, a body or a credential. A known enqueue
+ * of a 503 and nothing to look at. The stamped `erro` names the error's CLASS
+ * (plus, for firebase-admin's two classes, the SDK's closed-set code), never
+ * its message: the field is persisted and rendered to the operator, and a
+ * transport message can carry a URL, a body or a credential. A known enqueue
  * outage answers 503; anything else is stamped the same way and then RETHROWN
  * (root `CLAUDE.md` rule 6) — a bug must not read as an outage.
  *
@@ -76,24 +79,19 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { naoDocId } from '@/lib/shopee/anuncios/corpoPublicacao';
 import { isGrpcCodedError } from '@/lib/shopee/core/containment';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
-import { loadShopeeContext } from '@/lib/shopee/core/shopee';
-import { lerEstadoEstoque } from '@/lib/shopee/estoque/estadoEstoque';
 import {
   finalizarEnvioPrecoShopee,
   iniciarEnvioPrecoShopee,
 } from '@/lib/shopee/precos/atualizarPrecos';
-import { pausaDeCotaParaPreco } from '@/lib/shopee/precos/enviarPrecoManual';
 import {
   CODIGO_ENVIO_PRECO_EM_ANDAMENTO,
   CODIGO_ENVIO_PRECO_ENFILEIRAMENTO_FALHOU,
-  CODIGO_GUARDA_PRECO,
   MOTIVO_PRECO_SHOPEE,
   ShopeeEnvioPrecoEmAndamentoError,
   ShopeeEnvioPrecoGuardError,
   ShopeePriceSyncTasksDisabledError,
-  mensagemDoMotivoDePreco,
 } from '@/lib/shopee/precos/errosPreco';
-import { avaliarContaParaPreco } from '@/lib/shopee/precos/regiaoPreco';
+import { avaliarContaParaPreco, exigirContaParaPreco } from '@/lib/shopee/precos/regiaoPreco';
 import { createShopeePriceSyncScheduler } from '@/lib/shopee/precos/shopeePriceSyncTasks';
 import { MSG_BODY_INVALIDO, lerJsonDoCorpo } from '@/lib/shopee/produtos/corpoImportacao';
 import { shopeeTasksDesabilitado } from '@/lib/shopee/shopeeTasks';
@@ -126,11 +124,32 @@ const TAG_LOG = '[shopee/precos] atualizar-precos';
  * A class name, never a message and never a payload: it is persisted in the
  * job's `erro` and rendered to the operator.
  *
+ * ⚠️ firebase-admin's own classes leave `name` at the base `'Error'` (measured
+ * on 14.2.0: `new FirebaseFunctionsError(…).name === 'Error'`), and they are
+ * exactly what the REST enqueue raises — so those two are named by CLASS, with
+ * the SDK's closed-set `code` beside it (`functions/not-found` is a queue not
+ * deployed yet, `functions/permission-denied` a missing grant). The code is the
+ * SDK's enum, never the message, and a value that is not code-shaped is left
+ * out.
+ *
  * Module-level on purpose — inside a `catch` this would be `Error` as the sole
  * narrowed class, which narrows nothing (root `CLAUDE.md` rule 6).
  */
 function nomeDoErro(err: unknown): string {
+  if (err instanceof FirebaseFunctionsError) {
+    return comCodigoDoSdk('FirebaseFunctionsError', err.code);
+  }
+  if (err instanceof FirebaseAppError) return comCodigoDoSdk('FirebaseAppError', err.code);
   return err instanceof Error ? err.name : typeof err;
+}
+
+/** `<service>/<code>`, lower-case — the only shape an SDK code has. */
+const FORMA_DO_CODIGO_DO_SDK = /^[a-z]+\/[a-z-]+$/;
+
+function comCodigoDoSdk(classe: string, codigo: unknown): string {
+  return typeof codigo === 'string' && FORMA_DO_CODIGO_DO_SDK.test(codigo)
+    ? `${classe} ${codigo}`
+    : classe;
 }
 
 /**
@@ -233,61 +252,15 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   let jobId: string;
   try {
-    const ctx = await loadShopeeContext(db, integracaoId);
-
-    const tabelaRef = ctx.conta.tabelaNormalOuterRef;
-    if (typeof tabelaRef !== 'string' || tabelaRef.trim() === '') {
-      throw new ShopeeEnvioPrecoGuardError(
-        CODIGO_GUARDA_PRECO.contaSemTabelaNormal,
-        mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.semTabelaNormal),
-      );
-    }
-
-    const pausadoAte = pausaDeCotaParaPreco(await lerEstadoEstoque(db, integracaoId), nowMs);
-    if (pausadoAte !== null) {
-      throw new ShopeeEnvioPrecoGuardError(
-        CODIGO_GUARDA_PRECO.contaPausada,
-        mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.contaPausada),
-        { pausadoAte: new Date(pausadoAte).toISOString() },
-      );
-    }
-
-    const veredito = await avaliarContaParaPreco(
-      db,
-      {
-        integracaoId,
-        shopId: ctx.conta.shop_id ?? null,
-        tabelaNormalOuterRef: tabelaRef,
-      },
-      {
-        nowMs,
-        // The context already loaded is the client's source — built lazily by
-        // the verdict, only when the shop read needs it.
-        clientFor: () => Promise.resolve().then(() => ctx.createShopClient()),
-        config: ctx.config,
-      },
-    );
-    if (!veredito.ok) {
-      const mensagem = mensagemDoMotivoDePreco(veredito.motivo);
-      if (veredito.erro !== null) {
-        // The class and message are for the log — never for the body.
-        console.warn(`${TAG_LOG}: conta recusada (${veredito.motivo})`, {
-          integracaoId,
-          erro: veredito.erro,
-        });
-      }
-      if (veredito.motivo === MOTIVO_PRECO_SHOPEE.semTabelaNormal) {
-        throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaSemTabelaNormal, mensagem);
-      }
-      throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaRecusada, mensagem, {
-        motivo: veredito.motivo,
-        mensagem,
-        ...(veredito.regiao === null ? {} : { regiao: veredito.regiao }),
-      });
-    }
+    // Rungs 8–11: the ONE conta ladder, shared with `enviar-precos`.
+    const { contexto } = await exigirContaParaPreco(db, integracaoId, {
+      nowMs,
+      tagLog: TAG_LOG,
+      avaliar: avaliarContaParaPreco,
+    });
 
     jobId = await iniciarEnvioPrecoShopee(db, {
-      contexto: veredito.contexto,
+      contexto,
       baixarPreco,
       startedBy: auth.caller.uid,
       nowMs,

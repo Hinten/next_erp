@@ -191,8 +191,10 @@ export const envioPrecoShopeeSchema = z.object({
   parques: z.number().int().default(0),
   /**
    * MILLISECONDS. Set while the job is PARKED on Shopee's daily quota — the
-   * instant the parked dispatch will resume (the next 00:00 UTC+8) — and
-   * cleared by the resumed dispatch's first checkpoint. The orphan reclaim
+   * instant the parked dispatch will resume (the next 00:00 UTC+8, or the end
+   * of the stock sync's `cota-diaria` pause; the jitter goes only into the
+   * task's delay, never into this value) — and cleared by the resumed
+   * dispatch's first checkpoint and by every terminal stamp. The orphan reclaim
    * honours it: a parked job's `updatedAt` legitimately stops moving for hours,
    * and reclaiming it as a dead run would start a second one beside it.
    */
@@ -206,15 +208,24 @@ export const envioPrecoShopeeSchema = z.object({
   /** The first failures, for the UI (same cap rule as `skips`). */
   failures: z.array(envioPrecoFailureSchema).default(() => []),
   /**
-   * Rows written to the `relatorios` subcollection so far. Doubles as the shard
-   * CURSOR: `floor(relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE)` is the
-   * shard a new row lands in, a pure function of a value that only advances on
-   * a committed checkpoint — so a retry recomputes the SAME shard index. An
-   * upper bound on distinct rows, never an exact count (a replay overwrites a
-   * key while still incrementing this).
+   * Row WRITES committed to the `relatorios` subcollection so far. Every writer
+   * ADDS to it and none writes back a copy: the per-item checkpoint commits
+   * `FieldValue.increment(<its rows>)` (tier 0, root `CLAUDE.md` rule 7), and
+   * the terminal transaction adds its one synthetic row to its own `tx.get`
+   * snapshot — so a terminal stamp racing an in-flight item loses neither
+   * increment. Hence an upper bound on distinct rows, exact unless a replay
+   * re-writes a key it already wrote. Also the shard CURSOR:
+   * `floor(relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE)` is the shard a
+   * new row lands in — the dispatch computes it from its own copy, so a retry
+   * recomputes the SAME index, and after such a race a shard may hold one row
+   * past the size (never a row outside `relatorioShards`).
    */
   relatorioLinhas: z.number().int().default(0),
-  /** How many shard documents exist — what the download pages over. */
+  /**
+   * How many shard documents exist — what the download pages over. The
+   * checkpoint writes it as `FieldValue.maximum(<shards its rows reach>)`, so
+   * it only ever rises.
+   */
   relatorioShards: z.number().int().default(0),
   /**
    * The report covers the WHOLE run — written true only on the `completed`

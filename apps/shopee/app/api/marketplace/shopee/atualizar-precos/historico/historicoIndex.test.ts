@@ -1,8 +1,12 @@
 /**
- * The composite index the history route needs, DERIVED from the route's own
- * source and compared against `firestore.indexes.json` — the twin of Mercado
- * Livre's `atualizar-precos/historico/historicoIndex.test.ts` (EVIDENCE, not
- * imported: `apps/*` has no dependency edge to another app).
+ * The TWO composite indexes `enviosPrecoShopee` needs, each DERIVED from the
+ * source of the query that needs it and compared against
+ * `firestore.indexes.json`: the history route's `(integracaoId, startedAt
+ * DESC)` — the twin of Mercado Livre's
+ * `atualizar-precos/historico/historicoIndex.test.ts` (EVIDENCE, not imported:
+ * `apps/*` has no dependency edge to another app) — and, since review 2 (S-1),
+ * the job's start guard's `(integracaoId, status)`, derived from
+ * `iniciarEnvioPrecoShopee` (bottom of this file).
  *
  * Why a bespoke guard: both repo-wide index backstops key on
  * `meta.defaultQuery` (the `delfrance/default-query-needs-index` lint rule and
@@ -151,6 +155,125 @@ describe('a rota historico tem o seu índice composto', () => {
         { fieldPath: 'a', order: 'ASCENDING' },
         { fieldPath: 'b', order: 'DESCENDING' },
       ]);
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          the job's START GUARD — the collection's other composite (S-1)      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The start guard (`iniciarEnvioPrecoShopee`: "does this conta already have a
+ * `running` job?") is the collection's OTHER query, and before review 2 nothing
+ * pinned its composite: every test above derives from `historico/route.ts`
+ * alone, so deleting the `(integracaoId, status)` entry left all of them green
+ * — and on Enterprise the guard would then full-scan `enviosPrecoShopee` on
+ * every start and bill the scan. Step 9 has this pin; step 13 had dropped it.
+ *
+ * Its field names are not exported by the job module, so they are DERIVED from
+ * that ONE function's source — scoped to it, so a query added elsewhere in the
+ * module cannot join the set — and the derived pair is pinned beside it.
+ */
+const fonteDoJob = readFileSync(
+  resolve(AQUI, '../../../../../../lib/shopee/precos/atualizarPrecos.ts'),
+  'utf8',
+);
+
+/**
+ * The equality-only shape of the start guard: every `.where(field, '==', …)`
+ * of `iniciarEnvioPrecoShopee`, all ASCENDING (the equality prefix is
+ * order-insensitive; sorted for determinism). A range or an `orderBy` needs a
+ * DIFFERENT index shape, so the derivation refuses it (`null`) instead of
+ * guessing — the "still derivable" test below then says so.
+ */
+function derivarIgualdadesDoInicio(fonte: string): CampoDoIndice[] | null {
+  const inicio = fonte.indexOf('export async function iniciarEnvioPrecoShopee');
+  if (inicio < 0) return null;
+  const fim = fonte.indexOf('\nexport ', inicio + 1);
+  const corpo = fonte.slice(inicio, fim < 0 ? undefined : fim);
+  const igualdades = [...corpo.matchAll(/\.where\(\s*'([A-Za-z0-9_.]+)'\s*,\s*'=='/g)].map(
+    (m) => m[1]!,
+  );
+  const filtros = corpo.match(/\.where\(/g)?.length ?? 0;
+  if (igualdades.length === 0 || filtros !== igualdades.length || /\.orderBy\(/.test(corpo)) {
+    return null;
+  }
+  return [...new Set(igualdades)].sort().map<CampoDoIndice>((f) => ({
+    fieldPath: f,
+    order: 'ASCENDING',
+  }));
+}
+
+describe('a guarda de início do job tem o seu índice composto (S-1)', () => {
+  it('a forma da consulta ainda é derivável de iniciarEnvioPrecoShopee: (integracaoId ==, status ==)', () => {
+    expect(derivarIgualdadesDoInicio(fonteDoJob)).toEqual([
+      { fieldPath: 'integracaoId', order: 'ASCENDING' },
+      { fieldPath: 'status', order: 'ASCENDING' },
+    ]);
+  });
+
+  it('declara (integracaoId ASC, status ASC) em enviosPrecoShopee, escopo COLLECTION, sem `__name__`', () => {
+    const exigido = derivarIgualdadesDoInicio(fonteDoJob)!;
+
+    const achado = indices!.some(
+      (idx) =>
+        idx.collectionGroup === 'enviosPrecoShopee' &&
+        idx.queryScope === 'COLLECTION' &&
+        Array.isArray(idx.fields) &&
+        idx.fields.length === exigido.length &&
+        idx.fields.every(
+          (f, i) => f.fieldPath === exigido[i]!.fieldPath && f.order === exigido[i]!.order,
+        ),
+    );
+
+    if (achado) return;
+    expect.fail(
+      `Falta o índice composto da guarda de início do job. O Enterprise não cria índices ` +
+        `sozinho e a falta de um NÃO lança erro — varre a coleção a cada início e cobra a ` +
+        `varredura. Acrescente ao array "indexes" de firestore.indexes.json (o deploy é da ` +
+        `janela de migração, #1532):\n` +
+        JSON.stringify(
+          { collectionGroup: 'enviosPrecoShopee', queryScope: 'COLLECTION', fields: exigido },
+          null,
+          2,
+        ),
+    );
+  });
+
+  it('QUASE-IGUAL: o índice do HISTÓRICO não serve à guarda — são DUAS entradas distintas', () => {
+    const inicio = derivarIgualdadesDoInicio(fonteDoJob);
+    const historico = derivarCamposDoIndice(fonteDaRota);
+    expect(inicio).not.toEqual(historico);
+    const nossos = indices!.filter((idx) => idx.collectionGroup === 'enviosPrecoShopee');
+    expect(nossos.length).toBeGreaterThanOrEqual(2);
+  });
+
+  describe('a derivação em si', () => {
+    const inicioDe = (consulta: string): string =>
+      `export async function iniciarEnvioPrecoShopee() {\n  ${consulta}\n}\nexport function outra() {\n  x.where('fora', '==', 1);\n}\n`;
+
+    it('PAR: lê TODAS as igualdades da função, e só dela (a consulta de outra função fica fora)', () => {
+      expect(
+        derivarIgualdadesDoInicio(inicioDe(`.where('b', '==', y).where('a', '==', x).limit(1)`)),
+      ).toEqual([
+        { fieldPath: 'a', order: 'ASCENDING' },
+        { fieldPath: 'b', order: 'ASCENDING' },
+      ]);
+    });
+
+    it('QUASE-IGUAL: um intervalo ou um orderBy exige OUTRA forma de índice ⇒ null, nunca um palpite', () => {
+      expect(
+        derivarIgualdadesDoInicio(inicioDe(`.where('a', '==', x).where('b', '<', y)`)),
+      ).toBeNull();
+      expect(
+        derivarIgualdadesDoInicio(inicioDe(`.where('a', '==', x).orderBy('b', 'desc')`)),
+      ).toBeNull();
+    });
+
+    it('devolve null quando a função sumiu ou não consulta nada', () => {
+      expect(derivarIgualdadesDoInicio(`const x = 1;`)).toBeNull();
+      expect(derivarIgualdadesDoInicio(inicioDe(`return 1;`))).toBeNull();
     });
   });
 });

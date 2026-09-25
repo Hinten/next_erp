@@ -645,8 +645,9 @@ must list `roles/cloudtasks.enqueuer` for every identity in `TASKS_INVOKER_SA`.
 `processShopeeMassImport` re-enqueues onto its
 OWN queue for every scan/drain continuation and for the rate-limit pause, as
 does `sendShopeeStock` on a burst pause and on the conta-pause rung, and as
-does `processShopeePriceSync` for every plan/drain continuation, a burst pause
-and the daily-quota park — so
+does `processShopeePriceSync` for every plan/drain continuation, a burst pause,
+the daily-quota park and the rest of a park's wait when a dispatch arrives
+early — so
 the **functions runtime service account** — not
 just the App Hosting one — needs `roles/cloudtasks.enqueuer` on **all four**
 queues and `roles/run.invoker` on **all four** Cloud Run services. The
@@ -693,7 +694,10 @@ has the price job**: `/atualizar-precos` answers **503** before creating a job
 while `SHOPEE_TASKS_DISABLED` is set, and when the enqueue itself fails after
 the job exists it stamps that job `failed` with one `job-interrompido` report
 row before answering — so it, too, never leaves a `running` document for
-nothing to drain. ⚠️ **The stock
+nothing to drain, save one case: that stamp is best effort, and a Firestore
+outage DURING it is only logged, which leaves the job `running` until the
+operator cancels it or, after six hours of silence, the next start reclaims it
+as an orphan. ⚠️ **The stock
 sweeps have no fallback either, and they need none**: an enqueue that throws
 propagates out of the tick, which fails the execution loudly — there is no
 document to lose, because the next tick re-derives the same window from the same
@@ -754,7 +758,9 @@ the job's only Shopee calls are in the DRAIN, which runs only while `fila`
 holds a listing, and a plan-time refusal never puts one there. What that proves
 and nothing offline can: the keyset read (`startAfter` on an id value, after a
 `select`, under `orderBy` document id) on a real engine, the batch checkpoint
-DEEP-merging two pages' rows into one shard, the finalize through a real
+DEEP-merging two pages' rows into one shard, the plan checkpoint's
+`lastUpdateTime` precondition and its `increment` / `maximum` counter
+transforms applied by a real engine, the finalize through a real
 transaction, and the fourth queue's name resolving to a deployed
 `onTaskDispatched` — the self-continuation included. What it cannot prove is
 the DRAIN (every step of it needs a Shopee call) and the burst pause and the
@@ -827,7 +833,7 @@ its first live run stamped the conta onto `integracoesComProduto`. ⚠️ Produc
 is a separate project and inherits none of staging's API state, so there it is
 still a **migration-window fact** (root `CLAUDE.md` rule 8, register item 81),
 settled by that project's first deploy and **never run by an agent**. If that
-deploy refuses the trigger, the other thirteen functions are unaffected — the
+deploy refuses the trigger, the other fourteen functions are unaffected — the
 failure is per-function — and enabling the APIs plus re-running the same deploy
 is the whole remedy. ⚠️ **But a refused trigger is no longer cosmetic.** Since
 step 12 the stock discovery's S1 anchor term is

@@ -20,14 +20,34 @@
  * 3. PLAN one page, only while `fila` is empty and the walk is not done: the
  *    anchors come from the CLASSIC keyset query of `lerPaginaDeFamiliasDePreco`,
  *    each family goes through the pure planner, the listings join `fila` as
- *    IDENTITIES and the planner's skips become report rows.
+ *    IDENTITIES and the planner's skips become report rows. The plan checkpoint
+ *    is GUARDED (see "a cancel" below).
  * 4. DRAIN at most {@link itensPorDespachoPreco} listings, only while `fila`
- *    holds any. Lazy: the stock sync's quota pause is READ first (never
- *    written), then the conta verdict — the only place a Shopee client is built
- *    and the shop read spent — then ONE batched base reader for the whole lote.
- *    Per listing: read its `precos` NOW, price it, send it, and checkpoint.
+ *    holds any. A job PARKED until a later instant re-enqueues itself for the
+ *    rest of the wait and stops there. Then the status is re-read, and the rest
+ *    is lazy: the stock sync's quota pause is READ first (never written), then
+ *    the conta verdict — the only place a Shopee client is built and the shop
+ *    read spent — then ONE batched base reader for the whole lote. Per listing:
+ *    re-read the status, read its `precos` NOW, price it, send it, checkpoint.
  * 5. Continue (re-enqueue) or finish (the `completed` flip, through the ONE
  *    transaction).
+ *
+ * ## ⚠️ A cancel stops the lote after the listing in flight
+ *
+ * The job's `status` is re-read — ONE masked read of that one field — after the
+ * plan checkpoint (before the drain), before EACH listing of the lote, before a
+ * pause or a park is stamped, and before the continuation is enqueued. Anything
+ * but `running` answers `'noop'`: the listing being sent when the cancel landed
+ * finishes (its checkpoint writes no `status`, so it records the row without
+ * burying the stamp), and nothing after it is sent. The rest stays in `fila`,
+ * counted by `filaRestante`; the `job-cancelado` row is the cancel's own.
+ *
+ * The PLAN checkpoint goes further, because nothing was sent before it: it
+ * writes with the job read's `updateTime` as a precondition (root `CLAUDE.md`
+ * rule 7, tier 1). Any write since that read — a terminal stamp, or another
+ * delivery of this same task — fails it whole, the page and its skip rows
+ * included, and the dispatch answers `'noop'`; a cancelled job never receives a
+ * freshly planned `fila`.
  *
  * ## ⚠️ The price is read at DRAIN time, never at plan time (reconcile C-d)
  *
@@ -49,10 +69,19 @@
  * `pulado preco-igual` (contract S4), so the price is right and the report
  * under-reports by one row set per crash (register 147).
  *
- * The batch is not a transaction, deliberately: nothing in it is read-modify-
- * write (a shard index derives from `relatorioLinhas`, a counter that only moves
- * on a committed checkpoint, so a retry recomputes the same shard), and it
- * writes no `status`, so it cannot clobber a terminal stamp.
+ * The batch is not a transaction, deliberately, and it writes no `status`, so it
+ * cannot clobber a terminal stamp. Its two report counters are TIER 0 (root
+ * `CLAUDE.md` rule 7): `relatorioLinhas` is `FieldValue.increment(<rows this
+ * checkpoint adds>)` and `relatorioShards` is `FieldValue.maximum(<shards they
+ * reach>)`, never an absolute value computed from this dispatch's copy. A
+ * terminal stamp that lands while a listing is in flight writes its synthetic
+ * row and its own `+1` in the transaction; the in-flight listing's checkpoint
+ * then ADDS its rows instead of writing back a count that predates that row. The
+ * shard a row lands in still derives from the dispatch's local cursor (a retry
+ * recomputes the same one); after such a race it can trail the stored count by
+ * the one synthetic row, so a shard may hold one row past
+ * {@link RELATORIO_ENVIO_PRECO_SHARD_SIZE} — never a row outside the declared
+ * shard count, since `maximum` only ever raises it.
  *
  * ## ⚠️ The report row SET is a function of the queue entry, never of the outcome
  *
@@ -73,7 +102,11 @@
  * fails. The DAILY quota PARKS the job until the next 00:00 (UTC+8): `retomarEm`
  * is stamped, `status` stays `running`, and past {@link ENVIO_PRECO_MAX_PARQUES}
  * parks the job fails. The resumed dispatch clears `retomarEm` in its first
- * checkpoint.
+ * checkpoint, and every terminal stamp clears it too. A dispatch delivered
+ * BEFORE `retomarEm` — a Cloud Tasks duplicate, or the queue's retry of a park
+ * whose enqueue threw after its checkpoint — re-enqueues itself for the rest of
+ * the wait and answers `'pausado'`: no park spent, no verdict, no send, no
+ * write.
  *
  * ## ⚠️ The start race is ACCEPTED, by decision (reconcile C-q)
  *
@@ -99,8 +132,19 @@
  * six funnel through it. The guard re-derives `status` (still `running`?) and,
  * on the cancel, `integracaoId` from the `tx.get` snapshot, and derives the
  * synthetic row's shard index and `filaRestante` INSIDE the callback, so an OCC
- * retry recomputes them rather than re-applying a captured count. Inventoried
- * in `packages/config-eslint/rules/firestore-transaction-inventory.test.js`.
+ * retry recomputes them rather than re-applying a captured count. It also
+ * clears `retomarEm`: a stopped job is parked on nothing. Inventoried in
+ * `packages/config-eslint/rules/firestore-transaction-inventory.test.js`.
+ *
+ * ## ⚠️ A stamped `erro` never carries provider text
+ *
+ * A failure the dispatch stamps names its CAUSE, never Shopee's prose: a
+ * verdict refusal or a conta-wide fatal stamps the motivo and its pt-BR
+ * sentence; an exception stamps a sentence naming its CLASS, plus Shopee's own
+ * `error` CODE (a token, verbatim) for the `ShopeeApiError` family or the gRPC
+ * status for a Firestore/Tasks failure. The message goes to the log. The one
+ * exception is the closed set of this app's OWN conta classes, whose message the
+ * app composes from its own ids and field paths — see `erroDaFalha`.
  *
  * ## ⚠️ Clocks and units
  *
@@ -110,10 +154,16 @@
  * `startedAt` (never from a clock), so a replayed shard write re-stamps the SAME
  * instant.
  */
-import type { DocumentData, Firestore } from 'firebase-admin/firestore';
+import {
+  FieldValue,
+  type DocumentData,
+  type Firestore,
+  type Timestamp,
+} from 'firebase-admin/firestore';
 import { z } from 'zod';
 import {
   SHOPEE_ERROR_KIND,
+  ShopeeApiError,
   ShopeeConfigError,
   ShopeeError,
   ShopeeRateLimitError,
@@ -139,6 +189,7 @@ import {
   envioPrecoShopeeCollection,
   relatorioEnvioPrecoShopeeCollection,
 } from '@delfrance/data/admin/collections';
+import { isFailedPrecondition } from '@delfrance/data/admin/grpcErrors';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { isGrpcCodedError } from '../core/containment';
@@ -169,7 +220,6 @@ import {
   enviarPrecoDoItem,
   type ResultadoEnvioPreco,
 } from './enviarPreco';
-import { pausaDeCotaParaPreco } from './enviarPrecoManual';
 import {
   MOTIVO_PRECO_SHOPEE,
   ShopeeEnvioPrecoEmAndamentoError,
@@ -187,6 +237,7 @@ import {
 } from './planoPreco';
 import {
   avaliarContaParaPreco,
+  pausaDeCotaParaPreco,
   type ContextoContaPreco,
   type VereditoContaPreco,
 } from './regiaoPreco';
@@ -226,9 +277,9 @@ export type EnvioPrecoShopeeTaskPayload = z.infer<typeof envioPrecoShopeeTaskSch
 /** What a caller may ask of ONE enqueue beyond the payload itself. */
 export interface OpcoesDeEnfileiramentoPreco {
   /**
-   * A delay, in SECONDS. Omitted (never `undefined`) when not asked — the
-   * scheduler forwards the option object to Cloud Tasks, and "no delay" and "a
-   * delay of undefined" are not the same request.
+   * A delay, in SECONDS. Omitted (never `undefined`) when not asked — kept
+   * omitted so the call site does not rely on the SDK treating `undefined` as
+   * absent.
    */
   readonly scheduleDelaySeconds?: number;
 }
@@ -245,11 +296,17 @@ export interface AgendadorPrecoShopee {
 
 /** What one dispatch did. */
 export type DespachoEnvioPreco =
-  /** The job is gone or no longer `running` — a cancel, a terminal stamp — or the stamp lost a race. */
+  /**
+   * The job is gone or no longer `running` — a cancel, a terminal stamp — or
+   * the stamp lost a race, or the plan checkpoint's precondition failed.
+   */
   | 'noop'
   /** More to plan or to send (or a burst pause): the job re-enqueued itself. */
   | 'continued'
-  /** PARKED on Shopee's daily quota: re-enqueued for the next 00:00 (UTC+8). */
+  /**
+   * PARKED on Shopee's daily quota: re-enqueued for the next 00:00 (UTC+8) —
+   * or, delivered before its `retomarEm`, for the rest of the wait.
+   */
   | 'pausado'
   /** The `completed` flip landed. */
   | 'done'
@@ -339,13 +396,44 @@ export function expiraEmDoRelatorioShopee(startedAtMs: number): Date {
 /*                                 small readers                               */
 /* -------------------------------------------------------------------------- */
 
-async function lerJob(db: Firestore, jobId: string): Promise<EnvioPrecoShopee | null> {
+/** The job as the dispatch read it, and the write stamp of that read. */
+interface JobLido {
+  readonly job: EnvioPrecoShopee;
+  /**
+   * The snapshot's `updateTime` — the precondition of the plan checkpoint, the
+   * one write derived from this read with nothing sent before it. A real
+   * snapshot of an existing document always carries one.
+   */
+  readonly updateTime: Timestamp | undefined;
+}
+
+async function lerJob(db: Firestore, jobId: string): Promise<JobLido | null> {
   const snap = await envioPrecoShopeeCollection.docRef(db, {}, jobId).get();
   if (!snap.exists) return null;
-  return envioPrecoShopeeCollection.parseRead(
-    snap.data(),
-    envioPrecoShopeeCollection.docPath({}, jobId),
-  );
+  return {
+    job: envioPrecoShopeeCollection.parseRead(
+      snap.data(),
+      envioPrecoShopeeCollection.docPath({}, jobId),
+    ),
+    updateTime: snap.updateTime,
+  };
+}
+
+/** The one field the status re-read asks for. */
+const CAMPOS_DO_STATUS = ['status'] as const;
+
+/**
+ * Is the job STILL `running`? ONE masked read — `status` and nothing else, so a
+ * job document carrying a full `fila` and both samples costs a few bytes to
+ * ask. A missing document answers `false`.
+ */
+async function aindaRodando(db: Firestore, jobId: string): Promise<boolean> {
+  const [snap] = await db.getAll(envioPrecoShopeeCollection.docRef(db, {}, jobId), {
+    fieldMask: [...CAMPOS_DO_STATUS],
+  });
+  if (snap === undefined || !snap.exists) return false;
+  const status: unknown = snap.get('status');
+  return status === ENVIO_PRECO_SHOPEE_STATUS.running;
 }
 
 /** A stored field that is a finite number, else `null` — a junk stamp proves nothing. */
@@ -544,6 +632,10 @@ export interface OpcoesFinalizacaoPreco {
  * derived from the same snapshot, so an OCC retry recomputes them against the
  * winner. The row's shard carries `expiraEm` from the run's `startedAt`.
  *
+ * Every stamp also writes `retomarEm: null`, inside the transaction: a stopped
+ * job resumes nowhere, and a parked one cancelled mid-wait must not read as
+ * "cancelled, resumes at X" to the status and history routes.
+ *
  * ⚠️ The job write is `tx.update` — the document was just proved to exist.
  */
 export async function finalizarEnvioPrecoShopee(
@@ -565,7 +657,7 @@ export async function finalizarEnvioPrecoShopee(
     }
     if (job.status !== ENVIO_PRECO_SHOPEE_STATUS.running) return 'not-running';
 
-    const escrita: Record<string, unknown> = { ...patch };
+    const escrita: Record<string, unknown> = { ...patch, retomarEm: null };
     if (opts.linhaTerminal !== undefined) {
       const linha = linhaTerminal(job.integracaoId, opts.linhaTerminal, patch.erro ?? null);
       const indice = Math.floor(job.relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
@@ -597,11 +689,15 @@ export async function finalizarEnvioPrecoShopee(
  * is the route's (`not-found` / `wrong-integracao`); `409` for one no longer
  * running (`not-running`).
  *
- * It needs no cooperation from the dispatch: an in-flight dispatch finishes the
- * listing it is sending (its checkpoint writes no `status`), and its next status
- * read — before a re-enqueue, or at the top of the next dispatch — answers
- * `'noop'`. The abandoned queue is recorded the way every stopping stamp records
- * it: `filaRestante` plus ONE `job-cancelado` row.
+ * The in-flight listing finishes; nothing after it is sent. The dispatch re-reads
+ * the status before each listing of its lote (and before the drain, a pause, a
+ * park and a re-enqueue), so the listing being sent when the cancel lands
+ * completes and checkpoints — its checkpoint writes no `status`, and it ADDS its
+ * rows to the counter instead of overwriting the cancel's — and the next read
+ * answers `'noop'`. A cancel landing while a page is being PLANNED fails the plan
+ * checkpoint's precondition, so no fresh `fila` reaches the cancelled job. The
+ * abandoned queue is recorded the way every stopping stamp records it:
+ * `filaRestante` plus ONE `job-cancelado` row; `retomarEm` is cleared.
  */
 export async function cancelarEnvioPrecoShopee(
   db: Firestore,
@@ -646,6 +742,59 @@ function ehFalhaDePrimeiraTentativa(err: unknown): err is Error {
     err instanceof ShopeeConfigError ||
     err instanceof ShopeePriceSyncTasksDisabledError
   );
+}
+
+/**
+ * The classes whose MESSAGE this app composes itself, from its own ids and
+ * field PATHS — never from a provider body: the conta context's and the token
+ * store's conta classes, and the price queue's valve. Their sentence is the
+ * operator's best cause ("Integração … não é do tipo Shopee."), and the tasks
+ * lane's wrong-`tipo` case reads it as its proof of WHICH arm fired.
+ *
+ * ⚠️ A closed set of exact classes, and never a `ShopeeError` base: every
+ * `ShopeeApiError` subclass — `ShopeeReauthRequiredError` included, a
+ * first-attempt class too — carries Shopee's own prose in its message.
+ */
+function temMensagemPropria(err: Error): boolean {
+  return (
+    err instanceof ShopeeContaNotConfiguredError ||
+    err instanceof ShopeeContaSemShopIdError ||
+    err instanceof ShopeeSemCredencialError ||
+    err instanceof ShopeeCredencialInvalidaError ||
+    err instanceof ShopeePriceSyncTasksDisabledError
+  );
+}
+
+/**
+ * Shopee's `error` CODE as a TOKEN — letters, digits, `_`, `.` and `-`, at most
+ * a hundred — and nothing that reads as a sentence. A value of any other shape
+ * is left out of the stamp rather than trusted.
+ */
+const CODIGO_SHOPEE = /^[\w.-]{1,100}$/;
+
+/**
+ * The `erro` an EXCEPTION stamps: a pt-BR sentence naming its cause, never
+ * the provider's text.
+ *
+ * - One of this app's own conta classes ({@link temMensagemPropria}): its
+ *   message, which this app wrote, plus its class.
+ * - Anything else: its CLASS, plus Shopee's `error` code verbatim for the
+ *   `ShopeeApiError` family (when it is a {@link CODIGO_SHOPEE} token) or the
+ *   gRPC status for a Firestore/Tasks failure. A `ShopeeApiError`'s message
+ *   quotes Shopee's own `message`, which can carry ids and is not ours to
+ *   store; a transport message can carry a URL or a body (the start route's
+ *   rule). The message goes to the log, where {@link processarEnvioPrecoShopee}
+ *   writes it.
+ */
+function erroDaFalha(err: Error): string {
+  if (temMensagemPropria(err)) return `${err.message} (${err.name})`;
+  const detalhes = [err.name];
+  if (err instanceof ShopeeApiError) {
+    if (CODIGO_SHOPEE.test(err.code)) detalhes.push(`código Shopee ${err.code}`);
+  } else if (isGrpcCodedError(err)) {
+    detalhes.push(`código gRPC ${String((err as Error & { code: number }).code)}`);
+  }
+  return `O despacho da atualização de preços falhou (${detalhes.join(', ')}).`;
 }
 
 /** The operator sentence of a conta the verdict refused mid-run. */
@@ -721,8 +870,9 @@ export async function processarEnvioPrecoShopee(
   const enviar = deps.enviar ?? enviarPrecoDoItem;
   const jitter = deps.jitterSec ?? (() => 0);
 
-  const job = await lerJob(db, jobId);
-  if (!job || job.status !== ENVIO_PRECO_SHOPEE_STATUS.running) return 'noop';
+  const leitura = await lerJob(db, jobId);
+  if (!leitura || leitura.job.status !== ENVIO_PRECO_SHOPEE_STATUS.running) return 'noop';
+  const { job } = leitura;
   const integracaoId = job.integracaoId;
   const continuacao: EnvioPrecoShopeeTaskPayload = { jobId, integracaoId };
 
@@ -739,7 +889,8 @@ export async function processarEnvioPrecoShopee(
   let pausas = job.pausas;
   let parques = job.parques;
   // A resumed PARK clears its `retomarEm` in this dispatch's first checkpoint;
-  // a park taken again below stamps it anew.
+  // a park taken again below stamps it anew. (A dispatch that arrives BEFORE
+  // the stored `retomarEm` writes nothing — see the top of the drain.)
   let retomarEm: number | null = null;
   let skips: EnvioPrecoSkip[] = [...job.skips];
   let failures: EnvioPrecoFailure[] = [...job.failures];
@@ -749,9 +900,15 @@ export async function processarEnvioPrecoShopee(
 
   /**
    * ONE `db.batch()`: the job patch (never `status`) and every pending row, in
-   * the shard the PERSISTED counter selects. See the module docblock.
+   * the shard this dispatch's cursor selects. See the module docblock.
+   *
+   * `precondicao` — the PLAN checkpoint's alone: the job read's `updateTime`,
+   * making the job write an `update` that fails whole (`FAILED_PRECONDITION`,
+   * the rows included) when anything wrote the job since that read. Every other
+   * checkpoint is a plain merge, because the listing it records WAS sent and its
+   * row must land even after a cancel.
    */
-  const checkpoint = async (): Promise<void> => {
+  const checkpoint = async (precondicao?: Timestamp): Promise<void> => {
     const porShard = new Map<number, Record<string, LinhaRelatorioEnvioPreco>>();
     let total = relatorioLinhas;
     for (const linha of pendentes) {
@@ -764,22 +921,27 @@ export async function processarEnvioPrecoShopee(
       bucket[relatorioEnvioPrecoRowKey(linha)] = linha;
       total += 1;
     }
-    // ⚠️ A checkpoint with NO rows must not move the row counters: this
-    // dispatch's local total does not include a synthetic row a terminal stamp
-    // may have committed meanwhile, and writing it back would roll that
-    // increment back — on a shard boundary, off the declared shard count.
+    // ⚠️ TIER 0 (root `CLAUDE.md` rule 7): the counters are TRANSFORMS, never
+    // an absolute value from this dispatch's copy — a terminal stamp that
+    // landed while a listing was in flight has already added its synthetic row,
+    // and writing a count that predates it would take that `+1` back. So this
+    // ADDS the rows it writes and RAISES the shard count to the last shard they
+    // reach. Applied after `parseMerge`, which validates numbers and would
+    // refuse a sentinel. A checkpoint with NO rows moves neither.
     const contadores =
       pendentes.length === 0
         ? {}
         : {
-            relatorioLinhas: total,
-            relatorioShards: Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
+            relatorioLinhas: FieldValue.increment(pendentes.length),
+            relatorioShards: FieldValue.maximum(
+              Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
+            ),
           };
 
     const batch = db.batch();
-    batch.set(
-      envioPrecoShopeeCollection.docRef(db, {}, jobId),
-      envioPrecoShopeeCollection.parseMerge({
+    const refDoJob = envioPrecoShopeeCollection.docRef(db, {}, jobId);
+    const patchDoJob = {
+      ...envioPrecoShopeeCollection.parseMerge({
         fila,
         // A claim ABOUT `fila`, written with it on every checkpoint so the two
         // always land together.
@@ -795,11 +957,14 @@ export async function processarEnvioPrecoShopee(
         retomarEm,
         skips,
         failures,
-        ...contadores,
         updatedAt: nowMs,
-      }) as DocumentData,
-      { merge: true },
-    );
+      }),
+      ...contadores,
+    } as DocumentData;
+    // The patch is FLAT (arrays and scalars), so `update` and a merge write
+    // the same fields; only the precondition differs.
+    if (precondicao === undefined) batch.set(refDoJob, patchDoJob, { merge: true });
+    else batch.update(refDoJob, patchDoJob, { lastUpdateTime: precondicao });
     for (const [indice, linhas] of porShard) {
       batch.set(
         relatorioEnvioPrecoShopeeCollection.docRef(
@@ -925,11 +1090,18 @@ export async function processarEnvioPrecoShopee(
     return carimbo === 'stamped' ? 'failed' : 'noop';
   };
 
+  /** A park's task delay: the whole seconds until `ate`, plus the jitter. */
+  const atrasoDoParque = (ate: number): number =>
+    Math.max(0, Math.ceil((ate - nowMs) / MS_POR_SEGUNDO)) + jitter(PARQUE_JITTER_MAX_S);
+
   /**
    * A BURST limit: checkpoint WITHOUT consuming the head, then a DELAYED self
-   * re-enqueue — no attempt spent. Past the ceiling, the job fails.
+   * re-enqueue — no attempt spent. Past the ceiling, the job fails. A job no
+   * longer `running` (a cancel that landed during the call that met the limit)
+   * takes no pause: nothing is written, nothing enqueued.
    */
   const pausarPorRajada = async (atrasoS: number): Promise<DespachoEnvioPreco> => {
+    if (!(await aindaRodando(db, jobId))) return 'noop';
     pausas += 1;
     if (pausas > ENVIO_PRECO_MAX_PAUSAS) return falharJob(MSG_PAUSAS_EXCEDIDAS);
     await checkpoint();
@@ -942,16 +1114,16 @@ export async function processarEnvioPrecoShopee(
   /**
    * The DAILY quota: PARK until `ate` (the next 00:00, UTC+8) — `retomarEm`
    * stamped, `status` still `running`, head not consumed. Past the ceiling, the
-   * job fails.
+   * job fails. A job no longer `running` is not parked: a park stamped after a
+   * cancel would put a `retomarEm` back on a stopped job.
    */
   const estacionar = async (ate: number): Promise<DespachoEnvioPreco> => {
+    if (!(await aindaRodando(db, jobId))) return 'noop';
     parques += 1;
     if (parques > ENVIO_PRECO_MAX_PARQUES) return falharJob(MSG_PARQUES_EXCEDIDOS);
     retomarEm = ate;
     await checkpoint();
-    const atrasoS =
-      Math.max(0, Math.ceil((ate - nowMs) / MS_POR_SEGUNDO)) + jitter(PARQUE_JITTER_MAX_S);
-    await deps.scheduler.enqueue(continuacao, { scheduleDelaySeconds: atrasoS });
+    await deps.scheduler.enqueue(continuacao, { scheduleDelaySeconds: atrasoDoParque(ate) });
     return 'pausado';
   };
 
@@ -964,11 +1136,20 @@ export async function processarEnvioPrecoShopee(
   /**
    * The terminal stamp from INSIDE the dispatch's catch, where the working copy
    * may be ahead of what was committed: the transaction derives everything from
-   * its own snapshot. A failure of the stamp itself is logged and never rethrown
-   * as long as it is a Firestore or a Shopee-shaped one — rethrowing would
-   * replace the original cause with the symptom.
+   * its own snapshot. The stamped `erro` is {@link erroDaFalha}'s sentence —
+   * the error's message goes to the log, never to the document. A failure of
+   * the stamp itself is logged and never rethrown as long as it is a Firestore
+   * or a Shopee-shaped one — rethrowing would replace the original cause with
+   * the symptom.
    */
-  const carimbarFalha = async (erro: string): Promise<DespachoEnvioPreco> => {
+  const carimbarFalha = async (err: Error): Promise<DespachoEnvioPreco> => {
+    const erro = erroDaFalha(err);
+    console.warn(`${TAG_LOG}: o despacho falhou; o job é encerrado`, {
+      jobId,
+      integracaoId,
+      classe: err.name,
+      mensagem: err.message,
+    });
     try {
       const carimbo = await finalizarEnvioPrecoShopee(
         db,
@@ -1017,11 +1198,33 @@ export async function processarEnvioPrecoShopee(
       planejados += novos.length;
       afterAnchorId = pagina.nextAfterAnchorId;
       planejamentoConcluido = pagina.nextAfterAnchorId === null;
-      await checkpoint();
+      try {
+        // GUARDED (tier 1): nothing was sent yet, so a job written by anyone
+        // since this dispatch read it — a cancel, the orphan reclaim, another
+        // delivery of this task — must not receive this page. The whole batch
+        // fails, its skip rows included.
+        await checkpoint(leitura.updateTime);
+      } catch (err) {
+        if (isFailedPrecondition(err)) return 'noop';
+        throw err;
+      }
     }
 
     /* ------------------------------ (b) the drain ------------------------- */
     if (fila.length > 0) {
+      // PARKED until a later instant — an early duplicate, or the queue's retry
+      // of a park whose enqueue threw after its checkpoint: wait out the rest,
+      // with no park spent, no Shopee call and no write.
+      if (job.retomarEm !== null && job.retomarEm > nowMs) {
+        await deps.scheduler.enqueue(continuacao, {
+          scheduleDelaySeconds: atrasoDoParque(job.retomarEm),
+        });
+        return 'pausado';
+      }
+      // A cancel that landed during the plan checkpoint, or since this
+      // dispatch read the job, stops it before any Shopee call.
+      if (!(await aindaRodando(db, jobId))) return 'noop';
+
       // The stock sync's QUOTA pause, READ and never written. Before the verdict,
       // so a paused conta spends no Shopee call at all.
       const estado = await lerEstadoEstoque(db, integracaoId);
@@ -1063,6 +1266,10 @@ export async function processarEnvioPrecoShopee(
       );
 
       for (const planejado of lote) {
+        // ⚠️ A cancel stops the lote HERE: the listing in flight when it landed
+        // has finished and checkpointed; nothing after it is sent. Before the
+        // FIRST listing too — a cancel during the verdict sends nothing.
+        if (!(await aindaRodando(db, jobId))) return 'noop';
         // ⚠️ The price NOW, not the plan's (reconcile C-d).
         const precos = await lerPrecos(db, produtosQuePrecificam(planejado));
         const item = precificarItem(planejado, precos, conta.tabelaNormalId);
@@ -1101,8 +1308,7 @@ export async function processarEnvioPrecoShopee(
     /* ------------------------ (c) continue or complete -------------------- */
     if (fila.length > 0 || !planejamentoConcluido) {
       // A cancel that landed while this dispatch ran must not buy one more.
-      const atual = await lerJob(db, jobId);
-      if (!atual || atual.status !== ENVIO_PRECO_SHOPEE_STATUS.running) return 'noop';
+      if (!(await aindaRodando(db, jobId))) return 'noop';
       await deps.scheduler.enqueue(continuacao);
       return 'continued';
     }
@@ -1128,17 +1334,17 @@ export async function processarEnvioPrecoShopee(
         return await pausarPorErro(err);
       } catch (erroDaPausa) {
         if (erroDaPausa instanceof ShopeePriceSyncTasksDisabledError) {
-          return carimbarFalha(erroDaPausa.message);
+          return carimbarFalha(erroDaPausa);
         }
         if (retryCount < ENVIO_PRECO_MAX_TENTATIVAS - 1 || !(erroDaPausa instanceof Error)) {
           throw erroDaPausa;
         }
-        return carimbarFalha(erroDaPausa.message);
+        return carimbarFalha(erroDaPausa);
       }
     }
-    if (ehFalhaDePrimeiraTentativa(err)) return carimbarFalha(err.message);
+    if (ehFalhaDePrimeiraTentativa(err)) return carimbarFalha(err);
     if (!(err instanceof Error)) throw err;
     if (retryCount < ENVIO_PRECO_MAX_TENTATIVAS - 1) throw err; // the queue's backoff
-    return carimbarFalha(err.message);
+    return carimbarFalha(err);
   }
 }

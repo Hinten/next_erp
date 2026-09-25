@@ -39,8 +39,10 @@ The families are the seam, not a filing convention.
   `ShopeePriceSyncTasksDisabledError`, 503).
 - **The conta and the code table** — `regiaoPreco.ts` (the conta verdict:
   six rungs from a missing `shop_id` to the region, and the one sandbox
-  override) and `classificarPreco.ts` (Shopee's answer → skip, refuse, end the
-  run, or retry). Neither writes anything.
+  override; plus, since the second PR's review, `exigirContaParaPreco`, the
+  ONE conta ladder both price routes run — §13) and `classificarPreco.ts`
+  (Shopee's answer → skip, refuse, end the run, or retry). Neither writes
+  anything.
 - **The reads** — `descobertaPreco.ts` (CLASSIC queries on purpose, and ONE
   private join per anchor behind two family readers:
   `lerFamiliasDePrecoPorIds`, the manual push's read by anchor ids — one batch
@@ -96,11 +98,12 @@ channel can bind them: `precoDaTabela` and `mesmoPrecoEmReais` (§3).
 (`PERM.integracao.write`) takes `{ integracaoId, produtoIds, baixarPreco? }`
 and validates in a fixed order: the body, the ids, the DEDUPED count (over 50
 is a 400 carrying `limite` and `solicitados`, never a truncation), then
-`baixarPreco` as a real boolean or absent. Then ONE clock read, the context
-(404), a blank normal tabela (400 `SHOPEE_CONTA_SEM_TABELA_NORMAL`), the stock
-sync's quota pause (409 `SHOPEE_CONTA_PAUSADA` with `pausadoAte`, before any
-Shopee call) and the conta verdict (422 `SHOPEE_PRECO_CONTA_RECUSADA`, whose
-only call is the cached `get_shop_info`). Only then the run: every child id
+`baixarPreco` as a real boolean or absent. Then ONE clock read, and the
+shared conta ladder, `exigirContaParaPreco`: the context (404), a blank normal
+tabela (400 `SHOPEE_CONTA_SEM_TABELA_NORMAL`), the stock sync's quota pause
+(409 `SHOPEE_CONTA_PAUSADA` with `pausadoAte`, before any Shopee call) and the
+conta verdict (422 `SHOPEE_PRECO_CONTA_RECUSADA`, whose only call is the cached
+`get_shop_info`). Only then the run: every child id
 resolves to its anchor (deduplicated after resolution), the plan fixes
 IDENTITIES only, ONE batched base reader serves every first attempt, a pool at
 `concorrenciaEnvioPrecoManual()` prices and sends, and the deadline is measured
@@ -640,13 +643,24 @@ before any document is written or any conta read); ONE clock read; the context
 (404); a blank normal tabela (400); the stock sync's quota pause (409
 `SHOPEE_CONTA_PAUSADA`); the conta verdict (422 `SHOPEE_PRECO_CONTA_RECUSADA`,
 §5); then the start itself (409 `SHOPEE_PRICE_SYNC_RUNNING` while a live job
-holds the conta) and the enqueue. Those conta rungs are the manual push's own,
-DUPLICATED in the two routes rather than shared — both copies are pinned by
-their tests, and promoting them into one helper here needs a ruling, because
-the module list was frozen (register 183). An enqueue that fails after the job
-exists stamps it `failed` with one `job-interrompido` row before answering 503
-(an enqueue class it knows) or rethrowing (anything else), so no `running`
-document is left for nothing to drain.
+holds the conta) and the enqueue. The four conta rungs — the context through
+the verdict — are ONE call, `exigirContaParaPreco` in `regiaoPreco.ts`, the
+same ladder the manual push runs, so one conta answers the same refusal
+whichever of the two buttons the operator pressed (register 183, settled in
+the second PR's review: the helper joined an existing module, so the module
+list did not grow). Each route keeps its own body rungs and its own
+guard-error catch, this one keeps the valve BEFORE the ladder, and the
+helper's tests cover the ladder once for both. The job's per-drain
+re-evaluation of the conta (step 4 below) does not go through the helper: a
+refusal there fails the job instead of answering a route. An enqueue
+that fails after the job exists stamps it `failed` with one `job-interrompido`
+row before answering 503 (an enqueue class it knows) or rethrowing (anything
+else); the stamped `erro` names the error's CLASS — plus, for firebase-admin's
+two classes, the SDK's closed-set code — and never its message. So no
+`running` document is left for nothing to drain, with ONE exception: the stamp
+is best effort, and a Firestore outage during the stamp itself is only logged,
+which leaves that job `running` until the operator cancels it or the six-hour
+orphan reclaim below takes it.
 
 **One dispatch** of `processShopeePriceSync` runs `processarEnvioPrecoShopee`
 once:
@@ -660,16 +674,19 @@ once:
    through the SAME pure planner the manual push uses; its listings join `fila`
    as IDENTITIES (item, link and model ids — no price, no category) and the
    planner's refusals become report rows, committed with the page's job patch
-   in ONE batch. A walk whose anchor count is an exact multiple of the page
-   costs one more, EMPTY, page before the cursor reads `null`.
+   in ONE batch — GUARDED by the job read's `updateTime` (the cancel, below).
+   A walk whose anchor count is an exact multiple of the page costs one more,
+   EMPTY, page before the cursor reads `null`.
 4. DRAIN at most `itensPorDespachoPreco()` listings (default 10, which is also
-   the ceiling), only while `fila` holds any. Lazily, and in this order: the
-   stock quota pause is READ, then the conta verdict runs — the only place a
-   Shopee client is built and the shop read spent — then ONE batched base
-   reader serves the whole lote. Per listing: read its `precos` NOW, price it,
+   the ceiling), only while `fila` holds any. A job PARKED until a later
+   instant waits out the rest first (the park, below). Then the job's
+   `status` is re-read and, lazily, in this order: the stock quota pause is
+   READ, then the conta verdict runs — the only place a Shopee client is built
+   and the shop read spent — then ONE batched base reader serves the whole
+   lote. Per listing: re-read the `status`, read its `precos` NOW, price it,
    send it through the manual push's own per-item sender, checkpoint.
-5. Re-enqueue itself, or finish: `completed` with `relatorioCompleto: true`,
-   through the one transaction below.
+5. Re-enqueue itself (after one more `status` read), or finish: `completed`
+   with `relatorioCompleto: true`, through the one transaction below.
 
 A plan-only dispatch builds no client and calls no Shopee operation, which is
 what lets the emulator round trip (`atualizarPrecos.tasks.test.ts`, in
@@ -695,10 +712,34 @@ row-then-consume duplicates the listing on a retry, consume-then-row drops its
 rows. Per item rather than per dispatch, because a crash then replays AT MOST
 ONE landed send, which the sender's skip-if-equal reads back as `pulado
 preco-igual`: the price is right and the report under-reports one row set per
-crash (register 147). It is a batch and not a transaction because nothing in
-it is read-modify-write — a shard index derives from `relatorioLinhas`, which
-only moves on a committed checkpoint — and it never writes `status`, so it
-cannot clobber a terminal stamp.
+crash (register 147). It is a batch and not a transaction, and it never writes
+`status`, so it cannot clobber a terminal stamp. Its two report counters are
+TIER 0 (root `CLAUDE.md` rule 7): `relatorioLinhas` is
+`FieldValue.increment(<rows it adds>)` and `relatorioShards` is
+`FieldValue.maximum(<shards they reach>)`, never an absolute value computed
+from the dispatch's copy — a terminal stamp that lands while a listing is in
+flight writes its synthetic row and its own `+1`, and a checkpoint that wrote
+back its pre-stamp count would lose that increment. So `relatorioLinhas`
+counts committed row WRITES: an upper bound on distinct rows, exact unless a
+replay re-writes a key. A row's shard still derives from the dispatch's local
+cursor, which a retry recomputes; after that race the cursor can trail the
+stored count by the one synthetic row, so a shard may hold one row past 500 —
+never a row outside the declared shard count, since `maximum` only raises it.
+
+⚠️ **A cancel stops the lote after the listing in flight.** The job's
+`status` is re-read — ONE masked read of that one field — before the drain,
+before EACH listing of the lote, before a pause or a park is stamped, and
+before the continuation is enqueued; anything but `running` answers `noop`.
+The listing being sent when the cancel lands finishes and checkpoints (its
+checkpoint ADDS its rows and writes no `status`), and nothing after it is
+sent: the rest stays in `fila`, counted by the cancel's `filaRestante`. The
+re-read is a check, not a guard, and the one listing it cannot stop is the
+designed exception. The PLAN checkpoint is guarded for real, because nothing
+was sent before it: it writes the job with the job read's `updateTime` as a
+precondition (tier 1), so any write since that read — a cancel, the orphan
+reclaim, another delivery of the same task — fails the whole batch, the page's
+skip rows included, and the dispatch answers `noop`. A cancelled job never
+receives a freshly planned `fila`.
 
 **The report.** One row per planned MODEL (a no-model listing has one), keyed
 by `relatorioEnvioPrecoRowKey`, which is identity only. The row SET is a
@@ -714,14 +755,34 @@ motive `burst` — checkpoints WITHOUT consuming the head and re-enqueues itself
 with a delay (`Retry-After`, else `ratePauseMin()` × 60, or the time the stock
 pause has left), consuming no Cloud Tasks attempt; the 51st pause of one run
 fails it. The DAILY quota — Shopee's, or the stock pause's `cota-diaria` —
-PARKS the job: `retomarEm` is the next 00:00 UTC+8 plus up to 30 s of jitter,
-`status` stays `running`, the resumed dispatch clears `retomarEm`, and the
-fourth park fails the run. A holiday or blocked-shop stock pause is a stock
-condition and pauses nothing here. A conta refused mid-run, a sender `fatal`
-and the first-attempt classes fail the job at once; anything else rethrows
-into the queue's three-attempt ladder and stamps `failed` on the LAST attempt,
-because nothing re-drives a task the queue has dropped. The failure's `erro`
-is the motivo and its pt-BR sentence, never the provider's text.
+PARKS the job: `retomarEm` is the next 00:00 UTC+8, or the stock pause's own
+`pausadoAte`, exactly — the jitter of up to 30 s goes only into the task's
+delay, never into the stored value. `status` stays `running`, the resumed
+dispatch's first checkpoint clears `retomarEm`, every terminal stamp clears it
+too, and the fourth park fails the run. A dispatch delivered BEFORE
+`retomarEm` — a Cloud Tasks duplicate, or the queue's retry of a park whose
+enqueue threw after its checkpoint — re-enqueues itself for the rest of the
+wait (plus the jitter) and answers `pausado`: no park spent, no verdict, no
+Shopee call, no write. A pause or a park is stamped only on a job still
+`running`, so a send that met a limit after a cancel writes and enqueues
+nothing. A holiday or blocked-shop stock pause is a stock condition and
+pauses nothing here. A conta refused mid-run, a sender `fatal` and the
+first-attempt classes fail the job at once; anything else rethrows into the
+queue's three-attempt ladder and stamps `failed` on the LAST attempt, because
+nothing re-drives a task the queue has dropped.
+
+**A stamped `erro` never carries provider text.** A verdict refusal and a
+conta-wide `fatal` stamp the motivo and its pt-BR sentence, the pause and park
+ceilings a sentence of their own; an exception stamps a pt-BR sentence naming
+its CLASS, plus Shopee's own `error` CODE verbatim when it is a token (the
+`ShopeeApiError` family) or the gRPC status (a Firestore or Tasks failure) —
+and its message goes to the log, never to the document, since a Shopee
+message quotes Shopee's own prose, which can carry ids. The one
+exception is a closed set of this app's OWN classes — a conta that is missing,
+is not a Shopee conta, has no `shop_id` or no usable credential, and the
+closed Tasks valve — whose message the app composes from its own ids and field
+paths; that message is kept, with the class (`erroDaFalha`). The same text,
+cut to a row's length, reaches the synthetic `job-interrompido` row.
 
 **The one-active guard, and the race it ACCEPTS** (reconcile C-q). A start is
 refused while a `running` job of the conta exists — one query,
@@ -748,7 +809,8 @@ final-attempt stamp, the start route's enqueue-failure fallback and the
 operator's cancel. It re-derives "still `running`?" — and, on a cancel, the
 conta — from the `tx.get` snapshot, and derives the synthetic row's shard and
 `filaRestante` INSIDE the callback, so an OCC retry recomputes them rather
-than re-applying a captured count. It is inventoried in
+than re-applying a captured count. Every stamp also writes `retomarEm: null`:
+a stopped job is parked on nothing. It is inventoried in
 `firestore-transaction-inventory.test.js`, and it is the only place in this
 folder that names that API (§15).
 
@@ -757,7 +819,10 @@ folder that names that API (§15).
 `job-cancelado` row; a job already terminal answers 409
 `SHOPEE_PRICE_SYNC_NOT_RUNNING`, and a missing job and another conta's job
 answer the SAME 404. A cancel that lands while a listing is being sent lets
-that listing finish, and the dispatch's later `completed` stamp answers `noop`.
+THAT listing finish and nothing after it: the dispatch's next `status` read
+answers `noop` (the cancel paragraph above). The stamp also clears
+`retomarEm`, so a PARKED job that is cancelled never reads as "cancelled,
+resumes at X" on `status` or `historico`.
 `GET status` masks the job read to the fields it returns and never returns
 `fila`; `GET historico` lists runs newest first (`limite` 1–50, default 20,
 refused rather than clamped) on the `(integracaoId, startedAt DESC)` composite
@@ -963,7 +1028,9 @@ gate. In short:
   (step 11's tier mapper refusing an UPDATE for a price it does not send — a
   question for Lucas), 179 (a throttle whose body is `response: {}` loses
   `Retry-After` in the transport's partial), 180 (Mercado Livre's two price
-  comparisons still hand-rolled rather than bound to `mesmoPrecoEmReais`), 183
-  (the duplicated conta ladder of the two routes), and 151's remainder
-  (`ci-mercado-livre.yml`'s push paths still miss its own price-job schemas
-  and `shared/ttl.ts`).
+  comparisons still hand-rolled rather than bound to `mesmoPrecoEmReais`), and
+  151's remainder (`ci-mercado-livre.yml`'s push paths still miss its own
+  price-job schemas and `shared/ttl.ts`).
+- **Settled in the second PR's review**: 183 (the conta ladder the two routes
+  duplicated is now ONE helper, `exigirContaParaPreco` in `regiaoPreco.ts`,
+  §13).

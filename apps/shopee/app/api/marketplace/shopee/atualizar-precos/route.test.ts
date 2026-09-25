@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import { MissingRegionError } from '@delfrance/core/region';
@@ -471,6 +474,71 @@ describe('(6) o primeiro enfileiramento falhou — o job EXISTE e é carimbado',
     expect(corpo.error).not.toContain('token=abc');
   });
 
+  // (R-2) What the REAL transport raises: `taskQueue().enqueue` is REST, and
+  // firebase-admin maps every HTTP failure to `FirebaseFunctionsError` (a queue
+  // not deployed yet is `not-found` — the App-Hosting-before-functions order)
+  // and a transport failure to `FirebaseAppError`. Both constructors are
+  // public, so these are the SDK's own instances, not structural doubles.
+  // ⚠️ Both leave `name` at `'Error'`, which is why the NAME assertion here is
+  // the one that matters.
+  it.each([
+    [
+      'FirebaseFunctionsError not-found (a fila ainda não implantada)',
+      () =>
+        new FirebaseFunctionsError({
+          code: 'not-found',
+          message: 'Queue projects/p/locations/r/queues/q does not exist ?token=abc',
+        }),
+      'FirebaseFunctionsError functions/not-found',
+    ],
+    [
+      'FirebaseAppError network-error (o transporte REST caiu)',
+      () =>
+        new FirebaseAppError({
+          code: 'network-error',
+          message: 'ECONNRESET https://cloudtasks.googleapis.com/?token=abc',
+        }),
+      'FirebaseAppError app/network-error',
+    ],
+  ])(
+    '(R-2) %s ⇒ 503 com o código de enfileiramento, job failed, e o erro carimbado nomeia a CLASSE e o código do SDK, nunca a mensagem',
+    async (_nome, criar, nomeEsperado) => {
+      const { res, jobId } = await iniciarComFalha(criar());
+
+      expect(res.status).toBe(503);
+      const corpo = (await res.json()) as { error: string; code: string };
+      expect(corpo.code).toBe(CODIGO_ENVIO_PRECO_ENFILEIRAMENTO_FALHOU);
+      const job = doc(db, `${COL}/${jobId}`);
+      expect(job).toMatchObject({
+        status: 'failed',
+        relatorioCompleto: false,
+        finishedAt: AGORA_MS,
+      });
+      const gravado = String(job['erro']);
+      expect(gravado).toContain(`(${nomeEsperado})`);
+      expect(gravado).not.toContain('token=abc');
+      expect(gravado).not.toContain('ECONNRESET');
+      expect(gravado).not.toContain('queues/q');
+      expect(corpo.error).toBe(gravado);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('não foi enfileirado'),
+        expect.objectContaining({ erro: nomeEsperado }),
+      );
+    },
+  );
+
+  it('(R-2) QUASE-IGUAL — um código fora da forma do SDK fica de fora: o carimbo diz só a CLASSE', async () => {
+    const { res, jobId } = await iniciarComFalha(
+      new FirebaseFunctionsError({ code: 'Not Found 404 ?token=abc', message: 'x' }),
+    );
+
+    expect(res.status).toBe(503);
+    const gravado = String(doc(db, `${COL}/${jobId}`)['erro']);
+    expect(gravado).toContain('(FirebaseFunctionsError)');
+    expect(gravado).not.toContain('404');
+    expect(gravado).not.toContain('token=abc');
+  });
+
   it('⛔ uma classe DESCONHECIDA no enqueue: o job é carimbado failed E o erro sobe (rule 6)', async () => {
     h.enqueue.mockRejectedValue(new TypeError('bug nosso'));
 
@@ -498,5 +566,59 @@ describe('(6) o primeiro enfileiramento falhou — o job EXISTE e é carimbado',
     };
 
     await expect(POST(req({ integracaoId: INT }, AUTORIZADO))).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+/* ------------------------- (7) ONE conta ladder (R-1) ----------------------- */
+
+describe('(7) a escada de conta é a MESMA do envio manual (R-1)', () => {
+  it('no TEXTO: a válvula → a escada (UMA chamada) → o job → o enfileiramento; a rota não carrega cópia de degrau', () => {
+    const fonte = readFileSync(new URL('./route.ts', import.meta.url), 'utf8');
+    const corpo = fonte.slice(fonte.indexOf('export async function POST'));
+    const posicoes = [
+      'shopeeTasksDesabilitado()',
+      'exigirContaParaPreco(',
+      'iniciarEnvioPrecoShopee(',
+      'createShopeePriceSyncScheduler()',
+    ].map((trecho) => corpo.indexOf(trecho));
+
+    expect(posicoes.every((p) => p > 0)).toBe(true);
+    expect([...posicoes].sort((a, b) => a - b)).toEqual(posicoes);
+    // The rungs are `regiaoPreco.ts`'s; a rung spelled here again is the second copy.
+    for (const degrau of [
+      'loadShopeeContext(',
+      'CODIGO_GUARDA_PRECO.',
+      'pausaDeCotaParaPreco(',
+      'avaliarContaParaPreco(',
+    ]) {
+      expect(corpo).not.toContain(degrau);
+    }
+  });
+
+  it('o braço que esta rota nunca exercitou: recusa SEM região e COM classe ⇒ 422 sem `regiao`, a classe no LOG com a tag desta rota, nunca no corpo', async () => {
+    h.avaliar.mockResolvedValue({
+      ok: false,
+      motivo: MOTIVO_PRECO_SHOPEE.contaNaoConfigurada,
+      regiao: null,
+      erro: 'ShopeeSemCredencialError: Integração int-1 sem credencial 424242.',
+    });
+
+    const res = await POST(req({ integracaoId: INT }, AUTORIZADO));
+
+    expect(res.status).toBe(422);
+    const texto = await res.text();
+    const corpo = JSON.parse(texto) as Record<string, unknown>;
+    expect(Object.keys(corpo).sort()).toEqual(['code', 'error', 'mensagem', 'motivo']);
+    expect(corpo).toMatchObject({
+      code: CODIGO_GUARDA_PRECO.contaRecusada,
+      motivo: MOTIVO_PRECO_SHOPEE.contaNaoConfigurada,
+    });
+    expect(texto).not.toContain('ShopeeSemCredencialError');
+    expect(texto).not.toContain('424242');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[shopee/precos] atualizar-precos: conta recusada (conta-nao-configurada)',
+      expect.objectContaining({ integracaoId: INT, erro: expect.stringContaining('424242') }),
+    );
+    expect(jobs(db)).toEqual([]);
   });
 });

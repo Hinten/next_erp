@@ -286,7 +286,7 @@ describe('expiraEm — the TTL stamp (reconcile C-y)', () => {
     expect(Object.keys(relatorioEnvioPrecoSchema.shape)).toContain('expiraEm');
   });
 
-  it('TTL_POLICIES names the Shopee run and its shards; balanco/*/relatorios stays unstamped', () => {
+  it('TTL_POLICIES names the Shopee run and its shards, and the relatorios motivo TEXT says balanco/*/relatorios is never stamped (the registry text only — no balanço writer is scanned)', () => {
     const porGrupo = new Map(TTL_POLICIES.map((p) => [p.collectionGroup, p.motivo]));
     expect(porGrupo.get('enviosPrecoShopee')).toContain('apps/shopee precos/atualizarPrecos');
     expect(porGrupo.get('enviosPrecoShopee')).toContain('180 days');

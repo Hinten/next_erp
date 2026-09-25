@@ -213,11 +213,13 @@ on:
       - 'packages/data/src/admin/estoque/**'
       # Step 13 (#1521, the account-wide price job) writes one document and its
       # report shards through three schemas NO entry above covers — its own, and
-      # the two it REUSES from Mercado Livre under their ML names (the skip and
-      # failure rows, and the shared report shard). Plus the TTL module: every
-      # job doc and every shard is stamped `expiraEm` through its
-      # `expiraEmApos` + `RETENCAO_ENVIO_PRECO_SHOPEE_DIAS`, and all three
-      # schemas validate that stamp with its `ttlExpiry()`.
+      # the two it REUSES from Mercado Livre under their ML names:
+      # `envioPrecoMercadoLivre.ts` for the skip and failure sample rows, and
+      # `relatorioEnvioPrecoMercadoLivre.ts` for the shared report shard. Plus
+      # the TTL module: every job doc and every shard is stamped `expiraEm`
+      # through its `expiraEmApos` + `RETENCAO_ENVIO_PRECO_SHOPEE_DIAS`, and the
+      # job schema and the shared report-shard schema validate that stamp with
+      # its `ttlExpiry()` (the reused skip/failure rows carry no stamp).
       - 'packages/schemas/src/envioPrecoShopee.ts'
       - 'packages/schemas/src/envioPrecoMercadoLivre.ts'
       - 'packages/schemas/src/relatorioEnvioPrecoMercadoLivre.ts'
@@ -362,7 +364,7 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # THIRTEEN of the codebase's fourteen triggers declare both of these as
+      # FOURTEEN of the codebase's fifteen triggers declare both of these as
       # `secrets:` — the exception is the one Firestore trigger, which never
       # calls Shopee — and demo-erp has no Secret Manager. Invented values are
       # safe AND sufficient: every exercised path refuses before any Shopee call,

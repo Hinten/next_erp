@@ -11,7 +11,20 @@
  *  - `{ merge: true }` com mescla PROFUNDA de mapas, no lote e no `tx.set` da
  *    transação — o Firestore real funde o mapa `linhas` de um shard, e o `set`
  *    do dublê substituiria o shard inteiro (o que faria a linha sintética de um
- *    cancelamento apagar as linhas dos itens já enviados).
+ *    cancelamento apagar as linhas dos itens já enviados);
+ *  - os DOIS transforms numéricos do Admin SDK que o checkpoint escreve
+ *    (`FieldValue.increment` / `FieldValue.maximum`, nível 0 da regra 7),
+ *    APLICADOS contra o valor atual como o Firestore faz — guardá-los crus
+ *    deixaria o contador valendo um objeto. Qualquer outro `FieldValue` LANÇA;
+ *  - `batch.update(ref, patch, { lastUpdateTime })` — a pré-condição do
+ *    checkpoint do PLANO. Conferida no COMMIT (como no Firestore), e uma
+ *    pré-condição vencida derruba o lote inteiro com o gRPC 9, antes de
+ *    qualquer escrita aplicar;
+ *  - `getAll(ref, { fieldMask })` com a máscara APLICADA — a releitura de
+ *    `status` do dreno; cada chamada fica em `leiturasMascaradas`;
+ *  - `aoCommitar` — um gancho que roda DEPOIS de um commit aplicar (contado a
+ *    partir de 1), para um cancelamento pousar entre o checkpoint e o que vem
+ *    depois dele.
  *
  * O remetente, a leitura de página, a leitura de preços e o veredito da conta
  * são INJETADOS (as costuras de `DepsDespachoPreco`): a propriedade sob teste é
@@ -21,11 +34,14 @@
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { FieldValue } from 'firebase-admin/firestore';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
+  ShopeeApiError,
   ShopeeConfigError,
   ShopeeError,
   ShopeeRateLimitError,
+  ShopeeReauthRequiredError,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
 import {
@@ -45,9 +61,11 @@ import {
 } from '@delfrance/schemas';
 
 import { erroContidoPorConta } from '../core/containment';
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError, type ShopeeContext } from '../core/shopee';
+import { ShopeeContaSemShopIdError, ShopeeSemCredencialError } from '../core/tokenStore';
 import { ShopeeTasksDisabledError } from '../shopeeTasks';
-import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, type DocData } from '../testing/fakeDb';
 import {
   MARGEM_RELATORIO_ENVIO_PRECO_SHOPEE_DIAS,
   cancelarEnvioPrecoShopee,
@@ -130,44 +148,146 @@ function ehObjetoSimples(v: unknown): v is DocData {
   );
 }
 
+/**
+ * Um transform numérico do Admin SDK aplicado contra o valor ATUAL, como o
+ * Firestore faz: `increment` soma (um campo ausente ou não numérico conta como
+ * 0), `maximum` fica com o maior (ausente ⇒ o operando). O operando é o campo
+ * público do transform; a CLASSE é decidida por `isEqual`, que compara classe e
+ * operando. Qualquer outro `FieldValue` LANÇA — o dublê não adivinha.
+ */
+function aplicarTransform(atual: unknown, valor: FieldValue): number {
+  const operando = (valor as unknown as { operand?: unknown }).operand;
+  if (typeof operando !== 'number') throw new Error('dublê: FieldValue sem operando numérico');
+  const base = typeof atual === 'number' ? atual : null;
+  if (valor.isEqual(FieldValue.increment(operando))) return (base ?? 0) + operando;
+  if (valor.isEqual(FieldValue.maximum(operando))) {
+    return base === null ? operando : Math.max(base, operando);
+  }
+  throw new Error('dublê: FieldValue não modelado');
+}
+
+/** O valor que um campo passa a ter: um transform é aplicado, o resto substitui. */
+function valorEscrito(atual: unknown, valor: unknown): unknown {
+  return valor instanceof FieldValue ? aplicarTransform(atual, valor) : valor;
+}
+
 /** `{ merge: true }` do Firestore: mapas se fundem em profundidade, o resto substitui. */
 function fundir(base: DocData | undefined, patch: DocData): DocData {
   const saida: DocData = { ...(base ?? {}) };
   for (const [chave, valor] of Object.entries(patch)) {
     const atual = saida[chave];
-    saida[chave] = ehObjetoSimples(valor) && ehObjetoSimples(atual) ? fundir(atual, valor) : valor;
+    saida[chave] =
+      ehObjetoSimples(valor) && ehObjetoSimples(atual)
+        ? fundir(atual, valor)
+        : valorEscrito(atual, valor);
   }
   return saida;
 }
 
-/** O `FakeDb` com `batch()` e a mescla profunda — veja o cabeçalho. */
+/** `update()` do Firestore com um patch PLANO: cada chave substitui (ou transforma) o campo. */
+function substituirCampos(base: DocData, patch: DocData): DocData {
+  const saida: DocData = { ...base };
+  for (const [chave, valor] of Object.entries(patch))
+    saida[chave] = valorEscrito(saida[chave], valor);
+  return saida;
+}
+
+interface EscritaDeLote {
+  readonly path: string;
+  readonly data: DocData;
+  readonly verbo: 'set' | 'set-merge' | 'update';
+  readonly lastUpdateTime?: unknown;
+}
+
+/** O `FakeDb` com `batch()`, a mescla profunda, os transforms e a leitura mascarada — veja o cabeçalho. */
 class FakeDbDeJob extends FakeDb {
   /** Cada commit de lote que APLICOU, com as suas escritas em ordem. */
   readonly lotes: { path: string; data: DocData }[][] = [];
   /** Commits (contados a partir de 1) que lançam em vez de aplicar. */
   readonly commitsQueFalham = new Map<number, Error>();
+  /** Ganchos que rodam DEPOIS que o commit N (contado a partir de 1) aplicou. */
+  readonly aoCommitar = new Map<number, () => Promise<unknown>>();
+  /** Cada `getAll`: os caminhos pedidos e a máscara. */
+  readonly leiturasMascaradas: { caminhos: string[]; mascara: string[] | null }[] = [];
   private commits = 0;
 
   batch() {
-    const escritas: { path: string; data: DocData; merge: boolean }[] = [];
+    const escritas: EscritaDeLote[] = [];
     const lote = {
       set: (ref: { path: string }, data: DocData, opts?: { merge?: boolean }) => {
-        escritas.push({ path: ref.path, data, merge: opts?.merge === true });
+        escritas.push({ path: ref.path, data, verbo: opts?.merge === true ? 'set-merge' : 'set' });
         return lote;
       },
-      commit: () => {
+      update: (ref: { path: string }, data: DocData, precond?: { lastUpdateTime?: unknown }) => {
+        escritas.push({
+          path: ref.path,
+          data,
+          verbo: 'update',
+          lastUpdateTime: precond?.lastUpdateTime,
+        });
+        return lote;
+      },
+      commit: async () => {
         this.commits += 1;
-        const falha = this.commitsQueFalham.get(this.commits);
-        if (falha !== undefined) return Promise.reject(falha);
+        const numero = this.commits;
+        const falha = this.commitsQueFalham.get(numero);
+        if (falha !== undefined) throw falha;
+        // Atômico: toda existência e toda pré-condição conferidas ANTES de aplicar.
+        for (const e of escritas) {
+          if (e.verbo !== 'update') continue;
+          const atual = this.store[e.path];
+          if (atual === undefined) throw grpc(5, 'NOT_FOUND');
+          if (e.lastUpdateTime !== undefined && !atual.updateTime.isEqual(e.lastUpdateTime)) {
+            throw grpc(9, 'FAILED_PRECONDITION');
+          }
+        }
         this.lotes.push(escritas.map((e) => ({ path: e.path, data: e.data })));
         for (const e of escritas) {
-          this.seed(e.path, e.merge ? fundir(this.store[e.path]?.data, e.data) : e.data);
+          const anterior = this.store[e.path]?.data;
+          this.seed(
+            e.path,
+            e.verbo === 'set'
+              ? e.data
+              : e.verbo === 'set-merge'
+                ? fundir(anterior, e.data)
+                : substituirCampos(anterior ?? {}, e.data),
+          );
           this.writes.push({ path: e.path, patch: e.data });
         }
-        return Promise.resolve();
+        await this.aoCommitar.get(numero)?.();
       },
     };
     return lote;
+  }
+
+  getAll(...args: unknown[]) {
+    const ultimo = args[args.length - 1];
+    const opcoes =
+      typeof ultimo === 'object' && ultimo !== null && 'fieldMask' in ultimo
+        ? (ultimo as { fieldMask: string[] })
+        : null;
+    const refs = (opcoes === null ? args : args.slice(0, -1)) as { id: string; path: string }[];
+    this.leiturasMascaradas.push({
+      caminhos: refs.map((r) => r.path),
+      mascara: opcoes?.fieldMask ?? null,
+    });
+    return Promise.resolve(
+      refs.map((ref) => {
+        const dados = this.store[ref.path]?.data;
+        const visiveis: DocData | undefined =
+          dados === undefined || opcoes === null
+            ? dados
+            : Object.fromEntries(
+                Object.entries(dados).filter(([campo]) => opcoes.fieldMask.includes(campo)),
+              );
+        return {
+          id: ref.id,
+          exists: dados !== undefined,
+          data: () => visiveis,
+          get: (campo: string) => visiveis?.[campo],
+        };
+      }),
+    );
   }
 
   override runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
@@ -1513,7 +1633,11 @@ describe('o despacho — PAUSA, PARQUE e FALHA', () => {
     await expect(rodar(m, ENVIO_PRECO_MAX_TENTATIVAS - 2)).rejects.toThrow('DEADLINE_EXCEEDED');
     expect(jobNoBanco(m).status).toBe('running');
     expect(await rodar(m, ENVIO_PRECO_MAX_TENTATIVAS - 1)).toBe('failed');
-    expect(jobNoBanco(m)).toMatchObject({ status: 'failed', erro: 'DEADLINE_EXCEEDED' });
+    // D-2: a CLASSE e o status gRPC, nunca a mensagem do transporte.
+    expect(jobNoBanco(m)).toMatchObject({
+      status: 'failed',
+      erro: 'O despacho da atualização de preços falhou (Error, código gRPC 4).',
+    });
   });
 
   it('QUASE-IGUAL da escada: uma classe de PRIMEIRA tentativa (ShopeeConfigError) carimba já na tentativa 0', async () => {
@@ -1536,6 +1660,432 @@ describe('o despacho — PAUSA, PARQUE e FALHA', () => {
     });
     expect(await rodar(m, 0)).toBe('failed');
     expect(jobNoBanco(m).status).toBe('failed');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          revisão 2: o cancelamento, os contadores, o parque, o `erro`       */
+/* -------------------------------------------------------------------------- */
+
+/** O cancelamento do operador, do jeito que a rota o chama. */
+const cancelarAgora = (m: Mundo) =>
+  cancelarEnvioPrecoShopee(asDb(m.db), { jobId: JOB, integracaoId: INT, nowMs: T0 + MINUTO_MS });
+
+/** Quantas linhas DISTINTAS há em todos os shards do job. */
+function linhasEmTodosOsShards(m: Mundo): number {
+  const colecao = relatorioEnvioPrecoShopeeCollection.resolvePath({ envioId: JOB });
+  return m.db
+    .idsEm(colecao)
+    .reduce((soma, id) => soma + Object.keys(linhasDoShard(m, id)).length, 0);
+}
+
+const tresItens = (): EnvioPrecoShopeeFilaItem[] => [
+  itemSemModelo('a1', ITEM),
+  itemSemModelo('a2', ITEM + 1),
+  itemSemModelo('a3', ITEM + 2),
+];
+
+/** Um job de 3 itens no botão PADRÃO, com o cancelamento pousando DURANTE o envio do item 1. */
+async function cancelarDuranteOItem1(m: Mundo): Promise<DespachoEnvioPreco> {
+  semearJob(m, { fila: tresItens(), planejamentoConcluido: true });
+  for (const id of ['a1', 'a2', 'a3']) m.banco.set(id, precos(20));
+  const real = remetente(m.loja);
+  let cancelou = false;
+  m.enviar = vi.fn<Enviar>(async (item, d) => {
+    if (!cancelou) {
+      cancelou = true;
+      await cancelarAgora(m);
+    }
+    return real(item, d);
+  });
+  return rodar(m);
+}
+
+describe('J-1 / D-1 — um cancelamento para o lote DEPOIS do item em voo', () => {
+  it('⚠️ lote de 3 no botão PADRÃO, cancelamento durante o item 1 ⇒ só ele termina; 2 e 3 NUNCA são enviados, `filaRestante` = 2', async () => {
+    const m = mundo();
+    expect(itensPorDespachoPreco()).toBeGreaterThanOrEqual(3);
+    expect(await cancelarDuranteOItem1(m)).toBe('noop');
+    expect(m.enviar).toHaveBeenCalledTimes(1);
+    expect(m.loja.escritas.map((e) => e.itemId)).toEqual([ITEM]);
+    expect(m.lerPrecos).toHaveBeenCalledTimes(1);
+    expect(m.scheduler.enqueue).not.toHaveBeenCalled();
+    const job = jobNoBanco(m);
+    expect(job).toMatchObject({ status: 'cancelled', filaRestante: 2, enviados: 1 });
+    expect(job.fila.map((i) => i.produtoId)).toEqual(['a2', 'a3']);
+    expect(
+      motivosDoShard(m)
+        .map(([motivo]) => motivo)
+        .sort(),
+    ).toEqual(['job-cancelado', null].sort());
+    // UMA leitura mascarada de `status` antes do dreno e uma antes de CADA item
+    // tentado — a do item 2 é a que para o lote.
+    expect(m.db.leiturasMascaradas).toEqual(
+      Array.from({ length: 3 }, () => ({ caminhos: [CAMINHO_DO_JOB], mascara: ['status'] })),
+    );
+  });
+
+  it('um cancelamento durante o VEREDITO da conta ⇒ nada é enviado — nem um preço é lido', async () => {
+    const m = mundo();
+    semearJob(m, { fila: tresItens(), planejamentoConcluido: true });
+    for (const id of ['a1', 'a2', 'a3']) m.banco.set(id, precos(20));
+    m.avaliarConta.mockImplementation(async (): Promise<VereditoContaPreco> => {
+      await cancelarAgora(m);
+      return { ok: true, contexto: CONTEXTO_DA_CONTA };
+    });
+    expect(await rodar(m)).toBe('noop');
+    expect(m.avaliarConta).toHaveBeenCalledTimes(1);
+    expect(m.enviar).not.toHaveBeenCalled();
+    expect(m.lerPrecos).not.toHaveBeenCalled();
+    expect(m.db.lotes).toEqual([]);
+    expect(jobNoBanco(m)).toMatchObject({ status: 'cancelled', filaRestante: 3 });
+  });
+
+  it('⚠️ um cancelamento durante a leitura da PÁGINA ⇒ o checkpoint do plano cai pela pré-condição: nenhuma `fila` nova no job cancelado, nada enviado', async () => {
+    const m = mundo();
+    semearJob(m);
+    m.familias = [familiaSemModelo('a1', ITEM), familiaKit('a2', ITEM + 1)];
+    m.banco.set('a1', precos(20));
+    const original = m.lerPagina.getMockImplementation() as Costura<'lerPagina'>;
+    m.lerPagina.mockImplementation(async (...args: Parameters<Costura<'lerPagina'>>) => {
+      await cancelarAgora(m);
+      return original(...args);
+    });
+    expect(await rodar(m)).toBe('noop');
+    expect(jobNoBanco(m)).toMatchObject({
+      status: 'cancelled',
+      fila: [],
+      filaRestante: 0,
+      planejados: 0,
+      pulados: 0,
+      afterAnchorId: null,
+      planejamentoConcluido: false,
+    });
+    // Nem a linha de pulo do plano (`kit-derivado`) chegou: o lote caiu INTEIRO.
+    expect(motivosDoShard(m)).toEqual([['job-cancelado', 'nao-tentado']]);
+    expect(m.db.lotes).toEqual([]);
+    expect(m.avaliarConta).not.toHaveBeenCalled();
+    expect(m.enviar).not.toHaveBeenCalled();
+  });
+
+  it('um cancelamento logo DEPOIS do checkpoint do plano ⇒ o dreno não começa: zero veredito, zero envio', async () => {
+    const m = mundo();
+    semearJob(m);
+    m.familias = [familiaSemModelo('a1', ITEM), familiaSemModelo('a2', ITEM + 1)];
+    m.db.aoCommitar.set(1, () => cancelarAgora(m));
+    expect(await rodar(m)).toBe('noop');
+    expect(m.avaliarConta).not.toHaveBeenCalled();
+    expect(m.enviar).not.toHaveBeenCalled();
+    // O plano commitou ANTES do cancelamento: a fila dele é o que o cancelamento conta.
+    expect(jobNoBanco(m)).toMatchObject({ status: 'cancelled', planejados: 2, filaRestante: 2 });
+  });
+
+  it('um cancelamento durante o carregamento do CONTEXTO (fila já cheia) ⇒ nenhuma chamada à Shopee', async () => {
+    const m = mundo();
+    semearJob(m, { fila: tresItens(), planejamentoConcluido: true });
+    const original = m.resolverContexto.getMockImplementation() as Costura<'resolverContexto'>;
+    m.resolverContexto.mockImplementation(
+      async (...args: Parameters<Costura<'resolverContexto'>>) => {
+        await cancelarAgora(m);
+        return original(...args);
+      },
+    );
+    expect(await rodar(m)).toBe('noop');
+    expect(m.avaliarConta).not.toHaveBeenCalled();
+    expect(m.enviar).not.toHaveBeenCalled();
+  });
+
+  it('um job APAGADO durante o veredito (a leitura mascarada não o encontra) ⇒ `noop`, nada enviado — e nenhum checkpoint o recria', async () => {
+    const m = mundo();
+    semearJob(m, { fila: tresItens(), planejamentoConcluido: true });
+    for (const id of ['a1', 'a2', 'a3']) m.banco.set(id, precos(20));
+    m.avaliarConta.mockImplementation(async (): Promise<VereditoContaPreco> => {
+      await Promise.resolve();
+      delete m.db.store[CAMINHO_DO_JOB];
+      return { ok: true, contexto: CONTEXTO_DA_CONTA };
+    });
+    expect(await rodar(m)).toBe('noop');
+    expect(m.enviar).not.toHaveBeenCalled();
+    expect(m.db.store[CAMINHO_DO_JOB]).toBeUndefined();
+  });
+
+  const pausasDoEnvio: [string, ResultadoEnvioPreco][] = [
+    [
+      'cota-diaria',
+      {
+        tipo: 'pausa',
+        pausa: 'cota-diaria',
+        ate: T0 + HORA_MS,
+        retryAfterSeconds: null,
+        codigo: 'error_limit',
+        chamadasShopee: 1,
+      },
+    ],
+    [
+      'burst',
+      {
+        tipo: 'pausa',
+        pausa: 'burst',
+        ate: null,
+        retryAfterSeconds: 9,
+        codigo: 'error_rate_limit',
+        chamadasShopee: 1,
+      },
+    ],
+  ];
+
+  it.each(pausasDoEnvio)(
+    'uma pausa (%s) respondida pelo envio em voo DEPOIS de um cancelamento ⇒ nem parque nem pausa: nada escrito, nada enfileirado',
+    async (_nome, pausa) => {
+      const m = mundo();
+      semearJob(m, { fila: [itemSemModelo('a1', ITEM)], planejamentoConcluido: true });
+      m.banco.set('a1', precos(20));
+      m.enviar = vi.fn<Enviar>(async () => {
+        await cancelarAgora(m);
+        return pausa;
+      });
+      expect(await rodar(m)).toBe('noop');
+      expect(m.scheduler.enqueue).not.toHaveBeenCalled();
+      expect(m.db.lotes).toEqual([]);
+      expect(jobNoBanco(m)).toMatchObject({
+        status: 'cancelled',
+        retomarEm: null,
+        parques: 0,
+        pausas: 0,
+      });
+    },
+  );
+});
+
+describe('J-2 / S-2 / D-3 — os contadores do relatório são de NÍVEL 0', () => {
+  it('⚠️ um cancelamento que corre o item 1 de 3 ⇒ `relatorioLinhas` = as linhas distintas nos shards (era 3 contra 4)', async () => {
+    const m = mundo();
+    await cancelarDuranteOItem1(m);
+    const job = jobNoBanco(m);
+    expect(linhasEmTodosOsShards(m)).toBe(2);
+    expect(job.relatorioLinhas).toBe(linhasEmTodosOsShards(m));
+    expect(job.relatorioShards).toBe(1);
+  });
+
+  it('o checkpoint com linhas escreve TRANSFORMS — `increment(linhas)` e `maximum(shards)` —, nunca um número da cópia do despacho', async () => {
+    const m = mundo();
+    semearJob(m, {
+      fila: [itemComModelos('a1', ITEM)],
+      planejamentoConcluido: true,
+      relatorioLinhas: 499,
+      relatorioShards: 1,
+    });
+    m.banco.set(FILHO_A, precos(12));
+    m.banco.set(FILHO_B, precos(22));
+    expect(await rodar(m)).toBe('done');
+    const patch = m.db.lotes[0]?.find((e) => e.path === CAMINHO_DO_JOB)?.data ?? {};
+    expect(patch['relatorioLinhas']).toBeInstanceOf(FieldValue);
+    expect((patch['relatorioLinhas'] as FieldValue).isEqual(FieldValue.increment(2))).toBe(true);
+    expect((patch['relatorioShards'] as FieldValue).isEqual(FieldValue.maximum(2))).toBe(true);
+    // Aplicados: 499 + 2, e a 501ª linha abriu o shard 0001.
+    expect(jobNoBanco(m)).toMatchObject({ relatorioLinhas: 501, relatorioShards: 2 });
+    expect(Object.keys(linhasDoShard(m, '0000'))).toHaveLength(1);
+    expect(Object.keys(linhasDoShard(m, '0001'))).toHaveLength(1);
+  });
+});
+
+describe('J-3 — um job ESTACIONADO entregue antes da hora não chama a Shopee', () => {
+  it('PAR: `retomarEm` 2 h à frente ⇒ reenfileira pelo que falta + jitter e responde `pausado` — zero veredito, zero envio, `parques` intacto, nada escrito', async () => {
+    const m = mundo();
+    const retomarEm = T0 + 2 * HORA_MS + 500;
+    semearJob(m, {
+      fila: [itemSemModelo('a1', ITEM)],
+      planejamentoConcluido: true,
+      retomarEm,
+      parques: 1,
+    });
+    m.banco.set('a1', precos(20));
+    const jitter = vi.fn(() => 7);
+    expect(await rodar(m, 0, T0, { jitterSec: jitter })).toBe('pausado');
+    expect(jitter).toHaveBeenCalledWith(PARQUE_JITTER_MAX_S);
+    expect(m.enfileirados).toEqual([
+      {
+        payload: { jobId: JOB, integracaoId: INT },
+        opts: { scheduleDelaySeconds: 2 * 3600 + 1 + 7 },
+      },
+    ]);
+    expect(m.avaliarConta).not.toHaveBeenCalled();
+    expect(m.enviar).not.toHaveBeenCalled();
+    expect(m.db.lotes).toEqual([]);
+    expect(jobNoBanco(m)).toMatchObject({ status: 'running', parques: 1, retomarEm });
+  });
+
+  it('QUASE-IGUAL: `retomarEm` EXATAMENTE agora já venceu ⇒ o dreno segue (e o `retomarEm` é limpo)', async () => {
+    const m = mundo();
+    semearJob(m, {
+      fila: [itemSemModelo('a1', ITEM)],
+      planejamentoConcluido: true,
+      retomarEm: T0,
+      parques: 1,
+    });
+    m.banco.set('a1', precos(20));
+    expect(await rodar(m)).toBe('done');
+    expect(m.enviar).toHaveBeenCalledTimes(1);
+    expect(m.db.lotes[0]?.[0]?.data['retomarEm']).toBeNull();
+    expect(jobNoBanco(m)).toMatchObject({ retomarEm: null, parques: 1 });
+  });
+});
+
+describe('R-3 — todo carimbo terminal limpa o `retomarEm`', () => {
+  it('cancelar um job ESTACIONADO ⇒ `cancelled` com `retomarEm` nulo — nunca "cancelado, retoma às X"', async () => {
+    const m = mundo();
+    semearJob(m, { fila: [itemSemModelo('a1', ITEM)], retomarEm: T0 + 6 * HORA_MS, parques: 1 });
+    expect(await cancelarAgora(m)).toBe('stamped');
+    expect(jobNoBanco(m)).toMatchObject({ status: 'cancelled', retomarEm: null, parques: 1 });
+  });
+
+  it('a reclamação de um órfão cujo parque venceu há 2 h também limpa', async () => {
+    const m = mundo();
+    semearJob(m, { updatedAt: T0 - 7 * HORA_MS, retomarEm: T0 - 2 * HORA_MS, parques: 1 });
+    await iniciarEnvioPrecoShopee(asDb(m.db), {
+      contexto: CONTEXTO_DA_CONTA,
+      baixarPreco: false,
+      startedBy: null,
+      nowMs: T0,
+    });
+    expect(jobNoBanco(m)).toMatchObject({ status: 'failed', retomarEm: null });
+  });
+});
+
+describe('D-2 — o `erro` carimbado nunca traz o texto da Shopee', () => {
+  const erroDaShopee = (code: string, mensagem: string): ShopeeApiError =>
+    new ShopeeApiError(mensagem, {
+      code,
+      kind: 'transient',
+      httpStatus: 500,
+      path: '/api/v2/product/update_price',
+    });
+
+  /** O job de UM item cujo envio lança `err` na tentativa `retryCount`. */
+  async function falharNoEnvio(err: Error, retryCount: number): Promise<Mundo> {
+    const m = mundo();
+    semearJob(m, { fila: [itemSemModelo('a1', ITEM)], planejamentoConcluido: true });
+    m.banco.set('a1', precos(20));
+    m.enviar = vi.fn<Enviar>(async () => {
+      await Promise.resolve();
+      throw err;
+    });
+    expect(await rodar(m, retryCount)).toBe('failed');
+    return m;
+  }
+
+  it('⚠️ um erro da Shopee na ÚLTIMA tentativa, com dígitos e uma frase na mensagem ⇒ o `erro` (e a linha sintética) guardam só a CLASSE e o CÓDIGO', async () => {
+    const m = await falharNoEnvio(
+      erroDaShopee(
+        'error_server',
+        'Shopee /api/v2/product/update_price respondeu error_server (HTTP 500) — a loja 987654 foi bloqueada pelo parceiro',
+      ),
+      ENVIO_PRECO_MAX_TENTATIVAS - 1,
+    );
+    const { erro } = jobNoBanco(m);
+    expect(erro).toBe(
+      'O despacho da atualização de preços falhou (ShopeeApiError, código Shopee error_server).',
+    );
+    expect(erro).not.toMatch(/\d{3,}/);
+    expect(erro).not.toContain('bloqueada pelo parceiro');
+    const [linha] = Object.values(linhasDoShard(m));
+    expect(linha).toMatchObject({ motivo: 'job-interrompido', erro });
+  });
+
+  /** O `erro` de um job cujo contexto lança `err` — todas estas classes carimbam na tentativa 0. */
+  async function erroNaTentativa0(err: Error): Promise<string | null> {
+    const m = mundo();
+    semearJob(m);
+    m.resolverContexto.mockImplementation(async () => {
+      await Promise.resolve();
+      throw err;
+    });
+    expect(await rodar(m, 0)).toBe('failed');
+    return jobNoBanco(m).erro;
+  }
+
+  // As classes cuja mensagem o PRÓPRIO app compõe, com os ids dele — a raia de
+  // tasks lê a primeira ("não é do tipo Shopee") como a prova de QUAL braço rodou.
+  const PROPRIAS: [string, () => Error][] = [
+    [
+      'ShopeeContaNotConfiguredError',
+      () => new ShopeeContaNotConfiguredError(`Integração ${INT} não é do tipo Shopee.`),
+    ],
+    [
+      'ShopeeContaSemShopIdError',
+      () => new ShopeeContaSemShopIdError(`Integração ${INT} ainda não tem uma loja (shop_id).`),
+    ],
+    [
+      'ShopeeSemCredencialError',
+      () => new ShopeeSemCredencialError(`Conta Shopee ${INT} sem credencial utilizável.`),
+    ],
+    [
+      'ShopeeCredencialInvalidaError',
+      () =>
+        new ShopeeCredencialInvalidaError(
+          `Credencial Shopee inválida para a integração ${INT}. Campos: access_token.`,
+          ['access_token'],
+        ),
+    ],
+    ['ShopeePriceSyncTasksDisabledError', () => new ShopeePriceSyncTasksDisabledError()],
+  ];
+
+  it.each(PROPRIAS)(
+    'PAR: a mensagem de uma classe PRÓPRIA do app (%s), escrita por ele, É guardada — com a classe',
+    async (nome, criar) => {
+      const err = criar();
+      expect(await erroNaTentativa0(err)).toBe(`${err.message} (${nome})`);
+    },
+  );
+
+  // As classes de PRIMEIRA tentativa que NÃO são do app: a mensagem de uma
+  // `ShopeeApiError` cita a prosa da Shopee; a de uma `ShopeeConfigError` pode
+  // citar uma URL de host. O quase-igual das próprias acima.
+  const DE_FORA: [string, () => Error, string, string][] = [
+    [
+      'ShopeeReauthRequiredError',
+      () =>
+        new ShopeeReauthRequiredError(
+          'Shopee /api/v2/shop/get_shop_info respondeu invalid_acceess_token (HTTP 403) — token 1234567 revogado pelo vendedor',
+          { code: 'invalid_acceess_token', kind: 'reauth', httpStatus: 403, path: '/x' },
+        ),
+      'O despacho da atualização de preços falhou (ShopeeReauthRequiredError, código Shopee invalid_acceess_token).',
+      'revogado pelo vendedor',
+    ],
+    [
+      'ShopeeConfigError',
+      () => new ShopeeConfigError('SHOPEE_API_HOST inválido: https://proxy.exemplo:8443/v2'),
+      'O despacho da atualização de preços falhou (ShopeeConfigError).',
+      'proxy.exemplo',
+    ],
+  ];
+
+  it.each(DE_FORA)(
+    'QUASE-IGUAL: a de uma classe de primeira tentativa que NÃO é do app (%s) NUNCA — só a classe (e o código)',
+    async (_nome, criar, esperado, trecho) => {
+      const erro = await erroNaTentativa0(criar());
+      expect(erro).toBe(esperado);
+      expect(erro).not.toContain(trecho);
+      expect(erro).not.toMatch(/\d{4,}/);
+    },
+  );
+
+  it('PAR: um código com ponto (`product.error_update_price_fail`) entra verbatim; QUASE-IGUAL: um `code` que não é um TOKEN (com espaço e dígitos) fica de fora — só a classe', async () => {
+    const comPonto = await falharNoEnvio(
+      erroDaShopee('product.error_update_price_fail', 'qualquer coisa 987654'),
+      ENVIO_PRECO_MAX_TENTATIVAS - 1,
+    );
+    expect(jobNoBanco(comPonto).erro).toBe(
+      'O despacho da atualização de preços falhou (ShopeeApiError, código Shopee product.error_update_price_fail).',
+    );
+
+    const naoToken = await falharNoEnvio(
+      erroDaShopee('erro 987654 da loja', 'qualquer coisa'),
+      ENVIO_PRECO_MAX_TENTATIVAS - 1,
+    );
+    expect(jobNoBanco(naoToken).erro).toBe(
+      'O despacho da atualização de preços falhou (ShopeeApiError).',
+    );
   });
 });
 

@@ -139,8 +139,9 @@ describe('createShopeePriceSyncScheduler', () => {
     vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
     const agendador = createShopeePriceSyncScheduler();
 
-    // ⛔ O objeto de opções vai para o Cloud Tasks: "sem atraso" e "atraso
-    // indefinido" não são o mesmo pedido. `toHaveBeenCalledWith` compara como
+    // ⛔ A chave fica OMITIDA para que o ponto de chamada não dependa do SDK
+    // tratar `undefined` como ausente (o firebase-admin fixado trata, hoje —
+    // nada aqui deve depender disso). `toHaveBeenCalledWith` compara como
     // `toEqual` e IGNORA chaves com undefined, então `{scheduleDelaySeconds:
     // undefined}` passaria por `{}` — a asserção que mata o mutante é sobre o
     // ARGUMENTO em si, que precisa ser undefined inteiro. É o caminho de TODA

@@ -5,11 +5,19 @@
  *
  * The cancel is ONE terminal stamp through the job's single transaction
  * (`cancelarEnvioPrecoShopee`), which re-derives "still running" and "this
- * conta's job" from its own read; there is nothing to tell the queue. An
- * in-flight dispatch finishes the listing it is sending (its checkpoint writes
- * no `status`) and its next status read answers `noop`, so tasks already queued
- * drain as no-ops. The abandoned queue is recorded as `filaRestante` plus ONE
- * `job-cancelado` report row.
+ * conta's job" from its own read; there is nothing to tell the queue.
+ *
+ * ⚠️ **The listing in flight finishes; nothing after it is sent.** A dispatch
+ * re-reads the job's `status` before EACH listing of its lote (and before the
+ * drain), so a cancel that lands mid-lote lets only the listing already being
+ * sent complete — its checkpoint writes no `status`, and adds its report rows to
+ * the job's counter instead of overwriting the cancel's — and the next read
+ * answers `noop`. The rest of the lote stays in the `fila`, never sent. A
+ * cancel that lands while a page is being PLANNED never receives a fresh
+ * `fila`, and tasks already queued drain as no-ops. The abandoned queue is
+ * recorded as `filaRestante` plus ONE `job-cancelado` report row, and the stamp
+ * clears `retomarEm`: a cancelled PARKED job resumes nowhere, so `status` and
+ * `historico` never answer "cancelled, resumes at X".
  *
  * ⚠️ It is also the recovery for a job that is `running` with NO worker — an
  * enqueue that succeeded and never dispatched (a region mismatch, a missing
