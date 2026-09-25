@@ -400,6 +400,12 @@ jobs:
       # is a task carrying more models than `update_stock` accepts, refused
       # ABOVE the client — same call-order argument as the other two suites.
       SHOPEE_STOCK_SYNC_ENABLED: '1'
+      # Step 13's price job pages two anchors per dispatch here, so its round trip
+      # (`precos/atualizarPrecos.tasks.test.ts`, case 1) really crosses a page
+      # boundary and a self re-enqueue with four anchors. The suite throws a
+      # named precondition error when this is not '2'. A QUOTED string, like the
+      # valve above; it writes to no marketplace (every anchor is a plan-time skip).
+      SHOPEE_PRICE_PAGE_LIMIT: '2'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
