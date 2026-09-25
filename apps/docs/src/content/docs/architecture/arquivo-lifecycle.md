@@ -1,6 +1,6 @@
 ---
 title: Arquivo (file) lifecycle
-description: Upload, maintenance and deletion flow for the arquivos collection — create-first, doc-anchored, product-scoped — with a coverage map of every failure mode.
+description: Upload, reference, maintenance and deletion flow for the arquivos collection — create-first, doc-anchored, owner-scoped and globally shared mensagem media.
 ---
 
 A managerial, high-level view of how files (`arquivos`) move through the system —
@@ -14,20 +14,22 @@ page is the **map** to verify nothing falls through the cracks.
 - The **`arquivos` Firestore doc is the anchor**, not the Storage object.
 - **Create-first**: the client writes the doc *before* uploading the bytes, so a dead
   upload leaves a detectable *phantom doc*, never an orphan object.
-- **Content-addressed**: the doc id is `sha512(bytes)` — re-uploading identical bytes
-  is a no-op (dedup).
-- **Product-scoped**: every product file lives under `produtos/<produtoId>/…` with a
-  product-scoped doc id, so there is no cross-product sharing — deletion is
-  owner-scoped and needs no refcount table.
-- Five Cloud Functions own the server side (codebase `storage`, region `FUNCTIONS_REGION`):
+- **Content-addressed**: uploads derive ids from `sha512(bytes)` and reuse an existing
+  completed anchor. Namespaces scope the id where ownership differs:
+  `<produtoId>_<hash>` for owner media and `chat_<hash>` for new composer uploads.
+- **Two ownership modes**: `produtos/` and `tabMedi/` encode one owner in the path;
+  `whatsapp/` and `chat/` may be referenced globally by many mensagens and therefore
+  require a collection-group refcount before deletion.
+- The relevant Cloud Functions in codebase `storage` are:
 
 | Function | Trigger | Job |
 | --- | --- | --- |
 | `resizeProductImage` | `onObjectFinalized` | Confirm upload (`uploadState→'finalized'`) + generate image derivatives |
 | `reconcileProductImages` | `onSchedule` (48h) | Backfill derivatives the trigger never finished |
 | `onArquivoDeleted` | `onDocumentDeleted('arquivos/{id}')` | Free the object + cascade derivatives when a doc is deleted |
-| `onProdutoMediaChanged` | `onDocumentUpdated('produtos/{id}')` | **Eagerly mark** an arquivo for deletion when a photo/video is edited out of a produto (clears the mark on re-add) |
-| `reconcileArquivoOrphans` | `onSchedule` (48h) | Delete marked arquivos + reap phantom docs + arquivos no produto references anymore |
+| `onProdutoMediaChanged` / `onTabMediMediaChanged` | owner updates | **Eagerly mark** owner media removed from a document (clear on re-add) |
+| `onMensagemDeleted` | `onDocumentDeleted('chat/{conversaId}/mensagem/{mensagemId}')` | Mark governed mensagem media; never delete a possibly shared arquivo directly |
+| `reconcileArquivoOrphans` | `onSchedule` (48h) | Reap marked, phantom and globally unreferenced arquivos |
 
 ## Storage layout & doc model
 
@@ -36,6 +38,10 @@ page is the **map** to verify nothing falls through the cracks.
 | Product image **original** | `produtos/<id>/originals/<hash>.<ext>` | `<id>_<hash>` | ✅ (watched) |
 | Image **derivative** | `produtos/<id>/derivatives/<hash>_<key>.jpeg` | `<id>_<hash>_<key>` | server-only (`resized:true`) |
 | Product **video** | `produtos/<id>/videos/<hash>.<ext>` | `<id>_<hash>` | ❌ |
+| Product **attachment** | `produtos/<id>/anexos/<hash>.<ext>` | `<id>_<hash>` | ❌ |
+| Size-chart image | `tabMedi/<id>/originals/<hash>.<ext>` | `<id>_<hash>` | ✅ (watched) |
+| WhatsApp inbound media | `whatsapp/<contaId>/<mediaId>` | `wa_<mediaId>` | ❌ |
+| Chat composer attachment | `chat/<hash>.<ext>` | `chat_<hash>` (legacy `<hash>` remains valid) | ❌ |
 | Generic **media** | `media/<hash>.<ext>` | `<hash>` | ❌ |
 
 Each `arquivos` doc carries two **orthogonal** lifecycle markers plus a queryable
@@ -48,8 +54,8 @@ timestamp:
 - **`criadoEm`**: microseconds since epoch, schema default `nowMicros()` — a required
   numeric field so the sweeps can range-query it for the grace window.
 - **`markedForDeletionAt`**: microseconds since epoch, or `null` (the default = not
-  marked). Set by `onProdutoMediaChanged` when an edit removes the arquivo's ref;
-  cleared back to `null` on re-add. The marked sweep range-queries it.
+  marked). Set by owner-media triggers and `onMensagemDeleted`; cleared on re-add
+  or when the sweep finds another live reference. The marked sweep range-queries it.
 
 Derivative variants are `200` (200px), `400` (400px), and `jpeg` (full-size re-encode).
 
@@ -81,9 +87,10 @@ sequenceDiagram
 ```
 
 Entry points (`packages/storage/src/upload.ts`): `uploadProductImage` (originals →
-resized), `uploadProductVideo`, `uploadFile` / `uploadFromUrl` (generic `media/`). All
-route through `putArquivo`, which does the dedup check, the doc-before-bytes write, and
-the post-upload `url` patch.
+resized), `uploadProductVideo`, `uploadChatFile` (`chat/`, namespaced doc id), and
+`uploadFile` / `uploadFromUrl` (generic `media/`). All route through the same private
+create-first core, which does the dedup check, doc-before-bytes write, object metadata,
+and post-upload `url` patch.
 
 ## 2 · Lifecycle state machine
 
@@ -102,23 +109,23 @@ stateDiagram-v2
     Finalized --> Resized: processProductOriginal (product image only)
     Pending --> Phantom: object absent, past 48h grace
     Phantom --> [*]: sweepPhantomDocs deletes the doc
-    Finalized --> Marked: onProdutoMediaChanged (photo/video edited out)
-    Resized --> Marked: onProdutoMediaChanged (photo/video edited out)
+    Finalized --> Marked: owner ref or mensagem removed
+    Resized --> Marked: owner ref removed
     Marked --> Resized: ref re-added (mark cleared)
     Marked --> [*]: sweepMarkedForDeletion deletes (still unreferenced, past short grace)
-    Finalized --> Unreferenced: no produto reference, past grace
-    Resized --> Unreferenced: no produto reference, past grace
+    Finalized --> Unreferenced: no owner/mensagem reference, past grace
+    Resized --> Unreferenced: no owner reference, past grace
     Unreferenced --> [*]: sweepUnreferencedArquivos deletes (onArquivoDeleted frees object + derivatives)
 ```
 
 Videos and generic media stop at **finalized** (they never get `resizeState`). Only
-product image originals reach **resized**. The **marked** path is the eager route for
-a photo edited out of a produto; the **unreferenced** path is the 48h backstop for
-everything the trigger misses (produto deletes, console edits, missed deliveries).
+owner image originals reach **resized**. The **marked** path is the eager route for a
+removed owner or mensagem ref; the **unreferenced** path is the 48h backstop for
+abandoned uploads, deletes, console edits and missed deliveries.
 
-## 3 · Eager reap on produto edit (`onProdutoMediaChanged`)
+## 3 · Eager marks on reference removal
 
-When a user removes a photo/video from a produto and saves, the `fotos`/`videos` array
+When a user removes media from a produto and saves, its media array
 is rewritten *without* that element — but the `arquivos` doc + Storage object are left
 behind. Rather than wait for the 48h sweep to *rediscover* this, an `onDocumentUpdated`
 trigger diffs the edit and **marks** the orphaned arquivo immediately. The delete still
@@ -128,7 +135,7 @@ drops `fotos` can only *mark* (never instantly destroy) photos.
 ```mermaid
 flowchart TD
     Edit["produto saved<br/>onDocumentUpdated(produtos/&lt;id&gt;)"]
-    Edit --> Diff["reconcileProdutoMediaMarks<br/>diff before vs after fotos + videos (by arquivoOuterRef)"]
+    Edit --> Diff["reconcileProdutoMediaMarks<br/>diff fotos + videos + anexos by arquivoOuterRef"]
     Diff --> Rem{ref in before<br/>not in after?}
     Rem -->|removed| Mark["arquivos/&lt;id&gt;.markedForDeletionAt = now"]
     Diff --> Add{ref in after<br/>not in before?}
@@ -138,11 +145,23 @@ flowchart TD
 
 The trigger writes **only** to `arquivos` docs (never `produtos`), so it can't re-fire
 itself. It reads + writes the affected docs in one batched `getAll` + `WriteBatch`, and
-touches a doc only when it exists, is **genuine product media** (its `filepath` parses to
-`produtos/<id>/originals|videos` — a `fotos` ref pointing elsewhere is skipped, since the
-sweep couldn't owner-verify it), and the write actually changes the mark (no no-op
-writes). `anexos` are intentionally out of scope (their files aren't under
-`originals|videos`); they stay on the 48h backstop.
+touches a doc only when it exists, is genuine owner media (its `filepath` parses to a
+governed owner root), and the write actually changes the mark. `onTabMediMediaChanged`
+applies the same rule to size-chart photos.
+
+Deleting a mensagem follows the same mark-first principle. `onMensagemDeleted`
+extracts the six supported fields (`anexoStorage`, `audio.audio`, `image.image`,
+`video.video`, `sticker.sticker`, `genericDocument.genericDocument`), accepts both
+`arquivos/<id>` and legacy `documents/arquivos/<id>`, and marks only files whose
+`filepath` is exactly `chat` or `whatsapp/<contaId>`. It never deletes directly: the
+same arquivo may still be used by another mensagem or conversa.
+
+The final mensagem-media decision is made in an Admin transaction that rereads the
+arquivo and repeats the global collection-group refcount query before deleting the
+anchor. Inbound and outbound mensagem writers read those arquivo anchors inside their
+own write transaction. If a writer commits first, the sweep retries and sees the ref;
+if deletion commits first, the writer retries, sees the missing anchor and does not
+create a dangling mensagem.
 
 ## 4 · Maintenance — scheduled reconciliation (every 48h)
 
@@ -158,7 +177,7 @@ flowchart TD
 
     RAO --> SM[sweepMarkedForDeletion]
     SM --> SMQ["query where markedForDeletionAt &lt; cutoff<br/>orderBy markedForDeletionAt (limit 100)"]
-    SMQ --> SMR{still unreferenced?<br/>(re-verify owner produto)}
+    SMQ --> SMR{still unreferenced?<br/>(owner or global mensagem check)}
     SMR -->|yes| DelM["delete doc → onArquivoDeleted"]
     SMR -->|no, re-added| ClearM["clear mark (markedForDeletionAt = null)"]
 
@@ -169,11 +188,13 @@ flowchart TD
     SPO -->|no| DelP[delete phantom doc]
 
     RAO --> SU[sweepUnreferencedArquivos]
-    SU --> FUC["fetchUnreferencedCandidates — regex pipeline:<br/>filepath ~ produtos/&lt;id&gt;/originals or /videos<br/>AND criadoEm &lt; cutoff, oldest first (limit 100)"]
-    FUC --> RR["resolveReferencedArquivoRefs<br/>getAll owning produtos → fotos / videos / anexos refs"]
-    RR --> REF{referenced by<br/>its produto?}
+    SU --> FUC["round-robin page by document id<br/>classify old owner vs mensagem media"]
+    FUC --> RR["owner: getAll owning docs<br/>mensagem: indexed OR over six fields"]
+    RR --> REF{still referenced?}
     REF -->|yes| Keep[keep]
-    REF -->|no| DelU["delete doc → onArquivoDeleted"]
+    REF -->|no, mensagem| TX["transaction: reread anchor + repeat global query"]
+    REF -->|no, owner| DelU["delete doc → onArquivoDeleted"]
+    TX --> DelU
 ```
 
 Two independent scheduled functions:
@@ -184,24 +205,21 @@ Two independent scheduled functions:
   missing, skips the download when complete).
 - **`reconcileArquivoOrphans`** — three bounded passes:
   - **`sweepMarkedForDeletion`** — the back half of the eager reap: deletes arquivos
-    `onProdutoMediaChanged` marked (`markedForDeletionAt < cutoff`) once they're past a
-    **short** grace (`ARQUIVO_MARKED_GRACE_HOURS`, default 1h), **re-verifying** the owning
-    produto still doesn't reference them (a missed unmark clears the mark instead). If the
-    owner can't be derived from the `filepath` (legacy/bad data), it clears the mark and
-    logs — it never deletes what it can't verify. A plain indexed range query (no
-    pipeline), so it's the cheapest pass and runs first.
+    owner/mensagem triggers marked (`markedForDeletionAt < cutoff`) once they're past a
+    **short** grace (`ARQUIVO_MARKED_GRACE_HOURS`, default 1h), re-verifying the owning
+    document or global mensagem refs. A missed unmark clears the mark instead. If scope
+    cannot be derived from `filepath`, it clears and logs — never deletes blind. Plain
+    Admin queries (no Pipelines), so the pass is emulator-testable.
   - **`sweepPhantomDocs`** — a `pending` doc past the grace window whose object never
     arrived is deleted; if the object *is* present (the finalize event was missed), the
     doc self-heals to `finalized`. The selection (pending + past grace + oldest first)
     is entirely in the query, backed by the composite index
     `arquivos(uploadState, criadoEm)`.
-  - **`sweepUnreferencedArquivos`** — product photos/videos that **no produto
-    references anymore** (e.g. a photo edited out of `produto.fotos`). Candidates come
-    from a **regex pipeline** scoped server-side to `originals|videos`; each candidate's
-    owner `produtoId` is parsed from its path, and only the owning produtos are read
-    (`getAll`, field-masked to `fotos`/`videos`/`anexos`) — **O(distinct produtos in the
-    batch)**, never O(all produtos). Deleting the doc lets `onArquivoDeleted` free the
-    object and its derivatives.
+  - **`sweepUnreferencedArquivos`** — round-robin pages `arquivos` by document id,
+    applies age/scope in code, then checks only the relevant owner documents or performs
+    one bounded-concurrency collection-group query per mensagem-media candidate. The
+    latter is an OR over all six fields and both ref encodings, limited to one result.
+    Its final no-ref verdict is recomputed transactionally before deleting the anchor.
 
 ## 5 · Deletion + cascade
 
@@ -210,12 +228,12 @@ flowchart TD
     T1[App / admin deletes the arquivo doc]
     T2[sweepUnreferencedArquivos]
     T4[sweepMarkedForDeletion]
-    T3["produto-delete cascade<br/>(#136 — NOT built yet)"]
+    T3["onProdutoDeleted<br/>owner cascade"]
 
     T1 --> OAD
     T2 --> OAD
     T4 --> OAD
-    T3 -. planned .-> OAD
+    T3 --> OAD
 
     OAD["onArquivoDeleted<br/>onDocumentDeleted(arquivos/&lt;id&gt;)"]
     OAD --> G{"same id re-created?<br/>(dedup-resurrection)"}
@@ -227,8 +245,8 @@ flowchart TD
 ```
 
 Deletion is **doc-anchored**: deleting the `arquivos` doc is what frees Storage, so the
-same code path covers an explicit delete, a sweep delete, and (in future) a
-produto-delete cascade. The dedup-resurrection guard skips the object delete if a doc
+same code path covers an explicit delete, a sweep delete, and the produto-delete
+cascade. The dedup-resurrection guard skips the object delete if a doc
 with the same content-addressed id exists again (a re-upload recreated it).
 
 ## Coverage matrix
@@ -248,40 +266,42 @@ with the same content-addressed id exists again (a re-upload recreated it).
 | Bulk/partial save accidentally drops `fotos` | ✅ guarded | only *marks* (reversible) — the grace window + owner re-verify prevent an instant destructive delete |
 | Explicit arquivo delete (app/admin) | ✅ | `onArquivoDeleted` frees object + cascades derivatives |
 | Re-upload races a delete (resurrection) | ✅ | dedup-resurrection guard skips the object delete |
-| **Produto deleted** | ⚠️ delayed | no produto-delete trigger yet (#136) — the produto's arquivos become unreferenced and are reaped by the 48h sweep, not immediately |
-| Manual Firestore-console produto delete | ⚠️ delayed | same as above — eventual cleanup via the sweep, no real-time block |
+| Abandoned WhatsApp inbound / composer upload | ✅ | `whatsapp/` / `chat/` candidate → global refcount → transactional delete |
+| Mensagem or conversa deleted | ✅ | `onMensagemDeleted` marks; marked sweep preserves shared refs and deletes after the last ref + grace |
+| Same arquivo shared across mensagens/conversas | ✅ | global collection-group refcount; no single-message delete |
+| Sweep races a new mensagem | ✅ | both sides read the arquivo anchor transactionally; loser retries against winner |
+| **Produto deleted** | ✅ | `onProdutoDeleted` cascades owner media; round-robin sweep remains the backstop |
+| Manual Firestore-console produto delete | ✅ eventual | owner becomes missing; the round-robin sweep reaps its old media |
 
 ## Indexes & cost
 
-This project runs Firestore **Enterprise**, which **auto-creates no indexes**, so both
-sweep queries are declared in `firestore.indexes.json` and must be deployed
-(`firebase deploy --only firestore:indexes`):
+This project runs Firestore **Enterprise**, which **auto-creates no indexes**. The
+index-dependent sweep queries are declared in `firestore.indexes.json` and must be
+deployed manually:
 
 - `arquivos(uploadState, criadoEm)` — the phantom sweep (equality + range + orderBy).
-- `arquivos(criadoEm)` — the unreferenced candidate pipeline (range + sort; the regex is
-  a residual filter).
 - `arquivos(markedForDeletionAt)` — the marked sweep (range + sort; `null` docs are
   excluded by the range predicate).
+- Six single-field, `COLLECTION_GROUP` indexes on `mensagem`: `anexoStorage`,
+  `audio.audio`, `image.image`, `video.video`, `sticker.sticker`, and
+  `genericDocument.genericDocument`. The OR refcount query depends on all six.
 
 All three sweeps are bounded at **100 docs/run**. Grace windows:
 `ARQUIVO_ORPHAN_GRACE_HOURS` (48h) for the phantom + unreferenced passes;
-`ARQUIVO_MARKED_GRACE_HOURS` (1h) for the marked pass. The unreferenced sweep's read
-cost is the candidate batch plus one `getAll` over the *distinct* owning produtos — not
-the whole `produtos` collection; the marked sweep's reference re-check shares that
-`getAll`-by-owner lookup. The `onProdutoMediaChanged` trigger itself is O(media delta) —
-one batched read + write per edit, and zero when the edit doesn't touch media.
+`ARQUIVO_MARKED_GRACE_HOURS` (1h) for the marked pass. The round-robin page uses native
+document-id ordering and needs no declared index. Owner refchecks use `getAll` only for
+the distinct owners in the page. Mensagem refchecks run with concurrency 8 and
+`limit(1)`; only candidates that look unreferenced pay the second transactional query.
+
+`packages/schemas/src/mensagemArquivoRefs.indexes.test.ts` keeps the field inventory and
+index declarations synchronized. `apps/functions/scripts/check-sweep-indexes.mjs` runs
+`explain({ analyze: true })` against the named `default` database, logs
+`indexesUsed`/read/scan metrics, and fails if the live plan does not use all six indexes.
+The emulator cannot run Query Explain; this check belongs to the coordinated deployment
+runbook, after indexes reach `READY`.
 
 ## Known gaps & follow-ups
 
-- **#136 — produto-_delete_ cascade (not built).** `onProdutoMediaChanged` handles the
-  produto-_edit_ case (a photo removed from a live produto); its sibling, an
-  `onDocumentDeleted('produtos/{id}')` function, would handle a produto deleted *entirely*
-  — sweeping its 13 subcollections and deleting its referenced arquivos docs *promptly*.
-  Until it ships, a deleted produto's arquivos linger until the 48h unreferenced sweep
-  reaps them. This is the next planned step (ADR 0010 Phase 1).
-- **#234 — persisted-cursor coverage.** Both sweeps re-read the oldest docs each run, so a
-  large head of long-lived referenced photos can starve newer orphans; a persisted
-  round-robin cursor is the planned fix.
 - **#135 — reference cascade (Phase 3, blocked).** Replace the produto delete-*block* with
   a confirmed cascade (kit entries, marketplace variation links, remote delist) — blocked
   on the `apps/integrations` remote-delist design.
@@ -289,5 +309,7 @@ one batched read + write per edit, and zero when the edit doesn't touch media.
 ## See also
 
 - [ADR 0010 — Produto deletion lifecycle](/adr/0010-produto-deletion-lifecycle/) — the design decisions behind this lifecycle.
-- `apps/functions/CLAUDE.md` — operational notes for the five functions + deploy gotchas.
-- Source: `packages/storage/src/upload.ts`, `apps/functions/src/arquivos/*`, `apps/functions/src/product-images/*`, `packages/schemas/src/storage/{arquivo,storagePaths}.ts`.
+- `apps/functions/CLAUDE.md` — operational notes for the functions + deploy gotchas.
+- Source: `packages/storage/src/upload.ts`, `apps/functions/src/arquivos/*`,
+  `apps/functions/src/product-images/*`, `packages/schemas/src/mensagemArquivoRefs.ts`,
+  `packages/schemas/src/storage/{arquivo,storagePaths}.ts`.

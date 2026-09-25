@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
+import { arquivoCollection } from '@delfrance/data/admin/collections';
 import { ESTADO_ENVIO, encodeHorarioMs } from '@delfrance/schemas';
 
 // Only media storage is stubbed. The contact resolver, canonical registries,
 // pending persistence, conversation lifecycle and status processing run real.
 const media = vi.hoisted(() => ({
-  getAndUploadMedia: vi.fn(
-    async (_ctx: unknown, mediaId: string) => `documents/arquivos/wa_${mediaId}`,
-  ),
+  getAndUploadMedia: vi.fn(async (ctx: unknown, mediaId: string) => {
+    const typed = ctx as { db: Firestore; contaId: string };
+    await arquivoCollection
+      .docRef(typed.db, {}, `wa_${mediaId}`)
+      .set({ filepath: `whatsapp/${typed.contaId}` });
+    return `documents/arquivos/wa_${mediaId}`;
+  }),
 }));
 vi.mock('./media', () => ({ getAndUploadMedia: media.getAndUploadMedia }));
 
@@ -22,7 +27,7 @@ const {
 const { conversaWhatsappKey, identidadeWhatsappId } = await import('./contatos');
 const { confirmarVinculoWhatsapp, confirmarVinculoSchema } = await import('./vinculos');
 const { replayVinculoWhatsapp } = await import('./vinculoReplay');
-const { processMessagesField } = await import('./processMessages');
+const { processMessagesField, WhatsappMediaAnchorMissingError } = await import('./processMessages');
 const { WhatsappVinculoConflitoError } = await import('./contatos');
 const { conversaDocId, mensagemDocId, senderId } = await import('./ids');
 
@@ -227,7 +232,9 @@ function messagesPayload(value: DocData): DocData {
   };
 }
 
-const deps = { mediaContext: vi.fn(async () => ({}) as never) };
+const deps = {
+  mediaContext: vi.fn(async (db: Firestore, contaId: string) => ({ db, contaId }) as never),
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -960,6 +967,28 @@ describe('mensagem dedup + media population', () => {
     const msg = db.docs(CONV_PATH).get(mensagemDocId(CONTA, 'wamid.IMG'))!;
     expect(msg.tipo).toBe('f');
     expect(msg.image).toEqual({ image: 'documents/arquivos/wa_MED1', caption: 'foto' });
+  });
+
+  it('aborts the mensagem transaction when the media anchor disappeared', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    media.getAndUploadMedia.mockResolvedValueOnce('documents/arquivos/wa_MISSING');
+    const value = inboundValue({
+      messages: [
+        {
+          from: FROM,
+          id: 'wamid.MISSING',
+          timestamp: '1700000000',
+          type: 'image',
+          image: { id: 'MISSING' },
+        },
+      ],
+    });
+
+    await expect(
+      processMessagesField(asDb(db), value, deps, 'wamid.MISSING'),
+    ).rejects.toBeInstanceOf(WhatsappMediaAnchorMissingError);
+    expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.MISSING'))).toBe(false);
   });
 });
 

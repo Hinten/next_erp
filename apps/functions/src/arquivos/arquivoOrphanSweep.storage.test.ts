@@ -5,6 +5,7 @@ import { getStorage } from 'firebase-admin/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
+  chatMediaPath,
   mediaPath,
   nowMicros,
   productAnexoPath,
@@ -13,14 +14,19 @@ import {
   productVideoPath,
   tabMediArquivoId,
   tabMediOriginalPath,
+  whatsappMediaPath,
 } from '@delfrance/schemas';
 
 import {
+  reconcileMensagemArquivoCandidate,
   resolveReferencedArquivoRefs,
+  resolveMensagemArquivoReferences,
   sweepMarkedForDeletion,
   sweepPhantomDocs,
   sweepUnreferencedArquivos,
 } from './arquivoOrphanSweep';
+import { processArquivoDeletion } from './onArquivoDeleted';
+import { markDeletedMensagemArquivos } from './onMensagemDeleted';
 
 // Integration test — requires the firestore + storage emulators. Drives the sweep
 // cores directly (not the onSchedule trigger; not the pipeline). Grace window
@@ -397,6 +403,290 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     const refs = await resolveReferencedArquivoRefs(db, [produtoId, produtoId, missingId]);
 
     expect(refs).toEqual(new Set([fotoRef, videoRef, anexoRef]));
+  });
+
+  it('reaps unreferenced whatsapp/chat media, keeps all six ref fields and shared refs', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const conversaPrefix = `media-${randomUUID().replace(/-/g, '')}`;
+
+    const seedArquivo = async (docId: string, storagePath: string) => {
+      const slash = storagePath.lastIndexOf('/');
+      const data = {
+        filetype: 'image',
+        filepath: storagePath.slice(0, slash),
+        filename: storagePath.slice(slash + 1),
+        contentType: 'image/jpeg',
+        url: 'https://example.invalid/file',
+        externalIds: [],
+        uploadState: 'finalized',
+        criadoEm: past,
+        markedForDeletionAt: null,
+      };
+      await db.collection('arquivos').doc(docId).set(data);
+      return {
+        ref: db.collection('arquivos').doc(docId),
+        id: docId,
+        filepath: data.filepath,
+        criadoEm: past,
+        data,
+        objectPath: storagePath,
+      };
+    };
+
+    const fieldWrites: Array<(ref: string) => Record<string, unknown>> = [
+      (ref) => ({ anexoStorage: ref }),
+      (ref) => ({ audio: { audio: ref } }),
+      (ref) => ({ image: { image: ref } }),
+      (ref) => ({ video: { video: ref } }),
+      (ref) => ({ sticker: { sticker: ref } }),
+      (ref) => ({ genericDocument: { genericDocument: ref } }),
+    ];
+    const referenced: Awaited<ReturnType<typeof seedArquivo>>[] = [];
+    for (const [index, write] of fieldWrites.entries()) {
+      const docId = `wa_ref_${index}_${randomUUID().replace(/-/g, '')}`;
+      referenced.push(await seedArquivo(docId, whatsappMediaPath('conta-1', docId)));
+      const wireRef = index % 2 === 0 ? `arquivos/${docId}` : `documents/arquivos/${docId}`;
+      await db
+        .collection('chat')
+        .doc(`${conversaPrefix}-${index}`)
+        .collection('mensagem')
+        .doc('m1')
+        .set(write(wireRef));
+    }
+    // The first arquivo is shared by another conversa; one lookup must still
+    // answer referenced without assuming a single owner.
+    await db
+      .collection('chat')
+      .doc(`${conversaPrefix}-shared`)
+      .collection('mensagem')
+      .doc('m2')
+      .set({ image: { image: `documents/arquivos/${referenced[0]!.id}` } });
+
+    const orphanInbound = await seedArquivo(
+      `wa_orphan_${randomUUID().replace(/-/g, '')}`,
+      whatsappMediaPath('conta-1', randomUUID().replace(/-/g, '')),
+    );
+    const orphanOutbound = await seedArquivo(
+      `chat_orphan_${randomUUID().replace(/-/g, '')}`,
+      chatMediaPath(randomUUID().replace(/-/g, ''), 'jpg'),
+    );
+    await bucket.file(orphanInbound.objectPath).save(Buffer.from('inbound'));
+    await bucket.file(orphanOutbound.objectPath).save(Buffer.from('outbound'));
+
+    const page = [...referenced, orphanInbound, orphanOutbound];
+    await sweepUnreferencedArquivos(db, bucket, async () => page);
+
+    expect(
+      await resolveMensagemArquivoReferences(
+        db,
+        referenced.map((row) => row.id),
+      ),
+    ).toEqual(new Set(referenced.map((row) => row.id)));
+    for (const row of referenced) {
+      expect((await row.ref.get()).exists).toBe(true);
+    }
+    expect((await orphanInbound.ref.get()).exists).toBe(false);
+    expect((await orphanOutbound.ref.get()).exists).toBe(false);
+
+    // The sweep owns doc deletion; the trigger core owns object deletion. Drive
+    // both real cores against the emulators to pin the complete lifecycle.
+    await processArquivoDeletion(bucket, db, orphanInbound.id, orphanInbound.data);
+    await processArquivoDeletion(bucket, db, orphanOutbound.id, orphanOutbound.data);
+    expect((await bucket.file(orphanInbound.objectPath).exists())[0]).toBe(false);
+    expect((await bucket.file(orphanOutbound.objectPath).exists())[0]).toBe(false);
+
+    for (let index = 0; index < fieldWrites.length; index += 1) {
+      await db
+        .collection('chat')
+        .doc(`${conversaPrefix}-${index}`)
+        .collection('mensagem')
+        .doc('m1')
+        .delete();
+    }
+    await db
+      .collection('chat')
+      .doc(`${conversaPrefix}-shared`)
+      .collection('mensagem')
+      .doc('m2')
+      .delete();
+    await Promise.all(referenced.map((row) => row.ref.delete()));
+  });
+
+  it('transactional recheck keeps a ref created after the cheap precheck', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const arquivoId = `wa_race_${randomUUID().replace(/-/g, '')}`;
+    const objectPath = whatsappMediaPath('conta-race', arquivoId);
+    const slash = objectPath.lastIndexOf('/');
+    const ref = db.collection('arquivos').doc(arquivoId);
+    await ref.set({
+      filetype: 'image',
+      filepath: objectPath.slice(0, slash),
+      filename: objectPath.slice(slash + 1),
+      contentType: 'image/jpeg',
+      url: 'https://example.invalid/file',
+      externalIds: [],
+      uploadState: 'finalized',
+      criadoEm: past,
+      markedForDeletionAt: null,
+    });
+    const conversaId = `race-${randomUUID().replace(/-/g, '')}`;
+
+    await sweepUnreferencedArquivos(
+      db,
+      bucket,
+      async () => [{ ref, id: arquivoId, filepath: `whatsapp/conta-race`, criadoEm: past }],
+      async () => new Set(),
+      async () => {
+        // Simulates the query→delete window: the cheap precheck saw nothing,
+        // then a writer landed a ref before the final transaction opened.
+        await db
+          .collection('chat')
+          .doc(conversaId)
+          .collection('mensagem')
+          .doc('m1')
+          .set({ image: { image: `arquivos/${arquivoId}` } });
+        return new Set();
+      },
+    );
+
+    expect((await ref.get()).exists).toBe(true);
+    await db.collection('chat').doc(conversaId).collection('mensagem').doc('m1').delete();
+    await ref.delete();
+  });
+
+  it('a mensagem transaction refuses to write after the sweep deleted its anchor', async () => {
+    const db = getDb();
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const arquivoId = `wa_sweep_won_${randomUUID().replace(/-/g, '')}`;
+    const objectPath = whatsappMediaPath('conta-race', arquivoId);
+    const slash = objectPath.lastIndexOf('/');
+    const arquivoRef = db.collection('arquivos').doc(arquivoId);
+    await arquivoRef.set({
+      filetype: 'image',
+      filepath: objectPath.slice(0, slash),
+      filename: objectPath.slice(slash + 1),
+      contentType: 'image/jpeg',
+      url: 'https://example.invalid/file',
+      externalIds: [],
+      uploadState: 'finalized',
+      criadoEm: past,
+      markedForDeletionAt: null,
+    });
+    expect(await reconcileMensagemArquivoCandidate(db, arquivoRef)).toBe('deleted');
+
+    const mensagemRef = db
+      .collection('chat')
+      .doc(`race-lost-${randomUUID().replace(/-/g, '')}`)
+      .collection('mensagem')
+      .doc('m1');
+    await expect(
+      db.runTransaction(async (tx) => {
+        if (!(await tx.get(arquivoRef)).exists) throw new Error('arquivo anchor missing');
+        tx.set(mensagemRef, { image: { image: `arquivos/${arquivoId}` } });
+      }),
+    ).rejects.toThrow('arquivo anchor missing');
+    expect((await mensagemRef.get()).exists).toBe(false);
+  });
+
+  it('keeps shared marked media until the last mensagem ref is removed', async () => {
+    const db = getDb();
+    const past = nowMicros() - DAY_MICROS;
+    const arquivoId = `chat_${randomUUID().replace(/-/g, '')}`;
+    const objectPath = chatMediaPath(randomUUID().replace(/-/g, ''), 'pdf');
+    const slash = objectPath.lastIndexOf('/');
+    const arquivoRef = db.collection('arquivos').doc(arquivoId);
+    await arquivoRef.set({
+      filetype: 'document',
+      filepath: objectPath.slice(0, slash),
+      filename: objectPath.slice(slash + 1),
+      contentType: 'application/pdf',
+      url: 'https://example.invalid/file',
+      externalIds: [],
+      uploadState: 'finalized',
+      criadoEm: past,
+      markedForDeletionAt: past,
+    });
+
+    const mensagemData = { genericDocument: { genericDocument: `arquivos/${arquivoId}` } };
+    const conversaA = `shared-a-${randomUUID().replace(/-/g, '')}`;
+    const conversaB = `shared-b-${randomUUID().replace(/-/g, '')}`;
+    const mensagemA = db.collection('chat').doc(conversaA).collection('mensagem').doc('m1');
+    const mensagemB = db.collection('chat').doc(conversaB).collection('mensagem').doc('m2');
+    await Promise.all([mensagemA.set(mensagemData), mensagemB.set(mensagemData)]);
+
+    await sweepMarkedForDeletion(db);
+    expect((await arquivoRef.get()).data()?.markedForDeletionAt).toBeNull();
+
+    await mensagemA.delete();
+    expect(await markDeletedMensagemArquivos(db, mensagemData)).toBe(1);
+    await sweepMarkedForDeletion(db);
+    expect((await arquivoRef.get()).exists).toBe(true);
+    expect((await arquivoRef.get()).data()?.markedForDeletionAt).toBeNull();
+
+    await mensagemB.delete();
+    expect(await markDeletedMensagemArquivos(db, mensagemData)).toBe(1);
+    await sweepMarkedForDeletion(db);
+    expect((await arquivoRef.get()).exists).toBe(false);
+  });
+
+  it('keeps young mensagem media and files outside the governed roots', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const previousGrace = process.env.ARQUIVO_ORPHAN_GRACE_HOURS;
+    process.env.ARQUIVO_ORPHAN_GRACE_HOURS = '48';
+    try {
+      const youngId = `wa_young_${randomUUID().replace(/-/g, '')}`;
+      const genericId = `generic_${randomUUID().replace(/-/g, '')}`;
+      const youngRef = db.collection('arquivos').doc(youngId);
+      const genericRef = db.collection('arquivos').doc(genericId);
+      const youngPath = whatsappMediaPath('conta-young', youngId);
+      const genericPath = mediaPath(randomUUID().replace(/-/g, ''), 'bin');
+      const youngDir = youngPath.slice(0, youngPath.lastIndexOf('/'));
+      const genericDir = genericPath.slice(0, genericPath.lastIndexOf('/'));
+      await Promise.all([
+        youngRef.set({
+          filetype: 'image',
+          filepath: youngDir,
+          filename: youngPath.slice(youngPath.lastIndexOf('/') + 1),
+          contentType: 'image/jpeg',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: nowMicros(),
+        }),
+        genericRef.set({
+          filetype: 'application',
+          filepath: genericDir,
+          filename: genericPath.slice(genericPath.lastIndexOf('/') + 1),
+          contentType: 'application/octet-stream',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: nowMicros() - 10 * DAY_MICROS,
+        }),
+      ]);
+
+      await sweepUnreferencedArquivos(db, bucket, async () => [
+        { ref: youngRef, id: youngId, filepath: youngDir, criadoEm: nowMicros() },
+        {
+          ref: genericRef,
+          id: genericId,
+          filepath: genericDir,
+          criadoEm: nowMicros() - 10 * DAY_MICROS,
+        },
+      ]);
+
+      expect((await youngRef.get()).exists).toBe(true);
+      expect((await genericRef.get()).exists).toBe(true);
+      await Promise.all([youngRef.delete(), genericRef.delete()]);
+    } finally {
+      if (previousGrace === undefined) delete process.env.ARQUIVO_ORPHAN_GRACE_HOURS;
+      else process.env.ARQUIVO_ORPHAN_GRACE_HOURS = previousGrace;
+    }
   });
 
   it('marked sweep deletes a marked unreferenced arquivo and clears a re-referenced one', async () => {

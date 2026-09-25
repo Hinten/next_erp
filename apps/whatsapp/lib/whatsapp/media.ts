@@ -19,7 +19,12 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { arquivoCollection } from '@delfrance/data/admin/collections';
-import { filetypeFromMime, toOuterRef } from '@delfrance/schemas';
+import {
+  filetypeFromMime,
+  toOuterRef,
+  whatsappArquivoId,
+  whatsappMediaPath,
+} from '@delfrance/schemas';
 import { type Bucket, putArquivoAdmin } from '@delfrance/storage/admin';
 import type { WhatsAppClient } from '@delfrance/integrations-whatsapp-cloud-api';
 
@@ -31,11 +36,6 @@ export interface MediaCacheContext {
   readonly client: WhatsAppClient;
   /** The `integracao` account id — the `whatsapp/<contaId>/<mediaId>` prefix. */
   readonly contaId: string;
-}
-
-/** The content-addressed-by-media-id arquivo doc id. */
-function arquivoDocId(mediaId: string): string {
-  return `wa_${mediaId}`;
 }
 
 /** `documents/arquivos/<docId>` — the media outer-ref stored on a mensagem. */
@@ -51,7 +51,7 @@ function arquivoRef(docId: string): string {
  *                `image`/`video`/`audio`/`document`/`sticker` field).
  */
 export async function getAndUploadMedia(ctx: MediaCacheContext, mediaId: string): Promise<string> {
-  const docId = arquivoDocId(mediaId);
+  const docId = whatsappArquivoId(mediaId);
 
   // Cache hit: the arquivo doc already carries a `url` → bytes are in Storage.
   // Return without touching the Graph API (no re-download, no re-upload). This
@@ -74,7 +74,7 @@ export async function getAndUploadMedia(ctx: MediaCacheContext, mediaId: string)
     db: ctx.db,
     bucket: ctx.bucket,
     docId,
-    storagePath: `whatsapp/${ctx.contaId}/${mediaId}`,
+    storagePath: whatsappMediaPath(ctx.contaId, mediaId),
     bytes: download.data,
     contentType,
     filetype: filetypeFromMime(meta.mime_type),

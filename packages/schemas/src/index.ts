@@ -1100,6 +1100,10 @@ export {
   productVideoPath,
   productAnexoPath,
   mediaPath,
+  whatsappArquivoId,
+  whatsappMediaPath,
+  chatArquivoId,
+  chatMediaPath,
   tabMediOriginalPath,
   ownedArquivoId,
   productArquivoId,
@@ -1109,6 +1113,7 @@ export {
   isWatchedOriginal,
   parseProductMediaDir,
   parseOwnedMediaDir,
+  parseMensagemMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -1118,7 +1123,16 @@ export {
   type ParsedProductMediaDir,
   type MediaOwnerCollection,
   type ParsedOwnedMediaDir,
+  type MensagemMediaKind,
+  type ParsedMensagemMediaDir,
 } from './storage/storagePaths';
+
+export {
+  MENSAGEM_ARQUIVO_REF_FIELDS,
+  extractMensagemArquivoIds,
+  mensagemArquivoRefValues,
+  type MensagemArquivoRefField,
+} from './mensagemArquivoRefs';
 
 export {
   buildFotoRefs,
