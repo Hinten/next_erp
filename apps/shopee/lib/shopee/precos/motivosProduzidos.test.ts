@@ -53,8 +53,9 @@ const RAIZ_DAS_ROTAS = new URL('../../../app/api/marketplace/shopee/', import.me
  * ⚠️ Fixado, nunca "lida se existir": uma pasta ausente lida em silêncio é
  * exatamente como um produtor real some do universo sem ninguém notar (um nome
  * digitado errado aqui teria o mesmo efeito). `atualizar-precos` é o job do
- * SEGUNDO PR — quando ela chegar, a âncora abaixo falha e obriga a trocar o
- * `false` por `true`, e então os produtores `job-*` dela passam a contar.
+ * SEGUNDO PR: a pasta chegou com ele, a âncora abaixo obrigou a trocar o
+ * `false` por `true`, e desde então os produtores `job-*` dela contam (a rota
+ * de início escreve `job-interrompido` quando o primeiro enfileiramento falha).
  */
 const PASTAS_DE_ROTA: Readonly<Record<string, boolean>> = {
   'enviar-precos': true,
@@ -140,7 +141,8 @@ function autorizadosJaProduzidos(
 /**
  * Os órfãos POR PROJETO, cada um com a razão de uma linha que o autoriza.
  *
- * ⚠️ VAZIA no primeiro PR, e vazia de propósito: os 44 membros têm produtor. O
+ * ⚠️ VAZIA, e vazia de propósito: os 46 membros têm produtor (44 no primeiro PR,
+ * mais `job-interrompido` e `job-cancelado`, produzidos pelo job do segundo). O
  * passo 12 precisou de uma linha (`pisoAcimaDaBanda`, uma banda que não viaja
  * na tarefa); o preço não tem equivalente — a reconciliação CORTOU os nomes que
  * nada produziria (`status-desconhecido`, `familia-nao-encontrada`, a pausa
@@ -169,7 +171,7 @@ describe('todo motivo de preço declarado tem um PRODUTOR fora de errosPreco.ts'
     expect([...fontes.keys()].filter((nome) => nome.endsWith('.test.ts'))).toEqual([]);
   });
 
-  it('as pastas de rota estão no estado FIXADO: `enviar-precos` existe, `atualizar-precos` (PR 2) ainda não', () => {
+  it('as pastas de rota estão no estado FIXADO: `enviar-precos` e `atualizar-precos` (PR 2) existem', () => {
     for (const [pasta, existe] of Object.entries(PASTAS_DE_ROTA)) {
       expect(
         existsSync(new URL(`${pasta}/`, RAIZ_DAS_ROTAS)),
