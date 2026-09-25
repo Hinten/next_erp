@@ -3,18 +3,20 @@ import type { CollectionMetadata } from '../../types';
 import { outerRefSchema } from '../../shared/outerRef';
 
 // Price/cost history is produto-scoped: it reuses the produto permission bits
-// (byte 8 — see `produto.ts`), so reading/writing a produto's history requires
-// the same read/write/delete claims as the produto itself.
+// (byte 8 — see `produto.ts`). The collections are retained only so imported
+// legacy rows remain readable; `serverOwned` makes every client write bit below
+// inert while preserving the produto read grant.
 const PERM_PRODUTO_READ = 1n << 8n;
 const PERM_PRODUTO_WRITE = 1n << 9n;
 const PERM_PRODUTO_DELETE = 1n << 10n;
 
 /**
- * Price/cost history records — subcollections of a produto doc, written by
- * the Flutter `Produto.save()` (`packages/produtos/lib/src/models.dart:2078-2130`)
- * and now also by the Next produto editor (price changes via `diffPrecos`,
- * cost changes via `appendCustoHistory`). Wire facts (generated
- * `models.g.dart:153-171` + the old firestore rules):
+ * Legacy price/cost history records imported with the Flutter corpus. Nothing
+ * in this repo reads or writes these subcollections as application state; new
+ * edits are recorded in `historicoDeModificacoes`. The schemas stay registered
+ * so imported rows retain their existing produto-scoped read grant while all
+ * client writes are denied. Wire facts (generated `models.g.dart:153-171` +
+ * the old firestore rules):
  *  - `listaDePrecoHistoricoOuterRef` = string `documents/listaDePrecos/<id>`
  *    (`OuterRefField.toJson()` → `pathWithDocuments`); readers must tolerate
  *    the bare form (Flutter parses via `fromPathPrependDocuments`).
@@ -37,6 +39,7 @@ export type HistoricoPreco = z.infer<typeof historicoPrecoSchema>;
 
 export const historicoPrecoMeta: CollectionMetadata = {
   collectionPath: 'produtos/{produtoId}/historicoDePrecos',
+  serverOwned: true,
   permissions: {
     read: PERM_PRODUTO_READ,
     write: PERM_PRODUTO_WRITE,
@@ -51,9 +54,9 @@ export const historicoPreco = {
 
 /**
  * `produtos/{id}/historicoDeCusto` doc ("data da compra"). The old Flutter app
- * defined the model + rules but never wrote records; the Next editor now
- * records every `custo` change (`appendCustoHistory`) using the same wire
- * shape, so migrated rows resolve natively.
+ * defined the model + rules. Any rows carried by the import remain parseable
+ * and readable here, but current edits are represented by
+ * `historicoDeModificacoes` and no client may mutate this legacy collection.
  */
 export const historicoCustoSchema = z
   .object({
@@ -66,6 +69,7 @@ export type HistoricoCusto = z.infer<typeof historicoCustoSchema>;
 
 export const historicoCustoMeta: CollectionMetadata = {
   collectionPath: 'produtos/{produtoId}/historicoDeCusto',
+  serverOwned: true,
   permissions: {
     read: PERM_PRODUTO_READ,
     write: PERM_PRODUTO_WRITE,
@@ -77,3 +81,4 @@ export const historicoCusto = {
   schema: historicoCustoSchema,
   meta: historicoCustoMeta,
 };
+
