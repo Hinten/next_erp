@@ -178,6 +178,7 @@ import { criarLeitorDeBaseEmLote, type LeitorDeBase } from './leitorDeBase';
 import {
   montarItensDePreco,
   precificarItem,
+  produtosQuePrecificam,
   type ItemDePreco,
   type ItemPlanejadoPreco,
   type PuloDePlano,
@@ -523,16 +524,6 @@ function fimDaPausa(
 /* -------------------------------------------------------------------------- */
 /*                             the send-time price                             */
 /* -------------------------------------------------------------------------- */
-
-/**
- * The produtos whose `precos` price a planned item — exactly
- * `precificarItem`'s sources: the ANCHOR of a no-model listing, each model's
- * own CHILD otherwise (a model is never priced from the anchor, so the anchor
- * is not read for one).
- */
-function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
-  return item.modelos.length === 0 ? [item.produtoId] : item.modelos.map((m) => m.produtoId);
-}
 
 /** No `precos` at all — every alvo prices as `null`. */
 const SEM_PRECOS: ReadonlyMap<string, unknown> = new Map();

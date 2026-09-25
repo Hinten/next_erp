@@ -14,9 +14,10 @@
  * after import, and a rehearsal retunes with a redeploy instead of a patch.
  *
  * ⚠️ **Not path-bound to the deploy preflight**, unlike the stock constants.
- * Both knobs below are read by the App Hosting route at request time, and no
- * queue rate is env-driven for price — the second PR's queue declares its
- * rates as literals — so nothing outside the app regexes this file's text.
+ * The two manual knobs are read by the App Hosting route at request time, the
+ * two job knobs by the functions codebase at dispatch time, and no queue rate
+ * is env-driven for price — the price queue declares its rates as literals —
+ * so nothing outside the app regexes this file's text.
  *
  * ⚠️ **The three wire decisions are CONSTANTS, never env knobs.** Each was
  * settled by the SG sandbox probe of 2026-09-24 (`probe-step13-results.md`,
@@ -27,8 +28,8 @@
  * The rule the module holds is step 12's: a bound the WIRE states lives in
  * `@delfrance/integrations-shopee` and is imported; a bound WE chose lives
  * here; a value an operator may change without a code deploy is a lazy
- * `envInt` reader here. The second PR adds the queue name and the job's knobs
- * to this same file.
+ * `envInt` reader here. The account-wide job (the second PR) keeps its queue
+ * name, its bounds and its two knobs in this same file.
  */
 import { envInt } from '@delfrance/data/admin/estoque';
 
@@ -121,9 +122,9 @@ export const SHOPEE_ENVIO_PRECO_MAX_PRODUTOS = 50;
  * classified refusal is an ANSWER, and asking again spends the shared quota to
  * hear it twice.
  *
- * ⚠️ The second PR adds the price queue, and with it the pin that this stays
- * `<=` the queue's attempt cap (step 12's pin, copied): a manual ladder longer
- * than the queue's would reach a terminal state the queue never can.
+ * ⚠️ It stays `<=` {@link ENVIO_PRECO_MAX_TENTATIVAS}, the price queue's
+ * attempt cap (step 12's pin, copied): a manual ladder longer than the queue's
+ * would reach a terminal state the queue never can.
  */
 export const ENVIO_PRECO_MANUAL_MAX_TENTATIVAS = 2;
 
@@ -188,5 +189,110 @@ export function concorrenciaEnvioPrecoManual(): number {
   return Math.max(
     1,
     Math.min(envInt('SHOPEE_PRICE_MANUAL_CONCURRENCY', 2), concurrentDispatches()),
+  );
+}
+
+/* ------------------------ the account-wide job (PR 2) ---------------------- */
+
+/**
+ * The deployed `onTaskDispatched` name of the price job — which is ALSO its
+ * auto-provisioned Cloud Tasks queue name, the app's FOURTH queue. Declared
+ * here, in a module with no Functions SDK import, so the scheduler, the job and
+ * the functions entry all read one spelling; the entry asserts the pair at
+ * module load (its rename-safety check).
+ */
+export const SHOPEE_PRICE_SYNC_QUEUE = 'processShopeePriceSync';
+
+/**
+ * The job's in-task attempt cap — kept equal to the queue's
+ * `retryConfig.maxAttempts`, and `>=` {@link ENVIO_PRECO_MANUAL_MAX_TENTATIVAS}
+ * (the manual ladder must never outlast the queue's). On the LAST attempt an
+ * otherwise-retryable failure stamps the job `failed` instead of rethrowing,
+ * because nothing re-drives a task the queue has dropped.
+ */
+export const ENVIO_PRECO_MAX_TENTATIVAS = 3;
+
+/**
+ * How many BURST rate-limit pauses one run may take before it fails — each is a
+ * delayed self re-enqueue that consumes no attempt, so without a ceiling a conta
+ * that keeps throttling would chain delayed tasks for ever.
+ */
+export const ENVIO_PRECO_MAX_PAUSAS = 50;
+
+/**
+ * How many DAILY-quota parks one run may take before it fails. A park holds the
+ * conta's one-active slot until the next 00:00 (UTC+8), so three rollovers is
+ * already three days of a job that has not finished; cancel is the operator's
+ * exit before that.
+ */
+export const ENVIO_PRECO_MAX_PARQUES = 3;
+
+/** Milliseconds per second, minute and hour — the units the bounds below are written in. */
+const MS_POR_SEGUNDO = 1_000;
+const SEGUNDOS_POR_MINUTO = 60;
+const MINUTOS_POR_HORA = 60;
+const MS_POR_HORA = MINUTOS_POR_HORA * SEGUNDOS_POR_MINUTO * MS_POR_SEGUNDO;
+
+/**
+ * A `running` job whose `updatedAt` is older than this is an ORPHAN — a crash
+ * bypassed every terminal stamp — and the next start reclaims it instead of
+ * refusing with 409 for ever. Six hours is far beyond one dispatch (300 s) times
+ * the queue's whole ladder. ⚠️ A PARKED job is exempt while its `retomarEm`
+ * lies ahead (the job module's orphan predicate): its `updatedAt` legitimately
+ * stops moving for up to a day.
+ */
+export const ENVIO_PRECO_ORFAO_MS = 6 * MS_POR_HORA;
+
+/** The `skips` sample's cap on the job document — the counters stay exact. */
+export const AMOSTRA_PULOS_CAP = 200;
+
+/** The `failures` sample's cap on the job document — the counters stay exact. */
+export const AMOSTRA_FALHAS_CAP = 100;
+
+/**
+ * The upper bound, in SECONDS, of the jitter added to a park's re-enqueue delay,
+ * so a fleet of contas parked on the same rollover does not resume in the same
+ * second. The randomness itself is the functions entry's (`jitterSec`): a module
+ * that drew its own could not be tested for the delay it computed.
+ */
+export const PARQUE_JITTER_MAX_S = 30;
+
+/** The clamp of {@link pageLimitPreco}: a page never exceeds the wire's own batch of fifty. */
+const PAGINA_DE_PRECO_MAXIMA = 50;
+
+/**
+ * Anchors the job PLANS per dispatch — `SHOPEE_PRICE_PAGE_LIMIT`, default 25,
+ * clamped into `[1, 50]`.
+ *
+ * The page bounds what one plan write carries: every listing of every anchor on
+ * the page lands in `fila` in ONE checkpoint, and the job document is rewritten
+ * after every drained item, so a wide page is a large document written many
+ * times. A zero would plan nothing and walk no further, so the floor is 1.
+ */
+export function pageLimitPreco(): number {
+  return Math.min(PAGINA_DE_PRECO_MAXIMA, Math.max(1, envInt('SHOPEE_PRICE_PAGE_LIMIT', 25)));
+}
+
+/** The clamp of {@link itensPorDespachoPreco}. */
+const ITENS_POR_DESPACHO_MAXIMO = 10;
+
+/**
+ * Listings the job SENDS per dispatch — `SHOPEE_PRICE_ITEMS_PER_DISPATCH`,
+ * default 10, clamped into `[1, 10]`.
+ *
+ * Budget arithmetic, stated rather than discovered: per item one masked
+ * `precos` read, at most one `get_model_list`, one `update_price`, the link
+ * write-backs and the per-item checkpoint — a worst case of ≈ 20 s, so the
+ * CEILING spends ≈ 200 s of the queue's 300 s timeout, inside the 70 % budget
+ * a test pins — so NO value the knob accepts can outrun the timeout. The
+ * default IS the ceiling; the knob only goes DOWN. Raising the ceiling is a
+ * decision on a MEASURED per-item time (the step's open register item), never
+ * an env change: a dispatch that runs out of time is killed mid-item and
+ * retried from its last per-item checkpoint.
+ */
+export function itensPorDespachoPreco(): number {
+  return Math.min(
+    ITENS_POR_DESPACHO_MAXIMO,
+    Math.max(1, envInt('SHOPEE_PRICE_ITEMS_PER_DISPATCH', 10)),
   );
 }

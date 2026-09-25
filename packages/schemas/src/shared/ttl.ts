@@ -56,6 +56,13 @@ export const RETENCAO_HISTORICO_PEDIDO_ANOS = 6;
 /** Mercado Livre price-send runs (`enviosPrecoMercadoLivre`). Their report shards get a week more. */
 export const RETENCAO_ENVIO_PRECO_ML_DIAS = 180;
 
+/**
+ * Shopee price-job runs (`enviosPrecoShopee`, #1521). Their report shards get a
+ * week more, in the SHARED `relatorios` group — the ML twin's retention, on
+ * purpose: one operator reads both channels' runs side by side.
+ */
+export const RETENCAO_ENVIO_PRECO_SHOPEE_DIAS = 180;
+
 /** Processed `whatsappVinculos/*\/mensagens` — redundant copies already replayed into the chat. */
 export const RETENCAO_VINCULO_WHATSAPP_DIAS = 30;
 
@@ -168,10 +175,15 @@ export const TTL_POLICIES: readonly TtlPolicy[] = [
     motivo: 'apps/mercado-livre precoSync: each price-send run, 180 days after it starts.',
   },
   {
+    collectionGroup: 'enviosPrecoShopee',
+    motivo: 'apps/shopee precos/atualizarPrecos: each price-job run, 180 days after it starts.',
+  },
+  {
     collectionGroup: 'relatorios',
     motivo:
-      'apps/mercado-livre precoSync: the run report shards, 187 days (a week past their run). ' +
-      'balanco/*/relatorios shares the group and is never stamped.',
+      'apps/mercado-livre precoSync and apps/shopee precos/atualizarPrecos: the run report ' +
+      'shards, 187 days (a week past their run). balanco/*/relatorios shares the group and is ' +
+      'never stamped.',
   },
   {
     collectionGroup: 'mensagens',

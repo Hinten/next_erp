@@ -406,6 +406,21 @@ export function precosDaFamilia(f: FamiliaDePreco): ReadonlyMap<string, unknown>
 }
 
 /**
+ * The produtos whose `precos` price a planned item — exactly
+ * {@link precificarItem}'s sources: the ANCHOR of a no-model listing, each
+ * model's own CHILD otherwise (a model is never priced from the anchor, so the
+ * anchor is not read for one).
+ *
+ * The send-time price read of BOTH surfaces — the manual push per item, the
+ * account-wide job per drained item — asks for exactly these ids, so a read
+ * and the pricing that consumes it cannot disagree about which produto a
+ * price comes from.
+ */
+export function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
+  return item.modelos.length === 0 ? [item.produtoId] : item.modelos.map((m) => m.produtoId);
+}
+
+/**
  * **One planned item, priced.** Each model's price is its CHILD's own
  * `precos[tabelaId]` — the source step 11 publishes from — and a no-model
  * item's single price is the ANCHOR's. Never the anchor's for a model: a

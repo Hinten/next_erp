@@ -2181,6 +2181,12 @@
       "indexes": []
     },
     {
+      "collectionGroup": "enviosPrecoShopee",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "relatorios",
       "fieldPath": "expiraEm",
       "ttl": true,

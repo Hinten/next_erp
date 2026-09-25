@@ -178,13 +178,13 @@ describe('todo motivo de preço declarado tem um PRODUTOR fora de errosPreco.ts'
     }
   });
 
-  it('os 44 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
+  it('os 46 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
     const fontes = fontesQuePodemProduzir(['errosPreco.ts']);
     expect(
       membrosSemProdutor(MOTIVO_PRECO_SHOPEE, fontes, ORFAOS_AUTORIZADOS),
       'motivos declarados que NINGUÉM produz e que não estão autorizados',
     ).toEqual([]);
-    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(44);
+    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(46);
   });
 
   it('a lista de órfãos autorizados está VAZIA e não guarda um membro que já ganhou produtor', () => {
@@ -368,12 +368,12 @@ describe('a dobra de slug: o que ela trata como IGUAL e o que precisa continuar 
     expect(dobraDeSlug(MOTIVO_PRECO_SHOPEE.precoInvalido)).not.toBe(alvo);
   });
 
-  it('os 44 slugs dobram para 44 formas distintas', () => {
+  it('os 46 slugs dobram para 46 formas distintas', () => {
     // Se dois membros colidissem sob a dobra, o detector apontaria o membro
     // errado numa mensagem de falha — e este é o único lugar que checa isso.
     const slugs = todosOsSlugs();
     const dobras = new Set([...slugs].map(dobraDeSlug));
-    expect(slugs.size).toBe(44);
+    expect(slugs.size).toBe(46);
     expect(dobras.size).toBe(slugs.size);
   });
 
