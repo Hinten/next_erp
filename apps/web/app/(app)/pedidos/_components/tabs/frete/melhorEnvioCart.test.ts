@@ -294,9 +294,9 @@ describe('buildPedidoCartPayload', () => {
   });
 
   it('sends phones in the LOCAL shape, stripping the stored 55 country code', () => {
-    // This app stores phones `55`-prefixed (`normalizeTelefone`); ME's own
-    // documented example, every fixture here and the legacy app all use the
-    // local 10/11-digit shape, so the boundary strips it (#868).
+    // This app stores phones `55`-prefixed (`normalizeTelefone`); ME documents
+    // local 10/11-digit values and does not promise E.164 support, so #868 pins
+    // the conversion at the provider boundary.
     const payload = buildPedidoCartPayload({
       frete: makeFrete(),
       enderecoOrigem: { ...ORIGIN, telefone: '5511333334444' },

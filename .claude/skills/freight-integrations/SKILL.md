@@ -250,6 +250,11 @@ reads; `buildCartItem` tolerates a blank/null key.
   sandbox.
 - **`User-Agent` is required** by ME on every request (app name + contact email)
   — the legacy omitted it on GETs; the port always sends it.
+- **Cart phones use local BR digits** (DDD + subscriber, no `55`). The official
+  cart and store-phone references document only that shape and do not promise
+  E.164 support. Firestore keeps digits-only E.164; the web cart mapper converts
+  both parties through `localTelefoneOrNull` at the provider boundary (#868).
+  Keep `phone` opaque in `freight-br`; foreign country codes remain unchanged.
 - **Tokens are Laravel Passport JWTs** with a `scopes` array; the registered
   sandbox app must grant cart-write scopes (it does — verified, all 14 scopes).
 - **Quote responses are per-service**: an option is either quotable (`price` +

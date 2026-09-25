@@ -84,8 +84,9 @@ const cap = (s: string | null | undefined, n: number) => (s ?? '').slice(0, n).t
  * `@delfrance/core/phone` rather than restated, so this script cannot drift
  * from what it exists to reproduce (the reasoning lives above
  * `BuildPedidoCartInput` in `melhorEnvioCart.ts`). `?? undefined` because this
- * payload omits absent fields instead of sending `null`. To probe a `55…`
- * value deliberately, add it as a `variants()` entry.
+ * payload omits absent fields instead of sending `null`. #868 deliberately
+ * does not probe an E.164 `55…` variant: the app sends the local BR shape ME
+ * documents and does not depend on undocumented provider tolerance.
  */
 const wirePhone = (v: unknown) =>
   localTelefoneOrNull(typeof v === 'string' ? v : null) ?? undefined;
