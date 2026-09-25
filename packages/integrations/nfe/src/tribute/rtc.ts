@@ -16,6 +16,7 @@
  * slots under `det/imposto` (not nested), so the dispatcher attaches each
  * independently.
  */
+import { NFeTributeError } from './errors';
 import { fmtMoney, fmtQuantity, fmtRate, roundReais } from './format';
 import {
   configuracaoIBSCBSSchema,
@@ -26,15 +27,17 @@ import type { TIS, TTribNFe } from '../types/nfe-schema';
 
 /**
  * Strict-parse a stored, known-field partial `configuracaoIBSCBS` draft into
- * the complete typed RTC config. Throws a clear error when RTC
+ * the complete typed RTC config. Throws `NFeTributeError` when RTC
  * emission is on for an item but its registered config is incomplete/invalid —
  * surfaced to the operator at emit time, never silently emitting bad values.
+ * The same class as a partial ICMSSN900 group, because it is the same kind of
+ * defect: a stored config the operator fixes and re-emits (#506).
  */
 export function parseRtcConfig(raw: unknown): ConfiguracaoIBSCBS {
   const result = configuracaoIBSCBSSchema.safeParse(raw);
   if (result.success) return result.data;
   const first = result.error.issues[0];
-  throw new Error(
+  throw new NFeTributeError(
     `Invalid configuracaoIBSCBS (RTC emission is on for this item): ` +
       `${first?.path.join('.') ?? '(root)'} — ${first?.message ?? 'parse failed'}`,
   );
@@ -132,7 +135,9 @@ export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
   } else {
     // `configuracaoISRtcSchema`'s refine guarantees one mode is present; this
     // is a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
-    throw new Error('buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)');
+    throw new NFeTributeError(
+      'buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)',
+    );
   }
   return out;
 }

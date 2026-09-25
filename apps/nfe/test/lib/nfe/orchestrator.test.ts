@@ -40,8 +40,11 @@ import {
 import {
   CONTINGENCIA_MODO,
   AMBIENTE_NFE,
+  CRT,
+  CSOSN,
   ESTADO_NFE,
   FORMA_PAGAMENTO,
+  MOD_BC,
   freteDoPedidoSchema,
   pagamentoSchema,
   type NFeConfig,
@@ -126,6 +129,41 @@ function impostoCsosn102(): Record<string, unknown> {
       crt: '1',
       csosn: '102',
     },
+  };
+}
+
+/**
+ * A CSOSN 900 config that passes impostoSchema (every 500/900 member is
+ * optional, so the resolver keeps it) but that the engine's XSD-group guard
+ * rejects: 'ICMS próprio' opened without modBC (#506).
+ */
+const CSOSN_900_PARCIAL = {
+  crt: CRT.simplesNacional,
+  csosn: CSOSN.outros,
+  csosn900: { vBC: 1500, pICMS: 18, vICMS: 270 },
+};
+
+/** The default PED-1 with its one item's `configuracaoICMS` replaced. */
+function pedidoComICMS(configuracaoICMS: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ehSaida: true,
+    estado: 'pago',
+    itens: {
+      'P-1': [
+        {
+          sku: 'SKU-1',
+          nomeDeVenda: 'Bicicleta',
+          precoDeVenda: 1500,
+          quantidade: 1,
+          descontoUnitario: 0,
+          imposto: { ...impostoCsosn102(), configuracaoICMS },
+        },
+      ],
+    },
+    integracaoPedidoOuterRef: 'integracao/I-1',
+    clientePedidoOuterRef: 'clientes/C-1',
+    operacaoPedidoOuterRef: 'operacao/O-1',
+    enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
   };
 }
 
@@ -817,6 +855,29 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     expect(procWrite?.data.xml_assinado).toBeNull();
   });
 
+  it('pós-EPEC transmits the stored bytes even when the LIVE imposto no longer builds (#506)', async () => {
+    // The registered EPEC owns the chave and the bytes; the transmission never
+    // regenerates, so a partial CSOSN 900 config edited since must not block it.
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfeConfig: EPEC_CONFIG,
+      pedido: pedidoComICMS(CSOSN_900_PARCIAL),
+    });
+    docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_100_SYNC);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/aut' }),
+      { idLote: '1', NFe: [EPEC_SIGNED_NFE] },
+    );
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.chave).toBe(CHAVE);
+  });
+
   it('pós-EPEC cStat 468 (EPEC não sincronizado) keeps estado p, bumps retries and audit-logs', async () => {
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
@@ -1178,6 +1239,76 @@ describe('emitirPedido — guards', () => {
     // untouched, so the número is not burned on the doomed emission.
     expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
     expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+  });
+
+  it.each([
+    {
+      caso: 'partial CSOSN 900 (ICMS próprio without modBC)',
+      configuracaoICMS: CSOSN_900_PARCIAL,
+      expected:
+        /^pedido 'PED-1' item 0 \(produto 'P-1'\): .*CSOSN '900'.*ICMS próprio missing: modBC$/,
+    },
+    {
+      caso: 'partial CSOSN 500 (ICMS efetivo with vBCEfet only)',
+      configuracaoICMS: {
+        crt: CRT.simplesNacional,
+        csosn: CSOSN.icmsCobradoAnteriormente,
+        csosn500: { vBCEfet: 1500 },
+      },
+      expected:
+        /^pedido 'PED-1' item 0 \(produto 'P-1'\): .*CSOSN '500'.*ICMS efetivo missing: pRedBCEfet, pICMSEfet, vICMSEfet$/,
+    },
+  ])(
+    'throws NFeOrchestratorError before any write — no número consumed (#506): $caso',
+    async ({ configuracaoICMS, expected }) => {
+      // The imposto passes impostoSchema (every 500/900 member is optional), so
+      // the resolver keeps it; only the engine's XSD-group guard rejects it —
+      // inside the allocation transaction, where buildGenItems runs BEFORE the
+      // first tx.set, so the throw aborts it with nothing written.
+      const events: string[] = [];
+      const { fs, writes, docs } = fakeFirestore({
+        events,
+        nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+        pedido: pedidoComICMS(configuracaoICMS),
+      });
+
+      const error = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(NFeOrchestratorError);
+      expect((error as NFeOrchestratorError).message).toMatch(expected);
+
+      // Nothing written: no nfev4 anchor/placeholder, no counter advance.
+      expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+      expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+      expect(docs['filiais/F-1/nfeconfig/default']).toMatchObject({
+        numeracao_atual: 41,
+        idLote: 6,
+      });
+      expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lets a COMPLETE CSOSN 900 group through — one número (#506)', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+      pedido: pedidoComICMS({
+        crt: CRT.simplesNacional,
+        csosn: CSOSN.outros,
+        csosn900: { modBC: MOD_BC.valorOperacao, vBC: 1500, pICMS: 18, vICMS: 270 },
+      }),
+    });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aguardandoResposta);
+    expect(docs['filiais/F-1/nfeconfig/default']?.numeracao_atual).toBe(42); // 41 + 1
+    // The real buildImpostoXml ran on the complete group at generation time.
+    const impostoXml = vi.mocked(generateNFe).mock.calls[0]![0].itens[0]!.impostoXml;
+    expect(impostoXml).toContain('<ICMSSN900><orig>0</orig><CSOSN>900</CSOSN><modBC>3</modBC>');
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
   });
 
   it('throws NFeBlockedError when pedido.ehSaida contradicts operacao.tipo (#398)', async () => {
@@ -1558,6 +1689,57 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
     expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
     expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
   });
+
+  it.each([
+    {
+      caso: 'aprovada (bloqueada cStat 100)',
+      existing: {
+        estado: ESTADO_NFE.aprovada,
+        cStat: '100',
+        xMotivo: 'Autorizado o uso da NF-e',
+        nRec: '351000000000123',
+      },
+    },
+    {
+      caso: 'in flight with a saved nRec',
+      existing: {
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: null,
+        xMotivo: null,
+        nRec: '351000000000123',
+      },
+    },
+  ])(
+    'returns the persisted $caso doc even when the LIVE imposto no longer builds (#506)',
+    async ({ existing }) => {
+      // An unstamped item is re-resolved from the live cascade on every call, so
+      // a config edited after emission can turn unbuildable. A pedido whose
+      // nfev4 doc is already settled never generates: it must come back as
+      // before, not fail on a projection that would never be built.
+      const events: string[] = [];
+      const { fs, writes, docs } = fakeFirestore({
+        events,
+        pedido: pedidoComICMS(CSOSN_900_PARCIAL),
+      });
+      docs['pedidos/PED-1/nfev4/s1'] = {
+        numeracao: 7,
+        serie: 1,
+        tpEmis: 1,
+        chave: CHAVE,
+        ...existing,
+      };
+
+      const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(result.reused).toBe(true);
+      expect(result.estado).toBe(existing.estado);
+      expect(result.chave).toBe(CHAVE);
+      expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+      expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+      expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+    },
+  );
 
   it('fresh emit returns reused=false (so the UI shows the regular green toast)', async () => {
     const events: string[] = [];
@@ -2948,6 +3130,33 @@ describe('emitirPedido — #396 crash-window stored bytes + digest guard', () =>
       expect.objectContaining({ NFe: [STORED_XML] }),
     );
     const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.numeracao_atual).toBe(50);
+  });
+
+  it('retransmits the STORED bytes even when the LIVE imposto no longer builds (#506)', async () => {
+    // The stored bytes may already be authorized at SEFAZ and the retransmit
+    // never reads the live config — so a config edited after the crash (here a
+    // partial CSOSN 900 group) must not block the recovery.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 7, ambiente: '2' },
+      pedido: pedidoComICMS(CSOSN_900_PARCIAL),
+    });
+    seedCrashWindowDoc(docs);
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aguardandoResposta);
+    expect(result.chave).toBe(CHAVE);
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ NFe: [STORED_XML] }),
+    );
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.idLote).toBe(8);
     expect(cfgWrite?.data.numeracao_atual).toBe(50);
   });
 

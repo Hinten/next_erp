@@ -12,7 +12,10 @@
  *   - CRT='4' (MEI)
  *   - missing CSOSN
  *   - missing required sub-config for the active CSOSN
+ *   - incomplete XSD sub-group (CSOSN 201/202/203/500/900)
  *   - unknown CSOSN value
+ *   - an incomplete/invalid `configuracaoIBSCBS` while `emitRtc` is on
+ *     (thrown by `rtc.ts`)
  */
 import type { z } from 'zod';
 
@@ -40,14 +43,12 @@ import type {
   TNFe_infNFe_det_imposto_PIS,
 } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
+import { NFeTributeError } from './errors';
 import { buildIBSCBS, buildIS, parseRtcConfig } from './rtc';
 
-export class NFeTributeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NFeTributeError';
-  }
-}
+// Declared in `./errors` (dependency-free, so `rtc.ts` can throw it too) and
+// re-exported here under the same name for every existing importer.
+export { NFeTributeError };
 
 /**
  * Public entry — validates inputs, dispatches, and emits the `<imposto>` XML.
@@ -110,26 +111,105 @@ function requireICMSConfig(cfg: ConfiguracaoICMS | null | undefined): Configurac
 }
 
 /**
- * FCP-ST (Fundo de Combate à Pobreza retido por ST) is an all-or-nothing
- * wire group: the XSD models the base/rate/value trio as a set that must be
- * emitted together or omitted entirely. The individual `fmtMoneyOpt` /
- * `fmtRateOpt` calls would happily emit a partial trio (only the non-null
- * members), which SEFAZ rejects (cStat 215). Fail fast at build time on a
- * partial trio, naming the CSOSN and the missing member(s). `fields` carries
- * the wire names so CSOSN 500's `…Ret` variant reports its own field names.
+ * One `xs:sequence minOccurs="0"` sub-group of an ICMSSN variant, named by
+ * the sub-config's own field names (typed, so a misspelt member fails
+ * typecheck). `required` are the group's members without `minOccurs="0"`;
+ * `optional` are the ones with it. An optional member still opens the group,
+ * so on its own it forces every required member.
  */
-function assertFcpStTrio(
+type XsdGroup<T> = {
+  label: string;
+  required: readonly (keyof T & string)[];
+  optional?: readonly (keyof T & string)[];
+};
+
+type ConfICMSSN201 = NonNullable<ConfiguracaoICMS['csosn201']>;
+type ConfICMSSN202ou203 = NonNullable<ConfiguracaoICMS['csosn202ou203']>;
+type ConfICMSSN500 = NonNullable<ConfiguracaoICMS['csosn500']>;
+type ConfICMSSN900 = NonNullable<ConfiguracaoICMS['csosn900']>;
+
+// The group tables below transcribe `generated/moc7.0/schemas/leiauteNFe_v4.00.xsd`
+// — the XSD `validateXsd` and SEFAZ enforce, so it is the authority. Line
+// ranges cite that file; each table lists its groups in XSD document order.
+
+/**
+ * FCP-ST (Fundo de Combate à Pobreza retido por ST): ICMSSN201 xsd:4016-4032,
+ * ICMSSN202 xsd:4122-4138, ICMSSN900 xsd:4345-4361 (nested inside the ST
+ * sequence there — see ICMSSN900_GROUPS).
+ */
+const FCP_ST_GROUP = {
+  label: 'FCP-ST',
+  required: ['vBCFCPST', 'pFCPST', 'vFCPST'],
+} as const satisfies XsdGroup<ConfICMSSN201 | ConfICMSSN202ou203 | ConfICMSSN900>;
+
+/** ICMSSN500 (xsd:4142-4230): three independent optional sub-groups. */
+const ICMSSN500_GROUPS = [
+  // xsd:4167-4188
+  {
+    label: 'ICMS-ST retido',
+    required: ['vBCSTRet', 'pST', 'vICMSSTRet'],
+    optional: ['vICMSSubstituto'],
+  },
+  // xsd:4189-4205
+  { label: 'FCP-ST retido', required: ['vBCFCPSTRet', 'pFCPSTRet', 'vFCPSTRet'] },
+  // xsd:4206-4227
+  { label: 'ICMS efetivo', required: ['pRedBCEfet', 'vBCEfet', 'pICMSEfet', 'vICMSEfet'] },
+] as const satisfies ReadonlyArray<XsdGroup<ConfICMSSN500>>;
+
+/**
+ * ICMSSN900 (xsd:4231-4377). The FCP-ST sequence is NESTED inside the ICMS-ST
+ * one (xsd:4345-4361 within 4295-4362), so its trio is listed as optional
+ * members of 'ICMS-ST' — an FCP-ST member with no ST group is schema-invalid —
+ * and keeps its own all-or-nothing group besides.
+ */
+const ICMSSN900_GROUPS = [
+  // xsd:4255-4294
+  {
+    label: 'ICMS próprio',
+    required: ['modBC', 'vBC', 'pICMS', 'vICMS'],
+    optional: ['pRedBC'],
+  },
+  // xsd:4295-4362
+  {
+    label: 'ICMS-ST',
+    required: ['modBCST', 'vBCST', 'pICMSST', 'vICMSST'],
+    optional: ['pMVAST', 'pRedBCST', 'vBCFCPST', 'pFCPST', 'vFCPST'],
+  },
+  FCP_ST_GROUP,
+  // xsd:4363-4374
+  { label: 'crédito SN', required: ['pCredSN', 'vCredICMSSN'] },
+] as const satisfies ReadonlyArray<XsdGroup<ConfICMSSN900>>;
+
+/**
+ * Every `xs:sequence minOccurs="0"` sub-group is all-or-nothing on the wire:
+ * absent is legal, complete is legal, anything in between is schema-invalid.
+ * The individual `fmtMoneyOpt` / `fmtRateOpt` calls would happily emit a
+ * partial group (only the non-null members), which SEFAZ rejects (cStat 215).
+ * Fail fast at build time instead, before any field is formatted, naming the
+ * CSOSN, each incomplete group and its missing required members — every
+ * violation in one error, in XSD order, so the operator fixes them in one pass.
+ *
+ * Presence is `!= null`: 0 and '0' are legitimate values (the schema is
+ * nonnegative; `modBC` '0' is a real modalidade), so they count as present.
+ */
+function assertXsdGroupsComplete<T extends object>(
   csosn: string,
-  fields: ReadonlyArray<readonly [string, number | null | undefined]>,
+  cfg: T,
+  groups: ReadonlyArray<XsdGroup<T>>,
 ): void {
-  const missing = fields.filter(([, value]) => value == null).map(([name]) => name);
-  // 0 missing (full trio) and all missing (no trio) are both valid; a
-  // partial trio — 1 or 2 present — is the only rejected shape.
-  if (missing.length !== 0 && missing.length !== fields.length) {
+  const isPresent = (field: keyof T & string): boolean => cfg[field] != null;
+  const violations: string[] = [];
+  for (const group of groups) {
+    const missing = group.required.filter((field) => !isPresent(field));
+    if (missing.length === 0) continue; // complete
+    const opened = missing.length < group.required.length || (group.optional ?? []).some(isPresent);
+    if (!opened) continue; // absent
+    violations.push(`${group.label} missing: ${missing.join(', ')}`);
+  }
+  if (violations.length > 0) {
     throw new NFeTributeError(
-      `CSOSN '${csosn}' FCP-ST fields are all-or-nothing per the XSD — emit the ` +
-        `complete trio (${fields.map(([name]) => name).join(', ')}) or none; ` +
-        `missing: ${missing.join(', ')}`,
+      `CSOSN '${csosn}': XSD sub-groups must be emitted complete or omitted — ` +
+        violations.join('; '),
     );
   }
 }
@@ -177,11 +257,7 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '201' requires `configuracaoICMS.csosn201`");
       }
-      assertFcpStTrio('201', [
-        ['vBCFCPST', c.vBCFCPST],
-        ['pFCPST', c.pFCPST],
-        ['vFCPST', c.vFCPST],
-      ]);
+      assertXsdGroupsComplete('201', c, [FCP_ST_GROUP]);
       return {
         ICMSSN201: {
           orig: origem,
@@ -206,11 +282,7 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError(`CSOSN '${csosn}' requires \`configuracaoICMS.csosn202ou203\``);
       }
-      assertFcpStTrio(csosn, [
-        ['vBCFCPST', c.vBCFCPST],
-        ['pFCPST', c.pFCPST],
-        ['vFCPST', c.vFCPST],
-      ]);
+      assertXsdGroupsComplete(csosn, c, [FCP_ST_GROUP]);
       return {
         ICMSSN202: {
           orig: origem,
@@ -232,11 +304,7 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '500' requires `configuracaoICMS.csosn500`");
       }
-      assertFcpStTrio('500', [
-        ['vBCFCPSTRet', c.vBCFCPSTRet],
-        ['pFCPSTRet', c.pFCPSTRet],
-        ['vFCPSTRet', c.vFCPSTRet],
-      ]);
+      assertXsdGroupsComplete('500', c, ICMSSN500_GROUPS);
       return {
         ICMSSN500: {
           orig: origem,
@@ -260,11 +328,7 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '900' requires `configuracaoICMS.csosn900`");
       }
-      assertFcpStTrio('900', [
-        ['vBCFCPST', c.vBCFCPST],
-        ['pFCPST', c.pFCPST],
-        ['vFCPST', c.vFCPST],
-      ]);
+      assertXsdGroupsComplete('900', c, ICMSSN900_GROUPS);
       return {
         ICMSSN900: {
           orig: origem,

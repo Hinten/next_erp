@@ -139,12 +139,15 @@ export function buildDest(
   //
   // ⚠️ DEVIATION from the legacy ladder, decided by the owner: legacy maps an
   // ABSENT ie on a PJ to '2', and that value is barely emittable. NT 2025.001
-  // rule E16a-30 made "destinatário isento de IE" a REJECTION (cStat=805) on an
-  // internal operation (idDest=1) in 17 UFs — AL, AM, BA, CE, DF, ES, GO, MG,
-  // MS, MT, PB, PE, RJ, RN, RS, SE and SP included. Our own homologação lane
+  // (v1.03) rule E16a-30 made "destinatário isento de IE" a REJECTION
+  // (cStat=805) on internal AND interstate operations (idDest=1 or 2) whenever
+  // the DESTINATÁRIO's UF is one of 17 — AL, AM, BA, CE, DF, ES, GO, MG, MS, MT,
+  // PB, PE, RJ, RN, RS, SE, SP — and rule E16a-35 lets any other UF reject it on
+  // internal operations too; both exempt only a note with ICMS-ST on some item
+  // or an isenta / imune / não tributada operation. Our own homologação lane
   // caught it live. A cliente nobody ever filled an IE for would therefore be
-  // emittable interstate but not in-state, which is a worse outcome than
-  // defaulting the classification.
+  // unemittable — in-state or interstate — whenever it sits in one of those UFs,
+  // which is a worse outcome than defaulting the classification.
   //
   // So '2' is now reachable ONLY by an explicit `ISENTO` in the cadastro — it is
   // a claim the operator makes, never one inferred from a blank field. ⚠️ Legacy

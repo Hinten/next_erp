@@ -1,0 +1,10 @@
+---
+"@delfrance/integrations-nfe": patch
+"@delfrance/nfe-app": patch
+---
+
+Validate the ICMSSN500/900 sub-groups all-or-nothing against the XSD, and fail a build-time tribute config error before numeração is allocated (#506).
+
+`buildImpostoXml` now checks every `xs:sequence minOccurs="0"` sub-group of ICMSSN500 (ICMS-ST retido, FCP-ST retido, ICMS efetivo) and ICMSSN900 (ICMS próprio, ICMS-ST, FCP-ST, crédito SN) before formatting any field: a group must be complete or absent, and an optional member (`pRedBC`, `pMVAST`, `pRedBCST`, `vICMSSubstituto`) on its own forces the whole group. For CSOSN 900 the FCP-ST trio is nested inside the ICMS-ST sequence, so FCP-ST without a complete ST group is now rejected too. Every violation for the item is reported in one `NFeTributeError`, in XSD order; the CSOSN 201/202/203 FCP-ST trio uses the same check, so its message text changes. Complete configs emit byte-identical XML. An incomplete `configuracaoIBSCBS` while `emitRtc` is on (and `buildIS`'s rate-less backstop) now throws `NFeTributeError` as well, instead of a plain `Error`, with the same message; the class moved to a dependency-free `tribute/errors.ts` and is still exported under the same name.
+
+In `apps/nfe`, a build-time tribute config error (`NFeTributeError` / `TributeFormatError`, including a draft `configuracaoIBSCBS` with RTC on) now fails as a 400 `NFeOrchestratorError` naming the pedido, item and produto (batch errorCode `'NFeOrchestratorError'`), where it used to surface as a 500 under the engine error's own name (e.g. `NFeTributeError`), which the web client retried — and, on the batch path, only after an nNF had been consumed and a chave-less placeholder written. The batch now dry-runs each member's per-item projection after prep, and its chunk transaction fails an unbuildable member that would allocate or regenerate before counting it, so no número is consumed any more; the single path already generated inside its transaction before writing. Pedidos whose NF-e is already authorized/blocked, in flight, EPEC-approved or awaiting a crash-window retransmit of its stored bytes are unaffected by the live config, as before.

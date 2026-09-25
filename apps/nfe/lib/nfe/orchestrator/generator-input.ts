@@ -5,8 +5,10 @@ import {
   buildTotalXml,
   buildTranspXml,
   datePartsInOffset,
+  NFeTributeError,
   offsetForUF,
   sanitizeNFeText,
+  TributeFormatError,
   type GeneratorInput,
   type GeneratorItem,
   type Payment,
@@ -39,6 +41,16 @@ import type { FiscalItem, PedidoBundle } from './bundle';
 const TPAG_DINHEIRO = String(FORMA_PAGAMENTO.dinheiro).padStart(2, '0');
 
 /**
+ * Interestadual iff the destination UF differs from the emitente's sede UF —
+ * it picks `cfopInterestadual` over `cfop` per item. ONE derivation shared by
+ * generation (`buildGeneratorInput`) and the batch pre-allocation pre-flight
+ * (`assertItemsBuildable`), so the two can never project different CFOPs.
+ */
+export function isInterstateFor(bundle: PedidoBundle): boolean {
+  return bundle.enderecoDest.estado !== bundle.filial.sede.estado;
+}
+
+/**
  * Project the validated fiscal items + filial + cliente + operação +
  * counters into the typed `GeneratorInput`.
  *
@@ -61,8 +73,7 @@ export function buildGeneratorInput(
   contingencia?: { readonly dhCont: Date | null; readonly xJust: string | null } | null,
   emitRtc?: boolean,
 ): GeneratorInput {
-  const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
-  const genItems = buildGenItems(items, bundle, isInterstate, emitRtc === true);
+  const genItems = buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc === true);
 
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto a det's prod.vFrete (item level)
@@ -357,9 +368,57 @@ export function buildGenItems(
       indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
-      impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc }),
+      impostoXml: buildItemImpostoXml(it, emitRtc, where),
     };
   });
+}
+
+/**
+ * `buildImpostoXml` for one item, with the engine's operator-fixable tribute
+ * errors (`NFeTributeError` — a partial ICMSSN500/900 sub-group, a missing
+ * CSOSN sub-config, CRT 3/4, a draft `configuracaoIBSCBS` while RTC is on —
+ * and `TributeFormatError`, a value the wire format cannot carry) re-thrown as
+ * `NFeOrchestratorError` prefixed with the item's `where`. That is the same
+ * class `flattenAndValidate` and the CFOP / NCM / unidade checks above report:
+ * the route answers 400 (not retried by the client) and the batch path files
+ * it under errorCode 'NFeOrchestratorError'. Anything else is not an
+ * operator-fixable config defect and is re-thrown untouched (rule 6).
+ */
+function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): string {
+  try {
+    return buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc });
+  } catch (err) {
+    if (err instanceof NFeTributeError || err instanceof TributeFormatError) {
+      throw new NFeOrchestratorError(`${where}: ${err.message}`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Pre-allocation tribute pre-flight (#506): dry-run the per-item projection
+ * and discard it. The batch path needs it because its chunk transaction
+ * commits the nNF and a chave-less placeholder BEFORE generating, so a throw
+ * at generation consumes an nNF and leaves a placeholder needing fix +
+ * re-emit or inutilização. `emitir.ts` runs it per member after prep
+ * (`tributePreflight`) and `runChunkAllocateTx` applies the verdict only to a
+ * member that would allocate or regenerate — never to one whose nfev4 doc is
+ * skipped or retransmitted from stored bytes. The single path does not use
+ * it: its transaction generates before its first write.
+ *
+ * It is the SAME projection generation runs — `buildGenItems` with the same
+ * `isInterstateFor` and `emitRtc`, never a parallel re-implementation — so:
+ *   - the error precedence (CFOP → NCM → unidade → vDesc → imposto) and the
+ *     messages are identical to generation's;
+ *   - a pass guarantees generation's `buildGenItems` cannot throw: it is pure
+ *     over the same captured `items` and `emitRtc`.
+ */
+export function assertItemsBuildable(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): void {
+  buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc);
 }
 
 /**
