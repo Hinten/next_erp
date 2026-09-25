@@ -309,6 +309,9 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     expect((await conversaCollection.ref(db, {}).get()).empty).toBe(true);
   });
 
+  // Regression coverage for #1629. Keep the real contention and assertions below: under
+  // Firestore Emulator 1.22.0, lock contention is normally surfaced as retryable ABORTED.
+  // Do not mask a non-retryable "Transaction is invalid or closed" with a test retry.
   it('two simultaneous create confirmations with the same request reserve one client and conversation', async () => {
     const id = await park();
     const choice = confirmarVinculoSchema.parse({
@@ -360,6 +363,8 @@ describe('WhatsApp identity and linkage against Firestore transactions', () => {
     expect((await conversaCollection.ref(db, {}).get()).size).toBe(1);
   });
 
+  // This is the second #1629 contention shape. Both attempts must derive their result from
+  // current transaction snapshots while converging on the canonical conversation.
   it('two verified phones share one client conversation without changing its principal phone', async () => {
     await seedCliente();
     await seedIdentity('cliente-a', contato(), 'telefone');
