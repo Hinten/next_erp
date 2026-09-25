@@ -329,13 +329,66 @@ export async function persistPatch(
 }
 
 /**
- * Ties a `persistPatchUnlessFinal` write to ONE lote (#512): the reply being
- * persisted answers the lote whose `idLote` the doc was stamped with before
- * the send, and is stale for a doc a newer lote has re-stamped since.
+ * The premise a `persistPatchUnlessFinal` write was decided on, re-checked on
+ * the transaction's own `tx.get` snapshot: when ANY condition given does not
+ * hold on the stored doc, nothing is written. Every field is optional and an
+ * omitted one is not checked, so each caller states exactly its own premise.
+ *
+ *  - #512 (`persistLoteSemRecibo`) ties the write to ONE lote — the reply
+ *    answers the lote whose `idLote` the doc was stamped with before the send,
+ *    and is stale for a doc a newer lote has re-stamped since.
+ *  - #513 (`reconcileByRecibo`, and `reconcileLoteSemProtocolo` under it) ties
+ *    each write to the receipt, the `retries` its decision was computed from,
+ *    and an in-flight estado: its `data` was read before the `consReciNFe`
+ *    await (and before the earlier docs' consSit calls), so a concurrent
+ *    terminal `error`/`rejeitada` or a concurrent counted write by another
+ *    runner must refuse the write rather than be overwritten by it.
  */
 export interface PersistGuard {
-  /** The lote this write answers, as stamped on the nfev4 doc (`String(idLote)`). */
-  readonly expectedIdLote: string;
+  /** #512 — the lote this write answers, as stamped on the nfev4 doc (`String(idLote)`). */
+  readonly expectedIdLote?: string;
+  /** #513 — the receipt this write answers; refused when the stored `nRec` differs. */
+  readonly expectedNRec?: string;
+  /**
+   * #513 — the `retries` this write was decided from; refused when the stored
+   * `retries ?? 0` differs (another runner counted in between).
+   */
+  readonly expectedRetries?: number;
+  /** #513 — refused unless the stored estado is in flight (`enviando` / `aguardandoResposta`). */
+  readonly requireInFlight?: true;
+}
+
+/** True when every condition `guard` states holds on the stored doc. */
+function guardHolds(guard: PersistGuard, current: NotaFiscalEletronica): boolean {
+  // `idLote` is stamped as `String(idLote)`; String() on both sides keeps a
+  // read-tolerated legacy number comparable. A stored `null` never matches.
+  if (
+    guard.expectedIdLote != null &&
+    (current.idLote == null || String(current.idLote) !== String(guard.expectedIdLote))
+  ) {
+    return false;
+  }
+  if (guard.expectedNRec != null && (current.nRec ?? null) !== guard.expectedNRec) {
+    return false;
+  }
+  if (guard.expectedRetries != null && (current.retries ?? 0) !== guard.expectedRetries) {
+    return false;
+  }
+  if (
+    guard.requireInFlight === true &&
+    current.estado !== ESTADO_NFE.enviando &&
+    current.estado !== ESTADO_NFE.aguardandoResposta
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** What a refused write under a guard was answering — for the missing-doc error. */
+function alvoDaGuarda(guard: PersistGuard): string {
+  if (guard.expectedIdLote != null) return `o retorno do lote ${guard.expectedIdLote}`;
+  if (guard.expectedNRec != null) return `o retorno do recibo ${guard.expectedNRec}`;
+  return 'a gravação guardada';
 }
 
 /** Outcome of `persistPatchUnlessFinal` — either written, or skipped with the doc's live truth. */
@@ -344,8 +397,9 @@ export type GuardedPersistResult =
   | {
       readonly written: false;
       /**
-       * The doc's CURRENT estado that blocked the write — final, or re-stamped
-       * by a newer lote (only under a {@link PersistGuard}).
+       * The doc's CURRENT estado that blocked the write — final, or one on
+       * which a {@link PersistGuard} condition failed (re-stamped by a newer
+       * lote, another receipt, counted by another runner, no longer in flight).
        */
       readonly estadoAtual: EstadoNFe;
       readonly cStatAtual: string | null;
@@ -366,18 +420,34 @@ export type GuardedPersistResult =
  * the doc's real state. Otherwise it writes exactly what `persistPatch` writes
  * (shared `buildPersistData` mapping).
  *
- * With a `guard` — #512's `persistLoteSemRecibo` (emitir.ts), writing a lote
- * reply that carried no `infRec` to every member — the write is ALSO skipped
- * when the stored `idLote` differs from `guard.expectedIdLote` (a stored
- * `null` included): a newer lote re-stamped the doc, so this reply is stale
- * for it. Under a guard a MISSING doc throws `NFeOrchestratorError` and
- * nothing is written — every member was anchored before the send, so a merge
- * would only mint a partial doc; without a guard it is written as before.
- * Every check is decided on the `tx.get` snapshot, never on a pre-read.
+ * With a `guard` ({@link PersistGuard}) the write is ALSO skipped, with the
+ * same `{ written: false, … }` result, when any condition it states fails on
+ * the stored doc:
+ *  - #512's `persistLoteSemRecibo` (emitir.ts), writing a lote reply that
+ *    carried no `infRec` to every member, passes `expectedIdLote` — a stored
+ *    `idLote` that differs (a stored `null` included) means a newer lote
+ *    re-stamped the doc, so this reply is stale for it;
+ *  - `reconcileByRecibo` (#513) uses it for EVERY write it makes, with
+ *    `expectedNRec` + `expectedRetries` + `requireInFlight`: its in-flight
+ *    query runs before the `consReciNFe` await, so an estado filter on that
+ *    pre-read is no guard at write time. The 105 / lote-level non-answer /
+ *    104-with-our-protNFe (proc swap included) / 539 / 656 / cap writes state
+ *    the `retries` as read; the lote-sem-protocolo branch
+ *    (`reconcileLoteSemProtocolo`) states it as read for its counted write
+ *    and as just counted for every write after its consSit. A concurrent
+ *    terminal (a 656 `error`, a 217 `rejeitada`) or a concurrent counted write
+ *    by another runner therefore refuses the write instead of being
+ *    overwritten by a decision taken on a pre-read.
+ * Under a guard a MISSING doc throws `NFeOrchestratorError` and nothing is
+ * written — every guarded writer anchored the doc before its SEFAZ call, so a
+ * merge would only mint a partial doc; without a guard it is written as
+ * before. Every check is decided on the `tx.get` snapshot, never on a
+ * pre-read.
  *
- * `reconcileByRecibo` / `runProcessarPendentes` deliberately stay on the plain
- * `persistPatch`: their in-flight queries already filter to non-final docs and
- * their write cadence is task/sweep-paced, so the plain merge is enough there.
+ * Still unguarded on the reconcile paths: `runProcessarPendentes`'
+ * consult-by-chave branch for legacy (no-`nRec`) docs (the plain
+ * `persistPatch`), and `recover539IfNeeded`'s chave swap — its own plain
+ * merge, landing ahead of `reconcileByRecibo`'s guarded write.
  */
 export async function persistPatchUnlessFinal(
   fs: Firestore,
@@ -392,18 +462,14 @@ export async function persistPatchUnlessFinal(
       // Thrown inside the callback: the transaction aborts (a non-Firestore
       // error is never retried) with no write.
       throw new NFeOrchestratorError(
-        `nfev4 ${nfeRef.path} ausente ao gravar o retorno do lote ${guard.expectedIdLote} — nada gravado`,
+        `nfev4 ${nfeRef.path} ausente ao gravar ${alvoDaGuarda(guard)} — nada gravado`,
       );
     }
     if (snap.exists) {
       const current = nfev4Collection.parseRead(snap.data(), nfeRef.path);
       const finalBlocks = isEstadoFinalNFe(current.estado) && current.estado !== patch.estado;
-      // `idLote` is stamped as `String(idLote)`; String() on both sides keeps a
-      // read-tolerated legacy number comparable.
-      const superseded =
-        guard != null &&
-        (current.idLote == null || String(current.idLote) !== String(guard.expectedIdLote));
-      if (finalBlocks || superseded) {
+      const premiseFailed = guard != null && !guardHolds(guard, current);
+      if (finalBlocks || premiseFailed) {
         return {
           written: false,
           estadoAtual: current.estado,

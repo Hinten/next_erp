@@ -235,10 +235,30 @@ Terraform. `infra/terraform` does not exist in this repo.
 enqueues a task at `now + tMed` onto the **`reconciliarNfe` Firebase Functions
 task queue** — `onTaskDispatched` auto-provisions the queue on deploy, named
 after the function. `reconciliarNfe` consults by recibo and re-enqueues with
-backoff until terminal (capped at `MAX_RECONCILE_ATTEMPTS`; cStat 656 =
-consumo indevido is terminal and never retried — re-querying it risks a SEFAZ
-ban). The CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides the
-**same** queue, discriminated by `kind`.
+backoff until terminal (cStat 656 = consumo indevido is terminal and never
+retried — re-querying it risks a SEFAZ ban). The cap is per doc, on its
+`retries`: 105 rounds and 104-without-our-protNFe rounds both count toward
+`MAX_RECONCILE_ATTEMPTS`, and a lote-level non-answer (103/106/107/108/109/113/114)
+keeps the counter as read without advancing it, and never trips the cap — the
+cap's terminal would carry its NON-blocking cStat — so a doc at the cap stays
+in flight there until the next 104 sighting ends it with NO consSit (cStat
+104) or the next 105 with cStat 105. A processed lote (104) whose reply lacks
+our chave's `protNFe` makes ONE `consSitNFe` for that chave per round
+(`orchestrator/lote-sem-protocolo.ts`, #513). **Every** write of
+`reconcileByRecibo` — that branch's and the 105 / non-answer / 104-with-protNFe
+/ 539 / cap ones — is guarded in its transaction on the receipt, the `retries`
+it was decided from and an in-flight estado (`PersistGuard`), so a concurrent
+terminal or counted write wins and the doc is tallied by its live estado; the
+539 recovery's own chave swap is the one plain merge left. A breaker stops
+further consSit calls after a 656 or an unavailable service — per lote on the
+task path; across the sweep's lotes, a 656 per filial and an outage per filial
++ authorizer (home / SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal
+or stays counted. ⚠️ Two chains are still **not** capped (pre-existing
+follow-ups): a pure lote-level 106/108 chain, and a 104 whose `protNFe` for our
+chave carries a non-539 duplicidade (204/205/218/635). ⚠️ A breaker tripped by
+a reconcile that then THROWS is not carried to the next lote or the queue retry
+(follow-up). The CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides
+the **same** queue, discriminated by `kind`.
 
 Transport is `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`
 (`lib/nfe/tasks.ts`) — no queue path, no runner SA, no `google-auth-library`.

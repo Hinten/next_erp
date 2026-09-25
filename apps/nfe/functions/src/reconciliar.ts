@@ -17,7 +17,9 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * kinds of task onto this function's auto-provisioned queue, discriminated by
  * `kind` and **executed in-process** (no HTTP hop, no OIDC):
  *   - `consulta-lote` (#77) — consult an async lote by recibo (`runReconcile`)
- *     and re-enqueue the next consult while still cStat 105.
+ *     and re-enqueue the next consult while any doc of the lote is still
+ *     pending (105, a 104 not yet resolved for its chave, or a lote-level
+ *     non-answer) — 105/104 rounds capped per doc.
  *   - `cce-vinculo` (#81) — re-check a pending cStat-136 CC-e
  *     (`runReconcileCce`) and re-enqueue the next re-check while still 136.
  *
@@ -75,7 +77,8 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
         `recovered=${result.recovered} errored=${result.errored} ` +
         `stillPending=${result.stillPending} reEnqueued=${result.reEnqueued}`,
     );
-    // handled — including 656 / cap (stillPending=0) → no re-enqueue, no retry.
+    // handled — including 656 / the per-doc 105/104 cap (stillPending=0) → no
+    // re-enqueue, no retry.
   } catch (e) {
     if (e instanceof NFeCertError) {
       logger.error(`${RECONCILE_FUNCTION} ${label}: cert unavailable — backstop will retry`, {
