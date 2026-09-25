@@ -670,4 +670,3 @@ service cloud.firestore {
     }
   }
 }
-

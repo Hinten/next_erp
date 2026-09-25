@@ -7,4 +7,3 @@ describe('legacy produto price/cost history metadata', () => {
     expect(historicoCustoMeta.serverOwned).toBe(true);
   });
 });
-

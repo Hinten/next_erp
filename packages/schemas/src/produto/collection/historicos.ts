@@ -81,4 +81,3 @@ export const historicoCusto = {
   schema: historicoCustoSchema,
   meta: historicoCustoMeta,
 };
-
