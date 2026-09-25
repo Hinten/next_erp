@@ -58,7 +58,7 @@ const RAIZ_DAS_ROTAS = new URL('../../../app/api/marketplace/shopee/', import.me
  */
 const PASTAS_DE_ROTA: Readonly<Record<string, boolean>> = {
   'enviar-precos': true,
-  'atualizar-precos': false,
+  'atualizar-precos': true,
 };
 
 /** Todo `*.ts` não-teste sob `dir`, recursivo, com o nome relativo a `prefixo`. */

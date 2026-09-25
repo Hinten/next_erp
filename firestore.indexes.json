@@ -257,6 +257,34 @@
       ]
     },
     {
+      "collectionGroup": "enviosPrecoShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enviosPrecoShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "produtoMercadoLivre",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
