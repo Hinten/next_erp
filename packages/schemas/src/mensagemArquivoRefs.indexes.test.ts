@@ -35,7 +35,8 @@ describe('mensagem arquivo reference indexes', () => {
 
     for (const field of MENSAGEM_ARQUIVO_REF_FIELDS) {
       const matches = mensagemRefIndexes.filter(
-        (index) => index.fields[0]?.fieldPath === field && index.fields[0]?.order === 'ASCENDING',
+        (index) =>
+          index.fields?.[0]?.fieldPath === field && index.fields?.[0]?.order === 'ASCENDING',
       );
       expect(
         matches,
