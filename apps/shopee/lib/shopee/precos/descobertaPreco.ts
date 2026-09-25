@@ -2,8 +2,11 @@
  * Shopee **price discovery** (#1521, step 13) — the reads a price push is built
  * on, and nothing else. No Shopee call, no write, no clock: this module answers
  * "which listings and which `precos` does this family hold" for an explicit
- * list of anchors (`lerFamiliasDePrecoPorIds`, the manual push). The second PR
- * adds the account-wide paged reader over the SAME per-anchor join.
+ * list of anchors (`lerFamiliasDePrecoPorIds`, the manual push), and "what do
+ * these produtos' `precos` say NOW" (`lerPrecosDosProdutos`, the SEND-time read
+ * — reconcile C-d: the manual push prices each item immediately before sending
+ * it, and the second PR's job reuses the same reader at drain time). The second
+ * PR adds the account-wide paged reader over the SAME per-anchor join.
  *
  * The shapes it returns are `./planoPreco`'s ({@link FamiliaDePreco},
  * {@link LinkPrecoCru}, {@link FilhoDePreco}); nothing is re-declared here.
@@ -44,6 +47,13 @@
  * small reads. The anchors are joined with bounded parallelism through the
  * promoted pool, because this sits in front of a human on a request capped at
  * fifty produtos.
+ *
+ * Step 1 IS {@link lerPrecosDosProdutos} — the same masked key read the push
+ * repeats per item at send time, so the anchor's plan-time `precos` and an
+ * item's send-time `precos` are read through one function, one mask and one
+ * "absent means deleted" rule. The plan-time copy decides NO price on the
+ * manual push any more (it prices at send time); the family keeps it because
+ * the family shape is the planner's and the dry run prices from it.
  *
  * ⚠️ **A masked-out field arrives ABSENT, and absent is a legal reading
  * everywhere downstream** — `kitNativo` absent sends, `item_status` absent
@@ -185,6 +195,49 @@ async function lerFamiliaDePreco(
 }
 
 /* -------------------------------------------------------------------------- */
+/*                         THE PRICES OF NAMED PRODUTOS                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The `precos` of an explicit list of produtos, read NOW — ONE batch key read
+ * (`getAll`), masked to `precos`, through the admin handle.
+ *
+ * The send-time read of reconcile C-d: the manual push calls it inside each
+ * item's pool task, immediately before the sender, with exactly the produtos
+ * that price that item; the second PR's job calls it at drain time. Both then
+ * hand the map to the pure `precificarItem`, unchanged.
+ *
+ * - The value is the stored `precos` map RAW (`unknown`) — `precoDaTabela`
+ *   reads it, nothing here interprets it.
+ * - ⚠️ **Presence is EXISTENCE.** A produto that does not exist is ABSENT from
+ *   the map; a produto that exists without a `precos` field is PRESENT with an
+ *   `undefined` value. Both price as "no price" downstream, and neither
+ *   throws: a produto deleted between a plan and its send answers
+ *   `preco-nao-encontrado`, never an error.
+ * - Duplicates are collapsed; an empty list answers an empty map with ZERO
+ *   reads (a batch read of nothing is refused by the SDK).
+ * - Matched by DOCUMENT ID, never by position in the answer.
+ * - A read failure propagates: nothing is caught here.
+ */
+export async function lerPrecosDosProdutos(
+  db: Firestore,
+  produtoIds: readonly string[],
+): Promise<ReadonlyMap<string, unknown>> {
+  const ids = [...new Set(produtoIds)];
+  const precos = new Map<string, unknown>();
+  if (ids.length === 0) return precos;
+
+  const snaps = await db.getAll(...ids.map((id) => produtoCollection.docRef(db, {}, id)), {
+    fieldMask: [...CAMPOS_DO_PRODUTO],
+  });
+  for (const snap of snaps) {
+    if (!snap.exists) continue;
+    precos.set(snap.id, projetar(snap.data(), CAMPOS_DO_PRODUTO).precos);
+  }
+  return precos;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                               THE BY-IDS READER                            */
 /* -------------------------------------------------------------------------- */
 
@@ -213,14 +266,8 @@ export async function lerFamiliasDePrecoPorIds(
   const familias = new Map<string, FamiliaDePreco>();
   if (anchorIds.length === 0) return familias;
 
-  const snaps = await db.getAll(...anchorIds.map((id) => produtoCollection.docRef(db, {}, id)), {
-    fieldMask: [...CAMPOS_DO_PRODUTO],
-  });
-  const precosPorAnchor = new Map<string, unknown>();
-  for (const snap of snaps) {
-    if (!snap.exists) continue;
-    precosPorAnchor.set(snap.id, projetar(snap.data(), CAMPOS_DO_PRODUTO).precos);
-  }
+  // Read 1 — the send-time reader, reused: one masked key read, absent = missing.
+  const precosPorAnchor = await lerPrecosDosProdutos(db, anchorIds);
 
   const presentes = anchorIds.filter((id) => precosPorAnchor.has(id));
   const lidas: (FamiliaDePreco | undefined)[] = new Array<FamiliaDePreco | undefined>(

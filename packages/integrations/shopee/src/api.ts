@@ -1990,9 +1990,17 @@ export interface ShopeeClient {
    *
    * Either way whoever writes the result back reads BOTH lists, never the
    * absence of a throw — a model in neither list was not confirmed. A failing
-   * body with NO parseable `response` (the ordinary throttle, a dead
-   * authorization, a refusal code sent without the lists) throws the ordinary
-   * class, `ShopeeRateLimitError`/`ShopeeReauthRequiredError` included.
+   * body with NO `response` key, `response: null`, or a `response` that does
+   * not parse throws the ordinary class — `ShopeeRateLimitError` and
+   * `ShopeeReauthRequiredError` included.
+   *
+   * ⚠️ But `response: {}` PARSES — both lists default to `[]` — so a failing
+   * body carrying an empty `response` object throws `ShopeeApiPartialError`
+   * with two empty lists (every sent model then reads the top-level code). A
+   * throttle arriving that way LOSES its `Retry-After`: the partial class
+   * carries no `retryAfterSeconds`, so the price sync's surface falls back to
+   * its own `ratePauseMin()`. Measured by review, not by the probe; the
+   * transport is unchanged (a register item, not a fix here).
    *
    * ⚠️ The flag is code-blind, so the partial class REPLACES whichever subclass
    * the envelope would have produced: a throttle code arriving WITH the lists

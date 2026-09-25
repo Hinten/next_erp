@@ -76,12 +76,23 @@
  * ## Rule 7 — the race tier
  *
  * None of the ten fields is ever read to DECIDE a send: the sender decides from
- * a FRESH Shopee read every time. So a lost race — the manual push and the job
- * on one item, two operators, a retry — leaves at worst a stale DIAGNOSTIC that
- * the next send overwrites. That is tier (0) by design (the race is made
- * irrelevant, not survived): no transaction, no precondition, and no row in the
+ * Shopee's own reading of the listing, taken for that send (a no-model
+ * listing's base row is the request's batch — `./leitorDeBase` states that
+ * bound). That is tier (0) by design (the race is made irrelevant to the
+ * DECISION, not survived): no transaction, no precondition, and no row in the
  * transaction inventory. A future reader that DECIDES from these fields (the
  * push-22 correlation, register 142) must re-decide the tier.
+ *
+ * ⚠️ What a lost race — the manual push and the job on one item, two
+ * operators, a retry — CAN leave is a stale DIAGNOSTIC, and it stays stale
+ * until the next send that CHANGES the price: a `preco-igual` send writes
+ * nothing here, so a late write-back (a success pair of 15 landing after a
+ * newer send of 12 already did) stands for as long as the price holds. And the
+ * item's refusal fields are cleared by a `null` write rather than expired by a
+ * stamp, so a refusal that lands AFTER a newer clean clear stands beside the
+ * newer `precoEnviadoEm`. The step-21 reader therefore shows the item's refusal
+ * only while `precoRecusaEm >= (precoEnviadoEm ?? 0)` — the model rows' rule
+ * (above), which survives this race where the `null` clear does not.
  *
  * ## Clock-free, framework-free
  *
@@ -255,7 +266,12 @@ export interface PrecoDeModelo {
 
 /** One model's refusal, of a stamping class. */
 export interface RecusaDeModeloPreco {
-  /** The model's own `failed_reason`, VERBATIM. */
+  /**
+   * Shopee's `failed_reason` or refusal code VERBATIM, or the sender's
+   * `erp:<motivo>` when the refusal is ours — a child is also stamped with the
+   * call's top-level code or a refused read's, not only with its own row's
+   * reason.
+   */
   readonly codigo: string;
   /** MILLISECONDS. */
   readonly nowMs: number;

@@ -25,9 +25,8 @@
  *    to the package, and the blank-guard rule below buys an `=== '1'`
  *    comparison nothing.
  *  - `lib/shopee/estoque/constantesEstoque.ts` — the step-12 stock knobs
- *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family** and
- *    the only other one that is a family rather than a single read. It goes
- *    through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which
+ *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family**. It
+ *    goes through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which
  *    already treat a blank value as unset, so the rule below would buy it
  *    nothing; that file's own docblock states the split and is PATH-BOUND to
  *    `tools/deploy-env/preflight.mjs`.

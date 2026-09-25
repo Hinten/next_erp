@@ -551,10 +551,12 @@ export const produtoShopeeLinkSchema = z
     // ⚠️ DIAGNOSTICS and the push-22 correlation record — NEVER a gate. No reader
     // decides whether to send from any of them: the price sender reads the live
     // price from Shopee on every send, and that fresh read is the authority.
-    // That is also their rule-7 tier: a lost race between two senders on one
-    // item (the manual push against the job) leaves a stale DIAGNOSTIC that the
-    // next send overwrites, so no transaction guards them. A future reader that
-    // DECIDES from them has to re-decide that tier (register 142).
+    // That is also their rule-7 tier: no field decides a send, so no transaction
+    // guards them. A lost race between two senders on one item (the manual push
+    // against the job) can still leave a stale DIAGNOSTIC, and it stays stale
+    // until the next send that CHANGES the price — a `preco-igual` send writes
+    // nothing. A future reader that DECIDES from them has to re-decide that
+    // tier (register 142).
     //
     // ⚠️ ONE writer, ONE clearer: the price sender writes all ten, and nothing
     // nulls the refusal fields but its own CLEAN send, whose patch names every
@@ -601,6 +603,12 @@ export const produtoShopeeLinkSchema = z
      * MILLISECONDS. When the last item-level refusal landed — including a
      * partial send whose refused model was a stamping class. A partial leaves
      * {@link precoEnviadoEm} alone.
+     *
+     * ⚠️ A reader shows the item's refusal only while
+     * `precoRecusaEm >= (precoEnviadoEm ?? 0)`. The clean send's `null` clear
+     * is not enough on its own: a refusal whose write-back lands AFTER a newer
+     * clean clear stands beside the newer {@link precoEnviadoEm}, and the stamp
+     * comparison — the model rows' rule — is what hides it.
      */
     precoRecusaEm: z.number().int().nullable().default(null),
     /**
@@ -697,7 +705,12 @@ export const variacaoShopeeLinkSchema = z
      * mismatch never stamp it.
      */
     precoRecusaEm: z.number().int().nullable().default(null),
-    /** The model's own `failed_reason`, **VERBATIM**, prefix and all. */
+    /**
+     * Shopee's `failed_reason` or refusal code **VERBATIM**, prefix and all, or
+     * the sender's `erp:<motivo>` when the refusal is ours — a model is also
+     * stamped with the call's top-level code or a refused read's, not only with
+     * its own row's reason.
+     */
     precoRecusaCodigo: z.string().nullable().default(null),
   })
   .passthrough();

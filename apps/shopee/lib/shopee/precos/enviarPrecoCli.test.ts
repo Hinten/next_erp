@@ -76,7 +76,7 @@ import {
 } from './errosPreco';
 import { criarLeitorDeBaseEmLote } from './leitorDeBase';
 import { lerItemParaPreco } from './leituraPreco';
-import type { FamiliaDePreco, ItemDePreco } from './planoPreco';
+import { precosDaFamilia, type FamiliaDePreco, type ItemDePreco } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
 
 /* -------------------------------------------------------------------------- */
@@ -652,6 +652,13 @@ describe('⚠️ paridade: o ensaio e o envio REAL respondem as MESMAS linhas', 
       },
       familiaSimples('prod-kit', ITEM + 6, 15, { kitNativo: true }),
     ];
+    // The SEND-time price read (C-d) reads the produto DOCUMENTS: give each one
+    // the price its family carries, so the dry run and the real run read one store.
+    for (const f of familias) {
+      for (const [id, p] of precosDaFamilia(f)) {
+        if (p !== null) db.seed(`produtos/${id}`, { ...produtos[id], precos: p });
+      }
+    }
     // The link documents the real sender writes back to.
     for (const f of familias) {
       for (const l of f.links) db.seed(`produtos/${f.anchorId}/prodshopee/${l.linkDocId}`, {});

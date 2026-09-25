@@ -9,6 +9,7 @@ import {
   shopeeUpdatePriceSchema,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
+import { produtoCollection } from '@delfrance/data/admin/collections';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import type { VarLinkShopeeCru } from '../core/vinculosShopee';
@@ -43,7 +44,7 @@ import {
   ShopeeEnvioPrecoGuardError,
   type MotivoPrecoShopee,
 } from './errosPreco';
-import type { FamiliaDePreco, ItemDePreco } from './planoPreco';
+import { precosDaFamilia, type FamiliaDePreco, type ItemDePreco } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
 
 /**
@@ -211,6 +212,16 @@ interface Mundo {
   readonly db: FakeDbComLote;
   readonly familias: Map<string, FamiliaDePreco>;
   readonly lerFamilias: ReturnType<typeof vi.fn>;
+  /**
+   * The SEND-time `precos` read, answering from {@link Mundo.familias} AT CALL
+   * TIME — the families are this suite's catálogo, so a case that edits one
+   * between the plan and the send is a tabela edited mid-request. A case that
+   * needs the REAL reader passes `lerPrecos: undefined` and seeds `precos` on
+   * the produto documents.
+   */
+  readonly lerPrecos: Mock<
+    (db: unknown, ids: readonly string[]) => Promise<ReadonlyMap<string, unknown>>
+  >;
   readonly enviar: Mock<(item: ItemDePreco, d: DepsEnvioPreco) => Promise<ResultadoEnvioPreco>>;
   readonly getItemBaseInfo: ReturnType<typeof vi.fn>;
   readonly updatePrice: ReturnType<typeof vi.fn>;
@@ -233,6 +244,19 @@ function mundo(): Mundo {
       ),
     ),
   );
+  const lerPrecos = vi.fn((_db: unknown, ids: readonly string[]) => {
+    const catalogo = new Map<string, unknown>();
+    for (const f of familias.values()) {
+      for (const [id, p] of precosDaFamilia(f)) catalogo.set(id, p);
+    }
+    return Promise.resolve<ReadonlyMap<string, unknown>>(
+      new Map(
+        ids.flatMap((id): [string, unknown][] =>
+          catalogo.has(id) ? [[id, catalogo.get(id)]] : [],
+        ),
+      ),
+    );
+  });
   const enviar = vi.fn<(item: ItemDePreco, d: DepsEnvioPreco) => Promise<ResultadoEnvioPreco>>(
     (item) => {
       const fila = roteiro.get(item.itemId) ?? [];
@@ -273,7 +297,17 @@ function mundo(): Mundo {
     multiplo: 4,
     tabelaNormalId: TABELA,
   } as ContextoContaPreco;
-  return { db, familias, lerFamilias, enviar, getItemBaseInfo, updatePrice, contexto, roteiro };
+  return {
+    db,
+    familias,
+    lerFamilias,
+    lerPrecos,
+    enviar,
+    getItemBaseInfo,
+    updatePrice,
+    contexto,
+    roteiro,
+  };
 }
 
 function semearProduto(m: Mundo, id: string, nome: string, paiId: string | null = null): void {
@@ -292,6 +326,7 @@ function deps(m: Mundo, over: Partial<DepsEnvioPrecoManual> = {}): DepsEnvioPrec
     contexto: m.contexto,
     contaNome: 'Loja teste',
     lerFamilias: m.lerFamilias as unknown as DepsEnvioPrecoManual['lerFamilias'],
+    lerPrecos: m.lerPrecos as unknown as DepsEnvioPrecoManual['lerPrecos'],
     enviar: m.enviar as unknown as DepsEnvioPrecoManual['enviar'],
     ...over,
   };
@@ -1175,5 +1210,293 @@ describe('conferirContabilidadeDePreco — todo id pedido sai em exatamente UM l
     expect(() =>
       conferirContabilidadeDePreco([ANCORA], new Map(), [], [sem(ANCORA), sem(ANCORA)]),
     ).toThrow('DUAS vezes');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          review 1 — the send-time price, the ladder's base read, S1         */
+/* -------------------------------------------------------------------------- */
+
+/** The produto document with a `precos` map — what the REAL send-time reader sees. */
+function precificarNoBanco(m: Mundo, id: string, valor: number, paiId: string | null = null): void {
+  m.db.seed(`produtos/${id}`, { nome: `Nome de ${id}`, paiId, precos: precos(valor) });
+}
+
+/** The masked `precos` batch reads the run made, in call order. */
+function leiturasDePrecos(m: Mundo): { ids: string[]; campos: string[] | null }[] {
+  return m.db.leiturasEmLote.filter((l) => l.campos?.includes('precos') === true);
+}
+
+type LerFamiliasImpl = (
+  db: unknown,
+  a: { readonly anchorIds: readonly string[] },
+) => Promise<ReadonlyMap<string, FamiliaDePreco>>;
+
+/**
+ * Wrap the fixture's family read: `antes` runs before it answers, `depois`
+ * after it — the moment between the plan's reads and the pool a case needs.
+ */
+function envolverLerFamilias(
+  m: Mundo,
+  ganchos: { readonly antes?: () => void; readonly depois?: () => Promise<void> },
+): void {
+  const lerFamilias = m.lerFamilias as unknown as Mock<LerFamiliasImpl>;
+  const original = lerFamilias.getMockImplementation();
+  if (original === undefined) throw new Error('fixture: leitor de famílias ausente');
+  lerFamilias.mockImplementation(async (db, a) => {
+    ganchos.antes?.();
+    const lidas = await original(db, a);
+    await ganchos.depois?.();
+    return lidas;
+  });
+}
+
+describe('enviarPrecoManualShopee — o preço é lido na hora do ENVIO, nunca no plano (C-d, L3-F1)', () => {
+  it('⚠️ PAR: a tabela alterada ENTRE o plano e o envio ⇒ o item seguinte sai com o valor NOVO', async () => {
+    const m = mundo();
+    const ids = semearAnchors(m, 2);
+    for (const id of ids) precificarNoBanco(m, id, 15);
+    m.enviar.mockImplementation((item: ItemDePreco) => {
+      // A second operator edits prod-1's tabela while prod-0 is being sent.
+      if (item.itemId === ITEM) precificarNoBanco(m, 'prod-1', 18);
+      return Promise.resolve(enviado(item));
+    });
+
+    const r = await rodar(m, ids, { lerPrecos: undefined });
+
+    expect(m.enviar.mock.calls.map((c) => [c[0].itemId, c[0].alvos[0]?.precoAlvo])).toEqual([
+      [ITEM, 15],
+      [ITEM + 1, 18],
+    ]);
+    expect(r.listings.map((l) => l.preco)).toEqual([15, 18]);
+  });
+
+  it('QUASE-IGUAL: a tabela INTACTA entre o plano e o envio ⇒ o valor planejado', async () => {
+    const m = mundo();
+    const ids = semearAnchors(m, 2);
+    for (const id of ids) precificarNoBanco(m, id, 15);
+
+    const r = await rodar(m, ids, { lerPrecos: undefined });
+
+    expect(m.enviar.mock.calls.map((c) => [c[0].itemId, c[0].alvos[0]?.precoAlvo])).toEqual([
+      [ITEM, 15],
+      [ITEM + 1, 15],
+    ]);
+    expect(r.listings.map((l) => l.preco)).toEqual([15, 15]);
+  });
+
+  it('UMA leitura de `precos` POR ITEM, mascarada, imediatamente antes do SEU envio — e nenhuma antes do plano', async () => {
+    const m = mundo();
+    const ids = semearAnchors(m, 3);
+    for (const id of ids) precificarNoBanco(m, id, 15);
+    let leiturasAntesDoPlano = -1;
+    envolverLerFamilias(m, {
+      antes: () => {
+        leiturasAntesDoPlano = leiturasDePrecos(m).length;
+      },
+    });
+    const vistasNoEnvio: string[][] = [];
+    m.enviar.mockImplementation((item: ItemDePreco) => {
+      vistasNoEnvio.push(leiturasDePrecos(m).map((l) => l.ids.join(',')));
+      return Promise.resolve(enviado(item));
+    });
+
+    await rodar(m, ids, { lerPrecos: undefined });
+
+    expect(leiturasAntesDoPlano).toBe(0);
+    expect(leiturasDePrecos(m)).toEqual([
+      { ids: ['prod-0'], campos: ['precos'] },
+      { ids: ['prod-1'], campos: ['precos'] },
+      { ids: ['prod-2'], campos: ['precos'] },
+    ]);
+    // At each send, the LAST read is that item's own — never all of them up front.
+    expect(vistasNoEnvio).toEqual([
+      ['prod-0'],
+      ['prod-0', 'prod-1'],
+      ['prod-0', 'prod-1', 'prod-2'],
+    ]);
+  });
+
+  it('um item COM modelos lê os FILHOS que o precificam (nunca a âncora), e do BANCO — não da família do plano', async () => {
+    const m = mundo();
+    semearProduto(m, ANCORA, 'Âncora');
+    m.familias.set(ANCORA, familiaComModelos()); // the plan saw 12 / 22
+    precificarNoBanco(m, FILHO_A, 13, ANCORA);
+    precificarNoBanco(m, FILHO_B, 23, ANCORA);
+
+    await rodar(m, [ANCORA], { lerPrecos: undefined });
+
+    expect(leiturasDePrecos(m)).toEqual([{ ids: [FILHO_A, FILHO_B], campos: ['precos'] }]);
+    const item = m.enviar.mock.calls[0]?.[0] as ItemDePreco;
+    expect(item.alvos.map((a) => [a.produtoId, a.precoAlvo])).toEqual([
+      [FILHO_A, 13],
+      [FILHO_B, 23],
+    ]);
+  });
+
+  it('um produto APAGADO entre o plano e o envio ⇒ `pulado preco-nao-encontrado`, sem chamada à Shopee, sem escrita e sem lançar', async () => {
+    const m = mundo();
+    precificarNoBanco(m, ANCORA, 15);
+    m.db.seed(`produtos/${ANCORA}/prodshopee/${LINK}`, { item_id: ITEM, item_status: 'NORMAL' });
+    m.familias.set(ANCORA, familiaSemModelo(ANCORA));
+    // Deleted AFTER the plan's reads, before the pool starts.
+    envolverLerFamilias(m, {
+      depois: async () => {
+        await produtoCollection.docRef(asDb(m.db), {}, ANCORA).delete();
+      },
+    });
+
+    const r = await rodar(m, [ANCORA], { lerPrecos: undefined, enviar: undefined });
+
+    expect(r.produtosSemEnvio).toEqual([]);
+    expect(r.listings).toEqual([
+      expect.objectContaining({
+        produtoId: ANCORA,
+        outcome: 'pulado',
+        motivo: MOTIVO_PRECO_SHOPEE.precoNaoEncontrado,
+        preco: null,
+      }),
+    ]);
+    expect(leiturasDePrecos(m)).toEqual([{ ids: [ANCORA], campos: ['precos'] }]);
+    expect(m.getItemBaseInfo).not.toHaveBeenCalled();
+    expect(m.updatePrice).not.toHaveBeenCalled();
+    expect(m.db.writes).toEqual([]);
+  });
+});
+
+describe('enviarPrecoManualShopee — a escada relê a base FRESCA (S4, L3-F3)', () => {
+  it('⚠️ uma escrita que POUSOU seguida de um write-back que LANÇA ⇒ a tentativa 2 relê SÓ aquele item e não envia NADA', async () => {
+    const m = mundo();
+    const [a, b] = semearAnchors(m, 2);
+    const linkDe = (id: string | undefined): string => `produtos/${String(id)}/prodshopee/${LINK}`;
+    m.db.seed(linkDe(a), { item_id: ITEM, item_status: 'NORMAL' });
+    m.db.seed(linkDe(b), { item_id: ITEM + 1, item_status: 'NORMAL' });
+    // One stateful Shopee: every listing at 10 until an update_price lands.
+    const naShopee = new Map<number, number>();
+    const baseInfo = m.getItemBaseInfo as Mock<
+      (a: { itemIds: readonly number[] }) => Promise<unknown>
+    >;
+    baseInfo.mockImplementation(({ itemIds }) =>
+      Promise.resolve({
+        item_list: itemIds.map((item_id) => {
+          const preco = naShopee.get(item_id) ?? 10;
+          return shopeeItemBaseInfoRowSchema.parse({
+            item_id,
+            item_status: 'NORMAL',
+            has_model: false,
+            price_info: [{ currency: 'BRL', original_price: preco, current_price: preco }],
+          });
+        }),
+      }),
+    );
+    const atualizar = m.updatePrice as Mock<
+      (corpo: {
+        item_id: number;
+        price_list: readonly { original_price: number }[];
+      }) => Promise<unknown>
+    >;
+    atualizar.mockImplementation((corpo) => {
+      const preco = corpo.price_list[0]?.original_price ?? 0;
+      naShopee.set(corpo.item_id, preco);
+      return Promise.resolve(
+        shopeeUpdatePriceSchema.parse({
+          request_id: 'req-1',
+          error: '',
+          message: null,
+          warning: null,
+          response: { success_list: [{ original_price: preco }], failure_list: [] },
+        }),
+      );
+    });
+    // The first item's write-back fails ONCE, after its update_price landed.
+    m.db.falhasDeUpdate.set(linkDe(a), new Error('14 UNAVAILABLE'));
+    const esperar = vi.fn(() => {
+      m.db.falhasDeUpdate.clear();
+      return Promise.resolve();
+    });
+
+    const r = await rodar(m, [a ?? '', b ?? ''], { enviar: undefined, esperar });
+
+    expect(esperar).toHaveBeenCalledTimes(1);
+    // PAR: the first attempt read through the request's batch (both ids); the
+    // retry through a FRESH one-id reader, which sees the landed 15.
+    expect(m.getItemBaseInfo.mock.calls).toEqual([
+      [{ itemIds: [ITEM, ITEM + 1] }],
+      [{ itemIds: [ITEM] }],
+    ]);
+    // QUASE-IGUAL: one update_price per listing — the retry sent NOTHING.
+    const envios = m.updatePrice.mock.calls.map((c) => (c[0] as { item_id: number }).item_id);
+    expect(envios).toEqual([ITEM, ITEM + 1]);
+    expect(r.listings.map((l) => [l.outcome, l.motivo])).toEqual([
+      ['pulado', MOTIVO_PRECO_SHOPEE.precoIgual],
+      ['enviado', null],
+    ]);
+    // `preco-igual` writes nothing: the lost write-back stays lost (rule 7).
+    expect(m.db.writes.filter((w) => w.path === linkDe(a))).toEqual([]);
+    expect(m.db.writes.map((w) => w.path)).toContain(linkDe(b));
+  });
+});
+
+describe('enviarPrecoManualShopee — o S1 da superfície MARCA o aborto (L4-F1)', () => {
+  const semLinhas = (item: ItemDePreco): ResultadoEnvioPreco => ({
+    tipo: 'enviado',
+    modelos: linhas(item, 'enviado', null).slice(0, 0),
+    chamadasShopee: 1,
+  });
+
+  it('⚠️ LARGURA 2: a violação no item 1 aborta — o item 2, ainda lendo o preço, NUNCA é enviado, e o erro sobe', async () => {
+    vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+    const m = mundo();
+    const ids = semearAnchors(m, 6);
+    m.roteiro.set(ITEM, [semLinhas]);
+    const precosReais = m.lerPrecos.getMockImplementation();
+    m.lerPrecos.mockImplementation(async (db: unknown, lidos: readonly string[]) => {
+      // Item 2's read is still in flight when item 1's rows are checked.
+      if (lidos.includes('prod-1')) await new Promise((resolve) => setTimeout(resolve, 5));
+      if (precosReais === undefined) throw new Error('fixture: leitor de preços ausente');
+      return precosReais(db, lidos);
+    });
+
+    await expect(rodar(m, ids)).rejects.toThrow('linhas incompletas');
+
+    expect(m.enviar).toHaveBeenCalledTimes(1);
+    // Item 2 DID start (it read its price); items 3..6 never did.
+    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([['prod-0'], ['prod-1']]);
+  });
+
+  it('LARGURA 2, sem atraso: no máximo o irmão JÁ em voo é enviado — os itens 3..6 nunca', async () => {
+    vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+    const m = mundo();
+    const ids = semearAnchors(m, 6);
+    m.roteiro.set(ITEM, [semLinhas]);
+
+    await expect(rodar(m, ids)).rejects.toThrow('linhas incompletas');
+
+    const enviados = m.enviar.mock.calls.map((c) => c[0].itemId);
+    expect(enviados.length).toBeLessThanOrEqual(2);
+    expect(enviados.filter((id) => id >= ITEM + 2)).toEqual([]);
+  });
+
+  it('LARGURA 2: um irmão que PAUSA enquanto o item ainda lia o preço ⇒ o item sai `nao-tentado conta-pausada`, sem chamada', async () => {
+    vi.stubEnv('SHOPEE_PRICE_MANUAL_CONCURRENCY', '2');
+    const m = mundo();
+    const ids = semearAnchors(m, 3);
+    m.roteiro.set(ITEM, [() => pausaBurst(30)]);
+    const precosReais = m.lerPrecos.getMockImplementation();
+    m.lerPrecos.mockImplementation(async (db: unknown, lidos: readonly string[]) => {
+      if (lidos.includes('prod-1')) await new Promise((resolve) => setTimeout(resolve, 5));
+      if (precosReais === undefined) throw new Error('fixture: leitor de preços ausente');
+      return precosReais(db, lidos);
+    });
+
+    const r = await rodar(m, ids);
+
+    expect(m.enviar).toHaveBeenCalledTimes(1);
+    expect(r.listings.map((l) => [l.outcome, l.motivo, l.codigo])).toEqual([
+      ['nao-tentado', 'conta-pausada', 'error_rate_limit'],
+      ['nao-tentado', 'conta-pausada', null],
+      ['nao-tentado', 'conta-pausada', null],
+    ]);
+    expect(r.pausadoAte).toBe(new Date(AGORA + 30_000).toISOString());
   });
 });

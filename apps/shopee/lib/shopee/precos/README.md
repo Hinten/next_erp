@@ -8,7 +8,7 @@ The reconciled design, the sandbox probe of 2026-09-24 and the wave reports that
 produced this folder are in the step-13 review directory named by the PR that
 closes #1521.
 
-Step 13 ships in two stacked PRs. The first — this folder's thirteen modules,
+Step 13 ships in two stacked PRs. The first — this folder's fourteen modules,
 the manual push and the CLI — is what sections 1–12 below describe. The second
 adds the account-wide job (`atualizarPrecos.ts`, its scheduler and queue, its
 routes) and sections 13–17: the job, push 22, the folder discipline, what is
@@ -22,7 +22,7 @@ reais or on production, and no staging rehearsal of the manual push has run
 yet. Every "measured" below means that probe, on an SGD shop; a fact that only a
 BR shop can settle says so where it appears.
 
-## 1. The thirteen modules, in five families
+## 1. The fourteen modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -38,7 +38,8 @@ The families are the seam, not a filing convention.
   override) and `classificarPreco.ts` (Shopee's answer → skip, refuse, end the
   run, or retry). Neither writes anything.
 - **The reads** — `descobertaPreco.ts` (the family read by anchor ids: one
-  batch key read plus one join per anchor, CLASSIC queries on purpose),
+  batch key read plus one join per anchor, CLASSIC queries on purpose; and
+  `lerPrecosDosProdutos`, the SEND-time `precos` read of named produtos),
   `leitorDeBase.ts` (the BATCHED `get_item_base_info`, one lazy call per chunk
   of up to 50 ids, reconciled by `item_id`) and `leituraPreco.ts` (the fresh
   read of one listing — `get_model_list` only when `has_model === true` — and
@@ -76,15 +77,43 @@ is a 400 carrying `limite` and `solicitados`, never a truncation), then
 sync's quota pause (409 `SHOPEE_CONTA_PAUSADA` with `pausadoAte`, before any
 Shopee call) and the conta verdict (422 `SHOPEE_PRECO_CONTA_RECUSADA`, whose
 only call is the cached `get_shop_info`). Only then the run: every child id
-resolves to its anchor (deduplicated after resolution), ONE batched base reader
-serves the whole request, a pool at `concorrenciaEnvioPrecoManual()` sends, and
-the deadline is measured on ELAPSED time. The answer is **200 whenever the run
-ran**, even when every row failed: a per-listing refusal is data. A pause or a
-conta-wide `fatal` mid-run ends the rest as `nao-tentado` rows and still answers
-200, so the rows that already landed are reported rather than lost to a 500.
+resolves to its anchor (deduplicated after resolution), the plan fixes
+IDENTITIES only, ONE batched base reader serves every first attempt, a pool at
+`concorrenciaEnvioPrecoManual()` prices and sends, and the deadline is measured
+on ELAPSED time. The answer is **200 whenever the run ran**, even when every
+row failed: a per-listing refusal is data. A pause or a conta-wide `fatal`
+mid-run ends the rest as `nao-tentado` rows and still answers 200, so the rows
+that already landed are reported rather than lost to a 500.
 The envelope says `canal: 'shopee'`; its rows are per MODEL, carry Shopee's
 `codigo` verbatim, and their `mensagem` is always `mensagemDoMotivoDePreco`'s
 sentence.
+
+⚠️ **The price is read at SEND time, never at plan time** (reconcile C-d — the
+job's drain-time rule, applied to this surface). Inside each item's pool task,
+immediately before the sender, ONE masked key read (`lerPrecosDosProdutos`)
+fetches the `precos` of exactly the produtos that price the item — the anchor
+of a no-model listing, each model's own child otherwise — and the pure
+`precificarItem` prices it. An item late in the pool is sent up to the deadline
+after the request started, and pricing every item up front made a tabela edited
+inside that window (a second operator, another tab, the job) a lost update ON
+THE WIRE: the older value overwrote the newer one at Shopee. A produto deleted
+after the plan is absent from that read and answers `preco-nao-encontrado`,
+never a throw. Every ladder attempt re-reads the prices, and a retry reads its
+listing through a FRESH one-id base reader instead of the request's memo, so an
+attempt that landed its `update_price` and then threw (a write-back blip)
+replays as `preco-igual` (S4) rather than sending again. ⚠️ The CLI's dry run
+(`ensaiarEnvioDePreco`) still prices at PLAN time from the family, so a
+rehearsal and a live run agree only while nobody edits the tabela in between.
+
+⚠️ **ACCEPTED, not fixed — the no-model comparand's window** (reconcile C-c,
+register 148). The TARGET is fresh; the CURRENT price a no-model listing is
+compared with is its row of the batched base read, which the chunk's first
+item fetches for the whole chunk, so it is up to one request old when a later
+item is decided. A Seller-Centre edit landing inside that window is judged
+against the older shelf price: the equality check can re-send a value Shopee
+already holds, and the decrease guard can let a send LOWER a price the seller
+has just raised there, with the guard ON. A has-model listing reads its model
+list per item and has no such window.
 
 ## 2. The whole item is the unit; the body is the diff
 
@@ -192,7 +221,9 @@ wrong.
 The projection reads the FIRST `price_info` entry only, carries its `currency`
 VERBATIM (the decision judges it, §5), and rounds the shelf price with
 `roundReais`: a result that is not above zero is `null`. A `null` comparand is
-what the decrease guard reads as `preco-atual-ilegivel` (§12).
+what the decrease guard reads as `preco-atual-ilegivel` (§12). On the manual
+push a no-model listing's comparand is its row of the request's batched base
+read, up to one request old — an ACCEPTED window (§1, register 148).
 
 ⚠️ **`has_promotion` is never read.** Probe **P2** measured it `true` on a
 fresh listing with no promotion at all; it is not evidence of anything (§6).
@@ -282,8 +313,10 @@ broken for the length of a promotion. The four codes that mean it (T1) are
 `error_cannt_edit_price_in_promotion`, `error_in_item_promotion_item_price_lock`,
 `error_cannot_update_price_in_promotion` and
 `error_related_product_in_promotion`, plus the free-text needle `promotion` in
-a per-model reason; which promotion produces which code is not documented
-anywhere (register 134, needs a BR shop with a live Seller Discount).
+a per-model reason (and a generic per-model reason under one of those four
+top-level codes reads as the lock too, §8); which promotion produces which
+code is not documented anywhere (register 134, needs a BR shop with a live
+Seller Discount).
 
 Two neighbours that are not promotions:
 
@@ -366,9 +399,11 @@ Two measured shapes say the same thing from opposite ends:
 - **P9** — one valid and one bogus model: **HTTP 200, `error: ''`**, one
   `success_list` row and one `failure_list` row, the valid model applied and
   the sibling intact. A clean envelope is not a clean write.
-- **P4c-bogus / P10** — a bogus model on a no-model item: the top-level
+- **P4c-bogus** — a bogus model on a no-model item: the top-level
   `product.error_update_price_fail` **AND** a populated `failure_list`. The
-  envelope error COEXISTS with the lists.
+  envelope error COEXISTS with the lists. (P10 — every model bogus on a
+  HAS-model item — recorded only the top-level code; the coexistence is
+  P4c-bogus's alone.)
 
 So `updatePrice` became the SECOND operation in the package to carry
 `payloadNoErro: true` (the source-count pin went from 1 to 2): an error envelope
@@ -398,10 +433,18 @@ the table calls `fatal` or transient becomes an UNSTAMPED refusal row — the
 call already landed its other models, and a pause would drop their
 write-backs); one answered in `success_list` is accepted, pending §9; one named
 in neither takes the top-level code's classification when the call threw, else
-`modelo-sem-resposta`. A model Shopee both echoed and refused is never recorded
-as sent. The item: any `falha` row ⇒ `falha` (`envio-parcial` when at least one
-model was accepted); no `falha` and nothing accepted ⇒ `pulado`; otherwise
-`enviado`.
+`modelo-sem-resposta`. ⚠️ A per-model reason the table does NOT know (T14 — a
+generic `"fail"`, or an empty reason) says nothing about WHY, so when the call
+also threw a top-level code the table DOES know, the row takes that top-level
+reading instead: a promotion lock stays an unstamped `bloqueado-por-promocao`
+skip, and the catch-all stays `preco-recusado` stamped under Shopee's top-level
+code verbatim. The free text survives as the row's code only when the
+top-level reading carries none, and a KNOWN per-model reason (T4's
+`model ID not exist in sku`) still wins over any top-level code — it names THIS
+model, the top-level code names the call. A model Shopee both echoed and
+refused is never recorded as sent. The item: any `falha` row ⇒ `falha`
+(`envio-parcial` when at least one model was accepted); no `falha` and nothing
+accepted ⇒ `pulado`; otherwise `enviado`.
 
 ⚠️ **The pre-wire checks are the operator's only reason.** Because
 `error_update_price_fail` is Shopee's single answer for several causes, the
@@ -483,12 +526,21 @@ only caller; nothing here writes `item_status` or `estadoAnuncio`.
   attribute the seller's price to us.
 
 **Rule 7: tier 0, by design.** None of the ten fields is ever read to DECIDE a
-send — the sender decides from a FRESH Shopee read every time — so a lost race
-(the manual push and the job on one item, two operators, a retry) leaves at
-worst a stale diagnostic the next send overwrites. No transaction, no
-precondition, no inventory row. The accepted residual (register 147): a crash
-between an accepted write and its write-back replays as `preco-igual`, writes no
-success stamp for it, and under-reports at most that one item.
+send — the sender decides from Shopee's own reading of the listing, taken for
+that send (a no-model listing's base row is the request's batch, §1) — so no
+transaction, no precondition, no inventory row. What a lost race (the manual
+push and the job on one item, two operators, a retry) CAN leave is a stale
+diagnostic, and it stays stale until the next send that CHANGES the price: a
+`preco-igual` send writes nothing, so a late success pair (15 landing after a
+newer send of 12 already did) stands for as long as the price holds. ⚠️ The
+item's refusal fields are cleared by a `null` write, not expired by a stamp, so
+a refusal that lands after a newer clean clear stands beside the newer
+`precoEnviadoEm`: step 21's reader must show the item's refusal only while
+`precoRecusaEm >= (precoEnviadoEm ?? 0)` — the child rows' rule above, which
+survives this race where the `null` clear does not. The accepted residual
+(register 147): a crash between an accepted write and its write-back replays as
+`preco-igual`, writes no success stamp for it, and under-reports at most that
+one item.
 
 `ultimaModificacao` rides every write in ms; on these docs it is an UNDECLARED
 pass-through with mixed legacy shapes (register 141).

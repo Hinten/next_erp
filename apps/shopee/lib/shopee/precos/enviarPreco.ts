@@ -60,7 +60,16 @@
  *    reason the table calls `fatal` or `transitorio` becomes an UNSTAMPED
  *    refusal row (the conta-wide motivo, or `modelo-sem-resposta`): the call
  *    already landed its other models, and a pause or a fatal would drop their
- *    write-backs on the floor;
+ *    write-backs on the floor.
+ *    ⚠️ A reason the table does NOT know (T14 — a generic `"fail"`, or no
+ *    text at all) says nothing about WHY. When the call also threw a
+ *    top-level code the table DOES know, the row takes that top-level reading
+ *    instead (case 3's), so a promotion lock stays a skip that stamps nothing
+ *    and the catch-all stays `preco-recusado` under Shopee's verbatim code;
+ *    the free text survives as the row's code only when the top-level reading
+ *    carries none. A KNOWN per-model reason (T4's `model ID not exist in sku`)
+ *    still wins over any top-level code — it names THIS model, the top-level
+ *    code names the call;
  * 2. answered in `success_list` ⇒ accepted, pending G11;
  * 3. named in neither ⇒ the TOP-LEVEL code's classification when the call
  *    threw (a partial, or a plain refusal with no lists at all — then every
@@ -107,9 +116,15 @@
  *   Centre edit, and stamping it would attribute it to us), a promotion or
  *   slash-sale lock, an echo mismatch, a skip, a pause, a fatal, a rethrow.
  *
- * Rule 7: none of these fields is ever read to decide a send (the fresh read
- * is the authority), so a lost race leaves a stale diagnostic the next send
- * overwrites — tier (0) by design, `./linkPreco` states it.
+ * Rule 7: none of these fields is ever read to decide a send (Shopee's own
+ * reading is the authority) — tier (0) by design, and `./linkPreco` states the
+ * whole of it. What a lost race CAN leave is a stale diagnostic, and it stays
+ * stale until the next send that CHANGES the price: a `preco-igual` send
+ * writes nothing. The item's refusal fields are cleared by a `null` write, not
+ * expired by a stamp, so a refusal that lands after a newer clean clear stands
+ * beside the newer `precoEnviadoEm` — the step-21 reader shows the item's
+ * refusal only while `precoRecusaEm >= (precoEnviadoEm ?? 0)`, the rule that
+ * survives this race where the `null` clear does not.
  *
  * ## What it never does
  *
@@ -464,6 +479,10 @@ function veredictoDoErro(err: unknown, nowMs: number, comListas: boolean): Vered
     // ⚠️ The KIND first: the transport builds this class INSTEAD of the
     // throttle / reauth subclass whenever the body re-parses.
     if (err.kind === SHOPEE_ERROR_KIND.burst || err.kind === SHOPEE_ERROR_KIND.daily) {
+      // `null` because there is none to pass: the transport copies no
+      // `Retry-After` onto the partial class, so a throttle whose body carried
+      // a `response` object (even `{}`) loses the header and pauses on the
+      // surface's own default.
       return pausaDoLimite(err.kind, err.code, null, nowMs);
     }
     if (err.kind === SHOPEE_ERROR_KIND.reauth) {
@@ -587,7 +606,22 @@ function recusaNaLeitura(ctx: Contexto, v: Topo): Promise<ResultadoEnvioPreco> {
 /*                               THE ATTRIBUTION                               */
 /* -------------------------------------------------------------------------- */
 
-/** One sent model refused by name in `failure_list` — its own reason, through the table. */
+/** T14 — the table's answer to a text nobody taught it (`classificarPreco.ts`). */
+function ehRecusaDesconhecida(classe: ClassePreco): boolean {
+  return classe.classe === 'falhar' && classe.motivo === MOTIVO_PRECO_SHOPEE.recusaDesconhecida;
+}
+
+/**
+ * One sent model refused by name in `failure_list` — its own reason, through
+ * the table.
+ *
+ * ⚠️ Unless the table does not know that reason (T14) and the call threw a
+ * top-level code it DOES know: then the top-level reading speaks for the row
+ * ({@link daRecusaDoTopo}), with the reason kept as evidence only where that
+ * reading carries no code. Without this, a promotion lock sent with the lists
+ * and a generic `"fail"` row would stamp a healthy listing for the length of
+ * the promotion (review L1-1). A KNOWN reason still wins over any top-level code.
+ */
 function daRecusaDoModelo(
   linha: LinhaModeloPreco,
   razao: string | null,
@@ -596,6 +630,9 @@ function daRecusaDoModelo(
   const texto = razao ?? '';
   const classe = classificarCodigoDePreco(texto, '', SHOPEE_ERROR_KIND.other);
   const codigo = texto === '' ? null : texto;
+  if (ehRecusaDesconhecida(classe) && topo !== null && !ehRecusaDesconhecida(topo.classe)) {
+    return daRecusaDoTopo(linha, topo, codigo);
+  }
   switch (classe.classe) {
     case 'pular':
       return {
@@ -607,7 +644,8 @@ function daRecusaDoModelo(
       return {
         linha: reescrever(linha, ENVIO_PRECO_RESULTADO.falha, classe.motivo, codigo),
         enviada: true,
-        // A reason with no text is stamped under the call's own code, or ours.
+        // A reason with no text is stamped under the call's own code (an
+        // unknown one here — a known one took the branch above), or ours.
         carimbo: carimboSe(classe.motivo, {
           codigo: codigo ?? topo?.codigo ?? codigoDoErpDePreco(classe.motivo),
           mensagem: null,
@@ -636,20 +674,30 @@ function daRecusaDoModelo(
   }
 }
 
-/** One sent model no list names, under a thrown refusal: the top-level reading. */
-function daRecusaDoTopo(linha: LinhaModeloPreco, topo: Topo): LinhaAtribuida {
+/**
+ * One sent model under a thrown refusal's top-level reading — a model no list
+ * names, or one whose own reason the table does not know. `evidencia` is that
+ * unknown reason: it becomes the row's code (and its stamp's) only when the
+ * top-level reading carries no code of its own.
+ */
+function daRecusaDoTopo(
+  linha: LinhaModeloPreco,
+  topo: Topo,
+  evidencia: string | null = null,
+): LinhaAtribuida {
   const { classe } = topo;
+  const codigo = topo.codigo === '' && evidencia !== null ? evidencia : topo.codigo;
   if (classe.classe === 'pular') {
     return {
-      linha: reescrever(linha, ENVIO_PRECO_RESULTADO.pulado, classe.motivo, topo.codigo),
+      linha: reescrever(linha, ENVIO_PRECO_RESULTADO.pulado, classe.motivo, codigo),
       enviada: true,
       carimbo: null,
     };
   }
   return {
-    linha: reescrever(linha, ENVIO_PRECO_RESULTADO.falha, classe.motivo, topo.codigo),
+    linha: reescrever(linha, ENVIO_PRECO_RESULTADO.falha, classe.motivo, codigo),
     enviada: true,
-    carimbo: carimboSe(classe.motivo, { codigo: topo.codigo, mensagem: topo.mensagem }),
+    carimbo: carimboSe(classe.motivo, { codigo, mensagem: topo.mensagem }),
   };
 }
 

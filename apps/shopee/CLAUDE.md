@@ -431,18 +431,17 @@ a page of the 3-day queue irreversibly.
   step-9 path, `publicar-anuncio.ts` (step 11) publishes ONE named produto as a
   listing, `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
   produtos and `enviar-precos.ts` (step 13) their prices; the last eight
-  **dry-run by default**, `--live` to write. Their
-  pure halves
-  (arg parsing, the redacted summary, the renderer, the error describer) live in
+  **dry-run by default**, `--live` to write. Their pure halves (arg parsing,
+  the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
   `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts` and
   `lib/shopee/pedidos/varrerReservasCli.ts`,
   `lib/shopee/produtos/importarAnuncioCli.ts`,
-  `lib/shopee/anuncios/publicarAnuncioCli.ts` and
-  `lib/shopee/estoque/enviarEstoqueCli.ts`
-  **because `scripts/` is outside
-  this app's vitest `include`**, so logic written in a script file can never be
+  `lib/shopee/anuncios/publicarAnuncioCli.ts`,
+  `lib/shopee/estoque/enviarEstoqueCli.ts` and
+  `lib/shopee/precos/enviarPrecoCli.ts` **because `scripts/` is outside this
+  app's vitest `include`**, so logic written in a script file can never be
   tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
   Script-only, imported by no route and no bundle.
 

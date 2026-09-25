@@ -13,8 +13,9 @@
  *  - **One sender.** Every item goes through `enviarPrecoDoItem` verbatim: the
  *    fresh read, the decision, the wire, the attribution, the verification and
  *    every link write-back live there. This module owns the RUN around it — the
- *    child → anchor resolution, the plan, the ONE batched base reader, the
- *    pool, the deadline, the retry ladder, the aborts — and the ACCOUNTING.
+ *    child → anchor resolution, the plan (identities), the send-time price
+ *    read, the ONE batched base reader, the pool, the deadline, the retry
+ *    ladder, the aborts — and the ACCOUNTING.
  *  - **The conta verdict is the CALLER's.** The deps carry the branded
  *    `ContextoContaPreco`, which only `avaliarContaParaPreco` can produce, so
  *    this module cannot be called for a conta the ERP refuses to price; the
@@ -28,6 +29,39 @@
  * (a child and its own anchor in one request cost one family, one plan, one
  * send per listing). Rows always name the ANCHOR in `produtoId` and the child
  * whose price a model carries in `variacaoProdutoId`.
+ *
+ * ## ⚠️ The price is read at SEND time, never at plan time (reconcile C-d)
+ *
+ * The plan carries IDENTITIES only — anchor, listing, `item_id`, models. Each
+ * item's price is read inside its pool task, immediately before the sender
+ * runs: ONE masked key read (`lerPrecosDosProdutos`) of exactly the produtos
+ * that price it — the anchor of a no-model listing, each model's own child
+ * otherwise — handed to the pure `precificarItem`. That is the job's
+ * drain-time rule, applied to this surface. An item late in the pool is sent up
+ * to the deadline after the request started, and pricing every item up front
+ * made a tabela edited inside that window (a second operator, another tab, the
+ * job) a lost update ON THE WIRE: the older value overwrote the newer one at
+ * Shopee — and when the newer one was a decrease the operator had authorised,
+ * the default push (guard ON) then refused to lower it again. A produto deleted
+ * after the plan is simply absent from that read: its models carry no price
+ * and answer `preco-nao-encontrado`, never a throw.
+ *
+ * Every ladder attempt re-reads, so a retry sends the tabela as it stands at
+ * the retry. After a first attempt's read, and before any Shopee call, the task
+ * checks the abort flags again: a sibling may have thrown, paused or hit a
+ * fatal while the read was in flight, and an item that has not called Shopee
+ * yet answers `nao-tentado` like every item that had not started.
+ *
+ * ⚠️ **ACCEPTED, not fixed — the no-model comparand's window** (reconcile C-c,
+ * register 148). A no-model listing's CURRENT price comes from the batched base
+ * row below, and the first item of a chunk reads it for the whole chunk, so it
+ * is up to one request old when a later item is decided. The TARGET is fresh;
+ * the shelf price it is compared with is not. Consequence: a Seller-Centre edit
+ * landing inside the window is judged against the older shelf price — the
+ * equality check can re-send a value Shopee already holds, and the decrease
+ * guard can let a send LOWER a price the seller has just raised there, with the
+ * guard ON. A has-model listing reads its model list per item and has no such
+ * window.
  *
  * ## One base read per request
  *
@@ -67,10 +101,36 @@
  * misconfiguration (`ShopeeConfigError`), a conta-level guard, and a rate
  * limit — hammering a throttled conta is the one thing this must never do.
  *
+ * ⚠️ A retry reads the listing through a FRESH one-id base reader
+ * (`criarLeitorDeBaseEmLote(client, [itemId])`), never the request's memo. An
+ * attempt that landed its `update_price` and THEN threw (a write-back blip)
+ * left the memo holding the PRE-write row, and a retry judged against it would
+ * send again — a wasted per-APPLICATION call, and contract S4 ("a replay of a
+ * landed send is `pulado preco-igual`") broken inside one request. The fresh
+ * read sees the landed price and answers `preco-igual`, which writes nothing:
+ * the lost write-back stays lost until the next send that CHANGES the price
+ * (rule 7, below).
+ *
  * After the ladder: a guard error and a config error ABORT and propagate (the
  * route maps them); any other Shopee error becomes that item's rows `falha
  * recusa-desconhecida` with Shopee's code verbatim; anything else aborts and
- * propagates (a 500 — rule 6).
+ * propagates (a 500 — rule 6). Every rethrow sets the abort flag FIRST — the
+ * surface's own S1 check included — which is the pool's contract: once one
+ * task has thrown, no sibling that has not called Shopee yet does.
+ *
+ * ## Rule 7 — what a lost race costs here
+ *
+ * The WIRE write: the target is read at send time (above), so a concurrent
+ * tabela edit reaches Shopee at its NEW value; the window left is one item's
+ * read-to-wire interval, plus the accepted no-model comparand window above. The
+ * LINK diagnostics the sender writes are tier (0): no field of them decides a
+ * send, so a lost race leaves a stale diagnostic — stale until the next send
+ * that CHANGES the price, because a `preco-igual` send writes nothing (S4). The
+ * item's refusal fields are cleared by a null write, not expired by a stamp,
+ * so a refusal that lands after a clean clear stays beside a newer
+ * `precoEnviadoEm`: step 21's reader must show the item's refusal only while
+ * `precoRecusaEm >= (precoEnviadoEm ?? 0)` — a comparison that survives this
+ * race where the null-clear does not.
  *
  * ## ⚠️ THE ACCOUNTING INVARIANT
  *
@@ -102,7 +162,7 @@ import {
   concorrenciaEnvioPrecoManual,
   manualDeadlineMsPreco,
 } from './constantesPreco';
-import { lerFamiliasDePrecoPorIds } from './descobertaPreco';
+import { lerFamiliasDePrecoPorIds, lerPrecosDosProdutos } from './descobertaPreco';
 import {
   conferirCompletudeDoItemDePreco,
   enviarPrecoDoItem,
@@ -114,12 +174,12 @@ import {
   mensagemDoMotivoDePreco,
   type MotivoPrecoShopee,
 } from './errosPreco';
-import { criarLeitorDeBaseEmLote } from './leitorDeBase';
+import { criarLeitorDeBaseEmLote, type LeitorDeBase } from './leitorDeBase';
 import {
   montarItensDePreco,
   precificarItem,
-  precosDaFamilia,
   type ItemDePreco,
+  type ItemPlanejadoPreco,
   type PuloDePlano,
 } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
@@ -271,6 +331,8 @@ export interface DepsEnvioPrecoManual {
   readonly contaNome: string | null;
   /** Injectable so tests never need the real subcollection reads. */
   readonly lerFamilias?: typeof lerFamiliasDePrecoPorIds;
+  /** The SEND-time `precos` read. Injectable so a test can move a tabela between the plan and the send. */
+  readonly lerPrecos?: typeof lerPrecosDosProdutos;
   /** Injectable so tests never need the real sender. */
   readonly enviar?: typeof enviarPrecoDoItem;
 }
@@ -416,24 +478,27 @@ function nomeDoErro(err: unknown): string {
 }
 
 /**
- * The bounded inline ladder around the sender. `deveParar` is read before a
- * retry: once a sibling aborted the run, a second attempt would spend a call on
- * a conta whose answer is already decided, so the last error stands.
+ * The bounded inline ladder around one item's read-price-and-send.
+ * `executar` receives the attempt number (1-based), so an attempt after the
+ * first can refuse the request's memoised base reader (module docblock).
+ * `deveParar` is read before a retry: once a sibling aborted the run, a second
+ * attempt would spend a call on a conta whose answer is already decided, so the
+ * last error stands.
  */
-async function enviarComLadder(
-  item: ItemDePreco,
-  executar: () => Promise<ResultadoEnvioPreco>,
+async function enviarComLadder<T>(
+  itemId: number,
+  executar: (tentativa: number) => Promise<T>,
   esperar: (ms: number) => Promise<void>,
   deveParar: () => boolean,
-): Promise<ResultadoEnvioPreco> {
+): Promise<T> {
   for (let tentativa = 1; ; tentativa += 1) {
     try {
-      return await executar();
+      return await executar(tentativa);
     } catch (err) {
       const ultima = tentativa >= ENVIO_PRECO_MANUAL_MAX_TENTATIVAS;
       if (ultima || !podeRepetir(err) || deveParar()) throw err;
       console.warn(`${TAG_LOG}: tentativa ${String(tentativa)} lançou; repetindo`, {
-        itemId: item.itemId,
+        itemId,
         erro: nomeDoErro(err),
       });
       await esperar(ENVIO_PRECO_MANUAL_RETRY_DELAY_MS);
@@ -453,6 +518,39 @@ function fimDaPausa(
   // A burst: Shopee's Retry-After when it sent one, else the SAME pause the
   // stock sync applies to the same per-application limiter.
   return nowMs + (r.retryAfterSeconds ?? ratePauseMin() * SEGUNDOS_POR_MINUTO) * MS_POR_SEGUNDO;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             the send-time price                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The produtos whose `precos` price a planned item — exactly
+ * `precificarItem`'s sources: the ANCHOR of a no-model listing, each model's
+ * own CHILD otherwise (a model is never priced from the anchor, so the anchor
+ * is not read for one).
+ */
+function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
+  return item.modelos.length === 0 ? [item.produtoId] : item.modelos.map((m) => m.produtoId);
+}
+
+/** No `precos` at all — every alvo prices as `null`. */
+const SEM_PRECOS: ReadonlyMap<string, unknown> = new Map();
+
+/**
+ * The item's alvos with NO price — the row shape of an item that never reached
+ * the sender (a deadline, an abort, a throw). Built by the SAME pure function
+ * that prices a sent item, so the alvos of a row never depend on how the item
+ * ended; the rows it feeds carry no price.
+ */
+function alvosSemPreco(item: ItemPlanejadoPreco, tabelaId: string): ItemDePreco {
+  return precificarItem(item, SEM_PRECOS, tabelaId);
+}
+
+/** One attempt that reached the sender: the item as priced for THAT attempt, and its answer. */
+interface EnvioDoItem {
+  readonly item: ItemDePreco;
+  readonly r: ResultadoEnvioPreco;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -582,16 +680,24 @@ function montarResposta(
 /*                                   the run                                   */
 /* -------------------------------------------------------------------------- */
 
-/** One planned unit, in the envelope's order: rows already final, or an item to send. */
+/**
+ * One planned unit, in the envelope's order: rows already final, or an item to
+ * price and send — IDENTITIES only; its price is read in its pool task.
+ */
 type Entrada =
   | { readonly tipo: 'linhas'; readonly linhas: readonly EnvioPrecoListing[] }
-  | { readonly tipo: 'item'; readonly item: ItemDePreco; readonly produtoNome: string | null };
+  | {
+      readonly tipo: 'item';
+      readonly item: ItemPlanejadoPreco;
+      readonly produtoNome: string | null;
+    };
 
 /**
  * **The manual price push.** See the module docblock for the shape; the steps
  * are: dedupe → read the requested produtos (name + `paiId`) → resolve each to
- * its anchor → discover the families → plan and price → ONE batched base
- * reader → the pool (deadline, ladder, aborts) → the accounting → the envelope.
+ * its anchor → discover the families → plan (identities) → ONE batched base
+ * reader → the pool (deadline, then per item: read its `precos`, price it,
+ * send it, through the ladder; aborts) → the accounting → the envelope.
  *
  * @throws ShopeeConfigError over {@link SHOPEE_ENVIO_PRECO_MAX_PRODUTOS} (the
  *   route refuses first, with the numbers) or on a context of another conta.
@@ -602,7 +708,9 @@ export async function enviarPrecoManualShopee(
   deps: DepsEnvioPrecoManual,
 ): Promise<EnvioPrecoResponse> {
   const lerFamilias = deps.lerFamilias ?? lerFamiliasDePrecoPorIds;
+  const lerPrecos = deps.lerPrecos ?? lerPrecosDosProdutos;
   const enviar = deps.enviar ?? enviarPrecoDoItem;
+  const tabelaId = deps.contexto.tabelaNormalId;
 
   const solicitados = [...new Set(args.produtoIds)];
   // ⚠️ Asserted, not enforced: the route refuses an oversize selection first,
@@ -666,7 +774,8 @@ export async function enviarPrecoManualShopee(
     solicitados.filter((id) => anchorDe.get(id) === anchor);
 
   // --- the plan, in REQUEST order, so the rows come back in the operator's order
-  // however the pool interleaves the sends.
+  // however the pool interleaves the sends. IDENTITIES only: the family's own
+  // `precos` price nothing here — each item is priced in its pool task.
   const entradas: Entrada[] = [];
   for (const anchor of anchors) {
     const familia = familias.get(anchor);
@@ -694,13 +803,8 @@ export async function enviarPrecoManualShopee(
     const nome = nomeDoAnchor(anchor);
     for (const pulo of plano.pulos)
       entradas.push({ tipo: 'linhas', linhas: linhasDoPulo(pulo, nome) });
-    const precos = precosDaFamilia(familia);
     for (const planejado of plano.itens) {
-      entradas.push({
-        tipo: 'item',
-        item: precificarItem(planejado, precos, deps.contexto.tabelaNormalId),
-        produtoNome: nome,
-      });
+      entradas.push({ tipo: 'item', item: planejado, produtoNome: nome });
     }
   }
 
@@ -725,47 +829,77 @@ export async function enviarPrecoManualShopee(
   let lancou = false;
   let pausadoAteMs: number | null = null;
 
+  /**
+   * One attempt: read the item's `precos` NOW, price it, and send it (the
+   * module docblock's C-d rule). `null` = the run was aborted while a FIRST
+   * attempt's read was in flight, so no Shopee call was made for this item.
+   * An attempt after the first reads the listing through a FRESH one-id base
+   * reader, never the request's memo (S4 inside the ladder).
+   */
+  const lerPrecificarEnviar = async (
+    planejado: ItemPlanejadoPreco,
+    tentativa: number,
+  ): Promise<EnvioDoItem | null> => {
+    const precos = await lerPrecos(db, produtosQuePrecificam(planejado));
+    if (tentativa === 1 && (lancou || motivoDoAborto !== null)) return null;
+    const item = precificarItem(planejado, precos, tabelaId);
+    const leitor: LeitorDeBase =
+      tentativa === 1 ? lerBase : criarLeitorDeBaseEmLote(deps.contexto.client, [planejado.itemId]);
+    const r = await enviar(item, {
+      db,
+      conta: deps.contexto,
+      nowMs: deps.nowMs,
+      baixarPreco: args.baixarPreco,
+      lerBase: leitor,
+    });
+    return { item, r };
+  };
+
   await executarEmPool(paraEnviar, concorrenciaEnvioPrecoManual(), async (entrada) => {
-    const { item, produtoNome, indice } = entrada;
+    const { item: planejado, produtoNome, indice } = entrada;
     // A sibling threw: the response is already lost, spend nothing more.
     if (lancou) return;
 
-    if (motivoDoAborto !== null) {
+    // Rows for this item when the sender produced none — not attempted, a
+    // pause, a fatal, a thrown Shopee error: one per alvo, no price.
+    const linhasSemRemetente = (
+      outcome: EnvioPrecoOutcome,
+      motivo: MotivoPrecoShopee,
+      codigo: string | null,
+    ): void => {
       resolvidas[indice] = linhasDoItem(
-        item,
+        alvosSemPreco(planejado, tabelaId),
         produtoNome,
-        ENVIO_PRECO_RESULTADO.naoTentado,
-        motivoDoAborto,
-        null,
+        outcome,
+        motivo,
+        codigo,
       );
+    };
+
+    if (motivoDoAborto !== null) {
+      linhasSemRemetente(ENVIO_PRECO_RESULTADO.naoTentado, motivoDoAborto, null);
       return;
     }
     if (deps.agora() - inicioMs > orcamentoMs) {
-      resolvidas[indice] = linhasDoItem(
-        item,
-        produtoNome,
-        ENVIO_PRECO_RESULTADO.naoTentado,
-        MOTIVO_PRECO_SHOPEE.tempoEsgotado,
-        null,
-      );
+      linhasSemRemetente(ENVIO_PRECO_RESULTADO.naoTentado, MOTIVO_PRECO_SHOPEE.tempoEsgotado, null);
       return;
     }
 
-    let r: ResultadoEnvioPreco;
+    let envio: EnvioDoItem | null;
     try {
-      r = await enviarComLadder(
-        item,
-        () =>
-          enviar(item, {
-            db,
-            conta: deps.contexto,
-            nowMs: deps.nowMs,
-            baixarPreco: args.baixarPreco,
-            lerBase,
-          }),
+      envio = await enviarComLadder(
+        planejado.itemId,
+        (tentativa) => lerPrecificarEnviar(planejado, tentativa),
         deps.esperar,
         () => lancou || motivoDoAborto !== null,
       );
+      // S1 again, at the surface: an injected or future sender that dropped a
+      // row would otherwise make a model vanish from the envelope. ⚠️ INSIDE the
+      // try, so a violation sets the abort flag like every other rethrow — out
+      // here it let every sibling keep sending into a request that 500s.
+      if (envio !== null && envio.r.tipo !== 'pausa' && envio.r.tipo !== 'fatal') {
+        conferirCompletudeDoItemDePreco(envio.item, envio.r.modelos);
+      }
     } catch (err) {
       // ⚠️ The guard class FIRST (reconcile D-6): it extends the package's base,
       // and the generic arm below would turn a conta-level refusal into one
@@ -775,9 +909,7 @@ export async function enviarPrecoManualShopee(
         throw err;
       }
       if (err instanceof ShopeeError) {
-        resolvidas[indice] = linhasDoItem(
-          item,
-          produtoNome,
+        linhasSemRemetente(
           ENVIO_PRECO_RESULTADO.falha,
           MOTIVO_PRECO_SHOPEE.recusaDesconhecida,
           err instanceof ShopeeApiError ? err.code : null,
@@ -788,13 +920,20 @@ export async function enviarPrecoManualShopee(
       throw err;
     }
 
+    if (envio === null) {
+      // Aborted during the price read: not attempted, like every item that had
+      // not started. (A sibling's THROW leaves no row — the response is lost.)
+      if (motivoDoAborto !== null)
+        linhasSemRemetente(ENVIO_PRECO_RESULTADO.naoTentado, motivoDoAborto, null);
+      return;
+    }
+
+    const { item, r } = envio;
     if (r.tipo === 'pausa') {
       motivoDoAborto ??= MOTIVO_PRECO_SHOPEE.contaPausada;
       const fim = fimDaPausa(r, deps.nowMs);
       pausadoAteMs = pausadoAteMs === null ? fim : Math.max(pausadoAteMs, fim);
-      resolvidas[indice] = linhasDoItem(
-        item,
-        produtoNome,
+      linhasSemRemetente(
         ENVIO_PRECO_RESULTADO.naoTentado,
         MOTIVO_PRECO_SHOPEE.contaPausada,
         r.codigo,
@@ -810,19 +949,10 @@ export async function enviarPrecoManualShopee(
         itemId: item.itemId,
         erro: r.erro,
       });
-      resolvidas[indice] = linhasDoItem(
-        item,
-        produtoNome,
-        ENVIO_PRECO_RESULTADO.naoTentado,
-        r.motivo,
-        null,
-      );
+      linhasSemRemetente(ENVIO_PRECO_RESULTADO.naoTentado, r.motivo, null);
       return;
     }
 
-    // S1 again, at the surface: an injected or future sender that dropped a
-    // row would otherwise make a model vanish from the envelope.
-    conferirCompletudeDoItemDePreco(item, r.modelos);
     resolvidas[indice] = paraListagensDePreco(item, r, produtoNome);
   });
 

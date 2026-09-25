@@ -1090,6 +1090,195 @@ describe('enviarPrecoDoItem — G10, a atribuição por modelo', () => {
   });
 });
 
+/**
+ * Review L1-1: a `failure_list` reason the table does NOT know (T14 — the
+ * page's own sample `"fail"`, or an empty reason) says nothing about WHY, so a
+ * KNOWN top-level code thrown with the lists speaks for that row. The fold
+ * here is "which reading wins": the pairs must come out equal to the plain
+ * (list-less) refusal; the near-misses — a KNOWN reason, an UNKNOWN top-level
+ * code — must keep the row's own reason.
+ */
+describe('enviarPrecoDoItem — a razão DESCONHECIDA de um modelo cede ao código CONHECIDO do topo (L1-1)', () => {
+  const PROMOCAO = 'product.error_cannot_update_price_in_promotion';
+  const TRAVA_DE_PRECO = 'product.error_in_item_promotion_item_price_lock';
+
+  it.each([
+    [
+      'o código de promoção COM listas e a razão genérica `"fail"`',
+      () => parcial(PROMOCAO, { falhas: [[MODELO_A, 'fail']] }),
+      PROMOCAO,
+    ],
+    [
+      'o código de promoção COM listas e a razão VAZIA',
+      () => parcial(PROMOCAO, { falhas: [[MODELO_A, '']] }),
+      PROMOCAO,
+    ],
+    [
+      'a trava de preço da promoção COM listas e `"fail"`',
+      () => parcial(TRAVA_DE_PRECO, { falhas: [[MODELO_A, 'fail']] }),
+      TRAVA_DE_PRECO,
+    ],
+    [
+      'o MESMO código de promoção SEM listas (o teste 23)',
+      () => erroShopee(PROMOCAO, 'locked'),
+      PROMOCAO,
+    ],
+  ])(
+    '32c — ⚠️ PAR: %s ⇒ `pulado bloqueado-por-promocao` com o código do TOPO na linha e ZERO escrita — um anúncio saudável nunca é carimbado pela duração da promoção',
+    async (_nome, resposta, codigoDoTopo) => {
+      const c = cenarioComModelos({ updatePrice: [resposta()] });
+
+      const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+      expect(r).toMatchObject({ tipo: 'pulado', motivo: 'bloqueado-por-promocao' });
+      expect(linhaDe(r, MODELO_A)).toEqual(
+        expect.objectContaining({
+          resultado: 'pulado',
+          motivo: 'bloqueado-por-promocao',
+          codigo: codigoDoTopo,
+        }),
+      );
+      expect(c.db.writes).toEqual([]);
+    },
+  );
+
+  it.each([
+    [
+      'COM listas e a razão genérica `"fail"`',
+      () => parcial(CODIGO_RECUSADO, { falhas: [[MODELO_A, 'fail']] }),
+    ],
+    ['COM listas e a razão VAZIA', () => parcial(CODIGO_RECUSADO, { falhas: [[MODELO_A, '']] })],
+    ['SEM listas (o teste 16)', () => erroShopee(CODIGO_RECUSADO)],
+  ])(
+    '32d — ⚠️ PAR: `product.error_update_price_fail` %s ⇒ `falha preco-recusado`, o filho e o item carimbados com o código VERBATIM do TOPO e a frase da Shopee',
+    async (_nome, resposta) => {
+      const erro = resposta();
+      const c = cenarioComModelos({ updatePrice: [erro] });
+
+      const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+      expect(r).toMatchObject({
+        tipo: 'falha',
+        motivo: 'preco-recusado',
+        codigo: CODIGO_RECUSADO,
+        mensagem: erro.message,
+        carimbado: true,
+      });
+      expect(linhaDe(r, MODELO_A)).toMatchObject({
+        resultado: 'falha',
+        motivo: 'preco-recusado',
+        codigo: CODIGO_RECUSADO,
+      });
+      expect(caminhosEscritos(c.db)).toEqual([CAMINHO_VAR_A, CAMINHO_LINK]);
+      expect(unicoPatch(c.db, CAMINHO_VAR_A)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: CODIGO_RECUSADO,
+        ultimaModificacao: AGORA_MS,
+      });
+      expect(unicoPatch(c.db, CAMINHO_LINK)).toEqual({
+        precoRecusaEm: AGORA_MS,
+        precoRecusaCodigo: CODIGO_RECUSADO,
+        precoRecusaMotivo: 'preco-recusado',
+        precoRecusaMensagem: erro.message,
+        ultimaModificacao: AGORA_MS,
+      });
+    },
+  );
+
+  it('32e — ⛔ QUASE-IGUAL: uma razão CONHECIDA (`model ID not exist in sku`) sob o MESMO código do topo ainda vence ⇒ `modelo-invalido` no filho, carimbado com a razão', async () => {
+    const c = cenarioComModelos({
+      updatePrice: [parcial(CODIGO_RECUSADO, { falhas: [[MODELO_A, RAZAO_MODELO_INEXISTENTE]] })],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'modelo-invalido',
+      codigo: RAZAO_MODELO_INEXISTENTE,
+      carimbado: true,
+    });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'modelo-invalido',
+      codigo: RAZAO_MODELO_INEXISTENTE,
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toEqual({
+      precoRecusaEm: AGORA_MS,
+      precoRecusaCodigo: RAZAO_MODELO_INEXISTENTE,
+      ultimaModificacao: AGORA_MS,
+    });
+  });
+
+  it('32f — ⛔ QUASE-IGUAL: um código de topo DESCONHECIDO não tem leitura melhor a oferecer ⇒ `falha recusa-desconhecida` com a RAZÃO guardada na linha, no filho e no item', async () => {
+    const c = cenarioComModelos({
+      updatePrice: [parcial('product.error_nunca_visto', { falhas: [[MODELO_A, 'fail']] })],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(r).toMatchObject({
+      tipo: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: 'fail',
+      mensagem: null,
+      carimbado: true,
+    });
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'recusa-desconhecida',
+      codigo: 'fail',
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({ precoRecusaCodigo: 'fail' });
+    expect(unicoPatch(c.db, CAMINHO_LINK)).toMatchObject({
+      precoRecusaCodigo: 'fail',
+      precoRecusaMotivo: 'recusa-desconhecida',
+      precoRecusaMensagem: null,
+    });
+  });
+
+  /** A top-level reading with NO code — a shape the transport never builds (`error: ''` is a success there). */
+  function parcialSemCodigo(frase: string): ShopeeApiPartialError {
+    return new ShopeeApiPartialError(frase, {
+      code: '',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: CAMINHO,
+      parsed: corpoBruto({ falhas: [[MODELO_A, 'fail']] }),
+    });
+  }
+
+  it('32g — PAR com o 32c: um topo que lê promoção mas NÃO traz código ⇒ a razão desconhecida vira a EVIDÊNCIA da linha (e nada é escrito)', async () => {
+    const c = cenarioComModelos({
+      updatePrice: [parcialSemCodigo('item price locked by promotion')],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'pulado',
+      motivo: 'bloqueado-por-promocao',
+      codigo: 'fail',
+    });
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('32h — o mesmo topo SEM código numa leitura que CARIMBA (a agulha de modelo inexistente na frase) ⇒ o filho é carimbado com a razão, nunca com um código vazio', async () => {
+    const c = cenarioComModelos({
+      updatePrice: [parcialSemCodigo('model ID not exist in sku for this item')],
+    });
+
+    const r = await enviarPrecoDoItem(itemComModelos(12, 22), c.deps);
+
+    expect(linhaDe(r, MODELO_A)).toMatchObject({
+      resultado: 'falha',
+      motivo: 'modelo-invalido',
+      codigo: 'fail',
+    });
+    expect(unicoPatch(c.db, CAMINHO_VAR_A)).toMatchObject({ precoRecusaCodigo: 'fail' });
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*  (6) G11 — the verification                                                 */
 /* -------------------------------------------------------------------------- */

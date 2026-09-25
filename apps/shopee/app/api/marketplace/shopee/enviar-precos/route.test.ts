@@ -479,6 +479,40 @@ describe('(2) o corpo — R-02 a R-08', () => {
   });
 });
 
+/* ------------------------- the ORDER of the body rungs --------------------- */
+
+describe('(2b) a ORDEM dos degraus do corpo — dois defeitos, qual 400 vence (L4-F2)', () => {
+  it('⚠️ o TETO vem antes da bandeira: 51 distintos + `baixarPreco: "x"` ⇒ SHOPEE_SELECAO_EXCEDE_LIMITE com limite e solicitados', async () => {
+    const ids = Array.from({ length: 51 }, (_v, i) => `prod-${String(i)}`);
+
+    const res = await POST(req(corpoValido({ produtoIds: ids, baixarPreco: 'x' }), AUTORIZADO));
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      code: CODIGO_SELECAO_EXCEDE_LIMITE,
+      limite: SHOPEE_ENVIO_PRECO_MAX_PRODUTOS,
+      solicitados: 51,
+    });
+    // A swapped pair would answer the flag's sentence, with no code at all.
+    expect(body.error).not.toBe('baixarPreco deve ser booleano.');
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.enviar).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ a INTEGRAÇÃO vem antes da seleção: `integracaoId: "a/b"` + `produtoIds: []` ⇒ a frase do integracaoId, SEM código de seleção', async () => {
+    const res = await POST(req({ integracaoId: 'a/b', produtoIds: [] }, AUTORIZADO));
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe('integracaoId deve ser um id de documento (sem "/" nem "..").');
+    // A swapped pair would answer SHOPEE_SELECAO_INVALIDA.
+    expect(body.code).toBeUndefined();
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.enviar).not.toHaveBeenCalled();
+  });
+});
+
 /* ------------------------------ R-09 … R-11 -------------------------------- */
 
 describe('(3) as guardas de conta — R-09 a R-11, antes de QUALQUER chamada', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
-import { lerFamiliasDePrecoPorIds } from './descobertaPreco';
+import { lerFamiliasDePrecoPorIds, lerPrecosDosProdutos } from './descobertaPreco';
 import { montarItensDePreco, precificarItem, precosDaFamilia } from './planoPreco';
 
 /* -------------------------------------------------------------------------- */
@@ -388,5 +388,105 @@ describe('lerFamiliasDePrecoPorIds — ausência, ordem, identidade e falha', ()
         code: 14,
       },
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 the send-time read — lerPrecosDosProdutos (C-d)             */
+/* -------------------------------------------------------------------------- */
+
+describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora', () => {
+  it('UMA leitura em lote mascarada a `precos`: o mapa CRU por id, e nada além de `precos`', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, FILHO]);
+
+    expect([...lidos]).toEqual([
+      [ANCORA, precos(10)],
+      [FILHO, precos(12)],
+    ]);
+    expect(db.leiturasEmLote).toEqual([
+      { caminhos: [`produtos/${ANCORA}`, `produtos/${FILHO}`], campos: ['precos'] },
+    ]);
+    // No subcollection, no query: a key read and nothing else.
+    expect(db.consultasCompletas).toEqual([]);
+  });
+
+  it('⚠️ PAR — um produto INEXISTENTE (apagado depois do plano) fica FORA do mapa, e nada lança', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, 'prod-apagado']);
+
+    expect(lidos.has('prod-apagado')).toBe(false);
+    expect([...lidos.keys()]).toEqual([ANCORA]);
+  });
+
+  it('QUASE-IGUAL — um produto que EXISTE sem `precos` fica NO mapa com `undefined` (presença é existência)', async () => {
+    const db = new FakeDbDePreco();
+    db.seed(`produtos/${ANCORA_2}`, { nome: 'Sem preço', paiId: null });
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA_2]);
+
+    expect(lidos.has(ANCORA_2)).toBe(true);
+    expect(lidos.get(ANCORA_2)).toBeUndefined();
+  });
+
+  it('os dois precificam como "sem preço": `precificarItem` dá `null` ao apagado e ao sem `precos`', async () => {
+    const db = new FakeDbDePreco();
+    db.seed(`produtos/${ANCORA_2}`, { nome: 'Sem preço', paiId: null });
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA_2, 'prod-apagado']);
+    const item = (produtoId: string) =>
+      precificarItem({ produtoId, linkDocId: LINK_A, itemId: ITEM_A, modelos: [] }, lidos, TABELA);
+
+    expect(item(ANCORA_2).alvos[0]?.precoAlvo).toBeNull();
+    expect(item('prod-apagado').alvos[0]?.precoAlvo).toBeNull();
+  });
+
+  it('PAR — uma lista vazia responde um mapa vazio com ZERO leituras', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), []);
+
+    expect(lidos.size).toBe(0);
+    expect(db.leiturasEmLote).toEqual([]);
+  });
+
+  it('QUASE-IGUAL — ids repetidos colapsam: UMA leitura com o id UMA vez', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    await lerPrecosDosProdutos(asDb(db), [FILHO, FILHO, ANCORA, FILHO]);
+
+    expect(db.leiturasEmLote).toEqual([
+      { caminhos: [`produtos/${FILHO}`, `produtos/${ANCORA}`], campos: ['precos'] },
+    ]);
+  });
+
+  it('⚠️ casa pelo ID do documento, nunca pela POSIÇÃO na resposta do lote', async () => {
+    const db = new FakeDbDePreco();
+    semear(db, ANCORA, 10);
+    db.inverterLote = true;
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, FILHO]);
+
+    expect(lidos.get(ANCORA)).toEqual(precos(10));
+    expect(lidos.get(FILHO)).toEqual(precos(12));
+  });
+
+  it('a leitura das ÂNCORAS de `lerFamiliasDePrecoPorIds` é ESTE leitor: a mesma máscara, o mesmo "ausente = inexistente"', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const familias = await lerFamiliasDePrecoPorIds(asDb(db), {
+      anchorIds: [ANCORA, 'prod-inexistente'],
+    });
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, 'prod-inexistente']);
+
+    expect(db.leiturasEmLote[0]).toEqual(db.leiturasEmLote[1]);
+    expect([...familias.keys()]).toEqual([...lidos.keys()]);
+    expect(familias.get(ANCORA)?.precos).toEqual(lidos.get(ANCORA));
   });
 });
