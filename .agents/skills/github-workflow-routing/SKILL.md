@@ -42,5 +42,3 @@ A request to create a pull request authorizes in-scope fixes needed to make that
 - Stop after three attempted fixes for the same CI failure or review finding without materially new evidence.
 - Observable progress or materially new evidence resets only the corresponding consecutive-failure counter.
 - On stopping, report the current pull-request state, the evidence, and the attempts already made.
-
-

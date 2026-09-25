@@ -1,8 +1,7 @@
 interface:
-  display_name: "GitHub Workflow Routing"
-  short_description: "Route GitHub work and finish PR feedback loops"
-  default_prompt: "Use $github-workflow-routing to inspect this GitHub issue and follow any resulting pull request through CI and review."
+  display_name: 'GitHub Workflow Routing'
+  short_description: 'Route GitHub work and finish PR feedback loops'
+  default_prompt: 'Use $github-workflow-routing to inspect this GitHub issue and follow any resulting pull request through CI and review.'
 
 policy:
   allow_implicit_invocation: true
-
