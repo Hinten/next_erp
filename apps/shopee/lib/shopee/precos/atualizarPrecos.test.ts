@@ -1887,6 +1887,42 @@ describe('J-2 / S-2 / D-3 — os contadores do relatório são de NÍVEL 0', () 
     expect(Object.keys(linhasDoShard(m, '0000'))).toHaveLength(1);
     expect(Object.keys(linhasDoShard(m, '0001'))).toHaveLength(1);
   });
+
+  it('⚠️ PAR: um cancelamento que corre o item 1 ⇒ o `updatedAt` guardado nunca fica ATRÁS do `finishedAt` — o checkpoint em voo leva um relógio mais velho', async () => {
+    const m = mundo();
+    await cancelarDuranteOItem1(m);
+    // O cancelamento carimbou T0 + 1 min; o checkpoint do item 1 pousou DEPOIS,
+    // com o relógio do despacho (T0). Um valor simples levaria o carimbo para trás.
+    const patch = m.db.lotes[0]?.find((e) => e.path === CAMINHO_DO_JOB)?.data ?? {};
+    expect(patch['updatedAt']).toBeInstanceOf(FieldValue);
+    expect((patch['updatedAt'] as FieldValue).isEqual(FieldValue.maximum(T0))).toBe(true);
+    expect(jobNoBanco(m)).toMatchObject({
+      status: 'cancelled',
+      finishedAt: T0 + MINUTO_MS,
+      updatedAt: T0 + MINUTO_MS,
+    });
+  });
+
+  it('QUASE-IGUAL: sem cancelamento, o checkpoint AVANÇA um `updatedAt` mais velho até o relógio do despacho — o `maximum` não o congela', async () => {
+    const m = mundo();
+    semearJob(m, {
+      fila: [itemSemModelo('a1', ITEM)],
+      planejamentoConcluido: true,
+      updatedAt: T0 - HORA_MS,
+    });
+    // Uma rajada: o checkpoint é o ÚLTIMO escritor do job (nenhum carimbo
+    // terminal vem depois), então o valor guardado é o dele.
+    m.enviar = responde({
+      tipo: 'pausa',
+      pausa: 'burst',
+      ate: null,
+      retryAfterSeconds: 42,
+      codigo: 'error_rate_limit',
+      chamadasShopee: 1,
+    });
+    expect(await rodar(m)).toBe('continued');
+    expect(jobNoBanco(m)).toMatchObject({ status: 'running', updatedAt: T0 });
+  });
 });
 
 describe('J-3 — um job ESTACIONADO entregue antes da hora não chama a Shopee', () => {

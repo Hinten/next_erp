@@ -725,6 +725,10 @@ replay re-writes a key. A row's shard still derives from the dispatch's local
 cursor, which a retry recomputes; after that race the cursor can trail the
 stored count by the one synthetic row, so a shard may hold one row past 500 —
 never a row outside the declared shard count, since `maximum` only raises it.
+`updatedAt` is `FieldValue.maximum(<the dispatch's clock>)` for the same race:
+the cancel stamps `updatedAt = finishedAt` at its own instant, and the
+in-flight listing's checkpoint, landing after it with an older clock, must not
+move the stamp back behind `finishedAt`.
 
 ⚠️ **A cancel stops the lote after the listing in flight.** The job's
 `status` is re-read — ONE masked read of that one field — before the drain,

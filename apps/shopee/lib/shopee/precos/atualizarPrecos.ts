@@ -81,7 +81,10 @@
  * recomputes the same one); after such a race it can trail the stored count by
  * the one synthetic row, so a shard may hold one row past
  * {@link RELATORIO_ENVIO_PRECO_SHARD_SIZE} — never a row outside the declared
- * shard count, since `maximum` only ever raises it.
+ * shard count, since `maximum` only ever raises it. `updatedAt` is
+ * `FieldValue.maximum(nowMs)` for the same race: the in-flight listing's
+ * checkpoint carries a clock older than the cancel's, and must not move the
+ * stamp behind `finishedAt`.
  *
  * ## ⚠️ The report row SET is a function of the queue entry, never of the outcome
  *
@@ -928,15 +931,23 @@ export async function processarEnvioPrecoShopee(
     // ADDS the rows it writes and RAISES the shard count to the last shard they
     // reach. Applied after `parseMerge`, which validates numbers and would
     // refuse a sentinel. A checkpoint with NO rows moves neither.
-    const contadores =
-      pendentes.length === 0
+    //
+    // `updatedAt` is the same tier for the same race: a cancel stamps
+    // `updatedAt = finishedAt = <its instant>`, and the in-flight listing's
+    // checkpoint lands AFTER it carrying this dispatch's older clock. A plain
+    // value would move the stamp backwards (`updatedAt < finishedAt` on the
+    // status and history routes); `maximum` only ever raises it.
+    const transformacoes = {
+      updatedAt: FieldValue.maximum(nowMs),
+      ...(pendentes.length === 0
         ? {}
         : {
             relatorioLinhas: FieldValue.increment(pendentes.length),
             relatorioShards: FieldValue.maximum(
               Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
             ),
-          };
+          }),
+    };
 
     const batch = db.batch();
     const refDoJob = envioPrecoShopeeCollection.docRef(db, {}, jobId);
@@ -957,9 +968,8 @@ export async function processarEnvioPrecoShopee(
         retomarEm,
         skips,
         failures,
-        updatedAt: nowMs,
       }),
-      ...contadores,
+      ...transformacoes,
     } as DocumentData;
     // The patch is FLAT (arrays and scalars), so `update` and a merge write
     // the same fields; only the precondition differs.
