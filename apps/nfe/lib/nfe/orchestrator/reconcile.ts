@@ -1,6 +1,6 @@
 /**
- * Async lote reconciliation — the core shared by the Cloud Task endpoint
- * (`/api/nfe/reconciliar`, the primary trigger) and the backstop sweep
+ * Async lote reconciliation — the core shared by the `reconciliarNfe` Cloud
+ * Task (`runReconcile`, the primary trigger) and the backstop sweep
  * (`processar-pendentes`).
  *
  * Consults a lote **by receipt** (`consReciNFe(nRec)` — one call for the whole
@@ -10,46 +10,55 @@
  * decision is left to the caller so this stays a SEFAZ + Firestore operation
  * with no scheduling of its own.
  *
- * The one per-chave exception (#513): a PROCESSED lote (104) whose reply lacks
- * a `protNFe` for a chave is final for that receipt, so that doc goes to
- * `reconcileLoteSemProtocolo` (`./lote-sem-protocolo`), which makes at most ONE
- * `consSitNFe` for that chave per round — counted against the same per-doc cap,
- * written through the guarded persist (persistPatchUnlessFinal, every write
- * guarded on the receipt, the `retries` it was decided from and an in-flight
- * estado) — behind a consSit breaker that stops further consSit calls after a
- * 656 or an unavailable service, for the rest of this lote and, when the
- * caller threads it (`bloqueioConsSit`), for the filial's next lotes too (an
- * outage only for those at the same authorizer).
- *
- * Every OTHER write of a lote reconcile (the 105 poll, a lote-level
- * non-answer, a 104 carrying our protNFe — with its proc/anchor swap — the
- * 539 outcome, a lote-level 656 and the attempt-cap terminal) goes through the
- * same guarded persist, under the premise it was decided on: this receipt,
- * the `retries` as the in-flight query read it, an in-flight estado (rule 7).
- * That query ran BEFORE the `consReciNFe` await, so a concurrent terminal (a
- * #513 consSit verdict, a 656) or another runner's counted write refuses the
- * write instead of being overwritten by it; the doc's live estado is tallied.
+ * **One decision per round** (#1654, `decidirRodadaDoRecibo` in
+ * `./lote-sem-protocolo`), total over the cStat space, from our `protNFe` in
+ * the reply (STRICT chave equality) or else the lote cStat:
+ *   - `aplicar-protocolo` — our protNFe carries a final answer: applied, with
+ *     the digest-safe `<nfeProc>` stitch on an authorization.
+ *   - `recuperar-539` — `recover539IfNeeded`.
+ *   - `por-chave` — a processed lote (104) without our protNFe, a per-NF-e
+ *     verdict at LOTE level (never a final estado without a protocol), a 106,
+ *     or a duplicidade other than 539 (204/205/218/635, in our protNFe or at
+ *     lote level): `reconcilePorChave` counts the round, then makes at most ONE
+ *     `consSitNFe` for the chave (none on a 106's first round), read through
+ *     one recovery table — behind a consSit breaker that stops further consSit
+ *     calls after a 656 or an unavailable service, for the rest of this lote
+ *     and, when the caller threads it (`bloqueioConsSit`), for the filial's
+ *     next lotes too (an outage only for those at the same authorizer).
+ *   - `aguardar` — nothing about the chave (103/105/107/108/109/113/114, or a
+ *     cStat that is not TStat-shaped): counted, and consulted again.
+ *   - `terminal` — a 656, or a rejection of the `consReciNFe` query itself.
  *
  * Hard rules baked in here (NOT overridable by the caller):
- *   - **cStat 656 (consumo indevido) is terminal.** `consultarLote` returning
- *     656 maps (via `cStatToEstado`) to `estado='error'` — we persist that and
- *     stop. Re-querying after a 656 is a SEFAZ-ban precedent (#77); there is no
- *     backoff-and-retry path for it.
- *   - **Attempt cap.** 105 rounds and 104-without-our-protNFe rounds both count
- *     on the doc's `retries`; once it reaches `MAX_RECONCILE_ATTEMPTS` the doc
- *     is flipped to terminal `error` with a "verificar manualmente" motivo and
- *     a BLOCKING cStat (105, or 104 in the #513 branch), so it stops being
- *     scanned/re-enqueued. A lote-level non-answer
- *     (103/106/107/108/109/113/114) keeps the counter as read, without
- *     advancing it, and never trips the cap itself — that terminal would carry
- *     the non-answer's NON-blocking cStat — so a doc at MAX stays in flight AT
- *     MAX until the next counted sighting ends it past the cap (a 104 without
- *     our protNFe with no SEFAZ call, a 105 with cStat 105). Only our
- *     `protNFe` or a final answer clears the counter. Two chains are still
- *     uncapped (pre-existing, follow-ups): a pure lote-level 106/108 chain, and
- *     a 104 whose `protNFe` for our chave carries a duplicidade cStat other
- *     than 539 (204/205/218/635) — `applyOutcome` leaves it in flight with
- *     `retries` zeroed, and only 539 has a recovery (`recover539IfNeeded`).
+ *   - **Every round that leaves a doc in flight advances its `retries` by
+ *     exactly one** — a 105, a lote-level non-answer, an `enviando` doc (now
+ *     written `aguardandoResposta`), a recovered 539, a round resolved by
+ *     chave — so a doc gets at most `MAX_RECONCILE_ATTEMPTS` receipt rounds
+ *     and at most that many consSit calls between two operator actions. The
+ *     round that reaches the cap goes terminal `error` with a "verificar
+ *     manualmente" motivo. The writers that still reset the counter are
+ *     outside this module: the manual verify (`consultarChavePersistida`,
+ *     operator-initiated), a new emit lote, and the sweep's consult-by-chave
+ *     branch for docs without an `nRec`.
+ *   - **Every terminal decided here blocks re-emission.** It carries the
+ *     round's own 103/104/105, or 103 — SEFAZ issued this receipt, so the
+ *     número may be held — with the real cStat in xMotivo
+ *     (`terminalBloqueante`). A lote-level 656 is terminal and never retried:
+ *     re-querying after a 656 is a SEFAZ-ban precedent (#77).
+ *   - **A paralisado receipt (108/109/113/114) is paced**
+ *     (`esperaMinimaDoRecibo`): the counted write's `proximaConsultaEm` waits
+ *     `RECONCILE_INDISPONIVEL_DELAY_MS`, as does the task's re-enqueue, so the
+ *     sweep never runs ahead of the task.
+ *   - The 105 and 104-with-our-protNFe patches are byte-identical to the
+ *     pre-#1654 ones.
+ *
+ * Every write of a lote reconcile goes through the guarded persist
+ * (persistPatchUnlessFinal), under the premise it was decided on: this
+ * receipt, the `retries` as the in-flight query read it (or, inside
+ * `reconcilePorChave`, as just counted), an in-flight estado (rule 7). That
+ * query ran BEFORE the `consReciNFe` await, so a concurrent terminal or another
+ * runner's counted write refuses the write instead of being overwritten by it;
+ * the doc's live estado is tallied.
  *
  * Residuals (follow-ups):
  *   - `recover539IfNeeded` still writes on its own: its chave swap is a plain
@@ -64,11 +73,15 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { nowMicros } from '@delfrance/core/datetime';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   consultarLote,
+  esperaMinimaDoRecibo,
   MAX_RECONCILE_ATTEMPTS,
+  nextConsultaDelayMs,
+  RECONCILE_SWEEP_GRACE_MS,
   type SefazCall,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
@@ -79,9 +92,10 @@ import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
 import {
   type BloqueioConsSit,
-  isLoteProcessadoSemProtocolo,
-  loteSemRespostaParaAChave,
-  reconcileLoteSemProtocolo,
+  CSTAT_LOTE_PENDENTE,
+  decidirRodadaDoRecibo,
+  reconcilePorChave,
+  terminalBloqueante,
 } from './lote-sem-protocolo';
 import {
   buildEnviNFeMsgFromConsulta,
@@ -102,17 +116,18 @@ export interface ReconcileLoteResult {
   /** nfev4 docs found for this `nRec` that were still in flight. */
   readonly scanned: number;
   /**
-   * Docs left `aguardandoResposta` — re-enqueue. A 105 or a 104 not yet
-   * resolved for its chave (both under the attempt cap), or a lote-level
-   * non-answer (103/106/107/108/109/113/114).
+   * Docs left `aguardandoResposta` — re-enqueue. Every round that leaves a doc
+   * in flight under the attempt cap: a 105, a lote-level non-answer, a round
+   * resolved by chave that is not settled yet (an `enviando` doc included —
+   * it is written `aguardandoResposta`).
    */
   readonly stillPending: number;
   /** Docs that reached a terminal non-error state (aprovada / cancelada / …). */
   readonly recovered: number;
   /**
-   * Docs flipped to terminal `error` (656 consumo-indevido, cap exceeded, a
-   * 104 whose chave the consSit could not resolve). A rejeitada counts as
-   * `recovered`.
+   * Docs flipped to terminal `error` (656 consumo-indevido, a refused receipt
+   * query, cap exceeded, a chave the consSit could not resolve). A rejeitada
+   * counts as `recovered`.
    */
   readonly errored: number;
   /** Lote-level consult cStat, for the response/log line. */
@@ -132,9 +147,9 @@ export interface ReconcileLoteResult {
  * Reconcile every still-in-flight nfev4 doc of one lote against SEFAZ.
  *
  * @param attempt 0-based consult attempt from the task payload — used only for
- *   diagnostics; the authoritative cap is the per-doc `retries` counter (105
- *   rounds via `applyOutcome`, 104-without-our-protNFe rounds via
- *   `reconcileLoteSemProtocolo`), so a re-delivered task can't escape the cap.
+ *   diagnostics; the authoritative cap is the per-doc `retries` counter, which
+ *   every in-flight round advances by one (here, or in `reconcilePorChave`),
+ *   so a re-delivered task can't escape the cap.
  * @param bloqueioConsSit the consSit breaker a previous reconcile in this run
  *   tripped for the same scope — the SAME filial for a 656, the same filial +
  *   authorizer for an outage (see {@link ReconcileLoteResult.bloqueioConsSit});
@@ -150,9 +165,9 @@ export async function reconcileByRecibo(params: {
   bloqueioConsSit?: BloqueioConsSit | null;
 }): Promise<ReconcileLoteResult> {
   const { fs, rt, filialId, nRec, tpEmis } = params;
-  // Per-run consSit breaker for the 104-without-our-protNFe branch: once a
-  // consSit of this run answers 656 or finds the service down, the remaining
-  // missing docs are not consulted (#513).
+  // Per-run consSit breaker for the by-chave branch: once a consSit of this
+  // run answers 656 or finds the service down, the remaining docs are not
+  // consulted (#513).
   let bloqueioConsSit: BloqueioConsSit | null = params.bloqueioConsSit ?? null;
 
   // Docs of this lote that are still in flight. Query by receipt only
@@ -202,12 +217,11 @@ export async function reconcileByRecibo(params: {
     // Our protocol in the lote reply — STRICT chave equality; a near-miss is
     // missing, never ours.
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
+    const decisao = decidirRodadaDoRecibo(ret.cStat, ourProt?.infProt.cStat ?? null);
 
-    // A processed lote (104) with no protNFe for this chave is final for this
-    // receipt: re-reading it cannot help, so the doc is resolved by chave —
-    // counted, at most one consSit per round (#513).
-    if (isLoteProcessadoSemProtocolo(ret, ourProt)) {
-      const r = await reconcileLoteSemProtocolo({
+    // Resolved by chave (#513, #1654): counted, then at most one consSit.
+    if (decisao.tipo === 'por-chave') {
+      const r = await reconcilePorChave({
         fs,
         rt,
         filialId,
@@ -217,6 +231,7 @@ export async function reconcileByRecibo(params: {
         chave,
         data,
         nfeRef: doc.ref,
+        motivo: decisao.motivo,
         bloqueio: bloqueioConsSit,
       });
       bloqueioConsSit = r.bloqueio;
@@ -224,76 +239,82 @@ export async function reconcileByRecibo(params: {
       continue;
     }
 
+    const tentativa = (data.retries ?? 0) + 1;
     const outcome = outcomeFromConsReci(ret, chave);
     let patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
-    // A lote-level non-answer (103/106/107/108/109/113/114) says nothing about
-    // this chave, so it must not reset the counter `applyOutcome` zeroes for
-    // it — else an outage between two 104 rounds restarts the 104 count
-    // (#513). Only our protNFe or a final answer clears it. Kept EXACTLY as
-    // read — never lowered, never advanced (see the cap below).
-    const naoResposta = loteSemRespostaParaAChave(ret.cStat);
-    if (naoResposta) {
-      patch = { ...patch, retries: data.retries ?? 0 };
+
+    // Nothing about the chave: it never leaves flight here, even when
+    // `applyOutcome` maps a cStat that is not TStat-shaped to rejeitada — that
+    // would free a número SEFAZ may hold.
+    if (
+      decisao.tipo === 'aguardar' &&
+      patch.estado !== ESTADO_NFE.enviando &&
+      patch.estado !== ESTADO_NFE.aguardandoResposta
+    ) {
+      patch = { ...patch, estado: ESTADO_NFE.aguardandoResposta };
     }
 
-    // Rule 7: `data` was read by the in-flight query BEFORE the consReciNFe
-    // await (and before the earlier docs' consSit awaits), so this write
-    // re-checks, on the doc as it is at write time, the premise it was decided
-    // on: still this receipt, still the `retries` as read, still in flight. A
-    // concurrent terminal (a #513 consSit verdict, a 656) or another runner's
-    // counted write refuses it instead of being overwritten by it.
-    const guarda: PersistGuard = {
-      expectedNRec: nRec,
-      expectedRetries: data.retries ?? 0,
-      requireInFlight: true,
-    };
+    // A 656, or a refused consReci query: no further SEFAZ call can help, and
+    // SEFAZ issued this receipt — a BLOCKING terminal, never a número-freeing
+    // rejeitada or a non-blocking 656.
+    if (decisao.tipo === 'terminal') {
+      patch = terminalBloqueante(
+        patch,
+        ret.cStat,
+        `recibo ${nRec}: cStat ${outcome.cStat}, sem nova consulta — verificar manualmente`,
+      );
+    }
 
     // cStat=539 (duplicidade com chave diferente) must NOT linger in
     // aguardandoResposta: recover the SEFAZ-asserted chave if it is one we
-    // emitted, else flip to terminal `error` (#243). `recover539IfNeeded` is a
-    // no-op for every other outcome. pedidoId comes from the doc path
-    // `pedidos/{pedidoId}/nfev4/{nfeId}`. Its chave swap is its OWN plain
-    // merge, outside the guard below (see the header's residuals).
-    const recovered539 = await recover539IfNeeded({
-      fs,
-      bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId },
-      nfeRef: doc.ref,
-      rt,
-      tpEmis,
-      outcome,
-      patch,
-    });
-    patch = recovered539.patch;
-    // A 539 chave-swap leaves our local signed XML pointing at the old chave —
-    // skip the <nfeProc> build for it (mirrors the emit path).
-    const chaveSwapped = recovered539.chaveOverride != null;
+    // emitted, else flip to terminal `error` (#243). pedidoId comes from the
+    // doc path `pedidos/{pedidoId}/nfev4/{nfeId}`. Its chave swap is its OWN
+    // plain merge, outside the guard below (see the header's residuals). A
+    // recovery that leaves the doc in flight is counted below like any other
+    // round — on the doc's own `retries`, never restarted.
+    let chaveSwapped = false;
+    if (decisao.tipo === 'recuperar-539') {
+      const recovered539 = await recover539IfNeeded({
+        fs,
+        bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId },
+        nfeRef: doc.ref,
+        rt,
+        tpEmis,
+        outcome,
+        patch,
+      });
+      patch = recovered539.patch;
+      // A 539 chave-swap leaves our local signed XML pointing at the old chave —
+      // skip the <nfeProc> build for it (mirrors the emit path).
+      chaveSwapped = recovered539.chaveOverride != null;
+    }
 
-    // Attempt cap: a lote still processing after MAX_RECONCILE_ATTEMPTS consults
-    // stops auto-reconciling and surfaces for manual review (never re-queried
-    // forever — #77).
-    //
-    // A non-answer is EXEMPT: this terminal keeps the patch's cStat, and
-    // 103/106/107/108/109/113/114 are not in STATUS_BLOQUEADORES — the pedido
-    // would become re-emittable over a número SEFAZ may already have
-    // processed. A doc meets a non-answer AT the cap when an at-cap 104 round
-    // was interrupted after its counted write (a rethrown consSit failure, a
-    // timeout); it stays in flight at MAX, and the next counted sighting ends
-    // it: a 104 without our protNFe computes tentativa MAX+1 and goes terminal
-    // with the blocking cStat 104 and NO consSit (`reconcileLoteSemProtocolo`'s
-    // hard stop), a 105 counts to MAX+1 and trips this cap with cStat 105. So
-    // the 104 ceiling stays hard: never more than MAX consSit calls per doc.
-    if (
-      patch.estado === ESTADO_NFE.aguardandoResposta &&
-      patch.retries >= MAX_RECONCILE_ATTEMPTS &&
-      !naoResposta
-    ) {
+    // Every round that leaves the doc in flight counts, by exactly one — an
+    // `enviando` doc is written `aguardandoResposta` — and the round that
+    // reaches MAX_RECONCILE_ATTEMPTS goes terminal with a BLOCKING cStat and a
+    // manual-review motivo (never re-queried forever — #77). A 105 keeps its
+    // own xMotivo and its "lote não processado" terminal, byte for byte.
+    if (patch.estado === ESTADO_NFE.enviando || patch.estado === ESTADO_NFE.aguardandoResposta) {
+      const pendente = patch.cStat === CSTAT_LOTE_PENDENTE;
       patch = {
         ...patch,
-        estado: ESTADO_NFE.error,
-        xMotivo:
-          `${patch.xMotivo} | lote não processado após ${MAX_RECONCILE_ATTEMPTS} ` +
-          `consultas — verificar manualmente`,
+        estado: ESTADO_NFE.aguardandoResposta,
+        retries: tentativa,
+        xMotivo: pendente
+          ? patch.xMotivo
+          : `${patch.xMotivo} | sem resposta para a chave no recibo ${nRec} ` +
+            `(consulta ${tentativa}/${MAX_RECONCILE_ATTEMPTS})`,
       };
+      if (tentativa >= MAX_RECONCILE_ATTEMPTS) {
+        patch = terminalBloqueante(
+          patch,
+          ret.cStat,
+          pendente
+            ? `lote não processado após ${MAX_RECONCILE_ATTEMPTS} consultas — verificar manualmente`
+            : `sem resposta para a chave após ${MAX_RECONCILE_ATTEMPTS} consultas — ` +
+                'verificar manualmente',
+        );
+      }
     }
 
     // Build <nfeProc> when SEFAZ authorized this chave and we still hold the
@@ -311,13 +332,35 @@ export async function reconcileByRecibo(params: {
       chave,
     });
 
-    const gravado = await persistPatchUnlessFinal(
-      fs,
-      doc.ref,
-      patch,
-      nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
-      guarda,
-    );
+    // A paralisado receipt paces the doc's due-gate like the task's re-enqueue
+    // (`runReconcile`): decided from the LOTE cStat, before any write, so every
+    // doc of the round agrees and the sweep never runs ahead of the task.
+    const espera =
+      patch.estado === ESTADO_NFE.aguardandoResposta ? esperaMinimaDoRecibo(ret.cStat) : null;
+    const extras =
+      nfeProcXml != null
+        ? swapAnchorForProc(nfeProcXml)
+        : espera != null
+          ? {
+              proximaConsultaEm:
+                nowMicros() +
+                (Math.max(nextConsultaDelayMs(tentativa), espera) + RECONCILE_SWEEP_GRACE_MS) *
+                  1000,
+            }
+          : undefined;
+
+    // Rule 7: `data` was read by the in-flight query BEFORE the consReciNFe
+    // await (and before the earlier docs' consSit awaits), so this write
+    // re-checks, on the doc as it is at write time, the premise it was decided
+    // on: still this receipt, still the `retries` as read, still in flight. A
+    // concurrent terminal (a consSit verdict, a 656) or another runner's
+    // counted write refuses it instead of being overwritten by it.
+    const guarda: PersistGuard = {
+      expectedNRec: nRec,
+      expectedRetries: data.retries ?? 0,
+      requireInFlight: true,
+    };
+    const gravado = await persistPatchUnlessFinal(fs, doc.ref, patch, extras, guarda);
     if (!gravado.written) {
       // The doc changed under us: report its LIVE estado, never the patch
       // this round decided on a stale read.

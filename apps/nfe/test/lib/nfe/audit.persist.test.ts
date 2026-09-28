@@ -256,7 +256,7 @@ describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
 });
 
 describe('persistPatchUnlessFinal with a #513 PersistGuard (receipt + retries + in flight)', () => {
-  /** reconcileLoteSemProtocolo's counted write, decided on a doc read at retries 3. */
+  /** reconcilePorChave's counted write, decided on a doc read at retries 3. */
   const GUARD = { expectedNRec: 'REC-1', expectedRetries: 3, requireInFlight: true } as const;
   const contada = (): NFeStatePatch =>
     patchOf({
