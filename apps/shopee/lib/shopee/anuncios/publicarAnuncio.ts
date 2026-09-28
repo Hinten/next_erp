@@ -761,6 +761,9 @@ async function filhoParaPublicar(
       },
       tabelaNormalId,
     ),
+    // The price SOURCE, from the very flag that chose the arm above — so a
+    // `filho-sem-preco` names the parent exactly when the parent priced it.
+    precoDoPai: precoDoPai.propagaPreco,
     estoque: chao(derivado ?? proprio),
     fotos: fotosDeProduto(filho.raw.fotos).fotos,
     linkModelId: link?.modelId ?? null,

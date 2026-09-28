@@ -1,12 +1,17 @@
 /**
  * Shopee **price discovery** (#1521, step 13) — the reads a price push is built
  * on, and nothing else. No Shopee call, no write, no clock: this module answers
- * "which listings and which `precos` does this family hold" for an explicit
- * list of anchors (`lerFamiliasDePrecoPorIds`, the manual push), and "what do
- * these produtos' `precos` say NOW" (`lerPrecosDosProdutos`, the SEND-time read
- * — reconcile C-d: the manual push prices each item immediately before sending
- * it, and the second PR's job reuses the same reader at drain time). The second
- * PR adds the account-wide paged reader over the SAME per-anchor join.
+ * "which listings and which `precos` does this family hold, and does its anchor
+ * propagate its price" for an explicit list of anchors
+ * (`lerFamiliasDePrecoPorIds`, the manual push), and "what do these produtos'
+ * `precos` and `propagatePriceToChildren` say NOW" (`lerPrecosDosProdutos`, the
+ * SEND-time read — reconcile C-d: the manual push prices each item immediately
+ * before sending it, and the second PR's job reuses the same reader at drain
+ * time). Both carry the stored flag RAW beside `precos` — the family only the
+ * anchor's, the send-time map every produto's it read, of which only the
+ * anchor's is ever consulted (D-9: it decides whether a model is priced from
+ * the anchor or from its own child); nothing here folds it. The second PR adds
+ * the account-wide paged reader over the SAME per-anchor join.
  *
  * The shapes it returns are `./planoPreco`'s ({@link FamiliaDePreco},
  * {@link LinkPrecoCru}, {@link FilhoDePreco}); nothing is re-declared here.

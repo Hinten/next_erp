@@ -338,9 +338,17 @@ export function propagaPrecoAosFilhos(valor: unknown): boolean {
 }
 
 /**
- * The price of a variation CHILD in a tabela — the ONE copy for every channel
- * that sends one (Mercado Livre's price plan, Shopee's publish and price sync).
- * The rule is Mercado Livre's, verbatim (`buildPrecoDrafts` in
+ * The price of a variation CHILD in a tabela. Bound today by Mercado Livre's
+ * price plan and by Shopee's publish and price sync, so those three cannot
+ * disagree about a child's price.
+ *
+ * ⚠️ Not yet every sender: Mercado Livre's PUBLISH still decides a User
+ * Products member's price with its own copy (the `price:` of each variation in
+ * `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts`, via
+ * `resolvePrice`, which neither rounds nor re-checks positivity after
+ * rounding). Routing it through this function is a known follow-up.
+ *
+ * The rule is Mercado Livre's price plan's, verbatim (`buildPrecoDrafts` in
  * `apps/mercado-livre/lib/marketplace/preco/precoPlan.ts`):
  *
  * - `propagaPreco` (the PARENT's flag, folded by {@link propagaPrecoAosFilhos})

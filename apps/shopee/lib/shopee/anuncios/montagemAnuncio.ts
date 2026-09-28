@@ -249,6 +249,12 @@ export interface ArgsMontarAnuncio {
   readonly tabelaNormalId: string | null;
   /** The throwaway item-level price of a has-model CREATE. */
   readonly precoDoPrimeiroFilho: number | null;
+  /**
+   * That first child's `precoDoPai` (D-9): its price is the PARENT's because the
+   * parent propagates. Words the create's `filho-sem-preco` only — the motivo
+   * is the same either way.
+   */
+  readonly precoDoPrimeiroFilhoVemDoPai: boolean;
   /** The throwaway item-level stock of a has-model CREATE (O3). */
   readonly estoqueDoPrimeiroFilho: number | null;
   /** This produto's own available stock at the conta's depósito. */
@@ -787,13 +793,19 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   // fixing a description or refreshing photos got a 422 `sem-preco`.
   if (!args.ehAtualizacao) {
     if (preco === null) {
+      // Under propagation (D-9) the first child's price IS the parent's, and the
+      // web refuses a per-child price edit — so the text names the parent, the
+      // field the operator can fix. Same motivo either way.
       problemas.push(
         args.temFilhos
           ? problema(
               'original_price',
               MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
-              'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
-                'descartável do item',
+              args.precoDoPrimeiroFilhoVemDoPai
+                ? 'o produto pai propaga o preço para as variações e não tem preço na tabela ' +
+                    'normal — defina o preço do pai ou desligue a propagação'
+                : 'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
+                    'descartável do item',
             )
           : problema(
               'original_price',

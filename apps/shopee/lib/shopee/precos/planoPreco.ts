@@ -55,9 +55,11 @@
  * ⚠️ **Rung 3 reads the LINK, never the produto.** An ERP kit (`ehKit`, a
  * produto assembled from `componentesKit`) publishes as an ORDINARY Shopee
  * listing and its price is sent like any other; only a listing Shopee itself
- * reported as a native kit is skipped. The family shape carries no produto
- * flag at all, which makes "an ERP kit is skipped" structurally unwritable
- * here. Same slug as the stock sync, same condition, same word.
+ * reported as a native kit is skipped. The family shape carries no KIT flag —
+ * its one produto flag is the anchor's `propagatePriceToChildren` (D-9), which
+ * decides where a model's price comes from and nothing else — which makes "an
+ * ERP kit is skipped" structurally unwritable here. Same slug as the stock
+ * sync, same condition, same word.
  *
  * ⚠️ **Rung 4 has TWO stored spellings of one fact, and both refuse.** The
  * frozen rung reads the raw `item_status` (`SELLER_DELETE` / `SHOPEE_DELETE`,

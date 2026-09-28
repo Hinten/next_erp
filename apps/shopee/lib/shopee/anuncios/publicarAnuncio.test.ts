@@ -1922,4 +1922,77 @@ describe('publicar — o preço do filho é lido por precoDaTabela', () => {
       expect(db.writes).toEqual([]);
     });
   });
+
+  /* ------------------------------------------------------------------------ */
+  /*  D-9: o TEXTO do filho-sem-preco nomeia quem tem o preço                  */
+  /* ------------------------------------------------------------------------ */
+
+  describe('D-9 — o texto do filho-sem-preco nomeia quem tem o preço (o motivo não muda)', () => {
+    // Sob propagação a web RECUSA editar o preço de uma variação, então o texto
+    // que mandava o operador ao preço do filho o mandava a um campo que ele não
+    // pode editar. O remédio é o preço do PAI, ou desligar a propagação.
+    const TEXTO_PAI_NO_ITEM =
+      'o produto pai propaga o preço para as variações e não tem preço na tabela normal — ' +
+      'defina o preço do pai ou desligue a propagação';
+    const TEXTO_PAI_NO_TIER =
+      `A variação ${FILHO} não tem preço: o produto pai propaga o preço para as variações e ` +
+      'não tem preço na tabela normal — defina o preço do pai ou desligue a propagação.';
+    const TEXTO_FILHO_NO_ITEM =
+      'o primeiro filho não tem preço na tabela normal — é dele que sai o preço descartável do item';
+    const TEXTO_FILHO_NO_TIER = `A variação ${FILHO} não tem preço e a Shopee exige um original_price por modelo.`;
+
+    /** Every `filho-sem-preco` of the plan, as `[campo, mensagem]`. */
+    function recusasDePreco(problemas: PlanoPublicacao['problemas']): [string | null, string][] {
+      return problemas
+        .filter((p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco)
+        .map((p) => [p.campo, p.mensagem]);
+    }
+
+    /** Pai que PROPAGA (flag ausente) SEM preço; o filho tem 49.9 próprio, que não é lido. */
+    const PAI_PROPAGA_SEM_PRECO = { pai: { precos: {} }, filho: {} };
+    /** Pai que NÃO propaga (com 49.9, que não é lido); o filho não tem preço próprio. */
+    const PAI_NAO_PROPAGA = { pai: { propagatePriceToChildren: false }, filho: { precos: {} } };
+
+    async function planoDe(
+      familia: { readonly pai: Record<string, unknown>; readonly filho: Record<string, unknown> },
+      comVinculo: boolean,
+    ) {
+      const db = new FakeDb();
+      semearCatalogo(db, familia.pai);
+      semearFilho(db, familia.filho);
+      if (comVinculo) semearLink(db);
+      const fake = clienteFake({
+        addItem: () => ecoDeItem(),
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(comVinculo);
+      expect(contexto.filhos[0]?.preco).toBeNull();
+      return plano;
+    }
+
+    it('⚠️ PAR (CREATE): pai que PROPAGA sem preço na tabela normal ⇒ as DUAS recusas (a do item e a do tier) nomeiam o PAI e o remédio', async () => {
+      const plano = await planoDe(PAI_PROPAGA_SEM_PRECO, false);
+      expect(recusasDePreco(plano.problemas)).toEqual([
+        ['original_price', TEXTO_PAI_NO_ITEM],
+        ['model', TEXTO_PAI_NO_TIER],
+      ]);
+    });
+
+    it('⚠️ PAR (UPDATE): o MESMO pai sem preço, anúncio já publicado ⇒ a recusa do tier nomeia o PAI', async () => {
+      const plano = await planoDe(PAI_PROPAGA_SEM_PRECO, true);
+      expect(recusasDePreco(plano.problemas)).toEqual([['model', TEXTO_PAI_NO_TIER]]);
+    });
+
+    it('⛔ QUASE-IGUAL (CREATE e UPDATE): pai que NÃO propaga + filho sem preço próprio ⇒ os textos de sempre, que nomeiam o FILHO — mesmo motivo', async () => {
+      const criar = await planoDe(PAI_NAO_PROPAGA, false);
+      expect(recusasDePreco(criar.problemas)).toEqual([
+        ['original_price', TEXTO_FILHO_NO_ITEM],
+        ['model', TEXTO_FILHO_NO_TIER],
+      ]);
+      const atualizar = await planoDe(PAI_NAO_PROPAGA, true);
+      expect(recusasDePreco(atualizar.problemas)).toEqual([['model', TEXTO_FILHO_NO_TIER]]);
+    });
+  });
 });

@@ -749,6 +749,46 @@ describe('precificarItem — D-9: a flag de propagação da ÂNCORA decide de on
     }
   });
 
+  // ⚠️ The send-time reader masks EVERY id to `precos` + `propagatePriceToChildren`,
+  // so a child's entry in the map really can carry the child's own stored flag.
+  // It is never read: only the ANCHOR's decides (the same rule publish pins).
+  it('⚠️ PAR — a flag `false` gravada num FILHO é IGNORADA: âncora que propaga (flag ausente) + filho `{ 12, false }` ⇒ 10, igual ao filho sem flag', () => {
+    const preco = (filho: PrecosDoProduto) =>
+      precificarItem(
+        ITEM_COM_MODELOS,
+        porProduto([ANCORA, { precos: precos(10) }], ['filho-1', filho], ['filho-2', filho]),
+        TABELA,
+      ).alvos.map((a) => a.precoAlvo);
+    expect(preco({ precos: precos(12), ...NAO_PROPAGA })).toEqual([10, 10]);
+    expect(preco({ precos: precos(12) })).toEqual([10, 10]);
+  });
+
+  it('⚠️ QUASE-IGUAL — o MESMO filho `false` SEM preço próprio (`precos: undefined`) ⇒ ainda 10, nunca `null`', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(
+        [ANCORA, { precos: precos(10) }],
+        ['filho-1', { precos: undefined, ...NAO_PROPAGA }],
+        ['filho-2', { precos: undefined, ...NAO_PROPAGA }],
+      ),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([10, 10]);
+  });
+
+  it('QUASE-IGUAL (o inverso) — a âncora `false` + um filho `true` ⇒ o preço PRÓPRIO do filho (12): a flag do filho não religa a propagação', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(
+        [ANCORA, { precos: precos(10), ...NAO_PROPAGA }],
+        ['filho-1', { precos: precos(12), propagatePriceToChildren: true }],
+        ['filho-2', { precos: precos(12), propagatePriceToChildren: true }],
+      ),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([12, 12]);
+  });
+
   it('o arredondamento e a positividade valem no braço da âncora: âncora que propaga a 0.004 ⇒ `null`; QUASE-IGUAL 0.005 ⇒ 0.01', () => {
     const preco = (valor: number) =>
       precificarItem(
