@@ -272,7 +272,8 @@ export function diffPrecos(oldPrecos: PrecosMap, newPrecos: PrecosMap): PrecoCha
 
 /**
  * The ONE reader of "the price of this produto in that tabela", for every
- * channel that SENDS it (Mercado Livre's price plan, Shopee's price sync).
+ * channel that SENDS it (Mercado Livre's price plan and publish, Shopee's
+ * publish and price sync).
  * Pure and total — no clock, no Firestore — so both backends share it instead
  * of each keeping a private copy that drifts.
  *
@@ -338,15 +339,10 @@ export function propagaPrecoAosFilhos(valor: unknown): boolean {
 }
 
 /**
- * The price of a variation CHILD in a tabela. Bound today by Mercado Livre's
- * price plan and by Shopee's publish and price sync, so those three cannot
+ * The price of a variation CHILD in a tabela. Bound by every sender of a child
+ * price — Mercado Livre's price plan and publish (`resolveMemberPrice`, for a
+ * User-Products member), Shopee's publish and price sync — so none of them can
  * disagree about a child's price.
- *
- * ⚠️ Not yet every sender: Mercado Livre's PUBLISH still decides a User
- * Products member's price with its own copy (the `price:` of each variation in
- * `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts`, via
- * `resolvePrice`, which neither rounds nor re-checks positivity after
- * rounding). Routing it through this function is a known follow-up.
  *
  * The rule is Mercado Livre's price plan's, verbatim (`buildPrecoDrafts` in
  * `apps/mercado-livre/lib/marketplace/preco/precoPlan.ts`):

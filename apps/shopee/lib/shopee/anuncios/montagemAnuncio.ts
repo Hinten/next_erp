@@ -40,7 +40,8 @@
  * `link.item_name`, `link.description`, `link.category_id`, `link.attributes` and
  * `link.brand_id` come from the last read-back of the LIVE listing, so they carry
  * the operator's Seller Centre choices. They WIN over the ERP produto, blank
- * meaning absent — the `publishCore.ts:1200-1209` rule for Mercado Livre,
+ * meaning absent — the `linkTitle` rule in Mercado Livre's `assemblePublishInput`
+ * (`publishCore.ts`),
  * adopted verbatim and for the same measured reason (#799 bug 4a: without it an
  * operator can never give a listing a marketplace-optimised name of its own).
  * The produto is the fallback, which is what a first publish uses.

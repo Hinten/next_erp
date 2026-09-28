@@ -168,11 +168,16 @@ on a model id anywhere between the plan and the wire.
 `precoDaTabela(precos, tabelaId)` in
 `packages/schemas/src/produto/pureLogic/precoCalculo.ts` is the one reader of
 "the price of this produto in that tabela" for every channel that SENDS it. It
-has three binders:
+has four binders:
 
 - **Mercado Livre's price plan**, whose private copy was DELETED rather than
   aliased (an alias is a second name). ⚠️ That is a behaviour change for ML on
   a sub-centavo stored price (register 137): see the next paragraph.
+- **Mercado Livre's publish** (`resolvePrice` / `resolveMemberPrice` in
+  `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts`), which used to
+  read the raw `valor` — so a stored `7.891` was listed at `7.891` while the
+  price sync sent `7.89`, and a `0.004` was listed at all. A User-Products
+  member's price goes through `precoDoFilhoNaTabela` there too.
 - **Step 11's publish** (commit `3256b213`), which now reads every price through
   it — rounded to the centavo — and refuses a zero variation price instead of
   sending it (register 138).
@@ -195,8 +200,9 @@ rule verbatim: when the PARENT's `propagatePriceToChildren` folds true through
 included — the schema default), every model carries the parent's
 `precoDaTabela`, and the child's own map is never read, not even as a fallback;
 otherwise every model carries its child's own, and the parent is never read for
-a model. Three binders call it: ML's price plan, step 11's publish and this
-folder's `precificarItem`, so publish and sync agree on a family because they
+a model. Four binders call it: ML's price plan and publish (a User-Products
+member), step 11's publish and this folder's `precificarItem`, so publish and
+sync agree on a family — on each channel — because they
 call one function — not because the produto trigger happened to run. That
 trigger copies the parent's `precos` into the children only when the PARENT's
 prices change (or propagation is re-enabled), so a child created after the last
