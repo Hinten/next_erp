@@ -15,7 +15,7 @@
  * function the item builder emits, so the two cannot drift. An ISSQN item's
  * PIS/COFINS is kept out of ICMSTot (rule 602 counts only items subject to
  * ICMS). ⚠️ `ISSQNtot` is unreachable from the ERP: `apps/nfe` refuses an
- * ISSQN item before generation (#1656), so `aggregateISSQN` has no caller. Its
+ * ISSQN item before generation (#1656), and `aggregateISSQN` has no caller. Its
  * missing vPIS/vCOFINS (608 / 609), the `dCompet` the orchestrator would have
  * to thread in, and the vProd/vServ split (an ISSQN item's `vProd` still counts
  * in ICMSTot.vProd below) are the NF-e conjugada follow-up.
@@ -282,8 +282,9 @@ export function aggregateTotals(
  *
  * Returns `undefined` when no item carries `configuracaoISSQN` (the
  * common case for retail). When at least one item is ISSQN, `extras.dCompet`
- * is required by the XSD — the orchestrator threads it in from the
- * emission date.
+ * is required by the XSD, and a caller must supply it. `apps/nfe` never calls
+ * this: it refuses ISSQN items (#1656), and threading `dCompet` in is part of
+ * the NF-e conjugada follow-up.
  *
  * vServ is the sum of `item.vProd` for ISSQN items (per Lei Complementar
  * 116/2003 — service revenue, not merchandise). The rest are summed

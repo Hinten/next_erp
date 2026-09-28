@@ -412,11 +412,13 @@ const ISSQN_NAO_SUPORTADO =
  *
  * An imposto carrying `configuracaoISSQN` is refused the same way, before the
  * engine is called (`ISSQN_NAO_SUPORTADO`, #1656). Being here, inside
- * `buildGenItems`, is what keeps it off every path that does not generate: the
- * single path generates before the allocation's first write, the batch reaches
- * it through `assertItemsBuildable` (`tributePreflight`) before a member is
- * counted, and a stored-bytes, EPEC, skip or in-flight doc never builds a
- * projection. Never move it into `prepareEmission`, which runs for those too.
+ * `buildGenItems`, is what keeps it from failing a member that will not
+ * generate. The single path generates before the allocation's first write and
+ * never for a stored-bytes, EPEC, skip or in-flight doc. The batch dry-runs it
+ * for EVERY prepped member through `assertItemsBuildable` (`tributePreflight`),
+ * but `runChunkAllocateTx` applies that verdict only to a member that would
+ * allocate or regenerate, and discards it for those docs. Never move it into
+ * `prepareEmission`, whose throw fails the member whatever its nfev4 doc holds.
  */
 function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): string {
   if (it.imposto.configuracaoISSQN != null) {
