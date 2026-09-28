@@ -82,6 +82,7 @@ export {
   classifyCStat,
   cStatToEstado,
   isBloqueada,
+  isCStat,
   nextAction,
   nextConsultaDelayMs,
   resolveTpEmis,

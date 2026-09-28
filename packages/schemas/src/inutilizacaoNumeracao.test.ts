@@ -39,6 +39,16 @@ describe('inutNumeracaoSchema', () => {
     expect(out.estado).toBe('3');
   });
 
+  it('keeps a 17-digit nProt and a 4-digit cStat as-is (NT 2025.002 §5.1, #329)', () => {
+    const out = inutNumeracaoSchema.parse({
+      ...MINIMAL,
+      cStat: '1115',
+      nProt: '13526000000012345',
+    });
+    expect(out.cStat).toBe('1115');
+    expect(out.nProt).toBe('13526000000012345');
+  });
+
   it('targets the per-filial inutilizacao subcollection', () => {
     expect(inutNumeracaoMeta.collectionPath).toBe('filiais/{filialId}/inutilizacao');
   });

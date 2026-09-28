@@ -6,9 +6,12 @@ that adds new codes (consolidated below).
 
 **Width: 3 or 4 digits.** Pré-NT 2025.002 todos os cStats eram 3 dígitos;
 NT 2025.002 §5.1 estendeu o campo para 4 dígitos para abrir espaço às
-rejeições exclusivas dos novos tributos (IBS/CBS/IS). Parsers devem aceitar
-`^[0-9]{3,4}$`. Códigos novos da NT 2025.001 (452, 853, 797, etc.) ainda
-são 3 dígitos.
+rejeições exclusivas dos novos tributos (IBS/CBS/IS). O gate XSD de toda
+resposta já aceita `[0-9]{3,4}`; para um valor que não passou por ele use
+`isCStat` (`src/state/index.ts`). `classifyCStat` compara strings EXATAS —
+todo código de 4 dígitos da RTC cai em `rejeitada` → `done-rejected`. Códigos
+novos da NT 2025.001 (452, 853, 797, etc.) ainda são 3 dígitos. O `nProt`
+passou a ter 15 **ou** 17 dígitos (mesma NT).
 
 ## Success / processing
 
@@ -82,7 +85,7 @@ something to query.
 | 225 | Falha no schema XML do lote |
 | 252 | Ambiente informado diverge do ambiente de recebimento |
 | 280 / 281 / 286 | Certificado de transmissão inválido / vencido / sem cadeia |
-| 290–298 | Certificado/assinatura de assinatura inválidos |
+| 290–298 | Certificado/assinatura de assinatura inválidos (conjunto exato de strings — `'0290'` não é 290) |
 | 416 | Falha na descompactação da área de dados (Zip) |
 | **452** | **Rejeição: Solicitada resposta assíncrona para Lote com somente 1 (uma) NF-e** (NT 2025.001 RV GAP03a-3, produção 13/10/2025) |
 | 656 | Consumo Indevido — **ban path, see below** |
