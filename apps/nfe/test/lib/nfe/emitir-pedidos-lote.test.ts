@@ -644,7 +644,9 @@ describe('emitirPedidosLote — single filial happy path', () => {
       events,
       pedidos: [{ pedidoId: 'PED-1', filialId: 'F-1' }],
     });
-    autorizarLoteSync(['35260514200166000187550010000000001100000001']);
+    // The protocol names the chave the generateNFe mock mints for this member
+    // (nNF 1, cNF 1): #1654 §1 applies only OUR protNFe, by strict chave equality.
+    autorizarLoteSync([fakeChave(1, 1)]);
     const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1']);
     expect(out.results).toHaveLength(1);
     const first = out.results[0]!;
@@ -1398,7 +1400,9 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
         // loadPedidoBundle throws NFePedidoNotFoundError.
       ],
     });
-    autorizarLoteSync(['35260514200166000187550010000000001100000001']);
+    // The protocol names the chave the generateNFe mock mints for this member
+    // (nNF 1, cNF 1): #1654 §1 applies only OUR protNFe, by strict chave equality.
+    autorizarLoteSync([fakeChave(1, 1)]);
     const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-OK', 'PED-MISSING']);
     expect(out.results).toHaveLength(2);
     const okResult = out.results.find((r) => r.pedidoId === 'PED-OK')!;
@@ -2638,6 +2642,125 @@ describe('#512 — async lote reply without nRec', () => {
         });
       }
       expectNoConsultNoEnqueue(enqueued);
+    });
+
+    // #1654 §1 — a chunk that shrank to ONE member rides a SYNC lote (4e,
+    // `applyAutorizadoOutcome`), and a reply without our protNFe and without
+    // infRec now takes the same disposition as the async path above — with
+    // the stored-bytes nuance decided per member (`storedPaths`).
+    describe('a 1-member chunk (indSinc 1) takes the same no-receipt disposition (#1654 §1)', () => {
+      function expectSyncHomologacaoCall(): void {
+        expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+        const [call, args] = vi.mocked(autorizarLote).mock.calls[0]!;
+        expect(call.tpAmb).toBe('2');
+        expect(call.url.startsWith('https://example/')).toBe(true);
+        expect(args.indSinc).toBe('1');
+      }
+
+      it('a crash-window member (STORED bytes) refused lote-level 225 stays an anchor with its stored bytes', async () => {
+        const { fs, docs } = fakeFirestore({
+          events: [],
+          pedidos: seedMixedChunkPedidos().filter((p) => p.pedidoId === 'PED-CRASH'),
+        });
+        autorizarLoteAsyncSemRecibo('225', 'Rejeicao: Falha no Schema XML do lote de NFe');
+        const { scheduler, enqueued } = recordingScheduler();
+
+        const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-CRASH'], scheduler);
+
+        expectSyncHomologacaoCall();
+        expect(vi.mocked(autorizarLote).mock.calls[0]![1].NFe).toEqual([STORED_XML]);
+        expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+        expect(docs[nfePath('PED-CRASH')]).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat: '225',
+          nRec: null,
+          xml_assinado: STORED_XML,
+        });
+        expect(out.results).toEqual([
+          expect.objectContaining({
+            pedidoId: 'PED-CRASH',
+            estado: ESTADO_NFE.aguardandoResposta,
+            cStat: '225',
+            nRec: null,
+            reused: false,
+          }),
+        ]);
+        expectNoConsultNoEnqueue(enqueued);
+      });
+
+      it('near-miss: a FRESH member refused the same way is rejeitada — its bytes were never sent before', async () => {
+        const { fs, docs } = fakeFirestore({
+          events: [],
+          pedidos: [{ pedidoId: 'PED-FRESH', filialId: 'F-1' }],
+        });
+        autorizarLoteAsyncSemRecibo('225', 'Rejeicao: Falha no Schema XML do lote de NFe');
+        const { scheduler, enqueued } = recordingScheduler();
+
+        const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH'], scheduler);
+
+        expectSyncHomologacaoCall();
+        expect(docs[nfePath('PED-FRESH')]).toMatchObject({
+          estado: ESTADO_NFE.rejeitada,
+          cStat: '225',
+          nRec: null,
+          proximaConsultaEm: null,
+        });
+        expect(out.results).toEqual([
+          expect.objectContaining({
+            pedidoId: 'PED-FRESH',
+            estado: ESTADO_NFE.rejeitada,
+            reused: false,
+          }),
+        ]);
+        expectNoConsultNoEnqueue(enqueued);
+      });
+
+      it('a protNFe for ANOTHER chave is never applied to the one member — it stays enviando, no proc', async () => {
+        const { fs, docs, writes } = fakeFirestore({
+          events: [],
+          pedidos: [{ pedidoId: 'PED-FRESH', filialId: 'F-1' }],
+        });
+        const nossa = fakeChave(1, 1);
+        const vizinha = `${nossa.slice(0, 43)}${nossa.endsWith('9') ? '0' : '9'}`;
+        autorizarLoteAsyncSemRecibo('104', 'Lote processado', {
+          protNFe: {
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'TEST',
+              chNFe: vizinha,
+              dhRecbto: new Date().toISOString(),
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              nProt: '135000000000001',
+            },
+          },
+        });
+        const { scheduler, enqueued } = recordingScheduler();
+
+        const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH'], scheduler);
+
+        expectSyncHomologacaoCall();
+        expect(generatedChaves).toEqual([nossa]);
+        expect(docs[nfePath('PED-FRESH')]).toMatchObject({
+          estado: ESTADO_NFE.enviando,
+          cStat: '104',
+          chave: nossa,
+        });
+        expect(
+          writes.some(
+            (w) => w.path === nfePath('PED-FRESH') && typeof w.data.xml_nfe_proc === 'string',
+          ),
+        ).toBe(false);
+        expect(out.results).toEqual([
+          expect.objectContaining({
+            pedidoId: 'PED-FRESH',
+            estado: ESTADO_NFE.enviando,
+            chave: nossa,
+          }),
+        ]);
+        expectNoConsultNoEnqueue(enqueued);
+      });
     });
   });
 
