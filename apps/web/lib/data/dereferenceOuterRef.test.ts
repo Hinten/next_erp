@@ -91,6 +91,8 @@ describe('dereferenceOuterRef', () => {
     it.each([
       { path: 'clientes/x', id: 'x', firestore: null },
       { path: 'clientes/x', id: 'x', firestore: null, parent: null },
+      // A real ref's `id` is always a string (the `/clientes/{id}` link reads it).
+      { path: 'clientes/x', id: 42, firestore: null, parent: { id: 'clientes' } },
     ])('%j → a real ref to clientes/x', (map) => {
       const ref = dereferenceOuterRef(db, map);
       expect(ref).toBeInstanceOf(DocumentReference);
