@@ -82,10 +82,12 @@ export interface ConsultaChaveResult {
  * (`terminalBloqueante`), as is a 656 or a refused receipt query. A receipt
  * that says nothing about the chave (`aguardar`) puts the doc back in flight
  * on that receipt, paced like the reconcile — never `error` with a
- * non-blocking cStat or `rejeitada`. Unlike the
- * reconcile nothing is counted and a 106 is consulted at once: the call is
- * operator-initiated, and it still resets `retries` (`applyOutcome`). With no
- * receipt at all it goes straight to `consSitNFe`.
+ * non-blocking cStat or `rejeitada`. A stored `rejeitada` is left as it is by
+ * such a receipt, a 656 or a refused receipt query: SEFAZ's answer about the
+ * chave stands and nothing is written. Unlike the reconcile nothing is
+ * counted and a 106 is consulted at once: the call is operator-initiated, and
+ * it still resets `retries` (`applyOutcome`). With no receipt at all it goes
+ * straight to `consSitNFe`.
  *
  * Every SEFAZ round-trip appends an `enviNfe` audit doc. The final outcome
  * runs `applyOutcome` (with the doc's current estado/cStat/xMotivo, so the
@@ -209,6 +211,14 @@ export async function consultarChavePersistida(params: {
   let patch: NFeStatePatch;
   // The minimum wait of a round that stays in flight on a paralisado receipt.
   let espera: number | null = null;
+  // A stored `rejeitada` is SEFAZ's conclusive answer about this chave, and
+  // the emit path keeps its fix-and-resend branch open (a rejection frees the
+  // número). A receipt round that says nothing about the chave (`aguardar`)
+  // or is terminal on its own (a 656, a refused query) leaves it as it is:
+  // back in flight or a blocking `error` would shut that branch although
+  // nothing new was learned.
+  const rejeicaoConclusiva = current.estado === ESTADO_NFE.rejeitada;
+  let rejeicaoMantida = false;
   if (msgWithNRec?.nRec) {
     const nRec = msgWithNRec.nRec;
     // Per-run dedupe: N chaves of the same lote share one consReciNFe
@@ -242,11 +252,15 @@ export async function consultarChavePersistida(params: {
     if (decisao.tipo === 'por-chave') {
       patch = await resolverPorChave(patch, retRec.cStat, nRec, decisao.motivo);
     } else if (decisao.tipo === 'terminal') {
-      patch = terminalBloqueante(
-        patch,
-        retRec.cStat,
-        `recibo ${nRec}: cStat ${outcome.cStat}, sem nova consulta — verificar manualmente`,
-      );
+      if (rejeicaoConclusiva) {
+        rejeicaoMantida = true;
+      } else {
+        patch = terminalBloqueante(
+          patch,
+          retRec.cStat,
+          `recibo ${nRec}: cStat ${outcome.cStat}, sem nova consulta — verificar manualmente`,
+        );
+      }
     } else if (decisao.tipo === 'aguardar') {
       // Nothing about the chave: never out of flight, as in the reconcile.
       // `applyOutcome` keeps the current estado for a null-mapped
@@ -256,12 +270,14 @@ export async function consultarChavePersistida(params: {
       // SEFAZ may hold. Back in flight on this receipt instead, as 103/105
       // already map: the emit path skips an in-flight doc with an nRec, and the
       // sweep consults it again, paced like the reconcile on a paralisado one.
+      // A stored rejeitada is left as it is (see `rejeicaoConclusiva`).
       if (
         !isEstadoFinalNFe(patch.estado) &&
         patch.estado !== ESTADO_NFE.enviando &&
         patch.estado !== ESTADO_NFE.aguardandoResposta
       ) {
-        patch = { ...patch, estado: ESTADO_NFE.aguardandoResposta };
+        if (rejeicaoConclusiva) rejeicaoMantida = true;
+        else patch = { ...patch, estado: ESTADO_NFE.aguardandoResposta };
       }
       if (patch.estado === ESTADO_NFE.aguardandoResposta) {
         espera = esperaMinimaDoRecibo(retRec.cStat);
@@ -271,6 +287,26 @@ export async function consultarChavePersistida(params: {
     // The no-nRec path already IS the consSit, so it never re-consults.
     outcome = await consultarPorChave();
     patch = applyOutcome(current, outcome);
+  }
+
+  if (rejeicaoMantida) {
+    // Nothing learned about the chave, so nothing is written: the doc's own
+    // cStat/xMotivo are reported (the receipt's answer is in the audit log),
+    // and a 656 still raises `consumoIndevido` for the batch caller.
+    return {
+      patch: {
+        estado: current.estado,
+        cStat: current.cStat ?? outcome.cStat,
+        xMotivo: current.xMotivo ?? outcome.xMotivo,
+        retries: current.retries,
+        nRec: null,
+        action: 'done-rejected',
+        tMed: null,
+      },
+      chaveFinal: chave,
+      nRecUsado: msgWithNRec?.nRec ?? null,
+      consumoIndevido,
+    };
   }
 
   // cStat=539 (duplicidade com chave diferente): recover the SEFAZ-asserted

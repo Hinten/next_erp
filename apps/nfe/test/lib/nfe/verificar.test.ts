@@ -830,6 +830,129 @@ describe('verificarEnviNfeMsgs — the receipt round shares reconcile’s decisi
     },
   );
 
+  describe('a stored rejeitada — SEFAZ’s conclusive answer about the chave', () => {
+    const XMOTIVO_778 = 'Rejeicao: Informado NCM inexistente';
+
+    /**
+     * Our protNFe in REC-1 rejected the chave (778): the número is free, and
+     * the emit path keeps the fix-and-resend branch open for a rejeitada doc
+     * (it skips only an in-flight doc with an nRec).
+     */
+    function rejeitadaPeloProtocolo(): void {
+      seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+      seedNfev4([
+        { chave: CHAVE_A, estado: ESTADO_NFE.rejeitada, cStat: '778', xMotivo: XMOTIVO_778 },
+      ]);
+      vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+    }
+
+    it.each([
+      ['says nothing', '107'],
+      ['says nothing (paralisado)', '108'],
+      ['says nothing (paralisado)', '109'],
+      ['says nothing (SVC)', '113'],
+      ['says nothing (SVC)', '114'],
+      ['says nothing (not TStat-shaped)', ''],
+      ['is terminal (consumo indevido)', '656'],
+      ['is terminal (refused query)', '252'],
+      ['is terminal (refused query)', '999'],
+    ])(
+      "a receipt that %s ('%s') leaves it as it is — never back in flight, never a blocking error",
+      async (_caso, loteCStat) => {
+        rejeitadaPeloProtocolo();
+        vi.mocked(consultarLote).mockResolvedValue(consReciRet(loteCStat) as never);
+
+        const r = await verificar();
+
+        expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+        // Nothing was learned about the chave, so nothing is written.
+        expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
+        expect(r.results[0]).toMatchObject({
+          status: 'sem-mudanca',
+          estadoAnterior: ESTADO_NFE.rejeitada,
+          estadoNovo: ESTADO_NFE.rejeitada,
+          cStat: '778',
+          xMotivo: XMOTIVO_778,
+        });
+      },
+    );
+
+    it('a lote-level 656 still aborts the run, although nothing was written', async () => {
+      seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A, CHAVE_B] } });
+      seedNfev4([
+        { chave: CHAVE_A, estado: ESTADO_NFE.rejeitada, cStat: '778', xMotivo: XMOTIVO_778 },
+        { chave: CHAVE_B, estado: ESTADO_NFE.aguardandoResposta },
+      ]);
+      vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('656') as never);
+
+      const r = await verificar();
+
+      expect(r.results[1]).toMatchObject({
+        chave: CHAVE_B,
+        status: 'erro',
+        error: 'verificação interrompida — cStat 656 (consumo indevido)',
+      });
+      expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
+    });
+
+    it('near-miss: our protNFe in the receipt IS about the chave — applied and written as before', async () => {
+      rejeitadaPeloProtocolo();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('104', '778') as never);
+
+      const r = await verificar();
+
+      expect(persistido()).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat: '778' });
+      expect(r.results[0]).toMatchObject({ estadoNovo: ESTADO_NFE.rejeitada, cStat: '778' });
+    });
+
+    it('near-miss: a lote still processing (105) maps in flight on its own, as before', async () => {
+      rejeitadaPeloProtocolo();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('105') as never);
+
+      await verificar();
+
+      expect(persistido()).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: '105',
+        nRec: 'REC-1',
+      });
+    });
+
+    /** An `error` doc with a NON-blocking cStat — e.g. the sweep's legacy consSit 656. */
+    function errorNaoBloqueante(): void {
+      seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+      seedNfev4([
+        { chave: CHAVE_A, estado: ESTADO_NFE.error, cStat: '656', xMotivo: 'Consumo indevido' },
+      ]);
+      vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+    }
+
+    it('near-miss: an error doc with a non-blocking cStat + a receipt that says nothing (108) → still back in flight', async () => {
+      errorNaoBloqueante();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('108') as never);
+
+      await verificar();
+
+      expect(persistido()).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'REC-1',
+      });
+    });
+
+    it('near-miss: an error doc with a non-blocking cStat + a refused receipt query (252) → still the BLOCKING terminal', async () => {
+      errorNaoBloqueante();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('252') as never);
+
+      await verificar();
+
+      const patch = persistido();
+      expect(patch).toMatchObject({ estado: ESTADO_NFE.error, cStat: '103' });
+      expect(isBloqueada(patch.cStat)).toBe(true);
+    });
+  });
+
   describe('our protNFe 204 carrying an [nRec:X] marker', () => {
     const MARCADOR = '351000000000999';
 
