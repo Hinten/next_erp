@@ -16,6 +16,11 @@
  * cStat. Every write goes through the guarded `persistPatchUnlessFinal` (rule
  * 7) — a tripwire on every case asserts the plain `persistPatch` is never
  * called — and the race cases run the REAL guard over an in-memory store.
+ * #1654 §2c/§2d: a vanished doc, a transient Firestore failure and a failed
+ * 539-recovery SOAP call are isolated per doc (and nothing else is), the
+ * consSit breaker lives in the caller's `disjuntor` cell so a trip survives a
+ * later throw, and a recovered 539 swaps its chave only inside the round's own
+ * guarded write.
  * `outcomeFromConsReci`, `outcomeFromRetConsSit`, `applyOutcome`,
  * `classifyCStat`, `markAsLost`, the digest-safe proc stitch and `sefazCallFor`
  * run REAL.
@@ -82,12 +87,15 @@ import { nfev4Collection } from '@delfrance/data/admin/collections';
 
 import {
   buildEnviNFeMsgFromConsulta,
+  enviNfeCollection,
   findLatestEnviNFeMsgWithNRec,
   type GuardedPersistResult,
   type PersistGuard,
   persistPatch,
   persistPatchUnlessFinal,
 } from '../../../lib/nfe/orchestrator/audit';
+import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
+import type { DisjuntorConsSit } from '../../../lib/nfe/orchestrator/lote-sem-protocolo';
 import {
   reconcileByRecibo,
   type ReconcileLoteResult,
@@ -2557,5 +2565,354 @@ describe('reconcileByRecibo — one decision per consReci round (#1654)', () => 
     expect(guardasFor(DOC)).toEqual([guardaDe(0)]);
     expect(loja.docs[DOC]).toMatchObject(outroRunner);
     expectHomologacaoOnly();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1654 §2c/§2d — a failing doc does not take the round down with it, the
+// consSit breaker lives in the CALLER's cell (so a trip survives a later
+// throw), and a recovered 539's chave swap rides the round's own guarded write.
+// ---------------------------------------------------------------------------
+
+describe('reconcileByRecibo — per-doc isolation, the breaker cell and the 539 swap (#1654)', () => {
+  /** An Admin-SDK Firestore failure: an `Error` carrying the numeric gRPC `code`. */
+  const grpc = (code: number): Error => Object.assign(new Error(`${code} gRPC status`), { code });
+
+  /** Route the guarded persist (and the plain one, for the tripwire) to the REAL audit module. */
+  async function persistReal(): Promise<void> {
+    const real = await vi.importActual<typeof import('../../../lib/nfe/orchestrator/audit')>(
+      '../../../lib/nfe/orchestrator/audit',
+    );
+    vi.mocked(persistPatchUnlessFinal).mockImplementation(real.persistPatchUnlessFinal);
+    vi.mocked(persistPatch).mockImplementation(real.persistPatch);
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  describe('a doc that fails does not abort the round — only the named causes are isolated', () => {
+    it('doc A deleted between the query and its write, next to doc B → A skipped (no partial doc), B aprovada, the call resolves', async () => {
+      const loja = lojaEmMemoria();
+      const [a, b] = seedDocs([{}, { chave: CHAVE_B }], loja.docs);
+      // B is in the store; A was deleted after the in-flight query read it.
+      loja.docs[b!.path] = { ...b!.data };
+      await persistReal();
+      vi.mocked(consultarLote).mockResolvedValue(loteRetComProts([CHAVE, CHAVE_B]) as never);
+
+      const r = await reconcileByRecibo({ ...baseArgs, fs: loja.fs, attempt: 0 });
+
+      // A is neither pending nor recovered: there is nothing left to reconcile.
+      expect(r).toMatchObject({ scanned: 2, recovered: 1, stillPending: 0, errored: 0 });
+      expect(loja.docs[a!.path]).toBeUndefined();
+      expect(loja.docs[b!.path]).toMatchObject({ estado: ESTADO_NFE.aprovada, cStat: '100' });
+      // One single-argument line names the vanished path and the receipt.
+      const aviso = vi
+        .mocked(console.warn)
+        .mock.calls.find(([msg]) => String(msg).includes('sumiu'));
+      expect(aviso).toHaveLength(1);
+      expect(aviso![0]).toContain(a!.path);
+      expect(aviso![0]).toContain('REC-1');
+      expectHomologacaoOnly();
+    });
+
+    it.each([4, 8, 10, 13, 14])(
+      "a TRANSIENT Firestore failure (gRPC %i) on A's audit add → A left pending and unwritten, B reconciled, the call resolves",
+      async (code) => {
+        seedDocs([{ retries: 2 }, { chave: CHAVE_B, retries: 2 }]);
+        vi.mocked(consultarLote).mockResolvedValue(loteRetComProts([CHAVE, CHAVE_B]) as never);
+        vi.mocked(enviNfeCollection).mockReturnValueOnce({
+          add: vi.fn().mockRejectedValue(grpc(code)),
+        } as never);
+
+        const r = await reconcileByRecibo({ ...baseArgs, attempt: 2 });
+
+        // A's live state is unknown — pending, so the task re-reads it next round.
+        expect(r).toMatchObject({ scanned: 2, stillPending: 1, recovered: 1, errored: 0 });
+        expect(writesFor(DOC)).toEqual([]);
+        expect(writesFor(DOC_B).map((w) => w.patch.estado)).toEqual([ESTADO_NFE.aprovada]);
+        // Redacted through safeLog: a label naming the chave and the receipt,
+        // then the error's name/message/code only.
+        const log = vi
+          .mocked(console.error)
+          .mock.calls.find(([msg]) => String(msg).includes('falhou'));
+        expect(log![0]).toContain(CHAVE);
+        expect(log![0]).toContain('REC-1');
+        expect(log![1]).toEqual({ name: 'Error', message: `${code} gRPC status`, code });
+        expectHomologacaoOnly();
+      },
+    );
+
+    it("a transient failure (gRPC 10, ABORTED) on A's GUARDED WRITE → A pending, B reconciled", async () => {
+      seedDocs([{}, { chave: CHAVE_B }]);
+      vi.mocked(consultarLote).mockResolvedValue(loteRetComProts([CHAVE, CHAVE_B]) as never);
+      vi.mocked(persistPatchUnlessFinal).mockRejectedValueOnce(grpc(10));
+
+      const r = await reconcileByRecibo({ ...baseArgs, attempt: 0 });
+
+      expect(r).toMatchObject({ scanned: 2, stillPending: 1, recovered: 1, errored: 0 });
+      expect(writesFor(DOC_B).map((w) => w.patch.estado)).toEqual([ESTADO_NFE.aprovada]);
+      expectHomologacaoOnly();
+    });
+
+    it.each<[string, () => Error]>([
+      ['gRPC 3 (INVALID_ARGUMENT)', () => grpc(3)],
+      ['gRPC 9 (FAILED_PRECONDITION)', () => grpc(9)],
+      ['gRPC 7 (PERMISSION_DENIED)', () => grpc(7)],
+      [
+        'a TypeError (a bug)',
+        () => new TypeError("Cannot read properties of undefined (reading 'x')"),
+      ],
+      [
+        'a plain NFeOrchestratorError — NOT the vanished-doc subclass',
+        () => new NFeOrchestratorError('outra falha'),
+      ],
+    ])(
+      "near-miss: %s on A's write → the call REJECTS with it, and B is never reached",
+      async (_caso, erro) => {
+        seedDocs([{}, { chave: CHAVE_B }]);
+        vi.mocked(consultarLote).mockResolvedValue(loteRetComProts([CHAVE, CHAVE_B]) as never);
+        const e = erro();
+        vi.mocked(persistPatchUnlessFinal).mockRejectedValueOnce(e);
+
+        await expect(reconcileByRecibo({ ...baseArgs, attempt: 0 })).rejects.toBe(e);
+
+        expect(writesFor(DOC_B)).toEqual([]);
+        expectHomologacaoOnly();
+      },
+    );
+  });
+
+  describe("the consSit breaker lives in the CALLER's cell — a trip survives a later throw", () => {
+    it("A's consSit answers 656, then B's terminal write throws gRPC 3 → the call rejects, and the caller's cell holds consumo-indevido", async () => {
+      seedDocs([{}, { chave: CHAVE_B }]);
+      vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
+      vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+        chave === CHAVE
+          ? consSitRet('656', { xMotivo: 'Rejeicao: Consumo Indevido' })
+          : consSitRet('100', { protCStat: '100', chNFe: CHAVE_B }),
+      );
+      const falha = grpc(3);
+      vi.mocked(persistPatchUnlessFinal).mockImplementation(async (_fs, ref) => {
+        if (ref.path === DOC_B) throw falha;
+        return { written: true };
+      });
+      const disjuntor: DisjuntorConsSit = { bloqueio: null };
+
+      await expect(reconcileByRecibo({ ...baseArgs, attempt: 0, disjuntor })).rejects.toBe(falha);
+
+      // The trip is the caller's to keep, although no result ever came back.
+      expect(disjuntor.bloqueio).toEqual({
+        tipo: 'consumo-indevido',
+        chave: CHAVE,
+        xMotivo: 'Rejeicao: Consumo Indevido',
+      });
+      // B went terminal WITHOUT a consSit — the breaker held inside the run too.
+      expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+      expect(writesFor(DOC_B).map((w) => w.patch.estado)).toEqual([ESTADO_NFE.error]);
+      expectHomologacaoOnly();
+    });
+
+    it("A's consSit answers 656 and THAT answer's audit add fails transiently → A pending, yet the trip holds: B terminal with no consSit", async () => {
+      seedDocs([{}, { chave: CHAVE_B }]);
+      vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
+      vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+        chave === CHAVE
+          ? consSitRet('656', { xMotivo: 'Rejeicao: Consumo Indevido' })
+          : consSitRet('100', { protCStat: '100', chNFe: CHAVE_B }),
+      );
+      // A's audits, in order: its receipt round (ok), then its consSit (fails).
+      vi.mocked(enviNfeCollection)
+        .mockReturnValueOnce({ add: vi.fn() } as never)
+        .mockReturnValueOnce({ add: vi.fn().mockRejectedValue(grpc(14)) } as never);
+      const disjuntor: DisjuntorConsSit = { bloqueio: null };
+
+      const r = await reconcileByRecibo({ ...baseArgs, attempt: 0, disjuntor });
+
+      // The answer tripped the breaker BEFORE the await that failed.
+      expect(disjuntor.bloqueio).toMatchObject({ tipo: 'consumo-indevido', chave: CHAVE });
+      expect(r).toMatchObject({ scanned: 2, stillPending: 1, errored: 1 });
+      expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+      expect(writesFor(DOC_B).map((w) => w.patch.estado)).toEqual([ESTADO_NFE.error]);
+      expectHomologacaoOnly();
+    });
+
+    it("an outage trip (consSit 108 on A) lands in the caller's cell, and the result reports the same breaker", async () => {
+      seedDocs([{}, { chave: CHAVE_B }]);
+      vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
+      vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('108'));
+      const disjuntor: DisjuntorConsSit = { bloqueio: null };
+
+      const r = await reconcileByRecibo({ ...baseArgs, attempt: 0, disjuntor });
+
+      expect(r).toMatchObject({ scanned: 2, stillPending: 2 });
+      expect(disjuntor.bloqueio).toEqual({ tipo: 'indisponivel', detalhe: 'consSit cStat 108' });
+      expect(r.bloqueioConsSit).toEqual(disjuntor.bloqueio);
+      expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+      expectHomologacaoOnly();
+    });
+
+    it('a cell the caller already tripped (a 656 on an earlier lote of the filial) → no consSit at all; the doc terminal', async () => {
+      seedDoc();
+      vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
+      const disjuntor: DisjuntorConsSit = {
+        bloqueio: {
+          tipo: 'consumo-indevido',
+          chave: CHAVE_B,
+          xMotivo: 'Rejeicao: Consumo Indevido',
+        },
+      };
+
+      const r = await reconcileByRecibo({ ...baseArgs, attempt: 0, disjuntor });
+
+      expect(r).toMatchObject({ scanned: 1, errored: 1 });
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      expect(lastPatch().xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+      expect(lastPatch().xMotivo).toContain(CHAVE_B);
+      expectHomologacaoOnly();
+    });
+  });
+
+  describe("the 539 recovery's own SOAP call fails → the round is COUNTED, never thrown", () => {
+    /** Lote REC-1 answers our 539; the earlier receipt REC-0 fails with `erro`. */
+    function recuperacaoFalha(erro: () => Error): void {
+      vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValueOnce({ nRec: 'REC-0' } as never);
+      vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) => {
+        if (nRec === 'REC-1') return loteRet539() as never;
+        throw erro();
+      });
+    }
+
+    it.each<[string, () => Error]>([
+      ['NFeTransportError', () => new NFeTransportError('ECONNRESET')],
+      [
+        'NFeXsdValidationError',
+        () => new NFeXsdValidationError('retConsReciNFe', [{ message: 'campo inválido', line: 1 }]),
+      ],
+      ['NFeXmlError', () => new NFeXmlError('XML malformado')],
+    ])(
+      '%s on the earlier receipt → aguardandoResposta, retries+1 on the doc’s own count, guarded on the retries as read, no swap',
+      async (nome, erro) => {
+        seedDoc({ retries: 3 });
+        recuperacaoFalha(erro);
+
+        const r = await reconcileByRecibo({ ...baseArgs, attempt: 3 });
+
+        expect(r).toMatchObject({ scanned: 1, stillPending: 1, recovered: 0, errored: 0 });
+        expect(vi.mocked(consultarLote).mock.calls.map(([, args]) => args.nRec)).toEqual([
+          'REC-1',
+          'REC-0',
+        ]);
+        const escritas = writesFor(DOC);
+        expect(escritas).toHaveLength(1);
+        expect(escritas[0]!.patch).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          retries: 4,
+        });
+        expect(escritas[0]!.patch.xMotivo).toContain(`recuperação do 539 falhou (${nome})`);
+        expect(escritas[0]!.patch.xMotivo).toContain(`(consulta 4/${MAX_RECONCILE_ATTEMPTS})`);
+        expect(escritas[0]!.extras?.chave).toBeUndefined();
+        expect(guardasFor(DOC)).toEqual([guardaDe(3)]);
+        expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+        expectHomologacaoOnly();
+      },
+    );
+
+    it('at the cap → terminal error with the round’s BLOCKING cStat 104, the 539 in xMotivo — the chain ends', async () => {
+      seedDoc({ retries: MAX_RECONCILE_ATTEMPTS - 1 });
+      recuperacaoFalha(() => new NFeTransportError('ECONNRESET'));
+
+      const r = await reconcileByRecibo({ ...baseArgs, attempt: MAX_RECONCILE_ATTEMPTS - 1 });
+
+      expect(r).toMatchObject({ scanned: 1, stillPending: 0, recovered: 0, errored: 1 });
+      const patch = lastPatch();
+      expect(patch).toMatchObject({
+        estado: ESTADO_NFE.error,
+        cStat: '104',
+        retries: MAX_RECONCILE_ATTEMPTS,
+      });
+      expect(isBloqueada(patch.cStat)).toBe(true);
+      expect(patch.xMotivo).toContain('cStat 539');
+      expect(patch.xMotivo).toContain('recuperação do 539 falhou');
+      expect(patch.xMotivo).toMatch(/verificar manualmente/);
+      expectHomologacaoOnly();
+    });
+
+    it('near-miss: a TypeError from the recovery is NOT counted — the call rejects', async () => {
+      seedDoc({ retries: 3 });
+      const bug = new TypeError("Cannot read properties of undefined (reading 'cStat')");
+      recuperacaoFalha(() => bug);
+
+      await expect(reconcileByRecibo({ ...baseArgs, attempt: 3 })).rejects.toBe(bug);
+
+      expect(writesFor(DOC)).toEqual([]);
+      expectHomologacaoOnly();
+    });
+  });
+
+  describe('§2d — a recovered 539 swaps the chave in the round’s OWN guarded write (real guard)', () => {
+    /**
+     * One doc in the store; lote REC-1 answers our 539, and the earlier receipt
+     * REC-0 authorizes the chave SEFAZ asserted. With `concorrente`, another
+     * writer's terminal lands during that recovery's `consReciNFe`.
+     */
+    async function com539Recuperavel(
+      concorrente?: Record<string, unknown>,
+      over: Record<string, unknown> = {},
+    ): Promise<ReturnType<typeof lojaEmMemoria>> {
+      const loja = lojaEmMemoria();
+      const [semente] = seedDocs([over], loja.docs);
+      loja.docs[semente!.path] = { ...semente!.data };
+      await persistReal();
+      vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValueOnce({ nRec: 'REC-0' } as never);
+      vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) => {
+        if (nRec === 'REC-1') return loteRet539() as never;
+        if (concorrente) loja.docs[DOC] = { ...loja.docs[DOC], ...concorrente };
+        return { ...(loteRet('104', '100', { chNFe: OUTRA_CHAVE }) as object), nRec } as never;
+      });
+      return loja;
+    }
+
+    it('control: ONE guarded write carries the recovered estado AND the chave — and no proc, though the stored digest matches', async () => {
+      // Stored bytes whose digest matches the fixtures' digVal: only the swap
+      // keeps a proc off this write (our signed XML is for the OLD chave).
+      const loja = await com539Recuperavel(undefined, { xml_assinado: XML_DIGEST_OK });
+
+      const r = await reconcileByRecibo({ ...baseArgs, fs: loja.fs, attempt: 0 });
+
+      expect(r).toMatchObject({ scanned: 1, recovered: 1, stillPending: 0, errored: 0 });
+      const escritas = writesFor(DOC);
+      expect(escritas).toHaveLength(1);
+      expect(escritas[0]).toMatchObject({
+        via: 'persistPatchUnlessFinal',
+        patch: { estado: ESTADO_NFE.aprovada, cStat: '100' },
+      });
+      expect(escritas[0]!.extras).toEqual({ chave: OUTRA_CHAVE });
+      expect(guardasFor(DOC)).toEqual([guardaDe(0)]);
+      expect(loja.docs[DOC]).toMatchObject({
+        estado: ESTADO_NFE.aprovada,
+        cStat: '100',
+        chave: OUTRA_CHAVE,
+        xml_assinado: XML_DIGEST_OK,
+      });
+      expectHomologacaoOnly();
+    });
+
+    it('a concurrent aprovada lands during the recovery’s consReciNFe → the write is REFUSED and the chave is NOT swapped', async () => {
+      const concorrente = {
+        estado: ESTADO_NFE.aprovada,
+        cStat: '100',
+        xMotivo: 'Autorizado o uso da NF-e (outro runner)',
+      };
+      const loja = await com539Recuperavel(concorrente);
+
+      const r = await reconcileByRecibo({ ...baseArgs, fs: loja.fs, attempt: 0 });
+
+      // Tallied by the live estado; nothing of this round reached the doc.
+      expect(r).toMatchObject({ scanned: 1, recovered: 1, stillPending: 0, errored: 0 });
+      expect(loja.docs[DOC]).toMatchObject({ ...concorrente, chave: CHAVE });
+      expectHomologacaoOnly();
+    });
   });
 });

@@ -28,7 +28,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { EmitResult } from './bundle';
-import { NFeOrchestratorError } from './errors';
+import { NFeDocAusenteError } from './errors';
 
 /** A filial's `enviNfe` audit-log subcollection, via the validated handle. */
 export function enviNfeCollection(fs: Firestore, filialId: string) {
@@ -283,9 +283,10 @@ export function buildProcForAuthorizedOutcome(params: {
  * anyway; this copy is just for the NFCell.
  *
  * `extras` lets the caller stamp other fields in the same write —
- * currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
- * generic so future fields (e.g. `data_autorizacao`, `nProt`) can
- * ride along without another method.
+ * currently used for `xml_nfe_proc` on cStat=100 (autorizada), a
+ * recovered 539's `chave` (`extrasDaTrocaDeChave`) and the paced
+ * `proximaConsultaEm`. Kept generic so future fields (e.g.
+ * `data_autorizacao`, `nProt`) can ride along without another method.
  *
  * `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
  * patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
@@ -449,16 +450,20 @@ export type GuardedPersistResult =
  *    A concurrent terminal (a 656 `error`, a 217 `rejeitada`) or a concurrent
  *    counted write by another runner therefore refuses the write instead of
  *    being overwritten by a decision taken on a pre-read.
- * Under a guard a MISSING doc throws `NFeOrchestratorError` and nothing is
- * written — every guarded writer anchored the doc before its SEFAZ call, so a
- * merge would only mint a partial doc; without a guard it is written as
+ * Under a guard a MISSING doc throws `NFeDocAusenteError` (an
+ * `NFeOrchestratorError`, carrying the doc's `path`) and nothing is written —
+ * every guarded writer anchored the doc before its SEFAZ call, so a merge
+ * would only mint a partial doc; `reconcileByRecibo` skips that one doc and
+ * reconciles the rest of the lote (#1654). Without a guard it is written as
  * before. Every check is decided on the `tx.get` snapshot, never on a
  * pre-read.
  *
- * Still unguarded on the reconcile paths: `runProcessarPendentes`'
- * consult-by-chave branch for legacy (no-`nRec`) docs (the plain
- * `persistPatch`), and `recover539IfNeeded`'s chave swap — its own plain
- * merge, landing ahead of `reconcileByRecibo`'s guarded write.
+ * A recovered 539's chave swap rides the caller's own write as `extras`
+ * (`extrasDaTrocaDeChave`, #1654 §2d), so here — `reconcileByRecibo` and the
+ * manual verify — a refused write swaps nothing either. Still unguarded on the
+ * reconcile paths: `runProcessarPendentes`' consult-by-chave branch for
+ * legacy (no-`nRec`) docs (the plain `persistPatch`, whose merge now carries
+ * that swap atomically with the outcome, but cannot be refused).
  */
 export async function persistPatchUnlessFinal(
   fs: Firestore,
@@ -472,7 +477,8 @@ export async function persistPatchUnlessFinal(
     if (!snap.exists && guard != null) {
       // Thrown inside the callback: the transaction aborts (a non-Firestore
       // error is never retried) with no write.
-      throw new NFeOrchestratorError(
+      throw new NFeDocAusenteError(
+        nfeRef.path,
         `nfev4 ${nfeRef.path} ausente ao gravar ${alvoDaGuarda(guard)} — nada gravado`,
       );
     }

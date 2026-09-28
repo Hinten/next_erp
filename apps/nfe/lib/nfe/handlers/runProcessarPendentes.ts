@@ -7,8 +7,13 @@
  * `enviando` / `aguardandoResposta` / `epecAprovado`, then: transmits approved
  * EPECs once the filial leaves contingency, reconciles due lotes by receipt
  * (`reconcileByRecibo`, deduped by `nRec`), and consults legacy (no-`nRec`) docs
- * by chave. Per-doc errors are accumulated, never thrown — the sweep always
- * returns a full report.
+ * by chave.
+ *
+ * Per-item failures of a KNOWN class (`descreverFalhaConhecida`, the one table
+ * in `orchestrator/falhas.ts`) are accumulated in `errors` and the run goes on;
+ * an unknown class — a bug — is rethrown (rule 6, #1654), so the run aborts
+ * loudly: the scheduled function fails and the next tick retries, the manual
+ * route answers 500. A lote after the failing one waits for that retry.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -39,8 +44,9 @@ import {
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
 import { reconcileCartaCorrecaoVinculo } from '../orchestrator/carta-correcao';
 import { transmitirPosEpec } from '../orchestrator/epec';
-import type { BloqueioConsSit } from '../orchestrator/lote-sem-protocolo';
-import { recover539IfNeeded } from '../orchestrator/recover539';
+import { descreverFalhaConhecida } from '../orchestrator/falhas';
+import type { BloqueioConsSit, DisjuntorConsSit } from '../orchestrator/lote-sem-protocolo';
+import { extrasDaTrocaDeChave, recover539IfNeeded } from '../orchestrator/recover539';
 import { reconcileByRecibo } from '../orchestrator/reconcile';
 import { autorizadorDe, sefazCallFor } from '../orchestrator/sefaz-call';
 
@@ -62,11 +68,20 @@ interface PendingDoc {
   readonly chave: string | null;
   readonly tpEmis: number | null;
   readonly filialId: string | null;
-  readonly ultima_modificacao: string | null;
+  /**
+   * The last write, as the RAW stored value — `doc.data()` is read without the
+   * schema. `nfeSchema` stores a ms number, and so does the legacy Flutter
+   * corpus; `isStuckEnviando` reads any stored shape through `coerceToMillis`
+   * (#1653).
+   */
+  readonly ultima_modificacao: unknown;
   readonly retries: number | null;
   /** Lote receipt — when present, the doc is reconciled by recibo (consReci), not consSit. */
   readonly nRec: string | null;
-  /** Async-reconciler due gate (µs epoch). Null on legacy docs → fall back to `isStuckEnviando`. */
+  /**
+   * Async-reconciler due gate (µs epoch). Null on a doc nothing paces → the
+   * stuck timeout (`isStuckEnviando`) decides instead.
+   */
   readonly proximaConsultaEm: number | null;
   /** The persist-before-send anchor — feeds `buildNFeProc` when the consult recovers `autorizada`. */
   readonly xml_assinado: string | null;
@@ -74,17 +89,20 @@ interface PendingDoc {
 
 /**
  * Backstop due-gate: a doc is due iff its `proximaConsultaEm` (µs epoch) has
- * passed. Legacy docs predating the field (`proximaConsultaEm == null`) fall
- * back to the coarse `isStuckEnviando` timeout. Respecting `proximaConsultaEm`
- * is what keeps the sweep from consulting a lote the Cloud Task is already
- * pacing — the consumo-indevido guard (#77).
+ * passed. A doc with none — the persist-before-send anchor, the chave-less
+ * batch placeholder, #512's `enviando` dispositions, imported legacy docs —
+ * waits the stuck timeout instead: `isStuckEnviando` judges its stored
+ * `ultima_modificacao` against `timeoutMs`, which keeps the sweep off a send
+ * still in flight (#1653). Respecting `proximaConsultaEm` is what keeps the
+ * sweep from consulting a lote the Cloud Task is already pacing — the
+ * consumo-indevido guard (#77).
  */
 function isDue(data: PendingDoc, now: Date, timeoutMs: number): boolean {
   if (data.proximaConsultaEm != null) {
     return data.proximaConsultaEm <= now.getTime() * 1000;
   }
   return isStuckEnviando(
-    { estado: data.estado, ultima_modificacao: data.ultima_modificacao ?? null },
+    { estado: data.estado, ultima_modificacao: data.ultima_modificacao },
     now,
     timeoutMs,
   );
@@ -167,10 +185,10 @@ export async function sweepCartasCorrecaoPendentes(args: {
         recovered++;
       }
     } catch (e) {
-      errors.push({
-        chave: null,
-        error: `${doc.ref.path}: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      // Rule 6: only a known failure class is recorded; a bug aborts the run.
+      const falha = descreverFalhaConhecida(e);
+      if (falha == null) throw e;
+      errors.push({ chave: null, error: `${doc.ref.path}: ${falha.mensagem}` });
     }
   }
 
@@ -250,10 +268,10 @@ export async function runProcessarPendentes(args: {
           recovered++;
         }
       } catch (e) {
-        errors.push({
-          chave: data.chave,
-          error: e instanceof Error ? e.message : String(e),
-        });
+        // Rule 6: only a known failure class is recorded; a bug aborts the run.
+        const falha = descreverFalhaConhecida(e);
+        if (falha == null) throw e;
+        errors.push({ chave: data.chave, error: falha.mensagem });
       }
       continue;
     }
@@ -300,19 +318,19 @@ export async function runProcessarPendentes(args: {
       // or flip to terminal `error`, never left aguardandoResposta (#243). Needs
       // the filial to look up our audit log; a legacy doc with no filialId can't,
       // so it keeps the generic outcome (pre-existing behavior for that rare case).
-      let chaveSwapped = false;
+      // The recovery writes nothing: its chave swap rides the persist below.
+      let chaveOverride: string | undefined;
       if (data.filialId) {
         const recovered539 = await recover539IfNeeded({
           fs,
           bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId: data.filialId },
-          nfeRef: doc.ref,
           rt: frt,
           tpEmis: (data.tpEmis ?? 1) as TpEmis,
           outcome,
           patch,
         });
         patch = recovered539.patch;
-        chaveSwapped = recovered539.chaveOverride != null;
+        chaveOverride = recovered539.chaveOverride;
       }
 
       // A consult that lands `autorizada` carries the authoritative protNFe —
@@ -325,7 +343,7 @@ export async function runProcessarPendentes(args: {
       // doc stays aprovada WITHOUT proc for a DistDFe/manual fetch.
       const nfeProcXml = buildProcForAuthorizedOutcome({
         cStat: patch.cStat,
-        chaveMatches: !chaveSwapped && retSit.protNFe?.infProt.chNFe === data.chave,
+        chaveMatches: chaveOverride == null && retSit.protNFe?.infProt.chNFe === data.chave,
         signedXml: data.xml_assinado,
         prot: retSit.protNFe ?? null,
         logTag: 'nfe/processar-pendentes',
@@ -334,17 +352,20 @@ export async function runProcessarPendentes(args: {
       // persistPatch (not an inline merge) so its nRec preservation applies
       // here too: a consSit outcome carries no receipt, and overwriting the
       // nRec saved on cStat=103 with null would orphan the lote-poll trail.
+      // A recovered 539's chave swap rides this same merge (#1654 §2d) —
+      // atomic with the outcome, though this plain persist still cannot be
+      // refused (follow-up). A proc and a swap never meet.
       await persistPatch(
         doc.ref,
         patch,
-        nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
+        nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : extrasDaTrocaDeChave(chaveOverride),
       );
       recovered++;
     } catch (e) {
-      errors.push({
-        chave: data.chave,
-        error: e instanceof Error ? e.message : String(e),
-      });
+      // Rule 6: only a known failure class is recorded; a bug aborts the run.
+      const falha = descreverFalhaConhecida(e);
+      if (falha == null) throw e;
+      errors.push({ chave: data.chave, error: falha.mensagem });
     }
   }
 
@@ -354,8 +375,9 @@ export async function runProcessarPendentes(args: {
   // does NOT re-enqueue a Cloud Task — its own cadence (gated by the refreshed
   // `proximaConsultaEm`) is the recovery when the primary task path is lost.
   //
-  // The consSit breaker of the 104-without-our-protNFe branch (#513) is kept
-  // across the lotes of this run, not reset per lote, at two scopes:
+  // The consSit breaker of every by-chave round (`reconcilePorChave`, #513 /
+  // #1654) is kept across the lotes of this run, not reset per lote, at two
+  // scopes:
   //  - `consumo-indevido` per FILIAL: the 656 throttle is per CNPJ+IP, so after
   //    one consSit answered 656 the filial's next lotes must not consult by
   //    chave either;
@@ -363,13 +385,20 @@ export async function runProcessarPendentes(args: {
   //    `sefazCallFor` uses): a lote's consSit goes to the authorizer that owns
   //    its tpEmis, so the home SEFAZ being down says nothing about SVC-AN /
   //    SVC-RS, and must not suppress the consSit of a lote emitted there.
-  // Residual (follow-up): a reconcile that THROWS loses the breaker it tripped
-  // — the catch below has no result to read it from.
+  // Each lote gets a breaker CELL built BEFORE its `try` and read AFTER its
+  // `catch`: the reconcile writes every trip into the cell in place, so a trip
+  // survives a lote whose reconcile then throws a recorded failure (#1654).
   const consumoIndevidoPorFilial = new Map<string, BloqueioConsSit>();
   const indisponivelPorAutorizador = new Map<string, BloqueioConsSit>();
   for (const [nRec, info] of dueLotes) {
     const tpEmis = info.tpEmis as TpEmis;
     const autorizador = `${info.filialId}|${autorizadorDe(tpEmis)}`;
+    const disjuntor: DisjuntorConsSit = {
+      bloqueio:
+        consumoIndevidoPorFilial.get(info.filialId) ??
+        indisponivelPorAutorizador.get(autorizador) ??
+        null,
+    };
     try {
       const rt = await resolveFilialRuntime(fs, baseRt, info.filialId);
       const r = await reconcileByRecibo({
@@ -379,24 +408,22 @@ export async function runProcessarPendentes(args: {
         nRec,
         tpEmis,
         attempt: 0,
-        bloqueioConsSit:
-          consumoIndevidoPorFilial.get(info.filialId) ??
-          indisponivelPorAutorizador.get(autorizador) ??
-          null,
+        disjuntor,
       });
-      const bloqueio = r.bloqueioConsSit;
-      if (bloqueio?.tipo === 'consumo-indevido') {
-        consumoIndevidoPorFilial.set(info.filialId, bloqueio);
-      } else if (bloqueio?.tipo === 'indisponivel') {
-        indisponivelPorAutorizador.set(autorizador, bloqueio);
-      }
       recovered += r.recovered + r.errored;
       stillPending += r.stillPending;
     } catch (e) {
-      errors.push({
-        chave: null,
-        error: `nRec ${nRec}: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      // Rule 6: only a known failure class is recorded; a bug aborts the run.
+      const falha = descreverFalhaConhecida(e);
+      if (falha == null) throw e;
+      errors.push({ chave: null, error: `nRec ${nRec}: ${falha.mensagem}` });
+    }
+    // On success and on a recorded failure alike.
+    const bloqueio = disjuntor.bloqueio;
+    if (bloqueio?.tipo === 'consumo-indevido') {
+      consumoIndevidoPorFilial.set(info.filialId, bloqueio);
+    } else if (bloqueio?.tipo === 'indisponivel') {
+      indisponivelPorAutorizador.set(autorizador, bloqueio);
     }
   }
 

@@ -30,7 +30,7 @@ import {
   persistPatch,
   persistPatchUnlessFinal,
 } from '../../../lib/nfe/orchestrator/audit';
-import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
+import { NFeDocAusenteError, NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 const NFE_REF = { path: 'pedidos/PED-1/nfev4/s1' } as never;
 
@@ -242,14 +242,22 @@ describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
     expect(txSet).not.toHaveBeenCalled();
   });
 
-  it('a missing doc WITH a guard → rejects NFeOrchestratorError, nothing written', async () => {
+  it('a missing doc WITH a guard → rejects NFeDocAusenteError (an NFeOrchestratorError) naming the path, nothing written', async () => {
     // Near-miss of 'a missing doc → writes' above: without a guard the same
     // missing doc IS written.
     const { fs, txSet } = fakeFs(null);
 
     const p = persistPatchUnlessFinal(fs, NFE_REF, loteReply(), undefined, GUARD);
 
+    // Its own class (#1654), so a reconcile can skip a vanished doc without
+    // swallowing any other NFeOrchestratorError — and still that parent
+    // class, so the routes' 400 and the batch errorCode do not move.
+    await expect(p).rejects.toBeInstanceOf(NFeDocAusenteError);
     await expect(p).rejects.toBeInstanceOf(NFeOrchestratorError);
+    await expect(p).rejects.toMatchObject({
+      name: 'NFeDocAusenteError',
+      path: 'pedidos/PED-1/nfev4/s1',
+    });
     await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*lote 12/);
     expect(txSet).not.toHaveBeenCalled();
   });
@@ -388,12 +396,13 @@ describe('persistPatchUnlessFinal with a #513 PersistGuard (receipt + retries + 
     expect(txSet).not.toHaveBeenCalled();
   });
 
-  it('a missing doc under a #513 guard → rejects NFeOrchestratorError naming the receipt, nothing written', async () => {
+  it('a missing doc under a #513 guard → rejects NFeDocAusenteError naming the receipt, nothing written', async () => {
     const { fs, txSet } = fakeFs(null);
 
     const p = persistPatchUnlessFinal(fs, NFE_REF, contada(), undefined, GUARD);
 
-    await expect(p).rejects.toBeInstanceOf(NFeOrchestratorError);
+    await expect(p).rejects.toBeInstanceOf(NFeDocAusenteError);
+    await expect(p).rejects.toMatchObject({ path: 'pedidos/PED-1/nfev4/s1' });
     await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*recibo REC-1/);
     expect(txSet).not.toHaveBeenCalled();
   });

@@ -26,7 +26,7 @@ import { safeLog } from '../log';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
-import { recover539IfNeeded } from './recover539';
+import { extrasDaTrocaDeChave, recover539IfNeeded } from './recover539';
 import {
   classificarConsSitDeRecuperacao,
   decidirRodadaDoRecibo,
@@ -48,7 +48,10 @@ import {
 export interface ConsultaChaveResult {
   /** The persisted patch (already written to the nfev4 doc). */
   readonly patch: NFeStatePatch;
-  /** The doc's chave after a possible cStat=539 swap. */
+  /**
+   * The doc's chave after a possible cStat=539 swap — the recovered one only
+   * when the write carrying it landed; a refused write swapped nothing.
+   */
   readonly chaveFinal: string;
   /** The lote receipt the consReci path used, when one existed in the audit log. */
   readonly nRecUsado: string | null;
@@ -95,7 +98,9 @@ export interface ConsultaChaveResult {
  * gate, the digest-safe `<nfeProc>` stitch on autorizada, and the
  * TOCTOU-guarded `persistPatchUnlessFinal` (a doc that reaches a final estado
  * during the SEFAZ round-trip is never overwritten; the returned patch then
- * reflects the doc's CURRENT estado/cStat/xMotivo).
+ * reflects the doc's CURRENT estado/cStat/xMotivo). A recovered 539's chave
+ * swap rides that same write (#1654 §2d), so a refused write swaps nothing and
+ * `chaveFinal` stays the doc's own chave.
  *
  * NOT gated on `isEstadoFinalNFe` — callers own that guard (they decide
  * whether to skip or report).
@@ -313,11 +318,11 @@ export async function consultarChavePersistida(params: {
   // chave if it is one we emitted, else flip to terminal `error` — never leave
   // the doc stuck aguardandoResposta (#243). No-op for every other outcome —
   // `outcome` is the receipt's (or the direct consSit's), never 539 after a
-  // round resolved by chave.
+  // round resolved by chave. It writes nothing: its chave swap rides the
+  // guarded write below (#1654 §2d).
   const recovered539 = await recover539IfNeeded({
     fs,
     bundle: { pedidoId, filialId },
-    nfeRef,
     rt,
     tpEmis: notaTpEmis,
     outcome,
@@ -325,7 +330,6 @@ export async function consultarChavePersistida(params: {
   });
   patch = recovered539.patch;
   const chaveSwapped = recovered539.chaveOverride != null;
-  const chaveFinal = recovered539.chaveOverride ?? chave;
 
   // Build `<nfeProc>` when SEFAZ authorized this chave and we still hold the
   // matching signed XML — same atomic anchor-clear as the emit path (#128).
@@ -342,25 +346,36 @@ export async function consultarChavePersistida(params: {
     chave,
   });
 
+  // A proc and a chave swap never meet: a swap forces `chaveMatches: false`.
+  const troca = extrasDaTrocaDeChave(recovered539.chaveOverride);
+  const pacing =
+    espera != null
+      ? {
+          proximaConsultaEm:
+            nowMicros() +
+            (Math.max(nextConsultaDelayMs(patch.retries, patch.tMed), espera) +
+              RECONCILE_SWEEP_GRACE_MS) *
+              1000,
+        }
+      : undefined;
+
   // TOCTOU guard: `applyOutcome`'s anti-regression defense ran against the
   // estado read BEFORE the SEFAZ round-trip — a doc that became final
-  // (e.g. cancelada) mid-call must not be blindly merged over.
+  // (e.g. cancelada) mid-call must not be blindly merged over, and a refused
+  // write swaps no chave either.
   const persisted = await persistPatchUnlessFinal(
     fs,
     nfeRef,
     patch,
     nfeProcXml != null
       ? swapAnchorForProc(nfeProcXml)
-      : espera != null
-        ? {
-            proximaConsultaEm:
-              nowMicros() +
-              (Math.max(nextConsultaDelayMs(patch.retries, patch.tMed), espera) +
-                RECONCILE_SWEEP_GRACE_MS) *
-                1000,
-          }
+      : troca != null || pacing != null
+        ? { ...troca, ...pacing }
         : undefined,
   );
+  // The doc's chave after this call: the recovered one only if the write
+  // that carries the swap landed.
+  const chaveFinal = persisted.written ? (recovered539.chaveOverride ?? chave) : chave;
   if (!persisted.written) {
     // Nothing was written — report the doc's live truth, not the stale patch.
     patch = {
