@@ -251,6 +251,31 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
 `references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.
 
+## idDest, CFOP e o local de entrega (#422)
+
+A UF de destino da operação é a da ENTREGA quando o pedido tem um endereço de
+entrega que é outro documento (`ufDestinoOperacao`); o `<enderDest>` continua
+sendo o endereço FISCAL e o `<entrega>` (Grupo G) vai no XML. As regras que
+tornam isso necessário — conferidas no Anexo I do MOC 7.0 (v7.00, nov/2020) e
+nas NTs vendorizadas:
+
+| cStat | Regra | O que valida | Por que o `<entrega>` resolve |
+|---|---|---|---|
+| 732 / 733 | I08-40 / I08-60 | 1º dígito do CFOP × `idDest` | CFOP e `idDest` saem da MESMA UF (`isInterstateFor` e `buildIde` usam `ufDestinoOperacao`) |
+| 772 | E12-30 (obrig.) | `idDest=2` com `enderDest/UF` = UF do emitente | Exceção 1: `entrega/UF` ≠ UF do emitente |
+| 773 | E12-40 (obrig.) | `idDest=1` com `enderDest/UF` ≠ UF do emitente, **só não-consumidor** | Exceção 2: `entrega/UF` = UF do emitente |
+| 523 | I08-90 (facult.) | CFOP interestadual com UF emitente = UF destinatário | NT 2020.006 v1.31: "alteração da regra I08-90 para considerar local de entrega e retirada" |
+| 694 | NA01-20 (obrig.) | falta `ICMSUFDest` em interestadual p/ consumidor não contribuinte | NT 2022.005 v1.11, Exceção 12: **não se aplica a CRT=1** (e RV suspensa desde 01/01/2022) |
+
+⚠️ **521** (I08-70, facultativa) — `idDest=1` com UF do emitente ≠ UF do
+destinatário e `indIEDest=1` — **não** tem exceção de entrega no texto do
+Anexo I. Só é alcançável por uma venda B2B a contribuinte com endereço fiscal
+em outra UF e entrega na UF do emitente.
+
+O `<entrega>` exige CPF ou CNPJ (choice obrigatório do `TLocal`). O CNPJ ali
+entra na validação LCC-RFB da NT 2026.007 (faixa 185/186 acima); em
+homologação use um recebedor pessoa física.
+
 ## Resend rule of thumb
 
 - **Rejected** (not 100/150, not duplicidade, not denegada) → NF-e was *not*

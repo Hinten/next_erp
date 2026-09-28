@@ -388,6 +388,91 @@ describe('generateNFe', () => {
   });
 });
 
+/**
+ * #422 — the delivery address decides `idDest` AND rides as `<entrega>`.
+ *
+ * SEFAZ judges `idDest` against `enderDest/UF`, or against `entrega/UF` when
+ * the group is present (772/773/523), so the two must come from ONE input:
+ * `enderecoEntrega` present ⇒ both; absent ⇒ neither.
+ */
+describe('generateNFe — delivery address (enderecoEntrega, #422)', () => {
+  const ENTREGA_RJ: Endereco = {
+    ...ENDERECO_DEST,
+    logradouro: 'Rua do Ouvidor',
+    numero: '50',
+    bairro: 'Centro',
+    cep: '20040030',
+    codigoMunicipio: '3304557',
+    cidade: 'Rio de Janeiro',
+    estado: UF_SIGLA.RJ,
+    nome: 'Maria Recebedora',
+    cpf_cnpj: '52998224725',
+  };
+  const DEST_RJ: Endereco = { ...ENTREGA_RJ, nome: null, cpf_cnpj: null };
+  const ENTREGA_SP: Endereco = { ...ENDERECO_DEST, nome: 'Joao', cpf_cnpj: '11144477735' };
+  // `cnae: null` — the unrelated emit-sequence quirk of the shared FILIAL
+  // fixture (see the contingência block) would fail the XSD for another reason.
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+
+  const idDestOf = (xml: string) => /<idDest>(\d)<\/idDest>/.exec(xml)?.[1];
+  const enderDestUF = (xml: string) => /<enderDest>.*?<UF>([A-Z]{2})<\/UF>/.exec(xml)?.[1];
+
+  // [label, fiscal address, delivery address, ehExterior, expected idDest] —
+  // the emitente is SP throughout.
+  const CASES: Array<[string, Endereco, Endereco | null, boolean, string]> = [
+    ['fiscal SP, no delivery', ENDERECO_DEST, null, false, '1'],
+    ['fiscal RJ, no delivery', DEST_RJ, null, false, '2'],
+    ['fiscal SP, delivery RJ', ENDERECO_DEST, ENTREGA_RJ, false, '2'],
+    ['fiscal RJ, delivery SP', DEST_RJ, ENTREGA_SP, false, '1'],
+    ['fiscal RJ, delivery RJ', DEST_RJ, ENTREGA_RJ, false, '2'],
+    ['exterior wins over a delivery UF', ENDERECO_DEST, ENTREGA_RJ, true, '3'],
+  ];
+
+  it.each(CASES)('%s → idDest %s', (_label, dest, entrega, ehExterior, expected) => {
+    const out = generateNFe({
+      ...BASE_INPUT,
+      operacao: { ...OPERACAO, ehExterior },
+      enderecoDest: dest,
+      enderecoEntrega: entrega,
+    });
+    expect(idDestOf(out.nfeXml)).toBe(expected);
+  });
+
+  it('keeps <enderDest> on the FISCAL address while idDest follows the delivery', () => {
+    const out = generateNFe({ ...BASE_INPUT, enderecoEntrega: ENTREGA_RJ });
+    expect(idDestOf(out.nfeXml)).toBe('2');
+    expect(enderDestUF(out.nfeXml)).toBe('SP');
+  });
+
+  it('places <entrega> between </dest> and the first <det> (XSD order)', () => {
+    const out = generateNFe({ ...BASE_INPUT, enderecoEntrega: ENTREGA_RJ });
+    expect(out.nfeXml).toMatch(/<\/dest><entrega><CPF>52998224725<\/CPF>.*<\/entrega><det /);
+    expect(out.nfeXml).toContain('<UF>RJ</UF><CEP>20040030</CEP></entrega>');
+  });
+
+  it('a signed nota with a CPF recebedor passes the NFe XSD', async () => {
+    const out = generateNFe({ ...XSD_INPUT, enderecoEntrega: ENTREGA_RJ });
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('a signed nota with the cliente CNPJ as fallback identity passes the NFe XSD', async () => {
+    const out = generateNFe({
+      ...XSD_INPUT,
+      enderecoEntrega: { ...ENTREGA_RJ, nome: null, cpf_cnpj: null },
+    });
+    expect(out.nfeXml).toContain(`<entrega><CNPJ>${CLIENTE.cpf_cnpj}</CNPJ>`);
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('without a delivery address the XML is byte-identical and has no <entrega>', () => {
+    const plain = generateNFe(BASE_INPUT);
+    expect(plain.nfeXml).not.toContain('<entrega>');
+    expect(generateNFe({ ...BASE_INPUT, enderecoEntrega: null }).nfeXml).toBe(plain.nfeXml);
+  });
+});
+
 /** Self-signed cert for the offline signer round-trip. */
 function fixtureCertificate(): NFeCertificate {
   const keys = forge.pki.rsa.generateKeyPair(1024);

@@ -41,6 +41,7 @@ import {
   CSOSN,
   CST_PIS_COFINS,
   ESTADO_NFE,
+  UF_SIGLA,
   type EstadoNFe,
   type NFeConfig,
 } from '@delfrance/schemas';
@@ -279,9 +280,17 @@ interface PedidoSpec {
   readonly failGenerate?: boolean;
   /** Override for the item's stamped imposto; defaults to `impostoCsosn102()`. */
   readonly imposto?: Record<string, unknown>;
+  /**
+   * Stored ref form. `'canonico'` writes `documents/…` refs — what the app's
+   * own writers store (#422); the default is the bare form.
+   */
+  readonly refs?: 'canonico';
+  /** `pedido.freteInicial` — e.g. a separate delivery address (#422). */
+  readonly freteInicial?: Record<string, unknown>;
 }
 
 function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
+  const prefixo = spec.refs === 'canonico' ? 'documents/' : '';
   return {
     ehSaida: true,
     estado: 'pago',
@@ -298,10 +307,11 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
       ],
     },
     // Filial resolved via the pedido's integração (see bundle.ts).
-    integracaoPedidoOuterRef: `integracao/I-${spec.filialId}`,
-    clientePedidoOuterRef: 'clientes/C-1',
-    operacaoPedidoOuterRef: 'operacao/O-1',
-    enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    integracaoPedidoOuterRef: `${prefixo}integracao/I-${spec.filialId}`,
+    clientePedidoOuterRef: `${prefixo}clientes/C-1`,
+    operacaoPedidoOuterRef: `${prefixo}operacao/O-1`,
+    enderecoFiscalOuterRef: `${prefixo}clientes/C-1/enderecos/E-1`,
+    ...(spec.freteInicial ? { freteInicial: spec.freteInicial } : {}),
   };
 }
 
@@ -310,6 +320,8 @@ interface BatchHarnessOpts {
   readonly pedidos: ReadonlyArray<PedidoSpec>;
   /** Per-filial NFeConfig seed override. Defaults to `SEED_NFE_CONFIG`. */
   readonly nfeConfigByFilial?: Record<string, NFeConfig | null>;
+  /** Extra documents by bare path (e.g. a separate delivery address, #422). */
+  readonly extraDocs?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -352,6 +364,8 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       docs[`pedidos/${spec.pedidoId}/nfev4/s1`] = spec.existingNFe;
     }
   }
+
+  Object.assign(docs, opts.extraDocs ?? {});
 
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
   let autoIdCounter = 0;
@@ -478,7 +492,17 @@ function fakeFirestore(opts: BatchHarnessOpts) {
   return {
     fs: {
       collection: (name: string) => makeCollection(name),
-      doc: (path: string) => makeRef(path),
+      // Like the Admin SDK: an odd segment count is not a document path and
+      // THROWS — a canonical `documents/…` ref handed over verbatim fails here
+      // exactly as it does in production (#422).
+      doc: (path: string) => {
+        if (path.split('/').filter(Boolean).length % 2 !== 0) {
+          throw new Error(
+            `Value for argument "documentPath" must point to a document, but was "${path}".`,
+          );
+        }
+        return makeRef(path);
+      },
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
@@ -790,6 +814,63 @@ describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
     expect(events.filter((e) => e === 'get:operacao/O-1/regras')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-1')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-2')).toHaveLength(1);
+  });
+});
+
+/** consultarLote answers 104 with a cStat-100 protNFe for every generated chave. */
+function consultarLoteAutorizaGerados(): void {
+  vi.mocked(consultarLote).mockImplementation(
+    async () =>
+      ({
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'TEST',
+        cStat: '104',
+        xMotivo: 'Lote processado',
+        cUF: '35',
+        protNFe: generatedChaves.map((ch, i) => ({
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'TEST',
+            chNFe: ch,
+            dhRecbto: new Date().toISOString(),
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+            nProt: `135${i.toString().padStart(12, '0')}`,
+            digVal: `dig-${i}`,
+          },
+        })),
+      }) as never,
+  );
+}
+
+// #422 — canonical `documents/…` refs, and the batch memo across ref forms.
+describe('emitirPedidosLote — canonical refs (#422)', () => {
+  it('emits pedidos whose refs are canonical, reading a doc shared across ref forms ONCE', async () => {
+    // PED-CANON stores every ref as `documents/…` (what the app writes), PED-BARE
+    // the bare form. Both name the same cliente / operação / filial: the memo is
+    // keyed on the NORMALIZED path, so each is read once and no read is ever
+    // issued for a `documents/…` path (the fake's doc() would throw on one).
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-CANON', filialId: 'F-1', refs: 'canonico' },
+        { pedidoId: 'PED-BARE', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteAutorizaGerados();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-CANON', 'PED-BARE']);
+
+    expect(out.results.map((r) => ('errorCode' in r ? r.errorCode : 'ok'))).toEqual(['ok', 'ok']);
+    expect(events.filter((e) => e === 'get:clientes/C-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:clientes/C-1/enderecos/E-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:operacao/O-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:filiais/F-1')).toHaveLength(1);
+    expect(events.some((e) => e.startsWith('get:documents/'))).toBe(false);
   });
 });
 
@@ -1331,6 +1412,90 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
       ).toBe(1);
     },
   );
+});
+
+// #422 — a delivery address the nota cannot carry is refused by the SAME
+// pre-flight, before a número is allocated.
+describe('emitirPedidosLote — the delivery address is judged before allocation (#422)', () => {
+  it('refuses an unresolvable or uncarriable delivery address — no nNF, no placeholder', async () => {
+    const events: string[] = [];
+    const ENTREGA_RJ = {
+      logradouro: 'Rua do Ouvidor',
+      numero: '50',
+      bairro: 'Centro',
+      cep: '20040030',
+      codigoMunicipio: '3304557',
+      cidade: 'Rio de Janeiro',
+      estado: 'RJ',
+      complemento: null,
+    };
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        {
+          pedidoId: 'PED-GONE',
+          filialId: 'F-1',
+          freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/GONE' },
+        },
+        {
+          pedidoId: 'PED-BADREC',
+          filialId: 'F-1',
+          freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/E-RJ' },
+        },
+        {
+          pedidoId: 'PED-RJ',
+          filialId: 'F-1',
+          freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/E-RJ2' },
+        },
+      ],
+      extraDocs: {
+        // A typed recebedor CPF one check digit off — never replaced by the cliente's.
+        'clientes/C-1/enderecos/E-RJ': { ...ENTREGA_RJ, cpf_cnpj: '52998224724' },
+        'clientes/C-1/enderecos/E-RJ2': { ...ENTREGA_RJ, cpf_cnpj: '52998224725' },
+      },
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteAutorizaGerados();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-GOOD',
+      'PED-GONE',
+      'PED-BADREC',
+      'PED-RJ',
+    ]);
+
+    const byId = (id: string) => out.results.find((r) => r.pedidoId === id)!;
+    const code = (id: string) => {
+      const r = byId(id);
+      return 'errorCode' in r ? r.errorCode : null;
+    };
+    const msg = (id: string) => {
+      const r = byId(id);
+      return 'errorMessage' in r ? r.errorMessage : '';
+    };
+    expect(code('PED-GONE')).toBe('NFeOrchestratorError');
+    expect(msg('PED-GONE')).toContain("endereco 'clientes/C-1/enderecos/GONE' not found");
+    expect(code('PED-BADREC')).toBe('NFeOrchestratorError');
+    expect(msg('PED-BADREC')).toMatch(/delivery address — .*not a valid CPF or CNPJ/);
+    expect(code('PED-GOOD')).toBeNull();
+    expect(code('PED-RJ')).toBeNull();
+
+    // Neither refused member was counted as fresh: no placeholder, and the
+    // counter advanced by 2 (the good members), not 4.
+    for (const id of ['PED-GONE', 'PED-BADREC']) {
+      expect(docs[`pedidos/${id}/nfev4/s1`]).toBeUndefined();
+      expect(events.some((e) => e.startsWith(`set:pedidos/${id}/`))).toBe(false);
+    }
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(2);
+    // The RJ delivery reached the generator as enderecoEntrega, with its CFOP.
+    const rjCall = vi
+      .mocked(generateNFe)
+      .mock.calls.find((c) => c[0].enderecoEntrega?.estado === UF_SIGLA.RJ);
+    expect(rjCall?.[0].itens[0]!.CFOP).toBe('6102');
+  });
 });
 
 describe('emitirPedidosLote — the tribute pre-flight honours the filial emitRtc (#506)', () => {

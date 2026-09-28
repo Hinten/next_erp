@@ -208,7 +208,17 @@ export interface GeneratorInput {
   readonly filial: Filial;
   readonly operacao: Operacao;
   readonly cliente: Cliente;
+  /** The destinatário's FISCAL address — always `<dest><enderDest>`. */
   readonly enderecoDest: Endereco;
+  /**
+   * The delivery address, when it is a DIFFERENT document from the fiscal one
+   * (#422). Present ⇒ the generator emits `<entrega>` AND decides `idDest` from
+   * its UF (`ufDestinoOperacao`); absent/null ⇒ neither, and the XML is
+   * byte-identical to a nota without it. The caller decides "different" — the
+   * generator never compares addresses. Its `codigoMunicipio` must already be
+   * resolved, like `enderecoDest`'s.
+   */
+  readonly enderecoEntrega?: Endereco | null;
   readonly itens: ReadonlyArray<GeneratorItem>;
   /** Pre-built `<total>...</total>` XML. */
   readonly totalXml: string;
