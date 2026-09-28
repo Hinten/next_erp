@@ -13,6 +13,12 @@ import {
   type Pedido,
 } from '@delfrance/schemas';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
+import {
+  aplicarPlanoDeCopiaAoPatch,
+  buildEnderecoCopyOps,
+  enderecoCopyReadPaths,
+  type PedidoEnderecoCopyPlan,
+} from './enderecoCopy';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -263,27 +269,59 @@ export async function savePedido(
     patch: Record<string, unknown>;
     /** The pedido document as loaded into the editor — the concurrency baseline. */
     baseline: Record<string, unknown>;
+    /** Confirmed address copies to commit in the same transaction, if any. */
+    enderecoCopyPlan?: PedidoEnderecoCopyPlan | null;
   },
 ): Promise<SavePedidoResultado> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
   // Reassigned on EVERY run of `apply`: a transaction retry re-runs the callback
   // against a fresh read, and only the last run is the one that committed.
-  const lido: { current?: Record<string, unknown> } = {};
-  await port.updatePedido(args.pedidoId, (current) => {
-    if (current === null) throw new PedidoConflictError(null);
-    if (remotelyChangedFields(args.baseline, current).length > 0) {
-      throw new PedidoConflictError(current);
-    }
-    lido.current = current;
-    return { ...args.patch, ultimaModificacao: port.now() };
-  });
+  const lido: { current?: Record<string, unknown>; patch?: Record<string, unknown> } = {};
+  if (args.enderecoCopyPlan) {
+    const pedidoPath = `pedidos/${args.pedidoId}`;
+    await port.transact({
+      reads: [pedidoPath, ...enderecoCopyReadPaths(args.enderecoCopyPlan)],
+      apply(docs) {
+        const current = docs.get(pedidoPath) ?? null;
+        if (current === null) throw new PedidoConflictError(null);
+        if (remotelyChangedFields(args.baseline, current).length > 0) {
+          throw new PedidoConflictError(current);
+        }
+        lido.current = current;
+        const patch = aplicarPlanoDeCopiaAoPatch(
+          args.patch,
+          { ...current, ...args.patch } as unknown as Pedido,
+          args.enderecoCopyPlan,
+        );
+        lido.patch = patch;
+        const now = port.now();
+        return [
+          ...buildEnderecoCopyOps(args.enderecoCopyPlan, docs, now),
+          {
+            type: 'update',
+            path: pedidoPath,
+            data: { ...patch, ultimaModificacao: now },
+          },
+        ];
+      },
+    });
+  } else {
+    await port.updatePedido(args.pedidoId, (current) => {
+      if (current === null) throw new PedidoConflictError(null);
+      if (remotelyChangedFields(args.baseline, current).length > 0) {
+        throw new PedidoConflictError(current);
+      }
+      lido.current = current;
+      return { ...args.patch, ultimaModificacao: port.now() };
+    });
+  }
   if (lido.current === undefined) {
     // A port that resolves without running `apply` broke its contract — there is
     // no committed read to answer from, and guessing would decide a reconcile.
     throw new Error('savePedido: updatePedido resolved without running apply');
   }
-  return resultadoDoSave(args.patch, lido.current);
+  return resultadoDoSave(lido.patch ?? args.patch, lido.current);
 }
 
 /**

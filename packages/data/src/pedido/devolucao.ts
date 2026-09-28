@@ -9,6 +9,12 @@ import {
   type Pedido,
 } from '@delfrance/schemas';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
+import {
+  aplicarPlanoDeCopiaDeEndereco,
+  buildEnderecoCopyOps,
+  enderecoCopyReadPaths,
+  type PedidoEnderecoCopyPlan,
+} from './enderecoCopy';
 import type { PedidoDataPort, PedidoDevolucaoDataPort, PedidoWriteOp } from './port';
 import { PedidoConflictError, buildIncidenteOp, remotelyChangedFields } from './usecases';
 import { PEDIDO_COUNTER_PATH, mintNumeros, operacaoNumeroPrefix } from './numero';
@@ -281,14 +287,20 @@ export async function prepareDevolucaoSave(
  */
 export async function criarSaidaComDevolucao(
   port: PedidoDevolucaoDataPort,
-  args: { values: Pedido; prepared: DevolucaoSavePrepared; saidaOperacaoNome: string | null },
+  args: {
+    values: Pedido;
+    prepared: DevolucaoSavePrepared;
+    saidaOperacaoNome: string | null;
+    enderecoCopyPlan?: PedidoEnderecoCopyPlan | null;
+  },
 ): Promise<{
   saidaId: string;
   saidaNumero: string;
   devolucaoId: string;
   devolucaoNumero: string;
 }> {
-  const { values, prepared } = args;
+  const prepared = args.prepared;
+  const values = aplicarPlanoDeCopiaDeEndereco(args.values, args.enderecoCopyPlan);
   const saidaId = port.newId();
   const devolucaoId = port.newId();
   const devolucaoDoc = buildDevolucaoPedido(port, {
@@ -308,13 +320,18 @@ export async function criarSaidaComDevolucao(
   let saidaNumero = '';
   let devolucaoNumero = '';
   await port.transact({
-    reads: [PEDIDO_COUNTER_PATH, ...prepared.originIds.map(PEDIDO_PATH)],
+    reads: [
+      PEDIDO_COUNTER_PATH,
+      ...prepared.originIds.map(PEDIDO_PATH),
+      ...enderecoCopyReadPaths(args.enderecoCopyPlan),
+    ],
     apply: (docs) => {
       const ops: PedidoWriteOp[] = [];
       const { numeros, counterOp } = mintNumeros(docs.get(PEDIDO_COUNTER_PATH) ?? null, prefixes);
       saidaNumero = numeros[0] ?? '';
       devolucaoNumero = numeros[1] ?? '';
       ops.push(counterOp);
+      ops.push(...buildEnderecoCopyOps(args.enderecoCopyPlan, docs, port.now()));
 
       for (const originId of prepared.originIds) {
         const txDoc = docs.get(PEDIDO_PATH(originId)) ?? null;
@@ -542,15 +559,25 @@ export async function buildDevolucaoIntegralSeed(
  */
 export async function criarEntradaDevolucaoIntegral(
   port: PedidoDevolucaoDataPort,
-  args: { values: Pedido; originId: string; operacaoNome: string | null },
+  args: {
+    values: Pedido;
+    originId: string;
+    operacaoNome: string | null;
+    enderecoCopyPlan?: PedidoEnderecoCopyPlan | null;
+  },
 ): Promise<{ entradaId: string; numero: string }> {
   const entradaId = port.newId();
   const prefix = operacaoNumeroPrefix(args.operacaoNome);
+  const values = aplicarPlanoDeCopiaDeEndereco(args.values, args.enderecoCopyPlan);
 
   // Set by the FINAL (committed) `apply` attempt; reset per attempt.
   let numero = '';
   await port.transact({
-    reads: [PEDIDO_COUNTER_PATH, PEDIDO_PATH(args.originId)],
+    reads: [
+      PEDIDO_COUNTER_PATH,
+      PEDIDO_PATH(args.originId),
+      ...enderecoCopyReadPaths(args.enderecoCopyPlan),
+    ],
     apply: (docs) => {
       const txOrigin = docs.get(PEDIDO_PATH(args.originId)) ?? null;
       if (txOrigin === null) throw new PedidoConflictError(null);
@@ -558,17 +585,18 @@ export async function criarEntradaDevolucaoIntegral(
       numero = numeros[0] ?? '';
       return [
         counterOp,
+        ...buildEnderecoCopyOps(args.enderecoCopyPlan, docs, port.now()),
         {
           type: 'set',
           path: PEDIDO_PATH(entradaId),
           data: {
-            ...(args.values as unknown as Record<string, unknown>),
+            ...(values as unknown as Record<string, unknown>),
             saidasRelacionadas: [args.originId],
             numero: numeros[0],
             // See the sibling stamp in `criarSaidaComDevolucao`: `args.values`
             // carries PedidoForm's `timestamp: null`, and an undated pedido
             // sorts last under the `/pedidos` `timestamp desc` default.
-            timestamp: args.values.timestamp ?? port.now(),
+            timestamp: values.timestamp ?? port.now(),
           },
         },
         {

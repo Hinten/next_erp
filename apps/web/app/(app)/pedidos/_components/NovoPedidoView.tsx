@@ -15,12 +15,13 @@ import {
   criarEntradaDevolucaoIntegral,
   criarSaidaComDevolucao,
   PedidoConflictError,
+  PedidoEnderecoOrigemAusenteError,
   prepareDevolucaoSave,
   registrarIncidenteDeDevolucaoIntegral,
   type DevolucaoSavePrepared,
   type PedidoDevolucaoDataPort,
 } from '@delfrance/data/pedido';
-import { PedidoForm } from './PedidoForm';
+import { PedidoForm, type PedidoSubmitPreparation } from './PedidoForm';
 import { DIRECAO, direcaoIncompativelDaCopia, type Direcao } from './direcao';
 import { DirecaoSurface } from './DirecaoSurface';
 import { useConfirmDialog } from './ConfirmDialog';
@@ -34,6 +35,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth/useAuth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { usePedidoEnderecoCopyPreparation } from './usePedidoEnderecoCopyPreparation';
 
 // Fills the AppShell main area so the form's flex layout can pin the sticky
 // footer to the bottom regardless of how short a tab's content is.
@@ -90,6 +92,8 @@ function useCreatePedidoSubmit(direcao: Direcao) {
   const nfeClient = useNFeClient();
   const { confirm, element: confirmElement } = useConfirmDialog();
   const { promptEmitirEntrada, element: emitirPromptElement } = useEmitirEntradaPrompt();
+  const { prepareSubmit: prepareEnderecoCopy, element: enderecoCopyPromptElement } =
+    usePedidoEnderecoCopyPreparation();
 
   // #488 — a saída with itens devolvidos: dialog chain, then either the atomic
   // saída+devolução create or the plain create; troca incidentes + optional
@@ -99,6 +103,7 @@ function useCreatePedidoSubmit(direcao: Direcao) {
     port: PedidoDevolucaoDataPort,
     values: Pedido,
     prepared: DevolucaoSavePrepared,
+    preparation: PedidoSubmitPreparation,
   ): Promise<boolean | void> {
     const answers = await runDevolucaoDialogs(prepared, confirm, (msg) =>
       notifications.show({ color: 'yellow', message: msg, autoClose: 8000 }),
@@ -115,7 +120,12 @@ function useCreatePedidoSubmit(direcao: Direcao) {
         values.operacaoPedidoOuterRef,
       );
       try {
-        const result = await criarSaidaComDevolucao(port, { values, prepared, saidaOperacaoNome });
+        const result = await criarSaidaComDevolucao(port, {
+          values,
+          prepared,
+          saidaOperacaoNome,
+          enderecoCopyPlan: preparation.enderecoCopyPlan,
+        });
         saidaId = result.saidaId;
         saidaNumero = result.saidaNumero;
         devolucao = { id: result.devolucaoId, numero: result.devolucaoNumero };
@@ -127,12 +137,28 @@ function useCreatePedidoSubmit(direcao: Direcao) {
           });
           return false; // nothing committed — keep the form dirty
         }
+        if (err instanceof PedidoEnderecoOrigemAusenteError) {
+          showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
+          return false;
+        }
         throw err;
       }
     } else {
-      const created = await createPedidoWithNumero(getFirebaseFirestore(), values);
-      saidaId = created.id;
-      saidaNumero = created.numero;
+      try {
+        const created = await createPedidoWithNumero(
+          getFirebaseFirestore(),
+          values,
+          preparation.enderecoCopyPlan,
+        );
+        saidaId = created.id;
+        saidaNumero = created.numero;
+      } catch (err) {
+        if (err instanceof PedidoEnderecoOrigemAusenteError) {
+          showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
+          return false;
+        }
+        throw err;
+      }
     }
 
     await registrarIncidentesDeTrocaBestEffort(port, {
@@ -151,7 +177,11 @@ function useCreatePedidoSubmit(direcao: Direcao) {
     router.replace(DIRECAO.saida.editarPath(saidaId));
   }
 
-  async function handleSubmit(values: Pedido): Promise<boolean | void> {
+  async function handleSubmit(
+    values: Pedido,
+    _dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { preparation: PedidoSubmitPreparation },
+  ): Promise<boolean | void> {
     const db = getFirebaseFirestore();
     // Devolução (#488): prepare returns null whenever the flow doesn't apply
     // (not a saída, or no itens devolvidos) — the plain create below stays the
@@ -159,10 +189,19 @@ function useCreatePedidoSubmit(direcao: Direcao) {
     const port = createClientPedidoPort(db);
     const prepared = await prepareDevolucaoSave(port, { values });
     if (prepared !== null) {
-      return handleSaidaComDevolucao(port, values, prepared);
+      return handleSaidaComDevolucao(port, values, prepared, opts.preparation);
     }
     // Allocate a human-readable, unique `numero` atomically with the create.
-    const { id } = await createPedidoWithNumero(db, values);
+    let id: string;
+    try {
+      ({ id } = await createPedidoWithNumero(db, values, opts.preparation.enderecoCopyPlan));
+    } catch (err) {
+      if (err instanceof PedidoEnderecoOrigemAusenteError) {
+        showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
+        return false;
+      }
+      throw err;
+    }
     // #551 parity with the edit page and the integral path: a paid entrada
     // offers to emit its NF-e right after the create.
     if (!cfg.ehSaida) {
@@ -175,13 +214,25 @@ function useCreatePedidoSubmit(direcao: Direcao) {
     router.replace(cfg.editarPath(id));
   }
 
-  return { handleSubmit, confirmElement, emitirPromptElement };
+  return {
+    handleSubmit,
+    confirmElement,
+    emitirPromptElement,
+    prepareEnderecoCopy,
+    enderecoCopyPromptElement,
+  };
 }
 
 /** The plain create view — no pre-fill. */
 function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
   const cfg = DIRECAO[direcao];
-  const { handleSubmit, confirmElement, emitirPromptElement } = useCreatePedidoSubmit(direcao);
+  const {
+    handleSubmit,
+    confirmElement,
+    emitirPromptElement,
+    prepareEnderecoCopy,
+    enderecoCopyPromptElement,
+  } = useCreatePedidoSubmit(direcao);
 
   return (
     <DirecaoSurface direcao={direcao}>
@@ -196,7 +247,13 @@ function NovoPedidoCreate({ direcao }: { direcao: Direcao }) {
         />
         {confirmElement}
         {emitirPromptElement}
-        <PedidoForm ehSaida={cfg.ehSaida} submitLabel="Criar" onSubmit={handleSubmit} />
+        {enderecoCopyPromptElement}
+        <PedidoForm
+          ehSaida={cfg.ehSaida}
+          submitLabel="Criar"
+          prepareSubmit={prepareEnderecoCopy}
+          onSubmit={handleSubmit}
+        />
       </Stack>
     </DirecaoSurface>
   );
@@ -219,7 +276,13 @@ function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: st
   const cfg = DIRECAO[direcao];
   const { user } = useAuth();
   const usuarioRef = user ? `documents/usuarios/${user.uid}` : null;
-  const { handleSubmit, confirmElement, emitirPromptElement } = useCreatePedidoSubmit(direcao);
+  const {
+    handleSubmit,
+    confirmElement,
+    emitirPromptElement,
+    prepareEnderecoCopy,
+    enderecoCopyPromptElement,
+  } = useCreatePedidoSubmit(direcao);
 
   const port = useMemo(() => createClientPedidoPort(getFirebaseFirestore()), []);
 
@@ -254,6 +317,7 @@ function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: st
         />
         {confirmElement}
         {emitirPromptElement}
+        {enderecoCopyPromptElement}
         {isPending ? (
           <Stack>
             <Skeleton height={32} width={240} />
@@ -284,6 +348,7 @@ function NovoPedidoCopia({ direcao, originId }: { direcao: Direcao; originId: st
             defaultValues={seed.values as Pedido}
             ehSaida={cfg.ehSaida}
             submitLabel="Criar"
+            prepareSubmit={prepareEnderecoCopy}
             onSubmit={handleSubmit}
           />
         )}
@@ -304,6 +369,8 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
   const router = useRouter();
   const { user } = useAuth();
   const { promptEmitirEntrada, element: emitirPromptElement } = useEmitirEntradaPrompt();
+  const { prepareSubmit: prepareEnderecoCopy, element: enderecoCopyPromptElement } =
+    usePedidoEnderecoCopyPreparation();
   const usuarioRef = user ? `documents/usuarios/${user.uid}` : null;
 
   const port = useMemo(() => createClientPedidoPort(getFirebaseFirestore()), []);
@@ -319,7 +386,11 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
     queryFn: () => buildDevolucaoIntegralSeed(port, { originId, usuarioRef }),
   });
 
-  async function handleSubmit(values: Pedido): Promise<boolean | void> {
+  async function handleSubmit(
+    values: Pedido,
+    _dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { preparation: PedidoSubmitPreparation },
+  ): Promise<boolean | void> {
     if (!seed) return false; // unreachable — the form only renders with a seed
 
     // The numero prefix follows the operação SELECTED at submit time — the
@@ -335,6 +406,7 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
         values,
         originId,
         operacaoNome,
+        enderecoCopyPlan: opts.preparation.enderecoCopyPlan,
       });
     } catch (err) {
       if (err instanceof PedidoConflictError) {
@@ -342,6 +414,10 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
           title: 'Pedido alterado',
           message: 'O pedido de origem não existe mais — a devolução não foi criada.',
         });
+        return false;
+      }
+      if (err instanceof PedidoEnderecoOrigemAusenteError) {
+        showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
         return false;
       }
       throw err;
@@ -394,6 +470,7 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
           }
         />
         {emitirPromptElement}
+        {enderecoCopyPromptElement}
         {isPending ? (
           <Stack>
             <Skeleton height={32} width={240} />
@@ -413,6 +490,7 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
             defaultValues={seed.values as Pedido}
             ehSaida={false}
             submitLabel="Criar"
+            prepareSubmit={prepareEnderecoCopy}
             onSubmit={handleSubmit}
           />
         )}

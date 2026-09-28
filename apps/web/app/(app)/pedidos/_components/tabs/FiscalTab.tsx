@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import {
   ActionIcon,
-  Alert,
   Button,
   Card,
   Checkbox,
@@ -175,13 +174,6 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           );
         })}
       </Stack>
-
-      <Alert color="gray" variant="light">
-        <Text size="sm">
-          A reatribuição de endereço a outro cliente (quando o endereço fiscal pertence a outro
-          cliente) ainda usa o app antigo.
-        </Text>
-      </Alert>
     </Stack>
   );
 }

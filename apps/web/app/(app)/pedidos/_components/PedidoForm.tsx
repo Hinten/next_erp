@@ -24,6 +24,7 @@ import {
   idFromRef,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { aplicarPlanoDeCopiaDeEndereco, type PedidoEnderecoCopyPlan } from '@delfrance/data/pedido';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { useServerTruthSeed, useUnsavedChangesGuard } from '@delfrance/ui';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -51,6 +52,10 @@ import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
 import { pedidoTabs, summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
 import type { FlatItem, PedidoFormState } from './types';
+
+export interface PedidoSubmitPreparation {
+  enderecoCopyPlan: PedidoEnderecoCopyPlan | null;
+}
 
 export interface PedidoFormProps {
   defaultValues?: Pedido;
@@ -92,6 +97,8 @@ export interface PedidoFormProps {
    * held the cached copy, and that mismatch reads as a phantom conflict (#972).
    */
   onSeeded?: (serverTruth: boolean) => void;
+  /** Runs before incidentes or any pedido/address write. `false` cancels all. */
+  prepareSubmit?: (values: Pedido) => Promise<PedidoSubmitPreparation | false>;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -104,7 +111,11 @@ export interface PedidoFormProps {
   onSubmit: (
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
-    opts: { continueEditing: boolean; incidenteSaved: boolean },
+    opts: {
+      continueEditing: boolean;
+      incidenteSaved: boolean;
+      preparation: PedidoSubmitPreparation;
+    },
   ) => Promise<void | boolean>;
 }
 
@@ -312,6 +323,7 @@ export function PedidoForm({
   ehSaida = true,
   fromCache,
   onSeeded,
+  prepareSubmit,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -430,6 +442,9 @@ export function PedidoForm({
     setSubmitError(null);
     let incidenteSaved = false;
     try {
+      const preparation = prepareSubmit ? await prepareSubmit(values) : { enderecoCopyPlan: null };
+      if (preparation === false) return;
+
       const incidenteResult = await flushIncidentesPendentes();
       if (incidenteResult === 'blocked') return;
       incidenteSaved = incidenteResult === 'saved';
@@ -437,7 +452,7 @@ export function PedidoForm({
       const saved = await onSubmit(
         values,
         form.formState.dirtyFields as Readonly<Record<string, unknown>>,
-        { continueEditing, incidenteSaved },
+        { continueEditing, incidenteSaved, preparation },
       );
       if (saved === false && incidenteSaved) {
         notifications.show({
@@ -452,7 +467,13 @@ export function PedidoForm({
       // would trip its `beforeunload` confirmation). Skip when the save did not
       // commit (`false`: conflict / nothing changed) so edits stay dirty.
       if (continueEditing && saved !== false) {
-        form.reset(form.getValues());
+        const current = form.getValues();
+        const rewritten = aplicarPlanoDeCopiaDeEndereco(values, preparation.enderecoCopyPlan);
+        form.reset({
+          ...current,
+          enderecoFiscalOuterRef: rewritten.enderecoFiscalOuterRef,
+          freteInicial: rewritten.freteInicial as PedidoFormState['freteInicial'],
+        });
       }
     } catch (err) {
       if (err instanceof FirebaseError) {
@@ -474,6 +495,13 @@ export function PedidoForm({
   // then keep the pedido on screen and route to its validation errors.
   async function onInvalid(errors: FieldErrors<PedidoFormState>) {
     setSubmitError(null);
+    // Incidentes can be flushed even when the pedido itself is invalid. Keep
+    // the same pre-write gate here so choosing “Revisar” never persists that
+    // independent subcollection behind the cancelled address-copy decision.
+    if (prepareSubmit) {
+      const preparation = await prepareSubmit(form.getValues() as unknown as Pedido);
+      if (preparation === false) return;
+    }
     const incidenteResult = await flushIncidentesPendentes();
     if (incidenteResult === 'blocked') return;
 

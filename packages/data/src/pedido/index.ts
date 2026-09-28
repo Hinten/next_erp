@@ -43,6 +43,20 @@ export {
   mintNumeros,
   operacaoNumeroPrefix,
 } from './numero';
+export { criarPedidoComNumero } from './create';
+export {
+  PedidoEnderecoOrigemAusenteError,
+  aplicarPlanoDeCopiaAoPatch,
+  aplicarPlanoDeCopiaDeEndereco,
+  buildEnderecoCopyOps,
+  detectarEnderecosDeOutroCliente,
+  enderecoCopyReadPaths,
+  planejarCopiasDeEndereco,
+  type PedidoEnderecoCopyEntry,
+  type PedidoEnderecoCopyPlan,
+  type PedidoEnderecoMismatch,
+  type PedidoEnderecoUso,
+} from './enderecoCopy';
 export {
   DEVOLUCAO_INTEGRAL_STRIP_KEYS,
   PEDIDO_PATH,

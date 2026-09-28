@@ -20,6 +20,7 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
+import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { newDocId } from '@/lib/data/newDocId';
 
 // A writeBatch caps at 500 operations.
@@ -55,6 +56,10 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     if (sub === 'pagamentos') {
       return pagamentoCollection.docRef(db, { pedidoId }, id) as DocumentReference;
     }
+  }
+  if (parts.length === 4 && parts[0] === 'clientes' && parts[2] === 'enderecos') {
+    const [, clienteId, , id] = parts as [string, string, string, string];
+    return enderecoCollection.docRef(db, { clienteId }, id) as DocumentReference;
   }
   throw new Error(`clientPedidoPort: unmapped write path "${path}"`);
 }
