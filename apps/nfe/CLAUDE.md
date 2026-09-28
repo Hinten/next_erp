@@ -353,8 +353,10 @@ before, otherwise ONE `consSitNFe` read through the reconcile's recovery table
 applied; "still queued" (635 + 217) or an unavailable service leaves a #396
 anchor (`aguardandoResposta`, no `nRec`, no proc, nothing enqueued); anything
 else — a protNFe for another chave included — is a blocking terminal
-(`terminalBloqueante`: 104 inside a 104 reply, else 103). Those three are
-written under the same lote guard. The pós-EPEC transmission
+(`terminalBloqueante`: 104 inside a 104 reply, else 103). OUR protNFe carrying
+a duplicidade (204/205/218/635) or a 106 reads its consSit through the same
+table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
+`rejeitada`. Those three are written under the same lote guard. The pós-EPEC transmission
 (`origem 'pos-epec'`) keeps its old handling byte for byte (follow-up). ⚠️ The
 anchors this leaves are recovered by the sweep's consult-by-chave branch for
 docs without an `nRec`, which is still uncounted, unguarded and blind to the

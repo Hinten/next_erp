@@ -866,9 +866,13 @@ export async function runChunkAllocateTx(
  * an unavailable service leaves a #396 anchor (`aguardandoResposta`, no
  * `nRec`, no proc, nothing enqueued); anything else — a protNFe for another
  * chave included — is a BLOCKING terminal (`terminalBloqueante`: 104 inside a
- * 104 reply, else 103). Those three dispositions are written under the same
- * lote guard as the no-receipt one, so a doc a concurrent emit re-stamped, or
- * one that went final, is reported `reused` with its live state instead.
+ * 104 reply, else 103). OUR protNFe carrying a duplicidade (204/205/218/635)
+ * or a 106, with no `[nRec:]` marker, takes the same consult through the same
+ * table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
+ * `rejeitada` — while a FINAL protNFe of ours is applied as before. Those
+ * three dispositions are written under the same lote guard as the no-receipt
+ * one, so a doc a concurrent emit re-stamped, or one that went final, is
+ * reported `reused` with its live state instead.
  *
  * `origem 'pos-epec'` keeps today's handling byte for byte: the reply's
  * protNFe is applied as before, and a duplicidade's consSit is read by the
@@ -1111,9 +1115,11 @@ export async function applyAutorizadoOutcome(args: {
  * BEFORE the SOAP send, then hands the sync reply to `applyAutorizadoOutcome`
  * with where its bytes came from (`runAllocateGenerateSignTx`'s
  * `storedBytes`): generated for this lote, or a #396 crash-window doc's STORED
- * bytes. A reply with our protocol, or with a receipt, is applied as before; a
- * lote-level duplicidade is recovered inline (one `consultarLote` /
- * `consultarSituacaoNFe`, read through the reconcile's recovery table); any
+ * bytes. A reply with our FINAL protocol, or with a receipt, is applied as
+ * before; a lote-level duplicidade, and a duplicidade (204/205/218/635) or a
+ * 106 inside our protNFe, are recovered inline (one `consultarLote` /
+ * `consultarSituacaoNFe`, the consSit read through the reconcile's recovery
+ * table, so our 204 + consSit 217 is a blocking `error`, never `rejeitada`); any
  * other reply without our protocol and without a receipt takes #512's
  * no-receipt disposition (#1654 §1) — so a FRESH NF-e refused with
  * 108/109/113/114 is `rejeitada` (the route answers 422), as in the batch path.
