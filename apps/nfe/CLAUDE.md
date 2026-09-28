@@ -271,14 +271,26 @@ behind the task — and the cap then rides out about ten hours of outage before
 the docs need a manual verify. **Every** write of `reconcileByRecibo` is
 guarded in its transaction on the receipt, the `retries` it was decided from
 and an in-flight estado (`PersistGuard`), so a concurrent terminal or counted
-write wins and the doc is tallied by its live estado; the 539 recovery's own
-chave swap is the one plain merge left. A breaker stops further consSit calls
-after a 656 or an unavailable service — per lote on the task path; across the
-sweep's lotes, a 656 per filial and an outage per filial + authorizer (home /
-SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal or stays counted. ⚠️
-A breaker tripped by a reconcile that then THROWS is not carried to the next
-lote or the queue retry (follow-up). The CC-e linkage re-check (`kind:
-'cce-vinculo'`, cStat 136) rides the **same** queue, discriminated by `kind`.
+write wins and the doc is tallied by its live estado; a recovered 539's chave
+swap rides that same write (`extrasDaTrocaDeChave` — `recover539.ts` writes
+nothing, #1654), so a refused write swaps nothing either, in the manual verify
+too. One failing doc no longer aborts the round — only for three named causes
+(rule 6): a doc deleted mid-round (`NFeDocAusenteError`, the guarded persist's
+missing-doc throw) is skipped; a transient Firestore failure
+(`isTransientGrpcError`, gRPC 4/8/10/13/14, `@delfrance/data/admin/grpcErrors`)
+leaves the doc pending and uncounted; a failed SOAP call of the 539 recovery
+counts the round. Anything else is rethrown. A breaker stops further consSit
+calls after a 656 or an unavailable service — per lote on the task path; across
+the sweep's lotes, a 656 per filial and an outage per filial + authorizer (home
+/ SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal or stays counted.
+The breaker lives in a cell the CALLER owns (`DisjuntorConsSit`), written in
+place the moment a consSit answer trips it — before any further await — so a
+lote whose reconcile throws after a trip still hands it to the sweep's next
+lote. ⚠️ On the task path a throw still reaches the queue retry without it
+(the cell dies with the run); since the named causes no longer throw, that is
+left to a bug after a trip (follow-up: a durable per-filial suspension). The
+CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides the **same**
+queue, discriminated by `kind`.
 
 Transport is `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`
 (`lib/nfe/tasks.ts`) — no queue path, no runner SA, no `google-auth-library`.
@@ -301,7 +313,16 @@ schedule. An `nfev4` doc with no `proximaConsultaEm` (the persist-before-send
 anchor, #512's `enviando` dispositions, imported legacy docs) waits
 `DEFAULT_STUCK_TIMEOUT_MS` from its last write instead, which keeps the sweep
 off a send still in flight (#1653); a `cartacorrecao` record with none is due at
-once. No `gcloud scheduler` job to wire — it deploys with the codebase.
+once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its four
+per-item catches follow rule 6 through ONE table (`orchestrator/falhas.ts`,
+`descreverFalhaConhecida`, #1654): a failure of a known class — the NF-e and
+orchestrator classes, `ZodError`, `FirebaseFunctionsError`, a Firestore gRPC
+error (`'FirestoreRpcError'`) — is recorded in `errors` with its message and the
+run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
+(the scheduled function fails and the next tick retries; the manual route
+answers 500) and the lotes after it wait for that retry. A new exported error
+class fails `falhas.test.ts` until it is placed in the table or listed as never
+reaching a reporting catch.
 
 **Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
 carries no `nRec`, so there is nothing to consult by recibo: `processChunk`

@@ -29,6 +29,11 @@ import { tasksInvokerOptions } from './tasksInvoker';
  *   - bad payload (Zod) / `NFeCertError` → **return** (deterministic; the
  *     backstop sweep covers a cert that's not yet uploaded).
  *   - runtime-not-ready / transport / Firestore → **throw** (bounded queue retry).
+ *     Inside a lote, three per-doc causes no longer throw (#1654,
+ *     `reconcileByRecibo`): a doc deleted mid-round is skipped, a transient
+ *     Firestore failure on one doc leaves it pending for the next round, and a
+ *     failed SOAP call of a 539 recovery counts the round — so the run returns,
+ *     with the consSit breaker it tripped, and re-enqueues at normal backoff.
  */
 /** The dispatcher body, extracted so the throw/return disposition is unit-testable. */
 export async function handleReconciliarTask(data: unknown): Promise<void> {
