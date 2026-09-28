@@ -1,6 +1,6 @@
 'use client';
 
-import { useFormContext } from 'react-hook-form';
+import { useFormContext, useWatch } from 'react-hook-form';
 import { Button, Group, MultiSelect, Select, Stack } from '@mantine/core';
 import { z } from 'zod';
 import {
@@ -77,10 +77,14 @@ export function validarImpostoDaOperacao(values: Record<string, unknown>): Valid
  * hidden here (`showDadosGerais={false}`).
  */
 function OperacaoImpostoField({ disabled }: { disabled?: boolean }) {
-  const { watch, setValue, formState } = useFormContext();
+  const { control, watch, setValue, formState } = useFormContext();
   // The WHOLE operação, not just the blob below: the engine's tier gate needs
   // `origem`/`cfop`/`NCM` from the Dados gerais tab (see validarImpostoDaOperacao).
-  const problemas = problemasDeEmissaoDoImposto(watch());
+  // `useWatch`, never a bare `watch()`: the argument-less `watch()` flips RHF's
+  // form-wide `watchAll`, so every keystroke in ANY operação field would
+  // re-render the whole ObjectView; `useWatch` re-renders only this editor.
+  const valores = useWatch({ control });
+  const problemas = problemasDeEmissaoDoImposto(valores);
 
   const blob: ImpostoConfigValue = {
     configuracaoICMS: watch('configuracaoICMS'),
