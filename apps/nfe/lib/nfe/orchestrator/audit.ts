@@ -334,9 +334,14 @@ export async function persistPatch(
  * hold on the stored doc, nothing is written. Every field is optional and an
  * omitted one is not checked, so each caller states exactly its own premise.
  *
- *  - #512 (`persistLoteSemRecibo`) ties the write to ONE lote — the reply
- *    answers the lote whose `idLote` the doc was stamped with before the send,
- *    and is stale for a doc a newer lote has re-stamped since.
+ *  - #512 / #1654 §1 (`persistirGuardadoPeloLote`, emitir.ts) ties the write
+ *    to ONE lote — the reply answers the lote whose `idLote` the doc was
+ *    stamped with before the send, and is stale for a doc a newer lote has
+ *    re-stamped since. Two emit paths write through it: every member of an
+ *    async lote reply without `infRec` (`persistLoteSemRecibo`), and a sync
+ *    reply without our protNFe and without `infRec`, plus the anchor /
+ *    blocking-terminal dispositions of its inline consult by chave
+ *    (`applyAutorizadoOutcome`).
  *  - #513 / #1654 (`reconcileByRecibo`, and `reconcilePorChave` under it)
  *    ties each write to the receipt, the `retries` its decision was computed
  *    from, and an in-flight estado: its `data` was read before the
@@ -425,10 +430,13 @@ export type GuardedPersistResult =
  * With a `guard` ({@link PersistGuard}) the write is ALSO skipped, with the
  * same `{ written: false, … }` result, when any condition it states fails on
  * the stored doc:
- *  - #512's `persistLoteSemRecibo` (emitir.ts), writing a lote reply that
- *    carried no `infRec` to every member, passes `expectedIdLote` — a stored
- *    `idLote` that differs (a stored `null` included) means a newer lote
- *    re-stamped the doc, so this reply is stale for it;
+ *  - emitir.ts's `persistirGuardadoPeloLote` passes `expectedIdLote` — a
+ *    stored `idLote` that differs (a stored `null` included) means a newer
+ *    lote re-stamped the doc, so this reply is stale for it. Its two callers:
+ *    #512's `persistLoteSemRecibo`, writing a lote reply that carried no
+ *    `infRec` to every member, and (#1654 §1) `applyAutorizadoOutcome` — a
+ *    sync reply with no protNFe for the chave and no `infRec`, and the anchor
+ *    / blocking-terminal dispositions of its inline consult by chave;
  *  - `reconcileByRecibo` (#513, #1654) uses it for EVERY write it makes, with
  *    `expectedNRec` + `expectedRetries` + `requireInFlight`: its in-flight
  *    query runs before the `consReciNFe` await, so an estado filter on that

@@ -57,11 +57,12 @@ export interface EmitResult {
   /**
    * `true` when the dedup branch short-circuited because an existing
    * nfev4 doc was already in a `STATUS_BLOQUEADORES` cStat — no fresh
-   * SEFAZ call was made. Also `true` for a #512 no-receipt lote member whose
-   * reply was NOT persisted because the doc went final or was re-stamped by
-   * another lote mid-flight: the result is that doc's live state, written by
-   * another run. `false` for every other path (fresh emission or
-   * rejeitada-retry that did re-call SEFAZ).
+   * SEFAZ call was made. Also `true` for a no-receipt disposition — a #512
+   * lote member, or a sync reply and its inline consult's anchor / terminal
+   * (#1654 §1) — that was NOT persisted because the doc went final or was
+   * re-stamped by another lote mid-flight: the result is that doc's live
+   * state, written by another run. `false` for every other path (fresh
+   * emission or rejeitada-retry that did re-call SEFAZ).
    */
   readonly reused: boolean;
 }
