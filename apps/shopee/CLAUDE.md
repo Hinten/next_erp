@@ -387,10 +387,10 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **57** suites in this app drive, and since step 8 it has a suite of its OWN.
+  **66** suites in this app drive, and since step 8 it has a suite of its OWN.
   ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 today). Step 9 extended the double ADDITIVELY: an
+  step 8, 34 after step 9, 66 today). Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
   per snapshot plus the `update(patch, { lastUpdateTime })` PRECONDITION that
@@ -1217,9 +1217,14 @@ are the rules a change must not break.**
   memo, a second loss is `taxonomia-em-conflito`; the loser's patch is never
   re-applied. The per-dispatch memo absorbs the grupos the dispatch writes.
 - **Prices go to the NORMAL table only** (`original_price ?? current_price`,
-  ML #803). **Estoque is never written on a parent with children.** Photos are
-  last, retriable, behind an SSRF host allow-list; logs carry host + `image_id`,
-  never the URL.
+  ML #803); models all one price ⇒ the parent gets it +
+  `propagatePriceToChildren: true`, else `false`; no model priced ⇒ neither;
+  only on CREATE or a produto with no children (there with both price options;
+  `planejarPrecoDaFamilia`, via the guarded patch); the race arm never merges
+  either on a has-model listing, then decides a childless document the same
+  way. **Estoque is never written on a parent with children.** Photos are last,
+  retriable, behind an SSRF host allow-list; logs carry host + `image_id`, never
+  the URL.
 - **Two memos a caller must pass**: `grupos` absent ⇒ the module builds its own;
   `categorias` absent ⇒ the categoria leg is SKIPPED with one warn.
 - **Kits (K1)**: `kitShopee.ts`, parent `ehKit: true`, `componentesKit` keyed by

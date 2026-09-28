@@ -200,9 +200,14 @@ folder's `precificarItem`, so publish and sync agree on a family because they
 call one function — not because the produto trigger happened to run. That
 trigger copies the parent's `precos` into the children only when the PARENT's
 prices change (or propagation is re-enabled), so a child created after the last
-parent edit, a child step 9's import wrote with no price of its own, trigger lag
-and legacy rows all leave a child with a stale or missing map under a
-propagating parent — the web already treats the parent as the truth there. A
+parent edit (a model step 9's re-import adds to an existing propagating family
+carries its OWN model price, never the parent's), trigger lag and legacy rows
+all leave a child with a stale or missing map under a propagating parent — the
+web already treats the parent as the truth there. With the price options on and
+at least one model priced, step 9 gives every priced model's child its own price
+and, when it forms the family (a created parent, or a produto with no children),
+decides the PARENT's price and flag from the models, so such a family is never
+left propagating a missing price (`produtos/README.md`). A
 child's OWN flag is never consulted: the join does not even read it. The
 consequences Lucas signed off: a propagating parent WITH a tabela price prices
 every model and blocks nothing; a non-propagating parent with an unpriced child

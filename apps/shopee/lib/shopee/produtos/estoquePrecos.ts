@@ -6,11 +6,20 @@
  *
  * On the UPDATE path the price write is a DOTTED-PATH `update` naming only the
  * conta's own tabela key (`precos.<tabelaId>`), so the legacy `precos` map is
- * never re-validated and a sibling tabela provably cannot be touched. It is the
- * one guarded write here: the patch is derived from the produto snapshot, so it
- * asserts that read's `lastUpdateTime` and a concurrent writer — a retrying
- * import, the item webhook, an operator saving the produto editor — fails
- * FAILED_PRECONDITION instead of being silently reverted.
+ * never re-validated and a sibling tabela provably cannot be touched — plus, on
+ * the parent of a has-model listing that turns an existing produto with NO
+ * children into a family (or on the CREATE-race arm's childless document), the
+ * family rule's `propagatePriceToChildren` (with the price, or alone). It is
+ * the one guarded write here: it asserts the `lastUpdateTime` of the writer's
+ * own re-read of the produto, taken just before the patch, so a concurrent
+ * writer — a retrying import, the item webhook, an operator saving the produto
+ * editor — that lands between THAT read and the patch fails
+ * FAILED_PRECONDITION instead of being silently reverted. ⚠️ The window is
+ * narrower than the decision: the price and the flag were decided in the
+ * preparo, earlier, so a save landing during the preparo is overwritten, and a
+ * child created in that window does not touch the parent's stamp at all — a
+ * flag flipped to `true` then lets the produto trigger overwrite that child's
+ * map. Left for a follow-up.
  *
  * The produto merge always writes on the update path (it carries
  * `ultimaModificacao`), which BUMPS `updateTime`. Running the merge first would

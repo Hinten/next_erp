@@ -332,7 +332,7 @@ describe('planejarImportacaoShopee — os filhos', () => {
     );
   });
 
-  it('um pai com filhos não recebe preço nem estoque — as duas recusas dizem por quê', () => {
+  it('um pai com filhos cujo model NÃO tem preço não recebe preço nem estoque — as duas recusas dizem por quê', () => {
     const m = shopeeModelSchema.parse({ model_id: MODEL_ID, tier_index: [0] });
     const plano = planejarImportacaoShopee(
       preparo({

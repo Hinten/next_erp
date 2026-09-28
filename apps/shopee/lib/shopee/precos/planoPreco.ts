@@ -477,9 +477,12 @@ export function precosDaFamilia(f: FamiliaDePreco): ReadonlyMap<string, PrecosDo
  * ⚠️ Why the child's map is not trusted under propagation: the produto
  * trigger copies the parent's `precos` into the children only when the
  * PARENT's prices change (or propagation is re-enabled), so a child created
- * after the last parent edit, a child step 9's import wrote with no price of
- * its own, trigger lag and legacy rows all leave a child with a stale or
- * missing map under a propagating parent. The web treats the parent as the
+ * after the last parent edit (a model step 9's re-import adds to an existing
+ * propagating family carries its OWN model price), trigger lag and legacy rows
+ * all leave a child with a stale or missing map under a propagating parent.
+ * With the price options on and at least one model priced, step 9 leaves no
+ * family it FORMS propagating a missing price: it decides the parent's price
+ * and flag from the models. The web treats the parent as the
  * truth there (it flags divergence and refuses a per-child edit), and so do
  * publish and sync now — they agree because both call the one helper, not
  * because a trigger happened to run.
