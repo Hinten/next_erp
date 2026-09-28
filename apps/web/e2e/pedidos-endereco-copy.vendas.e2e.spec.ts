@@ -85,7 +85,13 @@ test.describe.serial('Pedido — cópia confirmada de endereço', () => {
     await page.goto(`/pedidos/${fixtures.motPedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
-    await page.getByRole('button', { name: 'Limpar' }).first().click();
+    const clienteField = page
+      .locator('label')
+      .filter({ hasText: /^Cliente$/ })
+      .locator('xpath=..');
+    // Mantine's Pill remove button is deliberately `aria-hidden`, so it is
+    // absent from getByRole even though it is the visible, clickable control.
+    await clienteField.locator('button[aria-label="Limpar"]').click();
     await expect(page.getByRole('combobox', { name: 'Cliente', exact: true })).toBeVisible();
     await selectFieldWithSearch(page, 'Cliente', targetClienteNome, new RegExp(targetClienteNome));
     await page.getByRole('button', { name: 'Salvar alterações' }).click();
