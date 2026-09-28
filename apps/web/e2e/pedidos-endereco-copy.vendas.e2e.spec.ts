@@ -85,8 +85,8 @@ test.describe.serial('Pedido — cópia confirmada de endereço', () => {
     await page.goto(`/pedidos/${fixtures.motPedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
-    const clienteChip = page.getByText(fixtures.base.clienteNome, { exact: true }).locator('..');
-    await clienteChip.getByRole('button', { name: 'Limpar' }).click();
+    await page.getByRole('button', { name: 'Limpar' }).first().click();
+    await expect(page.getByRole('combobox', { name: 'Cliente', exact: true })).toBeVisible();
     await selectFieldWithSearch(page, 'Cliente', targetClienteNome, new RegExp(targetClienteNome));
     await page.getByRole('button', { name: 'Salvar alterações' }).click();
 
