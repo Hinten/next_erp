@@ -277,11 +277,11 @@ silently drops. Pinned twice: a load-time assert in `functions/src/index.ts`
 pre-existing stuck docs, and transmits approved EPECs once the filial leaves
 contingency. It covers both `nfev4` lotes and `cartacorrecao` records, and is
 gated per-doc by `proximaConsultaEm`, so it never consults ahead of a task's
-schedule. A doc with no `proximaConsultaEm` (the persist-before-send anchor,
-#512's `enviando` dispositions, imported legacy docs) waits
+schedule. An `nfev4` doc with no `proximaConsultaEm` (the persist-before-send
+anchor, #512's `enviando` dispositions, imported legacy docs) waits
 `DEFAULT_STUCK_TIMEOUT_MS` from its last write instead, which keeps the sweep
-off a send still in flight (#1653). No `gcloud scheduler` job to wire — it
-deploys with the codebase.
+off a send still in flight (#1653); a `cartacorrecao` record with none is due at
+once. No `gcloud scheduler` job to wire — it deploys with the codebase.
 
 **Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
 carries no `nRec`, so there is nothing to consult by recibo: `processChunk`

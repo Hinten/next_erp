@@ -480,6 +480,8 @@ describe('isStuckEnviando', () => {
   // stamp on each side of the timeout: read as local time, the 10-min-old one
   // would sit in the FUTURE and never be stuck.
   it('an ISO string without an offset is read as UTC, never in the process timezone', () => {
+    const tzAnterior = process.env.TZ;
+    const zonaAnterior = Intl.DateTimeFormat().resolvedOptions().timeZone;
     vi.stubEnv('TZ', 'America/Sao_Paulo');
     try {
       expect(
@@ -496,6 +498,14 @@ describe('isStuckEnviando', () => {
       ).toBe(true);
     } finally {
       vi.unstubAllEnvs();
+      // Node re-reads the zone only when TZ is SET, so the `delete` that
+      // unstubAllEnvs does for a TZ that started unset (the Linux CI runner)
+      // would leave the rest of this file in America/Sao_Paulo. Re-apply the
+      // zone that was in force, then drop the variable again.
+      if (tzAnterior === undefined) {
+        process.env.TZ = zonaAnterior;
+        delete process.env.TZ;
+      }
     }
   });
 
