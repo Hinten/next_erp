@@ -17,6 +17,7 @@ import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
+import { safeLog } from '../log';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
@@ -224,7 +225,7 @@ export async function consultarPedido(
   baseRt: NFeBaseRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
-  console.debug(`[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);
+  safeLog('debug', `[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);
 
   const bundle = await loadPedidoBundle(fs, pedidoId);
   // mTLS for the consulta must present this filial's cert (or the env
@@ -258,7 +259,8 @@ export async function consultarPedido(
   }
 
   if (isEstadoFinalNFe(nota.estado)) {
-    console.debug(
+    safeLog(
+      'debug',
       `[nfe/orchestrator] pedido '${pedidoId}' nfev4 '${chosen.id}' is already final ` +
         `(estado=${nota.estado}) — returning persisted state without a SEFAZ call`,
     );
