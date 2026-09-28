@@ -90,6 +90,18 @@ refuse the item BEFORE any write: a `prodshopee` found under a CHILD, and a
 and just skips the link (counted in `semLink`); a listing with no models writes
 no `variashopee` at all.
 
+**`kitNativo` is stamped on every listing link, on both branches.**
+`dadosLinkListagem` writes `ehKitDe(base)` — `true` for a native Shopee kit,
+`false` for an ordinary listing — unconditionally, so a stored `null` or a
+stale value converges on the next import. It is the ONE writer of the flag that
+steps 11, 12 and 13 use to refuse a native kit (`kitNativoDoAnuncio`,
+`podeEnviarEstoqueShopee`), and it is Shopee's `tag.kit`, never `produto.ehKit`:
+an ERP kit is an ordinary Shopee listing and keeps syncing. The kit arm gets
+`true` because `anuncioDerivadoDoKit` PINS `tag.kit: true` rather than copying
+the caller's tag. ⚠️ Until 2026-09-28 the builder did not write the field at
+all, so a link imported before then reads `null` — which SENDS — until it is
+re-imported.
+
 **The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
 naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /
 `ultimaModificacao`, `create()` for a new grupo. A lost precondition is answered

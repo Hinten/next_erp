@@ -79,7 +79,7 @@ import {
 } from '@delfrance/schemas';
 
 import { EIXOS_PACOTE_SHOPEE, type EixoDePacoteProduto } from './eixos';
-import { descricaoDe, itemStatusDe, type ItemLido } from './itemLido';
+import { descricaoDe, ehKitDe, itemStatusDe, type ItemLido } from './itemLido';
 import { idProdutoFilhoShopee, idProdutoPaiShopee } from './produtoIds';
 
 /* -------------------------------------------------------------------------- */
@@ -894,6 +894,18 @@ export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
  * information. The values inside are STRINGS, all of them: `"00"` means absent
  * for `ncm`/`cest`, and the leading zeros of `origin`/`csosn`/`icms_cst` are
  * meaningful. A numeric coercion anywhere near this key is a defect.
+ *
+ * ⚠️ `kitNativo` is stamped UNCONDITIONALLY and **after** the spread, from
+ * {@link ehKitDe} on the base read — `true` for a native Shopee kit, `false`
+ * for an ordinary listing, on the create AND the merge branch alike. It is the
+ * link-side flag steps 11, 12 and 13 read through `kitNativoDoAnuncio` /
+ * `podeEnviarEstoqueShopee`, and this builder is its ONLY writer
+ * (`shopeeLink.ts`). Both arms reach it: the listing importer refuses a
+ * `tag.kit` record before planning, so every link it writes is `false`, and
+ * the kit arm's `anuncioDerivadoDoKit` pins `tag.kit: true`, so every link it
+ * writes is `true`. ⚠️ Never `produto.ehKit` — thousands of ERP kits are
+ * ORDINARY Shopee listings, and conflating the two stops their stock and price
+ * sync without a word.
  */
 export function dadosLinkListagem(
   entrada: ItemLido,
@@ -923,6 +935,10 @@ export function dadosLinkListagem(
     brand_id: base.brand?.brand_id ?? null,
     item_dangerous: base.item_dangerous,
     ...(entrada.taxInfo != null ? { tax_info: entrada.taxInfo } : {}),
+    // ⚠️ UNCONDITIONAL, unlike `tax_info` above: a stored `null` (a link
+    // imported before this stamp existed) must converge to what Shopee reports
+    // NOW, and `ehKitDe` answers a boolean for every read. See the docblock.
+    kitNativo: ehKitDe(base),
     ultimaModificacao: nowMs,
     dataCadastro: (existente.dataCadastro as number | undefined) ?? nowMs,
   };

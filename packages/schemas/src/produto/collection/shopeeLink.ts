@@ -422,13 +422,16 @@ export const produtoShopeeLinkSchema = z
      * outage for the whole legacy kit catalogue.
      *
      * Stamped on BOTH branches by step 9's import (`true` for a kit, `false`
-     * for an ordinary listing) from `ehKitDe()` (`produtos/itemLido.ts`), which
-     * already computes it and throws it away — so the field converges to DATA on
-     * every import rather than staying three-valued for ever.
+     * for an ordinary listing) from `ehKitDe()` (`produtos/itemLido.ts`), in
+     * `dadosLinkListagem` (`produtos/mapeamento.ts`) — so the field converges
+     * to DATA on every import rather than staying three-valued for ever.
+     * ⚠️ Wired only on 2026-09-28; until then this paragraph described a stamp
+     * nothing wrote.
      *
-     * `null` = a link imported before step 12 — **it SENDS**, which is the safe
-     * direction, because no native Shopee kit exists in this catalogue today.
-     * Only `kitNativo === true` refuses.
+     * `null` = a link no import has stamped yet — the legacy corpus, a link
+     * imported before 2026-09-28, or one a step-11 first publish created —
+     * **it SENDS**, which is the safe direction, because no native Shopee kit
+     * exists in this catalogue today. Only `kitNativo === true` refuses.
      */
     kitNativo: z.boolean().nullable().default(null),
     /**
