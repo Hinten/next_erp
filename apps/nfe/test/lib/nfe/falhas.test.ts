@@ -7,8 +7,8 @@
  * Pinned here:
  *  - every class in the table maps to its LITERAL code, from a real instance
  *    built by its own constructor — the code equals the class's `name`, which
- *    is what the batch path reports today (`toEmitError`), except where that
- *    name is the bare `'Error'`;
+ *    is what the batch path (`toEmitError`) reported before it read this
+ *    table, except where that name is the bare `'Error'`;
  *  - a subclass is reported through its parent (`NFeDocAusenteError` →
  *    `'NFeOrchestratorError'`), and no table entry is shadowed by an earlier
  *    parent;
@@ -140,7 +140,7 @@ describe('descreverFalhaConhecida — the table', () => {
       // The literal is the class's own name…
       expect(codigo).toBe(C.name);
       // …and, unless the class never sets one, the `name` the batch path
-      // reports today, so the codes do not move.
+      // reported before it read this table, so the codes do not move.
       if (!NAME_NAO_E_O_CODIGO.has(C)) expect(e.name).toBe(codigo);
     },
   );

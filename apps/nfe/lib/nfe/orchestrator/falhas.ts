@@ -3,18 +3,20 @@
  * (#1654, root CLAUDE.md rule 6).
  *
  * A catch that records a failure and carries on — the backstop sweep's four
- * per-item catches (`runProcessarPendentes`) — asks
+ * per-item catches (`runProcessarPendentes`) and the batch emit's per-member
+ * report (`toEmitError`, `emitir.ts`) — asks
  * {@link descreverFalhaConhecida} what it caught: a known class comes back as
  * `{ codigo, mensagem }`, anything else as `null`, and the caller rethrows it.
  * An unknown class is a bug, and a bug recorded as an ordinary per-doc error
  * reads as a SEFAZ or Firestore hiccup forever; rethrown, it fails the run
  * loudly — the scheduled function errors and the next tick retries, the manual
- * route answers 500.
+ * sweep route and `POST /emitir-lote` answer 500.
  *
  * Every code is a LITERAL, not `e.name`: it names the class even where the
- * class never sets `name` (`FirebaseFunctionsError` inherits `'Error'`), and
- * it cannot drift with a rename. For every other class it equals the `name`
- * the batch path has always reported. A subclass is reported through its
+ * class never sets `name` (`FirebaseFunctionsError` inherits `'Error'`, which
+ * is what the batch path reported for it before it read this table), and it
+ * cannot drift with a rename. For every other class it equals the `name` the
+ * batch path has always reported. A subclass is reported through its
  * parent — `NFeDocAusenteError` is an `'NFeOrchestratorError'` — and an entry
  * never follows one of its own parents, or the parent would shadow it
  * (`falhas.test.ts` pins both, and that every exported error class is either

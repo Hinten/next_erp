@@ -41,12 +41,8 @@ import {
 import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { safeLog } from '../log';
-import {
-  NFeBlockedError,
-  NFeMissingImpostoError,
-  NFeOrchestratorError,
-  NFePedidoNotFoundError,
-} from './errors';
+import { NFeBlockedError, NFeOrchestratorError } from './errors';
+import { descreverFalhaConhecida } from './falhas';
 import {
   createBatchReadContext,
   DEFAULT_NFE_CONFIG_DOC_ID,
@@ -1244,7 +1240,11 @@ export const MAX_PEDIDOS_PER_CHUNK = 20;
 /** Per-pedido failure inside a batch. Distinct shape from EmitResult so callers can branch. */
 export interface EmitError {
   readonly pedidoId: string;
-  /** Class name of the error (JSON-safe — `NFeBlockedError`, `NFePedidoNotFoundError`, ...). */
+  /**
+   * The known failure class's literal code (JSON-safe — `NFeBlockedError`,
+   * `NFePedidoNotFoundError`, `FirestoreRpcError`, …; `./falhas`). Only a known
+   * class ever becomes an EmitError (`toEmitError`, #1654 §3).
+   */
   readonly errorCode: string;
   readonly errorMessage: string;
 }
@@ -1255,10 +1255,29 @@ export interface BatchEmitResult {
 
 /**
  * Batch emit cycle. Mirrors `emitirPedido` but fans out across one
- * shared idLote per (filial, ≤20-pedido) chunk. Per-pedido failures
- * surface as `EmitError` entries in the result array — the request
- * never throws unless an upstream invariant fails (empty input, >50
- * total pedidos, runtime boot).
+ * shared idLote per (filial, ≤20-pedido) chunk. A per-pedido failure of a
+ * KNOWN class (`toEmitError` → `descreverFalhaConhecida`, the table in
+ * `./falhas`) surfaces as an `EmitError` entry in the result array.
+ *
+ * It throws when an upstream invariant fails (empty input, >50 total
+ * pedidos) and — since #1654 §3 — when any member's failure is of an
+ * UNKNOWN class: a bug is rethrown (rule 6), never filed as an ordinary
+ * per-pedido error, so `POST /emitir-lote` answers 500 and every other
+ * member's report in the request is lost with it. What each site leaves
+ * behind:
+ *  - prep (step 1) or the chunk cascade before any allocation: nothing is
+ *    written or sent — ONE bug aborts all ≤50 pedidos;
+ *  - 4b (generate/sign): the chunk's healthy fresh members are already
+ *    persisted as unsent #396 anchors (chave + `xml_assinado`, `enviando`,
+ *    no `nRec`), so a re-emit retransmits their stored bytes, and otherwise
+ *    the backstop sweep's `consSitNFe` recovers them;
+ *  - after the send (4d/4e/EPEC): each member's reply is audited before that
+ *    member is persisted, so a member whose write threw is still its
+ *    persist-before-send anchor, which the sweep (or a re-emit) recovers — the
+ *    state stays consistent; only the report is lost.
+ * `apps/web` does not re-POST an emit on a 5xx or a network error (only the
+ * pre-send 503, `withNFeRetry`): a re-POST regenerates and RE-SENDS every
+ * rejeitada/error member (`runChunkAllocateTx`).
  *
  * Mirror of Flutter's `gerarNFePedidos` at
  * `.old/packages/pedido_nfe/lib/src/tasks.dart:59`: group by filial,
@@ -1285,10 +1304,11 @@ export async function emitirPedidosLote(
     `[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`,
   );
 
-  // 1. Prepare every pedido in parallel. prepareEmission failures
-  //    (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
-  //    NFeOrchestratorError) become per-pedido EmitError entries — the
-  //    pedido never reaches a lote. The tribute pre-flight (#506) runs here
+  // 1. Prepare every pedido in parallel. prepareEmission failures of a known
+  //    class (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
+  //    NFeOrchestratorError, …) become per-pedido EmitError entries — the
+  //    pedido never reaches a lote; any other class aborts the whole batch
+  //    here, before anything is allocated. The tribute pre-flight (#506) runs here
   //    too, but its NFeOrchestratorError is CARRIED, not thrown: only the
   //    chunk transaction knows whether the member would generate at all.
   // One read context for the whole batch — dedups the shared filial /
@@ -1338,8 +1358,10 @@ export async function emitirPedidosLote(
     `[nfe/orchestrator] Batch fan-out: ${groups.size} filial(is) × ${chunks.length} chunk(s)`,
   );
 
-  // 4. Process each chunk in parallel. Chunk-level failures (e.g.
-  //    NFeConfig missing) cascade to every pedido in that chunk.
+  // 4. Process each chunk in parallel. Chunk-level failures of a known class
+  //    (e.g. NFeConfig missing) cascade to every pedido in that chunk; any
+  //    other class — from any chunk — rejects the batch once every chunk has
+  //    settled.
   const chunkResults = await Promise.allSettled(
     chunks.map((c) => processChunk(fs, rt, c.filialId, c.group, scheduler)),
   );
@@ -1601,7 +1623,9 @@ async function persistirDisposicaoSemRecibo(a: {
  * each ({@link persistirDisposicaoSemRecibo}, with this chunk's idLote), each
  * member reporting its own write or the doc's live truth. Per-member
  * isolation: SEFAZ has already answered and the reply is audited per chave, so
- * one failed write fails only its pedido.
+ * one failed write of a known class (a Firestore RPC failure included) fails
+ * only its pedido; any other class fails the batch (`toEmitError`) once every
+ * member's write has settled.
  */
 async function persistLoteSemRecibo(args: {
   readonly fs: Firestore;
@@ -1691,10 +1715,12 @@ export async function processChunk(
   }
 
   // 4b. Generate + sign + persist each NF-e OUTSIDE the allocation tx, per
-  //     pedido. A generate/sign failure (e.g. a raw fiscal-field overflow)
-  //     fails ONLY that pedido — its placeholder doc keeps the numeração
-  //     for recovery (inutilização or fix + re-emit) — while the rest
-  //     proceed. The chave + signed XML are persisted (full doc overwrite)
+  //     pedido. A generate/sign failure of a known class (e.g. a raw
+  //     fiscal-field overflow, NFeGeneratorError) fails ONLY that pedido —
+  //     its placeholder doc keeps the numeração for recovery (inutilização
+  //     or fix + re-emit) — while the rest proceed. Any other class (a bug)
+  //     aborts the chunk before the send, with the healthy members already
+  //     persisted as #396 anchors. The chave + signed XML are persisted (full doc overwrite)
   //     BEFORE autorizarLote, so the anti-loss anchor is complete before
   //     any SOAP send. Signing here (not in the tx) keeps RSA work out of
   //     the transaction.
@@ -1738,7 +1764,8 @@ export async function processChunk(
   if (toSend.length === 0) return txResults;
 
   // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente
-  // Nacional (one evento per envEvento in v1). Failures stay per-pedido.
+  // Nacional (one evento per envEvento in v1). Failures of a known class
+  // (NFeConsumoIndevidoError included) stay per-pedido.
   if (toSend[0]!.prep.contingencia.modo === CONTINGENCIA_MODO.epec) {
     const epecs = await Promise.allSettled(
       toSend.map((s) =>
@@ -1909,30 +1936,18 @@ export async function processChunk(
 }
 
 /**
- * Narrow an unknown exception into a JSON-safe EmitError. Non-Error
- * throwables are re-raised (CLAUDE.md rule 6 — don't swallow what we
- * can't classify).
+ * A batch member's failure as a JSON-safe EmitError — only when its class is a
+ * KNOWN failure (`descreverFalhaConhecida`, the one table in `./falhas`, #1654
+ * §3): the code is the table's literal, the message the error's own. Anything
+ * else is a bug and is rethrown as it came (rule 6), so `emitirPedidosLote`
+ * rejects and `POST /emitir-lote` answers 500 instead of filing a bug as an
+ * ordinary per-pedido error. The price is every other member's report in that
+ * request — see `emitirPedidosLote` for what each site leaves behind.
  */
 export function toEmitError(pedidoId: string, reason: unknown): EmitError {
-  if (reason instanceof NFeBlockedError) {
-    return { pedidoId, errorCode: 'NFeBlockedError', errorMessage: reason.message };
-  }
-  if (reason instanceof NFePedidoNotFoundError) {
-    return { pedidoId, errorCode: 'NFePedidoNotFoundError', errorMessage: reason.message };
-  }
-  if (reason instanceof NFeMissingImpostoError) {
-    return { pedidoId, errorCode: 'NFeMissingImpostoError', errorMessage: reason.message };
-  }
-  if (reason instanceof NFeOrchestratorError) {
-    return { pedidoId, errorCode: 'NFeOrchestratorError', errorMessage: reason.message };
-  }
-  if (reason instanceof NFeConfigNotFoundError) {
-    return { pedidoId, errorCode: 'NFeConfigNotFoundError', errorMessage: reason.message };
-  }
-  if (reason instanceof Error) {
-    return { pedidoId, errorCode: reason.name, errorMessage: reason.message };
-  }
-  throw reason;
+  const falha = descreverFalhaConhecida(reason);
+  if (falha == null) throw reason;
+  return { pedidoId, errorCode: falha.codigo, errorMessage: falha.mensagem };
 }
 
 /* cStat=539 recovery moved to `./recover539` (keeps the heavy emit graph out of

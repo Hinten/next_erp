@@ -17,7 +17,13 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
 vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: vi.fn(() => ({}) as never),
 }));
-vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
+// The real module's classes stay (the batch's failure table, which the
+// orchestrator now imports, names `NFeRuntimeConfigError`); only the runtime
+// itself is faked.
+vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/runtime')>();
+  return { ...actual, getNFeRuntime: vi.fn() };
+});
 vi.mock('@/lib/nfe/orchestrator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/orchestrator')>();
   return { ...actual, emitirPedido: vi.fn() };
