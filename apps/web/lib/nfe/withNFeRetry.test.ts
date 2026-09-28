@@ -1,8 +1,10 @@
 /**
  * `withNFeRetry` per-endpoint retry policy (#90). The key invariant: idempotent
- * / server-deduped endpoints retry the full transient set, but `cartaCorrecao`
- * (NOT idempotent — each send increments nSeqEvento) retries ONLY the pre-send
- * 503, never a post-send network/5xx.
+ * / server-deduped endpoints retry the full transient set, but an endpoint that
+ * is NOT safe to re-POST retries ONLY the pre-send 503, never a post-send
+ * network/5xx: `cartaCorrecao` (each send increments nSeqEvento), `inutilizar`
+ * (563), and — since #1654 §3 — `emitir` and `emitirLote`, whose re-POST
+ * regenerates and RE-SENDS every rejeitada/error member.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -50,13 +52,79 @@ function failThenSucceed<T>(failures: number, err: unknown, value: T): () => Pro
 }
 
 describe('withNFeRetry', () => {
-  it('emitir retries a transient NFeServerError then succeeds', async () => {
+  // #1654 §3 — REWRITTEN on purpose: this used to pin that emitir retried a
+  // 5xx. A re-POST is not deduped for a rejeitada/error member (the server
+  // regenerates and re-sends it), and a bug now answers 500 by design.
+  it.each([
+    ['NFeServerError', () => new NFeServerError('boom', 500, null)],
+    ['NFeNetworkError', () => new NFeNetworkError('reset')],
+  ] as const)(
+    'emitir does NOT retry a post-send %s — a re-POST would re-send rejeitada/error members',
+    async (_rotulo, erro) => {
+      const falha = erro();
+      const emitir = vi.fn(() => Promise.reject(falha));
+      const client = withNFeRetry(fakeClient({ emitir }));
+      await expect(client.emitir('PED-1')).rejects.toBe(falha);
+      expect(emitir).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ['NFeServerError', () => new NFeServerError('boom', 500, null)],
+    ['NFeNetworkError', () => new NFeNetworkError('reset')],
+  ] as const)(
+    'emitirLote does NOT retry a post-send %s — a re-POST would re-send rejeitada/error members',
+    async (_rotulo, erro) => {
+      const falha = erro();
+      const emitirLote = vi.fn(() => Promise.reject(falha));
+      const client = withNFeRetry(fakeClient({ emitirLote }));
+      await expect(client.emitirLote(['PED-1', 'PED-2'])).rejects.toBe(falha);
+      expect(emitirLote).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('emitir DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
     const emitir = vi.fn(
-      failThenSucceed(1, new NFeServerError('boom', 500, null), { nfeId: 'n1' } as never),
+      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { nfeId: 'n1' } as never),
     );
     const client = withNFeRetry(fakeClient({ emitir }));
     await expect(client.emitir('PED-1')).resolves.toMatchObject({ nfeId: 'n1' });
     expect(emitir).toHaveBeenCalledTimes(2);
+  });
+
+  it('emitirLote DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
+    const emitirLote = vi.fn(
+      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { results: [] } as never),
+    );
+    const client = withNFeRetry(fakeClient({ emitirLote }));
+    await expect(client.emitirLote(['PED-1'])).resolves.toMatchObject({ results: [] });
+    expect(emitirLote).toHaveBeenCalledTimes(2);
+  });
+
+  it('emitirLote makes ONE attempt on the route’s 500 for a bug — no re-POST of the batch (#1654 §3)', async () => {
+    // End to end through the REAL client error mapper: the 500 the route now
+    // answers for an unclassified failure arrives as an NFeServerError, and the
+    // policy must not re-run the batch (and its re-sends) on it.
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: "Cannot read properties of undefined (reading 'itens')",
+            code: 'TypeError',
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = withNFeRetry(
+      createNFeHttpClient({
+        baseUrl: 'http://nfe.test',
+        getAuthToken: () => Promise.resolve('token'),
+        fetch,
+      }),
+    );
+    await expect(client.emitirLote(['PED-1', 'PED-2'])).rejects.toBeInstanceOf(NFeServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('emitir does NOT retry a deterministic NFeRejectedError', async () => {
