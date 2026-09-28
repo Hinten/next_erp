@@ -254,12 +254,14 @@ one** — an `enviando` doc is written `aguardandoResposta`, a recovered 539
 continues its own count — so a doc gets at most `MAX_RECONCILE_ATTEMPTS`
 receipt rounds and consSit calls between two operator actions; the manual
 verify, a new emit lote and the sweep's consult-by-chave branch for docs
-without an `nRec` still reset it. **Every terminal carries a blocking cStat**
-(`terminalBloqueante`): the round's own 103/104/105, else 103 — SEFAZ issued
+without an `nRec` still reset it. **Every terminal the decision makes carries a
+blocking cStat** (`terminalBloqueante`; the 539 recovery keeps its #243
+terminals, cStat 539 included): the round's own 103/104/105, else 103 — SEFAZ issued
 this receipt — with the real cStat as an xMotivo prefix, so the pedido cannot
 be re-emitted over a número SEFAZ may hold; "Verificar novamente"
 (`consultarChavePersistida`) then consults by chave through the same decision
-and table, without counting, and `verificarEnviNfeMsgs` stops a run on its
+and table, without counting (a receipt that says nothing puts the doc back in
+flight on it, paced), and `verificarEnviNfeMsgs` stops a run on its
 `consumoIndevido` flag, since the persisted cStat no longer shows the 656. A
 receipt answering serviço paralisado (108/109/113/114) is paced
 `RECONCILE_INDISPONIVEL_DELAY_MS` (one hour, `esperaMinimaDoRecibo`) — the

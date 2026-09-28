@@ -40,11 +40,14 @@
  *     outside this module: the manual verify (`consultarChavePersistida`,
  *     operator-initiated), a new emit lote, and the sweep's consult-by-chave
  *     branch for docs without an `nRec`.
- *   - **Every terminal decided here blocks re-emission.** It carries the
- *     round's own 103/104/105, or 103 — SEFAZ issued this receipt, so the
- *     número may be held — with the real cStat in xMotivo
- *     (`terminalBloqueante`). A lote-level 656 is terminal and never retried:
- *     re-querying after a 656 is a SEFAZ-ban precedent (#77).
+ *   - **Every terminal this decision makes blocks re-emission** — by chave,
+ *     at the cap, a 656 or a refused receipt query. It carries the round's
+ *     own 103/104/105, or 103 — SEFAZ issued this receipt, so the número may
+ *     be held — with the real cStat in xMotivo (`terminalBloqueante`). A
+ *     lote-level 656 is terminal and never retried: re-querying after a 656
+ *     is a SEFAZ-ban precedent (#77). The exception is the 539 recovery, which
+ *     keeps its #243 terminals: an unrecovered 539 is `error` with cStat 539,
+ *     and a recovered lote's final answer is applied as it comes.
  *   - **A paralisado receipt (108/109/113/114) is paced**
  *     (`esperaMinimaDoRecibo`): the counted write's `proximaConsultaEm` waits
  *     `RECONCILE_INDISPONIVEL_DELAY_MS`, as does the task's re-enqueue, so the
