@@ -102,7 +102,12 @@ import {
   ShopeeEnvioPrecoEmAndamentoError,
   ShopeePriceSyncTasksDisabledError,
 } from './errosPreco';
-import { produtosQuePrecificam, type FamiliaDePreco, type ItemDePreco } from './planoPreco';
+import {
+  produtosQuePrecificam,
+  type FamiliaDePreco,
+  type ItemDePreco,
+  type PrecosDoProduto,
+} from './planoPreco';
 import type { ContextoContaPreco, VereditoContaPreco } from './regiaoPreco';
 import type { VarLinkShopeeCru } from '../core/vinculosShopee';
 
@@ -455,6 +460,12 @@ interface Mundo {
   familias: FamiliaDePreco[];
   /** O `precos` de cada produto NO BANCO — a leitura de DRENO lê daqui. */
   readonly banco: Map<string, unknown>;
+  /**
+   * O `propagatePriceToChildren` GRAVADO de um produto (D-9); ausente aqui =
+   * ausente no documento, que propaga. Um produto existe quando está em
+   * `banco` OU aqui.
+   */
+  readonly flags: Map<string, unknown>;
   readonly enfileirados: {
     payload: unknown;
     opts: OpcoesDeEnfileiramentoPreco | undefined;
@@ -476,6 +487,7 @@ function mundo(): Mundo {
     loja,
     familias: [],
     banco: new Map(),
+    flags: new Map(),
     enfileirados: [],
     scheduler: { enqueue: vi.fn<AgendadorPrecoShopee['enqueue']>() },
     resolverContexto: vi.fn<Costura<'resolverContexto'>>(),
@@ -522,8 +534,16 @@ function mundo(): Mundo {
   );
   m.lerPrecos.mockImplementation(async (_db: unknown, ids: readonly string[]) => {
     await Promise.resolve();
-    const saida = new Map<string, unknown>();
-    for (const id of ids) if (m.banco.has(id)) saida.set(id, m.banco.get(id));
+    const saida = new Map<string, PrecosDoProduto>();
+    for (const id of ids) {
+      if (!m.banco.has(id) && !m.flags.has(id)) continue;
+      saida.set(
+        id,
+        m.flags.has(id)
+          ? { precos: m.banco.get(id), propagatePriceToChildren: m.flags.get(id) }
+          : { precos: m.banco.get(id) },
+      );
+    }
     return saida;
   });
   m.criarLeitorDeBase.mockImplementation(() => async () => Promise.resolve(null));
@@ -1153,18 +1173,31 @@ describe('o despacho — o DRENO', () => {
     expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([['a1'], ['a2']]);
   });
 
-  it('um anúncio COM modelos lê o preço de CADA FILHO — nunca a âncora', async () => {
+  it('PAR (D-9): um anúncio COM modelos cuja âncora NÃO propaga lê o preço de CADA FILHO — nunca o da âncora', async () => {
+    const m = mundo();
+    semearJob(m, { fila: [itemComModelos('a1', ITEM)], planejamentoConcluido: true });
+    m.banco.set('a1', precos(99));
+    m.flags.set('a1', false);
+    m.banco.set(FILHO_A, precos(12));
+    m.banco.set(FILHO_B, precos(22));
+    await rodar(m);
+    // A âncora é lida TAMBÉM: é a flag dela que decide de onde vem o preço de um model.
+    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([['a1', FILHO_A, FILHO_B]]);
+    expect(m.lerPrecos.mock.calls[0]?.[1]).toEqual(
+      produtosQuePrecificam(itemComModelos('a1', ITEM)),
+    );
+    expect(alvosRecebidos(m)).toEqual([[12, 22]]);
+  });
+
+  it('QUASE-IGUAL (D-9): a MESMA família com a âncora propagando (flag ausente) ⇒ todo model no preço da ÂNCORA, no dreno', async () => {
     const m = mundo();
     semearJob(m, { fila: [itemComModelos('a1', ITEM)], planejamentoConcluido: true });
     m.banco.set('a1', precos(99));
     m.banco.set(FILHO_A, precos(12));
     m.banco.set(FILHO_B, precos(22));
     await rodar(m);
-    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([[FILHO_A, FILHO_B]]);
-    expect(m.lerPrecos.mock.calls[0]?.[1]).toEqual(
-      produtosQuePrecificam(itemComModelos('a1', ITEM)),
-    );
-    expect(alvosRecebidos(m)).toEqual([[12, 22]]);
+    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([['a1', FILHO_A, FILHO_B]]);
+    expect(alvosRecebidos(m)).toEqual([[99, 99]]);
   });
 
   it('UM leitor de base por despacho, sobre o LOTE inteiro; o que sobra da fila continua no próximo', async () => {
@@ -1244,6 +1277,7 @@ describe('o despacho — o DRENO', () => {
     const m = mundo();
     semearJob(m, { fila: [itemComModelos('a1', ITEM)], planejamentoConcluido: false });
     m.familias = [];
+    m.flags.set('a1', false); // D-9: a âncora não propaga — cada model pelo SEU filho
     m.banco.set(FILHO_A, precos(12));
     m.banco.set(FILHO_B, precos(22));
     // A loja já tem os dois preços: o anúncio inteiro é `preco-igual`.
@@ -1266,6 +1300,7 @@ describe('o despacho — o DRENO', () => {
   it('as linhas do dreno: `preco` é o PRETENDIDO em toda linha, o `codigo` vira `erro` cortado em 300, e a amostra é uma por anúncio', async () => {
     const m = mundo();
     semearJob(m, { fila: [itemComModelos('a1', ITEM)], planejamentoConcluido: true });
+    m.flags.set('a1', false); // D-9: a âncora não propaga — cada model pelo SEU filho
     m.banco.set(FILHO_A, precos(12));
     m.banco.set(FILHO_B, precos(22));
     const longo = `error_param: ${'x'.repeat(400)}`;
@@ -1875,6 +1910,7 @@ describe('J-2 / S-2 / D-3 — os contadores do relatório são de NÍVEL 0', () 
       relatorioLinhas: 499,
       relatorioShards: 1,
     });
+    m.flags.set('a1', false); // D-9: a âncora não propaga — cada model pelo SEU filho
     m.banco.set(FILHO_A, precos(12));
     m.banco.set(FILHO_B, precos(22));
     expect(await rodar(m)).toBe('done');

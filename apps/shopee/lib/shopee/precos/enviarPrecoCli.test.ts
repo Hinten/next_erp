@@ -122,7 +122,10 @@ function familiaSimples(
   };
 }
 
-/** A family with ONE has-model listing: two children, each priced on its own. */
+/**
+ * A family with ONE has-model listing: two children, each priced on its own —
+ * the anchor does NOT propagate (D-9), so its 99 prices no model.
+ */
 function familiaComModelos(
   anchorId: string,
   itemId: number,
@@ -132,6 +135,7 @@ function familiaComModelos(
   return {
     anchorId,
     precos: precos(99),
+    propagatePriceToChildren: false,
     links: [link(itemId, linkDocId)],
     children: filhos.map(([produtoId, modelId, valor]) => ({
       produtoId,
@@ -458,6 +462,48 @@ describe('ensaiarEnvioDePreco', () => {
     ]);
   });
 
+  it('D-9 PAR/QUASE — o ensaio precifica o modelo pela flag da ÂNCORA: propaga (sem a flag) ⇒ 99 nos dois; `false` ⇒ 12 / 22', async () => {
+    const precosDosModelos = async (familia: FamiliaDePreco) => {
+      const r = leitores({
+        produtos: { 'prod-ancora': { nome: 'Âncora' } },
+        familias: [familia],
+        leituras: {
+          [ITEM]: {
+            ausente: false,
+            leitura: {
+              itemStatus: 'NORMAL',
+              temModelos: true,
+              modelos: [
+                { modelId: MODELO_A, precoAnterior: 10, moeda: 'BRL', status: 'MODEL_NORMAL' },
+                { modelId: MODELO_B, precoAnterior: 10, moeda: 'BRL', status: 'MODEL_NORMAL' },
+              ],
+            },
+          },
+        },
+      });
+      const e = await ensaiarEnvioDePreco(
+        { integracaoId: INT, produtoIds: ['prod-ancora'], baixarPreco: false },
+        CONTA,
+        r.l,
+      );
+      return e.anuncios[0]?.modelos.map((m) => [m.variacaoProdutoId, m.precoAlvo]);
+    };
+    const naoPropaga = familiaComModelos('prod-ancora', ITEM, [
+      ['prod-filho-a', MODELO_A, 12],
+      ['prod-filho-b', MODELO_B, 22],
+    ]);
+    const { propagatePriceToChildren: _flag, ...propaga } = naoPropaga;
+
+    expect(await precosDosModelos(propaga)).toEqual([
+      ['prod-filho-a', 99],
+      ['prod-filho-b', 99],
+    ]);
+    expect(await precosDosModelos(naoPropaga)).toEqual([
+      ['prod-filho-a', 12],
+      ['prod-filho-b', 22],
+    ]);
+  });
+
   it('PAR/QUASE: `baixarPreco` chega à decisão — a MESMA redução pula sem ele e seria enviada com ele', async () => {
     const rodar = (baixarPreco: boolean) => {
       const r = leitores({
@@ -656,7 +702,8 @@ describe('⚠️ paridade: o ensaio e o envio REAL respondem as MESMAS linhas', 
     // the price its family carries, so the dry run and the real run read one store.
     for (const f of familias) {
       for (const [id, p] of precosDaFamilia(f)) {
-        if (p !== null) db.seed(`produtos/${id}`, { ...produtos[id], precos: p });
+        // `p` carries the anchor's propagation flag when the family has one (D-9).
+        if (p.precos !== null) db.seed(`produtos/${id}`, { ...produtos[id], ...p });
       }
     }
     // The link documents the real sender writes back to.

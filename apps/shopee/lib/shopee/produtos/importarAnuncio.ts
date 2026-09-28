@@ -95,6 +95,7 @@ import {
 import {
   idDoFilhoPlanejado,
   idDoPaiPlanejado,
+  produtoJaTemFilhos,
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
 } from './resolveProduto';
@@ -285,7 +286,23 @@ export async function aplicarImportacaoShopee(
       // Someone created it between the cascade and now — merge onto theirs
       // rather than claiming a create that did not happen.
       criado = false;
-      await produtoCollection.merge(db, {}, produtoId, dados);
+      // ⚠️ WITHOUT the family rule's price and flag (`camposForaDaCorrida`,
+      // a has-model listing): the CREATE decision assumed a new document, and
+      // the one here may hold an operator's values. It is not always a racing
+      // twin — an earlier attempt that stopped before its link lands here too.
+      const fora = new Set(plano.camposForaDaCorrida);
+      const semCampos = Object.fromEntries(Object.entries(dados).filter(([k]) => !fora.has(k)));
+      await produtoCollection.merge(db, {}, produtoId, semCampos);
+      // ⚠️ Then decided like the childless produto it almost always is (the
+      // link is written before any child, so an unlinked document has none
+      // unless something attached one since): with NO ERP child, the family
+      // rule's patch through the SAME tier-1 guard as `precosPai`, against a
+      // snapshot read AFTER the merge above — never an unguarded write. With a
+      // child, nothing more: that family's price and flag are the operator's.
+      if (plano.precosPaiNaCorrida !== null && !(await produtoJaTemFilhos(db, produtoId))) {
+        const snap = await ref.get();
+        await aplicarPrecosShopee(db, plano.precosPaiNaCorrida, snap.updateTime);
+      }
     }
   } else {
     // ⚠️ 3 BEFORE 4 — the guarded price patch asserts the stamp of the read it

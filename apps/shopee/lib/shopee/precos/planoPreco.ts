@@ -15,9 +15,10 @@
  *
  * {@link montarItensDePreco} plans IDENTITIES — anchor, `prodshopee`, `item_id`,
  * the models of that listing — and carries no price at all.
- * {@link precificarItem} prices one planned item from a `precos` map handed in
- * by the caller. The manual push calls the two back to back over the family it
- * just read; the account-wide job (the second PR) plans a page, parks it, and
+ * {@link precificarItem} prices one planned item from the per-produto price
+ * inputs ({@link PrecosDoProduto}) handed in by the caller. The manual push
+ * calls the two back to back over the family it just read; the account-wide
+ * job (the second PR) plans a page, parks it, and
  * prices each item seconds before sending it, so a job held across a daily
  * quota pause never sends a day-old tabela value. A planned item that carried
  * its price would have made that second reading impossible.
@@ -54,9 +55,11 @@
  * ⚠️ **Rung 3 reads the LINK, never the produto.** An ERP kit (`ehKit`, a
  * produto assembled from `componentesKit`) publishes as an ORDINARY Shopee
  * listing and its price is sent like any other; only a listing Shopee itself
- * reported as a native kit is skipped. The family shape carries no produto
- * flag at all, which makes "an ERP kit is skipped" structurally unwritable
- * here. Same slug as the stock sync, same condition, same word.
+ * reported as a native kit is skipped. The family shape carries no KIT flag —
+ * its one produto flag is the anchor's `propagatePriceToChildren` (D-9), which
+ * decides where a model's price comes from and nothing else — which makes "an
+ * ERP kit is skipped" structurally unwritable here. Same slug as the stock
+ * sync, same condition, same word.
  *
  * ⚠️ **Rung 4 has TWO stored spellings of one fact, and both refuse.** The
  * frozen rung reads the raw `item_status` (`SELLER_DELETE` / `SHOPEE_DELETE`,
@@ -96,7 +99,13 @@
  * never a no-model listing that would send the ANCHOR's price at model `0`.
  */
 import { SHOPEE_UPDATE_PRICE_MAX_MODELS } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE, SHOPEE_ITEM_STATUS, precoDaTabela } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  SHOPEE_ITEM_STATUS,
+  precoDaTabela,
+  precoDoFilhoNaTabela,
+  propagaPrecoAosFilhos,
+} from '@delfrance/schemas';
 
 import { kitNativoDoAnuncio } from '../anuncios/montagemAnuncio';
 import {
@@ -132,10 +141,14 @@ export interface LinkPrecoCru {
   [k: string]: unknown;
 }
 
-/** A variation child: its OWN `precos` and its own model links. */
+/**
+ * A variation child: its OWN `precos` and its own model links. It carries no
+ * propagation flag: a child's own `propagatePriceToChildren` is never
+ * consulted — only the ANCHOR's decides (D-9) — so the shape cannot offer it.
+ */
 export interface FilhoDePreco {
   readonly produtoId: string;
-  /** The child's `precos` map, RAW — a model's price is its child's, never the anchor's. */
+  /** The child's `precos` map, RAW — a model's price when the ANCHOR does not propagate. */
   readonly precos: unknown;
   readonly varLinks: readonly VarLinkShopeeCru[];
 }
@@ -144,18 +157,54 @@ export interface FilhoDePreco {
 export interface FamiliaDePreco {
   /** The family anchor — the produto that owns the `prodshopee` links. */
   readonly anchorId: string;
-  /** The anchor's `precos` map, RAW — a NO-MODEL listing's price. */
+  /**
+   * The anchor's `precos` map, RAW — a NO-MODEL listing's price, and every
+   * model's price when the anchor propagates.
+   */
   readonly precos: unknown;
+  /**
+   * The anchor's stored `propagatePriceToChildren`, RAW — ABSENT when the
+   * document has no such field (the projection copies only present keys).
+   * Never read here as a value: {@link precificarItem} folds it through
+   * `propagaPrecoAosFilhos`, where only a literal `false` turns propagation
+   * off, so an absent field PROPAGATES — the schema's own default.
+   */
+  readonly propagatePriceToChildren?: unknown;
   /** Every `prodshopee` of the anchor, EVERY conta — the conta is compared here. */
   readonly links: readonly LinkPrecoCru[];
   readonly children: readonly FilhoDePreco[];
+}
+
+/**
+ * One produto's price inputs, RAW — the value of the map
+ * {@link precificarItem} prices from, produced by the send-time reader
+ * (`lerPrecosDosProdutos`) and by {@link precosDaFamilia}. Nothing here is
+ * folded: `precos` is read by `precoDaTabela` and the flag by
+ * `propagaPrecoAosFilhos`, both in `@delfrance/schemas`.
+ *
+ * ⚠️ Presence in the map is EXISTENCE — a produto that does not exist is
+ * absent from it; a produto that exists without `precos` is present with an
+ * `undefined` `precos`.
+ */
+export interface PrecosDoProduto {
+  /** The stored `precos` map, RAW; `undefined` when the document has none. */
+  readonly precos: unknown;
+  /**
+   * The stored `propagatePriceToChildren`, RAW; ABSENT when the document has
+   * none. Consulted ONLY on the family ANCHOR's entry — a child's entry may
+   * carry its own, and nothing reads it.
+   */
+  readonly propagatePriceToChildren?: unknown;
 }
 
 /** One model a planned item addresses. */
 export interface ModeloPlanejadoPreco {
   /** A positive integer — a no-model item has NO models, never a `0` entry here. */
   readonly modelId: number;
-  /** The CHILD produto whose `precos` price this model. */
+  /**
+   * The CHILD produto this model belongs to — the row key. Its `precos` price
+   * the model only when the anchor does NOT propagate ({@link precificarItem}).
+   */
   readonly produtoId: string;
   /** The `variashopee` document the per-model write-back stamps. */
   readonly varLinkDocId: string;
@@ -207,7 +256,10 @@ export interface AlvoDeModelo {
    * alvo, a positive integer otherwise. Never tested for truthiness.
    */
   readonly modelId: number;
-  /** The produto whose `precos` priced this alvo — the CHILD, or the anchor at a no-model item. */
+  /**
+   * The produto this alvo belongs to — the CHILD (whichever map priced it:
+   * the anchor's under propagation), or the anchor at a no-model item.
+   */
   readonly produtoId: string;
   /** `null` exactly on a no-model item's single alvo. */
   readonly varLinkDocId: string | null;
@@ -395,21 +447,28 @@ export function montarItensDePreco(f: FamiliaDePreco, integracaoId: string): Pla
 /* -------------------------------------------------------------------------- */
 
 /**
- * Every `precos` map of the family, keyed by the produto that owns it — the
- * anchor AND each child under its OWN id, so {@link precificarItem} can never
- * price a model from the anchor by accident.
+ * Every produto of the family, keyed by the produto that owns it — the anchor
+ * (its `precos` AND its propagation flag, the flag only when stored) and each
+ * child under its OWN id (its `precos` only). The plan-time twin of the
+ * send-time reader's map, so the CLI's dry run prices through the same
+ * {@link precificarItem}.
  */
-export function precosDaFamilia(f: FamiliaDePreco): ReadonlyMap<string, unknown> {
-  const mapa = new Map<string, unknown>([[f.anchorId, f.precos]]);
-  for (const filho of f.children) mapa.set(filho.produtoId, filho.precos);
+export function precosDaFamilia(f: FamiliaDePreco): ReadonlyMap<string, PrecosDoProduto> {
+  const doAnchor: PrecosDoProduto = Object.hasOwn(f, 'propagatePriceToChildren')
+    ? { precos: f.precos, propagatePriceToChildren: f.propagatePriceToChildren }
+    : { precos: f.precos };
+  const mapa = new Map<string, PrecosDoProduto>([[f.anchorId, doAnchor]]);
+  for (const filho of f.children) mapa.set(filho.produtoId, { precos: filho.precos });
   return mapa;
 }
 
 /**
- * The produtos whose `precos` price a planned item — exactly
- * {@link precificarItem}'s sources: the ANCHOR of a no-model listing, each
- * model's own CHILD otherwise (a model is never priced from the anchor, so the
- * anchor is not read for one).
+ * The produtos whose price inputs a planned item needs — exactly
+ * {@link precificarItem}'s sources: the ANCHOR alone for a no-model listing;
+ * the ANCHOR and every model's CHILD otherwise. The anchor is read for a
+ * has-model listing because its `propagatePriceToChildren` decides whether a
+ * model carries the anchor's price or its child's own (D-9), and an anchor
+ * that is not in the answer prices every model `null`.
  *
  * The send-time price read of BOTH surfaces — the manual push per item, the
  * account-wide job per drained item — asks for exactly these ids, so a read
@@ -417,16 +476,42 @@ export function precosDaFamilia(f: FamiliaDePreco): ReadonlyMap<string, unknown>
  * price comes from.
  */
 export function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
-  return item.modelos.length === 0 ? [item.produtoId] : item.modelos.map((m) => m.produtoId);
+  return item.modelos.length === 0
+    ? [item.produtoId]
+    : [item.produtoId, ...item.modelos.map((m) => m.produtoId)];
 }
 
 /**
- * **One planned item, priced.** Each model's price is its CHILD's own
- * `precos[tabelaId]` — the source step 11 publishes from — and a no-model
- * item's single price is the ANCHOR's. Never the anchor's for a model: a
- * propagated parent price is materialised into each child's map by the
- * produto trigger, and reading the anchor here would make publish and sync
- * disagree on the same listing.
+ * **One planned item, priced.** A no-model item's single price is the
+ * ANCHOR's own `precos[tabelaId]`. A model's price is decided by the ANCHOR's
+ * `propagatePriceToChildren` (D-9), through `precoDoFilhoNaTabela` — the ONE
+ * rule Mercado Livre's price plan and step 11's publish call too:
+ *
+ * - the anchor propagates (anything but a stored literal `false`, absent
+ *   included) ⇒ EVERY model carries the anchor's price, and no child's own
+ *   map is read — not even as a fallback when the anchor has none;
+ * - it does not ⇒ each model carries its CHILD's own price, and the anchor's
+ *   map is never read for a model.
+ *
+ * ⚠️ Why the child's map is not trusted under propagation: the produto
+ * trigger copies the parent's `precos` into the children only when the
+ * PARENT's prices change (or propagation is re-enabled), so a child created
+ * after the last parent edit (a model step 9's re-import adds to an existing
+ * propagating family carries its OWN model price), trigger lag and legacy rows
+ * all leave a child with a stale or missing map under a propagating parent.
+ * With the price options on and at least one model priced, step 9 leaves no
+ * family it FORMS propagating a missing price: it decides the parent's price
+ * and flag from the models. The web treats the parent as the
+ * truth there (it flags divergence and refuses a per-child edit), and so do
+ * publish and sync now — they agree because both call the one helper, not
+ * because a trigger happened to run.
+ *
+ * ⚠️ **Presence is existence, on BOTH sides of a model.** An ANCHOR absent
+ * from the map (deleted between the plan and this read) prices EVERY model
+ * `null` — its flag is unknown, and a guessed propagation would send a price
+ * nobody vouches for. A CHILD absent from the map prices its own model `null`
+ * even under propagation: the model's ERP produto is gone, and the pre-D-9
+ * answer (`preco-nao-encontrado`, never a throw) stands.
  *
  * Every price goes through `precoDaTabela`, which rounds to the centavo and
  * checks positivity AFTER rounding — a stored `0.004` is "no price", never a
@@ -436,11 +521,22 @@ export function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
  */
 export function precificarItem(
   item: ItemPlanejadoPreco,
-  precosPorProduto: ReadonlyMap<string, unknown>,
+  precosPorProduto: ReadonlyMap<string, PrecosDoProduto>,
   tabelaId: string,
 ): ItemDePreco {
-  const precoDe = (produtoId: string): number | null =>
-    precoDaTabela(precosPorProduto.get(produtoId), tabelaId);
+  const anchor = precosPorProduto.get(item.produtoId);
+  const precoDoModelo = (produtoId: string): number | null => {
+    const filho = precosPorProduto.get(produtoId);
+    if (anchor === undefined || filho === undefined) return null;
+    return precoDoFilhoNaTabela(
+      {
+        precosDoPai: anchor.precos,
+        propagaPreco: propagaPrecoAosFilhos(anchor.propagatePriceToChildren),
+        precosDoFilho: filho.precos,
+      },
+      tabelaId,
+    );
+  };
 
   if (item.modelos.length === 0) {
     return {
@@ -453,7 +549,7 @@ export function precificarItem(
           modelId: SHOPEE_PRECO_MODEL_ID_SEM_MODELO,
           produtoId: item.produtoId,
           varLinkDocId: null,
-          precoAlvo: precoDe(item.produtoId),
+          precoAlvo: precoDaTabela(anchor?.precos, tabelaId),
         },
       ],
     };
@@ -468,7 +564,7 @@ export function precificarItem(
       modelId: modelo.modelId,
       produtoId: modelo.produtoId,
       varLinkDocId: modelo.varLinkDocId,
-      precoAlvo: precoDe(modelo.produtoId),
+      precoAlvo: precoDoModelo(modelo.produtoId),
     })),
   };
 }

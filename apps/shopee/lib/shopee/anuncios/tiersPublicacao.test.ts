@@ -970,6 +970,81 @@ describe('reconciliarModelos — o model_list sai do get_model_list FRESCO', () 
 });
 
 /* -------------------------------------------------------------------------- */
+/*  (7b) D-9 — the `filho-sem-preco` TEXT follows the price source            */
+/* -------------------------------------------------------------------------- */
+
+describe('montarTiers — D-9: o texto do `filho-sem-preco` nomeia quem tem o preço', () => {
+  const azul = variante('v-azul', 'Azul');
+  const verde = variante('v-verde', 'Verde');
+  const cor = grupo({
+    grupoId: 'g-cor',
+    nome: 'Cor',
+    variacoes: [azul, verde],
+    linksVariacoesShopee: [entrada({ variation_id: 0 })],
+  });
+
+  /** Both children priceless; `fonte` spreads onto each (absent = the field is not set). */
+  function recusasDePreco(fonte: Partial<FilhoParaPublicar>) {
+    const filhos = [
+      filho({
+        produtoId: 'p-1',
+        variacoesUid: [varianteFakePath('g-cor', 'v-azul')],
+        preco: null,
+        ...fonte,
+      }),
+      filho({
+        produtoId: 'p-2',
+        variacoesUid: [varianteFakePath('g-cor', 'v-verde')],
+        preco: null,
+        ...fonte,
+      }),
+    ];
+    return montarTiers(args({ grupos: [cor], filhos })).problemas.filter(
+      (p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+    );
+  }
+
+  const textoDoPai = (id: string) =>
+    `A variação ${id} não tem preço: o produto pai propaga o preço para as variações e não tem ` +
+    'preço na tabela normal — defina o preço do pai ou desligue a propagação.';
+  const textoDoFilho = (id: string) =>
+    `A variação ${id} não tem preço e a Shopee exige um original_price por modelo.`;
+
+  it('⚠️ PAR — o preço vem do PAI (`precoDoPai: true`) ⇒ cada recusa nomeia o PAI e o remédio; o motivo continua `filho-sem-preco`', () => {
+    expect(recusasDePreco({ precoDoPai: true })).toEqual([
+      {
+        campo: 'model',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        mensagem: textoDoPai('p-1'),
+      },
+      {
+        campo: 'model',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        mensagem: textoDoPai('p-2'),
+      },
+    ]);
+  });
+
+  it('⚠️ QUASE-IGUAL — os MESMOS filhos sem preço, com o preço PRÓPRIO (`precoDoPai: false`, ou ausente) ⇒ o texto de sempre, que nomeia a variação', () => {
+    for (const fonte of [{ precoDoPai: false }, {}]) {
+      expect(recusasDePreco(fonte).map((p) => p.mensagem)).toEqual([
+        textoDoFilho('p-1'),
+        textoDoFilho('p-2'),
+      ]);
+    }
+  });
+
+  it('a fonte não muda o que é recusado: filhos COM preço vindo do pai não recusam nada', () => {
+    const filhos = [
+      filho({ produtoId: 'p-1', variacoesUid: [varianteFakePath('g-cor', 'v-azul')] }),
+      filho({ produtoId: 'p-2', variacoesUid: [varianteFakePath('g-cor', 'v-verde')] }),
+    ].map((f) => ({ ...f, precoDoPai: true }));
+    const montado = montarTiers(args({ grupos: [cor], filhos }));
+    expect(motivos(montado.problemas)).not.toContain('filho-sem-preco');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  (8) folder discipline — no local copy of a wire bound                      */
 /* -------------------------------------------------------------------------- */
 

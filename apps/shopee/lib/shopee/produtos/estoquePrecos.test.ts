@@ -174,7 +174,7 @@ describe('os preços — de onde vêm e para onde vão', () => {
     expect(p.precoPaiIgnorado).toBe('valor-abaixo-do-minimo');
   });
 
-  it('um anúncio COM models não escreve preço no pai — a wire nem manda `price_info` nele', () => {
+  it('na ATUALIZAÇÃO de um pai que JÁ TEM filhos, um anúncio COM models não escreve preço no pai — a wire nem manda `price_info` nele', () => {
     const p = plano({
       entrada: item({ has_model: true }, modelos([{ model_id: MODEL_ID, price_info: PRECO_BRL }])),
       filhos: [
@@ -186,7 +186,9 @@ describe('os preços — de onde vêm e para onde vão', () => {
           estoque: null,
         },
       ],
-      pai: { ...preparo().pai, existente: EXISTENTE },
+      // ⚠️ Já uma FAMÍLIA: um produto existente SEM filhos vira família pela
+      // regra da família (preço + flag no patch guardado — `precoDaFamilia.test.ts`).
+      pai: { ...preparo().pai, existente: EXISTENTE, jaTemFilhos: true },
     });
     expect(p.precosPai).toBeNull();
     expect(p.precoPaiIgnorado).toBe('pai-com-filhos');

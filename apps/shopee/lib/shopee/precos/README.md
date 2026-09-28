@@ -49,10 +49,11 @@ The families are the seam, not a filing convention.
   key read plus one join per anchor — and `lerPaginaDeFamiliasDePreco`, the
   job's PAGED walk over every anchor of the conta — one keyset query per page,
   `paiId == null` and `integracoesComProduto array-contains` the conta, ordered
-  by document id, projected to `precos`, resumed from a cursor that is an id
-  VALUE, never a snapshot, so an anchor that left the conta between two
-  dispatches does not break the walk; plus `lerPrecosDosProdutos`, the
-  SEND-time `precos` read of named produtos that both surfaces price from),
+  by document id, projected to `precos` and `propagatePriceToChildren`, resumed
+  from a cursor that is an id VALUE, never a snapshot, so an anchor that left
+  the conta between two dispatches does not break the walk; plus
+  `lerPrecosDosProdutos`, the SEND-time read of named produtos' `precos` and
+  `propagatePriceToChildren` that both surfaces price from),
   `leitorDeBase.ts` (the BATCHED `get_item_base_info`, one lazy call per chunk
   of up to 50 ids, reconciled by `item_id`) and `leituraPreco.ts` (the fresh
   read of one listing — `get_model_list` only when `has_model === true` — and
@@ -118,14 +119,17 @@ sentence.
 ⚠️ **The price is read at SEND time, never at plan time** (reconcile C-d — the
 job's drain-time rule, applied to this surface). Inside each item's pool task,
 immediately before the sender, ONE masked key read (`lerPrecosDosProdutos`)
-fetches the `precos` of exactly the produtos that price the item — the anchor
-of a no-model listing, each model's own child otherwise — and the pure
-`precificarItem` prices it. An item late in the pool is sent up to the deadline
+fetches the `precos` and `propagatePriceToChildren` of exactly the produtos
+that price the item — the anchor alone for a no-model listing; the anchor AND
+each model's child otherwise, because the anchor's flag decides which map
+prices a model (§3, D-9) — and the pure `precificarItem` prices it. An item late in the pool is sent up to the deadline
 after the request started, and pricing every item up front made a tabela edited
 inside that window (a second operator, another tab, the job) a lost update ON
 THE WIRE: the older value overwrote the newer one at Shopee. A produto deleted
 after the plan is absent from that read and answers `preco-nao-encontrado`,
-never a throw. Every ladder attempt re-reads the prices, and a retry reads its
+never a throw — a deleted ANCHOR takes every model of its listing with it,
+whatever its flag said, because a guessed propagation would send a price
+nobody vouches for. Every ladder attempt re-reads the prices, and a retry reads its
 listing through a FRESH one-id base reader instead of the request's memo, so an
 attempt that landed its `update_price` and then threw (a write-back blip)
 replays as `preco-igual` (S4) rather than sending again. ⚠️ The CLI's dry run
@@ -200,7 +204,8 @@ has three binders:
   it — rounded to the centavo — and refuses a zero variation price instead of
   sending it (register 138).
 - **This folder**, through `precificarItem`, reading the conta's
-  `tabelaNormal` for the anchor and each model child.
+  `tabelaNormal` for the anchor and — through `precoDoFilhoNaTabela`, below —
+  for each model.
 
 ⚠️ **Rounding BEFORE positivity.** The value is `roundReais`'d first and only a
 result above zero is a price: a stored `0.004` rounds to `0` and reads as "no
@@ -209,11 +214,33 @@ reader would treat as real and that Shopee's own validator refuses. `0.005`
 rounds to `0.01` and is a price. An inherited key never counts, so a tabela id
 of `__proto__` reads `null`.
 
-**Open item (D-9, a question for Lucas):** step 11's tier mapper refuses a child
-with a zero, negative or sub-centavo price as `filho-sem-preco`, and since the
-promotion that refusal also blocks an UPDATE of a listing whose already-live
-model would receive no price on that path at all. Whether an update should be
-refused for a price it does not send is the open question.
+**A model's price follows the ANCHOR when the anchor propagates (D-9, decided
+by Lucas 2026-09-28).** `precoDoFilhoNaTabela` in the same module is the ONE
+rule for the price of a variation child, and it is Mercado Livre's price plan's
+rule verbatim: when the PARENT's `propagatePriceToChildren` folds true through
+`propagaPrecoAosFilhos` (anything but a stored literal `false`, an absent field
+included — the schema default), every model carries the parent's
+`precoDaTabela`, and the child's own map is never read, not even as a fallback;
+otherwise every model carries its child's own, and the parent is never read for
+a model. Three binders call it: ML's price plan, step 11's publish and this
+folder's `precificarItem`, so publish and sync agree on a family because they
+call one function — not because the produto trigger happened to run. That
+trigger copies the parent's `precos` into the children only when the PARENT's
+prices change (or propagation is re-enabled), so a child created after the last
+parent edit (a model step 9's re-import adds to an existing propagating family
+carries its OWN model price, never the parent's), trigger lag and legacy rows
+all leave a child with a stale or missing map under a propagating parent — the
+web already treats the parent as the truth there. With the price options on and
+at least one model priced, step 9 gives every priced model's child its own price
+and, when it forms the family (a created parent, or a produto with no children),
+decides the PARENT's price and flag from the models, so such a family is never
+left propagating a missing price (`produtos/README.md`). A
+child's OWN flag is never consulted: the join does not even read it. The
+consequences Lucas signed off: a propagating parent WITH a tabela price prices
+every model and blocks nothing; a non-propagating parent with an unpriced child
+still answers `null` (`preco-nao-encontrado` here, `filho-sem-preco` at step
+11's publish, UPDATE included); a propagating parent with NO tabela price is
+`null` for every model.
 
 `mesmoPrecoEmReais(atual, alvo)` is THE skip-if-equal fold, and it joined the
 fold inventory with this step. Two prices are EQUAL when they land on the same

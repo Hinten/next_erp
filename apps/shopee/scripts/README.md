@@ -782,6 +782,7 @@ is a kit.
 | `campos do produto` / `campos de extraData`   | the exact key set a merge would carry. On an UPDATE this is the fill rule at work: only absent fields are filled, except the small `sobrescreverDadosProduto` carve-out.                                                        |
 | `descrição` / `tax_info`                      | **counts and field NAMES only.** The description's characters are counted and the `tax_info` values are never rendered — the summary is an allow-list, so it is safe to paste into an issue. Keep it that way if you extend it. |
 | `preço … (nenhum) motivo=<token>`             | why no price would be written: `opcao-desligada`, `sem-tabela`, `pai-com-filhos`, `sem-price-info`, `moeda-nao-brl`, `valor-abaixo-do-minimo`. On the SG sandbox this is normally `moeda-nao-brl` — see §11.5.                  |
+| `propagar preço … sim/não/—`                  | the `propagatePriceToChildren` this run would WRITE (CREATE, or a produto with no children): `sim` = one price across models, the parent carries it; `não` = they differ or one is unpriced; `—` = none written.                |
 | `estoque … (nenhum) motivo=<token>`           | the same shape for stock. A parent that owns children never carries one.                                                                                                                                                        |
 | `### variações (N models → …)`                | `criar` / `existentes` / `semLink`. A `semLink` row is a `model_id: 0` child: the produto is created, the `variashopee` link is not, and that is the wire's answer rather than a failure.                                       |
 | the per-model rows                            | `criar` / `atualizar` / `sem mudança`, the child's own id, and its own `link` and `estoque`. A re-import of an unchanged listing should read `sem mudança` on every row.                                                        |
@@ -849,8 +850,19 @@ kit-componente-nao-vinculado`, printed together with the component table so
   first and run the same command again; **run it twice** is the procedure, not a
   workaround. The mass-import job avoids it by draining `filaKits` LAST.
 - **A `has_model` listing has no `price_info` on the item itself** — it is on
-  every model. The parent therefore prints `motivo=pai-com-filhos` and each
-  child carries its own price. Measured on the sandbox.
+  every model. The parent therefore prints `motivo=pai-com-filhos` (`sem-tabela`
+  when the conta has no tabela normal) and each child carries its own price.
+  Measured on the sandbox; no model there is priced
+  in BRL, so the `propagar preço` line (added after that measurement) reads `—`
+  by the family rule. A BRL shop differs only when the run CREATES the parent or
+  the parent is a produto with no children yet: one price across the models ⇒
+  the parent carries it and prints `sim`; `não` when they differ or one is
+  unpriced (`motivo=pai-com-filhos`); `—` when none is priced, or a price option
+  (on a produto with no children, either of the two) or the tabela is missing. A
+  re-import of a parent that already has children never writes it a price or the
+  flag (`—`). The dry run plans a CREATE; a live run whose create collides with
+  an unlinked document of an earlier attempt decides it as a produto with no
+  children instead, or writes nothing more when that document has one.
 - **The categoria leg is skipped when the category id is unknown to the cached
   tree**, printing `(nenhuma — id desconhecido ou opção desligada)` and one
   warn. Nothing fails: a category tree is a cached read, and an import that

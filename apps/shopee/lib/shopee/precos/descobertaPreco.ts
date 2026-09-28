@@ -1,14 +1,19 @@
 /**
  * Shopee **price discovery** (#1521, step 13) — the reads a price push is built
  * on, and nothing else. No Shopee call, no write, no clock: this module answers
- * "which listings and which `precos` does this family hold" for an explicit
- * list of anchors (`lerFamiliasDePrecoPorIds`, the manual push), and "what do
- * these produtos' `precos` say NOW" (`lerPrecosDosProdutos`, the SEND-time read
- * — reconcile C-d: the manual push prices each item immediately before sending
- * it, and the second PR's job reuses the same reader at drain time), and "which
+ * "which listings and which `precos` does this family hold, and does its anchor
+ * propagate its price" for an explicit list of anchors
+ * (`lerFamiliasDePrecoPorIds`, the manual push), and "what do these produtos'
+ * `precos` and `propagatePriceToChildren` say NOW" (`lerPrecosDosProdutos`, the
+ * SEND-time read — reconcile C-d: the manual push prices each item immediately
+ * before sending it, and the second PR's job reuses the same reader at drain
+ * time). Both carry the stored flag RAW beside `precos` — the family only the
+ * anchor's, the send-time map every produto's it read, of which only the
+ * anchor's is ever consulted (D-9: it decides whether a model is priced from
+ * the anchor or from its own child); nothing here folds it. And "which
  * families does this CONTA hold, one keyset page at a time"
  * (`lerPaginaDeFamiliasDePreco`, the account-wide job) — over the SAME
- * per-anchor join.
+ * per-anchor join, its page query masked to the same fields.
  *
  * The shapes it returns are `./planoPreco`'s ({@link FamiliaDePreco},
  * {@link LinkPrecoCru}, {@link FilhoDePreco}); nothing is re-declared here.
@@ -25,7 +30,9 @@
  *
  * ## The reads, per call
  *
- * 1. **The anchors — ONE batch key read** (`getAll`), masked to `precos`. A key
+ * 1. **The anchors — ONE batch key read** (`getAll`), masked to `precos` and
+ *    `propagatePriceToChildren` (D-9: the ANCHOR's flag decides whether a
+ *    model is priced from the anchor or from its own child). A key
  *    read has no index to ride and none to miss, so root `CLAUDE.md` rule 1's
  *    trap (an unindexed predicate silently full-scanning, billed by data
  *    scanned) cannot be asked here. A missing document is simply absent from
@@ -36,9 +43,11 @@
  *      no predicate is a key-order scan of one produto's links and needs no
  *      index; a conta predicate would need a collection-scope composite that
  *      nobody has declared, let alone deployed;
- *    - the children, `produtos where paiId == <anchor>`, masked to `precos` —
- *      the `paiId` equality rides the existing `produtos(paiId, nome)`
- *      composite as a prefix (the same read Mercado Livre's price push makes);
+ *    - the children, `produtos where paiId == <anchor>`, masked to `precos`
+ *      ONLY — a child's own propagation flag is never consulted, so it is
+ *      never read; the `paiId` equality rides the existing
+ *      `produtos(paiId, nome)` composite as a prefix (the same read Mercado
+ *      Livre's price push makes);
  *    - each child's WHOLE `variashopee` subcollection, no `where`, same reason
  *      as the links.
  *    Both link reads are PROJECTED to the fields the planner reads (the lists
@@ -58,9 +67,9 @@
  * {@link lerPaginaDeFamiliasDePreco} for the index it rides.
  *
  * Step 1 IS {@link lerPrecosDosProdutos} — the same masked key read the push
- * repeats per item at send time, so the anchor's plan-time `precos` and an
- * item's send-time `precos` are read through one function, one mask and one
- * "absent means deleted" rule. The plan-time copy decides NO price on the
+ * repeats per item at send time, so the anchor's plan-time `precos` and flag
+ * and an item's send-time ones are read through one function, one mask and
+ * one "absent means deleted" rule. The plan-time copy decides NO price on the
  * manual push any more (it prices at send time); the family keeps it because
  * the family shape is the planner's and the dry run prices from it.
  *
@@ -82,7 +91,7 @@ import { ShopeeConfigError } from '@delfrance/integrations-shopee';
 
 import { executarEmPool } from '../core/pool';
 import type { VarLinkShopeeCru } from '../core/vinculosShopee';
-import type { FamiliaDePreco, FilhoDePreco, LinkPrecoCru } from './planoPreco';
+import type { FamiliaDePreco, FilhoDePreco, LinkPrecoCru, PrecosDoProduto } from './planoPreco';
 
 /* -------------------------------------------------------------------------- */
 /*                               THE PROJECTIONS                              */
@@ -119,8 +128,21 @@ const CAMPOS_DO_VINCULO_DE_MODELO = [
   'modeloAusenteEm',
 ] as const;
 
-/** The produto field every read here masks to. */
-const CAMPOS_DO_PRODUTO = ['precos'] as const;
+/**
+ * The produto fields the KEY reads mask to — the anchors' read and the
+ * send-time {@link lerPrecosDosProdutos}: the price map and the propagation
+ * flag (D-9). The flag only matters on an ANCHOR, but the send-time read
+ * cannot tell an anchor from a child, and one more boolean per document is
+ * cheaper than a second read.
+ */
+const CAMPOS_DO_PRODUTO = ['precos', 'propagatePriceToChildren'] as const;
+
+/**
+ * The fields the join's CHILD query projects — `precos` only. A child's own
+ * `propagatePriceToChildren` is never consulted (the anchor's decides), so the
+ * join does not read it and {@link FilhoDePreco} cannot carry it.
+ */
+const CAMPOS_DO_FILHO = ['precos'] as const;
 
 /**
  * How many anchors are joined at once. A bound of this module's own, not an
@@ -153,18 +175,30 @@ function porId(a: string, b: string): number {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * One produto's price inputs out of a masked document — `precos` always
+ * (`undefined` when not stored), the flag only when stored, so an absent
+ * field stays absent and folds as PROPAGATING downstream.
+ */
+function precosDoProduto(dados: DocumentData | undefined): PrecosDoProduto {
+  const lido = projetar(dados, CAMPOS_DO_PRODUTO);
+  return Object.hasOwn(lido, 'propagatePriceToChildren')
+    ? { precos: lido.precos, propagatePriceToChildren: lido.propagatePriceToChildren }
+    : { precos: lido.precos };
+}
+
+/**
  * **The ONE per-anchor join** — the only definition the by-ids reader and the
  * paged reader use, so the family a human pushes and the family the job sends
  * are read identically (step 12's "one join, two readers").
  *
- * `precosDoAnchor` arrives from the caller's own anchor read, which already
- * paid for it — the batch key read on one path, the page query on the other,
- * both masked to the same {@link CAMPOS_DO_PRODUTO}.
+ * `doAnchor` (its `precos` and its flag) arrives from the caller's own anchor
+ * read, which already paid for it — the batch key read on one path, the page
+ * query on the other, both masked to the same {@link CAMPOS_DO_PRODUTO}.
  */
 async function lerFamiliaDePreco(
   db: Firestore,
   anchorId: string,
-  precosDoAnchor: unknown,
+  doAnchor: PrecosDoProduto,
 ): Promise<FamiliaDePreco> {
   const [linksSnap, filhosSnap] = await Promise.all([
     produtoShopeeLinkCollection
@@ -174,7 +208,7 @@ async function lerFamiliaDePreco(
     produtoCollection
       .ref(db, {})
       .where('paiId', '==', anchorId)
-      .select(...CAMPOS_DO_PRODUTO)
+      .select(...CAMPOS_DO_FILHO)
       .get(),
   ]);
 
@@ -196,14 +230,22 @@ async function lerFamiliaDePreco(
         .sort((a, b) => porId(a.varLinkDocId, b.varLinkDocId));
       return {
         produtoId: filhoDoc.id,
-        precos: projetar(filhoDoc.data(), CAMPOS_DO_PRODUTO).precos,
+        precos: projetar(filhoDoc.data(), CAMPOS_DO_FILHO).precos,
         varLinks,
       };
     }),
   );
   children.sort((a, b) => porId(a.produtoId, b.produtoId));
 
-  return { anchorId, precos: precosDoAnchor, links, children };
+  return Object.hasOwn(doAnchor, 'propagatePriceToChildren')
+    ? {
+        anchorId,
+        precos: doAnchor.precos,
+        propagatePriceToChildren: doAnchor.propagatePriceToChildren,
+        links,
+        children,
+      }
+    : { anchorId, precos: doAnchor.precos, links, children };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -211,21 +253,27 @@ async function lerFamiliaDePreco(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The `precos` of an explicit list of produtos, read NOW — ONE batch key read
- * (`getAll`), masked to `precos`, through the admin handle.
+ * The price inputs of an explicit list of produtos, read NOW — ONE batch key
+ * read (`getAll`), masked to `precos` and `propagatePriceToChildren`, through
+ * the admin handle.
  *
  * The send-time read of reconcile C-d: the manual push calls it inside each
  * item's pool task, immediately before the sender, with exactly the produtos
- * that price that item; the second PR's job calls it at drain time. Both then
- * hand the map to the pure `precificarItem`, unchanged.
+ * that price that item (the anchor, plus every model's child for a has-model
+ * listing); the second PR's job calls it at drain time. Both then hand the
+ * map to the pure `precificarItem`, unchanged.
  *
- * - The value is the stored `precos` map RAW (`unknown`) — `precoDaTabela`
- *   reads it, nothing here interprets it.
+ * - The value is a {@link PrecosDoProduto}: the stored `precos` map RAW and
+ *   the stored `propagatePriceToChildren` RAW (absent when not stored) —
+ *   `precoDaTabela` and `propagaPrecoAosFilhos` read them; nothing here
+ *   interprets either. So a produto WITHOUT the flag arrives without it and
+ *   folds as propagating, the schema's default.
  * - ⚠️ **Presence is EXISTENCE.** A produto that does not exist is ABSENT from
  *   the map; a produto that exists without a `precos` field is PRESENT with an
- *   `undefined` value. Both price as "no price" downstream, and neither
+ *   `undefined` `precos`. Both price as "no price" downstream, and neither
  *   throws: a produto deleted between a plan and its send answers
- *   `preco-nao-encontrado`, never an error.
+ *   `preco-nao-encontrado`, never an error — an absent ANCHOR takes every
+ *   model of its listing with it, whatever its flag was.
  * - Duplicates are collapsed; an empty list answers an empty map with ZERO
  *   reads (a batch read of nothing is refused by the SDK).
  * - Matched by DOCUMENT ID, never by position in the answer.
@@ -234,9 +282,9 @@ async function lerFamiliaDePreco(
 export async function lerPrecosDosProdutos(
   db: Firestore,
   produtoIds: readonly string[],
-): Promise<ReadonlyMap<string, unknown>> {
+): Promise<ReadonlyMap<string, PrecosDoProduto>> {
   const ids = [...new Set(produtoIds)];
-  const precos = new Map<string, unknown>();
+  const precos = new Map<string, PrecosDoProduto>();
   if (ids.length === 0) return precos;
 
   const snaps = await db.getAll(...ids.map((id) => produtoCollection.docRef(db, {}, id)), {
@@ -244,7 +292,7 @@ export async function lerPrecosDosProdutos(
   });
   for (const snap of snaps) {
     if (!snap.exists) continue;
-    precos.set(snap.id, projetar(snap.data(), CAMPOS_DO_PRODUTO).precos);
+    precos.set(snap.id, precosDoProduto(snap.data()));
   }
   return precos;
 }
@@ -286,7 +334,8 @@ export async function lerFamiliasDePrecoPorIds(
     presentes.length,
   );
   await executarEmPool(presentes, LARGURA_DA_JUNCAO, async (anchorId, indice) => {
-    lidas[indice] = await lerFamiliaDePreco(db, anchorId, precosPorAnchor.get(anchorId));
+    const doAnchor = precosPorAnchor.get(anchorId);
+    if (doAnchor !== undefined) lidas[indice] = await lerFamiliaDePreco(db, anchorId, doAnchor);
   });
 
   for (const familia of lidas) {
@@ -376,11 +425,10 @@ export async function lerPaginaDeFamiliasDePreco(
     ancoras.length,
   );
   await executarEmPool(ancoras, LARGURA_DA_JUNCAO, async (ancora, indice) => {
-    lidas[indice] = await lerFamiliaDePreco(
-      db,
-      ancora.id,
-      projetar(ancora.data(), CAMPOS_DO_PRODUTO).precos,
-    );
+    // The SAME projection as the by-ids read: the anchor's `precos` AND its
+    // flag — a bare `precos` would drop the flag and price every model of
+    // every job family from the anchor.
+    lidas[indice] = await lerFamiliaDePreco(db, ancora.id, precosDoProduto(ancora.data()));
   });
 
   const familias = lidas.filter((familia): familia is FamiliaDePreco => familia !== undefined);

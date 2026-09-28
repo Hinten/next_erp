@@ -391,10 +391,10 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **72** suites in this app name (70 drive it), and since step 8 it has a
+  **73** suites in this app name (71 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 after step 12, 72 today — the two
+  step 8, 34 after step 9, 57 after step 12, 73 today — the two
   `*.tasks.test.ts` suites it counts name the double in a docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1223,9 +1223,14 @@ are the rules a change must not break.**
   memo, a second loss is `taxonomia-em-conflito`; the loser's patch is never
   re-applied. The per-dispatch memo absorbs the grupos the dispatch writes.
 - **Prices go to the NORMAL table only** (`original_price ?? current_price`,
-  ML #803). **Estoque is never written on a parent with children.** Photos are
-  last, retriable, behind an SSRF host allow-list; logs carry host + `image_id`,
-  never the URL.
+  ML #803); models all one price ⇒ the parent gets it +
+  `propagatePriceToChildren: true`, else `false`; no model priced ⇒ neither;
+  only on CREATE or a produto with no children (there with both price options;
+  `planejarPrecoDaFamilia`, via the guarded patch); the race arm never merges
+  either on a has-model listing, then decides a childless document the same
+  way. **Estoque is never written on a parent with children.** Photos are last,
+  retriable, behind an SSRF host allow-list; logs carry host + `image_id`, never
+  the URL.
 - **Two memos a caller must pass**: `grupos` absent ⇒ the module builds its own;
   `categorias` absent ⇒ the categoria leg is SKIPPED with one warn.
 - **Kits (K1)**: `kitShopee.ts`, parent `ehKit: true`, `componentesKit` keyed by
@@ -1378,6 +1383,9 @@ The first SENDER of a price. Reasoning: `precos/README.md`.
   (BR 4×, SG 5×, over sent ∪ unsent-current models); the body is the diff.
 - `tabelaNormal` via `precoDaTabela`, `roundReais`'d, read at SEND (push) or
   DRAIN (job) time, never at plan; compared to step 9's `precoDePrateleiraDe`.
+- A model's price follows its ANCHOR's `propagatePriceToChildren` (D-9,
+  `precoDoFilhoNaTabela`, shared with ML and publish): propagating ⇒ the
+  anchor's price, else the child's own; the anchor is read for every model.
 - BR only, cross-border (`is_cb`) refused; a rowed non-`BR` region only under
   `SHOPEE_SANDBOX === '1'` on the RESOLVED sandbox host (rule 6's exception).
 - Promotions: send and classify, never pre-skip; a lock skips with NO link

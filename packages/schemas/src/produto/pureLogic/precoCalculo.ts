@@ -320,6 +320,66 @@ export function mesmoPrecoEmReais(atual: number | null, alvo: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// The price a channel sends for a variation CHILD (parent → children propagation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does a PARENT produto's `propagatePriceToChildren` say its `precos` are its
+ * variation children's? Only a stored literal `false` turns propagation off:
+ * the schema default is `true`, and a document written before the field
+ * existed — or holding junk (`'false'`, `0`, `null`) — propagates, exactly as
+ * a schema parse would default it. Pure and total.
+ *
+ * ⚠️ Pass the PARENT's (the family anchor's) raw value. A child's own
+ * `propagatePriceToChildren` is never consulted by any sender.
+ */
+export function propagaPrecoAosFilhos(valor: unknown): boolean {
+  return valor !== false;
+}
+
+/**
+ * The price of a variation CHILD in a tabela. Bound today by Mercado Livre's
+ * price plan and by Shopee's publish and price sync, so those three cannot
+ * disagree about a child's price.
+ *
+ * ⚠️ Not yet every sender: Mercado Livre's PUBLISH still decides a User
+ * Products member's price with its own copy (the `price:` of each variation in
+ * `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts`, via
+ * `resolvePrice`, which neither rounds nor re-checks positivity after
+ * rounding). Routing it through this function is a known follow-up.
+ *
+ * The rule is Mercado Livre's price plan's, verbatim (`buildPrecoDrafts` in
+ * `apps/mercado-livre/lib/marketplace/preco/precoPlan.ts`):
+ *
+ * - `propagaPreco` (the PARENT's flag, folded by {@link propagaPrecoAosFilhos})
+ *   ⇒ `precoDaTabela(precosDoPai, tabelaId)`. The child's own map is NEVER
+ *   read — not even as a fallback when the parent has no price in that tabela.
+ *   Under propagation the parent is the truth: the produto trigger overwrites
+ *   every child's `precos` with the parent's on the next parent price edit, and
+ *   the web editor flags a child that diverges (and refuses a per-child price
+ *   edit). A child map that differs is stale, not an override; one that exists
+ *   while the parent's does not would price a family the operator left unpriced.
+ * - otherwise ⇒ `precoDaTabela(precosDoFilho, tabelaId)`, and the parent is
+ *   never read.
+ *
+ * Both arms go through {@link precoDaTabela}, so its rounding and positivity
+ * rules hold on each (a `0.004` parent price is `null`, never `0`). `null` means
+ * "no price". Pure and total — no clock, no Firestore.
+ */
+export function precoDoFilhoNaTabela(
+  args: {
+    readonly precosDoPai: unknown;
+    readonly propagaPreco: boolean;
+    readonly precosDoFilho: unknown;
+  },
+  tabelaId: string | null,
+): number | null {
+  return args.propagaPreco
+    ? precoDaTabela(args.precosDoPai, tabelaId)
+    : precoDaTabela(args.precosDoFilho, tabelaId);
+}
+
+// ---------------------------------------------------------------------------
 // Kit cost
 // ---------------------------------------------------------------------------
 

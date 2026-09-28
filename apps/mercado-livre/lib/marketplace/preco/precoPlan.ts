@@ -84,6 +84,8 @@ import {
   type EnvioPrecoSkip,
   moderacaoRemoveuAnuncio,
   precoDaTabela,
+  precoDoFilhoNaTabela,
+  propagaPrecoAosFilhos,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -420,8 +422,9 @@ async function readFamilia(
     produtoId: anchorId,
     precos: coercePrecos(raw.precos),
     // Schema default TRUE: only a stored literal `false` turns propagation off
-    // (an absent or junk value reads as the default, like the schema parse).
-    propagatePriceToChildren: raw.propagatePriceToChildren !== false,
+    // (an absent or junk value reads as the default, like the schema parse) —
+    // the shared fold every sending channel reads the PARENT's flag through.
+    propagatePriceToChildren: propagaPrecoAosFilhos(raw.propagatePriceToChildren),
     // Schema default FALSE — only a stored literal `true` counts as published.
     publicado: raw.publicado === true,
     paiId: nonEmptyString(raw.paiId),
@@ -514,7 +517,7 @@ export function buildPrecoDrafts(
   opts: BuildPrecoDraftsOpts,
 ): BuildPrecoDraftsResult {
   const anchorPreco = precoDaTabela(row.precos, opts.tabelaNormalId);
-  const propagate = row.propagatePriceToChildren !== false;
+  const propagate = propagaPrecoAosFilhos(row.propagatePriceToChildren);
 
   if (row.links.length === 0) {
     return {
@@ -619,7 +622,13 @@ export function buildPrecoDrafts(
         );
         continue;
       }
-      const preco = propagate ? anchorPreco : precoDaTabela(child.precos, opts.tabelaNormalId);
+      // The ONE child-price rule (`@delfrance/schemas`), shared with Shopee's
+      // publish and price sync: under propagation the ANCHOR's entry — the
+      // child's own map is never a fallback — otherwise the child's alone.
+      const preco = precoDoFilhoNaTabela(
+        { precosDoPai: row.precos, propagaPreco: propagate, precosDoFilho: child.precos },
+        opts.tabelaNormalId,
+      );
       for (const varLink of matched) {
         if (varLink.itemId == null) {
           skips.push(

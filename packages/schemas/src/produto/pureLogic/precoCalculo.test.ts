@@ -10,6 +10,8 @@ import {
   mesmoPrecoEmReais,
   pesoDoKit,
   precoDaTabela,
+  precoDoFilhoNaTabela,
+  propagaPrecoAosFilhos,
   resolveComponentCusto,
   resolveComponentPeso,
   samePrecos,
@@ -384,5 +386,135 @@ describe('mesmoPrecoEmReais — THE skip-if-equal fold', () => {
     expect(mesmoPrecoEmReais(null, 10)).toBe(false);
     expect(mesmoPrecoEmReais(null, 0)).toBe(false);
     expect(mesmoPrecoEmReais(10, 10)).toBe(true);
+  });
+});
+
+/**
+ * `propagaPrecoAosFilhos` is a PREDICATE over a raw stored value: only the
+ * literal `false` is "off". The table pins where the fold STOPS — every
+ * falsy-looking near-miss (`'false'`, `0`, `null`, absent) must still read as
+ * the schema default `true`.
+ */
+describe('propagaPrecoAosFilhos — only a stored literal `false` turns propagation off', () => {
+  it.each<[string, boolean, unknown]>([
+    ['the literal false (OFF)', false, false],
+    ['the literal true', true, true],
+    ['absent (undefined) — a pre-field doc', true, undefined],
+    ['null', true, null],
+    ["the string 'false' (NEAR-MISS of false)", true, 'false'],
+    ['the number 0 (NEAR-MISS of false)', true, 0],
+    ['an empty object', true, {}],
+  ])('%s ⇒ propaga = %s', (_rotulo, esperado, valor) => {
+    expect(propagaPrecoAosFilhos(valor)).toBe(esperado);
+  });
+
+  it('EQUAL pair: true ≡ undefined (both propagate), NEAR-MISS: false ≠ "false" (only the boolean is off)', () => {
+    expect(propagaPrecoAosFilhos(true)).toBe(propagaPrecoAosFilhos(undefined));
+    expect(propagaPrecoAosFilhos(false)).not.toBe(propagaPrecoAosFilhos('false'));
+  });
+});
+
+/**
+ * `precoDoFilhoNaTabela` — Mercado Livre's child-price rule, shared. Each case
+ * pairs the arm that must answer with a near-miss proving the OTHER map is
+ * never read (not even as a fallback).
+ */
+describe('precoDoFilhoNaTabela — a variation child priced from its parent when the parent propagates', () => {
+  const PAI = { t: { valor: 50 } };
+  const FILHO = { t: { valor: 42 } };
+
+  it('propagating + a child priced DIFFERENTLY → the PARENT’s price (EQUAL pair with the parent’s own precoDaTabela)', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: true, precosDoFilho: FILHO }, 't'),
+    ).toBe(50);
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: true, precosDoFilho: FILHO }, 't'),
+    ).toBe(precoDaTabela(PAI, 't'));
+  });
+
+  it('propagating + a child with NO own price → the parent’s price', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: true, precosDoFilho: null }, 't'),
+    ).toBe(50);
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: true, precosDoFilho: {} }, 't'),
+    ).toBe(50);
+  });
+
+  it('NEAR-MISS (no fallback): propagating + the PARENT unpriced + the child priced → null, never the child’s 42', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: null, propagaPreco: true, precosDoFilho: FILHO }, 't'),
+    ).toBeNull();
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: { outra: { valor: 50 } }, propagaPreco: true, precosDoFilho: FILHO },
+        't',
+      ),
+    ).toBeNull();
+  });
+
+  it('NOT propagating + a child priced → the CHILD’s price even when the parent differs (NEAR-MISS of the propagating 50)', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: false, precosDoFilho: FILHO }, 't'),
+    ).toBe(42);
+  });
+
+  it('NOT propagating + the child unpriced + the parent priced → null, never the parent’s 50', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: false, precosDoFilho: null }, 't'),
+    ).toBeNull();
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: PAI, propagaPreco: false, precosDoFilho: { outra: { valor: 42 } } },
+        't',
+      ),
+    ).toBeNull();
+  });
+
+  it('precoDaTabela’s rounding and positivity hold on BOTH arms: a 0.004 → null, NEAR-MISS 0.005 → 0.01', () => {
+    const quaseZero = { t: { valor: 0.004 } };
+    const umCentavo = { t: { valor: 0.005 } };
+    // Propagating arm: a 0.004 parent is "no price" even beside a priced child.
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: quaseZero, propagaPreco: true, precosDoFilho: FILHO },
+        't',
+      ),
+    ).toBeNull();
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: umCentavo, propagaPreco: true, precosDoFilho: FILHO },
+        't',
+      ),
+    ).toBe(0.01);
+    // Own-price arm: the same rules on the child's map.
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: PAI, propagaPreco: false, precosDoFilho: quaseZero },
+        't',
+      ),
+    ).toBeNull();
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: PAI, propagaPreco: false, precosDoFilho: umCentavo },
+        't',
+      ),
+    ).toBe(0.01);
+    // And the rounding itself: 10.004 → 10 on either arm.
+    expect(
+      precoDoFilhoNaTabela(
+        { precosDoPai: { t: { valor: 10.004 } }, propagaPreco: true, precosDoFilho: null },
+        't',
+      ),
+    ).toBe(10);
+  });
+
+  it('a null tabela id → null on both arms', () => {
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: true, precosDoFilho: FILHO }, null),
+    ).toBeNull();
+    expect(
+      precoDoFilhoNaTabela({ precosDoPai: PAI, propagaPreco: false, precosDoFilho: FILHO }, null),
+    ).toBeNull();
   });
 });
