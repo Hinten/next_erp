@@ -623,4 +623,3 @@ describe('PedidoForm — persistent lazy Incidentes tab', () => {
     expect(seen[1]?.freteInicial?.enderecoFreteOuterReference).toBe(destino);
   });
 });
-
