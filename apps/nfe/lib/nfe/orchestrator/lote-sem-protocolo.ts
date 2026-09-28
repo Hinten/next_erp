@@ -187,6 +187,9 @@ function decisaoDaDuplicidade(cStat: string): DecisaoDaRodada {
  *  - 656 → `terminal`;
  *  - a lote-state or service code inside a protNFe → by chave
  *    (`protocolo-ausente`).
+ * A protNFe cStat that is not TStat-shaped (an empty `<cStat/>`) is read as
+ * absent, like a near-miss chave: `classifyCStat` would call it a rejection
+ * and free the número on an anomaly.
  *
  * Without it, from the LOTE cStat:
  *  - not TStat-shaped, 103/105/107/108/109/113/114 → `aguardar`;
@@ -203,7 +206,7 @@ export function decidirRodadaDoRecibo(
   loteCStat: string,
   protCStat: string | null,
 ): DecisaoDaRodada {
-  if (protCStat != null) {
+  if (protCStat != null && CSTAT_TSTAT.test(protCStat)) {
     switch (classifyCStat(protCStat)) {
       case 'autorizada':
       case 'cancelada':

@@ -107,6 +107,29 @@ describe('decidirRodadaDoRecibo — our protNFe is in the receipt (protCStat pre
       '656',
     ]);
   });
+
+  it.each(['', 'abc', '10', '10400'])(
+    "protNFe cStat '%s' (not TStat-shaped) is read as ABSENT — the lote cStat decides, never a número-freeing aplicar-protocolo",
+    (protCStat) => {
+      for (const loteCStat of ['103', '104', '105', '106', '108', '204', '539', '656', '252', '']) {
+        expect(decidirRodadaDoRecibo(loteCStat, protCStat)).toEqual(
+          decidirRodadaDoRecibo(loteCStat, null),
+        );
+      }
+      expect(rotulo(decidirRodadaDoRecibo('104', protCStat))).toBe('por-chave:protocolo-ausente');
+      expect(rotulo(decidirRodadaDoRecibo('105', protCStat))).toBe('aguardar');
+      expect(rotulo(decidirRodadaDoRecibo('656', protCStat))).toBe('terminal');
+    },
+  );
+
+  it.each(['999', '1000', '9999'])(
+    'near-miss: a TStat-shaped protNFe rejection %s is still applied, whatever the lote says',
+    (protCStat) => {
+      for (const loteCStat of ['104', '105', '']) {
+        expect(rotulo(decidirRodadaDoRecibo(loteCStat, protCStat))).toBe('aplicar-protocolo');
+      }
+    },
+  );
 });
 
 describe('decidirRodadaDoRecibo — no protNFe for our chave (protCStat null)', () => {

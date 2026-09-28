@@ -2100,6 +2100,30 @@ describe('reconcileByRecibo — one decision per consReci round (#1654)', () => 
     expectHomologacaoOnly();
   });
 
+  it('our protNFe with a non-TStat cStat (empty) in a 104 is read as ABSENT → resolved by chave (one consSit), never a número-freeing rejeitada', async () => {
+    seedDoc({ retries: 1 });
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('108'));
+    // `loteRet` omits a falsy protCStat — put our protNFe with `<cStat/>` in.
+    vi.mocked(consultarLote).mockResolvedValue({
+      ...(loteRet('104') as object),
+      protNFe: [protDoLote(CHAVE, '')],
+    } as never);
+
+    const r = await reconcileByRecibo({ ...baseArgs, attempt: 1 });
+
+    expect(r).toMatchObject({ stillPending: 1, recovered: 0, errored: 0 });
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    for (const { patch } of writesFor(DOC)) {
+      expect(patch.estado).not.toBe(ESTADO_NFE.rejeitada);
+    }
+    expect(lastPatch()).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '104',
+      retries: 2,
+    });
+    expectHomologacaoOnly();
+  });
+
   describe('lote 106 (lote não localizado) — resolved by chave, but never on the doc’s first round', () => {
     it('first round (retries 0) → counted only: retries 1, NO consSit (the receipt may not be indexed yet)', async () => {
       seedDoc({ retries: 0 });
