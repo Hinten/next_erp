@@ -217,15 +217,16 @@ describe('carregadorContextoRejeicao', () => {
     expect(contexto.destinatario).toBeNull();
   });
 
-  it('an opaque odd-segment ref ({ path: "clientes" }) makes doc() throw → cliente null, destinatário kept', async () => {
+  it('an opaque odd-segment ref ({ path: "clientes" }) dereferences to null → cliente null, destinatário kept', async () => {
     // The REAL dereference, against a real Firestore: `doc(db, 'clientes')`
-    // throws SYNCHRONOUSLY (a document path needs even segments) — a
-    // FirebaseError, the class the loader narrows on.
+    // would throw a FirebaseError synchronously (a document path needs even
+    // segments), and since #1656 the dereference never reaches it — it
+    // answers null.
     const { dereferenceOuterRef: real } = await vi.importActual<
       typeof import('@/lib/data/dereferenceOuterRef')
     >('@/lib/data/dereferenceOuterRef');
     const opaco = { path: 'clientes' };
-    expect(() => real(realDb, opaco)).toThrow(FirebaseError);
+    expect(real(realDb, opaco)).toBeNull();
     h.dereferenceOuterRef.mockImplementation(real);
     pedidoData = { clientePedidoOuterRef: opaco };
 
@@ -251,8 +252,10 @@ describe('carregadorContextoRejeicao', () => {
     expect(h.readClienteByRef).not.toHaveBeenCalled();
   });
 
-  // `doc()`'s path validation throws a FirestoreError — a FirebaseError subclass
-  // whose constructor the public typings keep private, hence the base class here.
+  // `doc()`'s path validation throws a FirebaseError `invalid-argument` — and
+  // NOT an `instanceof FirestoreError`: `@firebase/util` resets the prototype to
+  // FirebaseError's, so the base class is the one both the loader and this
+  // stand-in use.
   it('the nfev4 docRef throwing a FirebaseError synchronously → destinatario null, cliente still loaded', async () => {
     h.docRef.mockImplementation((kind: FakeRef['kind']) => {
       if (kind === 'nfe') throw new FirebaseError('invalid-argument', 'Invalid document reference');
