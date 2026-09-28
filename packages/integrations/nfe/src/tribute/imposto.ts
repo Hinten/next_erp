@@ -19,8 +19,11 @@
  *     or a CST 49–99 config with BOTH a percent and a per-unit rate
  *   - an incomplete/invalid `configuracaoIBSCBS` while `emitRtc` is on
  *     (thrown by `rtc.ts`)
+ *   - an IBS/CBS-only item (a nota de crédito/débito) without `emitRtc` or
+ *     without `configuracaoIBSCBS`
  */
 import type { z } from 'zod';
+import { MODO_GRUPOS_IMPOSTO, type ModoGruposImposto } from '@delfrance/schemas';
 
 import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt, roundReais } from './format';
 import {
@@ -67,14 +70,28 @@ export { NFeTributeError };
  * false (the default), the emitted XML is byte-identical to the pre-RTC
  * output — the `IS` / `IBSCBS` keys are simply never set, so the META walker
  * omits them. The orchestrator flips it on per-filial.
+ *
+ * `opts.grupos` (`modoGruposImposto`, `@delfrance/schemas`) is `completo` for
+ * every ordinary nota. `somenteIbsCbs` — a nota de crédito/débito (finNFe 5/6,
+ * RV B25-80, cStat 1001) — emits the IBS/CBS (and IS) groups ALONE: no ICMS,
+ * ISSQN, IPI, PIS or COFINS, whose configs are then not even read, so a stale
+ * PIS config cannot block a nota that never carries it.
  */
 export function buildImpostoXml(
   rawImposto: unknown,
   rawItem: unknown,
-  opts: { emitRtc?: boolean } = {},
+  opts: { emitRtc?: boolean; grupos?: ModoGruposImposto } = {},
 ): string {
   const imposto = parseInput(impostoSchema, rawImposto, 'imposto');
   const item = parseInput(tributeItemSchema, rawItem, 'item');
+
+  if (opts.grupos === MODO_GRUPOS_IMPOSTO.somenteIbsCbs) {
+    return serializeFragment(
+      'TNFe_infNFe_det_imposto',
+      'imposto',
+      buildSomenteIbsCbs(imposto, item, opts.emitRtc === true) as unknown as XmlValue,
+    );
+  }
 
   // XSD xs:choice — every item carries either <ICMS> or <ISSQN>, not
   // both. Mirror the Flutter dispatcher: ISSQN wins when set, otherwise
@@ -107,6 +124,33 @@ export function buildImpostoXml(
     'imposto',
     impostoValue as unknown as XmlValue,
   );
+}
+
+/**
+ * The `<imposto>` of a nota de crédito/débito item: `IS` (when configured) +
+ * `IBSCBS`, nothing else. Both refusals name what the operator must fix — the
+ * item carries NO other tax group, so without IBS/CBS it would carry none.
+ */
+function buildSomenteIbsCbs(
+  imposto: Imposto,
+  item: TributeItem,
+  emitRtc: boolean,
+): TNFe_infNFe_det_imposto {
+  if (!emitRtc) {
+    throw new NFeTributeError(
+      'nota de crédito/débito carries only IBS/CBS: the filial must emit the Reforma Tributária',
+    );
+  }
+  if (imposto.configuracaoIBSCBS == null) {
+    throw new NFeTributeError(
+      'nota de crédito/débito carries only IBS/CBS: the item has no configuracaoIBSCBS',
+    );
+  }
+  const rtc = parseRtcConfig(imposto.configuracaoIBSCBS);
+  return {
+    ...(rtc.is != null ? { IS: buildIS(rtc.is, item.vProd) } : {}),
+    IBSCBS: buildIBSCBS(rtc, item.vProd),
+  };
 }
 
 // ---------------------------------------------------------------------------

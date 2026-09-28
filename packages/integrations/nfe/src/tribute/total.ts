@@ -21,6 +21,8 @@
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
  * (the bag of vBC_ICMSTot, vICMS_ICMSTot, … doubles).
  */
+import { MODO_GRUPOS_IMPOSTO, type ModoGruposImposto } from '@delfrance/schemas';
+
 import { serializeFragment, type XmlValue } from '../xml';
 import type {
   TIBSCBSMonoTot,
@@ -33,6 +35,7 @@ import type {
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
 import { CSOSN, IPI_TRIB_CSTS } from './schemas';
 import { computePisCofinsItemValues } from './imposto';
+import { NFeTributeError } from './errors';
 import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
@@ -134,12 +137,18 @@ export interface TotalExtras {
  * vNF is computed as `vProd + vST + vFCPST + vFrete + vSeg + vOutro
  * + vIPI − vDesc`, mirroring Flutter `pedido_nfe_base.dart:1729` and
  * the SEFAZ formula for `<vNF>` (NT 2018.005).
+ *
+ * `opts.grupos` must be the one each item's `buildImpostoXml` received: with
+ * `somenteIbsCbs` (a nota de crédito/débito) no item emits ICMS, IPI, PIS or
+ * COFINS, so their buckets stay zero whatever the stored configs say — the
+ * totals must equal Σ of what the items EMIT (rejections 531/532/602/603).
  */
 export function aggregateTotals(
   items: ReadonlyArray<PerItem>,
   extras: TotalExtras = {},
-  opts: { emitRtc?: boolean } = {},
+  opts: { emitRtc?: boolean; grupos?: ModoGruposImposto } = {},
 ): TotalAggregation {
+  const somenteIbsCbs = opts.grupos === MODO_GRUPOS_IMPOSTO.somenteIbsCbs;
   let vProd = 0;
   let vBC = 0;
   let vICMS = 0;
@@ -169,6 +178,13 @@ export function aggregateTotals(
     // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
     // Base = the net-of-discount tribute value (matches the per-item
     // `buildImpostoXml` base), NOT the gross `vProd` accumulated above.
+    if (somenteIbsCbs && (!opts.emitRtc || imposto.configuracaoIBSCBS == null)) {
+      // The same refusal `buildImpostoXml` makes for this item: without IBS/CBS
+      // it would emit no tax group at all.
+      throw new NFeTributeError(
+        'nota de crédito/débito carries only IBS/CBS: every item needs it, with the Reforma Tributária on',
+      );
+    }
     if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
       const rtcBase = item.vBaseTributavel ?? item.vProd;
       const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), rtcBase);
@@ -180,6 +196,8 @@ export function aggregateTotals(
       rtcIS += r.vIS;
       rtcCount += 1;
     }
+    // IBS/CBS only: nothing below is on the wire for this item.
+    if (somenteIbsCbs) continue;
     // Only IPITrib CSTs (00/49/50/99) actually emit <vIPI> per item; IPINT CSTs
     // carry a stored vIPI in some legacy configs but emit nothing, so counting it
     // would make ICMSTot.vIPI > Σ item vIPI. Mirror buildIPI's IPI_TRIB_CSTS gate.

@@ -1,10 +1,20 @@
 'use client';
 
-import { useFormContext } from 'react-hook-form';
-import { Button, Group, MultiSelect, Select, Stack } from '@mantine/core';
+import { useFormContext, useWatch } from 'react-hook-form';
+import { Alert, Button, Group, MultiSelect, Select, Stack, Text } from '@mantine/core';
 import { z } from 'zod';
 import {
+  FIN_NFE_OPERACAO,
   FIN_NFE_OPERACAO_LABELS,
+  REGRA_DOCUMENTO,
+  TP_NF_CREDITO_LABELS,
+  TP_NF_DEBITO_LABELS,
+  descreverViolacaoDocumento,
+  tpNFCreditoSchema,
+  tpNFDebitoSchema,
+  violacoesDaOperacao,
+  type FinNFeOperacao,
+  type RegraDocumento,
   IND_INTERMED_OPERACAO_LABELS,
   IND_PRES_OPERACAO_LABELS,
   ORIGEM_PRODUTO_LABELS,
@@ -13,7 +23,7 @@ import {
   ufSchema,
 } from '@delfrance/schemas';
 import { valuesEqual } from '@delfrance/core';
-import type { FieldConfig } from '@delfrance/ui';
+import type { FieldConfig, FieldRenderProps, ValidationIssue } from '@delfrance/ui';
 import {
   ImpostoConfigEditor,
   IMPOSTO_CONFIG_KEYS,
@@ -43,6 +53,76 @@ export const operacaoPageSchema = operacaoSchema.extend({
 
 function toOptions(labels: Record<string, string>) {
   return Object.entries(labels).map(([value, label]) => ({ value, label }));
+}
+
+/**
+ * The form field each operação-level rule (`violacoesDaOperacao`, the SAME
+ * rules the emission refuses with) points at. A rule missing here would land
+ * on `finNFe`, never vanish.
+ */
+const CAMPO_DA_REGRA: Partial<Record<RegraDocumento, string>> = {
+  [REGRA_DOCUMENTO.creditoNaoEhEntrada]: 'tipo',
+  [REGRA_DOCUMENTO.debitoNaoEhSaida]: 'tipo',
+  [REGRA_DOCUMENTO.creditoRetornoNaoEhEntrada]: 'tipo',
+  [REGRA_DOCUMENTO.tpNFDebitoIndevido]: 'tpNFDebito',
+  [REGRA_DOCUMENTO.tpNFDebitoAusente]: 'tpNFDebito',
+  [REGRA_DOCUMENTO.tpNFCreditoIndevido]: 'tpNFCredito',
+  [REGRA_DOCUMENTO.tpNFCreditoAusente]: 'tpNFCredito',
+};
+
+/**
+ * `ObjectView.validate` for both operação pages: the NT 2025.002 finalidade /
+ * tipo rules (B25-110/120, B25.1, B25.2) that SEFAZ would reject every nota
+ * of this operação for. The emission date is unknown here, so 1145 (crédito
+ * 02 before 2029) is left to the emission.
+ */
+export function validarOperacao(values: Record<string, unknown>): ValidationIssue[] {
+  const finNFe = typeof values.finNFe === 'number' ? values.finNFe : FIN_NFE_OPERACAO.normal;
+  return violacoesDaOperacao({
+    finNFe,
+    tpNF: values.tipo === 1 ? '1' : '0',
+    // A value outside the enum is the schema resolver's error, not these rules'.
+    tpNFDebito: tpNFDebitoSchema.safeParse(values.tpNFDebito).data ?? null,
+    tpNFCredito: tpNFCreditoSchema.safeParse(values.tpNFCredito).data ?? null,
+    anoEmissao: null,
+  }).map((v) => ({
+    path: CAMPO_DA_REGRA[v.regra] ?? 'finNFe',
+    message: descreverViolacaoDocumento(v),
+  }));
+}
+
+/**
+ * The tipo of a nota de débito/crédito — shown only for its finalidade, or
+ * while it still holds a value (so a stale one stays visible and clearable
+ * next to the error `validarOperacao` puts on it).
+ */
+function TipoNotaAjusteSelect({
+  p,
+  finalidade,
+  labels,
+}: {
+  p: FieldRenderProps;
+  finalidade: FinNFeOperacao;
+  labels: Record<string, string>;
+}) {
+  const finNFe = useWatch({ name: 'finNFe' }) as unknown;
+  if (finNFe !== finalidade && p.value == null) return null;
+  return (
+    <Select
+      label={p.label}
+      description={p.hint}
+      error={p.error}
+      disabled={p.disabled}
+      data={Object.entries(labels).map(([value, label]) => ({
+        value,
+        label: `${value} — ${label}`,
+      }))}
+      value={(p.value as string | null) ?? null}
+      onChange={(v) => p.onChange(v)}
+      onBlur={p.onBlur}
+      clearable
+    />
+  );
 }
 
 const UF_OPTIONS = ufSchema.options.map((uf) => ({ value: uf, label: uf }));
@@ -90,6 +170,25 @@ function OperacaoImpostoField({ disabled }: { disabled?: boolean }) {
 }
 
 /**
+ * What the ERP emits of a nota de crédito/débito, stated where the finalidade
+ * is chosen — the emission refuses the rest with the same words.
+ */
+function NotaAjusteAviso() {
+  const finNFe = useWatch({ name: 'finNFe' }) as unknown;
+  if (finNFe !== FIN_NFE_OPERACAO.credito && finNFe !== FIN_NFE_OPERACAO.debito) return null;
+  return (
+    <Alert color="blue" variant="light">
+      <Text size="sm">
+        Nota de crédito/débito (NT 2025.002): emitida só com a Reforma Tributária ativa na filial, e
+        cada item precisa da configuração de IBS/CBS. Os itens levam só IBS/CBS — exceto crédito
+        03/04 e débito 07, que mantêm ICMS, PIS e COFINS. Os tipos com cClassTrib fixo (débito 01,
+        02, 03, 05, 07, 08 e crédito 02, 05) exigem grupos de ajuste que o ERP ainda não emite.
+      </Text>
+    </Alert>
+  );
+}
+
+/**
  * Static per-field overrides (module-level so ObjectView's identity-tracked
  * `fields` stays stable). The page merges the runtime-bound `macros` host on top.
  */
@@ -133,16 +232,41 @@ export const operacaoStaticFields: Record<string, FieldConfig> = {
     section: 'Dados gerais',
     label: 'Finalidade da emissão',
     renderInput: (p) => (
-      <Select
-        label={p.label}
-        description={p.hint}
-        error={p.error}
-        disabled={p.disabled}
-        data={toOptions(FIN_NFE_OPERACAO_LABELS)}
-        value={p.value == null ? null : String(p.value)}
-        onChange={(v) => p.onChange(v == null ? null : Number(v))}
-        onBlur={p.onBlur}
-        clearable
+      <Stack gap={6}>
+        <Select
+          label={p.label}
+          description={p.hint}
+          error={p.error}
+          disabled={p.disabled}
+          data={toOptions(FIN_NFE_OPERACAO_LABELS)}
+          value={p.value == null ? null : String(p.value)}
+          onChange={(v) => p.onChange(v == null ? null : Number(v))}
+          onBlur={p.onBlur}
+          clearable
+        />
+        <NotaAjusteAviso />
+      </Stack>
+    ),
+  },
+  tpNFDebito: {
+    section: 'Dados gerais',
+    label: 'Tipo de nota de débito',
+    renderInput: (p) => (
+      <TipoNotaAjusteSelect
+        p={p}
+        finalidade={FIN_NFE_OPERACAO.debito}
+        labels={TP_NF_DEBITO_LABELS}
+      />
+    ),
+  },
+  tpNFCredito: {
+    section: 'Dados gerais',
+    label: 'Tipo de nota de crédito',
+    renderInput: (p) => (
+      <TipoNotaAjusteSelect
+        p={p}
+        finalidade={FIN_NFE_OPERACAO.credito}
+        labels={TP_NF_CREDITO_LABELS}
       />
     ),
   },

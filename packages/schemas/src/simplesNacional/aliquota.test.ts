@@ -271,6 +271,10 @@ describe('sinalDaReceita — tpNF alone does not decide', () => {
     ['entrada normal (compra) → neutra', 0, 1, 0],
     ['entrada complementar → neutra', 0, 2, 0],
     ['entrada ajuste → neutra', 0, 3, 0],
+    ['saída nota de crédito (NT 2025.002) → neutra', 1, 5, 0],
+    ['saída nota de débito (NT 2025.002) → neutra', 1, 6, 0],
+    ['entrada nota de crédito → neutra', 0, 5, 0],
+    ['entrada nota de débito → neutra', 0, 6, 0],
   ] as const)('%s', (_label, tpNF, finNFe, esperado) => {
     expect(sinalDaReceita(totais({ tpNF, finNFe }))).toBe(esperado);
   });

@@ -250,6 +250,12 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 | 1145 | NF-e de Crédito tipo 2 (ZFM) só permitida a partir de 2029 | B25.2-30 |
 | 1153–1157 | Erros em dPrevEntrega (data prevista de entrega) | B10a-10 a B10a-50 |
 | 1200 / 1201 / 1202 | cClassTrib incompatível com tpNFDebito / tpNFCredito / nota | UB14-70/80/60 |
+| 1001 | Nota de crédito/débito com ICMS/PIS/COFINS/IPI (só IBS/CBS) | B25-80 |
+| 1003 | Nota de crédito referenciando documento que não é NF-e 55 | B25-100 |
+| 1009 / 1139 | Nota de débito sem `tpNFDebito` / `tpNFDebito` sem finNFe=6 | B25.1-20 / B25.1-10 |
+| 1164 / 1163 | Nota de crédito sem `tpNFCredito` / `tpNFCredito` sem finNFe=5 | B25.2-20 / B25.2-10 |
+| 1161 / 1162 / 1152 | Crédito não-entrada / débito não-saída / crédito 03 não-entrada | B25-110 / B25-120 / B25.2-40 |
+| 254 / 255 / 269 / 678 / 1027 | NF referenciada do crédito: ausente / várias / outro CNPJ / outra UF / indevida (ZFM) | B25-30…65 |
 
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
 `references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.

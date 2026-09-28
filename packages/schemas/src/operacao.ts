@@ -23,21 +23,91 @@ export const TIPO_NFE_LABELS: Record<TipoNFe, string> = {
 };
 
 /**
- * finNFeOperacaoEnum — int-coded finality of NF-e (1..4).
+ * finNFeOperacaoEnum — int-coded finality of NF-e (1..6). 5 (nota de crédito)
+ * and 6 (nota de débito) are NT 2025.002 (Reforma Tributária); each needs its
+ * `tpNFCredito` / `tpNFDebito` below, and both are IBS/CBS adjustments — see
+ * `regrasDoDocumento.ts` for what SEFAZ requires of them.
  */
 export const finNFeOperacaoSchema = z.union([
   z.literal(1), // normal
   z.literal(2), // complementar
   z.literal(3), // ajuste
   z.literal(4), // devolucao
+  z.literal(5), // nota de crédito (NT 2025.002)
+  z.literal(6), // nota de débito (NT 2025.002)
 ]);
 export type FinNFeOperacao = z.infer<typeof finNFeOperacaoSchema>;
+
+/** Named members of {@link finNFeOperacaoSchema}. */
+export const FIN_NFE_OPERACAO = {
+  normal: 1,
+  complementar: 2,
+  ajuste: 3,
+  devolucao: 4,
+  credito: 5,
+  debito: 6,
+} as const satisfies Record<string, FinNFeOperacao>;
 
 export const FIN_NFE_OPERACAO_LABELS: Record<FinNFeOperacao, string> = {
   1: 'Normal',
   2: 'Complementar',
   3: 'Ajuste',
   4: 'Devolução',
+  5: 'Nota de crédito',
+  6: 'Nota de débito',
+};
+
+/** `ide/tpNFDebito` (B25.1) — the kind of nota de débito (finNFe 6), NT 2025.002. */
+export const tpNFDebitoSchema = z.enum(['01', '02', '03', '04', '05', '06', '07', '08']);
+export type TpNFDebito = z.infer<typeof tpNFDebitoSchema>;
+
+/** Named members of {@link tpNFDebitoSchema}. */
+export const TP_NF_DEBITO = {
+  transferenciaCreditoCooperativa: '01',
+  anulacaoCreditoSaidaImuneIsenta: '02',
+  debitoNotaNaoProcessada: '03',
+  multaJuros: '04',
+  transferenciaCreditoSucessao: '05',
+  pagamentoAntecipado: '06',
+  perdaEstoque: '07',
+  desenquadramentoSimples: '08',
+} as const satisfies Record<string, TpNFDebito>;
+
+export const TP_NF_DEBITO_LABELS: Record<TpNFDebito, string> = {
+  '01': 'Transferência de créditos para cooperativas',
+  '02': 'Anulação de crédito por saídas imunes/isentas',
+  '03': 'Débitos de notas fiscais não processadas na apuração',
+  '04': 'Multa e juros',
+  '05': 'Transferência de crédito na sucessão',
+  '06': 'Pagamento antecipado',
+  '07': 'Perda em estoque',
+  '08': 'Desenquadramento do Simples Nacional',
+};
+
+/**
+ * `ide/tpNFCredito` (B25.2) — the kind of nota de crédito (finNFe 5), NT 2025.002.
+ * ⚠️ `'06'` (retorno por recusa parcial na entrega, NT v1.40) is NOT here yet:
+ * the vendored XSD pack predates it and the pre-send gate would refuse it. It
+ * arrives with the PL_010f pack.
+ */
+export const tpNFCreditoSchema = z.enum(['01', '02', '03', '04', '05']);
+export type TpNFCredito = z.infer<typeof tpNFCreditoSchema>;
+
+/** Named members of {@link tpNFCreditoSchema}. */
+export const TP_NF_CREDITO = {
+  multaJuros: '01',
+  creditoPresumidoZfm: '02',
+  retornoRecusaTotal: '03',
+  reducaoValores: '04',
+  transferenciaCreditoSucessao: '05',
+} as const satisfies Record<string, TpNFCredito>;
+
+export const TP_NF_CREDITO_LABELS: Record<TpNFCredito, string> = {
+  '01': 'Multa e juros',
+  '02': 'Apropriação de crédito presumido de IBS sobre o saldo devedor na ZFM',
+  '03': 'Retorno por recusa total na entrega ou destinatário não localizado',
+  '04': 'Redução de valores',
+  '05': 'Transferência de crédito na sucessão',
 };
 
 /**
@@ -144,6 +214,10 @@ export const operacaoSchema = z.object({
   ehFiscal: z.boolean().default(true),
 
   finNFe: finNFeOperacaoSchema.nullable().optional(),
+  // NT 2025.002 — exactly one of them, and only with finNFe 6 / 5 respectively
+  // (rules B25.1 / B25.2). New fields: absent on every migrated operação.
+  tpNFDebito: tpNFDebitoSchema.nullable().default(null),
+  tpNFCredito: tpNFCreditoSchema.nullable().default(null),
   indPres: indPresOperacaoSchema.default(IND_PRES_OPERACAO.naoPresencialInternet),
   indIntermed: indIntermedOperacaoSchema.default(IND_INTERMED_OPERACAO.plataformaTerceiros),
 

@@ -16,6 +16,7 @@ import {
   OPERACAO_SECTIONS,
   OPERACAO_TRANSIENT_FIELDS,
   operacaoPageSchema,
+  validarOperacao,
   operacaoStaticFields,
 } from '../_components/operacaoFields';
 
@@ -57,6 +58,7 @@ export default function OperacaoPage() {
 
       <ObjectView
         schema={operacaoPageSchema}
+        validate={validarOperacao}
         collection={operacaoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}

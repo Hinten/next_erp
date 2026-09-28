@@ -164,12 +164,19 @@ export function receitaBrutaDeComponentes(c: {
  * | 1 saída | 4 devolução | `0` | devolução de COMPRA — nunca foi nossa receita |
  * | 0 entrada | 4 devolução | `-1` | o cliente devolveu: receita negativa no mês |
  * | 0 entrada | 1,2,3 | `0` | compra, não venda |
+ * | 0/1 | 5 crédito | `0` | ajuste de IBS/CBS (NT 2025.002), não é venda |
+ * | 0/1 | 6 débito | `0` | idem — multa, juros, estorno de crédito… |
  *
  * ⚠️ O `0` de "saída + ajuste" é deliberadamente conservador: uma NF-e de
  * ajuste PODE carregar valor, e nesse caso a receita fica subestimada. Preferir
  * subestimar aqui seria errado se fosse silencioso — por isso o runner conta
  * essas notas à parte, para que a contabilidade veja quantas foram ignoradas em
  * vez de descobrir a diferença no PGDAS-D.
+ *
+ * As notas de crédito e de débito (finNFe 5/6) são neutras pela mesma razão, e
+ * caem no mesmo `notasNeutras`: movimentam IBS/CBS entre contribuinte e fisco,
+ * não o preço de uma venda — a receita da operação já entrou pela nota
+ * original.
  */
 export function sinalDaReceita(totais: NFeTotais): -1 | 0 | 1 {
   return sinalDe(totais.tpNF, totais.finNFe);

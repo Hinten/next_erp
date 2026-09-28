@@ -6,6 +6,7 @@ import {
   CSOSN,
   CST_PIS_COFINS,
   MODALIDADE_FRETE,
+  MODO_GRUPOS_IMPOSTO,
   ORIGEM,
   FORMA_PAGAMENTO,
   INTEGRACAO_TIPO,
@@ -24,6 +25,7 @@ import {
   buildGeneratorInput,
   buildGenItems,
   isInterstateFor,
+  modoGruposFor,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import {
   lerDfeReferenciado,
@@ -1499,5 +1501,115 @@ describe('assertNotaBuildable — PIS/COFINS configs the engine refuses (#509)',
       const items = [item({ imposto: impostoPisCofins(pis, null) })];
       expect(assertNotaBuildable(bundle, items, false), JSON.stringify(pis)).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 — nota de crédito / débito (finNFe 5/6): the item tax groups come from
+// ONE mode (`modoGruposFor`), the document rules refuse before the items.
+// ---------------------------------------------------------------------------
+
+describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
+  const IMPOSTO_RTC = {
+    ...item({}).imposto,
+    configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+    configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  } as FiscalItem['imposto'];
+  const DEBITO_06 = { ...OP, tipo: 1, finNFe: 6, tpNFDebito: '06', tpNFCredito: null };
+  const ITENS_RTC = [item({ imposto: IMPOSTO_RTC })];
+
+  it('modoGruposFor reads the operação once: débito 06 is IBS/CBS only, crédito 04 is not', () => {
+    expect(modoGruposFor(bundleWith(DEBITO_06))).toBe(MODO_GRUPOS_IMPOSTO.somenteIbsCbs);
+    expect(
+      modoGruposFor(bundleWith({ ...OP, tipo: 0, finNFe: 5, tpNFCredito: '04', tpNFDebito: null })),
+    ).toBe(MODO_GRUPOS_IMPOSTO.completo);
+    expect(modoGruposFor(bundleWith(OP))).toBe(MODO_GRUPOS_IMPOSTO.completo);
+  });
+
+  it('débito 06: the det and the total agree — IBS/CBS on the wire, no PIS/COFINS anywhere', () => {
+    const bundle = { ...fullBundle({}), operacao: { ...fullBundle({}).operacao, ...DEBITO_06 } };
+    const input = buildGeneratorInput(
+      bundle as PedidoBundle,
+      ITENS_RTC,
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+    const det = input.itens[0]!.impostoXml;
+    expect(det).toContain('<IBSCBS>');
+    for (const grupo of ['<ICMS>', '<PIS>', '<COFINS>']) expect(det).not.toContain(grupo);
+    expect(input.totalXml).toContain('<vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>');
+    expect(input.totalXml).toContain('<vNFTot>101.00</vNFTot>');
+    expect(input.operacao.tpNFDebito).toBe('06');
+  });
+
+  it('near-miss: the same items on a normal nota carry PIS/COFINS in the det AND the total', () => {
+    const input = buildGeneratorInput(
+      fullBundle({}),
+      ITENS_RTC,
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+    expect(input.itens[0]!.impostoXml).toContain('<PIS>');
+    expect(input.totalXml).toContain('<vPIS>1.65</vPIS>');
+  });
+
+  it('refuses with the Reforma Tributária off — a document verdict, not a tribute error', () => {
+    expect(
+      orchestratorMessage(() => assertNotaBuildable(bundleWith(DEBITO_06), ITENS_RTC, false)),
+    ).toBe(
+      "pedido 'PED-TEST': Nota de crédito/débito só é emitida com a Reforma Tributária (IBS/CBS) ativa nesta filial.",
+    );
+  });
+
+  it('the document rules run BEFORE the items: an unbuildable item does not mask them', () => {
+    // No CFOP anywhere would be the first item error; the tipo speaks first.
+    const semCfop = [item({ imposto: { ...IMPOSTO_RTC, cfop: null } as FiscalItem['imposto'] })];
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith({ ...DEBITO_06, tpNFDebito: '01', cfop: null }),
+        semCfop,
+        true,
+      ),
+    );
+    expect(msg).toContain('ainda não emite');
+    expect(msg).not.toContain('cfop');
+  });
+
+  it('refuses an item without IBS/CBS, naming it', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(bundleWith(DEBITO_06), [...ITENS_RTC, item({ itemIndex: 1 })], true),
+    );
+    expect(msg).toBe(
+      "pedido 'PED-TEST': Item 2: Todo item de nota de crédito/débito precisa da configuração de IBS/CBS (CST e cClassTrib).",
+    );
+  });
+
+  it('passes a buildable débito 06', () => {
+    expect(assertNotaBuildable(bundleWith(DEBITO_06), ITENS_RTC, true)).toBeUndefined();
+  });
+
+  it('judges the NFref of a crédito against the filial as emitente (269/678)', () => {
+    const CHAVE_SP = '35260514200166000187550010000000071000000011';
+    const credito04 = { ...OP, tipo: 0, finNFe: 5, tpNFCredito: '04', tpNFDebito: null };
+    const bundle = (cnpj: string) =>
+      ({
+        ...bundleWith(credito04, { chNFeReferenciadas: [CHAVE_SP] }),
+        filial: { cnpj, sede: { estado: 'SP' } },
+      }) as unknown as PedidoBundle;
+    expect(assertNotaBuildable(bundle('14200166000187'), ITENS_RTC, true)).toBeUndefined();
+    expect(
+      orchestratorMessage(() => assertNotaBuildable(bundle('11222333000181'), ITENS_RTC, true)),
+    ).toContain('(SEFAZ 269)');
   });
 });

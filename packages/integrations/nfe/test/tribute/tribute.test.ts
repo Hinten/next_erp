@@ -59,6 +59,7 @@ import {
   IND_ISS,
   MOD_BC,
   MOD_BCST,
+  MODO_GRUPOS_IMPOSTO,
   ORIGEM,
 } from '@delfrance/schemas';
 
@@ -2606,5 +2607,108 @@ describe('aggregateTotals — indTot=0 (não compõe o total, #398)', () => {
     const absent = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor102() }]);
     expect(explicit).toEqual(absent);
     expect(explicit.vProd).toBe(1500);
+  });
+});
+
+// ── Nota de crédito / débito: IBS/CBS only (finNFe 5/6, RV B25-80) ───────────
+describe('IBS/CBS-only mode (a nota de crédito/débito)', () => {
+  const somente = { emitRtc: true, grupos: MODO_GRUPOS_IMPOSTO.somenteIbsCbs } as const;
+  /** Every group B25-80 forbids is CONFIGURED — none may reach the wire. */
+  const carregado = (): Imposto => ({
+    ...impostoForRtc(),
+    configuracaoIPI: { cEnq: '999', CST: '50', vBC: 1500, pIPI: 10, vIPI: 150 },
+    configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 0.65 },
+    configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 3 },
+  });
+
+  it('emits IBSCBS alone — no ICMS, IPI, PIS or COFINS — and XSD-validates', async () => {
+    const imposto = carregado();
+    const xml = buildImpostoXml(imposto, item1500, somente);
+    expect(xml).toContain('<IBSCBS>');
+    for (const grupo of ['<ICMS>', '<ISSQN>', '<IPI>', '<PIS>', '<COFINS>']) {
+      expect(xml).not.toContain(grupo);
+    }
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, somente);
+    const xmlNota = wrap(
+      xml,
+      buildTotalXml(totals),
+      buildTranspXml(),
+      buildPagXml([{ tPag: '90', vPag: 0 }]),
+    );
+    await expect(validateXsd('NFe', signNFe(xmlNota, fixtureCert()))).resolves.toBeUndefined();
+  });
+
+  it('near-miss: the same item under `completo` still carries every group', () => {
+    const xml = buildImpostoXml(carregado(), item1500, {
+      emitRtc: true,
+      grupos: MODO_GRUPOS_IMPOSTO.completo,
+    });
+    for (const grupo of ['<ICMS>', '<IPI>', '<PIS>', '<COFINS>', '<IBSCBS>']) {
+      expect(xml).toContain(grupo);
+    }
+    expect(xml).toBe(buildImpostoXml(carregado(), item1500, { emitRtc: true }));
+  });
+
+  it('keeps the IS group — B25-80 does not list it', () => {
+    const imposto: Imposto = {
+      ...impostoForRtc(),
+      configuracaoIBSCBS: {
+        ...impostoForRtc().configuracaoIBSCBS!,
+        is: { CSTIS: '000', cClassTribIS: '000000', pIS: 2 },
+      },
+    };
+    const xml = buildImpostoXml(imposto, item1500, somente);
+    expect(xml).toContain('<IS>');
+    expect(xml).toContain('<IBSCBS>');
+    expect(xml).not.toContain('<ICMS>');
+  });
+
+  it('does not even read the configs it omits — a broken PIS cannot block it', () => {
+    const imposto: Imposto = {
+      ...impostoForRtc(),
+      // CST 01 without its rate: the ordinary builder throws on it.
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+    };
+    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500, somente)).not.toThrow();
+  });
+
+  it('refuses without the RTC or without configuracaoIBSCBS — both builders alike', () => {
+    const semRtc = { emitRtc: false, grupos: MODO_GRUPOS_IMPOSTO.somenteIbsCbs } as const;
+    expect(() => buildImpostoXml(impostoForRtc(), item1500, semRtc)).toThrow(
+      /must emit the Reforma Tributária/,
+    );
+    expect(() => buildImpostoXml(impostoFor102(), item1500, somente)).toThrow(
+      /has no configuracaoIBSCBS/,
+    );
+    for (const [imposto, opts] of [
+      [impostoForRtc(), semRtc],
+      [impostoFor102(), somente],
+    ] as const) {
+      expect(() => aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, opts)).toThrow(
+        NFeTributeError,
+      );
+    }
+  });
+
+  it('totals: the omitted buckets are zero, vNF is the goods, vNFTot adds IBS/CBS', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 1500 }, imposto: carregado() }],
+      { vDesc: 100 },
+      somente,
+    );
+    expect(totals).toMatchObject({ vIPI: 0, vPIS: 0, vCOFINS: 0, vICMS: 0, vBC: 0 });
+    expect(totals.vProd).toBe(1500);
+    expect(totals.vNF).toBe(1400);
+    expect(totals.rtc).toMatchObject({ vIBS: 1.5, vCBS: 13.5 });
+    // Near-miss: `completo` counts the same stored configs.
+    const completo = aggregateTotals(
+      [{ item: { vProd: 1500 }, imposto: carregado() }],
+      { vDesc: 100 },
+      { emitRtc: true },
+    );
+    expect(completo.vIPI).toBe(150);
+    expect(completo.vNF).toBe(1550);
+    expect(buildTotalXml(totals)).toContain('<vNFTot>1415.00</vNFTot>');
   });
 });

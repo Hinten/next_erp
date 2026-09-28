@@ -200,7 +200,7 @@ export function extrairTotaisNFe(xml: string): NFeTotais | null {
   }
 
   if (tpNFbruto !== '0' && tpNFbruto !== '1') return null;
-  if (!['1', '2', '3', '4'].includes(finNFebruto)) return null;
+  if (!['1', '2', '3', '4', '5', '6'].includes(finNFebruto)) return null;
 
   // Reforma Tributária (NT 2025.002). `<IBSCBSTot>` is emitted only when the
   // filial has `emitirReformaTributaria` on, so its ABSENCE is the ordinary

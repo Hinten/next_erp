@@ -5,12 +5,18 @@
  * value the XML serializer can emit. See
  * `.claude/skills/nfe/references/leiaute.md` for field-by-field meaning.
  */
-import { CHAVE_NFE_REGEX, type UF } from '@delfrance/schemas';
+import {
+  CHAVE_NFE_REGEX,
+  SEVERIDADE_VIOLACAO,
+  descreverViolacaoDocumento,
+  violacoesDaOperacao,
+  type UF,
+} from '@delfrance/schemas';
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
 import { ufDestinoOperacao } from './destino';
-import { formatSefazDateTime, UF_TO_IBGE } from './tz';
+import { datePartsInOffset, formatSefazDateTime, UF_TO_IBGE } from './tz';
 import type { Ambiente, GeneratorInput } from './types';
 
 // UF ↔ IBGE mapping lives in ./tz (shared with the offset helpers); re-exported
@@ -70,6 +76,23 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
 
   const tpAmb: TNFe_infNFe_ide['tpAmb'] = parts.ambiente === 'producao' ? '1' : '2';
   const finNFe = (input.operacao.finNFe ?? 1).toString() as TNFe_infNFe_ide['finNFe'];
+  const tpNF: TNFe_infNFe_ide['tpNF'] = input.operacao.tipo === 1 ? '1' : '0';
+  // finNFe 5/6 and their tipo (B25-110/120, B25.1, B25.2 — NT 2025.002). Both
+  // fields are XSD-optional, so the schema gate cannot catch a nota de débito
+  // without its tpNFDebito; the SHARED operação rules can, and are the same
+  // ones apps/nfe refuses with before a número is consumed.
+  const tpNFDebito = input.operacao.tpNFDebito ?? null;
+  const tpNFCredito = input.operacao.tpNFCredito ?? null;
+  const bloqueios = violacoesDaOperacao({
+    finNFe: input.operacao.finNFe ?? 1,
+    tpNF,
+    tpNFDebito,
+    tpNFCredito,
+    anoEmissao: datePartsInOffset(input.dhEmi, utcOffset).year,
+  }).filter((v) => v.severidade === SEVERIDADE_VIOLACAO.bloqueia);
+  if (bloqueios.length > 0) {
+    throw new NFeIdeError(bloqueios.map(descreverViolacaoDocumento).join('; '));
+  }
 
   // NFref (BA) — referenced NF-es (devolução finNFe=4 / complementar finNFe=2).
   // Each must be a 44-character chave; a malformed one is an upstream data error
@@ -99,7 +122,7 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     serie: input.serie.toString(),
     nNF: input.numeracao.toString(),
     dhEmi: formatSefazDateTime(input.dhEmi, utcOffset),
-    tpNF: input.operacao.tipo === 1 ? '1' : '0',
+    tpNF,
     idDest,
     cMunFG: input.filial.sede.codigoMunicipio,
     tpImp: '1',
@@ -107,6 +130,8 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     cDV: parts.cDV,
     tpAmb,
     finNFe,
+    ...(tpNFDebito != null ? { tpNFDebito } : {}),
+    ...(tpNFCredito != null ? { tpNFCredito } : {}),
     indFinal: input.operacao.ehConsumidorFinal ? '1' : '0',
     indPres: input.operacao.indPres,
     indIntermed: input.operacao.indIntermed,

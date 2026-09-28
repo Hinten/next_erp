@@ -10,10 +10,14 @@ import {
   SEVERIDADE_VIOLACAO,
   bloqueiaEmissao,
   descreverViolacaoDocumento,
+  violacoesDaOperacao,
   violacoesDoDocumento,
   type EntradaRegrasDocumento,
+  type EntradaRegrasOperacao,
   type RegraDocumento,
 } from './regrasDoDocumento';
+import { dvChaveAcesso } from '../chaveAcesso';
+import { TP_NF_CREDITO, TP_NF_DEBITO } from '../operacao';
 
 /** Emitente CNPJ 14200166000187. */
 const CHAVE_A = '35260514200166000187550010000000071000000011';
@@ -26,8 +30,14 @@ const BASE: EntradaRegrasDocumento = {
   emitRtc: true,
   finNFe: 1,
   tpNF: '1',
+  tpNFDebito: null,
+  tpNFCredito: null,
+  anoEmissao: 2026,
   chNFeReferenciadas: [],
   destinatarioDocumento: '12345678909',
+  // The emitente of CHAVE_A / CHAVE_B, in SP.
+  emitenteDocumento: '14.200.166/0001-87',
+  emitenteCUF: '35',
   itens: [],
 };
 
@@ -208,5 +218,312 @@ describe('descreverViolacaoDocumento', () => {
       itens: [{ nItem: 1, dfeReferenciado: ref(CHAVE_A) }],
     });
     expect(descreverViolacaoDocumento(v!)).not.toMatch(/SEFAZ/);
+  });
+});
+
+// ── Nota de crédito / débito (finNFe 5/6) ─────────────────────────────────
+
+/** Same 43 leading characters, recomputed check digit. */
+const comDv = (c43: string) => `${c43}${dvChaveAcesso(c43)}`;
+/** CHAVE_A's emitente, but a nota from RJ (cUF 33). */
+const CHAVE_OUTRA_UF = comDv(`33${CHAVE_A.slice(2, 43)}`);
+/** CHAVE_A as an NFC-e (modelo 65). */
+const CHAVE_NFCE = comDv(`${CHAVE_A.slice(0, 20)}65${CHAVE_A.slice(22, 43)}`);
+/** CHAVE_A as a CT-e (modelo 57). */
+const CHAVE_CTE = comDv(`${CHAVE_A.slice(0, 20)}57${CHAVE_A.slice(22, 43)}`);
+
+const DEBITO = { finNFe: 6, tpNF: '1' } as const;
+const CREDITO = { finNFe: 5, tpNF: '0' } as const;
+/** An item carrying the ordinary IBS/CBS classification. */
+const ITEM_IBSCBS = { nItem: 1, dfeReferenciado: null, cClassTrib: '000001' };
+
+describe('violacoesDaOperacao — finalidade and tipo (B25, B25.1, B25.2)', () => {
+  const op = (e: Partial<EntradaRegrasOperacao>) =>
+    violacoesDaOperacao({
+      finNFe: 1,
+      tpNF: '1',
+      tpNFDebito: null,
+      tpNFCredito: null,
+      anoEmissao: null,
+      ...e,
+    }).map((v) => v.regra);
+
+  it('a well-formed débito and crédito are clean', () => {
+    expect(op({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.multaJuros })).toEqual([]);
+    expect(op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.multaJuros })).toEqual([]);
+  });
+
+  it('1161 / 1162 — crédito is an entrada, débito a saída', () => {
+    expect(op({ finNFe: 5, tpNF: '1', tpNFCredito: TP_NF_CREDITO.multaJuros })).toEqual([
+      REGRA_DOCUMENTO.creditoNaoEhEntrada,
+    ]);
+    expect(op({ finNFe: 6, tpNF: '0', tpNFDebito: TP_NF_DEBITO.multaJuros })).toEqual([
+      REGRA_DOCUMENTO.debitoNaoEhSaida,
+    ]);
+  });
+
+  it('1139 / 1009 — tpNFDebito belongs to finNFe 6, and finNFe 6 needs one', () => {
+    expect(op({ tpNFDebito: TP_NF_DEBITO.multaJuros })).toEqual([
+      REGRA_DOCUMENTO.tpNFDebitoIndevido,
+    ]);
+    expect(op({ ...DEBITO })).toEqual([REGRA_DOCUMENTO.tpNFDebitoAusente]);
+    // Near-miss: the other direction's field does not satisfy it.
+    expect(op({ ...DEBITO, tpNFCredito: TP_NF_CREDITO.multaJuros })).toEqual([
+      REGRA_DOCUMENTO.tpNFDebitoAusente,
+      REGRA_DOCUMENTO.tpNFCreditoIndevido,
+    ]);
+  });
+
+  it('1163 / 1164 — tpNFCredito belongs to finNFe 5, and finNFe 5 needs one', () => {
+    expect(op({ tpNF: '0', tpNFCredito: TP_NF_CREDITO.reducaoValores })).toEqual([
+      REGRA_DOCUMENTO.tpNFCreditoIndevido,
+    ]);
+    expect(op({ ...CREDITO })).toEqual([REGRA_DOCUMENTO.tpNFCreditoAusente]);
+  });
+
+  it('1145 — crédito 02 only from 2029; an unknown year says nothing', () => {
+    expect(
+      op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm, anoEmissao: 2028 }),
+    ).toEqual([REGRA_DOCUMENTO.creditoZfmAntesDe2029]);
+    expect(
+      op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm, anoEmissao: 2029 }),
+    ).toEqual([]);
+    expect(
+      op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm, anoEmissao: null }),
+    ).toEqual([]);
+    // Near-miss: another tipo in 2028.
+    expect(op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.multaJuros, anoEmissao: 2028 })).toEqual([]);
+  });
+
+  it('1152 — crédito 03 (retorno) must be an entrada, beside 1161', () => {
+    expect(op({ finNFe: 5, tpNF: '1', tpNFCredito: TP_NF_CREDITO.retornoRecusaTotal })).toEqual([
+      REGRA_DOCUMENTO.creditoNaoEhEntrada,
+      REGRA_DOCUMENTO.creditoRetornoNaoEhEntrada,
+    ]);
+    expect(op({ ...CREDITO, tpNFCredito: TP_NF_CREDITO.retornoRecusaTotal })).not.toContain(
+      REGRA_DOCUMENTO.creditoRetornoNaoEhEntrada,
+    );
+  });
+
+  it('violacoesDoDocumento runs the operação rules too', () => {
+    expect(regras({ ...DEBITO })).toContain(REGRA_DOCUMENTO.tpNFDebitoAusente);
+  });
+});
+
+describe('violacoesDoDocumento — nota de crédito/débito policy', () => {
+  it('refuses a nota de crédito/débito with the Reforma Tributária off', () => {
+    expect(
+      regras({
+        ...DEBITO,
+        tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado,
+        emitRtc: false,
+        itens: [ITEM_IBSCBS],
+      }),
+    ).toEqual([REGRA_DOCUMENTO.notaAjusteSemReformaTributaria]);
+    // Near-miss: a normal nota with the RTC off is none of its business.
+    expect(regras({ emitRtc: false, itens: [ITEM_IBSCBS] })).toEqual([]);
+  });
+
+  it('refuses exactly the 8 tipos that bind a fixed cClassTrib (#330, part 3)', () => {
+    const naoSuportado = (e: Partial<EntradaRegrasDocumento>) =>
+      regras({ ...e, anoEmissao: 2030, itens: [ITEM_IBSCBS] }).includes(
+        REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado,
+      );
+    const debitos = (['01', '02', '03', '04', '05', '06', '07', '08'] as const).filter((tp) =>
+      naoSuportado({ ...DEBITO, tpNFDebito: tp }),
+    );
+    const creditos = (['01', '02', '03', '04', '05'] as const).filter((tp) =>
+      naoSuportado({ ...CREDITO, tpNFCredito: tp }),
+    );
+    expect(debitos).toEqual(['01', '02', '03', '05', '07', '08']);
+    expect(creditos).toEqual(['02', '05']);
+  });
+
+  it('every item carries IBS/CBS — a known absence refuses, an unknown one says nothing', () => {
+    const v = violacoesDoDocumento({
+      ...BASE,
+      ...DEBITO,
+      tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado,
+      itens: [ITEM_IBSCBS, { nItem: 2, dfeReferenciado: null, cClassTrib: null }],
+    });
+    expect(v).toEqual([
+      expect.objectContaining({ regra: REGRA_DOCUMENTO.notaAjusteItemSemIbsCbs, nItem: 2 }),
+    ]);
+    expect(
+      regras({
+        ...DEBITO,
+        tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado,
+        itens: [{ nItem: 1, dfeReferenciado: null }],
+      }),
+    ).toEqual([]);
+    // Near-miss: a normal nota may carry an item without IBS/CBS.
+    expect(regras({ itens: [{ nItem: 1, dfeReferenciado: null, cClassTrib: null }] })).toEqual([]);
+  });
+});
+
+describe('violacoesDoDocumento — the cClassTrib a tipo binds (UB14-60/70/80)', () => {
+  const item = (cClassTrib: string) => [{ nItem: 1, dfeReferenciado: null, cClassTrib }];
+
+  it('1202 — a cClassTrib bound to a tipo of nota refuses any other nota', () => {
+    expect(regras({ itens: item('800001') })).toEqual([
+      REGRA_DOCUMENTO.cClassTribIncompativelComTipoNota,
+    ]);
+    expect(
+      regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado, itens: item('410030') }),
+    ).toEqual([REGRA_DOCUMENTO.cClassTribIncompativelComTipoNota]);
+    // Near-misses: an unbound code, and the RTC off (no IBS/CBS on the wire).
+    expect(regras({ itens: item('000001') })).toEqual([]);
+    expect(regras({ emitRtc: false, itens: item('800001') })).toEqual([]);
+  });
+
+  it('1200 — the tipo de débito binds its cClassTrib; "não limitar" binds none', () => {
+    expect(
+      regras({
+        ...DEBITO,
+        tpNFDebito: TP_NF_DEBITO.transferenciaCreditoSucessao,
+        itens: item('000001'),
+      }),
+    ).toEqual([
+      REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado,
+      REGRA_DOCUMENTO.cClassTribIncompativelComDebito,
+    ]);
+    expect(
+      regras({
+        ...DEBITO,
+        tpNFDebito: TP_NF_DEBITO.transferenciaCreditoSucessao,
+        itens: item('800001'),
+      }),
+    ).toEqual([REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado]);
+    expect(
+      regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.multaJuros, itens: item('000001') }),
+    ).not.toContain(REGRA_DOCUMENTO.cClassTribIncompativelComDebito);
+  });
+
+  it('1201 — the tipo de crédito binds its cClassTrib; 800001 is shared with débito 05', () => {
+    const cred = { ...CREDITO, anoEmissao: 2030 };
+    expect(
+      regras({
+        ...cred,
+        tpNFCredito: TP_NF_CREDITO.transferenciaCreditoSucessao,
+        itens: item('800001'),
+      }),
+    ).toEqual([REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado]);
+    expect(
+      regras({ ...cred, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm, itens: item('800001') }),
+    ).toEqual([
+      REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado,
+      REGRA_DOCUMENTO.cClassTribIncompativelComTipoNota,
+      REGRA_DOCUMENTO.cClassTribIncompativelComCredito,
+    ]);
+  });
+});
+
+describe('violacoesDoDocumento — the NFref of a nota de crédito (B25-30…65, B25-100)', () => {
+  const credito = (tp: '01' | '02' | '03' | '04', chNFeReferenciadas: string[]) =>
+    regras({
+      ...CREDITO,
+      tpNFCredito: tp,
+      anoEmissao: 2030,
+      chNFeReferenciadas,
+      itens: [ITEM_IBSCBS],
+    });
+
+  it('254 / 255 — crédito 01/03/04 references exactly one nota', () => {
+    for (const tp of ['01', '03', '04'] as const) {
+      expect(credito(tp, [])).toEqual([REGRA_DOCUMENTO.creditoSemNFref]);
+      expect(credito(tp, [CHAVE_A, CHAVE_B])).toEqual([REGRA_DOCUMENTO.creditoMaisDeUmaNFref]);
+      expect(credito(tp, [CHAVE_A])).toEqual([]);
+    }
+  });
+
+  it('1027 — crédito 02 references nothing', () => {
+    expect(credito('02', [CHAVE_A])).toContain(REGRA_DOCUMENTO.creditoNFrefIndevida);
+    expect(credito('02', [])).not.toContain(REGRA_DOCUMENTO.creditoNFrefIndevida);
+  });
+
+  it('269 — crédito 03/04 references a nota of this emitente (not crédito 01)', () => {
+    expect(credito('04', [CHAVE_CPF])).toEqual([REGRA_DOCUMENTO.creditoNFrefOutroEmitente]);
+    expect(credito('03', [CHAVE_CPF])).toEqual([REGRA_DOCUMENTO.creditoNFrefOutroEmitente]);
+    // Near-miss: multa e juros may reference the other party's nota.
+    expect(credito('01', [CHAVE_CPF])).toEqual([]);
+    // An unknown emitente says nothing.
+    expect(
+      regras({
+        ...CREDITO,
+        tpNFCredito: TP_NF_CREDITO.reducaoValores,
+        emitenteDocumento: null,
+        chNFeReferenciadas: [CHAVE_CPF],
+        itens: [ITEM_IBSCBS],
+      }),
+    ).toEqual([]);
+  });
+
+  it('678 — crédito 03/04 references a nota of the emitente UF', () => {
+    expect(credito('04', [CHAVE_OUTRA_UF])).toEqual([REGRA_DOCUMENTO.creditoNFrefOutraUF]);
+    expect(credito('01', [CHAVE_OUTRA_UF])).toEqual([]);
+  });
+
+  it('1003 — modelo 55 only; crédito 03 also accepts an NFC-e', () => {
+    expect(credito('04', [CHAVE_NFCE])).toEqual([REGRA_DOCUMENTO.creditoNFrefModeloInvalido]);
+    expect(credito('03', [CHAVE_NFCE])).toEqual([]);
+    expect(credito('03', [CHAVE_CTE])).toEqual([REGRA_DOCUMENTO.creditoNFrefModeloInvalido]);
+  });
+
+  it('a chave with a bad check digit is not decomposed into more violations', () => {
+    const dvErrado = `${CHAVE_CPF.slice(0, 43)}${(Number(CHAVE_CPF[43]) + 1) % 10}`;
+    expect(credito('04', [dvErrado])).toEqual([]);
+  });
+});
+
+describe('violacoesDoDocumento — item references on a nota de crédito/débito (VC)', () => {
+  it('1042 — a nota de crédito never references by item', () => {
+    expect(
+      regras({
+        ...CREDITO,
+        tpNFCredito: TP_NF_CREDITO.multaJuros,
+        itens: [{ ...ITEM_IBSCBS, dfeReferenciado: ref(CHAVE_A, 1) }],
+      }),
+    ).toEqual([REGRA_DOCUMENTO.creditoSemNFref, REGRA_DOCUMENTO.refItemEmNotaDeCredito]);
+  });
+
+  it('1038 — débito 04 needs item references: none refuses, one missing warns', () => {
+    const debito04 = { ...BASE, ...DEBITO, tpNFDebito: '04' as const };
+    expect(violacoesDoDocumento({ ...debito04, itens: [ITEM_IBSCBS] }).map((v) => v.regra)).toEqual(
+      [REGRA_DOCUMENTO.refItemAusenteNoDebito],
+    );
+    const parcial = violacoesDoDocumento({
+      ...debito04,
+      itens: [
+        { ...ITEM_IBSCBS, dfeReferenciado: ref(CHAVE_A, 1) },
+        { ...ITEM_IBSCBS, nItem: 2 },
+      ],
+    });
+    expect(parcial).toEqual([
+      expect.objectContaining({ regra: REGRA_DOCUMENTO.refItemAusenteNoItemDoDebito, nItem: 2 }),
+    ]);
+    expect(bloqueiaEmissao(parcial)).toBe(false);
+    // Near-miss: débito 06 needs none.
+    expect(
+      regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado, itens: [ITEM_IBSCBS] }),
+    ).toEqual([]);
+  });
+
+  it('débito 03 references whole notas: 1039 on nItem, and no 1048 / 1130', () => {
+    const debito03 = { ...DEBITO, tpNFDebito: '03' as const };
+    expect(
+      regras({
+        ...debito03,
+        itens: [
+          { nItem: 1, dfeReferenciado: ref(CHAVE_A, null), cClassTrib: '811002' },
+          { nItem: 2, dfeReferenciado: ref(CHAVE_B, null), cClassTrib: '811002' },
+        ],
+      }),
+    ).toEqual([REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado]);
+    expect(
+      regras({
+        ...debito03,
+        itens: [{ nItem: 1, dfeReferenciado: ref(CHAVE_A, 1), cClassTrib: '811002' }],
+      }),
+    ).toEqual([REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado, REGRA_DOCUMENTO.refItemNItemIndevido]);
   });
 });

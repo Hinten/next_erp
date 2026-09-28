@@ -73,6 +73,13 @@ export function ReferenciaPorItemSection({
         emitRtc: true, // stated above the list instead — see the component doc
         finNFe: operacaoDoc?.data.finNFe ?? 1,
         tpNF: operacaoDoc?.data.tipo === 1 ? '1' : '0',
+        tpNFDebito: operacaoDoc?.data.tpNFDebito ?? null,
+        tpNFCredito: operacaoDoc?.data.tpNFCredito ?? null,
+        // Unknown on this screen — the rules that need them stay silent here
+        // and are judged at emission (1145, 269/678, and each item's cClassTrib).
+        anoEmissao: null,
+        emitenteDocumento: null,
+        emitenteCUF: null,
         chNFeReferenciadas: chNFeReferenciadas.filter((c): c is string => !!c),
         destinatarioDocumento,
         itens: linhas.map(({ item }, i) => ({
