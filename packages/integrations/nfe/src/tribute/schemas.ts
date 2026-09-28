@@ -17,7 +17,9 @@
  *
  * The emission rules those configs must satisfy (the ICMS SN CSOSN/sub-config/
  * XSD-group choice and the PIS/COFINS group choice) are re-exported too: they
- * live once, as verdicts, in `@delfrance/schemas` (`src/imposto/regrasDeEmissao.ts`).
+ * are decided, as verdicts, in `@delfrance/schemas`
+ * (`src/imposto/regrasDeEmissao.ts`); `total.ts`'s ICMSTot roll-up still
+ * mirrors the CSOSN-slot and ISSQN choices with its own checks.
  */
 import { z } from 'zod';
 

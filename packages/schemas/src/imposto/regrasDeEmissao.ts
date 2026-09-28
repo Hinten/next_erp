@@ -3,13 +3,19 @@
  * config alone** — the ICMS Simples Nacional choice (CRT → CSOSN → sub-config →
  * XSD sub-groups) and the PIS/COFINS group choice (CST → rate operands).
  *
- * Each rule lives here exactly once and returns DATA — a verdict — never text.
- * The NF-e engine (`packages/integrations/nfe/src/tribute/imposto.ts`) formats
- * a non-ok verdict into its English `NFeTributeError` and builds the XML from an
- * ok one. It lives here — browser-safe, unlike the NF-e package — so the web
- * imposto editor can format the SAME verdicts in pt-BR and refuse, before a
- * save, a config the engine would reject (#1655). Two copies of a rule drift
- * toward plausible while disagreeing; one copy cannot.
+ * Each rule the engine applies to a config is decided here, and returns DATA —
+ * a verdict — never text. The NF-e engine
+ * (`packages/integrations/nfe/src/tribute/imposto.ts`) formats a non-ok verdict
+ * into its English `NFeTributeError` and builds the XML from an ok one. It
+ * lives here — browser-safe, unlike the NF-e package — so the web imposto
+ * editor can format the SAME verdicts in pt-BR and refuse, before a save, a
+ * config the engine would reject (#1655). Two copies of a rule drift toward
+ * plausible while disagreeing; one copy cannot.
+ *
+ * ⚠️ One known mirror remains: the ICMSTot roll-up
+ * (`packages/integrations/nfe/src/tribute/total.ts`) picks the CSOSN's slot and
+ * skips ISSQN items with its own checks. It agrees with `SUBCONFIG_POR_CSOSN`
+ * and `usaIssqn` today; a change to either must reach it too.
  *
  * ⚠️ Never a Zod refine. `impostoSchema` and the per-collection schemas gate
  * the resolver cascade and every collection read: a stored doc that fails to
@@ -45,9 +51,11 @@ export const CRTS_SIMPLES_NACIONAL = [
 export type CrtSimplesNacional = (typeof CRTS_SIMPLES_NACIONAL)[number];
 
 /**
- * The ONLY Simples Nacional predicate. Takes `unknown` so a raw soft-read
- * value (a legacy number `1`, `null`, `''`) reads as "not SN" instead of
- * throwing: membership is strict equality against the two wire codes.
+ * The Simples Nacional predicate the engine decides by; a surface that needs
+ * one calls this rather than keeping its own set. Takes `unknown` so a raw
+ * soft-read value (a legacy number `1`, `null`, `''`) reads as "not SN"
+ * instead of throwing: membership is strict equality against the two wire
+ * codes.
  */
 export function ehCrtSimplesNacional(crt: unknown): crt is CrtSimplesNacional {
   return (CRTS_SIMPLES_NACIONAL as readonly unknown[]).includes(crt);

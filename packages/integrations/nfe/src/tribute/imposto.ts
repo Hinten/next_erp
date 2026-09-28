@@ -11,7 +11,7 @@
  *
  * The CONFIG-level rules are not decided here. Which CRT, CSOSN, sub-config and
  * complete XSD sub-groups an ICMS config needs, and which PIS/COFINS group a
- * CST and its rates select, live once, as verdicts, in `@delfrance/schemas`
+ * CST and its rates select, are decided, as verdicts, in `@delfrance/schemas`
  * (`src/imposto/regrasDeEmissao.ts`: `vereditoIcmsSn`, `vereditoPisCofins`,
  * `usaIssqn`), browser-safe, so the web imposto editor can check the same
  * rules before a save (#1655). This module formats a non-ok verdict into its
