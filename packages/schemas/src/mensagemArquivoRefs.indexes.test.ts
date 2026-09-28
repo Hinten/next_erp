@@ -3,6 +3,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { MENSAGEM_ARQUIVO_REF_FIELDS } from './mensagemArquivoRefs';
+import {
+  WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD,
+  WHATSAPP_VINCULO_MENSAGEM_COLLECTION_GROUP,
+} from './whatsappContato';
 
 function findRepoRoot(startDir: string): string {
   let dir = startDir;
@@ -43,5 +47,18 @@ describe('mensagem arquivo reference indexes', () => {
         `missing or duplicate mensagem(${field}) COLLECTION_GROUP index`,
       ).toHaveLength(1);
     }
+  });
+
+  it('indexes the pending-contact media reference', () => {
+    const matches = (parsed.indexes ?? []).filter(
+      (index) =>
+        index.collectionGroup === WHATSAPP_VINCULO_MENSAGEM_COLLECTION_GROUP &&
+        index.queryScope === 'COLLECTION_GROUP' &&
+        index.fields?.length === 1 &&
+        index.fields?.[0]?.fieldPath === WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD &&
+        index.fields?.[0]?.order === 'ASCENDING',
+    );
+
+    expect(matches).toHaveLength(1);
   });
 });

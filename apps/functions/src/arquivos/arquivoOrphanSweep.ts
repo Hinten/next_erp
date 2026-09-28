@@ -16,12 +16,14 @@ import {
   mensagemCollection,
   produtoCollection,
   tabelaDeMedidasCollection,
+  whatsappVinculoMensagemCollection,
 } from '@delfrance/data/admin/collections';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import {
   ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
   ARQUIVOS_COLLECTION,
   MENSAGEM_ARQUIVO_REF_FIELDS,
+  WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD,
   type MediaOwnerCollection,
   mensagemArquivoRefValues,
   nowMicros,
@@ -198,14 +200,31 @@ export function buildMensagemArquivoReferenceQuery(db: Firestore, arquivoId: str
     .limit(1);
 }
 
+/**
+ * Pending-contact media is retained outside `chat/{conversaId}/mensagem`: the raw
+ * `whatsappVinculos/{id}/mensagens` copy carries the bare arquivo id until an
+ * operator identifies the contact and replay creates the canonical mensagem.
+ */
+export function buildWhatsappVinculoArquivoReferenceQuery(db: Firestore, arquivoId: string): Query {
+  return whatsappVinculoMensagemCollection
+    .groupQuery(db)
+    .where(WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD, '==', arquivoId)
+    .select(WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD)
+    .limit(1);
+}
+
 async function mensagemArquivoIsReferenced(
   db: Firestore,
   arquivoId: string,
   tx?: Transaction,
 ): Promise<boolean> {
-  const query = buildMensagemArquivoReferenceQuery(db, arquivoId);
-  const snapshot = tx ? await tx.get(query) : await query.get();
-  return !snapshot.empty;
+  const mensagemQuery = buildMensagemArquivoReferenceQuery(db, arquivoId);
+  const mensagemSnapshot = tx ? await tx.get(mensagemQuery) : await mensagemQuery.get();
+  if (!mensagemSnapshot.empty) return true;
+
+  const vinculoQuery = buildWhatsappVinculoArquivoReferenceQuery(db, arquivoId);
+  const vinculoSnapshot = tx ? await tx.get(vinculoQuery) : await vinculoQuery.get();
+  return !vinculoSnapshot.empty;
 }
 
 /**
@@ -239,10 +258,11 @@ export type MensagemArquivoReconcileOutcome = 'deleted' | 'referenced' | 'missin
 /**
  * Final, race-safe deletion decision for one mensagem-owned arquivo.
  *
- * Class A transaction: the candidate doc and the global mensagem refcount query
- * are both read inside the callback. Message writers read this same anchor in
- * their own transaction before creating refs. Firestore OCC/serializable
- * retries therefore prevent either interleaving from committing a dangling ref.
+ * Class A transaction: the candidate doc plus the canonical mensagem and
+ * pending-contact refcount queries are read inside the callback. Both writers
+ * read this same anchor in their own transaction before creating refs. Firestore
+ * OCC/serializable retries therefore prevent either interleaving from committing
+ * a dangling ref.
  */
 export function reconcileMensagemArquivoCandidate(
   db: Firestore,

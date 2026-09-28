@@ -96,7 +96,10 @@ import {
 } from './contatos';
 import { guardarContatoPendente } from './vinculos';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
+import { WhatsappMediaAnchorMissingError } from './mediaAnchor';
 import { processStatuses, type StatusesReport } from './processStatus';
+
+export { WhatsappMediaAnchorMissingError } from './mediaAnchor';
 
 /** 24 hours in ms — the conversa prazo window and the auto-reply dedupe threshold. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -108,13 +111,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export interface WhatsappProcessDeps {
   mediaContext(db: Firestore, contaId: string): Promise<MediaCacheContext>;
-}
-
-export class WhatsappMediaAnchorMissingError extends Error {
-  constructor() {
-    super('O arquivo de mídia do WhatsApp desapareceu antes de a mensagem ser gravada.');
-    this.name = 'WhatsappMediaAnchorMissingError';
-  }
 }
 
 /** Internal replay authority, supplied only by the retained-contact replay worker. */

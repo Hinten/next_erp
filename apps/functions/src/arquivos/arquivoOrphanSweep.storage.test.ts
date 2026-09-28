@@ -464,6 +464,18 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
       .doc('m2')
       .set({ image: { image: `documents/arquivos/${referenced[0]!.id}` } });
 
+    const pending = await seedArquivo(
+      `wa_pending_${randomUUID().replace(/-/g, '')}`,
+      whatsappMediaPath('conta-1', randomUUID().replace(/-/g, '')),
+    );
+    const pendingVinculoId = `pending-${randomUUID().replace(/-/g, '')}`;
+    const pendingMensagemRef = db
+      .collection('whatsappVinculos')
+      .doc(pendingVinculoId)
+      .collection('mensagens')
+      .doc('m1');
+    await pendingMensagemRef.set({ arquivoId: pending.id });
+
     const orphanInbound = await seedArquivo(
       `wa_orphan_${randomUUID().replace(/-/g, '')}`,
       whatsappMediaPath('conta-1', randomUUID().replace(/-/g, '')),
@@ -475,18 +487,16 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     await bucket.file(orphanInbound.objectPath).save(Buffer.from('inbound'));
     await bucket.file(orphanOutbound.objectPath).save(Buffer.from('outbound'));
 
-    const page = [...referenced, orphanInbound, orphanOutbound];
+    const page = [...referenced, pending, orphanInbound, orphanOutbound];
     await sweepUnreferencedArquivos(db, bucket, async () => page);
 
     expect(
-      await resolveMensagemArquivoReferences(
-        db,
-        referenced.map((row) => row.id),
-      ),
-    ).toEqual(new Set(referenced.map((row) => row.id)));
+      await resolveMensagemArquivoReferences(db, [...referenced.map((row) => row.id), pending.id]),
+    ).toEqual(new Set([...referenced.map((row) => row.id), pending.id]));
     for (const row of referenced) {
       expect((await row.ref.get()).exists).toBe(true);
     }
+    expect((await pending.ref.get()).exists).toBe(true);
     expect((await orphanInbound.ref.get()).exists).toBe(false);
     expect((await orphanOutbound.ref.get()).exists).toBe(false);
 
@@ -511,7 +521,8 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
       .collection('mensagem')
       .doc('m2')
       .delete();
-    await Promise.all(referenced.map((row) => row.ref.delete()));
+    await pendingMensagemRef.delete();
+    await Promise.all([...referenced.map((row) => row.ref.delete()), pending.ref.delete()]);
   });
 
   it('transactional recheck keeps a ref created after the cheap precheck', async () => {
@@ -555,6 +566,47 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
 
     expect((await ref.get()).exists).toBe(true);
     await db.collection('chat').doc(conversaId).collection('mensagem').doc('m1').delete();
+    await ref.delete();
+  });
+
+  it('transactional recheck keeps media parked for a pending WhatsApp contact', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const arquivoId = `wa_pending_race_${randomUUID().replace(/-/g, '')}`;
+    const objectPath = whatsappMediaPath('conta-pending-race', arquivoId);
+    const slash = objectPath.lastIndexOf('/');
+    const ref = db.collection('arquivos').doc(arquivoId);
+    await ref.set({
+      filetype: 'image',
+      filepath: objectPath.slice(0, slash),
+      filename: objectPath.slice(slash + 1),
+      contentType: 'image/jpeg',
+      url: 'https://example.invalid/file',
+      externalIds: [],
+      uploadState: 'finalized',
+      criadoEm: past,
+      markedForDeletionAt: null,
+    });
+    const pendingMensagemRef = db
+      .collection('whatsappVinculos')
+      .doc(`race-${randomUUID().replace(/-/g, '')}`)
+      .collection('mensagens')
+      .doc('m1');
+
+    await sweepUnreferencedArquivos(
+      db,
+      bucket,
+      async () => [{ ref, id: arquivoId, filepath: 'whatsapp/conta-pending-race', criadoEm: past }],
+      async () => new Set(),
+      async () => {
+        await pendingMensagemRef.set({ arquivoId });
+        return new Set();
+      },
+    );
+
+    expect((await ref.get()).exists).toBe(true);
+    await pendingMensagemRef.delete();
     await ref.delete();
   });
 

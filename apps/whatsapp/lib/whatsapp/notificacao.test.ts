@@ -1491,6 +1491,29 @@ describe('pending contact retention', () => {
     expect(db.docs('chat').size).toBe(0);
   });
 
+  it('does not park media after the arquivo anchor disappeared', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.docs('clientes').clear();
+    media.getAndUploadMedia.mockResolvedValueOnce('documents/arquivos/wa_PENDING_MISSING');
+    const value = inboundValue({
+      messages: [
+        {
+          from: FROM,
+          id: 'wamid.PENDING.MISSING',
+          timestamp: '1700000000',
+          type: 'image',
+          image: { id: 'PENDING_MISSING' },
+        },
+      ],
+    });
+
+    await expect(
+      processMessagesField(asDb(db), value, deps, 'wamid.PENDING.MISSING'),
+    ).rejects.toBeInstanceOf(WhatsappMediaAnchorMissingError);
+    expect(db.docs('whatsappVinculos').size).toBe(0);
+  });
+
   it('matches a provider international number exactly without adding the Brazilian country code', async () => {
     const db = new FakeDb();
     seedConta(db);

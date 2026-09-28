@@ -68,7 +68,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   (single-field index `arquivos(markedForDeletionAt)`, short grace
   `ARQUIVO_MARKED_GRACE_HOURS` default 1h) — deletes what `onProdutoMediaChanged`
   flagged, re-verifying owner refs with `resolveReferencedArquivoRefs` and mensagem refs
-  with an indexed collection-group OR query (a live ref clears the mark instead). Plain
+  with indexed canonical-mensagem and pending-contact collection-group queries (a live
+  ref clears the mark instead). Plain
   Admin queries, no pipeline → emulator-testable. **Phantom-doc sweep** (`sweepPhantomDocs`):
   `arquivos where uploadState=='pending' AND criadoEm<cutoff orderBy criadoEm asc`
   (composite index `arquivos(uploadState, criadoEm)`) whose object never arrived →
@@ -95,16 +96,17 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   batch (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
   O(distinct produtos), never O(all produtos). Both the page fetch and the owner
   lookup are **seams** (`fetchPage` / `resolveReferenced`) the emulator suite can
-  override, though neither needs a pipeline anymore. Mensagem candidates use up to six
-  collection-group field indexes with bounded concurrency; the final query + arquivo-doc
-  delete is repeated inside an Admin transaction. Inbound and outbound mensagem writers
-  read the same arquivo anchor in their own transaction, closing both delete/create race
-  orders. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
+  override, though neither needs a pipeline anymore. Mensagem candidates use the six
+  canonical field indexes plus `whatsappVinculos/*/mensagens.arquivoId`, with bounded
+  concurrency; both final queries + the arquivo-doc delete are repeated inside an Admin
+  transaction. Canonical mensagem and pending-contact writers read the same arquivo
+  anchor in their own transaction, closing both delete/create race orders. Grace is
+  `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
   microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
   — the two arquivo sweep indexes (`arquivos(uploadState, criadoEm)` +
-  `arquivos(markedForDeletionAt)`) and the six single-field `mensagem` collection-group
-  indexes are declared in `firestore.indexes.json` and must be deployed manually;
+  `arquivos(markedForDeletionAt)`), the six single-field `mensagem` collection-group
+  indexes and `mensagens.arquivoId` are declared in `firestore.indexes.json` and must be deployed manually;
   verify usage live with `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
   The round-robin arquivo page scan itself needs no index (document-key ordering is
   native); the diagnostic covers the mensagem refcount query that each candidate uses.

@@ -157,11 +157,12 @@ extracts the six supported fields (`anexoStorage`, `audio.audio`, `image.image`,
 same arquivo may still be used by another mensagem or conversa.
 
 The final mensagem-media decision is made in an Admin transaction that rereads the
-arquivo and repeats the global collection-group refcount query before deleting the
-anchor. Inbound and outbound mensagem writers read those arquivo anchors inside their
-own write transaction. If a writer commits first, the sweep retries and sees the ref;
-if deletion commits first, the writer retries, sees the missing anchor and does not
-create a dangling mensagem.
+arquivo and repeats both global collection-group refcount sources before deleting the
+anchor: the canonical `mensagem` fields and pending-contact
+`whatsappVinculos/*/mensagens.arquivoId`. Canonical mensagem writers and the
+pending-contact writer read those arquivo anchors inside their own write transaction.
+If a writer commits first, the sweep retries and sees the ref; if deletion commits
+first, the writer retries, sees the missing anchor and does not create a dangling ref.
 
 ## 4 · Maintenance — scheduled reconciliation (every 48h)
 
@@ -189,7 +190,7 @@ flowchart TD
 
     RAO --> SU[sweepUnreferencedArquivos]
     SU --> FUC["round-robin page by document id<br/>classify old owner vs mensagem media"]
-    FUC --> RR["owner: getAll owning docs<br/>mensagem: indexed OR over six fields"]
+    FUC --> RR["owner: getAll owning docs<br/>mensagem: six-field OR + pending-contact arquivoId"]
     RR --> REF{still referenced?}
     REF -->|yes| Keep[keep]
     REF -->|no, mensagem| TX["transaction: reread anchor + repeat global query"]
@@ -217,8 +218,9 @@ Two independent scheduled functions:
     `arquivos(uploadState, criadoEm)`.
   - **`sweepUnreferencedArquivos`** — round-robin pages `arquivos` by document id,
     applies age/scope in code, then checks only the relevant owner documents or performs
-    one bounded-concurrency collection-group query per mensagem-media candidate. The
-    latter is an OR over all six fields and both ref encodings, limited to one result.
+    bounded-concurrency collection-group queries per mensagem-media candidate. The
+    canonical lookup is an OR over all six fields and both ref encodings; the second
+    lookup covers pending-contact `mensagens.arquivoId`. Both are limited to one result.
     Its final no-ref verdict is recomputed transactionally before deleting the anchor.
 
 ## 5 · Deletion + cascade
@@ -285,6 +287,8 @@ deployed manually:
 - Six single-field, `COLLECTION_GROUP` indexes on `mensagem`: `anexoStorage`,
   `audio.audio`, `image.image`, `video.video`, `sticker.sticker`, and
   `genericDocument.genericDocument`. The OR refcount query depends on all six.
+- One single-field, `COLLECTION_GROUP` index on `mensagens.arquivoId` for media
+  retained while a WhatsApp contact awaits identification.
 
 All three sweeps are bounded at **100 docs/run**. Grace windows:
 `ARQUIVO_ORPHAN_GRACE_HOURS` (48h) for the phantom + unreferenced passes;
@@ -296,7 +300,7 @@ the distinct owners in the page. Mensagem refchecks run with concurrency 8 and
 `packages/schemas/src/mensagemArquivoRefs.indexes.test.ts` keeps the field inventory and
 index declarations synchronized. `apps/functions/scripts/check-sweep-indexes.mjs` runs
 `explain({ analyze: true })` against the named `default` database, logs
-`indexesUsed`/read/scan metrics, and fails if the live plan does not use all six indexes.
+`indexesUsed`/read/scan metrics, and fails if the live plans do not use all seven indexes.
 The emulator cannot run Query Explain; this check belongs to the coordinated deployment
 runbook, after indexes reach `READY`.
 

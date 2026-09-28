@@ -162,15 +162,17 @@ phase the work so the debris-producing deletes are covered first.
   classic query ordered by document id; ownership and age are classified in code.
   Owner references still use batched owner-document lookups. Mensagem references use
   an indexed `collectionGroup('mensagem')` OR query over the six supported fields and
-  both OuterRef encodings. Its final refcount and arquivo delete happen in one Admin
-  transaction, paired with arquivo-anchor reads in inbound/outbound mensagem writers.
+  both OuterRef encodings, plus a `collectionGroup('mensagens')` lookup by `arquivoId`
+  for pending contacts. Both final refcounts and the arquivo delete happen in one Admin
+  transaction, paired with arquivo-anchor reads in canonical and pending-contact writers.
   Deleting the doc lets `onArquivoDeleted` free the bytes.
 
 **Emulator note.** The sweep uses classic Admin queries only. Its page scan, owner
 lookup, global mensagem lookup and transactional final decision therefore run in the
 Firestore emulator. Enterprise still requires the six explicit single-field
-collection-group indexes for the mensagem OR query; `check-sweep-indexes.mjs` validates
-their real-environment usage with Query Explain. The earlier storage-orphan scan was
+collection-group indexes for the mensagem OR query plus the pending-contact arquivo-id
+index; `check-sweep-indexes.mjs` validates their real-environment usage with Query
+Explain. The earlier storage-orphan scan was
 dropped: create-first guarantees an object always has a doc, so object-with-no-doc
 cannot arise. `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`),
 so the grace window is compared in code for the round-robin candidate page.
@@ -266,7 +268,8 @@ excluded in the query. The unreferenced check is an owner-document lookup
 (`resolveReferencedArquivoRefs` reads only the owners in the candidate batch via
 `getAll`), which replaced the original full-`produtos` pipeline anti-join. The
 candidate scan is now a persisted round-robin classic query (#234). Mensagem-owned
-media adds a collection-group OR refcount, six declared indexes, the eager
+media adds the canonical collection-group OR refcount, the pending-contact arquivo-id
+refcount, seven declared indexes, the eager
 `onMensagemDeleted` marker and a transactional final decision. All sweep paths are
 emulator-testable; Query Explain validates index use in the Enterprise environment.
 Phase 3 remains blocked on the `apps/integrations` remote-delist design. Refs #136,

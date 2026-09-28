@@ -10,9 +10,10 @@ import { Filter, getFirestore } from 'firebase-admin/firestore';
 // `sweepUnreferencedArquivos` is deliberately NOT checked here since #234: it
 // orders by `FieldPath.documentId()` (Firestore's always-available native
 // ordering) and persists a round-robin cursor, so there is no declared index for
-// it to ride. Its mensagem refcount query IS checked: the OR plan must report
-// all six single-field collection-group indexes. The script logs index/read/scan
-// metrics and fails when a declared index is missing from the plan.
+// it to ride. Its two global refcount sources ARE checked: the canonical mensagem
+// OR plan must report all six single-field indexes, and the pending-contact
+// `mensagens.arquivoId` lookup must report its collection-group index. The script
+// logs index/read/scan metrics and fails when a declared index is missing from the plan.
 //
 // Query Explain needs a real Firestore (Enterprise) — the emulator does not
 // implement `explain({ analyze: true })` — so run it against a live project:
@@ -90,6 +91,14 @@ await explain(
     .select(...mensagemArquivoRefFields)
     .limit(1),
   mensagemArquivoRefFields.length,
+);
+await explain(
+  'pending-contact media refcount — collectionGroup(mensagens) arquivoId limit 1',
+  db
+    .collectionGroup('mensagens')
+    .where('arquivoId', '==', probeArquivoId)
+    .select('arquivoId')
+    .limit(1),
 );
 await explain(
   'marked sweep — arquivos where markedForDeletionAt<cutoff orderBy markedForDeletionAt limit 100',

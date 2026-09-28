@@ -53,8 +53,9 @@ arquivos either (`freight-integrations` skill).
   deletion is owner-scoped and needs no refcount table.
 - **Mensagem-shared** — `whatsapp/<contaId>/<mediaId>` and `chat/<hash>.<ext>`
   files may be referenced by many messages/conversations. Delete only after the
-  six-field global refcount query; message writers and the final sweep decision
-  both read the arquivo anchor transactionally.
+  six-field canonical mensagem query plus the pending-contact `mensagens.arquivoId`
+  query; canonical and pending writers and the final sweep decision all anchor
+  their side transactionally.
 
 ## 3. Architecture map
 
@@ -233,7 +234,8 @@ the owner still doesn't reference it. `onMensagemDeleted` extracts the six suppo
 ref fields and marks only exact mensagem-media roots. The 48h
 `sweepUnreferencedArquivos` round-robins every arquivo as a backstop. Owner candidates
 use direct owner reads; mensagem candidates use an indexed collection-group OR query
-with bounded concurrency and repeat the final check inside an Admin transaction.
+plus the pending-contact arquivo-id query with bounded concurrency, and repeat both
+checks inside an Admin transaction.
 
 Grace windows (env, read per-call): `ARQUIVO_ORPHAN_GRACE_HOURS` (48),
 `ARQUIVO_MARKED_GRACE_HOURS` (1); all sweeps bounded at `BATCH_LIMIT=100`.
@@ -284,7 +286,8 @@ Start from the owner-scoped or globally-shared pattern above; do not mix them.
 
 - **Firestore Enterprise**: the DB is named `'default'`; it **auto-creates no
   indexes**. `firestore.indexes.json` declares the two arquivo sweep indexes plus
-  six single-field `COLLECTION_GROUP` indexes for the mensagem refcount OR query.
+  six single-field `COLLECTION_GROUP` indexes for the canonical mensagem OR query
+  and one for pending-contact `mensagens.arquivoId`.
   Deploy is a coordinated human operation; verify live with
   `scripts/check-sweep-indexes.mjs` Query Explain before functions deployment.
 - **`.nullable().default(null)`, never bare `.optional()`** — Firebase JS SDK v12
@@ -311,9 +314,10 @@ Start from the owner-scoped or globally-shared pattern above; do not mix them.
   emulator without a seam, though `fetchPage`/`resolveReferenced` stay overridable
   for cursor-mechanics unit tests. Grace envs are set to `0` in tests so
   freshly-written docs qualify.
-- Mensagem lifecycle tests cover all six ref fields, both OuterRef encodings,
-  sharing across conversations, mark-only deletion, last-ref cleanup, and both
-  sweep/message race orders. Query Explain cannot run in the emulator.
+- Mensagem lifecycle tests cover all six canonical ref fields, both OuterRef
+  encodings, pending-contact retention, sharing across conversations, mark-only
+  deletion, last-ref cleanup, and both sweep/writer race orders. Query Explain
+  cannot run in the emulator.
 - **Shared-emulator-bucket isolation**: the emulator bucket is shared across test
   files and there's no per-test teardown, so bucket-listing assertions are
   order-fragile — **delete any stray object you write** after your assertions
