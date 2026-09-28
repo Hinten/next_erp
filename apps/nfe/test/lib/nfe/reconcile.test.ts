@@ -2716,6 +2716,39 @@ describe('reconcileByRecibo — per-doc isolation, the breaker cell and the 539 
       expectHomologacaoOnly();
     });
 
+    it("A's consSit THROWS the 656 and A's OWN terminal write then throws gRPC 3 → the call rejects, and the caller's cell already holds consumo-indevido", async () => {
+      seedDocs([{}, { chave: CHAVE_B }]);
+      vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
+      vi.mocked(consultarSituacaoNFe).mockRejectedValue(
+        new NFeConsumoIndevidoError({
+          cStat: '656',
+          xMotivo: 'Rejeicao: Consumo Indevido',
+          source: 'reconcile.test',
+        }),
+      );
+      const falha = grpc(3);
+      // A's writes, in order: the durable count (lands), then the 656 terminal.
+      let escritasDeA = 0;
+      vi.mocked(persistPatchUnlessFinal).mockImplementation(async (_fs, ref) => {
+        if (ref.path === DOC && ++escritasDeA === 2) throw falha;
+        return { written: true };
+      });
+      const disjuntor: DisjuntorConsSit = { bloqueio: null };
+
+      await expect(reconcileByRecibo({ ...baseArgs, attempt: 0, disjuntor })).rejects.toBe(falha);
+
+      // The trip was written BEFORE the terminal write's await that failed.
+      expect(escritasDeA).toBe(2);
+      expect(disjuntor.bloqueio).toEqual({
+        tipo: 'consumo-indevido',
+        chave: CHAVE,
+        xMotivo: 'Rejeicao: Consumo Indevido',
+      });
+      expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+      expect(writesFor(DOC_B)).toEqual([]);
+      expectHomologacaoOnly();
+    });
+
     it("A's consSit answers 656 and THAT answer's audit add fails transiently → A pending, yet the trip holds: B terminal with no consSit", async () => {
       seedDocs([{}, { chave: CHAVE_B }]);
       vi.mocked(consultarLote).mockResolvedValue(loteRetSemProt() as never);
