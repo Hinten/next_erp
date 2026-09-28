@@ -14,7 +14,7 @@ Declared in `package.json`'s `exports` field:
 | Subpath | Contents | Consumers |
 |---|---|---|
 | `.` | Kitchen sink: cert, sign, soap, xsd, safety, xml, generator, operations, tribute, numeracao, recovery, state, http-provider. **Pulls `node:fs`, `node-forge`, `soap`, `xmllint-wasm`.** | `apps/nfe` (Node) |
-| `./http-provider` | Typed `NFeHttpClient` + the eight typed error classes (NFeRejectedError, NFePedidoNotFoundError, …), plus `extrairTotaisNFe` (`src/totals/`, the `<ICMSTot>` → modeled-numbers fold shared by the emitter, the backfill and the CSV report — #1491). Imports only `@delfrance/schemas`, `@delfrance/core/money` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
+| `./http-provider` | Typed `NFeHttpClient` + its typed error classes (NFeRejectedError, NFePedidoNotFoundError, NFeTimeoutError, …) and `isRetryableNFeHttpError`, plus `extrairTotaisNFe` (`src/totals/`, the `<ICMSTot>` → modeled-numbers fold shared by the emitter, the backfill and the CSV report — #1491). Every method has a deadline from `NFE_NIVEL_POR_OPERACAO` (#1094): `curto` 90 s where a repeat is harmless, `longo` 360 s (past the platform's own 504) wherever a repeat could overlap a live run; a timeout is never retryable. Imports only `zod`, `@delfrance/schemas`, `@delfrance/core/{money,wire}` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
 | `./code128` | Pure NF-e-chave → Zebra Code 128 field encoding, including the NT 2026.004 mixed C/B/C path. Imports only `@delfrance/schemas`; **zero server deps**. | DANFE ZPL + `apps/web` generic label |
 
 `apps/web/eslint.config.mjs` carries a `no-restricted-imports` rule

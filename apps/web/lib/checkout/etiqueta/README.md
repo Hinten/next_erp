@@ -29,7 +29,10 @@ gates, the UI bridge, or the other providers.
      the flow genuinely owns that write.
    - Narrow every `catch` to a specific error class (e.g. the freight client's
      `FreightHttpError` / `FreightNetworkError`, via `freightErrorMessage`) and
-     `throw err` for anything else — no generic catch (repo rule).
+     `throw err` for anything else — no generic catch (repo rule). A
+     `FreightTimeoutError` (#1094) is a `FreightNetworkError` subclass whose
+     message is the copy: put its arm FIRST, and never re-send a buy on it — the
+     server may still be running the first one.
 2. **Add one `registry.ts` entry** — put the provider in the array passed to
    `buildProviderMap`. Done; `PROVIDERS` indexes it by its `tipos`.
 3. **Write a unit test** `providers/<tipo>.test.ts` with injected fakes (see

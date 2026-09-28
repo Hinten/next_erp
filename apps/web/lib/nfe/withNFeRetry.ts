@@ -3,18 +3,31 @@
  * jittered exponential backoff (#90), with a **per-endpoint** policy. Pure (no
  * React), so it unit-tests without an auth/Firebase context.
  *
+ * ⚠️ **A timeout is never retried, on any endpoint (#1094).** `NFeTimeoutError`
+ * — the client's own deadline, or the platform gateway's 504 — says the route
+ * may still be running, and `isRetryableNFeHttpError` returns `false` for it. So
+ * every `retryTransient` below makes exactly ONE attempt on a timeout; retrying
+ * would overlap the live run and triple a wait whose budget is already spent.
+ *
  * Policy:
  *   - Read-only / idempotent (`consultar`, `statusServico`, `danfe`,
- *     `cartaCorrecaoDanfe`, `processarPendentes`, and `consultaCadastro` — a
- *     read-only POST, body-carried so the CNPJ stays out of the URL) → full
- *     transient set (`isRetryableNFeHttpError`: network / 5xx / 503). An XSD
- *     failure is NOT in that set although it arrives as a 5xx
- *     (`NFeXsdValidationFailedError`): it is deterministic, and a retried
- *     `consultaCadastro` would re-POST to SEFAZ (#1602).
- *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`) → full transient
- *     set. A re-POST converges to a no-op: emit/lote via PR1's dedup (stable doc
- *     id + `isBloqueada` + in-flight-nRec skip) → `reused:true`; `cancelar`
- *     reconciles a duplicate-event 573 → `cancelada`.
+ *     `cartaCorrecaoDanfe`, and `consultaCadastro` — a read-only POST,
+ *     body-carried so the CNPJ stays out of the URL) → full transient set
+ *     (`isRetryableNFeHttpError`: network / 5xx / 503). An XSD failure is NOT in
+ *     that set although it arrives as a 5xx (`NFeXsdValidationFailedError`): it
+ *     is deterministic, and a retried `consultaCadastro` would re-POST to SEFAZ
+ *     (#1602).
+ *   - `emitir`, `emitirLote`, `cancelar` → full transient set, kept
+ *     deliberately — and be precise about what it buys. The server dedups a
+ *     SEQUENTIAL re-POST: emit/lote via the stable doc id + `isBloqueada` +
+ *     in-flight-nRec skip → `reused:true`; `cancelar` reconciles a
+ *     duplicate-event 573 → `cancelada`. It does NOT dedup a re-POST that
+ *     OVERLAPS a run still inside its SOAP call (#1675): the second emit
+ *     retransmits the stored bytes and the two outcome writes race. A network
+ *     error or a non-504 5xx can arrive after the request left, so this retry
+ *     can land in that window; the common case it serves is a pre-send blip,
+ *     the likely-overlap case (a timeout) is excluded above, and #1675 closes
+ *     the window on the server.
  *   - cert management (`uploadCertificado`, `deleteCertificado`) → full
  *     transient set (upload overwrites the same cert; delete is idempotent).
  *   - **`cartaCorrecao` and `inutilizar` → pre-send 503 only.** Neither is
@@ -23,12 +36,15 @@
  *     which `inutilizar.ts` surfaces as a rejection (unlike `cancelar`'s 573).
  *     So a post-send network/5xx must never auto-retry these — only
  *     `NFeRuntimeNotReadyError`, provably raised before any SEFAZ contact.
- *   - **`verificar` → NO retry at all** (direct passthrough). The server runs
- *     the batch **sequentially** against SEFAZ precisely to avoid a
- *     consumo-indevido (cStat 656) burst; a client re-POST on a network/5xx
- *     failure could start a second run while the first is still consulting
- *     SEFAZ — the exact concurrency the server design exists to prevent. The
- *     operator can simply re-click once the first run settles.
+ *   - **`verificar` and `processarPendentes` → NO retry at all** (direct
+ *     passthrough). Both run a **sequential** loop against SEFAZ on the server
+ *     precisely to avoid a consumo-indevido (cStat 656) burst, and
+ *     `processarPendentes` is not read-only either — it transmits post-EPEC
+ *     NF-es and re-sends CC-e events, and the `nfeReconcileSweep` cron runs the
+ *     same core. A client re-POST on a network/5xx failure could start a second
+ *     run while the first is still consulting SEFAZ — the exact concurrency the
+ *     server design exists to prevent. The operator re-clicks once the first
+ *     run settles.
  */
 import { retryAsync } from '@delfrance/data/hooks';
 import {
@@ -53,7 +69,9 @@ export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
     // server run (still consulting SEFAZ sequentially) and provoke the
     // consumo-indevido 656 burst it guards against. The operator re-clicks.
     verificar: (filialId, enviNfeMsgIds) => client.verificar(filialId, enviNfeMsgIds),
-    processarPendentes: () => retryTransient(() => client.processarPendentes()),
+    // NO retry: it transmits post-EPEC NF-es and loops over SEFAZ sequentially,
+    // like `verificar` — a re-POST would overlap the live run (#1676).
+    processarPendentes: () => client.processarPendentes(),
     cancelar: (pedidoId, nfeId, xJust) =>
       retryTransient(() => client.cancelar(pedidoId, nfeId, xJust)),
     // Not idempotent on a re-send (563 duplicidade) — retry only the pre-send 503.

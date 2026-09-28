@@ -101,11 +101,17 @@ export async function reprintCheckoutEtiqueta(args: {
     // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
     // (1) The registry can legitimately await the OPERATOR: the already-posted
     // risk confirm and the ME buy modal both block on a human, and a deadline
-    // would cancel a dialog someone is reading. (2) It reaches the side effect —
-    // `freightClient.imprimir` prints, and `comprarEtiqueta` BUYS a label. Every
-    // bounded stage in this file sits strictly before any side effect, which is
-    // what makes "timeout, then re-click" safe; a deadline past that point frees
-    // the mutex after the POST and the re-click buys a second label.
+    // would cancel a dialog someone is reading. (2) It reaches the side effects —
+    // `comprarEtiqueta` BUYS a label, and the provider opens/prints the label URL
+    // once `freightClient.imprimir` returns it. Every bounded stage in this file
+    // sits strictly before any side effect, which is what makes "timeout, then
+    // re-click" safe; a deadline around the whole registry would free the mutex
+    // after the buy POST and the re-click would buy a second label.
+    //
+    // What IS bounded inside it (#1094) is each transport call on its own terms:
+    // `imprimir` only FETCHES the URL (a read), so it gives up at 60 s before
+    // anything opens; `comprar` waits past the platform's own request ceiling and
+    // then reports "may still be in progress", never a plain failure.
     return await emitirOuImprimirEtiqueta({
       db,
       pedido,
@@ -161,8 +167,9 @@ export async function reprintCheckoutDanfe(args: {
     // much: this button shares `usePrintInFlight` with that one, and BOTH render
     // `loading={printInFlight.inFlight}` — so a stall here spins both buttons
     // and looks identical to the failure this module exists to eliminate.
-    // `ensureNfeAprovada` wraps an unbounded `getDocs` plus `client.emitir`, and
-    // the NF-e HTTP client sends no `AbortSignal` either.
+    // `ensureNfeAprovada` wraps an unbounded `getDocs` plus `client.emitir`, whose
+    // own transport deadline (#1094) is the platform ceiling + 60 s — far past
+    // this stage's budget.
     const nfe = await withDeadline(
       'carregar a NF-e',
       ensureNfeAprovada(db, nfeClient, pedidoId),
@@ -178,14 +185,18 @@ export async function reprintCheckoutDanfe(args: {
     // stage sits BEFORE any side effect, so "timeout, then the operator
     // re-clicks" cannot double-print. This call IS the side effect — a deadline
     // here would free the mutex after the job reached the print agent, and the
-    // re-click would print a second copy. The same trap applies to
-    // `freightClient.imprimir` on the etiqueta side, and to any future attempt
-    // to push cancellation down into the transports: moving the line past a
-    // side effect silently converts a hang into a duplicate.
+    // re-click would print a second copy. #1094 pushed deadlines down into the
+    // transports WITHOUT moving that line: the DANFE download inside this call is
+    // bounded, but it resolves before `printJob` runs, so a timed-out download
+    // printed nothing. A deadline placed past a side effect silently converts a
+    // hang into a duplicate.
     //
-    // (`ensureNfeAprovada` is safe to bound despite calling `emitir` because the
-    // server dedups — it returns the existing NF-e with `reused: true` rather
-    // than emitting a second one.)
+    // (`ensureNfeAprovada` is bounded above although it calls `emitir`: the server
+    // dedups a SEQUENTIAL repeat — the existing NF-e comes back `reused: true`.
+    // ⚠️ It does NOT dedup a repeat that overlaps an emission still inside its
+    // SOAP call (#1675), and this stage's 30 s is shorter than an emission can
+    // take, so a re-click after this timeout can overlap one. Pre-existing; the
+    // server-side fix is #1675.)
     const outcome = await printDanfeForCheckout(
       nfeClient,
       pedidoId,

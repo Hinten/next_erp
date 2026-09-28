@@ -24,6 +24,7 @@ import { type Agency, withCartAgency } from '@delfrance/integrations-freight-br/
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
+import { freightQueryRetry } from '@/lib/freight/queryRetry';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import { resolveEtiquetaCartInput } from './etiquetaActions';
 
@@ -82,6 +83,8 @@ export function EtiquetaComprarModal({
     queryKey: ['freightConta', intFreteId],
     enabled: opened && client != null && intFreteId != null,
     staleTime: 0,
+    // Never re-sent after a timeout (#1094) — the default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () => client!.conta(intFreteId!),
   });
   const saldo = conta.data?.balance?.balance ?? null;
@@ -122,6 +125,10 @@ export function EtiquetaComprarModal({
       resolved?.remetente.cidade,
     ],
     enabled: agenciasEnabled,
+    // ⚠️ Not after a timeout (#1094): `agenciasSettling` below holds Comprar
+    // disabled until this settles, so a retried timeout blocked the buy for two
+    // full budgets. The default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () =>
       client!.agencias(resolved!.intFreteId, {
         service: resolved!.payload.service,
