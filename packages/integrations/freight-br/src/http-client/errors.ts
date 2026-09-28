@@ -112,11 +112,12 @@ export class FreightSchemaError extends FreightHttpError {
 }
 
 /**
- * Network-level failure — DNS, connection refused, a connection dropped while
- * the body was still arriving. Distinct from server errors: no `apps/melhor-envio`
- * route answered. ⚠️ That does NOT mean the route never RAN — a connection can
- * drop after the request left — so a caller that re-sends a buy on this error is
- * making the same bet `FreightTimeoutError` spells out.
+ * Network-level failure within the first seconds of a request — DNS, connection
+ * refused, a CORS refusal, a connection dropped while the body was still
+ * arriving. No complete response arrived. ⚠️ That does NOT mean the route never
+ * RAN — a connection can drop after the request left — so a caller that re-sends
+ * a buy on this error is making the same bet `FreightTimeoutError` spells out. A
+ * failure that arrives LATE is a `FreightTimeoutError`.
  */
 export class FreightNetworkError extends Error {
   public override readonly cause?: unknown;
@@ -129,8 +130,11 @@ export class FreightNetworkError extends Error {
 
 /**
  * The request's OUTCOME IS UNKNOWN (#1094): this client's own deadline expired
- * (`origem: 'prazo'`), or the platform gateway gave up on the request and
- * answered a 504 that no route of ours wrote (`origem: 'gateway'`).
+ * (`origem: 'prazo'`), or the platform gateway gave up on the request
+ * (`origem: 'gateway'`) — read as a 504 no route of ours wrote when the caller
+ * can see the status, and in a cross-origin browser (where that 504 carries no
+ * CORS headers) as a network failure after the request had been in flight past
+ * `LIMIAR_FALHA_TARDIA_MS`.
  *
  * ⚠️ Either way the server may still be running it — no route observes a
  * client abort, and Cloud Run keeps processing after its own 504. So the

@@ -42,9 +42,46 @@ export interface PrazoDeTransporte {
    * already aborted the request.
    */
   esgotado(): boolean;
+  /**
+   * Whether a rejection means **the outcome is unknown** — and why — or `null`
+   * when it reads as an ordinary network failure:
+   *
+   *  - `'prazo'` — this deadline fired;
+   *  - `'gateway'` — something else rejected the request after it had been in
+   *    flight for at least {@link LIMIAR_FALHA_TARDIA_MS}. In a cross-origin
+   *    browser that is how the platform's gateway 504 arrives (see there).
+   *
+   * A linked caller abort is never a timeout: `null`.
+   */
+  motivoDeTempoEsgotado(): 'prazo' | 'gateway' | null;
   /** Clear the timer and detach from the caller signal. Idempotent. */
   liberar(): void;
 }
+
+/**
+ * How long a request must have been in flight before a NETWORK failure stops
+ * reading as "never sent" and starts reading as "the outcome is unknown" (#1094).
+ *
+ * The case it exists for is the platform's own gateway 504. App Hosting / Cloud
+ * Run answer a request that outlives the service's request timeout from their
+ * FRONTEND, which never runs the app's Next proxy — so that 504 carries no
+ * `Access-Control-Allow-Origin`, and a cross-origin browser `fetch` sees it as
+ * `TypeError: Failed to fetch`, never as a status. Every browser caller of our
+ * backends is cross-origin, so reading the 504 as a status
+ * (`ehTempoEsgotadoNoGateway`) never happens there; the elapsed time is the
+ * only signal left. Without this rule the most common way a stalled request
+ * ends — the platform giving up — would arrive as a plain, RETRYABLE network
+ * error, and `withNFeRetry` would re-POST an emission over the live run.
+ *
+ * Why 30 s: a genuinely pre-send failure — DNS, connection refused, a TLS or
+ * CORS-preflight refusal, being offline — rejects within seconds, and 30 s sits
+ * below any request ceiling a backend of ours could have (App Hosting's former
+ * 60 s limit, the 180 s ML/Shopee pin, the 300 s default). What the rule can
+ * misread is a connection that dropped mid-flight or a black-holed connect; for
+ * both, "the outcome is unknown — check before repeating" is the SAFE reading,
+ * which is the direction it errs in.
+ */
+export const LIMIAR_FALHA_TARDIA_MS = 30_000;
 
 export interface OpcoesPrazo {
   /**
@@ -72,6 +109,7 @@ export function abrirPrazo(ms: number, opcoes: OpcoesPrazo = {}): PrazoDeTranspo
   }
 
   const controller = new AbortController();
+  const inicio = Date.now();
   let esgotou = false;
 
   const timer = setTimeout(() => {
@@ -94,6 +132,12 @@ export function abrirPrazo(ms: number, opcoes: OpcoesPrazo = {}): PrazoDeTranspo
   return {
     signal: controller.signal,
     esgotado: () => esgotou,
+    motivoDeTempoEsgotado(): 'prazo' | 'gateway' | null {
+      if (esgotou) return 'prazo';
+      // Aborted but not by us: the linked caller cancelled, whatever the clock says.
+      if (controller.signal.aborted) return null;
+      return Date.now() - inicio >= LIMIAR_FALHA_TARDIA_MS ? 'gateway' : null;
+    },
     liberar(): void {
       if (liberado) return;
       liberado = true;

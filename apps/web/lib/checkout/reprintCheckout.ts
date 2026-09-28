@@ -108,10 +108,12 @@ export async function reprintCheckoutEtiqueta(args: {
     // re-click" safe; a deadline around the whole registry would free the mutex
     // after the buy POST and the re-click would buy a second label.
     //
-    // What IS bounded inside it (#1094) is each transport call on its own terms:
-    // `imprimir` only FETCHES the URL (a read), so it gives up at 60 s before
-    // anything opens; `comprar` waits past the platform's own request ceiling and
-    // then reports "may still be in progress", never a plain failure.
+    // What IS bounded inside it (#1094) is each FREIGHT transport call on its own
+    // terms: `imprimir` only FETCHES the URL (a read), so it gives up at 60 s
+    // before anything opens; `comprar` waits past the platform's own request
+    // ceiling and then reports "may still be in progress", never a plain failure.
+    // ⚠️ The Mercado Livre client and the print agent this registry also reaches
+    // are NOT bounded yet (#1678) — a stall there still spins until a reload.
     return await emitirOuImprimirEtiqueta({
       db,
       pedido,

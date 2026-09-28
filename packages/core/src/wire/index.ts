@@ -233,6 +233,12 @@ export function envelopeDeErro(parsed: unknown): EnvelopeDeErro | null {
  * request outlived the platform — and the server may still be running it, so
  * repeating it is exactly the overlap #1094 exists to avoid.
  *
+ * ⚠️ This only ever sees a 504 the caller can READ: same-origin, or a server
+ * calling a server. A cross-origin browser never gets the platform's 504 as a
+ * status — it has no CORS headers, so `fetch` rejects with a `TypeError` —
+ * which is why `PrazoDeTransporte.motivoDeTempoEsgotado` also classifies a
+ * network failure by how long the request had been in flight.
+ *
  * @param corpo the parsed JSON body, or `null` when the body was empty or not
  *   JSON.
  */
@@ -381,4 +387,9 @@ export function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
   return [...vistos];
 }
 
-export { abrirPrazo, type OpcoesPrazo, type PrazoDeTransporte } from './prazo';
+export {
+  abrirPrazo,
+  LIMIAR_FALHA_TARDIA_MS,
+  type OpcoesPrazo,
+  type PrazoDeTransporte,
+} from './prazo';

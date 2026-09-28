@@ -189,9 +189,17 @@ function mensagemDeTempoEsgotado(nivel: Nivel, timeoutMs: number | null): string
  * Map a rejection from the transport — the `fetch` itself OR the body read —
  * to this client's taxonomy.
  *
- * ⚠️ Classified by asking the deadline (`esgotado()`), never by
+ * ⚠️ Classified by asking the deadline (`motivoDeTempoEsgotado()`), never by
  * `err instanceof DOMException`: `fetch` rejects with the signal's reason
  * as-is, and under jsdom that `DOMException` is a different realm's class.
+ *
+ * ⚠️ A failure that arrives LATE is a timeout too (`origem: 'gateway'`). This
+ * client runs in the browser, cross-origin to `apps/melhor-envio`, and the
+ * platform's own 504 comes from its frontend without CORS headers — so it
+ * reaches `fetch` as a `TypeError`, never as a status. Without this rule a
+ * `comprar` that outlived the platform would read "falha de rede" and invite
+ * the second-label click. See `LIMIAR_FALHA_TARDIA_MS`.
+ *
  * Everything else stays today's typed wrap, now also covering the body read,
  * which used to sit outside any `try` and let a mid-body failure escape raw.
  */
@@ -201,11 +209,12 @@ function erroDeTransporte(
   operacao: Operacao,
   timeoutMs: number,
 ): FreightNetworkError {
-  if (prazo.esgotado()) {
-    const nivel = FREIGHT_NIVEL_POR_OPERACAO[operacao];
+  const origem = prazo.motivoDeTempoEsgotado();
+  if (origem !== null) {
+    const ms = origem === 'prazo' ? timeoutMs : null;
     return new FreightTimeoutError(
-      mensagemDeTempoEsgotado(nivel, timeoutMs),
-      { origem: 'prazo', timeoutMs, operacao },
+      mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], ms),
+      { origem, timeoutMs: ms, operacao },
       err,
     );
   }
@@ -323,7 +332,9 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
       // ⚠️ Before the status mapping: a 504 no route of ours wrote is the
       // platform giving up on the request, and the server may still be running
       // it. As a `FreightServerError` it would read as a plain failure and invite
-      // the re-click this whole module exists to make safe.
+      // the re-click this whole module exists to make safe. (Only a READABLE 504
+      // lands here — same-origin or server-side. The cross-origin browser case
+      // arrives as a late network failure: see `erroDeTransporte`.)
       if (ehTempoEsgotadoNoGateway(res.status, parsed)) {
         throw new FreightTimeoutError(
           mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], null),

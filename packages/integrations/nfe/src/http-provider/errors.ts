@@ -143,11 +143,12 @@ export class NFeServerError extends NFeHttpError {
 }
 
 /**
- * Network-level failure — DNS, connection refused, a connection dropped while
- * the body was still arriving. Not an HTTP status: no `apps/nfe` route answered.
- * ⚠️ That does NOT prove the route never RAN — a connection can drop after the
- * request left — which is why `withNFeRetry` states per endpoint whether a
- * re-send is safe instead of trusting this class.
+ * Network-level failure within the first seconds of a request — DNS, connection
+ * refused, a CORS refusal, a connection dropped while the body was still
+ * arriving. No complete response arrived. ⚠️ That does NOT prove the route never
+ * RAN — a connection can drop after the request left — which is why
+ * `withNFeRetry` states per endpoint whether a re-send is safe instead of
+ * trusting this class. A failure that arrives LATE is an `NFeTimeoutError`.
  */
 export class NFeNetworkError extends Error {
   public override readonly cause?: unknown;
@@ -160,8 +161,11 @@ export class NFeNetworkError extends Error {
 
 /**
  * The request's OUTCOME IS UNKNOWN (#1094): this client's own deadline expired
- * (`origem: 'prazo'`), or the platform gateway gave up on the request and
- * answered a 504 no route of ours wrote (`origem: 'gateway'`).
+ * (`origem: 'prazo'`), or the platform gateway gave up on the request
+ * (`origem: 'gateway'`) — read as a 504 no route of ours wrote when the caller
+ * can see the status, and in a cross-origin browser (where that 504 carries no
+ * CORS headers) as a network failure after the request had been in flight past
+ * `LIMIAR_FALHA_TARDIA_MS`.
  *
  * ⚠️ Either way `apps/nfe` may still be running it — no route observes a client
  * abort, and Cloud Run keeps processing after its own 504 — so an emission may

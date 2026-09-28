@@ -233,7 +233,27 @@ describe('withNFeRetry never re-sends after a timeout (#1094)', () => {
       .catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.longo);
     expect(await out).toBeInstanceOf(NFeTimeoutError);
-    await vi.advanceTimersByTimeAsync(10_000); // any backoff would have fired by now
+    // A retry would have issued a SECOND fetch within 200–800 ms of the timeout.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('an emitir the PLATFORM gave up on (a late TypeError, the cross-origin 504) fetches ONCE', async () => {
+    // The realistic stall: at ~300 s the platform's 504 reaches the browser without
+    // CORS headers, i.e. as `TypeError: Failed to fetch` — before the 360 s deadline.
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          setTimeout(() => reject(new TypeError('Failed to fetch')), 300_000);
+        }),
+    );
+    const out = realClient(fetch)
+      .emitir('PED-1')
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(await out).toBeInstanceOf(NFeTimeoutError);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

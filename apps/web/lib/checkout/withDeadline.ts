@@ -16,10 +16,11 @@
  *
  * ⚠️ This does NOT cancel the work — a Firestore `getDoc` keeps running to
  * completion in the background. It bounds how long the UI waits on it, which is
- * what unwedges the mutex and frees the buttons. The HTTP transports now bound
- * and cancel their own requests (#1094, `abrirPrazo`), each with a budget chosen
- * per endpoint; this stays the UI-level bound over everything else, and a stage
- * it bounds must still sit before any side effect.
+ * what unwedges the mutex and frees the buttons. The freight and NF-e HTTP
+ * clients now bound and cancel their own requests (#1094, `abrirPrazo`), each
+ * with a budget chosen per endpoint; the Mercado Livre client and the print
+ * agent do not yet (#1678). This stays the UI-level bound over everything else,
+ * and a stage it bounds must still sit before any side effect.
  */
 
 /** Thrown when a stage outlives its deadline. Carries the stage for reporting. */

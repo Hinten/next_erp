@@ -483,11 +483,20 @@ function mensagemDeTempoEsgotado(operacao: Operacao, timeoutMs: number | null): 
 /**
  * Map a rejection from the transport — the `fetch` itself OR the body read.
  *
- * ⚠️ Classified by asking the deadline (`esgotado()`), never by the rejection's
- * class: `fetch` rejects with the abort signal's reason as-is (a `DOMException`
- * — not the `TypeError` this file used to claim), and under jsdom that
- * `DOMException` belongs to another realm. Everything else stays today's typed
- * wrap, now also covering the body read, which used to sit outside any `try`.
+ * ⚠️ Classified by asking the deadline (`motivoDeTempoEsgotado()`), never by
+ * the rejection's class: `fetch` rejects with the abort signal's reason as-is
+ * (a `DOMException` — not the `TypeError` this file used to claim), and under
+ * jsdom that `DOMException` belongs to another realm.
+ *
+ * ⚠️ A failure that arrives LATE is a timeout too (`origem: 'gateway'`). This
+ * client runs in the browser, cross-origin to `apps/nfe`, and the platform's own
+ * 504 comes from its frontend without CORS headers — so it reaches `fetch` as a
+ * `TypeError`, never as a status. As a plain `NFeNetworkError` it was RETRYABLE,
+ * and `withNFeRetry` re-POSTed an emission 200–800 ms later over the run still
+ * talking to SEFAZ. See `LIMIAR_FALHA_TARDIA_MS`.
+ *
+ * Everything else stays today's typed wrap, now also covering the body read,
+ * which used to sit outside any `try`.
  */
 function erroDeTransporte(
   err: unknown,
@@ -495,10 +504,12 @@ function erroDeTransporte(
   operacao: Operacao,
   timeoutMs: number,
 ): NFeNetworkError {
-  if (prazo.esgotado()) {
+  const origem = prazo.motivoDeTempoEsgotado();
+  if (origem !== null) {
+    const ms = origem === 'prazo' ? timeoutMs : null;
     return new NFeTimeoutError(
-      mensagemDeTempoEsgotado(operacao, timeoutMs),
-      { origem: 'prazo', timeoutMs, operacao },
+      mensagemDeTempoEsgotado(operacao, ms),
+      { origem, timeoutMs: ms, operacao },
       err,
     );
   }
@@ -677,8 +688,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       }
       // ⚠️ Before ANY status mapping, including the cert endpoints' `mapError`:
       // a 504 no route of ours wrote is the platform giving up on the request,
-      // and `apps/nfe` may still be running it. As an `NFeServerError` it was
-      // retryable, and `withNFeRetry` re-POSTed an emission over the live run.
+      // and `apps/nfe` may still be running it. As an `NFeServerError` it would
+      // be retryable. (Only a READABLE 504 lands here — same-origin or
+      // server-side. The cross-origin browser case arrives as a late network
+      // failure: see `erroDeTransporte`.)
       if (ehTempoEsgotadoNoGateway(res.status, body)) throw tempoEsgotadoNoGateway(operacao);
       const mapError =
         init.mapError ?? ((s: number, b: unknown) => errorFromResponse(s, b, init.context ?? {}));

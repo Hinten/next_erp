@@ -53,6 +53,20 @@ function fetchQueTravaNoCorpo() {
   });
 }
 
+/**
+ * A route that the PLATFORM gives up on: at `aposMs` the browser rejects with
+ * `TypeError: Failed to fetch`, because the gateway's 504 carries no CORS
+ * headers and a cross-origin `fetch` never sees it as a status (#1094 review).
+ */
+function fetchQueFalhaTarde(aposMs: number) {
+  return vi.fn(
+    () =>
+      new Promise<Response>((_resolve, reject) => {
+        setTimeout(() => reject(new TypeError('Failed to fetch')), aposMs);
+      }),
+  );
+}
+
 function observar(promise: Promise<unknown>) {
   const estado: { settled: boolean; valor?: unknown } = { settled: false };
   const pronto = promise.then(
@@ -93,6 +107,24 @@ const INVOCAR = {
   deleteCertificado: (c: NFeHttpClient) => c.deleteCertificado('F-1'),
 } satisfies Record<keyof NFeHttpClient, (c: NFeHttpClient) => Promise<unknown>>;
 
+/** The #1094 design, written out — NOT read from the table under test. */
+const NIVEL_ESPERADO = {
+  emitir: 'longo',
+  emitirLote: 'longo',
+  consultar: 'curto',
+  verificar: 'longo',
+  processarPendentes: 'longo',
+  cancelar: 'longo',
+  inutilizar: 'longo',
+  cartaCorrecao: 'longo',
+  danfe: 'curto',
+  cartaCorrecaoDanfe: 'curto',
+  statusServico: 'curto',
+  consultaCadastro: 'curto',
+  uploadCertificado: 'longo',
+  deleteCertificado: 'longo',
+} as const satisfies Record<keyof NFeHttpClient, 'curto' | 'longo'>;
+
 describe('NFeHttpClient deadlines (#1094)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -113,8 +145,15 @@ describe('NFeHttpClient deadlines (#1094)', () => {
     expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  describe.each(Object.entries(NFE_NIVEL_POR_OPERACAO))('%s (%s)', (operacao, nivel) => {
-    const budget = NFE_PRAZO_MS[nivel];
+  it('pins every tier — downgrading a method to `curto` must be a deliberate, reviewed edit', () => {
+    // ⚠️ `curto` fires BEFORE the platform gives up, so only a method whose repeat
+    // is harmless may have it: a CC-e, an inutilização or an emission may not.
+    expect(NFE_NIVEL_POR_OPERACAO).toEqual(NIVEL_ESPERADO);
+    expect(NFE_PRAZO_MS).toEqual({ curto: 90_000, longo: 360_000 });
+  });
+
+  describe.each(Object.entries(NIVEL_ESPERADO))('%s (%s)', (operacao, nivel) => {
+    const budget = { curto: 90_000, longo: 360_000 }[nivel];
 
     it(`is pending at ${String(budget - 1)} ms, times out at ${String(budget)} ms, never retryable`, async () => {
       const { estado, pronto } = observar(
@@ -168,6 +207,48 @@ describe('NFeHttpClient deadlines (#1094)', () => {
 
   it('a DANFE whose Blob stalls mid-body times out BEFORE anything is printed', async () => {
     const { estado, pronto } = observar(INVOCAR.danfe(makeClient(fetchQueTravaNoCorpo())));
+    await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.curto);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(NFeTimeoutError);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a LATE network failure is the platform's gateway timeout — never a retryable NFeNetworkError", async () => {
+    // At ~300 s the platform answers 504 without CORS headers; the browser only
+    // sees a TypeError. As an NFeNetworkError it was retryable, and withNFeRetry
+    // re-POSTed the emission over the run still talking to SEFAZ.
+    const { estado, pronto } = observar(INVOCAR.emitir(makeClient(fetchQueFalhaTarde(300_000))));
+    await vi.advanceTimersByTimeAsync(300_000);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(NFeTimeoutError);
+    const t = estado.valor as NFeTimeoutError;
+    expect(t.origem).toBe('gateway');
+    expect(t.timeoutMs).toBeNull();
+    expect(isRetryableNFeHttpError(t)).toBe(false);
+    expect(t.message).toContain('confira o estado da NF-e');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('near-miss: an EARLY network failure stays a retryable NFeNetworkError', async () => {
+    const { estado, pronto } = observar(INVOCAR.emitir(makeClient(fetchQueFalhaTarde(29_999))));
+    await vi.advanceTimersByTimeAsync(29_999);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(NFeNetworkError);
+    expect(estado.valor).not.toBeInstanceOf(NFeTimeoutError);
+    expect(isRetryableNFeHttpError(estado.valor)).toBe(true);
+  });
+
+  it('a DANFE error whose body stalls after 500 headers times out too', async () => {
+    const fetchMock = vi.fn(async (...[, init]: FetchArgs) => {
+      const signal = init?.signal;
+      const corpo = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+        },
+      });
+      return new Response(corpo, { status: 500 });
+    });
+    const { estado, pronto } = observar(INVOCAR.danfe(makeClient(fetchMock)));
     await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.curto);
     await pronto;
     expect(estado.valor).toBeInstanceOf(NFeTimeoutError);
@@ -297,6 +378,37 @@ describe('NFeHttpClient deadlines (#1094)', () => {
       verificar(r);
       expect(vi.getTimerCount()).toBe(0);
     });
+
+    const falhasDanfe: Array<[string, () => Promise<Response>, (e: unknown) => void]> = [
+      [
+        'an HTTP 500',
+        async () => new Response(JSON.stringify({ error: 'x' }), { status: 500 }),
+        (e) => expect(e).toBeInstanceOf(NFeHttpError),
+      ],
+      [
+        'a gateway 504',
+        async () => new Response('timeout', { status: 504 }),
+        (e) => expect(e).toBeInstanceOf(NFeTimeoutError),
+      ],
+      [
+        'a network error',
+        async () => {
+          throw new TypeError('failed to fetch');
+        },
+        (e) => expect(e).toBeInstanceOf(NFeNetworkError),
+      ],
+    ];
+
+    it.each(falhasDanfe)(
+      'after a DANFE download ending in %s',
+      async (_nome, resposta, verificar) => {
+        const r = await makeClient(vi.fn(resposta))
+          .danfe('PED-1', 'nfe-1', 'simplificado')
+          .catch((e: unknown) => e);
+        verificar(r);
+        expect(vi.getTimerCount()).toBe(0);
+      },
+    );
 
     it('after a successful DANFE download', async () => {
       const fetchMock = vi.fn(

@@ -46,7 +46,12 @@ export async function resolveAprovadaNfe(
 
 export type EnsureNfeResult =
   | { ok: true; nfeId: string; chave: string; reused: boolean }
-  /** the NF-e is processing async (enviando / aguardandoResposta) — the reconciler lands it. */
+  /**
+   * The outcome is not final yet: the NF-e is processing async (enviando /
+   * aguardandoResposta, which the reconciler lands), OR the emit call timed out
+   * (#1094) and the emission may or may not be running. Either way the operator
+   * reprints later — a reprint re-checks, and emits if nothing exists.
+   */
   | { ok: false; pending: true }
   /** rejected or errored — carries a ready-to-show notification. */
   | { ok: false; pending: false; notification: NotificationShape };

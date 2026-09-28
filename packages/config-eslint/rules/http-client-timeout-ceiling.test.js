@@ -78,6 +78,33 @@ function lerLongoMs(fonte, constante) {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
+/** One `timeoutSeconds: <int>` line, optionally commented. */
+const TIMEOUT_SECONDS_LINHA = /^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/;
+
+/**
+ * Every `timeoutSeconds` pinned in these YAML texts, plus every line that
+ * MENTIONS the key but could not be read as one.
+ *
+ * ⚠️ Fails CLOSED: a pin the parser cannot read (`timeoutSeconds: "900"`, a
+ * flow mapping `runConfig: { timeoutSeconds: 900 }`) is reported as
+ * `ilegiveis` and fails the guard, instead of being dropped — dropping it would
+ * compare against the 300 s default while the platform runs 900 s.
+ */
+function pinsDeTimeout(textos) {
+  const pinados = [];
+  const ilegiveis = [];
+  for (const texto of textos) {
+    for (const linha of texto.split(/\r?\n/)) {
+      const semComentario = linha.replace(/#.*$/, '');
+      if (!/timeoutSeconds/.test(semComentario)) continue;
+      const m = TIMEOUT_SECONDS_LINHA.exec(linha);
+      if (m === null) ilegiveis.push(linha.trim());
+      else pinados.push(Number(m[1]));
+    }
+  }
+  return { pinados, ilegiveis };
+}
+
 /**
  * The backend's request ceiling in seconds: the LARGEST `timeoutSeconds` across
  * its `apphosting*.yaml` files (per-environment overrides included), or the
@@ -85,13 +112,10 @@ function lerLongoMs(fonte, constante) {
  */
 function tetoDoBackendS(backend) {
   const arquivos = gitLsFiles(`:(glob)${backend}/apphosting*.yaml`);
-  const pinados = arquivos.flatMap((arquivo) => {
-    const texto = readFileSync(resolve(REPO_ROOT, arquivo), 'utf8');
-    return [...texto.matchAll(/^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/gm)].map((m) =>
-      Number(m[1]),
-    );
-  });
-  return { arquivos, tetoS: Math.max(TETO_APP_HOSTING_PADRAO_S, ...pinados) };
+  const { pinados, ilegiveis } = pinsDeTimeout(
+    arquivos.map((arquivo) => readFileSync(resolve(REPO_ROOT, arquivo), 'utf8')),
+  );
+  return { arquivos, pinados, ilegiveis, tetoS: Math.max(TETO_APP_HOSTING_PADRAO_S, ...pinados) };
 }
 
 describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', () => {
@@ -121,13 +145,30 @@ describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', ()
     },
   );
 
-  it('reads a pinned timeoutSeconds (the parser is not vacuous)', () => {
-    // apps/mercado-livre pins 180 today; the parser must see it, or every
-    // comparison above silently falls back to the default.
-    expect(tetoDoBackendS('apps/mercado-livre').tetoS).toBe(TETO_APP_HOSTING_PADRAO_S);
-    const ml = readFileSync(resolve(REPO_ROOT, 'apps/mercado-livre/apphosting.yaml'), 'utf8');
-    expect(
-      [...ml.matchAll(/^\s*timeoutSeconds\s*:\s*(\d+)\s*(?:#.*)?$/gm)].map((m) => m[1]),
-    ).toEqual(['180']);
+  it.each(LINHAS)('$backend has no timeoutSeconds line the parser cannot read', ({ backend }) => {
+    expect(tetoDoBackendS(backend).ilegiveis).toEqual([]);
+  });
+
+  it('reads the real pins through the SAME parser the comparison uses (not vacuous)', () => {
+    // apps/mercado-livre and apps/shopee pin 180 today. Their `tetoS` is still
+    // 300 (the default is larger), so assert what was PARSED, not the ceiling.
+    expect(tetoDoBackendS('apps/mercado-livre').pinados).toEqual([180]);
+    expect(tetoDoBackendS('apps/shopee').pinados).toEqual([180]);
+  });
+
+  it('a pin above the default raises the ceiling, and an unreadable one fails closed', () => {
+    const acima = pinsDeTimeout(['runConfig:\n  cpu: 1\n  timeoutSeconds: 900 # slow verificar\n']);
+    expect(acima).toEqual({ pinados: [900], ilegiveis: [] });
+    expect(Math.max(TETO_APP_HOSTING_PADRAO_S, ...acima.pinados)).toBe(900);
+
+    expect(pinsDeTimeout(['runConfig:\n  timeoutSeconds: "900"\n']).ilegiveis).toEqual([
+      'timeoutSeconds: "900"',
+    ]);
+    expect(pinsDeTimeout(['runConfig: { timeoutSeconds: 900 }\n']).ilegiveis).toHaveLength(1);
+    // A comment that merely mentions the key is not a pin.
+    expect(pinsDeTimeout(['# timeoutSeconds is not set on purpose\n'])).toEqual({
+      pinados: [],
+      ilegiveis: [],
+    });
   });
 });

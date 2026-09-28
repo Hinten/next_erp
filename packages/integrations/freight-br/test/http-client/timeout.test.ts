@@ -55,6 +55,20 @@ function fetchQueTravaNoCorpo() {
   });
 }
 
+/**
+ * A route that the PLATFORM gives up on: at `aposMs` the browser rejects with
+ * `TypeError: Failed to fetch`, because the gateway's 504 carries no CORS
+ * headers and a cross-origin `fetch` never sees it as a status (#1094 review).
+ */
+function fetchQueFalhaTarde(aposMs: number) {
+  return vi.fn(
+    () =>
+      new Promise<Response>((_resolve, reject) => {
+        setTimeout(() => reject(new TypeError('Failed to fetch')), aposMs);
+      }),
+  );
+}
+
 /** Start `promise` and record when it settles, without awaiting it. */
 function observar(promise: Promise<unknown>) {
   const estado: { settled: boolean; valor?: unknown } = { settled: false };
@@ -86,6 +100,17 @@ const INVOCAR = {
   rastrear: (c: FreightHttpClient) => c.rastrear('int-1', 'lbl-1'),
 } satisfies Record<keyof FreightHttpClient, (c: FreightHttpClient) => Promise<unknown>>;
 
+/** The #1094 design, written out — NOT read from the table under test. */
+const NIVEL_ESPERADO = {
+  oauthStart: 'curto',
+  calculate: 'curto',
+  conta: 'curto',
+  agencias: 'curto',
+  comprar: 'longo',
+  imprimir: 'curto',
+  rastrear: 'curto',
+} as const satisfies Record<keyof FreightHttpClient, 'curto' | 'longo'>;
+
 describe('FreightHttpClient deadlines (#1094)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -102,8 +127,15 @@ describe('FreightHttpClient deadlines (#1094)', () => {
     expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  describe.each(Object.entries(FREIGHT_NIVEL_POR_OPERACAO))('%s (%s)', (operacao, nivel) => {
-    const budget = FREIGHT_PRAZO_MS[nivel];
+  it('pins every tier — downgrading a method to `curto` must be a deliberate, reviewed edit', () => {
+    // ⚠️ `curto` fires BEFORE the platform gives up, so only a method whose repeat
+    // is harmless may have it. `comprar` pays for a label.
+    expect(FREIGHT_NIVEL_POR_OPERACAO).toEqual(NIVEL_ESPERADO);
+    expect(FREIGHT_PRAZO_MS).toEqual({ curto: 60_000, longo: 360_000 });
+  });
+
+  describe.each(Object.entries(NIVEL_ESPERADO))('%s (%s)', (operacao, nivel) => {
+    const budget = { curto: 60_000, longo: 360_000 }[nivel];
 
     it(`is still pending at ${String(budget - 1)} ms and times out at ${String(budget)} ms`, async () => {
       const { estado, pronto } = observar(
@@ -168,6 +200,29 @@ describe('FreightHttpClient deadlines (#1094)', () => {
     expect(err).toBeInstanceOf(FreightNetworkError);
     expect(err).not.toBeInstanceOf(FreightTimeoutError);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a LATE network failure is the platform's gateway timeout — never a plain FreightNetworkError", async () => {
+    // At ~300 s the platform answers 504 without CORS headers; the browser only
+    // sees a TypeError. As a FreightNetworkError the operator read "falha de rede"
+    // and clicked Comprar again over the purchase still running.
+    const { estado, pronto } = observar(INVOCAR.comprar(client(fetchQueFalhaTarde(300_000))));
+    await vi.advanceTimersByTimeAsync(300_000);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(FreightTimeoutError);
+    const t = estado.valor as FreightTimeoutError;
+    expect(t.origem).toBe('gateway');
+    expect(t.timeoutMs).toBeNull();
+    expect(t.message).toContain('confira se a etiqueta já aparece no pedido');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('near-miss: an EARLY network failure stays a FreightNetworkError', async () => {
+    const { estado, pronto } = observar(INVOCAR.conta(client(fetchQueFalhaTarde(29_999))));
+    await vi.advanceTimersByTimeAsync(29_999);
+    await pronto;
+    expect(estado.valor).toBeInstanceOf(FreightNetworkError);
+    expect(estado.valor).not.toBeInstanceOf(FreightTimeoutError);
   });
 
   it('a fetch TypeError stays a FreightNetworkError', async () => {
