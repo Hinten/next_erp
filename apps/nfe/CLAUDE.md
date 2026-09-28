@@ -273,12 +273,13 @@ guarded in its transaction on the receipt, the `retries` it was decided from
 and an in-flight estado (`PersistGuard`), so a concurrent terminal or counted
 write wins and the doc is tallied by its live estado; a recovered 539's chave
 swap rides that same write (`extrasDaTrocaDeChave` — `recover539.ts` writes
-nothing, #1654), so a refused write swaps nothing either, in the manual verify
+nothing to the nfev4 doc — only its `consReciNFe` audit entry — #1654), so a refused write swaps nothing either, in the manual verify
 too. One failing doc no longer aborts the round — only for three named causes
 (rule 6): a doc deleted mid-round (`NFeDocAusenteError`, the guarded persist's
 missing-doc throw) is skipped; a transient Firestore failure
 (`isTransientGrpcError`, gRPC 4/8/10/13/14, `@delfrance/data/admin/grpcErrors`)
-leaves the doc pending and uncounted — so a doc whose Firestore failure persists
+leaves the doc pending, uncounted unless its by-chave round had already written
+the count before its consSit — so a doc whose Firestore failure persists
 re-enqueues with no cap, one `consReciNFe` per round; a failed SOAP call of the
 539 recovery counts the round, on THIS receipt (the 539's `[nRec:]` marker
 names the other chave's lote and never re-keys the doc). Anything else is

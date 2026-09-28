@@ -318,7 +318,8 @@ export async function runProcessarPendentes(args: {
       // or flip to terminal `error`, never left aguardandoResposta (#243). Needs
       // the filial to look up our audit log; a legacy doc with no filialId can't,
       // so it keeps the generic outcome (pre-existing behavior for that rare case).
-      // The recovery writes nothing: its chave swap rides the persist below.
+      // The recovery writes nothing to the nfev4 doc (only its consReciNFe
+      // audit entry): its chave swap rides the persist below.
       let chaveOverride: string | undefined;
       if (data.filialId) {
         const recovered539 = await recover539IfNeeded({

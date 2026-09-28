@@ -7,7 +7,8 @@
  * Resolves the filial runtime, consults the lote by recibo (`reconcileByRecibo`),
  * and — while any doc of the lote is still pending (`stillPending > 0`: a doc
  * left in flight under the attempt cap, or one whose round a transient
- * Firestore failure interrupted, uncounted) — re-enqueues the next consult with
+ * Firestore failure interrupted, uncounted unless its by-chave count had
+ * already landed) — re-enqueues the next consult with
  * backoff via the injected scheduler. Throws the orchestrator's typed errors
  * (`NFeCertError`, transport errors); the caller decides their disposition.
  */

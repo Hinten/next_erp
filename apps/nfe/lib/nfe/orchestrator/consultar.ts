@@ -318,7 +318,8 @@ export async function consultarChavePersistida(params: {
   // chave if it is one we emitted, else flip to terminal `error` — never leave
   // the doc stuck aguardandoResposta (#243). No-op for every other outcome —
   // `outcome` is the receipt's (or the direct consSit's), never 539 after a
-  // round resolved by chave. It writes nothing: its chave swap rides the
+  // round resolved by chave. It writes nothing to the nfev4 doc (only its consReciNFe
+  // audit entry): its chave swap rides the
   // guarded write below (#1654 §2d).
   const recovered539 = await recover539IfNeeded({
     fs,

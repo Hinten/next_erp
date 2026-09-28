@@ -36,7 +36,7 @@
  *     chave — so a doc gets at most `MAX_RECONCILE_ATTEMPTS` receipt rounds
  *     and at most that many consSit calls between two operator actions (a
  *     round a transient Firestore failure interrupted is the exception: it
- *     writes nothing, so it counts nothing — below). The
+ *     stays uncounted unless its by-chave count had already landed — below). The
  *     round that reaches the cap goes terminal `error` with a "verificar
  *     manualmente" motivo. The writers that still reset the counter are
  *     outside this module: the manual verify (`consultarChavePersistida`,
@@ -72,8 +72,11 @@
  *   - a doc deleted since the in-flight query (`NFeDocAusenteError` from the
  *     guarded persist) is skipped, untallied — there is nothing to reconcile;
  *   - a TRANSIENT Firestore failure (`isTransientGrpcError`: gRPC 4, 8, 10, 13,
- *     14) leaves the doc pending and uncounted — its live state is unknown, and
- *     the next round re-reads it;
+ *     14) leaves the doc pending — its live state is unknown, and the next round
+ *     re-reads it. It is uncounted, except in a round resolved by chave:
+ *     `reconcilePorChave` writes the count BEFORE its consSit, so a failure
+ *     after that call keeps the count and loses that consSit's verdict (the
+ *     next round consults again — on the cap round, the hard stop instead);
  *   - a SOAP failure of the 539 recovery's own `consReciNFe` (transport, XSD,
  *     XML — the set the by-chave consSit absorbs) counts the round like any
  *     other in flight, on THIS receipt (the 539's `[nRec:]` marker never
@@ -176,7 +179,7 @@ export interface ReconcileLoteResult {
  *   diagnostics; the authoritative cap is the per-doc `retries` counter, which
  *   every in-flight round advances by one (here, or in `reconcilePorChave`),
  *   so a re-delivered task can't escape the cap. The one round left uncounted
- *   is one a transient Firestore failure interrupted (the doc stays pending,
+ *   is one a transient Firestore failure interrupted before its count landed (the doc stays pending,
  *   its live state unknown): a doc whose Firestore failure persists is
  *   re-enqueued with no cap, one `consReciNFe` per round.
  * @param disjuntor the consSit breaker CELL, owned by the caller and written in
@@ -365,8 +368,8 @@ async function reconciliarDoc(
   // cStat=539 (duplicidade com chave diferente) must NOT linger in
   // aguardandoResposta: recover the SEFAZ-asserted chave if it is one we
   // emitted, else flip to terminal `error` (#243). pedidoId comes from the
-  // doc path `pedidos/{pedidoId}/nfev4/{nfeId}`. The recovery writes nothing:
-  // its chave swap rides the guarded write below (#1654 §2d). A recovery that
+  // doc path `pedidos/{pedidoId}/nfev4/{nfeId}`. The recovery writes nothing
+  // to the nfev4 doc (only its consReciNFe audit entry): its chave swap rides the guarded write below (#1654 §2d). A recovery that
   // leaves the doc in flight is counted below like any other round — on the
   // doc's own `retries`, never restarted — and so is one whose OWN SOAP call
   // failed: the doc goes terminal at the cap instead of the run throwing.
