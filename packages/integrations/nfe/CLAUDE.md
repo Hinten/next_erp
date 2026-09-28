@@ -186,7 +186,13 @@ Every XSD-shape rule (sub-group completeness, pair choices) is a
 **throw inside `buildImpostoXml`**, never a Zod refine on the shared
 schemas: those schemas gate the resolver cascade and collection reads,
 so a stored doc that fails to parse silently drops to a lower resolver
-tier. `apps/nfe` makes sure such a throw never consumes a número (#506):
+tier. The config-level rules themselves (the ICMSSN CSOSN → sub-config →
+sub-group choice and the PIS/COFINS CST → rate choice) live once, as
+verdicts, in `@delfrance/schemas` `src/imposto/regrasDeEmissao.ts`
+(`vereditoIcmsSn`, `vereditoPisCofins`): the engine only formats a refusal
+into its `NFeTributeError`, the web imposto editor can refuse the same
+configs before a save, and it is still never a refine (#1655).
+`apps/nfe` makes sure such a throw never consumes a número (#506):
 the single-pedido transaction generates before its first write, and the
 batch dry-runs the per-item projection before its chunk transaction
 counts a member that would generate. Throw `NFeTributeError`

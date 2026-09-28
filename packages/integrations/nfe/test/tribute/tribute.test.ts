@@ -46,9 +46,17 @@ import {
 // <pag> value can be asserted without widening the package's public surface.
 import { buildPagObject } from '../../src/tribute/pag';
 import type {
+  TNFe_infNFe_det_imposto_COFINS_COFINSAliq,
+  TNFe_infNFe_det_imposto_COFINS_COFINSNT,
+  TNFe_infNFe_det_imposto_COFINS_COFINSOutr,
+  TNFe_infNFe_det_imposto_COFINS_COFINSQtde,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN201,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN202,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN900,
+  TNFe_infNFe_det_imposto_PIS_PISAliq,
+  TNFe_infNFe_det_imposto_PIS_PISNT,
+  TNFe_infNFe_det_imposto_PIS_PISOutr,
+  TNFe_infNFe_det_imposto_PIS_PISQtde,
 } from '../../src/types/nfe-schema';
 import {
   confICMSSN500Schema,
@@ -56,11 +64,17 @@ import {
   CRT,
   CSOSN,
   CST_PIS_COFINS,
+  cstPisCofinsSchema,
   IND_INCENTIVO,
   IND_ISS,
   MOD_BC,
   MOD_BCST,
   ORIGEM,
+  vereditoPisCofins,
+  type CstPisCofinsAliq,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type CstPisCofinsQtde,
 } from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
@@ -1619,6 +1633,73 @@ describe('buildImpostoXml — exact config-error messages and precedence (#1655)
         '(TDec_0302a04, at most 999.9999)',
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// The emission rules in @delfrance/schemas ↔ the XSD (#1655)
+//
+// `vereditoPisCofins` decides which PIS/COFINS group a CST selects; the engine
+// emits that group. The codegen types are the XSD's own enumerations, so the
+// type pins fail typecheck the moment a helper CST subset drifts from its
+// group, and the sweep builds every CST through the real engine and validates
+// the result against the XSD — the authority, not a hand copy of the table.
+// ---------------------------------------------------------------------------
+
+describe('regrasDeEmissao ↔ the XSD (#1655)', () => {
+  it('the helper CST subsets equal the codegen PIS/COFINS group enumerations', () => {
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISAliq['CST']>();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISQtde['CST']>();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISOutr['CST']>();
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSAliq['CST']
+    >();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSQtde['CST']
+    >();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_COFINS_COFINSNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSOutr['CST']
+    >();
+  });
+
+  // One ok input per group: Aliq a percent, Qtde a per-unit rate (the item
+  // carries qTrib), NT nothing, and Outr each branch of its xs:choice.
+  const ENTRADAS_OK = {
+    Aliq: [['percent', { pPIS: 0.65 }, { pCOFINS: 3 }]],
+    Qtde: [['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }]],
+    NT: [['no rate', {}, {}]],
+    Outr: [
+      ['percent', { pPIS: 0.65 }, { pCOFINS: 3 }],
+      ['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }],
+      ['no rate', {}, {}],
+    ],
+  } as const;
+  const XSD_SWEEP = cstPisCofinsSchema.options.flatMap((cst) => {
+    // The group the helper assigns (both rates set: Outr answers ambasAliquotas).
+    const v = vereditoPisCofins(cst, 0.65, 0.5);
+    const grupo = v.tipo === 'ok' ? v.grupo : 'Outr';
+    return ENTRADAS_OK[grupo].map(
+      ([modo, pis, cofins]) => [cst, grupo, modo, pis, cofins] as const,
+    );
+  });
+
+  it('the sweep covers every CST, and every Outr CST in all three branches', () => {
+    expect(new Set(XSD_SWEEP.map(([cst]) => cst)).size).toBe(cstPisCofinsSchema.options.length);
+    expect(XSD_SWEEP).toHaveLength(2 + 1 + 6 + 24 * 3);
+  });
+
+  it.each(XSD_SWEEP)(
+    'CST %s (%s, %s) → the engine emits an XSD-valid PIS/COFINS group',
+    async (cst, grupo, _modo, pis, cofins) => {
+      const imposto = impostoPisCofins({ CST: cst, ...pis }, { CST: cst, ...cofins });
+      const item = { vProd: 1500, qTrib: 2 };
+      const xml = buildImpostoXml(imposto, item);
+      expect(groupXmlOf(xml, 'PIS')).toContain(`<PIS${grupo}><CST>${cst}</CST>`);
+      expect(groupXmlOf(xml, 'COFINS')).toContain(`<COFINS${grupo}><CST>${cst}</CST>`);
+      await assertXsdValidWithRealTotals(xml, imposto, item);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
