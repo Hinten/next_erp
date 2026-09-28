@@ -83,8 +83,8 @@ export const consultaTaskPayloadSchema = z.object({
   ]),
   /**
    * 0-based consult attempt — drives the backoff delay only; the per-doc
-   * `retries` counter (105 and 104-without-our-protNFe) is what
-   * `reconcileByRecibo` caps at `MAX_RECONCILE_ATTEMPTS`.
+   * `retries` counter, which every in-flight receipt round advances by one,
+   * is what `reconcileByRecibo` caps at `MAX_RECONCILE_ATTEMPTS`.
    */
   attempt: z.number().int().min(0),
 });
