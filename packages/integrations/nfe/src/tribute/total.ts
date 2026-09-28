@@ -14,8 +14,11 @@
  * ao ICMS"). Each item value comes from `computePisCofinsItemValues`, the same
  * function the item builder emits, so the two cannot drift. An ISSQN item's
  * PIS/COFINS is kept out of ICMSTot (rule 602 counts only items subject to
- * ICMS). ⚠️ Its own home, `ISSQNtot` vPIS/vCOFINS (608 / 609), is NOT emitted
- * today: `aggregateISSQN` does not sum them and `apps/nfe` never calls it.
+ * ICMS). ⚠️ `ISSQNtot` is unreachable from the ERP: `apps/nfe` refuses an
+ * ISSQN item before generation (#1656), so `aggregateISSQN` has no caller. Its
+ * missing vPIS/vCOFINS (608 / 609), the `dCompet` the orchestrator would have
+ * to thread in, and the vProd/vServ split (an ISSQN item's `vProd` still counts
+ * in ICMSTot.vProd below) are the NF-e conjugada follow-up.
  *
  * Mirrors the Flutter aggregation in
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
