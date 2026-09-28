@@ -1,13 +1,17 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { nowMicros } from '@delfrance/core/datetime';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
+  esperaMinimaDoRecibo,
   isEstadoFinalNFe,
+  nextConsultaDelayMs,
   outcomeFromRetConsSit,
+  RECONCILE_SWEEP_GRACE_MS,
   type NFeStatePatch,
   type SefazCall,
   type SefazOutcome,
@@ -75,7 +79,10 @@ export interface ConsultaChaveResult {
  * queued" (635 + 217) or an unavailable service leaves the doc
  * `aguardandoResposta` with the stored receipt kept; anything else — and a
  * protNFe that names another chave — is a BLOCKING terminal `error`
- * (`terminalBloqueante`), as is a 656 or a refused receipt query. Unlike the
+ * (`terminalBloqueante`), as is a 656 or a refused receipt query. A receipt
+ * that says nothing about the chave (`aguardar`) puts the doc back in flight
+ * on that receipt, paced like the reconcile — never `error` with a
+ * non-blocking cStat or `rejeitada`. Unlike the
  * reconcile nothing is counted and a 106 is consulted at once: the call is
  * operator-initiated, and it still resets `retries` (`applyOutcome`). With no
  * receipt at all it goes straight to `consSitNFe`.
@@ -157,13 +164,18 @@ export async function consultarChavePersistida(params: {
     nRec: string,
     motivo: MotivoConsultaPorChave,
   ): Promise<NFeStatePatch> {
+    // Never re-keyed: our protNFe's duplicidade xMotivo may carry an
+    // `[nRec:X]` marker (`outcomeFromInfProt`), and writing it would move the
+    // doc onto another lote's receipt. `nRec: null` leaves the stored receipt
+    // untouched, as `reconcilePorChave` does by basing its patch on the lote.
+    const base: NFeStatePatch = { ...patch, nRec: null };
     const sit = await consultarPorChave();
     const chNFeDoProt = protNFeRaw?.infProt.chNFe ?? null;
     if (chNFeDoProt != null && chNFeDoProt !== chave) {
       // Strict equality, as in the reconcile: never applied as ours.
       protNFeRaw = null;
       return terminalBloqueante(
-        patch,
+        base,
         loteCStat,
         `recibo ${nRec}: consulta por chave devolveu protNFe de outra chave (${chNFeDoProt}) — ` +
           'verificar manualmente',
@@ -175,19 +187,18 @@ export async function consultarChavePersistida(params: {
         return applyOutcome(current, sit);
       case 'pendente':
       case 'indisponivel':
-        // Nothing to apply: back in flight, the stored receipt kept (nRec null
-        // leaves it untouched) and no proc — the sweep consults it again.
+        // Nothing to apply: back in flight, the stored receipt kept and no
+        // proc — the sweep consults it again.
         protNFeRaw = null;
         return {
-          ...patch,
+          ...base,
           estado: ESTADO_NFE.aguardandoResposta,
-          nRec: null,
-          xMotivo: `${patch.xMotivo} | ${consSit}`,
+          xMotivo: `${base.xMotivo} | ${consSit}`,
         };
       case 'sem-resolucao':
         protNFeRaw = null;
         return terminalBloqueante(
-          patch,
+          base,
           loteCStat,
           `recibo ${nRec}: ${consSit} — verificar manualmente`,
         );
@@ -196,6 +207,8 @@ export async function consultarChavePersistida(params: {
 
   let outcome: SefazOutcome;
   let patch: NFeStatePatch;
+  // The minimum wait of a round that stays in flight on a paralisado receipt.
+  let espera: number | null = null;
   if (msgWithNRec?.nRec) {
     const nRec = msgWithNRec.nRec;
     // Per-run dedupe: N chaves of the same lote share one consReciNFe
@@ -223,8 +236,8 @@ export async function consultarChavePersistida(params: {
     patch = applyOutcome(current, outcome);
 
     // The reconcile's decision for this round (#1654). 539 stays with the
-    // shared recover539 gate below; `aplicar-protocolo` and `aguardar` keep
-    // the receipt's patch as is.
+    // shared recover539 gate below; `aplicar-protocolo` keeps the receipt's
+    // patch as is.
     const decisao = decidirRodadaDoRecibo(retRec.cStat, ourProt?.infProt.cStat ?? null);
     if (decisao.tipo === 'por-chave') {
       patch = await resolverPorChave(patch, retRec.cStat, nRec, decisao.motivo);
@@ -234,6 +247,25 @@ export async function consultarChavePersistida(params: {
         retRec.cStat,
         `recibo ${nRec}: cStat ${outcome.cStat}, sem nova consulta — verificar manualmente`,
       );
+    } else if (decisao.tipo === 'aguardar') {
+      // Nothing about the chave: never out of flight, as in the reconcile.
+      // `applyOutcome` keeps the current estado for a null-mapped
+      // 107/108/109/113/114 and maps a cStat that is not TStat-shaped to
+      // rejeitada, so a doc the cap left `error` with a BLOCKING cStat would be
+      // written `error` 108 or `rejeitada` — both re-emittable over a número
+      // SEFAZ may hold. Back in flight on this receipt instead, as 103/105
+      // already map: the emit path skips an in-flight doc with an nRec, and the
+      // sweep consults it again, paced like the reconcile on a paralisado one.
+      if (
+        !isEstadoFinalNFe(patch.estado) &&
+        patch.estado !== ESTADO_NFE.enviando &&
+        patch.estado !== ESTADO_NFE.aguardandoResposta
+      ) {
+        patch = { ...patch, estado: ESTADO_NFE.aguardandoResposta };
+      }
+      if (patch.estado === ESTADO_NFE.aguardandoResposta) {
+        espera = esperaMinimaDoRecibo(retRec.cStat);
+      }
     }
   } else {
     // The no-nRec path already IS the consSit, so it never re-consults.
@@ -281,7 +313,17 @@ export async function consultarChavePersistida(params: {
     fs,
     nfeRef,
     patch,
-    nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
+    nfeProcXml != null
+      ? swapAnchorForProc(nfeProcXml)
+      : espera != null
+        ? {
+            proximaConsultaEm:
+              nowMicros() +
+              (Math.max(nextConsultaDelayMs(patch.retries, patch.tMed), espera) +
+                RECONCILE_SWEEP_GRACE_MS) *
+                1000,
+          }
+        : undefined,
   );
   if (!persisted.written) {
     // Nothing was written — report the doc's live truth, not the stale patch.

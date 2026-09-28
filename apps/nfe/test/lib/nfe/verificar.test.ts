@@ -49,6 +49,7 @@ vi.mock('../../../lib/nfe/filial-cert', () => ({
 
 import {
   NFeTransportError,
+  RECONCILE_INDISPONIVEL_DELAY_MS,
   consultarLote,
   consultarSituacaoNFe,
   isBloqueada,
@@ -738,6 +739,147 @@ describe('verificarEnviNfeMsgs — the receipt round shares reconcile’s decisi
       status: 'sem-mudanca',
       estadoNovo: ESTADO_NFE.aguardandoResposta,
       cStat: '105',
+    });
+  });
+
+  /**
+   * An `error` doc the cap left terminal with the BLOCKING 103 (a paralisado
+   * chain, "cStat 108: …" in xMotivo) and its receipt REC-1 in the audit log —
+   * the doc "Verificar novamente" exists for.
+   */
+  function terminalDoCap(): void {
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+    seedNfev4([
+      {
+        chave: CHAVE_A,
+        estado: ESTADO_NFE.error,
+        cStat: '103',
+        xMotivo:
+          'cStat 108: motivo 108 | sem resposta para a chave após 10 consultas — verificar manualmente',
+        retries: 10,
+      },
+    ]);
+    vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+  }
+
+  /** The extras of the (single) guarded write. */
+  function extrasPersistidos(): { proximaConsultaEm?: number } | undefined {
+    persistido();
+    return vi.mocked(persistPatchUnlessFinal).mock.calls[0]![3] as
+      | { proximaConsultaEm?: number }
+      | undefined;
+  }
+
+  it.each(['107', '108', '109', '113', '114', ''])(
+    "a capped terminal (error, BLOCKING 103) re-verified against a receipt that says nothing ('%s') → back IN FLIGHT on it — never error with that non-blocking cStat, never rejeitada",
+    async (loteCStat) => {
+      terminalDoCap();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet(loteCStat) as never);
+
+      const r = await verificar();
+
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      const patch = persistido();
+      // In flight WITH its receipt: the emit path skips it (no número reuse)
+      // and the sweep consults it again.
+      expect(patch.estado).toBe(ESTADO_NFE.aguardandoResposta);
+      expect(patch.nRec).toBe('REC-1');
+      expect(r.results[0]).toMatchObject({
+        status: 'atualizada',
+        estadoAnterior: ESTADO_NFE.error,
+        estadoNovo: ESTADO_NFE.aguardandoResposta,
+      });
+    },
+  );
+
+  it("an in-flight doc + a receipt whose cStat is not TStat-shaped ('') → stays in flight, never a número-freeing rejeitada", async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('') as never);
+
+    const r = await verificar();
+
+    expect(persistido().estado).toBe(ESTADO_NFE.aguardandoResposta);
+    expect(r.results[0]).toMatchObject({ estadoNovo: ESTADO_NFE.aguardandoResposta });
+  });
+
+  it.each(['108', '109', '113', '114'])(
+    'a paralisado receipt (%s) paces the doc like the reconcile: proximaConsultaEm ≥ now + RECONCILE_INDISPONIVEL_DELAY_MS',
+    async (loteCStat) => {
+      terminalDoCap();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet(loteCStat) as never);
+      const antes = Date.now() * 1000;
+
+      await verificar();
+
+      expect(extrasPersistidos()?.proximaConsultaEm).toBeGreaterThanOrEqual(
+        antes + RECONCILE_INDISPONIVEL_DELAY_MS * 1000,
+      );
+    },
+  );
+
+  it.each(['105', '107', ''])(
+    "near-miss: a receipt that says nothing but is not paralisado ('%s') keeps the default pacing — no extras",
+    async (loteCStat) => {
+      terminalDoCap();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet(loteCStat) as never);
+
+      await verificar();
+
+      expect(persistido().estado).toBe(ESTADO_NFE.aguardandoResposta);
+      expect(extrasPersistidos()).toBeUndefined();
+    },
+  );
+
+  describe('our protNFe 204 carrying an [nRec:X] marker', () => {
+    const MARCADOR = '351000000000999';
+
+    function recibo204ComMarcador(): unknown {
+      const ret = consReciRet('104', '204') as {
+        protNFe: Array<{ infProt: { xMotivo: string } }>;
+      };
+      ret.protNFe[0]!.infProt.xMotivo = `Rejeicao: Duplicidade de NF-e [nRec:${MARCADOR}]`;
+      return ret;
+    }
+
+    function consSitDeOutraChave(): unknown {
+      const ret = consSitRet('100', { protCStat: '100' }) as {
+        protNFe: { infProt: { chNFe: string } };
+      };
+      ret.protNFe.infProt.chNFe = CHAVE_B;
+      return ret;
+    }
+
+    it.each<[string, () => unknown]>([
+      ['consSit 217 (sem-resolucao)', () => consSitRet('217')],
+      ['a consSit protNFe of ANOTHER chave', consSitDeOutraChave],
+      ['consSit 108 (indisponivel, back in flight)', () => consSitRet('108')],
+    ])(
+      'the by-chave result (%s) keeps the stored receipt — never re-keyed onto X',
+      async (_caso, retSit) => {
+        comRecibo();
+        vi.mocked(consultarLote).mockResolvedValue(recibo204ComMarcador() as never);
+        vi.mocked(consultarSituacaoNFe).mockResolvedValue(retSit() as never);
+
+        await verificar();
+
+        expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+        const patch = persistido();
+        // nRec null → the persist leaves the stored receipt (REC-1) untouched.
+        expect(patch.nRec).toBeNull();
+        expect(patch.nRec).not.toBe(MARCADOR);
+      },
+    );
+
+    it('the terminal still quotes what our protNFe said, behind the BLOCKING cStat 104', async () => {
+      comRecibo();
+      vi.mocked(consultarLote).mockResolvedValue(recibo204ComMarcador() as never);
+      vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+
+      await verificar();
+
+      const patch = persistido();
+      expect(patch).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+      expect(patch.xMotivo).toContain('cStat 204: Rejeicao: Duplicidade de NF-e');
     });
   });
 });
