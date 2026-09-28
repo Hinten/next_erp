@@ -132,9 +132,11 @@ export const FRETE_QUOTE_RESET_KEYS = [
  * Per-line keys the clone must not inherit. `ensureUniqueId` is the Mercado
  * Livre line identity (`sha256(orderId-mktplaceId-index)`, `orderIds.ts`) and
  * `timestamp` is the origin line's creation stamp — neither describes a line on
- * a manually created pedido.
+ * a manually created pedido. `dfeReferenciado` points at an item of the NF-e the
+ * ORIGIN was issued against (#330): a copy is a different operation, and a
+ * reference carried over would emit a nota claiming to adjust someone else's.
  */
-const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp'] as const;
+const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp', 'dfeReferenciado'] as const;
 
 /** Clone `itens`, dropping {@link ITEM_STRIP_KEYS} from every line. */
 function cloneItens(itens: unknown): unknown {

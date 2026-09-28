@@ -28,6 +28,11 @@ describe('buildDuplicarPedidoSeed', () => {
           // neither describes a line on a manually created pedido.
           ensureUniqueId: 'sha-of-the-origin-order-line',
           timestamp: 777,
+          // An item-level NF-e reference (#330) belongs to the ORIGIN's operation.
+          dfeReferenciado: {
+            chaveAcesso: '35260514200166000187550010000000071000000018',
+            nItem: 2,
+          },
         },
       ],
     },
@@ -193,6 +198,7 @@ describe('buildDuplicarPedidoSeed', () => {
     const line = itens.p1?.[0];
     expect(line?.ensureUniqueId).toBeNull();
     expect(line?.timestamp).toBeNull();
+    expect(line?.dfeReferenciado).toBeNull();
     // Everything that describes WHAT is being sold survives.
     expect(line?.produtoUid).toBe('p1');
     expect(line?.quantidade).toBe(3);

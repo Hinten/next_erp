@@ -287,6 +287,8 @@ interface PedidoSpec {
   readonly refs?: 'canonico';
   /** `pedido.freteInicial` — e.g. a separate delivery address (#422). */
   readonly freteInicial?: Record<string, unknown>;
+  /** The item's `dfeReferenciado` (NT 2025.002 Grupo VC, #330). */
+  readonly dfeReferenciado?: Record<string, unknown>;
 }
 
 function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
@@ -303,6 +305,7 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
           quantidade: 1,
           descontoUnitario: 0,
           imposto: spec.imposto ?? impostoCsosn102(),
+          ...(spec.dfeReferenciado ? { dfeReferenciado: spec.dfeReferenciado } : {}),
         },
       ],
     },
@@ -1495,6 +1498,51 @@ describe('emitirPedidosLote — the delivery address is judged before allocation
       .mocked(generateNFe)
       .mock.calls.find((c) => c[0].enderecoEntrega?.estado === UF_SIGLA.RJ);
     expect(rjCall?.[0].itens[0]!.CFOP).toBe('6102');
+  });
+});
+
+// #330 — the document rules (item-level references) run in the SAME pre-flight.
+describe('emitirPedidosLote — item references are judged before allocation (#330)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+
+  it('RTC off: a pedido with an item reference fails before allocation — no nNF, no placeholder', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-REF', filialId: 'F-1', dfeReferenciado: { chaveAcesso: CHAVE, nItem: 1 } },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteAutorizaGerados();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-GOOD', 'PED-REF']);
+
+    const ref = out.results.find((r) => r.pedidoId === 'PED-REF')!;
+    expect('errorCode' in ref ? ref.errorCode : null).toBe('NFeOrchestratorError');
+    expect('errorMessage' in ref ? ref.errorMessage : '').toContain('Reforma Tributária ativa');
+    expect(docs['pedidos/PED-REF/nfev4/s1']).toBeUndefined();
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+  });
+
+  it('RTC on: a valid reference reaches the generator on its det', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-REF', filialId: 'F-1', dfeReferenciado: { chaveAcesso: CHAVE, nItem: 4 } },
+      ],
+      nfeConfigByFilial: { 'F-1': { ...SEED_NFE_CONFIG, emitirReformaTributaria: true } },
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteAutorizaGerados();
+
+    await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-REF']);
+
+    const input = vi.mocked(generateNFe).mock.calls.at(-1)?.[0];
+    expect(input?.itens[0]?.dfeReferenciado).toEqual({ chaveAcesso: CHAVE, nItem: 4 });
   });
 });
 

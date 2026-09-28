@@ -473,6 +473,54 @@ describe('generateNFe — delivery address (enderecoEntrega, #422)', () => {
   });
 });
 
+/**
+ * #330 — `det/DFeReferenciado` (NT 2025.002 Grupo VC), the item of another NF-e
+ * a line refers to. It is the LAST child of `<det>`, and absent means the det
+ * is byte-identical.
+ */
+describe('generateNFe — det/DFeReferenciado (#330)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  const CHAVE_ALFA = '352601ABCDEFGHIJKL87550010000001234567890120';
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const comRef = (dfeReferenciado: GeneratorItem['dfeReferenciado']): GeneratorInput => ({
+    ...XSD_INPUT,
+    itens: [{ ...ITEM, dfeReferenciado }],
+  });
+
+  it('emits chaveAcesso + nItem after </imposto>, closing the det', () => {
+    const out = generateNFe(comRef({ chaveAcesso: CHAVE, nItem: 3 }));
+    expect(out.nfeXml).toContain(
+      `</imposto><DFeReferenciado><chaveAcesso>${CHAVE}</chaveAcesso><nItem>3</nItem></DFeReferenciado></det>`,
+    );
+  });
+
+  it.each([
+    ['with nItem', { chaveAcesso: CHAVE, nItem: 3 }],
+    ['without nItem', { chaveAcesso: CHAVE }],
+    ['nItem 990 (the XSD maximum)', { chaveAcesso: CHAVE, nItem: 990 }],
+    ['an alphanumeric-CNPJ chave', { chaveAcesso: CHAVE_ALFA, nItem: 1 }],
+  ])('a signed nota %s passes the NFe XSD', async (_label, ref) => {
+    const signed = signNFe(generateNFe(comRef(ref)).nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('refuses what the XSD would, naming the item', () => {
+    expect(() => generateNFe(comRef({ chaveAcesso: '123', nItem: 1 }))).toThrow(
+      /item 1: DFeReferenciado\.chaveAcesso/,
+    );
+    for (const nItem of [0, 991, 1.5]) {
+      expect(() => generateNFe(comRef({ chaveAcesso: CHAVE, nItem }))).toThrow(
+        /DFeReferenciado\.nItem must be an integer from 1 to 990/,
+      );
+    }
+  });
+
+  it('without a reference the det is byte-identical', () => {
+    expect(generateNFe(comRef(undefined)).nfeXml).toBe(generateNFe(XSD_INPUT).nfeXml);
+    expect(generateNFe(XSD_INPUT).nfeXml).not.toContain('<DFeReferenciado>');
+  });
+});
+
 /** Self-signed cert for the offline signer round-trip. */
 function fixtureCertificate(): NFeCertificate {
   const keys = forge.pki.rsa.generateKeyPair(1024);

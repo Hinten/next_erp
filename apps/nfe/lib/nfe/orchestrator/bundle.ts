@@ -20,6 +20,7 @@ import {
   toDocPathOrNull,
   ufSchema,
   type Cliente,
+  type DfeReferenciadoEntrada,
   type Endereco,
   type EstadoNFe,
   type Filial,
@@ -177,6 +178,24 @@ export interface FiscalItem {
    * mirroring the legacy Flutter generator.
    */
   readonly vProdBruto: number;
+  /**
+   * The item's `dfeReferenciado` (NT 2025.002 Grupo VC, #330), read
+   * best-effort: a value that is not the stored shape is kept as an unusable
+   * reference (empty chave / NaN nItem) so the document rules REFUSE it with a
+   * message, instead of prep throwing or the reference silently vanishing.
+   */
+  readonly dfeReferenciado: DfeReferenciadoEntrada | null;
+}
+
+/** Best-effort read of a stored `itens[*].dfeReferenciado` (see {@link FiscalItem}). */
+export function lerDfeReferenciado(raw: unknown): DfeReferenciadoEntrada | null {
+  if (raw == null) return null;
+  if (typeof raw !== 'object') return { chaveAcesso: '', nItem: Number.NaN };
+  const r = raw as { chaveAcesso?: unknown; nItem?: unknown };
+  return {
+    chaveAcesso: typeof r.chaveAcesso === 'string' ? r.chaveAcesso : '',
+    nItem: r.nItem == null ? null : typeof r.nItem === 'number' ? r.nItem : Number.NaN,
+  };
 }
 
 /**
@@ -808,6 +827,7 @@ export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
         imposto,
         vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
         vProdBruto: roundReais(precoDeVenda * quantidade),
+        dfeReferenciado: lerDfeReferenciado(e.dfeReferenciado),
       });
     });
   }

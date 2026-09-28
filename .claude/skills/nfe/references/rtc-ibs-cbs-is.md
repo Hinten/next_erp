@@ -239,6 +239,31 @@ Cada `tpNFDebito`/`tpNFCredito` tem um cClassTrib obrigatório (validado em
 UB14-70 e UB14-80). Em particular, **NF-e de Crédito tipo 2 (ZFM)** só pode
 ser emitida a partir de **janeiro/2029** (RV B25.2-30).
 
+### Referência por item — `det/DFeReferenciado` (Grupo VC, #330)
+
+Último filho de `<det>`: `chaveAcesso` (TChNFe) + `nItem` opcional (1–990, o
+`det/@nItem` da nota original). Neste repo: `itens[*].dfeReferenciado` no
+pedido (editado na aba Fiscal), emitido por `det.ts`. As regras que a SEFAZ
+aplica moram em `@delfrance/schemas` (`imposto/regrasDoDocumento.ts`,
+`violacoesDoDocumento`) e servem a DOIS lados — o editor mostra como aviso, o
+pré-voo do `apps/nfe` recusa antes de consumir número:
+
+| cStat | Regra | O que recusa |
+|---|---|---|
+| 1010 | VC02-05 | `NFref` (por nota) E referência por item juntos |
+| 1042 | VC02-07 | referência por item em nota de crédito (exceto `tpNFCredito` 06) |
+| 1038 | VC02-10 | falta referência por item em `tpNFDebito` 03/04 ou `tpNFCredito` 06 |
+| 321 | VC02-14 | devolução sem referência — e **proíbe `refNFe`** na devolução (produção 01/09/2026; exceções CFOP 1201/1202/1410/1411/5921/6921) → #1683 |
+| 1072 | VC02-20 | mesma chave + nItem em dois itens |
+| 1130 | VC02-30 | mais de uma chave referenciada (exceto `tpNFDebito` 03 e devolução) |
+| 1193 | VC02-40 | devolução: emitentes diferentes entre os itens (aviso — NFA) |
+| 1194 | VC02-50 | devolução de saída: emitente referenciado ≠ destinatário (aviso — NFA) |
+| 1039 | VC03-10 | `nItem` informado em `tpNFDebito` 03 |
+| 1048 | VC03-20 | `nItem` ausente (exceto `tpNFDebito` 03) |
+
+Política deste repo: referência por item só com a Reforma Tributária ligada na
+filial (`emitirReformaTributaria`), como todo o resto da NT 2025.002.
+
 ## Grupo BB — Compras Governamentais
 
 NT 2025.002 **renomeou Grupo BB** (era "antecipação de pagamento", que

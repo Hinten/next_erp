@@ -25,6 +25,7 @@ function item(produtoUid: string | null, quantidade: number): ItemDoPedido {
     custo: null,
     timestamp: null,
     imposto: null,
+    dfeReferenciado: null,
   };
 }
 

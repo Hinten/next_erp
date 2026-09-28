@@ -22,7 +22,11 @@ import {
   MODALIDADE_FRETE,
   IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
+  SEVERIDADE_VIOLACAO,
+  bloqueiaEmissao,
   camposProdutoFiscal,
+  descreverViolacaoDocumento,
+  violacoesDoDocumento,
   ehMarketplace,
   gtinFiscal,
   type Endereco,
@@ -92,7 +96,49 @@ function projetarNota(
   const enderecoEntrega = entregaDaOperacao(bundle);
   const genItems = buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc);
   if (enderecoEntrega) assertEntregaEmitivel(bundle, enderecoEntrega);
+  assertDocumentoEmitivel(bundle, items, emitRtc);
   return { genItems, enderecoEntrega };
+}
+
+/**
+ * The note-level references (`ide.NFref`), non-empty entries of
+ * `pedido.chNFeReferenciadas`. ONE reader for generation and the document
+ * rules, so rule 1010 (NFref and item references together) judges exactly the
+ * list that would be emitted.
+ */
+export function chNFeReferenciadasDe(bundle: PedidoBundle): string[] {
+  const raw = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
+  return Array.isArray(raw)
+    ? raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+}
+
+/**
+ * The NT 2025.002 document rules (`violacoesDoDocumento`, `@delfrance/schemas`
+ * — the SAME verdicts the pedido editor shows) over the nota about to be built.
+ * A `bloqueia` violation refuses it as an `NFeOrchestratorError` listing every
+ * one, before a número is consumed; an `aviso` (a rule this ERP cannot fully
+ * judge, e.g. a Nota Fiscal Avulsa in 1193/1194) is left to SEFAZ.
+ */
+function assertDocumentoEmitivel(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): void {
+  const violacoes = violacoesDoDocumento({
+    emitRtc,
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNF: bundle.operacao.tipo === 1 ? '1' : '0',
+    chNFeReferenciadas: chNFeReferenciadasDe(bundle),
+    destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
+    // nItem = the det position `buildGenItems` assigns (i + 1).
+    itens: items.map((it, i) => ({ nItem: i + 1, dfeReferenciado: it.dfeReferenciado })),
+  });
+  if (!bloqueiaEmissao(violacoes)) return;
+  const motivos = violacoes
+    .filter((v) => v.severidade === SEVERIDADE_VIOLACAO.bloqueia)
+    .map(descreverViolacaoDocumento);
+  throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}': ${motivos.join('; ')}`);
 }
 
 /**
@@ -310,10 +356,7 @@ export function buildGeneratorInput(
   // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
   // stores chaves in `chNFeReferenciadas` (CHAVE_NFE_REGEX-validated on the FiscalTab);
   // buildIde re-validates each and throws on a malformed one.
-  const rawRefs = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
-  const chNFeReferenciadas = Array.isArray(rawRefs)
-    ? rawRefs.filter((c): c is string => typeof c === 'string' && c.length > 0)
-    : [];
+  const chNFeReferenciadas = chNFeReferenciadasDe(bundle);
 
   const transpOpts = buildTranspFromFrete(bundle.frete);
   const cobr = buildCobrFromPagamentos(bundle.pagamentos, {
@@ -446,6 +489,15 @@ export function buildGenItems(
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
       impostoXml: buildItemImpostoXml(it, emitRtc, where),
+      // det/DFeReferenciado (#330) — judged by the document rules in projetarNota.
+      ...(it.dfeReferenciado
+        ? {
+            dfeReferenciado: {
+              chaveAcesso: it.dfeReferenciado.chaveAcesso,
+              ...(it.dfeReferenciado.nItem != null ? { nItem: it.dfeReferenciado.nItem } : {}),
+            },
+          }
+        : {}),
     };
   });
 }

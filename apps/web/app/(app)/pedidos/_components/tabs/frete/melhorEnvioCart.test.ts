@@ -130,6 +130,7 @@ const ITENS: ItemDoPedido[] = [
     custo: null,
     timestamp: null,
     imposto: null,
+    dfeReferenciado: null,
   },
 ];
 

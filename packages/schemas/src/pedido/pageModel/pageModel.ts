@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
+import { chaveAcessoValida } from '../../chaveAcesso';
 import { CHAVE_NFE_REGEX } from '../../nfe';
 import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
@@ -46,7 +47,13 @@ export interface PedidoPageValidationInput {
   ehSaidaOriginal?: boolean | null;
   estado?: EstadoPedido | null;
   integracaoPedidoOuterRef?: unknown;
-  itens?: Record<string, ReadonlyArray<{ quantidade?: number | null }>> | null;
+  itens?: Record<
+    string,
+    ReadonlyArray<{
+      quantidade?: number | null;
+      dfeReferenciado?: { chaveAcesso?: string | null; nItem?: number | null } | null;
+    }>
+  > | null;
   chNFeReferenciadas?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
   pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
@@ -110,6 +117,33 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
       path: 'chNFeReferenciadas',
       message:
         'Chave de acesso referenciada inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente).',
+    });
+  }
+
+  // An item-level NF-e reference (`dfeReferenciado`, #330) must be a real chave —
+  // shape AND check digit — and its `nItem`, when given, the XSD's 1–990. Only
+  // the SHAPE blocks the save: whether `nItem` is required, and how the
+  // references combine, depends on the operação (finNFe / tipo de débito) and is
+  // judged by `violacoesDoDocumento` at emission and in the Fiscal tab panel.
+  const refs = Object.values(data.itens ?? {})
+    .flat()
+    .map((it) => it?.dfeReferenciado)
+    .filter((r): r is NonNullable<typeof r> => r != null);
+  if (refs.some((r) => !chaveAcessoValida(r.chaveAcesso ?? ''))) {
+    issues.push({
+      path: 'dfeReferenciado',
+      message:
+        'Referência por item: chave de acesso inválida — 44 caracteres com dígito verificador correto (letras A-Z só nas posições 7 a 18).',
+    });
+  }
+  if (
+    refs.some(
+      (r) => r.nItem != null && (!Number.isInteger(r.nItem) || r.nItem < 1 || r.nItem > 990),
+    )
+  ) {
+    issues.push({
+      path: 'dfeReferenciado',
+      message: 'Referência por item: o item da nota referenciada deve ser um número de 1 a 990.',
     });
   }
 

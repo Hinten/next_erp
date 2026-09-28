@@ -246,6 +246,8 @@ export function mlOrderItemToItemDoPedido(args: {
     custo: null,
     timestamp: timestampUs,
     imposto: null,
+    // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC).
+    dfeReferenciado: null,
   };
 }
 
