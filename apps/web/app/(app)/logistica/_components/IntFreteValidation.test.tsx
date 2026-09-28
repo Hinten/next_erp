@@ -149,6 +149,58 @@ describe('logistica create form — invalid submit from a non-first tab', () => 
       'true',
     );
   });
+
+  it.each(['Custo 1', 'Preço 1', 'Prazo 1'])(
+    'does not write when %s is cleared instead of coercing it to zero',
+    async (numericLabel) => {
+      const slice = LOGISTICA_SLICES.motoboy;
+      render(
+        <Wrap>
+          <ObjectView
+            schema={intFreteSchema}
+            collection={fakeCollection() as never}
+            db={{} as never}
+            currentUserUid="u1"
+            sections={[...slice.sections]}
+            fields={intFreteFields}
+            excludedFields={[...SHARED_EXCLUDED, ...slice.extraExcluded]}
+            defaultValues={{
+              tipo: slice.tipo,
+              ativo: true,
+              prazoExtra: 0,
+              dataCadastro: 1718000000000,
+              nome: 'Motoboy',
+              filialIntegracaoFreteOuterRef: 'documents/filiais/f1',
+              faixaCep: [
+                {
+                  cepInicial: '01000000',
+                  cepFinal: '01999999',
+                  custo: 10,
+                  valor: 20,
+                  prazo: 1,
+                },
+              ],
+            }}
+            saveLabel="Criar"
+            showSaveAndContinue={false}
+          />
+        </Wrap>,
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('tab', { name: 'Faixas de CEP' }));
+      });
+      const input = screen.getByLabelText(numericLabel) as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(input, { target: { value: '' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Criar' }));
+      });
+
+      expect(input.value).toBe('');
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(txSet).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('logistica create form — freight-origin telefone', () => {
