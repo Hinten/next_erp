@@ -7,7 +7,8 @@
  *
  * Plain on purpose: no `'use client'`, no React, no TanStack. The only imports
  * are `firebase/firestore`, the `clientes` collection handle and
- * `dereferenceOuterRef` (itself only `firebase/firestore` + `@delfrance/schemas`).
+ * `dereferenceOuterRef` (which does carry `'use client'`, but imports only
+ * `firebase/firestore` + `@delfrance/schemas`).
  *
  * ⚠️ PROVENANCE, not just shape (#1303). A key written by one consumer and read
  * by another is only safe while they fill it with the SAME value: a
@@ -51,7 +52,8 @@ export function ehRefDeCliente(ref: DocumentReference): boolean {
 /**
  * The pedido's cliente ref as a `DocumentReference` INTO `clientes`, or `null`
  * — absent, malformed (it does not dereference) or foreign (it points into
- * another collection). Total: {@link dereferenceOuterRef} never throws (#1656).
+ * another collection). Total: {@link dereferenceOuterRef} never throws, and
+ * every ref it returns has the `parent` {@link ehRefDeCliente} reads (#1656).
  *
  * The ONE gate before reading {@link clienteQueryKey} or linking
  * `/clientes/{id}`: `ClienteCell`, the `/pedidos` row batch, NFCell's

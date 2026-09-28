@@ -53,13 +53,23 @@ function looksLikeOpaqueRef(value: unknown): value is OpaqueRef {
   );
 }
 
+/**
+ * A real `DocumentReference` — or, defensively, something carrying every field
+ * a caller reads off one. ⚠️ `parent` is part of the test, not decoration:
+ * `ehRefDeCliente` reads `ref.parent.id` synchronously (in render and in the
+ * `/pedidos` row-batch effect), and Firestore stores any map keys, so a plain
+ * `{ path, id, firestore }` map would otherwise pass through and throw a
+ * `TypeError` there (#1656). Such a map falls through to the opaque `{ path }`
+ * rule instead. A real ref passes: `id`/`path`/`parent` are prototype getters.
+ */
 function looksLikeDocumentReference(value: unknown): value is DocumentReference {
+  if (value === null || typeof value !== 'object' || !('firestore' in value)) return false;
+  const { path, id, parent } = value as { path?: unknown; id?: unknown; parent?: unknown };
   return (
-    value !== null &&
-    typeof value === 'object' &&
-    'path' in value &&
-    'id' in value &&
-    'firestore' in value
+    typeof path === 'string' &&
+    typeof id === 'string' &&
+    typeof parent === 'object' &&
+    parent !== null
   );
 }
 

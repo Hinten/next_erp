@@ -82,6 +82,32 @@ describe('dereferenceOuterRef', () => {
     expect(dereferenceOuterRef(db, real)).toBe(real);
   });
 
+  describe('a stored map merely SHAPED like a DocumentReference', () => {
+    // Firestore stores any map keys, so `{ path, id, firestore }` can come back
+    // as a plain object. Passed through as a ref it has no `parent`, and
+    // `ehRefDeCliente` reads `ref.parent.id` synchronously — in `ClienteCell`'s
+    // render and in the `/pedidos` row-batch effect. So a map without a real
+    // parent is read by the opaque `{ path }` rule instead.
+    it.each([
+      { path: 'clientes/x', id: 'x', firestore: null },
+      { path: 'clientes/x', id: 'x', firestore: null, parent: null },
+    ])('%j → a real ref to clientes/x', (map) => {
+      const ref = dereferenceOuterRef(db, map);
+      expect(ref).toBeInstanceOf(DocumentReference);
+      expect(ref?.path).toBe('clientes/x');
+      expect(ref?.parent.id).toBe('clientes');
+    });
+
+    it('with an odd path → null, never a throw', () => {
+      expect(dereferenceOuterRef(db, { path: 'clientes', id: 'x', firestore: null })).toBeNull();
+    });
+
+    it('with a non-string path is no ref at all → null', () => {
+      const map = { path: 42, id: 'x', firestore: null, parent: { id: 'clientes' } };
+      expect(dereferenceOuterRef(db, map)).toBeNull();
+    });
+  });
+
   it.each([null, undefined, 42, {}, { path: 42 }, { path: '' }])(
     'a non-ref (%j) → null',
     (value) => {

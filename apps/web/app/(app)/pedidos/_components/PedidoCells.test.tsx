@@ -60,9 +60,10 @@ const {
   // Every options object the mocked `useQuery` received — so a test can assert
   // WHICH key, staleness and gate a call site used, not just what it rendered.
   useQueryCalls: vi.fn(),
-  // The ClienteCell calls `dereferenceOuterRef` once with the pedido's
-  // outer ref; the test toggles its return shape between a fake doc ref
-  // (`parent.id` decides whether it points into `clientes`) and `null`.
+  // ClienteCell (via `refDeClienteOuNull`) calls `dereferenceOuterRef` once
+  // for a PRESENT outer ref — a null one never reaches it; the test toggles its
+  // return shape between a fake doc ref (`parent.id` decides whether it points
+  // into `clientes`) and `null`.
   dereferenceMock: vi.fn(),
   // `null` = the real (provider-less) auth context. A uid lets `useLatestNfe`
   // remember a badge, which the memo-backed NFCell render needs.
