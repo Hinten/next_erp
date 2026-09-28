@@ -61,6 +61,7 @@ import {
   consultarLote,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
+  encryptSecret,
   NFeTransportError,
   RECONCILE_BASE_DELAY_MS,
   RECONCILE_SWEEP_GRACE_MS,
@@ -1374,6 +1375,53 @@ describe('POST /api/nfe/processar-pendentes — a known failure is recorded, an 
       await expect(POST(req())).rejects.toBe(bug);
     },
   );
+
+  it("one filial's stored cert that no longer decrypts (a rotated NFE_CERT_ENC_KEY) is an NFeCertError: recorded for ITS lote, and the next filial's lote is still reconciled", async () => {
+    // F-2's key was encrypted under a master key the env no longer holds; F-1
+    // has no stored cert and signs with the env fallback.
+    process.env.NFE_CERT_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
+    try {
+      const { fs } = fakeFirestore({
+        'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9', filialId: 'F-2' }),
+        'pedidos/PED-3/nfev4/s6': stuckDoc({ nRec: 'REC-10', chave: chaveDe(97) }),
+        'filiais/F-2/certificadoSecreto/default': {
+          encPrivateKey: encryptSecret('chave privada de teste', Buffer.alloc(32, 8)),
+          certificatePem: 'pem de teste',
+          certificateDerBase64: 'ZGVy',
+          subjectCommonName: 'ACME:99999999000191',
+          cnpj: '99999999000191',
+          notAfter: Date.parse('2027-01-01T00:00:00.000Z'),
+          algoritmo: 'aes-256-gcm',
+          keyVersion: 1,
+          uploadedAt: Date.parse('2026-01-01T00:00:00.000Z'),
+        },
+      });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      vi.mocked(consultarLote).mockResolvedValue({
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'SVC_AN',
+        nRec: 'REC-10',
+        cStat: '105',
+        xMotivo: 'Lote em processamento',
+        cUF: '35',
+        dhRecbto: '2026-06-11T09:00:00-03:00',
+      } as never);
+
+      const res = await POST(req());
+      const body = (await res.json()) as { errors: Array<{ chave: string | null; error: string }> };
+
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ scanned: 2, stillPending: 1 });
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0]!.chave).toBeNull();
+      expect(body.errors[0]!.error).toMatch(/^nRec REC-9: Filial 'F-2'/);
+      // F-2's lote never reached SEFAZ; F-1's did, once.
+      expect(vi.mocked(consultarLote).mock.calls.map(([, args]) => args.nRec)).toEqual(['REC-10']);
+    } finally {
+      delete process.env.NFE_CERT_ENC_KEY;
+    }
+  });
 
   it('the abort is immediate: the lotes after the failing one are not reconciled', async () => {
     const { fs } = fakeFirestore({
