@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { propagaPrecoAosFilhos } from '@delfrance/schemas';
 
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { lerFamiliasDePrecoPorIds, lerPrecosDosProdutos } from './descobertaPreco';
@@ -16,6 +17,9 @@ const LINK_A = 'link-a';
 const ITEM_A = 2500139861;
 const MODELO = 2000458802;
 const TABELA = 'tab-normal';
+
+/** The produto mask of every KEY read here (D-9: the price map and the anchor's propagation flag). */
+const MASCARA_DO_PRODUTO = ['precos', 'propagatePriceToChildren'];
 
 function precos(valor: number): DocData {
   return { [TABELA]: { valor } };
@@ -213,9 +217,15 @@ describe('lerFamiliasDePrecoPorIds — a família lida', () => {
     expect(plano.pulos).toEqual([]);
   });
 
-  it('da leitura ao preço: o modelo leva o preço do FILHO (12), nunca o da âncora (10)', async () => {
+  it('da leitura ao preço: o modelo leva o preço do FILHO (12), nunca o da âncora (10) (âncora que NÃO propaga)', async () => {
     const db = new FakeDbDePreco();
     semear(db);
+    db.seed(`produtos/${ANCORA}`, {
+      nome: 'Âncora de teste',
+      paiId: null,
+      precos: precos(10),
+      propagatePriceToChildren: false,
+    });
 
     const familia = (await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA] })).get(
       ANCORA,
@@ -234,13 +244,15 @@ describe('lerFamiliasDePrecoPorIds — a família lida', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('lerFamiliasDePrecoPorIds — as consultas que chegam ao servidor', () => {
-  it('UMA leitura em lote das âncoras mascarada a `precos`, e por âncora: vínculos SEM where, filhos por `paiId ==`, modelos SEM where', async () => {
+  it('UMA leitura em lote das âncoras mascarada a `precos` + `propagatePriceToChildren`, e por âncora: vínculos SEM where, filhos por `paiId ==`, modelos SEM where', async () => {
     const db = new FakeDbDePreco();
     semear(db);
 
     await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA] });
 
-    expect(db.leiturasEmLote).toEqual([{ caminhos: [`produtos/${ANCORA}`], campos: ['precos'] }]);
+    expect(db.leiturasEmLote).toEqual([
+      { caminhos: [`produtos/${ANCORA}`], campos: MASCARA_DO_PRODUTO },
+    ]);
     const porFonte = [...db.consultasCompletas].sort((a, b) => (a.fonte < b.fonte ? -1 : 1));
     expect(porFonte).toEqual([
       {
@@ -310,7 +322,9 @@ describe('lerFamiliasDePrecoPorIds — as consultas que chegam ao servidor', () 
 
     await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA, ANCORA, ANCORA] });
 
-    expect(db.leiturasEmLote).toEqual([{ caminhos: [`produtos/${ANCORA}`], campos: ['precos'] }]);
+    expect(db.leiturasEmLote).toEqual([
+      { caminhos: [`produtos/${ANCORA}`], campos: MASCARA_DO_PRODUTO },
+    ]);
     expect(db.consultasCompletas.filter((c) => c.fonte.endsWith('/prodshopee'))).toHaveLength(1);
   });
 });
@@ -396,18 +410,18 @@ describe('lerFamiliasDePrecoPorIds — ausência, ordem, identidade e falha', ()
 /* -------------------------------------------------------------------------- */
 
 describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora', () => {
-  it('UMA leitura em lote mascarada a `precos`: o mapa CRU por id, e nada além de `precos`', async () => {
+  it('UMA leitura em lote mascarada a `precos` + `propagatePriceToChildren`: o mapa CRU por id, e nada além dos dois', async () => {
     const db = new FakeDbDePreco();
     semear(db);
 
     const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, FILHO]);
 
     expect([...lidos]).toEqual([
-      [ANCORA, precos(10)],
-      [FILHO, precos(12)],
+      [ANCORA, { precos: precos(10) }],
+      [FILHO, { precos: precos(12) }],
     ]);
     expect(db.leiturasEmLote).toEqual([
-      { caminhos: [`produtos/${ANCORA}`, `produtos/${FILHO}`], campos: ['precos'] },
+      { caminhos: [`produtos/${ANCORA}`, `produtos/${FILHO}`], campos: MASCARA_DO_PRODUTO },
     ]);
     // No subcollection, no query: a key read and nothing else.
     expect(db.consultasCompletas).toEqual([]);
@@ -423,14 +437,14 @@ describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora
     expect([...lidos.keys()]).toEqual([ANCORA]);
   });
 
-  it('QUASE-IGUAL — um produto que EXISTE sem `precos` fica NO mapa com `undefined` (presença é existência)', async () => {
+  it('QUASE-IGUAL — um produto que EXISTE sem `precos` fica NO mapa com `precos` `undefined` (presença é existência)', async () => {
     const db = new FakeDbDePreco();
     db.seed(`produtos/${ANCORA_2}`, { nome: 'Sem preço', paiId: null });
 
     const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA_2]);
 
     expect(lidos.has(ANCORA_2)).toBe(true);
-    expect(lidos.get(ANCORA_2)).toBeUndefined();
+    expect(lidos.get(ANCORA_2)?.precos).toBeUndefined();
   });
 
   it('os dois precificam como "sem preço": `precificarItem` dá `null` ao apagado e ao sem `precos`', async () => {
@@ -461,7 +475,7 @@ describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora
     await lerPrecosDosProdutos(asDb(db), [FILHO, FILHO, ANCORA, FILHO]);
 
     expect(db.leiturasEmLote).toEqual([
-      { caminhos: [`produtos/${FILHO}`, `produtos/${ANCORA}`], campos: ['precos'] },
+      { caminhos: [`produtos/${FILHO}`, `produtos/${ANCORA}`], campos: MASCARA_DO_PRODUTO },
     ]);
   });
 
@@ -472,8 +486,8 @@ describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora
 
     const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA, FILHO]);
 
-    expect(lidos.get(ANCORA)).toEqual(precos(10));
-    expect(lidos.get(FILHO)).toEqual(precos(12));
+    expect(lidos.get(ANCORA)).toEqual({ precos: precos(10) });
+    expect(lidos.get(FILHO)).toEqual({ precos: precos(12) });
   });
 
   it('a leitura das ÂNCORAS de `lerFamiliasDePrecoPorIds` é ESTE leitor: a mesma máscara, o mesmo "ausente = inexistente"', async () => {
@@ -487,6 +501,118 @@ describe('lerPrecosDosProdutos — os `precos` de produtos NOMEADOS, lidos agora
 
     expect(db.leiturasEmLote[0]).toEqual(db.leiturasEmLote[1]);
     expect([...familias.keys()]).toEqual([...lidos.keys()]);
-    expect(familias.get(ANCORA)?.precos).toEqual(lidos.get(ANCORA));
+    expect(familias.get(ANCORA)?.precos).toEqual(lidos.get(ANCORA)?.precos);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          D-9 — the anchor's propagation flag, read with its prices          */
+/* -------------------------------------------------------------------------- */
+
+describe('D-9 — a flag `propagatePriceToChildren` lida com os preços', () => {
+  it('⚠️ PAR — `lerPrecosDosProdutos` traz a flag GRAVADA (`false` e `true`), crua, ao lado de `precos`', async () => {
+    for (const gravada of [false, true]) {
+      const db = new FakeDbDePreco();
+      db.seed(`produtos/${ANCORA}`, {
+        nome: 'Âncora',
+        paiId: null,
+        precos: precos(10),
+        propagatePriceToChildren: gravada,
+      });
+
+      const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA]);
+
+      expect(lidos.get(ANCORA)).toEqual({ precos: precos(10), propagatePriceToChildren: gravada });
+    }
+  });
+
+  it('⚠️ QUASE-IGUAL — um produto SEM o campo volta SEM a chave (nunca `undefined` inventado) e dobra como PROPAGANDO', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const lidos = await lerPrecosDosProdutos(asDb(db), [ANCORA]);
+
+    expect(Object.keys(lidos.get(ANCORA) ?? {})).toEqual(['precos']);
+    expect(propagaPrecoAosFilhos(lidos.get(ANCORA)?.propagatePriceToChildren)).toBe(true);
+  });
+
+  it('a FAMÍLIA carrega a flag gravada da âncora (`false`); QUASE-IGUAL — sem o campo, a família não tem a chave', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+    db.seed(`produtos/${ANCORA_2}`, {
+      nome: 'Segunda',
+      paiId: null,
+      precos: precos(20),
+      propagatePriceToChildren: false,
+    });
+
+    const familias = await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA, ANCORA_2] });
+
+    expect(familias.get(ANCORA_2)).toEqual({
+      anchorId: ANCORA_2,
+      precos: precos(20),
+      propagatePriceToChildren: false,
+      links: [],
+      children: [],
+    });
+    expect(Object.keys(familias.get(ANCORA) ?? {})).not.toContain('propagatePriceToChildren');
+  });
+
+  it('⚠️ a flag de um FILHO nunca é lida: a consulta dos filhos continua projetada a `precos`, e o filho não carrega a chave', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+    db.seed(`produtos/${FILHO}`, {
+      nome: 'Filho',
+      paiId: ANCORA,
+      precos: precos(12),
+      propagatePriceToChildren: false,
+    });
+
+    const familia = (await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA] })).get(ANCORA);
+
+    expect(new Map(db.projecoes.map((p) => [p.fonte, p.campos])).get('produtos')).toEqual([
+      'precos',
+    ]);
+    expect(Object.keys(familia?.children[0] ?? {}).sort()).toEqual([
+      'precos',
+      'produtoId',
+      'varLinks',
+    ]);
+  });
+
+  it('da leitura ao preço — PAR: âncora SEM a flag (propaga) ⇒ o modelo leva o preço da ÂNCORA (10), não o do filho (12)', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+
+    const familia = (await lerFamiliasDePrecoPorIds(asDb(db), { anchorIds: [ANCORA] })).get(
+      ANCORA,
+    )!;
+    const [planejado] = montarItensDePreco(familia, INTEGRACAO).itens;
+    const item = precificarItem(planejado!, precosDaFamilia(familia), TABELA);
+
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([10]);
+  });
+
+  it('na hora do envio — a leitura por ids (âncora + filho) precifica o modelo pela flag da âncora: ausente ⇒ 10; `false` ⇒ 12', async () => {
+    const db = new FakeDbDePreco();
+    semear(db);
+    const planejado = {
+      produtoId: ANCORA,
+      linkDocId: LINK_A,
+      itemId: ITEM_A,
+      modelos: [{ modelId: MODELO, produtoId: FILHO, varLinkDocId: 'var-1' }],
+    };
+    const precoAgora = async () =>
+      precificarItem(planejado, await lerPrecosDosProdutos(asDb(db), [ANCORA, FILHO]), TABELA)
+        .alvos[0]?.precoAlvo;
+
+    expect(await precoAgora()).toBe(10);
+    db.seed(`produtos/${ANCORA}`, {
+      nome: 'Âncora de teste',
+      paiId: null,
+      precos: precos(10),
+      propagatePriceToChildren: false,
+    });
+    expect(await precoAgora()).toBe(12);
   });
 });

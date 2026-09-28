@@ -44,7 +44,12 @@ import {
   ShopeeEnvioPrecoGuardError,
   type MotivoPrecoShopee,
 } from './errosPreco';
-import { precosDaFamilia, type FamiliaDePreco, type ItemDePreco } from './planoPreco';
+import {
+  precosDaFamilia,
+  type FamiliaDePreco,
+  type ItemDePreco,
+  type PrecosDoProduto,
+} from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
 
 /**
@@ -136,11 +141,15 @@ function varLink(anchorId: string, modelId: number, varLinkDocId: string): VarLi
   };
 }
 
-/** One listing with two models, each priced by its own child. */
+/**
+ * One listing with two models, each priced by its own child — the anchor does
+ * NOT propagate (D-9), so its 99 prices no model.
+ */
 function familiaComModelos(anchorId = ANCORA): FamiliaDePreco {
   return {
     anchorId,
     precos: precos(99),
+    propagatePriceToChildren: false,
     links: [{ contaProdutoShopeeOuterRef: `integracoes/${INT}`, item_id: ITEM, linkDocId: LINK }],
     children: [
       { produtoId: FILHO_A, precos: precos(12), varLinks: [varLink(anchorId, MODELO_A, 'var-a')] },
@@ -220,7 +229,7 @@ interface Mundo {
    * the produto documents.
    */
   readonly lerPrecos: Mock<
-    (db: unknown, ids: readonly string[]) => Promise<ReadonlyMap<string, unknown>>
+    (db: unknown, ids: readonly string[]) => Promise<ReadonlyMap<string, PrecosDoProduto>>
   >;
   readonly enviar: Mock<(item: ItemDePreco, d: DepsEnvioPreco) => Promise<ResultadoEnvioPreco>>;
   readonly getItemBaseInfo: ReturnType<typeof vi.fn>;
@@ -245,15 +254,16 @@ function mundo(): Mundo {
     ),
   );
   const lerPrecos = vi.fn((_db: unknown, ids: readonly string[]) => {
-    const catalogo = new Map<string, unknown>();
+    const catalogo = new Map<string, PrecosDoProduto>();
     for (const f of familias.values()) {
       for (const [id, p] of precosDaFamilia(f)) catalogo.set(id, p);
     }
-    return Promise.resolve<ReadonlyMap<string, unknown>>(
+    return Promise.resolve<ReadonlyMap<string, PrecosDoProduto>>(
       new Map(
-        ids.flatMap((id): [string, unknown][] =>
-          catalogo.has(id) ? [[id, catalogo.get(id)]] : [],
-        ),
+        ids.flatMap((id): [string, PrecosDoProduto][] => {
+          const p = catalogo.get(id);
+          return p === undefined ? [] : [[id, p]];
+        }),
       ),
     );
   });
@@ -652,6 +662,32 @@ describe('enviarPrecoManualShopee — resolução do filho para a âncora', () =
       [FILHO_A, 12],
       [FILHO_B, 22],
     ]);
+  });
+
+  it('D-9 PAR — a âncora que PROPAGA (sem a flag) ⇒ os dois modelos ao preço da ÂNCORA (99), e a leitura do envio pede a âncora E os filhos', async () => {
+    const m = mundo();
+    semearProduto(m, ANCORA, 'Âncora');
+    const { propagatePriceToChildren: _semFlag, ...propaga } = familiaComModelos();
+    m.familias.set(ANCORA, propaga);
+
+    await rodar(m, [ANCORA]);
+
+    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([[ANCORA, FILHO_A, FILHO_B]]);
+    const item = m.enviar.mock.calls[0]?.[0] as ItemDePreco;
+    expect(item.alvos.map((a) => [a.produtoId, a.precoAlvo])).toEqual([
+      [FILHO_A, 99],
+      [FILHO_B, 99],
+    ]);
+  });
+
+  it('D-9 QUASE-IGUAL — um item SEM modelos continua lendo SÓ a âncora', async () => {
+    const m = mundo();
+    semearProduto(m, ANCORA, 'Âncora');
+    m.familias.set(ANCORA, familiaSemModelo(ANCORA));
+
+    await rodar(m, [ANCORA]);
+
+    expect(m.lerPrecos.mock.calls.map((c) => c[1])).toEqual([[ANCORA]]);
   });
 });
 
@@ -1306,6 +1342,9 @@ describe('conferirContabilidadeDePreco — todo id pedido sai em exatamente UM l
 /*          review 1 — the send-time price, the ladder's base read, S1         */
 /* -------------------------------------------------------------------------- */
 
+/** The mask of the REAL send-time reader (D-9: the price map and the anchor's propagation flag). */
+const MASCARA_DO_PRODUTO = ['precos', 'propagatePriceToChildren'];
+
 /** The produto document with a `precos` map — what the REAL send-time reader sees. */
 function precificarNoBanco(m: Mundo, id: string, valor: number, paiId: string | null = null): void {
   m.db.seed(`produtos/${id}`, { nome: `Nome de ${id}`, paiId, precos: precos(valor) });
@@ -1394,9 +1433,9 @@ describe('enviarPrecoManualShopee — o preço é lido na hora do ENVIO, nunca n
 
     expect(leiturasAntesDoPlano).toBe(0);
     expect(leiturasDePrecos(m)).toEqual([
-      { ids: ['prod-0'], campos: ['precos'] },
-      { ids: ['prod-1'], campos: ['precos'] },
-      { ids: ['prod-2'], campos: ['precos'] },
+      { ids: ['prod-0'], campos: MASCARA_DO_PRODUTO },
+      { ids: ['prod-1'], campos: MASCARA_DO_PRODUTO },
+      { ids: ['prod-2'], campos: MASCARA_DO_PRODUTO },
     ]);
     // At each send, the LAST read is that item's own — never all of them up front.
     expect(vistasNoEnvio).toEqual([
@@ -1406,20 +1445,65 @@ describe('enviarPrecoManualShopee — o preço é lido na hora do ENVIO, nunca n
     ]);
   });
 
-  it('um item COM modelos lê os FILHOS que o precificam (nunca a âncora), e do BANCO — não da família do plano', async () => {
+  it('D-9 — um item COM modelos lê a ÂNCORA e os FILHOS que o precificam, e do BANCO — não da família do plano (âncora que NÃO propaga ⇒ 13 / 23)', async () => {
     const m = mundo();
     semearProduto(m, ANCORA, 'Âncora');
+    m.db.seed(`produtos/${ANCORA}`, {
+      nome: 'Âncora',
+      paiId: null,
+      precos: precos(30),
+      propagatePriceToChildren: false,
+    });
     m.familias.set(ANCORA, familiaComModelos()); // the plan saw 12 / 22
     precificarNoBanco(m, FILHO_A, 13, ANCORA);
     precificarNoBanco(m, FILHO_B, 23, ANCORA);
 
     await rodar(m, [ANCORA], { lerPrecos: undefined });
 
-    expect(leiturasDePrecos(m)).toEqual([{ ids: [FILHO_A, FILHO_B], campos: ['precos'] }]);
+    expect(leiturasDePrecos(m)).toEqual([
+      { ids: [ANCORA, FILHO_A, FILHO_B], campos: MASCARA_DO_PRODUTO },
+    ]);
     const item = m.enviar.mock.calls[0]?.[0] as ItemDePreco;
     expect(item.alvos.map((a) => [a.produtoId, a.precoAlvo])).toEqual([
       [FILHO_A, 13],
       [FILHO_B, 23],
+    ]);
+  });
+
+  it('⚠️ D-9 QUASE-IGUAL — a MESMA família com a âncora PROPAGANDO no banco (o plano dizia `false`) ⇒ os dois modelos ao preço da âncora (30): a flag é lida no ENVIO', async () => {
+    const m = mundo();
+    m.db.seed(`produtos/${ANCORA}`, { nome: 'Âncora', paiId: null, precos: precos(30) });
+    m.familias.set(ANCORA, familiaComModelos()); // the plan saw `false`, 12 / 22
+    precificarNoBanco(m, FILHO_A, 13, ANCORA);
+    precificarNoBanco(m, FILHO_B, 23, ANCORA);
+
+    await rodar(m, [ANCORA], { lerPrecos: undefined });
+
+    const item = m.enviar.mock.calls[0]?.[0] as ItemDePreco;
+    expect(item.alvos.map((a) => [a.produtoId, a.precoAlvo])).toEqual([
+      [FILHO_A, 30],
+      [FILHO_B, 30],
+    ]);
+  });
+
+  it('⚠️ D-9 — a ÂNCORA de um item com modelos APAGADA entre o plano e o envio ⇒ todo modelo chega ao remetente SEM preço, mesmo com os filhos precificados', async () => {
+    const m = mundo();
+    precificarNoBanco(m, ANCORA, 30);
+    m.familias.set(ANCORA, familiaComModelos());
+    precificarNoBanco(m, FILHO_A, 13, ANCORA);
+    precificarNoBanco(m, FILHO_B, 23, ANCORA);
+    envolverLerFamilias(m, {
+      depois: async () => {
+        await produtoCollection.docRef(asDb(m.db), {}, ANCORA).delete();
+      },
+    });
+
+    await rodar(m, [ANCORA], { lerPrecos: undefined });
+
+    const item = m.enviar.mock.calls[0]?.[0] as ItemDePreco;
+    expect(item.alvos.map((a) => [a.produtoId, a.precoAlvo])).toEqual([
+      [FILHO_A, null],
+      [FILHO_B, null],
     ]);
   });
 
@@ -1446,7 +1530,7 @@ describe('enviarPrecoManualShopee — o preço é lido na hora do ENVIO, nunca n
         preco: null,
       }),
     ]);
-    expect(leiturasDePrecos(m)).toEqual([{ ids: [ANCORA], campos: ['precos'] }]);
+    expect(leiturasDePrecos(m)).toEqual([{ ids: [ANCORA], campos: MASCARA_DO_PRODUTO }]);
     expect(m.getItemBaseInfo).not.toHaveBeenCalled();
     expect(m.updatePrice).not.toHaveBeenCalled();
     expect(m.db.writes).toEqual([]);

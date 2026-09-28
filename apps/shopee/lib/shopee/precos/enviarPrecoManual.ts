@@ -24,19 +24,21 @@
  * ## A requested CHILD resolves to its ANCHOR
  *
  * The listing (`prodshopee`) hangs off the family anchor, and every model of it
- * is priced from its own child — so a request naming a variation child is a
+ * is priced from the anchor's `precos` when the anchor propagates and from its
+ * own child otherwise (D-9) — so a request naming a variation child is a
  * request for its anchor's listings. Anchors are deduplicated AFTER resolution
  * (a child and its own anchor in one request cost one family, one plan, one
  * send per listing). Rows always name the ANCHOR in `produtoId` and the child
- * whose price a model carries in `variacaoProdutoId`.
+ * a model belongs to in `variacaoProdutoId`.
  *
  * ## ⚠️ The price is read at SEND time, never at plan time (reconcile C-d)
  *
  * The plan carries IDENTITIES only — anchor, listing, `item_id`, models. Each
  * item's price is read inside its pool task, immediately before the sender
  * runs: ONE masked key read (`lerPrecosDosProdutos`) of exactly the produtos
- * that price it — the anchor of a no-model listing, each model's own child
- * otherwise — handed to the pure `precificarItem`. That is the job's
+ * that price it — the anchor alone for a no-model listing; the anchor AND
+ * each model's child otherwise, because the anchor's propagation flag decides
+ * which of the two maps prices a model — handed to the pure `precificarItem`. That is the job's
  * drain-time rule, applied to this surface. An item late in the pool is sent up
  * to the deadline after the request started, and pricing every item up front
  * made a tabela edited inside that window (a second operator, another tab, the
@@ -44,7 +46,8 @@
  * Shopee — and when the newer one was a decrease the operator had authorised,
  * the default push (guard ON) then refused to lower it again. A produto deleted
  * after the plan is simply absent from that read: its models carry no price
- * and answer `preco-nao-encontrado`, never a throw.
+ * and answer `preco-nao-encontrado`, never a throw (a deleted ANCHOR takes
+ * every model of its listing with it, whatever its flag said).
  *
  * Every ladder attempt re-reads, so a retry sends the tabela as it stands at
  * the retry. After a first attempt's read, and before any Shopee call, the task
@@ -180,6 +183,7 @@ import {
   precificarItem,
   type ItemDePreco,
   type ItemPlanejadoPreco,
+  type PrecosDoProduto,
   type PuloDePlano,
 } from './planoPreco';
 import type { ContextoContaPreco } from './regiaoPreco';
@@ -210,16 +214,16 @@ export type EnvioPrecoOutcome = EnvioPrecoResultado;
 
 /**
  * One MODEL's row (one row for a no-model listing). On Shopee each model
- * carries its own child's tabela price, so a listing-level `preco` could not
- * hold them — and the job's report rows are per model too, so the envelope and
- * the report share one grain.
+ * carries its own tabela price (its child's, unless the anchor propagates), so
+ * a listing-level `preco` could not hold them — and the job's report rows are
+ * per model too, so the envelope and the report share one grain.
  */
 export interface EnvioPrecoListing {
   /** The family ANCHOR, always — never the requested child (see the accounting). */
   readonly produtoId: string;
   /** The anchor's name. */
   readonly produtoNome: string | null;
-  /** The CHILD whose price this model carries; `null` for a no-model listing or a listing-level line. */
+  /** The CHILD this model belongs to; `null` for a no-model listing or a listing-level line. */
   readonly variacaoProdutoId: string | null;
   /** `String(item_id)`, or `null` when the listing never had one. */
   readonly anuncioId: string | null;
@@ -525,17 +529,21 @@ function fimDaPausa(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The produtos whose `precos` price a planned item — exactly
- * `precificarItem`'s sources: the ANCHOR of a no-model listing, each model's
- * own CHILD otherwise (a model is never priced from the anchor, so the anchor
- * is not read for one).
+ * The produtos whose price inputs a planned item needs — exactly
+ * `precificarItem`'s sources: the ANCHOR alone for a no-model listing; the
+ * ANCHOR and every model's CHILD otherwise. The anchor is read for a
+ * has-model listing because its `propagatePriceToChildren` decides whether a
+ * model carries the anchor's price or its child's own (D-9), and an anchor
+ * that is not in the answer prices every model `null`.
  */
 function produtosQuePrecificam(item: ItemPlanejadoPreco): string[] {
-  return item.modelos.length === 0 ? [item.produtoId] : item.modelos.map((m) => m.produtoId);
+  return item.modelos.length === 0
+    ? [item.produtoId]
+    : [item.produtoId, ...item.modelos.map((m) => m.produtoId)];
 }
 
-/** No `precos` at all — every alvo prices as `null`. */
-const SEM_PRECOS: ReadonlyMap<string, unknown> = new Map();
+/** No produto at all — every alvo prices as `null`. */
+const SEM_PRECOS: ReadonlyMap<string, PrecosDoProduto> = new Map();
 
 /**
  * The item's alvos with NO price — the row shape of an item that never reached

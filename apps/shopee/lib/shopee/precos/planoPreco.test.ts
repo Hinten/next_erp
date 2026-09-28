@@ -9,6 +9,7 @@ import {
   type FilhoDePreco,
   type ItemPlanejadoPreco,
   type LinkPrecoCru,
+  type PrecosDoProduto,
   montarItensDePreco,
   precificarItem,
   precosDaFamilia,
@@ -71,6 +72,16 @@ function filhosComUmModeloCada(n: number): FilhoDePreco[] {
 function precos(valor: unknown): unknown {
   return { [TABELA]: { valor } };
 }
+
+/** The price-inputs map `precificarItem` reads, built from explicit pairs. */
+function porProduto(
+  ...pares: readonly (readonly [string, PrecosDoProduto])[]
+): ReadonlyMap<string, PrecosDoProduto> {
+  return new Map(pares);
+}
+
+/** An anchor that does NOT propagate: each model is priced from its OWN child. */
+const NAO_PROPAGA = { propagatePriceToChildren: false } as const;
 
 /* -------------------------------------------------------------------------- */
 /*                          rung 0 — the conta filter                          */
@@ -548,14 +559,36 @@ describe('precosDaFamilia', () => {
       }),
     );
     expect([...mapa.keys()]).toEqual([ANCORA, 'filho-1', 'filho-2']);
-    expect(mapa.get('filho-1')).toEqual(precos(12));
-    expect(mapa.get(ANCORA)).toEqual(precos(10));
+    expect(mapa.get('filho-1')).toEqual({ precos: precos(12) });
+    expect(mapa.get(ANCORA)).toEqual({ precos: precos(10) });
+  });
+
+  it('D-9 PAR — a flag GRAVADA da âncora (`false`, `true`) viaja na entrada da âncora; QUASE-IGUAL — ausente continua AUSENTE (nunca uma chave `undefined`)', () => {
+    for (const gravada of [false, true]) {
+      const mapa = precosDaFamilia(
+        familia({ precos: precos(10), propagatePriceToChildren: gravada }),
+      );
+      expect(mapa.get(ANCORA)).toEqual({ precos: precos(10), propagatePriceToChildren: gravada });
+    }
+    const semFlag = precosDaFamilia(familia({ precos: precos(10) })).get(ANCORA);
+    expect(Object.keys(semFlag ?? {})).toEqual(['precos']);
+  });
+
+  it('D-9 — a entrada de um FILHO nunca carrega flag de propagação (só a da âncora decide)', () => {
+    const mapa = precosDaFamilia(
+      familia({ ...NAO_PROPAGA, children: [filho('filho-1', [], precos(12))] }),
+    );
+    expect(Object.keys(mapa.get('filho-1') ?? {})).toEqual(['precos']);
   });
 });
 
 describe('precificarItem', () => {
   it('um item SEM modelos ⇒ UM alvo no id sem-modelo (o NÚMERO zero), sem vínculo de modelo, com o preço da ÂNCORA', () => {
-    const item = precificarItem(ITEM_SEM_MODELOS, new Map([[ANCORA, precos(10)]]), TABELA);
+    const item = precificarItem(
+      ITEM_SEM_MODELOS,
+      porProduto([ANCORA, { precos: precos(10) }]),
+      TABELA,
+    );
     expect(item).toEqual({
       produtoId: ANCORA,
       linkDocId: LINK_A,
@@ -566,14 +599,14 @@ describe('precificarItem', () => {
     expect(item.alvos[0]?.modelId).toBe(SHOPEE_PRECO_MODEL_ID_SEM_MODELO);
   });
 
-  it('⚠️ PAR (M51) — o preço de um MODELO é o do FILHO: filho 12, âncora 10 ⇒ 12', () => {
+  it('⚠️ PAR (M51) — o preço de um MODELO é o do FILHO: filho 12, âncora 10 ⇒ 12 (âncora que NÃO propaga)', () => {
     const item = precificarItem(
       ITEM_COM_MODELOS,
-      new Map([
-        [ANCORA, precos(10)],
-        ['filho-1', precos(12)],
-        ['filho-2', precos(12)],
-      ]),
+      porProduto(
+        [ANCORA, { precos: precos(10), ...NAO_PROPAGA }],
+        ['filho-1', { precos: precos(12) }],
+        ['filho-2', { precos: precos(12) }],
+      ),
       TABELA,
     );
     expect(item.semModelos).toBe(false);
@@ -583,13 +616,14 @@ describe('precificarItem', () => {
     ]);
   });
 
-  it('⚠️ QUASE-IGUAL (M51) — um filho SEM preço fica `null`, nunca herda o da âncora', () => {
+  it('⚠️ QUASE-IGUAL (M51) — um filho SEM preço fica `null`, nunca herda o da âncora (âncora que NÃO propaga)', () => {
     const item = precificarItem(
       ITEM_COM_MODELOS,
-      new Map([
-        [ANCORA, precos(10)],
-        ['filho-1', precos(12)],
-      ]),
+      porProduto(
+        [ANCORA, { precos: precos(10), ...NAO_PROPAGA }],
+        ['filho-1', { precos: precos(12) }],
+        ['filho-2', { precos: undefined }],
+      ),
       TABELA,
     );
     expect(item.alvos.map((a) => a.precoAlvo)).toEqual([12, null]);
@@ -598,13 +632,13 @@ describe('precificarItem', () => {
   it('PAR — um preço de duas casas passa intacto (10.5 ⇒ 10.5) e um de três é arredondado ao centavo (10.567 ⇒ 10.57)', () => {
     const doisDecimais = precificarItem(
       ITEM_SEM_MODELOS,
-      new Map([[ANCORA, precos(10.5)]]),
+      porProduto([ANCORA, { precos: precos(10.5) }]),
       TABELA,
     );
     expect(doisDecimais.alvos[0]?.precoAlvo).toBe(10.5);
     const tresDecimais = precificarItem(
       ITEM_SEM_MODELOS,
-      new Map([[ANCORA, precos(10.567)]]),
+      porProduto([ANCORA, { precos: precos(10.567) }]),
       TABELA,
     );
     expect(tresDecimais.alvos[0]?.precoAlvo).toBe(10.57);
@@ -612,7 +646,11 @@ describe('precificarItem', () => {
 
   it('⚠️ QUASE-IGUAL — um preço SUB-CENTAVO (0.004) é "sem preço" (`null`), nunca um preço zero', () => {
     for (const valor of [0.004, 0, -1, Number.NaN, '10']) {
-      const item = precificarItem(ITEM_SEM_MODELOS, new Map([[ANCORA, precos(valor)]]), TABELA);
+      const item = precificarItem(
+        ITEM_SEM_MODELOS,
+        porProduto([ANCORA, { precos: precos(valor) }]),
+        TABELA,
+      );
       expect(item.alvos[0]?.precoAlvo).toBeNull();
     }
   });
@@ -620,7 +658,7 @@ describe('precificarItem', () => {
   it('outra tabela, ou nenhum mapa para o produto, também é `null`', () => {
     const outraTabela = precificarItem(
       ITEM_SEM_MODELOS,
-      new Map([[ANCORA, { 'tab-atacado': { valor: 10 } }]]),
+      porProduto([ANCORA, { precos: { 'tab-atacado': { valor: 10 } } }]),
       TABELA,
     );
     expect(outraTabela.alvos[0]?.precoAlvo).toBeNull();
@@ -631,5 +669,145 @@ describe('precificarItem', () => {
   it('os alvos seguem a ORDEM dos modelos planejados, um por modelo', () => {
     const item = precificarItem(ITEM_COM_MODELOS, new Map(), TABELA);
     expect(item.alvos.map((a) => a.modelId)).toEqual([MODELO, MODELO + 1]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          D-9 — a model follows the ANCHOR when the anchor propagates        */
+/* -------------------------------------------------------------------------- */
+
+describe('precificarItem — D-9: a flag de propagação da ÂNCORA decide de onde vem o preço do modelo', () => {
+  it('⚠️ PAR — âncora que PROPAGA (flag ausente, e `true`) + filhos com preço DIFERENTE ⇒ TODO modelo sai ao preço da âncora (10), nunca 12/22', () => {
+    for (const flag of [{}, { propagatePriceToChildren: true }]) {
+      const item = precificarItem(
+        ITEM_COM_MODELOS,
+        porProduto(
+          [ANCORA, { precos: precos(10), ...flag }],
+          ['filho-1', { precos: precos(12) }],
+          ['filho-2', { precos: precos(22) }],
+        ),
+        TABELA,
+      );
+      expect(item.alvos).toEqual([
+        { modelId: MODELO, produtoId: 'filho-1', varLinkDocId: 'var-1', precoAlvo: 10 },
+        { modelId: MODELO + 1, produtoId: 'filho-2', varLinkDocId: 'var-2', precoAlvo: 10 },
+      ]);
+    }
+  });
+
+  it('⚠️ QUASE-IGUAL — a MESMA família com `propagatePriceToChildren: false` ⇒ cada modelo ao preço do SEU filho (12, 22)', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(
+        [ANCORA, { precos: precos(10), ...NAO_PROPAGA }],
+        ['filho-1', { precos: precos(12) }],
+        ['filho-2', { precos: precos(22) }],
+      ),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([12, 22]);
+  });
+
+  it('PAR — âncora que propaga + filhos SEM preço próprio (sem `precos`, ou outra tabela) ⇒ o preço da âncora, nunca `null`', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(
+        [ANCORA, { precos: precos(10) }],
+        ['filho-1', { precos: undefined }],
+        ['filho-2', { precos: { 'tab-atacado': { valor: 5 } } }],
+      ),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([10, 10]);
+  });
+
+  it('⚠️ QUASE-IGUAL (sem fallback, paridade ML) — âncora que propaga SEM preço + filhos precificados ⇒ `null` em todo modelo, nunca o 12 do filho', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(
+        [ANCORA, { precos: undefined }],
+        ['filho-1', { precos: precos(12) }],
+        ['filho-2', { precos: precos(22) }],
+      ),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([null, null]);
+  });
+
+  it('QUASE-IGUAL — só o booleano `false` desliga: `"false"`, `0` e `null` gravados PROPAGAM (o preço da âncora)', () => {
+    for (const gravada of ['false', 0, null]) {
+      const item = precificarItem(
+        ITEM_COM_MODELOS,
+        porProduto(
+          [ANCORA, { precos: precos(10), propagatePriceToChildren: gravada }],
+          ['filho-1', { precos: precos(12) }],
+          ['filho-2', { precos: precos(22) }],
+        ),
+        TABELA,
+      );
+      expect(item.alvos.map((a) => a.precoAlvo)).toEqual([10, 10]);
+    }
+  });
+
+  it('o arredondamento e a positividade valem no braço da âncora: âncora que propaga a 0.004 ⇒ `null`; QUASE-IGUAL 0.005 ⇒ 0.01', () => {
+    const preco = (valor: number) =>
+      precificarItem(
+        ITEM_COM_MODELOS,
+        porProduto(
+          [ANCORA, { precos: precos(valor) }],
+          ['filho-1', { precos: precos(12) }],
+          ['filho-2', { precos: precos(22) }],
+        ),
+        TABELA,
+      ).alvos.map((a) => a.precoAlvo);
+    expect(preco(0.004)).toEqual([null, null]);
+    expect(preco(0.005)).toEqual([0.01, 0.01]);
+  });
+
+  it('⚠️ uma ÂNCORA AUSENTE do mapa (apagada entre o plano e a leitura) ⇒ TODO modelo `null`, nunca uma propagação adivinhada nem o preço do filho', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto(['filho-1', { precos: precos(12) }], ['filho-2', { precos: precos(22) }]),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([null, null]);
+  });
+
+  it('QUASE-IGUAL — um FILHO AUSENTE do mapa (apagado) fica `null` mesmo sob propagação; o irmão presente leva o preço da âncora', () => {
+    const item = precificarItem(
+      ITEM_COM_MODELOS,
+      porProduto([ANCORA, { precos: precos(10) }], ['filho-2', { precos: precos(22) }]),
+      TABELA,
+    );
+    expect(item.alvos.map((a) => a.precoAlvo)).toEqual([null, 10]);
+  });
+
+  it('um item SEM modelos não muda: o preço PRÓPRIO da âncora, com a flag `false`, `true` ou ausente', () => {
+    for (const flag of [{}, NAO_PROPAGA, { propagatePriceToChildren: true }]) {
+      const item = precificarItem(
+        ITEM_SEM_MODELOS,
+        porProduto([ANCORA, { precos: precos(10), ...flag }]),
+        TABELA,
+      );
+      expect(item.alvos).toEqual([
+        { modelId: 0, produtoId: ANCORA, varLinkDocId: null, precoAlvo: 10 },
+      ]);
+    }
+  });
+
+  it('a família lida ⇒ o preço: `precosDaFamilia` leva a flag da âncora até `precificarItem` (ausente ⇒ 10; `false` ⇒ 12)', () => {
+    const base = familia({
+      precos: precos(10),
+      children: [
+        filho('filho-1', [varLink(LINK_A, MODELO, 'var-1')], precos(12)),
+        filho('filho-2', [varLink(LINK_A, MODELO + 1, 'var-2')], precos(12)),
+      ],
+    });
+    const precoDe = (f: FamiliaDePreco) => {
+      const [planejado] = montarItensDePreco(f, INTEGRACAO).itens;
+      return precificarItem(planejado!, precosDaFamilia(f), TABELA).alvos.map((a) => a.precoAlvo);
+    };
+    expect(precoDe(base)).toEqual([10, 10]);
+    expect(precoDe({ ...base, ...NAO_PROPAGA })).toEqual([12, 12]);
   });
 });

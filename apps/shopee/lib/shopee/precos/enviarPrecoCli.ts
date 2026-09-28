@@ -336,7 +336,7 @@ const DECISAO_POR_RESULTADO: Readonly<Record<LinhaModeloPreco['resultado'], Deci
 export interface ModeloDoEnsaio {
   /** `0` is the NO-MODEL listing's single entry — a real value, never "absent". */
   readonly modelId: number;
-  /** The CHILD whose price this model carries; `null` on a no-model listing. */
+  /** The CHILD this model belongs to; `null` on a no-model listing. */
   readonly variacaoProdutoId: string | null;
   /** Shopee's shelf price now, as the fresh read saw it; `null` when unreadable, absent or never read. */
   readonly precoAnterior: number | null;
