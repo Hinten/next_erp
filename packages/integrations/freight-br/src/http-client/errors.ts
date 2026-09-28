@@ -1,6 +1,6 @@
 /**
  * Typed errors raised by the browser `FreightHttpClient`. Each maps to a
- * failure shape the `apps/integrations` freight routes return; the client
+ * failure shape the `apps/melhor-envio` freight routes return; the client
  * narrows the HTTP status so callers (`apps/web`) branch on
  * `err instanceof <X>` instead of inspecting numbers. Mirrors the nfe
  * package's `http-provider/errors.ts`.
@@ -82,7 +82,7 @@ export class FreightLabelTerminalError extends FreightHttpError {
   }
 }
 
-/** 5xx — internal `apps/integrations` failure. */
+/** 5xx — internal `apps/melhor-envio` failure. */
 export class FreightServerError extends FreightHttpError {
   constructor(message: string, status: number, body: unknown) {
     super(message, status, body);
@@ -112,9 +112,11 @@ export class FreightSchemaError extends FreightHttpError {
 }
 
 /**
- * Network-level failure — DNS, connection refused, timeout, abort. The
- * request never reached `apps/integrations`. Distinct from server errors
- * so callers can retry client-side.
+ * Network-level failure — DNS, connection refused, a connection dropped while
+ * the body was still arriving. Distinct from server errors: no `apps/melhor-envio`
+ * route answered. ⚠️ That does NOT mean the route never RAN — a connection can
+ * drop after the request left — so a caller that re-sends a buy on this error is
+ * making the same bet `FreightTimeoutError` spells out.
  */
 export class FreightNetworkError extends Error {
   public override readonly cause?: unknown;
@@ -122,5 +124,44 @@ export class FreightNetworkError extends Error {
     super(message);
     this.name = 'FreightNetworkError';
     if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * The request's OUTCOME IS UNKNOWN (#1094): this client's own deadline expired
+ * (`origem: 'prazo'`), or the platform gateway gave up on the request and
+ * answered a 504 that no route of ours wrote (`origem: 'gateway'`).
+ *
+ * ⚠️ Either way the server may still be running it — no route observes a
+ * client abort, and Cloud Run keeps processing after its own 504. So the
+ * message says so, and nothing in this repo re-sends automatically on it.
+ *
+ * ⚠️ A SUBCLASS of `FreightNetworkError`, never a sibling: every freight catch
+ * site narrows on `FreightHttpError` / `FreightNetworkError` (or on
+ * `freightErrorMessage` returning `null`) and rethrows anything else, so a
+ * sibling class would land as an unhandled rejection in the checkout's
+ * `void`-ed print handlers. Code that wants the distinct copy puts a
+ * `FreightTimeoutError` arm BEFORE its `FreightNetworkError` arm.
+ */
+export class FreightTimeoutError extends FreightNetworkError {
+  public readonly origem: 'prazo' | 'gateway';
+  /** The deadline that expired; `null` for a gateway 504 (the platform's clock, not ours). */
+  public readonly timeoutMs: number | null;
+  /** The client method that timed out (`'comprar'`, `'conta'`, …). */
+  public readonly operacao: string;
+  constructor(
+    message: string,
+    detalhes: {
+      readonly origem: 'prazo' | 'gateway';
+      readonly timeoutMs: number | null;
+      readonly operacao: string;
+    },
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'FreightTimeoutError';
+    this.origem = detalhes.origem;
+    this.timeoutMs = detalhes.timeoutMs;
+    this.operacao = detalhes.operacao;
   }
 }

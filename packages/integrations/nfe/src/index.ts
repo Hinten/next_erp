@@ -317,6 +317,7 @@ export {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeTimeoutError,
   createNFeHttpClient,
   extrairTotaisNFe,
   type NFeCartaCorrecaoResult,

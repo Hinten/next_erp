@@ -219,6 +219,28 @@ export function envelopeDeErro(parsed: unknown): EnvelopeDeErro | null {
 }
 
 /**
+ * Is this non-2xx the PLATFORM's gateway timeout, rather than one of our routes?
+ *
+ * App Hosting / Cloud Run answer a request that outlives the service's request
+ * timeout with a 504 whose body is plain text or HTML. Our own routes answer
+ * with the `{ error, code }` envelope — including the ones that DO emit a 504 on
+ * purpose (the Mercado Livre AI routes' `AI_TIMEOUT`, and every server-side
+ * upstream timeout that follows that precedent). So a 504 is the gateway's only
+ * when its body is NOT our coded envelope.
+ *
+ * ⚠️ The distinction matters because the two mean different things to an
+ * operator: a coded 504 says what timed out, while a gateway 504 says the
+ * request outlived the platform — and the server may still be running it, so
+ * repeating it is exactly the overlap #1094 exists to avoid.
+ *
+ * @param corpo the parsed JSON body, or `null` when the body was empty or not
+ *   JSON.
+ */
+export function ehTempoEsgotadoNoGateway(status: number, corpo: unknown): boolean {
+  return status === 504 && typeof envelopeDeErro(corpo)?.code !== 'string';
+}
+
+/**
  * What {@link lerRespostaJson} found. Three outcomes, because the three need
  * different words in front of an operator: the request never reached a route
  * that answers JSON, it reached one and the body was not what we claimed, or it
@@ -358,3 +380,5 @@ export function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
   // (`resumirCampos`), not to this list — see the note there.
   return [...vistos];
 }
+
+export { abrirPrazo, type OpcoesPrazo, type PrazoDeTransporte } from './prazo';
