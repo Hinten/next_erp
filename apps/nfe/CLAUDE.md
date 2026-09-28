@@ -79,8 +79,9 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
    bad sub-field (invalid stamp) — no silent fallback. An `imposto` that
    passes `impostoSchema` but fails a build-time tribute guard (e.g. a
-   partial ICMSSN900/500 group, or a draft `configuracaoIBSCBS` with RTC
-   on) is **not** re-resolved: it fails as
+   partial ICMSSN900/500 group, a draft `configuracaoIBSCBS` with RTC
+   on, or any `configuracaoISSQN` — the ERP emits no `ISSQNtot`, so the
+   NF-e conjugada is refused, #1656) is **not** re-resolved: it fails as
    `NFeOrchestratorError` naming pedido/item/produto (400; batch errorCode
    `'NFeOrchestratorError'`) with no número consumed (#506) — single path:
    inside the allocation tx, generated before its first write; batch: a

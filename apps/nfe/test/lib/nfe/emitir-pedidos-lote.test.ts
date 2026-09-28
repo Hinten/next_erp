@@ -41,6 +41,8 @@ import {
   CSOSN,
   CST_PIS_COFINS,
   ESTADO_NFE,
+  IND_INCENTIVO,
+  IND_ISS,
   type EstadoNFe,
   type NFeConfig,
 } from '@delfrance/schemas';
@@ -156,6 +158,26 @@ function impostoCsosn900Parcial(): Record<string, unknown> {
  */
 function impostoRtcRascunho(): Record<string, unknown> {
   return { ...impostoCsosn102(), configuracaoIBSCBS: { CST: '000' } };
+}
+
+/**
+ * Stamped imposto with a complete ISSQN config. It passes impostoSchema and the
+ * engine can build its `<ISSQN>` group, but the ERP emits no `<ISSQNtot>`, so
+ * the orchestrator refuses it at build time (#1656).
+ */
+function impostoIssqn(): Record<string, unknown> {
+  return {
+    ...impostoCsosn102(),
+    configuracaoISSQN: {
+      vBC: 500,
+      vAliq: 5,
+      vISSQN: 25,
+      cMunFG: '3550308',
+      cListServ: '01.05',
+      indISS: IND_ISS.exigivel,
+      indIncentivo: IND_INCENTIVO.nao,
+    },
+  };
 }
 
 /**
@@ -1147,9 +1169,10 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
   });
 
   /**
-   * The two unbuildable-config classes the batch pre-flight holds back (#506).
-   * Both pass impostoSchema, so prep succeeds and only the engine finds out; the
-   * mixed-batch verdict below must not depend on which one it is.
+   * The unbuildable-config classes the batch pre-flight holds back (#506, #1656).
+   * All pass impostoSchema, so prep succeeds and only the build finds out — the
+   * engine for the first two, the orchestrator's ISSQN refusal for the third;
+   * the mixed-batch verdict below must not depend on which one it is.
    */
   const UNBUILDABLE = [
     {
@@ -1163,6 +1186,12 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
       imposto: impostoRtcRascunho,
       emitRtc: true,
       reason: /Invalid configuracaoIBSCBS \(RTC emission is on for this item\): /,
+    },
+    {
+      what: 'an ISSQN imposto (the ERP emits no ISSQNtot)',
+      imposto: impostoIssqn,
+      emitRtc: false,
+      reason: /: ISSQN \(configuracaoISSQN\) is not supported for emission/,
     },
   ];
 
