@@ -3,6 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
+  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   isEstadoFinalNFe,
@@ -13,7 +14,7 @@ import {
   type TpEmis,
   type TRetConsReciNFe,
 } from '@delfrance/integrations-nfe';
-import type { NotaFiscalEletronica } from '@delfrance/schemas';
+import { ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
@@ -22,6 +23,12 @@ import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
+import {
+  classificarConsSitDeRecuperacao,
+  decidirRodadaDoRecibo,
+  type MotivoConsultaPorChave,
+  terminalBloqueante,
+} from './lote-sem-protocolo';
 import {
   buildEnviNFeMsgFromConsulta,
   buildProcForAuthorizedOutcome,
@@ -41,6 +48,14 @@ export interface ConsultaChaveResult {
   readonly chaveFinal: string;
   /** The lote receipt the consReci path used, when one existed in the audit log. */
   readonly nRecUsado: string | null;
+  /**
+   * True when any SEFAZ answer of this call classified as consumo indevido
+   * (656) — the receipt, our protNFe in it, the consSit, or the patch this
+   * call returns (a refused write reports the live doc's). A batch caller
+   * stops consulting on it: the patch's own cStat no longer shows a 656 once
+   * it is a blocking terminal (103/104).
+   */
+  readonly consumoIndevido: boolean;
 }
 
 /**
@@ -50,11 +65,20 @@ export interface ConsultaChaveResult {
  *
  * Prefers `consReciNFe(nRec)` when an audit-log msg holds a receipt — it works
  * while the lote is still queued at SEFAZ (cStat=105) and yields the protocol
- * once processed. When the consReci outcome asks for `recover-via-consulta`
- * (duplicidade ≠539 / lote não localizado — e.g. an expired receipt, cStat=106),
- * falls through to `consSitNFe(chave)` in the same call so a manual
- * verification is conclusive (mirrors `emitirPedido`'s recover branch). With
- * no receipt at all it goes straight to `consSitNFe`.
+ * once processed. The receipt's answer is read through the SAME decision the
+ * async reconcile makes (`decidirRodadaDoRecibo`, #1654): when it says "by
+ * chave" — a processed lote (104) without our protNFe, a per-NF-e verdict at
+ * lote level, 106 (e.g. an expired receipt), a duplicidade other than 539 —
+ * the call falls through to ONE `consSitNFe(chave)` so a manual verification
+ * is conclusive, and reads its answer through the same recovery table
+ * (`classificarConsSitDeRecuperacao`): a final answer is applied; "still
+ * queued" (635 + 217) or an unavailable service leaves the doc
+ * `aguardandoResposta` with the stored receipt kept; anything else — and a
+ * protNFe that names another chave — is a BLOCKING terminal `error`
+ * (`terminalBloqueante`), as is a 656 or a refused receipt query. Unlike the
+ * reconcile nothing is counted and a 106 is consulted at once: the call is
+ * operator-initiated, and it still resets `retries` (`applyOutcome`). With no
+ * receipt at all it goes straight to `consSitNFe`.
  *
  * Every SEFAZ round-trip appends an `enviNfe` audit doc. The final outcome
  * runs `applyOutcome` (with the doc's current estado/cStat/xMotivo, so the
@@ -102,6 +126,13 @@ export async function consultarChavePersistida(params: {
   // needed for the `<nfeProc>` stitch on autorizada.
   let protNFeRaw: Awaited<ReturnType<typeof consultarSituacaoNFe>>['protNFe'] | null = null;
 
+  // Set by any answer of this call that classifies as consumo indevido — see
+  // `ConsultaChaveResult.consumoIndevido`.
+  let consumoIndevido = false;
+  const registrar = (cStat: string): void => {
+    if (classifyCStat(cStat) === 'consumo-indevido') consumoIndevido = true;
+  };
+
   async function consultarPorChave(): Promise<SefazOutcome> {
     const consSitCall: SefazCall = sefazCallFor(rt, notaTpEmis, 'NfeConsultaProtocolo');
     const retSit = await consultarSituacaoNFe(consSitCall, { chave });
@@ -109,10 +140,62 @@ export async function consultarChavePersistida(params: {
       buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis: notaTpEmis }),
     );
     protNFeRaw = retSit.protNFe ?? null;
-    return outcomeFromRetConsSit(retSit);
+    const sit = outcomeFromRetConsSit(retSit);
+    registrar(retSit.cStat);
+    registrar(sit.cStat);
+    return sit;
+  }
+
+  /**
+   * The receipt said "by chave" for `motivo`: ONE consSit, read through the
+   * reconcile's recovery table. `patch` is the receipt's; `loteCStat` picks the
+   * blocking cStat of a terminal.
+   */
+  async function resolverPorChave(
+    patch: NFeStatePatch,
+    loteCStat: string,
+    nRec: string,
+    motivo: MotivoConsultaPorChave,
+  ): Promise<NFeStatePatch> {
+    const sit = await consultarPorChave();
+    const chNFeDoProt = protNFeRaw?.infProt.chNFe ?? null;
+    if (chNFeDoProt != null && chNFeDoProt !== chave) {
+      // Strict equality, as in the reconcile: never applied as ours.
+      protNFeRaw = null;
+      return terminalBloqueante(
+        patch,
+        loteCStat,
+        `recibo ${nRec}: consulta por chave devolveu protNFe de outra chave (${chNFeDoProt}) — ` +
+          'verificar manualmente',
+      );
+    }
+    const consSit = `consulta por chave: cStat ${sit.cStat} — ${sit.xMotivo}`;
+    switch (classificarConsSitDeRecuperacao(sit.cStat, motivo)) {
+      case 'resolvida':
+        return applyOutcome(current, sit);
+      case 'pendente':
+      case 'indisponivel':
+        // Nothing to apply: back in flight, the stored receipt kept (nRec null
+        // leaves it untouched) and no proc — the sweep consults it again.
+        protNFeRaw = null;
+        return {
+          ...patch,
+          estado: ESTADO_NFE.aguardandoResposta,
+          nRec: null,
+          xMotivo: `${patch.xMotivo} | ${consSit}`,
+        };
+      case 'sem-resolucao':
+        protNFeRaw = null;
+        return terminalBloqueante(
+          patch,
+          loteCStat,
+          `recibo ${nRec}: ${consSit} — verificar manualmente`,
+        );
+    }
   }
 
   let outcome: SefazOutcome;
+  let patch: NFeStatePatch;
   if (msgWithNRec?.nRec) {
     const nRec = msgWithNRec.nRec;
     // Per-run dedupe: N chaves of the same lote share one consReciNFe
@@ -131,27 +214,38 @@ export async function consultarChavePersistida(params: {
       );
       consReciCache?.set(nRec, retRec);
     }
-    protNFeRaw = retRec.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
+    // Our protocol in the reply — STRICT chave equality.
+    const ourProt = retRec.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
+    protNFeRaw = ourProt;
     outcome = outcomeFromConsReci(retRec, chave);
+    registrar(retRec.cStat);
+    registrar(outcome.cStat);
+    patch = applyOutcome(current, outcome);
+
+    // The reconcile's decision for this round (#1654). 539 stays with the
+    // shared recover539 gate below; `aplicar-protocolo` and `aguardar` keep
+    // the receipt's patch as is.
+    const decisao = decidirRodadaDoRecibo(retRec.cStat, ourProt?.infProt.cStat ?? null);
+    if (decisao.tipo === 'por-chave') {
+      patch = await resolverPorChave(patch, retRec.cStat, nRec, decisao.motivo);
+    } else if (decisao.tipo === 'terminal') {
+      patch = terminalBloqueante(
+        patch,
+        retRec.cStat,
+        `recibo ${nRec}: cStat ${outcome.cStat}, sem nova consulta — verificar manualmente`,
+      );
+    }
   } else {
-    outcome = await consultarPorChave();
-  }
-
-  let patch = applyOutcome(current, outcome);
-
-  // Fall-through: the receipt no longer resolves (106 lote não localizado /
-  // duplicidade ≠539) — consult by chave in the same call so the manual
-  // verification is conclusive (mirrors emitirPedido's recover branch). 539
-  // stays with the shared recover539 gate; the no-nRec path already IS the
-  // consSit, so it never re-consults.
-  if (msgWithNRec?.nRec && patch.action === 'recover-via-consulta' && outcome.cStat !== '539') {
+    // The no-nRec path already IS the consSit, so it never re-consults.
     outcome = await consultarPorChave();
     patch = applyOutcome(current, outcome);
   }
 
   // cStat=539 (duplicidade com chave diferente): recover the SEFAZ-asserted
   // chave if it is one we emitted, else flip to terminal `error` — never leave
-  // the doc stuck aguardandoResposta (#243). No-op for every other outcome.
+  // the doc stuck aguardandoResposta (#243). No-op for every other outcome —
+  // `outcome` is the receipt's (or the direct consSit's), never 539 after a
+  // round resolved by chave.
   const recovered539 = await recover539IfNeeded({
     fs,
     bundle: { pedidoId, filialId },
@@ -202,7 +296,8 @@ export async function consultarChavePersistida(params: {
     };
   }
 
-  return { patch, chaveFinal, nRecUsado: msgWithNRec?.nRec ?? null };
+  registrar(patch.cStat);
+  return { patch, chaveFinal, nRecUsado: msgWithNRec?.nRec ?? null, consumoIndevido };
 }
 
 /**

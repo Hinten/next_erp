@@ -51,6 +51,7 @@ import {
   NFeTransportError,
   consultarLote,
   consultarSituacaoNFe,
+  isBloqueada,
 } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
@@ -594,5 +595,149 @@ describe('verificarEnviNfeMsgs', () => {
       cStat: '110',
     });
     expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('verificarEnviNfeMsgs — the receipt round shares reconcile’s decision and recovery table (#1654)', () => {
+  /** One in-flight doc for CHAVE_A whose audit log holds receipt REC-1. */
+  function comRecibo(estado: string = ESTADO_NFE.aguardandoResposta): void {
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+    seedNfev4([{ chave: CHAVE_A, estado }]);
+    vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+  }
+
+  async function verificar(): Promise<Awaited<ReturnType<typeof verificarEnviNfeMsgs>>> {
+    return verificarEnviNfeMsgs(...baseArgs, { filialId: FILIAL, enviNfeMsgIds: ['msg-1'] });
+  }
+
+  /** The patch the (single) guarded write persisted. */
+  function persistido(): Parameters<typeof persistPatchUnlessFinal>[2] {
+    expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(1);
+    return vi.mocked(persistPatchUnlessFinal).mock.calls[0]![2];
+  }
+
+  it('a processed lote (104) WITHOUT our protNFe → exactly ONE consSit for the chave; 100 → aprovada', async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('104') as never);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(
+      consSitRet('100', { protCStat: '100' }) as never,
+    );
+
+    const r = await verificar();
+
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledWith(expect.anything(), {
+      chave: CHAVE_A,
+    });
+    expect(r.results[0]).toMatchObject({
+      status: 'atualizada',
+      estadoNovo: ESTADO_NFE.aprovada,
+      cStat: '100',
+    });
+  });
+
+  it('our protNFe 635 + consSit 217 → still aguardandoResposta (wait), never rejeitada; the receipt is kept', async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('104', '635') as never);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+
+    const r = await verificar();
+
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    expect(r.results[0]).toMatchObject({
+      status: 'sem-mudanca',
+      estadoNovo: ESTADO_NFE.aguardandoResposta,
+    });
+    const patch = persistido();
+    expect(patch.estado).toBe(ESTADO_NFE.aguardandoResposta);
+    // nRec null → the persist leaves the stored receipt untouched.
+    expect(patch.nRec).toBeNull();
+    expect(patch.xMotivo).toContain('cStat 217');
+  });
+
+  it.each<[string, string, unknown]>([
+    ['204', '217', consSitRet('217')],
+    ['205', '110 (denegada)', consSitRet('110', { protCStat: '110' })],
+    ['218', '562', consSitRet('562')],
+  ])(
+    'our protNFe %s + consSit %s → terminal error KEEPING cStat 104 (blocking), never rejeitada',
+    async (protCStat, _caso, retSit) => {
+      comRecibo();
+      vi.mocked(consultarLote).mockResolvedValue(consReciRet('104', protCStat) as never);
+      vi.mocked(consultarSituacaoNFe).mockResolvedValue(retSit as never);
+
+      const r = await verificar();
+
+      expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+      expect(r.results[0]).toMatchObject({
+        status: 'atualizada',
+        estadoNovo: ESTADO_NFE.error,
+        cStat: '104',
+      });
+      expect(isBloqueada(r.results[0]!.cStat)).toBe(true);
+      expect(r.results[0]!.xMotivo).toMatch(/verificar manualmente/);
+    },
+  );
+
+  it('our protNFe 204 + consSit 100 → aprovada (the duplicidade was a lost response)', async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('104', '204') as never);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(
+      consSitRet('100', { protCStat: '100' }) as never,
+    );
+
+    const r = await verificar();
+
+    expect(r.results[0]).toMatchObject({ estadoNovo: ESTADO_NFE.aprovada, cStat: '100' });
+  });
+
+  it('a refused consReci query (252) → terminal error with the BLOCKING cStat 103, no consSit', async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('252') as never);
+
+    const r = await verificar();
+
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(r.results[0]).toMatchObject({ estadoNovo: ESTADO_NFE.error, cStat: '103' });
+    expect(r.results[0]!.xMotivo).toContain('cStat 252');
+  });
+
+  it('pin: a lote-level 656 on the first chave aborts the run — the second chave is never consulted, not even by receipt', async () => {
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A, CHAVE_B] } });
+    seedNfev4([
+      { chave: CHAVE_A, estado: ESTADO_NFE.aguardandoResposta },
+      { chave: CHAVE_B, estado: ESTADO_NFE.aguardandoResposta },
+    ]);
+    vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValue({ nRec: 'REC-1' } as never);
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('656') as never);
+
+    const r = await verificar();
+
+    // A is a blocking terminal now (cStat 103), so the abort can no longer read
+    // the persisted cStat — it reads the consumo-indevido flag.
+    expect(r.results[0]).toMatchObject({ chave: CHAVE_A, estadoNovo: ESTADO_NFE.error });
+    expect(r.results[1]).toMatchObject({
+      chave: CHAVE_B,
+      status: 'erro',
+      error: 'verificação interrompida — cStat 656 (consumo indevido)',
+    });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(1);
+  });
+
+  it('near-miss: a 105 by receipt → no consSit, the doc stays in flight (unchanged)', async () => {
+    comRecibo();
+    vi.mocked(consultarLote).mockResolvedValue(consReciRet('105') as never);
+
+    const r = await verificar();
+
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(r.results[0]).toMatchObject({
+      status: 'sem-mudanca',
+      estadoNovo: ESTADO_NFE.aguardandoResposta,
+      cStat: '105',
+    });
   });
 });
