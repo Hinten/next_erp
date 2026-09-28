@@ -33,6 +33,7 @@ import {
 
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
+import { safeLog } from '../log';
 import { ensureCodigoMunicipio } from './cmun';
 import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 
@@ -212,7 +213,7 @@ export async function loadPedidoBundle(
   pedidoId: string,
   ctx?: BatchReadContext,
 ): Promise<PedidoBundle> {
-  console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
+  safeLog('debug', `[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
   // Memoize the shared outer-ref reads against the batch context (if any)
   // so pedidos sharing a filial / operação don't re-fetch identical docs.
   // `getDoc` / `getRegra` dereference dynamic "outer ref" paths (the target
@@ -258,20 +259,24 @@ export async function loadPedidoBundle(
   if (!integracaoSnap.exists)
     throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found`);
   const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved filialPath '${filialPath}' (via integracao ` +
       `'${integracaoPath}') for pedidoId '${pedidoId}'`,
   );
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`,
   );
   const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`,
   );
   const enderecoPath = refToPath(getField(pedido, 'enderecoFiscalOuterRef'));
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`,
   );
 
@@ -303,7 +308,8 @@ export async function loadPedidoBundle(
   if (!enderecoSnap.exists) throw new NFeOrchestratorError(`endereco '${enderecoPath}' not found`);
 
   const pagamentos = loadPagamentosFromSnapshot(pedidoId, pagamentoSnap);
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${pedidoId}': loaded ${pagamentos.length} pagamento(s) ` +
       `(of ${pagamentoSnap.size} in subcollection)`,
   );
@@ -388,7 +394,8 @@ export function parseRegraImpostoSnapshot(
       );
     }
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${pedidoId}': loaded ${out.length} regraImposto(s) ` +
       `(of ${snap.size} in subcollection)`,
   );
@@ -567,7 +574,8 @@ export async function preResolveImpostos(
   }
   if (missing.length === 0) return;
 
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${bundle.pedidoId}': ${missing.length} item(s) ` +
       'missing imposto — running resolver cascade',
   );
