@@ -34,7 +34,9 @@
  *     exactly one** — a 105, a lote-level non-answer, an `enviando` doc (now
  *     written `aguardandoResposta`), a recovered 539, a round resolved by
  *     chave — so a doc gets at most `MAX_RECONCILE_ATTEMPTS` receipt rounds
- *     and at most that many consSit calls between two operator actions. The
+ *     and at most that many consSit calls between two operator actions (a
+ *     round a transient Firestore failure interrupted is the exception: it
+ *     writes nothing, so it counts nothing — below). The
  *     round that reaches the cap goes terminal `error` with a "verificar
  *     manualmente" motivo. The writers that still reset the counter are
  *     outside this module: the manual verify (`consultarChavePersistida`,
@@ -74,13 +76,15 @@
  *     the next round re-reads it;
  *   - a SOAP failure of the 539 recovery's own `consReciNFe` (transport, XSD,
  *     XML — the set the by-chave consSit absorbs) counts the round like any
- *     other in flight, so the doc goes terminal at the cap instead of the run
+ *     other in flight, on THIS receipt (the 539's `[nRec:]` marker never
+ *     re-keys the doc), so the doc goes terminal at the cap instead of the run
  *     throwing forever.
  * The consSit breaker lives in a cell the CALLER owns (`disjuntor`), written in
  * place at every trip, so a trip survives a round that throws anyway: the sweep
  * still carries it to the filial's next lote. On the task path a throw still
  * reaches the queue retry without it (the cell dies with the run); the causes
- * above no longer throw, so that is left to a bug after a trip.
+ * above no longer throw, so that is left to anything else thrown after a trip —
+ * a bug, a non-transient Firestore error (gRPC 3, 7, 9, …), any other class.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -171,7 +175,10 @@ export interface ReconcileLoteResult {
  * @param attempt 0-based consult attempt from the task payload — used only for
  *   diagnostics; the authoritative cap is the per-doc `retries` counter, which
  *   every in-flight round advances by one (here, or in `reconcilePorChave`),
- *   so a re-delivered task can't escape the cap.
+ *   so a re-delivered task can't escape the cap. The one round left uncounted
+ *   is one a transient Firestore failure interrupted (the doc stays pending,
+ *   its live state unknown): a doc whose Firestore failure persists is
+ *   re-enqueued with no cap, one `consReciNFe` per round.
  * @param disjuntor the consSit breaker CELL, owned by the caller and written in
  *   place at every trip (see {@link DisjuntorConsSit}): a sweep hands in the
  *   breaker a previous lote of this run tripped for the same scope — the SAME
@@ -395,7 +402,14 @@ async function reconciliarDoc(
         safeErrorShape(e),
       );
       // `patch` is still the 539 as read — null-mapped, so in flight — and is
-      // counted below.
+      // counted below. Its `nRec` is our protNFe's `[nRec:]` marker, the
+      // receipt of the OTHER chave's lote: counted as it is, the write would
+      // re-key the doc onto it, the task's next round would find nothing on
+      // this receipt, and the sweep would resolve our chave by chave against a
+      // lote that never held it (a 217 there frees a número SEFAZ holds). So
+      // the doc stays on THIS receipt — a marker never re-keys a doc, as in
+      // `reconcilePorChave`.
+      patch = { ...patch, nRec };
       semResposta = `recuperação do 539 falhou (${e.name})`;
     }
   }

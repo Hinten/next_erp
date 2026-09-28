@@ -349,9 +349,11 @@ const OUTRA_CHAVE = '35260614200166000187550010000000099400000019';
 /**
  * 104 lote whose inner protNFe for our chave is a cStat=539 (duplicidade com
  * chave diferente) — xMotivo asserts a DIFFERENT chave via the `[chNFe:...]`
- * marker the recovery parser reads.
+ * marker the recovery parser reads. With `nRecMarcador`, the xMotivo also
+ * carries the `[nRec:…]` marker SEFAZ appends (the OTHER chave's receipt).
  */
-function loteRet539(): unknown {
+function loteRet539(opts: { readonly nRecMarcador?: string } = {}): unknown {
+  const marcador = opts.nRecMarcador != null ? `[nRec:${opts.nRecMarcador}]` : '';
   return {
     versao: '4.00',
     tpAmb: '2',
@@ -370,7 +372,7 @@ function loteRet539(): unknown {
           chNFe: CHAVE,
           dhRecbto: new Date().toISOString(),
           cStat: '539',
-          xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA_CHAVE}]`,
+          xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA_CHAVE}]${marcador}`,
           nProt: '135000000000000',
           digVal: 'd',
         },
@@ -2838,6 +2840,39 @@ describe('reconcileByRecibo — per-doc isolation, the breaker cell and the 539 
       expect(patch.xMotivo).toMatch(/verificar manualmente/);
       expectHomologacaoOnly();
     });
+
+    it.each<[string, number, EstadoNFe]>([
+      ['under the cap', 3, ESTADO_NFE.aguardandoResposta],
+      ['at the cap', MAX_RECONCILE_ATTEMPTS - 1, ESTADO_NFE.error],
+    ])(
+      'our 539 carries an [nRec:] marker (%s) → the stored doc STAYS on this receipt REC-1, never re-keyed onto the other chave’s lote (real guard)',
+      async (_caso, retries, estado) => {
+        // Numeric, as SEFAZ's receipts are (`RE_NREC` reads digits only).
+        const MARCADOR = '351000000000777';
+        const loja = lojaEmMemoria();
+        const [semente] = seedDocs([{ retries }], loja.docs);
+        loja.docs[semente!.path] = { ...semente!.data };
+        await persistReal();
+        vi.mocked(findLatestEnviNFeMsgWithNRec).mockResolvedValueOnce({ nRec: 'REC-0' } as never);
+        vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) => {
+          if (nRec === 'REC-1') return loteRet539({ nRecMarcador: MARCADOR }) as never;
+          throw new NFeTransportError('ECONNRESET');
+        });
+
+        const r = await reconcileByRecibo({ ...baseArgs, fs: loja.fs, attempt: retries });
+
+        expect(r.scanned).toBe(1);
+        // The marker really was there to re-key with — no vacuous pass.
+        expect(lastPatch().xMotivo).toContain(`[nRec:${MARCADOR}]`);
+        expect(loja.docs[DOC]).toMatchObject({
+          estado,
+          retries: retries + 1,
+          nRec: 'REC-1',
+          chave: CHAVE,
+        });
+        expectHomologacaoOnly();
+      },
+    );
 
     it('near-miss: a TypeError from the recovery is NOT counted — the call rejects', async () => {
       seedDoc({ retries: 3 });
