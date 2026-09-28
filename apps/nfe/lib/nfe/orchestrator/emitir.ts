@@ -40,6 +40,7 @@ import {
 
 import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
+import { safeLog } from '../log';
 import {
   NFeBlockedError,
   NFeMissingImpostoError,
@@ -444,7 +445,8 @@ export async function runAllocateGenerateSignTx(
     // covers both the normal pre-check AND the race where another emit
     // wrote the doc between attempts of this transaction.
     if (existing && isBloqueada(existing.cStat)) {
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
           `(cStat=${existing.cStat}) — skipping emit and returning persisted state`,
       );
@@ -463,14 +465,16 @@ export async function runAllocateGenerateSignTx(
       existing.nRec &&
       (existing.estado === ESTADO_NFE.enviando || existing.estado === ESTADO_NFE.aguardandoResposta)
     ) {
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has an in-flight NFe with a saved ` +
           `nRec — skipping re-emit, the reconciler will confirm by recibo`,
       );
       return { skip: true, existing };
     }
 
-    console.debug(
+    safeLog(
+      'debug',
       `[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
         `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`,
     );
@@ -487,7 +491,8 @@ export async function runAllocateGenerateSignTx(
     // (their content may have been fixed).
     if (isCrashWindowAnchor(existing)) {
       const idLote = cfg.idLote + 1;
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' crash-window doc (${existing.estado}, ` +
           `no nRec) — retransmitting the STORED signed XML for chave ${existing.chave} ` +
           `(idLote ${idLote})`,
@@ -952,7 +957,8 @@ export async function emitirPedido(
   pedidoId: string,
   scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<EmitResult> {
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${baseRt.ambiente}'`,
   );
 
@@ -967,7 +973,8 @@ export async function emitirPedido(
     if ('epecPending' in captured) {
       // Approved EPEC — the emit action becomes "transmit the full NF-e to
       // the home SEFAZ" (same chave, stored xml_assinado).
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has an approved EPEC — ` +
           'routing into the pós-EPEC full transmission',
       );
@@ -980,7 +987,8 @@ export async function emitirPedido(
         nota: captured.existing,
       });
     }
-    console.debug(
+    safeLog(
+      'debug',
       `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
         `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
     );
@@ -1010,7 +1018,8 @@ export async function emitirPedido(
     idLote: String(idLote),
     NFe: [signedXml],
   });
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] autorizarLote cStat=${retEnvi.cStat} nRec=${retEnvi.infRec?.nRec ?? '-'}`,
   );
 
@@ -1083,7 +1092,8 @@ export async function emitirPedidosLote(
       `emitirPedidosLote: ${pedidoIds.length} pedidos exceeds MAX_PEDIDOS_PER_BATCH (${MAX_PEDIDOS_PER_BATCH})`,
     );
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`,
   );
 
@@ -1135,7 +1145,8 @@ export async function emitirPedidosLote(
       });
     }
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch fan-out: ${groups.size} filial(is) × ${chunks.length} chunk(s)`,
   );
 
@@ -1351,7 +1362,8 @@ async function persistLoteSemRecibo(args: {
           reused: false,
         };
       }
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] lote ${idLote}: ${s.prep.nfeRef.path} changed mid-flight ` +
           `(estado=${r.estadoAtual}) — reply not persisted, reporting the live doc`,
       );
@@ -1511,7 +1523,8 @@ export async function processChunk(
     NFe: toSend.map((s) => s.signedXml),
     indSinc,
   });
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch chunk autorizarLote — filial=${filialId} ` +
       `idLote=${sharedIdLote} count=${toSend.length} indSinc=${indSinc} ` +
       `retCStat=${retEnvi.cStat}`,
