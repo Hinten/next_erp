@@ -11,13 +11,12 @@
  * structure is valid. The vendored `DFeTiposBasicos_v1.00.xsd` already carries
  * the RTC layout (no schema drift).
  *
- * **Best-guess codes** — the Anexo III cClassTrib/CST tables aren't vendored,
- * so the fixture (`impostoCsosn102ComRtc`) uses placeholders + the documented
- * 2025–2026 test alíquotas (IBS 0,1% / CBS 0,9%). The **first run is
- * exploratory**: this test logs the real `cStat` + `xMotivo` before asserting,
- * so a rejection names exactly what to refine — likely 1020/1023/1024
- * (CST/cClassTrib), 1026/1037 (alíquota), 1022 (grupo incompleto), or
- * 1041/1091/1104 (totais).
+ * **Codes vs rates** — the fixture's CST `000` / cClassTrib `000001` is a row of
+ * the vendored Anexo III table (`@delfrance/schemas` `CCLASSTRIB_TABELA`, #333);
+ * the alíquotas are the documented 2025–2026 test rates (IBS 0,1% / CBS 0,9%).
+ * The test logs the real `cStat` + `xMotivo` before asserting, so a rejection
+ * names exactly what to refine — 1020/1023/1024 (CST/cClassTrib), 1026/1037
+ * (alíquota), 1022 (grupo incompleto), or 1041/1091/1104 (totais).
  *
  * Drives the **real builder path** — the fixture stamps `configuracaoIBSCBS`
  * and emits with `{ emitRtc: true }`, so `buildImpostoXml` / `buildTotalXml`
@@ -126,8 +125,8 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
     const cStat = prot?.infProt.cStat ?? ret.cStat;
     const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
     logSefaz('rtc protNFe', { cStat, xMotivo });
-    // The best-guess codes target cStat=100. On a first-run rejection the log
-    // above names the exact code/alíquota to refine (1020/1023/1024/1026/...).
+    // Targets cStat=100. On a rejection the log above names the exact
+    // code/alíquota to refine (1020/1023/1024/1026/...).
     //
     // ⚠️ The assertion message goes through `descreverSefaz` too: a vitest
     // message lands in the CI ANNOTATION, which is as public as the log.

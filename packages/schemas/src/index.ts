@@ -1061,18 +1061,41 @@ export {
 } from './imposto/camposProdutoFiscal';
 
 export {
-  // RTC cClassTrib/CST seed + validator (#333)
-  CCLASSTRIB_SEED,
+  // RTC Anexo III — cClassTrib + CST IBS/CBS tables with indicators + validator (#333)
+  CCLASSTRIB_PROVENIENCIA,
+  CCLASSTRIB_TABELA,
   CST_IBSCBS_CODES,
   CST_IBSCBS_LABELS,
+  CST_IBSCBS_TABELA,
+  IND_CCLASSTRIB,
+  IND_CST_IBSCBS,
+  TIPO_ALIQUOTA_RTC,
+  TIPO_ALIQUOTA_RTC_LABELS,
   cClassTribCodesForCst,
   cClassTribDescricao,
   cClassTribEntriesForCst,
+  cClassTribEntry,
   cstClassTribStructurallyValid,
+  cstIbsCbsEntry,
   validateCstClassTrib,
   type CClassTribEntry,
   type CstClassTribValidation,
+  type CstIbsCbsEntry,
+  type IndicadorCClassTrib,
+  type IndicadorCstIbsCbs,
+  type ProvenienciaTabelaRtc,
+  type TipoAliquotaRtc,
 } from './imposto/cclasstrib';
+
+export {
+  // RTC Anexo IV — cCredPres (#333)
+  CCREDPRES_PROVENIENCIA,
+  CCREDPRES_TABELA,
+  TRIBUTO_CREDITO_PRESUMIDO,
+  cCredPresEntry,
+  type CCredPresEntry,
+  type TributoCreditoPresumido,
+} from './imposto/ccredpres';
 
 export {
   arquivo,

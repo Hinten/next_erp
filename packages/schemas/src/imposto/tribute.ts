@@ -903,8 +903,9 @@ export const configuracaoIBSCBSSchema = z
   // Structural rule only (NT 2025.002, RV UB13/UB14): cClassTrib's first 3
   // digits == CST. Always correct, independent of any vendored table — so it
   // is the one cross-field check enforced at emit time (`parseRtcConfig`).
-  // Table *membership* is a UI-only warning (the vendored seed is a subset),
-  // never an emit-time block. Guard on format so we don't double-report.
+  // Table *membership* is a UI-only warning (the vendored table is a dated
+  // snapshot; SEFAZ adds codes outside the NT cycle), never an emit-time
+  // block. Guard on format so we don't double-report.
   .superRefine((cfg, ctx) => {
     if (
       /^\d{3}$/.test(cfg.CST) &&
