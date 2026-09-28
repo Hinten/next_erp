@@ -85,6 +85,8 @@ test.describe.serial('Pedido — cópia confirmada de endereço', () => {
     await page.goto(`/pedidos/${fixtures.motPedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
+    const clienteField = page.getByText('Cliente', { exact: true }).locator('..');
+    await clienteField.getByRole('button', { name: 'Limpar' }).click();
     await selectFieldWithSearch(page, 'Cliente', targetClienteNome, new RegExp(targetClienteNome));
     await page.getByRole('button', { name: 'Salvar alterações' }).click();
 
