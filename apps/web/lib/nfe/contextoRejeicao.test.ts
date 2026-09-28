@@ -51,7 +51,8 @@ vi.mock('@/lib/data/pedidoCollection', () => ({
 vi.mock('@/lib/data/dereferenceOuterRef', () => ({
   dereferenceOuterRef: (...args: unknown[]) => h.dereferenceOuterRef(...args),
 }));
-// Only the reader is stubbed: the collection check (`ehRefDeCliente`) is the real one.
+// Only the reader is stubbed: the cliente gate (`refDeClienteOuNull`, and the
+// `ehRefDeCliente` collection check inside it) is the real one.
 vi.mock('@/lib/data/readClienteByRef', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/data/readClienteByRef')>()),
   readClienteByRef: (...args: unknown[]) => h.readClienteByRef(...args),
@@ -218,10 +219,10 @@ describe('carregadorContextoRejeicao', () => {
   });
 
   it('an opaque odd-segment ref ({ path: "clientes" }) dereferences to null → cliente null, destinatário kept', async () => {
-    // The REAL dereference, against a real Firestore: `doc(db, 'clientes')`
-    // would throw a FirebaseError synchronously (a document path needs even
-    // segments), and since #1656 the dereference never reaches it — it
-    // answers null.
+    // The REAL dereference, against a real Firestore, end to end through the
+    // real `refDeClienteOuNull`: `doc(db, 'clientes')` would throw a
+    // FirebaseError synchronously (a document path needs even segments), and
+    // since #1656 the dereference never reaches it — it answers null.
     const { dereferenceOuterRef: real } = await vi.importActual<
       typeof import('@/lib/data/dereferenceOuterRef')
     >('@/lib/data/dereferenceOuterRef');

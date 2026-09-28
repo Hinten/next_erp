@@ -1,5 +1,3 @@
-import { Component, type ReactNode } from 'react';
-import { FirebaseError } from 'firebase/app';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -64,7 +62,7 @@ const {
   useQueryCalls: vi.fn(),
   // The ClienteCell calls `dereferenceOuterRef` once with the pedido's
   // outer ref; the test toggles its return shape between a fake doc ref
-  // and `null` to exercise the "Anônimo" branch.
+  // (`parent.id` decides whether it points into `clientes`) and `null`.
   dereferenceMock: vi.fn(),
   // `null` = the real (provider-less) auth context. A uid lets `useLatestNfe`
   // remember a badge, which the memo-backed NFCell render needs.
@@ -698,14 +696,14 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
     });
 
-    it('a legacy ref that dereference cannot resolve (FirebaseError) degrades to "o cliente deste pedido" instead of throwing in render', async () => {
-      // An opaque `{ path }` ref with an odd segment count makes the real `doc()`
-      // throw `FirebaseError invalid-argument` synchronously — inside this cell's
-      // render. The loader already degrades this case; the HoverCard must too.
+    it('a legacy ref that does not dereference (null) names "o cliente deste pedido", links nothing and reads nothing', async () => {
+      // Regression guard, not the proof: `dereferenceOuterRef` is TOTAL since
+      // #1656 — an odd opaque `{ path }` ref returns null instead of throwing
+      // out of `doc()` — and that is proved on the real SDK in
+      // `lib/data/dereferenceOuterRef.test.ts`. This pins the cell's side of
+      // the contract: null means no cliente, never a crash in render.
       const REF_IMPAR = { path: 'clientes' };
-      dereferenceMock.mockImplementation(() => {
-        throw new FirebaseError('invalid-argument', 'odd number of path segments');
-      });
+      dereferenceMock.mockReturnValue(null);
       setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
       const { container } = wrap(
         <NFCell
@@ -722,38 +720,6 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(within(alert).queryByRole('link')).toBeNull();
       expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), REF_IMPAR);
       expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
-    });
-
-    it('near-miss: a NON-Firebase error from dereference still propagates (narrowed, not swallowed)', async () => {
-      class Boundary extends Component<{ children: ReactNode }, { error: unknown }> {
-        override state = { error: null as unknown };
-        static getDerivedStateFromError(error: unknown) {
-          return { error };
-        }
-        override render() {
-          return this.state.error != null ? (
-            <div data-testid="boundary">{String(this.state.error)}</div>
-          ) : (
-            this.props.children
-          );
-        }
-      }
-      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-      dereferenceMock.mockImplementation(() => {
-        throw new TypeError('a bug, not a legacy ref');
-      });
-      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
-      const { container } = wrap(
-        <Boundary>
-          <NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />
-        </Boundary>,
-      );
-      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-
-      expect((await screen.findByTestId('boundary')).textContent).toContain(
-        'a bug, not a legacy ref',
-      );
-      consoleError.mockRestore();
     });
 
     it('switches to the "já alterado" variant once the cadastro no longer declares ISENTO', async () => {
@@ -877,10 +843,15 @@ describe('ClienteCell — static cached read', () => {
     dereferenceMock.mockReturnValue(null);
     wrap(<ClienteCell pedido={{ clientePedidoOuterRef: null } as unknown as Pedido} />);
     expect(screen.getByText('Anônimo')).toBeTruthy();
+    expect(screen.queryByText('Cliente não reconhecido')).toBeNull();
   });
 
   it('renders nome inside a link to /clientes/<id>', () => {
-    dereferenceMock.mockReturnValue({ id: 'abc', path: 'clientes/abc' });
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
     queryState.current = {
       data: { nome: 'Acme Ltda', cpf_cnpj: '12345678000190', tipo: '1' },
       isLoading: false,
@@ -892,10 +863,53 @@ describe('ClienteCell — static cached read', () => {
     );
     const link = screen.getByRole('link', { name: 'Acme Ltda' });
     expect(link.getAttribute('href')).toBe('/clientes/abc');
+    expect(screen.queryByText('Cliente não reconhecido')).toBeNull();
+  });
+
+  it('a ref into ANOTHER collection shows "Cliente não reconhecido", links nothing and reads nothing (#1656)', () => {
+    // Same id, other collection: `/clientes/abc` would open a DIFFERENT
+    // cadastro, and the foreign doc's nome belongs to no cliente.
+    useQueryCalls.mockClear();
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'fornecedores/abc',
+      parent: { id: 'fornecedores' },
+    });
+    // The mocked query still "returns" a name — it must never reach the screen.
+    queryState.current = { data: { nome: 'Acme Ltda' }, isLoading: false };
+    wrap(
+      <ClienteCell
+        pedido={{ clientePedidoOuterRef: 'documents/fornecedores/abc' } as unknown as Pedido}
+      />,
+    );
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.queryByText('Acme Ltda')).toBeNull();
+    expect(screen.getByText('Cliente não reconhecido')).toBeTruthy();
+    expect(screen.queryByText('Anônimo')).toBeNull();
+    expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+  });
+
+  it('a PRESENT ref that does not dereference is not "Anônimo" — that word is the null-ref filter (#1656)', () => {
+    // "Anônimo" is what `ClienteColumnFilter`'s isNull finds; a row carrying a
+    // ref it cannot resolve would be labelled with a word its filter never
+    // matches.
+    useQueryCalls.mockClear();
+    dereferenceMock.mockReturnValue(null);
+    wrap(
+      <ClienteCell pedido={{ clientePedidoOuterRef: { path: 'clientes' } } as unknown as Pedido} />,
+    );
+    expect(screen.getByText('Cliente não reconhecido')).toBeTruthy();
+    expect(screen.queryByText('Anônimo')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
   });
 
   it('shows a skeleton while the one-shot query is in flight', () => {
-    dereferenceMock.mockReturnValue({ id: 'abc', path: 'clientes/abc' });
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
     queryState.current = { data: null, isLoading: true };
     const { container } = wrap(
       <ClienteCell

@@ -6,7 +6,8 @@
  * `rowReadPrefetch.ts` re-exports both functions, so its importers are unchanged.
  *
  * Plain on purpose: no `'use client'`, no React, no TanStack. The only imports
- * are `firebase/firestore` and the `clientes` collection handle.
+ * are `firebase/firestore`, the `clientes` collection handle and
+ * `dereferenceOuterRef` (itself only `firebase/firestore` + `@delfrance/schemas`).
  *
  * ⚠️ PROVENANCE, not just shape (#1303). A key written by one consumer and read
  * by another is only safe while they fill it with the SAME value: a
@@ -21,10 +22,15 @@
  *    `getDocsByIds` — the same `clienteCollection` converter),
  *  - NFCell's `OrientacaoRejeicaoCliente` (the cStat 805 guidance, #852),
  *  - the `contextoRejeicao` loader (`lib/nfe/contextoRejeicao.ts`, #852).
+ *
+ * Every one of them except `OrigemPedidoPicker` first passes the pedido's ref
+ * through {@link refDeClienteOuNull} (#1656) — the one gate that says "this is
+ * a cliente" before a read under that key or a `/clientes/{id}` link.
  */
 import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
 
 import { clienteCollection } from '@/lib/data/clienteCollection';
+import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
 /** The TanStack key `ClienteCell` reads its cliente under. */
 export function clienteQueryKey(path: string): readonly unknown[] {
@@ -40,6 +46,23 @@ export function clienteQueryKey(path: string): readonly unknown[] {
  */
 export function ehRefDeCliente(ref: DocumentReference): boolean {
   return ref.parent.id === CLIENTES_COLLECTION_ID;
+}
+
+/**
+ * The pedido's cliente ref as a `DocumentReference` INTO `clientes`, or `null`
+ * — absent, malformed (it does not dereference) or foreign (it points into
+ * another collection). Total: {@link dereferenceOuterRef} never throws (#1656).
+ *
+ * The ONE gate before reading {@link clienteQueryKey} or linking
+ * `/clientes/{id}`: `ClienteCell`, the `/pedidos` row batch, NFCell's
+ * `OrientacaoRejeicaoCliente` and the `contextoRejeicao` loader all go through
+ * it, instead of each composing the dereference with {@link ehRefDeCliente}.
+ */
+export function refDeClienteOuNull(db: Firestore, outerRef: unknown): DocumentReference | null {
+  // An absent ref (the common marketplace-masked case) never reaches the dereference.
+  if (outerRef == null) return null;
+  const ref = dereferenceOuterRef(db, outerRef);
+  return ref != null && ehRefDeCliente(ref) ? ref : null;
 }
 
 /**
