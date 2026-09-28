@@ -394,6 +394,32 @@ docs without an `nRec`, which is still uncounted, unguarded and blind to the
 recovery table — a 204/635 anchor whose consSit later answers 217 turns
 `rejeitada` there (follow-up).
 
+**A batch member's failure is reported only for a known class (#1654 §3).**
+`emitirPedidosLote` files a member's failure as an `EmitError` through
+`toEmitError`, which reads the sweep's table (`descreverFalhaConhecida`,
+`orchestrator/falhas.ts`): a known class is reported by its literal code — the
+`name` it always had, except that an enqueue failure is now
+`'FirebaseFunctionsError'` and an Admin-SDK Firestore failure
+`'FirestoreRpcError'`, both of which used to read `'Error'` — and
+`NFeConsumoIndevidoError` stays a per-member report. Any other class is a bug
+and is rethrown (rule 6): the batch rejects, `POST /emitir-lote` answers 500,
+and every other member's report in that request is lost with it. What that
+leaves behind: at prep, ONE bug aborts all ≤50 pedidos with nothing written or
+sent; at 4b (generate/sign) the chunk's healthy fresh members are already
+unsent #396 anchors, which a re-emit retransmits with their stored bytes (or
+the sweep's consSit recovers); after the send each member's reply is audited
+before its write, so a member whose write threw is still its anchor — the
+state stays consistent, only the report is lost. ⚠️ So `apps/web` no longer
+auto-retries `emitir`/`emitirLote` on a 5xx or a network error — only on the
+pre-send 503 (`NFeRuntimeNotReadyError`, `apps/web/lib/nfe/withNFeRetry.ts`):
+an emit re-POST is a no-op only for a bloqueada or `nRec`-in-flight pedido, and
+`runChunkAllocateTx` / `runAllocateGenerateSignTx` REGENERATE and RE-SEND every
+`rejeitada`/`error` one, so a retried lote re-sent whatever the lost attempt had
+just seen refused. A transient 5xx on emit now reaches the operator, who
+re-clicks. ⚠️ **Deploy apps/web no later than apps/nfe**: an older web re-POSTs
+the new 500 up to three times, each re-POST re-sending the members the previous
+attempt left `rejeitada`/`error`.
+
 `POST /api/nfe/processar-pendentes` still exists, but only as a **manual/ops
 trigger** for that same core (`lib/nfe/handlers/runProcessarPendentes.ts`),
 behind a normal Firebase user token + `PERM.fiscal.write`.
