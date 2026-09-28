@@ -119,11 +119,11 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
     await page.getByRole('button', { name: 'Adicionar faixa' }).click();
-    await page.getByLabel('CEP Inicial 3').fill('03000000');
-    await page.getByLabel('CEP Final 3').fill('03999999');
-    await page.getByLabel('Custo 3').fill('0');
-    await page.getByLabel('Preço 3').fill('30');
-    await page.getByLabel('Prazo 3').fill('3');
+    await fillField(page, 'CEP Inicial 3', '03000000');
+    await fillField(page, 'CEP Final 3', '03999999');
+    await fillField(page, 'Custo 3', '0');
+    await fillField(page, 'Preço 3', '30');
+    await fillField(page, 'Prazo 3', '3');
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
 
