@@ -3759,6 +3759,44 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
       expect(r.enfileirados).toEqual([]);
     });
 
+    it.each([
+      { lote: '204', xMotivoLote: 'Rejeicao: Duplicidade de NF-e', sitCStat: '108' },
+      { lote: '635', xMotivoLote: 'Rejeicao: NF-e aguardando processamento', sitCStat: '109' },
+    ])(
+      'lote-level $lote + consSit $sitCStat (service unavailable): nothing learned — an anchor, never enviando with the consSit cStat',
+      async ({ lote, xMotivoLote, sitCStat }) => {
+        vi.mocked(consultarSituacaoNFe).mockResolvedValue({
+          ...RET_SIT_217,
+          cStat: sitCStat,
+          xMotivo: PARALISADO,
+        } as never);
+
+        const r = await emitir(retEnviSemRecibo(lote, xMotivoLote));
+
+        expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+        expect(r.result).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat: lote,
+          nRec: null,
+          reused: false,
+        });
+        expect(r.result.xMotivo).toContain(`consulta por chave: cStat ${sitCStat}`);
+        expect(r.doc).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat: lote,
+          retries: 0,
+          nRec: null,
+        });
+        expect(typeof r.doc.xml_assinado).toBe('string');
+        expect(
+          r.writes.some((w) => w.path === NFE && typeof w.data.xml_nfe_proc === 'string'),
+        ).toBe(false);
+        expectGravacaoGuardada(r);
+        expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+        expect(r.enfileirados).toEqual([]);
+      },
+    );
+
     it('the anchor is guarded on the lote too — a doc re-stamped during the consSit is not written', async () => {
       const events: string[] = [];
       const { fs, docs, writes } = fakeFirestore({ events });
