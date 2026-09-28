@@ -6,7 +6,8 @@
  *
  * Resolves the filial runtime, consults the lote by recibo (`reconcileByRecibo`),
  * and — while any doc of the lote is still pending (`stillPending > 0`: a doc
- * left in flight under the attempt cap) — re-enqueues the next consult with
+ * left in flight under the attempt cap, or one whose round a transient
+ * Firestore failure interrupted, uncounted) — re-enqueues the next consult with
  * backoff via the injected scheduler. Throws the orchestrator's typed errors
  * (`NFeCertError`, transport errors); the caller decides their disposition.
  */
@@ -35,7 +36,10 @@ export interface RunReconcileResult extends ReconcileLoteResult {
  * `stillPending === 0`, so neither re-enqueues — the terminal rule lives in
  * `reconcileByRecibo`, not here. The ceiling is that function's per-doc
  * `retries` counter, which every in-flight round advances by one, never
- * `payload.attempt`, which only paces the backoff.
+ * `payload.attempt`, which only paces the backoff. The exception is a round a
+ * transient Firestore failure interrupted: it is not counted, so a doc whose
+ * Firestore failure persists keeps this chain re-enqueuing with no cap, one
+ * `consReciNFe` per round (#1654).
  */
 export async function runReconcile(args: {
   fs: Firestore;

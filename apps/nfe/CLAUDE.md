@@ -278,8 +278,11 @@ too. One failing doc no longer aborts the round — only for three named causes
 (rule 6): a doc deleted mid-round (`NFeDocAusenteError`, the guarded persist's
 missing-doc throw) is skipped; a transient Firestore failure
 (`isTransientGrpcError`, gRPC 4/8/10/13/14, `@delfrance/data/admin/grpcErrors`)
-leaves the doc pending and uncounted; a failed SOAP call of the 539 recovery
-counts the round. Anything else is rethrown. A breaker stops further consSit
+leaves the doc pending and uncounted — so a doc whose Firestore failure persists
+re-enqueues with no cap, one `consReciNFe` per round; a failed SOAP call of the
+539 recovery counts the round, on THIS receipt (the 539's `[nRec:]` marker
+names the other chave's lote and never re-keys the doc). Anything else is
+rethrown. A breaker stops further consSit
 calls after a 656 or an unavailable service — per lote on the task path; across
 the sweep's lotes, a 656 per filial and an outage per filial + authorizer (home
 / SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal or stays counted.
@@ -288,7 +291,8 @@ place the moment a consSit answer trips it — before any further await — so a
 lote whose reconcile throws after a trip still hands it to the sweep's next
 lote. ⚠️ On the task path a throw still reaches the queue retry without it
 (the cell dies with the run); since the named causes no longer throw, that is
-left to a bug after a trip (follow-up: a durable per-filial suspension). The
+left to anything else thrown after a trip — a bug, a non-transient Firestore
+error (gRPC 3/7/9) — (follow-up: a durable per-filial suspension). The
 CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides the **same**
 queue, discriminated by `kind`.
 
@@ -322,7 +326,12 @@ run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
 (the scheduled function fails and the next tick retries; the manual route
 answers 500) and the lotes after it wait for that retry. A new exported error
 class fails `falhas.test.ts` until it is placed in the table or listed as never
-reaching a reporting catch.
+reaching a reporting catch. ⚠️ That backstop scans exported CLASSES only, so a
+plain Node `Error` escaping a known operation is invisible to it. A filial's
+stored key that no longer decrypts (a rotated `NFE_CERT_ENC_KEY`, a tampered
+blob) is exactly that case: it is recorded only because `resolveFilialCert`
+raises it as the `NFeCertError` it documents — as Node's plain `Error` it would
+abort every run, for every filial.
 
 **Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
 carries no `nRec`, so there is nothing to consult by recibo: `processChunk`
