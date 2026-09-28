@@ -239,7 +239,7 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await expect(discardDialog).toBeVisible();
     await discardDialog.getByRole('button', { name: 'Cancelar' }).click();
     await expect(toggle).toBeChecked();
-    await expect(cep).toHaveValue('01310100');
+    await expect(cep).toHaveValue('01310-100');
 
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
