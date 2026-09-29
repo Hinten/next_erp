@@ -106,14 +106,49 @@ interface XNode {
   raw: string;
 }
 
+const ENTIDADES: Readonly<Record<string, string>> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * Decode the five predefined entities AND numeric character references
+ * (`&#231;`, `&#xE3;`) in ONE pass, so a decoded `&` is never decoded again.
+ * Numeric references are legal anywhere XML text is, and signing does not pin
+ * them (C14N writes the character), so SEFAZ may hand back `Corre&#231;&#227;o`
+ * for a text we sent as `Correção` — left raw, a comparison against our own
+ * text would call it different (#1094 F1b). An out-of-range reference is left
+ * as written rather than guessed at.
+ */
 function unescapeText(s: string): string {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
+  return s.replace(/&(lt|gt|amp|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);/g, (ref, nome: string) => {
+    if (!nome.startsWith('#')) return ENTIDADES[nome] ?? ref;
+    const codigo = nome[1] === 'x' ? parseInt(nome.slice(2), 16) : parseInt(nome.slice(1), 10);
+    return codigo <= 0x10ffff ? String.fromCodePoint(codigo) : ref;
+  });
+}
+
+/**
+ * Index of the `>` that ends the tag opened at `from`, skipping any `>` inside a
+ * quoted attribute value — `a="x/>"` must neither end the tag nor make it look
+ * self-closing. -1 when truncated input never closes it.
+ */
+function fimDaTag(text: string, from: number): number {
+  let aspas: string | null = null;
+  for (let j = from; j < text.length; j++) {
+    const ch = text[j];
+    if (aspas !== null) {
+      if (ch === aspas) aspas = null;
+    } else if (ch === '"' || ch === "'") {
+      aspas = ch;
+    } else if (ch === '>') {
+      return j;
+    }
+  }
+  return -1;
 }
 
 const localName = (tag: string): string =>
@@ -153,7 +188,9 @@ function parseXml(text: string): XNode {
     if (text.startsWith('<![CDATA[', lt)) {
       const end = text.indexOf(']]>', lt);
       if (end === -1) break;
-      top().node.text += text.slice(lt + 9, end);
+      // CDATA is literal: escape it into `text` so the ONE decode every reader
+      // applies gives back exactly what was written (`&amp;` stays `&amp;`).
+      top().node.text += escapeText(text.slice(lt + 9, end));
       i = end + 3;
       continue;
     }
@@ -163,12 +200,16 @@ function parseXml(text: string): XNode {
       i = close + 1;
       continue;
     }
-    const gt = text.indexOf('>', lt);
+    const gt = fimDaTag(text, lt);
     if (gt === -1) break;
     let inner = text.slice(lt + 1, gt).trim();
     if (inner.startsWith('/')) {
-      const closed = stack.pop();
-      if (closed) closed.node.raw = text.slice(closed.start, gt + 1);
+      // A stray close tag with nothing open is ignored: popping `root` would
+      // leave `top()` undefined and crash the next read.
+      if (stack.length > 1) {
+        const closed = stack.pop();
+        if (closed) closed.node.raw = text.slice(closed.start, gt + 1);
+      }
       i = gt + 1;
       continue;
     }
@@ -278,4 +319,46 @@ export function rootElementName(xml: string): string | null {
 export function textOfFirst(xml: string, name: string): string | null {
   const node = findNode(parseXml(xml), name);
   return node === undefined ? null : unescapeText(node.text);
+}
+
+/**
+ * The namespaces a FRAGMENT relies on without declaring them itself — what a
+ * slice cut out of a larger document inherited from ancestors it no longer has.
+ * Scope-aware: a declaration covers only its own element and descendants.
+ *   - `padrao`: some unprefixed element has no default-namespace declaration
+ *     (`xmlns="…"`, including an explicit `xmlns=""`) in scope within the slice;
+ *   - `prefixos`: element/attribute prefixes used with no `xmlns:p` in scope
+ *     (`xml:` is predeclared and never reported).
+ */
+export function namespacesNaoDeclarados(xml: string): {
+  readonly padrao: boolean;
+  readonly prefixos: readonly string[];
+} {
+  let padrao = false;
+  const prefixos = new Set<string>();
+  const walk = (node: XNode, padraoEmEscopo: boolean, emEscopo: ReadonlySet<string>): void => {
+    for (const c of node.children) {
+      const declarados = new Set(emEscopo);
+      let padraoAqui = padraoEmEscopo;
+      const nomes: { nome: string; elemento: boolean }[] = [{ nome: c.tag, elemento: true }];
+      for (const k of Object.keys(c.attrs)) {
+        if (k === 'xmlns') padraoAqui = true;
+        else if (k.startsWith('xmlns:')) declarados.add(k.slice('xmlns:'.length));
+        else nomes.push({ nome: k, elemento: false });
+      }
+      for (const { nome, elemento } of nomes) {
+        const doisPontos = nome.indexOf(':');
+        if (doisPontos === -1) {
+          // An unprefixed ATTRIBUTE is in no namespace; only elements inherit one.
+          if (elemento && !padraoAqui) padrao = true;
+          continue;
+        }
+        const p = nome.slice(0, doisPontos);
+        if (p !== 'xml' && !declarados.has(p)) prefixos.add(p);
+      }
+      walk(c, padraoAqui, declarados);
+    }
+  };
+  walk(parseXml(xml), false, new Set());
+  return { padrao, prefixos: [...prefixos] };
 }

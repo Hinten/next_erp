@@ -22,7 +22,13 @@ import { formatSefazDateTime, offsetForCUF } from '../generator/tz';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
 import type { TNFe, TProcEvento } from '../types/nfe-schema';
-import { parse, serializeFragment, sliceElements, textOfFirst } from '../xml';
+import {
+  namespacesNaoDeclarados,
+  parse,
+  serializeFragment,
+  sliceElements,
+  textOfFirst,
+} from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -452,21 +458,32 @@ export interface EventoRegistradoNFe {
  * The signed bytes come from the reply, so the DANFE-CC-e can print the REAL
  * `dhRegEvento` / `nProt` — no SEFAZ XML is ever synthesized.
  *
- * Throws `NFeEventoError` when an event lacks its `evento` / `retEvento`, has a
- * non-numeric `nSeqEvento`, or uses an undeclared namespace prefix — never a
- * best guess, since the caller decides fiscal state from the answer.
+ * The `tpEvento` filter runs FIRST: an event of another type is never
+ * validated, so a malformed manifestação cannot block a CC-e lookup. Every
+ * event that IS returned was checked, and one that fails throws
+ * `NFeEventoError` — no `evento` / `retEvento` / `detEvento`, a non-numeric
+ * `nSeqEvento`, or a namespace prefix declared outside the slice — never a best
+ * guess, since the caller decides fiscal state from the answer.
  */
 export function extrairEventosNFe(retConsSitXml: string, tpEvento?: string): EventoRegistradoNFe[] {
   return sliceElements(retConsSitXml, 'procEventoNFe')
-    .map((fatia) => {
-      const procEventoXml = procEventoAutonomo(fatia);
-      const proc = parse<TProcEvento>('procEventoNFe', procEventoXml);
+    .map((fatia) => ({ fatia, proc: parse<TProcEvento>('procEventoNFe', fatia) }))
+    .filter(({ proc }) => {
+      if (tpEvento === undefined) return true;
+      // The signed type; the reply's echo only when the evento is missing (it
+      // then fails the check below anyway).
+      return (proc.evento?.infEvento?.tpEvento ?? proc.retEvento?.infEvento?.tpEvento) === tpEvento;
+    })
+    .map(({ fatia, proc }) => {
       const enviado = proc.evento?.infEvento;
       const ret = proc.retEvento?.infEvento;
       if (enviado === undefined || ret === undefined) {
         throw new NFeEventoError(
           'procEventoNFe sem <evento> ou <retEvento> na consulta de situação',
         );
+      }
+      if (typeof enviado.detEvento !== 'string') {
+        throw new NFeEventoError('evento sem <detEvento> na consulta de situação');
       }
       if (!/^[0-9]{1,2}$/.test(enviado.nSeqEvento)) {
         throw new NFeEventoError(
@@ -481,25 +498,35 @@ export function extrairEventosNFe(retConsSitXml: string, tpEvento?: string): Eve
         nProt: ret.nProt ?? null,
         dhRegEvento: ret.dhRegEvento,
         xCorrecao: textOfFirst(enviado.detEvento, 'xCorrecao'),
-        procEventoXml,
+        procEventoXml: procEventoAutonomo(fatia),
       };
-    })
-    .filter((e) => tpEvento === undefined || e.tpEvento === tpEvento);
+    });
 }
 
-/** A sliced `<procEventoNFe>` as a standalone document (see `procEventoXml`). */
+/**
+ * A sliced `<procEventoNFe>` as a standalone document (see `procEventoXml`).
+ *
+ * The only thing a slice can have inherited that we may restore is the DEFAULT
+ * namespace: `procEventoNFe` is a direct child of `retConsSitNFe`, which the
+ * leiaute (and the XSD check every consSit reply passes) puts in the NF-e
+ * namespace. Exactly that one declaration is added, on the root start tag —
+ * never a copy of every ancestor declaration, since inclusive C14N would carry
+ * an unused hoisted `xmlns:xsi` into the signed `infEvento` and change its
+ * digest. A PREFIX declared outside the slice has no value we can know, so it
+ * throws instead.
+ */
 function procEventoAutonomo(fatia: string): string {
   const prologo = '<?xml version="1.0" encoding="UTF-8"?>';
-  const abertura = fatia.slice(0, fatia.indexOf('>'));
-  const prefixo = /^<(?:([\w.-]+):)?procEventoNFe\b/.exec(abertura)?.[1];
-  if (prefixo === undefined) {
-    // Unprefixed: it needs its OWN default namespace declaration to stand alone.
-    if (/\sxmlns\s*=/.test(abertura)) return prologo + fatia;
-    return `${prologo}<procEventoNFe xmlns="${EVENTO_NS}"${fatia.slice('<procEventoNFe'.length)}`;
+  const { padrao, prefixos } = namespacesNaoDeclarados(fatia);
+  if (prefixos.length > 0) {
+    throw new NFeEventoError(
+      `procEventoNFe usa o(s) prefixo(s) ${prefixos.map((p) => `'${p}'`).join(', ')} ` +
+        'declarado(s) fora dele — não é possível isolá-lo',
+    );
   }
-  const declarado = new RegExp(`\\sxmlns:${prefixo.replace(/[.-]/g, '\\$&')}\\s*=`);
-  if (declarado.test(abertura)) return prologo + fatia;
-  throw new NFeEventoError(
-    `procEventoNFe com o prefixo '${prefixo}' declarado fora dele — não é possível isolá-lo`,
-  );
+  if (!padrao) return prologo + fatia;
+  // `padrao` implies the root declares no default namespace (a declaration there
+  // would cover every descendant), so this never writes a second `xmlns`.
+  const nome = /^<([\w.:-]+)/.exec(fatia)?.[1] ?? 'procEventoNFe';
+  return `${prologo}<${nome} xmlns="${EVENTO_NS}"${fatia.slice(1 + nome.length)}`;
 }

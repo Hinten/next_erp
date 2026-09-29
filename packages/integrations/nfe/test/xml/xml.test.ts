@@ -4,6 +4,7 @@ import {
   parse,
   parseConsCad,
   NFeXmlError,
+  namespacesNaoDeclarados,
   rootElementName,
   sliceElements,
   textOfFirst,
@@ -212,5 +213,67 @@ describe('textOfFirst', () => {
 
   it('is null when the element is absent', () => {
     expect(textOfFirst('<d/>', 'x')).toBeNull();
+  });
+
+  it('decodes numeric character references in the same single pass', () => {
+    expect(textOfFirst('<d><x>Corre&#231;&#xE3;o 2&#215;3</x></d>', 'x')).toBe('Correção 2×3');
+    // Near-misses: an escaped reference is decoded ONCE; an impossible one is kept.
+    expect(textOfFirst('<d><x>&amp;#231;</x></d>', 'x')).toBe('&#231;');
+    expect(textOfFirst('<d><x>&#x110000;</x></d>', 'x')).toBe('&#x110000;');
+  });
+
+  it('keeps CDATA literal — its "&amp;" is text, not an entity', () => {
+    expect(textOfFirst('<d><x><![CDATA[a &amp; <b>]]></x></d>', 'x')).toBe('a &amp; <b>');
+  });
+});
+
+describe('parser edges the byte-exact helpers rely on', () => {
+  it('a quoted ">" or "/>" inside an attribute neither ends nor self-closes the tag', () => {
+    const p = '<p><q a="x/>"></q><r b="1>2">t</r></p>';
+    expect(sliceElements(`<root>${p}<s/></root>`, 'p')).toEqual([p]);
+    expect(textOfFirst(p, 'r')).toBe('t');
+  });
+
+  it('a stray close tag is ignored instead of crashing the parse', () => {
+    expect(rootElementName('</a><b/>')).toBe('b');
+  });
+
+  it('parse() now decodes a character reference SEFAZ sends in a text field', () => {
+    const xml =
+      '<retConsStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">' +
+      '<tpAmb>2</tpAmb><verAplic>SP</verAplic><cStat>107</cStat>' +
+      '<xMotivo>Servi&#231;o em Opera&#xE7;&#xE3;o</xMotivo><cUF>35</cUF>' +
+      '<dhRecbto>2026-09-29T10:00:00-03:00</dhRecbto></retConsStatServ>';
+    expect(parse<XmlValue>('retConsStatServ', xml).xMotivo).toBe('Serviço em Operação');
+  });
+});
+
+describe('namespacesNaoDeclarados — what a slice inherited', () => {
+  it('nothing, when the fragment declares what it uses', () => {
+    expect(namespacesNaoDeclarados('<p xmlns="u" xmlns:ds="d"><c/><ds:s/></p>')).toEqual({
+      padrao: false,
+      prefixos: [],
+    });
+  });
+
+  it('the default namespace, when an unprefixed element has none in scope', () => {
+    expect(namespacesNaoDeclarados('<p><c/></p>').padrao).toBe(true);
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u"><c/></n:p>').padrao).toBe(true);
+    // An explicit `xmlns=""` is a declaration (no namespace, on purpose).
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u"><c xmlns=""/></n:p>').padrao).toBe(false);
+    // Unprefixed ATTRIBUTES are in no namespace, so they never need one.
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u" a="1"/>').padrao).toBe(false);
+  });
+
+  it('a prefix, scope-aware — a declaration on a sibling does not cover it', () => {
+    expect(
+      namespacesNaoDeclarados('<p xmlns="u"><a xmlns:ds="d"><ds:x/></a><ds:y/><e ds:z="1"/></p>')
+        .prefixos,
+    ).toEqual(['ds']);
+    expect(namespacesNaoDeclarados('<p xmlns="u" xml:lang="pt"/>').prefixos).toEqual([]);
+  });
+
+  it('reads a declaration that follows a quoted ">"', () => {
+    expect(namespacesNaoDeclarados('<p foo="a>b" xmlns="u"><c/></p>').padrao).toBe(false);
   });
 });

@@ -169,11 +169,95 @@ describe('extrairEventosNFe', () => {
       expect(() => extrairEventosNFe(retConsSitNFe([semRet]))).toThrow(NFeEventoError);
     });
 
-    it('throws on a prefixed procEventoNFe whose prefix is declared outside it', () => {
-      const prefixado =
-        `<n:retConsSitNFe xmlns:n="${NFE_NS}" versao="4.00">` +
-        `<n:procEventoNFe versao="1.00"><n:evento/></n:procEventoNFe></n:retConsSitNFe>`;
-      expect(() => extrairEventosNFe(prefixado)).toThrow(/prefixo 'n'/);
+    it('throws on an evento without its detEvento — an NFeEventoError, not a TypeError', () => {
+      const semDet = procs[0]!.replace(/<detEvento[\s\S]*<\/detEvento>/, '');
+      expect(semDet).not.toBe(procs[0]);
+      expect(() => extrairEventosNFe(retConsSitNFe([semDet]))).toThrow(NFeEventoError);
+    });
+
+    // A reply whose root also declares `prefixo`, the one shape a slice can
+    // lose a prefix declaration from.
+    const comPrefixoNaRaiz = (prefixo: string, uri: string, procEvento: string): string =>
+      retConsSitNFe([procEvento]).replace(
+        `<retConsSitNFe xmlns="${NFE_NS}"`,
+        `<retConsSitNFe xmlns="${NFE_NS}" xmlns:${prefixo}="${uri}"`,
+      );
+
+    it('throws on a procEventoNFe prefix declared only on the reply root', () => {
+      const prefixado = procEventoNaResposta(CCE_1, { xmlns: true })
+        .replace('<procEventoNFe ', '<n:procEventoNFe ')
+        .replace('</procEventoNFe>', '</n:procEventoNFe>');
+      expect(() => extrairEventosNFe(comPrefixoNaRaiz('n', NFE_NS, prefixado))).toThrow(
+        /prefixo\(s\) 'n'/,
+      );
+    });
+
+    it('throws on a prefix used INSIDE the event but declared only on the root (ds:Signature)', () => {
+      const comDs = procEventoNaResposta(CCE_1, { xmlns: true })
+        .replace('<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">', '<ds:Signature>')
+        .replace('</Signature>', '</ds:Signature>');
+      expect(comDs).toContain('<ds:Signature>');
+      expect(() =>
+        extrairEventosNFe(comPrefixoNaRaiz('ds', 'http://www.w3.org/2000/09/xmldsig#', comDs)),
+      ).toThrow(/prefixo\(s\) 'ds'/);
+    });
+  });
+
+  it('filters BEFORE validating — a malformed event of another type cannot block a CC-e lookup', () => {
+    const cancelamentoRuim = procEventoNaResposta(CANCELAMENTO, { xmlns: true }).replace(
+      '<nSeqEvento>1</nSeqEvento>',
+      '<nSeqEvento>X</nSeqEvento>',
+    );
+    const mista = retConsSitNFe([procs[0]!, cancelamentoRuim]);
+    expect(extrairEventosNFe(mista, TP_EVENTO_CCE).map((e) => e.nSeqEvento)).toEqual([1]);
+    // Asked for EVERY event, the malformed one is checked — and refused.
+    expect(() => extrairEventosNFe(mista)).toThrow(NFeEventoError);
+  });
+
+  it('takes nSeqEvento from the SIGNED evento — never from the reply echo (optional there)', () => {
+    const diverge = procEventoNaResposta({ ...CCE_2, nSeqEventoNoRet: 7 }, { xmlns: true });
+    const ausente = procEventoNaResposta({ ...CCE_1, nSeqEventoNoRet: null }, { xmlns: true });
+    expect(extrairEventosNFe(retConsSitNFe([diverge, ausente])).map((e) => e.nSeqEvento)).toEqual([
+      2, 1,
+    ]);
+  });
+
+  it('decodes character references in xCorrecao, and SEFAZ re-encoding them still verifies', () => {
+    const [evento] = extrairEventosNFe(
+      retConsSitNFe([
+        procEventoNaResposta(
+          { ...CCE_1, xCorrecaoXml: 'Corre&#231;&#xE3;o do peso 2&#215;3 conforme romaneio' },
+          { xmlns: true },
+        ),
+      ]),
+    );
+    // What our sanitized text would have been — equal, so F1b-4 never calls our
+    // own registered carta "a different text" over an encoding choice.
+    expect(evento!.xCorrecao).toBe('Correção do peso 2×3 conforme romaneio');
+    expect(assinaturaConfere(evento!.procEventoXml)).toBe(true);
+  });
+
+  describe('the standalone root start tag', () => {
+    it('never writes a second xmlns when a quoted ">" precedes the declaration', () => {
+      const comAspas = procEventoNaResposta(CCE_1, { xmlns: true }).replace(
+        `<procEventoNFe xmlns="${NFE_NS}"`,
+        `<procEventoNFe foo="a>b" xmlns="${NFE_NS}"`,
+      );
+      const [evento] = extrairEventosNFe(retConsSitNFe([comAspas]));
+      expect(evento!.procEventoXml).toBe(PROLOGO + comAspas);
+      expect(assinaturaConfere(evento!.procEventoXml)).toBe(true);
+    });
+
+    it('adds the default namespace to a prefixed root whose own prefix it declares', () => {
+      const semNs = procEventoNaResposta(CCE_1, { xmlns: false });
+      const prefixado = semNs
+        .replace('<procEventoNFe ', `<n:procEventoNFe xmlns:n="${NFE_NS}" `)
+        .replace('</procEventoNFe>', '</n:procEventoNFe>');
+      const [evento] = extrairEventosNFe(retConsSitNFe([prefixado]));
+      expect(evento!.procEventoXml).toBe(
+        `${PROLOGO}<n:procEventoNFe xmlns="${NFE_NS}"${prefixado.slice('<n:procEventoNFe'.length)}`,
+      );
+      expect(evento!.nProt).toBe('135260000000011');
     });
   });
 });

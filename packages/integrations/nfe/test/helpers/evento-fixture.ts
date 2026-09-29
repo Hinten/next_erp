@@ -64,6 +64,11 @@ export interface EventoDaFixture {
   readonly xMotivo: string;
   readonly nProt?: string;
   readonly dhRegEvento: string;
+  /**
+   * What SEFAZ's `retEvento` echoes as `nSeqEvento` — the same as the signed one
+   * unless set; `null` omits it (the element is optional in the leiaute).
+   */
+  readonly nSeqEventoNoRet?: number | null;
 }
 
 /** Our signed `<evento>` for one fixture event. */
@@ -110,7 +115,10 @@ export function retEventoXml(e: EventoDaFixture): string {
     `<tpAmb>2</tpAmb><verAplic>SP_EVENTOS_PL_100</verAplic><cOrgao>35</cOrgao>` +
     `<cStat>${e.cStat}</cStat><xMotivo>${e.xMotivo}</xMotivo><chNFe>${CHAVE}</chNFe>` +
     `<tpEvento>${tpEvento}</tpEvento><xEvento>${xEvento}</xEvento>` +
-    `<nSeqEvento>${e.nSeqEvento}</nSeqEvento><dhRegEvento>${e.dhRegEvento}</dhRegEvento>` +
+    (e.nSeqEventoNoRet === null
+      ? ''
+      : `<nSeqEvento>${e.nSeqEventoNoRet ?? e.nSeqEvento}</nSeqEvento>`) +
+    `<dhRegEvento>${e.dhRegEvento}</dhRegEvento>` +
     (e.nProt ? `<nProt>${e.nProt}</nProt>` : '') +
     `</infEvento></retEvento>`
   );
