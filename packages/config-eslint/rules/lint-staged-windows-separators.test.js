@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import { eslintTasks } from './lib/lint-staged.js';
 import { REPO_ROOT } from './lib/repo-scan.js';
 
 /**
@@ -55,52 +56,41 @@ process.chdir(cwdBefore);
 const winAbs = (relPath) => resolve(REPO_ROOT, relPath).split('/').join('\\');
 
 /**
- * Undo the config's POSIX single-quote escaping (`'` -> `'\''`), which wraps the
- * whole inner `sh -c` command. Same helper as the sibling guard: without it
- * every `cd '<ws>'` assertion fails for a quoting reason rather than a
- * separator one.
+ * Only the ESLint runs, split by lint-staged's own parser (see
+ * `lib/lint-staged.js` for why a string match is not enough). ⚠️ The Prettier
+ * command legitimately carries the ABSOLUTE staged paths exactly as the
+ * platform gave them (`C:\…\lib\x.ts`), so asserting "no backslashes anywhere"
+ * would fail on correct output.
  */
-const unescape = (cmd) => cmd.split(String.raw`'\''`).join("'");
-
-/**
- * Only the `sh -c` commands. ⚠️ The Prettier command legitimately carries the
- * ABSOLUTE staged paths exactly as the platform gave them (`C:\…\lib\x.ts`) —
- * lint-staged invokes it directly rather than through a shell — so asserting
- * "no backslashes anywhere" would fail on correct output.
- */
-const eslintCommands = (relPath) =>
-  lintStaged([winAbs(relPath)])
-    .map(unescape)
-    .filter((c) => c.startsWith('sh -c'));
+const eslintRuns = (relPath) => eslintTasks(lintStaged([winAbs(relPath)]));
 
 describe('lint-staged groups by workspace under Windows separators', () => {
-  it('emits an eslint command for a backslash-separated staged path', () => {
+  it('emits an eslint run for a backslash-separated staged path', () => {
     // If the mock failed to apply this fails loudly rather than passing
     // vacuously: under a real POSIX `path` the backslash path is not absolute,
     // resolves under the cwd, and matches the wrong workspace entirely.
-    const cmds = eslintCommands('apps/web/lib/__probe__.ts');
-    expect(cmds.some((c) => c.includes("cd 'apps/web'") && c.includes('eslint'))).toBe(true);
+    const runs = eslintRuns('apps/web/lib/__probe__.ts');
+    expect(runs.map((t) => t.ws)).toEqual(['apps/web']);
   });
 
-  it('hands POSIX separators to `sh -c`, not the platform ones', () => {
-    // The command is `sh -c "cd <ws> && eslint <files>"`, so the
-    // workspace-relative paths have to be POSIX even though `path.relative`
-    // produced them with backslashes.
-    const cmds = eslintCommands('apps/web/lib/__probe__.ts').join('\n');
-    expect(cmds).toContain("'lib/__probe__.ts'");
-    expect(cmds).not.toContain('\\');
+  it('hands ESLint POSIX separators, not the platform ones', () => {
+    // `path.relative` produced the workspace-relative path with backslashes;
+    // the emitted command is meant to be identical on every platform.
+    const [{ ws, args }] = eslintRuns('apps/web/lib/__probe__.ts');
+    expect(args.at(-1)).toBe('lib/__probe__.ts');
+    expect([ws, ...args].join(' ')).not.toContain('\\');
   });
 
   it('still prefers the longest matching workspace', () => {
     // `packages/integrations/nfe` must beat `packages/integrations`; normalising
     // separators must not disturb the longest-first ordering.
-    const cmds = eslintCommands('packages/integrations/nfe/src/__probe__.ts');
-    expect(cmds.some((c) => c.includes("cd 'packages/integrations/nfe'"))).toBe(true);
+    const runs = eslintRuns('packages/integrations/nfe/src/__probe__.ts');
+    expect(runs.map((t) => t.ws)).toEqual(['packages/integrations/nfe']);
   });
 
   it('still applies the --max-warnings 0 ratchet on Windows', () => {
     // The whole point: this is the only place in the repo that flag appears.
-    const cmds = eslintCommands('apps/web/lib/__probe__.ts');
-    expect(cmds.some((c) => c.includes('--max-warnings 0'))).toBe(true);
+    const [{ args }] = eslintRuns('apps/web/lib/__probe__.ts');
+    expect(args.join(' ')).toContain('--max-warnings 0');
   });
 });
