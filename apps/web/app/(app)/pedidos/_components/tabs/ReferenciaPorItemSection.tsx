@@ -16,6 +16,7 @@ import type { Firestore } from 'firebase/firestore';
 import {
   chaveAcessoValida,
   descreverViolacaoDocumento,
+  naOrdemDoPedido,
   nomeDoItem,
   REGRA_DOCUMENTO,
   violacoesDoDocumento,
@@ -25,6 +26,7 @@ import {
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
+import { linhaViraItem } from '../regroupItens';
 import type { FlatItem, PedidoFormState } from '../types';
 
 export interface ReferenciaPorItemSectionProps {
@@ -63,9 +65,14 @@ export function ReferenciaPorItemSection({
   }, [db, operacaoOuterRef]);
   const { data: operacaoDoc } = useDocSnapshot(operacaoRef);
 
-  const linhas = itensFlat
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => !item._delete);
+  // Numbered as the emission numbers `det/@nItem`: only the rows the save keeps
+  // (`linhaViraItem` — a blank "Adicionar produto" row would shift every later
+  // number), in the pedido's line order (`naOrdemDoPedido`, the order apps/nfe
+  // emits in) rather than the row's position in the form array.
+  const linhas = naOrdemDoPedido(
+    itensFlat.map((item, index) => ({ item, index })).filter(({ item }) => linhaViraItem(item)),
+    ({ item }) => item.ordem,
+  );
 
   const violacoes = useMemo(
     () =>

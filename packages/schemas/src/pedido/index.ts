@@ -25,7 +25,7 @@ export * from './collection/orderML'; // pedidos/{id}/orderML (Mercado Livre ord
 export * from './pureLogic/totals'; // money caches factory (derivePedidoTotals)
 export * from './pureLogic/estado'; // kanban buckets
 export * from './pureLogic/estoque'; // pedido → estoque desired-state predicates
-export * from './pureLogic/itens'; // flattenPedidoItens (grouped → ordem-sorted list)
+export * from './pureLogic/itens'; // flattenPedidoItens (grouped → ordem-sorted list), naOrdemDoPedido (the one line order)
 export * from './pureLogic/itemIdentity'; // per-line identity for the modification history
 export * from './pureLogic/nomeDoItem'; // the ONE display-name resolver for a pedido line
 export * from './pureLogic/checkoutEngine'; // kit-aware scan engine (checkout screen)
