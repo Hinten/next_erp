@@ -74,6 +74,17 @@
  *    each re-sanitize — could disagree. A mask only shrinks the text, so the
  *    result is still within `max`, and sanitizing it again changes nothing.
  *
+ * ## Shopee's error CODE — {@link codigoSeguro}
+ *
+ * The code is not free text, but it arrives on the same wire, so it gets its
+ * own gate here rather than one private copy per surface (the handler's log
+ * line and the CLI's error describer used to carry two). It is kept only when
+ * it is TOKEN-shaped — a letter, then at most 63 letters, digits, `_` or `.` —
+ * AND carries fewer than seven digits, the same threshold at which rules (a)–(c)
+ * call a span an identifier. So "never free text, never an identifier" is
+ * structural, not a property of Shopee's enumeration: `e` followed by a key's
+ * 44 digits is token-shaped and still refused.
+ *
  * Pure and total: no clock, no I/O, no Firestore.
  */
 import { EXCERTO_SHOPEE_MAX } from './constantesNfe';
@@ -216,4 +227,29 @@ export function resumirTextoDaShopee(
     .trim();
   if (limpo === '') return null;
   return mascarar(limitar(mascarar(limpo), max));
+}
+
+/* ----------------------------- the error code ------------------------------- */
+
+/**
+ * A token: a letter, then at most 63 letters, digits, `_` or `.` — 64
+ * characters in all. ASCII only, so a digit here is `[0-9]`.
+ */
+const CODIGO_TOKEN = /^[a-z][a-z0-9_.]{0,63}$/i;
+
+/**
+ * Shopee's error CODE as a log or CLI token — the ONE gate every surface of the
+ * folder (and PR 2's task function) reads it through; see the module header.
+ *
+ * @param code the envelope's `error` (anything — a non-string is `null`).
+ * @returns the TRIMMED code when it is token-shaped and carries fewer than
+ *   seven digits, else `null`. PAIR: `' order.upload_invoice_error\t'` ≡
+ *   `'order.upload_invoice_error'`. NEAR-MISS: six digits pass, seven do not;
+ *   64 characters pass, 65 do not.
+ */
+export function codigoSeguro(code: unknown): string | null {
+  if (typeof code !== 'string') return null;
+  const aparado = code.trim();
+  if (!CODIGO_TOKEN.test(aparado)) return null;
+  return contarDigitos(aparado) < MIN_DIGITOS_DO_GRUPO ? aparado : null;
 }

@@ -32,13 +32,22 @@
  * THROWS (the queue would retry it), so the command exits 1 and nothing is
  * finalized or stamped for the absence of an answer.
  *
- * ⚠️ **A fresh approval is REFUSED under `--live`** (`aguardando-serpro`): Shopee
- * checks the note against the federal record, which lags the SEFAZ
- * authorization, and an upload inside that window spends a certain refusal whose
- * wire text is unverified. The wait is `atrasoSerproS` over the slot's own
- * `data_autorizacao`, judged only for a slot the shared LEVEL predicate calls
- * ready AND whose instant is known — any other slot gets the handler's own
- * answer instead (an unknown instant would otherwise be refused on every run).
+ * ⚠️ **A fresh approval WITH A RECORDED INSTANT is refused under `--live`**
+ * (`aguardando-serpro`): Shopee checks the note against the federal record, which
+ * lags the SEFAZ authorization, and an upload inside that window spends a
+ * certain refusal whose wire text is unverified. The wait is `atrasoSerproS` over
+ * the slot's own `data_autorizacao`, judged only for a slot the shared LEVEL
+ * predicate calls ready AND whose instant is known — any other slot gets the
+ * handler's own answer instead (an unknown instant would otherwise be refused on
+ * every run).
+ *
+ * ⚠️ **In practice only the MIGRATED corpus has that instant** (review 2, S1-1).
+ * The legacy app stamped `data_autorizacao`; this ERP's NF-e app writes it as
+ * `null` and never fills it on approval. So every NF-e emitted after the
+ * cutover is uploaded at once, even one approved seconds ago: what covers that
+ * early upload is Shopee's "not valid yet" answer (case 5) and the handler's
+ * SERPRO re-enqueue — under `--live` recorded and printed as `adiado` /
+ * `aguardando-serpro`, never enqueued — and the operator re-runs later.
  *
  * ## The slot
  *
@@ -91,7 +100,7 @@ import {
 import type { NotaNaShopee, StatusNotaShopee } from './notaNaShopee';
 import { escolherNfeParaEnvioShopee } from './pedidoNfe';
 import type { DepsNfeShopee, ResultadoNfeShopee, SimulacaoNfeShopee } from './processarNfe';
-import { resumirTextoDaShopee } from './redacaoNfe';
+import { codigoSeguro, resumirTextoDaShopee } from './redacaoNfe';
 import {
   FASE_NFE_SHOPEE,
   type AgendadorNfeShopee,
@@ -161,8 +170,11 @@ não envia o XML, não grava nada e não enfileira nada.
 O --live roda o envio NESTE processo, como a primeira tentativa da fila, mas NUNCA
 enfileira: uma reverificação, uma espera ou uma pausa que a fila agendaria é
 IMPRESSA, e você roda o comando de novo depois.
-Uma NF-e aprovada há menos de 6 minutos é RECUSADA no --live (aguardando-serpro):
-a Shopee confere a nota no cadastro federal, que se atualiza depois da SEFAZ.
+Uma NF-e com a data de autorização gravada (as migradas do sistema antigo) e
+aprovada há menos de 6 minutos é RECUSADA no --live (aguardando-serpro): a Shopee
+confere a nota no cadastro federal, que se atualiza depois da SEFAZ. As NF-e
+emitidas por este ERP não gravam essa data: são enviadas na hora, e se a Shopee
+responder que a nota ainda não vale, a espera é IMPRESSA e você roda de novo depois.
 Uma recusa POR PEDIDO é uma RESPOSTA: o comando sai com 0. Só um erro que derruba
 a execução inteira sai com 1.
 Ver apps/shopee/scripts/README.md.
@@ -487,11 +499,15 @@ async function resolverSlot(db: Firestore, pedidoId: string, nfeId: string | nul
  *
  * ⚠️ An unknown instant is not "now" here. `atrasoSerproS` reads it as the FULL
  * wait, which is right for a queue — it waits once, then sends — but a refusal
- * keyed on that answer would refuse the same slot on EVERY run, for ever, and
- * `data_autorizacao` is nullable both in the schema and in the legacy corpus the
- * cutover re-drive exists for. So the `--live` refusal, and the dry run's
- * "`--live` would refuse" note, need a known instant; without one the line's
- * wait prints `—` and the handler answers as it would from the queue.
+ * keyed on that answer would refuse the same slot on EVERY run, for ever. And
+ * the unknown instant is the COMMON case, not the corner: only the legacy app
+ * ever wrote `data_autorizacao` (from the protocol's receipt time), while this
+ * ERP's NF-e app writes it as `null` and never fills it — so the migrated corpus
+ * carries the instant and every NF-e emitted after the cutover does not. The
+ * `--live` refusal, and the dry run's "`--live` would refuse" note, therefore
+ * need a known instant; without one the line's wait prints `—`, the handler
+ * answers as it would from the queue, and an upload inside the SERPRO window
+ * meets Shopee's case 5 and the handler's re-enqueue (recorded, never sent).
  */
 function autorizadaEmMs(raw: Record<string, unknown> | null): number | null {
   return raw === null ? null : coerceToMillis(raw.data_autorizacao);
@@ -915,12 +931,12 @@ export function renderizarJsonEnviarNfe(r: RelatorioEnviarNfe): string {
 /*                                   errors                                    */
 /* -------------------------------------------------------------------------- */
 
-/** A Shopee error code as printable text — a token, never free text. */
-const CODIGO_TOKEN = /^[a-z][a-z0-9_.]*$/i;
-
+/**
+ * A Shopee error code as printable text — through the folder's ONE gate
+ * (`codigoSeguro`: a short token, never free text, never an identifier).
+ */
 function codigoImprimivel(code: string): string {
-  const aparado = code.trim();
-  return CODIGO_TOKEN.test(aparado) ? aparado : '(não é um código)';
+  return codigoSeguro(code) ?? '(não é um código)';
 }
 
 /**

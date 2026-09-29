@@ -66,8 +66,11 @@
  *   `ATRASOS_SERPRO_REENVIO_S`; its LENGTH is the ceiling, then `nfe-invalida`.
  * - A transient Shopee failure RETHROWS to the queue's ladder, except on the
  *   LAST attempt, where it finalizes (`canal-indisponivel` + one recheck for the
- *   upload, `reverificacao-indisponivel` for a recheck). Anything else — a
- *   Firestore failure, a bug — rethrows on EVERY attempt.
+ *   upload, `reverificacao-indisponivel` for a recheck). On the ORDER READ every
+ *   Shopee code the reader does not map counts as transient, an unknown one
+ *   included — dropping the task silently is the one outcome the aviso list
+ *   cannot recover. Anything else — a Firestore failure, a bug — rethrows on
+ *   EVERY attempt.
  *
  * ## Rule 7, write by write (this module writes nothing directly)
  *
@@ -163,7 +166,7 @@ import {
   avaliarPedidoParaNfeShopee,
   chaveDaNfeParaCanal,
 } from './pedidoNfe';
-import { resumirTextoDaShopee } from './redacaoNfe';
+import { codigoSeguro, resumirTextoDaShopee } from './redacaoNfe';
 import { ehChaveDeIrmaoCancelado, reverificarNfeShopee } from './reverificacaoNfe';
 import {
   FASE_NFE_SHOPEE,
@@ -228,9 +231,6 @@ const CODIGOS_PEDIDO_INEXISTENTE: ReadonlySet<string> = new Set<string>([
 /** The app's egress IP is not on Shopee's allow-list. */
 const CODIGO_IP_NAO_DECLARADO = 'source_ip_undeclared';
 
-/** A Shopee error code as a LOG token — never free text. */
-const CODIGO_TOKEN = /^[a-z][a-z0-9_.]*$/i;
-
 /**
  * The code as this module compares it: trimmed, ONE module segment stripped,
  * trimmed again. PAIR: `order.order_not_found\t` ≡ `order_not_found`. NEAR-MISS:
@@ -239,12 +239,6 @@ const CODIGO_TOKEN = /^[a-z][a-z0-9_.]*$/i;
 function codigoSemPrefixo(code: string): string {
   const aparado = code.trim();
   return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
-}
-
-/** Shopee's code for a log line — the trimmed token, or `null` when it is not one. */
-function codigoSeguro(code: string): string | null {
-  const aparado = code.trim();
-  return CODIGO_TOKEN.test(aparado) ? aparado : null;
 }
 
 /**
@@ -270,7 +264,9 @@ type LeituraDoPedidoNaShopee =
  *   answer without our row ⇒ `inexistente` — reconciled by `order_sn`, never by
  *   position;
  * - `source_ip_undeclared` ⇒ `ip-nao-declarado`;
- * - anything else THROWS, to the caller's transient ladder.
+ * - anything else THROWS, to the caller's transient ladder — a Shopee code no
+ *   rule above maps included, which the last attempt finalizes
+ *   ({@link ehFalhaTransitoriaDeLeitura}).
  */
 export async function lerPedidoNaShopee(
   client: ShopeeClient,
@@ -407,13 +403,25 @@ function motivoDaContaQuebrada(err: unknown): MotivoNfeShopee | null {
 
 /**
  * A GET failure the queue's ladder owns: no answer at all (network), a non-Shopee
- * body (HTTP), an unreadable one (schema), or Shopee's own server hiccup.
+ * body (HTTP), an unreadable one (schema), and EVERY Shopee code
+ * {@link lerPedidoNaShopee} left unmapped — its own server hiccup
+ * (`kind: transient`) AND a code no rule knows (`kind: other`).
+ *
+ * ⚠️ The unmapped code is transient on purpose (review 2, S1-2). Rethrown on
+ * every attempt, it would end the task after the queue's last attempt with no
+ * aviso, no stamp and no completion line — for EVERY Shopee NF-e while Shopee
+ * kept answering it — and there is no NF-e sweep: the aviso list is the
+ * worklist. As a transient it keeps the retries (a code that heals is healed),
+ * and the LAST attempt finalizes it: `canal-indisponivel` (aviso + one recheck)
+ * for the upload, `reverificacao-indisponivel` for a recheck. Never a stamp: an
+ * order we could not read is not a refusal of this NF-e (reconcile R-g). The
+ * rate limit and the lapsed grant never reach here — the reader RETURNS them.
  */
 function ehFalhaTransitoriaDeLeitura(err: unknown): err is Error {
   if (err instanceof ShopeeNetworkError) return true;
   if (err instanceof ShopeeHttpError) return true;
   if (err instanceof ShopeeSchemaError) return true;
-  return err instanceof ShopeeApiError && err.kind === SHOPEE_ERROR_KIND.transient;
+  return err instanceof ShopeeApiError;
 }
 
 /** One order read, every outcome mapped to a row or a stop. Other failures throw. */

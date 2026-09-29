@@ -46,6 +46,12 @@
  * cancelled note is never chosen over its aprovada replacement, whatever its
  * dates say.
  *
+ * ⚠️ The date ranks only the MIGRATED corpus (review 2, S1-1): the legacy app
+ * stamped `data_autorizacao`, while this ERP's NF-e app writes it as `null` and
+ * never fills it on approval. Every NF-e emitted after the cutover therefore
+ * counts as "the oldest", so between two of them the rule is, in practice, the
+ * lowest document id — still total, just not "the latest authorization".
+ *
  * An eligible document whose proc is ILLEGIBLE (no readable `tpNF`/`finNFe`)
  * is kept on purpose: the slot rule cannot answer `xml-invalido`, and the
  * handler judges that XML with an aviso the operator sees — dropping it here
@@ -223,9 +229,11 @@ function motivoDeFicarDeFora(raw: Record<string, unknown>): MotivoSemNfeParaEnvi
  *
  * Eligible = the LEVEL predicate says ready AND the proc is not a legible
  * non-sale note (an illegible one stays eligible — the handler answers it).
- * Several ⇒ latest `data_autorizacao` in ms, tie ⇒ lowest id. None ⇒ the
- * furthest miss (see {@link PROFUNDIDADE_DA_FALTA}), `sem-nfe-aprovada` when
- * nothing got past "aprovada".
+ * Several ⇒ latest `data_autorizacao` in ms, tie ⇒ lowest id — and since only
+ * the migrated corpus carries that date (a post-cutover NF-e stores `null`, the
+ * oldest), two post-cutover notes fall to the lowest id. None ⇒ the furthest
+ * miss (see {@link PROFUNDIDADE_DA_FALTA}), `sem-nfe-aprovada` when nothing got
+ * past "aprovada".
  */
 export function escolherNfeParaEnvioShopee(docs: readonly DocumentoNfe[]): EscolhaNfeShopee {
   let melhor: { readonly id: string; readonly autorizadaMs: number | null } | null = null;

@@ -169,8 +169,11 @@ its own phase.
 except on the last attempt (`retryCount >= NFE_SHOPEE_MAX_TENTATIVAS - 1`).
 There the upload finalizes as `canal-indisponivel` and queues ONE recheck,
 which heals a 200 lost on that very attempt, and a recheck finalizes as
-`reverificacao-indisponivel`. A Firestore failure or a bug rethrows on EVERY
-attempt: only the four transport classes ever finalize.
+`reverificacao-indisponivel`. On the ORDER READ, every Shopee code the reader
+does not map counts as transient, an unknown one (`kind: other`) included:
+thrown on every attempt it would end the task with no aviso at all (review 2,
+S1-2). A Firestore failure or a bug rethrows on EVERY attempt: only the four
+transport classes ever finalize.
 
 **The re-drives** (§13). The route and the CLI start from a pedido and
 pick the slot with the LEVEL predicate. The route enqueues. The CLI runs the
@@ -288,7 +291,9 @@ upload's refusal table (reconcile R-f(3)):
 - `order_not_found` or `error_not_found` (module prefix stripped, trimmed), or
   an answer without our row ⇒ `pedido-inexistente-no-canal`;
 - `source_ip_undeclared` ⇒ `ip-nao-declarado`;
-- anything else ⇒ thrown to the queue's ladder.
+- anything else ⇒ thrown to the queue's ladder as a transient, a code no rule
+  maps included, so the last attempt finalizes it (`canal-indisponivel` or
+  `reverificacao-indisponivel`, §2) and never drops the task silently.
 
 `lerNotaNaShopee(row, nossaChave)` answers one of four verdicts:
 
@@ -816,10 +821,18 @@ This folder writes three things, and each one names its race tier.
   above the need is a minute the expedição waits at step 15. ⚠️ Never below
   300: the tasks emulator IGNORES `scheduleDelaySeconds`, so no round trip can
   catch an early dispatch, and the constant pin is the only guard. The
-  re-drives pass `atrasoSerproS(data_autorizacao, nowMs)` instead, clamped to
-  `[0, 360]` and rounded UP. A note approved yesterday waits nothing, and a
-  delay of 0 omits the option entirely. A `null` or non-finite instant waits
-  the full window, because the safe direction is to wait.
+  re-drives judge the remainder with `atrasoSerproS(data_autorizacao, nowMs)`
+  instead, clamped to `[0, 360]` and rounded UP, and only when the instant is
+  KNOWN. A note approved yesterday waits nothing, and a delay of 0 omits the
+  option entirely. The function reads a `null` or non-finite instant as the
+  full window (the safe default for a caller that waits once), but a re-drive
+  keyed on that answer would wait, or refuse, on every run, so an unknown
+  instant waits nothing there. ⚠️ Unknown is the post-cutover NORM, not the
+  corner (review 2, S1-1): only the legacy app wrote `data_autorizacao`, and
+  this ERP's NF-e app writes it as `null` and never fills it. The remainder
+  therefore applies to the migrated corpus; a re-drive of a fresh
+  post-cutover note uploads at once, and Shopee's case 5 plus the
+  `[600, 1800, 3600]` ladder below is what covers it.
 - **`[600, 1800, 3600]`.** Shopee's case 5 ("not valid, or less than five
   minutes old") is a DELAYED SELF re-enqueue that spends no queue attempt,
   since waiting for SERPRO is not a transport failure. It escalates because
@@ -865,10 +878,12 @@ re-drive, both starting from a pedido, both picking the slot with
   index). A document is eligible when the LEVEL predicate says ready and its
   proc is not a legible non-sale note. Several eligible ⇒ the latest
   `data_autorizacao` wins (read in ms through the tolerant reader), and a tie
-  goes to the lowest id. None ⇒ the reason of the document that got FURTHEST
-  (`nfe-nao-e-de-venda` over `tpamb-homologacao` over `xml-ausente`), else
-  `sem-nfe-aprovada`. A cancelled slot is `nao-aprovada` to the predicate, so
-  it is never chosen over its replacement.
+  goes to the lowest id. Only the migrated corpus carries that date: a
+  post-cutover NF-e stores `null`, which counts as the oldest, so between two
+  of those the lowest id decides. None ⇒ the reason of the document that got
+  FURTHEST (`nfe-nao-e-de-venda` over `tpamb-homologacao` over
+  `xml-ausente`), else `sem-nfe-aprovada`. A cancelled slot is `nao-aprovada`
+  to the predicate, so it is never chosen over its replacement.
 - **The route** `POST /api/marketplace/shopee/enviar-nfe` is
   `PERM.pedido.write`, because its callers are expedição staff on a pedido
   screen, unlike every other Shopee route. Its body is its own strict
