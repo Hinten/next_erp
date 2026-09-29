@@ -46,7 +46,7 @@ import type { IncidenteFlush } from './tabs/IncidentesTab';
 import { BloqueioMarketplaceAlert } from './BloqueioMarketplaceAlert';
 import { PagamentosSection } from './PagamentosSection';
 import { PedidoFooter } from './PedidoFooter';
-import { regroupItens } from './regroupItens';
+import { linhaViraItem, regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
 import { pedidoTabs, summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
@@ -180,11 +180,7 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   // produto" button appends a blank row before a produto is picked). Strip both
   // synthetic fields (`_rowId`, `_delete`) so neither reaches Firestore.
   const cleanItens = (_itensFlat ?? [])
-    .filter((row) => {
-      const r = row as FlatItem;
-      if (r._delete) return false;
-      return !!r.produtoUid || !!r.mktplaceId;
-    })
+    .filter((row) => linhaViraItem(row as FlatItem))
     .map((row) => {
       const { _rowId, _delete, ...item } = row as FlatItem;
       return item;
