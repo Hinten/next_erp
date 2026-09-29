@@ -17,11 +17,11 @@ import { REPO_ROOT } from './lib/repo-scan.js';
  * `byWorkspace` stayed empty, only the Prettier command was emitted, and the
  * ESLint half of the pre-commit hook never ran on a single Windows commit.
  *
- * That hook is the ONLY place `--max-warnings 0` is applied anywhere in this
- * repo — `ci.yml` runs a bare `pnpm turbo run lint` and no lint script passes
- * `--max-warnings`, so `turbo run lint` never fails on a warning. The bug
- * therefore switched off every warn-level rule (`no-console`, the `delfrance/*`
- * ratchets, `react-hooks/exhaustive-deps`) for Windows developers, silently.
+ * That hook was then the ONLY place `--max-warnings 0` was applied (`CI lint`
+ * joined it in #1704). The bug therefore switched off every warn-level rule
+ * (`no-console`, the `delfrance/*` ratchets, `react-hooks/exhaustive-deps`) for
+ * Windows developers, silently — and it still would switch off the commit-time
+ * half of that gate, leaving a warning to surface only as a red PR.
  *
  * ⚠️ `lint-staged-covers-workspaces.test.js` cannot protect the fix. It
  * exercises whatever `path.sep` the HOST has, and on Linux CI that is `/` —
@@ -89,7 +89,7 @@ describe('lint-staged groups by workspace under Windows separators', () => {
   });
 
   it('still applies the --max-warnings 0 ratchet on Windows', () => {
-    // The whole point: this is the only place in the repo that flag appears.
+    // The whole point: the commit-time half of the `--max-warnings 0` gate.
     const [{ args }] = eslintRuns('apps/web/lib/__probe__.ts');
     expect(args.join(' ')).toContain('--max-warnings 0');
   });

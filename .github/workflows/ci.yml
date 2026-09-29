@@ -155,8 +155,24 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # ⚠️ `--max-warnings 0` is load-bearing: every warn-level rule is a
+      # ratchet whose population is ZERO (#1704), and without the flag
+      # `eslint` exits 0 on a warning — so CI would pass one straight to main.
+      # Turbo forwards passthrough args to EVERY package's `lint` script, which
+      # here is exactly the intent (all of them are a bare `eslint .`). The
+      # pre-commit hook enforces the same bar on staged files, but
+      # `--no-verify`, a cloud agent or a web edit never runs it; this is the
+      # half nothing can skip. Pinned by
+      # `packages/config-eslint/rules/ci-lint-max-warnings.test.js`.
+      #
+      # turbo is called by its bin, not through pnpm: the `--` here is TURBO's
+      # passthrough separator, and `pnpm-run-args.test.js` forbids any pnpm
+      # command whose flags follow a bare `--` (pnpm forwards that `--` into
+      # the script it runs). Measured 2026-09-29 with a probe warning: turbo
+      # runs `pnpm run lint --max-warnings 0`, eslint gets `. --max-warnings 0`
+      # and exits 1; without the flag the same run exits 0.
       - name: Lint
-        run: pnpm turbo run lint
+        run: node_modules/.bin/turbo run lint -- --max-warnings 0
 
   format-check:
     name: CI format check

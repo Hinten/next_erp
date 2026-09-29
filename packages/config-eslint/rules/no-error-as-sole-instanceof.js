@@ -21,14 +21,17 @@
 //   - a catch with no `instanceof` at all: that shape is the base
 //     `no-restricted-syntax` selectors' job, not this rule's
 //
-// Warn, not error: 51 sites currently trip this — apps/nfe 18, apps/web 13,
-// apps/whatsapp 11, apps/mercado-livre 4, apps/mercado-pago 4,
-// tools/test-fixtures 1. apps/nfe leads because that workspace's own
+// Warn, not error: 51 sites tripped this when it was enabled — apps/nfe 18,
+// apps/web 13, apps/whatsapp 11, apps/mercado-livre 4, apps/mercado-pago 4,
+// tools/test-fixtures 1. apps/nfe led because that workspace's own
 // `no-restricted-syntax` override switches the base catch selectors off (flat
 // config replaces a rule by NAME, and this rule's distinct name is what lets it
 // reach there). A guard against backsliding, mirroring how
-// `no-inline-admin-collection` is registered. NOTE lint-staged runs
-// `--max-warnings 0`, so editing one of those 51 files means fixing it first.
+// `no-inline-admin-collection` is registered. The population is ZERO since
+// #1704, and both gates run `--max-warnings 0` (the pre-commit hook and
+// `CI lint`), so a new sole-`Error` catch fails the commit and the PR alike.
+// Where a catch-all is deliberate containment, say so in a scoped
+// `eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- <contract>`.
 
 /** Right-hand identifier of an `x instanceof Y` expression, or null. */
 function instanceofRhsName(node) {

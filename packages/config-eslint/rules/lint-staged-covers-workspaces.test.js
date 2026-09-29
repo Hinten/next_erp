@@ -22,12 +22,13 @@ process.chdir(cwdBefore);
  *
  * ## Why this needs a guard
  *
- * `.lintstagedrc.mjs` is the ONLY place `--max-warnings 0` is applied anywhere
- * in this repo — `ci.yml` runs a bare `pnpm turbo run lint`. So it is the sole
- * enforcement of every warn-level rule (`no-console`, the four `delfrance`
- * ratchets, `react-hooks/exhaustive-deps`), and a workspace missing from its
- * list loses all of them silently. Nothing fails; the files are simply passed
- * over.
+ * `.lintstagedrc.mjs` is one of the two places `--max-warnings 0` is applied —
+ * the other is `CI lint` (`turbo run lint -- --max-warnings 0`, since #1704) —
+ * and the only one that answers at commit time, before a push. So it is where
+ * every warn-level rule (`no-console`, the `delfrance` ratchets,
+ * `react-hooks/exhaustive-deps`) reaches the developer first, and a workspace
+ * missing from its list loses that silently: nothing fails, the files are
+ * simply passed over, and the warning surfaces only as a red PR.
  *
  * It had drifted in both directions. The list still named the five marketplace
  * scaffolds deleted in #815, and it was missing `packages/ai`,
@@ -92,9 +93,9 @@ describe('lint-staged covers every ESLint workspace', () => {
   });
 
   it('still applies the --max-warnings 0 ratchet', () => {
-    // The whole point of the pre-commit gate: CI never fails on a warning, so
-    // dropping this flag would silently retire every warn-level rule. Asserted
-    // on adjacent argv entries, which is how ESLint will receive them.
+    // The whole point of the pre-commit gate: without this flag a warning
+    // passes the commit and is found only by `CI lint`, after the push.
+    // Asserted on adjacent argv entries, which is how ESLint will receive them.
     const [{ args }] = eslintRunsFor('apps/web/lib/__probe__.ts');
     expect(args.slice(args.indexOf('--max-warnings'), args.indexOf('--max-warnings') + 2)).toEqual([
       '--max-warnings',

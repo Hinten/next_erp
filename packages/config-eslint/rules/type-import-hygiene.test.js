@@ -40,8 +40,9 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * premise free to move.
  *
  * ⚠️ `warn` would be no substitute for `error`, which is why the severities are
- * asserted: no lint script in this repo passes `--max-warnings`, so
- * `turbo run lint` never fails on a warning.
+ * asserted: a warning fails only the two `--max-warnings 0` gates (the
+ * pre-commit hook and `CI lint`, since #1704). No lint script passes the flag,
+ * so a local `turbo run lint` still exits 0 on one.
  *
  * Nothing fails when any of this is switched back off — that is the whole
  * reason this file is a test rather than a comment.

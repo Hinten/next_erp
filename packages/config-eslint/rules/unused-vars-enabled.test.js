@@ -36,9 +36,9 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * fails, nothing warns, and the next dead import ships.
  *
  * ⚠️ `warn` is not a substitute for `error` here and the guard checks the
- * severity for that reason: no lint script in this repo passes
- * `--max-warnings`, so `turbo run lint` never fails on a warning. Only
- * `.lintstagedrc.mjs` does, and only for files that happen to be staged.
+ * severity for that reason: a warning fails only the two `--max-warnings 0`
+ * gates — `.lintstagedrc.mjs` for staged files, and `CI lint` since #1704. No
+ * lint script passes the flag, so a local `turbo run lint` still exits 0 on one.
  *
  * A test rather than an ESLint rule because the invariant spans a JS config
  * module, a JSON tsconfig and a Playwright config — none of which ESLint reads

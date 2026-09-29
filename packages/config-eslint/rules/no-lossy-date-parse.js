@@ -39,7 +39,7 @@
 // immediately fired on `new Date(ms)` in `packages/schemas/src/integracao.ts`
 // and `new Date(Math.floor(us / 1000))` in `packages/data/src/pedido/devolucao.ts`,
 // both lossless epoch→Date conversions. There are ~146 such sites in the repo,
-// and lint-staged runs `--max-warnings 0`, so that direction would block edits
+// and both gates run `--max-warnings 0`, so that direction would block edits
 // across the codebase to flag no defect at all. Accepting a few false NEGATIVES
 // (a string arriving through a bare identifier) is the right trade: `Date.parse`
 // — which is unambiguous and cannot return microseconds — is still caught
@@ -60,9 +60,10 @@
 // idiomatic vitest. There are ~490 such sites and none of them reach a provider
 // payload.
 //
-// Warn, not error: this is a ratchet over a known pre-existing population
-// (`Date.parse` alone has ~24 non-test sites). Note lint-staged runs
-// `--max-warnings 0`, so touching one of those files means fixing it first.
+// Warn, not error: this was a ratchet over a known pre-existing population
+// (`Date.parse` alone had ~24 non-test sites when it was enabled). It is ZERO
+// since #1704, and both gates run `--max-warnings 0` (the pre-commit hook and
+// `CI lint`), so a new site fails the commit and the PR alike.
 // Distinct rule name, so it coexists with any app's `no-restricted-syntax`
 // override — flat config does full-replacement per rule NAME, never across
 // names, and apps/nfe plus five channel apps already override that rule.

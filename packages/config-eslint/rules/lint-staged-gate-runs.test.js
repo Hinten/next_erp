@@ -136,8 +136,8 @@ describe('the pre-commit ESLint gate actually runs', () => {
   });
 
   it('fails a staged file whose ONLY problem is a warning (the --max-warnings 0 ratchet)', () => {
-    // CI's `turbo run lint` never fails on a warning; this hook is the one
-    // place a warn-level rule gates anything, so it must.
+    // Every warn-level rule's population is zero (#1704) and must stay there;
+    // this hook is where a new warning is caught before it is even pushed.
     stageOnly('apps/probe/src/warn.js', "console.log('x');\n");
     const { status, output } = runLintStaged();
     expect(output).toContain('no-console');

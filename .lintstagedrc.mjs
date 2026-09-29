@@ -86,8 +86,9 @@ const ESLINT_IN_WORKSPACE = 'packages/config-eslint/lint-staged/eslint-in-worksp
 // `apps\web\app\x.ts` while the workspace names discovered above are built with
 // `/`. Every `rel.startsWith(ws + sep)` test was therefore false on Windows:
 // `byWorkspace` stayed empty, only the Prettier command was emitted, and the
-// `--max-warnings 0` gate — the ONLY place that flag is applied anywhere in this
-// repo — never ran on a single Windows commit, silently retiring every
+// `--max-warnings 0` gate — then the ONLY place that flag was applied anywhere
+// in this repo (`CI lint` joined it in #1704) — never ran on a single Windows
+// commit, silently retiring every
 // warn-level rule (`no-console`, the `delfrance` ratchets,
 // `react-hooks/exhaustive-deps`) for those developers. Nothing failed; the
 // files were simply passed over. That is the shape

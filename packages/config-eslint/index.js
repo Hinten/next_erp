@@ -123,9 +123,12 @@ export function typeAware(
         // ERROR, not a ratchet: the pre-existing hits are fixed in the PR that
         // enables this, so there is no population to grandfather — the condition
         // this repo states for `error` (see `no-unvalidated-response` below).
-        // ⚠️ And `warn` would gate NOTHING here: no lint script passes
-        // `--max-warnings`, so `turbo run lint` never fails on one. Only
-        // `.lintstagedrc.mjs` does, and only for files that happen to be staged.
+        // `warn` would still be the weaker choice. Until #1704 it gated NOTHING:
+        // no lint script passes `--max-warnings`, and the pre-commit hook's
+        // ESLint half never actually ran (#1709). `CI lint` now runs
+        // `turbo run lint -- --max-warnings 0`, so a warning fails CI too — but
+        // an `error` also fails a local `turbo run lint` and reads as one in the
+        // editor, which is where an orphaned import should be caught.
         //
         // The `^_` patterns are the sanctioned escape hatch — this repo already
         // writes `_ctx` / `_config` / `_exhaustive` by hand.
@@ -145,8 +148,8 @@ export function typeAware(
         // ── Type-import hygiene ────────────────────────────────────────────
         // ERROR for all three below, on the same grounds as `no-unused-vars`
         // above: every pre-existing site is fixed in the PR that enables them,
-        // so there is no population to grandfather — and `warn` gates nothing
-        // in CI.
+        // so there is no population to grandfather (and, before #1704, `warn`
+        // gated nothing in CI at all).
         //
         // All three exist because `packages/config-tsconfig/base.json` sets
         // `verbatimModuleSyntax: true`, which every workspace inherits.
@@ -375,13 +378,17 @@ const config = [
       // The distinct rule name matters: flat config does full-replacement per
       // rule NAME, so this survives the `no-restricted-syntax` overrides in
       // apps/nfe and packages/integrations/nfe that drop the base catch
-      // selectors — which is exactly where it earns its keep (18 of the 51
-      // current hits are in apps/nfe).
+      // selectors — which is exactly where it earns its keep (18 of the 51 hits
+      // it found when enabled were in apps/nfe).
       //
-      // Warn, not error: 51 pre-existing sites, mostly benign `.message`
-      // extraction. A ratchet against backsliding, mirroring
-      // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
-      // so editing one of those 51 files means fixing it first.
+      // Warn, not error: it was enabled over 51 pre-existing sites, mostly
+      // benign `.message` extraction — a ratchet against backsliding, mirroring
+      // no-inline-admin-collection. The population is ZERO since #1704: each
+      // site was narrowed, or kept behind a scoped
+      // `eslint-disable-next-line … -- <contract>` where the catch-all is
+      // deliberate containment (a webhook's persist-and-200, a sweep's per-item
+      // isolation). Both gates run `--max-warnings 0` — the pre-commit hook and
+      // `CI lint` — so a new sole-`Error` catch fails either one.
       'delfrance/no-error-as-sole-instanceof': 'warn',
 
       // `Date` cannot represent sub-millisecond time, and it reads an

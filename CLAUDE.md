@@ -506,7 +506,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- **Unused variables fail in BOTH gates, and `warn` gates nothing here.**
+- **Unused variables fail in BOTH gates, and every `warn` population is ZERO.**
   `@typescript-eslint/no-unused-vars` (error, inside `typeAware(...)`) plus
   `noUnusedLocals` in `packages/config-tsconfig/base.json`, with core
   `no-unused-vars` re-enabled for `.js`/`.mjs` only — `typeAware`'s glob is
@@ -514,11 +514,20 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `packages/config-eslint/rules` and the five `prepare-deploy.mjs`. Before #1445
   all three mechanisms were off at once and a dead import was invisible
   repo-wide: #1442 orphaned a `useQuery` import that survived typecheck 28/28,
-  lint 30/30 and 3013 web tests. ⚠️ The severity is not cosmetic — **no lint
-  script passes `--max-warnings`**, so `turbo run lint` never fails on a
-  warning; only `.lintstagedrc.mjs` does, and only for staged files. That is why
-  the repo's stated bar is `error` when the pre-existing population is zero and
-  `warn` only as a ratchet over a known one. `^_` is the escape hatch.
+  lint 30/30 and 3013 web tests. ⚠️ The severity still matters — **no lint
+  script passes `--max-warnings`**, so a local `turbo run lint` exits 0 on a
+  warning. What fails on one are the two `--max-warnings 0` gates: `CI lint`
+  (`turbo run lint -- --max-warnings 0`, pinned by
+  `rules/ci-lint-max-warnings.test.js`) and the pre-commit hook for staged
+  files. ⚠️ **That hook's ESLint half never ran** from its first commit until
+  #1709: lint-staged runs no shell, and `string-argv` split its
+  `sh -c '<cd ws && eslint …>'` task into a bare `cd`. The ratchets had grown to
+  157 warnings with every gate green; #1704 took them to zero, keeping deliberate
+  containment behind scoped `eslint-disable-next-line <rule> -- <reason>`. A
+  guard that reads a command STRING checks what it means, not what runs —
+  `rules/lint-staged-gate-runs.test.js` runs the real binary. The repo's stated
+  bar is still `error` when a rule's pre-existing population is zero and `warn`
+  only as a ratchet over a known one. `^_` is the escape hatch.
   Guarded by `rules/unused-vars-enabled.test.js`, because switching any of it
   back off fails nothing.
 - Fourteen custom lint rules in `packages/config-eslint/rules/`:
