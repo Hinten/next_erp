@@ -539,6 +539,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const columnsStorageKey = useMemo(
     () => `delfrance:tableview:columns:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext untracked by design: its {} default is a new object every render (see the comment above)
     [collection],
   );
 
@@ -563,6 +564,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const panelStorageKey = useMemo(
     () => `delfrance:tableview:actionspanel:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext untracked by design: its {} default is a new object every render (see the comment above)
     [collection],
   );
   const [panelCollapsed, setPanelCollapsed] = useLocalStorage<boolean>({
@@ -711,6 +713,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         search: searchTerm,
       }),
     // filtersSerial stands in for the `filters` object content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- filtersSerial stands in for filters: a value key, not an identity
     [filtersSerial, filterableFields, fieldOverrides, filterValueFormatters, searchTerm],
   );
 
@@ -761,6 +764,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     return null;
     // filtersSerial stands in for `filters`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- filtersSerial stands in for filters: a value key, not an identity
   }, [subLookupFields, filtersSerial]);
 
   const subLookup = useSubcollectionIdLookup(db, subLookupSpec);
@@ -804,6 +808,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const serverFilters = useMemo<Record<string, ColumnFilterValue>>(() => {
     if (subLookupKeys.size === 0) return filters;
     return Object.fromEntries(Object.entries(filters).filter(([k]) => !subLookupKeys.has(k)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- filtersSerial stands in for filters: a value key, not an identity
   }, [filtersSerial, subLookupKeys]);
   const serverFiltersSerial = useMemo(
     () =>
@@ -840,6 +845,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     });
     // queryParamsSerial stands in for queryParams; defaultQuery is identity-
     // tracked like meta itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- queryParamsSerial stands in for queryParams: a value key, not an identity
   }, [defaultQuery, queryParamsSerial]);
   const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
 
@@ -866,6 +872,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       Object.values(serverFilters).some(
         (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
       ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serverFiltersSerial stands in for serverFilters: a value key, not an identity
     [serverFiltersSerial],
   );
   const extraEmpty =
@@ -911,6 +918,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    */
   const rangeFilterField = useMemo(
     () => Object.entries(serverFilters).find(([, v]) => v.op === 'between')?.[0],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serverFiltersSerial stands in for serverFilters: a value key, not an identity
     [serverFiltersSerial],
   );
   const rangeForcedOrderBy = rangeFilterField
@@ -946,15 +954,26 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         direction: resolvedForcedOrderBy.direction ?? 'asc',
       }
     : undefined;
+  // Keyed on the primitives, never the objects: `forcedSort` is rebuilt every
+  // render, and this memo feeds both query memos, so an object dependency would
+  // re-run the query on every render.
+  const forcedSortField = forcedSort?.field;
+  const forcedSortDirection = forcedSort?.direction;
+  const sortField = sort?.field;
+  const sortDirection = sort?.direction;
   const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
     // `forcedOrderBy` outranks the user sort on purpose — see its prop doc.
-    if (forcedSort) return [{ field: forcedSort.field, direction: forcedSort.direction }];
-    if (sort) return [{ field: sort.field, direction: sort.direction }];
+    if (forcedSortField !== undefined && forcedSortDirection !== undefined) {
+      return [{ field: forcedSortField, direction: forcedSortDirection }];
+    }
+    if (sortField !== undefined && sortDirection !== undefined) {
+      return [{ field: sortField, direction: sortDirection }];
+    }
     if (defaultQuery?.orderBy?.length) {
       return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
     }
     return undefined;
-  }, [forcedSort?.field, forcedSort?.direction, sort?.field, sort?.direction, defaultQuery]);
+  }, [forcedSortField, forcedSortDirection, sortField, sortDirection, defaultQuery]);
   // Column the header arrow points at. Mirrors what was actually issued, so a
   // forced sort is visible to the user rather than silently disagreeing with
   // the arrow.
@@ -977,25 +996,32 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       ),
     [defaultQuery],
   );
+  // `resolveListMode` reads only the two COUNTS, so the memo keys on them.
+  // ⚠️ Keying on the arrays themselves let their identity leak into the
+  // pipeline memo (which depends on this object): `effectiveExtraFilters` is
+  // rebuilt whenever the `extraFilters` / `search` props are, so a caller
+  // passing either unmemoised re-executed the pipeline — a billed query — on
+  // every parent render. Both callers today pass stable values; this keeps it
+  // that way for the next one (#1704).
+  const columnFilterCount = Object.keys(serverFilters).length;
+  const extraFilterCount = effectiveExtraFilters?.length ?? 0;
   const listMode = useMemo(
     () =>
       resolveListMode({
         hasQueryOverride: !!queryOverride,
         hasDeclaredQuery: !!defaultQuery,
-        columnFilterCount: Object.keys(serverFilters).length,
-        extraFilterCount: effectiveExtraFilters?.length ?? 0,
+        columnFilterCount,
+        extraFilterCount,
         searchTerm,
         idRestrictionActive,
         orderBySerial,
         declaredOrderBySerial,
       }),
-    // `serverFiltersSerial` stands in for the `serverFilters` object content,
-    // matching how every other memo in this file tracks it.
     [
       queryOverride,
       defaultQuery,
-      serverFiltersSerial,
-      effectiveExtraFilters,
+      columnFilterCount,
+      extraFilterCount,
       searchTerm,
       idRestrictionActive,
       orderBySerial,
@@ -1110,6 +1136,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value serials (filters, idIn, selectFields) and pathContext is untracked: an identity dep here re-executes a billed pipeline on every render
   }, [
     db,
     collection,
@@ -1190,12 +1217,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
     constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value serials (base/extra filters) and pathContext is untracked: an identity dep here reopens the listener on every render
   }, [
     db,
     collection,
     queryOverride,
     pipeline,
-    lookupActive,
+    // ⚠️ `idRestrictionActive`, never `lookupActive` alone: the body reads the
+    // former, and a TYPED search turns it on without touching any other dep
+    // here — the memo then kept the unrestricted query, which painted the
+    // whole collection on the classic path and held the streaming listener
+    // open (billed) behind "Nenhum resultado" on the Pipelines one (#1704).
+    idRestrictionActive,
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
@@ -1222,6 +1255,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return applyColumnFilters(snap.data, serverFilters);
     },
     // serverFiltersSerial stands in for the `serverFilters` object content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serverFiltersSerial stands in for serverFilters: a value key, not an identity
     [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
@@ -1332,6 +1366,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       if (err instanceof PipelineUnsupportedError) return null;
       throw err;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value serials (filters, idIn, selectFields) and pathContext is untracked: an identity dep here re-executes a billed pipeline on every render
   }, [
     db,
     collection,
@@ -1617,6 +1652,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // can't loop on Set identity.
   useEffect(() => {
     if (!rows) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- prunes ghost ids from the selection when rows change; returns the same Set when nothing changed, so it converges
     setSelected((cur) => {
       if (cur.size === 0) return cur;
       const live = new Set(rows.map((r) => r.id));
