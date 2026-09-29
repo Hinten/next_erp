@@ -138,4 +138,58 @@ describe('ReferenciaPorItemSection (#330)', () => {
     expect(screen.queryByText(/Camiseta/)).toBeNull();
     expect(screen.getByText(/1\. Calça/)).toBeTruthy();
   });
+
+  it('skips the blank "Adicionar produto" row, so it shifts no later number', () => {
+    // No produto and no marketplace id: the save drops it, so the emission
+    // never numbers it. Near-miss: a row with only a marketplace id is kept.
+    render(
+      <Host
+        itens={[
+          linha('a', 'Em branco', { produtoUid: null, ordem: 1 }),
+          linha('b', 'Calça', { ordem: 2 }),
+          linha('c', 'Anúncio', { produtoUid: null, mktplaceId: 'MLB1', ordem: 3 }),
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Em branco/)).toBeNull();
+    expect(screen.getByText(/1\. Calça/)).toBeTruthy();
+    expect(screen.getByText(/2\. Anúncio/)).toBeTruthy();
+  });
+
+  it('numbers the lines in the pedido line order (ordem), as the emission numbers det/nItem', () => {
+    // The form array holds A₁, A₂, B₁ but the lines were entered A₁, B₁, A₂
+    // (ordem 1, 3, 2): "Item 2" must be B₁, the second det the nota carries.
+    render(
+      <Host
+        itens={[
+          linha('a1', 'Camiseta P', { produtoUid: 'p-A', ordem: 1 }),
+          linha('a2', 'Camiseta G', {
+            produtoUid: 'p-A',
+            ordem: 3,
+            dfeReferenciado: { chaveAcesso: CHAVE, nItem: null },
+          }),
+          linha('b1', 'Calça', { produtoUid: 'p-B', ordem: 2 }),
+        ]}
+      />,
+    );
+    expect(screen.getByText(/1\. Camiseta P/)).toBeTruthy();
+    expect(screen.getByText(/2\. Calça/)).toBeTruthy();
+    expect(screen.getByText(/3\. Camiseta G/)).toBeTruthy();
+    // The rule warning names the same number as the row label…
+    expect(
+      screen.getByText(
+        'Item 3: Informe o número do item da nota referenciada (nItem). (SEFAZ 1048)',
+      ),
+    ).toBeTruthy();
+    // …and editing "item 2" writes onto B₁ (form index 2), not onto A₂.
+    fireEvent.change(chaveDoItem(2), { target: { value: CHAVE } });
+    expect(formRef.getValues('_itensFlat.2.dfeReferenciado')).toEqual({
+      chaveAcesso: CHAVE,
+      nItem: null,
+    });
+    expect(formRef.getValues('_itensFlat.1.dfeReferenciado')).toEqual({
+      chaveAcesso: CHAVE,
+      nItem: null,
+    });
+  });
 });
