@@ -50,6 +50,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import {
   conversaCollection,
+  arquivoCollection,
   integracaoCollection,
   mensagemCollection,
   whatsappMensagemCollection,
@@ -75,6 +76,7 @@ import {
   type WhatsappDestino,
   mesmoDestinoWhatsapp,
   idFromRef,
+  extractMensagemArquivoIds,
 } from '@delfrance/schemas';
 import {
   valuePayloadSchema,
@@ -94,7 +96,10 @@ import {
 } from './contatos';
 import { guardarContatoPendente } from './vinculos';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
+import { WhatsappMediaAnchorMissingError } from './mediaAnchor';
 import { processStatuses, type StatusesReport } from './processStatus';
+
+export { WhatsappMediaAnchorMissingError } from './mediaAnchor';
 
 /** 24 hours in ms — the conversa prazo window and the auto-reply dedupe threshold. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -884,6 +889,8 @@ async function createOrUpdateMensagem(
   const referral = mapReferral(message);
   if (referral) fields.referral = referral;
 
+  const arquivoIds = [...extractMensagemArquivoIds(fields)];
+
   return db.runTransaction(async (tx) => {
     const current = await tx.get(msgRef);
     const mapRef = whatsappMensagemCollection.docRef(db, {}, msgId);
@@ -897,6 +904,19 @@ async function createOrUpdateMensagem(
       throw new WhatsappVinculoConflitoError('A mensagem já pertence a outra conversa canônica.');
     }
     const old = current.exists ? mensagemCollection.parseRead(current.data()) : null;
+
+    // Tier 1 by Firestore OCC. The arquivo anchors join the same transaction
+    // read set as the mensagem write. The orphan sweep deletes those anchors in
+    // its own transaction, so one side necessarily retries against the winner:
+    // either the message commits and the sweep keeps it, or this write sees a
+    // missing anchor and the notification pipeline retries the media download.
+    const arquivoSnaps = await Promise.all(
+      arquivoIds.map((id) => tx.get(arquivoCollection.docRef(db, {}, id))),
+    );
+    if (arquivoSnaps.some((snap) => !snap.exists)) {
+      throw new WhatsappMediaAnchorMissingError();
+    }
+
     tx.set(mapRef, {
       integracaoId: contaId,
       conversaId,

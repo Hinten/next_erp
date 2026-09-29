@@ -50,10 +50,13 @@ import type { CollectionMetadata } from './types';
  * default is built from, and the route's body sanitizer reads the same object,
  * so the schema and the route can never disagree.
  *
- * ⚠️ Every array default is written as a FUNCTION (`.default(() => [])`). Zod
- * hands a value-form default back by REFERENCE, so one parsed document's `fila`
- * would be the very same array as the next one's, and a drain that shifts it
- * would leave the schema's own default non-empty for the rest of the process.
+ * ⚠️ Every array default is written as a FUNCTION (`.default(() => [])`). The
+ * installed Zod 4 (4.4.3, read from its `_default`) shallow-clones a VALUE
+ * default on every parse, while Zod 3 handed the very same array back by
+ * REFERENCE — under which one parsed document's `fila` would be the next one's
+ * too, and a drain that shifts it would leave the schema's own default
+ * non-empty for the rest of the process. The function form is correct under
+ * both majors, so it does not depend on which one the catalog resolves.
  *
  * ## Admin-only / default-deny
  *

@@ -4,6 +4,7 @@ export { sha512Hex, toBytes } from './hash';
 export { extensionForContentType } from './mime';
 export {
   uploadFile,
+  uploadChatFile,
   uploadProductImage,
   uploadTabMediImage,
   uploadProductVideo,
@@ -11,6 +12,7 @@ export {
   uploadFromUrl,
   type UploadResult,
   type UploadFileArgs,
+  type UploadChatFileArgs,
   type UploadProductImageArgs,
   type UploadTabMediImageArgs,
   type UploadProductVideoArgs,

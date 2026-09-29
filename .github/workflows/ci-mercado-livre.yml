@@ -99,6 +99,16 @@ on:
       # closure from the workspace graph, and `packages/data` is in it.)
       - 'packages/data/src/admin/produtos/**'
       - 'packages/data/src/admin/enderecos/**'
+      # Same class, two more promotions. Shopee step 12 moved the stock
+      # arithmetic (`ehKit`, the kit SEND formula, the ledger) out of
+      # `bulkEstoquePlan.ts` into `packages/data/src/admin/estoque`, which ML now
+      # imports; step 13 (#1521) made `precoDaTabela` in `precoCalculo.ts` the
+      # reader ML's price plan sends from. ML source also imports `familia`,
+      # `kitEstoque`, `dimensoes`, `variacoes` and `fotosVariacao` out of the
+      # same `pureLogic/` folder (measured 2026-09-24), none of which was listed
+      # here, hence the folder glob rather than the one file.
+      - 'packages/data/src/admin/estoque/**'
+      - 'packages/schemas/src/produto/pureLogic/**'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       - 'packages/schemas/src/integracao.ts'

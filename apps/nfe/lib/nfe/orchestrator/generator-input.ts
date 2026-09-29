@@ -461,6 +461,24 @@ export function buildGenItems(
 }
 
 /**
+ * Why an item whose resolved imposto carries `configuracaoISSQN` is refused
+ * (#1656). This is an ERP policy, not an XSD-shape rule: the engine CAN build
+ * the det's `<ISSQN>` group, but an NF-e conjugada needs more than that, and
+ * none of it is emitted here:
+ *   - no `<ISSQNtot>` — `aggregateISSQN` has no caller, so the ISS totals never
+ *     reach the wire, nor do the vPIS/vCOFINS it does not sum (608/609);
+ *   - the service's `vProd` still counts in `ICMSTot.vProd` (`aggregateTotals`),
+ *     where a conjugada reports it as `ISSQNtot.vServ`;
+ *   - `buildISSQN` copies the config's `vBC`/`vISSQN` verbatim, and the editor
+ *     stores them as fixed R$ per produto/categoria/operação, so every sale
+ *     would carry the same ISS base and value whatever its price or quantity.
+ * The legacy Flutter app never emitted ISSQN either. The refusal is thrown in
+ * `buildItemImpostoXml`, so it rides #506's seat: no número is consumed.
+ */
+const ISSQN_NAO_SUPORTADO =
+  "ISSQN (configuracaoISSQN) is not supported for emission — this ERP emits no <ISSQNtot> (NF-e conjugada, #1656). Remove the ISSQN config from the item's imposto (produto, categoria, regra or operação)";
+
+/**
  * `buildImpostoXml` for one item, with the engine's operator-fixable tribute
  * errors (`NFeTributeError` — a partial ICMSSN500/900 sub-group, a missing
  * CSOSN sub-config, CRT 3/4, a draft `configuracaoIBSCBS` while RTC is on —
@@ -470,8 +488,21 @@ export function buildGenItems(
  * the route answers 400 (not retried by the client) and the batch path files
  * it under errorCode 'NFeOrchestratorError'. Anything else is not an
  * operator-fixable config defect and is re-thrown untouched (rule 6).
+ *
+ * An imposto carrying `configuracaoISSQN` is refused the same way, before the
+ * engine is called (`ISSQN_NAO_SUPORTADO`, #1656). Being here, inside
+ * `buildGenItems`, is what keeps it from failing a member that will not
+ * generate. The single path generates before the allocation's first write and
+ * never for a stored-bytes, EPEC, skip or in-flight doc. The batch dry-runs it
+ * for EVERY prepped member through `assertNotaBuildable` (`tributePreflight`),
+ * but `runChunkAllocateTx` applies that verdict only to a member that would
+ * allocate or regenerate, and discards it for those docs. Never move it into
+ * `prepareEmission`, whose throw fails the member whatever its nfev4 doc holds.
  */
 function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): string {
+  if (it.imposto.configuracaoISSQN != null) {
+    throw new NFeOrchestratorError(`${where}: ${ISSQN_NAO_SUPORTADO}`);
+  }
   try {
     // `qTrib` is the per-unit PIS/COFINS `qBCProd` (CST 03, and CST 49–99 with
     // `vAliqProd`); it equals the det's `<qTrib>` by construction — both come

@@ -531,6 +531,12 @@ describe('aplicarModelos — o create com filhos', () => {
         // sender's refusal write-back (`variacaoShopeeLinkSchema`).
         estoqueRecusaEm: null,
         estoqueRecusaCodigo: null,
+        // Step 13's four child price diagnostics — born null, stamped only by the
+        // price sender's write-backs (`variacaoShopeeLinkSchema`).
+        precoEnviado: null,
+        precoEnviadoEm: null,
+        precoRecusaEm: null,
+        precoRecusaCodigo: null,
       },
     ]);
     expect(docsEm(db, FILHO_B)[0]?.model_id).toBe(MODEL_B);

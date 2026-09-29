@@ -138,6 +138,18 @@ and no tiers is visible to buyers. The parent's `original_price` and
 inside the same sequence** — once models exist, Shopee ignores the item-level
 pair entirely.
 
+⚠️ **A child's price is its PARENT's when the parent propagates (D-9, #1521).**
+Every model's `original_price` — and therefore that throwaway item price — comes
+from `precoDoFilhoNaTabela` (`@delfrance/schemas`), Mercado Livre's rule and the
+ONE copy step 13's price sync calls too: unless the PARENT's
+`propagatePriceToChildren` is a stored literal `false`, every child is priced
+from the parent's `precos` and the child's own map is never read, not even as a
+fallback; a non-propagating parent leaves each child its own price and is never
+read. The produto trigger copies the parent's map into the children only when
+the parent's prices CHANGE, so a child created later, or imported by step 9,
+can hold no price of its own under a priced family. A `null` on either arm is
+still `filho-sem-preco`, on an update too.
+
 ⚠️ **O3 (probe-measured).** The throwaway stock cannot be the design's `0`:
 the sandbox shop answered `Stock should be within 2-1000000 for model`, so its
 `stock_limit.min_limit` is **2**. The item-level value is therefore

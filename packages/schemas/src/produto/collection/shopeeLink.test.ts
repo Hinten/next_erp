@@ -898,3 +898,167 @@ describe('shopeeLink.ts — o texto do arquivo', () => {
     }
   });
 });
+
+// ===========================================================================
+// Passo 13 (#1521) — os dez escalares `preco*` (seis no item, quatro no modelo)
+// ===========================================================================
+
+describe('os dez campos preco* do passo 13', () => {
+  const NOVOS_13_ITEM = [
+    'precoEnviado',
+    'precoEnviadoEm',
+    'precoRecusaEm',
+    'precoRecusaCodigo',
+    'precoRecusaMotivo',
+    'precoRecusaMensagem',
+  ] as const;
+  const NOVOS_13_MODELO = [
+    'precoEnviado',
+    'precoEnviadoEm',
+    'precoRecusaEm',
+    'precoRecusaCodigo',
+  ] as const;
+
+  const LINK_ANTIGO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Camiseta Básica Azul',
+    item_id: ITEM_ID,
+    item_status: 'NORMAL',
+  };
+  const FILHO_ANTIGO = {
+    contaVariacaoShopeeOuterRef: CONTA_REF,
+    produtoShopeeOuterRef: 'documents/produtos/p1/prodshopee/l1',
+    model_id: MODEL_ID,
+  };
+
+  /** As chaves `preco*` que o schema DECLARA — o `.shape`, não um parse. */
+  const chavesPreco = (shape: Record<string, unknown>) =>
+    Object.keys(shape)
+      .filter((k) => k.startsWith('preco'))
+      .sort();
+
+  it('PAR: um link anterior ao passo 13 faz parse e cada campo AUSENTE entra null (item e modelo)', () => {
+    const item = produtoShopeeLinkSchema.parse(LINK_ANTIGO) as Record<string, unknown>;
+    expect(NOVOS_13_ITEM).toHaveLength(6);
+    for (const campo of NOVOS_13_ITEM) {
+      expect(item).toHaveProperty(campo);
+      expect(item[campo]).toBeNull();
+      // `undefined` seria rejeitado pelo SDK do Firebase num addDoc/setDoc.
+      expect(item[campo]).not.toBeUndefined();
+    }
+    const modelo = variacaoShopeeLinkSchema.parse(FILHO_ANTIGO) as Record<string, unknown>;
+    expect(NOVOS_13_MODELO).toHaveLength(4);
+    for (const campo of NOVOS_13_MODELO) {
+      expect(modelo).toHaveProperty(campo);
+      expect(modelo[campo]).toBeNull();
+      expect(modelo[campo]).not.toBeUndefined();
+    }
+  });
+
+  it('⛔ NEAR-MISS: um valor PRESENTE sobrevive inalterado — o default só preenche o ausente', () => {
+    // Um `.default(null)` trocado por `.catch(null)` ou um transform que zere o
+    // campo passaria o teste do ausente; este é o que o separa.
+    const item = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      precoEnviado: 49.9,
+      precoEnviadoEm: 1_758_000_900_000,
+      precoRecusaEm: 1_758_000_800_000,
+      precoRecusaCodigo: 'product.error_busi_update_price_failed',
+      precoRecusaMotivo: 'recusa-desconhecida',
+      precoRecusaMensagem: 'A Shopee recusou o preço deste anúncio.',
+    });
+    expect(item.precoEnviado).toBe(49.9);
+    expect(item.precoEnviadoEm).toBe(1_758_000_900_000);
+    expect(item.precoRecusaEm).toBe(1_758_000_800_000);
+    // VERBATIM: o prefixo faz parte do que a Shopee respondeu.
+    expect(item.precoRecusaCodigo).toBe('product.error_busi_update_price_failed');
+    expect(item.precoRecusaMotivo).toBe('recusa-desconhecida');
+    expect(item.precoRecusaMensagem).toBe('A Shopee recusou o preço deste anúncio.');
+
+    const modelo = variacaoShopeeLinkSchema.parse({
+      ...FILHO_ANTIGO,
+      precoEnviado: 12.34,
+      precoEnviadoEm: 1_758_000_900_000,
+      precoRecusaEm: 1_758_000_700_000,
+      precoRecusaCodigo: 'erp:razao-de-precos-excedida',
+    });
+    expect(modelo.precoEnviado).toBe(12.34);
+    expect(modelo.precoEnviadoEm).toBe(1_758_000_900_000);
+    expect(modelo.precoRecusaEm).toBe(1_758_000_700_000);
+    expect(modelo.precoRecusaCodigo).toBe('erp:razao-de-precos-excedida');
+    // Zero também é um valor presente — nunca vira null.
+    expect(
+      produtoShopeeLinkSchema.parse({ ...LINK_ANTIGO, precoEnviadoEm: 0 }).precoEnviadoEm,
+    ).toBe(0);
+  });
+
+  it('PAR: precoEnviado aceita centavos (12.34) — ⛔ NEAR-MISS: os carimbos recusam 1.5', () => {
+    // O preço é dinheiro com centavos; os carimbos são MILISSEGUNDOS inteiros.
+    // Um `.int()` no preço, ou a falta dele num carimbo, reprova aqui.
+    expect(
+      produtoShopeeLinkSchema.parse({ ...LINK_ANTIGO, precoEnviado: 12.34 }).precoEnviado,
+    ).toBe(12.34);
+    expect(
+      variacaoShopeeLinkSchema.parse({ ...FILHO_ANTIGO, precoEnviado: 12.34 }).precoEnviado,
+    ).toBe(12.34);
+    for (const campo of ['precoEnviadoEm', 'precoRecusaEm'] as const) {
+      expect(produtoShopeeLinkSchema.safeParse({ ...LINK_ANTIGO, [campo]: 1.5 }).success).toBe(
+        false,
+      );
+      expect(variacaoShopeeLinkSchema.safeParse({ ...FILHO_ANTIGO, [campo]: 1.5 }).success).toBe(
+        false,
+      );
+      // o inteiro vizinho passa — a recusa é pela fração, não pelo campo
+      expect(produtoShopeeLinkSchema.safeParse({ ...LINK_ANTIGO, [campo]: 2 }).success).toBe(true);
+      expect(variacaoShopeeLinkSchema.safeParse({ ...FILHO_ANTIGO, [campo]: 2 }).success).toBe(
+        true,
+      );
+    }
+    // Um preço em string (um valor pt-BR não convertido) nunca é aceito.
+    expect(
+      produtoShopeeLinkSchema.safeParse({ ...LINK_ANTIGO, precoEnviado: '12,34' }).success,
+    ).toBe(false);
+  });
+
+  it('o item declara exatamente os seis, e o MODELO exatamente os quatro — sem Motivo nem Mensagem', () => {
+    expect(chavesPreco(produtoShopeeLinkSchema.shape)).toEqual([...NOVOS_13_ITEM].sort());
+    expect(chavesPreco(variacaoShopeeLinkSchema.shape)).toEqual([...NOVOS_13_MODELO].sort());
+    // ⛔ NEAR-MISS: o motivo e a mensagem são do ITEM; no modelo mora só o
+    // código verbatim da Shopee. Um schema filho que os declarasse passaria a
+    // preenchê-los com null em todo parse de todo modelo.
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('precoRecusaMotivo');
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('precoRecusaMensagem');
+    const modelo = variacaoShopeeLinkSchema.parse(FILHO_ANTIGO) as Record<string, unknown>;
+    expect(modelo).not.toHaveProperty('precoRecusaMotivo');
+    expect(modelo).not.toHaveProperty('precoRecusaMensagem');
+  });
+
+  it('ultimaModificacao continua NÃO declarada — um carimbo em ms e um legado atravessam intactos', () => {
+    // Register 141: declarar o campo forçaria uma união Timestamp|número em todo
+    // leitor. Ele passa pelo `.passthrough()`, nos dois formatos.
+    expect(produtoShopeeLinkSchema.shape).not.toHaveProperty('ultimaModificacao');
+    const emMs = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      ultimaModificacao: 1_758_000_900_000,
+    }) as Record<string, unknown>;
+    expect(emMs.ultimaModificacao).toBe(1_758_000_900_000);
+    const legado = { seconds: 1_758_000_900, nanoseconds: 0 };
+    const doLegado = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      ultimaModificacao: legado,
+    }) as Record<string, unknown>;
+    expect(doLegado.ultimaModificacao).toEqual(legado);
+    // ⛔ NEAR-MISS: ausente continua AUSENTE — nunca um null inventado.
+    expect(produtoShopeeLinkSchema.parse(LINK_ANTIGO)).not.toHaveProperty('ultimaModificacao');
+  });
+
+  it('o inventário de escritores do cabeçalho ganha os dez preco* com UM escritor', () => {
+    const FONTE = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+    expect(FONTE).toContain('**the ten `preco*` scalars** (step 13) — **ONE** writer, the price');
+    expect(FONTE).toMatch(
+      /nothing clears them but its clean send; none is ever read to\s*\*\s*decide a send/,
+    );
+    // A regra de leitura do modelo: comparada no MESMO doc, zero escritas de limpeza.
+    expect(FONTE).toContain('`precoRecusaEm >= (precoEnviadoEm ?? 0)`');
+  });
+});

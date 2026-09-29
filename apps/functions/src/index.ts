@@ -15,6 +15,7 @@ export { reconcileProductImages } from './product-images/reconcileSweep';
 export { onArquivoDeleted } from './arquivos/onArquivoDeleted';
 export { onProdutoMediaChanged } from './arquivos/onProdutoMediaChanged';
 export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
+export { onMensagemDeleted } from './arquivos/onMensagemDeleted';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 export { onProdutoChanged } from './produtos/onProdutoChanged';
