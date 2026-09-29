@@ -320,7 +320,7 @@ export function mesmoPrecoEmReais(atual: number | null, alvo: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The price a channel sends for a variation CHILD (parent → children propagation)
+// The price of a variation CHILD in a tabela (parent → children propagation)
 // ---------------------------------------------------------------------------
 
 /**
@@ -339,8 +339,11 @@ export function propagaPrecoAosFilhos(valor: unknown): boolean {
 
 /**
  * The price of a variation CHILD in a tabela. Bound today by Mercado Livre's
- * price plan and by Shopee's publish and price sync, so those three cannot
- * disagree about a child's price.
+ * price plan, by Shopee's publish and price sync, and by the web pedido line's
+ * lista price (`precoDoProdutoNaLista` in
+ * `apps/web/app/(app)/pedidos/_components/precoLookup.ts`), so none of those
+ * can disagree about a child's price — a pedido never charges a price the
+ * channels would not show.
  *
  * ⚠️ Not yet every sender: Mercado Livre's PUBLISH still decides a User
  * Products member's price with its own copy (the `price:` of each variation in
