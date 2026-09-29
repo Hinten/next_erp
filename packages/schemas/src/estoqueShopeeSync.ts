@@ -62,6 +62,12 @@ import type { CollectionMetadata } from './types';
  *  - **pause** (the send handler, on a rate limit / daily quota / holiday mode /
  *    blocked shop) ⇒ `{ pausadoAte, pausaMotivo, pausaCodigo, pauseCount + 1 }`.
  *
+ * The price sync (step 13, #1521) READS `pausadoAte` / `pausaMotivo` for the two
+ * quota motives (`burst`, `cota-diaria`) and **never writes** this document —
+ * both are call-quota pauses a price call would run into just the same. A
+ * `loja-em-ferias` / `loja-bloqueada` pause is a STOCK refusal and does not
+ * stop a price send.
+ *
  * ## Admin-only / default-deny
  *
  * Permissions are `0n` and the schema is deliberately NOT registered in

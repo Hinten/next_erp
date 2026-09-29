@@ -20,6 +20,7 @@
  * NF-e documents and the typed operation calls in `src/operations`.
  */
 import type { TRetConsReciNFe, TRetConsSitNFe, TRetEnviNFe } from '../types/nfe-schema';
+import { coerceToMillis } from '@delfrance/core/datetime';
 import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import { classifyCStat, type SefazOutcome } from '../state';
 
@@ -243,18 +244,31 @@ export const DEFAULT_STUCK_TIMEOUT_MS = 5 * 60_000; // 5 minutes
 /** Minimum NFe-doc shape needed to decide whether it's stuck. */
 export interface MaybeStuckNFe {
   readonly estado: EstadoNFe;
-  /** ISO 8601 timestamp of the last write. */
-  readonly ultima_modificacao?: string | null | undefined;
+  /**
+   * The last write, as the RAW stored value: the sweep reads `doc.data()`
+   * without the schema, so nothing has normalized it. `nfeSchema` stores a ms
+   * number, and so does the legacy Flutter corpus. A µs number, a pre-#220 ISO
+   * string or a `Date` are read too, through `coerceToMillis` — the same reader
+   * `millisSinceEpoch()` preprocesses with. Never `Date.parse` it: on a number
+   * that is NaN, and NaN once made every such doc stuck on sight (#1653).
+   */
+  readonly ultima_modificacao?: unknown;
 }
 
 /**
- * True when an NF-e is in `enviando` / `aguardandoResposta` and the
- * last write is older than `timeoutMs`. The `processar-pendentes`
- * route handler runs this against every NF-e doc it scans, then
- * invokes `consSitNFe(chave)` for the ones that come back true.
+ * True when an NF-e is in `enviando` / `aguardandoResposta` and its last write
+ * is at least `timeoutMs` old (the bound is inclusive).
  *
- * SEFAZ commits to 95% of lotes within 3 minutes; the 5-minute default
- * is a small safety margin past that.
+ * The backstop sweep (`runProcessarPendentes` in `apps/nfe`) applies it only to
+ * docs with no `proximaConsultaEm` of their own — the persist-before-send
+ * anchor, the chave-less batch placeholder, #512's `enviando` dispositions and
+ * imported legacy docs — and recovers the ones that come back true. A paced
+ * doc is judged by its `proximaConsultaEm` instead.
+ *
+ * SEFAZ commits to 95% of lotes within 3 minutes; the 5-minute default is a
+ * small safety margin past that. Being longer than the 60 s SOAP timeout, it
+ * is also what keeps the sweep off a send still in flight: a consSit made
+ * before SEFAZ records the NF-e answers 217, which lands as `rejeitada`.
  */
 export function isStuckEnviando(
   nfe: MaybeStuckNFe,
@@ -264,11 +278,16 @@ export function isStuckEnviando(
   if (nfe.estado !== ESTADO_NFE.enviando && nfe.estado !== ESTADO_NFE.aguardandoResposta) {
     return false;
   }
-  if (!nfe.ultima_modificacao) {
-    // No timestamp — treat as stuck (defensive: better to re-query than ignore).
+  const last = coerceToMillis(nfe.ultima_modificacao);
+  if (last === null) {
+    // Two cases, one answer — stuck, so the doc is re-queried, never ignored:
+    //  - MISSING (absent, null, undefined): there is no timestamp at all;
+    //  - present but UNREADABLE (a non-date string, a number in the ms/µs gap,
+    //    NaN, ±Infinity, an object such as a Firestore Timestamp — which no
+    //    writer stores — or a boolean). Deliberate: ignoring it could strand
+    //    an anti-loss anchor forever, and the consult's persist re-stamps a ms
+    //    number, so from then on the doc is judged on the timeout.
     return true;
   }
-  const last = Date.parse(nfe.ultima_modificacao);
-  if (Number.isNaN(last)) return true;
   return now.getTime() - last >= timeoutMs;
 }

@@ -304,6 +304,14 @@ export interface ResumoImportacaoShopee {
   readonly taxInfoCampos: readonly string[];
   readonly preco: { readonly tabelaId: string; readonly valor: number } | null;
   readonly precoIgnorado: string | null;
+  /**
+   * The parent's `propagatePriceToChildren` this import would write, or `null`
+   * when it writes none — the family rule's verdict (`planejarPrecoDaFamilia`),
+   * which only a CREATE or an existing produto with NO children reaches: the
+   * update of a parent that already has children always reads `null`, because
+   * that flag is the operator's.
+   */
+  readonly propagaPreco: boolean | null;
   readonly estoque: number | null;
   readonly estoqueIgnorado: string | null;
   readonly variacoes: {
@@ -477,6 +485,7 @@ export function resumoDoPlano(
     taxInfoCampos: taxInfoCamposDe(entrada),
     preco: precoDoPlano(plano),
     precoIgnorado: plano.precoPaiIgnorado,
+    propagaPreco: plano.propagaPrecoPai,
     estoque: numero(plano.estoquePai?.data.quantidade),
     estoqueIgnorado: plano.estoquePaiIgnorado,
     variacoes: {
@@ -572,6 +581,9 @@ export function renderResumoImportacao(r: ResumoImportacaoShopee): string[] {
   linhas.push('### preço e estoque');
   linhas.push(
     `  preço ................... ${r.preco === null ? `(nenhum) motivo=${txt(r.precoIgnorado)}` : `${String(r.preco.valor)} na tabela ${r.preco.tabelaId}`}`,
+  );
+  linhas.push(
+    `  propagar preço .......... ${r.propagaPreco === null ? '— (não seria escrito)' : r.propagaPreco ? 'sim (um preço para a família)' : 'não (cada variação com o seu)'}`,
   );
   linhas.push(
     `  estoque ................. ${r.estoque === null ? `(nenhum) motivo=${txt(r.estoqueIgnorado)}` : String(r.estoque)}`,
