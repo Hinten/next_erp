@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { coerceToMillis, dataCivilNoFuso } from '@delfrance/core/datetime';
 import { centavosDeReais, formatReais, roundReais } from '@delfrance/core/money';
+import { ESTADO_NFE, type EstadoNFe } from '../../nfe';
 import { idFromRef } from '../../shared/outerRef';
 import {
   MODO_LINK_PAGAMENTO,
@@ -11,7 +12,7 @@ import {
 import type { ModoLinkPagamento, StatusLinkPagamento } from '../collection/linkPgtoMercadoPago';
 import { isPagamentoPagante, sumPagamentosPagos } from '../collection/pagamento';
 import type { EstadoPedido } from '../collection/pedido';
-import { podeGerarLinkPagamento } from './estado';
+import { nfeFiscalEncerrada, podeGerarLinkPagamento, travarPagamentoComNFe } from './estado';
 
 /*
  * Pure helpers behind the pedido editor's "Link Pgto" tab (#367): why a link
@@ -115,7 +116,7 @@ export interface BloqueioLinkPagamentoInput {
    * to `pago` and authorise dispatch.
    */
   canalMarketplace: boolean;
-  /** `travarPagamentoComNFe(estado)` AND an aprovada / closed NF-e exists. */
+  /** An NF-e locks the pagamentos — {@link pagamentosTravadosPorNFe} decides it. */
   pagamentosTravadosPorNFe: boolean;
   /** Still to pay — `coberturaDoPedido(...).restante`. */
   restante: number | null | undefined;
@@ -136,7 +137,10 @@ export interface BloqueioLinkPagamentoInput {
  *  - `valorMinimo`         — the least (R$) one link may charge.
  *  - `expiracaoDiasPadrao` / `expiracaoDiasMax` — default and maximum horizon of
  *    a link's deadline, in days from today. Mercado Pago recommends at least
- *    three days for Pix and boleto.
+ *    three days for Pix and boleto. The maximum is 29, not 30: the deadline is
+ *    the END of the chosen day (23:59:59 in São Paulo), so "today + 30" would sit
+ *    up to a day past Pix's 30-day `date_of_expiration` bound, while the end of
+ *    "today + 29" always stays under it.
  */
 export const LIMITES_LINK_PAGAMENTO = {
   nomePagadorMax: 20,
@@ -146,7 +150,7 @@ export const LIMITES_LINK_PAGAMENTO = {
   parcelasMax: 12,
   valorMinimo: 1,
   expiracaoDiasPadrao: 3,
-  expiracaoDiasMax: 30,
+  expiracaoDiasMax: 29,
 } as const;
 
 /**
@@ -185,6 +189,37 @@ export function motivoBloqueioLinkPagamento(
     return MOTIVO_RECUSA_LINK.semValor;
   }
   return null;
+}
+
+/**
+ * Whether the pedido's NF-e locks its pagamentos — the input
+ * {@link motivoBloqueioLinkPagamento} calls `pagamentosTravadosPorNFe`. It is the
+ * rule the pedido editor computes for `pagamentosBloqueadosPorNFe`
+ * (`apps/web/app/(app)/pedidos/_components/PedidoForm.tsx`), extracted so the
+ * form and the `apps/mercado-pago` link routes cannot describe one lock two ways:
+ *
+ *  - a `cancelada` / `numeracaoInutilizada` NF-e ({@link nfeFiscalEncerrada})
+ *    locks them outright, in ANY pedido estado — nothing is left to change;
+ *  - an `aprovada` NF-e locks them except in the carve-out estados
+ *    ({@link travarPagamentoComNFe}: `iniciado`, `aguardandoConfirmacaoDePagamento`
+ *    and `cancelado` — the legacy save flow re-allows the write there);
+ *  - any other NF-e estado (`gerado`, `enviando`, `rejeitada`, `error`, …) or no
+ *    NF-e at all leaves them editable.
+ *
+ * `nfeEstado` is the estado of the pedido's NEWEST NF-e (by
+ * `ultima_modificacao`), the same document the editor's `limit(1)` query reads;
+ * the caller picks it, this only judges it. `null` / `undefined` means the pedido
+ * has no NF-e.
+ */
+export function pagamentosTravadosPorNFe(
+  nfeEstado: EstadoNFe | null | undefined,
+  estadoPedido: EstadoPedido,
+): boolean {
+  if (nfeEstado == null) return false;
+  return (
+    nfeFiscalEncerrada(nfeEstado) ||
+    (nfeEstado === ESTADO_NFE.aprovada && travarPagamentoComNFe(estadoPedido))
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -334,15 +369,48 @@ export function extrairPrimeiroNome(...fontes: ReadonlyArray<unknown>): string |
  * the strength of a refund. (The DISPLAY, {@link resumirLinksPagamento},
  * deliberately counts the paying ones — that is money in hand.)
  *
- * A link with no `quantidadeMaxima` (a legacy link) never reaches a quota.
+ * The quota is {@link cotaDoLink} — the SAME reading the summary uses — so a
+ * TRACEABLE link (`modo` set) with no usable `quantidadeMaxima` accepts ONE
+ * payment, while a LEGACY link (no readable `modo`) never reaches a quota, even
+ * one it happens to store: payments cannot be attributed to it, and it was
+ * created under the legacy application.
  */
 export function linkAtingiuCota(
-  link: { quantidadeMaxima?: number | null },
+  link: { quantidadeMaxima?: number | null; modo?: unknown },
   pagamentosDoLink: ReadonlyArray<{ dataAprovacao?: number | null }>,
 ): boolean {
-  if (link.quantidadeMaxima == null) return false;
   const aprovados = pagamentosDoLink.filter((p) => p.dataAprovacao != null).length;
-  return aprovados >= link.quantidadeMaxima;
+  return linkAtingiuCotaComAprovados(link, aprovados);
+}
+
+/**
+ * {@link linkAtingiuCota} for a caller that already holds the count of payments
+ * EVER approved on the link (the webhook's auto-close gets it from the reconcile
+ * as `aprovadosDoLink`). ONE rule, two entry points: the list form above only
+ * counts and delegates here.
+ *
+ * Written as "reached" rather than "not reached", so a count that is not a
+ * number (`NaN`) leaves the link OPEN instead of closing it.
+ */
+export function linkAtingiuCotaComAprovados(
+  link: { quantidadeMaxima?: number | null; modo?: unknown },
+  aprovados: number,
+): boolean {
+  const rastreavel = modoLinkPagamentoSchema.safeParse(link.modo).success;
+  if (!rastreavel) return false;
+  const cota = cotaDoLink(link.quantidadeMaxima, rastreavel);
+  return cota !== null && aprovados >= cota;
+}
+
+/**
+ * Payments a link accepts, read the ONE way every quota rule here reads it (the
+ * summary's `quantidadeMaxima` / `restantes` and {@link linkAtingiuCota}): the
+ * stored `quantidadeMaxima` when it is an integer `>= 1`; otherwise `1` for a
+ * TRACEABLE link (the create flow always stores a quota, and a per-person link
+ * accepts one payment); otherwise `null` — no quota — for a legacy one.
+ */
+function cotaDoLink(quantidadeMaxima: unknown, rastreavel: boolean): number | null {
+  return inteiroOuNull(quantidadeMaxima, 1) ?? (rastreavel ? 1 : null);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -571,7 +639,7 @@ export function resumirLinksPagamento(i: {
 
     const pagantesBrutos = (porLink.get(link.id) ?? []).filter((p) => p.pagante);
     const pagos = pagantesBrutos.length;
-    const quantidade = inteiroOuNull(dados.quantidadeMaxima, 1) ?? (rastreavel ? 1 : null);
+    const quantidade = cotaDoLink(dados.quantidadeMaxima, rastreavel);
     const restantes = quantidade === null ? null : Math.max(0, quantidade - pagos);
 
     const pagantes = [...pagantesBrutos]
@@ -648,8 +716,14 @@ export function resumirLinksPagamento(i: {
     .map(({ resumo }) => resumo);
 }
 
-/** Whether a summarised link can still receive a payment. */
-function estaEmAberto(resumo: LinkPagamentoResumo): boolean {
+/**
+ * Whether a summarised link can still receive a payment: TRACEABLE and `aberto` /
+ * `parcial`. The ONE definition of "open" — {@link valorEmAbertoEmLinks}, both copy
+ * messages and the backend's exposure guard (`apps/mercado-pago`'s
+ * `elegibilidade.ts`, which must tell the links this sum covers from the ones it
+ * does not) all ask it here.
+ */
+export function linkPagamentoEmAberto(resumo: LinkPagamentoResumo): boolean {
   return (
     resumo.rastreavel &&
     (resumo.situacao === SITUACAO_LINK_PAGAMENTO.aberto ||
@@ -672,7 +746,7 @@ function estaEmAberto(resumo: LinkPagamentoResumo): boolean {
 export function valorEmAbertoEmLinks(resumos: ReadonlyArray<LinkPagamentoResumo>): number {
   let centavos = 0;
   for (const resumo of resumos) {
-    if (!estaEmAberto(resumo)) continue;
+    if (!linkPagamentoEmAberto(resumo)) continue;
     centavos += centavosDeReais(resumo.valor) * (resumo.restantes ?? 1);
   }
   return roundReais(centavos / 100);
@@ -713,7 +787,7 @@ export function mensagemLinksPagamento(i: {
   resumos: ReadonlyArray<LinkPagamentoResumo>;
   fuso: string;
 }): string | null {
-  const enviaveis = i.resumos.filter((r) => estaEmAberto(r) && r.link !== null);
+  const enviaveis = i.resumos.filter((r) => linkPagamentoEmAberto(r) && r.link !== null);
   if (enviaveis.length === 0) return null;
 
   const cabecalho = i.numeroPedido
@@ -785,7 +859,7 @@ export function mensagemQuemJaPagou(i: {
   if (semNome > 0) linhas.push(`✅ ${semNome} pagamento(s) sem nome`);
 
   const aguardando = rastreaveis.flatMap((r) =>
-    r.modo === MODO_LINK_PAGAMENTO.individual && estaEmAberto(r) && r.nomePagador !== null
+    r.modo === MODO_LINK_PAGAMENTO.individual && linkPagamentoEmAberto(r) && r.nomePagador !== null
       ? [`⏳ ${r.nomePagador}`]
       : [],
   );

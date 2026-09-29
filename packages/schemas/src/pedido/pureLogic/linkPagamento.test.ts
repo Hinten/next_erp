@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { formatReais } from '@delfrance/core/money';
+import { ESTADO_NFE, estadoNFeSchema } from '../../nfe';
+import type { EstadoNFe } from '../../nfe';
 import { MODO_LINK_PAGAMENTO, STATUS_LINK_PAGAMENTO } from '../collection/linkPgtoMercadoPago';
 import { STATUS_PAGAMENTO, pagamentoSchema } from '../collection/pagamento';
 import { ESTADO_PEDIDO } from '../collection/pedido';
@@ -11,10 +13,12 @@ import {
   SITUACAO_LINK_PAGAMENTO_LABELS,
   extrairPrimeiroNome,
   linkAtingiuCota,
+  linkAtingiuCotaComAprovados,
   mensagemLinksPagamento,
   mensagemQuemJaPagou,
   motivoBloqueioLinkPagamento,
   motivoRecusaLinkSchema,
+  pagamentosTravadosPorNFe,
   resumirLinksPagamento,
   situacaoLinkPagamentoSchema,
   valorEmAbertoEmLinks,
@@ -145,6 +149,101 @@ describe('motivoBloqueioLinkPagamento', () => {
         MOTIVO_RECUSA_LINK.semValor,
       );
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                          pagamentosTravadosPorNFe                           */
+/* -------------------------------------------------------------------------- */
+
+describe('pagamentosTravadosPorNFe', () => {
+  /**
+   * Spelled out as literals instead of derived from `travarPagamentoComNFe` /
+   * `nfeFiscalEncerrada` — re-deriving the expectation from the helpers the rule
+   * is built on would only assert `f(x) === f(x)`. Written this way, WIDENING or
+   * NARROWING either predicate reds the table below.
+   */
+  const PEDIDO_COM_EXCECAO = [
+    ESTADO_PEDIDO.iniciado,
+    ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    ESTADO_PEDIDO.cancelado,
+  ] as const;
+  const NFE_ENCERRADA = [ESTADO_NFE.cancelada, ESTADO_NFE.numeracaoInutilizada] as const;
+  const NFE_QUE_NAO_TRAVA: readonly EstadoNFe[] = [
+    ESTADO_NFE.gerado,
+    ESTADO_NFE.enviando,
+    ESTADO_NFE.aguardandoResposta,
+    ESTADO_NFE.processamentoCompleto,
+    ESTADO_NFE.processamentoCancelado,
+    ESTADO_NFE.epecAprovado,
+    ESTADO_NFE.rejeitada,
+    ESTADO_NFE.error,
+  ];
+  const estadosDoPedido = Object.values(ESTADO_PEDIDO);
+
+  it('every NF-e estado is classified by exactly one group above (a new one forces a decision)', () => {
+    const classificados = [ESTADO_NFE.aprovada, ...NFE_ENCERRADA, ...NFE_QUE_NAO_TRAVA].sort();
+    expect(classificados).toEqual([...estadoNFeSchema.options].sort());
+  });
+
+  it('no NF-e → never locked, in any pedido estado', () => {
+    for (const estado of estadosDoPedido) {
+      expect(pagamentosTravadosPorNFe(null, estado), `null / ${estado}`).toBe(false);
+      expect(pagamentosTravadosPorNFe(undefined, estado), `undefined / ${estado}`).toBe(false);
+    }
+  });
+
+  it('a cancelada / numeração-inutilizada NF-e locks HARD: every pedido estado, carve-outs included', () => {
+    for (const nfe of NFE_ENCERRADA) {
+      for (const estado of estadosDoPedido) {
+        expect(pagamentosTravadosPorNFe(nfe, estado), `${nfe} / ${estado}`).toBe(true);
+      }
+    }
+  });
+
+  it('an aprovada NF-e locks every estado except the three legacy carve-outs', () => {
+    for (const estado of estadosDoPedido) {
+      const carveOut = (PEDIDO_COM_EXCECAO as readonly string[]).includes(estado);
+      expect(pagamentosTravadosPorNFe(ESTADO_NFE.aprovada, estado), estado).toBe(!carveOut);
+    }
+  });
+
+  it('NEAR-MISS: an aprovada NF-e on a carve-out estado is NOT locked, a cancelada one is', () => {
+    for (const estado of PEDIDO_COM_EXCECAO) {
+      expect(pagamentosTravadosPorNFe(ESTADO_NFE.aprovada, estado), estado).toBe(false);
+      expect(pagamentosTravadosPorNFe(ESTADO_NFE.cancelada, estado), estado).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: any other NF-e estado (in flight, rejected, EPEC, error) never locks', () => {
+    for (const nfe of NFE_QUE_NAO_TRAVA) {
+      for (const estado of estadosDoPedido) {
+        expect(pagamentosTravadosPorNFe(nfe, estado), `${nfe} / ${estado}`).toBe(false);
+      }
+    }
+  });
+
+  it('feeds motivoBloqueioLinkPagamento: only a real lock names the nfe reason', () => {
+    const base = {
+      ehSaida: true,
+      canalMarketplace: false,
+      restante: 100,
+    } as const;
+    const motivo = (nfe: EstadoNFe | null, estado: (typeof estadosDoPedido)[number]) =>
+      motivoBloqueioLinkPagamento({
+        ...base,
+        estado,
+        pagamentosTravadosPorNFe: pagamentosTravadosPorNFe(nfe, estado),
+      });
+    // Aprovada on `aguardando…` is the carve-out: the link may still be generated.
+    expect(motivo(ESTADO_NFE.aprovada, ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento)).toBeNull();
+    // …but not on a `carrinho` (link-eligible, yet outside the carve-outs), nor after a cancelamento.
+    expect(motivo(ESTADO_NFE.aprovada, ESTADO_PEDIDO.carrinho)).toBe(MOTIVO_RECUSA_LINK.nfe);
+    expect(motivo(ESTADO_NFE.cancelada, ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento)).toBe(
+      MOTIVO_RECUSA_LINK.nfe,
+    );
+    expect(motivo(null, ESTADO_PEDIDO.carrinho)).toBeNull();
+    expect(motivo(ESTADO_NFE.rejeitada, ESTADO_PEDIDO.carrinho)).toBeNull();
   });
 });
 
@@ -339,29 +438,89 @@ describe('extrairPrimeiroNome', () => {
 describe('linkAtingiuCota', () => {
   const aprovado = { dataAprovacao: 1_727_000_000_000_000 };
   const pendente = { dataAprovacao: null };
+  const individual = MODO_LINK_PAGAMENTO.individual;
+  const compartilhado = MODO_LINK_PAGAMENTO.compartilhado;
 
   it('is true once as many payments were approved as the quota', () => {
-    expect(linkAtingiuCota({ quantidadeMaxima: 1 }, [aprovado])).toBe(true);
-    expect(linkAtingiuCota({ quantidadeMaxima: 3 }, [aprovado, aprovado, aprovado])).toBe(true);
+    expect(linkAtingiuCota({ modo: individual, quantidadeMaxima: 1 }, [aprovado])).toBe(true);
+    expect(
+      linkAtingiuCota({ modo: compartilhado, quantidadeMaxima: 3 }, [aprovado, aprovado, aprovado]),
+    ).toBe(true);
   });
 
   it('is false one payment short (the near-miss of >=)', () => {
-    expect(linkAtingiuCota({ quantidadeMaxima: 1 }, [])).toBe(false);
-    expect(linkAtingiuCota({ quantidadeMaxima: 3 }, [aprovado, aprovado])).toBe(false);
+    expect(linkAtingiuCota({ modo: individual, quantidadeMaxima: 1 }, [])).toBe(false);
+    expect(
+      linkAtingiuCota({ modo: compartilhado, quantidadeMaxima: 3 }, [aprovado, aprovado]),
+    ).toBe(false);
   });
 
   it('counts approvals only: pending payments do not use up a slot', () => {
-    expect(linkAtingiuCota({ quantidadeMaxima: 1 }, [pendente])).toBe(false);
-    expect(linkAtingiuCota({ quantidadeMaxima: 2 }, [aprovado, pendente, {}])).toBe(false);
+    expect(linkAtingiuCota({ modo: individual, quantidadeMaxima: 1 }, [pendente])).toBe(false);
+    expect(
+      linkAtingiuCota({ modo: compartilhado, quantidadeMaxima: 2 }, [aprovado, pendente, {}]),
+    ).toBe(false);
   });
 
   it('is >= not ===: an over-full link is still full', () => {
-    expect(linkAtingiuCota({ quantidadeMaxima: 1 }, [aprovado, aprovado])).toBe(true);
+    expect(linkAtingiuCota({ modo: individual, quantidadeMaxima: 1 }, [aprovado, aprovado])).toBe(
+      true,
+    );
   });
 
-  it('a link with no quota (legacy) never reaches it', () => {
-    expect(linkAtingiuCota({ quantidadeMaxima: null }, [aprovado, aprovado])).toBe(false);
+  it('reads a TRACEABLE link with no stored quota as accepting ONE payment', () => {
+    for (const quantidadeMaxima of [null, undefined]) {
+      const link = { modo: individual, quantidadeMaxima };
+      expect(linkAtingiuCota(link, [aprovado]), String(quantidadeMaxima)).toBe(true);
+      // Near-miss: with nothing approved the same link is still open.
+      expect(linkAtingiuCota(link, []), String(quantidadeMaxima)).toBe(false);
+    }
+  });
+
+  it('never closes a LEGACY link (no readable modo), even one that stores a quota', () => {
+    for (const modo of [null, undefined, 'lixo']) {
+      expect(linkAtingiuCota({ modo, quantidadeMaxima: null }, [aprovado, aprovado])).toBe(false);
+      expect(linkAtingiuCota({ modo, quantidadeMaxima: 1 }, [aprovado, aprovado])).toBe(false);
+    }
     expect(linkAtingiuCota({}, [aprovado])).toBe(false);
+  });
+
+  it('uses the SAME quota the summary shows, for every stored quantidadeMaxima', () => {
+    // A quota that is not an integer >= 1 is no quota — for a traceable link, 1.
+    for (const quantidadeMaxima of [null, 0, -2, 1.5, 1, 3]) {
+      const [resumo] = resumirLinksPagamento({
+        links: [{ id: 'l', data: { modo: compartilhado, quantidadeMaxima } }],
+        pagamentos: [],
+        agoraMs: 0,
+      });
+      const cota = resumo!.quantidadeMaxima!;
+      const link = { modo: compartilhado, quantidadeMaxima };
+      const aprovados = (n: number) => Array.from({ length: n }, () => aprovado);
+      expect(linkAtingiuCota(link, aprovados(cota)), String(quantidadeMaxima)).toBe(true);
+      expect(linkAtingiuCota(link, aprovados(cota - 1)), String(quantidadeMaxima)).toBe(false);
+    }
+  });
+});
+
+describe('linkAtingiuCotaComAprovados', () => {
+  const individual = MODO_LINK_PAGAMENTO.individual;
+
+  it('is the count form of the SAME rule', () => {
+    for (const quantidadeMaxima of [null, 1, 2, 5]) {
+      for (let n = 0; n <= 6; n += 1) {
+        const link = { modo: individual, quantidadeMaxima };
+        const linhas = Array.from({ length: n }, () => ({ dataAprovacao: 1 }));
+        expect(linkAtingiuCotaComAprovados(link, n), `${quantidadeMaxima}/${n}`).toBe(
+          linkAtingiuCota(link, linhas),
+        );
+      }
+    }
+  });
+
+  it('leaves the link open when the count is not a number', () => {
+    expect(linkAtingiuCotaComAprovados({ modo: individual, quantidadeMaxima: 1 }, Number.NaN)).toBe(
+      false,
+    );
   });
 });
 

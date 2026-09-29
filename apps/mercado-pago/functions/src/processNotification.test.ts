@@ -102,6 +102,7 @@ describe('processMercadoPagoNotification log line', () => {
       outcome: 'done',
       kind: 'reconciled',
       detail: 'pago',
+      linkEncerramento: null,
       topic: 'payment',
       paymentId: '987',
       collectorUserId: 55,
@@ -137,9 +138,25 @@ describe('processMercadoPagoNotification log line', () => {
     await run({ data: { paymentId: '987', collectorUserId: 55 }, retryCount: 0 });
 
     const payload = loggedPayload(info);
-    for (const key of ['kind', 'detail', 'topic', 'metodoId', 'pedidoId']) {
+    for (const key of ['kind', 'detail', 'linkEncerramento', 'topic', 'metodoId', 'pedidoId']) {
       expect(payload).toHaveProperty(key, null);
     }
+  });
+
+  it('carries what the payment-link auto-close did (#367), so a close is filterable', async () => {
+    channel.handleNotificationTask.mockResolvedValueOnce({
+      outcome: 'done',
+      kind: 'reconciled',
+      detail: 'pago',
+      linkEncerramento: 'encerrado',
+      topic: 'payment',
+      metodoId: 'metodo-A',
+      pedidoId: 'pedido-1',
+    } satisfies TaskResultish);
+
+    await run({ data: { paymentId: '987', collectorUserId: 55 }, retryCount: 0 });
+
+    expect(loggedPayload(info).linkEncerramento).toBe('encerrado');
   });
 
   it('the payment ids come off the RAW payload, so they survive a schema-parse drop', async () => {

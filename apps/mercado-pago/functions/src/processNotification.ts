@@ -62,11 +62,16 @@ export const processMercadoPagoNotification = onTaskDispatched(
     // (`jsonPayload.detail="stale-ignorado"`), so more fields beat more lines.
     // `?? null` rather than leaving them undefined: Cloud Logging drops
     // `undefined` keys, so the key would vanish instead of reading as absent.
+    //
+    // `linkEncerramento` (#367) is what the payment-link auto-close did for a
+    // payment that came in through one of our links (`encerrado` / `aberto` /
+    // `ja-terminal` / `inexistente` / `erro-mp`); `null` for every other payment.
     logger.info('[mercado-pago] processed notification task', {
       queue: MERCADO_PAGO_NOTIFICATION_QUEUE,
       outcome: result.outcome,
       kind: result.kind ?? null,
       detail: result.detail ?? null,
+      linkEncerramento: result.linkEncerramento ?? null,
       topic: result.topic ?? null,
       paymentId: typeof payload?.paymentId === 'string' ? payload.paymentId : null,
       collectorUserId:

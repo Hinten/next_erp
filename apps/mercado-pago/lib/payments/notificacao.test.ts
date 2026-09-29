@@ -3,7 +3,7 @@ import { READ_CACHE_TTL, __resetAllReadCaches } from '@delfrance/data/admin/cach
 import { __setMercadoPagoCacheClockForTests } from './metodoCache';
 import type { Firestore } from 'firebase-admin/firestore';
 import { PedidoReconcileNotFoundError } from '@delfrance/data/admin';
-import { ESTADO_PEDIDO } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, type EstadoPedido } from '@delfrance/schemas';
 import {
   MercadoPagoHttpError,
   MercadoPagoNetworkError,
@@ -14,13 +14,27 @@ import {
 import {
   MAX_TENTATIVAS,
   TASK_MAX_ATTEMPTS,
+  defaultProcessDeps,
   handleNotificationTask,
   isPaymentTopic,
   parseNotificationBody,
   reprocessNotifications,
   resolveMetodoByCollector,
+  type LinkCloser,
+  type PedidoReconciler,
   type ProcessDeps,
 } from './notificacao';
+
+// The payment-link auto-close is a collaborator with its own suite
+// (`links/encerrarLink.test.ts`). It is mocked here so this file pins only the
+// WEBHOOK side of the contract: WHEN the closer is called, with WHAT, and what
+// happens when it throws. The module is mocked as a whole so that
+// `defaultProcessDeps` and a deps object that omits `encerrarLink` both resolve to
+// this one spy.
+const closer = vi.hoisted(() => ({ encerrarLinkSeCompleto: vi.fn() }));
+vi.mock('./links/encerrarLink', () => ({
+  encerrarLinkSeCompleto: closer.encerrarLinkSeCompleto,
+}));
 
 /* ----------------------------- fake Firestore ---------------------------- */
 // Supports the access shapes the admin handles use: doc get/set/create/delete,
@@ -762,6 +776,290 @@ describe('handleNotificationTask', () => {
     const r = await handleNotificationTask(asDb(db), { topic: 'payment' }, 0, fakeDeps()); // no paymentId
     expect(r.outcome).toBe('dropped');
     expect(db.docs(NOTIF).size).toBe(0);
+  });
+});
+
+/* ------------------------- payment-link auto-close (#367) ---------------- */
+
+/**
+ * Mercado Pago has no native "max uses", so a link that has been paid its quota of
+ * times is closed BY US: after the reconcile, the webhook hands the count the
+ * reconcile derived to `encerrarLinkSeCompleto`, which expires the preference.
+ *
+ * What is pinned here is the webhook's half of that contract — the gate, the
+ * arguments, the ORDER (a close before the payment is recorded would expire a link
+ * whose payment then failed to write) and the failure semantics (a throw retries;
+ * a stale redelivery still closes, which is how a close that crashed after the
+ * reconcile committed gets finished). The closer's own behaviour (quota compare,
+ * the PUT, the terminal-status write) is `links/encerrarLink.test.ts`.
+ */
+describe('payment-link auto-close (#367)', () => {
+  const LINK_ID = 'AbCdEfGhIjKlMnOpQrSt';
+
+  type ReconcileRet = {
+    transition: EstadoPedido | null;
+    skippedStale: boolean;
+    aprovadosDoLink: number | null;
+  };
+
+  /** A refetched payment that came in through one of our links (`metadata.link_id`). */
+  const viaLink = (): MpPayment => paymentOf({ metadata: { link_id: LINK_ID } });
+
+  const ENCERRADO: LinkCloser = async () => 'encerrado';
+
+  /** Deps with a spy for each seam; `encerrar` defaults to a closer that reports `encerrado`. */
+  function linkDeps(ret: ReconcileRet, over: { payment?: MpPayment; encerrar?: LinkCloser } = {}) {
+    const reconcile = vi.fn<PedidoReconciler>(async () => ret);
+    const encerrar = vi.fn<LinkCloser>(over.encerrar ?? ENCERRADO);
+    const deps: ProcessDeps = {
+      fetchPayment: vi.fn(async () => over.payment ?? viaLink()),
+      reconcile,
+      encerrarLink: encerrar,
+    };
+    return { deps, reconcile, encerrar };
+  }
+
+  const PAGO: ReconcileRet = {
+    transition: ESTADO_PEDIDO.pago,
+    skippedStale: false,
+    aprovadosDoLink: 2,
+  };
+
+  beforeEach(() => {
+    closer.encerrarLinkSeCompleto.mockReset();
+  });
+
+  it('closes the link the payment came through, with the resolved account and the reconcile count', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, encerrar } = linkDeps(PAGO);
+
+    const antes = Date.now();
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    const depois = Date.now();
+
+    expect(r).toMatchObject({
+      outcome: 'done',
+      kind: 'reconciled',
+      detail: ESTADO_PEDIDO.pago,
+      linkEncerramento: 'encerrado',
+    });
+    expect(encerrar).toHaveBeenCalledTimes(1);
+    const [dbArg, entrada] = encerrar.mock.calls[0]!;
+    expect(dbArg).toBe(asDb(db));
+    expect(entrada).toEqual({
+      metodoId: 'metodo-A', // the account the COLLECTOR resolved to, not a body field
+      pedidoId: 'pedido-1', // the payment's external_reference
+      linkId: LINK_ID, // the doc id, from metadata.link_id via the mapper
+      aprovados: 2, // exactly the reconcile's count
+      agoraMs: expect.any(Number),
+    });
+    expect(entrada.agoraMs).toBeGreaterThanOrEqual(antes);
+    expect(entrada.agoraMs).toBeLessThanOrEqual(depois);
+  });
+
+  it('runs the close AFTER the reconcile — never before the payment is recorded', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, reconcile, encerrar } = linkDeps(PAGO);
+    await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(reconcile.mock.invocationCallOrder[0]!).toBeLessThan(
+      encerrar.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('hands the closer the count even when it is ZERO — 0 is a count, not "absent"', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, encerrar } = linkDeps({ ...PAGO, aprovadosDoLink: 0 });
+    await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(encerrar).toHaveBeenCalledTimes(1);
+    expect(encerrar.mock.calls[0]![1].aprovados).toBe(0);
+  });
+
+  it('a payment that carries NO link is never closed — whatever count the reconcile reports', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    // A plain card payment: no `metadata.link_id`, so the mapper stamps no link.
+    // The reconcile returns `null` for it; a non-null count is fed here on purpose,
+    // to prove the gate is the payment's own link id and not the count alone.
+    const { deps, encerrar } = linkDeps(PAGO, { payment: paymentOf() });
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(encerrar).not.toHaveBeenCalled();
+    expect(r.outcome).toBe('done');
+    expect(r.linkEncerramento).toBeUndefined();
+  });
+
+  it('a payment whose link the reconcile did not count (null) is not closed either', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, encerrar } = linkDeps({ ...PAGO, aprovadosDoLink: null });
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(encerrar).not.toHaveBeenCalled();
+    expect(r.linkEncerramento).toBeUndefined();
+  });
+
+  it('a legacy reconcile result with no count at all (undefined) does not close', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const encerrar = vi.fn<LinkCloser>(ENCERRADO);
+    const deps: ProcessDeps = {
+      fetchPayment: vi.fn(async () => viaLink()),
+      // The shape every fake in this file returns: no `aprovadosDoLink` key.
+      reconcile: vi.fn(async () => ({ transition: null, skippedStale: false })) as never,
+      encerrarLink: encerrar,
+    };
+    await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(encerrar).not.toHaveBeenCalled();
+  });
+
+  it('a STALE redelivery still runs the close — that is how a crashed close is finished', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, encerrar } = linkDeps({
+      transition: null,
+      skippedStale: true,
+      aprovadosDoLink: 1,
+    });
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(r).toMatchObject({ detail: 'stale-ignorado', linkEncerramento: 'encerrado' });
+    expect(encerrar).toHaveBeenCalledTimes(1);
+    expect(encerrar.mock.calls[0]![1].aprovados).toBe(1);
+  });
+
+  it.each(['encerrado', 'aberto', 'ja-terminal', 'inexistente', 'erro-mp'] as const)(
+    'reports the closer verdict %s out to the task log',
+    async (veredito) => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const { deps } = linkDeps(PAGO, { encerrar: async () => veredito });
+      const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+      expect(r.linkEncerramento).toBe(veredito);
+      // The closer's verdict is NOT the notification's disposition: even a link that
+      // could not be closed leaves the delivery `done`.
+      expect(r.outcome).toBe('done');
+    },
+  );
+
+  it('a transient close failure THROWS so the queue retries — after the reconcile ran, persisting nothing', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, reconcile, encerrar } = linkDeps(PAGO, {
+      encerrar: async () => {
+        throw new MercadoPagoNetworkError('mp indisponível');
+      },
+    });
+    await expect(handleNotificationTask(asDb(db), payloadOf(), 0, deps)).rejects.toThrow(
+      'mp indisponível',
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1); // the payment WAS recorded first
+    expect(encerrar).toHaveBeenCalledTimes(1);
+    expect(db.docs(NOTIF).size).toBe(0); // not persisted until the final attempt
+  });
+
+  it('on the FINAL attempt a close failure is parked for the sweep instead of thrown', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps } = linkDeps(PAGO, {
+      encerrar: async () => {
+        throw new MercadoPagoNetworkError('mp indisponível');
+      },
+    });
+    const r = await handleNotificationTask(asDb(db), payloadOf(), TASK_MAX_ATTEMPTS - 1, deps);
+    expect(r.outcome).toBe('failed');
+    const doc = db.docs(NOTIF).get('N1')!;
+    expect(doc.status).toBe('failed');
+    expect(String(doc.erro)).toContain('mp indisponível');
+  });
+
+  it('the redelivery after a failed close finishes it: first throws, the stale retry closes', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const reconcile = vi
+      .fn<PedidoReconciler>()
+      // 1st delivery: the payment is written (and the pedido moves).
+      .mockResolvedValueOnce(PAGO)
+      // 2nd delivery: the same payment again — stale, nothing written, count still returned.
+      .mockResolvedValueOnce({ transition: null, skippedStale: true, aprovadosDoLink: 2 });
+    const encerrar = vi
+      .fn<LinkCloser>()
+      .mockRejectedValueOnce(new MercadoPagoNetworkError('mp indisponível'))
+      .mockResolvedValueOnce('encerrado');
+    const deps: ProcessDeps = {
+      fetchPayment: vi.fn(async () => viaLink()),
+      reconcile,
+      encerrarLink: encerrar,
+    };
+
+    await expect(handleNotificationTask(asDb(db), payloadOf(), 0, deps)).rejects.toThrow(
+      'mp indisponível',
+    );
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 1, deps);
+
+    expect(r).toMatchObject({
+      outcome: 'done',
+      detail: 'stale-ignorado',
+      linkEncerramento: 'encerrado',
+    });
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(encerrar).toHaveBeenCalledTimes(2);
+  });
+
+  it('a pedido that does not exist parks the delivery and NEVER reaches the closer', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    const { deps, encerrar } = linkDeps(PAGO);
+    deps.reconcile = vi.fn(async () => {
+      throw new PedidoReconcileNotFoundError('pedido-1');
+    }) as never;
+    const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+    expect(r.outcome).toBe('failed');
+    expect(encerrar).not.toHaveBeenCalled();
+  });
+
+  it('the sweep re-drive closes the link too (same processing path as a fresh task)', async () => {
+    const db = new FakeDb();
+    seedMetodo(db, 'metodo-A', 55);
+    seedFailed(db, 'N1', { processedAt: 1_000, paymentId: '111' });
+    const { deps, encerrar } = linkDeps({
+      transition: null,
+      skippedStale: true,
+      aprovadosDoLink: 1,
+    });
+    const res = await reprocessNotifications(asDb(db), { now: 10_000, olderThanMs: 100 }, deps);
+    expect(res.outcomes.reconciled).toBe(1);
+    expect(encerrar).toHaveBeenCalledTimes(1);
+    expect(db.docs(NOTIF).has('N1')).toBe(false); // resolved → the failure doc is deleted
+  });
+
+  describe('default wiring', () => {
+    it('defaultProcessDeps carries the real closer', () => {
+      expect(defaultProcessDeps.encerrarLink).toBe(closer.encerrarLinkSeCompleto);
+    });
+
+    it('deps that OMIT encerrarLink fall back to the real closer (a caller that predates links)', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      closer.encerrarLinkSeCompleto.mockResolvedValue('aberto');
+      const deps: ProcessDeps = {
+        fetchPayment: vi.fn(async () => viaLink()),
+        reconcile: vi.fn<PedidoReconciler>(async () => PAGO),
+      };
+      const r = await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+      expect(closer.encerrarLinkSeCompleto).toHaveBeenCalledTimes(1);
+      expect(r.linkEncerramento).toBe('aberto');
+    });
+
+    it('a payment with no link does not touch the default closer either', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const deps: ProcessDeps = {
+        fetchPayment: vi.fn(async () => paymentOf()),
+        reconcile: vi.fn<PedidoReconciler>(async () => ({ ...PAGO, aprovadosDoLink: null })),
+      };
+      await handleNotificationTask(asDb(db), payloadOf(), 0, deps);
+      expect(closer.encerrarLinkSeCompleto).not.toHaveBeenCalled();
+    });
   });
 });
 
