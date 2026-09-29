@@ -57,6 +57,7 @@ export function createScanQueue(initialEpoch = 0): ScanQueue {
         let result: Awaited<ReturnType<typeof task>>;
         try {
           result = await task();
+          // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- a rejected chain deadlocks every later scan; surfaced via onError
         } catch (err) {
           // A transient fallback failure (e.g. a Firestore read error) must NOT
           // reject `chain`: `.then` on a rejected promise skips its callback, so

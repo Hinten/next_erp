@@ -62,6 +62,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
   // the in-flight request via the `cancelled` flag.
   useEffect(() => {
     if (!opened) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the effect IS the request state machine: fire on open, reset on close
       setState({ kind: 'idle' });
       return;
     }
