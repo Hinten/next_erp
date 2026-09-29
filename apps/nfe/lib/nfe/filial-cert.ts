@@ -42,6 +42,7 @@ import {
   assertCertNotExpired,
   buildCertFromStored,
   decryptSecret,
+  type EncryptedBlob,
   getCertEncryptionKey,
   type NFeCertificate,
 } from '@delfrance/integrations-nfe';
@@ -132,13 +133,59 @@ export async function resolveFilialCert(
   if (hit && mesmoSegredo(hit.segredo, doc)) return hit.cert;
 
   const key = getCertEncryptionKey();
-  const privateKeyPem = decryptSecret(doc.encPrivateKey, key);
+  const privateKeyPem = decifrarChavePrivada(doc.encPrivateKey, key, filialId);
   const cert = buildCertFromStored({ privateKeyPem, certificatePem: doc.certificatePem });
   certCache.set(filialId, {
     segredo: { certificatePem: doc.certificatePem, encPrivateKey: doc.encPrivateKey },
     cert,
   });
   return cert;
+}
+
+/**
+ * Node's `decipher.final()` message for a GCM tag that does not verify — a
+ * wrong master key, or a tampered IV / ciphertext / tag. Node gives this failure
+ * no class of its own and no `code`, so its message is the only narrow handle.
+ */
+const GCM_NAO_AUTENTICA = 'Unsupported state or unable to authenticate data';
+
+/**
+ * Node's codes for a stored blob whose tag or IV has an impossible length — a
+ * tampered or truncated blob (the schema only requires non-empty strings).
+ */
+const GCM_BLOB_INVALIDO: ReadonlySet<string> = new Set([
+  'ERR_CRYPTO_INVALID_AUTH_TAG',
+  'ERR_CRYPTO_INVALID_IV',
+]);
+
+/**
+ * Decrypt a filial's stored private key, turning a blob that does not
+ * authenticate into the `NFeCertError` {@link resolveFilialCert} documents —
+ * the class every caller already reads as "this filial's cert is unusable": the
+ * task handler returns without a queue retry, and the backstop sweep records
+ * the doc and goes on to the other filiais (#1654). As Node's plain `Error` it
+ * was an unknown class there, and one filial's cert (a rotated
+ * `NFE_CERT_ENC_KEY` not yet re-uploaded everywhere) aborted every run.
+ * Anything else is rethrown as it came (rule 6).
+ */
+function decifrarChavePrivada(blob: EncryptedBlob, key: Buffer, filialId: string): string {
+  try {
+    return decryptSecret(blob, key);
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message === GCM_NAO_AUTENTICA ||
+        ('code' in err && typeof err.code === 'string' && GCM_BLOB_INVALIDO.has(err.code)))
+    ) {
+      // The key and the blob stay out of the message (rule 9).
+      throw new NFeCertError(
+        `Filial '${filialId}': a chave privada do certificado armazenado não pôde ser ` +
+          'decifrada (NFE_CERT_ENC_KEY trocada ou dado adulterado). ' +
+          'Refaça o upload do certificado A1 na aba "Certificado Digital" da filial.',
+      );
+    }
+    throw err;
+  }
 }
 
 /**
