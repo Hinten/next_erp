@@ -69,6 +69,7 @@ import {
   CONDICAO_PRODUTO,
   reservaEfetiva,
   makeEstoqueUid,
+  mesmoPrecoEmReais,
   SHOPEE_ITEM_STATUS,
   SHOPEE_MODEL_STATUS,
   idFromRef,
@@ -79,7 +80,7 @@ import {
 } from '@delfrance/schemas';
 
 import { EIXOS_PACOTE_SHOPEE, type EixoDePacoteProduto } from './eixos';
-import { descricaoDe, ehKitDe, itemStatusDe, type ItemLido } from './itemLido';
+import { descricaoDe, ehKitDe, itemStatusDe, temModelosDe, type ItemLido } from './itemLido';
 import { idProdutoFilhoShopee, idProdutoPaiShopee } from './produtoIds';
 
 /* -------------------------------------------------------------------------- */
@@ -296,7 +297,18 @@ export type MotivoPrecoIgnorado =
   | 'opcao-desligada'
   /** The conta has no `tabelaNormalOuterRef`; there is nowhere to write. */
   | 'sem-tabela'
-  /** A parent that owns children does not sell — its children carry the prices. */
+  /**
+   * A parent that owns children and gets no price of its own — its children
+   * carry the prices. When the family rule decides a has-model parent (the
+   * import CREATES it, or an existing produto with no children becomes the
+   * family) this means its models are NOT all priced alike (they differ, or one
+   * has no usable price: propagation is written OFF) or none has a usable price
+   * (the flag is not written); see {@link planejarPrecoDaFamilia}. An existing
+   * parent that ALREADY owns children always answers this (or
+   * `opcao-desligada`): the import writes it neither a price nor the flag — and
+   * so does a childless produto with `importarPreco` off, which the rule leaves
+   * exactly as the import before it did.
+   */
   | 'pai-com-filhos'
   /** `price_info` is absent or empty. */
   | 'sem-price-info'
@@ -323,15 +335,29 @@ export interface VeredictoDePreco {
   readonly motivo: MotivoPrecoIgnorado | null;
 }
 
+/** A finite number strictly above zero — Shopee's zero-fill reads as "not a price". */
+function numeroPositivo(valor: number | null | undefined): valor is number {
+  return typeof valor === 'number' && Number.isFinite(valor) && valor > 0;
+}
+
 /**
- * The FIRST `price_info[]` entry whose currency is exactly `BRL`, reduced to one
- * number.
+ * **The shelf price** of ONE `price_info[]` entry — `original_price` when it is
+ * a finite number above zero, else `current_price` under the same test, else
+ * `null`.
+ *
+ * Currency-agnostic, no minimum and no rounding: it answers "which of the two
+ * wire numbers is the shelf price", and each reader applies its own rules on
+ * top. It has TWO readers, and it exists so they cannot disagree about the
+ * answer: step 9's import ({@link precoBrlDe}, which picks the `BRL` entry
+ * first and then applies `precoSchema`'s minimum), and step 13's price push,
+ * which reads it as the COMPARAND — the price Shopee holds now, against which
+ * the ERP's price is judged equal or not.
  *
  * ⚠️ `original_price` is the shelf price and `current_price` the promotion, so
  * `original_price` WINS whenever it is a usable price — that is the whole point
  * of the rejected promotional arm (see the module header): a lower
  * `current_price` is a deal the operator did not author in the ERP, and it must
- * not become the produto's normal price.
+ * not become the produto's normal price, nor the number a push compares against.
  *
  * ⚠️ **Deviation from the literal `original_price ?? current_price`**, and it is
  * deliberate: Shopee zero-fills, so a listing with no promotion can answer
@@ -343,16 +369,30 @@ export interface VeredictoDePreco {
  * over a shelf price, because a shop with a real `original_price` always has a
  * positive one.
  */
+export function precoDePrateleiraDe(entrada: ShopeePriceInfo): number | null {
+  if (numeroPositivo(entrada.original_price)) return entrada.original_price;
+  if (numeroPositivo(entrada.current_price)) return entrada.current_price;
+  return null;
+}
+
+/**
+ * The FIRST `price_info[]` entry whose currency is exactly `BRL`, reduced to one
+ * number through {@link precoDePrateleiraDe} — whose docblock carries why the
+ * shelf price wins and why a zero-filled `original_price` falls through.
+ *
+ * On top of that shared answer this reader owns two rules of its own: the `BRL`
+ * pick, and `precoSchema`'s `min(0.01)` ({@link PRECO_MINIMO}) — a smaller value
+ * would THROW at parse time, so it is refused here as `valor-abaixo-do-minimo`,
+ * and so is an entry with no positive price at all.
+ */
 export function precoBrlDe(
   precos: readonly ShopeePriceInfo[] | null | undefined,
 ): VeredictoDePreco {
   if (precos == null || precos.length === 0) return { valor: null, motivo: 'sem-price-info' };
   const entrada = precos.find((p) => p.currency === MOEDA_IMPORTADA);
   if (entrada === undefined) return { valor: null, motivo: 'moeda-nao-brl' };
-  const original = entrada.original_price;
-  const usavel = typeof original === 'number' && Number.isFinite(original) && original > 0;
-  const valor = usavel ? original : entrada.current_price;
-  if (typeof valor !== 'number' || !Number.isFinite(valor) || valor < PRECO_MINIMO) {
+  const valor = precoDePrateleiraDe(entrada);
+  if (valor == null || valor < PRECO_MINIMO) {
     return { valor: null, motivo: 'valor-abaixo-do-minimo' };
   }
   return { valor, motivo: null };
@@ -428,6 +468,15 @@ export interface ArgsMapearProdutoPai {
    * pedido line and the print all go stale.
    */
   readonly temFilhos: boolean;
+  /**
+   * The ERP half of {@link temFilhos} ALONE: does the ERP already hold children
+   * for this produto? It is what tells an existing produto becoming a family (no
+   * children yet ⇒ the family rule, {@link planejarPrecoDaFamilia}) from an
+   * existing family (its price and flag are the operator's). ⚠️ REQUIRED, with
+   * no fallback: an omitted value read as "no children" would flip the flag of
+   * an existing family, so a caller that cannot say must not compile.
+   */
+  readonly jaTemFilhos: boolean;
   readonly estoqueExistente: LinhaEstoqueLida | null;
 }
 
@@ -456,6 +505,43 @@ export interface MapaProdutoShopee {
   readonly estoque: EscritaDeEstoquePlanejada | null;
   readonly estoqueIgnorado: MotivoEstoqueIgnorado | null;
 }
+
+/**
+ * The PARENT's map: a child's has no flag at all, because no sender ever reads
+ * a child's own `propagatePriceToChildren` — only the parent's decides which
+ * map prices a model.
+ */
+export interface MapaProdutoPaiShopee extends MapaProdutoShopee {
+  /**
+   * The `propagatePriceToChildren` this import WRITES on the parent, or `null`
+   * ⇒ the field is not written at all. Only the family rule
+   * ({@link planejarPrecoDaFamilia}) ever answers a boolean — a has-model parent
+   * the import CREATES, or an existing produto with NO children that this
+   * listing turns into a family with both price options on — and only when it
+   * writes the family's prices;
+   * an existing parent that already owns children and a no-model produto are
+   * always `null`. Like {@link MapaProdutoShopee.precos}: on CREATE it is folded
+   * into `patchProduto`; on the childless update it rides the guarded price
+   * patch, never the plain merge.
+   */
+  readonly propagaPreco: boolean | null;
+  /**
+   * The family decision for the CREATE-race arm — on a has-model CREATE only,
+   * {@link planejarPrecoDaFamilia} as it decides an existing produto with NO
+   * children (`criar: false`, so both price options). The writer applies it,
+   * through the guarded patch, only when `.create()` finds a document already
+   * at the deterministic id AND that document has no ERP child. `null` on
+   * every other path (an update, a no-model listing).
+   */
+  readonly precoDaFamiliaNaCorrida: PrecoDaFamiliaShopee | null;
+}
+
+/**
+ * The two fields the family rule decides on a parent — the keys the CREATE-race
+ * arm must NOT merge when the create finds a document already there (see
+ * `planoImportacao.ts`'s `camposForaDaCorrida`).
+ */
+export const CAMPOS_DO_PRECO_DA_FAMILIA = ['precos', 'propagatePriceToChildren'] as const;
 
 /** The shared produto-patch builder — the fill rule and nothing else. */
 function criarFill(
@@ -506,6 +592,154 @@ function planejarPreco(args: {
   };
 }
 
+/**
+ * What the import writes on a has-model PARENT whose family it forms — one it
+ * CREATES, or an existing produto with no children — price-wise.
+ */
+export interface PrecoDaFamiliaShopee {
+  /** The parent's normal-table price, or `null` — the parent gets none. */
+  readonly precos: { readonly tabelaId: string; readonly valor: number } | null;
+  /** The parent's `propagatePriceToChildren` to WRITE, or `null` ⇒ not written. */
+  readonly propagaPreco: boolean | null;
+  readonly motivo: MotivoPrecoIgnorado | null;
+}
+
+/**
+ * **The family price rule of the import** (Lucas, 2026-09-28): when the import
+ * FORMS a has-model listing's family — it CREATES the parent, or the parent is
+ * an existing produto with NO children yet — decide the parent's normal-table
+ * price and its `propagatePriceToChildren` from the models' own prices. The ONE
+ * copy — {@link mapearProdutoPai} is its only caller and routes nothing else
+ * here; the listing planner and the kit arm both reach it through that mapper,
+ * and the mass-import job drives those two.
+ *
+ * - Its premise is that the children carry Shopee's prices, so it needs the
+ *   option that prices them. On CREATE that is `importarPreco`, which the
+ *   parent and every child are created under. On the childless produto it is
+ *   BOTH: the parent is overwritten under `sobrescreverPreco`, but every child
+ *   is CREATED under `importarPreco` — with that one off the children hold no
+ *   price, and turning propagation off would leave every model unpriced where
+ *   the import before this rule left them pricing from the parent. Outside the
+ *   premise the rule answers exactly what the import answered before it — the
+ *   single-price rule's verdict for a parent with children (`opcao-desligada`
+ *   or `pai-com-filhos`), no price and no flag.
+ * - The import writes no family price (the conta has no normal table, or NO
+ *   model has a usable BRL price, the SGD sandbox's normal answer) ⇒ no price
+ *   AND no flag: a created document takes the schema default and an existing
+ *   one keeps what it holds, exactly as before the rule.
+ * - EVERY model has a usable BRL price ({@link precoBrlDe}) and they are all
+ *   the same in reais ⇒ the parent takes that price (the FIRST model's
+ *   `valor`) and `propagatePriceToChildren: true` — the ERP's "one price for
+ *   the whole family", which is what the sync (step 13) and the publish
+ *   (step 11) then read for every model.
+ * - Otherwise — the prices differ, or at least one model has no usable price
+ *   — the parent gets NO price and `propagatePriceToChildren: false`: each
+ *   child is priced from its own map (a model Shopee leaves unpriced stays
+ *   unpriced, as on Shopee). A childless produto that already holds a price
+ *   keeps it — nothing here deletes a key — and it prices no model.
+ *
+ * Either way the children keep their OWN price exactly as before (each model's
+ * {@link planejarPreco}); this function decides only the parent.
+ *
+ * ⚠️ **Why never on an existing FAMILY.** Once a parent owns children the flag
+ * is the operator's, and it governs every ERP child in every tabela — not just
+ * this listing's models in the normal one: flipping it to `true` makes the
+ * produto trigger replace every child's WHOLE `precos` map with the parent's
+ * (per-variation prices in other tabelas are erased, and ERP variations absent
+ * from the listing are repriced), and flipping it to `false` strands children
+ * that relied on the parent in other tabelas. So a parent that already owns
+ * children keeps the single-price rule — `pai-com-filhos` (or
+ * `opcao-desligada`), no price and no flag, byte-for-byte the import before
+ * this rule — and a propagating one keeps pricing its models from its own map.
+ * None of that exists while there are no children: every child is a model this
+ * same import creates, carrying at most its normal-table price, so there is
+ * nothing to erase, reprice or strand. On CREATE the parent is created with the
+ * price and `true`; on a childless produto they ride the guarded price patch
+ * together (`planoImportacao.ts`'s `precosPai`). If the produto trigger then
+ * copies the parent's map onto the new children, they already hold the same
+ * normal-table price, so no price in reais changes (a childless produto's
+ * prices in OTHER tabelas reach the children too — which is what propagation
+ * means, and nothing held a price there before). Any LATER parent price edit
+ * propagates as the ERP always did.
+ *
+ * ⚠️ The CREATE-race arm (`.create()` ⇒ ALREADY_EXISTS ⇒ a merge of the create
+ * document) merges NEITHER field this rule decides
+ * ({@link CAMPOS_DO_PRECO_DA_FAMILIA}) — the CREATE decision assumed a new
+ * document, and the one already there may hold an operator's price. It is
+ * then decided like the childless produto it almost always is: the parent
+ * link is written before any child, so an unlinked document at the
+ * deterministic id is an earlier attempt that stopped before its link (a blank
+ * or ambiguous `item_sku` misses the SKU rung on the retry). The writer asks
+ * whether it has any ERP child; with none it applies
+ * {@link MapaProdutoPaiShopee.precoDaFamiliaNaCorrida} — this function with
+ * `criar: false`, both options — through the same guarded patch, and with one
+ * it writes nothing more (an existing family's price and flag stay the
+ * operator's).
+ *
+ * ⚠️ "The same in reais" is `mesmoPrecoEmReais` — the price sync's own
+ * skip-if-equal fold, so a family this rule calls one-priced is one the sync
+ * would call already in sync. Equal: `10` ≡ `10.004` (the same centavo after
+ * rounding). Distinct: `10.00` ≠ `10.01` — one centavo apart is two prices,
+ * and folding it would reprice a model on the first sync. Every model is
+ * compared against the FIRST, which is an equivalence because the fold is
+ * equality of the rounded values.
+ *
+ * ⚠️ Why it has to exist: under the shared child-price rule a propagating
+ * parent prices every model from the PARENT's map, and the schema defaults the
+ * flag to `true` — so a parent created with no price and no explicit flag
+ * priced every model `null` (a sync right after an import had nothing to send
+ * while publish refused `filho-sem-preco`), and a childless produto that became
+ * a family priced every model at its OLD price (the first sync repriced them
+ * all to it).
+ */
+export function planejarPrecoDaFamilia(args: {
+  /** `true` ⇒ the parent is being CREATED; `false` ⇒ an existing produto with no children. */
+  readonly criar: boolean;
+  readonly options: ImportacaoShopeeOptions;
+  readonly tabelaNormalOuterRef: string | null;
+  /** The listing's models — each one's `price_info` is read, nothing else. */
+  readonly modelos: readonly Pick<ShopeeModel, 'price_info'>[];
+}): PrecoDaFamiliaShopee {
+  // The premise — the children carry Shopee's prices. CREATE: `importarPreco`,
+  // which the parent and every child are created under. A childless produto:
+  // BOTH, because its parent is overwritten under `sobrescreverPreco` while
+  // every child is CREATED under `importarPreco`.
+  const premissa = args.criar
+    ? args.options.importarPreco
+    : args.options.importarPreco && args.options.sobrescreverPreco;
+  if (!premissa) {
+    // Outside it, exactly the import before the rule: the single-price rule's
+    // verdict for a parent with children, and no flag.
+    return {
+      ...planejarPreco({
+        criar: args.criar,
+        options: args.options,
+        tabelaNormalOuterRef: args.tabelaNormalOuterRef,
+        temFilhos: true,
+        precos: null,
+      }),
+      propagaPreco: null,
+    };
+  }
+  if (args.tabelaNormalOuterRef == null) {
+    return { precos: null, propagaPreco: null, motivo: 'sem-tabela' };
+  }
+  const valores = args.modelos.map((m) => precoBrlDe(m.price_info).valor);
+  const usaveis = valores.filter((v): v is number => v !== null);
+  const primeiro = usaveis[0];
+  // No model priced at all (zero models included) — the import writes no family
+  // price, so it writes no flag either: exactly the pre-rule answer.
+  if (primeiro === undefined) return { precos: null, propagaPreco: null, motivo: 'pai-com-filhos' };
+  const umPreco =
+    usaveis.length === valores.length && usaveis.every((v) => mesmoPrecoEmReais(v, primeiro));
+  if (!umPreco) return { precos: null, propagaPreco: false, motivo: 'pai-com-filhos' };
+  return {
+    precos: { tabelaId: idFromRef(args.tabelaNormalOuterRef), valor: primeiro },
+    propagaPreco: true,
+    motivo: null,
+  };
+}
+
 function planejarEstoque(args: {
   readonly options: ImportacaoShopeeOptions;
   readonly depositoOuterRef: string | null;
@@ -552,7 +786,7 @@ function planejarEstoque(args: {
  * round-trips to a lie) or `tabelaDeMedidasModaUid` (`size_chart` is a URL;
  * size charts are step 18).
  */
-export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee {
+export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoPaiShopee {
   const { entrada, existente, options, nowMs } = args;
   const base = entrada.base;
   const criar = existente == null;
@@ -571,13 +805,45 @@ export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee 
   // backorder. Not pre-order ⇒ `null` ⇒ the fill rule writes nothing.
   const crossdocking = base.pre_order?.is_pre_order === true ? base.pre_order.days_to_ship : null;
 
-  const preco = planejarPreco({
-    criar,
-    options,
-    tabelaNormalOuterRef: args.tabelaNormalOuterRef,
-    temFilhos: args.temFilhos,
-    precos: base.price_info,
-  });
+  // A has-model listing whose FAMILY this import forms — it CREATES the parent,
+  // or the parent is an existing produto with no children yet — decides the
+  // parent from its MODELS' prices (the family rule — Lucas, 2026-09-28).
+  // Anything else keeps the single-price rule: a has-model parent that ALREADY
+  // owns children answers `pai-com-filhos` (or `opcao-desligada`) and writes
+  // neither a price nor the flag, byte-for-byte the import before the rule, so
+  // a re-import never touches that family's `propagatePriceToChildren`; so
+  // does a no-model listing whose produto already owns ERP children.
+  const modelos = entrada.models?.model ?? [];
+  const temModelos = temModelosDe(entrada);
+  const preco: PrecoDaFamiliaShopee =
+    temModelos && (criar || !args.jaTemFilhos)
+      ? planejarPrecoDaFamilia({
+          criar,
+          options,
+          tabelaNormalOuterRef: args.tabelaNormalOuterRef,
+          modelos,
+        })
+      : {
+          ...planejarPreco({
+            criar,
+            options,
+            tabelaNormalOuterRef: args.tabelaNormalOuterRef,
+            temFilhos: args.temFilhos,
+            precos: base.price_info,
+          }),
+          propagaPreco: null,
+        };
+  // The CREATE-race arm's decision: the same rule as for a childless produto.
+  // Applied only if `.create()` finds a document there with no ERP child.
+  const precoDaFamiliaNaCorrida =
+    temModelos && criar
+      ? planejarPrecoDaFamilia({
+          criar: false,
+          options,
+          tabelaNormalOuterRef: args.tabelaNormalOuterRef,
+          modelos,
+        })
+      : null;
   const estoque = planejarEstoque({
     options,
     depositoOuterRef: args.depositoOuterRef,
@@ -609,6 +875,9 @@ export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee 
       crossdocking,
       // Nothing to clear on a document that does not exist yet.
       precos: preco.precos ? { [preco.precos.tabelaId]: { valor: preco.precos.valor } } : null,
+      // Written only when the family rule decided it; absent ⇒ the schema's
+      // default applies, exactly as before the rule.
+      ...(preco.propagaPreco !== null ? { propagatePriceToChildren: preco.propagaPreco } : {}),
       categoriaProdutoOuterRef: args.categoriaOuterRef,
       timestamp: nowMs,
       ultimaModificacao: nowMs,
@@ -660,6 +929,8 @@ export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee 
     patchExtraData: Object.keys(patchExtra).length > 0 ? patchExtra : null,
     precos: preco.precos,
     precoIgnorado: preco.motivo,
+    propagaPreco: preco.propagaPreco,
+    precoDaFamiliaNaCorrida,
     estoque: estoque.estoque,
     estoqueIgnorado: estoque.motivo,
   };
@@ -746,7 +1017,11 @@ export interface ArgsMapearFilho {
  *
  * ⚠️ Shopee DOES carry per-model prices, unlike Mercado Livre — so a child takes
  * its OWN `price_info`, never a mirror of the parent's map. That is a real
- * divergence from `assembleVariationChildPlan`, not an oversight.
+ * divergence from `assembleVariationChildPlan`, not an oversight. Whether a
+ * parent whose family this import forms (it CREATES it, or it had no children)
+ * also carries the price (and propagates it) is the family rule's call,
+ * {@link planejarPrecoDaFamilia} — it never changes what a child gets, and a
+ * child's map carries no flag at all.
  */
 export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
   const { entrada, modelo, pai, options, nowMs } = args;

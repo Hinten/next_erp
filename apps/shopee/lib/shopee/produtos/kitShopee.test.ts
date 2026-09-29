@@ -593,7 +593,7 @@ describe('importarKitShopee — estoque e preços', () => {
     });
   });
 
-  it('o preço vai para a tabela NORMAL, no FILHO, só com importarPreco', async () => {
+  it('o preço vai para a tabela NORMAL — no FILHO e, sendo um preço só, também no PAI — só com importarPreco', async () => {
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
     const filhoId = idDoFilhoPlanejado(PAI_ID, MODEL_A);
@@ -611,8 +611,10 @@ describe('importarKitShopee — estoque e preços', () => {
     // ⛔ A tabela promocional pertence às promoções que o operador cria no ERP —
     // a importação NUNCA a escreve, tenha a conta uma ou não.
     expect(JSON.stringify(db.writes)).not.toContain(TABELA_PROMOCIONAL_ID);
-    // O pai tem filhos: quem vende é o filho, e o pai não carrega preço.
-    expect(docDoProduto(db, PAI_ID).precos).toBeNull();
+    // O kit de UM model é uma família de um preço só (a regra da família,
+    // Lucas 2026-09-28): o pai recebe esse preço e a propagação LIGADA.
+    expect(docDoProduto(db, PAI_ID).precos).toEqual({ [TABELA_NORMAL_ID]: { valor: 99.9 } });
+    expect(docDoProduto(db, PAI_ID).propagatePriceToChildren).toBe(true);
   });
 
   it('com importarPreco desligado nenhum preço é planejado', async () => {
