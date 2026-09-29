@@ -25,7 +25,7 @@ description: >-
 The NF-e is a digitally-signed XML fiscal document. It is only valid once SEFAZ
 (the state tax authority) grants an **Autorização de Uso**. This skill distills
 the SEFAZ **MOC 7.0** baseline and the Notas Técnicas that amended it through
-**NT 2025.001** (sync mode) and **NT 2025.002 v1.40** (Reforma Tributária),
+**NT 2025.001** (sync mode) and **NT 2025.002 v1.51** (Reforma Tributária — XSD pack PL_010f_v1.04),
 so NF-e code can be written without re-reading thousands of PDF pages.
 
 Original SEFAZ PDFs are committed under `references/sources/` for provenance

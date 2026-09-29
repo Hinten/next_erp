@@ -129,6 +129,8 @@ describe('modoGruposImposto — B25-80', () => {
     [5, null, '03', MODO_GRUPOS_IMPOSTO.completo],
     [5, null, '04', MODO_GRUPOS_IMPOSTO.completo],
     [5, null, '05', MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
+    // PL_010f: crédito 06 (retorno por recusa parcial) joins the B25-80 exceptions.
+    [5, null, '06', MODO_GRUPOS_IMPOSTO.completo],
     [6, '01', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
     [6, '04', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
     [6, '06', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
@@ -159,6 +161,7 @@ describe('grupoDeAjusteDoTipo — derived from the Anexo III indicators', () => 
     [5, null, TP_NF_CREDITO.retornoRecusaTotal, null],
     [5, null, TP_NF_CREDITO.reducaoValores, null],
     [5, null, TP_NF_CREDITO.transferenciaCreditoSucessao, G.transfCred],
+    [5, null, TP_NF_CREDITO.retornoRecusaParcial, null],
     // Near-misses: a tipo on the wrong finalidade, and a normal nota.
     [5, TP_NF_DEBITO.perdaEstoque, null, null],
     [1, null, null, null],

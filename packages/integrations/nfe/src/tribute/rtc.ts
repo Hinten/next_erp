@@ -177,10 +177,16 @@ export function buildIBSCBSAjuste(a: AjusteIbsCbsItem): TTribNFe {
 }
 
 /**
- * Build the optional item-level `<IS>` (Imposto Seletivo) wire value. The XSD
- * sequence is a choice: ad valorem (`vBCIS` + `pIS` + `vIS`) OR per-unit
- * (`pISEspec` + `uTrib` + `qTrib` + `vIS`). `vBCIS` defaults to the item line
- * value (`vProd`) in the ad valorem path.
+ * Build the optional item-level `<IS>` (Imposto Seletivo) wire value.
+ *
+ * ⚠️ The XSD is NOT a choice between the two modes: once the value sequence
+ * opens, `vBCIS` and `pIS` are BOTH required, then an optional `adRemIS` (the
+ * per-unit rate — named `pISEspec` until PL_010f) with an optional
+ * `uTrib` + `qTrib` pair, then `vIS`. So a per-unit IS still carries the base
+ * and a `pIS` of 0. (The per-unit path emitted `pISEspec` alone before, which
+ * no pack ever accepted.) `vBCIS` defaults to the item line value (`vProd`).
+ *
+ * The stored config keeps its `pISEspec` name; only the wire element moved.
  */
 export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
   const out: TIS = {
@@ -193,8 +199,14 @@ export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
     out.pIS = fmtRate('pIS', cfg.pIS);
     out.vIS = fmtMoney('vIS', roundReais((vBCIS * cfg.pIS) / 100));
   } else if (cfg.pISEspec != null && cfg.qTrib != null) {
-    out.pISEspec = fmtRate('pISEspec', cfg.pISEspec);
-    if (cfg.uTrib != null) out.uTrib = cfg.uTrib;
+    out.vBCIS = fmtMoney('vBCIS', cfg.vBCIS ?? vProd);
+    out.pIS = fmtRate('pIS', 0);
+    out.adRemIS = fmtRate('adRemIS', cfg.pISEspec);
+    // `uTrib` + `qTrib` are one XSD sequence: both or neither.
+    if (cfg.uTrib == null) {
+      throw new NFeTributeError('buildIS: a per-unit IS (pISEspec + qTrib) also needs uTrib');
+    }
+    out.uTrib = cfg.uTrib;
     out.qTrib = fmtQuantity('qTrib', cfg.qTrib);
     out.vIS = fmtMoney('vIS', roundReais(cfg.pISEspec * cfg.qTrib));
   } else {

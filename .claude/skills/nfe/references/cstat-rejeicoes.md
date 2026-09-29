@@ -229,7 +229,7 @@ No MOC 7.0 a `E16a-30` era só interestadual, com outra lista de UFs. Histórico
 exceções, a armadilha da 696 e onde o app orienta o operador: seção "`indIEDest`
 mais rigoroso" em `sincrono-vs-assincrono.md`.
 
-### NT 2025.002 (Reforma Tributária, v1.40 mai/2026)
+### NT 2025.002 (Reforma Tributária, v1.51 jul/2026)
 
 cStats novos têm 4 dígitos. Os mais "afiados" (rejeição instantânea quando
 RTC entra em vigor — 03/08/2026 para CRT=3):
@@ -262,7 +262,7 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 | 1176 / 1177 | Total do IBS / da CBS estornados difere da soma dos itens | W59f / W59g |
 
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
-`references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.
+`references/sources/nt/2025/NT_2025.002_v1.51_RTC.pdf` (the v1.40 PDF stays beside it for provenance).
 
 ## idDest, CFOP e o local de entrega (#422)
 

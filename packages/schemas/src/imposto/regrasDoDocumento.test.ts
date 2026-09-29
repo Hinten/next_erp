@@ -487,7 +487,7 @@ describe('violacoesDoDocumento — item references on a nota de crédito/débito
   it('1038 — débito 04 needs item references: none refuses, one missing warns', () => {
     const debito04 = { ...BASE, ...DEBITO, tpNFDebito: '04' as const };
     expect(violacoesDoDocumento({ ...debito04, itens: [ITEM_IBSCBS] }).map((v) => v.regra)).toEqual(
-      [REGRA_DOCUMENTO.refItemAusenteNoDebito],
+      [REGRA_DOCUMENTO.refItemAusente],
     );
     const parcial = violacoesDoDocumento({
       ...debito04,
@@ -497,13 +497,45 @@ describe('violacoesDoDocumento — item references on a nota de crédito/débito
       ],
     });
     expect(parcial).toEqual([
-      expect.objectContaining({ regra: REGRA_DOCUMENTO.refItemAusenteNoItemDoDebito, nItem: 2 }),
+      expect.objectContaining({ regra: REGRA_DOCUMENTO.refItemAusenteNoItem, nItem: 2 }),
     ]);
     expect(bloqueiaEmissao(parcial)).toBe(false);
     // Near-miss: débito 06 needs none.
     expect(
       regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado, itens: [ITEM_IBSCBS] }),
     ).toEqual([]);
+  });
+
+  it('crédito 06 (PL_010f) references the returned items: no 1042, and 1038 without them', () => {
+    const credito06 = { ...CREDITO, tpNFCredito: TP_NF_CREDITO.retornoRecusaParcial };
+    expect(
+      regras({ ...credito06, itens: [{ ...ITEM_IBSCBS, dfeReferenciado: ref(CHAVE_A, 2) }] }),
+    ).toEqual([]);
+    expect(regras({ ...credito06, itens: [ITEM_IBSCBS] })).toEqual([
+      REGRA_DOCUMENTO.refItemAusente,
+    ]);
+    // Near-miss: crédito 01 still may not reference by item.
+    expect(
+      regras({
+        ...CREDITO,
+        tpNFCredito: TP_NF_CREDITO.multaJuros,
+        chNFeReferenciadas: [CHAVE_B],
+        itens: [{ ...ITEM_IBSCBS, dfeReferenciado: ref(CHAVE_A, 2) }],
+      }),
+    ).toContain(REGRA_DOCUMENTO.refItemEmNotaDeCredito);
+  });
+
+  it('VC02-30 (v1.51): débito 07 may reference several notas; débito 04 may not', () => {
+    const itens = [
+      { ...ITEM_IBSCBS, dfeReferenciado: ref(CHAVE_A, 1) },
+      { ...ITEM_IBSCBS, nItem: 2, dfeReferenciado: ref(CHAVE_B, 1) },
+    ];
+    expect(regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.perdaEstoque, itens })).not.toContain(
+      REGRA_DOCUMENTO.refItemMaisDeUmaChave,
+    );
+    expect(regras({ ...DEBITO, tpNFDebito: TP_NF_DEBITO.multaJuros, itens })).toContain(
+      REGRA_DOCUMENTO.refItemMaisDeUmaChave,
+    );
   });
 
   it('débito 03 references whole notas: 1039 on nItem, and no 1048 / 1130', () => {

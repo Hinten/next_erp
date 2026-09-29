@@ -353,7 +353,9 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       nome: emit.xNome,
       cnpj: emit.CNPJ ?? null,
       cpf: emit.CPF ?? null,
-      ie: emit.IE,
+      // Optional since PL_010f (NT 2025.002 v1.50+): an emitente without IE
+      // prints an empty box, the way the XML carries no element.
+      ie: emit.IE ?? '',
       iest: emit.IEST ?? null,
       im: emit.IM ?? null,
       endereco: mapEndereco(emit.enderEmit),

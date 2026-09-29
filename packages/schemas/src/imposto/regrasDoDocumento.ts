@@ -74,10 +74,10 @@ export const REGRA_DOCUMENTO = {
   refItemComRefNota: 'refItemComRefNota',
   /** 1042 (VC02-07) — a nota de crédito referencing by item. */
   refItemEmNotaDeCredito: 'refItemEmNotaDeCredito',
-  /** 1038 (VC02-10) — débito 03/04 without any item reference. */
-  refItemAusenteNoDebito: 'refItemAusenteNoDebito',
-  /** 1038 (VC02-10) — débito 03/04: this item has none while others do (per item: uncertain). */
-  refItemAusenteNoItemDoDebito: 'refItemAusenteNoItemDoDebito',
+  /** 1038 (VC02-10) — débito 03/04 or crédito 06 without any item reference. */
+  refItemAusente: 'refItemAusente',
+  /** 1038 (VC02-10) — débito 03/04 or crédito 06: this item has none while others do (per item: uncertain). */
+  refItemAusenteNoItem: 'refItemAusenteNoItem',
   /** 1072 (VC02-20) — the same chave + nItem referenced twice. */
   refItemDuplicada: 'refItemDuplicada',
   /** 1130 (VC02-30) — items referencing more than one document. */
@@ -196,16 +196,15 @@ export const REGRAS_DOCUMENTO = {
     severidade: B,
     texto: 'A nota de crédito referencia a nota original pelas chaves referenciadas, não por item.',
   },
-  refItemAusenteNoDebito: {
+  refItemAusente: {
     cStat: '1038',
     severidade: B,
-    texto:
-      'Este tipo de nota de débito exige a referência por item (DF-e referenciado) à nota de origem.',
+    texto: 'Este tipo de nota exige a referência por item (DF-e referenciado) à nota de origem.',
   },
-  refItemAusenteNoItemDoDebito: {
+  refItemAusenteNoItem: {
     cStat: '1038',
     severidade: SEVERIDADE_VIOLACAO.aviso,
-    texto: 'Este item da nota de débito está sem referência (DF-e referenciado).',
+    texto: 'Este item está sem referência (DF-e referenciado) à nota de origem.',
   },
   refItemDuplicada: {
     cStat: '1072',
@@ -496,7 +495,8 @@ export function violacoesDoDocumento(e: EntradaRegrasDocumento): ViolacaoDocumen
 
 /**
  * The two tipos this ERP does not emit, each for a reason in the NT itself
- * (v1.40 — re-check both against v1.50):
+ * (v1.40, and both unchanged in v1.51 — B25.2-30, UB106-30 and the CST 800
+ * indicator read the same):
  *  - crédito 02 (crédito presumido de IBS na ZFM) cannot be emitted before
  *    2029 (1145), and needs the item-level `prod/tpCredPresIBSZFM` (I05k) this
  *    ERP does not model;
@@ -649,17 +649,18 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
     (i): i is ItemRegrasDocumento & { dfeReferenciado: DfeReferenciadoEntrada } =>
       i.dfeReferenciado != null,
   );
-  // VC02-10 is keyed on tpNFDebito alone (a finNFe mismatch is B25.1-10's).
+  // VC02-10 is keyed on the tipo fields alone (a finNFe mismatch is B25.1/B25.2's).
   const debitoNaoProcessado = e.tpNFDebito === TP_NF_DEBITO.debitoNotaNaoProcessada;
-  if (debitoNaoProcessado || e.tpNFDebito === TP_NF_DEBITO.multaJuros) {
+  const retornoParcial = e.tpNFCredito === TP_NF_CREDITO.retornoRecusaParcial;
+  if (debitoNaoProcessado || e.tpNFDebito === TP_NF_DEBITO.multaJuros || retornoParcial) {
     if (comRef.length === 0) {
-      out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoDebito, null));
+      out.push(violacao(REGRA_DOCUMENTO.refItemAusente, null));
     } else {
       // Whether SEFAZ judges VC02-10 per item or per nota the NT does not say,
       // so an item left out of a partly-referenced nota is only a warning.
       for (const item of e.itens) {
         if (item.dfeReferenciado == null) {
-          out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoItemDoDebito, item.nItem));
+          out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoItem, item.nItem));
         }
       }
     }
@@ -668,8 +669,8 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
 
   if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.refItemSemReformaTributaria, null));
   if (e.chNFeReferenciadas.length > 0) out.push(violacao(REGRA_DOCUMENTO.refItemComRefNota, null));
-  // VC02-07 — the tpNFCredito 06 exception arrives with that code (PL_010f).
-  if (e.finNFe === FIN_NFE_OPERACAO.credito) {
+  // VC02-07 — except crédito 06, which references the returned items (VC02-10).
+  if (e.finNFe === FIN_NFE_OPERACAO.credito && !retornoParcial) {
     out.push(violacao(REGRA_DOCUMENTO.refItemEmNotaDeCredito, null));
   }
 
@@ -697,8 +698,10 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
   }
 
   const devolucao = e.finNFe === FIN_NFE_OPERACAO.devolucao;
-  // VC02-30 exceptions: devolução, and débito 03 (one nota per unprocessed document).
-  if (chavesValidas.size > 1 && !devolucao && !debitoNaoProcessado) {
+  // VC02-30 exceptions: devolução, débito 03 (one nota per unprocessed
+  // document) and — since v1.51 — débito 07 (perda em estoque).
+  const perdaEstoque = e.tpNFDebito === TP_NF_DEBITO.perdaEstoque;
+  if (chavesValidas.size > 1 && !devolucao && !debitoNaoProcessado && !perdaEstoque) {
     out.push(violacao(REGRA_DOCUMENTO.refItemMaisDeUmaChave, null));
   }
 

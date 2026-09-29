@@ -70,7 +70,7 @@ vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
 
 | NT | Production | Topic | Skill impact |
 |---|---|---|---|
-| **`2025.002 v1.40`** | **03/08/2026 (CRT=3)** | **Reforma Tributária — IBS/CBS/IS** | **MAJOR.** Full new tax layer (Grupo UB item-level, Grupo W03 totals), new finalities (Crédito/Débito), cClassTrib, new events 112110-412130, cStat ampliado a 4 dígitos, nProt a 15/17. Dedicated reference: `rtc-ibs-cbs-is.md`. |
+| **`2025.002 v1.51`** (jul/2026; v1.40 mai/2026, v1.50 jun/2026) | **03/08/2026 (CRT=3)** | **Reforma Tributária — IBS/CBS/IS** | **MAJOR.** Full new tax layer (Grupo UB item-level, Grupo W03 totals), new finalities (Crédito/Débito), cClassTrib, new events 112110-412130, cStat ampliado a 4 dígitos, nProt a 15/17. v1.50 reformulou a monofásica de combustíveis; v1.51 alterou B25-80, VC02-14 (devolução só por item, produção 05/10/2026), VC02-30, UB112-10, UB116-10, UB131-20 e o cronograma da UB12-10. XSD pack **PL_010f_v1.04** vendorizado (`tpNFCredito` 06, `cIndOp`, `ISUFEmit`, `emit/IE` opcional, `IS/adRemIS`, `tpImp` 6 = DANFE Simplificado Tipo 2). Dedicated reference: `rtc-ibs-cbs-is.md` (seção PL_010f). |
 | **`2025.001 v1.03`** | **03/11/2025** | **Simplificação Operacional** | **MAJOR.** Síncrono mandatório para lote=1 (cStat 452); atraso na emissão reduzido de 30→7 dias; novas RVs em cobrança/pagamento; NFC-e QR Code v3. Dedicated reference: `sincrono-vs-assincrono.md`. cstat-rejeicoes.md atualizado. |
 
 ## 2024
