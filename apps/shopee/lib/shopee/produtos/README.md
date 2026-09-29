@@ -75,7 +75,17 @@ children, a permanent duplicate bought for a transient conflict. _The price
 patch before the produto merge_, because the merge always writes (it carries
 `ultimaModificacao`) and so bumps `updateTime`: merging first would make the
 price precondition assert a stamp we had just invalidated ourselves, failing
-every price-writing import.
+every price-writing import. That precondition is the `updateTime` of the
+PREPARO's read of the produto, carried on the plan (`EscritaDePrecos.lastUpdateTime`)
+— never a re-read in the writer, which would guard only its own last line and
+silently revert an operator's save made during the preparo. Taxonomia and
+categorias write no produto, so the stamp goes stale only when someone else
+wrote the document, and the item then re-plans once. The guard sees that one
+document: a child created in the window without a write to the parent (the
+ERP's family-forming writer does stamp the parent's `filhoUnicoId`, and is
+seen) lets the parent's price land, and `onProdutoChanged` then propagates it
+onto that child unless `propagatePriceToChildren` is `false` — accepted,
+documented in `estoquePrecos.ts`.
 
 **Links resolve, then write, and NEVER delete.** The parent cascade is
 `prodshopee (item_id, conta)` → `produtos (sku == item_sku, paiId == null)` →
@@ -184,14 +194,16 @@ and it is then decided like the childless produto it is: the importer asks
 whether it has any ERP child (`produtoJaTemFilhos`, one `paiId ==` query with
 `limit(1)`, served by the `produtos (paiId, nome)` composite by prefix — no new
 index), and with none it applies the rule as for a childless produto (both price
-options) through the same guarded patch, against a snapshot read after the
-merge (`precosPaiNaCorrida`); with a child it writes nothing more, since that
-family's price and flag are the operator's. A no-model listing's race arm is
-unchanged. ⚠️ Every guarded parent patch asserts the stamp of the writer's own
-re-read just before it, while price and flag were decided in the preparo: a
-save landing during the preparo is overwritten, and a child created in that
-window does not move the parent's stamp, so a flag flipped to `true` there lets
-the produto trigger overwrite that child's map — left for a follow-up. Estoque is Σ
+options) through the same guarded patch (`precosPaiNaCorrida`). The preparo
+never read that document, so the stamp is the arm's own read of it, taken
+before the child query and before the arm's merge (the merge leaves the two
+keys alone, so it can go second); with a child it writes nothing more, since
+that family's price and flag are the operator's. A no-model listing's race arm
+is unchanged. ⚠️ Every other guarded parent patch asserts the stamp of the
+PREPARO's read, so a save landing anywhere in the preparo → patch window makes
+it lose and re-plan; what no single-document guard sees is a child created in
+that window without a write to the parent, whose map the produto trigger then
+overwrites when the flag ends up `true` (documented in `estoquePrecos.ts`). Estoque is Σ
 `seller_stock[].stock` (never `shopee_stock`) plus `reservaEfetiva`, and it is
 **never written on a parent that has children** — gated on the payload's
 `has_model` OR the ERP's own `paiJaTemFilho`, because a parent row and child
