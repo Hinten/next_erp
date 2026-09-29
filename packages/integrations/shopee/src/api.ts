@@ -179,9 +179,20 @@
  * ⚠️ Its payload is a top-level ARRAY under `response` — the only one in this
  * package.
  *
+ * ## The price sync (step 13)
+ *
+ * One more write, `update_price`, and the SECOND operation whose `error`
+ * COEXISTS with its payload — not on its page's word (it documents no "check
+ * failure_list" code) but on the sandbox's: the step-13 probe received
+ * `product.error_update_price_fail` WITH a populated `failure_list`. So it
+ * carries the transport's `payloadNoErro` too, and a failing body that parses
+ * reaches the caller as a `ShopeeApiPartialError`.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
+import { roundReais } from '@delfrance/core/money';
+
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
 import {
   SHOPEE_SURFACE,
@@ -202,6 +213,7 @@ import {
   SHOPEE_TIER_MAX_LEVELS,
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_PRICE_MAX_MODELS,
   SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
   SHOPEE_UPLOAD_IMAGE_FIELD,
@@ -240,6 +252,7 @@ import {
   type ShopeeShopsByPartner,
   type ShopeeTierWriteResponse,
   type ShopeeUnlistItemResponse,
+  type ShopeeUpdatePriceResponse,
   type ShopeeUpdateStockResponse,
   type ShopeeUploadImageResponse,
   type ShopeeUploadImageScene,
@@ -276,6 +289,7 @@ import {
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
   shopeeUnlistItemSchema,
+  shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
   shopeeVariationsSchema,
@@ -363,10 +377,12 @@ export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
  * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
  * models per call.
  *
- * ⚠️ The ONE operation in this package whose `error` COEXISTS with its payload:
+ * ⚠️ The FIRST operation in this package whose `error` COEXISTS with its
+ * payload, and the only one whose page documents it:
  * `error_busi_update_stock_failed` is documented as *"please check
  * failure_list"*, and `failure_list` rides under `response`. Its call site is
- * therefore the ONLY `payloadNoErro` in this file — see
+ * therefore one of the TWO `payloadNoErro` sites in this file — the other is
+ * {@link SHOPEE_UPDATE_PRICE_PATH}'s, on measurement — see
  * {@link ShopeeClient.updateStock}.
  */
 export const SHOPEE_UPDATE_STOCK_PATH = '/api/v2/product/update_stock';
@@ -382,6 +398,31 @@ export const SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH = '/api/v2/shop/get_shop_holiday_
  * one in this package.
  */
 export const SHOPEE_GET_WAREHOUSE_DETAIL_PATH = '/api/v2/shop/get_warehouse_detail';
+
+/* -------------------------- the price sync (step 13) ---------------------- */
+
+/**
+ * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
+ * models per call — {@link SHOPEE_UPDATE_STOCK_PATH}'s shape, and, on
+ * MEASUREMENT, its error handling too.
+ *
+ * ⚠️ A `payloadNoErro` operation, although its PAGE says otherwise. The page's
+ * error list has no "check failure_list" code and its response sample prints the
+ * partial failure as a SUCCESS envelope — `error: ""` with both lists — so the
+ * shipped op went out WITHOUT the flag. Step 13's sandbox probe (2026-09-24)
+ * then measured the other shape as well: a bogus `model_id` on a no-model item
+ * (P4c-bogus) answered `product.error_update_price_fail` AND a populated
+ * `failure_list` in the same body, and without the flag those rows died at the
+ * throw site. So a partial arrives BOTH ways — the 200's `failure_list` and a
+ * `ShopeeApiPartialError` carrying the lists — see
+ * {@link ShopeeClient.updatePrice}.
+ *
+ * ⚠️ And NONE of its codes joins `KIND_BY_CODE` (`errors.ts`, register 101):
+ * `error_update_price_fail`, `error_system_busy` and this page's `error_inner`
+ * (`Update item failed {{.error_info}}` can be a PERMANENT whole-item
+ * validation) are classified per operation by the app, never here.
+ */
+export const SHOPEE_UPDATE_PRICE_PATH = '/api/v2/product/update_price';
 
 /** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
 export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
@@ -1373,6 +1414,37 @@ export type ShopeeWarehouseDetail =
   | { readonly kind: 'lista'; readonly armazens: readonly ShopeeWarehouse[] }
   | { readonly kind: 'sem-multi-armazem'; readonly code: string };
 
+/* -------------------------- the price sync (step 13) ---------------------- */
+
+/** One model of an `update_price` call. */
+export interface ShopeeUpdatePriceEntry {
+  /**
+   * ⚠️ ALWAYS sent. `0` IS the no-model item — the page's param table says "0
+   * for no model item". The guide's worked example OMITS the key instead, and
+   * step 13's probe measured BOTH forms accepted on a no-model item (P4, P6:
+   * read-back == request); `0` stays the one this package sends, because it is
+   * the form with the page behind it (and the one step 12 measured on the stock
+   * twin).
+   *
+   * ⚠️ The ECHO does not mirror it: that item's `success_list` entry comes back
+   * with NO `model_id` key at all (P4c), which the response schema reads as
+   * `null` — see `shopeeUpdatePricePayloadSchema`.
+   */
+  readonly model_id: number;
+  /**
+   * The new SHELF price, in the listing currency's MAJOR units. BR and SG: at
+   * most two decimals (the page, verbatim). ⚠️ The package never rounds it — see
+   * {@link assertUpdatePriceParams} rung 5.
+   */
+  readonly original_price: number;
+}
+
+/** `update_price` — ONE item, 1…{@link SHOPEE_UPDATE_PRICE_MAX_MODELS} models. */
+export interface ShopeeUpdatePriceRequest {
+  readonly item_id: number;
+  readonly price_list: readonly ShopeeUpdatePriceEntry[];
+}
+
 /** The shop credentials `upload_image` needs ONLY under `signing: 'shop'`. */
 export interface ShopeeShopAuth {
   readonly accessToken: string;
@@ -1829,8 +1901,9 @@ export interface ShopeeClient {
    * and that is the reason this operation exists in the shape it does. Its own
    * list documents `error_busi_update_stock_failed: Update stock failed, please
    * check failure_list for detailed reason`, and `failure_list` lives under
-   * `response`. So this is the ONE call site carrying the transport's
-   * `payloadNoErro`: the throw stays a throw, and the thrown
+   * `response`. So this is the FIRST call site carrying the transport's
+   * `payloadNoErro` (the second, on measurement, is
+   * {@link ShopeeClient.updatePrice}): the throw stays a throw, and the thrown
    * `ShopeeApiPartialError` carries the parsed body so the caller can attribute
    * the refusal to the models it actually hit. Everything else — a throttle, a
    * dead authorization, a body with no `response` — throws the ordinary class,
@@ -1896,6 +1969,53 @@ export interface ShopeeClient {
    * echoes back; nothing here parses it as a number.
    */
   getWarehouseDetail(p?: GetWarehouseDetailParams): Promise<ShopeeWarehouseDetail>;
+
+  /* ------------------------ the price sync (step 13) ---------------------- */
+
+  /**
+   * Set the SHELF price (`original_price`) of 1…{@link SHOPEE_UPDATE_PRICE_MAX_MODELS}
+   * models of ONE item — the WHOLE envelope, like every write here.
+   *
+   * ⚠️ **A partial refusal arrives in TWO shapes, both measured** (step 13's
+   * sandbox probe, 2026-09-24):
+   * - RETURNED — a 200 with `error: ''` carrying a non-empty `failure_list`
+   *   (P9: one valid model + one bogus). The page's own sample prints this one.
+   * - THROWN — a non-empty `error` WITH the lists in the same body (P4c-bogus:
+   *   `product.error_update_price_fail` + a populated `failure_list`). The page
+   *   documents no such code, so this op first shipped without the flag; it now
+   *   carries the transport's `payloadNoErro`, exactly like
+   *   {@link ShopeeClient.updateStock}, and the body arrives as a
+   *   `ShopeeApiPartialError` whose `parsed` re-parses with
+   *   `shopeeUpdatePriceSchema`.
+   *
+   * Either way whoever writes the result back reads BOTH lists, never the
+   * absence of a throw — a model in neither list was not confirmed. A failing
+   * body with NO `response` key, `response: null`, or a `response` that does
+   * not parse throws the ordinary class — `ShopeeRateLimitError` and
+   * `ShopeeReauthRequiredError` included.
+   *
+   * ⚠️ But `response: {}` PARSES — both lists default to `[]` — so a failing
+   * body carrying an empty `response` object throws `ShopeeApiPartialError`
+   * with two empty lists (every sent model then reads the top-level code). A
+   * throttle arriving that way LOSES its `Retry-After`: the partial class
+   * carries no `retryAfterSeconds`, so the price sync's surface falls back to
+   * its own `ratePauseMin()`. Measured by review, not by the probe; the
+   * transport is unchanged (a register item, not a fix here).
+   *
+   * ⚠️ The flag is code-blind, so the partial class REPLACES whichever subclass
+   * the envelope would have produced: a throttle code arriving WITH the lists
+   * is a `ShopeeApiPartialError` whose `kind` is `burst`/`daily`. A ladder that
+   * needs the retry verdict reads `kind` inside the partial arm, not only the
+   * class.
+   *
+   * ⚠️ A no-model item's success entry carries NO `model_id` (P4c) and reads as
+   * `null` — match it by that absence, never by `=== 0`.
+   *
+   * ⚠️ It does NOT round. A price with a third decimal is REFUSED before the
+   * fetch ({@link assertUpdatePriceParams} rung 5): rounding is the caller's
+   * (`roundReais`), so the package never decides a price.
+   */
+  updatePrice(body: ShopeeUpdatePriceRequest): Promise<ShopeeUpdatePriceResponse>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -2749,6 +2869,68 @@ function assertItemPromotionParams(p: GetItemPromotionParams): void {
   });
 }
 
+/* ---------------- the price sync (step 13) — the bound guards ------------- */
+
+/**
+ * Every `update_price` bound, all six checked BEFORE any fetch.
+ *
+ * ⚠️ Rung 3 uses {@link assertIdNaoNegativo} and NEVER {@link assertIdPositivo}
+ * on `model_id`: `0` IS the no-model item. And a duplicate is REFUSED —
+ * `error_param: Repeat model_id.` is on this page's own list, and BOTH result
+ * lists are keyed on `model_id` alone, so two entries for one model come back
+ * unreconcilable even on the success path ({@link assertUpdateStockParams}'
+ * argument, verbatim).
+ *
+ * ⚠️ Rung 5, two decimals: the page says BR and SG sellers "can set the price
+ * with two decimal place", and nothing documents what a third does (refused,
+ * truncated or rounded — UNVERIFIED). So a third decimal never reaches the wire,
+ * and it is REFUSED rather than rounded: the check is `roundReais(p) !== p`, the
+ * ONE sanctioned money rounding, so a price the app rounded is by construction a
+ * price this guard accepts — and the package never picks a price the caller did
+ * not.
+ *
+ * ⚠️ Rung 6, structure: a `model_id: 0` entry must be ALONE. `0` says "this item
+ * has no models"; a `0` beside a real id is a caller bug that Shopee would
+ * answer with one of two OPPOSITE errors (the has-model mirror, or `Wrong
+ * model_id.`), neither of which names the real mistake.
+ */
+function assertUpdatePriceParams(req: ShopeeUpdatePriceRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+
+  const quantidade = req.price_list.length;
+  if (quantidade < 1 || quantidade > SHOPEE_UPDATE_PRICE_MAX_MODELS) {
+    throw new ShopeeConfigError(
+      `price_list deve conter de 1 a ${String(SHOPEE_UPDATE_PRICE_MAX_MODELS)} modelos (recebido: ${String(quantidade)}).`,
+    );
+  }
+
+  const vistos = new Set<number>();
+  req.price_list.forEach((entrada, posicao) => {
+    const onde = `price_list[${String(posicao)}]`;
+    // ⚠️ `0` É o item sem modelos — daí o guarda NÃO-negativo.
+    assertIdNaoNegativo(`${onde}.model_id`, entrada.model_id);
+    if (vistos.has(entrada.model_id)) {
+      throw new ShopeeConfigError(
+        `${onde}.model_id repetido (${String(entrada.model_id)}) — as duas listas de resultado são chaveadas só por model_id.`,
+      );
+    }
+    vistos.add(entrada.model_id);
+
+    assertPositivoFinito(`${onde}.original_price`, entrada.original_price);
+    if (roundReais(entrada.original_price) !== entrada.original_price) {
+      throw new ShopeeConfigError(
+        `${onde}.original_price deve ter no máximo duas casas decimais (recebido: ${JSON.stringify(entrada.original_price)}) — o arredondamento é de quem chama, nunca do pacote.`,
+      );
+    }
+  });
+
+  if (quantidade > 1 && vistos.has(0)) {
+    throw new ShopeeConfigError(
+      `price_list mistura model_id 0 (o item SEM modelos) com ${String(quantidade - 1)} outro(s) modelo(s) — o 0 só pode vir sozinho.`,
+    );
+  }
+}
+
 /**
  * Every `upload_image` bound, checked BEFORE any fetch — including the one the
  * signing switch owes.
@@ -3467,9 +3649,11 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         call: await signedCall(),
         schema: shopeeUpdateStockSchema,
         surface: SHOPEE_SURFACE.business,
-        // ⚠️ The ONE `payloadNoErro` in this package, and the only place it may
-        // appear. It does NOT change the verdict — a non-empty `error` is still
-        // a failure and still throws — it only stops the parsed body being
+        // ⚠️ One of the TWO `payloadNoErro` sites in this package (the other is
+        // the step-13 price write, on measurement), and the only places it may
+        // appear.
+        // It does NOT change the verdict — a non-empty `error` is still a
+        // failure and still throws — it only stops the parsed body being
         // discarded at the throw site, because THIS page documents
         // `error_busi_update_stock_failed` as "please check failure_list" and
         // `failure_list` rides under `response`. See the flag's docblock in
@@ -3569,6 +3753,28 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       return armazens.length === 0
         ? { kind: 'sem-multi-armazem', code: '' }
         : { kind: 'lista', armazens };
+    },
+
+    /* ---------------------- the price sync (step 13) --------------------- */
+
+    updatePrice: async (body) => {
+      assertUpdatePriceParams(body);
+      // ⚠️ A WRITE: the whole envelope comes back. No VERDICT tolerance rides
+      // here — a non-empty `error` still throws — but the payload one does:
+      // step 13's sandbox probe (P4c-bogus) received
+      // `product.error_update_price_fail` WITH a populated `failure_list`, and
+      // without the flag those per-model rows were discarded at the throw
+      // site. The page documents no such code; the wire sent it anyway. See the
+      // path's docblock.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_PRICE_PATH,
+        call: await signedCall(),
+        schema: shopeeUpdatePriceSchema,
+        surface: SHOPEE_SURFACE.business,
+        payloadNoErro: true,
+        body,
+      });
     },
   };
 }

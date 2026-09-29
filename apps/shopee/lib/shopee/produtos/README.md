@@ -129,7 +129,69 @@ zero-fills the field). The promotional table is never written: Mercado Livre's
 #803 settled that it belongs to promotions the operator authors in the ERP, and
 step 9 takes the same stance, so `tabelaPromocionalOuterRef` rides the deps as a
 documented no-op. A no-model listing carries the parent's `precos`; a has-model
-listing puts nothing on the parent and gives each child its own. Estoque is Σ
+listing gives each child its own, and when the import FORMS the family — it
+CREATES the parent, or the parent is an existing produto with NO children yet —
+it decides that parent by **the family rule** (`planejarPrecoDaFamilia` in
+`mapeamento.ts`, Lucas 2026-09-28 — the one copy, reached by the listing planner
+and the kit arm alike through `mapearProdutoPai`): every model priced and all
+the same in reais (`mesmoPrecoEmReais`, `10` ≡ `10.004`, `10.00` ≠ `10.01`) ⇒
+the parent takes that price and `propagatePriceToChildren: true`; otherwise
+(they differ, or one is unpriced) ⇒ no parent price and `false`; no normal
+table or no model priced at all (the SGD sandbox) ⇒ neither. Its premise is that
+the children carry Shopee's prices, so it needs the option that prices them:
+`importarPreco` on CREATE, and BOTH `importarPreco` and `sobrescreverPreco` on
+the childless produto — its parent is overwritten under the second, but every
+child is CREATED under the first, and with that one off the children hold no
+price, so turning propagation off would leave every model unpriced where the
+import before the rule kept pricing them from the parent. Outside the premise
+the parent answers what it did before the rule (`opcao-desligada` or
+`pai-com-filhos`), no price and no flag. On CREATE both go in the create
+document; on the childless produto
+they ride the SAME guarded dotted-path patch as any parent price
+(`update(…, { lastUpdateTime })`, rule 7 tier 1), so price and flag land
+together or not at all — a flag alone (models priced apart) takes the same
+guard, and an old price is never deleted. Why: the price sync (step 13) and the
+publish (step 11) price a model from the PARENT when it propagates (the schema
+default), so a parent created with no price and no flag priced every model
+`null`, and a childless produto matched by SKU priced every model at its OLD
+price. Neither case has children to overwrite: every child is a model this same
+import creates with at most its normal-table price, so a trigger copy of the
+parent's map onto them changes no price in reais, and `precoDaFamilia.test.ts`
+pins the round trip for both — import, then `precificarItem` and the publish's
+`prepararPublicacao`, and every model lands on its own Shopee shelf price (a
+model Shopee leaves unpriced stays unpriced). ⚠️ **A
+re-import of a parent that ALREADY owns children writes it NEITHER a price NOR
+the flag** — the parent reports `pai-com-filhos` (or `opcao-desligada`), exactly
+as before the rule (Lucas's second answer, 2026-09-28: "only when creating" —
+a produto with no children counts as a family being formed, because none of the
+reasons below exists without children). That flag is the operator's and it
+governs every ERP child in every tabela, not just this listing's models in the
+normal one: turning it on makes the produto trigger replace each child's WHOLE
+`precos` map with the parent's (erasing per-variation prices in other tabelas,
+and repricing ERP variations absent from the listing), turning it off strands
+children that relied on the parent elsewhere. So for a family the round trip is
+NOT promised — a propagating parent keeps pricing every model from its own map,
+and the children's own prices the re-import writes are read only once the
+operator turns propagation off (pinned in the same file). ⚠️ The create-race arm
+(`.create()` ⇒ ALREADY_EXISTS ⇒ a merge of the create document) merges NEITHER
+field the rule decides on a has-model listing (`camposForaDaCorrida`): the
+CREATE decision assumed a new document, and the one already at the
+deterministic id is not always a racing twin — a parent an earlier attempt
+created and never linked (a blank or ambiguous `item_sku` misses the SKU rung)
+lands there too, and may hold an operator's price. The link is written before
+any child, so that document is childless unless something attached one since,
+and it is then decided like the childless produto it is: the importer asks
+whether it has any ERP child (`produtoJaTemFilhos`, one `paiId ==` query with
+`limit(1)`, served by the `produtos (paiId, nome)` composite by prefix — no new
+index), and with none it applies the rule as for a childless produto (both price
+options) through the same guarded patch, against a snapshot read after the
+merge (`precosPaiNaCorrida`); with a child it writes nothing more, since that
+family's price and flag are the operator's. A no-model listing's race arm is
+unchanged. ⚠️ Every guarded parent patch asserts the stamp of the writer's own
+re-read just before it, while price and flag were decided in the preparo: a
+save landing during the preparo is overwritten, and a child created in that
+window does not move the parent's stamp, so a flag flipped to `true` there lets
+the produto trigger overwrite that child's map — left for a follow-up. Estoque is Σ
 `seller_stock[].stock` (never `shopee_stock`) plus `reservaEfetiva`, and it is
 **never written on a parent that has children** — gated on the payload's
 `has_model` OR the ERP's own `paiJaTemFilho`, because a parent row and child

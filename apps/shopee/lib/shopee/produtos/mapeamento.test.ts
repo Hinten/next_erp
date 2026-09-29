@@ -85,6 +85,7 @@ function argsPai(parcial: Partial<ArgsMapearProdutoPai> = {}): ArgsMapearProduto
     depositoOuterRef: DEPOSITO,
     categoriaOuterRef: null,
     temFilhos: false,
+    jaTemFilhos: false,
     estoqueExistente: null,
     ...parcial,
   };
@@ -399,7 +400,8 @@ describe('mapearProdutoPai — estoque', () => {
   it('⛔ NEAR-MISS: NUNCA escreve estoque num pai que tem filhos — nem pelo payload, nem pelo ERP', () => {
     expect(comEstoque({ temFilhos: true }).estoque).toBeNull();
     expect(comEstoque({ temFilhos: true }).estoqueIgnorado).toBe('pai-com-filhos');
-    // e o preço do pai cai pelo mesmo motivo, com o motivo certo
+    // e o preço do pai (um anúncio SEM models) cai pelo mesmo motivo, com o
+    // motivo certo — num anúncio COM models quem decide é a regra da família
     expect(comEstoque({ temFilhos: true }).precoIgnorado).toBe('pai-com-filhos');
   });
 
