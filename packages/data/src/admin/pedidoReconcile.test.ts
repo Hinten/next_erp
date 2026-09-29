@@ -1949,3 +1949,259 @@ describe('troca — the devolução credit counts as paid', () => {
     });
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*  #367 PR 1b — a payment the LEGACY app stored under an AUTO doc id          */
+/* -------------------------------------------------------------------------- */
+
+describe('reconcilePedidoFromPagamento — legacy auto-id pagamento (#367 PR 1b)', () => {
+  const CONTA = 'documents/metodo_pgto/m1';
+  const LEGADO = 'pedidos/p1/pagamentos/legAuto1';
+
+  /** A pagamento as the legacy app persisted it: auto doc id, MP id in the `id` FIELD. */
+  function legado(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: PAY_ID,
+      metodoPagamentoOuterRef: CONTA,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+      valor: 60,
+      nFat: 'NF-legado',
+      ...over,
+    };
+  }
+
+  it('updates the legacy doc IN PLACE instead of creating a second one', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': { estado: 'pago', valorCobrado: 60 },
+      [LEGADO]: legado(),
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    // The refund landed on the legacy doc, and no doc was minted at the MP id.
+    expect(store['pedidos/p1/pagamentos/pay1']).toBeUndefined();
+    expect(writes.sets.map((w) => w.path)).toEqual([LEGADO]);
+    expect(store[LEGADO]).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+      // Operator/legacy fields survive the inverted merge, like any update.
+      nFat: 'NF-legado',
+    });
+    // Nothing paid any more → the pago pedido is downgraded.
+    expect(result.transition).toBe('aguardandoConfirmacaoDePagamento');
+  });
+
+  it('counts the payment ONCE: a redelivery of the same approved payment does not reach pago', async () => {
+    // The double count this fixes: without the match, a new doc at `pay1` (60)
+    // plus the legacy doc (60) would sum 120 >= 100 and settle the pedido.
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      [LEGADO]: legado(),
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(result.transition).toBeNull();
+    expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    expect(store['pedidos/p1/pagamentos/pay1']).toBeUndefined();
+  });
+
+  it('near-miss: the same MP id on ANOTHER account is a different payment', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      [LEGADO]: legado({ metodoPagamentoOuterRef: 'documents/metodo_pgto/outra' }),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 40 });
+    expect(store[LEGADO]).toMatchObject({ valor: 60, nFat: 'NF-legado' });
+    // 60 (other account, still counted) + 40 = 100 → pago.
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+  });
+
+  it('near-miss: a doc whose `id` field is a DIFFERENT payment is never matched', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      [LEGADO]: legado({ id: 'outroPagamento' }),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 40 });
+    expect(store[LEGADO]).toMatchObject({ id: 'outroPagamento', valor: 60 });
+  });
+
+  it('a doc AT the MP id wins over a legacy doc for the same payment', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': legado({ valor: 10 }),
+      [LEGADO]: legado(),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 20,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 20 });
+    expect(store[LEGADO]).toMatchObject({ valor: 60 });
+  });
+
+  it('two legacy docs for one payment resolve deterministically to the lowest doc id', async () => {
+    // ⚠️ Pins a KNOWN divergence from legacy: only the chosen doc is replaced in
+    // the sum, so the other duplicate keeps counting and the pedido stays pago
+    // (legacy dropped both). Duplicates are a corpus question for the window.
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'pago', valorCobrado: 60 },
+      'pedidos/p1/pagamentos/zzLegado': legado(),
+      'pedidos/p1/pagamentos/aaLegado': legado(),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/aaLegado']).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.estornado,
+    });
+    expect(store['pedidos/p1/pagamentos/zzLegado']).toMatchObject({
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    expect(store['pedidos/p1/pagamentos/pay1']).toBeUndefined();
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+  });
+
+  it('an incoming payment with no account ref never matches a legacy doc', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      [LEGADO]: legado(),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({ valor: 40, status_pagamento: STATUS_PAGAMENTO.aprovado }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 40 });
+    expect(store[LEGADO]).toMatchObject({ valor: 60 });
+  });
+  it('the update-if-newer guard protects a legacy doc too (same watermark → skipped)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': { estado: 'pago', valorCobrado: 60 },
+      [LEGADO]: legado({ lastProviderUpdate: T_NEW }),
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        metodoPagamentoOuterRef: CONTA,
+        lastProviderUpdate: T_NEW,
+      }),
+    });
+
+    expect(result).toMatchObject({ transition: null, skippedStale: true });
+    expect(writes.sets).toEqual([]);
+    expect(store[LEGADO]).toMatchObject({ status_pagamento: STATUS_PAGAMENTO.aprovado });
+  });
+
+  it('writes a realistic legacy doc (ms dates, cartao block) without throwing, dates in µs', async () => {
+    const MS = 1_700_000_000_000; // legacy stored epoch MILLISECONDS
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'pago', valorCobrado: 60 },
+      [LEGADO]: legado({
+        dataCadastro: MS,
+        dataAprovacao: MS,
+        ultimaModificacao: MS,
+        parcelas: 2,
+        aVista: false,
+        cartao: { tpIntegra: '2', numeroCartao: '1234', cAut: 'ABC' },
+      }),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    const doc = store[LEGADO]!;
+    expect(doc.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    // The legacy first-seen stamp survives, coerced to the µs standard.
+    expect(doc.dataCadastro).toBe(MS * 1000);
+    expect(doc.cartao).toMatchObject({ numeroCartao: '1234', cAut: 'ABC' });
+    expect(doc.ultimaModificacao as number).toBeGreaterThan(MS * 1000);
+    expect(store['pedidos/p1/pagamentos/pay1']).toBeUndefined();
+  });
+
+  it('near-miss: an equal id under ANOTHER collection is not the same account', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+      [LEGADO]: legado({ metodoPagamentoOuterRef: 'documents/integracoes/m1' }),
+    });
+
+    await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        metodoPagamentoOuterRef: CONTA,
+      }),
+    });
+
+    expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 40 });
+    expect(store[LEGADO]).toMatchObject({ valor: 60 });
+  });
+});
