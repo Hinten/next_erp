@@ -21,7 +21,7 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { emitirPedidosLote, NFeOrchestratorError } from '@/lib/nfe/orchestrator';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 import { createTaskScheduler, NFeTasksConfigError } from '@/lib/nfe/tasks';
 
 export const dynamic = 'force-dynamic';
@@ -52,10 +52,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     runtimeInstance = getNFeRuntime();
   } catch (e) {
-    return authError(503, {
-      error: 'NF-e runtime not ready',
-      code: e instanceof Error ? e.message : undefined,
-    });
+    // A misconfigured deploy (NFE_AMBIENTE / NFE_UF / TLS chain) → 503.
+    // Anything else is a bug and must surface, not hide behind a 503.
+    if (!isNFeRuntimeMisconfig(e)) throw e;
+    return authError(503, { error: 'NF-e runtime not ready', code: e.message });
   }
 
   try {

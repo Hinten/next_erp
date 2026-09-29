@@ -166,6 +166,10 @@ export async function sweepCartasCorrecaoPendentes(args: {
         // this record (or an idempotent no-op); count as handled.
         recovered++;
       }
+      // Per-item isolation (this whole sweep): one bad record must not abort the
+      // run for every other one, and its error is RETURNED to the caller in
+      // `errors[]` — reported, not swallowed.
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in errors[]
     } catch (e) {
       errors.push({
         chave: null,
@@ -249,6 +253,7 @@ export async function runProcessarPendentes(args: {
         } else {
           recovered++;
         }
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in errors[]
       } catch (e) {
         errors.push({
           chave: data.chave,
@@ -340,6 +345,7 @@ export async function runProcessarPendentes(args: {
         nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined,
       );
       recovered++;
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in errors[]
     } catch (e) {
       errors.push({
         chave: data.chave,
@@ -392,6 +398,7 @@ export async function runProcessarPendentes(args: {
       }
       recovered += r.recovered + r.errored;
       stillPending += r.stillPending;
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in errors[]
     } catch (e) {
       errors.push({
         chave: null,
