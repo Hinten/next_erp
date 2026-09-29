@@ -9,7 +9,9 @@
  * ## The sequence, and why it is this order
  *
  *  1. ONE clock read (`nowMs` → `nowUs`, converted ONCE here and handed DOWN —
- *     nothing below this module converts a clock);
+ *     nothing below this module converts a clock, except the aviso writers'
+ *     own seam in `avisos/autorizacao.ts`, which the step-14 NF-e aviso
+ *     resolve after the frete write goes through with the same `nowMs`);
  *  2. `get_order_detail` — the authority for every field;
  *  3. `get_escrow_detail`, **CONTAINED**: it refines PRICES, and losing a
  *     refinement must not lose the pedido;
@@ -88,6 +90,7 @@ import {
 
 import { readConta } from '../core/contaCache';
 import { loadShopeeContext } from '../core/shopee';
+import { resolverAvisoNfeSeEncerrado } from '../nfe/avisoNfe';
 import {
   avaliarCapturaComprador,
   clienteDeShopee,
@@ -613,6 +616,7 @@ export async function importarPedidoShopee(
   let mapeadosPag: PagamentosMapeadosShopee | null = null;
   let pagamentos: ResultadoPagamentosShopee | null = null;
   let frete7: ResultadoFreteShopee | null = null;
+  let avisoNfeResolvido = false;
   if (resultado.acao !== 'ignorado-obsoleto') {
     mapeadosPag = mapearPagamentosShopee({
       linha,
@@ -664,6 +668,28 @@ export async function importarPedidoShopee(
       prazoDaOrdemUs: frete.prazoDespacho,
       nowUs,
     });
+
+    // Step 14 (#1522) — the NF-e aviso's cross-step resolver, AFTER the frete
+    // transaction committed and outside it. Two facts end that problem: a frete
+    // WRITTEN into the removal set (the parcel moved) and the order row
+    // cancelled. ⚠️ The estado is handed over ONLY when this delivery wrote the
+    // frete (`atualizado`): a replay reads nothing and costs nothing. The
+    // cancelled arm does NOT wait for a frete write — step 7 preserves a stamped
+    // `error` against routine churn, so a cancelled order's frete can stay
+    // untouched while its aviso would otherwise stand forever. Every other
+    // import answers `false` with ZERO reads. A Firestore failure here
+    // PROPAGATES (rule 6): the delivery is idempotent, and its retry re-applies
+    // a no-op frete write and tries again.
+    avisoNfeResolvido = await resolverAvisoNfeSeEncerrado(
+      db,
+      {
+        integracaoId,
+        pedidoId,
+        estadoFreteEscrito: frete7.acao === 'atualizado' ? frete7.estadoEscrito : null,
+        orderStatus: linha.order_status,
+      },
+      { nowMs },
+    );
   }
 
   // AFTER the write, and driven by the snapshot the transaction actually saw: a
@@ -746,6 +772,8 @@ export async function importarPedidoShopee(
     motivoFrete: frete7?.motivoEstado ?? null,
     pacotes: frete7?.pacotes ?? 0,
     tokensFreteDesconhecidos: frete7?.tokensDesconhecidos ?? null,
+    // ── step 14: whether this import closed the pedido's NF-e aviso. A boolean.
+    avisoNfeResolvido,
   });
 
   return {

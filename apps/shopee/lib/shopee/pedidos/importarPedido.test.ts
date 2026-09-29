@@ -48,6 +48,9 @@ vi.mock('./pagamentoTx', async (importOriginal) => {
 });
 
 import { SHOPEE_ERRO_ORDER_NOT_FOUND, importarPedidoShopee } from './importarPedido';
+import { avisarNfeShopee, chaveAvisoNfeShopee } from '../nfe/avisoNfe';
+import { MOTIVO_NFE_SHOPEE } from '../nfe/errosNfe';
+import { SHOPEE_ORDER_STATUS } from './orderStatusMaps';
 
 const INT = 'int-1';
 const SHOP = 987654;
@@ -1046,5 +1049,166 @@ describe('importarPedidoShopee — o frete (passo 7)', () => {
     expect(tudo).not.toContain('Standard Express');
     expect(tudo).not.toContain('SGZ');
     expect(tudo).not.toContain('shipping_carrier');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*      step 14 (#1522) — o gancho que resolve o aviso de NF-e (R-k)          */
+/* -------------------------------------------------------------------------- */
+
+const AVISO_NFE_PATH = `avisos/${chaveAvisoNfeShopee(INT, PEDIDO_ID)}`;
+
+/**
+ * Abre o aviso de NF-e do pedido pelo PRODUTOR real, como o handler do passo
+ * 14 faria. A criação não usa o incremento — só uma repetição o usaria.
+ */
+async function abrirAvisoNfe(db: FakeDb): Promise<void> {
+  await avisarNfeShopee(
+    asDb(db),
+    {
+      integracaoId: INT,
+      pedidoId: PEDIDO_ID,
+      numero: ORDER_SN,
+      motivo: MOTIVO_NFE_SHOPEE.cnpjDivergente,
+      excerto: null,
+    },
+    { increment: (by: number) => ({ __increment: by }), nowMs: NOW_MS },
+  );
+  expect(db.store[AVISO_NFE_PATH]!.data.resolvidoEm).toBeNull();
+}
+
+function avisoNfe(db: FakeDb): Record<string, unknown> {
+  return db.store[AVISO_NFE_PATH]!.data;
+}
+
+/** A order SG com o seu pacote movido para `logistics_status`. */
+function comPacote(logisticsStatus: string, patch: Record<string, unknown> = {}) {
+  const pacote = detalheSG().package_list![0]!;
+  return linha({ package_list: [{ ...pacote, logistics_status: logisticsStatus }], ...patch });
+}
+
+describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => {
+  it('um frete ESCRITO no conjunto de remoção resolve o aviso aberto com `frete-despachado` (mutante 56)', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    c.getOrderDetail.mockResolvedValue({ order_list: [comPacote('LOGISTICS_PICKUP_DONE')] });
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('atualizado');
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+    expect(avisoNfe(c.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: 'frete-despachado',
+    });
+    // A linha do SEGUNDO import — a do primeiro diz `false`, e é o par.
+    const linhasDoImport = infos.filter((args) => String(args[0]).includes('pedido importado'));
+    expect(linhasDoImport).toHaveLength(2);
+    expect((linhasDoImport[0]![1] as Record<string, unknown>).avisoNfeResolvido).toBe(false);
+    expect((linhasDoImport[1]![1] as Record<string, unknown>).avisoNfeResolvido).toBe(true);
+  });
+
+  it('QUASE-ERRO: um import que NÃO escreve o frete não resolve e nem LÊ o aviso', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    c.db.caminhos.length = 0;
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(c.db.caminhos).not.toContain(AVISO_NFE_PATH);
+    expect(avisoNfe(c.db).resolvidoEm).toBeNull();
+  });
+
+  it('QUASE-ERRO: um frete ESCRITO fora do conjunto de remoção (`cancelado`) não resolve e nem LÊ o aviso', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    c.db.caminhos.length = 0;
+    // O PAR do caso acima: a mesma escrita de frete, mas num estado que não
+    // prova despacho nenhum — um pacote invalidado nunca saiu do depósito.
+    c.getOrderDetail.mockResolvedValue({ order_list: [comPacote('LOGISTICS_INVALID')] });
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('atualizado');
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.cancelado);
+    expect(c.db.caminhos).not.toContain(AVISO_NFE_PATH);
+    expect(avisoNfe(c.db).resolvidoEm).toBeNull();
+  });
+
+  it('a order CANCELLED resolve o aviso com `pedido-cancelado`', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        linha({ order_status: SHOPEE_ORDER_STATUS.cancelled, update_time: UPDATE_TIME_S + 60 }),
+      ],
+    });
+
+    await importar(c);
+
+    expect(avisoNfe(c.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: 'pedido-cancelado',
+    });
+  });
+
+  it('⚠️ o braço CANCELLED não espera uma escrita de frete: um aviso aberto DEPOIS do cancelamento fecha no import seguinte', async () => {
+    // O caso que o braço existe para cobrir: o passo 14 julga o XML ANTES de
+    // ler a order na Shopee, então um `xml-invalido` pode ser aberto sobre um
+    // pedido já cancelado — e a re-importação seguinte da MESMA order não muda
+    // o frete (`ignorado-sem-mudanca`). Esperar uma escrita de frete deixaria
+    // esse aviso de pé para sempre.
+    const c = cenario();
+    await importar(c);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        linha({ order_status: SHOPEE_ORDER_STATUS.cancelled, update_time: UPDATE_TIME_S + 60 }),
+      ],
+    });
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(avisoNfe(c.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: 'pedido-cancelado',
+    });
+  });
+
+  it('⚠️ QUASE-ERRO: IN_CANCEL não resolve — o pedido de cancelamento ainda pode ser recusado', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        linha({ order_status: SHOPEE_ORDER_STATUS.inCancel, update_time: UPDATE_TIME_S + 60 }),
+      ],
+    });
+
+    await importar(c);
+
+    expect(avisoNfe(c.db).resolvidoEm).toBeNull();
+  });
+
+  it('⚠️ uma falha do Firestore na resolução SOBE — o import não a engole (mutante 57)', async () => {
+    const c = cenario();
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    c.db.falhasDeUpdate.set(AVISO_NFE_PATH, falha);
+    c.getOrderDetail.mockResolvedValue({ order_list: [comPacote('LOGISTICS_PICKUP_DONE')] });
+
+    await expect(importar(c)).rejects.toBe(falha);
+    // A transação do frete já tinha commitado: a nova entrega a re-aplica como
+    // um no-op e tenta a resolução de novo.
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+    expect(avisoNfe(c.db).resolvidoEm).toBeNull();
   });
 });
