@@ -36,6 +36,7 @@ import {
 
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
+import { safeLog } from '../log';
 import { ensureCodigoMunicipio } from './cmun';
 import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 
@@ -59,11 +60,12 @@ export interface EmitResult {
   /**
    * `true` when the dedup branch short-circuited because an existing
    * nfev4 doc was already in a `STATUS_BLOQUEADORES` cStat — no fresh
-   * SEFAZ call was made. Also `true` for a #512 no-receipt lote member whose
-   * reply was NOT persisted because the doc went final or was re-stamped by
-   * another lote mid-flight: the result is that doc's live state, written by
-   * another run. `false` for every other path (fresh emission or
-   * rejeitada-retry that did re-call SEFAZ).
+   * SEFAZ call was made. Also `true` for a no-receipt disposition — a #512
+   * lote member, or a sync reply and its inline consult's anchor / terminal
+   * (#1654 §1) — that was NOT persisted because the doc went final or was
+   * re-stamped by another lote mid-flight: the result is that doc's live
+   * state, written by another run. `false` for every other path (fresh
+   * emission or rejeitada-retry that did re-call SEFAZ).
    */
   readonly reused: boolean;
 }
@@ -260,7 +262,7 @@ export async function loadPedidoBundle(
   pedidoId: string,
   ctx?: BatchReadContext,
 ): Promise<PedidoBundle> {
-  console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
+  safeLog('debug', `[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
   // Memoize the shared outer-ref reads against the batch context (if any)
   // so pedidos sharing a filial / operação don't re-fetch identical docs.
   // `getDoc` / `getRegra` dereference dynamic "outer ref" paths (the target
@@ -312,7 +314,8 @@ export async function loadPedidoBundle(
     getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'),
     `integracao '${integracaoPath}'.filialIntegracaoPedidoOuterRef`,
   );
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved filialPath '${filialPath}' (via integracao ` +
       `'${integracaoPath}') for pedidoId '${pedidoId}'`,
   );
@@ -320,21 +323,24 @@ export async function loadPedidoBundle(
     getField(pedido, 'clientePedidoOuterRef'),
     `pedido '${pedidoId}'.clientePedidoOuterRef`,
   );
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`,
   );
   const operacaoPath = refToPath(
     getField(pedido, 'operacaoPedidoOuterRef'),
     `pedido '${pedidoId}'.operacaoPedidoOuterRef`,
   );
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`,
   );
   const enderecoPath = refToPath(
     getField(pedido, 'enderecoFiscalOuterRef'),
     `pedido '${pedidoId}'.enderecoFiscalOuterRef`,
   );
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`,
   );
 
@@ -385,7 +391,8 @@ export async function loadPedidoBundle(
   if (!enderecoSnap.exists) throw new NFeOrchestratorError(`endereco '${enderecoPath}' not found`);
 
   const pagamentos = loadPagamentosFromSnapshot(pedidoId, pagamentoSnap);
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${pedidoId}': loaded ${pagamentos.length} pagamento(s) ` +
       `(of ${pagamentoSnap.size} in subcollection)`,
   );
@@ -520,7 +527,8 @@ export function parseRegraImpostoSnapshot(
       );
     }
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${pedidoId}': loaded ${out.length} regraImposto(s) ` +
       `(of ${snap.size} in subcollection)`,
   );
@@ -738,7 +746,8 @@ export async function preResolveImpostos(
   }
   if (missing.length === 0) return;
 
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] pedido '${bundle.pedidoId}': ${missing.length} item(s) ` +
       'missing imposto — running resolver cascade',
   );

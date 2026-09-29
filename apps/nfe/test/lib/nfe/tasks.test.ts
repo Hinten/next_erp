@@ -14,7 +14,15 @@ vi.mock('firebase-admin/functions', () => ({
   getFunctions: vi.fn(() => ({ taskQueue })),
 }));
 
-import { createTaskScheduler, noopTaskScheduler } from '../../../lib/nfe/tasks';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import { gaxios } from 'google-auth-library';
+
+import {
+  createTaskScheduler,
+  NFeTasksEnqueueError,
+  noopTaskScheduler,
+  type TaskScheduler,
+} from '../../../lib/nfe/tasks';
 import { MissingRegionError } from '@delfrance/core/region';
 
 const KEYS = ['NFE_TASKS_DISABLED', 'NFE_TASKS_REGION'];
@@ -108,5 +116,91 @@ describe('createTaskScheduler', () => {
         scheduleAtMs: Date.now(),
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('a failed enqueue (#1654)', () => {
+  const consulta = {
+    filialId: 'F1',
+    nRec: 'R1',
+    tpEmis: 1 as const,
+    attempt: 0,
+    scheduleAtMs: 1_700_000_000_000,
+  };
+  const cce = {
+    pedidoId: 'P1',
+    nfeId: 'N1',
+    cceId: 'C1',
+    nSeqEvento: 1,
+    attempt: 0,
+    scheduleAtMs: 1_700_000_000_000,
+  };
+  const url = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email';
+  /** What the Admin SDK rethrows raw when the metadata server's lookup fails. */
+  const falhaDoMetadata = () =>
+    new gaxios.GaxiosError(
+      `request to ${url} failed, reason: connect ETIMEDOUT`,
+      { url: new URL(url), headers: new Headers() } as never,
+      undefined,
+      Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    );
+
+  beforeEach(() => {
+    process.env.NFE_TASKS_REGION = 'southamerica-east1';
+  });
+
+  it.each([
+    ['enqueueConsulta', (s: TaskScheduler) => s.enqueueConsulta(consulta), 'consulta-lote'],
+    ['enqueueCceVinculo', (s: TaskScheduler) => s.enqueueCceVinculo(cce), 'cce-vinculo'],
+  ] as const)(
+    '%s: a GaxiosError the SDK let through raw becomes NFeTasksEnqueueError, cause kept',
+    async (_metodo, enfileirar, kind) => {
+      const falha = falhaDoMetadata();
+      enqueue.mockRejectedValueOnce(falha);
+      const err = await enfileirar(createTaskScheduler()).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(NFeTasksEnqueueError);
+      expect((err as NFeTasksEnqueueError).cause).toBe(falha);
+      expect((err as Error).message).toContain(falha.message);
+      expect((err as Error).message).toContain(kind);
+    },
+  );
+
+  it('recognises a GaxiosError of ANOTHER gaxios copy — where `instanceof` misses it', async () => {
+    // Same brand key, another version: what the functions bundle meets when the
+    // cloud-installed firebase-admin resolves a different gaxios than its own.
+    const outraCopia = Object.assign(new Error('metadata lookup failed'), {
+      [Symbol.for('gaxios-gaxios-error')]: '6.7.1',
+    });
+    expect(outraCopia instanceof gaxios.GaxiosError).toBe(false);
+    enqueue.mockRejectedValueOnce(outraCopia);
+    await expect(createTaskScheduler().enqueueConsulta(consulta)).rejects.toBeInstanceOf(
+      NFeTasksEnqueueError,
+    );
+  });
+
+  it.each<[string, () => Promise<Error>]>([
+    [
+      'FirebaseFunctionsError',
+      async () => {
+        const { FirebaseFunctionsError } = await vi.importActual<
+          typeof import('firebase-admin/functions')
+        >('firebase-admin/functions');
+        return new FirebaseFunctionsError({ code: 'unavailable', message: 'fila indisponível' });
+      },
+    ],
+    [
+      'FirebaseAppError',
+      async () =>
+        new FirebaseAppError({ code: AppErrorCode.NETWORK_ERROR, message: 'socket hang up' }),
+    ],
+    ['a TypeError (a bug)', async () => new TypeError('Cannot read properties of undefined')],
+    ['a plain Error', async () => new Error('sem marca')],
+  ])('%s propagates unchanged — only the gaxios brand is converted', async (_caso, criar) => {
+    const falha = await criar();
+    enqueue.mockRejectedValueOnce(falha);
+    await expect(createTaskScheduler().enqueueConsulta(consulta)).rejects.toBe(falha);
   });
 });
