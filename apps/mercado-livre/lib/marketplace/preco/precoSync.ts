@@ -239,6 +239,7 @@ export async function startPriceSyncJob(
         finishedAt: now,
         updatedAt: now,
       });
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort orphan-job stamp; the new job must still be created
     } catch (err) {
       if (!(err instanceof Error)) throw err;
       console.warn('[mercado-livre] price-sync: falha ao marcar o job órfão como failed', {
@@ -1148,6 +1149,7 @@ export async function processPriceSyncJob(
       updatedAt: nowMs,
     });
     return stamp === 'stamped' ? 'done' : 'noop';
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- final attempt stamps the job failed; earlier attempts rethrow for the queue
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     if (retryCount < PRICE_SYNC_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
@@ -1170,6 +1172,7 @@ export async function processPriceSyncJob(
       // dispatch had queued in memory died with the throw, so the last committed
       // checkpoint IS the run's final state.
       await stampFalhaTerminal(db, payload.jobId, err.message, nowMs);
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort failure stamp; must not mask the original error
     } catch (persistErr) {
       if (!(persistErr instanceof Error)) throw persistErr;
       console.error(

@@ -309,6 +309,7 @@ async function waitForServer(baseURL: string, timeoutMs = 60_000) {
     try {
       const res = await ctx.get(baseURL, { timeout: 5_000 });
       if (res.ok() || res.status() < 500) return;
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- network errors are expected while the dev server boots; keep polling
     } catch (err) {
       // Network-layer failures (ECONNREFUSED, timeout) are expected while
       // the dev server is still booting — keep polling. Anything that is

@@ -2,7 +2,7 @@ import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import type { z } from 'zod';
 import { diffDocumentFields, type ExpandSpec } from '@delfrance/core';
-import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
+import { millisToMicros, nowMicros, parseIsoToMillis } from '@delfrance/core/datetime';
 import type { AdminCollectionHandle } from '@delfrance/data/admin';
 
 import { getDb } from './admin';
@@ -243,7 +243,7 @@ export function makeModificationHistoryTrigger(
       // content-identical on retries. Stored as MICROSECONDS since epoch
       // (`microsSinceEpoch`, the repo's datetime standard — ms-derived × 1000,
       // same precision model as `nowMicros()`).
-      const eventTimeMillis = Date.parse(event.time);
+      const eventTimeMillis = parseIsoToMillis(event.time);
 
       const entry = buildModificationEntry({
         before,
@@ -253,9 +253,7 @@ export function makeModificationHistoryTrigger(
         subcolecao: source.subcolecao,
         docId,
         eventId: event.id,
-        eventTimeMicros: Number.isNaN(eventTimeMillis)
-          ? nowMicros()
-          : millisToMicros(eventTimeMillis),
+        eventTimeMicros: eventTimeMillis == null ? nowMicros() : millisToMicros(eventTimeMillis),
         expand: source.expand,
         usuarioOuterRef: resolveUsuarioOuterRef(event.authType, event.authId),
       });

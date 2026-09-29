@@ -110,7 +110,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (isCertExpired(cert)) {
     return authError(422, {
       error:
-        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR')}. ` +
+        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. ` +
         'Renove o certificado A1 junto à sua AC (Autoridade Certificadora).',
       code: 'CERT_EXPIRADO',
     });
@@ -165,6 +165,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     evictFilialCert(body.filialId);
 
     return NextResponse.json(certificado, { status: 200 });
+    // Last-resort 500 on purpose: this handler holds PFX + password material,
+    // so the error is logged only through the redacting `safeLog` (rule 9). A
+    // rethrow would hand Next the raw error object to log.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     // Never log the body (PFX + password) — only the redacted error shape.
     safeLog('error', '[nfe/certificado]', e);
@@ -192,6 +196,8 @@ export async function DELETE(req: Request): Promise<NextResponse> {
     await filialCollection.merge(fs, {}, filialId, { certificado: null });
     evictFilialCert(filialId);
     return NextResponse.json({ ok: true }, { status: 200 });
+    // Same contract as POST: a last-resort 500 logged only through `safeLog`.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     safeLog('error', '[nfe/certificado:delete]', e);
     return authError(500, {

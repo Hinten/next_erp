@@ -605,12 +605,14 @@ export function useTableUrlState(
    * object identity changes on every render and a dependency on it would make
    * `resetListState` a new function each time.
    */
+  const initialSortField = initialSort?.field;
+  const initialSortDirection = initialSort?.direction;
   const fallbackSort = useMemo<SortState | undefined>(
     () =>
-      initialSort
-        ? { field: initialSort.field, direction: initialSort.direction ?? 'asc' }
+      initialSortField
+        ? { field: initialSortField, direction: initialSortDirection ?? 'asc' }
         : undefined,
-    [initialSort?.field, initialSort?.direction],
+    [initialSortField, initialSortDirection],
   );
   const fallbackSortRef = useRef(fallbackSort);
   fallbackSortRef.current = fallbackSort;
@@ -667,6 +669,7 @@ export function useTableUrlState(
     // navigation that carried them, not to this screen's saved position.
     ownQsRef.current = ownQs;
     if (memoryKey) writeListViewMemory(memoryKey, { qs: ownQs, scroll: scrollRef.current });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value serials (filtersSerial, sort fields); pathname is read fresh on purpose (see above)
   }, [filtersSerial, sort?.field, sort?.direction, search, pages, memoryKey, ownsSearch]);
 
   const rememberScroll = useCallback(
