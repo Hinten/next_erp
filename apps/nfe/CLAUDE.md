@@ -87,8 +87,9 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
    bad sub-field (invalid stamp) — no silent fallback. An `imposto` that
    passes `impostoSchema` but fails a build-time tribute guard (e.g. a
-   partial ICMSSN900/500 group, or a draft `configuracaoIBSCBS` with RTC
-   on) is **not** re-resolved: it fails as
+   partial ICMSSN900/500 group, a draft `configuracaoIBSCBS` with RTC
+   on, or any `configuracaoISSQN` — the ERP emits no `ISSQNtot`, so the
+   NF-e conjugada is refused, #1656) is **not** re-resolved: it fails as
    `NFeOrchestratorError` naming pedido/item/produto (400; batch errorCode
    `'NFeOrchestratorError'`) with no número consumed (#506) — single path:
    inside the allocation tx, generated before its first write; batch: a
@@ -288,7 +289,11 @@ silently drops. Pinned twice: a load-time assert in `functions/src/index.ts`
 pre-existing stuck docs, and transmits approved EPECs once the filial leaves
 contingency. It covers both `nfev4` lotes and `cartacorrecao` records, and is
 gated per-doc by `proximaConsultaEm`, so it never consults ahead of a task's
-schedule. No `gcloud scheduler` job to wire — it deploys with the codebase.
+schedule. An `nfev4` doc with no `proximaConsultaEm` (the persist-before-send
+anchor, #512's `enviando` dispositions, imported legacy docs) waits
+`DEFAULT_STUCK_TIMEOUT_MS` from its last write instead, which keeps the sweep
+off a send still in flight (#1653); a `cartacorrecao` record with none is due at
+once. No `gcloud scheduler` job to wire — it deploys with the codebase.
 
 **Lote reply without a receipt (#512).** An async `retEnviNFe` WITHOUT `infRec`
 carries no `nRec`, so there is nothing to consult by recibo: `processChunk`
@@ -313,11 +318,10 @@ consumo-indevido window), otherwise the default pacing applies. 103/105/106 →
 XSD's 3–4 digits, such as an empty `<cStat/>`) at LOTE level says nothing about
 any member: the doc stays `enviando` with the cStat recorded — never `aprovada`
 without a proc, never a número-reusing `rejeitada`. These `enviando`
-dispositions carry no `proximaConsultaEm`, so the sweep's legacy due-fallback
-(`isStuckEnviando`) picks them up on its next tick — today immediately, because
-`runProcessarPendentes` hands it the stored `ultima_modificacao` ms NUMBER,
-which `Date.parse` turns into NaN and treats as stuck (a separate, pre-existing
-defect). ⚠️ A member whose lote cStat was 103/104/105 carries a
+dispositions carry no `proximaConsultaEm`, so the sweep's due-fallback
+(`isStuckEnviando`) picks them up once their `ultima_modificacao` is
+`DEFAULT_STUCK_TIMEOUT_MS` (5 min) old, at the next sweep tick after that
+(#1653). ⚠️ A member whose lote cStat was 103/104/105 carries a
 `STATUS_BLOQUEADORES` cStat, so both emit paths stop at `isBloqueada` before the
 #396 crash-window branch: an operator re-emit is a no-op (reported `reused`,
 "Em processamento") and only the sweep recovers it. Every in-flight disposition
