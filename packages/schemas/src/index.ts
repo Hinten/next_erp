@@ -1079,6 +1079,36 @@ export {
 } from './imposto/camposProdutoFiscal';
 
 export {
+  // The emission rules a tax config must satisfy, as verdicts: the NF-e engine
+  // throws from them, and the web imposto editor can check them before a save
+  // (#1655).
+  CRTS_SIMPLES_NACIONAL,
+  ehCrtSimplesNacional,
+  usaIssqn,
+  SUBCONFIGS_ICMS_SN,
+  SUBCONFIG_POR_CSOSN,
+  GRUPO_XSD_FCP_ST,
+  GRUPOS_XSD_ICMSSN500,
+  GRUPOS_XSD_ICMSSN900,
+  GRUPOS_XSD_POR_SUBCONFIG,
+  vereditoIcmsSn,
+  ALIQUOTA_PIS_COFINS_LIMITE,
+  vereditoPisCofins,
+  type CrtSimplesNacional,
+  type SubConfigIcmsSn,
+  type GrupoXsd,
+  type GrupoXsdIncompleto,
+  type IcmsSnEmitivel,
+  type VereditoIcmsSn,
+  type CstPisCofinsAliq,
+  type CstPisCofinsQtde,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type BasePisCofinsOutr,
+  type VereditoPisCofins,
+} from './imposto/regrasDeEmissao';
+
+export {
   // RTC cClassTrib/CST seed + validator (#333)
   CCLASSTRIB_SEED,
   CST_IBSCBS_CODES,
