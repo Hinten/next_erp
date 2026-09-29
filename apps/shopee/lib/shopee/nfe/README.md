@@ -25,11 +25,10 @@ uploader (#1705). §15 lists the rest.
 
 Step 14 ships in two stacked PRs. The first is this folder, the package op,
 the shared predicate, the step-5/7 hook and the CLI: the whole path runs IN
-PROCESS, and nothing enqueues in production because nothing enqueues onto a
-queue that does not exist yet. The second adds the cloud path: the approval
-trigger `onNfeAprovadaShopee`, the fifth queue `processShopeeNfeUpload`, the
-re-drive route `POST /api/marketplace/shopee/enviar-nfe` and the emulator round
-trip. Anything below marked **(PR 2)** is not in the tree until then.
+PROCESS. The second adds the cloud path: the approval trigger
+`onNfeAprovadaShopee`, the fifth queue `processShopeeNfeUpload`, the re-drive
+route `POST /api/marketplace/shopee/enviar-nfe` and the emulator round trip.
+Nothing of either is deployed anywhere.
 
 Everything here is **offline-verified**. No module has uploaded to a Brazilian
 shop, and none can in the sandbox: that shop is SG, which Shopee answers with
@@ -108,7 +107,7 @@ Outside the folder, and why each lives where it does:
   by the same definition (§6).
 - `pedidos/importarPedido.ts` and `pedidos/rastrearPedido.ts`: the two call
   sites of the cross-step hook (§10).
-- **(PR 2)** `functions/src/onNfeAprovadaShopee.ts` (the trigger),
+- `functions/src/onNfeAprovadaShopee.ts` (the trigger),
   `functions/src/processNfeUpload.ts` (the `onTaskDispatched`, export name
   `processShopeeNfeUpload`, equal to `SHOPEE_NFE_UPLOAD_QUEUE`) and
   `app/api/marketplace/shopee/enviar-nfe/route.ts`.
@@ -116,15 +115,15 @@ Outside the folder, and why each lives where it does:
 ## 2. The flow, end to end
 
 ```
-nfev4 write ──► (PR 2) onNfeAprovadaShopee
-                 T1  decideNfeUploadTransition     0 reads; skip = silent
-                 T1b finalidadeDoProc              0 reads; non-sale = log
-                 T2  ONE raw pedido read
-                 T3  avaliarPedidoParaNfeShopee    proof of ownership
-                 T4  enqueue {pedidoId, nfeId}     scheduleDelaySeconds 360
-                 T5  valve closed ⇒ aviso tasks-desabilitadas
+nfev4 write ──► onNfeAprovadaShopee
+                T1  decideNfeUploadTransition     0 reads; skip = silent
+                T1b finalidadeDoProc              0 reads; non-sale = log
+                T2  ONE raw pedido read
+                T3  avaliarPedidoParaNfeShopee    proof of ownership
+                T4  enqueue {pedidoId, nfeId}     scheduleDelaySeconds 360
+                T5  valve closed ⇒ aviso tasks-desabilitadas
 
-(PR 2) processShopeeNfeUpload ──► processarNfeShopee(deps, payload, retryCount)
+processShopeeNfeUpload ──► processarNfeShopee(deps, payload, retryCount)
    P1 NF-e read (raw)      P2 LEVEL predicate       P3 pedido read + proof
    P4 sale gate            P5 key + byte ceiling    P6 conta gate
    P7 SHOP client          P8 ONE get_order_detail + portaoDoPedido
@@ -135,7 +134,8 @@ nfev4 write ──► (PR 2) onNfeAprovadaShopee
 The pedido and its ownership proof are read BEFORE the XML is judged
 (reconcile R-n). The aviso for a broken XML needs the conta and the display
 number, and this order lets a broken XML reach an aviso AND a stamp with zero
-Shopee calls. The tasks round trip of PR 2 relies on exactly that.
+Shopee calls. The tasks round trip (`enviarNfe.tasks.test.ts`) relies on
+exactly that.
 
 **The upload phase, after P8.** The pre-read decides whether to upload at all:
 
@@ -172,7 +172,7 @@ which heals a 200 lost on that very attempt, and a recheck finalizes as
 `reverificacao-indisponivel`. A Firestore failure or a bug rethrows on EVERY
 attempt: only the four transport classes ever finalize.
 
-**The re-drives** (§13). The route (PR 2) and the CLI start from a pedido and
+**The re-drives** (§13). The route and the CLI start from a pedido and
 pick the slot with the LEVEL predicate. The route enqueues. The CLI runs the
 same handler in process.
 
@@ -234,7 +234,7 @@ domain is SEFAZ's to enforce, and a code a future layout adds lands on `outra`
 (a log line) rather than on a stamp. Only the exact pair `1`/`1` is a sale:
 `01` is illegible, never read as `1`.
 
-It runs in three places. **(PR 2)** In the trigger, after the edge and before
+It runs in three places. In the trigger, after the edge and before
 any read. In the task, as P4. And in the slot rule, where an ILLEGIBLE proc
 stays eligible on purpose: the slot rule cannot answer `xml-invalido`, and the
 handler judges that XML with an aviso the operator sees. The gate is NOT in the
@@ -531,7 +531,7 @@ The whole vocabulary, as `errosNfe.ts` declares it:
 | `limite-de-taxa`              | burst pause                                                          | pausado                                                                |     |     |     |
 | `cota-diaria`                 | daily pause                                                          | pausado                                                                |     |     |     |
 | `pausa-reenqueues-esgotados`  | the pause ceiling (6)                                                | erro-final                                                             | A   |     |     |
-| `tasks-desabilitadas`         | a closed valve on a self re-enqueue; (PR 2) the trigger's enqueue    | descartado                                                             | A   |     |     |
+| `tasks-desabilitadas`         | a closed valve on a self re-enqueue; the trigger's enqueue           | descartado                                                             | A   |     |     |
 | `payload-invalido`            | the dispatcher's `safeParse`                                         | descartado (`error` log, field paths only)                             |     |     |     |
 
 The outcome label FOLLOWS the aviso set for every stop (`recusado` when the
@@ -774,8 +774,8 @@ This folder writes three things, and each one names its race tier.
   and a resolve that loses answers `false` (the shared resolver's comment
   names only "someone else resolved"; a concurrent raise is the third case).
   That is the safe direction: a stale open aviso, never a hidden problem. The
-  envio and its recheck share one queue, which PR 2 serialises
-  (`rateLimits { 1, 1 }`), so the only real concurrency is a step-5/7 hook
+  envio and its recheck share one queue, which its `rateLimits { 1, 1 }`
+  serialise, so the only real concurrency is a step-5/7 hook
   (another queue) or the in-process CLI `--live`, and the stale row heals the
   way §10 describes.
 - **The write order, in the handler.** The aviso FIRST, then a due recheck,
@@ -806,7 +806,7 @@ This folder writes three things, and each one names its race tier.
 | `ATRASOS_SERPRO_REENVIO_S`  | `[600, 1800, 3600]` s | the #5 self re-enqueues; the length is the ceiling                        |
 | `ATRASOS_REVERIFICACAO_S`   | `[900, 1800]` s       | the recheck after a 200, and one more only while pending without a reason |
 | `NFE_SHOPEE_MAX_PAUSAS`     | 6                     | rate-limit re-enqueues, burst and daily together                          |
-| `NFE_SHOPEE_MAX_TENTATIVAS` | 4                     | the queue's `maxAttempts`, pinned by equality in PR 2                     |
+| `NFE_SHOPEE_MAX_TENTATIVAS` | 4                     | the queue's `maxAttempts`, pinned by equality in `index.test.ts`          |
 
 - **360 s.** Shopee checks the note against the federal record (SERPRO), which
   lags the SEFAZ authorization, and its guide asks for about five minutes. The
@@ -848,7 +848,7 @@ This folder writes three things, and each one names its race tier.
   `pausa-reenqueues-esgotados`, with an aviso, and the recheck (the only look
   before step 15) would never run. Pauses inside the recheck chain keep
   counting.
-- **The queue (PR 2).** `maxAttempts 4`, `timeoutSeconds 120`, backoff 60–300 s
+- **The queue.** `maxAttempts 4`, `timeoutSeconds 120`, backoff 60–300 s
   with `maxDoublings 2`, `rateLimits { 1, 1 }`, the two partner secrets. The
   whole ladder is 4 × 120 + 3 × 300 = 1380 s, within the 1800 s bound the
   functions index test pins on every queue.
@@ -869,13 +869,16 @@ re-drive, both starting from a pedido, both picking the slot with
   (`nfe-nao-e-de-venda` over `tpamb-homologacao` over `xml-ausente`), else
   `sem-nfe-aprovada`. A cancelled slot is `nao-aprovada` to the predicate, so
   it is never chosen over its replacement.
-- **(PR 2) The route** `POST /api/marketplace/shopee/enviar-nfe` is
+- **The route** `POST /api/marketplace/shopee/enviar-nfe` is
   `PERM.pedido.write`, because its callers are expedição staff on a pedido
   screen, unlike every other Shopee route. Its body is its own strict
   `{ pedidoId, nfeId? }`, never the task payload, so a caller cannot post a
-  phase or a counter. It re-runs the pre-network gates, never builds a client
-  and never calls Shopee. It answers 202 (with `enfileirado`, the two ids and
-  `atrasoSegundos`) for EVERY eligible document. Even when Shopee already holds
+  phase or a counter: any other key, `fase` included, is a 400. It re-runs the
+  pre-network gates (pedido, then conta, then slot), never builds a client and
+  never calls Shopee. The delay is the SERPRO remainder only when
+  `data_autorizacao` is KNOWN; an unknown instant never holds a re-drive. It
+  answers 202 (with `enfileirado`, the two ids and `atrasoSegundos`) for EVERY
+  eligible document. Even when Shopee already holds
   our key, the task's pre-read answers `ja-enviado`, and it closes any open
   aviso once the note reads valid. It answers 409 `SHOPEE_NFE_NAO_ELEGIVEL` with the motivo and
   `mensagemDoMotivoNfe`'s sentence, 404 for an explicit `nfeId` that does not
@@ -900,9 +903,9 @@ NF-e enqueue raising it could be swallowed as one conta's `lastError`. The
 valve is a deployment state and no NF-e sweep sits behind it, so every caller
 answers the class explicitly:
 
-- **(PR 2)** the trigger raises the `tasks-desabilitadas` aviso, one per
-  pedido: the list is the worklist;
-- **(PR 2)** the route answers 503;
+- the trigger raises the `tasks-desabilitadas` aviso, one per pedido: the
+  list is the worklist;
+- the route answers 503;
 - the handler's self re-enqueues end as `tasks-desabilitadas`;
 - the post-200 recheck only warns, because the upload already landed. So does
   the one queued with the final-attempt `canal-indisponivel`, which is why that
@@ -910,9 +913,10 @@ answers the class explicitly:
   (verify in the Seller Center, or re-send through the ERP).
 
 The channel's documented promise ("never a silent drop") therefore holds for
-NF-e through the aviso, not through a sweep. PR 2 amends the `.env.example`
-and `apphosting.yaml` comments to say so. There is no master valve: an unset
-flag must mean "on".
+NF-e through the aviso, not through a sweep, and the `.env.example` and
+`apphosting.yaml` comments say so. The trigger reads the valve in the functions
+env, the route in App Hosting's. There is no master valve: an unset flag must
+mean "on".
 
 **No sweep, by decision.** The plan chose the two re-drive surfaces over a
 sweep. Step 4's backfill cannot stand in for one: it sends no status filter,
@@ -968,8 +972,9 @@ for an UNTRACKED file either, so a new module is checked only after
 
 Two backstops hold the vocabulary (wave 4). `motivosProduzidos.test.ts` walks
 all fifty-six motivos and fails on any that no source outside `errosNfe.ts`
-produces. It scans this folder, plus the route folder `enviar-nfe` once PR 2
-creates it (`PASTAS_DE_ROTA` flips to `true` there), and it exempts, each with
+produces. It scans this folder, plus the route folder `enviar-nfe`
+(`PASTAS_DE_ROTA['enviar-nfe']` is `true`, and the test fails when that flag
+and the route folder disagree), and it exempts, each with
 its reason, the quoted literals that are not this vocabulary: the stamp's
 `MotivoCarimbo` values and the classifier's two "already attached" cases.
 `disciplinaDaPasta.test.ts` beside it runs the ten greps above as a test.
@@ -1050,9 +1055,10 @@ items is a gate.
   - A held token-refresh lease on the LAST attempt rethrows like every other
     non-transport error, so that task ends after its four attempts with no
     aviso. The next re-drive covers it.
-  - A rethrown `ShopeeApiError`'s `.message` embeds Shopee's sentence. PR 2's
-    task function must not let the runtime log it whole: log the class and
-    the token code, then rethrow.
+  - A rethrown `ShopeeApiError`'s `.message` embeds Shopee's sentence, so
+    `processShopeeNfeUpload` never lets the runtime log it whole: it logs the
+    class and the token code, then rethrows a NEW error without the sentence
+    (and without `cause`), which the queue still retries.
   - Two slots approved at once are unverified. The slot rule is total, and the
     pre-read makes the loser `outra-nfe-anexada`.
 
