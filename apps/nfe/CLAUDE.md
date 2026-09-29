@@ -338,6 +338,33 @@ dispositions carry no `proximaConsultaEm`, so the sweep's due-fallback
 is recovered by the sweep's `consSitNFe(chave)`, once per doc when due; never
 inline, which for a 20-member lote would be the #77 fan-out.
 
+**The sync path shares it (#1654 §1).** `applyAutorizadoOutcome` (the single
+emit, and a chunk that shrank to one member) applies only OUR `protNFe` — strict
+chave equality; a protNFe for another chave is ignored with a warning — and a
+sync reply with no protocol for the chave and no `infRec` takes the SAME
+disposition through the same lote-guarded write (`persistirDisposicaoSemRecibo`),
+the stored-bytes nuance decided by `origem` (`runAllocateGenerateSignTx`'s
+`storedBytes`, `processChunk`'s `storedPaths`). So a FRESH NF-e refused with
+108/109/113/114 is `rejeitada` and `POST /emitir` answers 422, as the batch path
+has since #512, a lote-level 100/101/102 without a protocol leaves it `enviando`,
+and a 106 is no longer consulted inline. The one exception is a lote-level
+duplicidade (204/205/218/539/635): one member means no fan-out and no reply
+smeared over N, so it keeps its inline recovery — 539 and an `[nRec:]` marker as
+before, otherwise ONE `consSitNFe` read through the reconcile's recovery table
+(`classificarConsSitDeRecuperacao` keyed by `motivoPorChave`): a final answer is
+applied; "still queued" (635 + 217) or an unavailable service leaves a #396
+anchor (`aguardandoResposta`, no `nRec`, no proc, nothing enqueued); anything
+else — a protNFe for another chave included — is a blocking terminal
+(`terminalBloqueante`: 104 inside a 104 reply, else 103). OUR protNFe carrying
+a duplicidade (204/205/218/635) or a 106 reads its consSit through the same
+table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
+`rejeitada`. Those three are written under the same lote guard. The pós-EPEC transmission
+(`origem 'pos-epec'`) keeps its old handling byte for byte (follow-up). ⚠️ The
+anchors this leaves are recovered by the sweep's consult-by-chave branch for
+docs without an `nRec`, which is still uncounted, unguarded and blind to the
+recovery table — a 204/635 anchor whose consSit later answers 217 turns
+`rejeitada` there (follow-up).
+
 `POST /api/nfe/processar-pendentes` still exists, but only as a **manual/ops
 trigger** for that same core (`lib/nfe/handlers/runProcessarPendentes.ts`),
 behind a normal Firebase user token + `PERM.fiscal.write`.

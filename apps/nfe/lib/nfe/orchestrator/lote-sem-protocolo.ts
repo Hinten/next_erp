@@ -271,7 +271,8 @@ export type RecuperacaoConsSit =
  * Classify `outcomeFromRetConsSit(retSit).cStat` — the inner `infProt.cStat`,
  * except for a top-level cancelada/inutilizada or an absent `protNFe` — for a
  * round resolved by chave for `motivo`. The one table the reconcile, the
- * manual verify and (later) the sync emit path share:
+ * manual verify and the sync emit path's inline consult
+ * (`applyAutorizadoOutcome`, #1654 §1) share:
  *
  *  - autorizada / cancelada / inutilizada → `resolvida`.
  *  - denegada → `resolvida` for `protocolo-ausente` (it lands as rejeitada,

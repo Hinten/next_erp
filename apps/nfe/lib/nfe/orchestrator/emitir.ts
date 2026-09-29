@@ -40,6 +40,7 @@ import {
 
 import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
+import { safeLog } from '../log';
 import {
   NFeBlockedError,
   NFeMissingImpostoError,
@@ -61,6 +62,11 @@ import {
 } from './bundle';
 import { sefazCallFor } from './sefaz-call';
 import { recover539IfNeeded } from './recover539';
+import {
+  classificarConsSitDeRecuperacao,
+  motivoPorChave,
+  terminalBloqueante,
+} from './lote-sem-protocolo';
 import {
   buildEnviNFeMsgFromConsulta,
   buildEnviNFeMsgFromLote,
@@ -114,7 +120,33 @@ export type TxOutcome =
    * it routes into `transmitirPosEpec` instead.
    */
   | { skip: true; epecPending: true; existing: NotaFiscalEletronica }
-  | { skip: false; chave: string; signedXml: string; idLote: number };
+  | {
+      skip: false;
+      chave: string;
+      signedXml: string;
+      idLote: number;
+      /**
+       * True when `signedXml` is a #396 crash-window doc's STORED bytes
+       * (`isCrashWindowAnchor`) rather than bytes generated in this
+       * transaction — an earlier send of them may already be authorized, so a
+       * refusal of this lote is not conclusive for them (#1654 §1).
+       */
+      readonly storedBytes: boolean;
+    };
+
+/**
+ * Where the bytes an `autorizarLote` reply answers came from — it decides how
+ * `applyAutorizadoOutcome` reads a reply that carries no protocol for the
+ * chave and no receipt (#1654 §1):
+ *  - `'gerados'` — generated (or regenerated) for this lote: never sent
+ *    before, so a lote refusal is conclusive for them;
+ *  - `'armazenados'` — a #396 crash-window doc's STORED bytes, retransmitted
+ *    unchanged: an earlier send may already be authorized, so any refusal
+ *    keeps the doc an anchor;
+ *  - `'pos-epec'` — the pós-EPEC transmission of an approved EPEC's stored
+ *    bytes (`transmitirPosEpec`), whose handling stays exactly what it was.
+ */
+export type OrigemDosBytes = 'gerados' | 'armazenados' | 'pos-epec';
 
 /**
  * Phase 1 of the emit cycle: load + resolve + validate + compute the
@@ -370,17 +402,19 @@ export function buildNfeDocWrite(
 /**
  * Crash-window doc (#396): the anti-loss anchor is committed (chave + signed
  * XML persisted) but SEFAZ never confirmed *receipt* — either the send/outcome
- * was lost entirely (`enviando`, no nRec) or a degraded-async 103 arrived
- * WITHOUT a receipt (`aguardandoResposta`, no nRec — the reconciler has
- * nothing to consult by). Those exact bytes MAY already be authorized at
- * SEFAZ, so a retry must retransmit them UNCHANGED (fresh idLote only):
- * regenerating would overwrite the anchor with different bytes (fresh dhEmi)
- * and corrupt any later proc stitch. Both emit paths (single + chunk) share
- * this predicate so they can never disagree on what counts as a crash window.
- * Docs WITH an nRec never reach it (the in-flight gates skip them first);
- * the `!nRec` clause keeps the predicate order-independent anyway.
+ * was lost entirely (`enviando`, no nRec) or a reply arrived WITHOUT a receipt
+ * and left it in flight (`aguardandoResposta`, no nRec — a degraded-async 103,
+ * a refusal of stored bytes (#512 / #1654 §1), a 635 still queued; the
+ * reconciler has nothing to consult by). Those exact bytes MAY already be
+ * authorized at SEFAZ, so a retry must retransmit them UNCHANGED (fresh idLote
+ * only): regenerating would overwrite the anchor with different bytes (fresh
+ * dhEmi) and corrupt any later proc stitch. Both emit paths (single + chunk)
+ * share this predicate so they can never disagree on what counts as a crash
+ * window. Docs WITH an nRec never reach it (the in-flight gates skip them
+ * first); the `!nRec` clause keeps the predicate order-independent anyway.
  *
- * ⚠️ Nor does a #512 no-receipt member whose LOTE cStat was 103/104/105
+ * ⚠️ Nor does a #512 no-receipt disposition — a batch member, or since #1654
+ * §1 a sync reply — whose LOTE cStat was 103/104/105
  * (`patchForLoteSemRecibo`): the doc matches this predicate's shape, but it
  * carries a `STATUS_BLOQUEADORES` cStat, so both emit paths stop at
  * `isBloqueada` BEFORE this branch. An operator re-emit of it is a no-op — the
@@ -444,7 +478,8 @@ export async function runAllocateGenerateSignTx(
     // covers both the normal pre-check AND the race where another emit
     // wrote the doc between attempts of this transaction.
     if (existing && isBloqueada(existing.cStat)) {
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
           `(cStat=${existing.cStat}) — skipping emit and returning persisted state`,
       );
@@ -463,14 +498,16 @@ export async function runAllocateGenerateSignTx(
       existing.nRec &&
       (existing.estado === ESTADO_NFE.enviando || existing.estado === ESTADO_NFE.aguardandoResposta)
     ) {
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has an in-flight NFe with a saved ` +
           `nRec — skipping re-emit, the reconciler will confirm by recibo`,
       );
       return { skip: true, existing };
     }
 
-    console.debug(
+    safeLog(
+      'debug',
       `[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
         `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`,
     );
@@ -487,7 +524,8 @@ export async function runAllocateGenerateSignTx(
     // (their content may have been fixed).
     if (isCrashWindowAnchor(existing)) {
       const idLote = cfg.idLote + 1;
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' crash-window doc (${existing.estado}, ` +
           `no nRec) — retransmitting the STORED signed XML for chave ${existing.chave} ` +
           `(idLote ${idLote})`,
@@ -497,7 +535,13 @@ export async function runAllocateGenerateSignTx(
         nfeConfigCollection.parse({ ...cfg, idLote, timestamp: new Date().toISOString() }),
       );
       tx.set(nfeRef, loteStampMerge(idLote), { merge: true });
-      return { skip: false, chave: existing.chave, signedXml: existing.xml_assinado, idLote };
+      return {
+        skip: false,
+        chave: existing.chave,
+        signedXml: existing.xml_assinado,
+        idLote,
+        storedBytes: true,
+      };
     }
 
     // Reuse numeração + serie when an existing rejeitada / error /
@@ -544,7 +588,7 @@ export async function runAllocateGenerateSignTx(
     );
     tx.set(nfeRef, docData);
 
-    return { skip: false, chave, signedXml, idLote };
+    return { skip: false, chave, signedXml, idLote, storedBytes: false };
   });
 }
 
@@ -794,15 +838,45 @@ export async function runChunkAllocateTx(
 }
 
 /**
- * Phase 3 of the emit cycle: audit-log + outcome + recovery branches +
- * `<nfeProc>` build + persist. Per-chave; the batch path calls this
- * once per pedido after polling `consultarLote` for the lote's
- * `protNFe[]`.
+ * Phase 3 of the emit cycle for ONE chave of a SYNC lote (indSinc '1'):
+ * audit-log + outcome + recovery branches + `<nfeProc>` build + persist.
+ * Serves `emitirPedido`, a batch chunk that shrank to one member
+ * (`processChunk` 4e) and the pós-EPEC transmission (`transmitirPosEpec`).
  *
- * `protNFeForChave` is the chave-specific protocol when the caller
- * already has it (batch path — extracted from `consultarLote.protNFe[]`).
- * Single-pedido path passes `null` and the helper derives the outcome
- * from `retEnvi.protNFe` (the sync response).
+ * **Our protocol is found by STRICT chave equality** (#1654 §1):
+ * `protNFeForChave` when the caller already matched it (4e indexes the reply
+ * by `chNFe`), else `retEnvi.protNFe` only when its `infProt.chNFe` is this
+ * chave. A protNFe for ANY other chave — a near-miss digit included — is
+ * ignored with a warning, never applied as ours.
+ *
+ * **A reply with no protocol for the chave and no `infRec`** carries no verdict
+ * for this NF-e and no receipt to consult by: it takes #512's no-receipt
+ * disposition (`persistirDisposicaoSemRecibo` → `patchForLoteSemRecibo`),
+ * written under the lote guard, exactly as a batch member would — a FRESH
+ * NF-e (`origem 'gerados'`) refused by the lote is `rejeitada` (656 → `error`),
+ * a #396 crash-window one (`'armazenados'`) stays an anchor, and a per-NF-e
+ * verdict at lote level (100/101/102…) or an anomaly leaves it `enviando`:
+ * never a final estado without a protocol. The one exception is a lote-level
+ * duplicidade (204/205/218/539/635): with a single member there is no
+ * fan-out and no reply smeared over N members (the two reasons #512 defers to
+ * the sweep), so it keeps its inline recovery — 539 → `recover539IfNeeded`,
+ * an `[nRec:]` marker → `consReciNFe`, otherwise ONE `consSitNFe` read through
+ * the reconcile's recovery table (`classificarConsSitDeRecuperacao`, keyed by
+ * `motivoPorChave`): a final answer is applied; "still queued" (635 + 217) or
+ * an unavailable service leaves a #396 anchor (`aguardandoResposta`, no
+ * `nRec`, no proc, nothing enqueued); anything else — a protNFe for another
+ * chave included — is a BLOCKING terminal (`terminalBloqueante`: 104 inside a
+ * 104 reply, else 103). OUR protNFe carrying a duplicidade (204/205/218/635)
+ * or a 106, with no `[nRec:]` marker, takes the same consult through the same
+ * table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
+ * `rejeitada` — while a FINAL protNFe of ours is applied as before. Those
+ * three dispositions are written under the same lote guard as the no-receipt
+ * one, so a doc a concurrent emit re-stamped, or one that went final, is
+ * reported `reused` with its live state instead.
+ *
+ * `origem 'pos-epec'` keeps today's handling byte for byte: the reply's
+ * protNFe is applied as before, and a duplicidade's consSit is read by the
+ * plain state machine (a pós-EPEC follow-up).
  */
 export async function applyAutorizadoOutcome(args: {
   fs: Firestore;
@@ -817,9 +891,12 @@ export async function applyAutorizadoOutcome(args: {
   retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
   /** Pre-stringified `retEnvi`, cached once per chunk by the batch path. */
   retEnviJson?: string;
+  /** Our protocol when the caller already matched it by `chNFe` (4e), else `null`. */
   protNFeForChave: NonNullable<Awaited<ReturnType<typeof autorizarLote>>['protNFe']> | null;
   /** `'1'` (sync, single NFe) or `'0'` (async, batch). */
   indSinc: '0' | '1';
+  /** Where `signedXml` came from — decides a reply with no protocol and no receipt (#1654 §1). */
+  origem: OrigemDosBytes;
   /** Cloud Tasks scheduler — enqueues a reconcile task if the outcome lands async. */
   scheduler?: TaskScheduler;
 }): Promise<EmitResult> {
@@ -840,12 +917,46 @@ export async function applyAutorizadoOutcome(args: {
     }),
   );
 
-  // Derive the initial outcome — from the chave-specific protocol when
-  // the batch caller supplied one, otherwise from the lote-level
-  // retEnvi (the sync single-NFe path).
-  let outcome: SefazOutcome = args.protNFeForChave
-    ? outcomeFromInfProt(args.protNFeForChave.infProt)
-    : outcomeFromRetEnviNFe(retEnvi);
+  // pós-EPEC keeps today's reading of the reply, byte for byte.
+  const legado = args.origem === 'pos-epec';
+  // Our protocol, by STRICT chave equality — a protNFe for another chave (a
+  // near-miss digit included) is never applied as ours.
+  const protNosso =
+    args.protNFeForChave ??
+    (legado
+      ? (retEnvi.protNFe ?? null)
+      : retEnvi.protNFe?.infProt.chNFe === chave
+        ? retEnvi.protNFe
+        : null);
+  if (!legado && protNosso == null && retEnvi.protNFe != null) {
+    console.warn(
+      `[nfe/orchestrator] chave ${chave}: retEnviNFe cStat=${retEnvi.cStat} carries a ` +
+        `protNFe for chave ${retEnvi.protNFe.infProt.chNFe} — not this NF-e's, ignored`,
+    );
+  }
+  // No protocol for this chave and no receipt: the reply says nothing about
+  // this NF-e and leaves nothing to consult by recibo — #512's disposition,
+  // under the lote guard. A lote-level duplicidade keeps the inline recovery
+  // below: one member means no fan-out and no smear.
+  const duplicidadeDoLote =
+    CSTAT_TSTAT.test(retEnvi.cStat) && classifyCStat(retEnvi.cStat) === 'duplicidade';
+  if (!legado && protNosso == null && retEnvi.infRec == null && !duplicidadeDoLote) {
+    return persistirDisposicaoSemRecibo({
+      fs,
+      nfeRef,
+      pedidoId: bundle.pedidoId,
+      chave,
+      retEnvi,
+      idLote,
+      storedBytes: args.origem === 'armazenados',
+    });
+  }
+
+  // Derive the initial outcome — from our protocol when there is one,
+  // otherwise from the lote-level retEnvi with any foreign protNFe dropped.
+  let outcome: SefazOutcome = protNosso
+    ? outcomeFromInfProt(protNosso.infProt)
+    : outcomeFromRetEnviNFe({ ...retEnvi, protNFe: undefined });
   let patch = applyOutcome({ estado: ESTADO_NFE.enviando, retries: 0 }, outcome);
   // The chave that ends up on the result (and on the nfev4 doc) may
   // change during a cStat=539 recovery: the "real" NF-e at SEFAZ lives
@@ -856,7 +967,10 @@ export async function applyAutorizadoOutcome(args: {
   // branch that surfaces one. Used at the end to build `<nfeProc>`.
   // Left as `null` for 539 (chave swap) since our local signedXml
   // doesn't match the recovered protocol's chNFe.
-  let protNFeRaw: typeof retEnvi.protNFe | null = args.protNFeForChave ?? retEnvi.protNFe ?? null;
+  let protNFeRaw: typeof retEnvi.protNFe | null = protNosso;
+  // Set when the recovery table leaves an anchor or a blocking terminal: those
+  // dispositions are written under the lote guard, like the no-receipt one.
+  let gravacaoGuardada = false;
 
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
@@ -888,10 +1002,70 @@ export async function applyAutorizadoOutcome(args: {
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
       );
-      protNFeRaw = retSit.protNFe ?? null;
-      outcome = outcomeFromRetConsSit(retSit);
-      patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+      const sit = outcomeFromRetConsSit(retSit);
+      // Why we consult by chave keys the reconcile's recovery table (#1654):
+      // a duplicidade, a 635 still queued, a 106 inside our protNFe. `null`
+      // only for pós-EPEC, which keeps the plain state machine.
+      const motivo = legado ? null : motivoPorChave(outcome.cStat);
+      const chNFeDoProt = retSit.protNFe?.infProt.chNFe ?? null;
+      const consSit = `consulta por chave: cStat ${sit.cStat} — ${sit.xMotivo}`;
+      if (motivo == null) {
+        protNFeRaw = retSit.protNFe ?? null;
+        outcome = sit;
+        patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+      } else if (chNFeDoProt != null && chNFeDoProt !== chave) {
+        // Strict equality, as in the reconcile: never applied as ours.
+        protNFeRaw = null;
+        patch = terminalBloqueante(
+          patch,
+          retEnvi.cStat,
+          `consulta por chave devolveu protNFe de outra chave (${chNFeDoProt}) — ` +
+            'verificar manualmente',
+        );
+        gravacaoGuardada = true;
+      } else {
+        switch (classificarConsSitDeRecuperacao(sit.cStat, motivo)) {
+          case 'resolvida':
+            protNFeRaw = retSit.protNFe ?? null;
+            outcome = sit;
+            patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+            break;
+          case 'pendente':
+          case 'indisponivel':
+            // Nothing to apply: a #396 anchor (no receipt, no proc, nothing
+            // enqueued) — the sweep consults it again, and a re-emit
+            // retransmits the same stored bytes.
+            protNFeRaw = null;
+            patch = {
+              ...patch,
+              estado: ESTADO_NFE.aguardandoResposta,
+              retries: 0,
+              nRec: null,
+              xMotivo: `${patch.xMotivo} | ${consSit}`,
+            };
+            gravacaoGuardada = true;
+            break;
+          case 'sem-resolucao':
+            // BLOCKING: 104 inside a 104 reply, else 103 — the número may be
+            // held under another chave, so it must not be re-emitted over.
+            protNFeRaw = null;
+            patch = terminalBloqueante(patch, retEnvi.cStat, `${consSit} — verificar manualmente`);
+            gravacaoGuardada = true;
+            break;
+        }
+      }
     }
+  }
+
+  if (gravacaoGuardada) {
+    return persistirGuardadoPeloLote({
+      fs,
+      nfeRef,
+      pedidoId: bundle.pedidoId,
+      chave,
+      patch,
+      idLote,
+    });
   }
 
   // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and we
@@ -938,9 +1112,17 @@ export async function applyAutorizadoOutcome(args: {
 
 /**
  * The full emit cycle for a single pedido. Persists `estado='enviando'`
- * BEFORE the SOAP send; applies `applyOutcome` after; runs an inline
- * `consultarSituacaoNFe` if the state machine asks for
- * `recover-via-consulta`.
+ * BEFORE the SOAP send, then hands the sync reply to `applyAutorizadoOutcome`
+ * with where its bytes came from (`runAllocateGenerateSignTx`'s
+ * `storedBytes`): generated for this lote, or a #396 crash-window doc's STORED
+ * bytes. A reply with our FINAL protocol, or with a receipt, is applied as
+ * before; a lote-level duplicidade, and a duplicidade (204/205/218/635) or a
+ * 106 inside our protNFe, are recovered inline (one `consultarLote` /
+ * `consultarSituacaoNFe`, the consSit read through the reconcile's recovery
+ * table, so our 204 + consSit 217 is a blocking `error`, never `rejeitada`); any
+ * other reply without our protocol and without a receipt takes #512's
+ * no-receipt disposition (#1654 §1) — so a FRESH NF-e refused with
+ * 108/109/113/114 is `rejeitada` (the route answers 422), as in the batch path.
  *
  * Composition of the three phase helpers (`prepareEmission`,
  * `runAllocateGenerateSignTx`, `applyAutorizadoOutcome`) — `emitirPedidosLote`
@@ -952,7 +1134,8 @@ export async function emitirPedido(
   pedidoId: string,
   scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<EmitResult> {
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${baseRt.ambiente}'`,
   );
 
@@ -967,7 +1150,8 @@ export async function emitirPedido(
     if ('epecPending' in captured) {
       // Approved EPEC — the emit action becomes "transmit the full NF-e to
       // the home SEFAZ" (same chave, stored xml_assinado).
-      console.debug(
+      safeLog(
+        'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has an approved EPEC — ` +
           'routing into the pós-EPEC full transmission',
       );
@@ -980,7 +1164,8 @@ export async function emitirPedido(
         nota: captured.existing,
       });
     }
-    console.debug(
+    safeLog(
+      'debug',
       `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
         `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
     );
@@ -1010,7 +1195,8 @@ export async function emitirPedido(
     idLote: String(idLote),
     NFe: [signedXml],
   });
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] autorizarLote cStat=${retEnvi.cStat} nRec=${retEnvi.infRec?.nRec ?? '-'}`,
   );
 
@@ -1026,6 +1212,7 @@ export async function emitirPedido(
     retEnvi,
     protNFeForChave: null,
     indSinc: '1',
+    origem: captured.storedBytes ? 'armazenados' : 'gerados',
     scheduler,
   });
 }
@@ -1083,7 +1270,8 @@ export async function emitirPedidosLote(
       `emitirPedidosLote: ${pedidoIds.length} pedidos exceeds MAX_PEDIDOS_PER_BATCH (${MAX_PEDIDOS_PER_BATCH})`,
     );
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`,
   );
 
@@ -1135,7 +1323,8 @@ export async function emitirPedidosLote(
       });
     }
   }
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch fan-out: ${groups.size} filial(is) × ${chunks.length} chunk(s)`,
   );
 
@@ -1175,8 +1364,9 @@ export interface LoteSemReciboPatch {
    * `null` to keep `buildPersistData`'s own pacing: task delay + grace for an
    * `aguardandoResposta` patch, and a `null` `proximaConsultaEm` for any other
    * estado — which takes a FINAL one (`rejeitada`/`error`) out of the scan, but
-   * leaves an `enviando` one to the sweep's legacy due-fallback
-   * (`isStuckEnviando`), which picks it up on its next tick.
+   * leaves an `enviando` one to the sweep's due-fallback (`isStuckEnviando`),
+   * which picks it up once its `ultima_modificacao` is
+   * `DEFAULT_STUCK_TIMEOUT_MS` old (#1653).
    */
   readonly consultaDelayMs: number | null;
 }
@@ -1189,11 +1379,14 @@ export interface LoteSemReciboPatch {
 const CSTAT_TSTAT = /^\d{3,4}$/;
 
 /**
- * Patch for ONE member of an async lote (indSinc='0') whose `retEnviNFe` came
- * back WITHOUT `infRec` (#512): SEFAZ answered but issued no receipt, so there
- * is nothing to consult by recibo. XSD `TRetEnviNFe` makes `infRec` optional
- * for exactly this — only a received lote (103) carries it; any other cStat
- * means the lote itself was refused (`.claude/skills/nfe/references/webservices.md:111`).
+ * Patch for ONE NF-e of a lote whose `retEnviNFe` came back WITHOUT `infRec`:
+ * every member of an async lote (indSinc='0', #512), and the one NF-e of a
+ * sync lote whose reply also carries no `protNFe` for it (#1654 §1 —
+ * `applyAutorizadoOutcome`; a lote-level duplicidade excepted). SEFAZ answered
+ * but issued no receipt, so there is nothing to consult by recibo. XSD
+ * `TRetEnviNFe` makes `infRec` optional for exactly this — only a received
+ * lote (103) carries it; any other cStat means the lote itself was refused
+ * (`.claude/skills/nfe/references/webservices.md:111`).
  *
  * Built from the LOTE cStat/xMotivo with `nRec`/`tMed` always null — NOT via
  * `outcomeFromRetEnviNFe`, which prefers `retEnvi.protNFe` (the XSD allows one,
@@ -1213,14 +1406,15 @@ const CSTAT_TSTAT = /^\d{3,4}$/;
  *    re-emit then either reports it (a `STATUS_BLOQUEADORES` cStat — 100/101/
  *    102/104/150/151 — stops it at `isBloqueada`) or retransmits the SAME
  *    stored bytes as a #396 crash-window anchor (every other one); it never
- *    regenerates. The doc has no `proximaConsultaEm`, so the sweep's legacy
- *    due-fallback (`isStuckEnviando`) picks it up on its next tick — today at
- *    once, because that fallback `Date.parse`s the stored ms NUMBER, gets NaN
- *    and treats it as stuck (a separate, pre-existing defect) — and its
- *    consSit learns the real status. Deferring to the sweep is deliberate and
- *    differs from `applyAutorizadoOutcome`'s INLINE consult: inline recovery
- *    for an N-member lote is an N-call consult fan-out inside the request —
- *    the #77 consumo-indevido vector;
+ *    regenerates. The doc has no `proximaConsultaEm`, so the sweep's
+ *    due-fallback (`isStuckEnviando`) picks it up once its
+ *    `ultima_modificacao` is `DEFAULT_STUCK_TIMEOUT_MS` old (#1653), and its
+ *    consSit learns the real status. Deferring to the sweep is deliberate:
+ *    inline recovery for an N-member lote is an N-call consult fan-out inside
+ *    the request — the #77 consumo-indevido vector — and one lote reply would
+ *    be read as N verdicts. The sync path defers the same way; only its
+ *    lote-level duplicidade, one member and one call, keeps
+ *    `applyAutorizadoOutcome`'s INLINE consult;
  *  - 103/105/106 → `aguardandoResposta`, paced by `buildPersistData` (103/105
  *    are bloqueadores too: see `isCrashWindowAnchor`);
  *  - a lote refusal is CONCLUSIVE for a FRESH member (its bytes were never
@@ -1299,17 +1493,105 @@ export function patchForLoteSemRecibo(
 }
 
 /**
- * Persist the #512 no-infRec outcome on every lote member — one guarded write
- * each (`persistPatchUnlessFinal` with this chunk's idLote). During the SOAP
- * round-trip every member looks like a crash-window anchor, so a concurrent
- * re-emit may have retransmitted it in ANOTHER lote, or it went final; the
- * guard re-derives both from `tx.get` and skips the write (rule 7), and the
- * member reports the doc's live truth instead — as `reused: true`, the
+ * Persist one emit-path disposition that carries no receipt, under THIS lote's
+ * guard (`persistPatchUnlessFinal` with `expectedIdLote`), and report it.
+ * During the SOAP round-trip the doc looks like a crash-window anchor, so a
+ * concurrent re-emit may have retransmitted it in ANOTHER lote, or it went
+ * final; the guard re-derives both from `tx.get` and skips the write (rule 7),
+ * and the result is the doc's live truth instead — as `reused: true`, the
  * `existingToEmitResult` precedent: that state was written by ANOTHER run, so
  * apps/web's `classifyEmitResult` must never count, say, a concurrent emit's
- * `aprovada` as THIS run's success. Per-member isolation: SEFAZ has already
- * answered and the reply is audited per chave, so one failed write fails only
- * its pedido.
+ * `aprovada` as THIS run's success. A missing doc throws (`NFeOrchestratorError`)
+ * and nothing is written.
+ *
+ * Callers: {@link persistirDisposicaoSemRecibo} (#512, #1654 §1) and the
+ * anchor / blocking-terminal dispositions of `applyAutorizadoOutcome`'s inline
+ * recovery by chave (#1654 §1). `patch` never carries a receipt (`nRec` null).
+ */
+async function persistirGuardadoPeloLote(a: {
+  readonly fs: Firestore;
+  readonly nfeRef: FirebaseFirestore.DocumentReference;
+  readonly pedidoId: string;
+  readonly chave: string;
+  readonly patch: NFeStatePatch;
+  readonly extras?: Record<string, unknown>;
+  readonly idLote: number;
+}): Promise<EmitResult> {
+  const { fs, nfeRef, pedidoId, chave, patch, idLote } = a;
+  const r = await persistPatchUnlessFinal(fs, nfeRef, patch, a.extras, {
+    expectedIdLote: String(idLote),
+  });
+  if (r.written) {
+    return {
+      nfeId: nfeRef.id,
+      pedidoId,
+      estado: patch.estado,
+      chave,
+      nRec: null,
+      cStat: patch.cStat,
+      xMotivo: patch.xMotivo,
+      reused: false,
+    };
+  }
+  safeLog(
+    'debug',
+    `[nfe/orchestrator] lote ${idLote}: ${nfeRef.path} changed mid-flight ` +
+      `(estado=${r.estadoAtual}) — reply not persisted, reporting the live doc`,
+  );
+  return {
+    nfeId: nfeRef.id,
+    pedidoId,
+    estado: r.estadoAtual,
+    chave,
+    nRec: r.nRecAtual,
+    cStat: r.cStatAtual ?? '',
+    xMotivo: r.xMotivoAtual ?? '',
+    reused: true,
+  };
+}
+
+/**
+ * The #512 no-receipt disposition of ONE NF-e (`patchForLoteSemRecibo`, with
+ * its explicit wait stamped as `proximaConsultaEm`), persisted under this
+ * lote's guard ({@link persistirGuardadoPeloLote}). Shared by every member of
+ * an async lote reply without `infRec` (`persistLoteSemRecibo`) and by the sync
+ * path's reply without our protNFe and without `infRec`
+ * (`applyAutorizadoOutcome`, #1654 §1) — one table, one guarded write.
+ * `storedBytes`: the NF-e was sent with a #396 crash-window doc's STORED bytes.
+ */
+async function persistirDisposicaoSemRecibo(a: {
+  readonly fs: Firestore;
+  readonly nfeRef: FirebaseFirestore.DocumentReference;
+  readonly pedidoId: string;
+  readonly chave: string;
+  readonly retEnvi: Pick<TRetEnviNFe, 'cStat' | 'xMotivo'>;
+  readonly idLote: number;
+  readonly storedBytes: boolean;
+}): Promise<EmitResult> {
+  const { patch, consultaDelayMs } = patchForLoteSemRecibo(a.retEnvi, {
+    storedBytes: a.storedBytes,
+  });
+  const extras =
+    consultaDelayMs != null
+      ? { proximaConsultaEm: nowMicros() + consultaDelayMs * 1000 }
+      : undefined;
+  return persistirGuardadoPeloLote({
+    fs: a.fs,
+    nfeRef: a.nfeRef,
+    pedidoId: a.pedidoId,
+    chave: a.chave,
+    patch,
+    extras,
+    idLote: a.idLote,
+  });
+}
+
+/**
+ * Persist the #512 no-infRec outcome on every lote member — one guarded write
+ * each ({@link persistirDisposicaoSemRecibo}, with this chunk's idLote), each
+ * member reporting its own write or the doc's live truth. Per-member
+ * isolation: SEFAZ has already answered and the reply is audited per chave, so
+ * one failed write fails only its pedido.
  */
 async function persistLoteSemRecibo(args: {
   readonly fs: Firestore;
@@ -1326,46 +1608,18 @@ async function persistLoteSemRecibo(args: {
         `protNFe but no infRec — protNFe ignored for all ${toSend.length} member(s)`,
     );
   }
-  const expectedIdLote = String(idLote);
   const settled = await Promise.allSettled(
-    toSend.map(async (s): Promise<EmitResult> => {
-      const { patch, consultaDelayMs } = patchForLoteSemRecibo(retEnvi, {
-        storedBytes: storedPaths.has(s.prep.nfeRef.path),
-      });
-      const extras =
-        consultaDelayMs != null
-          ? { proximaConsultaEm: nowMicros() + consultaDelayMs * 1000 }
-          : undefined;
-      const r = await persistPatchUnlessFinal(fs, s.prep.nfeRef, patch, extras, {
-        expectedIdLote,
-      });
-      if (r.written) {
-        return {
-          nfeId: s.prep.nfeRef.id,
-          pedidoId: s.pedidoId,
-          estado: patch.estado,
-          chave: s.chave,
-          nRec: null,
-          cStat: patch.cStat,
-          xMotivo: patch.xMotivo,
-          reused: false,
-        };
-      }
-      console.debug(
-        `[nfe/orchestrator] lote ${idLote}: ${s.prep.nfeRef.path} changed mid-flight ` +
-          `(estado=${r.estadoAtual}) — reply not persisted, reporting the live doc`,
-      );
-      return {
-        nfeId: s.prep.nfeRef.id,
+    toSend.map((s) =>
+      persistirDisposicaoSemRecibo({
+        fs,
+        nfeRef: s.prep.nfeRef,
         pedidoId: s.pedidoId,
-        estado: r.estadoAtual,
         chave: s.chave,
-        nRec: r.nRecAtual,
-        cStat: r.cStatAtual ?? '',
-        xMotivo: r.xMotivoAtual ?? '',
-        reused: true,
-      };
-    }),
+        retEnvi,
+        idLote,
+        storedBytes: storedPaths.has(s.prep.nfeRef.path),
+      }),
+    ),
   );
   return settled.map((o, i) =>
     o.status === 'fulfilled' ? o.value : toEmitError(toSend[i]!.pedidoId, o.reason),
@@ -1511,11 +1765,15 @@ export async function processChunk(
     NFe: toSend.map((s) => s.signedXml),
     indSinc,
   });
-  console.debug(
+  safeLog(
+    'debug',
     `[nfe/orchestrator] Batch chunk autorizarLote — filial=${filialId} ` +
       `idLote=${sharedIdLote} count=${toSend.length} indSinc=${indSinc} ` +
       `retCStat=${retEnvi.cStat}`,
   );
+  // nfev4 paths of the #396 crash-window members — sent with their STORED
+  // bytes, so a refusal of this lote is not conclusive for them (4d and 4e).
+  const storedPaths: ReadonlySet<string> = new Set(storedMembers.map((m) => m.prep.nfeRef.path));
 
   // 4d. Async chunk (indSinc='0'): SEFAZ returns cStat=103 + nRec. Hand off
   //     IMMEDIATELY — audit the send, persist each doc aguardandoResposta with
@@ -1555,7 +1813,7 @@ export async function processChunk(
         ...(await persistLoteSemRecibo({
           fs,
           toSend,
-          storedPaths: new Set(storedMembers.map((m) => m.prep.nfeRef.path)),
+          storedPaths,
           retEnvi,
           idLote: sharedIdLote,
         })),
@@ -1601,7 +1859,10 @@ export async function processChunk(
   // 4e. Apply outcome per chave. Index protNFe by chave once (was an
   //     O(N) array scan per pedido → O(N²) across the chunk) and cache
   //     the retEnvi JSON once (buildEnviNFeMsgFromLote would otherwise
-  //     re-stringify the same lote response once per chave) — PR-δ.
+  //     re-stringify the same lote response once per chave) — PR-δ. A
+  //     miss is `null`: a protNFe for another chave is never applied, and
+  //     a reply with no protocol for the member and no infRec takes the
+  //     no-receipt disposition, stored bytes decided per member (#1654 §1).
   const protByChave = new Map<string, (typeof protNFeArr)[number]>();
   for (const p of protNFeArr) protByChave.set(p.infProt.chNFe, p);
   const retEnviJson = JSON.stringify(retEnvi);
@@ -1621,6 +1882,7 @@ export async function processChunk(
         retEnviJson,
         protNFeForChave: proto,
         indSinc,
+        origem: storedPaths.has(s.prep.nfeRef.path) ? 'armazenados' : 'gerados',
         scheduler,
       });
     }),
