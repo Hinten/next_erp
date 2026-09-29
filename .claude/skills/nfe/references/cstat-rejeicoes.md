@@ -214,6 +214,18 @@ tentando outro CNPJ.** A única saída conhecida é um destinatário **CPF** (ta
 NFC-e específicos da mesma NT (não relevantes para este skill NF-e-only):
 407, 444, 445, 474, 583 — todos ligados ao QR Code v3.
 
+**RVs alteradas (cStat pré-existente).** A NT também reescreveu RVs de códigos
+que já existiam no MOC 7.0 — o código não muda, o que muda é quando ele
+dispara:
+
+| cStat | Mensagem | RV |
+|---|---|---|
+| 805 | A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição Estadual | `E16a-30` (Obrig., `idDest` 1 ou 2, 17 UFs) e `E16a-35` (Facult., `idDest=1`) |
+
+No MOC 7.0 a `E16a-30` era só interestadual, com outra lista de UFs. Histórico,
+exceções, a armadilha da 696 e onde o app orienta o operador: seção "`indIEDest`
+mais rigoroso" em `sincrono-vs-assincrono.md`.
+
 ### NT 2025.002 (Reforma Tributária, v1.40 mai/2026)
 
 cStats novos têm 4 dígitos. Os mais "afiados" (rejeição instantânea quando

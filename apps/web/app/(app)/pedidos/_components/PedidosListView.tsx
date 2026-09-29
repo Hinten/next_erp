@@ -96,9 +96,14 @@ export function pedidoVirtualColumns(
       key: 'nf',
       label: 'NF',
       tooltip: 'Nota Fiscal',
-      // Reads only the pedido id (subscribes to the nfev4 subcollection).
-      dependsOn: [],
-      renderCell: (r) => <NFCell pedidoId={r.id} />,
+      // Subscribes to the nfev4 subcollection by pedido id, and reads the cliente
+      // ref for the cStat 805 guidance in its HoverCard (#852) — the cliente's
+      // name and cadastro link. Declared here, not borrowed from the Cliente
+      // column, so the ref stays projected when that column is hidden.
+      dependsOn: ['clientePedidoOuterRef'],
+      renderCell: (r) => (
+        <NFCell pedidoId={r.id} clientePedidoOuterRef={r.data.clientePedidoOuterRef} />
+      ),
       filter: {
         field: 'nf',
         label: 'NF',

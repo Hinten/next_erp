@@ -1,9 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
 import { NFeRejectedError, type NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 
-const { getDocsMock } = vi.hoisted(() => ({ getDocsMock: vi.fn() }));
+import { ID_DEST, IND_IE_DEST } from '../nfe/destinatarioNFe';
+import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '../nfe/errors';
+
+const { getDocsMock, loaderMock, carregadorMock } = vi.hoisted(() => {
+  const loaderMock = vi.fn<CarregarContextoRejeicao>();
+  return { getDocsMock: vi.fn(), loaderMock, carregadorMock: vi.fn((_db: unknown) => loaderMock) };
+});
 vi.mock('firebase/firestore', () => ({ getDocs: getDocsMock }));
+// The Firestore-backed rejection-context loader (#852) — its own reads are
+// pinned in `contextoRejeicao.test.ts`; here only the wiring matters.
+vi.mock('../nfe/contextoRejeicao', () => ({ carregadorContextoRejeicao: carregadorMock }));
 vi.mock('@delfrance/data', () => ({
   defineCollection: () => ({
     ref: () => ({}),
@@ -51,10 +60,24 @@ describe('resolveAprovadaNfe', () => {
   });
 });
 
+const XMOTIVO_805 =
+  'Rejeição: A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição Estadual';
+
+/** An internal (idDest=1) NF-e sent with indIEDest=2 for a cadastro still ISENTO. */
+const CONTEXTO_805_INTERNA: ContextoRejeicaoNFe = {
+  destinatario: { idDest: ID_DEST.interna, indIEDest: IND_IE_DEST.isento, uf: 'SP' },
+  cliente: {
+    id: 'cli-805',
+    cadastro: { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: IE_SENTINELA.isento },
+  },
+};
+
 describe('ensureNfeAprovada', () => {
   let client: { emitir: ReturnType<typeof vi.fn>; danfe: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     getDocsMock.mockReset();
+    loaderMock.mockReset();
+    carregadorMock.mockClear();
     client = { emitir: vi.fn(), danfe: vi.fn() };
   });
 
@@ -104,6 +127,68 @@ describe('ensureNfeAprovada', () => {
     client.emitir.mockRejectedValue(new NFeRejectedError('999', 'Rejeitado', {}));
     const r = await ensureNfeAprovada(db, asClient(client), 'p1');
     expect(r).toMatchObject({ ok: false, pending: false });
+    // Only a cStat that needs context (805) pays for the extra reads.
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it('a thrown 226 keeps the generic notification and never calls the loader', async () => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('226', 'UF inválida', { pedidoId: 'p1', nfeId: 'nfe-1' }),
+    );
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r).toStrictEqual({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'SEFAZ rejeitou a NF-e',
+        message: 'cStat=226: UF inválida',
+        color: 'red',
+      },
+    });
+    expect(loaderMock).not.toHaveBeenCalled();
+  });
+
+  it('a thrown 805 reads the context through the db-bound loader → guidance + cadastro link', async () => {
+    setDocs([]);
+    loaderMock.mockResolvedValue(CONTEXTO_805_INTERNA);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('805', XMOTIVO_805, {
+        pedidoId: 'p1',
+        nfeId: 'nfe-805',
+        estado: ESTADO_NFE.rejeitada,
+      }),
+    );
+
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+
+    // Bound to the SAME db handle the caller passed (identity — `db` is `{}` here).
+    expect(carregadorMock).toHaveBeenCalledOnce();
+    expect(carregadorMock.mock.calls[0]![0]).toBe(db);
+    expect(loaderMock).toHaveBeenCalledOnce();
+    expect(loaderMock).toHaveBeenCalledWith({ pedidoId: 'p1', nfeId: 'nfe-805' });
+    expect(r).toMatchObject({
+      ok: false,
+      pending: false,
+      notification: {
+        title: 'Inscrição estadual do cliente recusada pela SEFAZ',
+        color: 'red',
+        link: { href: '/clientes/cli-805', label: 'Abrir cadastro de ACME LTDA' },
+      },
+    });
+    if (!r.ok && !r.pending) {
+      expect(r.notification.message.startsWith(`cStat=805: ${XMOTIVO_805} — `)).toBe(true);
+    }
+  });
+
+  it('a loader rejection on 805 propagates out of ensureNfeAprovada (a bug, not a toast)', async () => {
+    setDocs([]);
+    const boom = new TypeError('bug no carregador');
+    loaderMock.mockRejectedValue(boom);
+    client.emitir.mockRejectedValue(
+      new NFeRejectedError('805', XMOTIVO_805, { pedidoId: 'p1', nfeId: 'nfe-805' }),
+    );
+    await expect(ensureNfeAprovada(db, asClient(client), 'p1')).rejects.toBe(boom);
   });
 
   it('rethrows an unexpected (non-NFe) error', async () => {

@@ -30,7 +30,7 @@ const FONTE = readFileSync(fileURLToPath(new URL('./errosPreco.ts', import.meta.
 type Igual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
 describe('MotivoPrecoShopee', () => {
-  it('1 — o vocabulário é EXATAMENTE estes quarenta e quatro slugs', () => {
+  it('1 — o vocabulário é EXATAMENTE estes quarenta e seis slugs (44 do PR 1 + os 2 do job)', () => {
     // PERSISTIDO (`precoRecusaMotivo`, as linhas do relatório, o corpo do envio
     // manual). O `as const satisfies` garante o TIPO dos valores, mas não impede
     // um renome feito nos DOIS lugares de uma vez — o refactor silencioso que
@@ -49,6 +49,8 @@ describe('MotivoPrecoShopee', () => {
       'conta-pausada',
       'envio-parcial',
       'forma-de-modelo-divergente',
+      'job-cancelado',
+      'job-interrompido',
       'kit-derivado',
       'loja-banida-ou-congelada',
       'loja-com-penalidade',
@@ -82,8 +84,8 @@ describe('MotivoPrecoShopee', () => {
       'sem-tabela-normal',
       'tempo-esgotado',
     ]);
-    expect(TODOS).toHaveLength(44);
-    expect(new Set(TODOS).size).toBe(44);
+    expect(TODOS).toHaveLength(46);
+    expect(new Set(TODOS).size).toBe(46);
   });
 
   it('2 — o const cobre a união INTEIRA, nos dois sentidos, em tempo de compilação', () => {
@@ -106,14 +108,12 @@ describe('MotivoPrecoShopee', () => {
   });
 
   it('4 — ⛔ NEAR-MISS: os nomes que a reconciliação CORTOU ou adiou não são membros', () => {
-    // Um membro só existe se algo o produz. Os do job chegam no PR 2 junto com
-    // o produtor; `cota-diaria`/`burst` são valores de PAUSA da conta, não
+    // Um membro só existe se algo o produz. Os do job chegaram no PR 2 junto
+    // com o produtor; `cota-diaria`/`burst` são valores de PAUSA da conta, não
     // recusas de linha; um status desconhecido ENVIA; e as grafias UPPER_SNAKE
     // e as alternativas do desenho D1/D2 perderam para a do estoque.
     const valores: readonly string[] = TODOS;
     for (const fantasma of [
-      'job-interrompido',
-      'job-cancelado',
       'kit-nativo',
       'familia-nao-encontrada',
       'status-desconhecido',
@@ -139,7 +139,7 @@ describe('MotivoPrecoShopee', () => {
       const emCamel = slug.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
       expect(chave, slug).toBe(emCamel);
     }
-    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(44);
+    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(46);
   });
 
   it('7 — PAR: a condição que o ESTOQUE já nomeia usa a MESMA grafia (uma palavra por condição)', () => {
@@ -254,7 +254,7 @@ describe('MENSAGEM_POR_MOTIVO_PRECO', () => {
 });
 
 describe('mensagemDoMotivoDePreco', () => {
-  it('15 — PAR: um membro rende a SUA frase — todos os quarenta e quatro', () => {
+  it('15 — PAR: um membro rende a SUA frase — todos os quarenta e seis', () => {
     expect(mensagemDoMotivoDePreco('preco-igual')).toBe('O preço na Shopee já é igual ao do ERP.');
     for (const motivo of TODOS) {
       expect(mensagemDoMotivoDePreco(motivo), motivo).toBe(MENSAGEM_POR_MOTIVO_PRECO[motivo]);
@@ -270,7 +270,6 @@ describe('mensagemDoMotivoDePreco', () => {
       ' preco-igual', // um espaço a mais
       'preco-igual ',
       'Preco-igual',
-      'job-cancelado', // PR 2: ainda não é membro
       'cota-diaria', // valor de PAUSA, não motivo de linha
     ]) {
       const frase = mensagemDoMotivoDePreco(desconhecido);

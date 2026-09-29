@@ -118,9 +118,15 @@ describe('buildUpdate', () => {
 
 describe('resolveTargets', () => {
   it('defaults to clientes alone — the endereço family is opt-in', () => {
-    // Those feed Melhor Envio's from.phone/to.phone, and whether ME accepts a
-    // 55-prefixed value is still open.
     expect(resolveTargets([]).map((t) => t.name)).toEqual(['clientes']);
+  });
+
+  it('allows every address target now that the ME boundary emits local phones', () => {
+    expect(resolveTargets(['endereco', 'filial', 'intFrete']).map((t) => t.name)).toEqual([
+      'endereco',
+      'filial',
+      'intFrete',
+    ]);
   });
 
   it('resolves an explicit selection in the order given', () => {

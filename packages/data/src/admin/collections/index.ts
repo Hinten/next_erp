@@ -97,5 +97,9 @@ export {
   envioPrecoMercadoLivreCollection,
   relatorioEnvioPrecoMercadoLivreCollection,
 } from './envioPrecoMercadoLivreCollection';
+export {
+  envioPrecoShopeeCollection,
+  relatorioEnvioPrecoShopeeCollection,
+} from './envioPrecoShopeeCollection';
 export { avisoCollection } from './avisoCollection';
 export * from './whatsappContatoCollection';

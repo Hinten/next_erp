@@ -10,15 +10,44 @@ vi.mock('@mantine/notifications', () => ({
   },
 }));
 
+// Render next/link as a plain anchor (no App Router context in the test). Like
+// the real Link it runs the caller's onClick and then suppresses the document
+// navigation — which jsdom does not implement and would only log noise about.
+vi.mock('next/link', () => ({
+  default: ({
+    href,
+    children,
+    onClick,
+    ...rest
+  }: {
+    href: unknown;
+    children: React.ReactNode;
+    onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  }) => (
+    <a
+      href={typeof href === 'string' ? href : '#'}
+      {...rest}
+      onClick={(e) => {
+        onClick?.(e);
+        e.preventDefault();
+      }}
+    >
+      {children}
+    </a>
+  ),
+}));
+
 import { notifications } from '@mantine/notifications';
 import { showCopyableNotification, showErrorNotification } from './showErrorNotification';
 
 const showSpy = vi.mocked(notifications.show);
 const updateSpy = vi.mocked(notifications.update);
+const hideSpy = vi.mocked(notifications.hide);
 
 beforeEach(() => {
   showSpy.mockClear();
   updateSpy.mockClear();
+  hideSpy.mockClear();
 });
 
 describe('showErrorNotification', () => {
@@ -120,5 +149,60 @@ describe('showCopyableNotification', () => {
     render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
     fireEvent.click(screen.getByLabelText('Copiar mensagem'));
     expect(writeText).toHaveBeenCalledWith('EPEC registrado: cStat=136: ok');
+  });
+});
+
+describe('showCopyableNotification — link (#852)', () => {
+  const link = { href: '/clientes/cli-1', label: 'Abrir cadastro de ACME LTDA' };
+
+  it('renders the link under the message as an anchor with that href and label', () => {
+    showErrorNotification({ title: 'IE recusada', message: 'cStat=805: Rejeição', link });
+    const arg = showSpy.mock.calls[0]![0]!;
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
+
+    const anchor = screen.getByRole('link', { name: 'Abrir cadastro de ACME LTDA' });
+    expect(anchor.getAttribute('href')).toBe('/clientes/cli-1');
+    // The message and the copy button are still there alongside it.
+    expect(screen.getByText('cStat=805: Rejeição')).toBeTruthy();
+    expect(screen.getByLabelText('Copiar mensagem')).toBeTruthy();
+  });
+
+  it('clicking the link hides the toast by the SAME id notifications.show received', () => {
+    showErrorNotification({ title: 'IE recusada', message: 'm', link });
+    const arg = showSpy.mock.calls[0]![0]!;
+    const id = arg.id!;
+    expect(id).toBeTruthy();
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
+
+    expect(hideSpy).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('link', { name: link.label }));
+    expect(hideSpy).toHaveBeenCalledOnce();
+    expect(hideSpy).toHaveBeenCalledWith(id);
+  });
+
+  it('without a link renders no anchor (every existing caller)', () => {
+    showErrorNotification({ title: 'Erro', message: 'sem link' });
+    showErrorNotification({ title: 'Erro', message: 'link nulo', link: null });
+    for (const call of showSpy.mock.calls) {
+      const { unmount } = render(
+        <MantineTestProvider>{call[0]!.message as React.ReactNode}</MantineTestProvider>,
+      );
+      expect(screen.queryByRole('link')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('the copied text is still `${title}: ${message}` — the link never enters it', () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    showErrorNotification({ title: 'IE recusada', message: 'cStat=805: Rejeição', link });
+    const arg = showSpy.mock.calls[0]![0]!;
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
+    fireEvent.click(screen.getByLabelText('Copiar mensagem'));
+    expect(writeText).toHaveBeenCalledWith('IE recusada: cStat=805: Rejeição');
   });
 });

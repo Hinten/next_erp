@@ -26,10 +26,10 @@ import { buildUpdate, planTelefone, readNested } from './transform';
  *     --project <id> --target clientes,cheque     # pick targets explicitly
  *
  * ⚠️ Targets are OPT-IN and the default is `clientes` alone. The endereço
- * family (`endereco`, `filial`, `intFrete`) feeds Melhor Envio's `from.phone` /
- * `to.phone`, and whether ME accepts a `55`-prefixed value is an OPEN QUESTION
- * — normalizing those before it is answered could break label purchase. Do not
- * enable that group until the ME issue closes.
+ * family (`endereco`, `filial`, `intFrete`) is safe to normalize because the
+ * Melhor Envio boundary converts stored E.164 BR phones back to the provider's
+ * documented local shape (#868). Production execution still belongs only to
+ * the coordinated migration window in #1208.
  */
 
 const PAGE_SIZE = 300;
@@ -54,19 +54,19 @@ const TARGETS: readonly TelefoneTarget[] = [
     name: 'endereco',
     collectionGroup: 'enderecos',
     field: ['telefone'],
-    note: 'GATED on the Melhor Envio shape decision — feeds to.phone',
+    note: 'feeds ME to.phone through the local-phone provider boundary',
   },
   {
     name: 'filial',
     collectionGroup: 'filiais',
     field: ['sede', 'telefone'],
-    note: 'GATED on the Melhor Envio shape decision — feeds from.phone',
+    note: 'feeds ME from.phone through the local-phone provider boundary',
   },
   {
     name: 'intFrete',
     collectionGroup: 'int_frete',
     field: ['enderecoDeOrigem', 'telefone'],
-    note: 'GATED on the Melhor Envio shape decision — the freight-origin address',
+    note: 'freight-origin phone; ME receives the documented local shape',
   },
   {
     name: 'cheque',

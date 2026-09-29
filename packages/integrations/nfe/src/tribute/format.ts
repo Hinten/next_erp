@@ -53,12 +53,20 @@ export function fmtRateOpt(name: string, n: number | null | undefined): string |
   return fmtRate(name, n);
 }
 
-/** Format a quantity — 4 decimals (qCom, qTrib). */
+/**
+ * Format a quantity — 4 decimals (qCom, qTrib, and the PIS/COFINS `qBCProd`).
+ * Also the formatter for the 4-decimal per-unit rates — PIS/COFINS
+ * `vAliqProd` (`TDec_1104v`, at most 4 decimals) and IPI `vUnid`.
+ */
 export function fmtQuantity(name: string, n: number): string {
   return (check(name, n) as number).toFixed(4);
 }
 
-/** Format a unit-price — 10 decimals (vUnCom, vUnTrib, vAliqProd). */
+/**
+ * Format a unit-price — 10 decimals. For `vUnCom` / `vUnTrib` ONLY: the
+ * per-unit tax rates (`vAliqProd`, `vUnid`) allow at most 4 decimals, so a
+ * 10-decimal string there fails the XSD — they go through `fmtQuantity`.
+ */
 export function fmtUnitValue(name: string, n: number): string {
   return (check(name, n) as number).toFixed(10);
 }

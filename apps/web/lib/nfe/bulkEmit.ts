@@ -33,8 +33,15 @@ import {
 } from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 
+import { getFirebaseFirestore } from '@/lib/firebase/client';
+
 import { useNFeClient } from './client';
-import { notificationForNFeError, notificationForNFeResult } from './errors';
+import { carregadorContextoRejeicao } from './contextoRejeicao';
+import {
+  notificationForNFeErrorComContexto,
+  notificationForNFeResult,
+  type CarregarContextoRejeicao,
+} from './errors';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -73,10 +80,19 @@ interface PedidoRow {
  * Pure dispatcher — extracted from the React hook for unit testing.
  * Single-pedido path only; N>1 throws `NFeLoteNotImplementedError`
  * so the caller (React hook) knows to open the dialog instead.
+ *
+ * `carregarContexto` is REQUIRED, deliberately without a default: it
+ * is what turns a cStat 805 rejection into guidance plus a cadastro
+ * link (#852), and an optional parameter would let a caller drop it
+ * and silently fall back to the generic toast. It runs only for a
+ * rejection that needs context — never on success, never for any
+ * other error. It reads the pedido itself rather than taking the row's
+ * `data`: the Pipelines projection only guarantees `dependsOn` fields.
  */
 export async function dispatchEmitirNFe(
   client: NFeHttpClient,
   rows: ReadonlyArray<PedidoRow>,
+  carregarContexto: CarregarContextoRejeicao,
 ): Promise<void> {
   if (rows.length === 0) return;
   if (rows.length > 1) {
@@ -91,7 +107,7 @@ export async function dispatchEmitirNFe(
     showCopyableNotification(notificationForNFeResult(result));
   } catch (err) {
     if (!(err instanceof Error)) throw err;
-    showErrorNotification(notificationForNFeError(err));
+    showErrorNotification(await notificationForNFeErrorComContexto(err, carregarContexto));
   }
 }
 
@@ -182,7 +198,7 @@ export function useEmitirNFeAction(): {
         return;
       }
       try {
-        await dispatchEmitirNFe(client, rows);
+        await dispatchEmitirNFe(client, rows, carregadorContextoRejeicao(getFirebaseFirestore()));
       } catch (err) {
         if (err instanceof NFeLoteNotImplementedError) {
           // Defensive — the rows.length>1 check above should have

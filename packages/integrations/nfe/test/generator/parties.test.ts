@@ -92,9 +92,11 @@ describe('buildDest — indIEDest', () => {
   );
 
   // Deviation from legacy, which maps a blank ie on a PJ to '2'. NT 2025.001
-  // rule E16a-30 rejects '2' on an in-state operation (cStat=805) in 17 UFs
-  // including SP, so an unclassified cliente would be emittable interstate but
-  // not in-state — caught live by the homologação lane.
+  // (v1.03) rule E16a-30 rejects '2' (cStat=805) on internal AND interstate
+  // operations whenever the destinatário's UF is one of 17, SP included (and
+  // E16a-35 lets any other UF reject internal ones), so an unclassified cliente
+  // in those UFs would be unemittable either way — caught live by the
+  // homologação lane.
   it.each([null, '', '   '])(
     'pessoa jurídica with a blank ie=%j is Não Contribuinte (9), not Isento',
     (ie) => {

@@ -40,17 +40,18 @@ export interface ClienteDestinoLike {
  * Why `from.phone` / `to.phone` go out in the LOCAL BR shape (DDD + subscriber,
  * no country code), through `localTelefoneOrNull` below:
  *
- * That is what ME's own documented example uses, what every fixture in
- * `packages/integrations/freight-br` sends, and what the legacy Flutter app
- * demonstrably sent. This app, meanwhile, stores phones `55`-prefixed
- * (`normalizeTelefone`), so without the strip the shape on the wire would
- * change silently the moment a cliente or a freight origin is edited in this
- * UI — and whether ME accepts, normalizes or mangles a `55…` value is an OPEN
- * question (#868), answerable only against their sandbox. Stripping at the
- * boundary decouples the stored shape from the wire: correct whichever way
- * #868 lands, and a no-op on the legacy raw values already in the corpus.
- * `localTelefone` only ever strips a leading `55`, so a foreign number keeps
- * its own country code.
+ * That is the documented ME contract: the cart reference uses `11912345678`
+ * / `41912345678`, and the store-phone reference uses `11987654321`. Neither
+ * promises that an E.164 `55…` value is accepted or normalized. This app,
+ * meanwhile, stores phones `55`-prefixed (`normalizeTelefone`), so #868 chose
+ * the documented local shape at this provider boundary rather than depending
+ * on undocumented tolerance. The strip is a no-op on legacy raw values already
+ * in the corpus. `localTelefone` only ever strips a leading `55`, so a foreign
+ * number keeps its own country code.
+ *
+ * References (checked 2026-09-25):
+ * https://docs.melhorenvio.com.br/reference/inserir-fretes-no-carrinho
+ * https://docs.melhorenvio.com.br/reference/cadastrar-telefones-de-uma-loja
  */
 
 export interface BuildPedidoCartInput {

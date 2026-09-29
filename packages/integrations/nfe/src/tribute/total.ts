@@ -8,6 +8,15 @@
  * never rolls into ICMSTot. ICMS-ST values come from the SN201/202/203/500/900
  * sub-configs.
  *
+ * ICMSTot `vPIS` / `vCOFINS` are Σ of the per-item `<vPIS>` / `<vCOFINS>` of
+ * every item that carries the `<ICMS>` group — MOC 7.0 Anexo I rules 602 / 603
+ * (NT 2011.004: "Total do PIS/da COFINS difere do somatório dos itens sujeitos
+ * ao ICMS"). Each item value comes from `computePisCofinsItemValues`, the same
+ * function the item builder emits, so the two cannot drift. An ISSQN item's
+ * PIS/COFINS is kept out of ICMSTot (rule 602 counts only items subject to
+ * ICMS). ⚠️ Its own home, `ISSQNtot` vPIS/vCOFINS (608 / 609), is NOT emitted
+ * today: `aggregateISSQN` does not sum them and `apps/nfe` never calls it.
+ *
  * Mirrors the Flutter aggregation in
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
  * (the bag of vBC_ICMSTot, vICMS_ICMSTot, … doubles).
@@ -23,6 +32,7 @@ import type {
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
 import { CSOSN, IPI_TRIB_CSTS } from './schemas';
+import { computePisCofinsItemValues } from './imposto';
 import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
@@ -46,10 +56,12 @@ interface PerItem {
    * (rejections 531/532/533 compare against Σ of item-EMITTED values, which
    * an `indTot='0'` det still emits). Absent = composes.
    * `item.vBaseTributavel`, when present, is the net-of-discount tribute base
-   * used for the RTC (IBS/CBS/IS) computation — it must match the base the
-   * per-item `buildImpostoXml` used, so item and total RTC values agree.
-   * Defaults to `vProd` (no discount). The pedido-level and per-item discounts
-   * flow into the total via `TotalExtras.vDesc`.
+   * used for the RTC (IBS/CBS/IS) and the PIS/COFINS computations — it must
+   * match the `vProd` the per-item `buildImpostoXml` received, so item and
+   * total values agree. Defaults to `vProd` (no discount). The pedido-level
+   * and per-item discounts flow into the total via `TotalExtras.vDesc`.
+   * `item.qTrib` is the det's `<qTrib>`, the `qBCProd` of a per-unit PIS/COFINS
+   * rate — the same quantity the per-item `buildImpostoXml` received.
    */
   readonly item: TributeItem & { readonly vBaseTributavel?: number; readonly indTot?: '0' | '1' };
   readonly imposto: Imposto;
@@ -136,6 +148,8 @@ export function aggregateTotals(
   let vFCPST = 0;
   let vFCPSTRet = 0;
   let vIPI = 0;
+  let vPIS = 0;
+  let vCOFINS = 0;
   // RTC (IBS/CBS/IS) accumulators — populated only with `{ emitRtc: true }`.
   let rtcBC = 0;
   let rtcIBSUF = 0;
@@ -178,6 +192,16 @@ export function aggregateTotals(
     // so its ICMS/ST config must NOT roll into the totals — otherwise ICMSTot
     // carries vICMS/vBCST/vST no item ever emitted (a totals mismatch SEFAZ rejects).
     if (icms == null || imposto.configuracaoISSQN != null) continue;
+    // PIS/COFINS (602/603): only items that carry <ICMS> — past the `continue`
+    // above — and regardless of indTot, whose rule covers vProd alone. Sum the
+    // per-item ROUNDED values the det emits, on the same net base and quantity
+    // `buildImpostoXml` received; rounding a raw Σ instead can land a cent away.
+    const pisCofins = computePisCofinsItemValues(imposto, {
+      vProd: item.vBaseTributavel ?? item.vProd,
+      qTrib: item.qTrib,
+    });
+    vPIS += pisCofins.vPIS;
+    vCOFINS += pisCofins.vCOFINS;
     // CSOSN 101/201 contribute NOTHING to ICMSTot.vBC/vICMS. `vCredICMSSN` is
     // the Simples Nacional transferable credit (LC 123/2006 art. 23) that the
     // buyer may appropriate — it is not ICMS debited by the emitter, and the
@@ -231,8 +255,8 @@ export function aggregateTotals(
     vII: 0,
     vIPI: roundReais(vIPI),
     vIPIDevol: 0,
-    vPIS: 0,
-    vCOFINS: 0,
+    vPIS: roundReais(vPIS),
+    vCOFINS: roundReais(vCOFINS),
     vOutro: roundReais(vOutro),
     vNF,
     ...(opts.emitRtc && rtcCount > 0

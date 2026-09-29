@@ -5,9 +5,11 @@
  * parsing + HTTP/queue-retry mapping stay in the caller; this just does the work.
  *
  * Resolves the filial runtime, consults the lote by recibo (`reconcileByRecibo`),
- * and — while still processing (`cStat=105`, under the cap) — re-enqueues the next
- * consult with backoff via the injected scheduler. Throws the orchestrator's typed
- * errors (`NFeCertError`, transport errors); the caller decides their disposition.
+ * and — while any doc of the lote is still pending (`stillPending > 0`: a 105, a
+ * 104 not yet resolved for its chave, or a lote-level non-answer) — re-enqueues
+ * the next consult with backoff via the injected scheduler. Throws the
+ * orchestrator's typed errors (`NFeCertError`, transport errors); the caller
+ * decides their disposition.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -19,7 +21,7 @@ import { reconcileByRecibo, type ReconcileLoteResult } from '../orchestrator/rec
 import type { ConsultaTaskPayload, TaskScheduler } from '../tasks';
 
 export interface RunReconcileResult extends ReconcileLoteResult {
-  /** Whether the next consult was scheduled (still `cStat=105` under the cap). */
+  /** Whether the next consult was scheduled (`stillPending > 0`). */
   readonly reEnqueued: boolean;
   readonly nextAttempt?: number;
 }
@@ -28,7 +30,10 @@ export interface RunReconcileResult extends ReconcileLoteResult {
  * Reconcile one async lote. On `stillPending > 0`, schedule the next consult
  * (`now + nextConsultaDelayMs(attempt+1)`). cStat 656 (consumo indevido) and the
  * attempt cap leave `stillPending === 0`, so neither re-enqueues — the terminal
- * rule lives in `reconcileByRecibo`, not here.
+ * rule lives in `reconcileByRecibo`, not here. The ceiling is that function's
+ * per-doc `retries` counter (105 and 104-without-our-protNFe rounds), never
+ * `payload.attempt`, which only paces the backoff; a pure lote-level 106/108
+ * chain keeps that counter without advancing it, so it is not yet capped.
  */
 export async function runReconcile(args: {
   fs: Firestore;

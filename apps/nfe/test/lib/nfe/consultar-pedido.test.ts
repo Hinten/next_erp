@@ -182,6 +182,7 @@ describe('consultarPedido — post-refactor sanity', () => {
       estadoAtual: ESTADO_NFE.cancelada,
       cStatAtual: '101',
       xMotivoAtual: 'Cancelamento de NF-e homologado',
+      nRecAtual: null,
     });
 
     const r = await consultarPedido({} as never, {} as never, PEDIDO);

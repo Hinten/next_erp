@@ -81,7 +81,11 @@ export const consultaTaskPayloadSchema = z.object({
     z.literal(7),
     z.literal(9),
   ]),
-  /** 0-based consult attempt; the reconciler caps it at `MAX_RECONCILE_ATTEMPTS`. */
+  /**
+   * 0-based consult attempt — drives the backoff delay only; the per-doc
+   * `retries` counter (105 and 104-without-our-protNFe) is what
+   * `reconcileByRecibo` caps at `MAX_RECONCILE_ATTEMPTS`.
+   */
   attempt: z.number().int().min(0),
 });
 export type ConsultaTaskPayload = z.infer<typeof consultaTaskPayloadSchema>;

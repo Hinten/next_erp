@@ -33,24 +33,34 @@ afterEach(() => {
 });
 
 describe('a superfície do módulo', () => {
-  it('1 — exporta EXATAMENTE estes oito nomes (o PR 1; nada do job ainda)', () => {
-    // O conjunto é o pino: cinco agentes importam este módulo, e um nome que
+  it('1 — exporta EXATAMENTE estes dezoito nomes (os oito do PR 1 + os dez do job)', () => {
+    // O conjunto é o pino: vários agentes importam este módulo, e um nome que
     // aparece ou some sem decisão é o que se quer ver vermelho. As constantes do
-    // job (a fila, os limites de página e de despacho) são do SEGUNDO PR e
-    // chegam com o seu consumidor.
+    // job (a fila, os limites, os dois botões) chegaram com o seu consumidor,
+    // `atualizarPrecos.ts`.
     expect(Object.keys(constantes).sort()).toEqual([
+      'AMOSTRA_FALHAS_CAP',
+      'AMOSTRA_PULOS_CAP',
       'ENVIO_PRECO_MANUAL_MAX_TENTATIVAS',
       'ENVIO_PRECO_MANUAL_RETRY_DELAY_MS',
+      'ENVIO_PRECO_MAX_PARQUES',
+      'ENVIO_PRECO_MAX_PAUSAS',
+      'ENVIO_PRECO_MAX_TENTATIVAS',
+      'ENVIO_PRECO_ORFAO_MS',
       'FONTE_DE_VERIFICACAO_PRECO',
+      'PARQUE_JITTER_MAX_S',
       'PRICE_LIST_SO_A_DIFERENCA',
       'SHOPEE_ENVIO_PRECO_MAX_PRODUTOS',
       'SHOPEE_PRECO_MODEL_ID_SEM_MODELO',
+      'SHOPEE_PRICE_SYNC_QUEUE',
       'concorrenciaEnvioPrecoManual',
+      'itensPorDespachoPreco',
       'manualDeadlineMsPreco',
+      'pageLimitPreco',
     ]);
   });
 
-  it('2 — ⛔ NEAR-MISS: nenhum nome do job do PR 2 vazou para o PR 1', () => {
+  it('2 — PAR: os nomes do job do PR 2 chegaram, junto com o seu consumidor', () => {
     const nomes: readonly string[] = Object.keys(constantes);
     for (const doJob of [
       'SHOPEE_PRICE_SYNC_QUEUE',
@@ -60,7 +70,7 @@ describe('a superfície do módulo', () => {
       'pageLimitPreco',
       'itensPorDespachoPreco',
     ]) {
-      expect(nomes, doJob).not.toContain(doJob);
+      expect(nomes, doJob).toContain(doJob);
     }
   });
 });

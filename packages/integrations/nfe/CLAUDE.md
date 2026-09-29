@@ -182,6 +182,18 @@ the upload/storage path only, never SEFAZ emission.**
 Phase A is Simples Nacional only (`src/tribute/imposto.ts:75` throws
 on CRT=3/4). Regime Normal (CST 00/10/20/…) is Phase D.
 
+Every XSD-shape rule (sub-group completeness, pair choices) is a
+**throw inside `buildImpostoXml`**, never a Zod refine on the shared
+schemas: those schemas gate the resolver cascade and collection reads,
+so a stored doc that fails to parse silently drops to a lower resolver
+tier. `apps/nfe` makes sure such a throw never consumes a número (#506):
+the single-pedido transaction generates before its first write, and the
+batch dry-runs the per-item projection before its chunk transaction
+counts a member that would generate. Throw `NFeTributeError`
+(`src/tribute/errors.ts`, dependency-free so `rtc.ts` can use it), never a
+plain `Error`: `apps/nfe` converts only the in-repo tribute classes, so a
+plain one fails a batch member in prep whatever its nfev4 doc holds.
+
 ## Numeração
 
 Per-Filial `nNF` + `idLote` counters via Firestore optimistic

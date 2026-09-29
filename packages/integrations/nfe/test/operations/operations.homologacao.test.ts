@@ -13,7 +13,8 @@
  *   consultarStatusServico(call, { cUF: '35' })
  *     → serialize('consStatServ', {...})    (Zod once Step 2 lands)
  *     → nfeStatusServico(call, xml)
- *       → assertSafeTpAmb('2')              (safety guard)
+ *       → assertSafeTpAmbForTransport('2')  (label guard, no NODE_ENV passthrough)
+ *       → assertSafeEndpointForTransport()  (destination guard)
  *       → validateXsd('consStatServ', xml)   (XSD pre-send gate)
  *       → mTLS POST → SEFAZ-SP
  *       → validateXsd('retConsStatServ', x)  (XSD inbound gate)

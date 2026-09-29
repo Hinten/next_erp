@@ -28,6 +28,7 @@ export {
   TTL_FIELD,
   TTL_POLICIES,
   RETENCAO_ENVIO_PRECO_ML_DIAS,
+  RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
   RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
   RETENCAO_VINCULO_WHATSAPP_DIAS,
@@ -639,6 +640,24 @@ export {
 } from './relatorioEnvioPrecoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS, and deliberately exports no
+  // `…Meta`) — the Shopee "Atualizar preços" account-wide price job (master-plan
+  // step 13, #1521), twin of envioPrecoMercadoLivre above. Its fila holds
+  // IDENTITIES, never prices, and its report binds the shared
+  // relatorioEnvioPrecoSchema. ⚠️ Every stamp here is MILLISECONDS; `expiraEm`
+  // is the TTL Date.
+  envioPrecoShopeeStatusSchema,
+  ENVIO_PRECO_SHOPEE_STATUS,
+  envioPrecoShopeeModeloSchema,
+  envioPrecoShopeeFilaItemSchema,
+  envioPrecoShopeeSchema,
+  type EnvioPrecoShopeeStatus,
+  type EnvioPrecoShopeeModelo,
+  type EnvioPrecoShopeeFilaItem,
+  type EnvioPrecoShopee,
+} from './envioPrecoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
@@ -1100,6 +1119,10 @@ export {
   productVideoPath,
   productAnexoPath,
   mediaPath,
+  whatsappArquivoId,
+  whatsappMediaPath,
+  chatArquivoId,
+  chatMediaPath,
   tabMediOriginalPath,
   ownedArquivoId,
   productArquivoId,
@@ -1109,6 +1132,7 @@ export {
   isWatchedOriginal,
   parseProductMediaDir,
   parseOwnedMediaDir,
+  parseMensagemMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -1118,7 +1142,16 @@ export {
   type ParsedProductMediaDir,
   type MediaOwnerCollection,
   type ParsedOwnedMediaDir,
+  type MensagemMediaKind,
+  type ParsedMensagemMediaDir,
 } from './storage/storagePaths';
+
+export {
+  MENSAGEM_ARQUIVO_REF_FIELDS,
+  extractMensagemArquivoIds,
+  mensagemArquivoRefValues,
+  type MensagemArquivoRefField,
+} from './mensagemArquivoRefs';
 
 export {
   buildFotoRefs,

@@ -2,7 +2,7 @@
  * Route tests for POST /api/nfe/emitir. vi.mock the auth + orchestrator +
  * runtime layers so this isolates the route's contract:
  *   - 401 / 403 on auth
- *   - 400 on bad body
+ *   - 400 on bad body, and on an operator-fixable NFeOrchestratorError
  *   - 404 / 409 on orchestrator-thrown errors
  *   - 200 happy path
  *   - 422 when SEFAZ rejected
@@ -27,7 +27,12 @@ import { NextResponse } from 'next/server';
 
 import { ESTADO_NFE } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/nfe/auth';
-import { emitirPedido, NFeBlockedError, NFePedidoNotFoundError } from '@/lib/nfe/orchestrator';
+import {
+  emitirPedido,
+  NFeBlockedError,
+  NFeOrchestratorError,
+  NFePedidoNotFoundError,
+} from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/emitir/route';
@@ -94,6 +99,22 @@ describe('POST /api/nfe/emitir', () => {
     vi.mocked(emitirPedido).mockRejectedValue(new NFeBlockedError('PED-Y'));
     const res = await POST(req({ pedidoId: 'PED-Y' }));
     expect(res.status).toBe(409);
+  });
+
+  it('400 when emitirPedido throws NFeOrchestratorError, message passed through', async () => {
+    // A contract pin on the ROUTE only: the NFeOrchestratorError → 400 mapping
+    // predates #506, and the #506 fix relies on it to answer an unbuildable tax
+    // config with an operator-fixable 400 rather than the 500 below.
+    // emitirPedido is mocked and the message is a sample, so this test does NOT
+    // show that the orchestrator throws that class. The generator-input,
+    // orchestrator and emitir-pedidos-lote tests do.
+    const message =
+      "pedido 'PED-1' item 0 (produto 'P-1'): CSOSN '900': XSD sub-groups must be " +
+      'emitted complete or omitted — ICMS próprio missing: modBC';
+    vi.mocked(emitirPedido).mockRejectedValue(new NFeOrchestratorError(message));
+    const res = await POST(req({ pedidoId: 'PED-1' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: message });
   });
 
   it('200 on cStat=103 (lote recebido)', async () => {

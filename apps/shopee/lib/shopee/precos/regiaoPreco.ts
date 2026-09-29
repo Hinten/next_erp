@@ -3,9 +3,11 @@
  * plus one instant ⇒ may this ERP write ANY price onto that shop, and if so in
  * which currency and under which max/min ratio between variations?
  *
- * Run ONCE per conta, before any item: the manual push runs it before its pool
- * (a refusal answers the whole request 422 `SHOPEE_PRECO_CONTA_RECUSADA`), and
- * the job runs it on every drain before touching the fila. Where
+ * Run ONCE per conta, before any item: both price routes reach it through
+ * {@link exigirContaParaPreco} — the ONE conta ladder (tabela → quota pause →
+ * this verdict), so a refusal answers the manual push and the job's start with
+ * the same 400 / 409 / 422 — and the job runs it again on every drain before
+ * touching the fila. Where
  * `estoque/contaEstoque.ts` asks the same question about a QUANTITY, this
  * module asks it about a PRICE — and the two read the ONE shop-info cache, so
  * one conta inside one cache window costs one `get_shop_info` whichever sync
@@ -84,7 +86,8 @@
  *
  * ## Rule 7
  *
- * Reads only; this module writes nothing, so it has no race to lose. The
+ * Reads only; this module writes nothing (the ladder included — it reads the
+ * stock sync's pause and never writes it), so it has no race to lose. The
  * shared cache's instant is advisory and last-writer-wins (see
  * `estoque/contaEstoque.ts`): a stale entry costs at worst one re-read or one
  * verdict up to 15 minutes old, and every refusal it could miss is also a
@@ -102,12 +105,49 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
-import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
+import {
+  ShopeeContaNotConfiguredError,
+  loadShopeeContext,
+  type ShopeeContext,
+} from '../core/shopee';
 import { ShopeeContaSemShopIdError, ShopeeSemCredencialError } from '../core/tokenStore';
 import { idDoRef } from '../core/vinculosShopee';
 import { type ShopeeConfig, shopeeConfig } from '../env';
 import { type DepsDeConta, lerInfoDaLojaShopee } from '../estoque/contaEstoque';
-import { MOTIVO_PRECO_SHOPEE, type MotivoPrecoShopee } from './errosPreco';
+import { MOTIVOS_DE_PAUSA } from '../estoque/constantesEstoque';
+import { estaPausada, lerEstadoEstoque, type EstadoEstoqueLido } from '../estoque/estadoEstoque';
+import {
+  CODIGO_GUARDA_PRECO,
+  MOTIVO_PRECO_SHOPEE,
+  ShopeeEnvioPrecoGuardError,
+  mensagemDoMotivoDePreco,
+  type MotivoPrecoShopee,
+} from './errosPreco';
+
+/* -------------------------------------------------------------------------- */
+/*                        the quota pause the route reads                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The instant the conta's QUOTA pause ends, when one is active — else `null`.
+ *
+ * Price READS the stock sync's pause and never writes it (reconcile C-l): the
+ * per-APPLICATION rate limit is one limiter for both syncs. But only the two
+ * QUOTA motives are a price pause — a holiday or a blocked-shop stock pause is a
+ * stock refusal, and a price push against that shop is still legitimate.
+ *
+ * ⚠️ A pause with NO motive stored is not a price pause either: the stock
+ * writers always stamp one, so a bare `pausadoAte` is a document this reader
+ * does not understand, and refusing an operator on it would be a guess.
+ */
+export function pausaDeCotaParaPreco(estado: EstadoEstoqueLido, nowMs: number): number | null {
+  const motivo = estado.pausaMotivo;
+  const deCota = motivo === MOTIVOS_DE_PAUSA.burst || motivo === MOTIVOS_DE_PAUSA.cotaDiaria;
+  // `estaPausada` is the stock sync's own "still paused" rule, imported rather
+  // than re-spelled, so the two surfaces cannot disagree about the edge instant.
+  if (!deCota || !estaPausada(estado, nowMs)) return null;
+  return estado.pausadoAte;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                               the region table                              */
@@ -346,4 +386,136 @@ export async function avaliarContaParaPreco(
     tabelaNormalId,
   } as ContextoContaPreco;
   return { ok: true, contexto };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     the conta ladder both routes run                        */
+/* -------------------------------------------------------------------------- */
+
+/** What {@link exigirContaParaPreco} needs beyond the conta id. */
+export interface OpcoesDaExigenciaDeConta {
+  /** The request's ONE logical instant: the pause verdict and the shop-info cache read it. */
+  readonly nowMs: number;
+  /** The caller's log tag. A refusal's `"<class>: <message>"` is logged under it, never answered. */
+  readonly tagLog: string;
+  /**
+   * The verdict; defaults to {@link avaliarContaParaPreco}. The routes hand in
+   * the one they import: a module mock replaces an EXPORT but never this
+   * module's own internal call, so without the parameter the verdict a route's
+   * suite scripts would not be the verdict the ladder runs.
+   */
+  readonly avaliar?: typeof avaliarContaParaPreco;
+}
+
+/** A conta that passed the whole ladder: its loaded context and the branded verdict context. */
+export interface ContaExigidaParaPreco {
+  readonly ctx: ShopeeContext;
+  readonly contexto: ContextoContaPreco;
+}
+
+/**
+ * **The conta ladder both price routes run before any work** —
+ * `enviar-precos` (the manual push) and `atualizar-precos` (the job's start).
+ * ONE copy on purpose: the two used to carry it line for line, each with a
+ * comment claiming the other matched, and a mutant in one copy's 422 arm
+ * survived the other's whole suite (review 2, R-1; root `CLAUDE.md`, #1369).
+ * One conta therefore answers the same refusal whichever button the operator
+ * pressed.
+ *
+ * The rungs, in this order — each cheaper than the next:
+ *
+ * 1. the conta (`loadShopeeContext`): missing, or not a Shopee conta, THROWS
+ *    `ShopeeContaNotConfiguredError` — the caller's `shopeeErrorResponse` 404;
+ * 2. a blank `tabelaNormalOuterRef` (not a string, or whitespace only) ⇒ 400
+ *    `SHOPEE_CONTA_SEM_TABELA_NORMAL`;
+ * 3. the conta's QUOTA pause (`pausaDeCotaParaPreco` over the stock sync's
+ *    state, READ and never written) ⇒ 409 `SHOPEE_CONTA_PAUSADA` with
+ *    `pausadoAte` as ISO — a holiday stock pause does not stop a price;
+ * 4. the verdict ({@link avaliarContaParaPreco}) — the only rung that may
+ *    spend the one cached `get_shop_info` and build the client; its
+ *    `sem-tabela-normal` refusal (a ref that names no document) is rung 2's
+ *    400, and every other refusal is ONE 422 `SHOPEE_PRECO_CONTA_RECUSADA`
+ *    `{ motivo, mensagem, regiao? }` — `regiao` OMITTED, never `null`, when the
+ *    shop was not read.
+ *
+ * ⚠️ Rungs 2–3 cost ZERO provider calls and build NO client, so a paused conta
+ * mints no token and a conta with nowhere to read a price from reaches no shop.
+ *
+ * ⚠️ The verdict's `erro` (`"<class>: <message>"`, a conta class only) goes to
+ * the LOG under `opts.tagLog` and never to the answer: the message carries the
+ * integração id, and neither the class nor the message is the operator's
+ * business.
+ *
+ * Every refusal is a THROWN `ShopeeEnvioPrecoGuardError` at its derived status.
+ * It extends the package's base, so a caller must narrow it BEFORE its
+ * `isShopeeError` arm — the generic arm would answer it as a generic failure.
+ * Anything else the conta load or the verdict throws propagates untouched.
+ *
+ * What stays with each caller: its own body validation, its own guard-error
+ * catch and — for the job — the Tasks valve, answered BEFORE this ladder so a
+ * closed valve costs no conta read and no shop read. The job's per-drain
+ * re-evaluation stays separate as well: it parks, pauses or fails a job where
+ * these rungs answer HTTP.
+ *
+ * Rule 7: no Firestore write — the conta, the stock sync's state and the
+ * verdict's in-memory shop-info cache are all it touches.
+ */
+export async function exigirContaParaPreco(
+  db: Firestore,
+  integracaoId: string,
+  opts: OpcoesDaExigenciaDeConta,
+): Promise<ContaExigidaParaPreco> {
+  const ctx = await loadShopeeContext(db, integracaoId);
+
+  const tabelaRef = ctx.conta.tabelaNormalOuterRef;
+  if (typeof tabelaRef !== 'string' || tabelaRef.trim() === '') {
+    throw new ShopeeEnvioPrecoGuardError(
+      CODIGO_GUARDA_PRECO.contaSemTabelaNormal,
+      mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.semTabelaNormal),
+    );
+  }
+
+  const pausadoAte = pausaDeCotaParaPreco(await lerEstadoEstoque(db, integracaoId), opts.nowMs);
+  if (pausadoAte !== null) {
+    throw new ShopeeEnvioPrecoGuardError(
+      CODIGO_GUARDA_PRECO.contaPausada,
+      mensagemDoMotivoDePreco(MOTIVO_PRECO_SHOPEE.contaPausada),
+      { pausadoAte: new Date(pausadoAte).toISOString() },
+    );
+  }
+
+  const avaliar = opts.avaliar ?? avaliarContaParaPreco;
+  const veredito = await avaliar(
+    db,
+    {
+      integracaoId,
+      shopId: ctx.conta.shop_id ?? null,
+      tabelaNormalOuterRef: tabelaRef,
+    },
+    {
+      nowMs: opts.nowMs,
+      // The context already loaded is the client's source — built lazily by
+      // the verdict, only when the shop read or the accepted context needs it.
+      clientFor: () => Promise.resolve().then(() => ctx.createShopClient()),
+      config: ctx.config,
+    },
+  );
+  if (veredito.ok) return { ctx, contexto: veredito.contexto };
+
+  const mensagem = mensagemDoMotivoDePreco(veredito.motivo);
+  if (veredito.erro !== null) {
+    // The class and message are for the log — never for the answer.
+    console.warn(`${opts.tagLog}: conta recusada (${veredito.motivo})`, {
+      integracaoId,
+      erro: veredito.erro,
+    });
+  }
+  if (veredito.motivo === MOTIVO_PRECO_SHOPEE.semTabelaNormal) {
+    throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaSemTabelaNormal, mensagem);
+  }
+  throw new ShopeeEnvioPrecoGuardError(CODIGO_GUARDA_PRECO.contaRecusada, mensagem, {
+    motivo: veredito.motivo,
+    mensagem,
+    ...(veredito.regiao === null ? {} : { regiao: veredito.regiao }),
+  });
 }

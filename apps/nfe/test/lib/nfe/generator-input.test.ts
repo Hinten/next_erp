@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
 import {
+  CRT,
+  CSOSN,
+  CST_PIS_COFINS,
   MODALIDADE_FRETE,
   ORIGEM,
   FORMA_PAGAMENTO,
@@ -14,10 +17,12 @@ import {
 
 import {
   apportionDescontos,
+  assertItemsBuildable,
   buildGeneratorInput,
   buildGenItems,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
+import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 /**
  * Regression tests for the discount handling in the NF-e generator input.
@@ -29,15 +34,22 @@ import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bun
  *    dropped, overstating `vNF` and mismatching payments → cStat 865).
  */
 
-/** Minimal bundle carrying only the fields buildGenItems/apportionDescontos read. */
+/**
+ * Minimal bundle carrying only the fields buildGenItems/apportionDescontos read,
+ * plus the two UFs `isInterstateFor` compares (assertItemsBuildable derives
+ * interstate itself). Both default to 'SP' — an intra-state sale.
+ */
 function bundleWith(
   operacao: Record<string, unknown>,
   pedido: Record<string, unknown> = {},
+  ufs: { readonly dest?: string; readonly sede?: string } = {},
 ): PedidoBundle {
   return {
     pedidoId: 'PED-TEST',
     operacao,
     pedido,
+    enderecoDest: { estado: ufs.dest ?? 'SP' },
+    filial: { sede: { estado: ufs.sede ?? 'SP' } },
   } as unknown as PedidoBundle;
 }
 
@@ -763,5 +775,427 @@ describe('frete-emitente with no composing item (review fix)', () => {
     expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(
       /nenhum item compõe o total/,
     );
+  });
+});
+
+/**
+ * CSOSN 900 with a PARTIAL 'ICMS próprio' group — vBC/pICMS/vICMS but no modBC.
+ * `impostoSchema` accepts it (every csosn900 member is optional); only the
+ * engine's build-time XSD-group guard rejects it (#506).
+ */
+const IMPOSTO_900_PARCIAL = {
+  origem: ORIGEM.nacional,
+  unidade: 'UN',
+  NCM: '61091000',
+  cfop: '5102',
+  configuracaoICMS: {
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.outros,
+    csosn900: { vBC: 100, pICMS: 18, vICMS: 18 },
+  },
+} as const;
+
+/** The `where` buildGenItems stamps on every per-item error for `item({})`. */
+const ITEM_PREFIX = "pedido 'PED-TEST' item 0 (produto 'prod-1'):";
+
+/** The NFeOrchestratorError message `fn` throws; any other throw propagates. */
+function orchestratorMessage(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (err) {
+    if (err instanceof NFeOrchestratorError) return err.message;
+    throw err;
+  }
+  return expect.fail('expected an NFeOrchestratorError, nothing was thrown');
+}
+
+describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', () => {
+  it('passes for a buildable item and leaves the generation projection unchanged', () => {
+    const items = [item({ precoDeVenda: 100, quantidade: 2, descontoUnitario: 10 })];
+    const bundle = bundleWith(OP);
+    const before = buildGenItems(items, bundle, false);
+    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+    expect(buildGenItems(items, bundle, false)).toEqual(before);
+  });
+
+  it('wraps a partial CSOSN 900 group as NFeOrchestratorError prefixed with pedido/item/produto', () => {
+    const msg = orchestratorMessage(() =>
+      assertItemsBuildable(
+        bundleWith(OP),
+        [item({ imposto: IMPOSTO_900_PARCIAL as never })],
+        false,
+      ),
+    );
+    expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
+    expect(msg).toContain("CSOSN '900'");
+    expect(msg).toContain('ICMS próprio missing: modBC');
+  });
+
+  it('keeps generation precedence — a desconto error wins over a partial 900 on the same item', () => {
+    // descontoTotal blows past the gross value AND the imposto is unbuildable:
+    // buildGenItems checks vDesc before it builds the imposto, and so must the
+    // pre-flight, or the operator would be told about the wrong defect first.
+    const items = [
+      item({ precoDeVenda: 10, quantidade: 1, imposto: IMPOSTO_900_PARCIAL as never }),
+    ];
+    const bundle = bundleWith(OP, { descontoTotal: 999 });
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    expect(msg).toMatch(/desconto .* exceeds the gross item value/);
+    expect(msg).not.toContain('CSOSN');
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+  });
+
+  it('derives interstate from the bundle UFs, exactly as generation does', () => {
+    // item() stamps only `cfop`; this operação has no cfopInterestadual either,
+    // so an interstate sale has no CFOP to project — an intra-state one does.
+    const opSemInterestadual = { cfop: '5102', NCM: '61091000', unidade: 'UN' };
+    const items = [item({})];
+    expect(assertItemsBuildable(bundleWith(opSemInterestadual), items, false)).toBeUndefined();
+    const msg = orchestratorMessage(() =>
+      assertItemsBuildable(bundleWith(opSemInterestadual, {}, { dest: 'RJ' }), items, false),
+    );
+    expect(msg).toBe(
+      `${ITEM_PREFIX} no cfopInterestadual — neither imposto.cfopInterestadual nor operacao.cfopInterestadual is set`,
+    );
+  });
+
+  it('wraps an invalid RTC config (RTC on) as NFeOrchestratorError, like any stored tribute defect', () => {
+    // `parseRtcConfig` throws the engine's NFeTributeError: a draft
+    // configuracaoIBSCBS is an operator-fixable stored config exactly like a
+    // partial CSOSN 900 group, so it gets the same item prefix and the same 400.
+    const items = [
+      item({
+        imposto: {
+          origem: ORIGEM.nacional,
+          unidade: 'UN',
+          NCM: '61091000',
+          cfop: '5102',
+          configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+          configuracaoIBSCBS: { CST: '000' }, // a draft: no cClassTrib, no rates
+        } as never,
+      }),
+    ];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, true));
+    expect(msg.startsWith(`${ITEM_PREFIX} Invalid configuracaoIBSCBS`)).toBe(true);
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false, true)));
+    // Near-miss: the same item with RTC off never reads the draft, so it passes —
+    // the pre-flight honours the filial's emitRtc like generation does.
+    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+  });
+
+  it('converts ONLY the engine tribute errors — any other throw from the engine propagates untouched (rule 6)', () => {
+    // A fault that is not an in-repo tribute class — standing in for an engine
+    // bug — raised from INSIDE buildImpostoXml: the engine's input parse reads
+    // configuracaoICMS.csosn, and this getter throws there. It must surface
+    // as-is (same class, no item prefix), not be relabelled operator-fixable.
+    const fault = new RangeError('unexpected engine fault (test)');
+    const imposto = {
+      origem: ORIGEM.nacional,
+      unidade: 'UN',
+      NCM: '61091000',
+      cfop: '5102',
+      configuracaoICMS: {
+        crt: CRT.simplesNacional,
+        get csosn(): string {
+          throw fault;
+        },
+      },
+    };
+    const items = [item({ imposto: imposto as never })];
+    const bundle = bundleWith(OP);
+    for (const run of [
+      () => assertItemsBuildable(bundle, items, false),
+      () => buildGenItems(items, bundle, false),
+    ]) {
+      expect(run).toThrow(RangeError);
+      expect(run).toThrow(/^unexpected engine fault \(test\)$/);
+      expect(run).not.toThrow(NFeOrchestratorError);
+    }
+  });
+
+  it('wraps a TributeFormatError (a computed value the wire cannot carry) as NFeOrchestratorError', () => {
+    // No stored config reaches TributeFormatError directly. The engine's Zod
+    // parse already rejects a negative, non-finite or missing required input,
+    // and the optional members are null-guarded before they are formatted.
+    // What is left is a COMPUTED value leaving the double range. PIS CST 01 derives vPIS = vProd × pPIS /
+    // 100, so a finite, nonnegative (schema-valid) vProd of Number.MAX_VALUE
+    // overflows it to Infinity, which `fmtMoney` refuses. That exercises the
+    // real `buildImpostoXml` path, with no mock.
+    const imposto = {
+      origem: ORIGEM.nacional,
+      unidade: 'UN',
+      NCM: '61091000',
+      cfop: '5102',
+      configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+    };
+    const overflowing = [item({ precoDeVenda: Number.MAX_VALUE, imposto: imposto as never })];
+    const bundle = bundleWith(OP);
+    const expected = `${ITEM_PREFIX} vPIS must be finite, got Infinity`;
+    expect(orchestratorMessage(() => assertItemsBuildable(bundle, overflowing, false))).toBe(
+      expected,
+    );
+    expect(orchestratorMessage(() => buildGenItems(overflowing, bundle, false))).toBe(expected);
+    // Near-miss: the same imposto on an ordinary price builds, so the overflow,
+    // not the config, is what trips the format check.
+    const ordinary = [item({ precoDeVenda: 100, imposto: imposto as never })];
+    expect(assertItemsBuildable(bundle, ordinary, false)).toBeUndefined();
+  });
+
+  it('buildGenItems at generation time surfaces the same NFeOrchestratorError', () => {
+    const items = [item({ imposto: IMPOSTO_900_PARCIAL as never })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => buildGenItems(items, bundle, false));
+    expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
+    expect(msg).toContain("CSOSN '900'");
+    expect(msg).toContain('ICMS próprio missing: modBC');
+    expect(msg).toBe(orchestratorMessage(() => assertItemsBuildable(bundle, items, false)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PIS/COFINS item ↔ ICMSTot (#509 — MOC 7.0 Anexo I rules 602/603: ICMSTot
+// vPIS/vCOFINS must equal Σ of the item values). These go through the REAL
+// buildGeneratorInput → aggregateTotals/buildTotalXml, never a hand-written
+// golden, so they prove what the wire carries.
+// ---------------------------------------------------------------------------
+
+/** The item() default imposto (CSOSN 102) carrying the given PIS/COFINS configs. */
+function impostoPisCofins(
+  configuracaoPIS: Record<string, unknown> | null,
+  configuracaoCOFINS: Record<string, unknown> | null,
+): FiscalItem['imposto'] {
+  return {
+    origem: ORIGEM.nacional,
+    unidade: 'UN',
+    NCM: '61091000',
+    cfop: '5102',
+    configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+    configuracaoPIS,
+    configuracaoCOFINS,
+  } as never;
+}
+
+/**
+ * Three items, one per PIS/COFINS shape:
+ *  - A: 3 × 100 with a unit discount of 10 → net base 270 (gross 300);
+ *    CST 49 by percent (PISOutr/COFINSOutr `vBC + p`).
+ *  - B: 1 × 50; CST 01 (PISAliq/COFINSAliq). Its raw vPIS is 0.825, which the
+ *    item rounds to 0.82 — so Σ of the ROUNDED item values (3.89) differs from
+ *    the rounded raw Σ (3.8952 → 3.90), and the totals pin tells them apart.
+ *  - C: 3 × 20; CST 99 per unit (PISOutr/COFINSOutr `qBCProd + vAliqProd`).
+ */
+const PIS_ITENS: FiscalItem[] = [
+  item({
+    produtoUid: 'a',
+    itemIndex: 0,
+    precoDeVenda: 100,
+    quantidade: 3,
+    descontoUnitario: 10,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1 },
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 3 },
+    ),
+  }),
+  item({
+    produtoUid: 'b',
+    itemIndex: 1,
+    precoDeVenda: 50,
+    quantidade: 1,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+    ),
+  }),
+  item({
+    produtoUid: 'c',
+    itemIndex: 2,
+    precoDeVenda: 20,
+    quantidade: 3,
+    imposto: impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.1234 },
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.5 },
+    ),
+  }),
+];
+
+/** The same items with the given PIS/COFINS configs on every one of them. */
+function comPisCofins(
+  configuracaoPIS: Record<string, unknown> | null,
+  configuracaoCOFINS: Record<string, unknown> | null,
+): FiscalItem[] {
+  return PIS_ITENS.map((it) => ({
+    ...it,
+    imposto: impostoPisCofins(configuracaoPIS, configuracaoCOFINS),
+  }));
+}
+
+/** Empty pagamentos → tPag 90, so the Σ vPag guard is skipped unless a test adds one. */
+function buildPis(items: ReadonlyArray<FiscalItem>, pedido: Record<string, unknown> = {}) {
+  return buildGeneratorInput(fullBundle({ pagamentos: [], pedido }), items, 7, 1, 'homologacao');
+}
+
+/** The ONE `<tag>` value in `xml`, as a number — fails when absent or repeated. */
+function valorUnico(xml: string, tag: string): number {
+  const valores = [...xml.matchAll(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'g'))].map((m) =>
+    Number(m[1]),
+  );
+  expect(valores, `exactly one <${tag}>`).toHaveLength(1);
+  return valores[0]!;
+}
+
+describe('PIS/COFINS item ↔ ICMSTot (cStat 602/603)', () => {
+  it('ICMSTot vPIS/vCOFINS equal Σ of the item values the dets carry', () => {
+    const out = buildPis(PIS_ITENS);
+    for (const tag of ['vPIS', 'vCOFINS']) {
+      const somaItens = roundReais(
+        out.itens.reduce((sum, gi) => sum + valorUnico(gi.impostoXml, tag), 0),
+      );
+      expect(valorUnico(out.totalXml, tag), tag).toBe(somaItens);
+    }
+    // Explicit, so the equality above cannot hold vacuously at 0 = 0. vPIS =
+    // 2.70 + 0.82 + 0.37 (Σ of the ROUNDED item values — the raw Σ is 3.90);
+    // vCOFINS = 8.10 + 3.80 + 1.50.
+    expect(valorUnico(out.totalXml, 'vPIS')).toBe(3.89);
+    expect(valorUnico(out.totalXml, 'vCOFINS')).toBe(13.4);
+    // A: the percent base is the net-of-unit-discount 270, not the gross 300.
+    expect(out.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>270.00</vBC><pPIS>1.0000</pPIS><vPIS>2.70</vPIS></PISOutr>',
+    );
+    expect(out.itens[0]!.impostoXml).toContain(
+      '<COFINSOutr><CST>49</CST><vBC>270.00</vBC><pCOFINS>3.0000</pCOFINS><vCOFINS>8.10</vCOFINS></COFINSOutr>',
+    );
+    // C: per unit — qBCProd is the item quantity, never a hardcoded 1.
+    expect(out.itens[2]!.impostoXml).toContain(
+      '<PISOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.1234</vAliqProd><vPIS>0.37</vPIS></PISOutr>',
+    );
+  });
+
+  it('the item base ignores the apportioned descontoTotal — A keeps vBC 270.00 (parity with PISAliq and RTC)', () => {
+    const semDesconto = buildPis(PIS_ITENS);
+    const comDesconto = buildPis(PIS_ITENS, { descontoTotal: 40 });
+    // The order discount DID reach the det: A's vDesc is its unit discount (30)
+    // plus its share of the 40 (28.42 of it, over the net 380).
+    expect(comDesconto.itens[0]!.vDesc).toBe(58.42);
+    expect(comDesconto.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>270.00</vBC><pPIS>1.0000</pPIS><vPIS>2.70</vPIS></PISOutr>',
+    );
+    // ...and the total still sums the same item values, discount or not.
+    expect(valorUnico(comDesconto.totalXml, 'vPIS')).toBe(valorUnico(semDesconto.totalXml, 'vPIS'));
+    expect(valorUnico(comDesconto.totalXml, 'vCOFINS')).toBe(
+      valorUnico(semDesconto.totalXml, 'vCOFINS'),
+    );
+  });
+
+  it('vNF and the Σ vPag guard are unaffected: vNF has no PIS/COFINS term', () => {
+    const comPis = buildPis(PIS_ITENS);
+    const semPis = buildPis(comPisCofins(null, null));
+    // Σ gross (300 + 50 + 60) − Σ vDesc (30) = 380, with or without PIS.
+    expect(valorUnico(comPis.totalXml, 'vNF')).toBe(380);
+    expect(valorUnico(semPis.totalXml, 'vNF')).toBe(380);
+    // The contrast that makes the equality above meaningful.
+    expect(valorUnico(comPis.totalXml, 'vPIS')).toBeGreaterThan(0);
+    expect(valorUnico(semPis.totalXml, 'vPIS')).toBe(0);
+    // A payment of exactly the goods total passes the guard with PIS non-zero.
+    const pago = buildGeneratorInput(
+      fullBundle({ pagamentos: [{ valor: 380, forma_de_pagamento: FORMA_PAGAMENTO.pix }] }),
+      PIS_ITENS,
+      7,
+      1,
+      'homologacao',
+    );
+    expect(pago.pagXml).toContain('<vPag>380.00</vPag>');
+  });
+
+  it('qBCProd equals the det quantity: genItems qTrib === quantidade, carried at 4 decimals', () => {
+    const out = buildPis(PIS_ITENS);
+    out.itens.forEach((gi, i) => {
+      expect(gi.qTrib).toBe(PIS_ITENS[i]!.quantidade);
+    });
+    expect(out.itens[2]!.impostoXml).toContain('<PISOutr><CST>99</CST><qBCProd>3.0000</qBCProd>');
+    expect(out.itens[2]!.impostoXml).toContain(
+      '<COFINSOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.5000</vAliqProd><vCOFINS>1.50</vCOFINS></COFINSOutr>',
+    );
+    // Near-miss: a fractional quantity is carried as-is, not rounded to a unit.
+    const fracionado = buildPis([{ ...PIS_ITENS[2]!, quantidade: 2.5, vProd: 50, vProdBruto: 50 }]);
+    expect(fracionado.itens[0]!.qTrib).toBe(2.5);
+    expect(fracionado.itens[0]!.impostoXml).toContain(
+      '<qBCProd>2.5000</qBCProd><vAliqProd>0.1234</vAliqProd><vPIS>0.31</vPIS>',
+    );
+    expect(valorUnico(fracionado.totalXml, 'vPIS')).toBe(0.31);
+  });
+
+  it('zero default: CST 49 with no rates gives a totalXml byte-equal to null PIS/COFINS', () => {
+    const semAliquota = buildPis(
+      comPisCofins(
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+      ),
+    );
+    const nulos = buildPis(comPisCofins(null, null));
+    expect(semAliquota.totalXml).toBe(nulos.totalXml);
+    expect(semAliquota.totalXml).toContain('<vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>');
+    // The dets still carry the XSD-mandated zero PISOutr/COFINSOutr shape.
+    expect(semAliquota.itens[0]!.impostoXml).toContain(
+      '<PISOutr><CST>49</CST><vBC>0.00</vBC><pPIS>0.0000</pPIS><vPIS>0.00</vPIS></PISOutr>',
+    );
+  });
+});
+
+describe('assertItemsBuildable — PIS/COFINS configs the engine refuses (#509)', () => {
+  const CST_49 = CST_PIS_COFINS.outrasOperacoesSaida;
+
+  function mensagem(
+    configuracaoPIS: Record<string, unknown> | null,
+    configuracaoCOFINS: Record<string, unknown> | null,
+  ): string {
+    const items = [item({ imposto: impostoPisCofins(configuracaoPIS, configuracaoCOFINS) })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    // The pre-flight IS generation's projection: same class, same message.
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+    return msg;
+  }
+
+  it('PIS CST 49 with BOTH pPIS and vAliqProd → NFeOrchestratorError naming the item', () => {
+    const msg = mensagem({ CST: CST_49, pPIS: 0.65, vAliqProd: 0.1 }, null);
+    expect(msg.startsWith(`${ITEM_PREFIX} PIS CST=49 (PISOutr)`)).toBe(true);
+    expect(msg).toMatch(/PIS CST=49/);
+    expect(msg).toMatch(/not both/);
+  });
+
+  it('COFINS-only both-rates (PIS valid) names COFINS, not PIS', () => {
+    const msg = mensagem({ CST: CST_49, pPIS: 0.65 }, { CST: CST_49, pCOFINS: 3, vAliqProd: 0.1 });
+    expect(msg.startsWith(`${ITEM_PREFIX} COFINS CST=49 (COFINSOutr)`)).toBe(true);
+    expect(msg).toMatch(/not both/);
+  });
+
+  it.each([
+    {
+      caso: 'CST 01 without pPIS',
+      pis: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+      expected: `${ITEM_PREFIX} PIS CST=01 requires \`pPIS\``,
+    },
+    {
+      caso: 'CST 03 without vAliqProd',
+      pis: { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade },
+      expected: `${ITEM_PREFIX} PIS CST=03 requires \`vAliqProd\``,
+    },
+  ])('$caso → NFeOrchestratorError carrying the engine message', ({ pis, expected }) => {
+    expect(mensagem(pis, null)).toBe(expected);
+  });
+
+  it('near-miss: one rate alone, or both at 0, builds', () => {
+    const bundle = bundleWith(OP);
+    for (const pis of [
+      { CST: CST_49, pPIS: 0.65 },
+      { CST: CST_49, vAliqProd: 0.1 },
+      { CST: CST_49, pPIS: 0, vAliqProd: 0 },
+      { CST: CST_49, pPIS: 0, vAliqProd: 0.1 },
+    ]) {
+      const items = [item({ imposto: impostoPisCofins(pis, null) })];
+      expect(assertItemsBuildable(bundle, items, false), JSON.stringify(pis)).toBeUndefined();
+    }
   });
 });

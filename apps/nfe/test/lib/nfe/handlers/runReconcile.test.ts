@@ -45,6 +45,7 @@ describe('runReconcile', () => {
       recovered: 0,
       errored: 0,
       cStat: '105',
+      bloqueioConsSit: null,
     });
     const { scheduler, enqueued } = recordingScheduler();
     const res = await runReconcile({
@@ -66,6 +67,7 @@ describe('runReconcile', () => {
       recovered: 0,
       errored: 1,
       cStat: '656',
+      bloqueioConsSit: null,
     });
     const { scheduler, enqueued } = recordingScheduler();
     const res = await runReconcile({

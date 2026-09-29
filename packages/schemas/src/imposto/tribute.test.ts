@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  CRT,
+  CSOSN,
   CSOSN_LABELS,
+  CST,
   CST_ICMS_LABELS,
   CST_PIS_COFINS_LABELS,
+  MOD_BC,
+  MOD_BCST,
+  MOD_BCST_LABELS,
+  ORIGEM,
   configuracaoIBSCBSDraftSchema,
   configuracaoIBSCBSSchema,
   configuracaoICMSSchema,
@@ -11,6 +18,7 @@ import {
   impostoPersistidoSchema,
   indEscalaField,
   indEscalaFromScalar,
+  modBCSTSchema,
   nveField,
   nveCarriesValue,
   nveFromScalar,
@@ -60,6 +68,105 @@ describe('configuracaoICMSSchema — Regime Normal (lossless storage, #312 defer
       },
     };
     expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
+  });
+});
+
+// modBCST '6' = Valor da Operação (NT 2019.001 §1.6, #509). Before it existed,
+// a stored ICMS-ST config holding '6' failed every collection schema that
+// spreads `taxConfigFields`, so the imposto resolver DROPPED the whole doc and
+// the item resolved against a lower tier — a wrong NF-e with no error. The
+// value has three companions (enum, named constant, UI label) and the type
+// system enforces only one of them, so each is pinned here.
+
+describe("modBCSTSchema — '6' Valor da Operação (#509)", () => {
+  it("accepts '6'", () => {
+    expect(modBCSTSchema.parse('6')).toBe('6');
+  });
+
+  it("near-miss: still rejects '7' and the NUMBER 6", () => {
+    expect(modBCSTSchema.safeParse('7').success).toBe(false);
+    expect(modBCSTSchema.safeParse(6).success).toBe(false);
+  });
+
+  it('names it valorOperacao with the leiaute label', () => {
+    expect(MOD_BCST.valorOperacao).toBe('6');
+    expect(MOD_BCST_LABELS[MOD_BCST.valorOperacao]).toBe('6 - Valor da Operação');
+  });
+
+  // `satisfies Record<string, ModBCST>` checks each value, never that every
+  // member has a name; only the `Record<ModBCST, string>` labels are
+  // compile-enforced. A member added to the enum alone must fail HERE.
+  it('MOD_BCST and MOD_BCST_LABELS each cover exactly the enum members', () => {
+    const members = [...modBCSTSchema.options].sort();
+    expect(members).toEqual(['0', '1', '2', '3', '4', '5', '6']);
+    expect([...Object.values(MOD_BCST)].sort()).toEqual(members);
+    expect(Object.keys(MOD_BCST_LABELS).sort()).toEqual(members);
+  });
+});
+
+describe("configuracaoICMSSchema — ST groups carry modBCST '6' (#509)", () => {
+  const st = { modBCST: MOD_BCST.valorOperacao, vBCST: 1500, pICMSST: 18, vICMSST: 270 };
+
+  it.each([
+    [CSOSN.tributadaComCreditoComSt, { csosn201: { pCredSN: 1.5, vCredICMSSN: 22.5, ...st } }],
+    [CSOSN.tributadaSemCreditoComSt, { csosn202ou203: st }],
+    [CSOSN.isencaoFaixaReceitaBrutaComSt, { csosn202ou203: st }],
+    [CSOSN.outros, { csosn900: st }],
+  ])('round-trips CSOSN %s', (csosn, sub) => {
+    const cfg = { crt: CRT.simplesNacional, csosn, ...sub };
+    expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
+  });
+
+  it('round-trips a Regime Normal icms10 losslessly', () => {
+    const cfg = {
+      crt: CRT.regimeNormal,
+      csosn: null,
+      cst: CST.tributadaComSt,
+      icms10: { modBC: MOD_BC.valorOperacao, vBC: 1500, pICMS: 18, vICMS: 270, ...st },
+    };
+    expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
+  });
+});
+
+// The resolver's root cause, pinned on the schemas it actually reads through:
+// `taxConfigFields.configuracaoICMS` is the strict slot spread into
+// impostoProduto / impostoCategoria / operacao / regraImposto (a doc failing it
+// is dropped by `warnDropped` in apps/nfe/lib/nfe/imposto-resolver.ts),
+// `impostoPersistidoSchema` is the pedido-stamped snapshot, and `impostoSchema`
+// is what the cascade parses each tier with.
+describe("resolver root cause — a stored CSOSN 201 with modBCST '6' is not dropped (#509)", () => {
+  const configuracaoICMS = {
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.tributadaComCreditoComSt,
+    csosn201: {
+      pCredSN: 1.5,
+      vCredICMSSN: 22.5,
+      modBCST: MOD_BCST.valorOperacao,
+      vBCST: 1500,
+      pICMSST: 18,
+      vICMSST: 270,
+    },
+  };
+  const imposto = { origem: ORIGEM.nacional, configuracaoICMS };
+
+  it('parses under taxConfigFields.configuracaoICMS', () => {
+    expect(taxConfigFields.configuracaoICMS.parse(configuracaoICMS)).toEqual(configuracaoICMS);
+  });
+
+  it('parses under impostoPersistidoSchema and impostoSchema', () => {
+    expect(impostoPersistidoSchema.parse(imposto).configuracaoICMS).toEqual(configuracaoICMS);
+    expect(impostoSchema.parse(imposto).configuracaoICMS).toEqual(configuracaoICMS);
+  });
+
+  it("near-miss: a '7' in the same slot is still rejected by all three", () => {
+    const bad = {
+      ...configuracaoICMS,
+      csosn201: { ...configuracaoICMS.csosn201, modBCST: '7' },
+    };
+    const badImposto = { ...imposto, configuracaoICMS: bad };
+    expect(taxConfigFields.configuracaoICMS.safeParse(bad).success).toBe(false);
+    expect(impostoPersistidoSchema.safeParse(badImposto).success).toBe(false);
+    expect(impostoSchema.safeParse(badImposto).success).toBe(false);
   });
 });
 

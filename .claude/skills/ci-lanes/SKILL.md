@@ -173,7 +173,11 @@ still lets `NODE_ENV='test'` through — fine at the generator boundary, where X
 built but no socket opens, and **exactly wrong at transport**, because `nfe-live` is
 itself Vitest, so that passthrough disabled the guard for the whole live suite.
 `NFE_ALLOW_PRODUCAO` and `NFE_AMBIENTE` are set in no workflow and are not repo
-variables.
+variables. `assertSafeEndpointForTransport` sits beside it at both sites and judges
+the URL, not the label — a produção-only SEFAZ host needs the same opt-in, and a
+`tpAmb='2'` call aimed at one is always refused. Both NF-e `vitest.config.ts` files
+pin `NFE_AMBIENTE=homologacao` / `NFE_ALLOW_PRODUCAO=''` after their env spreads,
+so a local `.env.local` cannot aim a Vitest run at produção either.
 
 Use it for nothing else. Measured over 30 merged PRs: the dependency closure of
 `@delfrance/integrations-nfe` fires on 14 (it depends on `schemas` and `core`),

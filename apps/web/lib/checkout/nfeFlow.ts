@@ -6,8 +6,9 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import { nfeCollection } from '../data/nfeCollection';
+import { carregadorContextoRejeicao } from '../nfe/contextoRejeicao';
 import {
-  notificationForNFeError,
+  notificationForNFeErrorComContexto,
   notificationForNFeResult,
   type NotificationShape,
 } from '../nfe/errors';
@@ -76,7 +77,17 @@ export async function ensureNfeAprovada(
     return { ok: false, pending: false, notification: notificationForNFeResult(result) };
   } catch (err) {
     if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
-      return { ok: false, pending: false, notification: notificationForNFeError(err) };
+      // A cStat 805 rejection reads the rejected NF-e, the pedido and the cliente
+      // (#852) so the notification can say what to fix and link the cadastro.
+      // Those extra reads happen ONLY on 805 — every other error maps without a
+      // read. On the reprint path (`reprintCheckout.ts`) they run INSIDE the
+      // `withDeadline` wrapping this whole function (REPRINT_STAGE_TIMEOUT_MS,
+      // 30s), so they share that budget rather than extending it.
+      return {
+        ok: false,
+        pending: false,
+        notification: await notificationForNFeErrorComContexto(err, carregadorContextoRejeicao(db)),
+      };
     }
     throw err;
   }
