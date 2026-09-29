@@ -32,7 +32,10 @@ gates, the UI bridge, or the other providers.
      `throw err` for anything else — no generic catch (repo rule). A
      `FreightTimeoutError` (#1094) is a `FreightNetworkError` subclass whose
      message is the copy: put its arm FIRST, and never re-send a buy on it — the
-     server may still be running the first one.
+     server may still be running the first one. A UI that offers the buy must
+     not leave the button armed either: `EtiquetaComprarModal` shows a yellow
+     notice and CLOSES on it, so the only way back is reopening after checking
+     the pedido.
 2. **Add one `registry.ts` entry** — put the provider in the array passed to
    `buildProviderMap`. Done; `PROVIDERS` indexes it by its `tipos`.
 3. **Write a unit test** `providers/<tipo>.test.ts` with injected fakes (see
