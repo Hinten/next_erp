@@ -19,7 +19,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import { addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { ZodError } from 'zod';
-import { normalizeNCM, type RegraImposto } from '@delfrance/schemas';
+import { normalizeNCM, problemasDeEmissaoDoImposto, type RegraImposto } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { nowMillis } from '@delfrance/core/datetime';
@@ -116,6 +116,12 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
   // Reset key for the add-produto picker (it has no persistent value of its own).
   const [produtoPickerKey, setProdutoPickerKey] = useState(0);
 
+  // What the NF-e engine would refuse in this regra's tax config (#1655). The
+  // imposto blob carries the regra's own origem/CFOP/NCM, so it is the whole
+  // tier doc the engine's tier gate reads. Shown live in the editor; blocks
+  // `handleSave` before any write.
+  const problemas = useMemo(() => problemasDeEmissaoDoImposto(form.imposto), [form.imposto]);
+
   function openAdd() {
     setForm(EMPTY_FORM);
     setEditing({ id: null, dataCadastro: null });
@@ -141,6 +147,11 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
         return;
       }
       if (!ncms.includes(normalized)) ncms.push(normalized);
+    }
+    // A regra has no ObjectView resolver: this is its only save-time gate.
+    if (problemas.length > 0) {
+      setSaveError(`A NF-e recusaria esta regra: ${problemas.map((p) => p.mensagem).join(' ')}`);
+      return;
     }
     setSaving(true);
     setSaveError(null);
@@ -275,6 +286,7 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
               value={form.imposto}
               onChange={(next) => setForm((f) => ({ ...f, imposto: next }))}
               disabled={disabled}
+              problemas={problemas}
             />
 
             {saveError && <Alert color="red">{saveError}</Alert>}
