@@ -12,12 +12,13 @@ name: CI — Shopee
 # their own gate. Step 22 (#1530) may move the offline job in here when it adds
 # the Firestore-only emulator job; until then the smaller blast radius wins.
 #
-# ⚠️ ONE job, FIVE suite files (10 tests) since step 13: the receiver round trip
+# ⚠️ ONE job, SIX suite files (11 tests) since step 14: the receiver round trip
 # (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
 # (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
 # (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1), the stock one
-# (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1) and the price-job one
-# (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3). Adding a file with
+# (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1), the price-job one
+# (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3) and the NF-e one
+# (`lib/shopee/nfe/enviarNfe.tasks.test.ts`, 1). Adding a file with
 # the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
 # name, no new row in the gate manifest.
 #
@@ -59,11 +60,25 @@ name: CI — Shopee
 #     → the job doc `completed` through the class-B finalize transaction
 #   plus a cancelled job answering `noop` and a wrong-tipo conta `failed`.
 #
-# ⚠️ That second path is NOT a push delivery, and neither are the third and the
-# fourth. The wrong-tipo conta, the unmapped shop, the over-sized task and the
-# plan-time skips are all chosen for the same reason: the refusal PRECEDES any
-# client, so the dispatch writes a document having made zero Shopee calls — by
-# call order, not by a mock.
+# and, since step 14 (#1522), the FIFTH queue end to end — and the first time
+# this lane asserts on a FIRESTORE TRIGGER's effect (the stock suite only names
+# the link trigger):
+#
+#   a digest-proved pedido (step 5's own frete mapper + a step-7 diary row),
+#   then an nfev4 doc CREATED `aprovada` with a tpAmb-1 SALE proc and NO key
+#     → onNfeAprovadaShopee                 the real deployed onDocumentWritten
+#     → createShopeeNfeUploadScheduler()    the real region-qualified queue name
+#     → Cloud Tasks emulator → Functions emulator
+#     → processShopeeNfeUpload              the real deployed onTaskDispatched
+#     → the key check refuses `xml-invalido` BEFORE the conta read
+#     → the nfeUploadRejeitado aviso + `freteInicial.estado: error` through the
+#       class-C stamp transaction, `pacotes` and the rest of the block kept
+#
+# ⚠️ That second path is NOT a push delivery, and neither are the third, the
+# fourth and the fifth. The wrong-tipo conta, the unmapped shop, the over-sized
+# task, the plan-time skips and the keyless proc are all chosen for the same
+# reason: the refusal PRECEDES any client, so the dispatch writes a document
+# having made zero Shopee calls — by call order, not by a mock.
 #
 # OFFLINE BY CONSTRUCTION — no Shopee credentials, ever. Shopee DOES have a
 # sandbox, so the danger here is not "there is nowhere safe to call": it is that
@@ -110,10 +125,19 @@ name: CI — Shopee
 #     scheduler sets one too — the burst pause (retryAfterSeconds ??
 #     ratePauseMin() × 60) and the daily-quota park (`retomarEm`) — and its
 #     round trip exercises neither, for the same reason; both are pinned offline
-#     in apps/shopee/lib/shopee/precos/atualizarPrecos.test.ts. `retryConfig`
-#     and `rateLimits` are asserted off `__endpoint` in
-#     processNotification.test.ts, processMassImport.test.ts and
-#     processPriceSync.test.ts.
+#     in apps/shopee/lib/shopee/precos/atualizarPrecos.test.ts. Step 14's NF-e
+#     queue sets one on the FIRST enqueue of every upload — the trigger holds
+#     the task for the SERPRO window (`ATRASO_SERPRO_S`, six minutes) — and its
+#     round trip finishes inside its poll ONLY because the emulator ignores
+#     that: it proves nothing about the delay (pinned offline in
+#     apps/shopee/functions/src/onNfeAprovadaShopee.test.ts), and a
+#     firebase-tools bump that honours it would time the suite out — its file
+#     header says how to split the hop then. The SERPRO re-enqueues, the
+#     burst/daily pauses and the ~15-min recheck are exercised by nothing here;
+#     they are pinned offline in apps/shopee/lib/shopee/nfe/processarNfe.test.ts.
+#     `retryConfig` and `rateLimits` are asserted off `__endpoint` in
+#     processNotification.test.ts, processMassImport.test.ts,
+#     processPriceSync.test.ts and processNfeUpload.test.ts.
 #   - The push HMAC against Shopee's own signer. `guide 18`'s vectors are pinned
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
@@ -131,6 +155,12 @@ name: CI — Shopee
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
 #     exposes db.pipeline(), so feature-probing answers yes then fails at
 #     execution.
+#   - The NF-e UPLOAD itself. The pre-read, `upload_invoice_doc`, the
+#     read-back and every classification of a Shopee answer each need a Shopee
+#     call, so the NF-e round trip stops at the key check on purpose; those arms
+#     are pinned offline in apps/shopee/lib/shopee/nfe/processarNfe.test.ts and
+#     reverificacaoNfe.test.ts. So is the transition NEGATIVE (a rewrite of an
+#     approved NF-e enqueues nothing): an absence cannot be polled honestly.
 #   - The Shopee Open Platform itself. By design — see the kill-switch above.
 
 on:
@@ -374,9 +404,9 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # FOURTEEN of the codebase's fifteen triggers declare both of these as
-      # `secrets:` — the exception is the one Firestore trigger, which never
-      # calls Shopee — and demo-erp has no Secret Manager. Invented values are
+      # FIFTEEN of the codebase's seventeen triggers declare both of these as
+      # `secrets:` — the exceptions are the two Firestore triggers, which never
+      # call Shopee — and demo-erp has no Secret Manager. Invented values are
       # safe AND sufficient: every exercised path refuses before any Shopee call,
       # and an invented key cannot sign a call that Shopee would answer.
       # ⚠️ The vitest fetch kill-switch does NOT cover the emulator's own
