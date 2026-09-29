@@ -46,21 +46,36 @@ import {
 // <pag> value can be asserted without widening the package's public surface.
 import { buildPagObject } from '../../src/tribute/pag';
 import type {
+  TNFe_infNFe_det_imposto_COFINS_COFINSAliq,
+  TNFe_infNFe_det_imposto_COFINS_COFINSNT,
+  TNFe_infNFe_det_imposto_COFINS_COFINSOutr,
+  TNFe_infNFe_det_imposto_COFINS_COFINSQtde,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN201,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN202,
   TNFe_infNFe_det_imposto_ICMS_ICMSSN900,
+  TNFe_infNFe_det_imposto_PIS_PISAliq,
+  TNFe_infNFe_det_imposto_PIS_PISNT,
+  TNFe_infNFe_det_imposto_PIS_PISOutr,
+  TNFe_infNFe_det_imposto_PIS_PISQtde,
 } from '../../src/types/nfe-schema';
 import {
   confICMSSN500Schema,
   confICMSSN900Schema,
+  CRT,
   CSOSN,
   CST_PIS_COFINS,
+  cstPisCofinsSchema,
   IND_INCENTIVO,
   IND_ISS,
   MOD_BC,
   MOD_BCST,
   MODO_GRUPOS_IMPOSTO,
   ORIGEM,
+  vereditoPisCofins,
+  type CstPisCofinsAliq,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type CstPisCofinsQtde,
 } from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
@@ -1306,6 +1321,386 @@ describe('buildImpostoXml — failure modes', () => {
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Exact config-error messages and their precedence (#1655 characterization)
+//
+// The failure-mode tests above assert only the error class (or /csosn/i).
+// These pin every config-level message BYTE-FOR-BYTE, and which check wins
+// when a config breaks more than one rule, so moving the rules into
+// `@delfrance/schemas` can be shown not to change a character or a winner.
+// They pass on the engine as it stood before that move: a refactor's proof,
+// not a fix's.
+// ---------------------------------------------------------------------------
+
+/** Every Simples Nacional sub-config slot explicitly null — the stored shape. */
+const SN_SLOTS_NULL = {
+  csosn101: null,
+  csosn201: null,
+  csosn202ou203: null,
+  csosn500: null,
+  csosn900: null,
+} as const;
+
+describe('buildImpostoXml — exact config-error messages and precedence (#1655)', () => {
+  // -- ICMS: CRT, CSOSN, sub-config ------------------------------------------
+
+  it.each([
+    [
+      CRT.regimeNormal,
+      'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
+        'Use Simples Nacional configs only.',
+    ],
+    [CRT.meiSimplesNacional, 'CRT=4 (MEI) is not implemented.'],
+  ] as const)('CRT %s → the exact not-implemented message', (crt, message) => {
+    const imposto: Imposto = { origem: ORIGEM.nacional, configuracaoICMS: { crt, csosn: null } };
+    expect(tributeErrorMessage(imposto)).toBe(message);
+  });
+
+  it.each([
+    [CRT.simplesNacional, 'CRT=1 requires a non-null csosn'],
+    [CRT.simplesNacionalExcessoSublimite, 'CRT=2 requires a non-null csosn'],
+  ] as const)('CRT %s with csosn null → %s', (crt, message) => {
+    const imposto: Imposto = { origem: ORIGEM.nacional, configuracaoICMS: { crt, csosn: null } };
+    expect(tributeErrorMessage(imposto)).toBe(message);
+  });
+
+  const SUB_CONFIG_AUSENTE = [
+    [CSOSN.tributadaComCredito, "CSOSN '101' requires `configuracaoICMS.csosn101`"],
+    [CSOSN.tributadaComCreditoComSt, "CSOSN '201' requires `configuracaoICMS.csosn201`"],
+    [CSOSN.tributadaSemCreditoComSt, "CSOSN '202' requires `configuracaoICMS.csosn202ou203`"],
+    [CSOSN.isencaoFaixaReceitaBrutaComSt, "CSOSN '203' requires `configuracaoICMS.csosn202ou203`"],
+    [CSOSN.icmsCobradoAnteriormente, "CSOSN '500' requires `configuracaoICMS.csosn500`"],
+    [CSOSN.outros, "CSOSN '900' requires `configuracaoICMS.csosn900`"],
+  ] as const;
+
+  it.each(SUB_CONFIG_AUSENTE)('CSOSN %s with its sub-config key absent → %s', (csosn, message) => {
+    expect(tributeErrorMessage(impostoFor(csosn))).toBe(message);
+  });
+
+  // The web editor nulls every SN slot when the CSOSN changes, so the stored
+  // shape carries `csosnXXX: null`, not a missing key.
+  it.each(SUB_CONFIG_AUSENTE)('CSOSN %s with every SN slot null → %s', (csosn, message) => {
+    expect(tributeErrorMessage(impostoFor(csosn, SN_SLOTS_NULL))).toBe(message);
+  });
+
+  it("CSOSN 202 with csosn201 filled and csosn202ou203 null → names csosn202ou203, not 201's slot", () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCreditoComSt, {
+      csosn201: {
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+      csosn202ou203: null,
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      "CSOSN '202' requires `configuracaoICMS.csosn202ou203`",
+    );
+  });
+
+  it('CSOSN 203 with a partial FCP-ST trio → the exact group message names 203, not the slot', () => {
+    const imposto = impostoFor(CSOSN.isencaoFaixaReceitaBrutaComSt, {
+      csosn202ou203: {
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+        vBCFCPST: 1800,
+      },
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      "CSOSN '203': XSD sub-groups must be emitted complete or omitted — " +
+        'FCP-ST missing: pFCPST, vFCPST',
+    );
+  });
+
+  it('neither configuracaoICMS nor configuracaoISSQN → the exact message', () => {
+    expect(tributeErrorMessage({ origem: ORIGEM.nacional })).toBe(
+      'imposto requires either `configuracaoICMS` or `configuracaoISSQN`',
+    );
+  });
+
+  // -- ICMS precedence: CRT, then csosn, then slot, then groups --------------
+
+  it('CRT 3 with csosn 500 and a null slot → the CRT message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: {
+        crt: CRT.regimeNormal,
+        csosn: CSOSN.icmsCobradoAnteriormente,
+        csosn500: null,
+      },
+    };
+    expect(tributeErrorMessage(imposto)).toBe(
+      'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
+        'Use Simples Nacional configs only.',
+    );
+  });
+
+  it('CRT 4 with csosn 900 and a partial group → the CRT message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: {
+        crt: CRT.meiSimplesNacional,
+        csosn: CSOSN.outros,
+        csosn900: { vBC: 1500 },
+      },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('CRT=4 (MEI) is not implemented.');
+  });
+
+  it('CRT 1 with csosn null and a leftover partial csosn500 → the csosn message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: CRT.simplesNacional, csosn: null, csosn500: { pST: 20 } },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('CRT=1 requires a non-null csosn');
+  });
+
+  it('CSOSN 102 with leftover partial csosn500/csosn900 → ICMSSN102, the other slots ignored', () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCredito, {
+      csosn500: { pST: 20 },
+      csosn900: { vBC: 1500 },
+    });
+    expect(icmsXmlOf(buildImpostoXml(imposto, item1500))).toBe(
+      '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>',
+    );
+  });
+
+  it('CSOSN 202 with a complete csosn202ou203 and a partial-trio csosn201 → builds ICMSSN202', () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCreditoComSt, {
+      csosn201: {
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+        vBCFCPST: 1800,
+      },
+      csosn202ou203: {
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+    });
+    expect(icmsXmlOf(buildImpostoXml(imposto, item1500))).toBe(
+      '<ICMS><ICMSSN202><orig>0</orig><CSOSN>202</CSOSN><modBCST>4</modBCST>' +
+        '<vBCST>1800.00</vBCST><pICMSST>18.0000</pICMSST><vICMSST>324.00</vICMSST>' +
+        '</ICMSSN202></ICMS>',
+    );
+  });
+
+  it('ISSQN set with CRT 3 → <ISSQN>, the ICMS config never checked', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: CRT.regimeNormal, csosn: null },
+      configuracaoISSQN: issqnFor(),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).not.toContain('<ICMS>');
+  });
+
+  // -- PIS and COFINS are built before ICMS, PIS before COFINS ---------------
+
+  it('PIS CST 01 without pPIS + CSOSN 500 with a null slot → the PIS message wins', () => {
+    const imposto: Imposto = {
+      ...impostoFor(CSOSN.icmsCobradoAnteriormente, SN_SLOTS_NULL),
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('PIS CST=01 requires `pPIS`');
+  });
+
+  it('COFINS CST 02 without pCOFINS + CSOSN 900 with a partial group → the COFINS message wins', () => {
+    const imposto: Imposto = {
+      ...impostoFor(CSOSN.outros, { csosn900: { vBC: 1500 } }),
+      configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaDiferenciada },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('COFINS CST=02 requires `pCOFINS`');
+  });
+
+  it('PIS CST 49 with both rates + COFINS CST 03 without vAliqProd → the PIS message wins', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.1 },
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade },
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500, qTrib: 1 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  // -- PIS/COFINS: the rate bound, exact, and each group's precedence --------
+
+  it('CST 01 with pPIS 1000 → the exact rate-format message', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1000 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe(
+      'PIS CST=01: `pPIS` 1000 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+
+  it('CST 99 with pCOFINS 1234.5 → the exact rate-format message', () => {
+    const imposto = impostoPisCofins(null, {
+      CST: CST_PIS_COFINS.outrasOperacoes,
+      pCOFINS: 1234.5,
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      'COFINS CST=99: `pCOFINS` 1234.5 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+
+  it('CST 01 without pPIS but with vAliqProd → still the missing-pPIS message', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, vAliqProd: 5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe('PIS CST=01 requires `pPIS`');
+  });
+
+  it('CST 01 with pPIS 1000 and a vAliqProd → the rate-format message (Aliq ignores vAliqProd)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toMatch(/^PIS CST=01: `pPIS` 1000 does not fit/);
+  });
+
+  it('CST 03 without vAliqProd on an item without qTrib → the config message, not qTrib', () => {
+    const imposto = impostoPisCofins({ CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade }, null);
+    expect(tributeErrorMessage(imposto, { vProd: 1500 })).toBe('PIS CST=03 requires `vAliqProd`');
+  });
+
+  it('CST 03 with pPIS 1000 → PISQtde, the percent rate never read', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, { vProd: 1500, qTrib: 2 }), 'PIS')).toBe(
+      '<PIS><PISQtde><CST>03</CST><qBCProd>2.0000</qBCProd><vAliqProd>0.5000</vAliqProd>' +
+        '<vPIS>1.00</vPIS></PISQtde></PIS>',
+    );
+  });
+
+  it('CST 07 with pPIS 1000 → PISNT, the rate never read', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.isentaContribuicao, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(
+      '<PIS><PISNT><CST>07</CST></PISNT></PIS>',
+    );
+  });
+
+  it('CST 49 with pPIS 1000 and vAliqProd 0.5 → the both-rates message, not the rate bound', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500, qTrib: 1 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  it('CST 49 with both rates on an item without qTrib → the both-rates message, not qTrib', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  it('CST 49 with pPIS 1000 and vAliqProd 0 → the rate bound (a 0 per-unit is no second rate)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1000, vAliqProd: 0 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe(
+      'PIS CST=49: `pPIS` 1000 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The emission rules in @delfrance/schemas ↔ the XSD (#1655)
+//
+// `vereditoPisCofins` decides which PIS/COFINS group a CST selects; the engine
+// emits that group. The codegen types are the XSD's own enumerations, so the
+// type pins fail typecheck the moment a helper CST subset drifts from its
+// group, and the sweep builds every CST through the real engine and validates
+// the result against the XSD — the authority, not a hand copy of the table.
+// ---------------------------------------------------------------------------
+
+describe('regrasDeEmissao ↔ the XSD (#1655)', () => {
+  it('the helper CST subsets equal the codegen PIS/COFINS group enumerations', () => {
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISAliq['CST']>();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISQtde['CST']>();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISOutr['CST']>();
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSAliq['CST']
+    >();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSQtde['CST']
+    >();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_COFINS_COFINSNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSOutr['CST']
+    >();
+  });
+
+  // One ok input per group: Aliq a percent, Qtde a per-unit rate (the item
+  // carries qTrib), NT nothing, and Outr each branch of its xs:choice.
+  const ENTRADAS_OK = {
+    Aliq: [['percent', { pPIS: 0.65 }, { pCOFINS: 3 }]],
+    Qtde: [['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }]],
+    NT: [['no rate', {}, {}]],
+    Outr: [
+      ['percent', { pPIS: 0.65 }, { pCOFINS: 3 }],
+      ['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }],
+      ['no rate', {}, {}],
+    ],
+  } as const;
+  const XSD_SWEEP = cstPisCofinsSchema.options.flatMap((cst) => {
+    // The group the helper assigns (both rates set: Outr answers ambasAliquotas).
+    const v = vereditoPisCofins(cst, 0.65, 0.5);
+    const grupo = v.tipo === 'ok' ? v.grupo : 'Outr';
+    return ENTRADAS_OK[grupo].map(
+      ([modo, pis, cofins]) => [cst, grupo, modo, pis, cofins] as const,
+    );
+  });
+
+  it('the sweep covers every CST, and every Outr CST in all three branches', () => {
+    expect(new Set(XSD_SWEEP.map(([cst]) => cst)).size).toBe(cstPisCofinsSchema.options.length);
+    expect(XSD_SWEEP).toHaveLength(2 + 1 + 6 + 24 * 3);
+  });
+
+  it.each(XSD_SWEEP)(
+    'CST %s (%s, %s) → the engine emits an XSD-valid PIS/COFINS group',
+    async (cst, grupo, _modo, pis, cofins) => {
+      const imposto = impostoPisCofins({ CST: cst, ...pis }, { CST: cst, ...cofins });
+      const item = { vProd: 1500, qTrib: 2 };
+      const xml = buildImpostoXml(imposto, item);
+      expect(groupXmlOf(xml, 'PIS')).toContain(`<PIS${grupo}><CST>${cst}</CST>`);
+      expect(groupXmlOf(xml, 'COFINS')).toContain(`<COFINS${grupo}><CST>${cst}</CST>`);
+      await assertXsdValidWithRealTotals(xml, imposto, item);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

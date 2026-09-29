@@ -20,6 +20,9 @@ vi.mock('@delfrance/data/admin/collections', () => ({
     docRef: vi.fn(),
     groupQuery: vi.fn(),
     parseRead: vi.fn((raw: unknown) => raw),
+    // A write that bypassed the guarded persist (a plain merge on the doc ref)
+    // would pass through here — kept a passthrough so it lands visibly.
+    parseMerge: vi.fn((raw: unknown) => raw),
   },
   enviNfeMsgCollection: {},
 }));
@@ -53,7 +56,10 @@ import { consultarLote, consultarSituacaoNFe } from '@delfrance/integrations-nfe
 import { ESTADO_NFE } from '@delfrance/schemas';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 
-import { persistPatchUnlessFinal } from '../../../lib/nfe/orchestrator/audit';
+import {
+  findLatestEnviNFeMsgWithNRec,
+  persistPatchUnlessFinal,
+} from '../../../lib/nfe/orchestrator/audit';
 import { loadPedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
 import { consultarPedido } from '../../../lib/nfe/orchestrator/consultar';
 
@@ -191,6 +197,103 @@ describe('consultarPedido — post-refactor sanity', () => {
       estado: ESTADO_NFE.cancelada,
       cStat: '101',
       xMotivo: 'Cancelamento de NF-e homologado',
+      reused: false,
+    });
+  });
+});
+
+describe('consultarPedido — a recovered 539 swaps the chave only in the guarded write (#1654 §2d)', () => {
+  /** The chave SEFAZ asserts holds our número (another emission of it). */
+  const OUTRA_CHAVE = '35260614200166000187550010000000099400000019';
+
+  /**
+   * Our receipt REC-1 answers a 539 for CHAVE asserting OUTRA_CHAVE; the audit
+   * log knows OUTRA_CHAVE from receipt REC-0, which authorizes it.
+   */
+  function seed539Recuperavel(): void {
+    seedSlot();
+    vi.mocked(findLatestEnviNFeMsgWithNRec).mockImplementation(
+      async (_fs, _filial, chave) => ({ nRec: chave === CHAVE ? 'REC-1' : 'REC-0' }) as never,
+    );
+    vi.mocked(consultarLote).mockImplementation(
+      async (_call, { nRec }) =>
+        ({
+          versao: '4.00',
+          tpAmb: '2',
+          verAplic: 'TEST',
+          nRec,
+          cStat: '104',
+          xMotivo: 'Lote processado',
+          cUF: '35',
+          dhRecbto: new Date().toISOString(),
+          protNFe: [
+            {
+              versao: '4.00',
+              infProt: {
+                tpAmb: '2',
+                verAplic: 'TEST',
+                chNFe: nRec === 'REC-1' ? CHAVE : OUTRA_CHAVE,
+                dhRecbto: new Date().toISOString(),
+                nProt: '135000000000000',
+                cStat: nRec === 'REC-1' ? '539' : '100',
+                xMotivo:
+                  nRec === 'REC-1'
+                    ? `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA_CHAVE}]`
+                    : 'Autorizado o uso da NF-e',
+              },
+            },
+          ],
+        }) as never,
+    );
+  }
+
+  afterEach(() => {
+    // clearAllMocks keeps implementations — never let these leak.
+    vi.mocked(findLatestEnviNFeMsgWithNRec).mockImplementation(async () => null);
+    vi.mocked(consultarLote).mockReset();
+  });
+
+  /** The nfev4 doc ref the call wrote through — a plain merge would show on its `set`. */
+  function refDoDoc(): { set: ReturnType<typeof vi.fn> } {
+    return vi.mocked(nfev4Collection.docRef).mock.results.at(-1)!.value as {
+      set: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  it('control: ONE guarded write carries the recovered estado AND the chave; the result names the recovered chave', async () => {
+    seed539Recuperavel();
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    expect(vi.mocked(consultarLote).mock.calls.map(([, a]) => a.nRec)).toEqual(['REC-1', 'REC-0']);
+    expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(1);
+    const [, , patch, extras] = vi.mocked(persistPatchUnlessFinal).mock.calls[0]!;
+    expect(patch).toMatchObject({ estado: ESTADO_NFE.aprovada, cStat: '100' });
+    expect(extras).toEqual({ chave: OUTRA_CHAVE });
+    // No write of its own on the doc ref — the swap rides the guarded one.
+    expect(refDoDoc().set).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ estado: ESTADO_NFE.aprovada, chave: OUTRA_CHAVE, reused: false });
+  });
+
+  it('the doc turned cancelada mid-call → the guarded write is refused, NOTHING swaps the chave, and the result keeps the original chave', async () => {
+    seed539Recuperavel();
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValue({
+      written: false,
+      estadoAtual: ESTADO_NFE.cancelada,
+      cStatAtual: '101',
+      xMotivoAtual: 'Cancelamento de NF-e homologado',
+      nRecAtual: 'REC-1',
+    });
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    // The refused write carried the swap — and nothing else did.
+    expect(vi.mocked(persistPatchUnlessFinal).mock.calls[0]![3]).toEqual({ chave: OUTRA_CHAVE });
+    expect(refDoDoc().set).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      estado: ESTADO_NFE.cancelada,
+      cStat: '101',
+      chave: CHAVE,
       reused: false,
     });
   });

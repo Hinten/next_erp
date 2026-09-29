@@ -27,6 +27,8 @@ import {
 } from '@mantine/core';
 import {
   isNFeEmitError,
+  NFeAuthError,
+  NFeBadRequestError,
   type NFeBatchEmitResult,
   type NFeEmitError,
   type NFeEmitResult,
@@ -37,6 +39,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
 import { carregadorContextoRejeicao } from '@/lib/nfe/contextoRejeicao';
 import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
+import { isRuntimeNotReadyBeforeSend } from '@/lib/nfe/withNFeRetry';
 
 import { BUCKET_META, BUCKET_ORDER, classifyEmitResult } from './emitirLoteBuckets';
 
@@ -50,7 +53,26 @@ type DialogState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'pending' }
   | { readonly kind: 'done'; readonly result: NFeBatchEmitResult }
-  | { readonly kind: 'error'; readonly message: string };
+  | {
+      readonly kind: 'error';
+      readonly message: string;
+      /** The lote may have reached SEFAZ — see {@link recusadoAntesDoEnvio}. */
+      readonly desfechoDesconhecido: boolean;
+    };
+
+/**
+ * `POST /emitir-lote` provably stopped before any SEFAZ contact: it refused the
+ * caller (401/403), the body or its size (400 — only its top-level checks
+ * answer 400; a member's failure is that member's report), or answered its own
+ * runtime-not-ready 503. Anything else — a 5xx, a network failure, a 503 the
+ * platform answered, a malformed 2xx — may come after some chunk already sent
+ * its lote (#1654 §3), and `withNFeRetry` no longer re-POSTs it.
+ */
+function recusadoAntesDoEnvio(e: unknown): boolean {
+  return (
+    e instanceof NFeAuthError || e instanceof NFeBadRequestError || isRuntimeNotReadyBeforeSend(e)
+  );
+}
 
 export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialogProps) {
   const client = useNFeClient();
@@ -61,12 +83,17 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
   // re-opens with a different selection), in which case we cancel
   // the in-flight request via the `cancelled` flag.
   useEffect(() => {
+    // Synchronous reset on open/close — the open-a-modal effect pattern
+    // (PrintComumDialog cites this one); the advisory set-state-in-effect rule
+    // stays 'warn' in eslint.config and is disabled locally so the
+    // --max-warnings 0 pre-commit lint passes.
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!opened) {
       setState({ kind: 'idle' });
       return;
     }
     if (!client) {
-      setState({ kind: 'error', message: 'Você não está logado.' });
+      setState({ kind: 'error', message: 'Você não está logado.', desfechoDesconhecido: false });
       return;
     }
     if (pedidoIds.length === 0) {
@@ -75,6 +102,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
     }
     let cancelled = false;
     setState({ kind: 'pending' });
+    /* eslint-enable react-hooks/set-state-in-effect */
     client.emitirLote(pedidoIds).then(
       (r) => {
         if (!cancelled) setState({ kind: 'done', result: r });
@@ -84,6 +112,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
         setState({
           kind: 'error',
           message: e instanceof Error ? e.message : String(e),
+          desfechoDesconhecido: !recusadoAntesDoEnvio(e),
         });
       },
     );
@@ -118,16 +147,18 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
       size="lg"
     >
       <Stack>
-        {counts.map(({ bucket, label, color, count }) => (
-          <Group justify="space-between" key={bucket}>
-            <Text fw={600} c={color}>
-              {label}:
-            </Text>
-            <Text fw={600} c={color}>
-              {count}/{total}
-            </Text>
-          </Group>
-        ))}
+        {/* A failed request has no results: "0/N" would read as "none sent". */}
+        {state.kind !== 'error' &&
+          counts.map(({ bucket, label, color, count }) => (
+            <Group justify="space-between" key={bucket}>
+              <Text fw={600} c={color}>
+                {label}:
+              </Text>
+              <Text fw={600} c={color}>
+                {count}/{total}
+              </Text>
+            </Group>
+          ))}
 
         {state.kind === 'pending' && (
           <Group justify="center" mt="md">
@@ -135,11 +166,22 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
           </Group>
         )}
 
-        {state.kind === 'error' && (
-          <Text c="red" ta="center">
-            {state.message}
-          </Text>
-        )}
+        {state.kind === 'error' &&
+          (state.desfechoDesconhecido ? (
+            <Stack gap={4}>
+              <Text c="red" fw={600} ta="center">
+                O resultado do lote é desconhecido — algumas NF-e podem ter sido enviadas à SEFAZ.
+                Confira a coluna NF antes de emitir novamente.
+              </Text>
+              <Text c="dimmed" size="xs" ta="center">
+                {state.message}
+              </Text>
+            </Stack>
+          ) : (
+            <Text c="red" ta="center">
+              {state.message}
+            </Text>
+          ))}
 
         {state.kind === 'done' && results.length > 0 && (
           <ScrollArea.Autosize mah={240} mt="md">

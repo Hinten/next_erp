@@ -6,13 +6,19 @@ import type { Firestore } from 'firebase/firestore';
 import {
   impostoCategoriaSchema,
   operacaoIdFromImpostoRef,
+  problemasDeEmissaoDoImposto,
   type ImpostoCategoria,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
-import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
+import {
+  ImpostoConfigEditor,
+  OperacoesComProblemas,
+  type ImpostoConfigValue,
+  type LinhaDeOperacao,
+} from '@/components/imposto';
 
 const OPERACAO_LIMIT = 200;
 const IMPOSTO_LIMIT = 200;
@@ -105,6 +111,14 @@ export function CategoriaImpostoManager({
 
   const rows = value ?? [];
 
+  // What the NF-e engine would refuse in EACH row (#1655): the page's save
+  // (`validarImpostosDaCategoria`) checks every seeded row, not just the one
+  // on screen.
+  const problemasPorLinha = useMemo(
+    () => (value ?? []).map((linha) => problemasDeEmissaoDoImposto(linha)),
+    [value],
+  );
+
   if (operacoesSnap.error) {
     return (
       <Text c="red" size="sm">
@@ -130,6 +144,14 @@ export function CategoriaImpostoManager({
 
   const v = (active ?? emptyImposto(activeId ?? '')) as ImpostoConfigValue;
 
+  const nomeDaOperacao = new Map(operacoes.map((o) => [o.id, o.nome]));
+  const linhas: LinhaDeOperacao[] = rows.flatMap((r, i) => {
+    const operacaoId = operacaoIdFromImpostoRef(r.impostoCategoriaOperacaoOuterRef);
+    if (!operacaoId) return [];
+    const nome = nomeDaOperacao.get(operacaoId) ?? operacaoId;
+    return [{ operacaoId, nome, problemas: problemasPorLinha[i] ?? [] }];
+  });
+
   const handleChange = (next: ImpostoConfigValue) => {
     if (!activeId) return;
     const nextRows = [...rows];
@@ -152,11 +174,13 @@ export function CategoriaImpostoManager({
         allowDeselect={false}
         disabled={disabled}
       />
+      <OperacoesComProblemas linhas={linhas} ativa={activeId} onSelecionar={setPickedId} />
       <ImpostoConfigEditor
         value={v}
         onChange={handleChange}
         disabled={disabled}
         errorTree={errNode}
+        problemas={activeIndex >= 0 ? problemasPorLinha[activeIndex] : undefined}
       />
     </Stack>
   );
