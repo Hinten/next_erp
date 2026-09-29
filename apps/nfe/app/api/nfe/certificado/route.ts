@@ -20,7 +20,8 @@
  *   400  bad body / JSON
  *   401/403  auth
  *   404  filial not found (also on DELETE — it never creates a stub filial)
- *   409  the filial changed while the certificate was being validated (POST)
+ *   409  the filial changed or was deleted while the certificate was being
+ *        validated (POST)
  *   422  invalid PFX (wrong password / malformed / expired / CNPJ mismatch)
  *   500  server (e.g. NFE_CERT_ENC_KEY misconfigured)
  *
@@ -122,7 +123,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (isCertExpired(cert)) {
     return authError(422, {
       error:
-        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR')}. ` +
+        // The operator's business zone, explicitly: `apps/nfe` happens to run
+        // TZ=America/Sao_Paulo, but a date the user reads must not depend on
+        // which container rendered it (`delfrance/no-ambient-timezone`).
+        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. ` +
         'Renove o certificado A1 junto à sua AC (Autoridade Certificadora).',
       code: 'CERT_EXPIRADO',
     });
@@ -159,7 +163,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     // `lastUpdateTime` precondition because the CNPJ check above was derived
     // from THAT read — if the filial changed in between (its CNPJ edited), the
     // batch fails instead of storing a certificate validated against a stale
-    // CNPJ (root `CLAUDE.md` rule 7, tier 1).
+    // CNPJ (root `CLAUDE.md` rule 7, tier 1). That precondition REPLACES the
+    // implicit `exists: true` of an `update()`, so a filial deleted in between
+    // fails the same way (FAILED_PRECONDITION, never NOT_FOUND) — one 409 for both.
     const batch = fs.batch();
     batch.set(
       certificadoSecretoCollection.docRef(
@@ -187,14 +193,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     try {
       await batch.commit();
     } catch (e) {
-      if (isNotFound(e)) {
-        return authError(404, { error: `Filial '${body.filialId}' não encontrada.` });
-      }
       if (isFailedPrecondition(e)) {
         return authError(409, {
           error:
-            'A filial foi alterada enquanto o certificado era validado. Confira o CNPJ da ' +
-            'filial e envie o certificado de novo.',
+            'A filial foi alterada (ou removida) enquanto o certificado era validado. ' +
+            'Confira o cadastro da filial e envie o certificado de novo.',
           code: 'FILIAL_ALTERADA',
         });
       }
@@ -205,6 +208,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     evictFilialCert(body.filialId);
 
     return NextResponse.json(certificado, { status: 200 });
+    // The route's last-resort 500 boundary: every expected outcome was mapped
+    // above, so the breadth IS the contract here — anything left is logged and
+    // answered 500, never continued as a success.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
   } catch (e) {
     // Never log the body (PFX + password) — only the redacted error shape.
     safeLog('error', '[nfe/certificado]', e);
@@ -248,6 +255,8 @@ export async function DELETE(req: Request): Promise<NextResponse> {
     // old key from a secret doc that still existed.
     evictFilialCert(filialId);
     return NextResponse.json({ ok: true }, { status: 200 });
+    // Last-resort 500 boundary, as in POST.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
   } catch (e) {
     safeLog('error', '[nfe/certificado:delete]', e);
     return authError(500, {

@@ -127,16 +127,22 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
 
   /**
    * ⚠️ Removal hard-deletes the filial's encrypted A1 key — there is no undo,
-   * and every NF-e emission for this filial stops until a .pfx is uploaded
-   * again. It was unconfirmed while the DELETE never reached the backend (the
-   * CORS preflight refused it until #1680); now that it does, it asks first.
+   * and NF-e emission for this filial stops until a .pfx is uploaded again.
+   * "Stops" is eventual, and the copy says so: every running `apps/nfe`
+   * instance caches the decrypted cert for its lifetime and the route evicts
+   * only its own, so the others keep signing until they restart
+   * (`apps/nfe/CLAUDE.md` rule 4). It was unconfirmed while the DELETE never
+   * reached the backend (the CORS preflight refused it until #1680); now that
+   * it does, it asks first.
    */
   async function confirmarRemocao(): Promise<void> {
     const sim = await confirm({
       title: 'Remover certificado',
       message:
-        'A emissão de NF-e desta filial fica bloqueada até um novo envio do arquivo .pfx/.p12. ' +
-        'O certificado removido não pode ser recuperado.',
+        'Novas emissões de NF-e desta filial ficam bloqueadas até um novo envio do arquivo ' +
+        '.pfx/.p12, e o certificado removido não pode ser recuperado. Instâncias do serviço de ' +
+        'NF-e já em execução podem seguir usando a cópia em memória até reiniciarem — se o ' +
+        'certificado foi comprometido, peça o reinício do serviço.',
       confirmLabel: 'Remover',
       cancelLabel: 'Cancelar',
     });

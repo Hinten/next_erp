@@ -59,11 +59,13 @@ describe('CertificadoPanel — removal asks first (#1680)', () => {
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: 'Remover' }));
 
-    // The confirmation says what removal costs before anything happens.
-    expect(await screen.findByText(/fica bloqueada até um novo envio/)).toBeTruthy();
+    // The confirmation says what removal costs before anything happens —
+    // including that running instances keep the cert until they restart.
+    const aviso = await screen.findByText(/bloqueadas até um novo envio/);
+    expect(aviso.textContent).toMatch(/até reiniciarem/);
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
 
-    await waitFor(() => expect(screen.queryByText(/fica bloqueada/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/bloqueadas até um novo envio/)).toBeNull());
     expect(deleteCertificado).not.toHaveBeenCalled();
   });
 
@@ -71,7 +73,7 @@ describe('CertificadoPanel — removal asks first (#1680)', () => {
     deleteCertificado.mockResolvedValue(undefined);
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: 'Remover' }));
-    await screen.findByText(/fica bloqueada até um novo envio/);
+    await screen.findByText(/bloqueadas até um novo envio/);
 
     // Two "Remover" buttons exist now (the card's and the dialog's): click the
     // dialog's.
@@ -92,7 +94,7 @@ describe('CertificadoPanel — removal asks first (#1680)', () => {
     );
     renderPanel();
     fireEvent.click(await screen.findByRole('button', { name: 'Remover' }));
-    await screen.findByText(/fica bloqueada até um novo envio/);
+    await screen.findByText(/bloqueadas até um novo envio/);
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remover' }));
 
     await waitFor(() =>

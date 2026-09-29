@@ -18,13 +18,21 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * live in different files nobody edits together, which is exactly what this
  * file compares.
  *
- * The per-app copies are deliberate (independent deploys, #1431 keeps them
- * pinned rather than extracted), so this is a drift PIN, not a refactor.
+ * The per-app proxy copies are deliberate (independent deploys), so this pins
+ * each one against its OWN routes rather than extracting a shared helper — the
+ * same "pin" style as the still-open #1431 decision for `verifyCaller`/hmac. It
+ * does not compare the copies with each other.
+ *
+ * Routes are found by URL, not by folder: every `route.{ts,tsx,js,mjs}` under
+ * `apps/<app>/app`, with route-group `(…)` and parallel-slot `@…` segments
+ * dropped (Next serves `app/(x)/api/nfe/foo/route.ts` at `/api/nfe/foo`), kept
+ * when that URL falls under a matcher prefix.
  *
  * It fails LOUDLY instead of skipping whenever it cannot read something — a
  * matcher that is not `/<prefix>/:path*`, an Allow-Methods that is not a string
- * literal, or a route re-exporting its handlers — because a guard that silently
- * reads nothing passes for ever.
+ * literal, a route whose handlers are re-exported, star-exported or
+ * destructured, or a route file that yields no verb at all — because a guard
+ * that silently reads nothing passes for ever.
  */
 
 /** CORS-safelisted methods: a cross-origin request with one of these needs no preflight. */
@@ -32,9 +40,25 @@ const SAFELISTED = new Set(['GET', 'HEAD', 'POST']);
 /** What every browser client of these backends sends. */
 const CABECALHOS_EXIGIDOS = ['authorization', 'content-type'];
 
+const ARQUIVO_DE_ROTA = /\/route\.(?:ts|tsx|js|mjs)$/;
 const VERBO =
-  /export\s+(?:async\s+)?(?:function|const)\s+(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\b/g;
-const REEXPORT = /export\s*\{[^}]*\b(GET|HEAD|POST|PUT|PATCH|DELETE)\b[^}]*\}/;
+  /export\s+(?:async\s+)?(?:function|const|let|var)\s+(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)\b/g;
+/** Export shapes whose verbs this text scan cannot read — each one fails loudly. */
+const ILEGIVEIS = [
+  ['re-exports its handlers', /export\s*\{[^}]*\b(GET|HEAD|POST|PUT|PATCH|DELETE)\b[^}]*\}/],
+  ['star-exports another module', /export\s*\*/],
+  ['exports destructured bindings', /export\s+(?:const|let|var)\s*[{[]/],
+];
+
+/** The URL path Next serves `apps/<app>/app/<…>/route.ts` at, without slashes at the ends. */
+function caminhoDaRota(rota, app) {
+  return rota
+    .slice(`apps/${app}/app/`.length)
+    .split('/')
+    .slice(0, -1)
+    .filter((seg) => !/^\(.*\)$/.test(seg) && !seg.startsWith('@'))
+    .join('/');
+}
 
 function lerLista(fonte, cabecalho, proxy) {
   const m = new RegExp(`'${cabecalho}',\\s*'([^']+)'`).exec(fonte);
@@ -61,15 +85,24 @@ function lerProxies() {
     const app = proxy.split('/')[1];
     const fonte = readFileSync(resolve(REPO_ROOT, proxy), 'utf8');
     const prefixos = lerMatchers(fonte, proxy);
-    const rotas = prefixos.flatMap((prefixo) =>
-      gitLsFiles(`:(glob)apps/${app}/app/${prefixo}/**/route.ts`),
-    );
+    const rotas = gitLsFiles(`:(glob)apps/${app}/app/**/route.*`)
+      .filter((rota) => ARQUIVO_DE_ROTA.test(rota))
+      .filter((rota) => {
+        const caminho = caminhoDaRota(rota, app);
+        return prefixos.some((p) => caminho === p || caminho.startsWith(`${p}/`));
+      });
     const verbos = rotas.flatMap((rota) => {
       const texto = readFileSync(resolve(REPO_ROOT, rota), 'utf8');
-      if (REEXPORT.test(texto)) {
-        throw new Error(`${rota}: re-exports its handlers — the guard cannot read its verbs`);
+      for (const [motivo, padrao] of ILEGIVEIS) {
+        if (padrao.test(texto)) {
+          throw new Error(`${rota}: ${motivo} — the guard cannot read its verbs`);
+        }
       }
-      return [...texto.matchAll(VERBO)].map((m) => ({ rota, verbo: m[1] }));
+      const achados = [...texto.matchAll(VERBO)].map((m) => ({ rota, verbo: m[1] }));
+      if (achados.length === 0) {
+        throw new Error(`${rota}: no \`export function|const VERB\` found — cannot read its verbs`);
+      }
+      return achados;
     });
     return {
       proxy,
@@ -82,6 +115,35 @@ function lerProxies() {
     };
   });
 }
+
+describe('the readers the guard rests on', () => {
+  it('maps a route file to the URL Next serves it at', () => {
+    expect(caminhoDaRota('apps/nfe/app/api/nfe/certificado/route.ts', 'nfe')).toBe(
+      'api/nfe/certificado',
+    );
+    // Route groups and parallel slots are not URL segments.
+    expect(caminhoDaRota('apps/nfe/app/(interno)/api/nfe/foo/route.ts', 'nfe')).toBe('api/nfe/foo');
+    expect(caminhoDaRota('apps/nfe/app/api/@slot/nfe/bar/route.tsx', 'nfe')).toBe('api/nfe/bar');
+  });
+
+  it.each([
+    ['export async function DELETE(req) {}', ['DELETE']],
+    ['export const PATCH = handler;', ['PATCH']],
+    ['export let DELETE = h;', ['DELETE']],
+    ["export const dynamic = 'force-dynamic';\nexport function GET() {}", ['GET']],
+  ])('reads the verbs of %j', (texto, esperados) => {
+    expect([...texto.matchAll(VERBO)].map((m) => m[1])).toEqual(esperados);
+  });
+
+  it.each([
+    'export { handler as DELETE };',
+    "export * from './impl';",
+    'export const { GET, DELETE } = handlers;',
+    'export let [GET] = pair;',
+  ])('refuses to guess at %j', (texto) => {
+    expect(ILEGIVEIS.some(([, padrao]) => padrao.test(texto))).toBe(true);
+  });
+});
 
 describe('CORS proxies admit every verb their routes export (#1680)', () => {
   const proxies = lerProxies();

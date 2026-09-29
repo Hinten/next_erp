@@ -213,8 +213,9 @@ functions/                         NESTED Cloud Functions codebase `nfe` — NOT
   src/reconciliar.ts               reconciliarNfe (onTaskDispatched) — the queue consumer
   src/sweep.ts                     nfeReconcileSweep (onSchedule) — the backstop
 proxy.ts                           CORS for /api/nfe/* (browser callers): GET/POST/DELETE,
-                                   exposes Content-Disposition. A verb a route exports must be
-                                   in Allow-Methods — config-eslint `cors-proxy-covers-routes`
+                                   exposes Content-Disposition. A non-safelisted verb a route
+                                   exports (not GET/HEAD/POST) must be in Allow-Methods —
+                                   config-eslint `cors-proxy-covers-routes`
 ```
 
 ## Dev

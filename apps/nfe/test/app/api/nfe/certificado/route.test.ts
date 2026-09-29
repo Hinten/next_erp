@@ -27,15 +27,24 @@ const CNPJ = '99999999000191';
  * Minimal in-memory Firestore — `collection(p).doc(id)` + get/set/delete, and a
  * `batch()` that applies ALL of its writes at commit or none (#1680).
  *
- * Mirrors the two Admin-SDK behaviours the route now relies on: `update()` on
- * an absent doc fails the whole batch with gRPC NOT_FOUND (5), and an
- * `update(…, { lastUpdateTime })` whose doc changed since that read fails it with
- * FAILED_PRECONDITION (9). `aoLer` runs after each `get()` — the seam a test uses
- * to play a concurrent writer between the route's read and its commit.
+ * Mirrors the Admin SDK's precondition semantics (`@google-cloud/firestore`
+ * `WriteBatch`), because the route's 404/409 mapping rests on them:
+ *   - a plain `update()` carries an implicit `exists: true` → an absent doc fails
+ *     the whole batch with gRPC NOT_FOUND (5);
+ *   - `update(…, { lastUpdateTime })` REPLACES that with an update-time
+ *     precondition → FAILED_PRECONDITION (9) when the doc changed OR is gone;
+ *   - `delete(ref)` of an absent doc is a no-op, while `delete(ref, { exists:
+ *     true })` fails NOT_FOUND — so a precondition slipped onto the removal would
+ *     break its idempotency, and the repeat test below catches it.
+ * `aoLer` runs after each `get()` — the seam a test uses to play a concurrent
+ * writer (an edit or a deletion) between the route's read and its commit.
  */
 function fakeFirestore(
   seed: Record<string, Record<string, unknown> | null> = {},
-  aoLer?: (path: string, alterar: (path: string) => void) => void,
+  aoLer?: (
+    path: string,
+    concorrente: { alterar: (path: string) => void; apagar: (path: string) => void },
+  ) => void,
 ) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
   const versoes: Record<string, number> = {};
@@ -43,6 +52,10 @@ function fakeFirestore(
   const alterar = (path: string) => {
     relogio += 1;
     versoes[path] = relogio;
+  };
+  const apagar = (path: string) => {
+    docs[path] = null;
+    alterar(path);
   };
   for (const path of Object.keys(docs)) alterar(path);
 
@@ -62,7 +75,7 @@ function fakeFirestore(
           data: () => d,
           updateTime: d != null ? { versao: versoes[path] } : undefined,
         };
-        aoLer?.(path, alterar);
+        aoLer?.(path, { alterar, apagar });
         return snap;
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
@@ -78,15 +91,22 @@ function fakeFirestore(
     };
   }
 
+  type Pre = { exists?: boolean; lastUpdateTime?: { versao: number } };
   type Op =
     | { op: 'set'; path: string; data: Record<string, unknown> }
-    | {
-        op: 'update';
-        path: string;
-        data: Record<string, unknown>;
-        pre?: { lastUpdateTime?: { versao: number } };
+    | { op: 'update'; path: string; data: Record<string, unknown>; pre?: Pre }
+    | { op: 'delete'; path: string; pre?: Pre };
+
+  /** Throws the gRPC error the backend would, or returns when `pre` holds. */
+  function validar(path: string, pre: Pre) {
+    if (pre.lastUpdateTime !== undefined) {
+      if (docs[path] == null || pre.lastUpdateTime.versao !== versoes[path]) {
+        throw grpc(9, `FAILED_PRECONDITION: ${path}`);
       }
-    | { op: 'delete'; path: string };
+    } else if (pre.exists === true && docs[path] == null) {
+      throw grpc(5, `NOT_FOUND: ${path}`);
+    }
+  }
 
   function batch() {
     const ops: Op[] = [];
@@ -95,27 +115,19 @@ function fakeFirestore(
         ops.push({ op: 'set', path: r.path, data });
         return b;
       },
-      update(
-        r: { path: string },
-        data: Record<string, unknown>,
-        pre?: { lastUpdateTime?: { versao: number } },
-      ) {
+      update(r: { path: string }, data: Record<string, unknown>, pre?: Pre) {
         ops.push({ op: 'update', path: r.path, data, pre });
         return b;
       },
-      delete(r: { path: string }) {
-        ops.push({ op: 'delete', path: r.path });
+      delete(r: { path: string }, pre?: Pre) {
+        ops.push({ op: 'delete', path: r.path, pre });
         return b;
       },
       async commit() {
         // Validate EVERY op first: a batch lands whole or not at all.
         for (const o of ops) {
-          if (o.op !== 'update') continue;
-          if (docs[o.path] == null) throw grpc(5, `NOT_FOUND: ${o.path}`);
-          const esperada = o.pre?.lastUpdateTime?.versao;
-          if (esperada !== undefined && esperada !== versoes[o.path]) {
-            throw grpc(9, `FAILED_PRECONDITION: ${o.path}`);
-          }
+          if (o.op === 'update') validar(o.path, o.pre ?? { exists: true });
+          else if (o.op === 'delete' && o.pre) validar(o.path, o.pre);
         }
         for (const o of ops) {
           if (o.op === 'set') docs[o.path] = o.data;
@@ -218,7 +230,7 @@ describe('POST /api/nfe/certificado', () => {
     // validated against a stale value.
     const { fs, docs, commits } = fakeFirestore(
       { 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } },
-      (path, alterar) => {
+      (path, { alterar }) => {
         if (path === 'filiais/F-1') alterar(path);
       },
     );
@@ -231,6 +243,29 @@ describe('POST /api/nfe/certificado', () => {
     expect(res.status).toBe(409);
     expect(((await res.json()) as { code: string }).code).toBe('FILIAL_ALTERADA');
     expect(commits).toEqual([]);
+    expect(docs['filiais/F-1/certificadoSecreto/default']).toBeUndefined();
+  });
+
+  it('409 FILIAL_ALTERADA — not a stub, not a 404 — when the filial is deleted between its read and the commit', async () => {
+    // The update-time precondition replaces the implicit `exists: true`, so a
+    // filial that vanished mid-upload fails as FAILED_PRECONDITION. Nothing may be
+    // written: neither an orphan secret nor a resurrected filial.
+    const { fs, docs, commits } = fakeFirestore(
+      { 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } },
+      (path, { apagar }) => {
+        if (path === 'filiais/F-1') apagar(path);
+      },
+    );
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const pfxBase64 = buildPfxFixture({ password: 'pw', commonName: `ACME LTDA:${CNPJ}` });
+
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'cert.pfx' }),
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe('FILIAL_ALTERADA');
+    expect(commits).toEqual([]);
+    expect(docs['filiais/F-1']).toBeNull();
     expect(docs['filiais/F-1/certificadoSecreto/default']).toBeUndefined();
   });
 
@@ -327,16 +362,25 @@ describe('DELETE /api/nfe/certificado', () => {
 
   it('404 for an unknown filial — and never creates a stub filial doc', async () => {
     // The old `merge({ certificado: null })` was an upsert: an unknown id left a
-    // `filiais/<id>` holding nothing but `certificado: null`.
-    const { fs, docs, commits } = fakeFirestore({});
+    // `filiais/<id>` holding nothing but `certificado: null`. A secret doc under
+    // that id is seeded so the test also proves the SECRET delete rolled back
+    // with the failed update — a delete outside the batch would take it.
+    const secreto = { encPrivateKey: { ciphertext: 'x' } };
+    const { fs, docs, deletes, commits } = fakeFirestore({
+      'filiais/MISSING/certificadoSecreto/default': secreto,
+    });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
     const res = await DELETE(deleteReq('MISSING'));
     expect(res.status).toBe(404);
     expect(docs['filiais/MISSING']).toBeUndefined();
+    expect(docs['filiais/MISSING/certificadoSecreto/default']).toEqual(secreto);
+    expect(deletes).toEqual([]);
     expect(commits).toEqual([]);
   });
 
   it('a repeat after a successful removal still succeeds (the secret is already gone)', async () => {
+    // `withNFeRetry` retries this call on a transient failure, so the removal
+    // must stay idempotent: no `exists` precondition on the secret delete.
     const { fs, docs } = fakeFirestore({
       'filiais/F-1': { cnpj: CNPJ, certificado: null },
     });
