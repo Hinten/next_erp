@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import {
   MercadoLivreHttpError,
   type MercadoLivreApi,
@@ -356,7 +357,7 @@ beforeEach(() => {
   process.env[STOCK_SYNC_FLAG_ENV] = '1';
   h.buildCtx.mockReset();
   h.createApi.mockReset();
-  vi.spyOn(console, 'info').mockImplementation(() => {});
+  vi.spyOn(logger, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -1534,7 +1535,7 @@ describe('runStockSweep — 429 pause gate', () => {
     const { getMeMock } = wireCtx();
     const { fetchFamilies, calls } = makeFetch([]);
     const { scheduler, enqueue } = makeScheduler();
-    const infoSpy = vi.spyOn(console, 'info').mockClear();
+    const infoSpy = vi.spyOn(logger, 'info').mockClear();
 
     const result = await run(db, 'incremental', { scheduler, fetchFamilies });
 

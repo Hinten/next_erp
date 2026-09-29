@@ -79,11 +79,18 @@ const config = [
   // NF-e paths — Rule A (no raw console.*) + Rule B (no NFE_CERT_* reads).
   // `lib/nfe/log.ts` is the implementation of the safe wrappers and uses
   // raw `console[level]` internally with an inline eslint-disable.
+  //
+  // `no-console` also admits `debug` here, which is what makes Rule A's
+  // "single-arg text-only forms stay legal" true: the base config allows only
+  // warn/error, so the orchestrator's ~25 single-arg `console.debug` markers
+  // were warnings nobody saw while the pre-commit gate never ran (#1704).
+  // Rule A still forbids the multi-arg shape at every level.
   {
     files: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts'],
     ignores: ['**/*.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ruleAConsole, ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
+      'no-console': ['warn', { allow: ['warn', 'error', 'debug'] }],
     },
   },
   // Non-NF-e app paths — Rule B only. Console-* is unrestricted outside
@@ -94,6 +101,15 @@ const config = [
     ignores: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts', '**/*.test.ts'],
     rules: {
       'no-restricted-syntax': ['error', ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
+    },
+  },
+  // `scripts/` holds one-shot CLI drivers (`emit:dev-pedido`,
+  // `consult:dev-pedido`) whose output IS the console. A separate block that
+  // sets only `no-console`, so the one above keeps Rule B there.
+  {
+    files: ['scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
   // eslint-config-prettier LAST — disables stylistic rules that conflict with

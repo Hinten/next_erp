@@ -54,7 +54,7 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -122,7 +122,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     base = getNFeRuntime();
   } catch (e) {
-    return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
+    // A misconfigured deploy (NFE_AMBIENTE / NFE_UF / TLS chain) → 503.
+    // Anything else is a bug and must surface, not hide behind a 503.
+    if (!isNFeRuntimeMisconfig(e)) throw e;
+    return authError(503, { error: e.message });
   }
 
   // Resolve the UF endpoint FIRST — a UF that doesn't offer Consulta Cadastro
