@@ -3,18 +3,20 @@
  * (#1654, root CLAUDE.md rule 6).
  *
  * A catch that records a failure and carries on — the backstop sweep's four
- * per-item catches (`runProcessarPendentes`) — asks
+ * per-item catches (`runProcessarPendentes`) and the batch emit's per-member
+ * report (`toEmitError`, `emitir.ts`) — asks
  * {@link descreverFalhaConhecida} what it caught: a known class comes back as
  * `{ codigo, mensagem }`, anything else as `null`, and the caller rethrows it.
  * An unknown class is a bug, and a bug recorded as an ordinary per-doc error
  * reads as a SEFAZ or Firestore hiccup forever; rethrown, it fails the run
  * loudly — the scheduled function errors and the next tick retries, the manual
- * route answers 500.
+ * sweep route and `POST /emitir-lote` answer 500.
  *
  * Every code is a LITERAL, not `e.name`: it names the class even where the
- * class never sets `name` (`FirebaseFunctionsError` inherits `'Error'`), and
- * it cannot drift with a rename. For every other class it equals the `name`
- * the batch path has always reported. A subclass is reported through its
+ * class never sets `name` (`FirebaseFunctionsError` and `FirebaseAppError`
+ * inherit `'Error'`, which is what the batch path reported for them before it
+ * read this table), and it cannot drift with a rename. For every other class it equals the `name` the
+ * batch path has always reported. A subclass is reported through its
  * parent — `NFeDocAusenteError` is an `'NFeOrchestratorError'` — and an entry
  * never follows one of its own parents, or the parent would shadow it
  * (`falhas.test.ts` pins both, and that every exported error class is either
@@ -23,9 +25,11 @@
  * An Admin-SDK Firestore failure (an `Error` with a numeric gRPC code 1–16,
  * `isGrpcStatusError`) is `'FirestoreRpcError'`, checked after the table.
  */
+import { FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { ZodError } from 'zod';
 
+import { MissingRegionError } from '@delfrance/core/region';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
   NFeCertError,
@@ -50,7 +54,7 @@ import {
 } from '@delfrance/integrations-nfe';
 
 import { NFeRuntimeConfigError } from '../runtime';
-import { NFeTasksConfigError } from '../tasks';
+import { NFeTasksConfigError, NFeTasksEnqueueError } from '../tasks';
 import {
   NFeBlockedError,
   NFeCartaCorrecaoError,
@@ -98,9 +102,25 @@ export const FALHAS_CONHECIDAS: ReadonlyArray<readonly [ClasseDeFalha, string]> 
   [NFeEventoError, 'NFeEventoError'],
   [NFeConsumoIndevidoError, 'NFeConsumoIndevidoError'],
   [NFeCartaCorrecaoError, 'NFeCartaCorrecaoError'],
-  // A stored doc that fails its schema; the Cloud Tasks enqueue.
+  // A stored doc that fails its schema.
   [ZodError, 'ZodError'],
+  // The Cloud Tasks enqueue (`tasks.ts`), which runs AFTER the lote was sent
+  // and its members persisted in flight on their nRec — so each of its
+  // failures must stay that member's report, never fail the batch. The Admin
+  // SDK wraps only an HTTP error reply in `FirebaseFunctionsError`; a network
+  // error, a timeout or a credential it could not mint a token for is a
+  // `FirebaseAppError` — a SIBLING class, not a subclass
+  // (`apps/functions/src/produtos/kitRollupTasks.ts` contains the same two).
+  // The service-account lookup it does NOT wrap — the metadata server, asked
+  // on each instance's first enqueue under Application Default Credentials —
+  // fails as gaxios' `GaxiosError`, which `tasks.ts` converts to
+  // `NFeTasksEnqueueError`. `MissingRegionError` is an unset `NFE_TASKS_REGION`
+  // (`requireRegion`). Anything else the enqueue throws is a bug and is
+  // rethrown, like any other unknown class.
   [FirebaseFunctionsError, 'FirebaseFunctionsError'],
+  [FirebaseAppError, 'FirebaseAppError'],
+  [NFeTasksEnqueueError, 'NFeTasksEnqueueError'],
+  [MissingRegionError, 'MissingRegionError'],
 ];
 
 /** The code of an Admin-SDK Firestore failure — any non-OK gRPC status. */
