@@ -297,9 +297,10 @@ export async function prepareEmission(
  * including a draft `configuracaoIBSCBS` while RTC is on — arrives as an
  * `NFeTributeError`/`TributeFormatError` that `buildGenItems` has already
  * turned into an `NFeOrchestratorError`, so it is carried like any other.
- * Anything else is not operator-fixable and propagates (rule 6): it fails the
- * member in prep whatever its nfev4 doc holds, so a new engine throw that
- * should be carried must be one of those tribute classes, never a plain
+ * Anything else is not operator-fixable and propagates (rule 6): a known
+ * failure class fails the member in prep whatever its nfev4 doc holds, and any
+ * other class aborts the whole batch (`toEmitError`) — so a new engine throw
+ * that should be carried must be one of those tribute classes, never a plain
  * `Error`.
  *
  * The single path does not call this: `runAllocateGenerateSignTx` generates
@@ -679,8 +680,8 @@ export function buildPlaceholderNfeDoc(
 /**
  * Batch allocation for an entire (filial, ≤20-pedido) chunk in ONE
  * Firestore transaction — **allocation only** (no generate/sign; those run
- * per-pedido OUTSIDE the tx so one pedido's failure can't sink the chunk,
- * and no RSA work lengthens the tx). Mirrors the Flutter batch flow
+ * per-pedido OUTSIDE the tx so one pedido's known-class failure can't sink
+ * the chunk, and no RSA work lengthens the tx). Mirrors the Flutter batch flow
  * (`.old/packages/pedido_nfe/lib/src/tasks.dart:255-285`):
  *
  *   1. read `NFeConfig` once + every pedido's nfev4 doc;
@@ -698,8 +699,9 @@ export function buildPlaceholderNfeDoc(
  *      until the out-of-tx step overwrites it with the regenerated NF-e.
  *
  * A chunk-level throw (missing/invalid NFeConfig) propagates to the
- * caller, which cascades it to every pedido. Per-pedido generate/sign
- * failures are handled by the caller, not here.
+ * caller, which cascades it to every pedido when its class is known
+ * (`toEmitError`) and otherwise rejects the whole batch. Per-pedido
+ * generate/sign failures are handled by the caller, not here.
  */
 export async function runChunkAllocateTx(
   fs: Firestore,
@@ -1265,8 +1267,15 @@ export interface BatchEmitResult {
  * per-pedido error, so `POST /emitir-lote` answers 500 and every other
  * member's report in the request is lost with it. What each site leaves
  * behind:
- *  - prep (step 1) or the chunk cascade before any allocation: nothing is
- *    written or sent — ONE bug aborts all ≤50 pedidos;
+ *  - prep (step 1): nothing is written or sent — ONE bug aborts all ≤50
+ *    pedidos, before any chunk runs;
+ *  - a chunk that throws before its allocation writes and sends nothing
+ *    itself, but the chunks run concurrently and the batch rejects only once
+ *    every one has settled: in a batch of more than one chunk (another
+ *    filial, or more than 20 pedidos) the others may already have allocated,
+ *    persisted their anchors and sent their lotes. Their docs stay consistent
+ *    (anchors, or in flight on an nRec the sweep reconciles); only their
+ *    reports are lost — true of every site below as well;
  *  - 4b (generate/sign): the chunk's healthy fresh members are already
  *    persisted as unsent #396 anchors (chave + `xml_assinado`, `enviando`,
  *    no `nRec`), so a re-emit retransmits their stored bytes, and otherwise
@@ -1663,7 +1672,8 @@ async function persistLoteSemRecibo(args: {
 /**
  * Process one (filial, ≤20-pedido) chunk: bulk-allocate numeração for the
  * chunk in one transaction, then generate + sign + persist each NF-e
- * per-pedido OUTSIDE the tx (isolated failures), call autorizarLote once
+ * per-pedido OUTSIDE the tx (a known-class failure is isolated to its
+ * pedido; any other class fails the batch), call autorizarLote once
  * for the chunk, poll for async lotes, apply per-chave outcome.
  */
 export async function processChunk(
@@ -1679,7 +1689,8 @@ export async function processChunk(
   // 4a. Allocate idLote + bulk-allocate nNF (fresh count only) and anchor
   //     each fresh pedido's numeração in ONE transaction (Flutter parity:
   //     .old/packages/pedido_nfe/lib/src/tasks.dart:255-285). A chunk-level
-  //     throw cascades to every pedido via emitirPedidosLote's allSettled.
+  //     throw of a known class cascades to every pedido via
+  //     emitirPedidosLote's allSettled; any other class rejects the batch.
   const { members, idLote: sharedIdLote } = await runChunkAllocateTx(fs, filialId, group);
   const txResults: Array<EmitResult | EmitError> = [];
   const fresh: Array<{
