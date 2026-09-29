@@ -1,4 +1,4 @@
-import type { Pedido } from '@delfrance/schemas';
+import { naOrdemDoPedido, type Pedido } from '@delfrance/schemas';
 import type { FlatItem } from './types';
 
 /**
@@ -22,8 +22,7 @@ export function flattenItens(grouped: Pedido['itens']): FlatItem[] {
       });
     }
   }
-  out.sort((a, b) => a.ordem - b.ordem);
-  return out;
+  return naOrdemDoPedido(out, (row) => row.ordem);
 }
 
 /**
