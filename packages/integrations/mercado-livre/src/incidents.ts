@@ -6,6 +6,8 @@ import type {
   SyncCursor,
   SyncPage,
 } from '@delfrance/core/marketplace';
+import { parseIsoToMillis } from '@delfrance/core/datetime';
+
 import type { MercadoLivreApi } from './api';
 import { CLAIM_SEARCH_WINDOW_MAX } from './claimSearch';
 import { MercadoLivreHttpError } from './errors';
@@ -71,7 +73,7 @@ function mapClaimMessage(msg: MlClaimMessage): ImportedIncidentMessage {
     author: authorFromSenderRole(msg.sender_role),
     text: msg.message,
     ...(attachments.length > 0 ? { attachments } : {}),
-    timestampMs: Date.parse(msg.date_created),
+    timestampMs: parseIsoToMillis(msg.date_created) ?? Number.NaN,
   };
 }
 
@@ -99,8 +101,8 @@ export function mapClaimToImportedIncident(
     orderExternalId: String(claim.resource_id),
     status: claim.status ?? '',
     ...(reasonText != null ? { reason: reasonText } : {}),
-    openedMs: Date.parse(claim.date_created),
-    lastUpdatedMs: Date.parse(claim.last_updated ?? claim.date_created),
+    openedMs: parseIsoToMillis(claim.date_created) ?? Number.NaN,
+    lastUpdatedMs: parseIsoToMillis(claim.last_updated ?? claim.date_created) ?? Number.NaN,
     ...(opts?.messages !== undefined ? { messages: opts.messages.map(mapClaimMessage) } : {}),
     channelSpecific: {
       stage: claim.stage,
