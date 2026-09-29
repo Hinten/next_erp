@@ -3,6 +3,7 @@ import { produtoSchema } from '../collection/produto';
 import { produtoExtraDataSchema } from '../collection/extraData';
 import { estoqueProdutoSchema } from '../collection/estoque';
 import { impostoProdutoSchema } from '../../impostoProduto';
+import { issuesDeEmissaoDasLinhas } from '../../imposto/problemasDeEmissao';
 
 /**
  * # Produto page model
@@ -173,6 +174,14 @@ export function produtoPageIssues(data: ProdutoPageValidationInput): ProdutoPage
       issues.push({ path: `impostos.${i}.CEST`, message: 'O CEST deve ter 7 dígitos.' });
     }
   });
+
+  // A tax config the NF-e engine would refuse from the config alone (#1655) —
+  // a half-filled ICMSSN XSD group, a PIS/COFINS CST without its rate, … The
+  // rules are `regrasDeEmissao.ts`'s verdicts; only a row the engine would
+  // actually read (it parses as a tier: `origem` set, well-formed codes) is
+  // checked. `impostos` stays null until the Impostos tab seeds it, so a save
+  // that never opened the tab checks nothing.
+  issues.push(...issuesDeEmissaoDasLinhas(data.impostos, 'impostos'));
 
   return issues;
 }

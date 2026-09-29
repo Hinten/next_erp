@@ -1109,6 +1109,15 @@ export {
 } from './imposto/regrasDeEmissao';
 
 export {
+  // Those verdicts in pt-BR, behind the engine's own impostoSchema tier gate —
+  // what the web refuses to save because the NF-e engine would refuse to emit
+  // it (#1655).
+  problemasDeEmissaoDoImposto,
+  issuesDeEmissaoDasLinhas,
+  type ProblemaDeEmissao,
+} from './imposto/problemasDeEmissao';
+
+export {
   // RTC cClassTrib/CST seed + validator (#333)
   CCLASSTRIB_SEED,
   CST_IBSCBS_CODES,
