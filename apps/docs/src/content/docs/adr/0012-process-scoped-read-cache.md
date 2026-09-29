@@ -34,7 +34,10 @@ Two ad-hoc caches already existed, and between them they framed the design:
 - **`certCache` / `runtimeCache`** (`apps/nfe/lib/nfe/filial-cert.ts`) — process-scoped,
   with an explicit evict on the upload path and a test reset. It has no TTL either,
   and that is the cautionary tale: `apps/nfe/CLAUDE.md` rule 4 has to state that
-  rotating a filial's certificate requires an `apps/nfe` restart.
+  rotating a filial's certificate requires an `apps/nfe` restart. *(Resolved in
+  #1680: the secret doc is now read through this ADR's `createCachedDocReader`
+  with the 15-minute `config` TTL, so a rotation or removal reaches every instance
+  within that bound.)*
 
 Nothing generic existed; a repo-wide search for a shared memoize/cache helper returned
 none, and no high-frequency config read used either of the two above.

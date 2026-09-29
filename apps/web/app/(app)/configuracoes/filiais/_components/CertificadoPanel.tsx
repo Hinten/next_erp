@@ -8,6 +8,12 @@
  * HTTPS (never to Firestore from the client); the server encrypts the private
  * key at rest and returns only public metadata. This panel reads that metadata
  * back from the filial doc (`filial.certificado`) to show the status badge.
+ *
+ * Every NF-e server instance caches the certificate it resolved for up to
+ * `CERTIFICADO_CACHE_TTL_MS` (#1680), so an upload, replacement or removal takes
+ * up to that long to reach ALL emissions. The panel says so wherever the
+ * operator changes the certificate — a certificate changes about once a year,
+ * so an honest warning is the chosen trade, not cross-instance invalidation.
  */
 import { useState } from 'react';
 import {
@@ -29,7 +35,7 @@ import { getDoc } from 'firebase/firestore';
 
 import { PERM } from '@delfrance/auth';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
-import type { CertificadoFilialInfo } from '@delfrance/schemas';
+import { CERTIFICADO_CACHE_TTL_MS, type CertificadoFilialInfo } from '@delfrance/schemas';
 
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import { usePermission } from '@/lib/auth';
@@ -53,6 +59,11 @@ async function fileToBase64(file: File): Promise<string> {
   // dataUrl is "data:<mime>;base64,<b64>" — strip the prefix.
   return dataUrl.slice(dataUrl.indexOf(',') + 1);
 }
+
+/** The propagation warning, from the same number the server's certificate cache uses. */
+const AVISO_PROPAGACAO =
+  `A alteração pode levar até ${CERTIFICADO_CACHE_TTL_MS / 60_000} minutos para valer em ` +
+  'todas as emissões de NF-e.';
 
 /** Badge color + label from a cert's notAfter (ms epoch): válido / vence em N dias / expirado. */
 function certStatus(notAfter: number): { color: string; label: string } {
@@ -89,7 +100,10 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
       await client.uploadCertificado(filialId, pfxBase64, password, file.name);
     },
     onSuccess: () => {
-      notifications.show({ color: 'green', message: 'Certificado enviado com sucesso.' });
+      notifications.show({
+        color: 'green',
+        message: `Certificado enviado com sucesso. ${AVISO_PROPAGACAO}`,
+      });
       setFile(null);
       setPassword('');
       void queryClient.invalidateQueries({ queryKey: ['filial', filialId] });
@@ -113,7 +127,7 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
       await client.deleteCertificado(filialId);
     },
     onSuccess: () => {
-      notifications.show({ color: 'green', message: 'Certificado removido.' });
+      notifications.show({ color: 'green', message: `Certificado removido. ${AVISO_PROPAGACAO}` });
       void queryClient.invalidateQueries({ queryKey: ['filial', filialId] });
     },
     onError: (err) => {
@@ -127,22 +141,17 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
 
   /**
    * ⚠️ Removal hard-deletes the filial's encrypted A1 key — there is no undo,
-   * and NF-e emission for this filial stops until a .pfx is uploaded again.
-   * "Stops" is eventual, and the copy says so: every running `apps/nfe`
-   * instance caches the decrypted cert for its lifetime and the route evicts
-   * only its own, so the others keep signing until they restart
-   * (`apps/nfe/CLAUDE.md` rule 4). It was unconfirmed while the DELETE never
-   * reached the backend (the CORS preflight refused it until #1680); now that
-   * it does, it asks first.
+   * and NF-e emission for this filial stops until a .pfx is uploaded again,
+   * within the cache bound above (the copy says so). It was unconfirmed while
+   * the DELETE never reached the backend (the CORS preflight refused it until
+   * #1680); now that it does, it asks first.
    */
   async function confirmarRemocao(): Promise<void> {
     const sim = await confirm({
       title: 'Remover certificado',
       message:
         'Novas emissões de NF-e desta filial ficam bloqueadas até um novo envio do arquivo ' +
-        '.pfx/.p12, e o certificado removido não pode ser recuperado. Instâncias do serviço de ' +
-        'NF-e já em execução podem seguir usando a cópia em memória até reiniciarem — se o ' +
-        'certificado foi comprometido, peça o reinício do serviço.',
+        `.pfx/.p12, e o certificado removido não pode ser recuperado. ${AVISO_PROPAGACAO}`,
       confirmLabel: 'Remover',
       cancelLabel: 'Cancelar',
     });
@@ -229,6 +238,10 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
             Enviar certificado
           </Button>
         </Group>
+        <Text size="xs" c="dimmed">
+          Envios, substituições e remoções de certificado podem levar até{' '}
+          {CERTIFICADO_CACHE_TTL_MS / 60_000} minutos para valer em todas as emissões de NF-e.
+        </Text>
       </Stack>
     </Stack>
   );

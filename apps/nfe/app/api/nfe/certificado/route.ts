@@ -204,7 +204,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       throw e;
     }
 
-    // Pick up the new cert without an apps/nfe restart (this instance only).
+    // This instance switches now; every other one within CERTIFICADO_CACHE_TTL_MS
+    // (the certificate cache's TTL — see lib/nfe/filial-cert.ts).
     evictFilialCert(body.filialId);
 
     return NextResponse.json(certificado, { status: 200 });

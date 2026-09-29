@@ -12,15 +12,26 @@
  *           homologação suites, which run against a fixture filial.
  *   - off → throw (production default — every filial must upload its cert).
  *
- * The decrypted cert is cached per filialId for the process lifetime; rotating
- * a filial's cert requires an apps/nfe restart (same model as the env-cert
- * singleton + svc chain cache). The upload route evicts its own filialId entry
- * so an in-process re-upload is picked up immediately.
+ * Caching (#1680). Every `apps/nfe` instance — and the `nfe` Functions
+ * codebase, which runs this same code — keeps what it resolved, and instances
+ * do not coordinate. So the secret doc is read through a TTL-bounded
+ * `createCachedDocReader` (`@delfrance/data/admin/cache`): an upload or removal
+ * made through ANOTHER instance reaches this one within
+ * `CERTIFICADO_CACHE_TTL_MS` (15 min), the bound the certificate screen tells
+ * the operator. Until then this instance keeps signing with what it had — the
+ * accepted trade for an operation a filial does about once a year. The route
+ * evicts its own instance's entry, so the instance that served the upload or
+ * removal switches at once.
+ *
+ * The decrypted cert and its derived runtime (the keep-alive mTLS agent) are
+ * reused for as long as the re-read returns the SAME certificate, so a TTL
+ * expiry costs one document read, never a decrypt nor a fresh TLS handshake.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { createCachedDocReader } from '@delfrance/data/admin/cache';
 import { certificadoSecretoCollection, filialCollection } from '@delfrance/data/admin/collections';
-import { CERTIFICADO_SECRETO_DOC_ID } from '@delfrance/schemas';
+import { CERTIFICADO_CACHE_TTL_MS, CERTIFICADO_SECRETO_DOC_ID } from '@delfrance/schemas';
 import {
   NFeCertError,
   assertCertNotExpired,
@@ -38,8 +49,46 @@ function envFallbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return v === '1' || v?.toLowerCase() === 'true';
 }
 
-/** Decrypted cert cache, keyed by filialId. Cleared on restart / explicit evict. */
-const certCache = new Map<string, NFeCertificate>();
+/**
+ * The filial's secret doc — the one read this module repeats (every emission,
+ * cancelamento, CC-e and sweep unit resolves its filial's runtime). The TTL IS
+ * the staleness bound above.
+ *
+ * `negativeTtlMs: 0`: a filial with no certificate is re-read every time, as it
+ * always was, so an upload is visible to an instance that had none at once —
+ * absence is never what keeps a filial from emitting.
+ *
+ * `now` is resolved per call: the cache would otherwise capture `Date.now` when
+ * this module loads, and a test's `vi.setSystemTime` could never reach it.
+ */
+const secretoReader = createCachedDocReader(certificadoSecretoCollection, {
+  name: 'nfe:certificado-secreto',
+  ttlMs: CERTIFICADO_CACHE_TTL_MS,
+  maxEntries: 256,
+  negativeTtlMs: 0,
+  now: () => Date.now(),
+});
+
+/**
+ * The decrypted cert per filial, tagged with the stored `certificatePem` it was
+ * built from. A certificate binds exactly one key pair, so the same PEM means
+ * the same signing identity: the entry is reused until a re-read returns a
+ * different certificate (a rotation) or none (a removal).
+ */
+const certCache = new Map<
+  string,
+  { readonly certificatePem: string; readonly cert: NFeCertificate }
+>();
+
+/**
+ * Per-filial DERIVED runtime cache (cert + the mTLS `https.Agent`s). The SOAP
+ * layer relies on reusing ONE keep-alive agent per cert, so we cache the whole
+ * derived runtime — not just the cert — to avoid a fresh TLS handshake + socket
+ * churn on every emission. Tagged with the cert object it was derived from:
+ * `resolveFilialCert` returns that same object for as long as the certificate
+ * is unchanged, so identity is the whole test.
+ */
+const runtimeCache = new Map<string, { readonly cert: NFeCertificate; readonly rt: NFeRuntime }>();
 
 /**
  * Read + decrypt a filial's stored A1 cert. Returns `null` when the filial has
@@ -50,33 +99,24 @@ export async function resolveFilialCert(
   fs: Firestore,
   filialId: string,
 ): Promise<NFeCertificate | null> {
+  const doc = await secretoReader.get(fs, { filialId }, CERTIFICADO_SECRETO_DOC_ID);
+  if (doc == null) {
+    // Removed (or never uploaded): drop what this instance held, so nothing
+    // below can hand out the old certificate again.
+    certCache.delete(filialId);
+    runtimeCache.delete(filialId);
+    return null;
+  }
+
   const hit = certCache.get(filialId);
-  if (hit) return hit;
-
-  const snap = await certificadoSecretoCollection
-    .docRef(fs, { filialId }, CERTIFICADO_SECRETO_DOC_ID)
-    .get();
-  if (!snap.exists) return null;
-
-  const doc = certificadoSecretoCollection.parseRead(
-    snap.data(),
-    certificadoSecretoCollection.docPath({ filialId }, CERTIFICADO_SECRETO_DOC_ID),
-  );
+  if (hit && hit.certificatePem === doc.certificatePem) return hit.cert;
 
   const key = getCertEncryptionKey();
   const privateKeyPem = decryptSecret(doc.encPrivateKey, key);
   const cert = buildCertFromStored({ privateKeyPem, certificatePem: doc.certificatePem });
-  certCache.set(filialId, cert);
+  certCache.set(filialId, { certificatePem: doc.certificatePem, cert });
   return cert;
 }
-
-/**
- * Per-filial DERIVED runtime cache (cert + the mTLS `https.Agent`s). The SOAP
- * layer relies on reusing ONE keep-alive agent per cert, so we cache the whole
- * derived runtime — not just the cert — to avoid a fresh TLS handshake + socket
- * churn on every emission. Keyed by filialId; evicted on upload/delete.
- */
-const runtimeCache = new Map<string, NFeRuntime>();
 
 /**
  * Resolve the runtime that emits for `filialId`: the filial's stored cert when
@@ -88,20 +128,15 @@ export async function resolveFilialRuntime(
   base: NFeBaseRuntime,
   filialId: string,
 ): Promise<NFeRuntime> {
-  // Fast path: reuse the derived runtime (and its keep-alive agent). Re-check
-  // expiry every call so a long-running process can't keep signing with a cert
-  // that expired after it was cached.
-  const cachedRt = runtimeCache.get(filialId);
-  if (cachedRt) {
-    assertCertNotExpired(cachedRt.cert);
-    return cachedRt;
-  }
-
   const stored = await resolveFilialCert(fs, filialId);
   if (stored) {
+    // Re-checked on every call, so a long-running process can't keep signing
+    // with a cert that expired after it was cached.
     assertCertNotExpired(stored);
+    const hit = runtimeCache.get(filialId);
+    if (hit && hit.cert === stored) return hit.rt;
     const rt = deriveRuntimeForCert(base, stored);
-    runtimeCache.set(filialId, rt);
+    runtimeCache.set(filialId, { cert: stored, rt });
     return rt;
   }
   if (envFallbackEnabled()) {
@@ -144,14 +179,22 @@ export async function resolveFilialRuntimeByCnpj(
   return resolveFilialRuntime(fs, base, doc.id);
 }
 
-/** Evict a filial's cached cert + derived runtime (call after an upload / delete). */
+/**
+ * Evict a filial's cached secret doc, cert + derived runtime (call after an
+ * upload / delete). Covers THIS instance only — the others converge within
+ * `CERTIFICADO_CACHE_TTL_MS`.
+ */
 export function evictFilialCert(filialId: string): void {
+  secretoReader.invalidate({ filialId }, CERTIFICADO_SECRETO_DOC_ID);
   certCache.delete(filialId);
   runtimeCache.delete(filialId);
 }
 
-/** Test-only: clear the per-filial cert + runtime caches so each test sees a fresh state. */
+/** Test-only: clear the per-filial caches so each test sees a fresh state. */
 export function __resetFilialCertCacheForTests(): void {
+  // Directly, not via `__resetAllReadCaches`: that one also drops the reader from
+  // its registry, so a second reset would no longer reach this module-scope cache.
+  secretoReader.clear();
   certCache.clear();
   runtimeCache.clear();
 }

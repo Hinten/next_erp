@@ -89,6 +89,16 @@ export const CERTIFICADO_SECRETO_PATH = 'filiais/{filialId}/certificadoSecreto';
 export const CERTIFICADO_SECRETO_DOC_ID = 'default';
 
 /**
+ * How long an NF-e server instance may keep using a filial's certificate after
+ * it was uploaded, replaced or removed through ANOTHER instance: the TTL of
+ * `apps/nfe`'s certificate cache (#1680), which is the `@delfrance/data`
+ * `READ_CACHE_TTL.config` tier. It lives here because `apps/web` tells the
+ * operator this bound and cannot import the server package — one number, so
+ * the warning cannot drift from the cache it describes.
+ */
+export const CERTIFICADO_CACHE_TTL_MS = 15 * 60_000;
+
+/**
  * Collection metadata for the secret subcollection. **Admin-only.** The
  * Admin SDK bypasses Firestore rules; clients must be denied. The generated
  * ruleset (rules-gen) denies client read/write here — the encrypted private

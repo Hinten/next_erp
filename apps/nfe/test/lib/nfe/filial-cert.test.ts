@@ -25,9 +25,12 @@ import {
   loadCertificateFromBase64,
 } from '@delfrance/integrations-nfe';
 import { buildPfxFixture } from '@delfrance/integrations-nfe/test-helpers/pfx-fixture';
+import { READ_CACHE_TTL } from '@delfrance/data/admin/cache';
+import { CERTIFICADO_CACHE_TTL_MS } from '@delfrance/schemas';
 
 import {
   __resetFilialCertCacheForTests,
+  evictFilialCert,
   resolveFilialCert,
   resolveFilialRuntime,
   resolveFilialRuntimeByCnpj,
@@ -40,9 +43,12 @@ const KEY = Buffer.alloc(32, 5);
 
 function fakeFirestore(seed: Record<string, Record<string, unknown> | null> = {}) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
+  /** Every document `get()`, by path — what the TTL tests count. */
+  const reads: string[] = [];
   function ref(path: string) {
     return {
       async get() {
+        reads.push(path);
         const d = docs[path];
         return { exists: d != null, id: path.split('/').pop()!, data: () => d };
       },
@@ -79,6 +85,8 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null> = {}
       doc: (p: string) => ref(p),
       collection,
     } as never,
+    docs,
+    reads,
   };
 }
 
@@ -215,5 +223,90 @@ describe('resolveFilialRuntimeByCnpj', () => {
     await expect(resolveFilialRuntimeByCnpj(fs, fakeBaseRuntime(), CNPJ)).rejects.toBeInstanceOf(
       NFeCertError,
     );
+  });
+});
+
+describe('the certificate cache is bounded by CERTIFICADO_CACHE_TTL_MS (#1680)', () => {
+  const SECRET = 'filiais/F-1/certificadoSecreto/default';
+  const T0 = new Date('2026-09-29T12:00:00Z').getTime();
+
+  beforeEach(() => {
+    // Only Date: the cache reads the clock per call, and nothing here sleeps.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('is the 15-minute config tier the screen warns about', () => {
+    expect(CERTIFICADO_CACHE_TTL_MS).toBe(15 * 60_000);
+    expect(CERTIFICADO_CACHE_TTL_MS).toBe(READ_CACHE_TTL.config);
+  });
+
+  it('a removal made on ANOTHER instance stops this one at the TTL — not before, not never', async () => {
+    const { fs, docs, reads } = fakeFirestore({ [SECRET]: seedSecret() });
+    const base = fakeBaseRuntime();
+    await resolveFilialRuntime(fs, base, 'F-1');
+
+    // Another instance removes it: this one never hears about it.
+    docs[SECRET] = null;
+
+    vi.setSystemTime(T0 + CERTIFICADO_CACHE_TTL_MS - 1);
+    // Near-miss: one millisecond short, the cached certificate still signs.
+    expect((await resolveFilialRuntime(fs, base, 'F-1')).cert.cnpj).toBe(CNPJ);
+    expect(reads).toEqual([SECRET]);
+
+    vi.setSystemTime(T0 + CERTIFICADO_CACHE_TTL_MS);
+    await expect(resolveFilialRuntime(fs, base, 'F-1')).rejects.toBeInstanceOf(NFeCertError);
+    expect(reads).toEqual([SECRET, SECRET]);
+  });
+
+  it('a replacement made on another instance is picked up at the TTL', async () => {
+    const { fs, docs } = fakeFirestore({ [SECRET]: seedSecret() });
+    const base = fakeBaseRuntime();
+    const antigo = await resolveFilialRuntime(fs, base, 'F-1');
+
+    const novo = seedSecret(); // a fresh key pair → a different certificate
+    docs[SECRET] = novo;
+    vi.setSystemTime(T0 + CERTIFICADO_CACHE_TTL_MS);
+
+    const rt = await resolveFilialRuntime(fs, base, 'F-1');
+    expect(rt).not.toBe(antigo);
+    expect(rt.cert.certificatePem).toBe(novo.certificatePem);
+    expect(vi.mocked(deriveRuntimeForCert)).toHaveBeenCalledTimes(2);
+  });
+
+  it('an unchanged certificate costs one re-read per TTL — no decrypt, same runtime and agent', async () => {
+    const { fs, reads } = fakeFirestore({ [SECRET]: seedSecret() });
+    const base = fakeBaseRuntime();
+    const rt1 = await resolveFilialRuntime(fs, base, 'F-1');
+
+    vi.setSystemTime(T0 + CERTIFICADO_CACHE_TTL_MS);
+    const rt2 = await resolveFilialRuntime(fs, base, 'F-1');
+
+    expect(reads).toHaveLength(2); // the re-read happened…
+    expect(rt2).toBe(rt1); // …and found the same certificate: keep the keep-alive agent
+    expect(vi.mocked(deriveRuntimeForCert)).toHaveBeenCalledTimes(1);
+  });
+
+  it('absence is never cached — an upload reaches an instance that had none at once', async () => {
+    const { fs, docs } = fakeFirestore({});
+    const base = fakeBaseRuntime();
+    await expect(resolveFilialRuntime(fs, base, 'F-1')).rejects.toBeInstanceOf(NFeCertError);
+
+    docs[SECRET] = seedSecret(); // uploaded through another instance, a moment later
+    expect((await resolveFilialRuntime(fs, base, 'F-1')).cert.cnpj).toBe(CNPJ);
+  });
+
+  it('the instance that served the upload or removal switches at once (evictFilialCert)', async () => {
+    const { fs, docs, reads } = fakeFirestore({ [SECRET]: seedSecret() });
+    const base = fakeBaseRuntime();
+    await resolveFilialRuntime(fs, base, 'F-1');
+
+    docs[SECRET] = null;
+    evictFilialCert('F-1');
+    await expect(resolveFilialRuntime(fs, base, 'F-1')).rejects.toBeInstanceOf(NFeCertError);
+    expect(reads).toHaveLength(2); // no TTL wait
   });
 });
