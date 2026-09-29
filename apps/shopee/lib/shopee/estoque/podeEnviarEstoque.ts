@@ -64,9 +64,10 @@
  * are ORDINARY Shopee listings whose stock is sent at the component-derived
  * quantity, so reading the produto's flag here would be a total, silent stock
  * outage for the entire legacy kit catalogue. Three-valued on purpose — `null`
- * is a link imported before step 12 and it SENDS, which is the safe direction
- * because no native Shopee kit exists in this catalogue today. Only `true`
- * refuses.
+ * is a link no import has stamped yet (the legacy corpus, or one imported
+ * before the stamp was wired on 2026-09-28) and it SENDS, which is the safe
+ * direction because no native Shopee kit exists in this catalogue today. Only
+ * `true` refuses.
  *
  * ⚠️ And with a link in hand, `kitNativo` is the ONLY thing that decides.
  * `produto` is carried for symmetry with the publish-side predicate
