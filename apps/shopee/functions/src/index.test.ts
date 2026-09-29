@@ -8,6 +8,10 @@ import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
+import {
+  ENVIO_PRECO_MAX_TENTATIVAS,
+  SHOPEE_PRICE_SYNC_QUEUE,
+} from '../../lib/shopee/precos/constantesPreco';
 import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 
 /**
@@ -66,6 +70,7 @@ const {
   monitorShopeePushConfig,
   processShopeeMassImport,
   processShopeeNotification,
+  processShopeePriceSync,
   reprocessShopeeNotifications,
   sendShopeeStock,
   sweepShopeeAuthorizationExpiry,
@@ -124,13 +129,25 @@ const AGENDAMENTOS = {
  * new assertion written. Its own numbers (120 s, and that the handler never
  * sets `ignoreSyncFlag`) are in `sendStock.test.ts`.
  *
+ * The FOURTH arrived in step 13 (`processShopeePriceSync`, the account-wide
+ * price job) and landed COVERED the same way. Its own numbers (300 s, the
+ * literal `{1, 1}` and `maxAttempts` naming `ENVIO_PRECO_MAX_TENTATIVAS`) are in
+ * `processPriceSync.test.ts`; the equality is pinned once more below, because
+ * the job reads that same constant to decide which attempt is its LAST.
+ *
  * Each queue's per-option assertions stay in its own sibling file
  * (`processNotification.test.ts`, `processMassImport.test.ts`,
- * `sendStock.test.ts`), which mock their channels; what lives HERE is the
+ * `sendStock.test.ts`, `processPriceSync.test.ts`), which mock their channels;
+ * what lives HERE is the
  * cross-cutting set — the exact secrets, the retry cap, the timeout, the ladder
  * — plus the completeness check.
  */
-const FILAS = { processShopeeNotification, processShopeeMassImport, sendShopeeStock } as const;
+const FILAS = {
+  processShopeeNotification,
+  processShopeeMassImport,
+  sendShopeeStock,
+  processShopeePriceSync,
+} as const;
 
 /**
  * Every FIRESTORE-TRIGGER export of this codebase — the third sibling of
@@ -781,10 +798,11 @@ describe('processShopeeMassImport', () => {
     // de crescer: as filas são exportadas, são DISTINTAS entre si, e o módulo
     // não exporta uma a mais (isso é do teste de exaustividade acima).
     //
-    // ⚠️ O passo 12 trouxe a TERCEIRA (`sendShopeeStock`) e é por isto que os
-    // dois literais abaixo moram aqui: um mapa que cresce sem que a contagem
-    // cresça junto volta a ser uma lista, e a asserção passaria descrevendo
-    // uma codebase que não existe mais.
+    // ⚠️ O passo 12 trouxe a TERCEIRA (`sendShopeeStock`) e o passo 13 a
+    // QUARTA (`processShopeePriceSync`), e é por isto que os dois literais
+    // abaixo moram aqui: um mapa que cresce sem que a contagem cresça junto
+    // volta a ser uma lista, e a asserção passaria descrevendo uma codebase
+    // que não existe mais.
     const comFila = Object.entries(modulo as unknown as Record<string, unknown>)
       .filter(([, valor]) => {
         const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
@@ -794,11 +812,14 @@ describe('processShopeeMassImport', () => {
     expect(comFila.sort()).toEqual([
       'processShopeeMassImport',
       'processShopeeNotification',
+      'processShopeePriceSync',
       'sendShopeeStock',
     ]);
-    expect(Object.keys(FILAS)).toHaveLength(3);
+    expect(Object.keys(FILAS)).toHaveLength(4);
     expect(processShopeeMassImport).not.toBe(processShopeeNotification);
     expect(sendShopeeStock).not.toBe(processShopeeMassImport);
+    expect(processShopeePriceSync).not.toBe(sendShopeeStock);
+    expect(processShopeePriceSync).not.toBe(processShopeeMassImport);
   });
 
   it('o nome do export é exatamente SHOPEE_MASS_IMPORT_QUEUE', () => {
@@ -847,13 +868,65 @@ describe('sendShopeeStock (passo 12)', () => {
       "'[shopee] function-name drift: functions/src/sendStock.ts must export a '",
     );
     expect(fonte).toContain('if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers))');
-    // ÂNCORA: as três travas são três, e cada uma nomeia um arquivo diferente —
-    // uma frase que aparecesse duas vezes seria uma cópia que esqueceu o nome.
+    // ÂNCORA: as travas são QUATRO desde o passo 13, e cada uma nomeia um
+    // arquivo diferente — uma frase que aparecesse duas vezes seria uma cópia
+    // que esqueceu o nome.
     const travas = fonte.match(/function-name drift: functions\/src\/[A-Za-z]+\.ts/g) ?? [];
     expect(travas.sort()).toEqual([
       'function-name drift: functions/src/processMassImport.ts',
       'function-name drift: functions/src/processNotification.ts',
+      'function-name drift: functions/src/processPriceSync.ts',
       'function-name drift: functions/src/sendStock.ts',
     ]);
+  });
+});
+
+describe('processShopeePriceSync (passo 13)', () => {
+  it('é a QUARTA fila, e o nome do export é exatamente SHOPEE_PRICE_SYNC_QUEUE', () => {
+    // Gêmea das três asserções acima (M48). O risco é o da importação em massa
+    // com um TERCEIRO braço: o job reenfileira contra a PRÓPRIA fila a cada
+    // continuação de plano ou dreno, na pausa por rajada e no parque da cota
+    // diária — então um rename pela metade não quebra o primeiro despacho da
+    // rota, quebra a CONTINUAÇÃO, e o job fica `running` até a recuperação de
+    // órfão de seis horas. `index.ts` afirma o par na carga do módulo; isto
+    // fixa a mesma propriedade offline.
+    expect(SHOPEE_PRICE_SYNC_QUEUE).toBe('processShopeePriceSync');
+    expect(SHOPEE_PRICE_SYNC_QUEUE in modulo).toBe(true);
+    expect((modulo as unknown as Record<string, unknown>)[SHOPEE_PRICE_SYNC_QUEUE]).toBe(
+      processShopeePriceSync,
+    );
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_MASS_IMPORT_QUEUE);
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_STOCK_SEND_QUEUE);
+  });
+
+  it('a quarta trava de rename é um `if` PRÓPRIO que nomeia o seu arquivo', () => {
+    // A mesma propriedade textual da terceira: a frase inteira, caminho
+    // incluído, existe como UM literal, e a condição testa a constante do PREÇO
+    // contra o namespace do módulo do PREÇO — um `if` copiado que esquecesse um
+    // dos dois nomes compilaria e compararia o par errado.
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+
+    expect(fonte).toContain(
+      "'[shopee] function-name drift: functions/src/processPriceSync.ts must export a '",
+    );
+    expect(fonte).toContain('if (!(SHOPEE_PRICE_SYNC_QUEUE in priceSyncHandlers))');
+    expect(fonte).toContain("import * as priceSyncHandlers from './processPriceSync';");
+  });
+
+  it('PAR: maxAttempts da fila === ENVIO_PRECO_MAX_TENTATIVAS — a última tentativa do job É a da fila', () => {
+    // O job compara `retryCount` com `ENVIO_PRECO_MAX_TENTATIVAS - 1` para
+    // decidir carimbar `failed` em vez de relançar. Uma fila com MAIS
+    // tentativas carimbaria antes da última; uma com MENOS descartaria a task
+    // com o job `running` — e nada re-conduz esta fila. Lido do ENDPOINT
+    // declarado, não da fonte: é o número que o deploy grava na fila.
+    const gatilho = endpointOf(processShopeePriceSync).taskQueueTrigger as {
+      retryConfig?: { maxAttempts?: number };
+    };
+    expect(gatilho.retryConfig?.maxAttempts).toBe(ENVIO_PRECO_MAX_TENTATIVAS);
+    // QUASE-IGUAL: a constante continua sendo 3 — o número que a escada de
+    // 1500 s pressupõe (3 × 300 + 2 × 300).
+    expect(ENVIO_PRECO_MAX_TENTATIVAS).toBe(3);
+    expect(endpointOf(processShopeePriceSync).timeoutSeconds).toBe(300);
   });
 });
