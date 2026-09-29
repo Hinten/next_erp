@@ -213,10 +213,12 @@ export async function consultarChavePersistida(params: {
   let espera: number | null = null;
   // A stored `rejeitada` is SEFAZ's conclusive answer about this chave, and
   // the emit path keeps its fix-and-resend branch open (a rejection frees the
-  // número). A receipt round that says nothing about the chave (`aguardar`)
-  // or is terminal on its own (a 656, a refused query) leaves it as it is:
-  // back in flight or a blocking `error` would shut that branch although
-  // nothing new was learned.
+  // número). A receipt round that says nothing about the chave (`aguardar`:
+  // 107/108/109/113/114 or not TStat-shaped) or is terminal on its own (a 656,
+  // a refused query) leaves it as it is: back in flight or a blocking `error`
+  // would shut that branch although nothing new was learned. A 103/105 is not
+  // such a round — a lote holding the chave is still pending — and still takes
+  // it back in flight (see the `aguardar` arm below).
   const rejeicaoConclusiva = current.estado === ESTADO_NFE.rejeitada;
   let rejeicaoMantida = false;
   if (msgWithNRec?.nRec) {
@@ -270,7 +272,13 @@ export async function consultarChavePersistida(params: {
       // SEFAZ may hold. Back in flight on this receipt instead, as 103/105
       // already map: the emit path skips an in-flight doc with an nRec, and the
       // sweep consults it again, paced like the reconcile on a paralisado one.
-      // A stored rejeitada is left as it is (see `rejeicaoConclusiva`).
+      // A stored rejeitada is left as it is by such a SILENT receipt
+      // (107/108/109/113/114, or not TStat-shaped — see `rejeicaoConclusiva`).
+      // ⚠️ Deliberately NOT by a 103/105: `applyOutcome` maps those in flight
+      // before this block, and they are not silent — a lote holding this chave
+      // is still pending at SEFAZ, which may yet authorize it, so a rejeitada
+      // that came from another send goes back in flight rather than leave its
+      // número re-emittable (as before #1654; pinned by the 103/105 near-miss).
       if (
         !isEstadoFinalNFe(patch.estado) &&
         patch.estado !== ESTADO_NFE.enviando &&

@@ -262,7 +262,8 @@ be re-emitted over a número SEFAZ may hold; "Verificar novamente"
 (`consultarChavePersistida`) then consults by chave through the same decision
 and table, without counting (a receipt that says nothing puts the doc back in
 flight on it, paced; a stored `rejeitada` is left as it is by that, a 656 or a
-refused receipt query), and `verificarEnviNfeMsgs` stops a run on its
+refused receipt query — but not by a 103/105, whose lote holding the chave is
+still pending at SEFAZ), and `verificarEnviNfeMsgs` stops a run on its
 `consumoIndevido` flag, since the persisted cStat no longer shows the 656. A
 receipt answering serviço paralisado (108/109/113/114) is paced
 `RECONCILE_INDISPONIVEL_DELAY_MS` (one hour, `esperaMinimaDoRecibo`) — the

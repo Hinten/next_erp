@@ -907,18 +907,28 @@ describe('verificarEnviNfeMsgs — the receipt round shares reconcile’s decisi
       expect(r.results[0]).toMatchObject({ estadoNovo: ESTADO_NFE.rejeitada, cStat: '778' });
     });
 
-    it('near-miss: a lote still processing (105) maps in flight on its own, as before', async () => {
-      rejeitadaPeloProtocolo();
-      vi.mocked(consultarLote).mockResolvedValue(consReciRet('105') as never);
+    // Where the "leave a rejeitada alone" fold STOPS: a 103/105 is not silent —
+    // a lote holding the chave is still pending at SEFAZ, which may yet
+    // authorize it — so the doc goes back in flight rather than leave its
+    // número re-emittable (as before #1654).
+    it.each([
+      ['received', '103'],
+      ['still processing', '105'],
+    ])(
+      "near-miss: a lote %s ('%s') maps in flight on its own, as before",
+      async (_caso, loteCStat) => {
+        rejeitadaPeloProtocolo();
+        vi.mocked(consultarLote).mockResolvedValue(consReciRet(loteCStat) as never);
 
-      await verificar();
+        await verificar();
 
-      expect(persistido()).toMatchObject({
-        estado: ESTADO_NFE.aguardandoResposta,
-        cStat: '105',
-        nRec: 'REC-1',
-      });
-    });
+        expect(persistido()).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          cStat: loteCStat,
+          nRec: 'REC-1',
+        });
+      },
+    );
 
     /** An `error` doc with a NON-blocking cStat — e.g. the sweep's legacy consSit 656. */
     function errorNaoBloqueante(): void {
