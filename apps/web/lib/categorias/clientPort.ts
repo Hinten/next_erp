@@ -2,12 +2,25 @@ import type { DocumentReference, Firestore } from 'firebase/firestore';
 import {
   type ImpostoCategoria,
   impostoCategoriaSchema,
+  issuesDeEmissaoDasLinhas,
   nveCarriesValue,
   operacaoIdFromImpostoRef,
 } from '@delfrance/schemas';
 import { nowMillis } from '@delfrance/core/datetime';
-import type { TransactionWrite } from '@delfrance/ui';
+import type { TransactionWrite, ValidationIssue } from '@delfrance/ui';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
+
+/**
+ * The categoria page's `validate`: refuses to save a per-operação imposto row
+ * the NF-e engine would refuse (#1655) — the same verdicts the engine throws
+ * from, behind its own tier gate, so a row with no `origem` is never blocked.
+ * `impostos` stays null until the Impostos tab seeds it, so a save that never
+ * opened the tab checks nothing; once seeded, EVERY row is checked (each is
+ * rewritten on save). Module-level so ObjectView's resolver memo stays stable.
+ */
+export function validarImpostosDaCategoria(values: Record<string, unknown>): ValidationIssue[] {
+  return issuesDeEmissaoDasLinhas(values.impostos as unknown[] | null | undefined, 'impostos');
+}
 
 /**
  * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
