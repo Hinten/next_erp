@@ -31,6 +31,7 @@ import { PERM } from '@delfrance/auth';
 import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
 import type { CertificadoFilialInfo } from '@delfrance/schemas';
 
+import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import { usePermission } from '@/lib/auth';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -66,6 +67,7 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
   const queryClient = useQueryClient();
   const client = useNFeClient();
   const { allowed: canWrite } = usePermission(PERM.configuracoes.write);
+  const { confirm, element: confirmElement } = useConfirmDialog();
 
   const [file, setFile] = useState<File | null>(null);
   const [password, setPassword] = useState('');
@@ -123,6 +125,24 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
     },
   });
 
+  /**
+   * ⚠️ Removal hard-deletes the filial's encrypted A1 key — there is no undo,
+   * and every NF-e emission for this filial stops until a .pfx is uploaded
+   * again. It was unconfirmed while the DELETE never reached the backend (the
+   * CORS preflight refused it until #1680); now that it does, it asks first.
+   */
+  async function confirmarRemocao(): Promise<void> {
+    const sim = await confirm({
+      title: 'Remover certificado',
+      message:
+        'A emissão de NF-e desta filial fica bloqueada até um novo envio do arquivo .pfx/.p12. ' +
+        'O certificado removido não pode ser recuperado.',
+      confirmLabel: 'Remover',
+      cancelLabel: 'Cancelar',
+    });
+    if (sim) remove.mutate();
+  }
+
   if (filialQuery.isLoading) return <Loader size="sm" />;
   if (filialQuery.isError) {
     return (
@@ -134,6 +154,7 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
 
   return (
     <Stack gap="lg" maw={640}>
+      {confirmElement}
       {certificado ? (
         <Card withBorder padding="md">
           <Group justify="space-between" align="flex-start">
@@ -159,7 +180,7 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
               color="red"
               variant="light"
               size="compact-sm"
-              onClick={() => remove.mutate()}
+              onClick={() => void confirmarRemocao()}
               loading={remove.isPending}
               disabled={!canWrite || !client}
             >

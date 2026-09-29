@@ -65,7 +65,12 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    per-filial. A filial with no stored cert throws unless `NFE_CERT_ENV_FALLBACK`
    is on AND an env cert exists (then it uses the env cert — tests/dev only).
    **Rotating a filial's cert needs an apps/nfe restart** (the decrypted cert
-   is process-cached; the upload route evicts its own instance's entry).
+   is process-cached; the upload route evicts its own instance's entry) — and
+   so does a REMOVAL: other instances keep signing with the removed cert until
+   they restart. Each verb writes the secret + the filial's `certificado` in ONE
+   `WriteBatch` (an unknown filial is a 404, never a stub doc), and the upload
+   carries a `lastUpdateTime` precondition from the read its CNPJ check used
+   (409 `FILIAL_ALTERADA`, #1680).
    Upload/remove via `POST`/`DELETE /api/nfe/certificado` (`PERM.configuracoes.write`).
    **Losing `NFE_CERT_ENC_KEY` = all stored filial certs become undecryptable**
    (re-upload required) — treat it as a secret.
@@ -207,7 +212,9 @@ functions/                         NESTED Cloud Functions codebase `nfe` — NOT
                                    cover it. See functions/DEPLOY.md.
   src/reconciliar.ts               reconciliarNfe (onTaskDispatched) — the queue consumer
   src/sweep.ts                     nfeReconcileSweep (onSchedule) — the backstop
-proxy.ts                           CORS for /api/nfe/* (browser callers)
+proxy.ts                           CORS for /api/nfe/* (browser callers): GET/POST/DELETE,
+                                   exposes Content-Disposition. A verb a route exports must be
+                                   in Allow-Methods — config-eslint `cors-proxy-covers-routes`
 ```
 
 ## Dev
