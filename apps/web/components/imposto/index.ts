@@ -5,3 +5,8 @@ export {
   IMPOSTO_CONFIG_KEYS,
   IMPOSTO_DADOS_GERAIS_KEYS,
 } from './ImpostoConfigEditor';
+export {
+  OperacoesComProblemas,
+  type LinhaDeOperacao,
+  type OperacoesComProblemasProps,
+} from './OperacoesComProblemas';

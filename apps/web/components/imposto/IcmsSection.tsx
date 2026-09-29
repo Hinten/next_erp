@@ -7,72 +7,78 @@ import {
   CST_ICMS_LABELS,
   MOD_BC_LABELS,
   MOD_BCST_LABELS,
+  SUBCONFIG_POR_CSOSN,
+  SUBCONFIGS_ICMS_SN,
+  csosnSchema,
+  ehCrtSimplesNacional,
+  type SubConfigIcmsSn,
 } from '@delfrance/schemas';
 import { EnumSelect, SubConfigGrid, type FieldSpec } from './fields';
 import type { ImpostoConfigValue } from './types';
 
-/** The CSOSN sub-config slot + its editable fields (Simples Nacional surface). */
-const CSOSN_SUBCONFIG: Record<string, { subKey: string; specs: FieldSpec[] } | null> = {
-  '101': { subKey: 'csosn101', specs: [icmsRate('pCredSN'), icmsMoney('vCredICMSSN')] },
-  '102': null,
-  '103': null,
-  '300': null,
-  '400': null,
-  '201': {
-    subKey: 'csosn201',
-    specs: [
-      icmsRate('pCredSN'),
-      icmsMoney('vCredICMSSN'),
-      icmsSelect('modBCST', MOD_BCST_LABELS),
-      icmsRate('pMVAST'),
-      icmsRate('pRedBCST'),
-      icmsMoney('vBCST'),
-      icmsRate('pICMSST'),
-      icmsMoney('vICMSST'),
-      icmsMoney('vBCFCPST'),
-      icmsRate('pFCPST'),
-      icmsMoney('vFCPST'),
-    ],
-  },
-  '202': { subKey: 'csosn202ou203', specs: csosn202specs() },
-  '203': { subKey: 'csosn202ou203', specs: csosn202specs() },
-  '500': {
-    subKey: 'csosn500',
-    specs: [
-      icmsMoney('vBCSTRet'),
-      icmsRate('pST'),
-      icmsMoney('vICMSSubstituto'),
-      icmsMoney('vICMSSTRet'),
-      icmsMoney('vBCFCPSTRet'),
-      icmsRate('pFCPSTRet'),
-      icmsMoney('vFCPSTRet'),
-      icmsRate('pRedBCEfet'),
-      icmsMoney('vBCEfet'),
-      icmsRate('pICMSEfet'),
-      icmsMoney('vICMSEfet'),
-    ],
-  },
-  '900': {
-    subKey: 'csosn900',
-    specs: [
-      icmsSelect('modBC', MOD_BC_LABELS),
-      icmsMoney('vBC'),
-      icmsRate('pRedBC'),
-      icmsRate('pICMS'),
-      icmsMoney('vICMS'),
-      icmsSelect('modBCST', MOD_BCST_LABELS),
-      icmsRate('pMVAST'),
-      icmsRate('pRedBCST'),
-      icmsMoney('vBCST'),
-      icmsRate('pICMSST'),
-      icmsMoney('vICMSST'),
-      icmsMoney('vBCFCPST'),
-      icmsRate('pFCPST'),
-      icmsMoney('vFCPST'),
-      icmsRate('pCredSN'),
-      icmsMoney('vCredICMSSN'),
-    ],
-  },
+/**
+ * The editable fields of each Simples Nacional sub-config slot. WHICH slot a
+ * CSOSN reads is `SUBCONFIG_POR_CSOSN` (`@delfrance/schemas`) — the same table
+ * the NF-e engine emits from, so the editor cannot show one slot while the
+ * engine reads another.
+ */
+const ESPECS_POR_SUBCONFIG: Record<SubConfigIcmsSn, FieldSpec[]> = {
+  csosn101: [icmsRate('pCredSN'), icmsMoney('vCredICMSSN')],
+  csosn201: [
+    icmsRate('pCredSN'),
+    icmsMoney('vCredICMSSN'),
+    icmsSelect('modBCST', MOD_BCST_LABELS),
+    icmsRate('pMVAST'),
+    icmsRate('pRedBCST'),
+    icmsMoney('vBCST'),
+    icmsRate('pICMSST'),
+    icmsMoney('vICMSST'),
+    icmsMoney('vBCFCPST'),
+    icmsRate('pFCPST'),
+    icmsMoney('vFCPST'),
+  ],
+  csosn202ou203: [
+    icmsSelect('modBCST', MOD_BCST_LABELS),
+    icmsRate('pMVAST'),
+    icmsRate('pRedBCST'),
+    icmsMoney('vBCST'),
+    icmsRate('pICMSST'),
+    icmsMoney('vICMSST'),
+    icmsMoney('vBCFCPST'),
+    icmsRate('pFCPST'),
+    icmsMoney('vFCPST'),
+  ],
+  csosn500: [
+    icmsMoney('vBCSTRet'),
+    icmsRate('pST'),
+    icmsMoney('vICMSSubstituto'),
+    icmsMoney('vICMSSTRet'),
+    icmsMoney('vBCFCPSTRet'),
+    icmsRate('pFCPSTRet'),
+    icmsMoney('vFCPSTRet'),
+    icmsRate('pRedBCEfet'),
+    icmsMoney('vBCEfet'),
+    icmsRate('pICMSEfet'),
+    icmsMoney('vICMSEfet'),
+  ],
+  csosn900: [
+    icmsSelect('modBC', MOD_BC_LABELS),
+    icmsMoney('vBC'),
+    icmsRate('pRedBC'),
+    icmsRate('pICMS'),
+    icmsMoney('vICMS'),
+    icmsSelect('modBCST', MOD_BCST_LABELS),
+    icmsRate('pMVAST'),
+    icmsRate('pRedBCST'),
+    icmsMoney('vBCST'),
+    icmsRate('pICMSST'),
+    icmsMoney('vICMSST'),
+    icmsMoney('vBCFCPST'),
+    icmsRate('pFCPST'),
+    icmsMoney('vFCPST'),
+    icmsRate('pCredSN'),
+    icmsMoney('vCredICMSSN'),
+  ],
 };
 
 function icmsMoney(key: string): FieldSpec {
@@ -84,21 +90,13 @@ function icmsRate(key: string): FieldSpec {
 function icmsSelect(key: string, labels: Record<string, string>): FieldSpec {
   return { key, label: key, kind: 'select', labels };
 }
-function csosn202specs(): FieldSpec[] {
-  return [
-    icmsSelect('modBCST', MOD_BCST_LABELS),
-    icmsRate('pMVAST'),
-    icmsRate('pRedBCST'),
-    icmsMoney('vBCST'),
-    icmsRate('pICMSST'),
-    icmsMoney('vICMSST'),
-    icmsMoney('vBCFCPST'),
-    icmsRate('pFCPST'),
-    icmsMoney('vFCPST'),
-  ];
-}
 
-const SIMPLES_NACIONAL = new Set(['1', '2']);
+/** Every SN slot set to null — one active treatment at a time. */
+const SLOTS_SN_VAZIOS: Readonly<Record<SubConfigIcmsSn, null>> = Object.fromEntries(
+  SUBCONFIGS_ICMS_SN.map((slot) => [slot, null]),
+) as Record<SubConfigIcmsSn, null>;
+
+const SEM_ERROS: ReadonlyMap<string, string> = new Map();
 
 export interface IcmsSectionProps {
   value: ImpostoConfigValue;
@@ -106,6 +104,13 @@ export interface IcmsSectionProps {
   disabled?: boolean;
   /** RHF error node for `configuracaoICMS`, if any. */
   errorNode?: Record<string, unknown>;
+  /**
+   * What the NF-e engine would refuse, keyed by field path
+   * (`configuracaoICMS.csosn500.vBCSTRet`, `configuracaoICMS.csosn`) — the
+   * host derives it from `problemasDeEmissaoDoImposto`. An RHF error on the
+   * same field wins.
+   */
+  errosPorCampo?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -113,7 +118,13 @@ export interface IcmsSectionProps {
  * CSOSN + its conditional sub-config. Regime Normal (CRT 3/4) is preserved but
  * not edited here (issue #312) — the existing blob round-trips untouched.
  */
-export function IcmsSection({ value, onChange, disabled, errorNode }: IcmsSectionProps) {
+export function IcmsSection({
+  value,
+  onChange,
+  disabled,
+  errorNode,
+  errosPorCampo = SEM_ERROS,
+}: IcmsSectionProps) {
   const icms = (value.configuracaoICMS ?? {}) as Record<string, unknown>;
   const crt = (icms.crt as string | null) ?? null;
   const csosn = (icms.csosn as string | null) ?? null;
@@ -132,24 +143,35 @@ export function IcmsSection({ value, onChange, disabled, errorNode }: IcmsSectio
   function setCsosn(next: string | null) {
     // Clear the sibling SN sub-configs (one active treatment); keep Regime Normal
     // (`icms*`) blobs intact for a lossless round-trip.
-    patchIcms({
-      csosn: next ?? null,
-      csosn101: null,
-      csosn201: null,
-      csosn202ou203: null,
-      csosn500: null,
-      csosn900: null,
-    });
+    patchIcms({ csosn: next ?? null, ...SLOTS_SN_VAZIOS });
   }
 
-  function patchSub(subKey: string, patch: Record<string, unknown>) {
-    const cur = (icms[subKey] ?? {}) as Record<string, unknown>;
-    patchIcms({ [subKey]: { ...cur, ...patch } });
+  function patchSub(slot: SubConfigIcmsSn, patch: Record<string, unknown>) {
+    const cur = (icms[slot] ?? {}) as Record<string, unknown>;
+    patchIcms({ [slot]: { ...cur, ...patch } });
   }
 
-  const isSN = crt != null && SIMPLES_NACIONAL.has(crt);
-  const sub = csosn ? CSOSN_SUBCONFIG[csosn] : undefined;
-  const subErrors = (errorNode ?? {}) as Record<string, Record<string, { message?: string }>>;
+  // The SN predicate and the CSOSN → slot table are the engine's own
+  // (`@delfrance/schemas` regrasDeEmissao). Both guard raw soft-read values: a
+  // legacy numeric CRT reads as "not SN", and an off-enum CSOSN has no slot
+  // (`undefined`, so nothing renders) — `null` is a CSOSN that reads no slot.
+  const isSN = ehCrtSimplesNacional(crt);
+  const csosnValido = csosnSchema.safeParse(csosn);
+  const slot = csosnValido.success ? SUBCONFIG_POR_CSOSN[csosnValido.data] : undefined;
+  const rhf = (errorNode ?? {}) as Record<string, unknown>;
+  const erroCsosn =
+    (rhf.csosn as { message?: string } | undefined)?.message ??
+    errosPorCampo.get('configuracaoICMS.csosn');
+
+  function errosDoSlot(s: SubConfigIcmsSn): Record<string, { message?: string } | undefined> {
+    const rhfDoSlot = (rhf[s] ?? {}) as Record<string, { message?: string } | undefined>;
+    const erros: Record<string, { message?: string } | undefined> = {};
+    for (const { key } of ESPECS_POR_SUBCONFIG[s]) {
+      const message = rhfDoSlot[key]?.message ?? errosPorCampo.get(`configuracaoICMS.${s}.${key}`);
+      if (message != null) erros[key] = { message };
+    }
+    return erros;
+  }
 
   return (
     <Stack gap="sm">
@@ -180,19 +202,20 @@ export function IcmsSection({ value, onChange, disabled, errorNode }: IcmsSectio
             disabled={disabled}
             clearable={false}
             required
+            error={erroCsosn}
           />
-          {csosn != null && sub === null && (
+          {csosn != null && slot === null && (
             <Text c="dimmed" size="sm">
               CSOSN {csosn} não possui campos adicionais de ICMS.
             </Text>
           )}
-          {sub && (
+          {slot != null && (
             <SubConfigGrid
-              config={(icms[sub.subKey] as Record<string, unknown> | null) ?? null}
-              specs={sub.specs}
-              onPatch={(patch) => patchSub(sub.subKey, patch)}
+              config={(icms[slot] as Record<string, unknown> | null) ?? null}
+              specs={ESPECS_POR_SUBCONFIG[slot]}
+              onPatch={(patch) => patchSub(slot, patch)}
               disabled={disabled}
-              errorNode={subErrors[sub.subKey]}
+              errorNode={errosDoSlot(slot)}
             />
           )}
         </>
