@@ -322,8 +322,8 @@ once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its fo
 per-item catches follow rule 6 through ONE table (`orchestrator/falhas.ts`,
 `descreverFalhaConhecida`, #1654): a failure of a known class — the NF-e and
 orchestrator classes, `ZodError`, the Cloud Tasks enqueue's
-`FirebaseFunctionsError` / `FirebaseAppError` / `MissingRegionError`, a
-Firestore gRPC error (`'FirestoreRpcError'`) — is recorded in `errors` with its
+`FirebaseFunctionsError` / `FirebaseAppError` / `NFeTasksEnqueueError` /
+`MissingRegionError`, a Firestore gRPC error (`'FirestoreRpcError'`) — is recorded in `errors` with its
 message and the run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
 (the scheduled function fails and the next tick retries; the manual route
 answers 500) and the lotes after it wait for that retry. A new exported error
@@ -400,10 +400,13 @@ recovery table — a 204/635 anchor whose consSit later answers 217 turns
 `toEmitError`, which reads the sweep's table (`descreverFalhaConhecida`,
 `orchestrator/falhas.ts`): a known class is reported by its literal code — the
 `name` it always had, except that an enqueue failure is now
-`'FirebaseFunctionsError'` (an HTTP error reply) or `'FirebaseAppError'` (the
-network, a timeout, the credential) and an Admin-SDK Firestore failure
-`'FirestoreRpcError'`, all of which used to read `'Error'`. Every enqueue
-failure — `MissingRegionError` included — stays a per-member report, since the
+`'FirebaseFunctionsError'` (an HTTP error reply), `'FirebaseAppError'` (the
+network, a timeout, the access token) or `'NFeTasksEnqueueError'` (the
+service-account lookup the SDK leaves unwrapped: under Application Default
+Credentials each instance's first enqueue asks the metadata server, and
+`tasks.ts` converts that gaxios failure), and an Admin-SDK Firestore failure
+`'FirestoreRpcError'`, all of which used to read `'Error'`. Those enqueue
+failures — `MissingRegionError` included — stay a per-member report, since the
 enqueue runs after the send, on members already in flight on their `nRec`; so
 does `NFeConsumoIndevidoError`. Any other class is a bug and is rethrown
 (rule 6): the batch rejects, `POST /emitir-lote` answers 500,
@@ -414,13 +417,17 @@ unsent #396 anchors, which a re-emit retransmits with their stored bytes (or
 the sweep's consSit recovers); after the send each member's reply is audited
 before its write, so a member whose write threw is still its anchor — the
 state stays consistent, only the report is lost. ⚠️ So `apps/web` no longer
-auto-retries `emitir`/`emitirLote` on a 5xx or a network error — only on the
-pre-send 503 (`NFeRuntimeNotReadyError`, `apps/web/lib/nfe/withNFeRetry.ts`):
-an emit re-POST is a no-op only for a bloqueada or `nRec`-in-flight pedido, and
+auto-retries `emitir`/`emitirLote` on a 5xx or a network error — only on this
+app's own pre-send 503, recognised by its body `error: 'NF-e runtime not
+ready'` (`isRuntimeNotReadyBeforeSend`, `apps/web/lib/nfe/withNFeRetry.ts`),
+never by `NFeRuntimeNotReadyError` alone: the client maps every 503 to that
+class, Cloud Run's own mid-request one included. An emit re-POST is a no-op
+only for a bloqueada or `nRec`-in-flight pedido, and
 `runChunkAllocateTx` / `runAllocateGenerateSignTx` REGENERATE and RE-SEND every
 `rejeitada`/`error` one, so a retried lote re-sent whatever the lost attempt had
 just seen refused. A transient 5xx on emit now reaches the operator, who
-re-clicks. ⚠️ **Deploy apps/web no later than apps/nfe**: an older web re-POSTs
+re-clicks — the lote dialog calls the outcome of any failure but a 400/401/403
+or that 503 unknown, and points at the NF column first. ⚠️ **Deploy apps/web no later than apps/nfe**: an older web re-POSTs
 the new 500 up to three times, each re-POST re-sending the members the previous
 attempt left `rejeitada`/`error`.
 
