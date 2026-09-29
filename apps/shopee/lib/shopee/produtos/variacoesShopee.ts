@@ -7,6 +7,11 @@
  * price patch → produto → estoque → link. The guarded price patch goes first for
  * the same reason it does on the parent (the merge bumps `updateTime`), and the
  * link goes last because it is the only write that needs the parent link's id.
+ * Like the parent's, the patch asserts the PREPARO's read of this child, carried
+ * on the plan: nothing this import writes before it touches the child document
+ * (the parent's writes, the estoque rows and the links are other documents), so
+ * a stale stamp means a concurrent writer — an operator, or `onProdutoChanged`
+ * mirroring the parent merge onto a sole member — and the item re-plans.
  *
  * ## ⚠️ `filhoUnicoId` runs AFTER the child set is final, in the same unit
  *
@@ -94,15 +99,13 @@ export async function aplicarFilhoShopee(
         await produtoCollection.merge(db, {}, produtoId, escrita.data);
       }
     } else {
-      // The guarded price patch, against the snapshot it was derived from, and
-      // BEFORE the merge that would bump that very stamp.
-      const snap = await ref.get();
-      await aplicarPrecosShopee(db, filho.precos, snap.updateTime);
+      // The guarded price patch, against the PREPARO's snapshot the plan carries
+      // (never a re-read here), and BEFORE the merge that would bump that stamp.
+      await aplicarPrecosShopee(db, filho.precos);
       await produtoCollection.merge(db, {}, produtoId, escrita.data);
     }
-  } else if (filho.precos !== null) {
-    const snap = await produtoCollection.docRef(db, {}, produtoId).get();
-    await aplicarPrecosShopee(db, filho.precos, snap.updateTime);
+  } else {
+    await aplicarPrecosShopee(db, filho.precos);
   }
 
   await aplicarEstoqueShopee(db, filho.estoque);

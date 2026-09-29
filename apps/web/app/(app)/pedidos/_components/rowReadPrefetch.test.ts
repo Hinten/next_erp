@@ -24,9 +24,12 @@ vi.mock('@/lib/data/getDocsByIds', () => ({
 }));
 vi.mock('@/lib/data/dereferenceOuterRef', () => ({
   // The real helper accepts three legacy ref shapes; for these tests a bare
-  // path string is enough.
+  // path string is enough. `parent.id` is what the REAL `ehRefDeCliente` (behind
+  // `refDeClienteOuNull`) reads to decide whether the ref points into `clientes`.
   dereferenceOuterRef: (_db: unknown, ref: unknown) =>
-    typeof ref === 'string' && ref.length > 0 ? { path: ref } : null,
+    typeof ref === 'string' && ref.length > 0
+      ? { path: ref, parent: { id: ref.split('/').at(-2) } }
+      : null,
 }));
 
 // A REAL provider rather than a mocked `useQueryClient`. Mocking it is the
@@ -283,6 +286,46 @@ describe('usePedidoRowReadPrefetch', () => {
     });
 
     expect(queryClient.getQueryData(clienteQueryKey('clientes/a'))).toEqual({ nome: 'Fulano' });
+  });
+
+  it('batches and seeds only refs INTO clientes (#1656)', async () => {
+    // The batch reads `clientes/<id>` BY ID, so a ref into another collection
+    // would fetch a DIFFERENT document and seed it under a key
+    // `readClienteByRef` fills from the foreign doc — two provenances for one
+    // key, the #1303 bug class.
+    const docA = { nome: 'Cliente A' };
+    const docB = { nome: 'O cliente b, não o fornecedor b' };
+    getDocsByIdsMock.mockResolvedValue(
+      new Map<string, unknown>([
+        ['a', docA],
+        ['b', docB],
+      ]),
+    );
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    await actSettle(() =>
+      result.current.onRows([row('p1', 'clientes/a', null), row('p2', 'fornecedores/b', null)]),
+    );
+
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(1);
+    expect(getDocsByIdsMock.mock.calls[0]![2]).toEqual(['a']);
+    expect(queryClient.getQueryData(clienteQueryKey('clientes/a'))).toEqual(docA);
+    expect(queryClient.getQueryData(clienteQueryKey('fornecedores/b'))).toBeUndefined();
+  });
+
+  it('a page whose refs all point outside clientes settles with no read (#1656)', async () => {
+    getDocsByIdsMock.mockResolvedValue(new Map());
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    await actSettle(() =>
+      result.current.onRows([
+        row('p1', 'fornecedores/b', null),
+        row('p2', 'documents/int_frete/x', null),
+      ]),
+    );
+
+    expect(result.current.status).toBe('settled');
+    expect(getDocsByIdsMock).not.toHaveBeenCalled();
   });
 
   it('ignores a superseded batch so a stale page cannot seed the current one', async () => {

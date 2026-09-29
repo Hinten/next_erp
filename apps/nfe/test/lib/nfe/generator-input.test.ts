@@ -5,6 +5,8 @@ import {
   CRT,
   CSOSN,
   CST_PIS_COFINS,
+  IND_INCENTIVO,
+  IND_ISS,
   MODALIDADE_FRETE,
   MODO_GRUPOS_IMPOSTO,
   ORIGEM,
@@ -861,6 +863,28 @@ function orchestratorMessage(fn: () => unknown): string {
   return expect.fail('expected an NFeOrchestratorError, nothing was thrown');
 }
 
+/**
+ * The item() default imposto (CSOSN 102) with a complete, schema-valid ISSQN
+ * config. The engine CAN build its `<ISSQN>` group; the orchestrator refuses it
+ * because it emits no `<ISSQNtot>` (#1656).
+ */
+const IMPOSTO_ISSQN = {
+  origem: ORIGEM.nacional,
+  unidade: 'UN',
+  NCM: '61091000',
+  cfop: '5102',
+  configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+  configuracaoISSQN: {
+    vBC: 500,
+    vAliq: 5,
+    vISSQN: 25,
+    cMunFG: '3550308',
+    cListServ: '01.05',
+    indISS: IND_ISS.exigivel,
+    indIncentivo: IND_INCENTIVO.nao,
+  },
+} as const;
+
 describe('assertNotaBuildable — pre-allocation tribute pre-flight (#506)', () => {
   it('passes for a buildable item and leaves the generation projection unchanged', () => {
     const items = [item({ precoDeVenda: 100, quantidade: 2, descontoUnitario: 10 })];
@@ -999,6 +1023,39 @@ describe('assertNotaBuildable — pre-allocation tribute pre-flight (#506)', () 
     expect(msg).toContain("CSOSN '900'");
     expect(msg).toContain('ICMS próprio missing: modBC');
     expect(msg).toBe(orchestratorMessage(() => assertNotaBuildable(bundle, items, false)));
+  });
+
+  it('refuses an ISSQN imposto as NFeOrchestratorError naming pedido/item/produto (#1656)', () => {
+    // The engine would emit <ISSQN> for this item, but the ERP emits no
+    // <ISSQNtot>, counts the service in ICMSTot.vProd and carries the config's
+    // fixed R$ vBC/vISSQN on every sale — so it is refused before a número.
+    const items = [item({ imposto: IMPOSTO_ISSQN as never })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
+    expect(msg.startsWith(`${ITEM_PREFIX} ISSQN`)).toBe(true);
+    expect(msg).toMatch(/ISSQN \(configuracaoISSQN\) is not supported for emission/);
+    // One projection: generation says exactly what the pre-flight says, and the
+    // filial's RTC switch does not change the verdict.
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+    expect(msg).toBe(orchestratorMessage(() => assertNotaBuildable(bundle, items, true)));
+  });
+
+  it('lets the same imposto through once its ISSQN config is null (#1656 near-miss)', () => {
+    // `!= null`, not truthiness of a flag: a cleared switch stores null, and the
+    // item then builds its <ICMS> as before.
+    const items = [item({ imposto: { ...IMPOSTO_ISSQN, configuracaoISSQN: null } as never })];
+    expect(assertNotaBuildable(bundleWith(OP), items, false)).toBeUndefined();
+  });
+
+  it('keeps generation precedence — a desconto error wins over an ISSQN imposto (#1656)', () => {
+    // The refusal sits where the imposto is built, after the vDesc check, so the
+    // operator is told about the defect generation meets first.
+    const items = [item({ precoDeVenda: 10, quantidade: 1, imposto: IMPOSTO_ISSQN as never })];
+    const bundle = bundleWith(OP, { descontoTotal: 999 });
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
+    expect(msg).toMatch(/desconto .* exceeds the gross item value/);
+    expect(msg).not.toContain('ISSQN');
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
   });
 });
 

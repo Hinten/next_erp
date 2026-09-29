@@ -16,6 +16,9 @@ import {
   type ImportacaoShopeeOptions,
 } from '@delfrance/schemas';
 
+import { kitNativoDoAnuncio } from '../anuncios/montagemAnuncio';
+import { MOTIVO_ESTOQUE_SHOPEE } from '../estoque/errosEstoque';
+import { podeEnviarEstoqueShopee } from '../estoque/podeEnviarEstoque';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeBucket, asBucket } from '../testing/fakeBucket';
 import { FakeDb, asDb } from '../testing/fakeDb';
@@ -248,6 +251,13 @@ function passos(db: FakeDb, filhos: readonly string[] = []): string[] {
 
 function docDoProduto(db: FakeDb, produtoId: string): Record<string, unknown> {
   return (db.store[`produtos/${produtoId}`]?.data ?? {}) as Record<string, unknown>;
+}
+
+/** Os `prodshopee` gravados sob o pai do kit — caminho e dados. */
+function vinculosDoPai(db: FakeDb): { caminho: string; dados: Record<string, unknown> }[] {
+  return Object.entries(db.store)
+    .filter(([p]) => p.startsWith(`produtos/${PAI_ID}/prodshopee/`))
+    .map(([caminho, doc]) => ({ caminho, dados: doc.data as Record<string, unknown> }));
 }
 
 function escritasDeEstoque(db: FakeDb): string[] {
@@ -583,7 +593,7 @@ describe('importarKitShopee — estoque e preços', () => {
     });
   });
 
-  it('o preço vai para a tabela NORMAL, no FILHO, só com importarPreco', async () => {
+  it('o preço vai para a tabela NORMAL — no FILHO e, sendo um preço só, também no PAI — só com importarPreco', async () => {
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
     const filhoId = idDoFilhoPlanejado(PAI_ID, MODEL_A);
@@ -601,8 +611,10 @@ describe('importarKitShopee — estoque e preços', () => {
     // ⛔ A tabela promocional pertence às promoções que o operador cria no ERP —
     // a importação NUNCA a escreve, tenha a conta uma ou não.
     expect(JSON.stringify(db.writes)).not.toContain(TABELA_PROMOCIONAL_ID);
-    // O pai tem filhos: quem vende é o filho, e o pai não carrega preço.
-    expect(docDoProduto(db, PAI_ID).precos).toBeNull();
+    // O kit de UM model é uma família de um preço só (a regra da família,
+    // Lucas 2026-09-28): o pai recebe esse preço e a propagação LIGADA.
+    expect(docDoProduto(db, PAI_ID).precos).toEqual({ [TABELA_NORMAL_ID]: { valor: 99.9 } });
+    expect(docDoProduto(db, PAI_ID).propagatePriceToChildren).toBe(true);
   });
 
   it('com importarPreco desligado nenhum preço é planejado', async () => {
@@ -711,6 +723,79 @@ describe('importarKitShopee — os vínculos', () => {
     const dados = (vinculoFilho?.[1].data ?? {}) as Record<string, unknown>;
     expect(dados.model_id).toBe(MODEL_A);
     expect(dados.produtoShopeeOuterRef).toBe(`documents/${String(caminhoPai)}`);
+  });
+});
+
+/* -------------------- 4b. `kitNativo` no vínculo, e quem o lê -------------- */
+
+describe('importarKitShopee — `kitNativo` no vínculo da listagem', () => {
+  it('um kit NATIVO importado grava `kitNativo: true` no prodshopee criado', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+
+    await importarKitShopee(deps(db), entradaDeKit(kit()));
+
+    const vinculos = vinculosDoPai(db);
+    expect(vinculos).toHaveLength(1);
+    expect(vinculos[0]?.dados.kitNativo).toBe(true);
+  });
+
+  it('um re-import MANTÉM `kitNativo: true` no MESMO documento, pelo ramo de merge', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), entradaDeKit(kit()));
+    const [primeiro] = vinculosDoPai(db);
+    const escritasDoPrimeiroPasse = db.writes.length;
+
+    await importarKitShopee(deps(db, { nowMs: AGORA + 3_600_000 }), entradaDeKit(kit()));
+
+    const vinculos = vinculosDoPai(db);
+    expect(vinculos.map((v) => v.caminho)).toEqual([primeiro?.caminho]);
+    expect(vinculos[0]?.dados.kitNativo).toBe(true);
+    // O segundo passe ESCREVEU o campo — não é o valor do primeiro sobrevivendo.
+    const escritaDoVinculo = db.writes
+      .slice(escritasDoPrimeiroPasse)
+      .filter((w) => w.path === primeiro?.caminho);
+    expect(escritaDoVinculo).toHaveLength(1);
+    expect(escritaDoVinculo[0]?.patch.kitNativo).toBe(true);
+  });
+
+  it('⛔ um vínculo gravado ANTES do carimbo (null, ausente ou false) CONVERGE para true', async () => {
+    for (const armazenado of [null, undefined, false]) {
+      const db = new FakeDb();
+      semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+      await importarKitShopee(deps(db), entradaDeKit(kit()));
+      const [vinculo] = vinculosDoPai(db);
+      const { kitNativo: _descartado, ...semOCampo } = vinculo?.dados ?? {};
+      db.seed(
+        String(vinculo?.caminho),
+        armazenado === undefined ? semOCampo : { ...semOCampo, kitNativo: armazenado },
+      );
+
+      await importarKitShopee(deps(db), entradaDeKit(kit()));
+
+      expect(vinculosDoPai(db)).toHaveLength(1);
+      expect(vinculosDoPai(db)[0]?.dados.kitNativo).toBe(true);
+    }
+  });
+
+  it('IDA E VOLTA: o vínculo gravado faz o passo 12 pular com `kit-derivado` e o predicado dos passos 11/13 recusar', async () => {
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    await importarKitShopee(deps(db), entradaDeKit(kit()));
+    const vinculo = vinculosDoPai(db)[0]?.dados ?? {};
+    const produto = docDoProduto(db, PAI_ID);
+
+    // Passo 12 — o veredito que a varredura e o envio manual aplicam ao
+    // documento cru.
+    expect(podeEnviarEstoqueShopee(vinculo, produto, { nowMs: AGORA })).toEqual({
+      enviar: false,
+      motivo: MOTIVO_ESTOQUE_SHOPEE.kitDerivado,
+    });
+    // Passos 11 (recusa de publicação) e 13 (degrau 3 do plano de preço) leem
+    // o MESMO predicado. Com vínculo, só `kitNativo` decide — nem `ehKitVirtual`
+    // falso no produto o desliga.
+    expect(kitNativoDoAnuncio(vinculo, { ehKitVirtual: false })).toBe(true);
   });
 });
 
@@ -893,6 +978,36 @@ describe('anuncioDerivadoDoKit', () => {
     // ⚠️ Continua sendo um kit: a recusa de ROTEAMENTO do importador de anúncio
     // tem de continuar valendo se este registro escapar deste módulo.
     expect(anuncio.base.tag?.kit).toBe(true);
+  });
+
+  it('⛔ FIXA `tag.kit: true` mesmo quando a base de quem chama diz false ou null', () => {
+    // É desta tag que o construtor de vínculo carimba `kitNativo`. Copiar a
+    // tag da base faria um chamador descuidado gravar `kitNativo: false` num
+    // kit nativo — e os passos 12 e 13 sincronizariam estoque e preço dele.
+    const detalhe = kit();
+    for (const tag of [{ kit: false }, { kit: null }, null]) {
+      const entrada: ItemLido = {
+        ...entradaDeKit(detalhe),
+        base: shopeeItemBaseInfoRowSchema.parse({ item_id: ITEM_ID, tag }),
+      };
+      expect(anuncioDerivadoDoKit(entrada, detalhe).base.tag?.kit).toBe(true);
+    }
+  });
+
+  it('NEAR-MISS: fixar `kit` não apaga as OUTRAS chaves da tag', () => {
+    const detalhe = kit();
+    const entrada: ItemLido = {
+      ...entradaDeKit(detalhe),
+      base: shopeeItemBaseInfoRowSchema.parse({
+        item_id: ITEM_ID,
+        tag: { kit: false, chave_futura: 'x' },
+      }),
+    };
+
+    expect(anuncioDerivadoDoKit(entrada, detalhe).base.tag).toMatchObject({
+      kit: true,
+      chave_futura: 'x',
+    });
   });
 
   it('⛔ um tier cujo image vem como ARRAY não quebra a leitura', () => {
