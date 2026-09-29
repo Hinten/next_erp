@@ -319,11 +319,14 @@ describe('publish and the price sync price the SAME family the same way', () => 
       expect(publicar(f)).toEqual({ recusa: [SEM_PRECO('Camiseta')] });
     });
 
-    it('⚠️ STILL DIFFERENT — a GATE, not a price: own prices under an UNPRICED anchor', () => {
+    it('⚠️ STILL DIFFERENT (open follow-up, NOT the intended end state) — a GATE, not a price: own prices under an UNPRICED anchor', () => {
       // Every member's price agrees (the anchor is never read on this arm), but
       // publish still requires the anchor's own `resolvePrice` — a price no
       // User-Products member body carries — while the sync prices the members.
-      // Pinned so that relaxing (or keeping) the gate is a deliberate change.
+      // ⚠️ This pins TODAY's behaviour, not a decision that it is right: it was
+      // left out of scope only because relaxing it changes a live publish gate.
+      // Whoever decides the gate flips this expectation on purpose — to a
+      // `concordam(f, { M: 60, G: 70 })` if publish stops requiring the anchor.
       const f: Familia = {
         userProducts: true,
         precosPai: null,
