@@ -365,8 +365,8 @@ export function terminalBloqueante(
 }
 
 /**
- * Per-run consSit circuit breaker, held by `reconcileByRecibo` across the docs
- * of one lote reconcile and threaded through this branch — and, in the
+ * Per-run consSit circuit breaker, held in a {@link DisjuntorConsSit} cell
+ * across the docs of one lote reconcile and read by this branch — and, in the
  * backstop sweep (`runProcessarPendentes`), across the later lotes of that run
  * at each type's own scope:
  *
@@ -387,6 +387,19 @@ export type BloqueioConsSit =
   | { readonly tipo: 'consumo-indevido'; readonly chave: string; readonly xMotivo: string }
   | { readonly tipo: 'indisponivel'; readonly detalhe: string };
 
+/**
+ * The cell a {@link BloqueioConsSit} lives in, OWNED BY THE CALLER and mutated
+ * in place (#1654 §2c): `reconcilePorChave` writes every trip into it BEFORE
+ * the await of the write that follows, so a trip survives a reconcile that
+ * then throws — a later doc's failing Firestore write, a bug — with no result
+ * to carry it. The sweep builds one per lote before its `try` and registers
+ * whatever it holds after the `catch`, on success and on a recorded failure
+ * alike; `reconcileByRecibo` makes its own when given none (the task path).
+ */
+export interface DisjuntorConsSit {
+  bloqueio: BloqueioConsSit | null;
+}
+
 /** One in-flight doc of a receipt round that resolves it by chave. */
 export interface ReconcilePorChaveParams {
   readonly fs: Firestore;
@@ -404,8 +417,11 @@ export interface ReconcilePorChaveParams {
   readonly nfeRef: FirebaseFirestore.DocumentReference;
   /** Why this round resolves the doc by chave ({@link decidirRodadaDoRecibo}). */
   readonly motivo: MotivoConsultaPorChave;
-  /** The run's breaker so far — `null` until a consSit of this run trips it. */
-  readonly bloqueio: BloqueioConsSit | null;
+  /**
+   * The run's breaker cell — read before any consSit, and written in place at
+   * every trip (a `null` bloqueio until a consSit of this run trips it).
+   */
+  readonly disjuntor: DisjuntorConsSit;
 }
 
 export interface ReconcilePorChaveResult {
@@ -414,13 +430,34 @@ export interface ReconcilePorChaveResult {
    * refused the write because the doc changed concurrently — that live estado.
    */
   readonly estado: EstadoNFe;
-  /** The breaker for the remaining docs of the run (the given one, or a newly tripped one). */
-  readonly bloqueio: BloqueioConsSit | null;
 }
 
 /** `cStat <c> — <xMotivo>` of a consSit answer, for a terminal motivo. */
 function descreverConsSit(outcome: SefazOutcome): string {
   return `cStat ${outcome.cStat} — ${outcome.xMotivo}`;
+}
+
+/**
+ * The breaker a consSit ANSWER for `chave` trips, if any: an unavailable
+ * service (`indisponivel`), or a 656 among the unresolvable answers
+ * (`consumo-indevido`). A final answer or "still queued" trips nothing.
+ */
+function disparoDaResposta(
+  chave: string,
+  outcome: SefazOutcome,
+  recuperacao: RecuperacaoConsSit,
+): BloqueioConsSit | null {
+  switch (recuperacao) {
+    case 'indisponivel':
+      return { tipo: 'indisponivel', detalhe: `consSit cStat ${outcome.cStat}` };
+    case 'sem-resolucao':
+      return classifyCStat(outcome.cStat) === 'consumo-indevido'
+        ? { tipo: 'consumo-indevido', chave, xMotivo: outcome.xMotivo }
+        : null;
+    case 'resolvida':
+    case 'pendente':
+      return null;
+  }
 }
 
 /**
@@ -486,13 +523,16 @@ function descreverRodada(
  * A consSit whose `protNFe` names ANOTHER chave is terminal too — never
  * applied as ours.
  *
- * **The per-run breaker** ({@link BloqueioConsSit}) is read before and
- * returned after: after a 656 (answered or thrown) the remaining docs go
- * terminal with no call (cstat-rejeicoes.md lines 98-121: stop immediately;
- * gargalos-e-problemas.md lines 63-91), and after an unavailable service the
- * remaining ones are counted with no call — an outage costs one consSit per
- * round, not one per chave, and never turns into the "transient → retry → 656"
- * pattern (gargalos-e-problemas.md line 203).
+ * **The per-run breaker** ({@link BloqueioConsSit}) is read from the caller's
+ * {@link DisjuntorConsSit} cell before any call, and every trip is written into
+ * that cell at once — before the await of the write that follows it, so the
+ * trip is the caller's even when that write, or a later doc, throws (#1654):
+ * after a 656 (answered or thrown) the remaining docs go terminal with no call
+ * (cstat-rejeicoes.md lines 98-121: stop immediately; gargalos-e-problemas.md
+ * lines 63-91), and after an unavailable service the remaining ones are
+ * counted with no call — an outage costs one consSit per round, not one per
+ * chave, and never turns into the "transient → retry → 656" pattern
+ * (gargalos-e-problemas.md line 203).
  *
  * **Every write goes through the guarded persist (`persistPatchUnlessFinal`),
  * never the plain `persistPatch`, under a {@link PersistGuard} (rule 7):**
@@ -516,8 +556,7 @@ function descreverRodada(
 export async function reconcilePorChave(
   params: ReconcilePorChaveParams,
 ): Promise<ReconcilePorChaveResult> {
-  const { fs, rt, filialId, tpEmis, nRec, ret, chave, data, nfeRef, motivo } = params;
-  let bloqueio = params.bloqueio;
+  const { fs, rt, filialId, tpEmis, nRec, ret, chave, data, nfeRef, motivo, disjuntor } = params;
 
   // The LOTE outcome for this doc: the receipt's cStat + xMotivo, never our
   // protNFe's — so its [nRec:] marker cannot re-key the doc.
@@ -571,7 +610,7 @@ export async function reconcilePorChave(
       terminalBloqueante({ ...base, retries: tentativa }, ret.cStat, reason),
       guarda,
     );
-    return { estado, bloqueio };
+    return { estado };
   }
 
   // Hard stop: the cap was already reached (a previous at-cap round was
@@ -593,12 +632,15 @@ export async function reconcilePorChave(
   // A 106 on the doc's first round may be a receipt not indexed yet: count
   // it, and consult by chave only from the next round on.
   if (motivo === 'lote-nao-localizado' && tentativa === 1) {
-    if (!noLimite) return { estado: (await gravar(contada, guardaContagem)).estado, bloqueio };
+    if (!noLimite) return { estado: (await gravar(contada, guardaContagem)).estado };
     return terminal(
       `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas — verificar manualmente`,
       guardaContagem,
     );
   }
+
+  // The breaker as an earlier consSit of this run (or the caller) left it.
+  const bloqueio = disjuntor.bloqueio;
 
   // A 656 earlier in this run: consulting again deepens the throttle hole.
   if (bloqueio?.tipo === 'consumo-indevido') {
@@ -611,7 +653,7 @@ export async function reconcilePorChave(
 
   // The service was unavailable earlier in this run: count, don't call.
   if (bloqueio?.tipo === 'indisponivel') {
-    if (!noLimite) return { estado: (await gravar(contada, guardaContagem)).estado, bloqueio };
+    if (!noLimite) return { estado: (await gravar(contada, guardaContagem)).estado };
     return terminal(
       `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave ` +
         `indisponível nesta rodada (${bloqueio.detalhe}) — verificar manualmente`,
@@ -623,7 +665,7 @@ export async function reconcilePorChave(
   // concurrently (went terminal, or another runner counted it): report it,
   // and do not consult.
   const contagem = await gravar(contada, guardaContagem);
-  if (!contagem.written) return { estado: contagem.estado, bloqueio };
+  if (!contagem.written) return { estado: contagem.estado };
 
   let retSit: TRetConsSitNFe;
   try {
@@ -632,7 +674,7 @@ export async function reconcilePorChave(
     });
   } catch (e) {
     if (e instanceof NFeConsumoIndevidoError) {
-      bloqueio = { tipo: 'consumo-indevido', chave, xMotivo: e.xMotivo };
+      disjuntor.bloqueio = { tipo: 'consumo-indevido', chave, xMotivo: e.xMotivo };
       safeLog(
         'error',
         `[nfe/reconcile] chave ${chave}: consSitNFe recusada com cStat ${e.cStat} — ` +
@@ -649,8 +691,8 @@ export async function reconcilePorChave(
       safeLog('error', `[nfe/reconcile] chave ${chave}: consSitNFe falhou`, safeErrorShape(e));
       // The SERVICE is unreachable: the remaining docs are counted without a
       // call.
-      bloqueio = { tipo: 'indisponivel', detalhe: e.name };
-      if (!noLimite) return { estado: contada.estado, bloqueio };
+      disjuntor.bloqueio = { tipo: 'indisponivel', detalhe: e.name };
+      if (!noLimite) return { estado: contada.estado };
       return terminal(
         `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave ` +
           `indisponível (${e.name}) — verificar manualmente`,
@@ -663,7 +705,7 @@ export async function reconcilePorChave(
       // for THIS chave, so it says nothing about the service: this doc is
       // counted (terminal at the cap), the breaker is left as it was, and the
       // other docs of the run are still consulted.
-      if (!noLimite) return { estado: contada.estado, bloqueio };
+      if (!noLimite) return { estado: contada.estado };
       return terminal(
         `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave ` +
           `falhou (${e.name}) — verificar manualmente`,
@@ -673,14 +715,19 @@ export async function reconcilePorChave(
     throw e;
   }
 
-  await enviNfeCollection(fs, filialId).add(
-    buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
-  );
-
   const outcome = outcomeFromRetConsSit(retSit);
   const chNFeDoProt = retSit.protNFe?.infProt.chNFe ?? null;
   const outraChave = chNFeDoProt != null && chNFeDoProt !== chave;
   const recuperacao = classificarConsSitDeRecuperacao(outcome.cStat, motivo);
+  // The ANSWER trips the breaker at once, before the audit add and the
+  // verdict's write below: either may throw, and the trip must outlive it.
+  const disparo = outraChave ? null : disparoDaResposta(chave, outcome, recuperacao);
+  if (disparo != null) disjuntor.bloqueio = disparo;
+
+  await enviNfeCollection(fs, filialId).add(
+    buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
+  );
+
   console.warn(
     `[nfe/reconcile] chave ${chave}: ${motivo} no recibo ${nRec}; ` +
       `consSitNFe cStat ${outcome.cStat} → ${outraChave ? 'outra-chave' : recuperacao}`,
@@ -712,12 +759,12 @@ export async function reconcilePorChave(
         guardaRodada,
         proc != null ? swapAnchorForProc(proc) : undefined,
       );
-      return { estado, bloqueio };
+      return { estado };
     }
     case 'pendente': {
       // The NF-e is still queued at SEFAZ: nothing to apply and nothing wrong
       // with the service — the counted write stands, no breaker.
-      if (!noLimite) return { estado: contada.estado, bloqueio };
+      if (!noLimite) return { estado: contada.estado };
       return terminal(
         `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave: ` +
           `${descreverConsSit(outcome)} — ainda aguardando processamento — verificar manualmente`,
@@ -725,8 +772,8 @@ export async function reconcilePorChave(
       );
     }
     case 'indisponivel': {
-      bloqueio = { tipo: 'indisponivel', detalhe: `consSit cStat ${outcome.cStat}` };
-      if (!noLimite) return { estado: contada.estado, bloqueio };
+      // The outage breaker tripped above, on the answer.
+      if (!noLimite) return { estado: contada.estado };
       return terminal(
         `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave ` +
           `indisponível: ${descreverConsSit(outcome)} — verificar manualmente`,
@@ -734,9 +781,7 @@ export async function reconcilePorChave(
       );
     }
     case 'sem-resolucao': {
-      if (classifyCStat(outcome.cStat) === 'consumo-indevido') {
-        bloqueio = { tipo: 'consumo-indevido', chave, xMotivo: outcome.xMotivo };
-      }
+      // A 656 among these tripped the consumo-indevido breaker above.
       return terminal(
         `${ausente}; consulta por chave: ${descreverConsSit(outcome)} — verificar manualmente`,
         guardaRodada,

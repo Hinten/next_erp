@@ -138,8 +138,10 @@ export {
 // Generator
 export {
   NFeChaveError,
+  NFeDetError,
   NFeGeneratorError,
   NFeIdeError,
+  NFePartiesError,
   NFeTzError,
   cUFFromUF,
   datePartsInOffset,

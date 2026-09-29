@@ -61,7 +61,7 @@ import {
   type PedidoBundle,
 } from './bundle';
 import { sefazCallFor } from './sefaz-call';
-import { recover539IfNeeded } from './recover539';
+import { extrasDaTrocaDeChave, recover539IfNeeded } from './recover539';
 import {
   classificarConsSitDeRecuperacao,
   motivoPorChave,
@@ -975,10 +975,10 @@ export async function applyAutorizadoOutcome(args: {
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
     if (outcome.cStat === '539') {
+      // Writes nothing: its chave swap rides the persist below (#1654 §2d).
       const recovered = await recover539IfNeeded({
         fs,
         bundle,
-        nfeRef,
         rt,
         tpEmis,
         outcome,
@@ -1083,7 +1083,17 @@ export async function applyAutorizadoOutcome(args: {
     chave,
   });
 
-  await persistPatch(nfeRef, patch, nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : undefined);
+  // A recovered 539's chave swap rides this same merge — atomic with the
+  // outcome, never a separate write landing first (#1654 §2d). Still the plain
+  // persist: nothing here can refuse it (follow-up). A proc and a swap never
+  // meet: a swap forces `chaveMatches: false`.
+  await persistPatch(
+    nfeRef,
+    patch,
+    nfeProcXml != null
+      ? swapAnchorForProc(nfeProcXml)
+      : extrasDaTrocaDeChave(finalChave === chave ? undefined : finalChave),
+  );
 
   // Degraded async: SEFAZ replied 103 to a (nominally sync) single-pedido send.
   // The doc is now aguardandoResposta with a receipt — hand off to the async
@@ -1501,8 +1511,8 @@ export function patchForLoteSemRecibo(
  * and the result is the doc's live truth instead — as `reused: true`, the
  * `existingToEmitResult` precedent: that state was written by ANOTHER run, so
  * apps/web's `classifyEmitResult` must never count, say, a concurrent emit's
- * `aprovada` as THIS run's success. A missing doc throws (`NFeOrchestratorError`)
- * and nothing is written.
+ * `aprovada` as THIS run's success. A missing doc throws (`NFeDocAusenteError`,
+ * an `NFeOrchestratorError`) and nothing is written.
  *
  * Callers: {@link persistirDisposicaoSemRecibo} (#512, #1654 §1) and the
  * anchor / blocking-terminal dispositions of `applyAutorizadoOutcome`'s inline

@@ -1245,11 +1245,18 @@ describe('emitirPedido — cStat=539 (duplicidade with different chave)', () => 
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.chave).toBe(OTHER_CHAVE); // ← chave swap
 
-    // The chave swap is also persisted on the nfev4 doc.
-    const chaveSwapWrite = writes.find(
+    // The chave swap is persisted on the nfev4 doc in ONE merge with the
+    // recovered outcome — never as a separate write landing first (#1654 §2d).
+    const trocas = writes.filter(
       (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.chave === OTHER_CHAVE,
     );
-    expect(chaveSwapWrite).toBeDefined();
+    expect(trocas).toHaveLength(1);
+    expect(trocas[0]!.data).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      cStat: '100',
+      chave: OTHER_CHAVE,
+    });
+    expect(trocas[0]!.merge).toBe(true);
   });
 
   it('marks estado=error when the chave from xMotivo is NOT in the audit log', async () => {
