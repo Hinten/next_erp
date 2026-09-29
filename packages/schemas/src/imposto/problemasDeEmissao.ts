@@ -125,13 +125,29 @@ function problemasIcms(v: VereditoIcmsSn): ProblemaDeEmissao[] {
 }
 
 /**
+ * The tier doc exactly as `resolverImposto.ts` hands it to `impostoSchema`. The
+ * categoria and regra tiers store the legacy UPPERCASE `CFOP`, and the resolver
+ * folds it into the lowercase `cfop` before parsing (a lowercase value, when
+ * present, wins) — so a malformed legacy `CFOP` fails the gate there and the
+ * tier is never read. Without the same fold the parse would strip `CFOP` and
+ * refuse a row the engine skips. On the operação and produto tiers it changes
+ * nothing: neither writer emits an uppercase `CFOP` (`impostoProduto.ts`).
+ */
+function comoOResolverLe(nivel: unknown): unknown {
+  if (nivel == null || typeof nivel !== 'object' || Array.isArray(nivel)) return nivel;
+  const doc = nivel as { cfop?: unknown; CFOP?: unknown };
+  return { ...doc, cfop: doc.cfop ?? doc.CFOP };
+}
+
+/**
  * Every refusal the NF-e engine would raise from this tier doc's config alone,
  * in build order (PIS, COFINS, ICMS). `[]` for a doc the engine would emit —
  * and for one it would never read (it fails `impostoSchema`, the engine's own
- * tier gate), which includes any raw value that is not a tier doc at all.
+ * tier gate, after the resolver's legacy-`CFOP` fold), which includes any raw
+ * value that is not a tier doc at all.
  */
 export function problemasDeEmissaoDoImposto(nivel: unknown): ProblemaDeEmissao[] {
-  const parsed = impostoSchema.safeParse(nivel);
+  const parsed = impostoSchema.safeParse(comoOResolverLe(nivel));
   if (!parsed.success) return [];
   const imposto = parsed.data;
   const problemas: ProblemaDeEmissao[] = [];

@@ -314,6 +314,39 @@ describe('problemasDeEmissaoDoImposto — order, reachability, totality', () => 
     ]);
   });
 
+  // The categoria and regra tiers store the legacy UPPERCASE `CFOP`, and
+  // resolverImposto folds it into `cfop` before its tier-gate parse (a
+  // lowercase value wins). The gate here must read the row the same way.
+  describe('the legacy uppercase CFOP fold (categoria / regra tiers)', () => {
+    it('a malformed uppercase CFOP makes the row unreachable → [] (the engine skips it)', () => {
+      expect(problemasDeEmissaoDoImposto(nivel({ ...PARCIAL_500, CFOP: '5.102' }))).toEqual([]);
+    });
+
+    it('near-miss: a well-formed uppercase CFOP keeps the row reachable → the problem', () => {
+      expect(problemasDeEmissaoDoImposto(nivel({ ...PARCIAL_500, CFOP: '5102' }))).toEqual([
+        PROBLEMA_PARCIAL_500,
+      ]);
+    });
+
+    it('a lowercase cfop wins over a malformed uppercase CFOP → the problem', () => {
+      expect(
+        problemasDeEmissaoDoImposto(nivel({ ...PARCIAL_500, cfop: '5102', CFOP: '5.102' })),
+      ).toEqual([PROBLEMA_PARCIAL_500]);
+    });
+
+    it('a null lowercase cfop falls back to the malformed uppercase CFOP → []', () => {
+      expect(
+        problemasDeEmissaoDoImposto(nivel({ ...PARCIAL_500, cfop: null, CFOP: '5.102' })),
+      ).toEqual([]);
+    });
+
+    it('the categoria page validate skips the same row', () => {
+      expect(
+        issuesDeEmissaoDasLinhas([nivel({ ...PARCIAL_500, CFOP: '5.102' })], 'impostos'),
+      ).toEqual([]);
+    });
+  });
+
   it.each([
     ['null', null],
     ['undefined', undefined],
