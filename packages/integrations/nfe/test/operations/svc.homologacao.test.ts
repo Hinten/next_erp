@@ -257,21 +257,30 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // ⚠️ SKIPPED pending #1471 — a deliberate, TEMPORARY pause, not a deletion.
   // Flip to `false` to restore the test exactly as it was; nothing else changes.
   //
-  // SVC-AN rejects this emission with `cStat=178` ("CNPJ do Emitente não
-  // cadastrado na Receita Federal"). The cause is NOT here: in the same CI run
-  // the same certificate and CNPJ are AUTHORIZED by SEFAZ-SP (`cStat=100`), so
-  // the issuer is plainly registered and it is SVC-AN's own cadastro replica
-  // that intermittently disagrees. It flaps — a pass is a clean `100` — which is
-  // why this is a pause and not a fix. Nothing in this repo can fix it;
-  // registering the CNPJ on the SVC-AN side is an external step (#1471).
+  // SVC-AN rejects this emission with `cStat=178` — **NT 2026.007 §5.10, RV
+  // 12C02-10**: "Acessar LCC-RFB (Chave: UF Emitente, CNPJ Emitente)… CNPJ do
+  // Emitente não cadastrado na Receita Federal". The LCC-RFB is a national copy
+  // of the Receita Federal CNPJ register synced to each autorizadora. The rule
+  // went live in homologação on 2026-09-01; produção follows on 2026-11-03.
   //
-  // ⚠️ The RULE behind 178 is now known, and it makes the "replica" reading
-  // above a description rather than a guess: **NT 2026.007 §5.10, RV 12C02-10**
-  // — "Acessar LCC-RFB (Chave: UF Emitente, CNPJ Emitente)… CNPJ Emitente não
-  // cadastrado". The LCC-RFB is a national replica of the Receita Federal CNPJ
-  // register synchronised to each autorizadora, so two autorizadoras answering
-  // differently for one CNPJ is exactly a replica that has not converged.
-  // Implantação teste 01/09/2026 — the day before the flapping started.
+  // The cause is NOT in this repo. After that date the SAME certificate and
+  // emitente are authorized by SEFAZ-SP (`cStat=100` on the ci-nfe `NFe live`
+  // lane, e.g. 2026-09-25), and EPEC through the Ambiente Nacional completed its
+  // round-trip (2026-09-03). Only SVC-AN's copy fails to list us. Nothing here
+  // can change that; the investigation — and the produção risk it carries — is
+  // #1667.
+  //
+  // ⚠️ It does NOT flap, and it is not healing on its own. An earlier version of
+  // this comment said it "demonstrably" returned `100` on its own; that was a
+  // misreading of CI. The only verified SVC-AN `100` is 2026-08-31 — the day
+  // BEFORE the rule existed. Every 2026-09-03 run once counted as a "pass" was
+  // one where the SVC suite merely did not fail: four logged `SVC-AN host
+  // unreachable` (the emission test was SKIPPED, #337), one never ran the suite,
+  // and none printed the `[SVC-AN lote]` line every attempted emission logs
+  // before its assertion. Every attempt that reached SVC-AN since the rule went
+  // live has answered 178. ⭐ So read the `[SVC-AN protNFe]` line, never the
+  // suite's pass/fail: a green suite does not mean SVC-AN authorized.
+  //
   // 181 (RV 12E02-10) is the destinatário twin; it blocked the SEFAZ-SP suites
   // from 2026-09-17 until the fixture's destinatário moved to a PESSOA FÍSICA
   // (CPF, tag E03), which the rule does not reach at all (#1612). ⚠️ An official
@@ -284,12 +293,14 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // fixture edit can change. The two rejections are twins in the NT and
   // unrelated in what it takes to clear them.
   //
-  // ⚠️ The skip condition below therefore stays as it is, `&& !isFatalRun`: the
-  // FATAL runs keep probing for the cadastro healing. 181 was not cleared by any
-  // cadastro converging — it was left behind, by emitting to a tag the rule does
-  // not read — and that door does not exist here, because the emitente is our
-  // own certificate. What is left for 178 IS the replica converging, and it
-  // demonstrably does: it has returned `100` on its own. Keep probing.
+  // ⚠️ The skip condition below stays `&& !isFatalRun`, for a narrower reason
+  // than this comment once gave. Not because the cadastro is expected to heal by
+  // itself — nothing observed says it will — but because the weekly FATAL run is
+  // the cheapest detector for the day something changes: SVC-AN's copy gaining
+  // the CNPJ, or SEFAZ amending the rule. 181 could be left behind by emitting to
+  // a tag the rule does not read; that door does not exist here, because the
+  // emitente is our own certificate. Silencing the fatal run too would leave
+  // nothing that would notice. A future `[SVC-AN protNFe] cStat=100` is NEWS.
   //
   // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
   // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the
@@ -308,10 +319,12 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // That is #1247 gap (a) exactly, the bug this same file just gained a gate
   // for in the SVC-RS half; shipping its inverse here would be indefensible.
   //
-  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run will go RED while
-  // SVC-AN keeps answering 178. That is the intended trade — it is also the only
-  // remaining detector for when the cadastro HEALS, since the skip removes the
-  // `[SVC-AN protNFe]` line that would otherwise say so.
+  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run goes RED while
+  // SVC-AN keeps answering 178, and `report-failure` comments on the open
+  // tracker (#1500) — never close it while this holds: the lookup is `is:open`,
+  // so a closed tracker makes every Monday open a NEW issue. That is the intended
+  // trade — it is also the only remaining detector IF the cadastro ever changes,
+  // since the skip removes the `[SVC-AN protNFe]` line from every other run.
   //
   // ⚠️ `process.stdout.write`, NOT `console.warn`. Vitest 4's default reporter
   // only replays intercepted `console.*` for FAILING files, so a `console.warn`
