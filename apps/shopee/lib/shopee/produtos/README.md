@@ -99,8 +99,11 @@ steps 11, 12 and 13 use to refuse a native kit (`kitNativoDoAnuncio`,
 an ERP kit is an ordinary Shopee listing and keeps syncing. The kit arm gets
 `true` because `anuncioDerivadoDoKit` PINS `tag.kit: true` rather than copying
 the caller's tag. ⚠️ Until 2026-09-28 the builder did not write the field at
-all, so a link imported before then reads `null` — which SENDS — until it is
-re-imported.
+all, so a link imported before then reads `null` — which SENDS — until that
+listing is RE-imported: through the `importar` route, the CLI, or
+`importar-todos` with `atualizarCadastrados` on. ⚠️ A default `importar-todos`
+run heals nothing — it skips every listing that already has a link
+(`idsJaVinculados`), kits included.
 
 **The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
 naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /
