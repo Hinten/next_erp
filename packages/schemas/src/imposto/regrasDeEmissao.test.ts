@@ -8,6 +8,7 @@ import {
   ehCrtSimplesNacional,
   usaIssqn,
   vereditoIcmsSn,
+  vereditoIsRtc,
   vereditoPisCofins,
   type CrtSimplesNacional,
   type IcmsSnEmitivel,
@@ -630,5 +631,46 @@ describe('vereditoPisCofins — Outr (CST 49–99): a rate counts only when > 0'
       expect(vereditoPisCofins(outr, 0.65, 0.5)).toEqual({ tipo: 'ambasAliquotas', cst: outr });
       expect(vereditoPisCofins(outr, null, null)).toEqual({ ...zero, cst: outr });
     }
+  });
+});
+
+describe('vereditoIsRtc — the IS value mode (#1696 review)', () => {
+  const porUnidade = { pIS: null, pISEspec: 1.25, qTrib: 4, uTrib: 'UN' };
+
+  it('pISEspec + qTrib + uTrib is a per-unit IS, carrying the operands', () => {
+    expect(vereditoIsRtc(porUnidade)).toEqual({
+      tipo: 'porUnidade',
+      pISEspec: 1.25,
+      qTrib: 4,
+      uTrib: 'UN',
+    });
+  });
+
+  it.each([
+    ['null', null],
+    ['blank', ''],
+  ])(
+    'a per-unit IS whose uTrib is %s → uTribAusente (the XSD pairs it with qTrib)',
+    (_l, uTrib) => {
+      expect(vereditoIsRtc({ ...porUnidade, uTrib })).toEqual({ tipo: 'uTribAusente' });
+    },
+  );
+
+  it('pIS wins: an ad valorem IS needs no uTrib, even beside a half-filled per-unit rate', () => {
+    // Near-miss of the case above: the same missing uTrib, but the mode is ad valorem.
+    expect(vereditoIsRtc({ ...porUnidade, pIS: 2, uTrib: null })).toEqual({
+      tipo: 'adValorem',
+      pIS: 2,
+    });
+    // A stored 0 is a configured 0% rate, not an absent one.
+    expect(vereditoIsRtc({ ...porUnidade, pIS: 0 })).toEqual({ tipo: 'adValorem', pIS: 0 });
+  });
+
+  it('no complete mode → semAliquota (qTrib alone, pISEspec alone, nothing)', () => {
+    expect(vereditoIsRtc({ ...porUnidade, pISEspec: null })).toEqual({ tipo: 'semAliquota' });
+    expect(vereditoIsRtc({ ...porUnidade, qTrib: null })).toEqual({ tipo: 'semAliquota' });
+    expect(vereditoIsRtc({ pIS: null, pISEspec: null, qTrib: null, uTrib: null })).toEqual({
+      tipo: 'semAliquota',
+    });
   });
 });

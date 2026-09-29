@@ -426,3 +426,51 @@ describe('issuesDeEmissaoDasLinhas', () => {
     expect(issuesDeEmissaoDasLinhas(raw, 'impostos')).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// RTC IS (#1696 review)
+// ---------------------------------------------------------------------------
+
+describe('problemasDeEmissaoDoImposto — the RTC IS value mode', () => {
+  /** A reachable tier doc with a complete CSOSN 102 and an RTC config carrying `is`. */
+  const comIs = (is: Record<string, unknown>) =>
+    nivel({
+      ...icms(CSOSN.tributadaSemCredito),
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000001', ...is },
+      },
+    });
+
+  it('a per-unit IS without uTrib → one problem on configuracaoIBSCBS.is.uTrib', () => {
+    expect(problemasDeEmissaoDoImposto(comIs({ pISEspec: 1.25, qTrib: 4, uTrib: null }))).toEqual([
+      {
+        campos: ['configuracaoIBSCBS.is.uTrib'],
+        mensagem:
+          'IS por unidade: preencha a unidade tributável (uTrib) junto com a quantidade (qTrib).',
+      },
+    ]);
+  });
+
+  it('the same per-unit IS with its uTrib, or an ad valorem one, is emittable', () => {
+    // Near-misses: the uTrib filled in, and the ad valorem mode that needs none.
+    expect(problemasDeEmissaoDoImposto(comIs({ pISEspec: 1.25, qTrib: 4, uTrib: 'UN' }))).toEqual(
+      [],
+    );
+    expect(problemasDeEmissaoDoImposto(comIs({ pIS: 2, uTrib: null }))).toEqual([]);
+  });
+
+  it('an IS with no complete mode → a problem too (the stored draft accepts it, emission would not)', () => {
+    expect(problemasDeEmissaoDoImposto(comIs({ qTrib: 4 }))).toEqual([
+      {
+        campos: ['configuracaoIBSCBS.is.pIS'],
+        mensagem:
+          'IS: informe a alíquota ad valorem (pIS) ou a específica por unidade (pISEspec, qTrib e uTrib).',
+      },
+    ]);
+  });
+});
