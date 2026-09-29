@@ -34,7 +34,10 @@ const RECENCY_ORDER = [
   { field: 'timestamp', direction: 'desc' as const },
 ];
 
-/** The word `ClienteCell` renders for a pedido with no cliente ref. Keep them equal. */
+/**
+ * The word for a pedido with no cliente ref. `ClienteCell` renders this for a
+ * null ref (it imports it), so the cell and this filter's chip cannot drift.
+ */
 export const ANONIMO_LABEL = 'Anônimo';
 
 type ClienteFilterMode = 'cliente' | 'anonimo';
