@@ -487,3 +487,35 @@ describe('classificarRecusaDeNfe — ⛔ mutante 32: N0, as classes da escada NU
     ).toEqual(TRANSITORIO);
   });
 });
+
+describe('classificarRecusaDeNfe — ⛔ K6: N9 também pela agulha NUA `issue date` (o FAQ do guia 292)', () => {
+  it.each([
+    [
+      'sem "invalid issue date" (o FAQ do guia 292)',
+      'The NF-e issue date is earlier than the order payment date.',
+    ],
+    [
+      'a mesma frase no envelope e em caixa alta',
+      'Wrong parameters, detail: THE NF-E ISSUE DATE IS EARLIER THAN THE ORDER PAYMENT DATE..',
+    ],
+  ])(
+    'PAR: uma recusa que cita a data de emissão %s ⇒ `data-de-emissao-invalida`',
+    (_rotulo, texto) => {
+      expect(classificarRecusaDeNfe(erro('order.upload_invoice_error', texto), PRONTO)).toEqual(
+        recusar('data-de-emissao-invalida'),
+      );
+    },
+  );
+
+  it('⛔ QUASE-MISS: `issue-date` (hífen) não é a agulha ⇒ `recusa-desconhecida`', () => {
+    expect(
+      classificarRecusaDeNfe(
+        erro(
+          'order.upload_invoice_error',
+          'The NF-e issue-date is earlier than the order payment date.',
+        ),
+        PRONTO,
+      ),
+    ).toEqual(DESCONHECIDA);
+  });
+});

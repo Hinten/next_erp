@@ -314,3 +314,27 @@ describe('resumirTextoDaShopee — review 1 (F-1, R4-1, R4-3, R4-5)', () => {
     expect(resumirTextoDaShopee('CFOP 51\u00AD02 não aceito')).toBe('CFOP 5102 não aceito');
   });
 });
+
+describe('resumirTextoDaShopee — review 1, a lente de mutação (R6, R9)', () => {
+  it('32 — PAR (R6): o texto cru ≡ o já mascarado — a junção que só a 2ª passada vê some ANTES do teto', () => {
+    // A 1ª passada une `1 2345678 9` (regra (a)) e deixa `AB1CDE•••FGH1IJ`: 15
+    // caracteres, letras e dois dígitos — só a 2ª passada o mascara. Uma máscara
+    // de passada única deixaria esse token para o teto cortar, e a saída teria
+    // 12 caracteres a menos da cauda (nada vaza: a máscara final ainda o pega).
+    const cru = `AB1CDE1 2345678 9FGH1IJ ${'a'.repeat(200)}`;
+    const uma = resumirTextoDaShopee(cru);
+    expect(uma).toBe(resumirTextoDaShopee(`••• ${'a'.repeat(200)}`));
+    expect(uma).toBe(`••• ${'a'.repeat(EXCERTO_SHOPEE_MAX - 5)}…`);
+    expect(Array.from(uma ?? '')).toHaveLength(EXCERTO_SHOPEE_MAX);
+  });
+
+  it('33 — ⛔ NEAR-MISS (R9): DOIS grupos alfanuméricos com 7 dígitos não são a regra (c) — ela exige três; PAR: com TRÊS, são', () => {
+    // Nenhuma outra regra os pega: a corrida de dígitos tem no máximo seis, e
+    // nenhum token chega a doze caracteres.
+    expect(resumirTextoDaShopee('protocolo 123456 A1 recusado')).toBe(
+      'protocolo 123456 A1 recusado',
+    );
+    expect(resumirTextoDaShopee('ref 12A345 6B7 ok')).toBe('ref 12A345 6B7 ok');
+    expect(resumirTextoDaShopee('protocolo 123456 A1 B2 recusado')).toBe('protocolo ••• recusado');
+  });
+});

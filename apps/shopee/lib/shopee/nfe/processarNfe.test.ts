@@ -1036,6 +1036,19 @@ describe('limites de taxa — pausas que não gastam tentativa', () => {
     expect((await processar(c)).motivo).toBe(MOTIVO_NFE_SHOPEE.tasksDesabilitadas);
     expect(aviso(c)).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.tasksDesabilitadas });
   });
+
+  it.each([
+    ['PAR', 0, 1],
+    ['PAR', 1, 1],
+    ['⛔ QUASE', 2, 2],
+  ])(
+    '⛔ PH10 — %s: rajada com `Retry-After: %i` ⇒ pausa de %i s — o piso é 1 s, nunca uma reentrega imediata no mesmo limite',
+    async (_rotulo, retryAfter, esperadoS) => {
+      const c = cenario({ leituras: [limite('burst', retryAfter)] });
+      expect((await processar(c)).motivo).toBe(MOTIVO_NFE_SHOPEE.limiteDeTaxa);
+      expect(c.enfileiradas.map((e) => e.opts)).toEqual([{ scheduleDelaySeconds: esperadoS }]);
+    },
+  );
 });
 
 describe('⛔ 67 — a última tentativa: só o transitório da Shopee finaliza', () => {
@@ -1235,6 +1248,19 @@ describe('simularEnvioNfeShopee — não escreve, não sobe, não enfileira', ()
       motivo: MOTIVO_NFE_SHOPEE.xmlInvalido,
       avisaria: true,
       carimbaria: true,
+      enviaria: false,
+    });
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('⛔ PH14 — QUASE do `xml-invalido` acima: `outra-nfe-anexada` AVISARIA mas NÃO carimbaria (A sem S), sem escrever nada', async () => {
+    expect(MOTIVOS_QUE_AVISAM.has(MOTIVO_NFE_SHOPEE.outraNfeAnexada)).toBe(true);
+    expect(MOTIVOS_QUE_CARIMBAM.has(MOTIVO_NFE_SHOPEE.outraNfeAnexada)).toBe(false);
+    const c = cenario({ leituras: [outra(K_OUTRA)] });
+    expect(await simularEnvioNfeShopee(c.deps, TAREFA)).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada,
+      avisaria: true,
+      carimbaria: false,
       enviaria: false,
     });
     expect(c.db.writes).toEqual([]);

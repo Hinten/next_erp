@@ -630,6 +630,18 @@ describe('6b — a chave de um irmão CANCELADO ainda à mostra ⇒ nao-refletid
     });
     expect(estadoDoFrete(db)).toBe(ESTADO_FRETE.despachoAutorizado);
   });
+
+  it('⛔ RV3 — PAR: a chave GUARDADA do irmão cancelado (sem proc) com espaços em volta ≡ a mesma ⇒ nao-refletida-ainda; ⛔ QUASE: com prefixo `NFe` não ⇒ outra-nfe-anexada', async () => {
+    // A dobra do lado GUARDADO (`chaveCanonica`) é um trim e nada mais — nunca
+    // tira um prefixo. O PAR "espaços em volta" acima dobra o lado da SHOPEE.
+    const semProc = (chave: string): Readonly<Record<string, DocData>> => ({
+      s4: { estado: ESTADO_NFE.cancelada, chave },
+    });
+    const comEspacos = await rodar({ invoice: chaveDoIrmao, irmaos: semProc(`  ${K_OUTRA}\n`) });
+    expect(comEspacos.r.motivo).toBe(MOTIVO_NFE_SHOPEE.naoRefletidaAinda);
+    const comPrefixo = await rodar({ invoice: chaveDoIrmao, irmaos: semProc(`NFe${K_OUTRA}`) });
+    expect(comPrefixo.r.motivo).toBe(MOTIVO_NFE_SHOPEE.outraNfeAnexada);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
