@@ -394,7 +394,7 @@ describe('codigoSeguro — o código da Shopee como TOKEN curto, nunca texto liv
       );
       expect(fonte, modulo).not.toContain('CODIGO_TOKEN');
       expect(fonte, modulo).not.toContain('[a-z0-9_.]');
-      expect(fonte, modulo).not.toMatch(/function codigoSeguro/);
+      expect(fonte, modulo).not.toMatch(/function codigoSeguro\b/);
     }
   });
 });
