@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { serialize, parse, parseConsCad, NFeXmlError, type XmlValue } from '../../src/xml/index';
+import {
+  serialize,
+  parse,
+  parseConsCad,
+  NFeXmlError,
+  rootElementName,
+  sliceElements,
+  textOfFirst,
+  type XmlValue,
+} from '../../src/xml/index';
 import { META as CONSCAD_META } from '../../src/types/conscad-schema';
 import { META as NFE_META } from '../../src/types/nfe-schema';
 
@@ -155,5 +164,53 @@ describe('ROOTS xmlName for tpEvento-keyed event payloads', () => {
     const parsed = parse<XmlValue>('detEvento_e110111', xml);
     expect(parsed.descEvento).toBe('Cancelamento');
     expect(parsed.nProt).toBe('135200000012345');
+  });
+});
+
+describe('sliceElements — signed parts stay bytes (#1094 F1b)', () => {
+  it('returns each match as the EXACT input slice — attributes, entities and spacing untouched', () => {
+    const a = '<item  id="1"	a="x">Peso &amp; volume</item>';
+    const b = '<item id="2"/>';
+    expect(sliceElements(`<?xml version="1.0"?><root>${a}<outro/>${b}</root>`, 'item')).toEqual([
+      a,
+      b,
+    ]);
+  });
+
+  it('matches on the local name, so a namespace prefix does not hide an element', () => {
+    const x = '<ns2:item xmlns:ns2="urn:x">1</ns2:item>';
+    expect(sliceElements(`<root>${x}</root>`, 'item')).toEqual([x]);
+  });
+
+  it('reports an outer match once — not the same-named element nested inside it', () => {
+    const outer = '<item><item>inner</item></item>';
+    expect(sliceElements(`<root>${outer}</root>`, 'item')).toEqual([outer]);
+  });
+
+  it('skips a match that truncated input left unclosed, and finds none in an empty reply', () => {
+    expect(sliceElements('<root><item>1</item><item>2', 'item')).toEqual(['<item>1</item>']);
+    expect(sliceElements('<root/>', 'item')).toEqual([]);
+  });
+});
+
+describe('rootElementName', () => {
+  it('names the document element past the prolog and comments, without its prefix', () => {
+    expect(rootElementName('<?xml version="1.0"?><!-- c --><procEventoNFe/>')).toBe(
+      'procEventoNFe',
+    );
+    expect(rootElementName('<n:retEnvEvento xmlns:n="urn:x"/>')).toBe('retEnvEvento');
+    expect(rootElementName('')).toBeNull();
+  });
+});
+
+describe('textOfFirst', () => {
+  it('unescapes exactly once', () => {
+    expect(textOfFirst('<d><x>a &amp; b &lt;c&gt;</x></d>', 'x')).toBe('a & b <c>');
+    // Near-miss: an escaped entity stays one level escaped — never double-decoded.
+    expect(textOfFirst('<d><x>&amp;lt;</x></d>', 'x')).toBe('&lt;');
+  });
+
+  it('is null when the element is absent', () => {
+    expect(textOfFirst('<d/>', 'x')).toBeNull();
   });
 });

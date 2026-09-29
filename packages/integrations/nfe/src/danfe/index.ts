@@ -90,7 +90,11 @@ export function renderDanfeEpec(
 export interface RenderCartaCorrecaoInput {
   /** The NF-e's authorized procNFe XML (`nfev4.xml_nfe_proc`). */
   readonly procNFeXml: string;
-  /** The CC-e record's `xml_retorno` (`retEnvEvento`) — source of `dhRegEvento`. */
+  /**
+   * The CC-e's proof of registration — source of `dhRegEvento`: the record's
+   * `xml_retorno` (`retEnvEvento`), or a `procEventoNFe` recovered from SEFAZ
+   * through a consSit when the send reply was lost (`parseCceRetorno`).
+   */
   readonly xmlRetorno: string;
   readonly xCorrecao: string;
   readonly nProt: string | null;

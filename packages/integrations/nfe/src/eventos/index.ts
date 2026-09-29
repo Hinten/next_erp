@@ -21,8 +21,8 @@
 import { formatSefazDateTime, offsetForCUF } from '../generator/tz';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
-import type { TNFe } from '../types/nfe-schema';
-import { parse, serializeFragment } from '../xml';
+import type { TNFe, TProcEvento } from '../types/nfe-schema';
+import { parse, serializeFragment, sliceElements, textOfFirst } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -414,5 +414,92 @@ export function buildProcEventoNFe(
   return (
     '<?xml version="1.0" encoding="UTF-8"?>' +
     `<procEventoNFe xmlns="${EVENTO_NS}" versao="${versao}">${evento}${m[0]}</procEventoNFe>`
+  );
+}
+
+/** One event SEFAZ holds for an NF-e, read back from a `retConsSitNFe`. */
+export interface EventoRegistradoNFe {
+  /** `110110` CC-e, `110111` cancelamento, `110140` EPEC, … */
+  readonly tpEvento: string;
+  /** The sequence the event was SIGNED with (`evento/infEvento/nSeqEvento`). */
+  readonly nSeqEvento: number;
+  /** SEFAZ's outcome for it — `135` / `136` / `155` mean registered. */
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly nProt: string | null;
+  readonly dhRegEvento: string;
+  /** The `<xCorrecao>` text, XML-unescaped — only a CC-e's detEvento has one, so null otherwise. */
+  readonly xCorrecao: string | null;
+  /**
+   * The `<procEventoNFe>` exactly as SEFAZ returned it — our signed `evento`
+   * plus its `retEvento`, never re-serialized — made standalone: the XML
+   * prolog `buildProcEventoNFe` writes, and the NF-e default namespace when the
+   * reply declared it only on its `retConsSitNFe` root. Both edits sit OUTSIDE
+   * the signed `infEvento`, whose canonical form already carries that in-scope
+   * namespace, so the signature over the standalone document is unchanged.
+   */
+  readonly procEventoXml: string;
+}
+
+/**
+ * Every event a `retConsSitNFe` (consSitNFe reply) carries for the NF-e, in
+ * document order, optionally only those of one `tpEvento`.
+ *
+ * This is how an event whose send reply was lost is recovered from SEFAZ
+ * instead of guessed: SEFAZ keeps `(chNFe, tpEvento, nSeqEvento)` unique
+ * (MOC 7.0, rule 3P15-10 → cStat 573), so a CC-e resend that hits 573 is
+ * resolved by reading which text SEFAZ registered at that sequence (#1094 F1b).
+ * The signed bytes come from the reply, so the DANFE-CC-e can print the REAL
+ * `dhRegEvento` / `nProt` — no SEFAZ XML is ever synthesized.
+ *
+ * Throws `NFeEventoError` when an event lacks its `evento` / `retEvento`, has a
+ * non-numeric `nSeqEvento`, or uses an undeclared namespace prefix — never a
+ * best guess, since the caller decides fiscal state from the answer.
+ */
+export function extrairEventosNFe(retConsSitXml: string, tpEvento?: string): EventoRegistradoNFe[] {
+  return sliceElements(retConsSitXml, 'procEventoNFe')
+    .map((fatia) => {
+      const procEventoXml = procEventoAutonomo(fatia);
+      const proc = parse<TProcEvento>('procEventoNFe', procEventoXml);
+      const enviado = proc.evento?.infEvento;
+      const ret = proc.retEvento?.infEvento;
+      if (enviado === undefined || ret === undefined) {
+        throw new NFeEventoError(
+          'procEventoNFe sem <evento> ou <retEvento> na consulta de situação',
+        );
+      }
+      if (!/^[0-9]{1,2}$/.test(enviado.nSeqEvento)) {
+        throw new NFeEventoError(
+          `nSeqEvento inválido na consulta de situação: '${enviado.nSeqEvento}'`,
+        );
+      }
+      return {
+        tpEvento: enviado.tpEvento,
+        nSeqEvento: Number(enviado.nSeqEvento),
+        cStat: ret.cStat,
+        xMotivo: ret.xMotivo,
+        nProt: ret.nProt ?? null,
+        dhRegEvento: ret.dhRegEvento,
+        xCorrecao: textOfFirst(enviado.detEvento, 'xCorrecao'),
+        procEventoXml,
+      };
+    })
+    .filter((e) => tpEvento === undefined || e.tpEvento === tpEvento);
+}
+
+/** A sliced `<procEventoNFe>` as a standalone document (see `procEventoXml`). */
+function procEventoAutonomo(fatia: string): string {
+  const prologo = '<?xml version="1.0" encoding="UTF-8"?>';
+  const abertura = fatia.slice(0, fatia.indexOf('>'));
+  const prefixo = /^<(?:([\w.-]+):)?procEventoNFe\b/.exec(abertura)?.[1];
+  if (prefixo === undefined) {
+    // Unprefixed: it needs its OWN default namespace declaration to stand alone.
+    if (/\sxmlns\s*=/.test(abertura)) return prologo + fatia;
+    return `${prologo}<procEventoNFe xmlns="${EVENTO_NS}"${fatia.slice('<procEventoNFe'.length)}`;
+  }
+  const declarado = new RegExp(`\\sxmlns:${prefixo.replace(/[.-]/g, '\\$&')}\\s*=`);
+  if (declarado.test(abertura)) return prologo + fatia;
+  throw new NFeEventoError(
+    `procEventoNFe com o prefixo '${prefixo}' declarado fora dele — não é possível isolá-lo`,
   );
 }

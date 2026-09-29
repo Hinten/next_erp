@@ -243,3 +243,39 @@ function parseDocument(meta: Meta, xmlName: string, typeName: string, xml: strin
   if (!node) throw new NFeXmlError(`Root element <${xmlName}> not found`);
   return parseElement(meta, node, typeName);
 }
+
+// ---------------------------------------------------------------------------
+// Untyped reads — for the parts of a SEFAZ reply that must stay BYTES
+// ---------------------------------------------------------------------------
+
+/**
+ * The outer XML of every `<name>` element in `xml`, in document order, as the
+ * EXACT slices of the input — never re-serialized, so a signed element keeps
+ * the bytes its digest was computed over (the same reason `retEvento` is lifted
+ * verbatim in `buildProcEventoNFe`). Matches on the local name, so a `ns:`
+ * prefix is ignored; an element nested inside a match is not reported on its
+ * own, and a match left unclosed by truncated input is skipped.
+ */
+export function sliceElements(xml: string, name: string): string[] {
+  const out: string[] = [];
+  const walk = (node: XNode): void => {
+    for (const c of node.children) {
+      if (localName(c.tag) !== name) walk(c);
+      else if (c.raw !== '') out.push(c.raw);
+    }
+  };
+  walk(parseXml(xml));
+  return out;
+}
+
+/** The local name of `xml`'s document element (prolog skipped), or null when it has none. */
+export function rootElementName(xml: string): string | null {
+  const first = parseXml(xml).children[0];
+  return first === undefined ? null : localName(first.tag);
+}
+
+/** The XML-unescaped text of the first `<name>` element in `xml`, or null when there is none. */
+export function textOfFirst(xml: string, name: string): string | null {
+  const node = findNode(parseXml(xml), name);
+  return node === undefined ? null : unescapeText(node.text);
+}
