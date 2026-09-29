@@ -16,7 +16,9 @@
  *   401  no/invalid token
  *   403  insufficient perm
  *   503  runtime not ready (`NFeRuntimeConfigError` / `NFeEndpointError`) —
- *        always before any SEFAZ contact, which is why `apps/web` may retry it
+ *        always before any SEFAZ contact, which is why `apps/web` may retry it;
+ *        it recognises this one by its body (`error: 'NF-e runtime not ready'`),
+ *        since Cloud Run answers its own 503 when an instance fails mid-request
  *   500  a member failure of an unknown class, or any other uncaught error
  */
 import { NextResponse } from 'next/server';

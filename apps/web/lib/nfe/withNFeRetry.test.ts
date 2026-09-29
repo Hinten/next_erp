@@ -4,7 +4,9 @@
  * is NOT safe to re-POST retries ONLY the pre-send 503, never a post-send
  * network/5xx: `cartaCorrecao` (each send increments nSeqEvento), `inutilizar`
  * (563), and — since #1654 §3 — `emitir` and `emitirLote`, whose re-POST
- * regenerates and RE-SENDS every rejeitada/error member.
+ * regenerates and RE-SENDS every rejeitada/error member. "Pre-send" is read
+ * from the 503's BODY (apps/nfe's marker), never from its class: the client
+ * maps every 503 to `NFeRuntimeNotReadyError`, the platform's own included.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -51,6 +53,66 @@ function failThenSucceed<T>(failures: number, err: unknown, value: T): () => Pro
   };
 }
 
+/**
+ * The pre-send 503 exactly as the client builds it from apps/nfe's answer to a
+ * `getNFeRuntime()` failure: `{ error: 'NF-e runtime not ready', code: … }`.
+ */
+const naoProntoDoNFe = () =>
+  new NFeRuntimeNotReadyError('NF-e runtime not ready', {
+    error: 'NF-e runtime not ready',
+    code: 'NFE_AMBIENTE inválido',
+  });
+
+/** A real client over `fetch`, wrapped by the policy under test. */
+function clienteReal(fetch: typeof globalThis.fetch): NFeHttpClient {
+  return withNFeRetry(
+    createNFeHttpClient({
+      baseUrl: 'http://nfe.test',
+      getAuthToken: () => Promise.resolve('token'),
+      fetch,
+    }),
+  );
+}
+
+/** The four calls that are not safe to re-send, each with valid arguments. */
+const NAO_REENVIAVEIS: ReadonlyArray<
+  readonly [keyof NFeHttpClient, (c: NFeHttpClient) => Promise<unknown>]
+> = [
+  ['emitir', (c) => c.emitir('PED-1')],
+  ['emitirLote', (c) => c.emitirLote(['PED-1', 'PED-2'])],
+  [
+    'inutilizar',
+    (c) => c.inutilizar({ filialId: 'F-1', serie: 1, nNFIni: 1, nNFFin: 1, xJust: 'x'.repeat(20) }),
+  ],
+  ['cartaCorrecao', (c) => c.cartaCorrecao('PED-1', 'n1', 'x'.repeat(20))],
+];
+
+/**
+ * 503s apps/nfe did NOT answer. Cloud Run answers its own 503 when the
+ * instance serving the request fails mid-request (memory exhausted, instance
+ * terminated) — after the SEFAZ send — and the client maps EVERY 503 to
+ * `NFeRuntimeNotReadyError`, whatever its body.
+ */
+const SEM_A_MARCA_DO_NFE: ReadonlyArray<readonly [string, () => Response]> = [
+  [
+    'an HTML body (the platform’s own page)',
+    () =>
+      new Response('<html><body><h1>Service Unavailable</h1></body></html>', {
+        status: 503,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+  ],
+  ['an empty body', () => new Response(null, { status: 503 })],
+  [
+    'a JSON body with another error',
+    () =>
+      new Response(JSON.stringify({ error: 'Service Unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  ],
+];
+
 describe('withNFeRetry', () => {
   // #1654 §3 — REWRITTEN on purpose: this used to pin that emitir retried a
   // 5xx. A re-POST is not deduped for a rejeitada/error member (the server
@@ -84,21 +146,51 @@ describe('withNFeRetry', () => {
   );
 
   it('emitir DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const emitir = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { nfeId: 'n1' } as never),
-    );
+    const emitir = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { nfeId: 'n1' } as never));
     const client = withNFeRetry(fakeClient({ emitir }));
     await expect(client.emitir('PED-1')).resolves.toMatchObject({ nfeId: 'n1' });
     expect(emitir).toHaveBeenCalledTimes(2);
   });
 
   it('emitirLote DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const emitirLote = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { results: [] } as never),
-    );
+    const emitirLote = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { results: [] } as never));
     const client = withNFeRetry(fakeClient({ emitirLote }));
     await expect(client.emitirLote(['PED-1'])).resolves.toMatchObject({ results: [] });
     expect(emitirLote).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(
+    NAO_REENVIAVEIS.flatMap(([metodo, chamar]) =>
+      SEM_A_MARCA_DO_NFE.map(([corpo, resposta]) => [metodo, corpo, chamar, resposta] as const),
+    ),
+  )(
+    '%s makes ONE attempt on a 503 without apps/nfe’s marker — %s — it may come after the send',
+    async (_metodo, _corpo, chamar, resposta) => {
+      const fetch = vi.fn(() => Promise.resolve(resposta()));
+      await expect(chamar(clienteReal(fetch))).rejects.toBeInstanceOf(NFeRuntimeNotReadyError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('emitirLote DOES retry the route’s own pre-send 503, end to end through the real client', async () => {
+    // Exactly what `emitir-lote/route.ts` answers when getNFeRuntime() fails.
+    const respostas = [
+      () =>
+        new Response(
+          JSON.stringify({ error: 'NF-e runtime not ready', code: 'NFE_AMBIENTE inválido' }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        ),
+      () =>
+        new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    ];
+    const fetch = vi.fn(() => Promise.resolve(respostas[fetch.mock.calls.length - 1]!()));
+    await expect(clienteReal(fetch).emitirLote(['PED-1', 'PED-2'])).resolves.toEqual({
+      results: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('emitirLote makes ONE attempt on the route’s 500 for a bug — no re-POST of the batch (#1654 §3)', async () => {
@@ -216,9 +308,7 @@ describe('withNFeRetry', () => {
   });
 
   it('cartaCorrecao DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const cartaCorrecao = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { nSeqEvento: 1 } as never),
-    );
+    const cartaCorrecao = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { nSeqEvento: 1 } as never));
     const client = withNFeRetry(fakeClient({ cartaCorrecao }));
     await expect(client.cartaCorrecao('PED-1', 'n1', 'x'.repeat(20))).resolves.toMatchObject({
       nSeqEvento: 1,
@@ -236,9 +326,7 @@ describe('withNFeRetry', () => {
   });
 
   it('inutilizar DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const inutilizar = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { aprovada: true } as never),
-    );
+    const inutilizar = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { aprovada: true } as never));
     const client = withNFeRetry(fakeClient({ inutilizar }));
     await expect(client.inutilizar(inutArgs)).resolves.toMatchObject({ aprovada: true });
     expect(inutilizar).toHaveBeenCalledTimes(2);

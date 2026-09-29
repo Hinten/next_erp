@@ -28,8 +28,10 @@
  *     re-sends whatever the first request had just seen refused (#1654 §3).
  *     `emitir-lote` also answers 500 for a failure of an unknown class (a bug)
  *     by design. So a post-send network/5xx must never auto-retry these — only
- *     `NFeRuntimeNotReadyError`, the 503 apps/nfe answers before any SEFAZ
- *     contact; the operator re-clicks.
+ *     the 503 apps/nfe answers before any SEFAZ contact, recognised by its
+ *     body (`isRuntimeNotReadyBeforeSend`), never by `NFeRuntimeNotReadyError`
+ *     alone: the client maps Cloud Run's own mid-request 503 to that class too.
+ *     The operator re-clicks.
  *   - **`verificar` → NO retry at all** (direct passthrough). The server runs
  *     the batch **sequentially** against SEFAZ precisely to avoid a
  *     consumo-indevido (cStat 656) burst; a client re-POST on a network/5xx
@@ -48,8 +50,33 @@ import {
 const retryTransient = <T>(fn: () => Promise<T>): Promise<T> =>
   retryAsync(fn, { isRetryable: isRetryableNFeHttpError });
 
+/**
+ * The `error` apps/nfe's `emitir`, `emitir-lote`, `inutilizar` and
+ * `carta-correcao` routes answer a `getNFeRuntime()` failure with — a 503
+ * raised before any SEFAZ contact (the two emit routes' tests pin the
+ * literal). Should it drift, the pre-send 503 merely stops being retried.
+ */
+const RUNTIME_NOT_READY = 'NF-e runtime not ready';
+
+/**
+ * apps/nfe's own pre-send 503 — `NFeRuntimeNotReadyError` carrying the route's
+ * marker. The class alone does not prove it: the client maps EVERY 503 to it,
+ * whatever the body, and Cloud Run answers its own 503 (an HTML page, or
+ * nothing) when the instance serving the request fails mid-request — after the
+ * lote may already have gone to SEFAZ.
+ */
+export function isRuntimeNotReadyBeforeSend(err: unknown): boolean {
+  if (!(err instanceof NFeRuntimeNotReadyError)) return false;
+  const body: unknown = err.body;
+  return (
+    body !== null &&
+    typeof body === 'object' &&
+    (body as { error?: unknown }).error === RUNTIME_NOT_READY
+  );
+}
+
 /** Only the pre-SEFAZ-contact 503 is safe to retry for a non-idempotent call. */
-const isPreSendOnly = (err: unknown): boolean => err instanceof NFeRuntimeNotReadyError;
+const isPreSendOnly = isRuntimeNotReadyBeforeSend;
 
 export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
   return {
