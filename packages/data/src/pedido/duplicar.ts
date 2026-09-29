@@ -48,6 +48,8 @@ import { PedidoConflictError } from './usecases';
  *  - `bloquearEmissaoNFe` — operator intent scoped to the ORIGIN ("do not emit
  *    NF-e for THIS order"). Carried over it silently blocks the duplicate's
  *    emission, surfacing only as a 409 `NFeBlockedError` at emit time.
+ *  - `chNFePagamentoAntecipado` — the prepayment notas the ORIGIN settles
+ *    (#331); a duplicate carrying them would settle the same prepayment twice.
  *  - `foiImpresso` — pairs with `dtImpressao`: carrying `true` over without a
  *    real print date would mark a never-printed draft as printed.
  *
@@ -67,6 +69,7 @@ export const DUPLICAR_PEDIDO_STRIP_KEYS = [
   'dataFinalExpedicao',
   'error',
   'chNFeReferenciadas',
+  'chNFePagamentoAntecipado',
   'itensDevolvidos',
   'entradasRelacionadas',
   'saidasRelacionadas',

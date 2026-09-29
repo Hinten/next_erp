@@ -86,6 +86,7 @@ const FILIAL: Filial = {
   cnpj: '12345678000199',
   ie: '111222333',
   iest: null,
+  isuf: null,
   imun: null,
   sede: ORIGIN,
   ultimaModificacao: null,

@@ -13,9 +13,9 @@ import type {
 import { signNFe } from '../../src/sign';
 import { validateXsd } from '../../src/xsd';
 import type { NFeCertificate } from '../../src/cert';
-import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
+import { buildCompraGov, generateNFe, NFeGeneratorError } from '../../src/generator/index';
 import { NFeIdeError } from '../../src/generator/ide';
-import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
+import { HOMOLOGACAO_XNOME, NFePartiesError } from '../../src/generator/parties';
 import { aggregateTotals, buildImpostoXml, buildTotalXml } from '../../src/tribute/index';
 import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
 import {
@@ -39,6 +39,7 @@ const FILIAL: Filial = {
   cnpj: '14200166000187',
   ie: '111111111111',
   iest: null,
+  isuf: null,
   imun: null,
   ultimaModificacao: null,
   sede: {
@@ -806,6 +807,78 @@ describe('generateNFe — nota de débito with an IBS/CBS adjustment group (#330
     expect(xml).toContain('<gIBSCBS>');
 
     expect(xml).toContain('<cClassTrib>000001</cClassTrib>');
+  });
+});
+
+describe('generateNFe — NT 2025.002 ide/emit fields (#331)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const CHAVE_A = '35260514200166000187550010000000071000000011';
+  const CHAVE_B = '35200714200166000187550010000000071000000018';
+  const com = (rtc: GeneratorInput['rtc']) => generateNFe({ ...XSD_INPUT, rtc }).nfeXml;
+  const xsdValida = async (rtc: GeneratorInput['rtc']) =>
+    expect(validateXsd('NFe', signNFe(com(rtc), fixtureCertificate()))).resolves.toBeUndefined();
+
+  it('without rtc (or with an empty one) the XML is byte-identical', () => {
+    const sem = generateNFe(XSD_INPUT).nfeXml;
+    expect(com({})).toBe(sem);
+    expect(com({ pagAntecipado: [] })).toBe(sem);
+  });
+
+  it('dPrevEntrega sits right after dhEmi and XSD-validates', async () => {
+    expect(com({ dPrevEntrega: '2026-06-01' })).toMatch(
+      /<\/dhEmi><dPrevEntrega>2026-06-01<\/dPrevEntrega><tpNF>/,
+    );
+    await xsdValida({ dPrevEntrega: '2026-06-01' });
+    expect(() => com({ dPrevEntrega: '01/06/2026' })).toThrow(NFeIdeError);
+  });
+
+  it('gPagAntecipado closes the ide, one refNFe per nota, and XSD-validates', async () => {
+    expect(com({ pagAntecipado: [CHAVE_A, CHAVE_B] })).toContain(
+      `<gPagAntecipado><refNFe>${CHAVE_A}</refNFe><refNFe>${CHAVE_B}</refNFe></gPagAntecipado></ide>`,
+    );
+    await xsdValida({ pagAntecipado: [CHAVE_A, CHAVE_B] });
+    expect(() => com({ pagAntecipado: ['123'] })).toThrow(/gPagAntecipado\.refNFe/);
+    expect(() => com({ pagAntecipado: Array(100).fill(CHAVE_A) })).toThrow(/at most 99/);
+  });
+
+  it('emit/ISUFEmit closes the emit group and XSD-validates; 7 digits is refused', async () => {
+    expect(com({ isufEmit: '200123456' })).toMatch(
+      /<CRT>1<\/CRT><ISUFEmit>200123456<\/ISUFEmit><\/emit>/,
+    );
+    await xsdValida({ isufEmit: '200123456' });
+    expect(() => com({ isufEmit: '2001234' })).toThrow(NFePartiesError);
+  });
+
+  it('gCompraGov (library-only) sits before gPagAntecipado and XSD-validates', async () => {
+    const compraGov = {
+      tpEnteGov: '2',
+      pRedutor: 12.5,
+      tpOperGov: '2',
+      refDFeAnt: [CHAVE_A],
+    } as const;
+    expect(com({ compraGov, pagAntecipado: [CHAVE_B] })).toContain(
+      '<gCompraGov><tpEnteGov>2</tpEnteGov><pRedutor>12.5000</pRedutor><tpOperGov>2</tpOperGov>' +
+        `<refDFeAnt>${CHAVE_A}</refDFeAnt></gCompraGov><gPagAntecipado>`,
+    );
+    await xsdValida({ compraGov });
+    await xsdValida({ compraGov: { tpEnteGov: '4', pRedutor: 0, tpOperGov: '1' } });
+  });
+
+  it('gCompraGov refuses what BB05 refuses on shape alone', () => {
+    const gov = (tpOperGov: '1' | '2' | '3' | '4', refDFeAnt: string[]) => () =>
+      buildCompraGov({ tpEnteGov: '1', pRedutor: 10, tpOperGov, refDFeAnt });
+    expect(gov('1', [CHAVE_A])).toThrow(/tpOperGov 1 takes 0/); // BB05-10
+    expect(gov('2', [])).toThrow(/tpOperGov 2 takes 1/); // BB05-20
+    expect(gov('2', [CHAVE_A, CHAVE_B])).toThrow(/tpOperGov 2 takes 1/); // BB05-30
+    expect(gov('3', [])).toThrow(/tpOperGov 3 takes 1–99/); // BB05-40
+    expect(gov('4', [CHAVE_A])).toThrow(/tpOperGov 4 takes 0/); // BB05-50
+    expect(gov('3', [CHAVE_A, CHAVE_A])).toThrow(/same DF-e twice/); // BB05-140
+    // Near-misses: the allowed counts pass.
+    expect(gov('3', [CHAVE_A, CHAVE_B])).not.toThrow();
+    expect(gov('1', [])).not.toThrow();
+    expect(() => buildCompraGov({ tpEnteGov: '1', pRedutor: 101, tpOperGov: '1' })).toThrow(
+      /pRedutor/,
+    );
   });
 });
 

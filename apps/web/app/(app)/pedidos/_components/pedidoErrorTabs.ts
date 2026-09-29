@@ -71,6 +71,7 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   infCpl: 'fiscal',
   bloquearEmissaoNFe: 'fiscal',
   chNFeReferenciadas: 'fiscal',
+  chNFePagamentoAntecipado: 'fiscal',
   // The per-item NF-e references (`itens[*].dfeReferenciado`, #330) are edited
   // on the Fiscal tab, so their page-model issue routes there, not to `itens`.
   dfeReferenciado: 'fiscal',

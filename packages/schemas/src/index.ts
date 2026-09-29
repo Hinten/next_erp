@@ -1141,6 +1141,14 @@ export {
 } from './imposto/notaCreditoDebito';
 
 export {
+  // NT 2025.002 ide/emit fields beyond the tax groups — dPrevEntrega, ISUFEmit (#331)
+  ISUF_EMIT_REGEX,
+  MUNICIPIOS_SUFRAMA_EMITENTE,
+  dPrevEntregaParaEmissao,
+  somarMeses,
+} from './imposto/ideRtc';
+
+export {
   // RTC Anexo IV — cCredPres (#333)
   CCREDPRES_PROVENIENCIA,
   CCREDPRES_TABELA,

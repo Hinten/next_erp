@@ -81,6 +81,10 @@ export function ReferenciaPorItemSection({
         mesEmissao: null,
         emitenteDocumento: null,
         emitenteCUF: null,
+        // Judged by their own editor (and at emission), not by this panel.
+        chNFePagamentoAntecipado: [],
+        emitenteISUF: null,
+        emitenteCMun: null,
         chNFeReferenciadas: chNFeReferenciadas.filter((c): c is string => !!c),
         destinatarioDocumento,
         itens: linhas.map(({ item }, i) => ({

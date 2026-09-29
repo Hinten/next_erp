@@ -15,7 +15,9 @@ import {
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
+import { buildCompraGov } from './compraGov';
 import { ufDestinoOperacao } from './destino';
+import { NFeIdeError } from './ide-error';
 import { datePartsInOffset, formatSefazDateTime, UF_TO_IBGE } from './tz';
 import type { Ambiente, GeneratorInput } from './types';
 
@@ -23,12 +25,8 @@ import type { Ambiente, GeneratorInput } from './types';
 // here so existing consumers keep importing it from ide.
 export { UF_TO_IBGE };
 
-export class NFeIdeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NFeIdeError';
-  }
-}
+// Declared in `./ide-error` so `compraGov.ts` can throw it without a cycle.
+export { NFeIdeError };
 
 /** Resolve a UF (e.g. `'SP'`) to its 2-digit IBGE cUF code (`'35'`). */
 export function cUFFromUF(uf: UF): string {
@@ -114,9 +112,26 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     }
   }
 
+  // NT 2025.002 `ide` fields (#331) — the caller passes them only with the
+  // Reforma Tributária on; absent, the ide is byte-identical.
+  const rtc = input.rtc;
+  if (rtc?.dPrevEntrega != null && !/^\d{4}-\d{2}-\d{2}$/.test(rtc.dPrevEntrega)) {
+    throw new NFeIdeError(`dPrevEntrega must be AAAA-MM-DD, got '${rtc.dPrevEntrega}'`);
+  }
+  const pagAntecipado = [...(rtc?.pagAntecipado ?? [])];
+  if (pagAntecipado.length > 99) {
+    throw new NFeIdeError(`gPagAntecipado takes at most 99 refNFe, got ${pagAntecipado.length}`);
+  }
+  for (const chave of pagAntecipado) {
+    if (!CHAVE_NFE_REGEX.test(chave)) {
+      throw new NFeIdeError(`gPagAntecipado.refNFe is not a chave de acesso: '${chave}'`);
+    }
+  }
+
   return {
     cUF,
     cNF: parts.cNF,
+    ...(rtc?.dPrevEntrega != null ? { dPrevEntrega: rtc.dPrevEntrega } : {}),
     natOp: sanitizeNFeText(input.operacao.naturezaDaOperacao) ?? '',
     mod: '55',
     serie: input.serie.toString(),
@@ -137,6 +152,8 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     indIntermed: input.operacao.indIntermed,
     procEmi: PROC_EMI as TNFe_infNFe_ide['procEmi'],
     verProc: VER_PROC,
+    ...(rtc?.compraGov != null ? { gCompraGov: buildCompraGov(rtc.compraGov) } : {}),
+    ...(pagAntecipado.length > 0 ? { gPagAntecipado: { refNFe: pagAntecipado } } : {}),
     // BA — referenced NF-es (empty ⇒ omit; META serializer places it last in ide).
     ...(nfRefs.length > 0 ? { NFref: nfRefs.map((refNFe) => ({ refNFe })) } : {}),
     // B28/B29 — only emitted in contingency. validateInput already enforced

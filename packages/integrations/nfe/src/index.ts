@@ -141,6 +141,7 @@ export {
   NFeIdeError,
   NFePartiesError,
   NFeTzError,
+  buildCompraGov,
   buildEntrega,
   cUFFromUF,
   datePartsInOffset,
@@ -152,6 +153,8 @@ export {
   type GeneratorInput,
   type GeneratorItem,
   type GeneratorOutput,
+  type GeneratorRtc,
+  type CompraGovInput,
   type TpEmis,
 } from './generator';
 

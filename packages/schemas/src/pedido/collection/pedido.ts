@@ -403,6 +403,14 @@ export const pedidoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Chaves de NF-e referenciadas'),
+  // NT 2025.002 `ide/gPagAntecipado` (#331): the NF-e de pagamento antecipado
+  // (a nota de débito 06) whose installments this nota settles. Not a legacy
+  // field — nullable, default null. Checked by the page model and at emission.
+  chNFePagamentoAntecipado: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('NF-e de pagamento antecipado'),
 
   // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
   itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),

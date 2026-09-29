@@ -35,6 +35,7 @@
 import { normalizeDocumento } from '@delfrance/core/documents';
 
 import { chaveAcessoValida, decomporChaveAcesso } from '../chaveAcesso';
+import { MUNICIPIOS_SUFRAMA_EMITENTE } from './ideRtc';
 import {
   FIN_NFE_OPERACAO,
   TP_NF_CREDITO,
@@ -150,6 +151,16 @@ export const REGRA_DOCUMENTO = {
   ajusteCompetenciaFutura: 'ajusteCompetenciaFutura',
   /** Amounts on an item of a nota whose tipo has no adjustment group: ignored. */
   ajusteIndevido: 'ajusteIndevido',
+
+  // ── Grupo BC / C — pagamento antecipado and the emitente's SUFRAMA (#331) ─
+  /** Policy: pagamento-antecipado references ride only with the Reforma Tributária on. */
+  pagAntecipadoSemReformaTributaria: 'pagAntecipadoSemReformaTributaria',
+  /** BC02: a referenced chave that is not an NF-e modelo 55 with a valid check digit. */
+  pagAntecipadoChaveInvalida: 'pagAntecipadoChaveInvalida',
+  /** BC01: at most 99 references (XSD `maxOccurs`). */
+  pagAntecipadoExcesso: 'pagAntecipadoExcesso',
+  /** 1185 (C22-10) — ISUFEmit from a municipality outside the ZFM / ALC. */
+  isufEmitForaDaAreaIncentivada: 'isufEmitForaDaAreaIncentivada',
 } as const;
 export type RegraDocumento = (typeof REGRA_DOCUMENTO)[keyof typeof REGRA_DOCUMENTO];
 
@@ -368,6 +379,29 @@ export const REGRAS_DOCUMENTO = {
     texto:
       'Este item tem valores de ajuste de IBS/CBS, mas o tipo desta nota não os usa — serão ignorados.',
   },
+  pagAntecipadoSemReformaTributaria: {
+    cStat: null,
+    severidade: B,
+    texto:
+      'As NF-e de pagamento antecipado só são referenciadas com a Reforma Tributária ativa nesta filial.',
+  },
+  pagAntecipadoChaveInvalida: {
+    cStat: null,
+    severidade: B,
+    texto:
+      'Chave de NF-e de pagamento antecipado inválida: deve ser uma NF-e modelo 55 com dígito verificador correto.',
+  },
+  pagAntecipadoExcesso: {
+    cStat: null,
+    severidade: B,
+    texto: 'Uma nota referencia no máximo 99 NF-e de pagamento antecipado.',
+  },
+  isufEmitForaDaAreaIncentivada: {
+    cStat: '1185',
+    severidade: B,
+    texto:
+      'A inscrição SUFRAMA do emitente só vale em município da Zona Franca de Manaus ou de Área de Livre Comércio.',
+  },
 } as const satisfies Record<
   RegraDocumento,
   { readonly cStat: string | null; readonly severidade: SeveridadeViolacao; readonly texto: string }
@@ -426,6 +460,12 @@ export interface EntradaRegrasDocumento extends EntradaRegrasOperacao {
   readonly emitenteCUF: string | null;
   /** Month (1–12) of `dhEmi` in the emitente's time zone; `null` when unknown. */
   readonly mesEmissao: number | null;
+  /** `ide/gPagAntecipado/refNFe` — the NF-e de pagamento antecipado this nota settles. */
+  readonly chNFePagamentoAntecipado: readonly string[];
+  /** The emitente's SUFRAMA inscription (`emit/ISUFEmit`), null when it has none. */
+  readonly emitenteISUF: string | null;
+  /** The emitente's municipality (IBGE, 7 digits), null when unknown. */
+  readonly emitenteCMun: string | null;
   readonly itens: readonly ItemRegrasDocumento[];
 }
 
@@ -490,6 +530,8 @@ export function violacoesDoDocumento(e: EntradaRegrasDocumento): ViolacaoDocumen
     ...violacoesDoCClassTrib(e),
     ...violacoesDaNFrefDoCredito(e),
     ...violacoesDaReferenciaPorItem(e),
+    ...violacoesDoPagamentoAntecipado(e),
+    ...violacoesDoIsufEmit(e),
   ];
 }
 
@@ -718,6 +760,31 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
     }
   }
   return out;
+}
+
+/** BC01/BC02 — the NF-e de pagamento antecipado a nota settles (#331). */
+function violacoesDoPagamentoAntecipado(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  const refs = e.chNFePagamentoAntecipado;
+  if (refs.length === 0) return [];
+  const out: ViolacaoDocumento[] = [];
+  if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoSemReformaTributaria, null));
+  if (refs.some((c) => decomporChaveAcesso(c)?.mod !== '55')) {
+    out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoChaveInvalida, null));
+  }
+  if (refs.length > 99) out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoExcesso, null));
+  return out;
+}
+
+/**
+ * C22-10 (1185) — only with the RTC on, the only time `ISUFEmit` is on the
+ * wire. C22-20 (the inscription's check digit) is left to SEFAZ: the NT does
+ * not publish the algorithm, and a guessed one would refuse valid inscriptions.
+ */
+function violacoesDoIsufEmit(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  if (!e.emitRtc || e.emitenteISUF == null || e.emitenteCMun == null) return [];
+  return MUNICIPIOS_SUFRAMA_EMITENTE.has(e.emitenteCMun)
+    ? []
+    : [violacao(REGRA_DOCUMENTO.isufEmitForaDaAreaIncentivada, null)];
 }
 
 /** True when any violation must stop the emission. */

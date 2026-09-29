@@ -28,6 +28,7 @@ import {
   buildGenItems,
   isInterstateFor,
   modoGruposFor,
+  rtcDaNota,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import {
   lerAjusteRtc,
@@ -1761,5 +1762,98 @@ describe('nota de débito with an IBS/CBS adjustment (#330, part 3)', () => {
       ),
     );
     expect(msg).toContain('mês da emissão ou um mês anterior');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #331 — dPrevEntrega, gPagAntecipado and ISUFEmit, only with the RTC on.
+// ---------------------------------------------------------------------------
+
+describe('rtcDaNota — NT 2025.002 ide/emit fields (#331)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  /** 2026-09-29 12:00 in São Paulo. */
+  const DH_EMI = new Date('2026-09-29T12:00:00-03:00');
+  /** µs of a São Paulo wall-clock instant. */
+  const us = (iso: string) => new Date(iso).getTime() * 1000;
+  const bundle = (over: {
+    previsao?: string | null;
+    finNFe?: number;
+    isuf?: string | null;
+    pedido?: Record<string, unknown>;
+  }) =>
+    ({
+      ...fullBundle({ pedido: over.pedido }),
+      operacao: { ...OP, finNFe: over.finNFe ?? 1 },
+      filial: { sede: { estado: 'SP' }, isuf: over.isuf ?? null },
+      frete:
+        over.previsao === undefined
+          ? null
+          : { dataPrevisaoEntrega: over.previsao == null ? null : us(over.previsao) },
+    }) as unknown as PedidoBundle;
+
+  it('emits the forecast as a São Paulo date, inside the B10a windows', () => {
+    // 23:30 on 2026-10-14 in São Paulo is already the 15th in UTC — the date is SP's.
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-10-14T23:30:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({ dPrevEntrega: '2026-10-14' });
+  });
+
+  it('omits the forecast SEFAZ would refuse — never refuses the nota', () => {
+    const dentro = '2026-10-14T12:00:00-03:00';
+    expect(rtcDaNota(bundle({ previsao: dentro }), DH_EMI, MODALIDADE_FRETE.fob)).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: dentro, finNFe: 2 }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-09-28T12:00:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(rtcDaNota(bundle({ previsao: null }), DH_EMI, MODALIDADE_FRETE.cif)).toEqual({});
+  });
+
+  it('carries the pedido’s pagamento-antecipado chaves and the filial’s ISUF', () => {
+    expect(
+      rtcDaNota(
+        bundle({ pedido: { chNFePagamentoAntecipado: [CHAVE, ''] }, isuf: '200123456' }),
+        DH_EMI,
+        MODALIDADE_FRETE.semTransporte,
+      ),
+    ).toEqual({ pagAntecipado: [CHAVE], isufEmit: '200123456' });
+  });
+
+  it('buildGeneratorInput passes them only with the RTC on', () => {
+    const b = { ...fullBundle({ pedido: { chNFePagamentoAntecipado: [CHAVE] } }) } as PedidoBundle;
+    const on = buildGeneratorInput(b, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true);
+    expect(on.rtc).toEqual({ pagAntecipado: [CHAVE] });
+    // RTC off: a filial ISUF is simply not emitted (the pedido chaves above would
+    // be REFUSED instead — the next test).
+    const zfm = {
+      ...fullBundle({}),
+      filial: { isuf: '200123456', sede: { estado: 'AM', codigoMunicipio: '1302603' } },
+    } as unknown as PedidoBundle;
+    expect('rtc' in buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao')).toBe(false);
+    expect(
+      buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true).rtc,
+    ).toEqual({ isufEmit: '200123456' });
+  });
+
+  it('pre-flight: pagamento-antecipado chaves with the RTC off are refused (policy)', () => {
+    const b = bundleWith(OP, { chNFePagamentoAntecipado: [CHAVE] });
+    expect(orchestratorMessage(() => assertNotaBuildable(b, ITEM_100, false))).toBe(
+      "pedido 'PED-TEST': As NF-e de pagamento antecipado só são referenciadas com a Reforma Tributária ativa nesta filial.",
+    );
+    expect(assertNotaBuildable(b, ITEM_100, true)).toBeUndefined();
+  });
+
+  it('pre-flight: 1185 — an ISUF on a filial outside the ZFM/ALC', () => {
+    const b = (codigoMunicipio: string) =>
+      ({
+        ...bundleWith(OP),
+        filial: { isuf: '200123456', sede: { estado: 'SP', codigoMunicipio } },
+      }) as unknown as PedidoBundle;
+    expect(orchestratorMessage(() => assertNotaBuildable(b('3550308'), ITEM_100, true))).toContain(
+      '(SEFAZ 1185)',
+    );
+    // Near-miss: RTC off — ISUFEmit is not on the wire, nothing to judge.
+    expect(assertNotaBuildable(b('3550308'), ITEM_100, false)).toBeUndefined();
   });
 });

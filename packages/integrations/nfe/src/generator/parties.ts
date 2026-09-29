@@ -8,7 +8,7 @@
  */
 import { normalizeDocumento, validateCNPJ, validateCPF } from '@delfrance/core/documents';
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
-import { IE_SENTINELA, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
+import { IE_SENTINELA, ISUF_EMIT_REGEX, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
 
 import { sanitizeNFeEmail, sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type {
@@ -42,7 +42,14 @@ export class NFePartiesError extends Error {
   }
 }
 
-export function buildEmit(filial: Filial): TNFe_infNFe_emit {
+/**
+ * `emit`. `isufEmit` is `emit/ISUFEmit` (NT 2025.002 C22, #331) — the caller
+ * passes it only with the Reforma Tributária on; absent, `emit` is unchanged.
+ */
+export function buildEmit(filial: Filial, isufEmit?: string): TNFe_infNFe_emit {
+  if (isufEmit != null && !ISUF_EMIT_REGEX.test(isufEmit)) {
+    throw new NFePartiesError(`emit/ISUFEmit must be 8 or 9 digits, got '${isufEmit}'`);
+  }
   if (!filial.cnpj) throw new NFePartiesError('filial.cnpj is required');
   if (!filial.razaoSocial) throw new NFePartiesError('filial.razaoSocial is required');
 
@@ -72,6 +79,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
     IM: filial.imun ?? undefined,
     CNAE: filial.cnae ?? undefined,
     CRT: DEFAULT_CRT,
+    ...(isufEmit != null ? { ISUFEmit: isufEmit } : {}),
   };
 }
 
