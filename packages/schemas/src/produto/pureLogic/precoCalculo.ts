@@ -267,6 +267,119 @@ export function diffPrecos(oldPrecos: PrecosMap, newPrecos: PrecosMap): PrecoCha
 }
 
 // ---------------------------------------------------------------------------
+// The price a channel SENDS: the tabela reader + the skip-if-equal fold
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE reader of "the price of this produto in that tabela", for every
+ * channel that SENDS it (Mercado Livre's price plan, Shopee's price sync).
+ * Pure and total — no clock, no Firestore — so both backends share it instead
+ * of each keeping a private copy that drifts.
+ *
+ * Returns `null` ("no price" — `PRECO_NAO_ENCONTRADO` / `preco-nao-encontrado`
+ * downstream) for: a null or empty `tabelaId`; a `precos` that is not a plain
+ * object (null, a scalar, an array); a tabela with no OWN entry (an inherited
+ * key never counts, so a tabela id of `__proto__` or `toString` is `null`); an
+ * entry that is not an object (legacy docs can hold a bare number under a
+ * tabela key); a `valor` that is not a finite NUMBER — a string `'10'` is
+ * `null`, never coerced.
+ *
+ * Otherwise the value is `roundReais`'d (the ONE sanctioned money rounding) and
+ * ⚠️ positivity is checked AFTER rounding: a stored `0.004` rounds to `0` and is
+ * "no price", never a zero price (every downstream reader would treat a `0` as
+ * real, and a marketplace validator refuses it). `0.005` rounds to `0.01` and is
+ * a price.
+ */
+export function precoDaTabela(precos: unknown, tabelaId: string | null): number | null {
+  if (tabelaId === null || tabelaId === '') return null;
+  if (precos === null || typeof precos !== 'object' || Array.isArray(precos)) return null;
+  if (!Object.hasOwn(precos, tabelaId)) return null;
+  const entry: unknown = (precos as Record<string, unknown>)[tabelaId];
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const valor = (entry as { valor?: unknown }).valor;
+  if (typeof valor !== 'number' || !Number.isFinite(valor)) return null;
+  const arredondado = roundReais(valor);
+  return arredondado > 0 ? arredondado : null;
+}
+
+/**
+ * THE skip-if-equal fold: is the price a channel currently shows (`atual`) the
+ * same, in reais, as the price we would send (`alvo`)? A `true` SKIPS the
+ * send, so folding too much silently drops a real price edit.
+ *
+ * EQUAL: two numbers whose `roundReais` agree — `10.004 ≡ 10`,
+ * `0.1 + 0.2 ≡ 0.3` (float residue is not an edit).
+ * DISTINCT: anything one centavo apart after rounding — `49.99 ≠ 50`,
+ * `49.991 ≠ 50` (a tolerance of `< 0.01` would equate these: 0.009 apart, yet
+ * they round to different centavos), `11.10 ≠ 11.11`.
+ * `null` (the current price is unknown or unreadable) never equals anything —
+ * an unknown price is never "already correct".
+ */
+export function mesmoPrecoEmReais(atual: number | null, alvo: number): boolean {
+  return atual !== null && roundReais(atual) === roundReais(alvo);
+}
+
+// ---------------------------------------------------------------------------
+// The price a channel sends for a variation CHILD (parent → children propagation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Does a PARENT produto's `propagatePriceToChildren` say its `precos` are its
+ * variation children's? Only a stored literal `false` turns propagation off:
+ * the schema default is `true`, and a document written before the field
+ * existed — or holding junk (`'false'`, `0`, `null`) — propagates, exactly as
+ * a schema parse would default it. Pure and total.
+ *
+ * ⚠️ Pass the PARENT's (the family anchor's) raw value. A child's own
+ * `propagatePriceToChildren` is never consulted by any sender.
+ */
+export function propagaPrecoAosFilhos(valor: unknown): boolean {
+  return valor !== false;
+}
+
+/**
+ * The price of a variation CHILD in a tabela. Bound today by Mercado Livre's
+ * price plan and by Shopee's publish and price sync, so those three cannot
+ * disagree about a child's price.
+ *
+ * ⚠️ Not yet every sender: Mercado Livre's PUBLISH still decides a User
+ * Products member's price with its own copy (the `price:` of each variation in
+ * `apps/mercado-livre/lib/marketplace/anuncios/publishCore.ts`, via
+ * `resolvePrice`, which neither rounds nor re-checks positivity after
+ * rounding). Routing it through this function is a known follow-up.
+ *
+ * The rule is Mercado Livre's price plan's, verbatim (`buildPrecoDrafts` in
+ * `apps/mercado-livre/lib/marketplace/preco/precoPlan.ts`):
+ *
+ * - `propagaPreco` (the PARENT's flag, folded by {@link propagaPrecoAosFilhos})
+ *   ⇒ `precoDaTabela(precosDoPai, tabelaId)`. The child's own map is NEVER
+ *   read — not even as a fallback when the parent has no price in that tabela.
+ *   Under propagation the parent is the truth: the produto trigger overwrites
+ *   every child's `precos` with the parent's on the next parent price edit, and
+ *   the web editor flags a child that diverges (and refuses a per-child price
+ *   edit). A child map that differs is stale, not an override; one that exists
+ *   while the parent's does not would price a family the operator left unpriced.
+ * - otherwise ⇒ `precoDaTabela(precosDoFilho, tabelaId)`, and the parent is
+ *   never read.
+ *
+ * Both arms go through {@link precoDaTabela}, so its rounding and positivity
+ * rules hold on each (a `0.004` parent price is `null`, never `0`). `null` means
+ * "no price". Pure and total — no clock, no Firestore.
+ */
+export function precoDoFilhoNaTabela(
+  args: {
+    readonly precosDoPai: unknown;
+    readonly propagaPreco: boolean;
+    readonly precosDoFilho: unknown;
+  },
+  tabelaId: string | null,
+): number | null {
+  return args.propagaPreco
+    ? precoDaTabela(args.precosDoPai, tabelaId)
+    : precoDaTabela(args.precosDoFilho, tabelaId);
+}
+
+// ---------------------------------------------------------------------------
 // Kit cost
 // ---------------------------------------------------------------------------
 

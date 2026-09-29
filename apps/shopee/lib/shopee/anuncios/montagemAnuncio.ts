@@ -92,6 +92,7 @@ import {
   type EstadoAnuncioShopee,
   type Foto,
   ESTADO_ANUNCIO_SHOPEE,
+  precoDaTabela,
 } from '@delfrance/schemas';
 
 import { quantidadeParaPublicarShopee } from '../estoque/quantidadeEstoque';
@@ -248,6 +249,12 @@ export interface ArgsMontarAnuncio {
   readonly tabelaNormalId: string | null;
   /** The throwaway item-level price of a has-model CREATE. */
   readonly precoDoPrimeiroFilho: number | null;
+  /**
+   * That first child's `precoDoPai` (D-9): its price is the PARENT's because the
+   * parent propagates. Words the create's `filho-sem-preco` only — the motivo
+   * is the same either way.
+   */
+  readonly precoDoPrimeiroFilhoVemDoPai: boolean;
   /** The throwaway item-level stock of a has-model CREATE (O3). */
   readonly estoqueDoPrimeiroFilho: number | null;
   /** This produto's own available stock at the conta's depósito. */
@@ -766,9 +773,13 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* -------------------------------- price --------------------------------- */
 
-  const tabela = args.tabelaNormalId;
-  const precoProprio =
-    tabela === null ? null : numeroPositivo(produto.precos?.[tabela]?.valor ?? null);
+  // ⚠️ `precoDaTabela` (`@delfrance/schemas`) is the ONE reader of "the price of
+  // this produto in that tabela" for every channel that SENDS one (step 13,
+  // #1521): rounded to the centavo through `roundReais`, and positive AFTER
+  // rounding — a stored `0.004` is no price at all, never a `0.004` on the wire.
+  // The first child's price arrives already read through it
+  // (`publicarAnuncio.ts`'s `filhoParaPublicar`), so the child arm only guards.
+  const precoProprio = precoDaTabela(produto.precos, args.tabelaNormalId);
   const preco = args.temFilhos ? numeroPositivo(args.precoDoPrimeiroFilho) : precoProprio;
   // ⚠️ CREATE-only, all three — the same rule the `seller_stock` refusal below
   // already follows, and for the same reason: `original_price` is absent from
@@ -782,13 +793,19 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
   // fixing a description or refreshing photos got a 422 `sem-preco`.
   if (!args.ehAtualizacao) {
     if (preco === null) {
+      // Under propagation (D-9) the first child's price IS the parent's, and the
+      // web refuses a per-child price edit — so the text names the parent, the
+      // field the operator can fix. Same motivo either way.
       problemas.push(
         args.temFilhos
           ? problema(
               'original_price',
               MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
-              'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
-                'descartável do item',
+              args.precoDoPrimeiroFilhoVemDoPai
+                ? 'o produto pai propaga o preço para as variações e não tem preço na tabela ' +
+                    'normal — defina o preço do pai ou desligue a propagação'
+                : 'o primeiro filho não tem preço na tabela normal — é dele que sai o preço ' +
+                    'descartável do item',
             )
           : problema(
               'original_price',
