@@ -23,15 +23,37 @@
  *  2. **categorias** — create-if-absent, root→leaf, so a child's
  *     `categoriaPaiOuterRef` always points at a document that already exists.
  *  3. **the guarded price patch** (`precosPai`), on the UPDATE path only, and
- *     **BEFORE** the produto merge. The merge always writes (it carries
- *     `ultimaModificacao`), which BUMPS `updateTime`; running it first would
- *     make this precondition assert a stamp we had just invalidated ourselves,
- *     failing every price-writing import.
+ *     **BEFORE** the produto merge. Its precondition is the `updateTime` of the
+ *     PREPARO's read of that produto — the read this plan was derived from,
+ *     carried as {@link EscritaDePrecos.lastUpdateTime} — never a re-read in the
+ *     writer. So the window it guards is the whole preparo → patch span: any
+ *     write to the produto document in it (an operator saving the editor, the
+ *     item webhook, a retrying import) fails FAILED_PRECONDITION and the
+ *     importer re-plans once. Steps 1 and 2 write no produto document, so the
+ *     import never invalidates its own stamp before the patch; the merge always
+ *     writes (it carries `ultimaModificacao`), which BUMPS `updateTime`, and
+ *     running it first would fail every price-writing import. When the listing
+ *     turns an existing produto with NO children into a family, the family
+ *     rule's `propagatePriceToChildren` rides this same patch, so price and flag
+ *     land together or not at all. The CREATE-race arm's patch
+ *     (`precosPaiNaCorrida`) has no preparo read behind it — the cascade never
+ *     found that document — so the writer reads the collided document once,
+ *     asks whether it has a child, and patches against THAT read, still BEFORE
+ *     the arm's merge. ⚠️ The guard sees the PARENT DOCUMENT only: a child
+ *     created in the window without a write to the parent (the ERP's own
+ *     family-forming writer does stamp `filhoUnicoId` there in the same atomic
+ *     write, and is seen) leaves the stamp alone, so the patch lands on a parent
+ *     that now has a child, and `onProdutoChanged` then propagates the parent's
+ *     map onto that child whenever the flag it ends with is not `false`.
  *  4. **the produto**, 5. **extraData**, 6. **estoque**, 7. **the parent link** —
  *     the link last of the four because its document path is what every child
  *     link points AT.
  *  8. **the children**, each in the same internal order (price patch → produto →
- *     estoque → link).
+ *     estoque → link), each patch guarded by the preparo's read of THAT child.
+ *     No earlier step of this import writes a child document; the one other
+ *     writer that can move a child's stamp mid-run is `onProdutoChanged`
+ *     mirroring the parent merge onto a sole member, and that is a concurrent
+ *     writer like any other — the patch loses and the item re-plans.
  *  9. **`filhoUnicoId`** — after the child set is final, in the same unit of
  *     work, because it is a denormalisation of exactly that set.
  * 10. **the photos** — last, separate and RETRIABLE. The legacy committed its
@@ -59,6 +81,7 @@ import { toOuterRef, type ImportacaoShopeeOptions } from '@delfrance/schemas';
 import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from './errosImportacao';
 import { temModelosDe, type GrupoMemo, type ItemLido } from './itemLido';
 import {
+  CAMPOS_DO_PRECO_DA_FAMILIA,
   caminhoDoLinkDaListagem,
   dadosLinkListagem,
   dadosLinkVariacao,
@@ -85,6 +108,14 @@ import {
 export interface DocumentoLido {
   readonly id: string;
   readonly raw: Record<string, unknown>;
+  /**
+   * The snapshot's write stamp. Set on every PRODUTO the cascade reads, because
+   * the guarded price patch asserts it ({@link EscritaDePrecos.lastUpdateTime});
+   * absent on a link row, whose write nothing guards. `unknown` because it is
+   * the Admin SDK's `Timestamp` and nothing here reads it — it is handed
+   * straight back to `update()`, the `DocumentoDeGrupo.updateTime` precedent.
+   */
+  readonly updateTime?: unknown;
 }
 
 /** What the parent cascade settled. */
@@ -189,11 +220,35 @@ export interface EscritaDeLink {
   readonly dados: Record<string, unknown>;
 }
 
-/** The guarded dotted-path price patch, on the UPDATE path only. */
+/**
+ * The guarded dotted-path price patch: on the UPDATE path, and on the
+ * CREATE-race arm's collided document (`precosPaiNaCorrida`).
+ */
 export interface EscritaDePrecos {
   readonly produtoId: string;
-  /** `{ 'precos.<tabelaId>': { valor } }` — set-only; nothing ever deletes a key. */
+  /**
+   * `{ 'precos.<tabelaId>': { valor } }` — set-only; nothing ever deletes a key.
+   * On the PARENT of a has-model listing that turns an existing produto with no
+   * children into a family — or on the childless document a CREATE collided
+   * with — it may also carry, or carry alone, `propagatePriceToChildren` (the
+   * family rule, `planejarPrecoDaFamilia`); a child's patch never does.
+   */
   readonly patch: Record<string, unknown>;
+  /**
+   * The `updateTime` of the PREPARO's read of this produto — the snapshot the
+   * patch was derived from — asserted as the write's `lastUpdateTime`.
+   *
+   * ⚠️ It rides the plan so the writer has no stamp of its own to reach for. A
+   * patch planned against the preparo's read and guarded by a re-read just
+   * before the write is an unguarded write wearing a precondition: the window
+   * it claims to cover is exactly the preparo → re-read span, and an operator's
+   * save landing there is silently reverted. A plan without it is never written
+   * (`aplicarPrecosShopee` throws), so a preparo that forgets the stamp is loud.
+   * The one exception is {@link PlanoImportacaoShopee.precosPaiNaCorrida}, which
+   * has no preparo read to carry: it leaves the plan `undefined`, and the writer
+   * supplies the stamp of its own read of the collided document.
+   */
+  readonly lastUpdateTime: unknown;
 }
 
 /** One picture to fetch, paired with the id that makes it dedupable. */
@@ -225,10 +280,39 @@ export interface PlanoImportacaoShopee {
   readonly taxonomia: readonly GrupoPlanejado[];
   /** Step 2 — create-if-absent, ROOT-FIRST. */
   readonly categorias: readonly CategoriaParaCriar[];
-  /** Step 3 — BEFORE the produto merge. `null` on create and when no price applies. */
+  /**
+   * Step 3 — BEFORE the produto merge, guarded by the preparo's read of the
+   * parent. `null` on create and when no price applies.
+   */
   readonly precosPai: EscritaDePrecos | null;
   /** Step 4. */
   readonly produtoPai: EscritaDeProduto | null;
+  /**
+   * The keys of `produtoPai.data` the CREATE-race arm (`.create()` ⇒
+   * ALREADY_EXISTS ⇒ a merge of the create document) must NOT merge: the
+   * family rule's `precos` and `propagatePriceToChildren` on a has-model
+   * listing. The CREATE decision assumed a NEW document, and the one already at
+   * the deterministic id may hold an operator's price and flag — it is an
+   * earlier attempt that stopped before its link (a blank or ambiguous
+   * `item_sku` misses the SKU rung on the retry). Whether the rule then writes
+   * them is {@link precosPaiNaCorrida}'s call. Empty on a no-model listing (its
+   * race arm is unchanged) and on every update.
+   */
+  readonly camposForaDaCorrida: readonly string[];
+  /**
+   * The CREATE-race arm's own guarded patch — the family rule as it decides an
+   * existing produto with NO children (both price options), in the same shape
+   * as {@link precosPai}. The writer applies it only when the document the
+   * `.create()` collided with has no ERP child (one `paiId` query), against its
+   * OWN read of that document — taken before the query, and before the
+   * race-arm merge so that merge cannot invalidate it; with a child it writes
+   * nothing more, since that family's price and flag are the operator's. Its
+   * `lastUpdateTime` is `undefined` in the plan (the preparo never read that
+   * document), and the writer fills it from that read. `null` when
+   * there is nothing to write (no decision, an option off, no model priced, no
+   * normal table), on a no-model listing and on every update.
+   */
+  readonly precosPaiNaCorrida: EscritaDePrecos | null;
   /** Step 5. */
   readonly extraData: Record<string, unknown> | null;
   /** Step 6. */
@@ -258,6 +342,17 @@ export interface PlanoImportacaoShopee {
   /** Step 10 — retriable, after everything. */
   readonly fotos: { readonly baixar: readonly ParDeImagemShopee[]; readonly ignoradas: number };
   readonly precoPaiIgnorado: MotivoPrecoIgnorado | null;
+  /**
+   * The parent's `propagatePriceToChildren` this import writes (the family rule,
+   * `planejarPrecoDaFamilia`) — inside `produtoPai.data` on CREATE, inside the
+   * guarded `precosPai` patch when an existing produto with NO children becomes
+   * the family — or `null` when it writes none, which an update of a parent
+   * that already owns children always is: that flag is the operator's. Carried
+   * apart so a surface can say it without re-reading either write. A CREATE
+   * that collides (ALREADY_EXISTS) writes {@link precosPaiNaCorrida}'s flag
+   * instead, or none — a plan cannot know it will collide.
+   */
+  readonly propagaPrecoPai: boolean | null;
   readonly estoquePaiIgnorado: MotivoEstoqueIgnorado | null;
   /** What the importer will report, as far as a PLAN can know it. */
   readonly resultado: {
@@ -457,17 +552,39 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
     depositoOuterRef: preparo.depositoOuterRef,
     categoriaOuterRef,
     temFilhos,
+    jaTemFilhos: preparo.pai.jaTemFilhos,
     estoqueExistente: preparo.pai.estoque,
   });
 
+  // ⚠️ ONE guarded patch for the parent's price AND the family rule's flag
+  // (root CLAUDE.md rule 7, tier 1) — price and flag land together or not at
+  // all, and neither ever rides the plain merge. A flag with no price (models
+  // priced apart) goes through the same guard. Its stamp is the one the cascade
+  // READ the parent with — the read price and flag were decided against — never
+  // one the writer fetches later, so a save anywhere in the preparo → patch
+  // window makes it lose. A child created in that window WITHOUT a write to the
+  // parent does not move that stamp: a flag set to `true` there still lets the
+  // produto trigger overwrite that child's map (`estoquePrecos.ts` documents it).
+  const patchPai = patchDePrecoDoPai(mapaPai.precos, mapaPai.propagaPreco);
   const precosPai =
-    !mapaPai.criar && mapaPai.precos !== null
+    !mapaPai.criar && Object.keys(patchPai).length > 0
       ? {
           produtoId: mapaPai.produtoId,
-          patch: {
-            [`precos.${mapaPai.precos.tabelaId}`]: { valor: mapaPai.precos.valor },
-          },
+          patch: patchPai,
+          lastUpdateTime: preparo.pai.existente?.updateTime,
         }
+      : null;
+  // The CREATE-race arm's patch, in the same shape — applied by the writer only
+  // on a collided document with no ERP child (see `precosPaiNaCorrida`). The
+  // mapper decides it on a has-model CREATE alone, so it is `null` elsewhere.
+  // ⚠️ It carries NO stamp: the preparo never read that document (the cascade
+  // missed it), so the writer supplies the stamp of its own read of it — and a
+  // writer that forgot would be refused by `aplicarPrecosShopee`, never unguarded.
+  const corrida = mapaPai.precoDaFamiliaNaCorrida;
+  const patchCorrida = corrida ? patchDePrecoDoPai(corrida.precos, corrida.propagaPreco) : {};
+  const precosPaiNaCorrida =
+    Object.keys(patchCorrida).length > 0
+      ? { produtoId: mapaPai.produtoId, patch: patchCorrida, lastUpdateTime: undefined }
       : null;
 
   const produtoPai =
@@ -572,6 +689,7 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
           ? {
               produtoId: mapa.produtoId,
               patch: { [`precos.${mapa.precos.tabelaId}`]: { valor: mapa.precos.valor } },
+              lastUpdateTime: preparoFilho.existente?.updateTime,
             }
           : null,
       estoque: mapa.estoque
@@ -607,6 +725,8 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
     categorias,
     precosPai,
     produtoPai,
+    camposForaDaCorrida: mapaPai.criar && temModelos ? [...CAMPOS_DO_PRECO_DA_FAMILIA] : [],
+    precosPaiNaCorrida,
     extraData: mapaPai.patchExtraData,
     estoquePai,
     linkPai,
@@ -615,12 +735,27 @@ export function planejarImportacaoShopee(preparo: PreparoImportacaoShopee): Plan
     filhoUnico: { paiId: mapaPai.produtoId, idsPlanejados },
     fotos,
     precoPaiIgnorado: mapaPai.precoIgnorado,
+    propagaPrecoPai: mapaPai.propagaPreco,
     estoquePaiIgnorado: mapaPai.estoqueIgnorado,
     resultado: {
       variacoes: { total: filhos.length, criadas, semLink },
       fotos: { aBaixar: fotos.baixar.length, ignoradas: fotos.ignoradas },
     },
   };
+}
+
+/**
+ * The guarded patch on a PARENT: the dotted normal-table price key and the
+ * family rule's flag, each only when decided — `{}` when neither is.
+ */
+function patchDePrecoDoPai(
+  precos: { readonly tabelaId: string; readonly valor: number } | null,
+  propagaPreco: boolean | null,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (precos !== null) patch[`precos.${precos.tabelaId}`] = { valor: precos.valor };
+  if (propagaPreco !== null) patch.propagatePriceToChildren = propagaPreco;
+  return patch;
 }
 
 function numeroOuNulo(v: unknown): number | null {
