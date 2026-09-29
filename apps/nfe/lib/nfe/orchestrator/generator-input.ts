@@ -57,8 +57,18 @@ const TPAG_DINHEIRO = String(FORMA_PAGAMENTO.dinheiro).padStart(2, '0');
  * There is deliberately no fallback to the fiscal UF: a delivery address the
  * operator declared but we cannot read may be interstate, and guessing
  * intrastate is exactly the defect #422 fixes.
+ *
+ * ⚠️ An EXPORT (`operacao.ehExterior`) has no delivery address, whatever the
+ * frete ref says: `buildIde` sends `idDest=3` without looking at any UF, so a
+ * delivery UF here would decide the CFOP pick alone (a forwarder in the
+ * emitente's UF → `cfop` beside `idDest=3`), and `buildEntrega` cannot describe
+ * a foreign place (no `cPais`/`xPais`, and a foreign buyer has no CPF/CNPJ
+ * recebedor). Returning `null` keeps "`<entrega>` present ⇔ it decided the
+ * destination" and the pre-#422 export behaviour: the fiscal `EX` address picks
+ * `cfopInterestadual`, and an unreadable delivery ref refuses nothing.
  */
 export function entregaDaOperacao(bundle: PedidoBundle): Endereco | null {
+  if (bundle.operacao.ehExterior) return null;
   const { entrega } = bundle;
   if (entrega.tipo === 'enderecoFiscal') return null;
   if (entrega.tipo === 'outroEndereco') return entrega.endereco;
