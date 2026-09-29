@@ -100,6 +100,7 @@ import {
 import {
   idDoFilhoPlanejado,
   idDoPaiPlanejado,
+  produtoJaTemFilhos,
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
 } from './resolveProduto';
@@ -290,7 +291,34 @@ export async function aplicarImportacaoShopee(
       // Someone created it between the cascade and now — merge onto theirs
       // rather than claiming a create that did not happen.
       criado = false;
-      await produtoCollection.merge(db, {}, produtoId, dados);
+      // ⚠️ WITHOUT the family rule's price and flag (`camposForaDaCorrida`,
+      // a has-model listing): the CREATE decision assumed a new document, and
+      // the one here may hold an operator's values. It is not always a racing
+      // twin — an earlier attempt that stopped before its link lands here too.
+      const fora = new Set(plano.camposForaDaCorrida);
+      const semCampos = Object.fromEntries(Object.entries(dados).filter(([k]) => !fora.has(k)));
+      // ⚠️ Decided like the childless produto it almost always is (the link is
+      // written before any child, so an unlinked document has none unless
+      // something attached one since): with NO ERP child, the family rule's
+      // patch through the SAME tier-1 guard as `precosPai`. The preparo never
+      // read this document, so the stamp is the arm's OWN read of it, taken
+      // BEFORE the child query that decides the patch and BEFORE the merge
+      // below — 3 before 4, as on the update path: merging first and re-reading
+      // would guard only the re-read's own line and revert, in silence, a save
+      // landing between the collision and that re-read. With a child, nothing
+      // more: that family's price and flag are the operator's.
+      if (plano.precosPaiNaCorrida !== null) {
+        const lido = await ref.get();
+        if (!(await produtoJaTemFilhos(db, produtoId))) {
+          await aplicarPrecosShopee(db, {
+            ...plano.precosPaiNaCorrida,
+            lastUpdateTime: lido.updateTime,
+          });
+        }
+      }
+      // `camposForaDaCorrida` keeps the merge off the two keys the patch owns,
+      // so running it second cannot overwrite what the patch just wrote.
+      await produtoCollection.merge(db, {}, produtoId, semCampos);
     }
   } else {
     // ⚠️ 3 BEFORE 4 — the guarded price patch asserts the stamp of the PREPARO's

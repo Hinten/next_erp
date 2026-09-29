@@ -397,6 +397,14 @@ describe('aplicarImportacaoShopee — a ordem de escrita', () => {
   it('um anúncio de DOIS tiers escreve taxonomia → categorias → pai → vínculo → filhos', async () => {
     const db = new FakeDb();
     semearPaiComVinculo(db);
+    // ⚠️ O pai já é uma FAMÍLIA (uma variação do ERP fora do anúncio): um pai
+    // SEM filhos viraria família pela regra da família e ganharia o patch
+    // guardado de preço — a ordem desse caso está em `precoDaFamilia.test.ts`.
+    db.seed('produtos/variacao-fora-do-anuncio', {
+      nome: 'Camiseta Básica Rosa',
+      sku: 'CAM-001-RS',
+      paiId: PAI_EXISTENTE,
+    });
     const filhos = [MODEL_A, MODEL_B].map((m) => idDoFilhoPlanejado(PAI_EXISTENTE, m));
 
     await importarAnuncioShopee(deps(db), anuncioDeDoisTiers());

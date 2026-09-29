@@ -187,7 +187,15 @@ async function lerExtraData(
   return snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
 }
 
-async function jaTemFilhos(db: Firestore, produtoId: string): Promise<boolean> {
+/**
+ * Does the ERP hold ANY child of this produto? One `paiId ==` query, `limit(1)`.
+ *
+ * ⚠️ Served by the existing `produtos (paiId ASC, nome ASC)` composite by
+ * PREFIX, like {@link lerIrmaos} — no index of its own. Exported for the
+ * importer's CREATE-race arm, which asks the same question of the document its
+ * `.create()` collided with: one copy of the query, never two.
+ */
+export async function produtoJaTemFilhos(db: Firestore, produtoId: string): Promise<boolean> {
   const snap = await produtoCollection.ref(db, {}).where('paiId', '==', produtoId).limit(1).get();
   return snap.docs.length > 0;
 }
@@ -245,7 +253,7 @@ export async function resolverPaiDaListagem(
         existente: produto,
         extraData: await lerExtraData(db, produto.id),
         linkSobFilho: false,
-        jaTemFilhos: await jaTemFilhos(db, produto.id),
+        jaTemFilhos: await produtoJaTemFilhos(db, produto.id),
         link: comoDocumento(linkEscolhido),
       };
     }
@@ -269,7 +277,7 @@ export async function resolverPaiDaListagem(
         existente: produto,
         extraData: await lerExtraData(db, produto.id),
         linkSobFilho: false,
-        jaTemFilhos: await jaTemFilhos(db, produto.id),
+        jaTemFilhos: await produtoJaTemFilhos(db, produto.id),
         link: comoDocumento(linkEscolhido),
       };
     }

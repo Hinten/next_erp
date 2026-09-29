@@ -6,15 +6,21 @@
  *
  * On the UPDATE path the price write is a DOTTED-PATH `update` naming only the
  * conta's own tabela key (`precos.<tabelaId>`), so the legacy `precos` map is
- * never re-validated and a sibling tabela provably cannot be touched. It is the
- * one guarded write here (root CLAUDE.md rule 7, tier 1): the patch is derived
- * from the PREPARO's read of the produto, so it asserts THAT read's
+ * never re-validated and a sibling tabela provably cannot be touched — plus, on
+ * the parent of a has-model listing that turns an existing produto with NO
+ * children into a family (or on the CREATE-race arm's childless document), the
+ * family rule's `propagatePriceToChildren` (with the price, or alone). It is
+ * the one guarded write here (root CLAUDE.md rule 7, tier 1): the patch is
+ * derived from the PREPARO's read of the produto, so it asserts THAT read's
  * `updateTime` — carried on the plan, `EscritaDePrecos.lastUpdateTime` — and
  * never a re-read taken here. The window it covers is therefore the whole
- * preparo → patch span, which is where the decision was made: a concurrent
- * writer anywhere in it — a retrying import, the item webhook, an operator
- * saving the produto editor — fails FAILED_PRECONDITION instead of being
- * silently reverted, and the importer re-plans once against a fresh read.
+ * preparo → patch span, which is where the price and the flag were decided: a
+ * concurrent writer anywhere in it — a retrying import, the item webhook, an
+ * operator saving the produto editor — fails FAILED_PRECONDITION instead of
+ * being silently reverted, and the importer re-plans once against a fresh read.
+ * The CREATE-race arm's patch is the one no preparo read covers (the cascade
+ * never found that document), so the writer reads the collided document ONCE,
+ * decides from that read, and hands its stamp in — still before the arm's merge.
  *
  * The produto merge always writes on the update path (it carries
  * `ultimaModificacao`), which BUMPS `updateTime`. Running the merge first would
@@ -27,15 +33,16 @@
  * there is no patch at all.
  *
  * ⚠️ What the guard cannot see is a write to a DIFFERENT document. The parent's
- * price is planned only for a parent with no children, and a child created in
- * the preparo → patch window leaves the parent's stamp alone unless its writer
- * also touches the parent — the ERP's own family-forming writer does (it stamps
- * `filhoUnicoId` in the same atomic write), a child written on its own does
- * not. The patch then lands on a parent that now owns a child, and
+ * price and flag are planned only for a parent with no children, and a child
+ * created in the preparo → patch window leaves the parent's stamp alone unless
+ * its writer also touches the parent — the ERP's own family-forming writer does
+ * (it stamps `filhoUnicoId` in the same atomic write), a child written on its
+ * own does not. The patch then lands on a parent that now owns a child, and
  * `onProdutoChanged` propagates the parent's map onto that child whenever the
- * parent's `propagatePriceToChildren` is not `false`. Accepted and documented,
- * not guarded: closing it would need the `paiId` query inside the same guard,
- * which a single-document precondition cannot express.
+ * flag the parent ends with is not `false` — a flag this patch set to `true`
+ * included. Accepted and documented, not guarded: closing it would need the
+ * `paiId` query inside the same guard, which a single-document precondition
+ * cannot express.
  *
  * Set-only: nothing here ever DELETES a price key. `tabelaPromocionalOuterRef`
  * is never written by an import (#803's stance, taken again for Shopee) — the

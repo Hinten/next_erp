@@ -140,6 +140,7 @@ function args(over: Partial<ArgsMontarAnuncio> = {}): ArgsMontarAnuncio {
     temFilhos: false,
     tabelaNormalId: TABELA_NORMAL,
     precoDoPrimeiroFilho: null,
+    precoDoPrimeiroFilhoVemDoPai: false,
     estoqueDoPrimeiroFilho: null,
     ownDisponivel: 7,
     disponivelByProdutoId: {},
@@ -649,6 +650,67 @@ describe('montarAnuncio — o preço não recusa um update', () => {
     // continua sendo obrigatório.
     const criar = montarAnuncio(args({ temFilhos: true, precoDoPrimeiroFilho: null }));
     expect(motivos(criar.problemas)).toContain('filho-sem-preco');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*   (5c) D-9 — o texto do filho-sem-preco do CREATE segue a FONTE do preço    */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — D-9: o texto do `filho-sem-preco` do create nomeia quem tem o preço', () => {
+  const TEXTO_PAI =
+    'o produto pai propaga o preço para as variações e não tem preço na tabela normal — ' +
+    'defina o preço do pai ou desligue a propagação';
+  const TEXTO_FILHO =
+    'o primeiro filho não tem preço na tabela normal — é dele que sai o preço descartável do item';
+
+  function recusaDePreco(vemDoPai: boolean): readonly ProblemaPublicacao[] {
+    return montarAnuncio(
+      args({ temFilhos: true, precoDoPrimeiroFilho: null, precoDoPrimeiroFilhoVemDoPai: vemDoPai }),
+    ).problemas.filter((p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco);
+  }
+
+  it('⚠️ PAR — o preço do primeiro filho vem do PAI (o pai propaga) ⇒ o texto nomeia o PAI e o remédio; o motivo continua `filho-sem-preco`', () => {
+    expect(recusaDePreco(true)).toEqual([
+      {
+        campo: 'original_price',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        mensagem: TEXTO_PAI,
+      },
+    ]);
+  });
+
+  it('⚠️ QUASE-IGUAL — o MESMO primeiro filho sem preço, com o preço PRÓPRIO (o pai não propaga) ⇒ o texto de sempre, que nomeia o filho', () => {
+    expect(recusaDePreco(false)).toEqual([
+      {
+        campo: 'original_price',
+        motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        mensagem: TEXTO_FILHO,
+      },
+    ]);
+  });
+
+  it('a fonte não muda o que é recusado: um primeiro filho COM preço não recusa, venha do pai ou não; um UPDATE não recusa preço', () => {
+    for (const vemDoPai of [true, false]) {
+      const comPreco = montarAnuncio(
+        args({
+          temFilhos: true,
+          precoDoPrimeiroFilho: 19.9,
+          precoDoPrimeiroFilhoVemDoPai: vemDoPai,
+        }),
+      );
+      expect(motivos(comPreco.problemas)).not.toContain('filho-sem-preco');
+      const atualizar = montarAnuncio(
+        args({
+          temFilhos: true,
+          precoDoPrimeiroFilho: null,
+          precoDoPrimeiroFilhoVemDoPai: vemDoPai,
+          link: link(),
+          ehAtualizacao: true,
+        }),
+      );
+      expect(motivos(atualizar.problemas)).not.toContain('filho-sem-preco');
+    }
   });
 });
 
@@ -1172,5 +1234,53 @@ describe('montarAnuncio — image_id_list', () => {
   it('a ORDEM de entrada é preservada — a Shopee renderiza posicionalmente', () => {
     const montado = montarAnuncio(args({ imagens: ['c', 'a', 'b'] }));
     expect(montado.criar.image.image_id_list).toEqual(['c', 'a', 'b']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*    (13) o preço do item passa por precoDaTabela — passo 13 (#1521), M16     */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — o preço do item é lido por precoDaTabela', () => {
+  // O leitor da tabela é UM, compartilhado com o envio de preço do passo 13 e
+  // com o Mercado Livre: `roundReais` ao centavo e positividade DEPOIS do
+  // arredondamento. O passo 11 mandava o valor armazenado cru.
+  it('PAR: 10.567 na tabela normal sai 10.57 no original_price do add_item', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: { [TABELA_NORMAL]: { valor: 10.567 } } }) }),
+    );
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.original_price).toBe(10.57);
+  });
+
+  it('⚠️ NEAR-MISS: 10.5 já está no centavo e sai 10.5 — intacto, nunca 10.50 virando outra coisa', () => {
+    const montado = montarAnuncio(
+      args({ produto: produto({ precos: { [TABELA_NORMAL]: { valor: 10.5 } } }) }),
+    );
+    expect(montado.criar.original_price).toBe(10.5);
+  });
+
+  it('⚠️ 0.004 agora é sem-preco — a positividade é checada DEPOIS do arredondamento (antes ia ao fio como 0.004)', () => {
+    // Sem faixa de preço na categoria, nada mais recusaria: é o leitor que diz
+    // "não há preço".
+    const montado = montarAnuncio(
+      args({
+        produto: produto({ precos: { [TABELA_NORMAL]: { valor: 0.004 } } }),
+        limites: limites({ priceLimit: null }),
+      }),
+    );
+    expect(motivos(montado.problemas)).toContain('sem-preco');
+    expect(montado.criar.original_price).toBe(0);
+  });
+
+  it('⚠️ NEAR-MISS: 0.005 arredonda para 0.01, que É um preço — publica sem recusa', () => {
+    const montado = montarAnuncio(
+      args({
+        produto: produto({ precos: { [TABELA_NORMAL]: { valor: 0.005 } } }),
+        limites: limites({ priceLimit: null }),
+      }),
+    );
+    expect(motivos(montado.problemas)).not.toContain('sem-preco');
+    expect(montado.criar.original_price).toBe(0.01);
   });
 });

@@ -427,6 +427,7 @@ export function planejarPublicacao(
     temFilhos,
     tabelaNormalId: contexto.tabelaNormalId,
     precoDoPrimeiroFilho: primeiro?.preco ?? null,
+    precoDoPrimeiroFilhoVemDoPai: primeiro?.precoDoPai === true,
     estoqueDoPrimeiroFilho: primeiro?.estoque ?? null,
     ownDisponivel: contexto.ownDisponivel,
     disponivelByProdutoId: contexto.disponivelByProdutoId,
