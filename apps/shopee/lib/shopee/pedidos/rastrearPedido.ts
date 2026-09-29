@@ -281,24 +281,27 @@ export async function rastrearPedidoShopee(
         detail = resultado.acao;
 
         // Step 14 (#1522) — the NF-e aviso's cross-step resolver, AFTER the
-        // frete transaction committed and outside it, and ONLY when this
-        // delivery wrote the frete: a parcel written into the removal set moved,
-        // so the pedido's NF-e problem has ended (`frete-despachado`). This path
-        // carries no order row, hence no order status. A Firestore failure here
-        // PROPAGATES (rule 6): the delivery is idempotent, and its retry
-        // re-applies a no-op frete write and tries again.
-        if (resultado.acao === 'atualizado') {
-          avisoNfeResolvido = await resolverAvisoNfeSeEncerrado(
-            db,
-            {
-              integracaoId,
-              pedidoId,
-              estadoFreteEscrito: resultado.estadoEscrito,
-              orderStatus: null,
-            },
-            { nowMs },
-          );
-        }
+        // frete transaction committed and outside it. A parcel Shopee's own
+        // diary places in the removal set moved, so the pedido's NF-e problem
+        // has ended (`frete-despachado`). This path carries no order row, hence
+        // no order status. ⚠️ The estado is `estadoConfirmado` — what the block
+        // holds after the transaction, corroborated by the diary — on EVERY
+        // outcome, not only on `atualizado`: a Firestore failure here PROPAGATES
+        // (rule 6), the queue redelivers, the frete comes back
+        // `ignorado-sem-mudanca`, and it is this estado that makes the retry
+        // try the resolve again. The price is one aviso read per delivery about
+        // a parcel already in the removal set (a replay, or a refresh that moves
+        // no estado); a pre-shipment delivery still reads nothing.
+        avisoNfeResolvido = await resolverAvisoNfeSeEncerrado(
+          db,
+          {
+            integracaoId,
+            pedidoId,
+            estadoFreteEscrito: resultado.estadoConfirmado,
+            orderStatus: null,
+          },
+          { nowMs },
+        );
       }
     }
   }

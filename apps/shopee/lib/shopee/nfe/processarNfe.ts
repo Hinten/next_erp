@@ -37,16 +37,24 @@
  * (`outra-nfe-anexada`) unless it belongs to a CANCELLED sibling NF-e of the same
  * pedido (a substitution), and only `sem-nota` uploads. After a 200 the order is
  * read BACK once (a failure of that read is logged and swallowed: the upload
- * landed), and the recheck is ALWAYS enqueued. A refusal is narrowed by CLASS —
+ * landed), and the recheck is ALWAYS enqueued — with a fresh pause budget, since
+ * it is a new re-enqueue chain. A read-back that still shows no key, or still
+ * shows the key of a CANCELLED sibling (the note a substitution just replaced),
+ * is read-your-write lag: `nao-refletida-ainda`, a log line, and the recheck
+ * judges it. A refusal is narrowed by CLASS —
  * the rate limit FIRST (it extends the API class), then the lapsed grant, then
  * the refusal table (`classificarNfe.ts`), and an answer we cannot read (schema,
- * HTTP, network) lets the read-back decide. A stamp is never spent on the
- * ABSENCE of an answer (reconcile R-f(1), R-g).
+ * HTTP, network) lets the read-back decide — where a CANCELLED sibling's key
+ * counts as no key of ours, as it does after a 200. A stamp is never spent on
+ * the ABSENCE of an answer (reconcile R-f(1), R-g).
  *
  * ## Effects come from the sets, and only from them
  *
- * Every arm DECIDES a motivo; {@link aplicar} is the one place the three sets of
- * `errosNfe.ts` are consulted — the aviso, then the stamp, then the resolve.
+ * Every arm DECIDES a motivo — the pauses and the SERPRO waits included — and
+ * {@link aplicar} is the one place the three sets of `errosNfe.ts` are
+ * consulted: the aviso, then a due recheck, then the stamp, then the resolve. The
+ * completion line's level follows those effects too: an execution that raised
+ * the aviso or stamped the frete logs a `warn`, whatever its outcome label.
  *
  * ## Attempts, pauses and waits
  *
@@ -82,8 +90,10 @@
  * The context holds the order number and our key; the XML is in memory. None of
  * them — nor the upload filename, nor Shopee's raw sentence or pending reason —
  * reaches a log line, a payload or a returned field. The log carries document
- * ids, counters, slugs, Shopee's error CODE when it is a token, and — only for
- * the members of `MOTIVOS_COM_EXCERTO` — the SANITIZED excerpt.
+ * ids, counters, slugs, Shopee's error CODE when it is a token, Shopee's
+ * `invoice_data.status` reduced to a TOKEN — only for the two readings of
+ * `MOTIVOS_COM_STATUS_BRUTO` — and, only for the members of
+ * `MOTIVOS_COM_EXCERTO`, the SANITIZED excerpt.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -104,10 +114,10 @@ import {
 import { nfev4Collection, pedidoCollection } from '@delfrance/data/admin/collections';
 import { coerceToMillis } from '@delfrance/core/datetime';
 import { camposInvalidos, resumirCampos } from '@delfrance/core/wire';
-import { ESTADO_NFE, decideNfeUploadDispatch } from '@delfrance/schemas';
+import { decideNfeUploadDispatch } from '@delfrance/schemas';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
-import { type AvisoDeps, agoraUsDe } from '../avisos/autorizacao';
+import { agoraUsDe } from '../avisos/autorizacao';
 import { readConta } from '../core/contaCache';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
@@ -142,7 +152,6 @@ import {
   type MotivoNfeShopee,
 } from './errosNfe';
 import {
-  chaveCanonica,
   finalidadeDoProc,
   lerNotaNaShopee,
   portaoDoPedido,
@@ -155,13 +164,13 @@ import {
   chaveDaNfeParaCanal,
 } from './pedidoNfe';
 import { resumirTextoDaShopee } from './redacaoNfe';
-import { reverificarNfeShopee } from './reverificacaoNfe';
+import { ehChaveDeIrmaoCancelado, reverificarNfeShopee } from './reverificacaoNfe';
 import {
   FASE_NFE_SHOPEE,
   tarefaNfeShopeeSchema,
-  type AgendadorNfeShopee,
   type ContextoNfeShopee,
-  type FaseNfeShopee,
+  type DepsNfeShopee,
+  type ResultadoNfeShopee,
   type TarefaNfeShopee,
 } from './tarefaNfe';
 
@@ -169,46 +178,10 @@ import {
 /*                                   the seam                                  */
 /* -------------------------------------------------------------------------- */
 
-/** Everything one execution needs (orchestrator amendment W3-1). */
-export interface DepsNfeShopee {
-  readonly db: Firestore;
-  /** The NF-e queue — the recheck, the pauses, the SERPRO waits. */
-  readonly scheduler: AgendadorNfeShopee;
-  /** The dispatcher's ONE clock read, in MILLISECONDS. This module reads none. */
-  readonly nowMs: number;
-  /**
-   * `(by) => FieldValue.increment(by)` — the aviso writer needs the sentinel, and
-   * this folder may not make the runtime import that produces it.
-   */
-  readonly increment: AvisoDeps['increment'];
-  /**
-   * Jitter, in whole SECONDS in `[0, maxS]`, added to every pause's delay so a
-   * fleet paused on the same limit does not resume on the same second. The
-   * randomness belongs to the dispatcher; a test passes a constant.
-   */
-  jitterSec(maxS: number): number;
-  /**
-   * The conta's SHOP client. Default: `loadShopeeContext(...).createShopClient()`
-   * — called only after the conta gate passed.
-   */
-  readonly resolveClient?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
-}
-
-/** What one execution ended in. */
-export interface ResultadoNfeShopee {
-  readonly desfecho: DesfechoNfeShopee;
-  /** `null` only when a 200's read-back could not be read (the upload landed). */
-  readonly motivo: MotivoNfeShopee | null;
-  /** `null` only for a payload that did not parse. */
-  readonly fase: FaseNfeShopee | null;
-  /** The upload replaced a CANCELLED sibling NF-e's key on the order. */
-  readonly substituicao: boolean;
-  /** The frete stamp's answer, when the motivo stamps. */
-  readonly carimbo: MotivoCarimbo | null;
-  readonly avisado: boolean;
-  /** THIS execution closed the pedido's open aviso. */
-  readonly resolvido: boolean;
-}
+// The deps and the result are declared ONCE, in the task contract, because the
+// recheck shares them and may not import this module; re-exported here for the
+// importers that name them through the handler.
+export type { DepsNfeShopee, ResultadoNfeShopee } from './tarefaNfe';
 
 /**
  * What the upload WOULD do — the dry run's answer (`simularEnvioNfeShopee`).
@@ -353,6 +326,11 @@ interface Decisao {
   readonly excerto: string | null;
   /** Shopee's error code, when it is a token (log only). */
   readonly codigo: string | null;
+  /**
+   * Shopee's raw `invoice_data.status` as the reader's TOKEN (log only, and only
+   * for the members of {@link MOTIVOS_COM_STATUS_BRUTO}).
+   */
+  readonly statusBruto: string | null;
   /** Close the pedido's aviso with this resolution. */
   readonly resolucao: ResolucaoAvisoNfeShopee | null;
   /** Enqueue ONE recheck (`ATRASOS_REVERIFICACAO_S[0]`). */
@@ -369,6 +347,7 @@ function decidir(
     motivo,
     excerto: extra.excerto ?? null,
     codigo: extra.codigo ?? null,
+    statusBruto: extra.statusBruto ?? null,
     resolucao: extra.resolucao ?? null,
     reverificar: extra.reverificar ?? false,
   };
@@ -614,7 +593,7 @@ function decisaoDaNossa(
     nota.status === 'pendente'
       ? MOTIVO_NFE_SHOPEE.validacaoPendente
       : MOTIVO_NFE_SHOPEE.statusDesconhecido,
-    { reverificar: true },
+    { reverificar: true, statusBruto: nota.statusBruto },
   );
 }
 
@@ -627,43 +606,6 @@ function decisaoDaOutra(
     desfecho,
     nota.legivel ? MOTIVO_NFE_SHOPEE.outraNfeAnexada : MOTIVO_NFE_SHOPEE.chaveIlegivel,
   );
-}
-
-/**
- * The key a CANCELLED sibling NF-e carries: the key inside its proc (through
- * the same reader as ours), or — only when no proc string is stored at all —
- * its stored `chave`, canonical.
- *
- * Both writers of the corpus keep the proc on a cancel (`apps/nfe`'s cancel is a
- * merge of the estado and the protocol fields; the legacy app's `copyWith`),
- * but an NF-e can reach `aprovada` WITHOUT its proc (the digest-mismatch audit
- * path) and still be cancelled — which leaves the stored key as the only
- * witness.
- */
-function chaveDoIrmaoCancelado(raw: Record<string, unknown>): string | null {
-  if (typeof raw.xml_nfe_proc === 'string') {
-    const doProc = chaveDaNfeParaCanal(raw);
-    return 'chave' in doProc ? doProc.chave : null;
-  }
-  return typeof raw.chave === 'string' ? chaveCanonica(raw.chave) : null;
-}
-
-/**
- * The substitution rule (reconcile R-d(5)): the key Shopee holds belongs to a
- * CANCELLED NF-e of this same pedido — the re-emission after a cancel, which
- * must replace it. ONE unfiltered read of the pedido's slot documents (a handful
- * at most; no index involved).
- */
-async function ehSubstituicao(
-  db: Firestore,
-  pedidoId: string,
-  chaveNaShopee: string,
-): Promise<boolean> {
-  const irmaos = await nfev4Collection.ref(db, { pedidoId }).get();
-  return irmaos.docs.some((doc) => {
-    const raw = (doc.data() ?? {}) as Record<string, unknown>;
-    return raw.estado === ESTADO_NFE.cancelada && chaveDoIrmaoCancelado(raw) === chaveNaShopee;
-  });
 }
 
 /** The pre-read's verdict: upload (maybe as a substitution), or stop. */
@@ -682,7 +624,10 @@ async function decidirPreLeitura(
     case 'nossa':
       return { enviar: false, decisao: decisaoDaNossa(nota, 'antes') };
     case 'outra':
-      if (nota.chave !== null && (await ehSubstituicao(db, ctx.pedidoId, nota.chave))) {
+      // The substitution rule (reconcile R-d(5)): the key Shopee holds belongs
+      // to a CANCELLED NF-e of this same pedido — the re-emission after a
+      // cancel, which must replace it.
+      if (nota.chave !== null && (await ehChaveDeIrmaoCancelado(db, ctx.pedidoId, nota.chave))) {
         return { enviar: true, substituicao: true };
       }
       return { enviar: false, decisao: decisaoDaOutra(nota, DESFECHO_NFE_SHOPEE.recusado) };
@@ -696,8 +641,18 @@ async function decidirPreLeitura(
 /**
  * What a 200 means once read back (`null` = the read-back failed). The recheck
  * is ALWAYS enqueued.
+ *
+ * Read-your-write lag (settle-live register 189) has TWO faces, and both are
+ * `nao-refletida-ainda` — a log line, never an aviso: no key at all, and the key
+ * of a CANCELLED sibling NF-e of this pedido still showing (the note a
+ * substitution just replaced). The recheck is the arbiter of both. Any OTHER key
+ * is loud (`outra-nfe-anexada`), as at the pre-read.
  */
-function decisaoAposEnvio(nota: NotaNaShopee | null): Decisao {
+async function decisaoAposEnvio(
+  db: Firestore,
+  ctx: ContextoNfeShopee,
+  nota: NotaNaShopee | null,
+): Promise<Decisao> {
   if (nota === null) return decidir(DESFECHO_NFE_SHOPEE.enviado, null, { reverificar: true });
   switch (nota.veredito) {
     case 'nossa':
@@ -707,6 +662,11 @@ function decisaoAposEnvio(nota: NotaNaShopee | null): Decisao {
         reverificar: true,
       });
     case 'outra':
+      if (nota.chave !== null && (await ehChaveDeIrmaoCancelado(db, ctx.pedidoId, nota.chave))) {
+        return decidir(DESFECHO_NFE_SHOPEE.enviado, MOTIVO_NFE_SHOPEE.naoRefletidaAinda, {
+          reverificar: true,
+        });
+      }
       return { ...decisaoDaOutra(nota, DESFECHO_NFE_SHOPEE.enviado), reverificar: true };
     case 'nao-br':
       return decidir(DESFECHO_NFE_SHOPEE.enviado, MOTIVO_NFE_SHOPEE.pedidoNaoBr, {
@@ -801,7 +761,20 @@ interface Saida {
   readonly resultado: ResultadoNfeShopee;
   readonly codigo: string | null;
   readonly excerto: string | null;
+  /** The reader's status TOKEN — logged only for {@link MOTIVOS_COM_STATUS_BRUTO}. */
+  readonly statusBruto: string | null;
 }
+
+/**
+ * The two log-only readings whose line carries Shopee's raw status as a TOKEN:
+ * a status we do not know, and a `valid` status on an order with no key. That
+ * token is the only record of WHICH value Shopee sent; everywhere else the
+ * folded status already says everything.
+ */
+const MOTIVOS_COM_STATUS_BRUTO: ReadonlySet<MotivoNfeShopee> = new Set<MotivoNfeShopee>([
+  MOTIVO_NFE_SHOPEE.statusDesconhecido,
+  MOTIVO_NFE_SHOPEE.notaDispensada,
+]);
 
 /** Motivos whose line is an `error`: a data inconsistency, or a producer bug. */
 const MOTIVOS_DE_LOG_ERRO: ReadonlySet<MotivoNfeShopee> = new Set<MotivoNfeShopee>([
@@ -825,8 +798,10 @@ const MOTIVOS_DE_ALERTA: ReadonlySet<MotivoNfeShopee> = new Set<MotivoNfeShopee>
 
 /**
  * The ONE completion line. Ids, counters, slugs; Shopee's code only as a token;
- * the excerpt only for `MOTIVOS_COM_EXCERTO`, already sanitized. Never the order
- * number, the key, the XML, the filename or Shopee's raw text.
+ * the excerpt only for `MOTIVOS_COM_EXCERTO`, already sanitized; the status
+ * token only for `MOTIVOS_COM_STATUS_BRUTO` (`null` there = absent, or not a
+ * token). Never the order number, the key, the XML, the filename or Shopee's
+ * raw text.
  */
 function linhaDeLog(
   tarefa: TarefaNfeShopee,
@@ -836,6 +811,8 @@ function linhaDeLog(
   const { resultado } = s;
   const comExcerto =
     resultado.motivo !== null && MOTIVOS_COM_EXCERTO.has(resultado.motivo) && s.excerto !== null;
+  const comStatusBruto =
+    resultado.motivo !== null && MOTIVOS_COM_STATUS_BRUTO.has(resultado.motivo);
   return {
     queue: SHOPEE_NFE_UPLOAD_QUEUE,
     pedidoId: tarefa.pedidoId,
@@ -851,17 +828,26 @@ function linhaDeLog(
     carimbo: resultado.carimbo,
     ...(s.codigo !== null ? { codigo: s.codigo } : {}),
     ...(comExcerto ? { excerto: resumirTextoDaShopee(s.excerto) } : {}),
+    ...(comStatusBruto ? { statusBruto: s.statusBruto } : {}),
   };
 }
 
+/**
+ * The line's level. `warn` also follows the EFFECTS, not only the outcome label:
+ * after a 200 the label stays `enviado` whatever the read-back says (README §8),
+ * so an execution that raised the aviso or stamped the frete — a parcel that
+ * stops shipping — must never hide among the healthy `info` lines.
+ */
 function registrar(tarefa: TarefaNfeShopee, retryCount: number, s: Saida): void {
   const linha = linhaDeLog(tarefa, retryCount, s);
-  const { motivo, desfecho } = s.resultado;
+  const { motivo, desfecho, avisado, carimbo } = s.resultado;
   if (motivo !== null && MOTIVOS_DE_LOG_ERRO.has(motivo)) {
     console.error(TAG_LOG, linha);
   } else if (
     DESFECHOS_DE_ALERTA.has(desfecho) ||
-    (motivo !== null && MOTIVOS_DE_ALERTA.has(motivo))
+    (motivo !== null && MOTIVOS_DE_ALERTA.has(motivo)) ||
+    avisado ||
+    carimbo === 'carimbado'
   ) {
     console.warn(TAG_LOG, linha);
   } else {
@@ -935,13 +921,23 @@ async function executar(
     },
     codigo: d.codigo,
     excerto: d.motivo !== null && MOTIVOS_COM_EXCERTO.has(d.motivo) ? d.excerto : null,
+    statusBruto: d.statusBruto,
   });
 
-  /** ONE recheck, at the ladder's first rung. The closed valve is a warn, never a failure. */
+  /**
+   * ONE recheck, at the ladder's first rung. The closed valve is a warn, never a
+   * failure.
+   *
+   * ⚠️ `pausas: 0`: the recheck is a NEW re-enqueue chain, bounded by its own
+   * ladder, so it starts with a fresh pause budget — inheriting the upload's
+   * would let one rate limit on the recheck's read end an ACCEPTED note as
+   * `pausa-reenqueues-esgotados`, with an aviso. `adiamentosSerpro` is carried
+   * as it is (nothing in the recheck spends it).
+   */
   const agendarReverificacao = async (): Promise<void> => {
     try {
       await deps.scheduler.enqueue(
-        { ...tarefa, fase: FASE_NFE_SHOPEE.reverificacao },
+        { ...tarefa, fase: FASE_NFE_SHOPEE.reverificacao, pausas: 0 },
         { scheduleDelaySeconds: ATRASOS_REVERIFICACAO_S[0] },
       );
     } catch (err) {
@@ -956,9 +952,18 @@ async function executar(
   };
 
   /**
-   * THE place the sets are consulted: the aviso FIRST, then the stamp (a stamp
-   * failure propagates — the aviso already stands), then the resolve, then the
-   * recheck.
+   * THE place the sets are consulted — every arm's outcome goes through here,
+   * the pauses and the SERPRO waits included. Order: the aviso FIRST, then a
+   * due recheck, then the stamp, then the resolve.
+   *
+   * ⚠️ The recheck is enqueued BEFORE the stamp because the enqueue writes no
+   * document and the stamp is the write that can fail: a stamp failure
+   * PROPAGATES (the aviso already stands) and the queue retries the WHOLE
+   * execution — whose pre-read then finds our key and, reading it BEFORE any
+   * upload of its own, owes no recheck. Enqueued after the stamp, the recheck a
+   * `sefaz-pendente` read-back owes would be lost with it. A retry after a
+   * refusal re-uploads (a refused note leaves no key) and repeats the aviso,
+   * which bumps its `ocorrencias`; only then does its stamp land.
    */
   const aplicar = async (d: Decisao, alvo: AlvoNfe | null): Promise<Saida> => {
     const avisa = d.motivo !== null && MOTIVOS_QUE_AVISAM.has(d.motivo);
@@ -985,6 +990,7 @@ async function executar(
         { increment: deps.increment, nowMs },
       );
     }
+    if (d.reverificar) await agendarReverificacao();
     const carimbo = carimba ? await carimbarFreteNfeShopee(db, alvo.pedidoId, nowUs) : null;
     const resolvido =
       d.resolucao === null
@@ -992,7 +998,6 @@ async function executar(
         : await resolverAvisoNfeShopee(db, alvo.integracaoId, alvo.pedidoId, d.resolucao, {
             nowMs,
           });
-    if (d.reverificar) await agendarReverificacao();
     return saidaDe(d, { avisado: avisa, carimbo, resolvido });
   };
 
@@ -1032,13 +1037,13 @@ async function executar(
         alvo,
       );
     }
-    return saidaDe(
+    return aplicar(
       decidir(
         DESFECHO_NFE_SHOPEE.pausado,
         diario ? MOTIVO_NFE_SHOPEE.cotaDiaria : MOTIVO_NFE_SHOPEE.limiteDeTaxa,
         { codigo },
       ),
-      { avisado: false, carimbo: null, resolvido: false },
+      alvo,
     );
   };
 
@@ -1090,13 +1095,9 @@ async function executar(
         alvo,
       );
     }
-    return saidaDe(
+    return aplicar(
       decidir(DESFECHO_NFE_SHOPEE.adiado, MOTIVO_NFE_SHOPEE.aguardandoSerpro, { codigo }),
-      {
-        avisado: false,
-        carimbo: null,
-        resolvido: false,
-      },
+      alvo,
     );
   };
 
@@ -1104,6 +1105,14 @@ async function executar(
    * The read-back after an "already attached" refusal or an answer we could not
    * read — it DECIDES (reconcile R-f(1)). Its own failures go through the same
    * stops as the pre-read's.
+   *
+   * ⚠️ The key of a CANCELLED sibling NF-e still showing is judged as NO key of
+   * ours (`aoFaltar`), never as another note: it is the note a substitution was
+   * replacing, so ours is simply not there — an uncertain upload retries, and
+   * "access key duplicated" stays the proven case-7 refusal, exactly as over an
+   * order with no key. `outra-nfe-anexada` there would say the ERP does not
+   * replace the very note it was replacing, and would end the substitution
+   * without a retry.
    */
   const releituraQueDecide = async (
     ctx: ContextoNfeShopee,
@@ -1118,6 +1127,9 @@ async function executar(
       case 'nossa':
         return aplicar(aoSerNossa(nota), alvo);
       case 'outra':
+        if (nota.chave !== null && (await ehChaveDeIrmaoCancelado(db, ctx.pedidoId, nota.chave))) {
+          return aoFaltar();
+        }
         return aplicar(decisaoDaOutra(nota, DESFECHO_NFE_SHOPEE.recusado), alvo);
       case 'sem-nota':
         return aoFaltar();
@@ -1250,6 +1262,8 @@ async function executar(
         r.motivo !== null && MOTIVOS_COM_EXCERTO.has(r.motivo) && nota.veredito === 'nossa'
           ? nota.motivoPendente
           : null,
+      statusBruto:
+        nota.veredito === 'nossa' || nota.veredito === 'sem-nota' ? nota.statusBruto : null,
     };
   }
 
@@ -1266,7 +1280,7 @@ async function executar(
     if (err instanceof ShopeeError) return tratarFalhaDoEnvio(err, ctx, alvo, linha);
     throw err;
   }
-  return aplicar(decisaoAposEnvio(await releituraTolerante(ctx)), alvo);
+  return aplicar(await decisaoAposEnvio(db, ctx, await releituraTolerante(ctx)), alvo);
 }
 
 /* -------------------------------------------------------------------------- */

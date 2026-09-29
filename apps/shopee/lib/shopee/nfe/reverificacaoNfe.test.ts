@@ -20,8 +20,10 @@ import {
   type ShopeeClient,
   type ShopeeOrderDetailRow,
 } from '@delfrance/integrations-shopee';
+import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   ESTADO_FRETE,
+  ESTADO_NFE,
   ESTADO_PEDIDO,
   INTEGRACAO_FRETE,
   MODALIDADE_FRETE,
@@ -159,7 +161,14 @@ interface Cenario {
   readonly falhaDoAgendador?: Error | null;
   /** Open the pedido's aviso BEFORE the recheck runs. */
   readonly avisoAberto?: boolean;
+  /** Sibling NF-e documents of the pedido, by id (the cancelled-sibling rule reads them). */
+  readonly irmaos?: Readonly<Record<string, DocData>>;
 }
+
+/** A CANCELLED sibling NF-e whose stored key is `K_OUTRA` (no proc stored). */
+const IRMAO_CANCELADO: Readonly<Record<string, DocData>> = {
+  s4: { estado: ESTADO_NFE.cancelada, chave: K_OUTRA },
+};
 
 async function abrirAviso(db: FakeDb): Promise<void> {
   await avisarNfeShopee(
@@ -177,6 +186,9 @@ async function abrirAviso(db: FakeDb): Promise<void> {
 
 async function rodar(c: Cenario, db = new FakeDb()) {
   if (db.store[PEDIDO_PATH] === undefined) db.seed(PEDIDO_PATH, pedidoCru());
+  for (const [id, raw] of Object.entries(c.irmaos ?? {})) {
+    db.seed(nfev4Collection.docPath({ pedidoId: PEDIDO_ID }, id), raw);
+  }
   if (c.avisoAberto === true) await abrirAviso(db);
   const escritasAntes = db.writes.length;
   const { client, acessos } = clienteEspiao();
@@ -535,6 +547,92 @@ describe('6 — outra', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  (6b) a CANCELLED sibling's key — read-your-write lag (R1-2 / R5-4)          */
+/* -------------------------------------------------------------------------- */
+
+describe('6b — a chave de um irmão CANCELADO ainda à mostra ⇒ nao-refletida-ainda', () => {
+  const chaveDoIrmao = { access_key: K_OUTRA, status: 'valid' };
+
+  it('PAR: 1ª reverificação ⇒ reagenda UMA vez (1800 s, reverificacoes 1), SEM aviso e sem escrita', async () => {
+    const payload = tarefa({ reverificacoes: 0, pausas: 2 });
+    const { r, db, chamadas } = await rodar({
+      invoice: chaveDoIrmao,
+      irmaos: IRMAO_CANCELADO,
+      payload,
+    });
+
+    expect(r).toEqual(
+      semEfeito(DESFECHO_NFE_SHOPEE.reverificacaoAgendada, MOTIVO_NFE_SHOPEE.naoRefletidaAinda),
+    );
+    expect(chamadas).toEqual([
+      {
+        payload: { ...payload, fase: FASE_NFE_SHOPEE.reverificacao, reverificacoes: 1 },
+        opcoes: { scheduleDelaySeconds: ATRASOS_REVERIFICACAO_S[1] },
+      },
+    ]);
+    expect(db.writes).toEqual([]);
+    expect(aviso(db)).toBeUndefined();
+  });
+
+  it('PAR: além da escada (reverificacoes 1) ⇒ descartado nao-refletida-ainda — log só, NADA enfileirado', async () => {
+    const { r, db, chamadas } = await rodar({
+      invoice: chaveDoIrmao,
+      irmaos: IRMAO_CANCELADO,
+      payload: tarefa({ reverificacoes: 1 }),
+    });
+
+    expect(r).toEqual(
+      semEfeito(DESFECHO_NFE_SHOPEE.descartado, MOTIVO_NFE_SHOPEE.naoRefletidaAinda),
+    );
+    expect(chamadas).toEqual([]);
+    expect(db.writes).toEqual([]);
+  });
+
+  it('PAR: a chave do irmão lida com espaços em volta ≡ a mesma ⇒ também nao-refletida-ainda', async () => {
+    const { r } = await rodar({
+      invoice: { access_key: `  ${K_OUTRA}\t`, status: 'valid' },
+      irmaos: IRMAO_CANCELADO,
+    });
+    expect(r.motivo).toBe(MOTIVO_NFE_SHOPEE.naoRefletidaAinda);
+  });
+
+  it('⛔ QUASE-ERRO: uma TERCEIRA chave (nem a nossa nem a do irmão cancelado) ⇒ outra-nfe-anexada, com aviso', async () => {
+    const { r, db, chamadas } = await rodar({
+      invoice: { access_key: montarChave(undefined, '000000003'), status: 'valid' },
+      irmaos: IRMAO_CANCELADO,
+    });
+
+    expect(r).toEqual({
+      ...semEfeito(DESFECHO_NFE_SHOPEE.recusado, MOTIVO_NFE_SHOPEE.outraNfeAnexada),
+      avisado: true,
+    });
+    expect(aviso(db)?.motivo).toBe(MOTIVO_NFE_SHOPEE.outraNfeAnexada);
+    expect(chamadas).toEqual([]);
+  });
+
+  it('⛔ QUASE-ERRO: a MESMA chave num irmão que NÃO está cancelado ⇒ outra-nfe-anexada, com aviso', async () => {
+    const { r } = await rodar({
+      invoice: chaveDoIrmao,
+      irmaos: { s4: { estado: ESTADO_NFE.aprovada, chave: K_OUTRA } },
+    });
+    expect(r).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada, avisado: true });
+  });
+
+  it('válvula fechada no reagendamento ⇒ descartado tasks-desabilitadas (aviso pelo conjunto), sem carimbo', async () => {
+    const { r, db } = await rodar({
+      invoice: chaveDoIrmao,
+      irmaos: IRMAO_CANCELADO,
+      falhaDoAgendador: new ShopeeNfeUploadTasksDisabledError(),
+    });
+    expect(r).toEqual({
+      ...semEfeito(DESFECHO_NFE_SHOPEE.descartado, MOTIVO_NFE_SHOPEE.tasksDesabilitadas),
+      avisado: true,
+    });
+    expect(estadoDoFrete(db)).toBe(ESTADO_FRETE.despachoAutorizado);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  (7) a foreign order                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -570,6 +668,7 @@ const TODOS: readonly Cenario[] = [
   { invoice: { access_key: '', status: 'pending' } },
   { invoice: null },
   { invoice: { access_key: K_OUTRA, status: 'valid' } },
+  { invoice: { access_key: K_OUTRA, status: 'valid' }, irmaos: IRMAO_CANCELADO },
   { invoice: { access_key: '-', status: null } },
   { invoice: { access_key: K, status: 'valid' }, region: 'SG' },
   {
@@ -623,6 +722,15 @@ describe('8 — a reverificação NUNCA envia (mutante 63)', () => {
       expect(fonte).not.toMatch(/from '\.\/processarNfe'/);
     });
 
+    it('F-2: os tipos de deps e de resultado vêm do CONTRATO da tarefa — nenhuma cópia estrutural local', () => {
+      const texto = fonte.replace(/\r\n/g, '\n');
+      const importDoContrato = /import \{([^}]*)\} from '\.\/tarefaNfe';/.exec(texto)?.[1] ?? '';
+      expect(importDoContrato).toMatch(/\btype DepsNfeShopee\b/);
+      expect(importDoContrato).toMatch(/\btype ResultadoNfeShopee\b/);
+      // No interface of its own that restates a deps or a result shape.
+      expect(texto).not.toMatch(/\binterface \w*(Deps|Resultado)\w*/);
+    });
+
     it('cada conjunto é consultado em UM só lugar (W3-4)', () => {
       const vezes = (s: string) => fonte.split(s).length - 1;
       expect(vezes('MOTIVOS_QUE_AVISAM.has(')).toBe(1);
@@ -661,6 +769,7 @@ describe('9 — os efeitos vêm SÓ dos conjuntos', () => {
         MOTIVO_NFE_SHOPEE.chaveIlegivel,
         MOTIVO_NFE_SHOPEE.pedidoNaoBr,
         MOTIVO_NFE_SHOPEE.tasksDesabilitadas,
+        MOTIVO_NFE_SHOPEE.naoRefletidaAinda,
       ].sort(),
     );
   });

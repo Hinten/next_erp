@@ -47,13 +47,16 @@ The families are the seam, not a filing convention.
   `get_order_detail` field list, the excerpt cap and `atrasoSerproS`. It holds
   no environment reader and no clock, and no byte ceiling: that bound is the
   PACKAGE's `SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES`, measured on the same bytes
-  the package sends. `errosNfe.ts` holds the outcomes, the fifty-seven-member
+  the package sends. `errosNfe.ts` holds the outcomes, the fifty-six-member
   `MotivoNfeShopee` union with its TOTAL pt-BR fragment table, the three sets
   that are the only source of every effect (§8), and the queue's own
   `ShopeeNfeUploadTasksDisabledError`. `tarefaNfe.ts` holds the `.strict()`
-  Cloud Tasks payload, the enqueue seam and the in-memory context the two
-  phases share. `redacaoNfe.ts` holds the ONE sanitizer for Shopee's free
-  text (§9).
+  Cloud Tasks payload, the enqueue seam, the in-memory context the two
+  phases share, and ONE declaration of the execution's deps and result
+  (`DepsNfeShopee`, `ResultadoNfeShopee`): the recheck may not import the
+  handler, and a structural copy kept in step by a comment is the drift the
+  root `CLAUDE.md` warns about. `redacaoNfe.ts` holds the ONE sanitizer for
+  Shopee's free text (§9).
 - **The wire readers and the classifier.** `notaNaShopee.ts` reads our key out
   of our XML (§5), decides whether our note is a sale (§4), turns one order row
   into one of four verdicts, and gates the order (§6). It is the only source
@@ -76,9 +79,12 @@ The families are the seam, not a filing convention.
 - **The handler.** `processarNfe.ts` runs the common prefix P1–P8, the upload
   ladder, the pauses and the SERPRO waits, the final-attempt split and the ONE
   completion log line. It also holds `lerPedidoNaShopee`, the folder's one
-  order read, and `simularEnvioNfeShopee`, the writer-free dry run.
+  order read, and `simularEnvioNfeShopee`, the writer-free dry run, and
+  re-exports the two shared types for its importers.
   `reverificacaoNfe.ts` is the recheck: it judges the row the prefix already
-  read, makes no Shopee call of its own and never uploads.
+  read, makes no Shopee call of its own and never uploads. It also holds the
+  cancelled-sibling rule, `ehChaveDeIrmaoCancelado` (§6), because both phases
+  ask it and the handler may import the recheck but not the other way round.
 - **The CLI (wave 4).** `enviarNfeCli.ts` is the pure half of `enviar:nfe`
   (argument parsing and the two renderers), and `scripts/enviar-nfe.ts` is its
   I/O half (§13). The runbook is `scripts/README.md`.
@@ -141,18 +147,23 @@ Shopee calls. The tasks round trip of PR 2 relies on exactly that.
   unless the key belongs to a CANCELLED sibling NF-e of the same pedido. That
   is the re-emission after a cancel, and it uploads as a substitution (§6).
 - No key ⇒ upload. A 200 is followed by ONE read-back. The read-back's own
-  failure is logged and swallowed, because the upload landed. Then the
-  recheck is ALWAYS enqueued, whatever the read-back said.
+  failure is logged and swallowed, because the upload landed. A read-back that
+  still shows no key, or still shows the key of a CANCELLED sibling (the note
+  a substitution just replaced), is read-your-write lag:
+  `nao-refletida-ainda`, a log line (§6). Then the recheck is ALWAYS enqueued,
+  whatever the read-back said, with a fresh pause budget (§12).
 - A refusal is narrowed by CLASS: the rate limit first (it extends the API
   class), then the lapsed grant, then the refusal table (§7). An answer we
   cannot read (schema, HTTP, network) lets a read-back decide, and its absence
-  of our key is never a stamp.
+  of our key is never a stamp. There too, a cancelled sibling's key counts as
+  no key of ours.
 
 **The recheck phase** reads the row the prefix already fetched: valid ⇒
 resolve; pending with a reason ⇒ `sefaz-pendente` (aviso + stamp); pending
-without one ⇒ one more look on the ladder, then a log line; no key ⇒
-`nao-anexada` (aviso, no stamp); another key ⇒ the aviso. It never uploads, and
-every re-enqueue it makes is pinned to its own phase.
+without one, or a cancelled sibling's key still showing ⇒ one more look on the
+ladder, then a log line; no key ⇒ `nao-anexada` (aviso, no stamp); any other
+key ⇒ the aviso. It never uploads, and every re-enqueue it makes is pinned to
+its own phase.
 
 **The attempts.** A transient Shopee failure RETHROWS to the queue's ladder,
 except on the last attempt (`retryCount >= NFE_SHOPEE_MAX_TENTATIVAS - 1`).
@@ -284,8 +295,8 @@ upload's refusal table (reconcile R-f(3)):
 | verdict    | when                                                                         |                                                                         |
 | ---------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `nao-br`   | `pedidoForaDoBrasil(row.region)`                                             | whatever `invoice_data` says                                            |
-| `sem-nota` | `invoice_data` null, or its key blank (`null`, `""`, whitespace)             | carries `status`; `invoiceDataAusente` when the whole block was missing |
-| `nossa`    | the canonical key equals ours                                                | carries `status`, and the SANITIZED pending reason when `pendente`      |
+| `sem-nota` | `invoice_data` null, or its key blank (`null`, `""`, whitespace)             | `status`, `statusBruto`; `invoiceDataAusente` if the block was missing  |
+| `nossa`    | the canonical key equals ours                                                | `status`, `statusBruto`, and the SANITIZED pending reason if `pendente` |
 | `outra`    | a legible other key (`legivel`, with that key), or a value that is not a key |                                                                         |
 
 ⚠️ **Never "foreign" on the absence of `invoice_data`.** The wire schema folds
@@ -304,6 +315,17 @@ match on `valid` / `pending`. `invalid`, `validated` and `pending_review` are
 note. `null` or blank is `ausente`. Shopee added the field (with
 `pending_reason`) on 2026-08-06, and it is why the key alone does not confirm
 an upload: a SEFAZ or SERPRO rejection can land after a 200.
+
+**`statusBruto`, the diagnostic beside the fold.** The fold above says
+`desconhecido` for every value we do not know, so it cannot say WHICH value
+Shopee sent. The `sem-nota` and `nossa` verdicts therefore also carry the raw
+status reduced to a TOKEN: the same trim and lower-case, kept only when the
+result is 1 to 24 characters of `[a-z_]`, else `null`. It decides nothing. The
+handler's completion line carries it for exactly two readings,
+`status-desconhecido` and `nota-dispensada` (§8). EQUAL: `' INVALID '` logs as
+`invalid`. DISTINCT (`null`): `valid.`, `pending review`, anything with a digit
+and anything over 24 characters. A token has no room for a key, a document
+number or a sentence, so the line never carries Shopee's free text.
 
 **The order gate.** `portaoDoPedido(row)`, in order, the first match answers:
 
@@ -331,6 +353,28 @@ count, because an NF-e can reach `aprovada` WITHOUT its proc (the audit's
 digest-mismatch path) and still be cancelled. Both cancel writers keep the
 proc: `apps/nfe`'s cancel is a merge, and the legacy app's is a `copyWith`.
 
+**The substitution lag rule.** After an upload, the order can still show the
+key a substitution just replaced (read-your-write lag, register 189). An
+`outra-nfe-anexada` aviso there would tell the operator, seconds after the ERP
+replaced that note, that the ERP does not replace it. So the same helper,
+`ehChaveDeIrmaoCancelado` (one unfiltered read of the slot documents, only when
+Shopee shows another legible key), is asked at every reading AFTER an upload:
+
+- the read-back after a 200 ⇒ `nao-refletida-ainda`, a log line, and the
+  recheck it always enqueues is the arbiter;
+- the recheck ⇒ one more look on its `[900, 1800]` ladder, then `descartado`
+  `nao-refletida-ainda` (a log line; nothing would ever resolve an aviso);
+- the read-back that DECIDES after an unreadable answer or an "already
+  attached" refusal ⇒ judged as an order with NO key of ours: an uncertain
+  upload retries (on the last attempt, `canal-indisponivel` plus a recheck),
+  N1 stays the proven `chave-em-outro-pedido`, and N2 retries. Read as another
+  note, it would end the substitution with no retry.
+
+The rule is not gated on the upload having been a substitution: the recheck's
+payload cannot say so, and a cancelled sibling's key is the same fact either
+way. A THIRD key, or the same key on a sibling that is NOT cancelled, stays
+`outra-nfe-anexada` at every reading.
+
 ## 7. The classifier: the code cannot decide, so the sentence does
 
 Most of guide 382's seventeen refusal cases share ONE code, `error_param`,
@@ -354,8 +398,8 @@ order:
 | row    | matches                                                                                                           | class · motivo                                                                                               |
 | ------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | N0     | `kind` burst / daily / reauth                                                                                     | `transitorio` — the handler's class ladder owns these                                                        |
-| N1     | `access key duplicated` (case 7)                                                                                  | `ja-anexada` — read-back: ours ⇒ `ja-enviado`; another ⇒ aviso; none ⇒ `chave-em-outro-pedido`               |
-| N2     | `already sent` (the legacy's same-order text)                                                                     | `ja-anexada` — read-back: none ⇒ `transitorio`                                                               |
+| N1     | `access key duplicated` or `access_key duplicated` (case 7)                                                       | `ja-anexada` — read-back: ours ⇒ `ja-enviado`; another ⇒ aviso; none (§6) ⇒ `chave-em-outro-pedido`          |
+| N2     | `already sent` (the legacy's same-order text)                                                                     | `ja-anexada` — read-back: none (§6) ⇒ `transitorio`                                                          |
 | N3     | `invoice status is invalid` (case 11)                                                                             | `ignorar` — `pedido-cancelado` when the pre-read status is `IN_CANCEL`/`CANCELLED`, else `sem-suporte-a-nfe` |
 | N4–N13 | issuer, CNPJ, UF, IE, cancelled, issue date, model 55, CFOP, file/XML, key                                        | `recusar` — one motivo each                                                                                  |
 | N14    | `invalid nf-e` (case 5)                                                                                           | `aguardar-serpro` — the #5 ladder, then `nfe-invalida`                                                       |
@@ -372,7 +416,10 @@ order:
   absence of an answer.
 - **N1/N2 before every other needle.** Both share the template of the other
   refusals, and a stamp on an already-attached note is the one false alarm
-  nothing resolves.
+  nothing resolves. For the same reason N1 is the one row where a NARROW
+  needle is the dangerous direction: a drift to the underscore spelling would
+  fall to N18 and stamp, with no read-back, a note that may be our own. Its
+  needle is therefore N13's form, a space or an underscore.
 - **N10 before N14.** `Invalid NF-e model. Only model 55 is accepted.`
   contains `invalid nf-e`. Read as case 5, it would wait for SERPRO on a
   document that can never pass.
@@ -385,7 +432,7 @@ order:
 
 Substring needles rather than exact texts: a wording drift on a `recusar` row
 costs a label, since N18 also avisa and stamps. On N14 an exact match would
-turn a SERPRO wait into a stamp. The N13 needle accepts a space or an
+turn a SERPRO wait into a stamp. The N1 and N13 needles accept a space or an
 underscore in the key's field name, because guide 382 prints it both ways (and
 the folder may not spell the wire field outside `notaNaShopee.ts`, §14). Every
 lookup is a `Set`, never an object literal, because the codes arrive verbatim
@@ -395,8 +442,12 @@ from a provider.
 
 Every arm DECIDES a motivo, and the effects are the answer of three sets in
 `errosNfe.ts`. Each phase APPLIES them in exactly one place (`aplicar` in the
-handler, `aplicarEfeitos` in the recheck). Elsewhere the sets are only READ:
-the dry run uses them to report what it would do, the outcome label follows the
+handler, `aplicarEfeitos` in the recheck). Every handler outcome goes through
+`aplicar`, the pauses and the SERPRO waits included, so the dry run (which
+READS the sets for those arms too) and the live run cannot diverge when a set
+changes. Both phases have a sweep test over every motivo they can produce:
+`avisado` and the stamp follow the sets. Elsewhere the sets are only READ: the
+dry run uses them to report what it would do, the outcome label follows the
 aviso set, and the log line keeps the excerpt only for X. No producer restates
 a set with an inline comparison.
 
@@ -436,7 +487,6 @@ The whole vocabulary, as `errosNfe.ts` declares it:
 | `pedido-nao-encontrado`       | `avaliarPedidoParaNfeShopee`                                         | descartado                                                             |     |     |     |
 | `nao-shopee`                  | `avaliarPedidoParaNfeShopee`                                         | descartado                                                             |     |     |     |
 | `emissao-bloqueada`           | `avaliarPedidoParaNfeShopee`                                         | descartado (warn)                                                      |     |     |     |
-| `frete-de-outra-integradora`  | `avaliarPedidoParaNfeShopee`                                         | descartado                                                             |     |     |     |
 | `xml-invalido`                | P4 illegible proc; P5 `chaveDaNfeParaCanal`                          | recusado                                                               | A   | S   |     |
 | `xml-grande-demais`           | P5, the package's byte ceiling                                       | recusado                                                               | A   | S   |     |
 | `conta-nao-configurada`       | P6 `avaliarContaParaNfeShopee`; P7 typed conta and credential errors | descartado                                                             |     |     |     |
@@ -450,13 +500,13 @@ The whole vocabulary, as `errosNfe.ts` declares it:
 | `loja-cross-border`           | `portaoDoPedido`                                                     | descartado                                                             |     |     |     |
 | `pedido-cancelado`            | `portaoDoPedido` (resolves); N3 on a cancelling order                | descartado                                                             |     |     |     |
 | `pedido-exportacao`           | `portaoDoPedido`                                                     | recusado                                                               | A   |     |     |
-| `outra-nfe-anexada`           | pre-read, read-back, recheck: another legible key                    | recusado                                                               | A   |     |     |
+| `outra-nfe-anexada`           | any read: another legible key, not a cancelled sibling's (§6)        | recusado                                                               | A   |     |     |
 | `chave-ilegivel`              | pre-read, read-back, recheck: a value that is not a key              | recusado                                                               | A   |     |     |
 | `nfe-validada`                | ours + `valid`, at any read (resolves)                               | ja-enviado / enviado / validada                                        |     |     |     |
 | `validacao-pendente`          | ours + `pending`, no reason                                          | ja-enviado + recheck; recheck: reverificacao-agendada, then descartado |     |     |     |
 | `status-desconhecido`         | ours + no or unknown status (never resolves)                         | ja-enviado + recheck; recheck: descartado (warn)                       |     |     |     |
 | `nota-dispensada`             | recheck: no key, status `valid`                                      | descartado                                                             |     |     |     |
-| `nao-refletida-ainda`         | read-back after a 200: no key yet                                    | enviado + recheck                                                      |     |     |     |
+| `nao-refletida-ainda`         | read-back: no key / a cancelled sibling's key; recheck: the latter   | enviado + recheck; recheck: reverificacao-agendada, then descartado    |     |     |     |
 | `sefaz-pendente`              | ours + `pending` + a reason, at any read                             | recusado (enviado after a 200)                                         | A   | S   | X   |
 | `nao-anexada`                 | recheck: no key, status not `valid`                                  | recusado                                                               | A   |     |     |
 | `emissor-shopee`              | classifier N4                                                        | recusado                                                               | A   | S   |     |
@@ -489,8 +539,22 @@ operator is told, `descartado` otherwise); it never decides an effect. After a
 200 the outcome stays `enviado` whatever the read-back says, and the sets still
 apply: a `sefaz-pendente` read-back avisa and stamps. The handler writes ONE
 completion line per task, with ids, counters, slugs, Shopee's code only when
-it is a token, and the excerpt only for X. A `motivosProduzidos.test.ts`
-backstop (wave 4) fails on any member nothing produces.
+it is a token, `statusBruto` only for `status-desconhecido` and
+`nota-dispensada` (§6), and the excerpt only for X. Its LEVEL follows the
+effects too: a line is a `warn` whenever the execution raised the aviso or
+stamped the frete, even when the label is `enviado`, so a parcel that stops
+shipping never hides among the healthy `info` lines. A
+`motivosProduzidos.test.ts` backstop (wave 4) fails on any member nothing
+produces.
+
+⚠️ **The frete's owner is not a motivo.** A proved Shopee pedido whose
+`freteInicial.externalOptionIntegracao` names ANOTHER integradora (an operator
+re-pointed it to Melhor Envio, a courier, a pickup) is enqueued and uploaded
+like any other. Shopee attaches the note to the ORDER (its upload has no
+package number), so the order still owes it, and Mercado Livre's
+shipment-scoped reason for skipping does not transfer. Only the stamp is
+owner-guarded, by its own `outra-integradora` answer (§11). No member encodes
+that skip, on purpose (an earlier draft had `frete-de-outra-integradora`).
 
 ## 9. Shopee's text: two motivos, one sanitizer
 
@@ -501,44 +565,83 @@ like `sefaz-<cStat>`, which would break the closed union and its backstop. The
 cStat survives inside the excerpt instead. Everywhere else the operator reads
 our own fragment, and the frete stamp carries no text at all.
 
-The raw string can carry an access key, a CNPJ, an order number or an IP, so it
-goes through `resumirTextoDaShopee` first. Steps, in order: control characters
-DROPPED (Shopee's pages print a TAB inside their own strings, and dropping can
-only glue, never hide a match); whitespace collapsed; a leading
-`Wrong parameters, detail:` and the trailing periods stripped; then masked; then
-capped at `EXCERTO_SHOPEE_MAX` = 160 characters with `…`. The cap comes AFTER
-the mask, so a cut can never expose the first digits of a number the mask would
-have hidden whole.
+The raw string can carry an access key, a CNPJ or CPF (numeric or
+alphanumeric) or an order number, so it goes through `resumirTextoDaShopee`
+first. An IP address is masked only when it carries ≥ 7 digits: an IPv4 such
+as `34.95.1.2` (six digits) survives, which is acceptable because it is our own
+egress address, not personal data. Steps, in order:
 
-**Two mask rules, because each alone leaks.**
+1. `null` or blank ⇒ `null`.
+2. Control (`\p{Cc}`) AND format (`\p{Cf}`) characters DROPPED, not spaced.
+   Shopee's pages print a TAB inside their own strings, and a zero-width space
+   or a soft hyphen between digit groups is invisible to an operator yet splits
+   every rule's run. Dropping can only glue, never hide a match.
+3. Whitespace collapsed, trimmed.
+4. A leading `Wrong parameters, detail:` (case-insensitive, repeated) and the
+   trailing periods stripped.
+5. Masked (below).
+6. Capped at `EXCERTO_SHOPEE_MAX` = 160 characters with `…`, AFTER the mask, so
+   a cut can never expose the first digits of a number the mask would have
+   hidden whole.
+7. Masked AGAIN. The cut glues `…` to the last token, which can lift it to rule
+   (b)'s twelve characters, so without this pass the output is not a fixpoint
+   at the cap edge, and the aviso, the log line and the CLI (which each
+   re-sanitize) could disagree. A mask only shrinks the text, so the result
+   still fits the cap.
+
+**Three mask rules, because each alone leaks.**
 
 - (a) **digit groups:** every maximal run of digits joined by at most ONE of
   `.` `/` `-` or a space between groups, whose DIGIT total is ≥ 7. It catches a
   key printed the way the DANFE prints it (groups of four, each harmless on its
   own), and a formatted CNPJ or CPF.
-- (b) **mixed tokens:** every whitespace token of ≥ 12 characters mixing
-  letters and ≥ 2 digits. It catches an alphanumeric CNPJ, an order number
-  shaped like `260910KJBHUJDM` (only six digits) and a key glued to a label.
+- (b) **long tokens:** every whitespace token of ≥ 12 characters that carries
+  ≥ 7 digits (letters or not), or that mixes letters with ≥ 2 digits. The first
+  arm catches a numeric key or CNPJ whose groups are joined by a character rule
+  (a) does not join on (`,` `_` `|` `:` `–`). The second catches a formatted
+  alphanumeric CNPJ, an order number shaped like `260910KJBHUJDM` (only six
+  digits) and a key glued to a label.
+- (c) **alphanumeric groups:** every maximal run of ≥ 3 groups joined by ONE
+  space, `.`, `/` or `-`, each group 1 to 6 characters of `[0-9A-Za-z]` with at
+  least one digit, whose DIGIT total is ≥ 7. It catches a DANFE-spaced key
+  whose CNPJ window holds letters (`… 09ZZ 1ZZ2 ZZ3Z …`: rule (a) stops at
+  every letter, and every token is short) and a SPACED alphanumeric CNPJ. The
+  one-digit-per-group demand is what keeps prose alive: without it
+  `539 CFOP 5102` would read as one seven-digit identifier.
 
-Both rules judge the SAME unmasked text and the union of their spans becomes
-`•••`. Applying them in sequence leaks either way: masking one first can
-shorten a token below the other's threshold. The pass then repeats to a
-fixpoint, so a second call changes nothing. `fraseDoErroDoAviso` re-runs the
-sanitizer on whatever excerpt it is handed, so an unsanitized string passed by
-mistake still cannot reach the aviso. PAIR: a DANFE-spaced key, a formatted
-CNPJ and the fixture order number are masked. NEAR-MISS: a cStat (`539`), a
-CFOP (`5102`) and any run of up to six digits SURVIVE on purpose, because they
-are what the operator needs to act. The price is paid at the other edge: a date
-written with separators (eight digits) is masked too.
+All three rules judge the SAME unmasked text and the union of their spans
+becomes `•••`. Applying them in sequence leaks either way: masking one first can
+shorten a token below another's threshold. The pass then repeats until nothing
+more matches, so `f(f(x)) = f(x)`, the cap edge included. `fraseDoErroDoAviso`
+re-runs the sanitizer on whatever excerpt it is handed, so an unsanitized string
+passed by mistake still cannot reach the aviso. PAIR: a DANFE-spaced key
+(numeric or alphanumeric), a key joined by any of `,` `_` `|` `:` `–`, a
+zero-width space or a soft hyphen, a formatted CNPJ and the fixture order
+number are masked. NEAR-MISS: a cStat (`539`), a CFOP (`5102`), a sentence like
+`Rejeição 539: CFOP 5102 não permitido`, an amount (`12.345,67`) and any run of
+up to six digits SURVIVE on purpose, because they are what the operator needs
+to act. The price is paid at the other edge: a date written with separators
+(eight digits) is masked too.
 
-⚠️ **Known leak, not yet fixed.** A DANFE-spaced key whose CNPJ window holds
-LETTERS partly survives both rules (`… 09ZZ 1ZZ2 ZZ3Z …`): each four-character
-group has fewer than seven digits and fewer than twelve characters, and the
-letters break the digit run. No Shopee or SEFAZ text has been observed spacing
-a key, so the odds are low. A fix is pending in the first review of this step
-(a third rule over space-joined `[0-9A-Z]` groups), and #1706 tracks promoting
-ONE shared identifier masker for the whole repo (register 200). The same
-leak reaches `motivoPendente`, which is sanitized by this same function.
+**The accepted residue**, measured and pinned by the tests so neither this page
+nor the module's header can start lying in silence:
+
+- Groups joined by TWO characters (a dash between spaces, or a comma or a
+  semicolon followed by a space) join under no rule, so a key printed
+  `9926 - 0911 - …` leaves every four-digit group readable. Joining
+  across two characters would also join `123 - 4567` and a list of short
+  numbers, which is prose.
+- A group with NO digit breaks rule (c)'s run: the bare alphanumeric root
+  `12.ABC.345` (five digits) survives whole, and a spaced `12 ABC 345 01DE 35`
+  keeps its leading `12 ABC` while the rest is masked. The FORMATTED
+  `12.ABC.345/01DE-35` is one long token and rule (b) masks it whole.
+
+The leak the first draft carried (a DANFE-spaced key with an alphanumeric CNPJ,
+of which cUF, AAMM and most of the CNPJ stayed readable) is FIXED by rule (c).
+It reached `motivoPendente` too, which is sanitized by this same function.
+#1706 (register 200) still tracks promoting ONE shared identifier masker for
+the whole repo, so the next module that needs one reuses it instead of growing
+its own copy.
 
 ## 10. The aviso, and who resolves it
 
@@ -577,20 +680,38 @@ before it ships), each a TRANSITION: an absent or already-resolved row answers
   token may be a rejection spelled in a way we do not know.
 - **The cross-step hook, `resolverAvisoNfeSeEncerrado`**, called by BOTH
   callers of step 7's `salvarFreteShopee`, after it returns and outside its
-  transaction:
-  - `pedidos/importarPedido.ts` (step 5, the order import) passes the estado
-    the frete transaction actually WROTE (only when it wrote one) and the
-    order's `order_status`. A frete written into `ESTADOS_FRETE_REMOVE_ESTOQUE`
-    ⇒ `frete-despachado`. On this channel the parcel moves only after a
-    shipment Shopee allows with a valid invoice. Otherwise `CANCELLED` ⇒
-    `pedido-cancelado`. That arm deliberately does NOT wait for a frete write:
-    an XML defect can open an aviso on an already-cancelled order, and its
-    next re-import changes no frete.
-  - `pedidos/rastrearPedido.ts` (step 7, the package push) calls it only when
-    the transaction wrote (`acao === 'atualizado'`), with no order status.
-  - The ordinary delivery costs ZERO reads. A Firestore failure PROPAGATES (no
-    catch): both deliveries are idempotent, so the retry re-applies a no-op
-    frete write and tries the resolve again.
+  transaction, on EVERY outcome:
+  - Both hand it `ResultadoFreteShopee.estadoConfirmado`: the estado the block
+    holds once the frete transaction is over (the one it wrote, or on a replay
+    the one its own `tx.get` found and kept, never a second read), and only
+    when Shopee's own package diary folds to that same estado; `null`
+    otherwise. An estado in `ESTADOS_FRETE_REMOVE_ESTOQUE` ⇒
+    `frete-despachado`. On this channel the parcel moves only after a shipment
+    Shopee allows with a valid invoice.
+  - ⚠️ The diary condition is load-bearing. The bare stored estado is not a
+    Shopee fact: `empacotado` and `checkFinalizado` are the OPERATOR's
+    warehouse estados, sit in the removal set too, and step 7's ladder keeps
+    them against a lower pull. They are also outside the stamp's estado set,
+    so on a packed pedido the aviso is the ONLY signal, and closing it because
+    a parcel was packed would hide a problem Shopee has not cleared. Accepted
+    residual, pinned by a test: an operator `checkFinalizado` kept against
+    Shopee's `aguardandoPostagem` does not resolve, although both are in the
+    set.
+  - `pedidos/importarPedido.ts` (step 5, the order import) also passes the
+    order's `order_status`: otherwise `CANCELLED` ⇒ `pedido-cancelado`. That
+    arm deliberately does NOT wait for a frete write: an XML defect can open an
+    aviso on an already-cancelled order, and its next re-import changes no
+    frete. `pedidos/rastrearPedido.ts` (step 7, the package push) has no order
+    row, hence no order status.
+  - The cost: ZERO reads for a pre-shipment delivery; ONE aviso read per
+    delivery about a parcel already in the removal set (a replay, or a refresh
+    that moves no estado), plus one per import of a cancelled order. That read
+    is what makes the retry real: a Firestore failure PROPAGATES (no catch),
+    the queue redelivers, the frete comes back `ignorado-sem-mudanca`, and the
+    caller still hands over the confirmed estado (or the cancelled status), so
+    the resolve is tried again. Handing over only a WRITTEN estado would have
+    skipped it on the replay, and an aviso whose resolve failed on the
+    parcel's last transition would have stood forever.
   - Without the CANCELLED arm an aviso on a cancelled order would stand
     forever. A stamped frete never becomes `cancelado`, because step 7's gate
     preserves `error` against routine churn (`erro-preservado`). An unresolved
@@ -619,7 +740,9 @@ This folder writes three things, and each one names its race tier.
   - `sem-pedido` (a stamp never creates);
   - `sem-frete` (a synthesized block would render a freight nobody chose);
   - `outra-integradora` (strict equality to Shopee's slug, so an absent owner
-    refuses too);
+    refuses too). This is the ONLY place the frete's owner matters: the upload
+    itself still runs for a re-pointed frete (§8), because the note belongs to
+    the order;
   - `ja-carimbado` (ZERO writes on a replay, or every replay would move
     `ultimaModificacao` and file an audit row);
   - `estado-ilegivel`;
@@ -645,10 +768,32 @@ This folder writes three things, and each one names its race tier.
   writer's read and `lastUpdateTime` precondition, which recomputes the patch
   when it loses. **The resolve: tier 1**, the same precondition inside
   `resolverAviso`, answering a transition.
-- **The write order.** The aviso FIRST, then the stamp. A stamp failure
-  PROPAGATES: the aviso already stands, and the queue's retry meets the
-  stamp's own zero-write replay. A swallowed stamp would leave the pedido
-  looking dispatchable.
+- **A raise racing a resolve: the raise wins.** There is no event clock by
+  design, so sequentially the later write wins. In a true race the raise that
+  loses its precondition re-reads and REOPENS a row the resolve just closed,
+  and a resolve that loses answers `false` (the shared resolver's comment
+  names only "someone else resolved"; a concurrent raise is the third case).
+  That is the safe direction: a stale open aviso, never a hidden problem. The
+  envio and its recheck share one queue, which PR 2 serialises
+  (`rateLimits { 1, 1 }`), so the only real concurrency is a step-5/7 hook
+  (another queue) or the in-process CLI `--live`, and the stale row heals the
+  way §10 describes.
+- **The write order, in the handler.** The aviso FIRST, then a due recheck,
+  then the stamp, then the resolve. A swallowed stamp would leave the pedido
+  looking dispatchable, so a stamp failure PROPAGATES: the aviso already
+  stands, and the queue retries the WHOLE execution. That retry is not a
+  zero-write replay. After a refusal it UPLOADS again (a refused note leaves no
+  key), Shopee refuses again, and the aviso is written again (a repeat, which
+  bumps `ocorrencias`); only then does the stamp land. The recheck is enqueued
+  BEFORE the stamp because the enqueue writes no document: after a
+  `sefaz-pendente` read-back (the one arm that both stamps and owes a recheck),
+  a stamp failure no longer loses the look, and the retry's pre-read, which
+  finds our key BEFORE any upload of its own, owes none, so at most one
+  recheck is ever enqueued.
+- **The write order, in the recheck.** The aviso, then the stamp. A stamp
+  failure re-runs the whole recheck: one more order read, the same verdict,
+  the aviso again, then the stamp. No arm of its table both stamps and
+  re-enqueues, so no look is lost with it.
 - **The re-enqueues write no document.** A duplicate task converges through the
   pre-read (Shopee then holds OUR key ⇒ `ja-enviado`), and a duplicate recheck
   is one more read-only look.
@@ -686,13 +831,23 @@ This folder writes three things, and each one names its race tier.
   step 15 tries to ship. The second look happens only for "pending without a
   reason", which is ambiguous (still validating, or simply not
   shipment-ready). After it comes a log line, never an aviso, because nothing
-  would ever resolve one. Step 15's shipment call is the backstop.
+  would ever resolve one. Step 15's shipment call is the backstop. A cancelled
+  sibling's key still showing after an upload earns the same second look
+  (§6).
 - **Pauses.** A burst waits for its `Retry-After`, or step 12's pause minutes.
   A daily limit waits until the next 00:00 UTC+8 (step 11's
   `proximaViradaDaCotaMs`). Both add a jitter of up to 30 s (step 13's
   `PARQUE_JITTER_MAX_S`), so a fleet paused on one limit does not resume on
   one second, and both count in `pausas`. Without a ceiling, a conta stuck at
-  its quota would re-enqueue the same NF-e forever.
+  its quota would re-enqueue the same NF-e forever. ⚠️ The ceiling is per
+  re-enqueue CHAIN: the recheck an upload enqueues (after a 200, or with the
+  final-attempt `canal-indisponivel`) starts a new chain, bounded by its own
+  ladder, with `pausas: 0` (`adiamentosSerpro` is carried as it is; nothing in
+  the recheck spends it). Inheriting the upload's count would let one rate
+  limit on the recheck's read end an ACCEPTED note as
+  `pausa-reenqueues-esgotados`, with an aviso, and the recheck (the only look
+  before step 15) would never run. Pauses inside the recheck chain keep
+  counting.
 - **The queue (PR 2).** `maxAttempts 4`, `timeoutSeconds 120`, backoff 60–300 s
   with `maxDoublings 2`, `rateLimits { 1, 1 }`, the two partner secrets. The
   whole ladder is 4 × 120 + 3 × 300 = 1380 s, within the 1800 s bound the
@@ -749,7 +904,10 @@ answers the class explicitly:
   pedido: the list is the worklist;
 - **(PR 2)** the route answers 503;
 - the handler's self re-enqueues end as `tasks-desabilitadas`;
-- the post-200 recheck only warns, because the upload already landed.
+- the post-200 recheck only warns, because the upload already landed. So does
+  the one queued with the final-attempt `canal-indisponivel`, which is why that
+  motivo's sentence promises no automatic check: it leads with the remedy
+  (verify in the Seller Center, or re-send through the ERP).
 
 The channel's documented promise ("never a silent drop") therefore holds for
 NF-e through the aviso, not through a sweep. PR 2 amends the `.env.example`
@@ -809,7 +967,7 @@ for an UNTRACKED file either, so a new module is checked only after
 `git add -N`.
 
 Two backstops hold the vocabulary (wave 4). `motivosProduzidos.test.ts` walks
-all fifty-seven motivos and fails on any that no source outside `errosNfe.ts`
+all fifty-six motivos and fails on any that no source outside `errosNfe.ts`
 produces. It scans this folder, plus the route folder `enviar-nfe` once PR 2
 creates it (`PASTAS_DE_ROTA` flips to `true` there), and it exempts, each with
 its reason, the quoted literals that are not this vocabulary: the stamp's
@@ -822,7 +980,12 @@ its reason, the quoted literals that are not this vocabulary: the stamp's
   formula: `apps/nfe` owns all of it.
 - **`ship_order` and the label** (step 15). Step 15 will call `/enviar-nfe`
   when the ship call answers that the invoice is missing. The ship-side code's
-  spelling is register 193.
+  spelling is register 193. ⚠️ Step 15 must NEVER gate `ship_order` on the
+  frete not being `error`. The stamp outlives a validated NF-e: when a
+  replacement lands, or a `sefaz-pendente` note later reads valid, the aviso
+  closes, but this step cannot revoke the stamp (§8), and it clears only when
+  step 7 writes an estado of the removal set, which happens only AFTER the
+  parcel moves. A gate on it would deadlock the very pedido it waits for.
 - **A sweep or a schedule** (§13), and a `get_order_list` walk on
   `INVOICE_PENDING` (register 202, step 15's decision).
 - **`add_invoice_data`.** It exists behind a login-gated page, and it is
@@ -859,7 +1022,9 @@ items is a gate.
     prefix, and which of them this API can return at all. Cases 8, 9, 12 and
     13 name `add_invoice_data` fields;
   - 188 if not the probe;
-  - 189: the read-your-write lag after a 200. `nao-refletida-ainda` counts it;
+  - 189: the read-your-write lag after a 200, in both faces (no key yet, and
+    a substitution's replaced key still showing, §6). `nao-refletida-ainda`
+    counts it;
   - 190: `valid` with no key on a carrier that needs no note, and its pair with
     case 11 (master plan §7 q4: whether Correios is in use at all);
   - 191: the SERPRO anchor, and whether an upload under five minutes really
@@ -876,9 +1041,10 @@ items is a gate.
   the ship page, `error_pending_invoice` per the announcement) and 202.
 - **Follow-ups with issues** (opened 2026-09-29): 199 → #1705 (Mercado Livre's
   level trigger re-fires on the `nfe-totais` migration and uploads non-sale
-  notes), 200 → #1706 (one shared identifier masker, which also closes §9's
-  known leak) and 201 → #1707 (no cross-codebase guard stops two codebases
-  from exporting the same function name, the `onNfeAprovada` collision class).
+  notes), 200 → #1706 (one shared identifier masker for the repo; §9's leak
+  is already fixed here, by rule (c)) and 201 → #1707 (no cross-codebase
+  guard stops two codebases from exporting the same function name, the
+  `onNfeAprovada` collision class).
 - **Recorded**: 203 (`add_invoice_data` exists, login-gated, unused).
 - **Accepted, and visible in code**:
   - A held token-refresh lease on the LAST attempt rethrows like every other
@@ -949,3 +1115,13 @@ runbook is #1208, which PR 2 edits with these, in ADR 0013's phase order):
 - "Every approved tpAmb-1 NF-e of a Shopee pedido is the sale's" (§4).
 - The legacy trigger as parity: it was update-only, had no delay and wrote
   nothing.
+- "A frete of another integradora skips the upload": that is Mercado Livre's
+  shipment-scoped reason, and Shopee's upload is per ORDER (§8).
+- "The retry re-applies a no-op frete write and tries the resolve again" while
+  the hook ran only when the frete was WRITTEN: a replay writes nothing, so
+  that retry read nothing. It is true only with `estadoConfirmado` (§10).
+- "The stamp failure's retry meets a zero-write replay": the stamp aborted, so
+  the retry re-runs the whole execution (§11).
+- The sanitizer's two-rule "fixpoint": a numeric key joined by `,` `_` `|` `:`
+  `–` or an invisible character survived both rules, a DANFE-spaced
+  alphanumeric key survived partly, and the cap could break idempotence (§9).

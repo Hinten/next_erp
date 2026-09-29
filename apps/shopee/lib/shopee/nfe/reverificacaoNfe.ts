@@ -10,9 +10,13 @@
  * module only JUDGES that row against our key. It never names the client's
  * methods, never enqueues the upload phase — every re-enqueue it makes is
  * pinned to {@link FASE_NFE_SHOPEE.reverificacao} — and it never imports the
- * handler module, so the two cannot form a cycle. The only thing it may do
- * besides reading the row is the aviso, the frete stamp, the aviso's resolve
- * and one delayed self re-enqueue.
+ * handler module, so the two cannot form a cycle — which is why the types both
+ * phases share live in the task contract, and why the cancelled-sibling rule
+ * both ask ({@link ehChaveDeIrmaoCancelado}) lives HERE and the handler imports
+ * it. The only thing it may do besides reading the row is that rule's one read
+ * of the pedido's NF-e documents (only when Shopee holds another legible key),
+ * the aviso, the frete stamp, the aviso's resolve and one delayed self
+ * re-enqueue.
  *
  * ## The verdict table (reconcile §2.8 "Recheck", R-c, R-g, R-k)
  *
@@ -24,6 +28,7 @@
  * | our key, no status / an unknown one | `descartado` · `status-desconhecido`         | log — NEVER resolve |
  * | no key, status `valid`              | `descartado` · `nota-dispensada`             | log               |
  * | no key, any other status            | `recusado` · `nao-anexada`                   | the sets          |
+ * | a CANCELLED sibling's key           | `reverificacao-agendada` / `descartado` · `nao-refletida-ainda` | one more look, then log |
  * | another legible key                 | `recusado` · `outra-nfe-anexada`             | the sets          |
  * | a value that is not a key           | `recusado` · `chave-ilegivel`                | the sets          |
  * | a foreign order                     | `descartado` · `pedido-nao-br`               | log               |
@@ -40,6 +45,11 @@
  *   ONE more look and then a log line, never an aviso: nothing would ever
  *   resolve it. Step 15's shipment call is the backstop. A blank reason is no
  *   reason — the reader has already folded it to `null`.
+ * - **A cancelled sibling's key is lag, not another note** (orchestrator ruling
+ *   on R1-2/R5-4): after an accepted SUBSTITUTION the order may still show the
+ *   key it replaced (settle-live register 189), and an `outra-nfe-anexada` aviso
+ *   seconds after the ERP replaced that note would be false. It earns the same
+ *   ladder as a reasonless pending; a THIRD key is still loud.
  *
  * ## Effects come from the sets, and only from them
  *
@@ -48,8 +58,10 @@
  * carries Shopee's sanitized text is {@link MOTIVOS_COM_EXCERTO}. This module
  * never compares a motivo to decide an effect — each set is consulted in
  * exactly one place ({@link aplicarEfeitos}). Write order: the aviso FIRST,
- * then the stamp; a stamp failure PROPAGATES (the aviso already stands, and the
- * queue's retry meets the stamp's own zero-write replay).
+ * then the stamp; a stamp failure PROPAGATES — the aviso already stands, and the
+ * queue's retry re-runs the whole recheck: one more order read, the same
+ * verdict, the aviso again (a repeat bumps its `ocorrencias`), then the stamp.
+ * No arm of this table both stamps and re-enqueues, so no look is lost with it.
  *
  * ## Rule 7, write by write
  *
@@ -71,10 +83,12 @@
  * line, a payload or a returned field. The one line this module writes itself
  * (the closed valve) names the pedido and NF-e document ids only.
  */
-import type { ShopeeClient, ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
+import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 import type { Firestore } from 'firebase-admin/firestore';
+import { nfev4Collection } from '@delfrance/data/admin/collections';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
-import { type AvisoDeps, agoraUsDe } from '../avisos/autorizacao';
+import { agoraUsDe } from '../avisos/autorizacao';
 import { RESOLUCAO_AVISO_NFE_SHOPEE, avisarNfeShopee, resolverAvisoNfeShopee } from './avisoNfe';
 import { carimbarFreteNfeShopee, type MotivoCarimbo } from './carimboFreteNfe';
 import { ATRASOS_REVERIFICACAO_S, SHOPEE_NFE_UPLOAD_QUEUE } from './constantesNfe';
@@ -88,50 +102,60 @@ import {
   type DesfechoNfeShopee,
   type MotivoNfeShopee,
 } from './errosNfe';
-import { lerNotaNaShopee } from './notaNaShopee';
+import { chaveCanonica, lerNotaNaShopee } from './notaNaShopee';
+import { chaveDaNfeParaCanal } from './pedidoNfe';
 import {
   FASE_NFE_SHOPEE,
-  type AgendadorNfeShopee,
   type ContextoNfeShopee,
-  type FaseNfeShopee,
+  type DepsNfeShopee,
+  type ResultadoNfeShopee,
   type TarefaNfeShopee,
 } from './tarefaNfe';
 
 /* -------------------------------------------------------------------------- */
-/*                         the seam (structural, W3-1)                          */
+/*                     the cancelled-sibling rule (shared)                      */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The handler's dependencies, STRUCTURALLY — exactly the fields the handler's
- * own deps type declares (orchestrator amendment W3-1), restated here rather
- * than imported so this module never imports the handler module. The recheck
- * uses `db`, `scheduler`, `nowMs` and `increment`; the rest is listed so the
- * two types stay one shape.
+ * The key a CANCELLED sibling NF-e carries: the key inside its proc (through
+ * the same reader as ours), or — only when no proc string is stored at all —
+ * its stored `chave`, canonical.
+ *
+ * Both writers of the corpus keep the proc on a cancel (`apps/nfe`'s cancel is a
+ * merge of the estado and the protocol fields; the legacy app's `copyWith`),
+ * but an NF-e can reach `aprovada` WITHOUT its proc (the digest-mismatch audit
+ * path) and still be cancelled — which leaves the stored key as the only
+ * witness.
  */
-interface DepsDaReverificacao {
-  readonly db: Firestore;
-  readonly scheduler: AgendadorNfeShopee;
-  /** The dispatcher's ONE clock read, in MILLISECONDS. */
-  readonly nowMs: number;
-  /** `(by) => FieldValue.increment(by)` — the aviso writer needs the sentinel. */
-  readonly increment: AvisoDeps['increment'];
-  jitterSec(maxS: number): number;
-  readonly resolveClient?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
+function chaveDoIrmaoCancelado(raw: Record<string, unknown>): string | null {
+  if (typeof raw.xml_nfe_proc === 'string') {
+    const doProc = chaveDaNfeParaCanal(raw);
+    return 'chave' in doProc ? doProc.chave : null;
+  }
+  return typeof raw.chave === 'string' ? chaveCanonica(raw.chave) : null;
 }
 
 /**
- * What one recheck ended in — structurally the handler's result type (reconcile
- * §2.8). `substituicao` is always `false` here: a substitution is an UPLOAD
- * decision, and this phase never uploads.
+ * Whether `chaveNaShopee` is the key of a CANCELLED NF-e of this same pedido
+ * (reconcile R-d(5), orchestrator W3-5). ONE unfiltered read of the pedido's
+ * slot documents — a handful at most, no index involved.
+ *
+ * Declared here, and exported, because BOTH phases ask it and this module may
+ * not import the handler: the upload's PRE-read (such a key is the note a
+ * re-emission must replace — the substitution), and the two readings made
+ * AFTER a 200 — the upload's read-back and this recheck — where such a key is
+ * read-your-write lag, not another note.
  */
-interface ResultadoDaReverificacao {
-  readonly desfecho: DesfechoNfeShopee;
-  readonly motivo: MotivoNfeShopee | null;
-  readonly fase: FaseNfeShopee;
-  readonly substituicao: boolean;
-  readonly carimbo: MotivoCarimbo | null;
-  readonly avisado: boolean;
-  readonly resolvido: boolean;
+export async function ehChaveDeIrmaoCancelado(
+  db: Firestore,
+  pedidoId: string,
+  chaveNaShopee: string,
+): Promise<boolean> {
+  const irmaos = await nfev4Collection.ref(db, { pedidoId }).get();
+  return irmaos.docs.some((doc) => {
+    const raw = (doc.data() ?? {}) as Record<string, unknown>;
+    return raw.estado === ESTADO_NFE.cancelada && chaveDoIrmaoCancelado(raw) === chaveNaShopee;
+  });
 }
 
 /** The two fields of the order row the verdict reads. */
@@ -155,10 +179,10 @@ const TAG_LOG = '[shopee/nfe] reverificação';
  */
 export async function reverificarNfeShopee(
   ctx: ContextoNfeShopee,
-  deps: DepsDaReverificacao,
+  deps: DepsNfeShopee,
   payload: TarefaNfeShopee,
   linha: LinhaDoPedido,
-): Promise<ResultadoDaReverificacao> {
+): Promise<ResultadoNfeShopee> {
   const nota = lerNotaNaShopee(linha, ctx.nossaChave);
 
   switch (nota.veredito) {
@@ -166,6 +190,15 @@ export async function reverificarNfeShopee(
       return semEfeito(DESFECHO_NFE_SHOPEE.descartado, MOTIVO_NFE_SHOPEE.pedidoNaoBr);
 
     case 'outra':
+      // The key of a CANCELLED sibling still showing after an accepted upload is
+      // read-your-write lag (the substitution has not landed yet), never another
+      // note: one more look while the ladder lasts, then a log line.
+      if (
+        nota.chave !== null &&
+        (await ehChaveDeIrmaoCancelado(deps.db, ctx.pedidoId, nota.chave))
+      ) {
+        return olharDeNovo(ctx, deps, payload, MOTIVO_NFE_SHOPEE.naoRefletidaAinda);
+      }
       return comEfeitos(
         ctx,
         deps,
@@ -185,7 +218,7 @@ export async function reverificarNfeShopee(
       if (nota.status === 'pendente') {
         return nota.motivoPendente !== null
           ? comEfeitos(ctx, deps, MOTIVO_NFE_SHOPEE.sefazPendente, nota.motivoPendente)
-          : olharDeNovo(ctx, deps, payload);
+          : olharDeNovo(ctx, deps, payload, MOTIVO_NFE_SHOPEE.validacaoPendente);
       }
       // `ausente` / `desconhecido`: no observation of validity ⇒ never resolve.
       return semEfeito(DESFECHO_NFE_SHOPEE.descartado, MOTIVO_NFE_SHOPEE.statusDesconhecido);
@@ -197,10 +230,7 @@ export async function reverificarNfeShopee(
 /* -------------------------------------------------------------------------- */
 
 /** Our note, read valid: close the pedido's aviso if one is open. */
-async function validar(
-  ctx: ContextoNfeShopee,
-  deps: DepsDaReverificacao,
-): Promise<ResultadoDaReverificacao> {
+async function validar(ctx: ContextoNfeShopee, deps: DepsNfeShopee): Promise<ResultadoNfeShopee> {
   // An absent or already-resolved row answers `false` and writes nothing.
   const resolvido = await resolverAvisoNfeShopee(
     deps.db,
@@ -215,10 +245,17 @@ async function validar(
   };
 }
 
+/** The two readings that earn one more look instead of a verdict. */
+type MotivoDeOutroOlhar =
+  | typeof MOTIVO_NFE_SHOPEE.validacaoPendente
+  | typeof MOTIVO_NFE_SHOPEE.naoRefletidaAinda;
+
 /**
- * Our note, pending WITHOUT a reason: one more look while the ladder has a rung
- * left (`reverificacoes + 1 < ATRASOS_REVERIFICACAO_S.length`), with that rung's
- * delay; past the ceiling, a log line.
+ * A reading that is not a verdict yet — our note pending WITHOUT a reason
+ * (`validacao-pendente`), or a cancelled sibling's key still showing
+ * (`nao-refletida-ainda`): one more look while the ladder has a rung left
+ * (`reverificacoes + 1 < ATRASOS_REVERIFICACAO_S.length`), with that rung's
+ * delay; past the ceiling, a log line under the same motivo.
  *
  * The ceiling is the rung LOOKUP itself: the counter is a whole number ≥ 0 (the
  * payload schema), so "index `reverificacoes + 1` is past the end" and "no rung
@@ -228,13 +265,14 @@ async function validar(
  */
 async function olharDeNovo(
   ctx: ContextoNfeShopee,
-  deps: DepsDaReverificacao,
+  deps: DepsNfeShopee,
   payload: TarefaNfeShopee,
-): Promise<ResultadoDaReverificacao> {
+  motivo: MotivoDeOutroOlhar,
+): Promise<ResultadoNfeShopee> {
   const proxima = payload.reverificacoes + 1;
   const atraso: number | undefined = ATRASOS_REVERIFICACAO_S[proxima];
   if (atraso === undefined) {
-    return semEfeito(DESFECHO_NFE_SHOPEE.descartado, MOTIVO_NFE_SHOPEE.validacaoPendente);
+    return semEfeito(DESFECHO_NFE_SHOPEE.descartado, motivo);
   }
 
   try {
@@ -259,7 +297,7 @@ async function olharDeNovo(
     }
     throw err;
   }
-  return semEfeito(DESFECHO_NFE_SHOPEE.reverificacaoAgendada, MOTIVO_NFE_SHOPEE.validacaoPendente);
+  return semEfeito(DESFECHO_NFE_SHOPEE.reverificacaoAgendada, motivo);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -273,11 +311,11 @@ async function olharDeNovo(
  */
 async function comEfeitos(
   ctx: ContextoNfeShopee,
-  deps: DepsDaReverificacao,
+  deps: DepsNfeShopee,
   motivo: MotivoNfeShopee,
   excerto: string | null,
   opcoes: { readonly desfecho: DesfechoNfeShopee } = { desfecho: DESFECHO_NFE_SHOPEE.recusado },
-): Promise<ResultadoDaReverificacao> {
+): Promise<ResultadoNfeShopee> {
   const { avisado, carimbo } = await aplicarEfeitos(ctx, deps, motivo, excerto);
   return { ...semEfeito(opcoes.desfecho, motivo), avisado, carimbo };
 }
@@ -289,7 +327,7 @@ async function comEfeitos(
  */
 async function aplicarEfeitos(
   ctx: ContextoNfeShopee,
-  deps: DepsDaReverificacao,
+  deps: DepsNfeShopee,
   motivo: MotivoNfeShopee,
   excerto: string | null,
 ): Promise<{ readonly avisado: boolean; readonly carimbo: MotivoCarimbo | null }> {
@@ -314,7 +352,7 @@ async function aplicarEfeitos(
 }
 
 /** An outcome with no write: no aviso, no stamp, no resolve. */
-function semEfeito(desfecho: DesfechoNfeShopee, motivo: MotivoNfeShopee): ResultadoDaReverificacao {
+function semEfeito(desfecho: DesfechoNfeShopee, motivo: MotivoNfeShopee): ResultadoNfeShopee {
   return {
     desfecho,
     motivo,

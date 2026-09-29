@@ -132,8 +132,13 @@ const KINDS_DA_ESCADA: ReadonlySet<ShopeeErrorKind> = new Set<ShopeeErrorKind>([
   SHOPEE_ERROR_KIND.reauth,
 ]);
 
-/** N1 — guide 382 case 7: the key is already on ANOTHER order. */
-const AGULHA_CHAVE_DUPLICADA = 'access key duplicated';
+/**
+ * N1 — guide 382 case 7: the key is already on ANOTHER order. The key's field
+ * name takes a space OR an underscore, as in N13: a drift to the underscore
+ * spelling would otherwise fall to N18 and stamp, with no read-back, a note
+ * that may be our own.
+ */
+const AGULHA_CHAVE_DUPLICADA = /access[ _]key duplicated/;
 
 /** N2 — the legacy importer's same-order resend text (never documented). */
 const AGULHA_JA_ENVIADA = 'already sent';
@@ -279,7 +284,7 @@ export function classificarRecusaDeNfe(
   const det = detalheDaRecusa(err.providerMessage);
 
   // ---- N1/N2: already attached — the read-back decides. FIRST. ----
-  if (det.includes(AGULHA_CHAVE_DUPLICADA)) {
+  if (AGULHA_CHAVE_DUPLICADA.test(det)) {
     return { classe: 'ja-anexada', motivo: CASO_JA_ANEXADA.chaveDuplicada };
   }
   if (det.includes(AGULHA_JA_ENVIADA)) {

@@ -90,9 +90,13 @@ export const DESFECHO_NFE_SHOPEE = {
 /* ------------------------------ the vocabulary ------------------------------ */
 
 /**
- * WHY a task ended where it did. Fifty-seven members, grouped by the altitude
+ * WHY a task ended where it did. Fifty-six members, grouped by the altitude
  * that produces them; each member is a MECHANISM, and its sentence is
  * {@link FRASE_DO_MOTIVO_NFE}'s.
+ *
+ * ⚠️ There is no "the frete belongs to another integradora" member: the upload
+ * attaches the note to the ORDER, never to a shipment, so a re-pointed frete
+ * still uploads — only the frete stamp is owner-guarded, by its own outcome.
  */
 export type MotivoNfeShopee =
   // ---- the shared dispatch predicate, re-checked at task level (4) ----
@@ -104,11 +108,10 @@ export type MotivoNfeShopee =
   | 'nfe-nao-encontrada'
   | 'sem-nfe-aprovada'
   | 'nfe-nao-e-de-venda'
-  // ---- the pedido (4) ----
+  // ---- the pedido (3) ----
   | 'pedido-nao-encontrado'
   | 'nao-shopee'
   | 'emissao-bloqueada'
-  | 'frete-de-outra-integradora'
   // ---- our own XML, before any Shopee call (2) ----
   | 'xml-invalido'
   | 'xml-grande-demais'
@@ -177,11 +180,10 @@ export const MOTIVO_NFE_SHOPEE = {
   nfeNaoEncontrada: 'nfe-nao-encontrada',
   semNfeAprovada: 'sem-nfe-aprovada',
   nfeNaoEDeVenda: 'nfe-nao-e-de-venda',
-  // ---- the pedido (4) ----
+  // ---- the pedido (3) ----
   pedidoNaoEncontrado: 'pedido-nao-encontrado',
   naoShopee: 'nao-shopee',
   emissaoBloqueada: 'emissao-bloqueada',
-  freteDeOutraIntegradora: 'frete-de-outra-integradora',
   // ---- our own XML (2) ----
   xmlInvalido: 'xml-invalido',
   xmlGrandeDemais: 'xml-grande-demais',
@@ -281,8 +283,6 @@ export const FRASE_DO_MOTIVO_NFE: Record<MotivoNfeShopee, string> = {
   'nao-shopee': 'o pedido não veio da Shopee, e esta integração só envia NF-e de pedidos da Shopee',
   'emissao-bloqueada':
     'o pedido está marcado para não emitir NF-e, e nenhuma nota dele é enviada ao canal',
-  'frete-de-outra-integradora':
-    'o frete do pedido é de outra integradora, e a NF-e não é enviada à Shopee',
   // ---- our own XML ----
   'xml-invalido':
     'confira o XML autorizado da NF-e — ele não traz uma chave de acesso legível e única, e sem ela a nota não pode ser enviada',
@@ -355,7 +355,7 @@ export const FRASE_DO_MOTIVO_NFE: Record<MotivoNfeShopee, string> = {
   // ---- the grant, the transport, the limits and the valve ----
   reauth: 'reconecte a conta Shopee — a autorização da loja expirou',
   'canal-indisponivel':
-    'a Shopee não respondeu em nenhuma das tentativas de envio; uma conferência automática ainda vai verificar se a nota chegou',
+    'verifique no Seller Center se a NF-e ficou anexada ao pedido, ou reenvie a nota pelo ERP — a Shopee não respondeu em nenhuma das tentativas de envio',
   'reverificacao-indisponivel':
     'a Shopee não respondeu na conferência da NF-e, e o ERP não conseguiu confirmar se a nota ficou anexada',
   'limite-de-taxa': 'a Shopee limitou a frequência de chamadas, e o envio foi reagendado',

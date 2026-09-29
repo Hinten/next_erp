@@ -59,12 +59,14 @@
  *   pre-read (`pedido-cancelado`).
  * - {@link resolverAvisoNfeSeEncerrado} — the CROSS-STEP hook, called by BOTH
  *   callers of the step-7 frete transaction (the order import and the package
- *   push), after it returns: a frete written into `ESTADOS_FRETE_REMOVE_ESTOQUE`
- *   means the parcel moved, which on this channel requires a shipment Shopee
- *   only allows with a valid invoice (`frete-despachado`); an order status of
- *   cancelled ends the problem too (`pedido-cancelado`). Without the second arm
- *   an aviso on a cancelled order would stand forever: a stamped frete never
- *   becomes `cancelado`, because step 7 preserves `error` against routine churn.
+ *   push), after it returns, on every outcome: a frete estado in
+ *   `ESTADOS_FRETE_REMOVE_ESTOQUE` that the channel's own package diary
+ *   confirms means the parcel moved, which on this channel requires a shipment
+ *   Shopee only allows with a valid invoice (`frete-despachado`); an order
+ *   status of cancelled ends the problem too (`pedido-cancelado`). Without the
+ *   second arm an aviso on a cancelled order would stand forever: a stamped
+ *   frete never becomes `cancelado`, because step 7 preserves `error` against
+ *   routine churn.
  *
  * ⚠️ This module imports NOTHING from `pedidos/`: `pedidos/` imports it (the
  * hook), and the dependency must stay one-way. The order status therefore
@@ -242,8 +244,17 @@ export interface EncerramentoNfeShopee {
   readonly integracaoId: string;
   readonly pedidoId: string;
   /**
-   * The estado the frete transaction actually WROTE, or `null` when it wrote
-   * none (a refused verdict, or no write at all). Never the stored estado.
+   * The frete estado the block holds once the step-7 transaction is over —
+   * the one it wrote, or on a replay the one its own read found and kept — and
+   * only when the channel's package diary folds to that same estado; `null`
+   * otherwise (`ResultadoFreteShopee.estadoConfirmado`, in `pedidos/freteTx.ts`).
+   *
+   * ⚠️ Despite the historical name it is NOT only a write: a replay that writes
+   * nothing must still hand the estado over, or a delivery whose resolve failed
+   * after the frete committed would never retry it. And it is NOT the bare
+   * stored estado either: the operator's warehouse estados (`empacotado`,
+   * `checkFinalizado`) sit in the removal set too, and closing an NF-e aviso
+   * because a parcel was packed would hide a problem Shopee has not cleared.
    */
   readonly estadoFreteEscrito: EstadoFrete | null;
   /** Shopee's `order_status` verbatim, or `null` on a path that has no order row. */
@@ -257,13 +268,18 @@ export interface EncerramentoNfeShopee {
  * - `estadoFreteEscrito ∈ ESTADOS_FRETE_REMOVE_ESTOQUE` ⇒ `frete-despachado`;
  * - otherwise `orderStatus` is cancelled ⇒ `pedido-cancelado`;
  * - otherwise `false`, with ZERO reads — this runs on every import and every
- *   package push, and the ordinary delivery must cost nothing.
+ *   package push, and a pre-shipment delivery must cost nothing.
+ *
+ * The cost it does have: ONE aviso read per delivery about a parcel already in
+ * the removal set — a replay, or a refresh that moves no estado — plus one per
+ * import of a cancelled order. That read is what makes the retry below real.
  *
  * Called OUTSIDE the frete transaction, after it committed. A Firestore
  * failure here PROPAGATES (no catch): both deliveries that call it are
- * idempotent, so the retry that follows re-applies a no-op frete write and
- * tries the resolve again — swallowing it would leave a row standing for a
- * problem that has ended.
+ * idempotent, so the queue redelivers, the frete comes back
+ * `ignorado-sem-mudanca`, and the caller still hands over the confirmed estado
+ * (or the cancelled status), so the retry tries the resolve again. Swallowing
+ * it would leave a row standing for a problem that has ended.
  */
 export async function resolverAvisoNfeSeEncerrado(
   db: Firestore,

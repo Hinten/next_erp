@@ -671,21 +671,23 @@ export async function importarPedidoShopee(
 
     // Step 14 (#1522) — the NF-e aviso's cross-step resolver, AFTER the frete
     // transaction committed and outside it. Two facts end that problem: a frete
-    // WRITTEN into the removal set (the parcel moved) and the order row
-    // cancelled. ⚠️ The estado is handed over ONLY when this delivery wrote the
-    // frete (`atualizado`): a replay reads nothing and costs nothing. The
-    // cancelled arm does NOT wait for a frete write — step 7 preserves a stamped
-    // `error` against routine churn, so a cancelled order's frete can stay
-    // untouched while its aviso would otherwise stand forever. Every other
-    // import answers `false` with ZERO reads. A Firestore failure here
-    // PROPAGATES (rule 6): the delivery is idempotent, and its retry re-applies
-    // a no-op frete write and tries again.
+    // in the removal set by Shopee's own diary (the parcel moved) and the order
+    // row cancelled. ⚠️ The estado is `estadoConfirmado` — what the block holds
+    // after the transaction, corroborated by the diary — on EVERY outcome, not
+    // only on `atualizado`: a Firestore failure here PROPAGATES (rule 6), the
+    // queue redelivers, the frete comes back `ignorado-sem-mudanca`, and it is
+    // this estado that makes the retry try the resolve again. The price is one
+    // aviso read per import of an order whose parcel already sits in the
+    // removal set. The cancelled arm does NOT wait for a frete write either —
+    // step 7 preserves a stamped `error` against routine churn, so a cancelled
+    // order's frete can stay untouched while its aviso would otherwise stand
+    // forever. Every other import answers `false` with ZERO reads.
     avisoNfeResolvido = await resolverAvisoNfeSeEncerrado(
       db,
       {
         integracaoId,
         pedidoId,
-        estadoFreteEscrito: frete7.acao === 'atualizado' ? frete7.estadoEscrito : null,
+        estadoFreteEscrito: frete7.estadoConfirmado,
         orderStatus: linha.order_status,
       },
       { nowMs },

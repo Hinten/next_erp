@@ -19,7 +19,7 @@
  * window (NT 2026.004). ⚠️ Never a digits-only extractor: it would silently fail
  * every NF-e of an alphanumeric-CNPJ emitter.
  *
- * ## The two folds, and where each one STOPS
+ * ## The folds, and where each one STOPS
  *
  * - {@link chaveCanonica} — `trim()` and then the regex, NOTHING more. EQUAL:
  *   `'  K  '` and `'K\n'` read as `K`. DISTINCT (each pinned by a test): K with
@@ -32,9 +32,17 @@
  *   `pending`. EQUAL: `' VALID '` is `valida`. DISTINCT: `invalid` is
  *   `desconhecido` — a substring test would RESOLVE the aviso of a rejected note —
  *   and so are `validated` and `pending_review`; `null` / blank is `ausente`.
+ * - `statusBruto` (on `nossa` / `sem-nota`) — the SAME `trim()` + lower-case,
+ *   kept only when the result is a bare TOKEN (`[a-z_]`, 1 to 24 characters),
+ *   else `null`. It decides nothing: it is what a caller LOGS when the fold
+ *   above answers `desconhecido`, so an unknown value is diagnosable without a
+ *   line ever carrying Shopee's free text. EQUAL: `' INVALID '` and `invalid`
+ *   log as `invalid`. DISTINCT: `valid.`, `pending review`, anything with a
+ *   digit and anything over 24 characters log as `null` — a token has no room
+ *   for a key, a document number or a sentence.
  *
- * Neither fold uses a shared comparison helper, so neither has a row in the
- * repo's fold inventory; the pairs and near-misses live in this module's tests.
+ * None of them uses a shared comparison helper, so none has a row in the repo's
+ * fold inventory; the pairs and near-misses live in this module's tests.
  *
  * ## Never decided by the absence of `invoice_data`
  *
@@ -164,7 +172,7 @@ export function finalidadeDoProc(xml: string): 'venda' | 'outra' | 'ilegivel' {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                the two folds                                */
+/*                                  the folds                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -188,7 +196,8 @@ export function chaveCanonica(raw: string | null): string | null {
  *   invoice" (unverified on the wire — the handler logs it, never skips on it);
  * - `pendente` — held (e.g. flagged by SEFAZ), with or without a reason;
  * - `ausente` — no status at all;
- * - `desconhecido` — a value we do not know, logged verbatim by the caller.
+ * - `desconhecido` — a value we do not know. The caller logs the verdict's
+ *   `statusBruto` — the value reduced to a bare token, never the raw text.
  */
 export type StatusNotaShopee = 'valida' | 'pendente' | 'ausente' | 'desconhecido';
 
@@ -209,6 +218,22 @@ export function statusDaNota(raw: string | null): StatusNotaShopee {
   return 'desconhecido';
 }
 
+/**
+ * The only shape of `invoice_data.status` a log line may carry: lower-case
+ * letters and `_`, 1 to 24 of them — no digit, no space, no punctuation.
+ */
+const TOKEN_DE_STATUS = /^[a-z_]{1,24}$/;
+
+/**
+ * `invoice_data.status` → the TOKEN a caller may log (`statusBruto`), or `null`
+ * when the trimmed, lower-cased value is not one (see the module docblock).
+ */
+function tokenDoStatus(raw: string | null): string | null {
+  if (raw === null) return null;
+  const dobrado = raw.trim().toLowerCase();
+  return TOKEN_DE_STATUS.test(dobrado) ? dobrado : null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                         what Shopee holds for the order                     */
 /* -------------------------------------------------------------------------- */
@@ -225,17 +250,24 @@ export function statusDaNota(raw: string | null): StatusNotaShopee {
  * - `outra` — Shopee holds a different key (`legivel`, with that key, for the
  *   cancelled-sibling rule) or a value that is not a key at all
  *   (`legivel: false`, `chave: null`).
+ *
+ * `sem-nota` and `nossa` also carry `statusBruto`: the raw status as a
+ * loggable token (`null` when there is none, or when it is not a token) — what
+ * the caller logs beside a `desconhecido` status or a `nota-dispensada`
+ * reading, instead of Shopee's free text.
  */
 export type NotaNaShopee =
   | { readonly veredito: 'nao-br' }
   | {
       readonly veredito: 'sem-nota';
       readonly status: StatusNotaShopee;
+      readonly statusBruto: string | null;
       readonly invoiceDataAusente: boolean;
     }
   | {
       readonly veredito: 'nossa';
       readonly status: StatusNotaShopee;
+      readonly statusBruto: string | null;
       readonly motivoPendente: string | null;
     }
   | { readonly veredito: 'outra'; readonly legivel: boolean; readonly chave: string | null };
@@ -262,12 +294,15 @@ export function lerNotaNaShopee(
 ): NotaNaShopee {
   if (pedidoForaDoBrasil(row.region)) return { veredito: 'nao-br' };
   const nota = row.invoice_data;
-  if (nota === null) return { veredito: 'sem-nota', status: 'ausente', invoiceDataAusente: true };
+  if (nota === null) {
+    return { veredito: 'sem-nota', status: 'ausente', statusBruto: null, invoiceDataAusente: true };
+  }
 
   const status = statusDaNota(nota.status);
+  const statusBruto = tokenDoStatus(nota.status);
   const bruta = nota.access_key;
   if (bruta === null || bruta.trim() === '') {
-    return { veredito: 'sem-nota', status, invoiceDataAusente: false };
+    return { veredito: 'sem-nota', status, statusBruto, invoiceDataAusente: false };
   }
   const chave = chaveCanonica(bruta);
   if (chave === null) return { veredito: 'outra', legivel: false, chave: null };
@@ -275,6 +310,7 @@ export function lerNotaNaShopee(
   return {
     veredito: 'nossa',
     status,
+    statusBruto,
     motivoPendente: status === 'pendente' ? resumirTextoDaShopee(nota.pending_reason) : null,
   };
 }

@@ -112,13 +112,17 @@ on:
       # Shopee step 14 (#1522) moved the NF-e upload dispatch (`extractTpAmb`,
       # `decideNfeUploadDispatch`) out of `lib/marketplace/nfe/nfeUpload.ts`
       # into `nfeEnvioCanal.ts`, which ML re-exports and its trigger and route
-      # run. That file reads `ESTADO_NFE` from `nfe.ts`, and `nfeUpload.ts`
-      # already imported from both `nfe.ts` and `shared/frete.ts` without either
-      # being listed here — a main/Codex push touching only one of the three
+      # run. That file reads `ESTADO_NFE` from `nfe.ts`, and the one import
+      # statement of `nfeUpload.ts` already reached THREE unlisted schema files:
+      # `nfe.ts`, `shared/frete.ts` and `shared/outerRef.ts` (`idFromRef`, which
+      # derives the pedido's `integracaoId`; 32 other ML source files read
+      # `outerRef.ts` too, the etiqueta route and the publish path among them —
+      # measured 2026-09-29). A main/Codex push touching only one of these four
       # would not fire this lane's safety net.
       - 'packages/schemas/src/nfeEnvioCanal.ts'
       - 'packages/schemas/src/nfe.ts'
       - 'packages/schemas/src/shared/frete.ts'
+      - 'packages/schemas/src/shared/outerRef.ts'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       - 'packages/schemas/src/integracao.ts'

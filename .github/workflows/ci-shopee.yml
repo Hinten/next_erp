@@ -224,11 +224,14 @@ on:
       - 'packages/schemas/src/envioPrecoMercadoLivre.ts'
       - 'packages/schemas/src/relatorioEnvioPrecoMercadoLivre.ts'
       - 'packages/schemas/src/shared/ttl.ts'
-      # Step 14 (#1522, NF-e upload) decides on the EDGE through
-      # `decideNfeUploadTransition`, the predicate shared with Mercado Livre in
-      # `nfeEnvioCanal.ts`, which reads `ESTADO_NFE` from `nfe.ts`; the NF-e
-      # readers under `lib/shopee/nfe/` validate an access key with `nfe.ts`'s
-      # `CHAVE_NFE_REGEX`. Neither file was covered by an entry above.
+      # Step 14 (#1522, NF-e upload) reads two predicates shared with Mercado
+      # Livre in `nfeEnvioCanal.ts`: the NF-e handler and the `enviar:nfe` CLI
+      # call the LEVEL one, `decideNfeUploadDispatch`, and PR 2's trigger calls
+      # the EDGE one, `decideNfeUploadTransition`. That file reads `ESTADO_NFE`
+      # from `nfe.ts`; the NF-e readers under `lib/shopee/nfe/` validate an
+      # access key with `nfe.ts`'s `CHAVE_NFE_REGEX`, and the recheck matches a
+      # cancelled sibling with `ESTADO_NFE`. Neither file was covered by an
+      # entry above.
       - 'packages/schemas/src/nfeEnvioCanal.ts'
       - 'packages/schemas/src/nfe.ts'
       - 'firestore.indexes.json'

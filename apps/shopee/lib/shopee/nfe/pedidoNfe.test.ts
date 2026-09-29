@@ -170,7 +170,7 @@ describe('avaliarPedidoParaNfeShopee — a posse é PROVADA, nunca inferida', ()
     );
   });
 
-  it('5 — `bloquearEmissaoNFe === true` ⇒ `emissao-bloqueada` (antes do frete de outra integradora)', () => {
+  it('5 — `bloquearEmissaoNFe === true` ⇒ `emissao-bloqueada`, seja qual for a integradora do frete', () => {
     expect(avaliarPedidoParaNfeShopee(PEDIDO_ID, pedidoRaw({ bloquearEmissaoNFe: true }))).toEqual(
       ignorar(MOTIVO_NFE_SHOPEE.emissaoBloqueada),
     );
@@ -193,23 +193,34 @@ describe('avaliarPedidoParaNfeShopee — a posse é PROVADA, nunca inferida', ()
   );
 
   it.each([
+    INTEGRACAO_FRETE.shopee,
     INTEGRACAO_FRETE.melhorEnvios,
     INTEGRACAO_FRETE.retiradaNaLoja,
     INTEGRACAO_FRETE.motoboy,
     INTEGRACAO_FRETE.mercadoLivre,
-  ])('7 — um frete de OUTRA integradora (%s) ⇒ `frete-de-outra-integradora`', (integradora) => {
-    const raw = pedidoRaw({ freteInicial: { externalOptionIntegracao: integradora } });
-    expect(avaliarPedidoParaNfeShopee(PEDIDO_ID, raw)).toEqual(
-      ignorar(MOTIVO_NFE_SHOPEE.freteDeOutraIntegradora),
-    );
-  });
-
-  it.each(['Shopee', ' shopee', 'SHOPEE'])(
-    '8 — QUASE-MISS: `externalOptionIntegracao` = %j NÃO é a da Shopee (comparação EXATA do nosso slug)',
+    'Shopee',
+    ' shopee',
+  ])(
+    '7 — ⛔ R5-1 — PAR: um pedido PROVADO com frete de %j ENFILEIRA — a nota vai ao PEDIDO, não ao envio',
     (integradora) => {
+      // O `upload_invoice_doc` da Shopee é por PEDIDO (não há número de pacote
+      // na página): um frete reapontado para outra integradora não tira a nota
+      // do pedido. Quem recusa um frete alheio é só o carimbo, pelo desfecho
+      // `outra-integradora` do `carimboFreteNfe.ts`.
       const raw = pedidoRaw({ freteInicial: { externalOptionIntegracao: integradora } });
-      expect(avaliarPedidoParaNfeShopee(PEDIDO_ID, raw)).toEqual(
-        ignorar(MOTIVO_NFE_SHOPEE.freteDeOutraIntegradora),
+      expect(avaliarPedidoParaNfeShopee(PEDIDO_ID, raw)).toEqual(ENFILEIRAR);
+    },
+  );
+
+  it.each([
+    ['o frete da Shopee', INTEGRACAO_FRETE.shopee],
+    ['o frete de outra integradora', INTEGRACAO_FRETE.melhorEnvios],
+  ])(
+    '8 — ⛔ R5-1 — QUASE-MISS: um pedido SEM o digest, com %s, é `nao-shopee` — o frete nem prova nem desqualifica',
+    (_rotulo, integradora) => {
+      const raw = pedidoRaw({ freteInicial: { externalOptionIntegracao: integradora } });
+      expect(avaliarPedidoParaNfeShopee('pedido-manual-1', raw)).toEqual(
+        ignorar(MOTIVO_NFE_SHOPEE.naoShopee),
       );
     },
   );

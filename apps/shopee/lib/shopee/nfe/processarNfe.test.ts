@@ -58,12 +58,19 @@ import {
   NFE_SHOPEE_MAX_TENTATIVAS,
   SHOPEE_NFE_DETALHE_CAMPOS,
 } from './constantesNfe';
-import { MOTIVO_NFE_SHOPEE, ShopeeNfeUploadTasksDisabledError } from './errosNfe';
+import {
+  MOTIVO_NFE_SHOPEE,
+  MOTIVOS_QUE_AVISAM,
+  MOTIVOS_QUE_CARIMBAM,
+  ShopeeNfeUploadTasksDisabledError,
+  type MotivoNfeShopee,
+} from './errosNfe';
 import {
   lerPedidoNaShopee,
   processarNfeShopee,
   simularEnvioNfeShopee,
   type DepsNfeShopee,
+  type ResultadoNfeShopee,
 } from './processarNfe';
 import { FASE_NFE_SHOPEE, type OpcoesDeEnfileiramentoNfe, type TarefaNfeShopee } from './tarefaNfe';
 
@@ -1303,5 +1310,679 @@ describe('lerPedidoNaShopee — o mapa dos erros do GET', () => {
     } as unknown as ShopeeClient;
     const r = await lerPedidoNaShopee(cliente, ORDER_SN);
     expect(r.tipo === 'linha' && r.linha.order_sn).toBe(ORDER_SN);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   review 1 — the handler's fixes (FX-C1)                     */
+/* -------------------------------------------------------------------------- */
+
+/** The ONE completion line, and the console level it went to. */
+function conclusaoENivel(): { nivel: 'info' | 'warn' | 'error'; linha: Record<string, unknown> } {
+  const niveis = ['info', 'warn', 'error'] as const;
+  const achadas = logs.flatMap((spy, i) =>
+    spy.mock.calls
+      .map((args) => args[1] as Record<string, unknown> | undefined)
+      .filter((m): m is Record<string, unknown> => m !== undefined && 'desfecho' in m)
+      .map((linhaDoLog) => ({ nivel: niveis[i] ?? 'info', linha: linhaDoLog })),
+  );
+  expect(achadas).toHaveLength(1);
+  const [unica] = achadas;
+  if (unica === undefined) throw new Error('nenhuma linha de conclusão');
+  return unica;
+}
+
+/** A CANCELLED sibling NF-e whose stored key is `K_OUTRA` (no proc stored). */
+const IRMAO_CANCELADO = { s4: { estado: ESTADO_NFE.cancelada, chave: K_OUTRA } };
+
+describe('R2-2 — a reverificação devida é enfileirada ANTES do carimbo', () => {
+  it('PAR: o carimbo FALHA depois de uma releitura `sefaz-pendente` ⇒ relança, e a reverificação JÁ está enfileirada', async () => {
+    const c = cenario({ leituras: [semNota(), nossa('pending', 'Rejeição 539: Duplicidade')] });
+    vi.spyOn(c.db, 'runTransaction').mockRejectedValue(grpc(14, 'UNAVAILABLE'));
+
+    await expect(processar(c)).rejects.toMatchObject({ code: 14 });
+    // The aviso stands (it is written first) and the recheck the 200 owes was
+    // enqueued before the stamp that failed — the retry's pre-read owes none.
+    expect(aviso(c)).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.sefazPendente });
+    expect(c.enfileiradas).toEqual([
+      {
+        payload: { ...TAREFA, fase: FASE_NFE_SHOPEE.reverificacao },
+        opts: { scheduleDelaySeconds: ATRASOS_REVERIFICACAO_S[0] },
+      },
+    ]);
+    expect(estadoDoFrete(c)).toBe(ESTADO_FRETE.aguardandoNFe);
+  });
+
+  it('QUASE: o carimbo falha numa recusa que NÃO deve reverificação (CNPJ) ⇒ relança e nada é enfileirado', async () => {
+    const c = cenario({ leituras: [semNota()], upload: recusa('Invalid CNPJ') });
+    vi.spyOn(c.db, 'runTransaction').mockRejectedValue(grpc(14, 'UNAVAILABLE'));
+
+    await expect(processar(c)).rejects.toMatchObject({ code: 14 });
+    expect(aviso(c)).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.cnpjDivergente });
+    expect(c.enfileiradas).toEqual([]);
+  });
+});
+
+describe('R1-2 / R5-4 — a releitura depois do 200 que ainda mostra a chave de um irmão CANCELADO', () => {
+  it('PAR: substituição aceita + releitura atrasada (ainda K_OUTRA) ⇒ `nao-refletida-ainda`, SEM aviso, e a reverificação agendada', async () => {
+    const c = cenario({ leituras: [outra(K_OUTRA), outra(K_OUTRA)], irmaos: IRMAO_CANCELADO });
+
+    const r = await processar(c);
+
+    expect(r).toMatchObject({
+      desfecho: 'enviado',
+      motivo: MOTIVO_NFE_SHOPEE.naoRefletidaAinda,
+      substituicao: true,
+      avisado: false,
+      carimbo: null,
+    });
+    expect(c.uploadInvoiceDoc).toHaveBeenCalledTimes(1);
+    expect(aviso(c)).toBeUndefined();
+    expect(c.db.writes).toEqual([]);
+    expect(c.enfileiradas.map((e) => e.payload.fase)).toEqual([FASE_NFE_SHOPEE.reverificacao]);
+    expect(conclusaoENivel().nivel).toBe('info');
+  });
+
+  it('QUASE: a releitura mostra uma TERCEIRA chave ⇒ `outra-nfe-anexada` (aviso), e a reverificação AINDA é agendada', async () => {
+    const c = cenario({
+      leituras: [outra(K_OUTRA), outra(montarChave('000000003'))],
+      irmaos: IRMAO_CANCELADO,
+    });
+
+    const r = await processar(c);
+
+    expect(r).toMatchObject({
+      desfecho: 'enviado',
+      motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada,
+      substituicao: true,
+      avisado: true,
+      carimbo: null,
+    });
+    expect(aviso(c)).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada });
+    expect(c.enfileiradas).toHaveLength(1);
+  });
+
+  it('QUASE: a mesma chave num irmão NÃO cancelado, lida depois do 200 ⇒ continua `outra-nfe-anexada`', async () => {
+    const c = cenario({
+      leituras: [semNota(), outra(K_OUTRA)],
+      irmaos: { s4: { estado: ESTADO_NFE.aprovada, chave: K_OUTRA } },
+    });
+    expect((await processar(c)).motivo).toBe(MOTIVO_NFE_SHOPEE.outraNfeAnexada);
+  });
+});
+
+describe('R1-2 — a releitura que DECIDE (resposta incerta / N1) numa substituição: a chave do irmão CANCELADO ≡ nenhuma chave nossa', () => {
+  it('PAR: substituição + resposta ilegível (rede) + releitura ainda K_OUTRA ⇒ RELANÇA como sobre `sem-nota`, nenhuma escrita', async () => {
+    const c = cenario({
+      leituras: [outra(K_OUTRA), outra(K_OUTRA)],
+      irmaos: IRMAO_CANCELADO,
+      upload: new ShopeeNetworkError('reset'),
+    });
+
+    await expect(processar(c, {}, 0)).rejects.toBeInstanceOf(ShopeeNetworkError);
+    expect(aviso(c)).toBeUndefined();
+    expect(c.db.writes).toEqual([]);
+    expect(c.enfileiradas).toEqual([]);
+  });
+
+  it('PAR: o mesmo na ÚLTIMA tentativa ⇒ `canal-indisponivel` + UMA reverificação — igual ao gêmeo `sem-nota`', async () => {
+    const leituraFinal = async (depois: ShopeeOrderDetailRow, irmaos?: Record<string, DocData>) => {
+      __resetAllReadCaches();
+      const c = cenario({
+        leituras: [irmaos ? outra(K_OUTRA) : semNota(), depois],
+        ...(irmaos ? { irmaos } : {}),
+        upload: new ShopeeNetworkError('reset'),
+      });
+      const r = await processar(c, {}, ULTIMA_TENTATIVA);
+      return { r, fases: c.enfileiradas.map((e) => e.payload.fase) };
+    };
+    const substituicao = await leituraFinal(outra(K_OUTRA), IRMAO_CANCELADO);
+    const gemeo = await leituraFinal(semNota());
+
+    expect(substituicao.r).toMatchObject({
+      desfecho: 'erro-final',
+      motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel,
+      substituicao: true,
+      carimbo: null,
+    });
+    expect({ ...substituicao.r, substituicao: false }).toEqual(gemeo.r);
+    expect(substituicao.fases).toEqual([FASE_NFE_SHOPEE.reverificacao]);
+    expect(gemeo.fases).toEqual(substituicao.fases);
+  });
+
+  it('PAR: substituição + N1 (`access key duplicated`) + releitura ainda K_OUTRA ⇒ `chave-em-outro-pedido`, como sobre `sem-nota`', async () => {
+    const c = cenario({
+      leituras: [outra(K_OUTRA), outra(K_OUTRA)],
+      irmaos: IRMAO_CANCELADO,
+      upload: recusa('access key duplicated'),
+    });
+    expect(await processar(c)).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.chaveEmOutroPedido,
+      substituicao: true,
+      avisado: true,
+      carimbo: 'carimbado',
+    });
+  });
+
+  it('QUASE: substituição + resposta ilegível + releitura com uma TERCEIRA chave ⇒ continua `outra-nfe-anexada` (aviso, sem carimbo)', async () => {
+    const c = cenario({
+      leituras: [outra(K_OUTRA), outra(montarChave('000000003'))],
+      irmaos: IRMAO_CANCELADO,
+      upload: new ShopeeNetworkError('reset'),
+    });
+    expect(await processar(c, {}, 0)).toMatchObject({
+      desfecho: 'recusado',
+      motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada,
+      substituicao: true,
+      avisado: true,
+      carimbo: null,
+    });
+  });
+
+  it('QUASE: sem substituição, N1 + releitura com a chave de um irmão NÃO cancelado ⇒ continua `outra-nfe-anexada`', async () => {
+    const c = cenario({
+      leituras: [semNota(), outra(K_OUTRA)],
+      irmaos: { s4: { estado: ESTADO_NFE.aprovada, chave: K_OUTRA } },
+      upload: recusa('access key duplicated'),
+    });
+    expect(await processar(c)).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.outraNfeAnexada,
+      avisado: true,
+      carimbo: null,
+    });
+  });
+});
+
+describe('R1-3 — a reverificação começa com o orçamento de pausas ZERADO', () => {
+  it('PAR: um envio que pausou até o teto e sobe ⇒ a reverificação sai com `pausas: 0` e `adiamentosSerpro` como veio', async () => {
+    const c = cenario({ leituras: [semNota(), nossa('pending')] });
+
+    await processar(c, { pausas: NFE_SHOPEE_MAX_PAUSAS, adiamentosSerpro: 2 });
+
+    expect(c.enfileiradas).toEqual([
+      {
+        payload: {
+          ...TAREFA,
+          fase: FASE_NFE_SHOPEE.reverificacao,
+          pausas: 0,
+          adiamentosSerpro: 2,
+        },
+        opts: { scheduleDelaySeconds: ATRASOS_REVERIFICACAO_S[0] },
+      },
+    ]);
+  });
+
+  it('PAR: o `canal-indisponivel` da última tentativa também agenda a reverificação com `pausas: 0`', async () => {
+    const c = cenario({
+      leituras: [semNota()],
+      upload: recusa(null, 'error_server', SHOPEE_ERROR_KIND.transient),
+    });
+    await processar(c, { pausas: 3 }, ULTIMA_TENTATIVA);
+    expect(c.enfileiradas.map((e) => e.payload.pausas)).toEqual([0]);
+  });
+
+  it('QUASE: DENTRO da cadeia da reverificação uma pausa CONTINUA contando (3 ⇒ 4) — o zero é só na fronteira', async () => {
+    const c = cenario({ leituras: [limite('burst', 10)] });
+    await processar(c, { fase: FASE_NFE_SHOPEE.reverificacao, pausas: 3 });
+    expect(c.enfileiradas.map((e) => [e.payload.fase, e.payload.pausas])).toEqual([
+      [FASE_NFE_SHOPEE.reverificacao, 4],
+    ]);
+  });
+});
+
+describe('R4-2 — a linha de conclusão leva o `statusBruto` (o TOKEN) só onde ele é a única pista', () => {
+  it('PAR: `status-desconhecido` na pré-leitura ⇒ `statusBruto` = o token (`invalid`; e `REJECTED` + TAB ≡ `rejected`)', async () => {
+    const c1 = cenario({ leituras: [nossa('invalid')] });
+    await processar(c1);
+    expect(conclusaoENivel().linha).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.statusDesconhecido,
+      statusBruto: 'invalid',
+    });
+    for (const spy of logs) spy.mockClear();
+
+    const c2 = cenario({ leituras: [nossa('REJECTED\t')] });
+    await processar(c2);
+    expect(conclusaoENivel().linha).toMatchObject({ statusBruto: 'rejected' });
+  });
+
+  it('PAR: `nota-dispensada` numa reverificação (sem chave, `valid`) ⇒ `statusBruto: valid`', async () => {
+    const c = cenario({ leituras: [linha({ invoice: { access_key: '', status: 'valid' } })] });
+    await processar(c, { fase: FASE_NFE_SHOPEE.reverificacao });
+    expect(conclusaoENivel().linha).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.notaDispensada,
+      statusBruto: 'valid',
+    });
+  });
+
+  it('PAR: `status-desconhecido` numa reverificação também leva o token', async () => {
+    const c = cenario({ leituras: [nossa('pending_review')] });
+    await processar(c, { fase: FASE_NFE_SHOPEE.reverificacao });
+    expect(conclusaoENivel().linha).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.statusDesconhecido,
+      statusBruto: 'pending_review',
+    });
+  });
+
+  it('QUASE: um status que NÃO é token (texto livre) ⇒ `statusBruto: null`, e o texto nunca é logado', async () => {
+    const c = cenario({ leituras: [nossa(`Rejeitada ${K}`)] });
+    await processar(c);
+    expect(conclusaoENivel().linha).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.statusDesconhecido,
+      statusBruto: null,
+    });
+    expect(tudoQueFoiLogado()).not.toContain(K);
+    expect(tudoQueFoiLogado()).not.toContain('Rejeitada');
+  });
+
+  it('QUASE: `validacao-pendente` (status conhecido) ⇒ a linha NÃO tem o campo `statusBruto`', async () => {
+    const c = cenario({ leituras: [nossa('pending')] });
+    await processar(c);
+    expect(conclusaoENivel().linha).not.toHaveProperty('statusBruto');
+  });
+});
+
+describe('R5-2 — o nível da linha segue os EFEITOS, não só o rótulo', () => {
+  it('PAR: `enviado` + `sefaz-pendente` depois do 200 (avisou E carimbou) ⇒ `warn`', async () => {
+    const c = cenario({ leituras: [semNota(), nossa('pending', 'Rejeição 539')] });
+    await processar(c);
+    const { nivel, linha: l } = conclusaoENivel();
+    expect(l).toMatchObject({ desfecho: 'enviado', motivo: MOTIVO_NFE_SHOPEE.sefazPendente });
+    expect(nivel).toBe('warn');
+  });
+
+  it('PAR: `enviado` + `outra-nfe-anexada` depois do 200 (avisou, sem carimbo) ⇒ `warn`', async () => {
+    const c = cenario({ leituras: [semNota(), outra(K_OUTRA)] });
+    await processar(c);
+    expect(conclusaoENivel().nivel).toBe('warn');
+  });
+
+  it('QUASE: `enviado` + `validacao-pendente` (nenhum efeito) ⇒ `info`', async () => {
+    const c = cenario({ leituras: [semNota(), nossa('pending')] });
+    await processar(c);
+    expect(conclusaoENivel().nivel).toBe('info');
+  });
+
+  it('QUASE: `enviado` + `nfe-validada` que RESOLVEU um aviso (efeito que não é alerta) ⇒ `info`', async () => {
+    const c = cenario({ leituras: [semNota(), nossa('valid')] });
+    await avisarNfeShopee(
+      asDb(c.db),
+      {
+        integracaoId: CONTA,
+        pedidoId: PEDIDO_ID,
+        numero: ORDER_SN,
+        motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel,
+        excerto: null,
+      },
+      { increment, nowMs: NOW_MS - 60_000 },
+    );
+    for (const spy of logs) spy.mockClear();
+    expect((await processar(c)).resolvido).toBe(true);
+    expect(conclusaoENivel().nivel).toBe('info');
+  });
+});
+
+/* ----------------- R5-3 — every outcome's effects come from the sets --------- */
+
+/** A reauth refusal of the order read. */
+function reauthNaLeitura(): ShopeeReauthRequiredError {
+  return new ShopeeReauthRequiredError('vencida', {
+    code: 'shop_access_expired',
+    kind: SHOPEE_ERROR_KIND.reauth,
+    httpStatus: 403,
+    path: '/api/v2/order/get_order_detail',
+  });
+}
+
+/** One upload refused with Shopee's sentence, over a `sem-nota` pre-read. */
+function recusaNoEnvio(texto: string, over: Partial<TarefaNfeShopee> = {}) {
+  return () => processar(cenario({ leituras: [semNota()], upload: recusa(texto) }), over);
+}
+
+/** A proc whose byte size is ONE past the package's ceiling. */
+function procGrandeDemais(): string {
+  const base = procXml();
+  return `${base}<!--${'a'.repeat(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES - base.length - 6)}-->`;
+}
+
+type CasoDaVarredura = readonly [string, MotivoNfeShopee, () => Promise<ResultadoNfeShopee>];
+
+const REVERIFICACAO = { fase: FASE_NFE_SHOPEE.reverificacao } as const;
+
+/**
+ * One execution per motivo the HANDLER can produce — both phases, every stop
+ * of the prefix, every refusal row, every pause and wait.
+ */
+const CASOS_DA_VARREDURA: readonly CasoDaVarredura[] = [
+  // ---- P1–P3 ----
+  ['P1 NF-e ausente', MOTIVO_NFE_SHOPEE.nfeNaoEncontrada, () => processar(cenario({ nfe: null }))],
+  [
+    'P2 NF-e cancelada',
+    MOTIVO_NFE_SHOPEE.naoAprovada,
+    () => processar(cenario({ nfe: nfeRaw({ estado: ESTADO_NFE.cancelada }) })),
+  ],
+  [
+    'P2 sem proc',
+    MOTIVO_NFE_SHOPEE.xmlAusente,
+    () => processar(cenario({ nfe: nfeRaw({ xml_nfe_proc: null }) })),
+  ],
+  [
+    'P2 homologação',
+    MOTIVO_NFE_SHOPEE.tpambHomologacao,
+    () =>
+      processar(
+        cenario({
+          nfe: nfeRaw({
+            xml_nfe_proc: procXml().replaceAll('<tpAmb>1</tpAmb>', '<tpAmb>2</tpAmb>'),
+          }),
+        }),
+      ),
+  ],
+  [
+    'P3 pedido ausente',
+    MOTIVO_NFE_SHOPEE.pedidoNaoEncontrado,
+    () => processar(cenario({ pedido: null })),
+  ],
+  [
+    'P3 sem prova de posse',
+    MOTIVO_NFE_SHOPEE.naoShopee,
+    () => processar(cenario({ pedido: pedidoRaw({ numero: 'OUTRO-NUMERO' }) })),
+  ],
+  [
+    'P3 emissão bloqueada',
+    MOTIVO_NFE_SHOPEE.emissaoBloqueada,
+    () => processar(cenario({ pedido: pedidoRaw({ bloquearEmissaoNFe: true }) })),
+  ],
+  // ---- P4–P5 ----
+  [
+    'P4 devolução',
+    MOTIVO_NFE_SHOPEE.nfeNaoEDeVenda,
+    () => processar(cenario({ nfe: nfeRaw({ xml_nfe_proc: procXml({ finNFe: '4' }) }) })),
+  ],
+  [
+    'P5 XML sem chave',
+    MOTIVO_NFE_SHOPEE.xmlInvalido,
+    () =>
+      processar(
+        cenario({
+          nfe: nfeRaw({ xml_nfe_proc: procXml().replace(`Id="NFe${K}"`, 'Id="NFe"'), chave: null }),
+        }),
+      ),
+  ],
+  [
+    'P5 XML grande demais',
+    MOTIVO_NFE_SHOPEE.xmlGrandeDemais,
+    () => processar(cenario({ nfe: nfeRaw({ xml_nfe_proc: procGrandeDemais() }) })),
+  ],
+  // ---- P6–P7 ----
+  [
+    'P6 conta ausente',
+    MOTIVO_NFE_SHOPEE.contaNaoConfigurada,
+    () => processar(cenario({ conta: null })),
+  ],
+  [
+    'P6 conta inativa',
+    MOTIVO_NFE_SHOPEE.contaInativa,
+    () => processar(cenario({ conta: contaRaw({ ativo: false }) })),
+  ],
+  [
+    'P7 sem shop_id',
+    MOTIVO_NFE_SHOPEE.semShopId,
+    () => {
+      const c = cenario();
+      c.resolveClient.mockRejectedValueOnce(new ShopeeContaSemShopIdError('conta principal'));
+      return processar(c);
+    },
+  ],
+  [
+    'P7 configuração do app',
+    MOTIVO_NFE_SHOPEE.configuracaoDoApp,
+    () => {
+      const c = cenario();
+      c.resolveClient.mockRejectedValueOnce(new ShopeeConfigError('SHOPEE_PARTNER_ID ausente'));
+      return processar(c);
+    },
+  ],
+  // ---- P8: the order read and the order gate ----
+  [
+    'P8 pedido inexistente',
+    MOTIVO_NFE_SHOPEE.pedidoInexistenteNoCanal,
+    () => processar(cenario({ leituras: ['vazio'] })),
+  ],
+  [
+    'P8 IP não declarado',
+    MOTIVO_NFE_SHOPEE.ipNaoDeclarado,
+    () => processar(cenario({ leituras: [recusa(null, 'common.source_ip_undeclared')] })),
+  ],
+  [
+    'P8 autorização vencida',
+    MOTIVO_NFE_SHOPEE.reauth,
+    () => processar(cenario({ leituras: [reauthNaLeitura()] })),
+  ],
+  [
+    'P8 fora do Brasil',
+    MOTIVO_NFE_SHOPEE.pedidoNaoBr,
+    () => processar(cenario({ leituras: [linha({ region: 'SG' })] })),
+  ],
+  [
+    'P8 FBS',
+    MOTIVO_NFE_SHOPEE.pedidoFbs,
+    () => processar(cenario({ leituras: [linha({ fulfillment: 'fulfilled_by_shopee' })] })),
+  ],
+  [
+    'P8 cross-border',
+    MOTIVO_NFE_SHOPEE.lojaCrossBorder,
+    () => processar(cenario({ leituras: [linha({ fulfillment: 'fulfilled_by_cb_seller' })] })),
+  ],
+  [
+    'P8 cancelado',
+    MOTIVO_NFE_SHOPEE.pedidoCancelado,
+    () => processar(cenario({ leituras: [linha({ status: 'CANCELLED' })] })),
+  ],
+  [
+    'P8 exportação',
+    MOTIVO_NFE_SHOPEE.pedidoExportacao,
+    () => processar(cenario({ leituras: [linha({ internacional: true })] })),
+  ],
+  // ---- the pre-read ----
+  [
+    'pré-leitura nossa valid',
+    MOTIVO_NFE_SHOPEE.nfeValidada,
+    () => processar(cenario({ leituras: [nossa('valid')] })),
+  ],
+  [
+    'pré-leitura nossa pending',
+    MOTIVO_NFE_SHOPEE.validacaoPendente,
+    () => processar(cenario({ leituras: [nossa('pending')] })),
+  ],
+  [
+    'pré-leitura nossa invalid',
+    MOTIVO_NFE_SHOPEE.statusDesconhecido,
+    () => processar(cenario({ leituras: [nossa('invalid')] })),
+  ],
+  [
+    'pré-leitura nossa pending + motivo',
+    MOTIVO_NFE_SHOPEE.sefazPendente,
+    () => processar(cenario({ leituras: [nossa('pending', 'Rejeição 539')] })),
+  ],
+  [
+    'pré-leitura outra',
+    MOTIVO_NFE_SHOPEE.outraNfeAnexada,
+    () => processar(cenario({ leituras: [outra(K_OUTRA)] })),
+  ],
+  [
+    'pré-leitura ilegível',
+    MOTIVO_NFE_SHOPEE.chaveIlegivel,
+    () => processar(cenario({ leituras: [linha({ invoice: { access_key: '-' } })] })),
+  ],
+  // ---- the upload's refusal table ----
+  [
+    'N4',
+    MOTIVO_NFE_SHOPEE.emissorShopee,
+    recusaNoEnvio("Wrong parameters, detail: Don't support invoice issuer."),
+  ],
+  ['N5', MOTIVO_NFE_SHOPEE.cnpjDivergente, recusaNoEnvio('Invalid CNPJ')],
+  ['N6', MOTIVO_NFE_SHOPEE.ufDivergente, recusaNoEnvio('Invalid UF')],
+  ['N7', MOTIVO_NFE_SHOPEE.ieDivergente, recusaNoEnvio('Invalid state registration')],
+  ['N8', MOTIVO_NFE_SHOPEE.nfeCancelada, recusaNoEnvio('Canceled NF-e')],
+  ['N9', MOTIVO_NFE_SHOPEE.dataDeEmissaoInvalida, recusaNoEnvio('Invalid issue date')],
+  ['N10', MOTIVO_NFE_SHOPEE.modeloNao55, recusaNoEnvio('Invalid NF-e model')],
+  ['N11', MOTIVO_NFE_SHOPEE.cfopNaoAceito, recusaNoEnvio('CFOP not accepted')],
+  ['N12', MOTIVO_NFE_SHOPEE.xmlRecusado, recusaNoEnvio('file error')],
+  ['N13', MOTIVO_NFE_SHOPEE.chaveInvalida, recusaNoEnvio('invalid access key')],
+  ['N15', MOTIVO_NFE_SHOPEE.requisicaoInvalida, recusaNoEnvio('order_sn is a required field')],
+  ['N18', MOTIVO_NFE_SHOPEE.recusaDesconhecida, recusaNoEnvio('algo que ninguém ensinou')],
+  ['N3 sem suporte', MOTIVO_NFE_SHOPEE.semSuporteANfe, recusaNoEnvio('invoice status is invalid')],
+  [
+    'N1 + releitura sem-nota',
+    MOTIVO_NFE_SHOPEE.chaveEmOutroPedido,
+    () =>
+      processar(
+        cenario({ leituras: [semNota(), semNota()], upload: recusa('access key duplicated') }),
+      ),
+  ],
+  ['N14 1º adiamento', MOTIVO_NFE_SHOPEE.aguardandoSerpro, recusaNoEnvio('Invalid NF-e')],
+  [
+    'N14 além da escada',
+    MOTIVO_NFE_SHOPEE.nfeInvalida,
+    recusaNoEnvio('Invalid NF-e', { adiamentosSerpro: ATRASOS_SERPRO_REENVIO_S.length }),
+  ],
+  [
+    'transitório na última',
+    MOTIVO_NFE_SHOPEE.canalIndisponivel,
+    () =>
+      processar(
+        cenario({
+          leituras: [semNota()],
+          upload: recusa(null, 'error_server', SHOPEE_ERROR_KIND.transient),
+        }),
+        {},
+        ULTIMA_TENTATIVA,
+      ),
+  ],
+  // ---- after a 200 ----
+  [
+    'releitura sem-nota',
+    MOTIVO_NFE_SHOPEE.naoRefletidaAinda,
+    () => processar(cenario({ leituras: [semNota(), semNota()] })),
+  ],
+  // ---- the pauses ----
+  [
+    'rajada',
+    MOTIVO_NFE_SHOPEE.limiteDeTaxa,
+    () => processar(cenario({ leituras: [semNota()], upload: limite('burst', 30) })),
+  ],
+  [
+    'cota diária',
+    MOTIVO_NFE_SHOPEE.cotaDiaria,
+    () => processar(cenario({ leituras: [limite('daily')] })),
+  ],
+  [
+    'pausas no teto',
+    MOTIVO_NFE_SHOPEE.pausaReenqueuesEsgotados,
+    () =>
+      processar(cenario({ leituras: [limite('burst', 30)] }), { pausas: NFE_SHOPEE_MAX_PAUSAS }),
+  ],
+  [
+    'válvula fechada numa pausa',
+    MOTIVO_NFE_SHOPEE.tasksDesabilitadas,
+    () => {
+      const c = cenario({ leituras: [limite('burst', 30)] });
+      c.valvulaFechada = true;
+      return processar(c);
+    },
+  ],
+  // ---- the recheck, through the handler ----
+  [
+    'reverificação: transitório na última',
+    MOTIVO_NFE_SHOPEE.reverificacaoIndisponivel,
+    () =>
+      processar(
+        cenario({ leituras: [new ShopeeNetworkError('rede')] }),
+        REVERIFICACAO,
+        ULTIMA_TENTATIVA,
+      ),
+  ],
+  [
+    'reverificação: sem chave, valid',
+    MOTIVO_NFE_SHOPEE.notaDispensada,
+    () =>
+      processar(
+        cenario({ leituras: [linha({ invoice: { access_key: '', status: 'valid' } })] }),
+        REVERIFICACAO,
+      ),
+  ],
+  [
+    'reverificação: sem chave',
+    MOTIVO_NFE_SHOPEE.naoAnexada,
+    () => processar(cenario({ leituras: [semNota()] }), REVERIFICACAO),
+  ],
+  // ---- the payload ----
+  [
+    'payload inválido',
+    MOTIVO_NFE_SHOPEE.payloadInvalido,
+    () => processarNfeShopee(cenario().deps, { pedidoId: PEDIDO_ID, fase: 'x' }, 0),
+  ],
+];
+
+/**
+ * The two members the handler CANNOT produce, each with the reason — the
+ * anchor below is "every OTHER member is reached by the table".
+ */
+const FORA_DO_HANDLER: Readonly<Partial<Record<MotivoNfeShopee, string>>> = {
+  [MOTIVO_NFE_SHOPEE.apagada]:
+    'P1 answers `nfe-nao-encontrada` for a missing document before the predicate runs',
+  [MOTIVO_NFE_SHOPEE.semNfeAprovada]:
+    'the slot rule of the route and the CLI; a task always names its NF-e',
+};
+
+describe('R5-3 — a varredura do handler: todo desfecho tem os efeitos que os CONJUNTOS dizem', () => {
+  it('para cada motivo que o handler produz: avisado ⇔ MOTIVOS_QUE_AVISAM, carimbado ⇔ MOTIVOS_QUE_CARIMBAM', async () => {
+    const vistos = new Set<MotivoNfeShopee>();
+    for (const [rotulo, esperado, rodar] of CASOS_DA_VARREDURA) {
+      // Each case is its own execution: the cached conta read of one must not
+      // answer for the next (the per-test reset in `beforeEach`, per case).
+      __resetAllReadCaches();
+      const r = await rodar();
+      expect(r.motivo, rotulo).toBe(esperado);
+      vistos.add(esperado);
+      expect(r.avisado, `${rotulo}: avisado`).toBe(MOTIVOS_QUE_AVISAM.has(esperado));
+      expect(r.carimbo !== null, `${rotulo}: carimbo`).toBe(MOTIVOS_QUE_CARIMBAM.has(esperado));
+    }
+    // ÂNCORA: the table reaches every member but the two the handler cannot
+    // produce — so a set change can never slip past an arm this loop skipped.
+    const todos: MotivoNfeShopee[] = Object.values(MOTIVO_NFE_SHOPEE);
+    expect([...vistos].sort()).toEqual(todos.filter((m) => !(m in FORA_DO_HANDLER)).sort());
+    expect(Object.keys(FORA_DO_HANDLER).sort()).toEqual(
+      [MOTIVO_NFE_SHOPEE.apagada, MOTIVO_NFE_SHOPEE.semNfeAprovada].sort(),
+    );
+  });
+
+  it('a fonte: toda saída do handler nasce em `aplicar` — nenhum braço monta a sua por fora dos conjuntos', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./processarNfe.ts', import.meta.url)),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    const inicio = fonte.indexOf('const aplicar = async');
+    const fim = fonte.indexOf('\n  };\n', inicio);
+    expect(inicio).toBeGreaterThan(0);
+    expect(fim).toBeGreaterThan(inicio);
+    const corpoDeAplicar = fonte.slice(inicio, fim);
+    const vezes = (texto: string) => texto.split('saidaDe(').length - 1;
+    // ÂNCORA: `aplicar` does build outcomes (its log-only arm and its last line).
+    expect(vezes(corpoDeAplicar)).toBe(2);
+    expect(vezes(fonte)).toBe(vezes(corpoDeAplicar));
+  });
+});
+
+describe('F-2 — os tipos do handler são os do contrato da tarefa (uma declaração só)', () => {
+  it('`processarNfe.ts` RE-EXPORTA `DepsNfeShopee` / `ResultadoNfeShopee` de `./tarefaNfe` e não os declara', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./processarNfe.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(fonte).toMatch(
+      /export type \{ DepsNfeShopee, ResultadoNfeShopee \} from '\.\/tarefaNfe';/,
+    );
+    expect(fonte).not.toMatch(/interface (DepsNfeShopee|ResultadoNfeShopee)\b/);
   });
 });

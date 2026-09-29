@@ -322,7 +322,12 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
 
   it('2 — ⛔ mutante 22: um pedido BR SEM `invoice_data` é `sem-nota` (sobe), NUNCA `nao-br`', () => {
     const nota = lerNotaNaShopee(linhaBr(null), K);
-    expect(nota).toEqual({ veredito: 'sem-nota', status: 'ausente', invoiceDataAusente: true });
+    expect(nota).toEqual({
+      veredito: 'sem-nota',
+      status: 'ausente',
+      statusBruto: null,
+      invoiceDataAusente: true,
+    });
     expect(nota.veredito).not.toBe('nao-br');
   });
 
@@ -330,6 +335,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
     expect(lerNotaNaShopee(linhaBr(null, null), K)).toEqual({
       veredito: 'sem-nota',
       status: 'ausente',
+      statusBruto: null,
       invoiceDataAusente: true,
     });
   });
@@ -342,6 +348,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
     expect(lerNotaNaShopee(linhaBr({ access_key }), K)).toEqual({
       veredito: 'sem-nota',
       status: 'ausente',
+      statusBruto: null,
       invoiceDataAusente: false,
     });
   });
@@ -350,6 +357,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
     expect(lerNotaNaShopee(linhaBr({ access_key: '', status: 'valid' }), K)).toEqual({
       veredito: 'sem-nota',
       status: 'valida',
+      statusBruto: 'valid',
       invoiceDataAusente: false,
     });
   });
@@ -357,7 +365,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
   it('6 — a NOSSA chave validada ⇒ `nossa` + `valida`, sem motivo pendente', () => {
     expect(
       lerNotaNaShopee(linhaBr({ access_key: K, status: 'valid', pending_reason: 'x' }), K),
-    ).toEqual({ veredito: 'nossa', status: 'valida', motivoPendente: null });
+    ).toEqual({ veredito: 'nossa', status: 'valida', statusBruto: 'valid', motivoPendente: null });
   });
 
   it('7 — PAR: a nossa chave com espaços em volta continua sendo `nossa`', () => {
@@ -386,6 +394,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
     expect(lerNotaNaShopee(linhaBr({ access_key: K, status: 'pending' }), K)).toEqual({
       veredito: 'nossa',
       status: 'pendente',
+      statusBruto: 'pending',
       motivoPendente: null,
     });
   });
@@ -394,6 +403,7 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
     expect(lerNotaNaShopee(linhaBr({ access_key: K, status: 'invalid' }), K)).toEqual({
       veredito: 'nossa',
       status: 'desconhecido',
+      statusBruto: 'invalid',
       motivoPendente: null,
     });
   });
@@ -426,6 +436,71 @@ describe('lerNotaNaShopee — quatro vereditos', () => {
       chave: null,
     });
     expect(lerNotaNaShopee(linhaBr({ access_key: K_ALFA }), K_ALFA).veredito).toBe('nossa');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     statusBruto — o TOKEN que se loga (R4-2)                */
+/* -------------------------------------------------------------------------- */
+
+/** The `statusBruto` of our own note under `status`, and of a key-less row under it. */
+function statusBrutoDe(status: string | null): { nossa: unknown; semNota: unknown } {
+  const nossa = lerNotaNaShopee(linhaBr({ access_key: K, status }), K);
+  const semNota = lerNotaNaShopee(linhaBr({ access_key: '', status }), K);
+  return {
+    nossa: nossa.veredito === 'nossa' ? nossa.statusBruto : `veredito ${nossa.veredito}`,
+    semNota: semNota.veredito === 'sem-nota' ? semNota.statusBruto : `veredito ${semNota.veredito}`,
+  };
+}
+
+describe('statusBruto — o status cru reduzido a um TOKEN, para o log de um `desconhecido`', () => {
+  it.each([
+    ['`invalid`', 'invalid', 'invalid'],
+    ['` INVALID `', 'invalid', ' INVALID '],
+    ['`Rejected` + TAB', 'rejected', 'Rejected\t'],
+    ['`pending_review`', 'pending_review', 'pending_review'],
+    ['24 letras (o teto)', 'a'.repeat(24), 'a'.repeat(24)],
+  ])('PAR: %s ⇒ o token %j, em `nossa` E em `sem-nota`', (_rotulo, token, bruto) => {
+    expect(statusBrutoDe(bruto)).toEqual({ nossa: token, semNota: token });
+  });
+
+  it('PAR: `invalid` e ` INVALID ` logam o MESMO token — e o status dobrado segue `desconhecido`', () => {
+    const a = lerNotaNaShopee(linhaBr({ access_key: K, status: 'invalid' }), K);
+    const b = lerNotaNaShopee(linhaBr({ access_key: K, status: ' INVALID ' }), K);
+    expect(a).toEqual(b);
+    expect(a).toMatchObject({ status: 'desconhecido', statusBruto: 'invalid' });
+  });
+
+  it.each([
+    ['25 letras (um além do teto)', 'a'.repeat(25)],
+    ['pontuação (`valid.`)', 'valid.'],
+    ['um espaço no meio (`pending review`)', 'pending review'],
+    ['um dígito (`rejeicao539`)', 'rejeicao539'],
+    ['um hífen (`on-hold`)', 'on-hold'],
+    ['um acento (`válida`)', 'válida'],
+    ['uma chave inteira', K],
+    ['uma frase da SEFAZ', 'Rejeição 539: Duplicidade de NF-e'],
+    ['texto vazio', ''],
+    ['só espaços', '   '],
+    ['nulo', null],
+  ])('⛔ QUASE-MISS: %s ⇒ `null` — nunca texto livre num log', (_rotulo, bruto) => {
+    expect(statusBrutoDe(bruto)).toEqual({ nossa: null, semNota: null });
+  });
+
+  it('⛔ QUASE-MISS: `invoice_data` AUSENTE ⇒ `statusBruto: null`, e `outra` não carrega o campo', () => {
+    expect(lerNotaNaShopee(linhaBr(null), K)).toMatchObject({ statusBruto: null });
+    const outra = lerNotaNaShopee(linhaBr({ access_key: K_OUTRA, status: 'invalid' }), K);
+    expect(outra.veredito).toBe('outra');
+    expect(Object.keys(outra)).not.toContain('statusBruto');
+  });
+
+  it('o token NÃO decide nada: `valid` com qualquer caixa segue `valida`, com o token cru ao lado', () => {
+    expect(lerNotaNaShopee(linhaBr({ access_key: K, status: ' VALID ' }), K)).toEqual({
+      veredito: 'nossa',
+      status: 'valida',
+      statusBruto: 'valid',
+      motivoPendente: null,
+    });
   });
 });
 

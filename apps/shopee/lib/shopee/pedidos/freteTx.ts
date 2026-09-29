@@ -223,6 +223,25 @@ export interface ResultadoFreteShopee {
   readonly campos: readonly string[];
   /** The estado actually written, or `null` when the verdict refused it. */
   readonly estadoEscrito: EstadoFrete | null;
+  /**
+   * The block estado once this transaction is over — the one it WROTE, else the
+   * one its own `tx.get` read and kept, never a second read — and ONLY when the
+   * channel's own diary folds to that same estado (`diagnosticos.estadoAlvo`);
+   * `null` otherwise, and on every outcome with no block at all.
+   *
+   * It exists for step 14's cross-step hook (`nfe/avisoNfe.ts`), which must see
+   * a shipped parcel on a REPLAY too: {@link ResultadoFreteShopee.estadoEscrito}
+   * is `null` on `ignorado-sem-mudanca`, so a delivery whose hook failed after
+   * the frete committed would otherwise never retry the resolve.
+   *
+   * ⚠️ The diary condition is the point, not decoration. The stored estado alone
+   * is not a Shopee fact: `empacotado` and `checkFinalizado` are the OPERATOR's
+   * warehouse estados and sit in `ESTADOS_FRETE_REMOVE_ESTOQUE` too, and the
+   * ladder keeps them against a lower pull (`regressivo`). Handing that estado
+   * to the hook would close an NF-e aviso the moment a packed parcel's next
+   * delivery arrived — while Shopee still holds no valid NF-e for it.
+   */
+  readonly estadoConfirmado: EstadoFrete | null;
   /** Why it refused, or `null` when it wrote. */
   readonly motivoEstado: MotivoFreteShopee | null;
   readonly estadoRessuscitado: boolean;
@@ -512,6 +531,26 @@ export function preverFreteShopee(
   };
 }
 
+/**
+ * {@link ResultadoFreteShopee.estadoConfirmado}, from the transaction's OWN
+ * snapshot and its own decision — never a second read.
+ *
+ * The block after the write is the patch's whole map when there is one (it is
+ * the rebuild of that same snapshot), else the snapshot's block untouched. The
+ * estado it holds counts only when the fold over the MERGED diary answers the
+ * same estado: on a replay that is Shopee re-stating what is already stored;
+ * on a write it is the write itself.
+ */
+function estadoConfirmadoDoFrete(
+  raw: Record<string, unknown> | null,
+  previsao: PrevisaoFreteShopee,
+): EstadoFrete | null {
+  const bloco = previsao.patch?.freteInicial ?? objetoDe(raw?.freteInicial);
+  if (bloco === null) return null;
+  const estado = estadoArmazenadoShopee(bloco.estado);
+  return estado !== null && estado === previsao.diagnosticos.estadoAlvo ? estado : null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                               the transaction                               */
 /* -------------------------------------------------------------------------- */
@@ -565,6 +604,7 @@ export async function salvarFreteShopee(
         campos: previsao.campos,
         estadoEscrito:
           previsao.diagnosticos.motivoEstado === null ? previsao.diagnosticos.estadoAlvo : null,
+        estadoConfirmado: estadoConfirmadoDoFrete(raw, previsao),
         motivoEstado: previsao.diagnosticos.motivoEstado,
         estadoRessuscitado: previsao.diagnosticos.estadoRessuscitado,
         pacotes: previsao.diagnosticos.pacotes,

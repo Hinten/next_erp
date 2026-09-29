@@ -353,8 +353,32 @@ describe('classificarRecusaDeNfe — a dobra da FRASE (`providerMessage`)', () =
   });
 
   it.each([
+    [
+      'com espaço (o texto documentado)',
+      'Access Key duplicated, please do not use duplicated Access Key.',
+    ],
+    ['com sublinhado (a grafia de N13)', 'Wrong parameters, detail: access_key duplicated.'],
+    ['com sublinhado e em caixa alta', 'ACCESS_KEY DUPLICATED'],
+  ])(
+    '⛔ R4-4 — PAR: a chave duplicada %s ⇒ `ja-anexada chave-duplicada` (N1, a leitura decide)',
+    (_rotulo, texto) => {
+      expect(classificarRecusaDeNfe(erro('error_param', texto), PRONTO)).toEqual({
+        classe: 'ja-anexada',
+        motivo: 'chave-duplicada',
+      });
+    },
+  );
+
+  it('⛔ R4-4 — N1 com sublinhado AINDA vence as outras agulhas do mesmo texto', () => {
+    expect(
+      classificarRecusaDeNfe(erro('error_param', 'access_key duplicated. Invalid NF-e.'), PRONTO),
+    ).toEqual({ classe: 'ja-anexada', motivo: 'chave-duplicada' });
+  });
+
+  it.each([
     ['as palavras coladas', 'accesskeyduplicated'],
     ['um hífen no lugar do espaço', 'access-key duplicated'],
+    ['dois separadores', 'access _key duplicated'],
   ])('⛔ QUASE-MISS: %s NÃO é a chave duplicada', (_rotulo, texto) => {
     expect(classificarRecusaDeNfe(erro('error_param', texto), PRONTO)).toEqual(DESCONHECIDA);
   });

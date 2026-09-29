@@ -6,7 +6,9 @@ import {
   tarefaNfeShopeeSchema,
   type AgendadorNfeShopee,
   type ContextoNfeShopee,
+  type DepsNfeShopee,
   type OpcoesDeEnfileiramentoNfe,
+  type ResultadoNfeShopee,
   type TarefaNfeShopee,
 } from './tarefaNfe';
 
@@ -106,6 +108,24 @@ describe('o seam de enfileiramento e o contexto', () => {
     const campos: Igual<
       keyof ContextoNfeShopee,
       'pedidoId' | 'nfeId' | 'integracaoId' | 'numero' | 'nossaChave' | 'client'
+    > = true;
+    expect(campos).toBe(true);
+  });
+});
+
+describe('F-2 — as deps e o resultado de UMA execução moram no contrato (uma declaração só)', () => {
+  it('11 — as deps têm EXATAMENTE os seis campos da W3-1, em tempo de compilação', () => {
+    const campos: Igual<
+      keyof DepsNfeShopee,
+      'db' | 'scheduler' | 'nowMs' | 'increment' | 'jitterSec' | 'resolveClient'
+    > = true;
+    expect(campos).toBe(true);
+  });
+
+  it('12 — o resultado tem EXATAMENTE os sete campos da §2.8, em tempo de compilação', () => {
+    const campos: Igual<
+      keyof ResultadoNfeShopee,
+      'desfecho' | 'motivo' | 'fase' | 'substituicao' | 'carimbo' | 'avisado' | 'resolvido'
     > = true;
     expect(campos).toBe(true);
   });

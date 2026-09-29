@@ -1502,7 +1502,7 @@ bytes · serpro`), then one block per pedido. The whole rendering is an
 | `XML`               | our proc's UTF-8 size against the package's 1 MiB ceiling                                                                                                                                            |
 | `espera SERPRO`     | seconds still due since the authorization; above zero on an upload the dry run WOULD send means `--live` refuses it now                                                                              |
 | `efeitos previstos` | what the outcome would do: raise the aviso, mark the frete with an error, resolve the aviso, schedule a recheck                                                                                      |
-| `trecho da Shopee`  | only for `sefaz-pendente` / `recusa-desconhecida`, and MASKED: a run of seven or more digits, or a long letters-and-digits token, prints as `•••`                                                    |
+| `trecho da Shopee`  | only for `sefaz-pendente` / `recusa-desconhecida`, and MASKED: seven or more digits (spaced or not), a long token with digits, or spaced letter-and-digit groups print as `•••` (`nfe/README.md` §9) |
 
 ⚠️ **A dry run is not a cheaper `--live`.** Shopee's refusal of the file itself
 (the CNPJ, the IE, the CFOP, the federal record) only exists once the file is
@@ -1519,8 +1519,14 @@ queue's FIRST attempt, and the handler may raise or resolve the pedido's aviso a
 mark its frete with an error. It **never enqueues**: a recheck, a SERPRO wait or a
 rate-limit pause the queue would have scheduled is printed as
 `NÃO enfileirado … <fase> em N s`, and you run the command again after that
-delay (the re-run's pre-read finds OUR key and answers `ja-enviado`, never a
-second upload).
+delay. What the re-run does depends on what was deferred. After a **recheck**
+(the upload landed), its pre-read finds OUR key and answers `ja-enviado`, with
+no second upload — once Shopee shows the key. Under read-your-write lag it may
+read no key yet and upload again, which is harmless: a 200, an "already
+attached" answer (the same-order resend text is unverified, register 188) or
+an unreadable one each ends in a read-back, and the absence of our key never
+marks the frete. After a **SERPRO wait** or a **rate-limit pause** nothing was
+attached, so the re-run UPLOADS, which is the point of running it again.
 
 - **A fresh approval is REFUSED** with `aguardando-serpro` (outcome `adiado`) until
   six minutes after the authorization — Shopee checks the note against the
@@ -1544,8 +1550,8 @@ second upload).
 - **`chave: —` under `--live`.** The handler's result carries the outcome, not the
   pre-read's verdict; read the verdict with `--dry-run`.
 - **`nao-refletida-ainda` right after a `200`** — Shopee had not reflected the
-  file on the order yet; the recheck the queue would run is printed, run again
-  later.
+  file on the order yet (no key, or still the key of the CANCELLED NF-e this
+  one replaces); the recheck the queue would run is printed, run again later.
 - **The sandbox shop is SG**, so its orders are `pedido-nao-br` and nothing is
   sent: the upload cannot be rehearsed end to end before a BR shop.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it sends a

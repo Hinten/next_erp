@@ -47,7 +47,6 @@ const TABELA: Readonly<Record<MotivoNfeShopee, { A: boolean; S: boolean; X: bool
   'pedido-nao-encontrado': { A: false, S: false, X: false },
   'nao-shopee': { A: false, S: false, X: false },
   'emissao-bloqueada': { A: false, S: false, X: false },
-  'frete-de-outra-integradora': { A: false, S: false, X: false },
   'xml-invalido': { A: true, S: true, X: false },
   'xml-grande-demais': { A: true, S: true, X: false },
   'conta-nao-configurada': { A: false, S: false, X: false },
@@ -110,7 +109,7 @@ const CHAVE_FICTICIA = [
 ].join('');
 
 describe('MotivoNfeShopee', () => {
-  it('1 — o vocabulário é EXATAMENTE estes cinquenta e sete slugs (a tabela §2.4)', () => {
+  it('1 — o vocabulário é EXATAMENTE estes cinquenta e seis slugs (a tabela §2.4 menos o R5-1)', () => {
     // PERSISTIDO (`aviso.motivo`, o corpo do 409 da rota). O `as const
     // satisfies` garante o TIPO dos valores, mas não impede um renome feito nos
     // dois lugares de uma vez — a igualdade contra literais é o que fica
@@ -132,7 +131,6 @@ describe('MotivoNfeShopee', () => {
         'data-de-emissao-invalida',
         'emissao-bloqueada',
         'emissor-shopee',
-        'frete-de-outra-integradora',
         'ie-divergente',
         'ip-nao-declarado',
         'limite-de-taxa',
@@ -176,8 +174,8 @@ describe('MotivoNfeShopee', () => {
         'xml-recusado',
       ].sort(),
     );
-    expect(TODOS).toHaveLength(57);
-    expect(new Set(TODOS).size).toBe(57);
+    expect(TODOS).toHaveLength(56);
+    expect(new Set(TODOS).size).toBe(56);
   });
 
   it('2 — o const cobre a união INTEIRA, nos dois sentidos, em tempo de compilação', () => {
@@ -240,6 +238,20 @@ describe('MotivoNfeShopee', () => {
     }
   });
 
+  it('5b — ⛔ R5-1: NÃO existe motivo de "frete de outra integradora" — o envio anexa a nota ao PEDIDO', () => {
+    // A premissa copiada era a de um canal cujo envio mira um ENVIO físico; o
+    // desta Shopee mira o pedido. Um frete reapontado continua enviando, e quem
+    // se recusa a tocar um frete alheio é só o carimbo (o desfecho dele).
+    const todos: readonly string[] = TODOS;
+    expect(todos).not.toContain('frete-de-outra-integradora');
+    expect(Object.keys(MOTIVO_NFE_SHOPEE)).not.toContain('freteDeOutraIntegradora');
+    expect(FONTE).not.toMatch(/frete-de-outra-integradora/);
+    // ⛔ O par que dá sentido: os outros três motivos do pedido continuam.
+    for (const doPedido of ['pedido-nao-encontrado', 'nao-shopee', 'emissao-bloqueada']) {
+      expect(todos).toContain(doPedido);
+    }
+  });
+
   it('6 — os desfechos são EXATAMENTE os nove da §2.4', () => {
     expect(Object.values(DESFECHO_NFE_SHOPEE).sort()).toEqual(
       [
@@ -297,10 +309,23 @@ describe('FRASE_DO_MOTIVO_NFE', () => {
   it('11 — ⛔ nenhum `?? fallback` numa consulta à tabela (o #1226)', () => {
     expect(FONTE).not.toMatch(/FRASE_DO_MOTIVO_NFE\[[^\]]+\]\s*\?\?/);
   });
+
+  it('11b — ⛔ R5-6: `canal-indisponivel` começa pelo REMÉDIO e não promete uma conferência automática', () => {
+    // Com a válvula da fila fechada na última tentativa, a reverificação só vira
+    // um `warn` — nada foi agendado, então a frase não pode prometer que "uma
+    // conferência automática ainda vai verificar". O operador confere ou reenvia.
+    const frase = FRASE_DO_MOTIVO_NFE['canal-indisponivel'];
+    expect(frase.startsWith('verifique no Seller Center')).toBe(true);
+    expect(frase).toContain('reenvie a nota pelo ERP');
+    expect(frase).not.toMatch(/autom[aá]tic/i);
+    expect(frase).not.toMatch(/ainda vai/i);
+    // ⛔ QUASE-MISS: a CAUSA continua dita, depois do travessão.
+    expect(frase).toMatch(/ — a Shopee não respondeu/);
+  });
 });
 
 describe('mensagemDoMotivoNfe', () => {
-  it('12 — PAR: é o fragmento com a primeira letra maiúscula e um ponto — para todos os 57', () => {
+  it('12 — PAR: é o fragmento com a primeira letra maiúscula e um ponto — para todos os 56', () => {
     for (const motivo of TODOS) {
       const frase = FRASE_DO_MOTIVO_NFE[motivo];
       const mensagem = mensagemDoMotivoNfe(motivo);
@@ -320,7 +345,7 @@ describe('mensagemDoMotivoNfe', () => {
 });
 
 describe('os conjuntos — a ÚNICA fonte de aviso, carimbo e excerto', () => {
-  it('14 — a tabela §2.4, membro a membro: A / S / X de cada um dos 57', () => {
+  it('14 — a tabela §2.4, membro a membro: A / S / X de cada um dos 56', () => {
     expect(Object.keys(TABELA).sort()).toEqual([...TODOS].sort());
     for (const motivo of TODOS) {
       const linha = TABELA[motivo];

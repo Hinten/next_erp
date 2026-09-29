@@ -1109,7 +1109,27 @@ describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
     expect((linhasDoImport[1]![1] as Record<string, unknown>).avisoNfeResolvido).toBe(true);
   });
 
-  it('QUASE-ERRO: um import que NÃO escreve o frete não resolve e nem LÊ o aviso', async () => {
+  it('a RE-importação de uma order cujo pacote JÁ está no conjunto de remoção (`ignorado-sem-mudanca`) resolve o aviso (R2-1)', async () => {
+    // O PAR do quase-erro abaixo: a mesma re-importação sem escrita de frete,
+    // mas de um pacote que a Shopee já pôs em `postado`. O gancho recebe o
+    // estado mesmo assim — é o que torna real a nova tentativa depois de uma
+    // resolução que falhou.
+    const c = cenario();
+    c.getOrderDetail.mockResolvedValue({ order_list: [comPacote('LOGISTICS_PICKUP_DONE')] });
+    await importar(c);
+    await abrirAvisoNfe(c.db);
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+    expect(avisoNfe(c.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: 'frete-despachado',
+    });
+  });
+
+  it('QUASE-ERRO: a RE-importação de uma order PRÉ-despacho (`despachoAutorizado`, sem escrita de frete) não resolve e nem LÊ o aviso', async () => {
     const c = cenario();
     await importar(c);
     await abrirAvisoNfe(c.db);
@@ -1118,6 +1138,7 @@ describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
     const r = await importar(c);
 
     expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.despachoAutorizado);
     expect(c.db.caminhos).not.toContain(AVISO_NFE_PATH);
     expect(avisoNfe(c.db).resolvidoEm).toBeNull();
   });
@@ -1197,7 +1218,7 @@ describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
     expect(avisoNfe(c.db).resolvidoEm).toBeNull();
   });
 
-  it('⚠️ uma falha do Firestore na resolução SOBE — o import não a engole (mutante 57)', async () => {
+  it('⚠️ uma falha do Firestore na resolução SOBE, e a RE-importação resolve (mutante 57, R2-1)', async () => {
     const c = cenario();
     await importar(c);
     await abrirAvisoNfe(c.db);
@@ -1206,9 +1227,19 @@ describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
     c.getOrderDetail.mockResolvedValue({ order_list: [comPacote('LOGISTICS_PICKUP_DONE')] });
 
     await expect(importar(c)).rejects.toBe(falha);
-    // A transação do frete já tinha commitado: a nova entrega a re-aplica como
-    // um no-op e tenta a resolução de novo.
+    // A transação do frete já tinha commitado, e o aviso segue aberto.
     expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
     expect(avisoNfe(c.db).resolvidoEm).toBeNull();
+
+    // A fila re-entrega a MESMA order: o frete volta `ignorado-sem-mudanca`, e o
+    // gancho tenta a resolução de novo — agora com sucesso.
+    c.db.falhasDeUpdate.delete(AVISO_NFE_PATH);
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(avisoNfe(c.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: 'frete-despachado',
+    });
   });
 });

@@ -10,7 +10,8 @@
  * que todo VALOR do const é membro, jamais que todo membro é usado), passa no
  * teste de totalidade de `FRASE_DO_MOTIVO_NFE` e no pareamento chave↔slug, e só
  * aparece quando um operador pergunta por que aquele veredicto nunca sai. As
- * ondas 1–3 deram produtor a cada um dos 57; este teste chega depois delas pelo
+ * ondas 1–3 deram produtor a cada um dos 57 de então (56 desde a revisão 1, que
+ * tirou `frete-de-outra-integradora`); este teste chega depois delas pelo
  * mesmo motivo que o do preço chegou depois das suas.
  *
  * ## Três diferenças do porte, cada uma de propósito
@@ -166,7 +167,7 @@ function autorizadosJaProduzidos(
 /**
  * Os órfãos POR PROJETO, cada um com a razão de uma linha que o autoriza.
  *
- * ⚠️ VAZIA, e vazia de propósito: os 57 membros têm produtor. A reconciliação
+ * ⚠️ VAZIA, e vazia de propósito: os 56 membros têm produtor. A reconciliação
  * (§2.4) atribuiu um produtor a cada linha da tabela antes de declará-la, e as
  * ondas 1–3 entregaram cada um; um membro que perdesse o seu é o mutante 38, e
  * a correção é dar-lhe produtor ou tirá-lo da união — nunca uma linha aqui sem
@@ -207,13 +208,13 @@ describe('todo motivo da NF-e declarado tem um PRODUTOR fora de errosNfe.ts', ()
     expect(existsSync(new URL('enviar-precos/', RAIZ_DAS_ROTAS))).toBe(true);
   });
 
-  it('os 57 motivos: cada um é NOMEADO por algum outro arquivo (ou está na lista autorizada com razão)', () => {
+  it('os 56 motivos: cada um é NOMEADO por algum outro arquivo (ou está na lista autorizada com razão)', () => {
     const fontes = fontesQuePodemProduzir(['errosNfe.ts']);
     expect(
       membrosSemProdutor(MOTIVO_NFE_SHOPEE, fontes, ORFAOS_AUTORIZADOS),
       'motivos declarados que NINGUÉM produz como `MOTIVO_NFE_SHOPEE.<chave>` e que não estão autorizados',
     ).toEqual([]);
-    expect(Object.keys(MOTIVO_NFE_SHOPEE)).toHaveLength(57);
+    expect(Object.keys(MOTIVO_NFE_SHOPEE)).toHaveLength(56);
   });
 
   it('a lista de órfãos autorizados está VAZIA e não guarda um membro que já ganhou produtor', () => {
@@ -322,7 +323,7 @@ const LITERAL_DE_UMA_LINHA = /'([^'\\\r\n]{3,60})'/g;
  */
 const PISO_DA_DOBRA = 6;
 
-/** Os 57 slugs do vocabulário, que é o universo dos detectores. */
+/** Os 56 slugs do vocabulário, que é o universo dos detectores. */
 function todosOsSlugs(): Set<string> {
   return new Set<string>(Object.values(MOTIVO_NFE_SHOPEE));
 }
@@ -543,12 +544,12 @@ describe('a dobra de slug: o que ela trata como IGUAL e o que precisa continuar 
     expect(dobraDeSlug('validada')).not.toBe(alvo);
   });
 
-  it('os 57 slugs dobram para 57 formas distintas, e o MENOR dobra para exatamente o piso', () => {
+  it('os 56 slugs dobram para 56 formas distintas, e o MENOR dobra para exatamente o piso', () => {
     // Se dois membros colidissem sob a dobra, o detector apontaria o membro
     // errado numa mensagem de falha — e este é o único lugar que checa isso.
     const slugs = todosOsSlugs();
     const dobras = [...slugs].map(dobraDeSlug);
-    expect(slugs.size).toBe(57);
+    expect(slugs.size).toBe(56);
     expect(new Set(dobras).size).toBe(slugs.size);
     expect(Math.min(...dobras.map((d) => d.length))).toBe(PISO_DA_DOBRA);
   });

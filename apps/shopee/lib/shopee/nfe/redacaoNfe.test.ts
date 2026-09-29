@@ -17,6 +17,50 @@ const CHAVE_DANFE = (CHAVE.match(/.{4}/g) ?? []).join(' ');
 /** An order number of the fixture shape: six digits and eight letters. */
 const ORDER_SN = '260910KJBHUJDM';
 
+/**
+ * The same synthetic key with an ALPHANUMERIC CNPJ (`ZZ1ZZ2ZZ3ZZ4` + DV `00`),
+ * assembled from its fields — the D1 §7 recipe.
+ */
+const CHAVE_ALFA = [
+  '99',
+  '2609',
+  'ZZ1ZZ2ZZ3ZZ4',
+  '00',
+  '55',
+  '000',
+  '000000001',
+  '1',
+  '00000000',
+  '0',
+].join('');
+
+/** The alphanumeric key the way the DANFE prints it: eleven groups of four. */
+const CHAVE_ALFA_DANFE = (CHAVE_ALFA.match(/.{4}/g) ?? []).join(' ');
+
+/** The numeric key in groups of four, joined by `sep` instead of a space. */
+function chaveUnidaPor(sep: string): string {
+  return (CHAVE.match(/.{4}/g) ?? []).join(sep);
+}
+
+/**
+ * Every separator review 1 (R4-1) MEASURED leaking the key whole: none is one
+ * of rule (a)'s joiners, and none is whitespace, so before the fix the key was
+ * one long letter-free token. The last two are invisible (zero-width space,
+ * soft hyphen) — format characters the cleaning step now drops.
+ */
+const SEPARADORES_MEDIDOS: ReadonlyArray<readonly [string, string]> = [
+  ['vírgula', ','],
+  ['sublinhado', '_'],
+  ['barra vertical', '|'],
+  ['dois-pontos', ':'],
+  ['meia-risca (U+2013)', '\u2013'],
+  ['espaço de largura zero (U+200B)', '\u200B'],
+  ['hífen condicional (U+00AD)', '\u00AD'],
+];
+
+/** R4-3's measured string: a mixed token that the cap lifts to twelve characters. */
+const ATRAVESSA_O_TETO = `${'a'.repeat(EXCERTO_SHOPEE_MAX - 13)} ab1c2defghi zzz`;
+
 describe('resumirTextoDaShopee — limpeza', () => {
   it('1 — `null`, `undefined` e texto em branco dão `null`', () => {
     expect(resumirTextoDaShopee(null)).toBeNull();
@@ -158,10 +202,115 @@ describe('resumirTextoDaShopee — idempotência', () => {
       'Wrong parameters, detail: Wrong parameters, detail: File error..',
       `${'palavra '.repeat(40)}${CHAVE}`,
       'CFOP 5102 não aceito',
+      ATRAVESSA_O_TETO,
+      `chave ${CHAVE_ALFA_DANFE} recusada`,
+      `chave ${chaveUnidaPor(',')} x`,
+      'CNPJ 12 ABC 345 01DE 35 inválido',
+      'ip 34.95.1.2 nao declarado',
     ];
     for (const texto of corpus) {
       const uma = resumirTextoDaShopee(texto);
       expect(resumirTextoDaShopee(uma)).toBe(uma);
     }
+  });
+});
+
+describe('resumirTextoDaShopee — review 1 (F-1, R4-1, R4-3, R4-5)', () => {
+  it.each(SEPARADORES_MEDIDOS)(
+    '20 — PAR (R4-1): a chave unida por %s sai mascarada inteira',
+    (_nome, sep) => {
+      expect(resumirTextoDaShopee(`chave ${chaveUnidaPor(sep)} x`)).toBe('chave ••• x');
+    },
+  );
+
+  it('21 — PAR (R4-1): um CNPJ numérico unido por `_` ou `|` também — o token longo com ≥ 7 dígitos', () => {
+    expect(resumirTextoDaShopee('CNPJ 11_111_111_1111_11 inválido')).toBe('CNPJ ••• inválido');
+    expect(resumirTextoDaShopee('CNPJ 11|111|111|1111|11 inválido')).toBe('CNPJ ••• inválido');
+  });
+
+  it('22 — ⛔ NEAR-MISS (R4-1): um token longo sem letras com SEIS dígitos sobrevive; com sete, não', () => {
+    expect(resumirTextoDaShopee('ref (11)-(22)-(33) ok')).toBe('ref (11)-(22)-(33) ok');
+    expect(resumirTextoDaShopee('ref (11)-(22)-(333) ok')).toBe('ref ••• ok');
+    // E a vírgula decimal continua não sendo um identificador (9 caracteres).
+    expect(resumirTextoDaShopee('valor 12.345,67 divergente')).toBe('valor 12.345,67 divergente');
+  });
+
+  it('23 — PAR (F-1): a chave com CNPJ alfanumérico no formato do DANFE sai mascarada inteira', () => {
+    expect(CHAVE_ALFA).toHaveLength(44);
+    expect(resumirTextoDaShopee(`chave ${CHAVE_ALFA_DANFE} recusada`)).toBe('chave ••• recusada');
+    // Colada, a regra (b) já a pegava; o formato do DANFE é o que vazava.
+    expect(resumirTextoDaShopee(`chave ${CHAVE_ALFA} recusada`)).toBe('chave ••• recusada');
+  });
+
+  it('24 — PAR (F-1): o CNPJ alfanumérico espaçado é mascarado a partir da corrida de grupos com dígito', () => {
+    // Todos os grupos com dígito: a regra (c) o leva inteiro (antes, nenhuma
+    // regra via nada — tokens curtos, no máximo cinco dígitos seguidos).
+    expect(resumirTextoDaShopee('CNPJ 1A 2BC 345 01DE 35 inválido')).toBe('CNPJ ••• inválido');
+    // `ABC` não tem dígito e quebra a corrida: `12 ABC` fica — o resíduo aceito,
+    // o mesmo da raiz sozinha (teste 25); ordem e DV (`345 01DE 35`) somem.
+    expect(resumirTextoDaShopee('CNPJ 12 ABC 345 01DE 35 inválido')).toBe(
+      'CNPJ 12 ABC ••• inválido',
+    );
+    // Formatado SEM espaços é um token só de 18 caracteres: a regra (b) o leva.
+    expect(resumirTextoDaShopee('CNPJ 12.ABC.345/01DE-35 inválido')).toBe('CNPJ ••• inválido');
+  });
+
+  it('25 — ⛔ NEAR-MISS (F-1): o que a regra (c) NÃO pode comer — números curtos, prosa e códigos curtos', () => {
+    const sobrevivem = [
+      '539',
+      '5102',
+      'CFOP 5102',
+      'Rejeição 539: CFOP 5102 não permitido',
+      // Sem acento e sem dois-pontos: `CFOP` não tem dígito, então a corrida
+      // `539 CFOP 5102` nunca se forma (seriam sete dígitos).
+      'Rejeicao 539 CFOP 5102 nao permitido',
+      'protocolo 123456 pendente',
+      'valor 12.345,67 divergente',
+      // Três grupos alfanuméricos, mas só três dígitos.
+      'lote A1-B2-C3 recusado',
+      'NF-e v4.00.1 recusada',
+      // O resíduo aceito: a raiz alfanumérica sozinha (cinco dígitos).
+      'raiz 12.ABC.345 divergente',
+      // O resíduo aceito: dois caracteres entre os grupos não unem nada.
+      'itens 123 - 4567',
+    ];
+    for (const texto of sobrevivem) expect(resumirTextoDaShopee(texto)).toBe(texto);
+  });
+
+  it('26 — ⛔ resíduo aceito, medido: a chave com ` - ` entre os grupos NÃO é mascarada (nem com `, ` ou `; `)', () => {
+    // Se isto um dia passar a mascarar, o cabeçalho do módulo mente — atualize-o.
+    for (const sep of [' - ', ', ', '; ']) {
+      expect(resumirTextoDaShopee(`chave ${chaveUnidaPor(sep)} x`)).toContain('9926');
+    }
+  });
+
+  it('27 — PAR (R4-3): no limite do teto, a saída já é o ponto fixo — a 2ª chamada não muda nada', () => {
+    const uma = resumirTextoDaShopee(ATRAVESSA_O_TETO);
+    // O corte cola `…` no token misto de 11 caracteres; a máscara final o pega.
+    expect(uma).toBe(`${'a'.repeat(EXCERTO_SHOPEE_MAX - 13)} •••`);
+    expect(resumirTextoDaShopee(uma)).toBe(uma);
+    expect(Array.from(uma ?? '').length).toBeLessThanOrEqual(EXCERTO_SHOPEE_MAX);
+  });
+
+  it('28 — ⛔ NEAR-MISS (R4-3): um token de 11 caracteres que o teto NÃO toca sobrevive', () => {
+    expect(resumirTextoDaShopee('código ab1c2defghi zzz')).toBe('código ab1c2defghi zzz');
+  });
+
+  it('29 — R4-5: um IPv4 com até seis dígitos NÃO é mascarado (o cabeçalho diz isso); com sete, é', () => {
+    expect(resumirTextoDaShopee('ip 34.95.1.2 nao declarado')).toBe('ip 34.95.1.2 nao declarado');
+    expect(resumirTextoDaShopee('ip 192.168.10.1 nao declarado')).toBe('ip ••• nao declarado');
+  });
+
+  it('30 — PAR (R4-1): um caractere de FORMATO invisível no meio de um número curto não o esconde', () => {
+    // Token curto (< 12): só a limpeza (`\p{Cf}` descartado) junta os sete dígitos.
+    expect(resumirTextoDaShopee('protocolo 123456\u200B7 pendente')).toBe('protocolo ••• pendente');
+    expect(resumirTextoDaShopee('protocolo 12345\u00AD67 pendente')).toBe('protocolo ••• pendente');
+  });
+
+  it('31 — ⛔ NEAR-MISS (R4-1): o caractere de formato sai, mas seis dígitos continuam seis', () => {
+    expect(resumirTextoDaShopee('protocolo 123456\u200B pendente')).toBe(
+      'protocolo 123456 pendente',
+    );
+    expect(resumirTextoDaShopee('CFOP 51\u00AD02 não aceito')).toBe('CFOP 5102 não aceito');
   });
 });

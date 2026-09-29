@@ -18,15 +18,11 @@
  * nothing, and uploading another channel's note to a Shopee order is not a
  * refusal anyone would see.
  *
- * A proved pedido with NO frete at all is ENQUEUED: the upload concerns the
- * ORDER, and the frete is only the target of a later stamp (which then answers
- * that there is no frete). The Shopee importer seeds the frete in the same
- * transaction that creates the pedido, so there is no importer to wait for; a
- * frete-less Shopee pedido is a migrated or hand-edited one, and it still needs
- * its note on the channel. Only a frete that names ANOTHER integradora
- * (Melhor Envio, a pickup, a courier) skips — the shipment then does not go
- * through the channel's logistics, and neither does the note. A frete whose
- * integradora is absent names nothing, and is not "another" one.
+ * The FRETE decides nothing here: a proved pedido is ENQUEUED whether its frete
+ * is Shopee's, another integradora's or absent, because Shopee's upload attaches
+ * the note to the ORDER (its page has no package number), so a re-pointed frete
+ * does not take the order's invoice away — only the later frete stamp is
+ * owner-guarded, by `carimboFreteNfe.ts`'s own `outra-integradora`.
  *
  * ## The conta: `ativo !== true`, never `=== false`
  *
@@ -77,7 +73,6 @@
 import { coerceToMillis } from '@delfrance/core/datetime';
 import {
   decideNfeUploadDispatch,
-  INTEGRACAO_FRETE,
   INTEGRACAO_TIPO,
   type Integracao,
   type NfeUploadDispatch,
@@ -91,24 +86,19 @@ import { chaveCanonica, chaveDoProc, finalidadeDoProc } from './notaNaShopee';
 /*                                  the pedido                                 */
 /* -------------------------------------------------------------------------- */
 
-/** The four reasons a pedido takes no NF-e upload. */
+/**
+ * The three reasons a pedido takes no NF-e upload. A frete of another
+ * integradora is NOT one: the upload targets the order, not the shipment.
+ */
 type MotivoIgnorarPedidoNfe =
   | typeof MOTIVO_NFE_SHOPEE.pedidoNaoEncontrado
   | typeof MOTIVO_NFE_SHOPEE.naoShopee
-  | typeof MOTIVO_NFE_SHOPEE.emissaoBloqueada
-  | typeof MOTIVO_NFE_SHOPEE.freteDeOutraIntegradora;
+  | typeof MOTIVO_NFE_SHOPEE.emissaoBloqueada;
 
 /** The pedido's verdict: enqueue with the proved identity, or ignore and say why. */
 type AvaliacaoPedidoNfeShopee =
   | { readonly acao: 'enfileirar'; readonly contaId: string; readonly orderSn: string }
   | { readonly acao: 'ignorar'; readonly motivo: MotivoIgnorarPedidoNfe };
-
-/** A plain object — a map field as the SDK hands it back — or `null` for anything else. */
-function mapaOuNull(valor: unknown): Record<string, unknown> | null {
-  return typeof valor === 'object' && valor !== null && !Array.isArray(valor)
-    ? (valor as Record<string, unknown>)
-    : null;
-}
 
 /**
  * May this pedido's NF-e go to Shopee? In THIS order (the first match answers):
@@ -118,11 +108,10 @@ function mapaOuNull(valor: unknown): Record<string, unknown> | null {
  * 3. `bloquearEmissaoNFe === true` ⇒ `emissao-bloqueada` — the NF-e app
  *    refuses to emit under the flag, so an approved note under it means the
  *    flag was set after emission: do not upload, let the caller warn;
- * 4. a frete whose `externalOptionIntegracao` is present and is not Shopee's
- *    ⇒ `frete-de-outra-integradora` — an EXACT comparison: the value is our
- *    own enum slug, written by our own importer;
- * 5. otherwise — a frete-less pedido included — enqueue, carrying the conta
- *    and the order number the PROOF recovered.
+ * 4. otherwise — whatever the frete says, a frete-less pedido included —
+ *    enqueue, carrying the conta and the order number the PROOF recovered
+ *    (the note belongs to the ORDER, so the frete's owner is the stamp's
+ *    question, never the upload's).
  */
 export function avaliarPedidoParaNfeShopee(
   pedidoId: string,
@@ -135,11 +124,6 @@ export function avaliarPedidoParaNfeShopee(
 
   if (raw.bloquearEmissaoNFe === true) {
     return { acao: 'ignorar', motivo: MOTIVO_NFE_SHOPEE.emissaoBloqueada };
-  }
-
-  const integradora = mapaOuNull(raw.freteInicial)?.externalOptionIntegracao;
-  if (integradora != null && integradora !== INTEGRACAO_FRETE.shopee) {
-    return { acao: 'ignorar', motivo: MOTIVO_NFE_SHOPEE.freteDeOutraIntegradora };
   }
 
   return { acao: 'enfileirar', contaId: prova.contaId, orderSn: prova.orderSn };

@@ -1,6 +1,12 @@
 /**
  * The NF-e upload's task contract (#1522, step 14): the Cloud Tasks payload,
- * the enqueue seam, and the in-memory context the two phases share.
+ * the enqueue seam, the in-memory context the two phases share, and the
+ * dependencies and result type of ONE execution of either phase.
+ *
+ * The last two live here — not in the handler module — so the upload handler
+ * and the recheck name ONE declaration each: the recheck may not import the
+ * handler (it would be a cycle), and a structural copy kept "in step" by a
+ * comment is exactly the drift the root CLAUDE.md warns about.
  *
  * ## What the payload carries — and what it deliberately does not
  *
@@ -24,7 +30,12 @@
  * field paths only, never the values.
  */
 import type { ShopeeClient } from '@delfrance/integrations-shopee';
+import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
+
+import type { AvisoDeps } from '../avisos/autorizacao';
+import type { MotivoCarimbo } from './carimboFreteNfe';
+import type { DesfechoNfeShopee, MotivoNfeShopee } from './errosNfe';
 
 /* ---------------------------------- the phase --------------------------------- */
 
@@ -114,4 +125,54 @@ export interface ContextoNfeShopee {
   readonly nossaChave: string;
   /** The conta's SHOP client (never the partner client). */
   readonly client: ShopeeClient;
+}
+
+/* --------------------------- one execution, both phases --------------------------- */
+
+/**
+ * Everything one execution needs (orchestrator amendment W3-1). The upload
+ * handler takes all of it; the recheck uses `db`, `scheduler`, `nowMs` and
+ * `increment`.
+ */
+export interface DepsNfeShopee {
+  readonly db: Firestore;
+  /** The NF-e queue — the recheck, the pauses, the SERPRO waits. */
+  readonly scheduler: AgendadorNfeShopee;
+  /** The dispatcher's ONE clock read, in MILLISECONDS. No module of the flow reads one. */
+  readonly nowMs: number;
+  /**
+   * `(by) => FieldValue.increment(by)` — the aviso writer needs the sentinel, and
+   * this folder may not make the runtime import that produces it.
+   */
+  readonly increment: AvisoDeps['increment'];
+  /**
+   * Jitter, in whole SECONDS in `[0, maxS]`, added to every pause's delay so a
+   * fleet paused on the same limit does not resume on the same second. The
+   * randomness belongs to the dispatcher; a test passes a constant.
+   */
+  jitterSec(maxS: number): number;
+  /**
+   * The conta's SHOP client. Default: `loadShopeeContext(...).createShopClient()`
+   * — called only after the conta gate passed.
+   */
+  readonly resolveClient?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
+}
+
+/**
+ * What one execution ended in (reconcile §2.8) — the upload's, or a recheck's
+ * (whose `substituicao` is always `false`: a substitution is an UPLOAD decision).
+ */
+export interface ResultadoNfeShopee {
+  readonly desfecho: DesfechoNfeShopee;
+  /** `null` only when a 200's read-back could not be read (the upload landed). */
+  readonly motivo: MotivoNfeShopee | null;
+  /** `null` only for a payload that did not parse. */
+  readonly fase: FaseNfeShopee | null;
+  /** The upload replaced a CANCELLED sibling NF-e's key on the order. */
+  readonly substituicao: boolean;
+  /** The frete stamp's answer, when the motivo stamps. */
+  readonly carimbo: MotivoCarimbo | null;
+  readonly avisado: boolean;
+  /** THIS execution closed the pedido's open aviso. */
+  readonly resolvido: boolean;
 }
