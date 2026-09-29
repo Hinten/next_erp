@@ -712,9 +712,15 @@ describe('P8 — a leitura do pedido na Shopee (R-f(3)) e o portão do pedido', 
     expect((await processar(c)).motivo).toBe(MOTIVO_NFE_SHOPEE.pedidoInexistenteNoCanal);
   });
 
-  it('QUASE: `order_not_found_x` não é o código ⇒ propaga, mesmo na última tentativa', async () => {
-    const c = cenario({ leituras: [recusa(null, 'order_not_found_x')] });
-    await expect(processar(c, {}, ULTIMA_TENTATIVA)).rejects.toBeInstanceOf(ShopeeApiError);
+  it('QUASE: `order_not_found_x` não é o código ⇒ NUNCA `pedido-inexistente-no-canal`: relança antes da última tentativa e, na última, é o transitório da leitura (review 2, S1-2)', async () => {
+    // Before review 2 this code rethrew even on the last attempt, which ended the
+    // task with no aviso; the near-miss it pins — "not the not-found code" — stands.
+    const antes = cenario({ leituras: [recusa(null, 'order_not_found_x')] });
+    await expect(processar(antes, {}, 0)).rejects.toBeInstanceOf(ShopeeApiError);
+    const naUltima = cenario({ leituras: [recusa(null, 'order_not_found_x')] });
+    expect(await processar(naUltima, {}, ULTIMA_TENTATIVA)).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel,
+    });
   });
 
   it('`source_ip_undeclared` ⇒ aviso `ip-nao-declarado`, SEM carimbo', async () => {
@@ -1120,6 +1126,123 @@ describe('⛔ 67 — a última tentativa: só o transitório da Shopee finaliza'
     c.db.falhasDeCriacao.set(AVISO_PATH, grpc(14, 'UNAVAILABLE'));
     await expect(processar(c, {}, ULTIMA_TENTATIVA)).rejects.toMatchObject({ code: 14 });
     expect(estadoDoFrete(c)).toBe(ESTADO_FRETE.aguardandoNFe);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          review 2 — S1-2 (an unmapped GET code) and S3-6 (the code gate)     */
+/* -------------------------------------------------------------------------- */
+
+describe('S1-2 — um código da Shopee que NENHUMA regra mapeia, na LEITURA do pedido, é transitório', () => {
+  /** A refusal of the ORDER READ (not of the upload), `kind: other` by default. */
+  function recusaDaLeitura(code: string): ShopeeApiError {
+    return new ShopeeApiError(`Shopee respondeu ${code}`, {
+      code,
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/api/v2/order/get_order_detail',
+      providerMessage: null,
+    });
+  }
+
+  it('PAR: `error_permission` na pré-leitura, tentativa 0 ⇒ RELANÇA o MESMO erro, nada escrito nem enfileirado', async () => {
+    const erro = recusaDaLeitura('error_permission');
+    const c = cenario({ leituras: [erro] });
+    await expect(processar(c, {}, 0)).rejects.toBe(erro);
+    expect(c.uploadInvoiceDoc).not.toHaveBeenCalled();
+    expect(c.db.writes).toEqual([]);
+    expect(c.enfileiradas).toEqual([]);
+  });
+
+  it('PAR: o mesmo na ÚLTIMA tentativa ⇒ `canal-indisponivel` + aviso + UMA reverificação (pausas 0, 900 s), SEM carimbo', async () => {
+    const c = cenario({ leituras: [recusaDaLeitura('error_permission')] });
+    expect(await processar(c, {}, ULTIMA_TENTATIVA)).toMatchObject({
+      desfecho: 'erro-final',
+      motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel,
+      avisado: true,
+      carimbo: null,
+      resolvido: false,
+    });
+    expect(c.uploadInvoiceDoc).not.toHaveBeenCalled();
+    expect(aviso(c)).toMatchObject({ motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel });
+    expect(estadoDoFrete(c)).toBe(ESTADO_FRETE.aguardandoNFe);
+    expect(c.enfileiradas).toEqual([
+      {
+        payload: { ...TAREFA, fase: FASE_NFE_SHOPEE.reverificacao, pausas: 0 },
+        opts: { scheduleDelaySeconds: ATRASOS_REVERIFICACAO_S[0] },
+      },
+    ]);
+    expect(linhasDeConclusao()).toHaveLength(1);
+    expect(linhasDeConclusao()[0]).toMatchObject({ codigo: 'error_permission' });
+    expect(logs[1]).toHaveBeenCalled();
+  });
+
+  it('PAR: numa REVERIFICAÇÃO, na última ⇒ `reverificacao-indisponivel` — log apenas, nada escrito nem enfileirado', async () => {
+    const c = cenario({ leituras: [recusaDaLeitura('error_param')] });
+    expect(
+      await processar(c, { fase: FASE_NFE_SHOPEE.reverificacao }, ULTIMA_TENTATIVA),
+    ).toMatchObject({
+      desfecho: 'erro-final',
+      motivo: MOTIVO_NFE_SHOPEE.reverificacaoIndisponivel,
+      avisado: false,
+      carimbo: null,
+    });
+    expect(c.db.writes).toEqual([]);
+    expect(c.enfileiradas).toEqual([]);
+  });
+
+  it('PAR: a releitura que DECIDE (resposta ilegível do upload) falhando com um código sem regra, na última ⇒ `canal-indisponivel` + UMA reverificação, sem carimbo', async () => {
+    const c = cenario({
+      leituras: [semNota(), recusaDaLeitura('error_permission')],
+      upload: new ShopeeNetworkError('reset'),
+    });
+    expect(await processar(c, {}, ULTIMA_TENTATIVA)).toMatchObject({
+      motivo: MOTIVO_NFE_SHOPEE.canalIndisponivel,
+      avisado: true,
+      carimbo: null,
+    });
+    expect(c.enfileiradas.map((e) => e.payload.fase)).toEqual([FASE_NFE_SHOPEE.reverificacao]);
+  });
+
+  it('QUASE: um código MAPEADO (`order.order_not_found`) na última continua `pedido-inexistente-no-canal` — sem aviso, sem reverificação', async () => {
+    const c = cenario({ leituras: [recusaDaLeitura('order.order_not_found')] });
+    expect(await processar(c, {}, ULTIMA_TENTATIVA)).toMatchObject({
+      desfecho: 'descartado',
+      motivo: MOTIVO_NFE_SHOPEE.pedidoInexistenteNoCanal,
+      avisado: false,
+      carimbo: null,
+    });
+    expect(c.enfileiradas).toEqual([]);
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('QUASE: o dry run NÃO finaliza — o mesmo código ainda LANÇA, como na primeira tentativa da fila', async () => {
+    const erro = recusaDaLeitura('error_permission');
+    const c = cenario({ leituras: [erro] });
+    await expect(simularEnvioNfeShopee(c.deps, TAREFA)).rejects.toBe(erro);
+    expect(c.db.writes).toEqual([]);
+  });
+});
+
+describe('S3-6 — o código da Shopee só vai para a linha pelo portão `codigoSeguro`', () => {
+  it('QUASE: um código com FORMA de token mas com os 44 dígitos de uma chave NUNCA vai para a linha nem para o aviso', async () => {
+    const c = cenario({ leituras: [semNota()], upload: recusa('algo estranho', `e${K}`) });
+    expect((await processar(c)).avisado).toBe(true);
+    const [linhaFinal] = linhasDeConclusao();
+    expect(linhaFinal).toBeDefined();
+    expect(linhaFinal).not.toHaveProperty('codigo');
+    expect(tudoQueFoiLogado()).not.toContain(K);
+    expect(aviso(c)).toBeDefined();
+    expect(JSON.stringify(aviso(c))).not.toContain(K);
+  });
+
+  it('PAR: um código-token curto (`order.error_param` com TAB) vai para a linha, aparado', async () => {
+    const c = cenario({
+      leituras: [semNota()],
+      upload: recusa('Wrong parameters, detail: Invalid CNPJ..', 'order.error_param\t'),
+    });
+    await processar(c);
+    expect(linhasDeConclusao()[0]).toMatchObject({ codigo: 'order.error_param' });
   });
 });
 

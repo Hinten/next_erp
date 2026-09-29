@@ -355,7 +355,7 @@ export const FRASE_DO_MOTIVO_NFE: Record<MotivoNfeShopee, string> = {
   // ---- the grant, the transport, the limits and the valve ----
   reauth: 'reconecte a conta Shopee — a autorização da loja expirou',
   'canal-indisponivel':
-    'verifique no Seller Center se a NF-e ficou anexada ao pedido, ou reenvie a nota pelo ERP — a Shopee não respondeu em nenhuma das tentativas de envio',
+    'verifique no Seller Center se a NF-e ficou anexada ao pedido, ou reenvie a nota pelo ERP — a Shopee não confirmou o envio em nenhuma das tentativas',
   'reverificacao-indisponivel':
     'a Shopee não respondeu na conferência da NF-e, e o ERP não conseguiu confirmar se a nota ficou anexada',
   'limite-de-taxa': 'a Shopee limitou a frequência de chamadas, e o envio foi reagendado',

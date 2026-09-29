@@ -1531,9 +1531,12 @@ attached, so the re-run UPLOADS, which is the point of running it again.
 - **A fresh approval is REFUSED** with `aguardando-serpro` (outcome `adiado`) until
   six minutes after the authorization — Shopee checks the note against the
   federal record, which lags SEFAZ. Nothing is read at Shopee for that pedido.
-  ⚠️ An NF-e with NO recorded authorization instant (the field is nullable, and
-  legacy documents lack it) is NOT refused — a refusal would repeat on every run
-  — so its `espera SERPRO` prints `—` and the upload proceeds.
+  ⚠️ This refusal only applies to the imported legacy corpus: `apps/nfe` never
+  writes `data_autorizacao` (only the legacy app did), so every NF-e emitted
+  after the cutover has NO recorded authorization instant. Such an NF-e is NOT
+  refused — a refusal would repeat on every run — so its `espera SERPRO` prints
+  `—` and the upload proceeds; an upload that reaches Shopee too early gets case
+  5's answer, and the handler re-enqueues it after the SERPRO wait.
 - **A transient Shopee failure THROWS** (exit `1`), exactly as it would reach the
   queue's retry; nothing is marked for the absence of an answer. The pedidos
   concluded before it are printed on stderr, then the error by CLASS and code.

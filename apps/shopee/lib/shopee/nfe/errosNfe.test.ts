@@ -319,8 +319,11 @@ describe('FRASE_DO_MOTIVO_NFE', () => {
     expect(frase).toContain('reenvie a nota pelo ERP');
     expect(frase).not.toMatch(/autom[aá]tic/i);
     expect(frase).not.toMatch(/ainda vai/i);
-    // ⛔ QUASE-MISS: a CAUSA continua dita, depois do travessão.
-    expect(frase).toMatch(/ — a Shopee não respondeu/);
+    // ⛔ QUASE-MISS: a CAUSA continua dita, depois do travessão — e sem afirmar
+    // que a Shopee ficou muda: o motivo também cobre um código que ninguém mapeia
+    // (review 2, S1-2), quando ela RESPONDEU, só que nada confirmou o envio.
+    expect(frase).toMatch(/ — a Shopee não confirmou o envio/);
+    expect(frase).not.toMatch(/não respondeu/);
   });
 });
 

@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { EXCERTO_SHOPEE_MAX } from './constantesNfe';
-import { resumirTextoDaShopee } from './redacaoNfe';
+import { codigoSeguro, resumirTextoDaShopee } from './redacaoNfe';
 
 /**
  * A synthetic, visibly impossible access key — cUF 99 (no such UF), an
@@ -336,5 +338,63 @@ describe('resumirTextoDaShopee — review 1, a lente de mutação (R6, R9)', () 
     );
     expect(resumirTextoDaShopee('ref 12A345 6B7 ok')).toBe('ref 12A345 6B7 ok');
     expect(resumirTextoDaShopee('protocolo 123456 A1 B2 recusado')).toBe('protocolo ••• recusado');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   codigoSeguro — review 2 (S3-6 + E1)                       */
+/* -------------------------------------------------------------------------- */
+
+describe('codigoSeguro — o código da Shopee como TOKEN curto, nunca texto livre nem identificador', () => {
+  it('34 — PAR: `order.upload_invoice_error` passa, e com espaço/TAB em volta ≡ o mesmo código aparado', () => {
+    expect(codigoSeguro('order.upload_invoice_error')).toBe('order.upload_invoice_error');
+    expect(codigoSeguro(' order.upload_invoice_error	')).toBe('order.upload_invoice_error');
+    expect(codigoSeguro('error_param')).toBe('error_param');
+    expect(codigoSeguro('common.source_ip_undeclared')).toBe('common.source_ip_undeclared');
+  });
+
+  it('35 — ⛔ NEAR-MISS: `e` + os 44 dígitos de uma chave tem forma de token e é `null` (sete dígitos ou mais)', () => {
+    expect(codigoSeguro(`e${CHAVE}`)).toBeNull();
+    // The digit threshold, both sides: six digits are a code, seven are not.
+    expect(codigoSeguro('error_123456')).toBe('error_123456');
+    expect(codigoSeguro('error_1234567')).toBeNull();
+    expect(codigoSeguro('e1.2.3.4.5.6.7')).toBeNull();
+  });
+
+  it('36 — ⛔ NEAR-MISS: um código de 70 caracteres é `null`; o teto é 64, dos dois lados', () => {
+    expect(codigoSeguro(`error_${'x'.repeat(64)}`)).toBeNull();
+    expect(codigoSeguro(`e${'x'.repeat(63)}`)).toBe(`e${'x'.repeat(63)}`);
+    expect(codigoSeguro(`e${'x'.repeat(64)}`)).toBeNull();
+  });
+
+  it('37 — ⛔ NEAR-MISS: texto livre, o número de pedido, um dígito na frente e o que não é string ⇒ `null`', () => {
+    for (const naoCodigo of [
+      'chave inválida',
+      `chave ${CHAVE}`,
+      ORDER_SN,
+      '1error',
+      '_error',
+      'error-param',
+      '',
+      '   ',
+      null,
+      undefined,
+      42,
+      { code: 'error_param' },
+    ]) {
+      expect(codigoSeguro(naoCodigo), String(naoCodigo)).toBeNull();
+    }
+  });
+
+  it('38 — a fonte: o handler e a CLI leem o código por ESTE portão, sem cópia privada da regex', () => {
+    for (const modulo of ['./processarNfe.ts', './enviarNfeCli.ts']) {
+      const fonte = readFileSync(fileURLToPath(new URL(modulo, import.meta.url)), 'utf8');
+      expect(fonte, modulo).toMatch(
+        /import \{ codigoSeguro, resumirTextoDaShopee \} from '\.\/redacaoNfe';/,
+      );
+      expect(fonte, modulo).not.toContain('CODIGO_TOKEN');
+      expect(fonte, modulo).not.toContain('[a-z0-9_.]');
+      expect(fonte, modulo).not.toMatch(/function codigoSeguro/);
+    }
   });
 });

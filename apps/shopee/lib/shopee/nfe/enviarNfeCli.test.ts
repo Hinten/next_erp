@@ -714,6 +714,23 @@ describe('descreverErroEnviarNfe — pela CLASSE, nunca pela mensagem da Shopee'
     semIdentificadores(comCodigo(`chave ${K}`));
   });
 
+  it('review 2 (S3-6) — PAR: `order.upload_invoice_error` com TAB é impresso aparado; NEAR-MISS: `e` + os 44 dígitos da chave e um código de 70 caracteres não são códigos', () => {
+    const comCodigo = (code: string) =>
+      descreverErroEnviarNfe(
+        new ShopeeApiError('x', {
+          code,
+          kind: SHOPEE_ERROR_KIND.other,
+          httpStatus: 200,
+          path: SHOPEE_UPLOAD_INVOICE_DOC_PATH,
+        }),
+      ).join('\n');
+    expect(comCodigo('order.upload_invoice_error\t')).toContain('code=order.upload_invoice_error ');
+    // Token-SHAPED, and still an identifier: the digit cap is what refuses it.
+    expect(comCodigo(`e${K}`)).toContain('code=(não é um código)');
+    semIdentificadores(comCodigo(`e${K}`));
+    expect(comCodigo(`error_${'x'.repeat(64)}`)).toContain('code=(não é um código)');
+  });
+
   it('só um erro de argumento é anterior a qualquer envio', () => {
     expect(ehRecusaAntesDoEnvioNfe(new ArgumentoInvalidoError('x'))).toBe(true);
     expect(ehRecusaAntesDoEnvioNfe(new ShopeeNetworkError('x'))).toBe(false);
