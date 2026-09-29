@@ -12,11 +12,14 @@ import {
   MAX_LOTE_POLL_RETRIES,
   MAX_RECONCILE_ATTEMPTS,
   nextAction,
+  esperaMinimaDoRecibo,
   nextConsultaDelayMs,
   RECONCILE_BASE_DELAY_MS,
+  RECONCILE_INDISPONIVEL_DELAY_MS,
   RECONCILE_MAX_DELAY_MS,
   resolveTpEmis,
 } from '../../src/state/index';
+import * as barril from '../../src/index';
 
 describe('classifyCStat', () => {
   it.each([
@@ -371,6 +374,42 @@ describe('nextConsultaDelayMs', () => {
   it('MAX_RECONCILE_ATTEMPTS is a sane positive cap', () => {
     expect(MAX_RECONCILE_ATTEMPTS).toBeGreaterThan(0);
     expect(Number.isInteger(MAX_RECONCILE_ATTEMPTS)).toBe(true);
+  });
+});
+
+describe('esperaMinimaDoRecibo — a paralisado receipt is paced, never polled at backoff (#1654)', () => {
+  it('RECONCILE_INDISPONIVEL_DELAY_MS is one hour — longer than any backoff step', () => {
+    expect(RECONCILE_INDISPONIVEL_DELAY_MS).toBe(3_600_000);
+    expect(RECONCILE_INDISPONIVEL_DELAY_MS).toBeGreaterThan(RECONCILE_MAX_DELAY_MS);
+  });
+
+  it.each(['108', '109', '113', '114'])(
+    'lote cStat %s (serviço paralisado) → one hour',
+    (cStat) => {
+      expect(esperaMinimaDoRecibo(cStat)).toBe(RECONCILE_INDISPONIVEL_DELAY_MS);
+    },
+  );
+
+  it.each(['104', '105', '106', '107', '103', '656', '1080', '1090', 'abc', ''])(
+    'lote cStat %s → null (the normal backoff applies)',
+    (cStat) => {
+      expect(esperaMinimaDoRecibo(cStat)).toBeNull();
+    },
+  );
+
+  it('over the whole 3/4-digit space, non-null exactly for 108/109/113/114', () => {
+    const todos = Array.from({ length: 10_000 }, (_, i) => String(i).padStart(3, '0'));
+    expect(todos.filter((c) => esperaMinimaDoRecibo(c) != null)).toEqual([
+      '108',
+      '109',
+      '113',
+      '114',
+    ]);
+  });
+
+  it('both are exported from the package barrel (apps/nfe imports them from there)', () => {
+    expect(barril.RECONCILE_INDISPONIVEL_DELAY_MS).toBe(RECONCILE_INDISPONIVEL_DELAY_MS);
+    expect(barril.esperaMinimaDoRecibo).toBe(esperaMinimaDoRecibo);
   });
 });
 

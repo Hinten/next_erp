@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/nfe/filial-cert', () => ({ resolveFilialRuntime: vi.fn(async () => ({})) }));
 vi.mock('@/lib/nfe/orchestrator/reconcile', () => ({ reconcileByRecibo: vi.fn() }));
 
+import { nextConsultaDelayMs, RECONCILE_INDISPONIVEL_DELAY_MS } from '@delfrance/integrations-nfe';
+
 import { reconcileByRecibo } from '@/lib/nfe/orchestrator/reconcile';
 import { runReconcile } from '@/lib/nfe/handlers/runReconcile';
 import type { ConsultaTaskInput, TaskScheduler } from '@/lib/nfe/tasks';
@@ -79,4 +81,54 @@ describe('runReconcile', () => {
     expect(res.reEnqueued).toBe(false);
     expect(enqueued).toHaveLength(0);
   });
+
+  /** Run one pending round whose lote answered `cStat`; returns the enqueue and the clock window. */
+  async function rodadaPendente(
+    cStat: string,
+    attempt = 0,
+  ): Promise<{
+    readonly agendado: ConsultaTaskInput;
+    readonly antes: number;
+    readonly depois: number;
+  }> {
+    vi.mocked(reconcileByRecibo).mockResolvedValue({
+      scanned: 1,
+      stillPending: 1,
+      recovered: 0,
+      errored: 0,
+      cStat,
+      bloqueioConsSit: null,
+    });
+    const { scheduler, enqueued } = recordingScheduler();
+    const antes = Date.now();
+    await runReconcile({
+      fs: {} as never,
+      baseRt: {} as never,
+      scheduler,
+      payload: { ...PAYLOAD, attempt },
+    });
+    const depois = Date.now();
+    expect(enqueued).toHaveLength(1);
+    return { agendado: enqueued[0]!, antes, depois };
+  }
+
+  it.each(['108', '109', '113', '114'])(
+    'a paralisado receipt (%s) re-enqueues no sooner than RECONCILE_INDISPONIVEL_DELAY_MS (#1654)',
+    async (cStat) => {
+      const { agendado, antes, depois } = await rodadaPendente(cStat);
+      expect(agendado.attempt).toBe(1);
+      expect(agendado.scheduleAtMs).toBeGreaterThanOrEqual(antes + RECONCILE_INDISPONIVEL_DELAY_MS);
+      expect(agendado.scheduleAtMs).toBeLessThanOrEqual(depois + RECONCILE_INDISPONIVEL_DELAY_MS);
+    },
+  );
+
+  it.each(['105', '104', '103', '107'])(
+    'pin: a %s round keeps the plain backoff, nextConsultaDelayMs(attempt+1)',
+    async (cStat) => {
+      const { agendado, antes, depois } = await rodadaPendente(cStat, 2);
+      expect(agendado.attempt).toBe(3);
+      expect(agendado.scheduleAtMs).toBeGreaterThanOrEqual(antes + nextConsultaDelayMs(3));
+      expect(agendado.scheduleAtMs).toBeLessThanOrEqual(depois + nextConsultaDelayMs(3));
+    },
+  );
 });

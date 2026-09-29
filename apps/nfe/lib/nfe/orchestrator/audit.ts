@@ -337,12 +337,14 @@ export async function persistPatch(
  *  - #512 (`persistLoteSemRecibo`) ties the write to ONE lote — the reply
  *    answers the lote whose `idLote` the doc was stamped with before the send,
  *    and is stale for a doc a newer lote has re-stamped since.
- *  - #513 (`reconcileByRecibo`, and `reconcileLoteSemProtocolo` under it) ties
- *    each write to the receipt, the `retries` its decision was computed from,
- *    and an in-flight estado: its `data` was read before the `consReciNFe`
- *    await (and before the earlier docs' consSit calls), so a concurrent
- *    terminal `error`/`rejeitada` or a concurrent counted write by another
- *    runner must refuse the write rather than be overwritten by it.
+ *  - #513 / #1654 (`reconcileByRecibo`, and `reconcilePorChave` under it)
+ *    ties each write to the receipt, the `retries` its decision was computed
+ *    from, and an in-flight estado: its `data` was read before the
+ *    `consReciNFe` await (and before the earlier docs' consSit calls), so a
+ *    concurrent terminal `error`/`rejeitada` or a concurrent counted write by
+ *    another runner must refuse the write rather than be overwritten by it.
+ *    Every one of those writes that leaves the doc in flight is a COUNTED
+ *    write (the `retries` as read + 1), so none of them ever lowers it.
  */
 export interface PersistGuard {
   /** #512 — the lote this write answers, as stamped on the nfev4 doc (`String(idLote)`). */
@@ -427,17 +429,18 @@ export type GuardedPersistResult =
  *    carried no `infRec` to every member, passes `expectedIdLote` — a stored
  *    `idLote` that differs (a stored `null` included) means a newer lote
  *    re-stamped the doc, so this reply is stale for it;
- *  - `reconcileByRecibo` (#513) uses it for EVERY write it makes, with
+ *  - `reconcileByRecibo` (#513, #1654) uses it for EVERY write it makes, with
  *    `expectedNRec` + `expectedRetries` + `requireInFlight`: its in-flight
  *    query runs before the `consReciNFe` await, so an estado filter on that
- *    pre-read is no guard at write time. The 105 / lote-level non-answer /
- *    104-with-our-protNFe (proc swap included) / 539 / 656 / cap writes state
- *    the `retries` as read; the lote-sem-protocolo branch
- *    (`reconcileLoteSemProtocolo`) states it as read for its counted write
- *    and as just counted for every write after its consSit. A concurrent
- *    terminal (a 656 `error`, a 217 `rejeitada`) or a concurrent counted write
- *    by another runner therefore refuses the write instead of being
- *    overwritten by a decision taken on a pre-read.
+ *    pre-read is no guard at write time. The counted in-flight writes (105,
+ *    lote-level non-answer — paced by `proximaConsultaEm` on a paralisado
+ *    receipt —, a recovered 539) and the 104-with-our-protNFe (proc swap
+ *    included) / 539 / blocking-terminal / cap writes state the `retries` as
+ *    read; the by-chave branch (`reconcilePorChave`) states it as read for
+ *    its counted write and as just counted for every write after its consSit.
+ *    A concurrent terminal (a 656 `error`, a 217 `rejeitada`) or a concurrent
+ *    counted write by another runner therefore refuses the write instead of
+ *    being overwritten by a decision taken on a pre-read.
  * Under a guard a MISSING doc throws `NFeOrchestratorError` and nothing is
  * written — every guarded writer anchored the doc before its SEFAZ call, so a
  * merge would only mint a partial doc; without a guard it is written as

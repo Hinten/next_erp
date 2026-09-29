@@ -236,30 +236,51 @@ Terraform. `infra/terraform` does not exist in this repo.
 enqueues a task at `now + tMed` onto the **`reconciliarNfe` Firebase Functions
 task queue** — `onTaskDispatched` auto-provisions the queue on deploy, named
 after the function. `reconciliarNfe` consults by recibo and re-enqueues with
-backoff until terminal (cStat 656 = consumo indevido is terminal and never
-retried — re-querying it risks a SEFAZ ban). The cap is per doc, on its
-`retries`: 105 rounds and 104-without-our-protNFe rounds both count toward
-`MAX_RECONCILE_ATTEMPTS`, and a lote-level non-answer (103/106/107/108/109/113/114)
-keeps the counter as read without advancing it, and never trips the cap — the
-cap's terminal would carry its NON-blocking cStat — so a doc at the cap stays
-in flight there until the next 104 sighting ends it with NO consSit (cStat
-104) or the next 105 with cStat 105. A processed lote (104) whose reply lacks
-our chave's `protNFe` makes ONE `consSitNFe` for that chave per round
-(`orchestrator/lote-sem-protocolo.ts`, #513). **Every** write of
-`reconcileByRecibo` — that branch's and the 105 / non-answer / 104-with-protNFe
-/ 539 / cap ones — is guarded in its transaction on the receipt, the `retries`
-it was decided from and an in-flight estado (`PersistGuard`), so a concurrent
-terminal or counted write wins and the doc is tallied by its live estado; the
-539 recovery's own chave swap is the one plain merge left. A breaker stops
-further consSit calls after a 656 or an unavailable service — per lote on the
-task path; across the sweep's lotes, a 656 per filial and an outage per filial
-+ authorizer (home / SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal
-or stays counted. ⚠️ Two chains are still **not** capped (pre-existing
-follow-ups): a pure lote-level 106/108 chain, and a 104 whose `protNFe` for our
-chave carries a non-539 duplicidade (204/205/218/635). ⚠️ A breaker tripped by
-a reconcile that then THROWS is not carried to the next lote or the queue retry
-(follow-up). The CC-e linkage re-check (`kind: 'cce-vinculo'`, cStat 136) rides
-the **same** queue, discriminated by `kind`.
+backoff until terminal. **One decision per round** (`decidirRodadaDoRecibo`,
+`orchestrator/lote-sem-protocolo.ts`, #513/#1654): our `protNFe` (strict
+chave equality) is applied when final; a 539 is recovered; a processed lote
+(104) without it, a per-NF-e verdict at LOTE level (never a final estado
+without a protocol), a 106, or a duplicidade 204/205/218/635 is resolved **by
+chave** — ONE `consSitNFe` per round (none on a 106's first round: the receipt
+may not be indexed yet), read through one recovery table
+(`classificarConsSitDeRecuperacao`): a 217 frees the número only when the
+protocol was merely missing or the receipt not found — for a duplicidade it is
+terminal (539 is facultative, the número may be held under another chave), for
+635 it means "still queued" — and a denegada is applied only for a missing
+protocol; 103/105/107/108/109/113/114 (or a cStat that is not TStat-shaped) say
+nothing and wait; a lote-level 656 or a refused receipt query is terminal
+(656 = consumo indevido is never retried — re-querying it risks a SEFAZ ban).
+**Every round that leaves a doc in flight advances its `retries` by exactly
+one** — an `enviando` doc is written `aguardandoResposta`, a recovered 539
+continues its own count — so a doc gets at most `MAX_RECONCILE_ATTEMPTS`
+receipt rounds and consSit calls between two operator actions; the manual
+verify, a new emit lote and the sweep's consult-by-chave branch for docs
+without an `nRec` still reset it. **Every terminal the decision makes carries a
+blocking cStat** (`terminalBloqueante`; the 539 recovery keeps its #243
+terminals, cStat 539 included): the round's own 103/104/105, else 103 — SEFAZ issued
+this receipt — with the real cStat as an xMotivo prefix, so the pedido cannot
+be re-emitted over a número SEFAZ may hold; "Verificar novamente"
+(`consultarChavePersistida`) then consults by chave through the same decision
+and table, without counting (a receipt that says nothing puts the doc back in
+flight on it, paced; a stored `rejeitada` is left as it is by that, a 656 or a
+refused receipt query — but not by a 103/105, whose lote holding the chave is
+still pending at SEFAZ), and `verificarEnviNfeMsgs` stops a run on its
+`consumoIndevido` flag, since the persisted cStat no longer shows the 656. A
+receipt answering serviço paralisado (108/109/113/114) is paced
+`RECONCILE_INDISPONIVEL_DELAY_MS` (one hour, `esperaMinimaDoRecibo`) — the
+task's re-enqueue and the doc's `proximaConsultaEm` alike, so the sweep stays
+behind the task — and the cap then rides out about ten hours of outage before
+the docs need a manual verify. **Every** write of `reconcileByRecibo` is
+guarded in its transaction on the receipt, the `retries` it was decided from
+and an in-flight estado (`PersistGuard`), so a concurrent terminal or counted
+write wins and the doc is tallied by its live estado; the 539 recovery's own
+chave swap is the one plain merge left. A breaker stops further consSit calls
+after a 656 or an unavailable service — per lote on the task path; across the
+sweep's lotes, a 656 per filial and an outage per filial + authorizer (home /
+SVC-AN / SVC-RS, `autorizadorDe`). The doc ends terminal or stays counted. ⚠️
+A breaker tripped by a reconcile that then THROWS is not carried to the next
+lote or the queue retry (follow-up). The CC-e linkage re-check (`kind:
+'cce-vinculo'`, cStat 136) rides the **same** queue, discriminated by `kind`.
 
 Transport is `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)`
 (`lib/nfe/tasks.ts`) — no queue path, no runner SA, no `google-auth-library`.

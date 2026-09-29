@@ -1,16 +1,35 @@
 /**
- * The 104-without-our-protNFe branch of `reconcileByRecibo` (#513) — its pure
- * classifiers and the per-doc recovery `reconcileLoteSemProtocolo`.
+ * One decision per `consReciNFe` round of `reconcileByRecibo` (#513, #1654) —
+ * its pure classifiers, and the per-doc recovery by chave `reconcilePorChave`.
  *
- * A processed lote (`cStat=104`) carries the result of EVERY NF-e it held
- * (MOC 7.0 p.75 §5.1, p.76 BR07; `TRetConsReciNFe/protNFe` is 0..50), so a 104
- * with no `protNFe` for our chave is final for that `nRec`: re-reading the same
- * receipt cannot change the answer, and re-fetching an already-delivered result
- * is the Consumo Indevido pattern (MOC 7.0 p.58 §4.3(c)(3), p.63 Tabela 4-9).
- * What is left to ask is what SEFAZ holds for the chave itself — the
- * `consSitNFe` recovery query (`.claude/skills/nfe/references/webservices.md`
- * lines 139-143, "NfeConsultaProtocolo"; MOC 7.0 p.78 §5.2.5 and p.84 J03–J06
- * for its answers).
+ * {@link decidirRodadaDoRecibo} turns a receipt's answer for ONE chave into one
+ * of five decisions: apply our protocol, recover a 539, resolve by chave, wait
+ * (the next round), or go terminal. It is total over the cStat space — the
+ * reconcile loop and the manual verify (`consultar.ts`) both switch on it, so
+ * no answer can fall through to a reset or an unbounded re-read.
+ *
+ * Resolving by chave is the `consSitNFe` recovery query
+ * (`.claude/skills/nfe/references/webservices.md` lines 139-143,
+ * "NfeConsultaProtocolo"; MOC 7.0 p.78 §5.2.5 and p.84 J03–J06 for its
+ * answers). A receipt's answer is final for that `nRec`, so re-reading it
+ * cannot change anything, and re-fetching an already-delivered result is the
+ * Consumo Indevido pattern (MOC 7.0 p.58 §4.3(c)(3), p.63 Tabela 4-9). It is
+ * taken for four reasons ({@link MotivoConsultaPorChave}):
+ *  - a processed lote (104) with no `protNFe` for our chave — it carries the
+ *    result of EVERY NF-e it held (MOC 7.0 p.75 §5.1, p.76 BR07;
+ *    `TRetConsReciNFe/protNFe` is 0..50) — or a per-NF-e verdict given at LOTE
+ *    level, which never lands without a protocol;
+ *  - 106, lote não localizado (an expired receipt);
+ *  - a duplicidade other than 539 (204/205/218);
+ *  - 635, "NF-e com mesmo número/série já transmitida, aguardando
+ *    processamento" — wait and poll (cstat-rejeicoes.md, "Recovery procedure").
+ * The answer is read through ONE table, {@link classificarConsSitDeRecuperacao},
+ * which depends on that reason.
+ *
+ * A terminal this module decides always carries a BLOCKING cStat
+ * ({@link terminalBloqueante}): the round's own 103/104/105, or 103 — SEFAZ
+ * issued this receipt, so the número may be held — with the real cStat in
+ * xMotivo. A non-blocking one would make the pedido re-emittable over it.
  *
  * Every switch here is EXHAUSTIVE over `CStatCategory` with no `default`: a
  * category added to the library fails typecheck here instead of silently
@@ -31,6 +50,7 @@ import {
   NFeTransportError,
   NFeXmlError,
   NFeXsdValidationError,
+  outcomeFromRetConsRec,
   outcomeFromRetConsSit,
   type NFeStatePatch,
   type SefazOutcome,
@@ -48,110 +68,240 @@ import {
   buildProcForAuthorizedOutcome,
   enviNfeCollection,
   markAsLost,
-  outcomeFromConsReci,
   type PersistGuard,
   persistPatchUnlessFinal,
   swapAnchorForProc,
 } from './audit';
 
+/**
+ * `TStat` — `^\d{3,4}$` since NT 2025.002. A lote cStat of any other shape
+ * (an empty `<cStat/>`) is an anomaly that says nothing about any chave.
+ */
+const CSTAT_TSTAT = /^\d{3,4}$/;
+/** 103 — lote recebido: SEFAZ issued the receipt. The blocking fallback of {@link cStatBloqueanteDaRodada}. */
+const CSTAT_LOTE_RECEBIDO = '103';
+/** 104 — lote processado. */
+const CSTAT_LOTE_PROCESSADO = '104';
+/**
+ * 105 — lote em processamento: the one counted round whose xMotivo carries no
+ * extra tail (its patch is byte-identical to the pre-#1654 one).
+ */
+export const CSTAT_LOTE_PENDENTE = '105';
+/** 106 — lote não localizado. */
+const CSTAT_LOTE_NAO_LOCALIZADO = '106';
+/** 539 — duplicidade com diferença na chave: `recover539IfNeeded`, never by chave. */
+const CSTAT_DUPLICIDADE_CHAVE_DIFERENTE = '539';
+/** 635 — NF-e com mesmo número/série já transmitida, aguardando processamento. */
+const CSTAT_AGUARDANDO_PROCESSAMENTO = '635';
+/**
+ * 217 — "NF-e não consta na base de dados da SEFAZ" (MOC 7.0 p.84 Tabela 5-16,
+ * J03): SEFAZ holds no NF-e for this chave.
+ */
+const CSTAT_NFE_NAO_CONSTA_NA_BASE = '217';
+
 /** One `protNFe` element of a `retConsReciNFe`. */
 type ProtNFeDoLote = NonNullable<TRetConsReciNFe['protNFe']>[number];
 
-/**
- * True when the lote was processed (104) and carries no `protNFe` for our
- * chave. The caller resolves `ourProt` by STRICT equality on
- * `infProt.chNFe` — a near-miss chave counts as missing, never as ours.
- */
-export function isLoteProcessadoSemProtocolo(
-  ret: Pick<TRetConsReciNFe, 'cStat'>,
-  ourProt: ProtNFeDoLote | null,
-): boolean {
-  return classifyCStat(ret.cStat) === 'lote-processado' && ourProt == null;
-}
+/** Why a round resolves a doc by chave — it decides how the consSit answer is read. */
+export type MotivoConsultaPorChave =
+  /** A processed lote (104) or a lote-level verdict carries no protocol for the chave. */
+  | 'protocolo-ausente'
+  /** 106 — the receipt is not found (expired, or not indexed yet). */
+  | 'lote-nao-localizado'
+  /** 204/205/218 — an NF-e with this número already reached SEFAZ. */
+  | 'duplicidade'
+  /** 635 — the NF-e is still queued at SEFAZ. */
+  | 'aguardando-processamento';
 
 /**
- * True for a lote-level reply that says NOTHING about any chave of the lote:
- * 103 (lote recebido), 106 (lote não localizado), 107 (serviço em operação)
- * and 108/109/113/114 (serviço paralisado, SVC em desativação/desabilitada).
- * `reconcileByRecibo` keeps the doc's `retries` on these instead of letting
- * `applyOutcome` zero it, so an outage between two 104 rounds cannot restart
- * the 104 count — only our `protNFe` or a final answer clears it. The value is
- * kept exactly as read, and a non-answer is exempt from the cap (whose
- * terminal would carry the non-answer's NON-blocking cStat): a doc at MAX stays
- * in flight at MAX, and the next 104 sighting ends it past the cap with NO
- * consSit, by {@link reconcileLoteSemProtocolo}'s hard stop.
- *
- * False for every other category: 105 is already counted by `applyOutcome`,
- * 104 has its own branch, and the final / duplicidade / rejection / 656
- * categories keep their existing handling. A pure lote-level 106/108 chain is
- * still uncapped — resolving 106 via `consSitNFe` is a follow-up — and so is
- * a 104 whose `protNFe` for our chave carries a non-539 duplicidade
- * (204/205/218/635), which `applyOutcome` leaves in flight with `retries`
- * zeroed (pre-existing).
+ * The by-chave reason a cStat itself names: 106 → `lote-nao-localizado`,
+ * 204/205/218 → `duplicidade`, 635 → `aguardando-processamento`. `null` for
+ * everything else — 539 included, which keeps its own recovery.
  */
-export function loteSemRespostaParaAChave(cStat: string): boolean {
+export function motivoPorChave(cStat: string): MotivoConsultaPorChave | null {
   switch (classifyCStat(cStat)) {
-    case 'lote-recebido':
     case 'lote-nao-localizado':
-    case 'servico-em-operacao':
-    case 'servico-paralisado':
-      return true;
-    case 'lote-pendente':
-    case 'lote-processado':
+      return 'lote-nao-localizado';
+    case 'duplicidade':
+      if (cStat === CSTAT_DUPLICIDADE_CHAVE_DIFERENTE) return null;
+      return cStat === CSTAT_AGUARDANDO_PROCESSAMENTO ? 'aguardando-processamento' : 'duplicidade';
     case 'autorizada':
     case 'cancelada':
     case 'inutilizada':
     case 'denegada':
-    case 'duplicidade':
+    case 'lote-recebido':
+    case 'lote-processado':
+    case 'lote-pendente':
+    case 'servico-em-operacao':
+    case 'servico-paralisado':
     case 'rejeitada-schema':
     case 'rejeitada-certificado':
     case 'rejeitada-ambiente':
     case 'consumo-indevido':
     case 'rejeitada':
-      return false;
+      return null;
   }
 }
 
-/** What the recovery `consSitNFe` told us about a chave missing from a processed lote. */
-export type RecuperacaoConsSit =
-  /** SEFAZ gave the chave a final answer — apply it. */
-  | 'resolvida'
-  /** The service is down — nothing learned; the doc stays counted. */
-  | 'indisponivel'
-  /** No usable answer — terminal error that keeps cStat 104, verificar manualmente. */
-  | 'sem-resolucao';
+/** What one `consReciNFe` round does with one doc. */
+export type DecisaoDaRodada =
+  /** Our protNFe carries a final answer — apply it (today's path). */
+  | { readonly tipo: 'aplicar-protocolo' }
+  /** A 539 — `recover539IfNeeded`. */
+  | { readonly tipo: 'recuperar-539' }
+  /** Resolve by chave: counted, then at most ONE `consSitNFe` ({@link reconcilePorChave}). */
+  | { readonly tipo: 'por-chave'; readonly motivo: MotivoConsultaPorChave }
+  /** Nothing about the chave — counted, and consulted again next round. */
+  | { readonly tipo: 'aguardar' }
+  /** No further SEFAZ call can help — blocking terminal, verificar manualmente. */
+  | { readonly tipo: 'terminal' };
+
+const APLICAR: DecisaoDaRodada = { tipo: 'aplicar-protocolo' };
+const RECUPERAR_539: DecisaoDaRodada = { tipo: 'recuperar-539' };
+const AGUARDAR: DecisaoDaRodada = { tipo: 'aguardar' };
+const TERMINAL: DecisaoDaRodada = { tipo: 'terminal' };
+const porChave = (motivo: MotivoConsultaPorChave): DecisaoDaRodada => ({
+  tipo: 'por-chave',
+  motivo,
+});
 
 /**
- * 217 — "NF-e não consta na base de dados da SEFAZ" (MOC 7.0 p.84 Tabela 5-16,
- * J03): SEFAZ holds no NF-e for this emitente/modelo/série/número, so the
- * número was NOT consumed and re-emitting it cannot use it twice.
+ * A duplicidade cStat's decision: 539 recovers, the others go by chave. Within
+ * the duplicidade category {@link motivoPorChave} is `null` for 539 alone.
  */
-const CSTAT_NFE_NAO_CONSTA_NA_BASE = '217';
+function decisaoDaDuplicidade(cStat: string): DecisaoDaRodada {
+  const motivo = motivoPorChave(cStat);
+  return motivo == null ? RECUPERAR_539 : porChave(motivo);
+}
 
 /**
- * Classify `outcomeFromRetConsSit(retSit).cStat` — the inner `infProt.cStat`,
- * except for a top-level cancelada/inutilizada or an absent `protNFe`.
+ * The decision for one doc of a `consReciNFe` round. `protCStat` is the cStat
+ * of OUR `protNFe` in the reply — the caller resolves it by STRICT equality on
+ * `infProt.chNFe` (a near-miss chave is missing, never ours) — or `null`.
  *
- *  - autorizada / cancelada / inutilizada / denegada → `resolvida`. Denegada
- *    lands as rejeitada, same as every other consSit path, even though its
- *    número is consumed (cstat-rejeicoes.md, "Denial").
- *  - rejeitada → `resolvida` ONLY for 217 (above). 561/562/613 (MOC 7.0 p.84
- *    J04–J06: mês / código numérico / chave differ from the NF-e SEFAZ holds)
- *    mean the número EXISTS under another chave, so re-emitting would collide:
- *    `sem-resolucao`, like every other rejection.
- *  - servico-paralisado (108/109/113/114) → `indisponivel`.
- *  - everything else, 656 included → `sem-resolucao` (on 656 the caller also
- *    stops consulting for the rest of the run — cstat-rejeicoes.md §656).
+ * With our protNFe:
+ *  - a final answer (autorizada / cancelada / inutilizada / denegada / any
+ *    rejection) → `aplicar-protocolo`;
+ *  - 539 → `recuperar-539`; 204/205/218 → by chave (`duplicidade`); 635 → by
+ *    chave (`aguardando-processamento`);
+ *  - 656 → `terminal`;
+ *  - a lote-state or service code inside a protNFe → by chave
+ *    (`protocolo-ausente`).
+ * A protNFe cStat that is not TStat-shaped (an empty `<cStat/>`) is read as
+ * absent, like a near-miss chave: `classifyCStat` would call it a rejection
+ * and free the número on an anomaly.
+ *
+ * Without it, from the LOTE cStat:
+ *  - not TStat-shaped, 103/105/107/108/109/113/114 → `aguardar`;
+ *  - 104, and a per-NF-e verdict given at lote level (100/150/101/151/102/
+ *    110/301/302) → by chave (`protocolo-ausente`): a final estado never
+ *    lands without a protocol, the same rule #512 applies to a lote reply
+ *    without a receipt;
+ *  - 106 → by chave (`lote-nao-localizado`);
+ *  - the duplicidades as above;
+ *  - 656, and a rejection of the `consReciNFe` query itself (252, 215/225,
+ *    28x/29x, any other) → `terminal`.
  */
-export function classificarConsSitDeRecuperacao(cStat: string): RecuperacaoConsSit {
-  switch (classifyCStat(cStat)) {
+export function decidirRodadaDoRecibo(
+  loteCStat: string,
+  protCStat: string | null,
+): DecisaoDaRodada {
+  if (protCStat != null && CSTAT_TSTAT.test(protCStat)) {
+    switch (classifyCStat(protCStat)) {
+      case 'autorizada':
+      case 'cancelada':
+      case 'inutilizada':
+      case 'denegada':
+      case 'rejeitada-schema':
+      case 'rejeitada-certificado':
+      case 'rejeitada-ambiente':
+      case 'rejeitada':
+        return APLICAR;
+      case 'duplicidade':
+        return decisaoDaDuplicidade(protCStat);
+      case 'consumo-indevido':
+        return TERMINAL;
+      case 'lote-recebido':
+      case 'lote-processado':
+      case 'lote-pendente':
+      case 'lote-nao-localizado':
+      case 'servico-em-operacao':
+      case 'servico-paralisado':
+        return porChave('protocolo-ausente');
+    }
+  }
+  if (!CSTAT_TSTAT.test(loteCStat)) return AGUARDAR;
+  switch (classifyCStat(loteCStat)) {
+    case 'lote-recebido':
+    case 'lote-pendente':
+    case 'servico-em-operacao':
+    case 'servico-paralisado':
+      return AGUARDAR;
+    case 'lote-processado':
     case 'autorizada':
     case 'cancelada':
     case 'inutilizada':
     case 'denegada':
-      return 'resolvida';
+      return porChave('protocolo-ausente');
+    case 'lote-nao-localizado':
+      return porChave('lote-nao-localizado');
+    case 'duplicidade':
+      return decisaoDaDuplicidade(loteCStat);
+    case 'consumo-indevido':
+    case 'rejeitada-schema':
+    case 'rejeitada-certificado':
+    case 'rejeitada-ambiente':
     case 'rejeitada':
-      return cStat === CSTAT_NFE_NAO_CONSTA_NA_BASE ? 'resolvida' : 'sem-resolucao';
+      return TERMINAL;
+  }
+}
+
+/** What the recovery `consSitNFe` told us about a chave a round resolves by chave. */
+export type RecuperacaoConsSit =
+  /** SEFAZ gave the chave a final answer — apply it. */
+  | 'resolvida'
+  /** The NF-e is still queued at SEFAZ (635 + 217) — stays counted, no breaker. */
+  | 'pendente'
+  /** The service is down — nothing learned; the doc stays counted. */
+  | 'indisponivel'
+  /** No usable answer — blocking terminal `error`, verificar manualmente. */
+  | 'sem-resolucao';
+
+/**
+ * Classify `outcomeFromRetConsSit(retSit).cStat` — the inner `infProt.cStat`,
+ * except for a top-level cancelada/inutilizada or an absent `protNFe` — for a
+ * round resolved by chave for `motivo`. The one table the reconcile, the
+ * manual verify and (later) the sync emit path share:
+ *
+ *  - autorizada / cancelada / inutilizada → `resolvida`.
+ *  - denegada → `resolvida` for `protocolo-ausente` (it lands as rejeitada,
+ *    same as every other consSit path — pinned since #513); `sem-resolucao`
+ *    for the other motivos, since a denegada número is consumed
+ *    (cstat-rejeicoes.md, "Denial").
+ *  - 217 (NF-e não consta na base) → `resolvida` (rejeitada: the número is
+ *    free) for `protocolo-ausente` and `lote-nao-localizado`;
+ *    `sem-resolucao` for `duplicidade` — 539 is facultative, so the número
+ *    may exist under ANOTHER chave and re-emitting would collide; `pendente`
+ *    for `aguardando-processamento` — the NF-e has not landed yet.
+ *  - every other rejection — 561/562/613 (MOC 7.0 p.84 J04–J06: the número
+ *    exists under another chave) included → `sem-resolucao`.
+ *  - servico-paralisado (108/109/113/114) → `indisponivel`.
+ *  - everything else, 656 included → `sem-resolucao` (on 656 the caller also
+ *    stops consulting for the rest of the run — cstat-rejeicoes.md §656).
+ */
+export function classificarConsSitDeRecuperacao(
+  cStat: string,
+  motivo: MotivoConsultaPorChave,
+): RecuperacaoConsSit {
+  switch (classifyCStat(cStat)) {
+    case 'autorizada':
+    case 'cancelada':
+    case 'inutilizada':
+      return 'resolvida';
+    case 'denegada':
+      return motivo === 'protocolo-ausente' ? 'resolvida' : 'sem-resolucao';
+    case 'rejeitada':
+      return cStat === CSTAT_NFE_NAO_CONSTA_NA_BASE ? naoConstaNaBase(motivo) : 'sem-resolucao';
     case 'servico-paralisado':
       return 'indisponivel';
     case 'lote-recebido':
@@ -168,6 +318,51 @@ export function classificarConsSitDeRecuperacao(cStat: string): RecuperacaoConsS
   }
 }
 
+/** A consSit 217 (NF-e não consta na base), read for `motivo` — see {@link classificarConsSitDeRecuperacao}. */
+function naoConstaNaBase(motivo: MotivoConsultaPorChave): RecuperacaoConsSit {
+  switch (motivo) {
+    case 'protocolo-ausente':
+    case 'lote-nao-localizado':
+      return 'resolvida';
+    case 'duplicidade':
+      return 'sem-resolucao';
+    case 'aguardando-processamento':
+      return 'pendente';
+  }
+}
+
+/**
+ * The cStat a terminal decided in a round of lote `loteCStat` carries: the
+ * round's own 103/104/105 (all in `STATUS_BLOQUEADORES`), and 103 for anything
+ * else — SEFAZ issued this receipt, so the número may be held, and a
+ * non-blocking cStat (106, 108, 656, a rejection…) would let the pedido be
+ * re-emitted over it.
+ */
+export function cStatBloqueanteDaRodada(loteCStat: string): string {
+  return loteCStat === CSTAT_LOTE_RECEBIDO ||
+    loteCStat === CSTAT_LOTE_PROCESSADO ||
+    loteCStat === CSTAT_LOTE_PENDENTE
+    ? loteCStat
+    : CSTAT_LOTE_RECEBIDO;
+}
+
+/**
+ * `markAsLost` with the BLOCKING cStat of the round
+ * ({@link cStatBloqueanteDaRodada}). When that differs from the patch's own
+ * cStat, xMotivo keeps the original as a `cStat <orig>: ` prefix, so the real
+ * cause stays visible. Byte-identical to the pre-#1654 105-cap and #513
+ * terminals, whose patch already carried the round's 105 / 104.
+ */
+export function terminalBloqueante(
+  patch: NFeStatePatch,
+  loteCStat: string,
+  motivo: string,
+): NFeStatePatch {
+  const cStat = cStatBloqueanteDaRodada(loteCStat);
+  const xMotivo = cStat !== patch.cStat ? `cStat ${patch.cStat}: ${patch.xMotivo}` : patch.xMotivo;
+  return markAsLost({ ...patch, cStat, xMotivo }, motivo);
+}
+
 /**
  * Per-run consSit circuit breaker, held by `reconcileByRecibo` across the docs
  * of one lote reconcile and threaded through this branch — and, in the
@@ -175,30 +370,30 @@ export function classificarConsSitDeRecuperacao(cStat: string): RecuperacaoConsS
  * at each type's own scope:
  *
  *  - `consumo-indevido` — a consSit answered 656 (or threw
- *    `NFeConsumoIndevidoError`): every remaining missing doc of the run goes
- *    terminal WITHOUT a call (cstat-rejeicoes.md §656, "Stop immediately";
- *    the same abort `verificar.ts` applies). Sweep scope: the whole FILIAL,
- *    since the 656 throttle is per CNPJ+IP.
+ *    `NFeConsumoIndevidoError`): every remaining doc of the run resolved by
+ *    chave goes terminal WITHOUT a call (cstat-rejeicoes.md §656, "Stop
+ *    immediately"; the same abort `verificar.ts` applies). Sweep scope: the
+ *    whole FILIAL, since the 656 throttle is per CNPJ+IP.
  *  - `indisponivel` — the service is down (a consSit answered
- *    108/109/113/114, or threw `NFeTransportError`): the remaining missing
- *    docs are counted without a call, so an outage costs one consSit per
- *    round, not one per chave. An XSD / XML failure does NOT trip it — it can
- *    be deterministic for one chave, and must not starve the others. Sweep
- *    scope: the filial's lotes at the SAME authorizer (`autorizadorDe`) — the
- *    home SEFAZ being down says nothing about SVC-AN / SVC-RS.
+ *    108/109/113/114, or threw `NFeTransportError`): the remaining docs are
+ *    counted without a call, so an outage costs one consSit per round, not one
+ *    per chave. An XSD / XML failure does NOT trip it — it can be
+ *    deterministic for one chave, and must not starve the others. Sweep scope:
+ *    the filial's lotes at the SAME authorizer (`autorizadorDe`) — the home
+ *    SEFAZ being down says nothing about SVC-AN / SVC-RS.
  */
 export type BloqueioConsSit =
   | { readonly tipo: 'consumo-indevido'; readonly chave: string; readonly xMotivo: string }
   | { readonly tipo: 'indisponivel'; readonly detalhe: string };
 
-/** One in-flight doc of a processed lote whose reply carries no `protNFe` for it. */
-export interface LoteSemProtocoloParams {
+/** One in-flight doc of a receipt round that resolves it by chave. */
+export interface ReconcilePorChaveParams {
   readonly fs: Firestore;
   /** The filial's runtime — the consSit is built from it via `sefazCallFor`. */
   readonly rt: NFeRuntime;
   readonly filialId: string;
   readonly tpEmis: TpEmis;
-  /** The receipt that answered 104 without our chave. */
+  /** The receipt of this round. */
   readonly nRec: string;
   /** That `consReciNFe` reply. */
   readonly ret: TRetConsReciNFe;
@@ -206,11 +401,13 @@ export interface LoteSemProtocoloParams {
   /** The doc as `reconcileByRecibo`'s in-flight query read it. */
   readonly data: NotaFiscalEletronica;
   readonly nfeRef: FirebaseFirestore.DocumentReference;
+  /** Why this round resolves the doc by chave ({@link decidirRodadaDoRecibo}). */
+  readonly motivo: MotivoConsultaPorChave;
   /** The run's breaker so far — `null` until a consSit of this run trips it. */
   readonly bloqueio: BloqueioConsSit | null;
 }
 
-export interface LoteSemProtocoloResult {
+export interface ReconcilePorChaveResult {
   /**
    * The doc's estado after this round: what was written, or — when the guard
    * refused the write because the doc changed concurrently — that live estado.
@@ -226,14 +423,47 @@ function descreverConsSit(outcome: SefazOutcome): string {
 }
 
 /**
- * Resolve one doc of a processed lote (104) whose reply carries no `protNFe`
- * for its chave (#513) — the branch `reconcileByRecibo` takes when
- * {@link isLoteProcessadoSemProtocolo} holds.
+ * What this round knows about the chave, for the counted write's xMotivo and
+ * every terminal motivo. The 104-without-our-protNFe text is the one #513
+ * wrote, byte for byte. Our own protNFe (a duplicidade, a 635, a lote-state
+ * code) is quoted with its cStat and xMotivo — the doc keeps the RECEIPT's
+ * cStat, so this is where the operator sees what the protocol said.
+ */
+function descreverRodada(
+  ret: TRetConsReciNFe,
+  nRec: string,
+  nosso: ProtNFeDoLote['infProt'] | null,
+): string {
+  if (nosso != null) {
+    return `protNFe desta chave no recibo ${nRec}: cStat ${nosso.cStat} — ${nosso.xMotivo}`;
+  }
+  switch (ret.cStat) {
+    case CSTAT_LOTE_PROCESSADO:
+      return `protNFe desta chave ausente no lote processado nRec ${nRec}`;
+    case CSTAT_LOTE_NAO_LOCALIZADO:
+      return `lote não localizado para o recibo ${nRec}`;
+    default:
+      return `protNFe desta chave ausente no recibo ${nRec}`;
+  }
+}
+
+/**
+ * Resolve one doc of a receipt round by chave — the branch `reconcileByRecibo`
+ * takes when {@link decidirRodadaDoRecibo} says `por-chave` (#513, #1654).
  *
- * **Every sighting counts.** `tentativa = (retries ?? 0) + 1`, on the same
- * per-doc counter the 105 path advances, so the chain is capped by
- * `MAX_RECONCILE_ATTEMPTS` whatever the lote keeps answering. Past the cap
+ * **Its base is the LOTE outcome** (`outcomeFromRetConsRec`): the doc keeps
+ * the receipt's cStat and `nRec`, so an `[nRec:X]` marker in our protNFe's
+ * duplicidade xMotivo never re-keys the doc onto another receipt. For a 104
+ * without our protNFe that is exactly what #513 wrote.
+ *
+ * **Every round counts.** `tentativa = (retries ?? 0) + 1`, on the same
+ * per-doc counter every other in-flight round advances, so the chain is capped
+ * by `MAX_RECONCILE_ATTEMPTS` whatever the lote keeps answering. Past the cap
  * (`tentativa > MAX`) the doc goes terminal with NO SEFAZ call.
+ *
+ * **A 106 on the doc's first round is only counted**, with no consSit: at
+ * `tMed` a receipt may simply not be indexed yet, and a consSit then would
+ * answer 217 for an NF-e that is about to land.
  *
  * **The count is durable before any further SEFAZ call.** The counted patch
  * (`aguardandoResposta`, `retries: tentativa`, "(consulta k/N)" in xMotivo) is
@@ -241,22 +471,23 @@ function descreverConsSit(outcome: SefazOutcome): string {
  * the task uses — so a consSit that throws, or a function that times out,
  * still leaves the attempt recorded.
  *
- * **Then ONE `consSitNFe` for the chave** (on the FIRST sighting: a processed
- * lote's result is complete, so re-reading the receipt cannot help), classified
- * by {@link classificarConsSitDeRecuperacao} on `outcomeFromRetConsSit(retSit).cStat`:
+ * **Then ONE `consSitNFe` for the chave**, classified by
+ * {@link classificarConsSitDeRecuperacao} for `motivo`:
  *  - `resolvida` → SEFAZ's own estado, with the digest-safe `<nfeProc>` stitch
  *    when it is an authorization;
- *  - `indisponivel` → stays counted (terminal once the count reaches the cap);
- *  - `sem-resolucao` → terminal `error` KEEPING cStat 104 (a
- *    `STATUS_BLOQUEADORES` code, so the pedido cannot be re-emitted over a
- *    número SEFAZ may hold — MOC 7.0 p.84 J04–J06), with the consSit
+ *  - `pendente` → stays counted, no breaker (terminal once the count reaches
+ *    the cap: "ainda aguardando processamento");
+ *  - `indisponivel` → stays counted and trips the outage breaker (terminal
+ *    once the count reaches the cap);
+ *  - `sem-resolucao` → terminal `error` with the round's BLOCKING cStat
+ *    ({@link terminalBloqueante}: 104 for a 104, else 103), with the consSit
  *    cStat/xMotivo and "verificar manualmente" in the motivo.
  * A consSit whose `protNFe` names ANOTHER chave is terminal too — never
  * applied as ours.
  *
  * **The per-run breaker** ({@link BloqueioConsSit}) is read before and
- * returned after: after a 656 (answered or thrown) the remaining missing docs
- * go terminal with no call (cstat-rejeicoes.md lines 98-121: stop immediately;
+ * returned after: after a 656 (answered or thrown) the remaining docs go
+ * terminal with no call (cstat-rejeicoes.md lines 98-121: stop immediately;
  * gargalos-e-problemas.md lines 63-91), and after an unavailable service the
  * remaining ones are counted with no call — an outage costs one consSit per
  * round, not one per chave, and never turns into the "transient → retry → 656"
@@ -281,20 +512,23 @@ function descreverConsSit(outcome: SefazOutcome): string {
  * failures (this doc counted; no breaker). Anything else (a cert or endpoint
  * error, a bug) is rethrown; the count is already persisted.
  */
-export async function reconcileLoteSemProtocolo(
-  params: LoteSemProtocoloParams,
-): Promise<LoteSemProtocoloResult> {
-  const { fs, rt, filialId, tpEmis, nRec, ret, chave, data, nfeRef } = params;
+export async function reconcilePorChave(
+  params: ReconcilePorChaveParams,
+): Promise<ReconcilePorChaveResult> {
+  const { fs, rt, filialId, tpEmis, nRec, ret, chave, data, nfeRef, motivo } = params;
   let bloqueio = params.bloqueio;
 
-  // Today's 104 patch for this doc: lote cStat '104' + the lote xMotivo.
+  // The LOTE outcome for this doc: the receipt's cStat + xMotivo, never our
+  // protNFe's — so its [nRec:] marker cannot re-key the doc.
   const base = applyOutcome(
     { estado: data.estado, retries: data.retries },
-    outcomeFromConsReci(ret, chave),
+    outcomeFromRetConsRec(ret),
   );
   const tentativa = (data.retries ?? 0) + 1;
   const noLimite = tentativa >= MAX_RECONCILE_ATTEMPTS;
-  const ausente = `protNFe desta chave ausente no lote processado nRec ${nRec}`;
+  // Strict equality: a near-miss chave is never ours.
+  const nosso = ret.protNFe?.find((p) => p.infProt.chNFe === chave)?.infProt ?? null;
+  const ausente = descreverRodada(ret, nRec, nosso);
 
   // Rule 7: `data` was read by the in-flight query BEFORE the consReciNFe await
   // (and the earlier docs' consSit awaits), so every write re-derives its
@@ -330,15 +564,35 @@ export async function reconcileLoteSemProtocolo(
     return { written: false, estado: r.estadoAtual };
   }
 
-  /** Terminal `error` keeping cStat 104 (blocking) — the reason goes in xMotivo. */
-  async function terminal(reason: string, guarda: PersistGuard): Promise<LoteSemProtocoloResult> {
-    const { estado } = await gravar(markAsLost({ ...base, retries: tentativa }, reason), guarda);
+  /** Terminal `error` with the round's BLOCKING cStat — the reason goes in xMotivo. */
+  async function terminal(reason: string, guarda: PersistGuard): Promise<ReconcilePorChaveResult> {
+    const { estado } = await gravar(
+      terminalBloqueante({ ...base, retries: tentativa }, ret.cStat, reason),
+      guarda,
+    );
     return { estado, bloqueio };
   }
 
-  // Hard stop: the cap was already reached (a previous at-cap consSit threw) —
-  // no further SEFAZ call.
+  // Hard stop: the cap was already reached (a previous at-cap round was
+  // interrupted after its count) — no further SEFAZ call.
   if (tentativa > MAX_RECONCILE_ATTEMPTS) {
+    return terminal(
+      `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas — verificar manualmente`,
+      guardaContagem,
+    );
+  }
+
+  const contada: NFeStatePatch = {
+    ...base,
+    estado: ESTADO_NFE.aguardandoResposta,
+    retries: tentativa,
+    xMotivo: `${base.xMotivo} | ${ausente} (consulta ${tentativa}/${MAX_RECONCILE_ATTEMPTS})`,
+  };
+
+  // A 106 on the doc's first round may be a receipt not indexed yet: count
+  // it, and consult by chave only from the next round on.
+  if (motivo === 'lote-nao-localizado' && tentativa === 1) {
+    if (!noLimite) return { estado: (await gravar(contada, guardaContagem)).estado, bloqueio };
     return terminal(
       `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas — verificar manualmente`,
       guardaContagem,
@@ -353,13 +607,6 @@ export async function reconcileLoteSemProtocolo(
       guardaContagem,
     );
   }
-
-  const contada: NFeStatePatch = {
-    ...base,
-    estado: ESTADO_NFE.aguardandoResposta,
-    retries: tentativa,
-    xMotivo: `${base.xMotivo} | ${ausente} (consulta ${tentativa}/${MAX_RECONCILE_ATTEMPTS})`,
-  };
 
   // The service was unavailable earlier in this run: count, don't call.
   if (bloqueio?.tipo === 'indisponivel') {
@@ -399,8 +646,8 @@ export async function reconcileLoteSemProtocolo(
     if (e instanceof NFeTransportError) {
       // name + message only — `NFeTransportError.responseBody` stays server-side.
       safeLog('error', `[nfe/reconcile] chave ${chave}: consSitNFe falhou`, safeErrorShape(e));
-      // The SERVICE is unreachable: the remaining missing docs are counted
-      // without a call.
+      // The SERVICE is unreachable: the remaining docs are counted without a
+      // call.
       bloqueio = { tipo: 'indisponivel', detalhe: e.name };
       if (!noLimite) return { estado: contada.estado, bloqueio };
       return terminal(
@@ -414,7 +661,7 @@ export async function reconcileLoteSemProtocolo(
       // A request or reply that fails XSD / XML parsing can be deterministic
       // for THIS chave, so it says nothing about the service: this doc is
       // counted (terminal at the cap), the breaker is left as it was, and the
-      // other missing docs of the run are still consulted.
+      // other docs of the run are still consulted.
       if (!noLimite) return { estado: contada.estado, bloqueio };
       return terminal(
         `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave ` +
@@ -432,14 +679,14 @@ export async function reconcileLoteSemProtocolo(
   const outcome = outcomeFromRetConsSit(retSit);
   const chNFeDoProt = retSit.protNFe?.infProt.chNFe ?? null;
   const outraChave = chNFeDoProt != null && chNFeDoProt !== chave;
-  const recuperacao = classificarConsSitDeRecuperacao(outcome.cStat);
+  const recuperacao = classificarConsSitDeRecuperacao(outcome.cStat, motivo);
   console.warn(
-    `[nfe/reconcile] chave ${chave}: sem protNFe no lote processado nRec ${nRec}; ` +
+    `[nfe/reconcile] chave ${chave}: ${motivo} no recibo ${nRec}; ` +
       `consSitNFe cStat ${outcome.cStat} → ${outraChave ? 'outra-chave' : recuperacao}`,
   );
 
-  // Strict equality, same discipline as the lote predicate: a protocol for
-  // another chave is never applied as ours.
+  // Strict equality, same discipline as the receipt: a protocol for another
+  // chave is never applied as ours.
   if (outraChave) {
     return terminal(
       `${ausente}; consulta por chave devolveu protNFe de outra chave (${chNFeDoProt}) — ` +
@@ -465,6 +712,16 @@ export async function reconcileLoteSemProtocolo(
         proc != null ? swapAnchorForProc(proc) : undefined,
       );
       return { estado, bloqueio };
+    }
+    case 'pendente': {
+      // The NF-e is still queued at SEFAZ: nothing to apply and nothing wrong
+      // with the service — the counted write stands, no breaker.
+      if (!noLimite) return { estado: contada.estado, bloqueio };
+      return terminal(
+        `${ausente} após ${MAX_RECONCILE_ATTEMPTS} consultas; consulta por chave: ` +
+          `${descreverConsSit(outcome)} — ainda aguardando processamento — verificar manualmente`,
+        guardaRodada,
+      );
     }
     case 'indisponivel': {
       bloqueio = { tipo: 'indisponivel', detalhe: `consSit cStat ${outcome.cStat}` };

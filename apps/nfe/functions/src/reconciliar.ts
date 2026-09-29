@@ -18,8 +18,8 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * `kind` and **executed in-process** (no HTTP hop, no OIDC):
  *   - `consulta-lote` (#77) — consult an async lote by recibo (`runReconcile`)
  *     and re-enqueue the next consult while any doc of the lote is still
- *     pending (105, a 104 not yet resolved for its chave, or a lote-level
- *     non-answer) — 105/104 rounds capped per doc.
+ *     pending — every in-flight round counted and capped per doc (#1654), a
+ *     serviço paralisado receipt re-enqueued no sooner than one hour.
  *   - `cce-vinculo` (#81) — re-check a pending cStat-136 CC-e
  *     (`runReconcileCce`) and re-enqueue the next re-check while still 136.
  *
