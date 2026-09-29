@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { describe, it, expect, vi } from 'vitest';
+import { ESTADO_NFE, nfeSchema } from '@delfrance/schemas';
 import {
   classifyRecovery,
   DEFAULT_STUCK_TIMEOUT_MS,
@@ -365,70 +365,168 @@ describe('classifyRecovery', () => {
 // isStuckEnviando
 // ---------------------------------------------------------------------------
 
+/**
+ * #1653 — the sweep hands `isStuckEnviando` the RAW stored `ultima_modificacao`
+ * (it reads `doc.data()` without the schema), and what is stored is a ms
+ * NUMBER: `nfeSchema` writes one, and so did the legacy Flutter app. The old
+ * `Date.parse` turned that number into NaN and counted NaN as stuck, so a doc
+ * written one second earlier was already due. The ISO-only cases that stood
+ * here never saw it — so every readable shape is now pinned on BOTH sides of
+ * the timeout.
+ */
 describe('isStuckEnviando', () => {
   const NOW = new Date('2026-05-20T12:00:00Z');
+  const MINUTE_MS = 60_000;
+  const EM_VOO = [
+    ['enviando', ESTADO_NFE.enviando],
+    ['aguardandoResposta', ESTADO_NFE.aguardandoResposta],
+  ] as const;
 
-  it('returns false for terminal estados (aprovada / rejeitada / cancelada)', () => {
-    for (const estado of [
-      ESTADO_NFE.aprovada,
-      ESTADO_NFE.rejeitada,
-      ESTADO_NFE.cancelada,
-      ESTADO_NFE.gerado,
-    ]) {
-      expect(isStuckEnviando({ estado, ultima_modificacao: '2020-01-01T00:00:00Z' }, NOW)).toBe(
-        false,
-      );
-    }
+  /** The same instant, `ageMs` before NOW, in every shape the reader accepts. */
+  function stampsAged(ageMs: number): Array<[string, unknown]> {
+    const t = NOW.getTime() - ageMs;
+    return [
+      ['a ms number (nfeSchema, the Flutter corpus)', t],
+      ['a µs number', t * 1000],
+      ['an ISO string (pre-#220 docs)', new Date(t).toISOString()],
+      ['a Date', new Date(t)],
+    ];
+  }
+
+  describe.each(EM_VOO)('in flight (%s)', (_nome, estado) => {
+    it.each(stampsAged(MINUTE_MS))('1 min old, as %s → not stuck', (_shape, stamp) => {
+      expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(false);
+    });
+
+    it.each(stampsAged(10 * MINUTE_MS))('10 min old, as %s → stuck', (_shape, stamp) => {
+      expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(true);
+    });
+
+    it.each(stampsAged(DEFAULT_STUCK_TIMEOUT_MS))(
+      'exactly the timeout old, as %s → stuck (the bound is inclusive)',
+      (_shape, stamp) => {
+        expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(true);
+      },
+    );
+
+    it.each(stampsAged(DEFAULT_STUCK_TIMEOUT_MS - 1))(
+      '1 ms short of the timeout, as %s → not stuck',
+      (_shape, stamp) => {
+        expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(false);
+      },
+    );
+
+    it.each(stampsAged(2 * MINUTE_MS))(
+      '2 min old, as %s → not stuck by default, stuck under a 1-min timeoutMs',
+      (_shape, stamp) => {
+        expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(false);
+        expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW, 60_000)).toBe(true);
+      },
+    );
   });
 
-  it('returns false when enviando is recent (within timeout)', () => {
-    const recent = new Date(NOW.getTime() - 60_000).toISOString(); // 1 min ago
-    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: recent }, NOW)).toBe(
+  it('reads the value nfeSchema really stores — a ms number one minute old is not stuck', () => {
+    const stored = nfeSchema.shape.ultima_modificacao.parse(
+      new Date(NOW.getTime() - MINUTE_MS).toISOString(),
+    );
+    expect(typeof stored).toBe('number');
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: stored }, NOW)).toBe(
       false,
     );
   });
 
-  it('returns true when enviando is older than the default timeout', () => {
-    const old = new Date(NOW.getTime() - 10 * 60_000).toISOString(); // 10 min ago
-    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: old }, NOW)).toBe(
+  describe('a MISSING stamp counts as stuck — better to re-query than to ignore', () => {
+    it('the field is absent', () => {
+      expect(isStuckEnviando({ estado: ESTADO_NFE.enviando }, NOW)).toBe(true);
+    });
+
+    it.each<[string, unknown]>([
+      ['null', null],
+      ['undefined', undefined],
+    ])('the field is %s', (_label, stamp) => {
+      expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: stamp }, NOW)).toBe(
+        true,
+      );
+    });
+  });
+
+  // Deliberate, not an accident of NaN: ignoring such a doc could strand an
+  // anti-loss anchor forever, and the consult's persist re-stamps a ms number.
+  it.each<[string, unknown]>([
+    ['a non-date string', 'not-a-date'],
+    ['an empty string', ''],
+    ['a number in the ms/µs gap', 5e13],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a Firestore-Timestamp-like object', { seconds: 1716206340, nanoseconds: 0 }],
+    ['a boolean', true],
+  ])('a present but UNREADABLE stamp (%s) counts as stuck', (_label, stamp) => {
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: stamp }, NOW)).toBe(
       true,
     );
   });
 
-  it('returns true when aguardandoResposta is older than the timeout', () => {
-    const old = new Date(NOW.getTime() - 10 * 60_000).toISOString();
-    expect(
-      isStuckEnviando({ estado: ESTADO_NFE.aguardandoResposta, ultima_modificacao: old }, NOW),
-    ).toBe(true);
-  });
-
-  it('treats missing ultima_modificacao as stuck (defensive)', () => {
-    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: null }, NOW)).toBe(
+  it.each<[string, number]>([
+    ['0', 0],
+    ['a negative number', -1],
+  ])('the epoch or before it (%s) reads as a very old stamp → stuck', (_label, stamp) => {
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: stamp }, NOW)).toBe(
       true,
     );
   });
 
-  it('treats unparseable timestamps as stuck', () => {
-    expect(
-      isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: 'not-a-date' }, NOW),
-    ).toBe(true);
+  // apps/nfe runs TZ=America/Sao_Paulo, so an offset-less string read in the
+  // process timezone lands three hours off. Pinned under that zone, with one
+  // stamp on each side of the timeout: read as local time, the 10-min-old one
+  // would sit in the FUTURE and never be stuck.
+  it('an ISO string without an offset is read as UTC, never in the process timezone', () => {
+    const tzAnterior = process.env.TZ;
+    const zonaAnterior = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    vi.stubEnv('TZ', 'America/Sao_Paulo');
+    try {
+      expect(
+        isStuckEnviando(
+          { estado: ESTADO_NFE.enviando, ultima_modificacao: '2026-05-20T11:59:00' },
+          NOW,
+        ),
+      ).toBe(false);
+      expect(
+        isStuckEnviando(
+          { estado: ESTADO_NFE.enviando, ultima_modificacao: '2026-05-20T11:50:00' },
+          NOW,
+        ),
+      ).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      // Node re-reads the zone only when TZ is SET, so the `delete` that
+      // unstubAllEnvs does for a TZ that started unset (the Linux CI runner)
+      // would leave the rest of this file in America/Sao_Paulo. Re-apply the
+      // zone that was in force, then drop the variable again.
+      if (tzAnterior === undefined) {
+        process.env.TZ = zonaAnterior;
+        delete process.env.TZ;
+      }
+    }
   });
 
-  it('honors a custom timeoutMs', () => {
-    const twoMinutesAgo = new Date(NOW.getTime() - 2 * 60_000).toISOString();
-    // 5min default — not stuck yet
-    expect(
-      isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: twoMinutesAgo }, NOW),
-    ).toBe(false);
-    // 1min custom — stuck
-    expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: twoMinutesAgo },
-        NOW,
-        60_000,
-      ),
-    ).toBe(true);
-  });
+  it.each([
+    ['aprovada', ESTADO_NFE.aprovada],
+    ['rejeitada', ESTADO_NFE.rejeitada],
+    ['cancelada', ESTADO_NFE.cancelada],
+    ['gerado', ESTADO_NFE.gerado],
+  ] as const)(
+    'an estado that is not in flight (%s) is never stuck, whatever its stamp',
+    (_nome, estado) => {
+      for (const stamp of [
+        NOW.getTime() - MINUTE_MS,
+        NOW.getTime() - 10 * MINUTE_MS,
+        'not-a-date',
+        null,
+      ]) {
+        expect(isStuckEnviando({ estado, ultima_modificacao: stamp }, NOW)).toBe(false);
+      }
+    },
+  );
 
   it('exports a sensible default timeout (5 minutes)', () => {
     expect(DEFAULT_STUCK_TIMEOUT_MS).toBe(5 * 60_000);

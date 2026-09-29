@@ -39,6 +39,7 @@ import {
   type ContatoWhatsapp,
 } from './contatos';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
+import { WhatsappMediaAnchorMissingError } from './mediaAnchor';
 
 type ValuePayload = ReturnType<typeof valuePayloadSchema.parse>;
 
@@ -89,6 +90,7 @@ export async function guardarContatoPendente(
   const media =
     message.image ?? message.video ?? message.audio ?? message.document ?? message.sticker;
   const arquivoRef = media ? await getAndUploadMedia(await mediaContext(), media.id) : null;
+  const arquivoId = arquivoRef ? idFromRef(arquivoRef) : null;
   const ref = whatsappVinculoCollection.docRef(db, {}, id);
   const messageRef = whatsappVinculoMensagemCollection.docRef(db, { vinculoId: id }, messageId);
   await db.runTransaction(async (tx) => {
@@ -96,6 +98,9 @@ export async function guardarContatoPendente(
     const oldMessage = await tx.get(messageRef);
     const conta = await tx.get(integracaoCollection.docRef(db, {}, contato.integracaoId));
     if (oldMessage.exists) return;
+    if (arquivoId && !(await tx.get(arquivoCollection.docRef(db, {}, arquivoId))).exists) {
+      throw new WhatsappMediaAnchorMissingError();
+    }
     const data = old.exists ? whatsappVinculoCollection.parseRead(old.data()) : null;
     const newest = !data || contato.timestamp >= data.ultimaMensagemEm;
     const currentIdentity = newest ? contato : data;
@@ -140,7 +145,7 @@ export async function guardarContatoPendente(
         sourceNotificationId,
         timestamp: contato.timestamp,
         conteudo: message.text?.body ?? media?.caption ?? message.system?.body ?? null,
-        arquivoId: arquivoRef ? idFromRef(arquivoRef) : null,
+        arquivoId,
         anexoTipo: media ? message.type : null,
         processada: false,
       }),

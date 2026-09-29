@@ -15,7 +15,6 @@
 import { type ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FirebaseError } from 'firebase/app';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -62,7 +61,7 @@ import {
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { ehRefDeCliente } from '@/lib/data/readClienteByRef';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
 import type { IntegracaoLookup } from './integracaoLookup';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -71,6 +70,7 @@ import type { DestinatarioNFe } from '@/lib/nfe/destinatarioNFe';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 import { DanfeMenu } from '@/components/DanfeMenu';
+import { ANONIMO_LABEL } from './ClienteColumnFilter';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
 import {
@@ -355,23 +355,14 @@ function OrientacaoRejeicaoCliente({
 }) {
   const db = getFirebaseFirestore();
   const rowReads = usePedidoRowReads();
-  const ref = useMemo(() => {
-    if (clientePedidoOuterRef == null) return null;
-    let deref: DocumentReference | null;
-    try {
-      deref = dereferenceOuterRef(db, clientePedidoOuterRef);
-    } catch (err) {
-      // A legacy opaque `{ path }` ref with an odd segment count makes `doc()`
-      // throw synchronously — here, during render. Degrade exactly like the
-      // loader (`contextoRejeicao.ts`): "o cliente deste pedido", no link.
-      if (err instanceof FirebaseError) return null;
-      throw err;
-    }
-    // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens — the
-    // same id under another collection is a different document. Anything else
-    // is "o cliente deste pedido" with no link, and reads nothing.
-    return deref != null && ehRefDeCliente(deref) ? deref : null;
-  }, [db, clientePedidoOuterRef]) as DocumentReference<ClienteDoc> | null;
+  // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens — the
+  // same id under another collection is a different document. Anything else
+  // (absent, malformed, foreign) is "o cliente deste pedido" with no link, and
+  // reads nothing. Total: the dereference never throws in render (#1656).
+  const ref = useMemo(
+    () => refDeClienteOuNull(db, clientePedidoOuterRef),
+    [db, clientePedidoOuterRef],
+  ) as DocumentReference<ClienteDoc> | null;
   const path = ref?.path ?? null;
 
   const { data, isError } = useQuery<ClienteDoc | null>({
@@ -435,8 +426,11 @@ interface ClienteDoc {
 export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const db = getFirebaseFirestore();
   const rowReads = usePedidoRowReads();
+  // ⚠️ Through the cliente gate, not the bare dereference: a ref into ANOTHER
+  // collection would link `/clientes/{id}` to a different cadastro and read a
+  // foreign doc under the shared key (#1656). Null here = no read, no link.
   const ref = useMemo(
-    () => dereferenceOuterRef(db, pedido.clientePedidoOuterRef),
+    () => refDeClienteOuNull(db, pedido.clientePedidoOuterRef),
     [db, pedido.clientePedidoOuterRef],
   ) as DocumentReference<ClienteDoc> | null;
   const path = ref?.path ?? null;
@@ -457,7 +451,21 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
     staleTime: 5 * 60 * 1000,
   });
 
-  if (!ref) return <Text c="dimmed">Anônimo</Text>;
+  // "Anônimo" is exactly what the column filter's isNull finds
+  // (`ClienteColumnFilter`), so it is reserved for a pedido with NO ref.
+  if (pedido.clientePedidoOuterRef == null) return <Text c="dimmed">{ANONIMO_LABEL}</Text>;
+  // A ref is present but names no cliente — foreign, or it does not
+  // dereference. Said so, the way IntegracaoCell flags a `desconhecida` id.
+  if (!ref) {
+    return (
+      <Tooltip
+        label="A referência de cliente deste pedido não aponta para um cadastro de cliente."
+        withinPortal
+      >
+        <Text c="dimmed">Cliente não reconhecido</Text>
+      </Tooltip>
+    );
+  }
   if (isLoading) return <Skeleton height={20} width={120} />;
   const nome = data?.nome ?? 'Anônimo';
   const cpfCnpj = data?.cpf_cnpj ? formatCpfCnpj(data.cpf_cnpj) : null;

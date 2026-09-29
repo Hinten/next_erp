@@ -207,7 +207,12 @@ describe('aplicarFilhoShopee — o documento do filho', () => {
     const pExistente = plano([modelo({ price_info: PRECO_BRL })], undefined, {
       filhos: [
         filho(modelo({ price_info: PRECO_BRL }), {
-          existente: { id: filhoId, raw: { nome: 'Camiseta Básica Azul', paiId: PAI } },
+          // Como o preparo o lê: com o carimbo do snapshot, que o patch afirma.
+          existente: {
+            id: filhoId,
+            raw: { nome: 'Camiseta Básica Azul', paiId: PAI },
+            updateTime: db.store[`produtos/${filhoId}`]?.updateTime,
+          },
         }),
       ],
     });

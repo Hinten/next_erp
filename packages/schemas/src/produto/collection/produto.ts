@@ -199,6 +199,10 @@ export const produtoSchema = z.object({
   // apps/functions). Default true = every parent price edit cascades to the
   // children, matching the legacy Flutter behavior. false = the user
   // maintains each variation's prices manually through the product editor.
+  // Every READER of a child's price — the channel senders and the pedido line
+  // lookup — goes through `precoDoFilhoNaTabela` (pureLogic/precoCalculo.ts):
+  // propagating ⇒ the parent's entry, never the child's; otherwise the child's
+  // own, never the parent's.
   propagatePriceToChildren: z.boolean().default(true),
 
   // Variations.

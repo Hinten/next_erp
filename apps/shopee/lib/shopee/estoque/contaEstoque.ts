@@ -318,6 +318,36 @@ function clienteShopee(
 }
 
 /**
+ * **The shop's `get_shop_info`, through the ONE shop-info cache** — the read
+ * {@link avaliarContaParaEstoque} gates on, exported so step 13's price verdict
+ * reads the SAME entry instead of paying a second `get_shop_info` for the same
+ * conta inside one cache window. Register 140: the cache's metric name still
+ * says `stock` — one cache, named after its first reader.
+ *
+ * Same key (`[integracaoId]`, never the shop id — see {@link cacheDaLoja}),
+ * same TTL, same clock: `deps.nowMs` is written to the caches' instant on entry,
+ * exactly as the stock gate does, so whichever of the two callers ran last is
+ * the one the expiry reads.
+ *
+ * The client is built through `deps.clientFor` (default: the conta's context)
+ * ONLY on a miss — a warm entry costs neither a context load nor a token.
+ *
+ * ⚠️ Nothing is caught: a provider failure PROPAGATES and is never cached, so
+ * the next caller simply reads again. Each caller maps it onto its own
+ * vocabulary.
+ */
+export function lerInfoDaLojaShopee(
+  db: Firestore,
+  integracaoId: string,
+  deps: DepsDeConta,
+): Promise<ShopeeShopInfo> {
+  instanteMs = deps.nowMs;
+  return cacheDaLoja.get([integracaoId], async () =>
+    (await clienteShopee(db, integracaoId, deps)).getShopInfo(),
+  );
+}
+
+/**
  * The verdict for one conta, this tick.
  *
  * `{ ok: true }` means "ask Shopee about this conta's listings", never "Shopee
@@ -348,9 +378,12 @@ export async function avaliarContaParaEstoque(
     return clientePendente;
   };
 
-  const loja = await cacheDaLoja.get([conta.integracaoId], async () =>
-    (await cliente()).getShopInfo(),
-  );
+  // Through the exported reader, with the evaluation's OWN lazy client as its
+  // seam — so a cold tick still builds exactly one client for all three reads.
+  const loja = await lerInfoDaLojaShopee(db, conta.integracaoId, {
+    nowMs: deps.nowMs,
+    clientFor: () => cliente(),
+  });
 
   // BANNED and FROZEN are one verdict: neither is covered by an `update_stock`
   // error code, both mean the shop cannot sell, and only Seller Centre lifts

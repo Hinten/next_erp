@@ -94,8 +94,10 @@ export function buildImpostoXml(
   }
 
   // XSD xs:choice — every item carries either <ICMS> or <ISSQN>, not
-  // both. Mirror the Flutter dispatcher: ISSQN wins when set, otherwise
-  // require an ICMS config.
+  // both: ISSQN wins when set, otherwise require an ICMS config. The legacy
+  // Flutter app never emitted ISSQN (its `_getISSQN` is commented out in
+  // pedido_nfe_base.dart), and `apps/nfe` refuses an ISSQN item before it
+  // calls this builder, since it emits no <ISSQNtot> (#1656).
   const pis = buildPIS(imposto.configuracaoPIS, item);
   const cofins = buildCOFINS(imposto.configuracaoCOFINS, item);
   const impostoValue: TNFe_infNFe_det_imposto =
