@@ -92,6 +92,7 @@
  *   - 5xx / network / Firestore / anything else → RETHROW (transient).
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import { z } from 'zod';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
@@ -457,7 +458,7 @@ function registrarReconciliacao(
   const enviadas = payload.variations?.length ?? 0;
   const preservadas = reconciliado.variations.length - (enviadas - reconciliado.fantasmas.length);
   if (preservadas > 0) {
-    console.info('[mercado-livre] stock-send: variations completado com o anúncio vivo', {
+    logger.info('[mercado-livre] stock-send: variations completado com o anúncio vivo', {
       integracaoId: payload.integracaoId,
       itemId: payload.itemId,
       sweepId: payload.sweepId,
@@ -729,7 +730,7 @@ export async function processStockSendTask(
       }
       payload = refreshed.payload;
     }
-    console.info('[mercado-livre] stock-send: fonte da quantidade resolvida', {
+    logger.info('[mercado-livre] stock-send: fonte da quantidade resolvida', {
       integracaoId: payload.integracaoId,
       produtoId: payload.produtoId,
       itemId: payload.itemId,
@@ -927,7 +928,7 @@ export async function processStockSendTask(
 
     // `ageMs` intentionally keeps describing the original payload even when a
     // delayed attempt refreshed its quantities immediately before this send.
-    console.info('[mercado-livre] stock-send: enviado', {
+    logger.info('[mercado-livre] stock-send: enviado', {
       integracaoId: payload.integracaoId,
       itemId: payload.itemId,
       sweepId: payload.sweepId,
@@ -1164,7 +1165,7 @@ async function aplicarErroDeAlvo(
 ): Promise<StockSendResult> {
   if (alvo.erro === null) throw new Error('aplicarErroDeAlvo chamado sem erro');
   if (alvo.erro === 'full') {
-    console.info('[mercado-livre] stock-send: anúncio Fulfillment — estoque gerido pelo ML', {
+    logger.info('[mercado-livre] stock-send: anúncio Fulfillment — estoque gerido pelo ML', {
       integracaoId: payload.integracaoId,
       itemId: payload.itemId,
       userProductId,
@@ -1344,7 +1345,7 @@ async function enviarEstoqueUserProduct(
     });
   }
 
-  console.info('[mercado-livre] stock-send: enviado (multiorigem)', {
+  logger.info('[mercado-livre] stock-send: enviado (multiorigem)', {
     integracaoId: payload.integracaoId,
     itemId: payload.itemId,
     userProductId,

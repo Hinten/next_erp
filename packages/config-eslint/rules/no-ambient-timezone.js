@@ -43,11 +43,12 @@
 //
 // Warn, not error: it shipped over ONE pre-existing site — `apps/nfe`'s
 // certificado route rendering a cert expiry with `toLocaleDateString('pt-BR')`
-// and no zone. #1680 edited that file and resolved it with an explicit
-// `America/Sao_Paulo` (the operator's business zone, which is also the zone that
-// container already ran in, so the rendered date did not change). The
-// population is now zero, which by the repo's own bar means this rule can be
-// promoted to `error` — a separate, deliberate change.
+// and no zone. It now passes an explicit `America/Sao_Paulo` (the operator's
+// business zone, which is also the zone that container already ran in, so the
+// rendered date did not change) — fixed both by #1680 and by the warning sweep
+// that followed the lint-staged gate fix (#1709). The population is now zero,
+// which by the repo's own bar means this rule can be promoted to `error` — a
+// separate, deliberate change.
 //
 // (An earlier draft counted 6 sites, but 5 of them were `devolucao.ts` under the
 // too-broad `/packages/data/` scope — browser code, and therefore exempt by this

@@ -24,7 +24,13 @@ const {
   monitorFieldRef,
   monitorGenRef,
   widenState,
+  useSnapshotSpy,
 } = vi.hoisted(() => ({
+  // Records the QUERY each render hands `useSnapshot` (the stub below still
+  // answers with `snapState` whatever it is given). The classic listener is
+  // open exactly while this argument is non-null, so a test can prove a
+  // listener was closed rather than merely that the rows look right.
+  useSnapshotSpy: vi.fn(),
   snapState: {
     current: {
       data: [
@@ -103,7 +109,13 @@ vi.mock('next/navigation', () => ({
 vi.mock('@delfrance/data/hooks', async () => {
   const actual =
     await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
-  return { ...actual, useSnapshot: () => snapState.current };
+  return {
+    ...actual,
+    useSnapshot: (query: unknown) => {
+      useSnapshotSpy(query);
+      return snapState.current;
+    },
+  };
 });
 vi.mock('@delfrance/data/hooks/usePipelineSnapshot', () => ({
   usePipelineSnapshot: (p: { __widen?: boolean } | null) =>
@@ -2801,6 +2813,78 @@ describe('TableView', () => {
         expect(buildQuerySpy).not.toHaveBeenCalled();
         pipelineSupportedRef.current = true;
       });
+
+      // ⚠️ The case above starts with the term already in the URL, so the
+      // restriction is on from the FIRST render and the classic query is never
+      // built at all. These two start unrestricted and TYPE the term: the
+      // restriction switches on after `fallbackQuery` was already memoised, and
+      // it used to stay memoised — `idRestrictionActive` was read but missing
+      // from its dependencies (#1704).
+      const metaSemConsulta = {
+        collectionPath: 'tests',
+        permissions: { read: 0n, write: 0n, delete: 0n },
+      } as const;
+      const metaDeclarada = {
+        ...metaSemConsulta,
+        defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+      };
+
+      function renderUnrestricted(
+        resolveIds: (term: string) => Promise<unknown>,
+        meta?: typeof metaDeclarada,
+      ) {
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={meta}
+            search={{ ...search, resolveIds: resolveIds as never }}
+          />,
+        );
+      }
+
+      it('closes the streaming listener while a typed term resolves and when it matches nothing', async () => {
+        // Pipelines path, declared query: the list STREAMS through
+        // `fallbackQuery`. A resolving or zero-match term withholds the
+        // pipeline, which left that unrestricted realtime listener open —
+        // and billed — behind "Nenhum resultado".
+        let answer!: (v: { ids: string[] }) => void;
+        const resolveIds = vi.fn(
+          () =>
+            new Promise<{ ids: string[] }>((r) => {
+              answer = r;
+            }),
+        );
+        renderUnrestricted(resolveIds, metaDeclarada);
+        // Anti-vacuity: the declared query really is streaming before the term.
+        expect(useSnapshotSpy).toHaveBeenLastCalledWith({ __fakeQuery: true });
+
+        fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'MLB1' } });
+        await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(1));
+        expect(useSnapshotSpy).toHaveBeenLastCalledWith(null);
+
+        answer({ ids: [] });
+        await vi.waitFor(() => expect(screen.getByText('Nenhum resultado.')).toBeTruthy());
+        expect(useSnapshotSpy).toHaveBeenLastCalledWith(null);
+      });
+
+      it('never keeps the unrestricted classic query once a typed term resolves', async () => {
+        // Classic path (no Pipelines): only the pipeline can honour `idIn`,
+        // so the memoised unrestricted query painted the whole collection
+        // under a term that matched one row.
+        pipelineSupportedRef.current = false;
+        try {
+          renderUnrestricted(() => Promise.resolve({ ids: ['a'], truncated: true }));
+          expect(useSnapshotSpy).toHaveBeenLastCalledWith({ __fakeQuery: true });
+
+          fireEvent.change(screen.getByLabelText('Buscar'), { target: { value: 'MLB1' } });
+          await vi.waitFor(() => expect(screen.getByText(/Refine o termo/)).toBeTruthy());
+          expect(useSnapshotSpy).toHaveBeenLastCalledWith(null);
+        } finally {
+          pipelineSupportedRef.current = true;
+        }
+      });
     });
   });
 
@@ -3050,6 +3134,97 @@ describe('TableView', () => {
       expect(especsDeTexto()).toHaveLength(0);
       expect(screen.queryByText(/Mostrando nomes que contêm/)).toBeNull();
       pipelineSupportedRef.current = true;
+    });
+  });
+
+  // ⚠️ Every CRUD list renders through this component, and the queries it
+  // builds are BILLED per execution (Firestore Enterprise bills data scanned).
+  // Several of its inputs are fresh objects on every render — the `{}` / `[]`
+  // prop defaults, an inline `extraFilters`, the derived forced sort — so a
+  // query memo that depends on one of those identities re-runs its query on
+  // every parent render. The memos key on value serials instead; these pin
+  // that a parent re-render with value-identical props builds NOTHING new, so
+  // the next dependency edit that reintroduces an identity cannot pass
+  // silently (#1704).
+  describe('stable query identity across parent re-renders', () => {
+    const metaSemConsulta = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const metaDeclarada = {
+      ...metaSemConsulta,
+      defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+    };
+
+    // `collection` and `db` are legitimate memo keys and module-level singletons
+    // in every real caller, so they are held stable here. Everything else in
+    // `node()` is rebuilt on every render, the way a parent's inline JSX is.
+    const collection = fakeCollection();
+    const db = {} as never;
+
+    function rerenderTwice(node: () => React.ReactElement, spy: { mock: { calls: unknown[] } }) {
+      const { rerender } = wrap(node());
+      const built = spy.mock.calls.length;
+      rerender(<MantineTestProvider>{node()}</MantineTestProvider>);
+      rerender(<MantineTestProvider>{node()}</MantineTestProvider>);
+      return { built, after: spy.mock.calls.length };
+    }
+
+    it('streams the declared query once with every prop left at its default', () => {
+      buildQuerySpy.mockClear();
+      const { built, after } = rerenderTwice(
+        () => (
+          <TableView schema={testSchema} collection={collection} db={db} meta={metaDeclarada} />
+        ),
+        buildQuerySpy,
+      );
+      // Anti-vacuity: the streaming query was built at all.
+      expect(built).toBeGreaterThan(0);
+      expect(after).toBe(built);
+    });
+
+    it('builds the pipeline once while a search forces the sort', () => {
+      // `forcedSort` is rebuilt every render; `effectiveOrderBy` keys on its
+      // primitives, and it feeds both query memos.
+      searchParamsRef.current = new URLSearchParams('q=camiseta');
+      buildPipelineSpy.mockClear();
+      const { built, after } = rerenderTwice(
+        () => (
+          <TableView
+            schema={testSchema}
+            collection={collection}
+            db={db}
+            search={{
+              placeholder: 'Buscar',
+              toFilters: (t: string) => [{ field: 'nome', op: 'gte' as const, value: t }],
+              toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+            }}
+          />
+        ),
+        buildPipelineSpy,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+      expect(after).toBe(built);
+    });
+
+    it('builds the pipeline once for an inline extraFilters array', () => {
+      buildPipelineSpy.mockClear();
+      const { built, after } = rerenderTwice(
+        () => (
+          <TableView
+            schema={testSchema}
+            collection={collection}
+            db={db}
+            extraFilters={[{ field: 'tipo', op: 'eq', value: '0' }]}
+          />
+        ),
+        buildPipelineSpy,
+      );
+      expect(built).toBeGreaterThan(0);
+      expect(after).toBe(built);
     });
   });
 });

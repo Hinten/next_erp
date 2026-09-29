@@ -115,6 +115,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   for (const payload of payloads) {
     try {
       await scheduler.enqueue(payload);
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- any enqueue failure is persisted for the sweep; a 5xx makes Meta disable the webhook
     } catch (err) {
       if (!(err instanceof Error)) throw err;
       // Enqueue path failed (IAM / transport / disabled valve). Persist as

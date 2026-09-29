@@ -209,10 +209,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     evictFilialCert(body.filialId);
 
     return NextResponse.json(certificado, { status: 200 });
-    // The route's last-resort 500 boundary: every expected outcome was mapped
-    // above, so the breadth IS the contract here — anything left is logged and
-    // answered 500, never continued as a success.
-    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+    // Last-resort 500 on purpose: this handler holds PFX + password material,
+    // so the error is logged only through the redacting `safeLog` (rule 9). A
+    // rethrow would hand Next the raw error object to log.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     // Never log the body (PFX + password) — only the redacted error shape.
     safeLog('error', '[nfe/certificado]', e);
@@ -256,8 +256,8 @@ export async function DELETE(req: Request): Promise<NextResponse> {
     // old key from a secret doc that still existed.
     evictFilialCert(filialId);
     return NextResponse.json({ ok: true }, { status: 200 });
-    // Last-resort 500 boundary, as in POST.
-    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
+    // Same contract as POST: a last-resort 500 logged only through `safeLog`.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     safeLog('error', '[nfe/certificado:delete]', e);
     return authError(500, {

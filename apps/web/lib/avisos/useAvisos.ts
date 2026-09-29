@@ -89,7 +89,6 @@ export function useAvisos(): UseAvisosResult {
   // leave a trace somewhere, or nobody can tell the two apart from a screenshot.
   useEffect(() => {
     if (!avisos.error) return;
-    // eslint-disable-next-line no-console
     console.warn('[avisos] listener failed — the bell is showing empty, not quiet', {
       code: avisos.error.code,
       message: avisos.error.message,
