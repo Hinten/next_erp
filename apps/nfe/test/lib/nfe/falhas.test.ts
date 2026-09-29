@@ -130,6 +130,9 @@ const NAO_REPORTAVEIS: Readonly<Record<string, string>> = {
       'NFeRejectedError',
       'NFeRuntimeNotReadyError',
       'NFeServerError',
+      // The client's own deadline / the gateway's 504 (#1094): a subclass of
+      // NFeNetworkError, raised only by the browser client like the rest.
+      'NFeTimeoutError',
     ].map((nome) => [
       `integrations-nfe:${nome}`,
       'browser-side HTTP client error (`http-provider`, apps/web → apps/nfe) — never thrown inside apps/nfe',
