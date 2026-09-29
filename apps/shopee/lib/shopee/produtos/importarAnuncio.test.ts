@@ -15,6 +15,8 @@ import {
   type ImportacaoShopeeOptions,
 } from '@delfrance/schemas';
 
+import { kitNativoDoAnuncio } from '../anuncios/montagemAnuncio';
+import { podeEnviarEstoqueShopee } from '../estoque/podeEnviarEstoque';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeBucket, asBucket } from '../testing/fakeBucket';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
@@ -1194,5 +1196,78 @@ describe('o patch de preço afirma o carimbo da leitura do PREPARO', () => {
     expect(db.store['produtos/filho-existente']?.data.precos).toEqual({
       [TABELA_NORMAL_ID]: { valor: 99.9 },
     });
+  });
+});
+
+/* --------------- 10. `kitNativo` no vínculo, e quem o lê ------------------ */
+
+describe('importarAnuncioShopee — `kitNativo` no vínculo da listagem', () => {
+  /** Os `prodshopee` sob um pai — caminho e dados. */
+  function vinculosDe(
+    db: FakeDb,
+    paiId: string,
+  ): { caminho: string; dados: Record<string, unknown> }[] {
+    return Object.entries(db.store)
+      .filter(([p]) => p.startsWith(`produtos/${paiId}/prodshopee/`))
+      .map(([caminho, doc]) => ({ caminho, dados: doc.data as Record<string, unknown> }));
+  }
+
+  it('um anúncio COMUM grava `kitNativo: false` no prodshopee criado — um false é DADO, não ausência', async () => {
+    for (const tag of [{ kit: false }, null]) {
+      const db = new FakeDb();
+      const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+
+      await importarAnuncioShopee(deps(db), anuncioSimples({ tag }));
+
+      const vinculos = vinculosDe(db, paiId);
+      expect(vinculos).toHaveLength(1);
+      expect(vinculos[0]?.dados).toHaveProperty('kitNativo', false);
+    }
+  });
+
+  it('⛔ um re-import sobre um vínculo antigo (null) ou errado (true) grava false no MESMO documento', async () => {
+    for (const armazenado of [null, true]) {
+      const db = new FakeDb();
+      semearPaiComVinculo(db);
+      db.seed(`produtos/${PAI_EXISTENTE}/prodshopee/link-1`, {
+        item_id: ITEM_ID,
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        kitNativo: armazenado,
+      });
+
+      await importarAnuncioShopee(deps(db), anuncioSimples());
+
+      // O ramo de MERGE: nenhum segundo vínculo, e o campo escrito é o novo.
+      expect(vinculosDe(db, PAI_EXISTENTE).map((v) => v.caminho)).toEqual([
+        `produtos/${PAI_EXISTENTE}/prodshopee/link-1`,
+      ]);
+      expect(vinculosDe(db, PAI_EXISTENTE)[0]?.dados.kitNativo).toBe(false);
+    }
+  });
+
+  it('um re-import byte-idêntico mantém `kitNativo: false`', async () => {
+    const db = new FakeDb();
+    const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+    await importarAnuncioShopee(deps(db), anuncioDeDoisTiers());
+    await importarAnuncioShopee(deps(db), anuncioDeDoisTiers());
+
+    const vinculos = vinculosDe(db, paiId);
+    expect(vinculos).toHaveLength(1);
+    expect(vinculos[0]?.dados.kitNativo).toBe(false);
+  });
+
+  it('IDA E VOLTA: o vínculo de um anúncio comum ENVIA no passo 12 e não recusa nos passos 11/13 — nem com o produto ehKit', async () => {
+    const db = new FakeDb();
+    const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+    await importarAnuncioShopee(deps(db), anuncioSimples());
+    const vinculo = vinculosDe(db, paiId)[0]?.dados ?? {};
+    // ⚠️ O catálogo legado: um kit do ERP É um anúncio comum na Shopee. Se o
+    // produto decidisse, o estoque e o preço de milhares de kits parariam.
+    const produtoKitDoErp = { ehKit: true, ehKitVirtual: true };
+
+    expect(podeEnviarEstoqueShopee(vinculo, produtoKitDoErp, { nowMs: AGORA })).toEqual({
+      enviar: true,
+    });
+    expect(kitNativoDoAnuncio(vinculo, produtoKitDoErp)).toBe(false);
   });
 });
