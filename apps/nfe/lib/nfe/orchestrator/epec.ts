@@ -207,5 +207,8 @@ export async function transmitirPosEpec(args: {
     retEnvi,
     protNFeForChave: null,
     indSinc: '1',
+    // Today's handling, byte for byte: the #1654 §1 no-receipt disposition and
+    // recovery table do not apply to the pós-EPEC transmission.
+    origem: 'pos-epec',
   });
 }

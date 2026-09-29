@@ -71,6 +71,7 @@ export {
   MAX_LOTE_POLL_RETRIES,
   MAX_RECONCILE_ATTEMPTS,
   RECONCILE_BASE_DELAY_MS,
+  RECONCILE_INDISPONIVEL_DELAY_MS,
   RECONCILE_MAX_DELAY_MS,
   RECONCILE_SWEEP_GRACE_MS,
   NFeConsumoIndevidoError,
@@ -81,6 +82,7 @@ export {
   assertNotConsumoIndevido,
   classifyCStat,
   cStatToEstado,
+  esperaMinimaDoRecibo,
   isBloqueada,
   isCStat,
   nextAction,
@@ -137,6 +139,7 @@ export {
 // Generator
 export {
   NFeChaveError,
+  NFeDetError,
   NFeGeneratorError,
   NFeIdeError,
   NFePartiesError,

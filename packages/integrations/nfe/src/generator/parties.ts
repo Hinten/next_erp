@@ -25,8 +25,8 @@ export const HOMOLOGACAO_XNOME = 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM 
 
 /**
  * CRT default — Simples Nacional. Phase A's tribute engine is SN-only
- * (it builds CSOSN variants and throws on CRT=3/4 — see
- * `src/tribute/imposto.ts:75`), so the `<emit><CRT>` value MUST match
+ * (it builds CSOSN variants and throws on CRT=3/4 — see `buildICMS` in
+ * `src/tribute/imposto.ts`), so the `<emit><CRT>` value MUST match
  * to keep the XML internally consistent. SEFAZ rejects with cStat=591
  * ("Informado CSOSN para emissor que não é do Simples Nacional") when
  * a CRT=3 emit contains a CSOSN item. Production target (DEL FRANCE)

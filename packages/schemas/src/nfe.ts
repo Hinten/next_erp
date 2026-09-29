@@ -260,19 +260,27 @@ export const nfeSchema = z.object({
    */
   nRec: z.string().min(1).nullable(),
   /**
-   * Bounded retry counter for the lote-pendente (cStat=105) poll loop.
-   * The state machine resets this on every non-105 outcome. Also the
-   * attempt counter the async reconciler caps at `MAX_RECONCILE_ATTEMPTS`.
+   * The async reconciler's per-doc attempt counter, capped at
+   * `MAX_RECONCILE_ATTEMPTS`: every `consReciNFe` round that leaves the doc in
+   * flight advances it by exactly one — a 105, a lote-level non-answer, a
+   * round resolved by chave (104 without our protNFe, 106, a duplicidade) —
+   * and the round that reaches the cap turns the doc into a blocking terminal
+   * `error` (#513, #1654). A final outcome resets it (`applyOutcome`); the
+   * writers that still reset it on an in-flight doc are the manual verify, a
+   * new emit lote and the sweep's consult-by-chave branch for docs without an
+   * `nRec`.
    */
   retries: z.number().int().min(0).nullable(),
   /**
    * Earliest time the async reconciler may consult this lote again — the
    * consumo-indevido gate (avoids SEFAZ rejection 656). Seeded at emit time
    * to `now + tMed` (SEFAZ's estimate), then pushed out by the per-attempt
-   * backoff (`nextConsultaDelayMs`). The Cloud Task is scheduled for this
-   * instant; the backstop sweep skips docs whose `proximaConsultaEm` is in
-   * the future. Cleared to `null` on any terminal outcome. Microseconds
-   * since epoch (the project datetime standard — see `@delfrance/core/datetime`).
+   * backoff (`nextConsultaDelayMs`), or by `RECONCILE_INDISPONIVEL_DELAY_MS`
+   * (one hour) after a receipt that answered serviço paralisado (#1654). The
+   * Cloud Task is scheduled for this instant; the backstop sweep skips docs
+   * whose `proximaConsultaEm` is in the future. Cleared to `null` on any
+   * terminal outcome. Microseconds since epoch (the project datetime
+   * standard — see `@delfrance/core/datetime`).
    */
   proximaConsultaEm: microsSinceEpoch().nullable().default(null),
 

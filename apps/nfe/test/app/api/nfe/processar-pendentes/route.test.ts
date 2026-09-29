@@ -16,9 +16,16 @@
  *     its stored ms `ultima_modificacao` is `DEFAULT_STUCK_TIMEOUT_MS` old — or
  *     the operator's `timeoutMs` — so the sweep stays off a send that may still
  *     be in flight (#1653);
- *   - the consSit breaker of the 104-without-our-protNFe branch (#513) spans
- *     the due lotes of one filial, never another filial's — a 656 all of
- *     them, an outage only those at the same authorizer (home / SVC-AN).
+ *   - the consSit breaker of every by-chave round (#513, #1654) spans the due
+ *     lotes of one filial, never another filial's — a 656 all of them, an
+ *     outage only those at the same authorizer (home / SVC-AN) — and it
+ *     survives a lote whose reconcile THREW after tripping it (#1654);
+ *   - rule 6 in the sweep (#1654): a failure of a KNOWN class
+ *     (`descreverFalhaConhecida`) is recorded in `errors` and the run goes on,
+ *     at each of the four catch sites; an unknown class (a bug) aborts the
+ *     run, which the route answers 500;
+ *   - the legacy consult-by-chave branch writes a recovered 539's chave swap
+ *     in the SAME merge as its outcome (#1654 §2d).
  * Auth, runtime, Firestore and the EPEC transmit are mocked; the scan logic,
  * `loadNfeConfigForEmission` and `sefazCallFor` run REAL against an in-memory
  * fake that supports `collectionGroup`.
@@ -29,7 +36,12 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/auth')>();
   return { ...actual, verifyCaller: vi.fn() };
 });
-vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
+// The real module's classes stay (the sweep's failure table names
+// `NFeRuntimeConfigError`); only the runtime itself is faked.
+vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/runtime')>();
+  return { ...actual, getNFeRuntime: vi.fn() };
+});
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: vi.fn() }));
 vi.mock('@/lib/nfe/orchestrator/epec', () => ({ transmitirPosEpec: vi.fn() }));
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
@@ -49,6 +61,8 @@ import {
   consultarLote,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
+  encryptSecret,
+  NFeTransportError,
   RECONCILE_BASE_DELAY_MS,
   RECONCILE_SWEEP_GRACE_MS,
 } from '@delfrance/integrations-nfe';
@@ -113,8 +127,14 @@ function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
  * In-memory Firestore for the route: `doc(path).get/set` (config reads +
  * recovery patches) and a `collectionGroup` that filters seeded docs by their
  * parent collection name + the `estado in [...]` constraint.
+ *
+ * `falhaNaTransacao` makes every transaction that reads that doc path reject
+ * with that error — a guarded write failing in Firestore itself.
  */
-function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
+function fakeFirestore(
+  seed: Record<string, Record<string, unknown> | null>,
+  opts: { readonly falhaNaTransacao?: { readonly path: string; readonly erro: Error } } = {},
+) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
 
@@ -186,17 +206,43 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
           docs[path] = data;
           return ref(path);
         },
+        // The 539 recovery's audit lookup (`findLatestEnviNFeMsgWithNRec`):
+        // `where(targetsChnfe array-contains …).orderBy(…).limit(…)` over the
+        // seeded docs directly under `p`.
+        where(field: string, op: string, value: unknown) {
+          const q = {
+            orderBy: () => q,
+            limit: () => q,
+            async get() {
+              const profundidade = p.split('/').length + 1;
+              const items = Object.entries(docs)
+                .filter(([k, v]) => v != null && k.startsWith(`${p}/`))
+                .filter(([k]) => k.split('/').length === profundidade)
+                .filter(([, v]) => {
+                  const campo = (v as Record<string, unknown>)[field];
+                  return op === 'array-contains' && Array.isArray(campo) && campo.includes(value);
+                })
+                .map(([k, v]) => ({ id: k.split('/').pop()!, ref: ref(k), data: () => v }));
+              return { docs: items, size: items.length, empty: items.length === 0 };
+            },
+          };
+          return q;
+        },
       }),
       collectionGroup,
       // The seam the REAL guarded persist (`persistPatchUnlessFinal`) uses —
-      // the 104-without-our-protNFe branch (#513) writes through it.
+      // every by-chave round of a receipt (`reconcilePorChave`) writes through it.
       async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
         type Ref = ReturnType<typeof ref> & {
           get(): Promise<unknown>;
           set(data: Record<string, unknown>, opt?: { merge?: boolean }): Promise<void>;
         };
         return fn({
-          get: (r: Ref) => r.get(),
+          get: async (r: Ref) => {
+            const falha = opts.falhaNaTransacao;
+            if (falha != null && falha.path === r.path) throw falha.erro;
+            return r.get();
+          },
           set: (r: Ref, data: Record<string, unknown>, opt?: { merge?: boolean }) => {
             void r.set(data, opt);
           },
@@ -1020,11 +1066,12 @@ describe('POST /api/nfe/processar-pendentes — an unpaced in-flight doc waits t
 });
 
 // ---------------------------------------------------------------------------
-// #513 — the consSit breaker of the 104-without-our-protNFe branch spans the
-// later lotes of one sweep. A 656 spans every lote of the FILIAL: the throttle
-// is per CNPJ+IP, so a 656 on one lote's missing chave must stop the consSit
-// for the filial's next lotes. An outage spans only the filial's lotes at the
-// SAME authorizer: the home SEFAZ being down says nothing about SVC-AN.
+// #513 / #1654 — the consSit breaker of every by-chave round spans the later
+// lotes of one sweep. A 656 spans every lote of the FILIAL: the throttle is per
+// CNPJ+IP, so a 656 on one lote's chave must stop the consSit for the filial's
+// next lotes. An outage spans only the filial's lotes at the SAME authorizer:
+// the home SEFAZ being down says nothing about SVC-AN. The sweep owns the
+// breaker CELL, so a trip survives a lote whose reconcile then throws.
 // ---------------------------------------------------------------------------
 
 describe('POST /api/nfe/processar-pendentes — the consSit breaker spans the lotes of a filial (#513)', () => {
@@ -1199,5 +1246,270 @@ describe('POST /api/nfe/processar-pendentes — the consSit breaker spans the lo
     const b = docs[pathDe(82)] as { estado: string; cStat: string; xMotivo: string };
     expect(b).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
     expect(b.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+  });
+
+  it('a lote whose reconcile THROWS after its consSit answered 656 still stops the filial’s next lote — the trip lives in the sweep’s cell (#1654)', async () => {
+    // REC-A (F-1): A's consSit answers 656 (the trip); B then goes terminal
+    // with no call, and THAT write fails in Firestore (gRPC 3, not transient),
+    // so the whole lote's reconcile throws and returns no result.
+    const falha = Object.assign(new Error('3 INVALID_ARGUMENT: gravação recusada'), { code: 3 });
+    const { fs, docs } = fakeFirestore(
+      {
+        [pathDe(91)]: membroDoLote(91, 'REC-A', 'F-1'),
+        [pathDe(92)]: membroDoLote(92, 'REC-A', 'F-1'),
+        [pathDe(93)]: membroDoLote(93, 'REC-B', 'F-1'),
+        // Near-miss: another filial is not throttled by F-1's 656.
+        [pathDe(94)]: membroDoLote(94, 'REC-C', 'F-2'),
+      },
+      { falhaNaTransacao: { path: pathDe(92), erro: falha } },
+    );
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === chaveDe(91) ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // REC-A's failure is a known class (a Firestore RPC error): recorded, and
+    // the run goes on. REC-B is terminal (errored folds into recovered), and
+    // REC-C approved.
+    expect(body).toEqual({
+      scanned: 4,
+      recovered: 2,
+      stillPending: 0,
+      errors: [{ chave: null, error: `nRec REC-A: ${falha.message}` }],
+    });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // REC-B's chave is NEVER consulted — the 656 of the lote that threw still
+    // holds for the filial. F-2's is.
+    expect(consultedChaves()).toEqual([chaveDe(91), chaveDe(94)]);
+    const c = docs[pathDe(93)] as { estado: string; cStat: string; xMotivo: string };
+    expect(c).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(c.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+    expect(c.xMotivo).toContain(chaveDe(91));
+    expect((docs[pathDe(94)] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1654 — rule 6 in the sweep. Each of its four catch sites (the EPEC
+// transmission, the legacy consult by chave, the lote reconcile, the CC-e sweep
+// in sweepCce.test.ts) reads the failure through `descreverFalhaConhecida`: a
+// KNOWN class is recorded in `errors` with the message it always had, and the
+// run goes on; an unknown class — a bug — is rethrown, so the run aborts
+// loudly (the scheduled function fails and the next tick retries; the manual
+// route answers 500) instead of dressing the bug up as a per-doc error.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — a known failure is recorded, an unknown one aborts the run (#1654, rule 6)', () => {
+  /** An Admin-SDK Firestore failure: an `Error` carrying the numeric gRPC `code`. */
+  const grpc = (code: number): Error =>
+    Object.assign(new Error(`${code} UNAVAILABLE: sem conexão`), { code });
+
+  /** One catch site: its seed, the SEFAZ/transmit binding that fails there, and the error it records. */
+  interface Sitio {
+    readonly seed: Record<string, Record<string, unknown>>;
+    falhar(erro: Error): void;
+    readonly registro: (mensagem: string) => { chave: string | null; error: string };
+  }
+
+  const SITIOS: Readonly<Record<string, Sitio>> = {
+    'the pós-EPEC transmission': {
+      seed: {
+        'filiais/F-1/nfeconfig/default': CFG_NONE as unknown as Record<string, unknown>,
+        'pedidos/PED-1/nfev4/s4': pDoc(),
+      },
+      falhar: (erro) => vi.mocked(transmitirPosEpec).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: CHAVE, error: mensagem }),
+    },
+    'the legacy consult by chave': {
+      seed: { 'pedidos/PED-2/nfev4/s6': stuckDoc() },
+      falhar: (erro) => vi.mocked(consultarSituacaoNFe).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: CHAVE, error: mensagem }),
+    },
+    'the lote reconcile by receipt': {
+      seed: { 'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9' }) },
+      falhar: (erro) => vi.mocked(consultarLote).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: null, error: `nRec REC-9: ${mensagem}` }),
+    },
+  };
+
+  const casosConhecidos = Object.keys(SITIOS).flatMap((sitio) =>
+    [
+      ['NFeTransportError', () => new NFeTransportError('connect ETIMEDOUT')] as const,
+      ['a transient Firestore RPC error (gRPC 14)', () => grpc(14)] as const,
+    ].map(([nome, erro]) => [sitio, nome, erro] as const),
+  );
+
+  it.each(casosConhecidos)(
+    '%s: a %s is recorded in errors, with its message, and the run answers 200',
+    async (sitio, _nome, erro) => {
+      const s = SITIOS[sitio]!;
+      const { fs } = fakeFirestore(s.seed);
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      const e = erro();
+      s.falhar(e);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ scanned: 1, recovered: 0, errors: [s.registro(e.message)] });
+    },
+  );
+
+  it.each(Object.keys(SITIOS))(
+    '%s: an UNKNOWN class (a TypeError) aborts the run — the POST rejects, which Next answers 500',
+    async (sitio) => {
+      const s = SITIOS[sitio]!;
+      const { fs } = fakeFirestore(s.seed);
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      const bug = new TypeError("Cannot read properties of undefined (reading 'infProt')");
+      s.falhar(bug);
+
+      await expect(POST(req())).rejects.toBe(bug);
+    },
+  );
+
+  it("one filial's stored cert that no longer decrypts (a rotated NFE_CERT_ENC_KEY) is an NFeCertError: recorded for ITS lote, and the next filial's lote is still reconciled", async () => {
+    // F-2's key was encrypted under a master key the env no longer holds; F-1
+    // has no stored cert and signs with the env fallback.
+    process.env.NFE_CERT_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
+    try {
+      const { fs } = fakeFirestore({
+        'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9', filialId: 'F-2' }),
+        'pedidos/PED-3/nfev4/s6': stuckDoc({ nRec: 'REC-10', chave: chaveDe(97) }),
+        'filiais/F-2/certificadoSecreto/default': {
+          encPrivateKey: encryptSecret('chave privada de teste', Buffer.alloc(32, 8)),
+          certificatePem: 'pem de teste',
+          certificateDerBase64: 'ZGVy',
+          subjectCommonName: 'ACME:99999999000191',
+          cnpj: '99999999000191',
+          notAfter: Date.parse('2027-01-01T00:00:00.000Z'),
+          algoritmo: 'aes-256-gcm',
+          keyVersion: 1,
+          uploadedAt: Date.parse('2026-01-01T00:00:00.000Z'),
+        },
+      });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      vi.mocked(consultarLote).mockResolvedValue({
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'SVC_AN',
+        nRec: 'REC-10',
+        cStat: '105',
+        xMotivo: 'Lote em processamento',
+        cUF: '35',
+        dhRecbto: '2026-06-11T09:00:00-03:00',
+      } as never);
+
+      const res = await POST(req());
+      const body = (await res.json()) as { errors: Array<{ chave: string | null; error: string }> };
+
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ scanned: 2, stillPending: 1 });
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0]!.chave).toBeNull();
+      expect(body.errors[0]!.error).toMatch(/^nRec REC-9: Filial 'F-2'/);
+      // F-2's lote never reached SEFAZ; F-1's did, once.
+      expect(vi.mocked(consultarLote).mock.calls.map(([, args]) => args.nRec)).toEqual(['REC-10']);
+    } finally {
+      delete process.env.NFE_CERT_ENC_KEY;
+    }
+  });
+
+  it('the abort is immediate: the lotes after the failing one are not reconciled', async () => {
+    const { fs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9' }),
+      'pedidos/PED-3/nfev4/s6': stuckDoc({ nRec: 'REC-10', chave: chaveDe(97) }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const bug = new TypeError("Cannot read properties of undefined (reading 'cStat')");
+    vi.mocked(consultarLote).mockRejectedValue(bug);
+
+    await expect(POST(req())).rejects.toBe(bug);
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1654 §2d — the legacy consult-by-chave branch (a doc without an nRec)
+// recovering a 539: the recovered chave rides the SAME merge as the outcome,
+// instead of a separate plain merge landing first.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — a 539 recovered by the legacy consult is ONE write (#1654 §2d)', () => {
+  /** The chave SEFAZ asserts holds our número — shape only (nNF 99). */
+  const OUTRA = chaveDe(99);
+
+  it('consSit 539 [chNFe:OUTRA] → the earlier receipt authorizes OUTRA → ONE merge carrying the recovered estado AND the chave, no proc', async () => {
+    const { fs, docs, writes } = fakeFirestore({
+      // No nRec → the legacy branch; filialId F-1 → the 539 gate runs; SVC-AN (tpEmis 6).
+      'pedidos/PED-2/nfev4/s6': stuckDoc(),
+      // The audit log knows OUTRA from an earlier lote, receipt REC-0.
+      'filiais/F-1/enviNfe/anterior': {
+        targetsChnfe: [OUTRA],
+        nRec: 'REC-0',
+        timestamp: '2026-06-01T10:00:00.000Z',
+      },
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue({
+      ...consSitRet('539', false),
+      xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA}]`,
+    } as never);
+    vi.mocked(consultarLote).mockResolvedValue({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SVC_AN',
+      nRec: 'REC-0',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-06-01T10:01:00-03:00',
+      protNFe: [
+        {
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'SVC_AN',
+            chNFe: OUTRA,
+            dhRecbto: '2026-06-01T10:01:00-03:00',
+            nProt: '635260000000999',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    } as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tpAmb: '2', url: 'https://example/svc-an/ret' }),
+      { nRec: 'REC-0' },
+    );
+    const escritas = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(escritas).toHaveLength(1);
+    expect(escritas[0]!.data).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      cStat: '100',
+      chave: OUTRA,
+    });
+    // Our stored bytes are for the OLD chave — no proc, the anchor stays.
+    expect(escritas[0]!.data.xml_nfe_proc).toBeUndefined();
+    expect(docs['pedidos/PED-2/nfev4/s6']).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      chave: OUTRA,
+      xml_assinado: '<NFe>…signed…</NFe>',
+    });
   });
 });
