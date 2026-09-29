@@ -6,21 +6,18 @@ import type {
   Transaction,
 } from 'firebase-admin/firestore';
 import {
-  ESTADO_FRETE,
+  coberturaDoPedido,
   ehMarketplace,
   idFromRef,
   integracaoTipoSchema,
-  isFreteMarketplaceOwned,
   nowMicros,
-  podeAutorizarDespacho,
-  sumPagamentosPagos,
   travarInclusaoProduto,
-  type EstadoFrete,
   type EstadoPedido,
   type Pagamento,
+  type PagamentoCoberturaRow,
 } from '@delfrance/schemas';
 
-import { nextPedidoEstado } from '../pedido/usecases';
+import { freteComDespachoAutorizado, nextPedidoEstado } from '../pedido/usecases';
 import { integracaoCollection, pagamentoCollection, pedidoCollection } from './collections';
 
 /**
@@ -61,14 +58,39 @@ const GATEWAY_OWNED = [
 ] as const;
 
 /**
+ * One pagamento doc as far as the coverage sum is concerned: `valor` (0 when not
+ * a number), `status_pagamento`, and `forma_de_pagamento` (`null` when not a
+ * number — the 'crédito loja' subtraction reads it). Shared by both callers so
+ * the two cannot map a stored row differently.
+ */
+function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
+  const forma: unknown = d.get('forma_de_pagamento');
+  return {
+    valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
+    status_pagamento: d.get('status_pagamento') as number | null | undefined,
+    forma_de_pagamento: typeof forma === 'number' ? forma : null,
+  };
+}
+
+/**
  * Shared tail of both admin reconciles: given the pedido's already-read
- * snapshot and the (already computed) `valorPago`, applies {@link
- * nextPedidoEstado} and — only on a transition — writes the new `estado` and
- * flips `freteInicial.estado` to `despachoAutorizado` ONLY from a
- * pre-authorization estado ({@link podeAutorizarDespacho}) — or from a malformed
- * block carrying no estado at all, which the flip repairs — and never on a
- * marketplace-owned frete block (#702). Returns the new estado, or `null` when
- * no transition applies.
+ * snapshot and the pedido's pagamento rows, computes the VALOR QUITADO — the
+ * paying pagamentos PLUS the troca's devolução credit minus any paying 'crédito
+ * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — applies
+ * {@link nextPedidoEstado} and — only on a transition — writes the new `estado`
+ * and flips `freteInicial.estado` to `despachoAutorizado` through {@link
+ * freteComDespachoAutorizado} (only from a pre-authorization estado, or from a
+ * malformed block carrying no estado at all, which the flip repairs — and never
+ * on a marketplace-owned frete block, #702). Returns the new estado, or `null`
+ * when no transition applies.
+ *
+ * ⚠️ The credit is derived from `pedidoSnap` — the caller's `tx.get` of the
+ * pedido — so `itensDevolvidos` / `ehSaida` are re-read on every transaction
+ * attempt like `estado` and `valorCobrado` (root `CLAUDE.md` rule 7), and it adds
+ * NO read: {@link reconcilePedidoFromPagamento} has already written the pagamento
+ * by the time this runs and Firestore forbids a read after a write. The rows
+ * arrive already read (or, for the incoming payment, already known), each
+ * carrying `forma_de_pagamento`.
  *
  * The `historicoEstadoPedido` audit row is NOT written here: the
  * `onPedidoChanged` trigger observes the pedido write below and records
@@ -84,14 +106,22 @@ function applyEstadoTransition(
   tx: Transaction,
   pedidoRef: DocumentReference,
   pedidoSnap: DocumentSnapshot,
-  valorPago: number,
+  pagamentos: ReadonlyArray<PagamentoCoberturaRow>,
 ): EstadoPedido | null {
   const estado = pedidoSnap.get('estado') as EstadoPedido;
   const total =
     typeof pedidoSnap.get('valorCobrado') === 'number'
       ? (pedidoSnap.get('valorCobrado') as number)
       : 0;
-  const next = nextPedidoEstado(estado, total, valorPago);
+  const { valorQuitado } = coberturaDoPedido(
+    {
+      valorCobrado: total,
+      ehSaida: pedidoSnap.get('ehSaida') as boolean | null | undefined,
+      itensDevolvidos: pedidoSnap.get('itensDevolvidos'),
+    },
+    pagamentos,
+  );
+  const next = nextPedidoEstado(estado, total, valorQuitado);
   if (next === null) return null;
 
   const pedidoPatch: Record<string, unknown> = {
@@ -99,30 +129,10 @@ function applyEstadoTransition(
     ultimaModificacao: nowMicros(),
   };
   if (next.autorizarDespacho) {
-    const frete = pedidoSnap.get('freteInicial');
-    if (frete && typeof frete === 'object') {
-      const freteRecord = frete as Record<string, unknown>;
-      const freteEstado = freteRecord.estado as EstadoFrete | undefined;
-      // Authorize dispatch ONLY from a state that precedes authorization, and never
-      // on a freight block the marketplace importer owns (#702). This used to be
-      // `!isFreteJaPostado(...)`, which answers the label-reprint question and let a
-      // `pago` transition regress `empacotado` / `emSeparacao` / `checkFinalizado`
-      // back to `despachoAutorizado` — erasing warehouse progress, and (via
-      // `CAMPOS_OBSERVADOS`) re-running the estoque sync against a state that no
-      // longer removes stock.
-      //
-      // The ownership tipo is read off `externalOptionIntegracao`, which lives on the
-      // frete block itself — no extra transaction read, which matters because
-      // `reconcilePedidoFromPagamento` has already written the pagamento by the time
-      // this runs and Firestore forbids a read after a write.
-      const podeAutorizar = !freteEstado || podeAutorizarDespacho(freteEstado);
-      const marketplaceOwned = isFreteMarketplaceOwned(
-        freteRecord.externalOptionIntegracao as string | null | undefined,
-      );
-      if (podeAutorizar && !marketplaceOwned) {
-        pedidoPatch.freteInicial = { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
-      }
-    }
+    // The frete rule (#702) — including why it needs no extra transaction read —
+    // lives with `freteComDespachoAutorizado`; `null` means "leave the block alone".
+    const frete = freteComDespachoAutorizado(pedidoSnap.get('freteInicial'));
+    if (frete !== null) pedidoPatch.freteInicial = frete;
   }
   tx.update(pedidoRef, pedidoPatch);
 
@@ -153,13 +163,16 @@ function applyEstadoTransition(
  *     {@link GATEWAY_OWNED} fields are overlaid from the incoming pagamento, so
  *     operator-edited fields (nFat, vencimento, juros, …) survive a redelivery;
  *     a CREATE writes the full mapped doc and mints `dataCadastro`;
- *  5. recomputes `valorPago` from the in-tx set (with the upserted payment's
- *     incoming values) via the shared {@link sumPagamentosPagos} rule;
+ *  5. recomputes the valor quitado from the in-tx set (with the upserted
+ *     payment's incoming values) via the shared `coberturaDoPedido` rule: the
+ *     paying pagamentos (`sumPagamentosPagos`) PLUS the troca's devolução credit,
+ *     read off the pedido snapshot of step 1, minus paying 'crédito loja'
+ *     pagamentos (legacy `tasks.dart:64-68`);
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
  *     `freteInicial.estado` to `despachoAutorizado` — only from a
- *     pre-authorization estado ({@link podeAutorizarDespacho}) and never on a
- *     marketplace-owned frete block (#702) — and stamps the pedido
+ *     pre-authorization estado and never on a marketplace-owned frete block
+ *     (#702, {@link freteComDespachoAutorizado}) — and stamps the pedido
  *     `ultimaModificacao` (µs).
  *
  * The `historicoEstadoPedido` audit row for a transition is written by the
@@ -252,21 +265,21 @@ export async function reconcilePedidoFromPagamento(
     const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, pagamentoId);
     tx.set(pagamentoRef, pagamentoCollection.parse(toWrite) as DocumentData);
 
-    // Recompute valorPago from the in-tx set, replacing the upserted doc with the
-    // incoming values, using the SAME status filter the client path uses.
-    const paymentsForSum = pagamentosSnap.docs
+    // The payment set the coverage is summed over: the in-tx docs, replacing the
+    // upserted one with the incoming values, using the SAME status filter the
+    // client path uses. `forma_de_pagamento` rides along for the 'crédito loja'
+    // subtraction (`coberturaDoPedido`); the devolução credit itself comes from
+    // `pedidoSnap`, so this adds no read after the `tx.set` above.
+    const paymentsForSum: PagamentoCoberturaRow[] = pagamentosSnap.docs
       .filter((d) => d.id !== pagamentoId)
-      .map((d) => ({
-        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
-        status_pagamento: d.get('status_pagamento') as number | null | undefined,
-      }));
+      .map(coberturaRowOf);
     paymentsForSum.push({
       valor: pagamento.valor,
       status_pagamento: pagamento.status_pagamento,
+      forma_de_pagamento: pagamento.forma_de_pagamento,
     });
-    const valorPago = sumPagamentosPagos(paymentsForSum);
 
-    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, paymentsForSum);
     return { transition, skippedStale: false };
   });
 }
@@ -308,8 +321,15 @@ export async function reconcilePedidoFromPagamento(
  * only surviving attribution for this path is the `logger.info` line in
  * `reconciliarPagamentoPedido.ts`, which ages out with log retention.
  *
+ * The estado it settles is measured against the pedido's VALOR QUITADO, not the
+ * bare payment sum: a troca's devolução credit counts as paid beside the
+ * pagamentos (`coberturaDoPedido`, see {@link applyEstadoTransition}), so a
+ * pedido paid "the difference" reaches `pago` and an even swap needs no
+ * pagamento at all.
+ *
  * `aposAlterarTotal` serves the OTHER caller: a pedido save that moved
- * `valorCobrado` (#703, `deveReconciliarAposSalvar`). It returns
+ * `valorCobrado` or the devolução credit (#703, `deveReconciliarAposSalvar`).
+ * It returns
  * `{ transition: null }` without writing unless, per THIS transaction's reads:
  *
  *  1. the estado still lets the editor change the total
@@ -351,14 +371,13 @@ export async function reconcilePedidoEstado(
     }
 
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-    const valorPago = sumPagamentosPagos(
-      pagamentosSnap.docs.map((d) => ({
-        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
-        status_pagamento: d.get('status_pagamento') as number | null | undefined,
-      })),
-    );
 
-    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
+    const transition = applyEstadoTransition(
+      tx,
+      pedidoRef,
+      pedidoSnap,
+      pagamentosSnap.docs.map(coberturaRowOf),
+    );
     return { transition };
   });
 }

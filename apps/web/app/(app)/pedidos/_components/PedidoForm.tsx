@@ -715,10 +715,17 @@ export function PedidoForm({
                   pedidoId={pedidoId}
                   disabled={disabled || pagamentosTravados}
                   estado={estadoNow}
-                  // `getValues` (not `watch`): the total is stable while the
-                  // Pagamento tab is open (items are edited on Principal), so no
-                  // subscription/re-render is needed.
-                  pedidoTotal={form.getValues('valorCobrado') ?? 0}
+                  // The PERSISTED total + devolução (the live doc behind
+                  // `defaultValues`), not the form's unsaved edits: the server
+                  // reconcile compares payments against the STORED values, so the
+                  // "valor restante" autofill must too. `getValues` is only the
+                  // fallback for a form with no loaded doc.
+                  pedidoCobertura={{
+                    valorCobrado:
+                      defaultValues?.valorCobrado ?? form.getValues('valorCobrado') ?? 0,
+                    ehSaida: !isEntrada,
+                    itensDevolvidos: defaultValues?.itensDevolvidos ?? null,
+                  }}
                 />
               </>
             ) : (

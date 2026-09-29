@@ -23,6 +23,7 @@ export * from './collection/orderML'; // pedidos/{id}/orderML (Mercado Livre ord
 
 // === PURE LOGIC (no database) ===
 export * from './pureLogic/totals'; // money caches factory (derivePedidoTotals)
+export * from './pureLogic/cobertura'; // payments + devolução credit vs the gross total
 export * from './pureLogic/estado'; // kanban buckets
 export * from './pureLogic/estoque'; // pedido → estoque desired-state predicates
 export * from './pureLogic/itens'; // flattenPedidoItens (grouped → ordem-sorted list)

@@ -109,7 +109,10 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
 
   // Each test starts from a clean returns map on the edited pedido.
   test.beforeEach(async () => {
-    await db().collection('pedidos').doc(pedidoId).update({ itensDevolvidos: null });
+    await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ itensDevolvidos: null, estado: 'iniciado' });
   });
 
   test.afterAll(async () => {

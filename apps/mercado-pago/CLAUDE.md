@@ -47,7 +47,9 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   `detail` out to the task log — `done` is a DISPOSITION, not a claim that work
   happened, and a stale redelivery that wrote nothing used to log exactly like a real
   estado transition (#1087, fixed for ML in #1136). `metodoId` now also rides every
-  park that resolved an account, and the `dropped` arm names WHICH drop it was.
+  park that resolved an account, and the `dropped` arm names WHICH drop it was. The
+  estado rule now counts the troca devolução credit (minus crédito loja pagamentos)
+  as paid — see `coberturaDoPedido` in `packages/schemas/src/pedido/pureLogic/cobertura.ts`.
 - `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
   (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
 - `lib/payments/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth

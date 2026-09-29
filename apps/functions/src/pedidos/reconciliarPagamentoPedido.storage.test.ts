@@ -3,7 +3,7 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 import { PedidoReconcileNotFoundError, reconcilePedidoEstado } from '@delfrance/data/admin';
-import { ESTADO_FRETE, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { ESTADO_FRETE, FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
 
 import {
   WAIT_LABELS,
@@ -315,6 +315,106 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     expect(freteTrail.map((r) => r.estado as string).sort()).toEqual(
       [ESTADO_FRETE.despachoAutorizado, ESTADO_FRETE.iniciado].sort(),
     );
+  });
+
+  // #367 PR 0 — a troca's returned items count as PAID. The unit suite proves the
+  // rule against a fake; this is the same claim on a REAL document: the
+  // `itensDevolvidos` map and `ehSaida` come back from a Firestore read (a price
+  // written as `100` is stored and returned as an integer), and the credit is
+  // derived from the very `tx.get` snapshot the transaction decides on — no
+  // extra read. `valorCobrado` stays GROSS (150); the credit rides the paid side.
+  describe('a troca: the devolução credit counts as paid (#367)', () => {
+    /** A saída `iniciado`, GROSS total 150, returning one line worth 100. */
+    function trocaSeed(): Record<string, unknown> {
+      return {
+        estado: 'iniciado',
+        ehSaida: true,
+        valorCobrado: 150,
+        itensDevolvidos: {
+          origem1: { produto1: [{ precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 }] },
+        },
+        freteInicial: { estado: ESTADO_FRETE.iniciado, codRastreio: null },
+      };
+    }
+
+    it('a payment of only the difference (credit 100 + aprovado 50 on 150) → pago', async () => {
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 50,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'pago' });
+      const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
+      expect(pedido.estado).toBe('pago');
+      expect(pedido.freteInicial).toEqual({
+        estado: ESTADO_FRETE.despachoAutorizado,
+        codRastreio: null,
+      });
+      // Gross stays gross: the credit is derived, never written back.
+      expect(pedido.valorCobrado).toBe(150);
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
+    });
+
+    it('⚠️ NEAR-MISS: one cent short of the difference (49.99) → aguardando, frete untouched', async () => {
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 49.99,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
+      expect(pedido.estado).toBe('aguardandoConfirmacaoDePagamento');
+      expect(pedido.freteInicial).toEqual({ estado: ESTADO_FRETE.iniciado, codRastreio: null });
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(
+        ['aguardandoConfirmacaoDePagamento', 'iniciado'].sort(),
+      );
+    });
+
+    it('a crédito loja pagamento is the returned value already registered — not counted twice', async () => {
+      // credit 100 − crédito loja 100 = 0, so only the pix counts: 49.99 of 150.
+      // Read from a real snapshot, `forma_de_pagamento` is what tells the two apart.
+      const db = getDb();
+      const pedidoId = await seedPedido(db, trocaSeed(), [
+        {
+          valor: 100,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.credito_loja,
+        },
+        {
+          valor: 49.99,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+        },
+      ]);
+
+      const result = await reconcilePedidoEstado(db, { pedidoId });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect((await pedidoRef(db, pedidoId).get()).data()!.estado).toBe(
+        'aguardandoConfirmacaoDePagamento',
+      );
+
+      const trail = await waitForTrail(db, pedidoId, 2);
+      expect(trail.map((r) => r.estado as string).sort()).toEqual(
+        ['aguardandoConfirmacaoDePagamento', 'iniciado'].sort(),
+      );
+    });
   });
 
   it('throws PedidoReconcileNotFoundError against a real missing pedido', async () => {

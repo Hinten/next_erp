@@ -5,13 +5,14 @@ import {
   STATUS_PAGAMENTO,
   cartaoSchema,
   chequeSchema,
-  isPagamentoPagante,
+  coberturaDoPedido,
   sumPagamentosPagos,
   valuesEqual,
   type FormaPagamento,
   type Cartao,
   type Cheque,
   type Pagamento,
+  type PedidoCoberturaInput,
   type StatusPagamento,
 } from '@delfrance/schemas';
 
@@ -202,22 +203,31 @@ export interface PagamentoSummary {
   id: string;
   valor: number;
   status_pagamento?: number | null;
+  /** `FORMA_PAGAMENTO` code — a paying "crédito loja" row is subtracted from the
+   * devolução credit (see `coberturaDoPedido`), so it must reach the rule. */
+  forma_de_pagamento?: number | null;
 }
 
 /**
- * The amount still owed so the pedido becomes fully paid: the pedido total minus
- * the sum of the OTHER {@link isPagamentoPagante} payments (excluding the one
- * being edited). Never negative. Drives the Valor autofill.
+ * The amount still owed so the pedido becomes fully paid — the `restante` of
+ * `coberturaDoPedido`: the pedido total minus the OTHER paying payments
+ * (excluding the one being edited) AND minus the troca devolução credit (the
+ * value of the returned items, less any "crédito loja" payment that already
+ * carries it). Never negative. Drives the Valor autofill.
+ *
+ * `pedido` is the PERSISTED total + devolução (the server reconcile compares
+ * against the stored values, so the autofill must too); an entrada carries no
+ * credit.
  */
 export function remainingToPay(
-  pedidoTotal: number,
+  pedido: PedidoCoberturaInput,
   pagamentos: ReadonlyArray<PagamentoSummary>,
   editingId: string | null,
 ): number {
-  const covered = pagamentos
-    .filter((p) => p.id !== editingId && isPagamentoPagante(p.status_pagamento))
-    .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-  return Math.max(0, roundReais(pedidoTotal - covered));
+  return coberturaDoPedido(
+    pedido,
+    pagamentos.filter((p) => p.id !== editingId),
+  ).restante;
 }
 
 /**

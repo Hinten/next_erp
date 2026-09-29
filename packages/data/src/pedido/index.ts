@@ -25,6 +25,8 @@ export {
   deletePagamento,
   saveChequeSplit,
   nextPedidoEstado,
+  freteComDespachoAutorizado,
+  aplicarQuitacaoNaCriacao,
   cancelarPedido,
   confirmarEntregaPedido,
   type ConfirmarEntregaResultado,
