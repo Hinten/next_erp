@@ -727,6 +727,7 @@ export function ListingForm({
   // not a derivation in the first place.
   useEffect(() => {
     if (isDirty) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- open-only follow of the re-seed, gated on isDirty; a derivation would collapse the field mid-edit
     if ((link.descricao ?? '').trim() !== '') setDescricaoOpen(true);
   }, [link.descricao, isDirty]);
 

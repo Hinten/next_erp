@@ -26,6 +26,7 @@ export function useVirtualRows(
   scrollRef: RefObject<HTMLElement | null>,
   estimateSize = 72,
 ): VirtualRowsResult {
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual cannot be memoized by the React Compiler; this wrapper is its one call site
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,

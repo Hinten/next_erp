@@ -83,6 +83,7 @@ export function AplicarDialog({
   // Fresh confirm state every time the dialog (re)opens for a new run.
   useEffect(() => {
     if (opened) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset-on-open: every run starts from a fresh confirm state
       setFase({ fase: 'confirmar' });
       setSnapshot(null);
     }

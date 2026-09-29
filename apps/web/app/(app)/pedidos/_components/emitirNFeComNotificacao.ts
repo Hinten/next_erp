@@ -32,6 +32,7 @@ export async function emitirNFeComNotificacao(
   try {
     const result = await client.emitir(pedidoId);
     showCopyableNotification(notificationForNFeResult(result));
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- UI boundary: notificationForNFeErrorComContexto maps every error to a toast; a rethrow would show nothing
   } catch (err) {
     // The repo's established narrowing for this exact call (see
     // lib/nfe/bulkEmit.ts): the typed NFe errors all extend Error and
