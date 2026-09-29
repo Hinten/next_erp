@@ -107,6 +107,14 @@ function semearProduto(db: FakeDb, precos: Record<string, unknown> | null = null
 
 const EXISTENTE = { id: PRODUTO, raw: { nome: 'Camiseta Básica', paiId: null } };
 
+/**
+ * O produto como a cascata do preparo o LÊ: com o carimbo do snapshot, que é o
+ * que o patch guardado afirma. Lido do banco, nunca inventado.
+ */
+function existenteLido(db: FakeDb): typeof EXISTENTE & { updateTime: unknown } {
+  return { ...EXISTENTE, updateTime: db.store[`produtos/${PRODUTO}`]?.updateTime };
+}
+
 /* ------------------------------ 1. os preços ------------------------------ */
 
 describe('os preços — de onde vêm e para onde vão', () => {
@@ -130,10 +138,9 @@ describe('os preços — de onde vêm e para onde vão', () => {
   it('⛔ `tabelaPromocionalOuterRef` NÃO aparece em escrita nenhuma do import', async () => {
     const db = new FakeDb();
     semearProduto(db);
-    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    const p = plano({ pai: { ...preparo().pai, existente: existenteLido(db) } });
 
-    const snap = await produtoCollection.docRef(asDb(db), {}, PRODUTO).get();
-    await aplicarPrecosShopee(asDb(db), p.precosPai, snap.updateTime);
+    await aplicarPrecosShopee(asDb(db), p.precosPai);
 
     const escrito = JSON.stringify(db.writes);
     expect(escrito).toContain(TABELA_NORMAL_ID);
@@ -150,10 +157,9 @@ describe('os preços — de onde vêm e para onde vão', () => {
   it('na ATUALIZAÇÃO o patch é um caminho PONTILHADO — a tabela vizinha não é tocada', async () => {
     const db = new FakeDb();
     semearProduto(db, { outra: { valor: 5 } });
-    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    const p = plano({ pai: { ...preparo().pai, existente: existenteLido(db) } });
 
-    const snap = await produtoCollection.docRef(asDb(db), {}, PRODUTO).get();
-    await aplicarPrecosShopee(asDb(db), p.precosPai, snap.updateTime);
+    await aplicarPrecosShopee(asDb(db), p.precosPai);
 
     expect(db.store[`produtos/${PRODUTO}`]?.data.precos).toEqual({
       outra: { valor: 5 },
@@ -174,7 +180,7 @@ describe('os preços — de onde vêm e para onde vão', () => {
     expect(p.precoPaiIgnorado).toBe('valor-abaixo-do-minimo');
   });
 
-  it('um anúncio COM models não escreve preço no pai — a wire nem manda `price_info` nele', () => {
+  it('na ATUALIZAÇÃO de um pai que JÁ TEM filhos, um anúncio COM models não escreve preço no pai — a wire nem manda `price_info` nele', () => {
     const p = plano({
       entrada: item({ has_model: true }, modelos([{ model_id: MODEL_ID, price_info: PRECO_BRL }])),
       filhos: [
@@ -186,7 +192,9 @@ describe('os preços — de onde vêm e para onde vão', () => {
           estoque: null,
         },
       ],
-      pai: { ...preparo().pai, existente: EXISTENTE },
+      // ⚠️ Já uma FAMÍLIA: um produto existente SEM filhos vira família pela
+      // regra da família (preço + flag no patch guardado — `precoDaFamilia.test.ts`).
+      pai: { ...preparo().pai, existente: EXISTENTE, jaTemFilhos: true },
     });
     expect(p.precosPai).toBeNull();
     expect(p.precoPaiIgnorado).toBe('pai-com-filhos');
@@ -199,14 +207,13 @@ describe('a escrita guardada de preços', () => {
   it('⛔ M11: o merge do produto ANTES do patch invalida a pré-condição e o patch FALHA', async () => {
     const db = new FakeDb();
     semearProduto(db);
-    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    const p = plano({ pai: { ...preparo().pai, existente: existenteLido(db) } });
 
-    // A ordem ERRADA: lê, mescla o produto (o que BUMPA o updateTime) e só
-    // então tenta o patch guardado com o carimbo que acabou de invalidar.
-    const snap = await produtoCollection.docRef(asDb(db), {}, PRODUTO).get();
+    // A ordem ERRADA: mescla o produto (o que BUMPA o updateTime) e só então
+    // tenta o patch guardado com o carimbo que acabou de invalidar.
     await produtoCollection.merge(asDb(db), {}, PRODUTO, { ultimaModificacao: AGORA });
 
-    await expect(aplicarPrecosShopee(asDb(db), p.precosPai, snap.updateTime)).rejects.toThrow(
+    await expect(aplicarPrecosShopee(asDb(db), p.precosPai)).rejects.toThrow(
       ShopeePrecoDesatualizadoError,
     );
     expect(db.store[`produtos/${PRODUTO}`]?.data.precos).toBeNull();
@@ -215,10 +222,9 @@ describe('a escrita guardada de preços', () => {
   it('na ordem CERTA — patch, depois merge — os dois pousam', async () => {
     const db = new FakeDb();
     semearProduto(db);
-    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    const p = plano({ pai: { ...preparo().pai, existente: existenteLido(db) } });
 
-    const snap = await produtoCollection.docRef(asDb(db), {}, PRODUTO).get();
-    await aplicarPrecosShopee(asDb(db), p.precosPai, snap.updateTime);
+    await aplicarPrecosShopee(asDb(db), p.precosPai);
     await produtoCollection.merge(asDb(db), {}, PRODUTO, { ultimaModificacao: AGORA });
 
     expect(db.store[`produtos/${PRODUTO}`]?.data.precos).toEqual({
@@ -229,17 +235,38 @@ describe('a escrita guardada de preços', () => {
   it('⛔ um carimbo que não é carimbo NENHUM não vira uma escrita sem guarda', async () => {
     const db = new FakeDb();
     semearProduto(db);
-    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    const p = plano({ pai: { ...preparo().pai, existente: existenteLido(db) } });
 
-    await expect(aplicarPrecosShopee(asDb(db), p.precosPai, 42)).rejects.toThrow(
-      ShopeePrecoDesatualizadoError,
-    );
+    await expect(
+      aplicarPrecosShopee(asDb(db), { ...p.precosPai!, lastUpdateTime: 42 }),
+    ).rejects.toThrow(ShopeePrecoDesatualizadoError);
+  });
+
+  it('⛔ um plano SEM carimbo é recusado antes de escrever — não existe braço sem guarda', async () => {
+    const db = new FakeDb();
+    semearProduto(db);
+    // O preparo que esqueceu o carimbo: o `existente` sem `updateTime`.
+    const p = plano({ pai: { ...preparo().pai, existente: EXISTENTE } });
+    expect(p.precosPai?.patch).toEqual({ [`precos.${TABELA_NORMAL_ID}`]: { valor: 99.9 } });
+
+    for (const lastUpdateTime of [undefined, null]) {
+      const erro = await aplicarPrecosShopee(asDb(db), { ...p.precosPai!, lastUpdateTime }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(erro).toBeInstanceOf(Error);
+      // Um erro de PROGRAMAÇÃO, não uma corrida perdida: não pode disparar o replano.
+      expect(erro).not.toBeInstanceOf(ShopeePrecoDesatualizadoError);
+      expect(String(erro)).toContain('carimbo');
+    }
+    expect(db.writes).toEqual([]);
+    expect(db.store[`produtos/${PRODUTO}`]?.data.precos).toBeNull();
   });
 
   it('sem patch nenhum não escreve nada', async () => {
     const db = new FakeDb();
     semearProduto(db);
-    await aplicarPrecosShopee(asDb(db), null, undefined);
+    await aplicarPrecosShopee(asDb(db), null);
     expect(db.writes).toEqual([]);
   });
 });

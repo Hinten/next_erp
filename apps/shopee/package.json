@@ -15,6 +15,7 @@
     "importar:anuncio": "dotenv -e ../../.env.local -- tsx scripts/importar-anuncio.ts",
     "publicar:anuncio": "dotenv -e ../../.env.local -- tsx scripts/publicar-anuncio.ts",
     "enviar:estoque": "dotenv -e ../../.env.local -- tsx scripts/enviar-estoque.ts",
+    "enviar:precos": "dotenv -e ../../.env.local -- tsx scripts/enviar-precos.ts",
     "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
     "liquidar:pagamentos": "dotenv -e ../../.env.local -- tsx scripts/liquidar-pagamentos.ts",
     "rastrear:pedido": "dotenv -e ../../.env.local -- tsx scripts/rastrear-pedido.ts",

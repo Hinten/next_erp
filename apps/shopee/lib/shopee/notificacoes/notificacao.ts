@@ -553,7 +553,7 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   9: 'ack', // promotion/reserved stock (the third of the trio)
   11: 'ack', // video upload
   13: 'ack', // brand register result
-  22: 'ack', // push_api_id 25 — item_price_update_push, the ERP's OWN echo
+  22: 'ack', // push_api_id 25 — item_price_update_push: fires on OUR update_price AND on Seller Centre edits (no actor field); no consumer yet — see precos/README.md
   28: 'ack', // push_api_id 31 — shop_penalty_update_push (no ERP surface yet)
 
   // ---- the pedido arm (step 5) -------------------------------------------

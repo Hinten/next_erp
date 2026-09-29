@@ -178,6 +178,14 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    what leaves no other trace*. A soft-missed status writes nothing but a `console.warn`;
    the conversa story writes its own documents (`evento_nova`, `evento_reaberto_<wamid>`)
    and is derivable from `detail` besides.
+   **Inbound media anchor contract:** `getAndUploadMedia` is create-first
+   and deterministic: Arquivo id `wa_<mediaId>`, Storage
+   `whatsapp/<contaId>/<mediaId>`. After the download, `createOrUpdateMensagem`
+   reads every extracted arquivo anchor inside the same transaction that writes
+   the mensagem. A missing anchor throws `WhatsappMediaAnchorMissingError`; the
+   notification remains retryable and the next delivery downloads/reuses media
+   again. This read pairs with the arquivo sweep's transactional refcount/delete,
+   preventing either race order from committing a dangling reference.
 4. **`lib/whatsapp/processStatus.ts`** — advances an OUTBOUND mensagem's
    `estadoEnvio` from a `statuses[]` entry, guarded by the exact legacy forward-only
    transition matrix + the `lastExternalUpdateDateTime` out-of-order guard, and
@@ -339,6 +347,13 @@ auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
 6. **Client**: `WhatsAppClient.sendMedia({ to, type, link, caption?, replyTo? })`
    (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
    mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
+7. **Composer attachment anchor**: the inbox uses
+   `uploadChatFile`, which keeps create-first/content dedup but writes Arquivo id
+   `chat_<hash>` and Storage `chat/<hash>.<ext>` (legacy `chat/<hash>` docs remain
+   readable). `persistWhatsappMensagens` reads every arquivo anchor before its
+   mensagem writes in the same client transaction. If the sweep already won, the
+   composer reports a clear retry/re-attach error and retains the draft content;
+   if the mensagem wins, the sweep transaction retries and preserves the file.
 
 ## Template message (mensagem padrão) (#PR-C4)
 
