@@ -12,6 +12,9 @@
  * The one stub is `NFE_CA_DIR`: the offline CI runner has no vendored TLS chain
  * (it is fetched only in the live lane), and the cert-free boot guard just needs
  * a file to read (same workaround as `runtime.test.ts`).
+ * Boot reads only this one chain today — `svc()` / `an()` load theirs lazily (`runtime.ts`).
+ * If boot ever reads another file, this suite fails offline FIRST, and that is the point:
+ * review the boot change, don't widen the stub.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

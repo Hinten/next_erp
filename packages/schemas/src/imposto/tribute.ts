@@ -786,13 +786,15 @@ export const configuracaoIPISchema = z.object({
 export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
 
 // ---------------------------------------------------------------------------
-// configuracaoISSQN — mirror of the Flutter class (per-item ISSQN, services)
+// configuracaoISSQN — per-item ISSQN (services)
 // ---------------------------------------------------------------------------
 
 /**
- * Mirror of the Flutter `ConfiguracaoISSQN`. Driven by the XSD `<ISSQN>` shape.
- * The XSD makes `<imposto>` carry **either** `<ICMS>` **or** `<ISSQN>`
- * (xs:choice) — the dispatcher emits `<ISSQN>` and skips `<ICMS>` when set.
+ * Driven by the XSD `<ISSQN>` shape; the legacy Flutter app had no such class
+ * and never emitted ISSQN. The XSD makes `<imposto>` carry **either** `<ICMS>`
+ * **or** `<ISSQN>` (xs:choice) — the engine's dispatcher emits `<ISSQN>` and
+ * skips `<ICMS>` when set. NF-e emission refuses an item carrying it today
+ * (no `<ISSQNtot>`, NF-e conjugada not supported — #1656).
  */
 export const configuracaoISSQNSchema = z.object({
   vBC: z.number().nonnegative(),
