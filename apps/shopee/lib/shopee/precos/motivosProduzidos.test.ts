@@ -53,12 +53,13 @@ const RAIZ_DAS_ROTAS = new URL('../../../app/api/marketplace/shopee/', import.me
  * ⚠️ Fixado, nunca "lida se existir": uma pasta ausente lida em silêncio é
  * exatamente como um produtor real some do universo sem ninguém notar (um nome
  * digitado errado aqui teria o mesmo efeito). `atualizar-precos` é o job do
- * SEGUNDO PR — quando ela chegar, a âncora abaixo falha e obriga a trocar o
- * `false` por `true`, e então os produtores `job-*` dela passam a contar.
+ * SEGUNDO PR: a pasta chegou com ele, a âncora abaixo obrigou a trocar o
+ * `false` por `true`, e desde então os produtores `job-*` dela contam (a rota
+ * de início escreve `job-interrompido` quando o primeiro enfileiramento falha).
  */
 const PASTAS_DE_ROTA: Readonly<Record<string, boolean>> = {
   'enviar-precos': true,
-  'atualizar-precos': false,
+  'atualizar-precos': true,
 };
 
 /** Todo `*.ts` não-teste sob `dir`, recursivo, com o nome relativo a `prefixo`. */
@@ -140,7 +141,8 @@ function autorizadosJaProduzidos(
 /**
  * Os órfãos POR PROJETO, cada um com a razão de uma linha que o autoriza.
  *
- * ⚠️ VAZIA no primeiro PR, e vazia de propósito: os 44 membros têm produtor. O
+ * ⚠️ VAZIA, e vazia de propósito: os 46 membros têm produtor (44 no primeiro PR,
+ * mais `job-interrompido` e `job-cancelado`, produzidos pelo job do segundo). O
  * passo 12 precisou de uma linha (`pisoAcimaDaBanda`, uma banda que não viaja
  * na tarefa); o preço não tem equivalente — a reconciliação CORTOU os nomes que
  * nada produziria (`status-desconhecido`, `familia-nao-encontrada`, a pausa
@@ -169,7 +171,7 @@ describe('todo motivo de preço declarado tem um PRODUTOR fora de errosPreco.ts'
     expect([...fontes.keys()].filter((nome) => nome.endsWith('.test.ts'))).toEqual([]);
   });
 
-  it('as pastas de rota estão no estado FIXADO: `enviar-precos` existe, `atualizar-precos` (PR 2) ainda não', () => {
+  it('as pastas de rota estão no estado FIXADO: `enviar-precos` e `atualizar-precos` (PR 2) existem', () => {
     for (const [pasta, existe] of Object.entries(PASTAS_DE_ROTA)) {
       expect(
         existsSync(new URL(`${pasta}/`, RAIZ_DAS_ROTAS)),
@@ -178,13 +180,13 @@ describe('todo motivo de preço declarado tem um PRODUTOR fora de errosPreco.ts'
     }
   });
 
-  it('os 44 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
+  it('os 46 motivos: cada um é escrito por ALGUM outro arquivo (ou está na lista autorizada com razão)', () => {
     const fontes = fontesQuePodemProduzir(['errosPreco.ts']);
     expect(
       membrosSemProdutor(MOTIVO_PRECO_SHOPEE, fontes, ORFAOS_AUTORIZADOS),
       'motivos declarados que NINGUÉM produz e que não estão autorizados',
     ).toEqual([]);
-    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(44);
+    expect(Object.keys(MOTIVO_PRECO_SHOPEE)).toHaveLength(46);
   });
 
   it('a lista de órfãos autorizados está VAZIA e não guarda um membro que já ganhou produtor', () => {
@@ -368,12 +370,12 @@ describe('a dobra de slug: o que ela trata como IGUAL e o que precisa continuar 
     expect(dobraDeSlug(MOTIVO_PRECO_SHOPEE.precoInvalido)).not.toBe(alvo);
   });
 
-  it('os 44 slugs dobram para 44 formas distintas', () => {
+  it('os 46 slugs dobram para 46 formas distintas', () => {
     // Se dois membros colidissem sob a dobra, o detector apontaria o membro
     // errado numa mensagem de falha — e este é o único lugar que checa isso.
     const slugs = todosOsSlugs();
     const dobras = new Set([...slugs].map(dobraDeSlug));
-    expect(slugs.size).toBe(44);
+    expect(slugs.size).toBe(46);
     expect(dobras.size).toBe(slugs.size);
   });
 

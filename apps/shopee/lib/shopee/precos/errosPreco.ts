@@ -37,10 +37,11 @@
  * the UI renders and the code never fills. That is why several plausible names
  * are ABSENT on purpose — an unknown listing status SENDS (Shopee's own refusal
  * then classifies it), the daily quota and the burst limit are PAUSE values of
- * the conta rather than row refusals, a per-item "too many models" is the
- * plan's `modelos-excedem-limite`, and the two job-only members arrive with the
- * second PR together with their producer. `motivosProduzidos.test.ts` (a later
- * wave) mechanises the rule by scanning the producers' raw text.
+ * the conta rather than row refusals, and a per-item "too many models" is the
+ * plan's `modelos-excedem-limite`. The two job-only members arrived with the
+ * second PR together with their producer, the account-wide job
+ * (`atualizarPrecos.ts`). `motivosProduzidos.test.ts` mechanises the rule by
+ * scanning the producers' raw text.
  *
  * ## Not a Zod enum
  *
@@ -57,7 +58,8 @@ import { ShopeeError } from '@delfrance/integrations-shopee';
  * Why a produto, an item, a model or a whole conta did not send a price.
  *
  * Each member is a MECHANISM; the sentence is
- * {@link MENSAGEM_POR_MOTIVO_PRECO}'s. Forty-four members in the first PR.
+ * {@link MENSAGEM_POR_MOTIVO_PRECO}'s. Forty-six members: forty-four from the
+ * first PR, and the account-wide job's two terminal rows.
  */
 export type MotivoPrecoShopee =
   // ---- the plan, per family / listing (7) ----
@@ -110,7 +112,10 @@ export type MotivoPrecoShopee =
   // ---- conta-wide, ends the run (3) ----
   | 'reauth'
   | 'loja-com-penalidade'
-  | 'sem-permissao';
+  | 'sem-permissao'
+  // ---- the account-wide job's terminal rows (2) ----
+  | 'job-interrompido'
+  | 'job-cancelado';
 
 /**
  * The closed set, for iteration and so code names a member instead of spelling
@@ -168,6 +173,9 @@ export const MOTIVO_PRECO_SHOPEE = {
   reauth: 'reauth',
   lojaComPenalidade: 'loja-com-penalidade',
   semPermissao: 'sem-permissao',
+  // ---- the account-wide job's terminal rows (2) ----
+  jobInterrompido: 'job-interrompido',
+  jobCancelado: 'job-cancelado',
 } as const satisfies Record<string, MotivoPrecoShopee>;
 
 /* ---------------------------- the rendered table --------------------------- */
@@ -257,6 +265,10 @@ export const MENSAGEM_POR_MOTIVO_PRECO: Record<MotivoPrecoShopee, string> = {
   reauth: 'A autorização da loja expirou; reconecte a conta Shopee.',
   'loja-com-penalidade': 'A loja está sob penalidade na Shopee.',
   'sem-permissao': 'O aplicativo não tem permissão para alterar preços nesta loja.',
+  // ---- the account-wide job ----
+  'job-interrompido':
+    'A atualização foi interrompida antes deste ponto; os itens restantes não foram tentados.',
+  'job-cancelado': 'A atualização foi cancelada; os itens restantes não foram tentados.',
 };
 
 /**
@@ -325,6 +337,8 @@ export function mensagemDoMotivoDePreco(motivo: string | null): string {
  *   failed — the listing is fine, the ERP simply cannot certify the value;
  * - the conta-wide fatals (`reauth`, `loja-com-penalidade`, `sem-permissao`)
  *   and every conta verdict: a property of the SHOP, not of this listing;
+ * - the job's two terminal rows (`job-interrompido`, `job-cancelado`): they
+ *   name a RUN that stopped, and are written into a report, never onto a link;
  * - every plan and gate skip: nothing reached Shopee to be refused.
  *
  * `preco-recusado` is IN: Shopee's catch-all price refusal was measured as
@@ -418,5 +432,66 @@ export class ShopeeEnvioPrecoGuardError extends ShopeeError {
     this.code = code;
     this.status = STATUS_POR_CODIGO_DE_GUARDA_PRECO[code];
     this.extra = extra;
+  }
+}
+
+/* ---------------------------- the job's two classes ------------------------- */
+
+/**
+ * The HTTP answer and code of {@link ShopeeEnvioPrecoEmAndamentoError} — the
+ * start route maps the class onto exactly this pair.
+ */
+export const CODIGO_ENVIO_PRECO_EM_ANDAMENTO = 'SHOPEE_PRICE_SYNC_RUNNING';
+
+/**
+ * The account-wide job's start guard: this conta already has a live `running`
+ * price job (an ORPHAN is reclaimed instead, and a PARKED job is live). ONE
+ * run per conta at a time — with the start race ACCEPTED by decision, see the
+ * job module.
+ *
+ * ⚠️ It EXTENDS `ShopeeError`, the step-9 twin's position, so the start route
+ * must narrow it BEFORE its generic Shopee arm — which would otherwise answer
+ * a busy conta as a generic failure instead of 409.
+ */
+export class ShopeeEnvioPrecoEmAndamentoError extends ShopeeError {
+  readonly code = CODIGO_ENVIO_PRECO_EM_ANDAMENTO;
+  readonly status = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShopeeEnvioPrecoEmAndamentoError';
+  }
+}
+
+/**
+ * The HTTP code the start route answers when the price queue cannot take the
+ * job — the valve is closed, or a genuine enqueue outage (503 both ways: from
+ * the operator's side the action is the same).
+ */
+export const CODIGO_ENVIO_PRECO_ENFILEIRAMENTO_FALHOU = 'SHOPEE_PRICE_SYNC_ENQUEUE_FAILED';
+
+/**
+ * The price queue's scheduler was asked to enqueue while `SHOPEE_TASKS_DISABLED`
+ * is `'1'`.
+ *
+ * The start refuses BEFORE creating a job (so the valve leaves no document
+ * behind), and a dispatch that meets it stamps the job `failed` on the FIRST
+ * attempt: a retry cannot open a valve, and no sweep drains this queue later.
+ *
+ * ⚠️ Its OWN class, never the push pipeline's `ShopeeTasksDisabledError`: that
+ * one is inside the per-conta containment set, so a price job that raised it
+ * would be CONTAINED as one conta's `lastError` instead of stamping the job.
+ * A bare `Error`, not a `ShopeeError`, because nothing Shopee-shaped went wrong.
+ */
+export class ShopeePriceSyncTasksDisabledError extends Error {
+  readonly code = CODIGO_ENVIO_PRECO_ENFILEIRAMENTO_FALHOU;
+  readonly status = 503;
+
+  constructor() {
+    super(
+      'SHOPEE_TASKS_DISABLED=1 — a fila do envio de preços está desabilitada; ' +
+        'não há sweep por trás deste caminho, então nenhum job é criado (ou o job em curso é encerrado como failed).',
+    );
+    this.name = 'ShopeePriceSyncTasksDisabledError';
   }
 }
