@@ -279,6 +279,7 @@ describe('backstop — every exported error class is placed', () => {
         'integrations-nfe:NFePartiesError',
         'runtime:NFeRuntimeConfigError',
         'tasks:NFeTasksConfigError',
+        'tasks:NFeTasksEnqueueError',
         'orchestrator/errors:NFeDocAusenteError',
         'core/region:MissingRegionError',
         'firebase-admin/functions:FirebaseFunctionsError',

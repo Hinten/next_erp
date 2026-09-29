@@ -8,8 +8,16 @@
  * failure is reported only for a known failure class; any other class
  * fails the whole batch (#1654 §3).
  */
+import { createRequire } from 'node:module';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import {
+  AppErrorCode,
+  applicationDefault,
+  deleteApp,
+  FirebaseAppError,
+  initializeApp,
+} from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 
 import { MissingRegionError, requireRegion } from '@delfrance/core/region';
@@ -63,7 +71,11 @@ import {
   toEmitError,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
-import type { ConsultaTaskInput, TaskScheduler } from '../../../lib/nfe/tasks';
+import {
+  createTaskScheduler,
+  type ConsultaTaskInput,
+  type TaskScheduler,
+} from '../../../lib/nfe/tasks';
 import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
 
 /** Fake Cloud Tasks scheduler that records what the orchestrator would enqueue. */
@@ -3227,4 +3239,71 @@ describe('#1654 §3 — toEmitError reports only known failure classes', () => {
       }
     },
   );
+
+  // The one enqueue failure the Admin SDK does NOT wrap. apps/nfe's deployed
+  // backend passes no credential (`lib/firebase/admin.ts`), so firebase-admin
+  // runs on Application Default Credentials, and the first enqueue of each
+  // instance asks the metadata server for the service-account email that signs
+  // the task's OIDC token. `FunctionsApiClient.enqueue` converts only an HTTP
+  // error reply and rethrows anything else raw, so a failed lookup arrives as
+  // gaxios' own GaxiosError. Driven through the REAL scheduler and the REAL
+  // Admin SDK; only the credential's lookup is stubbed, with an error built
+  // from the google-auth-library copy firebase-admin itself resolves.
+  it('an enqueue whose service-account lookup fails at the metadata server stays each member’s report — the batch does not reject', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    const requireDoAdmin = createRequire(
+      createRequire(import.meta.url).resolve('firebase-admin/app'),
+    );
+    const { gaxios } = requireDoAdmin(
+      'google-auth-library',
+    ) as typeof import('google-auth-library');
+    const url = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email';
+    const falha = new gaxios.GaxiosError(
+      `request to ${url} failed, reason: connect ETIMEDOUT`,
+      { url: new URL(url), headers: new Headers() } as never,
+      undefined,
+      Object.assign(new Error('connect ETIMEDOUT 169.254.169.254:80'), { code: 'ETIMEDOUT' }),
+    );
+    const credential = applicationDefault();
+    vi.spyOn(
+      credential as unknown as { getServiceAccountEmail(): Promise<string> },
+      'getServiceAccountEmail',
+    ).mockRejectedValue(falha);
+    vi.stubEnv('NFE_TASKS_REGION', 'southamerica-east1');
+    vi.stubEnv('NFE_TASKS_DISABLED', '');
+    const app = initializeApp({ projectId: 'demo-nfe-enqueue', credential });
+    try {
+      const out = await emitirPedidosLote(
+        fs as never,
+        fakeRuntime(),
+        ['PED-1', 'PED-2'],
+        createTaskScheduler(),
+      );
+
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+      expect(out.results).toEqual(
+        ['PED-1', 'PED-2'].map((pedidoId) => ({
+          pedidoId,
+          errorCode: 'NFeTasksEnqueueError',
+          errorMessage: expect.stringContaining(falha.message),
+        })),
+      );
+      for (const pedidoId of ['PED-1', 'PED-2']) {
+        expect(docs[nfePath(pedidoId)]).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          nRec: 'RECIBO-1',
+        });
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      await deleteApp(app);
+    }
+  });
 });

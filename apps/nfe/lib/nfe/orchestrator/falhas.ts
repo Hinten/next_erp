@@ -54,7 +54,7 @@ import {
 } from '@delfrance/integrations-nfe';
 
 import { NFeRuntimeConfigError } from '../runtime';
-import { NFeTasksConfigError } from '../tasks';
+import { NFeTasksConfigError, NFeTasksEnqueueError } from '../tasks';
 import {
   NFeBlockedError,
   NFeCartaCorrecaoError,
@@ -111,9 +111,15 @@ export const FALHAS_CONHECIDAS: ReadonlyArray<readonly [ClasseDeFalha, string]> 
   // error, a timeout or a credential it could not mint a token for is a
   // `FirebaseAppError` — a SIBLING class, not a subclass
   // (`apps/functions/src/produtos/kitRollupTasks.ts` contains the same two).
-  // `MissingRegionError` is an unset `NFE_TASKS_REGION` (`requireRegion`).
+  // The service-account lookup it does NOT wrap — the metadata server, asked
+  // on each instance's first enqueue under Application Default Credentials —
+  // fails as gaxios' `GaxiosError`, which `tasks.ts` converts to
+  // `NFeTasksEnqueueError`. `MissingRegionError` is an unset `NFE_TASKS_REGION`
+  // (`requireRegion`). Anything else the enqueue throws is a bug and is
+  // rethrown, like any other unknown class.
   [FirebaseFunctionsError, 'FirebaseFunctionsError'],
   [FirebaseAppError, 'FirebaseAppError'],
+  [NFeTasksEnqueueError, 'NFeTasksEnqueueError'],
   [MissingRegionError, 'MissingRegionError'],
 ];
 
