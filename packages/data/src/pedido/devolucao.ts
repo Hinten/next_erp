@@ -467,6 +467,11 @@ export const DEVOLUCAO_INTEGRAL_STRIP_KEYS = [
   'timestamp',
   'error',
   'observacoesInternas',
+  // The prepayment notas the ORIGIN settles (#331). The entrada would emit
+  // them as its own `ide/gPagAntecipado`, and SEFAZ accepts that (the
+  // referenced notas really are débito 06), so the same prepayment would be
+  // abated twice. `duplicar` strips it for the same reason.
+  'chNFePagamentoAntecipado',
   // ⚠️ SPREAD, never hand-listed — same reason `duplicar` does it. This list
   // hand-listed 8 keys and nulled `estoqueAplicado` alone further down, which
   // was survivable only while the two legacy markers were client-writable.
