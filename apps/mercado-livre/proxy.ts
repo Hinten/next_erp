@@ -53,7 +53,14 @@ export function proxy(req: NextRequest) {
   }
 
   const res = NextResponse.next();
-  if (allowed) applyCors(res.headers, allowed);
+  if (allowed) {
+    applyCors(res.headers, allowed);
+    // The etiqueta route names its file via Content-Disposition — and ML's
+    // "pdf" format can hand back a ZIP batch, whose real name only that header
+    // carries. Unexposed, a cross-origin `fetch` reads it as `null` and the ZIP
+    // was saved as `.pdf` (#1680).
+    res.headers.set('Access-Control-Expose-Headers', 'Content-Disposition');
+  }
   return res;
 }
 
