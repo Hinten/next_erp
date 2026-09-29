@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chatArquivoId,
+  chatMediaPath,
   derivativeArquivoId,
   firebaseDownloadUrl,
   isDerivativeName,
@@ -8,6 +10,7 @@ import {
   normalizeName,
   ownedDerivativePath,
   parseOwnedMediaDir,
+  parseMensagemMediaDir,
   parseOwnedOriginalPath,
   parseProductMediaDir,
   productAnexoPath,
@@ -17,6 +20,8 @@ import {
   productVideoPath,
   tabMediArquivoId,
   tabMediOriginalPath,
+  whatsappArquivoId,
+  whatsappMediaPath,
 } from './storagePaths';
 
 const PID = 'prod123';
@@ -35,6 +40,27 @@ describe('path builders', () => {
     expect(mediaPath(HASH, '.PNG')).toBe(`media/${HASH}.png`);
     expect(tabMediOriginalPath('tm1', HASH, 'jpg')).toBe(`tabMedi/tm1/originals/${HASH}.jpg`);
     expect(tabMediOriginalPath('tm1', HASH)).toBe(`tabMedi/tm1/originals/${HASH}`);
+    expect(whatsappMediaPath('wa1', 'media1')).toBe('whatsapp/wa1/media1');
+    expect(chatMediaPath(HASH, '.PDF')).toBe(`chat/${HASH}.pdf`);
+  });
+});
+
+describe('parseMensagemMediaDir', () => {
+  it('recognises the exact inbound and outbound directories', () => {
+    expect(parseMensagemMediaDir('whatsapp/conta-1')).toEqual({
+      kind: 'whatsapp',
+      contaId: 'conta-1',
+    });
+    expect(parseMensagemMediaDir('chat')).toEqual({ kind: 'chat' });
+  });
+
+  it('rejects owner, generic, derivative and malformed paths', () => {
+    expect(parseMensagemMediaDir(`produtos/${PID}/originals`)).toBeNull();
+    expect(parseMensagemMediaDir('media')).toBeNull();
+    expect(parseMensagemMediaDir('whatsapp/conta-1/extra')).toBeNull();
+    expect(parseMensagemMediaDir('whatsapp/')).toBeNull();
+    expect(parseMensagemMediaDir('chat/extra')).toBeNull();
+    expect(parseMensagemMediaDir(null)).toBeNull();
   });
 });
 
@@ -203,6 +229,8 @@ describe('arquivo ids', () => {
     expect(productArquivoId(PID, HASH)).toBe(`${PID}_${HASH}`);
     expect(derivativeArquivoId(PID, HASH, '200')).toBe(`${PID}_${HASH}_200`);
     expect(tabMediArquivoId('tm1', HASH)).toBe(`tm1_${HASH}`);
+    expect(whatsappArquivoId('MEDIA123')).toBe('wa_MEDIA123');
+    expect(chatArquivoId(HASH)).toBe(`chat_${HASH}`);
   });
 });
 

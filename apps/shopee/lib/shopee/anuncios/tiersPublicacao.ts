@@ -121,6 +121,17 @@ export interface FilhoParaPublicar {
   /** Fake paths — `documents/grupoDeVariacoes/<g>/variacoes/<v>`. */
   readonly variacoesUid: readonly string[];
   readonly preco: number | null;
+  /**
+   * Where `preco` came from (D-9): `true` when the PARENT propagates its price
+   * to its variations, so `preco` is the parent's price in the tabela normal and
+   * the child's own map was never read. It decides nothing but the WORDING of a
+   * `filho-sem-preco` refusal: under propagation the web refuses a per-child
+   * price edit, so the text names the parent — the field the operator can
+   * actually fix. The motivo is the same either way. Absent reads as `false`
+   * (the child's own price, the original wording); `publicarAnuncio.ts`'s
+   * projection always sets it.
+   */
+  readonly precoDoPai?: boolean;
   readonly estoque: number;
   readonly fotos: readonly Foto[];
   /** The stored `variashopee.model_id`; `0`/null both mean "no usable id". */
@@ -788,11 +799,16 @@ export function montarTiers(args: ArgsMontarTiers): ResultadoMontarTiers {
     vistos.set(chave, filho.produtoId);
 
     if (filho.preco === null) {
+      // The motivo never changes; only the text follows the price SOURCE (D-9).
       problemas.push(
         problema(
           'model',
           MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
-          `A variação ${filho.produtoId} não tem preço e a Shopee exige um original_price por modelo.`,
+          filho.precoDoPai === true
+            ? `A variação ${filho.produtoId} não tem preço: o produto pai propaga o preço para ` +
+                'as variações e não tem preço na tabela normal — defina o preço do pai ou ' +
+                'desligue a propagação.'
+            : `A variação ${filho.produtoId} não tem preço e a Shopee exige um original_price por modelo.`,
         ),
       );
       continue;

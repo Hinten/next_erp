@@ -32,15 +32,20 @@
  *    writes on the update path (it carries `ultimaModificacao`) and so bumps
  *    `updateTime`. Merging first would make the price precondition assert a
  *    stamp we had just invalidated ourselves, failing every price-writing
- *    import.
+ *    import. That stamp is the PREPARO's — the read the plan was derived from —
+ *    and the only writes before the patch (taxonomia, categorias) touch no
+ *    produto, so it goes stale only when someone ELSE wrote the produto.
  *
  * ## ⚠️ ONE bounded retry, and it RE-PLANS
  *
  * Both guarded writes — the taxonomy patch and the price patch — answer a lost
- * race by failing loudly. {@link importarAnuncioShopee} then re-reads and
- * RE-PLANS the whole item exactly once, against a FRESH grupo memo. It never
- * re-applies the same patch: re-applying writes the loser's values over the
- * winner's, which is the precise thing the precondition exists to stop. A second
+ * race by failing loudly, and both assert the stamp of the read their plan was
+ * derived from (the memo's copy, the preparo's produto snapshot), so the race
+ * they lose is any write since the PREPARO, not merely since the line before.
+ * {@link importarAnuncioShopee} then re-reads and RE-PLANS the whole item
+ * exactly once, against a FRESH grupo memo. It never re-applies the same
+ * patch: re-applying writes the loser's values over the winner's, which is
+ * the precise thing the precondition exists to stop. A second
  * loss propagates — for the taxonomy that is `taxonomia-em-conflito`, contained
  * per item by the job, with nothing half-written because the taxonomy step is
  * first.
@@ -95,6 +100,7 @@ import {
 import {
   idDoFilhoPlanejado,
   idDoPaiPlanejado,
+  produtoJaTemFilhos,
   resolverFilhosDaListagem,
   resolverPaiDaListagem,
 } from './resolveProduto';
@@ -285,13 +291,42 @@ export async function aplicarImportacaoShopee(
       // Someone created it between the cascade and now — merge onto theirs
       // rather than claiming a create that did not happen.
       criado = false;
-      await produtoCollection.merge(db, {}, produtoId, dados);
+      // ⚠️ WITHOUT the family rule's price and flag (`camposForaDaCorrida`,
+      // a has-model listing): the CREATE decision assumed a new document, and
+      // the one here may hold an operator's values. It is not always a racing
+      // twin — an earlier attempt that stopped before its link lands here too.
+      const fora = new Set(plano.camposForaDaCorrida);
+      const semCampos = Object.fromEntries(Object.entries(dados).filter(([k]) => !fora.has(k)));
+      // ⚠️ Decided like the childless produto it almost always is (the link is
+      // written before any child, so an unlinked document has none unless
+      // something attached one since): with NO ERP child, the family rule's
+      // patch through the SAME tier-1 guard as `precosPai`. The preparo never
+      // read this document, so the stamp is the arm's OWN read of it, taken
+      // BEFORE the child query that decides the patch and BEFORE the merge
+      // below — 3 before 4, as on the update path: merging first and re-reading
+      // would guard only the re-read's own line and revert, in silence, a save
+      // landing between the collision and that re-read. With a child, nothing
+      // more: that family's price and flag are the operator's.
+      if (plano.precosPaiNaCorrida !== null) {
+        const lido = await ref.get();
+        if (!(await produtoJaTemFilhos(db, produtoId))) {
+          await aplicarPrecosShopee(db, {
+            ...plano.precosPaiNaCorrida,
+            lastUpdateTime: lido.updateTime,
+          });
+        }
+      }
+      // `camposForaDaCorrida` keeps the merge off the two keys the patch owns,
+      // so running it second cannot overwrite what the patch just wrote.
+      await produtoCollection.merge(db, {}, produtoId, semCampos);
     }
   } else {
-    // ⚠️ 3 BEFORE 4 — the guarded price patch asserts the stamp of the read it
-    // was derived from, and the merge below would bump exactly that stamp.
-    const snap = await ref.get();
-    await aplicarPrecosShopee(db, plano.precosPai, snap.updateTime);
+    // ⚠️ 3 BEFORE 4 — the guarded price patch asserts the stamp of the PREPARO's
+    // read, carried on the plan (no re-read here: that would shrink the guarded
+    // window to this line and revert, in silence, an operator's save made during
+    // the preparo). Steps 1–2 wrote no produto, so the stamp is still ours to
+    // assert; the merge below would bump exactly that stamp.
+    await aplicarPrecosShopee(db, plano.precosPai);
     if (plano.produtoPai !== null) {
       await produtoCollection.merge(db, {}, produtoId, plano.produtoPai.data);
     }

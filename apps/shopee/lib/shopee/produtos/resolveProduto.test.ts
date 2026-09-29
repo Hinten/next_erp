@@ -57,6 +57,14 @@ function semearProduto(db: FakeDb, id: string, over: Record<string, unknown> = {
   db.seed(`produtos/${id}`, { sku: null, paiId: null, ...over });
 }
 
+/**
+ * O carimbo GRAVADO de um produto. O resolvido tem de carregar este MESMO
+ * objeto — é o que o patch de preço guardado afirma como `lastUpdateTime`.
+ */
+function carimboDe(db: FakeDb, id: string): unknown {
+  return db.store[`produtos/${id}`]?.updateTime;
+}
+
 function semearLinkDaListagem(
   db: FakeDb,
   opts: { produtoId: string; docId?: string; itemId?: number; conta?: string },
@@ -113,7 +121,15 @@ describe('resolverPaiDaListagem — os quatro degraus', () => {
 
     const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, item());
 
-    expect(r.existente).toEqual({ id: PAI, raw: { sku: 'SKU-PAI', paiId: null } });
+    expect(r.existente).toEqual({
+      id: PAI,
+      raw: { sku: 'SKU-PAI', paiId: null },
+      updateTime: carimboDe(db, PAI),
+    });
+    // A IDENTIDADE do carimbo lido — é ele que o patch guardado afirma.
+    expect(r.existente?.updateTime).toBe(carimboDe(db, PAI));
+    // O vínculo não carrega carimbo: nenhuma escrita de vínculo é guardada.
+    expect(r.link).not.toHaveProperty('updateTime');
     expect(r.extraData).toEqual({ observacoes: 'oi' });
     expect(r.jaTemFilhos).toBe(true);
     expect(r.linkSobFilho).toBe(false);
@@ -164,6 +180,7 @@ describe('resolverPaiDaListagem — os quatro degraus', () => {
     const r = await resolverPaiDaListagem(asDb(db), INTEGRACAO, item({ item_sku: '  SKU-PAI  ' }));
 
     expect(r.existente?.id).toBe('prod-por-sku');
+    expect(r.existente?.updateTime).toBe(carimboDe(db, 'prod-por-sku'));
     const [porSku, deFilhos] = consultasDeProdutos(db);
     expect(porSku!.clausulas).toEqual([
       ['sku', 'SKU-PAI'],
@@ -281,6 +298,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
+    expect(r!.existente?.updateTime).toBe(carimboDe(db, 'prod-filho'));
     expect(r!.vinculoDeOutraFamilia).toBe(false);
     expect(r!.link?.id).toBe('var-1');
     const [consulta] = consultasDeGrupo(db, 'variashopee');
@@ -327,6 +345,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
+    expect(r!.existente?.updateTime).toBe(carimboDe(db, 'prod-filho'));
     const porSku = consultasDeProdutos(db).find((c) => c.clausulas[0]?.[0] === 'sku');
     expect(porSku!.clausulas).toEqual([
       ['sku', 'SKU-M'],
@@ -366,6 +385,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
     );
 
     expect(r!.existente?.id).toBe('prod-filho');
+    expect(r!.existente?.updateTime).toBe(carimboDe(db, 'prod-filho'));
     expect(r!.link?.id).toBe('var-meu');
   });
 

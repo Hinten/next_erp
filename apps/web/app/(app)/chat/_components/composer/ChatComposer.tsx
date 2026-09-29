@@ -26,7 +26,7 @@ import {
   idFromRef,
   toOuterRef,
 } from '@delfrance/schemas';
-import { StorageUploadError, uploadFile } from '@delfrance/storage';
+import { StorageUploadError, uploadChatFile } from '@delfrance/storage';
 import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
@@ -34,6 +34,7 @@ import { useAuth } from '@/lib/auth';
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import {
   persistWhatsappMensagens,
+  WhatsappArquivoIndisponivelError,
   WhatsappDestinoAlteradoError,
 } from '@/lib/chat/whatsappMensagemWrite';
 import { composerGate } from '@/lib/chat/composerGate';
@@ -321,12 +322,11 @@ function ComposerInput({
     ]);
     try {
       const contentType = file.type || 'application/octet-stream';
-      const result = await uploadFile({
+      const result = await uploadChatFile({
         storage: getFirebaseStorage(),
         db: getFirebaseFirestore(),
         bytes: file,
         contentType,
-        filepath: 'chat',
         originalFilename: file.name,
       });
       const arquivoRef = toOuterRef(`arquivos/${result.id}`);
@@ -482,7 +482,11 @@ function ComposerInput({
       ) {
         setSendError(err.message);
         for (const id of sentIds) markOptimisticError(id);
-      } else if (err instanceof FirebaseError || err instanceof WhatsappDestinoAlteradoError) {
+      } else if (
+        err instanceof FirebaseError ||
+        err instanceof WhatsappDestinoAlteradoError ||
+        err instanceof WhatsappArquivoIndisponivelError
+      ) {
         setSendError(err.message);
         for (const id of sentIds) markOptimisticError(id);
       } else {
