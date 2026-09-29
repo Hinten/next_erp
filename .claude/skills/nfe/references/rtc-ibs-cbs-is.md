@@ -255,10 +255,34 @@ tipo 2 (ZFM)** só pode ser emitida a partir de **janeiro/2029** (RV B25.2-30).
   `aggregateTotals` recebem o MESMO modo (`modoGruposFor` no `apps/nfe`), então
   det e total não divergem.
 - **Recusado antes do número** (`violacoesDoDocumento`): nota 5/6 sem a Reforma
-  Tributária ligada; item sem `configuracaoIBSCBS`; e os **8 tipos de cClassTrib
-  fixo**, cujo item exige um grupo de ajuste (`gTransfCred`, `gAjusteCompet`,
-  `gEstornoCred`, `gCredPresIBSZFM`) que ainda não é emitido (#330, parte 3).
-  Emitíveis hoje: **débito 04 e 06, crédito 01, 03 e 04**.
+  Tributária ligada; item sem `configuracaoIBSCBS` (tipos de `gIBSCBS`
+  comum) ou sem os valores do ajuste (tipos de cClassTrib fixo); e os dois
+  tipos que o ERP **não emite** (`tipoAindaNaoEmitido`):
+  - **crédito 02** (ZFM): proibido antes de 2029 (1145) e exige
+    `prod/tpCredPresIBSZFM` (I05k), que não é modelado;
+  - **crédito 05** (sucessão): **contraditório na v1.40** — o 800001 tem CST 800,
+    que EXIGE `gTransfCred` (1132), e a UB106-30 só aceita `gTransfCred` em
+    nota de DÉBITO (1133). Nenhum item satisfaz as duas. Reconferir na v1.50.
+
+  Emitíveis: **débito 01–08, crédito 01, 03 e 04** (débito 06 autorizado na
+  homologação SEFAZ-SP em 2026-09-28).
+- **Grupos de ajuste** (tipos de cClassTrib fixo, #330 parte 3): o **tipo** dá
+  CST + cClassTrib + grupo (`grupoDeAjusteDoTipo`, derivado dos indicadores do
+  Anexo III — nunca uma tabela digitada); o **item** dá os valores
+  (`itens[*].ajusteRtc = { vIBS, vCBS, competApur }`, editado na aba Fiscal).
+  O `configuracaoIBSCBS` do produto **não é lido** — a transferência ou o
+  estorno é da operação, não do produto. Nenhum desses CSTs admite `gIBSCBS`
+  (`ind_gIBSCBS = 0`), então o grupo de ajuste é o IBS/CBS inteiro do item:
+
+  | Tipo | cClassTrib | Grupo | Regras |
+  |---|---|---|---|
+  | débito 01 / 05 | 800002 / 800001 | `gTransfCred {vIBS, vCBS}` | 1129: IBS ou CBS > 0 |
+  | débito 02 / 03 / 08 | 811001 / 811002 / 811003 | `gAjusteCompet {competApur, vIBS, vCBS}` | 1171: IBS ou CBS > 0; `competApur` AAAA-MM, mês da emissão ou anterior (UB113) |
+  | débito 07 | 410030 | `gEstornoCred {vIBSEstCred, vCBSEstCred}` + modo `completo` | valores podem ser zero (exceção da UB116-30) |
+
+  **Totais**: `IBSCBSTot` vBC/vIBS/vCBS somam SÓ `gIBSCBS` (W35/W47/W56), então
+  uma nota só de ajustes leva `IBSCBSTot` zerado (e presente — W34-20); o
+  estorno vai para `IBSCBSTot/gEstornoCred` (W59e–g, 1176/1177).
 - **Simples Nacional**: 5/6 são **neutras** na receita bruta (sinal 0, contadas
   em `notasNeutras`) — ajustam IBS/CBS, não o preço de uma venda.
 - ⚠️ B25-30/40/50/60 também valem para finNFe 2 (complementar); o módulo cobre

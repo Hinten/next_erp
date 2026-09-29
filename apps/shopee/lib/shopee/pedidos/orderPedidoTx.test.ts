@@ -54,6 +54,7 @@ function itemDe(index: number, produtoUid: string | null = null): ItemDoPedido {
     timestamp: NOW_US,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
   };
 }
 

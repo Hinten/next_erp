@@ -134,6 +134,7 @@ describe('mlOrderItemToItemDoPedido', () => {
       timestamp: 42,
       imposto: null,
       dfeReferenciado: null,
+      ajusteRtc: null,
     });
   });
 
@@ -165,6 +166,7 @@ describe('mlOrderItemToItemDoPedido', () => {
       timestamp: 42,
       imposto: null,
       dfeReferenciado: null,
+      ajusteRtc: null,
     });
   });
 

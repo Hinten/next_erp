@@ -23,6 +23,7 @@ function item(over: Partial<ItemDoPedido> = {}): ItemDoPedido {
     timestamp: null,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
     ...over,
   };
 }

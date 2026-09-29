@@ -151,6 +151,7 @@ export function PrincipalTab({ form, db, disabled, observacoesDisabled }: Princi
       timestamp: null,
       imposto: null,
       dfeReferenciado: null,
+      ajusteRtc: null,
     });
   }
 

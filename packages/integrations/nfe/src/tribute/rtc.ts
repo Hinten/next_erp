@@ -16,6 +16,8 @@
  * slots under `det/imposto` (not nested), so the dispatcher attaches each
  * independently.
  */
+import { COMPETENCIA_AAAA_MM, GRUPO_AJUSTE_RTC, type GrupoAjusteRtc } from '@delfrance/schemas';
+
 import { NFeTributeError } from './errors';
 import { fmtMoney, fmtQuantity, fmtRate, roundReais } from './format';
 import {
@@ -109,6 +111,69 @@ export function buildIBSCBS(cfg: ConfiguracaoIBSCBS, vProd: number): TTribNFe {
       },
     },
   };
+}
+
+/**
+ * One item's IBS/CBS on a nota de débito whose tipo binds a fixed cClassTrib
+ * (NT 2025.002 UB14-70): the tipo supplies the classification and the group
+ * (`grupoDeAjusteDoTipo`, `@delfrance/schemas`), the operator the AMOUNTS —
+ * no alíquota applies to a transfer, an adjustment or a reversal of credit.
+ */
+export interface AjusteIbsCbsItem {
+  readonly cClassTrib: string;
+  readonly grupo: GrupoAjusteRtc;
+  readonly vIBS: number;
+  readonly vCBS: number;
+  /** `AAAA-MM` — `gAjusteCompet` only. */
+  readonly competApur: string | null;
+}
+
+/**
+ * Build the item-level `<IBSCBS>` of an adjustment item: CST + cClassTrib and
+ * the ONE group the tipo names — never `gIBSCBS`, which none of these CSTs
+ * (410, 800, 811) admits (`ind_gIBSCBS = 0`, cStat 1021).
+ *
+ * `gCredPresIBSZFM` is refused: crédito 02 cannot be emitted before 2029
+ * (1145) and needs the item's `prod/tpCredPresIBSZFM`, which is not modelled.
+ */
+export function buildIBSCBSAjuste(a: AjusteIbsCbsItem): TTribNFe {
+  const base = { CST: a.cClassTrib.slice(0, 3), cClassTrib: a.cClassTrib };
+  switch (a.grupo) {
+    case GRUPO_AJUSTE_RTC.transfCred:
+      return {
+        ...base,
+        gTransfCred: {
+          vIBS: fmtMoney('gTransfCred.vIBS', a.vIBS),
+          vCBS: fmtMoney('gTransfCred.vCBS', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.ajusteCompet:
+      if (a.competApur == null || !COMPETENCIA_AAAA_MM.test(a.competApur)) {
+        throw new NFeTributeError(
+          `gAjusteCompet requires competApur as AAAA-MM, got ${JSON.stringify(a.competApur)}`,
+        );
+      }
+      return {
+        ...base,
+        gAjusteCompet: {
+          competApur: a.competApur,
+          vIBS: fmtMoney('gAjusteCompet.vIBS', a.vIBS),
+          vCBS: fmtMoney('gAjusteCompet.vCBS', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.estornoCred:
+      return {
+        ...base,
+        gEstornoCred: {
+          vIBSEstCred: fmtMoney('gEstornoCred.vIBSEstCred', a.vIBS),
+          vCBSEstCred: fmtMoney('gEstornoCred.vCBSEstCred', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.credPresIBSZFM:
+      throw new NFeTributeError(
+        'gCredPresIBSZFM is not emitted (crédito 02: from 2029, and prod/tpCredPresIBSZFM is not modelled)',
+      );
+  }
 }
 
 /**

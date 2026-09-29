@@ -13,6 +13,7 @@ import {
   sanitizeNFeText,
   TributeFormatError,
   ufDestinoOperacao,
+  type AjusteIbsCbsItem,
   type GeneratorInput,
   type GeneratorItem,
   type Payment,
@@ -25,7 +26,9 @@ import {
   FORMA_PAGAMENTO,
   SEVERIDADE_VIOLACAO,
   bloqueiaEmissao,
+  cClassTribDoTipo,
   camposProdutoFiscal,
+  grupoDeAjusteDoTipo,
   descreverViolacaoDocumento,
   modoGruposImposto,
   violacoesDoDocumento,
@@ -100,6 +103,25 @@ export function modoGruposFor(bundle: PedidoBundle): ModoGruposImposto {
 }
 
 /**
+ * The IBS/CBS adjustment one item carries — or `undefined` when the nota's
+ * tipo binds no fixed cClassTrib (an ordinary `gIBSCBS` item) or the item has
+ * no amounts (the document rules refuse that before generation). The tipo
+ * supplies classification and group, the item its amounts. ONE projection for
+ * the det (`buildImpostoXml`) and the total (`aggregateTotals`).
+ */
+export function ajusteDoItem(bundle: PedidoBundle, it: FiscalItem): AjusteIbsCbsItem | undefined {
+  const tipo = {
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  };
+  const cClassTrib = cClassTribDoTipo(tipo);
+  const grupo = grupoDeAjusteDoTipo(tipo);
+  if (cClassTrib == null || grupo == null || it.ajusteRtc == null) return undefined;
+  return { cClassTrib, grupo, ...it.ajusteRtc };
+}
+
+/**
  * The part of a nota that can fail on operator-fixable data, projected ONCE
  * for both generation and the batch pre-flight so they cannot drift: the
  * delivery address (unresolvable → refused), the document rules (a nota SEFAZ
@@ -156,15 +178,25 @@ function assertDocumentoEmitivel(
   emitRtc: boolean,
 ): void {
   const uf = bundle.filial.sede.estado;
+  const hoje = datePartsInOffset(new Date(), offsetForUF(uf));
+  // A tipo that binds a fixed cClassTrib supplies it to every item (the item's
+  // own config is not read), so the UB14 rules judge what will be emitted.
+  const cClassTribFixo = cClassTribDoTipo({
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  });
   const violacoes = violacoesDoDocumento({
     emitRtc,
     finNFe: bundle.operacao.finNFe ?? 1,
     tpNF: bundle.operacao.tipo === 1 ? '1' : '0',
     tpNFDebito: bundle.operacao.tpNFDebito,
     tpNFCredito: bundle.operacao.tpNFCredito,
-    // Only 1145 reads it. Time moves forward, so a pre-flight pass stays a pass
-    // at generation; the reverse can only refuse on the eve of 2029.
-    anoEmissao: datePartsInOffset(new Date(), offsetForUF(uf)).year,
+    // 1145 and the adjustment's competApur read them. Time moves forward, so a
+    // pre-flight pass stays a pass at generation; the reverse can only refuse
+    // at the turn of a month.
+    anoEmissao: hoje.year,
+    mesEmissao: hoje.month,
     chNFeReferenciadas: chNFeReferenciadasDe(bundle),
     destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
     emitenteDocumento: bundle.filial.cnpj,
@@ -174,7 +206,8 @@ function assertDocumentoEmitivel(
     itens: items.map((it, i) => ({
       nItem: i + 1,
       dfeReferenciado: it.dfeReferenciado,
-      cClassTrib: it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+      cClassTrib: cClassTribFixo ?? it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+      ajusteRtc: it.ajusteRtc,
     })),
   });
   if (!bloqueiaEmissao(violacoes)) return;
@@ -282,6 +315,7 @@ export function buildGeneratorInput(
         indTot: indTotFor(it),
       },
       imposto: it.imposto,
+      ajuste: ajusteDoItem(bundle, it),
     })),
     { vFrete, vDesc },
     { emitRtc: emitRtc === true, grupos: modoGruposFor(bundle) },
@@ -532,7 +566,7 @@ export function buildGenItems(
       indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
-      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, where),
+      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, ajusteDoItem(bundle, it), where),
       // det/DFeReferenciado (#330) — judged by the document rules in projetarNota.
       ...(it.dfeReferenciado
         ? {
@@ -561,6 +595,7 @@ function buildItemImpostoXml(
   it: FiscalItem,
   emitRtc: boolean,
   grupos: ModoGruposImposto,
+  ajuste: AjusteIbsCbsItem | undefined,
   where: string,
 ): string {
   try {
@@ -572,7 +607,7 @@ function buildItemImpostoXml(
     return buildImpostoXml(
       it.imposto,
       { vProd: it.vProd, qTrib: it.quantidade },
-      { emitRtc, grupos },
+      { emitRtc, grupos, ...(ajuste != null ? { ajuste } : {}) },
     );
   } catch (err) {
     if (err instanceof NFeTributeError || err instanceof TributeFormatError) {

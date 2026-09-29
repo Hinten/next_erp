@@ -256,6 +256,10 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 | 1164 / 1163 | Nota de crédito sem `tpNFCredito` / `tpNFCredito` sem finNFe=5 | B25.2-20 / B25.2-10 |
 | 1161 / 1162 / 1152 | Crédito não-entrada / débito não-saída / crédito 03 não-entrada | B25-110 / B25-120 / B25.2-40 |
 | 254 / 255 / 269 / 678 / 1027 | NF referenciada do crédito: ausente / várias / outro CNPJ / outra UF / indevida (ZFM) | B25-30…65 |
+| 1129 / 1171 | Transferência de crédito / ajuste de competência sem IBS nem CBS > 0 | UB106-40 / UB112-30 |
+| 1131 / 1132, 1169 / 1170, 1172 / 1173 | Grupo de transferência / ajuste de competência / estorno informado indevidamente / não informado (indicadores do CST ou do cClassTrib) | UB14, UB112, UB116 |
+| 1133 / 1168 | `gTransfCred` fora de nota de débito / fora dos tipos 01 e 05 | UB106-30 / UB106-31 |
+| 1176 / 1177 | Total do IBS / da CBS estornados difere da soma dos itens | W59f / W59g |
 
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
 `references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.

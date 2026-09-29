@@ -26,6 +26,7 @@ function item(produtoUid: string | null, quantidade: number): ItemDoPedido {
     timestamp: null,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
   };
 }
 

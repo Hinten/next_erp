@@ -179,10 +179,11 @@ function NotaAjusteAviso() {
   return (
     <Alert color="blue" variant="light">
       <Text size="sm">
-        Nota de crédito/débito (NT 2025.002): emitida só com a Reforma Tributária ativa na filial, e
-        cada item precisa da configuração de IBS/CBS. Os itens levam só IBS/CBS — exceto crédito
-        03/04 e débito 07, que mantêm ICMS, PIS e COFINS. Os tipos com cClassTrib fixo (débito 01,
-        02, 03, 05, 07, 08 e crédito 02, 05) exigem grupos de ajuste que o ERP ainda não emite.
+        Nota de crédito/débito (NT 2025.002): emitida só com a Reforma Tributária ativa na filial.
+        Os itens levam só IBS/CBS — exceto crédito 03/04 e débito 07, que mantêm ICMS, PIS e COFINS.
+        Nos débitos 01, 02, 03, 05, 07 e 08 a classificação vem do tipo, e os valores de IBS e CBS
+        de cada item são informados na aba Fiscal do pedido; nos demais tipos, cada item precisa da
+        configuração de IBS/CBS. Crédito 02 (ZFM) e 05 (sucessão) ainda não são emitidos.
       </Text>
     </Alert>
   );

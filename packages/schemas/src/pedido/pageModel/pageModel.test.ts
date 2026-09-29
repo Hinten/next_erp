@@ -87,6 +87,28 @@ describe('pedidoPageIssues', () => {
     }
   });
 
+  it('adjustment amounts (#330): blocks a negative amount or a malformed competência only', () => {
+    const issues = (ajusteRtc: { vIBS?: number; vCBS?: number; competApur?: string | null }) =>
+      pedidoPageIssues({
+        integracaoPedidoOuterRef: 'x',
+        itens: { p1: [{ quantidade: 1, ajusteRtc }] },
+      }).map((i) => i.message);
+
+    expect(issues({ vIBS: 1.5, vCBS: 13.5, competApur: '2026-09' })).toEqual([]);
+    // Zero amounts and a missing competência are the TIPO's to judge, at emission.
+    expect(issues({ vIBS: 0, vCBS: 0, competApur: null })).toEqual([]);
+    for (const bad of [{ vIBS: -0.01, vCBS: 1 }, { vIBS: 1, vCBS: Number.NaN }, { vIBS: 1 }]) {
+      expect(issues({ ...bad, competApur: null })).toEqual([
+        expect.stringMatching(/iguais ou maiores que zero/),
+      ]);
+    }
+    for (const competApur of ['2026-13', '2026-9', '09/2026']) {
+      expect(issues({ vIBS: 1, vCBS: 1, competApur })).toEqual([
+        expect.stringMatching(/formato AAAA-MM/),
+      ]);
+    }
+  });
+
   it('warns when a paid order is underpaid (only when pagamentos supplied)', () => {
     const base = {
       itens: { p1: [{ quantidade: 1 }] },

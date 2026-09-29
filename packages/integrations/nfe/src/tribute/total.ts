@@ -21,7 +21,7 @@
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
  * (the bag of vBC_ICMSTot, vICMS_ICMSTot, … doubles).
  */
-import { MODO_GRUPOS_IMPOSTO, type ModoGruposImposto } from '@delfrance/schemas';
+import { GRUPO_AJUSTE_RTC, MODO_GRUPOS_IMPOSTO, type ModoGruposImposto } from '@delfrance/schemas';
 
 import { serializeFragment, type XmlValue } from '../xml';
 import type {
@@ -36,7 +36,7 @@ import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
 import { CSOSN, IPI_TRIB_CSTS } from './schemas';
 import { computePisCofinsItemValues } from './imposto';
 import { NFeTributeError } from './errors';
-import { computeRtcItemValues, parseRtcConfig } from './rtc';
+import { computeRtcItemValues, parseRtcConfig, type AjusteIbsCbsItem } from './rtc';
 
 /**
  * Whole-NF-e values needed by aggregateISSQN that aren't derivable
@@ -68,6 +68,13 @@ interface PerItem {
    */
   readonly item: TributeItem & { readonly vBaseTributavel?: number; readonly indTot?: '0' | '1' };
   readonly imposto: Imposto;
+  /**
+   * The same `ajuste` the item's `buildImpostoXml` received (a nota de débito
+   * whose tipo binds a fixed cClassTrib). It opens `IBSCBSTot` but adds nothing
+   * to its vBC/vIBS/vCBS — W35/W47/W56 sum `gIBSCBS` only, which an adjustment
+   * item never carries; `gEstornoCred` amounts go to the W59e group.
+   */
+  readonly ajuste?: AjusteIbsCbsItem;
 }
 
 export interface TotalAggregation {
@@ -114,6 +121,8 @@ export interface RtcTotalSummary {
   readonly vIBS: number;
   readonly vCBS: number;
   readonly vIS: number;
+  /** W59e `gEstornoCred` — present only when an item carries `gEstornoCred`. */
+  readonly estornoCred?: { readonly vIBSEstCred: number; readonly vCBSEstCred: number };
 }
 
 /**
@@ -167,8 +176,11 @@ export function aggregateTotals(
   let rtcCBS = 0;
   let rtcIS = 0;
   let rtcCount = 0;
+  let estIBS = 0;
+  let estCBS = 0;
+  let estCount = 0;
 
-  for (const { item, imposto } of items) {
+  for (const { item, imposto, ajuste } of items) {
     // `indTot='0'` (não compõe o total, #398): vProd stays out of the goods
     // total — SEFAZ validates ICMSTot.vProd against Σ vProd of indTot=1 items
     // only. Deliberate deviation from the legacy Flutter engine, which emitted
@@ -178,14 +190,25 @@ export function aggregateTotals(
     // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
     // Base = the net-of-discount tribute value (matches the per-item
     // `buildImpostoXml` base), NOT the gross `vProd` accumulated above.
-    if (somenteIbsCbs && (!opts.emitRtc || imposto.configuracaoIBSCBS == null)) {
+    if (ajuste != null) {
+      if (!opts.emitRtc) {
+        throw new NFeTributeError(
+          'an IBS/CBS adjustment item needs the filial to emit the Reforma Tributária',
+        );
+      }
+      rtcCount += 1;
+      if (ajuste.grupo === GRUPO_AJUSTE_RTC.estornoCred) {
+        estIBS += ajuste.vIBS;
+        estCBS += ajuste.vCBS;
+        estCount += 1;
+      }
+    } else if (somenteIbsCbs && (!opts.emitRtc || imposto.configuracaoIBSCBS == null)) {
       // The same refusal `buildImpostoXml` makes for this item: without IBS/CBS
       // it would emit no tax group at all.
       throw new NFeTributeError(
         'nota de crédito/débito carries only IBS/CBS: every item needs it, with the Reforma Tributária on',
       );
-    }
-    if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
+    } else if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
       const rtcBase = item.vBaseTributavel ?? item.vProd;
       const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), rtcBase);
       rtcBC += r.vBC;
@@ -286,6 +309,11 @@ export function aggregateTotals(
             vIBS: roundReais(rtcIBS),
             vCBS: roundReais(rtcCBS),
             vIS: roundReais(rtcIS),
+            ...(estCount > 0
+              ? {
+                  estornoCred: { vIBSEstCred: roundReais(estIBS), vCBSEstCred: roundReais(estCBS) },
+                }
+              : {}),
           },
         }
       : {}),
@@ -465,6 +493,12 @@ export function buildTotalObject(
         vCredPresCondSus: '0.00',
       },
     };
+    if (r.estornoCred != null) {
+      ibsCbsTot.gEstornoCred = {
+        vIBSEstCred: fmtMoney('vIBSEstCred', r.estornoCred.vIBSEstCred),
+        vCBSEstCred: fmtMoney('vCBSEstCred', r.estornoCred.vCBSEstCred),
+      };
+    }
     out.IBSCBSTot = ibsCbsTot;
     if (r.vIS > 0) {
       const isTot: TISTot = { vIS: fmtMoney('vIS', r.vIS) };
