@@ -109,6 +109,16 @@ on:
       # here, hence the folder glob rather than the one file.
       - 'packages/data/src/admin/estoque/**'
       - 'packages/schemas/src/produto/pureLogic/**'
+      # Shopee step 14 (#1522) moved the NF-e upload dispatch (`extractTpAmb`,
+      # `decideNfeUploadDispatch`) out of `lib/marketplace/nfe/nfeUpload.ts`
+      # into `nfeEnvioCanal.ts`, which ML re-exports and its trigger and route
+      # run. That file reads `ESTADO_NFE` from `nfe.ts`, and `nfeUpload.ts`
+      # already imported from both `nfe.ts` and `shared/frete.ts` without either
+      # being listed here — a main/Codex push touching only one of the three
+      # would not fire this lane's safety net.
+      - 'packages/schemas/src/nfeEnvioCanal.ts'
+      - 'packages/schemas/src/nfe.ts'
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       - 'packages/schemas/src/integracao.ts'

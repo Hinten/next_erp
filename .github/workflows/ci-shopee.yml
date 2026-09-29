@@ -224,6 +224,13 @@ on:
       - 'packages/schemas/src/envioPrecoMercadoLivre.ts'
       - 'packages/schemas/src/relatorioEnvioPrecoMercadoLivre.ts'
       - 'packages/schemas/src/shared/ttl.ts'
+      # Step 14 (#1522, NF-e upload) decides on the EDGE through
+      # `decideNfeUploadTransition`, the predicate shared with Mercado Livre in
+      # `nfeEnvioCanal.ts`, which reads `ESTADO_NFE` from `nfe.ts`; the NF-e
+      # readers under `lib/shopee/nfe/` validate an access key with `nfe.ts`'s
+      # `CHAVE_NFE_REGEX`. Neither file was covered by an entry above.
+      - 'packages/schemas/src/nfeEnvioCanal.ts'
+      - 'packages/schemas/src/nfe.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

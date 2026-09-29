@@ -894,6 +894,14 @@ export {
 } from './nfe';
 
 export {
+  extractTpAmb,
+  decideNfeUploadDispatch,
+  decideNfeUploadTransition,
+  type NfeUploadDispatch,
+  type NfeUploadTransition,
+} from './nfeEnvioCanal';
+
+export {
   nfeConfig,
   nfeConfigSchema,
   nfeConfigMeta,
