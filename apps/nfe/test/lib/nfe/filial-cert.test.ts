@@ -8,6 +8,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Counted, not replaced: the TTL tests assert when a decrypt happens.
+vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
+  return { ...actual, decryptSecret: vi.fn(actual.decryptSecret) };
+});
+
 vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/runtime')>();
   return {
@@ -21,6 +27,7 @@ vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
 
 import {
   NFeCertError,
+  decryptSecret,
   encryptSecret,
   loadCertificateFromBase64,
 } from '@delfrance/integrations-nfe';
@@ -124,11 +131,16 @@ function fakeBaseRuntime(envRuntime: () => NFeRuntime | null = fakeEnvRuntime): 
 
 /** A secret doc built from a mock cert, encrypted with KEY. */
 function seedSecret(): Record<string, unknown> {
+  return seedSecretComChave().doc;
+}
+
+/** `seedSecret`, plus the plaintext key — to re-encrypt it as a re-upload would. */
+function seedSecretComChave(): { doc: Record<string, unknown>; privateKeyPem: string } {
   const original = loadCertificateFromBase64(
     buildPfxFixture({ password: 'pw', commonName: `ACME:${CNPJ}` }),
     'pw',
   );
-  return {
+  const doc = {
     encPrivateKey: encryptSecret(original.privateKeyPem, KEY),
     certificatePem: original.certificatePem,
     certificateDerBase64: original.certificateDerBase64,
@@ -139,6 +151,7 @@ function seedSecret(): Record<string, unknown> {
     keyVersion: 1,
     uploadedAt: Date.now(),
   };
+  return { doc, privateKeyPem: original.privateKeyPem };
 }
 
 beforeEach(() => {
@@ -288,6 +301,25 @@ describe('the certificate cache is bounded by CERTIFICADO_CACHE_TTL_MS (#1680)',
     expect(reads).toHaveLength(2); // the re-read happened…
     expect(rt2).toBe(rt1); // …and found the same certificate: keep the keep-alive agent
     expect(vi.mocked(deriveRuntimeForCert)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(decryptSecret)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a re-upload of the SAME certificate is still a new upload — its key is decrypted again', async () => {
+    // The route never checks that a PFX's key matches its certificate, so a
+    // re-upload fixing a mismatched export can keep the PEM and change the key.
+    // Any upload re-encrypts (fresh IV), which is what the cache keys on.
+    const { doc, privateKeyPem } = seedSecretComChave();
+    const { fs, docs } = fakeFirestore({ [SECRET]: doc });
+    const base = fakeBaseRuntime();
+    const antes = await resolveFilialRuntime(fs, base, 'F-1');
+
+    docs[SECRET] = { ...doc, encPrivateKey: encryptSecret(privateKeyPem, KEY) };
+    vi.setSystemTime(T0 + CERTIFICADO_CACHE_TTL_MS);
+    const depois = await resolveFilialRuntime(fs, base, 'F-1');
+
+    expect(depois.cert.certificatePem).toBe(antes.cert.certificatePem);
+    expect(depois).not.toBe(antes);
+    expect(vi.mocked(decryptSecret)).toHaveBeenCalledTimes(2);
   });
 
   it('absence is never cached — an upload reaches an instance that had none at once', async () => {

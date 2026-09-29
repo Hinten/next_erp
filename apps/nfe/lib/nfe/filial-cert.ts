@@ -24,14 +24,19 @@
  * removal switches at once.
  *
  * The decrypted cert and its derived runtime (the keep-alive mTLS agent) are
- * reused for as long as the re-read returns the SAME certificate, so a TTL
- * expiry costs one document read, never a decrypt nor a fresh TLS handshake.
+ * reused for as long as the re-read returns the SAME stored bytes (certificate
+ * and encrypted key), so a TTL expiry costs one document read, never a decrypt
+ * nor a fresh TLS handshake.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { createCachedDocReader } from '@delfrance/data/admin/cache';
 import { certificadoSecretoCollection, filialCollection } from '@delfrance/data/admin/collections';
-import { CERTIFICADO_CACHE_TTL_MS, CERTIFICADO_SECRETO_DOC_ID } from '@delfrance/schemas';
+import {
+  CERTIFICADO_CACHE_TTL_MS,
+  CERTIFICADO_SECRETO_DOC_ID,
+  type CertificadoSecreto,
+} from '@delfrance/schemas';
 import {
   NFeCertError,
   assertCertNotExpired,
@@ -70,15 +75,30 @@ const secretoReader = createCachedDocReader(certificadoSecretoCollection, {
 });
 
 /**
- * The decrypted cert per filial, tagged with the stored `certificatePem` it was
- * built from. A certificate binds exactly one key pair, so the same PEM means
- * the same signing identity: the entry is reused until a re-read returns a
- * different certificate (a rotation) or none (a removal).
+ * The decrypted cert per filial, tagged with the stored bytes it was built
+ * from — the certificate PEM AND the encrypted key blob. The PEM alone is not
+ * enough: the upload route takes the PFX's first key bag and first cert bag
+ * independently and never checks that they match, so a re-upload fixing a
+ * mismatched export can carry the SAME certificate with a DIFFERENT key. The
+ * blob gets a fresh random IV on every encryption, so any upload — even of an
+ * identical PFX — is a new tag. The entry is reused until a re-read returns
+ * different bytes (an upload) or none (a removal).
  */
 const certCache = new Map<
   string,
-  { readonly certificatePem: string; readonly cert: NFeCertificate }
+  { readonly segredo: SegredoArmazenado; readonly cert: NFeCertificate }
 >();
+
+type SegredoArmazenado = Pick<CertificadoSecreto, 'certificatePem' | 'encPrivateKey'>;
+
+function mesmoSegredo(a: SegredoArmazenado, b: SegredoArmazenado): boolean {
+  return (
+    a.certificatePem === b.certificatePem &&
+    a.encPrivateKey.iv === b.encPrivateKey.iv &&
+    a.encPrivateKey.authTag === b.encPrivateKey.authTag &&
+    a.encPrivateKey.ciphertext === b.encPrivateKey.ciphertext
+  );
+}
 
 /**
  * Per-filial DERIVED runtime cache (cert + the mTLS `https.Agent`s). The SOAP
@@ -109,12 +129,15 @@ export async function resolveFilialCert(
   }
 
   const hit = certCache.get(filialId);
-  if (hit && hit.certificatePem === doc.certificatePem) return hit.cert;
+  if (hit && mesmoSegredo(hit.segredo, doc)) return hit.cert;
 
   const key = getCertEncryptionKey();
   const privateKeyPem = decryptSecret(doc.encPrivateKey, key);
   const cert = buildCertFromStored({ privateKeyPem, certificatePem: doc.certificatePem });
-  certCache.set(filialId, { certificatePem: doc.certificatePem, cert });
+  certCache.set(filialId, {
+    segredo: { certificatePem: doc.certificatePem, encPrivateKey: doc.encPrivateKey },
+    cert,
+  });
   return cert;
 }
 
@@ -192,8 +215,8 @@ export function evictFilialCert(filialId: string): void {
 
 /** Test-only: clear the per-filial caches so each test sees a fresh state. */
 export function __resetFilialCertCacheForTests(): void {
-  // Directly, not via `__resetAllReadCaches`: that one also drops the reader from
-  // its registry, so a second reset would no longer reach this module-scope cache.
+  // Cleared directly so this helper alone resets every cache this module owns;
+  // `__resetAllReadCaches()` reaches the reader too (it re-registers on its next get).
   secretoReader.clear();
   certCache.clear();
   runtimeCache.clear();

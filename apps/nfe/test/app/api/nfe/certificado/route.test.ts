@@ -20,6 +20,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { buildPfxFixture } from '@delfrance/integrations-nfe/test-helpers/pfx-fixture';
 
 import { POST, DELETE } from '../../../../../app/api/nfe/certificado/route';
+import { __resetFilialCertCacheForTests, resolveFilialCert } from '@/lib/nfe/filial-cert';
 
 const CNPJ = '99999999000191';
 
@@ -60,6 +61,7 @@ function fakeFirestore(
   for (const path of Object.keys(docs)) alterar(path);
 
   const writes: { path: string; merge?: boolean }[] = [];
+  const hooks: { antesDoCommit?: () => Promise<unknown> } = {};
   const deletes: string[] = [];
   const commits: { op: 'set' | 'update' | 'delete'; path: string }[][] = [];
   const grpc = (code: number, message: string) => Object.assign(new Error(message), { code });
@@ -124,6 +126,9 @@ function fakeFirestore(
         return b;
       },
       async commit() {
+        // A concurrent request of this same instance, landing while the batch is
+        // in flight (the ordering tests below).
+        await hooks.antesDoCommit?.();
         // Validate EVERY op first: a batch lands whole or not at all.
         for (const o of ops) {
           if (o.op === 'update') validar(o.path, o.pre ?? { exists: true });
@@ -154,6 +159,7 @@ function fakeFirestore(
     writes,
     deletes,
     commits,
+    hooks,
   };
 }
 
@@ -388,5 +394,56 @@ describe('DELETE /api/nfe/certificado', () => {
     const res = await DELETE(deleteReq('F-1'));
     expect(res.status).toBe(200);
     expect((docs['filiais/F-1'] as { certificado?: unknown }).certificado).toBeNull();
+  });
+});
+
+describe('the serving instance switches at once — it evicts AFTER the commit (#1680)', () => {
+  // The certificate cache is module state: each test starts from nothing.
+  beforeEach(() => __resetFilialCertCacheForTests());
+  afterEach(() => __resetFilialCertCacheForTests());
+
+  const SECRET = 'filiais/F-1/certificadoSecreto/default';
+
+  async function comCertificado(commonName: string) {
+    const fake = fakeFirestore({ 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } });
+    vi.mocked(getAdminFirestore).mockReturnValue(fake.fs);
+    const pfxBase64 = buildPfxFixture({ password: 'pw', commonName });
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'a.pfx' }),
+    );
+    expect(res.status).toBe(200);
+    return fake;
+  }
+
+  it('DELETE: a read racing the commit cannot leave the removed certificate cached here', async () => {
+    const fake = await comCertificado(`ACME A:${CNPJ}`);
+    expect(await resolveFilialCert(fake.fs, 'F-1')).not.toBeNull();
+
+    // Mid-commit, another request of this instance resolves the certificate. Had
+    // the route evicted BEFORE committing, this read would re-cache the one
+    // about to be deleted, and it would keep signing for the whole TTL.
+    fake.hooks.antesDoCommit = () => resolveFilialCert(fake.fs, 'F-1');
+    expect((await DELETE(deleteReq('F-1'))).status).toBe(200);
+    fake.hooks.antesDoCommit = undefined;
+
+    expect(fake.docs[SECRET]).toBeNull();
+    expect(await resolveFilialCert(fake.fs, 'F-1')).toBeNull(); // no TTL wait
+  });
+
+  it('POST: a replacement is what this instance signs with next — never the one it replaced', async () => {
+    const fake = await comCertificado(`ACME A:${CNPJ}`);
+    const antigo = await resolveFilialCert(fake.fs, 'F-1');
+
+    fake.hooks.antesDoCommit = () => resolveFilialCert(fake.fs, 'F-1');
+    const pfxB = buildPfxFixture({ password: 'pw', commonName: `ACME B:${CNPJ}` });
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64: pfxB, password: 'pw', filename: 'b.pfx' }),
+    );
+    expect(res.status).toBe(200);
+    fake.hooks.antesDoCommit = undefined;
+
+    const novo = await resolveFilialCert(fake.fs, 'F-1');
+    expect(novo?.certificatePem).not.toBe(antigo?.certificatePem);
+    expect(novo?.certificatePem).toBe(fake.docs[SECRET]?.certificatePem);
   });
 });
