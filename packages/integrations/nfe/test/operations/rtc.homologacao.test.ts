@@ -31,8 +31,11 @@
  *
  * **Nota de débito (#330)** — a second case emits finNFe=6 / tpNFDebito=06
  * (pagamento antecipado) with the item carrying IBS/CBS ALONE (RV B25-80: no
- * ICMS, PIS or COFINS on a nota de crédito/débito). Same posture as the first:
- * advisory on PR/push, fatal on `workflow_dispatch`.
+ * ICMS, PIS or COFINS on a nota de crédito/débito). A third emits tpNFDebito=05
+ * (transferência de crédito na sucessão): cClassTrib 800001 (CST 800) with the
+ * `gTransfCred` adjustment group and no `gIBSCBS` — the empirical check of how
+ * #330 part 3 read the NT. Same posture as the first: advisory on PR/push,
+ * fatal on `workflow_dispatch`.
  *
  * **serie lane**: this test runs on **serie=4** (`SEFAZ_HOM_RTC_SERIE`) — full
  * lane registry in `../helpers/homologacao-seed.ts`. SEFAZ keys persistence on
@@ -44,7 +47,14 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { beforeAll, describe, expect, it } from 'vitest';
-import { FIN_NFE_OPERACAO, MODO_GRUPOS_IMPOSTO, TP_NF_DEBITO } from '@delfrance/schemas';
+import {
+  FIN_NFE_OPERACAO,
+  MODO_GRUPOS_IMPOSTO,
+  TP_NF_DEBITO,
+  cClassTribDoTipo,
+  grupoDeAjusteDoTipo,
+  modoGruposImposto,
+} from '@delfrance/schemas';
 
 import { buildHomologacaoFixture, impostoCsosn102ComRtc } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
@@ -171,6 +181,45 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
     expect(
       cStat,
       `SEFAZ rejected the nota de débito — ${descreverSefaz('rtc-debito protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+  }, 180_000);
+
+  it('emits a nota de débito 05 (transferência de crédito na sucessão) with gTransfCred — SEFAZ accepts (cStat=100)', async () => {
+    // The tipo decides classification, group and mode — the same shared
+    // functions apps/nfe derives them with (`ajusteDoItem`, `modoGruposFor`).
+    const tipo = {
+      finNFe: FIN_NFE_OPERACAO.debito,
+      tpNFDebito: TP_NF_DEBITO.transferenciaCreditoSucessao,
+      tpNFCredito: null,
+    };
+    const fixture = buildHomologacaoFixture({
+      numeracao: seedNNF(),
+      serie: SEFAZ_HOM_RTC_SERIE,
+      cnpj: TEST_CERT!.cnpj,
+      ie: TEST_IE!,
+      imposto: impostoCsosn102ComRtc(),
+      emitRtc: true,
+      grupos: modoGruposImposto(tipo),
+      operacao: {
+        naturezaDaOperacao: 'Nota de debito - transferencia de credito',
+        finNFe: tipo.finNFe,
+        tpNFDebito: tipo.tpNFDebito,
+      },
+      ajuste: {
+        cClassTrib: cClassTribDoTipo(tipo)!,
+        grupo: grupoDeAjusteDoTipo(tipo)!,
+        vIBS: 1.5,
+        vCBS: 13.5,
+        competApur: null,
+      },
+    });
+    const { cStat, xMotivo } = await emitir(fixture, 'rtc-debito05');
+    // A rejection names what the v1.40/v1.51 reading got wrong: 1131/1132
+    // (gTransfCred vs the CST 800 indicator), 1133/1168 (finalidade / tipo),
+    // 1129 (amounts), 1021 (a gIBSCBS the CST forbids), 1200/1202 (cClassTrib).
+    expect(
+      cStat,
+      `SEFAZ rejected the nota de débito 05 — ${descreverSefaz('rtc-debito05 protNFe', { cStat, xMotivo })}`,
     ).toBe('100');
   }, 180_000);
 });
