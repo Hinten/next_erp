@@ -11,18 +11,27 @@
  *     failure is NOT in that set although it arrives as a 5xx
  *     (`NFeXsdValidationFailedError`): it is deterministic, and a retried
  *     `consultaCadastro` would re-POST to SEFAZ (#1602).
- *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`) → full transient
- *     set. A re-POST converges to a no-op: emit/lote via PR1's dedup (stable doc
- *     id + `isBloqueada` + in-flight-nRec skip) → `reused:true`; `cancelar`
- *     reconciles a duplicate-event 573 → `cancelada`.
+ *   - the server-deduped POST (`cancelar`) → full transient set. A re-POST
+ *     converges to a no-op: `cancelar` reconciles a duplicate-event 573 →
+ *     `cancelada`.
  *   - cert management (`uploadCertificado`, `deleteCertificado`) → full
  *     transient set (upload overwrites the same cert; delete is idempotent).
- *   - **`cartaCorrecao` and `inutilizar` → pre-send 503 only.** Neither is
- *     idempotent on a re-send: `cartaCorrecao` increments `nSeqEvento`, and a
- *     re-sent `inutilizar` of an already-homologada range returns cStat 563,
- *     which `inutilizar.ts` surfaces as a rejection (unlike `cancelar`'s 573).
- *     So a post-send network/5xx must never auto-retry these — only
- *     `NFeRuntimeNotReadyError`, provably raised before any SEFAZ contact.
+ *   - **`emitir`, `emitirLote`, `cartaCorrecao` and `inutilizar` → pre-send 503
+ *     only.** None is safe to re-send: `cartaCorrecao` increments
+ *     `nSeqEvento`; a re-sent `inutilizar` of an already-homologada range
+ *     returns cStat 563, which `inutilizar.ts` surfaces as a rejection (unlike
+ *     `cancelar`'s 573); and an emit re-POST is a no-op only for a pedido
+ *     that is bloqueada or in flight on a receipt (`nRec`) — a #396 anchor is
+ *     retransmitted with its stored bytes, and a `rejeitada`/`error` one is
+ *     REGENERATED and RE-SENT (`runAllocateGenerateSignTx`,
+ *     `runChunkAllocateTx` in apps/nfe), so a re-POST after a lost response
+ *     re-sends whatever the first request had just seen refused (#1654 §3).
+ *     `emitir-lote` also answers 500 for a failure of an unknown class (a bug)
+ *     by design. So a post-send network/5xx must never auto-retry these — only
+ *     the 503 apps/nfe answers before any SEFAZ contact, recognised by its
+ *     body (`isRuntimeNotReadyBeforeSend`), never by `NFeRuntimeNotReadyError`
+ *     alone: the client maps Cloud Run's own mid-request 503 to that class too.
+ *     The operator re-clicks.
  *   - **`verificar` → NO retry at all** (direct passthrough). The server runs
  *     the batch **sequentially** against SEFAZ precisely to avoid a
  *     consumo-indevido (cStat 656) burst; a client re-POST on a network/5xx
@@ -41,13 +50,41 @@ import {
 const retryTransient = <T>(fn: () => Promise<T>): Promise<T> =>
   retryAsync(fn, { isRetryable: isRetryableNFeHttpError });
 
+/**
+ * The `error` apps/nfe's `emitir`, `emitir-lote`, `inutilizar` and
+ * `carta-correcao` routes answer a `getNFeRuntime()` failure with — a 503
+ * raised before any SEFAZ contact (the two emit routes' tests pin the
+ * literal). Should it drift, the pre-send 503 merely stops being retried.
+ */
+const RUNTIME_NOT_READY = 'NF-e runtime not ready';
+
+/**
+ * apps/nfe's own pre-send 503 — `NFeRuntimeNotReadyError` carrying the route's
+ * marker. The class alone does not prove it: the client maps EVERY 503 to it,
+ * whatever the body, and Cloud Run answers its own 503 (an HTML page, or
+ * nothing) when the instance serving the request fails mid-request — after the
+ * lote may already have gone to SEFAZ.
+ */
+export function isRuntimeNotReadyBeforeSend(err: unknown): boolean {
+  if (!(err instanceof NFeRuntimeNotReadyError)) return false;
+  const body: unknown = err.body;
+  return (
+    body !== null &&
+    typeof body === 'object' &&
+    (body as { error?: unknown }).error === RUNTIME_NOT_READY
+  );
+}
+
 /** Only the pre-SEFAZ-contact 503 is safe to retry for a non-idempotent call. */
-const isPreSendOnly = (err: unknown): boolean => err instanceof NFeRuntimeNotReadyError;
+const isPreSendOnly = isRuntimeNotReadyBeforeSend;
 
 export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
   return {
-    emitir: (pedidoId) => retryTransient(() => client.emitir(pedidoId)),
-    emitirLote: (pedidoIds) => retryTransient(() => client.emitirLote(pedidoIds)),
+    // Not deduped for a rejeitada/error member (regenerated and re-sent on every
+    // POST, #1654 §3) — retry only the pre-send 503.
+    emitir: (pedidoId) => retryAsync(() => client.emitir(pedidoId), { isRetryable: isPreSendOnly }),
+    emitirLote: (pedidoIds) =>
+      retryAsync(() => client.emitirLote(pedidoIds), { isRetryable: isPreSendOnly }),
     consultar: (chave) => retryTransient(() => client.consultar(chave)),
     // NO retry: a re-POST on a post-send network/5xx may overlap the first
     // server run (still consulting SEFAZ sequentially) and provoke the

@@ -211,8 +211,12 @@ function escape(s: string): string {
 
 export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './types';
 export { NFeChaveError, NFeIdeError };
+// Thrown by `generateNFe` through `buildDetXml` / `buildEmit` / `buildDest` —
+// exported so a caller can name them (apps/nfe's `FALHAS_CONHECIDAS`, #1654).
+export { NFeDetError } from './det';
+export { NFePartiesError } from './parties';
 export { cUFFromUF } from './ide';
-export { buildEntrega, NFePartiesError } from './parties';
+export { buildEntrega } from './parties';
 export { ufDestinoOperacao } from './destino';
 export { extractCNFFromChave } from './chave';
 export { datePartsInOffset, NFeTzError, offsetForCUF, offsetForUF } from './tz';
