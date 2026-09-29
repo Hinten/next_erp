@@ -215,6 +215,43 @@ describe('planejarImportacaoShopee — a ordem de escrita', () => {
     expect(plano.produtoPai?.criar).toBe(true);
     expect(plano.produtoPai?.data.precos).toEqual({ 'tab-normal': { valor: 99.9 } });
   });
+
+  it('⛔ cada patch guardado leva o carimbo da LEITURA do preparo — o do pai e o de cada filho', () => {
+    // Dois objetos DISTINTOS: um carimbo trocado entre pai e filho seria um
+    // patch guardado pela leitura de OUTRO documento, e passaria com um só.
+    const carimboDoPai = { lido: 'pai' };
+    const carimboDoFilho = { lido: 'filho' };
+    const paiLido = {
+      existente: { id: 'p-1', raw: {}, updateTime: carimboDoPai },
+      extraData: null,
+      linkSobFilho: false,
+      jaTemFilhos: false,
+      estoque: null,
+    };
+
+    const simples = planejarImportacaoShopee(preparo({ pai: paiLido }));
+    // A IDENTIDADE do que foi lido, não um valor igual: o escritor não relê nada.
+    expect(simples.precosPai?.lastUpdateTime).toBe(carimboDoPai);
+
+    const m = shopeeModelSchema.parse({
+      model_id: MODEL_ID,
+      tier_index: [0],
+      price_info: PRECO_BRL,
+    });
+    const comFilho = planejarImportacaoShopee(
+      preparo({
+        entrada: item({ has_model: true }, modelos([{ model_id: MODEL_ID, tier_index: [0] }])),
+        pai: paiLido,
+        filhos: [
+          filho(m, { existente: { id: 'f-1', raw: { paiId: 'p-1' }, updateTime: carimboDoFilho } }),
+        ],
+        linkPai: { id: 'link-1', raw: {} },
+      }),
+    );
+    expect(comFilho.precosPai).toBeNull();
+    expect(comFilho.filhos[0]?.precos?.patch).toEqual({ 'precos.tab-normal': { valor: 99.9 } });
+    expect(comFilho.filhos[0]?.precos?.lastUpdateTime).toBe(carimboDoFilho);
+  });
 });
 
 /* ------------------------ 3. criar vs atualizar --------------------------- */

@@ -924,9 +924,9 @@ describe('um produto existente SEM filhos que o anúncio transforma em família 
       const snap = await produtoCollection.docRef(asDb(db), {}, SIMPLES).get();
       await produtoCollection.merge(asDb(db), {}, SIMPLES, { ultimaModificacao: AGORA });
 
-      await expect(aplicarPrecosShopee(asDb(db), p.precosPai, snap.updateTime)).rejects.toThrow(
-        ShopeePrecoDesatualizadoError,
-      );
+      await expect(
+        aplicarPrecosShopee(asDb(db), { ...p.precosPai!, lastUpdateTime: snap.updateTime }),
+      ).rejects.toThrow(ShopeePrecoDesatualizadoError);
       const pai = docDoProduto(db, SIMPLES);
       expect(pai.precos).toEqual(PRECOS_ANTIGOS);
       expect(pai).not.toHaveProperty('propagatePriceToChildren');
@@ -950,15 +950,16 @@ describe('um produto existente SEM filhos que o anúncio transforma em família 
 
     await importarAnuncioShopee(deps(db), anuncio([brl(49.9), brl(49.9)]));
 
-    // Uma aplicação A MAIS que o mesmo import sem concorrente: a perdedora, que
-    // leu o pai para tirar o carimbo e não escreveu nada. Sem a guarda ela teria
-    // pousado sobre o operador e não haveria replanejamento.
-    const leiturasDoPai = (banco: FakeDb) =>
-      banco.opLog.filter((o) => o.op === 'get' && o.path === caminho).length;
+    // Um PREPARO a mais que o mesmo import sem concorrente: o carimbo afirmado é
+    // o da leitura do preparo, então a perda replaneja do zero (uma cascata de
+    // pai a mais). Sem a guarda o patch teria pousado sobre o operador e não
+    // haveria replanejamento.
+    const cascatasDePai = (banco: FakeDb) =>
+      banco.consultas.filter((c) => c.fonte === 'group:prodshopee').length;
     const limpo = new FakeDb();
     semearProdutoSemFilhos(limpo, { precos: PRECOS_ANTIGOS });
     await importarAnuncioShopee(deps(limpo), anuncio([brl(49.9), brl(49.9)]));
-    expect(leiturasDoPai(db)).toBe(leiturasDoPai(limpo) + 1);
+    expect(cascatasDePai(db)).toBe(cascatasDePai(limpo) + 1);
     expect(db.patches.filter((w) => w.path === caminho)).toEqual([
       {
         path: caminho,
@@ -1039,7 +1040,7 @@ describe('⛔ o braço ALREADY_EXISTS da criação: o merge nunca leva preço ne
     },
   );
 
-  it('SEM filho no ERP, models IGUAIS ⇒ o pai leva o preço (só a tabela normal) E a propagação LIGADA, num único patch GUARDADO depois do merge', async () => {
+  it('SEM filho no ERP, models IGUAIS ⇒ o pai leva o preço (só a tabela normal) E a propagação LIGADA, num único patch GUARDADO ANTES do merge', async () => {
     const db = new FakeDb();
     const paiId = semearPaiNaoVinculado(db, DO_OPERADOR);
 
@@ -1053,6 +1054,13 @@ describe('⛔ o braço ALREADY_EXISTS da criação: o merge nunca leva preço ne
     });
     expect(pai.propagatePriceToChildren).toBe(true);
     expect(pai.sku).toBe('CAM-001');
+    // ⛔ O patch vem ANTES do merge da corrida: guardado pela leitura que o braço
+    // fez do documento, que o próprio merge invalidaria se viesse primeiro.
+    const escritasNoPai = db.writes.filter((w) => w.path === `produtos/${paiId}`);
+    const iPatch = escritasNoPai.findIndex((w) => `precos.${TABELA_NORMAL_ID}` in w.patch);
+    const iMerge = escritasNoPai.findIndex((w) => 'sku' in w.patch);
+    expect(iPatch).toBeGreaterThanOrEqual(0);
+    expect(iMerge).toBeGreaterThan(iPatch);
     // O merge da corrida não levou nenhum dos dois; o patch guardado levou ambos.
     expect(escritasDePrecoNoPai(db, paiId)).toEqual([
       {
@@ -1132,7 +1140,7 @@ describe('⛔ o braço ALREADY_EXISTS da criação: o merge nunca leva preço ne
     },
   );
 
-  it('⛔ o patch da corrida é GUARDADO: um gravador CONCORRENTE entre a releitura e o patch ⇒ ele PERDE, o importador REPLANEJA, e preço e flag pousam uma vez só', async () => {
+  it('⛔ o patch da corrida é GUARDADO: um gravador CONCORRENTE entre a leitura do braço e o patch ⇒ ele PERDE, o importador REPLANEJA, e preço e flag pousam uma vez só', async () => {
     const db = new FakeDb();
     const paiId = semearPaiNaoVinculado(db, DO_OPERADOR);
     const caminho = `produtos/${paiId}`;
@@ -1141,7 +1149,7 @@ describe('⛔ o braço ALREADY_EXISTS da criação: o merge nunca leva preço ne
     vi.spyOn(db.falhasDeUpdate, 'get').mockImplementation((chave: string) => {
       if (chave === caminho && concorrentes > 0) {
         concorrentes -= 1;
-        // O operador salva o produto: o `updateTime` relido pelo braço vence.
+        // O operador salva o produto: o `updateTime` lido pelo braço vence.
         db.seed(caminho, { ...docDoProduto(db, paiId), ultimaModificacao: AGORA + 1 });
       }
       return original(chave);
