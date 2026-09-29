@@ -15,8 +15,8 @@
  *    line makes the function total over `unknown`: the web hands raw
  *    soft-read documents to the editor, and only the parse touches them.
  * 2. **The build order.** PIS, then COFINS, then ICMS (skipped when the item
- *    uses ISSQN — the XSD `ICMS | ISSQN` choice), as `buildImpostoXml` builds
- *    them. The engine stops at the first refusal; this lists every one, so the
+ *    uses ISSQN — the XSD `ICMS | ISSQN` choice), then the RTC `IS`, as
+ *    `buildImpostoXml` builds them. The engine stops at the first refusal; this lists every one, so the
  *    operator fixes them in one pass.
  *
  * Deliberately NOT modelled: which tier the engine SELECTS (the operação's
@@ -32,8 +32,10 @@ import {
   ALIQUOTA_PIS_COFINS_LIMITE,
   usaIssqn,
   vereditoIcmsSn,
+  vereditoIsRtc,
   vereditoPisCofins,
   type VereditoIcmsSn,
+  type VereditoIsRtc,
   type VereditoPisCofins,
 } from './regrasDeEmissao';
 import { impostoSchema } from './tribute';
@@ -125,6 +127,36 @@ function problemasIcms(v: VereditoIcmsSn): ProblemaDeEmissao[] {
 }
 
 /**
+ * The RTC `IS` is read only with the filial's Reforma Tributária switch on, and
+ * the editor cannot see that switch. A half-filled per-unit IS is refused at
+ * save anyway: the operator is filling it in now, and otherwise nothing would
+ * say so before the first emission with the switch on (#1696 review).
+ */
+function problemasIs(v: VereditoIsRtc): ProblemaDeEmissao[] {
+  switch (v.tipo) {
+    case 'adValorem':
+    case 'porUnidade':
+      return [];
+    case 'uTribAusente':
+      return [
+        {
+          campos: ['configuracaoIBSCBS.is.uTrib'],
+          mensagem:
+            'IS por unidade: preencha a unidade tributável (uTrib) junto com a quantidade (qTrib).',
+        },
+      ];
+    case 'semAliquota':
+      return [
+        {
+          campos: ['configuracaoIBSCBS.is.pIS'],
+          mensagem:
+            'IS: informe a alíquota ad valorem (pIS) ou a específica por unidade (pISEspec, qTrib e uTrib).',
+        },
+      ];
+  }
+}
+
+/**
  * The tier doc exactly as `resolverImposto.ts` hands it to `impostoSchema`. The
  * categoria and regra tiers store the legacy UPPERCASE `CFOP`, and the resolver
  * folds it into the lowercase `cfop` before parsing (a lowercase value, when
@@ -141,7 +173,7 @@ function comoOResolverLe(nivel: unknown): unknown {
 
 /**
  * Every refusal the NF-e engine would raise from this tier doc's config alone,
- * in build order (PIS, COFINS, ICMS). `[]` for a doc the engine would emit —
+ * in build order (PIS, COFINS, ICMS, IS). `[]` for a doc the engine would emit —
  * and for one it would never read (it fails `impostoSchema`, the engine's own
  * tier gate, after the resolver's legacy-`CFOP` fold), which includes any raw
  * value that is not a tier doc at all.
@@ -167,6 +199,8 @@ export function problemasDeEmissaoDoImposto(nivel: unknown): ProblemaDeEmissao[]
   if (!usaIssqn(imposto) && imposto.configuracaoICMS != null) {
     problemas.push(...problemasIcms(vereditoIcmsSn(imposto.configuracaoICMS)));
   }
+  const is = imposto.configuracaoIBSCBS?.is;
+  if (is != null) problemas.push(...problemasIs(vereditoIsRtc(is)));
   return problemas;
 }
 

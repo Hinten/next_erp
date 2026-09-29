@@ -1,7 +1,8 @@
 /**
  * **The emission rules a stored tax config must satisfy, decided from the
  * config alone** — the ICMS Simples Nacional choice (CRT → CSOSN → sub-config →
- * XSD sub-groups) and the PIS/COFINS group choice (CST → rate operands).
+ * XSD sub-groups), the PIS/COFINS group choice (CST → rate operands) and the
+ * IS value mode (ad valorem vs per unit).
  *
  * Each rule the engine applies to a config is decided here, and returns DATA —
  * a verdict — never text. The NF-e engine
@@ -34,6 +35,7 @@ import {
   type ConfICMSSN500,
   type ConfICMSSN900,
   type ConfiguracaoICMS,
+  type ConfiguracaoISRtc,
   type Crt,
   type Csosn,
   type CstPisCofins,
@@ -439,4 +441,49 @@ export function vereditoPisCofins(
       return { tipo: 'ok', grupo: 'Outr', cst, base: { modo: 'zero' } };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// IS (Imposto Seletivo, NT 2025.002): which value mode a config emits
+// ---------------------------------------------------------------------------
+
+/**
+ * What `buildIS` emits for a `configuracaoIBSCBS.is`, or why it cannot.
+ * `adValorem` and `porUnidade` carry the operands the XML is built from.
+ */
+export type VereditoIsRtc =
+  | { readonly tipo: 'adValorem'; readonly pIS: number }
+  | {
+      readonly tipo: 'porUnidade';
+      readonly pISEspec: number;
+      readonly qTrib: number;
+      readonly uTrib: string;
+    }
+  | { readonly tipo: 'uTribAusente' }
+  | { readonly tipo: 'semAliquota' };
+
+/**
+ * Which `<IS>` value mode a config emits. `pIS` wins (ad valorem, over
+ * `vBCIS`). Otherwise `pISEspec` + `qTrib` make a per-unit IS, and then `uTrib`
+ * is REQUIRED: in the XSD (PL_010f `TIS`) `uTrib` and `qTrib` are one
+ * sequence, both or neither, so a per-unit config without its unit is XML no
+ * pack accepts → `uTribAusente`. Neither mode → `semAliquota`.
+ *
+ * Where each is refused (#1696 review): the stored field is the lenient
+ * `configuracaoIBSCBSDraftSchema`, which accepts both on purpose, so the web
+ * editor reports them at save through `problemasDeEmissaoDoImposto`. At
+ * emission the strict `configuracaoISRtcSchema` (`parseRtcConfig`) refuses
+ * `semAliquota` first, and `buildIS` refuses `uTribAusente` from THIS verdict.
+ * The strict refine cannot call this function: `tribute.ts` would import a
+ * module that reads `tribute.ts`'s own enums at load time.
+ */
+export function vereditoIsRtc(
+  is: Pick<ConfiguracaoISRtc, 'pIS' | 'pISEspec' | 'qTrib' | 'uTrib'>,
+): VereditoIsRtc {
+  if (is.pIS != null) return { tipo: 'adValorem', pIS: is.pIS };
+  if (is.pISEspec != null && is.qTrib != null) {
+    if (is.uTrib == null || is.uTrib === '') return { tipo: 'uTribAusente' };
+    return { tipo: 'porUnidade', pISEspec: is.pISEspec, qTrib: is.qTrib, uTrib: is.uTrib };
+  }
+  return { tipo: 'semAliquota' };
 }
