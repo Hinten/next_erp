@@ -13,9 +13,9 @@
  * sweep route and `POST /emitir-lote` answer 500.
  *
  * Every code is a LITERAL, not `e.name`: it names the class even where the
- * class never sets `name` (`FirebaseFunctionsError` inherits `'Error'`, which
- * is what the batch path reported for it before it read this table), and it
- * cannot drift with a rename. For every other class it equals the `name` the
+ * class never sets `name` (`FirebaseFunctionsError` and `FirebaseAppError`
+ * inherit `'Error'`, which is what the batch path reported for them before it
+ * read this table), and it cannot drift with a rename. For every other class it equals the `name` the
  * batch path has always reported. A subclass is reported through its
  * parent — `NFeDocAusenteError` is an `'NFeOrchestratorError'` — and an entry
  * never follows one of its own parents, or the parent would shadow it
@@ -25,9 +25,11 @@
  * An Admin-SDK Firestore failure (an `Error` with a numeric gRPC code 1–16,
  * `isGrpcStatusError`) is `'FirestoreRpcError'`, checked after the table.
  */
+import { FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { ZodError } from 'zod';
 
+import { MissingRegionError } from '@delfrance/core/region';
 import { isGrpcStatusError } from '@delfrance/data/admin/grpcErrors';
 import {
   NFeCertError,
@@ -100,9 +102,19 @@ export const FALHAS_CONHECIDAS: ReadonlyArray<readonly [ClasseDeFalha, string]> 
   [NFeEventoError, 'NFeEventoError'],
   [NFeConsumoIndevidoError, 'NFeConsumoIndevidoError'],
   [NFeCartaCorrecaoError, 'NFeCartaCorrecaoError'],
-  // A stored doc that fails its schema; the Cloud Tasks enqueue.
+  // A stored doc that fails its schema.
   [ZodError, 'ZodError'],
+  // The Cloud Tasks enqueue (`tasks.ts`), which runs AFTER the lote was sent
+  // and its members persisted in flight on their nRec — so each of its
+  // failures must stay that member's report, never fail the batch. The Admin
+  // SDK wraps only an HTTP error reply in `FirebaseFunctionsError`; a network
+  // error, a timeout or a credential it could not mint a token for is a
+  // `FirebaseAppError` — a SIBLING class, not a subclass
+  // (`apps/functions/src/produtos/kitRollupTasks.ts` contains the same two).
+  // `MissingRegionError` is an unset `NFE_TASKS_REGION` (`requireRegion`).
   [FirebaseFunctionsError, 'FirebaseFunctionsError'],
+  [FirebaseAppError, 'FirebaseAppError'],
+  [MissingRegionError, 'MissingRegionError'],
 ];
 
 /** The code of an Admin-SDK Firestore failure — any non-OK gRPC status. */

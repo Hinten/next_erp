@@ -321,9 +321,10 @@ off a send still in flight (#1653); a `cartacorrecao` record with none is due at
 once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its four
 per-item catches follow rule 6 through ONE table (`orchestrator/falhas.ts`,
 `descreverFalhaConhecida`, #1654): a failure of a known class — the NF-e and
-orchestrator classes, `ZodError`, `FirebaseFunctionsError`, a Firestore gRPC
-error (`'FirestoreRpcError'`) — is recorded in `errors` with its message and the
-run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
+orchestrator classes, `ZodError`, the Cloud Tasks enqueue's
+`FirebaseFunctionsError` / `FirebaseAppError` / `MissingRegionError`, a
+Firestore gRPC error (`'FirestoreRpcError'`) — is recorded in `errors` with its
+message and the run goes on; an unknown class is a bug and is rethrown, so the run aborts loudly
 (the scheduled function fails and the next tick retries; the manual route
 answers 500) and the lotes after it wait for that retry. A new exported error
 class fails `falhas.test.ts` until it is placed in the table or listed as never
@@ -399,10 +400,13 @@ recovery table — a 204/635 anchor whose consSit later answers 217 turns
 `toEmitError`, which reads the sweep's table (`descreverFalhaConhecida`,
 `orchestrator/falhas.ts`): a known class is reported by its literal code — the
 `name` it always had, except that an enqueue failure is now
-`'FirebaseFunctionsError'` and an Admin-SDK Firestore failure
-`'FirestoreRpcError'`, both of which used to read `'Error'` — and
-`NFeConsumoIndevidoError` stays a per-member report. Any other class is a bug
-and is rethrown (rule 6): the batch rejects, `POST /emitir-lote` answers 500,
+`'FirebaseFunctionsError'` (an HTTP error reply) or `'FirebaseAppError'` (the
+network, a timeout, the credential) and an Admin-SDK Firestore failure
+`'FirestoreRpcError'`, all of which used to read `'Error'`. Every enqueue
+failure — `MissingRegionError` included — stays a per-member report, since the
+enqueue runs after the send, on members already in flight on their `nRec`; so
+does `NFeConsumoIndevidoError`. Any other class is a bug and is rethrown
+(rule 6): the batch rejects, `POST /emitir-lote` answers 500,
 and every other member's report in that request is lost with it. What that
 leaves behind: at prep, ONE bug aborts all ≤50 pedidos with nothing written or
 sent; at 4b (generate/sign) the chunk's healthy fresh members are already

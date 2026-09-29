@@ -9,7 +9,10 @@
  * fails the whole batch (#1654 §3).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
+
+import { MissingRegionError, requireRegion } from '@delfrance/core/region';
 
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
@@ -3151,4 +3154,77 @@ describe('#1654 §3 — toEmitError reports only known failure classes', () => {
       });
     }
   });
+
+  // The Admin SDK wraps only an HTTP error REPLY in FirebaseFunctionsError. A
+  // network error or timeout of the enqueue itself is a FirebaseAppError — a
+  // sibling class — and an unset NFE_TASKS_REGION a MissingRegionError. Both
+  // arrive after the lote was sent: filed as a bug, they would 500 the batch
+  // and drop every member's report, aprovadas of other chunks included.
+  it.each<[string, () => Promise<void>]>([
+    [
+      'FirebaseAppError',
+      () =>
+        Promise.reject(
+          new FirebaseAppError({
+            code: AppErrorCode.NETWORK_ERROR,
+            message: 'Error while making request: socket hang up. Error code: ECONNRESET',
+          }),
+        ),
+    ],
+    [
+      'MissingRegionError',
+      async () => {
+        // Exactly what `tasks.ts` does before it reaches the queue.
+        requireRegion({ NFE_TASKS_REGION: undefined });
+      },
+    ],
+  ])(
+    'an enqueue failing with %s after the send stays each member’s report inside the result — the batch does not reject',
+    async (codigo, enqueueConsulta) => {
+      const { fs, docs } = fakeFirestore({
+        events: [],
+        pedidos: [
+          { pedidoId: 'PED-1', filialId: 'F-1' },
+          { pedidoId: 'PED-2', filialId: 'F-1' },
+        ],
+      });
+      autorizarLoteAsync('RECIBO-1');
+      const falha = await enqueueConsulta().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(falha).toBeInstanceOf(
+        codigo === 'MissingRegionError' ? MissingRegionError : FirebaseAppError,
+      );
+      expect(falha).not.toBeInstanceOf(FirebaseFunctionsError);
+      const scheduler: TaskScheduler = {
+        enqueueConsulta,
+        async enqueueCceVinculo() {
+          /* emit path never enqueues a CC-e re-check */
+        },
+      };
+
+      const out = await emitirPedidosLote(
+        fs as never,
+        fakeRuntime(),
+        ['PED-1', 'PED-2'],
+        scheduler,
+      );
+
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+      expect(out.results).toEqual(
+        ['PED-1', 'PED-2'].map((pedidoId) => ({
+          pedidoId,
+          errorCode: codigo,
+          errorMessage: (falha as Error).message,
+        })),
+      );
+      for (const pedidoId of ['PED-1', 'PED-2']) {
+        expect(docs[nfePath(pedidoId)]).toMatchObject({
+          estado: ESTADO_NFE.aguardandoResposta,
+          nRec: 'RECIBO-1',
+        });
+      }
+    },
+  );
 });

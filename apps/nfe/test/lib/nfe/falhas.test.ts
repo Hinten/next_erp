@@ -15,15 +15,22 @@
  *  - an Admin-SDK Firestore failure (an `Error` with a numeric gRPC code
  *    1–16) is `'FirestoreRpcError'`; the near-misses stay out;
  *  - the backstop: every `*Error` class exported by
- *    `@delfrance/integrations-nfe` and by apps/nfe's `runtime.ts`, `tasks.ts`
- *    and `orchestrator/errors.ts` is either in the table (itself or through a
+ *    `@delfrance/integrations-nfe`, by apps/nfe's `runtime.ts`, `tasks.ts`
+ *    and `orchestrator/errors.ts`, and by the modules the Cloud Tasks enqueue
+ *    raises from (`@delfrance/core/region`, `firebase-admin/functions`,
+ *    `firebase-admin/app`) is either in the table (itself or through a
  *    parent) or in {@link NAO_REPORTAVEIS} with the reason it never reaches a
  *    reporting catch. A new exported class fails here until it is placed.
  */
 import { describe, expect, it } from 'vitest';
+import * as firebaseApp from 'firebase-admin/app';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import * as firebaseFunctions from 'firebase-admin/functions';
 import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import { ZodError } from 'zod';
 
+import * as regiao from '@delfrance/core/region';
+import { MissingRegionError, requireRegion } from '@delfrance/core/region';
 import * as nfe from '@delfrance/integrations-nfe';
 import {
   NFeConsumoIndevidoError,
@@ -44,6 +51,17 @@ import * as runtime from '../../../lib/nfe/runtime';
 import * as tasks from '../../../lib/nfe/tasks';
 
 type Classe = abstract new (...args: never[]) => Error;
+
+/** What `requireRegion` throws when `NFE_TASKS_REGION` is unset. */
+function regiaoAusente(): MissingRegionError {
+  try {
+    requireRegion({ NFE_TASKS_REGION: undefined });
+  } catch (e) {
+    if (e instanceof MissingRegionError) return e;
+    throw e;
+  }
+  throw new TypeError('requireRegion aceitou uma região ausente');
+}
 
 /** A REAL instance of `C`, built by its own constructor. */
 function instanciaDe(C: Classe): Error {
@@ -68,16 +86,31 @@ function instanciaDe(C: Classe): Error {
       FirebaseFunctionsError,
       () => new FirebaseFunctionsError({ code: 'unavailable', message: 'fila indisponível' }),
     ],
+    // As the Admin SDK's HttpClient builds it once its retries are spent.
+    [
+      FirebaseAppError,
+      () =>
+        new FirebaseAppError({
+          code: AppErrorCode.NETWORK_ERROR,
+          message: 'Error while making request: socket hang up. Error code: ECONNRESET',
+        }),
+    ],
+    // The very error an unset NFE_TASKS_REGION raises in `tasks.ts`.
+    [MissingRegionError, regiaoAusente],
   ]);
   const especial = especiais.get(C);
   return especial ? especial() : new (C as unknown as new (m: string) => Error)('falha de teste');
 }
 
 /**
- * Classes whose `name` is not their code: `FirebaseFunctionsError` never sets
- * one, so it inherits `'Error'` — the literal code is what names it.
+ * Classes whose `name` is not their code: `FirebaseFunctionsError` and
+ * `FirebaseAppError` never set one, so they inherit `'Error'` — the literal
+ * code is what names them.
  */
-const NAME_NAO_E_O_CODIGO: ReadonlySet<Classe> = new Set<Classe>([FirebaseFunctionsError]);
+const NAME_NAO_E_O_CODIGO: ReadonlySet<Classe> = new Set<Classe>([
+  FirebaseFunctionsError,
+  FirebaseAppError,
+]);
 
 /**
  * Exported error classes that are deliberately NOT in the table, keyed
@@ -112,6 +145,9 @@ const NAO_REPORTAVEIS: Readonly<Record<string, string>> = {
     'a presentation precondition of the DANFE routes (422) — never raised by emit, reconcile or the sweep',
   'orchestrator/errors:NFeCancelamentoError':
     'the cancelamento route’s own rejection (422) — never raised by emit, reconcile or the sweep',
+  'firebase-admin/app:FirebaseError':
+    'the Admin SDK’s base class, never thrown itself — tabling it would admit every product’s ' +
+    'error (auth, storage, …); only the enqueue’s own two subclasses are in the table',
 };
 
 /** Every class a module exports that extends `Error` — found by value, not by name. */
@@ -225,6 +261,10 @@ describe('backstop — every exported error class is placed', () => {
     ['runtime', runtime],
     ['tasks', tasks],
     ['orchestrator/errors', orquestrador],
+    // What `tasks.ts`'s enqueue raises — after the lote was sent.
+    ['core/region', regiao],
+    ['firebase-admin/functions', firebaseFunctions],
+    ['firebase-admin/app', firebaseApp],
   ];
   const exportadas = modulos.flatMap(([modulo, m]) =>
     classesDeErro(m).map(([nome, C]) => [`${modulo}:${nome}`, C] as const),
@@ -240,6 +280,10 @@ describe('backstop — every exported error class is placed', () => {
         'runtime:NFeRuntimeConfigError',
         'tasks:NFeTasksConfigError',
         'orchestrator/errors:NFeDocAusenteError',
+        'core/region:MissingRegionError',
+        'firebase-admin/functions:FirebaseFunctionsError',
+        'firebase-admin/app:FirebaseAppError',
+        'firebase-admin/app:FirebaseError',
       ]),
     );
   });
