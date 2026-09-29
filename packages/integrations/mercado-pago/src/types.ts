@@ -134,11 +134,22 @@ export const mpPaymentCardSchema = z
   })
   .passthrough();
 
-/** The `payer` block — the paying MP user. */
+/**
+ * The `payer` block — the paying MP user.
+ *
+ * ⚠️ `first_name` is ENRICHMENT for the payment-link tab (#367), not a key we
+ * depend on: Checkout Pro nulls the payer's personal data, so it is usually
+ * absent, and a Pix payment carries only the payer's BANK name elsewhere
+ * (`point_of_interaction.transaction_data.bank_info.payer.long_name`, which is
+ * deliberately not modelled). It carries `.catch(null)` for the same reason
+ * `metadata` does below: a value of the wrong type must cost us the name, never
+ * the WHOLE payment parse (the #1087 lesson in this file's header).
+ */
 export const mpPaymentPayerSchema = z
   .object({
     id: z.union([z.string(), z.number()]).nullable().optional(),
     email: z.string().nullable().optional(),
+    first_name: z.string().nullable().optional().catch(null),
   })
   .passthrough();
 
@@ -182,6 +193,24 @@ export const mpPaymentSchema = z
     description: z.string().nullable().optional(),
     collector_id: z.union([z.string(), z.number()]).nullable().optional(),
     payer: mpPaymentPayerSchema.nullable().optional(),
+    /**
+     * The `metadata` object of the preference that produced this payment (MP
+     * copies it onto the payment; keys arrive snake_cased). The payment-link
+     * flow stamps `link_id` there so a payment can be attributed to the
+     * `linkPgtoMercadoPago` doc that issued it (#367).
+     *
+     * ⚠️ ENRICHMENT ONLY, hence `.catch(null)`: a `metadata` of the wrong type
+     * (a string, an array…) must never fail the WHOLE payment parse — `parseOk`
+     * validates the full body, so one bad optional field would park a REAL
+     * payment exactly like #1087 did. Absent stays absent (the key is not
+     * written), garbage collapses to `null`, and either way the mapper simply
+     * attributes nothing.
+     *
+     * ⚠️ There is deliberately NO `additional_info` here. Legacy stamped the
+     * PEDIDO id into `additional_info.items[0].id`, so reading it back as a link
+     * id would attribute every legacy payment to a "link" named after its pedido.
+     */
+    metadata: z.record(z.string(), z.unknown()).nullable().optional().catch(null),
   })
   .passthrough();
 export type MpPayment = z.infer<typeof mpPaymentSchema>;

@@ -3,6 +3,7 @@ import type { Firestore as FirebaseAdminFirestore } from 'firebase-admin/firesto
 import {
   ESTADO_FRETE,
   FORMA_PAGAMENTO,
+  INTEGRACAO_TIPO,
   STATUS_PAGAMENTO,
   estadoFreteSchema,
   pagamentoSchema,
@@ -10,8 +11,10 @@ import {
   type Pagamento,
 } from '@delfrance/schemas';
 
+import { pedidoCollection } from './collections';
 import {
   PedidoReconcileNotFoundError,
+  canalDecideOEstado,
   reconcilePedidoEstado,
   reconcilePedidoFromPagamento,
 } from './pedidoReconcile';
@@ -593,6 +596,336 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     ).rejects.toBeInstanceOf(PedidoReconcileNotFoundError);
     expect(writes.sets).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Payment-link attribution (#367)                                           */
+/*                                                                            */
+/*  `linkPagamentoId` / `primeiroNomePagador` are server-stamped by the       */
+/*  Mercado Pago mapper. Unlike the GATEWAY_OWNED keys (overlaid from every   */
+/*  delivery) they are FILL-ONCE: the first delivery that carries a value     */
+/*  fixes it, and no later delivery — poorer, different or empty — may        */
+/*  overwrite or clear it.                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Two DISTINCT link ids in the `newDocId()` shape (20 chars, `[A-Za-z0-9]`) the schema requires. */
+const LINK_A = 'AbCdEfGhIjKlMnOpQrSt';
+const LINK_B = 'ZyXwVuTsRqPoNmLkJiHg';
+const PAG_PATH = 'pedidos/p1/pagamentos/pay1';
+
+type ChaveAtribuicao = 'linkPagamentoId' | 'primeiroNomePagador';
+
+/** One attribution key of a `Pagamento`, built without a computed key so the literal stays type-checked. */
+function atribuicao(key: ChaveAtribuicao, value: string | null): Partial<Pagamento> {
+  return key === 'linkPagamentoId' ? { linkPagamentoId: value } : { primeiroNomePagador: value };
+}
+
+/** [key, a value ALREADY stored, a DIFFERENT value a later delivery carries]. */
+const ATRIBUICOES: Array<[ChaveAtribuicao, string, string]> = [
+  ['linkPagamentoId', LINK_A, LINK_B],
+  ['primeiroNomePagador', 'Maria', 'Joana'],
+];
+
+/** A pedido awaiting payment plus a stored pagamento at the OLD provider watermark. */
+const pedidoComPagamentoGravado = (guardado: Record<string, unknown>) => ({
+  'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+  [PAG_PATH]: {
+    valor: 40,
+    status_pagamento: STATUS_PAGAMENTO.pendente,
+    ultimaModificacao: T_OLD,
+    lastProviderUpdate: T_OLD,
+    ...guardado,
+  },
+});
+
+/** A NEWER delivery (it wins the update-if-newer guard) that pays the pedido in full. */
+const entregaMaisNova = (extra: Partial<Pagamento> = {}): Pagamento =>
+  mkPagamento({
+    valor: 100,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    ultimaModificacao: T_NEW,
+    lastProviderUpdate: T_NEW,
+    ...extra,
+  });
+
+describe('reconcilePedidoFromPagamento — payment-link attribution is fill-once (#367)', () => {
+  describe('UPDATE of a stored pagamento', () => {
+    it.each(ATRIBUICOES)(
+      '%s: a stored value survives a NEWER delivery that carries a different one',
+      async (key, guardado, outro) => {
+        const { db, store } = makeDb(pedidoComPagamentoGravado({ [key]: guardado }));
+
+        const result = await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(atribuicao(key, outro)),
+        });
+
+        // The delivery WAS applied — so what follows is the overlay's decision, not a stale skip…
+        expect(result).toEqual({ transition: 'pago', skippedStale: false });
+        expect(store[PAG_PATH]).toMatchObject({
+          valor: 100,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          lastProviderUpdate: T_NEW,
+        });
+        // …and the first observation still stands (a plain GATEWAY_OWNED overlay would hold `outro`).
+        expect(store[PAG_PATH]![key]).toBe(guardado);
+      },
+    );
+
+    it.each(ATRIBUICOES)(
+      '%s: a doc that never had the key is filled by the first delivery that carries it',
+      async (key, _guardado, valor) => {
+        const { db, store } = makeDb(pedidoComPagamentoGravado({}));
+
+        await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(atribuicao(key, valor)),
+        });
+
+        expect(store[PAG_PATH]![key]).toBe(valor);
+      },
+    );
+
+    it.each(ATRIBUICOES)(
+      '%s: an explicit stored null counts as empty (NEAR-MISS for an `=== undefined` check)',
+      async (key, _guardado, valor) => {
+        const { db, store } = makeDb(pedidoComPagamentoGravado({ [key]: null }));
+
+        await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(atribuicao(key, valor)),
+        });
+
+        expect(store[PAG_PATH]![key]).toBe(valor);
+      },
+    );
+
+    it.each(ATRIBUICOES)(
+      '%s: a newer delivery WITHOUT the key does not clear the stored one',
+      async (key, guardado) => {
+        const { db, store } = makeDb(pedidoComPagamentoGravado({ [key]: guardado }));
+
+        const result = await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(),
+        });
+
+        expect(result.skippedStale).toBe(false);
+        expect(store[PAG_PATH]![key]).toBe(guardado);
+      },
+    );
+
+    it.each(ATRIBUICOES)(
+      '%s: an explicit null on a newer delivery does not clear the stored one either',
+      async (key, guardado) => {
+        const { db, store } = makeDb(pedidoComPagamentoGravado({ [key]: guardado }));
+
+        await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(atribuicao(key, null)),
+        });
+
+        expect(store[PAG_PATH]![key]).toBe(guardado);
+      },
+    );
+
+    it('decides the two keys independently — a stored link id does not freeze an empty first name', async () => {
+      const { db, store } = makeDb(pedidoComPagamentoGravado({ linkPagamentoId: LINK_A }));
+
+      await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: entregaMaisNova({ linkPagamentoId: LINK_B, primeiroNomePagador: 'Joana' }),
+      });
+
+      expect(store[PAG_PATH]).toMatchObject({
+        linkPagamentoId: LINK_A,
+        primeiroNomePagador: 'Joana',
+      });
+    });
+
+    it('…and a stored first name does not freeze an empty link id', async () => {
+      const { db, store } = makeDb(pedidoComPagamentoGravado({ primeiroNomePagador: 'Maria' }));
+
+      await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: entregaMaisNova({ linkPagamentoId: LINK_B, primeiroNomePagador: 'Joana' }),
+      });
+
+      expect(store[PAG_PATH]).toMatchObject({
+        linkPagamentoId: LINK_B,
+        primeiroNomePagador: 'Maria',
+      });
+    });
+
+    it('NEAR-MISS: a STALE delivery carrying an attribution fills nothing and writes nothing', async () => {
+      // Same watermark as the stored doc → the update-if-newer guard drops the
+      // delivery whole, attribution included; the next fresh event fills it.
+      const { db, store, writes } = makeDb(pedidoComPagamentoGravado({}));
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: entregaMaisNova({
+          lastProviderUpdate: T_OLD,
+          linkPagamentoId: LINK_A,
+          primeiroNomePagador: 'Maria',
+        }),
+      });
+
+      expect(result).toEqual({ transition: null, skippedStale: true });
+      expect(writes.sets).toHaveLength(0);
+      expect(writes.updates).toHaveLength(0);
+      expect(store[PAG_PATH]).not.toHaveProperty('linkPagamentoId');
+      expect(store[PAG_PATH]).not.toHaveProperty('primeiroNomePagador');
+    });
+
+    it('still overlays the GATEWAY_OWNED fields while it keeps the attribution', async () => {
+      // The fill-once loop is a SIBLING of the gateway overlay, not a replacement.
+      const { db, store } = makeDb(
+        pedidoComPagamentoGravado({ linkPagamentoId: LINK_A, primeiroNomePagador: 'Maria' }),
+      );
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: entregaMaisNova({ linkPagamentoId: LINK_B, primeiroNomePagador: 'Joana' }),
+      });
+
+      expect(result.transition).toBe('pago');
+      expect(store[PAG_PATH]).toMatchObject({
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        lastProviderUpdate: T_NEW,
+        linkPagamentoId: LINK_A,
+        primeiroNomePagador: 'Maria',
+      });
+    });
+  });
+
+  describe('CREATE of a new pagamento', () => {
+    /** A fresh seed per test: the fake store is seeded by reference. */
+    const pedidoAguardando = () => ({
+      'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },
+    });
+
+    it('persists the attribution the mapper derived', async () => {
+      const { db, store } = makeDb(pedidoAguardando());
+
+      await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: entregaMaisNova({ linkPagamentoId: LINK_A, primeiroNomePagador: 'Maria' }),
+      });
+
+      expect(store[PAG_PATH]).toMatchObject({
+        linkPagamentoId: LINK_A,
+        primeiroNomePagador: 'Maria',
+      });
+    });
+
+    it.each(ATRIBUICOES)(
+      '%s: a delivery without it writes a doc with NO such key (not null, not undefined)',
+      async (key) => {
+        const { db, store } = makeDb(pedidoAguardando());
+
+        await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(),
+        });
+
+        // `in`, not `=== undefined`: an `undefined` value would be rejected by the Admin
+        // SDK and a `null` would show up as a spurious change in the modification history.
+        expect(key in store[PAG_PATH]!).toBe(false);
+      },
+    );
+
+    it.each(ATRIBUICOES)(
+      '%s: a delivery carrying only this key does not invent the other',
+      async (key, _guardado, valor) => {
+        const { db, store } = makeDb(pedidoAguardando());
+        const outra: ChaveAtribuicao =
+          key === 'linkPagamentoId' ? 'primeiroNomePagador' : 'linkPagamentoId';
+
+        await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: entregaMaisNova(atribuicao(key, valor)),
+        });
+
+        expect(store[PAG_PATH]![key]).toBe(valor);
+        expect(outra in store[PAG_PATH]!).toBe(false);
+      },
+    );
+  });
+});
+
+describe('canalDecideOEstado — exported for the payment-link route (#367)', () => {
+  const REF_INT1 = 'documents/integracao/int1';
+
+  /**
+   * Runs the gate exactly as a caller does: inside ITS OWN transaction, on ITS OWN
+   * pedido read. `ref` is the pedido's `integracaoPedidoOuterRef` (key omitted when
+   * `undefined`); `integracao` is the doc that ref points at (not seeded when `null`).
+   */
+  const decide = (
+    ref: unknown,
+    integracao: Record<string, unknown> | null = null,
+  ): Promise<boolean> => {
+    const { db } = makeDb({
+      'pedidos/p1': {
+        estado: 'carrinho',
+        valorCobrado: 10,
+        ...(ref === undefined ? {} : { integracaoPedidoOuterRef: ref }),
+      },
+      ...(integracao === null ? {} : { 'integracao/int1': integracao }),
+    });
+    return db.runTransaction(async (tx) =>
+      canalDecideOEstado(tx, db, await tx.get(pedidoCollection.docRef(db, {}, PEDIDO_ID))),
+    );
+  };
+
+  it.each([
+    ['mercadoLivre', INTEGRACAO_TIPO.mercadoLivre],
+    ['shopee', INTEGRACAO_TIPO.shopee],
+    ['magalu', INTEGRACAO_TIPO.magalu],
+    ['amazon', INTEGRACAO_TIPO.amazon],
+  ])('the %s channel decides the estado', async (_canal, tipo) => {
+    await expect(decide(REF_INT1, { tipo })).resolves.toBe(true);
+  });
+
+  it.each([
+    ['nenhuma', INTEGRACAO_TIPO.nenhuma],
+    ['whatsapp', INTEGRACAO_TIPO.whatsapp],
+    ['balcao', INTEGRACAO_TIPO.balcao],
+  ])('NEAR-MISS: the %s channel does not', async (_canal, tipo) => {
+    await expect(decide(REF_INT1, { tipo })).resolves.toBe(false);
+  });
+
+  it('a pedido with no integração at all was never written by a marketplace importer', async () => {
+    await expect(decide(undefined)).resolves.toBe(false);
+  });
+
+  it('a ref that is not a string reads as no integração (not as a marketplace)', async () => {
+    await expect(decide(123)).resolves.toBe(false);
+  });
+
+  it.each([
+    ['the integração no longer exists', null],
+    ['its tipo is outside the enum', { tipo: 99 }],
+    ['its tipo is missing', {}],
+  ])('fails CLOSED when %s', async (_caso, integracao) => {
+    // A ref that is SET but cannot be resolved is not the same as "no integração":
+    // the sibling test above answers false for that, this one answers true.
+    await expect(decide(REF_INT1, integracao)).resolves.toBe(true);
   });
 });
 

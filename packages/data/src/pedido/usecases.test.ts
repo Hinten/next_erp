@@ -4,6 +4,7 @@ import {
   ESTADO_PEDIDO,
   estadoFreteSchema,
   pedidoMeta,
+  podeGerarLinkPagamento,
   valorDevolvido,
 } from '@delfrance/schemas';
 import type { EstadoFrete, Pedido } from '@delfrance/schemas';
@@ -818,6 +819,39 @@ describe('nextPedidoEstado (rule table)', () => {
     // Partially paid (refund) on a refund state → must NOT erase it.
     expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50)).toBeNull();
     expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0)).toBeNull();
+  });
+
+  describe('the payment-link allow-list stays inside the payment-driven estados (#367)', () => {
+    // `podeGerarLinkPagamento` lives in `@delfrance/schemas` and `AUTO_ESTADO_SOURCES`
+    // (private here) lives with `nextPedidoEstado`: two lists that must agree, in two
+    // packages, with no import edge between them. A link is only useful if paying it
+    // can settle the pedido, so this pins the one direction that matters — every
+    // estado that may generate a link must be one a full payment settles to `pago`.
+    const geraveis = Object.values(ESTADO_PEDIDO).filter((estado) =>
+      podeGerarLinkPagamento(estado),
+    );
+
+    it('finds the estados to check (guards a vacuous loop over an emptied allow-list)', () => {
+      expect(geraveis.length).toBeGreaterThan(0);
+    });
+
+    it.each(geraveis)('%s: a payment covering the total settles it to pago', (estado) => {
+      expect(nextPedidoEstado(estado, 100, 100)?.estado).toBe(ESTADO_PEDIDO.pago);
+    });
+
+    it.each([
+      ESTADO_PEDIDO.cancelado,
+      ESTADO_PEDIDO.finalizado,
+      ESTADO_PEDIDO.fraude,
+      ESTADO_PEDIDO.processandoCancelamento,
+      ESTADO_PEDIDO.estornadoParcialmente,
+      ESTADO_PEDIDO.estornadoIntegralmente,
+    ])('NEAR-MISS: %s is not payment-driven, so it is NOT in the link allow-list', (estado) => {
+      // The invariant above bites only if these really fail it: a full payment moves
+      // none of them, so a link generated there could never settle the pedido.
+      expect(nextPedidoEstado(estado, 100, 100)).toBeNull();
+      expect(podeGerarLinkPagamento(estado)).toBe(false);
+    });
   });
 });
 

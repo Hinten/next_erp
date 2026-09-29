@@ -145,3 +145,38 @@ describe('clausesForSchema(pagamentoSchema) — the step-6 marketplace fields', 
     expect(fields).toContain('tarifas');
   });
 });
+
+/**
+ * #367 stamps two server-owned attribution fields on `pagamentoSchema` (which
+ * Mercado Pago link settled a payment, and the payer's FIRST name). Each costs
+ * one clause in `v_pedidos_pagamentos` — in BOTH rulesets and both snapshots —
+ * and the size bound is the only shape the rules enforce on them, since the
+ * `serverOwnedFields` guard denies every client write anyway. Pinned here, at
+ * the generator, so a schema edit that loosens either bound reads as a test
+ * failure and not as a snapshot diff someone refreshes with `-u`.
+ */
+describe('clausesForSchema(pagamentoSchema) — the link-attribution fields (#367)', () => {
+  it('bounds linkPagamentoId to 20 characters (the newDocId() shape) and lets null through', () => {
+    expect(exprOf(pagamentoSchema, 'linkPagamentoId')).toBe(
+      "(!c.hasAny(['linkPagamentoId']) || (d.get('linkPagamentoId', null) == null || d.get('linkPagamentoId', null) is string && d.get('linkPagamentoId', null).size() <= 20))",
+    );
+  });
+
+  it('bounds primeiroNomePagador to 20 characters and lets null through', () => {
+    expect(exprOf(pagamentoSchema, 'primeiroNomePagador')).toBe(
+      "(!c.hasAny(['primeiroNomePagador']) || (d.get('primeiroNomePagador', null) == null || d.get('primeiroNomePagador', null) is string && d.get('primeiroNomePagador', null).size() <= 20))",
+    );
+  });
+
+  it('adds exactly those two size-bounded string clauses beside the existing nFat one', () => {
+    // Exhaustive, not `toContain`: a third string field that gained a bound (or
+    // either of these losing it) changes the ruleset size and must be deliberate.
+    const bounded = clausesForSchema(pagamentoSchema)
+      .filter((cl) => cl.expr.includes('.size() <='))
+      .map((cl) => cl.field);
+    expect(bounded).toEqual(['linkPagamentoId', 'nFat', 'primeiroNomePagador']);
+    // The anchor: the pre-existing 60-character bound is untouched, so the two
+    // 20s above are per-field bounds and not a shared one applied to every string.
+    expect(exprOf(pagamentoSchema, 'nFat')).toContain('.size() <= 60');
+  });
+});

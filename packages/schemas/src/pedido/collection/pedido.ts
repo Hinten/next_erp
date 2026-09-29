@@ -525,6 +525,8 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
+    // Mercado Pago Checkout Pro links (#367) — the legacy leaf, serverOwned.
+    { path: 'pedidos/{pedidoId}/linkPgtoMercadoPago', onDelete: 'cascade' },
     // Freight-history / checkout / checkin subcollections, all three reusing
     // the legacy leaf names, which is where the migrated corpus sits. The new app
     // writes two of them: `checkout` (saveCheckout, schema

@@ -12,6 +12,7 @@ export {
 } from './deleteSubtree';
 
 export {
+  canalDecideOEstado,
   reconcilePedidoEstado,
   reconcilePedidoFromPagamento,
   PedidoReconcileNotFoundError,

@@ -84,6 +84,65 @@ describe('pagamentoSchema', () => {
     expect(pagamentoMeta.serverOwnedFields).toContain('lastProviderUpdate');
   });
 
+  // #367 — the link attribution `apps/mercado-pago` stamps on a payment. Same
+  // shape as `lastProviderUpdate` and for the same reason: a `.default(null)`
+  // would write `null` keys into every marketplace pagamento, and absent → null
+  // reads as a modification in the history diff.
+  describe('link attribution (linkPagamentoId / primeiroNomePagador) — #367', () => {
+    const LINK_ID = '0123456789abcdefABCD';
+
+    it('leaves both keys ABSENT when omitted (never defaults them to null)', () => {
+      const out = pagamentoSchema.parse({ valor: 1 });
+      expect('linkPagamentoId' in out).toBe(false);
+      expect('primeiroNomePagador' in out).toBe(false);
+    });
+
+    it('accepts null for both (a server write that clears nothing yet)', () => {
+      const out = pagamentoSchema.parse({
+        valor: 1,
+        linkPagamentoId: null,
+        primeiroNomePagador: null,
+      });
+      expect(out.linkPagamentoId).toBeNull();
+      expect(out.primeiroNomePagador).toBeNull();
+    });
+
+    it('keeps a supplied value, and survives the strict write re-parse', () => {
+      const doc = { valor: 1, linkPagamentoId: LINK_ID, primeiroNomePagador: 'Maria' };
+      const out = pagamentoSchema.parse(doc);
+      expect(out.linkPagamentoId).toBe(LINK_ID);
+      expect(out.primeiroNomePagador).toBe('Maria');
+      // `parseForWrite` re-parses `.strict()` when the lenient parse dropped a
+      // key: a key the schema does not model would THROW inside the reconcile
+      // transaction and park a real payment.
+      expect(pagamentoSchema.strict().safeParse(doc).success).toBe(true);
+    });
+
+    it('bounds primeiroNomePagador to 1..20 characters', () => {
+      const parse = (nome: string) =>
+        pagamentoSchema.safeParse({ valor: 1, primeiroNomePagador: nome }).success;
+      expect(parse('A'.repeat(20))).toBe(true);
+      expect(parse('A'.repeat(21))).toBe(false);
+      expect(parse('')).toBe(false);
+    });
+
+    it('accepts only a 20-character alphanumeric linkPagamentoId', () => {
+      const parse = (id: string) =>
+        pagamentoSchema.safeParse({ valor: 1, linkPagamentoId: id }).success;
+      expect(parse(LINK_ID)).toBe(true);
+      expect(parse(LINK_ID.slice(0, 19))).toBe(false);
+      expect(parse(`${LINK_ID}x`)).toBe(false);
+      expect(parse(`a/b${LINK_ID.slice(3)}`)).toBe(false);
+      expect(parse('')).toBe(false);
+    });
+
+    it('lists both as server-owned, next to lastProviderUpdate', () => {
+      expect(pagamentoMeta.serverOwnedFields).toContain('linkPagamentoId');
+      expect(pagamentoMeta.serverOwnedFields).toContain('primeiroNomePagador');
+      expect(pagamentoMeta.serverOwnedFields).toContain('lastProviderUpdate');
+    });
+  });
+
   // No `.passthrough()` (#463): an unmodeled key is stripped on a lenient
   // parse (the read path, `parseSoftRead` in `@delfrance/data`) — this is what
   // keeps a legacy corpus doc carrying a since-retired field readable (root

@@ -42,7 +42,9 @@ export class PedidoReconcileNotFoundError extends Error {
  * `metodoPagamentoOuterRef` / `dataCadastro`, …). Without the inversion a
  * redelivery would rebuild the doc from the mapper output and wipe those edits.
  * `lastProviderUpdate` is the update-if-newer key. `ultimaModificacao` remains
- * local recency and is made monotonic on every winning write.
+ * local recency and is made monotonic on every winning write. The server-stamped
+ * attribution keys are NOT here — they follow the opposite rule, see
+ * {@link GATEWAY_FILL_ONCE}.
  */
 const GATEWAY_OWNED = [
   'valor',
@@ -56,6 +58,31 @@ const GATEWAY_OWNED = [
   'aVista',
   'forma_de_pagamento',
 ] as const;
+
+/**
+ * The server-stamped ATTRIBUTION keys (#367): which payment link a Mercado Pago
+ * payment came from and the payer's first name. Filled from the FIRST delivery
+ * that carries a value and never overwritten or cleared afterwards — the
+ * deliberate opposite of {@link GATEWAY_OWNED}, which overlays every defined
+ * incoming value.
+ *
+ * Why they are NOT in `GATEWAY_OWNED`: that loop would let any later delivery
+ * rewrite them, and a later delivery is exactly the one most likely to be
+ * poorer — a redelivery whose mapper could not read `metadata.link_id` (or a
+ * card-less state of the same payment) arrives with the key absent, and a
+ * mapper that ever produced a DIFFERENT value would silently re-attribute money
+ * already credited to another link. The attribution answers "who paid what",
+ * which the first observation fixes for good. The two keys are also
+ * `serverOwnedFields` on `pagamentoMeta`, so no operator edit can have put a
+ * competing value in the stored doc.
+ *
+ * The fill condition is `stored == null && incoming != null`, i.e. an ABSENT
+ * stored key and an explicit `null` behave the same (both are "not filled yet").
+ * A stale delivery (`lastProviderUpdate` not newer) returns before this runs, so
+ * an attribution can only be filled by a delivery that is also fresh enough to
+ * win the update-if-newer guard — the next real event fills it.
+ */
+const GATEWAY_FILL_ONCE = ['linkPagamentoId', 'primeiroNomePagador'] as const;
 
 /**
  * One pagamento doc as far as the coverage sum is concerned: `valor` (0 when not
@@ -161,7 +188,9 @@ function applyEstadoTransition(
  *  4. upserts the incoming pagamento at the FIXED id `pagamentoId`: on an UPDATE
  *     the merge is INVERTED — the stored doc is the base and only the
  *     {@link GATEWAY_OWNED} fields are overlaid from the incoming pagamento, so
- *     operator-edited fields (nFat, vencimento, juros, …) survive a redelivery;
+ *     operator-edited fields (nFat, vencimento, juros, …) survive a redelivery,
+ *     and the {@link GATEWAY_FILL_ONCE} attribution keys (`linkPagamentoId`,
+ *     `primeiroNomePagador`) are filled only while still empty;
  *     a CREATE writes the full mapped doc and mints `dataCadastro`;
  *  5. recomputes the valor quitado from the in-tx set (with the upserted
  *     payment's incoming values) via the shared `coberturaDoPedido` rule: the
@@ -245,6 +274,12 @@ export async function reconcilePedidoFromPagamento(
       toWrite = { ...existingData };
       for (const key of GATEWAY_OWNED) {
         if (incoming[key] !== undefined) toWrite[key] = incoming[key];
+      }
+      // The attribution keys are decided from the stored side, which is the
+      // in-tx `existing` snapshot above (root CLAUDE.md rule 7): a value already
+      // stored wins over whatever this delivery carries.
+      for (const key of GATEWAY_FILL_ONCE) {
+        if (toWrite[key] == null && incoming[key] != null) toWrite[key] = incoming[key];
       }
     } else {
       // CREATE — the full mapped doc, plus the first-seen `dataCadastro` stamp
@@ -399,8 +434,17 @@ export async function reconcilePedidoEstado(
  * pagamento change, fixable by hand); the cost of the opposite is a stranded or
  * prematurely-`pago` marketplace order. A pedido with no integração at all was
  * never written by a marketplace importer, so it proceeds.
+ *
+ * Exported for the Mercado Pago payment-link route (#367, `apps/mercado-pago`),
+ * which needs the SAME answer before it mints a link: {@link
+ * reconcilePedidoFromPagamento} carries no such gate, so a link payment landing
+ * on a marketplace pedido would settle it straight to `pago` and authorize
+ * dispatch past the channel's own ladder (the #703 / #791 hazard). The route
+ * MUST call this with the `tx` and `pedidoSnap` of ITS OWN transaction — the
+ * answer is a decision, and a value read before the transaction is exactly what
+ * rule 7 says a race makes stale.
  */
-async function canalDecideOEstado(
+export async function canalDecideOEstado(
   tx: Transaction,
   db: FirebaseAdminFirestore,
   pedidoSnap: DocumentSnapshot,
