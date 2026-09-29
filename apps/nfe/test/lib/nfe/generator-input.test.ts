@@ -11,6 +11,7 @@ import {
   FORMA_PAGAMENTO,
   GRUPO_AJUSTE_RTC,
   INTEGRACAO_TIPO,
+  UF_SIGLA,
   freteDoPedidoSchema,
   pagamentoSchema,
   type Endereco,
@@ -1019,6 +1020,17 @@ describe('isInterstateFor — delivery UF over fiscal UF (#422)', () => {
   it.each(CASES)('%s → interstate %s', (_label, dest, entrega, expected) => {
     expect(isInterstateFor(bundleWith(OP, {}, { dest }, entrega))).toBe(expected);
   });
+
+  it('an export ignores the delivery UF: a forwarder in the emitente UF still picks cfopInterestadual', () => {
+    // idDest=3 is decided by ehExterior alone, so the delivery UF must not pick
+    // the CFOP either — SP here would have meant `cfop` beside idDest=3.
+    const exportacao = { ...OP, ehExterior: true };
+    expect(isInterstateFor(bundleWith(exportacao, {}, { dest: 'EX' }, outroEndereco('SP')))).toBe(
+      true,
+    );
+    // Near-miss: the same bundle as a domestic sale does follow the delivery UF.
+    expect(isInterstateFor(bundleWith(OP, {}, { dest: 'EX' }, outroEndereco('SP')))).toBe(false);
+  });
 });
 
 describe('assertNotaBuildable — the delivery address (#422)', () => {
@@ -1079,6 +1091,42 @@ describe('assertNotaBuildable — the delivery address (#422)', () => {
     expect(msg).toMatch(/^pedido 'PED-TEST': delivery address — /);
     expect(msg).toContain("is not a município of UF 'RJ'");
   });
+
+  describe('an export (ehExterior) has no delivery address', () => {
+    const exportacao = { ...OP, ehExterior: true };
+    /** A foreign buyer: no CPF/CNPJ, so no `<entrega>` recebedor exists. */
+    const estrangeiro = { tipo: '2', cpf_cnpj: null, idEstrangeiro: 'P123456', nome: 'Buyer' };
+    const entregaExterior: EntregaDoPedido = {
+      tipo: 'outroEndereco',
+      path: 'clientes/C-1/enderecos/E-EX',
+      endereco: {
+        ...enderecoEntrega('SP'),
+        estado: 'EX',
+        codigoMunicipio: '9999999',
+        cep: null,
+      } as unknown as Endereco,
+    };
+    const exportBundle = (entrega: EntregaDoPedido) =>
+      ({
+        ...bundleWith(exportacao, {}, { dest: 'EX' }, entrega),
+        cliente: estrangeiro,
+      }) as PedidoBundle;
+
+    it('a separate foreign delivery address is not refused', () => {
+      expect(assertNotaBuildable(exportBundle(entregaExterior), items, false)).toBeUndefined();
+      // Near-miss: the same address on a domestic sale reaches buildEntrega and
+      // is refused — the export is exempt, not the address valid.
+      const domestico = { ...exportBundle(entregaExterior), operacao: OP } as PedidoBundle;
+      expect(orchestratorMessage(() => assertNotaBuildable(domestico, items, false))).toMatch(
+        /^pedido 'PED-TEST': delivery address — /,
+      );
+    });
+
+    it('an unreadable delivery ref refuses nothing — the export never reads it', () => {
+      const irresolvivel: EntregaDoPedido = { tipo: 'irresolvivel', motivo: 'motivo X' };
+      expect(assertNotaBuildable(exportBundle(irresolvivel), items, false)).toBeUndefined();
+    });
+  });
 });
 
 describe('buildGeneratorInput — enderecoEntrega (#422)', () => {
@@ -1095,6 +1143,21 @@ describe('buildGeneratorInput — enderecoEntrega (#422)', () => {
     const input = build(entregaBundle({ tipo: 'enderecoFiscal' }));
     expect('enderecoEntrega' in input).toBe(false);
     expect(input.itens[0]!.CFOP).toBe('5102');
+  });
+
+  it('an export sets no enderecoEntrega and keeps cfopInterestadual, even delivered in SP', () => {
+    const exportacao = {
+      ...entregaBundle(outroEndereco('SP')),
+      operacao: { ...fullBundle({}).operacao, ehExterior: true },
+      enderecoDest: { estado: UF_SIGLA.EX },
+    } as PedidoBundle;
+    // `exporta` needs the sede city; nothing else of the export path is under test.
+    const input = build({
+      ...exportacao,
+      filial: { sede: { estado: 'SP', cidade: 'Sao Paulo' } },
+    } as unknown as PedidoBundle);
+    expect('enderecoEntrega' in input).toBe(false);
+    expect(input.itens[0]!.CFOP).toBe('6102');
   });
 });
 
