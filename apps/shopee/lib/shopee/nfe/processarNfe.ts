@@ -796,8 +796,14 @@ const DESFECHOS_DE_ALERTA: ReadonlySet<DesfechoNfeShopee> = new Set<DesfechoNfeS
   DESFECHO_NFE_SHOPEE.erroFinal,
 ]);
 
-/** Log-only motivos that still deserve a `warn`: someone set something wrong. */
-const MOTIVOS_DE_ALERTA: ReadonlySet<MotivoNfeShopee> = new Set<MotivoNfeShopee>([
+/**
+ * Log-only motivos that still deserve a `warn`: someone set something wrong.
+ *
+ * EXPORTED because the approval trigger (`functions/src/onNfeAprovadaShopee.ts`)
+ * logs its own discards through this same set — reconcile R-o's
+ * `emissao-bloqueada` is a `warn` on both surfaces, never decided twice.
+ */
+export const MOTIVOS_DE_ALERTA: ReadonlySet<MotivoNfeShopee> = new Set<MotivoNfeShopee>([
   MOTIVO_NFE_SHOPEE.emissaoBloqueada,
   MOTIVO_NFE_SHOPEE.configuracaoDoApp,
   MOTIVO_NFE_SHOPEE.tasksDesabilitadas,

@@ -16,7 +16,9 @@ import {
   MOTIVO_NFE_SHOPEE,
   ShopeeNfeUploadTasksDisabledError,
   fraseDoErroDoAviso,
+  type MotivoNfeShopee,
 } from '../../lib/shopee/nfe/errosNfe';
+import { MOTIVOS_DE_ALERTA } from '../../lib/shopee/nfe/processarNfe';
 import type {
   AgendadorNfeShopee,
   OpcoesDeEnfileiramentoNfe,
@@ -296,15 +298,51 @@ describe('T2/T3 — UMA leitura e a PROVA de posse', () => {
     );
   });
 
-  it('`bloquearEmissaoNFe` ⇒ `emissao-bloqueada`, nada enfileirado', async () => {
+  it('`bloquearEmissaoNFe` ⇒ `emissao-bloqueada`, nada enfileirado — e a linha é `warn` (R-o)', async () => {
+    // The pedido is never enqueued, so the handler's own `warn` never runs:
+    // this line is the ONLY signal that an approved note will not reach Shopee.
     db.seed(PEDIDO_PATH, pedidoRaw({ bloquearEmissaoNFe: true }));
 
     await tratar(undefined, nfe());
 
     expect(chamadas).toEqual([]);
-    expect(((info.mock.calls[0] as unknown[])[1] as Record<string, unknown>).motivo).toBe(
-      MOTIVO_NFE_SHOPEE.emissaoBloqueada,
-    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalled();
+    expect((warn.mock.calls[0] as unknown[])[1]).toEqual({
+      pedidoId: PEDIDO_ID,
+      nfeId: NFE_ID,
+      motivo: MOTIVO_NFE_SHOPEE.emissaoBloqueada,
+    });
+  });
+
+  it('PAR / QUASE-IGUAL: o nível do descarte vem do `MOTIVOS_DE_ALERTA` do handler — `nao-shopee` e `pedido-nao-encontrado` ficam `info`', async () => {
+    // Every discard T3 can produce, at the level the handler's set gives it:
+    // PAIR = the handler and the trigger agree on `emissao-bloqueada` (warn);
+    // NEAR-MISS = the other two T3 motivos stay info, not warn.
+    const casos: [DocData | null, string, 'warn' | 'info'][] = [
+      [pedidoRaw({ bloquearEmissaoNFe: true }), MOTIVO_NFE_SHOPEE.emissaoBloqueada, 'warn'],
+      [
+        pedidoRaw({ integracaoPedidoOuterRef: 'documents/integracao/int-2' }),
+        MOTIVO_NFE_SHOPEE.naoShopee,
+        'info',
+      ],
+      [null, MOTIVO_NFE_SHOPEE.pedidoNaoEncontrado, 'info'],
+    ];
+    for (const [pedido, motivo, nivel] of casos) {
+      vi.clearAllMocks();
+      db = new FakeDb();
+      if (pedido !== null) db.seed(PEDIDO_PATH, pedido);
+
+      await tratar(undefined, nfe());
+
+      expect(MOTIVOS_DE_ALERTA.has(motivo as MotivoNfeShopee)).toBe(nivel === 'warn');
+      const [usado, calado] = nivel === 'warn' ? [warn, info] : [info, warn];
+      expect(usado).toHaveBeenCalledTimes(1);
+      expect(calado).not.toHaveBeenCalled();
+      expect(((usado.mock.calls[0] as unknown[])[1] as Record<string, unknown>).motivo).toBe(
+        motivo,
+      );
+    }
   });
 
   it('a FRETE não decide: sem `freteInicial` ou com frete de OUTRA integradora, enfileira igual', async () => {

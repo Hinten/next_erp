@@ -9,17 +9,29 @@ import {
   SHOPEE_NFE_UPLOAD_QUEUE,
 } from '../../lib/shopee/nfe/constantesNfe';
 import { processarNfeShopee } from '../../lib/shopee/nfe/processarNfe';
+import { codigoSeguro } from '../../lib/shopee/nfe/redacaoNfe';
 import { createShopeeNfeUploadScheduler } from '../../lib/shopee/nfe/shopeeNfeUploadTasks';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
 
-/** A Shopee error code as a LOG token — never free text (the handler's own rule). */
-const CODIGO_TOKEN = /^[a-z][a-z0-9_.]*$/i;
+/** The longest id the error line echoes — a Firestore document id, never text. */
+const MAX_ID_NO_LOG = 128;
 
-/** Shopee's code for a log line or an error message: the trimmed token, or `null`. */
-function codigoSeguro(code: string): string | null {
-  const aparado = code.trim();
-  return CODIGO_TOKEN.test(aparado) ? aparado : null;
+/**
+ * `req.data[campo]` when it is a SAFE document id — a non-empty string of at
+ * most {@link MAX_ID_NO_LOG} characters without `/` — else `undefined`. Not a
+ * parse and no validity decision (the handler's schema owns both): it only lets
+ * the error line name WHICH NF-e failed. Nothing else of the payload is read.
+ */
+function idSeguroDoPayload(dados: unknown, campo: 'pedidoId' | 'nfeId'): string | undefined {
+  if (typeof dados !== 'object' || dados === null) return undefined;
+  const valor = (dados as Record<string, unknown>)[campo];
+  return typeof valor === 'string' &&
+    valor.length > 0 &&
+    valor.length <= MAX_ID_NO_LOG &&
+    !valor.includes('/')
+    ? valor
+    : undefined;
 }
 
 /**
@@ -56,11 +68,15 @@ function codigoSeguro(code: string): string | null {
  * access key or the issuer's CNPJ. The runtime logs an uncaught error verbatim,
  * so the class that carries the provider's text — `ShopeeApiError` and its
  * three subclasses, the narrowest class that holds it — is caught, logged as
- * ONE line with the class name and the token-shaped code, and replaced by a NEW
- * error whose message holds only those two (no `cause`: the runtime would print
- * it). Cloud Tasks still sees a failure and retries. Every other error —
- * network, HTTP, schema (whose messages are our own), Firestore, a bug —
- * rethrows untouched.
+ * ONE line with the class name and the token-shaped code (the folder's ONE
+ * gate, `nfe/redacaoNfe.ts`'s `codigoSeguro`), and replaced by a NEW error
+ * whose message holds only those two (no `cause`: the runtime would print it).
+ * Cloud Tasks still sees a failure and retries. Every other error — network,
+ * HTTP, schema (whose messages are our own), Firestore, a bug — rethrows
+ * untouched. On a non-final attempt the handler rethrows a transient WITHOUT a
+ * line of its own, so this one is the attempt's only trace: it also names
+ * `pedidoId` and `nfeId` when `req.data` holds them as safe document ids, and
+ * nothing else of the payload.
  *
  * `retryConfig.maxAttempts` IS {@link NFE_SHOPEE_MAX_TENTATIVAS}: the handler
  * reads the same constant to decide that an attempt is the LAST one (and
@@ -139,11 +155,15 @@ export const processShopeeNfeUpload = onTaskDispatched(
       // three subclasses included); everything else rethrows untouched.
       if (err instanceof ShopeeApiError) {
         const codigo = codigoSeguro(err.code);
+        const pedidoId = idSeguroDoPayload(req.data, 'pedidoId');
+        const nfeId = idSeguroDoPayload(req.data, 'nfeId');
         logger.error(
           '[shopee] envio de NF-e — recusa da Shopee relançada sem o texto do provedor',
           {
             queue: SHOPEE_NFE_UPLOAD_QUEUE,
             retryCount,
+            ...(pedidoId !== undefined ? { pedidoId } : {}),
+            ...(nfeId !== undefined ? { nfeId } : {}),
             classe: err.name,
             codigo,
             kind: err.kind,

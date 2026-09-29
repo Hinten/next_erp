@@ -46,24 +46,32 @@
  * 9. the conta through `readConta` + `avaliarContaParaNfeShopee` (missing or of
  *    another tipo, or `ativo !== true`);
  * 10. the slot. An explicit `nfeId` is read (absent ⇒ 404
- *    `SHOPEE_NFE_NAO_ENCONTRADA`) and judged by the shared LEVEL predicate —
- *    never the transition one: a re-drive is for a document that is ALREADY
- *    ready, exactly the population a transition gate would refuse — and then by
- *    the sale gate. Without one, the pedido's NF-e documents are LISTED and
- *    `escolherNfeParaEnvioShopee` picks the slot (the same rule the CLI runs).
- *    An ILLEGIBLE proc passes on purpose: the handler answers it with an aviso
- *    and the frete stamp the operator sees, and a 409 here would hide both.
+ *    `SHOPEE_NFE_NAO_ENCONTRADA`, with the route's OWN sentence — nothing was
+ *    scheduled, so the handler's P1 wording would mislead) and judged by the
+ *    shared LEVEL predicate — never the transition one: a re-drive is for a
+ *    document that is ALREADY ready, exactly the population a transition gate
+ *    would refuse — and then by the sale gate. Without one, the pedido's NF-e
+ *    documents are LISTED and `escolherNfeParaEnvioShopee` picks the slot (the
+ *    same rule the CLI runs). A proc ILLEGIBLE TO THE SALE GATE passes on
+ *    purpose: the handler answers it with an aviso and the frete stamp the
+ *    operator sees, and a 409 here would hide both. That is the sale gate only:
+ *    an unreadable `<tpAmb>` is refused one rung earlier by the shared level
+ *    predicate, as `tpamb-homologacao`.
  *
  * ## The SERPRO wait — only when the authorization instant is KNOWN
  *
  * Shopee checks the note against the federal record, which lags SEFAZ by
- * minutes. A re-drive of a note approved seconds ago is held for what is left of
- * the window (`atrasoSerproS`); an older one is dispatched now. An UNKNOWN
- * instant (`data_autorizacao` null, absent or unreadable — the migrated corpus
- * this route exists for) is dispatched now too, and never refused: the helper
- * would read it as "just authorized" and hold every re-drive of it six minutes,
- * and the handler's own "not yet valid" arm re-enqueues with a delay if Shopee
- * still answers so. A zero wait OMITS the option.
+ * minutes. A re-drive of a note whose authorization instant is RECORDED and
+ * seconds old is held for what is left of the window (`atrasoSerproS`); an
+ * older one is dispatched now. ⚠️ Only the migrated corpus records it: the
+ * legacy app wrote `data_autorizacao`, while this ERP's NF-e app writes `null`
+ * and never fills it (review 2, S1-1), so every post-cutover note is an UNKNOWN
+ * instant. An unknown instant (null, absent or unreadable) is dispatched now,
+ * and never refused: the helper would read it as "just authorized" and hold
+ * every re-drive of it six minutes. An early upload of a fresh note is covered
+ * by the handler instead — Shopee's case 5 ("not yet valid") becomes the #5
+ * delayed self re-enqueue (`[600, 1800, 3600]`, no attempt spent). A zero wait
+ * OMITS the option.
  *
  * ## Errors
  *
@@ -127,6 +135,14 @@ export const MSG_NFE_ID_INVALIDO =
 
 /** The sentence a body with any other key gets — the payload is built by name. */
 export const MSG_CAMPO_NAO_ACEITO = 'O corpo aceita apenas pedidoId e nfeId.';
+
+/**
+ * The sentence of the 404 — ours: the handler's `nfe-nao-encontrada` phrase
+ * speaks of a note deleted AFTER an upload was scheduled, and here nothing was.
+ */
+export const MSG_NFE_NAO_ENCONTRADA =
+  'A NF-e informada não foi encontrada neste pedido; nada foi agendado. ' +
+  'Confira o nfeId, ou omita-o para que a NF-e aprovada do pedido seja escolhida.';
 
 /** The sentence of the 503 — ours, never the valve class's environment wording. */
 export const MSG_ENFILEIRAMENTO_DESLIGADO =
@@ -205,10 +221,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const nfeSnap = await nfev4Collection.docRef(db, { pedidoId }, nfeIdPedido).get();
     if (!nfeSnap.exists) {
       return NextResponse.json(
-        {
-          error: mensagemDoMotivoNfe(MOTIVO_NFE_SHOPEE.nfeNaoEncontrada),
-          code: CODIGO_NFE_NAO_ENCONTRADA,
-        },
+        { error: MSG_NFE_NAO_ENCONTRADA, code: CODIGO_NFE_NAO_ENCONTRADA },
         { status: 404 },
       );
     }

@@ -72,7 +72,7 @@ vi.mock('@/lib/shopee/nfe/shopeeNfeUploadTasks', async (importActual) => {
   return { ...actual, createShopeeNfeUploadScheduler: h.criar };
 });
 
-const { POST } = await import('./route');
+const { POST, MSG_NFE_NAO_ENCONTRADA } = await import('./route');
 
 /* --------------------------------- fixtures ------------------------------- */
 
@@ -390,14 +390,18 @@ describe('os portões antes do enfileiramento (409 `SHOPEE_NFE_NAO_ELEGIVEL`)', 
     expect(h.criar).not.toHaveBeenCalled();
   });
 
-  it('`nfeId` explícito que não existe ⇒ 404 `SHOPEE_NFE_NAO_ENCONTRADA`', async () => {
+  it('`nfeId` explícito que não existe ⇒ 404 `SHOPEE_NFE_NAO_ENCONTRADA`, com a frase DA ROTA', async () => {
     cenario();
     const { status, body } = await responder({ pedidoId: PEDIDO_ID, nfeId: 's9' });
     expect(status).toBe(404);
-    expect(body).toEqual({
-      error: mensagemDoMotivoNfe(MOTIVO_NFE_SHOPEE.nfeNaoEncontrada),
-      code: 'SHOPEE_NFE_NAO_ENCONTRADA',
-    });
+    expect(body).toEqual({ error: MSG_NFE_NAO_ENCONTRADA, code: 'SHOPEE_NFE_NAO_ENCONTRADA' });
+    // Review 2, S3-4 — QUASE-IGUAL: the handler's P1 phrase speaks of a note
+    // deleted after an upload was SCHEDULED; at the route nothing was.
+    expect((body as { error: string }).error).not.toBe(
+      mensagemDoMotivoNfe(MOTIVO_NFE_SHOPEE.nfeNaoEncontrada),
+    );
+    expect((body as { error: string }).error).not.toMatch(/depois que o envio foi agendado/);
+    expect((body as { error: string }).error).toMatch(/nada foi agendado/);
     expect(h.criar).not.toHaveBeenCalled();
   });
 

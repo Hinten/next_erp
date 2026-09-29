@@ -11,9 +11,11 @@ import { ATRASO_SERPRO_S, SHOPEE_NFE_UPLOAD_QUEUE } from '../../lib/shopee/nfe/c
 import {
   MOTIVO_NFE_SHOPEE,
   ShopeeNfeUploadTasksDisabledError,
+  type MotivoNfeShopee,
 } from '../../lib/shopee/nfe/errosNfe';
 import { finalidadeDoProc } from '../../lib/shopee/nfe/notaNaShopee';
 import { avaliarPedidoParaNfeShopee } from '../../lib/shopee/nfe/pedidoNfe';
+import { MOTIVOS_DE_ALERTA } from '../../lib/shopee/nfe/processarNfe';
 import { createShopeeNfeUploadScheduler } from '../../lib/shopee/nfe/shopeeNfeUploadTasks';
 import {
   FASE_NFE_SHOPEE,
@@ -47,6 +49,18 @@ export interface EscritaNfev4Shopee {
 const TAG = '[shopee] onNfeAprovadaShopee';
 
 /**
+ * The ONE discard line of T1b and T3. Its LEVEL is the handler's own
+ * `MOTIVOS_DE_ALERTA` — never decided here: `emissao-bloqueada` (someone set
+ * the flag after emission, and this trigger is the only place the cloud path
+ * meets that pedido) is a `warn`, every other discard an `info` (reconcile R-o).
+ */
+function registrarDescarte(pedidoId: string, nfeId: string, motivo: MotivoNfeShopee): void {
+  const linha = { pedidoId, nfeId, motivo };
+  if (MOTIVOS_DE_ALERTA.has(motivo)) logger.warn(`${TAG} descartado`, linha);
+  else logger.info(`${TAG} descartado`, linha);
+}
+
+/**
  * T1–T5 for ONE `nfev4` write — see the module docblock. Never throws for a
  * write that is not ours; rethrows what Eventarc must retry.
  */
@@ -65,11 +79,7 @@ export async function tratarEscritaNfeShopee(
   // the gate total without trusting that across a refactor of the predicate.
   const xml = typeof after?.xml_nfe_proc === 'string' ? after.xml_nfe_proc : '';
   if (finalidadeDoProc(xml) === 'outra') {
-    logger.info(`${TAG} descartado`, {
-      pedidoId,
-      nfeId,
-      motivo: MOTIVO_NFE_SHOPEE.nfeNaoEDeVenda,
-    });
+    registrarDescarte(pedidoId, nfeId, MOTIVO_NFE_SHOPEE.nfeNaoEDeVenda);
     return;
   }
 
@@ -81,7 +91,7 @@ export async function tratarEscritaNfeShopee(
   // ---- T3: the ownership proof. ----
   const dono = avaliarPedidoParaNfeShopee(pedidoId, pedido);
   if (dono.acao === 'ignorar') {
-    logger.info(`${TAG} descartado`, { pedidoId, nfeId, motivo: dono.motivo });
+    registrarDescarte(pedidoId, nfeId, dono.motivo);
     return;
   }
 
@@ -165,12 +175,17 @@ export async function tratarEscritaNfeShopee(
  *    late-proc repair (aprovada without a proc, then with one) is still an edge.
  *  - **T1b** `finalidadeDoProc(after.xml_nfe_proc)` — a legible NON-SALE note
  *    (a devolução, an entrada, a complementar) is discarded with ONE `info`
- *    line (`nfe-nao-e-de-venda`). An ILLEGIBLE proc is NOT discarded here: the
- *    handler judges it `xml-invalido` with an aviso and a frete stamp, and a
- *    drop at this rung would turn that loud refusal into silence.
+ *    line (`nfe-nao-e-de-venda`). A proc ILLEGIBLE to the sale gate is NOT
+ *    discarded here: the handler judges it `xml-invalido` with an aviso and a
+ *    frete stamp, and a drop at this rung would turn that loud refusal into
+ *    silence. (An unreadable `<tpAmb>` never reaches this rung: T1's predicate
+ *    already skipped it.)
  *  - **T2** ONE raw pedido read, through the handle.
  *  - **T3** `avaliarPedidoParaNfeShopee` — the ownership PROOF (the pedido id
- *    recomputes from `(conta, order_sn)`); anything else is one `info` line.
+ *    recomputes from `(conta, order_sn)`); anything else is ONE line, at the
+ *    level the handler's `MOTIVOS_DE_ALERTA` gives it: `emissao-bloqueada` is a
+ *    `warn` (reconcile R-o — nothing else will ever say so, since this pedido is
+ *    never enqueued), `pedido-nao-encontrado` and `nao-shopee` are `info`.
  *    The frete decides nothing here: Shopee attaches the note to the ORDER.
  *  - **T4** enqueue `{ pedidoId, nfeId, fase: envio }` with
  *    `scheduleDelaySeconds: ATRASO_SERPRO_S` — the CONSTANT, not
@@ -193,9 +208,13 @@ export async function tratarEscritaNfeShopee(
  * redelivery replays the ORIGINAL CloudEvent — the same stale snapshots — so it
  * can enqueue a second task for an NF-e whose first one already ran. That
  * duplicate converges in the handler, never here: the queue's `{1, 1}` rate
- * limit runs the two one after the other, and the second one's pre-read finds
- * OUR key on the order and answers `ja-enviado` (a read that still lags is the
- * recheck's to judge).
+ * limit runs the two one after the other, and when Shopee's read already shows
+ * OUR key the second pre-read answers `ja-enviado`. ⚠️ A pre-read that still
+ * LAGS answers "no note" and UPLOADS again; convergence then rests on how
+ * Shopee answers a resend of the key it holds (the "already attached" rows N1/N2
+ * of `nfe/classificarNfe.ts`, register 188) plus the read-back — and a text no
+ * row matches would end as `recusa-desconhecida`, aviso and stamp. That answer
+ * is OPEN until the probe (`nfe/README.md` §16).
  *
  * NO `secrets:` binding — this trigger never calls Shopee (the queue handler
  * does), and a needless binding is one more Secret Manager grant that can 403

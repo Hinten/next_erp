@@ -144,7 +144,8 @@ const AGENDAMENTOS = {
  *
  * The FIFTH arrived in step 14 (`processShopeeNfeUpload`, the NF-e XML upload)
  * and landed COVERED the same way — its 4 × 120 + 3 × 300 = 1380 s ladder is
- * the closest to the 1800 s bound of the five, which is why the numbers are
+ * the only 4-attempt ladder of the five, below the three 1500 s ones (the
+ * push, the mass import and the price job), which is why the numbers are
  * pinned again in its own describe below, beside `maxAttempts` naming
  * `NFE_SHOPEE_MAX_TENTATIVAS` (the handler finalizes a transient on the attempt
  * that constant calls LAST).
@@ -1099,8 +1100,8 @@ describe('processShopeeNfeUpload (passo 14)', () => {
     };
     expect(gatilho.retryConfig?.maxAttempts).toBe(NFE_SHOPEE_MAX_TENTATIVAS);
     // QUASE-IGUAL: the constant is still 4 and the timeout still 120 — the pair
-    // the 1380 s ladder presupposes (4 × 120 + 3 × 300), the tightest of the
-    // five against the 1800 s bound.
+    // the 1380 s ladder presupposes (4 × 120 + 3 × 300), the only 4-attempt
+    // ladder of the five, below the three 1500 s ones.
     expect(NFE_SHOPEE_MAX_TENTATIVAS).toBe(4);
     expect(endpointOf(processShopeeNfeUpload).timeoutSeconds).toBe(120);
     const escada =

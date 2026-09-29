@@ -220,7 +220,9 @@ a page of the 3-day queue irreversibly.
 - `app/api/marketplace/shopee/enviar-nfe/route.ts` — the NF-e re-drive,
   `PERM.pedido.write` (the only Shopee route not on `integracao.*`): strict
   `{ pedidoId, nfeId? }`, enqueue only, 202; 409 `SHOPEE_NFE_NAO_ELEGIVEL`,
-  404, 503 on the valve; a delay only for a KNOWN `data_autorizacao`.
+  404, 503 on the valve; a delay only for a KNOWN `data_autorizacao` — only
+  the migrated corpus has one; this ERP's NF-e store `null`, so a fresh one
+  uploads at once and Shopee's case 5 (the #5 re-enqueue) covers it.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -1435,13 +1437,18 @@ Uploads an aprovada tpAmb-1 SALE nfeProc before `ship_order`. Reasoning:
 - SERPRO wait = `scheduleDelaySeconds` (invisible to the tasks emulator); #5 is
   a delayed self re-enqueue that spends no attempt.
 - ONE `get_order_detail` before the upload (ours ⇒ `ja-enviado`; another key ⇒
-  never overwritten, aviso), a read-back after it, a recheck ~15 min later.
-  "Ours" = the key INSIDE the XML (alphanumeric CNPJ).
+  never overwritten, aviso — unless it is a CANCELLED sibling NF-e's key, which
+  the re-emission replaces as a substitution), a read-back after it, a recheck
+  ~15 min later. "Ours" = the key INSIDE the XML (alphanumeric CNPJ).
 - The classifier reads `providerMessage`, never `.message`.
-- Failure = the aviso `nfeUploadRejeitado` (one chave per pedido) +
-  `freteInicial.estado = error` only for a proven refusal (class C; step 7's
+- Failure = the aviso `nfeUploadRejeitado` (one chave per pedido), plus
+  `freteInicial.estado = error` for a DETERMINISTIC failure of this NF-e — a
+  Shopee refusal, a SEFAZ reason or our own broken XML (class C; step 7's
   `erro-preservado`). The `MOTIVOS_*` sets are the only source of both. A
-  validated upload or steps 5/7 (parcel moved, order cancelled) resolve it.
+  validated upload or steps 5/7 (parcel moved, order cancelled) close the
+  AVISO; the stamp clears only when step 7 writes an estado of the
+  stock-removal set. ⚠️ So step 15 must NEVER gate `ship_order` on the frete
+  not being `error` — that deadlocks the pedido whose note was re-sent (R2-5).
 - Shopee text reaches an aviso only for `sefaz-pendente` /
   `recusa-desconhecida`, through `resumirTextoDaShopee`. The chave, a CNPJ or
   the XML never reach a log, a filename, a payload or a CLI line.
@@ -1571,10 +1578,10 @@ emulator → the real `sendShopeeStock` → a seeded LINK document stamped
 `erp:task-excede-limite`, from a 51-model task the chunker cuts. Step 13's is
 a FOURTH: the real `processShopeePriceSync` takes a job whose anchors all skip
 at PLAN time to `completed` (the drain's lazy client is never built), answers
-`noop` once cancelled and fails a wrong-`tipo` conta. All nine are
-chosen for the same reason — each is decided with NO Shopee call; eight write
-a document, and the cancelled job's dispatch writes NOTHING (a sentinel job
-behind it proves it ran): the mass-import one seeds an
+`noop` once cancelled and fails a wrong-`tipo` conta. All ten (step 14's,
+below, included) are chosen for the same reason — each is decided with NO
+Shopee call; nine write a document, and the cancelled job's dispatch writes
+NOTHING (a sentinel job behind it proves it ran): the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
 reached the network would show a 30 s backoff instead); the stock one refuses at

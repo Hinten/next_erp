@@ -658,10 +658,13 @@ for the queues staging does not hold yet** — the price queue (step 13) and the
 NF-e queue (step 14); the other three have existed there since 2026-09-24 —
 **and production's first deploy pays it for all FIVE**: production is a
 separate project, so its first deploy hits this for every queue — put the
-grants in the window's runbook. ⚠️ The NF-e queue must exist before its trigger
-can enqueue onto it; both land in the same deploy, and a trigger fire whose
-enqueue fails throws, so `retry: true` asks Eventarc to redeliver it (the
-redelivery horizon is unmeasured). Verify the enqueue leg, which the `run` check above
+grants in the window's runbook. ⚠️ The NF-e queue and its trigger land in the
+SAME `firebase deploy`, which cannot order them: until the workaround above has
+run, the trigger can be live while its queue has no enqueuer binding, and a
+fire whose enqueue fails throws, so `retry: true` asks Eventarc to redeliver it
+(the redelivery horizon is unmeasured). That is harmless today — staging emits
+homologação notes (`tpAmb 2`), which the trigger never enqueues, and production
+has no Shopee NF-e traffic before the window. Verify the enqueue leg, which the `run` check above
 cannot see: `gcloud tasks queues get-iam-policy <queue> --location=<region>`
 must list `roles/cloudtasks.enqueuer` for every identity in `TASKS_INVOKER_SA`.
 
@@ -865,14 +868,37 @@ Three gaps to know about:
 
 ## Cutover
 
-There is **no legacy Flutter Shopee RECEIVER to coordinate with.** The legacy
-stack had no server-side Shopee push handling at all — its push handling and
-token store are the anti-patterns the shared seams replaced (master plan §3), and
-it never wrote a `pedshopee`. ⚠️ It did have ONE Shopee Cloud Run service, the
-NF-e uploader behind `nfe-shopee--updated-trigger`, and step 14 owes it a
-deletion — see **HARD CUTOVER** below. Otherwise this codebase does not race a
-predecessor for a document, and the coordination it owes is the ORDER of the
-window steps:
+No legacy Shopee service writes a document this codebase writes (the legacy
+app never wrote a `pedshopee`, and its push handling and token store are the
+anti-patterns the shared seams replaced, master plan §3), so there is no
+predecessor to race for a DOCUMENT. ⚠️ But the legacy project ran SEVERAL Shopee
+Cloud Run services (`.old/docker-repos-local:87-98`; the targets are in
+`.old/packages/canais_de_venda/shopee/lib/functions.dart`), and every one still
+running after the switch-off acts on the SAME Shopee shop — the shared-provider
+hazard **HARD CUTOVER** below spells out for the NF-e.
+
+**What the cutover must disable (legacy project):**
+
+| Cloud Run service (target)                                                     | triggered by                                                                                    | what it did                                                                                                  |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `recebedor-noti-shopee` (`receberNotificacoesShopee`)                          | unauthenticated HTTP — pushes forwarded by `shop_id`                                            | stored each push under `integracao/{integ}/pushshopee/{pushdoc}`                                             |
+| `notifications-shopee-rt` (`managerNotificacoesShopee`)                        | `notifications-shopee-rt--created-trigger` / `--updated-trigger` on that `pushshopee` path      | processed each stored push into the legacy project                                                           |
+| `estoque-shopee-periodic` (`estoqueShopee`)                                    | HTTP, from the legacy app's `estoque-shopee` queue (`.old/packages/canal_de_vendas/filas.json`) | pushed stock to the listings — a late call pushes the SOURCE project's stock to the same listings (oversell) |
+| `nfe-shopee` (`signalEnviarNFeShopee`)                                         | `nfe-shopee--updated-trigger` on `pedidos/{ped}/nfev4/{nfe}`                                    | uploaded the NF-e — step 14's row; its deletion is **HARD CUTOVER** below                                    |
+| `update-grupoeco-shopee-shopid` and `…--delete` (`updateGrupoEconomicoShopee`) | `…--created-trigger` / `--updated-trigger` / `--delete-trigger` on `integracao/{integ}`         | (un)registered a conta's `shop_id` with the shared push distributor, pointing it at `recebedor-noti-shopee`  |
+
+Switching the legacy app off (ADR 0013's phase order) does not by itself stop a
+Cloud Run service or an Eventarc trigger in the legacy project — which is why
+the NF-e row gets an explicit delete below. Every row needs the same check
+(`gcloud run services list` / `gcloud eventarc triggers list` on the legacy
+project); step 14 owes only the NF-e row's deletion. ⚠️ The distributor itself
+and its `shop_id` registry (`distribuidor-notificacoes-shopee`,
+`manager-geconom-shopee`, `.old/docker-repos-auth:49-50`) run in a SEPARATE
+shared project, not this tenant's to delete: surface them with the callback-URL
+registration (#1534), which is app-wide.
+
+Otherwise the coordination this codebase owes is the ORDER of the window
+steps:
 grant the IAM above, deploy this codebase, deploy the App Hosting backend, and
 only THEN register the push callback URL with Shopee (#1534). Registering first
 means every delivery arrives at a backend whose queue does not exist — each one
@@ -937,9 +963,10 @@ that no IAM layer touches. Both are a human's, in a coordinated window, and
 ⚠️ **The fifth queue and the second trigger (step 14) have reached no project
 yet either.** `processShopeeNfeUpload` and `onNfeAprovadaShopee` land in ONE
 deploy, which pays the 15.28.2 enqueuer workaround for the NF-e queue (IAM
-section above). Deploy order: this codebase (the queue before anything
-enqueues onto it), then the App Hosting backend (the `/enviar-nfe` route), then
-the web (the `nfeUploadRejeitado` wording). On staging the path stays inert by
+section above). Deploy order: this codebase — the queue and the trigger in ONE
+deploy, which cannot order them (harmless today, as the IAM section says) —
+then the App Hosting backend (the `/enviar-nfe` route), then the web (the
+`nfeUploadRejeitado` wording). On staging the path stays inert by
 construction — staging emits homologação notes (`tpAmb 2`), which the shared
 predicate never sends — so a staging deploy proves the wiring, never an upload.
 
@@ -971,9 +998,10 @@ was never parity either — update-only, no SERPRO delay, writing nothing.
 `functions/DEPLOY.md` HARD CUTOVER is the same shape). After the import the same
 Shopee order exists in both projects, so an approval driven on the legacy side —
 a leftover process, a re-run, a panel still open — uploads to the SAME order.
-Shopee keeps the FIRST key it receives, and this codebase never overwrites
-another key: ours then reads `outra-nfe-anexada` and raises an aviso on a pedido
-whose note may be perfectly fine.
+Shopee is EXPECTED to refuse a second key on an order that already holds one
+(registers 188/197 — open until the probe and the window's first upload), and
+this codebase never overwrites another key: ours then reads `outra-nfe-anexada`
+and raises an aviso on a pedido whose note may be perfectly fine.
 
 Order of operations, all inside the window and never by an agent:
 

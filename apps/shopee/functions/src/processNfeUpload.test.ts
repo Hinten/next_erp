@@ -335,6 +335,9 @@ describe('F-3: uma recusa da Shopee relançada nunca leva o texto do provedor', 
     expect((erro.mock.calls[0] as unknown[])[1]).toEqual({
       queue: SHOPEE_NFE_UPLOAD_QUEUE,
       retryCount: 3,
+      // Review 2, S3-5: the two safe ids of `req.data` (TAREFA's), nothing else.
+      pedidoId: 'ped-1',
+      nfeId: 's1',
       classe: 'ShopeeApiError',
       codigo: 'order.upload_invoice_error',
       kind: SHOPEE_ERROR_KIND.other,
@@ -392,6 +395,34 @@ describe('F-3: uma recusa da Shopee relançada nunca leva o texto do provedor', 
     expect(erro).not.toHaveBeenCalled();
   });
 
+  it('PAR / QUASE-IGUAL: o código passa pelo `codigoSeguro` ÚNICO — `e` + os 44 dígitos de uma chave e um token de 70 caracteres NÃO são código', async () => {
+    // Review 2, S3-6: the private uncapped copy echoed both as "tokens". PAIR:
+    // the real code (with stray whitespace) is echoed trimmed; NEAR-MISS: a
+    // token-SHAPED run carrying a key, and one over 64 characters, are not.
+    handler.processarNfeShopee.mockRejectedValueOnce(erroDaShopee(' order.upload_invoice_error\t'));
+    const par = (await run({ data: TAREFA, retryCount: 0 }).catch((e: unknown) => e)) as Error;
+    expect(par.message).toContain('ShopeeApiError order.upload_invoice_error —');
+    expect(((erro.mock.calls[0] as unknown[])[1] as Record<string, unknown>).codigo).toBe(
+      'order.upload_invoice_error',
+    );
+
+    for (const code of [`e${CHAVE_PLANTADA}`, `e${'x'.repeat(69)}`]) {
+      erro.mockClear();
+      handler.processarNfeShopee.mockRejectedValueOnce(erroDaShopee(code));
+      const falha = (await run({ data: TAREFA, retryCount: 0 }).catch((e: unknown) => e)) as Error;
+      expect(falha.message).toContain('(código ilegível)');
+      expect(falha.message).not.toContain(code);
+      expect(((erro.mock.calls[0] as unknown[])[1] as Record<string, unknown>).codigo).toBeNull();
+    }
+    expect(tudoQueFoiLogado()).not.toContain(CHAVE_PLANTADA);
+  });
+
+  it('a fonte IMPORTA o `codigoSeguro` de `nfe/redacaoNfe.ts` — nenhuma cópia privada', () => {
+    expect(FONTE).toContain("import { codigoSeguro } from '../../lib/shopee/nfe/redacaoNfe';");
+    expect(FONTE).not.toContain('CODIGO_TOKEN');
+    expect(FONTE).not.toMatch(/function codigoSeguro\b/);
+  });
+
   it('a fonte narra por CLASSE (regra 6): ShopeeApiError e nada mais largo', () => {
     // `ShopeeError` would also catch `ShopeeConfigError` (our own message) and
     // the transport classes; `Error` would catch everything.
@@ -399,5 +430,56 @@ describe('F-3: uma recusa da Shopee relançada nunca leva o texto do provedor', 
     expect(FONTE).not.toMatch(/instanceof ShopeeError\b/);
     expect(FONTE).not.toMatch(/instanceof Error\b/);
     expect(FONTE).not.toContain('cause:');
+  });
+});
+
+describe('S3-5: a linha do F-3 diz QUAL NF-e falhou — só os dois ids seguros', () => {
+  function linhaDoErro(): Record<string, unknown> {
+    expect(erro).toHaveBeenCalledTimes(1);
+    return (erro.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+  }
+
+  it('PAR: `pedidoId` e `nfeId` de `req.data` entram — até 128 caracteres', async () => {
+    // A non-final attempt's transient rethrows with NO handler line, so this is
+    // the attempt's only trace; without the ids it ties to no pedido.
+    const pedidoId = 'a'.repeat(128);
+    handler.processarNfeShopee.mockRejectedValueOnce(erroDaShopee());
+
+    await expect(run({ data: { ...TAREFA, pedidoId }, retryCount: 0 })).rejects.toThrow();
+
+    expect(linhaDoErro()).toMatchObject({ pedidoId, nfeId: 's1' });
+  });
+
+  it('QUASE-IGUAL: um id com `/`, com 129 caracteres, vazio ou não-string fica FORA — e nada mais do payload entra', async () => {
+    const casos: unknown[] = [
+      { pedidoId: 'pedidos/ped-1', nfeId: 'a'.repeat(129), fase: 'envio' },
+      { pedidoId: '', nfeId: 7, extra: 'SEGREDO-NAO-LOGAR' },
+      null,
+      'ped-1',
+    ];
+    for (const dados of casos) {
+      erro.mockClear();
+      handler.processarNfeShopee.mockRejectedValueOnce(erroDaShopee());
+
+      await expect(run({ data: dados, retryCount: 0 })).rejects.toThrow();
+
+      expect(Object.keys(linhaDoErro()).sort()).toEqual([
+        'classe',
+        'codigo',
+        'kind',
+        'queue',
+        'retryCount',
+      ]);
+    }
+    expect(tudoQueFoiLogado()).not.toContain('SEGREDO-NAO-LOGAR');
+    expect(tudoQueFoiLogado()).not.toContain('pedidos/ped-1');
+  });
+
+  it('o erro RELANÇADO continua sem id nenhum — só a linha os carrega', async () => {
+    handler.processarNfeShopee.mockRejectedValueOnce(erroDaShopee());
+
+    const falha = (await run({ data: TAREFA, retryCount: 0 }).catch((e: unknown) => e)) as Error;
+
+    expect(falha.message).not.toContain('ped-1');
   });
 });

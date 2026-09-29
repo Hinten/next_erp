@@ -891,7 +891,9 @@ re-drive, both starting from a pedido, both picking the slot with
   phase or a counter: any other key, `fase` included, is a 400. It re-runs the
   pre-network gates (pedido, then conta, then slot), never builds a client and
   never calls Shopee. The delay is the SERPRO remainder only when
-  `data_autorizacao` is KNOWN; an unknown instant never holds a re-drive. It
+  `data_autorizacao` is KNOWN, which only the migrated corpus is; an unknown
+  instant (every post-cutover NF-e stores `null`) never holds a re-drive, and
+  an early upload of a fresh one is Shopee's case 5, the #5 re-enqueue. It
   answers 202 (with `enfileirado`, the two ids and `atrasoSegundos`) for EVERY
   eligible document. Even when Shopee already holds
   our key, the task's pre-read answers `ja-enviado`, and it closes any open
@@ -1078,12 +1080,16 @@ items is a gate.
     pre-read makes the loser `outra-nfe-anexada`.
 
 **The window live checks — proposed, none run** (root `CLAUDE.md` rule 8; the
-runbook is #1208, which PR 2 edits with these, in ADR 0013's phase order):
+runbook is #1208, edited when PR 2 opens — Lucas approved the W1–W5 items —
+in ADR 0013's phase order):
 
 - **W1.** The shopee codebase grows to seventeen functions and five queues,
   with a second Firestore trigger, and the enqueuer-binding workaround now
-  covers five queues for each `TASKS_INVOKER_SA` identity. The queue must exist
-  before the trigger can enqueue.
+  covers five queues for each `TASKS_INVOKER_SA` identity. The queue and the
+  trigger land in ONE `firebase deploy`, which cannot order them; a fire whose
+  enqueue fails throws and Eventarc redelivers it. Harmless today: staging
+  emits `tpAmb 2`, which the trigger never enqueues, and production has no
+  Shopee NF-e traffic before the window.
 - **W2.** Three Seller Centre and infra preconditions. The Invoice Setting is
   "Other" (else case 4 on every upload). The issuer CNPJ, UF and IE registered
   at Shopee equal the NF-e issuer's (else cases 1–3). The IP allow-list and
@@ -1101,8 +1107,8 @@ runbook is #1208, which PR 2 edits with these, in ADR 0013's phase order):
 - **W5.** The first real upload, on one watched order: the read-back shows OUR
   key, then the status, then the recheck, and `order_status` stays unchanged.
   It settles 186–192 and 195–198 as dated observations.
-- **Deploy order**: functions (the queue before the trigger), then App Hosting
-  (the route), then web (the aviso wording).
+- **Deploy order**: functions (the queue and the trigger together — see W1),
+  then App Hosting (the route), then web (the aviso wording).
 
 ## 17. Premises this step refuted — do not re-assert them
 
