@@ -120,15 +120,28 @@ const ENTIDADES: Readonly<Record<string, string>> = {
  * Numeric references are legal anywhere XML text is, and signing does not pin
  * them (C14N writes the character), so SEFAZ may hand back `Corre&#231;&#227;o`
  * for a text we sent as `Correção` — left raw, a comparison against our own
- * text would call it different (#1094 F1b). An out-of-range reference is left
- * as written rather than guessed at.
+ * text would call it different (#1094 F1b). A reference to anything that is
+ * not an XML `Char` (XML 1.0 §2.2 — `&#0;`, a lone surrogate, `&#xFFFE;`, past
+ * U+10FFFF) is left as written rather than turned into an ill-formed string.
  */
 function unescapeText(s: string): string {
   return s.replace(/&(lt|gt|amp|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);/g, (ref, nome: string) => {
     if (!nome.startsWith('#')) return ENTIDADES[nome] ?? ref;
     const codigo = nome[1] === 'x' ? parseInt(nome.slice(2), 16) : parseInt(nome.slice(1), 10);
-    return codigo <= 0x10ffff ? String.fromCodePoint(codigo) : ref;
+    return ehCharXml(codigo) ? String.fromCodePoint(codigo) : ref;
   });
+}
+
+/** XML 1.0 §2.2 `Char`: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]. */
+function ehCharXml(c: number): boolean {
+  return (
+    c === 0x9 ||
+    c === 0xa ||
+    c === 0xd ||
+    (c >= 0x20 && c <= 0xd7ff) ||
+    (c >= 0xe000 && c <= 0xfffd) ||
+    (c >= 0x10000 && c <= 0x10ffff)
+  );
 }
 
 /**

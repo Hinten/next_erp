@@ -169,6 +169,12 @@ describe('extrairEventosNFe', () => {
       expect(() => extrairEventosNFe(retConsSitNFe([semRet]))).toThrow(NFeEventoError);
     });
 
+    it('throws on an event without its dhRegEvento — never an undefined in a string field', () => {
+      const semData = procs[0]!.replace(/<dhRegEvento>[^<]*<\/dhRegEvento>/, '');
+      expect(semData).not.toBe(procs[0]);
+      expect(() => extrairEventosNFe(retConsSitNFe([semData]))).toThrow(/dhRegEvento/);
+    });
+
     it('throws on an evento without its detEvento — an NFeEventoError, not a TypeError', () => {
       const semDet = procs[0]!.replace(/<detEvento[\s\S]*<\/detEvento>/, '');
       expect(semDet).not.toBe(procs[0]);

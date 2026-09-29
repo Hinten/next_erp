@@ -490,6 +490,20 @@ export function extrairEventosNFe(retConsSitXml: string, tpEvento?: string): Eve
           `nSeqEvento inválido na consulta de situação: '${enviado.nSeqEvento}'`,
         );
       }
+      // The generated types call these required, but the parser returns an absent
+      // element as `undefined` — so the result's `string` types are checked here,
+      // not assumed (the XSD gate on a live consSit makes this unreachable there).
+      const obrigatorios = {
+        'evento/tpEvento': enviado.tpEvento,
+        'retEvento/cStat': ret.cStat,
+        'retEvento/xMotivo': ret.xMotivo,
+        'retEvento/dhRegEvento': ret.dhRegEvento,
+      };
+      for (const [campo, valor] of Object.entries(obrigatorios)) {
+        if (typeof valor !== 'string') {
+          throw new NFeEventoError(`evento sem <${campo}> na consulta de situação`);
+        }
+      }
       return {
         tpEvento: enviado.tpEvento,
         nSeqEvento: Number(enviado.nSeqEvento),

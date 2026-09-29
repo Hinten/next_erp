@@ -222,6 +222,17 @@ describe('textOfFirst', () => {
     expect(textOfFirst('<d><x>&#x110000;</x></d>', 'x')).toBe('&#x110000;');
   });
 
+  it('leaves a reference to a non-XML Char raw — and decodes the legal ones at the edges', () => {
+    // XML 1.0 §2.2: NUL, a lone surrogate and U+FFFE/FFFF are not characters.
+    for (const ilegal of ['&#0;', '&#x1;', '&#xD800;', '&#xDFFF;', '&#xFFFE;', '&#xFFFF;']) {
+      expect(textOfFirst(`<d><x>${ilegal}</x></d>`, 'x')).toBe(ilegal);
+    }
+    // Near-misses: the boundaries of the legal ranges still decode.
+    expect(textOfFirst('<d><x>&#x9;&#xD7FF;&#xE000;&#xFFFD;&#x10000;</x></d>', 'x')).toBe(
+      '\t\uD7FF\uE000\uFFFD\u{10000}',
+    );
+  });
+
   it('keeps CDATA literal — its "&amp;" is text, not an entity', () => {
     expect(textOfFirst('<d><x><![CDATA[a &amp; <b>]]></x></d>', 'x')).toBe('a &amp; <b>');
   });
