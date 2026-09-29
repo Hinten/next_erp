@@ -1,4 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { FirebaseError } from 'firebase/app';
+
+import {
+  CODIGO_ERRO_LINK,
+  ESTADO_PEDIDO,
+  MODO_LINK_PAGAMENTO,
+  MOTIVO_RECUSA_LINK,
+  STATUS_LINK_PAGAMENTO,
+  TIPO_PAGAMENTO_MP,
+  criarLinksPagamentoBodySchema,
+  type CriarLinksPagamentoBody,
+  type CriarLinksPagamentoResposta,
+} from '@delfrance/schemas';
 
 import {
   MercadoPagoClientHttpError,
@@ -161,5 +174,374 @@ describe('non-2xx bodies', () => {
     });
 
     await expect(c.conta('m1')).rejects.toBeInstanceOf(MercadoPagoClientNetworkError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 POST and the payment-link methods (#367)                    */
+/* -------------------------------------------------------------------------- */
+
+const LINK_A = 'a'.repeat(20);
+const LINK_B = 'b'.repeat(20);
+
+const BODY_CRIAR: CriarLinksPagamentoBody = {
+  pedidoId: 'ped_1',
+  metodoId: 'mp1',
+  modo: MODO_LINK_PAGAMENTO.individual,
+  valorCobradoEsperado: 100,
+  expiraEm: '2026-10-02',
+  tiposExcluidos: [TIPO_PAGAMENTO_MP.boleto],
+  parcelasMaximas: 6,
+  quantidadeMaxima: null,
+  preencherPagador: false,
+  links: [
+    { linkId: LINK_A, nomePagador: 'Maria', valor: 60 },
+    { linkId: LINK_B, nomePagador: 'João', valor: 40 },
+  ],
+};
+
+const RESPOSTA_CRIAR = {
+  links: [
+    {
+      linkId: LINK_A,
+      preferenceId: 'pref-a',
+      link: 'https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=pref-a',
+      valorCobrado: 60,
+      nomePagador: 'Maria',
+      dataExpiracao: 1_790_000_000_000,
+      modo: MODO_LINK_PAGAMENTO.individual,
+      quantidadeMaxima: null,
+    },
+  ],
+  estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  reaproveitado: false,
+} satisfies CriarLinksPagamentoResposta;
+
+type FetchMock = Mock<typeof globalThis.fetch>;
+
+function json(corpo: unknown, status = 200): Response {
+  return new Response(JSON.stringify(corpo), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** A fetch that answers every call with a FRESH response (a body reads only once). */
+function fetchQueResponde(resposta: () => Response): FetchMock {
+  return vi.fn<typeof globalThis.fetch>(async () => resposta());
+}
+
+function chamadaUnica(fetchMock: FetchMock): { url: unknown; init: RequestInit } {
+  expect(fetchMock).toHaveBeenCalledOnce();
+  const chamada = fetchMock.mock.calls[0];
+  if (!chamada) throw new Error('fetch não foi chamado');
+  return { url: chamada[0], init: chamada[1] ?? {} };
+}
+
+describe('a POST carries its body — and a GET still does not', () => {
+  it('the fixture is a body the real route accepts', () => {
+    // The control for everything below: were the fixture something the route
+    // answers 400 to, the assertions would describe a request nobody can make.
+    expect(criarLinksPagamentoBodySchema.safeParse(BODY_CRIAR).success).toBe(true);
+  });
+
+  it('⭐ sends POST, the JSON content type, the bearer token and the EXACT body', async () => {
+    const fetchMock = fetchQueResponde(() => json(RESPOSTA_CRIAR, 201));
+
+    await client(fetchMock).criarLinks(BODY_CRIAR);
+
+    const { url, init } = chamadaUnica(fetchMock);
+    expect(url).toBe('http://localhost:3007/api/payments/mercado-pago/links/criar');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    });
+    // Byte for byte: the link ids the caller minted must reach the server
+    // untouched, or a retried request would stop being a replay.
+    expect(init.body).toBe(JSON.stringify(BODY_CRIAR));
+  });
+
+  it('⭐ a GET (conta) still sends NO body and NO Content-Type', async () => {
+    // The near-miss for making the header unconditional: a GET that announces a
+    // JSON payload it does not carry is a malformed request some proxies reject.
+    const fetchMock = fetchQueResponde(() => json({ connected: true, me: null }));
+
+    await client(fetchMock).conta('m1');
+
+    const { url, init } = chamadaUnica(fetchMock);
+    expect(url).toBe('http://localhost:3007/api/payments/mercado-pago/conta?metodoId=m1');
+    expect(init.method).toBe('GET');
+    expect(init).not.toHaveProperty('body');
+    expect(init.headers).toEqual({ Authorization: 'Bearer token', Accept: 'application/json' });
+    expect(init.headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('oauthStart is still a bodiless GET', async () => {
+    const fetchMock = fetchQueResponde(() => json({ authorizeUrl: 'https://auth.example/x' }));
+
+    await client(fetchMock).oauthStart('m 1');
+
+    const { url, init } = chamadaUnica(fetchMock);
+    expect(url).toBe('http://localhost:3007/api/payments/mercado-pago/oauth/start?metodoId=m%201');
+    expect(init.method).toBe('GET');
+    expect(init).not.toHaveProperty('body');
+  });
+
+  it('cancelarLink POSTs { pedidoId, linkId } and reads the stored status back', async () => {
+    const fetchMock = fetchQueResponde(() =>
+      json({ linkId: LINK_A, status: STATUS_LINK_PAGAMENTO.cancelado }),
+    );
+
+    const resposta = await client(fetchMock).cancelarLink({ pedidoId: 'ped_1', linkId: LINK_A });
+
+    const { url, init } = chamadaUnica(fetchMock);
+    expect(url).toBe('http://localhost:3007/api/payments/mercado-pago/links/cancelar');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify({ pedidoId: 'ped_1', linkId: LINK_A }));
+    expect(resposta).toEqual({ linkId: LINK_A, status: STATUS_LINK_PAGAMENTO.cancelado });
+  });
+
+  it('sincronizarLinks POSTs { pedidoId } and reads the reconciliation back', async () => {
+    const sincronizado = {
+      encontrados: 3,
+      reconciliados: 2,
+      ignorados: 1,
+      falhas: [{ paymentId: '123', motivo: 'sem metadata' }],
+      transicoes: [ESTADO_PEDIDO.pago],
+      truncado: false,
+    };
+    const fetchMock = fetchQueResponde(() => json(sincronizado));
+
+    const resposta = await client(fetchMock).sincronizarLinks({ pedidoId: 'ped_1' });
+
+    const { url, init } = chamadaUnica(fetchMock);
+    expect(url).toBe('http://localhost:3007/api/payments/mercado-pago/links/sincronizar');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify({ pedidoId: 'ped_1' }));
+    expect(resposta).toEqual(sincronizado);
+  });
+});
+
+describe('criarLinks — reading the answer', () => {
+  it.each([
+    ['201 — the batch was created', 201, false],
+    ['200 — an idempotent replay of a batch that already exists', 200, true],
+  ])('accepts %s', async (_nome, status, reaproveitado) => {
+    const c = client(async () => json({ ...RESPOSTA_CRIAR, reaproveitado }, status));
+
+    await expect(c.criarLinks(BODY_CRIAR)).resolves.toEqual({ ...RESPOSTA_CRIAR, reaproveitado });
+  });
+
+  it('accepts a null estado (the pedido was left where it was)', async () => {
+    const c = client(async () => json({ ...RESPOSTA_CRIAR, estado: null }, 201));
+
+    await expect(c.criarLinks(BODY_CRIAR)).resolves.toMatchObject({ estado: null });
+  });
+
+  it('a NEWER backend that adds a field does not break this tab', async () => {
+    // Response schemas are tolerant on purpose: apps/web calls the DEPLOYED
+    // backend, which may be ahead of the tab that is open.
+    const c = client(async () => json({ ...RESPOSTA_CRIAR, camposDoFuturo: { x: 1 } }, 201));
+
+    const resposta = await c.criarLinks(BODY_CRIAR);
+
+    expect(resposta).toEqual(RESPOSTA_CRIAR);
+    expect(resposta).not.toHaveProperty('camposDoFuturo');
+  });
+
+  it('⭐ a 2xx with the wrong shape is a RespostaInvalida that names the field', async () => {
+    const c = client(async () => json({ links: 'nope', estado: null, reaproveitado: false }, 201));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientRespostaInvalidaError;
+
+    expect(err).toBeInstanceOf(MercadoPagoClientRespostaInvalidaError);
+    expect(err.campos).toEqual(['links']);
+    expect(err.status).toBe(201);
+    expect(err.message).toContain('Campos inválidos: links');
+  });
+
+  it('collapses the row index of a nested wrong field', async () => {
+    const c = client(async () =>
+      json({ ...RESPOSTA_CRIAR, links: [{ ...RESPOSTA_CRIAR.links[0], link: 5 }] }, 201),
+    );
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientRespostaInvalidaError;
+
+    expect(err.campos).toEqual(['links[].link']);
+  });
+
+  it('a stale backend that omits a field of the answer is named, not defaulted', async () => {
+    // `truncado` missing must NOT read as `false` — that would report a
+    // complete synchronisation the backend never claimed.
+    const c = client(async () =>
+      json({ encontrados: 1, reconciliados: 1, ignorados: 0, falhas: [], transicoes: [] }),
+    );
+
+    const err = (await c
+      .sincronizarLinks({ pedidoId: 'ped_1' })
+      .catch((e: unknown) => e)) as MercadoPagoClientRespostaInvalidaError;
+
+    expect(err).toBeInstanceOf(MercadoPagoClientRespostaInvalidaError);
+    expect(err.campos).toEqual(['truncado']);
+  });
+
+  it('⭐ an HTML 2xx on a POST is the not-JSON variant, and is logged', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => ok(NEXT_404, 'text/html'));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientRespostaInvalidaError;
+
+    expect(err).toBeInstanceOf(MercadoPagoClientRespostaInvalidaError);
+    expect(err.campos).toEqual([]);
+    expect(err.message).toContain('sem um corpo JSON');
+    // Not version skew, so it must not tell the operator to deploy anything.
+    expect(err.message).not.toContain('deploy');
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it('an EMPTY 2xx on a POST is the same variant — never a null handed back', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => ok(''));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientRespostaInvalidaError;
+
+    expect(err).toBeInstanceOf(MercadoPagoClientRespostaInvalidaError);
+    expect(err.campos).toEqual([]);
+    expect(spy.mock.calls[0]?.[1]).toBe('(corpo vazio)');
+  });
+});
+
+describe('a refusal from a link route', () => {
+  const corpoRecusa = {
+    error: 'Os links somam mais do que o valor restante (incluindo links em aberto).',
+    code: CODIGO_ERRO_LINK.naoElegivel,
+    reason: MOTIVO_RECUSA_LINK.excedeRestante,
+  };
+
+  it('⭐ a 409 LINK_NAO_ELEGIVEL keeps its status, code AND reason', async () => {
+    const c = client(async () => json(corpoRecusa, 409));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientHttpError;
+
+    expect(err).toBeInstanceOf(MercadoPagoClientHttpError);
+    expect(err).not.toBeInstanceOf(MercadoPagoClientRespostaInvalidaError);
+    expect(err.status).toBe(409);
+    expect(err.code).toBe(CODIGO_ERRO_LINK.naoElegivel);
+    expect(err.reason).toBe(MOTIVO_RECUSA_LINK.excedeRestante);
+    expect(err.message).toBe(corpoRecusa.error);
+  });
+
+  it.each([
+    ['no reason at all', { error: 'x', code: CODIGO_ERRO_LINK.naoElegivel }],
+    ['a null reason', { error: 'x', code: CODIGO_ERRO_LINK.naoElegivel, reason: null }],
+    ['a numeric reason', { error: 'x', code: CODIGO_ERRO_LINK.naoElegivel, reason: 42 }],
+    ['an array reason', { error: 'x', code: CODIGO_ERRO_LINK.naoElegivel, reason: ['estado'] }],
+    ['an array body that contains one', [{ reason: MOTIVO_RECUSA_LINK.excedeRestante }]],
+  ])('the reason is null for %s', async (_nome, corpo) => {
+    // Near-misses: `reason` is a label-table key downstream, so anything that is
+    // not a string must come out as "no reason" rather than as a value.
+    const c = client(async () => json(corpo, 409));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientHttpError;
+
+    expect(err.status).toBe(409);
+    expect(err.reason).toBeNull();
+  });
+
+  it('an unknown reason survives as text — a backend newer than the tab', async () => {
+    const c = client(async () => json({ ...corpoRecusa, reason: 'motivoDoFuturo' }, 409));
+
+    const err = (await c
+      .criarLinks(BODY_CRIAR)
+      .catch((e: unknown) => e)) as MercadoPagoClientHttpError;
+
+    expect(err.reason).toBe('motivoDoFuturo');
+  });
+
+  it('the HTML 404 of a backend without the route has no code and no reason', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => new Response(NEXT_404, { status: 404 }));
+
+    const err = (await c
+      .sincronizarLinks({ pedidoId: 'ped_1' })
+      .catch((e: unknown) => e)) as MercadoPagoClientHttpError;
+
+    expect(err.status).toBe(404);
+    expect(err.code).toBeNull();
+    expect(err.reason).toBeNull();
+    expect(err.message).toContain('HTTP 404');
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it('existing call sites keep compiling: the reason is optional and defaults to null', () => {
+    expect(new MercadoPagoClientHttpError('x', 500, null).reason).toBeNull();
+    expect(new MercadoPagoClientRespostaInvalidaError('x', 200, []).reason).toBeNull();
+  });
+
+  it('⭐ an offline token refresh is a network error, and nothing is sent', async () => {
+    // `user.getIdToken()` refreshes over the network: offline, it rejects BEFORE
+    // any request exists. The tab keeps its minted ids only across a network
+    // error, and a raw FirebaseError is none of this client's classes (the tab
+    // would rethrow it as an unhandled rejection).
+    const semRede = new FirebaseError(
+      'auth/network-request-failed',
+      'Firebase: Error (auth/network-request-failed).',
+    );
+    const fetchMock = fetchQueResponde(() => json(RESPOSTA_CRIAR, 201));
+    const c = createMercadoPagoClient({
+      baseUrl: 'http://localhost:3007',
+      getAuthToken: () => Promise.reject(semRede),
+      fetch: fetchMock,
+    });
+
+    const err = await c.criarLinks(BODY_CRIAR).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoPagoClientNetworkError);
+    expect((err as MercadoPagoClientNetworkError).cause).toBe(semRede);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a bug in the token getter still propagates as itself (near-miss)', async () => {
+    // Only a FirebaseError is re-classified: anything else is a programming error
+    // and must surface as one (root rule 6), not as "Sem conexão".
+    const bug = new TypeError('user is undefined');
+    const fetchMock = fetchQueResponde(() => json(RESPOSTA_CRIAR, 201));
+    const c = createMercadoPagoClient({
+      baseUrl: 'http://localhost:3007',
+      getAuthToken: () => Promise.reject(bug),
+      fetch: fetchMock,
+    });
+
+    const err = await c.criarLinks(BODY_CRIAR).catch((e: unknown) => e);
+
+    expect(err).toBe(bug);
+    expect(err).not.toBeInstanceOf(MercadoPagoClientNetworkError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a network failure on a POST is a network error and is NOT retried', async () => {
+    // A silent retry would re-POST a create. The caller decides, with its ids.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+
+    await expect(client(fetchMock).criarLinks(BODY_CRIAR)).rejects.toBeInstanceOf(
+      MercadoPagoClientNetworkError,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

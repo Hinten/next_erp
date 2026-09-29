@@ -15,9 +15,9 @@ import {
   ESTADO_NFE_LABELS,
   ESTADO_PEDIDO_LABELS,
   nfeFiscalEncerrada,
+  pagamentosTravadosPorNFe,
   pedidoPageIssues,
   travarInclusaoProduto,
-  travarPagamentoComNFe,
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
@@ -38,10 +38,10 @@ import {
   FiscalTab,
   FreteTab,
   ModificacoesTab,
-  PlaceholderTab,
   PrincipalTab,
 } from './tabs';
 import { LazyIncidentesTab } from './tabs/LazyIncidentesTab';
+import { LazyLinkPagamentoTab } from './tabs/LazyLinkPagamentoTab';
 import type { IncidenteFlush } from './tabs/IncidentesTab';
 import { BloqueioMarketplaceAlert } from './BloqueioMarketplaceAlert';
 import { PagamentosSection } from './PagamentosSection';
@@ -56,8 +56,10 @@ export interface PedidoFormProps {
   defaultValues?: Pedido;
   /**
    * Firestore id of the pedido being edited. Absent in create mode.
-   * When present, the Pagamento tab renders the real (read-only)
-   * `PagamentosSection` instead of the placeholder.
+   * When present, the Pagamento tab renders the real `PagamentosSection` and the
+   * Link Pgto tab renders the payment-link editor; in create mode both show a
+   * "save the pedido first" hint (their data lives in subcollections keyed by
+   * this id).
    */
   pedidoId?: string;
   submitLabel?: string;
@@ -316,10 +318,13 @@ export function PedidoForm({
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('principal');
-  // Incidentes is the one persistent pedido tab. It is not even imported until
-  // the first activation, then remains mounted so its draft, listener and flush
-  // callback survive navigation through the other tabs.
+  // Incidentes and Link Pgto are the persistent pedido tabs. Neither is even
+  // imported until its first activation, then it remains mounted so its draft
+  // and listeners survive navigation through the other tabs — Incidentes keeps
+  // its editor, listener and flush callback; Link Pgto keeps a half-typed
+  // vaquinha and the retry ids of a create that never got a response.
   const [incidentesOpened, setIncidentesOpened] = useState(false);
+  const [linkPgtoOpened, setLinkPgtoOpened] = useState(false);
   const [incidenteDirty, setIncidenteDirty] = useState(false);
   const incidenteFlushRef = useRef<IncidenteFlush | null>(null);
   const db = useMemo(() => getFirebaseFirestore(), []);
@@ -359,6 +364,7 @@ export function PedidoForm({
 
   function selectTab(next: string | null) {
     if (next === 'incidentes') setIncidentesOpened(true);
+    if (next === 'link-pgto') setLinkPgtoOpened(true);
     setActiveTab(next);
   }
 
@@ -569,9 +575,10 @@ export function PedidoForm({
   // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
   // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
   // editable regardless of estado — a soft "unexpected payment" warning
-  // (PagamentosSection) covers the already-paid case instead.
-  const pagamentosBloqueadosPorNFe =
-    nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  // (PagamentosSection) covers the already-paid case instead. The rule lives in
+  // `pagamentosTravadosPorNFe` (schemas) so the Link Pgto tab and the server's
+  // link gate read the SAME predicate instead of a second copy of it.
+  const pagamentosBloqueadosPorNFe = pagamentosTravadosPorNFe(nfeEstado, estadoNow);
   const pagamentosTravados = nfeCarregando || pagamentosBloqueadosPorNFe;
   const dadosGeraisLockNotice = itensTravados
     ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
@@ -729,11 +736,11 @@ export function PedidoForm({
                 />
               </>
             ) : (
-              // Payment is fully ported (PagamentosSection below); it's just
+              // Payment is fully ported (PagamentosSection above); it's just
               // unavailable until the doc exists, since pagamentos are a
               // subcollection keyed by pedidoId. Match the sibling create-mode
-              // empty states (Estoque / Estado / Incidentes) — NOT PlaceholderTab,
-              // which wrongly reads "em breve, use o app antigo".
+              // empty states (Estoque / Estado / Incidentes): a dimmed hint, never
+              // an "em breve, use o app antigo" placeholder.
               <Text c="dimmed" size="sm">
                 Salve o pedido para registrar pagamentos.
               </Text>
@@ -741,8 +748,32 @@ export function PedidoForm({
           </Tabs.Panel>
 
           {visibleTabs.has('link-pgto') && (
-            <Tabs.Panel value="link-pgto" pt="md">
-              <PlaceholderTab name="Link de pagamento" />
+            // keepMounted + a first-activation latch, exactly like Incidentes
+            // (the Tabs above unmount every other inactive panel): a half-typed
+            // vaquinha must survive a glance at the Pagamento tab. Create mode has
+            // no draft to keep, so its panel unmounts like any ordinary one.
+            <Tabs.Panel value="link-pgto" pt="md" keepMounted={Boolean(pedidoId && defaultValues)}>
+              {pedidoId && defaultValues ? (
+                linkPgtoOpened && (
+                  <LazyLinkPagamentoTab
+                    pedidoId={pedidoId}
+                    // The live snapshot doc (EditarPedidoView re-passes it on every
+                    // emission), NOT `form.getValues`: the links are sized against
+                    // the PERSISTED total and devolução the server reconciles with,
+                    // never the operator's unsaved edits.
+                    pedido={defaultValues}
+                    estado={estadoNow}
+                    formDirty={form.formState.isDirty}
+                    fromCache={fromCache ?? false}
+                    nfeEstado={nfeEstado}
+                    nfeCarregando={nfeCarregando}
+                  />
+                )
+              ) : (
+                <Text c="dimmed" size="sm">
+                  Salve o pedido para gerar links de pagamento.
+                </Text>
+              )}
             </Tabs.Panel>
           )}
 

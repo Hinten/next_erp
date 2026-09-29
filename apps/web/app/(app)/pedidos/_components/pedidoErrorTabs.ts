@@ -73,9 +73,10 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   chNFeReferenciadas: 'fiscal',
   // Frete
   freteInicial: 'frete',
-  // Preview-only fields rendered read-only in their tabs via PlaceholderTab —
-  // map them so a stray validation error marks the right tab instead of being
-  // reported as "fora do formulário".
+  // Fields owned by a tab that edits them through its own controls (Estado/
+  // Histórico for `estado`, Devolução for `itensDevolvidos`) rather than a
+  // plain input — map them so a stray validation error marks the right tab
+  // instead of being reported as "fora do formulário".
   estado: 'estado',
   itensDevolvidos: 'devolucao',
 };

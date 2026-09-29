@@ -435,6 +435,9 @@ describe('avaliarElegibilidade — 4. the exposure (no tolerance)', () => {
   });
 
   describe('the money in flight on links that are no longer open', () => {
+    // The rule lives in `@delfrance/schemas` (`valorEmTransitoForaDeLinksAbertos` /
+    // `disponivelParaNovosLinksCentavos`, pinned in `linkPagamento.test.ts`) because
+    // the web tab applies it too; these cases pin that the guard refuses by it.
     // A R$ 40,00 link that expired yesterday, with a Pix issued before it lapsed.
     const expirado = link('a', { valorCobrado: 40, dataExpiracao: AGORA - DIA });
     const emTransito = (status: unknown, sobra: Record<string, unknown> = {}) =>
@@ -541,6 +544,22 @@ describe('avaliarElegibilidade — 4. the exposure (no tolerance)', () => {
         });
         expect(avaliarElegibilidade(e), JSON.stringify(sobra)).toBeNull();
       }
+    });
+
+    it('refuses even R$ 1,00 once the stored links alone already exceed restante', () => {
+      // Open 40 (`b`) + in flight 40 (`a`) against what is left after a paid `p2`:
+      // the available figure clamps at 0, and the clamp must never read as room.
+      const comPago = (pago: number) =>
+        entrada({
+          links: [expirado, link('b', { valorCobrado: 40 })],
+          pagamentos: [emTransito(STATUS_PAGAMENTO.pendente), pagamento('p2', pago)],
+          novos: [{ valor: 1, quantidade: 1 }],
+        });
+      // restante 70 (over-exposed by 10) and 80 (exactly covered): refused.
+      expect(avaliarElegibilidade(comPago(30))).toBe(MOTIVO_RECUSA_LINK.excedeRestante);
+      expect(avaliarElegibilidade(comPago(20))).toBe(MOTIVO_RECUSA_LINK.excedeRestante);
+      // Near-miss: restante 81 leaves exactly R$ 1,00.
+      expect(avaliarElegibilidade(comPago(19))).toBeNull();
     });
   });
 
