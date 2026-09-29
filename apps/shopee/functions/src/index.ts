@@ -37,11 +37,13 @@ import {
   runShopeeOrderBackfill,
 } from '../../lib/shopee/notificacoes/orderBackfill';
 import { runShopeePushConfigMonitor } from '../../lib/shopee/notificacoes/pushConfigMonitor';
+import { SHOPEE_PRICE_SYNC_QUEUE } from '../../lib/shopee/precos/constantesPreco';
 import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 import { createShopeeTaskScheduler } from '../../lib/shopee/shopeeTasks';
 import { getDb } from './lib/admin';
 import * as massImportHandlers from './processMassImport';
 import * as notificationHandlers from './processNotification';
+import * as priceSyncHandlers from './processPriceSync';
 import * as stockSendHandlers from './sendStock';
 
 /**
@@ -107,6 +109,15 @@ import * as stockSendHandlers from './sendStock';
  * with no flag of its own: the single valve `SHOPEE_STOCK_SYNC_ENABLED` covers
  * all four, and a second flag would let the corrector be off while an operator
  * believed stock sync was on.
+ *
+ * Master plan step 13 (#1521) adds the FOURTH Cloud Tasks queue
+ * (`processShopeePriceSync`, ./processPriceSync) — the account-wide price job
+ * ("Atualizar preços"). It is the mass import's shape: a job document is the
+ * checkpoint, the `/atualizar-precos` route enqueues the first dispatch and the
+ * handler re-enqueues onto ITSELF for every plan/drain continuation, for a burst
+ * pause and for the daily-quota park — three self-re-enqueue arms, and no sweep
+ * behind any of them. No `onSchedule` arrives with it: every run is an
+ * operator's click (the manual push runs in-process and never enqueues).
  */
 
 /**
@@ -114,9 +125,10 @@ import * as stockSendHandlers from './sendStock';
  * PUBLIC-signed Shopee call.
  *
  * ⚠️ It covers the seven `onSchedule` triggers defined in THIS file only. The
- * THREE queue functions — `processShopeeNotification` (./processNotification),
- * `processShopeeMassImport` (./processMassImport, master plan step 9) and
- * `sendShopeeStock` (./sendStock, step 12) — and the three step-12 sweeps
+ * FOUR queue functions — `processShopeeNotification` (./processNotification),
+ * `processShopeeMassImport` (./processMassImport, master plan step 9),
+ * `sendShopeeStock` (./sendStock, step 12) and `processShopeePriceSync`
+ * (./processPriceSync, step 13) — and the three step-12 sweeps
  * (./sweepStock) each declare their own copy of the same two names, each pinned
  * by its own module's test, so this constant does not by itself stop a NEW
  * trigger picking a different subset; the exact-set assertions do, and
@@ -193,6 +205,28 @@ if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers)) {
 
 /** The queue-based stock push — one task, one `update_stock`, self-re-enqueued. */
 export { sendShopeeStock } from './sendStock';
+
+// The same rename-safety assertion for the FOURTH queue of this codebase (master
+// plan step 13's account-wide price job). Its OWN `if`, never folded into a loop
+// over the four: the message has to name the FILE to fix, and the four
+// constants live in four different modules.
+//
+// ⚠️ This one has the mass import's hazard with a THIRD arm. The handler
+// re-enqueues onto its own queue for every plan/drain continuation, for a burst
+// pause and for the daily-quota park, so a half-rename does not break the
+// route's first dispatch — it breaks the CONTINUATION: the re-enqueued task aims
+// at a queue that does not exist, the enqueue still returns success, and the job
+// document stays `running` until the six-hour orphan reclaim takes it.
+if (!(SHOPEE_PRICE_SYNC_QUEUE in priceSyncHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processPriceSync.ts must export a ' +
+      `handler named '${SHOPEE_PRICE_SYNC_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_PRICE_SYNC_QUEUE constant together.',
+  );
+}
+
+/** The queue-based account-wide price job (one dispatch at a time, self-continued). */
+export { processShopeePriceSync } from './processPriceSync';
 
 // Master plan step 11 (#1519): the Shopee half of `produtos.integracoesComProduto`,
 // derived from the `prodshopee` links. No `secrets:` — it never calls Shopee.

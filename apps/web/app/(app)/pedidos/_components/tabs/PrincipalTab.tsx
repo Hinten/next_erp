@@ -43,7 +43,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
-import { precoFromProduto } from '../precoLookup';
+import { lerProdutoUmaVez, precoFromProduto } from '../precoLookup';
 import { ProdutoThumbnail } from '@/components/ProdutoThumbnail';
 import { ProdutoVariacaoLabel } from '../ProdutoVariacaoLabel';
 import { VendedorField } from '../VendedorField';
@@ -192,14 +192,17 @@ export function PrincipalTab({ form, db, disabled, observacoesDisabled }: Princi
     // first lookup can land second and restore the prices it read.
     const token = ++repriceToken.current;
     const priceById = new Map<string, number | null>();
+    // Every variation line reads its parent (only the parent's flag says whose
+    // price counts), so share one reader across the batch: sizes of one family
+    // read that parent once.
+    const ler = lerProdutoUmaVez(db);
     await Promise.all(
       produtoIds.map(async (id) => {
         // A per-produto Firestore failure must not reject the whole batch —
         // treat it as "no price found" so the row keeps its current price.
         try {
-          const snap = await getDoc(produtoCollection.docRef(db, {}, id));
-          const data = snap.data();
-          priceById.set(id, data ? await precoFromProduto(db, data, novaListaId) : null);
+          const data = await ler(id);
+          priceById.set(id, data ? await precoFromProduto(db, data, novaListaId, ler) : null);
         } catch (err) {
           if (!(err instanceof FirebaseError)) throw err;
           priceById.set(id, null);

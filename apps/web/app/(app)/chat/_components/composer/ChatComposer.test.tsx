@@ -4,12 +4,12 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { conversaSchema, type Conversa } from '@delfrance/schemas';
 
-const { batchSet, batchCommit, newDocIdMock, uploadFileMock, setDocMock, responderConversa } =
+const { batchSet, batchCommit, newDocIdMock, uploadChatFileMock, setDocMock, responderConversa } =
   vi.hoisted(() => ({
     batchSet: vi.fn(),
     batchCommit: vi.fn(async () => undefined),
     newDocIdMock: vi.fn(() => 'evt-id'),
-    uploadFileMock: vi.fn(),
+    uploadChatFileMock: vi.fn(),
     setDocMock: vi.fn(async (_ref: unknown, _data: unknown) => undefined),
     responderConversa: vi.fn(),
   }));
@@ -27,7 +27,13 @@ vi.mock('@/lib/data/newDocId', () => ({ newDocId: newDocIdMock }));
 // the upload itself so the tests drive success / failure deterministically.
 vi.mock('@delfrance/storage', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/storage')>();
-  return { ...actual, uploadFile: uploadFileMock };
+  return {
+    ...actual,
+    uploadChatFile: uploadChatFileMock,
+    arquivoCollection: {
+      docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __arquivoRef: id }),
+    },
+  };
 });
 
 vi.mock('@/lib/data/conversaCollection', () => ({
@@ -50,13 +56,16 @@ vi.mock('firebase/firestore', async (importActual) => {
     runTransaction: async (
       _db: unknown,
       callback: (tx: {
-        get: () => Promise<{ data: () => Conversa }>;
+        get: (ref: unknown) => Promise<unknown>;
         set: (ref: unknown, data: unknown) => void;
       }) => Promise<void>,
     ) => {
       const writes: Array<[unknown, unknown]> = [];
       await callback({
-        get: async () => ({ data: () => conversaFull }),
+        get: async (ref: unknown) =>
+          typeof ref === 'object' && ref !== null && '__arquivoRef' in ref
+            ? { exists: () => true }
+            : { data: () => conversaFull },
         set: (ref, data) => {
           writes.push([ref, data]);
         },
@@ -139,7 +148,7 @@ afterEach(() => {
 
 describe('ChatComposer — attachment upload + audio caption hint', () => {
   it('preserves a WhatsApp JPEG and uploads the original bytes through uploadFile', async () => {
-    uploadFileMock.mockResolvedValueOnce({ id: 'jpeg-1', arquivo: { filetype: 'image' } });
+    uploadChatFileMock.mockResolvedValueOnce({ id: 'jpeg-1', arquivo: { filetype: 'image' } });
     const { container } = wrap(
       <ChatComposer
         conversaId="c1"
@@ -153,11 +162,10 @@ describe('ChatComposer — attachment upload + audio caption hint', () => {
     selectFile(container, jpeg);
 
     await waitFor(() =>
-      expect(uploadFileMock).toHaveBeenCalledWith(
+      expect(uploadChatFileMock).toHaveBeenCalledWith(
         expect.objectContaining({
           bytes: jpeg,
           contentType: 'image/jpeg',
-          filepath: 'chat',
           originalFilename: 'foto.jpg',
         }),
       ),
@@ -165,7 +173,7 @@ describe('ChatComposer — attachment upload + audio caption hint', () => {
   });
 
   it('flags an attachment as errored when the upload rejects (StorageUploadError)', async () => {
-    uploadFileMock.mockRejectedValueOnce(new StorageUploadError('Falha no upload do arquivo'));
+    uploadChatFileMock.mockRejectedValueOnce(new StorageUploadError('Falha no upload do arquivo'));
     const { container } = wrap(
       <ChatComposer
         conversaId="c1"
@@ -202,7 +210,7 @@ describe('ChatComposer — attachment upload + audio caption hint', () => {
   });
 
   it('hints that an audio caption is dropped once audio + text coexist', async () => {
-    uploadFileMock.mockResolvedValueOnce({ id: 'a1', arquivo: { filetype: 'audio' } });
+    uploadChatFileMock.mockResolvedValueOnce({ id: 'a1', arquivo: { filetype: 'audio' } });
     const { container } = wrap(
       <ChatComposer
         conversaId="c1"

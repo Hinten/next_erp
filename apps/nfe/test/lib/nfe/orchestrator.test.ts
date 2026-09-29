@@ -45,6 +45,8 @@ import {
   CST_PIS_COFINS,
   ESTADO_NFE,
   FORMA_PAGAMENTO,
+  IND_INCENTIVO,
+  IND_ISS,
   MOD_BC,
   freteDoPedidoSchema,
   pagamentoSchema,
@@ -142,6 +144,21 @@ const CSOSN_900_PARCIAL = {
   crt: CRT.simplesNacional,
   csosn: CSOSN.outros,
   csosn900: { vBC: 1500, pICMS: 18, vICMS: 270 },
+};
+
+/**
+ * A complete, schema-valid ISSQN config. The engine can build its `<ISSQN>`
+ * group, and the resolver keeps it; the orchestrator refuses it at generation
+ * because the ERP emits no `<ISSQNtot>` (#1656).
+ */
+const CONFIGURACAO_ISSQN = {
+  vBC: 500,
+  vAliq: 5,
+  vISSQN: 25,
+  cMunFG: '3550308',
+  cListServ: '01.05',
+  indISS: IND_ISS.exigivel,
+  indIncentivo: IND_INCENTIVO.nao,
 };
 
 /** The default PED-1 with its one item's `configuracaoICMS` replaced. */
@@ -1308,6 +1325,35 @@ describe('emitirPedido — guards', () => {
     },
   );
 
+  it('throws NFeOrchestratorError before any write for an ISSQN imposto — no número consumed (#1656)', async () => {
+    // The ISSQN config passes impostoSchema, so the resolver keeps it and the
+    // engine could build <ISSQN>; the ERP refuses it because it emits no
+    // <ISSQNtot>. Same seat as #506: buildGenItems, inside the allocation
+    // transaction and before its first tx.set, so nothing is written.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+      pedido: pedidoComImposto({ ...impostoCsosn102(), configuracaoISSQN: CONFIGURACAO_ISSQN }),
+    });
+
+    const error = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NFeOrchestratorError);
+    expect((error as NFeOrchestratorError).message).toMatch(
+      /^pedido 'PED-1' item 0 \(produto 'P-1'\): ISSQN \(configuracaoISSQN\) is not supported for emission/,
+    );
+
+    // Nothing written: no nfev4 anchor/placeholder, no counter advance.
+    expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+    expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+    expect(docs['filiais/F-1/nfeconfig/default']).toMatchObject({
+      numeracao_atual: 41,
+      idLote: 6,
+    });
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+  });
+
   it('lets a COMPLETE CSOSN 900 group through — one número (#506)', async () => {
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({
@@ -1973,6 +2019,38 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
       expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
     },
   );
+
+  it('returns the persisted aprovada doc even when the LIVE imposto is ISSQN — the refusal never runs in prepareEmission (#1656)', async () => {
+    // The ISSQN refusal belongs to generation, like #506's guard. An operator
+    // who switches ISSQN on after the nota was authorized must still get that
+    // nota back; a check in prepareEmission would fail it on a projection that
+    // is never built.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      pedido: pedidoComImposto({ ...impostoCsosn102(), configuracaoISSQN: CONFIGURACAO_ISSQN }),
+    });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
+      chave: CHAVE,
+      estado: ESTADO_NFE.aprovada,
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+      nRec: '351000000000123',
+    };
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.reused).toBe(true);
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.chave).toBe(CHAVE);
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+    expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+  });
 
   it('fresh emit returns reused=false (so the UI shows the regular green toast)', async () => {
     const events: string[] = [];

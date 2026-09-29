@@ -11,9 +11,10 @@
  *     so one failing never discards the other);
  *  2. the cliente the pedido points at, through {@link readClienteByRef} — the
  *     SAME reader, and so the same provenance, as `ClienteCell` (#1303) — and
- *     only when the ref really points into `clientes` ({@link ehRefDeCliente}):
- *     the cadastro link is `/clientes/{id}`, and the same id under another
- *     collection is a different document.
+ *     only when the ref really points into `clientes` (the same
+ *     {@link refDeClienteOuNull} gate as `ClienteCell`): the cadastro link is
+ *     `/clientes/{id}`, and the same id under another collection is a
+ *     different document.
  *
  * The destinatário comes from `lerDestinatarioDoNfev4` — `xml_assinado` (EXACTLY
  * the NF-e the SEFAZ judged, kept on `rejeitada`), else `xml_nfe_proc`, never
@@ -29,19 +30,21 @@
  * Failure policy (root CLAUDE.md rule 6): a `FirebaseError` — permission-denied
  * on `clientes`, an offline `unavailable` — degrades THAT part to `null`, so
  * the toast still shows what it can (a failed cliente read keeps the id-only
- * cadastro link). That includes the FirestoreErrors `doc()` throws
- * SYNCHRONOUSLY for a malformed path — an odd-segment legacy outer ref, an id
- * with a `/` — which is why every ref is built inside the guarded region, not
- * before it. Anything else is a defect and is rethrown.
+ * cadastro link). The pedido's outer ref no longer throws at all: its
+ * dereference is total and answers null for a malformed path (#1656). What
+ * still throws SYNCHRONOUSLY is `docRef` on a malformed id (one with a `/`) —
+ * a `FirebaseError` `invalid-argument` (NOT an `instanceof FirestoreError`:
+ * `@firebase/util` resets the prototype) — which is why the nfev4 and pedido
+ * refs are built inside the guarded region, not before it. Anything else is a
+ * defect and is rethrown.
  */
 import { FirebaseError } from 'firebase/app';
-import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
+import { getDoc, type Firestore } from 'firebase/firestore';
 import { TIPO_CLIENTE, type TipoCliente } from '@delfrance/schemas';
 
-import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
-import { ehRefDeCliente, readClienteByRef } from '@/lib/data/readClienteByRef';
+import { readClienteByRef, refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 
 import { lerDestinatarioDoNfev4 } from './destinatarioNFe';
 import type {
@@ -93,21 +96,18 @@ async function carregarCliente(
   db: Firestore,
   outerRef: unknown,
 ): Promise<ClienteDaRejeicao | null> {
-  let ref: DocumentReference | null = null;
+  // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens; the
+  // same id elsewhere is a different document, so no link rather than a wrong
+  // one. Outside the try: the gate is total — a malformed ref answers null
+  // rather than throwing out of `doc()` (#1656).
+  const ref = refDeClienteOuNull(db, outerRef);
+  if (ref == null) return null;
   try {
-    // ⚠️ Inside the try: an opaque `{ path }` ref with an odd segment count
-    // makes `doc()` throw a FirestoreError SYNCHRONOUSLY, and that must degrade
-    // like a failed read — never reject the loader and cost the toast.
-    ref = dereferenceOuterRef(db, outerRef);
-    // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens; the
-    // same id elsewhere is a different document, so no link rather than a wrong one.
-    if (ref == null || !ehRefDeCliente(ref)) return null;
     const doc = await readClienteByRef<Record<string, unknown>>(db, ref);
     return { id: ref.id, cadastro: doc == null ? null : cadastroClienteRejeicao(doc) };
   } catch (err) {
-    // A failed read keeps the id-only cadastro link; a ref that did not even
-    // dereference has no id to link to.
-    if (err instanceof FirebaseError) return ref == null ? null : { id: ref.id, cadastro: null };
+    // A failed read keeps the id-only cadastro link.
+    if (err instanceof FirebaseError) return { id: ref.id, cadastro: null };
     throw err;
   }
 }
@@ -120,7 +120,7 @@ export function carregadorContextoRejeicao(db: Firestore): CarregarContextoRejei
   return async ({ pedidoId, nfeId }): Promise<ContextoRejeicaoNFe> => {
     const [nfeSettled, pedidoSettled] = await Promise.allSettled([
       // Each ref is built INSIDE its settled promise: `docRef` validates the
-      // path and throws a FirestoreError synchronously for a malformed id, which
+      // path and throws a FirebaseError synchronously for a malformed id, which
       // outside would escape `allSettled` and reject the whole loader.
       Promise.resolve().then(() => getDoc(nfeCollection.docRef(db, { pedidoId }, nfeId))),
       Promise.resolve().then(() => getDoc(pedidoCollection.docRef(db, {}, pedidoId))),
