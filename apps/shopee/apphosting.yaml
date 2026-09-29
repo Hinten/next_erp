@@ -51,7 +51,11 @@ runConfig:
   # is the residual (the same one apps/shopee/CLAUDE.md records for the token
   # refresh) and the 60 s above the budget is headroom for the last listing's
   # two ladder attempts, not a bound. Same argument and the same number as
-  # apps/mercado-livre/apphosting.yaml, for the same route shape.
+  # apps/mercado-livre/apphosting.yaml, for the same route shape. Since step 13
+  # (#1521) a SECOND route has exactly that shape — the manual price push,
+  # /api/marketplace/shopee/enviar-precos, one `update_price` per listing under
+  # its OWN budget (SHOPEE_PRICE_MANUAL_DEADLINE_MS, also 120 s by default) — so
+  # this ceiling stays at 180 and still sits above both.
   timeoutSeconds: 180
 # ⚠️ That `timeoutSeconds` is NEW, and it replaces a paragraph that claimed the
 # opposite. Until step 12 every route here WAS a fast Firestore read/write plus
@@ -173,6 +177,22 @@ runConfig:
 #                           blank exactly as unset, so a `value: ''` row would be
 #                           behaviourally identical to no row while adding
 #                           surface. Same call ML made for its three.
+#   SHOPEE_PRICE_MANUAL_DEADLINE_MS
+#                           OPTIONAL — the manual PRICE push's wall-clock budget
+#                           in ms (step 13; default 120000, floored at 1000). The
+#                           stock budget's twin with its own knob, so the two
+#                           routes retune apart; the same rule applies — keep it
+#                           BELOW runConfig.timeoutSeconds, and 120 s fits 180.
+#   SHOPEE_PRICE_MANUAL_CONCURRENCY
+#                           OPTIONAL — how many listings the price push sends in
+#                           parallel (default 2), CLAMPED into
+#                           [1, SHOPEE_STOCK_CONCURRENT_DISPATCHES]: price spends
+#                           the same per-APPLICATION quota as the stock queue.
+#                           There is no price master valve (every price send is
+#                           an operator's request) and no price pause knob — a
+#                           burst with no `Retry-After` pauses for
+#                           SHOPEE_STOCK_RATE_PAUSE_MIN above. These two get no
+#                           `env:` row either, for the same reason as the six.
 #   WEB_APP_URL             apps/web origin (the callback redirects back here)
 #   ALLOWED_ADMIN_ORIGINS   CSV of apps/web origins for CORS. ⚠️ REQUIRED in
 #                           prod: localhost is no longer implicitly allowed

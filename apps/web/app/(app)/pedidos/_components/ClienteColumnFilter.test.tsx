@@ -110,8 +110,8 @@ describe('ClienteColumnFilter', () => {
 
 describe('formatClienteFilterValue', () => {
   it('names the empty state the way the cell does', () => {
-    // `ClienteCell` renders the literal "Anônimo" for a null ref. A chip saying
-    // anything else would describe the same rows with a second vocabulary.
+    // `ClienteCell` renders `ANONIMO_LABEL` ("Anônimo") for a null ref. A chip
+    // saying anything else would describe the same rows with a second vocabulary.
     expect(formatClienteFilterValue(null)).toBe('Anônimo');
   });
 

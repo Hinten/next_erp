@@ -18,9 +18,16 @@ vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
     })),
   };
 });
+// The REAL decrypt, behind a spy: only the near-miss cases swap in a failure
+// the real primitive cannot produce from a stored blob.
+vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
+  return { ...actual, decryptSecret: vi.fn(actual.decryptSecret) };
+});
 
 import {
   NFeCertError,
+  decryptSecret,
   encryptSecret,
   loadCertificateFromBase64,
 } from '@delfrance/integrations-nfe';
@@ -159,6 +166,80 @@ describe('resolveFilialCert', () => {
     const { fs } = fakeFirestore({});
     expect(await resolveFilialCert(fs, 'F-1')).toBeNull();
   });
+});
+
+describe('resolveFilialCert — a stored key that does not decrypt is an NFeCertError (#1654)', () => {
+  /** The seeded secret with its encrypted-key blob rewritten by `mudar`. */
+  function seedSecretCom(
+    mudar: (blob: { iv: string; authTag: string; ciphertext: string }) => Record<string, string>,
+  ): Record<string, unknown> {
+    const secret = seedSecret();
+    const blob = secret.encPrivateKey as { iv: string; authTag: string; ciphertext: string };
+    return { ...secret, encPrivateKey: mudar(blob) };
+  }
+
+  /** Flip the first byte of a base64 field. */
+  const virarByte = (b64: string): string => {
+    const bytes = Buffer.from(b64, 'base64');
+    bytes[0] = bytes[0]! ^ 0xff;
+    return bytes.toString('base64');
+  };
+
+  it.each<[string, () => Record<string, unknown>]>([
+    [
+      'a rotated NFE_CERT_ENC_KEY (the blob authenticates under the OLD key only)',
+      () => {
+        process.env.NFE_CERT_ENC_KEY = Buffer.alloc(32, 6).toString('base64');
+        return seedSecret();
+      },
+    ],
+    [
+      'a tampered ciphertext',
+      () => seedSecretCom((b) => ({ ...b, ciphertext: virarByte(b.ciphertext) })),
+    ],
+    ['a tampered tag', () => seedSecretCom((b) => ({ ...b, authTag: virarByte(b.authTag) }))],
+    [
+      'a truncated tag (3 bytes)',
+      () => seedSecretCom((b) => ({ ...b, authTag: Buffer.alloc(3, 1).toString('base64') })),
+    ],
+    ['an IV that decodes to nothing', () => seedSecretCom((b) => ({ ...b, iv: '!!!!' }))],
+  ])('%s → NFeCertError naming the filial, and nothing cached', async (_caso, semente) => {
+    const { fs } = fakeFirestore({ 'filiais/F-1/certificadoSecreto/default': semente() });
+
+    const erro = await resolveFilialRuntime(fs, fakeBaseRuntime(), 'F-1').catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(NFeCertError);
+    expect((erro as NFeCertError).message).toContain("Filial 'F-1'");
+    // The master key never reaches the message (rule 9).
+    expect((erro as NFeCertError).message).not.toContain(process.env.NFE_CERT_ENC_KEY);
+    expect(vi.mocked(deriveRuntimeForCert)).not.toHaveBeenCalled();
+    // Not cached: the SAME stored blob fails again on the next call.
+    await expect(resolveFilialCert(fs, 'F-1')).rejects.toBeInstanceOf(NFeCertError);
+  });
+
+  it.each<[string, () => Error]>([
+    ['a plain Error with another message', () => new Error('Unsupported state')],
+    [
+      'a Node crypto error with another code (ERR_CRYPTO_INVALID_KEYLEN)',
+      () =>
+        Object.assign(new RangeError('Invalid key length'), { code: 'ERR_CRYPTO_INVALID_KEYLEN' }),
+    ],
+    [
+      'a TypeError (a bug)',
+      () => new TypeError("Cannot read properties of undefined (reading 'iv')"),
+    ],
+  ])(
+    'near-miss: %s from the decrypt is NOT an NFeCertError — rethrown as it came',
+    async (_caso, erro) => {
+      const { fs } = fakeFirestore({ 'filiais/F-1/certificadoSecreto/default': seedSecret() });
+      const e = erro();
+      vi.mocked(decryptSecret).mockImplementationOnce(() => {
+        throw e;
+      });
+
+      await expect(resolveFilialCert(fs, 'F-1')).rejects.toBe(e);
+    },
+  );
 });
 
 describe('resolveFilialRuntime', () => {

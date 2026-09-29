@@ -124,6 +124,39 @@ describe('createViaCepClient', () => {
       expect(fetchStub.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
     });
 
+    it('wraps a timeout that fires while the BODY is still arriving', async () => {
+      // The window covers the body read (`request`), and a signal that fires
+      // after the headers errors the body stream with the abort's reason — as
+      // fetch itself does — so `res.json()` rejects with a DOMException
+      // ('AbortError'), neither a SyntaxError nor a TypeError. The headers
+      // arrive at once; the body sends half an object and stalls.
+      let corpoAbortado = false;
+      const fetchStub = vi.fn((_url: string, init?: RequestInit) => {
+        const signal = init?.signal;
+        const corpo = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"logradouro":'));
+            signal?.addEventListener('abort', () => {
+              corpoAbortado = true;
+              controller.error(signal.reason);
+            });
+          },
+        });
+        return Promise.resolve(
+          new Response(corpo, { status: 200, headers: { 'Content-Type': 'application/json' } }),
+        );
+      });
+      const client = createViaCepClient({ fetch: fetchStub as never, timeoutMs: 10 });
+
+      const err = await client.buscarCep('01310100').catch((e: unknown) => e);
+
+      // The abort landed in the BODY read — the fetch itself had resolved.
+      expect(corpoAbortado).toBe(true);
+      expect(err).toBeInstanceOf(ViaCepError);
+      expect((err as ViaCepError).cause).toBeInstanceOf(DOMException);
+      expect(((err as ViaCepError).cause as DOMException).name).toBe('AbortError');
+    });
+
     it('does not abort a request that completes inside the window', async () => {
       // The timer must be cleared on the happy path — otherwise every fast
       // lookup leaves one pending for the full timeout.

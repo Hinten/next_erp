@@ -34,9 +34,10 @@ import {
  *
  * It is an array of objects, and `ObjectView` renders that through
  * `FieldRenderer`'s `'array'` branch as a plain text input holding raw JSON — an
- * editor that can only corrupt the value. Step 13 (price sync) owns the real
- * editor, with the staged-deletion affordance the repo requires for destructive
- * edits inside a form.
+ * editor that can only corrupt the value. The real editor, with the
+ * staged-deletion affordance the repo requires for destructive edits inside a
+ * form, belongs to whichever future step first SENDS `wholesale` (step 13 never
+ * does; master plan step 21's note).
  */
 export const shopeeFields: Record<string, FieldConfig> = {
   ...integracaoFieldsCompartilhados({ canal: 'Shopee', generoCanal: 'f' }),

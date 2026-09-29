@@ -28,6 +28,7 @@ export {
   TTL_FIELD,
   TTL_POLICIES,
   RETENCAO_ENVIO_PRECO_ML_DIAS,
+  RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
   RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
   RETENCAO_VINCULO_WHATSAPP_DIAS,
@@ -639,6 +640,24 @@ export {
 } from './relatorioEnvioPrecoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS, and deliberately exports no
+  // `…Meta`) — the Shopee "Atualizar preços" account-wide price job (master-plan
+  // step 13, #1521), twin of envioPrecoMercadoLivre above. Its fila holds
+  // IDENTITIES, never prices, and its report binds the shared
+  // relatorioEnvioPrecoSchema. ⚠️ Every stamp here is MILLISECONDS; `expiraEm`
+  // is the TTL Date.
+  envioPrecoShopeeStatusSchema,
+  ENVIO_PRECO_SHOPEE_STATUS,
+  envioPrecoShopeeModeloSchema,
+  envioPrecoShopeeFilaItemSchema,
+  envioPrecoShopeeSchema,
+  type EnvioPrecoShopeeStatus,
+  type EnvioPrecoShopeeModelo,
+  type EnvioPrecoShopeeFilaItem,
+  type EnvioPrecoShopee,
+} from './envioPrecoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
@@ -1058,6 +1077,45 @@ export {
   type CamposProdutoFiscal,
   type OperacaoCamposFiscais,
 } from './imposto/camposProdutoFiscal';
+
+export {
+  // The emission rules a tax config must satisfy, as verdicts: the NF-e engine
+  // throws from them, and the web imposto editor can check them before a save
+  // (#1655).
+  CRTS_SIMPLES_NACIONAL,
+  ehCrtSimplesNacional,
+  usaIssqn,
+  SUBCONFIGS_ICMS_SN,
+  SUBCONFIG_POR_CSOSN,
+  GRUPO_XSD_FCP_ST,
+  GRUPOS_XSD_ICMSSN500,
+  GRUPOS_XSD_ICMSSN900,
+  GRUPOS_XSD_POR_SUBCONFIG,
+  vereditoIcmsSn,
+  ALIQUOTA_PIS_COFINS_LIMITE,
+  vereditoPisCofins,
+  type CrtSimplesNacional,
+  type SubConfigIcmsSn,
+  type GrupoXsd,
+  type GrupoXsdIncompleto,
+  type IcmsSnEmitivel,
+  type VereditoIcmsSn,
+  type CstPisCofinsAliq,
+  type CstPisCofinsQtde,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type BasePisCofinsOutr,
+  type VereditoPisCofins,
+} from './imposto/regrasDeEmissao';
+
+export {
+  // Those verdicts in pt-BR, behind the engine's own impostoSchema tier gate —
+  // what the web refuses to save because the NF-e engine would refuse to emit
+  // it (#1655).
+  problemasDeEmissaoDoImposto,
+  issuesDeEmissaoDasLinhas,
+  type ProblemaDeEmissao,
+} from './imposto/problemasDeEmissao';
 
 export {
   // RTC cClassTrib/CST seed + validator (#333)
