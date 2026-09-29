@@ -37,11 +37,13 @@
  * import; it is one translation plus three extra decisions (the composition, the
  * kit flags, and the refusal to stock any of it).
  *
- * ⚠️ The derived record KEEPS `tag.kit`. It is a kit and says so: the routing
- * guard in `importarAnuncio.ts` must stay effective if this record ever escapes
- * this module, which is why the plan is built here from the shared PURE planner
- * (which has no routing guard, and should not) rather than by handing the record
- * back to the listing importer.
+ * ⚠️ The derived record PINS `tag.kit: true`. It is a kit and says so: the
+ * routing guard in `importarAnuncio.ts` must stay effective if this record ever
+ * escapes this module, which is why the plan is built here from the shared PURE
+ * planner (which has no routing guard, and should not) rather than by handing
+ * the record back to the listing importer. The same pin is what makes the
+ * shared link builder (`dadosLinkListagem`) stamp `kitNativo: true` on the
+ * listing link — the flag steps 11, 12 and 13 refuse a native kit on.
  *
  * ## ⚠️ Components are RESOLVED, never created
  *
@@ -278,9 +280,15 @@ export function anuncioDerivadoDoKit(entrada: ItemLido, kit: ShopeeKitItem): Ite
     // The table spelling first, then the sample's. Neither is invented.
     image: kit.images ?? kit.image ?? null,
     has_model: modelos.length > 0,
-    // ⚠️ KEPT: this record is a kit and says so, so the listing importer's
-    // routing refusal still fires if it ever reaches it.
-    tag: entrada.base.tag ?? { kit: true },
+    // ⚠️ PINNED to `kit: true`, never copied: this record is a kit and says
+    // so, so the listing importer's routing refusal still fires if it ever
+    // reaches it, AND the shared link builder stamps `kitNativo: true` from
+    // it. A copied `tag` would make that stamp depend on every caller building
+    // its base row with `kit: true` — the job's kit drain and `lerAnuncio` both
+    // do today, but a caller that did not would write `kitNativo: false` on a
+    // native kit, and steps 12 and 13 would then sync a quantity and a price
+    // Shopee derives from the components.
+    tag: { ...(entrada.base.tag ?? {}), kit: true },
   });
 
   const models =

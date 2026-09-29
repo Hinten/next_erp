@@ -15,11 +15,14 @@ import {
   type ImportacaoShopeeOptions,
 } from '@delfrance/schemas';
 
+import { kitNativoDoAnuncio } from '../anuncios/montagemAnuncio';
+import { podeEnviarEstoqueShopee } from '../estoque/podeEnviarEstoque';
 import { limparTaxonomiaShopee } from '../taxonomia/cache';
 import { FakeBucket, asBucket } from '../testing/fakeBucket';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { criarMemoDeCategorias } from './categoriaShopee';
 import { ShopeeImportBlockedError } from './errosImportacao';
+import { ShopeePrecoDesatualizadoError } from './estoquePrecos';
 import {
   aplicarImportacaoShopee,
   importarAnuncioShopee,
@@ -933,5 +936,338 @@ describe('importarAnuncioShopee — o memo do despacho', () => {
     await importarAnuncioShopee(deps(db, { grupos: criarMemoDeGrupos(asDb(db)) }), entrada);
 
     expect(consultasDeGrupo(db)).toHaveLength(2);
+  });
+});
+
+/* ------------- 9. o carimbo do PREPARO (regra 7, camada 1) ---------------- */
+
+/**
+ * Um operador salvando o produto no editor: uma escrita do documento inteiro que
+ * MOVE o carimbo, como um save real. Por `seed`, para ficar FORA de
+ * `db.writes`, que então lista só as escritas do import.
+ */
+function salvarComoOperador(db: FakeDb, produtoId: string, campos: Record<string, unknown>): void {
+  const caminho = `produtos/${produtoId}`;
+  db.seed(caminho, { ...(db.store[caminho]?.data ?? {}), ...campos });
+}
+
+/**
+ * Roda `escrever` UMA vez, na ÚLTIMA leitura do preparo — a linha de estoque do
+ * pai, que `lerPreparo` lê depois do pai E de cada filho — e antes de qualquer
+ * escrita do aplicar. A escrita cai, portanto, exatamente na janela
+ * preparo → patch que a guarda do preço cobre, para o pai e para os filhos. O
+ * replano relê o mesmo estoque, e é por isso que a escrita não se repete.
+ */
+function escreverNoFimDoPreparo(db: FakeDb, escrever: () => void): void {
+  const colecao = db.collection.bind(db);
+  let pendente = true;
+  vi.spyOn(db, 'collection').mockImplementation((caminho: string) => {
+    if (pendente && caminho === `produtos/${PAI_EXISTENTE}/estoques`) {
+      pendente = false;
+      escrever();
+    }
+    return colecao(caminho);
+  });
+}
+
+/** Quantos patches de preço POUSARAM num produto — o perdedor não chega ao log. */
+function patchesDePreco(db: FakeDb, produtoId: string): number {
+  return db.patches.filter(
+    (p) =>
+      p.path === `produtos/${produtoId}` &&
+      Object.keys(p.patch).some((k) => k.startsWith('precos.')),
+  ).length;
+}
+
+const PRECO_DO_OPERADOR = { [TABELA_NORMAL_ID]: { valor: 30 } };
+
+/** O anúncio de UM modelo cujo filho o ERP já tem (a rung 2, pelo `model_sku`). */
+function anuncioDoFilhoExistente(): ItemLido {
+  return item(
+    { has_model: true },
+    modelos(
+      [
+        {
+          model_id: MODEL_A,
+          tier_index: [0],
+          model_sku: 'CAM-001-AZ',
+          price_info: PRECO_BRL,
+          stock_info_v2: ESTOQUE_7,
+        },
+      ],
+      TIER_COR,
+    ),
+  );
+}
+
+function semearFilhoExistente(db: FakeDb): void {
+  db.seed('produtos/filho-existente', {
+    nome: 'Camiseta Básica Azul',
+    sku: 'CAM-001-AZ',
+    paiId: PAI_EXISTENTE,
+    precos: PRECO_DO_OPERADOR,
+  });
+}
+
+describe('o patch de preço afirma o carimbo da leitura do PREPARO', () => {
+  it('⛔ uma escrita do operador ENTRE o preparo e o aplicar faz o patch do pai PERDER — nada revertido em silêncio', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+    const plano = await prepararImportacaoShopee(deps(db), anuncioSimples());
+    expect(plano.precosPai?.patch).toEqual({ [`precos.${TABELA_NORMAL_ID}`]: { valor: 99.9 } });
+
+    // O operador salva o produto DEPOIS da leitura do preparo. Um carimbo relido
+    // no aplicar seria o desta escrita, e o patch a desfaria sem erro nenhum.
+    salvarComoOperador(db, PAI_EXISTENTE, {
+      precos: { [TABELA_NORMAL_ID]: { valor: 35 } },
+      propagatePriceToChildren: false,
+    });
+
+    await expect(aplicarImportacaoShopee(deps(db), plano)).rejects.toBeInstanceOf(
+      ShopeePrecoDesatualizadoError,
+    );
+    expect(db.store[`produtos/${PAI_EXISTENTE}`]?.data).toMatchObject({
+      precos: { [TABELA_NORMAL_ID]: { valor: 35 } },
+      propagatePriceToChildren: false,
+    });
+    // O patch é o passo 3: nada do PRODUTO foi escrito antes da perda.
+    expect(passos(db, PAI_EXISTENTE)).toEqual(['categoria', 'categoria', 'categoria']);
+  });
+
+  it('sem escrita concorrente o MESMO plano pousa — as categorias gravadas antes não movem o carimbo', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+    const plano = await prepararImportacaoShopee(deps(db), anuncioSimples());
+
+    await aplicarImportacaoShopee(deps(db), plano);
+
+    expect(passos(db, PAI_EXISTENTE)).toEqual([
+      'categoria',
+      'categoria',
+      'categoria',
+      'preco-pai',
+      'produto-pai',
+      'estoque-pai',
+      'link-pai',
+    ]);
+    expect(db.store[`produtos/${PAI_EXISTENTE}`]?.data.precos).toEqual({
+      [TABELA_NORMAL_ID]: { valor: 99.9 },
+    });
+  });
+
+  it('o importador inteiro: sem escrita concorrente pousa na PRIMEIRA tentativa', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+
+    await importarAnuncioShopee(deps(db), anuncioSimples());
+
+    // UMA cascata de pai = zero replanos: nada que o import grava antes do
+    // patch toca o documento do produto.
+    expect(cascatasDePai(db)).toHaveLength(1);
+    expect(patchesDePreco(db, PAI_EXISTENTE)).toBe(1);
+  });
+
+  it('uma escrita concorrente na janela ⇒ UM replano contra a leitura nova ⇒ o preço é RE-DERIVADO', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+
+    escreverNoFimDoPreparo(db, () =>
+      salvarComoOperador(db, PAI_EXISTENTE, {
+        precos: { [TABELA_NORMAL_ID]: { valor: 35 }, 'tab-atacado': { valor: 28 } },
+      }),
+    );
+
+    const resultado = await importarAnuncioShopee(deps(db), anuncioSimples());
+
+    expect(resultado.produtoId).toBe(PAI_EXISTENTE);
+    // DUAS cascatas: a primeira tentativa perdeu e o item foi replanejado — o
+    // retry nunca reaplica o patch do perdedor.
+    expect(cascatasDePai(db)).toHaveLength(2);
+    expect(patchesDePreco(db, PAI_EXISTENTE)).toBe(1);
+    // `sobrescreverPreco` (o padrão) re-deriva a tabela da conta sobre a leitura
+    // NOVA; a tabela vizinha que o operador gravou fica.
+    expect(db.store[`produtos/${PAI_EXISTENTE}`]?.data.precos).toEqual({
+      [TABELA_NORMAL_ID]: { valor: 99.9 },
+      'tab-atacado': { valor: 28 },
+    });
+  });
+
+  it('⛔ o operador forma a FAMÍLIA na janela ⇒ o replano vê o filho e o preço dele é RESPEITADO', async () => {
+    // O gravador de família do ERP (`buildMembroUnicoWriteOps`) grava o filho E
+    // o `filhoUnicoId` do pai na mesma escrita atômica — é o carimbo do PAI que
+    // se move, e a guarda o vê. Com a releitura no aplicar, o patch pousaria num
+    // pai que agora tem filho, com estoque, e o gatilho levaria o preço ao filho.
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+
+    escreverNoFimDoPreparo(db, () => {
+      db.seed('produtos/filho-do-operador', { nome: 'Unidade', paiId: PAI_EXISTENTE });
+      salvarComoOperador(db, PAI_EXISTENTE, { filhoUnicoId: 'filho-do-operador' });
+    });
+
+    await importarAnuncioShopee(deps(db), anuncioSimples());
+
+    expect(cascatasDePai(db)).toHaveLength(2);
+    expect(patchesDePreco(db, PAI_EXISTENTE)).toBe(0);
+    expect(db.store[`produtos/${PAI_EXISTENTE}`]?.data.precos).toEqual(PRECO_DO_OPERADOR);
+    // E o replano também recusa o estoque de um pai que agora tem filho.
+    expect(db.idsEm(`produtos/${PAI_EXISTENTE}/estoques`)).toEqual([]);
+  });
+
+  it('RESÍDUO documentado: um filho criado SEM escrever no pai não move o carimbo — o patch pousa', async () => {
+    // Fixa a FRONTEIRA que `estoquePrecos.ts` documenta, não um comportamento
+    // desejado: a precondição é de UM documento, e um filho gravado sozinho é
+    // outro documento. Quem fechar esta janela atualiza este teste e o texto.
+    const db = new FakeDb();
+    semearPaiComVinculo(db, { precos: PRECO_DO_OPERADOR });
+
+    escreverNoFimDoPreparo(db, () =>
+      db.seed('produtos/filho-solto', { nome: 'Unidade', paiId: PAI_EXISTENTE }),
+    );
+
+    await importarAnuncioShopee(deps(db), anuncioSimples());
+
+    expect(cascatasDePai(db)).toHaveLength(1);
+    expect(db.store[`produtos/${PAI_EXISTENTE}`]?.data.precos).toEqual({
+      [TABELA_NORMAL_ID]: { valor: 99.9 },
+    });
+  });
+
+  it('⛔ o FILHO também: uma escrita no filho entre o preparo e o aplicar faz o patch dele PERDER', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db);
+    semearFilhoExistente(db);
+    const plano = await prepararImportacaoShopee(deps(db), anuncioDoFilhoExistente());
+    expect(plano.filhos[0]?.precos?.patch).toEqual({
+      [`precos.${TABELA_NORMAL_ID}`]: { valor: 99.9 },
+    });
+
+    salvarComoOperador(db, 'filho-existente', { precos: { [TABELA_NORMAL_ID]: { valor: 45 } } });
+
+    await expect(aplicarImportacaoShopee(deps(db), plano)).rejects.toBeInstanceOf(
+      ShopeePrecoDesatualizadoError,
+    );
+    expect(db.store['produtos/filho-existente']?.data.precos).toEqual({
+      [TABELA_NORMAL_ID]: { valor: 45 },
+    });
+    const escritos = passos(db, PAI_EXISTENTE, ['filho-existente']);
+    expect(escritos).not.toContain('preco-filho0');
+    expect(escritos).not.toContain('produto-filho0');
+  });
+
+  it('o filho, sem escrita concorrente: taxonomia, pai e vínculo gravados antes NÃO movem o carimbo dele', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db);
+    semearFilhoExistente(db);
+
+    await importarAnuncioShopee(deps(db), anuncioDoFilhoExistente());
+
+    expect(cascatasDePai(db)).toHaveLength(1);
+    expect(passos(db, PAI_EXISTENTE, ['filho-existente'])).toEqual([
+      'taxonomia',
+      'categoria',
+      'categoria',
+      'categoria',
+      'produto-pai',
+      'link-pai',
+      'preco-filho0',
+      'produto-filho0',
+      'estoque-filho0',
+      'link-filho0',
+      'filho-unico',
+    ]);
+  });
+
+  it('o filho, com escrita concorrente na janela ⇒ UM replano ⇒ o preço dele é re-derivado', async () => {
+    const db = new FakeDb();
+    semearPaiComVinculo(db);
+    semearFilhoExistente(db);
+
+    escreverNoFimDoPreparo(db, () =>
+      salvarComoOperador(db, 'filho-existente', {
+        precos: { [TABELA_NORMAL_ID]: { valor: 45 } },
+      }),
+    );
+
+    await importarAnuncioShopee(deps(db), anuncioDoFilhoExistente());
+
+    expect(cascatasDePai(db)).toHaveLength(2);
+    expect(patchesDePreco(db, 'filho-existente')).toBe(1);
+    expect(db.store['produtos/filho-existente']?.data.precos).toEqual({
+      [TABELA_NORMAL_ID]: { valor: 99.9 },
+    });
+  });
+});
+
+/* --------------- 10. `kitNativo` no vínculo, e quem o lê ------------------ */
+
+describe('importarAnuncioShopee — `kitNativo` no vínculo da listagem', () => {
+  /** Os `prodshopee` sob um pai — caminho e dados. */
+  function vinculosDe(
+    db: FakeDb,
+    paiId: string,
+  ): { caminho: string; dados: Record<string, unknown> }[] {
+    return Object.entries(db.store)
+      .filter(([p]) => p.startsWith(`produtos/${paiId}/prodshopee/`))
+      .map(([caminho, doc]) => ({ caminho, dados: doc.data as Record<string, unknown> }));
+  }
+
+  it('um anúncio COMUM grava `kitNativo: false` no prodshopee criado — um false é DADO, não ausência', async () => {
+    for (const tag of [{ kit: false }, null]) {
+      const db = new FakeDb();
+      const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+
+      await importarAnuncioShopee(deps(db), anuncioSimples({ tag }));
+
+      const vinculos = vinculosDe(db, paiId);
+      expect(vinculos).toHaveLength(1);
+      expect(vinculos[0]?.dados).toHaveProperty('kitNativo', false);
+    }
+  });
+
+  it('⛔ um re-import sobre um vínculo antigo (null) ou errado (true) grava false no MESMO documento', async () => {
+    for (const armazenado of [null, true]) {
+      const db = new FakeDb();
+      semearPaiComVinculo(db);
+      db.seed(`produtos/${PAI_EXISTENTE}/prodshopee/link-1`, {
+        item_id: ITEM_ID,
+        contaProdutoShopeeOuterRef: REF_CONTA,
+        kitNativo: armazenado,
+      });
+
+      await importarAnuncioShopee(deps(db), anuncioSimples());
+
+      // O ramo de MERGE: nenhum segundo vínculo, e o campo escrito é o novo.
+      expect(vinculosDe(db, PAI_EXISTENTE).map((v) => v.caminho)).toEqual([
+        `produtos/${PAI_EXISTENTE}/prodshopee/link-1`,
+      ]);
+      expect(vinculosDe(db, PAI_EXISTENTE)[0]?.dados.kitNativo).toBe(false);
+    }
+  });
+
+  it('um re-import byte-idêntico mantém `kitNativo: false`', async () => {
+    const db = new FakeDb();
+    const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+    await importarAnuncioShopee(deps(db), anuncioDeDoisTiers());
+    await importarAnuncioShopee(deps(db), anuncioDeDoisTiers());
+
+    const vinculos = vinculosDe(db, paiId);
+    expect(vinculos).toHaveLength(1);
+    expect(vinculos[0]?.dados.kitNativo).toBe(false);
+  });
+
+  it('IDA E VOLTA: o vínculo de um anúncio comum ENVIA no passo 12 e não recusa nos passos 11/13 — nem com o produto ehKit', async () => {
+    const db = new FakeDb();
+    const paiId = idDoPaiPlanejado(INTEGRACAO, ITEM_ID);
+    await importarAnuncioShopee(deps(db), anuncioSimples());
+    const vinculo = vinculosDe(db, paiId)[0]?.dados ?? {};
+    // ⚠️ O catálogo legado: um kit do ERP É um anúncio comum na Shopee. Se o
+    // produto decidisse, o estoque e o preço de milhares de kits parariam.
+    const produtoKitDoErp = { ehKit: true, ehKitVirtual: true };
+
+    expect(podeEnviarEstoqueShopee(vinculo, produtoKitDoErp, { nowMs: AGORA })).toEqual({
+      enviar: true,
+    });
+    expect(kitNativoDoAnuncio(vinculo, produtoKitDoErp)).toBe(false);
   });
 });

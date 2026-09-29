@@ -1,7 +1,7 @@
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
-import { millisToMicros, nowMillis } from '@delfrance/core/datetime';
+import { millisToMicros, nowMillis, parseIsoToMillis } from '@delfrance/core/datetime';
 import {
   historicoEstadoPedidoCollection,
   historicoFreteInicialCollection,
@@ -305,8 +305,7 @@ export const onPedidoChanged = onDocumentWrittenWithAuthContext(
     // redelivery still OVERWRITES its row instead of appending a duplicate. The
     // worst case is a row dated when it was retried rather than when it
     // occurred — never a double entry in the trail.
-    const parsedMillis = Date.parse(event.time);
-    const eventTimeMillis = Number.isNaN(parsedMillis) ? nowMillis() : parsedMillis;
+    const eventTimeMillis = parseIsoToMillis(event.time) ?? nowMillis();
 
     const input: HistoryEntryInput = {
       before,

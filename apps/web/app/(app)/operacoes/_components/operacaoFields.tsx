@@ -1,6 +1,6 @@
 'use client';
 
-import { useFormContext } from 'react-hook-form';
+import { useFormContext, useWatch } from 'react-hook-form';
 import { Button, Group, MultiSelect, Select, Stack } from '@mantine/core';
 import { z } from 'zod';
 import {
@@ -10,10 +10,11 @@ import {
   ORIGEM_PRODUTO_LABELS,
   TIPO_NFE_LABELS,
   operacaoSchema,
+  problemasDeEmissaoDoImposto,
   ufSchema,
 } from '@delfrance/schemas';
 import { valuesEqual } from '@delfrance/core';
-import type { FieldConfig } from '@delfrance/ui';
+import type { FieldConfig, ValidationIssue } from '@delfrance/ui';
 import {
   ImpostoConfigEditor,
   IMPOSTO_CONFIG_KEYS,
@@ -49,6 +50,26 @@ const UF_OPTIONS = ufSchema.options.map((uf) => ({ value: uf, label: uf }));
 const ALL_UFS: string[] = [...ufSchema.options];
 
 /**
+ * The operação page's `validate` (both the edit and the create page): refuses
+ * to save a default tax config the NF-e engine would refuse (#1655). The
+ * operação doc IS the resolver's last tier, and the engine's tier gate
+ * (`impostoSchema`) reads the whole doc — `origem` lives on the Dados gerais
+ * tab — so the check runs on every value, not just the `configuracao*` keys.
+ *
+ * Every issue lands on `configuracaoICMS`: it is the one VISIBLE key of the
+ * "Impostos (padrão)" tab (the PIS/COFINS keys are hidden fields, whose issues
+ * ObjectView would park outside the form), so the tab is flagged and the
+ * editor there shows each message inline. Module-level so ObjectView's
+ * resolver memo, keyed on `validate`'s identity, stays stable.
+ */
+export function validarImpostoDaOperacao(values: Record<string, unknown>): ValidationIssue[] {
+  return problemasDeEmissaoDoImposto(values).map((problema) => ({
+    path: 'configuracaoICMS',
+    message: problema.mensagem,
+  }));
+}
+
+/**
  * Bridges the operação form (RHF context) to the {@link ImpostoConfigEditor}:
  * the deep tax config lives on the operação doc as separate `configuracao*`
  * fields, so the editor reads/writes them via `useFormContext`. Dados Gerais
@@ -56,7 +77,14 @@ const ALL_UFS: string[] = [...ufSchema.options];
  * hidden here (`showDadosGerais={false}`).
  */
 function OperacaoImpostoField({ disabled }: { disabled?: boolean }) {
-  const { watch, setValue, formState } = useFormContext();
+  const { control, watch, setValue, formState } = useFormContext();
+  // The WHOLE operação, not just the blob below: the engine's tier gate needs
+  // `origem`/`cfop`/`NCM` from the Dados gerais tab (see validarImpostoDaOperacao).
+  // `useWatch`, never a bare `watch()`: the argument-less `watch()` flips RHF's
+  // form-wide `watchAll`, so every keystroke in ANY operação field would
+  // re-render the whole ObjectView; `useWatch` re-renders only this editor.
+  const valores = useWatch({ control });
+  const problemas = problemasDeEmissaoDoImposto(valores);
 
   const blob: ImpostoConfigValue = {
     configuracaoICMS: watch('configuracaoICMS'),
@@ -85,6 +113,7 @@ function OperacaoImpostoField({ disabled }: { disabled?: boolean }) {
       showDadosGerais={false}
       disabled={disabled}
       errorTree={formState.errors}
+      problemas={problemas}
     />
   );
 }

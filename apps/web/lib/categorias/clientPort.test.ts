@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { impostoCategoriaSchema } from '@delfrance/schemas';
-import { categoriaImpostoCarriesInfo } from './clientPort';
+import { CRT, CSOSN, ORIGEM, impostoCategoriaSchema } from '@delfrance/schemas';
+import { categoriaImpostoCarriesInfo, validarImpostosDaCategoria } from './clientPort';
 
 // Regression coverage for the review finding on #467's PR: `carriesInfo` used
 // to key emptiness off `typeof v === 'string'` across a field list that
@@ -93,5 +93,43 @@ describe('categoriaImpostoCarriesInfo', () => {
   it('reads a non-null leaf inside configuracaoIBSCBS as carrying info', () => {
     const imp = impostoCategoriaSchema.parse({ configuracaoIBSCBS: { CST: '000' } });
     expect(categoriaImpostoCarriesInfo(imp)).toBe(true);
+  });
+});
+
+// #1655: the categoria save refuses a per-operação row the NF-e engine would
+// refuse — only once the Impostos tab has seeded its rows, and only for a row
+// the engine would actually read (origem set).
+describe('validarImpostosDaCategoria', () => {
+  const linha = (operacaoId: string, over: Record<string, unknown> = {}) =>
+    impostoCategoriaSchema.parse({
+      impostoCategoriaOperacaoOuterRef: `operacao/${operacaoId}`,
+      ...over,
+    });
+  const parcial900 = {
+    crt: CRT.simplesNacional,
+    csosn: CSOSN.outros,
+    csosn900: { vBC: 1500 },
+  };
+
+  it('flags a reachable row with a half-filled ICMS próprio group, keyed by row and field', () => {
+    const impostos = [
+      linha('op1'),
+      linha('op2', { origem: ORIGEM.nacional, configuracaoICMS: parcial900 }),
+    ];
+    expect(validarImpostosDaCategoria({ impostos })).toEqual([
+      {
+        path: 'impostos.1.configuracaoICMS.csosn900.modBC',
+        message: expect.stringContaining('ICMS próprio'),
+      },
+    ]);
+  });
+
+  it.each([
+    ['impostos null (the tab was never opened)', null],
+    ['impostos absent', undefined],
+    ['only empty rows', [linha('op1'), linha('op2')]],
+    ['the partial row with origem null', [linha('op2', { configuracaoICMS: parcial900 })]],
+  ])('%s → []', (_label, impostos) => {
+    expect(validarImpostosDaCategoria({ impostos })).toEqual([]);
   });
 });

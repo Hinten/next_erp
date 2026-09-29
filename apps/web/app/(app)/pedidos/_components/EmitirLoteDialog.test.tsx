@@ -14,7 +14,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { NFeBatchEmitResult } from '@delfrance/integrations-nfe/http-provider';
+import {
+  NFeAuthError,
+  NFeBadRequestError,
+  NFeNetworkError,
+  NFeRuntimeNotReadyError,
+  NFeServerError,
+  type NFeBatchEmitResult,
+} from '@delfrance/integrations-nfe/http-provider';
 import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
 
 import type { ContextoRejeicaoNFe } from '@/lib/nfe/errors';
@@ -263,4 +270,72 @@ describe('EmitirLoteDialog — cStat 805 guidance per row (#852)', () => {
     expect(screen.queryByText(GUIDANCE)).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
   });
+});
+
+/**
+ * A lote whose request failed (#1654 §3). `POST /emitir-lote` answers 500 for a
+ * failure of an unknown class, and by then sibling chunks may already have
+ * sent their lotes — only the reports are lost. The web no longer re-POSTs it,
+ * so the operator decides, and must not read "0 of N" off counters that count
+ * nothing.
+ */
+describe('EmitirLoteDialog — a lote whose request failed (#1654)', () => {
+  const DESCONHECIDO = /O resultado do lote é desconhecido/;
+  const CONFIRA = /Confira a coluna NF antes de emitir novamente/;
+
+  it.each<[string, () => Error]>([
+    [
+      'the route’s 500 for a bug',
+      () =>
+        new NFeServerError("Cannot read properties of undefined (reading 'itens')", 500, {
+          error: "Cannot read properties of undefined (reading 'itens')",
+          code: 'TypeError',
+        }),
+    ],
+    ['a network failure', () => new NFeNetworkError('Failed to fetch')],
+    [
+      'a 503 without apps/nfe’s marker (the platform’s own)',
+      () =>
+        new NFeRuntimeNotReadyError('<html>Service Unavailable</html>', {
+          error: '<html>Service Unavailable</html>',
+        }),
+    ],
+  ])(
+    '%s: no 0/N counters, the outcome is called unknown, and the technical message stays',
+    async (_caso, erro) => {
+      const falha = erro();
+      h.emitirLote.mockRejectedValue(falha);
+      renderDialog();
+
+      expect(await screen.findByText(DESCONHECIDO)).toBeTruthy();
+      expect(screen.getByText(CONFIRA)).toBeTruthy();
+      expect(screen.getByText(falha.message)).toBeTruthy();
+      expect(screen.queryByText(`0/${PEDIDO_IDS.length}`)).toBeNull();
+      expect(screen.queryByText(/Sucesso/)).toBeNull();
+    },
+  );
+
+  it.each<[string, () => Error]>([
+    ['a 401', () => new NFeAuthError('Token inválido ou expirado.', 401, {})],
+    ['a 400', () => new NFeBadRequestError('Bad body', { error: 'Bad body' })],
+    [
+      'apps/nfe’s own pre-send 503',
+      () =>
+        new NFeRuntimeNotReadyError('NF-e runtime not ready', {
+          error: 'NF-e runtime not ready',
+          code: 'NFE_AMBIENTE inválido',
+        }),
+    ],
+  ])(
+    '%s is refused before any send: its message, no counters, and no unknown-outcome warning',
+    async (_caso, erro) => {
+      const falha = erro();
+      h.emitirLote.mockRejectedValue(falha);
+      renderDialog();
+
+      expect(await screen.findByText(falha.message)).toBeTruthy();
+      expect(screen.queryByText(DESCONHECIDO)).toBeNull();
+      expect(screen.queryByText(`0/${PEDIDO_IDS.length}`)).toBeNull();
+    },
+  );
 });

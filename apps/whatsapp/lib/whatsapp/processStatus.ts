@@ -4,6 +4,7 @@
  * Status transitions and their event watermark commit in the same transaction.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { parseIsoToMillis } from '@delfrance/core/datetime';
 import { mensagemCollection, whatsappMensagemCollection } from '@delfrance/data/admin/collections';
 import { ESTADO_ENVIO, type EstadoEnvioMensagem } from '@delfrance/schemas';
 import {
@@ -26,10 +27,7 @@ function waTimestampToMs(ts: string): number {
 /** Coerce an epoch ms int (or a stray legacy ISO string) to epoch ms. */
 function toEpochMs(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string') {
-    const n = Date.parse(v);
-    return Number.isFinite(n) ? n : null;
-  }
+  if (typeof v === 'string') return parseIsoToMillis(v);
   return null;
 }
 

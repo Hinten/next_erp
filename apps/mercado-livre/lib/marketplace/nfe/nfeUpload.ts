@@ -594,6 +594,7 @@ export async function processNfeUploadTask(
     if (err instanceof NfeUploadTransientError && err.stampFreteOnExhaust && freteCtx.hasFrete) {
       try {
         await stampFreteErro(db, pedidoId, freteCtx.shipmentId, nowUs);
+        // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort frete stamp; must not mask the primary disposition
       } catch (persistErr) {
         if (!(persistErr instanceof Error)) throw persistErr;
         console.error('[mercado-livre] nfe-upload: falha ao stampar o frete na tentativa final', {

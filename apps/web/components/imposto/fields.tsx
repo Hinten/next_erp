@@ -10,6 +10,13 @@ export interface NumberFieldProps {
   disabled?: boolean;
   description?: string;
   error?: string;
+  /**
+   * Digits after the separator; default 6. A field that goes on the NF-e wire
+   * at a fixed precision passes it (PIS/COFINS: 4). Display-only: a stored
+   * value with more decimals is shown rounded and never rewritten — Mantine
+   * writes back only on a user `event`, not on a re-format.
+   */
+  decimalScale?: number;
 }
 
 /** A non-negative numeric input for a fiscal value/rate/quantity (`null` when empty). */
@@ -20,6 +27,7 @@ export function NumberField({
   disabled,
   description,
   error,
+  decimalScale = 6,
 }: NumberFieldProps) {
   return (
     <DecimalInput
@@ -28,7 +36,7 @@ export function NumberField({
       error={error}
       value={value ?? null}
       onChange={onChange}
-      decimalScale={6}
+      decimalScale={decimalScale}
       step={0.01}
       hideControls
       disabled={disabled}
