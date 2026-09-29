@@ -74,10 +74,10 @@ const RAIZ_DAS_ROTAS = new URL('../../../app/api/marketplace/shopee/', import.me
  * exatamente como um produtor real some do universo sem ninguém notar (um nome
  * digitado errado aqui teria o mesmo efeito). `enviar-nfe` é a rota do SEGUNDO
  * PR: a pasta chegou com ele, a âncora abaixo obrigou a trocar o `false` por
- * `true`, e desde então os produtores dela contam — a frase do 404
- * (`nfe-nao-encontrada`) e o portão de venda do `nfeId` explícito
- * (`nfe-nao-e-de-venda`); as demais recusas 409 ela repassa das decisões de
- * `pedidoNfe.ts` sem soletrá-las. A espera do SERPRO ali é um ATRASO, nunca uma
+ * `true`, e desde então os produtores dela contam — hoje só o portão de venda
+ * do `nfeId` explícito (`nfe-nao-e-de-venda`). O 404 tem frase PRÓPRIA
+ * (`MSG_NFE_NAO_ENCONTRADA`, review 2), não um motivo; as demais recusas 409 ela
+ * repassa das decisões de `pedidoNfe.ts` sem soletrá-las. A espera do SERPRO ali é um ATRASO, nunca uma
  * recusa, então a rota não produz `aguardando-serpro`. O mesmo caminho que
  * `atualizar-precos` fez no passo 13.
  */
