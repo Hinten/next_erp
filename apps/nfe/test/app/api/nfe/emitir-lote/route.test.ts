@@ -8,7 +8,8 @@
  *   - a failure of any other class — a bug — is never reported as an ordinary
  *     per-pedido error: the batch rejects and the route answers 500, dropping
  *     the other pedidos' reports with it (here, before any SEFAZ contact);
- *   - 400 / 503 on the request itself.
+ *   - 400 / 503 on the request itself — the 503 only for a runtime-config
+ *     failure, never for a bug in the runtime boot.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -41,6 +42,7 @@ import {
   consultarLote,
   consultarSituacaoNFe,
   enviarEpec,
+  NFeEndpointError,
 } from '@delfrance/integrations-nfe';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { PERM, verifyCaller } from '@/lib/nfe/auth';
@@ -108,12 +110,26 @@ describe('POST /api/nfe/emitir-lote', () => {
     expect(res.status).toBe(400);
   });
 
-  it('503 when the runtime is not ready', async () => {
+  it.each<[string, Error]>([
+    ['NFeRuntimeConfigError', new NFeRuntimeConfigError('NFE_AMBIENTE inválido')],
+    ['NFeEndpointError', new NFeEndpointError('XX')],
+  ])('503 when the runtime is not ready (%s)', async (_classe, falha) => {
     vi.mocked(getNFeRuntime).mockImplementation(() => {
-      throw new NFeRuntimeConfigError('NFE_AMBIENTE inválido');
+      throw falha;
     });
     const res = await POST(req({ pedidoIds: ['PED-X'] }));
     expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'NF-e runtime not ready', code: falha.message });
+    expectNoSefazCall();
+  });
+
+  it('a bug in the runtime boot is rethrown — never the pre-send 503 the web retries', async () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'toLowerCase')");
+    vi.mocked(getNFeRuntime).mockImplementation(() => {
+      throw bug;
+    });
+    await expect(POST(req({ pedidoIds: ['PED-X'] }))).rejects.toBe(bug);
+    expectNoSefazCall();
   });
 
   it('200 — a failure of a known class is that pedido’s own report', async () => {

@@ -1,27 +1,33 @@
 /**
  * `POST /api/nfe/emitir-lote` — batch emit up to 50 pedidos per request.
  *
- * Mirrors `emitir/route.ts` but for `emitirPedidosLote`. Per-pedido
- * failures are part of the JSON response body (HTTP 200 with `results[i]`
- * shaped as either an EmitResult or an EmitError) — HTTP-level errors
- * only fire for auth / validation / runtime-boot failures.
+ * Mirrors `emitir/route.ts` but for `emitirPedidosLote`. A per-pedido
+ * failure of a KNOWN class (`orchestrator/falhas.ts`) is part of the JSON
+ * response body (HTTP 200 with `results[i]` shaped as either an EmitResult or
+ * an EmitError). HTTP-level errors fire for auth / validation / runtime-boot
+ * failures and — since #1654 §3 — for a member failure of any other class (a
+ * bug): the batch rejects, this answers 500 and every pedido's report in the
+ * request is lost with it (`emitirPedidosLote` says what each site leaves
+ * behind).
  *
  * Returns:
  *   200 { results: Array<EmitResult | EmitError> }   — mixed per-pedido outcomes
  *   400  bad body (empty pedidoIds, >50, malformed JSON)
  *   401  no/invalid token
  *   403  insufficient perm
- *   503  runtime not ready
- *   500  uncaught error
+ *   503  runtime not ready (`NFeRuntimeConfigError` / `NFeEndpointError`) —
+ *        always before any SEFAZ contact, which is why `apps/web` may retry it
+ *   500  a member failure of an unknown class, or any other uncaught error
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { NFeEndpointError } from '@delfrance/integrations-nfe';
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { emitirPedidosLote, NFeOrchestratorError } from '@/lib/nfe/orchestrator';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, NFeRuntimeConfigError } from '@/lib/nfe/runtime';
 import { createTaskScheduler, NFeTasksConfigError } from '@/lib/nfe/tasks';
 
 export const dynamic = 'force-dynamic';
@@ -52,10 +58,13 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     runtimeInstance = getNFeRuntime();
   } catch (e) {
-    return authError(503, {
-      error: 'NF-e runtime not ready',
-      code: e instanceof Error ? e.message : undefined,
-    });
+    // A misconfigured runtime (bad NFE_AMBIENTE / NFE_UF, missing TLS chain)
+    // → 503. Anything else is a bug and must surface (rule 6), never hide
+    // behind the one status the web treats as pre-send and retries.
+    if (e instanceof NFeRuntimeConfigError || e instanceof NFeEndpointError) {
+      return authError(503, { error: 'NF-e runtime not ready', code: e.message });
+    }
+    throw e;
   }
 
   try {
