@@ -14,6 +14,7 @@ runs them, from this worktree, against the project the environment points at.
 | `publicar-anuncio.ts`    | publishes ONE produto through the real step-11 path                | only with `--live`        |
 | `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path | only with `--live`        |
 | `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path | only with `--live`        |
+| `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)            | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1441,3 +1442,111 @@ was sent — and do not look at `update_time` to confirm it: a price write does
   model, so the whole listing is read and decided together.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it writes
   prices on a real marketplace, and even a dry run calls Shopee.
+
+---
+
+## `enviar:nfe` — rehearsing the first NF-e upload
+
+The upload normally runs unattended: an NF-e approval → the trigger → the NF-e
+queue → `processarNfeShopee`. This script drives **the same handler** from a
+terminal against up to 50 named pedidos, so the channel's first
+`upload_invoice_doc` is deliberate and observable — and it is the re-drive for a
+pedido whose trigger never fired (the queue valve was shut, or the NF-e arrived
+with the migrated corpus, which fires no trigger). The reasoning behind every
+line it prints is `lib/shopee/nfe/README.md`.
+
+### 15.1 Environment
+
+Same `.env.local` as every other script here, and the same variables as §1. The
+preamble prints, on stderr and BEFORE anything is read: `modo`, `projeto`,
+`database`, the RAW `SHOPEE_SANDBOX` (only exactly `1` is the sandbox), the
+pedidos and the NF-e slot (`--nfe`, or the slot rule). There is no conta flag:
+each pedido PROVES its own conta, exactly as the trigger does.
+
+⚠️ **This CLI uploads a fiscal document to a real marketplace order**, so the
+project the environment points at decides which orders receive it. Read the
+preamble before you let it continue, exactly as in §1.
+
+### 15.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId>
+```
+
+| flag             | meaning                                                                                                                                                                                              |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--pedido <id>`  | **required and REPEATABLE** — the pedido DOCUMENT id (the digest), never Shopee's order number. ⚠️ No comma-separated form. Deduped in flag order; more than 50 distinct is REFUSED, never truncated |
+| `--nfe <id>`     | the `nfev4` document to send (e.g. `s1`), only with exactly ONE `--pedido`. Without it the pedido's documents are listed and the slot rule the route shares picks one — or says why none goes        |
+| `--dry-run`      | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                                   |
+| `--live`         | the only opt-in to a real upload                                                                                                                                                                     |
+| `--project <id>` | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                                                |
+| `--json`         | the same REDACTED summary as one parseable document on stdout; the preamble and every library line go to stderr                                                                                      |
+| `--help`, `-h`   | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                                       |
+
+**What the dry run calls, and what it can never call.** Firestore: the slot
+(one document, or the pedido's `nfev4` listing), the NF-e, the pedido and the
+conta. Shopee: ONE `get_order_detail` per pedido — the handler's own pre-read,
+through `simularEnvioNfeShopee`. It never reaches the upload, the aviso writer,
+the frete stamp or any enqueue: its deps carry none of them.
+
+### 15.3 What to read in the output
+
+A header, one table row per pedido (`pedido · nfe · desfecho · motivo · chave ·
+bytes · serpro`), then one block per pedido. The whole rendering is an
+**allow-list** — named fields only — so it is safe to paste into an issue.
+
+| line                | what it tells you                                                                                                                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `desfecho`          | the outcome slug, then the motivo slug and its pt-BR sentence — the same vocabulary the route, the aviso and the task log use                                                                        |
+| `nota na Shopee`    | `chave: confere` (Shopee holds OUR key), `difere` (another note — never overwritten unless it belongs to a CANCELLED NF-e of the same pedido), `ausente` (nothing attached). ⚠️ Never the key itself |
+| `XML`               | our proc's UTF-8 size against the package's 1 MiB ceiling                                                                                                                                            |
+| `espera SERPRO`     | seconds still due since the authorization; above zero on an upload the dry run WOULD send means `--live` refuses it now                                                                              |
+| `efeitos previstos` | what the outcome would do: raise the aviso, mark the frete with an error, resolve the aviso, schedule a recheck                                                                                      |
+| `trecho da Shopee`  | only for `sefaz-pendente` / `recusa-desconhecida`, and MASKED: a run of seven or more digits, or a long letters-and-digits token, prints as `•••`                                                    |
+
+⚠️ **A dry run is not a cheaper `--live`.** Shopee's refusal of the file itself
+(the CNPJ, the IE, the CFOP, the federal record) only exists once the file is
+sent. A clean rehearsal says "nothing we can see refuses this".
+
+### 15.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId> --live
+```
+
+⚠️ **`--live` uploads the XML for real**, through `processarNfeShopee` as the
+queue's FIRST attempt, and the handler may raise or resolve the pedido's aviso and
+mark its frete with an error. It **never enqueues**: a recheck, a SERPRO wait or a
+rate-limit pause the queue would have scheduled is printed as
+`NÃO enfileirado … <fase> em N s`, and you run the command again after that
+delay (the re-run's pre-read finds OUR key and answers `ja-enviado`, never a
+second upload).
+
+- **A fresh approval is REFUSED** with `aguardando-serpro` (outcome `adiado`) until
+  six minutes after the authorization — Shopee checks the note against the
+  federal record, which lags SEFAZ. Nothing is read at Shopee for that pedido.
+  ⚠️ An NF-e with NO recorded authorization instant (the field is nullable, and
+  legacy documents lack it) is NOT refused — a refusal would repeat on every run
+  — so its `espera SERPRO` prints `—` and the upload proceeds.
+- **A transient Shopee failure THROWS** (exit `1`), exactly as it would reach the
+  queue's retry; nothing is marked for the absence of an answer. The pedidos
+  concluded before it are printed on stderr, then the error by CLASS and code.
+
+| code | when                                                                                  |
+| ---- | ------------------------------------------------------------------------------------- |
+| `0`  | any report — including one where every pedido was refused, and a SERPRO refusal       |
+| `0`  | `--help`                                                                              |
+| `1`  | a bad command line; prints THIS command's usage                                       |
+| `1`  | any throw, described by CLASS plus Shopee's `code`/`path` — ⚠️ never Shopee's message |
+
+### 15.5 Caveats you should expect to see (none of these is a bug)
+
+- **`chave: —` under `--live`.** The handler's result carries the outcome, not the
+  pre-read's verdict; read the verdict with `--dry-run`.
+- **`nao-refletida-ainda` right after a `200`** — Shopee had not reflected the
+  file on the order yet; the recheck the queue would run is printed, run again
+  later.
+- **The sandbox shop is SG**, so its orders are `pedido-nao-br` and nothing is
+  sent: the upload cannot be rehearsed end to end before a BR shop.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it sends a
+  fiscal document to a real marketplace, and even a dry run calls Shopee.
