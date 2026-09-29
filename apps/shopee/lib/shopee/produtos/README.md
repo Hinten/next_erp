@@ -75,7 +75,17 @@ children, a permanent duplicate bought for a transient conflict. _The price
 patch before the produto merge_, because the merge always writes (it carries
 `ultimaModificacao`) and so bumps `updateTime`: merging first would make the
 price precondition assert a stamp we had just invalidated ourselves, failing
-every price-writing import.
+every price-writing import. That precondition is the `updateTime` of the
+PREPARO's read of the produto, carried on the plan (`EscritaDePrecos.lastUpdateTime`)
+— never a re-read in the writer, which would guard only its own last line and
+silently revert an operator's save made during the preparo. Taxonomia and
+categorias write no produto, so the stamp goes stale only when someone else
+wrote the document, and the item then re-plans once. The guard sees that one
+document: a child created in the window without a write to the parent (the
+ERP's family-forming writer does stamp the parent's `filhoUnicoId`, and is
+seen) lets the parent's price land, and `onProdutoChanged` then propagates it
+onto that child unless `propagatePriceToChildren` is `false` — accepted,
+documented in `estoquePrecos.ts`.
 
 **Links resolve, then write, and NEVER delete.** The parent cascade is
 `prodshopee (item_id, conta)` → `produtos (sku == item_sku, paiId == null)` →

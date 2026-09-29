@@ -154,10 +154,29 @@ function comoDocumento(linha: LinhaDeLink | null): DocumentoLido | null {
   return linha === null ? null : { id: linha.id, raw: linha.raw };
 }
 
+/**
+ * A produto as the plan will see it.
+ *
+ * ⚠️ `updateTime` rides along on EVERY produto this cascade reads — here and on
+ * both SKU rungs — because it is what the guarded price patch asserts. A
+ * produto read without it would plan a patch the writer refuses to send.
+ */
+function produtoLido(snap: {
+  readonly id: string;
+  readonly updateTime?: unknown;
+  data: () => unknown;
+}): DocumentoLido {
+  return {
+    id: snap.id,
+    raw: (snap.data() ?? {}) as Record<string, unknown>,
+    updateTime: snap.updateTime,
+  };
+}
+
 async function lerProduto(db: Firestore, produtoId: string): Promise<DocumentoLido | null> {
   const snap = await produtoCollection.docRef(db, {}, produtoId).get();
   if (!snap.exists) return null;
-  return { id: produtoId, raw: (snap.data() ?? {}) as Record<string, unknown> };
+  return produtoLido({ id: produtoId, updateTime: snap.updateTime, data: () => snap.data() });
 }
 
 async function lerExtraData(
@@ -245,11 +264,7 @@ export async function resolverPaiDaListagem(
       .get();
     // ⚠️ EXACTLY one. `length`, never `size`; two hits DECLINE the rung.
     if (porSku.docs.length === 1) {
-      const doc = porSku.docs[0]!;
-      const produto: DocumentoLido = {
-        id: doc.id,
-        raw: (doc.data() ?? {}) as Record<string, unknown>,
-      };
+      const produto = produtoLido(porSku.docs[0]!);
       return {
         existente: produto,
         extraData: await lerExtraData(db, produto.id),
@@ -429,7 +444,7 @@ export async function resolverFilhosDaListagem(
         const jaTomado = tomados.has(doc.id);
         const vinculos = jaTomado ? [] : await vinculosDoFilho(db, doc.id, conta);
         if (!jaTomado && !vinculos.some((v) => vinculoNomeiaOutroModelo(v.raw, modelId))) {
-          existente = { id: doc.id, raw: (doc.data() ?? {}) as Record<string, unknown> };
+          existente = produtoLido(doc);
           tomados.add(existente.id);
           // Reuse the candidate's own link for this conta, so a re-import merges
           // onto it instead of minting a second `variashopee` under the same
