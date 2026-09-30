@@ -11,6 +11,7 @@ import {
   MOTIVO_RECUSA_LINK_LABELS,
   SITUACAO_LINK_PAGAMENTO,
   SITUACAO_LINK_PAGAMENTO_LABELS,
+  disponivelParaNovosLinksCentavos,
   extrairPrimeiroNome,
   linkAtingiuCota,
   linkAtingiuCotaComAprovados,
@@ -22,6 +23,7 @@ import {
   resumirLinksPagamento,
   situacaoLinkPagamentoSchema,
   valorEmAbertoEmLinks,
+  valorEmTransitoForaDeLinksAbertos,
 } from './linkPagamento';
 import type { LinkPagamentoResumo } from './linkPagamento';
 
@@ -1077,6 +1079,166 @@ describe('valorEmAbertoEmLinks', () => {
     expect(valorEmAbertoEmLinks(tres)).toBe(100);
     const decimais = [0.1, 0.2].map((valor, i) => resumo({ linkId: `L${i}`, valor }));
     expect(valorEmAbertoEmLinks(decimais)).toBe(0.3); // 0.1 + 0.2 !== 0.3 in floats
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*      valorEmTransitoForaDeLinksAbertos / disponivelParaNovosLinksCentavos     */
+/* -------------------------------------------------------------------------- */
+
+describe('valorEmTransitoForaDeLinksAbertos / disponivelParaNovosLinksCentavos', () => {
+  // The ONE "available for new links" rule: the mercado-pago exposure guard refuses
+  // above it and the web tab shows it, limits its form and splits by it.
+  const AGORA = 1_727_000_000_000; // ms
+  const DIA = 86_400_000;
+
+  type Bruto = { id: string; data: unknown };
+
+  /** A stored link, raw: an OPEN individual link of R$ 40,00 unless overridden. */
+  function linkBruto(id: string, sobre: Record<string, unknown> = {}): Bruto {
+    return {
+      id,
+      data: {
+        modo: MODO_LINK_PAGAMENTO.individual,
+        status: STATUS_LINK_PAGAMENTO.aberto,
+        valorCobrado: 40,
+        quantidadeMaxima: 1,
+        dataExpiracao: AGORA + 3 * DIA,
+        ...sobre,
+      },
+    };
+  }
+
+  /** A R$ 40,00 pagamento attributed to link `a`, with the given status. */
+  function emTransito(status: unknown, sobre: Record<string, unknown> = {}): Bruto {
+    return {
+      id: 'p1',
+      data: { valor: 40, status_pagamento: status, linkPagamentoId: 'a', ...sobre },
+    };
+  }
+
+  /** Link `a`, expired yesterday — a Pix issued before it lapsed may still land. */
+  const expirado = linkBruto('a', { dataExpiracao: AGORA - DIA });
+
+  const PENDENTES = [
+    STATUS_PAGAMENTO.pendente,
+    STATUS_PAGAMENTO.em_revisao,
+    STATUS_PAGAMENTO.em_processo_aprovacao,
+  ];
+
+  function calcular(links: Bruto[], pagamentos: Bruto[], restante: number | null = 100) {
+    const resumos = resumirLinksPagamento({ links, pagamentos, agoraMs: AGORA });
+    return {
+      emTransito: valorEmTransitoForaDeLinksAbertos(resumos, pagamentos),
+      disponivel: disponivelParaNovosLinksCentavos({ restante, resumos, pagamentos }),
+    };
+  }
+
+  it('counts every pending status on a link that is no longer open', () => {
+    for (const status of PENDENTES) {
+      expect(calcular([expirado], [emTransito(status)]), String(status)).toEqual({
+        emTransito: 40,
+        disponivel: 6_000,
+      });
+    }
+  });
+
+  it('counts nothing for a payment that is final, paying or unreadable (near-miss)', () => {
+    for (const status of [
+      STATUS_PAGAMENTO.recusado,
+      STATUS_PAGAMENTO.cancelado,
+      STATUS_PAGAMENTO.estornado,
+      STATUS_PAGAMENTO.aprovado,
+      'pendente',
+      null,
+    ]) {
+      expect(calcular([expirado], [emTransito(status)]), String(status)).toEqual({
+        emTransito: 0,
+        disponivel: 10_000,
+      });
+    }
+  });
+
+  it('counts it on a cancelled, concluded, paid or legacy link as on an expired one', () => {
+    const naoAbertos: Bruto[] = [
+      linkBruto('a', { status: STATUS_LINK_PAGAMENTO.cancelado }),
+      linkBruto('a', { status: STATUS_LINK_PAGAMENTO.concluido }),
+      // A legacy link (no `modo`) is never open: its attributed pending money is in flight.
+      { id: 'a', data: { valorCobrado: 40, dataExpiracao: AGORA + DIA } },
+    ];
+    for (const link of naoAbertos) {
+      expect(calcular([link], [emTransito(STATUS_PAGAMENTO.pendente)]).emTransito).toBe(40);
+    }
+    // A paid individual link with a SECOND payment still pending on it: only the
+    // pending one is in flight (the approved one is money in hand, in `restante`).
+    const aprovado: Bruto = {
+      id: 'p0',
+      data: { valor: 40, status_pagamento: STATUS_PAGAMENTO.aprovado, linkPagamentoId: 'a' },
+    };
+    const pago = calcular([linkBruto('a')], [aprovado, emTransito(STATUS_PAGAMENTO.pendente)]);
+    expect(pago.emTransito).toBe(40);
+  });
+
+  it('does NOT double count a pending payment on a link that is still OPEN', () => {
+    // The open link's pending payment is already inside valor × restantes (40).
+    for (const status of PENDENTES) {
+      expect(calcular([linkBruto('a')], [emTransito(status)]), String(status)).toEqual({
+        emTransito: 0,
+        disponivel: 6_000,
+      });
+    }
+  });
+
+  it('counts nothing for a pending payment that names no STORED link of the pedido', () => {
+    for (const linkPagamentoId of [null, 'naoGuardado', 123]) {
+      const pendente = emTransito(STATUS_PAGAMENTO.pendente, { linkPagamentoId });
+      expect(calcular([expirado], [pendente]).emTransito, String(linkPagamentoId)).toBe(0);
+    }
+  });
+
+  it('adds nothing for a valor that is not a positive finite number', () => {
+    for (const valor of [0, -40, Number.NaN, Number.POSITIVE_INFINITY, '40', null]) {
+      const pendente = emTransito(STATUS_PAGAMENTO.pendente, { valor });
+      expect(calcular([expirado], [pendente]).emTransito, String(valor)).toBe(0);
+    }
+    // Near-miss: one centavo is a positive amount and counts.
+    const umCentavo = emTransito(STATUS_PAGAMENTO.pendente, { valor: 0.01 });
+    expect(calcular([expirado], [umCentavo])).toEqual({ emTransito: 0.01, disponivel: 9_999 });
+  });
+
+  it('sums the payments in flight to the cent, without float drift', () => {
+    const pagamentos = [
+      emTransito(STATUS_PAGAMENTO.pendente, { valor: 0.1 }),
+      { ...emTransito(STATUS_PAGAMENTO.em_revisao, { valor: 0.2 }), id: 'p2' },
+    ];
+    expect(calcular([expirado], pagamentos).emTransito).toBe(0.3); // 0.1 + 0.2 !== 0.3 in floats
+  });
+
+  it('is restante − open links − money in flight, in centavos', () => {
+    const links = [expirado, linkBruto('b', { valorCobrado: 33.33 })];
+    const pagamentos = [emTransito(STATUS_PAGAMENTO.pendente)];
+    // 100,00 − 33,33 (open) − 40,00 (in flight) = 26,67.
+    expect(calcular(links, pagamentos).disponivel).toBe(2_667);
+  });
+
+  it('clamps at 0 when the stored links already cover more than restante', () => {
+    const links = [expirado, linkBruto('b')];
+    const pagamentos = [emTransito(STATUS_PAGAMENTO.pendente)];
+    // Open 40 + in flight 40 = 80: never a negative figure, and exact at the edge.
+    expect(calcular(links, pagamentos, 50).disponivel).toBe(0);
+    expect(calcular(links, pagamentos, 80).disponivel).toBe(0);
+    expect(calcular(links, pagamentos, 80.01).disponivel).toBe(1);
+  });
+
+  it('reads a missing or non-finite restante as nothing available (fail closed)', () => {
+    for (const restante of [null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(calcular([], [], restante).disponivel, String(restante)).toBe(0);
+    }
+    expect(
+      disponivelParaNovosLinksCentavos({ restante: undefined, resumos: [], pagamentos: [] }),
+    ).toBe(0);
+    // Near-miss: a real restante with nothing stored is all available.
+    expect(calcular([], [], 100).disponivel).toBe(10_000);
   });
 });
 

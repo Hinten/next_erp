@@ -3,16 +3,13 @@ import { centavosDeReais } from '@delfrance/core/money';
 import {
   LIMITES_LINK_PAGAMENTO,
   MOTIVO_RECUSA_LINK,
-  STATUS_PAGAMENTO,
   coberturaDoPedido,
+  disponivelParaNovosLinksCentavos,
   estadoNFeSchema,
-  linkPagamentoEmAberto,
   motivoBloqueioLinkPagamento,
   pagamentosTravadosPorNFe,
   resumirLinksPagamento,
-  valorEmAbertoEmLinks,
   type EstadoPedido,
-  type LinkPagamentoResumo,
   type MotivoRecusaLink,
   type PagamentoCoberturaRow,
 } from '@delfrance/schemas';
@@ -99,55 +96,6 @@ function linhaDeCobertura(dados: unknown): PagamentoCoberturaRow {
 }
 
 /**
- * The statuses a Mercado Pago payment can still leave for `aprovado` — money in
- * FLIGHT: it pays nothing yet (so `restante` does not see it), but it may land.
- */
-const STATUS_EM_TRANSITO: ReadonlySet<number> = new Set([
-  STATUS_PAGAMENTO.pendente,
-  STATUS_PAGAMENTO.em_revisao,
-  STATUS_PAGAMENTO.em_processo_aprovacao,
-]);
-
-/**
- * Centavos in flight on links the open-link term does NOT cover: Σ `valor` of the
- * pagamentos whose `linkPagamentoId` names a STORED link that
- * {@link linkPagamentoEmAberto} says is not open (`expirado`, `cancelado`, `pago`,
- * `legado`) and whose `status_pagamento` is still {@link STATUS_EM_TRANSITO}.
- *
- * Why it exists: a Pix issued before a link expired (or was cancelled, or before
- * its quota filled) can still be approved afterwards, and the moment its link stops
- * being open that money drops out of `valorEmAbertoEmLinks` while `restante` has
- * not seen it either — so without this term a new link sized to the full
- * `restante` would overpay the pedido when the pending payment lands.
- *
- * A link still counted as OPEN is excluded on purpose: its pending payment is
- * already inside `valor × restantes` (a pending payment does not consume a slot).
- * Rows are raw: a missing / non-numeric status or a non-string link id is not in
- * flight, and a `valor` that is not a positive finite number adds nothing.
- */
-function centavosEmTransitoForaDeLinksAbertos(
-  resumos: ReadonlyArray<LinkPagamentoResumo>,
-  pagamentos: ReadonlyArray<{ id: string; data: unknown }>,
-): number {
-  const naoAbertos = new Set(
-    resumos.filter((resumo) => !linkPagamentoEmAberto(resumo)).map((resumo) => resumo.linkId),
-  );
-  let centavos = 0;
-  for (const pagamento of pagamentos) {
-    const d = comoRegistro(pagamento.data);
-    const linkId = d.linkPagamentoId;
-    if (typeof linkId !== 'string' || !naoAbertos.has(linkId)) continue;
-    const status = d.status_pagamento;
-    if (typeof status !== 'number' || !STATUS_EM_TRANSITO.has(status)) continue;
-    const valor = d.valor;
-    if (typeof valor === 'number' && Number.isFinite(valor) && valor > 0) {
-      centavos += centavosDeReais(valor);
-    }
-  }
-  return centavos;
-}
-
-/**
  * The first reason this batch of links cannot be created, or `null` when it can.
  * Checked in this order, so the answer never depends on which surface ran first:
  *
@@ -161,16 +109,25 @@ function centavosEmTransitoForaDeLinksAbertos(
  *    `LIMITES_LINK_PAGAMENTO.linksPorPedidoMax` links (every stored link counts,
  *    cancelled and legacy included: the tab lists them all from one page).
  * 4. `excedeRestante` — the EXPOSURE: what the new links could bring in
- *    (Σ `valor × quantidade`) plus what the links still open could bring in
- *    ({@link valorEmAbertoEmLinks}) plus the money IN FLIGHT on links that are no
- *    longer open ({@link centavosEmTransitoForaDeLinksAbertos}) is more than
- *    `restante`. There is NO tolerance: an overpayment blocks the pedido's NF-e
- *    (cStat 866 — Mercado Pago money is never tPag 01 dinheiro, so no troco is
- *    allowed). A payment that has not landed does not change `valorPago`, so
- *    without the open-link term two operators (or two tabs) creating DIFFERENT
- *    batches would each fit `restante` on their own and together expose twice as
- *    much — and without the in-flight term a Pix issued before its link expired
- *    would land on top of a new link sized to the whole `restante`.
+ *    (Σ `valor × quantidade`) is more than {@link disponivelParaNovosLinksCentavos}
+ *    — `restante` minus what the links still open could bring in
+ *    (`valorEmAbertoEmLinks`) minus the money IN FLIGHT on links that are no longer
+ *    open (`valorEmTransitoForaDeLinksAbertos`), clamped at 0. That figure is the
+ *    ONE rule the web tab shows as "Disponível para novos links" and sizes its form
+ *    against, so the tab never offers a batch this refuses. There is NO tolerance:
+ *    an overpayment blocks the pedido's NF-e (cStat 866 — Mercado Pago money is
+ *    never tPag 01 dinheiro, so no troco is allowed). A payment that has not
+ *    landed does not change `valorPago`, so without the open-link term two
+ *    operators (or two tabs) creating DIFFERENT batches would each fit `restante`
+ *    on their own and together expose twice as much — and without the in-flight
+ *    term a Pix issued before its link expired would land on top of a new link
+ *    sized to the whole `restante`.
+ *
+ *    `Σ novos > max(0, restante − emAberto − emTrânsito)` refuses exactly what
+ *    `Σ novos + emAberto + emTrânsito > restante` refuses for every batch worth at
+ *    least one centavo — and every batch that reaches it is: each entry is checked
+ *    for `≥ 1` centavo × `≥ 1` payment first, the wire schema demands `.min(1)`
+ *    links and `persistirLinks` throws on an empty batch before its transaction.
  *
  * The open-link term counts only TRACEABLE links (`modo != null`) that are still
  * `aberto` / `parcial`; a legacy link, a paid one, a cancelled one and one past its
@@ -224,11 +181,12 @@ export function avaliarElegibilidade(e: EntradaElegibilidade): MotivoRecusaLink 
     pagamentos: e.pagamentos,
     agoraMs: e.agoraMs,
   });
-  const centavosEmAberto = centavosDeReais(valorEmAbertoEmLinks(resumos));
-  const centavosEmTransito = centavosEmTransitoForaDeLinksAbertos(resumos, e.pagamentos);
-  if (centavosNovos + centavosEmAberto + centavosEmTransito > centavosDeReais(restante)) {
-    return MOTIVO_RECUSA_LINK.excedeRestante;
-  }
+  const disponivel = disponivelParaNovosLinksCentavos({
+    restante,
+    resumos,
+    pagamentos: e.pagamentos,
+  });
+  if (centavosNovos > disponivel) return MOTIVO_RECUSA_LINK.excedeRestante;
   return null;
 }
 

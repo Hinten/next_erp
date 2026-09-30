@@ -10,7 +10,7 @@ import {
   statusLinkPagamentoSchema,
 } from '../collection/linkPgtoMercadoPago';
 import type { ModoLinkPagamento, StatusLinkPagamento } from '../collection/linkPgtoMercadoPago';
-import { isPagamentoPagante, sumPagamentosPagos } from '../collection/pagamento';
+import { STATUS_PAGAMENTO, isPagamentoPagante, sumPagamentosPagos } from '../collection/pagamento';
 import type { EstadoPedido } from '../collection/pedido';
 import { nfeFiscalEncerrada, podeGerarLinkPagamento, travarPagamentoComNFe } from './estado';
 
@@ -733,9 +733,8 @@ export function resumirLinksPagamento(i: {
 /**
  * Whether a summarised link can still receive a payment: TRACEABLE and `aberto` /
  * `parcial`. The ONE definition of "open" — {@link valorEmAbertoEmLinks}, both copy
- * messages and the backend's exposure guard (`apps/mercado-pago`'s
- * `elegibilidade.ts`, which must tell the links this sum covers from the ones it
- * does not) all ask it here.
+ * messages and {@link valorEmTransitoForaDeLinksAbertos} (which must tell the links
+ * the open-link sum covers from the ones it does not) all ask it here.
  */
 export function linkPagamentoEmAberto(resumo: LinkPagamentoResumo): boolean {
   return (
@@ -764,6 +763,103 @@ export function valorEmAbertoEmLinks(resumos: ReadonlyArray<LinkPagamentoResumo>
     centavos += centavosDeReais(resumo.valor) * (resumo.restantes ?? 1);
   }
   return roundReais(centavos / 100);
+}
+
+/**
+ * The statuses a Mercado Pago payment can still leave for `aprovado` — money in
+ * FLIGHT: it pays nothing yet (so `restante` does not see it), but it may land.
+ */
+const STATUS_EM_TRANSITO: ReadonlySet<number> = new Set([
+  STATUS_PAGAMENTO.pendente,
+  STATUS_PAGAMENTO.em_revisao,
+  STATUS_PAGAMENTO.em_processo_aprovacao,
+]);
+
+/** {@link valorEmTransitoForaDeLinksAbertos} in integer CENTS, the unit every guard compares. */
+function centavosEmTransitoForaDeLinksAbertos(
+  resumos: ReadonlyArray<LinkPagamentoResumo>,
+  pagamentos: ReadonlyArray<{ id: string; data: unknown }>,
+): number {
+  const naoAbertos = new Set(
+    resumos.filter((resumo) => !linkPagamentoEmAberto(resumo)).map((resumo) => resumo.linkId),
+  );
+  let centavos = 0;
+  for (const pagamento of pagamentos) {
+    const d = comoRegistro(pagamento.data);
+    const linkId = d.linkPagamentoId;
+    if (typeof linkId !== 'string' || !naoAbertos.has(linkId)) continue;
+    const status = d.status_pagamento;
+    if (typeof status !== 'number' || !STATUS_EM_TRANSITO.has(status)) continue;
+    const valor = d.valor;
+    if (typeof valor === 'number' && Number.isFinite(valor) && valor > 0) {
+      centavos += centavosDeReais(valor);
+    }
+  }
+  return centavos;
+}
+
+/**
+ * Money in FLIGHT on links the open-link term ({@link valorEmAbertoEmLinks}) does
+ * NOT cover, in REAIS (like {@link valorEmAbertoEmLinks}: the tab prints it, and a
+ * guard converts with `centavosDeReais`): Σ `valor` of the pagamentos whose
+ * `linkPagamentoId` names a STORED link that {@link linkPagamentoEmAberto} says is
+ * not open (`expirado`, `cancelado`, `pago`, `legado`) and whose
+ * `status_pagamento` is still pending (`pendente`, `em_revisao`,
+ * `em_processo_aprovacao`).
+ *
+ * Why it exists: a Pix issued before a link expired (or was cancelled, or before
+ * its quota filled) can still be approved afterwards, and the moment its link stops
+ * being open that money drops out of `valorEmAbertoEmLinks` while `restante` has
+ * not seen it either — so without this term a new link sized to the full
+ * `restante` would overpay the pedido when the pending payment lands (an
+ * overpayment blocks the NF-e, cStat 866).
+ *
+ * A link still counted as OPEN is excluded on purpose: its pending payment is
+ * already inside `valor × restantes` (a pending payment does not consume a slot).
+ * A pagamento that names no stored link counts nothing. Rows are raw: a missing /
+ * non-numeric status or a non-string link id is not in flight, and a `valor` that
+ * is not a positive finite number adds nothing. Summed in centavos, so the result
+ * is exact to the cent.
+ */
+export function valorEmTransitoForaDeLinksAbertos(
+  resumos: ReadonlyArray<LinkPagamentoResumo>,
+  pagamentos: ReadonlyArray<{ id: string; data: unknown }>,
+): number {
+  return roundReais(centavosEmTransitoForaDeLinksAbertos(resumos, pagamentos) / 100);
+}
+
+/**
+ * What NEW links may still charge, in integer CENTS — the ONE figure behind both
+ * surfaces: the `apps/mercado-pago` exposure guard (`elegibilidade.ts` refuses a
+ * batch worth more than this as `excedeRestante`) and the web tab's "Disponível
+ * para novos links", its create limit and its "Dividir igualmente". Two copies of
+ * this subtraction would drift toward plausible: a tab that forgot a term would
+ * offer a batch the route refuses.
+ *
+ *   `max(0, restante − valorEmAbertoEmLinks − valorEmTransitoForaDeLinksAbertos)`
+ *
+ * every term in centavos. `restante` is `coberturaDoPedido(...).restante` (the ONE
+ * "still to pay" rule); a missing or non-finite one reads as 0 — nothing is
+ * available, the fail-closed direction. `resumos` must be
+ * {@link resumirLinksPagamento} over the SAME `pagamentos`, so the open-link term
+ * and the in-flight term split the links between them without overlap.
+ *
+ * Clamped at 0: when what the stored links may still bring in already exceeds
+ * `restante`, no new link fits — a guard compares `Σ novos > disponível`, so any
+ * non-empty batch (≥ 1 centavo) is refused exactly as `Σ novos + emAberto +
+ * emTrânsito > restante` would refuse it.
+ */
+export function disponivelParaNovosLinksCentavos(i: {
+  restante: number | null | undefined;
+  resumos: ReadonlyArray<LinkPagamentoResumo>;
+  pagamentos: ReadonlyArray<{ id: string; data: unknown }>;
+}): number {
+  const bruto = i.restante;
+  const restanteCentavos =
+    typeof bruto === 'number' && Number.isFinite(bruto) ? centavosDeReais(bruto) : 0;
+  const emAberto = centavosDeReais(valorEmAbertoEmLinks(i.resumos));
+  const emTransito = centavosEmTransitoForaDeLinksAbertos(i.resumos, i.pagamentos);
+  return Math.max(0, restanteCentavos - emAberto - emTransito);
 }
 
 /* -------------------------------------------------------------------------- */

@@ -11,8 +11,14 @@
 import { createHash } from 'node:crypto';
 import {
   clienteSchema,
+  ESTADO_PEDIDO,
+  FORMA_PAGAMENTO,
   integracaoSchema,
   INTEGRACAO_TIPO,
+  MODO_LINK_PAGAMENTO,
+  STATUS_LINK_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  TIPO_INTEGRACAO_PGTO,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
@@ -4379,4 +4385,273 @@ export async function seedAvisoUnico(id: string, loja: string): Promise<void> {
       resolvidoEm: null,
       resolucaoMotivo: null,
     });
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Pedidos — Mercado Pago payment-link tab (#367)                            */
+/* -------------------------------------------------------------------------- */
+
+const UM_DIA_MS = 86_400_000;
+
+/**
+ * The doc id of a seeded payment link, in the shape the web mints with
+ * `newDocId()` — 20 characters of `[A-Za-z0-9]` — but deterministic, so a fixture
+ * can name it before it is written. Not derived from the prefix directly: the
+ * prefix carries hyphens, and `pagamento.linkPagamentoId` (the field that names
+ * this id on the payment side) is validated against the 20-character shape.
+ */
+function linkPagamentoDocId(prefix: string, tag: string): string {
+  return createHash('sha256').update(`${prefix}:${tag}`).digest('hex').slice(0, 20);
+}
+
+/** One seeded link — what the spec needs to find it, copy it and count on it. */
+export interface LinkPagamentoSeed {
+  /** The link's DOC id. */
+  id: string;
+  /** The checkout URL the operator copies. */
+  url: string;
+  /** What each payment on the link charges (R$). */
+  valor: number;
+  /** The link's deadline, epoch MILLISECONDS. */
+  expiraMs: number;
+}
+
+export interface LinkPagamentoFixtures {
+  pedidoId: string;
+  numero: string;
+  /** The pedido's total (R$). */
+  valorCobrado: number;
+  /** What Maria's approved, link-attributed payment brought in (R$). */
+  valorPago: number;
+  /** Still owed: total − paid (R$). */
+  restante: number;
+  /** Money sitting in OPEN traceable links — João's; the legacy link is NOT counted (R$). */
+  emLinksAbertos: number;
+  /** What a new batch may still charge: restante − emLinksAbertos (R$). */
+  disponivel: number;
+  /** The only account the picker may offer. */
+  metodoId: string;
+  metodoNome: string;
+  /** Accounts the picker must NOT offer: not enabled for links / never connected. */
+  metodoSemLinkNome: string;
+  metodoSemUsuarioNome: string;
+  links: { legado: LinkPagamentoSeed; maria: LinkPagamentoSeed; joao: LinkPagamentoSeed };
+  /** Every link doc as written, so `resetLinksPagamento` can put them back. */
+  linkDocs: Array<{ id: string; data: Record<string, unknown> }>;
+}
+
+/**
+ * Fixtures for the pedido editor's "Link Pgto" tab (`pedidos-link-pagamento.emulator`):
+ * a saída pedido of R$ 100,00 in `aguardandoConfirmacaoDePagamento`, one Mercado Pago
+ * account the picker may offer plus two it must not, and three links —
+ *
+ *  - Maria: an individual link of R$ 30,00, PAID (one approved pagamento attributed to
+ *    it through `linkPagamentoId`);
+ *  - João:  an individual link of R$ 30,00, still open;
+ *  - legado: R$ 20,00 in the six fields the legacy app wrote and nothing else (no
+ *    `modo`), so no payment can ever be attributed to it.
+ *
+ * So restante = 100 − 30 = 70, R$ 30,00 of it sits in João's open link (the legacy link
+ * is not counted), and a new batch may charge up to R$ 40,00.
+ *
+ * The pedido carries one item so the editor's Zod converter parses; the integração has
+ * no depósito, so the pedido→estoque trigger ignores it.
+ *
+ * ⚠️ Seeding the pagamento fires `onPagamentoChanged`, which appends to the pedido's
+ * `historicoDeModificacoes` asynchronously — `cleanupLinkPagamentoFixtures` sweeps it.
+ * ⚠️ `orderBy` SKIPS documents missing the field: the pagamento needs `dataCadastro` and
+ * every link needs `dataCriacao` (the legacy one included) or the tab would never list
+ * them.
+ */
+export async function seedLinkPagamentoFixtures(prefix: string): Promise<LinkPagamentoFixtures> {
+  const base = await seedPedidoFixtures(prefix);
+  const produtoId = base.produtoPath.split('/')[1]!;
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+
+  const pedidoId = `${prefix}-ped`;
+  const valorCobrado = 100;
+  const valorMaria = 30;
+  const valorJoao = 30;
+  const valorLegado = 20;
+
+  const metodoId = `${prefix}-mp-ok`;
+  const metodoSemLinkNome = `${prefix}-mp-sem-link`;
+  const metodoSemUsuarioNome = `${prefix}-mp-sem-usuario`;
+  const contaRef = `documents/metodo_pgto/${metodoId}`;
+
+  const pedidoRef = db().collection('pedidos').doc(pedidoId);
+  await pedidoRef.set({
+    ehSaida: true,
+    estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    numero: pedidoId,
+    integracaoPedidoOuterRef: `documents/${base.integracaoPath}`,
+    clientePedidoOuterRef: `documents/${base.clientePath}`,
+    operacaoPedidoOuterRef: `documents/${base.operacaoPath}`,
+    itens: {
+      [produtoId]: [
+        {
+          produtoUid: produtoId,
+          ordem: 1,
+          sku: base.produtoSku,
+          nomeDeVenda: base.produtoNome,
+          precoDeVenda: valorCobrado,
+          descontoUnitario: 0,
+          quantidade: 1,
+          custo: null,
+        },
+      ],
+    },
+    itensIds: [produtoId],
+    descontoTotal: 0,
+    valorCobrado,
+    timestamp: nowUs,
+  });
+
+  const metodos = db().collection('metodo_pgto');
+  const metodoBase = { tipo: TIPO_INTEGRACAO_PGTO.mercadoPago, dataCadastro: nowUs };
+  const salvarMetodo = (nome: string, hasLinkPagamento: boolean, userId: number | null) =>
+    metodos.doc(nome).set({ ...metodoBase, nome, hasLinkPagamento, user_id: userId });
+  await Promise.all([
+    salvarMetodo(metodoId, true, 900_000_101),
+    salvarMetodo(metodoSemLinkNome, false, 900_000_102),
+    salvarMetodo(metodoSemUsuarioNome, true, null),
+  ]);
+
+  const link = (tag: string, valor: number, expiraMs: number): LinkPagamentoSeed => {
+    const id = linkPagamentoDocId(prefix, tag);
+    return {
+      id,
+      url: `https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=${prefix}-${tag}`,
+      valor,
+      expiraMs,
+    };
+  };
+  const maria = link('maria', valorMaria, nowMs + 5 * UM_DIA_MS);
+  const joao = link('joao', valorJoao, nowMs + 5 * UM_DIA_MS);
+  const legado = link('legado', valorLegado, nowMs + UM_DIA_MS);
+
+  // A link written by the create flow: traceable, one payment, open.
+  const docIndividual = (
+    seed: LinkPagamentoSeed,
+    nomePagador: string,
+    ordem: number,
+    criadoMs: number,
+  ): Record<string, unknown> => ({
+    contaMercadoPagoOuterRef: contaRef,
+    valorCobrado: seed.valor,
+    link: seed.url,
+    id: `${prefix}-${nomePagador.toLowerCase()}`,
+    dataCriacao: criadoMs,
+    dataExpiracao: seed.expiraMs,
+    modo: MODO_LINK_PAGAMENTO.individual,
+    nomePagador,
+    quantidadeMaxima: 1,
+    grupoId: linkPagamentoDocId(prefix, 'grupo'),
+    ordem,
+    status: STATUS_LINK_PAGAMENTO.aberto,
+    encerradoEm: null,
+    encerradoPorOuterRef: null,
+    erroEncerramento: null,
+    criadoPorOuterRef: null,
+    tiposExcluidos: null,
+    parcelasMaximas: null,
+  });
+
+  const linkDocs = [
+    { id: maria.id, data: docIndividual(maria, 'Maria', 0, nowMs - 2 * 3_600_000) },
+    { id: joao.id, data: docIndividual(joao, 'João', 1, nowMs - 3_600_000) },
+    {
+      id: legado.id,
+      // The six fields the legacy app wrote and nothing else: no `modo`, no `status`.
+      data: {
+        contaMercadoPagoOuterRef: contaRef,
+        valorCobrado: legado.valor,
+        link: legado.url,
+        id: `${prefix}-legado`,
+        dataCriacao: nowMs - UM_DIA_MS,
+        dataExpiracao: legado.expiraMs,
+      },
+    },
+  ];
+
+  const fixtures: LinkPagamentoFixtures = {
+    pedidoId,
+    numero: pedidoId,
+    valorCobrado,
+    valorPago: valorMaria,
+    restante: valorCobrado - valorMaria,
+    emLinksAbertos: valorJoao,
+    disponivel: valorCobrado - valorMaria - valorJoao,
+    metodoId,
+    metodoNome: metodoId,
+    metodoSemLinkNome,
+    metodoSemUsuarioNome,
+    links: { legado, maria, joao },
+    linkDocs,
+  };
+
+  await resetLinksPagamento(fixtures);
+
+  // Maria's payment, attributed to her link through the link's DOC id.
+  const pagamentoId = `${prefix}-pag-maria`;
+  const pagamentoRef = pedidoRef.collection('pagamentos').doc(pagamentoId);
+  await pagamentoRef.set({
+    id: pagamentoId,
+    metodoPagamentoOuterRef: contaRef,
+    forma_de_pagamento: FORMA_PAGAMENTO.pix,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    valor: valorMaria,
+    parcelas: 1,
+    aVista: true,
+    duplicata: false,
+    cartao: null,
+    cheque: null,
+    linkPagamentoId: maria.id,
+    primeiroNomePagador: null,
+    dataAprovacao: nowUs,
+    dataCadastro: nowUs,
+    ultimaModificacao: nowUs,
+  });
+
+  return fixtures;
+}
+
+/**
+ * Put the pedido's links back to the three seeded ones: deletes every link doc — the
+ * ones a spec's fake backend wrote included — and writes the seeded docs again. Lets each
+ * test start from the same list without re-seeding the payment (which would fire the
+ * `onPagamentoChanged` trigger again).
+ */
+export async function resetLinksPagamento(fixtures: LinkPagamentoFixtures): Promise<void> {
+  const pedidoRef = db().collection('pedidos').doc(fixtures.pedidoId);
+  const colecao = pedidoRef.collection('linkPgtoMercadoPago');
+  const existentes = await colecao.get();
+  const batch = db().batch();
+  existentes.docs.forEach((d) => batch.delete(d.ref));
+  fixtures.linkDocs.forEach(({ id, data }) => batch.set(colecao.doc(id), data));
+  await batch.commit();
+}
+
+/**
+ * Teardown for `seedLinkPagamentoFixtures`. Firestore never cascades, so the pedido's
+ * subcollections go BEFORE the pedido: the links, the payment, and the three trails the
+ * triggers append to asynchronously (`historicoDeModificacoes` from `onPagamentoChanged`,
+ * `historicoEstadoPedido` / `historicoFtIni` from `onPedidoChanged`). Then the accounts
+ * (`metodo_pgto` is a shared top-level collection, swept by `nome` prefix) and the base
+ * pedido fixtures.
+ *
+ * Keyed on the prefix alone (the pedido is found by its `numero`, like the base
+ * fixtures), so it still cleans up after a `beforeAll` that died half-way.
+ */
+export async function cleanupLinkPagamentoFixtures(prefix: string): Promise<void> {
+  const subcolecoes = [
+    'linkPgtoMercadoPago',
+    'pagamentos',
+    'historicoDeModificacoes',
+    'historicoEstadoPedido',
+    'historicoFtIni',
+  ];
+  await Promise.all(subcolecoes.map((s) => cleanupPedidoSubcollectionByPrefix(s, prefix)));
+  await Promise.all([cleanupByNamePrefix('metodo_pgto', prefix), cleanupPedidoFixtures(prefix)]);
 }
