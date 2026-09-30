@@ -333,8 +333,15 @@ gCompraGov (0-1)            BB01
 │                                  3=fornecimento c/ pagamento já realizado
 │                                  4=recebimento do pagamento c/ fornecimento posterior
 └── refDFeAnt (0-99)        BB05   chave de acesso do DFe anterior (44 caracteres)
-                                   obrigatório para tpOperGov 2 e 4
+                                   (PL_010f) tpOperGov 1 e 4: proibida (1195 / BB05-50);
+                                   2: exatamente UMA (1196 / BB05-30); 3: obrigatória (BB05-40)
 ```
+
+**Neste repo (#331)**: só na biblioteca — `buildCompraGov` (`generator/compraGov.ts`)
+monta o grupo e recusa a cardinalidade acima e referências duplicadas (BB05-140).
+Nenhum pedido carrega `gCompraGov` ainda: o `pRedutor` aplicado às alíquotas de
+IBS/CBS de cada item (art. 472/370) e o modelo de dados são o follow-up "full
+gCompraGov".
 
 ## Grupo BC — Antecipação de Pagamento
 
@@ -349,19 +356,26 @@ gPagAntecipado (0-1)        BC01
 RV `11BC01-10`/`20`/`30`: validações que vinculam tpNFDebito=06 (Pagamento
 antecipado) a referenciamento via gPagAntecipado.
 
+**Neste repo (#331)**: `pedido.chNFePagamentoAntecipado` (editado na aba Fiscal),
+emitido como `ide/gPagAntecipado` só com a Reforma Tributária ligada — com ela
+desligada, chaves informadas **recusam** a nota antes do número (não somem em
+silêncio). O page model recusa chave que não seja NF-e 55 com DV correto,
+duplicada ou além de 99. A existência da nota e o tipo débito 06 (11BC01-20/30)
+ficam com a SEFAZ (banco de dados).
+
 ## Outras inclusões no Grupo B (Identificação)
 
 | Campo | ID | Descrição |
 |---|---|---|
-| `dPrevEntrega` | B10a | Data prevista de entrega/disponibilização. Obrigatório calcular para frete CIF (modFrete=0, 1) e finNFe=1 ou 4. Limites: até 3 meses após `dhSaiEnt`; nunca anterior. Atualizável via Evento 112150. |
-| `cMunFGIBS` | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados. |
-| `cIndOp` | B25d | Código indicador do local da operação. Obrigatório quando: `010104` = leilão judicial / licitação pública; `010105` = constatação de irregularidade por fiscalização. |
+| `dPrevEntrega` | B10a | Data prevista de entrega/disponibilização, **opcional**. Só com finNFe 1 ou 4 (B10a-40); **proibida** com modFrete 1 (FOB), 4 (próprio do destinatário) e 9 (sem transporte) (B10a-50); nunca antes de `dhSaiEnt` (ou `dhEmi`), no máximo 3 meses depois, só a data (B10a-20/30). Atualizável via Evento 112150. **Neste repo (#331)**: derivada de `freteInicial.dataPrevisaoEntrega` (data no fuso do emitente) e **omitida** — nunca recusada — fora das janelas (`dPrevEntregaParaEmissao`). |
+| `cMunFGIBS` | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados. **Não modelado**: toda nota deste ERP tem endereço do destinatário. |
+| `cIndOp` | B25d | Código indicador do local da operação de fornecimento, **opcional** (proibido na NFC-e, B25d-10; conforme a tabela "Código Indicador de Local da Operação", B25d-20). Os códigos `010104` (leilão judicial / licitação pública) e `010105` (constatação de irregularidade) **exigem** o grupo `<retirada>` (B25d-30, 1110). **Não modelado**: o ERP não emite `<retirada>`. |
 
 ## Outras inclusões no Grupo C (Emitente)
 
 | Campo | ID | Descrição |
 |---|---|---|
-| `ISUFEmit` | C22 | Inscrição SUFRAMA do emitente. Obrigatório quando operação se beneficia de alíquota zero CBS em ZFM/ALC (arts. 451 e 466 LC 214/25). 8-9 dígitos. Verificador DV validado em C22-20. |
+| `ISUFEmit` | C22 | Inscrição SUFRAMA do emitente. Obrigatório quando operação se beneficia de alíquota zero CBS em ZFM/ALC (arts. 451 e 466 LC 214/25). 8-9 dígitos. Município do emitente só da ZFM/ALC (C22-10, 1185 — 12 municípios listados na NT); DV validado em C22-20 (1186). **Neste repo (#331)**: `filial.isuf`, emitido só com a Reforma Tributária ligada; a C22-10 é recusada antes do número (`MUNICIPIOS_SUFRAMA_EMITENTE`); a C22-20 fica com a SEFAZ — a NT não publica o algoritmo do DV. |
 
 ## Eventos novos da RTC (todos para NF-e modelo 55)
 
@@ -514,8 +528,9 @@ diferem só no `
 falha contra o pacote anterior (verificado):
 
 - **`tpNFCredito` 06** — retorno por recusa parcial na entrega.
-- **`ide/cIndOp`** (6 dígitos, entre `indIntermed` e `procEmi`) e
-  **`emit/ISUFEmit`** (8–9 dígitos, depois de `CRT`) — ainda não emitidos (#331).
+- **`ide/cIndOp`** (6 dígitos, entre `indIntermed` e `procEmi`) — não modelado
+  (os códigos que o usam exigem `<retirada>`) — e **`emit/ISUFEmit`** (8–9
+  dígitos, depois de `CRT`) — emitido desde o #331, a partir de `filial.isuf`.
 - **`emit/IE` virou opcional.** O DANFE imprime o campo vazio quando falta.
 - **`vNFTot`** passou de `TDec_1302Opc` a `TDec_1302`: aceita `0.00`.
 - **`IS/pISEspec` → `IS/adRemIS`.** ⚠️ O XSD nunca foi uma escolha entre os

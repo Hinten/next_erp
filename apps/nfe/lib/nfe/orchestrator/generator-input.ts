@@ -16,6 +16,7 @@ import {
   type AjusteIbsCbsItem,
   type GeneratorInput,
   type GeneratorItem,
+  type GeneratorRtc,
   type Payment,
 } from '@delfrance/integrations-nfe';
 import { microsToMillis } from '@delfrance/core/datetime';
@@ -30,6 +31,7 @@ import {
   camposProdutoFiscal,
   grupoDeAjusteDoTipo,
   descreverViolacaoDocumento,
+  dPrevEntregaParaEmissao,
   modoGruposImposto,
   violacoesDoDocumento,
   ehMarketplace,
@@ -38,6 +40,7 @@ import {
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type ModalidadeFrete,
   type ModoGruposImposto,
   type Operacao,
   type Pagamento,
@@ -176,6 +179,54 @@ export function chNFeReferenciadasDe(bundle: PedidoBundle): string[] {
 }
 
 /**
+ * The NT 2025.002 `ide` / `emit` fields beyond the tax groups (#331) of a nota
+ * emitted at `dhEmi` — called only with the Reforma Tributária on:
+ *  - `dPrevEntrega` from the pedido's `freteInicial.dataPrevisaoEntrega`, read
+ *    as a date in the emitente's legal time and OMITTED when B10a would refuse
+ *    it (`dPrevEntregaParaEmissao`) — a derived value never blocks a nota;
+ *  - `gPagAntecipado` from `pedido.chNFePagamentoAntecipado`, which the
+ *    document rules judged before generation;
+ *  - `ISUFEmit` from `filial.isuf` (C22-10 judged by the same rules).
+ */
+export function rtcDaNota(
+  bundle: PedidoBundle,
+  dhEmi: Date,
+  modFrete: ModalidadeFrete,
+): GeneratorRtc {
+  const offset = offsetForUF(bundle.filial.sede.estado);
+  const dia = (d: Date) => {
+    const p = datePartsInOffset(d, offset);
+    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+  };
+  const previsaoUs = bundle.frete?.dataPrevisaoEntrega ?? null;
+  const dPrevEntrega = dPrevEntregaParaEmissao({
+    previsao: previsaoUs == null ? null : dia(new Date(microsToMillis(previsaoUs))),
+    emissao: dia(dhEmi),
+    finNFe: bundle.operacao.finNFe ?? 1,
+    modFrete,
+  });
+  const pagAntecipado = chNFePagamentoAntecipadoDe(bundle);
+  const isuf = bundle.filial.isuf ?? null;
+  return {
+    ...(dPrevEntrega != null ? { dPrevEntrega } : {}),
+    ...(pagAntecipado.length > 0 ? { pagAntecipado } : {}),
+    ...(isuf != null ? { isufEmit: isuf } : {}),
+  };
+}
+
+/**
+ * `ide/gPagAntecipado/refNFe` (#331): non-empty entries of
+ * `pedido.chNFePagamentoAntecipado`. ONE reader for generation and the
+ * document rules, like {@link chNFeReferenciadasDe}.
+ */
+export function chNFePagamentoAntecipadoDe(bundle: PedidoBundle): string[] {
+  const raw = (bundle.pedido as { chNFePagamentoAntecipado?: unknown }).chNFePagamentoAntecipado;
+  return Array.isArray(raw)
+    ? raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+}
+
+/**
  * The NT 2025.002 document rules (`violacoesDoDocumento`, `@delfrance/schemas`
  * — the SAME verdicts the pedido editor shows) over the nota about to be built.
  * A `bloqueia` violation refuses it as an `NFeOrchestratorError` listing every
@@ -211,6 +262,9 @@ function assertDocumentoEmitivel(
     destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
     emitenteDocumento: bundle.filial.cnpj,
     emitenteCUF: cUFFromUF(uf),
+    chNFePagamentoAntecipado: chNFePagamentoAntecipadoDe(bundle),
+    emitenteISUF: bundle.filial.isuf ?? null,
+    emitenteCMun: bundle.filial.sede.codigoMunicipio ?? null,
     // nItem = the det position `buildGenItems` assigns (i + 1); cClassTrib is
     // the resolved imposto's — null when the item carries no IBS/CBS config.
     itens: items.map((it, i) => ({
@@ -446,6 +500,9 @@ export function buildGeneratorInput(
   const chNFeReferenciadas = chNFeReferenciadasDe(bundle);
 
   const transpOpts = buildTranspFromFrete(bundle.frete);
+  // ONE instant for the nota and for the forecast window judged against it.
+  const dhEmi = new Date();
+  const rtc = emitRtc === true ? rtcDaNota(bundle, dhEmi, transpOpts.modFrete) : null;
   const cobr = buildCobrFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
     frete: bundle.frete,
@@ -461,7 +518,7 @@ export function buildGeneratorInput(
     numeracao,
     serie,
     tpEmis,
-    dhEmi: new Date(),
+    dhEmi,
     filial: bundle.filial,
     operacao: bundle.operacao,
     cliente: bundle.cliente,
@@ -479,6 +536,7 @@ export function buildGeneratorInput(
     ...(infIntermed ? { infIntermed } : {}),
     ...(cNF ? { cNF } : {}),
     ...(chNFeReferenciadas.length > 0 ? { chNFeReferenciadas } : {}),
+    ...(rtc != null && Object.keys(rtc).length > 0 ? { rtc } : {}),
     // B28/B29 — the generator's validateInput enforces presence (tpEmis≠1)
     // and absence (tpEmis=1); here we only thread the values through.
     ...(contingencia?.dhCont ? { dhCont: contingencia.dhCont } : {}),

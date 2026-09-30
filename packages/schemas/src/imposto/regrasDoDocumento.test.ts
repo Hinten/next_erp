@@ -39,6 +39,10 @@ const BASE: EntradaRegrasDocumento = {
   // The emitente of CHAVE_A / CHAVE_B, in SP.
   emitenteDocumento: '14.200.166/0001-87',
   emitenteCUF: '35',
+  chNFePagamentoAntecipado: [],
+  emitenteISUF: null,
+  // São Paulo — outside the ZFM/ALC.
+  emitenteCMun: '3550308',
   itens: [],
 };
 
@@ -667,5 +671,42 @@ describe('violacoesDoDocumento — the adjustment amounts (gTransfCred / gAjuste
       expect(v.map((x) => x.regra)).toEqual([REGRA_DOCUMENTO.ajusteIndevido]);
       expect(bloqueiaEmissao(v)).toBe(false);
     }
+  });
+});
+
+describe('violacoesDoDocumento — pagamento antecipado and ISUFEmit (#331)', () => {
+  it('a valid NF-e 55 reference with the RTC on is clean; off, it is refused (policy)', () => {
+    expect(regras({ chNFePagamentoAntecipado: [CHAVE_A] })).toEqual([]);
+    expect(regras({ emitRtc: false, chNFePagamentoAntecipado: [CHAVE_A] })).toEqual([
+      REGRA_DOCUMENTO.pagAntecipadoSemReformaTributaria,
+    ]);
+  });
+
+  it('BC02 — only an NF-e modelo 55 with a valid check digit; an NFC-e is refused', () => {
+    expect(regras({ chNFePagamentoAntecipado: [CHAVE_NFCE] })).toEqual([
+      REGRA_DOCUMENTO.pagAntecipadoChaveInvalida,
+    ]);
+    const dvErrado = `${CHAVE_A.slice(0, 43)}${(Number(CHAVE_A[43]) + 1) % 10}`;
+    expect(regras({ chNFePagamentoAntecipado: [dvErrado] })).toEqual([
+      REGRA_DOCUMENTO.pagAntecipadoChaveInvalida,
+    ]);
+  });
+
+  it('BC01 — at most 99 references', () => {
+    expect(regras({ chNFePagamentoAntecipado: Array(99).fill(CHAVE_A) })).toEqual([]);
+    expect(regras({ chNFePagamentoAntecipado: Array(100).fill(CHAVE_A) })).toEqual([
+      REGRA_DOCUMENTO.pagAntecipadoExcesso,
+    ]);
+  });
+
+  it('1185 — ISUFEmit only from a ZFM/ALC municipality, and only with the RTC on', () => {
+    expect(regras({ emitenteISUF: '200123456' })).toEqual([
+      REGRA_DOCUMENTO.isufEmitForaDaAreaIncentivada,
+    ]);
+    expect(regras({ emitenteISUF: '200123456', emitenteCMun: '1302603' })).toEqual([]);
+    // Near-misses: no inscription, the RTC off (not on the wire), an unknown municipality.
+    expect(regras({ emitenteISUF: null })).toEqual([]);
+    expect(regras({ emitenteISUF: '200123456', emitRtc: false })).toEqual([]);
+    expect(regras({ emitenteISUF: '200123456', emitenteCMun: null })).toEqual([]);
   });
 });

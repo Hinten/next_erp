@@ -88,6 +88,10 @@ export function AjusteRtcSection({ form, db, disabled }: AjusteRtcSectionProps) 
     destinatarioDocumento: null,
     emitenteDocumento: null,
     emitenteCUF: null,
+    // Judged by their own editor (and at emission), not by this panel.
+    chNFePagamentoAntecipado: [],
+    emitenteISUF: null,
+    emitenteCMun: null,
     itens: linhas.map(({ item }, i) => ({
       nItem: i + 1,
       dfeReferenciado: null,

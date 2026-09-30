@@ -183,6 +183,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       cnae: null,
       ie: opts.ie,
       iest: null,
+      isuf: null,
       imun: null,
       ultimaModificacao: null,
       sede: {

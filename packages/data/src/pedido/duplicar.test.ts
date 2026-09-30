@@ -46,6 +46,7 @@ describe('buildDuplicarPedidoSeed', () => {
     entradasRelacionadas: ['x'],
     saidasRelacionadas: ['y'],
     chNFeReferenciadas: ['CH1'],
+    chNFePagamentoAntecipado: ['CH2'],
     itensDevolvidos: { o0: { p1: [item('p1', 1, 25)] } },
     estoqueAplicado: { depositoId: 'd1', ehSaida: true },
     observacoesInternas: 'nota interna',
@@ -129,6 +130,7 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(values.timestamp).toBeNull();
     expect(values.error).toBeNull();
     expect(values.chNFeReferenciadas).toBeNull();
+    expect(values.chNFePagamentoAntecipado).toBeNull();
     expect(values.itensDevolvidos).toBeNull();
     expect(values.entradasRelacionadas).toBeNull();
     expect(values.saidasRelacionadas).toBeNull();

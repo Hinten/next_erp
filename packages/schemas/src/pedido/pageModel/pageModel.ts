@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
-import { chaveAcessoValida } from '../../chaveAcesso';
+import { chaveAcessoValida, decomporChaveAcesso } from '../../chaveAcesso';
 import { CHAVE_NFE_REGEX } from '../../nfe';
 import { COMPETENCIA_AAAA_MM } from '../../imposto/notaCreditoDebito';
 import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
@@ -57,6 +57,7 @@ export interface PedidoPageValidationInput {
     }>
   > | null;
   chNFeReferenciadas?: ReadonlyArray<string | null> | null;
+  chNFePagamentoAntecipado?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
   pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
 }
@@ -119,6 +120,33 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
       path: 'chNFeReferenciadas',
       message:
         'Chave de acesso referenciada inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente).',
+    });
+  }
+
+  // The NF-e de pagamento antecipado (`chNFePagamentoAntecipado`, #331): each an
+  // NF-e modelo 55 with a valid check digit (BC02), none twice, at most 99
+  // (BC01). Whether the nota may carry them at all (the RTC switch) is judged at
+  // emission, like every NT 2025.002 group.
+  const antecipado = (data.chNFePagamentoAntecipado ?? []).filter(
+    (c): c is string => c != null && c !== '',
+  );
+  if (antecipado.some((c) => decomporChaveAcesso(c)?.mod !== '55')) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message:
+        'NF-e de pagamento antecipado: cada chave deve ser de uma NF-e modelo 55, com dígito verificador correto.',
+    });
+  }
+  if (new Set(antecipado).size !== antecipado.length) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message: 'NF-e de pagamento antecipado: a mesma chave aparece mais de uma vez.',
+    });
+  }
+  if (antecipado.length > 99) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message: 'NF-e de pagamento antecipado: no máximo 99 chaves.',
     });
   }
 

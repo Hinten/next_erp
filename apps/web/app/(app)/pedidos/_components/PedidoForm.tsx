@@ -129,6 +129,7 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   entradasRelacionadas: null,
   saidasRelacionadas: null,
   chNFeReferenciadas: null,
+  chNFePagamentoAntecipado: null,
   itens: {},
   itensIds: [],
   itensDevolvidos: null,
@@ -222,6 +223,7 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
     chNFeReferenciadas: merged.chNFeReferenciadas,
+    chNFePagamentoAntecipado: merged.chNFePagamentoAntecipado,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };

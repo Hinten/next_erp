@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { pedidoPageBaseSchema, pedidoPageIssues } from './pageModel';
+import { dvChaveAcesso } from '../../chaveAcesso';
 
 const paths = (input: Parameters<typeof pedidoPageIssues>[0]) =>
   pedidoPageIssues(input).map((i) => i.path);
@@ -85,6 +86,30 @@ describe('pedidoPageIssues', () => {
     for (const nItem of [0, 991]) {
       expect(issues({ chaveAcesso: VALIDA, nItem })).toEqual([expect.stringMatching(/de 1 a 990/)]);
     }
+  });
+
+  it('pagamento antecipado (#331): NF-e 55 with a valid DV, no duplicate, at most 99', () => {
+    const issues = (chNFePagamentoAntecipado: string[]) =>
+      pedidoPageIssues({
+        integracaoPedidoOuterRef: 'x',
+        itens: { p1: [{ quantidade: 1 }] },
+        chNFePagamentoAntecipado,
+      }).map((i) => i.message);
+    const NFE = '35260514200166000187550010000000071000000011';
+    const NFE_B = '35200714200166000187550010000000071000000018';
+    expect(issues([NFE, NFE_B, ''])).toEqual([]);
+    // Near-misses: one check digit off, an NFC-e, the same chave twice, 100 chaves.
+    expect(issues([`${NFE.slice(0, 43)}2`])).toEqual([expect.stringMatching(/modelo 55/)]);
+    expect(issues([`${NFE.slice(0, 20)}65${NFE.slice(22)}`])).toEqual([
+      expect.stringMatching(/modelo 55/),
+    ]);
+    expect(issues([NFE, NFE])).toEqual([expect.stringMatching(/mais de uma vez/)]);
+    const cem = Array.from({ length: 100 }, (_, i) => {
+      const c43 = `${NFE.slice(0, 25)}${String(i + 1).padStart(9, '0')}${NFE.slice(34, 43)}`;
+      return `${c43}${dvChaveAcesso(c43)}`;
+    });
+    expect(issues(cem)).toEqual([expect.stringMatching(/no máximo 99/)]);
+    expect(issues(cem.slice(0, 99))).toEqual([]);
   });
 
   it('adjustment amounts (#330): blocks a negative amount or a malformed competência only', () => {
