@@ -59,6 +59,9 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   park that resolved an account, and the `dropped` arm names WHICH drop it was. The
   estado rule now counts the troca devolução credit (minus crédito loja pagamentos)
   as paid — see `coberturaDoPedido` in `packages/schemas/src/pedido/pureLogic/cobertura.ts`.
+  The credit can settle a pedido to `pago`, but only money paid beyond the returned
+  value makes it partially paid (#367 OD4): a pendente payment on a credit-only
+  partial troca leaves it where it is.
   **#367**: after the reconcile, a payment that carries `linkPagamentoId` runs the link
   auto-close (`links/encerrarLink.ts`); a throw there fails the task, so it retries.
 - `lib/payments/links/` — **#367**, the orchestration behind the link routes:

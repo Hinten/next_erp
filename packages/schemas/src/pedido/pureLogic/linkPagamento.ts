@@ -367,7 +367,8 @@ export function extrairPrimeiroNome(...fontes: ReadonlyArray<unknown>): string |
  * approved and later refunded still used up one of the link's slots at the
  * moment it was taken, and the link must not be left open to be paid again on
  * the strength of a refund. (The DISPLAY, {@link resumirLinksPagamento},
- * deliberately counts the paying ones — that is money in hand.)
+ * deliberately counts the paying ones — that is money in hand — and reads such a
+ * closed link as `estornado`, never `pago`.)
  *
  * The quota is {@link cotaDoLink} — the SAME reading the summary uses — so a
  * TRACEABLE link (`modo` set) with no usable `quantidadeMaxima` accepts ONE
@@ -423,6 +424,10 @@ function cotaDoLink(quantidadeMaxima: unknown, rastreavel: boolean): number | nu
  *  - `aberto`    — payable, nothing paid yet;
  *  - `parcial`   — a `compartilhado` link with some but not all payments in;
  *  - `pago`      — every payment the link accepts has been received;
+ *  - `estornado` — closed after its quota (`concluido`), but fewer of its
+ *    payments count as paid NOW: one was approved and later refunded or charged
+ *    back, so that money went back to the payer and the pedido's `restante` grew
+ *    by it. The link stays closed — it is not payable again;
  *  - `expirado`  — past its `dataExpiracao` with the quota unmet;
  *  - `cancelado` — withdrawn by the operator with the quota unmet;
  *  - `legado`    — written by the legacy app: payments cannot be attributed to
@@ -432,6 +437,7 @@ export const situacaoLinkPagamentoSchema = z.enum([
   'aberto',
   'parcial',
   'pago',
+  'estornado',
   'expirado',
   'cancelado',
   'legado',
@@ -443,6 +449,7 @@ export const SITUACAO_LINK_PAGAMENTO = {
   aberto: 'aberto',
   parcial: 'parcial',
   pago: 'pago',
+  estornado: 'estornado',
   expirado: 'expirado',
   cancelado: 'cancelado',
   legado: 'legado',
@@ -452,6 +459,7 @@ export const SITUACAO_LINK_PAGAMENTO_LABELS: Record<SituacaoLinkPagamento, strin
   aberto: 'Aberto',
   parcial: 'Parcialmente pago',
   pago: 'Pago',
+  estornado: 'Estornado',
   expirado: 'Expirado',
   cancelado: 'Cancelado',
   legado: 'Legado (sem rastreio)',
@@ -550,7 +558,13 @@ interface PagamentoDoLink {
  *    as paid, or the operator re-sends it and the pedido is overpaid (which
  *    blocks NF-e emission, cStat 866);
  * 3. stored `cancelado` → `cancelado`;
- * 4. stored `concluido` → `pago` (auto-closed after its quota);
+ * 4. stored `concluido` → `estornado`. The link was auto-closed after its quota,
+ *    which counts payments EVER approved ({@link linkAtingiuCota}); reaching this
+ *    step means fewer of them count as paid now (a refund or a chargeback — or the
+ *    pagamento row is gone), so the money is NOT all in hand. Reading it `pago`
+ *    would paint a green badge on a link whose money went back, while the pedido's
+ *    `restante` grew again and nothing on screen said why. A concluido link that
+ *    IS fully paid already returned `pago` at step 2;
  * 5. `dataExpiracao < agoraMs` (STRICT: at the exact instant it is still open)
  *    → `expirado`;
  * 6. some payments in → `parcial`;
@@ -567,7 +581,7 @@ function situacaoDoLink(i: {
   if (!i.rastreavel) return SITUACAO_LINK_PAGAMENTO.legado;
   if (i.pagos >= (i.quantidade ?? 1)) return SITUACAO_LINK_PAGAMENTO.pago;
   if (i.status === STATUS_LINK_PAGAMENTO.cancelado) return SITUACAO_LINK_PAGAMENTO.cancelado;
-  if (i.status === STATUS_LINK_PAGAMENTO.concluido) return SITUACAO_LINK_PAGAMENTO.pago;
+  if (i.status === STATUS_LINK_PAGAMENTO.concluido) return SITUACAO_LINK_PAGAMENTO.estornado;
   if (i.dataExpiracaoMs !== null && i.dataExpiracaoMs < i.agoraMs) {
     return SITUACAO_LINK_PAGAMENTO.expirado;
   }

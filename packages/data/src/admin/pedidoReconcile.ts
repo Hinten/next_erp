@@ -199,10 +199,12 @@ function pagamentoLegadoDoMesmoPagamento(
  * Shared tail of both admin reconciles: given the pedido's already-read
  * snapshot and the pedido's pagamento rows, computes the VALOR QUITADO — the
  * paying pagamentos PLUS the troca's devolução credit minus any paying 'crédito
- * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — applies
- * {@link nextPedidoEstado} and — only on a transition — writes the new `estado`
- * and flips `freteInicial.estado` to `despachoAutorizado` through {@link
- * freteComDespachoAutorizado} (only from a pre-authorization estado, or from a
+ * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — and the
+ * money paid beyond the returned value (only that makes a pedido PARTIALLY paid;
+ * the return alone never does, #367 OD4), applies {@link nextPedidoEstado} and —
+ * only on a transition — writes the new `estado` and flips `freteInicial.estado`
+ * to `despachoAutorizado` through {@link freteComDespachoAutorizado} (only from
+ * a pre-authorization estado, or from a
  * malformed block carrying no estado at all, which the flip repairs — and never
  * on a marketplace-owned frete block, #702). Returns the new estado, or `null`
  * when no transition applies.
@@ -236,7 +238,7 @@ function applyEstadoTransition(
     typeof pedidoSnap.get('valorCobrado') === 'number'
       ? (pedidoSnap.get('valorCobrado') as number)
       : 0;
-  const { valorQuitado } = coberturaDoPedido(
+  const { valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
     {
       valorCobrado: total,
       ehSaida: pedidoSnap.get('ehSaida') as boolean | null | undefined,
@@ -244,7 +246,7 @@ function applyEstadoTransition(
     },
     pagamentos,
   );
-  const next = nextPedidoEstado(estado, total, valorQuitado);
+  const next = nextPedidoEstado(estado, total, valorQuitado, valorPagoAlemDaDevolucao);
   if (next === null) return null;
 
   const pedidoPatch: Record<string, unknown> = {
@@ -408,7 +410,8 @@ export async function reconcilePedidoFromPagamento(
       }
     }
 
-    // Upsert the pagamento at its fixed (gateway-stable) id.
+    // Upsert the pagamento at `alvoId`: its fixed (gateway-stable) id, or the
+    // legacy auto-id doc matched above for the same payment.
     let toWrite: Record<string, unknown>;
     if (existing) {
       // UPDATE — INVERTED merge: the stored doc is the base (operator edits and
