@@ -9,6 +9,7 @@ import {
   coberturaDoPedido,
   ehMarketplace,
   idFromRef,
+  parseRef,
   integracaoTipoSchema,
   nowMicros,
   travarInclusaoProduto,
@@ -97,6 +98,65 @@ function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
     status_pagamento: d.get('status_pagamento') as number | null | undefined,
     forma_de_pagamento: typeof forma === 'number' ? forma : null,
   };
+}
+
+/**
+ * The `metodo_pgto` doc id a pagamento's `metodoPagamentoOuterRef` names, or
+ * `null` when it is not a string or names another collection. Compares the
+ * collection too, so an equal id under another collection never matches.
+ */
+function contaMetodoPgto(ref: unknown): string | null {
+  if (typeof ref !== 'string') return null;
+  const { collection, id } = parseRef(ref);
+  return collection === 'metodo_pgto' && id !== '' ? id : null;
+}
+
+/**
+ * The stored pagamento the LEGACY app wrote for the same Mercado Pago payment, or
+ * `null`. Legacy never passed a doc id when it saved an MP pagamento: the doc got
+ * an AUTO id, and the MP payment id lived only in the `id` FIELD — legacy matched
+ * an existing payment by `id` field AND account
+ * (`.old/packages/pagamento/mercado_pago/lib/src/tasks.dart:41-44`, `element.id ==
+ * pagamento.id && element.metodopagamento_id == conta.id`). This reconcile keys on
+ * the doc id `String(payment.id)` instead, so without this lookup every
+ * post-cutover redelivery, refund, chargeback or sync of a migrated payment would
+ * CREATE a second doc beside the legacy one: `valorPago` double-counted, and the
+ * estado / freight flipped on money that arrived once (#367 PR 1b).
+ *
+ * Matched only when BOTH hold — the same rule legacy used: the `id` field equals
+ * the incoming payment's id, and the account is the same `metodo_pgto` doc
+ * ({@link contaMetodoPgto}: collection AND id — legacy wrote the canonical
+ * `documents/metodo_pgto/<id>`, the same form the mapper emits). The same payment
+ * id on another account is a different payment and never matches. A doc AT the
+ * incoming id is found first by the caller, so this only runs when there is none.
+ *
+ * ⚠️ Several legacy docs for ONE payment (a legacy duplicate) resolve
+ * deterministically to the lowest doc id, and ONLY that one is replaced in the
+ * sum — the others keep counting. Legacy dropped every doc with the same `id`
+ * field from its sum (`tasks.dart:41`), but excluding them here alone would not
+ * help: `reconcilePedidoEstado` (the callable) sums every stored doc. Duplicates
+ * are a corpus question, not a matching one — count them before the migration
+ * window and dedupe there if any exist.
+ */
+function pagamentoLegadoDoMesmoPagamento(
+  docs: ReadonlyArray<DocumentSnapshot>,
+  pagamentoId: string,
+  pagamento: Pagamento,
+): DocumentSnapshot | null {
+  const conta = contaMetodoPgto(pagamento.metodoPagamentoOuterRef);
+  if (conta === null) return null;
+  // Legacy compared the `id` FIELD with the incoming pagamento's own `id`
+  // (`element.id == pagamento.id`); the mapper sets it to the same string as the
+  // doc id, so `pagamentoId` is only the fallback.
+  const idPagamento = pagamento.id ?? pagamentoId;
+  const candidatos = docs.filter((d) => {
+    if (d.id === pagamentoId) return false;
+    return (
+      d.get('id') === idPagamento && contaMetodoPgto(d.get('metodoPagamentoOuterRef')) === conta
+    );
+  });
+  if (candidatos.length === 0) return null;
+  return [...candidatos].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0] ?? null;
 }
 
 /**
@@ -234,7 +294,16 @@ export async function reconcilePedidoFromPagamento(
     // The atomic read the client SDK can't do (#308): the whole payment set,
     // in the same snapshot as the pedido.
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-    const existing = pagamentosSnap.docs.find((d) => d.id === pagamentoId) ?? null;
+    // The stored doc this delivery updates: the one at the gateway-stable id, or —
+    // for a payment the LEGACY app wrote — the auto-id doc carrying the same MP
+    // payment id in its `id` FIELD for the same account ({@link
+    // pagamentoLegadoDoMesmoPagamento}). `alvoId` is where the write lands and
+    // which doc the sum below replaces; both are decided from THIS transaction's
+    // read (root CLAUDE.md rule 7).
+    const existing =
+      pagamentosSnap.docs.find((d) => d.id === pagamentoId) ??
+      pagamentoLegadoDoMesmoPagamento(pagamentosSnap.docs, pagamentoId, pagamento);
+    const alvoId = existing?.id ?? pagamentoId;
 
     // Update-if-newer guard: a stored pagamento at least as fresh as the incoming
     // one (same or newer `lastProviderUpdate`) means this is a stale/duplicate
@@ -256,7 +325,8 @@ export async function reconcilePedidoFromPagamento(
       }
     }
 
-    // Upsert the pagamento at its fixed (gateway-stable) id.
+    // Upsert the pagamento at `alvoId`: its fixed (gateway-stable) id, or the
+    // legacy auto-id doc matched above for the same payment.
     let toWrite: Record<string, unknown>;
     if (existing) {
       // UPDATE — INVERTED merge: the stored doc is the base (operator edits and
@@ -270,7 +340,7 @@ export async function reconcilePedidoFromPagamento(
       // INCOMING unknown key can still throw on write.
       const existingData = pagamentoCollection.parseRead(
         existing.data() ?? {},
-        pagamentoCollection.docPath({ pedidoId }, pagamentoId),
+        pagamentoCollection.docPath({ pedidoId }, alvoId),
       ) as unknown as Record<string, unknown>;
       const incoming = pagamento as unknown as Record<string, unknown>;
       toWrite = { ...existingData };
@@ -299,7 +369,7 @@ export async function reconcilePedidoFromPagamento(
     if (typeof toWrite.lastProviderUpdate !== 'number') {
       toWrite.lastProviderUpdate = writeNow;
     }
-    const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, pagamentoId);
+    const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, alvoId);
     tx.set(pagamentoRef, pagamentoCollection.parse(toWrite) as DocumentData);
 
     // The payment set the coverage is summed over: the in-tx docs, replacing the
@@ -308,7 +378,7 @@ export async function reconcilePedidoFromPagamento(
     // subtraction (`coberturaDoPedido`); the devolução credit itself comes from
     // `pedidoSnap`, so this adds no read after the `tx.set` above.
     const paymentsForSum: PagamentoCoberturaRow[] = pagamentosSnap.docs
-      .filter((d) => d.id !== pagamentoId)
+      .filter((d) => d.id !== alvoId)
       .map(coberturaRowOf);
     paymentsForSum.push({
       valor: pagamento.valor,
