@@ -170,9 +170,10 @@
  * which one model sat inside a promotion fails as one lump, which is the legacy
  * Flutter defect verbatim.
  *
- * ⚠️ `getWarehouseDetail` is the ONE operation here that FOLDS an error into a
- * value. `warehouse.error_not_in_whitelist` is what the page's own sample shows
- * an ordinary shop receiving, so treating it as a failure would make "this shop
+ * ⚠️ `getWarehouseDetail` was the FIRST operation here that FOLDS an error into
+ * a value (step 15's batch reader is the second — see below).
+ * `warehouse.error_not_in_whitelist` is what the page's own sample shows an
+ * ordinary shop receiving, so treating it as a failure would make "this shop
  * has no multi-warehouse regime" — the common case — read as a broken call. The
  * fold is exactly two codes ({@link SHOPEE_WAREHOUSE_SEM_ACESSO}) and everything
  * else rethrows.
@@ -207,19 +208,69 @@
  * already contains `upload`, `invoice` and `error` in its path and code before
  * Shopee has said a word (see `errors.ts`).
  *
+ * ## The label flow (step 15)
+ *
+ * Seven `v2.logistics.*` operations, all on the SHOP client: two GET reads
+ * (`getShippingParameter`, `getTrackingNumber`), the one write that ARRANGES the
+ * shipment (`shipOrder`), three batch reads/writes over 1…50 packages
+ * (`getShippingDocumentParameter`, `createShippingDocument`,
+ * `getShippingDocumentResult`) and the download, which answers BYTES through the
+ * transport's separate `shopeeCallArquivo`. Their paths, request shapes, guards
+ * and wire constants live in `logistica.ts`, so this file only carries the
+ * members and their bodies.
+ *
+ * ⚠️ `shipOrder` is NOT idempotent and is never retried here: a transport
+ * failure after it is an UNKNOWN outcome, and the caller re-derives the package
+ * state before anything is sent again.
+ *
+ * ⚠️ The three batch operations carry the SECOND fold of an error into a value
+ * (after `getWarehouseDetail`): `common.batch_api_all_failed` carries the
+ * per-row verdicts beside the failing `error`, and `lerLoteLogistico` hands those
+ * rows back in the SAME projection a success produces. That fold is exactly one
+ * code, gated on the rows being there; everything else rethrows.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
+import type { z } from 'zod';
+
 import { roundReais } from '@delfrance/core/money';
 
-import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
+import type { ShopeeArquivoBaixado } from './arquivo';
+import { type ShopeeTransport, type ShopeeWarning, shopeeCall, shopeeCallArquivo } from './call';
 import {
   SHOPEE_SURFACE,
   ShopeeApiError,
+  ShopeeApiPartialError,
   ShopeeConfigError,
   shopeeCodeSemPrefixoDeModulo,
 } from './errors';
 import type { ShopeeHosts } from './hosts';
+import {
+  type BaixarDocumentoParams,
+  type CriarDocumentoParams,
+  type DocumentoParams,
+  type GetShippingParameterParams,
+  type GetTrackingNumberParams,
+  SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH,
+  SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH,
+  SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH,
+  SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
+  SHOPEE_GET_SHIPPING_PARAMETER_PATH,
+  SHOPEE_GET_TRACKING_NUMBER_PATH,
+  SHOPEE_SHIP_ORDER_DROPOFF_VAZIO,
+  SHOPEE_SHIP_ORDER_PATH,
+  type ShipOrderParams,
+  type ShopeeAlvoDePacote,
+  type ShopeeLoteLogistico,
+  assertCreateShippingDocumentParams,
+  assertDownloadShippingDocumentParams,
+  assertShipOrderParams,
+  assertShippingDocumentParameterParams,
+  assertShippingDocumentResultParams,
+  assertShippingParameterParams,
+  assertTrackingNumberParams,
+} from './logistica';
 import type { SignedCall } from './sign';
 import {
   SHOPEE_CONDITION,
@@ -247,6 +298,7 @@ import {
   SHOPEE_WAREHOUSE_SEM_ACESSO,
   type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
+  type ShopeeAvisoDeLote,
   type ShopeeBrandList,
   type ShopeeCategoryList,
   type ShopeeCategoryRecommend,
@@ -265,16 +317,22 @@ import {
   type ShopeeItemWriteResponse,
   type ShopeeKitItemInfo,
   type ShopeeKitItemLimit,
+  type ShopeeLinhaDeLote,
   type ShopeeLostPushResponse,
   type ShopeeModelList,
   type ShopeeOrderDetail,
   type ShopeeOrderList,
   type ShopeePackageDetail,
+  type ShopeeParametroDeDocumento,
   type ShopeeProfile,
+  type ShopeeResultadoDeDocumento,
+  type ShopeeShipOrderResponse,
+  type ShopeeShippingParameter,
   type ShopeeShopHolidayMode,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
   type ShopeeTierWriteResponse,
+  type ShopeeTrackingNumber,
   type ShopeeUnlistItemResponse,
   type ShopeeUpdatePriceResponse,
   type ShopeeUpdateStockResponse,
@@ -303,16 +361,22 @@ import {
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
+  shopeeLinhaDeLotePaginaSchema,
   shopeeLostPushSchema,
   shopeeModelListSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeePackageDetailSchema,
+  shopeeParametroDeDocumentoPaginaSchema,
   shopeeProfileSchema,
+  shopeeResultadoDeDocumentoPaginaSchema,
+  shopeeShipOrderSchema,
+  shopeeShippingParameterSchema,
   shopeeShopHolidayModeSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
+  shopeeTrackingNumberSchema,
   shopeeUnlistItemSchema,
   shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
@@ -2009,8 +2073,9 @@ export interface ShopeeClient {
   /**
    * The shop's warehouses — or the typed statement that it has none.
    *
-   * ⚠️ **The ONE operation in this package that folds an error into a value**,
-   * and the fold is exactly {@link SHOPEE_WAREHOUSE_SEM_ACESSO}: the page's own
+   * ⚠️ **The FIRST operation in this package that folds an error into a value**
+   * (the step-15 batch reader is the second, over a different code), and the
+   * fold is exactly {@link SHOPEE_WAREHOUSE_SEM_ACESSO}: the page's own
    * sample shows `warehouse.error_not_in_whitelist` as what an ORDINARY shop
    * receives, so a shop with no multi-warehouse regime would otherwise read as a
    * broken call on every sweep. Every other `ShopeeApiError` — and every other
@@ -2098,6 +2163,84 @@ export interface ShopeeClient {
    * package puts the document (or its filename) in a message.
    */
   uploadInvoiceDoc(p: UploadInvoiceDocParams): Promise<ShopeeUploadInvoiceDocResponse>;
+
+  /* ------------------------ the label flow (step 15) ---------------------- */
+
+  /**
+   * Which modes ONE package offers (`info_needed`) and their options —
+   * UNWRAPPED, like every read.
+   *
+   * ⚠️ `info_needed.<mode>` ABSENT (`null`) and EMPTY (`[]`) are different
+   * answers: `[]` is "offered, nothing to fill". The page's own sample offers
+   * two modes at once; choosing is the app's.
+   *
+   * ⚠️ `package_number` is omitted from the query when absent, never `""`.
+   */
+  getShippingParameter(p: GetShippingParameterParams): Promise<ShopeeShippingParameter>;
+
+  /**
+   * ARRANGE the shipment of one package — the WHOLE bare envelope, like every
+   * write here; the page returns no tracking number and no state.
+   *
+   * ⚠️ **NOT idempotent, and NEVER retried by this package.** A network error,
+   * an HTTP error, `error_timeout`, `error_third_party_server` or a lock code
+   * does NOT mean "not arranged": the outcome is UNKNOWN, and the caller
+   * re-derives it through `get_package_detail` (`is_shipment_arranged`) before
+   * anything is sent again.
+   *
+   * ⚠️ Exactly one of `pickup` / `dropoff` / `non_integrated` goes out, and a
+   * dropoff with nothing to fill goes out as `"dropoff": {}` — see
+   * {@link SHOPEE_SHIP_ORDER_DROPOFF_VAZIO}. Undefined sub-fields are DROPPED,
+   * never `null`.
+   */
+  shipOrder(p: ShipOrderParams): Promise<ShopeeShipOrderResponse>;
+
+  /**
+   * One package's tracking number — UNWRAPPED, and every field VERBATIM: `""`
+   * and `"-"` are what arrived, not errors. The app normalises them.
+   *
+   * ⚠️ No `response_optional_fields` by default: `tracking_number` is a base
+   * field, and naming an optional one risks `error_param`.
+   */
+  getTrackingNumber(p: GetTrackingNumberParams): Promise<ShopeeTrackingNumber>;
+
+  /**
+   * The suggested and selectable document types of 1…50 packages.
+   *
+   * ⚠️ A BATCH page, like the next two: see {@link ShopeeLoteLogistico} —
+   * per-row verdicts ({@link falhaDaLinha}), rows reconciled by
+   * `(order_sn, package_number)`, and `common.batch_api_all_failed` WITH rows
+   * answered as a value (`todasFalharam: true`), never thrown.
+   */
+  getShippingDocumentParameter(p: {
+    readonly pacotes: readonly ShopeeAlvoDePacote[];
+  }): Promise<ShopeeLoteLogistico<ShopeeParametroDeDocumento>>;
+
+  /**
+   * Start the label task of 1…50 packages. A row without `fail_error` means the
+   * task was ACCEPTED, not that the label is ready — poll
+   * {@link ShopeeClient.getShippingDocumentResult}.
+   */
+  createShippingDocument(p: CriarDocumentoParams): Promise<ShopeeLoteLogistico<ShopeeLinhaDeLote>>;
+
+  /**
+   * The label task's status of 1…50 packages. ⚠️ `status` is a FREE string, and
+   * a row with a `fail_error` is never ready whatever its status says.
+   */
+  getShippingDocumentResult(
+    p: DocumentoParams,
+  ): Promise<ShopeeLoteLogistico<ShopeeResultadoDeDocumento>>;
+
+  /**
+   * The label FILE of 1…50 packages of ONE courier — bytes and headers, never a
+   * schema.
+   *
+   * ⚠️ The answer is judged by its first significant byte (`shopeeCallArquivo`):
+   * an envelope is a FAILURE even when it says success, and an empty 2xx is
+   * `ShopeeArquivoVazioError`. Which format the bytes are — and refusing an
+   * unknown one — is `classificarArquivoDeEnvio`'s job, at the caller.
+   */
+  downloadShippingDocument(p: BaixarDocumentoParams): Promise<ShopeeArquivoBaixado>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -3080,6 +3223,186 @@ function assertUploadInvoiceDocParams(p: UploadInvoiceDocParams): Uint8Array {
   return bytes;
 }
 
+/* -------------------------------------------------------------------------- */
+/*              The label flow (step 15) — the bodies and the batch reader     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One package on the wire: `{ order_sn, package_number? }`.
+ *
+ * ⚠️ `package_number` is ABSENT — the key itself, not `""` — when the caller
+ * gave none, and TRIMMED when it did, because that is what the guards in
+ * `logistica.ts` judged. `order_sn` travels verbatim.
+ */
+function pacoteNoFio(alvo: ShopeeAlvoDePacote): {
+  readonly order_sn: string;
+  readonly package_number?: string;
+} {
+  return alvo.packageNumber === undefined
+    ? { order_sn: alvo.orderSn }
+    : { order_sn: alvo.orderSn, package_number: alvo.packageNumber.trim() };
+}
+
+/** `{ key: value }` when the value is present, `{}` when it is not — never a `null` or `undefined` key. */
+function seHouver<K extends string, V>(chave: K, valor: V | undefined): Partial<Record<K, V>> {
+  return valor === undefined ? {} : ({ [chave]: valor } as Partial<Record<K, V>>);
+}
+
+/**
+ * The `dropoff` object of `ship_order`.
+ *
+ * ⚠️ `'objeto-vazio'` DROPS every undefined field, so nothing to fill is `{}`;
+ * `'nulos-explicitos'` is the legacy body, each unfilled field an explicit
+ * `null`. See {@link SHOPEE_SHIP_ORDER_DROPOFF_VAZIO} — the parameter exists so
+ * the probe constant is the only thing that picks.
+ */
+function dropoffNoFio(
+  d: Extract<ShipOrderParams, { modo: 'dropoff' }>['dropoff'],
+  vazio: typeof SHOPEE_SHIP_ORDER_DROPOFF_VAZIO = SHOPEE_SHIP_ORDER_DROPOFF_VAZIO,
+): Record<string, number | string | null> {
+  switch (vazio) {
+    case 'objeto-vazio':
+      return {
+        ...seHouver('branch_id', d.branchId),
+        ...seHouver('sender_real_name', d.senderRealName),
+        ...seHouver('tracking_number', d.trackingNumber),
+        ...seHouver('slug', d.slug),
+      };
+    case 'nulos-explicitos':
+      return {
+        branch_id: d.branchId ?? null,
+        sender_real_name: d.senderRealName ?? null,
+        tracking_number: d.trackingNumber ?? null,
+        slug: d.slug ?? null,
+      };
+  }
+}
+
+/**
+ * The `ship_order` body — `order_sn`, `package_number` when given, and EXACTLY
+ * one mode object. `pickup_time_id` and every tracking number travel verbatim
+ * and are dropped when absent.
+ */
+function shipOrderNoFio(p: ShipOrderParams): Record<string, unknown> {
+  const pacote = pacoteNoFio(p);
+  switch (p.modo) {
+    case 'pickup':
+      return {
+        ...pacote,
+        pickup: {
+          address_id: p.pickup.addressId,
+          ...seHouver('pickup_time_id', p.pickup.pickupTimeId),
+          ...seHouver('tracking_number', p.pickup.trackingNumber),
+        },
+      };
+    case 'dropoff':
+      return { ...pacote, dropoff: dropoffNoFio(p.dropoff) };
+    case 'non_integrated':
+      return {
+        ...pacote,
+        non_integrated: { ...seHouver('tracking_number', p.nonIntegrated.trackingNumber) },
+      };
+  }
+}
+
+/** What the three document pages share once parsed — the reader's view of them. */
+interface PaginaDeLote<Row> {
+  readonly request_id: string | null;
+  readonly warning: string | readonly (ShopeeAvisoDeLote | null)[] | null;
+  readonly response: { readonly result_list: readonly (Row | null)[] };
+}
+
+/** The ONE code {@link lerLoteLogistico} folds into a value. */
+const CODIGO_LOTE_TODO_FALHOU = 'common.batch_api_all_failed';
+
+/**
+ * A Shopee code with ONE module segment stripped: trim → strip → trim.
+ *
+ * ⚠️ The FOLD and its scope: `common.batch_api_all_failed`,
+ * `batch_api_all_failed` and ` common.batch_api_all_failed` are the same code;
+ * `common.batch_api_all_failed_x` and `logistics.common.batch_api_all_failed`
+ * (TWO segments) stay distinct — `api.test.ts` pins each side.
+ */
+function codigoSemModulo(code: string): string {
+  const aparado = code.trim();
+  return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
+}
+
+/**
+ * The count sentence of a batch `warning` — the transport's own
+ * (`avisoEmLista`), so a log line never carries a warning ROW (an `order_sn`).
+ * A string warning is Shopee's own sentence and passes through.
+ */
+function resumoDosAvisos(warning: PaginaDeLote<unknown>['warning']): string | null {
+  if (warning === null || typeof warning === 'string') return warning;
+  return `${String(warning.length)} aviso(s) por pedido/pacote`;
+}
+
+/**
+ * Run ONE batch document call and project it — success or all-failed — into
+ * {@link ShopeeLoteLogistico}.
+ *
+ * ⚠️ The two transport flags are set HERE, once, for all three pages: the
+ * catch below depends on `payloadNoErro` (without it the rows are discarded at
+ * the throw site), and the pages' `warning: object[]` needs `avisoEmLista`
+ * (without it the first warned package is a `ShopeeSchemaError`).
+ *
+ * ⚠️ The catch is exactly one narrow: a `ShopeeApiPartialError` whose code,
+ * ONE module segment stripped on both sides, is `batch_api_all_failed`, whose
+ * body RE-PARSES through the page schema (never cast) and carries at least one
+ * READABLE row. An "all failed" with no row to attribute it to is unjudgeable,
+ * and it rethrows — as does every other class and code (a throttle, a dead
+ * authorization, `logistics.error_param` arriving with a `response`).
+ */
+async function lerLoteLogistico<Row>(
+  transport: ShopeeTransport,
+  chamada: {
+    readonly path: string;
+    readonly call: SignedCall;
+    readonly schema: z.ZodType<PaginaDeLote<Row>>;
+    readonly body: unknown;
+  },
+): Promise<ShopeeLoteLogistico<Row>> {
+  let pagina: PaginaDeLote<Row>;
+  let todasFalharam = false;
+  try {
+    pagina = await shopeeCall(transport, {
+      method: 'POST',
+      path: chamada.path,
+      call: chamada.call,
+      schema: chamada.schema,
+      surface: SHOPEE_SURFACE.business,
+      payloadNoErro: true,
+      avisoEmLista: true,
+      body: chamada.body,
+    });
+  } catch (err: unknown) {
+    if (!(err instanceof ShopeeApiPartialError)) throw err;
+    if (codigoSemModulo(err.code) !== codigoSemModulo(CODIGO_LOTE_TODO_FALHOU)) throw err;
+    const releitura = chamada.schema.safeParse(err.parsed);
+    if (!releitura.success) throw err;
+    if (!releitura.data.response.result_list.some((linha) => linha !== null)) throw err;
+    pagina = releitura.data;
+    todasFalharam = true;
+  }
+
+  const linhas: Row[] = [];
+  let linhasIlegiveis = 0;
+  // ⚠️ Shopee's order, each row with its OWN identity — nothing here pairs a row
+  // with the request entry at the same index.
+  for (const linha of pagina.response.result_list) {
+    if (linha === null) linhasIlegiveis += 1;
+    else linhas.push(linha);
+  }
+  return {
+    requestId: pagina.request_id,
+    todasFalharam,
+    linhas,
+    linhasIlegiveis,
+    avisos: resumoDosAvisos(pagina.warning),
+  };
+}
+
 export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePartnerClient {
   const transport = transportFrom(config);
 
@@ -3922,6 +4245,117 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
           // `order_sn` VERBATIM (blank refused, nothing trimmed); `file_type` is
           // a TEXT part, like every non-file part.
           fields: { order_sn: p.orderSn, file_type: SHOPEE_INVOICE_FILE_TYPE_XML },
+        },
+      });
+    },
+
+    /* --------------------- the label flow (step 15) --------------------- */
+
+    getShippingParameter: async (p) => {
+      // ⚠️ Every guard of the label flow runs BEFORE the token is asked for.
+      assertShippingParameterParams(p);
+      const res = await shopeeCall(transport, {
+        // GET — the page's own `method: 2`.
+        method: 'GET',
+        path: SHOPEE_GET_SHIPPING_PARAMETER_PATH,
+        call: await signedCall(),
+        schema: shopeeShippingParameterSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ `undefined` emits NO key — `package_number` is never `""`.
+        query: { order_sn: p.orderSn, package_number: p.packageNumber?.trim() },
+      });
+      return res.response;
+    },
+
+    shipOrder: async (p) => {
+      assertShipOrderParams(p);
+      // ⚠️ A WRITE, NOT idempotent: the whole bare envelope, and no retry of any
+      // kind here — a failure after this line is an UNKNOWN outcome for the
+      // caller to re-derive, never to re-send blindly. No tolerance rides here.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_SHIP_ORDER_PATH,
+        call: await signedCall(),
+        schema: shopeeShipOrderSchema,
+        surface: SHOPEE_SURFACE.business,
+        body: shipOrderNoFio(p),
+      });
+    },
+
+    getTrackingNumber: async (p) => {
+      assertTrackingNumberParams(p);
+      const res = await shopeeCall(transport, {
+        // GET — the page's own `method: 2`.
+        method: 'GET',
+        path: SHOPEE_GET_TRACKING_NUMBER_PATH,
+        call: await signedCall(),
+        schema: shopeeTrackingNumberSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          order_sn: p.orderSn,
+          package_number: p.packageNumber?.trim(),
+          // ⚠️ ABSENT unless asked: ONE comma-joined scalar, the page's spelling.
+          response_optional_fields: p.responseOptionalFields?.join(','),
+        },
+      });
+      return res.response;
+    },
+
+    getShippingDocumentParameter: async (p) => {
+      assertShippingDocumentParameterParams(p);
+      return lerLoteLogistico(transport, {
+        path: SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH,
+        call: await signedCall(),
+        schema: shopeeParametroDeDocumentoPaginaSchema,
+        body: { order_list: p.pacotes.map(pacoteNoFio) },
+      });
+    },
+
+    createShippingDocument: async (p) => {
+      assertCreateShippingDocumentParams(p);
+      return lerLoteLogistico(transport, {
+        path: SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH,
+        call: await signedCall(),
+        schema: shopeeLinhaDeLotePaginaSchema,
+        body: {
+          order_list: p.documentos.map((doc) => ({
+            ...pacoteNoFio(doc),
+            ...seHouver('tracking_number', doc.trackingNumber),
+            ...seHouver('shipping_document_type', doc.shippingDocumentType),
+          })),
+        },
+      });
+    },
+
+    getShippingDocumentResult: async (p) => {
+      assertShippingDocumentResultParams(p);
+      return lerLoteLogistico(transport, {
+        path: SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
+        call: await signedCall(),
+        schema: shopeeResultadoDeDocumentoPaginaSchema,
+        body: {
+          // ⚠️ The type travels PER ENTRY on this page, unlike the download's.
+          order_list: p.documentos.map((doc) => ({
+            ...pacoteNoFio(doc),
+            ...seHouver('shipping_document_type', doc.shippingDocumentType),
+          })),
+        },
+      });
+    },
+
+    downloadShippingDocument: async (p) => {
+      assertDownloadShippingDocumentParams(p);
+      // ⚠️ BYTES: the separate transport entry point, with none of the
+      // envelope tolerances — the download page documents none.
+      return shopeeCallArquivo(transport, {
+        method: 'POST',
+        path: SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH,
+        call: await signedCall(),
+        surface: SHOPEE_SURFACE.business,
+        body: {
+          // ONE type for the whole list on this page, absent ⇒ Shopee's default.
+          ...seHouver('shipping_document_type', p.shippingDocumentType),
+          order_list: p.documentos.map(pacoteNoFio),
         },
       });
     },

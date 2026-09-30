@@ -33,8 +33,13 @@ import {
   SHOPEE_UPLOAD_IMAGE_SIGNING,
   SHOPEE_WAREHOUSE_SEM_ACESSO,
   SHOPEE_WAREHOUSE_TYPE,
+  type ShopeeLinhaDeLote,
   type ShopeeNestingAmbiguousKey,
+  type ShopeeParametroDeDocumento,
   type ShopeePromocaoDeItem,
+  type ShopeeResultadoDeDocumento,
+  type ShopeeShippingParameter,
+  type ShopeeTrackingNumber,
   dataOp,
   flatOp,
   idOpacoExato,
@@ -42,16 +47,19 @@ import {
   shopeeAppPushConfigSchema,
   shopeeAtributoSchema,
   shopeeAttributeTreeSchema,
+  shopeeAvisoDeLoteSchema,
   shopeeBrandListSchema,
   shopeeCategoriaSchema,
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
   shopeeChannelListSchema,
   shopeeConfirmLostPushSchema,
+  shopeeDropoffBranchSchema,
   shopeeEnvelopeSchema,
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
   shopeeFaixaSchema,
+  shopeeInfoNeededSchema,
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
@@ -60,6 +68,8 @@ import {
   shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
+  shopeeLinhaDeLotePaginaSchema,
+  shopeeLinhaDeLoteSchema,
   shopeeLostPushSchema,
   shopeeModelListSchema,
   shopeeModelSchema,
@@ -69,8 +79,15 @@ import {
   shopeePackageDetailRowSchema,
   shopeePackageDetailSchema,
   shopeePackageItemSchema,
+  shopeeParametroDeDocumentoPaginaSchema,
+  shopeeParametroDeDocumentoSchema,
+  shopeePickupTimeSlotSchema,
   shopeeProfileSchema,
   shopeePromocaoDeItemSchema,
+  shopeeResultadoDeDocumentoPaginaSchema,
+  shopeeResultadoDeDocumentoSchema,
+  shopeeShipOrderSchema,
+  shopeeShippingParameterSchema,
   shopeeShopHolidayModePayloadSchema,
   shopeeShopHolidayModeSchema,
   shopeeShopInfoSchema,
@@ -78,6 +95,8 @@ import {
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
   shopeeTokenResponseSchema,
+  shopeeTrackingNumberPayloadSchema,
+  shopeeTrackingNumberSchema,
   shopeeUnlistItemSchema,
   shopeeUpdatePricePayloadSchema,
   shopeeUpdatePriceSchema,
@@ -4245,5 +4264,559 @@ describe('update_price (passo 13)', () => {
     expect(codigo.split('model_id: wireInt().nullable()').length - 1).toBe(1);
     // A citação que impede o docblock de virar palpite.
     expect(SECAO_PRECO_13).toContain('P4c');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                       A etiqueta (passo 15)                                */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ Ids de FIXTURE — nunca um pedido, pacote ou rastreio real. */
+const ORDER_SN_ETQ = '260910KJBHUJDM';
+const PACOTE_ETQ = 'OFG000000000001';
+const PACOTE_ETQ_2 = 'OFG000000000002';
+const RASTREIO_ETQ = 'BR000000000000T';
+
+/**
+ * A amostra de resposta da PÁGINA de `get_shipping_parameter`, VERBATIM — os
+ * `address_id` 123/234 e o texto de endereço são os placeholders da própria
+ * documentação.
+ *
+ * ⚠️ Ela oferece DOIS modos de uma vez (`dropoff: []` ao lado de `pickup`), não
+ * traz `non_integrated`, imprime `"dropoff": null` e `time_slot_list: null`. É
+ * a forma que prova que a página escreve `null` para lista vazia.
+ */
+const AMOSTRA_SHIPPING_PARAMETER = {
+  error: '',
+  message: '',
+  response: {
+    info_needed: { dropoff: [], pickup: ['address_id', 'pickup_time_id'] },
+    dropoff: null,
+    pickup: {
+      address_list: [
+        {
+          address_id: 123,
+          region: 'SG',
+          state: '',
+          city: '',
+          district: '',
+          town: '',
+          address: '',
+          zipcode: '40009',
+          address_flag: ['default_address', 'pickup_address', 'return_address'],
+          time_slot_list: null,
+        },
+        {
+          address_id: 234,
+          region: 'SG',
+          state: '',
+          city: '',
+          district: '',
+          town: '',
+          address: 'hhh, #34',
+          zipcode: 'xxx',
+          address_flag: [],
+          time_slot_list: null,
+        },
+      ],
+    },
+  },
+  request_id: '2880a5a28510424eaa3288fd941fae2c',
+};
+
+/** A amostra da página de `get_tracking_number`, com os dois números trocados por fixtures. */
+const AMOSTRA_TRACKING = {
+  error: '',
+  message: '',
+  response: { tracking_number: RASTREIO_ETQ, first_mile_tracking_number: 'CNF000000000000' },
+  request_id: '9d07076ffda5407bb7c559f0b82ed91e',
+};
+
+/**
+ * A amostra da página de `get_shipping_document_parameter`, com os ids trocados
+ * por fixtures (os dois `order_sn` da página viram UM só; a linha que falhou
+ * continua SEM `package_number`, como na página).
+ *
+ * ⚠️ Um corpo de SUCESSO com `warning` em LISTA — o que o envelope estrito
+ * recusa e o `avisoEmLista` do transporte existe para aceitar.
+ */
+const AMOSTRA_DOC_PARAMETRO = {
+  error: '',
+  message: '',
+  response: {
+    result_list: [
+      {
+        order_sn: ORDER_SN_ETQ,
+        package_number: PACOTE_ETQ,
+        suggest_shipping_document_type: 'THERMAL_AIR_WAYBILL',
+        selectable_shipping_document_type: ['THERMAL_AIR_WAYBILL'],
+      },
+      {
+        order_sn: ORDER_SN_ETQ,
+        fail_error: 'logistics.order_not_exist',
+        fail_message: `The order_sn ${ORDER_SN_ETQ} you provided is not exist. Please check`,
+      },
+    ],
+  },
+  warning: [{ order_sn: ORDER_SN_ETQ }],
+  request_id: '8412939d0fbd48c9a548fba4b710a7f6',
+};
+
+/** A amostra de SUCESSO da página de `create_shipping_document` — `warning: null`. */
+const AMOSTRA_CREATE_OK = {
+  error: '',
+  message: '',
+  response: { result_list: [{ order_sn: ORDER_SN_ETQ }] },
+  warning: null,
+  request_id: '80e9644be9c077bec9f89a762e2ea120',
+};
+
+/** O exemplo de ERRO da mesma página: `common.batch_api_all_failed` COM as linhas ao lado. */
+const AMOSTRA_CREATE_TODAS_FALHARAM = {
+  error: 'common.batch_api_all_failed',
+  message: 'Failed, please check result_list for more details.',
+  response: {
+    result_list: [
+      {
+        order_sn: ORDER_SN_ETQ,
+        fail_error: 'logistics.package_can_not_print',
+        fail_message: 'The package can not print now.',
+      },
+    ],
+  },
+  request_id: '3c8a0a3bcd9d767e929aca2fafe2a620',
+};
+
+/**
+ * A amostra da página de `get_shipping_document_result`, com os ids trocados
+ * por fixtures (três linhas viram duas: UMA pronta, UMA que falhou).
+ *
+ * ⚠️ `warning` em LISTA num SUCESSO, e a linha que falhou traz `fail_error` e
+ * NENHUM `status` — exatamente o que a página imprime.
+ */
+const AMOSTRA_RESULTADO = {
+  message: '',
+  warning: [{ order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ_2 }],
+  request_id: '2028925e9f1440a3b8f9c3f8f21dee8d',
+  response: {
+    result_list: [
+      { status: 'READY', order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ },
+      {
+        fail_message:
+          'The package can not print now, please create shipping document first.Detail: order_sn',
+        order_sn: ORDER_SN_ETQ,
+        fail_error: 'logistics.shipping_document_should_print_first',
+        package_number: PACOTE_ETQ_2,
+      },
+    ],
+  },
+  error: '',
+};
+
+/** O envelope de sucesso em volta de um `response` de `get_shipping_parameter`. */
+function parametroCom(response: Record<string, unknown>) {
+  return shopeeShippingParameterSchema.parse({ error: '', request_id: 'req-etq', response });
+}
+
+/** Um endereço de coleta mínimo e VÁLIDO. */
+function enderecoEtq(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { address_id: 123, address_flag: ['pickup_address'], time_slot_list: null, ...extra };
+}
+
+/** Um horário mínimo e VÁLIDO. */
+function horarioEtq(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { date: 1700000000, time_text: '09:00-12:00', pickup_time_id: 'slot-1', ...extra };
+}
+
+describe('a etiqueta (passo 15)', () => {
+  it('1 — a amostra da PÁGINA de get_shipping_parameter parseia: DOIS modos oferecidos, `dropoff: null`, nenhum horário', () => {
+    const lido = shopeeShippingParameterSchema.parse(AMOSTRA_SHIPPING_PARAMETER);
+    // Tipado: o que `getShippingParameter` responde é o payload DESEMBRULHADO.
+    const parametro: ShopeeShippingParameter = lido.response;
+    expect(parametro.info_needed).toEqual({
+      dropoff: [],
+      pickup: ['address_id', 'pickup_time_id'],
+      non_integrated: null,
+    });
+    expect(parametro.dropoff).toBeNull();
+    const enderecos = parametro.pickup?.address_list ?? [];
+    expect(enderecos.map((e) => e?.address_id)).toEqual([123, 234]);
+    expect(enderecos[0]?.address_flag).toEqual([
+      'default_address',
+      'pickup_address',
+      'return_address',
+    ]);
+    expect(enderecos[1]?.address_flag).toEqual([]);
+    expect(enderecos[1]?.address).toBe('hhh, #34');
+    expect(enderecos.map((e) => e?.time_slot_list)).toEqual([null, null]);
+    // O id que volta para o `ship_order` é um NÚMERO em tempo de compilação.
+    const id: number | undefined = enderecos[0]?.address_id;
+    expect(id).toBe(123);
+  });
+
+  it('2 — PAR / ⛔ QUASE-IGUAL: em `info_needed`, AUSENTE é `null` e VAZIO é `[]` — e os dois NÃO são iguais', () => {
+    // ⚠️ `[]` = modo oferecido sem nada a preencher ("developer should still
+    // include "dropoff" field"); `null` = modo NÃO oferecido. Um `.default([])`
+    // ofereceria os três modos a todo pacote.
+    const vazio = shopeeInfoNeededSchema.parse({ dropoff: [] });
+    const ausente = shopeeInfoNeededSchema.parse({});
+    expect(vazio.dropoff).toEqual([]);
+    expect(ausente.dropoff).toBeNull();
+    expect(vazio).not.toEqual(ausente);
+    // PAR: um `null` explícito lê IGUAL à ausência.
+    expect(shopeeInfoNeededSchema.parse({ dropoff: null })).toEqual(ausente);
+    // As outras duas chaves seguem a mesma regra.
+    for (const chave of ['pickup', 'non_integrated'] as const) {
+      expect(shopeeInfoNeededSchema.parse({ [chave]: [] })[chave]).toEqual([]);
+      expect(shopeeInfoNeededSchema.parse({})[chave]).toBeNull();
+    }
+    // Pela página inteira também: o invólucro não dobra nada.
+    expect(parametroCom({ info_needed: { dropoff: [] } }).response.info_needed?.dropoff).toEqual(
+      [],
+    );
+    expect(parametroCom({ info_needed: {} }).response.info_needed?.dropoff).toBeNull();
+    // Sem `info_needed` nenhum, nenhum modo — e não uma página recusada.
+    expect(parametroCom({}).response.info_needed).toBeNull();
+  });
+
+  it('3 — a chave `non-integrated` (com HÍFEN, da prosa da página) NÃO vira modo: viaja no passthrough e `non_integrated` fica `null`', () => {
+    const lido = shopeeInfoNeededSchema.parse({ 'non-integrated': [] });
+    expect(lido.non_integrated).toBeNull();
+    expect((lido as Record<string, unknown>)['non-integrated']).toEqual([]);
+    // ÂNCORA: a grafia com sublinhado é o modo.
+    expect(shopeeInfoNeededSchema.parse({ non_integrated: [] }).non_integrated).toEqual([]);
+  });
+
+  it('4 — um `address_id` int64 INSEGURO torna AQUELA linha o sentinela `null`; a irmã sobrevive, e nenhum id arredondado é lido', () => {
+    // ⚠️ Pelo TEXTO, como chega do fio: é o `JSON.parse` que arredonda o id, e
+    // é por isso que o schema tem de recusá-lo em vez de devolvê-lo ao
+    // `ship_order` com outros dígitos.
+    const corpo: unknown = JSON.parse(
+      '{"error":"","response":{"pickup":{"address_list":[' +
+        '{"address_id":9007199254740993,"address_flag":["pickup_address"]},' +
+        '{"address_id":234,"address_flag":["pickup_address"]}]}}}',
+    );
+    const lista = shopeeShippingParameterSchema.parse(corpo).response.pickup?.address_list;
+    expect(lista).toHaveLength(2);
+    expect(lista?.[0]).toBeNull();
+    expect(lista?.[1]?.address_id).toBe(234);
+
+    // ⛔ QUASE-IGUAL: o MAIOR inteiro seguro sobrevive exato, e um id entre
+    // aspas é o mesmo id (a tolerância do pacote inteiro).
+    const limite = parametroCom({
+      pickup: { address_list: [enderecoEtq({ address_id: Number.MAX_SAFE_INTEGER })] },
+    });
+    expect(limite.response.pickup?.address_list?.[0]?.address_id).toBe(Number.MAX_SAFE_INTEGER);
+    const aspas = parametroCom({ pickup: { address_list: [enderecoEtq({ address_id: '234' })] } });
+    expect(aspas.response.pickup?.address_list?.[0]?.address_id).toBe(234);
+
+    // Um endereço SEM id é o sentinela também — nunca uma linha de id `null`.
+    const semId = parametroCom({
+      pickup: { address_list: [enderecoEtq({ address_id: undefined }), enderecoEtq()] },
+    });
+    expect(semId.response.pickup?.address_list?.[0]).toBeNull();
+    expect(semId.response.pickup?.address_list?.[1]?.address_id).toBe(123);
+  });
+
+  it('5 — PAR / ⛔ QUASE-IGUAL: `pickup_time_id` é OPACO — um número vira os seus dígitos, e `"012"` continua `"012"`', () => {
+    const numerico = shopeePickupTimeSlotSchema.parse(horarioEtq({ pickup_time_id: 1608103685 }));
+    expect(numerico.pickup_time_id).toBe('1608103685');
+    // Tipado: o id que volta ao `ship_order` é uma STRING.
+    const id: string = numerico.pickup_time_id;
+    expect(typeof id).toBe('string');
+    // PAR: o número 12 e a string "12" são o MESMO id.
+    expect(
+      shopeePickupTimeSlotSchema.parse(horarioEtq({ pickup_time_id: 12 })).pickup_time_id,
+    ).toBe(shopeePickupTimeSlotSchema.parse(horarioEtq({ pickup_time_id: '12' })).pickup_time_id);
+    // ⛔ QUASE-IGUAL: a leitura não é numérica — um zero à esquerda NÃO some.
+    const zero = shopeePickupTimeSlotSchema.parse(horarioEtq({ pickup_time_id: '012' }));
+    expect(zero.pickup_time_id).toBe('012');
+    expect(zero.pickup_time_id).not.toBe('12');
+  });
+
+  it('6 — ⛔ QUASE-IGUAL: um `pickup_time_id` numérico INSEGURO, vazio ou ausente custa AQUELE horário (sentinela `null`), nunca o endereço', () => {
+    // ⚠️ O `JSON.parse` já arredondou o número inseguro: os dígitos seriam um
+    // horário plausível que a Shopee NÃO ofereceu. A regra é a do `address_id`.
+    const corpo: unknown = JSON.parse(
+      '{"error":"","response":{"pickup":{"address_list":[{"address_id":123,' +
+        '"address_flag":["pickup_address"],"time_slot_list":[' +
+        '{"pickup_time_id":9007199254740993},{"pickup_time_id":""},{"date":1700000000},' +
+        '{"pickup_time_id":"slot-2","flags":["recommended"]}]}]}}}',
+    );
+    const endereco = shopeeShippingParameterSchema.parse(corpo).response.pickup?.address_list?.[0];
+    expect(endereco?.address_id).toBe(123);
+    expect(endereco?.time_slot_list).toHaveLength(4);
+    expect(endereco?.time_slot_list?.slice(0, 3)).toEqual([null, null, null]);
+    expect(endereco?.time_slot_list?.[3]).toEqual({
+      date: null,
+      time_text: null,
+      pickup_time_id: 'slot-2',
+      flags: ['recommended'],
+    });
+    // ÂNCORA: o MAIOR inteiro seguro é aceito, como dígitos exatos.
+    expect(
+      shopeePickupTimeSlotSchema.parse(horarioEtq({ pickup_time_id: Number.MAX_SAFE_INTEGER }))
+        .pickup_time_id,
+    ).toBe(String(Number.MAX_SAFE_INTEGER));
+  });
+
+  it('7 — `address_flag` e `flags` são STRINGS LIVRES e aceitam o `null` com que a página escreve lista vazia', () => {
+    // ⚠️ Um `.default([])` sem `.nullable()` transformaria o `null` do fio numa
+    // linha RECUSADA — o endereço sumiria da escolha sem aviso.
+    const lido = parametroCom({
+      pickup: {
+        address_list: [
+          enderecoEtq({ address_flag: null }),
+          enderecoEtq({ address_id: 234, address_flag: ['pickup_address', 'flag_nova'] }),
+        ],
+      },
+    });
+    const [semFlag, comFlag] = lido.response.pickup?.address_list ?? [];
+    expect(semFlag?.address_id).toBe(123);
+    expect(semFlag?.address_flag).toBeNull();
+    expect(comFlag?.address_flag).toEqual(['pickup_address', 'flag_nova']);
+    const horario = shopeePickupTimeSlotSchema.parse(horarioEtq({ flags: null }));
+    expect(horario.flags).toBeNull();
+    expect(shopeePickupTimeSlotSchema.parse(horarioEtq({ flags: ['outra'] })).flags).toEqual([
+      'outra',
+    ]);
+  });
+
+  it('8 — dropoff: `branch_list` e `slug_list` com sentinela POR ELEMENTO, e um `branch_id` int64 inseguro custa a linha', () => {
+    const corpo: unknown = JSON.parse(
+      '{"error":"","response":{"info_needed":{"dropoff":["branch_id"]},"dropoff":{' +
+        '"branch_list":[{"branch_id":9007199254740993},{"branch_id":77,"city":"Cidade"},"lixo"],' +
+        '"slug_list":[{"slug":"s1","slug_name":"Parceiro"},7]}}}',
+    );
+    const dropoff = shopeeShippingParameterSchema.parse(corpo).response.dropoff;
+    expect(dropoff?.branch_list?.map((b) => b?.branch_id ?? null)).toEqual([null, 77, null]);
+    expect(dropoff?.branch_list?.[1]?.city).toBe('Cidade');
+    expect(dropoff?.slug_list).toEqual([{ slug: 's1', slug_name: 'Parceiro' }, null]);
+    // A linha sozinha RECUSA alto e claro; o sentinela é da LISTA.
+    expect(shopeeDropoffBranchSchema.safeParse({ city: 'Cidade' }).success).toBe(false);
+    expect(shopeeDropoffBranchSchema.parse({ branch_id: '77' }).branch_id).toBe(77);
+  });
+
+  it('9 — ship_order: o envelope NU da página parseia, o exemplo de erro também, e um corpo sem `error` é RECUSADO', () => {
+    const ok = shopeeShipOrderSchema.parse({
+      error: '',
+      message: '',
+      request_id: '3dad66f43b8447d282ae6da36626c6b7',
+    });
+    expect(ok.error).toBe('');
+    // Julgar o sucesso é do transporte: o schema lê a falha do mesmo jeito.
+    const erro = shopeeShipOrderSchema.parse({
+      error: 'logistics.ship_order_need_sender_real_name',
+      message: 'Parameter sender_real_name can not be null.',
+      request_id: '6ea20540431c35f2a76cfbaa0c090683',
+    });
+    expect(erro.error).toBe('logistics.ship_order_need_sender_real_name');
+    const semErro = shopeeShipOrderSchema.safeParse({ request_id: 'x' });
+    expect(semErro.success).toBe(false);
+    expect(semErro.error?.issues.map((i) => i.path.join('.'))).toContain('error');
+  });
+
+  it('10 — get_tracking_number: a amostra parseia, e `"-"`, `""` e ausente são TRÊS leituras diferentes, VERBATIM', () => {
+    const lido = shopeeTrackingNumberSchema.parse(AMOSTRA_TRACKING);
+    const rastreio: ShopeeTrackingNumber = lido.response;
+    expect(rastreio).toEqual({
+      tracking_number: RASTREIO_ETQ,
+      plp_number: null,
+      first_mile_tracking_number: 'CNF000000000000',
+      last_mile_tracking_number: null,
+      hint: null,
+      pickup_code: null,
+    });
+    // ⚠️ Normalizar é do app, numa função só; aqui o fio chega como veio.
+    const traco = shopeeTrackingNumberPayloadSchema.parse({ tracking_number: '-' });
+    const vazio = shopeeTrackingNumberPayloadSchema.parse({ tracking_number: '' });
+    const ausente = shopeeTrackingNumberPayloadSchema.parse({});
+    expect(traco.tracking_number).toBe('-');
+    expect(vazio.tracking_number).toBe('');
+    expect(ausente.tracking_number).toBeNull();
+    expect(traco.tracking_number).not.toBe(vazio.tracking_number);
+    expect(vazio.tracking_number).not.toBe(ausente.tracking_number);
+    // `hint` explica um número vazio e é carregado.
+    const comDica = shopeeTrackingNumberPayloadSchema.parse({ tracking_number: '', hint: 'CVS' });
+    expect(comDica.hint).toBe('CVS');
+  });
+
+  it('11 — get_shipping_document_parameter: a amostra da página, com `warning` em LISTA, parseia; ⛔ o envelope ESTRITO continua recusando o mesmo corpo', () => {
+    const lido = shopeeParametroDeDocumentoPaginaSchema.parse(AMOSTRA_DOC_PARAMETRO);
+    expect(lido.warning).toEqual([{ order_sn: ORDER_SN_ETQ, package_number: null }]);
+    const linhas: readonly (ShopeeParametroDeDocumento | null)[] = lido.response.result_list;
+    expect(linhas).toEqual([
+      {
+        order_sn: ORDER_SN_ETQ,
+        package_number: PACOTE_ETQ,
+        suggest_shipping_document_type: 'THERMAL_AIR_WAYBILL',
+        selectable_shipping_document_type: ['THERMAL_AIR_WAYBILL'],
+        fail_error: null,
+        fail_message: null,
+      },
+      {
+        order_sn: ORDER_SN_ETQ,
+        // A linha que falhou não traz pacote — por isso ele NÃO é estrito.
+        package_number: null,
+        suggest_shipping_document_type: null,
+        selectable_shipping_document_type: null,
+        fail_error: 'logistics.order_not_exist',
+        fail_message: `The order_sn ${ORDER_SN_ETQ} you provided is not exist. Please check`,
+      },
+    ]);
+    // ⛔ QUASE-IGUAL: a tolerância NÃO mora em `types.ts` — o envelope estrito
+    // recusa a lista, e só o `avisoEmLista` do transporte a aceita no estágio 1.
+    const estrito = shopeeEnvelopeSchema.safeParse(AMOSTRA_DOC_PARAMETRO);
+    expect(estrito.success).toBe(false);
+    expect(estrito.error?.issues.map((i) => i.path.join('.'))).toContain('warning');
+  });
+
+  it('12 — create_shipping_document: o SUCESSO (`warning: null`) e o `batch_api_all_failed` passam pelo MESMO schema; `warning` em string também', () => {
+    const ok = shopeeLinhaDeLotePaginaSchema.parse(AMOSTRA_CREATE_OK);
+    expect(ok.warning).toBeNull();
+    const linhas: readonly (ShopeeLinhaDeLote | null)[] = ok.response.result_list;
+    expect(linhas).toEqual([
+      { order_sn: ORDER_SN_ETQ, package_number: null, fail_error: null, fail_message: null },
+    ]);
+    // A releitura do `payloadNoErro`: o corpo de falha traz as linhas.
+    const todas = shopeeLinhaDeLotePaginaSchema.parse(AMOSTRA_CREATE_TODAS_FALHARAM);
+    expect(todas.error).toBe('common.batch_api_all_failed');
+    expect(todas.response.result_list).toEqual([
+      {
+        order_sn: ORDER_SN_ETQ,
+        package_number: null,
+        fail_error: 'logistics.package_can_not_print',
+        fail_message: 'The package can not print now.',
+      },
+    ]);
+    // A outra metade da união: o `warning` em string de todas as outras páginas.
+    expect(
+      shopeeLinhaDeLotePaginaSchema.parse({ ...AMOSTRA_CREATE_OK, warning: 'aviso' }).warning,
+    ).toBe('aviso');
+    // O `.extend` do `warning` não derrubou o passthrough: chave nova é carregada.
+    const novo = shopeeLinhaDeLotePaginaSchema.parse({ ...AMOSTRA_CREATE_OK, campo_novo: 1 });
+    expect((novo as Record<string, unknown>).campo_novo).toBe(1);
+  });
+
+  it('13 — get_shipping_document_result: a amostra parseia; `status` é STRING LIVRE e a linha que falhou não tem nenhum', () => {
+    const lido = shopeeResultadoDeDocumentoPaginaSchema.parse(AMOSTRA_RESULTADO);
+    expect(lido.warning).toEqual([{ order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ_2 }]);
+    const [pronta, falhou] = lido.response.result_list;
+    expect(pronta).toEqual({
+      order_sn: ORDER_SN_ETQ,
+      package_number: PACOTE_ETQ,
+      status: 'READY',
+      fail_error: null,
+      fail_message: null,
+    });
+    expect(falhou?.status).toBeNull();
+    expect(falhou?.fail_error).toBe('logistics.shipping_document_should_print_first');
+    // Um status que a página não lista é CARREGADO, nunca recusado.
+    const desconhecido: ShopeeResultadoDeDocumento = shopeeResultadoDeDocumentoSchema.parse({
+      order_sn: ORDER_SN_ETQ,
+      package_number: PACOTE_ETQ,
+      status: 'QUEUED',
+    });
+    const status: string | null = desconhecido.status;
+    expect(status).toBe('QUEUED');
+    // E o exemplo de ERRO da página passa pelo mesmo schema.
+    const todas = shopeeResultadoDeDocumentoPaginaSchema.parse({
+      error: 'common.batch_api_all_failed',
+      message: 'Failed, please check result_list for more details.',
+      response: {
+        result_list: [
+          {
+            order_sn: ORDER_SN_ETQ,
+            fail_error: 'logistics.order_not_exist',
+            fail_message: `The order_sn ${ORDER_SN_ETQ} is not exist.`,
+          },
+        ],
+      },
+      request_id: '550d98e83b6434346337dffc11e6f4e5',
+    });
+    expect(todas.response.result_list[0]?.fail_error).toBe('logistics.order_not_exist');
+  });
+
+  it('14 — ⛔ QUASE-IGUAL: `fail_error` chega VERBATIM — `" "` NÃO é `""`, e nenhum dos dois é `null`', () => {
+    // ⚠️ O veredito da linha é `fail_error` NÃO-VAZIO, exato: um `" "` aparado
+    // aqui viraria "sucesso" antes de o leitor poder julgá-lo.
+    for (const schema of [
+      shopeeLinhaDeLoteSchema,
+      shopeeParametroDeDocumentoSchema,
+      shopeeResultadoDeDocumentoSchema,
+    ]) {
+      const espaco = schema.parse({ order_sn: ORDER_SN_ETQ, fail_error: ' ' });
+      const vazio = schema.parse({ order_sn: ORDER_SN_ETQ, fail_error: '' });
+      const ausente = schema.parse({ order_sn: ORDER_SN_ETQ });
+      expect(espaco.fail_error).toBe(' ');
+      expect(vazio.fail_error).toBe('');
+      expect(espaco.fail_error).not.toBe(vazio.fail_error);
+      expect(ausente.fail_error).toBeNull();
+    }
+  });
+
+  it('15 — uma linha sem `order_sn` (ou com ele em branco) é o sentinela `null` da página; as irmãs sobrevivem, e FALTAR linha é válido', () => {
+    const pagina = shopeeResultadoDeDocumentoPaginaSchema.parse({
+      error: '',
+      response: {
+        result_list: [
+          { order_sn: '', status: 'READY' },
+          { status: 'READY', package_number: PACOTE_ETQ },
+          { order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ_2, status: 'READY' },
+          'lixo',
+        ],
+      },
+    });
+    const linhas = pagina.response.result_list;
+    expect(linhas).toHaveLength(4);
+    expect([linhas[0], linhas[1], linhas[3]]).toEqual([null, null, null]);
+    expect(linhas[2]?.package_number).toBe(PACOTE_ETQ_2);
+    // A linha sozinha RECUSA alto e claro — o sentinela é da página.
+    const semPedido = shopeeLinhaDeLoteSchema.safeParse({ order_sn: '' });
+    expect(semPedido.success).toBe(false);
+    expect(semPedido.error?.issues.map((i) => i.path.join('.'))).toContain('order_sn');
+    // Sem `result_list`: zero linhas, não uma página recusada.
+    expect(
+      shopeeLinhaDeLotePaginaSchema.parse({ error: '', response: {} }).response.result_list,
+    ).toEqual([]);
+  });
+
+  it('16 — um aviso ilegível na LISTA `warning` custa AQUELE aviso, nunca a página', () => {
+    const pagina = shopeeLinhaDeLotePaginaSchema.parse({
+      ...AMOSTRA_CREATE_OK,
+      warning: [{ order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ }, 42, { order_sn: 7 }],
+    });
+    expect(pagina.warning).toEqual([
+      { order_sn: ORDER_SN_ETQ, package_number: PACOTE_ETQ },
+      null,
+      null,
+    ]);
+    // O elemento sozinho: as duas chaves são opcionais e anuláveis.
+    expect(shopeeAvisoDeLoteSchema.parse({})).toEqual({ order_sn: null, package_number: null });
+  });
+
+  it('17 — as três linhas compartilham as QUATRO chaves de identidade e falha: `Parametro` e `Resultado` ESTENDEM `LinhaDeLote`', () => {
+    const comuns = ['fail_error', 'fail_message', 'order_sn', 'package_number'];
+    expect(Object.keys(shopeeLinhaDeLoteSchema.shape).sort()).toEqual(comuns);
+    expect(Object.keys(shopeeParametroDeDocumentoSchema.shape).sort()).toEqual(
+      [...comuns, 'selectable_shipping_document_type', 'suggest_shipping_document_type'].sort(),
+    );
+    expect(Object.keys(shopeeResultadoDeDocumentoSchema.shape).sort()).toEqual(
+      [...comuns, 'status'].sort(),
+    );
+  });
+
+  it('18 — os tipos de documento são STRINGS LIVRES: um tipo que a página não lista é carregado, nunca recusado', () => {
+    const linha = shopeeParametroDeDocumentoSchema.parse({
+      order_sn: ORDER_SN_ETQ,
+      package_number: PACOTE_ETQ,
+      suggest_shipping_document_type: 'TIPO_NOVO',
+      selectable_shipping_document_type: ['TIPO_NOVO', 'THERMAL_UNPACKAGED_LABEL'],
+    });
+    expect(linha.suggest_shipping_document_type).toBe('TIPO_NOVO');
+    expect(linha.selectable_shipping_document_type).toEqual([
+      'TIPO_NOVO',
+      'THERMAL_UNPACKAGED_LABEL',
+    ]);
   });
 });

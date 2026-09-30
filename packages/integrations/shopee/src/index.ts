@@ -51,12 +51,19 @@
  * schema in `types.ts`, and `ShopeeApiError.providerMessage` — ride the same
  * wildcards; `test/api.test.ts` pins them at this door.
  *
- * ⚠️ These six re-exports are WILDCARD, so every step-11 addition — the twelve
+ * ⚠️ Step 15 (the label flow) added two NEW MODULES, each with its own line
+ * below: `arquivo.ts` (the downloaded label's bytes and their sniff) and
+ * `logistica.ts` (the seven
+ * `v2.logistics.*` paths, request shapes, guards and wire constants — the
+ * operations themselves are `api.ts`'s, the response schemas `types.ts`'s).
+ * `test/api.test.ts` pins the seven operations at this door.
+ *
+ * ⚠️ These eight re-exports are WILDCARD, so every step-11 addition — the twelve
  * operations, their wire-shaped request interfaces, the response schemas and the
  * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
- * here. A NEW MODULE would need one; a new export inside these six does not, and
- * a test in `test/api.test.ts` pins the twelve operation names so a rename cannot
- * silently drop one from the public surface.
+ * here. A NEW MODULE would need one; a new export inside these eight does not,
+ * and a test in `test/api.test.ts` pins the twelve operation names so a rename
+ * cannot silently drop one from the public surface.
  */
 
 export * from './errors';
@@ -66,3 +73,4 @@ export * from './sign';
 export * from './oauth';
 export * from './api';
 export * from './arquivo';
+export * from './logistica';
