@@ -12,8 +12,10 @@ import type { EtiquetaOutcome, EtiquetaProviderInput } from './types';
  * provider — the carrier-agnostic part of the legacy `emitirOuImprimirFrete`
  * (`.old/lib/despacho/pages/emitirOuImprimirFrete.dart:35-157`). Keeping them
  * here means each provider can assume: the frete is not `semFrete`, an
- * already-posted reprint has been risk-confirmed, and the integration is
- * resolved (the registry resolves it and passes `input.intFrete`).
+ * already-posted reprint has been risk-confirmed — unless the provider
+ * declares `reimpressao: 'mesmo-documento'`, whose reprint is the same
+ * document (Shopee, #1523 R-f) — and the integration is resolved (the CALLER
+ * resolved it through `resolverIntFrete` and passed `input.intFrete`).
  *
  * Pure except for the single `ui.confirmRisk` await (the risky-reprint
  * confirmation) — no reads, no writes, no other side effects.

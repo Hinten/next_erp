@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 
@@ -131,13 +131,15 @@ const corpos = (etiqueta: ReturnType<typeof fakeClient>['etiqueta']) =>
 function makeInput(over: {
   client: ShopeeClient | null;
   formato?: 'pdf' | 'zpl2';
+  /** The pedido's `numero`; `'1234'` unless a test says otherwise. */
+  numero?: string | null;
   printJob?: EtiquetaProviderInput['deps']['printJob'];
   sleep?: (ms: number) => Promise<void>;
   ui?: Partial<EtiquetaProviderInput['ui']>;
 }): EtiquetaProviderInput {
   return {
     db: {} as never,
-    pedido: { numero: '1234' } as never,
+    pedido: { numero: over.numero === undefined ? '1234' : over.numero } as never,
     pedidoId: 'p1',
     // W18: step 5 writes `externalId: null` on every multi-package order.
     frete: { externalId: null, externalOptionIntegracao: 'shopee' } as never,
@@ -241,6 +243,7 @@ describe('shopeeProvider — registration', () => {
     expect(SHOPEE_ETIQUETA_LIMITES).toEqual({
       totalMs: 120_000,
       porChamadaMs: 75_000,
+      pisoPorChamadaMs: 45_000,
       esperaMinMs: 2_000,
       esperaMaxMs: 15_000,
       maxPerguntas: 8,
@@ -427,7 +430,11 @@ describe('shopeeProvider — the waits', () => {
     expect(sleep.mock.calls).toEqual([[2_000], [15_000], [7_000]]);
   });
 
-  it('W9 — stops before a 4th call when the CALLS spend the budget (50 s each)', async () => {
+  // Review 2 (Q2-F2) moved this from "before a 4th call" to "before a 3rd": the
+  // old rule started a call whenever ANY budget was left (104 s spent → a 3rd
+  // call, 154 s of machine time); a call now needs the floor (45 s) left, and
+  // 120 − 104 = 16 s is not it.
+  it('W9 — stops before a 3rd call when the CALLS leave less than the floor (50 s each)', async () => {
     const r = relogio();
     const lento = (resposta: Resposta) => async () => {
       r.t += 50_000;
@@ -443,7 +450,8 @@ describe('shopeeProvider — the waits', () => {
       makeInput({ client }),
     );
     expect(out).toEqual({ status: 'error', message: TEMPO_JA_ORGANIZADO });
-    expect(etiqueta).toHaveBeenCalledTimes(3);
+    expect(etiqueta).toHaveBeenCalledTimes(2);
+    expect(r.t).toBe(100_000);
   });
 
   it('W9 near-miss — 100 s of DIALOG time does not count: the flow still completes', async () => {
@@ -469,7 +477,8 @@ describe('shopeeProvider — the waits', () => {
   });
 
   it('W12 — the give-up sentence says ORGANIZADO only when every package is arranged', async () => {
-    const semTempo = { limites: { totalMs: 1_000 } };
+    // The floor shrinks with the budget, or the FIRST call would never start.
+    const semTempo = { limites: { totalMs: 1_000, pisoPorChamadaMs: 500 } };
     const casos: [Progresso, string][] = [
       [{ total: 2, organizados: 2, comRastreio: 1, prontos: 0 }, TEMPO_JA_ORGANIZADO],
       // near-misses: one of two arranged; and nothing to count at all
@@ -481,6 +490,229 @@ describe('shopeeProvider — the waits', () => {
       const out = await createShopeeProvider(semTempo).emitirOuImprimir(makeInput({ client }));
       expect(out).toEqual({ status: 'error', message: esperado });
     }
+  });
+});
+
+/* ------------------------ the budget contract (review 2) ------------------------ */
+
+describe('shopeeProvider — the budget contract (Q2-F2, Q2-F5)', () => {
+  const { totalMs, pisoPorChamadaMs, porChamadaMs } = SHOPEE_ETIQUETA_LIMITES;
+
+  it('a call without an answer is NOT started with less than the floor left: give-up, no call', async () => {
+    // 80 s on the first call; the per-package run's first call would start with
+    // 40 s left — under the 45 s floor.
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += 80_000;
+        return porPacote([PACOTE_A, PACOTE_B]);
+      },
+      arquivo(),
+      arquivo(),
+    ]);
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(
+      makeInput({ client }),
+    );
+    expect(out).toEqual({ status: 'error', message: `Etiqueta 1 de 2: ${TEMPO_JA_ORGANIZADO}` });
+    expect(etiqueta).toHaveBeenCalledTimes(1);
+  });
+
+  it('near-miss — EXACTLY the floor left: the call starts', async () => {
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += totalMs - pisoPorChamadaMs;
+        return porPacote([PACOTE_A, PACOTE_B]);
+      },
+      arquivo(),
+      arquivo(),
+    ]);
+    // The first package's call takes no clock time, so the second starts with
+    // the same 45 s — the floor again, not under it.
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(
+      makeInput({ client }),
+    );
+    expect(out).toEqual({ status: 'printed' });
+    expect(etiqueta).toHaveBeenCalledTimes(3);
+  });
+
+  it('the call carrying the operator’s ANSWER is exempt: it starts with 20 s left', async () => {
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += 100_000;
+        return escolher();
+      },
+      arquivo(),
+    ]);
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(
+      makeInput({
+        client,
+        ui: { escolherEnvio: vi.fn(async () => ({ modo: 'dropoff' as const })) },
+      }),
+    );
+    expect(out).toEqual({ status: 'printed' });
+    expect(corpos(etiqueta).map((c) => c.envio)).toEqual([
+      undefined,
+      { pacote: PACOTE_A, modo: 'dropoff' },
+    ]);
+  });
+
+  it('Q2-F5 — a wait that leaves less than the floor: give-up at once, no sleep, no phase toast', async () => {
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += 80_000;
+        return aguardar({ fase: 'gerando-documento', tentarEmMs: 2_000 });
+      },
+      arquivo(),
+    ]);
+    const sleep = vi.fn(async () => undefined);
+    const input = makeInput({ client, sleep });
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(input);
+    expect(out).toEqual({ status: 'error', message: TEMPO_JA_ORGANIZADO });
+    expect(input.ui.notify).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(etiqueta).toHaveBeenCalledTimes(1);
+  });
+
+  it('near-miss — a wait that leaves EXACTLY the floor is slept, with its toast', async () => {
+    const r = relogio();
+    const { client } = fakeClient([
+      async () => {
+        r.t += totalMs - pisoPorChamadaMs - 2_000;
+        return aguardar({ fase: 'gerando-documento', tentarEmMs: 2_000 });
+      },
+      arquivo(),
+    ]);
+    const input = makeInput({ client });
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(input);
+    expect(out).toEqual({ status: 'printed' });
+    expect(input.ui.notify).toHaveBeenCalledTimes(1);
+  });
+
+  describe('on a fake clock — the AbortSignal and the honest bound', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Dialog time the operator spends on each question — EXCLUDED from the budget. */
+    const DIALOGO_MS = 100_000;
+
+    /**
+     * A server that answers each scripted step after `apos` ms and, once the
+     * script runs out, hangs until OUR abort. It records, in MACHINE time (the
+     * dialogs taken out), when each call started and how long it ran before
+     * its signal fired.
+     */
+    function servidor(passos: readonly { apos: number; resposta: Resposta }[]) {
+      const fila = [...passos];
+      const estado = { dialogoMs: 0 };
+      const inicios: number[] = [];
+      const abortosMs: number[] = [];
+      const etiqueta = vi.fn(
+        (_p: ShopeeEtiquetaPedido, opts?: { signal?: AbortSignal }): Promise<Resposta> =>
+          new Promise<Resposta>((resolve, reject) => {
+            const sinal = opts?.signal;
+            if (sinal === undefined) throw new Error('sem sinal');
+            const inicio = Date.now();
+            inicios.push(inicio - estado.dialogoMs);
+            const passo = fila.shift();
+            const t =
+              passo === undefined
+                ? undefined
+                : setTimeout(() => {
+                    resolve(passo.resposta);
+                  }, passo.apos);
+            sinal.addEventListener('abort', () => {
+              clearTimeout(t);
+              abortosMs.push(Date.now() - inicio);
+              reject(new ShopeeClientNetworkError('This operation was aborted', sinal.reason));
+            });
+          }),
+      );
+      const client: ShopeeClient = { oauthStart: vi.fn(), conta: vi.fn(), etiqueta };
+      const escolherEnvio = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, DIALOGO_MS));
+        estado.dialogoMs += DIALOGO_MS;
+        return { modo: 'dropoff' as const };
+      });
+      return { client, etiqueta, estado, inicios, abortosMs, escolherEnvio };
+    }
+
+    async function rodarNoRelogio(s: ReturnType<typeof servidor>) {
+      const input = makeInput({
+        client: s.client,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        ui: { escolherEnvio: s.escolherEnvio },
+      });
+      const promessa = createShopeeProvider({ agora: () => Date.now() }).emitirOuImprimir(input);
+      await vi.runAllTimersAsync();
+      const out = await promessa;
+      return { out, maquinaMs: Date.now() - s.estado.dialogoMs };
+    }
+
+    it('the signal fires at min(porChamadaMs, max(restante, piso)) — three regimes', async () => {
+      // (a) a fresh click: restante 120 s ⇒ the ceiling, 75 s.
+      const a = servidor([]);
+      await rodarNoRelogio(a);
+      expect(a.abortosMs).toEqual([porChamadaMs]);
+
+      // (b) 62 s spent (a 60 s call + a 2 s wait): restante 58 s, between the
+      //     floor and the ceiling ⇒ 58 s, so the call ends AT the budget.
+      vi.setSystemTime(0);
+      const b = servidor([{ apos: 60_000, resposta: aguardar({ tentarEmMs: 2_000 }) }]);
+      await rodarNoRelogio(b);
+      expect(b.abortosMs).toEqual([58_000]);
+
+      // (c) the ANSWER's call with 20 s left (60 s + a 2 s wait + 38 s) ⇒ the
+      //     floor, 45 s — never 20 s.
+      vi.setSystemTime(0);
+      const c = servidor([
+        { apos: 60_000, resposta: aguardar({ tentarEmMs: 2_000 }) },
+        { apos: 38_000, resposta: escolher() },
+      ]);
+      await rodarNoRelogio(c);
+      expect(c.escolherEnvio).toHaveBeenCalledTimes(1);
+      expect(c.abortosMs).toEqual([pisoPorChamadaMs]);
+    });
+
+    it('the honest bound holds for EVERY script: no call starts after totalMs, machine time ≤ totalMs + piso', async () => {
+      // Steps a slow server may answer with, each just under a deadline it
+      // could meet (44 s < the floor, 74 s < the ceiling); every script ends in
+      // a hang, so the LAST call always runs until its signal fires.
+      const alfabeto: { apos: number; resposta: Resposta }[] = [];
+      for (const apos of [44_000, 74_000]) {
+        alfabeto.push({ apos, resposta: aguardar({ tentarEmMs: 2_000 }) });
+        // Re-asked as stale, so a re-ask is legitimate rather than "ignored".
+        alfabeto.push({ apos, resposta: escolher({ escolhaInvalida: true }) });
+        alfabeto.push({ apos, resposta: porPacote([PACOTE_A, PACOTE_B]) });
+      }
+      const roteiros: { apos: number; resposta: Resposta }[][] = [[]];
+      for (let tamanho = 0; tamanho < 3; tamanho += 1) {
+        for (const roteiro of roteiros.filter((x) => x.length === tamanho)) {
+          for (const passo of alfabeto) roteiros.push([...roteiro, passo]);
+        }
+      }
+      expect(roteiros).toHaveLength(1 + 6 + 36 + 216);
+
+      let pior = 0;
+      for (const roteiro of roteiros) {
+        vi.setSystemTime(0);
+        const s = servidor(roteiro);
+        const { maquinaMs } = await rodarNoRelogio(s);
+        for (const inicio of s.inicios) expect(inicio).toBeLessThan(totalMs);
+        expect(maquinaMs).toBeLessThanOrEqual(totalMs + pisoPorChamadaMs);
+        pior = Math.max(pior, maquinaMs);
+      }
+      // Not vacuous: the answer's exemption really does run past `totalMs`
+      // (74 s question, 44 s question, then the answer's 45 s floor = 163 s).
+      expect(pior).toBeGreaterThan(totalMs);
+    });
   });
 });
 
@@ -500,6 +732,7 @@ describe('shopeeProvider — the question', () => {
 
     expect(await createShopeeProvider().emitirOuImprimir(input)).toEqual({ status: 'printed' });
     expect(escolherEnvio).toHaveBeenCalledWith({
+      pedidoRotulo: '1234',
       pacoteRotulo: 'Pacote 1 de 2',
       mensagem:
         'Escolha como enviar o pacote: o endereço e o horário da coleta, ou a postagem na agência.',
@@ -536,6 +769,24 @@ describe('shopeeProvider — the question', () => {
     ]);
   });
 
+  it('Q2-F3 — the question names its pedido: the número, or null when absent or blank', async () => {
+    const casos: [string | null, string | null][] = [
+      ['1234', '1234'],
+      [null, null],
+      ['   ', null],
+    ];
+    for (const [numero, esperado] of casos) {
+      const { client } = fakeClient([escolher()]);
+      const escolherEnvio = vi.fn(
+        async (_p: Parameters<EtiquetaProviderInput['ui']['escolherEnvio']>[0]) => null,
+      );
+      await createShopeeProvider().emitirOuImprimir(
+        makeInput({ client, numero, ui: { escolherEnvio } }),
+      );
+      expect(escolherEnvio.mock.calls[0]?.[0].pedidoRotulo).toBe(esperado);
+    }
+  });
+
   it('a cancelled dialog skips, with no further call', async () => {
     const { client, etiqueta } = fakeClient([escolher()]);
     const out = await createShopeeProvider().emitirOuImprimir(
@@ -543,6 +794,30 @@ describe('shopeeProvider — the question', () => {
     );
     expect(out).toEqual({ status: 'skipped' });
     expect(etiqueta).toHaveBeenCalledTimes(1);
+  });
+
+  it('Q2-F4 — a cancelled dialog is NOT silent: ONE yellow toast pointing to where to reprint', async () => {
+    const { client } = fakeClient([escolher()]);
+    const input = makeInput({ client, ui: { escolherEnvio: vi.fn(async () => null) } });
+    expect(await createShopeeProvider().emitirOuImprimir(input)).toEqual({ status: 'skipped' });
+    expect(input.ui.notify).toHaveBeenCalledTimes(1);
+    expect(input.ui.notify).toHaveBeenCalledWith({
+      title: 'Etiqueta Shopee',
+      message:
+        'Etiqueta não impressa: a escolha de como enviar foi cancelada. Para imprimir, use a ' +
+        'etiqueta na linha do pedido (Pedidos) ou "Outros Checkouts".',
+      color: 'yellow',
+    });
+  });
+
+  it('near-miss — an ANSWERED question raises no cancel toast', async () => {
+    const { client } = fakeClient([escolher(), arquivo()]);
+    const input = makeInput({
+      client,
+      ui: { escolherEnvio: vi.fn(async () => ({ modo: 'dropoff' as const })) },
+    });
+    expect(await createShopeeProvider().emitirOuImprimir(input)).toEqual({ status: 'printed' });
+    expect(input.ui.notify).not.toHaveBeenCalled();
   });
 
   it('errors when the call CARRYING the answer asks the same package again (the answer was ignored)', async () => {
@@ -581,11 +856,14 @@ describe('shopeeProvider — the question', () => {
     expect(escolherEnvio).toHaveBeenCalledTimes(2);
   });
 
-  it('stops at maxPerguntas questions', async () => {
+  // Review 2 (Q2-F6) made the cap per PACKAGE: this used to ask A, B, A and
+  // stop at the 3rd question of the CLICK; the same package must now be asked
+  // past the cap (re-asked as stale, so the "answer ignored" check stays out).
+  it('stops at maxPerguntas questions about the SAME package', async () => {
     const { client } = fakeClient([
       escolher({ pacote: PACOTE_A }),
-      escolher({ pacote: PACOTE_B }),
-      escolher({ pacote: PACOTE_A }),
+      escolher({ pacote: PACOTE_A, escolhaInvalida: true }),
+      escolher({ pacote: PACOTE_A, escolhaInvalida: true }),
     ]);
     const escolherEnvio = vi.fn(async () => ({ modo: 'dropoff' as const }));
     const out = await createShopeeProvider({ limites: { maxPerguntas: 2 } }).emitirOuImprimir(
@@ -593,6 +871,25 @@ describe('shopeeProvider — the question', () => {
     );
     expect(out).toEqual({ status: 'error', message: PERGUNTAS_DEMAIS });
     expect(escolherEnvio).toHaveBeenCalledTimes(2);
+  });
+
+  it('Q2-F6 — a split order with MORE packages than the cap, each asked once, prints', async () => {
+    const pacotes = Array.from(
+      { length: SHOPEE_ETIQUETA_LIMITES.maxPerguntas + 1 },
+      (_, i) => `OFG${String(i + 1).padStart(12, '0')}`,
+    );
+    const { client, etiqueta } = fakeClient([
+      ...pacotes.map((pacote) => escolher({ pacote })),
+      arquivo(),
+    ]);
+    const escolherEnvio = vi.fn(async () => ({ modo: 'dropoff' as const }));
+    const out = await createShopeeProvider().emitirOuImprimir(
+      makeInput({ client, ui: { escolherEnvio } }),
+    );
+    expect(out).toEqual({ status: 'printed' });
+    expect(escolherEnvio).toHaveBeenCalledTimes(pacotes.length);
+    // Each answer rode the call right after its own question, for its own package.
+    expect(corpos(etiqueta).map((c) => c.envio?.pacote)).toEqual([undefined, ...pacotes]);
   });
 
   it('never opens a dialog once the budget is spent', async () => {
@@ -636,7 +933,10 @@ describe('shopeeProvider — per package', () => {
     ]);
   });
 
-  it('names the failing package; after the first, says the earlier ones were sent', async () => {
+  // Q1-4: "Etiqueta i de n", never "pacote i de n" — `i` counts this 202's
+  // download list, while the server numbers a package by its place in the FULL
+  // order (a cancelled P2 of 3 makes the list's 2nd the server's `-p3de3`).
+  it('names the failing label (i of the LIST); after the first, says the earlier ones were sent', async () => {
     const recusa = new ShopeeClientHttpError(
       'Tente de novo mais tarde — a Shopee reteve o envio do pacote temporariamente.',
       409,
@@ -647,7 +947,7 @@ describe('shopeeProvider — per package', () => {
     expect(out).toEqual({
       status: 'error',
       message:
-        'Etiqueta do pacote 2 de 2: Tente de novo mais tarde — a Shopee reteve o envio do pacote ' +
+        'Etiqueta 2 de 2: Tente de novo mais tarde — a Shopee reteve o envio do pacote ' +
         'temporariamente. As anteriores foram enviadas; clique em Imprimir de novo para reimprimir todas.',
     });
   });
@@ -656,7 +956,7 @@ describe('shopeeProvider — per package', () => {
     const recusa = new ShopeeClientHttpError('Recusado.', 409, 'SHOPEE_ETIQUETA_RECUSADA');
     const { client } = fakeClient([porPacote([PACOTE_A, PACOTE_B]), recusa]);
     const out = await createShopeeProvider().emitirOuImprimir(makeInput({ client }));
-    expect(out).toEqual({ status: 'error', message: 'Etiqueta do pacote 1 de 2: Recusado.' });
+    expect(out).toEqual({ status: 'error', message: 'Etiqueta 1 de 2: Recusado.' });
   });
 
   it('errors when a per-package call asks for a per-package download again', async () => {
@@ -666,7 +966,7 @@ describe('shopeeProvider — per package', () => {
     ]);
     const out = await createShopeeProvider().emitirOuImprimir(makeInput({ client }));
     expect(out.status).toBe('error');
-    if (out.status === 'error') expect(out.message).toMatch(/^Etiqueta do pacote 1 de 2: /);
+    if (out.status === 'error') expect(out.message).toMatch(/^Etiqueta 1 de 2: /);
     expect(etiqueta).toHaveBeenCalledTimes(2);
   });
 });

@@ -288,9 +288,16 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   );
   return (
     <PedidoRowReadsContext.Provider value={rowReads.status}>
-      {/* The etiqueta row action's dialogs and in-flight flags (#1523): page
-          level, because the FreteCell HoverCard unmounts the action on the
-          first mouse move — see `EtiquetaAcaoHost`. */}
+      {/* The etiqueta row action's dialogs, question queue and in-flight flags
+          (#1523): page level, because the FreteCell HoverCard unmounts the
+          action on the first mouse move — see `EtiquetaAcaoHost`.
+          ⚠️ No unit test pins THIS mount: without it the row falls back to its
+          own instance (`host === null`) and every unit test stays green while
+          the pickup dialog dies with the HoverCard again. Its pin is the e2e
+          `pedidos-etiqueta-shopee.vendas.e2e.spec.ts` ("answers the pickup
+          question by mouse…"), the step that moves the mouse off the card,
+          waits for the PDF button to unmount and expects the question still
+          open. */}
       <EtiquetaAcaoHost>
         <DirecaoSurface direcao={direcao}>
           <ContingenciaBanner />

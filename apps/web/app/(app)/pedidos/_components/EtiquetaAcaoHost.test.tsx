@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
-import type { RespostaDeEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
+import type { PerguntaDeEnvio, RespostaDeEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
 
 import {
   EtiquetaAcaoHost,
@@ -47,12 +47,51 @@ function Pagina({ onValor }: { onValor: (v: EtiquetaAcaoContextValue | null) => 
 
 function montar() {
   let valor: EtiquetaAcaoContextValue | null = null;
-  render(
+  const view = render(
     <MantineTestProvider>
       <Pagina onValor={(v) => (valor = v)} />
     </MantineTestProvider>,
   );
-  return () => valor!;
+  return Object.assign(() => valor!, { view });
+}
+
+/** A pickup question for `pedidoRotulo`, one address + one slot (fixture ids). */
+function perguntaPickup(pedidoRotulo: string | null): PerguntaDeEnvio {
+  return {
+    pedidoRotulo,
+    pacoteRotulo: null,
+    mensagem: 'Escolha como enviar o pacote.',
+    enderecos: [
+      {
+        id: '200001',
+        rotulo: 'Rua A, 10',
+        principal: true,
+        horarios: [{ id: 'slot-1', rotulo: 'Amanhã 08:00–12:00', recomendado: true }],
+      },
+    ],
+    permiteDropoff: true,
+    escolhaInvalida: false,
+  };
+}
+
+/** Records when (and with what) a promise settles, without awaiting it. */
+function observar<T>(p: Promise<T>) {
+  const estado: { respondida: boolean; valor: T | undefined } = {
+    respondida: false,
+    valor: undefined,
+  };
+  void p.then((v) => {
+    estado.respondida = true;
+    estado.valor = v;
+  });
+  return estado;
+}
+
+/** Let every pending microtask (the queue's `.then` hops) run. */
+async function drenar() {
+  await act(async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  });
 }
 
 describe('EtiquetaAcaoHost — o dono das ações de etiqueta da página', () => {
@@ -95,6 +134,8 @@ describe('EtiquetaAcaoHost — o dono das ações de etiqueta da página', () =>
     expect(chamadas).toBe(0);
     expect(screen.getByTestId('p1').textContent).toBe('fetch-zpl2');
 
+    // Another pedido still RUNS (batch printing) — only its QUESTIONS wait
+    // behind p1's, in the FIFO pinned below (#1523 review 2, Q2-F1).
     await act(async () => {
       await host().executar('p2', 'fetch-pdf', async () => {
         chamadas += 1;
@@ -162,21 +203,10 @@ describe('EtiquetaAcaoHost — o dono das ações de etiqueta da página', () =>
     const host = montar();
     let resposta!: Promise<RespostaDeEnvio>;
     act(() => {
-      resposta = host().escolherEnvio({
-        pacoteRotulo: null,
-        mensagem: 'Escolha como enviar o pacote.',
-        enderecos: [
-          {
-            id: '200001',
-            rotulo: 'Rua A, 10',
-            principal: true,
-            horarios: [{ id: 'slot-1', rotulo: 'Amanhã 08:00–12:00', recomendado: true }],
-          },
-        ],
-        permiteDropoff: false,
-        escolhaInvalida: false,
-      });
+      resposta = host().escolherEnvio(perguntaPickup(null));
     });
+    // The question opens one queue hop later (the FIFO below).
+    expect(await screen.findByRole('button', { name: 'Confirmar' })).toBeTruthy();
     // The asker (the row inside the HoverCard) goes away…
     fireEvent.click(screen.getByText('desmontar'));
     // …and the dialog is still there, because the HOST renders it.
@@ -199,8 +229,99 @@ describe('EtiquetaAcaoHost — o dono das ações de etiqueta da página', () =>
         cancelLabel: 'Cancelar',
       });
     });
+    expect(await screen.findByRole('button', { name: 'Continuar' })).toBeTruthy();
     fireEvent.click(screen.getByText('desmontar'));
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
     await expect(resposta).resolves.toBe(true);
+  });
+});
+
+/**
+ * #1523 review 2, Q2-F1 (MAJOR): the in-flight guard is per pedido, so two
+ * pedidos' flows run at once — but the page has ONE dialog of each kind, and a
+ * new question used to answer the open one as cancelled. Pedido A then ended
+ * `skipped` in silence while the operator answered B's question thinking it
+ * was A's. The host now queues every question FIFO.
+ */
+describe('EtiquetaAcaoHost — as perguntas de dois pedidos entram numa FILA', () => {
+  it('dois pedidos perguntam: nenhuma resposta é null, e a ordem é FIFO', async () => {
+    const host = montar();
+    let a!: ReturnType<typeof observar<RespostaDeEnvio>>;
+    let b!: ReturnType<typeof observar<RespostaDeEnvio>>;
+    act(() => {
+      a = observar(host().escolherEnvio(perguntaPickup('1001')));
+    });
+    await drenar();
+    act(() => {
+      b = observar(host().escolherEnvio(perguntaPickup('1002')));
+    });
+    await drenar();
+
+    // B's question did NOT cancel A's: A is still open, B waits (never shown).
+    expect(a.respondida).toBe(false);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByText('Pedido 1001 — Como enviar o pacote')).toBeTruthy();
+    expect(screen.queryByText(/Pedido 1002/)).toBeNull();
+
+    // A's answer goes to A — the drop-off, so it is distinguishable from B's.
+    fireEvent.click(screen.getByRole('radio', { name: /dropoff/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await drenar();
+    expect(a.valor).toEqual({ modo: 'dropoff' });
+    expect(b.respondida).toBe(false);
+
+    // Then B's question opens, titled with B, and B's answer goes to B.
+    expect(await screen.findByText('Pedido 1002 — Como enviar o pacote')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await drenar();
+    expect(b.valor).toEqual({ modo: 'pickup', enderecoId: '200001', horarioId: 'slot-1' });
+    expect(a.valor).toEqual({ modo: 'dropoff' });
+  });
+
+  it('o confirm e a pergunta de envio partilham a MESMA fila (um diálogo por vez)', async () => {
+    const host = montar();
+    let confirmA!: ReturnType<typeof observar<boolean>>;
+    let envioB!: ReturnType<typeof observar<RespostaDeEnvio>>;
+    act(() => {
+      confirmA = observar(
+        host().confirm({
+          title: 'Atenção',
+          message: 'Frete já postado.',
+          confirmLabel: 'Continuar',
+          cancelLabel: 'Cancelar',
+        }),
+      );
+    });
+    await drenar();
+    act(() => {
+      envioB = observar(host().escolherEnvio(perguntaPickup('1002')));
+    });
+    await drenar();
+    expect(screen.getByText('Frete já postado.')).toBeTruthy();
+    expect(screen.queryByText(/Pedido 1002/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    await drenar();
+    expect(confirmA.valor).toBe(true);
+    expect(await screen.findByText('Pedido 1002 — Como enviar o pacote')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await drenar();
+    expect(envioB.valor).toEqual({ modo: 'pickup', enderecoId: '200001', horarioId: 'slot-1' });
+  });
+
+  it('a página sair com perguntas na fila responde TODAS como canceladas (nada fica pendurado)', async () => {
+    const host = montar();
+    let confirmA!: ReturnType<typeof observar<boolean>>;
+    let envioB!: ReturnType<typeof observar<RespostaDeEnvio>>;
+    act(() => {
+      confirmA = observar(host().confirm({ title: 'Atenção', message: 'Frete já postado.' }));
+      envioB = observar(host().escolherEnvio(perguntaPickup('1002')));
+    });
+    await drenar();
+    // The confirm dialog itself never settles on unmount — the host must.
+    host.view.unmount();
+    await drenar();
+    expect(confirmA).toEqual({ respondida: true, valor: false });
+    expect(envioB).toEqual({ respondida: true, valor: null });
   });
 });

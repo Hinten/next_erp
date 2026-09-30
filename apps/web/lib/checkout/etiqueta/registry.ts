@@ -14,9 +14,17 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
 
 /**
  * The etiqueta provider registry — the carrier-agnostic dispatch that replaces
- * the legacy `switch (tipo)` in `emitirOuImprimirFrete.dart`. Adding a carrier
- * is one provider file + one `PROVIDERS` row (see `README.md`); gates, the UI
- * bridge, and the other providers stay untouched.
+ * the legacy `switch (tipo)` in `emitirOuImprimirFrete.dart`.
+ *
+ * Adding a carrier starts with one provider file + one `PROVIDERS` row, and
+ * stops there only when it needs nothing the contract does not already carry.
+ * A marketplace fetch provider needs more — Shopee (#1523) touched all of it:
+ * its `FREIGHT_TIPO_CAPS` flip (and leaving `unsupportedMarketplace.ts`), a
+ * NEW client threaded as a REQUIRED `deps` member through the three entry
+ * points and the checkout screens, a NEW operator question as a REQUIRED `ui`
+ * member served on `/pedidos` by `EtiquetaAcaoHost`, the row action's
+ * client-presence branch, and the drift guard in `registry.test.ts`. The full
+ * list is in `README.md` ("Adding a provider").
  */
 
 /** Registered providers, indexed by every tipo each one claims via `.tipos`. */

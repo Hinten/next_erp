@@ -34,16 +34,37 @@ import type {
  *
  * ## The bounds (`SHOPEE_ETIQUETA_LIMITES`, reconcile R-b)
  *
- * - `porChamadaMs` — each call carries its own `AbortSignal`: above the
- *   server's 30 s budget plus one download, below App Hosting's 180 s.
  * - `totalMs` — MACHINE time per click: the calls and the sleeps. ⚠️ The
  *   operator's dialog time is EXCLUDED (W9): a pickup question someone is
- *   reading must never be what runs the click out of time. The checkout
- *   awaits this provider before it resets the screen, so this is also how long
- *   a station can be held.
+ *   reading must never be what runs the click out of time.
+ * - `pisoPorChamadaMs` — the least a call needs: the server's 30 s budget plus
+ *   one download. Before each call `restante = totalMs − gasto`; a call whose
+ *   `restante` is below the floor is NOT started — the click gives up with the
+ *   resumable sentence — unless it carries the operator's answer (`envio`),
+ *   which is never thrown away for want of time.
+ * - `porChamadaMs` — the ceiling of one call's `AbortSignal`, below App
+ *   Hosting's 180 s. The signal actually fires at
+ *   `min(porChamadaMs, max(restante, pisoPorChamadaMs))`, so a call cannot run
+ *   past `totalMs` — except the answer's call, which still gets the floor.
  * - `esperaMinMs`/`esperaMaxMs` — the server's `tentarEmMs` is clamped: a `0`
- *   would hot-loop (W10), a huge value would outlive the click.
- * - `maxPerguntas` — a backend that keeps asking becomes an error, not a hang.
+ *   would hot-loop (W10), a huge value would outlive the click. A wait after
+ *   which no call could start is not slept at all: the click gives up at once,
+ *   and without the phase toast a give-up would contradict.
+ * - `maxPerguntas` — per PACKAGE: a backend that keeps asking about the same
+ *   package becomes an error, not a hang. Per package, not per click: a split
+ *   order asks each package once, and more packages than the cap is a
+ *   legitimate order, not a backend that ignored an answer.
+ *
+ * ⚠️ The honest bound: no call starts after `totalMs`; a click holds the
+ * station at most `totalMs` of machine time, plus at most ONE call of
+ * `pisoPorChamadaMs` when that call carries the operator's answer — ≤ 165 s
+ * with the values below. The checkout awaits this provider before it resets
+ * the screen, so that is also how long the provider holds a station. NOT in
+ * it: the operator's dialogs and the print agent's hand-off (`printJob`,
+ * unbounded until #1678), once per file.
+ *
+ * Why an early abort is safe: the route is resumable, and a re-click
+ * re-derives the phase from Shopee and never ships a package twice.
  *
  * Unlike `reprintCheckout.ts`'s unbounded registry stage, bounding HERE is
  * safe: the side effect (`ship_order`) is idempotent BY THE SERVER's
@@ -77,13 +98,18 @@ import type {
 export const SHOPEE_ETIQUETA_LIMITES = {
   /** Machine time per click (calls + sleeps; dialogs EXCLUDED). Probe P4/P6 may raise it. */
   totalMs: 120_000,
-  /** One call's `AbortSignal`. */
+  /** The ceiling of one call's `AbortSignal` (it fires sooner when the click's budget is shorter). */
   porChamadaMs: 75_000,
+  /**
+   * The least a call is started with: the server's 30 s budget plus one
+   * download. Below it the click gives up — unless the call carries an answer.
+   */
+  pisoPorChamadaMs: 45_000,
   /** The floor of the server's `tentarEmMs` (a `0` would hot-loop). */
   esperaMinMs: 2_000,
   /** The ceiling of the server's `tentarEmMs` (a huge one would outlive the click). */
   esperaMaxMs: 15_000,
-  /** Questions per click. */
+  /** Questions per PACKAGE per click (a split order asks each package once). */
   maxPerguntas: 8,
 } as const;
 
@@ -212,7 +238,19 @@ function mensagemDeRede(detalhe: string): string {
   );
 }
 
-/** The backend kept asking: `maxPerguntas` ran out, or it ignored the answer it was sent. */
+/**
+ * The operator cancelled the pickup/drop-off question. A yellow notice, not a
+ * silent skip: the checkout resets right after, and without it an accidental
+ * Cancelar leaves a saved checkout with no label and no hint where to reprint.
+ */
+const MENSAGEM_ENVIO_CANCELADO =
+  'Etiqueta não impressa: a escolha de como enviar foi cancelada. Para imprimir, use a ' +
+  'etiqueta na linha do pedido (Pedidos) ou "Outros Checkouts".';
+
+/**
+ * The backend kept asking about ONE package: `maxPerguntas` ran out for it, or
+ * it ignored the answer it was sent.
+ */
 const MENSAGEM_PERGUNTAS_DEMAIS =
   'A Shopee continuou perguntando como enviar este pedido depois de respondida — organize o ' +
   'envio na Central do Vendedor e clique em Imprimir de novo.';
@@ -253,7 +291,8 @@ type Rodada =
 interface Sessao {
   /** Machine milliseconds spent: the calls and the sleeps, never a dialog. */
   gasto: number;
-  perguntas: number;
+  /** Questions asked, per PACKAGE (the server's `pacote`) — `maxPerguntas` caps each. */
+  readonly perguntas: Map<string, number>;
   ultimaFase: string | null;
   /** The last 202's counts — what picks the give-up sentence. */
   progresso: Progresso | null;
@@ -262,12 +301,24 @@ interface Sessao {
 interface Contexto {
   readonly client: ShopeeClient;
   readonly pedidoId: string;
+  /** The pedido's número for the question's title; `null` when it has none. */
+  readonly pedidoRotulo: string | null;
   readonly formato: 'pdf' | 'zpl2';
   readonly ui: EtiquetaProviderUi;
   readonly sleep: (ms: number) => Promise<void>;
   readonly agora: () => number;
   readonly limites: LimitesDaEtiqueta;
   readonly sessao: Sessao;
+}
+
+/**
+ * The pedido the question is about, for its title (Q2-F3): two questions can
+ * stand in line on one screen, and an unnamed one gets answered for the wrong
+ * pedido. The número itself; `null` when absent or blank (the dialog then
+ * shows no pedido rather than an empty one).
+ */
+function rotuloDoPedido(numero: string | null | undefined): string | null {
+  return numero !== null && numero !== undefined && numero.trim() !== '' ? numero : null;
 }
 
 const erro = (message: string): EtiquetaOutcome => ({ status: 'error', message });
@@ -295,23 +346,34 @@ function ehInterrupcao(err: unknown): boolean {
 }
 
 /**
- * ONE call, under its own deadline. The call's time is added to the machine
- * budget however it ends.
+ * When one call's `AbortSignal` fires, given the click's `restante` machine
+ * budget: never past `porChamadaMs`, never past the click's budget — but never
+ * under the floor either, which only the answer's call can be started below
+ * (module docblock, "The bounds").
+ */
+function prazoDaChamada(restante: number, limites: LimitesDaEtiqueta): number {
+  return Math.min(limites.porChamadaMs, Math.max(restante, limites.pisoPorChamadaMs));
+}
+
+/**
+ * ONE call, under its own deadline (`prazoMs`, from {@link prazoDaChamada}).
+ * The call's time is added to the machine budget however it ends.
  *
  * ⚠️ Our deadline is decided by `sinal.aborted`, never by the error class: an
  * abort while the request is in flight arrives as a `ShopeeClientNetworkError`
  * (its `cause` is the abort), one during the body read as the raw abort itself.
- * Both are the same fact — the call outlived `porChamadaMs` — and both give up
+ * Both are the same fact — the call outlived its deadline — and both give up
  * with the resumable sentence.
  */
 async function chamar(
   ctx: Contexto,
   pedido: ShopeeEtiquetaPedido,
+  prazoMs: number,
 ): Promise<{ ok: true; r: ShopeeEtiquetaResposta } | { ok: false; outcome: EtiquetaOutcome }> {
   const controle = new AbortController();
   const prazo = setTimeout(() => {
     controle.abort();
-  }, ctx.limites.porChamadaMs);
+  }, prazoMs);
   const inicio = ctx.agora();
   try {
     return { ok: true, r: await ctx.client.etiqueta(pedido, { signal: controle.signal }) };
@@ -348,21 +410,28 @@ async function rodar(ctx: Contexto, pacote: string | undefined): Promise<Rodada>
   let envio: EscolhaDeEnvio | undefined;
 
   for (;;) {
-    // No call is STARTED past the budget — except the one carrying an answer
-    // the operator just gave: the check before the dialog already let it in,
-    // and dialog time does not count.
-    if (envio === undefined && sessao.gasto >= limites.totalMs) {
+    // ⚠️ The budget contract (module docblock, "The bounds"): a call is started
+    // only with at least the floor left — except the one carrying the answer
+    // the operator just gave, which the check before the dialog already let in
+    // (dialog time does not count) and which is never thrown away for want of
+    // time. Giving up early is safe: a re-click re-derives the phase.
+    const restante = limites.totalMs - sessao.gasto;
+    if (envio === undefined && restante < limites.pisoPorChamadaMs) {
       return fim(erro(mensagemDeTempo(sessao.progresso)));
     }
     // ⚠️ An answer rides exactly ONE call (W11); a later re-ask is answered again.
     const enviado = envio;
     envio = undefined;
-    const chamada = await chamar(ctx, {
-      pedidoId: ctx.pedidoId,
-      formato: ctx.formato,
-      ...(pacote === undefined ? {} : { pacote }),
-      ...(enviado === undefined ? {} : { envio: enviado }),
-    });
+    const chamada = await chamar(
+      ctx,
+      {
+        pedidoId: ctx.pedidoId,
+        formato: ctx.formato,
+        ...(pacote === undefined ? {} : { pacote }),
+        ...(enviado === undefined ? {} : { envio: enviado }),
+      },
+      prazoDaChamada(restante, limites),
+    );
     if (!chamada.ok) return fim(chamada.outcome);
     const r = chamada.r;
     if (r.tipo === 'arquivo') return { tipo: 'arquivo', arquivo: r };
@@ -370,6 +439,14 @@ async function rodar(ctx: Contexto, pacote: string | undefined): Promise<Rodada>
     sessao.progresso = r.progresso;
     switch (r.acao) {
       case 'aguardar': {
+        const espera = esperaDe(r.tentarEmMs, limites);
+        // ⚠️ BEFORE the phase toast: after this wait the next call (which
+        // carries no answer) needs the floor, so a wait that leaves less is not
+        // slept — and a toast announcing a phase the click is about to abandon
+        // would contradict the give-up right behind it.
+        if (limites.totalMs - (sessao.gasto + espera) < limites.pisoPorChamadaMs) {
+          return fim(erro(mensagemDeTempo(sessao.progresso)));
+        }
         // One toast per PHASE, not per poll.
         if (r.fase !== sessao.ultimaFase) {
           sessao.ultimaFase = r.fase;
@@ -378,10 +455,6 @@ async function rodar(ctx: Contexto, pacote: string | undefined): Promise<Rodada>
             message: FASES_CONHECIDAS.has(r.fase) ? r.mensagem : MENSAGEM_FASE_DESCONHECIDA,
             color: 'blue',
           });
-        }
-        const espera = esperaDe(r.tentarEmMs, limites);
-        if (sessao.gasto + espera >= limites.totalMs) {
-          return fim(erro(mensagemDeTempo(sessao.progresso)));
         }
         await ctx.sleep(espera);
         sessao.gasto += espera;
@@ -395,19 +468,27 @@ async function rodar(ctx: Contexto, pacote: string | undefined): Promise<Rodada>
         if (enviado !== undefined && enviado.pacote === r.pacote && !r.escolhaInvalida) {
           return fim(erro(MENSAGEM_PERGUNTAS_DEMAIS));
         }
-        sessao.perguntas += 1;
-        if (sessao.perguntas > limites.maxPerguntas) return fim(erro(MENSAGEM_PERGUNTAS_DEMAIS));
-        // Never ask a question whose answer could not be sent.
+        // Counted per PACKAGE: a split order legitimately asks each of its
+        // packages once, so a per-click count would call a long order a backend
+        // that "kept asking".
+        const perguntas = (sessao.perguntas.get(r.pacote) ?? 0) + 1;
+        sessao.perguntas.set(r.pacote, perguntas);
+        if (perguntas > limites.maxPerguntas) return fim(erro(MENSAGEM_PERGUNTAS_DEMAIS));
+        // No call starts after `totalMs` — the answer's call included.
         if (sessao.gasto >= limites.totalMs) return fim(erro(mensagemDeTempo(sessao.progresso)));
 
         const escolha = await ui.escolherEnvio({
+          pedidoRotulo: ctx.pedidoRotulo,
           pacoteRotulo: r.pacoteRotulo,
           mensagem: r.mensagem,
           enderecos: r.enderecos,
           permiteDropoff: r.permiteDropoff,
           escolhaInvalida: r.escolhaInvalida,
         });
-        if (escolha === null) return fim({ status: 'skipped' });
+        if (escolha === null) {
+          ui.notify({ title: TITULO, message: MENSAGEM_ENVIO_CANCELADO, color: 'yellow' });
+          return fim({ status: 'skipped' });
+        }
         // Rebuilt BY NAME with the QUESTION's package: the answer is for that one.
         envio =
           escolha.modo === 'dropoff'
@@ -503,12 +584,13 @@ export function createShopeeProvider(
       const ctx: Contexto = {
         client: deps.shopeeClient,
         pedidoId,
+        pedidoRotulo: rotuloDoPedido(input.pedido.numero),
         formato,
         ui,
         sleep: deps.sleep ?? realSleep,
         agora,
         limites,
-        sessao: { gasto: 0, perguntas: 0, ultimaFase: null, progresso: null },
+        sessao: { gasto: 0, perguntas: new Map(), ultimaFase: null, progresso: null },
       };
 
       const pedido = await rodar(ctx, undefined);
@@ -519,12 +601,21 @@ export function createShopeeProvider(
       }
 
       // Different couriers: one call — and one file — per package, against the
-      // SAME budget. A failure names its package; the earlier ones printed, and a
+      // SAME budget. A failure names its label; the earlier ones printed, and a
       // re-click reprints them all (a reprint is the same document).
+      //
+      // ⚠️ Known limit (Q1-1): a re-click restarts at the FIRST listed package,
+      // so an order with MANY packages may run out of budget before its tail,
+      // reprinting the same first labels on every click (never a second ship).
+      // Rare at this seller's volume; documented, not fixed.
       ui.notify({ title: TITULO, message: pedido.mensagem, color: 'blue' });
       const total = pedido.pacotes.length;
       for (const [i, pacote] of pedido.pacotes.entries()) {
-        const prefixo = `Etiqueta do pacote ${String(i + 1)} de ${String(total)}: `;
+        // "Etiqueta i de n" — `i` counts the DOWNLOADS this 202 listed. Never
+        // "pacote i": the server numbers a package by its position in the FULL
+        // order (its filename's `-p<i>de<n>`), which counts packages this list
+        // leaves out (cancelled, not eligible), so the two would disagree.
+        const prefixo = `Etiqueta ${String(i + 1)} de ${String(total)}: `;
         const sufixo =
           i > 0
             ? ' As anteriores foram enviadas; clique em Imprimir de novo para reimprimir todas.'

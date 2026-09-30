@@ -76,6 +76,19 @@ function modoInicial(p: PerguntaDeEnvio): string | null {
   return p.permiteDropoff ? DROPOFF : null;
 }
 
+/**
+ * The dialog title. It names the PEDIDO first (#1523 review 2, Q2-F3): the
+ * server's `mensagem` is generic, and two flows can ask back to back (two rows
+ * on `/pedidos`, a reprint over the post-save), so a title without it let the
+ * operator answer one pedido's question for another.
+ */
+function tituloDaPergunta(p: PerguntaDeEnvio): string {
+  const base = p.pacoteRotulo !== null ? `Como enviar — ${p.pacoteRotulo}` : 'Como enviar o pacote';
+  // A pedido with no número yet (null, or a blank legacy one) keeps the bare title.
+  const pedido = p.pedidoRotulo?.trim() ?? '';
+  return pedido !== '' ? `Pedido ${pedido} — ${base}` : base;
+}
+
 function FormularioDeEnvio({
   pergunta,
   onResponder,
@@ -193,8 +206,12 @@ export function useEscolherEnvio(): UseEscolherEnvioResult {
   const escolherEnvio = useCallback(
     (pergunta: PerguntaDeEnvio) =>
       new Promise<RespostaDeEnvio>((resolve) => {
-        // A dangling previous question (should not happen — the provider asks
-        // one at a time) resolves as cancelled, so no caller hangs forever.
+        // A dangling previous question resolves as cancelled, so no caller
+        // hangs forever. ⚠️ This is a last resort, never a way to share the
+        // dialog: one provider asks one question at a time, and a view whose
+        // flows can OVERLAP must serialise them before this hook — `/pedidos`
+        // runs one flow per pedido, so `EtiquetaAcaoHost` queues every question
+        // FIFO (#1523 review 2, Q2-F1: B's question used to cancel A's here).
         resolveRef.current?.(null);
         resolveRef.current = resolve;
         seqRef.current += 1;
@@ -222,12 +239,11 @@ export function useEscolherEnvio(): UseEscolherEnvioResult {
     resolve?.(r);
   }
 
-  const pacoteRotulo = aberta?.pergunta.pacoteRotulo ?? null;
   const element = (
     <Modal
       opened={aberta !== null}
       onClose={() => settle(null)}
-      title={pacoteRotulo !== null ? `Como enviar — ${pacoteRotulo}` : 'Como enviar o pacote'}
+      title={aberta !== null ? tituloDaPergunta(aberta.pergunta) : ''}
       centered
       withCloseButton={false}
       closeOnClickOutside={false}

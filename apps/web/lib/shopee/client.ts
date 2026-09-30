@@ -48,6 +48,13 @@ export class ShopeeClientHttpError extends Error {
     readonly status: number,
     /** Machine code from the backend (`SHOPEE_NETWORK_ERROR`, `SHOPEE_BAD_RESPONSE`, …). */
     readonly code: string | null,
+    /**
+     * SHOPEE's own error code, when a label refusal carries one (the
+     * `recusa-desconhecida` 409's optional `shopeeCode`) — for a caller or a
+     * console that wants it on a support screenshot. `message` stays the
+     * backend's sentence either way; `null` whenever the body has none.
+     */
+    readonly shopeeCode: string | null = null,
   ) {
     super(message);
     this.name = 'ShopeeClientHttpError';
@@ -188,10 +195,12 @@ function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
 
 /**
  * The error for a non-2xx — the ONE copy, shared by every route of this client.
- * Our JSON envelope's `error` and `code` when the backend sent one (a label
- * refusal's `error` IS its `mensagem`; every other key of that body, `motivo`
- * and `shopeeCode` included, is tolerated and ignored here), the status
- * fallback otherwise.
+ * Our JSON envelope's `error` and `code` when the backend sent one, the status
+ * fallback otherwise. A label refusal's `error` IS its `mensagem` (truth:
+ * `apps/shopee/lib/shopee/etiqueta/respostaEtiqueta.ts`); its `shopeeCode`, when
+ * a string, is carried on the error WITHOUT touching the message, and every
+ * other key of that body (`motivo`, `nfe`, `tentarApos`) is tolerated and
+ * ignored here.
  */
 function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpError {
   let parsed: unknown = null;
@@ -213,7 +222,15 @@ function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpEr
     errBody?.error ?? shopeeHttpFallbackMessage(res.status),
     res.status,
     errBody?.code ?? null,
+    codigoShopeeDoCorpo(parsed),
   );
+}
+
+/** A non-empty string `shopeeCode` off an error body, else `null` — nothing is coerced. */
+function codigoShopeeDoCorpo(parsed: unknown): string | null {
+  if (parsed === null || typeof parsed !== 'object' || !('shopeeCode' in parsed)) return null;
+  const { shopeeCode } = parsed;
+  return typeof shopeeCode === 'string' && shopeeCode.length > 0 ? shopeeCode : null;
 }
 
 /** A 2xx JSON body read against its schema, or the one error each failure earns. */
@@ -259,6 +276,18 @@ function lerCorpoJson<S extends z.ZodType>(
 function essenciaDoTipo(contentType: string): string {
   return (contentType.split(';')[0] ?? '').trim().toLowerCase();
 }
+
+/**
+ * The extension of each type the label route serves, keyed by MIME essence —
+ * the three its byte sniff can name (truth:
+ * `packages/integrations/shopee/src/arquivo.ts`). A `Map`, not an object: an
+ * essence is a string off the wire, and `'constructor'` must not resolve.
+ */
+const EXTENSAO_DA_ETIQUETA: ReadonlyMap<string, string> = new Map([
+  ['application/pdf', 'pdf'],
+  ['application/zip', 'zip'],
+  ['text/plain', 'txt'],
+]);
 
 /**
  * The label request body, rebuilt BY NAME: absent keys omitted, and each
@@ -406,19 +435,26 @@ export function createShopeeClient(config: {
       );
     }
 
-    // The ONLY place this client names a file type: the fallbacks for a header
-    // the browser cannot see (a backend whose proxy predates the Expose
-    // header). The route byte-sniffs the real type and names the real file.
-    const fallback =
-      p.formato === 'pdf'
-        ? { filename: `etiqueta-${p.pedidoId}.pdf`, contentType: 'application/pdf' }
-        : { filename: `etiqueta-${p.pedidoId}.zip`, contentType: 'application/zip' };
+    // The fallback name, for a `Content-Disposition` the browser cannot see (a
+    // backend whose proxy predates the Expose header). The route byte-sniffs
+    // the real type and names the real file.
+    //
+    // ⚠️ The extension follows the RESPONSE's `Content-Type`, never the
+    // requested `formato`: Shopee may answer a zpl2 request with a PDF (R-u),
+    // and a PDF saved as `.zip` is ML #1680's defect. `Content-Type` is
+    // CORS-safelisted, so it is readable exactly when the disposition is not.
+    // The `formato` guess is left only for a type the route never serves
+    // (absent, or not one of its three).
+    const extensao =
+      (essencia === null ? undefined : EXTENSAO_DA_ETIQUETA.get(essencia)) ??
+      (p.formato === 'pdf' ? 'pdf' : 'zip');
     return {
       tipo: 'arquivo',
       blob,
       filename:
-        filenameFromDisposition(res.headers.get('content-disposition')) ?? fallback.filename,
-      contentType: contentType ?? fallback.contentType,
+        filenameFromDisposition(res.headers.get('content-disposition')) ??
+        `etiqueta-${p.pedidoId}.${extensao}`,
+      contentType: contentType ?? (p.formato === 'pdf' ? 'application/pdf' : 'application/zip'),
     };
   }
 

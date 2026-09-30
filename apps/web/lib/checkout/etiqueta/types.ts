@@ -17,11 +17,14 @@ import type { EnderecoDeColeta } from '@/lib/shopee/wire';
  * label, fetched a marketplace label, or rendered a generic PDF. Here that
  * switch is a **registry of providers** keyed by `IntegracaoFrete` tipo; the
  * shared pre-gates (`gates.ts`) and the resolution/dispatch (`registry.ts`)
- * are carrier-agnostic, so a new carrier is one provider file + one registry
- * row (see `README.md`).
+ * are carrier-agnostic. A carrier that needs only what these types already
+ * carry is one provider file + one registry row; one that needs a NEW client
+ * or operator question also threads it through every entry point — the steps
+ * are in `README.md` ("Adding a provider"), with Shopee as the worked example.
  *
  * The provider is **pure of UI**: every side effect it can't do itself — a
- * confirm dialog, a toast, opening a URL, driving the ME buy modal — is an
+ * confirm dialog, a toast, opening a URL, driving the ME buy modal, asking how
+ * a Shopee package ships — is an
  * injected `ui.*` callback, mirroring how `nfeFlow.ts` keeps the flow logic
  * testable with fakes. Firebase reads/writes go through the injected `db` +
  * `deps` clients, never a module singleton.
@@ -81,12 +84,17 @@ export interface EtiquetaProviderUi {
    * options are the server's 202 `escolher-envio` body, verbatim; the provider
    * adds the package itself when it sends the answer back.
    *
+   * `pedidoRotulo` is the pedido's número (`null` when it has none), which the
+   * dialog puts in its title: questions from two pedidos can stand in line on
+   * one screen (Q2-F3), and an unnamed one gets answered for the wrong pedido.
+   *
    * ⚠️ REQUIRED, not optional: an optional member would let a UI forget it and
    * still compile, and that screen's Shopee label would then die on the first
    * pickup question — SPX is a PICKUP channel, so the question is the main
    * path, not an edge.
    */
   escolherEnvio(p: {
+    pedidoRotulo: string | null;
     pacoteRotulo: string | null;
     mensagem: string;
     enderecos: readonly EnderecoDeColeta[];
@@ -126,9 +134,13 @@ export interface EtiquetaProviderDeps {
  *                 `integracaoFreteOuterRef` (today's only shape);
  *   - `'bloco'` — NO document: the frete block's `externalOptionIntegracao`
  *                 names a marketplace-owned tipo, and that is the whole
- *                 identity. A Shopee pedido has no `int_frete` ref at all, and
- *                 an ML pedido whose ref was degraded to null on import is the
- *                 same case (#1523, R-q).
+ *                 identity. A Shopee pedido imported by THIS app carries no
+ *                 `int_frete` ref (step 5 sets none), and an ML pedido whose
+ *                 ref was degraded to null on import is the same case (#1523,
+ *                 R-q). ⚠️ A MIGRATED legacy Shopee pedido does carry one — the
+ *                 legacy FreteShopee document's — and dispatches as `'doc'`
+ *                 when that document's tipo is `shopee`. The Shopee provider
+ *                 reads neither, so nothing may assume "Shopee ⇒ `'bloco'`".
  *
  * ⚠️ A provider that needs the DOCUMENT (its id or its data) must narrow on
  * `fonte === 'doc'` first — Melhor Envio passes `id` to its HTTP client, the

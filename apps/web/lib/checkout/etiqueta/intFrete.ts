@@ -26,11 +26,17 @@ import type { IntFreteResolvido } from './types';
  *     block alone answers (`fonte: 'bloco'`).
  *
  * Why the block and not the document: both label routes already key on it.
- * Mercado Livre's refuses a pedido whose block is not ML, and Shopee's refuses
- * one whose block names any other tipo — so dispatching on a document that
- * disagrees would only reach a route that says no. A Shopee pedido has no
- * `int_frete` ref at all, and an imported ML pedido whose ref was degraded to
- * null is the same case.
+ * Mercado Livre's refuses a pedido whose block is not ML
+ * (`apps/mercado-livre/app/api/marketplace/mercado-livre/etiqueta/route.ts`),
+ * and Shopee's refuses one whose block names any other tipo
+ * (`apps/shopee/lib/shopee/etiqueta/alvoEtiqueta.ts`) — so dispatching on a
+ * document that disagrees would only reach a route that says no. A Shopee
+ * pedido imported by THIS app carries no `int_frete` ref (step 5 sets none),
+ * and an imported ML pedido whose ref was degraded to null is the same case.
+ * ⚠️ A MIGRATED legacy Shopee pedido does carry one — the legacy FreteShopee
+ * document's — and dispatches as `'doc'` when that document's tipo is
+ * `shopee`; the Shopee provider reads neither, so nothing here may assume
+ * "Shopee ⇒ `'bloco'`".
  *
  * ⚠️ It WIDENS, never narrows. A block naming a NON-marketplace tipo (Melhor
  * Envio, motoboy, …) changes nothing: the document decides exactly as before,

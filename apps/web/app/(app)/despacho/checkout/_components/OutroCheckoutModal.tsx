@@ -30,11 +30,12 @@ import type { OutroCheckoutRow } from './useOutrosCheckouts';
  * Compile-time exhaustiveness guard for the two report switches below.
  *
  * ⚠️ Both switches are pure side effect (they only fire a toast), so a missing
- * arm is invisible: no type error, no lint error — `@typescript-eslint/switch-
- * exhaustiveness-check` is not enabled anywhere in this repo — and at runtime
- * just silence. Silence is precisely the failure these reporters exist to
- * remove: the stage times out, the mutex releases correctly, and the operator
- * still sees nothing. Deleting an arm now reds `tsc` instead.
+ * arm is invisible at runtime: just silence. Silence is precisely the failure
+ * these reporters exist to remove: the stage times out, the mutex releases
+ * correctly, and the operator still sees nothing. `@typescript-eslint/switch-
+ * exhaustiveness-check` (enabled repo-wide since 1a553b84f) reds lint on a
+ * missing arm, and this guard reds `tsc` as well, so the check does not hang on
+ * the lint config alone.
  */
 function assertNever(value: never): never {
   throw new Error(`Unhandled reprint result: ${JSON.stringify(value)}`);

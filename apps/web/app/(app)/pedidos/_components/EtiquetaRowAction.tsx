@@ -6,9 +6,12 @@
  * generic label (motoboy/outros, PDF or ZPL2), dispatched by carrier `tipo`.
  *
  * The tipo is the DISPATCH tipo (`tipoDeDespacho`, #1523): a marketplace-owned
- * frete block names it outright — a Shopee pedido has no `int_frete` ref at all
- * — and otherwise the int_frete doc does (cached, shared across rows on the same
- * integração). The buy's heavier cart resolution stays lazy in
+ * frete block names it outright, and otherwise the int_frete doc does (cached,
+ * shared across rows on the same integração). A Shopee pedido imported by THIS
+ * app carries no `int_frete` ref (step 5 sets none); a migrated legacy one
+ * carries the legacy FreteShopee doc's ref and dispatches as `'doc'` when that
+ * doc's tipo is `shopee` — the provider reads neither. The buy's heavier cart
+ * resolution stays lazy in
  * `EtiquetaComprarModal`, and the fetch-label + generic-label paths both reuse
  * the shared checkout etiqueta registry (gates + provider).
  *
@@ -103,9 +106,13 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
 
   // A fetch-label button is live when the client of THE provider it reaches is
   // — never another marketplace's (#1523 W15: a Shopee row used to be disabled
-  // on the Mercado Livre client). A tipo with no entry here stays live: a
-  // provider that needs a client reports its own 'error' outcome when it is null.
-  let clienteDoFetchPresente = true;
+  // on the Mercado Livre client).
+  // ⚠️ FAIL CLOSED (#1523 review 2, Q4-3): a fetch tipo with no branch here is
+  // DISABLED, never live. Flipping a marketplace's `canFetchLabel` does not
+  // thread its client to this row — a new fetch provider adds its branch here
+  // (with its `use<Canal>Client()` above) in the same change, or its buttons
+  // stay off. Only read on the 'fetch-label' action below.
+  let clienteDoFetchPresente = false;
   if (tipo === INTEGRACAO_FRETE.mercadoLivre) clienteDoFetchPresente = mlClient !== null;
   else if (tipo === INTEGRACAO_FRETE.shopee) clienteDoFetchPresente = shopeeClient !== null;
 

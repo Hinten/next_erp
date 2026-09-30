@@ -524,27 +524,83 @@ describe('etiqueta — 200: the label bytes', () => {
     expect(r.tipo === 'arquivo' ? r.contentType : null).toBe('text/plain; charset=utf-8');
   });
 
-  it('falls back to `etiqueta-<pedidoId>.pdf|zip` by formato when the header is HIDDEN', async () => {
+  it('⭐ Q1-3: a HIDDEN disposition names the file by the RESPONSE type — a PDF answered to a zpl2 request is `.pdf`', async () => {
     // A backend whose proxy predates `Access-Control-Expose-Headers` answers
-    // the bytes with the disposition invisible to the browser.
+    // the bytes with the disposition invisible to the browser, while the
+    // CORS-safelisted Content-Type stays readable. Shopee may substitute a PDF
+    // for a zpl2 request (R-u): naming it by the REQUEST saved a PDF as `.zip`
+    // (ML #1680's defect, reachable whenever the print agent is down).
     const c = client(async () => etiqueta200(PDF_BYTES, { 'content-type': 'application/pdf' }));
 
     const pdf = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' });
     const zpl = await c.etiqueta({ pedidoId: 'ped-1', formato: 'zpl2' });
 
     expect(pdf.tipo === 'arquivo' ? pdf.filename : null).toBe('etiqueta-ped-1.pdf');
-    expect(zpl.tipo === 'arquivo' ? zpl.filename : null).toBe('etiqueta-ped-1.zip');
+    expect(zpl.tipo === 'arquivo' ? zpl.filename : null).toBe('etiqueta-ped-1.pdf');
   });
 
-  it('a missing Content-Type falls back by formato too', async () => {
+  it.each([
+    ['application/zip', 'etiqueta-ped-1.zip'],
+    ['text/plain', 'etiqueta-ped-1.txt'],
+    ['text/plain; charset=utf-8', 'etiqueta-ped-1.txt'],
+    ['Application/PDF', 'etiqueta-ped-1.pdf'],
+  ])(
+    'the three types the route serves each name their own extension — %s ⇒ %s, whatever was requested',
+    async (contentType, nome) => {
+      const c = client(async () => etiqueta200(PDF_BYTES, { 'content-type': contentType }));
+
+      for (const formato of ['pdf', 'zpl2'] as const) {
+        const r = await c.etiqueta({ pedidoId: 'ped-1', formato });
+
+        expect(r.tipo === 'arquivo' ? r.filename : null).toBe(nome);
+      }
+    },
+  );
+
+  it('⚠️ NEAR MISS — a VISIBLE disposition still wins over the type-derived fallback', async () => {
+    // The fallback is a fallback: the route's own name (`-p1de2.zip`, the
+    // order number) is never replaced by the generic one.
+    const c = client(async () =>
+      etiqueta200(PDF_BYTES, {
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="etiqueta-shopee-260910KJBHUJDM-p1de2.zip"',
+      }),
+    );
+
+    const r = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' });
+
+    expect(r.tipo === 'arquivo' ? r.filename : null).toBe(
+      'etiqueta-shopee-260910KJBHUJDM-p1de2.zip',
+    );
+  });
+
+  it('a missing Content-Type falls back by formato — the only case the request decides', async () => {
     // A `Uint8Array` body sets no Content-Type of its own.
     const c = client(async () => etiqueta200(PDF_BYTES, {}));
 
     const pdf = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' });
     const zpl = await c.etiqueta({ pedidoId: 'ped-1', formato: 'zpl2' });
 
-    expect(pdf.tipo === 'arquivo' ? pdf.contentType : null).toBe('application/pdf');
-    expect(zpl.tipo === 'arquivo' ? zpl.contentType : null).toBe('application/zip');
+    expect(pdf.tipo === 'arquivo' ? [pdf.contentType, pdf.filename] : null).toEqual([
+      'application/pdf',
+      'etiqueta-ped-1.pdf',
+    ]);
+    expect(zpl.tipo === 'arquivo' ? [zpl.contentType, zpl.filename] : null).toEqual([
+      'application/zip',
+      'etiqueta-ped-1.zip',
+    ]);
+  });
+
+  it('a type the route never serves falls back by formato too — and `constructor` is not a type', async () => {
+    // The extension table is a `Map`: an object literal would resolve an
+    // essence of `constructor` to `Object.prototype.constructor`.
+    for (const contentType of ['application/octet-stream', 'constructor']) {
+      const c = client(async () => etiqueta200(PDF_BYTES, { 'content-type': contentType }));
+
+      const r = await c.etiqueta({ pedidoId: 'ped-1', formato: 'zpl2' });
+
+      expect(r.tipo === 'arquivo' ? r.filename : null).toBe('etiqueta-ped-1.zip');
+    }
   });
 
   it('⭐ W16: a 200 `application/json` is a RespostaInvalida, never a label to print', async () => {
@@ -742,6 +798,37 @@ describe('etiqueta — non-2xx: the backend’s own sentence', () => {
 
     expect([a.message, a.status, a.code]).toEqual([frase, 409, 'SHOPEE_ETIQUETA_RECUSADA']);
     expect([b.message, b.status, b.code]).toEqual([a.message, a.status, a.code]);
+  });
+
+  it('Q1-6: the `shopeeCode` rides on the error for support — and ONLY there, never in the message', async () => {
+    const frase = 'confira o pedido na Central do Vendedor';
+    const com = client(async () =>
+      recusa409('recusa-desconhecida', frase, { shopeeCode: 'some_new_code' }),
+    );
+    const sem = client(async () => recusa409('recusa-desconhecida', frase));
+
+    const a = (await com
+      .etiqueta({ pedidoId: 'ped-1', formato: 'pdf' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+    const b = (await sem
+      .etiqueta({ pedidoId: 'ped-1', formato: 'pdf' })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(a.shopeeCode).toBe('some_new_code');
+    expect(a.message).toBe(frase);
+    expect(b.shopeeCode).toBeNull();
+  });
+
+  it('⚠️ NEAR MISS — a non-string or empty `shopeeCode` is null, never coerced', async () => {
+    for (const shopeeCode of [42, '', { a: 1 }, null]) {
+      const c = client(async () => recusa409('recusa-desconhecida', 'frase', { shopeeCode }));
+
+      const err = (await c
+        .etiqueta({ pedidoId: 'ped-1', formato: 'pdf' })
+        .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+      expect(err.shopeeCode).toBeNull();
+    }
   });
 
   it('a 409 carrying the NF-e outcome and `tentarApos` still reads as its sentence', async () => {

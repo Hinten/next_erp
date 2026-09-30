@@ -268,7 +268,7 @@ channel-agnostic:
 | Surface | What a new channel adds |
 | --- | --- |
 | Conta CRUD (`/canais/<channel>`) | A route + `fieldOverrides`. `TableView`/`ObjectView` already run off `integracaoSchema` with `queryParams: { tipo }` — one meta, N screens |
-| Row / bulk actions (estoque, preço, pausar, etiqueta) | **One caps row + one provider file + one `PROVIDERS` row** in `apps/web/lib/marketplace/{estoque,preco,anuncioStatus}/registry.ts` and `lib/checkout/etiqueta/registry.ts` (the etiqueta's caps row is `FREIGHT_TIPO_CAPS`, below) |
+| Row / bulk actions (estoque, preço, pausar, etiqueta) | **One caps row + one provider file + one `PROVIDERS` row** in `apps/web/lib/marketplace/{estoque,preco,anuncioStatus}/registry.ts` and `lib/checkout/etiqueta/registry.ts` — except the etiqueta, which takes more: its caps row is `FREIGHT_TIPO_CAPS`, and a new client or operator question is threaded through its entry points (below) |
 | Chat inbox | An `OrigemConversa` value + an `ORIGEM_RULES` row (`conversaOrigem.ts`) |
 | Conta panel + job cards | Per-channel cards, but the fan-out is shared: `apps/web/lib/marketplace/contaJobs/` (`useContaJobFan` / `startJobsForContas`). Supply a `describe<Job>StartError` next to your client |
 | Produto listing tab | Per-channel today (18 ML components). Generalize only with a second channel in hand |
@@ -290,7 +290,8 @@ channel-agnostic:
   this table, so `registriesAlinhadas.test.ts` never sees it. Its guard is
   `lib/checkout/etiqueta/registry.test.ts` (against `FREIGHT_TIPO_CAPS`); a
   marketplace pedido reaches it with no `int_frete` document through
-  `resolverIntFrete` (Shopee, #1523). See the `freight-integrations` skill.
+  `resolverIntFrete` (Shopee, #1523). Adding one is six steps, not a file and a
+  row — see the `freight-integrations` skill, step 5.
 - ⚠️ **`apps/web` calls the DEPLOYED channel backend even in local dev**, and its
   `call<T>()` casts rather than validates. A UI that looks right against an older
   backend is a known, shipped failure (#1087's capability probe).

@@ -16,8 +16,11 @@ which was one big `switch (tipo)`.
 
 ## Adding a provider
 
-Everything is a **provider file + one registry row**. You never touch the
-gates, the UI bridge, or the other providers.
+A carrier that needs nothing the contract does not already carry is a
+**provider file + one registry row** (steps 1, 2 and 7). A marketplace FETCH
+provider is more: step 3 always, and steps 4–6 whenever it brings its own
+client or asks the operator something. Shopee (#1523, step 15) is the worked
+example — it needed every step below.
 
 1. **Create `providers/<tipo>.ts`** exporting a `CheckoutEtiquetaProvider`:
    - `tipos` — the `IntegracaoFrete` values it claims (a provider may claim
@@ -52,8 +55,26 @@ gates, the UI bridge, or the other providers.
    leaves `providers/unsupportedMarketplace.ts`. The drift guard in
    `registry.test.ts` reds either half alone — the cap alone shows fetch
    buttons that end in "ainda não suportada"; the provider alone never renders
-   its buttons.
-4. **Write a unit test** `providers/<tipo>.test.ts` with injected fakes (see
+   its buttons. ⚠️ Never flip a marketplace's `canPrint`: the fetch flow IS
+   `canFetchLabel`, and `etiquetaRowState` tests `canPrint` first, so a pedido
+   carrying a `printLabelId` would route "Imprimir" to Melhor Envio.
+4. **A new client is a REQUIRED `EtiquetaProviderDeps` member** (Shopee:
+   `shopeeClient`), never an optional one — an optional member compiles at a
+   site that forgot it and answers "cliente indisponível" there. Thread it
+   through the three entry points (`postSave.ts`, `reprintCheckout.ts`, the
+   `/pedidos` row action `EtiquetaRowAction.tsx`) and the checkout screens that
+   feed them (`CheckoutScreen`, `CheckoutSidebar`, `OutrosCheckoutsPane`,
+   `OutroCheckoutModal`).
+5. **A new operator question is a REQUIRED `EtiquetaProviderUi` member**
+   (Shopee: `escolherEnvio`), implemented by every screen that builds a `ui`:
+   the checkout screen; the reprint modal, with the dialog element OUTSIDE its
+   `<Modal>` (the #1096 wedge); and, on `/pedidos`, `EtiquetaAcaoHost`, which
+   serves the page's dialogs so a flow outlives the row's HoverCard.
+6. **The row action's client-presence branch**: `EtiquetaRowAction.tsx` decides
+   per tipo whether a fetch button is live (`mercadoLivre` → `mlClient`,
+   `shopee` → `shopeeClient`, anything else → disabled). A new fetch provider
+   adds its branch, or its buttons stay disabled.
+7. **Write a unit test** `providers/<tipo>.test.ts` with injected fakes (see
    the existing per-provider tests). Do not hit Firestore or the network.
 
 `resolveEtiquetaProvider` falls back on its own: a tipo with no exact provider
@@ -61,7 +82,7 @@ that is `marketplaceOwned` → `unsupportedMarketplace`; anything else → the
 generic label. So the fallbacks stay correct even before you register a new
 marketplace provider.
 
-## Reachability: the integração a Shopee pedido has none of
+## Reachability: the integração a Shopee pedido may have none of
 
 `resolverIntFrete` is the one rule behind all three entry points (the checkout
 post-save, the "Outros Checkouts" reprint and the `/pedidos` row action). When
@@ -69,8 +90,14 @@ the frete block's `externalOptionIntegracao` names a **marketplace-owned** tipo,
 that tipo is the dispatch, with or without an `int_frete` document:
 
 - the document is used only when it names the SAME tipo → `fonte: 'doc'`;
-- otherwise — no `integracaoFreteOuterRef` (every Shopee pedido), a dangling
-  ref, a document of another tipo → `fonte: 'bloco'`, `id: null`, `data: null`.
+- otherwise — no `integracaoFreteOuterRef`, a dangling ref, a document of
+  another tipo → `fonte: 'bloco'`, `id: null`, `data: null`.
+
+A Shopee pedido imported by THIS app carries no ref (step 5 sets none), so it
+dispatches as `'bloco'`. ⚠️ A MIGRATED legacy one carries the legacy
+FreteShopee document's ref and dispatches as `'doc'` when that document's tipo
+is `shopee`. The Shopee provider reads neither, so nothing may assume
+"Shopee ⇒ `'bloco'`" — that holds only for this app's own imports.
 
 It WIDENS, never narrows: a block naming a non-marketplace tipo changes
 nothing, and no document still means "sem integração". `'bloco'` therefore only
@@ -90,24 +117,54 @@ enqueued), waits 15s for ML to process it, then retries the fetch exactly once.
 `shopee` is **implemented** — `providers/shopee.ts` (#1523, step 15; the port of
 the legacy `gerarEtiquetaShippingShopee`). It is a bounded, RESUMABLE loop over
 ONE stateless route on `apps/shopee`, `POST /api/marketplace/shopee/etiqueta`,
-which re-derives the phase from Shopee on every call:
+which re-derives the phase from Shopee on every call. The server files define
+what it answers — the 202 bodies in
+`apps/shopee/lib/shopee/etiqueta/pendenteEtiqueta.ts`, the pickup/drop-off
+question in `modoDeEnvio.ts`, the 200/409/403 responses in
+`respostaEtiqueta.ts` (all three in that folder); `apps/web/lib/shopee/wire.ts`
+mirrors the 202 by name:
 
-| answer                        | what the provider does                                                                   |
-| ----------------------------- | ---------------------------------------------------------------------------------------- |
-| 200 — the file                | prints it (below)                                                                        |
-| 202 `aguardar`                | sleeps `tentarEmMs` clamped to [2 s, 15 s]; ONE blue toast per phase                     |
-| 202 `escolher-envio`          | `ui.escolherEnvio` (pickup address/slot or dropoff); the answer rides the NEXT call only |
-| 202 `baixar-por-pacote`       | one call — and one file — per listed package, with `pacote`                              |
-| 409 / 403 / any other failure | `error` with the backend's own sentence; never retried automatically                     |
+| answer                                      | what the provider does                                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 200 — the file                              | prints it (below)                                                                                                              |
+| 202 `aguardar`                              | sleeps `tentarEmMs` clamped to [2 s, 15 s]; ONE blue toast per phase                                                           |
+| 202 `escolher-envio`                        | `ui.escolherEnvio` (pickup address/slot or dropoff), titled with the pedido; the answer rides the NEXT call only               |
+| 202 `baixar-por-pacote`                     | one call — and one file — per listed package, with `pacote`; toasts say "Etiqueta i de n"                                      |
+| 409 / 403                                   | `error` with the backend's own sentence (a 409's `mensagem`)                                                                   |
+| network failure                             | `error`: "Falha de comunicação com a Shopee…", saying a re-click continues                                                     |
+| our own deadline (the call's `AbortSignal`) | `error`: the give-up sentence (below)                                                                                          |
+| a malformed 2xx (no label, no known 202)    | `error`: the client's `ShopeeClientRespostaInvalidaError` sentence — a version skew, or a request that never reached the route |
 
-- **The bounds** (`SHOPEE_ETIQUETA_LIMITES`): 75 s per call (an `AbortSignal`),
-  120 s of MACHINE time per click — calls and sleeps; the operator's dialog
-  time is excluded — and at most 8 questions. Bounding is safe here because
-  the server never ships a package twice (a repeated `ship_order` reads as
-  arranged) and a reprint is the same document, so "timeout, then re-click"
-  converges. The give-up sentence is chosen from the last 202's `progresso`,
-  never parsed from text: every package arranged ⇒ "O envio JÁ ESTÁ
-  ORGANIZADO…", otherwise "A Shopee ainda não respondeu…".
+None is retried automatically — the re-click is the retry, and it is safe
+(below).
+
+- **The bounds** (`SHOPEE_ETIQUETA_LIMITES`): MACHINE time per click — calls
+  and sleeps; the operator's dialog time is excluded — is `totalMs` (120 s).
+  Before each call `restante = totalMs − gasto`; a call is started only with
+  at least `pisoPorChamadaMs` (45 s: the server's 30 s budget plus one
+  download) left, unless it carries the operator's answer, and its
+  `AbortSignal` fires at `min(porChamadaMs, max(restante, pisoPorChamadaMs))`
+  (`porChamadaMs` = 75 s). ⚠️ The honest bound: no call starts after
+  `totalMs`; a click holds the station at most `totalMs` of machine time, plus
+  at most ONE call of `pisoPorChamadaMs` when that call carries the operator's
+  answer — ≤ 165 s. Not in it: the dialogs, and the print agent's hand-off
+  (unbounded until #1678), once per file. At most 8 questions per PACKAGE.
+  Bounding — and aborting early — is safe here because the route is
+  resumable: a re-click re-derives the phase, the server never ships a package
+  twice (a repeated `ship_order` reads as arranged) and a reprint is the same
+  document, so "timeout, then re-click" converges. The give-up sentence is
+  chosen from the last 202's `progresso`, never parsed from text: every
+  package arranged ⇒ "O envio JÁ ESTÁ ORGANIZADO…", otherwise "A Shopee ainda
+  não respondeu…".
+- **A cancelled question** is not silent: a yellow toast says the label was
+  not printed and points to the pedido's row or "Outros Checkouts" — the
+  checkout resets right after.
+- ⚠️ **Known limit — many packages**: a `baixar-por-pacote` order downloads one
+  label per call against the same budget, and a re-click restarts at the
+  FIRST listed package. An order with many packages may therefore never reach
+  its tail within one click, reprinting its first labels each time (the same
+  documents, never a second shipment). Rare at this seller's volume;
+  documented, not fixed.
 - **The print agent** gets only the three types it routes on, as their BARE
   essence (`mimeParaAgente`: `text/plain; charset=utf-8` ⇒ `text/plain`); any
   other type is DOWNLOADED with a yellow notice, because the agent answers 200

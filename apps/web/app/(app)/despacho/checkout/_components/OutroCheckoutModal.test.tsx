@@ -3,6 +3,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { MODALIDADE_FRETE } from '@delfrance/schemas';
 
+import type { ShopeeClient } from '@/lib/shopee/client';
+import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
+
 import type { OutroCheckoutRow } from './useOutrosCheckouts';
 
 // The reprint helpers do the real Firestore/print I/O — stub them so we can
@@ -37,7 +40,10 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
   };
 }
 
-function modalTree(row: OutroCheckoutRow | null) {
+/** A stand-in Shopee client: only its IDENTITY matters (the modal just threads it). */
+const SHOPEE_SENTINEL = { __sentinela: 'shopee' } as unknown as ShopeeClient;
+
+function modalTree(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | null) {
   return (
     <MantineTestProvider>
       <OutroCheckoutModal
@@ -47,7 +53,7 @@ function modalTree(row: OutroCheckoutRow | null) {
         nfeClient={null}
         freightClient={null}
         mercadoLivreClient={null}
-        shopeeClient={null}
+        shopeeClient={shopeeClient}
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />
@@ -55,8 +61,8 @@ function modalTree(row: OutroCheckoutRow | null) {
   );
 }
 
-function renderModal(row: OutroCheckoutRow | null) {
-  const utils = render(modalTree(row));
+function renderModal(row: OutroCheckoutRow | null, shopeeClient: ShopeeClient | null = null) {
+  const utils = render(modalTree(row, shopeeClient));
   return {
     ...utils,
     /**
@@ -64,7 +70,7 @@ function renderModal(row: OutroCheckoutRow | null) {
      * is the operator closing the reprint modal. One tree, so the two can't
      * drift apart.
      */
-    rerenderWith: (next: OutroCheckoutRow | null) => utils.rerender(modalTree(next)),
+    rerenderWith: (next: OutroCheckoutRow | null) => utils.rerender(modalTree(next, shopeeClient)),
   };
 }
 
@@ -248,6 +254,62 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     // releasing. Asserting DOM presence alone would stay green if `settle` ever
     // broke.
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    await waitFor(() =>
+      expect(h.showCopyableNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Etiqueta enviada para impressão.' }),
+      ),
+    );
+  });
+});
+
+/**
+ * #1523 review 2, Q3 — the component half of the Shopee reprint. The lib layer
+ * (`reprintCheckout.test.ts`) already pins that the reprint USES the client and
+ * the question it is handed; these pin that this SCREEN hands them over.
+ */
+describe('OutroCheckoutModal — a reimpressão Shopee (#1523)', () => {
+  it('Q3-F1: threads the screen Shopee client into the reprint (a hardcoded null is caught)', async () => {
+    renderModal(makeRow({ pedidoId: 'PEDA' }), SHOPEE_SENTINEL);
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
+    expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledWith(
+      expect.objectContaining({ pedidoId: 'PEDA', shopeeClient: SHOPEE_SENTINEL }),
+    );
+  });
+
+  it('Q3-F2 (#1096 twin): a pending Shopee pickup question survives the modal closing and still settles', async () => {
+    // Same wedge as the confirm above, for the Shopee question: were
+    // `envio.element` nested inside the <Modal>, closing the reprint modal
+    // would unmount it while the hook (owned by THIS component, still mounted)
+    // kept its promise pending — so `printInFlight.run`'s `finally` would never
+    // run and both reprint buttons would spin for the life of the pane.
+    h.reprintCheckoutEtiqueta.mockImplementation(async (args: { ui: EtiquetaProviderUi }) => {
+      const escolha = await args.ui.escolherEnvio({
+        pedidoRotulo: 'NUM-A',
+        pacoteRotulo: null,
+        mensagem: 'Escolha como enviar o pacote.',
+        enderecos: [],
+        permiteDropoff: true,
+        escolhaInvalida: false,
+      });
+      return { status: escolha === null ? 'skipped' : 'printed' };
+    });
+
+    const { rerenderWith } = renderModal(makeRow(), SHOPEE_SENTINEL);
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(screen.getByText('Escolha como enviar o pacote.')).toBeTruthy());
+
+    // The operator closes the reprint modal while the question is still open.
+    rerenderWith(null);
+
+    // The question must STILL be in the document…
+    expect(screen.queryByText('Escolha como enviar o pacote.')).not.toBeNull();
+    // …and answering it must SETTLE the flow: the drop-off is the only option,
+    // pre-selected, and only a non-null answer reaches the `printed` toast —
+    // which fires strictly after `printInFlight.run` released the mutex. (A
+    // stubbed `escolherEnvio: async () => null` in the modal's `ui` would end
+    // `skipped`, in silence, and fail here too.)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
     await waitFor(() =>
       expect(h.showCopyableNotification).toHaveBeenCalledWith(
         expect.objectContaining({ message: 'Etiqueta enviada para impressão.' }),

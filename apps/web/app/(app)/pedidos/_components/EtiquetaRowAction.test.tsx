@@ -46,6 +46,19 @@ vi.mock('firebase/firestore', async () => {
   const actual = await vi.importActual<typeof import('firebase/firestore')>('firebase/firestore');
   return { ...actual, getDoc: (ref: unknown) => getDocMock(ref) };
 });
+// A FUTURE fetch provider (Q4-3): Magalu's caps flipped to `canFetchLabel`
+// WITHOUT the row learning its client — the shape of "flip the caps and forget
+// the row". Every other tipo keeps its real caps.
+vi.mock('@delfrance/schemas', async () => {
+  const actual = await vi.importActual<typeof import('@delfrance/schemas')>('@delfrance/schemas');
+  return {
+    ...actual,
+    freightCapsFor: (tipo: string | null | undefined) =>
+      tipo === actual.INTEGRACAO_FRETE.magalu
+        ? { ...actual.freightCapsFor(tipo), canFetchLabel: true }
+        : actual.freightCapsFor(tipo),
+  };
+});
 
 import { EtiquetaAcaoHost } from './EtiquetaAcaoHost';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
@@ -148,6 +161,19 @@ describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
     expect(botao(PDF).disabled).toBe(true);
   });
 
+  it('Q4-3: um tipo de fetch SEM ramo de cliente na linha fica DESLIGADO (falha fechada), mesmo com todos os clientes', () => {
+    clientes.freight = { __freight: true };
+    clientes.ml = ML_CLIENT;
+    clientes.shopee = SHOPEE_CLIENT;
+    renderComHost(pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.magalu }));
+    // It reaches the fetch action (the caps say so)…
+    expect(botao(ZPL2).disabled).toBe(true);
+    expect(botao(PDF).disabled).toBe(true);
+    // …and a click starts nothing.
+    fireEvent.click(botao(ZPL2));
+    expect(emitirMock).not.toHaveBeenCalled();
+  });
+
   it('o Mercado Livre continua dependendo do SEU cliente (e não do da Shopee)', () => {
     clientes.ml = null;
     clientes.shopee = SHOPEE_CLIENT;
@@ -198,6 +224,7 @@ describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
     let resposta: unknown = 'pendente';
     emitirMock.mockImplementation(async (input: EtiquetaProviderInput) => {
       resposta = await input.ui.escolherEnvio({
+        pedidoRotulo: null,
         pacoteRotulo: null,
         mensagem: 'Escolha como enviar o pacote.',
         enderecos: [

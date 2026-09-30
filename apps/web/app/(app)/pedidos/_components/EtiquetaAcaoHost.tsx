@@ -13,18 +13,38 @@
  * a pickup channel), so this is not cosmetic.
  *
  * So the host, mounted ONCE by `PedidosListView` outside every HoverCard, owns
- * three things and nothing else:
+ * four things and nothing else:
  *   - `confirm` — the awaitable confirm dialog (the posted-risk and
  *     direction-mismatch questions);
  *   - `escolherEnvio` — the Shopee pickup/drop-off question;
+ *   - the question QUEUE both of them go through (below);
  *   - the in-flight map keyed by `pedidoId` — `emAndamento(pedidoId)` answers
  *     which action is running, and `executar` refuses a second run for a
  *     pedido that already has one.
  *
+ * ⚠️ The queue (#1523 review 2, Q2-F1): the in-flight guard is PER PEDIDO, so
+ * pedido B's flow runs while A's is still asking — batch printing is the point.
+ * But there is ONE dialog of each kind for the whole page, and each dialog
+ * answers a still-open question as cancelled when a new one arrives. Without
+ * the queue, B's question silently resolved A's as `null`: A ended `skipped`
+ * (a silent outcome on the row), and the operator answered B's question
+ * believing it was A's. So every question — confirm AND pickup, in ONE FIFO —
+ * waits for the previous one's answer; only one is ever on screen, and its
+ * title names its pedido (`pedidoRotulo`). A question still queued when the
+ * page unmounts is answered as cancelled, like the open one, so no flow hangs.
+ *
  * Rejected (R-f): Mantine `keepMounted` on the HoverCard — it would mount every
  * row's `EtiquetaRowAction`, each with its own `int_frete` query.
  */
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactNode } from 'react';
 
 import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
@@ -42,9 +62,9 @@ export type EtiquetaAcaoChave =
   | 'generico-pdf';
 
 export interface EtiquetaAcaoContextValue {
-  /** The awaitable confirm dialog; `true` = the operator confirmed. */
+  /** The awaitable confirm dialog; `true` = the operator confirmed. Queued FIFO. */
   confirm(opts: ConfirmDialogOptions): Promise<boolean>;
-  /** The Shopee pickup/drop-off question (`EtiquetaProviderUi.escolherEnvio`). */
+  /** The Shopee pickup/drop-off question (`EtiquetaProviderUi.escolherEnvio`). Queued FIFO. */
   escolherEnvio: EtiquetaProviderUi['escolherEnvio'];
   /** The action running for this pedido, or `null`. */
   emAndamento(pedidoId: string): EtiquetaAcaoChave | null;
@@ -72,12 +92,66 @@ export function useEtiquetaAcao(): EtiquetaAcaoContextValue | null {
  * itself — the hooks stay unconditional either way.
  */
 export function useEtiquetaAcaoValor(): { valor: EtiquetaAcaoContextValue; elementos: ReactNode } {
-  const { confirm, element: confirmElement } = useConfirmDialog();
-  const { escolherEnvio, element: escolherEnvioElement } = useEscolherEnvio();
+  const { confirm: abrirConfirm, element: confirmElement } = useConfirmDialog();
+  const { escolherEnvio: abrirEscolherEnvio, element: escolherEnvioElement } = useEscolherEnvio();
   // The ref is the GUARD (read synchronously, so two clicks in the same tick
   // cannot both pass); the state is the RENDER copy.
   const emVooRef = useRef(new Map<string, EtiquetaAcaoChave>());
   const [emVoo, setEmVoo] = useState<ReadonlyMap<string, EtiquetaAcaoChave>>(() => new Map());
+
+  // The question FIFO (see the module doc): the tail of the chain, which never
+  // rejects, so one failed question cannot wedge every later one.
+  const filaRef = useRef<Promise<void>>(Promise.resolve());
+  // Every question not yet answered (queued or open) → its "answer cancelled".
+  const pendentesRef = useRef(new Set<() => void>());
+  const montadoRef = useRef(false);
+  useEffect(() => {
+    montadoRef.current = true;
+    const pendentes = pendentesRef.current;
+    return () => {
+      montadoRef.current = false;
+      // ⚠️ The confirm dialog does not settle on unmount (the pickup one does),
+      // so an open confirm would otherwise hold every question queued behind it.
+      for (const cancelar of [...pendentes]) cancelar();
+    };
+  }, []);
+
+  /**
+   * Open `perguntar` once every earlier question has been answered. A question
+   * asked after the host unmounted, or still unanswered when it does, answers
+   * `cancelado` (and a queued one never opens) — the dialogs are gone.
+   */
+  const enfileirar = useCallback(<T,>(perguntar: () => Promise<T>, cancelado: T): Promise<T> => {
+    if (!montadoRef.current) return Promise.resolve(cancelado);
+    const vez = new Promise<T>((resolve, reject) => {
+      let encerrada = false;
+      const cancelar = () => {
+        encerrada = true;
+        pendentesRef.current.delete(cancelar);
+        resolve(cancelado);
+      };
+      pendentesRef.current.add(cancelar);
+      void filaRef.current
+        .then(() => (encerrada ? cancelado : perguntar()))
+        .then(resolve, reject)
+        .finally(() => pendentesRef.current.delete(cancelar));
+    });
+    // The CALLER still sees a rejection; only the queue's tail ignores it.
+    filaRef.current = vez.then(
+      () => undefined,
+      () => undefined,
+    );
+    return vez;
+  }, []);
+
+  const confirm = useCallback(
+    (opts: ConfirmDialogOptions) => enfileirar(() => abrirConfirm(opts), false),
+    [enfileirar, abrirConfirm],
+  );
+  const escolherEnvio = useCallback<EtiquetaProviderUi['escolherEnvio']>(
+    (pergunta) => enfileirar(() => abrirEscolherEnvio(pergunta), null),
+    [enfileirar, abrirEscolherEnvio],
+  );
 
   const executar = useCallback(
     async (pedidoId: string, chave: EtiquetaAcaoChave, fn: () => Promise<void>) => {

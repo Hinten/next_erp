@@ -222,11 +222,16 @@ const baixarPorPacoteSchema = z.object({
   acao: z.literal('baixar-por-pacote'),
   fase,
   /**
-   * One call per package, with `pacote`. `2..50`: one package is not a split,
-   * and 50 is Shopee's own ceiling on a document batch — outside it the loop
-   * that walks this list is not the loop the backend asked for.
+   * One call per package, with `pacote`. `.min(2)`: one package is not a split.
+   *
+   * ⚠️ NO upper bound, on purpose. Shopee's own 50-package ceiling on one
+   * download is a reason the backend asks for THIS loop, not a bound on it — it
+   * sends more than 50 here (truth: `executarEtiqueta.ts`; pinned by
+   * `executarEtiqueta.test.ts` "51 pacotes prontos … ⇒ baixar-por-pacote com os
+   * 51", mirrored in `wire.test.ts`). A `.max(50)` rejected that body and sent
+   * the operator to a deploy that fixed nothing (review 2, Q1-1).
    */
-  pacotes: z.array(z.string().min(1)).min(2).max(50),
+  pacotes: z.array(z.string().min(1)).min(2),
   mensagem: z.string().min(1),
   progresso: shopeeEtiquetaProgressoSchema,
 });

@@ -33,6 +33,7 @@ const SEM_SLOT = { id: '200003', rotulo: 'Rua C, 30 — Cidade C', principal: fa
 
 function pergunta(over: Partial<PerguntaDeEnvio> = {}): PerguntaDeEnvio {
   return {
+    pedidoRotulo: null,
     pacoteRotulo: null,
     mensagem: 'Escolha como enviar o pacote.',
     enderecos: [PRINCIPAL, SECUNDARIO],
@@ -192,6 +193,21 @@ describe('EscolherEnvioDialog — a pergunta de envio da Shopee', () => {
     expect(screen.queryByText(/Pacote 2 de 3/)).toBeNull();
   });
 
+  it('Q2-F3: o título nomeia o PEDIDO (com e sem pacote); sem número, o título fica como era', () => {
+    const soPedido = abrir(pergunta({ pedidoRotulo: '1234' }));
+    expect(screen.getByText('Pedido 1234 — Como enviar o pacote')).toBeTruthy();
+    soPedido.view.unmount();
+
+    const comPacote = abrir(pergunta({ pedidoRotulo: '1234', pacoteRotulo: 'Pacote 2 de 3' }));
+    expect(screen.getByText('Pedido 1234 — Como enviar — Pacote 2 de 3')).toBeTruthy();
+    comPacote.view.unmount();
+
+    // Near-miss: a blank número is no número — never "Pedido  — …".
+    abrir(pergunta({ pedidoRotulo: '  ' }));
+    expect(screen.getByText('Como enviar o pacote')).toBeTruthy();
+    expect(screen.queryByText(/Pedido/)).toBeNull();
+  });
+
   it('Cancelar responde null e fecha', async () => {
     const { resposta } = abrir(pergunta());
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
@@ -214,7 +230,12 @@ describe('EscolherEnvioDialog — a pergunta de envio da Shopee', () => {
     expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
   });
 
-  it('uma segunda pergunta com a primeira pendente responde a primeira como null', async () => {
+  // The hook's OWN last resort, kept on purpose (#1523 review 2, Q2-F1): a view
+  // whose flows can overlap must serialise its questions BEFORE this hook, and
+  // `/pedidos` does (`EtiquetaAcaoHost`'s FIFO, pinned in its own test) — so
+  // this path is no longer reachable there. The single-flow screens (checkout,
+  // reprint) ask one question at a time, and a dangling one must never hang.
+  it('uma segunda pergunta com a primeira pendente responde a primeira como null (último recurso)', async () => {
     const { resposta, api } = abrir(pergunta());
     let segunda!: Promise<RespostaDeEnvio>;
     act(() => {

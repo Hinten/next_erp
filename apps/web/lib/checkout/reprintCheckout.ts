@@ -92,8 +92,9 @@ export async function reprintCheckoutEtiqueta(args: {
 
     // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
     // (1) The registry can legitimately await the OPERATOR: the already-posted
-    // risk confirm and the ME buy modal both block on a human, and a deadline
-    // would cancel a dialog someone is reading. (2) It reaches the side effects —
+    // risk confirm, the ME buy modal and the Shopee pickup/drop-off question
+    // (`ui.escolherEnvio`) all block on a human, and a deadline would cancel a
+    // dialog someone is reading. (2) It reaches the side effects —
     // `comprarEtiqueta` BUYS a label, and the provider opens/prints the label URL
     // once `freightClient.imprimir` returns it. Every bounded stage in this file
     // sits strictly before any side effect, which is what makes "timeout, then
@@ -104,6 +105,9 @@ export async function reprintCheckoutEtiqueta(args: {
     // terms: `imprimir` only FETCHES the URL (a read), so it gives up at 60 s
     // before anything opens; `comprar` waits past the platform's own request
     // ceiling and then reports "may still be in progress", never a plain failure.
+    // The Shopee provider bounds its OWN calls (`SHOPEE_ETIQUETA_LIMITES` in
+    // `etiqueta/providers/shopee.ts`: machine time, dialogs excluded) — safe
+    // there because its route is resumable and never ships a package twice.
     // ⚠️ The Mercado Livre client and the print agent this registry also reaches
     // are NOT bounded yet (#1678) — a stall there still spins until a reload.
     return await emitirOuImprimirEtiqueta({

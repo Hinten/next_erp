@@ -376,6 +376,88 @@ const AGUARDAR_SEM_ESPERA: Record<string, unknown> = {
   progresso: { total: 3, organizados: 3, comRastreio: 0, prontos: 0 },
 };
 
+/**
+ * `apps/shopee/lib/shopee/etiqueta/executarEtiqueta.test.ts` "51 pacotes prontos
+ * do mesmo canal ⇒ baixar-por-pacote com os 51, ZERO download" (review 1,
+ * mutantes 60 e 61) — pinned WHOLE (`toStrictEqual`), its `prontos(51)` package
+ * names and `MENSAGEM_BAIXAR_POR_PACOTE` included. Past Shopee's 50-package
+ * download ceiling the backend asks for the per-package loop ON PURPOSE, so a
+ * cap on `pacotes` here is a label that never prints (review 2, Q1-1).
+ */
+const BAIXAR_51: Record<string, unknown> = {
+  acao: 'baixar-por-pacote',
+  fase: 'baixando',
+  pacotes: Array.from({ length: 51 }, (_, i) => `PACOTE-TESTE-${String(i).padStart(3, '0')}`),
+  mensagem:
+    'Os pacotes deste pedido vão por transportadoras diferentes; cada etiqueta é baixada separadamente.',
+  progresso: { total: 51, organizados: 51, comRastreio: 51, prontos: 51 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/executarEtiqueta.test.ts` "a volta completa",
+ * step 1 ("the question, ZERO ship") — the PICKUP-ONLY question: two addresses,
+ * no dropoff on offer. That test pins `acao`, `fase`, `pacote`, `pacoteRotulo`,
+ * `escolhaInvalida`, `permiteDropoff: false` and the address ids `2001`/`2002`
+ * (`toMatchObject`); the sentence (`MENSAGEM_ESCOLHER_ENVIO`), the labels (as
+ * `modoDeEnvio.ts` projects its `DOIS_ENDERECOS`) and the counts are filled in
+ * here.
+ */
+const ESCOLHER_SO_COLETA: Record<string, unknown> = {
+  acao: 'escolher-envio',
+  fase: 'programando',
+  pacote: 'OFG000000000001',
+  pacoteRotulo: null,
+  mensagem:
+    'Escolha como enviar o pacote: o endereço e o horário da coleta, ou a postagem na agência.',
+  enderecos: [
+    {
+      id: '2001',
+      rotulo: 'Rua do Vendedor, 100',
+      principal: false,
+      horarios: [{ id: 'slot-1', rotulo: '21/09/2026 · 09:00', recomendado: false }],
+    },
+    {
+      id: '2002',
+      rotulo: 'Rua do Vendedor, 200',
+      principal: false,
+      horarios: [{ id: 'slot-2', rotulo: '21/09/2026 · 14:00', recomendado: false }],
+    },
+  ],
+  permiteDropoff: false,
+  escolhaInvalida: false,
+  progresso: { total: 1, organizados: 0, comRastreio: 0, prontos: 0 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/etiquetaCli.test.ts` "uma resposta que a
+ * Shopee não aceita é respondida UMA vez: a segunda pergunta encerra" — the
+ * SECOND call, the RE-ASKED question (`escolhaInvalida: true`, an `enderecoId`
+ * that matches no address). That test pins `tipo` and `escolhaInvalida: true`
+ * on the call's summary; the rest is how `executarEtiqueta.ts`'s `'pergunta'`
+ * arm projects it over that file's `DOIS_ENDERECOS` — `MENSAGEM_ESCOLHA_INVALIDA`
+ * above all, the one sentence only this variant carries.
+ */
+const ESCOLHER_DE_NOVO: Record<string, unknown> = {
+  ...ESCOLHER_SO_COLETA,
+  mensagem:
+    'A opção escolhida não está mais disponível na Shopee — escolha de novo como enviar o pacote.',
+  enderecos: [
+    {
+      id: '2001',
+      rotulo: 'Rua do Vendedor, 100, Cidade do Vendedor',
+      principal: false,
+      horarios: [{ id: 'slot-1', rotulo: '21/09/2026 · 09:00', recomendado: false }],
+    },
+    {
+      id: '2002',
+      rotulo: 'Rua do Vendedor, 200, Cidade do Vendedor',
+      principal: false,
+      horarios: [{ id: 'slot-2', rotulo: '21/09/2026 · 14:00', recomendado: false }],
+    },
+  ],
+  escolhaInvalida: true,
+};
+
 const PENDENTES_DO_BACKEND: [string, Record<string, unknown>][] = [
   ['route.test.ts `AGUARDAR`', AGUARDAR],
   ['route.test.ts `ESCOLHER`', ESCOLHER],
@@ -409,6 +491,15 @@ const PENDENTES_DO_BACKEND: [string, Record<string, unknown>][] = [
     },
   ],
   ['executarEtiqueta.test.ts `tentarEmMs: 0` (the budget ran out mid-poll)', AGUARDAR_SEM_ESPERA],
+  ['executarEtiqueta.test.ts `51 pacotes prontos` (past the 50-package download)', BAIXAR_51],
+  [
+    'executarEtiqueta.test.ts `a volta completa` step 1 (PICKUP ONLY, `permiteDropoff: false`)',
+    ESCOLHER_SO_COLETA,
+  ],
+  [
+    'etiquetaCli.test.ts `respondida UMA vez` call 2 (RE-ASKED, `escolhaInvalida: true`)',
+    ESCOLHER_DE_NOVO,
+  ],
 ];
 
 describe('the label 202 — every variant the BACKEND builds parses here (R-aa)', () => {
@@ -562,19 +653,31 @@ describe('the label 202 — a question must be answerable', () => {
   });
 });
 
-describe('the label 202 — `baixar-por-pacote` lists 2..50 packages', () => {
+describe('the label 202 — `baixar-por-pacote` lists 2 or more packages, with NO upper bound', () => {
   const pacotes = (n: number) =>
     Array.from({ length: n }, (_, i) => `OFG${String(i + 1).padStart(12, '0')}`);
   const baixar = (lista: string[]) => ({ ...BAIXAR, pacotes: lista });
 
-  it('accepts the two bounds', () => {
-    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(2))).success).toBe(true);
-    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(50))).success).toBe(true);
+  it('accepts the lower bound, 50, and ⭐ 51 — past Shopee’s download ceiling, the backend asks for THIS loop', () => {
+    // Q1-1: 50 is Shopee's cap on ONE download, which is WHY the backend sends
+    // the per-package loop for 51 (the `BAIXAR_51` mirror row above). A cap
+    // here turned that body into "faça o deploy de apps/shopee" on every click.
+    for (const n of [2, 50, 51, 120]) {
+      expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(n))).success).toBe(true);
+    }
   });
 
-  it('⚠️ NEAR MISS — rejects one package (not a split) and 51 (past the batch cap)', () => {
+  it('⚠️ NEAR MISS — rejects one package (not a split) and none', () => {
     expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(1))).success).toBe(false);
-    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(51))).success).toBe(false);
+    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar([])).success).toBe(false);
+  });
+
+  it('⚠️ NEAR MISS — rejects an EMPTY package number anywhere in a long list', () => {
+    // The dropped cap is not blanket tolerance: each entry is still echoed
+    // back as `pacote` on its own call.
+    const lista = pacotes(51);
+    lista[50] = '';
+    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(lista)).success).toBe(false);
   });
 });
 
