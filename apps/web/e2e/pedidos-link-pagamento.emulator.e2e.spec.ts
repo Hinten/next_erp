@@ -578,10 +578,17 @@ test.describe.serial('Pedidos e2e — aba Link Pgto (links de pagamento Mercado 
 
     await typeMoney(page, 'Valor do link', '25', { exact: true });
     await page.getByLabel('Nome do pagador', { exact: true }).fill('Paulo');
-    // Turn Pix off: the other three stay accepted.
-    await page
-      .getByRole('switch', { name: TIPO_PAGAMENTO_MP_LABELS[TIPO_PAGAMENTO_MP.pix] })
-      .uncheck();
+    // Turn Pix off: the other three stay accepted. Mantine's thumb sits over the
+    // hidden input and the sticky pedido footer covers the bottom of the viewport,
+    // so `.uncheck()` on the input never gets a clickable point: center the switch
+    // and click its visible label instead (the balanco emulator spec's precedent).
+    const pix = page.getByRole('switch', {
+      name: TIPO_PAGAMENTO_MP_LABELS[TIPO_PAGAMENTO_MP.pix],
+    });
+    await pix.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    const pixId = await pix.getAttribute('id');
+    await page.locator(`label[for="${pixId}"]`).last().click();
+    await expect(pix).not.toBeChecked();
 
     await page.getByRole('button', { name: 'Gerar link', exact: true }).click();
     await expect.poll(() => backend.criar.length, { timeout: 30_000 }).toBe(1);
