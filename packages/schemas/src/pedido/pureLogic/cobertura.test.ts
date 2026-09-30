@@ -100,6 +100,7 @@ describe('coberturaDoPedido — the devolução credit', () => {
       creditoDevolucao: 23,
       valorPago: 0,
       valorQuitado: 23,
+      valorPagoAlemDaDevolucao: 0,
       saldo: 77,
       restante: 77,
       troco: 0,
@@ -340,6 +341,64 @@ describe('coberturaDoPedido — crédito loja is not counted twice (OD1)', () =>
     expect(c.creditoDevolucao).toBe(0);
     expect(c.valorQuitado).toBe(100);
     expect(c.restante).toBe(50);
+  });
+});
+
+describe('coberturaDoPedido — money paid BEYOND the returned value (OD4)', () => {
+  // The one figure that makes a pedido PARTIALLY paid: however the return is
+  // recorded — only in `itensDevolvidos`, or also as a crédito-loja pagamento —
+  // it is never "money beyond" it.
+  it('is 0 for the credit alone and for a crédito loja that only registers it', () => {
+    expect(coberturaDoPedido(troca(150, devolvendo(100)), []).valorPagoAlemDaDevolucao).toBe(0);
+    expect(
+      coberturaDoPedido(troca(150, devolvendo(100)), [creditoLoja(100)]).valorPagoAlemDaDevolucao,
+    ).toBe(0);
+    // A partial registration of the return is still the return.
+    expect(
+      coberturaDoPedido(troca(150, devolvendo(100)), [creditoLoja(40)]).valorPagoAlemDaDevolucao,
+    ).toBe(0);
+  });
+
+  it('NEAR-MISS: one paid cent beside the registered return is money beyond it', () => {
+    const c = coberturaDoPedido(troca(150, devolvendo(100)), [creditoLoja(100), pagamento(0.01)]);
+    expect(c.valorPagoAlemDaDevolucao).toBe(0.01);
+  });
+
+  it('NEAR-MISS: a crédito loja ABOVE the returned value counts its excess', () => {
+    const c = coberturaDoPedido(troca(200, devolvendo(100)), [creditoLoja(150)]);
+    expect(c.valorPagoAlemDaDevolucao).toBe(50);
+  });
+
+  it('a partial crédito loja plus a pix counts only the pix', () => {
+    const c = coberturaDoPedido(troca(150, devolvendo(100)), [creditoLoja(40), pagamento(49.99)]);
+    expect(c.valorPagoAlemDaDevolucao).toBe(49.99);
+  });
+
+  it('equals valorPago when nothing is returned — every non-troca, every entrada', () => {
+    const semDevolucao = coberturaDoPedido(troca(150, null), [creditoLoja(100), pagamento(20)]);
+    expect(semDevolucao.valorPagoAlemDaDevolucao).toBe(semDevolucao.valorPago);
+    expect(semDevolucao.valorPagoAlemDaDevolucao).toBe(120);
+    const entrada = coberturaDoPedido({ ...troca(150, devolvendo(100)), ehSaida: false }, [
+      creditoLoja(100),
+    ]);
+    expect(entrada.valorPagoAlemDaDevolucao).toBe(entrada.valorPago);
+    expect(entrada.valorPagoAlemDaDevolucao).toBe(100);
+  });
+
+  it('is exactly max(0, valorQuitado − valorDevolvido), to the cent', () => {
+    for (const [cl, pix] of [
+      [0, 0],
+      [100, 0],
+      [40, 49.99],
+      [150, 0],
+      [0, 0.01],
+      [99.99, 0.02],
+    ] as const) {
+      const c = coberturaDoPedido(troca(200, devolvendo(100)), [creditoLoja(cl), pagamento(pix)]);
+      expect(c.valorPagoAlemDaDevolucao, `${String(cl)}+${String(pix)}`).toBe(
+        Math.max(0, roundReais(c.valorQuitado - c.valorDevolvido)),
+      );
+    }
   });
 });
 

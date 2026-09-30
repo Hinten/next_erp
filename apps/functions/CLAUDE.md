@@ -419,6 +419,9 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   safe only because the reconcile is idempotent. The estado rule now counts the
   troca devolução credit (minus crédito loja pagamentos) as paid — see
   `coberturaDoPedido` in `packages/schemas/src/pedido/pureLogic/cobertura.ts`.
+  The credit can settle a pedido to `pago`, but only money paid beyond the
+  returned value makes it partially paid (#367 OD4), so a credit-only partial
+  troca stays in its estado with the items editable.
 - **`finalizarBalanco`** (`onCall`) + **`processarBalanco`** (`onTaskDispatched`)
   — the server-owned stock-apply half of the balanço feature (#458), replacing a
   legacy Flutter finalize that wrote client-supplied quantities straight to

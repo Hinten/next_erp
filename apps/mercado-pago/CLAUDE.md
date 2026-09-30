@@ -50,6 +50,9 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   park that resolved an account, and the `dropped` arm names WHICH drop it was. The
   estado rule now counts the troca devolução credit (minus crédito loja pagamentos)
   as paid — see `coberturaDoPedido` in `packages/schemas/src/pedido/pureLogic/cobertura.ts`.
+  The credit can settle a pedido to `pago`, but only money paid beyond the returned
+  value makes it partially paid (#367 OD4): a pendente payment on a credit-only
+  partial troca leaves it where it is.
 - `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
   (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
 - `lib/payments/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth

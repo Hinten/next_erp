@@ -822,7 +822,8 @@ describe('nextPedidoEstado (rule table)', () => {
     expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0, 0)).toBeNull();
   });
   describe('a troca: the credit settles, but only a payment makes it PARTIAL (#367 OD4)', () => {
-    // 150 total, 100 returned (credit), nothing paid: valorQuitado 100, valorPago 0.
+    // 150 total, 100 returned (credit), nothing paid beyond it:
+    // valorQuitado 100, valorPagoAlemDaDevolucao 0.
     it('a credit-only partial leaves every payment-driven estado where it is', () => {
       for (const estado of [
         ESTADO_PEDIDO.iniciado,
@@ -846,6 +847,11 @@ describe('nextPedidoEstado (rule table)', () => {
         estado: 'pago',
         autorizarDespacho: true,
       });
+    });
+
+    it('a pago troca the credit alone still covers stays pago (no downgrade without a payment)', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 150, 0)).toBeNull();
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 200, 0)).toBeNull();
     });
 
     it('a pago troca that the credit alone no longer covers is still downgraded', () => {

@@ -77,8 +77,8 @@ function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
  * snapshot and the pedido's pagamento rows, computes the VALOR QUITADO — the
  * paying pagamentos PLUS the troca's devolução credit minus any paying 'crédito
  * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — and the
- * paying pagamentos alone (only a real payment makes a pedido PARTIALLY paid; a
- * credit alone never does, #367 OD4), applies {@link nextPedidoEstado} and —
+ * money paid beyond the returned value (only that makes a pedido PARTIALLY paid;
+ * the return alone never does, #367 OD4), applies {@link nextPedidoEstado} and —
  * only on a transition — writes the new `estado` and flips `freteInicial.estado`
  * to `despachoAutorizado` through {@link freteComDespachoAutorizado} (only from
  * a pre-authorization estado, or from a
@@ -115,7 +115,7 @@ function applyEstadoTransition(
     typeof pedidoSnap.get('valorCobrado') === 'number'
       ? (pedidoSnap.get('valorCobrado') as number)
       : 0;
-  const { valorQuitado, valorPago } = coberturaDoPedido(
+  const { valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
     {
       valorCobrado: total,
       ehSaida: pedidoSnap.get('ehSaida') as boolean | null | undefined,
@@ -123,7 +123,7 @@ function applyEstadoTransition(
     },
     pagamentos,
   );
-  const next = nextPedidoEstado(estado, total, valorQuitado, valorPago);
+  const next = nextPedidoEstado(estado, total, valorQuitado, valorPagoAlemDaDevolucao);
   if (next === null) return null;
 
   const pedidoPatch: Record<string, unknown> = {
