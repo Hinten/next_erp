@@ -184,3 +184,65 @@ export function pagamentoInesperado(estado: EstadoPedido): boolean {
 export function nfeFiscalEncerrada(estado: EstadoNFe): boolean {
   return estado === ESTADO_NFE.cancelada || estado === ESTADO_NFE.numeracaoInutilizada;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                     Payment links (Mercado Pago, #367)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Estados in which a Mercado Pago payment link may be GENERATED.
+ *
+ * ⚠️ This is a NEW gate, not a port. The legacy app never checked the estado
+ * before creating a link (`.old/packages/pagamento/mercado_pago/lib/src/utils.dart:6-121`
+ * goes straight to the preference POST; its only estado logic is the
+ * `iniciado` flip at `:97-112`). The members below are the legacy
+ * `ESTADOS_PEDIDO.estadosConferirPagamento` set
+ * (`.old/packages/pedido/lib/src/models.dart:2489-2495`), which the legacy app
+ * used to gate the payment RECONCILE — reused here because it is exactly the
+ * set in which an approved payment can still move the pedido to `pago`, so a
+ * link created in one of these estados can actually settle it. Every member
+ * also has `nextPedidoEstado(e, total, total, total) === pago` (pinned by a
+ * cross-module test in `packages/data`), so the allow-list can never drift out
+ * of the payment-driven estados.
+ *
+ * ALLOW-list, like {@link podeTrocar}: a newly-added `EstadoPedido` defaults to
+ * "no link" — the safe default. `pago`, `emProcessamento` and the cancelled /
+ * refunded estados are out: a link there can only overpay (an overpayment
+ * blocks NF-e emission with cStat 866 — Mercado Pago money is never tPag 01
+ * dinheiro, so no troco is allowed) or charge a dead sale.
+ *
+ * This says nothing about the sales CHANNEL: a marketplace pedido sits in
+ * `carrinho` / `escolhendoFormaDePagamento` too, and its estado belongs to the
+ * marketplace ladder. That is a separate reason (`canal`) in
+ * `motivoBloqueioLinkPagamento`.
+ */
+const PODE_GERAR_LINK_PAGAMENTO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
+]);
+
+/** Whether a payment link may be generated from this estado. See {@link PODE_GERAR_LINK_PAGAMENTO}. */
+export function podeGerarLinkPagamento(estado: EstadoPedido): boolean {
+  return PODE_GERAR_LINK_PAGAMENTO.has(estado);
+}
+
+/**
+ * The estado a pedido moves to when its FIRST link is generated, or `null` when
+ * the creation leaves the estado alone.
+ *
+ * Owner decision (#367): flip on creation, as the legacy app did
+ * (`.old/packages/pagamento/mercado_pago/lib/src/utils.dart:97-112`) — and only
+ * from `iniciado`. Every other estado in {@link podeGerarLinkPagamento} is
+ * already at or past "waiting for payment" (or is a retry after a refusal), so
+ * moving it would rewrite a state the operator or a payment set on purpose.
+ * `carrinho` in particular returns `null`: it is not `iniciado`.
+ *
+ * The write is server-side only: `historicoEstadoPedido` is server-owned, so
+ * the flip has to go through the same path that records who did it.
+ */
+export function estadoAoGerarLinkPagamento(estado: EstadoPedido): EstadoPedido | null {
+  return estado === ESTADO_PEDIDO.iniciado ? ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento : null;
+}

@@ -77,7 +77,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     ambiente: input.ambiente,
     utcOffsetMinutes,
   });
-  const emit = buildEmit(input.filial);
+  const emit = buildEmit(input.filial, input.rtc?.isufEmit);
   const dest = buildDest(
     input.cliente,
     input.enderecoDest,
@@ -209,7 +209,8 @@ function escape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './types';
+export type { GeneratorInput, GeneratorItem, GeneratorOutput, GeneratorRtc, TpEmis } from './types';
+export { buildCompraGov, type CompraGovInput } from './compraGov';
 export { NFeChaveError, NFeIdeError };
 // Thrown by `generateNFe` through `buildDetXml` / `buildEmit` / `buildDest` —
 // exported so a caller can name them (apps/nfe's `FALHAS_CONHECIDAS`, #1654).

@@ -550,6 +550,7 @@ describe('salvarFreteShopee — a corrida com a transação do PEDIDO', () => {
           timestamp: NOW_US,
           imposto: null,
           dfeReferenciado: null,
+          ajusteRtc: null,
         },
       ],
       conferencia: {

@@ -67,6 +67,11 @@ schemas. The schema list page:
   schema (`e110111`), serialized on its own and fed into the `#raw` slot.
 - **All leaf values are typed `string`** — NF-e needs exact decimal control
   on the wire; never `number`. Enumerations become string-literal unions.
+- **A `maxOccurs` on an `xs:sequence` does NOT reach its children.** A child
+  is `list: true` only when the ELEMENT carries `maxOccurs`. PL_010f made
+  `infProt`'s `cMsg`+`xMsg` pair a `<xs:sequence maxOccurs="5">`; the META
+  still types each as a single value, and `parse` keeps the first occurrence.
+  Harmless while nothing reads them — model it before anything does.
 - **`xs:choice` members are flattened**, marked optional, and tagged with a
   `choiceGroup` id (members of a group are mutually exclusive).
 - **Same-named elements are deduped.** `xs:choice` branches can declare the

@@ -86,11 +86,9 @@ export const TP_NF_DEBITO_LABELS: Record<TpNFDebito, string> = {
 
 /**
  * `ide/tpNFCredito` (B25.2) — the kind of nota de crédito (finNFe 5), NT 2025.002.
- * ⚠️ `'06'` (retorno por recusa parcial na entrega, NT v1.40) is NOT here yet:
- * the vendored XSD pack predates it and the pre-send gate would refuse it. It
- * arrives with the PL_010f pack.
+ * `'06'` (retorno por recusa parcial na entrega) arrived with the PL_010f pack.
  */
-export const tpNFCreditoSchema = z.enum(['01', '02', '03', '04', '05']);
+export const tpNFCreditoSchema = z.enum(['01', '02', '03', '04', '05', '06']);
 export type TpNFCredito = z.infer<typeof tpNFCreditoSchema>;
 
 /** Named members of {@link tpNFCreditoSchema}. */
@@ -100,6 +98,7 @@ export const TP_NF_CREDITO = {
   retornoRecusaTotal: '03',
   reducaoValores: '04',
   transferenciaCreditoSucessao: '05',
+  retornoRecusaParcial: '06',
 } as const satisfies Record<string, TpNFCredito>;
 
 export const TP_NF_CREDITO_LABELS: Record<TpNFCredito, string> = {
@@ -108,6 +107,7 @@ export const TP_NF_CREDITO_LABELS: Record<TpNFCredito, string> = {
   '03': 'Retorno por recusa total na entrega ou destinatário não localizado',
   '04': 'Redução de valores',
   '05': 'Transferência de crédito na sucessão',
+  '06': 'Retorno por recusa parcial na entrega',
 };
 
 /**

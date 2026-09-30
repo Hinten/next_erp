@@ -24,6 +24,14 @@ on:
       # the real Admin-SDK transaction.
       - 'packages/data/src/admin/pedidoReconcile*.ts'
       - 'packages/data/src/pedido/usecases.ts'
+      # The reconcile's inputs that live in pure modules, GLOBBED for the same
+      # reason as `collection/**` below: the devolução credit
+      # (`coberturaDoPedido`, #367) and `travarInclusaoProduto` live in
+      # `pedido/pureLogic`, and `roundReais` — which decides whether a sum reaches
+      # the total at the cent — lives in `core/money`. An edit to any of them
+      # alone would otherwise skip the only suite running the real transaction.
+      - 'packages/schemas/src/pedido/pureLogic/**'
+      - 'packages/core/src/money/**'
       # A GLOB, deliberately, in place of the single `pagamento.ts` it replaces.
       # Every pedido subcollection the emulator suite parses through belongs here
       # (pagamento, plus the two trigger-written audit trails), and a named-file

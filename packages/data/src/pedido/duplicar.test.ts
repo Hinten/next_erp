@@ -33,6 +33,8 @@ describe('buildDuplicarPedidoSeed', () => {
             chaveAcesso: '35260514200166000187550010000000071000000018',
             nItem: 2,
           },
+          // So do a nota de débito's IBS/CBS adjustment amounts (#330).
+          ajusteRtc: { vIBS: 10, vCBS: 90, competApur: '2026-08' },
         },
       ],
     },
@@ -44,6 +46,7 @@ describe('buildDuplicarPedidoSeed', () => {
     entradasRelacionadas: ['x'],
     saidasRelacionadas: ['y'],
     chNFeReferenciadas: ['CH1'],
+    chNFePagamentoAntecipado: ['CH2'],
     itensDevolvidos: { o0: { p1: [item('p1', 1, 25)] } },
     estoqueAplicado: { depositoId: 'd1', ehSaida: true },
     observacoesInternas: 'nota interna',
@@ -127,6 +130,7 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(values.timestamp).toBeNull();
     expect(values.error).toBeNull();
     expect(values.chNFeReferenciadas).toBeNull();
+    expect(values.chNFePagamentoAntecipado).toBeNull();
     expect(values.itensDevolvidos).toBeNull();
     expect(values.entradasRelacionadas).toBeNull();
     expect(values.saidasRelacionadas).toBeNull();
@@ -199,6 +203,7 @@ describe('buildDuplicarPedidoSeed', () => {
     expect(line?.ensureUniqueId).toBeNull();
     expect(line?.timestamp).toBeNull();
     expect(line?.dfeReferenciado).toBeNull();
+    expect(line?.ajusteRtc).toBeNull();
     // Everything that describes WHAT is being sold survives.
     expect(line?.produtoUid).toBe('p1');
     expect(line?.quantidade).toBe(3);

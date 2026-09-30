@@ -1,9 +1,13 @@
 # Firebase App Hosting backend config for apps/mercado-pago.
 # API-only service for the Mercado Pago payments integration: OAuth connect
 # (account linking) + the connected-account status route + the payment-notification
-# webhook receiver (#531; enqueues onto the processMercadoPagoNotification queue).
+# webhook receiver (#531; enqueues onto the processMercadoPagoNotification queue)
+# + the payment-link routes (#367: links/criar, links/cancelar, links/sincronizar).
 # The queued task handler + reprocess sweep run in the nested Cloud Functions
-# codebase; payment-link generation (#367) lands in a later PR.
+# codebase — and so does the link AUTO-CLOSE (it rides the webhook reconcile), so
+# a change to lib/payments/links needs BOTH this backend and functions:mercado-pago
+# redeployed, functions:mercado-pago FIRST: a link created here before the
+# auto-close is live would stay payable after its first payment.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -39,6 +43,15 @@ runConfig:
 #   MERCADO_PAGO_TASKS_REGION    OPTIONAL — region of the notification function/queue
 #                                (falls back to FUNCTIONS_REGION; no default —
 #                                unset, the first enqueue throws)
+#   MERCADO_PAGO_LINK_COMPARTILHADO_ENABLED
+#                                OPTIONAL — "1" lets links/criar mint a SHARED link
+#                                (one Checkout Pro link paid N times, #367). Read on
+#                                every request. ⚠️ Leave UNSET until live probe P2
+#                                (scripts/probe-link-pagamento.ts) has shown that
+#                                Mercado Pago accepts a second payment on one
+#                                preference; per-person links (the default) never
+#                                need it. Not a secret — a plain console var, set by
+#                                a human, so it has NO `env:` entry below.
 #   WEB_APP_URL                  apps/web origin (the callback redirects back here)
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 

@@ -10,10 +10,13 @@ import { TP_NF_CREDITO, TP_NF_DEBITO } from '../operacao';
 import {
   CCLASSTRIB_DO_TP_NF_CREDITO,
   CCLASSTRIB_DO_TP_NF_DEBITO,
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
   MODO_GRUPOS_IMPOSTO,
   cClassTribCompativelComTipo,
   cClassTribDoTipo,
   cClassTribVinculadoATipoDeNota,
+  grupoDeAjusteDoTipo,
   modoGruposImposto,
 } from './notaCreditoDebito';
 
@@ -126,6 +129,8 @@ describe('modoGruposImposto — B25-80', () => {
     [5, null, '03', MODO_GRUPOS_IMPOSTO.completo],
     [5, null, '04', MODO_GRUPOS_IMPOSTO.completo],
     [5, null, '05', MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
+    // PL_010f: crédito 06 (retorno por recusa parcial) joins the B25-80 exceptions.
+    [5, null, '06', MODO_GRUPOS_IMPOSTO.completo],
     [6, '01', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
     [6, '04', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
     [6, '06', null, MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
@@ -137,5 +142,48 @@ describe('modoGruposImposto — B25-80', () => {
     [6, null, '03', MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
   ] as const)('finNFe %s débito %s crédito %s → %s', (finNFe, tpNFDebito, tpNFCredito, modo) => {
     expect(modoGruposImposto({ finNFe, tpNFDebito, tpNFCredito })).toBe(modo);
+  });
+});
+
+describe('grupoDeAjusteDoTipo — derived from the Anexo III indicators', () => {
+  const G = GRUPO_AJUSTE_RTC;
+  it.each([
+    [6, TP_NF_DEBITO.transferenciaCreditoCooperativa, null, G.transfCred],
+    [6, TP_NF_DEBITO.anulacaoCreditoSaidaImuneIsenta, null, G.ajusteCompet],
+    [6, TP_NF_DEBITO.debitoNotaNaoProcessada, null, G.ajusteCompet],
+    [6, TP_NF_DEBITO.multaJuros, null, null],
+    [6, TP_NF_DEBITO.transferenciaCreditoSucessao, null, G.transfCred],
+    [6, TP_NF_DEBITO.pagamentoAntecipado, null, null],
+    [6, TP_NF_DEBITO.perdaEstoque, null, G.estornoCred],
+    [6, TP_NF_DEBITO.desenquadramentoSimples, null, G.ajusteCompet],
+    [5, null, TP_NF_CREDITO.multaJuros, null],
+    [5, null, TP_NF_CREDITO.creditoPresumidoZfm, G.credPresIBSZFM],
+    [5, null, TP_NF_CREDITO.retornoRecusaTotal, null],
+    [5, null, TP_NF_CREDITO.reducaoValores, null],
+    [5, null, TP_NF_CREDITO.transferenciaCreditoSucessao, G.transfCred],
+    [5, null, TP_NF_CREDITO.retornoRecusaParcial, null],
+    // Near-misses: a tipo on the wrong finalidade, and a normal nota.
+    [5, TP_NF_DEBITO.perdaEstoque, null, null],
+    [1, null, null, null],
+  ] as const)('finNFe %s débito %s crédito %s → %s', (finNFe, tpNFDebito, tpNFCredito, grupo) => {
+    expect(grupoDeAjusteDoTipo({ finNFe, tpNFDebito, tpNFCredito })).toBe(grupo);
+  });
+});
+
+describe('COMPETENCIA_AAAA_MM', () => {
+  it('accepts a real month and refuses its near-misses', () => {
+    for (const ok of ['2026-01', '2026-09', '2026-12'])
+      expect(COMPETENCIA_AAAA_MM.test(ok)).toBe(true);
+    for (const bad of [
+      '2026-00',
+      '2026-13',
+      '2026-9',
+      '26-09',
+      '2026/09',
+      ' 2026-09',
+      '2026-09-01',
+    ]) {
+      expect(COMPETENCIA_AAAA_MM.test(bad), bad).toBe(false);
+    }
   });
 });

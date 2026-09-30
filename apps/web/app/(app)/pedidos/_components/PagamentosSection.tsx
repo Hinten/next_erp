@@ -47,6 +47,7 @@ import {
   type EstadoPedido,
   type FormaPagamento,
   type Pagamento,
+  type PedidoCoberturaInput,
   type StatusPagamento,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
@@ -119,14 +120,18 @@ export function PagamentosSection({
   pedidoId,
   disabled,
   estado,
-  pedidoTotal = 0,
+  pedidoCobertura = { valorCobrado: 0 },
 }: {
   pedidoId: string;
   disabled?: boolean;
   /** Live pedido estado — drives the soft "unexpected payment" warning. */
   estado?: EstadoPedido;
-  /** Pedido charged total (`valorCobrado`) — drives the "valor restante" autofill. */
-  pedidoTotal?: number;
+  /**
+   * Pedido charged total (`valorCobrado`) plus its devolução (`ehSaida` +
+   * `itensDevolvidos`) — drives the "valor restante" autofill, which nets the
+   * troca devolução credit off the amount still owed (`coberturaDoPedido`).
+   */
+  pedidoCobertura?: PedidoCoberturaInput;
 }) {
   const q = useMemo(() => {
     const base = pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId });
@@ -405,11 +410,12 @@ export function PagamentosSection({
   // owed (drives the Valor autofill — excludes the payment being edited).
   const vis = pagamentoFieldVisibility(form.forma);
   const remaining = remainingToPay(
-    pedidoTotal,
+    pedidoCobertura,
     (data ?? []).map(({ id, data: p }) => ({
       id,
       valor: p.valor,
       status_pagamento: p.status_pagamento,
+      forma_de_pagamento: p.forma_de_pagamento,
     })),
     editing?.id ?? null,
   );

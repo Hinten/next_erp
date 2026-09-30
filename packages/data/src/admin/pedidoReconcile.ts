@@ -6,21 +6,19 @@ import type {
   Transaction,
 } from 'firebase-admin/firestore';
 import {
-  ESTADO_FRETE,
+  coberturaDoPedido,
   ehMarketplace,
   idFromRef,
+  parseRef,
   integracaoTipoSchema,
-  isFreteMarketplaceOwned,
   nowMicros,
-  podeAutorizarDespacho,
-  sumPagamentosPagos,
   travarInclusaoProduto,
-  type EstadoFrete,
   type EstadoPedido,
   type Pagamento,
+  type PagamentoCoberturaRow,
 } from '@delfrance/schemas';
 
-import { nextPedidoEstado } from '../pedido/usecases';
+import { freteComDespachoAutorizado, nextPedidoEstado } from '../pedido/usecases';
 import { integracaoCollection, pagamentoCollection, pedidoCollection } from './collections';
 
 /**
@@ -45,7 +43,9 @@ export class PedidoReconcileNotFoundError extends Error {
  * `metodoPagamentoOuterRef` / `dataCadastro`, …). Without the inversion a
  * redelivery would rebuild the doc from the mapper output and wipe those edits.
  * `lastProviderUpdate` is the update-if-newer key. `ultimaModificacao` remains
- * local recency and is made monotonic on every winning write.
+ * local recency and is made monotonic on every winning write. The server-stamped
+ * attribution keys are NOT here — they follow the opposite rule, see
+ * {@link GATEWAY_FILL_ONCE}.
  */
 const GATEWAY_OWNED = [
   'valor',
@@ -61,14 +61,161 @@ const GATEWAY_OWNED = [
 ] as const;
 
 /**
+ * The server-stamped ATTRIBUTION keys (#367): which payment link a Mercado Pago
+ * payment came from and the payer's first name. Filled from the FIRST delivery
+ * that carries a value and never overwritten or cleared afterwards — the
+ * deliberate opposite of {@link GATEWAY_OWNED}, which overlays every defined
+ * incoming value.
+ *
+ * Why they are NOT in `GATEWAY_OWNED`: that loop would let any later delivery
+ * rewrite them, and a later delivery is exactly the one most likely to be
+ * poorer — a redelivery whose mapper could not read `metadata.link_id` (or a
+ * card-less state of the same payment) arrives with the key absent, and a
+ * mapper that ever produced a DIFFERENT value would silently re-attribute money
+ * already credited to another link. The attribution answers "who paid what",
+ * which the first observation fixes for good. The two keys are also
+ * `serverOwnedFields` on `pagamentoMeta`, so no operator edit can have put a
+ * competing value in the stored doc.
+ *
+ * The fill condition is `stored == null && incoming != null`, i.e. an ABSENT
+ * stored key and an explicit `null` behave the same (both are "not filled yet").
+ * A stale delivery (`lastProviderUpdate` not newer) returns before this runs, so
+ * an attribution can only be filled by a delivery that is also fresh enough to
+ * win the update-if-newer guard — the next real event fills it.
+ */
+const GATEWAY_FILL_ONCE = ['linkPagamentoId', 'primeiroNomePagador'] as const;
+
+/**
+ * One pagamento doc as far as the coverage sum is concerned: `valor` (0 when not
+ * a number), `status_pagamento`, and `forma_de_pagamento` (`null` when not a
+ * number — the 'crédito loja' subtraction reads it). Shared by both callers so
+ * the two cannot map a stored row differently.
+ */
+function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
+  const forma: unknown = d.get('forma_de_pagamento');
+  return {
+    valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
+    status_pagamento: d.get('status_pagamento') as number | null | undefined,
+    forma_de_pagamento: typeof forma === 'number' ? forma : null,
+  };
+}
+
+/**
+ * One pagamento as far as the payment-link quota is concerned: which link it is
+ * attributed to and whether it was ever approved. Raw `unknown`s, because a stored
+ * legacy doc can hold anything in either key — only `=== linkId` and `!= null` are
+ * ever asked of them.
+ */
+interface LinhaDeAtribuicao {
+  linkPagamentoId: unknown;
+  dataAprovacao: unknown;
+}
+
+function linhaDeAtribuicaoOf(d: DocumentSnapshot): LinhaDeAtribuicao {
+  return { linkPagamentoId: d.get('linkPagamentoId'), dataAprovacao: d.get('dataAprovacao') };
+}
+
+/**
+ * How many of `linhas` were attributed to the payment link `linkId` AND ever
+ * approved (`dataAprovacao != null`) — the count a link's quota is measured
+ * against (`linkAtingiuCota`, #367).
+ *
+ * "Ever approved" and not "currently paying" on purpose: a quota is spent by the
+ * approval, so a status that later moves (a refund, a chargeback) does not by
+ * itself hand the quota back — the count keys on the approval STAMP
+ * (`dataAprovacao`, the mapper's `date_approved` pass-through), never on
+ * `status_pagamento`. A pending, rejected or never-approved row (`dataAprovacao`
+ * null) does not count, and neither does a row attributed to another link or to
+ * none.
+ *
+ * Pure over the rows the caller already read INSIDE its transaction: it adds no
+ * read (a query by `linkPagamentoId` would need a declared index on Enterprise,
+ * root `CLAUDE.md` rule 1) and no write.
+ */
+function contarAprovadosDoLink(linhas: ReadonlyArray<LinhaDeAtribuicao>, linkId: string): number {
+  return linhas.filter((l) => l.linkPagamentoId === linkId && l.dataAprovacao != null).length;
+}
+
+/**
+ * The `metodo_pgto` doc id a pagamento's `metodoPagamentoOuterRef` names, or
+ * `null` when it is not a string or names another collection. Compares the
+ * collection too, so an equal id under another collection never matches.
+ */
+function contaMetodoPgto(ref: unknown): string | null {
+  if (typeof ref !== 'string') return null;
+  const { collection, id } = parseRef(ref);
+  return collection === 'metodo_pgto' && id !== '' ? id : null;
+}
+
+/**
+ * The stored pagamento the LEGACY app wrote for the same Mercado Pago payment, or
+ * `null`. Legacy never passed a doc id when it saved an MP pagamento: the doc got
+ * an AUTO id, and the MP payment id lived only in the `id` FIELD — legacy matched
+ * an existing payment by `id` field AND account
+ * (`.old/packages/pagamento/mercado_pago/lib/src/tasks.dart:41-44`, `element.id ==
+ * pagamento.id && element.metodopagamento_id == conta.id`). This reconcile keys on
+ * the doc id `String(payment.id)` instead, so without this lookup every
+ * post-cutover redelivery, refund, chargeback or sync of a migrated payment would
+ * CREATE a second doc beside the legacy one: `valorPago` double-counted, and the
+ * estado / freight flipped on money that arrived once (#367 PR 1b).
+ *
+ * Matched only when BOTH hold — the same rule legacy used: the `id` field equals
+ * the incoming payment's id, and the account is the same `metodo_pgto` doc
+ * ({@link contaMetodoPgto}: collection AND id — legacy wrote the canonical
+ * `documents/metodo_pgto/<id>`, the same form the mapper emits). The same payment
+ * id on another account is a different payment and never matches. A doc AT the
+ * incoming id is found first by the caller, so this only runs when there is none.
+ *
+ * ⚠️ Several legacy docs for ONE payment (a legacy duplicate) resolve
+ * deterministically to the lowest doc id, and ONLY that one is replaced in the
+ * sum — the others keep counting. Legacy dropped every doc with the same `id`
+ * field from its sum (`tasks.dart:41`), but excluding them here alone would not
+ * help: `reconcilePedidoEstado` (the callable) sums every stored doc. Duplicates
+ * are a corpus question, not a matching one — count them before the migration
+ * window and dedupe there if any exist.
+ */
+function pagamentoLegadoDoMesmoPagamento(
+  docs: ReadonlyArray<DocumentSnapshot>,
+  pagamentoId: string,
+  pagamento: Pagamento,
+): DocumentSnapshot | null {
+  const conta = contaMetodoPgto(pagamento.metodoPagamentoOuterRef);
+  if (conta === null) return null;
+  // Legacy compared the `id` FIELD with the incoming pagamento's own `id`
+  // (`element.id == pagamento.id`); the mapper sets it to the same string as the
+  // doc id, so `pagamentoId` is only the fallback.
+  const idPagamento = pagamento.id ?? pagamentoId;
+  const candidatos = docs.filter((d) => {
+    if (d.id === pagamentoId) return false;
+    return (
+      d.get('id') === idPagamento && contaMetodoPgto(d.get('metodoPagamentoOuterRef')) === conta
+    );
+  });
+  if (candidatos.length === 0) return null;
+  return [...candidatos].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0] ?? null;
+}
+
+/**
  * Shared tail of both admin reconciles: given the pedido's already-read
- * snapshot and the (already computed) `valorPago`, applies {@link
- * nextPedidoEstado} and — only on a transition — writes the new `estado` and
- * flips `freteInicial.estado` to `despachoAutorizado` ONLY from a
- * pre-authorization estado ({@link podeAutorizarDespacho}) — or from a malformed
- * block carrying no estado at all, which the flip repairs — and never on a
- * marketplace-owned frete block (#702). Returns the new estado, or `null` when
- * no transition applies.
+ * snapshot and the pedido's pagamento rows, computes the VALOR QUITADO — the
+ * paying pagamentos PLUS the troca's devolução credit minus any paying 'crédito
+ * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — and the
+ * money paid beyond the returned value (only that makes a pedido PARTIALLY paid;
+ * the return alone never does, #367 OD4), applies {@link nextPedidoEstado} and —
+ * only on a transition — writes the new `estado` and flips `freteInicial.estado`
+ * to `despachoAutorizado` through {@link freteComDespachoAutorizado} (only from
+ * a pre-authorization estado, or from a
+ * malformed block carrying no estado at all, which the flip repairs — and never
+ * on a marketplace-owned frete block, #702). Returns the new estado, or `null`
+ * when no transition applies.
+ *
+ * ⚠️ The credit is derived from `pedidoSnap` — the caller's `tx.get` of the
+ * pedido — so `itensDevolvidos` / `ehSaida` are re-read on every transaction
+ * attempt like `estado` and `valorCobrado` (root `CLAUDE.md` rule 7), and it adds
+ * NO read: {@link reconcilePedidoFromPagamento} has already written the pagamento
+ * by the time this runs and Firestore forbids a read after a write. The rows
+ * arrive already read (or, for the incoming payment, already known), each
+ * carrying `forma_de_pagamento`.
  *
  * The `historicoEstadoPedido` audit row is NOT written here: the
  * `onPedidoChanged` trigger observes the pedido write below and records
@@ -84,14 +231,22 @@ function applyEstadoTransition(
   tx: Transaction,
   pedidoRef: DocumentReference,
   pedidoSnap: DocumentSnapshot,
-  valorPago: number,
+  pagamentos: ReadonlyArray<PagamentoCoberturaRow>,
 ): EstadoPedido | null {
   const estado = pedidoSnap.get('estado') as EstadoPedido;
   const total =
     typeof pedidoSnap.get('valorCobrado') === 'number'
       ? (pedidoSnap.get('valorCobrado') as number)
       : 0;
-  const next = nextPedidoEstado(estado, total, valorPago);
+  const { valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
+    {
+      valorCobrado: total,
+      ehSaida: pedidoSnap.get('ehSaida') as boolean | null | undefined,
+      itensDevolvidos: pedidoSnap.get('itensDevolvidos'),
+    },
+    pagamentos,
+  );
+  const next = nextPedidoEstado(estado, total, valorQuitado, valorPagoAlemDaDevolucao);
   if (next === null) return null;
 
   const pedidoPatch: Record<string, unknown> = {
@@ -99,30 +254,10 @@ function applyEstadoTransition(
     ultimaModificacao: nowMicros(),
   };
   if (next.autorizarDespacho) {
-    const frete = pedidoSnap.get('freteInicial');
-    if (frete && typeof frete === 'object') {
-      const freteRecord = frete as Record<string, unknown>;
-      const freteEstado = freteRecord.estado as EstadoFrete | undefined;
-      // Authorize dispatch ONLY from a state that precedes authorization, and never
-      // on a freight block the marketplace importer owns (#702). This used to be
-      // `!isFreteJaPostado(...)`, which answers the label-reprint question and let a
-      // `pago` transition regress `empacotado` / `emSeparacao` / `checkFinalizado`
-      // back to `despachoAutorizado` — erasing warehouse progress, and (via
-      // `CAMPOS_OBSERVADOS`) re-running the estoque sync against a state that no
-      // longer removes stock.
-      //
-      // The ownership tipo is read off `externalOptionIntegracao`, which lives on the
-      // frete block itself — no extra transaction read, which matters because
-      // `reconcilePedidoFromPagamento` has already written the pagamento by the time
-      // this runs and Firestore forbids a read after a write.
-      const podeAutorizar = !freteEstado || podeAutorizarDespacho(freteEstado);
-      const marketplaceOwned = isFreteMarketplaceOwned(
-        freteRecord.externalOptionIntegracao as string | null | undefined,
-      );
-      if (podeAutorizar && !marketplaceOwned) {
-        pedidoPatch.freteInicial = { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
-      }
-    }
+    // The frete rule (#702) — including why it needs no extra transaction read —
+    // lives with `freteComDespachoAutorizado`; `null` means "leave the block alone".
+    const frete = freteComDespachoAutorizado(pedidoSnap.get('freteInicial'));
+    if (frete !== null) pedidoPatch.freteInicial = frete;
   }
   tx.update(pedidoRef, pedidoPatch);
 
@@ -151,15 +286,20 @@ function applyEstadoTransition(
  *  4. upserts the incoming pagamento at the FIXED id `pagamentoId`: on an UPDATE
  *     the merge is INVERTED — the stored doc is the base and only the
  *     {@link GATEWAY_OWNED} fields are overlaid from the incoming pagamento, so
- *     operator-edited fields (nFat, vencimento, juros, …) survive a redelivery;
+ *     operator-edited fields (nFat, vencimento, juros, …) survive a redelivery,
+ *     and the {@link GATEWAY_FILL_ONCE} attribution keys (`linkPagamentoId`,
+ *     `primeiroNomePagador`) are filled only while still empty;
  *     a CREATE writes the full mapped doc and mints `dataCadastro`;
- *  5. recomputes `valorPago` from the in-tx set (with the upserted payment's
- *     incoming values) via the shared {@link sumPagamentosPagos} rule;
+ *  5. recomputes the valor quitado from the in-tx set (with the upserted
+ *     payment's incoming values) via the shared `coberturaDoPedido` rule: the
+ *     paying pagamentos (`sumPagamentosPagos`) PLUS the troca's devolução credit,
+ *     read off the pedido snapshot of step 1, minus paying 'crédito loja'
+ *     pagamentos (legacy `tasks.dart:64-68`);
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
  *     `freteInicial.estado` to `despachoAutorizado` — only from a
- *     pre-authorization estado ({@link podeAutorizarDespacho}) and never on a
- *     marketplace-owned frete block (#702) — and stamps the pedido
+ *     pre-authorization estado and never on a marketplace-owned frete block
+ *     (#702, {@link freteComDespachoAutorizado}) — and stamps the pedido
  *     `ultimaModificacao` (µs).
  *
  * The `historicoEstadoPedido` audit row for a transition is written by the
@@ -167,7 +307,34 @@ function applyEstadoTransition(
  * usuário — this path runs on the Admin SDK and has no end user behind it.
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
- * transition applies), plus whether the delivery was skipped as stale.
+ * transition applies), whether the delivery was skipped as stale, and — for a
+ * payment that came through a payment link — how many of the pedido's pagamentos
+ * that link has now been paid by (`aprovadosDoLink`, below).
+ *
+ * ⚠️ `aprovadosDoLink` is `null` unless the INCOMING pagamento carries a
+ * `linkPagamentoId` L. Otherwise it is the number of pagamentos attributed to L
+ * with `dataAprovacao != null` ("ever approved", {@link contarAprovadosDoLink}),
+ * counted from the SAME in-transaction pagamento read the estado is decided on —
+ * no extra read, no query. It exists so the webhook can close a link whose quota
+ * is spent (`apps/mercado-pago` `encerrarLinkSeCompleto`), and it is returned on
+ * BOTH exits, which is the point:
+ *
+ *  - the WRITE exit counts the stored docs with the target doc (`alvoId`) REPLACED
+ *    by what was actually written — the incoming {@link GATEWAY_OWNED} values and
+ *    the fill-once attribution — so the payment that just got approved counts
+ *    even though it was not approved in the stored copy;
+ *  - the STALE exit counts the stored docs as they are, except that a target doc
+ *    with NO stored attribution is read as attributed to L: the delivery is stale
+ *    because an earlier one already wrote this very payment, and that write is
+ *    what a crashed close must be finished from. A target that never got the
+ *    attribution (a payment stored before its delivery carried the link, or a
+ *    legacy doc) would otherwise count for no link at all, and the close that
+ *    failed would never be retried. Only the TARGET gets this reading — another
+ *    unattributed row says nothing about L — and only when it was approved.
+ *
+ * The caller acts on the count AFTER this transaction commits (a Mercado Pago
+ * call cannot run inside it). The count is a fact about the docs read here, not a
+ * decision this transaction writes on.
  *
  * Datetime units: `lastProviderUpdate` / `ultimaModificacao` / `dataCadastro`
  * are MICROSECONDS since epoch (`nowMicros()`), the pagamento/pedido standard.
@@ -179,8 +346,16 @@ export async function reconcilePedidoFromPagamento(
     pagamentoId: string;
     pagamento: Pagamento;
   },
-): Promise<{ transition: EstadoPedido | null; skippedStale: boolean }> {
+): Promise<{
+  transition: EstadoPedido | null;
+  skippedStale: boolean;
+  aprovadosDoLink: number | null;
+}> {
   const { pedidoId, pagamentoId, pagamento } = input;
+  // The link the INCOMING payment came through, or null. Read from the input (the
+  // mapped delivery) — the stored side is never asked which link this delivery is
+  // about, only which docs already belong to it.
+  const linkId = pagamento.linkPagamentoId ?? null;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -190,7 +365,16 @@ export async function reconcilePedidoFromPagamento(
     // The atomic read the client SDK can't do (#308): the whole payment set,
     // in the same snapshot as the pedido.
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-    const existing = pagamentosSnap.docs.find((d) => d.id === pagamentoId) ?? null;
+    // The stored doc this delivery updates: the one at the gateway-stable id, or —
+    // for a payment the LEGACY app wrote — the auto-id doc carrying the same MP
+    // payment id in its `id` FIELD for the same account ({@link
+    // pagamentoLegadoDoMesmoPagamento}). `alvoId` is where the write lands and
+    // which doc the sum below replaces; both are decided from THIS transaction's
+    // read (root CLAUDE.md rule 7).
+    const existing =
+      pagamentosSnap.docs.find((d) => d.id === pagamentoId) ??
+      pagamentoLegadoDoMesmoPagamento(pagamentosSnap.docs, pagamentoId, pagamento);
+    const alvoId = existing?.id ?? pagamentoId;
 
     // Update-if-newer guard: a stored pagamento at least as fresh as the incoming
     // one (same or newer `lastProviderUpdate`) means this is a stale/duplicate
@@ -208,11 +392,26 @@ export async function reconcilePedidoFromPagamento(
         typeof incomingMod === 'number' &&
         existingMod >= incomingMod
       ) {
-        return { transition: null, skippedStale: true };
+        // Nothing is written, but the count still comes back (see the function
+        // doc): the stored docs as they are, the target doc read as belonging to
+        // the incoming link when it carries no attribution of its own yet.
+        const aprovadosDoLink =
+          linkId === null
+            ? null
+            : contarAprovadosDoLink(
+                pagamentosSnap.docs.map((d) =>
+                  d.id === alvoId && d.get('linkPagamentoId') == null
+                    ? { ...linhaDeAtribuicaoOf(d), linkPagamentoId: linkId }
+                    : linhaDeAtribuicaoOf(d),
+                ),
+                linkId,
+              );
+        return { transition: null, skippedStale: true, aprovadosDoLink };
       }
     }
 
-    // Upsert the pagamento at its fixed (gateway-stable) id.
+    // Upsert the pagamento at `alvoId`: its fixed (gateway-stable) id, or the
+    // legacy auto-id doc matched above for the same payment.
     let toWrite: Record<string, unknown>;
     if (existing) {
       // UPDATE — INVERTED merge: the stored doc is the base (operator edits and
@@ -226,12 +425,18 @@ export async function reconcilePedidoFromPagamento(
       // INCOMING unknown key can still throw on write.
       const existingData = pagamentoCollection.parseRead(
         existing.data() ?? {},
-        pagamentoCollection.docPath({ pedidoId }, pagamentoId),
+        pagamentoCollection.docPath({ pedidoId }, alvoId),
       ) as unknown as Record<string, unknown>;
       const incoming = pagamento as unknown as Record<string, unknown>;
       toWrite = { ...existingData };
       for (const key of GATEWAY_OWNED) {
         if (incoming[key] !== undefined) toWrite[key] = incoming[key];
+      }
+      // The attribution keys are decided from the stored side, which is the
+      // in-tx `existing` snapshot above (root CLAUDE.md rule 7): a value already
+      // stored wins over whatever this delivery carries.
+      for (const key of GATEWAY_FILL_ONCE) {
+        if (toWrite[key] == null && incoming[key] != null) toWrite[key] = incoming[key];
       }
     } else {
       // CREATE — the full mapped doc, plus the first-seen `dataCadastro` stamp
@@ -249,25 +454,41 @@ export async function reconcilePedidoFromPagamento(
     if (typeof toWrite.lastProviderUpdate !== 'number') {
       toWrite.lastProviderUpdate = writeNow;
     }
-    const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, pagamentoId);
-    tx.set(pagamentoRef, pagamentoCollection.parse(toWrite) as DocumentData);
+    const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, alvoId);
+    const escrito = pagamentoCollection.parse(toWrite);
+    tx.set(pagamentoRef, escrito as DocumentData);
 
-    // Recompute valorPago from the in-tx set, replacing the upserted doc with the
-    // incoming values, using the SAME status filter the client path uses.
-    const paymentsForSum = pagamentosSnap.docs
-      .filter((d) => d.id !== pagamentoId)
-      .map((d) => ({
-        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
-        status_pagamento: d.get('status_pagamento') as number | null | undefined,
-      }));
+    // The payment set the coverage is summed over: the in-tx docs, replacing the
+    // upserted one with the incoming values, using the SAME status filter the
+    // client path uses. `forma_de_pagamento` rides along for the 'crédito loja'
+    // subtraction (`coberturaDoPedido`); the devolução credit itself comes from
+    // `pedidoSnap`, so this adds no read after the `tx.set` above.
+    const paymentsForSum: PagamentoCoberturaRow[] = pagamentosSnap.docs
+      .filter((d) => d.id !== alvoId)
+      .map(coberturaRowOf);
     paymentsForSum.push({
       valor: pagamento.valor,
       status_pagamento: pagamento.status_pagamento,
+      forma_de_pagamento: pagamento.forma_de_pagamento,
     });
-    const valorPago = sumPagamentosPagos(paymentsForSum);
 
-    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
-    return { transition, skippedStale: false };
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, paymentsForSum);
+
+    // The link's quota count: the stored docs with the target REPLACED by what
+    // this transaction just wrote (`escrito` — the overlay and fill-once result,
+    // not the incoming delivery), so the payment approved by THIS delivery counts
+    // and a stored attribution to ANOTHER link is not re-attributed to this one.
+    const aprovadosDoLink =
+      linkId === null
+        ? null
+        : contarAprovadosDoLink(
+            [
+              ...pagamentosSnap.docs.filter((d) => d.id !== alvoId).map(linhaDeAtribuicaoOf),
+              { linkPagamentoId: escrito.linkPagamentoId, dataAprovacao: escrito.dataAprovacao },
+            ],
+            linkId,
+          );
+    return { transition, skippedStale: false, aprovadosDoLink };
   });
 }
 
@@ -308,8 +529,15 @@ export async function reconcilePedidoFromPagamento(
  * only surviving attribution for this path is the `logger.info` line in
  * `reconciliarPagamentoPedido.ts`, which ages out with log retention.
  *
+ * The estado it settles is measured against the pedido's VALOR QUITADO, not the
+ * bare payment sum: a troca's devolução credit counts as paid beside the
+ * pagamentos (`coberturaDoPedido`, see {@link applyEstadoTransition}), so a
+ * pedido paid "the difference" reaches `pago` and an even swap needs no
+ * pagamento at all.
+ *
  * `aposAlterarTotal` serves the OTHER caller: a pedido save that moved
- * `valorCobrado` (#703, `deveReconciliarAposSalvar`). It returns
+ * `valorCobrado` or the devolução credit (#703, `deveReconciliarAposSalvar`).
+ * It returns
  * `{ transition: null }` without writing unless, per THIS transaction's reads:
  *
  *  1. the estado still lets the editor change the total
@@ -351,14 +579,13 @@ export async function reconcilePedidoEstado(
     }
 
     const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
-    const valorPago = sumPagamentosPagos(
-      pagamentosSnap.docs.map((d) => ({
-        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
-        status_pagamento: d.get('status_pagamento') as number | null | undefined,
-      })),
-    );
 
-    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
+    const transition = applyEstadoTransition(
+      tx,
+      pedidoRef,
+      pedidoSnap,
+      pagamentosSnap.docs.map(coberturaRowOf),
+    );
     return { transition };
   });
 }
@@ -380,8 +607,17 @@ export async function reconcilePedidoEstado(
  * pagamento change, fixable by hand); the cost of the opposite is a stranded or
  * prematurely-`pago` marketplace order. A pedido with no integração at all was
  * never written by a marketplace importer, so it proceeds.
+ *
+ * Exported for the Mercado Pago payment-link route (#367, `apps/mercado-pago`),
+ * which needs the SAME answer before it mints a link: {@link
+ * reconcilePedidoFromPagamento} carries no such gate, so a link payment landing
+ * on a marketplace pedido would settle it straight to `pago` and authorize
+ * dispatch past the channel's own ladder (the #703 / #791 hazard). The route
+ * MUST call this with the `tx` and `pedidoSnap` of ITS OWN transaction — the
+ * answer is a decision, and a value read before the transaction is exactly what
+ * rule 7 says a race makes stale.
  */
-async function canalDecideOEstado(
+export async function canalDecideOEstado(
   tx: Transaction,
   db: FirebaseAdminFirestore,
   pedidoSnap: DocumentSnapshot,

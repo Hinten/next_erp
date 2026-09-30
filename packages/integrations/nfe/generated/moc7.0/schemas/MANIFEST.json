@@ -31,6 +31,18 @@
       ]
     },
     {
+      "name": "PL_010f_v1.04",
+      "nt": "NT 2025.002 v1.50/v1.51 (Reforma Tributária) + NT 2026.007 v1.00",
+      "publishedAt": "2026-08-31",
+      "role": "leiaute-overlay",
+      "description": "Supersedes PL_010d as the leiaute overlay. Of the five XSDs in the zip only leiauteNFe_v4.00.xsd and DFeTiposBasicos_v1.00.xsd changed content; nfe_v4.00.xsd and tiposBasico_v4.00.xsd differ only by the trailing newline and xmldsig-core-schema_v1.01.xsd is identical, so those three were NOT overlaid. Adds tpNFCredito 06, ide/cIndOp, emit/ISUFEmit, tpImp 6 (DANFE Simplificado Tipo 2); makes emit/IE optional; types vNFTot as TDec_1302 (0.00 allowed); renames IS/pISEspec to IS/adRemIS; gIBSCBS becomes TCIBS_NFe (TCIBS + optional gCBS/gALCZFMCBS); restructures the monofásica group; gCompraGov gains refDFeAnt; infProt cMsg+xMsg may repeat up to 5 times with xMsg up to 255 (a sequence maxOccurs the codegen does not propagate — see codegen.md). Generated type count 177 -> 194. Files normalised to LF. Pinned by test/xsd/pl010f.test.ts.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=BMPFMBoln3w=",
+      "overlays": [
+        "leiauteNFe_v4.00.xsd",
+        "DFeTiposBasicos_v1.00.xsd"
+      ]
+    },
+    {
       "name": "PL_010d_v1.03",
       "nt": "NT 2026.004 v1.01 (CNPJ Alfanumérico)",
       "publishedAt": "2026-07-01",

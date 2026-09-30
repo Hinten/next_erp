@@ -417,7 +417,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
   Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
   estado auto-transition only works once this is DEPLOYED — see the Deploying section in `apps/functions/CLAUDE.md`.
-  The pedido editor calls it too, after a save that moved `valorCobrado`, with
+  The pedido editor calls it too, after a save that moved `valorCobrado` (or,
+  #367, the troca devolução credit counted beside the payments), with
   `aposAlterarTotal: true` (#703) — the server then reconciles only while
   the estado IT reads still lets the total move (so a Mercado Livre pedido
   promoted to `emProcessamento` in the gap is left alone) AND the pedido's
@@ -426,7 +427,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Storage lifecycle exports include:
   would jump to `pago` past #791's prerequisites). ⚠️ Deploy this BEFORE
   the web that sends the flag: an older deploy strips the unknown key and
   reconciles unguarded. The web retries transient failures (≤3 attempts) —
-  safe only because the reconcile is idempotent.
+  safe only because the reconcile is idempotent. The estado rule now counts the
+  troca devolução credit (minus crédito loja pagamentos) as paid — see
+  `coberturaDoPedido` in `packages/schemas/src/pedido/pureLogic/cobertura.ts`.
+  The credit can settle a pedido to `pago`, but only money paid beyond the
+  returned value makes it partially paid (#367 OD4), so a credit-only partial
+  troca stays in its estado with the items editable.
 - **`finalizarBalanco`** (`onCall`) + **`processarBalanco`** (`onTaskDispatched`)
   — the server-owned stock-apply half of the balanço feature (#458), replacing a
   legacy Flutter finalize that wrote client-supplied quantities straight to

@@ -6,7 +6,8 @@ import { callReconciliarPagamentoPedido } from '@/lib/pedidos/clientPort';
 const RECONCILE_TOTAL_ERROR_ID = 'pedido-reconcile-total-falhou';
 
 /**
- * After a pedido save that moved `valorCobrado`, re-derive `estado` from the
+ * After a pedido save that moved `valorCobrado` or the troca devolução credit
+ * (`resultadoDoSave`, #367), re-derive `estado` from the
  * payments (#703). Before this, only a PAGAMENTO mutation ran the reconcile, so
  * an edit that pushed the total across the paid sum left `estado` stale until
  * the next payment change.

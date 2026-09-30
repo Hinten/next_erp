@@ -11,6 +11,7 @@ import {
   MODO_GRUPOS_IMPOSTO,
   ORIGEM,
   FORMA_PAGAMENTO,
+  GRUPO_AJUSTE_RTC,
   INTEGRACAO_TIPO,
   UF_SIGLA,
   freteDoPedidoSchema,
@@ -23,14 +24,17 @@ import {
 import { generateNFe } from '@delfrance/integrations-nfe';
 
 import {
+  ajusteDoItem,
   apportionDescontos,
   assertNotaBuildable,
   buildGeneratorInput,
   buildGenItems,
   isInterstateFor,
   modoGruposFor,
+  rtcDaNota,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import {
+  lerAjusteRtc,
   lerDfeReferenciado,
   type EntregaDoPedido,
   type FiscalItem,
@@ -1697,12 +1701,13 @@ describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
     const semCfop = [item({ imposto: { ...IMPOSTO_RTC, cfop: null } as FiscalItem['imposto'] })];
     const msg = orchestratorMessage(() =>
       assertNotaBuildable(
-        bundleWith({ ...DEBITO_06, tpNFDebito: '01', cfop: null }),
+        // Crédito 05 is a tipo the ERP does not emit (contradictory in NT v1.40).
+        bundleWith({ ...OP, tipo: 0, finNFe: 5, tpNFCredito: '05', tpNFDebito: null, cfop: null }),
         semCfop,
         true,
       ),
     );
-    expect(msg).toContain('ainda não emite');
+    expect(msg).toContain('ainda não é emitido');
     expect(msg).not.toContain('cfop');
   });
 
@@ -1731,5 +1736,244 @@ describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
     expect(
       orchestratorMessage(() => assertNotaBuildable(bundle('11222333000181'), ITENS_RTC, true)),
     ).toContain('(SEFAZ 269)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 part 3 — a nota de débito whose tipo binds a fixed cClassTrib: the tipo
+// supplies CST + cClassTrib + group, the item its amounts (`itens[*].ajusteRtc`).
+// ---------------------------------------------------------------------------
+
+describe('lerAjusteRtc — best-effort read of the stored item field', () => {
+  it('reads the stored shape and absence', () => {
+    expect(lerAjusteRtc(null)).toBeNull();
+    expect(lerAjusteRtc(undefined)).toBeNull();
+    expect(lerAjusteRtc({ vIBS: 1, vCBS: 9, competApur: '2026-04' })).toEqual({
+      vIBS: 1,
+      vCBS: 9,
+      competApur: '2026-04',
+    });
+  });
+
+  it('keeps a malformed value as UNUSABLE amounts — refused by name, never dropped', () => {
+    expect(lerAjusteRtc('x')).toEqual({ vIBS: Number.NaN, vCBS: Number.NaN, competApur: null });
+    expect(lerAjusteRtc({ vIBS: '1', vCBS: 2, competApur: 202604 })).toEqual({
+      vIBS: Number.NaN,
+      vCBS: 2,
+      competApur: null,
+    });
+  });
+});
+
+describe('nota de débito with an IBS/CBS adjustment (#330, part 3)', () => {
+  /** The produto's OWN classification — which an adjustment item must not emit. */
+  const IMPOSTO_RTC = {
+    ...item({}).imposto,
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  } as FiscalItem['imposto'];
+  const debito = (tpNFDebito: string) => ({
+    ...OP,
+    tipo: 1,
+    finNFe: 6,
+    tpNFDebito,
+    tpNFCredito: null,
+  });
+  const comAjuste = (ajusteRtc: FiscalItem['ajusteRtc']) => [
+    item({ imposto: IMPOSTO_RTC, ajusteRtc }),
+  ];
+  const gerar = (tpNFDebito: string, ajusteRtc: FiscalItem['ajusteRtc']) => {
+    const base = fullBundle({});
+    return buildGeneratorInput(
+      { ...base, operacao: { ...base.operacao, ...debito(tpNFDebito) } } as PedidoBundle,
+      comAjuste(ajusteRtc),
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+  };
+
+  it('ajusteDoItem: the tipo supplies classification + group, the item its amounts', () => {
+    const it = comAjuste({ vIBS: 1, vCBS: 9, competApur: null })[0]!;
+    expect(ajusteDoItem(bundleWith(debito('05')), it)).toEqual({
+      cClassTrib: '800001',
+      grupo: GRUPO_AJUSTE_RTC.transfCred,
+      vIBS: 1,
+      vCBS: 9,
+      competApur: null,
+    });
+    // Near-misses: a tipo with no fixed cClassTrib, and an item without amounts.
+    expect(ajusteDoItem(bundleWith(debito('06')), it)).toBeUndefined();
+    expect(ajusteDoItem(bundleWith(debito('05')), { ...it, ajusteRtc: null })).toBeUndefined();
+  });
+
+  it('débito 05: the det carries 800001 + gTransfCred, not the produto classification', () => {
+    const input = gerar('05', { vIBS: 10, vCBS: 90, competApur: null });
+    const det = input.itens[0]!.impostoXml;
+    expect(det).toBe(
+      '<imposto><IBSCBS><CST>800</CST><cClassTrib>800001</cClassTrib>' +
+        '<gTransfCred><vIBS>10.00</vIBS><vCBS>90.00</vCBS></gTransfCred></IBSCBS></imposto>',
+    );
+    // W47/W56: IBSCBSTot sums gIBSCBS only — the transfer never enters vIBS/vCBS.
+    expect(input.totalXml).toContain('<vBCIBSCBS>0.00</vBCIBSCBS>');
+    expect(input.totalXml).not.toContain('<gEstornoCred>');
+  });
+
+  it('débito 07: ICMS stays, gEstornoCred on the det AND in IBSCBSTot', () => {
+    const input = gerar('07', { vIBS: 3, vCBS: 27, competApur: null });
+    expect(input.itens[0]!.impostoXml).toContain('<ICMS>');
+    expect(input.itens[0]!.impostoXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+    expect(input.totalXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+  });
+
+  it('pre-flight: an adjustment item without its amounts is refused, naming it', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(bundleWith(debito('01')), comAjuste(null), true),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': Item 1: Informe os valores de IBS e CBS do ajuste deste item (aba Fiscal).",
+    );
+  });
+
+  it('pre-flight: 1129 on a zero transfer; a positive one passes', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(
+          bundleWith(debito('01')),
+          comAjuste({ vIBS: 0, vCBS: 0, competApur: null }),
+          true,
+        ),
+      ),
+    ).toContain('(SEFAZ 1129)');
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('01')),
+        comAjuste({ vIBS: 0, vCBS: 0.01, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: UB14-70 judges the cClassTrib the TIPO supplies, not the produto’s', () => {
+    // The produto says 000001; débito 05 binds 800001 — and 800001 is emitted.
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('05')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: a future competApur on gAjusteCompet is refused', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(debito('02')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: '2999-01' }),
+        true,
+      ),
+    );
+    expect(msg).toContain('mês da emissão ou um mês anterior');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #331 — dPrevEntrega, gPagAntecipado and ISUFEmit, only with the RTC on.
+// ---------------------------------------------------------------------------
+
+describe('rtcDaNota — NT 2025.002 ide/emit fields (#331)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  /** 2026-09-29 12:00 in São Paulo. */
+  const DH_EMI = new Date('2026-09-29T12:00:00-03:00');
+  /** µs of a São Paulo wall-clock instant. */
+  const us = (iso: string) => new Date(iso).getTime() * 1000;
+  const bundle = (over: {
+    previsao?: string | null;
+    finNFe?: number;
+    isuf?: string | null;
+    pedido?: Record<string, unknown>;
+  }) =>
+    ({
+      ...fullBundle({ pedido: over.pedido }),
+      operacao: { ...OP, finNFe: over.finNFe ?? 1 },
+      filial: { sede: { estado: 'SP' }, isuf: over.isuf ?? null },
+      frete:
+        over.previsao === undefined
+          ? null
+          : { dataPrevisaoEntrega: over.previsao == null ? null : us(over.previsao) },
+    }) as unknown as PedidoBundle;
+
+  it('emits the forecast as a São Paulo date, inside the B10a windows', () => {
+    // 23:30 on 2026-10-14 in São Paulo is already the 15th in UTC — the date is SP's.
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-10-14T23:30:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({ dPrevEntrega: '2026-10-14' });
+  });
+
+  it('omits the forecast SEFAZ would refuse — never refuses the nota', () => {
+    const dentro = '2026-10-14T12:00:00-03:00';
+    expect(rtcDaNota(bundle({ previsao: dentro }), DH_EMI, MODALIDADE_FRETE.fob)).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: dentro, finNFe: 2 }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-09-28T12:00:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(rtcDaNota(bundle({ previsao: null }), DH_EMI, MODALIDADE_FRETE.cif)).toEqual({});
+  });
+
+  it('carries the pedido’s pagamento-antecipado chaves and the filial’s ISUF', () => {
+    expect(
+      rtcDaNota(
+        bundle({ pedido: { chNFePagamentoAntecipado: [CHAVE, ''] }, isuf: '200123456' }),
+        DH_EMI,
+        MODALIDADE_FRETE.semTransporte,
+      ),
+    ).toEqual({ pagAntecipado: [CHAVE], isufEmit: '200123456' });
+  });
+
+  it('buildGeneratorInput passes them only with the RTC on', () => {
+    const b = { ...fullBundle({ pedido: { chNFePagamentoAntecipado: [CHAVE] } }) } as PedidoBundle;
+    const on = buildGeneratorInput(b, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true);
+    expect(on.rtc).toEqual({ pagAntecipado: [CHAVE] });
+    // RTC off: a filial ISUF is simply not emitted (the pedido chaves above would
+    // be REFUSED instead — the next test).
+    const zfm = {
+      ...fullBundle({}),
+      filial: { isuf: '200123456', sede: { estado: 'AM', codigoMunicipio: '1302603' } },
+    } as unknown as PedidoBundle;
+    expect('rtc' in buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao')).toBe(false);
+    expect(
+      buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true).rtc,
+    ).toEqual({ isufEmit: '200123456' });
+  });
+
+  it('pre-flight: pagamento-antecipado chaves with the RTC off are refused (policy)', () => {
+    const b = bundleWith(OP, { chNFePagamentoAntecipado: [CHAVE] });
+    expect(orchestratorMessage(() => assertNotaBuildable(b, ITEM_100, false))).toBe(
+      "pedido 'PED-TEST': As NF-e de pagamento antecipado só são referenciadas com a Reforma Tributária ativa nesta filial.",
+    );
+    expect(assertNotaBuildable(b, ITEM_100, true)).toBeUndefined();
+  });
+
+  it('pre-flight: 1185 — an ISUF on a filial outside the ZFM/ALC', () => {
+    const b = (codigoMunicipio: string) =>
+      ({
+        ...bundleWith(OP),
+        filial: { isuf: '200123456', sede: { estado: 'SP', codigoMunicipio } },
+      }) as unknown as PedidoBundle;
+    expect(orchestratorMessage(() => assertNotaBuildable(b('3550308'), ITEM_100, true))).toContain(
+      '(SEFAZ 1185)',
+    );
+    // Near-miss: RTC off — ISUFEmit is not on the wire, nothing to judge.
+    expect(assertNotaBuildable(b('3550308'), ITEM_100, false)).toBeUndefined();
   });
 });

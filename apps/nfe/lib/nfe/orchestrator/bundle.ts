@@ -20,6 +20,7 @@ import {
   regraImpostoSchema,
   toDocPathOrNull,
   ufSchema,
+  type AjusteRtcEntrada,
   type Cliente,
   type DfeReferenciadoEntrada,
   type Endereco,
@@ -188,6 +189,25 @@ export interface FiscalItem {
    * message, instead of prep throwing or the reference silently vanishing.
    */
   readonly dfeReferenciado: DfeReferenciadoEntrada | null;
+  /**
+   * The item's `ajusteRtc` — the IBS/CBS amounts of a nota de débito whose tipo
+   * binds a fixed cClassTrib (#330) — read best-effort the same way: a stored
+   * value that is not the shape keeps NaN amounts, which the document rules
+   * refuse by name.
+   */
+  readonly ajusteRtc: AjusteRtcEntrada | null;
+}
+
+/** Best-effort read of a stored `itens[*].ajusteRtc` (see {@link FiscalItem}). */
+export function lerAjusteRtc(raw: unknown): AjusteRtcEntrada | null {
+  if (raw == null) return null;
+  if (typeof raw !== 'object') return { vIBS: Number.NaN, vCBS: Number.NaN, competApur: null };
+  const r = raw as { vIBS?: unknown; vCBS?: unknown; competApur?: unknown };
+  return {
+    vIBS: typeof r.vIBS === 'number' ? r.vIBS : Number.NaN,
+    vCBS: typeof r.vCBS === 'number' ? r.vCBS : Number.NaN,
+    competApur: typeof r.competApur === 'string' ? r.competApur : null,
+  };
 }
 
 /** Best-effort read of a stored `itens[*].dfeReferenciado` (see {@link FiscalItem}). */
@@ -846,6 +866,7 @@ export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
           vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
           vProdBruto: roundReais(precoDeVenda * quantidade),
           dfeReferenciado: lerDfeReferenciado(e.dfeReferenciado),
+          ajusteRtc: lerAjusteRtc(e.ajusteRtc),
         },
       });
     });

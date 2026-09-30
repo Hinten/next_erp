@@ -2,6 +2,7 @@
 
 import {
   ActionIcon,
+  Box,
   Button,
   Fieldset,
   Group,
@@ -23,14 +24,20 @@ import { rootError, rowFieldError, validatedIndices } from './editorErrors';
 interface FaixaRow {
   cepInicial?: string;
   cepFinal?: string;
-  custo?: number;
-  valor?: number;
-  prazo?: number;
+  custo?: number | null;
+  valor?: number | null;
+  prazo?: number | null;
   [DELETE_MARK]?: boolean;
   [key: string]: unknown;
 }
 
-const EMPTY_ROW: FaixaRow = { cepInicial: '', cepFinal: '', custo: 0, valor: 0, prazo: 0 };
+const EMPTY_ROW: FaixaRow = {
+  cepInicial: '',
+  cepFinal: '',
+  custo: null,
+  valor: null,
+  prazo: null,
+};
 
 function toRows(value: unknown): FaixaRow[] {
   return Array.isArray(value) ? (value as FaixaRow[]) : [];
@@ -76,7 +83,7 @@ export function FaixaCepEditor({
           const marked = row[DELETE_MARK] === true;
           const errIdx = errIndices[i] ?? -1;
           return (
-            <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
+            <Group key={i} align="flex-start" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
               <TextInput
                 label="CEP Inicial"
                 aria-label={`CEP Inicial ${i + 1}`}
@@ -100,8 +107,8 @@ export function FaixaCepEditor({
               <DecimalInput
                 label="Custo"
                 ariaLabel={`Custo ${i + 1}`}
-                value={row.custo ?? 0}
-                onChange={(n) => patchRow(i, { custo: n ?? 0 })}
+                value={row.custo ?? null}
+                onChange={(n) => patchRow(i, { custo: n })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
                 error={rowFieldError(errorTree, errIdx, 'custo')}
@@ -112,8 +119,8 @@ export function FaixaCepEditor({
               <DecimalInput
                 label="Preço"
                 ariaLabel={`Preço ${i + 1}`}
-                value={row.valor ?? 0}
-                onChange={(n) => patchRow(i, { valor: n ?? 0 })}
+                value={row.valor ?? null}
+                onChange={(n) => patchRow(i, { valor: n })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
                 error={rowFieldError(errorTree, errIdx, 'valor')}
@@ -124,8 +131,10 @@ export function FaixaCepEditor({
               <NumberInput
                 label="Prazo (dias)"
                 aria-label={`Prazo ${i + 1}`}
-                value={row.prazo ?? 0}
-                onChange={(v) => patchRow(i, { prazo: typeof v === 'number' ? Math.trunc(v) : 0 })}
+                value={row.prazo ?? ''}
+                onChange={(v) =>
+                  patchRow(i, { prazo: typeof v === 'number' ? Math.trunc(v) : null })
+                }
                 onBlur={onBlur}
                 disabled={disabled || marked}
                 error={rowFieldError(errorTree, errIdx, 'prazo')}
@@ -133,33 +142,35 @@ export function FaixaCepEditor({
                 allowDecimal={false}
                 w={100}
               />
-              {marked ? (
-                <Group gap={4} wrap="nowrap">
-                  <Text size="xs" c="red" fw={500}>
-                    Será excluída
-                  </Text>
+              <Box pt={25}>
+                {marked ? (
+                  <Group gap={4} wrap="nowrap">
+                    <Text size="xs" c="red" fw={500}>
+                      Será excluída
+                    </Text>
+                    <ActionIcon
+                      type="button"
+                      variant="subtle"
+                      aria-label={`Desfazer exclusão da faixa ${i + 1}`}
+                      onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                      disabled={disabled}
+                    >
+                      <IconArrowBackUp size={16} />
+                    </ActionIcon>
+                  </Group>
+                ) : (
                   <ActionIcon
                     type="button"
                     variant="subtle"
-                    aria-label={`Desfazer exclusão da faixa ${i + 1}`}
-                    onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                    color="red"
+                    aria-label={`Excluir faixa ${i + 1}`}
+                    onClick={() => patchRow(i, { [DELETE_MARK]: true })}
                     disabled={disabled}
                   >
-                    <IconArrowBackUp size={16} />
+                    <IconTrash size={16} />
                   </ActionIcon>
-                </Group>
-              ) : (
-                <ActionIcon
-                  type="button"
-                  variant="subtle"
-                  color="red"
-                  aria-label={`Excluir faixa ${i + 1}`}
-                  onClick={() => patchRow(i, { [DELETE_MARK]: true })}
-                  disabled={disabled}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              )}
+                )}
+              </Box>
             </Group>
           );
         })}

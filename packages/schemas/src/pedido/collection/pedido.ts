@@ -121,6 +121,25 @@ export const dfeReferenciadoItemSchema = z.strictObject({
 export type DfeReferenciadoItem = z.infer<typeof dfeReferenciadoItemSchema>;
 
 /**
+ * The IBS/CBS amounts one item of a nota de débito carries when its tipo binds
+ * a fixed cClassTrib (NT 2025.002 UB14-70): débito 01/05 carry them in
+ * `gTransfCred`, 02/03/08 in `gAjusteCompet` (with `competApur`, AAAA-MM),
+ * 07 in `gEstornoCred`. They are AMOUNTS the operator states, never rates — no
+ * alíquota applies to a transfer, an adjustment or a reversal of credit.
+ *
+ * Which group they ride in is the operação's tipo, deliberately not stored
+ * here: a changed tipo re-reads the same amounts instead of leaving a stale
+ * group name behind. Loose like `dfeReferenciado`: the page model checks the
+ * values, `violacoesDoDocumento` whether the tipo needs them.
+ */
+export const ajusteRtcItemSchema = z.strictObject({
+  vIBS: z.number(),
+  vCBS: z.number(),
+  competApur: z.string().nullable().default(null),
+});
+export type AjusteRtcItem = z.infer<typeof ajusteRtcItemSchema>;
+
+/**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido — all 13 legacy fields
  * (`.old` `models.dart:57–195`) are enumerated below (confirmed 100% by the
@@ -159,6 +178,9 @@ export const itemDoPedidoSchema = z.strictObject({
   // NT 2025.002 Grupo VC, emitted as `det/DFeReferenciado` (#330). Absent on
   // every migrated item, hence nullable + default null.
   dfeReferenciado: dfeReferenciadoItemSchema.nullable().default(null),
+  // NOT a legacy field either: the adjustment amounts of a nota de débito
+  // (NT 2025.002 gTransfCred / gAjusteCompet / gEstornoCred, #330).
+  ajusteRtc: ajusteRtcItemSchema.nullable().default(null),
 });
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
@@ -381,6 +403,14 @@ export const pedidoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Chaves de NF-e referenciadas'),
+  // NT 2025.002 `ide/gPagAntecipado` (#331): the NF-e de pagamento antecipado
+  // (a nota de débito 06) whose installments this nota settles. Not a legacy
+  // field — nullable, default null. Checked by the page model and at emission.
+  chNFePagamentoAntecipado: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('NF-e de pagamento antecipado'),
 
   // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
   itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),
@@ -547,6 +577,8 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
+    // Mercado Pago Checkout Pro links (#367) — the legacy leaf, serverOwned.
+    { path: 'pedidos/{pedidoId}/linkPgtoMercadoPago', onDelete: 'cascade' },
     // Freight-history / checkout / checkin subcollections, all three reusing
     // the legacy leaf names, which is where the migrated corpus sits. The new app
     // writes two of them: `checkout` (saveCheckout, schema

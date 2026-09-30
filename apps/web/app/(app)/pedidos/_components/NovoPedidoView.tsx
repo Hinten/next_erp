@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { PageHeader } from '@delfrance/ui';
 import type { Pedido } from '@delfrance/schemas';
 import {
+  aplicarQuitacaoNaCriacao,
   buildDevolucaoIntegralSeed,
   buildDuplicarPedidoSeed,
   criarEntradaDevolucaoIntegral,
@@ -104,6 +105,14 @@ function useCreatePedidoSubmit(direcao: Direcao) {
       notifications.show({ color: 'yellow', message: msg, autoClose: 8000 }),
     );
 
+    // #367 OD2 — an even swap (the returned credit covers the whole total) is
+    // created already `pago` with the freight authorized (legacy parity); a
+    // partial credit leaves the created estado untouched, and so does the
+    // reconcile of every later save until a real payment exists (OD4). Done in
+    // the create itself: no pagamento can exist yet, and the operator keeps the
+    // attribution.
+    const valoresSaida = aplicarQuitacaoNaCriacao(values);
+
     let saidaId: string;
     let saidaNumero: string;
     let devolucao: { id: string; numero: string } | null = null;
@@ -115,7 +124,11 @@ function useCreatePedidoSubmit(direcao: Direcao) {
         values.operacaoPedidoOuterRef,
       );
       try {
-        const result = await criarSaidaComDevolucao(port, { values, prepared, saidaOperacaoNome });
+        const result = await criarSaidaComDevolucao(port, {
+          values: valoresSaida,
+          prepared,
+          saidaOperacaoNome,
+        });
         saidaId = result.saidaId;
         saidaNumero = result.saidaNumero;
         devolucao = { id: result.devolucaoId, numero: result.devolucaoNumero };
@@ -130,7 +143,7 @@ function useCreatePedidoSubmit(direcao: Direcao) {
         throw err;
       }
     } else {
-      const created = await createPedidoWithNumero(getFirebaseFirestore(), values);
+      const created = await createPedidoWithNumero(getFirebaseFirestore(), valoresSaida);
       saidaId = created.id;
       saidaNumero = created.numero;
     }

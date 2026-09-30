@@ -48,6 +48,8 @@ import { PedidoConflictError } from './usecases';
  *  - `bloquearEmissaoNFe` — operator intent scoped to the ORIGIN ("do not emit
  *    NF-e for THIS order"). Carried over it silently blocks the duplicate's
  *    emission, surfacing only as a 409 `NFeBlockedError` at emit time.
+ *  - `chNFePagamentoAntecipado` — the prepayment notas the ORIGIN settles
+ *    (#331); a duplicate carrying them would settle the same prepayment twice.
  *  - `foiImpresso` — pairs with `dtImpressao`: carrying `true` over without a
  *    real print date would mark a never-printed draft as printed.
  *
@@ -67,6 +69,7 @@ export const DUPLICAR_PEDIDO_STRIP_KEYS = [
   'dataFinalExpedicao',
   'error',
   'chNFeReferenciadas',
+  'chNFePagamentoAntecipado',
   'itensDevolvidos',
   'entradasRelacionadas',
   'saidasRelacionadas',
@@ -135,8 +138,10 @@ export const FRETE_QUOTE_RESET_KEYS = [
  * a manually created pedido. `dfeReferenciado` points at an item of the NF-e the
  * ORIGIN was issued against (#330): a copy is a different operation, and a
  * reference carried over would emit a nota claiming to adjust someone else's.
+ * `ajusteRtc` holds the IBS/CBS amounts of ONE nota de débito — the same
+ * reasoning: a copy would re-transfer or re-reverse a credit already settled.
  */
-const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp', 'dfeReferenciado'] as const;
+const ITEM_STRIP_KEYS = ['ensureUniqueId', 'timestamp', 'dfeReferenciado', 'ajusteRtc'] as const;
 
 /** Clone `itens`, dropping {@link ITEM_STRIP_KEYS} from every line. */
 function cloneItens(itens: unknown): unknown {

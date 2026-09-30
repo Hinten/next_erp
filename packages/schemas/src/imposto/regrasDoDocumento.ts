@@ -17,7 +17,9 @@
  *  - Grupo B — the finalidade crédito/débito (finNFe 5/6) and its tipo
  *    (B25-110/120, B25.1, B25.2), and the `NFref` a nota de crédito needs
  *    (B25-30/40/50/60/65, B25-100);
- *  - Grupo UB — the cClassTrib a tipo binds (UB14-60/70/80).
+ *  - Grupo UB — the cClassTrib a tipo binds (UB14-60/70/80), and the amounts
+ *    of the adjustment group that tipo puts on each item (UB106-40, UB112-30,
+ *    UB113).
  * ⚠️ B25-30/40/50/60 also bind finNFe 2 (complementar). That is pre-RTC
  * behaviour this module deliberately does not take over: it covers the
  * crédito half only.
@@ -33,6 +35,7 @@
 import { normalizeDocumento } from '@delfrance/core/documents';
 
 import { chaveAcessoValida, decomporChaveAcesso } from '../chaveAcesso';
+import { MUNICIPIOS_SUFRAMA_EMITENTE } from './ideRtc';
 import {
   FIN_NFE_OPERACAO,
   TP_NF_CREDITO,
@@ -43,8 +46,11 @@ import {
 import {
   CCLASSTRIB_DO_TP_NF_CREDITO,
   CCLASSTRIB_DO_TP_NF_DEBITO,
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
   cClassTribCompativelComTipo,
-  cClassTribDoTipo,
+  grupoDeAjusteDoTipo,
+  type TipoNotaAjuste,
 } from './notaCreditoDebito';
 
 export const SEVERIDADE_VIOLACAO = {
@@ -69,10 +75,10 @@ export const REGRA_DOCUMENTO = {
   refItemComRefNota: 'refItemComRefNota',
   /** 1042 (VC02-07) — a nota de crédito referencing by item. */
   refItemEmNotaDeCredito: 'refItemEmNotaDeCredito',
-  /** 1038 (VC02-10) — débito 03/04 without any item reference. */
-  refItemAusenteNoDebito: 'refItemAusenteNoDebito',
-  /** 1038 (VC02-10) — débito 03/04: this item has none while others do (per item: uncertain). */
-  refItemAusenteNoItemDoDebito: 'refItemAusenteNoItemDoDebito',
+  /** 1038 (VC02-10) — débito 03/04 or crédito 06 without any item reference. */
+  refItemAusente: 'refItemAusente',
+  /** 1038 (VC02-10) — débito 03/04 or crédito 06: this item has none while others do (per item: uncertain). */
+  refItemAusenteNoItem: 'refItemAusenteNoItem',
   /** 1072 (VC02-20) — the same chave + nItem referenced twice. */
   refItemDuplicada: 'refItemDuplicada',
   /** 1130 (VC02-30) — items referencing more than one document. */
@@ -125,10 +131,36 @@ export const REGRA_DOCUMENTO = {
   // ── Policy — what this ERP emits of finNFe 5/6 ──────────────────────────
   /** A nota de crédito/débito is an IBS/CBS document: the filial must emit the RTC. */
   notaAjusteSemReformaTributaria: 'notaAjusteSemReformaTributaria',
-  /** A tipo whose adjustment group (gTransfCred, gAjusteCompet, gEstornoCred, gCredPresIBSZFM) is not emitted yet. */
+  /** Crédito 02 (ZFM) and 05 (sucessão): not emitted — see {@link tipoAindaNaoEmitido}. */
   notaAjusteTipoNaoSuportado: 'notaAjusteTipoNaoSuportado',
   /** Every item of a nota de crédito/débito carries IBS/CBS. */
   notaAjusteItemSemIbsCbs: 'notaAjusteItemSemIbsCbs',
+
+  // ── The adjustment amounts (gTransfCred / gAjusteCompet / gEstornoCred) ──
+  /** A tipo with an adjustment group, and an item without its amounts. */
+  ajusteAusente: 'ajusteAusente',
+  /** An amount that is not a finite, non-negative number. */
+  ajusteValorInvalido: 'ajusteValorInvalido',
+  /** 1129 (UB106-40) — gTransfCred with neither IBS nor CBS above zero. */
+  ajusteTransfCredZerado: 'ajusteTransfCredZerado',
+  /** 1171 (UB112-30) — gAjusteCompet with neither IBS nor CBS above zero. */
+  ajusteCompetZerado: 'ajusteCompetZerado',
+  /** gAjusteCompet without a valid `competApur` (UB113, AAAA-MM). */
+  ajusteCompetenciaInvalida: 'ajusteCompetenciaInvalida',
+  /** UB113 — `competApur` is "período atual ou retroativo", never a later month. */
+  ajusteCompetenciaFutura: 'ajusteCompetenciaFutura',
+  /** Amounts on an item of a nota whose tipo has no adjustment group: ignored. */
+  ajusteIndevido: 'ajusteIndevido',
+
+  // ── Grupo BC / C — pagamento antecipado and the emitente's SUFRAMA (#331) ─
+  /** Policy: pagamento-antecipado references ride only with the Reforma Tributária on. */
+  pagAntecipadoSemReformaTributaria: 'pagAntecipadoSemReformaTributaria',
+  /** BC02: a referenced chave that is not an NF-e modelo 55 with a valid check digit. */
+  pagAntecipadoChaveInvalida: 'pagAntecipadoChaveInvalida',
+  /** BC01: at most 99 references (XSD `maxOccurs`). */
+  pagAntecipadoExcesso: 'pagAntecipadoExcesso',
+  /** 1185 (C22-10) — ISUFEmit from a municipality outside the ZFM / ALC. */
+  isufEmitForaDaAreaIncentivada: 'isufEmitForaDaAreaIncentivada',
 } as const;
 export type RegraDocumento = (typeof REGRA_DOCUMENTO)[keyof typeof REGRA_DOCUMENTO];
 
@@ -175,16 +207,15 @@ export const REGRAS_DOCUMENTO = {
     severidade: B,
     texto: 'A nota de crédito referencia a nota original pelas chaves referenciadas, não por item.',
   },
-  refItemAusenteNoDebito: {
+  refItemAusente: {
     cStat: '1038',
     severidade: B,
-    texto:
-      'Este tipo de nota de débito exige a referência por item (DF-e referenciado) à nota de origem.',
+    texto: 'Este tipo de nota exige a referência por item (DF-e referenciado) à nota de origem.',
   },
-  refItemAusenteNoItemDoDebito: {
+  refItemAusenteNoItem: {
     cStat: '1038',
     severidade: SEVERIDADE_VIOLACAO.aviso,
-    texto: 'Este item da nota de débito está sem referência (DF-e referenciado).',
+    texto: 'Este item está sem referência (DF-e referenciado) à nota de origem.',
   },
   refItemDuplicada: {
     cStat: '1072',
@@ -304,14 +335,72 @@ export const REGRAS_DOCUMENTO = {
   notaAjusteTipoNaoSuportado: {
     cStat: null,
     severidade: B,
-    texto:
-      'Este tipo de nota de crédito/débito exige um grupo de ajuste de IBS/CBS (transferência, estorno, ajuste de competência ou crédito presumido) que o ERP ainda não emite.',
+    texto: 'Este tipo de nota de crédito ainda não é emitido pelo ERP.',
   },
   notaAjusteItemSemIbsCbs: {
     cStat: null,
     severidade: B,
     texto:
       'Todo item de nota de crédito/débito precisa da configuração de IBS/CBS (CST e cClassTrib).',
+  },
+  ajusteAusente: {
+    cStat: null,
+    severidade: B,
+    texto: 'Informe os valores de IBS e CBS do ajuste deste item (aba Fiscal).',
+  },
+  ajusteValorInvalido: {
+    cStat: null,
+    severidade: B,
+    texto: 'Os valores de IBS e CBS do ajuste devem ser iguais ou maiores que zero.',
+  },
+  ajusteTransfCredZerado: {
+    cStat: '1129',
+    severidade: B,
+    texto: 'Na transferência de crédito, o valor do IBS ou da CBS deve ser maior que zero.',
+  },
+  ajusteCompetZerado: {
+    cStat: '1171',
+    severidade: B,
+    texto: 'No ajuste de competência, o valor do IBS ou da CBS deve ser maior que zero.',
+  },
+  ajusteCompetenciaInvalida: {
+    cStat: null,
+    severidade: B,
+    texto: 'Informe a competência do ajuste no formato AAAA-MM (ex.: 2026-09).',
+  },
+  ajusteCompetenciaFutura: {
+    cStat: null,
+    severidade: B,
+    texto: 'A competência do ajuste deve ser o mês da emissão ou um mês anterior.',
+  },
+  ajusteIndevido: {
+    cStat: null,
+    severidade: SEVERIDADE_VIOLACAO.aviso,
+    texto:
+      'Este item tem valores de ajuste de IBS/CBS, mas o tipo desta nota não os usa — serão ignorados.',
+  },
+  pagAntecipadoSemReformaTributaria: {
+    cStat: null,
+    severidade: B,
+    texto:
+      'As NF-e de pagamento antecipado só são referenciadas com a Reforma Tributária ativa nesta filial.',
+  },
+  pagAntecipadoChaveInvalida: {
+    cStat: null,
+    severidade: B,
+    texto:
+      'Chave de NF-e de pagamento antecipado inválida: deve ser uma NF-e modelo 55 com dígito verificador correto.',
+  },
+  pagAntecipadoExcesso: {
+    cStat: null,
+    severidade: B,
+    texto: 'Uma nota referencia no máximo 99 NF-e de pagamento antecipado.',
+  },
+  isufEmitForaDaAreaIncentivada: {
+    cStat: '1185',
+    severidade: B,
+    texto:
+      'A inscrição SUFRAMA do emitente só vale em município da Zona Franca de Manaus ou de Área de Livre Comércio.',
   },
 } as const satisfies Record<
   RegraDocumento,
@@ -333,6 +422,17 @@ export interface ItemRegrasDocumento {
    * cascade resolves it) — every rule that needs it stays silent.
    */
   readonly cClassTrib?: string | null;
+  /**
+   * The item's adjustment amounts (`itens[*].ajusteRtc`): `null` = none
+   * entered; ABSENT = not known here — the rules that need them stay silent.
+   */
+  readonly ajusteRtc?: AjusteRtcEntrada | null;
+}
+
+export interface AjusteRtcEntrada {
+  readonly vIBS: number;
+  readonly vCBS: number;
+  readonly competApur: string | null;
 }
 
 /** The operação-level facts (`ide`) of a nota — also all the operação form knows. */
@@ -358,6 +458,14 @@ export interface EntradaRegrasDocumento extends EntradaRegrasOperacao {
   readonly emitenteDocumento: string | null;
   /** The emitente's UF as its 2-digit IBGE code (`ide.cUF`), null when unknown. */
   readonly emitenteCUF: string | null;
+  /** Month (1–12) of `dhEmi` in the emitente's time zone; `null` when unknown. */
+  readonly mesEmissao: number | null;
+  /** `ide/gPagAntecipado/refNFe` — the NF-e de pagamento antecipado this nota settles. */
+  readonly chNFePagamentoAntecipado: readonly string[];
+  /** The emitente's SUFRAMA inscription (`emit/ISUFEmit`), null when it has none. */
+  readonly emitenteISUF: string | null;
+  /** The emitente's municipality (IBGE, 7 digits), null when unknown. */
+  readonly emitenteCMun: string | null;
   readonly itens: readonly ItemRegrasDocumento[];
 }
 
@@ -422,28 +530,99 @@ export function violacoesDoDocumento(e: EntradaRegrasDocumento): ViolacaoDocumen
     ...violacoesDoCClassTrib(e),
     ...violacoesDaNFrefDoCredito(e),
     ...violacoesDaReferenciaPorItem(e),
+    ...violacoesDoPagamentoAntecipado(e),
+    ...violacoesDoIsufEmit(e),
   ];
+}
+
+/**
+ * The two tipos this ERP does not emit, each for a reason in the NT itself
+ * (v1.40, and both unchanged in v1.51 — B25.2-30, UB106-30 and the CST 800
+ * indicator read the same):
+ *  - crédito 02 (crédito presumido de IBS na ZFM) cannot be emitted before
+ *    2029 (1145), and needs the item-level `prod/tpCredPresIBSZFM` (I05k) this
+ *    ERP does not model;
+ *  - crédito 05 (sucessão) binds 800001, whose CST 800 REQUIRES `gTransfCred`
+ *    (1132), while UB106-30 accepts `gTransfCred` only on a nota de DÉBITO
+ *    (1133). No item can satisfy both.
+ */
+export function tipoAindaNaoEmitido(t: TipoNotaAjuste): boolean {
+  return (
+    t.finNFe === FIN_NFE_OPERACAO.credito &&
+    (t.tpNFCredito === TP_NF_CREDITO.creditoPresumidoZfm ||
+      t.tpNFCredito === TP_NF_CREDITO.transferenciaCreditoSucessao)
+  );
 }
 
 /** Policy: what this ERP emits of a nota de crédito/débito (finNFe 5/6). */
 function violacoesDaNotaDeAjuste(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
-  if (e.finNFe !== FIN_NFE_OPERACAO.credito && e.finNFe !== FIN_NFE_OPERACAO.debito) return [];
+  const grupo = grupoDeAjusteDoTipo(e);
+  if (e.finNFe !== FIN_NFE_OPERACAO.credito && e.finNFe !== FIN_NFE_OPERACAO.debito) {
+    return violacoesDeAjusteIndevido(e);
+  }
   const out: ViolacaoDocumento[] = [];
   if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.notaAjusteSemReformaTributaria, null));
-  // A tipo that binds a fixed cClassTrib (UB14-70/80) is exactly one whose item
-  // needs an adjustment group instead of (or beside) gIBSCBS — not emitted yet
-  // (#330, part 3).
-  if (cClassTribDoTipo(e) != null) {
+  if (tipoAindaNaoEmitido(e)) {
     out.push(violacao(REGRA_DOCUMENTO.notaAjusteTipoNaoSuportado, null));
+    return out;
   }
-  if (e.emitRtc) {
-    for (const item of e.itens) {
-      if (item.cClassTrib === null) {
-        out.push(violacao(REGRA_DOCUMENTO.notaAjusteItemSemIbsCbs, item.nItem));
+  if (grupo == null) {
+    // An ordinary gIBSCBS item: its classification comes from its own config.
+    if (e.emitRtc) {
+      for (const item of e.itens) {
+        if (item.cClassTrib === null) {
+          out.push(violacao(REGRA_DOCUMENTO.notaAjusteItemSemIbsCbs, item.nItem));
+        }
       }
     }
+    return [...out, ...violacoesDeAjusteIndevido(e)];
+  }
+  // An adjustment item: the tipo supplies CST + cClassTrib, the item the amounts.
+  for (const item of e.itens) {
+    const a = item.ajusteRtc;
+    if (a === undefined) continue;
+    if (a === null) {
+      out.push(violacao(REGRA_DOCUMENTO.ajusteAusente, item.nItem));
+      continue;
+    }
+    if (!valorValido(a.vIBS) || !valorValido(a.vCBS)) {
+      out.push(violacao(REGRA_DOCUMENTO.ajusteValorInvalido, item.nItem));
+      continue;
+    }
+    const algumPositivo = a.vIBS > 0 || a.vCBS > 0;
+    if (grupo === GRUPO_AJUSTE_RTC.transfCred && !algumPositivo) {
+      out.push(violacao(REGRA_DOCUMENTO.ajusteTransfCredZerado, item.nItem));
+    }
+    if (grupo === GRUPO_AJUSTE_RTC.ajusteCompet) {
+      if (!algumPositivo) out.push(violacao(REGRA_DOCUMENTO.ajusteCompetZerado, item.nItem));
+      if (a.competApur == null || !COMPETENCIA_AAAA_MM.test(a.competApur)) {
+        out.push(violacao(REGRA_DOCUMENTO.ajusteCompetenciaInvalida, item.nItem));
+      } else if (competenciaPosterior(a.competApur, e.anoEmissao, e.mesEmissao)) {
+        out.push(violacao(REGRA_DOCUMENTO.ajusteCompetenciaFutura, item.nItem));
+      }
+    }
+    // gEstornoCred: 1174's "IBS or CBS above zero" does not apply to débito 07,
+    // the only tipo that carries it (UB116-30's own exception).
   }
   return out;
+}
+
+/** Amounts on the items of a nota whose tipo carries no adjustment group. */
+function violacoesDeAjusteIndevido(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  return e.itens
+    .filter((item) => item.ajusteRtc != null)
+    .map((item) => violacao(REGRA_DOCUMENTO.ajusteIndevido, item.nItem));
+}
+
+function valorValido(v: number): boolean {
+  return Number.isFinite(v) && v >= 0;
+}
+
+/** `AAAA-MM` strictly after the emission month; `false` when the month is unknown. */
+function competenciaPosterior(competApur: string, ano: number | null, mes: number | null): boolean {
+  if (ano == null || mes == null) return false;
+  const [a, m] = competApur.split('-').map(Number) as [number, number];
+  return a > ano || (a === ano && m > mes);
 }
 
 /** UB14-60/70/80 — only with the IBS/CBS group on the wire, i.e. the RTC on. */
@@ -512,17 +691,18 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
     (i): i is ItemRegrasDocumento & { dfeReferenciado: DfeReferenciadoEntrada } =>
       i.dfeReferenciado != null,
   );
-  // VC02-10 is keyed on tpNFDebito alone (a finNFe mismatch is B25.1-10's).
+  // VC02-10 is keyed on the tipo fields alone (a finNFe mismatch is B25.1/B25.2's).
   const debitoNaoProcessado = e.tpNFDebito === TP_NF_DEBITO.debitoNotaNaoProcessada;
-  if (debitoNaoProcessado || e.tpNFDebito === TP_NF_DEBITO.multaJuros) {
+  const retornoParcial = e.tpNFCredito === TP_NF_CREDITO.retornoRecusaParcial;
+  if (debitoNaoProcessado || e.tpNFDebito === TP_NF_DEBITO.multaJuros || retornoParcial) {
     if (comRef.length === 0) {
-      out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoDebito, null));
+      out.push(violacao(REGRA_DOCUMENTO.refItemAusente, null));
     } else {
       // Whether SEFAZ judges VC02-10 per item or per nota the NT does not say,
       // so an item left out of a partly-referenced nota is only a warning.
       for (const item of e.itens) {
         if (item.dfeReferenciado == null) {
-          out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoItemDoDebito, item.nItem));
+          out.push(violacao(REGRA_DOCUMENTO.refItemAusenteNoItem, item.nItem));
         }
       }
     }
@@ -531,8 +711,8 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
 
   if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.refItemSemReformaTributaria, null));
   if (e.chNFeReferenciadas.length > 0) out.push(violacao(REGRA_DOCUMENTO.refItemComRefNota, null));
-  // VC02-07 — the tpNFCredito 06 exception arrives with that code (PL_010f).
-  if (e.finNFe === FIN_NFE_OPERACAO.credito) {
+  // VC02-07 — except crédito 06, which references the returned items (VC02-10).
+  if (e.finNFe === FIN_NFE_OPERACAO.credito && !retornoParcial) {
     out.push(violacao(REGRA_DOCUMENTO.refItemEmNotaDeCredito, null));
   }
 
@@ -560,8 +740,10 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
   }
 
   const devolucao = e.finNFe === FIN_NFE_OPERACAO.devolucao;
-  // VC02-30 exceptions: devolução, and débito 03 (one nota per unprocessed document).
-  if (chavesValidas.size > 1 && !devolucao && !debitoNaoProcessado) {
+  // VC02-30 exceptions: devolução, débito 03 (one nota per unprocessed
+  // document) and — since v1.51 — débito 07 (perda em estoque).
+  const perdaEstoque = e.tpNFDebito === TP_NF_DEBITO.perdaEstoque;
+  if (chavesValidas.size > 1 && !devolucao && !debitoNaoProcessado && !perdaEstoque) {
     out.push(violacao(REGRA_DOCUMENTO.refItemMaisDeUmaChave, null));
   }
 
@@ -578,6 +760,31 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
     }
   }
   return out;
+}
+
+/** BC01/BC02 — the NF-e de pagamento antecipado a nota settles (#331). */
+function violacoesDoPagamentoAntecipado(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  const refs = e.chNFePagamentoAntecipado;
+  if (refs.length === 0) return [];
+  const out: ViolacaoDocumento[] = [];
+  if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoSemReformaTributaria, null));
+  if (refs.some((c) => decomporChaveAcesso(c)?.mod !== '55')) {
+    out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoChaveInvalida, null));
+  }
+  if (refs.length > 99) out.push(violacao(REGRA_DOCUMENTO.pagAntecipadoExcesso, null));
+  return out;
+}
+
+/**
+ * C22-10 (1185) — only with the RTC on, the only time `ISUFEmit` is on the
+ * wire. C22-20 (the inscription's check digit) is left to SEFAZ: the NT does
+ * not publish the algorithm, and a guessed one would refuse valid inscriptions.
+ */
+function violacoesDoIsufEmit(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  if (!e.emitRtc || e.emitenteISUF == null || e.emitenteCMun == null) return [];
+  return MUNICIPIOS_SUFRAMA_EMITENTE.has(e.emitenteCMun)
+    ? []
+    : [violacao(REGRA_DOCUMENTO.isufEmitForaDaAreaIncentivada, null)];
 }
 
 /** True when any violation must stop the emission. */

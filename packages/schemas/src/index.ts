@@ -1120,6 +1120,7 @@ export {
   vereditoIcmsSn,
   ALIQUOTA_PIS_COFINS_LIMITE,
   vereditoPisCofins,
+  vereditoIsRtc,
   type CrtSimplesNacional,
   type SubConfigIcmsSn,
   type GrupoXsd,
@@ -1132,6 +1133,7 @@ export {
   type CstPisCofinsOutr,
   type BasePisCofinsOutr,
   type VereditoPisCofins,
+  type VereditoIsRtc,
 } from './imposto/regrasDeEmissao';
 
 export {
@@ -1177,8 +1179,10 @@ export {
   SEVERIDADE_VIOLACAO,
   bloqueiaEmissao,
   descreverViolacaoDocumento,
+  tipoAindaNaoEmitido,
   violacoesDaOperacao,
   violacoesDoDocumento,
+  type AjusteRtcEntrada,
   type DfeReferenciadoEntrada,
   type EntradaRegrasDocumento,
   type EntradaRegrasOperacao,
@@ -1192,14 +1196,26 @@ export {
   // Nota de crédito / débito (finNFe 5/6, NT 2025.002) — tipo bindings and item tax groups (#330)
   CCLASSTRIB_DO_TP_NF_CREDITO,
   CCLASSTRIB_DO_TP_NF_DEBITO,
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
   MODO_GRUPOS_IMPOSTO,
   cClassTribCompativelComTipo,
   cClassTribDoTipo,
   cClassTribVinculadoATipoDeNota,
+  grupoDeAjusteDoTipo,
   modoGruposImposto,
+  type GrupoAjusteRtc,
   type ModoGruposImposto,
   type TipoNotaAjuste,
 } from './imposto/notaCreditoDebito';
+
+export {
+  // NT 2025.002 ide/emit fields beyond the tax groups — dPrevEntrega, ISUFEmit (#331)
+  ISUF_EMIT_REGEX,
+  MUNICIPIOS_SUFRAMA_EMITENTE,
+  dPrevEntregaParaEmissao,
+  somarMeses,
+} from './imposto/ideRtc';
 
 export {
   // RTC Anexo IV — cCredPres (#333)

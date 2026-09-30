@@ -79,6 +79,7 @@ const FILIAL: Filial = {
   cnpj: '14200166000187',
   ie: '111111111111',
   iest: null,
+  isuf: null,
   imun: null,
   sede: { ...ENDERECO, logradouro: 'Rua Direita', numero: '100', bairro: 'Centro' },
   ultimaModificacao: null,

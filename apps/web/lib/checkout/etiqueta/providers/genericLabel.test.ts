@@ -15,6 +15,8 @@ vi.mock('@/lib/etiqueta-generica', () => ({
 
 import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 
+import { printJob as realPrintJob, type PrintAgentRequest } from '@/lib/print-agent/printJob';
+
 import { genericLabelProvider } from './genericLabel';
 import type { EtiquetaProviderInput } from '../types';
 
@@ -129,9 +131,45 @@ describe('genericLabelProvider', () => {
       expect.any(Blob),
       expect.objectContaining({
         tamanho: 'etq',
-        contentType: 'text/plain;charset=utf-8',
+        contentType: 'text/plain',
         fileName: 'etiqueta-1234.zpl2',
       }),
+    );
+  });
+
+  it('hands the agent the BARE `text/plain` its exact-match router accepts, UTF-8 bytes intact', async () => {
+    // `printJob.dart` routes with `==`, so `text/plain;charset=utf-8` matches no
+    // branch and fails INSIDE the agent — which still answers 200, so neither
+    // `printJob`'s download fallback nor the toast ever fires and the label just
+    // does not print. Drive the REAL client and read the body the agent parses:
+    // nothing downstream of this assertion can see the mistake.
+    renderZplMock.mockReturnValue('^XA^CI28^FDSão Paulo^FS^XZ');
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) => new Response('OK', { status: 200 }),
+    );
+    const saveBlob = vi.fn();
+    const notify = vi.fn();
+
+    const out = await genericLabelProvider.emitirOuImprimir(
+      makeInput({
+        formato: 'zpl2',
+        printJob: (blob, opts) =>
+          realPrintJob(blob, opts, { fetch: fetchMock as unknown as typeof fetch, saveBlob }),
+        notify,
+      }),
+    );
+
+    expect(out).toEqual({ status: 'printed' });
+    expect(saveBlob).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as PrintAgentRequest;
+    expect(body.contentType).toBe('text/plain');
+    expect(body.tamanhoFolhaImpressao).toBe('etq');
+    // …while the bytes stay UTF-8: `^CI28` needs the two-byte `ã`, not Latin-1.
+    const bytes = Uint8Array.from(atob(body.docDataBase64), (c) => c.charCodeAt(0));
+    expect(new TextDecoder('utf-8', { fatal: true }).decode(bytes)).toBe(
+      '^XA^CI28^FDSão Paulo^FS^XZ',
     );
   });
 

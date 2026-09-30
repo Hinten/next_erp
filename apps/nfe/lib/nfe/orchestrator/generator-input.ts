@@ -13,8 +13,10 @@ import {
   sanitizeNFeText,
   TributeFormatError,
   ufDestinoOperacao,
+  type AjusteIbsCbsItem,
   type GeneratorInput,
   type GeneratorItem,
+  type GeneratorRtc,
   type Payment,
 } from '@delfrance/integrations-nfe';
 import { microsToMillis } from '@delfrance/core/datetime';
@@ -25,8 +27,11 @@ import {
   FORMA_PAGAMENTO,
   SEVERIDADE_VIOLACAO,
   bloqueiaEmissao,
+  cClassTribDoTipo,
   camposProdutoFiscal,
+  grupoDeAjusteDoTipo,
   descreverViolacaoDocumento,
+  dPrevEntregaParaEmissao,
   modoGruposImposto,
   violacoesDoDocumento,
   ehMarketplace,
@@ -35,6 +40,7 @@ import {
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type ModalidadeFrete,
   type ModoGruposImposto,
   type Operacao,
   type Pagamento,
@@ -110,6 +116,25 @@ export function modoGruposFor(bundle: PedidoBundle): ModoGruposImposto {
 }
 
 /**
+ * The IBS/CBS adjustment one item carries — or `undefined` when the nota's
+ * tipo binds no fixed cClassTrib (an ordinary `gIBSCBS` item) or the item has
+ * no amounts (the document rules refuse that before generation). The tipo
+ * supplies classification and group, the item its amounts. ONE projection for
+ * the det (`buildImpostoXml`) and the total (`aggregateTotals`).
+ */
+export function ajusteDoItem(bundle: PedidoBundle, it: FiscalItem): AjusteIbsCbsItem | undefined {
+  const tipo = {
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  };
+  const cClassTrib = cClassTribDoTipo(tipo);
+  const grupo = grupoDeAjusteDoTipo(tipo);
+  if (cClassTrib == null || grupo == null || it.ajusteRtc == null) return undefined;
+  return { cClassTrib, grupo, ...it.ajusteRtc };
+}
+
+/**
  * The part of a nota that can fail on operator-fixable data, projected ONCE
  * for both generation and the batch pre-flight so they cannot drift: the
  * delivery address (unresolvable → refused), the document rules (a nota SEFAZ
@@ -154,6 +179,54 @@ export function chNFeReferenciadasDe(bundle: PedidoBundle): string[] {
 }
 
 /**
+ * The NT 2025.002 `ide` / `emit` fields beyond the tax groups (#331) of a nota
+ * emitted at `dhEmi` — called only with the Reforma Tributária on:
+ *  - `dPrevEntrega` from the pedido's `freteInicial.dataPrevisaoEntrega`, read
+ *    as a date in the emitente's legal time and OMITTED when B10a would refuse
+ *    it (`dPrevEntregaParaEmissao`) — a derived value never blocks a nota;
+ *  - `gPagAntecipado` from `pedido.chNFePagamentoAntecipado`, which the
+ *    document rules judged before generation;
+ *  - `ISUFEmit` from `filial.isuf` (C22-10 judged by the same rules).
+ */
+export function rtcDaNota(
+  bundle: PedidoBundle,
+  dhEmi: Date,
+  modFrete: ModalidadeFrete,
+): GeneratorRtc {
+  const offset = offsetForUF(bundle.filial.sede.estado);
+  const dia = (d: Date) => {
+    const p = datePartsInOffset(d, offset);
+    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+  };
+  const previsaoUs = bundle.frete?.dataPrevisaoEntrega ?? null;
+  const dPrevEntrega = dPrevEntregaParaEmissao({
+    previsao: previsaoUs == null ? null : dia(new Date(microsToMillis(previsaoUs))),
+    emissao: dia(dhEmi),
+    finNFe: bundle.operacao.finNFe ?? 1,
+    modFrete,
+  });
+  const pagAntecipado = chNFePagamentoAntecipadoDe(bundle);
+  const isuf = bundle.filial.isuf ?? null;
+  return {
+    ...(dPrevEntrega != null ? { dPrevEntrega } : {}),
+    ...(pagAntecipado.length > 0 ? { pagAntecipado } : {}),
+    ...(isuf != null ? { isufEmit: isuf } : {}),
+  };
+}
+
+/**
+ * `ide/gPagAntecipado/refNFe` (#331): non-empty entries of
+ * `pedido.chNFePagamentoAntecipado`. ONE reader for generation and the
+ * document rules, like {@link chNFeReferenciadasDe}.
+ */
+export function chNFePagamentoAntecipadoDe(bundle: PedidoBundle): string[] {
+  const raw = (bundle.pedido as { chNFePagamentoAntecipado?: unknown }).chNFePagamentoAntecipado;
+  return Array.isArray(raw)
+    ? raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+}
+
+/**
  * The NT 2025.002 document rules (`violacoesDoDocumento`, `@delfrance/schemas`
  * — the SAME verdicts the pedido editor shows) over the nota about to be built.
  * A `bloqueia` violation refuses it as an `NFeOrchestratorError` listing every
@@ -166,25 +239,39 @@ function assertDocumentoEmitivel(
   emitRtc: boolean,
 ): void {
   const uf = bundle.filial.sede.estado;
+  const hoje = datePartsInOffset(new Date(), offsetForUF(uf));
+  // A tipo that binds a fixed cClassTrib supplies it to every item (the item's
+  // own config is not read), so the UB14 rules judge what will be emitted.
+  const cClassTribFixo = cClassTribDoTipo({
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  });
   const violacoes = violacoesDoDocumento({
     emitRtc,
     finNFe: bundle.operacao.finNFe ?? 1,
     tpNF: bundle.operacao.tipo === 1 ? '1' : '0',
     tpNFDebito: bundle.operacao.tpNFDebito,
     tpNFCredito: bundle.operacao.tpNFCredito,
-    // Only 1145 reads it. Time moves forward, so a pre-flight pass stays a pass
-    // at generation; the reverse can only refuse on the eve of 2029.
-    anoEmissao: datePartsInOffset(new Date(), offsetForUF(uf)).year,
+    // 1145 and the adjustment's competApur read them. Time moves forward, so a
+    // pre-flight pass stays a pass at generation; the reverse can only refuse
+    // at the turn of a month.
+    anoEmissao: hoje.year,
+    mesEmissao: hoje.month,
     chNFeReferenciadas: chNFeReferenciadasDe(bundle),
     destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
     emitenteDocumento: bundle.filial.cnpj,
     emitenteCUF: cUFFromUF(uf),
+    chNFePagamentoAntecipado: chNFePagamentoAntecipadoDe(bundle),
+    emitenteISUF: bundle.filial.isuf ?? null,
+    emitenteCMun: bundle.filial.sede.codigoMunicipio ?? null,
     // nItem = the det position `buildGenItems` assigns (i + 1); cClassTrib is
     // the resolved imposto's — null when the item carries no IBS/CBS config.
     itens: items.map((it, i) => ({
       nItem: i + 1,
       dfeReferenciado: it.dfeReferenciado,
-      cClassTrib: it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+      cClassTrib: cClassTribFixo ?? it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+      ajusteRtc: it.ajusteRtc,
     })),
   });
   if (!bloqueiaEmissao(violacoes)) return;
@@ -292,6 +379,7 @@ export function buildGeneratorInput(
         indTot: indTotFor(it),
       },
       imposto: it.imposto,
+      ajuste: ajusteDoItem(bundle, it),
     })),
     { vFrete, vDesc },
     { emitRtc: emitRtc === true, grupos: modoGruposFor(bundle) },
@@ -412,6 +500,9 @@ export function buildGeneratorInput(
   const chNFeReferenciadas = chNFeReferenciadasDe(bundle);
 
   const transpOpts = buildTranspFromFrete(bundle.frete);
+  // ONE instant for the nota and for the forecast window judged against it.
+  const dhEmi = new Date();
+  const rtc = emitRtc === true ? rtcDaNota(bundle, dhEmi, transpOpts.modFrete) : null;
   const cobr = buildCobrFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
     frete: bundle.frete,
@@ -427,7 +518,7 @@ export function buildGeneratorInput(
     numeracao,
     serie,
     tpEmis,
-    dhEmi: new Date(),
+    dhEmi,
     filial: bundle.filial,
     operacao: bundle.operacao,
     cliente: bundle.cliente,
@@ -445,6 +536,7 @@ export function buildGeneratorInput(
     ...(infIntermed ? { infIntermed } : {}),
     ...(cNF ? { cNF } : {}),
     ...(chNFeReferenciadas.length > 0 ? { chNFeReferenciadas } : {}),
+    ...(rtc != null && Object.keys(rtc).length > 0 ? { rtc } : {}),
     // B28/B29 — the generator's validateInput enforces presence (tpEmis≠1)
     // and absence (tpEmis=1); here we only thread the values through.
     ...(contingencia?.dhCont ? { dhCont: contingencia.dhCont } : {}),
@@ -542,7 +634,7 @@ export function buildGenItems(
       indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
-      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, where),
+      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, ajusteDoItem(bundle, it), where),
       // det/DFeReferenciado (#330) — judged by the document rules in projetarNota.
       ...(it.dfeReferenciado
         ? {
@@ -599,6 +691,7 @@ function buildItemImpostoXml(
   it: FiscalItem,
   emitRtc: boolean,
   grupos: ModoGruposImposto,
+  ajuste: AjusteIbsCbsItem | undefined,
   where: string,
 ): string {
   if (it.imposto.configuracaoISSQN != null) {
@@ -613,7 +706,7 @@ function buildItemImpostoXml(
     return buildImpostoXml(
       it.imposto,
       { vProd: it.vProd, qTrib: it.quantidade },
-      { emitRtc, grupos },
+      { emitRtc, grupos, ...(ajuste != null ? { ajuste } : {}) },
     );
   } catch (err) {
     if (err instanceof NFeTributeError || err instanceof TributeFormatError) {

@@ -56,7 +56,9 @@ export function ReferenciaPorItemSection({
   disabled,
 }: ReferenciaPorItemSectionProps) {
   const itensFlat = (form.watch('_itensFlat') ?? []) as FlatItem[];
-  const chNFeReferenciadas = form.watch('chNFeReferenciadas') ?? [];
+  // The RAW watched value: the `?? []` fallback lives inside the useMemo below,
+  // so the dependency is not a fresh array on every render.
+  const chNFeReferenciadas = form.watch('chNFeReferenciadas');
   const operacaoOuterRef = form.watch('operacaoPedidoOuterRef');
 
   const operacaoRef = useMemo(() => {
@@ -85,9 +87,14 @@ export function ReferenciaPorItemSection({
         // Unknown on this screen — the rules that need them stay silent here
         // and are judged at emission (1145, 269/678, and each item's cClassTrib).
         anoEmissao: null,
+        mesEmissao: null,
         emitenteDocumento: null,
         emitenteCUF: null,
-        chNFeReferenciadas: chNFeReferenciadas.filter((c): c is string => !!c),
+        // Judged by their own editor (and at emission), not by this panel.
+        chNFePagamentoAntecipado: [],
+        emitenteISUF: null,
+        emitenteCMun: null,
+        chNFeReferenciadas: (chNFeReferenciadas ?? []).filter((c): c is string => !!c),
         destinatarioDocumento,
         itens: linhas.map(({ item }, i) => ({
           nItem: i + 1,

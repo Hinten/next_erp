@@ -29,6 +29,7 @@ const COMPLEX_FIELDS = new Set([
   'entradasRelacionadas',
   'saidasRelacionadas',
   'chNFeReferenciadas',
+  'chNFePagamentoAntecipado',
 ]);
 
 function labelFor(schema: ZodTypeAny, field: string): string {

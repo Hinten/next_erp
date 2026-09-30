@@ -33,6 +33,7 @@ function linha(rowId: string, nomeDeVenda: string, over: Partial<FlatItem> = {})
     timestamp: null,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
     ...over,
   };
 }

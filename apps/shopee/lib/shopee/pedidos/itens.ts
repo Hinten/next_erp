@@ -258,8 +258,10 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       custo: null,
       timestamp: nowUs,
       imposto: null,
-      // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC).
+      // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC)
+      // nor carries a nota de débito's IBS/CBS adjustment amounts.
       dfeReferenciado: null,
+      ajusteRtc: null,
     });
 
     diagnosticos.push({

@@ -251,6 +251,7 @@ function makeItem(opts: {
     timestamp: null,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
   };
 }
 
