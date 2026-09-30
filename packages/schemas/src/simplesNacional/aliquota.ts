@@ -164,7 +164,7 @@ export function receitaBrutaDeComponentes(c: {
  * | 1 saída | 4 devolução | `0` | devolução de COMPRA — nunca foi nossa receita |
  * | 0 entrada | 4 devolução | `-1` | o cliente devolveu: receita negativa no mês |
  * | 0 entrada | 1,2,3 | `0` | compra, não venda |
- * | 0/1 | 5 crédito | `0` | ajuste de IBS/CBS (NT 2025.002), não é venda |
+ * | 0/1 | 5 crédito | `0` | ajuste de IBS/CBS (NT 2025.002) — 03/04: ver abaixo |
  * | 0/1 | 6 débito | `0` | idem — multa, juros, estorno de crédito… |
  *
  * ⚠️ O `0` de "saída + ajuste" é deliberadamente conservador: uma NF-e de
@@ -173,10 +173,19 @@ export function receitaBrutaDeComponentes(c: {
  * essas notas à parte, para que a contabilidade veja quantas foram ignoradas em
  * vez de descobrir a diferença no PGDAS-D.
  *
- * As notas de crédito e de débito (finNFe 5/6) são neutras pela mesma razão, e
- * caem no mesmo `notasNeutras`: movimentam IBS/CBS entre contribuinte e fisco,
- * não o preço de uma venda — a receita da operação já entrou pela nota
- * original.
+ * As notas de crédito e de débito (finNFe 5/6) também são `0` e caem no mesmo
+ * `notasNeutras`. Para quase todos os tipos o motivo é o da tabela: movimentam
+ * IBS/CBS entre contribuinte e fisco (multa, juros, estorno ou transferência de
+ * crédito, pagamento antecipado…), não o preço de uma venda — a receita da
+ * operação já entrou pela nota original.
+ *
+ * ⚠️ Crédito 03 (recusa no recebimento / destinatário não localizado) e crédito
+ * 04 (redução de valor) são a exceção: esses DIMINUEM a receita real, porque
+ * venda cancelada e desconto saem da receita bruta. Ficam em `0` DE PROPÓSITO
+ * (decidido em 2026-09-30, #1687), como o "saída + ajuste" acima: a RBT12 fica
+ * um pouco superestimada — o lado seguro, alíquota maior e nunca menor — e a
+ * nota aparece em `notasNeutras`. Abatê-las é mudar `sinalDe`, não este
+ * comentário.
  */
 export function sinalDaReceita(totais: NFeTotais): -1 | 0 | 1 {
   return sinalDe(totais.tpNF, totais.finNFe);
