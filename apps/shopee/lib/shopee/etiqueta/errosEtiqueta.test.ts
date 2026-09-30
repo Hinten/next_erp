@@ -720,3 +720,108 @@ describe('classificarErroDeEtiqueta — E26, o que ninguém ensinou', () => {
     expect(classificar('criar-documento', err)).toStrictEqual(RECUSA_DESCONHECIDA);
   });
 });
+
+/*
+ * `classificarFalhaDeLinha` (step 15, W3-A) — APPENDED. The function is read
+ * through a dynamic import so this block adds lines and edits none above it.
+ */
+describe('classificarFalhaDeLinha — a linha de lote pela MESMA tabela', () => {
+  const CASOS: readonly [OperacaoEtiqueta, string, string | null][] = [
+    ['criar-documento', 'logistics.package_can_not_print', 'cannot print'],
+    ['criar-documento', 'logistics.shipping_document_type_invalid', null],
+    ['resultado-documento', 'logistics.shipping_document_should_print_first', 'print first'],
+    ['resultado-documento', ' logistics.package_already_shipped', null],
+    ['parametro-documento', 'logistics.error_param', 'The order is being allocated, please wait'],
+    ['criar-documento', 'logistics.package_print_failed', null],
+    ['resultado-documento', 'error_limit', 'You have reached the daily API call limit.'],
+    ['criar-documento', 'logistics.error_limit', 'The batch request reach limit 50.'],
+    ['baixar', 'logistics.packages_can_not_download_together', null],
+  ];
+
+  it('cada linha recebe EXATAMENTE o veredito do envelope com o mesmo código e frase', async () => {
+    const { classificarFalhaDeLinha } = await import('./errosEtiqueta');
+    for (const [op, code, mensagem] of CASOS) {
+      expect(classificarFalhaDeLinha(op, { code, mensagem }, AGORA)).toStrictEqual(
+        classificar(op, doEnvelope(code, mensagem)),
+      );
+    }
+  });
+
+  it('os vereditos que o runner lê, fixados por valor', async () => {
+    const { classificarFalhaDeLinha } = await import('./errosEtiqueta');
+    expect(
+      classificarFalhaDeLinha(
+        'criar-documento',
+        { code: 'logistics.package_can_not_print', mensagem: null },
+        AGORA,
+      ),
+    ).toStrictEqual({ tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel });
+    expect(
+      classificarFalhaDeLinha(
+        'criar-documento',
+        { code: 'logistics.shipping_document_type_invalid', mensagem: null },
+        AGORA,
+      ),
+    ).toStrictEqual({ tipo: 'tipo-invalido' });
+    expect(
+      classificarFalhaDeLinha(
+        'resultado-documento',
+        { code: 'error_limit', mensagem: 'You have reached the daily API call limit.' },
+        AGORA,
+      ),
+    ).toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.limiteDiario,
+      tentarApos: proximaViradaDaCotaMs(AGORA),
+    });
+  });
+
+  it('o escopo da dobra: espaço e TAB caem; um SEGUNDO segmento de módulo não', async () => {
+    const { classificarFalhaDeLinha } = await import('./errosEtiqueta');
+    const indisponivel = { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel };
+    expect(
+      classificarFalhaDeLinha(
+        'criar-documento',
+        { code: ' logistics.package_can_not_print\t', mensagem: null },
+        AGORA,
+      ),
+    ).toStrictEqual(indisponivel);
+    // Near-miss: two module segments are NOT the code.
+    expect(
+      classificarFalhaDeLinha(
+        'criar-documento',
+        { code: 'x.logistics.package_can_not_print', mensagem: null },
+        AGORA,
+      ),
+    ).toStrictEqual(RECUSA_DESCONHECIDA);
+  });
+
+  it('a frase vem de `mensagem` (a do provedor): error_param sem frase é E26', async () => {
+    const { classificarFalhaDeLinha } = await import('./errosEtiqueta');
+    expect(
+      classificarFalhaDeLinha(
+        'resultado-documento',
+        { code: 'logistics.error_param', mensagem: 'Order has been shipped.' },
+        AGORA,
+      ),
+    ).toStrictEqual({ tipo: 'ja-programado' });
+    expect(
+      classificarFalhaDeLinha(
+        'resultado-documento',
+        { code: 'logistics.error_param', mensagem: null },
+        AGORA,
+      ),
+    ).toStrictEqual(RECUSA_DESCONHECIDA);
+  });
+
+  it('um código de autorização morta numa linha ⇒ null (o runner lê como recusa desconhecida)', async () => {
+    const { classificarFalhaDeLinha } = await import('./errosEtiqueta');
+    expect(
+      classificarFalhaDeLinha(
+        'criar-documento',
+        { code: 'refresh_token_expired', mensagem: null },
+        AGORA,
+      ),
+    ).toBeNull();
+  });
+});

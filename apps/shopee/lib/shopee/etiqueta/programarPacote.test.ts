@@ -1,0 +1,350 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  SHOPEE_SURFACE,
+  ShopeeConfigError,
+  ShopeeHttpError,
+  ShopeeNetworkError,
+  shopeeErrorFromEnvelope,
+  shopeeShippingParameterPayloadSchema,
+  type ShipOrderParams,
+  type ShopeeApiError,
+  type ShopeeClient,
+} from '@delfrance/integrations-shopee';
+
+import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
+import { TENTAR_EM_SHOPEE_MS } from './constantesEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE } from './errosEtiqueta';
+import type { EscolhaDeEnvio } from './modoDeEnvio';
+import { programarPacoteShopee, type AlvoDaProgramacao } from './programarPacote';
+
+/* --------------------------------- fixtures --------------------------------- */
+
+const ORDER_SN = '260910KJBHUJDM';
+const PACOTE = 'OFG000000000001';
+const OUTRO_PACOTE = 'OFG000000000002';
+const AGORA = Date.UTC(2026, 8, 30, 12, 0, 0);
+
+const ALVO: AlvoDaProgramacao = { orderSn: ORDER_SN, packageNumber: PACOTE, comPacote: false };
+const ALVO_DIVIDIDO: AlvoDaProgramacao = { ...ALVO, comPacote: true };
+
+function endereco(id: number, slots: unknown[] | null) {
+  return {
+    address_id: id,
+    region: 'BR',
+    state: 'SP',
+    city: 'Cidade do Vendedor',
+    district: 'Centro',
+    town: '',
+    address: 'Rua do Vendedor, 100',
+    zipcode: '00000-000',
+    address_flag: ['pickup_address'],
+    time_slot_list: slots,
+  };
+}
+
+function horario(id: string) {
+  return { date: 1_790_000_000, time_text: '09:00-12:00', pickup_time_id: id, flags: null };
+}
+
+/** One pickup address with ONE slot: decided with no question. */
+const UM_ENDERECO = {
+  info_needed: { pickup: ['address_id', 'pickup_time_id'] },
+  pickup: { address_list: [endereco(2001, [horario('slot-1')])] },
+};
+
+/** Two pickup addresses: a question. */
+const DOIS_ENDERECOS = {
+  info_needed: { pickup: ['address_id', 'pickup_time_id'] },
+  pickup: {
+    address_list: [endereco(2001, [horario('slot-1')]), endereco(2002, [horario('slot-2')])],
+  },
+};
+
+function envelope(error: string, message: string | null): ShopeeApiError {
+  return shopeeErrorFromEnvelope(
+    { error, message, request_id: null, warning: null },
+    { path: '/api/v2/logistics/ship_order', httpStatus: 200, surface: SHOPEE_SURFACE.business },
+  );
+}
+
+function fakeClient(opts: {
+  parametro?: unknown;
+  parametroErro?: unknown;
+  /** One entry per `shipOrder` call: `undefined` ⇒ success, else thrown. */
+  ship?: unknown[];
+}) {
+  const getShippingParameter = vi.fn(async () => {
+    if (opts.parametroErro !== undefined) throw opts.parametroErro;
+    return shopeeShippingParameterPayloadSchema.parse(opts.parametro ?? UM_ENDERECO);
+  });
+  const respostas = [...(opts.ship ?? [])];
+  const shipOrder = vi.fn(async (_p: ShipOrderParams) => {
+    const erro = respostas.shift();
+    if (erro !== undefined) throw erro;
+    return { error: '', message: null, request_id: null, warning: null };
+  });
+  const client = { getShippingParameter, shipOrder } as unknown as ShopeeClient;
+  return { client, getShippingParameter, shipOrder };
+}
+
+function corpoDoShip(shipOrder: ReturnType<typeof fakeClient>['shipOrder'], i = 0) {
+  const call = shipOrder.mock.calls[i];
+  if (call === undefined) throw new Error(`shipOrder não foi chamado ${String(i + 1)}×`);
+  return call[0];
+}
+
+/* ---------------------------------- tests ----------------------------------- */
+
+describe('programarPacoteShopee — o caminho feliz', () => {
+  it('lê o parâmetro NOMEANDO o pacote e envia o corpo decidido', async () => {
+    const f = fakeClient({});
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'programado',
+    });
+    expect(f.getShippingParameter).toHaveBeenCalledWith({
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('S29: pedido NÃO dividido ⇒ package_number AUSENTE no ship (nunca "")', async () => {
+    const f = fakeClient({});
+    await programarPacoteShopee(f.client, ALVO, null, AGORA);
+    const corpo = corpoDoShip(f.shipOrder);
+    expect(corpo).toStrictEqual({
+      orderSn: ORDER_SN,
+      modo: 'pickup',
+      pickup: { addressId: 2001, pickupTimeId: 'slot-1' },
+    });
+    expect('packageNumber' in corpo).toBe(false);
+  });
+
+  it('S29 (near-miss): pedido dividido ⇒ o ship leva o package_number', async () => {
+    const f = fakeClient({});
+    await programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA);
+    expect(corpoDoShip(f.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      modo: 'pickup',
+      pickup: { addressId: 2001, pickupTimeId: 'slot-1' },
+    });
+  });
+
+  it('dropoff sem nada a preencher ⇒ `dropoff: {}` enviado', async () => {
+    const f = fakeClient({ parametro: { info_needed: { dropoff: [] } } });
+    await programarPacoteShopee(f.client, ALVO, null, AGORA);
+    expect(corpoDoShip(f.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      modo: 'dropoff',
+      dropoff: {},
+    });
+  });
+});
+
+describe('programarPacoteShopee — a escolha do operador', () => {
+  it('mais de um endereço e nenhuma escolha ⇒ pergunta, ZERO ship', async () => {
+    const f = fakeClient({ parametro: DOIS_ENDERECOS });
+    const r = await programarPacoteShopee(f.client, ALVO, null, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', permiteDropoff: false, escolhaInvalida: false });
+    expect(r.tipo === 'pergunta' ? r.enderecos.map((e) => e.id) : []).toStrictEqual([
+      '2001',
+      '2002',
+    ]);
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('a escolha deste pacote ⇒ o id STRING volta como NÚMERO no ship (round-trip 1)', async () => {
+    const f = fakeClient({ parametro: DOIS_ENDERECOS });
+    const escolha: EscolhaDeEnvio = {
+      pacote: PACOTE,
+      modo: 'pickup',
+      enderecoId: '2002',
+      horarioId: 'slot-2',
+    };
+    await expect(programarPacoteShopee(f.client, ALVO, escolha, AGORA)).resolves.toStrictEqual({
+      tipo: 'programado',
+    });
+    expect(corpoDoShip(f.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      modo: 'pickup',
+      pickup: { addressId: 2002, pickupTimeId: 'slot-2' },
+    });
+  });
+
+  it('a escolha de OUTRO pacote não programa este — a pergunta deste é feita', async () => {
+    const f = fakeClient({ parametro: DOIS_ENDERECOS });
+    const escolha: EscolhaDeEnvio = {
+      pacote: OUTRO_PACOTE,
+      modo: 'pickup',
+      enderecoId: '2002',
+      horarioId: 'slot-2',
+    };
+    const r = await programarPacoteShopee(f.client, ALVO, escolha, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', escolhaInvalida: false });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('S42/S43: um enderecoId que não casa EXATAMENTE ("02002") ⇒ pergunta de novo, ZERO ship', async () => {
+    const f = fakeClient({ parametro: DOIS_ENDERECOS });
+    const escolha: EscolhaDeEnvio = {
+      pacote: PACOTE,
+      modo: 'pickup',
+      enderecoId: '02002',
+      horarioId: 'slot-2',
+    };
+    const r = await programarPacoteShopee(f.client, ALVO, escolha, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', escolhaInvalida: true });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('só non_integrated ⇒ recusa sem-etiqueta-shopee, ZERO ship', async () => {
+    const f = fakeClient({ parametro: { info_needed: { non_integrated: [] } } });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.semEtiquetaShopee,
+    });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe('programarPacoteShopee — ⚠️ ship_order não é idempotente', () => {
+  it('S30: erro de REDE no ship ⇒ verificar, UM ship só', async () => {
+    const f = fakeClient({ ship: [new ShopeeNetworkError('queda')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'verificar',
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('S30: HTTP sem envelope e error_timeout ⇒ verificar, UM ship só', async () => {
+    for (const erro of [
+      new ShopeeHttpError('borda', { httpStatus: 502, path: '/api/v2/logistics/ship_order' }),
+      envelope('logistics.error_timeout', 'timeout'),
+    ]) {
+      const f = fakeClient({ ship: [erro] });
+      await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+        tipo: 'verificar',
+      });
+      expect(f.shipOrder).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('S31: " logistics.package_already_shipped" (com o espaço da página) ⇒ ja-programado', async () => {
+    const f = fakeClient({ ship: [envelope(' logistics.package_already_shipped', 'shipped')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'ja-programado',
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R-l: not_need_pacakge_number ⇒ UM reenvio SEM o número', async () => {
+    const f = fakeClient({
+      ship: [envelope('logistics.ship_order_not_need_pacakge_number', null)],
+    });
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'programado' });
+    expect(f.shipOrder).toHaveBeenCalledTimes(2);
+    expect('packageNumber' in corpoDoShip(f.shipOrder, 0)).toBe(true);
+    expect('packageNumber' in corpoDoShip(f.shipOrder, 1)).toBe(false);
+  });
+
+  it('R-l: o reenvio recusado de novo ⇒ pacotes-mudaram, nunca um terceiro ship', async () => {
+    const naoPrecisa = () => envelope('logistics.ship_order_not_need_pacakge_number', null);
+    const f = fakeClient({ ship: [naoPrecisa(), naoPrecisa(), naoPrecisa()] });
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram });
+    expect(f.shipOrder).toHaveBeenCalledTimes(2);
+  });
+
+  it('R-l: not_need sem número para tirar ⇒ pacotes-mudaram, UM ship', async () => {
+    const f = fakeClient({
+      ship: [envelope('logistics.ship_order_not_need_pacakge_number', null)],
+    });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R-l: need_pacakge_number ⇒ pacotes-mudaram, SEM reenvio', async () => {
+    const f = fakeClient({ ship: [envelope('logistics.ship_order_need_pacakge_number', null)] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('o horário recusado no ship ⇒ pergunta marcada inválida, UM ship', async () => {
+    const f = fakeClient({
+      parametro: DOIS_ENDERECOS,
+      ship: [envelope('logistics.ship_order_pickup_time_invalid', 'invalid')],
+    });
+    const escolha: EscolhaDeEnvio = {
+      pacote: PACOTE,
+      modo: 'pickup',
+      enderecoId: '2001',
+      horarioId: 'slot-1',
+    };
+    const r = await programarPacoteShopee(f.client, ALVO, escolha, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', escolhaInvalida: true });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('o horário recusado quando era a ÚNICA opção ⇒ aguardar, nunca o mesmo ship de novo', async () => {
+    const f = fakeClient({ ship: [envelope('logistics.ship_order_pickup_time_invalid', 'x')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'aguardar',
+      fase: 'programando',
+      tentarEmMs: TENTAR_EM_SHOPEE_MS,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cota diária no ship ⇒ recusa limite-diario com tentarApos', async () => {
+    const f = fakeClient({ ship: [envelope('error_limit', 'reached the daily API call limit')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.limiteDiario,
+      tentarApos: proximaViradaDaCotaMs(AGORA),
+    });
+  });
+});
+
+describe('programarPacoteShopee — a leitura do parâmetro', () => {
+  it('lack_of_invoice_data no parâmetro ⇒ nfe-pendente, ZERO ship', async () => {
+    const f = fakeClient({
+      parametroErro: envelope('logistics.lack_of_invoice_data', 'no invoice'),
+    });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'nfe-pendente',
+    });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('rede caída na LEITURA ⇒ aguardar (nada foi enviado), nunca verificar', async () => {
+    const f = fakeClient({ parametroErro: new ShopeeNetworkError('queda') });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'aguardar',
+      fase: 'programando',
+      tentarEmMs: TENTAR_EM_SHOPEE_MS,
+    });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('um erro que a tabela não possui é RELANÇADO intacto', async () => {
+    const nosso = new ShopeeConfigError('configuração');
+    const f = fakeClient({ parametroErro: nosso });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).rejects.toBe(nosso);
+
+    const estranho = new TypeError('não é da Shopee');
+    const g = fakeClient({ ship: [estranho] });
+    await expect(programarPacoteShopee(g.client, ALVO, null, AGORA)).rejects.toBe(estranho);
+    expect(g.shipOrder).toHaveBeenCalledTimes(1);
+  });
+});

@@ -15,6 +15,7 @@ runs them, from this worktree, against the project the environment points at.
 | `enviar-estoque.ts`      | sends the stock of up to 50 produtos through the real step-12 path | only with `--live`        |
 | `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path | only with `--live`        |
 | `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)            | only with `--live`        |
+| `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)    | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1559,3 +1560,126 @@ attached, so the re-run UPLOADS, which is the point of running it again.
   sent: the upload cannot be rehearsed end to end before a BR shop.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it sends a
   fiscal document to a real marketplace, and even a dry run calls Shopee.
+
+---
+
+## `baixar:etiqueta` — rehearsing the first `ship_order`
+
+The label normally comes from the pedido screen's **Imprimir** button → the label
+route → `executarEtiquetaShopee`. This script drives **the same runner** from a
+terminal against ONE named pedido, so the channel's first `ship_order` is
+deliberate and observable — and its dry run says where a pedido stands (arranged?
+tracked? the document ready?) without changing anything at Shopee. The runner's
+reasoning is `lib/shopee/etiqueta/` (`executarEtiqueta.ts`, `faseEtiqueta.ts`).
+
+### 16.1 Environment
+
+Same `.env.local` as every other script here, and the same variables as §1. The
+preamble prints, on stderr and BEFORE anything is read: `modo`, `projeto`,
+`database`, the RAW `SHOPEE_SANDBOX` (only exactly `1` is the sandbox) and the
+format. There is no conta flag: the pedido PROVES its own conta, through the label
+route's own ladder (the pedido, `provaDeIdentidadeShopee`, a frete owned by
+another integration, the conta's tipo and `ativo`) — a refusal there costs zero
+Shopee calls.
+
+⚠️ **`--live` arranges the shipment of a real marketplace order, and `ship_order`
+is irreversible.** Read the preamble before you let it continue, exactly as in §1.
+
+### 16.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app baixar:etiqueta --pedido <pedidoId>
+```
+
+| flag                  | meaning                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `--pedido <id>`       | **required**, once — the pedido DOCUMENT id (the digest), never Shopee's order number                         |
+| `--formato pdf\|zpl2` | the format asked of Shopee; default `pdf` (`zpl2` = the thermal label). Anything else is REFUSED              |
+| `--pacote <número>`   | only this package of a split order (at most 64 characters). Without it, the whole order                       |
+| `--endereco <id>`     | the answer to the shipping-mode question: the pickup address                                                  |
+| `--horario <id>`      | the pickup slot; only beside `--endereco`                                                                     |
+| `--dropoff`           | the answer to the shipping-mode question: drop the parcel at the agency. ⚠️ `--dropoff --endereco` is REFUSED |
+| `--dry-run`           | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence            |
+| `--live`              | the only opt-in to a real `ship_order`, `create_shipping_document` and download                               |
+| `--project <id>`      | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                         |
+| `--help`, `-h`        | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                |
+
+There is **no `--confirmar-janela`**: the 1-hour confirm was removed with its
+whole apparatus (legacy parity, Lucas 2026-09-30).
+
+**What the dry run calls, and what it can never call.** Firestore: the pedido and
+the conta. Shopee: every READ the runner makes — `get_order_detail` (with only
+`package_list,fulfillment_flag`), `get_package_detail`, `get_tracking_number`,
+`get_shipping_document_parameter`, `get_shipping_document_result` — plus, when the
+next step is the arrange, ONE `get_shipping_parameter` to print the mode verdict.
+It never calls `ship_order`, `create_shipping_document` or
+`download_shipping_document`: the runner answers `simulado` at the first of them.
+The dry run is ONE runner call.
+
+### 16.3 What to read in the output
+
+A header, then one block per runner call. The whole rendering is an
+**allow-list** — named fields only — so it is safe to paste into an issue: it
+NEVER prints the order number, a package number, a tracking number, an address
+or its id, a byte, or the pedido id. A package is named by its POSITION
+(`Pacote 1 de 2`).
+
+| line                     | what it tells you                                                                                                                        |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `próxima ação`           | the dry run's stop: `programar` (the arrange), `criar-documento` or `baixar`, with how many packages it names                            |
+| `modo de envio`          | at an arrange: `coleta`/`postagem na agência` it would send without asking, or the question it would ask (counts of addresses and slots) |
+| `package_number no ship` | whether the arrange would carry the package number (only on a split order until the probe flips `SHOPEE_SHIP_ORDER_PACOTE`)              |
+| `tipo de etiqueta`       | at a download: the document type token (`NORMAL_AIR_WAYBILL`, `THERMAL_AIR_WAYBILL`, or Shopee's default)                                |
+| `fases`                  | each package's phase, by position: `programar`, `arranjado`, `nfe-pendente`, `nao-pronto`, `retido`, `janela-fechada`, …                 |
+| `progresso`              | organised / total, with a tracking number, documents ready — counts only                                                                 |
+| `recusa`                 | the motivo slug and its pt-BR sentence — the same vocabulary the route's 409 carries                                                     |
+| `arquivo`                | `--live`: the sniffed format, its `Content-Type` and the byte LENGTH. ⚠️ The file is NOT written                                         |
+
+### 16.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app baixar:etiqueta --pedido <pedidoId> --live
+```
+
+⚠️ **`--live` arranges the shipment for real** when a package is not arranged
+yet, then polls the tracking number and the document inside a **5-minute budget
+for the whole run**, and downloads the label — printing only its format and
+length. A re-run is the resume path: an arranged package is never arranged again.
+
+The run re-calls the runner in exactly two cases, both because the package
+number is never printed (so you could not type it into a second command):
+
+- **the shipping-mode question**, when you gave `--endereco [--horario]` or
+  `--dropoff`: the answer is bound to the package the question named, once per
+  package. Without an answer the question ends the run — the address and slot
+  ids are NOT printed; answer from the ERP's Imprimir button, or with
+  `--dropoff` when the agency is offered;
+- **`baixar-por-pacote`** (the packages go by different couriers): one download
+  per package, in Shopee's order.
+
+Everything else ends the run: a wait (`aguardar` — run again later), a refusal,
+and `nfe-pendente`, which prints **"use `enviar:nfe`"** — this CLI never
+re-drives the NF-e (§15).
+
+| code | when                                                                                  |
+| ---- | ------------------------------------------------------------------------------------- |
+| `0`  | any report — a refusal, a question, a wait and every dry run included                 |
+| `0`  | `--help`                                                                              |
+| `1`  | a bad command line; prints THIS command's usage                                       |
+| `1`  | any throw, described by CLASS plus Shopee's `code`/`path` — ⚠️ never Shopee's message |
+
+⚠️ A throw under `--live` after the arrange leaves the package ARRANGED at Shopee;
+the failure path says so. Read it again with the dry run before repeating.
+
+### 16.5 Caveats you should expect to see (none of these is a bug)
+
+- **`aguardar` with `aguardando-rastreio` after 5 minutes** — the courier has not
+  assigned a tracking number yet, and no label is created without one while
+  `IMPRIMIR_SEM_RASTREIO` is off. Run again later; nothing is arranged twice.
+- **`nfe-pendente` on a fresh order** — Shopee holds the arrange until the NF-e is
+  attached (step 14); `pacote-nao-pronto` means Shopee has not released the
+  package for shipping yet.
+- **The sandbox shop is SG** — its channels, addresses and document types are not
+  BR's, so a sandbox rehearsal proves the wiring, not BR's wire.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it arranges
+  a real shipment, and even a dry run calls Shopee.

@@ -17,6 +17,7 @@
     "enviar:estoque": "dotenv -e ../../.env.local -- tsx scripts/enviar-estoque.ts",
     "enviar:precos": "dotenv -e ../../.env.local -- tsx scripts/enviar-precos.ts",
     "enviar:nfe": "dotenv -e ../../.env.local -- tsx scripts/enviar-nfe.ts",
+    "baixar:etiqueta": "dotenv -e ../../.env.local -- tsx scripts/etiqueta.ts",
     "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
     "liquidar:pagamentos": "dotenv -e ../../.env.local -- tsx scripts/liquidar-pagamentos.ts",
     "rastrear:pedido": "dotenv -e ../../.env.local -- tsx scripts/rastrear-pedido.ts",

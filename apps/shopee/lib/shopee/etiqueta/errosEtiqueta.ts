@@ -26,12 +26,14 @@
  */
 import {
   SHOPEE_ERROR_KIND,
+  SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeArquivoVazioError,
   ShopeeError,
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
@@ -41,6 +43,7 @@ import {
   INTERVALO_DOCUMENTO_MS,
   TENTAR_EM_CREDENCIAL_MS,
   TENTAR_EM_LIMITE_MS,
+  TENTAR_EM_SHOPEE_MS,
 } from './constantesEtiqueta';
 import type { FaseEtiqueta } from './faseEtiqueta';
 
@@ -312,11 +315,11 @@ const FASE_DA_OPERACAO: Readonly<Record<OperacaoEtiqueta, FaseEtiqueta>> = {
 
 /**
  * The wait for a Shopee-side "not now" (E5 allocation, E6 lock off the ship,
- * E7b transient): D1 row 5's 10 000, which is the value
- * {@link TENTAR_EM_LIMITE_MS} already names (R-m's "gentler value"). One
- * number, not a second copy of it.
+ * E7b transient): D1 row 5's 10 000, named once in `constantesEtiqueta.ts`
+ * ({@link TENTAR_EM_SHOPEE_MS}) — not a second copy of the burst floor, which
+ * only happens to share the value.
  */
-const ESPERA_DA_SHOPEE_MS = TENTAR_EM_LIMITE_MS;
+const ESPERA_DA_SHOPEE_MS = TENTAR_EM_SHOPEE_MS;
 
 // ---- the codes and the needles (canonical codes; folded sentences) ----
 
@@ -618,4 +621,43 @@ export function classificarErroDeEtiqueta(
 
   // ---- E26: a refusal nobody taught us. After a ship the next call re-derives anyway. ----
   return recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida);
+}
+
+/**
+ * The path a ROW failure is attributed to in the synthetic error below. It
+ * only ever reaches the error's formatted `message`, which nothing classifies
+ * and nothing logs.
+ */
+const CAMINHO_DA_LINHA = 'linha-de-lote';
+
+/**
+ * Classify ONE failed row of a batch document page (`fail_error` /
+ * `fail_message`, read through the package's `falhaDaLinha`) with the SAME
+ * table as a thrown failure.
+ *
+ * ⚠️ One table, not two: the row is turned into exactly the error the
+ * transport would have built for an ENVELOPE carrying that code and sentence
+ * (`shopeeErrorFromEnvelope` — the same class and the same `kind`, so a
+ * row-level `error_limit` reads as the daily quota exactly where an envelope
+ * would), and {@link classificarErroDeEtiqueta} answers it. A second row table
+ * would drift from the first by construction.
+ *
+ * ⚠️ The code and the sentence arrive VERBATIM (a leading space or a trailing
+ * TAB included); the classifier's own folds apply, as they do to an envelope.
+ *
+ * @returns the verdict, or `null` when the table has nothing to say (a
+ *   reauth-kind code on a row). There is nothing to rethrow for a row, so the
+ *   caller decides what `null` means — the runner answers it as an unknown
+ *   refusal.
+ */
+export function classificarFalhaDeLinha(
+  op: OperacaoEtiqueta,
+  falha: { readonly code: string; readonly mensagem: string | null },
+  nowMs: number,
+): VereditoDeErro | null {
+  const erro = shopeeErrorFromEnvelope(
+    { error: falha.code, message: falha.mensagem, request_id: null, warning: null },
+    { path: CAMINHO_DA_LINHA, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+  );
+  return classificarErroDeEtiqueta(op, erro, nowMs);
 }

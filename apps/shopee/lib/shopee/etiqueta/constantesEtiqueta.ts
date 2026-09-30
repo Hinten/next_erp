@@ -57,6 +57,15 @@ export const TENTAR_EM_LIMITE_MS = 10_000;
 /** The `tentarEmMs` while another instance holds the token-refresh lease. */
 export const TENTAR_EM_CREDENCIAL_MS = 2_000;
 
+/**
+ * The `tentarEmMs` for Shopee's own "not now" — an allocation still running, a
+ * lock off the ship, a Shopee-side hiccup — and for the runner's own "this
+ * call cannot move further, ask again". D1 row 5's value, which is also the
+ * burst floor above; a name of its own because the two are different facts
+ * and either may move without the other.
+ */
+export const TENTAR_EM_SHOPEE_MS = 10_000;
+
 /* ------------------------------- the wire ask ------------------------------ */
 
 /**
