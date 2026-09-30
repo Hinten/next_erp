@@ -4435,12 +4435,22 @@ export type ShopeeResultadoDeDocumento = z.infer<typeof shopeeResultadoDeDocumen
  *
  * ⚠️ Per-ELEMENT `null` sentinels on `result_list`, the
  * {@link shopeePackageDetailPayloadSchema} precedent: a batch of up to 50 must
- * not lose 49 rows to one. `.default([])`: fewer rows than were asked for is a
- * valid answer, and the reader reconciles by identity.
+ * not lose 49 rows to one. An ABSENT and a `null` list both read as `[]`
+ * (review 1 of step 15, R4-4): this API's house style prints `null` for an
+ * empty list (`get_shipping_parameter`'s own sample: `time_slot_list: null`),
+ * fewer rows than were asked for is a valid answer, and the reader reconciles
+ * by identity — so a `null` there is "no rows", never a 502.
  */
 function paginaDeDocumento<Linha extends z.ZodType>(linha: Linha) {
   return wrappedOp(
-    z.object({ result_list: z.array(linha.nullable().catch(null)).default([]) }).passthrough(),
+    z
+      .object({
+        result_list: z
+          .array(linha.nullable().catch(null))
+          .nullish()
+          .transform((v) => v ?? []),
+      })
+      .passthrough(),
   ).extend({ warning: avisosDeLoteSchema });
 }
 

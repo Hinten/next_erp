@@ -244,6 +244,7 @@ import {
   ShopeeApiPartialError,
   ShopeeConfigError,
   shopeeCodeSemPrefixoDeModulo,
+  shopeeCodigoCanonico,
 } from './errors';
 import type { ShopeeHosts } from './hosts';
 import {
@@ -3312,21 +3313,15 @@ interface PaginaDeLote<Row> {
   readonly response: { readonly result_list: readonly (Row | null)[] };
 }
 
-/** The ONE code {@link lerLoteLogistico} folds into a value. */
-const CODIGO_LOTE_TODO_FALHOU = 'common.batch_api_all_failed';
-
 /**
- * A Shopee code with ONE module segment stripped: trim → strip → trim.
- *
- * ⚠️ The FOLD and its scope: `common.batch_api_all_failed`,
- * `batch_api_all_failed` and ` common.batch_api_all_failed` are the same code;
+ * The ONE code {@link lerLoteLogistico} folds into a value, compared through
+ * the package's one code fold, {@link shopeeCodigoCanonico} (`errors.ts`):
+ * `common.batch_api_all_failed`, `batch_api_all_failed` and
+ * ` common.batch_api_all_failed` are the same code;
  * `common.batch_api_all_failed_x` and `logistics.common.batch_api_all_failed`
- * (TWO segments) stay distinct — `api.test.ts` pins each side.
+ * (TWO segments) stay distinct — `api.test.ts` pins each side here.
  */
-function codigoSemModulo(code: string): string {
-  const aparado = code.trim();
-  return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
-}
+const CODIGO_LOTE_TODO_FALHOU = 'common.batch_api_all_failed';
 
 /**
  * The count sentence of a batch `warning` — the transport's own
@@ -3378,7 +3373,9 @@ async function lerLoteLogistico<Row>(
     });
   } catch (err: unknown) {
     if (!(err instanceof ShopeeApiPartialError)) throw err;
-    if (codigoSemModulo(err.code) !== codigoSemModulo(CODIGO_LOTE_TODO_FALHOU)) throw err;
+    if (shopeeCodigoCanonico(err.code) !== shopeeCodigoCanonico(CODIGO_LOTE_TODO_FALHOU)) {
+      throw err;
+    }
     const releitura = chamada.schema.safeParse(err.parsed);
     if (!releitura.success) throw err;
     if (!releitura.data.response.result_list.some((linha) => linha !== null)) throw err;

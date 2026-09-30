@@ -37,19 +37,16 @@
  * ## Then — ownership, the block, the conta, the runner
  *
  * - The pedido, RAW (`pedidoCollection.docRef(...).get()`); absent ⇒ 404
- *   `SHOPEE_ETIQUETA_PEDIDO_NAO_ENCONTRADO`.
- * - Ownership is `provaDeIdentidadeShopee` — the id must recompute from
- *   `(conta, order_sn)` — and NEVER `avaliarPedidoParaNfeShopee`, whose
- *   `bloquearEmissaoNFe` rung would refuse the label of every order that never
- *   gets an NF-e from this ERP (R-r, S39). No proof ⇒ 409 `nao-shopee`.
- * - The block: refused only when `freteInicial.externalOptionIntegracao` is
- *   PRESENT and not `shopee` (`frete-de-outra-integracao`). An absent/`null`
- *   owner passes: a migrated legacy pedido keeps whatever the legacy app wrote,
- *   and step 7 never rewrites that field (S40).
- * - The conta: the cached `readConta` judged by the NF-e upload's own conta
- *   predicate — missing or of another tipo ⇒ `conta-nao-configurada`,
- *   `ativo !== true` ⇒ `conta-inativa` — BEFORE a client is built, so a refused
- *   conta costs no token read.
+ *   `SHOPEE_ETIQUETA_PEDIDO_NAO_ENCONTRADO` — the one rung that is the route's
+ *   own.
+ * - The ladder is `etiqueta/alvoEtiqueta.ts`, the SAME two functions the
+ *   `baixar:etiqueta` CLI runs (review 1, R5-3): ownership through
+ *   `provaDeIdentidadeShopee` and NEVER the NF-e pedido predicate (R-r, S39;
+ *   no proof ⇒ 409 `nao-shopee`); the block, refused only when ANOTHER
+ *   integração owns the frete (409 `frete-de-outra-integracao`, S40); then the
+ *   cached `readConta` judged by the NF-e upload's own conta predicate (409
+ *   `conta-nao-configurada` / `conta-inativa`) BEFORE a client is built, so a
+ *   refused conta costs no token read.
  * - `loadShopeeContext(db, contaId).createShopClient()` and the runner. The
  *   route is the composition root: it supplies the client, a MOVING clock (the
  *   runner's budget needs one; the ladder's ONE read is the route's own) and the
@@ -71,15 +68,18 @@
  * `SHOPEE_REAUTH_REQUIRED`, 503 on the network, 502 on a schema drift, …), and
  * anything else rethrows (rule 6).
  *
- * ⚠️ PII: no log line here, and no answer carries the access key, a tracking
- * number, an address or the bytes of anything but the label itself. The
- * filename carries the pedido's `numero` under Mercado Livre's guard and a
- * package's POSITION — never a package number (`respostaEtiqueta.ts`).
+ * ⚠️ PII: ONE log line here, and only for a `recusa-desconhecida` that carries
+ * a `shopeeCode` — `{ op, code }`, the op slug and the token-gated canonical
+ * code (review 1, R3-F1), which the 409 body also carries as the optional
+ * `shopeeCode`. No answer and no log carries the access key, a tracking
+ * number, an address, Shopee's sentence or the bytes of anything but the label
+ * itself. The filename carries the pedido's `numero` under Mercado Livre's
+ * guard and a package's POSITION — never a package number
+ * (`pendenteEtiqueta.ts`).
  */
 import { NextResponse } from 'next/server';
 import { hasPerm } from '@delfrance/auth';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
-import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -87,21 +87,20 @@ import { naoDocId } from '@/lib/shopee/anuncios/corpoPublicacao';
 import { readConta } from '@/lib/shopee/core/contaCache';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import { loadShopeeContext } from '@/lib/shopee/core/shopee';
-import { TAMANHO_MAX_PACOTE } from '@/lib/shopee/etiqueta/constantesEtiqueta';
 import {
-  MOTIVO_ETIQUETA_SHOPEE,
-  type MotivoEtiquetaShopee,
-} from '@/lib/shopee/etiqueta/errosEtiqueta';
+  avaliarContaParaEtiquetaShopee,
+  avaliarPedidoParaEtiquetaShopee,
+} from '@/lib/shopee/etiqueta/alvoEtiqueta';
+import { TAMANHO_MAX_PACOTE } from '@/lib/shopee/etiqueta/constantesEtiqueta';
 import {
   executarEtiquetaShopee,
   type ResultadoEtiqueta,
 } from '@/lib/shopee/etiqueta/executarEtiqueta';
 import type { EscolhaDeEnvio } from '@/lib/shopee/etiqueta/modoDeEnvio';
-import { respostaDaEtiqueta, type DesfechoNfe } from '@/lib/shopee/etiqueta/respostaEtiqueta';
-import { MOTIVO_NFE_SHOPEE } from '@/lib/shopee/nfe/errosNfe';
-import { avaliarContaParaNfeShopee } from '@/lib/shopee/nfe/pedidoNfe';
+import type { MotivoEtiquetaShopee } from '@/lib/shopee/etiqueta/motivosEtiqueta';
+import type { DesfechoNfe } from '@/lib/shopee/etiqueta/pendenteEtiqueta';
+import { respostaDaEtiqueta } from '@/lib/shopee/etiqueta/respostaEtiqueta';
 import { reenviarNfeDoPedidoShopee } from '@/lib/shopee/nfe/reenvioNfe';
-import { provaDeIdentidadeShopee } from '@/lib/shopee/pedidos/reservaTravadaMapping';
 import { MSG_BODY_INVALIDO, lerJsonDoCorpo } from '@/lib/shopee/produtos/corpoImportacao';
 
 export const dynamic = 'force-dynamic';
@@ -202,38 +201,6 @@ function lerEnvio(v: unknown): Lido<EscolhaDeEnvio | null> {
 }
 
 /**
- * `freteInicial.externalOptionIntegracao` as STORED, or `null` when the block
- * or the field is absent. Anything else — another integração, a non-string —
- * is returned as is, and refused by the caller unless it is exactly `shopee`.
- */
-function donoDoFrete(raw: Record<string, unknown>): unknown {
-  const frete = raw['freteInicial'];
-  if (frete === null || typeof frete !== 'object' || Array.isArray(frete)) return null;
-  return (frete as Record<string, unknown>)['externalOptionIntegracao'] ?? null;
-}
-
-/**
- * The conta refusal in the label's vocabulary. The PREDICATE is the NF-e
- * upload's (`avaliarContaParaNfeShopee`), so the two surfaces cannot disagree
- * about which conta may act; the `never` arm makes a third refusal there a
- * compile error here rather than a silent `conta-nao-configurada`.
- */
-function motivoDaConta(
-  motivo: typeof MOTIVO_NFE_SHOPEE.contaNaoConfigurada | typeof MOTIVO_NFE_SHOPEE.contaInativa,
-): MotivoEtiquetaShopee {
-  switch (motivo) {
-    case MOTIVO_NFE_SHOPEE.contaNaoConfigurada:
-      return MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada;
-    case MOTIVO_NFE_SHOPEE.contaInativa:
-      return MOTIVO_ETIQUETA_SHOPEE.contaInativa;
-    default: {
-      const nunca: never = motivo;
-      return nunca;
-    }
-  }
-}
-
-/**
  * What the route does about the NF-e on an `nfe-pendente` answer: re-drive it
  * (with `PERM.pedido.write`) and map the re-drive's union BY NAME — the access
  * key, the XML and the NF-e document id never leave.
@@ -315,18 +282,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
   const raw = (snap.data() ?? {}) as Record<string, unknown>;
-  const prova = provaDeIdentidadeShopee(pedidoId, raw);
-  if (prova === null) return recusar(MOTIVO_ETIQUETA_SHOPEE.naoShopee);
-
-  // ---- the block: refused only when ANOTHER integração owns it. ----
-  const dono = donoDoFrete(raw);
-  if (dono !== null && dono !== INTEGRACAO_FRETE.shopee) {
-    return recusar(MOTIVO_ETIQUETA_SHOPEE.freteDeOutraIntegracao);
-  }
+  // ---- the ladder (`alvoEtiqueta.ts`, the CLI's too): ownership, then the block. ----
+  const prova = avaliarPedidoParaEtiquetaShopee(pedidoId, raw);
+  if (!prova.ok) return recusar(prova.motivo);
 
   // ---- the conta — the cached reader, before any client or token. ----
-  const conta = avaliarContaParaNfeShopee(await readConta(db, prova.contaId));
-  if (!conta.ok) return recusar(motivoDaConta(conta.motivo));
+  const conta = avaliarContaParaEtiquetaShopee(await readConta(db, prova.contaId));
+  if (!conta.ok) return recusar(conta.motivo);
 
   // ---- the runner. ----
   let r: ResultadoEtiqueta;
@@ -350,6 +312,18 @@ export async function POST(req: Request): Promise<NextResponse> {
   // `simulado` here is a defect — a 500, never a 2xx with nothing in it.
   if (r.tipo === 'simulado') {
     throw new Error('invariante: o executor da etiqueta respondeu simulado fora do modo leitura.');
+  }
+
+  // R3-F1: the route's ONE log line. A refusal the table does not know is the
+  // datum the table must learn, so its code is recorded — the canonical code
+  // the runner already put through `codigoSeguro` (a token, fewer than seven
+  // digits: never an order or package number) and our own op slug. Never
+  // Shopee's sentence.
+  if (r.tipo === 'recusa' && r.shopeeCode !== undefined) {
+    console.warn('[shopee/etiqueta] recusa-desconhecida', {
+      op: r.operacao ?? null,
+      code: r.shopeeCode,
+    });
   }
 
   // ---- the NF-e, only on the one answer that asks for it. ----

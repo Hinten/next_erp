@@ -30,22 +30,24 @@ import { ESTADO_NFE, INTEGRACAO_FRETE, INTEGRACAO_TIPO } from '@delfrance/schema
 
 import { ShopeeContaSemShopIdError, ShopeeSemCredencialError } from '@/lib/shopee/core/tokenStore';
 import { TAMANHO_MAX_PACOTE } from '@/lib/shopee/etiqueta/constantesEtiqueta';
-import {
-  MOTIVO_ETIQUETA_SHOPEE,
-  mensagemDoMotivoEtiqueta,
-  type MotivoEtiquetaShopee,
-} from '@/lib/shopee/etiqueta/errosEtiqueta';
 import type {
   DepsExecucaoEtiqueta,
   EntradaEtiqueta,
   ResultadoEtiqueta,
 } from '@/lib/shopee/etiqueta/executarEtiqueta';
 import {
+  MOTIVO_ETIQUETA_SHOPEE,
+  mensagemDoMotivoEtiqueta,
+  type MotivoEtiquetaShopee,
+} from '@/lib/shopee/etiqueta/motivosEtiqueta';
+import {
   MENSAGEM_DA_FASE,
   MENSAGEM_ESCOLHER_ENVIO,
+  type EtiquetaPendente,
+} from '@/lib/shopee/etiqueta/pendenteEtiqueta';
+import {
   MENSAGEM_FORMATO_DESCONHECIDO,
   MENSAGEM_SEM_PERMISSAO_PROGRAMAR,
-  type EtiquetaPendente,
 } from '@/lib/shopee/etiqueta/respostaEtiqueta';
 import { MOTIVO_NFE_SHOPEE } from '@/lib/shopee/nfe/errosNfe';
 import { avaliarPedidoParaNfeShopee } from '@/lib/shopee/nfe/pedidoNfe';
@@ -773,6 +775,43 @@ describe('as respostas — o mapeamento de `respostaEtiqueta.ts`, na rota', () =
     });
   });
 
+  it('R3-F1 PAR: uma `recusa-desconhecida` com `shopeeCode` ⇒ o 409 leva o código, e UMA linha de log `{ op, code }`', async () => {
+    cenario();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.executar.mockResolvedValue({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'some_new_code',
+      operacao: 'programar',
+    });
+    const { status, body } = await responder(corpo());
+    expect(status).toBe(409);
+    expect(body).toStrictEqual({
+      ...recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida),
+      shopeeCode: 'some_new_code',
+    });
+    expect(warn.mock.calls).toEqual([
+      ['[shopee/etiqueta] recusa-desconhecida', { op: 'programar', code: 'some_new_code' }],
+    ]);
+    const linha = JSON.stringify(warn.mock.calls);
+    expect(linha).not.toContain(ORDER_SN);
+    expect(linha).not.toContain(PEDIDO_ID);
+  });
+
+  it('R3-F1 QUASE-MISS: a MESMA recusa sem `shopeeCode` ⇒ nenhuma chave `shopeeCode` e nenhum log', async () => {
+    cenario();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.executar.mockResolvedValue({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      operacao: 'programar',
+    });
+    const { status, body } = await responder(corpo());
+    expect(status).toBe(409);
+    expect(body).toStrictEqual(recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('S44: `formato-desconhecido` ⇒ 502 JSON SHOPEE_ETIQUETA_FORMATO_DESCONHECIDO, nunca octet-stream', async () => {
     cenario();
     h.executar.mockResolvedValue({ tipo: 'formato-desconhecido' });
@@ -872,6 +911,26 @@ describe('a NF-e — reenviada SÓ na resposta `nfe-pendente` (R-e)', () => {
       desfecho: 'nao-elegivel',
       motivoNfe: MOTIVO_NFE_SHOPEE.semNfeAprovada,
     });
+  });
+
+  it('R1-F2 PAR: sem NF-e aprovada ⇒ a frase pede a EMISSÃO da NF-e — nunca um aviso que não existe', async () => {
+    cenario({ nfes: {} });
+    autorizar(EXPEDICAO_COM_PEDIDO);
+    h.executar.mockResolvedValue({ tipo: 'nfe-pendente' });
+    const { body } = await responder(corpo());
+    const mensagem = String(body.mensagem);
+    expect(mensagem).toContain('emita a NF-e do pedido e clique em Imprimir de novo');
+    expect(mensagem).not.toContain('aviso');
+  });
+
+  it('R1-F2 QUASE-MISS: `emissao-bloqueada` mantém a frase do aviso de NF-e, sem pedir emissão', async () => {
+    cenario({ pedido: pedidoRaw({ bloquearEmissaoNFe: true }) });
+    autorizar(EXPEDICAO_COM_PEDIDO);
+    h.executar.mockResolvedValue({ tipo: 'nfe-pendente' });
+    const { body } = await responder(corpo());
+    const mensagem = String(body.mensagem);
+    expect(mensagem).toContain('confira o aviso de NF-e do pedido');
+    expect(mensagem).not.toContain('emita a NF-e');
   });
 
   it('a válvula da fila de NF-e (o agendador REAL com `SHOPEE_TASKS_DISABLED=1`) ⇒ `desligado`, ainda 409', async () => {

@@ -5,8 +5,8 @@ import {
   type ShopeeShippingParameter,
 } from '@delfrance/integrations-shopee';
 
-import { MOTIVO_ETIQUETA_SHOPEE } from './errosEtiqueta';
 import { escolherModoDeEnvio, type EscolhaDeEnvio, type ModoEscolhido } from './modoDeEnvio';
+import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
 
 /* --------------------------------- fixtures --------------------------------- */
 

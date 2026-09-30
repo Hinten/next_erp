@@ -1,28 +1,13 @@
 /**
- * The label flow's vocabulary (#1523, step 15): WHY a click on "Imprimir
- * etiqueta" ended in a refusal, and the pt-BR sentence the operator reads for
- * each reason.
+ * THE refusal classifier of the label flow (#1523, step 15): Shopee's failure
+ * of one label operation → the runner's verdict (reconcile §2.3).
  *
- * The split is step 14's (`nfe/errosNfe.ts`): the vocabulary, its companion
- * const and the ONE text table in one small module; every producer elsewhere.
- * Where step 14 already names the same condition, the SPELLING is its
- * (`nao-shopee`, `conta-nao-configurada`, `conta-inativa`, `pedido-fbs`,
- * `pedido-cancelado`, `status-desconhecido`, `ip-nao-declarado`,
- * `recusa-desconhecida`); the TYPE is not shared — each folder owns its
- * vocabulary, so a member added to one never silently widens the other.
- *
- * ⚠️ **PERSISTED on the wire.** The slug rides the route's 409 body as
- * `motivo`, and the web branches on it, so a rename is a wire change on both
- * sides of a deploy.
- *
- * ⚠️ **No identifier and no provider payload in a sentence.** Never an order
- * number, a package number, a tracking number or Shopee's own text: the
- * sentence is ours, and it describes the mechanism, not the data.
- *
- * One producer lives HERE by design (reconcile §2.3): the classifier
- * {@link classificarErroDeEtiqueta} at the bottom — Shopee's failure of one
- * label operation → the runner's verdict. It is the only place a label refusal
- * is read, so the table and the vocabulary it answers in move together.
+ * The vocabulary it answers in — `MOTIVO_ETIQUETA_SHOPEE` and its ONE pt-BR
+ * text table — lives in `motivosEtiqueta.ts` since review 1 (R5-2). This module
+ * imports the credential store and the listing module (an error class and the
+ * quota clock), and the two pure decisions that NAME a motivo must not load
+ * that graph for a string table. It is still the only place a label refusal is
+ * READ, so a row here and the member it answers with are reviewed together.
  */
 import {
   SHOPEE_ERROR_KIND,
@@ -39,6 +24,7 @@ import {
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { codigoCanonicoShopee, fraseCanonicaShopee } from '../core/recusaShopee';
 import { ShopeeRefreshEmAndamentoError } from '../core/tokenStore';
+import { codigoSeguro } from '../nfe/redacaoNfe';
 import {
   INTERVALO_DOCUMENTO_MS,
   TENTAR_EM_CREDENCIAL_MS,
@@ -46,144 +32,7 @@ import {
   TENTAR_EM_SHOPEE_MS,
 } from './constantesEtiqueta';
 import type { FaseEtiqueta } from './faseEtiqueta';
-
-/* ------------------------------ the vocabulary ------------------------------ */
-
-/**
- * The closed set of refusal reasons, grouped by the altitude that produces
- * them. Keys are the slugs in camelCase — a test pins the pairing — so code
- * names a member instead of spelling a slug.
- */
-export const MOTIVO_ETIQUETA_SHOPEE = {
-  // ---- the pedido and the conta (the route's own rungs) ----
-  naoShopee: 'nao-shopee',
-  freteDeOutraIntegracao: 'frete-de-outra-integracao',
-  contaNaoConfigurada: 'conta-nao-configurada',
-  contaInativa: 'conta-inativa',
-  // ---- the order Shopee holds ----
-  pedidoFbs: 'pedido-fbs',
-  pedidoCancelado: 'pedido-cancelado',
-  pedidoEmCancelamento: 'pedido-em-cancelamento',
-  semPacotes: 'sem-pacotes',
-  pacoteInexistente: 'pacote-inexistente',
-  // ---- the package phase ----
-  statusDesconhecido: 'status-desconhecido',
-  nfePendente: 'nfe-pendente',
-  pacoteNaoPronto: 'pacote-nao-pronto',
-  retidoPelaShopee: 'retido-pela-shopee',
-  janelaFechada: 'janela-fechada',
-  pacoteInelegivel: 'pacote-inelegivel',
-  // ---- the shipping mode ----
-  semEnderecoDeColeta: 'sem-endereco-de-coleta',
-  agenciaPrecisaEscolha: 'agencia-precisa-escolha',
-  modoNaoSuportado: 'modo-nao-suportado',
-  semEtiquetaShopee: 'sem-etiqueta-shopee',
-  // ---- Shopee's refusal of the ship or of the document ----
-  cadastroDoVendedor: 'cadastro-do-vendedor',
-  pedidoDeReserva: 'pedido-de-reserva',
-  somenteSellerCentre: 'somente-seller-centre',
-  etiquetaIndisponivel: 'etiqueta-indisponivel',
-  documentoFalhou: 'documento-falhou',
-  tipoInvalido: 'tipo-invalido',
-  pacotesMudaram: 'pacotes-mudaram',
-  // ---- the limits and the infrastructure ----
-  limiteDiario: 'limite-diario',
-  ipNaoDeclarado: 'ip-nao-declarado',
-  recusaDesconhecida: 'recusa-desconhecida',
-} as const;
-
-/** One refusal reason — a member of {@link MOTIVO_ETIQUETA_SHOPEE}. */
-export type MotivoEtiquetaShopee =
-  (typeof MOTIVO_ETIQUETA_SHOPEE)[keyof typeof MOTIVO_ETIQUETA_SHOPEE];
-
-/* ------------------------------ the text table ------------------------------ */
-
-/**
- * The pt-BR FRAGMENT for every member — the ONE text table of this folder.
- *
- * Each entry is a **lowercase fragment with no trailing period**;
- * {@link mensagemDoMotivoEtiqueta} capitalizes it and adds the period. Where
- * the operator has something to DO, the remedy comes FIRST and the cause
- * follows the dash; where nothing is theirs to do, the fragment states the
- * fact. (The step-14 shape, `FRASE_DO_MOTIVO_NFE`.)
- *
- * ⚠️ `Record<MotivoEtiquetaShopee, string>`, and there is no `?? fallback` on a
- * lookup anywhere: a member without a fragment is a COMPILE error here, never
- * a blank at runtime.
- */
-const FRASE_DO_MOTIVO_ETIQUETA: Record<MotivoEtiquetaShopee, string> = {
-  // ---- the pedido and the conta ----
-  'nao-shopee':
-    'o pedido não veio da Shopee, e esta integração só imprime etiquetas de pedidos da Shopee',
-  'frete-de-outra-integracao':
-    'confira o frete do pedido — ele está vinculado a outra integração de frete, e a etiqueta da Shopee não é emitida para ele',
-  'conta-nao-configurada':
-    'reconecte a conta Shopee do pedido — ela não foi encontrada ou não está configurada',
-  'conta-inativa': 'reative a conta Shopee no ERP para imprimir a etiqueta — ela está desativada',
-  // ---- the order Shopee holds ----
-  'pedido-fbs':
-    'o pedido é atendido pelo fulfillment da Shopee (FBS), e a etiqueta é emitida pela própria Shopee',
-  'pedido-cancelado': 'o pedido foi cancelado na Shopee, e não há etiqueta a imprimir',
-  'pedido-em-cancelamento':
-    'responda ao pedido de cancelamento do comprador na Central do Vendedor antes de organizar o envio — o pedido está em cancelamento na Shopee',
-  'sem-pacotes':
-    'tente de novo em alguns minutos — a Shopee ainda não informou nenhum pacote para o pedido',
-  'pacote-inexistente':
-    'clique em Imprimir de novo — o pacote indicado não existe mais neste pedido na Shopee',
-  // ---- the package phase ----
-  'status-desconhecido':
-    'confira o pedido na Central do Vendedor — a Shopee informou uma situação de envio que o ERP não reconhece, e o ERP não age sobre ela',
-  'nfe-pendente':
-    'envie a NF-e do pedido à Shopee antes de imprimir a etiqueta — a Shopee só libera o envio com a nota fiscal anexada',
-  'pacote-nao-pronto':
-    'aguarde a Shopee liberar o envio e tente de novo — o pacote ainda não está pronto para ser enviado',
-  'retido-pela-shopee':
-    'tente de novo mais tarde — a Shopee reteve o envio do pacote temporariamente (por exemplo, por falta de capacidade da transportadora)',
-  'janela-fechada':
-    'a transportadora já coletou o pacote (ou o envio já terminou), e a etiqueta não pode mais ser impressa pelo ERP',
-  'pacote-inelegivel':
-    'confira o pedido na Central do Vendedor — o envio do pacote foi cancelado ou recusado na Shopee, e não há etiqueta a imprimir',
-  // ---- the shipping mode ----
-  'sem-endereco-de-coleta':
-    'marque um endereço de coleta na Central do Vendedor e clique de novo — a loja não tem endereço de coleta para este envio',
-  'agencia-precisa-escolha':
-    'escolha a agência na Central do Vendedor e clique de novo — a Shopee oferece mais de uma agência para este envio',
-  'modo-nao-suportado':
-    'organize o envio na Central do Vendedor e clique de novo — a Shopee pede dados de envio que o ERP não preenche',
-  'sem-etiqueta-shopee':
-    'este envio é feito pela logística do próprio vendedor, e a Shopee não emite etiqueta para ele',
-  // ---- Shopee's refusal of the ship or of the document ----
-  'cadastro-do-vendedor':
-    'confira os dados da loja na Central do Vendedor — a Shopee recusou o envio por um problema no cadastro do vendedor',
-  'pedido-de-reserva':
-    'o pedido é uma reserva de envio antecipado (Advance Fulfillment) da Shopee, e o ERP não organiza esse envio',
-  'somente-seller-centre':
-    'imprima a etiqueta pela Central do Vendedor — a Shopee só permite imprimir a etiqueta deste pedido por lá',
-  'etiqueta-indisponivel':
-    'tente de novo mais tarde ou imprima pela Central do Vendedor — a Shopee ainda não libera a etiqueta na situação atual do pedido',
-  'documento-falhou':
-    'tente de novo mais tarde ou imprima pela Central do Vendedor — a Shopee não conseguiu gerar a etiqueta, nem na segunda tentativa',
-  'tipo-invalido':
-    'tente o outro formato de etiqueta — a Shopee recusou o tipo de etiqueta pedido para este envio',
-  'pacotes-mudaram':
-    'clique em Imprimir de novo — os pacotes do pedido mudaram na Shopee durante a impressão',
-  // ---- the limits and the infrastructure ----
-  'limite-diario':
-    'tente de novo depois da virada do dia — a cota diária de chamadas da Shopee acabou',
-  'ip-nao-declarado':
-    'acione o suporte técnico — o IP do servidor do ERP não está liberado no aplicativo da Shopee',
-  'recusa-desconhecida':
-    'confira o pedido na Central do Vendedor — a Shopee recusou a etiqueta por um motivo que o ERP não reconhece',
-};
-
-/**
- * The route's and the CLI's SENTENCE for a motivo: the fragment with its first
- * letter capitalized and a closing period.
- */
-export function mensagemDoMotivoEtiqueta(motivo: MotivoEtiquetaShopee): string {
-  const frase = FRASE_DO_MOTIVO_ETIQUETA[motivo];
-  return `${frase.charAt(0).toLocaleUpperCase('pt-BR')}${frase.slice(1)}.`;
-}
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 
 /* ------------------------------ the classifier ----------------------------- */
 
@@ -203,6 +52,12 @@ export function mensagemDoMotivoEtiqueta(motivo: MotivoEtiquetaShopee): string {
  * all. There is deliberately no label-specific error class and no second path
  * to a 409 (R-m).
  *
+ * ⚠️ The classes are read the same on EVERY operation, the ship included: an
+ * unreadable 2xx from `ship_order` (`ShopeeSchemaError`, `httpStatus` 200) is
+ * `null` here too, although that ship may have happened. Reading it as an
+ * unknown outcome is the ship caller's obligation (review 1, R2-3) — this
+ * table stays op-agnostic on classes, and a test pins the `null`.
+ *
  * ## ⚠️ Needles read `providerMessage`, NEVER the thrown Error's `.message`
  *
  * The thrown sentence is `Shopee <path> respondeu <code> (HTTP n) — <text>`: on
@@ -214,13 +69,14 @@ export function mensagemDoMotivoEtiqueta(motivo: MotivoEtiquetaShopee): string {
  * ≡ `package_already_shipped`, while `x.logistics.package_already_shipped` keeps
  * its `logistics.` and falls to E26.
  *
- * ## ⚠️ `logistics.error_param` is SIX rows, split by the sentence
+ * ## ⚠️ `logistics.error_param` is SEVEN rows, split by the sentence
  *
  * One code answers E2 (`Order has been shipped.` ⇒ already arranged), E5 (`being
  * allocated` ⇒ wait), E8 (`has been splitted` ⇒ the packages changed), E10 (not
- * ready ⇒ refuse), E11 (the slot ⇒ choose again) and E13 (`Seller Info Error`).
- * A code-only row would read an allocation wait as an arranged package; each
- * pair is pinned by a same-code near-miss test.
+ * ready ⇒ refuse), E11 (the slot ⇒ choose again), E12 (the pickup/seller/sender
+ * ADDRESS ⇒ refuse, review 1 R4-1) and E13 (`Seller Info Error`) — then E7's
+ * `System error` as the wait. A code-only row would read an allocation wait as
+ * an arranged package; each pair is pinned by a same-code near-miss test.
  *
  * ## ⚠️ An unknown outcome of `ship_order` is `verificar`, never a refusal
  *
@@ -279,7 +135,11 @@ export type OperacaoEtiqueta =
  * - `fase-desatualizada` — the document step ran ahead of Shopee: re-derive once.
  * - `baixar-separado` — these packages cannot share one file: per-package files.
  * - `tipo-invalido` — the document type was refused: fall back to `suggest` once.
- * - `recusa` — terminal for this click, with the operator's motivo.
+ * - `recusa` — terminal for this click, with the operator's motivo. Only E26
+ *   (`recusa-desconhecida`) may carry `shopeeCode`: Shopee's canonical code
+ *   through `codigoSeguro` (token-shaped, fewer than seven digits, so an order
+ *   or package number cannot pass), OMITTED when it fails that gate. It is the
+ *   one datum that tells us which code to teach this table (review 1, R3-F1).
  */
 export type VereditoDeErro =
   | { tipo: 'ja-programado' }
@@ -292,7 +152,12 @@ export type VereditoDeErro =
   | { tipo: 'fase-desatualizada' }
   | { tipo: 'baixar-separado' }
   | { tipo: 'tipo-invalido' }
-  | { tipo: 'recusa'; motivo: MotivoEtiquetaShopee; tentarApos?: number };
+  | {
+      tipo: 'recusa';
+      motivo: MotivoEtiquetaShopee;
+      tentarApos?: number;
+      shopeeCode?: string;
+    };
 
 /**
  * The phase a WAIT reports, by the operation that failed.
@@ -312,14 +177,6 @@ const FASE_DA_OPERACAO: Readonly<Record<OperacaoEtiqueta, FaseEtiqueta>> = {
   'resultado-documento': 'gerando-documento',
   baixar: 'baixando',
 };
-
-/**
- * The wait for a Shopee-side "not now" (E5 allocation, E6 lock off the ship,
- * E7b transient): D1 row 5's 10 000, named once in `constantesEtiqueta.ts`
- * ({@link TENTAR_EM_SHOPEE_MS}) — not a second copy of the burst floor, which
- * only happens to share the value.
- */
-const ESPERA_DA_SHOPEE_MS = TENTAR_EM_SHOPEE_MS;
 
 // ---- the codes and the needles (canonical codes; folded sentences) ----
 
@@ -380,11 +237,17 @@ const AGULHAS_NAO_PRONTO: readonly string[] = [
   'not to_process',
 ];
 
-/** E11 — `ship_order` only: the chosen slot/address is no longer valid. */
+/**
+ * E11 — `ship_order` only: the chosen slot/address is no longer valid.
+ * `error_cutoff_time` (`Pickup time is not invalid.`, sic — no needle below
+ * matches that sentence) is the realistic one: a same-day slot passed its
+ * cutoff between the question and the click (review 1, R4-1).
+ */
 const CODIGOS_REESCOLHER: ReadonlySet<string> = new Set<string>([
   'ship_order_pickup_time_invalid',
   'ship_order_need_address_pickup_time',
   'error_pickup_time',
+  'error_cutoff_time',
 ]);
 const AGULHAS_REESCOLHER: readonly string[] = [
   'pickup_time_id received is invalid',
@@ -392,14 +255,44 @@ const AGULHAS_REESCOLHER: readonly string[] = [
   'invalid pickup time',
 ];
 
-/** E12 — the shop's pickup/dropoff setup cannot serve this ship. */
+/**
+ * E12 — the shop's pickup ADDRESS cannot serve this ship. The last seven are
+ * the `ship_order` page's own address codes (review 1, R4-1), spelled as the
+ * cached page prints them after the module fold.
+ */
 const CODIGOS_SEM_ENDERECO: ReadonlySet<string> = new Set<string>([
   'error_sender_address',
   'no_supported_pickup_address',
-  'no_supported_dropoff_branch',
-  'no_available_time_slot',
   'no_valid_shipping_parameters',
   'invalid_address_version',
+  'error_no_pickup_address',
+  'error_logistics_shop_require_pickup_address',
+  'pickup_address_unsupported',
+  'address_not_found',
+  'address_not_supported',
+  'order_has_no_seller_address',
+  'default_warehouse_not_set',
+]);
+
+/**
+ * E12 — the same, under `error_param` only (the TAB-suffixed code included):
+ * `Pickup address is not serviceable. Please select another address.`,
+ * `Seller address is not exist. …` / `… is invalid. …` / `… is not completed.`,
+ * `Seller Address Error. …`, `Sender address is not exist.`
+ */
+const AGULHAS_SEM_ENDERECO: readonly string[] = [
+  'pickup address is not serviceable',
+  'seller address',
+  'sender address',
+];
+
+/**
+ * E12b — no slot and no dropoff branch on offer: the address may be fine, so
+ * the answer is its own motivo and never blames it (review 1, R4-1).
+ */
+const CODIGOS_SEM_HORARIO_OU_AGENCIA: ReadonlySet<string> = new Set<string>([
+  'no_supported_dropoff_branch',
+  'no_available_time_slot',
 ]);
 
 /** E13 — `logistics.error_param: Seller Info Error. Please check and input your …` */
@@ -476,13 +369,24 @@ function recusa(motivo: MotivoEtiquetaShopee): VereditoDeErro {
 }
 
 /**
+ * E26, carrying Shopee's code when it is safe to show (R3-F1): the canonical
+ * code through `codigoSeguro`, and NO key at all when that gate refuses it.
+ */
+function recusaDesconhecida(err: ShopeeApiError): VereditoDeErro {
+  const shopeeCode = codigoSeguro(codigoCanonicoShopee(err.code));
+  return shopeeCode === null
+    ? recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida)
+    : { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida, shopeeCode };
+}
+
+/**
  * No answer, or Shopee's own hiccup: on the SHIP an unknown outcome
  * (`verificar`), on every other operation a plain wait.
  */
 function semResposta(op: OperacaoEtiqueta): VereditoDeErro {
   return op === 'programar'
     ? { tipo: 'verificar' }
-    : aguardar(FASE_DA_OPERACAO[op], ESPERA_DA_SHOPEE_MS);
+    : aguardar(FASE_DA_OPERACAO[op], TENTAR_EM_SHOPEE_MS);
 }
 
 /** `Retry-After` in ms, or 0 when absent or unusable. */
@@ -564,7 +468,7 @@ export function classificarErroDeEtiqueta(
 
   // ---- E5: still allocating — a wait, on the ship too (nothing was arranged). ----
   if (param && det.includes(AGULHA_ALOCANDO)) {
-    return aguardar(FASE_DA_OPERACAO[op], ESPERA_DA_SHOPEE_MS);
+    return aguardar(FASE_DA_OPERACAO[op], TENTAR_EM_SHOPEE_MS);
   }
 
   // ---- E8/E9: the `package_number` pair (R-l). ----
@@ -587,7 +491,15 @@ export function classificarErroDeEtiqueta(
   }
 
   // ---- E12–E15, E17, E18: deterministic refusals. ----
-  if (CODIGOS_SEM_ENDERECO.has(nu)) return recusa(MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta);
+  if (
+    CODIGOS_SEM_ENDERECO.has(nu) ||
+    (param && AGULHAS_SEM_ENDERECO.some((a) => det.includes(a)))
+  ) {
+    return recusa(MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta);
+  }
+  if (CODIGOS_SEM_HORARIO_OU_AGENCIA.has(nu)) {
+    return recusa(MOTIVO_ETIQUETA_SHOPEE.semHorarioOuAgencia);
+  }
   if (param && det.includes(AGULHA_CADASTRO)) {
     return recusa(MOTIVO_ETIQUETA_SHOPEE.cadastroDoVendedor);
   }
@@ -620,7 +532,7 @@ export function classificarErroDeEtiqueta(
   }
 
   // ---- E26: a refusal nobody taught us. After a ship the next call re-derives anyway. ----
-  return recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida);
+  return recusaDesconhecida(err);
 }
 
 /**

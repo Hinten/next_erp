@@ -112,8 +112,8 @@ async function main(): Promise<void> {
 
   const db = getAdminFirestore();
   const { loadShopeeContext } = await import('../lib/shopee/core/shopee');
-  // ⚠️ The runner reaches `next/server` through `respostaEtiqueta.ts` (its pt-BR
-  // sentences); it loads under plain Node.
+  // The runner is Next-free: its pt-BR sentences live in `pendenteEtiqueta.ts`,
+  // and only the route's `respostaEtiqueta.ts` loads `next/server`.
   const { executarEtiquetaShopee } = await import('../lib/shopee/etiqueta/executarEtiqueta');
 
   const relatorio = await rodarEtiquetaCli(

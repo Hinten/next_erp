@@ -18,6 +18,17 @@
  * 2. `decidirProximaAcao` (pure) names ONE action; this module runs it and
  *    folds the answer into the observations; repeat.
  *
+ * ⚠️ **An incomplete read never decides** (review 1, M1). A package read is
+ * COMPLETE only when every lot of 50 was folded in: a lot that a wait
+ * interrupted (a network drop, a burst limit, Shopee's hiccup) is read again
+ * on the next iteration — never decided on as "no detail row", which the
+ * decision reads as `status-desconhecido` and the operator as a terminal 409.
+ * The same holds for the re-read after an arrange: only the lots actually
+ * read are cleared. A read Shopee answers with "the packages changed"
+ * (`package_number_not_found` and its siblings) re-derives EVERYTHING once; a
+ * second one in the call is `pacotes-mudaram`. Out of budget, a hole answers
+ * 202 `aguardar` — never a refusal.
+ *
  * ## ⚠️ The budget: no action is STARTED past it
  *
  * `orcamentoMs ?? ORCAMENTO_ETIQUETA_MS` from the call's first clock read.
@@ -41,6 +52,19 @@
  * - `somenteLeitura` (the CLI dry run) stops at the first write-ish action —
  *   `programar`, `criar-documento`, `baixar` — and answers `simulado`: ZERO
  *   `shipOrder` / `createShippingDocument` / `downloadShippingDocument` (S46).
+ * - A ship WITHOUT `package_number` arranges the whole ORDER, so once one has
+ *   succeeded the call remembers it, and a stale split read's later
+ *   `not_need` is taken as arranged without a second order-level ship (R2-2;
+ *   `programarPacote.ts`).
+ *
+ * ⚠️ **Across calls the guarantee rests on Shopee** (review 1, R1-F3). The
+ * stickiness above is per CALL. A re-call right after a ship whose read still
+ * lags (`LOGISTICS_READY` with `is_shipment_arranged` false — register 208)
+ * decides `programar` again: it may ask `escolher-envio` for a package that is
+ * already arranged, or — one address, one slot — re-ship it once. Shopee's
+ * `package_already_shipped` absorbs that second ship as `ja-programado`
+ * (register 207; probe P2 measures the read-after-ship lag). Accepted: the
+ * only stateless alternative is a guess.
  *
  * ## The document
  *
@@ -72,11 +96,18 @@
  * whole batch (its verdict answers), and the package is never guessed.
  *
  * ⚠️ Nothing here logs an order number, a package number, a tracking number,
- * an address or a byte — one line counts the bytes of an unknown file.
+ * an address or a byte. Two lines exist, both for the rehearsal's one
+ * question — what the table does not know yet (review 1, R3-F1/F2): the
+ * unknown file (its length, the media-type ESSENCE of Shopee's header — never
+ * a `name=` parameter — and the status), and `status-desconhecido` (the unknown
+ * fulfilment TOKENS, each through {@link tokenParaLog}). An unknown REFUSAL is
+ * not logged here: it rides the result (`shopeeCode`, `operacao`) to the
+ * surface that logs it.
  */
 import {
   SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS,
   SHOPEE_SHIPPING_DOCUMENT_STATUS,
+  ShopeeApiError,
   ShopeeArquivoVazioError,
   classificarArquivoDeEnvio,
   falhaDaLinha,
@@ -91,6 +122,8 @@ import {
   type ShopeeResultadoDeDocumento,
 } from '@delfrance/integrations-shopee';
 
+import { codigoCanonicoShopee } from '../core/recusaShopee';
+import { codigoSeguro } from '../nfe/redacaoNfe';
 import { textoShopeeUtilizavel } from '../pedidos/orderMapping';
 import {
   ESPERA_POS_PROGRAMAR_MS,
@@ -101,12 +134,11 @@ import {
   SHOPEE_ETIQUETA_DETALHE_CAMPOS,
   TENTAR_EM_SHOPEE_MS,
   TIPO_DOCUMENTO_DO_FORMATO,
+  TIPO_OMITIDO,
 } from './constantesEtiqueta';
 import {
-  MOTIVO_ETIQUETA_SHOPEE,
   classificarErroDeEtiqueta,
   classificarFalhaDeLinha,
-  type MotivoEtiquetaShopee,
   type OperacaoEtiqueta,
   type VereditoDeErro,
 } from './errosEtiqueta';
@@ -121,7 +153,7 @@ import {
   type ObservacaoPacoteEtiqueta,
 } from './faseEtiqueta';
 import type { EscolhaDeEnvio } from './modoDeEnvio';
-import { programarPacoteShopee } from './programarPacote';
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 import {
   MENSAGEM_BAIXAR_POR_PACOTE,
   MENSAGEM_DA_FASE,
@@ -129,7 +161,8 @@ import {
   MENSAGEM_ESCOLHER_ENVIO,
   type EtiquetaPendente,
   type Progresso,
-} from './respostaEtiqueta';
+} from './pendenteEtiqueta';
+import { programarPacoteShopee } from './programarPacote';
 
 /* -------------------------------- the seam --------------------------------- */
 
@@ -168,7 +201,20 @@ export type ResultadoEtiqueta =
       total: number;
     }
   | { tipo: 'pendente'; corpo: EtiquetaPendente }
-  | { tipo: 'recusa'; motivo: MotivoEtiquetaShopee; tentarApos?: number }
+  | {
+      tipo: 'recusa';
+      motivo: MotivoEtiquetaShopee;
+      tentarApos?: number;
+      /**
+       * `recusa-desconhecida` only: Shopee's code, canonical, through the ONE
+       * gate (`codigoSeguro` — a token of ≤ 64 characters with fewer than 7
+       * digits, so no order or package number passes). Absent when there is no
+       * code or it is not token-shaped.
+       */
+      shopeeCode?: string;
+      /** `recusa-desconhecida` only: the operation Shopee refused. */
+      operacao?: OperacaoEtiqueta;
+    }
   | { tipo: 'nfe-pendente' }
   | { tipo: 'sem-permissao' }
   | { tipo: 'formato-desconhecido' }
@@ -192,12 +238,6 @@ export async function executarEtiquetaShopee(
 
 /* ------------------------------ private helpers ----------------------------- */
 
-/**
- * "Send no `shipping_document_type`" — Shopee's own default. A NON-null value
- * on purpose: `tipoDocumento: null` is "not read yet" to the decision.
- */
-const TIPO_OMITIDO = '';
-
 /** `invoice_pending.status` that holds the ship (FAQ 727), trimmed + lower-cased. */
 const NF_PENDENTE = 'pending';
 
@@ -219,6 +259,68 @@ function recusa(motivo: MotivoEtiquetaShopee, tentarApos?: number): ResultadoEti
   return tentarApos === undefined
     ? { tipo: 'recusa', motivo }
     : { tipo: 'recusa', motivo, tentarApos };
+}
+
+/**
+ * A refusal nobody taught us (R3-F1): the operation, and Shopee's code when a
+ * safe one exists — the one datum that says which row the table is missing.
+ */
+function recusaDesconhecida(
+  operacao: OperacaoEtiqueta,
+  shopeeCode: string | null | undefined,
+): ResultadoEtiqueta {
+  const motivo = MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida;
+  return shopeeCode === null || shopeeCode === undefined
+    ? { tipo: 'recusa', motivo, operacao }
+    : { tipo: 'recusa', motivo, shopeeCode, operacao };
+}
+
+/**
+ * Shopee's code as it may leave this module: the canonical fold (trim, ONE
+ * module segment, trim — `core/recusaShopee.ts`), then the ONE gate
+ * (`nfe/redacaoNfe.ts`'s `codigoSeguro`). `null` ⇒ no code, or not a token.
+ */
+function codigoParaOperador(code: string): string | null {
+  return codigoSeguro(codigoCanonicoShopee(code));
+}
+
+/** The code of a THROWN failure, when it has an envelope code at all. */
+function codigoDoErro(err: unknown): string | null {
+  return err instanceof ShopeeApiError ? codigoParaOperador(err.code) : null;
+}
+
+/** An upper-case `LOGISTICS_*`-shaped fulfilment token. */
+const TOKEN_DE_STATUS = /^[A-Z][A-Z0-9_]{1,40}$/;
+/** The `codigoSeguro` rule: seven digits make an identifier, never a token. */
+const MAX_DIGITOS_DO_TOKEN = 6;
+const TOKEN_ILEGIVEL = '<token-ilegivel>';
+/** A listed package Shopee gave no detail row for — no token to show. */
+const SEM_LINHA = '<sem-linha>';
+
+/**
+ * A fulfilment token as the `status-desconhecido` log line may carry it: the
+ * token when it is {@link TOKEN_DE_STATUS}-shaped with at most six digits,
+ * else a placeholder. ⚠️ The shape alone admits `OFG000000000001` — a PACKAGE
+ * number is capitals and digits too — so the digit cap is what keeps one out
+ * of the log whatever Shopee puts in the field.
+ */
+function tokenParaLog(token: string | null): string {
+  if (token === null || !TOKEN_DE_STATUS.test(token)) return TOKEN_ILEGIVEL;
+  return (token.match(/[0-9]/g) ?? []).length <= MAX_DIGITOS_DO_TOKEN ? token : TOKEN_ILEGIVEL;
+}
+
+/** The longest media type the unknown-file line carries (the transport's own cap). */
+const MAX_TIPO_LOGADO = 100;
+
+/**
+ * The media-type ESSENCE of Shopee's `Content-Type` (R3-F2): what precedes the
+ * first `;`, trimmed and capped. A parameter — `name="<order_sn>.pdf"` — never
+ * reaches the log.
+ */
+function essenciaDoTipo(contentType: string | null): string | null {
+  if (contentType === null) return null;
+  const essencia = (contentType.split(';')[0] ?? '').trim().slice(0, MAX_TIPO_LOGADO);
+  return essencia === '' ? null : essencia;
 }
 
 /** 1…50 at a time, in order — the four batch pages' bound. */
@@ -267,10 +369,13 @@ class ChamadaDeEtiqueta {
   private readonly programados = new Set<string>();
   /** Packages to re-read before the next decision (after an arrange). */
   private readonly aReler = new Set<string>();
+  /** The order and EVERY package must be read (again) before the next decision. */
   private precisaLerTudo = true;
   private primeiraLeitura = true;
   private rederivou = false;
   private arquivoVazioVisto = false;
+  /** A ship WITHOUT `package_number` succeeded in this call: the ORDER is arranged (R2-2). */
+  private ordemProgramadaSemPacote = false;
 
   constructor(
     private readonly deps: DepsExecucaoEtiqueta,
@@ -285,15 +390,15 @@ class ChamadaDeEtiqueta {
       if (this.precisaLerTudo) {
         passo = await this.lerTudo();
       } else if (this.aReler.size > 0) {
-        passo = await this.lerPacotes([...this.aReler], 'aguardando-rastreio');
-        if (!passo.fim) this.aReler.clear();
+        const leitura = await this.lerPacotes([...this.aReler], 'aguardando-rastreio');
+        // Only what was READ leaves the set: a lot a wait interrupted is read
+        // again on the next iteration (M1).
+        for (const numero of leitura.lidos) this.aReler.delete(numero);
+        passo = leitura.passo;
       } else {
-        const acao = decidirProximaAcao(
-          this.ordem,
-          [...this.pacotes.values()],
-          { pacote: this.e.pacote },
-          this.deps.agora(),
-        );
+        const acao = decidirProximaAcao(this.ordem, [...this.pacotes.values()], {
+          pacote: this.e.pacote,
+        });
         passo = await this.executarAcao(acao);
       }
       if (passo.fim) return passo.resultado;
@@ -390,7 +495,7 @@ class ChamadaDeEtiqueta {
       this.arquivoVazioVisto = true;
     }
     const v = classificarErroDeEtiqueta(op, err, this.deps.agora());
-    return v === null ? null : this.tratarVeredito(v, fase, afetados);
+    return v === null ? null : this.tratarVeredito(v, op, codigoDoErro(err), fase, afetados);
   }
 
   /** A failed batch ROW — the same table; `null` (nothing to rethrow) is an unknown refusal. */
@@ -400,14 +505,21 @@ class ChamadaDeEtiqueta {
     fase: FaseEtiqueta,
     afetados: readonly string[],
   ): Promise<Passo> {
+    const codigo = codigoParaOperador(falha.code);
     const v = classificarFalhaDeLinha(op, falha, this.deps.agora());
-    if (v === null) return fim(recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida));
-    return this.tratarVeredito(v, fase, afetados);
+    if (v === null) return fim(recusaDesconhecida(op, codigo));
+    return this.tratarVeredito(v, op, codigo, fase, afetados);
   }
 
-  /** A verdict of any operation but the arrange (which `programar` maps itself). */
+  /**
+   * A verdict of any operation but the arrange (which `programar` maps
+   * itself). `codigo` is Shopee's code, already through the gate, for the
+   * arms that answer an unknown refusal the classifier did not name.
+   */
   private async tratarVeredito(
     v: VereditoDeErro,
+    op: OperacaoEtiqueta,
+    codigo: string | null,
     fase: FaseEtiqueta,
     afetados: readonly string[],
   ): Promise<Passo> {
@@ -415,7 +527,11 @@ class ChamadaDeEtiqueta {
       case 'nfe-pendente':
         return fim({ tipo: 'nfe-pendente' });
       case 'recusa':
-        return fim(recusa(v.motivo, v.tentarApos));
+        return fim(
+          v.motivo === MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida
+            ? recusaDesconhecida(op, v.shopeeCode)
+            : recusa(v.motivo, v.tentarApos),
+        );
       case 'aguardar':
         return this.esperar(v.tentarEmMs, v.fase);
       case 'verificar':
@@ -426,16 +542,12 @@ class ChamadaDeEtiqueta {
       case 'fase-desatualizada':
         return this.rederivar(v.tipo === 'pacotes-mudaram', fase);
       case 'baixar-separado':
-        return fim(
-          afetados.length > 1
-            ? this.porPacote(afetados)
-            : recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida),
-        );
+        return fim(afetados.length > 1 ? this.porPacote(afetados) : recusaDesconhecida(op, codigo));
       case 'tipo-invalido':
         return this.rebaixarTipo(afetados);
       case 'reenviar-sem-pacote':
       case 'reescolher-envio':
-        return fim(recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida));
+        return fim(recusaDesconhecida(op, codigo));
     }
   }
 
@@ -455,6 +567,9 @@ class ChamadaDeEtiqueta {
     this.rederivou = true;
     this.pacotes.clear();
     this.sugeridos.clear();
+    // The full re-read covers every pending one (arranged packages stay
+    // arranged through `programados`).
+    this.aReler.clear();
     this.precisaLerTudo = true;
     return SEGUIR;
   }
@@ -495,6 +610,10 @@ class ChamadaDeEtiqueta {
    * The order, then every package of it. The call's FIRST read is exempt from
    * the budget (a call that read nothing could answer nothing); every later
    * one — a re-derive, a retry after a wait — is an action like any other.
+   *
+   * ⚠️ The read counts as done only when EVERY lot was folded in (M1). The
+   * flag drops BEFORE the reads, so a `rederivar` reached from inside them —
+   * which raises it again — is never overwritten; a hole raises it too.
    */
   private async lerTudo(): Promise<Passo> {
     const isento = this.primeiraLeitura;
@@ -503,6 +622,7 @@ class ChamadaDeEtiqueta {
       const parar = this.semTempo('programando');
       if (parar !== null) return parar;
     }
+    this.precisaLerTudo = false;
 
     let linha: ShopeeOrderDetailRow | null;
     try {
@@ -513,6 +633,8 @@ class ChamadaDeEtiqueta {
       // By `order_sn`, never by position.
       linha = detalhe.order_list.find((r) => r.order_sn === this.e.orderSn) ?? null;
     } catch (err: unknown) {
+      // Nothing was read: whatever the verdict, the next iteration reads again.
+      this.precisaLerTudo = true;
       const passo = await this.tratarErro('detalhe-pedido', err, 'programando', []);
       if (passo === null) throw err;
       return passo;
@@ -527,21 +649,27 @@ class ChamadaDeEtiqueta {
       pacotes: [...new Set(numeros)],
     };
 
-    const passo = await this.lerPacotes(this.ordem.pacotes, 'programando', isento);
-    if (!passo.fim) this.precisaLerTudo = false;
-    return passo;
+    const leitura = await this.lerPacotes(this.ordem.pacotes, 'programando', isento);
+    if (leitura.lidos.length < this.ordem.pacotes.length) this.precisaLerTudo = true;
+    return leitura.passo;
   }
 
-  /** `get_package_detail` for these packages, 50 at a time, folded in. */
+  /**
+   * `get_package_detail` for these packages, 50 at a time, folded in. Answers
+   * how the step ended AND which packages were read: a lot that failed — and
+   * every lot after it — is not in `lidos`, so the caller reads it again
+   * instead of deciding on its absence (M1).
+   */
   private async lerPacotes(
     numeros: readonly string[],
     fase: FaseEtiqueta,
     isento = false,
-  ): Promise<Passo> {
+  ): Promise<{ readonly passo: Passo; readonly lidos: readonly string[] }> {
+    const lidos: string[] = [];
     for (const lote of emLotes(numeros)) {
       if (!isento) {
         const parar = this.semTempo(fase);
-        if (parar !== null) return parar;
+        if (parar !== null) return { passo: parar, lidos };
       }
       let linhas: readonly (ShopeePackageDetailRow | null)[];
       try {
@@ -549,7 +677,7 @@ class ChamadaDeEtiqueta {
       } catch (err: unknown) {
         const passo = await this.tratarErro('detalhe-pacote', err, fase, lote);
         if (passo === null) throw err;
-        return passo;
+        return { passo, lidos };
       }
       const pedidos = new Set(lote);
       for (const row of linhas) {
@@ -557,8 +685,11 @@ class ChamadaDeEtiqueta {
         const numero = row.package_number.trim();
         if (pedidos.has(numero)) this.dobrarPacote(numero, row);
       }
+      // Read — a package Shopee gave no row for is an ANSWER (the decision's
+      // `status-desconhecido`), not a hole.
+      lidos.push(...lote);
     }
-    return SEGUIR;
+    return { passo: SEGUIR, lidos };
   }
 
   /**
@@ -620,6 +751,8 @@ class ChamadaDeEtiqueta {
   private async executarAcao(acao: AcaoEtiqueta): Promise<Passo> {
     switch (acao.tipo) {
       case 'recusa':
+        if (acao.motivo === MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido)
+          this.logarStatusDesconhecido();
         return fim(recusa(acao.motivo));
       case 'nfe-pendente':
         return fim({ tipo: 'nfe-pendente' });
@@ -642,6 +775,23 @@ class ChamadaDeEtiqueta {
     }
   }
 
+  /**
+   * ONE line for a `status-desconhecido` refusal (R3-F1): the fulfilment
+   * TOKENS of the working set's unknown packages, each through
+   * {@link tokenParaLog} — the token the table must learn. Never a number: a
+   * package appears only as its token, or as {@link SEM_LINHA}.
+   */
+  private logarStatusDesconhecido(): void {
+    const numeros = this.e.pacote !== null ? [this.e.pacote] : this.ordem.pacotes;
+    const tokens = new Set<string>();
+    for (const numero of numeros) {
+      const obs = this.pacotes.get(numero);
+      if (obs === undefined) tokens.add(SEM_LINHA);
+      else if (fasePacote(obs) === 'desconhecido') tokens.add(tokenParaLog(obs.fulfillment));
+    }
+    console.warn('[shopee etiqueta] status desconhecido', { tokens: [...tokens] });
+  }
+
   /** ARRANGE one package — every non-success ends the call (module docblock). */
   private async programar(acao: Extract<AcaoEtiqueta, { tipo: 'programar' }>): Promise<Passo> {
     if (this.deps.somenteLeitura === true) return this.simulado(acao);
@@ -657,13 +807,20 @@ class ChamadaDeEtiqueta {
 
     const r = await programarPacoteShopee(
       this.deps.client,
-      { orderSn: this.e.orderSn, packageNumber: acao.pacote, comPacote: acao.comPacote },
+      {
+        orderSn: this.e.orderSn,
+        packageNumber: acao.pacote,
+        comPacote: acao.comPacote,
+        ordemProgramadaSemPacote: this.ordemProgramadaSemPacote,
+      },
       this.e.envio,
       this.deps.agora(),
     );
     switch (r.tipo) {
       case 'programado':
       case 'ja-programado': {
+        // A ship with no package number arranged the whole ORDER (R2-2).
+        if (r.tipo === 'programado' && r.semPacote) this.ordemProgramadaSemPacote = true;
         this.programados.add(acao.pacote);
         this.atualizar(acao.pacote, { arranjado: true });
         this.aReler.add(acao.pacote);
@@ -698,7 +855,11 @@ class ChamadaDeEtiqueta {
       case 'aguardar':
         return fim(this.aguardar(r.fase, r.tentarEmMs));
       case 'recusa':
-        return fim(recusa(r.motivo, r.tentarApos));
+        return fim(
+          r.motivo === MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida
+            ? recusaDesconhecida(r.operacao ?? 'programar', r.shopeeCode)
+            : recusa(r.motivo, r.tentarApos),
+        );
     }
   }
 
@@ -811,14 +972,16 @@ class ChamadaDeEtiqueta {
         }
         const falha = falhaDaLinha(row);
         if (falha !== null) {
-          const v = classificarFalhaDeLinha('resultado-documento', falha, this.deps.agora());
-          if (v === null) return fim(recusa(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida));
+          const op = 'resultado-documento';
+          const codigo = codigoParaOperador(falha.code);
+          const v = classificarFalhaDeLinha(op, falha, this.deps.agora());
+          if (v === null) return fim(recusaDesconhecida(op, codigo));
           // `shipping_document_should_print_first`: nothing was created yet.
           if (v.tipo === 'fase-desatualizada') {
             this.atualizar(numero, { documento: 'inexistente' });
             continue;
           }
-          return this.tratarVeredito(v, 'gerando-documento', [numero]);
+          return this.tratarVeredito(v, op, codigo, 'gerando-documento', [numero]);
         }
         // READY; else PROCESSING, or a status nobody documented: NOT ready.
         this.atualizar(numero, {
@@ -916,10 +1079,11 @@ class ChamadaDeEtiqueta {
     }
     const formato = classificarArquivoDeEnvio(arquivo.bytes);
     if (formato.formato === 'desconhecido') {
-      // Lengths and Shopee's header only — never a byte.
+      // The length and the header's media-type ESSENCE only — never a byte,
+      // never a header parameter (R3-F2).
       console.warn('[shopee etiqueta] arquivo de formato desconhecido', {
         bytes: arquivo.bytes.byteLength,
-        contentType: arquivo.contentType,
+        contentType: essenciaDoTipo(arquivo.contentType),
         httpStatus: arquivo.httpStatus,
       });
       return fim({ tipo: 'formato-desconhecido' });

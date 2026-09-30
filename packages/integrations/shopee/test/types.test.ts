@@ -4820,3 +4820,33 @@ describe('a etiqueta (passo 15)', () => {
     ]);
   });
 });
+
+// Review 1 of step 15, R4-4: this API prints `null` for an empty list, so a
+// success page whose `result_list` is `null` is "no rows" — never a 502.
+describe('as três páginas de documento — `result_list: null` é uma lista vazia', () => {
+  it.each([
+    ['get_shipping_document_parameter', shopeeParametroDeDocumentoPaginaSchema],
+    ['create_shipping_document', shopeeLinhaDeLotePaginaSchema],
+    ['get_shipping_document_result', shopeeResultadoDeDocumentoPaginaSchema],
+  ] as const)('PAR — %s: `null`, ausente e `[]` leem igual: `[]`', (_op, schema) => {
+    for (const response of [{ result_list: null }, {}, { result_list: [] }]) {
+      const lido = schema.safeParse({ error: '', warning: null, response });
+      expect(lido.success).toBe(true);
+      expect(lido.data?.response.result_list).toEqual([]);
+    }
+  });
+
+  it.each([
+    ['get_shipping_document_parameter', shopeeParametroDeDocumentoPaginaSchema],
+    ['create_shipping_document', shopeeLinhaDeLotePaginaSchema],
+    ['get_shipping_document_result', shopeeResultadoDeDocumentoPaginaSchema],
+  ] as const)(
+    'QUASE-MISS — %s: um `result_list` que não é lista (texto, objeto) continua recusado',
+    (_op, schema) => {
+      for (const result_list of ['nada', { order_sn: ORDER_SN_ETQ }, 0]) {
+        const lido = schema.safeParse({ error: '', warning: null, response: { result_list } });
+        expect(lido.success).toBe(false);
+      }
+    },
+  );
+});

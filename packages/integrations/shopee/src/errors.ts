@@ -400,6 +400,32 @@ export function shopeeCodeSemPrefixoDeModulo(code: string): string | null {
 }
 
 /**
+ * A Shopee code as a refusal table COMPARES it: trimmed, ONE module segment
+ * stripped with {@link shopeeCodeSemPrefixoDeModulo} (which does not trim),
+ * trimmed again. The ONE copy of this fold (review 1 of step 15, R5-4): the
+ * package's batch reader and every refusal classifier in `apps/shopee` read
+ * through it, so widening it widens them all at once instead of letting two
+ * copies drift apart (#1369).
+ *
+ * ⚠️ What it treats as EQUAL, and what must stay DISTINCT:
+ * - EQUAL: `' logistics.package_already_shipped'` ≡ `'package_already_shipped'`
+ *   (a leading blank on the ship page), `'order.upload_invoice_error\t'` ≡
+ *   `'upload_invoice_error'` (a trailing TAB on the invoice page),
+ *   `'common.batch_api_all_failed'` ≡ `'batch_api_all_failed'`.
+ * - DISTINCT: `'a.b.error_limit'` keeps `b.` (exactly ONE segment — a greedy
+ *   strip would let any code that merely ENDS in a known one match); the CASE is
+ *   kept (`'Error_Param'` ≠ `'error_param'`); a longer suffix stays longer
+ *   (`'batch_api_all_failed_x'` ≠ `'batch_api_all_failed'`).
+ *
+ * The VERBATIM code stays the caller's, for its log line; a table never
+ * returns this. `test/errors.test.ts` pins each side.
+ */
+export function shopeeCodigoCanonico(code: string): string {
+  const aparado = code.trim();
+  return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
+}
+
+/**
  * Shopee's `error` string → what to do about it, on this surface.
  *
  * ⚠️ The module prefix is tolerated by trying the stripped code SECOND, and the

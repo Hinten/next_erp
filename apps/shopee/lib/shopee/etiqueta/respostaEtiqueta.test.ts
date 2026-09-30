@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { MOTIVO_ETIQUETA_SHOPEE, mensagemDoMotivoEtiqueta } from './errosEtiqueta';
+import { MOTIVO_NFE_SHOPEE } from '../nfe/errosNfe';
 import type { ResultadoEtiqueta } from './executarEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE, mensagemDoMotivoEtiqueta } from './motivosEtiqueta';
 import {
   MENSAGEM_DA_FASE,
+  nomeDoArquivoDeEtiqueta,
+  type EtiquetaPendente,
+} from './pendenteEtiqueta';
+import {
   MENSAGEM_FORMATO_DESCONHECIDO,
   MENSAGEM_SEM_PERMISSAO_PROGRAMAR,
-  nomeDoArquivoDeEtiqueta,
   respostaDaEtiqueta,
-  type EtiquetaPendente,
 } from './respostaEtiqueta';
 
 const PACOTE = 'OFG000000000001';
@@ -162,6 +165,36 @@ describe('respostaDaEtiqueta — 409 recusa', () => {
     });
   });
 
+  it('R3-F1 PAR: uma `recusa-desconhecida` com `shopeeCode` leva o código no 409 — e nunca a operação', async () => {
+    const res = respostaDaEtiqueta(
+      {
+        tipo: 'recusa',
+        motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+        shopeeCode: 'some_new_code',
+        operacao: 'programar',
+      },
+      { numero: 'N1', nfe: null },
+    );
+    const mensagem = mensagemDoMotivoEtiqueta('recusa-desconhecida');
+    expect(await res.json()).toStrictEqual({
+      error: mensagem,
+      code: 'SHOPEE_ETIQUETA_RECUSADA',
+      motivo: 'recusa-desconhecida',
+      mensagem,
+      shopeeCode: 'some_new_code',
+    });
+  });
+
+  it('R3-F1 QUASE-MISS: a mesma recusa SEM `shopeeCode` não inventa a chave', async () => {
+    const res = respostaDaEtiqueta(
+      { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida, operacao: 'programar' },
+      { numero: 'N1', nfe: null },
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect('shopeeCode' in body).toBe(false);
+    expect('operacao' in body).toBe(false);
+  });
+
   it('nfe-pendente leva o desfecho do reenvio em `nfe` e na mensagem', async () => {
     const res = respostaDaEtiqueta(
       { tipo: 'nfe-pendente' },
@@ -183,6 +216,38 @@ describe('respostaDaEtiqueta — 409 recusa', () => {
     const b2 = (await semPermissao.json()) as Record<string, unknown>;
     expect(b2.nfe).toStrictEqual({ desfecho: 'sem-permissao' });
     expect(b2.mensagem).not.toContain('reenviou');
+  });
+
+  it('R1-F2 PAR: `nao-elegivel` por `sem-nfe-aprovada` pede a EMISSÃO — nenhum aviso é citado (nada foi enviado)', async () => {
+    const res = respostaDaEtiqueta(
+      { tipo: 'nfe-pendente' },
+      {
+        numero: 'N1',
+        nfe: { desfecho: 'nao-elegivel', motivoNfe: MOTIVO_NFE_SHOPEE.semNfeAprovada },
+      },
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    const mensagem = String(body.mensagem);
+    expect(mensagem.startsWith(`${mensagemDoMotivoEtiqueta('nfe-pendente')} `)).toBe(true);
+    expect(mensagem).toContain('emita a NF-e do pedido e clique em Imprimir de novo');
+    expect(mensagem).not.toContain('aviso');
+    expect(body.nfe).toStrictEqual({
+      desfecho: 'nao-elegivel',
+      motivoNfe: MOTIVO_NFE_SHOPEE.semNfeAprovada,
+    });
+  });
+
+  it('R1-F2 QUASE-MISS: `nao-elegivel` por `emissao-bloqueada` mantém a frase do AVISO, e não pede emissão', async () => {
+    const res = respostaDaEtiqueta(
+      { tipo: 'nfe-pendente' },
+      {
+        numero: 'N1',
+        nfe: { desfecho: 'nao-elegivel', motivoNfe: MOTIVO_NFE_SHOPEE.emissaoBloqueada },
+      },
+    );
+    const mensagem = String(((await res.json()) as Record<string, unknown>).mensagem);
+    expect(mensagem).toContain('confira o aviso de NF-e do pedido');
+    expect(mensagem).not.toContain('emita a NF-e');
   });
 
   it('nfe-pendente sem desfecho não inventa a chave `nfe`', async () => {

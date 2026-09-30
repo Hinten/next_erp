@@ -32,26 +32,37 @@ is a named constant (§14).
   every bound WE chose: the budget, the in-call poll cadences, the waits, the
   ONE order-read field list, the format → document-type table and the probe
   constants. A bound the WIRE states (the 50-entry batch cap, the document
-  type and status spellings) is the package's, imported. `errosEtiqueta.ts`
-  holds the twenty-nine-member `MotivoEtiquetaShopee` vocabulary, its ONE total
-  pt-BR text table, and THE refusal classifier (§9).
+  type and status spellings) is the package's, imported.
+  `motivosEtiqueta.ts` holds the twenty-nine-member `MotivoEtiquetaShopee`
+  vocabulary and its ONE total pt-BR text table, and imports nothing.
+  `errosEtiqueta.ts` holds THE refusal classifier (§9), which answers in that
+  vocabulary.
 - **The pure decisions.** `faseEtiqueta.ts` turns what Shopee said into one
   package phase and the ONE next action (§5). `modoDeEnvio.ts` turns one
   `get_shipping_parameter` answer, plus the operator's choice, into a
-  `ship_order` body, a question or a refusal (§6). No clock, no I/O.
+  `ship_order` body, a question or a refusal (§6). `alvoEtiqueta.ts` is the
+  pedido → conta ladder, the ONE copy the route and the CLI both run (§4).
+  No clock, no I/O, and none of them loads the classifier.
 - **The actions.** `programarPacote.ts` arranges ONE package: the fresh
   parameter read, the chooser, the ship (§6). It is Next-free and
   Firestore-free, because step 15b's automatic arrange will call it from the
   step-7 push arm. `executarEtiqueta.ts` is the runner: the loop, the reads,
   the document steps, the download and the budget (§8).
-- **The answers.** `respostaEtiqueta.ts` holds the 202 body type, the frozen
-  pt-BR phase sentences, the filename and the ONE mapper from the runner's
-  result to an HTTP response (§2). It imports `next/server`, so the runner,
-  which takes its sentences from here, loads it too.
+- **The answers.** `pendenteEtiqueta.ts` holds the 202 body type, the frozen
+  pt-BR phase sentences, the NF-e outcome type and the filename; it is pure,
+  so the runner that reads its sentences stays Next-free.
+  `respostaEtiqueta.ts` is the ONE mapper from the runner's result to an HTTP
+  response (§2), with the sentences only an HTTP answer carries. It imports
+  `next/server`, and only the route imports it.
 - **The CLI.** `etiquetaCli.ts` is the pure half of `baixar:etiqueta`, and
   `scripts/etiqueta.ts` its I/O half (§13). The pure half names the runner
-  and `respostaEtiqueta.ts` for their TYPES only and receives the runner
-  injected, so loading it loads neither.
+  for its TYPES only and receives it injected, so loading it does not load
+  the runner.
+- **The discipline.** `disciplinaDaPasta.test.ts` pins the split as raw-text
+  rules: `next/server` only in the mapper, no value import of it anywhere,
+  `console` only in the runner, Firestore only in the CLI, and five pure
+  modules that load neither the credential store, the listing module nor an
+  impure sibling.
 
 Outside the folder, and why each lives where it does:
 
@@ -62,7 +73,8 @@ Outside the folder, and why each lives where it does:
   `enviar-nfe` route so the label route runs the SAME ladder (§7).
 - `core/recusaShopee.ts`: the code and sentence folds every Shopee refusal
   table compares through, promoted out of `nfe/classificarNfe.ts` so the two
-  tables read a refusal identically (§9).
+  tables read a refusal identically (§9). Its code fold delegates to the
+  package's `shopeeCodigoCanonico`, the ONE copy the batch reader uses too.
 - `notificacoes/notificacao.ts`: push code 15 is `ack` and code 25 re-parked
   (§11).
 - `proxy.ts`: exposes `Content-Disposition` to a cross-origin caller, so the
@@ -109,13 +121,21 @@ ignored key. Then the ladder reads the clock ONCE, for the NF-e re-drive's
 | 400    | a body rung                                          | `{ error }`                                                                                   |
 | 403    | an arrange is due and the caller lacks `frete.write` | `SHOPEE_ETIQUETA_SEM_PERMISSAO`, `motivo: 'programar-envio'`                                  |
 | 404    | no pedido document                                   | `SHOPEE_ETIQUETA_PEDIDO_NAO_ENCONTRADO`                                                       |
-| 409    | a refusal, `nfe-pendente` included                   | `SHOPEE_ETIQUETA_RECUSADA`, `motivo`, `mensagem`, `nfe?`, `tentarApos?`                       |
+| 409    | a refusal, `nfe-pendente` included                   | `SHOPEE_ETIQUETA_RECUSADA`, `motivo`, `mensagem`, `nfe?`, `tentarApos?`, `shopeeCode?`        |
 | 502    | a file whose signature we do not know                | `SHOPEE_ETIQUETA_FORMATO_DESCONHECIDO`                                                        |
 
 `verifyCaller` answers its own 401/403/500 first. Whatever the runner does not
 classify is rethrown and mapped by `shopeeErrorResponse` UNCHANGED: 409
 `SHOPEE_REAUTH_REQUIRED` for a dead grant, 503 on the network, 502 on a schema
 drift. There is no label-specific error class and no second path to a 409.
+
+A refusal the table does not know (`recusa-desconhecida`) carries Shopee's
+canonical code as the optional `shopeeCode`, through `codigoSeguro` (a token of
+at most 64 characters with fewer than seven digits, so an order or package
+number can never ride it), and the route logs it ONCE as
+`[shopee/etiqueta] recusa-desconhecida { op, code }` — the route's one log line
+of its own. That code is the datum the table needs to learn the refusal;
+Shopee's sentence is never logged or answered.
 
 **The 202 body** has three shapes, told apart by `acao`:
 
@@ -133,8 +153,10 @@ counts only. It exists so the caller's give-up message is DETERMINISTIC:
 arranged again", and nothing has to parse a sentence to know it.
 
 ⚠️ **The 202 body is a MIRROR, not a shared schema** (reconcile R-aa).
-`EtiquetaPendente` in `respostaEtiqueta.ts` is the PRODUCER's shape; PR 2's web
-parser must use IDENTICAL names, and the two are compared line by line by the
+`EtiquetaPendente` in `pendenteEtiqueta.ts` is the PRODUCER's shape. PR 2's web
+schema MUST mirror its names, and the 409's, and tolerate every optional key
+(`shopeeCode` included) — an obligation on that file, which this folder states
+and never describes (#1369). The two are compared line by line by the
 round-trip review, never by a comment. A rename is a wire change on both sides
 of a deploy. So is a `motivo` slug: it rides the 409 for the caller to branch
 on.
@@ -176,25 +198,31 @@ In this order, and each refusal costs zero Shopee calls and no token read:
   `ativo !== true` ⇒ `conta-inativa`. A third refusal on the NF-e side stops
   this route compiling.
 
-⚠️ The CLI spells this ladder a SECOND time (`avaliarPedidoParaEtiquetaCli`,
-`avaliarContaParaEtiquetaCli` in `etiquetaCli.ts`), each copy pinned by its own
-suite. Two copies of one rule is the smell root `CLAUDE.md` names (#1369);
-folding both into one pure module is not done yet.
+The ladder after the missing-document rung is ONE pure module,
+`alvoEtiqueta.ts` (`avaliarPedidoParaEtiquetaShopee`,
+`avaliarContaParaEtiquetaShopee`), and the route and the CLI both call it: the
+CLI rehearses exactly the ladder production runs. Each caller keeps only its
+own answer to a missing document (the route's 404, the CLI's
+`pedido-nao-encontrado`).
 
 ## 5. The phase decision (`faseEtiqueta.ts`)
 
 **One package's phase** (`fasePacote`), in this order:
 
-1. The invoice FIRST. An invoice-pending package reads `LOGISTICS_NOT_START`,
-   so a table consulted before the invoice would answer "not ready" and the
-   operator would never learn that the NF-e is what blocks (§7).
+1. The invoice first among the PRE-ARRANGE phases (`LOGISTICS_NOT_START`,
+   `LOGISTICS_READY` not arranged, an unknown token). An invoice-pending package
+   reads `LOGISTICS_NOT_START`, so a table consulted before the invoice would
+   answer "not ready" and the operator would never learn that the NF-e is what
+   blocks (§7). An arranged, collected or ineligible package IGNORES a stale
+   `invoice_pending`: it must never hold the rest of the order.
 2. The `LOGISTICS_*` token, read with step 7's rule: an EXACT lookup, both alias
    spellings as their own keys, no trim, no case fold. The table is typed on
    step 7's own token table, so a token step 7 learns is a COMPILE error here
    until this table decides its phase. Anything else — `LOGISTICS_PENDING_ARRANGE`
    (a return token) included — is `desconhecido`, and nothing acts on it.
 3. On `LOGISTICS_READY` only: `is_shipment_arranged === true` ⇒ arranged;
-   a non-empty `pending_terms` ⇒ `retido` (Shopee holds it); else ⇒ arrange.
+   a USABLE `pending_terms` entry (step 7's reader: `-` and blank hold
+   nothing) ⇒ `retido` (Shopee holds it); else ⇒ arrange.
    `null` counts as NOT arranged, which is safe because a duplicate ship is
    absorbed (§6). `LOGISTICS_PICKUP_RETRY` is arranged and never re-arranged:
    the retry is Shopee's.
@@ -245,6 +273,12 @@ folds them.
   `modo-nao-suportado`.
 - **`non_integrated` only** ⇒ `sem-etiqueta-shopee`: the seller's own
   logistics, for which Shopee prints no label.
+- **Shopee's own refusals here.** `no_available_time_slot` /
+  `no_supported_dropoff_branch` ⇒ `sem-horario-ou-agencia` (nothing to offer
+  right now; its sentence never blames the address), and the pickup-address
+  family (`error_no_pickup_address`, "pickup address is not serviceable", …)
+  ⇒ `sem-endereco-de-coleta`. A slot past its cutoff at the ship ⇒
+  `reescolher-envio`, which asks again.
 
 **It asks only when Shopee needs a choice**: more than one eligible address,
 more than one slot, or both modes offered (`permiteDropoff: true`). Otherwise
@@ -311,6 +345,15 @@ nothing is enqueued and the answer says `sem-permissao`. The 409 carries
 `enfileirado`, `nao-elegivel`, `nfe-nao-encontrada`, `desligado`,
 `sem-permissao` — never the key, the XML or the NF-e document id.
 
+The sentence is chosen from the outcome AND `motivoNfe`. The common case — the
+operator clicked Imprimir before emitting the NF-e — arrives as `nao-elegivel`
+with `sem-nfe-aprovada`, and its sentence asks for the emission ("emita a NF-e
+do pedido e clique em Imprimir de novo"): nothing was ever uploaded, so there
+is no aviso to point at. Every other `nao-elegivel` motivo keeps the "confira o
+aviso de NF-e" sentence. `nfe-nao-encontrada` is unreachable from this route
+(it re-drives with `nfeId: null`, and that arm answers only an explicit
+`nfeId`), and keeps the same "emita" sentence for the union's exhaustiveness.
+
 ⚠️ The answer is a 409, TERMINAL for the click. A 202 would make the caller
 poll, and every poll would enqueue the re-drive again. The operator clicks again
 once Shopee has the note. The CLI never re-drives: it prints "use `enviar:nfe`".
@@ -340,7 +383,9 @@ task is re-created once per call, and a second failure refuses with
 created yet. A result status nobody documented reads as NOT ready.
 
 **Batch rows are matched by `(order_sn, package_number)`, never by position.**
-Fewer rows than were asked for is a valid answer. A row with no package number
+Fewer rows than were asked for is a valid answer, and an absent or `null`
+`result_list` reads as no rows (this API prints `null` for an empty list),
+never as a 502. A row with no package number
 belongs to the only package of an unsplit order; on a split order a FAILED one
 is the whole batch's failure, and the package is never guessed. A batch where
 every row failed arrives as a value (`todasFalharam`), each row with its own
@@ -381,7 +426,9 @@ misconfiguration, an unreadable body).
   before Shopee has said a word. Codes and sentences go through the two folds
   of `core/recusaShopee.ts`, the ones step 14's table reads, so
   ` logistics.package_already_shipped` ≡ `package_already_shipped` while a
-  two-segment prefix stays distinct.
+  two-segment prefix stays distinct. The code fold is the package's
+  `shopeeCodigoCanonico`, delegated to — the same one the package's batch
+  reader folds `common.batch_api_all_failed` with, so the two cannot drift.
 - ⚠️ **`logistics.error_param` is SIX rows, split by the sentence**: already
   shipped, still allocating (a wait), the order was split, not ready, the slot
   is stale, and a seller-registration error. A code-only row would read an
@@ -494,8 +541,16 @@ pedido. The dry run is the DEFAULT: every read runs, and the runner answers
 `download_shipping_document`, none of which is sent. `--live` arranges for real
 with a 5-minute budget for the whole run and never writes the file; it prints
 the sniffed format and the byte length. It prints no order number, package
-number, tracking number, address or byte — every line is an allow-list. It is
-never run by an agent. Flags, output and the runbook: `scripts/README.md` §16.
+number, tracking number, address or byte — every line is an allow-list — and
+no argument the operator typed: a stray token or an unknown option is named by
+its POSITION ("argumento solto na posição N"), never echoed. Beside a
+`recusa-desconhecida` it prints `code=<shopeeCode>`, through the same
+`codigoSeguro` gate. A live run re-calls the runner only for the two things
+the operator cannot do by hand (an answered question, the per-package walk),
+and waits `ESPERA_POS_PROGRAMAR_MS` before EVERY re-call: the previous call may
+have ended right after its own `ship_order`, and a read made at once may not
+show the arrange yet (register 208). It is never run by an agent. Flags, output
+and the runbook: `scripts/README.md` §16.
 
 ## 14. What is UNVERIFIED, and what settles it
 

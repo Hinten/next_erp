@@ -38,12 +38,12 @@ import {
   type ShopeeClient,
   type ShopeeLoteLogistico,
 } from '@delfrance/integrations-shopee';
-import { INTEGRACAO_FRETE, INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE, INTEGRACAO_TIPO } from '@delfrance/schemas';
 
 import { ShopeeContaSemShopIdError } from '../core/tokenStore';
 import { makePedidoIdShopee } from '../pedidos/orderIds';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
-import { MOTIVO_ETIQUETA_SHOPEE } from './errosEtiqueta';
+import { ESPERA_POS_PROGRAMAR_MS, TIPO_OMITIDO } from './constantesEtiqueta';
 import {
   ArgumentoInvalidoError,
   MAX_CHAMADAS_ETIQUETA_CLI,
@@ -51,8 +51,6 @@ import {
   ORCAMENTO_CLI_ETIQUETA_MS,
   PEDIDO_NAO_ENCONTRADO,
   USO_BAIXAR_ETIQUETA,
-  avaliarContaParaEtiquetaCli,
-  avaliarPedidoParaEtiquetaCli,
   descreverErroEtiqueta,
   ehRecusaAntesDoEnvioEtiqueta,
   parseArgsEtiqueta,
@@ -69,7 +67,8 @@ import {
   type EntradaEtiqueta,
   type ResultadoEtiqueta,
 } from './executarEtiqueta';
-import { MENSAGEM_ESCOLHER_ENVIO } from './respostaEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
+import { MENSAGEM_ESCOLHER_ENVIO } from './pendenteEtiqueta';
 
 /* ---------------------------------- the world -------------------------------- */
 
@@ -302,6 +301,7 @@ function cenario(
   return {
     rodar,
     relogio,
+    dormir,
     criarCliente,
     executar,
     getOrderDetail,
@@ -436,8 +436,49 @@ describe('parseArgsEtiqueta', () => {
 
   it('não existe --confirmar-janela (Apêndice A): é uma opção desconhecida como outra qualquer', () => {
     expect(() => parseArgsEtiqueta(['--pedido', 'p', '--confirmar-janela'])).toThrow(
-      /Opção desconhecida: --confirmar-janela/,
+      'Opção desconhecida na posição 3',
     );
+  });
+
+  /** The parser's refusal, typed — any other throw is not this test's. */
+  function erroDe(argv: string[]): ArgumentoInvalidoError {
+    try {
+      parseArgsEtiqueta(argv);
+    } catch (err: unknown) {
+      if (err instanceof ArgumentoInvalidoError) return err;
+      throw err;
+    }
+    throw new Error('esperava um ArgumentoInvalidoError');
+  }
+
+  it('R3-F3: um argumento SOLTO (um 2º número de pacote) sai pela POSIÇÃO — o valor nunca é impresso; o MESMO número logo após --pacote é aceito', () => {
+    const err = erroDe(['--pedido', 'p', '--pacote', P1, P2]);
+    expect(err.message).toContain('Argumento solto na posição 5');
+    const linhas = descreverErroEtiqueta(err);
+    expect(linhas.join('\n')).not.toContain(P2);
+    semIdentificadores(linhas);
+    // Near-miss: the token in its option's slot is a value, not a stray.
+    expect(args(['--pedido', 'p', '--pacote', P2]).pacote).toBe(P2);
+  });
+
+  it.each<[string, string[], string]>([
+    [
+      'uma opção desconhecida com o valor colado',
+      ['--pedido', 'p', `--pacotes=${P2}`],
+      'posição 3',
+    ],
+    ['uma opção desconhecida que É o número', ['--pedido', 'p', `-${P2}`], 'posição 3'],
+    ['um switch com valor', ['--pedido', 'p', `--dropoff=${P2}`], 'não aceita valor'],
+    [
+      'um --pedido que não é id de documento',
+      ['--pedido', `pedidos/${PEDIDO_ID}`],
+      'id de documento',
+    ],
+    ['um --formato que é outra coisa', ['--pedido', 'p', '--formato', P2], 'use pdf ou zpl2'],
+  ])('R3-F3: %s — recusado sem ecoar o texto', (_rotulo, argv, trecho) => {
+    const err = erroDe(argv);
+    expect(err.message).toContain(trecho);
+    semIdentificadores(descreverErroEtiqueta(err));
   });
 
   it('o separador "--" do pnpm é recusado com a explicação', () => {
@@ -453,72 +494,9 @@ describe('parseArgsEtiqueta', () => {
 
 /* ---------------------------------- the ladder ------------------------------- */
 
-describe('avaliarPedidoParaEtiquetaCli / avaliarContaParaEtiquetaCli — a escada da rota', () => {
-  it('sem documento ⇒ pedido-nao-encontrado; o digest que não recomputa ⇒ nao-shopee', () => {
-    expect(avaliarPedidoParaEtiquetaCli(PEDIDO_ID, null)).toEqual({
-      ok: false,
-      motivo: PEDIDO_NAO_ENCONTRADO,
-    });
-    expect(avaliarPedidoParaEtiquetaCli('outro-id', pedidoRaw())).toEqual({
-      ok: false,
-      motivo: MOTIVO_ETIQUETA_SHOPEE.naoShopee,
-    });
-  });
-
-  it('PAR: externalOptionIntegracao shopee, null e ausente passam', () => {
-    const esperado = { ok: true, contaId: CONTA, orderSn: ORDER_SN };
-    expect(avaliarPedidoParaEtiquetaCli(PEDIDO_ID, pedidoRaw())).toEqual(esperado);
-    expect(
-      avaliarPedidoParaEtiquetaCli(
-        PEDIDO_ID,
-        pedidoRaw({ freteInicial: { externalOptionIntegracao: null } }),
-      ),
-    ).toEqual(esperado);
-    expect(avaliarPedidoParaEtiquetaCli(PEDIDO_ID, pedidoRaw({ freteInicial: {} }))).toEqual(
-      esperado,
-    );
-    expect(avaliarPedidoParaEtiquetaCli(PEDIDO_ID, pedidoRaw({ freteInicial: null }))).toEqual(
-      esperado,
-    );
-  });
-
-  it('NEAR-MISS: outra integração e "Shopee" com maiúscula são recusadas', () => {
-    for (const dono of [INTEGRACAO_FRETE.mercadoLivre, 'Shopee']) {
-      expect(
-        avaliarPedidoParaEtiquetaCli(
-          PEDIDO_ID,
-          pedidoRaw({ freteInicial: { externalOptionIntegracao: dono } }),
-        ),
-      ).toEqual({ ok: false, motivo: MOTIVO_ETIQUETA_SHOPEE.freteDeOutraIntegracao });
-    }
-  });
-
-  it('bloquearEmissaoNFe NÃO recusa a etiqueta — é o degrau da NF-e, e ele recusa todo pedido SG', () => {
-    expect(
-      avaliarPedidoParaEtiquetaCli(PEDIDO_ID, pedidoRaw({ bloquearEmissaoNFe: true })).ok,
-    ).toBe(true);
-  });
-
-  it('a conta: ausente ou de outro tipo ⇒ nao-configurada; ativo diferente de true ⇒ inativa', () => {
-    const conta = (o: Partial<Integracao>): Integracao =>
-      ({ tipo: INTEGRACAO_TIPO.shopee, ativo: true, ...o }) as Integracao;
-    expect(avaliarContaParaEtiquetaCli(conta({}))).toEqual({ ok: true });
-    expect(avaliarContaParaEtiquetaCli(null)).toEqual({
-      ok: false,
-      motivo: MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada,
-    });
-    expect(avaliarContaParaEtiquetaCli(conta({ tipo: INTEGRACAO_TIPO.mercadoLivre }))).toEqual({
-      ok: false,
-      motivo: MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada,
-    });
-    for (const ativo of [false, null, undefined]) {
-      expect(avaliarContaParaEtiquetaCli(conta({ ativo } as Partial<Integracao>))).toEqual({
-        ok: false,
-        motivo: MOTIVO_ETIQUETA_SHOPEE.contaInativa,
-      });
-    }
-  });
-
+// The ladder's own pairs and near-misses moved to `alvoEtiqueta.test.ts` with
+// the ladder (review 1, R5-3); what stays here is the CLI's use of it.
+describe('rodarEtiquetaCli — a escada da rota (alvoEtiqueta.ts)', () => {
   it.each([
     ['pedido ausente', { pedido: null }, PEDIDO_NAO_ENCONTRADO],
     ['conta ausente', { conta: null }, MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada],
@@ -808,9 +786,98 @@ describe('rodarEtiquetaCli — o --live', () => {
       };
     });
     const r = await c.rodar({ live: true, envio: { modo: 'dropoff' } }, fake);
-    expect(orcamentos).toEqual([ORCAMENTO_CLI_ETIQUETA_MS, 60_000]);
+    // The re-call's wait (R2-4) is charged to the same budget.
+    expect(orcamentos).toEqual([ORCAMENTO_CLI_ETIQUETA_MS, 60_000 - ESPERA_POS_PROGRAMAR_MS]);
     expect(r.interrompido).toBe('sem-tempo');
     expect(r.chamadas).toHaveLength(2);
+  });
+
+  it('R2-4 PAR: a RE-chamada espera ESPERA_POS_PROGRAMAR_MS antes de chamar de novo — a leitura pode não refletir o ship ainda', async () => {
+    const eventos: string[] = [];
+    const c = cenario([novo(P1)]);
+    c.dormir.mockImplementation(async (ms: number) => {
+      eventos.push(`dormir:${String(ms)}`);
+      c.relogio.agora += ms;
+    });
+    const respostas: ResultadoEtiqueta[] = [
+      {
+        tipo: 'pendente',
+        corpo: {
+          acao: 'escolher-envio',
+          fase: 'programando',
+          pacote: P2,
+          pacoteRotulo: 'Pacote 2 de 2',
+          mensagem: 'm',
+          enderecos: [],
+          permiteDropoff: true,
+          escolhaInvalida: false,
+          progresso: { total: 2, organizados: 1, comRastreio: 0, prontos: 0 },
+        },
+      },
+      {
+        tipo: 'pendente',
+        corpo: {
+          acao: 'aguardar',
+          fase: 'aguardando-rastreio',
+          tentarEmMs: 5_000,
+          mensagem: 'm',
+          progresso: { total: 2, organizados: 2, comRastreio: 0, prontos: 0 },
+        },
+      },
+    ];
+    const fake = vi.fn(async (): Promise<ResultadoEtiqueta> => {
+      eventos.push('executar');
+      const r = respostas.shift();
+      if (r === undefined) throw new Error('chamada a mais');
+      return r;
+    });
+    const r = await c.rodar({ live: true, envio: { modo: 'dropoff' } }, fake);
+    expect(r.chamadas).toHaveLength(2);
+    // Near-miss: the FIRST call never waits; only the re-call does.
+    expect(eventos).toEqual(['executar', `dormir:${String(ESPERA_POS_PROGRAMAR_MS)}`, 'executar']);
+  });
+
+  it('R3-F1 PAR: a `recusa-desconhecida` imprime `code=<código>` ao lado do motivo', async () => {
+    const c = cenario([novo(P1)]);
+    const fake = vi.fn(
+      async (): Promise<ResultadoEtiqueta> => ({
+        tipo: 'recusa',
+        motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+        shopeeCode: 'some_new_code',
+        operacao: 'programar',
+      }),
+    );
+    const r = await c.rodar({ live: true }, fake);
+    expect(r.chamadas[0]?.resumo).toMatchObject({ tipo: 'recusa', shopeeCode: 'some_new_code' });
+    const texto = renderizarRelatorioEtiqueta(r).join('\n');
+    expect(texto).toContain('recusa-desconhecida code=some_new_code: ');
+    semIdentificadores(renderizarRelatorioEtiqueta(r));
+  });
+
+  it.each<[string, Partial<Extract<ResultadoEtiqueta, { tipo: 'recusa' }>>, string | null]>([
+    ['sem `shopeeCode` ⇒ nenhum `code=`', {}, null],
+    [
+      'um "código" com 14 dígitos ⇒ `(não é um código)`, nunca os dígitos',
+      { shopeeCode: 'erro_12345678901234' },
+      '(não é um código)',
+    ],
+  ])('R3-F1 QUASE-MISS: %s', async (_rotulo, extra, esperado) => {
+    const c = cenario([novo(P1)]);
+    const fake = vi.fn(
+      async (): Promise<ResultadoEtiqueta> => ({
+        tipo: 'recusa',
+        motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+        ...extra,
+      }),
+    );
+    const r = await c.rodar({ live: true }, fake);
+    const texto = renderizarRelatorioEtiqueta(r).join('\n');
+    if (esperado === null) {
+      expect(texto).not.toContain('code=');
+    } else {
+      expect(texto).toContain(`code=${esperado}`);
+      expect(texto).not.toContain('12345678901234');
+    }
   });
 });
 
@@ -839,6 +906,7 @@ describe('renderizarRelatorioEtiqueta', () => {
             motivo: MOTIVO_ETIQUETA_SHOPEE.limiteDiario,
             mensagem: 'Tente de novo.',
             tentarApos,
+            shopeeCode: null,
           },
         },
       ],
@@ -847,6 +915,20 @@ describe('renderizarRelatorioEtiqueta', () => {
     expect(linhas[0]).toContain('LIVE');
     expect(texto).toContain('limite-diario: Tente de novo.');
     expect(texto).toContain(new Date(tentarApos).toISOString());
+  });
+
+  it('R5-6: o sentinela `TIPO_OMITIDO` DO RUNNER (importado, não redigitado) sai como o padrão da Shopee', async () => {
+    const c = cenario([pronto(P1)]);
+    const fake = vi.fn(
+      async (): Promise<ResultadoEtiqueta> => ({
+        tipo: 'simulado',
+        acao: { tipo: 'baixar', pacotes: [P1], tipoDocumento: TIPO_OMITIDO },
+        fases: ['arranjado'],
+        progresso: { total: 1, organizados: 1, comRastreio: 1, prontos: 1 },
+      }),
+    );
+    const r = await c.rodar({}, fake);
+    expect(r.chamadas[0]?.resumo).toMatchObject({ tipoDocumento: 'padrão da Shopee (sem tipo)' });
   });
 
   it('um tipo de documento fora do padrão de token não é impresso', async () => {
@@ -921,7 +1003,7 @@ describe('o módulo', () => {
       "import type { DepsExecucaoEtiqueta, EntradaEtiqueta, ResultadoEtiqueta } from './executarEtiqueta';",
     );
     expect(fonte).toContain(
-      "import type { EtiquetaPendente, Progresso } from './respostaEtiqueta';",
+      "import type { EtiquetaPendente, Progresso } from './pendenteEtiqueta';",
     );
     expect(fonte).not.toMatch(/import\s+\{[^}]*\}\s+from\s+'\.\/executarEtiqueta'/);
     expect(fonte).not.toMatch(/import\s+\{[^}]*\}\s+from\s+'\.\/respostaEtiqueta'/);

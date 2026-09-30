@@ -5,6 +5,7 @@ import {
   ShopeeConfigError,
   ShopeeHttpError,
   ShopeeNetworkError,
+  ShopeeSchemaError,
   shopeeErrorFromEnvelope,
   shopeeShippingParameterPayloadSchema,
   type ShipOrderParams,
@@ -14,8 +15,8 @@ import {
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { TENTAR_EM_SHOPEE_MS } from './constantesEtiqueta';
-import { MOTIVO_ETIQUETA_SHOPEE } from './errosEtiqueta';
 import type { EscolhaDeEnvio } from './modoDeEnvio';
+import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
 import { programarPacoteShopee, type AlvoDaProgramacao } from './programarPacote';
 
 /* --------------------------------- fixtures --------------------------------- */
@@ -84,7 +85,11 @@ function fakeClient(opts: {
     if (erro !== undefined) throw erro;
     return { error: '', message: null, request_id: null, warning: null };
   });
-  const client = { getShippingParameter, shipOrder } as unknown as ShopeeClient;
+  // R5-8: `satisfies` BEFORE the cast, so a renamed op or param is a type error.
+  const client = { getShippingParameter, shipOrder } satisfies Pick<
+    ShopeeClient,
+    'getShippingParameter' | 'shipOrder'
+  > as unknown as ShopeeClient;
   return { client, getShippingParameter, shipOrder };
 }
 
@@ -101,6 +106,7 @@ describe('programarPacoteShopee — o caminho feliz', () => {
     const f = fakeClient({});
     await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
       tipo: 'programado',
+      semPacote: true,
     });
     expect(f.getShippingParameter).toHaveBeenCalledWith({
       orderSn: ORDER_SN,
@@ -123,7 +129,10 @@ describe('programarPacoteShopee — o caminho feliz', () => {
 
   it('S29 (near-miss): pedido dividido ⇒ o ship leva o package_number', async () => {
     const f = fakeClient({});
-    await programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA);
+    // Named package ⇒ only THIS package was arranged, not the order (R2-2).
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'programado', semPacote: false });
     expect(corpoDoShip(f.shipOrder)).toStrictEqual({
       orderSn: ORDER_SN,
       packageNumber: PACOTE,
@@ -165,6 +174,7 @@ describe('programarPacoteShopee — a escolha do operador', () => {
     };
     await expect(programarPacoteShopee(f.client, ALVO, escolha, AGORA)).resolves.toStrictEqual({
       tipo: 'programado',
+      semPacote: true,
     });
     expect(corpoDoShip(f.shipOrder)).toStrictEqual({
       orderSn: ORDER_SN,
@@ -245,10 +255,35 @@ describe('programarPacoteShopee — ⚠️ ship_order não é idempotente', () =
     });
     await expect(
       programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA),
-    ).resolves.toStrictEqual({ tipo: 'programado' });
+    ).resolves.toStrictEqual({ tipo: 'programado', semPacote: true });
     expect(f.shipOrder).toHaveBeenCalledTimes(2);
     expect('packageNumber' in corpoDoShip(f.shipOrder, 0)).toBe(true);
     expect('packageNumber' in corpoDoShip(f.shipOrder, 1)).toBe(false);
+  });
+
+  it('R2-2: o PEDIDO já foi organizado sem número nesta chamada ⇒ o not_need do irmão é ja-programado, SEM reenvio', async () => {
+    const naoPrecisa = () => envelope('logistics.ship_order_not_need_pacakge_number', null);
+    const f = fakeClient({ ship: [naoPrecisa()] });
+    await expect(
+      programarPacoteShopee(
+        f.client,
+        { ...ALVO_DIVIDIDO, ordemProgramadaSemPacote: true },
+        null,
+        AGORA,
+      ),
+    ).resolves.toStrictEqual({ tipo: 'ja-programado' });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+    expect('packageNumber' in corpoDoShip(f.shipOrder, 0)).toBe(true);
+
+    // Near-miss: the memory says nothing ⇒ the R-l re-send still goes out.
+    const g = fakeClient({ ship: [naoPrecisa()] });
+    await programarPacoteShopee(
+      g.client,
+      { ...ALVO_DIVIDIDO, ordemProgramadaSemPacote: false },
+      null,
+      AGORA,
+    );
+    expect(g.shipOrder).toHaveBeenCalledTimes(2);
   });
 
   it('R-l: o reenvio recusado de novo ⇒ pacotes-mudaram, nunca um terceiro ship', async () => {
@@ -271,13 +306,78 @@ describe('programarPacoteShopee — ⚠️ ship_order não é idempotente', () =
     expect(f.shipOrder).toHaveBeenCalledTimes(1);
   });
 
-  it('R-l: need_pacakge_number ⇒ pacotes-mudaram, SEM reenvio', async () => {
+  it('R4-3: need_pacakge_number num ship SEM o número ⇒ UM reenvio COM ele', async () => {
     const f = fakeClient({ ship: [envelope('logistics.ship_order_need_pacakge_number', null)] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'programado',
+      semPacote: false,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(2);
+    expect('packageNumber' in corpoDoShip(f.shipOrder, 0)).toBe(false);
+    expect(corpoDoShip(f.shipOrder, 1)).toStrictEqual({
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      modo: 'pickup',
+      pickup: { addressId: 2001, pickupTimeId: 'slot-1' },
+    });
+  });
+
+  it('R4-3: need recusado de novo no reenvio ⇒ pacotes-mudaram, nunca um terceiro ship', async () => {
+    const precisa = () => envelope(' logistics.ship_order_need_pacakge_number', null);
+    const f = fakeClient({ ship: [precisa(), precisa(), precisa()] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram,
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(2);
+  });
+
+  it('R4-3 (near-miss): need num ship que JÁ levava o número ⇒ pacotes-mudaram, SEM reenvio', async () => {
+    const f = fakeClient({ ship: [envelope('logistics.ship_order_need_pacakge_number', null)] });
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, null, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R4-3 (near-miss): "has been splitted" sem o número é lista VELHA ⇒ pacotes-mudaram, SEM reenvio', async () => {
+    const f = fakeClient({
+      ship: [envelope('logistics.error_param', 'The order has been splitted, please refresh.')],
+    });
     await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
       tipo: 'recusa',
       motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram,
     });
     expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R2-3: um 2xx ILEGÍVEL do ship (ShopeeSchemaError) ⇒ verificar, UM ship — o ship pode ter acontecido', async () => {
+    const ilegivel = new ShopeeSchemaError('sem envelope', {
+      httpStatus: 200,
+      path: '/api/v2/logistics/ship_order',
+    });
+    const f = fakeClient({ ship: [ilegivel] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'verificar',
+    });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R2-3 (near-miss): o mesmo erro fora de 2xx, ou na LEITURA do parâmetro, é relançado', async () => {
+    const fora = new ShopeeSchemaError('x', {
+      httpStatus: 400,
+      path: '/api/v2/logistics/ship_order',
+    });
+    const f = fakeClient({ ship: [fora] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).rejects.toBe(fora);
+
+    const naLeitura = new ShopeeSchemaError('x', {
+      httpStatus: 200,
+      path: '/api/v2/logistics/get_shipping_parameter',
+    });
+    const g = fakeClient({ parametroErro: naLeitura });
+    await expect(programarPacoteShopee(g.client, ALVO, null, AGORA)).rejects.toBe(naLeitura);
+    expect(g.shipOrder).not.toHaveBeenCalled();
   });
 
   it('o horário recusado no ship ⇒ pergunta marcada inválida, UM ship', async () => {
@@ -304,6 +404,39 @@ describe('programarPacoteShopee — ⚠️ ship_order não é idempotente', () =
       tentarEmMs: TENTAR_EM_SHOPEE_MS,
     });
     expect(f.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('R3-F1: um código que a tabela não conhece ⇒ recusa-desconhecida com o código SEGURO e a operação', async () => {
+    const f = fakeClient({ ship: [envelope('logistics.algum_codigo_novo\t', 'x')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'algum_codigo_novo',
+      operacao: 'programar',
+    });
+
+    // The parameter read names ITS operation.
+    const g = fakeClient({ parametroErro: envelope('logistics.outro_codigo', 'x') });
+    await expect(programarPacoteShopee(g.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'outro_codigo',
+      operacao: 'parametro-envio',
+    });
+  });
+
+  it('R3-F1 (near-miss): um "código" com 7 dígitos não é código ⇒ sem shopeeCode; um motivo conhecido não leva nenhum dos dois', async () => {
+    const f = fakeClient({ ship: [envelope('logistics.erro_1234567', 'x')] });
+    await expect(programarPacoteShopee(f.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      operacao: 'programar',
+    });
+    const g = fakeClient({ parametro: { info_needed: { non_integrated: [] } } });
+    await expect(programarPacoteShopee(g.client, ALVO, null, AGORA)).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.semEtiquetaShopee,
+    });
   });
 
   it('a cota diária no ship ⇒ recusa limite-diario com tentarApos', async () => {

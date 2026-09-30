@@ -31,14 +31,15 @@ import {
   INTERVALO_DOCUMENTO_MS,
   INTERVALO_RASTREIO_MS,
   TENTAR_EM_LIMITE_MS,
+  TENTAR_EM_SHOPEE_MS,
 } from './constantesEtiqueta';
-import { MOTIVO_ETIQUETA_SHOPEE } from './errosEtiqueta';
 import {
   executarEtiquetaShopee,
   type EntradaEtiqueta,
   type ResultadoEtiqueta,
 } from './executarEtiqueta';
-import { MENSAGEM_DA_FASE } from './respostaEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
+import { MENSAGEM_DA_FASE } from './pendenteEtiqueta';
 
 /* ---------------------------------- the world -------------------------------- */
 
@@ -66,6 +67,8 @@ interface PacoteDoMundo {
   criado: boolean;
   /** What `get_shipping_document_result` answers once created; the last one repeats. */
   statusDoDocumento: string[];
+  /** `get_package_detail` gives NO row for it (the order still lists it). */
+  semLinha?: boolean;
 }
 
 interface Mundo {
@@ -79,7 +82,11 @@ interface Mundo {
   errosDoShip: unknown[];
   errosDoDownload: unknown[];
   errosDoRastreio: unknown[];
+  /** Thrown by `getPackageDetail`, in order; `undefined` answers; an exhausted queue answers. */
+  errosDoPacote: unknown[];
   arquivo: Uint8Array;
+  /** The download's `Content-Type`, VERBATIM. */
+  tipoDoArquivo: string | null;
   /** Rows of `create_shipping_document`, replacing the defaults when set. */
   linhasDoCriar: unknown[] | null;
   /** Rows of `get_shipping_document_parameter`, replacing the defaults when set. */
@@ -160,7 +167,9 @@ function mundo(pacotes: PacoteDoMundo[], extra: Partial<Mundo> = {}): Mundo {
     errosDoShip: [],
     errosDoDownload: [],
     errosDoRastreio: [],
+    errosDoPacote: [],
     arquivo: PDF,
+    tipoDoArquivo: 'application/pdf',
     linhasDoCriar: null,
     linhasDoParametro: null,
     custoDoRastreioMs: 0,
@@ -206,11 +215,14 @@ function montar(m: Mundo) {
       ],
     }),
   );
-  const getPackageDetail = vi.fn(async (p: GetPackageDetailParams) =>
-    shopeePackageDetailPayloadSchema.parse({
-      package_list: p.packageNumbers.map((n) => {
-        const x = doMundo(n);
-        return {
+  const getPackageDetail = vi.fn(async (p: GetPackageDetailParams) => {
+    const erro = m.errosDoPacote.shift();
+    if (erro !== undefined) throw erro;
+    return shopeePackageDetailPayloadSchema.parse({
+      package_list: p.packageNumbers
+        .map((n) => doMundo(n))
+        .filter((x) => x.semLinha !== true)
+        .map((x) => ({
           order_sn: ORDER_SN,
           package_number: x.numero,
           fulfillment_status: x.fulfillment,
@@ -219,10 +231,9 @@ function montar(m: Mundo) {
           tracking_number: x.rastreioNaLinha,
           pending_terms: [],
           invoice_pending: x.invoicePendente === true ? { status: ' Pending ' } : null,
-        };
-      }),
-    }),
-  );
+        })),
+    });
+  });
   const getShippingParameter = vi.fn(async () =>
     shopeeShippingParameterPayloadSchema.parse(m.parametro),
   );
@@ -293,12 +304,14 @@ function montar(m: Mundo) {
     if (erro !== undefined) throw erro;
     return {
       bytes: m.arquivo,
-      contentType: 'application/pdf',
+      contentType: m.tipoDoArquivo,
       contentDisposition: null,
       httpStatus: 200,
     };
   });
 
+  // R5-8: `satisfies` BEFORE the cast — a renamed op or param is a type error,
+  // so no `not.toHaveBeenCalled()` below can pass against a stale name.
   const client = {
     getOrderDetail,
     getPackageDetail,
@@ -309,7 +322,18 @@ function montar(m: Mundo) {
     createShippingDocument,
     getShippingDocumentResult,
     downloadShippingDocument,
-  } as unknown as ShopeeClient;
+  } satisfies Pick<
+    ShopeeClient,
+    | 'getOrderDetail'
+    | 'getPackageDetail'
+    | 'getShippingParameter'
+    | 'shipOrder'
+    | 'getTrackingNumber'
+    | 'getShippingDocumentParameter'
+    | 'createShippingDocument'
+    | 'getShippingDocumentResult'
+    | 'downloadShippingDocument'
+  > as unknown as ShopeeClient;
 
   const dormir = vi.fn(async (ms: number) => {
     relogio.agora += ms;
@@ -680,14 +704,19 @@ describe('executarEtiquetaShopee — pedido dividido (R-s)', () => {
       'THERMAL_AIR_WAYBILL',
     );
 
-    // Near-miss: on a split order the row names no package ⇒ no package gets it.
+    // Near-miss: on a split order the row names no package ⇒ no package gets
+    // it, and a SUCCESS row is no failure either — the label still prints.
+    // (R5-5: the loop alone passed with zero iterations when create never ran.)
     const dois = montar(
       mundo([pronto(P1, { criado: false }), pronto(P2, { criado: false })], {
         linhasDoParametro: [linha],
       }),
     );
-    await dois.rodar();
-    for (const d of dois.createShippingDocument.mock.calls[0]?.[0].documentos ?? []) {
+    await expect(dois.rodar()).resolves.toMatchObject({ tipo: 'bytes', total: 2 });
+    expect(dois.createShippingDocument).toHaveBeenCalledTimes(1);
+    const docs = dois.createShippingDocument.mock.calls[0]?.[0].documentos ?? [];
+    expect(docs).toHaveLength(2);
+    for (const d of docs) {
       expect('shippingDocumentType' in d).toBe(false);
     }
   });
@@ -803,6 +832,28 @@ describe('executarEtiquetaShopee — o documento (R-u)', () => {
       expect(logado).not.toContain(proibido);
     }
   });
+
+  it('R3-F2: o log leva só a ESSÊNCIA do Content-Type — nunca um parâmetro `name=` com o pedido', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = montar(
+      mundo([pronto(P1)], {
+        arquivo: HTML,
+        tipoDoArquivo: ` application/octet-stream ; name="${ORDER_SN}.pdf"`,
+      }),
+    );
+    await expect(s.rodar()).resolves.toStrictEqual({ tipo: 'formato-desconhecido' });
+    expect(aviso).toHaveBeenCalledTimes(1);
+    expect(aviso.mock.calls[0]?.[1]).toMatchObject({ contentType: 'application/octet-stream' });
+    expect(JSON.stringify(aviso.mock.calls)).not.toContain(ORDER_SN);
+
+    // Near-miss: a bare type is logged whole, and no header at all is `null`.
+    const t = montar(mundo([pronto(P1)], { arquivo: HTML, tipoDoArquivo: 'text/html' }));
+    await t.rodar();
+    expect(aviso.mock.calls[1]?.[1]).toMatchObject({ contentType: 'text/html' });
+    const u = montar(mundo([pronto(P1)], { arquivo: HTML, tipoDoArquivo: null }));
+    await u.rodar();
+    expect(aviso.mock.calls[2]?.[1]).toMatchObject({ contentType: null });
+  });
 });
 
 /* -------------------------------- the budget --------------------------------- */
@@ -847,5 +898,235 @@ describe('executarEtiquetaShopee — o orçamento', () => {
     const s = montar(mundo([pronto(P1, { rastreioNaLinha: '-' })], { errosDoRastreio: [burst] }));
     expect((await s.rodar()).tipo).toBe('bytes');
     expect(s.dormir).toHaveBeenCalledWith(TENTAR_EM_LIMITE_MS);
+  });
+});
+
+/* ------------------------- M1: an incomplete read ---------------------------- */
+
+describe('executarEtiquetaShopee — uma leitura INCOMPLETA nunca decide (M1)', () => {
+  it('rede caída no 1º get_package_detail ⇒ espera, RELÊ e entrega os bytes (nunca status-desconhecido)', async () => {
+    const s = montar(mundo([pronto(P1)], { errosDoPacote: [new ShopeeNetworkError('queda')] }));
+    await expect(s.rodar()).resolves.toMatchObject({ tipo: 'bytes' });
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(2);
+    expect(s.dormir).toHaveBeenCalledWith(TENTAR_EM_SHOPEE_MS);
+  });
+
+  it('falhas repetidas até o orçamento acabar ⇒ 202 aguardar, NUNCA uma recusa', async () => {
+    const queda = () => new ShopeeNetworkError('queda');
+    const s = montar(
+      mundo([pronto(P1)], { errosDoPacote: [queda(), queda(), queda(), queda(), queda()] }),
+    );
+    const r = pendente(await s.rodar());
+    expect(r).toMatchObject({
+      acao: 'aguardar',
+      fase: 'programando',
+      tentarEmMs: TENTAR_EM_SHOPEE_MS,
+    });
+    // Read at 0, 10 and 20 s; the wait to 30 s does not fit.
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(3);
+    expect(s.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('package_number_not_found na leitura ⇒ relê TUDO exatamente UMA vez, e segue', async () => {
+    const s = montar(
+      mundo([pronto(P1)], {
+        errosDoPacote: [envelope('logistics.package_number_not_found', 'not found')],
+      }),
+    );
+    await expect(s.rodar()).resolves.toMatchObject({ tipo: 'bytes' });
+    expect(s.getOrderDetail).toHaveBeenCalledTimes(2);
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('package_number_not_found DUAS vezes ⇒ pacotes-mudaram (o clique do operador), nunca status-desconhecido', async () => {
+    const naoAchou = () => envelope('logistics.package_number_not_found', 'not found');
+    const s = montar(mundo([pronto(P1)], { errosDoPacote: [naoAchou(), naoAchou()] }));
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram,
+    });
+    expect(s.getOrderDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('51 pacotes: o 2º lote falha uma vez ⇒ relido, e a decisão vê TODOS', async () => {
+    const pacotes = Array.from({ length: 51 }, (_, i) =>
+      pacote(`PACOTE-TESTE-${String(i).padStart(3, '0')}`, {
+        fulfillment: 'LOGISTICS_NOT_START',
+      }),
+    );
+    const s = montar(
+      mundo(pacotes, { errosDoPacote: [undefined, new ShopeeNetworkError('queda')] }),
+    );
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacoteNaoPronto,
+    });
+    expect(s.getPackageDetail.mock.calls.map((c) => c[0].packageNumbers.length)).toStrictEqual([
+      50, 1, 50, 1,
+    ]);
+  });
+
+  it('a releitura depois do ship interrompida por uma espera é REFEITA (só sai o que foi lido)', async () => {
+    const s = montar(
+      mundo([pacote(P1)], { errosDoPacote: [undefined, new ShopeeNetworkError('queda')] }),
+    );
+    await expect(s.rodar()).resolves.toMatchObject({ tipo: 'bytes' });
+    // The call's read, the interrupted re-read, the re-read again.
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(3);
+    expect(s.shipOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('um pacote listado SEM linha no detalhe é uma RESPOSTA (status-desconhecido), não um buraco a reler', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = montar(mundo([pronto(P1, { semLinha: true })]));
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido,
+    });
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* --------------------- the order-level ship (R2-2, R2-5) --------------------- */
+
+describe('executarEtiquetaShopee — o ship do PEDIDO', () => {
+  it('R2-2: leitura dividida VELHA ⇒ exatamente UM ship sem package_number na chamada', async () => {
+    const naoPrecisa = () => envelope('logistics.ship_order_not_need_pacakge_number', null);
+    const s = montar(
+      mundo([pacote(P1), pacote(P2)], { errosDoShip: [naoPrecisa(), undefined, naoPrecisa()] }),
+    );
+    await expect(s.rodar()).resolves.toMatchObject({ tipo: 'bytes', total: 2 });
+    const corpos = s.shipOrder.mock.calls.map((c) => c[0]);
+    expect(corpos.filter((c) => !('packageNumber' in c))).toHaveLength(1);
+    // P1 with, P1 without (R-l), P2 with — and P2's `not_need` is taken as arranged.
+    expect(corpos.map((c) => c.packageNumber ?? null)).toStrictEqual([P1, null, P2]);
+  });
+
+  it('R2-5: READY com is_shipment_arranged null ⇒ programar (S22) — escolhido, não acidental', async () => {
+    const s = montar(mundo([pacote(P1, { arranjado: null })]));
+    const r = await s.rodar({}, { somenteLeitura: true });
+    expect(r).toMatchObject({
+      tipo: 'simulado',
+      acao: { tipo: 'programar' },
+      fases: ['programar'],
+    });
+
+    // So a `frete.read` caller gets the 403 on it…
+    const t = montar(mundo([pacote(P1, { arranjado: null })]));
+    await expect(t.rodar({}, { podeProgramar: false })).resolves.toStrictEqual({
+      tipo: 'sem-permissao',
+    });
+    // …while the near-miss, `true`, reprints without the bit.
+    const u = montar(mundo([pronto(P1)]));
+    expect((await u.rodar({}, { podeProgramar: false })).tipo).toBe('bytes');
+  });
+});
+
+/* ------------------------ R3-F1: the unknown, observable --------------------- */
+
+describe('executarEtiquetaShopee — o desconhecido fica OBSERVÁVEL (R3-F1)', () => {
+  it('um código que a tabela não conhece ⇒ recusa-desconhecida com o código SEGURO e a operação', async () => {
+    const s = montar(
+      mundo([pronto(P1)], { errosDoDownload: [envelope(' logistics.algum_codigo_novo', 'x')] }),
+    );
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'algum_codigo_novo',
+      operacao: 'baixar',
+    });
+
+    // The arrange's unknown refusal is forwarded with ITS operation.
+    const t = montar(
+      mundo([pacote(P1)], { errosDoShip: [envelope('logistics.outro_codigo_novo', 'x')] }),
+    );
+    await expect(t.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'outro_codigo_novo',
+      operacao: 'programar',
+    });
+  });
+
+  it('uma LINHA que o classificador não possui (reauth numa linha) ⇒ o código e a operação da linha', async () => {
+    const s = montar(
+      mundo([pronto(P1, { criado: false })], {
+        linhasDoCriar: [
+          {
+            order_sn: ORDER_SN,
+            package_number: P1,
+            fail_error: 'shop_access_expired',
+            fail_message: 'x',
+          },
+        ],
+      }),
+    );
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      shopeeCode: 'shop_access_expired',
+      operacao: 'criar-documento',
+    });
+  });
+
+  it('near-miss: um "código" com 7 dígitos NÃO sai; um motivo conhecido não leva nem código nem operação', async () => {
+    const s = montar(
+      mundo([pronto(P1)], { errosDoDownload: [envelope('logistics.erro_1234567', 'x')] }),
+    );
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+      operacao: 'baixar',
+    });
+    const t = montar(
+      mundo([pronto(P1)], { errosDoDownload: [envelope('logistics.package_can_not_print', 'x')] }),
+    );
+    await expect(t.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel,
+    });
+  });
+
+  it('status-desconhecido ⇒ UM warn com o TOKEN cru — nunca o número do pacote nem o do pedido', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = montar(mundo([pacote(P1, { fulfillment: 'LOGISTICS_ALGO_NOVO' })]));
+    await expect(s.rodar()).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido,
+    });
+    expect(aviso).toHaveBeenCalledTimes(1);
+    expect(aviso.mock.calls[0]?.[1]).toStrictEqual({ tokens: ['LOGISTICS_ALGO_NOVO'] });
+    const logado = JSON.stringify(aviso.mock.calls);
+    for (const proibido of [ORDER_SN, P1]) expect(logado).not.toContain(proibido);
+  });
+
+  it('near-miss: um token com cara de NÚMERO DE PACOTE, minúsculo, ou sem linha ⇒ marcador, nunca o valor', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = montar(
+      mundo([
+        pacote(P1, { fulfillment: P2 }),
+        pacote(P2, { fulfillment: 'logistics_minusculo' }),
+        pacote('PACOTE-TESTE-003', { semLinha: true }),
+      ]),
+    );
+    await expect(s.rodar()).resolves.toMatchObject({
+      motivo: MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido,
+    });
+    expect(aviso.mock.calls[0]?.[1]).toStrictEqual({
+      tokens: ['<token-ilegivel>', '<sem-linha>'],
+    });
+    const logado = JSON.stringify(aviso.mock.calls);
+    for (const proibido of [ORDER_SN, P1, P2, 'logistics_minusculo', 'PACOTE-TESTE-003']) {
+      expect(logado).not.toContain(proibido);
+    }
+  });
+
+  it('near-miss: outra recusa da decisão (pacote-nao-pronto) não loga nada', async () => {
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const s = montar(mundo([pacote(P1, { fulfillment: 'LOGISTICS_NOT_START' })]));
+    await expect(s.rodar()).resolves.toMatchObject({
+      motivo: MOTIVO_ETIQUETA_SHOPEE.pacoteNaoPronto,
+    });
+    expect(aviso).not.toHaveBeenCalled();
   });
 });

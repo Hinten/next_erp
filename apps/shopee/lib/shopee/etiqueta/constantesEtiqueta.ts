@@ -95,6 +95,17 @@ export const TIPO_DOCUMENTO_DO_FORMATO = {
 } as const;
 
 /**
+ * The document type the runner RECORDS when it decided to send none (Shopee's
+ * own default): neither the asked type nor a `suggest` was offered.
+ *
+ * ⚠️ A NON-null value on purpose: to the decision, `tipoDocumento: null` means
+ * "not read yet", which would re-ask `get_shipping_document_parameter` until
+ * the budget ran out. Every reader that must tell "omitted" from a real type —
+ * the runner, and the CLI's report — imports this one name (review 1, R5-6).
+ */
+export const TIPO_OMITIDO = '';
+
+/**
  * Whether `ship_order` carries `package_number` on an UNSPLIT order.
  * `'so-se-dividido'` sends it only when the order has more than one package;
  * every OTHER op always sends it. The `ship_order_(not_)need_pacakge_number`

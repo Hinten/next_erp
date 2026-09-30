@@ -11,10 +11,10 @@
  * ⚠️ **Script-only, imported by no route, no job and no bundle.** Nothing here
  * reads an environment variable or a clock (`deps.agora` / `deps.dormir` are the
  * script's), and the runner is INJECTED: this module names `executarEtiqueta.ts`
- * and `respostaEtiqueta.ts` for their TYPES only (a test pins the raw text), so
- * loading it loads neither the runner nor `next/server`. The script's own
- * dynamic import of the runner does load `next/server` — the runner takes its
- * pt-BR sentences from `respostaEtiqueta.ts` — which runs under plain Node.
+ * for its TYPES only (a test pins the raw text), so loading it does not load
+ * the runner. Neither of them loads `next/server`: the 202 body's shape and the
+ * runner's pt-BR sentences live in the pure `pendenteEtiqueta.ts`, and only the
+ * route imports the Next-bound `respostaEtiqueta.ts` (review 1, R5-1).
  *
  * ## The two modes
  *
@@ -48,25 +48,34 @@
  * runs the command again. Bounded twice: {@link MAX_CHAMADAS_ETIQUETA_CLI} calls
  * and the {@link ORCAMENTO_CLI_ETIQUETA_MS} deadline.
  *
- * ## The ladder (the label route's own, in its order)
+ * ⚠️ **Every re-call waits `ESPERA_POS_PROGRAMAR_MS` first** (review 1, R2-4).
+ * The previous call may have ended right after our own `ship_order` (it arranged
+ * package 1, then asked about package 2), and a read made at once may not
+ * reflect the arrange yet (register 208) — the next call would then ask about,
+ * or re-ship, a package that is already arranged. The runner's result does not
+ * say whether a ship happened, so the CLI waits before EVERY re-call: at most
+ * 19 waits of 2 s, inside the 5-minute budget. The first call never waits.
  *
- * The raw pedido (absent ⇒ `pedido-nao-encontrado`), `provaDeIdentidadeShopee`
- * (⇒ `nao-shopee` — NEVER the NF-e ladder, whose `bloquearEmissaoNFe` rung would
- * refuse an SG order), a `freteInicial.externalOptionIntegracao` that is
- * non-null AND not `shopee` (⇒ `frete-de-outra-integracao`; null passes), then
- * the conta (missing or another tipo ⇒ `conta-nao-configurada`, `ativo !== true`
- * ⇒ `conta-inativa`) BEFORE any client is built. A refused pedido costs zero
- * Shopee calls.
+ * ## The ladder (the label route's own — ONE copy, `alvoEtiqueta.ts`)
+ *
+ * The raw pedido (absent ⇒ `pedido-nao-encontrado`, the one rung that is this
+ * CLI's own), then the two functions the route runs too (review 1, R5-3):
+ * ownership and the frete block (⇒ `nao-shopee` / `frete-de-outra-integracao`),
+ * then the conta (⇒ `conta-nao-configurada` / `conta-inativa`) BEFORE any
+ * client is built. A refused pedido costs zero Shopee calls.
  *
  * ## What it prints, and what it must never print
  *
  * Counts, phases (by package POSITION), action and motivo slugs with their pt-BR
  * sentence, the chosen document TYPE token, the sniffed format and the byte
- * length. **Never** an order number, a package number, a tracking number, an
- * address (or its id), a byte, the pedido id or Shopee's own text — every
- * builder below is an ALLOW-LIST, fields named one at a time, and nothing is
- * copied from a runner result wholesale. On `nfe-pendente` it prints "use
- * `enviar:nfe`" and never re-drives the NF-e.
+ * length — and, beside a `recusa-desconhecida`, Shopee's canonical CODE
+ * (`code=…`, through `codigoSeguro`: the one datum a rehearsal exists to
+ * capture, review 1 R3-F1). **Never** an order number, a package number, a
+ * tracking number, an address (or its id), a byte, the pedido id or Shopee's
+ * own text — every builder below is an ALLOW-LIST, fields named one at a time,
+ * and nothing is copied from a runner result wholesale. Nor an argument the
+ * operator typed: a bad command line is described by POSITION (R3-F3). On
+ * `nfe-pendente` it prints "use `enviar:nfe`" and never re-drives the NF-e.
  *
  * Ver apps/shopee/scripts/README.md §16.
  */
@@ -85,7 +94,6 @@ import {
   type ShopeeClient,
   type ShopeeShippingParameter,
 } from '@delfrance/integrations-shopee';
-import { INTEGRACAO_FRETE, INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 
 import { naoDocId } from '../anuncios/corpoPublicacao';
 import { readConta } from '../core/contaCache';
@@ -96,19 +104,23 @@ import {
 } from '../core/tokenStore';
 import { codigoSeguro } from '../nfe/redacaoNfe';
 import { ArgumentoInvalidoError } from '../pedidos/importarPedidoCli';
-import { provaDeIdentidadeShopee } from '../pedidos/reservaTravadaMapping';
-import { TAMANHO_MAX_PACOTE } from './constantesEtiqueta';
 import {
-  MOTIVO_ETIQUETA_SHOPEE,
-  classificarErroDeEtiqueta,
-  mensagemDoMotivoEtiqueta,
-  type MotivoEtiquetaShopee,
-  type VereditoDeErro,
-} from './errosEtiqueta';
+  avaliarContaParaEtiquetaShopee,
+  avaliarPedidoParaEtiquetaShopee,
+  type MotivoContaEtiquetaShopee,
+  type MotivoPedidoEtiquetaShopee,
+} from './alvoEtiqueta';
+import { ESPERA_POS_PROGRAMAR_MS, TAMANHO_MAX_PACOTE, TIPO_OMITIDO } from './constantesEtiqueta';
+import { classificarErroDeEtiqueta, type VereditoDeErro } from './errosEtiqueta';
 import type { DepsExecucaoEtiqueta, EntradaEtiqueta, ResultadoEtiqueta } from './executarEtiqueta';
 import type { AcaoEtiqueta, FaseEtiqueta, FasePacote } from './faseEtiqueta';
 import { escolherModoDeEnvio, type EscolhaDeEnvio, type ModoEscolhido } from './modoDeEnvio';
-import type { EtiquetaPendente, Progresso } from './respostaEtiqueta';
+import {
+  MOTIVO_ETIQUETA_SHOPEE,
+  mensagemDoMotivoEtiqueta,
+  type MotivoEtiquetaShopee,
+} from './motivosEtiqueta';
+import type { EtiquetaPendente, Progresso } from './pendenteEtiqueta';
 
 export { ArgumentoInvalidoError };
 
@@ -224,15 +236,30 @@ function unico(nome: string, atual: string | undefined): void {
 
 /**
  * A switch takes no value. ⚠️ Refused rather than ignored: `--live=0` read as
- * "the flag is present" would ship.
+ * "the flag is present" would ship. The value itself is not echoed (R3-F3).
  */
 function semValor(nome: string, inline: string | undefined): true {
   if (inline !== undefined) {
     throw new ArgumentoInvalidoError(
-      `${nome} não aceita valor (recebido "${nome}=${inline}"): a presença da flag já é o valor.`,
+      `${nome} não aceita valor (o valor recebido não é impresso): a presença da flag já é o valor.`,
     );
   }
   return true;
+}
+
+/**
+ * The refusal of a token the parser does not know — by its 1-based POSITION,
+ * never by its text (review 1, R3-F3): a stray token is usually a SECOND
+ * package number or address id (`--pacote A B`, `--endereco 1 2`), the usage
+ * text promises that nothing identifying the order is printed, and this line
+ * is what gets pasted into an issue.
+ */
+function tokenDesconhecido(arg: string, posicao: number): ArgumentoInvalidoError {
+  return new ArgumentoInvalidoError(
+    arg.startsWith('-')
+      ? `Opção desconhecida na posição ${String(posicao)} (o texto não é impresso) — veja --help.`
+      : `Argumento solto na posição ${String(posicao)} (o valor não é impresso): todo valor vem logo depois da sua opção — veja --help.`,
+  );
 }
 
 /**
@@ -283,7 +310,7 @@ export function parseArgsEtiqueta(argv: readonly string[]): ComandoBaixarEtiquet
         const valor = consumir('pedido');
         if (naoDocId(valor)) {
           throw new ArgumentoInvalidoError(
-            `--pedido ${valor} não é um id de documento: "/", "." e ".." endereçam outro caminho.`,
+            '--pedido não é um id de documento (o valor não é impresso): "/", "." e ".." endereçam outro caminho.',
           );
         }
         pedidoId = valor;
@@ -319,7 +346,7 @@ export function parseArgsEtiqueta(argv: readonly string[]): ComandoBaixarEtiquet
         dryRunExplicito = semValor(nome, inline);
         break;
       default:
-        throw new ArgumentoInvalidoError(`Opção desconhecida: ${arg}`);
+        throw tokenDesconhecido(arg, i + 1);
     }
   }
 
@@ -329,7 +356,9 @@ export function parseArgsEtiqueta(argv: readonly string[]): ComandoBaixarEtiquet
   if (pedidoId === undefined) throw new ArgumentoInvalidoError(MSG_PEDIDO_OBRIGATORIO);
   const formatoLido = formato ?? 'pdf';
   if (!ehFormato(formatoLido)) {
-    throw new ArgumentoInvalidoError(`--formato ${formatoLido} não existe: use pdf ou zpl2.`);
+    throw new ArgumentoInvalidoError(
+      '--formato não reconhecido (o valor não é impresso): use pdf ou zpl2.',
+    );
   }
   if (pacote !== undefined && pacote.length > TAMANHO_MAX_PACOTE) {
     throw new ArgumentoInvalidoError(
@@ -371,66 +400,20 @@ export function parseArgsEtiqueta(argv: readonly string[]): ComandoBaixarEtiquet
 /** The pedido document does not exist (the route's 404). */
 export const PEDIDO_NAO_ENCONTRADO = 'pedido-nao-encontrado';
 
-/** Why the ladder refused the pedido before any Shopee call. */
+/**
+ * Why the ladder refused the pedido before any Shopee call: the CLI's own
+ * missing document, or one of `alvoEtiqueta.ts`'s refusals.
+ */
 export type MotivoAlvoEtiquetaCli =
   | typeof PEDIDO_NAO_ENCONTRADO
-  | typeof MOTIVO_ETIQUETA_SHOPEE.naoShopee
-  | typeof MOTIVO_ETIQUETA_SHOPEE.freteDeOutraIntegracao
-  | typeof MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada
-  | typeof MOTIVO_ETIQUETA_SHOPEE.contaInativa;
+  | MotivoPedidoEtiquetaShopee
+  | MotivoContaEtiquetaShopee;
 
 /** The sentence of a ladder refusal. */
-export function mensagemDoMotivoAlvo(motivo: MotivoAlvoEtiquetaCli): string {
+function mensagemDoMotivoAlvo(motivo: MotivoAlvoEtiquetaCli): string {
   return motivo === PEDIDO_NAO_ENCONTRADO
     ? 'O pedido não existe neste projeto — confira o id do documento e o --project.'
     : mensagemDoMotivoEtiqueta(motivo);
-}
-
-function objetoDe(v: unknown): Record<string, unknown> | null {
-  return v !== null && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : null;
-}
-
-/**
- * The PEDIDO half of the ladder (the label route's rungs, in order). Pure.
- *
- * ⚠️ The frete rung refuses ONLY a named OTHER integration: `null` (and an
- * absent block or field) passes, because a migrated legacy pedido keeps
- * whatever the legacy wrote. The comparison is EXACT — `'Shopee'` is not ours.
- * ⚠️ `bloquearEmissaoNFe` is not read: that is the NF-e's rung, and it refuses
- * every SG order.
- */
-export function avaliarPedidoParaEtiquetaCli(
-  pedidoId: string,
-  raw: Record<string, unknown> | null,
-):
-  | { readonly ok: true; readonly contaId: string; readonly orderSn: string }
-  | { readonly ok: false; readonly motivo: MotivoAlvoEtiquetaCli } {
-  if (raw === null) return { ok: false, motivo: PEDIDO_NAO_ENCONTRADO };
-  const prova = provaDeIdentidadeShopee(pedidoId, raw);
-  if (prova === null) return { ok: false, motivo: MOTIVO_ETIQUETA_SHOPEE.naoShopee };
-  const dono = objetoDe(raw.freteInicial)?.externalOptionIntegracao ?? null;
-  if (dono !== null && dono !== INTEGRACAO_FRETE.shopee) {
-    return { ok: false, motivo: MOTIVO_ETIQUETA_SHOPEE.freteDeOutraIntegracao };
-  }
-  return { ok: true, contaId: prova.contaId, orderSn: prova.orderSn };
-}
-
-/** The CONTA half: missing or another tipo, then `ativo` not EXACTLY `true`. Pure. */
-export function avaliarContaParaEtiquetaCli(conta: Integracao | null):
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly motivo:
-        | typeof MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada
-        | typeof MOTIVO_ETIQUETA_SHOPEE.contaInativa;
-    } {
-  if (conta === null || conta.tipo !== INTEGRACAO_TIPO.shopee) {
-    return { ok: false, motivo: MOTIVO_ETIQUETA_SHOPEE.contaNaoConfigurada };
-  }
-  if (conta.ativo !== true) return { ok: false, motivo: MOTIVO_ETIQUETA_SHOPEE.contaInativa };
-  return { ok: true };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -495,6 +478,12 @@ export type ResumoChamadaEtiqueta =
       readonly motivo: MotivoEtiquetaShopee;
       readonly mensagem: string;
       readonly tentarApos: number | null;
+      /**
+       * Shopee's canonical code on a `recusa-desconhecida`, already printable
+       * (`codigoSeguro`, or `(não é um código)`); `null` when the runner
+       * carried none.
+       */
+      readonly shopeeCode: string | null;
     }
   | { readonly tipo: 'nfe-pendente'; readonly mensagem: string }
   | { readonly tipo: 'sem-permissao' }
@@ -538,12 +527,19 @@ const TIPO_DOCUMENTO_TOKEN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 function tipoDocumentoImprimivel(tipo: string | null): string | null {
   if (tipo === null) return null;
-  // The runner's "send no type" decision (Shopee's default).
-  if (tipo === '') return 'padrão da Shopee (sem tipo)';
+  // The runner's "send no type" decision (Shopee's default) — its ONE sentinel,
+  // imported, never re-typed here (review 1, R5-6).
+  if (tipo === TIPO_OMITIDO) return 'padrão da Shopee (sem tipo)';
   return TIPO_DOCUMENTO_TOKEN.test(tipo) ? tipo : '(tipo fora do padrão — não impresso)';
 }
 
-function progressoDe(p: Progresso): Progresso {
+/**
+ * The four counts, copied BY NAME (an allow-list: a field added to `Progresso`
+ * is not printed until this names it). Not `faseEtiqueta.ts`'s `progressoDe`,
+ * which DERIVES the counts from the package observations — hence the other
+ * name (review 1, R5-9).
+ */
+function copiaDoProgresso(p: Progresso): Progresso {
   return {
     total: p.total,
     organizados: p.organizados,
@@ -583,7 +579,7 @@ function resumirPendente(c: EtiquetaPendente): ResumoChamadaEtiqueta {
         fase: c.fase,
         tentarEmMs: c.tentarEmMs,
         mensagem: c.mensagem,
-        progresso: progressoDe(c.progresso),
+        progresso: copiaDoProgresso(c.progresso),
       };
     case 'escolher-envio':
       return {
@@ -594,20 +590,20 @@ function resumirPendente(c: EtiquetaPendente): ResumoChamadaEtiqueta {
         permiteDropoff: c.permiteDropoff,
         escolhaInvalida: c.escolhaInvalida,
         mensagem: c.mensagem,
-        progresso: progressoDe(c.progresso),
+        progresso: copiaDoProgresso(c.progresso),
       };
     case 'baixar-por-pacote':
       return {
         tipo: 'baixar-por-pacote',
         pacotes: c.pacotes.length,
         mensagem: c.mensagem,
-        progresso: progressoDe(c.progresso),
+        progresso: copiaDoProgresso(c.progresso),
       };
   }
 }
 
 /** The runner's result → the allow-listed summary. */
-export function resumirResultadoEtiqueta(
+function resumirResultadoEtiqueta(
   r: ResultadoEtiqueta,
   modo: VereditoDoModoCli | null,
 ): ResumoChamadaEtiqueta {
@@ -630,6 +626,10 @@ export function resumirResultadoEtiqueta(
         motivo: r.motivo,
         mensagem: mensagemDoMotivoEtiqueta(r.motivo),
         tentarApos: r.tentarApos ?? null,
+        // The runner already gated it; the CLI reads it through the SAME gate
+        // its error describer uses, so a printed code is a token by
+        // construction here too.
+        shopeeCode: r.shopeeCode === undefined ? null : codigoImprimivel(r.shopeeCode),
       };
     case 'nfe-pendente':
       return {
@@ -649,7 +649,7 @@ export function resumirResultadoEtiqueta(
         tipoDocumento:
           r.acao.tipo === 'baixar' ? tipoDocumentoImprimivel(r.acao.tipoDocumento) : null,
         fases: [...r.fases],
-        progresso: progressoDe(r.progresso),
+        progresso: copiaDoProgresso(r.progresso),
         modo,
       };
   }
@@ -745,12 +745,15 @@ export async function rodarEtiquetaCli(
 
   // ---- the ladder: the pedido, raw, then the conta — BEFORE any client ----
   const snap = await pedidoCollection.docRef(deps.db, {}, args.pedidoId).get();
-  const raw = snap.exists ? ((snap.data() ?? {}) as Record<string, unknown>) : null;
-  const alvo = avaliarPedidoParaEtiquetaCli(args.pedidoId, raw);
+  if (!snap.exists) {
+    return { ...base, recusaDoPedido: PEDIDO_NAO_ENCONTRADO, chamadas: [], interrompido: null };
+  }
+  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+  const alvo = avaliarPedidoParaEtiquetaShopee(args.pedidoId, raw);
   if (!alvo.ok) {
     return { ...base, recusaDoPedido: alvo.motivo, chamadas: [], interrompido: null };
   }
-  const conta = avaliarContaParaEtiquetaCli(await readConta(deps.db, alvo.contaId));
+  const conta = avaliarContaParaEtiquetaShopee(await readConta(deps.db, alvo.contaId));
   if (!conta.ok) {
     return { ...base, recusaDoPedido: conta.motivo, chamadas: [], interrompido: null };
   }
@@ -776,6 +779,9 @@ export async function rodarEtiquetaCli(
       interrompido = 'limite-de-chamadas';
       break;
     }
+    // R2-4: a RE-call may follow our own ship; let Shopee's read catch up
+    // (module docblock). Before the budget check, so the wait is charged to it.
+    if (chamadas.length > 0) await deps.dormir(ESPERA_POS_PROGRAMAR_MS);
     const restante = prazo - deps.agora();
     if (args.live && restante <= 0) {
       interrompido = 'sem-tempo';
@@ -880,11 +886,7 @@ function descreverModo(m: VereditoDoModoCli): string {
 }
 
 /** One call's lines — every value read off the summary, nothing recomputed. */
-export function renderizarChamadaEtiqueta(
-  c: ChamadaEtiquetaCli,
-  indice: number,
-  total: number,
-): string[] {
+function renderizarChamadaEtiqueta(c: ChamadaEtiquetaCli, indice: number, total: number): string[] {
   const titulo = [`### chamada ${String(indice + 1)}/${String(total)}`];
   if (c.pacote !== null) {
     titulo.push(`pacote ${String(c.pacote.indice)} de ${String(c.pacote.total)}`);
@@ -933,7 +935,12 @@ export function renderizarChamadaEtiqueta(
       linhas.push(linhaDoProgresso(s.progresso));
       break;
     case 'recusa':
-      linhas.push(rotulo('recusa ', `${s.motivo}: ${s.mensagem}`));
+      linhas.push(
+        rotulo(
+          'recusa ',
+          `${s.motivo}${s.shopeeCode === null ? '' : ` code=${s.shopeeCode}`}: ${s.mensagem}`,
+        ),
+      );
       if (s.tentarApos !== null) {
         linhas.push(rotulo('tentar após ', new Date(s.tentarApos).toISOString()));
       }

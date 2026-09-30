@@ -12,8 +12,12 @@
  *
  * ## ⚠️ What each fold treats as EQUAL, and what must stay DISTINCT
  *
- * `codigoCanonicoShopee` — trim, strip ONE module segment with the package's
- * `shopeeCodeSemPrefixoDeModulo` (which does not trim), trim again:
+ * `codigoCanonicoShopee` — the package's `shopeeCodigoCanonico`, CALLED rather
+ * than re-typed (review 1 of step 15, R5-4: the batch reader in
+ * `@delfrance/integrations-shopee` had grown a second copy of this fold). It
+ * keeps its app name so every classifier's call site stays put. Trim, strip ONE
+ * module segment with `shopeeCodeSemPrefixoDeModulo` (which does not trim),
+ * trim again:
  * - EQUAL: `order.upload_invoice_error\t` ≡ `upload_invoice_error` (the api page
  *   prints its code followed by a TAB), ` logistics.package_already_shipped` ≡
  *   `package_already_shipped`.
@@ -38,19 +42,19 @@
  * Pure and total: no clock, no I/O, no environment — the functions bundle may
  * reach it through `nfe/`.
  */
-import { shopeeCodeSemPrefixoDeModulo } from '@delfrance/integrations-shopee';
+import { shopeeCodigoCanonico } from '@delfrance/integrations-shopee';
 
 /** The template prefix most of Shopee's refusal sentences share. */
 const PREFIXO_DO_ENVELOPE = /^wrong parameters,\s*detail:\s*/i;
 
 /**
  * The envelope code as a refusal table compares it: trimmed, ONE module segment
- * stripped, trimmed again. The VERBATIM code stays the caller's, for its log
- * line; a table never returns this.
+ * stripped, trimmed again — the package's ONE fold, delegated to (the module
+ * docblock). The VERBATIM code stays the caller's, for its log line; a table
+ * never returns this.
  */
 export function codigoCanonicoShopee(code: string): string {
-  const aparado = code.trim();
-  return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
+  return shopeeCodigoCanonico(code);
 }
 
 /**

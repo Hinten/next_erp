@@ -21,13 +21,30 @@
  * by comment. Anything else, `LOGISTICS_PENDING_ARRANGE` (a return token)
  * included, is `desconhecido`, and nothing acts on it.
  *
- * ⚠️ **The invoice is checked FIRST.** An invoice-pending package reads
+ * ⚠️ **The invoice is checked FIRST among the pre-arrange phases** — and only
+ * there (review 1, R4-5). An invoice-pending package reads
  * `LOGISTICS_NOT_START`, so a table consulted before the invoice would answer
- * `nao-pronto` and the operator would never be told the NF-e is what blocks.
+ * `nao-pronto` and the operator would never be told the NF-e is what blocks
+ * (S21). But announcement 1521 returns the pending reason "only when the order
+ * or package is in a shipment-ready status": on a package already ARRANGED
+ * (`REQUEST_CREATED`, `PICKUP_RETRY`, `READY` + arranged) or excluded from the
+ * print by rule 2 (`janela-fechada`, `inelegivel`) a `pending` is stale, and
+ * reading it would turn a printable — or an excluded — package into rule 4's
+ * whole-order `nfe-pendente` plus an NF-e re-drive. An UNKNOWN token keeps the
+ * gate: nothing says it is not a shipment-ready state, and the invoice is the
+ * one fact Shopee did state.
  *
- * ⚠️ **`is_shipment_arranged: null` counts as NOT arranged** (⇒ `programar`).
- * Safe because a duplicate `ship_order` is absorbed as `package_already_shipped`
- * by the classifier, and a package that is not arranged is never printed.
+ * ⚠️ **`is_shipment_arranged: null` counts as NOT arranged** (⇒ `programar`,
+ * S22, chosen — review 1, R2-5). Safe for the label because a duplicate
+ * `ship_order` is absorbed as `package_already_shipped` by the classifier, and
+ * a package that is not arranged is never printed. The price is paid by the
+ * reprint: a `frete.read` caller asking for such a package gets the 403 of the
+ * arrange, since the answer is `programar` and not a document step.
+ *
+ * ⚠️ **`pending_terms` is read through step 7's string reader** (review 1,
+ * R4-2): Shopee zero-fills a string array with `["-"]` on this very page, and a
+ * `"-"` or a blank entry holds nothing. Read raw, one zero-fill would hold
+ * EVERY ready package as `retido`.
  *
  * ⚠️ **`LOGISTICS_PICKUP_RETRY` is arranged**, never re-arranged: the pickup
  * retry is Shopee's (`update_shipping_order`), and the package is still inside
@@ -43,7 +60,7 @@ import type { ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping
 import { textoShopeeUtilizavel } from '../pedidos/orderMapping';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
 import { IMPRIMIR_SEM_RASTREIO, SHOPEE_SHIP_ORDER_PACOTE } from './constantesEtiqueta';
-import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './errosEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 
 /* -------------------------------- the types -------------------------------- */
 
@@ -75,9 +92,15 @@ export interface ObservacaoPacoteEtiqueta {
   readonly fulfillment: string | null;
   /** `is_shipment_arranged`, or `true` once OUR `ship_order` succeeded. */
   readonly arranjado: boolean | null;
-  /** `pending_terms` — non-empty on a READY package means Shopee holds it. */
+  /**
+   * `pending_terms`, as Shopee sent it. A USABLE entry on a READY package
+   * means Shopee holds it; {@link fasePacote} drops the zero-fill itself.
+   */
   readonly termosPendentes: readonly string[];
-  /** `invoice_pending.status` trimmed + lower-cased `=== 'pending'`. */
+  /**
+   * `invoice_pending.status` trimmed + lower-cased `=== 'pending'`. Read only
+   * on the pre-arrange phases (see {@link fasePacote}).
+   */
   readonly nfePendente: boolean;
   /** The tracking number, normalised (`"-"`/`""` ⇒ `null`). */
   readonly rastreio: string | null;
@@ -142,18 +165,46 @@ const FASE_DO_TOKEN = {
 } as const satisfies Record<TokenLogistico, FasePacote>;
 
 /**
- * ONE package's phase. The invoice first; then the token; then, on READY only,
- * `arranjado` and `pending_terms`.
+ * The phases on which `invoice_pending` still decides (R4-5): the pre-arrange
+ * ones — `nao-pronto` and a READY package nobody arranged, BEFORE its
+ * `pending_terms` are read — plus an unknown token. Every other phase ignores
+ * the flag (see the module docblock).
+ */
+const FASES_DO_PORTAO_DA_NFE: ReadonlySet<FasePacote> = new Set<FasePacote>([
+  'nao-pronto',
+  'programar',
+  'desconhecido',
+]);
+
+/**
+ * A `pending_terms` entry that says something: step 7's string reader, so
+ * `"-"`, `""` and blanks hold nothing (R4-2). Any other string holds — a term
+ * we do not know is still Shopee holding the package.
+ */
+function temTermoPendente(termos: readonly string[]): boolean {
+  return termos.some((t) => textoShopeeUtilizavel(t) !== null);
+}
+
+/**
+ * ONE package's phase. The token first — READY refined by `arranjado`; then
+ * the invoice, on the pre-arrange phases only; then, on a READY package nobody
+ * arranged, its usable `pending_terms`.
+ *
+ * ⚠️ READY with `arranjado: null` answers `programar` (S22): a duplicate ship is
+ * absorbed as `package_already_shipped`, and a `frete.read` caller gets the
+ * arrange's 403 on it rather than a reprint (R2-5).
  */
 export function fasePacote(p: ObservacaoPacoteEtiqueta): FasePacote {
-  if (p.nfePendente) return 'nfe-pendente';
   const token = p.fulfillment;
   // `Object.hasOwn`, so `'constructor'` and friends answer `desconhecido`.
-  if (token === null || !Object.hasOwn(FASE_DO_TOKEN, token)) return 'desconhecido';
-  const fase = FASE_DO_TOKEN[token as TokenLogistico];
+  const doToken: FasePacote =
+    token === null || !Object.hasOwn(FASE_DO_TOKEN, token)
+      ? 'desconhecido'
+      : FASE_DO_TOKEN[token as TokenLogistico];
+  const fase: FasePacote = doToken === 'programar' && p.arranjado === true ? 'arranjado' : doToken;
+  if (p.nfePendente && FASES_DO_PORTAO_DA_NFE.has(fase)) return 'nfe-pendente';
   if (fase !== 'programar') return fase;
-  if (p.arranjado === true) return 'arranjado';
-  return p.termosPendentes.length > 0 ? 'retido' : 'programar';
+  return temTermoPendente(p.termosPendentes) ? 'retido' : 'programar';
 }
 
 /* ------------------------------ download groups ----------------------------- */
@@ -220,7 +271,8 @@ function observada(
  *     `pacote-inexistente`.
  *  2. the working set: `corpo.pacote` alone, or every package of the order;
  *     minus `janela-fechada` and `inelegivel` (a package past the window is
- *     excluded from a whole-order print). Empty ⇒ `janela-fechada` when any
+ *     excluded from a whole-order print — and its stale `invoice_pending`
+ *     never reaches rule 4, R4-5). Empty ⇒ `janela-fechada` when any
  *     package was past the window, else `pacote-inelegivel`.
  *  3. any `desconhecido` — an unknown token, or a listed package Shopee gave
  *     no detail row for ⇒ `status-desconhecido`. Never act on the unknown.
@@ -250,14 +302,13 @@ function observada(
  * `shipping_document_type`, so a group whose packages were given different
  * types cannot be merged into one file and is downloaded per package.
  *
- * `_nowMs` is the frozen seam's; no rule reads the clock since the 1-hour
- * rule was removed.
+ * Three parameters, no clock: the frozen seam's fourth (`nowMs`) lost its only
+ * reader with the 1-hour rule and was dropped (review 1, R5-7).
  */
 export function decidirProximaAcao(
   o: ObservacaoOrdemEtiqueta,
   ps: readonly ObservacaoPacoteEtiqueta[],
   corpo: { readonly pacote: string | null },
-  _nowMs: number,
 ): AcaoEtiqueta {
   // ---- 1. the order ----
   if (o.fbs) return recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoFbs);

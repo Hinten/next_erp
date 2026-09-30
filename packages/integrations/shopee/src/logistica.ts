@@ -280,9 +280,10 @@ function ondeEsta(posicao: number | undefined): string {
  * non-blank string.
  *
  * ⚠️ It echoes NO value — only the field, the position and the length. See the
- * module header.
+ * module header. Private to this module: every guard below calls it, and no
+ * other module ever did (review 1 of step 15, R5-9).
  */
-export function assertIdLogistico(
+function assertIdLogistico(
   nome: string,
   valor: unknown,
   posicao?: number,

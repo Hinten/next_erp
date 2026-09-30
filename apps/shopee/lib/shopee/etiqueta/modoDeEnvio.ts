@@ -74,7 +74,7 @@ import {
 
 import { FUSO_PRAZO_DESPACHO_SHOPEE } from '../pedidos/orderFreteMapping';
 import { segundosShopeeUtilizaveis, textoShopeeUtilizavel } from '../pedidos/orderMapping';
-import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './errosEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 
 /* -------------------------------- the types -------------------------------- */
 
