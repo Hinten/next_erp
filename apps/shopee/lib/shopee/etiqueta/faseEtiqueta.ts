@@ -64,8 +64,17 @@ import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiq
 
 /* -------------------------------- the types -------------------------------- */
 
-/** Where a call that answers 202 stopped — the `fase` of the pending body. */
+/**
+ * Where a call that answers 202 stopped — the `fase` of the pending body.
+ *
+ * `consultando` is the NEUTRAL phase of a read (review 2, F5): the order and
+ * package reads open EVERY call, a reprint's and a document poll's included,
+ * so a read that drops or runs out of budget must not report `programando` —
+ * the web toasts a phase change, and "Organizando o envio" after "a Shopee está
+ * gerando a etiqueta" reads to an operator as a second arrange.
+ */
 export type FaseEtiqueta =
+  | 'consultando'
   | 'programando'
   | 'aguardando-rastreio'
   | 'gerando-documento'

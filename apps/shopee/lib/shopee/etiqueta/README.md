@@ -139,10 +139,14 @@ Shopee's sentence is never logged or answered.
 
 **The 202 body** has three shapes, told apart by `acao`:
 
-- `aguardar` — a `fase` (`programando`, `aguardando-rastreio`,
+- `aguardar` — a `fase` (`consultando`, `programando`, `aguardando-rastreio`,
   `gerando-documento`, `baixando`, `renovando-credencial`,
   `limite-de-requisicoes`), the `tentarEmMs` to wait before the next call, and
-  the phase's frozen sentence;
+  the phase's frozen sentence. `consultando` ("Consultando a Shopee…") is the
+  NEUTRAL phase of the order/package read that opens every call (review 2,
+  F5): a read that drops or runs out of budget never reports `programando`,
+  which after "a Shopee está gerando a etiqueta" would read as a second
+  arrange;
 - `escolher-envio` — ONE package's shipping-mode question (§6);
 - `baixar-por-pacote` — the packages go by different couriers, so each is
   downloaded on its own call, with `pacote` (§10).
@@ -280,9 +284,20 @@ folds them.
   ⇒ `sem-endereco-de-coleta`. A slot past its cutoff at the ship ⇒
   `reescolher-envio`, which asks again.
 
-**It asks only when Shopee needs a choice**: more than one eligible address,
-more than one slot, or both modes offered (`permiteDropoff: true`). Otherwise
-it decides. The `recommended` flag only labels a slot in the question; it never
+**It offers only what the server can ship** (review 2, F2). Each side is judged
+ALONE first: a pickup that asks for an item we cannot fill, or has no eligible
+address, is not offered (`enderecos: []`); the dropoff is offered
+(`permiteDropoff: true`) only when it would yield a body, so an
+`agencia-precisa-escolha` or `modo-nao-suportado` dropoff is never an option.
+Before this, the question offered a side the answer then refused with a 409,
+and the next click asked the same question again.
+
+**Then it asks only when a choice is left**: both sides buildable ⇒ ask; exactly
+ONE ⇒ decide it (the pickup still asks when it has more than one eligible
+address, or more than one slot); NONE ⇒ refuse with the motivo of the side
+Shopee offered — the dropoff's when it offered both. So every question carries
+at least one option the server can ship, and one with no address always offers
+the dropoff. The `recommended` flag only labels a slot in the question; it never
 decides one. The question's labels are built from the SELLER's own address row
 and the slot's date (in `America/Sao_Paulo`, explicitly); no buyer datum is on
 that page.
@@ -291,8 +306,10 @@ that page.
 `String(address_id) === enderecoId`, never `Number(enderecoId)` (which would
 accept `'0123'` or `'1.23e2'`), and `horarioId` verbatim. An answer that no
 longer matches is RE-ASKED with `escolhaInvalida: true`, never shipped and
-never replaced by the one option left. An answer names its package, and one
-given for a sibling package is no answer for this one.
+never replaced by the one option left — and "matches" is against what this read
+OFFERS, so an answer naming a side it cannot build is re-asked too. An answer
+names its package, and one given for a sibling package is no answer for this
+one.
 
 ⚠️ **`ship_order` is irreversible and NOT idempotent.** It goes out at most once
 per package per call, plus exactly ONE documented re-send: Shopee refused the
@@ -405,6 +422,7 @@ budget stop answers `tentarEmMs: 0`.
 | a burst rate limit                                    | `limite-de-requisicoes` | `max(Retry-After, TENTAR_EM_LIMITE_MS)` (10 s) |
 | another instance holds the token-refresh lease        | `renovando-credencial`  | `TENTAR_EM_CREDENCIAL_MS` (2 s)                |
 | Shopee's own "not now" (allocating, a lock, a hiccup) | the operation's         | `TENTAR_EM_SHOPEE_MS` (10 s)                   |
+| … on the order/package READ, or its budget stop       | `consultando`           | `TENTAR_EM_SHOPEE_MS`, or `0` at the budget    |
 | an unknown `ship_order` outcome                       | `programando`           | `ESPERA_POS_PROGRAMAR_MS`                      |
 | an empty download, once per call                      | `baixando`              | `INTERVALO_DOCUMENTO_MS`                       |
 

@@ -436,13 +436,213 @@ describe('escolherModoDeEnvio — a escolha do modo', () => {
     });
   });
 
-  it('dropoff escolhido com várias agências ⇒ recusa agencia-precisa-escolha', () => {
+  it('dropoff escolhido com várias agências ⇒ a postagem NÃO é oferecida: pergunta de novo, só com o pickup (review 2, F2)', () => {
+    // Before F2 this answer was a 409 `agencia-precisa-escolha` — for an option
+    // the question itself had offered. The dropoff is not buildable here, so a
+    // dropoff answer no longer matches anything this read offers: it is stale,
+    // re-asked with the one side that CAN ship — never shipped as the pickup
+    // in silence.
     const p = parametro({
       info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
       pickup: { address_list: [endereco(5, [COLETA])] },
       dropoff: { branch_list: [{ branch_id: 1 }, { branch_id: 2 }] },
     });
+    expect(escolherModoDeEnvio(p, ESCOLHA_POSTAGEM)).toStrictEqual({
+      tipo: 'pergunta',
+      enderecos: [
+        {
+          id: '5',
+          rotulo: 'Rua do Vendedor, 100, Centro, Cidade do Vendedor, SP, 00000-000',
+          principal: false,
+          horarios: [],
+        },
+      ],
+      permiteDropoff: false,
+      escolhaInvalida: true,
+    });
+  });
+
+  it('dropoff escolhido com várias agências e NADA para perguntar ⇒ a recusa da postagem', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
+      pickup: { address_list: [endereco(5, [PADRAO])] },
+      dropoff: { branch_list: [{ branch_id: 1 }, { branch_id: 2 }] },
+    });
     expect(escolherModoDeEnvio(p, ESCOLHA_POSTAGEM)).toStrictEqual(recusa('agenciaPrecisaEscolha'));
+  });
+
+  it('pickup escolhido num pickup que não se constrói ⇒ pergunta de novo, só com a postagem', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id', 'tracking_number'], dropoff: [] },
+      pickup: { address_list: [endereco(5, [COLETA]), endereco(6, [COLETA])] },
+    });
+    expect(escolherModoDeEnvio(p, escolhaColeta('5', null))).toStrictEqual({
+      tipo: 'pergunta',
+      enderecos: [],
+      permiteDropoff: true,
+      escolhaInvalida: true,
+    });
+  });
+});
+
+describe('escolherModoDeEnvio — só se oferece o que o servidor consegue enviar (review 2, F2)', () => {
+  const agencia = (id: number) => ({ branch_id: id, city: 'Cidade', address: 'Agência' });
+
+  it('sonda (a): um endereço sem horário + 2 agências ⇒ o PICKUP, decidido sem pergunta', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
+      pickup: { address_list: [endereco(5, [COLETA])] },
+      dropoff: { branch_list: [agencia(31), agencia(32)] },
+    });
+    expect(escolherModoDeEnvio(p, null)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'pickup', pickup: { addressId: 5 } },
+    });
+  });
+
+  it('sonda (b): um pickup que pede tracking_number + dropoff [] ⇒ a POSTAGEM, decidida sem pergunta', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id', 'tracking_number'], dropoff: [] },
+      pickup: { address_list: [endereco(5, [COLETA]), endereco(6, [COLETA])] },
+    });
+    expect(escolherModoDeEnvio(p, null)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'dropoff', dropoff: {} },
+    });
+  });
+
+  it('sem endereço de coleta elegível + dropoff [] ⇒ a POSTAGEM, nunca uma pergunta sem endereço', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: [] },
+      pickup: { address_list: [endereco(5, [PADRAO])] },
+    });
+    expect(escolherModoDeEnvio(p, null)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'dropoff', dropoff: {} },
+    });
+  });
+
+  it('um pickup que ainda PEDE escolha (2 endereços) + uma postagem que não se constrói ⇒ pergunta SEM postagem', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
+      pickup: { address_list: [endereco(5, [COLETA]), endereco(6, [COLETA])] },
+      dropoff: { branch_list: [agencia(31), agencia(32)] },
+    });
+    const modo = escolherModoDeEnvio(p, null);
+    expect(modo).toMatchObject({ tipo: 'pergunta', permiteDropoff: false, escolhaInvalida: false });
+    if (modo.tipo !== 'pergunta') throw new Error('esperava pergunta');
+    expect(modo.enderecos.map((e) => e.id)).toStrictEqual(['5', '6']);
+  });
+
+  it('near-miss: os DOIS construíveis (1 endereço, 1 agência) ⇒ ainda uma pergunta, com os dois', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
+      pickup: { address_list: [endereco(5, [COLETA])] },
+      dropoff: { branch_list: [agencia(31)] },
+    });
+    const modo = escolherModoDeEnvio(p, null);
+    expect(modo).toMatchObject({ tipo: 'pergunta', permiteDropoff: true, escolhaInvalida: false });
+    if (modo.tipo !== 'pergunta') throw new Error('esperava pergunta');
+    expect(modo.enderecos.map((e) => e.id)).toStrictEqual(['5']);
+    // And each offered option ships as answered.
+    expect(escolherModoDeEnvio(p, ESCOLHA_POSTAGEM)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'dropoff', dropoff: { branchId: 31 } },
+    });
+    expect(escolherModoDeEnvio(p, escolhaColeta('5', null))).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'pickup', pickup: { addressId: 5 } },
+    });
+  });
+
+  it.each([
+    [
+      'pickup pede tracking_number + várias agências',
+      { pickup: ['address_id', 'tracking_number'], dropoff: ['branch_id'] },
+      [endereco(5, [COLETA])],
+      [agencia(31), agencia(32)],
+      'agenciaPrecisaEscolha',
+    ],
+    [
+      'sem endereço de coleta + dropoff pedindo sender_real_name',
+      { pickup: ['address_id'], dropoff: ['sender_real_name'] },
+      [endereco(5, [PADRAO])],
+      [agencia(31)],
+      'modoNaoSuportado',
+    ],
+  ] as const)(
+    'nenhum construível (%s) ⇒ a recusa da POSTAGEM, a preferida quando os dois vieram',
+    (_nome, info_needed, enderecos, agencias, chave) => {
+      const p = parametro({
+        info_needed,
+        pickup: { address_list: enderecos },
+        dropoff: { branch_list: agencias },
+      });
+      expect(escolherModoDeEnvio(p, null)).toStrictEqual(recusa(chave));
+      // A stale answer on either side meets the same refusal — never a question.
+      expect(escolherModoDeEnvio(p, ESCOLHA_POSTAGEM)).toStrictEqual(recusa(chave));
+      expect(escolherModoDeEnvio(p, escolhaColeta('5', null))).toStrictEqual(recusa(chave));
+    },
+  );
+
+  it('nenhum construível, só UM lado oferecido ⇒ a recusa DESSE lado', () => {
+    expect(
+      escolherModoDeEnvio(
+        soColeta([endereco(5, [COLETA])], ['address_id', 'tracking_number']),
+        null,
+      ),
+    ).toStrictEqual(recusa('modoNaoSuportado'));
+    expect(
+      escolherModoDeEnvio(
+        parametro({
+          info_needed: { dropoff: ['branch_id'] },
+          dropoff: { branch_list: [agencia(31), agencia(32)] },
+        }),
+        null,
+      ),
+    ).toStrictEqual(recusa('agenciaPrecisaEscolha'));
+  });
+
+  it('invariante: toda pergunta carrega ao menos UMA opção que o servidor envia', () => {
+    const itensColeta = [['address_id'], ['address_id', 'tracking_number'], null] as const;
+    const itensPostagem = [[], ['branch_id'], ['sender_real_name'], null] as const;
+    const enderecosDoMundo = [
+      [],
+      [endereco(5, [COLETA])],
+      [endereco(5, [COLETA]), endereco(6, [COLETA])],
+    ];
+    const agenciasDoMundo = [[agencia(31)], [agencia(31), agencia(32)]];
+    const respostas: (EscolhaDeEnvio | null)[] = [null, ESCOLHA_POSTAGEM, escolhaColeta('9', null)];
+    let perguntas = 0;
+    for (const pickup of itensColeta) {
+      for (const dropoff of itensPostagem) {
+        for (const address_list of enderecosDoMundo) {
+          for (const branch_list of agenciasDoMundo) {
+            const p = parametro({
+              info_needed: { pickup, dropoff },
+              pickup: { address_list },
+              dropoff: { branch_list },
+            });
+            for (const escolha of respostas) {
+              const modo = escolherModoDeEnvio(p, escolha);
+              if (modo.tipo !== 'pergunta') continue;
+              perguntas += 1;
+              // The web's `.refine`: no address ⇒ the dropoff is offered.
+              expect(modo.enderecos.length > 0 || modo.permiteDropoff).toBe(true);
+              // And every offered option ships when answered.
+              if (modo.permiteDropoff) {
+                expect(escolherModoDeEnvio(p, ESCOLHA_POSTAGEM).tipo).toBe('corpo');
+              }
+              for (const e of modo.enderecos) {
+                const h = e.horarios[0]?.id ?? null;
+                expect(escolherModoDeEnvio(p, escolhaColeta(e.id, h)).tipo).toBe('corpo');
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(perguntas).toBeGreaterThan(0); // the sweep really reached questions
   });
 });
 

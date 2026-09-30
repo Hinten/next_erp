@@ -963,10 +963,13 @@ describe('executarEtiquetaShopee — uma leitura INCOMPLETA nunca decide (M1)', 
       mundo([pronto(P1)], { errosDoPacote: [queda(), queda(), queda(), queda(), queda()] }),
     );
     const r = pendente(await s.rodar());
+    // A READ's phase (review 2, F5): `consultando`, never `programando` — this
+    // package was already arranged, and nothing here is about to arrange it.
     expect(r).toMatchObject({
       acao: 'aguardar',
-      fase: 'programando',
+      fase: 'consultando',
       tentarEmMs: TENTAR_EM_SHOPEE_MS,
+      mensagem: MENSAGEM_DA_FASE.consultando,
     });
     // Read at 0, 10 and 20 s; the wait to 30 s does not fit.
     expect(s.getPackageDetail).toHaveBeenCalledTimes(3);
@@ -1030,6 +1033,76 @@ describe('executarEtiquetaShopee — uma leitura INCOMPLETA nunca decide (M1)', 
       motivo: MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido,
     });
     expect(s.getPackageDetail).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ------------------ F5: a read that drops is `consultando` -------------------- */
+
+describe('executarEtiquetaShopee — uma leitura que cai é consultando, nunca programando (review 2, F5)', () => {
+  const CONSULTANDO = {
+    acao: 'aguardar',
+    fase: 'consultando',
+    mensagem: MENSAGEM_DA_FASE.consultando,
+  } as const;
+
+  it('o cenário da review: gerando-documento, e a chamada seguinte perde o get_order_detail ⇒ consultando', async () => {
+    const s = montar(mundo([pronto(P1, { statusDoDocumento: ['PROCESSING'] })]));
+    expect(pendente(await s.rodar())).toMatchObject({
+      acao: 'aguardar',
+      fase: 'gerando-documento',
+    });
+    s.getOrderDetail.mockRejectedValue(new ShopeeNetworkError('queda'));
+    const r = pendente(await s.rodar());
+    expect(r).toMatchObject({ ...CONSULTANDO, tentarEmMs: TENTAR_EM_SHOPEE_MS });
+    expect(r.fase).not.toBe('programando');
+    expect(s.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('o orçamento acaba ANTES da releitura de um re-derive (o semTempo do lerTudo) ⇒ consultando, tentarEmMs 0', async () => {
+    const s = montar(mundo([pronto(P1)]));
+    s.getPackageDetail.mockImplementationOnce(async () => {
+      s.relogio.agora = T0 + ORCAMENTO_ETIQUETA_MS;
+      throw envelope('logistics.package_number_not_found', 'not found');
+    });
+    expect(pendente(await s.rodar())).toMatchObject({ ...CONSULTANDO, tentarEmMs: 0 });
+    // The re-derive's read never started.
+    expect(s.getOrderDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it('o orçamento acaba entre o pedido e os pacotes da releitura ⇒ consultando, tentarEmMs 0', async () => {
+    const s = montar(mundo([pronto(P1)]));
+    const detalhe = s.getOrderDetail.getMockImplementation();
+    if (detalhe === undefined) throw new Error('sem implementação');
+    s.getOrderDetail.mockImplementationOnce(detalhe).mockImplementationOnce(async (p) => {
+      s.relogio.agora = T0 + ORCAMENTO_ETIQUETA_MS;
+      return detalhe(p);
+    });
+    s.getPackageDetail.mockRejectedValueOnce(
+      envelope('logistics.package_number_not_found', 'not found'),
+    );
+    expect(pendente(await s.rodar())).toMatchObject({ ...CONSULTANDO, tentarEmMs: 0 });
+    expect(s.getOrderDetail).toHaveBeenCalledTimes(2);
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it('o get_order_detail adiantado DUAS vezes (um re-derive já gasto) ⇒ espera consultando', async () => {
+    const s = montar(mundo([pronto(P1)]));
+    const adiantado = () => envelope('logistics.tracking_number_invalid', 'invalid');
+    s.getOrderDetail.mockRejectedValueOnce(adiantado()).mockRejectedValueOnce(adiantado());
+    expect(pendente(await s.rodar())).toMatchObject({
+      ...CONSULTANDO,
+      tentarEmMs: TENTAR_EM_SHOPEE_MS,
+    });
+    expect(s.getPackageDetail).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: um desfecho DESCONHECIDO do ship continua programando (é o arranjo, não uma leitura)', async () => {
+    const s = montar(mundo([pacote(P1)], { errosDoShip: [new ShopeeNetworkError('queda')] }));
+    expect(pendente(await s.rodar())).toMatchObject({
+      acao: 'aguardar',
+      fase: 'programando',
+      mensagem: MENSAGEM_DA_FASE.programando,
+    });
   });
 });
 

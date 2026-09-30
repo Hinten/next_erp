@@ -60,10 +60,13 @@ function desconhecida(shopeeCode: string) {
   return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida, shopeeCode };
 }
 
-/** Every operation but the ship, with the phase its waits report. */
+/**
+ * Every operation but the ship, with the phase its waits report. The two reads
+ * that open every call report the neutral `consultando` (review 2, F5).
+ */
 const FASE_FORA_DO_SHIP: readonly [OperacaoEtiqueta, string][] = [
-  ['detalhe-pedido', 'programando'],
-  ['detalhe-pacote', 'programando'],
+  ['detalhe-pedido', 'consultando'],
+  ['detalhe-pacote', 'consultando'],
   ['parametro-envio', 'programando'],
   ['rastreio', 'aguardando-rastreio'],
   ['parametro-documento', 'gerando-documento'],
@@ -163,6 +166,30 @@ describe('classificarErroDeEtiqueta — as classes, antes de qualquer código', 
       }
     },
   );
+
+  it('review 2, F5: uma LEITURA que cai (rede, HTTP, soluço, alocando) ⇒ consultando, NUNCA programando', () => {
+    const quedas = [
+      new ShopeeNetworkError('reset'),
+      new ShopeeHttpError('x', { httpStatus: 502, path: CAMINHO }),
+      doEnvelope('logistics.error_server', 'System error, please try again later.'),
+      doEnvelope(
+        'logistics.error_param',
+        'The order is being allocated, please wait until the allocate is completed.',
+      ),
+    ];
+    for (const op of ['detalhe-pedido', 'detalhe-pacote'] as const) {
+      for (const err of quedas) {
+        expect(classificar(op, err)).toMatchObject({ tipo: 'aguardar', fase: 'consultando' });
+      }
+    }
+    // Near-miss: the arrange's OWN read keeps `programando` — it is the arrange.
+    for (const err of quedas) {
+      expect(classificar('parametro-envio', err)).toMatchObject({
+        tipo: 'aguardar',
+        fase: 'programando',
+      });
+    }
+  });
 });
 
 describe('classificarErroDeEtiqueta — E0, os limites', () => {

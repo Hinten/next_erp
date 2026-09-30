@@ -614,12 +614,16 @@ class ChamadaDeEtiqueta {
    * ⚠️ The read counts as done only when EVERY lot was folded in (M1). The
    * flag drops BEFORE the reads, so a `rederivar` reached from inside them —
    * which raises it again — is never overwritten; a hole raises it too.
+   *
+   * ⚠️ Every stop in here reports `consultando` (review 2, F5): this read opens
+   * a reprint and a document poll as much as an arrange, and `programando`
+   * would read to the operator as a second arrange.
    */
   private async lerTudo(): Promise<Passo> {
     const isento = this.primeiraLeitura;
     this.primeiraLeitura = false;
     if (!isento) {
-      const parar = this.semTempo('programando');
+      const parar = this.semTempo('consultando');
       if (parar !== null) return parar;
     }
     this.precisaLerTudo = false;
@@ -635,7 +639,7 @@ class ChamadaDeEtiqueta {
     } catch (err: unknown) {
       // Nothing was read: whatever the verdict, the next iteration reads again.
       this.precisaLerTudo = true;
-      const passo = await this.tratarErro('detalhe-pedido', err, 'programando', []);
+      const passo = await this.tratarErro('detalhe-pedido', err, 'consultando', []);
       if (passo === null) throw err;
       return passo;
     }
@@ -649,7 +653,7 @@ class ChamadaDeEtiqueta {
       pacotes: [...new Set(numeros)],
     };
 
-    const leitura = await this.lerPacotes(this.ordem.pacotes, 'programando', isento);
+    const leitura = await this.lerPacotes(this.ordem.pacotes, 'consultando', isento);
     if (leitura.lidos.length < this.ordem.pacotes.length) this.precisaLerTudo = true;
     return leitura.passo;
   }
