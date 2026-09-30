@@ -36,10 +36,17 @@
  * id → 6. no OTHER key: the task payload is BUILT BY NAME, so a body `fase` (or
  * a counter) is refused here rather than silently dropped → 7. ONE clock read.
  *
- * Then the gates, in the handler's own order (ownership BEFORE the NF-e — the
+ * ## The re-drive — `nfe/reenvioNfe.ts`, shared with the label route
+ *
+ * Everything after the clock read is `reenviarNfeDoPedidoShopee` (step 15,
+ * #1523, extracted it VERBATIM so the label route runs the same ladder); this
+ * route maps its union to the HTTP answers below, and its unedited
+ * `route.test.ts` is the proof the move changed nothing.
+ *
+ * The gates run in the handler's own order (ownership BEFORE the NF-e — the
  * reconcile's R-n), each through the SAME pure predicate the trigger and the
- * handler run, answering 409 `SHOPEE_NFE_NAO_ELEGIVEL` with the motivo and its
- * one sentence from `nfe/errosNfe.ts`:
+ * handler run; `nao-elegivel` answers 409 `SHOPEE_NFE_NAO_ELEGIVEL` with the
+ * motivo and its one sentence from `nfe/errosNfe.ts`:
  *
  * 8. the pedido, raw, and `avaliarPedidoParaNfeShopee` — the id must recompute
  *    from `(conta, order_sn)`; `emissao-bloqueada` refuses too;
@@ -75,43 +82,23 @@
  *
  * ## Errors
  *
- * `ShopeeNfeUploadTasksDisabledError` (the NF-e queue's OWN valve class) ⇒ 503
- * `SHOPEE_NFE_ENFILEIRAMENTO_DESLIGADO` — there is no sweep behind the queue,
- * so the caller must see the outage. Anything else rethrows (rule 6): a
- * Firestore failure on a read, a missing region, a payload the schema refuses.
+ * `ShopeeNfeUploadTasksDisabledError` (the NF-e queue's OWN valve class) ⇒
+ * `desligado` ⇒ 503 `SHOPEE_NFE_ENFILEIRAMENTO_DESLIGADO` — there is no sweep
+ * behind the queue, so the caller must see the outage. Anything else rethrows
+ * out of the re-drive (rule 6): a Firestore failure on a read, a missing region,
+ * a payload the schema refuses.
  *
  * ⚠️ PII: no response or log line carries the access key, the XML, the order
  * number or Shopee's text — the route never reads the key, and it has no
  * Shopee text to carry.
  */
 import { NextResponse } from 'next/server';
-import { coerceToMillis } from '@delfrance/core/datetime';
-import { nfev4Collection, pedidoCollection } from '@delfrance/data/admin/collections';
-import { decideNfeUploadDispatch } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { naoDocId } from '@/lib/shopee/anuncios/corpoPublicacao';
-import { readConta } from '@/lib/shopee/core/contaCache';
-import { atrasoSerproS } from '@/lib/shopee/nfe/constantesNfe';
-import {
-  MOTIVO_NFE_SHOPEE,
-  ShopeeNfeUploadTasksDisabledError,
-  mensagemDoMotivoNfe,
-  type MotivoNfeShopee,
-} from '@/lib/shopee/nfe/errosNfe';
-import { finalidadeDoProc } from '@/lib/shopee/nfe/notaNaShopee';
-import {
-  avaliarContaParaNfeShopee,
-  avaliarPedidoParaNfeShopee,
-  escolherNfeParaEnvioShopee,
-} from '@/lib/shopee/nfe/pedidoNfe';
-import { createShopeeNfeUploadScheduler } from '@/lib/shopee/nfe/shopeeNfeUploadTasks';
-import {
-  FASE_NFE_SHOPEE,
-  type OpcoesDeEnfileiramentoNfe,
-  type TarefaNfeShopee,
-} from '@/lib/shopee/nfe/tarefaNfe';
+import { mensagemDoMotivoNfe, type MotivoNfeShopee } from '@/lib/shopee/nfe/errosNfe';
+import { reenviarNfeDoPedidoShopee } from '@/lib/shopee/nfe/reenvioNfe';
 import { MSG_BODY_INVALIDO, lerJsonDoCorpo } from '@/lib/shopee/produtos/corpoImportacao';
 
 export const dynamic = 'force-dynamic';
@@ -166,12 +153,6 @@ function corpoInvalido(error: string): NextResponse {
   return NextResponse.json({ error }, { status: 400 });
 }
 
-/** The slot the route enqueues: the document id and its raw data. */
-interface SlotNfe {
-  readonly nfeId: string;
-  readonly raw: Record<string, unknown>;
-}
-
 export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.pedido.write);
   if ('error' in auth) return auth.error;
@@ -205,85 +186,29 @@ export async function POST(req: Request): Promise<NextResponse> {
   const nowMs = Date.now();
   const db = getAdminFirestore();
 
-  // ---- the pedido, raw, and the ownership proof (before any NF-e read). ----
-  const pedidoSnap = await pedidoCollection.docRef(db, {}, pedidoId).get();
-  const pedido = pedidoSnap.exists ? ((pedidoSnap.data() ?? {}) as Record<string, unknown>) : null;
-  const dono = avaliarPedidoParaNfeShopee(pedidoId, pedido);
-  if (dono.acao === 'ignorar') return naoElegivel(dono.motivo);
-
-  // ---- the conta — the cached reader, never the context loader. ----
-  const conta = avaliarContaParaNfeShopee(await readConta(db, dono.contaId));
-  if (!conta.ok) return naoElegivel(conta.motivo);
-
-  // ---- the slot. ----
-  let slot: SlotNfe;
-  if (nfeIdPedido !== null) {
-    const nfeSnap = await nfev4Collection.docRef(db, { pedidoId }, nfeIdPedido).get();
-    if (!nfeSnap.exists) {
+  const r = await reenviarNfeDoPedidoShopee(db, { pedidoId, nfeId: nfeIdPedido, nowMs });
+  switch (r.tipo) {
+    case 'enfileirado':
+      return NextResponse.json(
+        { enfileirado: true, pedidoId, nfeId: r.nfeId, atrasoSegundos: r.atrasoSegundos },
+        { status: 202 },
+      );
+    case 'nao-elegivel':
+      return naoElegivel(r.motivo);
+    case 'nfe-nao-encontrada':
       return NextResponse.json(
         { error: MSG_NFE_NAO_ENCONTRADA, code: CODIGO_NFE_NAO_ENCONTRADA },
         { status: 404 },
       );
-    }
-    const raw = (nfeSnap.data() ?? {}) as Record<string, unknown>;
-    // The LEVEL predicate, its reason verbatim — never the transition helper.
-    const pronta = decideNfeUploadDispatch(undefined, raw);
-    if (pronta.action === 'skip') return naoElegivel(pronta.reason);
-    // The sale gate. A proc the predicate calls ready is a string; an
-    // ILLEGIBLE one goes on, for the handler's aviso.
-    const xml = typeof raw.xml_nfe_proc === 'string' ? raw.xml_nfe_proc : '';
-    if (finalidadeDoProc(xml) === 'outra') return naoElegivel(MOTIVO_NFE_SHOPEE.nfeNaoEDeVenda);
-    slot = { nfeId: nfeIdPedido, raw };
-  } else {
-    const lista = await nfev4Collection.ref(db, { pedidoId }).get();
-    const docs = lista.docs.map((doc) => ({
-      id: doc.id,
-      raw: (doc.data() ?? {}) as Record<string, unknown>,
-    }));
-    const escolha = escolherNfeParaEnvioShopee(docs);
-    if (!('nfeId' in escolha)) return naoElegivel(escolha.motivo);
-    const escolhido = docs.find((d) => d.id === escolha.nfeId);
-    // Unreachable: the rule only answers ids it was handed. A 409 here would
-    // dress a defect up as an eligibility answer, so it is a 500.
-    if (escolhido === undefined) {
-      throw new Error('invariante: a regra de escolha devolveu uma NF-e fora da listagem.');
-    }
-    slot = { nfeId: escolhido.id, raw: escolhido.raw };
-  }
-
-  // ---- the SERPRO wait: a KNOWN instant only; zero ⇒ no option at all. ----
-  const autorizadaMs = coerceToMillis(slot.raw.data_autorizacao);
-  const atrasoSegundos = autorizadaMs === null ? 0 : atrasoSerproS(autorizadaMs, nowMs);
-  const opcoes: OpcoesDeEnfileiramentoNfe | undefined =
-    atrasoSegundos > 0 ? { scheduleDelaySeconds: atrasoSegundos } : undefined;
-
-  // BUILT BY NAME: the upload phase, every ledger at zero.
-  const tarefa: TarefaNfeShopee = {
-    pedidoId,
-    nfeId: slot.nfeId,
-    fase: FASE_NFE_SHOPEE.envio,
-    adiamentosSerpro: 0,
-    pausas: 0,
-    reverificacoes: 0,
-  };
-
-  try {
-    const agendador = createShopeeNfeUploadScheduler();
-    await (opcoes === undefined ? agendador.enqueue(tarefa) : agendador.enqueue(tarefa, opcoes));
-  } catch (err) {
-    // The NF-e queue's OWN valve class — never the channel's shared one, which
-    // a per-conta containment would swallow. No sweep stands behind this queue.
-    if (err instanceof ShopeeNfeUploadTasksDisabledError) {
+    case 'desligado':
       return NextResponse.json(
         { error: MSG_ENFILEIRAMENTO_DESLIGADO, code: CODIGO_ENFILEIRAMENTO_DESLIGADO },
         { status: 503 },
       );
+    default: {
+      // A fifth arm stops compiling here instead of falling through to a 2xx.
+      const nunca: never = r;
+      return nunca;
     }
-    throw err;
   }
-
-  return NextResponse.json(
-    { enfileirado: true, pedidoId, nfeId: slot.nfeId, atrasoSegundos },
-    { status: 202 },
-  );
 }

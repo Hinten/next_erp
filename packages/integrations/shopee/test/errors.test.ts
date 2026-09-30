@@ -8,6 +8,7 @@ import {
   SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeApiPartialError,
+  ShopeeArquivoVazioError,
   ShopeeConfigError,
   ShopeeError,
   type ShopeeErrorKind,
@@ -697,5 +698,36 @@ describe('ShopeeApiError.providerMessage', () => {
       parsed: {},
     });
     expect(parcial.providerMessage).toBe('File error.');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       `ShopeeArquivoVazioError` — o 2xx vazio de um download (passo 15)       */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeArquivoVazioError', () => {
+  const init = { httpStatus: 200, path: '/api/v2/logistics/download_shipping_document' } as const;
+
+  it('é um ShopeeSchemaError — todo braço `instanceof ShopeeSchemaError` existente continua pegando', () => {
+    // ⚠️ SUBCLASSE, não irmã: o 502 do `respond.ts` do app e o `isShopeeError`
+    // (que casa `ShopeeError`) pegam este erro sem edição nenhuma.
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).toBeInstanceOf(ShopeeArquivoVazioError);
+    expect(err).toBeInstanceOf(ShopeeSchemaError);
+    expect(err).toBeInstanceOf(ShopeeError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('ShopeeArquivoVazioError');
+    expect(err.httpStatus).toBe(200);
+    expect(err.path).toBe(init.path);
+    expect(err.campos).toEqual([]);
+  });
+
+  it('⛔ QUASE-IGUAL — fica FORA do ramo ShopeeApiError: não houve envelope, então não há código', () => {
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).not.toBeInstanceOf(ShopeeApiError);
+    expect(primeiroBraco(ESCADA_CORRETA, err)).toBe('rethrow');
+    // E o inverso: um ShopeeSchemaError comum NÃO é um arquivo vazio — o fluxo
+    // da etiqueta pode estreitar o vazio para "tente de novo" sem pegar os outros.
+    expect(new ShopeeSchemaError('x', init)).not.toBeInstanceOf(ShopeeArquivoVazioError);
   });
 });

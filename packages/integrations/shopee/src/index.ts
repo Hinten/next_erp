@@ -65,3 +65,4 @@ export * from './hosts';
 export * from './sign';
 export * from './oauth';
 export * from './api';
+export * from './arquivo';

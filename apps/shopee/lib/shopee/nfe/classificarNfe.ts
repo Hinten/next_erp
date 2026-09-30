@@ -29,16 +29,22 @@
  * on `/api/v2/order/upload_invoice_doc` answering `order.upload_invoice_error`
  * its haystack holds `upload`, `invoice` and `error` before Shopee has said a
  * word. Every needle therefore runs on the provider's own sentence, folded ONCE
- * ({@link detalheDaRecusa}): whitespace collapsed and trimmed, a leading
- * `Wrong parameters, detail:` stripped, lower-cased, trailing periods dropped
- * (guide 382's texts end in `..`). A `null` sentence matches no needle at all.
+ * ({@link fraseCanonicaShopee}, `core/recusaShopee.ts`): whitespace collapsed
+ * and trimmed, a leading `Wrong parameters, detail:` stripped, lower-cased,
+ * trailing periods dropped (guide 382's texts end in `..`). A `null` sentence
+ * matches no needle at all.
  *
  * ## ⚠️ Codes are compared TRIMMED and without their module prefix
  *
  * The api page names its code `order.upload_invoice_error` followed by a TAB. The
  * code is trimmed, stripped of ONE module segment by the package's
- * `shopeeCodeSemPrefixoDeModulo` (which does not trim), and trimmed again. The
- * handler keeps the VERBATIM code for its log line; this table never returns it.
+ * `shopeeCodeSemPrefixoDeModulo` (which does not trim), and trimmed again
+ * ({@link codigoCanonicoShopee}). The handler keeps the VERBATIM code for its log
+ * line; this table never returns it.
+ *
+ * Both folds were this module's private `codigoDaRecusa` / `detalheDaRecusa`
+ * until step 15's label classifier needed the same reading; they were promoted
+ * to `core/recusaShopee.ts` unchanged, and this table's tests stayed unedited.
  *
  * ## ⚠️ The order is load-bearing (each pinned by a near-miss test)
  *
@@ -75,9 +81,10 @@
  *
  * Pure and total: no clock, no I/O, no environment.
  */
-import { SHOPEE_ERROR_KIND, shopeeCodeSemPrefixoDeModulo } from '@delfrance/integrations-shopee';
+import { SHOPEE_ERROR_KIND } from '@delfrance/integrations-shopee';
 import type { ShopeeErrorKind } from '@delfrance/integrations-shopee';
 
+import { codigoCanonicoShopee, fraseCanonicaShopee } from '../core/recusaShopee';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
 import { MOTIVO_NFE_SHOPEE } from './errosNfe';
 
@@ -225,35 +232,9 @@ const CODIGOS_TRANSITORIOS: ReadonlySet<string> = new Set<string>([
 const CODIGO_FALHA_DE_UPLOAD = 'upload_invoice_error';
 const AGULHA_TENTE_DE_NOVO = 'try again';
 
-/* ------------------------------- the folds --------------------------------- */
+/* ------------------------------- the needle -------------------------------- */
 
-/** The template prefix twelve of guide 382's seventeen texts share. */
-const PREFIXO_DO_ENVELOPE = /^wrong parameters,\s*detail:\s*/i;
-
-/**
- * The code as the rows compare it: trimmed, ONE module segment stripped, trimmed
- * again. EQUAL: `order.upload_invoice_error\t` ≡ `upload_invoice_error`.
- * DISTINCT: `a.b.source_ip_undeclared` keeps `b.` (the package strips exactly
- * one segment) and matches nothing.
- */
-function codigoDaRecusa(code: string): string {
-  const aparado = code.trim();
-  return (shopeeCodeSemPrefixoDeModulo(aparado) ?? aparado).trim();
-}
-
-/**
- * The provider's sentence as the needles read it (see the module docblock).
- * `null` ⇒ `''`, which no needle matches.
- */
-function detalheDaRecusa(providerMessage: string | null): string {
-  if (providerMessage === null) return '';
-  return providerMessage
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(PREFIXO_DO_ENVELOPE, '')
-    .toLowerCase()
-    .replace(/[.\s]+$/, '');
-}
+// The two folds live in `core/recusaShopee.ts` (see the module docblock).
 
 function contem(detalhe: string, agulha: string | RegExp): boolean {
   return typeof agulha === 'string' ? detalhe.includes(agulha) : agulha.test(detalhe);
@@ -280,8 +261,8 @@ export function classificarRecusaDeNfe(
   // ---- N0: a rate limit or a dead grant is never a refusal of this note. ----
   if (KINDS_DA_ESCADA.has(err.kind)) return { classe: 'transitorio' };
 
-  const nu = codigoDaRecusa(err.code);
-  const det = detalheDaRecusa(err.providerMessage);
+  const nu = codigoCanonicoShopee(err.code);
+  const det = fraseCanonicaShopee(err.providerMessage);
 
   // ---- N1/N2: already attached — the read-back decides. FIRST. ----
   if (AGULHA_CHAVE_DUPLICADA.test(det)) {

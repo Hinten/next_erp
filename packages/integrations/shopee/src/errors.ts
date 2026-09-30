@@ -287,6 +287,23 @@ export class ShopeeSchemaError extends ShopeeError {
   }
 }
 
+/**
+ * A file download (`shopeeCallArquivo`) answered a 2xx with an EMPTY body — an
+ * empty label is a failed label, never a file to print.
+ *
+ * ⚠️ A SUBCLASS of {@link ShopeeSchemaError}, not a sibling, on purpose: every
+ * existing `instanceof ShopeeSchemaError` arm (the app's `respond.ts` 502 among
+ * them) keeps catching it with no edit, while the label flow can narrow it to
+ * "tente de novo". Being a schema failure also keeps it OUT of the
+ * {@link ShopeeApiError} branch — there was no envelope, so there is no code.
+ */
+export class ShopeeArquivoVazioError extends ShopeeSchemaError {
+  constructor(message: string, init: ConstructorParameters<typeof ShopeeSchemaError>[1]) {
+    super(message, init);
+    this.name = 'ShopeeArquivoVazioError';
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*                               Classification                               */
 /* -------------------------------------------------------------------------- */

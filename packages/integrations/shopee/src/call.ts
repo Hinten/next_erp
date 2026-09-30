@@ -31,6 +31,20 @@
  * parsed payload to a `ShopeeApiPartialError` — still a failure, with the
  * evidence still attached.
  *
+ * ⚠️ A FOURTH per-operation flag, {@link ShopeeCallParams.avisoEmLista}, is not
+ * an exception either: it leaves `error === ''` alone and only lets stage 1 read
+ * a `warning` that arrives as an ARRAY (the three label-document pages, step 15)
+ * as a COUNT sentence, so the envelope-level channels keep `string | null`.
+ *
+ * ## The bytes mode
+ *
+ * {@link shopeeCallArquivo} is the SECOND entry point, for the one operation that
+ * answers a FILE (`download_shipping_document`, step 15). It shares the request
+ * half with {@link shopeeCall} — {@link enviarRequisicao}: URL, signature, body,
+ * `fetch`, the network-error mapping — and replaces the response half: it reads
+ * `arrayBuffer()` (a `text()` would corrupt every byte ≥ 0x80 of a PDF) and lets
+ * the first significant byte, not the status, decide envelope vs file.
+ *
  * ## Why the body is parsed TWICE
  *
  * Stage 1 parses the envelope alone; stage 2 parses the operation schema. That
@@ -62,9 +76,11 @@ import { z } from 'zod';
 
 import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
+import { SHOPEE_ARQUIVO_ACCEPT, type ShopeeArquivoBaixado, pareceCorpoJson } from './arquivo';
 import {
   SHOPEE_ERROR_KIND,
   ShopeeApiPartialError,
+  ShopeeArquivoVazioError,
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
@@ -264,6 +280,30 @@ interface ShopeeCallBase<S extends z.ZodType> {
    * vocabulary. The caller narrows on {@link ShopeeApiPartialError} and decides.
    */
   readonly payloadNoErro?: boolean;
+  /**
+   * Read an ARRAY `warning` at stage 1 as a COUNT sentence,
+   * `"<n> aviso(s) por pedido/pacote"`.
+   *
+   * ⚠️ DOCUMENTED, three call sites (step 15): `get_shipping_document_parameter`,
+   * `create_shipping_document` and `get_shipping_document_result` declare
+   * `warning: object[] {order_sn, package_number}`, and two of those pages' own
+   * SUCCESS samples carry one. The envelope's `warning` is `z.string()`, so
+   * without this flag a perfectly good batch answer — the first warned package —
+   * becomes a `ShopeeSchemaError` naming `warning`.
+   *
+   * ⚠️ The `erroAusenteEhSucesso` shape, and it stays as narrow: it is ATTEMPTED
+   * only after the STRICT stage 1 failed, and it only WINS when it succeeds, so
+   * a string warning is read exactly as before and a body that is not an
+   * envelope keeps the strict reading's diagnostics.
+   *
+   * ⚠️ A COUNT, never the rows. `onWarning` and `ShopeeApiError.warning` are
+   * `string | null` and reach log lines; the rows carry an `order_sn` and a
+   * package number, which must not. The rows themselves survive for the caller:
+   * stage 2 (and `payloadNoErro`'s re-read) parse the ORIGINAL text, whose
+   * operation schema declares both shapes. Unlike `erroAusenteEhSucesso`, this
+   * flag never REWRITES the text stage 2 reads.
+   */
+  readonly avisoEmLista?: boolean;
 }
 
 /**
@@ -310,6 +350,27 @@ export type ShopeeCallParams<S extends z.ZodType> = ShopeeCallBase<S> &
 const envelopeComErroAusenteSchema = shopeeEnvelopeSchema.extend({
   error: z.string().default(''),
   response: z.object({}).passthrough(),
+});
+
+/**
+ * The envelope as the three label-document pages answer it: `warning` may be an
+ * ARRAY, which becomes a COUNT sentence — see {@link ShopeeCallBase.avisoEmLista}.
+ *
+ * ⚠️ Local to the TRANSPORT for the same reason as the schema above: the strict
+ * `shopeeEnvelopeSchema` stays strict, and only a call carrying the flag reaches
+ * this one, after the strict parse failed. The OUTPUT type of `warning` stays
+ * `string | null`, so nothing downstream of stage 1 changes type.
+ */
+const envelopeComAvisoEmListaSchema = shopeeEnvelopeSchema.extend({
+  warning: z
+    .union([
+      z.string(),
+      z
+        .array(z.unknown())
+        .transform((avisos) => `${String(avisos.length)} aviso(s) por pedido/pacote`),
+    ])
+    .nullable()
+    .default(null),
 });
 
 /** How much of a non-JSON body may reach a log line. */
@@ -384,10 +445,29 @@ function corpoMultipart(m: ShopeeMultipartBody): FormData {
   return form;
 }
 
-export async function shopeeCall<S extends z.ZodType>(
+/** The request half of a call, whichever entry point makes it. */
+interface RequisicaoShopee {
+  readonly method: 'GET' | 'POST';
+  readonly path: string;
+  readonly call: SignedCall;
+  readonly query?: Readonly<Record<string, ShopeeQueryValue>>;
+  readonly body?: unknown;
+  readonly multipart?: ShopeeMultipartBody | undefined;
+}
+
+/**
+ * Sign, build the body, `fetch` — the half {@link shopeeCall} and
+ * {@link shopeeCallArquivo} share. Only the `Accept` header differs between the
+ * two, so it is the one parameter.
+ *
+ * ⚠️ Extracted, not rewritten: every existing `call.test.ts` test runs through
+ * here byte-unedited, and that is the proof the extraction changed nothing.
+ */
+async function enviarRequisicao(
   transport: ShopeeTransport,
-  p: ShopeeCallParams<S>,
-): Promise<z.infer<S>> {
+  p: RequisicaoShopee,
+  accept: string,
+): Promise<Response> {
   const qs = signedQuery({
     partnerId: transport.partnerId,
     partnerKey: transport.partnerKey,
@@ -397,7 +477,7 @@ export async function shopeeCall<S extends z.ZodType>(
     extra: p.query,
   });
 
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: accept };
   const init: RequestInit = { method: p.method, headers };
   // ⚠️ Neither body shape is part of the signature — `baseStringFor` reads
   // partner_id, path and timestamp (+ the token and the id) and nothing else.
@@ -411,14 +491,41 @@ export async function shopeeCall<S extends z.ZodType>(
     init.body = JSON.stringify(p.body);
   }
 
-  let res: Response;
   try {
-    res = await transport.fetch(`${transport.apiHost}${p.path}?${qs.toString()}`, init);
+    return await transport.fetch(`${transport.apiHost}${p.path}?${qs.toString()}`, init);
   } catch (err) {
     // ⚠️ The message names the PATH and nothing else. `err.message` from an
     // aborted fetch can echo the request URL, which carries `access_token`.
     throw new ShopeeNetworkError(`Falha de rede ao contatar a Shopee em ${p.path}.`, err);
   }
+}
+
+/**
+ * A bare 429 whose body is not an envelope — the same error from both entry
+ * points, so the two cannot drift apart.
+ */
+function limiteSemEnvelope(
+  path: string,
+  httpStatus: number,
+  retryAfterSeconds: number | null,
+): ShopeeRateLimitError {
+  return new ShopeeRateLimitError(
+    `Shopee ${path} respondeu HTTP 429 sem envelope (limite de requisições).`,
+    {
+      code: 'http_429',
+      kind: SHOPEE_ERROR_KIND.burst,
+      httpStatus,
+      path,
+      retryAfterSeconds,
+    },
+  );
+}
+
+export async function shopeeCall<S extends z.ZodType>(
+  transport: ShopeeTransport,
+  p: ShopeeCallParams<S>,
+): Promise<z.infer<S>> {
+  const res = await enviarRequisicao(transport, p, 'application/json');
 
   const text = await res.text();
   const sensitive = p.sensitive === true;
@@ -436,23 +543,25 @@ export async function shopeeCall<S extends z.ZodType>(
     !envelopeEstrito.ok && p.erroAusenteEhSucesso === true
       ? lerRespostaJson(text, envelopeComErroAusenteSchema)
       : null;
-  const envelopeLeitura = envelopeTolerante?.ok === true ? envelopeTolerante : envelopeEstrito;
+  // ⚠️ The fourth tolerance — see `avisoEmLista`. The same two narrowing rules:
+  // attempted only when the strict parse (and the absent-`error` tolerance)
+  // failed, and it only wins when it succeeds. It never feeds `textoParaSchema`
+  // below: stage 2 reads the ORIGINAL text, rows and all.
+  const envelopeComAviso =
+    !envelopeEstrito.ok && envelopeTolerante?.ok !== true && p.avisoEmLista === true
+      ? lerRespostaJson(text, envelopeComAvisoEmListaSchema)
+      : null;
+  const envelopeLeitura =
+    envelopeTolerante?.ok === true
+      ? envelopeTolerante
+      : envelopeComAviso?.ok === true
+        ? envelopeComAviso
+        : envelopeEstrito;
   if (!envelopeLeitura.ok) {
     // A bare 429 whose body is not an envelope is still a rate limit, and the
     // only signal a caller can act on. Classified as `burst`: the daily quota is
     // reported through `error_limit` IN an envelope, never as a naked status.
-    if (res.status === 429) {
-      throw new ShopeeRateLimitError(
-        `Shopee ${p.path} respondeu HTTP 429 sem envelope (limite de requisições).`,
-        {
-          code: 'http_429',
-          kind: SHOPEE_ERROR_KIND.burst,
-          httpStatus: res.status,
-          path: p.path,
-          retryAfterSeconds,
-        },
-      );
-    }
+    if (res.status === 429) throw limiteSemEnvelope(p.path, res.status, retryAfterSeconds);
 
     if (envelopeLeitura.motivo !== 'formato') {
       // ⚠️ EMPTY and NON-JSON share this branch: in both the request never
@@ -563,4 +672,180 @@ export async function shopeeCall<S extends z.ZodType>(
     `Shopee ${p.path} respondeu num formato inesperado. Campos inválidos: ${resumirCampos(campos)}.`,
     { campos, httpStatus: res.status, path: p.path },
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                         The bytes mode (step 15)                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A call that answers a FILE. The same request fields as {@link ShopeeCallBase},
+ * and deliberately nothing else: no `schema` (the answer is bytes), no
+ * `multipart` (nothing uploads through here), and none of the per-operation
+ * tolerances — the download page documents none, and adding one needs a
+ * measurement.
+ */
+export interface ShopeeCallArquivoParams {
+  readonly method: 'GET' | 'POST';
+  /** API path only, e.g. `/api/v2/logistics/download_shipping_document`. */
+  readonly path: string;
+  readonly call: SignedCall;
+  readonly surface: ShopeeSurface;
+  readonly query?: Readonly<Record<string, ShopeeQueryValue>>;
+  /** JSON, serialised exactly as {@link shopeeCall} serialises it. */
+  readonly body?: unknown;
+}
+
+/** How much of a `Content-Type` header may reach a log line. */
+const MAX_LOGGED_CONTENT_TYPE = 100;
+
+/**
+ * The ONE log line the bytes mode writes, on a refusal: path, status, length and
+ * content type.
+ *
+ * ⚠️ NEVER a body byte, on any path — and deliberately NOT
+ * {@link logarCorpoNaoJson}, which logs 500 characters of the body. A label
+ * carries the buyer's name and address, and a malformed body that starts with
+ * `{` is no less likely to carry them than a good one.
+ */
+function logarArquivoRecusado(
+  path: string,
+  httpStatus: number,
+  tamanho: number,
+  contentType: string | null,
+  motivo: string,
+): void {
+  const tipo = contentType === null ? '(ausente)' : contentType.slice(0, MAX_LOGGED_CONTENT_TYPE);
+  console.error(
+    `[shopee] arquivo recusado em ${path} (HTTP ${String(httpStatus)}): ${motivo}, ${String(tamanho)} bytes, content-type ${tipo} — corpo omitido`,
+  );
+}
+
+/**
+ * Fetch a FILE — the shipping label — and hand back its bytes and headers.
+ *
+ * The decision table, IN THIS ORDER (design D1 §2.2, rows 0–8):
+ *
+ * | # | condition | outcome |
+ * |---|---|---|
+ * | 0 | request | `Accept: SHOPEE_ARQUIVO_ACCEPT`; a JSON body as in {@link shopeeCall} |
+ * | 1 | read | `arrayBuffer()` — NEVER `text()` |
+ * | 2 | 0 bytes, HTTP 429 | `ShopeeRateLimitError`, kind `burst` |
+ * | 3 | 0 bytes, `!res.ok` | `ShopeeHttpError` |
+ * | 4 | 0 bytes, 2xx | `ShopeeArquivoVazioError` |
+ * | 5 | {@link pareceCorpoJson} | the ENVELOPE verdict; a SUCCESS envelope is `ShopeeSchemaError` naming `waybill` |
+ * | 6 | non-JSON, HTTP 429 | `ShopeeRateLimitError`, kind `burst` |
+ * | 7 | non-JSON, `!res.ok` | `ShopeeHttpError` |
+ * | 8 | non-JSON, 2xx | `{ bytes, contentType, contentDisposition, httpStatus }` |
+ *
+ * ⚠️ The FIRST SIGNIFICANT BYTE decides envelope vs file (row 5), never the
+ * status and never the content type: a Shopee failure is routinely HTTP 200, and
+ * the download page documents neither for either branch. A PDF or a ZIP can
+ * never start with `{`.
+ *
+ * ⚠️ A SUCCESS envelope (`error === ''`) is a FAILURE here. It is never a label,
+ * and returning its bytes would hand the print agent a JSON document to print.
+ *
+ * ⚠️ Row 8 returns the headers VERBATIM and does not sniff the format: which
+ * format the bytes are — and refusing an unknown one — is
+ * {@link classificarArquivoDeEnvio}'s job, at the caller.
+ */
+export async function shopeeCallArquivo(
+  transport: ShopeeTransport,
+  p: ShopeeCallArquivoParams,
+): Promise<ShopeeArquivoBaixado> {
+  const res = await enviarRequisicao(transport, p, SHOPEE_ARQUIVO_ACCEPT);
+
+  // ⚠️ `arrayBuffer()`, never `text()`: decoding a PDF as UTF-8 replaces every
+  // invalid sequence — its binary marker line is one — with U+FFFD, and the
+  // file that comes out is not the file Shopee sent. A test pins it byte-equal.
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const httpStatus = res.status;
+  const contentType = res.headers.get('content-type');
+  const retryAfterSeconds = parseRetryAfter(res);
+  const recusar = (motivo: string): void => {
+    logarArquivoRecusado(p.path, httpStatus, bytes.byteLength, contentType, motivo);
+  };
+
+  /* --------------------------- rows 2–4: empty ---------------------------- */
+  if (bytes.byteLength === 0) {
+    recusar('corpo vazio');
+    if (httpStatus === 429) throw limiteSemEnvelope(p.path, httpStatus, retryAfterSeconds);
+    if (!res.ok) {
+      throw new ShopeeHttpError(
+        `Shopee ${p.path} respondeu HTTP ${String(httpStatus)} com o corpo vazio.`,
+        { httpStatus, path: p.path },
+      );
+    }
+    // ⚠️ An empty 2xx is a FAILED label, never an empty file to print.
+    throw new ShopeeArquivoVazioError(
+      `Shopee ${p.path} respondeu HTTP ${String(httpStatus)} com um arquivo VAZIO — uma etiqueta vazia é uma etiqueta que falhou.`,
+      { httpStatus, path: p.path },
+    );
+  }
+
+  /* ------------------------ row 5: an envelope ---------------------------- */
+  if (pareceCorpoJson(bytes)) {
+    // ⚠️ `TextDecoder` drops a leading UTF-8 BOM by default (`ignoreBOM: false`),
+    // and it has to: `JSON.parse` refuses one, and `pareceCorpoJson` skipped it.
+    const leitura = lerRespostaJson(new TextDecoder().decode(bytes), shopeeEnvelopeSchema);
+    if (!leitura.ok) {
+      recusar(leitura.motivo === 'formato' ? 'JSON que não é um envelope' : 'JSON malformado');
+      if (httpStatus === 429) throw limiteSemEnvelope(p.path, httpStatus, retryAfterSeconds);
+      if (!res.ok) {
+        throw new ShopeeHttpError(
+          `Shopee ${p.path} respondeu HTTP ${String(httpStatus)} com um corpo que não é um envelope da Shopee.`,
+          { httpStatus, path: p.path },
+        );
+      }
+      if (leitura.motivo !== 'formato') {
+        throw new ShopeeSchemaError(
+          `Shopee ${p.path} respondeu HTTP ${String(httpStatus)} com um corpo que parece JSON e não é — nem um arquivo, nem um envelope.`,
+          { httpStatus, path: p.path },
+        );
+      }
+      throw new ShopeeSchemaError(
+        `Shopee ${p.path} respondeu sem o envelope esperado. Campos inválidos: ${resumirCampos(leitura.campos)}.`,
+        { campos: leitura.campos, httpStatus, path: p.path },
+      );
+    }
+
+    // ⚠️ EXACT equality with `''`, as in `shopeeCall` — and no alias: the
+    // download page documents none.
+    const envelope = leitura.data;
+    if (envelope.error !== '') {
+      throw shopeeErrorFromEnvelope(envelope, {
+        path: p.path,
+        httpStatus,
+        surface: p.surface,
+        retryAfterSeconds,
+      });
+    }
+    throw new ShopeeSchemaError(
+      `Shopee ${p.path} respondeu um envelope de SUCESSO sem arquivo — um envelope nunca é uma etiqueta.`,
+      { campos: ['waybill'], httpStatus, path: p.path },
+    );
+  }
+
+  /* ---------------------- rows 6–7: non-JSON failure ---------------------- */
+  if (httpStatus === 429) {
+    recusar('sem envelope');
+    throw limiteSemEnvelope(p.path, httpStatus, retryAfterSeconds);
+  }
+  if (!res.ok) {
+    // ⚠️ The IP-allow-list edge rejection shape (P2): HTML or a bare status.
+    recusar('sem envelope');
+    throw new ShopeeHttpError(
+      `Shopee ${p.path} respondeu HTTP ${String(httpStatus)} sem um arquivo nem um envelope da Shopee.`,
+      { httpStatus, path: p.path },
+    );
+  }
+
+  /* --------------------------- row 8: the file ---------------------------- */
+  return {
+    bytes,
+    contentType,
+    contentDisposition: res.headers.get('content-disposition'),
+    httpStatus,
+  };
 }

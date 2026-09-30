@@ -507,7 +507,7 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * | `pedido`| a pedido | the order import (step 5) — code 3, the only one |
  * | `frete` | one pedido | the shipment merge (step 7) — codes 4, 30 and 47 |
  * | `anuncio`| one link doc + maybe an aviso | the violation / scheduled-publish handlers (step 11) — codes 16 and 27 |
- * | `parado`| one doc | data-bearing, the owning step is not built yet |
+ * | `parado`| one doc | data-bearing, and no built step handles it (24/25 have no owning step at all) |
  *
  * ⚠️ **Keyed on the push code, never on `push_api_id`.** The comment beside
  * each row names both so a reader checking against Shopee's doc URL cannot
@@ -555,6 +555,11 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   13: 'ack', // brand register result
   22: 'ack', // push_api_id 25 — item_price_update_push: fires on OUR update_price AND on Seller Centre edits (no actor field); no consumer yet — see precos/README.md
   28: 'ack', // push_api_id 31 — shop_penalty_update_push (no ERP surface yet)
+  // ⚠️ Parked until step 15, and `ack` BECAUSE of step 15: the label flow polls
+  // `get_shipping_document_result` in-request, so this push has no consumer —
+  // and a parked row is TERMINAL, so parking it would leave one dead-letter row
+  // per shipping document we create.
+  15: 'ack', // push_api_id 17 — shipping_document_status_push
 
   // ---- the pedido arm (step 5) -------------------------------------------
   // ⚠️ This row is what ARMS `runShopeeOrderBackfill`: its structural guard
@@ -581,8 +586,7 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   16: 'anuncio', // push_api_id 18 — violation_item_push
   27: 'anuncio', // push_api_id 30 — item_scheduled_publish_failed_push
 
-  // ---- data-bearing, handler pending -------------------------------------
-  15: 'parado', // shipping document status
+  // ---- data-bearing, handler pending (24 / 25: no owning step at all) ----
   29: 'parado', // push_api_id 32 — return_updates_push
   10: 'parado', // webchat — an ERP System app cannot subscribe to it at all
   24: 'parado', // push_api_id 27 — booking_trackingno_push
@@ -595,11 +599,11 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
  * ⚠️ There is deliberately no row for **3** any more: the order import IS built
  * (step 5), so a `motivoDoParque(3)` could only answer the "código novo"
  * fallback — a sentence that would be false about the one code this channel
- * handles most. Step 7 removed **4**, **30** and **47** for the same reason, and
- * step 11 removed **16** and **27**.
+ * handles most. Step 7 removed **4**, **30** and **47** for the same reason,
+ * step 11 removed **16** and **27**, and step 15 removed **15** — which gained
+ * no handler but an `ack`, and is never parked, so its row could only lie.
  */
 const MOTIVO_PARADO: Readonly<Record<number, string>> = {
-  15: 'status do documento de envio — o handler é o passo 15',
   29: 'atualização de devolução — o handler é o passo 17',
   10: 'chat — o handler é o passo 16, condicionado à liberação da Chat API',
   // ⚠️ RE-PARKED by step 7, not handled, and the reason is the wire.
@@ -614,7 +618,12 @@ const MOTIVO_PARADO: Readonly<Record<number, string>> = {
   // because that shop is SG. There is no owning step; whoever ever needs it owns
   // it.
   24: 'código de rastreio de uma RESERVA (booking) — Advance Fulfillment, programa de ID/PH/VN/TH e nunca BR; o payload traz só booking_sn, sem order_sn e sem package_number, então nenhum pedido é derivável. Sem passo dono.',
-  25: 'status do documento de envio da reserva (booking) — o handler é o passo 15',
+  // ⚠️ RE-PARKED by step 15, for 24's reason exactly: 25 is 24's booking twin
+  // (`push 28`), and its `data` names only the `booking_sn` plus the READY/FAILED
+  // status — no `order_sn`, no `package_number`. The label flow is step 15's and
+  // it never reads this push (code 15 is `ack` for the same flow), so the old
+  // "o handler é o passo 15" promised an owner that does not exist.
+  25: 'status do documento de envio de uma RESERVA (booking) — Advance Fulfillment, programa de ID/PH/VN/TH e nunca BR; o payload traz só booking_sn e o status READY/FAILED, sem order_sn e sem package_number, então nenhum pedido é derivável. Sem passo dono.',
 };
 
 /**
