@@ -3,6 +3,9 @@ import { roundReais } from '@delfrance/core/money';
 import {
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
+  extrairPrimeiroNome,
+  linkPagamentoIdSchema,
+  pagamentoSchema,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
@@ -21,17 +24,69 @@ import type { MpPayment } from '../types';
  * the transactional upsert. The output is a wire-valid `pagamentoSchema` object
  * (the tests parse it to prove that) whose doc id is `String(payment.id)`, so a
  * redelivery upserts the same doc idempotently.
+ *
+ * It also stamps the two server-owned ATTRIBUTION keys of the payment-link tab
+ * (#367): `linkPagamentoId` (which `linkPgtoMercadoPago` doc issued the payment)
+ * and `primeiroNomePagador` (the payer's FIRST name only — LGPD). Both are
+ * enrichment: they are OMITTED — never written as `undefined`, which the Admin
+ * SDK rejects — whenever the payment does not carry a usable value.
  */
 
 /**
  * ISO-8601 → microseconds since epoch (the pagamento datetime unit). MP returns
- * ISO strings; `parseIsoToMicros` keeps any sub-millisecond digits instead of
- * truncating to ms and refilling with zeros. Returns null for a
- * null/absent/unparseable value.
+ * ISO strings; `parseIsoToMicros` keeps every digit the provider sent (a
+ * `Date.parse` would truncate sub-millisecond digits and refill them with zeros
+ * on the ×1000). Returns null for a null/absent/unparseable value.
  */
 function isoToMicros(iso: string | null | undefined): number | null {
   if (iso == null) return null;
   return parseIsoToMicros(iso);
+}
+
+/**
+ * The `linkPgtoMercadoPago` doc id this payment came from: the
+ * `metadata.link_id` the link route stamped on the Checkout Pro preference, or
+ * `null`.
+ *
+ * ⚠️ The snake_case key ONLY — Mercado Pago is believed to snake_case metadata
+ * keys, and a live probe (PR 2) confirms it; a `linkId` is deliberately NOT
+ * accepted, so a wrong guess fails visibly (nothing attributed) instead of
+ * matching by luck. The value goes through the same schema the link doc id is
+ * minted against, then through `pagamentoSchema`'s own field (the FINAL gate):
+ * an unparseable value written into the pedido transaction would throw there,
+ * read as transient and park a REAL payment (the #1087 class), so a bad id costs
+ * the attribution and nothing else.
+ *
+ * ⚠️ There is NO `additional_info.items[0].id` fallback: legacy stamped the
+ * PEDIDO id there, so it would attribute legacy payments to a "link" named after
+ * their pedido.
+ */
+function linkPagamentoIdDoPagamento(payment: MpPayment): string | null {
+  const bruto = payment.metadata?.link_id;
+  if (typeof bruto !== 'string') return null;
+  const id = linkPagamentoIdSchema.safeParse(bruto);
+  if (!id.success) return null;
+  return pagamentoSchema.shape.linkPagamentoId.safeParse(id.data).success ? id.data : null;
+}
+
+/**
+ * The payer's FIRST name (never a surname — LGPD minimisation), or `null`.
+ *
+ * Mercado Pago returns no payer personal data on Checkout Pro, so this is
+ * optional enrichment: `payer.first_name` when present, else the card payment's
+ * cardholder name. `extrairPrimeiroNome` returns the first source that yields a
+ * usable name (so a rejected `first_name` falls through to the cardholder) and
+ * `null` for emails, documents, test-card tokens and anything that is not a
+ * name. A Pix payer's BANK name (`bank_info.payer.long_name`) is a company, not
+ * a person — it is never read.
+ *
+ * The result then goes through `pagamentoSchema`'s own field (the FINAL gate),
+ * for the reason `linkPagamentoIdDoPagamento` states.
+ */
+function primeiroNomeDoPagador(payment: MpPayment): string | null {
+  const nome = extrairPrimeiroNome(payment.payer?.first_name, payment.card?.cardholder?.name);
+  if (nome === null) return null;
+  return pagamentoSchema.shape.primeiroNomePagador.safeParse(nome).success ? nome : null;
 }
 
 function sumAmounts(values: ReadonlyArray<number | null | undefined>): number {
@@ -174,6 +229,12 @@ export function mpPaymentToPagamento(
   const lastProviderUpdate =
     isoToMicros(payment.date_last_updated) ?? isoToMicros(payment.date_created) ?? opts.nowMicros;
 
+  // Attribution (#367): conditional spreads below, never a key set to
+  // `undefined` — the Admin SDK rejects it and nothing enables
+  // `ignoreUndefinedProperties`.
+  const linkPagamentoId = linkPagamentoIdDoPagamento(payment);
+  const primeiroNomePagador = primeiroNomeDoPagador(payment);
+
   const pagamento: Pagamento = {
     id: pagamentoId,
     metodoPagamentoOuterRef: opts.metodoOuterRef,
@@ -202,6 +263,8 @@ export function mpPaymentToPagamento(
     dataCancelamento: null,
     dataAprovacao: isoToMicros(payment.date_approved),
     dataCadastro: isoToMicros(payment.date_created),
+    ...(linkPagamentoId !== null ? { linkPagamentoId } : {}),
+    ...(primeiroNomePagador !== null ? { primeiroNomePagador } : {}),
   };
 
   return { pagamentoId, pagamento };

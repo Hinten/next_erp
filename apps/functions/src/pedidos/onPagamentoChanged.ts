@@ -40,11 +40,15 @@ export const pagamentoHistorySource: ModificationHistorySource = {
    * ignoring the stamp is what makes a content-identical re-import produce an
    * empty diff and therefore NO row at all.
    *
+   * `primeiroNomePagador` is a payer's first name (LGPD: never copy PII into
+   * the modification history). `linkPagamentoId` (#367) is deliberately still
+   * recorded: it is not PII, and its one-time fill is a meaningful change.
+   *
    * `dataCadastro` is deliberately NOT ignored: it never moves on an update, so
    * ignoring it would buy nothing, while recording it makes a backdated payment
    * visible.
    */
-  ignoreFields: ['id', 'ultimaModificacao', 'lastProviderUpdate'],
+  ignoreFields: ['id', 'ultimaModificacao', 'lastProviderUpdate', 'primeiroNomePagador'],
   resolve(params) {
     // Both wildcards are always present at runtime; the Record index type
     // can't know that (same cast as `onEstoqueDeleted`).

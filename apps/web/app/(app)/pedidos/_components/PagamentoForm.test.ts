@@ -191,6 +191,10 @@ describe('pagamentoPatchFromForm', () => {
     liquidacao: { payoutAmount: 9 },
     metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
     lastProviderUpdate: 123,
+    // Server-stamped attribution (#367): present on the baseline so a builder that
+    // carried baseline fields forward would fail the forbidden-keys loop below.
+    linkPagamentoId: 'AbCdEfGhIjKlMnOpQrSt',
+    primeiroNomePagador: 'Maria',
     ultimaModificacao: 456,
     dataCadastro: 789,
   } as unknown as Pagamento;
@@ -213,6 +217,8 @@ describe('pagamentoPatchFromForm', () => {
       'lastProviderUpdate',
       'ultimaModificacao',
       'dataCadastro',
+      'linkPagamentoId',
+      'primeiroNomePagador',
     ]) {
       expect(patch).not.toHaveProperty(forbidden);
     }

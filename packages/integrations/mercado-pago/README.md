@@ -15,7 +15,11 @@ stateful flow.
   numbers on this resource — the same exposure Mercado Livre hit on the same
   underlying payment (#1251).
 - `errors.ts` — the typed error taxonomy `apps/mercado-pago`'s `respond.ts` maps.
-- `mapping/payment.ts` — `mpPaymentToPagamento`, pure.
+- `mapping/payment.ts` — `mpPaymentToPagamento`, pure. It also stamps the two
+  server-owned attribution keys of the payment-link tab (#367): `linkPagamentoId`
+  from the preference's `metadata.link_id` (snake_case only) and
+  `primeiroNomePagador` (a FIRST name only — LGPD — from `payer.first_name`, else
+  the cardholder). Both are omitted, never `undefined`, when unusable.
 
 ## ⚠️ This is a library, not a plugin
 

@@ -111,11 +111,13 @@ service cloud.firestore {
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
         && (!c.hasAny(['lastProviderUpdate']) || (d.get('lastProviderUpdate', null) == null || d.get('lastProviderUpdate', null) is int))
+        && (!c.hasAny(['linkPagamentoId']) || (d.get('linkPagamentoId', null) == null || d.get('linkPagamentoId', null) is string && d.get('linkPagamentoId', null).size() <= 20))
         && (!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))
         && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))
+        && (!c.hasAny(['primeiroNomePagador']) || (d.get('primeiroNomePagador', null) == null || d.get('primeiroNomePagador', null) is string && d.get('primeiroNomePagador', null).size() <= 20))
         && (!c.hasAny(['tarifas']) || (d.get('tarifas', null) == null || (d.get('tarifas', null) is number && d.get('tarifas', null) >= 0)))
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['valor']) || (d.get('valor', null) is number && d.get('valor', null) >= 0))
@@ -424,6 +426,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
+    match /pedidos/{pedidoId}/linkPgtoMercadoPago/{docId} {
+      allow read: if isSuperUser() || p('d_pagamento', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /pedidos/{pedidoId}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
       allow create, update: if isSuperUser() || p('d_nfe', 2);
@@ -444,8 +452,8 @@ service cloud.firestore {
 
     match /pedidos/{pedidoId}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
-      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['lastProviderUpdate']) || request.resource.data.get('lastProviderUpdate', null) == null);
-      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastProviderUpdate']);
+      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['lastProviderUpdate']) || request.resource.data.get('lastProviderUpdate', null) == null) && (!request.resource.data.keys().hasAny(['linkPagamentoId']) || request.resource.data.get('linkPagamentoId', null) == null) && (!request.resource.data.keys().hasAny(['primeiroNomePagador']) || request.resource.data.get('primeiroNomePagador', null) == null);
+      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastProviderUpdate', 'linkPagamentoId', 'primeiroNomePagador']);
       allow delete: if isSuperUser() || p('d_pagamento', 4);
     }
 
@@ -620,6 +628,9 @@ service cloud.firestore {
     }
     match /{path=**}/inutilizacao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
+    }
+    match /{path=**}/linkPgtoMercadoPago/{docId} {
+      allow read: if isSuperUser() || p('d_pagamento', 1);
     }
     match /{path=**}/mensagem/{docId} {
       allow read: if isSuperUser() || p('d_mensagem', 1);

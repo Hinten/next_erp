@@ -18,6 +18,7 @@ describe('pagamentoHistorySource', () => {
       'id',
       'ultimaModificacao',
       'lastProviderUpdate',
+      'primeiroNomePagador',
     ]);
   });
 

@@ -73,6 +73,7 @@ export {
 export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
 export { pagamentoCollection } from './pagamentoCollection';
+export { linkPgtoMercadoPagoCollection } from './linkPgtoMercadoPagoCollection';
 export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
 export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';

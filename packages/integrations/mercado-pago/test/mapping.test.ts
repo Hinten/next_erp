@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
+  linkPagamentoIdSchema,
   pagamentoSchema,
   type FormaPagamento,
   type StatusPagamento,
@@ -11,6 +12,8 @@ import { mpPaymentToPagamento } from '../src/mapping/payment';
 
 const OUTER_REF = 'documents/metodo_pgto/acc-1';
 const NOW_MICROS = 1_700_000_000_000_000;
+/** A link doc id in the shape `newDocId()` mints: 20 chars from [A-Za-z0-9]. */
+const LINK_ID = 'aB3dE5gH7jK9mN1pQ3rS';
 
 /** Parse a raw payload through the API schema, exactly as the client would. */
 function build(raw: Record<string, unknown>): MpPayment {
@@ -387,6 +390,35 @@ describe('mpPaymentToPagamento — datetime → microseconds', () => {
     expect(pagamento.dataCadastro).toBe(Date.parse(iso) * 1000);
   });
 
+  // The freshness clock (`lastProviderUpdate`) exists to ORDER two deliveries of
+  // the same payment. MP sends ISO strings that can carry microseconds; the old
+  // `Date.parse(x) * 1000` truncated them to milliseconds and refilled zeros, so
+  // two updates a microsecond apart landed on the SAME stamp and the guard could
+  // not tell them apart (the lint rule `no-lossy-date-parse` documents the class).
+  it('keeps the sub-millisecond digits the provider sent (µs are not zero-filled)', () => {
+    const base = Date.UTC(2024, 5, 1, 10, 0, 0, 123) * 1000;
+    const { pagamento } = map({ date_created: '2024-06-01T10:00:00.123456Z' });
+    expect(pagamento.dataCadastro).toBe(base + 456);
+    // Near-miss: a plain millisecond ISO string still scales EXACTLY ×1000.
+    expect(map({ date_created: '2024-06-01T10:00:00.123Z' }).pagamento.dataCadastro).toBe(base);
+  });
+
+  it('two updates one microsecond apart get distinct lastProviderUpdate stamps', () => {
+    const base = Date.UTC(2024, 5, 1, 10, 0, 0, 0) * 1000;
+    const a = map({ date_last_updated: '2024-06-01T10:00:00.000001Z' }).pagamento;
+    const b = map({ date_last_updated: '2024-06-01T10:00:00.000002Z' }).pagamento;
+    expect(a.lastProviderUpdate).toBe(base + 1);
+    expect(b.lastProviderUpdate).toBe(base + 2);
+  });
+
+  it('an unparseable ISO string is null, never NaN', () => {
+    const { pagamento } = map({ date_created: 'not-a-date', date_approved: '' });
+    expect(pagamento.dataCadastro).toBeNull();
+    expect(pagamento.dataAprovacao).toBeNull();
+    // and lastProviderUpdate falls through to `now` instead of a NaN stamp
+    expect(pagamento.lastProviderUpdate).toBe(NOW_MICROS);
+  });
+
   it('lastProviderUpdate falls back date_last_updated → date_created → now', () => {
     expect(map({ date_created: '2023-01-01T00:00:00.000Z' }).pagamento.lastProviderUpdate).toBe(
       1_672_531_200_000_000,
@@ -459,6 +491,22 @@ describe('mpPaymentToPagamento — every output is wire-valid', () => {
     { status: 'refunded', transaction_amount: 80, refunds: [{ amount: 80 }] },
     { status: 'charged_back', transaction_amount: 80 },
     { payment_type_id: 'crypto_transfer', status: 'cancelled' },
+    // #367 attribution: both server-owned keys present, and both malformed.
+    {
+      payment_type_id: 'credit_card',
+      status: 'approved',
+      transaction_amount: 10,
+      metadata: { link_id: LINK_ID },
+      payer: { first_name: 'maria clara' },
+      card: { last_four_digits: '4242', cardholder: { name: 'FULANO DA SILVA' } },
+    },
+    {
+      payment_type_id: 'credit_card',
+      metadata: { link_id: 'a/b' },
+      payer: { first_name: 'x@y.com' },
+      card: { cardholder: { name: '123.456.789-09' } },
+    },
+    { metadata: 'garbage', payer: { first_name: 42 } },
   ];
 
   it.each(payloads)('pagamentoSchema.parse succeeds (#%#)', (raw) => {
@@ -560,5 +608,278 @@ describe('a fully-quoted payload maps identically to the numeric one', () => {
     for (const amount of ['', '   ', '1,50', '0x1F', '1e3', 'R$ 100,00', true]) {
       expect(mpPaymentSchema.safeParse({ id: 1, transaction_amount: amount }).success).toBe(false);
     }
+  });
+});
+
+/**
+ * Payment-link attribution (#367): which `linkPgtoMercadoPago` doc issued a
+ * payment, and the payer's FIRST name.
+ *
+ * Both keys are server-owned enrichment on `pagamento`. The rule the whole block
+ * pins: a value that is not usable costs the KEY — it is omitted, never written
+ * as `undefined` (the Admin SDK rejects it) and never allowed to throw inside the
+ * pedido transaction (a throw there reads as transient and parks a REAL payment,
+ * the #1087 class). Absence is asserted with `in`, not `toBeUndefined`, because
+ * `{ k: undefined }` is exactly the shape that must never reach Firestore.
+ */
+describe('mpPaymentToPagamento — link attribution (metadata.link_id)', () => {
+  it('the fixture id is a well-formed link id (so the absent cases below mean something)', () => {
+    expect(linkPagamentoIdSchema.safeParse(LINK_ID).success).toBe(true);
+  });
+
+  it('stamps linkPagamentoId from metadata.link_id, and the doc round-trips', () => {
+    const { pagamento } = map({ metadata: { link_id: LINK_ID } });
+    expect(pagamento.linkPagamentoId).toBe(LINK_ID);
+    expect(pagamentoSchema.parse(pagamento).linkPagamentoId).toBe(LINK_ID);
+  });
+
+  it('adds ONLY the attribution key — every other field maps as it does without metadata', () => {
+    const sem = map({ status: 'approved', transaction_amount: 42.5 }).pagamento;
+    const com = map({
+      status: 'approved',
+      transaction_amount: 42.5,
+      metadata: { link_id: LINK_ID, outra_chave: 'x' },
+    }).pagamento;
+    expect(com).toEqual({ ...sem, linkPagamentoId: LINK_ID });
+  });
+
+  // Snake_case ONLY. MP is believed to snake_case metadata keys; a live probe in
+  // PR 2 confirms it. Accepting `linkId` too would hide a wrong guess behind a
+  // lucky match, so every other spelling must attribute NOTHING.
+  it.each<[string, Record<string, unknown>]>([
+    ['linkId', { linkId: LINK_ID }],
+    ['LinkId', { LinkId: LINK_ID }],
+    ['link_Id', { link_Id: LINK_ID }],
+    ['linkid', { linkid: LINK_ID }],
+    ['link-id', { 'link-id': LINK_ID }],
+    ['nested', { meta: { link_id: LINK_ID } }],
+  ])('only the snake_case key attributes (%s → absent)', (_label, metadata) => {
+    const { pagamento } = map({ metadata });
+    expect('linkPagamentoId' in pagamento).toBe(false);
+  });
+
+  it.each<[string, unknown]>([
+    ['a number', 5],
+    ['a boolean', true],
+    ['null', null],
+    ['an empty string', ''],
+    ['a 20-char id containing a slash', 'a/bcdefghijklmnopqrs'],
+    ['a 20-char id containing a dash', 'aB3dE5gH7jK9mN1pQ3r-'],
+    ['a 21-char id', `${LINK_ID}x`],
+    ['a 19-char id', LINK_ID.slice(1)],
+    ['an array holding the id', [LINK_ID]],
+    ['an object', { id: LINK_ID }],
+  ])('a link_id that is %s is not an attribution', (_label, linkId) => {
+    const { pagamento } = map({ metadata: { link_id: linkId } });
+    expect('linkPagamentoId' in pagamento).toBe(false);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+  });
+
+  it('no metadata (absent, null or empty) attributes nothing', () => {
+    expect('linkPagamentoId' in map({}).pagamento).toBe(false);
+    expect('linkPagamentoId' in map({ metadata: null }).pagamento).toBe(false);
+    expect('linkPagamentoId' in map({ metadata: {} }).pagamento).toBe(false);
+  });
+
+  // The #1087 lesson: `parseOk` validates the whole body, so a bad optional
+  // field must be collapsed by the schema, not fail the payment.
+  it.each<[string, unknown]>([
+    ['a string', 'garbage'],
+    ['a number', 5],
+    ['a boolean', true],
+    ['an array', [LINK_ID]],
+  ])('%s metadata still parses (→ null) and the payment maps', (_label, metadata) => {
+    expect(mpPaymentSchema.safeParse({ id: 1, metadata }).success).toBe(true);
+    expect(build({ metadata }).metadata).toBeNull();
+    const { pagamento } = map({ metadata, status: 'approved', transaction_amount: 10 });
+    expect(pagamento.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(pagamento.valor).toBe(10);
+    expect('linkPagamentoId' in pagamento).toBe(false);
+  });
+
+  it('metadata keeps "absent" absent and "null" null on the parsed payment', () => {
+    // The `.catch(null)` must not turn a missing key into a present one.
+    expect('metadata' in build({})).toBe(false);
+    expect(build({ metadata: null }).metadata).toBeNull();
+    expect(build({ metadata: { link_id: LINK_ID } }).metadata).toEqual({ link_id: LINK_ID });
+  });
+
+  // Legacy stamped the PEDIDO id into `additional_info.items[0].id`; reading it
+  // back would attribute every legacy payment to a "link" named after its pedido.
+  it('additional_info.items[0].id is NOT a fallback for the link id', () => {
+    const items = { additional_info: { items: [{ id: LINK_ID }] } };
+    expect('linkPagamentoId' in map(items).pagamento).toBe(false);
+    // the legacy shape: the item id IS the external_reference (the pedido id)
+    const legacy = map({ external_reference: LINK_ID, ...items });
+    expect('linkPagamentoId' in legacy.pagamento).toBe(false);
+  });
+
+  it('external_reference does not attribute either (it is the pedido id, verbatim)', () => {
+    const { pagamento } = map({ external_reference: LINK_ID });
+    expect('linkPagamentoId' in pagamento).toBe(false);
+  });
+});
+
+describe('mpPaymentToPagamento — primeiroNomePagador (first name only)', () => {
+  /** A card payment whose cardholder is `name`. */
+  const comTitular = (name: unknown) => ({
+    payment_type_id: 'credit_card',
+    card: { last_four_digits: '4242', cardholder: { name } },
+  });
+
+  it.each([
+    ['FULANO DA SILVA', 'Fulano'],
+    ['JOSÉ', 'José'],
+    ['Ana-Clara Souza', 'Ana-Clara'],
+    ['  maria   clara ', 'Maria'],
+  ])('cardholder %j → %j', (name, esperado) => {
+    const { pagamento } = map(comTitular(name));
+    expect(pagamento.primeiroNomePagador).toBe(esperado);
+    expect(pagamentoSchema.parse(pagamento).primeiroNomePagador).toBe(esperado);
+  });
+
+  it('payer.first_name is used when present', () => {
+    const { pagamento } = map({ payer: { first_name: 'maria clara' } });
+    expect(pagamento.primeiroNomePagador).toBe('Maria');
+  });
+
+  it('payer.first_name WINS over a perfectly good cardholder (source order)', () => {
+    const { pagamento } = map({
+      payer: { first_name: 'maria clara' },
+      ...comTitular('JOAO SILVA'),
+    });
+    expect(pagamento.primeiroNomePagador).toBe('Maria');
+  });
+
+  it('a payer.first_name that is no name falls THROUGH to the cardholder, not to nothing', () => {
+    // A `??` on the raw value would stop at the email and drop the name.
+    const { pagamento } = map({
+      payer: { first_name: 'x@y.com' },
+      ...comTitular('MARIA SILVA'),
+    });
+    expect(pagamento.primeiroNomePagador).toBe('Maria');
+  });
+
+  it('a usable first_name beside a junk cardholder still names the payer', () => {
+    const { pagamento } = map({ payer: { first_name: 'maria clara' }, ...comTitular('X Y') });
+    expect(pagamento.primeiroNomePagador).toBe('Maria');
+  });
+
+  it.each([
+    ['a Mercado Pago test-card token', 'APRO'],
+    ['the same token in lower case', 'apro'],
+    ['an email', 'fulano@x.com'],
+    ['a CPF', '123.456.789-09'],
+    ['a name glued to a CPF', 'MARIA 12345678909'],
+    ['a single letter', 'A'],
+    ['blank', '  '],
+    ['empty', ''],
+  ])('%s is not a name → the key is absent', (_label, name) => {
+    const { pagamento } = map(comTitular(name));
+    expect('primeiroNomePagador' in pagamento).toBe(false);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+  });
+
+  it('a payment with no payer and no card names nobody', () => {
+    expect('primeiroNomePagador' in map({}).pagamento).toBe(false);
+    expect('primeiroNomePagador' in map({ payer: null, card: null }).pagamento).toBe(false);
+    expect('primeiroNomePagador' in map({ card: { cardholder: null } }).pagamento).toBe(false);
+  });
+
+  // For Pix, MP reports the payer's BANK ("long_name" of the bank_info payer),
+  // which is a company — not a person, and not ours to put on a payment.
+  it('a Pix payment carrying only the payer BANK name has no primeiroNomePagador', () => {
+    const pix = {
+      payment_type_id: 'bank_transfer',
+      point_of_interaction: {
+        transaction_data: { bank_info: { payer: { long_name: 'BANCO X' } } },
+      },
+    };
+    expect('primeiroNomePagador' in map(pix).pagamento).toBe(false);
+    // near-miss: the bank name is never READ, even beside a real first_name
+    expect(map({ ...pix, payer: { first_name: 'ana' } }).pagamento.primeiroNomePagador).toBe('Ana');
+  });
+
+  // LGPD: the surname is never stored anywhere on the doc.
+  it('never lets the surname reach the pagamento', () => {
+    const { pagamento } = map({
+      ...comTitular('FULANO DA SILVA'),
+      payer: { first_name: 'Beltrano Quintanilha' },
+    });
+    const json = JSON.stringify(pagamento).toLowerCase();
+    for (const sobrenome of ['silva', 'quintanilha']) {
+      expect(json).not.toContain(sobrenome);
+    }
+    expect(pagamento.primeiroNomePagador).toBe('Beltrano');
+    // and with only the cardholder, the surname of THAT source stays out too
+    const soTitular = JSON.stringify(map(comTitular('FULANO DA SILVA')).pagamento).toLowerCase();
+    expect(soTitular).not.toContain('silva');
+    expect(soTitular).toContain('fulano');
+  });
+
+  // Hostile input: whatever arrives on the wire, the doc must stay writable and
+  // a name that survives must be a plain title-cased word.
+  const HOSTILE: string[] = [
+    '',
+    ' ',
+    '\t\n',
+    'A',
+    '12345',
+    '123.456.789-09',
+    'MARIA 12345678909',
+    'fulano@x.com',
+    '<script>alert(1)</script>',
+    "Robert'); DROP TABLE pagamentos;--",
+    'a/b',
+    '../../etc/passwd',
+    '山田 太郎',
+    '👩‍💻',
+    '\u0000\u0000',
+    'a'.repeat(200),
+    'ANA-'.repeat(20),
+    "'''",
+    '---',
+    'Joãó',
+    "O'Connor",
+    "D'ÁVILA",
+    'FULANO  DA SILVA',
+    'ÉLODIE',
+    'jean-luc picard',
+    '‮FULANO',
+    'Ｍａｒｉａ',
+  ];
+  const NOME_LIMPO = /^\p{Lu}[\p{Ll}\p{M}']*(?:-\p{Lu}[\p{Ll}\p{M}']*)*$/u;
+
+  /** A surviving name is a plain title-cased word of 2..20 chars — or the key is absent. */
+  function expectLimpoOuAusente(pagamento: { primeiroNomePagador?: string | null }) {
+    if (!('primeiroNomePagador' in pagamento)) return;
+    const nome = pagamento.primeiroNomePagador ?? '';
+    expect(nome).toMatch(NOME_LIMPO);
+    expect(nome.length).toBeGreaterThanOrEqual(2);
+    expect(nome.length).toBeLessThanOrEqual(20);
+  }
+
+  it.each(HOSTILE)('hostile cardholder %j → dropped or cleaned', (name) => {
+    const { pagamento } = map(comTitular(name));
+    expectLimpoOuAusente(pagamento);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+  });
+
+  it.each(HOSTILE)('hostile payer.first_name %j → dropped or cleaned', (name) => {
+    const { pagamento } = map({ payer: { first_name: name } });
+    expectLimpoOuAusente(pagamento);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+  });
+
+  it('a payer.first_name of the wrong type costs the name, not the payment', () => {
+    // `first_name` is enrichment: a number must not fail the whole payment parse.
+    expect(mpPaymentSchema.safeParse({ id: 1, payer: { first_name: 42 } }).success).toBe(true);
+    const { pagamento } = map({
+      payer: { first_name: 42 },
+      status: 'approved',
+      transaction_amount: 10,
+    });
+    expect(pagamento.valor).toBe(10);
+    expect('primeiroNomePagador' in pagamento).toBe(false);
   });
 });
