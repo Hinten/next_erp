@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { cClassTribEntry } from './cclasstrib';
 import {
   CRT,
   CSOSN,
@@ -268,9 +269,11 @@ describe('configuracaoIBSCBSSchema — Reforma Tributária', () => {
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
   });
 
-  it('accepts a structurally valid code not in the vendored seed (lenient membership)', () => {
-    // 200099 is structurally valid for CST 200 but isn't seeded — must NOT be
-    // rejected (membership is a UI warning only, never an emit-time block).
+  it('accepts a structurally valid code the vendored table does not know (lenient membership)', () => {
+    // 200099 is structurally valid for CST 200 but absent from the dated
+    // snapshot — must NOT be rejected (membership is a UI warning only, never
+    // an emit-time block: SEFAZ adds codes outside the NT cycle).
+    expect(cClassTribEntry('200099')).toBeNull(); // precondition, or this proves nothing
     const rtc = { CST: '200', cClassTrib: '200099', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
   });

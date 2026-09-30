@@ -132,8 +132,10 @@ behavior dynamically.
   Anexo III (`cClassTrib`) / IV (`cCredPres`) as published **na aba Documentos →
   Diversos** do Portal Nacional NF-e (`www.nfe.fazenda.gov.br`). The actual
   6-digit codes, the CST table, and the alíquotas live in those **separate
-  spreadsheets** — and the agent sandbox can't reach `*.fazenda.gov.br`, so they
-  are **not re-readable in-repo**.
+  spreadsheets**. The agent sandbox can't reach `*.fazenda.gov.br`, but the
+  public SVRS mirror is reachable, and the NF-e rows of Anexo III + the CST table
+  + Anexo IV are **vendored in `@delfrance/schemas`** (#333) — see
+  `sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`.
 - The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 identify the
   specific legal hypothesis under LC 214/2025.
 - Dynamic indicators per cClassTrib row determine if each subgroup (`gDif`,
@@ -154,23 +156,30 @@ codes — there is **no Simples-specific cClassTrib**, and the IBS/CBS fields s�
 **facultativos para CRT=1 até 04/01/2027**. The live homologação test (#313)
 validates the full NF-e end-to-end.
 
-Other cClassTrib examples (special cases, from validation tables):
-- `410030` — Estorno de crédito por perda (tpNFDebito=07)
-- `800001` — Transferência de crédito do associado (cooperativa)
-- `800002` — Fusão/cisão/incorporação
-- `810001` — Crédito presumido IBS ZFM (tpNFCredito=02)
-- `811001` — Anulação Crédito por Saída Imune/Isenta (tpNFDebito=02)
-- `811002` — Débito de NF não processada na apuração (tpNFDebito=03)
-- `811003` — Desenquadramento Simples Nacional (tpNFDebito=08)
-- `620004` — Monofasia com pBio inferior ao obrigatório (finNFe=5)
-- `620005` — Monofasia com pBio superior ao obrigatório
+Other cClassTrib examples (special cases — descriptions from the vendored SVRS
+table, which corrected two swapped pairs this list used to carry):
+- `410030` — Estorno de crédito por perecimento, deteriorização, roubo, furto ou
+  extravio (tpNFDebito=07)
+- `800001` — Fusão, cisão ou incorporação (tpNFDebito=05 / tpNFCredito=05)
+- `800002` — Transferência de crédito do associado, inclusive as cooperativas
+  singulares (tpNFDebito=01)
+- `810001` — Crédito presumido sobre o valor apurado nos fornecimentos a partir
+  da ZFM (tpNFCredito=02)
+- `811001` — Anulação de crédito por saídas imunes/isentas (tpNFDebito=02)
+- `811002` — Débitos de notas fiscais não processadas na apuração (tpNFDebito=03)
+- `811003` — Desenquadramento do Simples Nacional (tpNFDebito=08)
+- `620004` — Monofásica sobre mistura de EAC com gasolina A em percentual
+  **superior** ao obrigatório
+- `620005` — Monofásica sobre mistura de EAC com gasolina A em percentual
+  **inferior** ao obrigatório
 
 ### In-repo validation + picker (#333)
 
 The codes are no longer pure free-text. `@delfrance/schemas`
-(`imposto/cclasstrib.ts`, a **pure, zero-dep** module next to the tribute
-schemas) vendors a **verified seed** of Anexo III + the CST IBS/CBS indicators,
-plus the validator. Two layers:
+(`imposto/cclasstrib.ts` + `cclasstrib.data.ts`, **pure, zero-dep** modules next
+to the tribute schemas) vendors the **NF-e rows of Anexo III** (97 of 164 on
+2026-09-28) and the **CST IBS/CBS table**, each with its `ind_g*` indicators,
+plus the validator; `imposto/ccredpres.ts` carries Anexo IV. Two layers:
 
 - **Emit-time (`configuracaoIBSCBSSchema` superRefine → `parseRtcConfig`)**
   enforces **only the structural rule**: `cClassTrib[0:3] === CST` (RV
@@ -178,16 +187,17 @@ plus the validator. Two layers:
   fails loud at emission. The same first-3 refine guards `cClassTribIS`/`CSTIS`.
 - **UI (the shared `components/imposto/RtcSection`, behind produto + operação +
   categoria)** swaps the two free-text inputs for searchable `Autocomplete`s
-  (CST + cClassTrib, filtered by the chosen CST) showing the seed descriptions.
-  **Free-entry is preserved** — any code not yet seeded can be typed;
+  (CST + cClassTrib, filtered by the chosen CST) showing the table descriptions.
+  **Free-entry is preserved** — a code the snapshot does not know can be typed;
   `validateCstClassTrib` shows a non-blocking warning (`cst-mismatch` vs
   `not-in-table`). Table *membership* is **never** an emit-time block.
 
-The seed currently covers the **CST-000 "tributação integral" family**
-(`000001`–`000005`); the long tail comes via the refresh routine in
-`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`. Deferred: `cClassTribIS`
-(Anexo II, *a ser publicada*) and `cCredPres` (Anexo IV, crédito-presumido
-subgroup out of scope).
+The CST labels are the **official** names (derived from the table). The
+indicators (`IND_CST_IBSCBS`, `IND_CCLASSTRIB`) say which groups a code requires
+— e.g. CST 800 → `gTransfCred`, 810 → `gCredPresIBSZFM`, 811 → `gAjusteCompet`,
+`410030` → `gEstornoCred`. Refresh routine:
+`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`. Still out: `cClassTribIS`
+(Anexo II, *a ser publicada*).
 
 ## Notas de Débito and Notas de Crédito (new finalities)
 
@@ -460,24 +470,23 @@ default** (PR #313). What exists:
 - **Registration UI**: the RTC editor is the shared `components/imposto/RtcSection`
   (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas + optional IS), rendered behind the
   produto, operação and categoria screens via `ImpostoConfigEditor` (#352). CST +
-  cClassTrib are searchable `Autocomplete`s driven by the vendored seed (#333),
+  cClassTrib are searchable `Autocomplete`s driven by the vendored table (#333),
   with free-entry + a non-blocking compatibility warning.
-- **Codes are validated, not pure free-text (#333)** — a **verified seed** of
-  Anexo III + CST IBS/CBS lives in `@delfrance/schemas` (`imposto/cclasstrib.ts`);
-  the emit-time schema enforces the structural `cClassTrib[0:3] === CST` rule, and
-  the UI warns on unknown/mismatched codes while still allowing free-entry of
-  unseeded codes. The full table + `cClassTribIS` (Anexo II) / `cCredPres`
-  (Anexo IV) remain deferred. See "CST + cClassTrib model" → "In-repo validation
-  + picker (#333)".
+- **Codes are validated, not pure free-text (#333)** — the NF-e rows of Anexo III,
+  the CST IBS/CBS table (with indicators) and Anexo IV live in `@delfrance/schemas`
+  (`imposto/cclasstrib*.ts`, `imposto/ccredpres.ts`); the emit-time schema
+  enforces the structural `cClassTrib[0:3] === CST` rule, and the UI warns on
+  unknown/mismatched codes while still allowing free-entry. `cClassTribIS`
+  (Anexo II) is still unpublished. See "CST + cClassTrib model" → "In-repo
+  validation + picker (#333)".
 - **Live homologação proof**: `test/operations/rtc.homologacao.test.ts` (serie
   4) emits a CRT=1 NF-e with the RTC groups against SEFAZ-SP homologação and
   asserts `cStat=100` — advisory in `ci-nfe.yml`'s `nfe-live` job, fatal on
-  `workflow_dispatch`. The fixture codes are best-guess; refine
-  `impostoCsosn102ComRtc` from the logged `cStat`+`xMotivo` on a first-run
-  rejection.
+  `workflow_dispatch`. Its cClassTrib `000001` is a row of the vendored table;
+  only the alíquotas are test values.
 
 **Deferred (tracked follow-ups):** the categoria RTC view; `finNFe` 5/6 (nota de crédito/débito);
 Grupo BB/BC + the Grupo B additions; the new RTC events (112110…412130);
-importing the Anexo III/IV code tables; and RTC activation for CRT=3 (Phase D,
+and RTC activation for CRT=3 (Phase D,
 #312). **Simples Nacional RTC stays off in produção** until SEFAZ publishes the
 Simples rules (mandatory only 2027-01-04).
