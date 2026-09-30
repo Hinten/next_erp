@@ -41,8 +41,19 @@ export interface CoberturaPedido {
   creditoDevolucao: number;
   /** Paying pagamentos only (`== sumPagamentosPagos`) — the footer's "Vlr. Pago". */
   valorPago: number;
-  /** What settles the pedido: `creditoDevolucao + valorPago`. Feeds `nextPedidoEstado`. */
+  /**
+   * What settles the pedido: `creditoDevolucao + valorPago`. Decides `pago` in
+   * `nextPedidoEstado`; the partial branch reads {@link valorPagoAlemDaDevolucao} (OD4).
+   */
   valorQuitado: number;
+  /**
+   * Money paid BEYOND the returned value: `max(0, valorPago − min(creditoLojaPago,
+   * valorDevolvido))` — the paying pagamentos other than a crédito loja that only
+   * registers the return (OD1), plus any crédito loja in excess of it. Equals
+   * `valorPago` when nothing is returned (every non-troca, every entrada). The
+   * only figure that makes a pedido PARTIALLY paid (OD4).
+   */
+  valorPagoAlemDaDevolucao: number;
   /** `valorCobrado − creditoDevolucao` — the legacy footer's NET "Total"; may be negative. */
   saldo: number;
   /** Still to pay: `max(0, valorCobrado − valorQuitado)` — the "Valor restante" autofill. */
@@ -94,12 +105,10 @@ export function valorDevolvido(
  * `valorCobrado` stays GROSS — it backs the indexed `/pedidos` sort and currency
  * filter and the migrated legacy corpus holds gross values. And netting it
  * instead would break the estado rule: `nextPedidoEstado` returns `null` when
- * `total <= 0` (an even swap would be stranded in `iniciado` forever) and gates
- * its partial branch on `valorPago > 0` (a credit-only partial would never reach
- * `aguardandoConfirmacaoDePagamento`). Adding the credit to what is paid
- * reproduces legacy on both.
+ * `total <= 0`, so an even swap would be stranded in `iniciado` forever. Adding
+ * the credit to what is paid settles it, like legacy.
  *
- * ## Deliberate deviations from legacy (both fail SAFE — never over-count a credit)
+ * ## Deliberate deviations from legacy (all fail SAFE — never over-count a credit)
  *
  * - **OD1 — the credit is the returned value MINUS the paying 'crédito loja'
  *   pagamentos** (`FORMA_PAGAMENTO.credito_loja`), floored at 0. To emit the
@@ -120,6 +129,19 @@ export function valorDevolvido(
  *   footer says 0,51, the operator pays the remaining 16,84 on 17,35 and the raw
  *   sum rounds to 17,34 — stuck in `aguardandoConfirmacaoDePagamento`. With one
  *   rounded credit, paying exactly `restante` always closes the pedido.
+ * - **OD4 — the returned value settles a troca, but never makes it PARTIALLY
+ *   paid.** `valorQuitado` decides `pago`; only `valorPagoAlemDaDevolucao` —
+ *   money beyond the returned value — opens `nextPedidoEstado`'s partial branch.
+ *   A troca whose returned items cover part of the total, with nothing more paid,
+ *   stays in its estado with the items editable — at creation and on every later
+ *   save alike — until the first payment (or payment link) moves it forward
+ *   (owner decision). That holds however the return is recorded: a crédito-loja
+ *   pagamento that only registers it (OD1) is the credit, not a payment, so the
+ *   estado never depends on which of the two the operator used. Legacy moved a
+ *   credit-only partial to `aguardandoConfirmacaoDePagamento` everywhere — the
+ *   form's save, creation included (`cadastroPedidoProvider.dart:1137`), and the
+ *   Mercado Pago webhook (`tasks.dart:101`) — locking the items before anyone had
+ *   paid.
  *
  * ## Not wired (deliberately)
  *
@@ -167,6 +189,10 @@ export function coberturaDoPedido(
     creditoDevolucao,
     valorPago,
     valorQuitado,
+    valorPagoAlemDaDevolucao: Math.max(
+      0,
+      roundReais(valorPago - Math.min(creditoLojaPago, devolvido)),
+    ),
     saldo: roundReais(valorCobrado - creditoDevolucao),
     restante: Math.max(0, roundReais(valorCobrado - valorQuitado)),
     troco: Math.max(0, roundReais(valorQuitado - valorCobrado)),
