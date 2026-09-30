@@ -41,8 +41,10 @@
  *
  * ## The two body shapes
  *
- * Almost every operation posts JSON. Exactly one — `v2.media_space.upload_image`
- * — posts `multipart/form-data`, and it is a different enough animal that
+ * Almost every operation posts JSON. Exactly two post `multipart/form-data` —
+ * `v2.media_space.upload_image` (step 11, on the partner client) and
+ * `v2.order.upload_invoice_doc` (step 14, on the shop client) — and that body is
+ * a different enough animal that
  * {@link ShopeeCallParams} makes the two **mutually exclusive at compile time**
  * rather than guarding them at runtime: no `Content-Type` header (`fetch` writes
  * the boundary), the file as a `Blob` over a copied buffer, and `undefined` text
@@ -102,11 +104,13 @@ export interface ShopeeMultipartFile {
   /**
    * The form field name.
    *
-   * ⚠️ A CONTRADICTED literal at the one call site that has one: the
+   * ⚠️ A CONTRADICTED literal at the first of the two call sites: the
    * `upload_image` page's Request-params table, its PHP sample and its cURL
    * sample all say `image`, while its Java sample says `file`. The package
    * carries the choice as `SHOPEE_UPLOAD_IMAGE_FIELD` (`types.ts`) so the probe
    * can flip it in one line; the transport itself sends whatever it is given.
+   * The second, `upload_invoice_doc`, is UNcontradicted — `file` in all four of
+   * its page's samples — and carries it as `SHOPEE_UPLOAD_INVOICE_DOC_FIELD`.
    */
   readonly field: string;
   readonly filename: string;
@@ -510,6 +514,10 @@ export async function shopeeCall<S extends z.ZodType>(
     // copy of `shopeeErrorFromEnvelope`'s formatting, free to drift — and the
     // one thing that must never differ between the two classes is how the same
     // envelope reads.
+    //
+    // ⚠️ Field by field, so a NEW `ShopeeApiErrorInit` field is dropped here
+    // unless it is added here too — `providerMessage` is, and `call.test.ts`
+    // pins that the partial class still carries it.
     const parcial = p.payloadNoErro === true ? lerRespostaJson(text, p.schema) : null;
     if (parcial === null || !parcial.ok) throw falha;
     throw new ShopeeApiPartialError(falha.message, {
@@ -519,6 +527,7 @@ export async function shopeeCall<S extends z.ZodType>(
       path: falha.path,
       requestId: falha.requestId,
       warning: falha.warning,
+      providerMessage: falha.providerMessage,
       parsed: parcial.data,
     });
   }

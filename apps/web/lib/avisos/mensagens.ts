@@ -72,10 +72,13 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       }. Reconecte a conta.`,
   },
   [TIPO_AVISO.nfeUploadRejeitado]: {
-    titulo: 'Envio de NF-e rejeitado pelo canal',
+    titulo: 'Envio de NF-e ao canal não concluído',
+    // ⚠️ Nem todo motivo é uma recusa (o canal pode não ter respondido, a
+    // autorização pode ter expirado, a fila pode estar desligada), então a frase
+    // não diz "recusou" — o `erro` de cada motivo traz a causa e o que fazer.
     corpo: (params) =>
-      `O canal recusou a NF-e do pedido ${p(params, 'pedido')}: ${p(params, 'erro')}. ` +
-      'O pedido não pode ser despachado enquanto isso não for corrigido.',
+      `O envio da NF-e do pedido ${p(params, 'pedido')} ao canal não foi concluído: ` +
+      `${p(params, 'erro')}.`,
   },
   [TIPO_AVISO.pedidoPrecisaDecisao]: {
     titulo: 'Pedido aguardando decisão',

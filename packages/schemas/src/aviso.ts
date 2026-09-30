@@ -87,7 +87,7 @@ export const TIPO_AVISO_LABELS = {
   shopeePushDegradado: 'Entrega de notificações Shopee degradada',
   shopeePushSuspenso: 'Assinatura de notificações Shopee suspensa',
   canalSemCredencial: 'Canal sem credencial válida',
-  nfeUploadRejeitado: 'Envio de NF-e rejeitado pelo canal',
+  nfeUploadRejeitado: 'Envio de NF-e ao canal não concluído',
   pedidoPrecisaDecisao: 'Pedido aguardando decisão',
   anuncioComViolacao: 'Anúncio com violação',
   jobConcluidoComFalhas: 'Processamento concluído com falhas',
@@ -137,6 +137,39 @@ export const TIPO_AVISO_LABELS = {
  *    escalates out of the app.
  *  - **`params` are NUMBERS only** — `anuncio`, `reservado`, `disponivel`. No
  *    provider prose, no promotion body, no produto name.
+ *
+ * ---
+ *
+ * **`nfeUploadRejeitado`** (first producer: Shopee step 14, #1522 —
+ * `apps/shopee/lib/shopee/nfe/avisoNfe.ts`) — the NF-e of a marketplace pedido
+ * did not get through to the channel: refused by it, flagged by SEFAZ behind
+ * it, not uploadable at all (an illegible or oversized XML), or not confirmed
+ * after every attempt. Which outcomes raise it is decided by the producer's
+ * own closed set, never by this enum.
+ *
+ *  - **The label says "not concluded", not "rejected"**, on purpose: several of
+ *    the reasons are not a refusal (the channel never answered, the grant
+ *    lapsed, the queue is switched off), and the per-reason `erro` fragment is
+ *    what names the cause and the remedy.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — ONE row per PEDIDO, never per NF-e document and with no `janela`: a
+ *    replacement NF-e that lands must close the row the cancelled one opened,
+ *    which a per-document key cannot do.
+ *  - **Severity `atencao`**, never `critico`: the pedido cannot ship until
+ *    someone acts, but nothing is down, and `critico` escalates out of the app.
+ *  - **`params` are exactly `pedido`** (the display number) **and `erro`** (a
+ *    lowercase pt-BR fragment with no trailing period, remedy first). Provider
+ *    text reaches `erro` only for the reasons whose meaning is not ours to know
+ *    in advance, and only after the producer's sanitizer — never an access key,
+ *    a CNPJ or the XML. The provider's own code stays in the log; `motivo`
+ *    carries the producer's kebab reason.
+ *  - **Machine resolvers** (this docblock's own rule, above), each reporting a
+ *    TRANSITION: the producer's recheck finding OUR note attached and valid
+ *    (`nfe-validada`); the order cancelled, seen at the producer's pre-read or
+ *    by the order import (`pedido-cancelado`); and the shipment written into
+ *    `ESTADOS_FRETE_REMOVE_ESTOQUE` by either caller of the channel's
+ *    frete transaction — the parcel moved, so the problem has ended
+ *    (`frete-despachado`).
  */
 export const tipoAvisoSchema = z
   .enum([

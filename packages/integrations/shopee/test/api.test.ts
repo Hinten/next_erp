@@ -48,6 +48,7 @@ import {
   SHOPEE_UPDATE_STOCK_PATH,
   SHOPEE_UPDATE_TIER_VARIATION_PATH,
   SHOPEE_UPLOAD_IMAGE_PATH,
+  SHOPEE_UPLOAD_INVOICE_DOC_PATH,
   type ShopeeAddItemRequest,
   type ShopeeClient,
   type ShopeeClientConfig,
@@ -58,6 +59,7 @@ import {
   type ShopeeUpdatePriceEntry,
   type ShopeeUpdateStockEntry,
   type UploadImageParams,
+  type UploadInvoiceDocParams,
   createShopeeClient,
   createShopeePartnerClient,
   encodeShopeeIdList,
@@ -81,6 +83,7 @@ import { resolveShopeeHosts } from '../src/hosts';
 import * as pacote from '../src/index';
 import {
   SHOPEE_CONDITION,
+  SHOPEE_INVOICE_FILE_TYPE_XML,
   SHOPEE_ITEM_IMAGE_MAX,
   SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
@@ -95,6 +98,10 @@ import {
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+  SHOPEE_UPLOAD_INVOICE_DOC_FIELD,
+  SHOPEE_UPLOAD_INVOICE_DOC_FILENAME,
+  SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES,
   SHOPEE_WAREHOUSE_TYPE,
   shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
@@ -4007,7 +4014,7 @@ describe('as duas LEITURAS do passo 11', () => {
   });
 });
 
-describe('upload_image — o único multipart do pacote', () => {
+describe('upload_image — o primeiro dos dois multipart do pacote (o do cliente de parceiro)', () => {
   const BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
   function paramsUpload(extra: Partial<UploadImageParams> = {}): UploadImageParams {
     return { bytes: BYTES, filename: 'foto.png', contentType: 'image/png', ...extra };
@@ -5557,5 +5564,309 @@ describe('update_price (passo 13)', () => {
     );
     expect(erro).toBeInstanceOf(ShopeeSchemaError);
     expect((erro as ShopeeSchemaError).campos.join(' ')).toContain('model_id');
+  });
+});
+
+/* ------------------------ the invoice upload (step 14) -------------------- */
+
+/** O `order_sn` de fixture do passo 14 — nunca um pedido real. */
+const ORDER_SN_NFE = '260910KJBHUJDM';
+
+/**
+ * Um marcador que só existe DENTRO do XML de teste: se ele aparecer numa
+ * mensagem de erro, o pacote vazou o documento para uma exceção.
+ */
+const MARCADOR_DO_XML = 'MARCADOR-SO-DENTRO-DO-XML-7f3a';
+
+/**
+ * Um `nfeProc` SINTÉTICO: sem chave de acesso, sem CNPJ, sem comprador — o
+ * pacote não lê nada disso, e um teste de pacote não tem por que carregar dado
+ * fiscal. `xProd` recebe o texto acentuado que mede a diferença entre CARACTERES
+ * e BYTES em UTF-8.
+ */
+function xmlDeTeste(xProd = 'Camiseta Algodão Orgânico'): string {
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?><nfeProc versao="4.00"><NFe><infNFe versao="4.00">' +
+    `<det nItem="1"><prod><xProd>${xProd}</xProd></prod></det>` +
+    `<infAdic><infCpl>${MARCADOR_DO_XML}</infCpl></infAdic></infNFe></NFe></nfeProc>`
+  );
+}
+
+const bytesUtf8 = (texto: string): number => new TextEncoder().encode(texto).byteLength;
+
+/**
+ * Um XML com EXATAMENTE `alvo` bytes em UTF-8, completado com `ç` (2 bytes cada)
+ * — de modo que o número de CARACTERES fica bem abaixo do de bytes, e uma
+ * checagem por `.length` aceitaria o que o fio recusa.
+ */
+function xmlComBytes(alvo: number): string {
+  const falta = alvo - bytesUtf8(xmlDeTeste(''));
+  const xml = xmlDeTeste(`${'ç'.repeat(Math.floor(falta / 2))}${falta % 2 === 1 ? 'a' : ''}`);
+  expect(bytesUtf8(xml)).toBe(alvo);
+  return xml;
+}
+
+/** O sucesso da PÁGINA: o envelope NU — sem `response`, sem eco, sem id. */
+const UPLOAD_INVOICE_BODY = { request_id: 'req-nfe', error: '', message: '' };
+
+function paramsNfe(extra: Partial<UploadInvoiceDocParams> = {}): UploadInvoiceDocParams {
+  return { orderSn: ORDER_SN_NFE, xml: xmlDeTeste(), ...extra };
+}
+
+describe('upload_invoice_doc (passo 14)', () => {
+  it('N1 — os literais do fio: caminho, campo `file`, file_type "4", octet-stream, `procNFe.xml` e o teto de 1 MiB', () => {
+    // ⚠️ Fixados por VALOR: o nome do arquivo NUNCA deriva do documento (o
+    // legado usava a chave de acesso nele), e o teto é MiB, o precedente do
+    // `upload_image` ("Max 10.0 MB" = 10 * 1024 * 1024).
+    expect(SHOPEE_UPLOAD_INVOICE_DOC_PATH).toBe('/api/v2/order/upload_invoice_doc');
+    expect(SHOPEE_UPLOAD_INVOICE_DOC_FIELD).toBe('file');
+    expect(SHOPEE_INVOICE_FILE_TYPE_XML).toBe('4');
+    expect(SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE).toBe('application/octet-stream');
+    expect(SHOPEE_UPLOAD_INVOICE_DOC_FILENAME).toBe('procNFe.xml');
+    expect(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it('N2 — POSTa multipart SEM cabeçalho Content-Type, shop-signed, com EXATAMENTE `file`, `order_sn` e `file_type`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc(paramsNfe());
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_UPLOAD_INVOICE_DOC_PATH);
+    expect(init?.method).toBe('POST');
+    // SHOP-signed: o token e a loja na query, e nada além dos comuns.
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(url.searchParams.get('access_token')).toBe('access-inventado');
+    expect(url.searchParams.get('shop_id')).toBe(String(TEST_SHOP_ID));
+    // ⚠️ O `fetch` escreve o Content-Type COM o boundary; um cabeçalho nosso
+    // produziria um corpo que a Shopee não parseia.
+    const headers = init?.headers as Record<string, string>;
+    expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('content-type');
+
+    expect(init?.body).toBeInstanceOf(FormData);
+    const form = init?.body as FormData;
+    expect([...form.keys()].sort()).toEqual(['file', 'file_type', 'order_sn']);
+    const arquivo = form.get(SHOPEE_UPLOAD_INVOICE_DOC_FIELD);
+    expect(arquivo).toBeInstanceOf(Blob);
+    expect((arquivo as File).name).toBe('procNFe.xml');
+    expect((arquivo as Blob).type).toBe('application/octet-stream');
+    expect(form.get('order_sn')).toBe(ORDER_SN_NFE);
+    // ⚠️ Um campo de TEXTO '4', nunca o rótulo "xml".
+    expect(form.get('file_type')).toBe('4');
+  });
+
+  it('N3 — PAR: os bytes que viajam são o UTF-8 do XML, byte a byte — e com `xProd` acentuado há MAIS bytes que caracteres', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const xml = xmlDeTeste('Calça Jeans Ação — Tamanho Único');
+    await createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc(paramsNfe({ xml }));
+
+    const arquivo = (fetchMock.mock.calls[0]![1]?.body as FormData).get('file') as Blob;
+    const enviados = new Uint8Array(await arquivo.arrayBuffer());
+    expect(enviados).toEqual(new TextEncoder().encode(xml));
+    // ⛔ QUASE-IGUAL: a contagem de caracteres NÃO é a de bytes — o teto mede bytes.
+    expect(enviados.byteLength).toBeGreaterThan(xml.length);
+  });
+
+  it('N4 — PAR no teto, em BYTES UTF-8: EXATAMENTE o máximo passa; ⛔ QUASE-IGUAL: máximo + 1 é recusado ANTES do fetch, sem ecoar o XML', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const noTeto = xmlComBytes(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES);
+    // ⚠️ É isto que mata uma checagem por `.length`: o XML tem ~metade dos
+    // caracteres do teto e mesmo assim está EXATAMENTE nele em bytes.
+    expect(noTeto.length).toBeLessThan(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES);
+    await client.uploadInvoiceDoc(paramsNfe({ xml: noTeto }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const enviado = (fetchMock.mock.calls[0]![1]?.body as FormData).get('file') as Blob;
+    expect(enviado.size).toBe(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES);
+
+    const acima = xmlComBytes(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES + 1);
+    expect(acima.length).toBeLessThan(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES);
+    const erro = await erroDe(client.uploadInvoiceDoc(paramsNfe({ xml: acima })));
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    const mensagem = (erro as Error).message;
+    // A mensagem nomeia o TAMANHO, e nada do documento.
+    expect(mensagem).toContain(String(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES + 1));
+    expect(mensagem).not.toContain(MARCADOR_DO_XML);
+    expect(mensagem).not.toContain('ç');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('N5 — um XML em branco e um order_sn em branco são recusados ANTES do token e do fetch, e nenhuma mensagem carrega o documento', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+    const client = createShopeeClient(shopConfig(fetchMock, getAccessToken));
+
+    // ⚠️ Espaços INCOMUNS de propósito (NBSP, em space): `trim()` os remove, e
+    // um guarda que fizesse `JSON.stringify` do valor os carregaria para a
+    // mensagem — é o `assertTextoNaoVazio`, que para `xml` imprimiria uma NF-e
+    // inteira numa exceção.
+    const branco = '   \t\n';
+    const semXml = await erroDe(client.uploadInvoiceDoc(paramsNfe({ xml: branco })));
+    expect(semXml).toBeInstanceOf(ShopeeConfigError);
+    const mensagemSemXml = (semXml as Error).message;
+    expect(mensagemSemXml).toContain('xml');
+    expect(mensagemSemXml).toContain(String(branco.length));
+    expect(mensagemSemXml).not.toContain(' ');
+    expect(mensagemSemXml).not.toContain(' ');
+    expect(mensagemSemXml).not.toContain(JSON.stringify(branco));
+
+    // O XML CARREGA o marcador aqui, e a recusa é do order_sn: nada do
+    // documento pode aparecer na mensagem.
+    const semPedido = await erroDe(client.uploadInvoiceDoc(paramsNfe({ orderSn: '  ' })));
+    expect(semPedido).toBeInstanceOf(ShopeeConfigError);
+    expect((semPedido as Error).message).toContain('order_sn');
+    expect((semPedido as Error).message).not.toContain(MARCADOR_DO_XML);
+
+    const vazio = await erroDe(client.uploadInvoiceDoc(paramsNfe({ xml: '' })));
+    expect(vazio).toBeInstanceOf(ShopeeConfigError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getAccessToken).not.toHaveBeenCalled();
+
+    // PAR: o order_sn vai VERBATIM — o guarda recusa branco e não apara nada,
+    // a regra das leituras de pedido.
+    await client.uploadInvoiceDoc(paramsNfe({ orderSn: ` ${ORDER_SN_NFE} ` }));
+    expect((fetchMock.mock.calls[0]![1]?.body as FormData).get('order_sn')).toBe(
+      ` ${ORDER_SN_NFE} `,
+    );
+  });
+
+  it('N6 — o sucesso é o envelope NU da página, devolvido inteiro', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const res = await createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc(paramsNfe());
+
+    expect(res.error).toBe('');
+    expect(res.request_id).toBe('req-nfe');
+    expect(res.message).toBe('');
+    expect(res.warning).toBeNull();
+  });
+
+  it('N7 — uma recusa do envelope entrega `code` e `providerMessage` VERBATIM — o TAB no fim do código incluído, nada aparado', async () => {
+    // ⚠️ O código da página TERMINA num TAB, e a frase é a que o classificador
+    // do app vai ler. O `message` formatado já contém `upload`, `invoice` e
+    // `error` no caminho e no código — por isso a frase viaja À PARTE.
+    const frase = 'Wrong parameters, detail: Invalid NF-e.';
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-nfe-erro',
+        error: 'order.upload_invoice_error\t',
+        message: frase,
+      }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc(paramsNfe()),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    const apiErr = erro as ShopeeApiError;
+    expect(apiErr.code).toBe('order.upload_invoice_error\t');
+    expect(apiErr.kind).toBe(SHOPEE_ERROR_KIND.other);
+    expect(apiErr.providerMessage).toBe(frase);
+    expect(apiErr.requestId).toBe('req-nfe-erro');
+    // ⛔ QUASE-IGUAL: o `message` formatado NÃO é a frase — ele carrega o caminho.
+    expect(apiErr.message).not.toBe(frase);
+    expect(apiErr.message).toContain(SHOPEE_UPLOAD_INVOICE_DOC_PATH);
+    expect(apiErr.providerMessage).not.toContain(SHOPEE_UPLOAD_INVOICE_DOC_PATH);
+
+    // PAR: espaços e pontuação da frase sobrevivem — nenhuma dobra no pacote.
+    const comEspacos = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-nfe-erro-2',
+        error: 'error_param',
+        message: '  File error.\t',
+      }),
+    );
+    const erro2 = await erroDe(
+      createShopeeClient(shopConfig(comEspacos)).uploadInvoiceDoc(paramsNfe()),
+    );
+    expect((erro2 as ShopeeApiError).providerMessage).toBe('  File error.\t');
+    expect((erro2 as ShopeeApiError).code).toBe('error_param');
+  });
+
+  it('N8 — ⛔ QUASE-IGUAL: um corpo SEM a chave `error` é RECUSADO, mesmo COM um objeto `response` (a classe do registro 73)', async () => {
+    // ⚠️ Nenhuma tolerância mora aqui. Com a de chave ausente, o segundo corpo
+    // viraria SUCESSO — o pior erro possível para um envio de documento fiscal.
+    const corpos = [
+      { request_id: 'req-nfe-sem-error', message: '' },
+      { request_id: 'req-nfe-sem-error-2', message: '', response: {} },
+    ];
+    for (const corpo of corpos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpo));
+      const erro = await erroDe(
+        createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc(paramsNfe()),
+      );
+      expect(erro).toBeInstanceOf(ShopeeSchemaError);
+      expect((erro as ShopeeSchemaError).campos).toContain('error');
+    }
+  });
+
+  it('N9 — FONTE: o bloco `uploadInvoiceDoc: async` não carrega tolerância nenhuma, e as contagens do arquivo não se moveram', () => {
+    // ⚠️ Asserção de FONTE: um teste de comportamento cujo corpo TEM `error`
+    // passaria com ou sem uma flag do transporte. As contagens são as mesmas que
+    // os testes 82/100/T-P17 fixam — o passo 14 não acrescenta call site.
+    const marcador = 'uploadInvoiceDoc: async';
+    expect(FONTE_API.split(marcador).length - 1).toBe(1);
+    const resto = FONTE_API.slice(FONTE_API.indexOf(marcador));
+    const fimRelativo = resto.search(/\n {4}\},/);
+    expect(fimRelativo).toBeGreaterThan(0);
+    const bloco = resto.slice(0, fimRelativo);
+
+    expect(bloco).toContain('SHOPEE_UPLOAD_INVOICE_DOC_PATH');
+    expect(bloco).toContain('shopeeUploadInvoiceDocSchema');
+    expect(bloco).toContain('multipart:');
+    // O guarda corre ANTES do token e da chamada.
+    const guarda = bloco.indexOf('assertUploadInvoiceDocParams(p)');
+    expect(guarda).toBeGreaterThan(-1);
+    expect(guarda).toBeLessThan(bloco.indexOf('signedCall()'));
+    expect(guarda).toBeLessThan(bloco.indexOf('shopeeCall('));
+    for (const tolerancia of [
+      'erroAusenteEhSucesso',
+      'payloadNoErro',
+      'emptyErrorAliases',
+      'sensitive',
+      'headers',
+    ]) {
+      expect(bloco).not.toContain(tolerancia);
+    }
+    expect(FONTE_API.split('erroAusenteEhSucesso').length - 1).toBe(2);
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
+  });
+
+  it('N10 — a operação mora SÓ no cliente da LOJA: o de parceiro não a ganha', () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+    expect('uploadInvoiceDoc' in partner).toBe(false);
+    expect(typeof createShopeeClient(shopConfig(fetchMock)).uploadInvoiceDoc).toBe('function');
+  });
+
+  it('N11 — a operação, o caminho, os literais, o schema e o `providerMessage` saem pelo index do pacote', async () => {
+    // ⚠️ `index.ts` re-exporta por WILDCARD: um rename tiraria a operação da
+    // superfície pública sem quebrar nada dentro do pacote.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_INVOICE_BODY));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+    expect(typeof client.uploadInvoiceDoc).toBe('function');
+    expect(pacote.SHOPEE_UPLOAD_INVOICE_DOC_PATH).toBe(SHOPEE_UPLOAD_INVOICE_DOC_PATH);
+    expect(pacote.SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES).toBe(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES);
+    expect(pacote.SHOPEE_UPLOAD_INVOICE_DOC_FIELD).toBe(SHOPEE_UPLOAD_INVOICE_DOC_FIELD);
+    expect(pacote.SHOPEE_INVOICE_FILE_TYPE_XML).toBe(SHOPEE_INVOICE_FILE_TYPE_XML);
+    expect(pacote.SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE).toBe(
+      SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+    );
+    expect(pacote.SHOPEE_UPLOAD_INVOICE_DOC_FILENAME).toBe(SHOPEE_UPLOAD_INVOICE_DOC_FILENAME);
+    expect(pacote.shopeeUploadInvoiceDocSchema.parse(UPLOAD_INVOICE_BODY).error).toBe('');
+    // E o carregador da frase do provedor, na classe exportada.
+    const erro = new pacote.ShopeeApiError('x', {
+      code: 'error_param',
+      kind: pacote.SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: pacote.SHOPEE_UPLOAD_INVOICE_DOC_PATH,
+      providerMessage: 'File error.',
+    });
+    expect(erro.providerMessage).toBe('File error.');
+    await client.uploadInvoiceDoc(paramsNfe());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
