@@ -47,6 +47,7 @@ function modalTree(row: OutroCheckoutRow | null) {
         nfeClient={null}
         freightClient={null}
         mercadoLivreClient={null}
+        shopeeClient={null}
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />

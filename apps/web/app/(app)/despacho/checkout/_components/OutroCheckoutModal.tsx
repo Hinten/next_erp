@@ -8,6 +8,8 @@ import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
+import type { ShopeeClient } from '@/lib/shopee/client';
+import { useEscolherEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -97,7 +99,9 @@ function reportEtiqueta(r: ReprintEtiquetaResult): void {
       });
       break;
     case 'skipped':
-      break; // semFrete or the operator declined the posted-reprint risk — silent
+      // semFrete, the operator declined the posted-reprint risk, or cancelled
+      // the Shopee pickup/drop-off question — all the operator's own choice, silent
+      break;
     case 'needs-quote':
       showCopyableNotification({
         title: 'Etiqueta',
@@ -155,6 +159,7 @@ export interface OutroCheckoutModalProps {
   nfeClient: NFeHttpClient | null;
   freightClient: FreightHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  shopeeClient: ShopeeClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   formatoEtiqueta: 'pdf' | 'zpl2';
 }
@@ -177,11 +182,13 @@ export function OutroCheckoutModal({
   nfeClient,
   freightClient,
   mercadoLivreClient,
+  shopeeClient,
   formatoDanfe,
   formatoEtiqueta,
 }: OutroCheckoutModalProps) {
   const printInFlight = usePrintInFlight();
   const confirm = useConfirm();
+  const envio = useEscolherEnvio();
 
   const ui = useMemo<EtiquetaProviderUi>(
     () => ({
@@ -209,8 +216,13 @@ export function OutroCheckoutModal({
         });
         return { status: 'cancelled' };
       },
+      // …but a reprint DOES answer the Shopee pickup/drop-off question (#1523).
+      // Arranging a Shopee shipment is not a purchase: the server never arranges
+      // the same package twice, and a pedido whose first print stopped at this
+      // question can only be finished by asking it again — here or on the row.
+      escolherEnvio: envio.escolherEnvio,
     }),
-    [confirm],
+    [confirm, envio.escolherEnvio],
   );
 
   const handleReimprimirNfe = useCallback(async () => {
@@ -232,12 +244,23 @@ export function OutroCheckoutModal({
         freightClient,
         nfeClient,
         mercadoLivreClient,
+        shopeeClient,
         formato: formatoEtiqueta,
         ui,
       });
       reportEtiqueta(r);
     });
-  }, [row, db, freightClient, nfeClient, mercadoLivreClient, formatoEtiqueta, ui, printInFlight]);
+  }, [
+    row,
+    db,
+    freightClient,
+    nfeClient,
+    mercadoLivreClient,
+    shopeeClient,
+    formatoEtiqueta,
+    ui,
+    printInFlight,
+  ]);
 
   const total = row?.itens.length ?? 0;
   const comErro = row?.itens.filter((i) => i.error != null).length ?? 0;
@@ -318,6 +341,11 @@ export function OutroCheckoutModal({
         )}
       </Modal>
       {confirm.element}
+      {/* ⚠️ Beside the confirm, OUTSIDE the <Modal>, for the same #1096 reason:
+          closing the reprint modal while the question is open must not strand
+          its promise, or `printInFlight.run`'s `finally` never runs and both
+          reprint buttons spin for the life of the pane. */}
+      {envio.element}
     </>
   );
 }

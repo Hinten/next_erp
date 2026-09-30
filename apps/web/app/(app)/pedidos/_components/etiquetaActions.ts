@@ -5,8 +5,9 @@
  * `emitirOuImprimirFrete` (`.old/lib/despacho/pages/emitirOuImprimirFrete.dart`),
  * which was a unified BUY-or-reprint action dispatched by carrier `tipo`.
  *
- * Supports Melhor Envio (buy/reprint) and Mercado Livre (fetch-label via the
- * marketplace's own client). `etiquetaRowState` is the pure dispatch decision;
+ * Supports Melhor Envio (buy/reprint), the generic label (motoboy/outros) and
+ * the marketplace fetch-label — Mercado Livre and Shopee (#1523), each via its
+ * own marketplace client. `etiquetaRowState` is the pure dispatch decision;
  * `resolveEtiquetaCartInput` lazily resolves the cart primitives from a pedido
  * **doc** (not the form) for the buy.
  */
@@ -40,7 +41,12 @@ export type EtiquetaAction =
   | 'none';
 
 export interface EtiquetaRowStateInput {
-  /** The integração tipo (null while still resolving / no integração). */
+  /**
+   * The DISPATCH tipo (`tipoDeDespacho`, #1523): a marketplace-owned frete
+   * block's tipo, else the int_frete doc's — null while still resolving / no
+   * integração. A Shopee pedido has no int_frete ref, so its block is the only
+   * thing that names it.
+   */
   readonly tipo: IntegracaoFrete | null;
   readonly printLabelId: string | null;
   readonly externalOptionId: string | null;
@@ -65,10 +71,14 @@ export interface EtiquetaRowStateResult {
  * hard-coded carrier check — a bought, printable label → reprint; a generic-label
  * tipo (motoboy/outros) → the on-demand generic PDF, available whenever frete is
  * configured (no buy step, so NOT gated on `printLabelId`); a fetch-label tipo
- * (Mercado Livre) → fetch + print via the marketplace client; a selected quote on
- * a buyable tipo → buy; a quotable tipo with neither → quote-first; anything else
- * → unsupported. The other marketplaces set no `can*` flag, so they still
- * resolve to `'unsupported'` (their fetch flows are Phase 5/6).
+ * (Mercado Livre, Shopee) → fetch + print via the marketplace client; a selected
+ * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
+ * anything else → unsupported. The other marketplaces set no `can*` flag, so
+ * they still resolve to `'unsupported'` (their fetch flows are not ported yet).
+ *
+ * ⚠️ Shopee is NOT printable: `canPrint` is tested BEFORE `canFetchLabel` here,
+ * so a `canPrint` on its row would route a `printLabelId` to Melhor Envio's
+ * reprint (#1523, R-p).
  */
 export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowStateResult {
   const { tipo, printLabelId, externalOptionId, estado } = input;
