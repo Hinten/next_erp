@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_PEDIDO, pedidoMeta } from '@delfrance/schemas';
-import type { Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
+  estadoFreteSchema,
+  pedidoMeta,
+  valorDevolvido,
+} from '@delfrance/schemas';
+import type { EstadoFrete, Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
   PagamentoConflictError,
   PagamentoNothingChangedError,
   PedidoConflictError,
   PedidoNothingChangedError,
+  aplicarQuitacaoNaCriacao,
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
@@ -15,6 +22,7 @@ import {
   deleteIncidente,
   deletePagamento,
   deveReconciliarAposSalvar,
+  freteComDespachoAutorizado,
   isIgnoredForConcurrency,
   nextPedidoEstado,
   remotelyChangedFields,
@@ -436,6 +444,72 @@ describe('savePedido', () => {
         save({ ...carrinho, estado: 'legadoDesconhecido' }, { valorCobrado: 10 }),
       ).resolves.toMatchObject({ estadoGravado: null });
     });
+
+    // #367 — `valorCobrado` stays GROSS, so an edit that only adds / removes /
+    // re-prices RETURNED items never moves it, yet it moves what the payments are
+    // measured against (the troca credit). Without its own arm such a save would
+    // never reconcile and the pedido would keep the estado of the old credit.
+    describe('the troca devolução credit (#367)', () => {
+      const item = (precoDeVenda: number, quantidade = 1) => ({
+        precoDeVenda,
+        descontoUnitario: 0,
+        quantidade,
+      });
+      const troca = {
+        numero: 'A',
+        estado: ESTADO_PEDIDO.iniciado,
+        ehSaida: true,
+        valorCobrado: 150,
+        itensDevolvidos: { o1: { p1: [item(10)], p2: [item(5)] } }, // credit 15
+      };
+
+      it('reports a patch that moves ONLY the credit (valorCobrado never rode it)', async () => {
+        await expect(
+          save(troca, { itensDevolvidos: { o1: { p1: [item(10)] } } }), // 15 → 10
+        ).resolves.toEqual({ totalMudou: true, estadoGravado: ESTADO_PEDIDO.iniciado });
+      });
+
+      it('⚠️ NEAR-MISS: the same items with their keys reordered are NOT a change', async () => {
+        // Deep-inequal on the raw map, equal in credit: comparing the maps (or a
+        // JSON of them) would reconcile on a re-serialization that changed nothing.
+        await expect(
+          save(troca, { itensDevolvidos: { o1: { p2: [item(5)], p1: [item(10)] } } }),
+        ).resolves.toMatchObject({ totalMudou: false });
+      });
+
+      it('⚠️ NEAR-MISS: a one-cent move in the credit is still a change', async () => {
+        await expect(
+          save(troca, { itensDevolvidos: { o1: { p1: [item(10)], p2: [item(5.01)] } } }),
+        ).resolves.toMatchObject({ totalMudou: true });
+      });
+
+      it('reports the devolução being removed, and being added to a pedido that had none', async () => {
+        await expect(save(troca, { itensDevolvidos: null })).resolves.toMatchObject({
+          totalMudou: true,
+        });
+        await expect(
+          save({ ...troca, itensDevolvidos: null }, { itensDevolvidos: troca.itensDevolvidos }),
+        ).resolves.toMatchObject({ totalMudou: true });
+      });
+
+      it('does NOT report a patch that never carried itensDevolvidos', async () => {
+        await expect(save(troca, { numero: 'B' })).resolves.toMatchObject({ totalMudou: false });
+      });
+
+      it('does NOT report a devolução change on a stored ENTRADA (it has no credit)', async () => {
+        await expect(
+          save({ ...troca, ehSaida: false }, { itensDevolvidos: { o1: { p1: [item(99)] } } }),
+        ).resolves.toMatchObject({ totalMudou: false });
+      });
+
+      it('reads the direction the pedido will HOLD: a patch flipping ehSaida drops the credit', async () => {
+        // Same items on both sides; only the direction moved, so the credit went
+        // 15 → 0. Reading `ehSaida` off the stored doc alone would call it "unchanged".
+        await expect(
+          save(troca, { ehSaida: false, itensDevolvidos: troca.itensDevolvidos }),
+        ).resolves.toMatchObject({ totalMudou: true });
+      });
+    });
   });
 });
 
@@ -690,60 +764,284 @@ describe('pagamentos', () => {
 
 describe('nextPedidoEstado (rule table)', () => {
   it('fully paid → pago + authorize despacho', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 100)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 100, 100)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 120)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 120, 120)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
   });
 
   it('is idempotent once pago', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 100, 100)).toBeNull();
   });
 
   it('partially paid → aguardando (no despacho)', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 50, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('is idempotent once aguardando while still partial', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, 100, 50)).toBeNull();
+    expect(
+      nextPedidoEstado(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, 100, 50, 50),
+    ).toBeNull();
   });
 
   it('downgrades a pago pedido that drops below its total', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 50, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 0)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 0, 0)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('leaves estado alone when nothing is paid and it is not pago', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 0, 0)).toBeNull();
   });
 
   it('never forces a transition on a zero-total pedido (even with a payment)', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 0)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 0, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 50, 50)).toBeNull();
   });
 
   it('never auto-reverts a terminal / fulfilled / refunded estado', () => {
     // Fully paid but cancelled/finalized → must NOT bounce back to pago.
-    expect(nextPedidoEstado(ESTADO_PEDIDO.cancelado, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.finalizado, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.fraude, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.processandoCancelamento, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.cancelado, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.finalizado, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.fraude, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.processandoCancelamento, 100, 100, 100)).toBeNull();
     // Partially paid (refund) on a refund state → must NOT erase it.
-    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0, 0)).toBeNull();
+  });
+  describe('a troca: the credit settles, but only a payment makes it PARTIAL (#367 OD4)', () => {
+    // 150 total, 100 returned (credit), nothing paid beyond it:
+    // valorQuitado 100, valorPagoAlemDaDevolucao 0.
+    it('a credit-only partial leaves every payment-driven estado where it is', () => {
+      for (const estado of [
+        ESTADO_PEDIDO.iniciado,
+        ESTADO_PEDIDO.carrinho,
+        ESTADO_PEDIDO.escolhendoFormaDePagamento,
+        ESTADO_PEDIDO.pagamentoNaoRealizado,
+      ]) {
+        expect(nextPedidoEstado(estado, 150, 100, 0)).toBeNull();
+      }
+    });
+
+    it('⚠️ NEAR-MISS: one paid cent on top of the same credit → aguardando', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 150, 100.01, 0.01)).toEqual({
+        estado: 'aguardandoConfirmacaoDePagamento',
+        autorizarDespacho: false,
+      });
+    });
+
+    it('the credit alone still settles an even swap — the full branch ignores valorPago', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 150, 150, 0)).toEqual({
+        estado: 'pago',
+        autorizarDespacho: true,
+      });
+    });
+
+    it('a pago troca the credit alone still covers stays pago (no downgrade without a payment)', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 150, 0)).toBeNull();
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 200, 0)).toBeNull();
+    });
+
+    it('a pago troca that the credit alone no longer covers is still downgraded', () => {
+      // The refund case: the difference was paid and refunded, the credit remains.
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 100, 0)).toEqual({
+        estado: 'aguardandoConfirmacaoDePagamento',
+        autorizarDespacho: false,
+      });
+    });
+  });
+});
+
+/**
+ * The frete estados a payment-driven `pago` may flip to `despachoAutorizado`
+ * (#702), spelled out instead of imported from `ESTADOS_FRETE_PRE_AUTORIZACAO`:
+ * importing the set the rule is built on would only assert `Set.has === Set.has`.
+ * Widening that set reds the table below instead of letting a payment rewrite one
+ * more warehouse estado. Mirrors `FLIPPABLE` in `../admin/pedidoReconcile.test.ts`.
+ */
+const FLIPPABLE: readonly EstadoFrete[] = [
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+];
+
+describe('freteComDespachoAutorizado (#702)', () => {
+  it.each([...estadoFreteSchema.options])(
+    'from frete estado %s: flips only when it precedes authorization',
+    (estado) => {
+      const frete = { estado, codRastreio: 'BR1' };
+
+      const result = freteComDespachoAutorizado(frete);
+
+      if (FLIPPABLE.includes(estado)) {
+        // The rest of the block rides along untouched.
+        expect(result).toEqual({ estado: ESTADO_FRETE.despachoAutorizado, codRastreio: 'BR1' });
+      } else {
+        // Not "same value" — null, so the caller never rewrites the block at all.
+        expect(result).toBeNull();
+      }
+    },
+  );
+
+  it('does not mutate the block it was given', () => {
+    const frete = { estado: ESTADO_FRETE.iniciado, codRastreio: null };
+    freteComDespachoAutorizado(frete);
+    expect(frete).toEqual({ estado: ESTADO_FRETE.iniciado, codRastreio: null });
+  });
+
+  it('repairs a malformed block that carries no estado at all', () => {
+    expect(freteComDespachoAutorizado({ codRastreio: null })).toEqual({
+      estado: ESTADO_FRETE.despachoAutorizado,
+      codRastreio: null,
+    });
+  });
+
+  it('leaves a marketplace-owned block alone, even from a pre-authorization estado', () => {
+    const owned = { estado: ESTADO_FRETE.iniciado, externalOptionIntegracao: 'mercadoLivre' };
+    expect(freteComDespachoAutorizado(owned)).toBeNull();
+  });
+
+  it('NEAR-MISS: an app-managed melhorEnvios block from the same estado still flips', () => {
+    expect(
+      freteComDespachoAutorizado({
+        estado: ESTADO_FRETE.iniciado,
+        externalOptionIntegracao: 'melhorEnvios',
+      }),
+    ).toEqual({
+      estado: ESTADO_FRETE.despachoAutorizado,
+      externalOptionIntegracao: 'melhorEnvios',
+    });
+  });
+
+  it.each([null, undefined, 'iniciado', 0])('has nothing to authorize on %j', (frete) => {
+    expect(freteComDespachoAutorizado(frete)).toBeNull();
+  });
+});
+
+describe('aplicarQuitacaoNaCriacao (OD2 — the even swap is created pago)', () => {
+  const devolvidos = (valor: number) => ({
+    o1: { p1: [{ precoDeVenda: valor, descontoUnitario: 0, quantidade: 1 }] },
+  });
+  /** A saída `iniciado`, total 150, returning 150 by default — the even swap. */
+  const troca = (over: Record<string, unknown> = {}) => ({
+    numero: 'PED-1',
+    estado: ESTADO_PEDIDO.iniciado,
+    ehSaida: true,
+    valorCobrado: 150,
+    itensDevolvidos: devolvidos(150),
+    freteInicial: { estado: ESTADO_FRETE.iniciado, codRastreio: null },
+    ...over,
+  });
+
+  it('creates an even swap directly as pago, with the frete dispatch authorized', () => {
+    const values = troca();
+
+    const result = aplicarQuitacaoNaCriacao(values);
+
+    expect(result).toEqual({
+      ...values,
+      estado: ESTADO_PEDIDO.pago,
+      freteInicial: { estado: ESTADO_FRETE.despachoAutorizado, codRastreio: null },
+    });
+    // The input is not the thing that changed.
+    expect(values.estado).toBe(ESTADO_PEDIDO.iniciado);
+    expect(values.freteInicial.estado).toBe(ESTADO_FRETE.iniciado);
+  });
+
+  it('⚠️ NEAR-MISS: a credit one cent short leaves the pedido untouched (stays editable)', () => {
+    const values = troca({ itensDevolvidos: devolvidos(149.99) });
+    const result = aplicarQuitacaoNaCriacao(values);
+    expect(result).toEqual(values);
+    expect(result.estado).toBe(ESTADO_PEDIDO.iniciado);
+  });
+
+  it('a partial credit does not even reach aguardando — the created estado is untouched', () => {
+    const result = aplicarQuitacaoNaCriacao(troca({ itensDevolvidos: devolvidos(100) }));
+    expect(result.estado).toBe(ESTADO_PEDIDO.iniciado);
+    expect(result.freteInicial.estado).toBe(ESTADO_FRETE.iniciado);
+  });
+
+  it('a credit above the total is still an even swap → pago', () => {
+    expect(aplicarQuitacaoNaCriacao(troca({ itensDevolvidos: devolvidos(200) })).estado).toBe(
+      ESTADO_PEDIDO.pago,
+    );
+  });
+
+  it('compares the ROUNDED credit — the figure the footer shows (OD3)', () => {
+    const itensDevolvidos = {
+      o1: { p1: [{ precoDeVenda: 1.01, descontoUnitario: 0, quantidade: 0.5 }] },
+    };
+    const credito = valorDevolvido({ itensDevolvidos });
+    expect(aplicarQuitacaoNaCriacao(troca({ itensDevolvidos, valorCobrado: credito })).estado).toBe(
+      ESTADO_PEDIDO.pago,
+    );
+    // NEAR-MISS: one cent more on the total and it is no longer covered.
+    expect(
+      aplicarQuitacaoNaCriacao(troca({ itensDevolvidos, valorCobrado: credito + 0.01 })).estado,
+    ).toBe(ESTADO_PEDIDO.iniciado);
+  });
+
+  it('never settles an ENTRADA — it carries no credit', () => {
+    const values = troca({ ehSaida: false });
+    expect(aplicarQuitacaoNaCriacao(values)).toEqual(values);
+  });
+
+  it('never settles a pedido with no devolução, or with a zero total', () => {
+    const semDevolucao = troca({ itensDevolvidos: null });
+    expect(aplicarQuitacaoNaCriacao(semDevolucao)).toEqual(semDevolucao);
+    // total 0: nextPedidoEstado has nothing to settle, credit or not.
+    const totalZero = troca({ valorCobrado: 0 });
+    expect(aplicarQuitacaoNaCriacao(totalZero)).toEqual(totalZero);
+  });
+
+  it('leaves an estado the payment rule does not drive (or cannot read) untouched', () => {
+    for (const estado of [
+      'legadoDesconhecido',
+      ESTADO_PEDIDO.cancelado,
+      ESTADO_PEDIDO.finalizado,
+    ]) {
+      const values = troca({ estado });
+      expect(aplicarQuitacaoNaCriacao(values)).toEqual(values);
+    }
+    // Already pago: no transition, so no frete flip either.
+    const jaPago = troca({ estado: ESTADO_PEDIDO.pago });
+    expect(aplicarQuitacaoNaCriacao(jaPago)).toEqual(jaPago);
+  });
+
+  it('is pago but leaves a marketplace-owned frete block as it was (#702)', () => {
+    const freteDoMarketplace = {
+      estado: ESTADO_FRETE.iniciado,
+      externalOptionIntegracao: 'mercadoLivre',
+    };
+    const result = aplicarQuitacaoNaCriacao(troca({ freteInicial: freteDoMarketplace }));
+    expect(result.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(result.freteInicial).toEqual(freteDoMarketplace);
+  });
+
+  it('is pago but does not regress a frete already past authorization (#702)', () => {
+    const empacotado = { estado: ESTADO_FRETE.empacotado, codRastreio: null };
+    const result = aplicarQuitacaoNaCriacao(troca({ freteInicial: empacotado }));
+    expect(result.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(result.freteInicial).toEqual(empacotado);
+  });
+
+  it('is pago without inventing a frete block the pedido never had', () => {
+    const result = aplicarQuitacaoNaCriacao(troca({ freteInicial: null }));
+    expect(result.estado).toBe(ESTADO_PEDIDO.pago);
+    expect(result.freteInicial).toBeNull();
   });
 });
 

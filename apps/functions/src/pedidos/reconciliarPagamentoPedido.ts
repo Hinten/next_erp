@@ -9,7 +9,8 @@ import { getDb } from '../lib/admin';
 
 const reconciliarInputSchema = z.object({
   pedidoId: z.string().min(1),
-  // Set by the pedido editor after a save that moved `valorCobrado` (#703): only
+  // Set by the pedido editor after a save that moved `valorCobrado` (#703) or
+  // the troca devolução credit (#367): only
   // reconcile while the estado read in the transaction still lets the total
   // move AND the pedido's channel is not a marketplace (whose ladder owns the
   // estado). Defaults to false, so the Pagamentos tab's call is unchanged.
@@ -35,7 +36,8 @@ export interface ReconciliarPagamentoPedidoResult {
  * manual — see the "Deploying" section in `apps/functions/CLAUDE.md`).
  *
  * Second caller (#703): the pedido editor, after a save that moved
- * `valorCobrado`, with `aposAlterarTotal: true`. ⚠️ Deploy this BEFORE the
+ * `valorCobrado` or the troca devolução credit (#367), with
+ * `aposAlterarTotal: true`. ⚠️ Deploy this BEFORE the
  * web that sends it — an older deploy strips the unknown key (non-strict Zod)
  * and reconciles unguarded; the web's own gate then only narrows that window.
  */

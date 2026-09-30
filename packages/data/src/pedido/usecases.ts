@@ -3,11 +3,16 @@ import {
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
   bloqueioFinalizarAtivo,
+  coberturaDoPedido,
   estadoPedidoSchema,
+  isFreteMarketplaceOwned,
+  podeAutorizarDespacho,
   seedFreteInicial,
   travarInclusaoProduto,
+  valorDevolvido,
   valuesEqual,
   type BloqueioPedido,
+  type EstadoFrete,
   type EstadoPedido,
   type FreteDoPedido,
   type Pedido,
@@ -293,10 +298,16 @@ export async function savePedido(
  */
 export interface SavePedidoResultado {
   /**
-   * `valorCobrado` rode the patch AND differs from the stored value it replaced.
-   * `buildPedidoPatch` adds it whenever items / desconto / frete / devolução are
-   * dirty, including an edit the operator reverted — so presence alone proves
-   * nothing and the stored value is the comparison.
+   * The total OR the devolução credit moved: `valorCobrado` rode the patch AND
+   * differs from the stored value it replaced, or `itensDevolvidos` rode it AND
+   * the credit they add to the paid side (`valorDevolvido`,
+   * `packages/schemas/src/pedido/pureLogic/cobertura.ts`) differs from the stored
+   * one. `buildPedidoPatch` adds `valorCobrado` whenever items / desconto / frete
+   * / devolução are dirty, including an edit the operator reverted — so presence
+   * alone proves nothing and the stored value is the comparison. The credit needs
+   * its own arm because `valorCobrado` stays GROSS: an edit that only adds or
+   * removes returned items leaves it untouched while moving what the payments are
+   * measured against.
    */
   totalMudou: boolean;
   /**
@@ -313,14 +324,42 @@ function resultadoDoSave(
   // A plain `!==`, never a fold: a false "changed" costs one idempotent
   // reconcile that writes nothing, while a false "unchanged" is the stale estado
   // this result exists to prevent.
-  const totalMudou = 'valorCobrado' in patch && patch.valorCobrado !== current.valorCobrado;
+  const totalMudou =
+    ('valorCobrado' in patch && patch.valorCobrado !== current.valorCobrado) ||
+    creditoDeDevolucaoMudou(patch, current);
   const estado = estadoPedidoSchema.safeParse('estado' in patch ? patch.estado : current.estado);
   return { totalMudou, estadoGravado: estado.success ? estado.data : null };
 }
 
 /**
+ * Whether the patch moved the devolução credit the estado rule counts as paid —
+ * `valorDevolvido` of the patch's `itensDevolvidos` (under the direction the
+ * pedido will HOLD after the write) against the same figure off the stored doc.
+ * Compares the ROUNDED credit with a plain `!==`, same stance as the total above:
+ * key order and other no-op re-serializations of the same items compare equal
+ * because the credit is a number, while a one-cent move never folds away. Read
+ * off `current` — the committed read of the transaction that wrote the patch.
+ */
+function creditoDeDevolucaoMudou(
+  patch: Record<string, unknown>,
+  current: Record<string, unknown>,
+): boolean {
+  if (!('itensDevolvidos' in patch)) return false;
+  const depois = valorDevolvido({
+    ehSaida: ('ehSaida' in patch ? patch.ehSaida : current.ehSaida) as boolean | null | undefined,
+    itensDevolvidos: patch.itensDevolvidos,
+  });
+  const antes = valorDevolvido({
+    ehSaida: current.ehSaida as boolean | null | undefined,
+    itensDevolvidos: current.itensDevolvidos,
+  });
+  return depois !== antes;
+}
+
+/**
  * Whether a pedido save must re-derive `estado` from the payments (#703): the
- * total moved, so the sum it was compared against is gone.
+ * total (or the troca devolução credit counted beside the payments) moved, so
+ * the sum it was compared against is gone.
  *
  * ⚠️ Gated on the estados where the editor lets the total move at all
  * (`!travarInclusaoProduto` — the cart/checkout phase plus `error`), read off the
@@ -578,37 +617,62 @@ const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
 ]);
 
 /**
- * Pure rule: the pedido `estado` implied by how much has been paid, or `null`
+ * Pure rule: the pedido `estado` implied by how much has been settled, or `null`
  * when there is no transition (current estado already matches, the estado isn't
  * payment-driven, or the pedido has no total). Ports the legacy auto-transition
  * that ran after each pagamento change:
  *
- *  - **fully paid** (`valorPago ≥ total`, `total > 0`) → `pago` and authorize
- *    frete dispatch (`despachoAutorizado`);
- *  - **partially paid** (`0 < valorPago < total`) → `aguardandoConfirmacaoDePagamento`;
+ *  - **fully settled** (`valorQuitado ≥ total`, `total > 0`) → `pago` and
+ *    authorize frete dispatch (`despachoAutorizado`);
+ *  - **partially paid** (`valorPagoAlemDaDevolucao > 0`, `valorQuitado < total`)
+ *    → `aguardandoConfirmacaoDePagamento`;
  *  - a **`pago`** pedido that drops below its total → downgraded back to
  *    `aguardandoConfirmacaoDePagamento`.
+ *
+ * `valorQuitado` is the PAID side of a troca: the paying pagamentos PLUS the
+ * devolução credit (`coberturaDoPedido`, `@delfrance/schemas`), measured against
+ * the GROSS `total`. `valorPagoAlemDaDevolucao` is the money paid BEYOND the
+ * returned value — the paying pagamentos minus a crédito loja that only registers
+ * the return. A pedido without returned items has no credit and all three
+ * coincide, but a troca's returned items count as paid (legacy
+ * `tasks.dart:64-68`). The credit is added to the paid side rather than
+ * subtracted from the total because `total <= 0` returns `null`, so a net total
+ * of zero (an even swap) would never settle.
+ *
+ * ⚠️ The returned value settles; it never makes a pedido PARTIALLY paid. The
+ * partial branch requires money beyond it. A troca whose returned items cover
+ * part of the total, with nothing more paid, stays in its estado (items
+ * editable) until a real payment moves it (#367 OD4, owner decision: "a partial
+ * credit stays iniciado and editable; the first link or payment moves it
+ * forward") — whether the return is only in `itensDevolvidos` or also registered
+ * as a crédito-loja pagamento. That makes creation ({@link aplicarQuitacaoNaCriacao},
+ * where no pagamento can exist) and every later reconcile agree on the same
+ * estado for the same return and payments. Legacy moved a credit-only partial to
+ * aguardando everywhere — the form's save, creation included
+ * (`cadastroPedidoProvider.dart:1137`), and the Mercado Pago webhook
+ * (`tasks.dart:101`) — locking the items before anyone had paid.
  *
  * Only the {@link AUTO_ESTADO_SOURCES} states are touched, so a cancelado /
  * finalizado / estornado* / fraude pedido is never reverted by a payment sum. A
  * zero-total pedido is left alone (nothing to settle). Inputs are expected
- * already 2-decimal-rounded (`derivePedidoTotals` / `sumPagamentosPagos`).
+ * already 2-decimal-rounded (`derivePedidoTotals` / `coberturaDoPedido`).
  */
 export function nextPedidoEstado(
   estado: EstadoPedido,
   total: number,
-  valorPago: number,
+  valorQuitado: number,
+  valorPagoAlemDaDevolucao: number,
 ): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
   if (!AUTO_ESTADO_SOURCES.has(estado)) return null;
   if (total <= 0) return null;
-  const fullyPaid = valorPago >= total;
+  const fullyPaid = valorQuitado >= total;
   if (fullyPaid) {
     return estado === ESTADO_PEDIDO.pago
       ? null
       : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
   if (
-    valorPago > 0 &&
+    valorPagoAlemDaDevolucao > 0 &&
     estado !== ESTADO_PEDIDO.pago &&
     estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
   ) {
@@ -619,6 +683,91 @@ export function nextPedidoEstado(
     return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
   return null;
+}
+
+/**
+ * The `freteInicial` block a payment-driven `pago` transition writes — the block
+ * with `estado` set to `despachoAutorizado` — or `null` when it must be left
+ * alone (no block, a block the marketplace owns, or one already past
+ * authorization). The single rule behind the server reconcile
+ * (`applyEstadoTransition` in `../admin/pedidoReconcile`) and the create-time
+ * settlement ({@link aplicarQuitacaoNaCriacao}), so the two cannot disagree on
+ * which frete estados a payment may rewrite.
+ *
+ * Authorizes dispatch ONLY from a state that precedes authorization
+ * ({@link podeAutorizarDespacho}) — or from a malformed block carrying no estado
+ * at all, which the flip repairs — and never on a freight block the marketplace
+ * importer owns (#702). This used to be `!isFreteJaPostado(...)`, which answers
+ * the label-reprint question and let a `pago` transition regress `empacotado` /
+ * `emSeparacao` / `checkFinalizado` back to `despachoAutorizado` — erasing
+ * warehouse progress, and (via `CAMPOS_OBSERVADOS`) re-running the estoque sync
+ * against a state that no longer removes stock.
+ *
+ * Pure and read-free by design: the ownership tipo is read off
+ * `externalOptionIntegracao`, which lives on the frete block itself. That matters
+ * to the webhook reconcile, which has already written the pagamento by the time
+ * it decides this and Firestore forbids a read after a write.
+ */
+export function freteComDespachoAutorizado(frete: unknown): Record<string, unknown> | null {
+  if (!frete || typeof frete !== 'object') return null;
+  const freteRecord = frete as Record<string, unknown>;
+  const freteEstado = freteRecord.estado as EstadoFrete | undefined;
+  const podeAutorizar = !freteEstado || podeAutorizarDespacho(freteEstado);
+  const marketplaceOwned = isFreteMarketplaceOwned(
+    freteRecord.externalOptionIntegracao as string | null | undefined,
+  );
+  if (!podeAutorizar || marketplaceOwned) return null;
+  return { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
+}
+
+/**
+ * Create-time settlement of a troca whose devolução credit FULLY covers its
+ * total (legacy parity for the even swap, `cadastroPedidoProvider.dart:1111-1136`):
+ * the saída is created directly as `pago`, with `freteInicial` authorized through
+ * {@link freteComDespachoAutorizado}. Without it the even swap would sit in
+ * `iniciado` forever — it has no pagamento to trigger the reconcile and, with
+ * nothing left to pay, none will ever be added.
+ *
+ * The rule is {@link nextPedidoEstado} fed the create-time cobertura: no
+ * pagamento can exist yet (they are a subcollection only reachable once the doc
+ * does), so `valorQuitado` is the credit alone and nothing is paid beyond it.
+ * Anything short of `pago` — a PARTIAL credit, an entrada (no credit), a zero
+ * total, an estado the payment rule does not drive, or one that is already
+ * `pago` — returns `values` UNTOUCHED and the pedido stays editable in the
+ * estado it was created with.
+ *
+ * A partial credit stays put for the SAME reason on every later reconcile (the
+ * save's, `aposAlterarTotal`, and a pagamento's): they apply the same rule, whose
+ * partial branch needs money beyond the returned value — so the estado never
+ * depends on whether the troca was just created or just edited (#367 OD4, see
+ * {@link nextPedidoEstado}).
+ *
+ * Done client-side, in the very write that creates the pedido, and NOT through
+ * the `reconciliarPagamentoPedido` callable after it: the operator keeps the
+ * estado attribution (the callable would record a null usuário), the pedido is
+ * never observable in the wrong estado, and there is no second writer to race —
+ * the doc does not exist until this write. Pure: no clock, no I/O.
+ */
+export function aplicarQuitacaoNaCriacao<T extends object>(values: T): T {
+  const doc = values as unknown as Record<string, unknown>;
+  const estado = estadoPedidoSchema.safeParse(doc.estado);
+  if (!estado.success) return values;
+  const { valorCobrado, valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
+    {
+      valorCobrado: doc.valorCobrado as number | null | undefined,
+      ehSaida: doc.ehSaida as boolean | null | undefined,
+      itensDevolvidos: doc.itensDevolvidos,
+    },
+    [],
+  );
+  const next = nextPedidoEstado(estado.data, valorCobrado, valorQuitado, valorPagoAlemDaDevolucao);
+  if (next?.estado !== ESTADO_PEDIDO.pago) return values;
+  const frete = freteComDespachoAutorizado(doc.freteInicial);
+  return {
+    ...values,
+    estado: ESTADO_PEDIDO.pago,
+    ...(frete === null ? {} : { freteInicial: frete }),
+  };
 }
 
 // The client-side reconcile that used to live here

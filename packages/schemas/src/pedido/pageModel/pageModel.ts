@@ -7,6 +7,7 @@ import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pe
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
+import { coberturaDoPedido, type PagamentoCoberturaRow } from '../pureLogic/cobertura';
 
 /**
  * # Pedido page model
@@ -59,7 +60,9 @@ export interface PedidoPageValidationInput {
   chNFeReferenciadas?: ReadonlyArray<string | null> | null;
   chNFePagamentoAntecipado?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
-  pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
+  /** The returned items (troca) — their value counts as paid; see `coberturaDoPedido`. */
+  itensDevolvidos?: unknown;
+  pagamentos?: ReadonlyArray<PagamentoCoberturaRow> | null;
 }
 
 /** One cross-document validation problem, keyed by a dotted field path. */
@@ -206,15 +209,26 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
   // in the Devolução tab UI. (See issue #235 for the return-order side effects.)
 
   // When the aggregate carries the payments AND the order is marked paid, the
-  // approved payments must cover the charged total (legacy
+  // approved payments PLUS the value of the returned items (a troca: legacy
+  // counted the devolução as paid) must cover the charged total (legacy
   // `cadastroPedidoProvider.dart:1169`). Only enforced when `pagamentos` is
   // supplied (an MCP agent / integrated save) — the per-tab web flows save the
   // pedido doc and the payments separately, so this stays out of their way.
+  // Keeps legacy's aprovado-only payment filter (the estado reconcile, not this
+  // save-time check, is what counts `em_disputa`).
   if (data.pagamentos != null && data.estado === ESTADO_PEDIDO.pago) {
-    const aprovado = data.pagamentos
-      .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
-      .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-    if (roundReais(aprovado) < roundReais(data.valorCobrado ?? 0)) {
+    const aprovados = data.pagamentos.filter(
+      (p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado,
+    );
+    const { valorQuitado } = coberturaDoPedido(
+      {
+        valorCobrado: data.valorCobrado,
+        ehSaida: data.ehSaida,
+        itensDevolvidos: data.itensDevolvidos,
+      },
+      aprovados,
+    );
+    if (valorQuitado < roundReais(data.valorCobrado ?? 0)) {
       issues.push({
         path: 'pagamentos',
         message: 'O valor pago aprovado é menor que o total do pedido.',

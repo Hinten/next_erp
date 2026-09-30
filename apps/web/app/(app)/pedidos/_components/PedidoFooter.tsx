@@ -6,10 +6,15 @@ import type { Firestore } from 'firebase/firestore';
 import { Alert, Button, Group, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { ESTADO_PEDIDO, derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
-import { formatReais, roundReais } from '@delfrance/core/money';
+import {
+  ESTADO_PEDIDO,
+  coberturaDoPedido,
+  derivePedidoTotals,
+  type Pedido,
+  type Pagamento,
+} from '@delfrance/schemas';
+import { formatReais } from '@delfrance/core/money';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
-import { sumPagamentosPagos } from './PagamentoForm';
 import { OrcamentoShareMenu } from './print/OrcamentoShareMenu';
 import type { FlatItem, PedidoFormState } from './types';
 import { DecimalInput } from '@delfrance/ui';
@@ -78,6 +83,13 @@ function FooterStat({
  * scrolls. Totals are derived live via `derivePedidoTotals` over the watched
  * form values, so they match the saved doc exactly (validate-what-you-save).
  * "Vlr. Pago" / "Troco" subscribe to the pedido's pagamentos (edit mode only).
+ *
+ * A troca's returned items (`itensDevolvidos`) are a CREDIT on the paid side
+ * (`coberturaDoPedido`, legacy `tasks.dart:64-68`): "Total" is the net amount
+ * to pay (`valorCobrado` − the credit, negative when the return exceeds the
+ * sale), "Devoluções" the gross returned value, and "Troco" what the credit
+ * plus the payments exceed the gross total by — also in create mode, where the
+ * credit is the only thing counted.
  */
 export function PedidoFooter({
   form,
@@ -122,8 +134,9 @@ export function PedidoFooter({
     [realItens, descontoTotal, freteInicial, itensDevolvidos],
   );
 
-  // Σ approved payments, live (edit mode only). `valorPago`/`troco` stay hidden in
-  // create mode where there is no pedido to attach pagamentos to.
+  // Σ paying payments, live (edit mode only). `valorPago` stays hidden in create
+  // mode where there is no pedido to attach pagamentos to — but the devolução
+  // credit still counts there (no pagamentos ⇒ `cobertura` is the credit alone).
   const pagamentosQuery = useMemo(
     () =>
       pedidoId
@@ -134,29 +147,30 @@ export function PedidoFooter({
     [db, pedidoId],
   );
   const { data: pagamentos } = useSnapshot<Pagamento>(pagamentosQuery);
-  const valorPago = useMemo(
+  const cobertura = useMemo(
     () =>
-      sumPagamentosPagos(
-        (pagamentos ?? []).map(({ id, data: p }) => ({
-          id,
+      coberturaDoPedido(
+        { valorCobrado: totals.valorCobrado, ehSaida, itensDevolvidos },
+        (pagamentos ?? []).map(({ data: p }) => ({
           valor: p.valor,
           status_pagamento: p.status_pagamento,
+          forma_de_pagamento: p.forma_de_pagamento,
         })),
       ),
-    [pagamentos],
+    [totals.valorCobrado, ehSaida, itensDevolvidos, pagamentos],
   );
-  const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
+  const { valorPago, troco } = cobertura;
 
   // Soft check (legacy `cadastroPedidoProvider.dart:1169`): a pedido marked
-  // `pago` whose paid total (`valorPago` = the null|aprovado payments counted by
-  // `sumPagamentosPagos`) doesn't cover the order total. Slice C's auto-reconcile
-  // keeps these consistent, so this only surfaces a manual estado→pago that isn't
-  // fully paid — a warning, not a save block.
+  // `pago` whose quitado total (`valorQuitado` = the null|aprovado payments plus
+  // the troca devolução credit) doesn't cover the order total. Slice C's
+  // auto-reconcile keeps these consistent, so this only surfaces a manual
+  // estado→pago that isn't fully paid — a warning, not a save block.
   const estado = useWatch({ control: form.control, name: 'estado' });
   const underpaid =
     pedidoId != null &&
     estado === ESTADO_PEDIDO.pago &&
-    roundReais(valorPago) < roundReais(totals.valorCobrado);
+    cobertura.valorQuitado < cobertura.valorCobrado;
 
   return (
     <Paper
@@ -208,9 +222,9 @@ export function PedidoFooter({
             </Stack>
             <FooterStat
               label="Total"
-              value={brl(totals.valorCobrado)}
+              value={brl(cobertura.saldo)}
               bold
-              color={totals.valorCobrado < 0 ? 'red' : undefined}
+              color={cobertura.saldo < 0 ? 'red' : undefined}
               testId="footer-total"
             />
             {/* Vlr. Pago is a payments figure — shown only in edit mode (a real

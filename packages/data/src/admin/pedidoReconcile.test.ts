@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
 import {
   ESTADO_FRETE,
+  FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
   estadoFreteSchema,
   pagamentoSchema,
@@ -9,6 +10,7 @@ import {
   type Pagamento,
 } from '@delfrance/schemas';
 
+import { aplicarQuitacaoNaCriacao } from '../pedido/usecases';
 import {
   PedidoReconcileNotFoundError,
   reconcilePedidoEstado,
@@ -1223,5 +1225,562 @@ describe('reconcilePedidoEstado', () => {
     );
     expect(writes.sets).toHaveLength(0);
     expect(writes.updates).toHaveLength(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Troca — the devolução credit counts as PAID (#367 PR 0)                   */
+/*                                                                            */
+/*  Legacy counted the returned items as paid and compared against the GROSS  */
+/*  total (`tasks.dart:64-68`). `valorCobrado` stays gross here; the credit   */
+/*  is read off the pedido snapshot the reconcile already holds and added to  */
+/*  the PAID side (`coberturaDoPedido`) — minus paying 'crédito loja'         */
+/*  pagamentos, so registering the returned value as a payment (to emit the   */
+/*  troca's NF-e) is not counted twice.                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('troca — the devolução credit counts as paid', () => {
+  /** The returned items of a troca: one line worth `valor` (qty 1, no discount). */
+  const devolvidos = (valor: number) => ({
+    o1: { p1: [{ precoDeVenda: valor, descontoUnitario: 0, quantidade: 1 }] },
+  });
+  /** A saída `iniciado`, total 150 (GROSS), returning 100 — "pay the difference". */
+  const trocaSeed = (over: Record<string, unknown> = {}) => ({
+    estado: 'iniciado',
+    ehSaida: true,
+    valorCobrado: 150,
+    itensDevolvidos: devolvidos(100),
+    freteInicial: { estado: 'iniciado', codRastreio: null },
+    ...over,
+  });
+  const pagamentoDoc = (valor: number, over: Record<string, unknown> = {}) => ({
+    valor,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    forma_de_pagamento: FORMA_PAGAMENTO.pix,
+    ultimaModificacao: T_OLD,
+    ...over,
+  });
+  const creditoLoja = (valor: number, over: Record<string, unknown> = {}) =>
+    pagamentoDoc(valor, { forma_de_pagamento: FORMA_PAGAMENTO.credito_loja, ...over });
+
+  describe('reconcilePedidoEstado', () => {
+    it('a troca paid the difference (credit 100 + aprovado 50 on 150) → pago, dispatch authorized', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed(),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'pago' });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+      expect(store['pedidos/p1']!.freteInicial).toEqual({
+        estado: 'despachoAutorizado',
+        codRastreio: null,
+      });
+      // The credit is a figure derived from the pedido — never written back.
+      expect(store['pedidos/p1']!.valorCobrado).toBe(150);
+    });
+
+    it('⚠️ NEAR-MISS: one cent short of the difference (49.99) → aguardando, frete untouched', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed(),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(49.99),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado', codRastreio: null });
+    });
+
+    it('an even swap (credit 150, NO pagamentos) → pago — the credit is added to the paid side, not netted off the total', async () => {
+      // Netting would leave a total of 0, and `nextPedidoEstado` returns null on
+      // `total <= 0`: the swap would sit in `iniciado` forever.
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({ itensDevolvidos: devolvidos(150) }),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'pago' });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+      expect(store['pedidos/p1']!.freteInicial).toMatchObject({ estado: 'despachoAutorizado' });
+    });
+
+    describe('OD4 — a credit alone never makes the troca PARTIALLY paid (items stay editable)', () => {
+      it('a credit-only partial (100 on 150, no pagamentos) stays iniciado — nothing is written', async () => {
+        // Legacy's save moved this to aguardando (`cadastroPedidoProvider.dart:1137`)
+        // and locked the items before anyone had paid; the owner chose "a partial
+        // credit stays iniciado and editable; the first link or payment moves it".
+        const { db, store, writes } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('iniciado');
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('the first save after creation (aposAlterarTotal) does not lock it either', async () => {
+        // The review's scenario: a troca created `iniciado` (150 total, 100
+        // returned, no pagamento) whose next save moves the total or the credit.
+        const { db, store, writes } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('iniciado');
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('a NON-paying pagamento (pendente) beside the credit does not open the partial branch', async () => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': pagamentoDoc(50, {
+            status_pagamento: STATUS_PAGAMENTO.pendente,
+          }),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('iniciado');
+      });
+
+      it('⚠️ NEAR-MISS: one PAID cent beside the same credit → aguardando, frete untouched', async () => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': pagamentoDoc(0.01),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+        expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+        expect(store['pedidos/p1']!.freteInicial).toEqual({
+          estado: 'iniciado',
+          codRastreio: null,
+        });
+      });
+
+      it('a crédito loja that only REGISTERS the returned value is the credit, not a payment — stays iniciado', async () => {
+        // OD1: the crédito loja is the return already registered, not extra money.
+        // Recording the same return this way must not lock the items when the
+        // bare credit does not — the estado cannot depend on which one was used.
+        const { db, store, writes } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(100),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('iniciado');
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('⚠️ NEAR-MISS: the same crédito loja plus one paid cent → aguardando', async () => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(100),
+          'pedidos/p1/pagamentos/pay2': pagamentoDoc(0.01),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+        expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+      });
+
+      it('a crédito loja ABOVE the returned value is money: the excess moves the troca forward', async () => {
+        // 100 returned, crédito loja 150 on 200: 50 of store credit beyond the return.
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed({ valorCobrado: 200 }),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(150),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+        expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+      });
+
+      describe('creation and every later reconcile agree — reconciling the created doc is a no-op', () => {
+        // `aplicarQuitacaoNaCriacao` decides the estado a troca is CREATED with;
+        // the reconciles it meets next must land on the same one for the same
+        // credit and (no) pagamentos, or the estado would depend on whether the
+        // troca was just created or just edited.
+        it.each<[string, number, string]>([
+          ['a partial credit', 100, 'iniciado'],
+          ['a credit one cent short', 149.99, 'iniciado'],
+          ['an even swap', 150, 'pago'],
+          ['a credit above the total', 200, 'pago'],
+        ])(
+          '%s (%s returned on 150) is created %s and no reconcile moves it',
+          async (_, devolvido, esperado) => {
+            const criado = aplicarQuitacaoNaCriacao(
+              trocaSeed({ itensDevolvidos: devolvidos(devolvido) }),
+            );
+            expect(criado.estado).toBe(esperado);
+            // Both reconciles a created troca meets next: the save's
+            // (`aposAlterarTotal`) and the flagless one a pagamento save / the
+            // operator's button runs. On a `pago` doc the save's one returns at the
+            // `travarInclusaoProduto` gate BEFORE the rule runs, so only the
+            // flagless one proves the RULE agrees with creation there.
+            for (const aposAlterarTotal of [true, false]) {
+              const { db, store, writes } = makeDb({ 'pedidos/p1': criado });
+
+              const result = await reconcilePedidoEstado(db, {
+                pedidoId: PEDIDO_ID,
+                aposAlterarTotal,
+              });
+
+              expect(result, String(aposAlterarTotal)).toEqual({ transition: null });
+              expect(store['pedidos/p1']!.estado).toBe(esperado);
+              expect(writes.updates).toHaveLength(0);
+            }
+          },
+        );
+
+        it('the save gate answers for a pago doc before the rule runs', async () => {
+          // Why the table above also runs the flagless reconcile: with the flag, a
+          // `pago` doc never reaches the rule, whatever the rule says.
+          const semCredito = () => ({
+            'pedidos/p1': trocaSeed({ estado: 'pago', itensDevolvidos: null }),
+          });
+          expect(
+            await reconcilePedidoEstado(makeDb(semCredito()).db, {
+              pedidoId: PEDIDO_ID,
+              aposAlterarTotal: true,
+            }),
+          ).toEqual({ transition: null });
+          expect(
+            await reconcilePedidoEstado(makeDb(semCredito()).db, { pedidoId: PEDIDO_ID }),
+          ).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+        });
+      });
+    });
+
+    it('a pago troca whose payment + credit still cover the total is a no-op (it used to DOWNGRADE)', async () => {
+      // The regression: without the credit this pedido reads as 50 paid of 150 and
+      // a reconcile (the operator's button, any pagamento save) sent it back to
+      // aguardando.
+      const { db, store, writes } = makeDb({
+        'pedidos/p1': trocaSeed({ estado: 'pago' }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: null });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+      expect(writes.updates).toHaveLength(0);
+    });
+
+    it('⚠️ NEAR-MISS: the same pago troca one cent short (49.99) downgrades', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({ estado: 'pago' }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(49.99),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
+
+    it('a refund of the difference downgrades a pago troca (the credit alone does not cover the total)', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({ estado: 'pago' }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50, {
+          status_pagamento: STATUS_PAGAMENTO.estornado,
+        }),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
+
+    describe('OD1 — a paying crédito loja pagamento is the returned value already registered, not extra money', () => {
+      it.each<[number, string]>([
+        // credit 100 − crédito loja 100 = 0, so only the pix counts.
+        [49.99, 'aguardandoConfirmacaoDePagamento'],
+        [50, 'pago'],
+      ])('crédito loja 100 + pix %s on 150 → %s', async (pix, esperado) => {
+        // Counted twice (credit 100 + crédito loja 100) the pedido would be `pago`
+        // — and its freight authorized — before the difference was paid.
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(100),
+          'pedidos/p1/pagamentos/pay2': pagamentoDoc(pix),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: esperado });
+        expect(store['pedidos/p1']!.estado).toBe(esperado);
+      });
+
+      it('NEAR-MISS: a REFUSED crédito loja does not reduce the credit', async () => {
+        // A recusado row is not paying, so it neither adds to the sum nor eats the
+        // credit: credit 100 + pix 50 covers the 150.
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(100, {
+            status_pagamento: STATUS_PAGAMENTO.recusado,
+          }),
+          'pedidos/p1/pagamentos/pay2': pagamentoDoc(50),
+        });
+
+        const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+        expect(result).toEqual({ transition: 'pago' });
+        expect(store['pedidos/p1']!.estado).toBe('pago');
+      });
+
+      it('a PARTIAL crédito loja only eats that much of the credit (40 of 100 → credit 60)', async () => {
+        // 60 + 40 + 50 = 150 covers; 60 + 40 + 49.99 does not.
+        const seed = (pix: number) => ({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/pay1': creditoLoja(40),
+          'pedidos/p1/pagamentos/pay2': pagamentoDoc(pix),
+        });
+        const cobre = makeDb(seed(50));
+        expect(await reconcilePedidoEstado(cobre.db, { pedidoId: PEDIDO_ID })).toEqual({
+          transition: 'pago',
+        });
+        const falta = makeDb(seed(49.99));
+        expect(await reconcilePedidoEstado(falta.db, { pedidoId: PEDIDO_ID })).toEqual({
+          transition: 'aguardandoConfirmacaoDePagamento',
+        });
+      });
+    });
+
+    it('an ENTRADA carrying itensDevolvidos gets no credit (50 on 150 → aguardando)', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({ ehSaida: false }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado', codRastreio: null });
+    });
+
+    it('reads a raw legacy devolução tolerantly — junk counts as no credit and never throws', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({
+          itensDevolvidos: {
+            // A string price is not a number: this line is worth 0.
+            o1: { p1: [{ precoDeVenda: '100', descontoUnitario: 0, quantidade: 1 }] },
+            o2: 'lixo',
+            o3: { p3: 'nao-e-lista' },
+          },
+        }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50),
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      // 50 paid of 150, no credit → still partial.
+      expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
+
+    describe('aposAlterarTotal — a devolução-only edit reconciles', () => {
+      it('settles an even swap the operator just edited into existence (no pagamentos)', async () => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed({ itensDevolvidos: devolvidos(150) }),
+        });
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: 'pago' });
+        expect(store['pedidos/p1']!.estado).toBe('pago');
+      });
+
+      it('⚠️ a marketplace pedido is still left alone — the gate is unchanged by the credit', async () => {
+        const { db, store, writes } = makeDb({
+          'pedidos/p1': trocaSeed({
+            estado: 'carrinho',
+            itensDevolvidos: devolvidos(150),
+            integracaoPedidoOuterRef: 'documents/integracao/int1',
+          }),
+          'integracao/int1': { tipo: 1 }, // mercadoLivre
+        });
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: null });
+        expect(store['pedidos/p1']!.estado).toBe('carrinho');
+        expect(writes.updates).toHaveLength(0);
+      });
+
+      it('NEAR-MISS: the same pedido on the balcão is settled', async () => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed({
+            estado: 'carrinho',
+            itensDevolvidos: devolvidos(150),
+            integracaoPedidoOuterRef: 'documents/integracao/int1',
+          }),
+          'integracao/int1': { tipo: 7 }, // balcao
+        });
+
+        const result = await reconcilePedidoEstado(db, {
+          pedidoId: PEDIDO_ID,
+          aposAlterarTotal: true,
+        });
+
+        expect(result).toEqual({ transition: 'pago' });
+        expect(store['pedidos/p1']!.estado).toBe('pago');
+      });
+    });
+  });
+
+  describe('reconcilePedidoFromPagamento', () => {
+    it('a Mercado Pago payment of the difference (50 on a 150 troca, credit 100) → pago', async () => {
+      // The credit comes ONLY from the stored pedido doc: the incoming pagamento
+      // carries nothing about the devolução.
+      const { db, store } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: mkPagamento({
+          valor: 50,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          ultimaModificacao: T_NEW,
+        }),
+      });
+
+      expect(result).toEqual({ transition: 'pago', skippedStale: false });
+      expect(store['pedidos/p1']!.estado).toBe('pago');
+      expect(store['pedidos/p1']!.freteInicial).toEqual({
+        estado: 'despachoAutorizado',
+        codRastreio: null,
+      });
+    });
+
+    it('⚠️ NEAR-MISS: 49.99 of the 50 difference → aguardando, frete untouched', async () => {
+      const { db, store } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: mkPagamento({
+          valor: 49.99,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          ultimaModificacao: T_NEW,
+        }),
+      });
+
+      expect(result).toEqual({
+        transition: 'aguardandoConfirmacaoDePagamento',
+        skippedStale: false,
+      });
+      expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado', codRastreio: null });
+    });
+
+    it('OD4: a PENDING Mercado Pago payment on a credit-partial troca leaves it iniciado', async () => {
+      // The credit (100 on 150) is not a payment, and a pendente one is not
+      // paying: nothing has been paid, so the items stay editable.
+      const { db, store } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: mkPagamento({
+          valor: 50,
+          status_pagamento: STATUS_PAGAMENTO.pendente,
+          ultimaModificacao: T_NEW,
+        }),
+      });
+
+      expect(result).toEqual({ transition: null, skippedStale: false });
+      expect(store['pedidos/p1']!.estado).toBe('iniciado');
+      // The pagamento itself is still recorded.
+      expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 50 });
+    });
+
+    it('the INCOMING pagamento carries its forma: a crédito loja of 100 eats the whole credit', async () => {
+      // credit 100 − crédito loja 100 = 0: 100 of 150 covered, nothing paid beyond
+      // the return → no transition (OD4). If the incoming row lost its
+      // `forma_de_pagamento` it would count as extra money (100 + 100 ≥ 150) and
+      // the pedido would read `pago`.
+      const { db, store } = makeDb({ 'pedidos/p1': trocaSeed() });
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: mkPagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.credito_loja,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          ultimaModificacao: T_NEW,
+        }),
+      });
+
+      expect(result).toEqual({ transition: null, skippedStale: false });
+      expect(store['pedidos/p1']!.estado).toBe('iniciado');
+    });
+
+    it.each<[number, string]>([
+      [49.99, 'aguardandoConfirmacaoDePagamento'],
+      [50, 'pago'],
+    ])(
+      'a STORED crédito loja of 100 + an incoming payment of %s on 150 → %s',
+      async (valor, esperado) => {
+        const { db, store } = makeDb({
+          'pedidos/p1': trocaSeed(),
+          'pedidos/p1/pagamentos/payCL': creditoLoja(100),
+        });
+
+        const result = await reconcilePedidoFromPagamento(db, {
+          pedidoId: PEDIDO_ID,
+          pagamentoId: PAY_ID,
+          pagamento: mkPagamento({
+            valor,
+            status_pagamento: STATUS_PAGAMENTO.aprovado,
+            ultimaModificacao: T_NEW,
+          }),
+        });
+
+        expect(result).toEqual({ transition: esperado, skippedStale: false });
+        expect(store['pedidos/p1']!.estado).toBe(esperado);
+      },
+    );
+
+    it('a payment refund on a pago troca downgrades it (the credit alone does not cover)', async () => {
+      const { db, store } = makeDb({
+        'pedidos/p1': trocaSeed({ estado: 'pago' }),
+        'pedidos/p1/pagamentos/pay1': pagamentoDoc(50),
+      });
+
+      const result = await reconcilePedidoFromPagamento(db, {
+        pedidoId: PEDIDO_ID,
+        pagamentoId: PAY_ID,
+        pagamento: mkPagamento({
+          valor: 50,
+          status_pagamento: STATUS_PAGAMENTO.estornado,
+          ultimaModificacao: T_NEW,
+        }),
+      });
+
+      expect(result.transition).toBe('aguardandoConfirmacaoDePagamento');
+      expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    });
   });
 });
