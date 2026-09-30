@@ -76,10 +76,12 @@ function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
  * Shared tail of both admin reconciles: given the pedido's already-read
  * snapshot and the pedido's pagamento rows, computes the VALOR QUITADO — the
  * paying pagamentos PLUS the troca's devolução credit minus any paying 'crédito
- * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — applies
- * {@link nextPedidoEstado} and — only on a transition — writes the new `estado`
- * and flips `freteInicial.estado` to `despachoAutorizado` through {@link
- * freteComDespachoAutorizado} (only from a pre-authorization estado, or from a
+ * loja' pagamento (`coberturaDoPedido`, legacy `tasks.dart:64-68`) — and the
+ * paying pagamentos alone (only a real payment makes a pedido PARTIALLY paid; a
+ * credit alone never does, #367 OD4), applies {@link nextPedidoEstado} and —
+ * only on a transition — writes the new `estado` and flips `freteInicial.estado`
+ * to `despachoAutorizado` through {@link freteComDespachoAutorizado} (only from
+ * a pre-authorization estado, or from a
  * malformed block carrying no estado at all, which the flip repairs — and never
  * on a marketplace-owned frete block, #702). Returns the new estado, or `null`
  * when no transition applies.
@@ -113,7 +115,7 @@ function applyEstadoTransition(
     typeof pedidoSnap.get('valorCobrado') === 'number'
       ? (pedidoSnap.get('valorCobrado') as number)
       : 0;
-  const { valorQuitado } = coberturaDoPedido(
+  const { valorQuitado, valorPago } = coberturaDoPedido(
     {
       valorCobrado: total,
       ehSaida: pedidoSnap.get('ehSaida') as boolean | null | undefined,
@@ -121,7 +123,7 @@ function applyEstadoTransition(
     },
     pagamentos,
   );
-  const next = nextPedidoEstado(estado, total, valorQuitado);
+  const next = nextPedidoEstado(estado, total, valorQuitado, valorPago);
   if (next === null) return null;
 
   const pedidoPatch: Record<string, unknown> = {

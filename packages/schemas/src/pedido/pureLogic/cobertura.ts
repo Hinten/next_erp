@@ -41,7 +41,10 @@ export interface CoberturaPedido {
   creditoDevolucao: number;
   /** Paying pagamentos only (`== sumPagamentosPagos`) — the footer's "Vlr. Pago". */
   valorPago: number;
-  /** What settles the pedido: `creditoDevolucao + valorPago`. Feeds `nextPedidoEstado`. */
+  /**
+   * What settles the pedido: `creditoDevolucao + valorPago`. Decides `pago` in
+   * `nextPedidoEstado`; the partial branch reads `valorPago` alone (OD4).
+   */
   valorQuitado: number;
   /** `valorCobrado − creditoDevolucao` — the legacy footer's NET "Total"; may be negative. */
   saldo: number;
@@ -94,12 +97,10 @@ export function valorDevolvido(
  * `valorCobrado` stays GROSS — it backs the indexed `/pedidos` sort and currency
  * filter and the migrated legacy corpus holds gross values. And netting it
  * instead would break the estado rule: `nextPedidoEstado` returns `null` when
- * `total <= 0` (an even swap would be stranded in `iniciado` forever) and gates
- * its partial branch on `valorPago > 0` (a credit-only partial would never reach
- * `aguardandoConfirmacaoDePagamento`). Adding the credit to what is paid
- * reproduces legacy on both.
+ * `total <= 0`, so an even swap would be stranded in `iniciado` forever. Adding
+ * the credit to what is paid settles it, like legacy.
  *
- * ## Deliberate deviations from legacy (both fail SAFE — never over-count a credit)
+ * ## Deliberate deviations from legacy (all fail SAFE — never over-count a credit)
  *
  * - **OD1 — the credit is the returned value MINUS the paying 'crédito loja'
  *   pagamentos** (`FORMA_PAGAMENTO.credito_loja`), floored at 0. To emit the
@@ -120,6 +121,15 @@ export function valorDevolvido(
  *   footer says 0,51, the operator pays the remaining 16,84 on 17,35 and the raw
  *   sum rounds to 17,34 — stuck in `aguardandoConfirmacaoDePagamento`. With one
  *   rounded credit, paying exactly `restante` always closes the pedido.
+ * - **OD4 — the credit settles a troca, but never makes it PARTIALLY paid.**
+ *   `valorQuitado` decides `pago`; only `valorPago` (a paying pagamento) opens
+ *   `nextPedidoEstado`'s partial branch. A troca whose returned items cover part
+ *   of the total, with nothing paid yet, stays in its estado with the items
+ *   editable — at creation and on every later save alike — until the first
+ *   payment (or payment link) moves it forward (owner decision). Legacy's save
+ *   counted the credit as `valorPago` and moved it to
+ *   `aguardandoConfirmacaoDePagamento` (`cadastroPedidoProvider.dart:1137`),
+ *   locking the items before anyone had paid.
  *
  * ## Not wired (deliberately)
  *

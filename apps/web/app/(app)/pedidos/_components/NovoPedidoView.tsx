@@ -107,8 +107,10 @@ function useCreatePedidoSubmit(direcao: Direcao) {
 
     // #367 OD2 — an even swap (the returned credit covers the whole total) is
     // created already `pago` with the freight authorized (legacy parity); a
-    // partial credit leaves the created estado untouched. Done in the create
-    // itself: no pagamento can exist yet, and the operator keeps the attribution.
+    // partial credit leaves the created estado untouched, and so does the
+    // reconcile of every later save until a real payment exists (OD4). Done in
+    // the create itself: no pagamento can exist yet, and the operator keeps the
+    // attribution.
     const valoresSaida = aplicarQuitacaoNaCriacao(values);
 
     let saidaId: string;
