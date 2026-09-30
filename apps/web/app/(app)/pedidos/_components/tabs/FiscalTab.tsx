@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Alert, Card, Checkbox, Stack, Text, Textarea } from '@mantine/core';
+import { Card, Checkbox, Stack, Text, Textarea } from '@mantine/core';
 import { Controller, type UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import { CHAVE_NFE_REGEX, decomporChaveAcesso, type Pedido } from '@delfrance/schemas';
@@ -170,13 +170,6 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
       />
 
       <AjusteRtcSection form={form} db={db} disabled={disabled} />
-
-      <Alert color="gray" variant="light">
-        <Text size="sm">
-          A reatribuição de endereço a outro cliente (quando o endereço fiscal pertence a outro
-          cliente) ainda usa o app antigo.
-        </Text>
-      </Alert>
     </Stack>
   );
 }

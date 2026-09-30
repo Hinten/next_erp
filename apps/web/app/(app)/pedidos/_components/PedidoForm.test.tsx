@@ -52,8 +52,10 @@ vi.mock('./tabs', () => {
   return {
     // Surfaces the seeded vendedor so the create-stamp below is observable
     // without rendering the real tab. It also gets the REAL `form` (the props
-    // PedidoForm hands the real tab), so the button can dirty it through
-    // react-hook-form — the only thing that moves `formState.isDirty`.
+    // PedidoForm hands the real tab), so the controls can dirty it through
+    // react-hook-form. They also let coordinator tests cross the invalid →
+    // valid boundary and mutate the address-copy selection without mounting
+    // the domain editor.
     PrincipalTab: ({
       form,
     }: {
@@ -69,6 +71,40 @@ vi.mock('./tabs', () => {
           onClick={() => form.setValue('infCpl', 'texto', { shouldDirty: true })}
         >
           Sujar o formulário
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            form.setValue(
+              '_itensFlat',
+              [
+                {
+                  _rowId: 'row-valid',
+                  produtoUid: 'prod-1',
+                  ordem: 1,
+                  sku: 'SKU-1',
+                  nomeDeVenda: 'Produto de teste',
+                  precoDeVenda: 10,
+                  descontoUnitario: 0,
+                  quantidade: 1,
+                  custo: null,
+                },
+              ],
+              { shouldDirty: true },
+            )
+          }
+        >
+          Corrigir itens
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            form.setValue('clientePedidoOuterRef', 'documents/clientes/outro', {
+              shouldDirty: true,
+            })
+          }
+        >
+          Trocar cliente
         </button>
       </>
     ),
@@ -574,6 +610,7 @@ describe('PedidoForm — persistent lazy Incidentes tab', () => {
     expect(submitArgs[2]).toEqual({
       continueEditing: true,
       incidenteSaved: true,
+      preparation: { enderecoCopyPlan: null },
     });
     expect(guardState.dirty).toBe(false);
   });
@@ -676,5 +713,183 @@ describe('PedidoForm — persistent lazy Incidentes tab', () => {
     expect(notificationShow).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Incidente salvo; pedido pendente', color: 'yellow' }),
     );
+  });
+
+  it('runs preparation before incidentes and canceling it performs no write', async () => {
+    const onSubmit = vi.fn(async () => true);
+    const prepareSubmit = vi.fn(async () => {
+      incidenteStub.order.push('prepare');
+      return false as const;
+    });
+    render(
+      <MantineTestProvider>
+        <PedidoForm
+          defaultValues={existente}
+          pedidoId="ped-1"
+          ehSaida
+          prepareSubmit={prepareSubmit}
+          onSubmit={onSubmit}
+        />
+      </MantineTestProvider>,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Incidentes' }));
+    fireEvent.change(screen.getByLabelText('Rascunho incidente'), {
+      target: { value: 'não deve ser gravado' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+
+    await waitFor(() => expect(prepareSubmit).toHaveBeenCalledTimes(1));
+    expect(incidenteStub.order).toEqual(['prepare']);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(guardState.dirty).toBe(true);
+  });
+
+  it('reuses an address-copy confirmation after the invalid pedido is corrected', async () => {
+    const origem = 'documents/clientes/antigo/enderecos/e1';
+    const enderecoCopyPlan = {
+      clienteId: 'novo',
+      copies: [
+        {
+          sourceOuterRef: origem,
+          sourcePath: 'clientes/antigo/enderecos/e1',
+          targetOuterRef: 'documents/clientes/novo/enderecos/copy',
+          targetPath: 'clientes/novo/enderecos/copy',
+          usos: ['fiscal', 'entrega'] as const,
+        },
+      ],
+    };
+    const prepareSubmit = vi.fn(async () => ({ enderecoCopyPlan }));
+    const onSubmit = vi.fn(async () => true);
+    render(
+      <MantineTestProvider>
+        <PedidoForm
+          defaultValues={
+            {
+              ehSaida: true,
+              integracaoPedidoOuterRef: 'documents/integracoes/int-1',
+              clientePedidoOuterRef: 'documents/clientes/novo',
+              enderecoFiscalOuterRef: origem,
+              freteInicial: { enderecoFreteOuterReference: origem },
+              itens: {},
+            } as unknown as Pedido
+          }
+          pedidoId="ped-invalido"
+          ehSaida
+          prepareSubmit={prepareSubmit}
+          onSubmit={onSubmit}
+        />
+      </MantineTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+    await waitFor(() => expect(prepareSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Corrigir itens' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(prepareSubmit).toHaveBeenCalledTimes(1);
+    const submitArgs = onSubmit.mock.calls[0] as unknown as unknown[];
+    expect(submitArgs[2]).toEqual(expect.objectContaining({ preparation: { enderecoCopyPlan } }));
+  });
+
+  it('asks for a new preparation when the client changes after confirmation', async () => {
+    const origem = 'documents/clientes/antigo/enderecos/e1';
+    const prepareSubmit = vi.fn(async (_values: Pedido) => ({
+      enderecoCopyPlan: {
+        clienteId: 'destino',
+        copies: [
+          {
+            sourceOuterRef: origem,
+            sourcePath: 'clientes/antigo/enderecos/e1',
+            targetOuterRef: 'documents/clientes/destino/enderecos/copy',
+            targetPath: 'clientes/destino/enderecos/copy',
+            usos: ['fiscal'] as const,
+          },
+        ],
+      },
+    }));
+    const onSubmit = vi.fn(async () => true);
+    render(
+      <MantineTestProvider>
+        <PedidoForm
+          defaultValues={
+            {
+              ehSaida: true,
+              integracaoPedidoOuterRef: 'documents/integracoes/int-1',
+              clientePedidoOuterRef: 'documents/clientes/novo',
+              enderecoFiscalOuterRef: origem,
+              itens: {},
+            } as unknown as Pedido
+          }
+          pedidoId="ped-invalido"
+          ehSaida
+          prepareSubmit={prepareSubmit}
+          onSubmit={onSubmit}
+        />
+      </MantineTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+    await waitFor(() => expect(prepareSubmit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trocar cliente' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Corrigir itens' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(prepareSubmit).toHaveBeenCalledTimes(2);
+    expect(prepareSubmit.mock.calls[1]?.[0].clientePedidoOuterRef).toBe('documents/clientes/outro');
+  });
+
+  it('rebases copied refs after save-and-continue so the next preparation sees the copy', async () => {
+    const origem = 'documents/clientes/antigo/enderecos/e1';
+    const destino = 'documents/clientes/novo/enderecos/copy';
+    const enderecoCopyPlan = {
+      clienteId: 'novo',
+      copies: [
+        {
+          sourceOuterRef: origem,
+          sourcePath: 'clientes/antigo/enderecos/e1',
+          targetOuterRef: destino,
+          targetPath: 'clientes/novo/enderecos/copy',
+          usos: ['fiscal', 'entrega'] as const,
+        },
+      ],
+    };
+    const seen: Pedido[] = [];
+    const prepareSubmit = vi.fn(async (values: Pedido) => {
+      seen.push(values);
+      return seen.length === 1 ? { enderecoCopyPlan } : { enderecoCopyPlan: null };
+    });
+    const onSubmit = vi.fn(async () => true);
+    render(
+      <MantineTestProvider>
+        <PedidoForm
+          defaultValues={
+            {
+              ...existente,
+              clientePedidoOuterRef: 'documents/clientes/novo',
+              enderecoFiscalOuterRef: origem,
+              freteInicial: { enderecoFreteOuterReference: origem },
+            } as unknown as Pedido
+          }
+          pedidoId="ped-1"
+          ehSaida
+          prepareSubmit={prepareSubmit}
+          onSubmit={onSubmit}
+        />
+      </MantineTestProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar editando' }));
+    await waitFor(() => expect(prepareSubmit).toHaveBeenCalledTimes(2));
+
+    expect(seen[1]?.enderecoFiscalOuterRef).toBe(destino);
+    expect(seen[1]?.freteInicial?.enderecoFreteOuterReference).toBe(destino);
   });
 });
