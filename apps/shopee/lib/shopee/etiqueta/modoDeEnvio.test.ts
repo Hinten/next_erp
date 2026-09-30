@@ -490,6 +490,27 @@ describe('escolherModoDeEnvio — o rótulo é o texto do PRÓPRIO vendedor', ()
   });
 });
 
+describe('escolherModoDeEnvio — a flag de coleta casa EXATA (review 1, mutante 35)', () => {
+  // `address_flag` is free strings on the wire (`types.ts`): nothing upstream
+  // narrows a flag that merely CONTAINS `pickup_address`.
+  it('o par: exatamente pickup_address ⇒ elegível', () => {
+    expect(escolherModoDeEnvio(soColeta([endereco(5, [COLETA])]), null)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'pickup', pickup: { addressId: 5 } },
+    });
+  });
+
+  it.each(['pickup_address_x', ' pickup_address', 'pickup_address ', 'not_pickup_address'])(
+    'near-miss: a flag %j só CONTÉM pickup_address ⇒ não elegível',
+    (flag) => {
+      expect(flag).toContain(COLETA); // the substring is really there
+      expect(escolherModoDeEnvio(soColeta([endereco(5, [flag, PADRAO])]), null)).toStrictEqual(
+        recusa('semEnderecoDeColeta'),
+      );
+    },
+  );
+});
+
 describe('escolherModoDeEnvio — pura', () => {
   it('não muda a entrada e responde igual duas vezes', () => {
     const p = soColeta([
