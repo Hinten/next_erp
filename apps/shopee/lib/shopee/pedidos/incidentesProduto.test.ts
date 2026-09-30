@@ -42,6 +42,7 @@ function item(over: Partial<ItemDoPedido> = {}): ItemDoPedido {
     timestamp: AGORA_US,
     imposto: null,
     dfeReferenciado: null,
+    ajusteRtc: null,
     ...over,
   };
 }

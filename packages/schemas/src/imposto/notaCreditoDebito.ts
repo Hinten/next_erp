@@ -21,6 +21,7 @@ import {
   type TpNFCredito,
   type TpNFDebito,
 } from '../operacao';
+import { IND_CCLASSTRIB, IND_CST_IBSCBS, cClassTribEntry, cstIbsCbsEntry } from './cclasstrib';
 
 /**
  * UB14-70 (cStat 1200) — the cClassTrib every item of a nota de débito must
@@ -127,3 +128,40 @@ export function modoGruposImposto(t: TipoNotaAjuste): ModoGruposImposto {
   }
   return MODO_GRUPOS_IMPOSTO.completo;
 }
+
+/**
+ * The IBS/CBS group an item carries INSTEAD of `gIBSCBS` when its tipo binds a
+ * fixed cClassTrib — none of those CSTs (410, 800, 810, 811) admits `gIBSCBS`
+ * (`ind_gIBSCBS = 0`), so the adjustment group is the item's whole IBS/CBS.
+ */
+export const GRUPO_AJUSTE_RTC = {
+  transfCred: 'gTransfCred',
+  ajusteCompet: 'gAjusteCompet',
+  estornoCred: 'gEstornoCred',
+  credPresIBSZFM: 'gCredPresIBSZFM',
+} as const;
+export type GrupoAjusteRtc = (typeof GRUPO_AJUSTE_RTC)[keyof typeof GRUPO_AJUSTE_RTC];
+
+/**
+ * The adjustment group this nota's tipo puts on every item, or `null` when the
+ * tipo binds no cClassTrib (the item then carries an ordinary `gIBSCBS`).
+ *
+ * DERIVED from the vendored Anexo III indicators (#333), never typed as a
+ * tipo → group table: the cClassTrib-level `ind_gEstornoCred` (410030) wins,
+ * then the CST-level `ind_gTransfCred` (800), `ind_gAjusteCompet` (811) and
+ * `ind_gCredPresIBSZFM` (810). `notaCreditoDebito.test.ts` pins the result.
+ */
+export function grupoDeAjusteDoTipo(t: TipoNotaAjuste): GrupoAjusteRtc | null {
+  const cClassTrib = cClassTribDoTipo(t);
+  if (cClassTrib == null) return null;
+  const entrada = cClassTribEntry(cClassTrib);
+  if (entrada?.ind.includes(IND_CCLASSTRIB.estornoCred)) return GRUPO_AJUSTE_RTC.estornoCred;
+  const cst = cstIbsCbsEntry(cClassTrib.slice(0, 3));
+  if (cst?.ind.includes(IND_CST_IBSCBS.transferenciaCredito)) return GRUPO_AJUSTE_RTC.transfCred;
+  if (cst?.ind.includes(IND_CST_IBSCBS.ajusteCompetencia)) return GRUPO_AJUSTE_RTC.ajusteCompet;
+  if (cst?.ind.includes(IND_CST_IBSCBS.credPresIbsZfm)) return GRUPO_AJUSTE_RTC.credPresIBSZFM;
+  return null;
+}
+
+/** `competApur` (UB113 / UB132): the apuração month, `AAAA-MM`. */
+export const COMPETENCIA_AAAA_MM = /^\d{4}-(0[1-9]|1[0-2])$/;

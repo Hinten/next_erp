@@ -32,9 +32,11 @@ export {
 } from './total';
 export {
   buildIBSCBS,
+  buildIBSCBSAjuste,
   buildIS,
   computeRtcItemValues,
   rtcTestRatesForYear,
+  type AjusteIbsCbsItem,
   type RtcItemValues,
 } from './rtc';
 export { buildTranspXml, modFreteSchema, type ModFrete } from './transp';

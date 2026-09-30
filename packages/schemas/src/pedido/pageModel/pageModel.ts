@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
 import { chaveAcessoValida } from '../../chaveAcesso';
 import { CHAVE_NFE_REGEX } from '../../nfe';
+import { COMPETENCIA_AAAA_MM } from '../../imposto/notaCreditoDebito';
 import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
@@ -52,6 +53,7 @@ export interface PedidoPageValidationInput {
     ReadonlyArray<{
       quantidade?: number | null;
       dfeReferenciado?: { chaveAcesso?: string | null; nItem?: number | null } | null;
+      ajusteRtc?: { vIBS?: number | null; vCBS?: number | null; competApur?: string | null } | null;
     }>
   > | null;
   chNFeReferenciadas?: ReadonlyArray<string | null> | null;
@@ -144,6 +146,29 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     issues.push({
       path: 'dfeReferenciado',
       message: 'Referência por item: o item da nota referenciada deve ser um número de 1 a 990.',
+    });
+  }
+
+  // The adjustment amounts of a nota de débito (`ajusteRtc`, #330): money, so
+  // finite and never negative, and `competApur` a real AAAA-MM. Whether the
+  // operação's tipo needs them — and which group they ride in — is judged by
+  // `violacoesDoDocumento`, like the item references above.
+  const ajustes = Object.values(data.itens ?? {})
+    .flat()
+    .map((it) => it?.ajusteRtc)
+    .filter((a): a is NonNullable<typeof a> => a != null);
+  const valorInvalido = (v: number | null | undefined) =>
+    typeof v !== 'number' || !Number.isFinite(v) || v < 0;
+  if (ajustes.some((a) => valorInvalido(a.vIBS) || valorInvalido(a.vCBS))) {
+    issues.push({
+      path: 'ajusteRtc',
+      message: 'Ajuste de IBS/CBS: informe valores de IBS e CBS iguais ou maiores que zero.',
+    });
+  }
+  if (ajustes.some((a) => a.competApur != null && !COMPETENCIA_AAAA_MM.test(a.competApur))) {
+    issues.push({
+      path: 'ajusteRtc',
+      message: 'Ajuste de IBS/CBS: a competência deve estar no formato AAAA-MM (ex.: 2026-09).',
     });
   }
 

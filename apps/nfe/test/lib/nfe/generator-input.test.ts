@@ -11,6 +11,7 @@ import {
   MODO_GRUPOS_IMPOSTO,
   ORIGEM,
   FORMA_PAGAMENTO,
+  GRUPO_AJUSTE_RTC,
   INTEGRACAO_TIPO,
   UF_SIGLA,
   freteDoPedidoSchema,
@@ -23,6 +24,7 @@ import {
 import { generateNFe } from '@delfrance/integrations-nfe';
 
 import {
+  ajusteDoItem,
   apportionDescontos,
   assertNotaBuildable,
   buildGeneratorInput,
@@ -31,6 +33,7 @@ import {
   modoGruposFor,
 } from '../../../lib/nfe/orchestrator/generator-input';
 import {
+  lerAjusteRtc,
   lerDfeReferenciado,
   type EntregaDoPedido,
   type FiscalItem,
@@ -1697,12 +1700,13 @@ describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
     const semCfop = [item({ imposto: { ...IMPOSTO_RTC, cfop: null } as FiscalItem['imposto'] })];
     const msg = orchestratorMessage(() =>
       assertNotaBuildable(
-        bundleWith({ ...DEBITO_06, tpNFDebito: '01', cfop: null }),
+        // Crédito 05 is a tipo the ERP does not emit (contradictory in NT v1.40).
+        bundleWith({ ...OP, tipo: 0, finNFe: 5, tpNFCredito: '05', tpNFDebito: null, cfop: null }),
         semCfop,
         true,
       ),
     );
-    expect(msg).toContain('ainda não emite');
+    expect(msg).toContain('ainda não é emitido');
     expect(msg).not.toContain('cfop');
   });
 
@@ -1731,5 +1735,151 @@ describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
     expect(
       orchestratorMessage(() => assertNotaBuildable(bundle('11222333000181'), ITENS_RTC, true)),
     ).toContain('(SEFAZ 269)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 part 3 — a nota de débito whose tipo binds a fixed cClassTrib: the tipo
+// supplies CST + cClassTrib + group, the item its amounts (`itens[*].ajusteRtc`).
+// ---------------------------------------------------------------------------
+
+describe('lerAjusteRtc — best-effort read of the stored item field', () => {
+  it('reads the stored shape and absence', () => {
+    expect(lerAjusteRtc(null)).toBeNull();
+    expect(lerAjusteRtc(undefined)).toBeNull();
+    expect(lerAjusteRtc({ vIBS: 1, vCBS: 9, competApur: '2026-04' })).toEqual({
+      vIBS: 1,
+      vCBS: 9,
+      competApur: '2026-04',
+    });
+  });
+
+  it('keeps a malformed value as UNUSABLE amounts — refused by name, never dropped', () => {
+    expect(lerAjusteRtc('x')).toEqual({ vIBS: Number.NaN, vCBS: Number.NaN, competApur: null });
+    expect(lerAjusteRtc({ vIBS: '1', vCBS: 2, competApur: 202604 })).toEqual({
+      vIBS: Number.NaN,
+      vCBS: 2,
+      competApur: null,
+    });
+  });
+});
+
+describe('nota de débito with an IBS/CBS adjustment (#330, part 3)', () => {
+  /** The produto's OWN classification — which an adjustment item must not emit. */
+  const IMPOSTO_RTC = {
+    ...item({}).imposto,
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  } as FiscalItem['imposto'];
+  const debito = (tpNFDebito: string) => ({
+    ...OP,
+    tipo: 1,
+    finNFe: 6,
+    tpNFDebito,
+    tpNFCredito: null,
+  });
+  const comAjuste = (ajusteRtc: FiscalItem['ajusteRtc']) => [
+    item({ imposto: IMPOSTO_RTC, ajusteRtc }),
+  ];
+  const gerar = (tpNFDebito: string, ajusteRtc: FiscalItem['ajusteRtc']) => {
+    const base = fullBundle({});
+    return buildGeneratorInput(
+      { ...base, operacao: { ...base.operacao, ...debito(tpNFDebito) } } as PedidoBundle,
+      comAjuste(ajusteRtc),
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+  };
+
+  it('ajusteDoItem: the tipo supplies classification + group, the item its amounts', () => {
+    const it = comAjuste({ vIBS: 1, vCBS: 9, competApur: null })[0]!;
+    expect(ajusteDoItem(bundleWith(debito('05')), it)).toEqual({
+      cClassTrib: '800001',
+      grupo: GRUPO_AJUSTE_RTC.transfCred,
+      vIBS: 1,
+      vCBS: 9,
+      competApur: null,
+    });
+    // Near-misses: a tipo with no fixed cClassTrib, and an item without amounts.
+    expect(ajusteDoItem(bundleWith(debito('06')), it)).toBeUndefined();
+    expect(ajusteDoItem(bundleWith(debito('05')), { ...it, ajusteRtc: null })).toBeUndefined();
+  });
+
+  it('débito 05: the det carries 800001 + gTransfCred, not the produto classification', () => {
+    const input = gerar('05', { vIBS: 10, vCBS: 90, competApur: null });
+    const det = input.itens[0]!.impostoXml;
+    expect(det).toBe(
+      '<imposto><IBSCBS><CST>800</CST><cClassTrib>800001</cClassTrib>' +
+        '<gTransfCred><vIBS>10.00</vIBS><vCBS>90.00</vCBS></gTransfCred></IBSCBS></imposto>',
+    );
+    // W47/W56: IBSCBSTot sums gIBSCBS only — the transfer never enters vIBS/vCBS.
+    expect(input.totalXml).toContain('<vBCIBSCBS>0.00</vBCIBSCBS>');
+    expect(input.totalXml).not.toContain('<gEstornoCred>');
+  });
+
+  it('débito 07: ICMS stays, gEstornoCred on the det AND in IBSCBSTot', () => {
+    const input = gerar('07', { vIBS: 3, vCBS: 27, competApur: null });
+    expect(input.itens[0]!.impostoXml).toContain('<ICMS>');
+    expect(input.itens[0]!.impostoXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+    expect(input.totalXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+  });
+
+  it('pre-flight: an adjustment item without its amounts is refused, naming it', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(bundleWith(debito('01')), comAjuste(null), true),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': Item 1: Informe os valores de IBS e CBS do ajuste deste item (aba Fiscal).",
+    );
+  });
+
+  it('pre-flight: 1129 on a zero transfer; a positive one passes', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(
+          bundleWith(debito('01')),
+          comAjuste({ vIBS: 0, vCBS: 0, competApur: null }),
+          true,
+        ),
+      ),
+    ).toContain('(SEFAZ 1129)');
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('01')),
+        comAjuste({ vIBS: 0, vCBS: 0.01, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: UB14-70 judges the cClassTrib the TIPO supplies, not the produto’s', () => {
+    // The produto says 000001; débito 05 binds 800001 — and 800001 is emitted.
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('05')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: a future competApur on gAjusteCompet is refused', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(debito('02')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: '2999-01' }),
+        true,
+      ),
+    );
+    expect(msg).toContain('mês da emissão ou um mês anterior');
   });
 });

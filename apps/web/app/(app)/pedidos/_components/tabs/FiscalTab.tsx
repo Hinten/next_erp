@@ -21,6 +21,7 @@ import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { EnderecoPicker } from '@/components/pickers/EnderecoPicker';
 import type { PedidoFormState } from '../types';
+import { AjusteRtcSection } from './AjusteRtcSection';
 import { ReferenciaPorItemSection } from './ReferenciaPorItemSection';
 
 export interface FiscalTabProps {
@@ -183,6 +184,8 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
         destinatarioDocumento={clienteDoc?.data.cpf_cnpj ?? null}
         disabled={disabled}
       />
+
+      <AjusteRtcSection form={form} db={db} disabled={disabled} />
 
       <Alert color="gray" variant="light">
         <Text size="sm">

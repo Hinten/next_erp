@@ -246,8 +246,10 @@ export function mlOrderItemToItemDoPedido(args: {
     custo: null,
     timestamp: timestampUs,
     imposto: null,
-    // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC).
+    // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC)
+    // nor carries a nota de débito's IBS/CBS adjustment amounts.
     dfeReferenciado: null,
+    ajusteRtc: null,
   };
 }
 

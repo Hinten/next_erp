@@ -299,6 +299,7 @@ export {
   paymentSchema,
   tPagSchema,
   tributeItemSchema,
+  type AjusteIbsCbsItem,
   type ConfCOFINS,
   type ConfPIS,
   type ConfiguracaoICMS,

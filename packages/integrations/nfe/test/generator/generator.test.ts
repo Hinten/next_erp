@@ -7,6 +7,7 @@ import type {
   Imposto,
   ModoGruposImposto,
   Operacao,
+  TpNFDebito,
 } from '@delfrance/schemas';
 
 import { signNFe } from '../../src/sign';
@@ -26,6 +27,9 @@ import {
   TP_NF_CREDITO,
   TP_NF_DEBITO,
   UF_SIGLA,
+  cClassTribDoTipo,
+  grupoDeAjusteDoTipo,
+  modoGruposImposto,
 } from '@delfrance/schemas';
 
 const FILIAL: Filial = {
@@ -607,6 +611,201 @@ describe('generateNFe — nota de crédito / débito (finNFe 5/6, #330)', () => 
     const out = generateNFe(XSD_INPUT).nfeXml;
     expect(out).not.toContain('<tpNFDebito>');
     expect(out).not.toContain('<tpNFCredito>');
+  });
+});
+
+describe('generateNFe — nota de débito with an IBS/CBS adjustment group (#330, part 3)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+
+  /** The produto's own RTC config — which an adjustment item must NOT read. */
+
+  const IMPOSTO: Imposto = {
+    origem: ORIGEM.nacional,
+
+    configuracaoICMS: { crt: '1', csosn: '102' },
+
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  };
+
+  /** A whole nota de débito the way apps/nfe builds it: the tipo decides group and mode. */
+
+  function debito(
+    tpNFDebito: TpNFDebito,
+    valores: { vIBS: number; vCBS: number; competApur?: string },
+  ) {
+    const t = { finNFe: 6, tpNFDebito, tpNFCredito: null };
+
+    const grupos = modoGruposImposto(t);
+
+    const ajuste = {
+      cClassTrib: cClassTribDoTipo(t)!,
+
+      grupo: grupoDeAjusteDoTipo(t)!,
+
+      vIBS: valores.vIBS,
+
+      vCBS: valores.vCBS,
+
+      competApur: valores.competApur ?? null,
+    };
+
+    const opts = { emitRtc: true, grupos, ajuste };
+
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: IMPOSTO, ajuste }], {}, opts);
+
+    return {
+      ...XSD_INPUT,
+
+      operacao: { ...OPERACAO, finNFe: 6 as const, tpNFDebito },
+
+      itens: [{ ...ITEM, impostoXml: buildImpostoXml(IMPOSTO, { vProd: 1500 }, opts) }],
+
+      totalXml: buildTotalXml(totals),
+
+      pagXml: '<pag><detPag><tPag>90</tPag><vPag>0.00</vPag></detPag></pag>',
+    };
+  }
+
+  const xsdValid = async (input: GeneratorInput) =>
+    expect(
+      validateXsd('NFe', signNFe(generateNFe(input).nfeXml, fixtureCertificate())),
+    ).resolves.toBeUndefined();
+
+  it.each([
+    [TP_NF_DEBITO.transferenciaCreditoCooperativa, '800', '800002'],
+
+    [TP_NF_DEBITO.transferenciaCreditoSucessao, '800', '800001'],
+  ] as const)(
+    'débito %s: CST %s / %s + gTransfCred alone, XSD-valid',
+    async (tp, cst, cClassTrib) => {
+      const input = debito(tp, { vIBS: 12.34, vCBS: 56.78 });
+
+      const xml = generateNFe(input).nfeXml;
+
+      expect(xml).toContain(
+        `<IBSCBS><CST>${cst}</CST><cClassTrib>${cClassTrib}</cClassTrib>` +
+          '<gTransfCred><vIBS>12.34</vIBS><vCBS>56.78</vCBS></gTransfCred></IBSCBS>',
+      );
+
+      // The produto's own classification and rates never reach the wire.
+
+      expect(xml).not.toContain('<gIBSCBS>');
+
+      expect(xml).not.toContain('<cClassTrib>000001</cClassTrib>');
+
+      expect(xml).not.toContain('<ICMS>');
+
+      await xsdValid(input);
+    },
+  );
+
+  it.each([
+    [TP_NF_DEBITO.anulacaoCreditoSaidaImuneIsenta, '811001'],
+
+    [TP_NF_DEBITO.debitoNotaNaoProcessada, '811002'],
+
+    [TP_NF_DEBITO.desenquadramentoSimples, '811003'],
+  ] as const)(
+    'débito %s: CST 811 / %s + gAjusteCompet with competApur, XSD-valid',
+    async (tp, cClassTrib) => {
+      const input = debito(tp, { vIBS: 1, vCBS: 9, competApur: '2026-04' });
+
+      expect(generateNFe(input).nfeXml).toContain(
+        `<IBSCBS><CST>811</CST><cClassTrib>${cClassTrib}</cClassTrib><gAjusteCompet>` +
+          '<competApur>2026-04</competApur><vIBS>1.00</vIBS><vCBS>9.00</vCBS></gAjusteCompet></IBSCBS>',
+      );
+
+      await xsdValid(input);
+    },
+  );
+
+  it('débito 07: ICMS stays (B25-80 exception), IBSCBS carries gEstornoCred, the total its W59e group', async () => {
+    const input = debito(TP_NF_DEBITO.perdaEstoque, { vIBS: 3.21, vCBS: 28.9 });
+
+    const xml = generateNFe(input).nfeXml;
+
+    expect(xml).toContain('<ICMS>');
+
+    expect(xml).toContain(
+      '<IBSCBS><CST>410</CST><cClassTrib>410030</cClassTrib><gEstornoCred>' +
+        '<vIBSEstCred>3.21</vIBSEstCred><vCBSEstCred>28.90</vCBSEstCred></gEstornoCred></IBSCBS>',
+    );
+
+    expect(xml).toMatch(
+      /<IBSCBSTot>.*<gEstornoCred><vIBSEstCred>3\.21<\/vIBSEstCred><vCBSEstCred>28\.90<\/vCBSEstCred><\/gEstornoCred><\/IBSCBSTot>/,
+    );
+
+    await xsdValid(input);
+  });
+
+  it('adjustment amounts never enter IBSCBSTot vIBS/vCBS (W47/W56 sum gIBSCBS only)', () => {
+    const xml = generateNFe(
+      debito(TP_NF_DEBITO.transferenciaCreditoSucessao, { vIBS: 10, vCBS: 90 }),
+    ).nfeXml;
+
+    expect(xml).toMatch(/<IBSCBSTot><vBCIBSCBS>0\.00<\/vBCIBSCBS>/);
+
+    expect(xml).toContain('<vIBS>0.00</vIBS><vCredPres>');
+
+    expect(xml).toContain('<vNFTot>1500.00</vNFTot>');
+
+    expect(xml).not.toContain('<gEstornoCred><vIBSEstCred>');
+  });
+
+  it('refuses what the wire cannot carry', () => {
+    const t = {
+      finNFe: 6,
+      tpNFDebito: TP_NF_DEBITO.anulacaoCreditoSaidaImuneIsenta,
+      tpNFCredito: null,
+    };
+
+    const ajuste = { cClassTrib: '811001', grupo: grupoDeAjusteDoTipo(t)!, vIBS: 1, vCBS: 1 };
+
+    const somente = { emitRtc: true, grupos: modoGruposImposto(t) };
+
+    // gAjusteCompet without a real competência.
+
+    for (const competApur of [null, '2026-13']) {
+      expect(() =>
+        buildImpostoXml(IMPOSTO, { vProd: 1 }, { ...somente, ajuste: { ...ajuste, competApur } }),
+      ).toThrow(/competApur as AAAA-MM/);
+    }
+
+    // The RTC off.
+
+    expect(() =>
+      buildImpostoXml(
+        IMPOSTO,
+        { vProd: 1 },
+        { emitRtc: false, ajuste: { ...ajuste, competApur: '2026-01' } },
+      ),
+    ).toThrow(/emit the Reforma Tributária/);
+
+    expect(() =>
+      aggregateTotals(
+        [{ item: { vProd: 1 }, imposto: IMPOSTO, ajuste: { ...ajuste, competApur: '2026-01' } }],
+        {},
+        {},
+      ),
+    ).toThrow(/emit the Reforma Tributária/);
+
+    // A negative amount.
+
+    expect(() =>
+      buildImpostoXml(
+        IMPOSTO,
+        { vProd: 1 },
+        { ...somente, ajuste: { ...ajuste, vIBS: -1, competApur: '2026-01' } },
+      ),
+    ).toThrow();
+  });
+
+  it('near-miss: without an ajuste the same item keeps its ordinary gIBSCBS', () => {
+    const xml = buildImpostoXml(IMPOSTO, { vProd: 1500 }, { emitRtc: true });
+
+    expect(xml).toContain('<gIBSCBS>');
+
+    expect(xml).toContain('<cClassTrib>000001</cClassTrib>');
   });
 });
 

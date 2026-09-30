@@ -75,7 +75,13 @@ import type {
 } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
 import { NFeTributeError } from './errors';
-import { buildIBSCBS, buildIS, parseRtcConfig } from './rtc';
+import {
+  buildIBSCBS,
+  buildIBSCBSAjuste,
+  buildIS,
+  parseRtcConfig,
+  type AjusteIbsCbsItem,
+} from './rtc';
 
 // Declared in `./errors` (dependency-free, so `rtc.ts` can throw it too) and
 // re-exported here under the same name for every existing importer.
@@ -94,21 +100,33 @@ export { NFeTributeError };
  * RV B25-80, cStat 1001) — emits the IBS/CBS (and IS) groups ALONE: no ICMS,
  * ISSQN, IPI, PIS or COFINS, whose configs are then not even read, so a stale
  * PIS config cannot block a nota that never carries it.
+ *
+ * `opts.ajuste` — an item of a nota de débito whose tipo binds a fixed
+ * cClassTrib (débito 01/02/03/05/07/08): its `<IBSCBS>` is that
+ * classification plus ONE adjustment group with the stated amounts
+ * (`buildIBSCBSAjuste`), and the item's own `configuracaoIBSCBS` is not read —
+ * the tipo, not the produto, decides a transfer or a reversal of credit. No
+ * `<IS>` rides with it.
  */
 export function buildImpostoXml(
   rawImposto: unknown,
   rawItem: unknown,
-  opts: { emitRtc?: boolean; grupos?: ModoGruposImposto } = {},
+  opts: { emitRtc?: boolean; grupos?: ModoGruposImposto; ajuste?: AjusteIbsCbsItem } = {},
 ): string {
   const imposto = parseInput(impostoSchema, rawImposto, 'imposto');
   const item = parseInput(tributeItemSchema, rawItem, 'item');
+  if (opts.ajuste != null && opts.emitRtc !== true) {
+    throw new NFeTributeError(
+      'an IBS/CBS adjustment item needs the filial to emit the Reforma Tributária',
+    );
+  }
 
   if (opts.grupos === MODO_GRUPOS_IMPOSTO.somenteIbsCbs) {
-    return serializeFragment(
-      'TNFe_infNFe_det_imposto',
-      'imposto',
-      buildSomenteIbsCbs(imposto, item, opts.emitRtc === true) as unknown as XmlValue,
-    );
+    const somente: TNFe_infNFe_det_imposto =
+      opts.ajuste != null
+        ? { IBSCBS: buildIBSCBSAjuste(opts.ajuste) }
+        : buildSomenteIbsCbs(imposto, item, opts.emitRtc === true);
+    return serializeFragment('TNFe_infNFe_det_imposto', 'imposto', somente as unknown as XmlValue);
   }
 
   // XSD xs:choice — every item carries either <ICMS> or <ISSQN>, not
@@ -131,7 +149,9 @@ export function buildImpostoXml(
   // Reforma Tributária (NT 2025.002) — attached only when the orchestrator
   // opts in. `IS` and `IBSCBS` are sibling slots under <imposto> per the
   // codegen; the META walker emits them in XSD order.
-  if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
+  if (opts.ajuste != null) {
+    impostoValue.IBSCBS = buildIBSCBSAjuste(opts.ajuste);
+  } else if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
     const rtc = parseRtcConfig(imposto.configuracaoIBSCBS);
     if (rtc.is != null) {
       impostoValue.IS = buildIS(rtc.is, item.vProd);

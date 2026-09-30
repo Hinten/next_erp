@@ -85,6 +85,7 @@ export function ReferenciaPorItemSection({
         // Unknown on this screen — the rules that need them stay silent here
         // and are judged at emission (1145, 269/678, and each item's cClassTrib).
         anoEmissao: null,
+        mesEmissao: null,
         emitenteDocumento: null,
         emitenteCUF: null,
         chNFeReferenciadas: chNFeReferenciadas.filter((c): c is string => !!c),

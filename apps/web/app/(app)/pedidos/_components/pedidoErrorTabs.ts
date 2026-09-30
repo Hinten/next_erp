@@ -74,6 +74,8 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   // The per-item NF-e references (`itens[*].dfeReferenciado`, #330) are edited
   // on the Fiscal tab, so their page-model issue routes there, not to `itens`.
   dfeReferenciado: 'fiscal',
+  // …and so are a nota de débito's IBS/CBS adjustment amounts (`ajusteRtc`).
+  ajusteRtc: 'fiscal',
   // Frete
   freteInicial: 'frete',
   // Preview-only fields rendered read-only in their tabs via PlaceholderTab —
