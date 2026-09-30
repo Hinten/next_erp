@@ -6,10 +6,13 @@ import {
   MOTIVO_RECUSA_LINK_LABELS,
 } from '@delfrance/schemas';
 
+import { FirebaseError } from 'firebase/app';
+
 import {
   MercadoPagoClientHttpError,
   MercadoPagoClientNetworkError,
   MercadoPagoClientRespostaInvalidaError,
+  MercadoPagoClientSessaoError,
   createMercadoPagoClient,
 } from '@/lib/mercado-pago/client';
 
@@ -200,6 +203,24 @@ describe('descreverFalhaLink — the client error classes', () => {
     });
   });
 
+  it('⭐ a session failure is checked BEFORE its parent class and asks to sign in again', () => {
+    // As a plain 401 it would fall to the generic arm; as "Sem conexão" it would
+    // keep the operator retrying a session that retrying cannot fix.
+    const err = new MercadoPagoClientSessaoError('auth/user-token-expired');
+
+    expect(descreverFalhaLink(err, PODE)).toStrictEqual({
+      title: 'Sessão expirada',
+      message: 'Sua sessão expirou. Entre novamente e tente de novo.',
+    });
+  });
+
+  it('NEAR-MISS: a plain 401 from the backend is still the generic HTTP arm', () => {
+    expect(descreverFalhaLink(http(401, null, 'token inválido'), PODE)).toStrictEqual({
+      title: TITULO_GENERICO,
+      message: 'token inválido',
+    });
+  });
+
   it('a network failure is described', () => {
     const err = new MercadoPagoClientNetworkError('Failed to fetch');
 
@@ -218,6 +239,22 @@ describe('descreverFalhaLink — the client error classes', () => {
     ['an object shaped like the client error', { name: 'MercadoPagoClientHttpError', status: 500 }],
   ])('returns null for %s, so the caller rethrows it', (_nome, err) => {
     expect(descreverFalhaLink(err, PODE)).toBeNull();
+  });
+});
+
+describe('descreverFalhaLink — a token the session cannot mint (through the real client)', () => {
+  it.each<[string, string]>([
+    ['auth/network-request-failed', 'Sem conexão'],
+    ['auth/user-token-expired', 'Sessão expirada'],
+  ])('%s reads as %s', async (code, titulo) => {
+    const c = createMercadoPagoClient({
+      baseUrl: 'http://localhost:3007',
+      getAuthToken: () => Promise.reject(new FirebaseError(code, code)),
+      fetch: async () => new Response('{}'),
+    });
+    const err = await c.sincronizarLinks({ pedidoId: 'ped_1' }).catch((e: unknown) => e);
+
+    expect(descreverFalhaLink(err, PODE)?.title).toBe(titulo);
   });
 });
 

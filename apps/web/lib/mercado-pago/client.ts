@@ -84,6 +84,29 @@ export class MercadoPagoClientRespostaInvalidaError extends MercadoPagoClientHtt
   }
 }
 
+/**
+ * The signed-in session could not produce an ID token for a reason OTHER than
+ * connectivity — the refresh token was revoked (`auth/user-token-expired`, e.g.
+ * after a password change), the user was disabled, or Firebase Auth failed
+ * internally. Nothing reached the backend; retrying will not help, signing in
+ * again will.
+ *
+ * ⚠️ A SUBCLASS of `MercadoPagoClientHttpError`, shaped as the 401 the backend
+ * would have answered, for the same reason as `MercadoPagoClientRespostaInvalidaError`:
+ * the MP panel narrows to the HTTP class and shows its message, so a sibling class
+ * would land there as an unhandled rejection.
+ */
+export class MercadoPagoClientSessaoError extends MercadoPagoClientHttpError {
+  constructor(
+    /** The Firebase Auth code (`auth/user-token-expired`, …) — for logs, never shown raw. */
+    readonly authCode: string,
+    override readonly cause?: unknown,
+  ) {
+    super('Sua sessão expirou. Entre novamente para continuar.', 401, null);
+    this.name = 'MercadoPagoClientSessaoError';
+  }
+}
+
 /** Network-level failure reaching the mercado-pago backend. */
 export class MercadoPagoClientNetworkError extends Error {
   constructor(
@@ -186,10 +209,19 @@ export function createMercadoPagoClient(config: {
       // offline tab fails HERE (`auth/network-request-failed`) before any request
       // exists. It is the same situation as a failed fetch — nothing reached the
       // backend — and must read as one: the link tab keeps its minted ids only
-      // across a network error, and a raw FirebaseError is none of this client's
-      // classes, so the caller would rethrow it as an unhandled rejection.
+      // across a network error.
+      //
+      // ⚠️ ONLY that code. Every other Auth failure (`auth/user-token-expired`
+      // after a password change, `auth/user-disabled`, `auth/internal-error`) is
+      // not fixed by retrying, and "Sem conexão — tente de novo" would keep the
+      // operator retrying a session that has to be signed into again. Both still
+      // become one of this client's classes: a raw FirebaseError is none of them,
+      // so the caller would rethrow it as an unhandled rejection.
       if (err instanceof FirebaseError) {
-        throw new MercadoPagoClientNetworkError(err.message, err);
+        if (err.code === 'auth/network-request-failed') {
+          throw new MercadoPagoClientNetworkError(err.message, err);
+        }
+        throw new MercadoPagoClientSessaoError(err.code, err);
       }
       throw err;
     }

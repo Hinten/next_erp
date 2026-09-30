@@ -17,6 +17,7 @@ import {
   MercadoPagoClientHttpError,
   MercadoPagoClientNetworkError,
   MercadoPagoClientRespostaInvalidaError,
+  MercadoPagoClientSessaoError,
   createMercadoPagoClient,
 } from './client';
 
@@ -514,6 +515,31 @@ describe('a refusal from a link route', () => {
     expect((err as MercadoPagoClientNetworkError).cause).toBe(semRede);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(['auth/user-token-expired', 'auth/user-disabled', 'auth/internal-error'])(
+    '⭐ NEAR-MISS: %s is a SESSION error, not "sem conexão" — and nothing is sent',
+    async (code) => {
+      // Retrying cannot fix a revoked or disabled session: signing in again does.
+      // It is a subclass of the HTTP error, so the MP panel (which narrows to that
+      // class) shows its message instead of an unhandled rejection.
+      const causa = new FirebaseError(code, `Firebase: Error (${code}).`);
+      const fetchMock = fetchQueResponde(() => json(RESPOSTA_CRIAR, 201));
+      const c = createMercadoPagoClient({
+        baseUrl: 'http://localhost:3007',
+        getAuthToken: () => Promise.reject(causa),
+        fetch: fetchMock,
+      });
+
+      const err = await c.criarLinks(BODY_CRIAR).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(MercadoPagoClientSessaoError);
+      expect(err).toBeInstanceOf(MercadoPagoClientHttpError);
+      expect(err).not.toBeInstanceOf(MercadoPagoClientNetworkError);
+      expect(err).toMatchObject({ status: 401, code: null, authCode: code, cause: causa });
+      expect((err as Error).message).toBe('Sua sessão expirou. Entre novamente para continuar.');
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('a bug in the token getter still propagates as itself (near-miss)', async () => {
     // Only a FirebaseError is re-classified: anything else is a programming error

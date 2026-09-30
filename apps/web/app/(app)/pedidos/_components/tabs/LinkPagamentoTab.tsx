@@ -157,6 +157,7 @@ const COR_SITUACAO: Record<SituacaoLinkPagamento, MantineColor> = {
   aberto: 'blue',
   parcial: 'yellow',
   pago: 'green',
+  estornado: 'orange',
   expirado: 'gray',
   cancelado: 'red',
   legado: 'dark',
@@ -473,12 +474,22 @@ export function LinkPagamentoTab({
   });
   const estadoAposGerar = estadoAoGerarLinkPagamento(estado);
 
-  const mensagemLinks = mensagemLinksPagamento({
-    numeroPedido: pedido.numero ?? null,
-    resumos,
-    fuso: FUSO_FISCAL,
-  });
-  const mensagemPagantes = mensagemQuemJaPagou({ numeroPedido: pedido.numero ?? null, resumos });
+  // ⚠️ Every situação is derived from the pagamentos. Until they are known
+  // (loading, or the listener failed) `resumos` was built on NONE: a paid link
+  // whose stored status is still `aberto` would read Aberto — with a live
+  // Cancelar and a place in "Copiar todos os links" — and an auto-closed one
+  // Estornado. The list and both messages wait instead of guessing.
+  const pagamentosConhecidos = pagamentos.data !== undefined;
+  const mensagemLinks = pagamentosConhecidos
+    ? mensagemLinksPagamento({
+        numeroPedido: pedido.numero ?? null,
+        resumos,
+        fuso: FUSO_FISCAL,
+      })
+    : null;
+  const mensagemPagantes = pagamentosConhecidos
+    ? mensagemQuemJaPagou({ numeroPedido: pedido.numero ?? null, resumos })
+    : null;
 
   // For a sync failure that needs a reconnect: the account of the pedido's
   // links when there is exactly one, else the account picked in the form.
@@ -500,15 +511,12 @@ export function LinkPagamentoTab({
     if (!anterior.linkIds.every((id) => gravados.has(id))) return;
     tentativa.current = null;
     // Syncing the draft to an external system (the links listener), guarded by
-    // the attempt ref so it converges; the advisory rule is kept at 'warn' and
-    // disabled locally so the --max-warnings 0 pre-commit lint passes.
-    /* eslint-disable react-hooks/set-state-in-effect */
+    // the attempt ref so it converges.
     setForm((atual) => ({
       ...valoresIniciaisLinkForm(hoje, metodoIdEfetivo, temCliente),
       modo: atual.modo,
     }));
     setMostrarErros(false);
-    /* eslint-enable react-hooks/set-state-in-effect */
     notifications.show({ color: 'blue', message: 'Os links já foram gerados.' });
   }, [linksLidos, criando, hoje, metodoIdEfetivo, temCliente]);
 
@@ -1044,13 +1052,15 @@ export function LinkPagamentoTab({
             {links.error.message}
           </Alert>
         )}
-        {links.data === undefined && !links.error && <Skeleton height={64} />}
+        {(links.data === undefined || pagamentos.data === undefined) &&
+          !links.error &&
+          !pagamentos.error && <Skeleton height={64} />}
         {links.data !== undefined && resumos.length === 0 && (
           <Text c="dimmed" size="sm">
             Nenhum link de pagamento gerado para este pedido.
           </Text>
         )}
-        {resumos.length > 0 && (
+        {pagamentosConhecidos && resumos.length > 0 && (
           <Table.ScrollContainer minWidth={820}>
             <Table striped>
               <Table.Thead>

@@ -8,6 +8,7 @@ import {
   MercadoPagoClientHttpError,
   MercadoPagoClientNetworkError,
   MercadoPagoClientRespostaInvalidaError,
+  MercadoPagoClientSessaoError,
 } from '@/lib/mercado-pago/client';
 
 /**
@@ -50,8 +51,9 @@ const CODIGO_REAUTH = 'MP_REAUTH_REQUIRED';
  * 500, a 400 body-validation refusal all land there).
  *
  * ⚠️ The order matters twice:
- *  - `MercadoPagoClientRespostaInvalidaError` is a SUBCLASS of the HTTP error, so
- *    it is tested first or it would be described as an HTTP failure.
+ *  - `MercadoPagoClientRespostaInvalidaError` and `MercadoPagoClientSessaoError`
+ *    are SUBCLASSES of the HTTP error, so they are tested first or they would be
+ *    described as an HTTP failure.
  *  - `code` is read BEFORE `status` for the 404s: `MP_CONTA_NAO_CONFIGURADA` is a
  *    real answer about the account, while a 404 with NO code is Next's own HTML
  *    404 — a web build that shipped before the backend route did — and telling
@@ -61,6 +63,12 @@ const CODIGO_REAUTH = 'MP_REAUTH_REQUIRED';
 export function descreverFalhaLink(err: unknown, ctx: ContextoFalhaLink): FalhaLinkDescrita | null {
   if (err instanceof MercadoPagoClientRespostaInvalidaError) {
     return { title: 'Resposta inesperada do Mercado Pago', message: err.message };
+  }
+  if (err instanceof MercadoPagoClientSessaoError) {
+    return {
+      title: 'Sessão expirada',
+      message: 'Sua sessão expirou. Entre novamente e tente de novo.',
+    };
   }
   if (err instanceof MercadoPagoClientHttpError) return descreverFalhaHttp(err, ctx);
   if (err instanceof MercadoPagoClientNetworkError) {

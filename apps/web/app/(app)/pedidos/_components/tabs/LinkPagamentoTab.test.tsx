@@ -838,6 +838,60 @@ describe('LinkPagamentoTab — the list', () => {
     expect(situacao('Maria').getAllByText('Maria')).toHaveLength(2);
   });
 
+  it('an auto-closed link whose payment was refunded reads Estornado, never Pago', () => {
+    servir('links', [
+      link('L-maria', { nomePagador: 'Maria', status: STATUS_LINK_PAGAMENTO.concluido }),
+      link('L-ana', { nomePagador: 'Ana', status: STATUS_LINK_PAGAMENTO.concluido }),
+    ]);
+    servir('pagamentos', [
+      pagamento('pg-maria', {
+        linkPagamentoId: 'L-maria',
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+      }),
+      // NEAR-MISS: the same closed link with its payment still in hand.
+      pagamento('pg-ana', { linkPagamentoId: 'L-ana' }),
+    ]);
+    renderTab({ pedido: { ...PROPS.pedido, valorCobrado: 200 } });
+
+    const maria = within(linhaDaTabela('Maria'));
+    expect(maria.getByText(SITUACAO_LINK_PAGAMENTO_LABELS.estornado)).toBeTruthy();
+    expect(maria.queryByText(SITUACAO_LINK_PAGAMENTO_LABELS.pago)).toBeNull();
+    expect(
+      within(linhaDaTabela('Ana')).getByText(SITUACAO_LINK_PAGAMENTO_LABELS.pago),
+    ).toBeTruthy();
+    // Closed either way: neither can be cancelled.
+    expect(screen.queryByRole('button', { name: 'Cancelar link' })).toBeNull();
+  });
+
+  it.each<[string, EstadoSnapshot]>([
+    ['still loading', { data: undefined, loading: true, error: undefined }],
+    ['failed', { data: undefined, loading: false, error: new Error('permissão negada') }],
+  ])('holds the list and both copy buttons while the payments are %s', (_, estado) => {
+    // Maria's link was paid but is still stored `aberto`: judged on NO payments it
+    // would read Aberto, offer Cancelar and be copied as an open link.
+    servir('links', [link('L-maria', { nomePagador: 'Maria' })]);
+    h.snap.pagamentos = estado;
+    renderTab({ pedido: { ...PROPS.pedido, valorCobrado: 200 } });
+
+    expect(screen.queryByText('Maria')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancelar link' })).toBeNull();
+    expect(botao('Copiar todos os links')).toHaveProperty('disabled', true);
+    expect(botao('Copiar quem já pagou')).toHaveProperty('disabled', true);
+  });
+
+  it('NEAR-MISS: the same list shows, judged right, once the payments arrive', () => {
+    servir('links', [link('L-maria', { nomePagador: 'Maria' })]);
+    servir('pagamentos', [pagamento('pg-maria', { linkPagamentoId: 'L-maria' })]);
+    renderTab({ pedido: { ...PROPS.pedido, valorCobrado: 200 } });
+
+    const maria = within(linhaDaTabela('Maria'));
+    expect(maria.getByText(SITUACAO_LINK_PAGAMENTO_LABELS.pago)).toBeTruthy();
+    expect(maria.queryByRole('button', { name: 'Cancelar link' })).toBeNull();
+    // Paid: nothing left to copy as open, but Maria is on the payers' list.
+    expect(botao('Copiar quem já pagou')).toHaveProperty('disabled', false);
+    expect(botao('Copiar todos os links')).toHaveProperty('disabled', true);
+  });
+
   it('offers Cancelar only on an open, traceable link', () => {
     semear();
     renderTab({ pedido: { ...PROPS.pedido, valorCobrado: 200 } });
