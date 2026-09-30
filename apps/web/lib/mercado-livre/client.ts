@@ -19,6 +19,7 @@ import type { z } from 'zod';
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
+import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import * as wire from './wire';
 import type {
@@ -849,21 +850,6 @@ export function mercadoLivreHttpFallbackMessage(status: number): string {
     return `A integração com o Mercado Livre falhou (HTTP ${String(status)}). Tente novamente em instantes.`;
   }
   return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
-}
-
-/** Pull the filename out of a `Content-Disposition` header, if present. */
-function filenameFromDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  if (!m?.[1]) return null;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch (err) {
-    // A stray '%' in the server-sent name must not fail a byte-successful
-    // fetch — keep the undecoded filename.
-    if (err instanceof URIError) return m[1];
-    throw err;
-  }
 }
 
 export function createMercadoLivreClient(config: {

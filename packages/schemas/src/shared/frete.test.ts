@@ -237,6 +237,9 @@ describe('FREIGHT_TIPO_CAPS', () => {
       channel: 'melhor-envio',
       marketplaceOwned: false,
     });
+    // Shopee fetches labels now, and this still holds: its label route is a
+    // MARKETPLACE route (`/api/marketplace/shopee/etiqueta`), not a freight
+    // channel, so `shopee.channel` stays null (#1523).
     const routed = integracoesFreteSchema.options.filter(
       (t) => FREIGHT_TIPO_CAPS[t].channel != null,
     );
@@ -248,6 +251,9 @@ describe('FREIGHT_TIPO_CAPS', () => {
     // `tipo !== 'melhorEnvios'` reject until a provider implements its flow.
     // `canPrint` is excluded here — the generic-label tipos are printable
     // via their own on-demand PDF (see the dedicated test below).
+    // Shopee included (#1523): step 7's order pushes do track it, but
+    // `canTrack` has no reader — Mercado Livre keeps `false` beside a live
+    // handler for the same reason.
     for (const tipo of integracoesFreteSchema.options) {
       if (tipo === 'melhorEnvios') continue;
       const caps = FREIGHT_TIPO_CAPS[tipo];
@@ -272,22 +278,49 @@ describe('FREIGHT_TIPO_CAPS', () => {
     }
     // Nothing else is printable outside Melhor Envio + the generic tipos —
     // the `channel`-routed check above already pins ME as the only channel.
+    // ⚠️ Shopee is NOT printable even though it fetches labels (#1523):
+    // `etiquetaRowState` tests `canPrint` BEFORE `canFetchLabel`, so a Shopee
+    // pedido carrying a `printLabelId` would route to Melhor Envio.
     const printable = integracoesFreteSchema.options.filter((t) => FREIGHT_TIPO_CAPS[t].canPrint);
     expect([...printable].sort()).toEqual(
       [INTEGRACAO_FRETE.melhorEnvios, INTEGRACAO_FRETE.motoboy, INTEGRACAO_FRETE.outros].sort(),
     );
   });
 
-  it('Mercado Livre is the only fetch-label tipo (marketplace-client print)', () => {
-    // Full key set: `canFetchLabel` is true ONLY for mercadoLivre — every other
-    // tipo (ME's emit flow included) fetches nothing via a marketplace client.
+  it('Mercado Livre and Shopee are the fetch-label tipos (marketplace-client print)', () => {
+    // Full key set: `canFetchLabel` is true ONLY for mercadoLivre and shopee
+    // (#1523) — every other tipo (ME's emit flow included) fetches nothing via
+    // a marketplace client. Enum order, so no sort.
     const fetchable = integracoesFreteSchema.options.filter(
       (t) => FREIGHT_TIPO_CAPS[t].canFetchLabel,
     );
-    expect(fetchable).toEqual([INTEGRACAO_FRETE.mercadoLivre]);
+    expect(fetchable).toEqual([INTEGRACAO_FRETE.mercadoLivre, INTEGRACAO_FRETE.shopee]);
     // The unknown-tipo fallback stays all-false too.
     expect(freightCapsFor(null).canFetchLabel).toBe(false);
     expect(freightCapsFor('bogus-legacy-tipo').canFetchLabel).toBe(false);
+  });
+
+  it('the Shopee row flipped canFetchLabel and NOTHING else (#1523)', () => {
+    // The whole row, not the flag: step 15's plan once listed four flags to
+    // flip (canFetchLabel, canPrint, canTrack, channel). Each of the other
+    // three is wrong on its own — `canPrint` routes a `printLabelId` to
+    // Melhor Envio, `channel` names a freight segment Shopee does not have,
+    // `canTrack` has no reader. The ratchets above guard those three one
+    // tipo-set at a time; this pin is the one place that reds on a change to
+    // ANY field of the row (`marketplaceOwned` and `labelMode` included).
+    expect(FREIGHT_TIPO_CAPS.shopee).toEqual({
+      marketplaceOwned: true,
+      canQuote: false,
+      canBuy: false,
+      canPrint: false,
+      canFetchLabel: true,
+      canTrack: false,
+      labelMode: 'fetch',
+      channel: null,
+    });
+    // The tolerant reader serves the same row — PedidoCells / etiquetaRowState
+    // read Shopee's caps through it, never by indexing the table.
+    expect(freightCapsFor(INTEGRACAO_FRETE.shopee)).toBe(FREIGHT_TIPO_CAPS.shopee);
   });
 
   it('the marketplace tipos are the read-only-tab ones', () => {

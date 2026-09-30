@@ -5,6 +5,8 @@ import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 
 import type { MercadoLivreClient } from '@/lib/mercado-livre/client';
 import type { printJob } from '@/lib/print-agent/printJob';
+import type { ShopeeClient } from '@/lib/shopee/client';
+import type { EnderecoDeColeta } from '@/lib/shopee/wire';
 
 /**
  * The etiqueta (shipping-label) provider contract for the checkout screen.
@@ -73,6 +75,26 @@ export interface EtiquetaProviderUi {
   openUrl(url: string): void;
   /** Drive the ME buy modal to completion and report whether a label was bought. */
   comprarEtiqueta(input: ComprarEtiquetaInput): Promise<ComprarEtiquetaOutcome>;
+  /**
+   * Ask the operator how ONE Shopee package ships (#1523): a pickup address and
+   * slot, or a drop-off at the agency. `null` = the operator cancelled. The
+   * options are the server's 202 `escolher-envio` body, verbatim; the provider
+   * adds the package itself when it sends the answer back.
+   *
+   * ⚠️ REQUIRED, not optional: an optional member would let a UI forget it and
+   * still compile, and that screen's Shopee label would then die on the first
+   * pickup question — SPX is a PICKUP channel, so the question is the main
+   * path, not an edge.
+   */
+  escolherEnvio(p: {
+    pacoteRotulo: string | null;
+    mensagem: string;
+    enderecos: readonly EnderecoDeColeta[];
+    permiteDropoff: boolean;
+    escolhaInvalida: boolean;
+  }): Promise<
+    { modo: 'pickup'; enderecoId: string; horarioId: string | null } | { modo: 'dropoff' } | null
+  >;
 }
 
 /** The clients + print helper a provider issues its network / device I/O through. */
@@ -83,6 +105,13 @@ export interface EtiquetaProviderDeps {
   readonly nfeClient: NFeHttpClient | null;
   /** Mercado Livre HTTP client (label fetch + NF-e resend); `null` while logged out. */
   readonly mercadoLivreClient: MercadoLivreClient | null;
+  /**
+   * Shopee HTTP client (label fetch, #1523); `null` while logged out. REQUIRED
+   * so every construction site has to say which client it threads — a site
+   * that forgot it would otherwise compile and quietly answer "cliente
+   * indisponível" on every Shopee label.
+   */
+  readonly shopeeClient: ShopeeClient | null;
   /** Local print-agent bridge (falls back to a browser download). */
   readonly printJob: typeof printJob;
   /** Injectable wait (the ML invoice-pending retry); providers default to a real `setTimeout`. */
@@ -90,9 +119,41 @@ export interface EtiquetaProviderDeps {
 }
 
 /**
+ * The freight integration an etiqueta action dispatches on — what
+ * `resolverIntFrete` (`intFrete.ts`) answers, in two shapes:
+ *
+ *   - `'doc'`   — the pedido's `int_frete` document, read through
+ *                 `integracaoFreteOuterRef` (today's only shape);
+ *   - `'bloco'` — NO document: the frete block's `externalOptionIntegracao`
+ *                 names a marketplace-owned tipo, and that is the whole
+ *                 identity. A Shopee pedido has no `int_frete` ref at all, and
+ *                 an ML pedido whose ref was degraded to null on import is the
+ *                 same case (#1523, R-q).
+ *
+ * ⚠️ A provider that needs the DOCUMENT (its id or its data) must narrow on
+ * `fonte === 'doc'` first — Melhor Envio passes `id` to its HTTP client, the
+ * generic label prints the account's `nome` in its subtitle. The union makes
+ * forgetting that a compile error rather than a `null` sent to a carrier.
+ */
+export type IntFreteResolvido =
+  | {
+      readonly fonte: 'doc';
+      readonly id: string;
+      readonly tipo: IntegracaoFrete;
+      readonly data: IntFrete;
+    }
+  | {
+      readonly fonte: 'bloco';
+      readonly id: null;
+      readonly tipo: IntegracaoFrete;
+      readonly data: null;
+    };
+
+/**
  * Everything a provider receives. `frete` is the LIVE `pedido.freteInicial`
  * (not the checkout snapshot); `intFrete` is the already-resolved integration
- * (the registry resolves it before gates, so providers never re-read it).
+ * (the CALLER resolves it through `resolverIntFrete` before the registry runs,
+ * so providers never re-read it).
  */
 export interface EtiquetaProviderInput {
   readonly db: Firestore;
@@ -100,12 +161,8 @@ export interface EtiquetaProviderInput {
   readonly pedidoId: string;
   /** The live `freteInicial` block of the pedido. */
   readonly frete: FreteDoPedido;
-  /** The resolved freight integration (id + tipo + its doc). */
-  readonly intFrete: {
-    readonly id: string;
-    readonly tipo: IntegracaoFrete;
-    readonly data: IntFrete;
-  };
+  /** The resolved freight integration — its doc, or only the block's marketplace tipo. */
+  readonly intFrete: IntFreteResolvido;
   /** The requested label format (the checkout dropdown). */
   readonly formato: 'pdf' | 'zpl2';
   readonly deps: EtiquetaProviderDeps;
@@ -129,6 +186,14 @@ export type EtiquetaOutcome =
 export interface CheckoutEtiquetaProvider {
   /** The `IntegracaoFrete` tipos this provider is registered for. */
   readonly tipos: readonly IntegracaoFrete[];
+  /**
+   * What a reprint of an already-posted frete produces. `'pode-duplicar'` (the
+   * default when absent) = a reprint can yield a SECOND paid label, so the
+   * gates ask the posted-risk confirm; `'mesmo-documento'` = the carrier hands
+   * back the same document every time and refuses a second shipment itself, so
+   * the confirm would only cry wolf (Shopee, #1523 R-f).
+   */
+  readonly reimpressao?: 'pode-duplicar' | 'mesmo-documento';
   /** Emit or (re)print the label for one pedido. Assumes the shared gates ran. */
   emitirOuImprimir(input: EtiquetaProviderInput): Promise<EtiquetaOutcome>;
 }

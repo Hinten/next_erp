@@ -39,11 +39,18 @@ export type EtiquetaGatesResult =
  *
  * Integration resolution (legacy step 3) is the CALLER's job — `input.intFrete`
  * is already resolved when we get here.
+ *
+ * `opts.confirmarPostado` (default `true`) turns gate 2 off for a provider
+ * whose reprint is the SAME document (`reimpressao: 'mesmo-documento'`, #1523
+ * R-f) — the registry resolves the provider first and decides. Gate 1 always
+ * runs: `semFrete` has nothing to print whoever the carrier is.
  */
 export async function runEtiquetaGates(
   input: Pick<EtiquetaProviderInput, 'frete' | 'ui'>,
+  opts?: { confirmarPostado?: boolean },
 ): Promise<EtiquetaGatesResult> {
   const { frete, ui } = input;
+  const confirmarPostado = opts?.confirmarPostado ?? true;
 
   // 1. Sem frete — no shipment, no label.
   if (frete.modalidade === MODALIDADE_FRETE.semTransporte) {
@@ -52,8 +59,13 @@ export async function runEtiquetaGates(
 
   // 2. Already-posted reprint → risk confirm. `isFreteJaPostado` already
   //    excludes `checkFinalizado`; the explicit check mirrors the legacy guard
-  //    `estado != checkFinalizado && jaPostado.contains(estado)`.
-  if (frete.estado !== ESTADO_FRETE.checkFinalizado && isFreteJaPostado(frete.estado)) {
+  //    `estado != checkFinalizado && jaPostado.contains(estado)`. Its rationale
+  //    is a DUPLICATE PAID label, so a provider that cannot produce one skips it.
+  if (
+    confirmarPostado &&
+    frete.estado !== ESTADO_FRETE.checkFinalizado &&
+    isFreteJaPostado(frete.estado)
+  ) {
     const estadoLabel = ESTADO_FRETE_LABELS[frete.estado] ?? frete.estado;
     const proceed = await ui.confirmRisk(
       'Este frete já foi postado e não deveria ter sua etiqueta reemitida ou reimpressa ' +

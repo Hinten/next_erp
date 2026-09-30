@@ -5,12 +5,12 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
-import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
 import type { MercadoLivreClient } from '../mercado-livre/client';
+import type { ShopeeClient } from '../shopee/client';
 import { pedidoCollection } from '../data/pedidoCollection';
-import { dereferenceOuterRef } from '../data/dereferenceOuterRef';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import { ensureNfeAprovada, printDanfeForCheckout, type CheckoutDanfeFormat } from './nfeFlow';
+import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
 import { printJob } from '../print-agent/printJob';
@@ -28,21 +28,10 @@ import { DeadlineExceededError, REPRINT_STAGE_TIMEOUT_MS, withDeadline } from '.
  * "current pedido" and never the frozen checkout snapshot. So a reprint can only
  * ever target its own row's order. Reuses the exact post-save machinery
  * (`ensureNfeAprovada` / `printDanfeForCheckout` / the etiqueta registry + gates)
- * so a reprint behaves identically to the original emit/print.
+ * so a reprint behaves identically to the original emit/print — including the
+ * integração itself, which is `resolverIntFrete`, the one rule all three
+ * etiqueta entry points share (#1523).
  */
-
-/** Resolve the frete integração doc → `{id, tipo, data}` (mirrors postSave). */
-async function resolveIntFrete(
-  db: Firestore,
-  frete: Pedido['freteInicial'],
-): Promise<{ id: string; tipo: IntegracaoFrete; data: IntFrete } | null> {
-  const ref = dereferenceOuterRef(db, frete?.integracaoFreteOuterRef);
-  if (ref === null) return null;
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  const data = snap.data() as IntFrete;
-  return { id: snap.id, tipo: data.tipo, data };
-}
 
 export type ReprintEtiquetaResult =
   | EtiquetaOutcome
@@ -68,13 +57,16 @@ export async function reprintCheckoutEtiqueta(args: {
   freightClient: FreightHttpClient | null;
   nfeClient: NFeHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  /** Required like the provider dep it feeds — a screen must say which client it threads. */
+  shopeeClient: ShopeeClient | null;
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
   /** Per-stage deadline; defaults to {@link REPRINT_STAGE_TIMEOUT_MS}. */
   timeoutMs?: number;
 }): Promise<ReprintEtiquetaResult> {
-  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, formato, ui } = args;
+  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, shopeeClient, formato, ui } =
+    args;
   const timeoutMs = args.timeoutMs ?? REPRINT_STAGE_TIMEOUT_MS;
 
   // Every await here is bounded and NAMED. Before this, a stall in any one of
@@ -93,7 +85,7 @@ export async function reprintCheckoutEtiqueta(args: {
 
     const intFrete = await withDeadline(
       'resolver a integração de frete',
-      resolveIntFrete(db, frete),
+      resolverIntFrete(db, frete),
       timeoutMs,
     );
     if (intFrete === null) return { status: 'no-integration' };
@@ -121,7 +113,13 @@ export async function reprintCheckoutEtiqueta(args: {
       frete,
       intFrete,
       formato,
-      deps: { freightClient, nfeClient, mercadoLivreClient, printJob: args.printJobFn ?? printJob },
+      deps: {
+        freightClient,
+        nfeClient,
+        mercadoLivreClient,
+        shopeeClient,
+        printJob: args.printJobFn ?? printJob,
+      },
       ui,
     });
   } catch (err) {

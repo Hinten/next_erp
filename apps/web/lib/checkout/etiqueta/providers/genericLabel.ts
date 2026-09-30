@@ -60,7 +60,16 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
   tipos: ['retiradaNaLoja', 'motoboy', 'fob', 'outros'],
 
   async emitirOuImprimir(input: EtiquetaProviderInput): Promise<EtiquetaOutcome> {
-    const { db, pedido, pedidoId, frete, intFrete, formato, deps, ui } = input;
+    const { db, pedido, pedidoId, frete, formato, deps, ui } = input;
+
+    // The label's subtitle names the `int_frete` ACCOUNT ("Motoboy Centro
+    // (Motoboy)"), so it needs the document. A `'bloco'` integration has none;
+    // `resolverIntFrete` only produces one for a marketplace-owned tipo, which
+    // the registry never sends here — this is the compile-time half (#1523).
+    if (input.intFrete.fonte !== 'doc') {
+      return { status: 'error', message: 'Integração de frete não encontrada.' };
+    }
+    const intFrete = input.intFrete;
 
     try {
       const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
