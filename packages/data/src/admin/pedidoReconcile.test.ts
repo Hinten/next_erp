@@ -176,7 +176,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: 'pago', skippedStale: false });
+    expect(result).toEqual({ transition: 'pago', skippedStale: false, aprovadosDoLink: null });
 
     // Pedido advanced + frete flipped (from a pre-shipment estado).
     expect(store['pedidos/p1']!.estado).toBe('pago');
@@ -228,6 +228,7 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(result).toEqual({
       transition: 'aguardandoConfirmacaoDePagamento',
       skippedStale: false,
+      aprovadosDoLink: null,
     });
     expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
     // Frete untouched (not fully paid).
@@ -374,7 +375,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: null, skippedStale: true });
+    expect(result).toEqual({ transition: null, skippedStale: true, aprovadosDoLink: null });
     expect(writes.sets).toHaveLength(0);
     expect(writes.updates).toHaveLength(0);
     // Stored payment untouched.
@@ -404,7 +405,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: null, skippedStale: true });
+    expect(result).toEqual({ transition: null, skippedStale: true, aprovadosDoLink: null });
     expect(writes.sets).toHaveLength(0);
     expect(writes.updates).toHaveLength(0);
   });
@@ -490,7 +491,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: null, skippedStale: false });
+    expect(result).toEqual({ transition: null, skippedStale: false, aprovadosDoLink: null });
     // Estado untouched.
     expect(store['pedidos/p1']!.estado).toBe('finalizado');
     // But the pagamento was still upserted.
@@ -549,7 +550,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: 'pago', skippedStale: false });
+    expect(result).toEqual({ transition: 'pago', skippedStale: false, aprovadosDoLink: null });
     expect(store['pedidos/p1']!.estado).toBe('pago');
     const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
     expect(pedidoUpdates).toHaveLength(1);
@@ -579,7 +580,7 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     });
 
-    expect(result).toEqual({ transition: 'pago', skippedStale: false });
+    expect(result).toEqual({ transition: 'pago', skippedStale: false, aprovadosDoLink: null });
     expect(store['pedidos/p1']!.estado).toBe('pago');
     const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
     expect(pedidoUpdates).toHaveLength(1);
@@ -660,11 +661,18 @@ describe('reconcilePedidoFromPagamento — payment-link attribution is fill-once
         const result = await reconcilePedidoFromPagamento(db, {
           pedidoId: PEDIDO_ID,
           pagamentoId: PAY_ID,
-          pagamento: entregaMaisNova(atribuicao(key, outro)),
+          pagamento: entregaMaisNova({ ...atribuicao(key, outro), dataAprovacao: T_NEW }),
         });
 
         // The delivery WAS applied — so what follows is the overlay's decision, not a stale skip…
-        expect(result).toEqual({ transition: 'pago', skippedStale: false });
+        // (`aprovadosDoLink` counts the link the doc is attributed to AFTER the
+        // write: this delivery is APPROVED and names LINK_B, yet the stored LINK_A
+        // is not re-attributed, so LINK_B still has no approved payment.)
+        expect(result).toEqual({
+          transition: 'pago',
+          skippedStale: false,
+          aprovadosDoLink: key === 'linkPagamentoId' ? 0 : null,
+        });
         expect(store[PAG_PATH]).toMatchObject({
           valor: 100,
           status_pagamento: STATUS_PAGAMENTO.aprovado,
@@ -781,7 +789,8 @@ describe('reconcilePedidoFromPagamento — payment-link attribution is fill-once
         }),
       });
 
-      expect(result).toEqual({ transition: null, skippedStale: true });
+      // (the stored row was never approved, so LINK_A's count is 0, not null)
+      expect(result).toEqual({ transition: null, skippedStale: true, aprovadosDoLink: 0 });
       expect(writes.sets).toHaveLength(0);
       expect(writes.updates).toHaveLength(0);
       expect(store[PAG_PATH]).not.toHaveProperty('linkPagamentoId');
@@ -866,6 +875,308 @@ describe('reconcilePedidoFromPagamento — payment-link attribution is fill-once
         expect(outra in store[PAG_PATH]!).toBe(false);
       },
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  `aprovadosDoLink` — how many payments a link has been paid by (#367)       */
+/*                                                                            */
+/*  The webhook closes a payment link once its quota is spent, and the count   */
+/*  it closes on comes out of THIS transaction's pagamento read: the docs      */
+/*  attributed to the incoming payment's link with `dataAprovacao != null`.    */
+/*  It is returned from BOTH exits — the write, where the target doc counts    */
+/*  as written, and the stale skip, where a crashed close is finished from.    */
+/* -------------------------------------------------------------------------- */
+
+describe('reconcilePedidoFromPagamento — aprovadosDoLink, the link quota count (#367)', () => {
+  const OUTRO = 'pedidos/p1/pagamentos/outro1';
+  const OUTRO_2 = 'pedidos/p1/pagamentos/outro2';
+  const LEGADO = 'pedidos/p1/pagamentos/legAuto1';
+  const CONTA = 'documents/metodo_pgto/m1';
+  /** Big enough that no payment below settles it — the estado never moves under the count. */
+  const PEDIDO_ABERTO = { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 1000 };
+
+  /** A stored pagamento, at the OLD provider watermark, approved at T_OLD unless overridden. */
+  const gravado = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    valor: 100,
+    status_pagamento: STATUS_PAGAMENTO.aprovado,
+    dataAprovacao: T_OLD,
+    ultimaModificacao: T_OLD,
+    lastProviderUpdate: T_OLD,
+    ...over,
+  });
+  /** A stored row that was never approved (pending, no approval stamp). */
+  const naoAprovado = (over: Record<string, unknown> = {}) =>
+    gravado({ status_pagamento: STATUS_PAGAMENTO.pendente, dataAprovacao: null, ...over });
+
+  /** A NEWER delivery that is approved (it stamps `dataAprovacao`, like the mapper). */
+  const aprovada = (extra: Partial<Pagamento> = {}): Pagamento =>
+    entregaMaisNova({ dataAprovacao: T_NEW, ...extra });
+  /** A delivery at the SAME watermark as the stored docs → the stale skip. */
+  const obsoleta = (extra: Partial<Pagamento> = {}): Pagamento =>
+    entregaMaisNova({ lastProviderUpdate: T_OLD, dataAprovacao: T_NEW, ...extra });
+
+  const reconciliar = async (
+    seed: Record<string, Record<string, unknown>>,
+    pagamento: Pagamento,
+  ) => {
+    const fake = makeDb(seed);
+    const result = await reconcilePedidoFromPagamento(fake.db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento,
+    });
+    return { result, ...fake };
+  };
+
+  describe('WRITE exit — the target doc counts as it was written', () => {
+    it('counts the payment this very delivery approves (CREATE, nothing else stored)', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result).toEqual({ transition: null, skippedStale: false, aprovadosDoLink: 1 });
+    });
+
+    it('adds the payments the link was already approved for (a shared link paid N times)', async () => {
+      const { result } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [OUTRO]: gravado({ linkPagamentoId: LINK_A }),
+          [OUTRO_2]: gravado({ linkPagamentoId: LINK_A }),
+        },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(3);
+    });
+
+    it('NEAR-MISS: a row of the link that was never approved is not a payment', async () => {
+      const { result } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [OUTRO]: naoAprovado({ linkPagamentoId: LINK_A }),
+        },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('NEAR-MISS: rows attributed to ANOTHER link, or to none, are not counted', async () => {
+      const { result } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [OUTRO]: gravado({ linkPagamentoId: LINK_B }),
+          [OUTRO_2]: gravado(),
+        },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('NEAR-MISS: the incoming payment counts only once it is approved', async () => {
+      const semAprovacao = entregaMaisNova({
+        linkPagamentoId: LINK_A,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+      });
+
+      const sozinha = await reconciliar({ 'pedidos/p1': PEDIDO_ABERTO }, semAprovacao);
+      expect(sozinha.result.aprovadosDoLink).toBe(0);
+
+      const aoLadoDeUmaAprovada = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [OUTRO]: gravado({ linkPagamentoId: LINK_A }) },
+        semAprovacao,
+      );
+      expect(aoLadoDeUmaAprovada.result.aprovadosDoLink).toBe(1);
+    });
+
+    it('the target is REPLACED, not added: a redelivery of a counted payment counts once', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }) },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result).toMatchObject({ skippedStale: false, aprovadosDoLink: 1 });
+    });
+
+    it('counts the values WRITTEN: an overlay that clears the approval stamp drops the payment', async () => {
+      // `dataAprovacao` is GATEWAY_OWNED, so a newer delivery carrying null overlays
+      // the stored stamp — and the count must follow what landed, not what was there.
+      const { result, store } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }) },
+        entregaMaisNova({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(store[PAG_PATH]!.dataAprovacao).toBeNull();
+      expect(result.aprovadosDoLink).toBe(0);
+    });
+
+    it('a refund delivery that keeps the approval stamp still counts (ever approved, not paying now)', async () => {
+      const { result, store } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }) },
+        aprovada({ linkPagamentoId: LINK_A, status_pagamento: STATUS_PAGAMENTO.estornado }),
+      );
+
+      expect(store[PAG_PATH]!.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('fill-once decides the attribution: a target stored under ANOTHER link is not moved', async () => {
+      const { result, store } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [PAG_PATH]: gravado({ linkPagamentoId: LINK_B }),
+          [OUTRO]: gravado({ linkPagamentoId: LINK_A }),
+        },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      // The delivery names LINK_A, but the doc it updated stays LINK_B's.
+      expect(store[PAG_PATH]!.linkPagamentoId).toBe(LINK_B);
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('fill-once decides the attribution: an UNattributed target is filled by this delivery and counts', async () => {
+      const { result, store } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado() },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(store[PAG_PATH]!.linkPagamentoId).toBe(LINK_A);
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('a legacy auto-id doc is the target: replaced by the write, never counted beside a new doc', async () => {
+      // The doc already carries the link (an earlier in-place update filled it), so
+      // counting it in its stored form AND as written would make 2.
+      const { result, store } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [LEGADO]: gravado({
+            id: PAY_ID,
+            metodoPagamentoOuterRef: CONTA,
+            valor: 60,
+            linkPagamentoId: LINK_A,
+          }),
+        },
+        aprovada({ linkPagamentoId: LINK_A, metodoPagamentoOuterRef: CONTA }),
+      );
+
+      expect(store['pedidos/p1/pagamentos/pay1']).toBeUndefined();
+      expect(store[LEGADO]!.linkPagamentoId).toBe(LINK_A);
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('is null when the incoming payment carries no link — whatever the stored rows say', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [OUTRO]: gravado({ linkPagamentoId: LINK_A }) },
+        aprovada(),
+      );
+
+      expect(result).toEqual({ transition: null, skippedStale: false, aprovadosDoLink: null });
+    });
+
+    it('writes nothing but the pagamento (the count is a return value, not a write)', async () => {
+      const { writes } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [OUTRO]: gravado({ linkPagamentoId: LINK_A }) },
+        aprovada({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(writes.sets.map((w) => w.path)).toEqual([PAG_PATH]);
+    });
+  });
+
+  describe('STALE exit — counted from the stored docs, nothing written', () => {
+    it('a redelivery of an approved payment still reports the count (a crashed close can be finished)', async () => {
+      const { result, writes } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }) },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result).toEqual({ transition: null, skippedStale: true, aprovadosDoLink: 1 });
+      expect(writes.sets).toHaveLength(0);
+      expect(writes.updates).toHaveLength(0);
+    });
+
+    it('counts the link’s other approved rows beside the target', async () => {
+      const { result } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }),
+          [OUTRO]: gravado({ linkPagamentoId: LINK_A }),
+          [OUTRO_2]: naoAprovado({ linkPagamentoId: LINK_A }),
+        },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(2);
+    });
+
+    it('a target with NO stored attribution is read as the incoming link’s — and nothing is filled', async () => {
+      const { result, store } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado() },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(1);
+      expect(store[PAG_PATH]).not.toHaveProperty('linkPagamentoId');
+    });
+
+    it('NEAR-MISS: only the TARGET gets that reading — another unattributed row is not counted', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado(), [OUTRO]: gravado() },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(1);
+    });
+
+    it('NEAR-MISS: a target stored under ANOTHER link is not moved to the incoming one', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_B }) },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(result.aprovadosDoLink).toBe(0);
+    });
+
+    it('NEAR-MISS: a target that was never approved does not count, attributed or not', async () => {
+      const semLink = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: naoAprovado() },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+      const comLink = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: naoAprovado({ linkPagamentoId: LINK_A }) },
+        obsoleta({ linkPagamentoId: LINK_A }),
+      );
+
+      expect(semLink.result.aprovadosDoLink).toBe(0);
+      expect(comLink.result.aprovadosDoLink).toBe(0);
+    });
+
+    it('a legacy auto-id target counts once, as the incoming link’s', async () => {
+      const { result } = await reconciliar(
+        {
+          'pedidos/p1': PEDIDO_ABERTO,
+          [LEGADO]: gravado({ id: PAY_ID, metodoPagamentoOuterRef: CONTA, valor: 60 }),
+        },
+        obsoleta({ linkPagamentoId: LINK_A, metodoPagamentoOuterRef: CONTA }),
+      );
+
+      expect(result).toMatchObject({ skippedStale: true, aprovadosDoLink: 1 });
+    });
+
+    it('is null when the stale delivery carries no link', async () => {
+      const { result } = await reconciliar(
+        { 'pedidos/p1': PEDIDO_ABERTO, [PAG_PATH]: gravado({ linkPagamentoId: LINK_A }) },
+        obsoleta(),
+      );
+
+      expect(result).toEqual({ transition: null, skippedStale: true, aprovadosDoLink: null });
+    });
   });
 });
 
@@ -1999,7 +2310,7 @@ describe('troca — the devolução credit counts as paid', () => {
         }),
       });
 
-      expect(result).toEqual({ transition: 'pago', skippedStale: false });
+      expect(result).toEqual({ transition: 'pago', skippedStale: false, aprovadosDoLink: null });
       expect(store['pedidos/p1']!.estado).toBe('pago');
       expect(store['pedidos/p1']!.freteInicial).toEqual({
         estado: 'despachoAutorizado',
@@ -2023,6 +2334,7 @@ describe('troca — the devolução credit counts as paid', () => {
       expect(result).toEqual({
         transition: 'aguardandoConfirmacaoDePagamento',
         skippedStale: false,
+        aprovadosDoLink: null,
       });
       expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado', codRastreio: null });
     });
@@ -2042,7 +2354,7 @@ describe('troca — the devolução credit counts as paid', () => {
         }),
       });
 
-      expect(result).toEqual({ transition: null, skippedStale: false });
+      expect(result).toEqual({ transition: null, skippedStale: false, aprovadosDoLink: null });
       expect(store['pedidos/p1']!.estado).toBe('iniciado');
       // The pagamento itself is still recorded.
       expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 50 });
@@ -2066,7 +2378,7 @@ describe('troca — the devolução credit counts as paid', () => {
         }),
       });
 
-      expect(result).toEqual({ transition: null, skippedStale: false });
+      expect(result).toEqual({ transition: null, skippedStale: false, aprovadosDoLink: null });
       expect(store['pedidos/p1']!.estado).toBe('iniciado');
     });
 
@@ -2091,7 +2403,11 @@ describe('troca — the devolução credit counts as paid', () => {
           }),
         });
 
-        expect(result).toEqual({ transition: esperado, skippedStale: false });
+        expect(result).toEqual({
+          transition: esperado,
+          skippedStale: false,
+          aprovadosDoLink: null,
+        });
         expect(store['pedidos/p1']!.estado).toBe(esperado);
       },
     );

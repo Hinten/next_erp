@@ -101,6 +101,42 @@ function coberturaRowOf(d: DocumentSnapshot): PagamentoCoberturaRow {
 }
 
 /**
+ * One pagamento as far as the payment-link quota is concerned: which link it is
+ * attributed to and whether it was ever approved. Raw `unknown`s, because a stored
+ * legacy doc can hold anything in either key — only `=== linkId` and `!= null` are
+ * ever asked of them.
+ */
+interface LinhaDeAtribuicao {
+  linkPagamentoId: unknown;
+  dataAprovacao: unknown;
+}
+
+function linhaDeAtribuicaoOf(d: DocumentSnapshot): LinhaDeAtribuicao {
+  return { linkPagamentoId: d.get('linkPagamentoId'), dataAprovacao: d.get('dataAprovacao') };
+}
+
+/**
+ * How many of `linhas` were attributed to the payment link `linkId` AND ever
+ * approved (`dataAprovacao != null`) — the count a link's quota is measured
+ * against (`linkAtingiuCota`, #367).
+ *
+ * "Ever approved" and not "currently paying" on purpose: a quota is spent by the
+ * approval, so a status that later moves (a refund, a chargeback) does not by
+ * itself hand the quota back — the count keys on the approval STAMP
+ * (`dataAprovacao`, the mapper's `date_approved` pass-through), never on
+ * `status_pagamento`. A pending, rejected or never-approved row (`dataAprovacao`
+ * null) does not count, and neither does a row attributed to another link or to
+ * none.
+ *
+ * Pure over the rows the caller already read INSIDE its transaction: it adds no
+ * read (a query by `linkPagamentoId` would need a declared index on Enterprise,
+ * root `CLAUDE.md` rule 1) and no write.
+ */
+function contarAprovadosDoLink(linhas: ReadonlyArray<LinhaDeAtribuicao>, linkId: string): number {
+  return linhas.filter((l) => l.linkPagamentoId === linkId && l.dataAprovacao != null).length;
+}
+
+/**
  * The `metodo_pgto` doc id a pagamento's `metodoPagamentoOuterRef` names, or
  * `null` when it is not a string or names another collection. Compares the
  * collection too, so an equal id under another collection never matches.
@@ -271,7 +307,34 @@ function applyEstadoTransition(
  * usuário — this path runs on the Admin SDK and has no end user behind it.
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
- * transition applies), plus whether the delivery was skipped as stale.
+ * transition applies), whether the delivery was skipped as stale, and — for a
+ * payment that came through a payment link — how many of the pedido's pagamentos
+ * that link has now been paid by (`aprovadosDoLink`, below).
+ *
+ * ⚠️ `aprovadosDoLink` is `null` unless the INCOMING pagamento carries a
+ * `linkPagamentoId` L. Otherwise it is the number of pagamentos attributed to L
+ * with `dataAprovacao != null` ("ever approved", {@link contarAprovadosDoLink}),
+ * counted from the SAME in-transaction pagamento read the estado is decided on —
+ * no extra read, no query. It exists so the webhook can close a link whose quota
+ * is spent (`apps/mercado-pago` `encerrarLinkSeCompleto`), and it is returned on
+ * BOTH exits, which is the point:
+ *
+ *  - the WRITE exit counts the stored docs with the target doc (`alvoId`) REPLACED
+ *    by what was actually written — the incoming {@link GATEWAY_OWNED} values and
+ *    the fill-once attribution — so the payment that just got approved counts
+ *    even though it was not approved in the stored copy;
+ *  - the STALE exit counts the stored docs as they are, except that a target doc
+ *    with NO stored attribution is read as attributed to L: the delivery is stale
+ *    because an earlier one already wrote this very payment, and that write is
+ *    what a crashed close must be finished from. A target that never got the
+ *    attribution (a payment stored before its delivery carried the link, or a
+ *    legacy doc) would otherwise count for no link at all, and the close that
+ *    failed would never be retried. Only the TARGET gets this reading — another
+ *    unattributed row says nothing about L — and only when it was approved.
+ *
+ * The caller acts on the count AFTER this transaction commits (a Mercado Pago
+ * call cannot run inside it). The count is a fact about the docs read here, not a
+ * decision this transaction writes on.
  *
  * Datetime units: `lastProviderUpdate` / `ultimaModificacao` / `dataCadastro`
  * are MICROSECONDS since epoch (`nowMicros()`), the pagamento/pedido standard.
@@ -283,8 +346,16 @@ export async function reconcilePedidoFromPagamento(
     pagamentoId: string;
     pagamento: Pagamento;
   },
-): Promise<{ transition: EstadoPedido | null; skippedStale: boolean }> {
+): Promise<{
+  transition: EstadoPedido | null;
+  skippedStale: boolean;
+  aprovadosDoLink: number | null;
+}> {
   const { pedidoId, pagamentoId, pagamento } = input;
+  // The link the INCOMING payment came through, or null. Read from the input (the
+  // mapped delivery) — the stored side is never asked which link this delivery is
+  // about, only which docs already belong to it.
+  const linkId = pagamento.linkPagamentoId ?? null;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -321,7 +392,21 @@ export async function reconcilePedidoFromPagamento(
         typeof incomingMod === 'number' &&
         existingMod >= incomingMod
       ) {
-        return { transition: null, skippedStale: true };
+        // Nothing is written, but the count still comes back (see the function
+        // doc): the stored docs as they are, the target doc read as belonging to
+        // the incoming link when it carries no attribution of its own yet.
+        const aprovadosDoLink =
+          linkId === null
+            ? null
+            : contarAprovadosDoLink(
+                pagamentosSnap.docs.map((d) =>
+                  d.id === alvoId && d.get('linkPagamentoId') == null
+                    ? { ...linhaDeAtribuicaoOf(d), linkPagamentoId: linkId }
+                    : linhaDeAtribuicaoOf(d),
+                ),
+                linkId,
+              );
+        return { transition: null, skippedStale: true, aprovadosDoLink };
       }
     }
 
@@ -370,7 +455,8 @@ export async function reconcilePedidoFromPagamento(
       toWrite.lastProviderUpdate = writeNow;
     }
     const pagamentoRef = pagamentoCollection.docRef(db, { pedidoId }, alvoId);
-    tx.set(pagamentoRef, pagamentoCollection.parse(toWrite) as DocumentData);
+    const escrito = pagamentoCollection.parse(toWrite);
+    tx.set(pagamentoRef, escrito as DocumentData);
 
     // The payment set the coverage is summed over: the in-tx docs, replacing the
     // upserted one with the incoming values, using the SAME status filter the
@@ -387,7 +473,22 @@ export async function reconcilePedidoFromPagamento(
     });
 
     const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, paymentsForSum);
-    return { transition, skippedStale: false };
+
+    // The link's quota count: the stored docs with the target REPLACED by what
+    // this transaction just wrote (`escrito` — the overlay and fill-once result,
+    // not the incoming delivery), so the payment approved by THIS delivery counts
+    // and a stored attribution to ANOTHER link is not re-attributed to this one.
+    const aprovadosDoLink =
+      linkId === null
+        ? null
+        : contarAprovadosDoLink(
+            [
+              ...pagamentosSnap.docs.filter((d) => d.id !== alvoId).map(linhaDeAtribuicaoOf),
+              { linkPagamentoId: escrito.linkPagamentoId, dataAprovacao: escrito.dataAprovacao },
+            ],
+            linkId,
+          );
+    return { transition, skippedStale: false, aprovadosDoLink };
   });
 }
 
