@@ -765,60 +765,103 @@ describe('pagamentos', () => {
 
 describe('nextPedidoEstado (rule table)', () => {
   it('fully paid → pago + authorize despacho', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 100)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 100, 100)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 120)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 120, 120)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
   });
 
   it('is idempotent once pago', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 100, 100)).toBeNull();
   });
 
   it('partially paid → aguardando (no despacho)', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 50, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('is idempotent once aguardando while still partial', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, 100, 50)).toBeNull();
+    expect(
+      nextPedidoEstado(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, 100, 50, 50),
+    ).toBeNull();
   });
 
   it('downgrades a pago pedido that drops below its total', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 50, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
-    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 0)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 0, 0)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('leaves estado alone when nothing is paid and it is not pago', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 0, 0)).toBeNull();
   });
 
   it('never forces a transition on a zero-total pedido (even with a payment)', () => {
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 0)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 0, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 50, 50)).toBeNull();
   });
 
   it('never auto-reverts a terminal / fulfilled / refunded estado', () => {
     // Fully paid but cancelled/finalized → must NOT bounce back to pago.
-    expect(nextPedidoEstado(ESTADO_PEDIDO.cancelado, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.finalizado, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.fraude, 100, 100)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.processandoCancelamento, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.cancelado, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.finalizado, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.fraude, 100, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.processandoCancelamento, 100, 100, 100)).toBeNull();
     // Partially paid (refund) on a refund state → must NOT erase it.
-    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50)).toBeNull();
-    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0, 0)).toBeNull();
+  });
+  describe('a troca: the credit settles, but only a payment makes it PARTIAL (#367 OD4)', () => {
+    // 150 total, 100 returned (credit), nothing paid beyond it:
+    // valorQuitado 100, valorPagoAlemDaDevolucao 0.
+    it('a credit-only partial leaves every payment-driven estado where it is', () => {
+      for (const estado of [
+        ESTADO_PEDIDO.iniciado,
+        ESTADO_PEDIDO.carrinho,
+        ESTADO_PEDIDO.escolhendoFormaDePagamento,
+        ESTADO_PEDIDO.pagamentoNaoRealizado,
+      ]) {
+        expect(nextPedidoEstado(estado, 150, 100, 0)).toBeNull();
+      }
+    });
+
+    it('⚠️ NEAR-MISS: one paid cent on top of the same credit → aguardando', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 150, 100.01, 0.01)).toEqual({
+        estado: 'aguardandoConfirmacaoDePagamento',
+        autorizarDespacho: false,
+      });
+    });
+
+    it('the credit alone still settles an even swap — the full branch ignores valorPago', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 150, 150, 0)).toEqual({
+        estado: 'pago',
+        autorizarDespacho: true,
+      });
+    });
+
+    it('a pago troca the credit alone still covers stays pago (no downgrade without a payment)', () => {
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 150, 0)).toBeNull();
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 200, 0)).toBeNull();
+    });
+
+    it('a pago troca that the credit alone no longer covers is still downgraded', () => {
+      // The refund case: the difference was paid and refunded, the credit remains.
+      expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 150, 100, 0)).toEqual({
+        estado: 'aguardandoConfirmacaoDePagamento',
+        autorizarDespacho: false,
+      });
+    });
   });
 
   describe('the payment-link allow-list stays inside the payment-driven estados (#367)', () => {
@@ -836,7 +879,7 @@ describe('nextPedidoEstado (rule table)', () => {
     });
 
     it.each(geraveis)('%s: a payment covering the total settles it to pago', (estado) => {
-      expect(nextPedidoEstado(estado, 100, 100)?.estado).toBe(ESTADO_PEDIDO.pago);
+      expect(nextPedidoEstado(estado, 100, 100, 100)?.estado).toBe(ESTADO_PEDIDO.pago);
     });
 
     it.each([
@@ -849,7 +892,7 @@ describe('nextPedidoEstado (rule table)', () => {
     ])('NEAR-MISS: %s is not payment-driven, so it is NOT in the link allow-list', (estado) => {
       // The invariant above bites only if these really fail it: a full payment moves
       // none of them, so a link generated there could never settle the pedido.
-      expect(nextPedidoEstado(estado, 100, 100)).toBeNull();
+      expect(nextPedidoEstado(estado, 100, 100, 100)).toBeNull();
       expect(podeGerarLinkPagamento(estado)).toBe(false);
     });
   });

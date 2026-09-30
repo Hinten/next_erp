@@ -201,7 +201,7 @@ export function nfeFiscalEncerrada(estado: EstadoNFe): boolean {
  * used to gate the payment RECONCILE — reused here because it is exactly the
  * set in which an approved payment can still move the pedido to `pago`, so a
  * link created in one of these estados can actually settle it. Every member
- * also has `nextPedidoEstado(e, total, total) === pago` (pinned by a
+ * also has `nextPedidoEstado(e, total, total, total) === pago` (pinned by a
  * cross-module test in `packages/data`), so the allow-list can never drift out
  * of the payment-driven estados.
  *

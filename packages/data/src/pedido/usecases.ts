@@ -624,18 +624,33 @@ const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
  *
  *  - **fully settled** (`valorQuitado ≥ total`, `total > 0`) → `pago` and
  *    authorize frete dispatch (`despachoAutorizado`);
- *  - **partially settled** (`0 < valorQuitado < total`) → `aguardandoConfirmacaoDePagamento`;
+ *  - **partially paid** (`valorPagoAlemDaDevolucao > 0`, `valorQuitado < total`)
+ *    → `aguardandoConfirmacaoDePagamento`;
  *  - a **`pago`** pedido that drops below its total → downgraded back to
  *    `aguardandoConfirmacaoDePagamento`.
  *
  * `valorQuitado` is the PAID side of a troca: the paying pagamentos PLUS the
  * devolução credit (`coberturaDoPedido`, `@delfrance/schemas`), measured against
- * the GROSS `total`. It is not `sumPagamentosPagos` alone — a pedido without
- * returned items has no credit and the two coincide, but a troca's returned
- * items count as paid (legacy `tasks.dart:64-68`). The credit is added to the
- * paid side rather than subtracted from the total precisely because of the two
- * gates below: `total <= 0` returns `null` and the partial branch needs
- * `valorQuitado > 0`, so a net total of zero (an even swap) would never settle.
+ * the GROSS `total`. `valorPagoAlemDaDevolucao` is the money paid BEYOND the
+ * returned value — the paying pagamentos minus a crédito loja that only registers
+ * the return. A pedido without returned items has no credit and all three
+ * coincide, but a troca's returned items count as paid (legacy
+ * `tasks.dart:64-68`). The credit is added to the paid side rather than
+ * subtracted from the total because `total <= 0` returns `null`, so a net total
+ * of zero (an even swap) would never settle.
+ *
+ * ⚠️ The returned value settles; it never makes a pedido PARTIALLY paid. The
+ * partial branch requires money beyond it. A troca whose returned items cover
+ * part of the total, with nothing more paid, stays in its estado (items
+ * editable) until a real payment moves it (#367 OD4, owner decision: "a partial
+ * credit stays iniciado and editable; the first link or payment moves it
+ * forward") — whether the return is only in `itensDevolvidos` or also registered
+ * as a crédito-loja pagamento. That makes creation ({@link aplicarQuitacaoNaCriacao},
+ * where no pagamento can exist) and every later reconcile agree on the same
+ * estado for the same return and payments. Legacy moved a credit-only partial to
+ * aguardando everywhere — the form's save, creation included
+ * (`cadastroPedidoProvider.dart:1137`), and the Mercado Pago webhook
+ * (`tasks.dart:101`) — locking the items before anyone had paid.
  *
  * Only the {@link AUTO_ESTADO_SOURCES} states are touched, so a cancelado /
  * finalizado / estornado* / fraude pedido is never reverted by a payment sum. A
@@ -646,6 +661,7 @@ export function nextPedidoEstado(
   estado: EstadoPedido,
   total: number,
   valorQuitado: number,
+  valorPagoAlemDaDevolucao: number,
 ): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
   if (!AUTO_ESTADO_SOURCES.has(estado)) return null;
   if (total <= 0) return null;
@@ -656,7 +672,7 @@ export function nextPedidoEstado(
       : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
   if (
-    valorQuitado > 0 &&
+    valorPagoAlemDaDevolucao > 0 &&
     estado !== ESTADO_PEDIDO.pago &&
     estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
   ) {
@@ -714,10 +730,17 @@ export function freteComDespachoAutorizado(frete: unknown): Record<string, unkno
  *
  * The rule is {@link nextPedidoEstado} fed the create-time cobertura: no
  * pagamento can exist yet (they are a subcollection only reachable once the doc
- * does), so `valorQuitado` is the credit alone. Anything short of `pago` — a
- * PARTIAL credit, an entrada (no credit), a zero total, an estado the payment
- * rule does not drive, or one that is already `pago` — returns `values` UNTOUCHED
- * and the pedido stays editable in the estado it was created with.
+ * does), so `valorQuitado` is the credit alone and nothing is paid beyond it.
+ * Anything short of `pago` — a PARTIAL credit, an entrada (no credit), a zero
+ * total, an estado the payment rule does not drive, or one that is already
+ * `pago` — returns `values` UNTOUCHED and the pedido stays editable in the
+ * estado it was created with.
+ *
+ * A partial credit stays put for the SAME reason on every later reconcile (the
+ * save's, `aposAlterarTotal`, and a pagamento's): they apply the same rule, whose
+ * partial branch needs money beyond the returned value — so the estado never
+ * depends on whether the troca was just created or just edited (#367 OD4, see
+ * {@link nextPedidoEstado}).
  *
  * Done client-side, in the very write that creates the pedido, and NOT through
  * the `reconciliarPagamentoPedido` callable after it: the operator keeps the
@@ -729,7 +752,7 @@ export function aplicarQuitacaoNaCriacao<T extends object>(values: T): T {
   const doc = values as unknown as Record<string, unknown>;
   const estado = estadoPedidoSchema.safeParse(doc.estado);
   if (!estado.success) return values;
-  const { valorCobrado, valorQuitado } = coberturaDoPedido(
+  const { valorCobrado, valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
     {
       valorCobrado: doc.valorCobrado as number | null | undefined,
       ehSaida: doc.ehSaida as boolean | null | undefined,
@@ -737,7 +760,7 @@ export function aplicarQuitacaoNaCriacao<T extends object>(values: T): T {
     },
     [],
   );
-  const next = nextPedidoEstado(estado.data, valorCobrado, valorQuitado);
+  const next = nextPedidoEstado(estado.data, valorCobrado, valorQuitado, valorPagoAlemDaDevolucao);
   if (next?.estado !== ESTADO_PEDIDO.pago) return values;
   const frete = freteComDespachoAutorizado(doc.freteInicial);
   return {
