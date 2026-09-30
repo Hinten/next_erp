@@ -235,9 +235,36 @@ conforme a finalidade.
 5. Transferência de crédito na sucessão
 6. Retorno por recusa parcial na entrega
 
-Cada `tpNFDebito`/`tpNFCredito` tem um cClassTrib obrigatório (validado em
-UB14-70 e UB14-80). Em particular, **NF-e de Crédito tipo 2 (ZFM)** só pode
-ser emitida a partir de **janeiro/2029** (RV B25.2-30).
+**Oito** tipos amarram o cClassTrib de todo item (UB14-70/80): débito 01 →
+800002, 02 → 811001, 03 → 811002, 05 → 800001, 07 → 410030, 08 → 811003;
+crédito 02 → 810001, 05 → 800001. Os demais (débito 04/06, crédito 01/03/04/06)
+são "não limitar". A tabela inversa (UB14-60, cStat 1202) proíbe esses sete
+códigos em qualquer outra nota — inclusive numa venda comum. **NF-e de Crédito
+tipo 2 (ZFM)** só pode ser emitida a partir de **janeiro/2029** (RV B25.2-30).
+
+### Neste repo (#330)
+
+- **Operação**: `finNFe` 5/6 + `tpNFDebito`/`tpNFCredito` (`operacao.ts`); o
+  formulário valida B25-110/120, B25.1 e B25.2 com as MESMAS regras do pré-voo
+  (`violacoesDaOperacao`). `tpNFCredito` 06 ainda **não** existe no enum — o
+  pacote de XSD vendorizado é anterior à v1.40 que o criou (chega com o PL_010f).
+- **Grupos do item** (`modoGruposImposto`, `imposto/notaCreditoDebito.ts`):
+  `somenteIbsCbs` — só `IS` + `IBSCBS`, nenhum ICMS/ISSQN/IPI/PIS/COFINS (B25-80,
+  cStat 1001) — para toda nota 5/6, **exceto** crédito 03/04 e débito 07
+  (`completo`, as exceções da própria RV). `buildImpostoXml` e
+  `aggregateTotals` recebem o MESMO modo (`modoGruposFor` no `apps/nfe`), então
+  det e total não divergem.
+- **Recusado antes do número** (`violacoesDoDocumento`): nota 5/6 sem a Reforma
+  Tributária ligada; item sem `configuracaoIBSCBS`; e os **8 tipos de cClassTrib
+  fixo**, cujo item exige um grupo de ajuste (`gTransfCred`, `gAjusteCompet`,
+  `gEstornoCred`, `gCredPresIBSZFM`) que ainda não é emitido (#330, parte 3).
+  Emitíveis hoje: **débito 04 e 06, crédito 01, 03 e 04**.
+- **Simples Nacional**: 5/6 são **neutras** na receita bruta (sinal 0, contadas
+  em `notasNeutras`) — ajustam IBS/CBS, não o preço de uma venda.
+- ⚠️ B25-30/40/50/60 também valem para finNFe 2 (complementar); o módulo cobre
+  só a metade do crédito, de propósito.
+- ⚠️ I08 (327/328): crédito 03 só aceita CFOP de devolução — a tabela de CFOP
+  não é vendorizada, então essa regra fica com a SEFAZ.
 
 ### Referência por item — `det/DFeReferenciado` (Grupo VC, #330)
 
@@ -380,10 +407,16 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `B10a-20` | 1154 | dPrevEntrega > 3 meses após dhSaiEnt |
 | `B10a-30` | 1155 | dPrevEntrega anterior a dhSaiEnt |
 | `B10a-40` | 1156 | dPrevEntrega informado para finNFe ≠ 1 (normal) ou 4 (devolução) |
-| `B25-30` a `B25-50` | 254/255/269 | NF-e referenciada ausente/duplicada/CNPJ divergente para finNFe=2/5/6 |
-| `B25-80` | 1001 | Crédito/Débito com ICMS/ISSQN/PIS/COFINS informado (deveria só ter IBS/CBS) |
-| `B25-100` | 1003 | NF-e de Crédito referenciando modelo ≠ 55 |
+| `B25-30` / `B25-40` | 254 / 255 | NF referenciada ausente / mais de uma — finNFe=2 e crédito 01/03/04 |
+| `B25-50` / `B25-60` | 269 / 678 | NF referenciada de outro CNPJ / outra UF — finNFe=2 e crédito 03/04 |
+| `B25-65` | 1027 | crédito 02 (ZFM) com NF referenciada |
+| `B25-80` | 1001 | Crédito/Débito com ICMS/ISSQN/IPI/II/PIS/COFINS(-ST)/ICMSUFDest/impostoDevol (exceto crédito 03/04/06 e débito 07) |
+| `B25-100` | 1003 | NF-e de Crédito referenciando modelo ≠ 55 (crédito 03 aceita 65) |
+| `B25-110` / `B25-120` | 1161 / 1162 | crédito que não é entrada / débito que não é saída |
+| `B25.1-10` / `B25.1-20` | 1139 / 1009 | `tpNFDebito` sem finNFe=6 / finNFe=6 sem `tpNFDebito` |
+| `B25.2-10` / `B25.2-20` | 1163 / 1164 | `tpNFCredito` sem finNFe=5 / finNFe=5 sem `tpNFCredito` |
 | `B25.2-30` | 1145 | NF-e de Crédito tipo 2 (ZFM) com ano emissão < 2029 |
+| `B25.2-40` | 1152 | crédito 03 (retorno) que não é entrada |
 
 ### IBS/CBS — Item
 
@@ -395,7 +428,8 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `UB13-30` | 1022 | gIBSCBS ausente quando CST exige |
 | `UB14-10` | 1023 | cClassTrib inexistente |
 | `UB14-20` | 1024 | cClassTrib incompatível com CST |
-| `UB14-60` | 1202 | cClassTrib incompatível com tpNFDebito/Credito |
+| `UB14-60` | 1202 | cClassTrib vinculado a um tipo de nota (410030, 800001/2, 810001, 811001/2/3) em outra nota |
+| `UB14-70` / `UB14-80` | 1200 / 1201 | cClassTrib diferente do exigido pelo `tpNFDebito` / `tpNFCredito` |
 | `UB16-10` | 1104 | Base de cálculo IBS/CBS difere do somatório |
 | `UB18-10` | 1026 | pIBSUF inválida para o ano (0,1% em 2025-2026, 0,05% em 2027-2028) |
 | `UB35-10` | 1041 | vIBSUF difere do calculado |

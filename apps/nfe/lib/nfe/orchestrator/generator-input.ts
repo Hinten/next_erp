@@ -5,6 +5,7 @@ import {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  cUFFromUF,
   datePartsInOffset,
   NFePartiesError,
   NFeTributeError,
@@ -26,6 +27,7 @@ import {
   bloqueiaEmissao,
   camposProdutoFiscal,
   descreverViolacaoDocumento,
+  modoGruposImposto,
   violacoesDoDocumento,
   ehMarketplace,
   gtinFiscal,
@@ -33,6 +35,7 @@ import {
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type ModoGruposImposto,
   type Operacao,
   type Pagamento,
 } from '@delfrance/schemas';
@@ -92,11 +95,32 @@ export function isInterstateFor(bundle: PedidoBundle): boolean {
 }
 
 /**
+ * Which `<imposto>` groups every item of this nota carries — `somenteIbsCbs`
+ * for a nota de crédito/débito (finNFe 5/6, RV B25-80), `completo` otherwise.
+ * Derived ONCE from the operação by the shared `modoGruposImposto` and handed
+ * to BOTH the per-item `buildImpostoXml` and `aggregateTotals`, so a det and
+ * the total can never disagree on which buckets are on the wire.
+ */
+export function modoGruposFor(bundle: PedidoBundle): ModoGruposImposto {
+  return modoGruposImposto({
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  });
+}
+
+/**
  * The part of a nota that can fail on operator-fixable data, projected ONCE
  * for both generation and the batch pre-flight so they cannot drift: the
- * delivery address (unresolvable → refused), the per-item projection (CFOP /
- * NCM / unidade / vDesc / imposto, in that order), and the `<entrega>` group's
- * own wire checks. Every failure is an `NFeOrchestratorError` naming the pedido.
+ * delivery address (unresolvable → refused), the document rules (a nota SEFAZ
+ * would reject whatever its items say), the per-item projection (CFOP / NCM /
+ * unidade / vDesc / imposto, in that order), and the `<entrega>` group's own
+ * wire checks. Every failure is an `NFeOrchestratorError` naming the pedido.
+ *
+ * The document rules run BEFORE the items so a nota the ERP does not emit at
+ * all (a nota de débito with the Reforma Tributária off, a tipo whose
+ * adjustment group is not built yet) says so, instead of surfacing as the
+ * first item's tribute error.
  */
 function projetarNota(
   bundle: PedidoBundle,
@@ -104,9 +128,15 @@ function projetarNota(
   emitRtc: boolean,
 ): { readonly genItems: GeneratorItem[]; readonly enderecoEntrega: Endereco | null } {
   const enderecoEntrega = entregaDaOperacao(bundle);
-  const genItems = buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc);
-  if (enderecoEntrega) assertEntregaEmitivel(bundle, enderecoEntrega);
   assertDocumentoEmitivel(bundle, items, emitRtc);
+  const genItems = buildGenItems(
+    items,
+    bundle,
+    isInterstateFor(bundle),
+    emitRtc,
+    modoGruposFor(bundle),
+  );
+  if (enderecoEntrega) assertEntregaEmitivel(bundle, enderecoEntrega);
   return { genItems, enderecoEntrega };
 }
 
@@ -135,14 +165,27 @@ function assertDocumentoEmitivel(
   items: ReadonlyArray<FiscalItem>,
   emitRtc: boolean,
 ): void {
+  const uf = bundle.filial.sede.estado;
   const violacoes = violacoesDoDocumento({
     emitRtc,
     finNFe: bundle.operacao.finNFe ?? 1,
     tpNF: bundle.operacao.tipo === 1 ? '1' : '0',
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+    // Only 1145 reads it. Time moves forward, so a pre-flight pass stays a pass
+    // at generation; the reverse can only refuse on the eve of 2029.
+    anoEmissao: datePartsInOffset(new Date(), offsetForUF(uf)).year,
     chNFeReferenciadas: chNFeReferenciadasDe(bundle),
     destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
-    // nItem = the det position `buildGenItems` assigns (i + 1).
-    itens: items.map((it, i) => ({ nItem: i + 1, dfeReferenciado: it.dfeReferenciado })),
+    emitenteDocumento: bundle.filial.cnpj,
+    emitenteCUF: cUFFromUF(uf),
+    // nItem = the det position `buildGenItems` assigns (i + 1); cClassTrib is
+    // the resolved imposto's — null when the item carries no IBS/CBS config.
+    itens: items.map((it, i) => ({
+      nItem: i + 1,
+      dfeReferenciado: it.dfeReferenciado,
+      cClassTrib: it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+    })),
   });
   if (!bloqueiaEmissao(violacoes)) return;
   const motivos = violacoes
@@ -251,7 +294,7 @@ export function buildGeneratorInput(
       imposto: it.imposto,
     })),
     { vFrete, vDesc },
-    { emitRtc: emitRtc === true },
+    { emitRtc: emitRtc === true, grupos: modoGruposFor(bundle) },
   );
   const payments = buildPaymentsFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
@@ -426,6 +469,7 @@ export function buildGenItems(
   bundle: PedidoBundle,
   isInterstate: boolean,
   emitRtc = false,
+  grupos: ModoGruposImposto = modoGruposFor(bundle),
 ): GeneratorItem[] {
   const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
   const vDescByIndex = apportionDescontos(items, bundle);
@@ -498,7 +542,7 @@ export function buildGenItems(
       indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
-      impostoXml: buildItemImpostoXml(it, emitRtc, where),
+      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, where),
       // det/DFeReferenciado (#330) — judged by the document rules in projetarNota.
       ...(it.dfeReferenciado
         ? {
@@ -551,7 +595,12 @@ const ISSQN_NAO_SUPORTADO =
  * allocate or regenerate, and discards it for those docs. Never move it into
  * `prepareEmission`, whose throw fails the member whatever its nfev4 doc holds.
  */
-function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): string {
+function buildItemImpostoXml(
+  it: FiscalItem,
+  emitRtc: boolean,
+  grupos: ModoGruposImposto,
+  where: string,
+): string {
   if (it.imposto.configuracaoISSQN != null) {
     throw new NFeOrchestratorError(`${where}: ${ISSQN_NAO_SUPORTADO}`);
   }
@@ -561,7 +610,11 @@ function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): s
     // from `it.quantidade`. The PIS/COFINS percent base stays `it.vProd` (net
     // of the unit discount), in parity with PISAliq and RTC, and is the same
     // `vBaseTributavel` the aggregateTotals item above sums from.
-    return buildImpostoXml(it.imposto, { vProd: it.vProd, qTrib: it.quantidade }, { emitRtc });
+    return buildImpostoXml(
+      it.imposto,
+      { vProd: it.vProd, qTrib: it.quantidade },
+      { emitRtc, grupos },
+    );
   } catch (err) {
     if (err instanceof NFeTributeError || err instanceof TributeFormatError) {
       throw new NFeOrchestratorError(`${where}: ${err.message}`);

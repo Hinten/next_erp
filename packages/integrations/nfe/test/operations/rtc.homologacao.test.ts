@@ -29,6 +29,11 @@
  *
  *   pnpm --filter @delfrance/integrations-nfe test rtc.homologacao
  *
+ * **Nota de débito (#330)** — a second case emits finNFe=6 / tpNFDebito=06
+ * (pagamento antecipado) with the item carrying IBS/CBS ALONE (RV B25-80: no
+ * ICMS, PIS or COFINS on a nota de crédito/débito). Same posture as the first:
+ * advisory on PR/push, fatal on `workflow_dispatch`.
+ *
  * **serie lane**: this test runs on **serie=4** (`SEFAZ_HOM_RTC_SERIE`) — full
  * lane registry in `../helpers/homologacao-seed.ts`. SEFAZ keys persistence on
  * serie, so it never collides with the other live suites at the (CNPJ, serie,
@@ -39,6 +44,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { beforeAll, describe, expect, it } from 'vitest';
+import { FIN_NFE_OPERACAO, MODO_GRUPOS_IMPOSTO, TP_NF_DEBITO } from '@delfrance/schemas';
 
 import { buildHomologacaoFixture, impostoCsosn102ComRtc } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
@@ -79,6 +85,31 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
+/** Sign, send (indSinc=1) and resolve one fixture; returns SEFAZ's verdict. */
+async function emitir(
+  fixture: ReturnType<typeof buildHomologacaoFixture>,
+  rotulo: string,
+): Promise<{ cStat: string; xMotivo: string }> {
+  const out = generateNFe(fixture);
+  const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
+  const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
+  const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+
+  const ret = await autorizarLote(autorizacaoCall, {
+    idLote: out.chave.slice(-15),
+    NFe: [signedXml],
+    indSinc: '1',
+  });
+  assertNotConsumoIndevido(ret, `${rotulo}/autorizarLote`);
+  logSefaz(`${rotulo} lote`, ret);
+  const prot = await resolveProtocol(ret, consReciCall);
+  if (prot) assertNotConsumoIndevido(prot.infProt, `${rotulo}/protNFe`);
+  const cStat = prot?.infProt.cStat ?? ret.cStat;
+  const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
+  logSefaz(`${rotulo} protNFe`, { cStat, xMotivo });
+  return { cStat, xMotivo };
+}
+
 /** Build the typed SefazCall context for one operation URL (tpAmb=2). */
 function buildCall(url: string, cert: NFeCertificate): SefazCall {
   assertCertNotExpired(cert);
@@ -107,24 +138,7 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
       imposto: impostoCsosn102ComRtc(),
       emitRtc: true,
     });
-    const out = generateNFe(fixture);
-
-    const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
-    const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
-    const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
-
-    const ret = await autorizarLote(autorizacaoCall, {
-      idLote: out.chave.slice(-15),
-      NFe: [signedXml],
-      indSinc: '1',
-    });
-    assertNotConsumoIndevido(ret, 'rtc/autorizarLote');
-    logSefaz('rtc lote', ret);
-    const prot = await resolveProtocol(ret, consReciCall);
-    if (prot) assertNotConsumoIndevido(prot.infProt, 'rtc/protNFe');
-    const cStat = prot?.infProt.cStat ?? ret.cStat;
-    const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
-    logSefaz('rtc protNFe', { cStat, xMotivo });
+    const { cStat, xMotivo } = await emitir(fixture, 'rtc');
     // Targets cStat=100. On a rejection the log above names the exact
     // code/alíquota to refine (1020/1023/1024/1026/...).
     //
@@ -133,6 +147,30 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
     expect(
       cStat,
       `SEFAZ rejected the RTC NF-e — ${descreverSefaz('rtc protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+  }, 180_000);
+
+  it('emits a nota de débito 06 (pagamento antecipado), IBS/CBS only — SEFAZ accepts (cStat=100)', async () => {
+    const fixture = buildHomologacaoFixture({
+      numeracao: seedNNF(),
+      serie: SEFAZ_HOM_RTC_SERIE,
+      cnpj: TEST_CERT!.cnpj,
+      ie: TEST_IE!,
+      imposto: impostoCsosn102ComRtc(),
+      emitRtc: true,
+      grupos: MODO_GRUPOS_IMPOSTO.somenteIbsCbs,
+      operacao: {
+        naturezaDaOperacao: 'Nota de debito - pagamento antecipado',
+        finNFe: FIN_NFE_OPERACAO.debito,
+        tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado,
+      },
+    });
+    const { cStat, xMotivo } = await emitir(fixture, 'rtc-debito');
+    // A rejection names the rule to refine: 1001 (a forbidden group), 1009/1139
+    // (the tipo), 1162 (tpNF), 1200/1202 (cClassTrib × tipo).
+    expect(
+      cStat,
+      `SEFAZ rejected the nota de débito — ${descreverSefaz('rtc-debito protNFe', { cStat, xMotivo })}`,
     ).toBe('100');
   }, 180_000);
 });

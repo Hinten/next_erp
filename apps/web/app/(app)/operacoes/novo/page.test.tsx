@@ -36,7 +36,7 @@ vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 vi.mock('../_components/MacrosTab', () => ({ MacrosTab: () => null }));
 
 import NovaOperacaoPage from './page';
-import { validarImpostoDaOperacao } from '../_components/operacaoFields';
+import { validarFormularioDaOperacao } from '../_components/operacaoFields';
 
 const PARCIAL_500 = {
   crt: CRT.simplesNacional,
@@ -54,9 +54,9 @@ beforeEach(() => {
 });
 
 describe('operacoes/novo — refuses a default tax config the NF-e engine would refuse (#1655)', () => {
-  it('passes the module-level validarImpostoDaOperacao', () => {
-    expect(typeof validarImpostoDaOperacao).toBe('function');
-    expect(h.captured?.validate).toBe(validarImpostoDaOperacao);
+  it('passes the module-level validarFormularioDaOperacao', () => {
+    expect(typeof validarFormularioDaOperacao).toBe('function');
+    expect(h.captured?.validate).toBe(validarFormularioDaOperacao);
   });
 
   it('a half-filled ICMS-ST retido group → an issue on the Impostos tab key', () => {

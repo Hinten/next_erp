@@ -1,17 +1,30 @@
 import { describe, it, expect } from 'vitest';
 import forge from 'node-forge';
-import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
+import type {
+  Cliente,
+  Endereco,
+  Filial,
+  Imposto,
+  ModoGruposImposto,
+  Operacao,
+} from '@delfrance/schemas';
 
 import { signNFe } from '../../src/sign';
 import { validateXsd } from '../../src/xsd';
 import type { NFeCertificate } from '../../src/cert';
 import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
+import { NFeIdeError } from '../../src/generator/ide';
 import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
+import { aggregateTotals, buildImpostoXml, buildTotalXml } from '../../src/tribute/index';
 import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
 import {
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
+  MODO_GRUPOS_IMPOSTO,
+  ORIGEM,
   TIPO_CLIENTE,
+  TP_NF_CREDITO,
+  TP_NF_DEBITO,
   UF_SIGLA,
 } from '@delfrance/schemas';
 
@@ -106,6 +119,8 @@ const OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
+  tpNFDebito: null,
+  tpNFCredito: null,
   indPres: IND_PRES_OPERACAO.naoPresencialInternet,
   indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',
@@ -518,6 +533,80 @@ describe('generateNFe — det/DFeReferenciado (#330)', () => {
   it('without a reference the det is byte-identical', () => {
     expect(generateNFe(comRef(undefined)).nfeXml).toBe(generateNFe(XSD_INPUT).nfeXml);
     expect(generateNFe(XSD_INPUT).nfeXml).not.toContain('<DFeReferenciado>');
+  });
+});
+
+describe('generateNFe — nota de crédito / débito (finNFe 5/6, #330)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const IMPOSTO_RTC: Imposto = {
+    origem: ORIGEM.nacional,
+    configuracaoICMS: { crt: '1', csosn: '102' },
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  };
+
+  /** A whole nota the way apps/nfe builds it: the det and the total from one mode. */
+  function nota(
+    operacao: Partial<Operacao>,
+    grupos: ModoGruposImposto = MODO_GRUPOS_IMPOSTO.somenteIbsCbs,
+  ) {
+    const opts = { emitRtc: true, grupos };
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: IMPOSTO_RTC }], {}, opts);
+    return {
+      ...XSD_INPUT,
+      operacao: { ...OPERACAO, ...operacao },
+      itens: [{ ...ITEM, impostoXml: buildImpostoXml(IMPOSTO_RTC, { vProd: 1500 }, opts) }],
+      totalXml: buildTotalXml(totals),
+      pagXml: '<pag><detPag><tPag>90</tPag><vPag>0.00</vPag></detPag></pag>',
+    };
+  }
+
+  it('débito 06 (pagamento antecipado): tpNFDebito after finNFe, IBS/CBS only, XSD-valid', async () => {
+    const out = generateNFe(nota({ finNFe: 6, tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado }));
+    expect(out.nfeXml).toContain('<finNFe>6</finNFe><tpNFDebito>06</tpNFDebito><indFinal>');
+    expect(out.nfeXml).not.toContain('<ICMS>');
+    expect(out.nfeXml).toContain('<vNFTot>1515.00</vNFTot>');
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['01', MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
+    ['03', MODO_GRUPOS_IMPOSTO.completo],
+    ['04', MODO_GRUPOS_IMPOSTO.completo],
+  ] as const)('crédito %s (an entrada) is XSD-valid in its mode', async (tp, grupos) => {
+    const out = generateNFe(nota({ finNFe: 5, tipo: 0, tpNFCredito: tp }, grupos));
+    expect(out.nfeXml).toContain(`<finNFe>5</finNFe><tpNFCredito>${tp}</tpNFCredito>`);
+    expect(out.nfeXml).toContain('<tpNF>0</tpNF>');
+    expect(out.nfeXml.includes('<ICMS>')).toBe(grupos === MODO_GRUPOS_IMPOSTO.completo);
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('refuses an ide SEFAZ would reject on the tipo alone (B25.1 / B25.2 / B25-110)', () => {
+    expect(() => generateNFe(nota({ finNFe: 6 }))).toThrow(NFeIdeError);
+    expect(() => generateNFe(nota({ finNFe: 6 }))).toThrow(/tipo da nota de débito.*1009/);
+    expect(() => generateNFe(nota({ finNFe: 1, tpNFDebito: TP_NF_DEBITO.multaJuros }))).toThrow(
+      /1139/,
+    );
+    expect(() => generateNFe(nota({ finNFe: 5, tpNFCredito: TP_NF_CREDITO.multaJuros }))).toThrow(
+      /1161/,
+    );
+  });
+
+  it('1145 is judged on the emission year in the emitente time zone', () => {
+    const credito02 = nota({ finNFe: 5, tipo: 0, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm });
+    // 2029-01-01 00:30 in São Paulo: 2029 (UTC agrees).
+    const virada = new Date('2029-01-01T00:30:00-03:00');
+    expect(() => generateNFe({ ...credito02, dhEmi: virada })).not.toThrow();
+    // Near-miss: 2028-12-31 23:30 in São Paulo is already 2029 in UTC, and still 2028 here.
+    const vespera = new Date('2028-12-31T23:30:00-03:00');
+    expect(() => generateNFe({ ...credito02, dhEmi: vespera })).toThrow(/1145/);
+  });
+
+  it('a normal nota is byte-identical — no tipo field appears', () => {
+    const out = generateNFe(XSD_INPUT).nfeXml;
+    expect(out).not.toContain('<tpNFDebito>');
+    expect(out).not.toContain('<tpNFCredito>');
   });
 });
 

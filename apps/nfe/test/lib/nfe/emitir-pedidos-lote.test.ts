@@ -1605,6 +1605,51 @@ describe('emitirPedidosLote — item references are judged before allocation (#3
   });
 });
 
+// #330 — a nota de débito (finNFe 6) goes through the SAME pre-flight.
+describe('emitirPedidosLote — a nota de débito is judged before allocation (#330)', () => {
+  const debito06 = { ...operacaoDoc(), finNFe: 6, tpNFDebito: '06' };
+  const impostoRtc = {
+    ...impostoCsosn102(),
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  };
+
+  it('RTC off: refused before allocation — no nNF, no placeholder', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [{ pedidoId: 'PED-DEB', filialId: 'F-1', imposto: impostoRtc }],
+      extraDocs: { 'operacao/O-1': debito06 },
+    });
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-DEB']);
+
+    const r = out.results[0]!;
+    expect('errorCode' in r ? r.errorCode : null).toBe('NFeOrchestratorError');
+    expect('errorMessage' in r ? r.errorMessage : '').toContain('Nota de crédito/débito');
+    expect(docs['pedidos/PED-DEB/nfev4/s1']).toBeUndefined();
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(0);
+  });
+
+  it('RTC on: the generator gets tpNFDebito and IBS/CBS-only items', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedidos: [{ pedidoId: 'PED-DEB', filialId: 'F-1', imposto: impostoRtc }],
+      extraDocs: { 'operacao/O-1': debito06 },
+      nfeConfigByFilial: { 'F-1': { ...SEED_NFE_CONFIG, emitirReformaTributaria: true } },
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteAutorizaGerados();
+
+    await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-DEB']);
+
+    const input = vi.mocked(generateNFe).mock.calls.at(-1)?.[0];
+    expect(input?.operacao.tpNFDebito).toBe('06');
+    expect(input?.itens[0]?.impostoXml).toContain('<IBSCBS>');
+    expect(input?.itens[0]?.impostoXml).not.toContain('<ICMS>');
+  });
+});
+
 describe('emitirPedidosLote — the tribute pre-flight honours the filial emitRtc (#506)', () => {
   it('RTC on: a draft configuracaoIBSCBS fails that member before allocation — no nNF, no placeholder', async () => {
     const events: string[] = [];

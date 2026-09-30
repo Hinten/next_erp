@@ -806,12 +806,21 @@ export {
   IND_INTERMED_OPERACAO,
   ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
+  FIN_NFE_OPERACAO,
   FIN_NFE_OPERACAO_LABELS,
+  TP_NF_CREDITO,
+  TP_NF_CREDITO_LABELS,
+  TP_NF_DEBITO,
+  TP_NF_DEBITO_LABELS,
+  tpNFCreditoSchema,
+  tpNFDebitoSchema,
   IND_PRES_OPERACAO_LABELS,
   IND_INTERMED_OPERACAO_LABELS,
   type Operacao,
   type TipoNFe,
   type FinNFeOperacao,
+  type TpNFCredito,
+  type TpNFDebito,
   type IndPresOperacao,
   type IndIntermedOperacao,
   type OrigemProdutoImposto,
@@ -1168,14 +1177,29 @@ export {
   SEVERIDADE_VIOLACAO,
   bloqueiaEmissao,
   descreverViolacaoDocumento,
+  violacoesDaOperacao,
   violacoesDoDocumento,
   type DfeReferenciadoEntrada,
   type EntradaRegrasDocumento,
+  type EntradaRegrasOperacao,
   type ItemRegrasDocumento,
   type RegraDocumento,
   type SeveridadeViolacao,
   type ViolacaoDocumento,
 } from './imposto/regrasDoDocumento';
+
+export {
+  // Nota de crédito / débito (finNFe 5/6, NT 2025.002) — tipo bindings and item tax groups (#330)
+  CCLASSTRIB_DO_TP_NF_CREDITO,
+  CCLASSTRIB_DO_TP_NF_DEBITO,
+  MODO_GRUPOS_IMPOSTO,
+  cClassTribCompativelComTipo,
+  cClassTribDoTipo,
+  cClassTribVinculadoATipoDeNota,
+  modoGruposImposto,
+  type ModoGruposImposto,
+  type TipoNotaAjuste,
+} from './imposto/notaCreditoDebito';
 
 export {
   // RTC Anexo IV — cCredPres (#333)

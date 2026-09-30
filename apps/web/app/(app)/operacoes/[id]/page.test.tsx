@@ -45,7 +45,7 @@ vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 vi.mock('../_components/MacrosTab', () => ({ MacrosTab: () => null }));
 
 import OperacaoPage from './page';
-import { validarImpostoDaOperacao } from '../_components/operacaoFields';
+import { validarFormularioDaOperacao } from '../_components/operacaoFields';
 
 const PARCIAL_500 = {
   crt: CRT.simplesNacional,
@@ -64,15 +64,40 @@ beforeEach(() => {
 });
 
 describe('operacoes/[id] — refuses a default tax config the NF-e engine would refuse (#1655)', () => {
-  it('passes the module-level validarImpostoDaOperacao (stable identity for the resolver memo)', () => {
-    expect(typeof validarImpostoDaOperacao).toBe('function');
-    expect(h.captured?.validate).toBe(validarImpostoDaOperacao);
+  it('passes the module-level validarFormularioDaOperacao (stable identity for the resolver memo)', () => {
+    expect(typeof validarFormularioDaOperacao).toBe('function');
+    expect(h.captured?.validate).toBe(validarFormularioDaOperacao);
   });
 
   it('a half-filled ICMS-ST retido group → an issue on the Impostos tab key', () => {
     expect(
       h.captured?.validate?.({
         nome: 'Venda',
+        origem: ORIGEM.nacional,
+        configuracaoICMS: PARCIAL_500,
+      }),
+    ).toEqual([{ path: 'configuracaoICMS', message: expect.stringContaining('ICMS-ST retido') }]);
+  });
+
+  it('keeps the finalidade/tipo rules (#330) beside the tax-config ones — one validate, both sets', () => {
+    // ObjectView takes ONE validate: dropping either half of the combination
+    // would silently stop refusing that half's configs.
+    const debitoSemTipo = { tipo: 1, finNFe: 6, tpNFDebito: null };
+    expect(
+      h.captured?.validate?.({
+        ...debitoSemTipo,
+        origem: ORIGEM.nacional,
+        configuracaoICMS: PARCIAL_500,
+      }),
+    ).toEqual([
+      { path: 'tpNFDebito', message: expect.stringContaining('SEFAZ 1009') },
+      { path: 'configuracaoICMS', message: expect.stringContaining('ICMS-ST retido') },
+    ]);
+    // Near-miss: the same débito with its tipo filled in leaves only the tax issue.
+    expect(
+      h.captured?.validate?.({
+        ...debitoSemTipo,
+        tpNFDebito: '06',
         origem: ORIGEM.nacional,
         configuracaoICMS: PARCIAL_500,
       }),

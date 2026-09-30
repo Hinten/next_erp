@@ -16,8 +16,8 @@ import {
   OPERACAO_SECTIONS,
   OPERACAO_TRANSIENT_FIELDS,
   operacaoPageSchema,
+  validarFormularioDaOperacao,
   operacaoStaticFields,
-  validarImpostoDaOperacao,
 } from '../_components/operacaoFields';
 
 export default function OperacaoPage() {
@@ -58,6 +58,7 @@ export default function OperacaoPage() {
 
       <ObjectView
         schema={operacaoPageSchema}
+        validate={validarFormularioDaOperacao}
         collection={operacaoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
@@ -66,7 +67,6 @@ export default function OperacaoPage() {
         fields={fields}
         excludedFields={OPERACAO_EXCLUDED_FIELDS}
         transientFields={OPERACAO_TRANSIENT_FIELDS}
-        validate={validarImpostoDaOperacao}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

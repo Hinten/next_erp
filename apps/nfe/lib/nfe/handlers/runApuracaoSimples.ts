@@ -44,13 +44,14 @@ import {
   sinalDe,
   type AnexoSimplesWire,
   type ApuracaoEstado,
+  type FinNFeOperacao,
 } from '@delfrance/schemas';
 
 /** Uma linha do agregado: um grupo `(filialId, tpNF, finNFe)` já somado. */
 export interface GrupoReceita {
   readonly filialId: string;
   readonly tpNF: 0 | 1;
-  readonly finNFe: 1 | 2 | 3 | 4;
+  readonly finNFe: FinNFeOperacao;
   /** Soma da receita bruta SEM sinal das notas do grupo. */
   readonly receita: number;
   readonly notas: number;

@@ -184,7 +184,10 @@ export const nfeTotaisSchema = z.object({
   vNF: z.number(),
   /** `<tpNF>` (B11) — 0 entrada, 1 saída. Uma entrada SUBTRAI do faturamento. */
   tpNF: tipoNFeSchema,
-  /** `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução. */
+  /**
+   * `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução, 5 nota de
+   * crédito, 6 nota de débito (the last two NT 2025.002).
+   */
   finNFe: finNFeOperacaoSchema,
   /**
    * `vProd − vDesc + vFrete + vSeg + vOutro` — a receita bruta desta nota, SEM
