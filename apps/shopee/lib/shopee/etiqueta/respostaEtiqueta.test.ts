@@ -44,6 +44,9 @@ describe('MENSAGEM_DA_FASE — o texto congelado do reconcile §2.4', () => {
       'renovando-credencial': 'Renovando o acesso à Shopee…',
       'limite-de-requisicoes':
         'A Shopee pediu uma pausa entre as chamadas; tentando de novo em instantes.',
+      // Review 2 (F5): a READ that drops or runs out of budget reports this neutral
+      // phase, never `programando`, which would read as a second arrange.
+      consultando: 'Consultando a Shopee…',
     });
   });
 });

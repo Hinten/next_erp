@@ -16,13 +16,25 @@
  * `non-integrated` key with a hyphen: it rides `.passthrough()` and reads as NO
  * mode, so an answer with nothing we know refuses instead of guessing.
  *
- * ## Ask only when Shopee needs a choice
+ * ## Ask only when Shopee needs a choice — and offer only what can ship
  *
- * A question is asked when there is more than one eligible pickup address, more
- * than one slot for the one address, or BOTH modes are offered (then
- * `permiteDropoff: true`, R-z). Everything else is decided here. The legacy
- * precedence (pickup → dropoff → non_integrated) is what "pickup alone" and
- * "dropoff alone" still do.
+ * ⚠️ **Buildability FIRST** (review 2, F2). Each side is judged on its own
+ * before anything is asked: a pickup whose items we cannot fill, or with no
+ * eligible address, is NOT offered (`enderecos: []`), and the dropoff is offered
+ * (`permiteDropoff: true`) ONLY when the dropoff side alone would yield a body —
+ * a `agencia-precisa-escolha` or `modo-nao-suportado` dropoff is not an option.
+ * Before this, the question offered a side the answer then refused with a 409,
+ * and the next click asked the same question again.
+ *
+ * Then: both sides buildable ⇒ ask (`permiteDropoff: true`, R-z); exactly ONE ⇒
+ * decide it (the pickup side still asks when it has more than one eligible
+ * address, or more than one slot for the one address); NONE ⇒ refuse with the
+ * motivo of the side Shopee offered — the DROPOFF's when it offered both, since
+ * its refusals (`agencia-precisa-escolha`) are the ones an operator can act on
+ * in the Seller Centre. So a question always carries at least one option the
+ * server can ship, which is what keeps the web's "no address ⇒ dropoff" rule
+ * true. The legacy precedence (pickup → dropoff → non_integrated) is what
+ * "pickup alone" and "dropoff alone" still do.
  *
  * - **Pickup.** Eligible addresses are those whose `address_flag` holds
  *   `pickup_address` (`SHOPEE_ADDRESS_FLAG.coleta`) — ⚠️ `default_address` ALONE
@@ -52,7 +64,9 @@
  * address 123 (S43). `horarioId` is compared to `pickup_time_id` verbatim, and
  * `null` is valid only for an address with no slot on offer. Anything that no
  * longer matches is re-asked with `escolhaInvalida: true` (S42) — never shipped,
- * and never silently replaced by the only option left.
+ * and never silently replaced by the only option left. "Matches" is against
+ * what THIS read OFFERS: an answer naming a side this read cannot build is no
+ * longer a match either, and is re-asked the same way.
  *
  * ⚠️ The chooser does not read `escolha.pacote`: the caller hands it the choice
  * for THIS package only.
@@ -117,6 +131,9 @@ export type ModoEscolhido =
       escolhaInvalida: boolean;
     }
   | { tipo: 'recusa'; motivo: MotivoEtiquetaShopee };
+
+/** One side's own answer when it is not a question: its body, or why it cannot ship. */
+type Decisao = Extract<ModoEscolhido, { tipo: 'corpo' } | { tipo: 'recusa' }>;
 
 /* ------------------------------- the wire items ----------------------------- */
 
@@ -201,7 +218,10 @@ function enderecosDaPergunta(coleta: ColetaOferecida | null): readonly EnderecoD
   }));
 }
 
-function corpoDeColeta(addressId: number, horario: ShopeePickupTimeSlot | null): ModoEscolhido {
+function corpoDeColeta(
+  addressId: number,
+  horario: ShopeePickupTimeSlot | null,
+): Extract<Decisao, { tipo: 'corpo' }> {
   return {
     tipo: 'corpo',
     corpo: {
@@ -212,12 +232,32 @@ function corpoDeColeta(addressId: number, horario: ShopeePickupTimeSlot | null):
   };
 }
 
+/**
+ * The pickup side ALONE (F2): its body when one address and at most one slot
+ * leave nothing to choose, `escolher` when the operator must pick, or the
+ * refusal that makes the side unbuildable — and an unbuildable side is never
+ * offered in a question.
+ */
+function decidirColeta(coleta: ColetaOferecida): Decisao | { tipo: 'escolher' } {
+  if (!coleta.construivel) {
+    return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado };
+  }
+  const [primeiro, ...outros] = coleta.enderecos;
+  if (primeiro === undefined) {
+    return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta };
+  }
+  if (outros.length > 0 || primeiro.horarios.length > 1) return { tipo: 'escolher' };
+  return corpoDeColeta(primeiro.linha.address_id, primeiro.horarios[0] ?? null);
+}
+
 /* ------------------------------- the dropoff side --------------------------- */
 
-function decidirPostagem(
-  parametro: ShopeeShippingParameter,
-  itens: readonly string[],
-): ModoEscolhido {
+/**
+ * The dropoff side ALONE: its body, or the refusal that makes it unbuildable —
+ * and then `permiteDropoff` is `false` (F2): a question never offers a dropoff
+ * this function would refuse.
+ */
+function decidirPostagem(parametro: ShopeeShippingParameter, itens: readonly string[]): Decisao {
   if (!itens.every((i) => ITENS_DE_POSTAGEM.has(i))) {
     return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado };
   }
@@ -262,50 +302,57 @@ export function escolherModoDeEnvio(
   }
 
   const coleta = itensColeta === null ? null : lerColeta(parametro, itensColeta);
+
+  // ---- buildability FIRST (F2): each side alone, before anything is asked ----
+  const ladoColeta = coleta === null ? null : decidirColeta(coleta);
+  const ladoPostagem = itensPostagem === null ? null : decidirPostagem(parametro, itensPostagem);
+  // Offered ⇔ Shopee put the key in `info_needed` AND the server can ship it.
+  const coletaOferecida = ladoColeta !== null && ladoColeta.tipo !== 'recusa';
+  const postagemOferecida = ladoPostagem !== null && ladoPostagem.tipo === 'corpo';
+
   const pergunta = (escolhaInvalida: boolean): ModoEscolhido => ({
     tipo: 'pergunta',
-    enderecos: enderecosDaPergunta(coleta),
-    // Offered ⇔ the key is present. Reached with only dropoff on offer solely by
-    // a stale answer, where it is the option left to confirm.
-    permiteDropoff: itensPostagem !== null,
+    enderecos: coletaOferecida ? enderecosDaPergunta(coleta) : [],
+    // Reached with only the dropoff on offer solely by a stale answer, where it
+    // is the option left to confirm.
+    permiteDropoff: postagemOferecida,
     escolhaInvalida,
   });
 
   /** The decision with no answer yet — also the fallback of a stale one. */
   const semEscolha = (): ModoEscolhido => {
-    if (coleta !== null && itensPostagem !== null) return pergunta(false);
-    if (coleta === null) {
-      // Dropoff alone (`itensPostagem` is non-null: the first rung refused both-null).
-      return decidirPostagem(parametro, itensPostagem ?? []);
+    if (coletaOferecida && postagemOferecida) return pergunta(false);
+    // Exactly one buildable side: decided, never asked (the pickup still asks
+    // which address or slot when it offers more than one).
+    if (ladoColeta !== null && ladoColeta.tipo !== 'recusa') {
+      return ladoColeta.tipo === 'escolher' ? pergunta(false) : ladoColeta;
     }
-    if (!coleta.construivel) {
-      return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado };
-    }
-    const [primeiro, ...outros] = coleta.enderecos;
-    if (primeiro === undefined) {
-      return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta };
-    }
-    if (outros.length > 0 || primeiro.horarios.length > 1) return pergunta(false);
-    return corpoDeColeta(primeiro.linha.address_id, primeiro.horarios[0] ?? null);
+    if (postagemOferecida) return ladoPostagem;
+    // Nothing buildable: the refusal of the side Shopee offered — the DROPOFF's
+    // when it offered both. One of the two is non-null: the first rung refused
+    // both-null.
+    return (
+      ladoPostagem ??
+      ladoColeta ?? { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado }
+    );
   };
 
   if (escolha === null) return semEscolha();
 
   // ---- the operator answered: match it EXACTLY against this read ----
   // A stale answer is RE-ASKED, never replaced by the one option left — unless
-  // nothing is left to ask about, and then this read's own refusal answers.
+  // nothing is left to ask about, and then this read's own refusal answers. An
+  // answer naming a side this read does not OFFER (absent, or unbuildable) is
+  // stale too.
   const invalida = (): ModoEscolhido => {
     const agora = semEscolha();
     return agora.tipo === 'recusa' ? agora : pergunta(true);
   };
 
   if (escolha.modo === 'dropoff') {
-    return itensPostagem === null ? invalida() : decidirPostagem(parametro, itensPostagem);
+    return postagemOferecida ? ladoPostagem : invalida();
   }
-  if (coleta === null) return invalida();
-  if (!coleta.construivel) {
-    return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado };
-  }
+  if (coleta === null || !coletaOferecida) return invalida();
   const endereco = coleta.enderecos.find((e) => String(e.linha.address_id) === escolha.enderecoId);
   if (endereco === undefined) return invalida();
   if (escolha.horarioId === null) {

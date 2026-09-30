@@ -72,9 +72,11 @@ export type EtiquetaPendente =
 /**
  * The pt-BR sentence of each phase — FROZEN (reconcile §2.4); the web shows it
  * once per phase. `Record<FaseEtiqueta, …>`, so a new phase is a compile error
- * here rather than a blank toast.
+ * here rather than a blank toast. `consultando` joined in review 2 (F5): the
+ * neutral sentence of a read, which promises no arrange.
  */
 export const MENSAGEM_DA_FASE: Readonly<Record<FaseEtiqueta, string>> = {
+  consultando: 'Consultando a Shopee…',
   programando: 'Organizando o envio na Shopee…',
   'aguardando-rastreio': 'Envio organizado; aguardando o código de rastreio da transportadora.',
   'gerando-documento': 'Envio organizado; a Shopee está gerando a etiqueta.',

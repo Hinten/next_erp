@@ -163,12 +163,15 @@ export type VereditoDeErro =
  * The phase a WAIT reports, by the operation that failed.
  *
  * ⚠️ The two order/package reads open every call — a reprint of an arranged
- * package included — and there is no neutral phase, so they report the FIRST
- * one, `programando`. `Record<…>`, so a new operation is a compile error here.
+ * package and a document poll included — so they report the NEUTRAL
+ * `consultando` (review 2, F5), never `programando`: a read that drops after
+ * the web showed "a Shopee está gerando a etiqueta" must not read as a second
+ * arrange. `parametro-envio` IS the arrange's own read and stays `programando`.
+ * `Record<…>`, so a new operation is a compile error here.
  */
 const FASE_DA_OPERACAO: Readonly<Record<OperacaoEtiqueta, FaseEtiqueta>> = {
-  'detalhe-pedido': 'programando',
-  'detalhe-pacote': 'programando',
+  'detalhe-pedido': 'consultando',
+  'detalhe-pacote': 'consultando',
   'parametro-envio': 'programando',
   programar: 'programando',
   rastreio: 'aguardando-rastreio',
