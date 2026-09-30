@@ -1982,8 +1982,9 @@ describe('#512 — async lote reply without nRec', () => {
       // NEAR-MISSES of the width rows on the other side: a cStat that is not
       // `TStat` ([0-9]{3,4}) at all — an empty `<cStat/>`, non-numeric text —
       // is an anomaly, never the generic 'rejeitada' classifyCStat files it
-      // under (which would make a FRESH member número-reusing).
-      ...['', 'abc'].map((cStat) => ({ cStat, ...both(EM_VOO) })),
+      // under (which would make a FRESH member número-reusing). Too short and
+      // too long pin both edges of `isCStat`'s {3,4}.
+      ...['', 'abc', '10', '12345'].map((cStat) => ({ cStat, ...both(EM_VOO) })),
       // Lote-level rejections (schema, certificate, ambiente, generic, 4-digit).
       ...['225', '215', '252', '280', '297', '999', '1115'].map((cStat) => ({
         cStat,

@@ -313,11 +313,25 @@ NT 2025.002 §5.1 alterou o schema:
   impostos. Códigos legados continuam com 3 dígitos.
 - **`nProt` aumentado para 15 ou 17 dígitos** (NFC-e em algumas UFs
   estava perto do esgotamento da numeração).
-- Schemas afetados: `retEnviNFe_v2.00.xsd`, `retConsReciNFe_v4.00.xsd`,
-  `retInutNFe_v4.00.xsd`, `retEnvEvento_v1.00.xsd`.
+- O alargamento mora nos tipos `TStat` (`[0-9]{3,4}`) e `TProt`
+  (`[0-9]{15}|[0-9]{17}`) de `tiposBasico_v4.00.xsd` e, para a família de
+  eventos, de `tiposBasico_v1.03.xsd` — ambos já vendorizados (PL_010c/PL_010d).
+  Todo root de resposta que os usa herda: `retEnviNFe_v4.00`,
+  `retConsReciNFe_v4.00`, `retConsSitNFe_v4.00`, `retInutNFe_v4.00`,
+  `retEnvEvento_v1.00`, `retConsStatServ_v4.00` (e o `detEvento` de
+  cancelamento, que carrega o `nProt` armazenado).
+- Duas exceções que **não** alargaram: `retEvento/infEvento/@Id` continua
+  `ID[0-9]{15}` (schema da SEFAZ — se ela devolver 17 dígitos ali, nosso gate
+  de entrada recusa a resposta de um evento já registrado; um reenvio de
+  cancelamento recupera via 573), e o pacote de Consulta Cadastro 2.00
+  (`generated/conscad`) mantém `TStat` com 3 dígitos.
 
-**Implicação para o código**: parsers de cStat precisam aceitar 3 **ou** 4
-dígitos. Validar com regex `^[0-9]{3,4}$`, não `^[0-9]{3}$`.
+**Implicação para o código**: um cStat vindo da SEFAZ já passou pelo gate XSD.
+Para um valor que não passou (armazenado, montado à mão) use `isCStat`
+(`packages/integrations/nfe/src/state/index.ts`) — nunca um regex local. O
+`classifyCStat` compara strings exatas, então todo código de 4 dígitos da RTC
+cai em `rejeitada` → `done-rejected`, que é o tratamento certo. Pins:
+`test/xsd/larguras-cstat-nprot.test.ts` e `test/danfe/nprot-17.test.ts`.
 
 ## Principais novas RVs (rejeições)
 
@@ -390,7 +404,6 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `nfe_v4.00.xsd` | Layout da NF-e atualizado |
 | `envEventoNFe_v9.99.xsd` | Wrapper genérico de envio de eventos |
 | `e112110_v1.00.xsd` … `e412130_v1.00.xsd` | Schemas específicos por evento (um por código de evento listado acima) |
-| `retEnviNFe_v2.00.xsd` | Retorno enviNFe com cStat de 4 dígitos e nProt de 15/17 |
 
 Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 `codegen.md`), incluir esses schemas — eles ainda não estão sob
@@ -463,8 +476,7 @@ default** (PR #313). What exists:
   `impostoCsosn102ComRtc` from the logged `cStat`+`xMotivo` on a first-run
   rejection.
 
-**Deferred (tracked follow-ups):** the categoria RTC view; 4-digit `cStat` /
-15-17-digit `nProt` response parsing; `finNFe` 5/6 (nota de crédito/débito);
+**Deferred (tracked follow-ups):** the categoria RTC view; `finNFe` 5/6 (nota de crédito/débito);
 Grupo BB/BC + the Grupo B additions; the new RTC events (112110…412130);
 importing the Anexo III/IV code tables; and RTC activation for CRT=3 (Phase D,
 #312). **Simples Nacional RTC stays off in produção** until SEFAZ publishes the

@@ -142,9 +142,45 @@ export type CStatCategory =
   | 'rejeitada';
 
 const DUPLICIDADE = new Set(['204', '205', '218', '539', '635']);
-const CERT_REJECTION = new Set(['280', '281', '286']);
+// Exact strings, like every other code here. 290–298 used to be matched as a
+// NUMERIC range, a fold that also caught '0290'…'0298' — valid 4-digit `TStat`
+// shapes (NT 2025.002 §5.1) that are not certificate rejections.
+const CERT_REJECTION = new Set([
+  '280',
+  '281',
+  '286',
+  '290',
+  '291',
+  '292',
+  '293',
+  '294',
+  '295',
+  '296',
+  '297',
+  '298',
+]);
 
-/** Classify a SEFAZ `cStat` into a coarse category. */
+/**
+ * The XSD `TStat` shape: 3 or 4 ASCII digits (NT 2025.002 §5.1 widened it from
+ * exactly 3 — the RTC rejections occupy the 4-digit range, e.g. 1115). Vendored
+ * as `[0-9]{3,4}` in `tiposBasico_v4.00.xsd` and `tiposBasico_v1.03.xsd`.
+ *
+ * Every SEFAZ reply is XSD-validated before it is parsed
+ * (`soap/index.ts` → `postSoapValidated`), so a cStat read from a reply already
+ * has this shape. Call this before {@link classifyCStat} on any value that did
+ * NOT come through that gate — a stored or hand-built one.
+ */
+export function isCStat(value: string): boolean {
+  return /^[0-9]{3,4}$/.test(value);
+}
+
+/**
+ * Classify a SEFAZ `cStat` into a coarse category.
+ *
+ * Assumes the `TStat` shape ({@link isCStat}): every comparison is an exact
+ * string, and anything unknown — a 4-digit RTC rejection such as 1115, but
+ * also a value that is not a cStat at all — falls through to `'rejeitada'`.
+ */
 export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '100' || cStat === '150') return 'autorizada';
   // 151 = cancelamento homologado fora de prazo — same terminal cancelada as
@@ -167,8 +203,6 @@ export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '252') return 'rejeitada-ambiente';
   if (cStat === '656') return 'consumo-indevido';
   if (CERT_REJECTION.has(cStat)) return 'rejeitada-certificado';
-  const n = Number(cStat);
-  if (Number.isInteger(n) && n >= 290 && n <= 298) return 'rejeitada-certificado';
   return 'rejeitada';
 }
 

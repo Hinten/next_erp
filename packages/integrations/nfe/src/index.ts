@@ -84,6 +84,7 @@ export {
   cStatToEstado,
   esperaMinimaDoRecibo,
   isBloqueada,
+  isCStat,
   nextAction,
   nextConsultaDelayMs,
   resolveTpEmis,

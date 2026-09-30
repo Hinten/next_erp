@@ -134,6 +134,16 @@ describe('redigirIdentificadores', () => {
       );
     });
 
+    // NT 2025.002 §5.1 (#329): nProt can be 17 digits and cStat 4. A fixed
+    // 14-char CNPJ rule must still find no boundary inside a 17-digit run —
+    // bare, or glued to a label the way a SOAP fault prints it.
+    it('leaves a 17-digit nProt and a 4-digit cStat alone', () => {
+      expect(redigirIdentificadores('protocolo 13526000000012345, cStat 1115')).toBe(
+        'protocolo 13526000000012345, cStat 1115',
+      );
+      expect(redigirIdentificadores('nProt13526000000012345')).toBe('nProt13526000000012345');
+    });
+
     it('leaves a 12- or 13-digit run alone — neither is a CNPJ or a CPF', () => {
       expect(redigirIdentificadores('valor 112223330001 e 1122233300014')).toBe(
         'valor 112223330001 e 1122233300014',

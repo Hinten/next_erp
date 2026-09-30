@@ -26,9 +26,10 @@
  *
  * ⚠️ Bounded by DIGIT lookarounds, not `\b`, and every entry is a FIXED width.
  *
- * The fixed widths are what keep `nProt`/`nRec` (15 digits) and `nNF` (9)
- * readable — they carry no personal data and are often the only way to
- * correlate a run with a document, so a greedy `\d{11,}` would swallow both.
+ * The fixed widths are what keep `nProt` (15 or 17 digits — NT 2025.002 §5.1),
+ * `nRec` (15) and `nNF` (9) readable — they carry no personal data and are
+ * often the only way to correlate a run with a document, so a greedy `\d{11,}`
+ * would swallow them.
  *
  * ⚠️ `\b` was WRONG here and shipped in the first draft. It is a
  * word-character boundary, and both letters and digits are word characters, so
@@ -83,7 +84,7 @@ const PADROES: readonly { readonly re: RegExp; readonly rotulo: string }[] = [
   //
   // ⚠️ It keeps a `(?<![0-9A-Z])` lookbehind, and that is load-bearing for the
   // FIXED-WIDTH property this whole table rests on. Dropped once during
-  // development: `nProt`/`nRec` are 15 digits, so a boundary-less 14-char rule
+  // development: `nProt`/`nRec` are 15+ digits, so a boundary-less 14-char rule
   // matched their tail and `protocolo 135260000012345` printed as `1[CNPJ]` —
   // destroying the one identifier that correlates a run with a document.
   //

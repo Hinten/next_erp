@@ -5,6 +5,7 @@ import {
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  isCStat,
   isEstadoFinalNFe,
   CSTAT_EPEC_DUPLICIDADE,
   CSTAT_EPEC_NAO_SINCRONIZADO,
@@ -73,9 +74,37 @@ describe('classifyCStat', () => {
     ['1080', 'rejeitada'],
     ['6560', 'rejeitada'],
     ['2900', 'rejeitada'],
+    // The certificate set 290–298 is EXACT strings (#329). Its edges stay
+    // distinct from their neighbours, and a leading-zero 4-digit value — a
+    // valid `TStat` shape — is not the 3-digit code it would parse to: the old
+    // `Number(cStat)` range folded '0290' onto 290.
+    ['291', 'rejeitada-certificado'],
+    ['295', 'rejeitada-certificado'],
+    ['289', 'rejeitada'],
+    ['299', 'rejeitada'],
+    ['0290', 'rejeitada'],
+    ['0298', 'rejeitada'],
+    ['0100', 'rejeitada'],
+    ['0656', 'rejeitada'],
   ] as const)('classifies %s as %s', (cStat, expected) => {
     expect(classifyCStat(cStat)).toBe(expected);
   });
+});
+
+describe('isCStat — the XSD TStat shape, [0-9]{3,4} (NT 2025.002 §5.1)', () => {
+  it.each(['000', '100', '999', '0100', '1115', '9999'])('accepts %j', (v) => {
+    expect(isCStat(v)).toBe(true);
+  });
+
+  // Near-misses of every kind a looser check would let through: wrong width,
+  // surrounding whitespace, signs/exponents a Number() parse accepts, and
+  // non-ASCII digits a \d with the `u` flag or a locale parse might accept.
+  it.each(['', '1', '10', '12345', 'abc', '10a', ' 100', '100 ', '100\n', '+100', '1e3', '١٠٠'])(
+    'rejects %j',
+    (v) => {
+      expect(isCStat(v)).toBe(false);
+    },
+  );
 });
 
 describe('cStatToEstado', () => {

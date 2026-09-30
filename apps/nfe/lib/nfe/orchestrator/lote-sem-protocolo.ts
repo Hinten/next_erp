@@ -45,6 +45,7 @@ import {
   applyOutcome,
   classifyCStat,
   consultarSituacaoNFe,
+  isCStat,
   MAX_RECONCILE_ATTEMPTS,
   NFeConsumoIndevidoError,
   NFeTransportError,
@@ -73,11 +74,6 @@ import {
   swapAnchorForProc,
 } from './audit';
 
-/**
- * `TStat` — `^\d{3,4}$` since NT 2025.002. A lote cStat of any other shape
- * (an empty `<cStat/>`) is an anomaly that says nothing about any chave.
- */
-const CSTAT_TSTAT = /^\d{3,4}$/;
 /** 103 — lote recebido: SEFAZ issued the receipt. The blocking fallback of {@link cStatBloqueanteDaRodada}. */
 const CSTAT_LOTE_RECEBIDO = '103';
 /** 104 — lote processado. */
@@ -206,7 +202,7 @@ export function decidirRodadaDoRecibo(
   loteCStat: string,
   protCStat: string | null,
 ): DecisaoDaRodada {
-  if (protCStat != null && CSTAT_TSTAT.test(protCStat)) {
+  if (protCStat != null && isCStat(protCStat)) {
     switch (classifyCStat(protCStat)) {
       case 'autorizada':
       case 'cancelada':
@@ -230,7 +226,7 @@ export function decidirRodadaDoRecibo(
         return porChave('protocolo-ausente');
     }
   }
-  if (!CSTAT_TSTAT.test(loteCStat)) return AGUARDAR;
+  if (!isCStat(loteCStat)) return AGUARDAR;
   switch (classifyCStat(loteCStat)) {
     case 'lote-recebido':
     case 'lote-pendente':

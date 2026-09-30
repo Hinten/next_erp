@@ -10,6 +10,7 @@ import {
   extractCNFFromChave,
   generateNFe,
   isBloqueada,
+  isCStat,
   NFeConfigNotFoundError,
   nextConsultaDelayMs,
   outcomeFromInfProt,
@@ -939,7 +940,7 @@ export async function applyAutorizadoOutcome(args: {
   // under the lote guard. A lote-level duplicidade keeps the inline recovery
   // below: one member means no fan-out and no smear.
   const duplicidadeDoLote =
-    CSTAT_TSTAT.test(retEnvi.cStat) && classifyCStat(retEnvi.cStat) === 'duplicidade';
+    isCStat(retEnvi.cStat) && classifyCStat(retEnvi.cStat) === 'duplicidade';
   if (!legado && protNosso == null && retEnvi.infRec == null && !duplicidadeDoLote) {
     return persistirDisposicaoSemRecibo({
       fs,
@@ -1415,13 +1416,6 @@ export interface LoteSemReciboPatch {
 }
 
 /**
- * `TStat` is `[0-9]{3,4}` (`tiposBasico_v4.00.xsd`). A lote cStat outside it —
- * an empty `<cStat/>`, non-numeric text — is not a SEFAZ verdict at all, and
- * `classifyCStat` would file it under the generic `rejeitada`.
- */
-const CSTAT_TSTAT = /^\d{3,4}$/;
-
-/**
  * Patch for ONE NF-e of a lote whose `retEnviNFe` came back WITHOUT `infRec`:
  * every member of an async lote (indSinc='0', #512), and the one NF-e of a
  * sync lote whose reply also carries no `protNFe` for it (#1654 §1 —
@@ -1437,7 +1431,9 @@ const CSTAT_TSTAT = /^\d{3,4}$/;
  * an xMotivo `[nRec:…]` marker (a possibly FOREIGN receipt, which would route
  * the doc into another lote's reconcile). Neither is read here.
  *
- * A cStat that is not `TStat`-shaped ({@link CSTAT_TSTAT}) is an anomaly,
+ * A cStat that is not `TStat`-shaped (`isCStat`: `[0-9]{3,4}`, so an empty
+ * `<cStat/>` or non-numeric text, which `classifyCStat` would file under the
+ * generic `rejeitada`) is not a SEFAZ verdict at all: an anomaly,
  * decided BEFORE classification. Otherwise an EXHAUSTIVE switch over
  * `classifyCStat` — a new `CStatCategory` fails typecheck in the `never`
  * default — because the global state machine is right for per-NF-e replies
@@ -1493,7 +1489,7 @@ export function patchForLoteSemRecibo(
   };
   // Before the switch: `classifyCStat('')` / `('abc')` is 'rejeitada', which
   // would make a FRESH member número-reusing on a reply that says nothing.
-  if (!CSTAT_TSTAT.test(retEnvi.cStat)) {
+  if (!isCStat(retEnvi.cStat)) {
     return { patch: emVoo, consultaDelayMs: null };
   }
   const categoria = classifyCStat(retEnvi.cStat);
