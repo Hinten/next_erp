@@ -418,6 +418,23 @@ describe('shopeeProvider — the waits', () => {
     });
   });
 
+  // PR 1 review 2 (F5): a read that dropped reports `consultando`. This build KNOWS
+  // that phase, so the operator sees the server's own sentence, never the generic
+  // one (and never "Organizando o envio…", which reads as a second arrange).
+  it('shows the server sentence for the neutral read phase `consultando`', async () => {
+    const { client } = fakeClient([
+      aguardar({ fase: 'consultando', mensagem: 'Consultando a Shopee…' }),
+      arquivo(),
+    ]);
+    const input = makeInput({ client });
+    expect(await createShopeeProvider().emitirOuImprimir(input)).toEqual({ status: 'printed' });
+    expect(input.ui.notify).toHaveBeenCalledWith({
+      title: 'Etiqueta Shopee',
+      message: 'Consultando a Shopee…',
+      color: 'blue',
+    });
+  });
+
   it('W10 — `tentarEmMs: 0` sleeps the floor, a huge one the ceiling, a mid one as sent', async () => {
     const { client } = fakeClient([
       aguardar({ tentarEmMs: 0 }),

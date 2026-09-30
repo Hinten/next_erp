@@ -275,6 +275,9 @@ const FASES_CONHECIDAS: ReadonlySet<string> = new Set([
   'baixando',
   'renovando-credencial',
   'limite-de-requisicoes',
+  // A read that dropped or ran out of budget (PR 1, review 2 F5): neutral, never
+  // `programando`, which an operator would read as a second arrange.
+  'consultando',
 ]);
 
 /* -------------------------------- the loop ----------------------------------- */
