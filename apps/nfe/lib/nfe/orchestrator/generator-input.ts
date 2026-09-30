@@ -1,14 +1,17 @@
 import {
   aggregateTotals,
+  buildEntrega,
   buildImpostoXml,
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
   datePartsInOffset,
+  NFePartiesError,
   NFeTributeError,
   offsetForUF,
   sanitizeNFeText,
   TributeFormatError,
+  ufDestinoOperacao,
   type GeneratorInput,
   type GeneratorItem,
   type Payment,
@@ -22,6 +25,7 @@ import {
   camposProdutoFiscal,
   ehMarketplace,
   gtinFiscal,
+  type Endereco,
   type Filial,
   type FreteDoPedido,
   type Integracao,
@@ -41,13 +45,85 @@ import type { FiscalItem, PedidoBundle } from './bundle';
 const TPAG_DINHEIRO = String(FORMA_PAGAMENTO.dinheiro).padStart(2, '0');
 
 /**
- * Interestadual iff the destination UF differs from the emitente's sede UF —
- * it picks `cfopInterestadual` over `cfop` per item. ONE derivation shared by
- * generation (`buildGeneratorInput`) and the batch pre-allocation pre-flight
- * (`assertItemsBuildable`), so the two can never project different CFOPs.
+ * The delivery address the nota carries as `<entrega>` — `null` when the goods
+ * go to the fiscal address (#422). An unresolvable delivery ref is refused
+ * HERE, where a nota is being built, rather than at bundle load: consultas and
+ * the stored-bytes retransmit paths share the loader and must not depend on it.
+ *
+ * There is deliberately no fallback to the fiscal UF: a delivery address the
+ * operator declared but we cannot read may be interstate, and guessing
+ * intrastate is exactly the defect #422 fixes.
+ *
+ * ⚠️ An EXPORT (`operacao.ehExterior`) has no delivery address, whatever the
+ * frete ref says: `buildIde` sends `idDest=3` without looking at any UF, so a
+ * delivery UF here would decide the CFOP pick alone (a forwarder in the
+ * emitente's UF → `cfop` beside `idDest=3`), and `buildEntrega` cannot describe
+ * a foreign place (no `cPais`/`xPais`, and a foreign buyer has no CPF/CNPJ
+ * recebedor). Returning `null` keeps "`<entrega>` present ⇔ it decided the
+ * destination" and the pre-#422 export behaviour: the fiscal `EX` address picks
+ * `cfopInterestadual`, and an unreadable delivery ref refuses nothing.
+ */
+export function entregaDaOperacao(bundle: PedidoBundle): Endereco | null {
+  if (bundle.operacao.ehExterior) return null;
+  const { entrega } = bundle;
+  if (entrega.tipo === 'enderecoFiscal') return null;
+  if (entrega.tipo === 'outroEndereco') return entrega.endereco;
+  throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}': ${entrega.motivo}`);
+}
+
+/**
+ * Interestadual iff the operation's destination UF — the DELIVERY UF when there
+ * is a separate delivery address (#422), the fiscal one otherwise — differs
+ * from the emitente's sede UF; it picks `cfopInterestadual` over `cfop` per
+ * item. The destination comes from the library's `ufDestinoOperacao`, the same
+ * function `buildIde` decides `idDest` with, over the same `enderecoEntrega`
+ * this module hands the generator — so CFOP and idDest cannot disagree (SEFAZ
+ * 732/733). ONE derivation shared by generation (`buildGeneratorInput`) and the
+ * batch pre-allocation pre-flight (`assertNotaBuildable`).
  */
 export function isInterstateFor(bundle: PedidoBundle): boolean {
-  return bundle.enderecoDest.estado !== bundle.filial.sede.estado;
+  return (
+    ufDestinoOperacao(bundle.enderecoDest, entregaDaOperacao(bundle)) !== bundle.filial.sede.estado
+  );
+}
+
+/**
+ * The part of a nota that can fail on operator-fixable data, projected ONCE
+ * for both generation and the batch pre-flight so they cannot drift: the
+ * delivery address (unresolvable → refused), the per-item projection (CFOP /
+ * NCM / unidade / vDesc / imposto, in that order), and the `<entrega>` group's
+ * own wire checks. Every failure is an `NFeOrchestratorError` naming the pedido.
+ */
+function projetarNota(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): { readonly genItems: GeneratorItem[]; readonly enderecoEntrega: Endereco | null } {
+  const enderecoEntrega = entregaDaOperacao(bundle);
+  const genItems = buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc);
+  if (enderecoEntrega) assertEntregaEmitivel(bundle, enderecoEntrega);
+  return { genItems, enderecoEntrega };
+}
+
+/**
+ * Dry-run the library's `buildEntrega` — the exact builder `generateNFe` runs —
+ * so a delivery address the group cannot carry (no identifiable recebedor, a
+ * cMun from another UF, a one-letter street…) fails as an `NFeOrchestratorError`
+ * BEFORE a número is allocated. Left to generation, `NFePartiesError` is a class
+ * the batch path does not carry: it would consume the número and leave a
+ * placeholder (#506).
+ */
+function assertEntregaEmitivel(bundle: PedidoBundle, enderecoEntrega: Endereco): void {
+  try {
+    buildEntrega(bundle.cliente, enderecoEntrega);
+  } catch (err) {
+    if (err instanceof NFePartiesError) {
+      throw new NFeOrchestratorError(
+        `pedido '${bundle.pedidoId}': delivery address — ${err.message}`,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -73,7 +149,7 @@ export function buildGeneratorInput(
   contingencia?: { readonly dhCont: Date | null; readonly xJust: string | null } | null,
   emitRtc?: boolean,
 ): GeneratorInput {
-  const genItems = buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc === true);
+  const { genItems, enderecoEntrega } = projetarNota(bundle, items, emitRtc === true);
 
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto a det's prod.vFrete (item level)
@@ -270,6 +346,9 @@ export function buildGeneratorInput(
     operacao: bundle.operacao,
     cliente: bundle.cliente,
     enderecoDest: bundle.enderecoDest,
+    // The same value isInterstateFor decided the CFOPs with — the generator
+    // decides idDest and emits <entrega> from it (#422).
+    ...(enderecoEntrega ? { enderecoEntrega } : {}),
     itens: genItems,
     totalXml: buildTotalXml(totals),
     transpXml: buildTranspXml(transpOpts),
@@ -415,7 +494,7 @@ const ISSQN_NAO_SUPORTADO =
  * `buildGenItems`, is what keeps it from failing a member that will not
  * generate. The single path generates before the allocation's first write and
  * never for a stored-bytes, EPEC, skip or in-flight doc. The batch dry-runs it
- * for EVERY prepped member through `assertItemsBuildable` (`tributePreflight`),
+ * for EVERY prepped member through `assertNotaBuildable` (`tributePreflight`),
  * but `runChunkAllocateTx` applies that verdict only to a member that would
  * allocate or regenerate, and discards it for those docs. Never move it into
  * `prepareEmission`, whose throw fails the member whatever its nfev4 doc holds.
@@ -450,19 +529,20 @@ function buildItemImpostoXml(it: FiscalItem, emitRtc: boolean, where: string): s
  * skipped or retransmitted from stored bytes. The single path does not use
  * it: its transaction generates before its first write.
  *
- * It is the SAME projection generation runs — `buildGenItems` with the same
- * `isInterstateFor` and `emitRtc`, never a parallel re-implementation — so:
- *   - the error precedence (CFOP → NCM → unidade → vDesc → imposto) and the
- *     messages are identical to generation's;
- *   - a pass guarantees generation's `buildGenItems` cannot throw: it is pure
- *     over the same captured `items` and `emitRtc`.
+ * It is the SAME projection generation runs — `projetarNota`, with the same
+ * `emitRtc`, never a parallel re-implementation — so:
+ *   - the error precedence (delivery address → CFOP → NCM → unidade → vDesc →
+ *     imposto → `<entrega>` wire checks) and the messages are identical to
+ *     generation's;
+ *   - a pass guarantees generation's projection cannot throw: it is pure over
+ *     the same captured bundle, `items` and `emitRtc`.
  */
-export function assertItemsBuildable(
+export function assertNotaBuildable(
   bundle: PedidoBundle,
   items: ReadonlyArray<FiscalItem>,
   emitRtc: boolean,
 ): void {
-  buildGenItems(items, bundle, isInterstateFor(bundle), emitRtc);
+  projetarNota(bundle, items, emitRtc);
 }
 
 /**

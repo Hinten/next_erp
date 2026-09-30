@@ -17,6 +17,8 @@ import {
   operacaoSchema,
   pagamentoSchema,
   regraImpostoSchema,
+  toDocPathOrNull,
+  ufSchema,
   type Cliente,
   type Endereco,
   type EstadoNFe,
@@ -74,7 +76,15 @@ export interface PedidoBundle {
   readonly filial: Filial;
   readonly clienteId: string;
   readonly cliente: Cliente;
+  /** The FISCAL address (`pedido.enderecoFiscalOuterRef`) — `<dest><enderDest>`. */
   readonly enderecoDest: Endereco;
+  /**
+   * Where the goods go, when that is another document (#422). Resolved at
+   * load time but judged only where a nota is generated: an unresolvable
+   * delivery address must not block `consultarPedido`, which shares this
+   * loader, and must not change what a bloqueada / in-flight doc does.
+   */
+  readonly entrega: EntregaDoPedido;
   readonly operacaoId: string;
   readonly operacao: Operacao;
   /**
@@ -124,6 +134,25 @@ export interface PedidoBundle {
    */
   readonly regrasImposto: readonly RegraImposto[];
 }
+
+/**
+ * The pedido's delivery address, as the NF-e sees it (#422):
+ *  - `enderecoFiscal` — no frete, no delivery ref, or a ref to the SAME
+ *    document as the fiscal one (path compared after normalization, so
+ *    `documents/clientes/C/enderecos/E` and `clientes/C/enderecos/E` are one);
+ *  - `outroEndereco` — a different document, read and `cMun`-resolved;
+ *  - `irresolvivel` — a delivery ref that cannot be followed. Kept as data
+ *    here and refused only by generation (`entregaDaOperacao`).
+ *
+ * ⚠️ "Different" is judged by the DOCUMENT, never by content. Two documents
+ * holding the same address emit a redundant but valid `<entrega>`; comparing
+ * content would couple the decision to sanitising/truncation rules and could
+ * merge two addresses that really differ.
+ */
+export type EntregaDoPedido =
+  | { readonly tipo: 'enderecoFiscal' }
+  | { readonly tipo: 'outroEndereco'; readonly path: string; readonly endereco: Endereco }
+  | { readonly tipo: 'irresolvivel'; readonly motivo: string };
 
 /** Per-item fiscal data after merging Pedido item + stamped Imposto. */
 export interface FiscalItem {
@@ -253,29 +282,44 @@ export async function loadPedidoBundle(
   // integração first, then derive the filial path from it. This read is
   // memoized against the batch context (pedidos in a lote routinely share one
   // integração), so it costs at most one extra read per distinct integração.
-  const integracaoPath = refToPath(getField(pedido, 'integracaoPedidoOuterRef'));
+  const integracaoPath = refToPath(
+    getField(pedido, 'integracaoPedidoOuterRef'),
+    `pedido '${pedidoId}'.integracaoPedidoOuterRef`,
+  );
   if (!integracaoPath)
     throw new NFeOrchestratorError(`pedido '${pedidoId}': integracaoPedidoOuterRef missing`);
   const integracaoSnap = await getDoc(integracaoPath);
   if (!integracaoSnap.exists)
     throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found`);
-  const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
+  const filialPath = refToPath(
+    getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'),
+    `integracao '${integracaoPath}'.filialIntegracaoPedidoOuterRef`,
+  );
   safeLog(
     'debug',
     `[nfe/orchestrator] Resolved filialPath '${filialPath}' (via integracao ` +
       `'${integracaoPath}') for pedidoId '${pedidoId}'`,
   );
-  const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
+  const clientePath = refToPath(
+    getField(pedido, 'clientePedidoOuterRef'),
+    `pedido '${pedidoId}'.clientePedidoOuterRef`,
+  );
   safeLog(
     'debug',
     `[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`,
   );
-  const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
+  const operacaoPath = refToPath(
+    getField(pedido, 'operacaoPedidoOuterRef'),
+    `pedido '${pedidoId}'.operacaoPedidoOuterRef`,
+  );
   safeLog(
     'debug',
     `[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`,
   );
-  const enderecoPath = refToPath(getField(pedido, 'enderecoFiscalOuterRef'));
+  const enderecoPath = refToPath(
+    getField(pedido, 'enderecoFiscalOuterRef'),
+    `pedido '${pedidoId}'.enderecoFiscalOuterRef`,
+  );
   safeLog(
     'debug',
     `[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`,
@@ -292,16 +336,35 @@ export async function loadPedidoBundle(
   if (!enderecoPath)
     throw new NFeOrchestratorError(`pedido '${pedidoId}': enderecoFiscalOuterRef missing`);
 
-  const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap, regraImpostoSnap] =
-    await Promise.all([
-      getDoc(filialPath),
-      getDoc(clientePath),
-      getDoc(operacaoPath),
-      getDoc(enderecoPath),
-      // eslint-disable-next-line no-restricted-syntax -- read-only `pagamentos` subcollection
-      fs.collection('pedidos').doc(pedidoId).collection('pagamentos').get(),
-      getRegra(operacaoPath),
-    ]);
+  // The delivery address (#422), from the RAW frete field rather than the
+  // parsed `frete` below: `parseFreteFromPedido` drops the WHOLE block on any
+  // parse failure, and a defect in some unrelated frete field must not quietly
+  // turn an interstate delivery back into the fiscal UF. The common case —
+  // marketplace imports set it to the fiscal ref itself — costs no read.
+  const entregaRef = lerRef(
+    getField(getField(pedido, 'freteInicial'), 'enderecoFreteOuterReference'),
+  );
+  const entregaPath =
+    entregaRef.tipo === 'caminho' && entregaRef.path !== enderecoPath ? entregaRef.path : null;
+
+  const [
+    filialSnap,
+    clienteSnap,
+    operacaoSnap,
+    enderecoSnap,
+    pagamentoSnap,
+    regraImpostoSnap,
+    entregaSnap,
+  ] = await Promise.all([
+    getDoc(filialPath),
+    getDoc(clientePath),
+    getDoc(operacaoPath),
+    getDoc(enderecoPath),
+    // eslint-disable-next-line no-restricted-syntax -- read-only `pagamentos` subcollection
+    fs.collection('pedidos').doc(pedidoId).collection('pagamentos').get(),
+    getRegra(operacaoPath),
+    entregaPath === null ? null : getDoc(entregaPath),
+  ]);
 
   if (!filialSnap.exists) throw new NFeOrchestratorError(`filial '${filialPath}' not found`);
   if (!clienteSnap.exists) throw new NFeOrchestratorError(`cliente '${clientePath}' not found`);
@@ -346,13 +409,14 @@ export async function loadPedidoBundle(
   // The patched `filial` MUST be the one returned: `ide.ts` reads
   // `filial.sede.codigoMunicipio` for cMunFG and `parties.ts` for enderEmit.
   const filialRaw = filialSnap.data() as Filial;
-  const [enderecoDest, sede] = await Promise.all([
+  const [enderecoDest, sede, entrega] = await Promise.all([
     ensureCodigoMunicipio(fs, enderecoSnap.data() as Endereco, {
       contexto: `endereco '${enderecoPath}'`,
     }),
     ensureCodigoMunicipio(fs, filialRaw.sede, {
       contexto: `filial '${filialPath}'.sede`,
     }),
+    resolverEntrega(fs, pedidoId, entregaRef, entregaPath, entregaSnap),
   ]);
 
   return {
@@ -363,6 +427,7 @@ export async function loadPedidoBundle(
     clienteId: clienteSnap.id,
     cliente: clienteSnap.data() as Cliente,
     enderecoDest,
+    entrega,
     operacaoId: operacaoSnap.id,
     operacao,
     pagamentos,
@@ -371,6 +436,54 @@ export async function loadPedidoBundle(
     integracaoTipo,
     regrasImposto,
   };
+}
+
+/**
+ * Settle the delivery address {@link loadPedidoBundle} read (#422). Never
+ * throws for a data problem: each one becomes `irresolvivel` with the reason,
+ * and generation refuses the nota with it. Only an error this module does not
+ * own is rethrown (root CLAUDE.md rule 6).
+ */
+async function resolverEntrega(
+  fs: Firestore,
+  pedidoId: string,
+  ref: RefLida,
+  path: string | null,
+  snap: FirebaseFirestore.DocumentSnapshot | null,
+): Promise<EntregaDoPedido> {
+  const campo = `pedido '${pedidoId}'.freteInicial.enderecoFreteOuterReference`;
+  if (ref.tipo === 'ausente') return { tipo: 'enderecoFiscal' };
+  if (ref.tipo === 'malformada') {
+    return {
+      tipo: 'irresolvivel',
+      motivo: `${campo}: malformed reference ${JSON.stringify(ref.bruto)}`,
+    };
+  }
+  // A readable ref with no read issued: it named the fiscal document itself.
+  if (path === null || snap === null) return { tipo: 'enderecoFiscal' };
+  if (!snap.exists) {
+    return { tipo: 'irresolvivel', motivo: `${campo}: endereco '${path}' not found` };
+  }
+  // `estado` now DECIDES idDest and the CFOP, so it is parsed, not cast.
+  const raw = snap.data() as Endereco;
+  const uf = ufSchema.safeParse(raw.estado);
+  if (!uf.success) {
+    return {
+      tipo: 'irresolvivel',
+      motivo: `delivery endereco '${path}': estado ${JSON.stringify(raw.estado ?? null)} is not a UF`,
+    };
+  }
+  try {
+    const endereco = await ensureCodigoMunicipio(
+      fs,
+      { ...raw, estado: uf.data },
+      { contexto: `delivery endereco '${path}'` },
+    );
+    return { tipo: 'outroEndereco', path, endereco };
+  } catch (err) {
+    if (err instanceof NFeOrchestratorError) return { tipo: 'irresolvivel', motivo: err.message };
+    throw err;
+  }
 }
 
 /**
@@ -515,14 +628,53 @@ export function getField(obj: unknown, key: string): unknown {
     : undefined;
 }
 
-export function refToPath(ref: unknown): string | null {
-  if (!ref) return null;
-  if (typeof ref === 'string') return ref;
-  if (typeof ref === 'object' && 'path' in ref) {
-    const p = (ref as { path?: unknown }).path;
-    return typeof p === 'string' ? p : null;
-  }
-  return null;
+/**
+ * A stored outer ref, read for dereferencing. Three outcomes, kept apart on
+ * purpose: an ABSENT ref (the field is unset) and a MALFORMED one (set, but no
+ * document path can be formed from it) are different operator problems, and
+ * reporting the second as "missing" sends the operator to fill in a field that
+ * is already filled in.
+ */
+export type RefLida =
+  | { readonly tipo: 'ausente' }
+  | { readonly tipo: 'caminho'; readonly path: string }
+  | { readonly tipo: 'malformada'; readonly bruto: unknown };
+
+/**
+ * Read an outer ref into the BARE document path the Admin SDK's `doc()` takes.
+ *
+ * Accepts every stored form: the canonical `documents/<col>/<id>`
+ * (`outerRefSchema` — what `toOuterRef`, the ML/Shopee importers and the
+ * Flutter `pathWithDocuments` write), the bare `<col>/<id>`, and a legacy
+ * object carrying a string `path`. ⚠️ The canonical form used to be handed to
+ * `fs.doc()` verbatim, and the Admin SDK refuses it — `documents/` makes the
+ * segment count odd ("must point to a document") — so every pedido written by
+ * the app itself failed to load, while every fixture here, seeded with bare
+ * paths, passed.
+ *
+ * The result is also the memo key of {@link BatchReadContext.docByPath}, so the
+ * same document referenced in two forms is read once.
+ */
+export function lerRef(ref: unknown): RefLida {
+  if (!ref) return { tipo: 'ausente' };
+  const bruto = typeof ref === 'object' && 'path' in ref ? (ref as { path?: unknown }).path : ref;
+  const path = toDocPathOrNull(bruto);
+  return path === null ? { tipo: 'malformada', bruto: ref } : { tipo: 'caminho', path };
+}
+
+/**
+ * {@link lerRef} for a ref the caller needs: `null` when absent (the caller
+ * names what is missing), the bare path when readable, and a thrown
+ * `NFeOrchestratorError` naming `campo` when malformed.
+ */
+export function refToPath(ref: unknown, campo: string): string | null {
+  const lida = lerRef(ref);
+  if (lida.tipo === 'ausente') return null;
+  if (lida.tipo === 'caminho') return lida.path;
+  throw new NFeOrchestratorError(
+    `${campo}: malformed reference ${JSON.stringify(lida.bruto)} — expected ` +
+      `'documents/<collection>/<id>' or '<collection>/<id>' (an even number of segments)`,
+  );
 }
 
 /**

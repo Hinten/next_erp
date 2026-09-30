@@ -9,6 +9,7 @@ import { CHAVE_NFE_REGEX, type UF } from '@delfrance/schemas';
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
+import { ufDestinoOperacao } from './destino';
 import { formatSefazDateTime, UF_TO_IBGE } from './tz';
 import type { Ambiente, GeneratorInput } from './types';
 
@@ -52,7 +53,10 @@ interface IdeParts {
 export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_ide {
   const filialUF = input.filial.sede.estado;
   const utcOffset = parts.utcOffsetMinutes;
-  const destUF = input.enderecoDest.estado;
+  // The delivery UF decides when there is a separate delivery address (#422) —
+  // the same `enderecoEntrega` that makes `generateNFe` emit `<entrega>`, so
+  // idDest and the group SEFAZ judges it against can never disagree.
+  const destUF = ufDestinoOperacao(input.enderecoDest, input.enderecoEntrega);
   if (!input.filial.sede.codigoMunicipio) {
     throw new NFeIdeError('filial.sede.codigoMunicipio (IBGE) is required for cMunFG');
   }

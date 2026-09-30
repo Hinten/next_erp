@@ -44,8 +44,12 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  * dropping the raw value):
  * - `estados` — `List` of UF codes (`_$RegraImpostoToJson`'s
  *   `ufsOperacaoToJson`) that scopes the rule to specific interstate
- *   destinations. Not yet consumed by the resolver's match semantics
- *   (deferred to #422) — modeled here so a legacy doc round-trips.
+ *   destinations. Not consumed by the resolver's match semantics — the
+ *   legacy resolver never matched on it either
+ *   (`.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:841-878`), and
+ *   #422 decided the operation's destination UF elsewhere
+ *   (`ufDestinoOperacao`) without it. Modeled here so a legacy doc
+ *   round-trips.
  * - `timeStamp` (capital S) — the legacy ms-epoch creation stamp; the new
  *   editor stamps `dataCadastro` instead and never ORIGINATES a `timeStamp`
  *   (`MacrosTab` round-trips an existing one unchanged on save, same as

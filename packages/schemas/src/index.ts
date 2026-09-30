@@ -70,6 +70,7 @@ export {
   outerRefLooseSchema,
   toOuterRef,
   toOuterRefOrNull,
+  toDocPathOrNull,
   idFromRef,
   parseRef,
   type OuterRef,

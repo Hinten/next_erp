@@ -213,6 +213,8 @@ interface FakeFirestoreOptions {
   operacao?: Record<string, unknown>;
   /** Partial override for `clientes/C-1/enderecos/E-1` — merged onto the default. */
   endereco?: Record<string, unknown>;
+  /** Extra documents by bare path (e.g. a separate delivery address, #422). */
+  extraDocs?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -328,6 +330,7 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       ...opts.endereco,
     };
   }
+  Object.assign(docs, opts.extraDocs ?? {});
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
 
   function makeRef(path: string) {
@@ -449,7 +452,18 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
   return {
     fs: {
       collection: (name: string) => makeCollection(name),
-      doc: (path: string) => makeRef(path),
+      // Like the Admin SDK's `Firestore.doc`: an odd segment count is not a
+      // document path and THROWS. Without this the fake accepted a canonical
+      // `documents/…` ref handed over verbatim — the exact defect that made
+      // every app-written pedido unloadable while this suite stayed green (#422).
+      doc: (path: string) => {
+        if (path.split('/').filter(Boolean).length % 2 !== 0) {
+          throw new Error(
+            `Value for argument "documentPath" must point to a document, but was "${path}".`,
+          );
+        }
+        return makeRef(path);
+      },
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
@@ -1890,6 +1904,158 @@ describe('emitirPedido — CFOP selection by emitente/destinatário UF', () => {
     });
     await emitirPedido(fs, fakeRuntime(), 'PED-1');
     expect(lastCFOP()).toBe('6102'); // from operação default
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #422 — canonical `documents/…` refs load, and the delivery address decides
+// interstate. The fake's `doc()` throws on an odd segment count like the Admin
+// SDK, so a ref handed over verbatim fails here exactly as in production.
+// ---------------------------------------------------------------------------
+
+describe('emitirPedido — canonical refs and the delivery address (#422)', () => {
+  beforeEach(() => {
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+  });
+
+  const ENTREGA_RJ = {
+    logradouro: 'Rua do Ouvidor',
+    numero: '50',
+    bairro: 'Centro',
+    cep: '20040030',
+    codigoMunicipio: '3304557',
+    cidade: 'Rio de Janeiro',
+    estado: 'RJ',
+    complemento: null,
+    nome: 'Maria Recebedora',
+    cpf_cnpj: '52998224725',
+  };
+
+  function pedido(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...pedidoComImposto(impostoCsosn102()), ...overrides };
+  }
+
+  function lastInput() {
+    const calls = vi.mocked(generateNFe).mock.calls;
+    const input = calls[calls.length - 1]?.[0];
+    if (!input) throw new Error('generateNFe was not called');
+    return input;
+  }
+
+  it('a pedido whose refs are ALL canonical `documents/…` loads and emits', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedido({
+        integracaoPedidoOuterRef: 'documents/integracao/I-1',
+        clientePedidoOuterRef: 'documents/clientes/C-1',
+        operacaoPedidoOuterRef: 'documents/operacao/O-1',
+        enderecoFiscalOuterRef: 'documents/clientes/C-1/enderecos/E-1',
+      }),
+      extraDocs: {
+        'integracao/I-1': {
+          nome: 'Canal Teste',
+          tipo: 0,
+          padrao: false,
+          ativo: true,
+          filialIntegracaoPedidoOuterRef: 'documents/filiais/F-1',
+        },
+      },
+    });
+    const out = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(out.estado).toBeTruthy();
+    expect(lastInput().filial.cnpj).toBe('14200166000187');
+  });
+
+  it('a malformed ref names its field instead of calling it "missing"', async () => {
+    const { fs, writes } = fakeFirestore({
+      events: [],
+      pedido: pedido({ clientePedidoOuterRef: 'documents/clientes' }),
+    });
+    const err = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeOrchestratorError);
+    expect((err as Error).message).toContain(
+      "pedido 'PED-1'.clientePedidoOuterRef: malformed reference",
+    );
+    expect((err as Error).message).not.toContain('missing');
+    expect(writes).toHaveLength(0);
+  });
+
+  it('a delivery ref to the fiscal document itself (canonical vs bare) changes nothing', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedido({
+        freteInicial: {
+          enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/E-1',
+        },
+      }),
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastInput().enderecoEntrega).toBeUndefined();
+    expect(lastInput().itens[0]!.CFOP).toBe('5102');
+  });
+
+  it('fiscal SP, delivered in RJ → interstate CFOP and the RJ address as enderecoEntrega', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedido({
+        freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/E-RJ' },
+      }),
+      extraDocs: { 'clientes/C-1/enderecos/E-RJ': ENTREGA_RJ },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastInput().itens[0]!.CFOP).toBe('6102');
+    expect(lastInput().enderecoEntrega?.estado).toBe('RJ');
+    // enderDest stays the fiscal address.
+    expect(lastInput().enderecoDest.estado).toBe('SP');
+  });
+
+  it('same address id under ANOTHER cliente is another document (near-miss)', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedido({
+        freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-2/enderecos/E-1' },
+      }),
+      extraDocs: { 'clientes/C-2/enderecos/E-1': ENTREGA_RJ },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastInput().enderecoEntrega?.estado).toBe('RJ');
+    expect(lastInput().itens[0]!.CFOP).toBe('6102');
+  });
+
+  it('fiscal MG, delivered in SP → intra-state CFOP', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      endereco: { estado: 'MG' },
+      pedido: pedido({
+        freteInicial: { enderecoFreteOuterReference: 'clientes/C-1/enderecos/E-SP' },
+      }),
+      extraDocs: {
+        'clientes/C-1/enderecos/E-SP': {
+          ...ENTREGA_RJ,
+          cep: '01310100',
+          codigoMunicipio: '3550308',
+          cidade: 'Sao Paulo',
+          estado: 'SP',
+        },
+      },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastInput().itens[0]!.CFOP).toBe('5102');
+  });
+
+  it('a delivery ref to a missing document is refused (400) with nothing written', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      pedido: pedido({
+        freteInicial: { enderecoFreteOuterReference: 'documents/clientes/C-1/enderecos/GONE' },
+      }),
+    });
+    const err = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeOrchestratorError);
+    expect((err as Error).message).toContain("endereco 'clientes/C-1/enderecos/GONE' not found");
+    expect(writes).toHaveLength(0);
+    expect(events.filter((e) => e.startsWith('set:'))).toEqual([]);
   });
 });
 

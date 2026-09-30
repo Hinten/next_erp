@@ -74,7 +74,7 @@ import {
   persistPatchUnlessFinal,
   swapAnchorForProc,
 } from './audit';
-import { assertItemsBuildable, buildGeneratorInput } from './generator-input';
+import { assertNotaBuildable, buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
 import { noopTaskScheduler, type TaskScheduler } from '../tasks';
 
@@ -288,8 +288,10 @@ export async function prepareEmission(
  * afterwards (4b), so the throw would consume an nNF and leave a chave-less
  * placeholder needing fix + re-emit or inutilização.
  *
- * So this dry-runs the exact per-item projection generation runs
- * (`assertItemsBuildable` → `buildGenItems`, same `items`, same `emitRtc`) and
+ * So this dry-runs the exact projection generation runs
+ * (`assertNotaBuildable` → `projetarNota`, same `items`, same `emitRtc`) —
+ * which since #422 also covers an unresolvable delivery address and an
+ * `<entrega>` group its builder refuses — and
  * RETURNS the operator-fixable failure instead of throwing it: prep runs
  * before the chunk transaction classifies the nfev4 doc, and only a member
  * that would allocate or regenerate may be failed by it (see
@@ -309,7 +311,7 @@ export async function prepareEmission(
  */
 function tributePreflight(prep: EmissionPrep): NFeOrchestratorError | null {
   try {
-    assertItemsBuildable(prep.bundle, prep.items, prep.emitRtc);
+    assertNotaBuildable(prep.bundle, prep.items, prep.emitRtc);
     return null;
   } catch (err) {
     if (err instanceof NFeOrchestratorError) return err;
