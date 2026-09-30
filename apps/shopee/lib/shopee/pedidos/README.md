@@ -404,12 +404,20 @@ the `IntegracaoFreteSelect`, so an operator can no longer attach a different
 `int_frete` to a Shopee pedido by hand — the importer owns the block.
 
 ⚠️ **Code 24 is not part of this step** (see the re-park note under **Inbound
-push**), and **`FREIGHT_TIPO_CAPS.shopee.canTrack` stays `false`** until step 15
-flips it with `canFetchLabel`, `canPrint` and `channel`. Nothing reads the flag
-today except `freightCapsFor` consumers, and `mercadoLivre` carries
-`canTrack: false` beside a live shipments handler — so flipping it alone would
-make Shopee the first marketplace with `canTrack: true` for no behavioural
-reason.
+push**), and **`FREIGHT_TIPO_CAPS.shopee.canTrack` stays `false`** — step 7 did
+not take it, and neither did step 15. Nothing reads the flag today except
+`freightCapsFor` consumers, and `mercadoLivre` carries `canTrack: false` beside a
+live shipments handler — so flipping it would make Shopee the first marketplace
+with `canTrack: true` for no behavioural reason.
+
+⚠️ **Corrected by step 15 (#1523):** this page used to promise that step 15
+would flip `canTrack` together with `canFetchLabel`, `canPrint` and `channel`.
+It flips **`canFetchLabel` ONLY**, and each of the other three stays off for a
+reason of its own: `canPrint`, because `etiquetaRowState` tests it BEFORE
+`canFetchLabel`, so a Shopee pedido carrying a `printLabelId` would route
+"Imprimir" to Melhor Envio's reprint; `channel`, because it names a FREIGHT
+HTTP route segment and the label route lives on this marketplace backend;
+`canTrack`, because nothing reads it (above).
 
 **The rehearsal.** `rastrear:pedido` is the only way to exercise the estado path
 before a BR shop exists: of the codes this step owns, the sandbox console's Push

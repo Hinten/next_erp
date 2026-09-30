@@ -11,11 +11,15 @@
 import { createHash } from 'node:crypto';
 import {
   clienteSchema,
+  ESTADO_FRETE,
   ESTADO_PEDIDO,
   FORMA_PAGAMENTO,
+  INTEGRACAO_FRETE,
   integracaoSchema,
   INTEGRACAO_TIPO,
+  MODALIDADE_FRETE,
   MODO_LINK_PAGAMENTO,
+  seedFreteInicial,
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
   TIPO_INTEGRACAO_PGTO,
@@ -2317,6 +2321,79 @@ export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> 
     // The ML conta seeded alongside the marketplace freight doc (#782).
     cleanupByNamePrefix('integracao', prefix),
   ]);
+}
+
+/**
+ * Fixture for the Shopee etiqueta row action (#1523, step 15): ONE pedido
+ * (`<prefix>-ped-001`) whose `freteInicial` is the block the Shopee order
+ * import writes, and nothing else — the label route it reaches is stubbed by
+ * the spec, so no conta, `int_frete` or cliente is read.
+ *
+ * What the block pins, each on purpose:
+ *   - `externalOptionIntegracao: 'shopee'` and NO `integracaoFreteOuterRef` —
+ *     a Shopee pedido has no `int_frete` document at all, so the row must reach
+ *     the provider off the block alone (`resolverIntFrete`, `fonte: 'bloco'`);
+ *   - `externalOptionId: null` — so the HoverCard opens off
+ *     `FREIGHT_TIPO_CAPS.shopee.canFetchLabel` alone, never off a stored
+ *     option id;
+ *   - `externalId: null` — what the import writes whenever the order did not
+ *     carry exactly one package; the provider must never need it (W18);
+ *   - `estado: 'error'` — step 14's stamp after an NF-e upload failure, an
+ *     estado the shared gates treat as ALREADY POSTED (`isFreteJaPostado`), so
+ *     a provider without `reimpressao: 'mesmo-documento'` would ask the
+ *     posted-risk confirm here. `error` is also stock-neutral, and it is where
+ *     a pedido whose note was re-sent still has to arrange its first label.
+ *
+ * Built through `seedFreteInicial` — the one seeder the import itself starts
+ * from — so every other key carries the importer's default. A separate helper
+ * rather than a row in `seedPedidoFreteFixtures`: that one serves three other
+ * specs, which would each seed (and fire the pedido triggers for) a document
+ * they never read.
+ */
+export async function seedPedidoEtiquetaShopeeFixtures(prefix: string): Promise<{
+  pedidoId: string;
+}> {
+  const pedidoId = `${prefix}-ped-001`;
+  const agoraUs = millisToMicros(Date.now());
+
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: ESTADO_PEDIDO.pago,
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: agoraUs,
+      freteInicial: {
+        ...seedFreteInicial(MODALIDADE_FRETE.fob, true),
+        externalOptionIntegracao: INTEGRACAO_FRETE.shopee,
+        externalId: null,
+        externalOptionId: null,
+        integracaoFreteOuterRef: null,
+        estado: ESTADO_FRETE.error,
+        valorCobrado: 19.9,
+        custoCalculado: 19.9,
+        codRastreio: null,
+        ultimaModificacao: agoraUs,
+      },
+    });
+
+  return { pedidoId };
+}
+
+/**
+ * Teardown for `seedPedidoEtiquetaShopeeFixtures`. The pedido is seeded with a
+ * non-null `freteInicial`, so `onPedidoChanged` appends a `historicoFtIni` row
+ * and an opening `historicoEstadoPedido` row — both swept BEFORE the parent is
+ * deleted, which never cascades (the `cleanupPedidoFreteFixtures` order).
+ */
+export async function cleanupPedidoEtiquetaShopeeFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoSubcollectionByPrefix('historicoFtIni', prefix);
+  await cleanupPedidoSubcollectionByPrefix('historicoEstadoPedido', prefix);
+  await cleanupByFieldPrefix('pedidos', 'numero', prefix);
 }
 
 /**
