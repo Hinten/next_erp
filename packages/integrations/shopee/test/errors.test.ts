@@ -633,3 +633,69 @@ describe('a classification key never carries a module prefix', () => {
     }
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*        `providerMessage` — a frase do provedor, VERBATIM (passo 14)          */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeApiError.providerMessage', () => {
+  const ctxNegocio = {
+    path: '/api/v2/order/upload_invoice_doc',
+    httpStatus: 200,
+    surface: SHOPEE_SURFACE.business,
+  } as const;
+
+  it('PAR — é o `message` do envelope byte a byte: espaços, TAB e pontuação preservados', () => {
+    const frase = '  Wrong parameters, detail: Invalid NF-e.\t';
+    const err = shopeeErrorFromEnvelope(envelope('error_param', { message: frase }), ctxNegocio);
+    expect(err.providerMessage).toBe(frase);
+    // ⛔ QUASE-IGUAL: o `message` FORMATADO não é a frase — ele carrega o
+    // caminho e o código, que já contêm `upload`, `invoice` e `error`.
+    expect(err.message).not.toBe(frase);
+    expect(err.message).toContain(ctxNegocio.path);
+  });
+
+  it('⛔ QUASE-IGUAL — `null` continua `null` e `""` continua `""`: nenhuma dobra entre ausência e vazio', () => {
+    const semFrase = shopeeErrorFromEnvelope(envelope('error_param'), ctxNegocio);
+    const vazia = shopeeErrorFromEnvelope(envelope('error_param', { message: '' }), ctxNegocio);
+    expect(semFrase.providerMessage).toBeNull();
+    expect(vazia.providerMessage).toBe('');
+  });
+
+  it('viaja nas TRÊS classes que o envelope produz — reauth, limite e a base', () => {
+    const frase = 'frase do provedor';
+    const reauth = shopeeErrorFromEnvelope(envelope('shop_access_expired', { message: frase }), {
+      ...ctxNegocio,
+      surface: SHOPEE_SURFACE.auth,
+    });
+    const limite = shopeeErrorFromEnvelope(
+      envelope('error_rate_limit', { message: frase }),
+      ctxNegocio,
+    );
+    const base = shopeeErrorFromEnvelope(envelope('error_server', { message: frase }), ctxNegocio);
+
+    expect(reauth).toBeInstanceOf(ShopeeReauthRequiredError);
+    expect(limite).toBeInstanceOf(ShopeeRateLimitError);
+    expect(base).not.toBeInstanceOf(ShopeeRateLimitError);
+    for (const err of [reauth, limite, base]) expect(err.providerMessage).toBe(frase);
+  });
+
+  it('omitido no init é `null` (nunca `undefined`) — e cada construção existente continua compilando sem ele', () => {
+    const err = new ShopeeApiError('x', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/p',
+    });
+    expect(err.providerMessage).toBeNull();
+    const parcial = new ShopeeApiPartialError('x', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/p',
+      providerMessage: 'File error.',
+      parsed: {},
+    });
+    expect(parcial.providerMessage).toBe('File error.');
+  });
+});

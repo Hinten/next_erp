@@ -7,7 +7,7 @@ import type {
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
-import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
+import { millisToMicros, nowMicros, parseIsoToMillis } from '@delfrance/core/datetime';
 import {
   camposEspelhadosQueMudaram,
   planejarSincronizacaoDoMembroUnico,
@@ -649,14 +649,14 @@ export const onProdutoChanged = onDocumentWrittenWithAuthContext(
     // redeliveries of the SAME event, so the deterministic entry doc stays
     // content-identical on retries. Stored as MICROSECONDS since epoch
     // (`microsSinceEpoch`, the repo's datetime standard).
-    const eventTimeMillis = Date.parse(event.time);
+    const eventTimeMillis = parseIsoToMillis(event.time);
     await recordProdutoModificationAndPropagate(
       getDb(),
       produtoId,
       before,
       after,
       event.id,
-      Number.isNaN(eventTimeMillis) ? nowMicros() : millisToMicros(eventTimeMillis),
+      eventTimeMillis == null ? nowMicros() : millisToMicros(eventTimeMillis),
       resolveUsuarioOuterRef(event.authType, event.authId),
     );
   },

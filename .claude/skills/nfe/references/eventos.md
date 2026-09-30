@@ -42,6 +42,13 @@ The authorized event document is `procEventoNFe` (the signed evento +
 - `detEvento` carries `xCorrecao` (the correction text) and `xCondUso` (fixed
   legal text).
 - `nSeqEvento` increments per correction (1, 2, 3, …); the latest supersedes.
+- SEFAZ keeps `(chNFe, tpEvento, nSeqEvento)` unique — a resend at a sequence it
+  already holds is **573** (MOC 3P15-10), whatever the text. To learn WHAT it
+  registered there, read the event back from a consSit:
+  `extrairEventosNFe(retConsSitXml, TP_EVENTO_CCE)` over
+  `consultarSituacaoNFeComXml` gives each event's `nSeqEvento`, `xCorrecao`,
+  `nProt`, `dhRegEvento` and its signed `procEventoNFe` (standalone, verifiable),
+  which `parseCceRetorno` / the DANFE-CC-e accept in place of a `retEnvEvento`.
 - A CC-e **cannot** correct: values/tax variables (base, alíquota, quantities),
   data that changes issuer or recipient, or the emission/exit date. Those
   require cancelamento + reissue.

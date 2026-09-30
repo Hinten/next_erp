@@ -3583,6 +3583,73 @@ export type ShopeeUploadImage = z.infer<typeof shopeeUploadImagePayloadSchema>;
 export const shopeeUploadImageSchema = wrappedOp(shopeeUploadImagePayloadSchema);
 export type ShopeeUploadImageResponse = z.infer<typeof shopeeUploadImageSchema>;
 
+/* ----------------------- upload_invoice_doc (step 14) --------------------- */
+
+/**
+ * `upload_invoice_doc`: "File size limit to 1MB." — read as MiB, the
+ * {@link SHOPEE_UPLOAD_IMAGE_MAX_BYTES} precedent ("Max 10.0 MB" there is
+ * `10 * 1024 * 1024`). "1MB" is ambiguous; the probe settles it if Shopee checks
+ * the size before anything else.
+ *
+ * ⚠️ Measured in UTF-8 BYTES, never in string length: an accented `xProd` is
+ * multi-byte, so a `.length` check would pass an XML the wire refuses. From a
+ * stored `xml_nfe_proc` the ceiling is practically unreachable (the XML lives
+ * inside a ≤ 1 MiB Firestore document); it is the caller-bug backstop.
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The multipart FIELD NAME — `file` in ALL FOUR of the page's samples. Unlike
+ * {@link SHOPEE_UPLOAD_IMAGE_FIELD} there is no contradiction to instrument; it
+ * is a constant so the probe can still flip it in one line.
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_FIELD = 'file';
+
+/**
+ * `file_type` for an XML: the page's own description ("4.xml") and the Brazil
+ * integration guide ("para XML é '4'"). The page's `limits: [1,2,3]` is STALE —
+ * it predates the XML type. Sent as a TEXT part `'4'`: every non-file multipart
+ * part is text.
+ */
+export const SHOPEE_INVOICE_FILE_TYPE_XML = '4';
+
+/**
+ * The file part's content type — the legacy PRODUCTION shape and the page's own
+ * Python sample. `application/xml` has no evidence behind it at all.
+ *
+ * ⚠️ It rides on the Blob, never on a request header (`call.ts`).
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE = 'application/octet-stream';
+
+/**
+ * The file part's filename — FIXED, never derived from the document.
+ *
+ * ⚠️ The legacy exporter named the part after the document's access key, which
+ * put fiscal data in a request field for no reason: Shopee reads the key out of
+ * the XML itself. UNVERIFIED that Shopee ignores the filename; the flip is this
+ * one literal, and there is deliberately no parameter to override it.
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_FILENAME = 'procNFe.xml';
+
+/**
+ * `POST /api/v2/order/upload_invoice_doc` — the BARE envelope: no `response`, no
+ * echo, no id (the page's sample).
+ *
+ * ⚠️ `flatOp({})` rather than reusing {@link shopeeEnvelopeSchema} — the
+ * {@link shopeeConfirmLostPushSchema} rule — and deliberately NOT
+ * {@link shopeeWriteAckSchema} either: that one constant covers four product
+ * writes, and a fifth operation from another module sharing it would make
+ * splitting it the edit the day ONE of them grows a `response`.
+ *
+ * ⚠️ `error` is REQUIRED like on every other operation. A success body that
+ * omitted it would be refused (`ShopeeSchemaError` naming `error`), and that is
+ * deliberate: this operation has no `response` object, so the transport's
+ * absent-key tolerance could not apply even if it were opted into. The caller
+ * treats that refusal as an UNCERTAIN outcome and asks the order itself.
+ */
+export const shopeeUploadInvoiceDocSchema = flatOp({});
+export type ShopeeUploadInvoiceDocResponse = z.infer<typeof shopeeUploadInvoiceDocSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*                         The stock sync (step 12)                           */
 /* -------------------------------------------------------------------------- */

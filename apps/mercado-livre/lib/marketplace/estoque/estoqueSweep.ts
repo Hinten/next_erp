@@ -87,6 +87,7 @@
  * RETHROWS, failing the whole tick loudly.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import { millisToMicros } from '@delfrance/core/datetime';
 import { INTEGRACAO_TIPO, idFromRef } from '@delfrance/schemas';
 import {
@@ -755,7 +756,7 @@ export async function runStockSweep(
   deps: StockSweepDeps,
 ): Promise<StockSweepResult> {
   if (!isStockSyncEnabled()) {
-    console.info(
+    logger.info(
       `[mercado-livre] stock-sweep (${mode}) desabilitado (${STOCK_SYNC_FLAG_ENV} != '1') — no-op`,
     );
     return { enabled: false, contas: [] };
@@ -820,7 +821,7 @@ export async function runStockSweep(
       const pausedUntilUs = finiteNumber(stateRaw.pausedUntilUs);
       if (pausedUntilUs != null && pausedUntilUs > nowUs) {
         const ate = new Date(Math.floor(pausedUntilUs / 1000)).toISOString();
-        console.info(
+        logger.info(
           `[mercado-livre] stock-sweep: conta pausada por 429 até ${ate} — sweep pulado; cursor mantido`,
           { integracaoId, mode, pausedUntilUs },
         );

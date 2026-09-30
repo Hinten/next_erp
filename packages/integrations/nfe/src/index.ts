@@ -178,6 +178,7 @@ export {
   buildEpecEvento,
   buildProcEventoNFe,
   extractEpecInputFromNFe,
+  extrairEventosNFe,
   C_ORGAO_AMBIENTE_NACIONAL,
   NFeEventoError,
   TP_EVENTO_CANCELAMENTO,
@@ -187,6 +188,7 @@ export {
   type CancelamentoEventoInput,
   type CCeEventoInput,
   type EpecEventoInput,
+  type EventoRegistradoNFe,
 } from './eventos';
 
 // Inutilização de numeração — builder for the NfeInutilizacao lote.
@@ -216,6 +218,7 @@ export {
   consultarCadastro,
   consultarLote,
   consultarSituacaoNFe,
+  consultarSituacaoNFeComXml,
   consultarStatusServico,
   enviarEpec,
   inutilizarNumeracao,
@@ -324,6 +327,7 @@ export {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeTimeoutError,
   createNFeHttpClient,
   extrairTotaisNFe,
   type NFeCartaCorrecaoResult,

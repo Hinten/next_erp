@@ -214,6 +214,21 @@ function campoDePassagem(detalhe: ShopeeOrderDetailRow, chave: string): unknown 
  */
 export const REGIAO_BR_PEDIDO = 'BR';
 
+/**
+ * Whether the order is KNOWN to sit outside Brazil — the ONE predicate for "no
+ * NF-e is emitted for it" (the create-only `bloquearEmissaoNFe` below) and "no
+ * NF-e is uploaded for it" (step 14's `nfe/notaNaShopee.ts`).
+ *
+ * ⚠️ A `null` region is NOT foreign. Shopee always sends the order-level
+ * `region`, so an absent one is an anomaly we cannot read, and both callers
+ * must then take the path whose failure is LOUD: emission stays allowed, and an
+ * upload is attempted (and refused visibly) rather than skipped in silence.
+ * EXACT comparison — the wire value is Shopee's upper-case ISO code.
+ */
+export function pedidoForaDoBrasil(region: string | null): boolean {
+  return region !== null && region !== REGIAO_BR_PEDIDO;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                 the groups                                  */
 /* -------------------------------------------------------------------------- */
@@ -440,8 +455,7 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
     },
     criacao: {
       ehSaida: true,
-      bloquearEmissaoNFe:
-        detalhe.region !== null && detalhe.region !== REGIAO_BR_PEDIDO ? true : null,
+      bloquearEmissaoNFe: pedidoForaDoBrasil(detalhe.region) ? true : null,
     },
   };
 }

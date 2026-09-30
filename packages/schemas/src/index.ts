@@ -840,6 +840,7 @@ export {
   encryptedBlobSchema,
   CERTIFICADO_SECRETO_PATH,
   CERTIFICADO_SECRETO_DOC_ID,
+  CERTIFICADO_CACHE_TTL_MS,
   type CertificadoSecreto,
   type CertificadoFilialInfo,
   type EncryptedBlob,
@@ -900,6 +901,14 @@ export {
   dvChaveAcesso,
   type ChaveAcessoDecomposta,
 } from './chaveAcesso';
+
+export {
+  extractTpAmb,
+  decideNfeUploadDispatch,
+  decideNfeUploadTransition,
+  type NfeUploadDispatch,
+  type NfeUploadTransition,
+} from './nfeEnvioCanal';
 
 export {
   nfeConfig,

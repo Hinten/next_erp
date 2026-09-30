@@ -70,6 +70,7 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
     if (!field) return null;
     return buildQuery(collection.ref(db, pathContext), [orderByField(field, 'desc'), limit(1)]);
     // pathContext is identity-tracked like the rest of the data layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext intentionally untracked: TableView hands down a fresh {} default every render, and tracking it re-subscribes this listener each render
   }, [db, collection, field]);
 
   const snap = useSnapshot<z.infer<S>>(query);
@@ -97,6 +98,7 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
     if (!query) {
       genRef.current = rowsGeneration;
       baselineRef.current = null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets when the monitor is switched off; converges
       setStale(false);
       return;
     }
