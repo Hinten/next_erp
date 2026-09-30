@@ -89,6 +89,7 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
         });
       }
       return { status: 'printed' };
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- post-save best-effort: the checkout is already committed; surfaced as a toast + error outcome
     } catch (err) {
       // The Firestore derefs and the jsPDF render throw plain
       // Errors; keep the post-save contract best-effort — surface a toast and

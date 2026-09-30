@@ -805,6 +805,7 @@ export async function sweepStaleOutbound(
       });
       outcomes[result.kind] = (outcomes[result.kind] ?? 0) + 1;
       processed += 1;
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- per-item isolation; reported in errors[]
     } catch (err) {
       if (!(err instanceof Error)) throw err;
       errors.push({ docId: `${c.conversaId}/${c.docId}`, message: err.message });

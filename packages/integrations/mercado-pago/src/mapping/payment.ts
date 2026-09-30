@@ -1,3 +1,4 @@
+import { parseIsoToMicros } from '@delfrance/core/datetime';
 import { roundReais } from '@delfrance/core/money';
 import {
   FORMA_PAGAMENTO,
@@ -24,13 +25,13 @@ import type { MpPayment } from '../types';
 
 /**
  * ISO-8601 → microseconds since epoch (the pagamento datetime unit). MP returns
- * ISO strings; `Date.parse` yields **milliseconds**, so scale by 1000. Returns
- * null for a null/absent/unparseable value.
+ * ISO strings; `parseIsoToMicros` keeps any sub-millisecond digits instead of
+ * truncating to ms and refilling with zeros. Returns null for a
+ * null/absent/unparseable value.
  */
 function isoToMicros(iso: string | null | undefined): number | null {
   if (iso == null) return null;
-  const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? null : ms * 1000;
+  return parseIsoToMicros(iso);
 }
 
 function sumAmounts(values: ReadonlyArray<number | null | undefined>): number {

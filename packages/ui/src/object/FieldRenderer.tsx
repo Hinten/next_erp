@@ -299,8 +299,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 value={dateStr}
                 onChange={(v) => {
                   // v is `string | null` (YYYY-MM-DD). Promote to full ISO
-                  // to keep wire format stable.
-                  field.onChange(v ? new Date(`${v}T00:00:00.000Z`).toISOString() : v);
+                  // to keep wire format stable — the literal IS what
+                  // `new Date(...).toISOString()` printed for any valid day.
+                  field.onChange(v ? `${v}T00:00:00.000Z` : v);
                 }}
               />
             );

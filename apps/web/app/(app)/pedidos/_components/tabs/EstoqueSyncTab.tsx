@@ -128,12 +128,11 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
 
   // `depositos` reads ride the estoque claim (schema perms) — gate like the
   // movements query; without the claim the raw id is the honest display.
+  const depositoId = aplicado?.depositoId;
+  const podeLerDeposito = podeLerEstoque.allowed;
   const depositoRef = useMemo(
-    () =>
-      podeLerEstoque.allowed && aplicado?.depositoId
-        ? depositoCollection.docRef(db, {}, aplicado.depositoId)
-        : null,
-    [db, aplicado?.depositoId, podeLerEstoque.allowed],
+    () => (podeLerDeposito && depositoId ? depositoCollection.docRef(db, {}, depositoId) : null),
+    [db, depositoId, podeLerDeposito],
   );
   const depositoSnap = useDocSnapshot(depositoRef);
   const depositoNome = depositoSnap.data?.data.nome ?? aplicado?.depositoId ?? '—';

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 import type { Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
@@ -544,7 +545,7 @@ beforeEach(() => {
   // The handler is gated on the master flag (#805), which is unset in this
   // process — without this every spec below would short-circuit into the gate.
   vi.stubEnv(STOCK_SYNC_FLAG_ENV, '1');
-  vi.spyOn(console, 'info').mockImplementation(() => {});
+  vi.spyOn(logger, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -1090,7 +1091,7 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
 
     await run(h, payload({ sweepComputedAtMs: NOW_MS - 90_000 }));
 
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('enviado'),
       expect.objectContaining({ ageMs: 90_000, itemId: 'MLB111', sweepId: 'sweep-1' }),
     );
@@ -1139,7 +1140,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
     for (const h of [item, variationItem, bulk, userProduct]) {
       expect(h.db.batchGets).toEqual([]);
     }
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({
@@ -1182,7 +1183,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
         fieldMask: ['quantidade', 'quantidadeReservada'],
       },
     ]);
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({
@@ -1215,7 +1216,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
     expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
       available_quantity: 18,
     });
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({
@@ -1417,7 +1418,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
 
     expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 11 });
     expect(h.db.batchGets).toHaveLength(2);
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({ source: 'pause-reenqueue', reenqueues: 1 }),
@@ -1547,7 +1548,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       `produtos/KIT-B/estoques/${makeEstoqueUid('KIT-B', 'DEP')}`,
       `produtos/COMP/estoques/${makeEstoqueUid('COMP', 'DEP')}`,
     ]);
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({ componentRefCount: 1, estoqueReadCount: 3 }),
@@ -1696,7 +1697,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       }),
     );
 
-    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
       expect.stringContaining('fonte da quantidade'),
       expect.objectContaining({
         stockRefresh: expect.objectContaining({

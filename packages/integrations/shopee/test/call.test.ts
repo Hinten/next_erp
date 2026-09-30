@@ -597,3 +597,57 @@ describe('shopeeCall — `payloadNoErro`, a carga que viaja junto com a falha', 
     expect((erro as ShopeeRateLimitError).kind).toBe('daily');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*     `providerMessage` — a frase do provedor atravessa a reconstrução (14)     */
+/* -------------------------------------------------------------------------- */
+
+describe('shopeeCall — `providerMessage` sobrevive à reconstrução do parcial', () => {
+  it('T19 — PAR: o ShopeeApiPartialError carrega a MESMA frase, verbatim, que a classe base carrega para o mesmo corpo', async () => {
+    // ⚠️ A reconstrução do parcial copia os campos UM A UM (`call.ts`), então um
+    // campo novo do `ShopeeApiErrorInit` some ali em silêncio se não for
+    // acrescentado também — e o classificador do passo 14 lê exatamente este.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpoParcial()));
+
+    const parcial = await chamarEstoque(fetchMock, { payloadNoErro: true }).catch(
+      (e: unknown) => e,
+    );
+    expect(parcial).toBeInstanceOf(ShopeeApiPartialError);
+    expect((parcial as ShopeeApiPartialError).providerMessage).toBe(
+      'Update stock failed, please check failure_list for detailed reason',
+    );
+
+    const base = await chamarEstoque(fetchMock).catch((e: unknown) => e);
+    expect(base).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((base as ShopeeApiError).providerMessage).toBe(
+      (parcial as ShopeeApiPartialError).providerMessage,
+    );
+  });
+
+  it('T20 — ⛔ QUASE-IGUAL: `message: null` continua `null` no parcial e `""` continua `""` — nenhuma dobra entre os dois', async () => {
+    const comNull = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...corpoParcial(), message: null }),
+    );
+    const vazio = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...corpoParcial(), message: '' }),
+    );
+
+    const erroNull = await chamarEstoque(comNull, { payloadNoErro: true }).catch((e: unknown) => e);
+    const erroVazio = await chamarEstoque(vazio, { payloadNoErro: true }).catch((e: unknown) => e);
+    expect(erroNull).toBeInstanceOf(ShopeeApiPartialError);
+    expect(erroVazio).toBeInstanceOf(ShopeeApiPartialError);
+    expect((erroNull as ShopeeApiPartialError).providerMessage).toBeNull();
+    expect((erroVazio as ShopeeApiPartialError).providerMessage).toBe('');
+  });
+
+  it('T21 — um HTTP 429 SEM envelope não tem frase do provedor: `providerMessage` é `null`, nunca o texto que nós formatamos', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(
+      async () => new Response('Too Many Requests', { status: 429 }),
+    );
+    const erro = await chamarEstoque(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeRateLimitError);
+    expect((erro as ShopeeRateLimitError).code).toBe('http_429');
+    expect((erro as ShopeeRateLimitError).providerMessage).toBeNull();
+  });
+});

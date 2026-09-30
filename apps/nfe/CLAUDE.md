@@ -64,8 +64,16 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    (rejection 213), so a single env cert can only emit for one CNPJ — hence
    per-filial. A filial with no stored cert throws unless `NFE_CERT_ENV_FALLBACK`
    is on AND an env cert exists (then it uses the env cert — tests/dev only).
-   **Rotating a filial's cert needs an apps/nfe restart** (the decrypted cert
-   is process-cached; the upload route evicts its own instance's entry).
+   **An upload, rotation or removal reaches every instance within 15 min**
+   (`CERTIFICADO_CACHE_TTL_MS` in `@delfrance/schemas`, the TTL of the
+   `createCachedDocReader` in `filial-cert.ts`; #1680). The route evicts its own
+   instance at once; the others — and the `nfe` Functions codebase — keep
+   signing with what they had until the TTL, and the certificate screen tells
+   the operator so. An unchanged certificate is re-read per TTL but keeps its
+   decrypted key and keep-alive agent. Each verb writes the secret + the filial's `certificado` in ONE
+   `WriteBatch` (an unknown filial is a 404, never a stub doc), and the upload
+   carries a `lastUpdateTime` precondition from the read its CNPJ check used
+   (409 `FILIAL_ALTERADA`, #1680).
    Upload/remove via `POST`/`DELETE /api/nfe/certificado` (`PERM.configuracoes.write`).
    **Losing `NFE_CERT_ENC_KEY` = all stored filial certs become undecryptable**
    (re-upload required) — treat it as a secret.
@@ -208,7 +216,10 @@ functions/                         NESTED Cloud Functions codebase `nfe` — NOT
                                    cover it. See functions/DEPLOY.md.
   src/reconciliar.ts               reconciliarNfe (onTaskDispatched) — the queue consumer
   src/sweep.ts                     nfeReconcileSweep (onSchedule) — the backstop
-proxy.ts                           CORS for /api/nfe/* (browser callers)
+proxy.ts                           CORS for /api/nfe/* (browser callers): GET/POST/DELETE,
+                                   exposes Content-Disposition. A non-safelisted verb a route
+                                   exports (not GET/HEAD/POST) must be in Allow-Methods —
+                                   config-eslint `cors-proxy-covers-routes`
 ```
 
 ## Dev
