@@ -23,6 +23,7 @@
  * instead of a message that never sends, a message that never existed.
  */
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/logger';
 import { conversaCollection, mensagemCollection } from '@delfrance/data/admin/collections';
 import {
   ESTADO_ENVIO,
@@ -249,7 +250,7 @@ async function responderMensagemPedido(
   // ever be noticed. `paginaTruncada` rides along because it is what flips the
   // rung precedence.
   if (destinatario.fonte !== 'mensagem' || destinatario.paginaTruncada) {
-    console.info('[mercado-livre] destinatário pós-venda inferido', {
+    logger.info('[mercado-livre] destinatário pós-venda inferido', {
       packId,
       fonte: destinatario.fonte,
       paginaTruncada: destinatario.paginaTruncada,

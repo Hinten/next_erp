@@ -20,38 +20,146 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { buildPfxFixture } from '@delfrance/integrations-nfe/test-helpers/pfx-fixture';
 
 import { POST, DELETE } from '../../../../../app/api/nfe/certificado/route';
+import { __resetFilialCertCacheForTests, resolveFilialCert } from '@/lib/nfe/filial-cert';
 
 const CNPJ = '99999999000191';
 
-/** Minimal in-memory Firestore — `collection(p).doc(id)` + get/set/delete. */
-function fakeFirestore(seed: Record<string, Record<string, unknown> | null> = {}) {
+/**
+ * Minimal in-memory Firestore — `collection(p).doc(id)` + get/set/delete, and a
+ * `batch()` that applies ALL of its writes at commit or none (#1680).
+ *
+ * Mirrors the Admin SDK's precondition semantics (`@google-cloud/firestore`
+ * `WriteBatch`), because the route's 404/409 mapping rests on them:
+ *   - a plain `update()` carries an implicit `exists: true` → an absent doc fails
+ *     the whole batch with gRPC NOT_FOUND (5);
+ *   - `update(…, { lastUpdateTime })` REPLACES that with an update-time
+ *     precondition → FAILED_PRECONDITION (9) when the doc changed OR is gone;
+ *   - `delete(ref)` of an absent doc is a no-op, while `delete(ref, { exists:
+ *     true })` fails NOT_FOUND — so a precondition slipped onto the removal would
+ *     break its idempotency, and the repeat test below catches it.
+ * `aoLer` runs after each `get()` — the seam a test uses to play a concurrent
+ * writer (an edit or a deletion) between the route's read and its commit.
+ */
+function fakeFirestore(
+  seed: Record<string, Record<string, unknown> | null> = {},
+  aoLer?: (
+    path: string,
+    concorrente: { alterar: (path: string) => void; apagar: (path: string) => void },
+  ) => void,
+) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
+  const versoes: Record<string, number> = {};
+  let relogio = 0;
+  const alterar = (path: string) => {
+    relogio += 1;
+    versoes[path] = relogio;
+  };
+  const apagar = (path: string) => {
+    docs[path] = null;
+    alterar(path);
+  };
+  for (const path of Object.keys(docs)) alterar(path);
+
   const writes: { path: string; merge?: boolean }[] = [];
+  const hooks: { antesDoCommit?: () => Promise<unknown> } = {};
   const deletes: string[] = [];
+  const commits: { op: 'set' | 'update' | 'delete'; path: string }[][] = [];
+  const grpc = (code: number, message: string) => Object.assign(new Error(message), { code });
+
   function ref(path: string) {
     return {
+      path,
       async get() {
         const d = docs[path];
-        return { exists: d != null, id: path.split('/').pop()!, data: () => d };
+        const snap = {
+          exists: d != null,
+          id: path.split('/').pop()!,
+          data: () => d,
+          updateTime: d != null ? { versao: versoes[path] } : undefined,
+        };
+        aoLer?.(path, { alterar, apagar });
+        return snap;
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
         writes.push({ path, merge: opt?.merge });
         docs[path] = opt?.merge ? { ...(docs[path] ?? {}), ...data } : data;
+        alterar(path);
       },
       async delete() {
         deletes.push(path);
         docs[path] = null;
+        alterar(path);
       },
     };
   }
+
+  type Pre = { exists?: boolean; lastUpdateTime?: { versao: number } };
+  type Op =
+    | { op: 'set'; path: string; data: Record<string, unknown> }
+    | { op: 'update'; path: string; data: Record<string, unknown>; pre?: Pre }
+    | { op: 'delete'; path: string; pre?: Pre };
+
+  /** Throws the gRPC error the backend would, or returns when `pre` holds. */
+  function validar(path: string, pre: Pre) {
+    if (pre.lastUpdateTime !== undefined) {
+      if (docs[path] == null || pre.lastUpdateTime.versao !== versoes[path]) {
+        throw grpc(9, `FAILED_PRECONDITION: ${path}`);
+      }
+    } else if (pre.exists === true && docs[path] == null) {
+      throw grpc(5, `NOT_FOUND: ${path}`);
+    }
+  }
+
+  function batch() {
+    const ops: Op[] = [];
+    const b = {
+      set(r: { path: string }, data: Record<string, unknown>) {
+        ops.push({ op: 'set', path: r.path, data });
+        return b;
+      },
+      update(r: { path: string }, data: Record<string, unknown>, pre?: Pre) {
+        ops.push({ op: 'update', path: r.path, data, pre });
+        return b;
+      },
+      delete(r: { path: string }, pre?: Pre) {
+        ops.push({ op: 'delete', path: r.path, pre });
+        return b;
+      },
+      async commit() {
+        // A concurrent request of this same instance, landing while the batch is
+        // in flight (the ordering tests below).
+        await hooks.antesDoCommit?.();
+        // Validate EVERY op first: a batch lands whole or not at all.
+        for (const o of ops) {
+          if (o.op === 'update') validar(o.path, o.pre ?? { exists: true });
+          else if (o.op === 'delete' && o.pre) validar(o.path, o.pre);
+        }
+        for (const o of ops) {
+          if (o.op === 'set') docs[o.path] = o.data;
+          else if (o.op === 'update') docs[o.path] = { ...(docs[o.path] ?? {}), ...o.data };
+          else {
+            deletes.push(o.path);
+            docs[o.path] = null;
+          }
+          alterar(o.path);
+        }
+        commits.push(ops.map((o) => ({ op: o.op, path: o.path })));
+      },
+    };
+    return b;
+  }
+
   return {
     fs: {
       doc: (p: string) => ref(p),
       collection: (p: string) => ({ doc: (id: string) => ref(`${p}/${id}`) }),
+      batch,
     } as never,
     docs,
     writes,
     deletes,
+    commits,
+    hooks,
   };
 }
 
@@ -78,7 +186,7 @@ afterEach(() => {
 
 describe('POST /api/nfe/certificado', () => {
   it('stores the encrypted key + filial metadata and returns NO key material', async () => {
-    const { fs, docs, writes } = fakeFirestore({
+    const { fs, docs, commits } = fakeFirestore({
       'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' },
     });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
@@ -109,8 +217,62 @@ describe('POST /api/nfe/certificado', () => {
     expect(JSON.stringify(secret?.encPrivateKey)).not.toContain('PRIVATE KEY');
     expect(String(secret?.certificatePem)).toContain('BEGIN CERTIFICATE');
 
-    // Filial metadata merged onto the filial doc (not a full overwrite).
-    expect(writes.some((w) => w.path === 'filiais/F-1' && w.merge === true)).toBe(true);
+    // #1680: the secret and the filial metadata land in ONE atomic commit, the
+    // filial side as an update (a partial write, never a full overwrite).
+    expect(commits).toEqual([
+      [
+        { op: 'set', path: 'filiais/F-1/certificadoSecreto/default' },
+        { op: 'update', path: 'filiais/F-1' },
+      ],
+    ]);
+    // Sibling filial fields survive.
+    expect(docs['filiais/F-1']?.razaoSocial).toBe('ACME');
+    expect((docs['filiais/F-1']?.certificado as { cnpj?: unknown }).cnpj).toBe(CNPJ);
+  });
+
+  it('409 FILIAL_ALTERADA when the filial changes between its read and the commit — nothing written', async () => {
+    // Rule 7, tier 1: the CNPJ check was derived from the read; a concurrent edit
+    // (say, of that CNPJ) must fail the batch rather than store a certificate
+    // validated against a stale value.
+    const { fs, docs, commits } = fakeFirestore(
+      { 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } },
+      (path, { alterar }) => {
+        if (path === 'filiais/F-1') alterar(path);
+      },
+    );
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const pfxBase64 = buildPfxFixture({ password: 'pw', commonName: `ACME LTDA:${CNPJ}` });
+
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'cert.pfx' }),
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe('FILIAL_ALTERADA');
+    expect(commits).toEqual([]);
+    expect(docs['filiais/F-1/certificadoSecreto/default']).toBeUndefined();
+  });
+
+  it('409 FILIAL_ALTERADA — not a stub, not a 404 — when the filial is deleted between its read and the commit', async () => {
+    // The update-time precondition replaces the implicit `exists: true`, so a
+    // filial that vanished mid-upload fails as FAILED_PRECONDITION. Nothing may be
+    // written: neither an orphan secret nor a resurrected filial.
+    const { fs, docs, commits } = fakeFirestore(
+      { 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } },
+      (path, { apagar }) => {
+        if (path === 'filiais/F-1') apagar(path);
+      },
+    );
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const pfxBase64 = buildPfxFixture({ password: 'pw', commonName: `ACME LTDA:${CNPJ}` });
+
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'cert.pfx' }),
+    );
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe('FILIAL_ALTERADA');
+    expect(commits).toEqual([]);
+    expect(docs['filiais/F-1']).toBeNull();
+    expect(docs['filiais/F-1/certificadoSecreto/default']).toBeUndefined();
   });
 
   it('rejects a wrong password with 422 — pt-BR message + CERT_INVALIDO, no SEFAZ wording', async () => {
@@ -172,9 +334,16 @@ describe('POST /api/nfe/certificado', () => {
   });
 });
 
+function deleteReq(filialId: string): Request {
+  return new Request(`http://localhost/api/nfe/certificado?filialId=${filialId}`, {
+    method: 'DELETE',
+    headers: { authorization: 'Bearer t' },
+  });
+}
+
 describe('DELETE /api/nfe/certificado', () => {
   it('removes the secret doc and clears the filial metadata', async () => {
-    const { fs, docs, deletes } = fakeFirestore({
+    const { fs, docs, deletes, commits } = fakeFirestore({
       'filiais/F-1': { cnpj: CNPJ, certificado: { cnpj: CNPJ } },
       'filiais/F-1/certificadoSecreto/default': { encPrivateKey: {} },
     });
@@ -188,5 +357,93 @@ describe('DELETE /api/nfe/certificado', () => {
     expect(res.status).toBe(200);
     expect(deletes).toContain('filiais/F-1/certificadoSecreto/default');
     expect((docs['filiais/F-1'] as { certificado?: unknown }).certificado).toBeNull();
+    // #1680: both halves in ONE atomic commit, so the pair can never disagree.
+    expect(commits).toEqual([
+      [
+        { op: 'delete', path: 'filiais/F-1/certificadoSecreto/default' },
+        { op: 'update', path: 'filiais/F-1' },
+      ],
+    ]);
+  });
+
+  it('404 for an unknown filial — and never creates a stub filial doc', async () => {
+    // The old `merge({ certificado: null })` was an upsert: an unknown id left a
+    // `filiais/<id>` holding nothing but `certificado: null`. A secret doc under
+    // that id is seeded so the test also proves the SECRET delete rolled back
+    // with the failed update — a delete outside the batch would take it.
+    const secreto = { encPrivateKey: { ciphertext: 'x' } };
+    const { fs, docs, deletes, commits } = fakeFirestore({
+      'filiais/MISSING/certificadoSecreto/default': secreto,
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const res = await DELETE(deleteReq('MISSING'));
+    expect(res.status).toBe(404);
+    expect(docs['filiais/MISSING']).toBeUndefined();
+    expect(docs['filiais/MISSING/certificadoSecreto/default']).toEqual(secreto);
+    expect(deletes).toEqual([]);
+    expect(commits).toEqual([]);
+  });
+
+  it('a repeat after a successful removal still succeeds (the secret is already gone)', async () => {
+    // `withNFeRetry` retries this call on a transient failure, so the removal
+    // must stay idempotent: no `exists` precondition on the secret delete.
+    const { fs, docs } = fakeFirestore({
+      'filiais/F-1': { cnpj: CNPJ, certificado: null },
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const res = await DELETE(deleteReq('F-1'));
+    expect(res.status).toBe(200);
+    expect((docs['filiais/F-1'] as { certificado?: unknown }).certificado).toBeNull();
+  });
+});
+
+describe('the serving instance switches at once — it evicts AFTER the commit (#1680)', () => {
+  // The certificate cache is module state: each test starts from nothing.
+  beforeEach(() => __resetFilialCertCacheForTests());
+  afterEach(() => __resetFilialCertCacheForTests());
+
+  const SECRET = 'filiais/F-1/certificadoSecreto/default';
+
+  async function comCertificado(commonName: string) {
+    const fake = fakeFirestore({ 'filiais/F-1': { cnpj: CNPJ, razaoSocial: 'ACME' } });
+    vi.mocked(getAdminFirestore).mockReturnValue(fake.fs);
+    const pfxBase64 = buildPfxFixture({ password: 'pw', commonName });
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'a.pfx' }),
+    );
+    expect(res.status).toBe(200);
+    return fake;
+  }
+
+  it('DELETE: a read racing the commit cannot leave the removed certificate cached here', async () => {
+    const fake = await comCertificado(`ACME A:${CNPJ}`);
+    expect(await resolveFilialCert(fake.fs, 'F-1')).not.toBeNull();
+
+    // Mid-commit, another request of this instance resolves the certificate. Had
+    // the route evicted BEFORE committing, this read would re-cache the one
+    // about to be deleted, and it would keep signing for the whole TTL.
+    fake.hooks.antesDoCommit = () => resolveFilialCert(fake.fs, 'F-1');
+    expect((await DELETE(deleteReq('F-1'))).status).toBe(200);
+    fake.hooks.antesDoCommit = undefined;
+
+    expect(fake.docs[SECRET]).toBeNull();
+    expect(await resolveFilialCert(fake.fs, 'F-1')).toBeNull(); // no TTL wait
+  });
+
+  it('POST: a replacement is what this instance signs with next — never the one it replaced', async () => {
+    const fake = await comCertificado(`ACME A:${CNPJ}`);
+    const antigo = await resolveFilialCert(fake.fs, 'F-1');
+
+    fake.hooks.antesDoCommit = () => resolveFilialCert(fake.fs, 'F-1');
+    const pfxB = buildPfxFixture({ password: 'pw', commonName: `ACME B:${CNPJ}` });
+    const res = await POST(
+      postReq({ filialId: 'F-1', pfxBase64: pfxB, password: 'pw', filename: 'b.pfx' }),
+    );
+    expect(res.status).toBe(200);
+    fake.hooks.antesDoCommit = undefined;
+
+    const novo = await resolveFilialCert(fake.fs, 'F-1');
+    expect(novo?.certificatePem).not.toBe(antigo?.certificatePem);
+    expect(novo?.certificatePem).toBe(fake.docs[SECRET]?.certificatePem);
   });
 });

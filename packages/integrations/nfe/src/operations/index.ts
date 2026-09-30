@@ -269,6 +269,20 @@ export async function consultarSituacaoNFe(
   call: SefazCall,
   args: { readonly chave: string },
 ): Promise<TRetConsSitNFe> {
+  return (await consultarSituacaoNFeComXml(call, args)).ret;
+}
+
+/**
+ * `consultarSituacaoNFe` that also hands back the reply's raw XML — for a caller
+ * that must keep SEFAZ's signed bytes rather than a re-serialization of them:
+ * `extrairEventosNFe` slices each `<procEventoNFe>` out of `retConsSitXml`
+ * (#1094 F1b). Same request, same transport; `ret` is exactly what
+ * `consultarSituacaoNFe` returns.
+ */
+export async function consultarSituacaoNFeComXml(
+  call: SefazCall,
+  args: { readonly chave: string },
+): Promise<{ readonly ret: TRetConsSitNFe; readonly retConsSitXml: string }> {
   const xml = serialize('consSitNFe', {
     tpAmb: call.tpAmb,
     xServ: 'CONSULTAR',
@@ -276,7 +290,7 @@ export async function consultarSituacaoNFe(
     versao: NFE_VERSAO,
   });
   const { resultXml } = await nfeConsultaProtocolo(call, xml);
-  return parse<TRetConsSitNFe>('retConsSitNFe', resultXml);
+  return { ret: parse<TRetConsSitNFe>('retConsSitNFe', resultXml), retConsSitXml: resultXml };
 }
 
 /**

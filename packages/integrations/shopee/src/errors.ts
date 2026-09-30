@@ -117,6 +117,11 @@ export interface ShopeeApiErrorInit {
   readonly path: string;
   readonly requestId?: string | null;
   readonly warning?: string | null;
+  /**
+   * Shopee's own `message` — the provider's sentence, VERBATIM. See
+   * {@link ShopeeApiError.providerMessage}. Omitted ⇒ `null`.
+   */
+  readonly providerMessage?: string | null;
 }
 
 /** Shopee answered with a non-empty `error` in the envelope. */
@@ -127,6 +132,27 @@ export class ShopeeApiError extends ShopeeError {
   readonly path: string;
   readonly requestId: string | null;
   readonly warning: string | null;
+  /**
+   * The envelope's `message`, VERBATIM — the provider's own sentence, for
+   * CLASSIFICATION and for a sanitized excerpt, never for a raw log line (this
+   * package never logs it).
+   *
+   * ⚠️ Why it exists beside {@link Error.message}: the thrown message is the
+   * FORMATTED `Shopee <path> respondeu <code> (HTTP n) — <message>`, so its
+   * haystack already contains the path and the code. On
+   * `/api/v2/order/upload_invoice_doc` answering `order.upload_invoice_error`
+   * that is `upload`, `invoice` and `error` before Shopee has said a word — a
+   * needle matched against it proves nothing, and reading the sentence back out
+   * would need a reverse parser of the one formatter. `warning` is already
+   * carried verbatim for the same reason.
+   *
+   * ⚠️ NO fold of any kind: not trimmed, not lowercased, `''` stays `''` and
+   * `null` stays `null` (`?? null` replaces only an ABSENT init field). A
+   * classifier that needs a fold does it at its own call site, where its test
+   * can pin what the fold treats as equal. `null` also covers every error built
+   * with no envelope at all (the bare HTTP 429).
+   */
+  readonly providerMessage: string | null;
 
   constructor(message: string, init: ShopeeApiErrorInit) {
     super(message);
@@ -137,6 +163,7 @@ export class ShopeeApiError extends ShopeeError {
     this.path = init.path;
     this.requestId = init.requestId ?? null;
     this.warning = init.warning ?? null;
+    this.providerMessage = init.providerMessage ?? null;
   }
 }
 
@@ -410,6 +437,10 @@ export interface ShopeeErrorContext {
  * in {@link classifyShopeeError} is a lookup and never a rewrite: the publish
  * classifier and every log line read the raw string, and normalising it here
  * would make a grep for what Shopee actually sent come up empty. A test pins it.
+ *
+ * ⚠️ `providerMessage` is `env.message` VERBATIM for the same reason — every
+ * subclass built here carries it (the rate limit through the `...init` spread),
+ * and the transport's partial rebuild copies it field by field.
  */
 export function shopeeErrorFromEnvelope(
   env: ShopeeErrorEnvelope,
@@ -425,6 +456,7 @@ export function shopeeErrorFromEnvelope(
     path: ctx.path,
     requestId: env.request_id,
     warning: env.warning,
+    providerMessage: env.message,
   };
 
   if (kind === SHOPEE_ERROR_KIND.reauth) return new ShopeeReauthRequiredError(message, init);

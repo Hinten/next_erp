@@ -22,6 +22,8 @@ import {
   rastrearPedidoShopee,
   type AlvoDeRastreioShopee,
 } from './rastrearPedido';
+import { avisarNfeShopee, chaveAvisoNfeShopee } from '../nfe/avisoNfe';
+import { MOTIVO_NFE_SHOPEE } from '../nfe/errosNfe';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — invented ids only. Never a real partner, shop, order or buyer.  */
@@ -522,5 +524,175 @@ describe('rastrearPedidoShopee — a única linha de log', () => {
     ]) {
       expect(tudo, proibido).not.toContain(proibido);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*      step 14 (#1522) — o gancho que resolve o aviso de NF-e (R-k)          */
+/* -------------------------------------------------------------------------- */
+
+const AVISO_NFE_PATH = `avisos/${chaveAvisoNfeShopee(CONTA, PEDIDO_ID)}`;
+
+/**
+ * Abre o aviso de NF-e do pedido pelo PRODUTOR real, como o handler do passo
+ * 14 faria. A criação não usa o incremento. Zera `caminhos` ao final.
+ */
+async function abrirAvisoNfe(db: FakeDb): Promise<void> {
+  await avisarNfeShopee(
+    asDb(db),
+    {
+      integracaoId: CONTA,
+      pedidoId: PEDIDO_ID,
+      numero: ORDER_SN,
+      motivo: MOTIVO_NFE_SHOPEE.cnpjDivergente,
+      excerto: null,
+    },
+    { increment: (by: number) => ({ __increment: by }), nowMs: AGORA_MS - 60_000 },
+  );
+  expect(db.store[AVISO_NFE_PATH]!.data.resolvidoEm).toBeNull();
+  db.caminhos.length = 0;
+}
+
+/** Um pedido semeado COM o aviso de NF-e já aberto. */
+async function pedidoComAvisoNfe(): Promise<FakeDb> {
+  const db = pedidoSemeado();
+  await abrirAvisoNfe(db);
+  return db;
+}
+
+/** O pedido semeado, com o bloco de frete num estado que o OPERADOR gravou. */
+function pedidoComFreteEm(estado: FreteDoPedido['estado']): FakeDb {
+  const db = pedidoSemeado();
+  db.seed(PEDIDO_PATH, { ...db.store[PEDIDO_PATH]!.data, freteInicial: blocoDeFrete({ estado }) });
+  return db;
+}
+
+/** As dependências de uma entrega cujo pull responde `fulfillment_status`. */
+function entregaCom(fulfillmentStatus: string) {
+  return {
+    clientFor: () =>
+      Promise.resolve(
+        clienteQueResponde([linha({ fulfillment_status: fulfillmentStatus })]).client,
+      ),
+    scheduler: agendador().scheduler,
+  };
+}
+
+function avisoNfe(db: FakeDb): Record<string, unknown> {
+  return db.store[AVISO_NFE_PATH]!.data;
+}
+
+describe('rastrearPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => {
+  it('um pacote escrito no conjunto de remoção resolve o aviso aberto com `frete-despachado`', async () => {
+    const db = await pedidoComAvisoNfe();
+
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), {
+      clientFor: () => Promise.resolve(clienteQueResponde([linha()]).client),
+      scheduler: agendador().scheduler,
+    });
+
+    expect(r.estadoEscrito).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(avisoNfe(db)).toMatchObject({
+      resolvidoEm: AGORA_MS * 1000,
+      resolucaoMotivo: 'frete-despachado',
+    });
+    expect(linhasDoBraco()[0]!.avisoNfeResolvido).toBe(true);
+  });
+
+  it('QUASE-ERRO: um pacote escrito FORA do conjunto (`despachoAutorizado`) não resolve e nem LÊ o aviso', async () => {
+    const db = await pedidoComAvisoNfe();
+
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), {
+      clientFor: () =>
+        Promise.resolve(
+          clienteQueResponde([linha({ fulfillment_status: 'LOGISTICS_READY' })]).client,
+        ),
+      scheduler: agendador().scheduler,
+    });
+
+    expect(r.acao).toBe('atualizado');
+    expect(r.estadoEscrito).toBe(ESTADO_FRETE.despachoAutorizado);
+    expect(db.caminhos).not.toContain(AVISO_NFE_PATH);
+    expect(avisoNfe(db).resolvidoEm).toBeNull();
+    expect(linhasDoBraco()[0]!.avisoNfeResolvido).toBe(false);
+  });
+
+  it('a REPETIÇÃO de uma entrega JÁ no conjunto de remoção (`ignorado-sem-mudanca`) resolve o aviso aberto (R2-1)', async () => {
+    // O PAR do quase-erro abaixo: a mesma repetição sem escrita, mas de um
+    // pacote que a Shopee já pôs em `aguardandoPostagem`. O frete não muda, e
+    // ainda assim o gancho recebe o estado — é o que torna a nova tentativa
+    // real depois de uma resolução que falhou.
+    const db = pedidoSemeado();
+    const deps = entregaCom('LOGISTICS_REQUEST_CREATED');
+    await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    await abrirAvisoNfe(db);
+
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.estadoEscrito).toBeNull();
+    expect(avisoNfe(db)).toMatchObject({
+      resolvidoEm: AGORA_MS * 1000,
+      resolucaoMotivo: 'frete-despachado',
+    });
+    expect(linhasDoBraco()[1]!.avisoNfeResolvido).toBe(true);
+  });
+
+  it('QUASE-ERRO: a REPETIÇÃO de uma entrega PRÉ-despacho (`despachoAutorizado`) não escreve o frete, e o gancho não LÊ nada', async () => {
+    const db = pedidoSemeado();
+    const deps = entregaCom('LOGISTICS_READY');
+    await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    db.caminhos.length = 0;
+
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(db.caminhos).not.toContain(AVISO_NFE_PATH);
+  });
+
+  it('⚠️ QUASE-ERRO: um frete `empacotado` pelo OPERADOR está no conjunto de remoção, mas a Shopee não o confirma — não resolve e nem LÊ o aviso', async () => {
+    // `empacotado` é um estado de DEPÓSITO: a escada o mantém contra um pull
+    // mais baixo (`regressivo`), então o bloco guarda um membro do conjunto de
+    // remoção enquanto o diário da Shopee diz `despachoAutorizado`. Entregar o
+    // estado GUARDADO ao gancho fecharia o aviso de uma NF-e que a Shopee ainda
+    // não aceitou — um problema escondido. Nem na primeira entrega, nem na
+    // repetição.
+    const db = pedidoComFreteEm(ESTADO_FRETE.empacotado);
+    await abrirAvisoNfe(db);
+    const deps = entregaCom('LOGISTICS_READY');
+
+    const r1 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    const r2 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r1.acao).toBe('atualizado');
+    expect(r2.acao).toBe('ignorado-sem-mudanca');
+    const frete = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    expect(frete.estado).toBe(ESTADO_FRETE.empacotado);
+    expect(db.caminhos).not.toContain(AVISO_NFE_PATH);
+    expect(avisoNfe(db).resolvidoEm).toBeNull();
+  });
+
+  it('⚠️ uma falha do Firestore na resolução SOBE, e a REPETIÇÃO da entrega resolve (mutante 57, R2-1)', async () => {
+    const db = await pedidoComAvisoNfe();
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    db.falhasDeUpdate.set(AVISO_NFE_PATH, falha);
+    const deps = entregaCom('LOGISTICS_REQUEST_CREATED');
+
+    await expect(rastrearPedidoShopee(asDb(db), alvo(), deps)).rejects.toBe(falha);
+    // O frete já tinha commitado, e o aviso segue aberto.
+    const frete = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    expect(frete.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(avisoNfe(db).resolvidoEm).toBeNull();
+
+    // A fila re-entrega a MESMA entrega: o frete volta `ignorado-sem-mudanca`, e
+    // o gancho tenta a resolução de novo — agora com sucesso.
+    db.falhasDeUpdate.delete(AVISO_NFE_PATH);
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(avisoNfe(db)).toMatchObject({
+      resolvidoEm: AGORA_MS * 1000,
+      resolucaoMotivo: 'frete-despachado',
+    });
   });
 });

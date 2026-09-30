@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { eslintTasks } from './lib/lint-staged.js';
 import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 // ⚠️ `.lintstagedrc.mjs` reads `process.cwd()` at import time, because
@@ -54,15 +55,17 @@ const configured = gitLsFiles(['**/eslint.config.mjs'])
   .sort();
 
 /**
- * Undo the config's POSIX single-quote escaping (`'` -> `'\''`), which wraps the
- * whole inner `sh -c` command. Without this every `cd '<ws>'` assertion below
- * fails for a quoting reason rather than a coverage one.
+ * Ask the real config which ESLint runs it would produce for one file, as
+ * lint-staged's own parser splits them.
+ *
+ * ⚠️ This used to undo the config's `'\''` escaping by hand and then grep the
+ * STRING for `cd '<ws>'` — reading the command as a shell would. lint-staged
+ * uses no shell, so that string never meant what it said: every assertion here
+ * passed while the ESLint task it described ran a bare `cd` and exited 0
+ * (`lint-staged-argv.test.js`).
  */
-const unescape = (cmd) => cmd.split(String.raw`'\''`).join("'");
-
-/** Ask the real config which commands it would produce for one file. */
-function commandsFor(relPath) {
-  return lintStaged([resolve(REPO_ROOT, relPath)]).map(unescape);
+function eslintRunsFor(relPath) {
+  return eslintTasks(lintStaged([resolve(REPO_ROOT, relPath)]));
 }
 
 describe('lint-staged covers every ESLint workspace', () => {
@@ -73,7 +76,7 @@ describe('lint-staged covers every ESLint workspace', () => {
   it('runs eslint for a TypeScript file in every configured workspace', () => {
     const uncovered = configured.filter((ws) => {
       const probe = `${ws}/__lint_staged_probe__.ts`;
-      return !commandsFor(probe).some((c) => c.includes(`cd '${ws}'`) && c.includes('eslint'));
+      return !eslintRunsFor(probe).some((t) => t.ws === ws);
     });
     expect(uncovered).toEqual([]);
   });
@@ -81,18 +84,22 @@ describe('lint-staged covers every ESLint workspace', () => {
   it('runs eslint for a plain-JS file too', () => {
     // packages/config-eslint is ~59 .js files — every custom rule and every
     // backstop in this directory. They were excluded by the extension filter.
-    const cmds = commandsFor('packages/config-eslint/rules/__probe__.js');
-    expect(cmds.some((c) => c.includes("cd 'packages/config-eslint'"))).toBe(true);
+    const js = eslintRunsFor('packages/config-eslint/rules/__probe__.js');
+    expect(js.map((t) => t.ws)).toEqual(['packages/config-eslint']);
 
-    const mjs = commandsFor('tools/deploy-env/__probe__.mjs');
-    expect(mjs.some((c) => c.includes("cd 'tools/deploy-env'"))).toBe(true);
+    const mjs = eslintRunsFor('tools/deploy-env/__probe__.mjs');
+    expect(mjs.map((t) => t.ws)).toEqual(['tools/deploy-env']);
   });
 
   it('still applies the --max-warnings 0 ratchet', () => {
     // The whole point of the pre-commit gate: CI never fails on a warning, so
-    // dropping this flag would silently retire every warn-level rule.
-    const cmds = commandsFor('apps/web/lib/__probe__.ts');
-    expect(cmds.some((c) => c.includes('--max-warnings 0'))).toBe(true);
+    // dropping this flag would silently retire every warn-level rule. Asserted
+    // on adjacent argv entries, which is how ESLint will receive them.
+    const [{ args }] = eslintRunsFor('apps/web/lib/__probe__.ts');
+    expect(args.slice(args.indexOf('--max-warnings'), args.indexOf('--max-warnings') + 2)).toEqual([
+      '--max-warnings',
+      '0',
+    ]);
   });
 
   it('names no workspace that no longer exists', () => {

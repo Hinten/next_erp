@@ -14,12 +14,13 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
  */
 export function useGrupoEconomico() {
   const { claims, loading: claimsLoading } = useTenant();
+  const grupoEconomicoId = claims?.grupoEconomico;
 
   const ref = useMemo(() => {
     if (claimsLoading) return null;
-    if (!claims?.grupoEconomico) return null;
-    return grupoEconomicoCollection.docRef(getFirebaseFirestore(), {}, claims.grupoEconomico);
-  }, [claimsLoading, claims?.grupoEconomico]);
+    if (!grupoEconomicoId) return null;
+    return grupoEconomicoCollection.docRef(getFirebaseFirestore(), {}, grupoEconomicoId);
+  }, [claimsLoading, grupoEconomicoId]);
 
   const snapshot = useDocSnapshot(ref);
 
