@@ -8,6 +8,7 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
+  consultarSituacaoNFeComXml,
   consultarStatusServico,
 } from '../../src/operations/index';
 
@@ -120,6 +121,34 @@ describe('consultarSituacaoNFe', () => {
     const sentXml = vi.mocked(mockedNfeConsultaProtocolo).mock.calls[0]![1];
     expect(sentXml).toContain(`<chNFe>${CHAVE}</chNFe>`);
     expect(sentXml).toContain('<xServ>CONSULTAR</xServ>');
+  });
+});
+
+describe('consultarSituacaoNFeComXml (#1094 F1b)', () => {
+  it('returns what consultarSituacaoNFe returns, plus the reply as SEFAZ sent it', async () => {
+    // Odd spacing + an entity: a re-serialization would normalize both.
+    const responseXml =
+      `<retConsSitNFe xmlns="${NFE_NS}"  versao="4.00">` +
+      `<tpAmb>2</tpAmb><verAplic>SP</verAplic><cStat>100</cStat>` +
+      `<xMotivo>Autorizado o uso da NF-e &amp; eventos</xMotivo><cUF>35</cUF>` +
+      `<dhRecbto>2026-05-20T10:30:00-03:00</dhRecbto>` +
+      `<chNFe>${CHAVE}</chNFe>` +
+      `</retConsSitNFe>`;
+    vi.mocked(mockedNfeConsultaProtocolo).mockResolvedValue({
+      resultXml: responseXml,
+      rawBody: `<soap:Envelope>${responseXml}</soap:Envelope>`,
+    });
+
+    const { ret, retConsSitXml } = await consultarSituacaoNFeComXml(dummyCall(), { chave: CHAVE });
+    const soRet = await consultarSituacaoNFe(dummyCall(), { chave: CHAVE });
+
+    expect(ret).toEqual(soRet);
+    expect(ret.xMotivo).toBe('Autorizado o uso da NF-e & eventos');
+    // The retConsSitNFe document itself — not the SOAP envelope around it.
+    expect(retConsSitXml).toBe(responseXml);
+    // Same request both ways.
+    const [primeira, segunda] = vi.mocked(mockedNfeConsultaProtocolo).mock.calls;
+    expect(primeira![1]).toBe(segunda![1]);
   });
 });
 
