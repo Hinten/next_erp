@@ -701,9 +701,61 @@ describe('resumirLinksPagamento', () => {
       expect(r.situacao).toBe(SITUACAO_LINK_PAGAMENTO.cancelado);
     });
 
-    it('an auto-closed link (concluido) reads pago', () => {
+    it('an auto-closed link (concluido) whose payment still counts reads pago', () => {
+      const r = resumirUm({ status: STATUS_LINK_PAGAMENTO.concluido }, [pagamento('p1')]);
+      expect(r).toMatchObject({ situacao: SITUACAO_LINK_PAGAMENTO.pago, pagos: 1 });
+    });
+
+    it('a payment in dispute still counts: the concluido link stays pago', () => {
+      const r = resumirUm({ status: STATUS_LINK_PAGAMENTO.concluido }, [
+        pagamento('p1', { status_pagamento: STATUS_PAGAMENTO.em_disputa }),
+      ]);
+      expect(r.situacao).toBe(SITUACAO_LINK_PAGAMENTO.pago);
+    });
+
+    it('⚠️ NEAR-MISS: the same concluido link whose payment went back reads estornado, never pago', () => {
+      // Auto-closed on the approval (`linkAtingiuCota` counts EVER-approved), then
+      // refunded or charged back: MP keeps `date_approved`, the row stops paying.
+      for (const status of [
+        STATUS_PAGAMENTO.estornado,
+        STATUS_PAGAMENTO.estornado_totalmente,
+        STATUS_PAGAMENTO.devolvido,
+      ]) {
+        const r = resumirUm({ status: STATUS_LINK_PAGAMENTO.concluido }, [
+          pagamento('p1', { status_pagamento: status }),
+        ]);
+        expect(r, String(status)).toMatchObject({
+          situacao: SITUACAO_LINK_PAGAMENTO.estornado,
+          pagos: 0,
+          valorRecebido: 0,
+          pagantes: [],
+        });
+      }
+    });
+
+    it('a shared link closed at its quota with ONE refund reads estornado, keeping the rest', () => {
+      const r = resumirUm(
+        {
+          modo: MODO_LINK_PAGAMENTO.compartilhado,
+          quantidadeMaxima: 3,
+          status: STATUS_LINK_PAGAMENTO.concluido,
+        },
+        [
+          pagamento('p1'),
+          pagamento('p2'),
+          pagamento('p3', { status_pagamento: STATUS_PAGAMENTO.estornado }),
+        ],
+      );
+      expect(r).toMatchObject({
+        situacao: SITUACAO_LINK_PAGAMENTO.estornado,
+        pagos: 2,
+        restantes: 1,
+      });
+    });
+
+    it('a concluido link with no paying row at all is not pago either', () => {
       expect(resumirUm({ status: STATUS_LINK_PAGAMENTO.concluido }, []).situacao).toBe(
-        SITUACAO_LINK_PAGAMENTO.pago,
+        SITUACAO_LINK_PAGAMENTO.estornado,
       );
     });
 
