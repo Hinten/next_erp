@@ -130,8 +130,9 @@
  *
  * The first operations here that CHANGE a listing: `add_item`, `update_item`, the
  * four tier/model writes, `delete_model`, `delete_item`, `unlist_item`, plus two
- * reads they need (`get_item_violation_info`, `get_channel_list`) and the ONE
- * upload in this package (`upload_image`, on the PARTNER client).
+ * reads they need (`get_item_violation_info`, `get_channel_list`) and the FIRST
+ * upload in this package (`upload_image`, on the PARTNER client — step 14 adds
+ * the second, on the shop client).
  *
  * ⚠️ **Every write returns the WHOLE parsed envelope; the two reads unwrap.** A
  * write's `warning` is a partial-failure channel — Shopee accepts the item and
@@ -188,6 +189,24 @@
  * carries the transport's `payloadNoErro` too, and a failing body that parses
  * reaches the caller as a `ShopeeApiPartialError`.
  *
+ * ## The invoice upload (step 14)
+ *
+ * One more write, `uploadInvoiceDoc` — the SECOND multipart operation here and
+ * the first on the SHOP client (`uploadImage` lives on the partner one). It
+ * attaches ONE authorized NF-e XML to ONE order, and its answer is the bare
+ * envelope. The part name, the filename and the part content type are single
+ * literals in `types.ts` ({@link SHOPEE_UPLOAD_INVOICE_DOC_FIELD},
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_FILENAME},
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE}) and deliberately NOT
+ * parameters: a parameter that can take one value is a door for a caller to put
+ * fiscal data in a request field. `file_type` is
+ * {@link SHOPEE_INVOICE_FILE_TYPE_XML}.
+ *
+ * ⚠️ It is also why `ShopeeApiError` carries `providerMessage`: this page's
+ * refusals are told apart by Shopee's SENTENCE, and the formatted `message`
+ * already contains `upload`, `invoice` and `error` in its path and code before
+ * Shopee has said a word (see `errors.ts`).
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -204,6 +223,7 @@ import type { ShopeeHosts } from './hosts';
 import type { SignedCall } from './sign';
 import {
   SHOPEE_CONDITION,
+  SHOPEE_INVOICE_FILE_TYPE_XML,
   SHOPEE_ITEM_IMAGE_MAX,
   SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
@@ -220,6 +240,10 @@ import {
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+  SHOPEE_UPLOAD_INVOICE_DOC_FIELD,
+  SHOPEE_UPLOAD_INVOICE_DOC_FILENAME,
+  SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES,
   SHOPEE_WAREHOUSE_SEM_ACESSO,
   type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
@@ -257,6 +281,7 @@ import {
   type ShopeeUploadImageResponse,
   type ShopeeUploadImageScene,
   type ShopeeUploadImageSigning,
+  type ShopeeUploadInvoiceDocResponse,
   type ShopeeVariations,
   type ShopeeWarehouse,
   type ShopeeWarehouseType,
@@ -292,6 +317,7 @@ import {
   shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
+  shopeeUploadInvoiceDocSchema,
   shopeeVariationsSchema,
   shopeeWarehouseDetailSchema,
   shopeeWriteAckSchema,
@@ -365,8 +391,10 @@ export const SHOPEE_GET_ITEM_VIOLATION_INFO_PATH = '/api/v2/product/get_item_vio
 /** `GET` — Shop-signed. WRAPPED. Every logistics channel of the SHOP. No parameters. */
 export const SHOPEE_GET_CHANNEL_LIST_PATH = '/api/v2/logistics/get_channel_list';
 /**
- * `POST` — **Public**-signed by default, `multipart/form-data`. The ONE upload in
- * this package; see {@link SHOPEE_UPLOAD_IMAGE_SIGNING} for the contradiction the
+ * `POST` — **Public**-signed by default, `multipart/form-data`. The first of the
+ * two uploads in this package (the other is
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_PATH}); see
+ * {@link SHOPEE_UPLOAD_IMAGE_SIGNING} for the contradiction the
  * default rests on and {@link UploadImageParams.signing} for the escape hatch.
  */
 export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
@@ -469,6 +497,13 @@ export const SHOPEE_GET_ESCROW_LIST_PATH = '/api/v2/payment/get_escrow_list';
  * `error_server`, `error_data` and `error_shop`.
  */
 export const SHOPEE_GET_PACKAGE_DETAIL_PATH = '/api/v2/order/get_package_detail';
+
+/**
+ * `POST` — **Shop**-signed, `multipart/form-data`. ONE order, ONE file, XML only
+ * (`file_type` 4). Per ORDER: there is no `package_number` on this page. The
+ * answer is the BARE envelope — see {@link ShopeeClient.uploadInvoiceDoc}.
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_PATH = '/api/v2/order/upload_invoice_doc';
 
 /** `get_order_detail`: `order_sn_list` is documented `limit [1,50]`. */
 export const SHOPEE_ORDER_DETAIL_MAX_ORDER_SN = 50;
@@ -1475,6 +1510,25 @@ export interface UploadImageParams {
   readonly signing?: ShopeeUploadImageSigning;
 }
 
+/**
+ * `upload_invoice_doc` — ONE order, ONE file, XML only (`file_type` 4). No
+ * `package_number`: the page attaches the document per ORDER.
+ *
+ * ⚠️ No `fileType`, no `filename`, no `contentType` here: each can take exactly
+ * one value, and a parameter that can take one value is a door for a caller to
+ * put the access key in a filename. They are literals in `types.ts`.
+ */
+export interface UploadInvoiceDocParams {
+  /** Sent VERBATIM — blank is refused, nothing is trimmed (the order-read rule). */
+  readonly orderSn: string;
+  /**
+   * The `nfeProc` XML, VERBATIM. The package encodes it as UTF-8 and never
+   * rewrites a byte; the ceiling ({@link SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES})
+   * is judged on those encoded bytes, never on the string length.
+   */
+  readonly xml: string;
+}
+
 export interface ShopeePartnerClient {
   /**
    * Every shop that authorized this partner, with `auth_time` / `expire_time`.
@@ -2016,6 +2070,34 @@ export interface ShopeeClient {
    * (`roundReais`), so the package never decides a price.
    */
   updatePrice(body: ShopeeUpdatePriceRequest): Promise<ShopeeUpdatePriceResponse>;
+
+  /* ---------------------- the invoice upload (step 14) -------------------- */
+
+  /**
+   * Attach ONE NF-e XML to ONE order — the WHOLE envelope, like every write
+   * here, and on this page the envelope is all there is: no `response`, no echo,
+   * no id.
+   *
+   * ⚠️ On the SHOP client, unlike {@link ShopeePartnerClient.uploadImage}: the
+   * page is `type=Shop`, and the document belongs to one shop's order.
+   *
+   * ⚠️ A resolved call proves only that Shopee took the upload, never that the
+   * note is attached and valid — the validation is asynchronous on Shopee's side
+   * and shows up on the order's `invoice_data`. The caller reads the order back.
+   *
+   * ⚠️ No transport tolerance rides here, of any kind. A body with no `error`
+   * key is REFUSED (`ShopeeSchemaError` naming `error`) — this page has no
+   * `response` object, so the absent-key reading could not apply anyway — and a
+   * caller reads that refusal as an UNCERTAIN outcome, never as a success.
+   *
+   * ⚠️ Every envelope refusal carries Shopee's sentence VERBATIM in
+   * `providerMessage`: classify on it, never on the formatted `message`.
+   *
+   * ⚠️ The XML carries the access key, CNPJs and the buyer's data: a refusal
+   * raised here, before the fetch, names LENGTHS only, and nothing in this
+   * package puts the document (or its filename) in a message.
+   */
+  uploadInvoiceDoc(p: UploadInvoiceDocParams): Promise<ShopeeUploadInvoiceDocResponse>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -2962,6 +3044,42 @@ function assertUploadImageParams(p: UploadImageParams, signing: ShopeeUploadImag
   }
 }
 
+/**
+ * Every `upload_invoice_doc` bound, checked BEFORE any fetch — and the UTF-8
+ * bytes it judged, which are the bytes the operation sends.
+ *
+ * ⚠️ Returning the bytes is the point. Judging one encoding and sending another
+ * is how a ceiling passes over the value that actually goes out (the
+ * {@link assertPackageDetailParams} lesson), and the ceiling is in BYTES: an
+ * accented `xProd` is multi-byte, so a string-length check would under-count.
+ *
+ * ⚠️ The XML is NEVER echoed. `assertTextoNaoVazio` would `JSON.stringify` the
+ * value into the message — for this parameter a whole NF-e (the access key,
+ * CNPJs, the buyer's name and CPF) inside an exception. Every message here
+ * names a LENGTH and nothing else.
+ *
+ * Every branch is a `ShopeeConfigError` — a caller bug, never a provider failure.
+ */
+function assertUploadInvoiceDocParams(p: UploadInvoiceDocParams): Uint8Array {
+  assertOrderSn(p.orderSn);
+  if (typeof p.xml !== 'string') {
+    throw new ShopeeConfigError(`xml deve ser um texto (recebido: ${typeof p.xml}).`);
+  }
+  if (p.xml.trim() === '') {
+    throw new ShopeeConfigError(
+      `xml não pode ser vazio (recebido: ${String(p.xml.length)} caracteres em branco).`,
+    );
+  }
+  const bytes = new TextEncoder().encode(p.xml);
+  const tamanho = bytes.byteLength;
+  if (tamanho < 1 || tamanho > SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES) {
+    throw new ShopeeConfigError(
+      `o XML deve ter de 1 a ${String(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES)} bytes em UTF-8 (recebido: ${String(tamanho)} bytes).`,
+    );
+  }
+  return bytes;
+}
+
 export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePartnerClient {
   const transport = transportFrom(config);
 
@@ -3774,6 +3892,37 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         surface: SHOPEE_SURFACE.business,
         payloadNoErro: true,
         body,
+      });
+    },
+
+    /* -------------------- the invoice upload (step 14) -------------------- */
+
+    uploadInvoiceDoc: async (p) => {
+      // ⚠️ The guard runs BEFORE the token is even asked for, and it RETURNS the
+      // bytes it measured: those — not a second encoding — are what travel.
+      const bytes = assertUploadInvoiceDocParams(p);
+      // ⚠️ A WRITE: the whole (bare) envelope comes back. Nothing here widens
+      // the verdict or attaches a payload to a refusal — see the method's
+      // docblock. No `Content-Type` of our own: `fetch` writes it WITH the
+      // boundary from the FormData.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPLOAD_INVOICE_DOC_PATH,
+        call: await signedCall(),
+        schema: shopeeUploadInvoiceDocSchema,
+        surface: SHOPEE_SURFACE.business,
+        multipart: {
+          file: {
+            field: SHOPEE_UPLOAD_INVOICE_DOC_FIELD,
+            // ⚠️ FIXED — never derived from the document (see the constant).
+            filename: SHOPEE_UPLOAD_INVOICE_DOC_FILENAME,
+            contentType: SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+            bytes,
+          },
+          // `order_sn` VERBATIM (blank refused, nothing trimmed); `file_type` is
+          // a TEXT part, like every non-file part.
+          fields: { order_sn: p.orderSn, file_type: SHOPEE_INVOICE_FILE_TYPE_XML },
+        },
       });
     },
   };

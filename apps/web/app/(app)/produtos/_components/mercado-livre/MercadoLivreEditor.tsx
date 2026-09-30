@@ -135,7 +135,9 @@ export function MercadoLivreEditor({
     [db],
   );
   const contasSnap = useSnapshot(contasQuery);
-  const contas = contasSnap.data ?? [];
+  // Memoised so `contasOrdenadas` below re-sorts only when the snapshot does;
+  // a bare `?? []` is a new array on every render.
+  const contas = useMemo(() => contasSnap.data ?? [], [contasSnap.data]);
 
   const linksQuery = useMemo(
     () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(MAX_LINKS)]),

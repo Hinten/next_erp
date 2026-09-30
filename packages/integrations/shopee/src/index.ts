@@ -42,8 +42,14 @@
  * transport `oauth.ts` and `api.ts` are both built on, not a public surface.
  * ⚠️ That is also why the multipart types (`ShopeeMultipartBody`,
  * `ShopeeMultipartFile`) stay unexported from here: only `api.ts` may build a
- * request, and the ONE upload it builds is
- * {@link ShopeePartnerClient.uploadImage}.
+ * request, and the TWO uploads it builds are
+ * {@link ShopeePartnerClient.uploadImage} (step 11) and
+ * {@link ShopeeClient.uploadInvoiceDoc} (step 14).
+ *
+ * ⚠️ Step 14's additions — `uploadInvoiceDoc`, `UploadInvoiceDocParams`,
+ * `SHOPEE_UPLOAD_INVOICE_DOC_PATH`, the five `upload_invoice_doc` literals and
+ * schema in `types.ts`, and `ShopeeApiError.providerMessage` — ride the same
+ * wildcards; `test/api.test.ts` pins them at this door.
  *
  * ⚠️ These six re-exports are WILDCARD, so every step-11 addition — the twelve
  * operations, their wire-shaped request interfaces, the response schemas and the

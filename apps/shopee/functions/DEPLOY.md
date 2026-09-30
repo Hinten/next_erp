@@ -43,11 +43,12 @@ the bundle, proven before the first deploy.
 - The App Hosting backend for `apps/shopee` created in the Firebase console.
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds,
   plus `SHOPEE_PARTNER_ID` and `SHOPEE_PARTNER_KEY` in Secret Manager (see
-  **Secrets** below — both are `secrets:` on fourteen of the **fifteen**
-  triggers: the **four queue handlers** (step 13's `processShopeePriceSync` is
-  the fourth) plus the **ten** schedules. ⚠️ The exception, since step 11, is
-  the Firestore trigger `onProdutoShopeeLinkChanged`, and it binds **none** of
-  them, because it never calls Shopee).
+  **Secrets** below — both are `secrets:` on fifteen of the **seventeen**
+  functions: the **five queue handlers** (step 14's `processShopeeNfeUpload` is
+  the fifth) plus the **ten** schedules. ⚠️ The exceptions are the two
+  Firestore triggers — step 11's `onProdutoShopeeLinkChanged` and step 14's
+  `onNfeAprovadaShopee` — and they bind **none** of them, because neither calls
+  Shopee).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves it from
   `SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, and there is **no default** — an
@@ -128,14 +129,15 @@ one SUM, so a bundle carrying only `importarPedidoShopee` still prints a non-zer
 number and exits 0 — it reports green over exactly the step-7 regression this
 block exists to catch. Only `grep -q` per name has a per-name exit status.
 
-⚠️ **Step 12 adds NO name to that loop, and neither does step 13 — the
+⚠️ **Step 12 adds NO name to that loop, and neither do steps 13 and 14 — the
 omission is deliberate.** `sendShopeeStock`, `sweepShopeeStock`,
-`sweepShopeeStockDaily`, `sweepShopeeStockReconciliacao` and step 13's
-`processShopeePriceSync` are **static exports** of `src/index.ts`, not
+`sweepShopeeStockDaily`, `sweepShopeeStockReconciliacao`, step 13's
+`processShopeePriceSync` and step 14's `processShopeeNfeUpload` and
+`onNfeAprovadaShopee` are **static exports** of `src/index.ts`, not
 dynamic `import()`s, so esbuild cannot silently drop them the way it could drop
 a lazily-imported handler: an absent one is a missing EXPORT, which
-`src/index.test.ts`'s three maps (`FILAS` is 4, `AGENDAMENTOS` is 10,
-`GATILHOS` is 1) already fail on. Adding them here would suggest the loop is a
+`src/index.test.ts`'s three maps (`FILAS` is 5, `AGENDAMENTOS` is 10,
+`GATILHOS` is 2) already fail on. Adding them here would suggest the loop is a
 completeness check when it is a dynamic-import smoke check.
 
 ## Functions in this codebase
@@ -146,6 +148,7 @@ completeness check when it is a dynamic-import smoke check.
 | `processShopeeMassImport`        | `onTaskDispatched` (Cloud Tasks queue) | #1517 / master-plan step 9 — the RESUMABLE MASS PRODUCT IMPORT: one dispatch of an `importacoesShopee` job. Scans one `get_item_list` page when both queues are empty (the server's `next_offset`, never a computed one), drains up to ten listings per dispatch through the step-9 importer (one batched `get_item_base_info`, one `get_model_list` per has-model item), checkpoints the job document after EVERY item and then re-enqueues ITSELF for the next slice. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }` — ONE dispatch at a time, deliberately, because Shopee's rate limit is per app and a second worker would only spend the same quota twice; `timeoutSeconds 300` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 1500 s, inside Cloud Tasks' 1800 s. A burst rate limit is a PAUSE, not a failure: the drain stops, the job checkpoints and re-enqueues with `scheduleDelaySeconds`. A daily quota, a reauth/credential/config refusal and the Tasks valve stamp the job `failed` on the FIRST attempt. Enqueued by the `/importar-todos` route (App Hosting runtime SA) **and by itself** (functions runtime SA) — two identities, see the IAM section.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `sendShopeeStock`                | `onTaskDispatched` (Cloud Tasks queue) | #1520 / master-plan step 12 — the STOCK PUSH, and the channel's THIRD queue: one dispatch is ONE `update_stock` for ONE listing, carrying up to 50 of its models with a per-model `success_list`/`failure_list`. `timeoutSeconds 120` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 960 s, inside Cloud Tasks' 1800 s. `rateLimits { maxConcurrentDispatches, maxDispatchesPerSecond }` are read from `SHOPEE_STOCK_CONCURRENT_DISPATCHES` / `SHOPEE_STOCK_DISPATCHES_PER_SECOND` **in the deploying shell**, defaulting to **2/2** — see the deploy-shell knobs below. Binds both secrets; **no per-function `region:`**. ⚠️ **It ENQUEUES ITSELF**, twice over: a burst rate limit becomes a delayed re-enqueue that consumes no attempt, and the conta-pause rung re-enqueues for `pausadoAte` — so the functions runtime SA is an enqueuer on this queue, exactly like the mass import. ⚠️ **The export name IS the queue name** (`SHOPEE_STOCK_SEND_QUEUE = 'sendShopeeStock'`); `src/index.ts` carries a third rename-safety `if` whose one static literal names **`functions/src/sendStock.ts`** — the file holding the export to rename — and which compares against `SHOPEE_STOCK_SEND_QUEUE`, declared in **`lib/shopee/estoque/constantesEstoque.ts`** (`shopeeStockTasks.ts` only imports it). Its own `if` rather than a loop, because the message must name its own file in one static literal. ⚠️ It **never** sets `ignoreSyncFlag` (pinned twice, on the built deps object and on the comment-stripped source): with `SHOPEE_STOCK_SYNC_ENABLED` unset the handler answers `pulado` at step 0.5 and reads NOTHING. **Resolving is success to the queue** — every outcome, `descartado` and `erro-registrado` included; only a throw asks for a retry, so do not wrap the body in a try/catch that logs and returns. |
 | `processShopeePriceSync`         | `onTaskDispatched` (Cloud Tasks queue) | #1521 / master-plan step 13 — the ACCOUNT-WIDE PRICE JOB, and the channel's FOURTH queue: one dispatch of an `enviosPrecoShopee` job either PLANS one page of anchors into its `fila` as identities (`SHOPEE_PRICE_PAGE_LIMIT`, default 25) or DRAINS up to `SHOPEE_PRICE_ITEMS_PER_DISPATCH` listings (default 10, also the ceiling) — each priced at DRAIN time, sent as ONE `update_price` and checkpointed with its report rows in ONE batch — and then re-enqueues ITSELF. `timeoutSeconds 300` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 1500 s, inside Cloud Tasks' 1800 s; `maxAttempts` IS `ENVIO_PRECO_MAX_TENTATIVAS`, which the job reads to know its LAST attempt. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }` **LITERAL** — the job document is the checkpoint, so two concurrent dispatches would race it — hence no deploy-shell knob and no preflight row. A burst is a delayed self re-enqueue that consumes no attempt; the daily quota PARKS the job until 00:00 UTC+8. Binds both secrets, and needs them even on a plan-only dispatch, because the conta context it loads first reads the partner configuration; **no per-function `region:`**. ⚠️ **The export name IS the queue name** (`SHOPEE_PRICE_SYNC_QUEUE`, declared in **`lib/shopee/precos/constantesPreco.ts`**); `src/index.ts` carries a FOURTH rename-safety `if` whose one static literal names **`functions/src/processPriceSync.ts`**. No valve of its own: every job is an operator's start, and the `/atualizar-precos` route refuses with 503 BEFORE creating one while `SHOPEE_TASKS_DISABLED` is set. Enqueued by that route (App Hosting runtime SA) **and by itself** (functions runtime SA) — two identities, see the IAM section.                                                                    |
+| `processShopeeNfeUpload`         | `onTaskDispatched` (Cloud Tasks queue) | #1522 / master-plan step 14 — the NF-e UPLOAD, and the channel's FIFTH queue: one dispatch is one `processarNfeShopee` run for ONE `nfev4` document of ONE pedido — the pre-network gates, ONE `get_order_detail` pre-read, `upload_invoice_doc` only when Shopee holds no key for the order, a read-back after a 200, and the ~15-min recheck (`fase: reverificacao`) that judges `invoice_data` and never uploads. `timeoutSeconds 120` with a 4-attempt ladder (60 s → 300 s, ×2), so the whole ladder closes at 1380 s, inside Cloud Tasks' 1800 s; `maxAttempts` IS `NFE_SHOPEE_MAX_TENTATIVAS`, which the handler reads to know its LAST attempt. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }` **LITERAL** — it serialises every upload, so a trigger task, a SERPRO re-enqueue and a route re-drive of one NF-e never upload concurrently; no deploy-shell knob, no preflight row. Binds both secrets; **no per-function `region:`**. ⚠️ **It ENQUEUES ITSELF**: the SERPRO wait (#5), the burst and daily pauses and the recheck are delayed self re-enqueues (`scheduleDelaySeconds`) that spend no attempt. ⚠️ **The export name IS the queue name** (`SHOPEE_NFE_UPLOAD_QUEUE`, declared in **`lib/shopee/nfe/constantesNfe.ts`**); `src/index.ts` carries a FIFTH rename-safety `if` naming **`functions/src/processNfeUpload.ts`**. A rethrown `ShopeeApiError` is logged as its class and code only, and rethrown WITHOUT Shopee's sentence. Enqueued by `onNfeAprovadaShopee` and by itself (functions runtime SA) **and by the `/enviar-nfe` route** (App Hosting runtime SA) — two identities, see the IAM section.                                                                                                                                                                                                   |
 | `reprocessShopeeNotifications`   | `onSchedule('every 30 minutes')`       | #1511 — the backstop, draining BOTH lanes on one tick: `failed` pushes older than 1 h (hot) and pushes whose `shop_id` matches no active integração (deferred, 24 h window). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `sweepShopeeAuthorizationExpiry` | `onSchedule('0 4 * * 1')`              | #1511 / master-plan P8 — the WEEKLY authorization-expiry sweep. Walks `get_shops_by_partner` (PUBLIC-signed, reads no token anywhere) and raises the `shopeeAutorizacaoExpirando` aviso at ≤ 30 days, resolving it once a re-consent pushes the clock back out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `sweepShopeeLostPushes`          | `onSchedule('20 */2 * * *')`           | #1512 — the LOST-PUSH sweep. Reads `get_lost_push_message` (PUBLIC-signed; the earliest 100 lost within 3 days and not confirmed), re-parses each entry's `data` string into the receiver's payload, **enqueues every entry onto `processShopeeNotification` first**, and only then acks the page with `confirm_consumed_lost_push_message`. Paging is cursor-by-ACK, so one undurable entry blocks every later one for 3 days — hence the ordering, and hence "never confirm an empty page". `timeoutSeconds 540`; binds both secrets; **ENQUEUES** (see the IAM note). `SHOPEE_LOST_PUSH_CONFIRM_DISABLED=1` skips only the confirm.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -157,14 +160,15 @@ completeness check when it is a dynamic-import smoke check.
 | `sweepShopeeStockDaily`          | `onSchedule('10 2 * * *')`             | #1520 — the DAILY tier, 02:10 America/Sao_Paulo. The same walk over a 24 h window, so a listing that is high on BOTH sides of a movement (`min(anterior, atual)` above `SHOPEE_STOCK_LIMIAR_ALTO`) still gets one pass a day even though the incremental tier deliberately skipped it. ⚠️ Its window carries **no overlap**, unlike the incremental one — the frozen seam, and the residual is a cron-jitter sliver the quarter-hourly tier re-covers. `timeoutSeconds 540`, both secrets, no `region:`; **ENQUEUES**; same single valve.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `sweepShopeeStockReconciliacao`  | `onSchedule('10 3 1 * *')`             | #1520 — the MONTHLY FORCE-SEND, 03:10 on day 1. `changedSinceMs: -1` and no ledger pre-pass: every live listing of every active conta is re-sent at the number the ERP holds now. ⚠️ **It ships ON with no flag of its own** — announcement 1445 says Shopee returns stock by itself when an order is cancelled, which makes keeping the number right an obligation rather than an optimisation, and a backstop that ships off is #778’s failure. It is still under the ONE master valve, and its blast radius is bounded by `SHOPEE_STOCK_MAX_TASKS_PER_SWEEP` (2 000): a tick that hits the cap writes a `truncada` carimbo and the NEXT tick resumes from it. `timeoutSeconds 540`, both secrets, no `region:`; **ENQUEUES**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `onProdutoShopeeLinkChanged`     | `onDocumentWritten` (Firestore)        | #1519 / master-plan step 11 — the codebase's **FIRST Firestore trigger** and the TENTH: `onDocumentWritten` on `produtos/{produtoId}/prodshopee/{linkId}`, the only one here that never calls Shopee. It maintains `produtos.integracoesComProduto`, so `/produtos` can badge a Shopee-linked produto. ⚠️ **Zero reads and zero writes on the overwhelming majority of invocations**: `planejarMudancaDeLinkShopee` is pure and answers "nothing moved" for a status-only merge, so the handler never even opens a Firestore handle — a test pins that path. When affiliation DOES move it adds the conta with `arrayUnion`, or re-derives orphanhood by reading the produto's WHOLE `prodshopee` subcollection (no `where`, so **no new composite index**) and removes with `arrayRemove`. `database` is the LITERAL name **`default`**, inlined at build time from `FIREBASE_DATABASE_ID` — never the `(default)` sentinel, which fails every op `5 NOT_FOUND`. `retry: true`, safe because the add is an `arrayUnion` and the remove re-derives inside its own read set. **No secrets**, and it **does not enqueue**, so it needs no Cloud Tasks IAM at all. No per-function `region:`: it inherits `setGlobalOptions`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `onNfeAprovadaShopee`            | `onDocumentWritten` (Firestore)        | #1522 / master-plan step 14 — the codebase's **SECOND Firestore trigger**: `onDocumentWritten` on `pedidos/{pedidoId}/nfev4/{nfeId}`, TRANSITION-gated — `decideNfeUploadTransition(before, after)` enqueues only on the edge INTO ready (aprovada, proc present, first `<tpAmb>` = `1`), so the window's `nfe-totais` rewrite of every approved document enqueues nothing. ⚠️ **Zero reads and NO log line on the overwhelming majority of invocations**: every `nfev4` write in the project fires it (the Eventarc note under Cutover). On the edge, a legible non-SALE proc is one `info` line and 0 reads; otherwise ONE pedido read, the ownership proof (`avaliarPedidoParaNfeShopee`) and ONE enqueue onto `processShopeeNfeUpload` with `scheduleDelaySeconds: ATRASO_SERPRO_S` (360 s — Shopee checks the note against SERPRO, which lags the SEFAZ authorization). With `SHOPEE_TASKS_DISABLED=1` it raises the aviso `tasks-desabilitadas`, one per pedido, instead of enqueuing, and resolves. `database` is the LITERAL **`default`**; `retry: true`, and every other error rethrows for Eventarc to redeliver. **No secrets** (it never calls Shopee), and no `invoker`: Eventarc invokes it, while its enqueue runs as the functions runtime SA. No per-function `region:`. ⚠️ Named `onNfeAprovadaShopee`, never `onNfeAprovada`: Mercado Livre's codebase already deploys that name into the same project (#1707).                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 ### Secrets: `SHOPEE_PARTNER_ID` + `SHOPEE_PARTNER_KEY`
 
-Both are declared as `secrets:` on **all four queue handlers** and on **every
-one of the ten schedules** — fourteen of the fifteen triggers, the exception
-being step 11's
-Firestore trigger, which binds neither because it makes no Shopee call at all
-(`src/index.test.ts` asserts that absence, so a secret drifting onto it reds CI)
+Both are declared as `secrets:` on **all five queue handlers** and on **every
+one of the ten schedules** — fifteen of the seventeen functions, the exceptions
+being the two Firestore triggers (step 11's and step 14's), which bind neither
+because they make no Shopee call at all (`src/index.test.ts` asserts that
+absence on EVERY trigger in a loop, so a secret drifting onto either reds CI)
 — because all of them can reach a PUBLIC-signed Shopee call
 (`shopeeConfig()` → `createShopeePartnerClient`) — and the order backfill needs
 them for its Shop-signed calls too, since the access token rides in the query
@@ -279,6 +283,19 @@ knob's value now paces the price job too), and a deploy-shell knob (the price
 queue's `rateLimits` are a literal 1/1). The manual price push's
 `SHOPEE_PRICE_MANUAL_DEADLINE_MS` / `SHOPEE_PRICE_MANUAL_CONCURRENCY` belong
 to App Hosting, exactly like step 12's manual twins above.
+
+**Step 14 adds no variable**, and deliberately no master valve: the delays, the
+attempt ceiling and the rate limits are constants in `lib/shopee/nfe/constantesNfe.ts`
+(a knob would be a second place to lower the SERPRO floor below 300 s), and the
+`tpAmb 1` gate already makes the path inert on staging. What it changes is what
+**`SHOPEE_TASKS_DISABLED`** means, and that valve is read in **two homes** for
+NF-e: here, by `onNfeAprovadaShopee` and by the handler's self re-enqueues, and
+in the App Hosting console, by the `/enviar-nfe` route. With it on, the trigger
+raises one aviso `tasks-desabilitadas` per pedido instead of enqueuing, the
+route answers 503, and a self re-enqueue ends as `tasks-desabilitadas`. ⚠️
+**There is no NF-e sweep behind it**, unlike the push receiver: the aviso list
+is the worklist, and the recovery is the route or `enviar:nfe` once the valve
+lifts.
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
@@ -442,31 +459,37 @@ is how `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY` travel).
 
 ## ⚠️ One-time IAM — the App Hosting backend enqueues Cloud Tasks
 
-⚠️ **Nothing below applies to step 11's Firestore trigger, and adding it here
-would do HARM.** A Firestore trigger is invoked by **Eventarc**, not by a Cloud
-Tasks enqueuer, so `onProdutoShopeeLinkChanged` needs no
-`roles/cloudtasks.enqueuer`, no `roles/iam.serviceAccountUser` and no
-per-service `roles/run.invoker` — it declares no `invoker` at all. And
-`TASKS_INVOKER_SA` is **AUTHORITATIVE**: a deploy REPLACES the member list it
-names, so adding a principal "for the trigger" would DISPLACE one that matters
-and break the queue leg instead. Grant the roles below for the **queue**
-functions only.
+⚠️ **Nothing below applies to the two Firestore triggers AS INVOKED
+FUNCTIONS, and adding them here would do HARM.** A Firestore trigger is invoked
+by **Eventarc**, not by a Cloud Tasks enqueuer, so `onProdutoShopeeLinkChanged`
+and `onNfeAprovadaShopee` need no per-service `roles/run.invoker` — neither
+declares an `invoker` at all. And `TASKS_INVOKER_SA` is **AUTHORITATIVE**: a
+deploy REPLACES the member list it names, so adding a principal "for the
+trigger" would DISPLACE one that matters and break the queue leg instead. Grant
+the roles below for the **queue** functions only. ⚠️ `onNfeAprovadaShopee`
+still ENQUEUES onto `processShopeeNfeUpload`, as the **functions runtime SA** —
+an identity `TASKS_INVOKER_SA` already names for the self-enqueuers below, so
+it needs no entry of its own.
 
 The receiver route (`/api/webhooks/shopee`, on the App Hosting backend) enqueues
 onto the `processShopeeNotification` queue via `firebase-admin`'s
 `getFunctions().taskQueue(...).enqueue(...)`, since step 9 the
 `/api/marketplace/shopee/importar-todos` route enqueues onto
-`processShopeeMassImport` the same way, and since step 13 the
-`/api/marketplace/shopee/atualizar-precos` route onto `processShopeePriceSync`.
+`processShopeeMassImport` the same way, since step 13 the
+`/api/marketplace/shopee/atualizar-precos` route onto `processShopeePriceSync`,
+and since step 14 the `/api/marketplace/shopee/enviar-nfe` route onto
+`processShopeeNfeUpload`.
 That requires the **App Hosting
 runtime service account** to be able to enqueue tasks and act as the functions'
 invoker SA — grant these **once**, before switching the push callback URL
-(#1534). ⚠️ Since step 13 there are **four queue functions**
+(#1534). ⚠️ Since step 14 there are **five queue functions**
 (`sendShopeeStock` is the third, and the `enviar-estoque` route does **not**
 enqueue onto it — the manual push runs IN-PROCESS by design;
 `processShopeePriceSync` is the fourth, and the same holds for its
 `enviar-precos` manual push, while its `atualizar-precos` job route DOES
-enqueue), and the per-service grant
+enqueue; `processShopeeNfeUpload` is the fifth, and its `enviar-nfe` route
+DOES enqueue, while the `enviar:nfe` CLI runs the handler in process and
+enqueues nothing), and the per-service grant
 below has to be repeated for each: a grant on one of them buys nothing for the
 others, and the failure is the silent one (task created, dispatched,
 `403 run.routes.invoke`, no document anywhere).
@@ -491,9 +514,9 @@ gcloud iam service-accounts add-iam-policy-binding <functions-runtime-sa> \
 # ⚠ SINCE #1133 THE DEPLOY DOES THIS FOR YOU when TASKS_INVOKER_SA is set (see
 # below). Run it by hand only for a deploy without that variable.
 #
-# ⚠ ONCE PER QUEUE FUNCTION - since step 13 there are FOUR.
+# ⚠ ONCE PER QUEUE FUNCTION - since step 14 there are FIVE.
 for fn in processShopeeNotification processShopeeMassImport sendShopeeStock \
-          processShopeePriceSync; do
+          processShopeePriceSync processShopeeNfeUpload; do
   gcloud run services add-iam-policy-binding "$fn" --region=<region> \
     --member="serviceAccount:<apphosting-runtime-sa>" \
     --role="roles/run.invoker"
@@ -586,9 +609,10 @@ all. That silent case is what this variable exists for.
 Verify it took, with nobody having run gcloud — **once per queue function**:
 `gcloud run services get-iam-policy processShopeeNotification --region=<region>`,
 `gcloud run services get-iam-policy processShopeeMassImport --region=<region>`,
-`gcloud run services get-iam-policy sendShopeeStock --region=<region>`
+`gcloud run services get-iam-policy sendShopeeStock --region=<region>`,
+`gcloud run services get-iam-policy processShopeePriceSync --region=<region>`
 and
-`gcloud run services get-iam-policy processShopeePriceSync --region=<region>`.
+`gcloud run services get-iam-policy processShopeeNfeUpload --region=<region>`.
 
 ### ⚠️ firebase-tools 15.28.2: the first deploy of a NEW queue crashes on the enqueuer binding
 
@@ -626,35 +650,45 @@ gcloud tasks queues add-iam-policy-binding <queue> \
 
 then re-run the SAME deploy: the policy now has a `bindings` array, so the
 deploy re-applies `TASKS_INVOKER_SA` authoritatively and finishes clean. For this
-codebase a first deploy means up to four queues (`processShopeeNotification`,
-`processShopeeMassImport`, `sendShopeeStock`, `processShopeePriceSync`) × each
-identity in the list; a later deploy that adds a queue pays it for that queue
-only. ⚠️ **So the first STAGING deploy after step 13 pays it for the price
-queue ALONE** — the other three have existed there since 2026-09-24 — **and
-production's first deploy pays it for all FOUR**: production is a separate
-project, so its first deploy hits this for every queue — put the grants in the
-window's runbook. Verify the enqueue leg, which the `run` check above
+codebase a first deploy means up to FIVE queues (`processShopeeNotification`,
+`processShopeeMassImport`, `sendShopeeStock`, `processShopeePriceSync`,
+`processShopeeNfeUpload`) × each identity in the list; a later deploy that adds
+a queue pays it for that queue only. ⚠️ **So the next STAGING deploy pays it
+for the queues staging does not hold yet** — the price queue (step 13) and the
+NF-e queue (step 14); the other three have existed there since 2026-09-24 —
+**and production's first deploy pays it for all FIVE**: production is a
+separate project, so its first deploy hits this for every queue — put the
+grants in the window's runbook. ⚠️ The NF-e queue and its trigger land in the
+SAME `firebase deploy`, which cannot order them: until the workaround above has
+run, the trigger can be live while its queue has no enqueuer binding, and a
+fire whose enqueue fails throws, so `retry: true` asks Eventarc to redeliver it
+(the redelivery horizon is unmeasured). That is harmless today — staging emits
+homologação notes (`tpAmb 2`), which the trigger never enqueues, and production
+has no Shopee NF-e traffic before the window. Verify the enqueue leg, which the `run` check above
 cannot see: `gcloud tasks queues get-iam-policy <queue> --location=<region>`
 must list `roles/cloudtasks.enqueuer` for every identity in `TASKS_INVOKER_SA`.
 
-### ⚠️ Since step 4 the SCHEDULED functions enqueue too (#1512), since step 9 a queue function enqueues ITSELF (#1517), since step 12 three more schedules and a third self-enqueuer (#1520), and since step 13 a fourth self-enqueuer (#1521)
+### ⚠️ Since step 4 the SCHEDULED functions enqueue too (#1512), since step 9 a queue function enqueues ITSELF (#1517), since step 12 three more schedules and a third self-enqueuer (#1520), since step 13 a fourth self-enqueuer (#1521), and since step 14 a Firestore trigger and a fifth self-enqueuer (#1522)
 
 `sweepShopeeLostPushes` and `backfillShopeeOrders` both enqueue onto
 `processShopeeNotification`; `sweepShopeeStock`, `sweepShopeeStockDaily` and
-`sweepShopeeStockReconciliacao` enqueue onto `sendShopeeStock`; and
+`sweepShopeeStockReconciliacao` enqueue onto `sendShopeeStock`;
+`onNfeAprovadaShopee` enqueues onto `processShopeeNfeUpload`; and
 `processShopeeMassImport` re-enqueues onto its
 OWN queue for every scan/drain continuation and for the rate-limit pause, as
-does `sendShopeeStock` on a burst pause and on the conta-pause rung, and as
+does `sendShopeeStock` on a burst pause and on the conta-pause rung, as
 does `processShopeePriceSync` for every plan/drain continuation, a burst pause,
 the daily-quota park and the rest of a park's wait when a dispatch arrives
-early — so
+early, and as does `processShopeeNfeUpload` for the SERPRO wait, the burst and
+daily pauses and the recheck — so
 the **functions runtime service account** — not
-just the App Hosting one — needs `roles/cloudtasks.enqueuer` on **all four**
-queues and `roles/run.invoker` on **all four** Cloud Run services. The
-mass-import function and, since step 13, the price job are the two
-dispatched by two DIFFERENT identities (the App Hosting route starts a job, the
-function continues it), which is exactly why leaving either out of the list below
-breaks one in the middle of a walk rather than at the start.
+just the App Hosting one — needs `roles/cloudtasks.enqueuer` on **all five**
+queues and `roles/run.invoker` on **all five** Cloud Run services. The
+mass-import function, the price job (step 13) and the NF-e upload (step 14)
+are the three dispatched by two DIFFERENT identities (the App Hosting route
+starts one, the functions SA continues it — or, for NF-e, the trigger starts
+it), which is exactly why leaving either out of the list below breaks one in
+the middle of a walk rather than at the start.
 ⚠️ `sendShopeeStock` is dispatched by two identities as well, but **both are the
 functions runtime SA** (the three sweeps, and itself): no App Hosting route ever
 enqueues onto it, because the manual push runs in-process. So the App Hosting SA
@@ -701,13 +735,18 @@ as an orphan. ⚠️ **The stock
 sweeps have no fallback either, and they need none**: an enqueue that throws
 propagates out of the tick, which fails the execution loudly — there is no
 document to lose, because the next tick re-derives the same window from the same
-durable cursor. Verify **all four**
+durable cursor. ⚠️ **Nor has the NF-e upload, and it has no sweep to fall
+back on**: the trigger's enqueue failure THROWS, so Eventarc redelivers it
+(`retry: true`); the valve is the one failure it answers with an aviso
+(`tasks-desabilitadas`, one per pedido — the worklist); and `/enviar-nfe`
+answers 503 on the valve and fails loudly on anything else. Verify **all five**
 queues exist after the first deploy:
 `gcloud tasks queues describe processShopeeNotification --location=<region>`,
 `gcloud tasks queues describe processShopeeMassImport --location=<region>`,
-`gcloud tasks queues describe sendShopeeStock --location=<region>`
+`gcloud tasks queues describe sendShopeeStock --location=<region>`,
+`gcloud tasks queues describe processShopeePriceSync --location=<region>`
 and
-`gcloud tasks queues describe processShopeePriceSync --location=<region>`.
+`gcloud tasks queues describe processShopeeNfeUpload --location=<region>`.
 
 ## What CI proves, and what it does not
 
@@ -768,19 +807,37 @@ daily park: both set a scheduling delay, which the tasks emulator ignores
 (firebase-tools#8254), so all of it is pinned offline in
 `lib/shopee/precos/atualizarPrecos.test.ts`.
 
+Since step 14 the job drives a FIFTH shape, and the first that starts at a
+Firestore WRITE rather than an enqueue (`lib/shopee/nfe/enviarNfe.tasks.test.ts`,
+one case): an `nfev4` document created `aprovada` with a synthetic tpAmb-1 SALE
+proc that carries NO access key, on a pedido built the way step 5 builds it →
+the real `onNfeAprovadaShopee` → the real region-qualified enqueue → the tasks
+emulator → the real `processShopeeNfeUpload` → `xml-invalido` → the aviso
+`nfeUploadRejeitado` AND `freteInicial.estado = 'error'` with `pacotes` and the
+frete's other fields preserved. ZERO Shopee calls, by CALL ORDER once more: the
+key check (P5) sits above the conta gate and the client. What it proves and
+nothing offline can: the trigger's document path and `database` resolve to a
+real event on a real engine, the fifth queue's name resolves to a deployed
+`onTaskDispatched`, and the class-C stamp's transaction lands. What it cannot
+prove: the SERPRO wait and the recheck delay (both `scheduleDelaySeconds`,
+ignored by the emulator), and the upload itself — every step of it needs a
+Shopee call.
+
 Three gaps to know about:
 
-- **The Firestore trigger never executes in CI either.** `firebase.shopee.tasks.json`
-  runs firestore + functions + tasks, and the functions emulator loads
-  `onProdutoShopeeLinkChanged` without ever delivering it an event: no lane
-  writes a `prodshopee` document through the emulated Firestore to watch the
-  handler wake up. Its BODY is covered by unit tests over the app's own FakeDb
-  and its OPTIONS by `src/index.test.ts` over `__endpoint` — the document
-  pattern, `database: 'default'` (exact equality on the parsed field, never a
-  `JSON.stringify().toContain()`, because the serialized endpoint always carries
-  `"namespace":"(default)"`), `retry: true` and the empty secret set. What no
-  test can show is that **Eventarc** delivers anything at all; the first real
-  proof is the deploy (see Cutover).
+- **Only ONE Firestore trigger is asserted in CI, and only on one path.**
+  `firebase.shopee.tasks.json` runs firestore + functions + tasks, and the
+  functions emulator DOES deliver Firestore events: `onProdutoShopeeLinkChanged`
+  fires on the stock suite's seed and write-back, which assert nothing about it,
+  and step 14's `onNfeAprovadaShopee` is the one whose effect a suite asserts.
+  The link trigger's BODY is covered by unit tests over the app's own FakeDb,
+  and both triggers' OPTIONS by `src/index.test.ts` over `__endpoint`, in a loop
+  over EVERY trigger — the document pattern, `database: 'default'` (exact
+  equality on the parsed field, never a `JSON.stringify().toContain()`, because
+  the serialized endpoint always carries `"namespace":"(default)"`),
+  `retry: true` and the empty secret set. What no test can show is that
+  **Eventarc** delivers anything in a real project; the first real proof is the
+  deploy (see Cutover).
 - **None of the ten `onSchedule` triggers ever executes in CI.** The functions
   emulator logs them as "ignored because the pubsub emulator does not exist or
   is not running", so the lane loads them and nothing drives them. Their bodies
@@ -811,11 +868,37 @@ Three gaps to know about:
 
 ## Cutover
 
-There are **no legacy Flutter Shopee Cloud Functions to coordinate with.** The
-legacy stack had no server-side Shopee receiver at all — its push handling and
-token store are the anti-patterns the shared seams replaced (master plan §3), and
-it never wrote a `pedshopee`. So this codebase does not race a predecessor for a
-document, and the only coordination it owes is the ORDER of the window steps:
+No legacy Shopee service writes a document this codebase writes (the legacy
+app never wrote a `pedshopee`, and its push handling and token store are the
+anti-patterns the shared seams replaced, master plan §3), so there is no
+predecessor to race for a DOCUMENT. ⚠️ But the legacy project ran SEVERAL Shopee
+Cloud Run services (`.old/docker-repos-local:87-98`; the targets are in
+`.old/packages/canais_de_venda/shopee/lib/functions.dart`), and every one still
+running after the switch-off acts on the SAME Shopee shop — the shared-provider
+hazard **HARD CUTOVER** below spells out for the NF-e.
+
+**What the cutover must disable (legacy project):**
+
+| Cloud Run service (target)                                                     | triggered by                                                                                    | what it did                                                                                                  |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `recebedor-noti-shopee` (`receberNotificacoesShopee`)                          | unauthenticated HTTP — pushes forwarded by `shop_id`                                            | stored each push under `integracao/{integ}/pushshopee/{pushdoc}`                                             |
+| `notifications-shopee-rt` (`managerNotificacoesShopee`)                        | `notifications-shopee-rt--created-trigger` / `--updated-trigger` on that `pushshopee` path      | processed each stored push into the legacy project                                                           |
+| `estoque-shopee-periodic` (`estoqueShopee`)                                    | HTTP, from the legacy app's `estoque-shopee` queue (`.old/packages/canal_de_vendas/filas.json`) | pushed stock to the listings — a late call pushes the SOURCE project's stock to the same listings (oversell) |
+| `nfe-shopee` (`signalEnviarNFeShopee`)                                         | `nfe-shopee--updated-trigger` on `pedidos/{ped}/nfev4/{nfe}`                                    | uploaded the NF-e — step 14's row; its deletion is **HARD CUTOVER** below                                    |
+| `update-grupoeco-shopee-shopid` and `…--delete` (`updateGrupoEconomicoShopee`) | `…--created-trigger` / `--updated-trigger` / `--delete-trigger` on `integracao/{integ}`         | (un)registered a conta's `shop_id` with the shared push distributor, pointing it at `recebedor-noti-shopee`  |
+
+Switching the legacy app off (ADR 0013's phase order) does not by itself stop a
+Cloud Run service or an Eventarc trigger in the legacy project — which is why
+the NF-e row gets an explicit delete below. Every row needs the same check
+(`gcloud run services list` / `gcloud eventarc triggers list` on the legacy
+project); step 14 owes only the NF-e row's deletion. ⚠️ The distributor itself
+and its `shop_id` registry (`distribuidor-notificacoes-shopee`,
+`manager-geconom-shopee`, `.old/docker-repos-auth:49-50`) run in a SEPARATE
+shared project, not this tenant's to delete: surface them with the callback-URL
+registration (#1534), which is app-wide.
+
+Otherwise the coordination this codebase owes is the ORDER of the window
+steps:
 grant the IAM above, deploy this codebase, deploy the App Hosting backend, and
 only THEN register the push callback URL with Shopee (#1534). Registering first
 means every delivery arrives at a backend whose queue does not exist — each one
@@ -825,17 +908,19 @@ persisted as `failed` and drained late, at best.
 still open for PRODUCTION.** Whether a project needs Eventarc and Pub-Sub APIs
 enabled (and the Eventarc service agent granted) before
 `onProdutoShopeeLinkChanged` can be created is **not settled by anything in this
-repo** — no test, no emulator and no CI lane exercises it, because the functions
-emulator never runs a Firestore trigger here. The staging deploy of 2026-09-24
+repo** — no test, no emulator and no CI lane exercises it, because an emulated
+trigger never touches Eventarc. The staging deploy of 2026-09-24
 answered it for THAT project: firebase-tools enabled `eventarc.googleapis.com`
 itself and generated the Eventarc service identity, the trigger was created, and
 its first live run stamped the conta onto `integracoesComProduto`. ⚠️ Production
 is a separate project and inherits none of staging's API state, so there it is
 still a **migration-window fact** (root `CLAUDE.md` rule 8, register item 81),
 settled by that project's first deploy and **never run by an agent**. If that
-deploy refuses the trigger, the other fourteen functions are unaffected — the
+deploy refuses a trigger, the other functions are unaffected — the
 failure is per-function — and enabling the APIs plus re-running the same deploy
-is the whole remedy. ⚠️ **But a refused trigger is no longer cosmetic.** Since
+is the whole remedy. ⚠️ A refused `onNfeAprovadaShopee` (step 14) is silent in
+its own way: no NF-e is ever enqueued, and the only recovery is the
+`/enviar-nfe` route or `enviar:nfe`. ⚠️ **But a refused trigger is no longer cosmetic.** Since
 step 12 the stock discovery's S1 anchor term is
 `integracoesComProduto array-contains <conta>`, so a produto the trigger never
 stamped is invisible to every stock sweep, and the manual push answers
@@ -868,9 +953,86 @@ three stock sweeps and the stock queue can refuse while everything else lands.
 `processShopeePriceSync` was not part of the 2026-09-24 staging deploy. Its
 first staging deploy creates one new queue and pays the firebase-tools 15.28.2
 enqueuer workaround for that queue alone; production's first deploy pays it for
-all four (the IAM section above). And the price job's rehearsal will be the
+all five (the IAM section above). And the price job's rehearsal will be the
 first time a ROUTE-started Shopee job crosses a real queue — step 9's
 `importar-todos` has no staging record — which is what finally proves the App
 Hosting identity's first enqueue: the tasks lane runs against an emulated queue
 that no IAM layer touches. Both are a human's, in a coordinated window, and
 **never run by an agent** (root `CLAUDE.md` rule 8).
+
+⚠️ **The fifth queue and the second trigger (step 14) have reached no project
+yet either.** `processShopeeNfeUpload` and `onNfeAprovadaShopee` land in ONE
+deploy, which pays the 15.28.2 enqueuer workaround for the NF-e queue (IAM
+section above). Deploy order: this codebase — the queue and the trigger in ONE
+deploy, which cannot order them (harmless today, as the IAM section says) —
+then the App Hosting backend (the `/enviar-nfe` route), then the web (the
+`nfeUploadRejeitado` wording). On staging the path stays inert by
+construction — staging emits homologação notes (`tpAmb 2`), which the shared
+predicate never sends — so a staging deploy proves the wiring, never an upload.
+
+⚠️ **Eventarc cost: `onNfeAprovadaShopee` is the THIRD function on
+`pedidos/{pedidoId}/nfev4/{nfeId}`** (beside Mercado Livre's `onNfeAprovada` and
+`apps/functions`' `onNfeDeleted`), so every `nfev4` write in the project — the
+placeholder, `enviando`, each retry, a cancel, the window's `nfe-totais`
+migration — now fires TWO `onDocumentWritten` invocations, and a delete a
+third. That is why this one returns at the
+transition check with ZERO reads and NO log line: the cost of a fire that is
+not ours is one invocation and nothing else. Verify it after the deploy:
+
+```bash
+gcloud eventarc triggers list --project <project-id>
+# expect one for onnfeaprovadashopee, event type google.cloud.firestore.document.v1.written,
+# filtered to database 'default' + the pedidos/*/nfev4/* document path
+```
+
+### ⚠️ HARD CUTOVER — delete the legacy `nfe-shopee--updated-trigger` in the window
+
+The legacy stack uploads Shopee NF-e through an Eventarc Firestore trigger,
+`nfe-shopee--updated-trigger` → the `nfe-shopee` Cloud Run service
+(`.old/docker-repos-local:92-93`), created in the LEGACY project on
+`document.v1.updated` over `(default)`. **It is not a dual run** (root
+`CLAUDE.md` rule 8): an `nfev4` document this repo writes cannot fire it, and it
+was never parity either — update-only, no SERPRO delay, writing nothing.
+
+**What survives is the SHARED-PROVIDER hazard** (Mercado Livre's
+`functions/DEPLOY.md` HARD CUTOVER is the same shape). After the import the same
+Shopee order exists in both projects, so an approval driven on the legacy side —
+a leftover process, a re-run, a panel still open — uploads to the SAME order.
+Shopee is EXPECTED to refuse a second key on an order that already holds one
+(registers 188/197 — open until the probe and the window's first upload), and
+this codebase never overwrites another key: ours then reads `outra-nfe-anexada`
+and raises an aviso on a pedido whose note may be perfectly fine.
+
+Order of operations, all inside the window and never by an agent:
+
+1. Switch the legacy app off (ADR 0013's phase order).
+2. **Delete the legacy trigger BEFORE the first upload from the new project**:
+
+```bash
+gcloud eventarc triggers describe nfe-shopee--updated-trigger \
+  --location=<legacy-region> --project <legacy-project-id>
+gcloud eventarc triggers delete nfe-shopee--updated-trigger \
+  --location=<legacy-region> --project <legacy-project-id>
+```
+
+3. Optional, later: delete the orphaned `nfe-shopee` Cloud Run service — only
+   cost and noise once the trigger is gone.
+
+### The cutover re-drive of approved-not-uploaded NF-e
+
+A Firestore import fires no trigger, so an NF-e the legacy app approved and
+never uploaded arrives INERT: nothing in this codebase will ever enqueue it, and
+there is no NF-e sweep. After the legacy app and its trigger are off, for each
+Shopee order Seller Centre lists as awaiting an invoice, re-drive its pedido:
+
+```bash
+pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId>          # dry run first
+pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId> --live
+```
+
+The handler's pre-read makes an order that already holds OUR key `ja-enviado`,
+so the run is idempotent and re-runnable (`scripts/README.md` §15 has the
+flags and what the output means). Earlier is wrong: until the switch-off the
+legacy app is the live writer on the source project and may upload a different
+key. The `/enviar-nfe` route is the same re-drive, one pedido at a time, through
+the queue.

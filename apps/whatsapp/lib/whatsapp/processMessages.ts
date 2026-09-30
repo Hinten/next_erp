@@ -83,6 +83,7 @@ import {
   type IncomingMessage,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
+import { parseIsoToMillis } from '@delfrance/core/datetime';
 import { normalizeTelefoneInternacional } from '@delfrance/core/phone';
 import { type ContaIdLookup, readContaIdByWaId, readWhatsappConta } from './contaCache';
 import { mensagemDocId } from './ids';
@@ -260,10 +261,7 @@ function waTimestampToMs(ts: string): number {
 /** Coerce a conversa date field (epoch ms int, or a stray legacy ISO string) to epoch ms. */
 function toEpochMs(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string') {
-    const n = Date.parse(v);
-    return Number.isFinite(n) ? n : null;
-  }
+  if (typeof v === 'string') return parseIsoToMillis(v);
   return null;
 }
 

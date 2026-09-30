@@ -254,6 +254,7 @@ export async function handleUptinMigration(
       // A `false` here means the PML was already deleted (e.g. a prior attempt
       // pruned it before crashing) — nothing to record, and nothing to report.
       await stampSourceError(db, sourceLink, now);
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- best-effort error stamp; the original migration failure still wins
     } catch (stampErr) {
       if (!(stampErr instanceof Error)) throw stampErr;
       // Unexpected failure while recording the error state — never silently

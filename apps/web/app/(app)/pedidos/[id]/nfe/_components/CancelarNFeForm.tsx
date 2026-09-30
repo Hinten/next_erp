@@ -23,11 +23,15 @@ import { IconAlertTriangle } from '@tabler/icons-react';
 import {
   NFeHttpError,
   NFeNetworkError,
+  NFeTimeoutError,
   NFeRejectedError,
 } from '@delfrance/integrations-nfe/http-provider';
 
 import { useNFeClient } from '@/lib/nfe/client';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 
 const XJUST_MIN = 15;
 const XJUST_MAX = 255;
@@ -77,6 +81,17 @@ export function CancelarNFeForm({
       });
       setXJust('');
     } catch (err) {
+      // ⚠️ #1094: before the generic arm — a timeout IS an NFeNetworkError. The
+      // outcome is unknown (the event may still be registering at SEFAZ), so a
+      // red "Falha" would invite the re-click that registers a second one.
+      if (err instanceof NFeTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado',
+          message: err.message,
+          color: 'yellow',
+        });
+        return;
+      }
       // The client throws NFeHttpError subclasses (incl. NFeRejectedError) or
       // NFeNetworkError; anything else is an unexpected bug — let it surface.
       if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
