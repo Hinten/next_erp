@@ -12,7 +12,16 @@ import {
   FreightHttpError,
   FreightNetworkError,
   FreightNotFoundError,
+  FreightTimeoutError,
 } from '@delfrance/integrations-freight-br/http-client';
+
+/** A read timeout, as the client builds it (#1094). */
+const tempoEsgotado = () =>
+  new FreightTimeoutError('O serviço de frete não respondeu em 60 s. Tente novamente.', {
+    origem: 'prazo',
+    timeoutMs: 60_000,
+    operacao: 'conta',
+  });
 
 import {
   MELHOR_ENVIO_OAUTH_TOAST,
@@ -39,6 +48,12 @@ describe('describeMelhorEnvioConnectFailure', () => {
     );
   });
 
+  it('a timeout shows its own copy — checked before the network arm it subclasses', () => {
+    expect(describeMelhorEnvioConnectFailure(tempoEsgotado())).toBe(
+      'O serviço de frete não respondeu em 60 s. Tente novamente.',
+    );
+  });
+
   it('returns null for anything that is not a freight client error', () => {
     // Rule 6: not ours to describe — `ConnectionPanel` rethrows it.
     expect(describeMelhorEnvioConnectFailure(new TypeError('boom'))).toBeNull();
@@ -59,6 +74,13 @@ describe('describeMelhorEnvioContaFailure', () => {
   it('names the network case', () => {
     expect(describeMelhorEnvioContaFailure(new FreightNetworkError('x'))).toEqual({
       message: 'Falha de rede ao consultar a conta.',
+      retryable: false,
+    });
+  });
+
+  it('a timeout shows its own copy, not "Falha de rede"', () => {
+    expect(describeMelhorEnvioContaFailure(tempoEsgotado())).toEqual({
+      message: 'O serviço de frete não respondeu em 60 s. Tente novamente.',
       retryable: false,
     });
   });

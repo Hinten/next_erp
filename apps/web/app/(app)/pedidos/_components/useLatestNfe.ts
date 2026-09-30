@@ -256,6 +256,7 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   useEffect(() => {
     if (inView) {
       seenVisible.current = true;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the IntersectionObserver edge; converges
       setActive(true);
       return;
     }

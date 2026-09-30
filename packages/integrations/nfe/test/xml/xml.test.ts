@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { serialize, parse, parseConsCad, NFeXmlError, type XmlValue } from '../../src/xml/index';
+import {
+  serialize,
+  parse,
+  parseConsCad,
+  NFeXmlError,
+  namespacesNaoDeclarados,
+  rootElementName,
+  sliceElements,
+  textOfFirst,
+  type XmlValue,
+} from '../../src/xml/index';
 import { META as CONSCAD_META } from '../../src/types/conscad-schema';
 import { META as NFE_META } from '../../src/types/nfe-schema';
 
@@ -155,5 +165,126 @@ describe('ROOTS xmlName for tpEvento-keyed event payloads', () => {
     const parsed = parse<XmlValue>('detEvento_e110111', xml);
     expect(parsed.descEvento).toBe('Cancelamento');
     expect(parsed.nProt).toBe('135200000012345');
+  });
+});
+
+describe('sliceElements — signed parts stay bytes (#1094 F1b)', () => {
+  it('returns each match as the EXACT input slice — attributes, entities and spacing untouched', () => {
+    const a = '<item  id="1"	a="x">Peso &amp; volume</item>';
+    const b = '<item id="2"/>';
+    expect(sliceElements(`<?xml version="1.0"?><root>${a}<outro/>${b}</root>`, 'item')).toEqual([
+      a,
+      b,
+    ]);
+  });
+
+  it('matches on the local name, so a namespace prefix does not hide an element', () => {
+    const x = '<ns2:item xmlns:ns2="urn:x">1</ns2:item>';
+    expect(sliceElements(`<root>${x}</root>`, 'item')).toEqual([x]);
+  });
+
+  it('reports an outer match once — not the same-named element nested inside it', () => {
+    const outer = '<item><item>inner</item></item>';
+    expect(sliceElements(`<root>${outer}</root>`, 'item')).toEqual([outer]);
+  });
+
+  it('skips a match that truncated input left unclosed, and finds none in an empty reply', () => {
+    expect(sliceElements('<root><item>1</item><item>2', 'item')).toEqual(['<item>1</item>']);
+    expect(sliceElements('<root/>', 'item')).toEqual([]);
+  });
+});
+
+describe('rootElementName', () => {
+  it('names the document element past the prolog and comments, without its prefix', () => {
+    expect(rootElementName('<?xml version="1.0"?><!-- c --><procEventoNFe/>')).toBe(
+      'procEventoNFe',
+    );
+    expect(rootElementName('<n:retEnvEvento xmlns:n="urn:x"/>')).toBe('retEnvEvento');
+    expect(rootElementName('')).toBeNull();
+  });
+});
+
+describe('textOfFirst', () => {
+  it('unescapes exactly once', () => {
+    expect(textOfFirst('<d><x>a &amp; b &lt;c&gt;</x></d>', 'x')).toBe('a & b <c>');
+    // Near-miss: an escaped entity stays one level escaped — never double-decoded.
+    expect(textOfFirst('<d><x>&amp;lt;</x></d>', 'x')).toBe('&lt;');
+  });
+
+  it('is null when the element is absent', () => {
+    expect(textOfFirst('<d/>', 'x')).toBeNull();
+  });
+
+  it('decodes numeric character references in the same single pass', () => {
+    expect(textOfFirst('<d><x>Corre&#231;&#xE3;o 2&#215;3</x></d>', 'x')).toBe('Correção 2×3');
+    // Near-misses: an escaped reference is decoded ONCE; an impossible one is kept.
+    expect(textOfFirst('<d><x>&amp;#231;</x></d>', 'x')).toBe('&#231;');
+    expect(textOfFirst('<d><x>&#x110000;</x></d>', 'x')).toBe('&#x110000;');
+  });
+
+  it('leaves a reference to a non-XML Char raw — and decodes the legal ones at the edges', () => {
+    // XML 1.0 §2.2: NUL, a lone surrogate and U+FFFE/FFFF are not characters.
+    for (const ilegal of ['&#0;', '&#x1;', '&#xD800;', '&#xDFFF;', '&#xFFFE;', '&#xFFFF;']) {
+      expect(textOfFirst(`<d><x>${ilegal}</x></d>`, 'x')).toBe(ilegal);
+    }
+    // Near-misses: the boundaries of the legal ranges still decode.
+    expect(textOfFirst('<d><x>&#x9;&#xD7FF;&#xE000;&#xFFFD;&#x10000;</x></d>', 'x')).toBe(
+      '\t\uD7FF\uE000\uFFFD\u{10000}',
+    );
+  });
+
+  it('keeps CDATA literal — its "&amp;" is text, not an entity', () => {
+    expect(textOfFirst('<d><x><![CDATA[a &amp; <b>]]></x></d>', 'x')).toBe('a &amp; <b>');
+  });
+});
+
+describe('parser edges the byte-exact helpers rely on', () => {
+  it('a quoted ">" or "/>" inside an attribute neither ends nor self-closes the tag', () => {
+    const p = '<p><q a="x/>"></q><r b="1>2">t</r></p>';
+    expect(sliceElements(`<root>${p}<s/></root>`, 'p')).toEqual([p]);
+    expect(textOfFirst(p, 'r')).toBe('t');
+  });
+
+  it('a stray close tag is ignored instead of crashing the parse', () => {
+    expect(rootElementName('</a><b/>')).toBe('b');
+  });
+
+  it('parse() now decodes a character reference SEFAZ sends in a text field', () => {
+    const xml =
+      '<retConsStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">' +
+      '<tpAmb>2</tpAmb><verAplic>SP</verAplic><cStat>107</cStat>' +
+      '<xMotivo>Servi&#231;o em Opera&#xE7;&#xE3;o</xMotivo><cUF>35</cUF>' +
+      '<dhRecbto>2026-09-29T10:00:00-03:00</dhRecbto></retConsStatServ>';
+    expect(parse<XmlValue>('retConsStatServ', xml).xMotivo).toBe('Serviço em Operação');
+  });
+});
+
+describe('namespacesNaoDeclarados — what a slice inherited', () => {
+  it('nothing, when the fragment declares what it uses', () => {
+    expect(namespacesNaoDeclarados('<p xmlns="u" xmlns:ds="d"><c/><ds:s/></p>')).toEqual({
+      padrao: false,
+      prefixos: [],
+    });
+  });
+
+  it('the default namespace, when an unprefixed element has none in scope', () => {
+    expect(namespacesNaoDeclarados('<p><c/></p>').padrao).toBe(true);
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u"><c/></n:p>').padrao).toBe(true);
+    // An explicit `xmlns=""` is a declaration (no namespace, on purpose).
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u"><c xmlns=""/></n:p>').padrao).toBe(false);
+    // Unprefixed ATTRIBUTES are in no namespace, so they never need one.
+    expect(namespacesNaoDeclarados('<n:p xmlns:n="u" a="1"/>').padrao).toBe(false);
+  });
+
+  it('a prefix, scope-aware — a declaration on a sibling does not cover it', () => {
+    expect(
+      namespacesNaoDeclarados('<p xmlns="u"><a xmlns:ds="d"><ds:x/></a><ds:y/><e ds:z="1"/></p>')
+        .prefixos,
+    ).toEqual(['ds']);
+    expect(namespacesNaoDeclarados('<p xmlns="u" xml:lang="pt"/>').prefixos).toEqual([]);
+  });
+
+  it('reads a declaration that follows a quoted ">"', () => {
+    expect(namespacesNaoDeclarados('<p foo="a>b" xmlns="u"><c/></p>').padrao).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { logger } from 'firebase-functions';
 import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
+import { parseIsoToMillis } from '@delfrance/core/datetime';
 import { integracaoMeta } from '@delfrance/schemas';
 
 import {
@@ -89,8 +90,7 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
       : null;
     // `data` comes from the event, never `Date.now()` — a redelivery must reproduce
     // the original stamp (`registrarHistoricoPedido.ts`'s rule).
-    const parsed = Date.parse(event.time);
-    const eventTimeMs = Number.isNaN(parsed) ? Date.now() : parsed;
+    const eventTimeMs = parseIsoToMillis(event.time) ?? Date.now();
 
     // ---- delete arm --------------------------------------------------------
     if (after == null) {

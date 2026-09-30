@@ -376,9 +376,11 @@ export async function lerFamiliasDePrecoPorIds(
  *   RESIDUAL filter — the cost question #1638 tracks for both channels. This
  *   page inherits that residual, unchanged; it is a measurement, not a change
  *   this module can make.
- * - **Masked to `precos`**, the same {@link CAMPOS_DO_PRODUTO} the by-ids
- *   reader's key read uses, so the page's `precos` IS the family's — no second
- *   read of the anchors.
+ * - **Masked to `precos` and `propagatePriceToChildren`** — the same
+ *   {@link CAMPOS_DO_PRODUTO} the by-ids reader's key read uses. Since D-9 the
+ *   anchor's flag decides which map prices each model, so the page carries it
+ *   too, and the page's anchor fields ARE the family's — no second read of the
+ *   anchors.
  * - Per anchor, the ONE shared join ({@link lerFamiliaDePreco}), bounded by the
  *   same pool width. `familias` comes back in the page's KEY order whatever
  *   order the joins finish in.

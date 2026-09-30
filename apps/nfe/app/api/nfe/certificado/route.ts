@@ -19,13 +19,26 @@
  *   200 { subjectCommonName, cnpj, notAfter, filename, uploadedAt }
  *   400  bad body / JSON
  *   401/403  auth
- *   404  filial not found
+ *   404  filial not found (also on DELETE — it never creates a stub filial)
+ *   409  the filial changed or was deleted while the certificate was being
+ *        validated (POST)
  *   422  invalid PFX (wrong password / malformed / expired / CNPJ mismatch)
  *   500  server (e.g. NFE_CERT_ENC_KEY misconfigured)
+ *
+ * ⚠️ Each verb writes its PAIR — the secret doc and the filial's public
+ * `certificado` — in ONE `WriteBatch` (#1680). As two separate writes an upload
+ * racing a removal could interleave into a filial whose badge shows a
+ * certificate whose key is gone, or key B under metadata A. Batched, the last
+ * committed operation wins and the pair always agrees (root `CLAUDE.md` rule 7:
+ * a config screen two operators rarely touch at once, so a consistent
+ * last-writer-wins is the chosen tier, not a conflict prompt). The filial side
+ * is an `update()`, so a missing filial fails the whole batch instead of being
+ * upserted into a stub.
  */
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 import { certificadoSecretoCollection, filialCollection } from '@delfrance/data/admin/collections';
 import { CERTIFICADO_SECRETO_DOC_ID, type Filial } from '@delfrance/schemas';
 import {
@@ -110,7 +123,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (isCertExpired(cert)) {
     return authError(422, {
       error:
-        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR')}. ` +
+        // The operator's business zone, explicitly: `apps/nfe` happens to run
+        // TZ=America/Sao_Paulo, but a date the user reads must not depend on
+        // which container rendered it (`delfrance/no-ambient-timezone`).
+        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. ` +
         'Renove o certificado A1 junto à sua AC (Autoridade Certificadora).',
       code: 'CERT_EXPIRADO',
     });
@@ -135,11 +151,29 @@ export async function POST(req: Request): Promise<NextResponse> {
     // Dates as ms since epoch (Dart/Flutter convention; SDK-agnostic, sortable).
     const uploadedAt = Date.now();
 
-    await certificadoSecretoCollection.set(
-      fs,
-      { filialId: body.filialId },
-      CERTIFICADO_SECRETO_DOC_ID,
-      {
+    const certificado = {
+      subjectCommonName: cert.subjectCommonName,
+      cnpj: cert.cnpj,
+      notAfter: cert.notAfter.getTime(),
+      filename: body.filename,
+      uploadedAt,
+    };
+
+    // One atomic pair (see the header). The filial update carries a
+    // `lastUpdateTime` precondition because the CNPJ check above was derived
+    // from THAT read — if the filial changed in between (its CNPJ edited), the
+    // batch fails instead of storing a certificate validated against a stale
+    // CNPJ (root `CLAUDE.md` rule 7, tier 1). That precondition REPLACES the
+    // implicit `exists: true` of an `update()`, so a filial deleted in between
+    // fails the same way (FAILED_PRECONDITION, never NOT_FOUND) — one 409 for both.
+    const batch = fs.batch();
+    batch.set(
+      certificadoSecretoCollection.docRef(
+        fs,
+        { filialId: body.filialId },
+        CERTIFICADO_SECRETO_DOC_ID,
+      ),
+      certificadoSecretoCollection.parse({
         encPrivateKey,
         certificatePem: cert.certificatePem,
         certificateDerBase64: cert.certificateDerBase64,
@@ -149,22 +183,36 @@ export async function POST(req: Request): Promise<NextResponse> {
         algoritmo: 'aes-256-gcm',
         keyVersion: 1,
         uploadedAt,
-      },
+      }),
     );
+    batch.update(
+      filialCollection.docRef(fs, {}, body.filialId),
+      filialCollection.parseMerge({ certificado }),
+      { lastUpdateTime: filialSnap.updateTime },
+    );
+    try {
+      await batch.commit();
+    } catch (e) {
+      if (isFailedPrecondition(e)) {
+        return authError(409, {
+          error:
+            'A filial foi alterada (ou removida) enquanto o certificado era validado. ' +
+            'Confira o cadastro da filial e envie o certificado de novo.',
+          code: 'FILIAL_ALTERADA',
+        });
+      }
+      throw e;
+    }
 
-    const certificado = {
-      subjectCommonName: cert.subjectCommonName,
-      cnpj: cert.cnpj,
-      notAfter: cert.notAfter.getTime(),
-      filename: body.filename,
-      uploadedAt,
-    };
-    await filialCollection.merge(fs, {}, body.filialId, { certificado });
-
-    // Pick up the new cert without an apps/nfe restart (this instance only).
+    // This instance switches now; every other one within CERTIFICADO_CACHE_TTL_MS
+    // (the certificate cache's TTL — see lib/nfe/filial-cert.ts).
     evictFilialCert(body.filialId);
 
     return NextResponse.json(certificado, { status: 200 });
+    // Last-resort 500 on purpose: this handler holds PFX + password material,
+    // so the error is logged only through the redacting `safeLog` (rule 9). A
+    // rethrow would hand Next the raw error object to log.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     // Never log the body (PFX + password) — only the redacted error shape.
     safeLog('error', '[nfe/certificado]', e);
@@ -186,12 +234,30 @@ export async function DELETE(req: Request): Promise<NextResponse> {
 
   const fs = getAdminFirestore();
   try {
-    await certificadoSecretoCollection
-      .docRef(fs, { filialId }, CERTIFICADO_SECRETO_DOC_ID)
-      .delete();
-    await filialCollection.merge(fs, {}, filialId, { certificado: null });
+    // One atomic pair (see the header). `update()` on the filial makes "the
+    // filial exists" part of the same commit: an unknown id is a 404, never a
+    // stub `filiais/{id}` holding only `certificado: null`. Deleting an absent
+    // secret is a no-op, so a repeat of a successful removal still succeeds.
+    const batch = fs.batch();
+    batch.delete(certificadoSecretoCollection.docRef(fs, { filialId }, CERTIFICADO_SECRETO_DOC_ID));
+    batch.update(
+      filialCollection.docRef(fs, {}, filialId),
+      filialCollection.parseMerge({ certificado: null }),
+    );
+    try {
+      await batch.commit();
+    } catch (e) {
+      if (isNotFound(e)) {
+        return authError(404, { error: `Filial '${filialId}' não encontrada.` });
+      }
+      throw e;
+    }
+    // Only after the commit: evicting first would let this instance reload the
+    // old key from a secret doc that still existed.
     evictFilialCert(filialId);
     return NextResponse.json({ ok: true }, { status: 200 });
+    // Same contract as POST: a last-resort 500 logged only through `safeLog`.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     safeLog('error', '[nfe/certificado:delete]', e);
     return authError(500, {

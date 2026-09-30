@@ -117,6 +117,7 @@ export function ProdutoPicker({
 
   useEffect(() => {
     if (!combobox.dropdownOpened) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs the input to the selected label while the dropdown is closed
       setSearch(currentLabel);
     }
   }, [currentLabel, combobox.dropdownOpened]);
