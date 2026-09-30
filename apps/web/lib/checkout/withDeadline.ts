@@ -5,7 +5,7 @@
  * WHY THIS EXISTS. The "Outros Checkouts" reprint had no timeout anywhere
  * between the operator's click and the network call — not in
  * `reprintCheckoutEtiqueta`, not in the etiqueta registry, and not in the
- * freight HTTP client, whose `RequestInit` carries no `signal` at all. So any
+ * freight HTTP client, which sent no `signal` at all until #1094. So any
  * stage that never settled left BOTH modal buttons spinning on the shared
  * `usePrintInFlight` flag, with no toast, no log and no way forward but a
  * reload. Whatever the underlying stall is, "we do not know how long this will
@@ -14,10 +14,13 @@
  * The stage name is the point. A bare timeout tells the operator that something
  * hung; naming the stage tells whoever reads the report WHICH await did.
  *
- * ⚠️ This does NOT cancel the work — a Firestore `getDoc` or a `fetch` without
- * a signal keeps running to completion in the background. It bounds how long
- * the UI waits on it, which is what unwedges the mutex and frees the buttons.
- * Cancellation has to be pushed into each transport separately.
+ * ⚠️ This does NOT cancel the work — a Firestore `getDoc` keeps running to
+ * completion in the background. It bounds how long the UI waits on it, which is
+ * what unwedges the mutex and frees the buttons. The freight and NF-e HTTP
+ * clients now bound and cancel their own requests (#1094, `abrirPrazo`), each
+ * with a budget chosen per endpoint; the Mercado Livre client and the print
+ * agent do not yet (#1678). This stays the UI-level bound over everything else,
+ * and a stage it bounds must still sit before any side effect.
  */
 
 /** Thrown when a stage outlives its deadline. Carries the stage for reporting. */

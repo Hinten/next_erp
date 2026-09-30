@@ -251,8 +251,10 @@ describe('reprintCheckoutDanfe — bounded on the same terms as its twin', () =>
   it('does NOT bound the print itself, so a timeout can never double-print', async () => {
     // The invariant every deadline in this module rests on: each bounded stage
     // is BEFORE a side effect, so "timeout, then re-click" is safe. If a future
-    // change wraps `printDanfeForCheckout` (or `freightClient.imprimir`), that
-    // stops being true and a re-click prints twice.
+    // change wraps `printDanfeForCheckout` (or the etiqueta registry that opens
+    // the label), that stops being true and a re-click prints twice. The
+    // transports' own deadlines (#1094) fire BEFORE the print: a timed-out
+    // download prints nothing.
     vi.useFakeTimers();
     try {
       h.ensureNfeAprovada.mockResolvedValue({ ok: true, nfeId: 'NFE1' });

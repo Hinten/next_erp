@@ -34,7 +34,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDoc } from 'firebase/firestore';
 
 import { PERM } from '@delfrance/auth';
-import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
+import {
+  NFeHttpError,
+  NFeNetworkError,
+  NFeTimeoutError,
+} from '@delfrance/integrations-nfe/http-provider';
 import { CERTIFICADO_CACHE_TTL_MS, type CertificadoFilialInfo } from '@delfrance/schemas';
 
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
@@ -42,7 +46,10 @@ import { usePermission } from '@/lib/auth';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 
 /**
  * Read a File's bytes as base64 (browser-safe). Uses `FileReader.readAsDataURL`
@@ -113,6 +120,17 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
       // NFeCertificateError (a NFeHttpError subclass) with a pt-BR message;
       // network errors likewise. The copyable toast keeps it open on hover and
       // gives a copy button (the message can be long).
+      // #1094: the outcome is unknown — the route's single batch may or may not
+      // have committed — so yellow, and the message says to check the
+      // certificate before repeating.
+      if (err instanceof NFeTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado',
+          message: err.message,
+          color: 'yellow',
+        });
+        return;
+      }
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
         showErrorNotification({ title: 'Falha no envio do certificado', message: err.message });
         return;
@@ -131,6 +149,17 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
       void queryClient.invalidateQueries({ queryKey: ['filial', filialId] });
     },
     onError: (err) => {
+      // #1094: the outcome is unknown — the route's single batch may or may not
+      // have committed — so yellow, and the message says to check the
+      // certificate before repeating.
+      if (err instanceof NFeTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado',
+          message: err.message,
+          color: 'yellow',
+        });
+        return;
+      }
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
         showErrorNotification({ title: 'Falha ao remover o certificado', message: err.message });
         return;

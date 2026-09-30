@@ -7,6 +7,8 @@
 export {
   createNFeHttpClient,
   isNFeEmitError,
+  NFE_NIVEL_POR_OPERACAO,
+  NFE_PRAZO_MS,
   type NFeBatchEmitResult,
   type NFeCartaCorrecaoResult,
   type NFeCertificadoMeta,
@@ -50,5 +52,6 @@ export {
   NFeRuntimeNotReadyError,
   NFeSchemaError,
   NFeServerError,
+  NFeTimeoutError,
   NFeXsdValidationFailedError,
 } from './errors';
