@@ -290,11 +290,12 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
  *
  * Enumerated deliberately: everything not named here belongs to somebody else —
  * `estado` and `codRastreio` to step 7 (both written by the shipment merge, and
- * the estado moves physical stock), `printLabelId` to the label flow (step 15),
- * `modalidade`/`transportadora`/`veiculo` to the operator. ⚠️ The two fields
- * that clause used to pair are no longer one owner's: on a Shopee block step 7
- * OVERWRITES a `codRastreio` the label flow wrote, and leaves `printLabelId`
- * alone.
+ * the estado moves physical stock), `printLabelId` to nobody on a Shopee block,
+ * `modalidade`/`transportadora`/`veiculo` to the operator. Step 15's label flow
+ * writes NO `printLabelId` (with `FREIGHT_TIPO_CAPS.canPrint` it would route
+ * "Imprimir" to Melhor Envio), and one already stored survives a re-import only
+ * because the merge spreads `existente`. ⚠️ Step 7 owns `codRastreio`; no label
+ * flow writes it.
  *
  * ⚠️ **`prazoDespacho` left this list with step 7 (#1515).** The block now has
  * ONE deadline slot and TWO sources for it: this mapper's ORDER-level

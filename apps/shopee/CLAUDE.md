@@ -222,7 +222,11 @@ a page of the 3-day queue irreversibly.
   `{ pedidoId, nfeId? }`, enqueue only, 202; 409 `SHOPEE_NFE_NAO_ELEGIVEL`,
   404, 503 on the valve; a delay only for a KNOWN `data_autorizacao` — only
   the migrated corpus has one; this ERP's NF-e store `null`, so a fresh one
-  uploads at once and Shopee's case 5 (the #5 re-enqueue) covers it.
+  uploads at once and Shopee's case 5 (the #5 re-enqueue) covers it. The
+  ladder is `nfe/reenvioNfe.ts`, shared with the label route.
+- `lib/shopee/etiqueta/` + `app/api/marketplace/shopee/etiqueta/route.ts` —
+  step 15's label flow and route (`PERM.frete.read`; the ship needs
+  `frete.write`). Narrative: `lib/shopee/etiqueta/README.md`.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -416,11 +420,12 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **81** suites in this app name (79 drive it), and since step 8 it has a
+  **84** suites in this app name (82 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
-  step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 today — the two
-  `*.tasks.test.ts` suites it counts name the double in a docblock only).
+  step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
+  84 today — the two `*.tasks.test.ts` suites it counts name the double in a
+  docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
   `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
@@ -450,7 +455,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **ten** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **eleven** dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -462,8 +467,9 @@ a page of the 3-day queue irreversibly.
   step-9 path, `publicar-anuncio.ts` (step 11) publishes ONE named produto as a
   listing, `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
   produtos, `enviar-precos.ts` (step 13) their prices and `enviar-nfe.ts`
-  (step 14) the approved NF-e of up to 50 named pedidos, in process; the last
-  nine **dry-run by default**, `--live` to write. Their pure halves (arg parsing,
+  (step 14) the approved NF-e of up to 50 named pedidos, in process, and
+  `etiqueta.ts` (step 15) the label of ONE pedido; the last ten **dry-run by
+  default**, `--live` to write. Their pure halves (arg parsing,
   the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
@@ -472,8 +478,9 @@ a page of the 3-day queue irreversibly.
   `lib/shopee/produtos/importarAnuncioCli.ts`,
   `lib/shopee/anuncios/publicarAnuncioCli.ts`,
   `lib/shopee/estoque/enviarEstoqueCli.ts`,
-  `lib/shopee/precos/enviarPrecoCli.ts` and
-  `lib/shopee/nfe/enviarNfeCli.ts` **because `scripts/` is outside this
+  `lib/shopee/precos/enviarPrecoCli.ts`,
+  `lib/shopee/nfe/enviarNfeCli.ts` and
+  `lib/shopee/etiqueta/etiquetaCli.ts` **because `scripts/` is outside this
   app's vitest `include`**, so logic written in a script file can never be
   tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
   Script-only, imported by no route and no bundle.
@@ -643,9 +650,9 @@ pushes `booking_trackingno_push` (push_api_id 27) and
 them arrive, unlisted, and park. Both still **park**, keyed on `booking_sn`.
 They arrived unlisted first, which is that signal doing its job.
 
-⚠️ **Code 24 was RE-PARKED by step 7 and now has NO owning step** (25 is still
-step 15's). An earlier revision of this page promised it to step 7; that promise
-was false and the reason is the wire. A "booking" is an **Advance Fulfillment**
+⚠️ **Code 24 was RE-PARKED by step 7 and now has NO owning step** (and so is
+25, its booking twin, since step 15). An earlier revision of this page
+promised it to step 7; that promise was false and the reason is the wire. A "booking" is an **Advance Fulfillment**
 parcel — stock the seller ships to Shopee BEFORE any buyer order exists — and
 the programme is ID/PH/VN (`announcement 1064`) plus TH (`announcement 1317`),
 never BR. `push 27` names ONLY a `booking_sn`: no `order_sn`, no
@@ -654,6 +661,10 @@ never BR. `push 27` names ONLY a `booking_sn`: no `order_sn`, no
 `booking_status === 'MATCHED'`. It arrived in the 2026-09-09 sandbox test
 because that shop is SG. Its `MOTIVO_PARADO` row names the programme and says
 so; whoever ever needs Advance Fulfillment owns it.
+
+Code 15 is `ack` since step 15: the label flow polls
+`get_shipping_document_result` in-request, and a parked row per created
+document would be a dead letter.
 
 ⚠️ **The app type does not gate what the console can send.** An ERP System app
 cannot receive `webchat_push` (code 10) per `guide 18`, which is why that code
@@ -1455,6 +1466,34 @@ Uploads an aprovada tpAmb-1 SALE nfeProc before `ship_order`. Reasoning:
 - No sweep: re-drive with `/enviar-nfe` (`PERM.pedido.write`, level predicate,
   202) or `enviar:nfe` (in process, enqueues nothing).
 
+## Labels (`lib/shopee/etiqueta/`, step 15)
+
+One stateless POST route; every call re-derives the phase from Shopee
+(`get_order_detail` with ONLY `package_list,fulfillment_flag` +
+`get_package_detail`) and advances within `ORCAMENTO_ETIQUETA_MS`. Reasoning:
+`etiqueta/README.md`.
+
+- ⚠️ `ship_order` is irreversible and NOT idempotent. A transport failure after
+  it is an UNKNOWN outcome: answer 202 and re-read `is_shipment_arranged` on
+  the next call; never re-send in-call. `package_already_shipped` (leading
+  space on the page) means ARRANGED.
+- ⚠️ Writes NOTHING to Firestore — no `printLabelId` (with `canPrint` it would
+  misroute to Melhor Envio), no `codRastreio` (step 7's). Step 7 learns the
+  arrange from codes 4/30/47.
+- The invoice gate is the PACKAGE's `invoice_pending`, never
+  `freteInicial.estado === 'error'`, never `INVOICE_PENDING`. Ownership is
+  `provaDeIdentidadeShopee`, NOT the NF-e predicate (it refuses every SG
+  order).
+- `frete.read` reprints; an arrange needs `frete.write` (403 before
+  `get_shipping_parameter`); `nfe-pendente` re-drives the NF-e through
+  `nfe/reenvioNfe.ts` only with `pedido.write`, and is a TERMINAL 409.
+- Downloads go through `shopeeCallArquivo` (bytes; the first byte decides). An
+  unknown signature is a 502, never octet-stream (the print agent answers 200
+  and prints nothing).
+- No clock, timer, env, µs or `runTransaction` under `etiqueta/`: the route
+  supplies the clock and the sleep, and the µs list above still says eight.
+- Deploy `apps/shopee` BEFORE `apps/web`.
+
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
@@ -1681,7 +1720,7 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other nine CLIs are **dry-run by default** and, like `oauth:url`, are
+The other ten CLIs are **dry-run by default** and, like `oauth:url`, are
 **never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
 output and the runbook for each live in `scripts/README.md`:
 
@@ -1695,6 +1734,7 @@ pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao <integracaoId>
 pnpm --filter @delfrance/shopee-app enviar:estoque --integracao <integracaoId> --produto <produtoId>
 pnpm --filter @delfrance/shopee-app enviar:precos --integracao <integracaoId> --produto <produtoId>
 pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId>
+pnpm --filter @delfrance/shopee-app baixar:etiqueta --pedido <pedidoId>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1710,8 +1750,9 @@ publication of ONE produto; and the seventh (step 12) plans the stock push for
 up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
 (step 13) does the same for prices (`--baixar-preco` allows a decrease); and
 the ninth (step 14) uploads the approved NF-e of up to 50 pedidos in process,
-enqueuing nothing — each pedido proves its own conta.
-All nine still CALL Shopee in dry-run — what they do not do is write, with ONE
+enqueuing nothing — each pedido proves its own conta; the tenth (step 15)
+arranges and downloads ONE pedido's label, never writing the file.
+All ten still CALL Shopee in dry-run — what they do not do is write, with ONE
 documented exception: `publicar:anuncio` UPLOADS the pictures in both modes,
 because `montarAnuncio` needs real `image_id`s to build a body at all.
 `enviar:estoque`'s dry run calls `get_item_promotion` and nothing else.

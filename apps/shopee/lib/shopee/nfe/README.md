@@ -88,6 +88,11 @@ The families are the seam, not a filing convention.
 - **The CLI (wave 4).** `enviarNfeCli.ts` is the pure half of `enviar:nfe`
   (argument parsing and the two renderers), and `scripts/enviar-nfe.ts` is its
   I/O half (§13). The runbook is `scripts/README.md`.
+- **The re-drive (step 15).** `reenvioNfe.ts` is the `enviar-nfe` route's body
+  after its clock read — the pedido, conta and slot gates, the SERPRO delay and
+  the enqueue — moved verbatim and answering a union instead of an HTTP
+  response, so the step-15 label route runs the SAME ladder (§13). The route's
+  unedited `route.test.ts` is the proof the move changed nothing.
 
 Outside the folder, and why each lives where it does:
 
@@ -103,6 +108,9 @@ Outside the folder, and why each lives where it does:
   `decideNfeUploadDispatch` (LEVEL, moved byte-identical out of Mercado
   Livre's `nfeUpload.ts`, which re-exports it) and `decideNfeUploadTransition`
   (§3).
+- `core/recusaShopee.ts`: the code and sentence folds §7 describes, promoted
+  verbatim by step 15 so the label classifier reads a Shopee refusal exactly
+  as this one does.
 - `pedidos/orderMapping.ts`'s `pedidoForaDoBrasil(region)`: the importer's
   `bloquearEmissaoNFe` predicate, extracted so the order read decides "foreign"
   by the same definition (§6).
@@ -389,7 +397,9 @@ with the text `Wrong parameters, detail: <sentence>`. So
 stripped, trimmed again: the api page prints `order.upload_invoice_error`
 followed by a TAB), the package's `kind`, and `providerMessage`. The sentence
 is folded ONCE: whitespace collapsed, the envelope prefix stripped,
-lower-cased, trailing periods dropped (guide 382's texts end in `..`).
+lower-cased, trailing periods dropped (guide 382's texts end in `..`). Both
+folds live in `core/recusaShopee.ts` since step 15, shared with the label
+classifier (§1).
 
 ⚠️ **Needles never read `.message`.** The thrown sentence is
 `Shopee <path> respondeu <code> (HTTP n) — <text>`, and on this endpoint its
@@ -891,7 +901,9 @@ re-drive, both starting from a pedido, both picking the slot with
   `{ pedidoId, nfeId? }`, never the task payload, so a caller cannot post a
   phase or a counter: any other key, `fase` included, is a 400. It re-runs the
   pre-network gates (pedido, then conta, then slot), never builds a client and
-  never calls Shopee. The delay is the SERPRO remainder only when
+  never calls Shopee. Since step 15 that ladder is `reenvioNfe.ts`, which the
+  label route also runs, for a caller with `PERM.pedido.write`, when Shopee
+  holds a package for its invoice. The delay is the SERPRO remainder only when
   `data_autorizacao` is KNOWN, which only the migrated corpus is; an unknown
   instant (every post-cutover NF-e stores `null`) never holds a re-drive, and
   an early upload of a fresh one is Shopee's case 5, the #5 re-enqueue. It
@@ -939,7 +951,8 @@ mean "on".
 **No sweep, by decision.** The plan chose the two re-drive surfaces over a
 sweep. Step 4's backfill cannot stand in for one: it sends no status filter,
 and the package has no parameter for Shopee's `INVOICE_PENDING` list (register
-202, step 15's decision). The aviso list is the worklist, and the route and the
+202, answered NOT NEEDED by step 15: its gate is the package's own
+`invoice_pending`). The aviso list is the worklist, and the route and the
 CLI are the recovery.
 
 ## 14. Folder discipline
@@ -1001,16 +1014,22 @@ its reason, the quoted literals that are not this vocabulary: the stamp's
 
 - **Emitting, signing, cancelling or correcting an NF-e**, and the NF-e total
   formula: `apps/nfe` owns all of it.
-- **`ship_order` and the label** (step 15). Step 15 will call `/enviar-nfe`
-  when the ship call answers that the invoice is missing. The ship-side code's
-  spelling is register 193. ⚠️ Step 15 must NEVER gate `ship_order` on the
-  frete not being `error`. The stamp outlives a validated NF-e: when a
-  replacement lands, or a `sefaz-pendente` note later reads valid, the aviso
-  closes, but this step cannot revoke the stamp (§8), and it clears only when
-  step 7 writes an estado of the removal set, which happens only AFTER the
-  parcel moves. A gate on it would deadlock the very pedido it waits for.
+- **`ship_order` and the label** (step 15, `lib/shopee/etiqueta/`). When the
+  package's `invoice_pending` says pending, or a label call answers that the
+  invoice is missing, the label route runs `reenvioNfe.ts` in process — for a
+  caller with `PERM.pedido.write` — and answers a terminal 409. The ship-side
+  code's spelling is register 193. ⚠️ Step 15 must NEVER gate `ship_order` on
+  the frete not being `error`, and it does not: its gate is the package's
+  `invoice_pending`. The stamp outlives a validated NF-e: when a replacement
+  lands, or a `sefaz-pendente` note later reads valid, the aviso closes, but
+  this step cannot revoke the stamp (§8), and it clears only when step 7
+  writes an estado of the removal set, which happens only AFTER the parcel
+  moves. A gate on it would deadlock the very pedido it waits for.
+  ⚠️ Corrected by step 15: "after the parcel moves" means after step 7
+  observes `LOGISTICS_REQUEST_CREATED` (`aguardandoPostagem`), i.e. right after
+  OUR `ship_order`, not after a physical pickup.
 - **A sweep or a schedule** (§13), and a `get_order_list` walk on
-  `INVOICE_PENDING` (register 202, step 15's decision).
+  `INVOICE_PENDING` (register 202, answered NOT NEEDED by step 15).
 - **`add_invoice_data`.** It exists behind a login-gated page, and it is
   deliberately unused (register 203).
 - **PDFs** (DANFE or CC-e) and **the FBS document family**: Shopee invoices
@@ -1063,7 +1082,10 @@ items is a gate.
     substitution);
   - 198: `invoice_data` absent on a Brazilian row, and a `-` or spaced key.
 - **Step 15's**: 193 (the ship-side code: `logistics.lack_of_invoice_data` per
-  the ship page, `error_pending_invoice` per the announcement) and 202.
+  the ship page, `error_pending_invoice` per the announcement) stays open —
+  step 15 classifies all five spellings, and the first BR refusal records
+  which one fired; 202 is answered NOT NEEDED (the gate is
+  `get_package_detail.invoice_pending`, FAQ 727).
 - **Follow-ups with issues** (opened 2026-09-29): 199 → #1705 (Mercado Livre's
   level trigger re-fires on the `nfe-totais` migration and uploads non-sale
   notes), 200 → #1706 (one shared identifier masker for the repo; §9's leak
