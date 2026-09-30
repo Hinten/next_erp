@@ -325,7 +325,8 @@ export async function reconcilePedidoFromPagamento(
       }
     }
 
-    // Upsert the pagamento at its fixed (gateway-stable) id.
+    // Upsert the pagamento at `alvoId`: its fixed (gateway-stable) id, or the
+    // legacy auto-id doc matched above for the same payment.
     let toWrite: Record<string, unknown>;
     if (existing) {
       // UPDATE — INVERTED merge: the stored doc is the base (operator edits and
