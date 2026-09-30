@@ -1,12 +1,11 @@
 # RTC IBS/CBS code tables — source pointer (cClassTrib / CST / cCredPres / alíquotas)
 
-**This is a SOURCE POINTER, not the table itself.** The IBS/CBS code tables are
-published by SEFAZ as **`.xlsx` spreadsheets**, updated *outside* the NT cycle,
-and the agent sandbox cannot reach `*.fazenda.gov.br` — so the binary files are
-**not vendored** in this skill (matching the skill's "operational data isn't
-versioned" convention). This file records *where* they are, *that they're
-published*, and the *confirmed key codes*, so the update-watch routine knows
-exactly where to refresh them.
+**This is a SOURCE POINTER.** SEFAZ publishes the IBS/CBS code tables as
+**`.xlsx` spreadsheets**, updated *outside* the NT cycle, and the agent sandbox
+cannot reach `*.fazenda.gov.br` — so the spreadsheets are not in this skill. The
+tables themselves ARE vendored in the code (see "Vendored tables" below), read
+from the public SVRS mirror. This file records where they come from and how to
+refresh them. Last refresh: **2026-09-28**.
 
 ## What's published, and where
 
@@ -34,52 +33,63 @@ Per **NT 2025.002 v1.40, page 82**, these annex tables are **NOT in the NT PDF**
   ⚠️ A newer **NT/IT 2025.002 v1.50** exists (mid-2026) — the skill body still
   cites v1.40; the table refresh + the v1.50 bump are tracked under #317.
 
-## Machine-readable access (two surfaces)
+## Machine-readable access
 
-1. **Browser export (no auth, simplest refresh).** The SVRS interactive portal
-   above renders the full ~250-code table client-side with **CSV / Excel / JSON**
-   export buttons. A human clicks **JSON** once and drops the file in — this is
-   the intended refresh path (the agent sandbox can't trigger a client-JS export).
-2. **Programmatic JSON (cert-gated).** `https://dfe-portal.svrs.rs.gov.br/CFF/Servicos`
-   returns the CST + cClassTrib tables (filter by CST or the full list) over
-   **ICP-Brasil mutual-TLS** — i.e. it needs the A1 certificate. SVRS asks for
-   **no looping** ("a daily GET per company is sufficient"). A future
-   `fetch:rtc-tables` mTLS script (deferred) would use this; today the browser
-   export is the refresh mechanism.
+The SVRS table page (`…/DFE/TabelaClassificacaoTributaria`, redirects to
+`…/DFE/ClassificacaoTributaria`) is **public and reachable from the agent
+sandbox** (plain HTTPS GET, no login, no certificate). It embeds the whole table
+as a JSON literal — `var dadosOriginais = [...]`, one entry per CST with its
+`ClassificacoesTributarias` — which is what its CSV / Excel / JSON buttons
+export. That literal is the refresh source: it carries named indicator fields
+(`IndExigeTrib`, `IndTransferenciaCred`, `IndAjusteCompet`, `IndEstornoCred`, …),
+the per-DF-e flags (`IndNfe`, `IndNfce`, …), `TipoAliq`, `PercRedIbs/Cbs`, and
+the vigência dates. The cCredPres page has no JSON literal; its rendered table
+is read instead.
+
+The cert-gated `https://dfe-portal.svrs.rs.gov.br/CFF/Servicos` (ICP-Brasil
+mTLS, "a daily GET per company is sufficient") is **not** used, deliberately:
+the public page carries the same data, and a committed fetch script would be a
+third code generator (root CLAUDE.md rule 3) holding the company certificate.
 
 ## Confirmed key code (regra geral)
 
-Verified against the **SVRS** table (2026-06):
-
 - **`cClassTrib = 000001`** → *"Situações tributadas integralmente pelo IBS e
-  CBS"*, under **`CST = 000` (Tributação integral)**. SVRS lists `000001` as the
-  CST-000 entry. This is the standard taxable-sale code the repo fixture
-  (`impostoCsosn102ComRtc`) uses.
+  CBS"*, under **`CST = 000` (Tributação integral)** — the standard taxable-sale
+  code the repo fixture (`impostoCsosn102ComRtc`) uses, and the one the RTC live
+  homologação case gets authorized with.
 - The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 select the
   specific legal hypothesis under LC 214/2025.
 
-## Vendored seed in this repo (#333)
+## Vendored tables in this repo (#333)
 
-A **verified seed** (not the full table) lives in
-`packages/schemas/src/imposto/cclasstrib.ts` — currently the CST-000
-"tributação integral" family (`000001`–`000005`) plus the CST IBS/CBS indicator
-labels. It powers the shared imposto picker (`components/imposto/RtcSection`) +
-the structural CST↔cClassTrib validator, and is exported from `@delfrance/schemas`
-(consumed by both the UI and the emit-time tribute schema). Codes outside the seed
-are still **free-typeable** (the UI warns but never blocks), and emission only
-enforces the structural `cClassTrib[0:3] === CST` rule — so a stale seed cannot
-block a valid NF-e. `cClassTribIS` (Anexo II) and `cCredPres` (Anexo IV) are
-**not** seeded (Anexo II unpublished; cCredPres subgroup out of scope).
+`packages/schemas/src/imposto/`, all exported from `@delfrance/schemas`:
+
+- `cclasstrib.data.ts` — `CST_IBSCBS_TABELA` (all 18 CSTs + their indicators)
+  and `CCLASSTRIB_TABELA` (the **NF-e rows only**, `IndNfe`, with indicators,
+  `tipoAliquota`, `pRedIBS/CBS`, `inicioVigencia`), plus
+  `CCLASSTRIB_PROVENIENCIA` (source, retrieval date, filter, row count).
+- `cclasstrib.ts` — the API (`validateCstClassTrib`, the picker helpers,
+  `cClassTribEntry`, `cstIbsCbsEntry`, the indicator/tipo constants). The CST
+  labels are DERIVED from the table, so they are the official names.
+- `ccredpres.ts` — Anexo IV, 13 codes stored as `'01'`…`'13'` (XSD `\d{2}`).
+
+Membership stays a **UI warning** (`not-in-table`); emission enforces only the
+structural `cClassTrib[0:3] === CST` rule, so a stale table can never block a
+valid NF-e, and the picker still accepts a free-typed code. Anexo II
+(`cClassTribIS`) and Anexo I (NCM do IS) are still *"a ser publicada"* — not
+vendored.
 
 ## How to refresh (update-watch routine)
 
-1. From the SVRS interactive portal, click **JSON** to download the full
-   `cClassTrib` + CST table (and `cCredPres` from its own table page).
-2. Note the new version/date here, and reconcile the `CST_IBSCBS_LABELS`
-   descriptions against the official "Indicadores CST" table.
-3. Expand `CCLASSTRIB_SEED` in `cclasstrib.ts` with the verified rows you need
-   (or, when the deferred `fetch:rtc-tables` mTLS script lands, regenerate from
-   the fresh export). The validator + picker pick the new codes up automatically.
+1. `curl` the two public pages (or open them) and read the `dadosOriginais`
+   literal / the cCredPres rows. Keep the NF-e filter (`IndNfe === true`).
+2. Rewrite `cclasstrib.data.ts` / `ccredpres.ts` with the SAME shape and folds
+   (descriptions: CR/LF → space, collapse spaces, trim; codes, flags, rates and
+   dates verbatim), and update the `*_PROVENIENCIA` date and row count.
+3. Run `pnpm --filter @delfrance/schemas test` — the integrity tests pin the row
+   count, the ordering, the CSTs with no NF-e row, and the codes the nota de
+   crédito/débito work depends on; a refresh that changes any of them says so.
+4. Note the new retrieval date here.
 
 ## References
 

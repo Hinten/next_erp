@@ -16,6 +16,13 @@
  * slots under `det/imposto` (not nested), so the dispatcher attaches each
  * independently.
  */
+import {
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
+  vereditoIsRtc,
+  type GrupoAjusteRtc,
+} from '@delfrance/schemas';
+
 import { NFeTributeError } from './errors';
 import { fmtMoney, fmtQuantity, fmtRate, roundReais } from './format';
 import {
@@ -112,34 +119,115 @@ export function buildIBSCBS(cfg: ConfiguracaoIBSCBS, vProd: number): TTribNFe {
 }
 
 /**
- * Build the optional item-level `<IS>` (Imposto Seletivo) wire value. The XSD
- * sequence is a choice: ad valorem (`vBCIS` + `pIS` + `vIS`) OR per-unit
- * (`pISEspec` + `uTrib` + `qTrib` + `vIS`). `vBCIS` defaults to the item line
- * value (`vProd`) in the ad valorem path.
+ * One item's IBS/CBS on a nota de débito whose tipo binds a fixed cClassTrib
+ * (NT 2025.002 UB14-70): the tipo supplies the classification and the group
+ * (`grupoDeAjusteDoTipo`, `@delfrance/schemas`), the operator the AMOUNTS —
+ * no alíquota applies to a transfer, an adjustment or a reversal of credit.
+ */
+export interface AjusteIbsCbsItem {
+  readonly cClassTrib: string;
+  readonly grupo: GrupoAjusteRtc;
+  readonly vIBS: number;
+  readonly vCBS: number;
+  /** `AAAA-MM` — `gAjusteCompet` only. */
+  readonly competApur: string | null;
+}
+
+/**
+ * Build the item-level `<IBSCBS>` of an adjustment item: CST + cClassTrib and
+ * the ONE group the tipo names — never `gIBSCBS`, which none of these CSTs
+ * (410, 800, 811) admits (`ind_gIBSCBS = 0`, cStat 1021).
+ *
+ * `gCredPresIBSZFM` is refused: crédito 02 cannot be emitted before 2029
+ * (1145) and needs the item's `prod/tpCredPresIBSZFM`, which is not modelled.
+ */
+export function buildIBSCBSAjuste(a: AjusteIbsCbsItem): TTribNFe {
+  const base = { CST: a.cClassTrib.slice(0, 3), cClassTrib: a.cClassTrib };
+  switch (a.grupo) {
+    case GRUPO_AJUSTE_RTC.transfCred:
+      return {
+        ...base,
+        gTransfCred: {
+          vIBS: fmtMoney('gTransfCred.vIBS', a.vIBS),
+          vCBS: fmtMoney('gTransfCred.vCBS', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.ajusteCompet:
+      if (a.competApur == null || !COMPETENCIA_AAAA_MM.test(a.competApur)) {
+        throw new NFeTributeError(
+          `gAjusteCompet requires competApur as AAAA-MM, got ${JSON.stringify(a.competApur)}`,
+        );
+      }
+      return {
+        ...base,
+        gAjusteCompet: {
+          competApur: a.competApur,
+          vIBS: fmtMoney('gAjusteCompet.vIBS', a.vIBS),
+          vCBS: fmtMoney('gAjusteCompet.vCBS', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.estornoCred:
+      return {
+        ...base,
+        gEstornoCred: {
+          vIBSEstCred: fmtMoney('gEstornoCred.vIBSEstCred', a.vIBS),
+          vCBSEstCred: fmtMoney('gEstornoCred.vCBSEstCred', a.vCBS),
+        },
+      };
+    case GRUPO_AJUSTE_RTC.credPresIBSZFM:
+      throw new NFeTributeError(
+        'gCredPresIBSZFM is not emitted (crédito 02: from 2029, and prod/tpCredPresIBSZFM is not modelled)',
+      );
+  }
+}
+
+/**
+ * Build the optional item-level `<IS>` (Imposto Seletivo) wire value.
+ *
+ * ⚠️ The XSD is NOT a choice between the two modes: once the value sequence
+ * opens, `vBCIS` and `pIS` are BOTH required, then an optional `adRemIS` (the
+ * per-unit rate — named `pISEspec` until PL_010f) with an optional
+ * `uTrib` + `qTrib` pair, then `vIS`. So a per-unit IS still carries the base
+ * and a `pIS` of 0. (The per-unit path emitted `pISEspec` alone before, which
+ * no pack ever accepted.) `vBCIS` defaults to the item line value (`vProd`).
+ *
+ * The stored config keeps its `pISEspec` name; only the wire element moved.
+ *
+ * The mode — and the refusals — come from `vereditoIsRtc` (`@delfrance/schemas`),
+ * the same verdict the web imposto editor refuses a save with (#1696 review).
  */
 export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
   const out: TIS = {
     CSTIS: cfg.CSTIS,
     cClassTribIS: cfg.cClassTribIS,
   };
-  if (cfg.pIS != null) {
-    const vBCIS = cfg.vBCIS ?? vProd;
-    out.vBCIS = fmtMoney('vBCIS', vBCIS);
-    out.pIS = fmtRate('pIS', cfg.pIS);
-    out.vIS = fmtMoney('vIS', roundReais((vBCIS * cfg.pIS) / 100));
-  } else if (cfg.pISEspec != null && cfg.qTrib != null) {
-    out.pISEspec = fmtRate('pISEspec', cfg.pISEspec);
-    if (cfg.uTrib != null) out.uTrib = cfg.uTrib;
-    out.qTrib = fmtQuantity('qTrib', cfg.qTrib);
-    out.vIS = fmtMoney('vIS', roundReais(cfg.pISEspec * cfg.qTrib));
-  } else {
-    // `configuracaoISRtcSchema`'s refine guarantees one mode is present; this
-    // is a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
-    throw new NFeTributeError(
-      'buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)',
-    );
+  const v = vereditoIsRtc(cfg);
+  switch (v.tipo) {
+    case 'adValorem': {
+      const vBCIS = cfg.vBCIS ?? vProd;
+      out.vBCIS = fmtMoney('vBCIS', vBCIS);
+      out.pIS = fmtRate('pIS', v.pIS);
+      out.vIS = fmtMoney('vIS', roundReais((vBCIS * v.pIS) / 100));
+      return out;
+    }
+    case 'porUnidade':
+      out.vBCIS = fmtMoney('vBCIS', cfg.vBCIS ?? vProd);
+      out.pIS = fmtRate('pIS', 0);
+      out.adRemIS = fmtRate('adRemIS', v.pISEspec);
+      out.uTrib = v.uTrib;
+      out.qTrib = fmtQuantity('qTrib', v.qTrib);
+      out.vIS = fmtMoney('vIS', roundReais(v.pISEspec * v.qTrib));
+      return out;
+    case 'uTribAusente':
+      // `uTrib` + `qTrib` are one XSD sequence: both or neither.
+      throw new NFeTributeError('buildIS: a per-unit IS (pISEspec + qTrib) also needs uTrib');
+    case 'semAliquota':
+      // `configuracaoISRtcSchema`'s refine keeps this out of a parsed config;
+      // a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
+      throw new NFeTributeError(
+        'buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)',
+      );
   }
-  return out;
 }
 
 /**

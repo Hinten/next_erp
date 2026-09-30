@@ -6,9 +6,12 @@ that adds new codes (consolidated below).
 
 **Width: 3 or 4 digits.** Pré-NT 2025.002 todos os cStats eram 3 dígitos;
 NT 2025.002 §5.1 estendeu o campo para 4 dígitos para abrir espaço às
-rejeições exclusivas dos novos tributos (IBS/CBS/IS). Parsers devem aceitar
-`^[0-9]{3,4}$`. Códigos novos da NT 2025.001 (452, 853, 797, etc.) ainda
-são 3 dígitos.
+rejeições exclusivas dos novos tributos (IBS/CBS/IS). O gate XSD de toda
+resposta já aceita `[0-9]{3,4}`; para um valor que não passou por ele use
+`isCStat` (`src/state/index.ts`). `classifyCStat` compara strings EXATAS —
+todo código de 4 dígitos da RTC cai em `rejeitada` → `done-rejected`. Códigos
+novos da NT 2025.001 (452, 853, 797, etc.) ainda são 3 dígitos. O `nProt`
+passou a ter 15 **ou** 17 dígitos (mesma NT).
 
 ## Success / processing
 
@@ -82,7 +85,7 @@ something to query.
 | 225 | Falha no schema XML do lote |
 | 252 | Ambiente informado diverge do ambiente de recebimento |
 | 280 / 281 / 286 | Certificado de transmissão inválido / vencido / sem cadeia |
-| 290–298 | Certificado/assinatura de assinatura inválidos |
+| 290–298 | Certificado/assinatura de assinatura inválidos (conjunto exato de strings — `'0290'` não é 290) |
 | 416 | Falha na descompactação da área de dados (Zip) |
 | **452** | **Rejeição: Solicitada resposta assíncrona para Lote com somente 1 (uma) NF-e** (NT 2025.001 RV GAP03a-3, produção 13/10/2025) |
 | 656 | Consumo Indevido — **ban path, see below** |
@@ -226,7 +229,7 @@ No MOC 7.0 a `E16a-30` era só interestadual, com outra lista de UFs. Histórico
 exceções, a armadilha da 696 e onde o app orienta o operador: seção "`indIEDest`
 mais rigoroso" em `sincrono-vs-assincrono.md`.
 
-### NT 2025.002 (Reforma Tributária, v1.40 mai/2026)
+### NT 2025.002 (Reforma Tributária, v1.51 jul/2026)
 
 cStats novos têm 4 dígitos. Os mais "afiados" (rejeição instantânea quando
 RTC entra em vigor — 03/08/2026 para CRT=3):
@@ -247,9 +250,44 @@ RTC entra em vigor — 03/08/2026 para CRT=3):
 | 1145 | NF-e de Crédito tipo 2 (ZFM) só permitida a partir de 2029 | B25.2-30 |
 | 1153–1157 | Erros em dPrevEntrega (data prevista de entrega) | B10a-10 a B10a-50 |
 | 1200 / 1201 / 1202 | cClassTrib incompatível com tpNFDebito / tpNFCredito / nota | UB14-70/80/60 |
+| 1001 | Nota de crédito/débito com ICMS/PIS/COFINS/IPI (só IBS/CBS) | B25-80 |
+| 1003 | Nota de crédito referenciando documento que não é NF-e 55 | B25-100 |
+| 1009 / 1139 | Nota de débito sem `tpNFDebito` / `tpNFDebito` sem finNFe=6 | B25.1-20 / B25.1-10 |
+| 1164 / 1163 | Nota de crédito sem `tpNFCredito` / `tpNFCredito` sem finNFe=5 | B25.2-20 / B25.2-10 |
+| 1161 / 1162 / 1152 | Crédito não-entrada / débito não-saída / crédito 03 não-entrada | B25-110 / B25-120 / B25.2-40 |
+| 254 / 255 / 269 / 678 / 1027 | NF referenciada do crédito: ausente / várias / outro CNPJ / outra UF / indevida (ZFM) | B25-30…65 |
+| 1129 / 1171 | Transferência de crédito / ajuste de competência sem IBS nem CBS > 0 | UB106-40 / UB112-30 |
+| 1131 / 1132, 1169 / 1170, 1172 / 1173 | Grupo de transferência / ajuste de competência / estorno informado indevidamente / não informado (indicadores do CST ou do cClassTrib) | UB14, UB112, UB116 |
+| 1133 / 1168 | `gTransfCred` fora de nota de débito / fora dos tipos 01 e 05 | UB106-30 / UB106-31 |
+| 1176 / 1177 | Total do IBS / da CBS estornados difere da soma dos itens | W59f / W59g |
 
 Lista completa em `rtc-ibs-cbs-is.md` e nos PDFs originais sob
-`references/sources/nt/2025/NT_2025.002_v1.40_*.pdf`.
+`references/sources/nt/2025/NT_2025.002_v1.51_RTC.pdf` (the v1.40 PDF stays beside it for provenance).
+
+## idDest, CFOP e o local de entrega (#422)
+
+A UF de destino da operação é a da ENTREGA quando o pedido tem um endereço de
+entrega que é outro documento (`ufDestinoOperacao`); o `<enderDest>` continua
+sendo o endereço FISCAL e o `<entrega>` (Grupo G) vai no XML. As regras que
+tornam isso necessário — conferidas no Anexo I do MOC 7.0 (v7.00, nov/2020) e
+nas NTs vendorizadas:
+
+| cStat | Regra | O que valida | Por que o `<entrega>` resolve |
+|---|---|---|---|
+| 732 / 733 | I08-40 / I08-60 | 1º dígito do CFOP × `idDest` | CFOP e `idDest` saem da MESMA UF (`isInterstateFor` e `buildIde` usam `ufDestinoOperacao`) |
+| 772 | E12-30 (obrig.) | `idDest=2` com `enderDest/UF` = UF do emitente | Exceção 1: `entrega/UF` ≠ UF do emitente |
+| 773 | E12-40 (obrig.) | `idDest=1` com `enderDest/UF` ≠ UF do emitente, **só não-consumidor** | Exceção 2: `entrega/UF` = UF do emitente |
+| 523 | I08-90 (facult.) | CFOP interestadual com UF emitente = UF destinatário | NT 2020.006 v1.31: "alteração da regra I08-90 para considerar local de entrega e retirada" |
+| 694 | NA01-20 (obrig.) | falta `ICMSUFDest` em interestadual p/ consumidor não contribuinte | NT 2022.005 v1.11, Exceção 12: **não se aplica a CRT=1** (e RV suspensa desde 01/01/2022) |
+
+⚠️ **521** (I08-70, facultativa) — `idDest=1` com UF do emitente ≠ UF do
+destinatário e `indIEDest=1` — **não** tem exceção de entrega no texto do
+Anexo I. Só é alcançável por uma venda B2B a contribuinte com endereço fiscal
+em outra UF e entrega na UF do emitente.
+
+O `<entrega>` exige CPF ou CNPJ (choice obrigatório do `TLocal`). O CNPJ ali
+entra na validação LCC-RFB da NT 2026.007 (faixa 185/186 acima); em
+homologação use um recebedor pessoa física.
 
 ## Resend rule of thumb
 

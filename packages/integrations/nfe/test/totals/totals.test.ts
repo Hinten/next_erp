@@ -159,6 +159,16 @@ describe('extrairTotaisNFe', () => {
 
     it('rejects an out-of-range finNFe instead of coercing it', () => {
       expect(extrairTotaisNFe(nfeProc({ finNFe: '9' }))).toBeNull();
+      // The first code past the NT 2025.002 range, and the empty one.
+      expect(extrairTotaisNFe(nfeProc({ finNFe: '7' }))).toBeNull();
+      expect(extrairTotaisNFe(nfeProc({ finNFe: '0' }))).toBeNull();
+    });
+
+    it('reads a nota de crédito / débito (finNFe 5/6, NT 2025.002)', () => {
+      // Refusing them would turn one approved nota into a poisoned block,
+      // and the Simples apuração blocks on any unreadable nota.
+      expect(extrairTotaisNFe(nfeProc({ finNFe: '5' }))?.finNFe).toBe(5);
+      expect(extrairTotaisNFe(nfeProc({ finNFe: '6' }))?.finNFe).toBe(6);
     });
 
     it('rejects a comma decimal — a wire decimal is always dot-separated', () => {

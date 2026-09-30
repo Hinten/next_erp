@@ -8,6 +8,8 @@
  */
 import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
 
+import type { CompraGovInput } from './compraGov';
+
 export type Ambiente = 'producao' | 'homologacao';
 
 /** SEFAZ `tpEmis` — emission type. Phase A uses `1` (normal). */
@@ -85,6 +87,14 @@ export interface GeneratorItem {
    * it in as-is; tributary computation lives in the caller (Phase D follow-up).
    */
   readonly impostoXml: string;
+  /**
+   * `det/DFeReferenciado` (NT 2025.002 Grupo VC) — the item of ANOTHER NF-e this
+   * line refers to. The caller has already judged the document rules
+   * (`violacoesDoDocumento` in `@delfrance/schemas`: RTC on, no `NFref`, one
+   * chave, `nItem` present…); the generator only emits it, re-checking just the
+   * shapes the XSD would refuse. Absent ⇒ byte-identical det.
+   */
+  readonly dfeReferenciado?: { readonly chaveAcesso: string; readonly nItem?: number };
 }
 
 export interface InfRespTec {
@@ -208,7 +218,17 @@ export interface GeneratorInput {
   readonly filial: Filial;
   readonly operacao: Operacao;
   readonly cliente: Cliente;
+  /** The destinatário's FISCAL address — always `<dest><enderDest>`. */
   readonly enderecoDest: Endereco;
+  /**
+   * The delivery address, when it is a DIFFERENT document from the fiscal one
+   * (#422). Present ⇒ the generator emits `<entrega>` AND decides `idDest` from
+   * its UF (`ufDestinoOperacao`); absent/null ⇒ neither, and the XML is
+   * byte-identical to a nota without it. The caller decides "different" — the
+   * generator never compares addresses. Its `codigoMunicipio` must already be
+   * resolved, like `enderecoDest`'s.
+   */
+  readonly enderecoEntrega?: Endereco | null;
   readonly itens: ReadonlyArray<GeneratorItem>;
   /** Pre-built `<total>...</total>` XML. */
   readonly totalXml: string;
@@ -247,6 +267,24 @@ export interface GeneratorInput {
    * from `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
    */
   readonly chNFeReferenciadas?: readonly string[];
+  /**
+   * NT 2025.002 fields of `ide` / `emit` beyond the tax groups (#331). The
+   * caller passes them only with the Reforma Tributária on; absent (or empty),
+   * the XML is byte-identical.
+   */
+  readonly rtc?: GeneratorRtc;
+}
+
+/** See {@link GeneratorInput.rtc}. */
+export interface GeneratorRtc {
+  /** `ide/dPrevEntrega`, `AAAA-MM-DD` — pass only a date `dPrevEntregaParaEmissao` returned. */
+  readonly dPrevEntrega?: string;
+  /** `ide/gPagAntecipado/refNFe` — the NF-e de pagamento antecipado (1–99). */
+  readonly pagAntecipado?: readonly string[];
+  /** `ide/gCompraGov` — library-only today (see `compraGov.ts`). */
+  readonly compraGov?: CompraGovInput;
+  /** `emit/ISUFEmit` — the filial's SUFRAMA inscription (8–9 digits). */
+  readonly isufEmit?: string;
 }
 
 export interface GeneratorOutput {

@@ -1,18 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import forge from 'node-forge';
-import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
+import type {
+  Cliente,
+  Endereco,
+  Filial,
+  Imposto,
+  ModoGruposImposto,
+  Operacao,
+  TpNFDebito,
+} from '@delfrance/schemas';
 
 import { signNFe } from '../../src/sign';
 import { validateXsd } from '../../src/xsd';
 import type { NFeCertificate } from '../../src/cert';
-import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
-import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
+import { buildCompraGov, generateNFe, NFeGeneratorError } from '../../src/generator/index';
+import { NFeIdeError } from '../../src/generator/ide';
+import { HOMOLOGACAO_XNOME, NFePartiesError } from '../../src/generator/parties';
+import { aggregateTotals, buildImpostoXml, buildTotalXml } from '../../src/tribute/index';
 import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
 import {
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
+  MODO_GRUPOS_IMPOSTO,
+  ORIGEM,
   TIPO_CLIENTE,
+  TP_NF_CREDITO,
+  TP_NF_DEBITO,
   UF_SIGLA,
+  cClassTribDoTipo,
+  grupoDeAjusteDoTipo,
+  modoGruposImposto,
 } from '@delfrance/schemas';
 
 const FILIAL: Filial = {
@@ -22,6 +39,7 @@ const FILIAL: Filial = {
   cnpj: '14200166000187',
   ie: '111111111111',
   iest: null,
+  isuf: null,
   imun: null,
   ultimaModificacao: null,
   sede: {
@@ -106,6 +124,8 @@ const OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
+  tpNFDebito: null,
+  tpNFCredito: null,
   indPres: IND_PRES_OPERACAO.naoPresencialInternet,
   indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',
@@ -384,6 +404,480 @@ describe('generateNFe', () => {
         const signed = signNFe(out.nfeXml, fixtureCertificate());
         await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
       },
+    );
+  });
+});
+
+/**
+ * #422 — the delivery address decides `idDest` AND rides as `<entrega>`.
+ *
+ * SEFAZ judges `idDest` against `enderDest/UF`, or against `entrega/UF` when
+ * the group is present (772/773/523), so the two must come from ONE input:
+ * `enderecoEntrega` present ⇒ both; absent ⇒ neither.
+ */
+describe('generateNFe — delivery address (enderecoEntrega, #422)', () => {
+  const ENTREGA_RJ: Endereco = {
+    ...ENDERECO_DEST,
+    logradouro: 'Rua do Ouvidor',
+    numero: '50',
+    bairro: 'Centro',
+    cep: '20040030',
+    codigoMunicipio: '3304557',
+    cidade: 'Rio de Janeiro',
+    estado: UF_SIGLA.RJ,
+    nome: 'Maria Recebedora',
+    cpf_cnpj: '52998224725',
+  };
+  const DEST_RJ: Endereco = { ...ENTREGA_RJ, nome: null, cpf_cnpj: null };
+  const ENTREGA_SP: Endereco = { ...ENDERECO_DEST, nome: 'Joao', cpf_cnpj: '11144477735' };
+  // `cnae: null` — the unrelated emit-sequence quirk of the shared FILIAL
+  // fixture (see the contingência block) would fail the XSD for another reason.
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+
+  const idDestOf = (xml: string) => /<idDest>(\d)<\/idDest>/.exec(xml)?.[1];
+  const enderDestUF = (xml: string) => /<enderDest>.*?<UF>([A-Z]{2})<\/UF>/.exec(xml)?.[1];
+
+  // [label, fiscal address, delivery address, ehExterior, expected idDest] —
+  // the emitente is SP throughout.
+  const CASES: Array<[string, Endereco, Endereco | null, boolean, string]> = [
+    ['fiscal SP, no delivery', ENDERECO_DEST, null, false, '1'],
+    ['fiscal RJ, no delivery', DEST_RJ, null, false, '2'],
+    ['fiscal SP, delivery RJ', ENDERECO_DEST, ENTREGA_RJ, false, '2'],
+    ['fiscal RJ, delivery SP', DEST_RJ, ENTREGA_SP, false, '1'],
+    ['fiscal RJ, delivery RJ', DEST_RJ, ENTREGA_RJ, false, '2'],
+    ['exterior wins over a delivery UF', ENDERECO_DEST, ENTREGA_RJ, true, '3'],
+  ];
+
+  it.each(CASES)('%s → idDest %s', (_label, dest, entrega, ehExterior, expected) => {
+    const out = generateNFe({
+      ...BASE_INPUT,
+      operacao: { ...OPERACAO, ehExterior },
+      enderecoDest: dest,
+      enderecoEntrega: entrega,
+    });
+    expect(idDestOf(out.nfeXml)).toBe(expected);
+  });
+
+  it('keeps <enderDest> on the FISCAL address while idDest follows the delivery', () => {
+    const out = generateNFe({ ...BASE_INPUT, enderecoEntrega: ENTREGA_RJ });
+    expect(idDestOf(out.nfeXml)).toBe('2');
+    expect(enderDestUF(out.nfeXml)).toBe('SP');
+  });
+
+  it('places <entrega> between </dest> and the first <det> (XSD order)', () => {
+    const out = generateNFe({ ...BASE_INPUT, enderecoEntrega: ENTREGA_RJ });
+    expect(out.nfeXml).toMatch(/<\/dest><entrega><CPF>52998224725<\/CPF>.*<\/entrega><det /);
+    expect(out.nfeXml).toContain('<UF>RJ</UF><CEP>20040030</CEP></entrega>');
+  });
+
+  it('a signed nota with a CPF recebedor passes the NFe XSD', async () => {
+    const out = generateNFe({ ...XSD_INPUT, enderecoEntrega: ENTREGA_RJ });
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('a signed nota with the cliente CNPJ as fallback identity passes the NFe XSD', async () => {
+    const out = generateNFe({
+      ...XSD_INPUT,
+      enderecoEntrega: { ...ENTREGA_RJ, nome: null, cpf_cnpj: null },
+    });
+    expect(out.nfeXml).toContain(`<entrega><CNPJ>${CLIENTE.cpf_cnpj}</CNPJ>`);
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('without a delivery address the XML is byte-identical and has no <entrega>', () => {
+    const plain = generateNFe(BASE_INPUT);
+    expect(plain.nfeXml).not.toContain('<entrega>');
+    expect(generateNFe({ ...BASE_INPUT, enderecoEntrega: null }).nfeXml).toBe(plain.nfeXml);
+  });
+});
+
+/**
+ * #330 — `det/DFeReferenciado` (NT 2025.002 Grupo VC), the item of another NF-e
+ * a line refers to. It is the LAST child of `<det>`, and absent means the det
+ * is byte-identical.
+ */
+describe('generateNFe — det/DFeReferenciado (#330)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  const CHAVE_ALFA = '352601ABCDEFGHIJKL87550010000001234567890120';
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const comRef = (dfeReferenciado: GeneratorItem['dfeReferenciado']): GeneratorInput => ({
+    ...XSD_INPUT,
+    itens: [{ ...ITEM, dfeReferenciado }],
+  });
+
+  it('emits chaveAcesso + nItem after </imposto>, closing the det', () => {
+    const out = generateNFe(comRef({ chaveAcesso: CHAVE, nItem: 3 }));
+    expect(out.nfeXml).toContain(
+      `</imposto><DFeReferenciado><chaveAcesso>${CHAVE}</chaveAcesso><nItem>3</nItem></DFeReferenciado></det>`,
+    );
+  });
+
+  it.each([
+    ['with nItem', { chaveAcesso: CHAVE, nItem: 3 }],
+    ['without nItem', { chaveAcesso: CHAVE }],
+    ['nItem 990 (the XSD maximum)', { chaveAcesso: CHAVE, nItem: 990 }],
+    ['an alphanumeric-CNPJ chave', { chaveAcesso: CHAVE_ALFA, nItem: 1 }],
+  ])('a signed nota %s passes the NFe XSD', async (_label, ref) => {
+    const signed = signNFe(generateNFe(comRef(ref)).nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('refuses what the XSD would, naming the item', () => {
+    expect(() => generateNFe(comRef({ chaveAcesso: '123', nItem: 1 }))).toThrow(
+      /item 1: DFeReferenciado\.chaveAcesso/,
+    );
+    for (const nItem of [0, 991, 1.5]) {
+      expect(() => generateNFe(comRef({ chaveAcesso: CHAVE, nItem }))).toThrow(
+        /DFeReferenciado\.nItem must be an integer from 1 to 990/,
+      );
+    }
+  });
+
+  it('without a reference the det is byte-identical', () => {
+    expect(generateNFe(comRef(undefined)).nfeXml).toBe(generateNFe(XSD_INPUT).nfeXml);
+    expect(generateNFe(XSD_INPUT).nfeXml).not.toContain('<DFeReferenciado>');
+  });
+});
+
+describe('generateNFe — nota de crédito / débito (finNFe 5/6, #330)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const IMPOSTO_RTC: Imposto = {
+    origem: ORIGEM.nacional,
+    configuracaoICMS: { crt: '1', csosn: '102' },
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  };
+
+  /** A whole nota the way apps/nfe builds it: the det and the total from one mode. */
+  function nota(
+    operacao: Partial<Operacao>,
+    grupos: ModoGruposImposto = MODO_GRUPOS_IMPOSTO.somenteIbsCbs,
+  ) {
+    const opts = { emitRtc: true, grupos };
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: IMPOSTO_RTC }], {}, opts);
+    return {
+      ...XSD_INPUT,
+      operacao: { ...OPERACAO, ...operacao },
+      itens: [{ ...ITEM, impostoXml: buildImpostoXml(IMPOSTO_RTC, { vProd: 1500 }, opts) }],
+      totalXml: buildTotalXml(totals),
+      pagXml: '<pag><detPag><tPag>90</tPag><vPag>0.00</vPag></detPag></pag>',
+    };
+  }
+
+  it('débito 06 (pagamento antecipado): tpNFDebito after finNFe, IBS/CBS only, XSD-valid', async () => {
+    const out = generateNFe(nota({ finNFe: 6, tpNFDebito: TP_NF_DEBITO.pagamentoAntecipado }));
+    expect(out.nfeXml).toContain('<finNFe>6</finNFe><tpNFDebito>06</tpNFDebito><indFinal>');
+    expect(out.nfeXml).not.toContain('<ICMS>');
+    expect(out.nfeXml).toContain('<vNFTot>1515.00</vNFTot>');
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['01', MODO_GRUPOS_IMPOSTO.somenteIbsCbs],
+    ['03', MODO_GRUPOS_IMPOSTO.completo],
+    ['04', MODO_GRUPOS_IMPOSTO.completo],
+  ] as const)('crédito %s (an entrada) is XSD-valid in its mode', async (tp, grupos) => {
+    const out = generateNFe(nota({ finNFe: 5, tipo: 0, tpNFCredito: tp }, grupos));
+    expect(out.nfeXml).toContain(`<finNFe>5</finNFe><tpNFCredito>${tp}</tpNFCredito>`);
+    expect(out.nfeXml).toContain('<tpNF>0</tpNF>');
+    expect(out.nfeXml.includes('<ICMS>')).toBe(grupos === MODO_GRUPOS_IMPOSTO.completo);
+    const signed = signNFe(out.nfeXml, fixtureCertificate());
+    await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+  });
+
+  it('refuses an ide SEFAZ would reject on the tipo alone (B25.1 / B25.2 / B25-110)', () => {
+    expect(() => generateNFe(nota({ finNFe: 6 }))).toThrow(NFeIdeError);
+    expect(() => generateNFe(nota({ finNFe: 6 }))).toThrow(/tipo da nota de débito.*1009/);
+    expect(() => generateNFe(nota({ finNFe: 1, tpNFDebito: TP_NF_DEBITO.multaJuros }))).toThrow(
+      /1139/,
+    );
+    expect(() => generateNFe(nota({ finNFe: 5, tpNFCredito: TP_NF_CREDITO.multaJuros }))).toThrow(
+      /1161/,
+    );
+  });
+
+  it('1145 is judged on the emission year in the emitente time zone', () => {
+    const credito02 = nota({ finNFe: 5, tipo: 0, tpNFCredito: TP_NF_CREDITO.creditoPresumidoZfm });
+    // 2029-01-01 00:30 in São Paulo: 2029 (UTC agrees).
+    const virada = new Date('2029-01-01T00:30:00-03:00');
+    expect(() => generateNFe({ ...credito02, dhEmi: virada })).not.toThrow();
+    // Near-miss: 2028-12-31 23:30 in São Paulo is already 2029 in UTC, and still 2028 here.
+    const vespera = new Date('2028-12-31T23:30:00-03:00');
+    expect(() => generateNFe({ ...credito02, dhEmi: vespera })).toThrow(/1145/);
+  });
+
+  it('a normal nota is byte-identical — no tipo field appears', () => {
+    const out = generateNFe(XSD_INPUT).nfeXml;
+    expect(out).not.toContain('<tpNFDebito>');
+    expect(out).not.toContain('<tpNFCredito>');
+  });
+});
+
+describe('generateNFe — nota de débito with an IBS/CBS adjustment group (#330, part 3)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+
+  /** The produto's own RTC config — which an adjustment item must NOT read. */
+
+  const IMPOSTO: Imposto = {
+    origem: ORIGEM.nacional,
+
+    configuracaoICMS: { crt: '1', csosn: '102' },
+
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  };
+
+  /** A whole nota de débito the way apps/nfe builds it: the tipo decides group and mode. */
+
+  function debito(
+    tpNFDebito: TpNFDebito,
+    valores: { vIBS: number; vCBS: number; competApur?: string },
+  ) {
+    const t = { finNFe: 6, tpNFDebito, tpNFCredito: null };
+
+    const grupos = modoGruposImposto(t);
+
+    const ajuste = {
+      cClassTrib: cClassTribDoTipo(t)!,
+
+      grupo: grupoDeAjusteDoTipo(t)!,
+
+      vIBS: valores.vIBS,
+
+      vCBS: valores.vCBS,
+
+      competApur: valores.competApur ?? null,
+    };
+
+    const opts = { emitRtc: true, grupos, ajuste };
+
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: IMPOSTO, ajuste }], {}, opts);
+
+    return {
+      ...XSD_INPUT,
+
+      operacao: { ...OPERACAO, finNFe: 6 as const, tpNFDebito },
+
+      itens: [{ ...ITEM, impostoXml: buildImpostoXml(IMPOSTO, { vProd: 1500 }, opts) }],
+
+      totalXml: buildTotalXml(totals),
+
+      pagXml: '<pag><detPag><tPag>90</tPag><vPag>0.00</vPag></detPag></pag>',
+    };
+  }
+
+  const xsdValid = async (input: GeneratorInput) =>
+    expect(
+      validateXsd('NFe', signNFe(generateNFe(input).nfeXml, fixtureCertificate())),
+    ).resolves.toBeUndefined();
+
+  it.each([
+    [TP_NF_DEBITO.transferenciaCreditoCooperativa, '800', '800002'],
+
+    [TP_NF_DEBITO.transferenciaCreditoSucessao, '800', '800001'],
+  ] as const)(
+    'débito %s: CST %s / %s + gTransfCred alone, XSD-valid',
+    async (tp, cst, cClassTrib) => {
+      const input = debito(tp, { vIBS: 12.34, vCBS: 56.78 });
+
+      const xml = generateNFe(input).nfeXml;
+
+      expect(xml).toContain(
+        `<IBSCBS><CST>${cst}</CST><cClassTrib>${cClassTrib}</cClassTrib>` +
+          '<gTransfCred><vIBS>12.34</vIBS><vCBS>56.78</vCBS></gTransfCred></IBSCBS>',
+      );
+
+      // The produto's own classification and rates never reach the wire.
+
+      expect(xml).not.toContain('<gIBSCBS>');
+
+      expect(xml).not.toContain('<cClassTrib>000001</cClassTrib>');
+
+      expect(xml).not.toContain('<ICMS>');
+
+      await xsdValid(input);
+    },
+  );
+
+  it.each([
+    [TP_NF_DEBITO.anulacaoCreditoSaidaImuneIsenta, '811001'],
+
+    [TP_NF_DEBITO.debitoNotaNaoProcessada, '811002'],
+
+    [TP_NF_DEBITO.desenquadramentoSimples, '811003'],
+  ] as const)(
+    'débito %s: CST 811 / %s + gAjusteCompet with competApur, XSD-valid',
+    async (tp, cClassTrib) => {
+      const input = debito(tp, { vIBS: 1, vCBS: 9, competApur: '2026-04' });
+
+      expect(generateNFe(input).nfeXml).toContain(
+        `<IBSCBS><CST>811</CST><cClassTrib>${cClassTrib}</cClassTrib><gAjusteCompet>` +
+          '<competApur>2026-04</competApur><vIBS>1.00</vIBS><vCBS>9.00</vCBS></gAjusteCompet></IBSCBS>',
+      );
+
+      await xsdValid(input);
+    },
+  );
+
+  it('débito 07: ICMS stays (B25-80 exception), IBSCBS carries gEstornoCred, the total its W59e group', async () => {
+    const input = debito(TP_NF_DEBITO.perdaEstoque, { vIBS: 3.21, vCBS: 28.9 });
+
+    const xml = generateNFe(input).nfeXml;
+
+    expect(xml).toContain('<ICMS>');
+
+    expect(xml).toContain(
+      '<IBSCBS><CST>410</CST><cClassTrib>410030</cClassTrib><gEstornoCred>' +
+        '<vIBSEstCred>3.21</vIBSEstCred><vCBSEstCred>28.90</vCBSEstCred></gEstornoCred></IBSCBS>',
+    );
+
+    expect(xml).toMatch(
+      /<IBSCBSTot>.*<gEstornoCred><vIBSEstCred>3\.21<\/vIBSEstCred><vCBSEstCred>28\.90<\/vCBSEstCred><\/gEstornoCred><\/IBSCBSTot>/,
+    );
+
+    await xsdValid(input);
+  });
+
+  it('adjustment amounts never enter IBSCBSTot vIBS/vCBS (W47/W56 sum gIBSCBS only)', () => {
+    const xml = generateNFe(
+      debito(TP_NF_DEBITO.transferenciaCreditoSucessao, { vIBS: 10, vCBS: 90 }),
+    ).nfeXml;
+
+    expect(xml).toMatch(/<IBSCBSTot><vBCIBSCBS>0\.00<\/vBCIBSCBS>/);
+
+    expect(xml).toContain('<vIBS>0.00</vIBS><vCredPres>');
+
+    expect(xml).toContain('<vNFTot>1500.00</vNFTot>');
+
+    expect(xml).not.toContain('<gEstornoCred><vIBSEstCred>');
+  });
+
+  it('refuses what the wire cannot carry', () => {
+    const t = {
+      finNFe: 6,
+      tpNFDebito: TP_NF_DEBITO.anulacaoCreditoSaidaImuneIsenta,
+      tpNFCredito: null,
+    };
+
+    const ajuste = { cClassTrib: '811001', grupo: grupoDeAjusteDoTipo(t)!, vIBS: 1, vCBS: 1 };
+
+    const somente = { emitRtc: true, grupos: modoGruposImposto(t) };
+
+    // gAjusteCompet without a real competência.
+
+    for (const competApur of [null, '2026-13']) {
+      expect(() =>
+        buildImpostoXml(IMPOSTO, { vProd: 1 }, { ...somente, ajuste: { ...ajuste, competApur } }),
+      ).toThrow(/competApur as AAAA-MM/);
+    }
+
+    // The RTC off.
+
+    expect(() =>
+      buildImpostoXml(
+        IMPOSTO,
+        { vProd: 1 },
+        { emitRtc: false, ajuste: { ...ajuste, competApur: '2026-01' } },
+      ),
+    ).toThrow(/emit the Reforma Tributária/);
+
+    expect(() =>
+      aggregateTotals(
+        [{ item: { vProd: 1 }, imposto: IMPOSTO, ajuste: { ...ajuste, competApur: '2026-01' } }],
+        {},
+        {},
+      ),
+    ).toThrow(/emit the Reforma Tributária/);
+
+    // A negative amount.
+
+    expect(() =>
+      buildImpostoXml(
+        IMPOSTO,
+        { vProd: 1 },
+        { ...somente, ajuste: { ...ajuste, vIBS: -1, competApur: '2026-01' } },
+      ),
+    ).toThrow();
+  });
+
+  it('near-miss: without an ajuste the same item keeps its ordinary gIBSCBS', () => {
+    const xml = buildImpostoXml(IMPOSTO, { vProd: 1500 }, { emitRtc: true });
+
+    expect(xml).toContain('<gIBSCBS>');
+
+    expect(xml).toContain('<cClassTrib>000001</cClassTrib>');
+  });
+});
+
+describe('generateNFe — NT 2025.002 ide/emit fields (#331)', () => {
+  const XSD_INPUT: GeneratorInput = { ...BASE_INPUT, filial: { ...FILIAL, cnae: null } };
+  const CHAVE_A = '35260514200166000187550010000000071000000011';
+  const CHAVE_B = '35200714200166000187550010000000071000000018';
+  const com = (rtc: GeneratorInput['rtc']) => generateNFe({ ...XSD_INPUT, rtc }).nfeXml;
+  const xsdValida = async (rtc: GeneratorInput['rtc']) =>
+    expect(validateXsd('NFe', signNFe(com(rtc), fixtureCertificate()))).resolves.toBeUndefined();
+
+  it('without rtc (or with an empty one) the XML is byte-identical', () => {
+    const sem = generateNFe(XSD_INPUT).nfeXml;
+    expect(com({})).toBe(sem);
+    expect(com({ pagAntecipado: [] })).toBe(sem);
+  });
+
+  it('dPrevEntrega sits right after dhEmi and XSD-validates', async () => {
+    expect(com({ dPrevEntrega: '2026-06-01' })).toMatch(
+      /<\/dhEmi><dPrevEntrega>2026-06-01<\/dPrevEntrega><tpNF>/,
+    );
+    await xsdValida({ dPrevEntrega: '2026-06-01' });
+    expect(() => com({ dPrevEntrega: '01/06/2026' })).toThrow(NFeIdeError);
+  });
+
+  it('gPagAntecipado closes the ide, one refNFe per nota, and XSD-validates', async () => {
+    expect(com({ pagAntecipado: [CHAVE_A, CHAVE_B] })).toContain(
+      `<gPagAntecipado><refNFe>${CHAVE_A}</refNFe><refNFe>${CHAVE_B}</refNFe></gPagAntecipado></ide>`,
+    );
+    await xsdValida({ pagAntecipado: [CHAVE_A, CHAVE_B] });
+    expect(() => com({ pagAntecipado: ['123'] })).toThrow(/gPagAntecipado\.refNFe/);
+    expect(() => com({ pagAntecipado: Array(100).fill(CHAVE_A) })).toThrow(/at most 99/);
+  });
+
+  it('emit/ISUFEmit closes the emit group and XSD-validates; 7 digits is refused', async () => {
+    expect(com({ isufEmit: '200123456' })).toMatch(
+      /<CRT>1<\/CRT><ISUFEmit>200123456<\/ISUFEmit><\/emit>/,
+    );
+    await xsdValida({ isufEmit: '200123456' });
+    expect(() => com({ isufEmit: '2001234' })).toThrow(NFePartiesError);
+  });
+
+  it('gCompraGov (library-only) sits before gPagAntecipado and XSD-validates', async () => {
+    const compraGov = {
+      tpEnteGov: '2',
+      pRedutor: 12.5,
+      tpOperGov: '2',
+      refDFeAnt: [CHAVE_A],
+    } as const;
+    expect(com({ compraGov, pagAntecipado: [CHAVE_B] })).toContain(
+      '<gCompraGov><tpEnteGov>2</tpEnteGov><pRedutor>12.5000</pRedutor><tpOperGov>2</tpOperGov>' +
+        `<refDFeAnt>${CHAVE_A}</refDFeAnt></gCompraGov><gPagAntecipado>`,
+    );
+    await xsdValida({ compraGov });
+    await xsdValida({ compraGov: { tpEnteGov: '4', pRedutor: 0, tpOperGov: '1' } });
+  });
+
+  it('gCompraGov refuses what BB05 refuses on shape alone', () => {
+    const gov = (tpOperGov: '1' | '2' | '3' | '4', refDFeAnt: string[]) => () =>
+      buildCompraGov({ tpEnteGov: '1', pRedutor: 10, tpOperGov, refDFeAnt });
+    expect(gov('1', [CHAVE_A])).toThrow(/tpOperGov 1 takes 0/); // BB05-10
+    expect(gov('2', [])).toThrow(/tpOperGov 2 takes 1/); // BB05-20
+    expect(gov('2', [CHAVE_A, CHAVE_B])).toThrow(/tpOperGov 2 takes 1/); // BB05-30
+    expect(gov('3', [])).toThrow(/tpOperGov 3 takes 1–99/); // BB05-40
+    expect(gov('4', [CHAVE_A])).toThrow(/tpOperGov 4 takes 0/); // BB05-50
+    expect(gov('3', [CHAVE_A, CHAVE_A])).toThrow(/same DF-e twice/); // BB05-140
+    // Near-misses: the allowed counts pass.
+    expect(gov('3', [CHAVE_A, CHAVE_B])).not.toThrow();
+    expect(gov('1', [])).not.toThrow();
+    expect(() => buildCompraGov({ tpEnteGov: '1', pRedutor: 101, tpOperGov: '1' })).toThrow(
+      /pRedutor/,
     );
   });
 });

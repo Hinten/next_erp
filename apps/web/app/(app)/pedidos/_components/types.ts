@@ -128,6 +128,7 @@ export interface PedidoFormState {
   entradasRelacionadas: string[] | null;
   saidasRelacionadas: string[] | null;
   chNFeReferenciadas: string[] | null;
+  chNFePagamentoAntecipado: string[] | null;
   itens: Record<string, ItemDoPedido[]>;
   itensIds: string[];
   itensDevolvidos: Record<string, Record<string, ItemDoPedido[]>> | null;

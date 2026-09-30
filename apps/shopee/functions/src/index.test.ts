@@ -3,11 +3,20 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import { nfev4Collection, produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
+import { nfeMeta } from '@delfrance/schemas';
 
 import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
+import {
+  NFE_SHOPEE_MAX_TENTATIVAS,
+  SHOPEE_NFE_UPLOAD_QUEUE,
+} from '../../lib/shopee/nfe/constantesNfe';
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
+import {
+  ENVIO_PRECO_MAX_TENTATIVAS,
+  SHOPEE_PRICE_SYNC_QUEUE,
+} from '../../lib/shopee/precos/constantesPreco';
 import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 
 /**
@@ -65,7 +74,9 @@ const {
   backfillShopeeOrders,
   monitorShopeePushConfig,
   processShopeeMassImport,
+  processShopeeNfeUpload,
   processShopeeNotification,
+  processShopeePriceSync,
   reprocessShopeeNotifications,
   sendShopeeStock,
   sweepShopeeAuthorizationExpiry,
@@ -76,6 +87,7 @@ const {
   sweepShopeeStockReconciliacao,
   sweepShopeeStuckReservations,
   onProdutoShopeeLinkChanged,
+  onNfeAprovadaShopee,
 } = modulo;
 
 afterAll(() => {
@@ -124,13 +136,35 @@ const AGENDAMENTOS = {
  * new assertion written. Its own numbers (120 s, and that the handler never
  * sets `ignoreSyncFlag`) are in `sendStock.test.ts`.
  *
+ * The FOURTH arrived in step 13 (`processShopeePriceSync`, the account-wide
+ * price job) and landed COVERED the same way. Its own numbers (300 s, the
+ * literal `{1, 1}` and `maxAttempts` naming `ENVIO_PRECO_MAX_TENTATIVAS`) are in
+ * `processPriceSync.test.ts`; the equality is pinned once more below, because
+ * the job reads that same constant to decide which attempt is its LAST.
+ *
+ * The FIFTH arrived in step 14 (`processShopeeNfeUpload`, the NF-e XML upload)
+ * and landed COVERED the same way — its 4 × 120 + 3 × 300 = 1380 s ladder is
+ * the only 4-attempt ladder of the five, below the three 1500 s ones (the
+ * push, the mass import and the price job), which is why the numbers are
+ * pinned again in its own describe below, beside `maxAttempts` naming
+ * `NFE_SHOPEE_MAX_TENTATIVAS` (the handler finalizes a transient on the attempt
+ * that constant calls LAST).
+ *
  * Each queue's per-option assertions stay in its own sibling file
  * (`processNotification.test.ts`, `processMassImport.test.ts`,
- * `sendStock.test.ts`), which mock their channels; what lives HERE is the
+ * `sendStock.test.ts`, `processPriceSync.test.ts`, `processNfeUpload.test.ts`),
+ * which mock their channels;
+ * what lives HERE is the
  * cross-cutting set — the exact secrets, the retry cap, the timeout, the ladder
  * — plus the completeness check.
  */
-const FILAS = { processShopeeNotification, processShopeeMassImport, sendShopeeStock } as const;
+const FILAS = {
+  processShopeeNotification,
+  processShopeeMassImport,
+  sendShopeeStock,
+  processShopeePriceSync,
+  processShopeeNfeUpload,
+} as const;
 
 /**
  * Every FIRESTORE-TRIGGER export of this codebase — the third sibling of
@@ -147,8 +181,38 @@ const FILAS = { processShopeeNotification, processShopeeMassImport, sendShopeeSt
  * expensive typo in the repo: an `onDocument*` that omits `database` — or
  * spells it `(default)` — deploys fine, binds to a database that does not exist
  * and NEVER FIRES, with nothing anywhere to say so.
+ *
+ * The SECOND arrived in step 14 (#1522, `onNfeAprovadaShopee`, the NF-e
+ * approval trigger). ⚠️ Until then every per-trigger assertion NAMED
+ * `onProdutoShopeeLinkChanged`, so a second trigger would have landed with its
+ * `database`, `retry`, region and secrets read by nothing — the map exhaustive
+ * and the coverage empty. The three `todo GATILHO…` tests below walk the map
+ * instead, and {@link CAMINHOS_DOS_GATILHOS} makes the document path a
+ * per-trigger row the compiler demands, so a THIRD trigger lands covered.
  */
-const GATILHOS = { onProdutoShopeeLinkChanged } as const;
+const GATILHOS = { onProdutoShopeeLinkChanged, onNfeAprovadaShopee } as const;
+
+/**
+ * The document path each trigger must listen on — derived from the HANDLE,
+ * never a second literal, plus an ANCHOR literal so the comparison can never be
+ * two `undefined`s agreeing. `satisfies` over the {@link GATILHOS} keys: a
+ * trigger with no row here does not compile.
+ */
+const CAMINHOS_DOS_GATILHOS = {
+  onProdutoShopeeLinkChanged: {
+    colecao: produtoShopeeLinkCollection.resolvePath({ produtoId: '{produtoId}' }),
+    ancora: 'produtos/{produtoId}/prodshopee',
+    folha: '{linkId}',
+  },
+  onNfeAprovadaShopee: {
+    colecao: nfev4Collection.resolvePath({ pedidoId: '{pedidoId}' }),
+    ancora: 'pedidos/{pedidoId}/nfev4',
+    folha: '{nfeId}',
+  },
+} as const satisfies Record<
+  keyof typeof GATILHOS,
+  { colecao: string; ancora: string; folha: string }
+>;
 
 function endpointOf(fn: unknown): Record<string, unknown> {
   return (fn as { __endpoint: Record<string, unknown> }).__endpoint;
@@ -719,6 +783,51 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
     expect(exportados.sort()).toEqual(Object.keys(GATILHOS).sort());
   });
 
+  it("todo GATILHO se liga ao banco NOMEADO 'default' — nunca a '(default)' nem a um ausente", () => {
+    // The step-11 describe's assertions, walked over the MAP (#1522): with two
+    // triggers, a describe that names one leaves the other's `database` read by
+    // nothing. Exact equality on the parsed field, never a `toContain` over the
+    // serialized endpoint — that blob always carries `"namespace":"(default)"`,
+    // so a substring check passes in every case.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const banco = gatilhoDeEvento(fn).eventFilters?.database;
+      expect(banco, nome).toBe('default');
+      // QUASE-FALHA: the sentinel spelling and the absent value, both refused.
+      expect(banco, nome).toBeDefined();
+      expect(banco, nome).not.toBe('(default)');
+    }
+  });
+
+  it('todo GATILHO declara retry: true, a região inlinada e NENHUM segredo', () => {
+    // `retry: true` is at-least-once for transient Firestore failures; without
+    // it the event is dropped on the first one. The region rides the bare
+    // `import './options'` at the top of index.ts (#1108). And no trigger here
+    // calls Shopee — a needless `secrets:` binding is one more Secret Manager
+    // grant that can 403 the function at startup.
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      expect(gatilhoDeEvento(fn).retry, nome).toBe(true);
+      expect(endpointOf(fn).region, nome).toEqual([process.env.FUNCTIONS_REGION]);
+      expect(endpointOf(fn).secretEnvironmentVariables ?? [], nome).toEqual([]);
+    }
+  });
+
+  it('todo GATILHO escuta o caminho da sua linha em CAMINHOS_DOS_GATILHOS — e dois nunca o mesmo', () => {
+    // A guessed collection name deploys fine and never fires, exactly like a
+    // wrong `database`. Distinctness catches a whole trigger copy-pasted with
+    // the first one's `document:` kept.
+    const caminhos: string[] = [];
+    for (const [nome, fn] of Object.entries(GATILHOS)) {
+      const esperado = CAMINHOS_DOS_GATILHOS[nome as keyof typeof GATILHOS];
+      const caminho = gatilhoDeEvento(fn).eventFilterPathPatterns?.document;
+      expect(caminho, nome).toBe(`${esperado.colecao}/${esperado.folha}`);
+      // ÂNCORA: the handle really resolved a wildcard path.
+      expect(esperado.colecao, nome).toBe(esperado.ancora);
+      caminhos.push(caminho ?? '');
+    }
+    expect(new Set(caminhos).size).toBe(caminhos.length);
+    expect(Object.keys(CAMINHOS_DOS_GATILHOS).sort()).toEqual(Object.keys(GATILHOS).sort());
+  });
+
   it('as TRÊS famílias são DISJUNTAS — nada é agendamento, fila e gatilho ao mesmo tempo', () => {
     // Um export que aparecesse em dois mapas satisfaria as duas asserções de
     // exaustividade correspondentes e teria as suas opções lidas pelo conjunto
@@ -781,10 +890,12 @@ describe('processShopeeMassImport', () => {
     // de crescer: as filas são exportadas, são DISTINTAS entre si, e o módulo
     // não exporta uma a mais (isso é do teste de exaustividade acima).
     //
-    // ⚠️ O passo 12 trouxe a TERCEIRA (`sendShopeeStock`) e é por isto que os
-    // dois literais abaixo moram aqui: um mapa que cresce sem que a contagem
-    // cresça junto volta a ser uma lista, e a asserção passaria descrevendo
-    // uma codebase que não existe mais.
+    // ⚠️ O passo 12 trouxe a TERCEIRA (`sendShopeeStock`), o passo 13 a
+    // QUARTA (`processShopeePriceSync`) e o passo 14 a QUINTA
+    // (`processShopeeNfeUpload`), e é por isto que os dois literais
+    // abaixo moram aqui: um mapa que cresce sem que a contagem cresça junto
+    // volta a ser uma lista, e a asserção passaria descrevendo uma codebase
+    // que não existe mais.
     const comFila = Object.entries(modulo as unknown as Record<string, unknown>)
       .filter(([, valor]) => {
         const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
@@ -793,12 +904,18 @@ describe('processShopeeMassImport', () => {
       .map(([nome]) => nome);
     expect(comFila.sort()).toEqual([
       'processShopeeMassImport',
+      'processShopeeNfeUpload',
       'processShopeeNotification',
+      'processShopeePriceSync',
       'sendShopeeStock',
     ]);
-    expect(Object.keys(FILAS)).toHaveLength(3);
+    expect(Object.keys(FILAS)).toHaveLength(5);
     expect(processShopeeMassImport).not.toBe(processShopeeNotification);
     expect(sendShopeeStock).not.toBe(processShopeeMassImport);
+    expect(processShopeePriceSync).not.toBe(sendShopeeStock);
+    expect(processShopeePriceSync).not.toBe(processShopeeMassImport);
+    expect(processShopeeNfeUpload).not.toBe(processShopeePriceSync);
+    expect(processShopeeNfeUpload).not.toBe(sendShopeeStock);
   });
 
   it('o nome do export é exatamente SHOPEE_MASS_IMPORT_QUEUE', () => {
@@ -847,13 +964,149 @@ describe('sendShopeeStock (passo 12)', () => {
       "'[shopee] function-name drift: functions/src/sendStock.ts must export a '",
     );
     expect(fonte).toContain('if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers))');
-    // ÂNCORA: as três travas são três, e cada uma nomeia um arquivo diferente —
-    // uma frase que aparecesse duas vezes seria uma cópia que esqueceu o nome.
+    // ÂNCORA: as travas são CINCO desde o passo 14, e cada uma nomeia um
+    // arquivo diferente — uma frase que aparecesse duas vezes seria uma cópia
+    // que esqueceu o nome.
     const travas = fonte.match(/function-name drift: functions\/src\/[A-Za-z]+\.ts/g) ?? [];
     expect(travas.sort()).toEqual([
       'function-name drift: functions/src/processMassImport.ts',
+      'function-name drift: functions/src/processNfeUpload.ts',
       'function-name drift: functions/src/processNotification.ts',
+      'function-name drift: functions/src/processPriceSync.ts',
       'function-name drift: functions/src/sendStock.ts',
     ]);
+  });
+});
+
+describe('processShopeePriceSync (passo 13)', () => {
+  it('é a QUARTA fila, e o nome do export é exatamente SHOPEE_PRICE_SYNC_QUEUE', () => {
+    // Gêmea das três asserções acima (M48). O risco é o da importação em massa
+    // com um TERCEIRO braço: o job reenfileira contra a PRÓPRIA fila a cada
+    // continuação de plano ou dreno, na pausa por rajada e no parque da cota
+    // diária — então um rename pela metade não quebra o primeiro despacho da
+    // rota, quebra a CONTINUAÇÃO, e o job fica `running` até a recuperação de
+    // órfão de seis horas. `index.ts` afirma o par na carga do módulo; isto
+    // fixa a mesma propriedade offline.
+    expect(SHOPEE_PRICE_SYNC_QUEUE).toBe('processShopeePriceSync');
+    expect(SHOPEE_PRICE_SYNC_QUEUE in modulo).toBe(true);
+    expect((modulo as unknown as Record<string, unknown>)[SHOPEE_PRICE_SYNC_QUEUE]).toBe(
+      processShopeePriceSync,
+    );
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_MASS_IMPORT_QUEUE);
+    expect(SHOPEE_PRICE_SYNC_QUEUE).not.toBe(SHOPEE_STOCK_SEND_QUEUE);
+  });
+
+  it('a quarta trava de rename é um `if` PRÓPRIO que nomeia o seu arquivo', () => {
+    // A mesma propriedade textual da terceira: a frase inteira, caminho
+    // incluído, existe como UM literal, e a condição testa a constante do PREÇO
+    // contra o namespace do módulo do PREÇO — um `if` copiado que esquecesse um
+    // dos dois nomes compilaria e compararia o par errado.
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+
+    expect(fonte).toContain(
+      "'[shopee] function-name drift: functions/src/processPriceSync.ts must export a '",
+    );
+    expect(fonte).toContain('if (!(SHOPEE_PRICE_SYNC_QUEUE in priceSyncHandlers))');
+    expect(fonte).toContain("import * as priceSyncHandlers from './processPriceSync';");
+  });
+
+  it('PAR: maxAttempts da fila === ENVIO_PRECO_MAX_TENTATIVAS — a última tentativa do job É a da fila', () => {
+    // O job compara `retryCount` com `ENVIO_PRECO_MAX_TENTATIVAS - 1` para
+    // decidir carimbar `failed` em vez de relançar. Uma fila com MAIS
+    // tentativas carimbaria antes da última; uma com MENOS descartaria a task
+    // com o job `running` — e nada re-conduz esta fila. Lido do ENDPOINT
+    // declarado, não da fonte: é o número que o deploy grava na fila.
+    const gatilho = endpointOf(processShopeePriceSync).taskQueueTrigger as {
+      retryConfig?: { maxAttempts?: number };
+    };
+    expect(gatilho.retryConfig?.maxAttempts).toBe(ENVIO_PRECO_MAX_TENTATIVAS);
+    // QUASE-IGUAL: a constante continua sendo 3 — o número que a escada de
+    // 1500 s pressupõe (3 × 300 + 2 × 300).
+    expect(ENVIO_PRECO_MAX_TENTATIVAS).toBe(3);
+    expect(endpointOf(processShopeePriceSync).timeoutSeconds).toBe(300);
+  });
+});
+
+describe('onNfeAprovadaShopee (passo 14)', () => {
+  it('escuta pedidos/{pedidoId}/nfev4/{nfeId} — a meta do schema e o handle concordam', () => {
+    // ⚠️ Two sources that must agree, and both are pinned: the trigger reads
+    // `nfeMeta.collectionPath` and every handler read goes through
+    // `nfev4Collection`. A trigger on one path and a handler reading another
+    // would enqueue tasks that answer `nfe-nao-encontrada` for ever.
+    const doHandle = nfev4Collection.resolvePath({ pedidoId: '{pedidoId}' });
+
+    expect(gatilhoDeEvento(onNfeAprovadaShopee).eventFilterPathPatterns?.document).toBe(
+      `${nfeMeta.collectionPath}/{nfeId}`,
+    );
+    expect(nfeMeta.collectionPath).toBe(doHandle);
+    // ÂNCORA: neither side is `undefined`, and the leaf is the real one.
+    expect(doHandle).toBe('pedidos/{pedidoId}/nfev4');
+  });
+
+  it("⚠️ liga-se ao banco NOMEADO 'default', com retry e sem segredo", () => {
+    expect(gatilhoDeEvento(onNfeAprovadaShopee).eventFilters?.database).toBe('default');
+    expect(gatilhoDeEvento(onNfeAprovadaShopee).retry).toBe(true);
+    expect(endpointOf(onNfeAprovadaShopee).secretEnvironmentVariables ?? []).toEqual([]);
+  });
+
+  it('⛔ o export NÃO se chama `onNfeAprovada` — o nome que o Mercado Livre já implanta', () => {
+    // Function names are per PROJECT, not per codebase, and nothing in the repo
+    // asserts cross-codebase uniqueness (register row 201, #1707): a Shopee
+    // `onNfeAprovada` would replace — or be replaced by — Mercado Livre's at
+    // deploy time. PAR: the Shopee name is exported; QUASE-FALHA: the ML one
+    // is not.
+    expect('onNfeAprovadaShopee' in modulo).toBe(true);
+    expect('onNfeAprovada' in modulo).toBe(false);
+  });
+});
+
+describe('processShopeeNfeUpload (passo 14)', () => {
+  it('é a QUINTA fila, e o nome do export é exatamente SHOPEE_NFE_UPLOAD_QUEUE', () => {
+    // Gêmea das quatro asserções acima. Aqui há produtores FORA do handler — o
+    // gatilho e a rota `/enviar-nfe` — além das autorreenfileiradas (SERPRO,
+    // pausas, reverificação), então um rename pela metade derruba o PRIMEIRO
+    // envio de toda NF-e aprovada com os dois produtores respondendo sucesso, e
+    // não há varredura de NF-e para achá-la depois.
+    expect(SHOPEE_NFE_UPLOAD_QUEUE).toBe('processShopeeNfeUpload');
+    expect(SHOPEE_NFE_UPLOAD_QUEUE in modulo).toBe(true);
+    expect((modulo as unknown as Record<string, unknown>)[SHOPEE_NFE_UPLOAD_QUEUE]).toBe(
+      processShopeeNfeUpload,
+    );
+    expect(SHOPEE_NFE_UPLOAD_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
+    expect(SHOPEE_NFE_UPLOAD_QUEUE).not.toBe(SHOPEE_MASS_IMPORT_QUEUE);
+    expect(SHOPEE_NFE_UPLOAD_QUEUE).not.toBe(SHOPEE_STOCK_SEND_QUEUE);
+    expect(SHOPEE_NFE_UPLOAD_QUEUE).not.toBe(SHOPEE_PRICE_SYNC_QUEUE);
+  });
+
+  it('a quinta trava de rename é um `if` PRÓPRIO que nomeia o seu arquivo', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+
+    expect(fonte).toContain(
+      "'[shopee] function-name drift: functions/src/processNfeUpload.ts must export a '",
+    );
+    expect(fonte).toContain('if (!(SHOPEE_NFE_UPLOAD_QUEUE in nfeUploadHandlers))');
+    expect(fonte).toContain("import * as nfeUploadHandlers from './processNfeUpload';");
+  });
+
+  it('PAR: maxAttempts da fila === NFE_SHOPEE_MAX_TENTATIVAS — a última tentativa do handler É a da fila', () => {
+    // The handler finalizes a transient (`canal-indisponivel` + one recheck)
+    // when `retryCount >= NFE_SHOPEE_MAX_TENTATIVAS - 1`. A queue with MORE
+    // attempts would finalize before its real last one; one with FEWER would
+    // drop a task on a rethrow meant to be retried — and with no NF-e sweep,
+    // that upload would never happen. Read off the ENDPOINT.
+    const gatilho = endpointOf(processShopeeNfeUpload).taskQueueTrigger as {
+      retryConfig?: { maxAttempts?: number; maxBackoffSeconds?: number };
+    };
+    expect(gatilho.retryConfig?.maxAttempts).toBe(NFE_SHOPEE_MAX_TENTATIVAS);
+    // QUASE-IGUAL: the constant is still 4 and the timeout still 120 — the pair
+    // the 1380 s ladder presupposes (4 × 120 + 3 × 300), the only 4-attempt
+    // ladder of the five, below the three 1500 s ones.
+    expect(NFE_SHOPEE_MAX_TENTATIVAS).toBe(4);
+    expect(endpointOf(processShopeeNfeUpload).timeoutSeconds).toBe(120);
+    const escada =
+      NFE_SHOPEE_MAX_TENTATIVAS * 120 +
+      (NFE_SHOPEE_MAX_TENTATIVAS - 1) * (gatilho.retryConfig?.maxBackoffSeconds ?? 0);
+    expect(escada).toBe(1380);
   });
 });

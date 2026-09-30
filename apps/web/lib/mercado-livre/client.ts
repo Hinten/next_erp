@@ -1037,9 +1037,9 @@ export function createMercadoLivreClient(config: {
     const blob = await res.blob();
     return {
       blob,
-      // The route names the file via Content-Disposition, but the proxy does
-      // not CORS-expose the header to the browser — tolerate its absence with
-      // a client-side fallback (nfe `fetchArtifact` precedent).
+      // The route names the file via Content-Disposition, which the proxy
+      // CORS-exposes (#1680). Keep the client-side fallback anyway: a backend
+      // deployed before that change still hides the header.
       filename:
         filenameFromDisposition(res.headers.get('content-disposition')) ?? fallback.filename,
       contentType: res.headers.get('content-type') ?? fallback.contentType,

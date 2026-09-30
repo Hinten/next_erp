@@ -69,6 +69,7 @@ const SENT_FILIAL: Filial = {
   cnpj: SENT_CNPJ_EMIT,
   ie: SENT_IE_EMIT,
   iest: null,
+  isuf: null,
   imun: null,
   ultimaModificacao: null,
   sede: {
@@ -150,6 +151,8 @@ const SENT_OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
+  tpNFDebito: null,
+  tpNFCredito: null,
   indPres: IND_PRES_OPERACAO.naoPresencialInternet,
   indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',

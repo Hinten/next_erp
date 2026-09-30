@@ -74,7 +74,10 @@ schema-inválido nunca deve chegar à SEFAZ (alimenta o caminho de banimento 656
   `IE_SENTINELA.naoContribuinte` — o sentinel carimba `indIEDest='9'` e atrai a
   cStat **300** (NT 2025.001, "tipo da IE difere de Não Contribuinte");
 - com IE real, `parties.ts` carimba `indIEDest='1'` e emite `<IE>` sozinho, e
-  `ide.ts` vira `idDest='2'` sozinho a partir de `destUF !== filialUF`;
+  `ide.ts` vira `idDest='2'` sozinho quando a UF de DESTINO da operação difere
+  da UF da filial — `ufDestinoOperacao` (`generator/destino.ts`): a UF do
+  endereço de ENTREGA quando o pedido tem um documento de entrega distinto do
+  fiscal (e aí o `<entrega>` vai junto, #422), senão a UF fiscal;
 - a operação passa a ser revenda interestadual: **CFOP `6102`** e
   `ehConsumidorFinal: false` (`indFinal='0'`). Deixar `true` ao lado de uma IE
   real afirma que um contribuinte comprou como consumidor final;

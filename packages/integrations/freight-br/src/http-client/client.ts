@@ -1,5 +1,5 @@
 /**
- * Browser-safe typed client for the `apps/integrations` Melhor Envio
+ * Browser-safe typed client for the `apps/melhor-envio` Melhor Envio
  * freight routes. Mirrors `@delfrance/integrations-nfe/http-provider`:
  * a Bearer Firebase ID token from the caller's auth context, typed
  * results, and HTTP statuses narrowed into typed errors. **Zero server
@@ -10,7 +10,14 @@
  */
 import { z } from 'zod';
 
-import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import {
+  abrirPrazo,
+  ehTempoEsgotadoNoGateway,
+  envelopeDeErro,
+  lerRespostaJson,
+  type PrazoDeTransporte,
+  resumirCampos,
+} from '@delfrance/core/wire';
 
 import {
   agencySchema,
@@ -30,6 +37,7 @@ import {
   FreightNotFoundError,
   FreightReauthRequiredError,
   FreightServerError,
+  FreightTimeoutError,
   FreightValidationError,
 } from './errors';
 
@@ -90,7 +98,7 @@ export const freightRastrearResultSchema = z.object({ tracking: z.unknown() });
 export type FreightRastrearResult = z.infer<typeof freightRastrearResultSchema>;
 
 export interface FreightHttpClientConfig {
-  /** Origin of `apps/integrations` (dev: `http://localhost:3001`). */
+  /** Origin of `apps/melhor-envio` (dev: `http://localhost:3005`). */
   readonly baseUrl: string;
   readonly getAuthToken: () => Promise<string>;
   readonly fetch?: typeof globalThis.fetch;
@@ -123,6 +131,94 @@ export interface FreightHttpClient {
   imprimir(intFreteId: string, printLabelId: string): Promise<FreightImprimirResult>;
   /** Get the tracking payload for a label. */
   rastrear(intFreteId: string, printLabelId: string): Promise<FreightRastrearResult>;
+}
+
+/**
+ * How long this client waits for each route (#1094).
+ *
+ * `fetch()` has no default timeout, so before this a route that accepted the
+ * connection and never answered left the caller spinning for ever. But no
+ * route observes a client abort — the server keeps running — so a deadline is
+ * only harmless where a RE-SEND is harmless:
+ *
+ *  - `curto` — the route has no effect a repeat could duplicate (a quote, a
+ *    read, a label URL, a tracking lookup; `oauthStart`'s overwritten nonce
+ *    fails CLOSED on a racing repeat). 60 s: a cold start plus up to three
+ *    sequential Melhor Envio calls.
+ *  - `longo` — a repeat could duplicate the effect (`comprar` pays for a label).
+ *    It must be at least the backend's request ceiling (App Hosting's 300 s)
+ *    plus a margin for the CORS preflight and a cold start, so the abort never
+ *    fires before the platform's own 504 and opens no window that 504 does not.
+ *
+ * ⚠️ There is deliberately no config knob: a caller-tunable budget on
+ * `comprar` is exactly how that window would reopen. The ceiling invariant is
+ * pinned by `packages/config-eslint/rules/http-client-timeout-ceiling.test.js`.
+ */
+export const FREIGHT_PRAZO_MS = { curto: 60_000, longo: 360_000 } as const;
+
+type Nivel = keyof typeof FREIGHT_PRAZO_MS;
+type Operacao = keyof FreightHttpClient;
+
+/**
+ * Every method's tier. `satisfies Record<keyof FreightHttpClient, …>` makes a
+ * new method a compile error until someone decides whether repeating it is
+ * safe — that decision is the whole point of the table.
+ */
+export const FREIGHT_NIVEL_POR_OPERACAO = {
+  oauthStart: 'curto',
+  calculate: 'curto',
+  conta: 'curto',
+  agencias: 'curto',
+  comprar: 'longo',
+  imprimir: 'curto',
+  rastrear: 'curto',
+} as const satisfies Record<Operacao, Nivel>;
+
+function mensagemDeTempoEsgotado(nivel: Nivel, timeoutMs: number | null): string {
+  if (nivel === 'longo') {
+    return (
+      'O serviço de frete não respondeu a tempo e a compra pode ainda estar em andamento. ' +
+      'Aguarde alguns minutos e confira se a etiqueta já aparece no pedido antes de comprar de novo.'
+    );
+  }
+  const quando = timeoutMs === null ? 'a tempo' : `em ${String(Math.round(timeoutMs / 1000))} s`;
+  return `O serviço de frete não respondeu ${quando}. Tente novamente.`;
+}
+
+/**
+ * Map a rejection from the transport — the `fetch` itself OR the body read —
+ * to this client's taxonomy.
+ *
+ * ⚠️ Classified by asking the deadline (`motivoDeTempoEsgotado()`), never by
+ * `err instanceof DOMException`: `fetch` rejects with the signal's reason
+ * as-is, and under jsdom that `DOMException` is a different realm's class.
+ *
+ * ⚠️ A failure that arrives LATE is a timeout too (`origem: 'gateway'`). This
+ * client runs in the browser, cross-origin to `apps/melhor-envio`, and the
+ * platform's own 504 comes from its frontend without CORS headers — so it
+ * reaches `fetch` as a `TypeError`, never as a status. Without this rule a
+ * `comprar` that outlived the platform would read "falha de rede" and invite
+ * the second-label click. See `LIMIAR_FALHA_TARDIA_MS`.
+ *
+ * Everything else stays today's typed wrap, now also covering the body read,
+ * which used to sit outside any `try` and let a mid-body failure escape raw.
+ */
+function erroDeTransporte(
+  err: unknown,
+  prazo: PrazoDeTransporte,
+  operacao: Operacao,
+  timeoutMs: number,
+): FreightNetworkError {
+  const origem = prazo.motivoDeTempoEsgotado();
+  if (origem !== null) {
+    const ms = origem === 'prazo' ? timeoutMs : null;
+    return new FreightTimeoutError(
+      mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], ms),
+      { origem, timeoutMs: ms, operacao },
+      err,
+    );
+  }
+  return new FreightNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
 }
 
 function normalizeBase(baseUrl: string): string {
@@ -181,11 +277,14 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
   const doFetch = config.fetch ?? globalThis.fetch;
 
   async function call<S extends z.ZodType>(
+    operacao: Operacao,
     method: 'GET' | 'POST',
     path: string,
     schema: S,
     body?: unknown,
   ): Promise<z.infer<S>> {
+    // Outside the deadline: Firebase Auth bounds its own token refresh, and the
+    // window measures the ROUTE, not the SDK.
     const token = await config.getAuthToken();
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -197,14 +296,24 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
       init.body = JSON.stringify(body);
     }
 
+    const timeoutMs = FREIGHT_PRAZO_MS[FREIGHT_NIVEL_POR_OPERACAO[operacao]];
+    const prazo = abrirPrazo(timeoutMs);
+    init.signal = prazo.signal;
+
+    // ⚠️ The body read is INSIDE the window and the mapping: a route that sends
+    // its headers and then stalls would otherwise hang past the deadline, and an
+    // abort landing mid-body would escape as a raw DOMException that every
+    // caller's `instanceof` chain rethrows.
     let res: Response;
+    let text: string;
     try {
       res = await doFetch(`${baseUrl}${path}`, init);
+      text = await res.text();
     } catch (err) {
-      throw new FreightNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
+      throw erroDeTransporte(err, prazo, operacao, timeoutMs);
+    } finally {
+      prazo.liberar();
     }
-
-    const text = await res.text();
 
     if (!res.ok) {
       let parsed: unknown = null;
@@ -219,6 +328,18 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
             logarCorpoNaoJson(path, res.status, text);
           } else throw err;
         }
+      }
+      // ⚠️ Before the status mapping: a 504 no route of ours wrote is the
+      // platform giving up on the request, and the server may still be running
+      // it. As a `FreightServerError` it would read as a plain failure and invite
+      // the re-click this whole module exists to make safe. (Only a READABLE 504
+      // lands here — same-origin or server-side. The cross-origin browser case
+      // arrives as a late network failure: see `erroDeTransporte`.)
+      if (ehTempoEsgotadoNoGateway(res.status, parsed)) {
+        throw new FreightTimeoutError(
+          mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], null),
+          { origem: 'gateway', timeoutMs: null, operacao },
+        );
       }
       throw errorFromResponse(res.status, parsed);
     }
@@ -256,17 +377,19 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
   return {
     oauthStart: (intFreteId) =>
       call(
+        'oauthStart',
         'GET',
         `/api/freight/melhor-envio/oauth/start?intFreteId=${encodeURIComponent(intFreteId)}`,
         freightOAuthStartResultSchema,
       ),
     calculate: (intFreteId, req) =>
-      call('POST', '/api/freight/melhor-envio/calculate', calculateResponseSchema, {
+      call('calculate', 'POST', '/api/freight/melhor-envio/calculate', calculateResponseSchema, {
         intFreteId,
         ...req,
       }),
     conta: (intFreteId) =>
       call(
+        'conta',
         'GET',
         `/api/freight/melhor-envio/conta?intFreteId=${encodeURIComponent(intFreteId)}`,
         freightContaResultSchema,
@@ -279,25 +402,26 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
         city: params.city,
       });
       return call(
+        'agencias',
         'GET',
         `/api/freight/melhor-envio/agencias?${q.toString()}`,
         freightAgenciasResultSchema,
       );
     },
     comprar: (intFreteId, pedidoId, cartPayload, printLabelId) =>
-      call('POST', '/api/freight/melhor-envio/comprar', freightComprarResultSchema, {
+      call('comprar', 'POST', '/api/freight/melhor-envio/comprar', freightComprarResultSchema, {
         intFreteId,
         pedidoId,
         cartPayload,
         printLabelId: printLabelId ?? null,
       }),
     imprimir: (intFreteId, printLabelId) =>
-      call('POST', '/api/freight/melhor-envio/imprimir', freightImprimirResultSchema, {
+      call('imprimir', 'POST', '/api/freight/melhor-envio/imprimir', freightImprimirResultSchema, {
         intFreteId,
         printLabelId,
       }),
     rastrear: (intFreteId, printLabelId) =>
-      call('POST', '/api/freight/melhor-envio/rastrear', freightRastrearResultSchema, {
+      call('rastrear', 'POST', '/api/freight/melhor-envio/rastrear', freightRastrearResultSchema, {
         intFreteId,
         printLabelId,
       }),

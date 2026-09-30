@@ -13,7 +13,13 @@
  */
 import { z } from 'zod';
 
-import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import {
+  abrirPrazo,
+  ehTempoEsgotadoNoGateway,
+  lerRespostaJson,
+  type PrazoDeTransporte,
+  resumirCampos,
+} from '@delfrance/core/wire';
 import { estadoNFeSchema } from '@delfrance/schemas';
 
 import {
@@ -30,6 +36,7 @@ import {
   NFeRuntimeNotReadyError,
   NFeSchemaError,
   NFeServerError,
+  NFeTimeoutError,
   NFeXsdValidationFailedError,
 } from './errors';
 
@@ -398,6 +405,126 @@ export interface NFeHttpClient {
   deleteCertificado(filialId: string): Promise<void>;
 }
 
+/**
+ * How long this client waits for each route (#1094).
+ *
+ * `fetch()` has no default timeout, so a route that accepted the connection and
+ * never answered left the caller spinning for ever. But no `apps/nfe` route
+ * observes a client abort — the server keeps running, possibly mid-SOAP with
+ * SEFAZ — so a deadline is only harmless where a RE-SEND is harmless:
+ *
+ *  - `curto` (90 s) — the route writes nothing a repeat could duplicate: a
+ *    consult, a status probe, a Consulta Cadastro, a DANFE/CC-e render (whose
+ *    print or save runs only AFTER it resolves). 90 s covers one SEFAZ call
+ *    (the SOAP transport's 60 s) plus a cold start.
+ *  - `longo` — a repeat could overlap a live run: an emission retransmits the
+ *    stored bytes, a CC-e registers a second sequence, `verificar` and
+ *    `processarPendentes` are sequential SEFAZ loops (cStat 656), and the
+ *    certificate pair is two unordered writes. It must be at least the backend's
+ *    request ceiling (App Hosting's 300 s) plus a margin for the CORS preflight
+ *    and a cold start, so the abort never fires before the platform's own 504 and
+ *    opens no window that 504 does not.
+ *
+ * ⚠️ No config knob: a caller-tunable budget on `emitir` is exactly how that
+ * window would reopen. The ceiling invariant is pinned by
+ * `packages/config-eslint/rules/http-client-timeout-ceiling.test.js`.
+ */
+export const NFE_PRAZO_MS = { curto: 90_000, longo: 360_000 } as const;
+
+type Nivel = keyof typeof NFE_PRAZO_MS;
+type Operacao = keyof NFeHttpClient;
+
+/**
+ * Every method's tier. `satisfies Record<keyof NFeHttpClient, …>` makes a new
+ * method a compile error until someone decides whether repeating it is safe.
+ */
+export const NFE_NIVEL_POR_OPERACAO = {
+  emitir: 'longo',
+  emitirLote: 'longo',
+  consultar: 'curto',
+  verificar: 'longo',
+  processarPendentes: 'longo',
+  cancelar: 'longo',
+  inutilizar: 'longo',
+  cartaCorrecao: 'longo',
+  danfe: 'curto',
+  cartaCorrecaoDanfe: 'curto',
+  statusServico: 'curto',
+  consultaCadastro: 'curto',
+  uploadCertificado: 'longo',
+  deleteCertificado: 'longo',
+} as const satisfies Record<Operacao, Nivel>;
+
+/** What the operator should look at before repeating a `longo` operation. */
+const O_QUE_CONFERIR: Partial<Record<Operacao, string>> = {
+  emitir: 'o estado da NF-e',
+  emitirLote: 'o estado das NF-es do lote',
+  cancelar: 'o estado da NF-e',
+  cartaCorrecao: 'as cartas de correção da NF-e',
+  inutilizar: 'as inutilizações da filial',
+  verificar: 'o estado das NF-es',
+  processarPendentes: 'o estado das NF-es pendentes',
+  uploadCertificado: 'o certificado da filial',
+  deleteCertificado: 'o certificado da filial',
+};
+
+function mensagemDeTempoEsgotado(operacao: Operacao, timeoutMs: number | null): string {
+  if (NFE_NIVEL_POR_OPERACAO[operacao] === 'longo') {
+    const alvo = O_QUE_CONFERIR[operacao] ?? 'o resultado';
+    return (
+      'A integração fiscal não respondeu a tempo, e a operação pode ainda estar em andamento ' +
+      `no servidor. Aguarde alguns minutos e confira ${alvo} antes de repetir.`
+    );
+  }
+  const quando = timeoutMs === null ? 'a tempo' : `em ${String(Math.round(timeoutMs / 1000))} s`;
+  return `A integração fiscal não respondeu ${quando}. Tente novamente.`;
+}
+
+/**
+ * Map a rejection from the transport — the `fetch` itself OR the body read.
+ *
+ * ⚠️ Classified by asking the deadline (`motivoDeTempoEsgotado()`), never by
+ * the rejection's class: `fetch` rejects with the abort signal's reason as-is
+ * (a `DOMException` — not the `TypeError` this file used to claim), and under
+ * jsdom that `DOMException` belongs to another realm.
+ *
+ * ⚠️ A failure that arrives LATE is a timeout too (`origem: 'gateway'`). This
+ * client runs in the browser, cross-origin to `apps/nfe`, and the platform's own
+ * 504 comes from its frontend without CORS headers — so it reaches `fetch` as a
+ * `TypeError`, never as a status. As a plain `NFeNetworkError` it was RETRYABLE,
+ * and `withNFeRetry` re-POSTed an emission 200–800 ms later over the run still
+ * talking to SEFAZ. See `LIMIAR_FALHA_TARDIA_MS`.
+ *
+ * Everything else stays today's typed wrap, now also covering the body read,
+ * which used to sit outside any `try`.
+ */
+function erroDeTransporte(
+  err: unknown,
+  prazo: PrazoDeTransporte,
+  operacao: Operacao,
+  timeoutMs: number,
+): NFeNetworkError {
+  const origem = prazo.motivoDeTempoEsgotado();
+  if (origem !== null) {
+    const ms = origem === 'prazo' ? timeoutMs : null;
+    return new NFeTimeoutError(
+      mensagemDeTempoEsgotado(operacao, ms),
+      { origem, timeoutMs: ms, operacao },
+      err,
+    );
+  }
+  return new NFeNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
+}
+
+/** The platform's gateway 504 as this client's timeout (see `ehTempoEsgotadoNoGateway`). */
+function tempoEsgotadoNoGateway(operacao: Operacao): NFeTimeoutError {
+  return new NFeTimeoutError(mensagemDeTempoEsgotado(operacao, null), {
+    origem: 'gateway',
+    timeoutMs: null,
+    operacao,
+  });
+}
+
 /** Pull the filename out of a `Content-Disposition` header, if present. */
 function filenameFromDisposition(header: string | null): string | null {
   if (!header) return null;
@@ -499,6 +626,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
   const doFetch = config.fetch ?? globalThis.fetch;
 
   async function call<S extends z.ZodType>(
+    operacao: Operacao,
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     schema: S,
@@ -509,6 +637,8 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       mapError?: (status: number, body: unknown) => NFeHttpError;
     } = {},
   ): Promise<z.infer<S>> {
+    // Outside the deadline: Firebase Auth bounds its own token refresh, and the
+    // window measures the ROUTE, not the SDK.
     const token = await config.getAuthToken();
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -520,16 +650,24 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       requestInit.body = JSON.stringify(init.body);
     }
 
+    const timeoutMs = NFE_PRAZO_MS[NFE_NIVEL_POR_OPERACAO[operacao]];
+    const prazo = abrirPrazo(timeoutMs);
+    requestInit.signal = prazo.signal;
+
+    // ⚠️ The body read is INSIDE the window and the mapping: a route that sends
+    // its headers and then stalls would otherwise hang past the deadline, and an
+    // abort landing mid-body would escape as a raw DOMException that every
+    // caller's `NFeHttpError || NFeNetworkError` narrowing rethrows.
     let res: Response;
+    let text: string;
     try {
       res = await doFetch(`${baseUrl}${path}`, requestInit);
+      text = await res.text();
     } catch (err) {
-      // fetch throws TypeError on network/abort failures — never on HTTP
-      // status. Distinguish so callers can retry confidently.
-      throw new NFeNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
+      throw erroDeTransporte(err, prazo, operacao, timeoutMs);
+    } finally {
+      prazo.liberar();
     }
-
-    const text = await res.text();
 
     if (!res.ok) {
       // Tolerate empty bodies on errors (some 503 paths don't ship JSON).
@@ -548,6 +686,13 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
           }
         }
       }
+      // ⚠️ Before ANY status mapping, including the cert endpoints' `mapError`:
+      // a 504 no route of ours wrote is the platform giving up on the request,
+      // and `apps/nfe` may still be running it. As an `NFeServerError` it would
+      // be retryable. (Only a READABLE 504 lands here — same-origin or
+      // server-side. The cross-origin browser case arrives as a late network
+      // failure: see `erroDeTransporte`.)
+      if (ehTempoEsgotadoNoGateway(res.status, body)) throw tempoEsgotadoNoGateway(operacao);
       const mapError =
         init.mapError ?? ((s: number, b: unknown) => errorFromResponse(s, b, init.context ?? {}));
       throw mapError(res.status, body);
@@ -578,23 +723,38 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
 
   /** Like `call`, but for a binary (non-JSON) success body. Errors are JSON. */
   async function fetchArtifact(
+    operacao: Operacao,
     path: string,
     fallbackName: string,
     context: { pedidoId?: string } = {},
   ): Promise<NFeDanfeArtifact> {
     const token = await config.getAuthToken();
+    const timeoutMs = NFE_PRAZO_MS[NFE_NIVEL_POR_OPERACAO[operacao]];
+    const prazo = abrirPrazo(timeoutMs);
+
+    // ⚠️ Both bodies — the error JSON and the success Blob — are read inside the
+    // window, for the same reason as in `call`: a stalled DANFE render must end
+    // in a typed timeout, not a spinner or a raw DOMException. Nothing is
+    // printed or saved until this returns, so the deadline sits BEFORE the side
+    // effect `reprintCheckout.ts` protects.
     let res: Response;
+    let text = '';
+    let blob: Blob | null = null;
     try {
       res = await doFetch(`${baseUrl}${path}`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` },
+        signal: prazo.signal,
       });
+      if (res.ok) blob = await res.blob();
+      else text = await res.text();
     } catch (err) {
-      throw new NFeNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
+      throw erroDeTransporte(err, prazo, operacao, timeoutMs);
+    } finally {
+      prazo.liberar();
     }
-    if (!res.ok) {
+    if (!res.ok || blob === null) {
       let body: unknown = null;
-      const text = await res.text();
       if (text.length > 0) {
         try {
           body = JSON.parse(text);
@@ -603,6 +763,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
           else throw err;
         }
       }
+      if (ehTempoEsgotadoNoGateway(res.status, body)) throw tempoEsgotadoNoGateway(operacao);
       // The DANFE route's 422 means "not renderable" (a presentation
       // precondition), NOT a SEFAZ rejection — `errorFromResponse` would
       // mis-map it to `NFeRejectedError`. Surface the dedicated error instead.
@@ -615,7 +776,6 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       }
       throw errorFromResponse(res.status, body, context);
     }
-    const blob = await res.blob();
     return {
       blob,
       filename: filenameFromDisposition(res.headers.get('content-disposition')) ?? fallbackName,
@@ -625,33 +785,46 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
 
   return {
     emitir: (pedidoId) =>
-      call('POST', '/api/nfe/emitir', nfeEmitResultSchema, {
+      call('emitir', 'POST', '/api/nfe/emitir', nfeEmitResultSchema, {
         body: { pedidoId },
         context: { pedidoId },
       }),
     emitirLote: (pedidoIds) =>
-      call('POST', '/api/nfe/emitir-lote', nfeBatchEmitResultSchema, {
+      call('emitirLote', 'POST', '/api/nfe/emitir-lote', nfeBatchEmitResultSchema, {
         body: { pedidoIds: [...pedidoIds] },
       }),
     consultar: (chave) =>
-      call('GET', `/api/nfe/consultar?chave=${encodeURIComponent(chave)}`, nfeConsultaResultSchema),
+      call(
+        'consultar',
+        'GET',
+        `/api/nfe/consultar?chave=${encodeURIComponent(chave)}`,
+        nfeConsultaResultSchema,
+      ),
     verificar: (filialId, enviNfeMsgIds) =>
-      call('POST', '/api/nfe/verificar', nfeVerificarResultSchema, {
+      call('verificar', 'POST', '/api/nfe/verificar', nfeVerificarResultSchema, {
         body: { filialId, enviNfeMsgIds: [...enviNfeMsgIds] },
       }),
     processarPendentes: () =>
-      call('POST', '/api/nfe/processar-pendentes', nfeProcessarPendentesResultSchema, {
-        body: {},
-      }),
+      call(
+        'processarPendentes',
+        'POST',
+        '/api/nfe/processar-pendentes',
+        nfeProcessarPendentesResultSchema,
+        {
+          body: {},
+        },
+      ),
     cancelar: (pedidoId, nfeId, xJust) =>
-      call('POST', '/api/nfe/cancelar', nfeEmitResultSchema, {
+      call('cancelar', 'POST', '/api/nfe/cancelar', nfeEmitResultSchema, {
         body: { pedidoId, nfeId, xJust },
         context: { pedidoId },
       }),
     inutilizar: (args) =>
-      call('POST', '/api/nfe/inutilizar', nfeInutilizarResultSchema, { body: { ...args } }),
+      call('inutilizar', 'POST', '/api/nfe/inutilizar', nfeInutilizarResultSchema, {
+        body: { ...args },
+      }),
     cartaCorrecao: (pedidoId, nfeId, xCorrecao) =>
-      call('POST', '/api/nfe/carta-correcao', nfeCartaCorrecaoResultSchema, {
+      call('cartaCorrecao', 'POST', '/api/nfe/carta-correcao', nfeCartaCorrecaoResultSchema, {
         body: { pedidoId, nfeId, xCorrecao },
         context: { pedidoId },
       }),
@@ -659,11 +832,14 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       const params = new URLSearchParams({ pedidoId, nfeId, format });
       if (dpi != null) params.set('dpi', String(dpi));
       const ext = format === 'zpl2' ? 'txt' : 'pdf';
-      return fetchArtifact(`/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`, { pedidoId });
+      return fetchArtifact('danfe', `/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`, {
+        pedidoId,
+      });
     },
     cartaCorrecaoDanfe: (pedidoId, nfeId, cceId) => {
       const params = new URLSearchParams({ pedidoId, nfeId, cceId });
       return fetchArtifact(
+        'cartaCorrecaoDanfe',
         `/api/nfe/carta-correcao/danfe?${params.toString()}`,
         'carta-correcao.pdf',
         { pedidoId },
@@ -671,6 +847,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     },
     statusServico: (target, filialId) =>
       call(
+        'statusServico',
         'GET',
         `/api/nfe/status-servico?target=${encodeURIComponent(target)}&filialId=${encodeURIComponent(filialId)}`,
         nfeStatusServicoResultSchema,
@@ -678,16 +855,23 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     consultaCadastro: (cnpj, uf, filialId) =>
       // POST (not GET) so the queried CNPJ travels in the body, never in a URL
       // that would land in access logs / proxies / browser history.
-      call('POST', '/api/nfe/consulta-cadastro', nfeConsultaCadastroResultSchema, {
-        body: { cnpj, uf, filialId },
-      }),
+      call(
+        'consultaCadastro',
+        'POST',
+        '/api/nfe/consulta-cadastro',
+        nfeConsultaCadastroResultSchema,
+        {
+          body: { cnpj, uf, filialId },
+        },
+      ),
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
-      call('POST', '/api/nfe/certificado', nfeCertificadoMetaSchema, {
+      call('uploadCertificado', 'POST', '/api/nfe/certificado', nfeCertificadoMetaSchema, {
         body: { filialId, pfxBase64, password, filename },
         mapError: certErrorFromResponse,
       }),
     deleteCertificado: async (filialId) => {
       await call(
+        'deleteCertificado',
         'DELETE',
         `/api/nfe/certificado?filialId=${encodeURIComponent(filialId)}`,
         nfeOkSchema,

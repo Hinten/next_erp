@@ -130,8 +130,9 @@
  *
  * The first operations here that CHANGE a listing: `add_item`, `update_item`, the
  * four tier/model writes, `delete_model`, `delete_item`, `unlist_item`, plus two
- * reads they need (`get_item_violation_info`, `get_channel_list`) and the ONE
- * upload in this package (`upload_image`, on the PARTNER client).
+ * reads they need (`get_item_violation_info`, `get_channel_list`) and the FIRST
+ * upload in this package (`upload_image`, on the PARTNER client — step 14 adds
+ * the second, on the shop client).
  *
  * ⚠️ **Every write returns the WHOLE parsed envelope; the two reads unwrap.** A
  * write's `warning` is a partial-failure channel — Shopee accepts the item and
@@ -179,9 +180,38 @@
  * ⚠️ Its payload is a top-level ARRAY under `response` — the only one in this
  * package.
  *
+ * ## The price sync (step 13)
+ *
+ * One more write, `update_price`, and the SECOND operation whose `error`
+ * COEXISTS with its payload — not on its page's word (it documents no "check
+ * failure_list" code) but on the sandbox's: the step-13 probe received
+ * `product.error_update_price_fail` WITH a populated `failure_list`. So it
+ * carries the transport's `payloadNoErro` too, and a failing body that parses
+ * reaches the caller as a `ShopeeApiPartialError`.
+ *
+ * ## The invoice upload (step 14)
+ *
+ * One more write, `uploadInvoiceDoc` — the SECOND multipart operation here and
+ * the first on the SHOP client (`uploadImage` lives on the partner one). It
+ * attaches ONE authorized NF-e XML to ONE order, and its answer is the bare
+ * envelope. The part name, the filename and the part content type are single
+ * literals in `types.ts` ({@link SHOPEE_UPLOAD_INVOICE_DOC_FIELD},
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_FILENAME},
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE}) and deliberately NOT
+ * parameters: a parameter that can take one value is a door for a caller to put
+ * fiscal data in a request field. `file_type` is
+ * {@link SHOPEE_INVOICE_FILE_TYPE_XML}.
+ *
+ * ⚠️ It is also why `ShopeeApiError` carries `providerMessage`: this page's
+ * refusals are told apart by Shopee's SENTENCE, and the formatted `message`
+ * already contains `upload`, `invoice` and `error` in its path and code before
+ * Shopee has said a word (see `errors.ts`).
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
+import { roundReais } from '@delfrance/core/money';
+
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
 import {
   SHOPEE_SURFACE,
@@ -193,6 +223,7 @@ import type { ShopeeHosts } from './hosts';
 import type { SignedCall } from './sign';
 import {
   SHOPEE_CONDITION,
+  SHOPEE_INVOICE_FILE_TYPE_XML,
   SHOPEE_ITEM_IMAGE_MAX,
   SHOPEE_ITEM_PROMOTION_MAX_IDS,
   SHOPEE_ITEM_STATUS_WRITABLE,
@@ -202,12 +233,17 @@ import {
   SHOPEE_TIER_MAX_LEVELS,
   SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPDATE_PRICE_MAX_MODELS,
   SHOPEE_UPDATE_STOCK_MAX_MODELS,
   SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
   SHOPEE_UPLOAD_IMAGE_FIELD,
   SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
   SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
   SHOPEE_UPLOAD_IMAGE_SIGNING,
+  SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+  SHOPEE_UPLOAD_INVOICE_DOC_FIELD,
+  SHOPEE_UPLOAD_INVOICE_DOC_FILENAME,
+  SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES,
   SHOPEE_WAREHOUSE_SEM_ACESSO,
   type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
@@ -240,10 +276,12 @@ import {
   type ShopeeShopsByPartner,
   type ShopeeTierWriteResponse,
   type ShopeeUnlistItemResponse,
+  type ShopeeUpdatePriceResponse,
   type ShopeeUpdateStockResponse,
   type ShopeeUploadImageResponse,
   type ShopeeUploadImageScene,
   type ShopeeUploadImageSigning,
+  type ShopeeUploadInvoiceDocResponse,
   type ShopeeVariations,
   type ShopeeWarehouse,
   type ShopeeWarehouseType,
@@ -276,8 +314,10 @@ import {
   shopeeShopsByPartnerSchema,
   shopeeTierWriteSchema,
   shopeeUnlistItemSchema,
+  shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
   shopeeUploadImageSchema,
+  shopeeUploadInvoiceDocSchema,
   shopeeVariationsSchema,
   shopeeWarehouseDetailSchema,
   shopeeWriteAckSchema,
@@ -351,8 +391,10 @@ export const SHOPEE_GET_ITEM_VIOLATION_INFO_PATH = '/api/v2/product/get_item_vio
 /** `GET` — Shop-signed. WRAPPED. Every logistics channel of the SHOP. No parameters. */
 export const SHOPEE_GET_CHANNEL_LIST_PATH = '/api/v2/logistics/get_channel_list';
 /**
- * `POST` — **Public**-signed by default, `multipart/form-data`. The ONE upload in
- * this package; see {@link SHOPEE_UPLOAD_IMAGE_SIGNING} for the contradiction the
+ * `POST` — **Public**-signed by default, `multipart/form-data`. The first of the
+ * two uploads in this package (the other is
+ * {@link SHOPEE_UPLOAD_INVOICE_DOC_PATH}); see
+ * {@link SHOPEE_UPLOAD_IMAGE_SIGNING} for the contradiction the
  * default rests on and {@link UploadImageParams.signing} for the escape hatch.
  */
 export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
@@ -363,10 +405,12 @@ export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
  * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
  * models per call.
  *
- * ⚠️ The ONE operation in this package whose `error` COEXISTS with its payload:
+ * ⚠️ The FIRST operation in this package whose `error` COEXISTS with its
+ * payload, and the only one whose page documents it:
  * `error_busi_update_stock_failed` is documented as *"please check
  * failure_list"*, and `failure_list` rides under `response`. Its call site is
- * therefore the ONLY `payloadNoErro` in this file — see
+ * therefore one of the TWO `payloadNoErro` sites in this file — the other is
+ * {@link SHOPEE_UPDATE_PRICE_PATH}'s, on measurement — see
  * {@link ShopeeClient.updateStock}.
  */
 export const SHOPEE_UPDATE_STOCK_PATH = '/api/v2/product/update_stock';
@@ -382,6 +426,31 @@ export const SHOPEE_GET_SHOP_HOLIDAY_MODE_PATH = '/api/v2/shop/get_shop_holiday_
  * one in this package.
  */
 export const SHOPEE_GET_WAREHOUSE_DETAIL_PATH = '/api/v2/shop/get_warehouse_detail';
+
+/* -------------------------- the price sync (step 13) ---------------------- */
+
+/**
+ * `POST` — Shop-signed (`method: 1` on the page). WRAPPED. ONE item, 1…50
+ * models per call — {@link SHOPEE_UPDATE_STOCK_PATH}'s shape, and, on
+ * MEASUREMENT, its error handling too.
+ *
+ * ⚠️ A `payloadNoErro` operation, although its PAGE says otherwise. The page's
+ * error list has no "check failure_list" code and its response sample prints the
+ * partial failure as a SUCCESS envelope — `error: ""` with both lists — so the
+ * shipped op went out WITHOUT the flag. Step 13's sandbox probe (2026-09-24)
+ * then measured the other shape as well: a bogus `model_id` on a no-model item
+ * (P4c-bogus) answered `product.error_update_price_fail` AND a populated
+ * `failure_list` in the same body, and without the flag those rows died at the
+ * throw site. So a partial arrives BOTH ways — the 200's `failure_list` and a
+ * `ShopeeApiPartialError` carrying the lists — see
+ * {@link ShopeeClient.updatePrice}.
+ *
+ * ⚠️ And NONE of its codes joins `KIND_BY_CODE` (`errors.ts`, register 101):
+ * `error_update_price_fail`, `error_system_busy` and this page's `error_inner`
+ * (`Update item failed {{.error_info}}` can be a PERMANENT whole-item
+ * validation) are classified per operation by the app, never here.
+ */
+export const SHOPEE_UPDATE_PRICE_PATH = '/api/v2/product/update_price';
 
 /** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
 export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
@@ -428,6 +497,13 @@ export const SHOPEE_GET_ESCROW_LIST_PATH = '/api/v2/payment/get_escrow_list';
  * `error_server`, `error_data` and `error_shop`.
  */
 export const SHOPEE_GET_PACKAGE_DETAIL_PATH = '/api/v2/order/get_package_detail';
+
+/**
+ * `POST` — **Shop**-signed, `multipart/form-data`. ONE order, ONE file, XML only
+ * (`file_type` 4). Per ORDER: there is no `package_number` on this page. The
+ * answer is the BARE envelope — see {@link ShopeeClient.uploadInvoiceDoc}.
+ */
+export const SHOPEE_UPLOAD_INVOICE_DOC_PATH = '/api/v2/order/upload_invoice_doc';
 
 /** `get_order_detail`: `order_sn_list` is documented `limit [1,50]`. */
 export const SHOPEE_ORDER_DETAIL_MAX_ORDER_SN = 50;
@@ -1373,6 +1449,37 @@ export type ShopeeWarehouseDetail =
   | { readonly kind: 'lista'; readonly armazens: readonly ShopeeWarehouse[] }
   | { readonly kind: 'sem-multi-armazem'; readonly code: string };
 
+/* -------------------------- the price sync (step 13) ---------------------- */
+
+/** One model of an `update_price` call. */
+export interface ShopeeUpdatePriceEntry {
+  /**
+   * ⚠️ ALWAYS sent. `0` IS the no-model item — the page's param table says "0
+   * for no model item". The guide's worked example OMITS the key instead, and
+   * step 13's probe measured BOTH forms accepted on a no-model item (P4, P6:
+   * read-back == request); `0` stays the one this package sends, because it is
+   * the form with the page behind it (and the one step 12 measured on the stock
+   * twin).
+   *
+   * ⚠️ The ECHO does not mirror it: that item's `success_list` entry comes back
+   * with NO `model_id` key at all (P4c), which the response schema reads as
+   * `null` — see `shopeeUpdatePricePayloadSchema`.
+   */
+  readonly model_id: number;
+  /**
+   * The new SHELF price, in the listing currency's MAJOR units. BR and SG: at
+   * most two decimals (the page, verbatim). ⚠️ The package never rounds it — see
+   * {@link assertUpdatePriceParams} rung 5.
+   */
+  readonly original_price: number;
+}
+
+/** `update_price` — ONE item, 1…{@link SHOPEE_UPDATE_PRICE_MAX_MODELS} models. */
+export interface ShopeeUpdatePriceRequest {
+  readonly item_id: number;
+  readonly price_list: readonly ShopeeUpdatePriceEntry[];
+}
+
 /** The shop credentials `upload_image` needs ONLY under `signing: 'shop'`. */
 export interface ShopeeShopAuth {
   readonly accessToken: string;
@@ -1401,6 +1508,25 @@ export interface UploadImageParams {
    * query.` — the very error the flip exists to read.
    */
   readonly signing?: ShopeeUploadImageSigning;
+}
+
+/**
+ * `upload_invoice_doc` — ONE order, ONE file, XML only (`file_type` 4). No
+ * `package_number`: the page attaches the document per ORDER.
+ *
+ * ⚠️ No `fileType`, no `filename`, no `contentType` here: each can take exactly
+ * one value, and a parameter that can take one value is a door for a caller to
+ * put the access key in a filename. They are literals in `types.ts`.
+ */
+export interface UploadInvoiceDocParams {
+  /** Sent VERBATIM — blank is refused, nothing is trimmed (the order-read rule). */
+  readonly orderSn: string;
+  /**
+   * The `nfeProc` XML, VERBATIM. The package encodes it as UTF-8 and never
+   * rewrites a byte; the ceiling ({@link SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES})
+   * is judged on those encoded bytes, never on the string length.
+   */
+  readonly xml: string;
 }
 
 export interface ShopeePartnerClient {
@@ -1829,8 +1955,9 @@ export interface ShopeeClient {
    * and that is the reason this operation exists in the shape it does. Its own
    * list documents `error_busi_update_stock_failed: Update stock failed, please
    * check failure_list for detailed reason`, and `failure_list` lives under
-   * `response`. So this is the ONE call site carrying the transport's
-   * `payloadNoErro`: the throw stays a throw, and the thrown
+   * `response`. So this is the FIRST call site carrying the transport's
+   * `payloadNoErro` (the second, on measurement, is
+   * {@link ShopeeClient.updatePrice}): the throw stays a throw, and the thrown
    * `ShopeeApiPartialError` carries the parsed body so the caller can attribute
    * the refusal to the models it actually hit. Everything else — a throttle, a
    * dead authorization, a body with no `response` — throws the ordinary class,
@@ -1896,6 +2023,81 @@ export interface ShopeeClient {
    * echoes back; nothing here parses it as a number.
    */
   getWarehouseDetail(p?: GetWarehouseDetailParams): Promise<ShopeeWarehouseDetail>;
+
+  /* ------------------------ the price sync (step 13) ---------------------- */
+
+  /**
+   * Set the SHELF price (`original_price`) of 1…{@link SHOPEE_UPDATE_PRICE_MAX_MODELS}
+   * models of ONE item — the WHOLE envelope, like every write here.
+   *
+   * ⚠️ **A partial refusal arrives in TWO shapes, both measured** (step 13's
+   * sandbox probe, 2026-09-24):
+   * - RETURNED — a 200 with `error: ''` carrying a non-empty `failure_list`
+   *   (P9: one valid model + one bogus). The page's own sample prints this one.
+   * - THROWN — a non-empty `error` WITH the lists in the same body (P4c-bogus:
+   *   `product.error_update_price_fail` + a populated `failure_list`). The page
+   *   documents no such code, so this op first shipped without the flag; it now
+   *   carries the transport's `payloadNoErro`, exactly like
+   *   {@link ShopeeClient.updateStock}, and the body arrives as a
+   *   `ShopeeApiPartialError` whose `parsed` re-parses with
+   *   `shopeeUpdatePriceSchema`.
+   *
+   * Either way whoever writes the result back reads BOTH lists, never the
+   * absence of a throw — a model in neither list was not confirmed. A failing
+   * body with NO `response` key, `response: null`, or a `response` that does
+   * not parse throws the ordinary class — `ShopeeRateLimitError` and
+   * `ShopeeReauthRequiredError` included.
+   *
+   * ⚠️ But `response: {}` PARSES — both lists default to `[]` — so a failing
+   * body carrying an empty `response` object throws `ShopeeApiPartialError`
+   * with two empty lists (every sent model then reads the top-level code). A
+   * throttle arriving that way LOSES its `Retry-After`: the partial class
+   * carries no `retryAfterSeconds`, so the price sync's surface falls back to
+   * its own `ratePauseMin()`. Measured by review, not by the probe; the
+   * transport is unchanged (a register item, not a fix here).
+   *
+   * ⚠️ The flag is code-blind, so the partial class REPLACES whichever subclass
+   * the envelope would have produced: a throttle code arriving WITH the lists
+   * is a `ShopeeApiPartialError` whose `kind` is `burst`/`daily`. A ladder that
+   * needs the retry verdict reads `kind` inside the partial arm, not only the
+   * class.
+   *
+   * ⚠️ A no-model item's success entry carries NO `model_id` (P4c) and reads as
+   * `null` — match it by that absence, never by `=== 0`.
+   *
+   * ⚠️ It does NOT round. A price with a third decimal is REFUSED before the
+   * fetch ({@link assertUpdatePriceParams} rung 5): rounding is the caller's
+   * (`roundReais`), so the package never decides a price.
+   */
+  updatePrice(body: ShopeeUpdatePriceRequest): Promise<ShopeeUpdatePriceResponse>;
+
+  /* ---------------------- the invoice upload (step 14) -------------------- */
+
+  /**
+   * Attach ONE NF-e XML to ONE order — the WHOLE envelope, like every write
+   * here, and on this page the envelope is all there is: no `response`, no echo,
+   * no id.
+   *
+   * ⚠️ On the SHOP client, unlike {@link ShopeePartnerClient.uploadImage}: the
+   * page is `type=Shop`, and the document belongs to one shop's order.
+   *
+   * ⚠️ A resolved call proves only that Shopee took the upload, never that the
+   * note is attached and valid — the validation is asynchronous on Shopee's side
+   * and shows up on the order's `invoice_data`. The caller reads the order back.
+   *
+   * ⚠️ No transport tolerance rides here, of any kind. A body with no `error`
+   * key is REFUSED (`ShopeeSchemaError` naming `error`) — this page has no
+   * `response` object, so the absent-key reading could not apply anyway — and a
+   * caller reads that refusal as an UNCERTAIN outcome, never as a success.
+   *
+   * ⚠️ Every envelope refusal carries Shopee's sentence VERBATIM in
+   * `providerMessage`: classify on it, never on the formatted `message`.
+   *
+   * ⚠️ The XML carries the access key, CNPJs and the buyer's data: a refusal
+   * raised here, before the fetch, names LENGTHS only, and nothing in this
+   * package puts the document (or its filename) in a message.
+   */
+  uploadInvoiceDoc(p: UploadInvoiceDocParams): Promise<ShopeeUploadInvoiceDocResponse>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -2749,6 +2951,68 @@ function assertItemPromotionParams(p: GetItemPromotionParams): void {
   });
 }
 
+/* ---------------- the price sync (step 13) — the bound guards ------------- */
+
+/**
+ * Every `update_price` bound, all six checked BEFORE any fetch.
+ *
+ * ⚠️ Rung 3 uses {@link assertIdNaoNegativo} and NEVER {@link assertIdPositivo}
+ * on `model_id`: `0` IS the no-model item. And a duplicate is REFUSED —
+ * `error_param: Repeat model_id.` is on this page's own list, and BOTH result
+ * lists are keyed on `model_id` alone, so two entries for one model come back
+ * unreconcilable even on the success path ({@link assertUpdateStockParams}'
+ * argument, verbatim).
+ *
+ * ⚠️ Rung 5, two decimals: the page says BR and SG sellers "can set the price
+ * with two decimal place", and nothing documents what a third does (refused,
+ * truncated or rounded — UNVERIFIED). So a third decimal never reaches the wire,
+ * and it is REFUSED rather than rounded: the check is `roundReais(p) !== p`, the
+ * ONE sanctioned money rounding, so a price the app rounded is by construction a
+ * price this guard accepts — and the package never picks a price the caller did
+ * not.
+ *
+ * ⚠️ Rung 6, structure: a `model_id: 0` entry must be ALONE. `0` says "this item
+ * has no models"; a `0` beside a real id is a caller bug that Shopee would
+ * answer with one of two OPPOSITE errors (the has-model mirror, or `Wrong
+ * model_id.`), neither of which names the real mistake.
+ */
+function assertUpdatePriceParams(req: ShopeeUpdatePriceRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+
+  const quantidade = req.price_list.length;
+  if (quantidade < 1 || quantidade > SHOPEE_UPDATE_PRICE_MAX_MODELS) {
+    throw new ShopeeConfigError(
+      `price_list deve conter de 1 a ${String(SHOPEE_UPDATE_PRICE_MAX_MODELS)} modelos (recebido: ${String(quantidade)}).`,
+    );
+  }
+
+  const vistos = new Set<number>();
+  req.price_list.forEach((entrada, posicao) => {
+    const onde = `price_list[${String(posicao)}]`;
+    // ⚠️ `0` É o item sem modelos — daí o guarda NÃO-negativo.
+    assertIdNaoNegativo(`${onde}.model_id`, entrada.model_id);
+    if (vistos.has(entrada.model_id)) {
+      throw new ShopeeConfigError(
+        `${onde}.model_id repetido (${String(entrada.model_id)}) — as duas listas de resultado são chaveadas só por model_id.`,
+      );
+    }
+    vistos.add(entrada.model_id);
+
+    assertPositivoFinito(`${onde}.original_price`, entrada.original_price);
+    if (roundReais(entrada.original_price) !== entrada.original_price) {
+      throw new ShopeeConfigError(
+        `${onde}.original_price deve ter no máximo duas casas decimais (recebido: ${JSON.stringify(entrada.original_price)}) — o arredondamento é de quem chama, nunca do pacote.`,
+      );
+    }
+  });
+
+  if (quantidade > 1 && vistos.has(0)) {
+    throw new ShopeeConfigError(
+      `price_list mistura model_id 0 (o item SEM modelos) com ${String(quantidade - 1)} outro(s) modelo(s) — o 0 só pode vir sozinho.`,
+    );
+  }
+}
+
 /**
  * Every `upload_image` bound, checked BEFORE any fetch — including the one the
  * signing switch owes.
@@ -2778,6 +3042,42 @@ function assertUploadImageParams(p: UploadImageParams, signing: ShopeeUploadImag
       `content-type ${JSON.stringify(p.contentType)} não é aceito pela Shopee (aceitos: ${aceitos.join(', ')}).`,
     );
   }
+}
+
+/**
+ * Every `upload_invoice_doc` bound, checked BEFORE any fetch — and the UTF-8
+ * bytes it judged, which are the bytes the operation sends.
+ *
+ * ⚠️ Returning the bytes is the point. Judging one encoding and sending another
+ * is how a ceiling passes over the value that actually goes out (the
+ * {@link assertPackageDetailParams} lesson), and the ceiling is in BYTES: an
+ * accented `xProd` is multi-byte, so a string-length check would under-count.
+ *
+ * ⚠️ The XML is NEVER echoed. `assertTextoNaoVazio` would `JSON.stringify` the
+ * value into the message — for this parameter a whole NF-e (the access key,
+ * CNPJs, the buyer's name and CPF) inside an exception. Every message here
+ * names a LENGTH and nothing else.
+ *
+ * Every branch is a `ShopeeConfigError` — a caller bug, never a provider failure.
+ */
+function assertUploadInvoiceDocParams(p: UploadInvoiceDocParams): Uint8Array {
+  assertOrderSn(p.orderSn);
+  if (typeof p.xml !== 'string') {
+    throw new ShopeeConfigError(`xml deve ser um texto (recebido: ${typeof p.xml}).`);
+  }
+  if (p.xml.trim() === '') {
+    throw new ShopeeConfigError(
+      `xml não pode ser vazio (recebido: ${String(p.xml.length)} caracteres em branco).`,
+    );
+  }
+  const bytes = new TextEncoder().encode(p.xml);
+  const tamanho = bytes.byteLength;
+  if (tamanho < 1 || tamanho > SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES) {
+    throw new ShopeeConfigError(
+      `o XML deve ter de 1 a ${String(SHOPEE_UPLOAD_INVOICE_DOC_MAX_BYTES)} bytes em UTF-8 (recebido: ${String(tamanho)} bytes).`,
+    );
+  }
+  return bytes;
 }
 
 export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePartnerClient {
@@ -3467,9 +3767,11 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         call: await signedCall(),
         schema: shopeeUpdateStockSchema,
         surface: SHOPEE_SURFACE.business,
-        // ⚠️ The ONE `payloadNoErro` in this package, and the only place it may
-        // appear. It does NOT change the verdict — a non-empty `error` is still
-        // a failure and still throws — it only stops the parsed body being
+        // ⚠️ One of the TWO `payloadNoErro` sites in this package (the other is
+        // the step-13 price write, on measurement), and the only places it may
+        // appear.
+        // It does NOT change the verdict — a non-empty `error` is still a
+        // failure and still throws — it only stops the parsed body being
         // discarded at the throw site, because THIS page documents
         // `error_busi_update_stock_failed` as "please check failure_list" and
         // `failure_list` rides under `response`. See the flag's docblock in
@@ -3569,6 +3871,59 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       return armazens.length === 0
         ? { kind: 'sem-multi-armazem', code: '' }
         : { kind: 'lista', armazens };
+    },
+
+    /* ---------------------- the price sync (step 13) --------------------- */
+
+    updatePrice: async (body) => {
+      assertUpdatePriceParams(body);
+      // ⚠️ A WRITE: the whole envelope comes back. No VERDICT tolerance rides
+      // here — a non-empty `error` still throws — but the payload one does:
+      // step 13's sandbox probe (P4c-bogus) received
+      // `product.error_update_price_fail` WITH a populated `failure_list`, and
+      // without the flag those per-model rows were discarded at the throw
+      // site. The page documents no such code; the wire sent it anyway. See the
+      // path's docblock.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_PRICE_PATH,
+        call: await signedCall(),
+        schema: shopeeUpdatePriceSchema,
+        surface: SHOPEE_SURFACE.business,
+        payloadNoErro: true,
+        body,
+      });
+    },
+
+    /* -------------------- the invoice upload (step 14) -------------------- */
+
+    uploadInvoiceDoc: async (p) => {
+      // ⚠️ The guard runs BEFORE the token is even asked for, and it RETURNS the
+      // bytes it measured: those — not a second encoding — are what travel.
+      const bytes = assertUploadInvoiceDocParams(p);
+      // ⚠️ A WRITE: the whole (bare) envelope comes back. Nothing here widens
+      // the verdict or attaches a payload to a refusal — see the method's
+      // docblock. No `Content-Type` of our own: `fetch` writes it WITH the
+      // boundary from the FormData.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPLOAD_INVOICE_DOC_PATH,
+        call: await signedCall(),
+        schema: shopeeUploadInvoiceDocSchema,
+        surface: SHOPEE_SURFACE.business,
+        multipart: {
+          file: {
+            field: SHOPEE_UPLOAD_INVOICE_DOC_FIELD,
+            // ⚠️ FIXED — never derived from the document (see the constant).
+            filename: SHOPEE_UPLOAD_INVOICE_DOC_FILENAME,
+            contentType: SHOPEE_UPLOAD_INVOICE_DOC_CONTENT_TYPE,
+            bytes,
+          },
+          // `order_sn` VERBATIM (blank refused, nothing trimmed); `file_type` is
+          // a TEXT part, like every non-file part.
+          fields: { order_sn: p.orderSn, file_type: SHOPEE_INVOICE_FILE_TYPE_XML },
+        },
+      });
     },
   };
 }

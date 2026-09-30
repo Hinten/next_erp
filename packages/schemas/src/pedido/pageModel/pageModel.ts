@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
+import { chaveAcessoValida, decomporChaveAcesso } from '../../chaveAcesso';
 import { CHAVE_NFE_REGEX } from '../../nfe';
+import { COMPETENCIA_AAAA_MM } from '../../imposto/notaCreditoDebito';
 import { ESTADO_PEDIDO, pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
@@ -47,8 +49,16 @@ export interface PedidoPageValidationInput {
   ehSaidaOriginal?: boolean | null;
   estado?: EstadoPedido | null;
   integracaoPedidoOuterRef?: unknown;
-  itens?: Record<string, ReadonlyArray<{ quantidade?: number | null }>> | null;
+  itens?: Record<
+    string,
+    ReadonlyArray<{
+      quantidade?: number | null;
+      dfeReferenciado?: { chaveAcesso?: string | null; nItem?: number | null } | null;
+      ajusteRtc?: { vIBS?: number | null; vCBS?: number | null; competApur?: string | null } | null;
+    }>
+  > | null;
   chNFeReferenciadas?: ReadonlyArray<string | null> | null;
+  chNFePagamentoAntecipado?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
   /** The returned items (troca) — their value counts as paid; see `coberturaDoPedido`. */
   itensDevolvidos?: unknown;
@@ -113,6 +123,83 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
       path: 'chNFeReferenciadas',
       message:
         'Chave de acesso referenciada inválida: 44 caracteres — letras A-Z apenas nas posições 7 a 18 (CNPJ do emitente).',
+    });
+  }
+
+  // The NF-e de pagamento antecipado (`chNFePagamentoAntecipado`, #331): each an
+  // NF-e modelo 55 with a valid check digit (BC02), none twice, at most 99
+  // (BC01). Whether the nota may carry them at all (the RTC switch) is judged at
+  // emission, like every NT 2025.002 group.
+  const antecipado = (data.chNFePagamentoAntecipado ?? []).filter(
+    (c): c is string => c != null && c !== '',
+  );
+  if (antecipado.some((c) => decomporChaveAcesso(c)?.mod !== '55')) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message:
+        'NF-e de pagamento antecipado: cada chave deve ser de uma NF-e modelo 55, com dígito verificador correto.',
+    });
+  }
+  if (new Set(antecipado).size !== antecipado.length) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message: 'NF-e de pagamento antecipado: a mesma chave aparece mais de uma vez.',
+    });
+  }
+  if (antecipado.length > 99) {
+    issues.push({
+      path: 'chNFePagamentoAntecipado',
+      message: 'NF-e de pagamento antecipado: no máximo 99 chaves.',
+    });
+  }
+
+  // An item-level NF-e reference (`dfeReferenciado`, #330) must be a real chave —
+  // shape AND check digit — and its `nItem`, when given, the XSD's 1–990. Only
+  // the SHAPE blocks the save: whether `nItem` is required, and how the
+  // references combine, depends on the operação (finNFe / tipo de débito) and is
+  // judged by `violacoesDoDocumento` at emission and in the Fiscal tab panel.
+  const refs = Object.values(data.itens ?? {})
+    .flat()
+    .map((it) => it?.dfeReferenciado)
+    .filter((r): r is NonNullable<typeof r> => r != null);
+  if (refs.some((r) => !chaveAcessoValida(r.chaveAcesso ?? ''))) {
+    issues.push({
+      path: 'dfeReferenciado',
+      message:
+        'Referência por item: chave de acesso inválida — 44 caracteres com dígito verificador correto (letras A-Z só nas posições 7 a 18).',
+    });
+  }
+  if (
+    refs.some(
+      (r) => r.nItem != null && (!Number.isInteger(r.nItem) || r.nItem < 1 || r.nItem > 990),
+    )
+  ) {
+    issues.push({
+      path: 'dfeReferenciado',
+      message: 'Referência por item: o item da nota referenciada deve ser um número de 1 a 990.',
+    });
+  }
+
+  // The adjustment amounts of a nota de débito (`ajusteRtc`, #330): money, so
+  // finite and never negative, and `competApur` a real AAAA-MM. Whether the
+  // operação's tipo needs them — and which group they ride in — is judged by
+  // `violacoesDoDocumento`, like the item references above.
+  const ajustes = Object.values(data.itens ?? {})
+    .flat()
+    .map((it) => it?.ajusteRtc)
+    .filter((a): a is NonNullable<typeof a> => a != null);
+  const valorInvalido = (v: number | null | undefined) =>
+    typeof v !== 'number' || !Number.isFinite(v) || v < 0;
+  if (ajustes.some((a) => valorInvalido(a.vIBS) || valorInvalido(a.vCBS))) {
+    issues.push({
+      path: 'ajusteRtc',
+      message: 'Ajuste de IBS/CBS: informe valores de IBS e CBS iguais ou maiores que zero.',
+    });
+  }
+  if (ajustes.some((a) => a.competApur != null && !COMPETENCIA_AAAA_MM.test(a.competApur))) {
+    issues.push({
+      path: 'ajusteRtc',
+      message: 'Ajuste de IBS/CBS: a competência deve estar no formato AAAA-MM (ex.: 2026-09).',
     });
   }
 

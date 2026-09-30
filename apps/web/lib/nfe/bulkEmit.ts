@@ -105,6 +105,7 @@ export async function dispatchEmitirNFe(
     // "não sincronizado" wait-and-retry) need to be copy-pasteable for
     // diagnosis, exactly like the error path below.
     showCopyableNotification(notificationForNFeResult(result));
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- UI boundary: notificationForNFeErrorComContexto maps every error to a toast; a rethrow would show nothing
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     showErrorNotification(await notificationForNFeErrorComContexto(err, carregarContexto));

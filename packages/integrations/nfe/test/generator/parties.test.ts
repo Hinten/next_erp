@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
 import { IE_SENTINELA, TIPO_CLIENTE, UF_SIGLA } from '@delfrance/schemas';
 
-import { buildDest, buildEmit, NFePartiesError } from '../../src/generator/parties';
+import { buildDest, buildEmit, buildEntrega, NFePartiesError } from '../../src/generator/parties';
 
 const ENDERECO: Endereco = {
   idExterno: null,
@@ -312,5 +312,144 @@ describe('buildDest — the document element per tipo', () => {
     const out = dest({ tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '12345678909', ie: null });
     expect(out.CPF).toBe('12345678909');
     expect(out.CNPJ).toBeUndefined();
+  });
+});
+
+/**
+ * `buildEntrega` — Grupo G (`TLocal`) for a delivery address that is not the
+ * fiscal one (#422). The XSD makes the CNPJ|CPF choice MANDATORY, so the group
+ * needs an identity; it takes the endereço's recebedor, else the cliente, and
+ * never mixes the two.
+ */
+describe('buildEntrega', () => {
+  const ENTREGA_RJ: Endereco = {
+    ...ENDERECO,
+    logradouro: 'Rua do Ouvidor',
+    numero: '50',
+    bairro: 'Centro',
+    cep: '20040030',
+    codigoMunicipio: '3304557',
+    cidade: 'Rio de Janeiro',
+    estado: UF_SIGLA.RJ,
+  };
+  const CPF_RECEBEDOR = '52998224725';
+
+  it('takes the recebedor on the delivery address: its CPF and its name', () => {
+    const out = buildEntrega(cliente(), {
+      ...ENTREGA_RJ,
+      nome: 'Maria Recebedora',
+      cpf_cnpj: CPF_RECEBEDOR,
+    });
+    expect(out.CPF).toBe(CPF_RECEBEDOR);
+    expect(out.CNPJ).toBeUndefined();
+    expect(out.xNome).toBe('Maria Recebedora');
+    expect(out).toMatchObject({
+      xLgr: 'Rua do Ouvidor',
+      nro: '50',
+      xBairro: 'Centro',
+      cMun: '3304557',
+      xMun: 'Rio de Janeiro',
+      UF: 'RJ',
+      CEP: '20040030',
+    });
+  });
+
+  it('a punctuated recebedor document folds to the stored form; a near-miss does not', () => {
+    // Equal: dots/dash/slash are presentation only.
+    const out = buildEntrega(cliente(), { ...ENTREGA_RJ, cpf_cnpj: '529.982.247-25' });
+    expect(out.CPF).toBe(CPF_RECEBEDOR);
+    // Distinct: one check digit off is ANOTHER document — refused, never
+    // "corrected" and never replaced by the cliente's.
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, cpf_cnpj: '52998224724' })).toThrow(
+      /not a valid CPF or CNPJ/,
+    );
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, cpf_cnpj: '5299822472' })).toThrow(
+      NFePartiesError,
+    );
+  });
+
+  it('an ALPHANUMERIC recebedor CNPJ rides <CNPJ> un-mangled', () => {
+    const out = buildEntrega(cliente(), { ...ENTREGA_RJ, cpf_cnpj: '12ABC34501DE35' });
+    expect(out.CNPJ).toBe('12ABC34501DE35');
+    expect(out.CPF).toBeUndefined();
+  });
+
+  it('a recebedor document with a blank name emits NO xNome — never the cliente name', () => {
+    const out = buildEntrega(cliente(), { ...ENTREGA_RJ, nome: '  ', cpf_cnpj: CPF_RECEBEDOR });
+    expect(out.CPF).toBe(CPF_RECEBEDOR);
+    expect(out.xNome).toBeUndefined();
+  });
+
+  it('without a recebedor, falls back to the cliente: pessoa jurídica → CNPJ + its name', () => {
+    const out = buildEntrega(
+      cliente({ tipo: TIPO_CLIENTE.pessoaJuridica, cpf_cnpj: '11222333000181' }),
+      ENTREGA_RJ,
+    );
+    expect(out.CNPJ).toBe('11222333000181');
+    expect(out.CPF).toBeUndefined();
+    expect(out.xNome).toBe('Distribuidora Andre & Cia. Ltda.');
+  });
+
+  it('without a recebedor, falls back to the cliente: pessoa física → CPF', () => {
+    const out = buildEntrega(
+      cliente({ tipo: TIPO_CLIENTE.pessoaFisica, cpf_cnpj: '11144477735', nome: 'Joao Silva' }),
+      ENTREGA_RJ,
+    );
+    expect(out.CPF).toBe('11144477735');
+    expect(out.xNome).toBe('Joao Silva');
+  });
+
+  it('refuses when neither the recebedor nor the cliente identifies anyone', () => {
+    expect(() =>
+      buildEntrega(
+        cliente({ tipo: TIPO_CLIENTE.estrangeiro, cpf_cnpj: null, idEstrangeiro: 'X1' }),
+        ENTREGA_RJ,
+      ),
+    ).toThrow(/Recebedor \(NF-e\)/);
+    expect(() => buildEntrega(cliente({ cpf_cnpj: null }), ENTREGA_RJ)).toThrow(NFePartiesError);
+  });
+
+  it('refuses a cMun from another UF (rule 279), naming both', () => {
+    expect(() =>
+      buildEntrega(cliente(), { ...ENTREGA_RJ, codigoMunicipio: '3550308' /* São Paulo */ }),
+    ).toThrow(/'3550308' is not a município of UF 'RJ'/);
+  });
+
+  it('refuses a one-letter street, district or city (TLocal minLength 2)', () => {
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, logradouro: 'R' })).toThrow(
+      /entrega\.logradouro/,
+    );
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, bairro: 'C' })).toThrow(
+      /entrega\.bairro/,
+    );
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, cidade: 'R' })).toThrow(
+      /entrega\.cidade/,
+    );
+  });
+
+  it('strips a hyphenated CEP to digits and refuses one that is not 8 digits', () => {
+    expect(buildEntrega(cliente(), { ...ENTREGA_RJ, cep: '20040-030' }).CEP).toBe('20040030');
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, cep: '2004003' })).toThrow(
+      /entrega\.cep/,
+    );
+  });
+
+  it('refuses corrupted text instead of laundering it (#788)', () => {
+    expect(() => buildEntrega(cliente(), { ...ENTREGA_RJ, logradouro: 'Rua SÃ£o JoÃ£o' })).toThrow(
+      /corrupted text/,
+    );
+  });
+
+  it('omits every optional contact field — minimal group', () => {
+    const out = buildEntrega(cliente(), {
+      ...ENTREGA_RJ,
+      email: 'x@y.com',
+      telefone: '21999999999',
+      ie: '123',
+    });
+    expect(out.fone).toBeUndefined();
+    expect(out.email).toBeUndefined();
+    expect(out.IE).toBeUndefined();
+    expect(out.cPais).toBeUndefined();
   });
 });

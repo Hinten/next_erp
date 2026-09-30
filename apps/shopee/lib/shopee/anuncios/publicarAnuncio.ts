@@ -68,6 +68,8 @@ import {
   kitEstoqueDisponivel,
   parseFakePath,
   parseRef,
+  precoDoFilhoNaTabela,
+  propagaPrecoAosFilhos,
   toOuterRef,
   varianteFakePath,
   type ComponentesKit,
@@ -535,9 +537,23 @@ export async function prepararPublicacao(
   const ownDisponivel = linhaDoPai === null ? 0 : chao(estoqueDisponivel(linhaDoPai));
 
   const tabelaNormalId = idDeRef(deps.tabelaNormalOuterRef);
+  // ⚠️ The PARENT's two raw values, off the document already in hand — no second
+  // read. It is always the parent: a variation child is refused above.
+  const precoDoPai: PrecoDoPai = {
+    precos: raw.precos,
+    propagaPreco: propagaPrecoAosFilhos(raw.propagatePriceToChildren),
+  };
   const filhos = await Promise.all(
     filhosCrus.map((filho) =>
-      filhoParaPublicar(db, deps, filho, tabelaNormalId, linksDeVariacao, disponivelByProdutoId),
+      filhoParaPublicar(
+        db,
+        deps,
+        filho,
+        precoDoPai,
+        tabelaNormalId,
+        linksDeVariacao,
+        disponivelByProdutoId,
+      ),
     ),
   );
 
@@ -682,6 +698,16 @@ function chao(valor: number): number {
 }
 
 /**
+ * The PARENT's price inputs for its children, RAW: `precos` as stored and
+ * `propagatePriceToChildren` already folded by `propagaPrecoAosFilhos` (only a
+ * stored literal `false` turns propagation off).
+ */
+interface PrecoDoPai {
+  readonly precos: unknown;
+  readonly propagaPreco: boolean;
+}
+
+/**
  * One child, projected for the tier mapper.
  *
  * ⚠️ `estoque` is the child's AVAILABLE quantity and is NOT clamped to the
@@ -694,6 +720,7 @@ async function filhoParaPublicar(
   db: Firestore,
   deps: PrepararPublicacaoDeps,
   filho: FilhoCru,
+  precoDoPai: PrecoDoPai,
   tabelaNormalId: string | null,
   links: readonly LinkDeVariacao[],
   disponivelByProdutoId: Record<string, number | null | undefined>,
@@ -714,10 +741,29 @@ async function filhoParaPublicar(
     gtin: textoOuNull(filho.raw.gtin),
     ordem: ordemDeProduto(filho.raw.ordem),
     variacoesUid: listaDeTextos(filho.raw.variacoesUid),
-    preco:
-      tabelaNormalId === null
-        ? null
-        : numeroOuNull(precosDeProduto(filho.raw.precos)?.[tabelaNormalId]?.valor),
+    // ⚠️ The shared child-price rule (`@delfrance/schemas`, Mercado Livre's, the
+    // ONE copy step 13's price sync calls too — D-9, #1521): a PROPAGATING parent's
+    // price in the tabela, the child's own map never read, not even as a fallback;
+    // a non-propagating parent ⇒ the child's own price, the parent never read.
+    // Both arms go through `precoDaTabela`: rounded to the centavo and positive
+    // AFTER rounding, so a `0` (or `0.004`) is `null` here and `montarTiers`
+    // refuses it as `filho-sem-preco` — on an UPDATE too — instead of putting
+    // `original_price: 0` on an `init_tier_variation` / `add_model` body.
+    // ⚠️ Why the parent under propagation: the produto trigger copies the
+    // parent's `precos` into each child only when the PARENT's prices change, so
+    // a child created after that edit, a step-9 import or a legacy row can hold
+    // no price (or a stale one) while the family is priced.
+    preco: precoDoFilhoNaTabela(
+      {
+        precosDoPai: precoDoPai.precos,
+        propagaPreco: precoDoPai.propagaPreco,
+        precosDoFilho: filho.raw.precos,
+      },
+      tabelaNormalId,
+    ),
+    // The price SOURCE, from the very flag that chose the arm above — so a
+    // `filho-sem-preco` names the parent exactly when the parent priced it.
+    precoDoPai: precoDoPai.propagaPreco,
     estoque: chao(derivado ?? proprio),
     fotos: fotosDeProduto(filho.raw.fotos).fotos,
     linkModelId: link?.modelId ?? null,

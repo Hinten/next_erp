@@ -6,19 +6,43 @@
  *
  * On the UPDATE path the price write is a DOTTED-PATH `update` naming only the
  * conta's own tabela key (`precos.<tabelaId>`), so the legacy `precos` map is
- * never re-validated and a sibling tabela provably cannot be touched. It is the
- * one guarded write here: the patch is derived from the produto snapshot, so it
- * asserts that read's `lastUpdateTime` and a concurrent writer — a retrying
- * import, the item webhook, an operator saving the produto editor — fails
- * FAILED_PRECONDITION instead of being silently reverted.
+ * never re-validated and a sibling tabela provably cannot be touched — plus, on
+ * the parent of a has-model listing that turns an existing produto with NO
+ * children into a family (or on the CREATE-race arm's childless document), the
+ * family rule's `propagatePriceToChildren` (with the price, or alone). It is
+ * the one guarded write here (root CLAUDE.md rule 7, tier 1): the patch is
+ * derived from the PREPARO's read of the produto, so it asserts THAT read's
+ * `updateTime` — carried on the plan, `EscritaDePrecos.lastUpdateTime` — and
+ * never a re-read taken here. The window it covers is therefore the whole
+ * preparo → patch span, which is where the price and the flag were decided: a
+ * concurrent writer anywhere in it — a retrying import, the item webhook, an
+ * operator saving the produto editor — fails FAILED_PRECONDITION instead of
+ * being silently reverted, and the importer re-plans once against a fresh read.
+ * The CREATE-race arm's patch is the one no preparo read covers (the cascade
+ * never found that document), so the writer reads the collided document ONCE,
+ * decides from that read, and hands its stamp in — still before the arm's merge.
  *
  * The produto merge always writes on the update path (it carries
  * `ultimaModificacao`), which BUMPS `updateTime`. Running the merge first would
  * make this precondition assert a stamp we had just invalidated OURSELVES,
- * failing every single price-writing import. So the guarded write goes first,
- * against the read it was derived from. On CREATE there is nothing to clear and
- * the price is already folded into the full document, so there is no patch at
- * all.
+ * failing every single price-writing import. So the guarded write goes first;
+ * the only writes the import makes before it are the taxonomia and the
+ * categorias, and neither is a produto document, so the stamp the preparo read
+ * is still the produto's own unless SOMEONE ELSE wrote it. On CREATE there is
+ * nothing to clear and the price is already folded into the full document, so
+ * there is no patch at all.
+ *
+ * ⚠️ What the guard cannot see is a write to a DIFFERENT document. The parent's
+ * price and flag are planned only for a parent with no children, and a child
+ * created in the preparo → patch window leaves the parent's stamp alone unless
+ * its writer also touches the parent — the ERP's own family-forming writer does
+ * (it stamps `filhoUnicoId` in the same atomic write), a child written on its
+ * own does not. The patch then lands on a parent that now owns a child, and
+ * `onProdutoChanged` propagates the parent's map onto that child whenever the
+ * flag the parent ends with is not `false` — a flag this patch set to `true`
+ * included. Accepted and documented, not guarded: closing it would need the
+ * `paiId` query inside the same guard, which a single-document precondition
+ * cannot express.
  *
  * Set-only: nothing here ever DELETES a price key. `tabelaPromocionalOuterRef`
  * is never written by an import (#803's stance, taken again for Shopee) — the
@@ -122,9 +146,16 @@ export class ShopeePrecoDesatualizadoError extends Error {
 /**
  * The guarded dotted-path price patch.
  *
- * ⚠️ It takes the SNAPSHOT STAMP of the read the patch was derived from, not a
- * produto id to re-read: a patch planned against one read and guarded by a
- * fresher one is an unguarded write wearing a precondition.
+ * ⚠️ The stamp comes from the PLAN and from nowhere else — there is no stamp
+ * parameter and no read here. It is the `updateTime` of the preparo's read the
+ * patch was derived from; a patch planned against that read and guarded by a
+ * fresher one is an unguarded write wearing a precondition, and an operator's
+ * save landing between the two reads is reverted in silence.
+ *
+ * ⚠️ A plan WITHOUT a stamp is refused before anything is written. There is no
+ * unguarded arm: the FakeDb carries a real stamp on every snapshot, so no double
+ * needs one, and an arm that quietly drops the precondition is exactly how a
+ * preparo that forgot the stamp would ship green.
  *
  * ⚠️ A lost precondition THROWS {@link ShopeePrecoDesatualizadoError}. Returning
  * a verdict would make "the caller forgot to branch" a silent lost update, which
@@ -133,18 +164,25 @@ export class ShopeePrecoDesatualizadoError extends Error {
 export async function aplicarPrecosShopee(
   db: Firestore,
   escrita: EscritaDePrecos | null,
-  lastUpdateTime: unknown,
 ): Promise<void> {
   if (escrita === null) return;
   const patch = escrita.patch;
   if (Object.keys(patch).length === 0) return;
 
+  const { lastUpdateTime } = escrita;
+  if (lastUpdateTime === undefined || lastUpdateTime === null) {
+    throw new Error(
+      `precos: o plano do produto ${escrita.produtoId} não carrega o carimbo da leitura ` +
+        'de que foi derivado — um patch de preço sem guarda nunca é escrito.',
+    );
+  }
+
   const ref = produtoCollection.docRef(db, {}, escrita.produtoId);
   try {
-    // The unguarded arm exists only so an in-memory double may omit the stamp.
-    await (lastUpdateTime !== undefined && lastUpdateTime !== null
-      ? ref.update(patch, { lastUpdateTime: lastUpdateTime as Timestamp })
-      : ref.update(patch));
+    // The cast is the seam's: the plan carries the stamp as `unknown` because
+    // nothing in this module reads it — it goes straight back to the SDK that
+    // produced it (or to the double that mimics it).
+    await ref.update(patch, { lastUpdateTime: lastUpdateTime as Timestamp });
   } catch (err) {
     if (isFailedPrecondition(err)) throw new ShopeePrecoDesatualizadoError(escrita.produtoId);
     throw err;

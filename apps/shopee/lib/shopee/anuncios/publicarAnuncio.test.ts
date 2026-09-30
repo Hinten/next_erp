@@ -1658,3 +1658,341 @@ describe('resolverFotosDaPublicacao — as imagens de opção do tier 1', () => 
     expect(fotos.passes).toEqual([{ cap: null, fotos: 1 }]);
   });
 });
+
+/* ========================================================================== */
+/*  (15) o preço do FILHO passa por precoDaTabela — passo 13 (#1521), M16/M17  */
+/* ========================================================================== */
+
+describe('publicar — o preço do filho é lido por precoDaTabela', () => {
+  /** The body of the ONE `init_tier_variation` the fake received. */
+  function modelosDoInit(fake: ClienteFake): unknown {
+    const corpo = fake.corpos.find((c) => 'model' in c && 'standardise_tier_variation' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum init_tier_variation foi enviado');
+    return corpo.model;
+  }
+
+  function corpoDoAddItem(fake: ClienteFake): Record<string, unknown> {
+    const corpo = fake.corpos.find((c) => 'item_name' in c);
+    if (corpo === undefined) throw new Error('fixture: nenhum add_item foi enviado');
+    return corpo;
+  }
+
+  /**
+   * A live listing that has NO models yet (published without variations, the
+   * produto gained a child since): the update's FRESH reading is empty, so the
+   * leg answers `init` and the child's price rides `init_tier_variation`. Every
+   * later reading is the model the init just minted.
+   *
+   * ⚠️ That is the path where a child priced `0` really REACHED the wire before
+   * step 13: an update carries no item-level price refusal (they are CREATE-only),
+   * so nothing but the tier mapper's `filho-sem-preco` stands in the way.
+   */
+  function leituraVaziaPrimeiro(): (p: { itemId: number }) => ShopeeModelList {
+    let chamadas = 0;
+    return () => {
+      chamadas += 1;
+      return chamadas === 1 ? modelList([]) : modelList();
+    };
+  }
+
+  /**
+   * ⚠️ D-9: the parent here does NOT propagate (`propagatePriceToChildren:
+   * false`). These cases are about the CHILD's OWN price going through
+   * `precoDaTabela`; under a propagating parent (an absent flag propagates) the
+   * child's map is never read and they would test the parent's 49.9 instead.
+   */
+  const PAI_SEM_PROPAGACAO = { propagatePriceToChildren: false } as const;
+
+  function semearUpdateComFilhoNovo(db: FakeDb, valor: number): void {
+    semearCatalogo(db, PAI_SEM_PROPAGACAO);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor } } });
+    semearLink(db);
+  }
+
+  it('PAR: um filho a 10.567 chega ao init_tier_variation como 10.57 — e o descartável do add_item também', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, PAI_SEM_PROPAGACAO);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor: 10.567 } } });
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano, contexto } = await planejar(db, fake);
+    expect(contexto.filhos[0]?.preco).toBe(10.57);
+    expect(plano.problemas).toEqual([]);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 10.57 })]);
+    expect(corpoDoAddItem(fake).original_price).toBe(10.57);
+  });
+
+  it('⚠️ NEAR-MISS: um filho a 10.5 já está no centavo e chega intacto', async () => {
+    const db = new FakeDb();
+    semearCatalogo(db, PAI_SEM_PROPAGACAO);
+    semearFilho(db, { precos: { [TABELA_NORMAL]: { valor: 10.5 } } });
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+    const { plano } = await planejar(db, fake);
+    await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 10.5 })]);
+  });
+
+  it('⚠️ um filho a 0 (ou 0.004, ou negativo) agora é RECUSADO com filho-sem-preco — antes ia ao fio como original_price no init_tier_variation', async () => {
+    for (const valor of [0, 0.004, -5]) {
+      const db = new FakeDb();
+      semearUpdateComFilhoNovo(db, valor);
+      const fake = clienteFake({
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(true);
+      expect(contexto.filhos[0]?.preco).toBeNull();
+      // O MAPEADOR DE TIERS recusa (`campo: 'model'`) — num update não há recusa
+      // de preço no nível do item, então sem ela o 0 era enviado.
+      expect(plano.problemas).toEqual([
+        expect.objectContaining({
+          campo: 'model',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        }),
+      ]);
+
+      await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+        ShopeePublishBlockedError,
+      );
+      expect(fake.ops).not.toContain('update_item');
+      expect(fake.ops).not.toContain('init_tier_variation');
+      expect(db.writes).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO filho a 0.01 é ENVIADO — um centavo é preço', async () => {
+    const db = new FakeDb();
+    semearUpdateComFilhoNovo(db, 0.01);
+    const fake = clienteFake({
+      updateItem: () => ecoDeItem(),
+      getModelList: leituraVaziaPrimeiro(),
+    });
+
+    const { plano, contexto } = await planejar(db, fake);
+    expect(contexto.filhos[0]?.preco).toBe(0.01);
+    expect(plano.problemas).toEqual([]);
+    const r = await aplicarPublicacao(deps(db, fake), plano);
+
+    expect(r.modelos.acao).toBe('init');
+    expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 0.01 })]);
+  });
+
+  /* ------------------------------------------------------------------------ */
+  /*  D-9: o preço do filho segue o PAI que propaga — a regra do Mercado Livre */
+  /* ------------------------------------------------------------------------ */
+
+  describe('D-9 — um pai que propaga dá o preço aos filhos (precoDoFilhoNaTabela)', () => {
+    /**
+     * A child with NO price of its own: one created after the parent's last price
+     * edit, or step 9's import (it writes the parent's `precos` only). The produto
+     * trigger copies the parent's map into the children only when the PARENT's
+     * prices change, so this child is real under a propagating parent.
+     */
+    const SEM_PRECO_PROPRIO = { precos: {} } as const;
+
+    it('PAR (UPDATE): pai que propaga, com preço, e um filho SEM preço próprio ⇒ nenhum filho-sem-preco, e o original_price do modelo é o do PAI', async () => {
+      const db = new FakeDb();
+      // Sem o campo `propagatePriceToChildren`: um documento anterior ao campo PROPAGA.
+      semearCatalogo(db);
+      semearFilho(db, SEM_PRECO_PROPRIO);
+      semearLink(db);
+      const fake = clienteFake({
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(true);
+      expect(contexto.filhos[0]?.preco).toBe(49.9);
+      expect(plano.problemas).toEqual([]);
+      const r = await aplicarPublicacao(deps(db, fake), plano);
+
+      expect(r.modelos.acao).toBe('init');
+      expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 49.9 })]);
+    });
+
+    it('PAR (CREATE): o MESMO par ⇒ o init_tier_variation E o descartável do add_item levam o preço do PAI', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearFilho(db, SEM_PRECO_PROPRIO);
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(false);
+      expect(contexto.filhos[0]?.preco).toBe(49.9);
+      expect(plano.problemas).toEqual([]);
+      await aplicarPublicacao(deps(db, fake), plano);
+
+      expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 49.9 })]);
+      expect(corpoDoAddItem(fake).original_price).toBe(49.9);
+    });
+
+    it('⛔ NEAR-MISS: a MESMA família com propagatePriceToChildren false ⇒ filho-sem-preco, no UPDATE também, e nada é escrito nem enviado', async () => {
+      for (const comVinculo of [false, true]) {
+        const db = new FakeDb();
+        semearCatalogo(db, PAI_SEM_PROPAGACAO);
+        semearFilho(db, SEM_PRECO_PROPRIO);
+        if (comVinculo) semearLink(db);
+        const fake = clienteFake({
+          addItem: () => ecoDeItem(),
+          updateItem: () => ecoDeItem(),
+          getModelList: leituraVaziaPrimeiro(),
+        });
+
+        const { plano, contexto } = await planejar(db, fake);
+        expect(plano.ehAtualizacao).toBe(comVinculo);
+        // O pai tem 49.9 e NÃO é lido: sem propagação o preço é o do filho, e ele não tem.
+        expect(contexto.filhos[0]?.preco).toBeNull();
+        expect(plano.problemas).toContainEqual(
+          expect.objectContaining({
+            campo: 'model',
+            motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+          }),
+        );
+
+        await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+          ShopeePublishBlockedError,
+        );
+        expect(fake.ops).not.toContain('add_item');
+        expect(fake.ops).not.toContain('update_item');
+        expect(fake.ops).not.toContain('init_tier_variation');
+        expect(db.writes).toEqual([]);
+      }
+    });
+
+    it('PAR: pai que propaga (49.9) + um filho com preço DIFERENTE (10.5) ⇒ o preço do PAI chega ao corpo — o mapa do filho está velho, não é um override', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearFilho(db, { precos: { [TABELA_NORMAL]: { valor: 10.5 } } });
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(contexto.filhos[0]?.preco).toBe(49.9);
+      expect(plano.problemas).toEqual([]);
+      await aplicarPublicacao(deps(db, fake), plano);
+
+      expect(modelosDoInit(fake)).toEqual([expect.objectContaining({ original_price: 49.9 })]);
+      expect(corpoDoAddItem(fake).original_price).toBe(49.9);
+    });
+
+    it('⛔ NEAR-MISS: o propagatePriceToChildren do FILHO nunca é lido — false nele, com o pai propagando, ainda dá o preço do PAI', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db);
+      semearFilho(db, {
+        propagatePriceToChildren: false,
+        precos: { [TABELA_NORMAL]: { valor: 10.5 } },
+      });
+      const fake = clienteFake({ addItem: () => ecoDeItem() });
+
+      const { contexto } = await planejar(db, fake);
+      expect(contexto.filhos[0]?.preco).toBe(49.9);
+    });
+
+    it('⚠️ o gêmeo do "filho a 0": um pai que PROPAGA a 0.004 (e o filho a 49.9) ⇒ ainda filho-sem-preco — o arredondamento vale no braço do pai, e o filho não é fallback', async () => {
+      const db = new FakeDb();
+      semearCatalogo(db, { precos: { [TABELA_NORMAL]: { valor: 0.004 } } });
+      semearFilho(db); // o filho TEM 49.9 próprio — e não é lido
+      semearLink(db);
+      const fake = clienteFake({
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(true);
+      expect(contexto.filhos[0]?.preco).toBeNull();
+      expect(plano.problemas).toEqual([
+        expect.objectContaining({
+          campo: 'model',
+          motivo: MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco,
+        }),
+      ]);
+
+      await expect(aplicarPublicacao(deps(db, fake), plano)).rejects.toBeInstanceOf(
+        ShopeePublishBlockedError,
+      );
+      expect(fake.ops).not.toContain('update_item');
+      expect(fake.ops).not.toContain('init_tier_variation');
+      expect(db.writes).toEqual([]);
+    });
+  });
+
+  /* ------------------------------------------------------------------------ */
+  /*  D-9: o TEXTO do filho-sem-preco nomeia quem tem o preço                  */
+  /* ------------------------------------------------------------------------ */
+
+  describe('D-9 — o texto do filho-sem-preco nomeia quem tem o preço (o motivo não muda)', () => {
+    // Sob propagação a web RECUSA editar o preço de uma variação, então o texto
+    // que mandava o operador ao preço do filho o mandava a um campo que ele não
+    // pode editar. O remédio é o preço do PAI, ou desligar a propagação.
+    const TEXTO_PAI_NO_ITEM =
+      'o produto pai propaga o preço para as variações e não tem preço na tabela normal — ' +
+      'defina o preço do pai ou desligue a propagação';
+    const TEXTO_PAI_NO_TIER =
+      `A variação ${FILHO} não tem preço: o produto pai propaga o preço para as variações e ` +
+      'não tem preço na tabela normal — defina o preço do pai ou desligue a propagação.';
+    const TEXTO_FILHO_NO_ITEM =
+      'o primeiro filho não tem preço na tabela normal — é dele que sai o preço descartável do item';
+    const TEXTO_FILHO_NO_TIER = `A variação ${FILHO} não tem preço e a Shopee exige um original_price por modelo.`;
+
+    /** Every `filho-sem-preco` of the plan, as `[campo, mensagem]`. */
+    function recusasDePreco(problemas: PlanoPublicacao['problemas']): [string | null, string][] {
+      return problemas
+        .filter((p) => p.motivo === MOTIVO_PUBLICACAO_BLOQUEADA.filhoSemPreco)
+        .map((p) => [p.campo, p.mensagem]);
+    }
+
+    /** Pai que PROPAGA (flag ausente) SEM preço; o filho tem 49.9 próprio, que não é lido. */
+    const PAI_PROPAGA_SEM_PRECO = { pai: { precos: {} }, filho: {} };
+    /** Pai que NÃO propaga (com 49.9, que não é lido); o filho não tem preço próprio. */
+    const PAI_NAO_PROPAGA = { pai: { propagatePriceToChildren: false }, filho: { precos: {} } };
+
+    async function planoDe(
+      familia: { readonly pai: Record<string, unknown>; readonly filho: Record<string, unknown> },
+      comVinculo: boolean,
+    ) {
+      const db = new FakeDb();
+      semearCatalogo(db, familia.pai);
+      semearFilho(db, familia.filho);
+      if (comVinculo) semearLink(db);
+      const fake = clienteFake({
+        addItem: () => ecoDeItem(),
+        updateItem: () => ecoDeItem(),
+        getModelList: leituraVaziaPrimeiro(),
+      });
+      const { plano, contexto } = await planejar(db, fake);
+      expect(plano.ehAtualizacao).toBe(comVinculo);
+      expect(contexto.filhos[0]?.preco).toBeNull();
+      return plano;
+    }
+
+    it('⚠️ PAR (CREATE): pai que PROPAGA sem preço na tabela normal ⇒ as DUAS recusas (a do item e a do tier) nomeiam o PAI e o remédio', async () => {
+      const plano = await planoDe(PAI_PROPAGA_SEM_PRECO, false);
+      expect(recusasDePreco(plano.problemas)).toEqual([
+        ['original_price', TEXTO_PAI_NO_ITEM],
+        ['model', TEXTO_PAI_NO_TIER],
+      ]);
+    });
+
+    it('⚠️ PAR (UPDATE): o MESMO pai sem preço, anúncio já publicado ⇒ a recusa do tier nomeia o PAI', async () => {
+      const plano = await planoDe(PAI_PROPAGA_SEM_PRECO, true);
+      expect(recusasDePreco(plano.problemas)).toEqual([['model', TEXTO_PAI_NO_TIER]]);
+    });
+
+    it('⛔ QUASE-IGUAL (CREATE e UPDATE): pai que NÃO propaga + filho sem preço próprio ⇒ os textos de sempre, que nomeiam o FILHO — mesmo motivo', async () => {
+      const criar = await planoDe(PAI_NAO_PROPAGA, false);
+      expect(recusasDePreco(criar.problemas)).toEqual([
+        ['original_price', TEXTO_FILHO_NO_ITEM],
+        ['model', TEXTO_FILHO_NO_TIER],
+      ]);
+      const atualizar = await planoDe(PAI_NAO_PROPAGA, true);
+      expect(recusasDePreco(atualizar.problemas)).toEqual([['model', TEXTO_FILHO_NO_TIER]]);
+    });
+  });
+});

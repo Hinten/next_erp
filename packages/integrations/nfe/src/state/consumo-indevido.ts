@@ -17,7 +17,7 @@
  *   - The helper is cheap and idempotent — safe to call after every
  *     SEFAZ response without conditional gating at the call site.
  *   - Composes on top of the existing `classifyCStat` mapping
- *     (`./index.ts:84`); does NOT duplicate the cStat → category
+ *     in `./index.ts`; does NOT duplicate the cStat → category
  *     classification.
  */
 

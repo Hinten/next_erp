@@ -131,7 +131,7 @@ function wrapNfeProc(nfe: string, chave: string): string {
     `<nfeProc xmlns="${NFE_NS}" versao="4.00">${nfe}` +
     `<protNFe versao="4.00"><infProt><tpAmb>2</tpAmb><verAplic>SP_NFE_PL009_V4</verAplic>` +
     `<chNFe>${chave}</chNFe><dhRecbto>2026-06-11T08:35:12-03:00</dhRecbto>` +
-    `<nProt>1352600000${chave.slice(25, 31)}</nProt><digVal>ZGV2LWZpeHR1cmU=</digVal>` +
+    `<nProt>135260000${chave.slice(25, 31)}</nProt><digVal>ZGV2LWZpeHR1cmU=</digVal>` +
     `<cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe></nfeProc>`
   );
 }

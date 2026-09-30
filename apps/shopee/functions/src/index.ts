@@ -21,6 +21,7 @@ import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
 import { runShopeeAuthorizationExpirySweep } from '../../lib/shopee/conta/expiracaoSweep';
 import { shopeeConfig } from '../../lib/shopee/env';
 import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
+import { SHOPEE_NFE_UPLOAD_QUEUE } from '../../lib/shopee/nfe/constantesNfe';
 import { runShopeeEscrowSettlement } from '../../lib/shopee/pedidos/liquidacaoSweep';
 import {
   RESERVA_TRAVADA_FLAG_ENV,
@@ -37,11 +38,14 @@ import {
   runShopeeOrderBackfill,
 } from '../../lib/shopee/notificacoes/orderBackfill';
 import { runShopeePushConfigMonitor } from '../../lib/shopee/notificacoes/pushConfigMonitor';
+import { SHOPEE_PRICE_SYNC_QUEUE } from '../../lib/shopee/precos/constantesPreco';
 import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 import { createShopeeTaskScheduler } from '../../lib/shopee/shopeeTasks';
 import { getDb } from './lib/admin';
 import * as massImportHandlers from './processMassImport';
+import * as nfeUploadHandlers from './processNfeUpload';
 import * as notificationHandlers from './processNotification';
+import * as priceSyncHandlers from './processPriceSync';
 import * as stockSendHandlers from './sendStock';
 
 /**
@@ -107,6 +111,27 @@ import * as stockSendHandlers from './sendStock';
  * with no flag of its own: the single valve `SHOPEE_STOCK_SYNC_ENABLED` covers
  * all four, and a second flag would let the corrector be off while an operator
  * believed stock sync was on.
+ *
+ * Master plan step 13 (#1521) adds the FOURTH Cloud Tasks queue
+ * (`processShopeePriceSync`, ./processPriceSync) — the account-wide price job
+ * ("Atualizar preços"). It is the mass import's shape: a job document is the
+ * checkpoint, the `/atualizar-precos` route enqueues the first dispatch and the
+ * handler re-enqueues onto ITSELF for every plan/drain continuation, for a burst
+ * pause and for the daily-quota park — three self-re-enqueue arms, and no sweep
+ * behind any of them. No `onSchedule` arrives with it: every run is an
+ * operator's click (the manual push runs in-process and never enqueues).
+ *
+ * Master plan step 14 (#1522) adds the FIFTH Cloud Tasks queue
+ * (`processShopeeNfeUpload`, ./processNfeUpload) and the SECOND Firestore
+ * trigger (`onNfeAprovadaShopee`, ./onNfeAprovadaShopee) — the NF-e XML upload
+ * that must land before `ship_order`. The trigger enqueues on the EDGE into
+ * "approved" (never on the level: the window's `nfe-totais` migration rewrites
+ * every approved document), held for the SERPRO window; the handler re-enqueues
+ * onto ITSELF for the SERPRO wait, the burst pause, the daily park and the
+ * ~15-min recheck. ⚠️ There is NO sweep behind either: with the valve shut the
+ * trigger raises one aviso per pedido instead, and `/enviar-nfe` / `enviar:nfe`
+ * are the re-drives. ⚠️ The trigger is NOT named `onNfeAprovada` — Mercado
+ * Livre's codebase deploys that name into the same project (#1707).
  */
 
 /**
@@ -114,9 +139,11 @@ import * as stockSendHandlers from './sendStock';
  * PUBLIC-signed Shopee call.
  *
  * ⚠️ It covers the seven `onSchedule` triggers defined in THIS file only. The
- * THREE queue functions — `processShopeeNotification` (./processNotification),
- * `processShopeeMassImport` (./processMassImport, master plan step 9) and
- * `sendShopeeStock` (./sendStock, step 12) — and the three step-12 sweeps
+ * FIVE queue functions — `processShopeeNotification` (./processNotification),
+ * `processShopeeMassImport` (./processMassImport, master plan step 9),
+ * `sendShopeeStock` (./sendStock, step 12), `processShopeePriceSync`
+ * (./processPriceSync, step 13) and `processShopeeNfeUpload`
+ * (./processNfeUpload, step 14) — and the three step-12 sweeps
  * (./sweepStock) each declare their own copy of the same two names, each pinned
  * by its own module's test, so this constant does not by itself stop a NEW
  * trigger picking a different subset; the exact-set assertions do, and
@@ -194,9 +221,56 @@ if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers)) {
 /** The queue-based stock push — one task, one `update_stock`, self-re-enqueued. */
 export { sendShopeeStock } from './sendStock';
 
+// The same rename-safety assertion for the FOURTH queue of this codebase (master
+// plan step 13's account-wide price job). Its OWN `if`, never folded into a loop
+// over the four: the message has to name the FILE to fix, and the four
+// constants live in four different modules.
+//
+// ⚠️ This one has the mass import's hazard with a THIRD arm. The handler
+// re-enqueues onto its own queue for every plan/drain continuation, for a burst
+// pause and for the daily-quota park, so a half-rename does not break the
+// route's first dispatch — it breaks the CONTINUATION: the re-enqueued task aims
+// at a queue that does not exist, the enqueue still returns success, and the job
+// document stays `running` until the six-hour orphan reclaim takes it.
+if (!(SHOPEE_PRICE_SYNC_QUEUE in priceSyncHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processPriceSync.ts must export a ' +
+      `handler named '${SHOPEE_PRICE_SYNC_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_PRICE_SYNC_QUEUE constant together.',
+  );
+}
+
+/** The queue-based account-wide price job (one dispatch at a time, self-continued). */
+export { processShopeePriceSync } from './processPriceSync';
+
+// The same rename-safety assertion for the FIFTH queue of this codebase (master
+// plan step 14's NF-e upload). Its OWN `if`, never folded into a loop over the
+// five: the message has to name the FILE to fix, and the five constants live in
+// five different modules.
+//
+// ⚠️ Two producers aim at this name from OUTSIDE the handler — the
+// `onNfeAprovadaShopee` trigger and the `/enviar-nfe` route — and the handler
+// re-enqueues onto it for the SERPRO wait, the pauses and the recheck. A
+// half-rename therefore drops the FIRST upload of every approved NF-e while
+// both producers report success, and there is no NF-e sweep to find it later.
+if (!(SHOPEE_NFE_UPLOAD_QUEUE in nfeUploadHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processNfeUpload.ts must export a ' +
+      `handler named '${SHOPEE_NFE_UPLOAD_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_NFE_UPLOAD_QUEUE constant together.',
+  );
+}
+
+/** The queue-based NF-e XML upload (one dispatch at a time, self re-enqueued). */
+export { processShopeeNfeUpload } from './processNfeUpload';
+
 // Master plan step 11 (#1519): the Shopee half of `produtos.integracoesComProduto`,
 // derived from the `prodshopee` links. No `secrets:` — it never calls Shopee.
 export { onProdutoShopeeLinkChanged } from './onProdutoShopeeLinkChanged';
+
+// Master plan step 14 (#1522): the NF-e approval trigger, the first producer of
+// `processShopeeNfeUpload`. No `secrets:` — it never calls Shopee.
+export { onNfeAprovadaShopee } from './onNfeAprovadaShopee';
 
 /**
  * Reprocess backstop, draining BOTH retry lanes on the same tick:

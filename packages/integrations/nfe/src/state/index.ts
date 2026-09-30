@@ -38,16 +38,36 @@ export { ESTADOS_FINAIS_NFE, isEstadoFinalNFe } from '@delfrance/schemas';
 export const MAX_LOTE_POLL_RETRIES = 4;
 
 /**
- * Async reconciler tuning (Cloud Tasks + backstop sweep). A lote stuck at
- * `cStat=105` is re-consulted at most `MAX_RECONCILE_ATTEMPTS` times; past
- * that it is marked terminal `error` for manual review (never re-queried
- * forever — that is the consumo-indevido / SEFAZ-ban vector behind #77).
+ * Async reconciler tuning (Cloud Tasks + backstop sweep). The cap on one
+ * nfev4 doc's `retries`: EVERY `consReciNFe` round that leaves the doc in
+ * flight advances it by exactly one — a 105, a lote-level non-answer
+ * (103/107/108/109/113/114), a 104/106/duplicidade resolved by chave, an
+ * `enviando` doc, a recovered 539 — so a doc gets at most this many
+ * receipt rounds, and at most this many `consSitNFe`, between two operator
+ * actions (#513, #1654). The round that reaches it marks the doc terminal
+ * `error` with a BLOCKING cStat for manual review (never re-queried forever —
+ * that is the consumo-indevido / SEFAZ-ban vector behind #77). Writers that
+ * still reset the counter: the manual verify, a new emit lote, and the
+ * sweep's consult-by-chave branch for docs without an `nRec`.
  */
 export const MAX_RECONCILE_ATTEMPTS = 10;
 /** First-consult / floor backoff when SEFAZ returns no `tMed`. */
 export const RECONCILE_BASE_DELAY_MS = 60_000;
-/** Backoff ceiling — a single attempt never waits longer than this. */
+/**
+ * Backoff ceiling — `nextConsultaDelayMs` never returns more than this. A
+ * receipt that answered serviço paralisado waits longer on purpose:
+ * {@link RECONCILE_INDISPONIVEL_DELAY_MS}, via {@link esperaMinimaDoRecibo}.
+ */
 export const RECONCILE_MAX_DELAY_MS = 15 * 60_000;
+/**
+ * The minimum wait before re-consulting a lote whose `consReciNFe` answered
+ * serviço paralisado / SVC em desativação or desabilitada (108/109/113/114,
+ * #1654). Every such round is counted, so polling at the normal backoff would
+ * spend the `MAX_RECONCILE_ATTEMPTS` rounds in about two hours of a SEFAZ-SP
+ * outage; at one hour they last about ten. Both the task delay and the doc's
+ * `proximaConsultaEm` take it, so the sweep never runs ahead of the task.
+ */
+export const RECONCILE_INDISPONIVEL_DELAY_MS = 60 * 60_000;
 /**
  * Grace the backstop sweep adds on top of the task delay before a lote is
  * "due". The Cloud Task is the primary trigger (fires at `now + delay`); the
@@ -122,9 +142,45 @@ export type CStatCategory =
   | 'rejeitada';
 
 const DUPLICIDADE = new Set(['204', '205', '218', '539', '635']);
-const CERT_REJECTION = new Set(['280', '281', '286']);
+// Exact strings, like every other code here. 290–298 used to be matched as a
+// NUMERIC range, a fold that also caught '0290'…'0298' — valid 4-digit `TStat`
+// shapes (NT 2025.002 §5.1) that are not certificate rejections.
+const CERT_REJECTION = new Set([
+  '280',
+  '281',
+  '286',
+  '290',
+  '291',
+  '292',
+  '293',
+  '294',
+  '295',
+  '296',
+  '297',
+  '298',
+]);
 
-/** Classify a SEFAZ `cStat` into a coarse category. */
+/**
+ * The XSD `TStat` shape: 3 or 4 ASCII digits (NT 2025.002 §5.1 widened it from
+ * exactly 3 — the RTC rejections occupy the 4-digit range, e.g. 1115). Vendored
+ * as `[0-9]{3,4}` in `tiposBasico_v4.00.xsd` and `tiposBasico_v1.03.xsd`.
+ *
+ * Every SEFAZ reply is XSD-validated before it is parsed
+ * (`soap/index.ts` → `postSoapValidated`), so a cStat read from a reply already
+ * has this shape. Call this before {@link classifyCStat} on any value that did
+ * NOT come through that gate — a stored or hand-built one.
+ */
+export function isCStat(value: string): boolean {
+  return /^[0-9]{3,4}$/.test(value);
+}
+
+/**
+ * Classify a SEFAZ `cStat` into a coarse category.
+ *
+ * Assumes the `TStat` shape ({@link isCStat}): every comparison is an exact
+ * string, and anything unknown — a 4-digit RTC rejection such as 1115, but
+ * also a value that is not a cStat at all — falls through to `'rejeitada'`.
+ */
 export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '100' || cStat === '150') return 'autorizada';
   // 151 = cancelamento homologado fora de prazo — same terminal cancelada as
@@ -147,8 +203,6 @@ export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '252') return 'rejeitada-ambiente';
   if (cStat === '656') return 'consumo-indevido';
   if (CERT_REJECTION.has(cStat)) return 'rejeitada-certificado';
-  const n = Number(cStat);
-  if (Number.isInteger(n) && n >= 290 && n <= 298) return 'rejeitada-certificado';
   return 'rejeitada';
 }
 
@@ -200,6 +254,37 @@ export type NextAction =
   | 'recover-via-consulta'
   /** Backoff and stop for this run; the poller will pick it up later. */
   | 'backoff';
+
+/**
+ * The minimum wait before the next consult of a lote, decided from the LOTE
+ * cStat of the round that just ran — before any write, so every doc of the
+ * round and the task's own re-enqueue share it (#1654):
+ * {@link RECONCILE_INDISPONIVEL_DELAY_MS} for serviço paralisado
+ * (108/109/113/114), `null` (the normal `nextConsultaDelayMs` backoff) for
+ * everything else. Callers take `max(backoff, espera)`.
+ */
+export function esperaMinimaDoRecibo(loteCStat: string): number | null {
+  switch (classifyCStat(loteCStat)) {
+    case 'servico-paralisado':
+      return RECONCILE_INDISPONIVEL_DELAY_MS;
+    case 'autorizada':
+    case 'cancelada':
+    case 'inutilizada':
+    case 'denegada':
+    case 'lote-recebido':
+    case 'lote-processado':
+    case 'lote-pendente':
+    case 'lote-nao-localizado':
+    case 'servico-em-operacao':
+    case 'duplicidade':
+    case 'rejeitada-schema':
+    case 'rejeitada-certificado':
+    case 'rejeitada-ambiente':
+    case 'consumo-indevido':
+    case 'rejeitada':
+      return null;
+  }
+}
 
 /** Decide the next action for an NF-e given its latest `cStat` and retries. */
 export function nextAction(cStat: string, retries: number): NextAction {

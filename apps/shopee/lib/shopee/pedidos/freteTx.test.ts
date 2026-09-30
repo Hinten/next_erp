@@ -549,6 +549,8 @@ describe('salvarFreteShopee — a corrida com a transação do PEDIDO', () => {
           custo: null,
           timestamp: NOW_US,
           imposto: null,
+          dfeReferenciado: null,
+          ajusteRtc: null,
         },
       ],
       conferencia: {
@@ -1075,5 +1077,64 @@ describe('preverFreteShopee — a fonte de BACKSTOP', () => {
     expect(previsao.diagnosticos.estadoAlvo).toBe(ESTADO_FRETE.despachoAutorizado);
     expect(previsao.patch!.freteInicial.estado).toBe(ESTADO_FRETE.despachoAutorizado);
     expect(previsao.diagnosticos.pacotes).toBe(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     step 14 (#1522, R2-1) — `estadoConfirmado`, o estado que o gancho lê     */
+/* -------------------------------------------------------------------------- */
+
+describe('salvarFreteShopee — `estadoConfirmado` (o gancho do aviso de NF-e)', () => {
+  it('IGUAL: a escrita e o seu REPLAY entregam o mesmo estado — o replay não escreve e ainda assim o confirma', async () => {
+    const db = pedidoComFrete(blocoDeFrete());
+
+    const escrita = await salvar(db, [obs()]);
+    const replay = await salvar(db, [obs()]);
+
+    expect(escrita.acao).toBe('atualizado');
+    expect(escrita.estadoConfirmado).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(escrita.estadoConfirmado).toBe(escrita.estadoEscrito);
+    // ⚠️ O ponto: `estadoEscrito` some no replay, `estadoConfirmado` não.
+    expect(replay.acao).toBe('ignorado-sem-mudanca');
+    expect(replay.estadoEscrito).toBeNull();
+    expect(replay.estadoConfirmado).toBe(ESTADO_FRETE.aguardandoPostagem);
+  });
+
+  it('QUASE-ERRO: um estado de DEPÓSITO guardado (`empacotado`) que o diário NÃO confirma dá `null`, na escrita e no replay', async () => {
+    // `empacotado` está em ESTADOS_FRETE_REMOVE_ESTOQUE e a escada o mantém
+    // contra o `despachoAutorizado` do pull — o bloco guarda um membro do
+    // conjunto que a Shopee nunca disse.
+    const db = pedidoComFrete(blocoDeFrete({ estado: ESTADO_FRETE.empacotado }));
+
+    const escrita = await salvar(db, [obs({ fulfillmentStatus: 'LOGISTICS_READY' })]);
+    const replay = await salvar(db, [obs({ fulfillmentStatus: 'LOGISTICS_READY' })]);
+
+    expect(escrita.acao).toBe('atualizado');
+    expect(escrita.motivoEstado).toBe(MOTIVO_FRETE_SHOPEE.regressivo);
+    expect(freteGravado(db).estado).toBe(ESTADO_FRETE.empacotado);
+    expect(escrita.estadoConfirmado).toBeNull();
+    expect(replay.acao).toBe('ignorado-sem-mudanca');
+    expect(replay.estadoConfirmado).toBeNull();
+  });
+
+  it('QUASE-ERRO: o fechamento do operador (`checkFinalizado`) acima de um `aguardandoPostagem` da Shopee dá `null` — os DOIS no conjunto, mas diferentes', async () => {
+    // O resíduo aceito, e o mesmo de antes deste campo: o veredito recusou a
+    // escrita (`regressivo`), e o estado guardado é o do operador.
+    const db = pedidoComFrete(blocoDeFrete({ estado: ESTADO_FRETE.checkFinalizado }));
+
+    const r = await salvar(db, [obs()]);
+
+    expect(r.motivoEstado).toBe(MOTIVO_FRETE_SHOPEE.regressivo);
+    expect(r.estadoConfirmado).toBeNull();
+  });
+
+  it('QUASE-ERRO: um `error` preservado, um pedido ausente e um bloco ausente dão `null`', async () => {
+    const carimbado = pedidoComFrete(blocoDeFrete({ estado: ESTADO_FRETE.error }));
+    const preservado = await salvar(carimbado, [obs({ fulfillmentStatus: 'LOGISTICS_READY' })]);
+    expect(preservado.motivoEstado).toBe(MOTIVO_FRETE_SHOPEE.erroPreservado);
+    expect(preservado.estadoConfirmado).toBeNull();
+
+    expect((await salvar(new FakeDb(), [obs()])).estadoConfirmado).toBeNull();
+    expect((await salvar(pedidoComFrete(undefined), [obs()])).estadoConfirmado).toBeNull();
   });
 });

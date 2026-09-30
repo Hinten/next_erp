@@ -131,5 +131,6 @@ export function safeLog(
   level: 'log' | 'debug' | 'info' | 'warn' | 'error',
   ...args: ReadonlyArray<unknown>
 ): void {
+  // eslint-disable-next-line no-console -- the safe wrapper itself: every arg has passed redactSensitive
   console[level](...args.map((a) => redactSensitive(a)));
 }

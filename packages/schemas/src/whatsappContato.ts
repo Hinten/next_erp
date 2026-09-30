@@ -68,6 +68,11 @@ export const whatsappVinculoSchema = whatsappVinculoResumoSchema.extend({
   requestFingerprint: z.string().nullable().default(null),
   decididoPor: z.string().nullable().default(null),
 });
+
+/** Collection-group/field pair that retains cached media while a contact awaits identification. */
+export const WHATSAPP_VINCULO_MENSAGEM_COLLECTION_GROUP = 'mensagens' as const;
+export const WHATSAPP_VINCULO_MENSAGEM_ARQUIVO_FIELD = 'arquivoId' as const;
+
 export const whatsappVinculoMensagemSchema = z.object({
   sourceNotificationId: z.string().nullable().default(null),
   value: z.unknown(),

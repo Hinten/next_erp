@@ -15,7 +15,7 @@ import { getDb } from '../lib/admin';
  * `@delfrance/schemas`) 90 days after `resolvidoEm` and a reopen could clear it
  * — `criadoEm` stays wrong as the key, since it would expire still-OPEN avisos
  * (an authorization warning legitimately stands for 200 days). The repo now does
- * exactly that for four collection groups (`TTL_POLICIES`, #651).
+ * exactly that for five collection groups (`TTL_POLICIES`, #651).
  *
  * This sweep stays because it already works and the swap would cost more than it
  * saves: a schema field, a stamp on resolve, a clear on reopen, their tests —

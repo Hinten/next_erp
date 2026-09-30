@@ -64,6 +64,16 @@ export const filialSchema = z.object({
       '{"label":"IEST","hint":"Inscrição Estadual do substituto tributário, quando houver"}',
     ),
   imun: z.string().regex(/^\d*$/, 'apenas números').nullable().describe('Inscrição Municipal'),
+  // NT 2025.002 `emit/ISUFEmit` (#331): emitted only with the Reforma Tributária
+  // on, and only valid from a ZFM/ALC municipality (C22-10, judged at emission).
+  isuf: z
+    .string()
+    .regex(/^\d{8,9}$/, '8 ou 9 dígitos')
+    .nullable()
+    .default(null)
+    .describe(
+      '{"label":"Inscrição SUFRAMA","hint":"Só para filial na Zona Franca de Manaus ou em Área de Livre Comércio (NF-e da Reforma Tributária)"}',
+    ),
   sede: enderecoSchema.describe('Endereço sede'),
   // Public A1 cert metadata, managed by the cert upload endpoint (apps/nfe),
   // NOT by this form — it is excluded from the Dados ObjectView. `.optional()`

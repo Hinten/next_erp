@@ -1,10 +1,16 @@
 /**
  * `withNFeRetry` per-endpoint retry policy (#90). The key invariant: idempotent
- * / server-deduped endpoints retry the full transient set, but `cartaCorrecao`
- * (NOT idempotent — each send increments nSeqEvento) retries ONLY the pre-send
- * 503, never a post-send network/5xx.
+ * / server-deduped endpoints retry the full transient set, but an endpoint that
+ * is NOT safe to re-POST retries ONLY the pre-send 503, never a post-send
+ * network/5xx: `cartaCorrecao` (each send increments nSeqEvento), `inutilizar`
+ * (563), and — since #1654 §3 — `emitir` and `emitirLote`, whose re-POST
+ * regenerates and RE-SENDS every rejeitada/error member. "Pre-send" is read
+ * from the 503's BODY (apps/nfe's marker), never from its class: the client
+ * maps every 503 to `NFeRuntimeNotReadyError`, the platform's own included.
+ * `verificar` and `processarPendentes` never retry, and a TIMEOUT (#1094) is
+ * never retried by any endpoint.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createNFeHttpClient,
@@ -12,7 +18,9 @@ import {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeTimeoutError,
   NFeXsdValidationFailedError,
+  NFE_PRAZO_MS,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 
@@ -49,14 +57,170 @@ function failThenSucceed<T>(failures: number, err: unknown, value: T): () => Pro
   };
 }
 
+/**
+ * The pre-send 503 exactly as the client builds it from apps/nfe's answer to a
+ * `getNFeRuntime()` failure: `{ error: 'NF-e runtime not ready', code: … }`.
+ */
+const naoProntoDoNFe = () =>
+  new NFeRuntimeNotReadyError('NF-e runtime not ready', {
+    error: 'NF-e runtime not ready',
+    code: 'NFE_AMBIENTE inválido',
+  });
+
+/** A real client over `fetch`, wrapped by the policy under test. */
+function clienteReal(fetch: typeof globalThis.fetch): NFeHttpClient {
+  return withNFeRetry(
+    createNFeHttpClient({
+      baseUrl: 'http://nfe.test',
+      getAuthToken: () => Promise.resolve('token'),
+      fetch,
+    }),
+  );
+}
+
+/** The four calls that are not safe to re-send, each with valid arguments. */
+const NAO_REENVIAVEIS: ReadonlyArray<
+  readonly [keyof NFeHttpClient, (c: NFeHttpClient) => Promise<unknown>]
+> = [
+  ['emitir', (c) => c.emitir('PED-1')],
+  ['emitirLote', (c) => c.emitirLote(['PED-1', 'PED-2'])],
+  [
+    'inutilizar',
+    (c) => c.inutilizar({ filialId: 'F-1', serie: 1, nNFIni: 1, nNFFin: 1, xJust: 'x'.repeat(20) }),
+  ],
+  ['cartaCorrecao', (c) => c.cartaCorrecao('PED-1', 'n1', 'x'.repeat(20))],
+];
+
+/**
+ * 503s apps/nfe did NOT answer. Cloud Run answers its own 503 when the
+ * instance serving the request fails mid-request (memory exhausted, instance
+ * terminated) — after the SEFAZ send — and the client maps EVERY 503 to
+ * `NFeRuntimeNotReadyError`, whatever its body.
+ */
+const SEM_A_MARCA_DO_NFE: ReadonlyArray<readonly [string, () => Response]> = [
+  [
+    'an HTML body (the platform’s own page)',
+    () =>
+      new Response('<html><body><h1>Service Unavailable</h1></body></html>', {
+        status: 503,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+  ],
+  ['an empty body', () => new Response(null, { status: 503 })],
+  [
+    'a JSON body with another error',
+    () =>
+      new Response(JSON.stringify({ error: 'Service Unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+  ],
+];
+
 describe('withNFeRetry', () => {
-  it('emitir retries a transient NFeServerError then succeeds', async () => {
-    const emitir = vi.fn(
-      failThenSucceed(1, new NFeServerError('boom', 500, null), { nfeId: 'n1' } as never),
-    );
+  // #1654 §3 — REWRITTEN on purpose: this used to pin that emitir retried a
+  // 5xx. A re-POST is not deduped for a rejeitada/error member (the server
+  // regenerates and re-sends it), and a bug now answers 500 by design.
+  it.each([
+    ['NFeServerError', () => new NFeServerError('boom', 500, null)],
+    ['NFeNetworkError', () => new NFeNetworkError('reset')],
+  ] as const)(
+    'emitir does NOT retry a post-send %s — a re-POST would re-send rejeitada/error members',
+    async (_rotulo, erro) => {
+      const falha = erro();
+      const emitir = vi.fn(() => Promise.reject(falha));
+      const client = withNFeRetry(fakeClient({ emitir }));
+      await expect(client.emitir('PED-1')).rejects.toBe(falha);
+      expect(emitir).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ['NFeServerError', () => new NFeServerError('boom', 500, null)],
+    ['NFeNetworkError', () => new NFeNetworkError('reset')],
+  ] as const)(
+    'emitirLote does NOT retry a post-send %s — a re-POST would re-send rejeitada/error members',
+    async (_rotulo, erro) => {
+      const falha = erro();
+      const emitirLote = vi.fn(() => Promise.reject(falha));
+      const client = withNFeRetry(fakeClient({ emitirLote }));
+      await expect(client.emitirLote(['PED-1', 'PED-2'])).rejects.toBe(falha);
+      expect(emitirLote).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('emitir DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
+    const emitir = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { nfeId: 'n1' } as never));
     const client = withNFeRetry(fakeClient({ emitir }));
     await expect(client.emitir('PED-1')).resolves.toMatchObject({ nfeId: 'n1' });
     expect(emitir).toHaveBeenCalledTimes(2);
+  });
+
+  it('emitirLote DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
+    const emitirLote = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { results: [] } as never));
+    const client = withNFeRetry(fakeClient({ emitirLote }));
+    await expect(client.emitirLote(['PED-1'])).resolves.toMatchObject({ results: [] });
+    expect(emitirLote).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(
+    NAO_REENVIAVEIS.flatMap(([metodo, chamar]) =>
+      SEM_A_MARCA_DO_NFE.map(([corpo, resposta]) => [metodo, corpo, chamar, resposta] as const),
+    ),
+  )(
+    '%s makes ONE attempt on a 503 without apps/nfe’s marker — %s — it may come after the send',
+    async (_metodo, _corpo, chamar, resposta) => {
+      const fetch = vi.fn(() => Promise.resolve(resposta()));
+      await expect(chamar(clienteReal(fetch))).rejects.toBeInstanceOf(NFeRuntimeNotReadyError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('emitirLote DOES retry the route’s own pre-send 503, end to end through the real client', async () => {
+    // Exactly what `emitir-lote/route.ts` answers when getNFeRuntime() fails.
+    const respostas = [
+      () =>
+        new Response(
+          JSON.stringify({ error: 'NF-e runtime not ready', code: 'NFE_AMBIENTE inválido' }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        ),
+      () =>
+        new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    ];
+    const fetch = vi.fn(() => Promise.resolve(respostas[fetch.mock.calls.length - 1]!()));
+    await expect(clienteReal(fetch).emitirLote(['PED-1', 'PED-2'])).resolves.toEqual({
+      results: [],
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('emitirLote makes ONE attempt on the route’s 500 for a bug — no re-POST of the batch (#1654 §3)', async () => {
+    // End to end through the REAL client error mapper: the 500 the route now
+    // answers for an unclassified failure arrives as an NFeServerError, and the
+    // policy must not re-run the batch (and its re-sends) on it.
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: "Cannot read properties of undefined (reading 'itens')",
+            code: 'TypeError',
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = withNFeRetry(
+      createNFeHttpClient({
+        baseUrl: 'http://nfe.test',
+        getAuthToken: () => Promise.resolve('token'),
+        fetch,
+      }),
+    );
+    await expect(client.emitirLote(['PED-1', 'PED-2'])).rejects.toBeInstanceOf(NFeServerError);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('emitir does NOT retry a deterministic NFeRejectedError', async () => {
@@ -148,14 +312,26 @@ describe('withNFeRetry', () => {
   });
 
   it('cartaCorrecao DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const cartaCorrecao = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { nSeqEvento: 1 } as never),
-    );
+    const cartaCorrecao = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { nSeqEvento: 1 } as never));
     const client = withNFeRetry(fakeClient({ cartaCorrecao }));
     await expect(client.cartaCorrecao('PED-1', 'n1', 'x'.repeat(20))).resolves.toMatchObject({
       nSeqEvento: 1,
     });
     expect(cartaCorrecao).toHaveBeenCalledTimes(2);
+  });
+
+  it('processarPendentes does NOT retry a transient NFeServerError — it transmits and loops over SEFAZ', async () => {
+    const processarPendentes = vi.fn(() => Promise.reject(new NFeServerError('boom', 500, null)));
+    const client = withNFeRetry(fakeClient({ processarPendentes }));
+    await expect(client.processarPendentes()).rejects.toBeInstanceOf(NFeServerError);
+    expect(processarPendentes).toHaveBeenCalledTimes(1);
+  });
+
+  it('processarPendentes does NOT retry a network error either', async () => {
+    const processarPendentes = vi.fn(() => Promise.reject(new NFeNetworkError('reset')));
+    const client = withNFeRetry(fakeClient({ processarPendentes }));
+    await expect(client.processarPendentes()).rejects.toBeInstanceOf(NFeNetworkError);
+    expect(processarPendentes).toHaveBeenCalledTimes(1);
   });
 
   const inutArgs = { filialId: 'F-1', serie: 1, nNFIni: 1, nNFFin: 1, xJust: 'x'.repeat(20) };
@@ -168,11 +344,126 @@ describe('withNFeRetry', () => {
   });
 
   it('inutilizar DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
-    const inutilizar = vi.fn(
-      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { aprovada: true } as never),
-    );
+    const inutilizar = vi.fn(failThenSucceed(1, naoProntoDoNFe(), { aprovada: true } as never));
     const client = withNFeRetry(fakeClient({ inutilizar }));
     await expect(client.inutilizar(inutArgs)).resolves.toMatchObject({ aprovada: true });
     expect(inutilizar).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * #1094, end to end through the REAL client: its deadline and its gateway-504
+ * mapping must surface as an error `retryTransient` refuses, or a timed-out
+ * emission is re-POSTed 200–800 ms later over the run still talking to SEFAZ.
+ */
+describe('withNFeRetry never re-sends after a timeout (#1094)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function realClient(fetch: typeof globalThis.fetch): NFeHttpClient {
+    return withNFeRetry(
+      createNFeHttpClient({
+        baseUrl: 'http://nfe.test',
+        getAuthToken: () => Promise.resolve('token'),
+        fetch,
+      }),
+    );
+  }
+
+  /** A route that accepts and never answers; rejects with the signal's reason. */
+  function fetchQueNuncaResponde() {
+    return vi.fn(
+      (...[, init]: Parameters<typeof globalThis.fetch>) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+    );
+  }
+
+  it('a timed-out emitir fetches ONCE', async () => {
+    vi.useFakeTimers();
+    const fetch = fetchQueNuncaResponde();
+    const out = realClient(fetch)
+      .emitir('PED-1')
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.longo);
+    expect(await out).toBeInstanceOf(NFeTimeoutError);
+    // A retry would have issued a SECOND fetch within 200–800 ms of the timeout.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('an emitir the PLATFORM gave up on (a late TypeError, the cross-origin 504) fetches ONCE', async () => {
+    // The realistic stall: at ~300 s the platform's 504 reaches the browser without
+    // CORS headers, i.e. as `TypeError: Failed to fetch` — before the 360 s deadline.
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((_resolve, reject) => {
+          setTimeout(() => reject(new TypeError('Failed to fetch')), 300_000);
+        }),
+    );
+    const out = realClient(fetch)
+      .emitir('PED-1')
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(await out).toBeInstanceOf(NFeTimeoutError);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a timed-out danfe (a read) fetches ONCE too — its budget is already spent', async () => {
+    vi.useFakeTimers();
+    const fetch = fetchQueNuncaResponde();
+    const out = realClient(fetch)
+      .danfe('PED-1', 'nfe-1', 'simplificado')
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.curto);
+    expect(await out).toBeInstanceOf(NFeTimeoutError);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // `cancelar` is the write that still retries the FULL transient set (the server
+  // reconciles a duplicate 573), so it is where the timeout exclusion is decisive:
+  // since #1654 §3 `emitir` retries only the pre-send 503, and would make one
+  // attempt on a timeout whether or not timeouts were excluded.
+  it('a timed-out cancelar fetches ONCE — a write that does retry a 5xx', async () => {
+    vi.useFakeTimers();
+    const fetch = fetchQueNuncaResponde();
+    const out = realClient(fetch)
+      .cancelar('PED-1', 'nfe-1', 'Cancelamento por erro de digitacao no pedido')
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(NFE_PRAZO_MS.longo);
+    expect(await out).toBeInstanceOf(NFeTimeoutError);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a gateway 504 on cancelar fetches ONCE — it used to be a retried NFeServerError', async () => {
+    const fetch = vi.fn(() =>
+      Promise.resolve(new Response('<html>upstream request timeout</html>', { status: 504 })),
+    );
+    await expect(
+      realClient(fetch).cancelar('PED-1', 'nfe-1', 'Cancelamento por erro de digitacao no pedido'),
+    ).rejects.toBeInstanceOf(NFeTimeoutError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('near-miss: a plain 500 on cancelar IS still retried — the exclusion is the timeout alone', async () => {
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'boom' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    await expect(
+      realClient(fetch).cancelar('PED-1', 'nfe-1', 'Cancelamento por erro de digitacao no pedido'),
+    ).rejects.toBeInstanceOf(NFeServerError);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 });

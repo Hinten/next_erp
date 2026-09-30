@@ -117,6 +117,11 @@ export interface ShopeeApiErrorInit {
   readonly path: string;
   readonly requestId?: string | null;
   readonly warning?: string | null;
+  /**
+   * Shopee's own `message` — the provider's sentence, VERBATIM. See
+   * {@link ShopeeApiError.providerMessage}. Omitted ⇒ `null`.
+   */
+  readonly providerMessage?: string | null;
 }
 
 /** Shopee answered with a non-empty `error` in the envelope. */
@@ -127,6 +132,27 @@ export class ShopeeApiError extends ShopeeError {
   readonly path: string;
   readonly requestId: string | null;
   readonly warning: string | null;
+  /**
+   * The envelope's `message`, VERBATIM — the provider's own sentence, for
+   * CLASSIFICATION and for a sanitized excerpt, never for a raw log line (this
+   * package never logs it).
+   *
+   * ⚠️ Why it exists beside {@link Error.message}: the thrown message is the
+   * FORMATTED `Shopee <path> respondeu <code> (HTTP n) — <message>`, so its
+   * haystack already contains the path and the code. On
+   * `/api/v2/order/upload_invoice_doc` answering `order.upload_invoice_error`
+   * that is `upload`, `invoice` and `error` before Shopee has said a word — a
+   * needle matched against it proves nothing, and reading the sentence back out
+   * would need a reverse parser of the one formatter. `warning` is already
+   * carried verbatim for the same reason.
+   *
+   * ⚠️ NO fold of any kind: not trimmed, not lowercased, `''` stays `''` and
+   * `null` stays `null` (`?? null` replaces only an ABSENT init field). A
+   * classifier that needs a fold does it at its own call site, where its test
+   * can pin what the fold treats as equal. `null` also covers every error built
+   * with no envelope at all (the bare HTTP 429).
+   */
+  readonly providerMessage: string | null;
 
   constructor(message: string, init: ShopeeApiErrorInit) {
     super(message);
@@ -137,6 +163,7 @@ export class ShopeeApiError extends ShopeeError {
     this.path = init.path;
     this.requestId = init.requestId ?? null;
     this.warning = init.warning ?? null;
+    this.providerMessage = init.providerMessage ?? null;
   }
 }
 
@@ -185,10 +212,16 @@ export class ShopeeRateLimitError extends ShopeeApiError {
  * SAME body — the failure and its per-item detail together.
  *
  * ⚠️ It is a FAILURE, exactly like its base class. The subclass exists so the
- * evidence is not discarded, never to read a failure as a success: the one
- * operation that produces it (`update_stock`) is documented with
- * `error_busi_update_stock_failed: Update stock failed, please check
- * failure_list for detailed reason`, and `failure_list` lives under `response`.
+ * evidence is not discarded, never to read a failure as a success. TWO
+ * operations produce it, for two different kinds of reason:
+ * - `update_stock` — DOCUMENTED: `error_busi_update_stock_failed: Update stock
+ *   failed, please check failure_list for detailed reason`, and `failure_list`
+ *   lives under `response`.
+ * - `update_price` — MEASURED, against its own page: the page documents no such
+ *   code, and step 13's sandbox probe (2026-09-24) still received
+ *   `product.error_update_price_fail` WITH a populated `failure_list` in the same
+ *   body.
+ *
  * Only a call carrying the transport's `payloadNoErro` tolerance can produce
  * one, and only when the operation's own schema parsed that body.
  *
@@ -205,7 +238,10 @@ export class ShopeeRateLimitError extends ShopeeApiError {
  * have produced, so a ladder that needs the retry verdict reads {@link kind}
  * rather than assuming a partial can never be a throttle. Nothing reaches that
  * corner today — a throttled or dead-authorization body carries no `response`
- * and therefore fails the operation schema — and a test pins it.
+ * and therefore fails the operation schema — and a test pins it. The corner
+ * itself is pinned too, on `update_price`: a throttle code arriving WITH the
+ * lists comes out as THIS class carrying `kind: 'burst'`, never as
+ * {@link ShopeeRateLimitError}.
  *
  * ⚠️ `parsed` is `unknown` deliberately. The transport does not know WHICH
  * operation schema it ran; the narrowing caller does, and it holds the schema's
@@ -401,6 +437,10 @@ export interface ShopeeErrorContext {
  * in {@link classifyShopeeError} is a lookup and never a rewrite: the publish
  * classifier and every log line read the raw string, and normalising it here
  * would make a grep for what Shopee actually sent come up empty. A test pins it.
+ *
+ * ⚠️ `providerMessage` is `env.message` VERBATIM for the same reason — every
+ * subclass built here carries it (the rate limit through the `...init` spread),
+ * and the transport's partial rebuild copies it field by field.
  */
 export function shopeeErrorFromEnvelope(
   env: ShopeeErrorEnvelope,
@@ -416,6 +456,7 @@ export function shopeeErrorFromEnvelope(
     path: ctx.path,
     requestId: env.request_id,
     warning: env.warning,
+    providerMessage: env.message,
   };
 
   if (kind === SHOPEE_ERROR_KIND.reauth) return new ShopeeReauthRequiredError(message, init);

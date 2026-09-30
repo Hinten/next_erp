@@ -53,6 +53,8 @@ function itemDe(index: number, produtoUid: string | null = null): ItemDoPedido {
     custo: null,
     timestamp: NOW_US,
     imposto: null,
+    dfeReferenciado: null,
+    ajusteRtc: null,
   };
 }
 

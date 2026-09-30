@@ -12,7 +12,7 @@
  */
 import { randomInt } from 'node:crypto';
 
-import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
+import { CHAVE_NFE_REGEX, dvChaveAcesso } from '@delfrance/schemas';
 
 import { datePartsInOffset } from './tz';
 
@@ -107,14 +107,13 @@ export function composeChave43(parts: ChaveParts): string {
  */
 export function computeCDV(chave43: string): number {
   assertShape('chave43', chave43, CHAVE43_SHAPE, 43);
-  let soma = 0;
-  let peso = 2;
-  for (let i = chave43.length - 1; i >= 0; i--) {
-    soma += (chave43.charCodeAt(i) - 48) * peso;
-    peso = peso === 9 ? 2 : peso + 1;
-  }
-  const resto = soma % 11;
-  return resto <= 1 ? 0 : 11 - resto;
+  // The arithmetic lives in `@delfrance/schemas` so the pedido editor checks a
+  // typed chave with the SAME rule this generator signs with — one module-11,
+  // not a browser copy of it. The shape guard above keeps this throw the
+  // generator's own, naming the field.
+  const dv = dvChaveAcesso(chave43);
+  if (dv === null) throw new NFeChaveError(`chave43 has an invalid shape: '${chave43}'`);
+  return dv;
 }
 
 /** Compose the full 44-character chave including its check digit. */

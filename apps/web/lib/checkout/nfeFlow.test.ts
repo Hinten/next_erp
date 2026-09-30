@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
-import { NFeRejectedError, type NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
+import {
+  NFeNetworkError,
+  NFeRejectedError,
+  NFeTimeoutError,
+  type NFeHttpClient,
+} from '@delfrance/integrations-nfe/http-provider';
 
 import { ID_DEST, IND_IE_DEST } from '../nfe/destinatarioNFe';
 import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '../nfe/errors';
@@ -120,6 +125,31 @@ describe('ensureNfeAprovada', () => {
     const r = await ensureNfeAprovada(db, asClient(client), 'p1');
     expect(r.ok).toBe(false);
     if (!r.ok && !r.pending) expect(r.notification.color).toBe('red');
+  });
+
+  it.each([
+    [
+      'our deadline',
+      new NFeTimeoutError('t', { origem: 'prazo', timeoutMs: 1, operacao: 'emitir' }),
+    ],
+    [
+      'the gateway 504',
+      new NFeTimeoutError('t', { origem: 'gateway', timeoutMs: null, operacao: 'emitir' }),
+    ],
+  ])('a timeout (%s) is pending — the emission may still be running (#1094)', async (_n, err) => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(err);
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: false,
+      pending: true,
+    });
+  });
+
+  it('a plain network error is still a failure notification (near-miss of the timeout)', async () => {
+    setDocs([]);
+    client.emitir.mockRejectedValue(new NFeNetworkError('Failed to fetch'));
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r).toMatchObject({ ok: false, pending: false });
   });
 
   it('maps a thrown NFeRejectedError to a notification', async () => {

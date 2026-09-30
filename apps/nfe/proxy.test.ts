@@ -90,3 +90,62 @@ describe('CORS allow-list', () => {
     ).toBeNull();
   });
 });
+
+describe('CORS methods and exposed headers (#1680)', () => {
+  it('admits the certificado DELETE from the configured frontend', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = proxy(
+      new NextRequest('http://localhost:3004/api/nfe/certificado?filialId=F-1', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://app.example.com',
+          'access-control-request-method': 'DELETE',
+          'access-control-request-headers': 'authorization',
+        },
+      }),
+    ) as unknown as Response;
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    const metodos = new Set(
+      (res.headers.get('access-control-allow-methods') ?? '').split(',').map((m) => m.trim()),
+    );
+    // Before #1680 DELETE was missing, so certificate removal never left the browser.
+    expect([...metodos]).toEqual(expect.arrayContaining(['GET', 'POST', 'DELETE']));
+    const cabecalhos = new Set(
+      (res.headers.get('access-control-allow-headers') ?? '')
+        .split(',')
+        .map((h) => h.trim().toLowerCase()),
+    );
+    expect([...cabecalhos]).toEqual(expect.arrayContaining(['authorization', 'content-type']));
+  });
+
+  it('exposes Content-Disposition to an allowed origin, so the DANFE keeps its real filename', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = proxy(
+      new NextRequest(
+        'http://localhost:3004/api/nfe/danfe?pedidoId=P&nfeId=N&format=simplificado',
+        {
+          headers: { origin: 'https://app.example.com' },
+        },
+      ),
+    ) as unknown as Response;
+    expect(res.headers.get('access-control-expose-headers')).toBe('Content-Disposition');
+  });
+
+  it('exposes nothing to an unlisted origin', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = proxy(
+      new NextRequest('http://localhost:3004/api/nfe/danfe', {
+        headers: { origin: 'https://evil.example.com' },
+      }),
+    ) as unknown as Response;
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-expose-headers')).toBeNull();
+  });
+});
