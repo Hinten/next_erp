@@ -85,6 +85,14 @@ export interface GeneratorItem {
    * it in as-is; tributary computation lives in the caller (Phase D follow-up).
    */
   readonly impostoXml: string;
+  /**
+   * `det/DFeReferenciado` (NT 2025.002 Grupo VC) — the item of ANOTHER NF-e this
+   * line refers to. The caller has already judged the document rules
+   * (`violacoesDoDocumento` in `@delfrance/schemas`: RTC on, no `NFref`, one
+   * chave, `nItem` present…); the generator only emits it, re-checking just the
+   * shapes the XSD would refuse. Absent ⇒ byte-identical det.
+   */
+  readonly dfeReferenciado?: { readonly chaveAcesso: string; readonly nItem?: number };
 }
 
 export interface InfRespTec {

@@ -133,6 +133,7 @@ describe('mlOrderItemToItemDoPedido', () => {
       custo: null,
       timestamp: 42,
       imposto: null,
+      dfeReferenciado: null,
     });
   });
 
@@ -163,6 +164,7 @@ describe('mlOrderItemToItemDoPedido', () => {
       custo: null,
       timestamp: 42,
       imposto: null,
+      dfeReferenciado: null,
     });
   });
 

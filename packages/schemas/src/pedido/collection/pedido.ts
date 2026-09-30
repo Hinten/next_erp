@@ -103,6 +103,24 @@ export const ESTADO_PEDIDO = {
 } as const satisfies Record<string, EstadoPedido>;
 
 /**
+ * `det/DFeReferenciado` for one item (NT 2025.002 Grupo VC): the item of ANOTHER
+ * NF-e this line refers to — its chave and, usually, its `nItem` (1–990).
+ * Required per item on some notas de crédito/débito and, once the NT's VC02-14
+ * applies, on a devolução; mutually exclusive with the note-level
+ * `chNFeReferenciadas` (`NFref`, rule 1010).
+ *
+ * The SHAPE is stored loosely, like `chNFeReferenciadas` (a string): the chave
+ * format, its check digit and the `nItem` range are page-model rules
+ * (`pedidoPageIssues`) so a half-typed value gets a readable message instead of
+ * a failed save, and the emission pre-flight re-checks them.
+ */
+export const dfeReferenciadoItemSchema = z.strictObject({
+  chaveAcesso: z.string(),
+  nItem: z.number().int().nullable().default(null),
+});
+export type DfeReferenciadoItem = z.infer<typeof dfeReferenciadoItemSchema>;
+
+/**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido — all 13 legacy fields
  * (`.old` `models.dart:57–195`) are enumerated below (confirmed 100% by the
@@ -137,6 +155,10 @@ export const itemDoPedidoSchema = z.strictObject({
   custo: z.number().nullable().default(null),
   timestamp: microsSinceEpoch().nullable().default(null),
   imposto: impostoPersistidoSchema.nullable().default(null),
+  // NOT a legacy field (the 13 above are): the item-level reference of
+  // NT 2025.002 Grupo VC, emitted as `det/DFeReferenciado` (#330). Absent on
+  // every migrated item, hence nullable + default null.
+  dfeReferenciado: dfeReferenciadoItemSchema.nullable().default(null),
 });
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;

@@ -28,10 +28,11 @@ import {
   buildGenItems,
   isInterstateFor,
 } from '../../../lib/nfe/orchestrator/generator-input';
-import type {
-  EntregaDoPedido,
-  FiscalItem,
-  PedidoBundle,
+import {
+  lerDfeReferenciado,
+  type EntregaDoPedido,
+  type FiscalItem,
+  type PedidoBundle,
 } from '../../../lib/nfe/orchestrator/bundle';
 import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
@@ -1208,6 +1209,92 @@ describe('buildGeneratorInput — enderecoEntrega (#422)', () => {
     } as unknown as PedidoBundle);
     expect('enderecoEntrega' in input).toBe(false);
     expect(input.itens[0]!.CFOP).toBe('6102');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 — item-level references (det/DFeReferenciado): the SAME document rules
+// the pedido editor shows (`violacoesDoDocumento`), refused before a número.
+// ---------------------------------------------------------------------------
+
+describe('lerDfeReferenciado — best-effort read of the stored item field', () => {
+  it('reads the stored shape and absence', () => {
+    expect(lerDfeReferenciado(null)).toBeNull();
+    expect(lerDfeReferenciado(undefined)).toBeNull();
+    expect(lerDfeReferenciado({ chaveAcesso: 'X', nItem: 2 })).toEqual({
+      chaveAcesso: 'X',
+      nItem: 2,
+    });
+    expect(lerDfeReferenciado({ chaveAcesso: 'X', nItem: null })).toEqual({
+      chaveAcesso: 'X',
+      nItem: null,
+    });
+  });
+
+  it('keeps a malformed value as an UNUSABLE reference — never drops it silently', () => {
+    expect(lerDfeReferenciado('X')).toEqual({ chaveAcesso: '', nItem: Number.NaN });
+    expect(lerDfeReferenciado({ chaveAcesso: 7, nItem: '3' })).toEqual({
+      chaveAcesso: '',
+      nItem: Number.NaN,
+    });
+  });
+});
+
+describe('assertNotaBuildable — the document rules (#330)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  const comRef = (dfeReferenciado: FiscalItem['dfeReferenciado']) => [item({ dfeReferenciado })];
+
+  it('passes a valid item reference with the Reforma Tributária on', () => {
+    expect(
+      assertNotaBuildable(bundleWith(OP), comRef({ chaveAcesso: CHAVE, nItem: 2 }), true),
+    ).toBeUndefined();
+  });
+
+  it('refuses an item reference with the Reforma Tributária off', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(bundleWith(OP), comRef({ chaveAcesso: CHAVE, nItem: 2 }), false),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': A referência por item (DF-e referenciado) só é emitida com a Reforma Tributária ativa nesta filial.",
+    );
+  });
+
+  it('lists EVERY blocking violation, with the item and the SEFAZ code', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(OP, { chNFeReferenciadas: [CHAVE] }),
+        comRef({ chaveAcesso: CHAVE, nItem: null }),
+        true,
+      ),
+    );
+    expect(msg).toContain('(SEFAZ 1010)');
+    expect(msg).toContain(
+      'Item 1: Informe o número do item da nota referenciada (nItem). (SEFAZ 1048)',
+    );
+  });
+
+  it('a nota with no item reference is untouched by the rules (NFref alone is fine)', () => {
+    expect(
+      assertNotaBuildable(bundleWith(OP, { chNFeReferenciadas: [CHAVE] }), [item({})], false),
+    ).toBeUndefined();
+  });
+
+  it('buildGenItems hands the reference to the generator (nItem only when set)', () => {
+    const [comNItem] = buildGenItems(
+      comRef({ chaveAcesso: CHAVE, nItem: 2 }),
+      bundleWith(OP),
+      false,
+    );
+    expect(comNItem!.dfeReferenciado).toEqual({ chaveAcesso: CHAVE, nItem: 2 });
+    const [semNItem] = buildGenItems(
+      comRef({ chaveAcesso: CHAVE, nItem: null }),
+      bundleWith(OP),
+      false,
+    );
+    expect(semNItem!.dfeReferenciado).toEqual({ chaveAcesso: CHAVE });
+    const [semRef] = buildGenItems([item({})], bundleWith(OP), false);
+    expect('dfeReferenciado' in semRef!).toBe(false);
   });
 });
 

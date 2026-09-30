@@ -7,6 +7,7 @@
  * computation is intentionally out of scope for Phase A — see the plan).
  */
 import { normalizeDocumento, validateCNPJ } from '@delfrance/core/documents';
+import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
 import { sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type { TNFe_infNFe_det_prod } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
@@ -214,5 +215,30 @@ export function buildDetXml(item: GeneratorItem): string {
     'prod',
     buildProd(item) as unknown as XmlValue,
   );
-  return `<det nItem="${item.nItem}">${prodXml}${item.impostoXml}</det>`;
+  return `<det nItem="${item.nItem}">${prodXml}${item.impostoXml}${buildDfeReferenciadoXml(item)}</det>`;
+}
+
+/**
+ * `det/DFeReferenciado` — the LAST child of `<det>` (XSD: prod, imposto,
+ * impostoDevol?, infAdProd?, obsItem?, vItem?, DFeReferenciado?). The caller
+ * judged the document rules; this re-checks only what the XSD would refuse, so
+ * a bad value fails here naming the item instead of at the pre-send gate.
+ */
+function buildDfeReferenciadoXml(item: GeneratorItem): string {
+  const ref = item.dfeReferenciado;
+  if (!ref) return '';
+  if (!CHAVE_NFE_REGEX.test(ref.chaveAcesso)) {
+    throw new NFeDetError(
+      `item ${item.nItem}: DFeReferenciado.chaveAcesso '${ref.chaveAcesso}' is not a chave de acesso`,
+    );
+  }
+  if (ref.nItem != null && (!Number.isInteger(ref.nItem) || ref.nItem < 1 || ref.nItem > 990)) {
+    throw new NFeDetError(
+      `item ${item.nItem}: DFeReferenciado.nItem must be an integer from 1 to 990, got ${ref.nItem}`,
+    );
+  }
+  return serializeFragment('TNFe_infNFe_det_DFeReferenciado', 'DFeReferenciado', {
+    chaveAcesso: ref.chaveAcesso,
+    ...(ref.nItem != null ? { nItem: String(ref.nItem) } : {}),
+  } as unknown as XmlValue);
 }

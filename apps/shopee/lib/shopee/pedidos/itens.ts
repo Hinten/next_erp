@@ -258,6 +258,8 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       custo: null,
       timestamp: nowUs,
       imposto: null,
+      // A marketplace sale never references another NF-e's item (NT 2025.002 Grupo VC).
+      dfeReferenciado: null,
     });
 
     diagnosticos.push({

@@ -896,6 +896,13 @@ export {
 } from './nfe';
 
 export {
+  chaveAcessoValida,
+  decomporChaveAcesso,
+  dvChaveAcesso,
+  type ChaveAcessoDecomposta,
+} from './chaveAcesso';
+
+export {
   extractTpAmb,
   decideNfeUploadDispatch,
   decideNfeUploadTransition,
@@ -1153,6 +1160,22 @@ export {
   type ProvenienciaTabelaRtc,
   type TipoAliquotaRtc,
 } from './imposto/cclasstrib';
+
+export {
+  // NT 2025.002 document rules shared by the pedido editor and the emission pre-flight (#330)
+  REGRA_DOCUMENTO,
+  REGRAS_DOCUMENTO,
+  SEVERIDADE_VIOLACAO,
+  bloqueiaEmissao,
+  descreverViolacaoDocumento,
+  violacoesDoDocumento,
+  type DfeReferenciadoEntrada,
+  type EntradaRegrasDocumento,
+  type ItemRegrasDocumento,
+  type RegraDocumento,
+  type SeveridadeViolacao,
+  type ViolacaoDocumento,
+} from './imposto/regrasDoDocumento';
 
 export {
   // RTC Anexo IV — cCredPres (#333)

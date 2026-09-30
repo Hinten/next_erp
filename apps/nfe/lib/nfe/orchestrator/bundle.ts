@@ -13,6 +13,7 @@ import {
   freteDoPedidoSchema,
   integracaoSchema,
   isPagamentoPagante,
+  naOrdemDoPedido,
   nfeConfigSchema,
   operacaoSchema,
   pagamentoSchema,
@@ -20,6 +21,7 @@ import {
   toDocPathOrNull,
   ufSchema,
   type Cliente,
+  type DfeReferenciadoEntrada,
   type Endereco,
   type EstadoNFe,
   type Filial,
@@ -179,6 +181,24 @@ export interface FiscalItem {
    * mirroring the legacy Flutter generator.
    */
   readonly vProdBruto: number;
+  /**
+   * The item's `dfeReferenciado` (NT 2025.002 Grupo VC, #330), read
+   * best-effort: a value that is not the stored shape is kept as an unusable
+   * reference (empty chave / NaN nItem) so the document rules REFUSE it with a
+   * message, instead of prep throwing or the reference silently vanishing.
+   */
+  readonly dfeReferenciado: DfeReferenciadoEntrada | null;
+}
+
+/** Best-effort read of a stored `itens[*].dfeReferenciado` (see {@link FiscalItem}). */
+export function lerDfeReferenciado(raw: unknown): DfeReferenciadoEntrada | null {
+  if (raw == null) return null;
+  if (typeof raw !== 'object') return { chaveAcesso: '', nItem: Number.NaN };
+  const r = raw as { chaveAcesso?: unknown; nItem?: unknown };
+  return {
+    chaveAcesso: typeof r.chaveAcesso === 'string' ? r.chaveAcesso : '',
+    nItem: r.nItem == null ? null : typeof r.nItem === 'number' ? r.nItem : Number.NaN,
+  };
 }
 
 /**
@@ -765,10 +785,16 @@ export async function preResolveImpostos(
  * `NFeMissingImpostoError` (for the imposto blob) or
  * `NFeOrchestratorError` (for everything else), each naming the
  * exact pedido / produto / item so the operator can fix the seed.
+ *
+ * **Order = the `det/@nItem` numbering.** The items come back in the pedido's
+ * LINE order (`naOrdemDoPedido`, by `ordem`), not in the `itens` map's
+ * grouping by produto: `{A: [A₁, A₂], B: [B₁]}` was entered as A₁, B₁, A₂.
+ * The pedido screen shows and labels its lines the same way, so an item-level
+ * reference refusal (VC03-10/20, #330) names the line the operator sees.
  */
 export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
   const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
-  const out: FiscalItem[] = [];
+  const lidos: Array<{ readonly ordem: unknown; readonly item: FiscalItem }> = [];
   for (const [produtoUid, list] of Object.entries(itens)) {
     if (!Array.isArray(list)) continue;
     list.forEach((rawEntry, itemIndex) => {
@@ -805,23 +831,27 @@ export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
       if (!Number.isFinite(quantidade) || quantidade <= 0) {
         throw new NFeOrchestratorError(`${where}: \`quantidade\` must be a positive number`);
       }
-      out.push({
-        produtoUid,
-        itemIndex,
-        sku,
-        gtin,
-        nomeDeVenda,
-        precoDeVenda,
-        descontoUnitario,
-        quantidade,
-        imposto,
-        vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
-        vProdBruto: roundReais(precoDeVenda * quantidade),
+      lidos.push({
+        ordem: e.ordem,
+        item: {
+          produtoUid,
+          itemIndex,
+          sku,
+          gtin,
+          nomeDeVenda,
+          precoDeVenda,
+          descontoUnitario,
+          quantidade,
+          imposto,
+          vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
+          vProdBruto: roundReais(precoDeVenda * quantidade),
+          dfeReferenciado: lerDfeReferenciado(e.dfeReferenciado),
+        },
       });
     });
   }
-  if (out.length === 0) {
+  if (lidos.length === 0) {
     throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}' has no items`);
   }
-  return out;
+  return naOrdemDoPedido(lidos, (l) => l.ordem).map((l) => l.item);
 }

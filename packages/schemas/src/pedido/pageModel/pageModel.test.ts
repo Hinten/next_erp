@@ -64,6 +64,29 @@ describe('pedidoPageIssues', () => {
     expect(paths({ ...base, chNFeReferenciadas: null })).not.toContain('chNFeReferenciadas');
   });
 
+  it('item-level reference (#330): blocks a bad chave or nItem, never a missing nItem', () => {
+    const issues = (dfeReferenciado: { chaveAcesso?: string | null; nItem?: number | null }) =>
+      pedidoPageIssues({
+        integracaoPedidoOuterRef: 'x',
+        itens: { p1: [{ quantidade: 1, dfeReferenciado }] },
+      }).map((i) => i.message);
+    const VALIDA = '35260514200166000187550010000000071000000011';
+
+    expect(issues({ chaveAcesso: VALIDA, nItem: 3 })).toEqual([]);
+    // Whether nItem is REQUIRED depends on the operação — not a save rule.
+    expect(issues({ chaveAcesso: VALIDA, nItem: null })).toEqual([]);
+    // Near-misses: one check digit off; a regex-valid chave is not enough.
+    expect(issues({ chaveAcesso: `${VALIDA.slice(0, 43)}2`, nItem: 1 })).toEqual([
+      expect.stringMatching(/chave de acesso inválida/),
+    ]);
+    expect(issues({ chaveAcesso: '', nItem: 1 })).toEqual([
+      expect.stringMatching(/chave de acesso inválida/),
+    ]);
+    for (const nItem of [0, 991]) {
+      expect(issues({ chaveAcesso: VALIDA, nItem })).toEqual([expect.stringMatching(/de 1 a 990/)]);
+    }
+  });
+
   it('warns when a paid order is underpaid (only when pagamentos supplied)', () => {
     const base = {
       itens: { p1: [{ quantidade: 1 }] },

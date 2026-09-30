@@ -41,6 +41,7 @@ function item(over: Partial<ItemDoPedido> = {}): ItemDoPedido {
     custo: null,
     timestamp: AGORA_US,
     imposto: null,
+    dfeReferenciado: null,
     ...over,
   };
 }

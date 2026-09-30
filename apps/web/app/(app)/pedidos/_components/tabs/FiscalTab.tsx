@@ -21,6 +21,7 @@ import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { EnderecoPicker } from '@/components/pickers/EnderecoPicker';
 import type { PedidoFormState } from '../types';
+import { ReferenciaPorItemSection } from './ReferenciaPorItemSection';
 
 export interface FiscalTabProps {
   form: UseFormReturn<PedidoFormState, unknown, Pedido>;
@@ -175,6 +176,13 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           );
         })}
       </Stack>
+
+      <ReferenciaPorItemSection
+        form={form}
+        db={db}
+        destinatarioDocumento={clienteDoc?.data.cpf_cnpj ?? null}
+        disabled={disabled}
+      />
 
       <Alert color="gray" variant="light">
         <Text size="sm">

@@ -18,6 +18,7 @@ function item(precoDeVenda: number, quantidade = 1): ItemDoPedido {
     custo: null,
     timestamp: null,
     imposto: null,
+    dfeReferenciado: null,
   };
 }
 
