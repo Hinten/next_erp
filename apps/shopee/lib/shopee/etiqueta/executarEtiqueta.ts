@@ -1000,11 +1000,6 @@ class ChamadaDeEtiqueta {
     for (const lote of emLotes(acao.pacotes)) {
       const parar = this.semTempo('gerando-documento');
       if (parar !== null) return parar;
-      for (const numero of lote) {
-        if (this.pacotes.get(numero)?.documento === 'falhou') {
-          this.atualizar(numero, { recriadoNestaChamada: true });
-        }
-      }
       let resposta: ShopeeLoteLogistico<ShopeeLinhaDeLote>;
       try {
         resposta = await this.deps.client.createShippingDocument({
@@ -1020,6 +1015,15 @@ class ChamadaDeEtiqueta {
         const passo = await this.tratarErro('criar-documento', err, 'gerando-documento', lote);
         if (passo === null) throw err;
         return passo;
+      }
+      // ⚠️ Stamped only AFTER Shopee answered the create. A transient throw above is waited
+      // out inside the budget and the decision runs again: a stamp placed before the call
+      // would let rule 10 answer a terminal `documento-falhou` for a re-create that never
+      // reached Shopee (the write-side twin of "an incomplete read never decides").
+      for (const numero of lote) {
+        if (this.pacotes.get(numero)?.documento === 'falhou') {
+          this.atualizar(numero, { recriadoNestaChamada: true });
+        }
       }
       const { porPacote, falhaDoLote } = this.conciliar(resposta, lote);
       if (falhaDoLote !== null) {

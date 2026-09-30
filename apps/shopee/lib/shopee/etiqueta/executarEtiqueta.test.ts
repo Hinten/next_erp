@@ -801,6 +801,32 @@ describe('executarEtiquetaShopee — o documento (R-u)', () => {
     expect(s.createShippingDocument).toHaveBeenCalledTimes(1);
   });
 
+  // #1746 review: the re-create of a FAILED document is stamped only once Shopee ANSWERED
+  // the create. A transient throw is waited out inside the budget; the next decision must
+  // re-create, never refuse `documento-falhou` for a create that never reached Shopee.
+  it.each([
+    ['queda de rede', () => new ShopeeNetworkError('queda')],
+    [
+      'limite burst',
+      () =>
+        new ShopeeRateLimitError('burst', {
+          code: 'error_busy',
+          kind: 'burst',
+          httpStatus: 429,
+          path: '/x',
+          retryAfterSeconds: null,
+        }),
+    ],
+  ])(
+    'documento FAILED + %s no re-create ⇒ espera e recria, depois os bytes',
+    async (_rotulo, erro) => {
+      const s = montar(mundo([pronto(P1, { statusDoDocumento: ['FAILED', 'READY'] })]));
+      s.createShippingDocument.mockImplementationOnce(() => Promise.reject(erro()));
+      expect((await s.rodar()).tipo).toBe('bytes');
+      expect(s.createShippingDocument).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('tipo recusado no create ⇒ cai para o suggest UMA vez; recusado de novo ⇒ tipo-invalido', async () => {
     const recusado = {
       order_sn: ORDER_SN,
