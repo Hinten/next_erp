@@ -73,13 +73,16 @@ const RAIZ_DAS_ROTAS = new URL('../../../app/api/marketplace/shopee/', import.me
  * ⚠️ Fixado, nunca "lida se existir": uma pasta ausente lida em silêncio é
  * exatamente como um produtor real some do universo sem ninguém notar (um nome
  * digitado errado aqui teria o mesmo efeito). `enviar-nfe` é a rota do SEGUNDO
- * PR: quando ela chegar, a âncora abaixo obriga a trocar o `false` por `true`,
- * e daí em diante os produtores dela (a recusa 409 `sem-nfe-aprovada`, a espera
- * `aguardando-serpro`) contam — o mesmo caminho que `atualizar-precos` fez no
- * passo 13.
+ * PR: a pasta chegou com ele, a âncora abaixo obrigou a trocar o `false` por
+ * `true`, e desde então os produtores dela contam — hoje só o portão de venda
+ * do `nfeId` explícito (`nfe-nao-e-de-venda`). O 404 tem frase PRÓPRIA
+ * (`MSG_NFE_NAO_ENCONTRADA`, review 2), não um motivo; as demais recusas 409 ela
+ * repassa das decisões de `pedidoNfe.ts` sem soletrá-las. A espera do SERPRO ali é um ATRASO, nunca uma
+ * recusa, então a rota não produz `aguardando-serpro`. O mesmo caminho que
+ * `atualizar-precos` fez no passo 13.
  */
 const PASTAS_DE_ROTA: Readonly<Record<string, boolean>> = {
-  'enviar-nfe': false,
+  'enviar-nfe': true,
 };
 
 /** O texto de um arquivo, com CRLF normalizado para LF (diferença 3). */
@@ -191,12 +194,15 @@ describe('todo motivo da NF-e declarado tem um PRODUTOR fora de errosNfe.ts', ()
       expect(fontes.has(produtor), produtor).toBe(true);
     }
     expect(fontes.has('errosNfe.ts')).toBe(false);
-    // Nenhum teste entra, e nenhuma pasta de rota enquanto o mapa diz `false`.
+    // Nenhum teste entra — nem o da rota —, e a pasta de rota entra INTEIRA:
+    // exatamente o `route.ts` dela, agora que o mapa diz `true`.
     expect([...fontes.keys()].filter((nome) => nome.endsWith('.test.ts'))).toEqual([]);
-    expect([...fontes.keys()].filter((nome) => nome.includes('/'))).toEqual([]);
+    expect([...fontes.keys()].filter((nome) => nome.includes('/'))).toEqual([
+      'enviar-nfe/route.ts',
+    ]);
   });
 
-  it('as pastas de rota estão no estado FIXADO: `enviar-nfe` (PR 2) ainda NÃO existe', () => {
+  it('as pastas de rota estão no estado FIXADO: `enviar-nfe` (PR 2) existe', () => {
     for (const [pasta, existe] of Object.entries(PASTAS_DE_ROTA)) {
       expect(
         existsSync(new URL(`${pasta}/`, RAIZ_DAS_ROTAS)),
