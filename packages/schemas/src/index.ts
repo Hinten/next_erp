@@ -1120,6 +1120,7 @@ export {
   vereditoIcmsSn,
   ALIQUOTA_PIS_COFINS_LIMITE,
   vereditoPisCofins,
+  vereditoIsRtc,
   type CrtSimplesNacional,
   type SubConfigIcmsSn,
   type GrupoXsd,
@@ -1132,6 +1133,7 @@ export {
   type CstPisCofinsOutr,
   type BasePisCofinsOutr,
   type VereditoPisCofins,
+  type VereditoIsRtc,
 } from './imposto/regrasDeEmissao';
 
 export {

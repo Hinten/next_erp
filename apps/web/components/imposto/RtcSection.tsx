@@ -141,7 +141,8 @@ export function RtcSection({ value, onChange, disabled, emitRtc }: RtcSectionPro
       {hasIS && (
         <Stack gap="sm">
           <Text c="dimmed" size="xs">
-            Informe a alíquota ad valorem (pIS) ou a específica por unidade (pISEspec + qTrib).
+            Informe a alíquota ad valorem (pIS) ou a específica por unidade (pISEspec, com qTrib e
+            uTrib).
           </Text>
           <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
             <TextInput

@@ -16,7 +16,12 @@
  * slots under `det/imposto` (not nested), so the dispatcher attaches each
  * independently.
  */
-import { COMPETENCIA_AAAA_MM, GRUPO_AJUSTE_RTC, type GrupoAjusteRtc } from '@delfrance/schemas';
+import {
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
+  vereditoIsRtc,
+  type GrupoAjusteRtc,
+} from '@delfrance/schemas';
 
 import { NFeTributeError } from './errors';
 import { fmtMoney, fmtQuantity, fmtRate, roundReais } from './format';
@@ -177,34 +182,52 @@ export function buildIBSCBSAjuste(a: AjusteIbsCbsItem): TTribNFe {
 }
 
 /**
- * Build the optional item-level `<IS>` (Imposto Seletivo) wire value. The XSD
- * sequence is a choice: ad valorem (`vBCIS` + `pIS` + `vIS`) OR per-unit
- * (`pISEspec` + `uTrib` + `qTrib` + `vIS`). `vBCIS` defaults to the item line
- * value (`vProd`) in the ad valorem path.
+ * Build the optional item-level `<IS>` (Imposto Seletivo) wire value.
+ *
+ * ⚠️ The XSD is NOT a choice between the two modes: once the value sequence
+ * opens, `vBCIS` and `pIS` are BOTH required, then an optional `adRemIS` (the
+ * per-unit rate — named `pISEspec` until PL_010f) with an optional
+ * `uTrib` + `qTrib` pair, then `vIS`. So a per-unit IS still carries the base
+ * and a `pIS` of 0. (The per-unit path emitted `pISEspec` alone before, which
+ * no pack ever accepted.) `vBCIS` defaults to the item line value (`vProd`).
+ *
+ * The stored config keeps its `pISEspec` name; only the wire element moved.
+ *
+ * The mode — and the refusals — come from `vereditoIsRtc` (`@delfrance/schemas`),
+ * the same verdict the web imposto editor refuses a save with (#1696 review).
  */
 export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
   const out: TIS = {
     CSTIS: cfg.CSTIS,
     cClassTribIS: cfg.cClassTribIS,
   };
-  if (cfg.pIS != null) {
-    const vBCIS = cfg.vBCIS ?? vProd;
-    out.vBCIS = fmtMoney('vBCIS', vBCIS);
-    out.pIS = fmtRate('pIS', cfg.pIS);
-    out.vIS = fmtMoney('vIS', roundReais((vBCIS * cfg.pIS) / 100));
-  } else if (cfg.pISEspec != null && cfg.qTrib != null) {
-    out.pISEspec = fmtRate('pISEspec', cfg.pISEspec);
-    if (cfg.uTrib != null) out.uTrib = cfg.uTrib;
-    out.qTrib = fmtQuantity('qTrib', cfg.qTrib);
-    out.vIS = fmtMoney('vIS', roundReais(cfg.pISEspec * cfg.qTrib));
-  } else {
-    // `configuracaoISRtcSchema`'s refine guarantees one mode is present; this
-    // is a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
-    throw new NFeTributeError(
-      'buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)',
-    );
+  const v = vereditoIsRtc(cfg);
+  switch (v.tipo) {
+    case 'adValorem': {
+      const vBCIS = cfg.vBCIS ?? vProd;
+      out.vBCIS = fmtMoney('vBCIS', vBCIS);
+      out.pIS = fmtRate('pIS', v.pIS);
+      out.vIS = fmtMoney('vIS', roundReais((vBCIS * v.pIS) / 100));
+      return out;
+    }
+    case 'porUnidade':
+      out.vBCIS = fmtMoney('vBCIS', cfg.vBCIS ?? vProd);
+      out.pIS = fmtRate('pIS', 0);
+      out.adRemIS = fmtRate('adRemIS', v.pISEspec);
+      out.uTrib = v.uTrib;
+      out.qTrib = fmtQuantity('qTrib', v.qTrib);
+      out.vIS = fmtMoney('vIS', roundReais(v.pISEspec * v.qTrib));
+      return out;
+    case 'uTribAusente':
+      // `uTrib` + `qTrib` are one XSD sequence: both or neither.
+      throw new NFeTributeError('buildIS: a per-unit IS (pISEspec + qTrib) also needs uTrib');
+    case 'semAliquota':
+      // `configuracaoISRtcSchema`'s refine keeps this out of a parsed config;
+      // a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
+      throw new NFeTributeError(
+        'buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)',
+      );
   }
-  return out;
 }
 
 /**

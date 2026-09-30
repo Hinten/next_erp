@@ -9,10 +9,6 @@
  *    a third time; `notaCreditoDebito.test.ts` pins that claim row by row.
  *  - Which tax groups an item may carry (RV B25-80, cStat 1001): IBS/CBS only,
  *    except the tipos whose goods physically move (crédito 03, débito 07).
- *
- * ⚠️ `tpNFCredito` 06 (retorno por recusa parcial, NT v1.40) is NOT modelled —
- * the vendored XSD predates it (see `operacao.ts`). When it arrives it joins
- * crédito 03 in `modoGruposImposto` and in the VC02-07/VC02-10 exceptions.
  */
 import {
   FIN_NFE_OPERACAO,
@@ -39,7 +35,7 @@ export const CCLASSTRIB_DO_TP_NF_DEBITO: Readonly<Partial<Record<TpNFDebito, str
 
 /**
  * UB14-80 (cStat 1201) — the same for a nota de crédito. "Não limitar": 01
- * multa e juros, 03 retorno, 04 redução de valores (and 06, once modelled).
+ * multa e juros, 03 retorno, 04 redução de valores, 06 retorno parcial.
  */
 export const CCLASSTRIB_DO_TP_NF_CREDITO: Readonly<Partial<Record<TpNFCredito, string>>> = {
   [TP_NF_CREDITO.creditoPresumidoZfm]: '810001',
@@ -111,13 +107,16 @@ export type ModoGruposImposto = (typeof MODO_GRUPOS_IMPOSTO)[keyof typeof MODO_G
 /**
  * The item tax groups of a nota, from its tipo. B25-80's exceptions are the
  * tipos whose goods physically move and so keep their ICMS: crédito 03
- * (retorno por recusa total), crédito 04 (redução de valores) and débito 07
- * (perda em estoque). Everything else of finNFe 5/6 is IBS/CBS only.
+ * (retorno por recusa total), 04 (redução de valores) and 06 (retorno por
+ * recusa parcial), and débito 07 (perda em estoque). Everything else of finNFe
+ * 5/6 is IBS/CBS only — v1.51's B25-80 PERMITS PIS/COFINS/IPI on débito 06 in
+ * 2026 but requires none of them, so débito 06 stays IBS/CBS only.
  */
 export function modoGruposImposto(t: TipoNotaAjuste): ModoGruposImposto {
   if (t.finNFe === FIN_NFE_OPERACAO.credito) {
     return t.tpNFCredito === TP_NF_CREDITO.retornoRecusaTotal ||
-      t.tpNFCredito === TP_NF_CREDITO.reducaoValores
+      t.tpNFCredito === TP_NF_CREDITO.reducaoValores ||
+      t.tpNFCredito === TP_NF_CREDITO.retornoRecusaParcial
       ? MODO_GRUPOS_IMPOSTO.completo
       : MODO_GRUPOS_IMPOSTO.somenteIbsCbs;
   }

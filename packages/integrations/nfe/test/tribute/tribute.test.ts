@@ -2882,6 +2882,35 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
     await assertRtcXsdValid(xml, imposto);
   });
 
+  it('a per-unit IS carries the base, a pIS of 0 and adRemIS — XSD-valid (PL_010f)', async () => {
+    // The XSD requires vBCIS + pIS whenever the IS values open; the per-unit
+    // path used to emit pISEspec alone, which no pack accepted.
+    const isPorUnidade = (uTrib: string | null): Imposto => ({
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000000', pISEspec: 1.25, qTrib: 4, uTrib },
+      },
+    });
+    const imposto = isPorUnidade('UN');
+    const xml = buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(xml).toContain(
+      '<IS><CSTIS>000</CSTIS><cClassTribIS>000000</cClassTribIS><vBCIS>1500.00</vBCIS>' +
+        '<pIS>0.0000</pIS><adRemIS>1.2500</adRemIS><uTrib>UN</uTrib><qTrib>4.0000</qTrib>' +
+        '<vIS>5.00</vIS></IS>',
+    );
+    await assertRtcXsdValid(xml, imposto);
+    // uTrib and qTrib are one XSD sequence: a per-unit IS without uTrib is refused.
+    expect(() => buildImpostoXml(isPorUnidade(null), item1500, { emitRtc: true })).toThrow(
+      /per-unit IS \(pISEspec \+ qTrib\) also needs uTrib/,
+    );
+  });
+
   it('throws NFeTributeError when emitRtc is on but the registered config is incomplete', () => {
     const imposto = {
       origem: '0',

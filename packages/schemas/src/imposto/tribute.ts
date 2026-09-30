@@ -848,7 +848,11 @@ export type Retencao = z.infer<typeof retencaoSchema>;
 
 /**
  * RTC `IS` (Imposto Seletivo) per-item sub-config. `pIS` (ad valorem over a
- * base) OR `pISEspec` (per unit, with `qTrib`) drives the value.
+ * base) OR `pISEspec` (per unit, with `qTrib` and `uTrib`) drives the value.
+ * This strict schema runs at emission (`parseRtcConfig`); the stored field is
+ * the lenient `configuracaoIBSCBSDraftSchema`. Its refine checks only that a
+ * mode is present. The per-unit `uTrib` is decided by `vereditoIsRtc`
+ * (`regrasDeEmissao.ts`), which the engine and the web editor share.
  */
 export const configuracaoISRtcSchema = z
   .object({
