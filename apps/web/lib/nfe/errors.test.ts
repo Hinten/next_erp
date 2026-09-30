@@ -15,6 +15,7 @@ import {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeTimeoutError,
   NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -219,6 +220,21 @@ describe('notificationForNFeError', () => {
     expect(n.color).toBe('red');
     expect(n.title).toBe('Requisição inválida');
     expect(n.message).toBe('pedidoId deve ser uma string');
+  });
+
+  it('NFeTimeoutError → yellow "Tempo esgotado" carrying its own copy — never "Erro de rede" (#1094)', () => {
+    // A subclass of NFeNetworkError: without its own arm (placed first) it would
+    // read "Não foi possível alcançar o servidor", which is FALSE — the request may
+    // have reached apps/nfe and still be running.
+    const err = new NFeTimeoutError('Aguarde e confira o estado da NF-e antes de repetir.', {
+      origem: 'prazo',
+      timeoutMs: 360_000,
+      operacao: 'emitir',
+    });
+    const n = notificationForNFeError(err);
+    expect(n.title).toBe('Tempo esgotado');
+    expect(n.color).toBe('yellow');
+    expect(n.message).toBe('Aguarde e confira o estado da NF-e antes de repetir.');
   });
 
   it('NFeNetworkError → red', () => {

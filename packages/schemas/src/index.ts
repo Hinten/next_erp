@@ -28,6 +28,7 @@ export {
   TTL_FIELD,
   TTL_POLICIES,
   RETENCAO_ENVIO_PRECO_ML_DIAS,
+  RETENCAO_ENVIO_PRECO_SHOPEE_DIAS,
   RETENCAO_HISTORICO_PEDIDO_ANOS,
   RETENCAO_HISTORICO_PRODUTO_DIAS,
   RETENCAO_VINCULO_WHATSAPP_DIAS,
@@ -69,6 +70,7 @@ export {
   outerRefLooseSchema,
   toOuterRef,
   toOuterRefOrNull,
+  toDocPathOrNull,
   idFromRef,
   parseRef,
   type OuterRef,
@@ -639,6 +641,24 @@ export {
 } from './relatorioEnvioPrecoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS, and deliberately exports no
+  // `…Meta`) — the Shopee "Atualizar preços" account-wide price job (master-plan
+  // step 13, #1521), twin of envioPrecoMercadoLivre above. Its fila holds
+  // IDENTITIES, never prices, and its report binds the shared
+  // relatorioEnvioPrecoSchema. ⚠️ Every stamp here is MILLISECONDS; `expiraEm`
+  // is the TTL Date.
+  envioPrecoShopeeStatusSchema,
+  ENVIO_PRECO_SHOPEE_STATUS,
+  envioPrecoShopeeModeloSchema,
+  envioPrecoShopeeFilaItemSchema,
+  envioPrecoShopeeSchema,
+  type EnvioPrecoShopeeStatus,
+  type EnvioPrecoShopeeModelo,
+  type EnvioPrecoShopeeFilaItem,
+  type EnvioPrecoShopee,
+} from './envioPrecoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
@@ -786,12 +806,21 @@ export {
   IND_INTERMED_OPERACAO,
   ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
+  FIN_NFE_OPERACAO,
   FIN_NFE_OPERACAO_LABELS,
+  TP_NF_CREDITO,
+  TP_NF_CREDITO_LABELS,
+  TP_NF_DEBITO,
+  TP_NF_DEBITO_LABELS,
+  tpNFCreditoSchema,
+  tpNFDebitoSchema,
   IND_PRES_OPERACAO_LABELS,
   IND_INTERMED_OPERACAO_LABELS,
   type Operacao,
   type TipoNFe,
   type FinNFeOperacao,
+  type TpNFCredito,
+  type TpNFDebito,
   type IndPresOperacao,
   type IndIntermedOperacao,
   type OrigemProdutoImposto,
@@ -820,6 +849,7 @@ export {
   encryptedBlobSchema,
   CERTIFICADO_SECRETO_PATH,
   CERTIFICADO_SECRETO_DOC_ID,
+  CERTIFICADO_CACHE_TTL_MS,
   type CertificadoSecreto,
   type CertificadoFilialInfo,
   type EncryptedBlob,
@@ -873,6 +903,21 @@ export {
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
+
+export {
+  chaveAcessoValida,
+  decomporChaveAcesso,
+  dvChaveAcesso,
+  type ChaveAcessoDecomposta,
+} from './chaveAcesso';
+
+export {
+  extractTpAmb,
+  decideNfeUploadDispatch,
+  decideNfeUploadTransition,
+  type NfeUploadDispatch,
+  type NfeUploadTransition,
+} from './nfeEnvioCanal';
 
 export {
   nfeConfig,
@@ -1060,18 +1105,127 @@ export {
 } from './imposto/camposProdutoFiscal';
 
 export {
-  // RTC cClassTrib/CST seed + validator (#333)
-  CCLASSTRIB_SEED,
+  // The emission rules a tax config must satisfy, as verdicts: the NF-e engine
+  // throws from them, and the web imposto editor can check them before a save
+  // (#1655).
+  CRTS_SIMPLES_NACIONAL,
+  ehCrtSimplesNacional,
+  usaIssqn,
+  SUBCONFIGS_ICMS_SN,
+  SUBCONFIG_POR_CSOSN,
+  GRUPO_XSD_FCP_ST,
+  GRUPOS_XSD_ICMSSN500,
+  GRUPOS_XSD_ICMSSN900,
+  GRUPOS_XSD_POR_SUBCONFIG,
+  vereditoIcmsSn,
+  ALIQUOTA_PIS_COFINS_LIMITE,
+  vereditoPisCofins,
+  vereditoIsRtc,
+  type CrtSimplesNacional,
+  type SubConfigIcmsSn,
+  type GrupoXsd,
+  type GrupoXsdIncompleto,
+  type IcmsSnEmitivel,
+  type VereditoIcmsSn,
+  type CstPisCofinsAliq,
+  type CstPisCofinsQtde,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type BasePisCofinsOutr,
+  type VereditoPisCofins,
+  type VereditoIsRtc,
+} from './imposto/regrasDeEmissao';
+
+export {
+  // Those verdicts in pt-BR, behind the engine's own impostoSchema tier gate —
+  // what the web refuses to save because the NF-e engine would refuse to emit
+  // it (#1655).
+  problemasDeEmissaoDoImposto,
+  issuesDeEmissaoDasLinhas,
+  type ProblemaDeEmissao,
+} from './imposto/problemasDeEmissao';
+
+export {
+  // RTC Anexo III — cClassTrib + CST IBS/CBS tables with indicators + validator (#333)
+  CCLASSTRIB_PROVENIENCIA,
+  CCLASSTRIB_TABELA,
   CST_IBSCBS_CODES,
   CST_IBSCBS_LABELS,
+  CST_IBSCBS_TABELA,
+  IND_CCLASSTRIB,
+  IND_CST_IBSCBS,
+  TIPO_ALIQUOTA_RTC,
+  TIPO_ALIQUOTA_RTC_LABELS,
   cClassTribCodesForCst,
   cClassTribDescricao,
   cClassTribEntriesForCst,
+  cClassTribEntry,
   cstClassTribStructurallyValid,
+  cstIbsCbsEntry,
   validateCstClassTrib,
   type CClassTribEntry,
   type CstClassTribValidation,
+  type CstIbsCbsEntry,
+  type IndicadorCClassTrib,
+  type IndicadorCstIbsCbs,
+  type ProvenienciaTabelaRtc,
+  type TipoAliquotaRtc,
 } from './imposto/cclasstrib';
+
+export {
+  // NT 2025.002 document rules shared by the pedido editor and the emission pre-flight (#330)
+  REGRA_DOCUMENTO,
+  REGRAS_DOCUMENTO,
+  SEVERIDADE_VIOLACAO,
+  bloqueiaEmissao,
+  descreverViolacaoDocumento,
+  tipoAindaNaoEmitido,
+  violacoesDaOperacao,
+  violacoesDoDocumento,
+  type AjusteRtcEntrada,
+  type DfeReferenciadoEntrada,
+  type EntradaRegrasDocumento,
+  type EntradaRegrasOperacao,
+  type ItemRegrasDocumento,
+  type RegraDocumento,
+  type SeveridadeViolacao,
+  type ViolacaoDocumento,
+} from './imposto/regrasDoDocumento';
+
+export {
+  // Nota de crédito / débito (finNFe 5/6, NT 2025.002) — tipo bindings and item tax groups (#330)
+  CCLASSTRIB_DO_TP_NF_CREDITO,
+  CCLASSTRIB_DO_TP_NF_DEBITO,
+  COMPETENCIA_AAAA_MM,
+  GRUPO_AJUSTE_RTC,
+  MODO_GRUPOS_IMPOSTO,
+  cClassTribCompativelComTipo,
+  cClassTribDoTipo,
+  cClassTribVinculadoATipoDeNota,
+  grupoDeAjusteDoTipo,
+  modoGruposImposto,
+  type GrupoAjusteRtc,
+  type ModoGruposImposto,
+  type TipoNotaAjuste,
+} from './imposto/notaCreditoDebito';
+
+export {
+  // NT 2025.002 ide/emit fields beyond the tax groups — dPrevEntrega, ISUFEmit (#331)
+  ISUF_EMIT_REGEX,
+  MUNICIPIOS_SUFRAMA_EMITENTE,
+  dPrevEntregaParaEmissao,
+  somarMeses,
+} from './imposto/ideRtc';
+
+export {
+  // RTC Anexo IV — cCredPres (#333)
+  CCREDPRES_PROVENIENCIA,
+  CCREDPRES_TABELA,
+  TRIBUTO_CREDITO_PRESUMIDO,
+  cCredPresEntry,
+  type CCredPresEntry,
+  type TributoCreditoPresumido,
+} from './imposto/ccredpres';
 
 export {
   arquivo,
@@ -1100,6 +1254,10 @@ export {
   productVideoPath,
   productAnexoPath,
   mediaPath,
+  whatsappArquivoId,
+  whatsappMediaPath,
+  chatArquivoId,
+  chatMediaPath,
   tabMediOriginalPath,
   ownedArquivoId,
   productArquivoId,
@@ -1109,6 +1267,7 @@ export {
   isWatchedOriginal,
   parseProductMediaDir,
   parseOwnedMediaDir,
+  parseMensagemMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -1118,7 +1277,16 @@ export {
   type ParsedProductMediaDir,
   type MediaOwnerCollection,
   type ParsedOwnedMediaDir,
+  type MensagemMediaKind,
+  type ParsedMensagemMediaDir,
 } from './storage/storagePaths';
+
+export {
+  MENSAGEM_ARQUIVO_REF_FIELDS,
+  extractMensagemArquivoIds,
+  mensagemArquivoRefValues,
+  type MensagemArquivoRefField,
+} from './mensagemArquivoRefs';
 
 export {
   buildFotoRefs,

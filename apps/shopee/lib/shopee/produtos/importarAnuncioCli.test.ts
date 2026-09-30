@@ -423,6 +423,7 @@ describe('a redação é uma ALLOW-LIST', () => {
         'preco',
         'precoIgnorado',
         'produtoId',
+        'propagaPreco',
         'profundidadeCm',
         'publicado',
         'sku',

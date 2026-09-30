@@ -85,6 +85,7 @@ function argsPai(parcial: Partial<ArgsMapearProdutoPai> = {}): ArgsMapearProduto
     depositoOuterRef: DEPOSITO,
     categoriaOuterRef: null,
     temFilhos: false,
+    jaTemFilhos: false,
     estoqueExistente: null,
     ...parcial,
   };
@@ -399,7 +400,8 @@ describe('mapearProdutoPai — estoque', () => {
   it('⛔ NEAR-MISS: NUNCA escreve estoque num pai que tem filhos — nem pelo payload, nem pelo ERP', () => {
     expect(comEstoque({ temFilhos: true }).estoque).toBeNull();
     expect(comEstoque({ temFilhos: true }).estoqueIgnorado).toBe('pai-com-filhos');
-    // e o preço do pai cai pelo mesmo motivo, com o motivo certo
+    // e o preço do pai (um anúncio SEM models) cai pelo mesmo motivo, com o
+    // motivo certo — num anúncio COM models quem decide é a regra da família
     expect(comEstoque({ temFilhos: true }).precoIgnorado).toBe('pai-com-filhos');
   });
 
@@ -881,6 +883,44 @@ describe('dadosLinkListagem', () => {
       AGORA,
     );
     expect(doc.violations).toEqual([{ violation_reason: 'x' }]);
+  });
+
+  describe('`kitNativo` — o que a SHOPEE diz (`tag.kit`), carimbado sempre', () => {
+    it('PAR: `tag.kit` true carimba true; `tag.kit` false carimba false', () => {
+      expect(
+        dadosLinkListagem(item({ tag: { kit: true } }), null, INTEGRACAO, AGORA).kitNativo,
+      ).toBe(true);
+      expect(
+        dadosLinkListagem(item({ tag: { kit: false } }), null, INTEGRACAO, AGORA).kitNativo,
+      ).toBe(false);
+    });
+
+    it('⛔ NEAR-MISS: `tag` ausente ou `kit: null` carimba FALSE — nunca deixa a chave de fora', () => {
+      // Uma leitura anterior a 2024-10-18 não traz `tag`. `ehKitDe` responde
+      // `false`, e um `false` é DADO: o vínculo sai booleano, não null.
+      for (const entrada of [item(), item({ tag: null }), item({ tag: { kit: null } })]) {
+        const doc = dadosLinkListagem(entrada, null, INTEGRACAO, AGORA);
+        expect(doc).toHaveProperty('kitNativo', false);
+      }
+    });
+
+    it('⛔ um valor ARMAZENADO nunca vence a leitura — null, true e false convergem', () => {
+      // O ramo de merge: `null` é um vínculo gravado antes deste carimbo existir;
+      // um `true` num anúncio que deixou de ser kit é um valor velho.
+      for (const armazenado of [null, true, false, 'true']) {
+        expect(
+          dadosLinkListagem(item(), { kitNativo: armazenado }, INTEGRACAO, AGORA).kitNativo,
+        ).toBe(false);
+        expect(
+          dadosLinkListagem(
+            item({ tag: { kit: true } }),
+            { kitNativo: armazenado },
+            INTEGRACAO,
+            AGORA,
+          ).kitNativo,
+        ).toBe(true);
+      }
+    });
   });
 });
 

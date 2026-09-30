@@ -92,6 +92,28 @@ export function toOuterRefOrNull(raw: unknown): OuterRef | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * The BARE document path of any accepted ref form — `<col>/<id>` or
+ * `<col>/<id>/<sub>/<subid>`, never `documents/…` — or `null` when `raw` is not
+ * a string or cannot form a valid (even-segment) document path.
+ *
+ * This is the form the SDK `doc(path)` calls take. The canonical stored form
+ * ({@link outerRefSchema}, `documents/<col>/<id>`) is NOT: the Admin SDK splits
+ * the string on `/` and refuses an odd segment count ("must point to a
+ * document"), and `documents/` is one extra segment. Handing a stored ref to
+ * `doc()` verbatim therefore throws on exactly the refs the app writes
+ * (`toOuterRef` / Flutter `pathWithDocuments`) while passing every test fixture
+ * seeded with a bare path.
+ *
+ * Total over untrusted input, like {@link toOuterRefOrNull}: a malformed value
+ * degrades to `null`, and the caller decides whether that is "absent" or an
+ * error to name.
+ */
+export function toDocPathOrNull(raw: unknown): string | null {
+  const canonical = toOuterRefOrNull(raw);
+  return canonical === null ? null : canonical.slice('documents/'.length);
+}
+
 /** The document id (last path segment) of any ref form. */
 export function idFromRef(raw: string): string {
   const segs = segments(raw);

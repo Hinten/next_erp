@@ -90,7 +90,11 @@ const CARVE_OUTS = {
     "the 'integer' and 'currency' (centavos) kinds; the 'number' kind uses DecimalInput",
   'apps/web/app/(app)/pedidos/_components/PagamentosSection.tsx':
     'parcelas, nº do cheque, intervalo — all allowDecimal={false}',
+  'apps/web/app/(app)/pedidos/_components/tabs/LinkPagamentoTab.tsx':
+    'quantidade de pagamentos and parcelas máx of a payment link — both allowDecimal={false}',
   'apps/web/app/(app)/pedidos/_components/NfColumnFilter.tsx': 'nº da NF — allowDecimal={false}',
+  'apps/web/app/(app)/pedidos/_components/tabs/ReferenciaPorItemSection.tsx':
+    'nItem da nota referenciada, 1–990 — allowDecimal={false}',
   'apps/web/app/(app)/nfe/comunicacoes/_components/EnviNfeFilterBar.tsx':
     'nº do recibo — allowDecimal={false}',
   'apps/web/app/(app)/logistica/_components/HorarioCorteEditor.tsx':

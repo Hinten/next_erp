@@ -567,6 +567,9 @@ describe('buildDevolucaoIntegralSeed', () => {
     ultimaModificacao: 333,
     timestamp: 444,
     foiImpresso: true,
+    // The prepayment the ORIGIN settles (#331): carried over, the entrada would
+    // emit it as its own gPagAntecipado and abate it a second time.
+    chNFePagamentoAntecipado: ['35260514200166000187550010000000071000000011'],
   };
 
   function setup() {
@@ -597,6 +600,9 @@ describe('buildDevolucaoIntegralSeed', () => {
     for (const key of refilledToNull) {
       expect(values[key]).toBeNull();
     }
+    // Named explicitly: the loop above only checks what the list already holds,
+    // so it cannot notice a key missing from it.
+    expect(values.chNFePagamentoAntecipado).toBeNull();
   });
 
   it('seeds an entrada with the origin items, ALL approved chaves + the resolved operação', async () => {

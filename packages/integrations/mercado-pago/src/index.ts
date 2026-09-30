@@ -1,11 +1,14 @@
 /**
  * Mercado Pago channel library — platform-neutral (fetch-only, no Firestore).
  *
- * The OAuth core (`oauth.ts`), the REST client (`api.ts` — `getMe`, `getPayment`),
- * the error taxonomy (`errors.ts`), the response schemas (`types.ts`) and the pure
- * `mpPaymentToPagamento` mapper ship here. Token persistence, refresh, the webhook
- * receiver and every stateful flow are driven by the App Hosting backend
- * (`apps/mercado-pago`), which holds the Firestore/Admin-SDK dependency.
+ * The OAuth core (`oauth.ts`), the REST client (`api.ts` — `getMe`, `getPayment`,
+ * and for the payment links of #367 `createPreference`, `updatePreference`,
+ * `searchPayments`), the error taxonomy (`errors.ts`), the tolerant response
+ * schemas (`types.ts`), the STRICT request schemas (`requests.ts`) and the pure
+ * mappers `mpPaymentToPagamento` and `buildPreferenceRequest` ship here. Token
+ * persistence, refresh, the webhook receiver and every stateful flow are driven
+ * by the App Hosting backend (`apps/mercado-pago`), which holds the
+ * Firestore/Admin-SDK dependency.
  *
  * ⚠️ **There is no `createMercadoPagoGateway` any more (#1429).** It returned a
  * `PaymentGateway` whose `createCharge`, `refund` and `webhook` all threw, and it
@@ -22,8 +25,12 @@
  *    disposition. A `(payload) => {orderId?, status}` cannot express any of that.
  *  - `createCharge` mis-described the one real write. The operation is
  *    `POST /checkout/preferences`, which returns a **link and an expiry** — not a
- *    charge id and a status — and needs `items[]`, `payer`, `back_urls`,
- *    `external_reference` and a per-pedido `notification_url`. That is #367.
+ *    charge id and a status. That is #367, and it now exists as
+ *    `MercadoPagoApi.createPreference` + `buildPreferenceRequest`. The comment that
+ *    stood here claimed the preference needs `back_urls` and a per-pedido
+ *    `notification_url`; the built body deliberately sends NEITHER (no public
+ *    return page, and a per-preference URL would override the panel webhook of
+ *    #564 and bake a host that changes at the cutover) — see `requests.ts`.
  *  - `refund` had no precedent at all: the legacy app never refunded either, and
  *    the ERP only ever *observes* a refund through `STATUS_PAGAMENTO`.
  *
@@ -37,6 +44,8 @@
 
 export * from './errors';
 export * from './types';
+export * from './requests';
 export * from './oauth';
 export * from './api';
 export * from './mapping/payment';
+export * from './mapping/preference';

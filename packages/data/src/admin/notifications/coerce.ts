@@ -22,7 +22,7 @@
  * stopped repo-wide ingestion with no error, only a growing failures
  * collection. Side by side they cannot drift again.
  */
-import { MILLIS_UPPER_BOUND } from '@delfrance/core/datetime';
+import { MILLIS_UPPER_BOUND, parseIsoToMillis } from '@delfrance/core/datetime';
 
 /** A signed run of digits, and nothing else. */
 const INTEGER_STRING = /^[+-]?\d+$/;
@@ -94,8 +94,8 @@ function rawMillis(v: unknown): number | null {
   if (typeof v === 'string') {
     const s = v.trim();
     if (!s) return null;
-    const iso = Date.parse(s); // ISO-8601
-    if (Number.isFinite(iso)) return iso;
+    const iso = parseIsoToMillis(s); // ISO-8601 / RFC 3339; offset-less reads as UTC
+    if (iso != null) return iso;
     const n = Number(s); // numeric string (epoch millis)
     return Number.isFinite(n) ? Math.trunc(n) : null;
   }

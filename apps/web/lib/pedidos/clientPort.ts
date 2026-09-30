@@ -82,7 +82,7 @@ function refForPath(db: Firestore, path: string): DocumentReference {
  * narrow on — the final attempt's original error.
  *
  * `aposAlterarTotal` is the pedido editor's flag after a save that moved
- * `valorCobrado` (#703): the server then reconciles only while the estado IT
+ * `valorCobrado` (#703) or the troca devolução credit (#367): the server then reconciles only while the estado IT
  * reads still lets the total move, and never on a marketplace pedido — see
  * `reconcilePedidoEstado`.
  */

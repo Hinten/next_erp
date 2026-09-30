@@ -22,7 +22,9 @@
  *     additionally collapses N same-lote chaves into ONE `consReciNFe` call.
  *   - **cStat=656 aborts the run**: the remaining chaves are reported as
  *     `erro` without any further SEFAZ call (re-querying after a 656 deepens
- *     the throttle hole — #77).
+ *     the throttle hole — #77). Read from `ConsultaChaveResult.consumoIndevido`,
+ *     never from the persisted cStat: a 656 on the receipt is now a BLOCKING
+ *     terminal carrying cStat 103/104 (#1654).
  *   - Per-chave errors never leak `responseBody` (raw SEFAZ reply) — only
  *     `name: message`.
  */
@@ -35,7 +37,6 @@ import {
   NFeEndpointError,
   NFeTransportError,
   NFeXmlError,
-  classifyCStat,
   isEstadoFinalNFe,
   type TRetConsReciNFe,
 } from '@delfrance/integrations-nfe';
@@ -195,7 +196,7 @@ export async function verificarEnviNfeMsgs(
     const pedidoId = chosen.ref.parent.parent?.id ?? chosen.ref.path;
 
     try {
-      const { patch } = await consultarChavePersistida({
+      const { patch, consumoIndevido } = await consultarChavePersistida({
         fs,
         rt,
         filialId,
@@ -214,9 +215,10 @@ export async function verificarEnviNfeMsgs(
         xMotivo: patch.xMotivo,
         error: null,
       });
-      // 656 surfaces as a persisted outcome (not a thrown error) in this
-      // codebase — abort the rest of the run.
-      if (classifyCStat(patch.cStat) === 'consumo-indevido') abort656 = true;
+      // 656 surfaces as an answer (not a thrown error) in this codebase —
+      // abort the rest of the run. The flag, not `patch.cStat`: a 656 on the
+      // receipt is persisted as a blocking terminal (cStat 103/104, #1654).
+      if (consumoIndevido) abort656 = true;
     } catch (e) {
       // Consumo indevido as a thrown error (the library shield) — same abort.
       if (e instanceof NFeConsumoIndevidoError) {

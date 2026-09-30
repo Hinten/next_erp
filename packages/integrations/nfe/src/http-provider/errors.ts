@@ -143,10 +143,12 @@ export class NFeServerError extends NFeHttpError {
 }
 
 /**
- * Network-level failure — DNS, connection refused, timeout, abort.
- * Not an HTTP status; the request never reached `apps/nfe` (or its
- * response never arrived). Distinct from server-side errors so
- * callers can decide to retry on the client side.
+ * Network-level failure within the first seconds of a request — DNS, connection
+ * refused, a CORS refusal, a connection dropped while the body was still
+ * arriving. No complete response arrived. ⚠️ That does NOT prove the route never
+ * RAN — a connection can drop after the request left — which is why
+ * `withNFeRetry` states per endpoint whether a re-send is safe instead of
+ * trusting this class. A failure that arrives LATE is an `NFeTimeoutError`.
  */
 export class NFeNetworkError extends Error {
   public override readonly cause?: unknown;
@@ -154,6 +156,47 @@ export class NFeNetworkError extends Error {
     super(message);
     this.name = 'NFeNetworkError';
     if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * The request's OUTCOME IS UNKNOWN (#1094): this client's own deadline expired
+ * (`origem: 'prazo'`), or the platform gateway gave up on the request
+ * (`origem: 'gateway'`) — read as a 504 no route of ours wrote when the caller
+ * can see the status, and in a cross-origin browser (where that 504 carries no
+ * CORS headers) as a network failure after the request had been in flight past
+ * `LIMIAR_FALHA_TARDIA_MS`.
+ *
+ * ⚠️ Either way `apps/nfe` may still be running it — no route observes a client
+ * abort, and Cloud Run keeps processing after its own 504 — so an emission may
+ * still be talking to SEFAZ. That is why `isRetryableNFeHttpError` returns
+ * `false` for it: a re-POST now would overlap the live run.
+ *
+ * ⚠️ A SUBCLASS of `NFeNetworkError`, never a sibling: every NF-e catch site in
+ * `apps/web` narrows on `NFeHttpError || NFeNetworkError` and rethrows anything
+ * else, so a sibling would land as an unhandled rejection. Code that wants the
+ * distinct copy puts an `NFeTimeoutError` arm BEFORE its `NFeNetworkError` arm.
+ */
+export class NFeTimeoutError extends NFeNetworkError {
+  public readonly origem: 'prazo' | 'gateway';
+  /** The deadline that expired; `null` for a gateway 504 (the platform's clock, not ours). */
+  public readonly timeoutMs: number | null;
+  /** The client method that timed out (`'emitir'`, `'danfe'`, …). */
+  public readonly operacao: string;
+  constructor(
+    message: string,
+    detalhes: {
+      readonly origem: 'prazo' | 'gateway';
+      readonly timeoutMs: number | null;
+      readonly operacao: string;
+    },
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'NFeTimeoutError';
+    this.origem = detalhes.origem;
+    this.timeoutMs = detalhes.timeoutMs;
+    this.operacao = detalhes.operacao;
   }
 }
 
@@ -208,6 +251,15 @@ export class NFeXsdValidationFailedError extends NFeHttpError {
  * unavailable, a document that failed the SEFAZ XSD — returns `false`: retrying
  * would just replay the same failure.
  *
+ * ⚠️ **A timeout is never retryable (#1094), although it IS an
+ * `NFeNetworkError`.** It says the request outlived its deadline — ours, or the
+ * platform's (a gateway 504) — and `apps/nfe` may still be running it. A retry
+ * 200–800 ms later would overlap that live run: for `emitir` the second request
+ * retransmits the stored bytes while the first is still waiting on SEFAZ. It
+ * would also triple the wait on a read, since the budget was already spent.
+ * The check sits FIRST because the subclass would otherwise match the
+ * `NFeNetworkError` arm below — the same shape as the #1602 XSD exclusion.
+ *
  * Pure + dependency-free (only `instanceof`), so the `./http-provider` subpath
  * stays browser-safe. Callers in `apps/web` feed this to `retryAsync`.
  * NOTE: an endpoint that is NOT idempotent (e.g. `cartaCorrecao`, which
@@ -215,6 +267,7 @@ export class NFeXsdValidationFailedError extends NFeHttpError {
  * pre-send-503 (`NFeRuntimeNotReadyError`).
  */
 export function isRetryableNFeHttpError(err: unknown): boolean {
+  if (err instanceof NFeTimeoutError) return false;
   return (
     err instanceof NFeNetworkError ||
     err instanceof NFeServerError ||

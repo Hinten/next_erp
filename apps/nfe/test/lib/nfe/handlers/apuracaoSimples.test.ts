@@ -83,6 +83,20 @@ describe('dobrarGrupos — the sign comes from the shared rule', () => {
     expect(r.notasContadas).toBe(0);
   });
 
+  it('a nota de crédito / débito (finNFe 5/6) is neutral in both directions', () => {
+    // NT 2025.002 adjustments move IBS/CBS, not a sale price: the sale that
+    // earned the revenue already counted through its own nota.
+    const r = dobrarGrupos([
+      grupo({ tpNF: 1, finNFe: 5, receita: 700, notas: 2 }),
+      grupo({ tpNF: 1, finNFe: 6, receita: 300, notas: 1 }),
+      grupo({ tpNF: 0, finNFe: 5, receita: 50, notas: 1 }),
+      grupo({ tpNF: 0, finNFe: 6, receita: 20, notas: 1 }),
+    ]);
+    expect(r.receita).toBe(0);
+    expect(r.notasNeutras).toBe(5);
+    expect(r.notasContadas).toBe(0);
+  });
+
   it('an empty window is zero, not NaN', () => {
     expect(dobrarGrupos([])).toEqual({ receita: 0, notasContadas: 0, notasNeutras: 0 });
   });
@@ -186,6 +200,27 @@ describe('interpretarLinhasDoAgregado', () => {
     ]);
     expect(r.grupos).toHaveLength(0);
     expect(r.notasIndeterminadas).toBe(0);
+  });
+
+  it('⚠️ a nota de crédito / débito folds into a group, never into indeterminadas', () => {
+    // Before NT 2025.002 support, 5/6 were codes the reader did not know, so
+    // one approved nota de débito would block the apuração for a whole year.
+    const r = interpretarLinhasDoAgregado([
+      { filialId: 'f1', tpNF: 1, finNFe: 6, receita: 80, nNotas: 2, nIlegiveis: 0 },
+      { filialId: 'f1', tpNF: 1, finNFe: 5, receita: 40, nNotas: 1, nIlegiveis: 0 },
+      // Unattributed, and still not blocking: it is revenue for nobody.
+      { tpNF: 1, finNFe: 6, receita: 10, nNotas: 3, nIlegiveis: 0 },
+    ]);
+    expect(r.grupos.map((g) => g.finNFe)).toEqual([6, 5]);
+    expect(r.notasIndeterminadas).toBe(0);
+  });
+
+  it('NEAR-MISS: the first code past the NT range is still indeterminate', () => {
+    const r = interpretarLinhasDoAgregado([
+      { filialId: 'f1', tpNF: 1, finNFe: 7, receita: 100, nNotas: 3, nIlegiveis: 0 },
+    ]);
+    expect(r.grupos).toHaveLength(0);
+    expect(r.notasIndeterminadas).toBe(3);
   });
 
   it('a group whose sum came back absent is zero, not NaN', () => {

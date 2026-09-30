@@ -25,18 +25,36 @@ import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput }
  * `printJob.dart:268` sends it to `_printPlainText`, a Win32 spooler write with
  * `pDatatype = 'RAW'` — no driver, no rasterisation, exactly what a Zebra wants.
  *
+ * ⚠️ **It must be the BARE `text/plain` — no `;charset=` parameter.** The agent
+ * compares with `==` (`printJob.dart:254/268/282`), `PrintRequest.fromJson`
+ * copies the field verbatim, and `printJob` forwards `opts.contentType` as is,
+ * so `text/plain;charset=utf-8` matches nothing and throws "Mime type não
+ * suportado" INSIDE the agent (`printJob.dart:300`). And that failure is SILENT
+ * from here: `printFromJob` catches it into the job (`:304-313`), the agent
+ * files the job in its own on-screen list (`printerProvider.dart:71-74`) and
+ * still answers `200 OK` (`main.dart:100-101`), so `printJob` reports 'printed',
+ * never falls back to a download, and the operator is told nothing. Only the
+ * test that pins this string catches a wrong one. The legacy Amazon DBA and Magalu label flows sent this
+ * same bare string to the same agent (`dba.dart:111`,
+ * `gerar_etiqueta_magalu.dart:115`).
+ *
  * ⚠️ **This is the first caller in this repo to send a top-level `text/plain`.**
  * `_printPlainText` itself is exercised in production, but reached the other
  * way: a marketplace label arrives as `application/zip` (`mercadoLivre.ts`
  * forwards ML's own content type, and ML returns a ZIP for BOTH formats), and
  * `_printFromZip:220` routes each `.txt` entry inside it to the same function.
  * So the function is proven and the entry point is not, which is also why
- * `nfeFlow.ts` still downloads the DANFE ZPL rather than printing it. The
- * agent-down path below is what surfaces it if this entry point turns out to be
- * wrong: an agent that rejects the content type answers non-OK, `printJob`
- * falls back to a download, and the operator gets told.
+ * `nfeFlow.ts` still downloads the DANFE ZPL rather than printing it.
  */
-const ZPL_CONTENT_TYPE = 'text/plain;charset=utf-8';
+const ZPL_AGENT_CONTENT_TYPE = 'text/plain';
+
+/**
+ * The Blob's own type only labels the file the download fallback saves; the
+ * charset is honest there, and the agent never sees it. The BYTES are UTF-8
+ * either way — `new Blob([string])` always encodes a string part as UTF-8 —
+ * which is what `^CI28` expects for the accents.
+ */
+const ZPL_BLOB_TYPE = 'text/plain;charset=utf-8';
 
 export const genericLabelProvider: CheckoutEtiquetaProvider = {
   tipos: ['retiradaNaLoja', 'motoboy', 'fob', 'outros'],
@@ -50,11 +68,10 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
       const artifact =
         formato === 'zpl2'
           ? {
-              // A ZPL string, so the bytes are the label — no rasterisation, and
-              // the Blob carries UTF-8 so `^CI28` finds the accents it expects.
-              blob: new Blob([renderEtiquetaGenericaZpl(model)], { type: ZPL_CONTENT_TYPE }),
+              // A ZPL string, so the bytes are the label — no rasterisation.
+              blob: new Blob([renderEtiquetaGenericaZpl(model)], { type: ZPL_BLOB_TYPE }),
               fileName: `${base}.zpl2`,
-              contentType: ZPL_CONTENT_TYPE,
+              contentType: ZPL_AGENT_CONTENT_TYPE,
             }
           : {
               blob: await renderEtiquetaGenericaPdf(model),
@@ -89,6 +106,7 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
         });
       }
       return { status: 'printed' };
+      // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- post-save best-effort: the checkout is already committed; surfaced as a toast + error outcome
     } catch (err) {
       // The Firestore derefs and the jsPDF render throw plain
       // Errors; keep the post-save contract best-effort — surface a toast and

@@ -1,6 +1,8 @@
 # Reforma Tributária do Consumo (RTC) — IBS / CBS / IS
 
-Source of truth: **NT 2025.002 v1.40** (May/2026), `references/sources/nt/2025/`.
+Source of truth: **NT 2025.002 v1.51** (Jul/2026), `references/sources/nt/2025/`, with
+the XSD pack **PL_010f_v1.04** vendored (see “PL_010f” below). The v1.40 PDF
+stays beside it for provenance.
 Legal basis: **Lei Complementar 214/2025** + **EC 132/2023**, regulated by
 **Ajuste SINIEF 49/2025**. This NT supersedes RT NT 2024.002.
 
@@ -87,7 +89,7 @@ det/imposto/
         ├── cClassTribIS        UB03
         ├── vBCIS               UB05
         ├── pIS                 UB06
-        ├── pISEspec            UB07  alíquota por unidade
+        ├── adRemIS             UB07  alíquota por unidade (era `pISEspec` até o PL_010f)
         ├── uTrib / qTrib       UB09/10  unidade tributável
         └── vIS                 UB11
 ```
@@ -128,12 +130,14 @@ behavior dynamically.
 
 - **The vendored NT PDF does NOT contain these tables.**
   `references/sources/nt/2025/NT_2025.002_*.pdf` is the **layout + RV spec
-  only**; its own **page 82** lists Anexo I/II as *"Tabela a ser publicada"* and
+  only**; its own annex page (82 in v1.40, 95 in v1.51) lists Anexo I/II as *"Tabela a ser publicada"* and
   Anexo III (`cClassTrib`) / IV (`cCredPres`) as published **na aba Documentos →
   Diversos** do Portal Nacional NF-e (`www.nfe.fazenda.gov.br`). The actual
   6-digit codes, the CST table, and the alíquotas live in those **separate
-  spreadsheets** — and the agent sandbox can't reach `*.fazenda.gov.br`, so they
-  are **not re-readable in-repo**.
+  spreadsheets**. The agent sandbox can't reach `*.fazenda.gov.br`, but the
+  public SVRS mirror is reachable, and the NF-e rows of Anexo III + the CST table
+  + Anexo IV are **vendored in `@delfrance/schemas`** (#333) — see
+  `sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`.
 - The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 identify the
   specific legal hypothesis under LC 214/2025.
 - Dynamic indicators per cClassTrib row determine if each subgroup (`gDif`,
@@ -154,23 +158,30 @@ codes — there is **no Simples-specific cClassTrib**, and the IBS/CBS fields s�
 **facultativos para CRT=1 até 04/01/2027**. The live homologação test (#313)
 validates the full NF-e end-to-end.
 
-Other cClassTrib examples (special cases, from validation tables):
-- `410030` — Estorno de crédito por perda (tpNFDebito=07)
-- `800001` — Transferência de crédito do associado (cooperativa)
-- `800002` — Fusão/cisão/incorporação
-- `810001` — Crédito presumido IBS ZFM (tpNFCredito=02)
-- `811001` — Anulação Crédito por Saída Imune/Isenta (tpNFDebito=02)
-- `811002` — Débito de NF não processada na apuração (tpNFDebito=03)
-- `811003` — Desenquadramento Simples Nacional (tpNFDebito=08)
-- `620004` — Monofasia com pBio inferior ao obrigatório (finNFe=5)
-- `620005` — Monofasia com pBio superior ao obrigatório
+Other cClassTrib examples (special cases — descriptions from the vendored SVRS
+table, which corrected two swapped pairs this list used to carry):
+- `410030` — Estorno de crédito por perecimento, deteriorização, roubo, furto ou
+  extravio (tpNFDebito=07)
+- `800001` — Fusão, cisão ou incorporação (tpNFDebito=05 / tpNFCredito=05)
+- `800002` — Transferência de crédito do associado, inclusive as cooperativas
+  singulares (tpNFDebito=01)
+- `810001` — Crédito presumido sobre o valor apurado nos fornecimentos a partir
+  da ZFM (tpNFCredito=02)
+- `811001` — Anulação de crédito por saídas imunes/isentas (tpNFDebito=02)
+- `811002` — Débitos de notas fiscais não processadas na apuração (tpNFDebito=03)
+- `811003` — Desenquadramento do Simples Nacional (tpNFDebito=08)
+- `620004` — Monofásica sobre mistura de EAC com gasolina A em percentual
+  **superior** ao obrigatório
+- `620005` — Monofásica sobre mistura de EAC com gasolina A em percentual
+  **inferior** ao obrigatório
 
 ### In-repo validation + picker (#333)
 
 The codes are no longer pure free-text. `@delfrance/schemas`
-(`imposto/cclasstrib.ts`, a **pure, zero-dep** module next to the tribute
-schemas) vendors a **verified seed** of Anexo III + the CST IBS/CBS indicators,
-plus the validator. Two layers:
+(`imposto/cclasstrib.ts` + `cclasstrib.data.ts`, **pure, zero-dep** modules next
+to the tribute schemas) vendors the **NF-e rows of Anexo III** (97 of 164 on
+2026-09-28) and the **CST IBS/CBS table**, each with its `ind_g*` indicators,
+plus the validator; `imposto/ccredpres.ts` carries Anexo IV. Two layers:
 
 - **Emit-time (`configuracaoIBSCBSSchema` superRefine → `parseRtcConfig`)**
   enforces **only the structural rule**: `cClassTrib[0:3] === CST` (RV
@@ -178,16 +189,17 @@ plus the validator. Two layers:
   fails loud at emission. The same first-3 refine guards `cClassTribIS`/`CSTIS`.
 - **UI (the shared `components/imposto/RtcSection`, behind produto + operação +
   categoria)** swaps the two free-text inputs for searchable `Autocomplete`s
-  (CST + cClassTrib, filtered by the chosen CST) showing the seed descriptions.
-  **Free-entry is preserved** — any code not yet seeded can be typed;
+  (CST + cClassTrib, filtered by the chosen CST) showing the table descriptions.
+  **Free-entry is preserved** — a code the snapshot does not know can be typed;
   `validateCstClassTrib` shows a non-blocking warning (`cst-mismatch` vs
   `not-in-table`). Table *membership* is **never** an emit-time block.
 
-The seed currently covers the **CST-000 "tributação integral" family**
-(`000001`–`000005`); the long tail comes via the refresh routine in
-`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`. Deferred: `cClassTribIS`
-(Anexo II, *a ser publicada*) and `cCredPres` (Anexo IV, crédito-presumido
-subgroup out of scope).
+The CST labels are the **official** names (derived from the table). The
+indicators (`IND_CST_IBSCBS`, `IND_CCLASSTRIB`) say which groups a code requires
+— e.g. CST 800 → `gTransfCred`, 810 → `gCredPresIBSZFM`, 811 → `gAjusteCompet`,
+`410030` → `gEstornoCred`. Refresh routine:
+`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`. Still out: `cClassTribIS`
+(Anexo II, *a ser publicada*).
 
 ## Notas de Débito and Notas de Crédito (new finalities)
 
@@ -225,9 +237,86 @@ conforme a finalidade.
 5. Transferência de crédito na sucessão
 6. Retorno por recusa parcial na entrega
 
-Cada `tpNFDebito`/`tpNFCredito` tem um cClassTrib obrigatório (validado em
-UB14-70 e UB14-80). Em particular, **NF-e de Crédito tipo 2 (ZFM)** só pode
-ser emitida a partir de **janeiro/2029** (RV B25.2-30).
+**Oito** tipos amarram o cClassTrib de todo item (UB14-70/80): débito 01 →
+800002, 02 → 811001, 03 → 811002, 05 → 800001, 07 → 410030, 08 → 811003;
+crédito 02 → 810001, 05 → 800001. Os demais (débito 04/06, crédito 01/03/04/06)
+são "não limitar". A tabela inversa (UB14-60, cStat 1202) proíbe esses sete
+códigos em qualquer outra nota — inclusive numa venda comum. **NF-e de Crédito
+tipo 2 (ZFM)** só pode ser emitida a partir de **janeiro/2029** (RV B25.2-30).
+
+### Neste repo (#330)
+
+- **Operação**: `finNFe` 5/6 + `tpNFDebito`/`tpNFCredito` (`operacao.ts`); o
+  formulário valida B25-110/120, B25.1 e B25.2 com as MESMAS regras do pré-voo
+  (`violacoesDaOperacao`). `tpNFCredito` 06 (retorno por recusa parcial) entrou
+  com o PL_010f: modo `completo` (exceção da B25-80), referência por item
+  permitida (exceção da 1042) e exigida (1038), cClassTrib “não limitar”.
+- **Grupos do item** (`modoGruposImposto`, `imposto/notaCreditoDebito.ts`):
+  `somenteIbsCbs` — só `IS` + `IBSCBS`, nenhum ICMS/ISSQN/IPI/PIS/COFINS (B25-80,
+  cStat 1001) — para toda nota 5/6, **exceto** crédito 03/04 e débito 07
+  (`completo`, as exceções da própria RV). `buildImpostoXml` e
+  `aggregateTotals` recebem o MESMO modo (`modoGruposFor` no `apps/nfe`), então
+  det e total não divergem.
+- **Recusado antes do número** (`violacoesDoDocumento`): nota 5/6 sem a Reforma
+  Tributária ligada; item sem `configuracaoIBSCBS` (tipos de `gIBSCBS`
+  comum) ou sem os valores do ajuste (tipos de cClassTrib fixo); e os dois
+  tipos que o ERP **não emite** (`tipoAindaNaoEmitido`):
+  - **crédito 02** (ZFM): proibido antes de 2029 (1145) e exige
+    `prod/tpCredPresIBSZFM` (I05k), que não é modelado;
+  - **crédito 05** (sucessão): **contraditório na v1.40 e na v1.51** — o 800001 tem CST 800,
+    que EXIGE `gTransfCred` (1132), e a UB106-30 só aceita `gTransfCred` em
+    nota de DÉBITO (1133). Nenhum item satisfaz as duas. Reconferir na v1.50.
+
+  Emitíveis: **débito 01–08, crédito 01, 03 e 04** (débito 06 autorizado na
+  homologação SEFAZ-SP em 2026-09-28).
+- **Grupos de ajuste** (tipos de cClassTrib fixo, #330 parte 3): o **tipo** dá
+  CST + cClassTrib + grupo (`grupoDeAjusteDoTipo`, derivado dos indicadores do
+  Anexo III — nunca uma tabela digitada); o **item** dá os valores
+  (`itens[*].ajusteRtc = { vIBS, vCBS, competApur }`, editado na aba Fiscal).
+  O `configuracaoIBSCBS` do produto **não é lido** — a transferência ou o
+  estorno é da operação, não do produto. Nenhum desses CSTs admite `gIBSCBS`
+  (`ind_gIBSCBS = 0`), então o grupo de ajuste é o IBS/CBS inteiro do item:
+
+  | Tipo | cClassTrib | Grupo | Regras |
+  |---|---|---|---|
+  | débito 01 / 05 | 800002 / 800001 | `gTransfCred {vIBS, vCBS}` | 1129: IBS ou CBS > 0 |
+  | débito 02 / 03 / 08 | 811001 / 811002 / 811003 | `gAjusteCompet {competApur, vIBS, vCBS}` | 1171: IBS ou CBS > 0; `competApur` AAAA-MM, mês da emissão ou anterior (UB113) |
+  | débito 07 | 410030 | `gEstornoCred {vIBSEstCred, vCBSEstCred}` + modo `completo` | valores podem ser zero (exceção da UB116-30) |
+
+  **Totais**: `IBSCBSTot` vBC/vIBS/vCBS somam SÓ `gIBSCBS` (W35/W47/W56), então
+  uma nota só de ajustes leva `IBSCBSTot` zerado (e presente — W34-20); o
+  estorno vai para `IBSCBSTot/gEstornoCred` (W59e–g, 1176/1177).
+- **Simples Nacional**: 5/6 são **neutras** na receita bruta (sinal 0, contadas
+  em `notasNeutras`) — ajustam IBS/CBS, não o preço de uma venda.
+- ⚠️ B25-30/40/50/60 também valem para finNFe 2 (complementar); o módulo cobre
+  só a metade do crédito, de propósito.
+- ⚠️ I08 (327/328): crédito 03 só aceita CFOP de devolução — a tabela de CFOP
+  não é vendorizada, então essa regra fica com a SEFAZ.
+
+### Referência por item — `det/DFeReferenciado` (Grupo VC, #330)
+
+Último filho de `<det>`: `chaveAcesso` (TChNFe) + `nItem` opcional (1–990, o
+`det/@nItem` da nota original). Neste repo: `itens[*].dfeReferenciado` no
+pedido (editado na aba Fiscal), emitido por `det.ts`. As regras que a SEFAZ
+aplica moram em `@delfrance/schemas` (`imposto/regrasDoDocumento.ts`,
+`violacoesDoDocumento`) e servem a DOIS lados — o editor mostra como aviso, o
+pré-voo do `apps/nfe` recusa antes de consumir número:
+
+| cStat | Regra | O que recusa |
+|---|---|---|
+| 1010 | VC02-05 | `NFref` (por nota) E referência por item juntos |
+| 1042 | VC02-07 | referência por item em nota de crédito (exceto `tpNFCredito` 06) |
+| 1038 | VC02-10 | falta referência por item em `tpNFDebito` 03/04 ou `tpNFCredito` 06 |
+| 321 | VC02-14 | devolução sem referência **por item** — e **proíbe `refNFe`** na devolução (v1.51: produção **05/10/2026**; a lista de CFOPs de exceção da v1.40 **saiu**) → #1683 |
+| 1072 | VC02-20 | mesma chave + nItem em dois itens |
+| 1130 | VC02-30 | mais de uma chave referenciada (exceto `tpNFDebito` 03, `tpNFDebito` 07 — v1.51 — e devolução) |
+| 1193 | VC02-40 | devolução: emitentes diferentes entre os itens (aviso — NFA) |
+| 1194 | VC02-50 | devolução de saída: emitente referenciado ≠ destinatário (aviso — NFA) |
+| 1039 | VC03-10 | `nItem` informado em `tpNFDebito` 03 |
+| 1048 | VC03-20 | `nItem` ausente (exceto `tpNFDebito` 03) |
+
+Política deste repo: referência por item só com a Reforma Tributária ligada na
+filial (`emitirReformaTributaria`), como todo o resto da NT 2025.002.
 
 ## Grupo BB — Compras Governamentais
 
@@ -244,8 +333,15 @@ gCompraGov (0-1)            BB01
 │                                  3=fornecimento c/ pagamento já realizado
 │                                  4=recebimento do pagamento c/ fornecimento posterior
 └── refDFeAnt (0-99)        BB05   chave de acesso do DFe anterior (44 caracteres)
-                                   obrigatório para tpOperGov 2 e 4
+                                   (PL_010f) tpOperGov 1 e 4: proibida (1195 / BB05-50);
+                                   2: exatamente UMA (1196 / BB05-30); 3: obrigatória (BB05-40)
 ```
+
+**Neste repo (#331)**: só na biblioteca — `buildCompraGov` (`generator/compraGov.ts`)
+monta o grupo e recusa a cardinalidade acima e referências duplicadas (BB05-140).
+Nenhum pedido carrega `gCompraGov` ainda: o `pRedutor` aplicado às alíquotas de
+IBS/CBS de cada item (art. 472/370) e o modelo de dados são o follow-up "full
+gCompraGov".
 
 ## Grupo BC — Antecipação de Pagamento
 
@@ -260,19 +356,26 @@ gPagAntecipado (0-1)        BC01
 RV `11BC01-10`/`20`/`30`: validações que vinculam tpNFDebito=06 (Pagamento
 antecipado) a referenciamento via gPagAntecipado.
 
+**Neste repo (#331)**: `pedido.chNFePagamentoAntecipado` (editado na aba Fiscal),
+emitido como `ide/gPagAntecipado` só com a Reforma Tributária ligada — com ela
+desligada, chaves informadas **recusam** a nota antes do número (não somem em
+silêncio). O page model recusa chave que não seja NF-e 55 com DV correto,
+duplicada ou além de 99. A existência da nota e o tipo débito 06 (11BC01-20/30)
+ficam com a SEFAZ (banco de dados).
+
 ## Outras inclusões no Grupo B (Identificação)
 
 | Campo | ID | Descrição |
 |---|---|---|
-| `dPrevEntrega` | B10a | Data prevista de entrega/disponibilização. Obrigatório calcular para frete CIF (modFrete=0, 1) e finNFe=1 ou 4. Limites: até 3 meses após `dhSaiEnt`; nunca anterior. Atualizável via Evento 112150. |
-| `cMunFGIBS` | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados. |
-| `cIndOp` | B25d | Código indicador do local da operação. Obrigatório quando: `010104` = leilão judicial / licitação pública; `010105` = constatação de irregularidade por fiscalização. |
+| `dPrevEntrega` | B10a | Data prevista de entrega/disponibilização, **opcional**. Só com finNFe 1 ou 4 (B10a-40); **proibida** com modFrete 1 (FOB), 4 (próprio do destinatário) e 9 (sem transporte) (B10a-50); nunca antes de `dhSaiEnt` (ou `dhEmi`), no máximo 3 meses depois, só a data (B10a-20/30). Atualizável via Evento 112150. **Neste repo (#331)**: derivada de `freteInicial.dataPrevisaoEntrega` (data no fuso do emitente) e **omitida** — nunca recusada — fora das janelas (`dPrevEntregaParaEmissao`). |
+| `cMunFGIBS` | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados. **Não modelado**: toda nota deste ERP tem endereço do destinatário. |
+| `cIndOp` | B25d | Código indicador do local da operação de fornecimento, **opcional** (proibido na NFC-e, B25d-10; conforme a tabela "Código Indicador de Local da Operação", B25d-20). Os códigos `010104` (leilão judicial / licitação pública) e `010105` (constatação de irregularidade) **exigem** o grupo `<retirada>` (B25d-30, 1110). **Não modelado**: o ERP não emite `<retirada>`. |
 
 ## Outras inclusões no Grupo C (Emitente)
 
 | Campo | ID | Descrição |
 |---|---|---|
-| `ISUFEmit` | C22 | Inscrição SUFRAMA do emitente. Obrigatório quando operação se beneficia de alíquota zero CBS em ZFM/ALC (arts. 451 e 466 LC 214/25). 8-9 dígitos. Verificador DV validado em C22-20. |
+| `ISUFEmit` | C22 | Inscrição SUFRAMA do emitente. Obrigatório quando operação se beneficia de alíquota zero CBS em ZFM/ALC (arts. 451 e 466 LC 214/25). 8-9 dígitos. Município do emitente só da ZFM/ALC (C22-10, 1185 — 12 municípios listados na NT); DV validado em C22-20 (1186). **Neste repo (#331)**: `filial.isuf`, emitido só com a Reforma Tributária ligada; a C22-10 é recusada antes do número (`MUNICIPIOS_SUFRAMA_EMITENTE`); a C22-20 fica com a SEFAZ — a NT não publica o algoritmo do DV. |
 
 ## Eventos novos da RTC (todos para NF-e modelo 55)
 
@@ -313,11 +416,25 @@ NT 2025.002 §5.1 alterou o schema:
   impostos. Códigos legados continuam com 3 dígitos.
 - **`nProt` aumentado para 15 ou 17 dígitos** (NFC-e em algumas UFs
   estava perto do esgotamento da numeração).
-- Schemas afetados: `retEnviNFe_v2.00.xsd`, `retConsReciNFe_v4.00.xsd`,
-  `retInutNFe_v4.00.xsd`, `retEnvEvento_v1.00.xsd`.
+- O alargamento mora nos tipos `TStat` (`[0-9]{3,4}`) e `TProt`
+  (`[0-9]{15}|[0-9]{17}`) de `tiposBasico_v4.00.xsd` e, para a família de
+  eventos, de `tiposBasico_v1.03.xsd` — ambos já vendorizados (PL_010c/PL_010d).
+  Todo root de resposta que os usa herda: `retEnviNFe_v4.00`,
+  `retConsReciNFe_v4.00`, `retConsSitNFe_v4.00`, `retInutNFe_v4.00`,
+  `retEnvEvento_v1.00`, `retConsStatServ_v4.00` (e o `detEvento` de
+  cancelamento, que carrega o `nProt` armazenado).
+- Duas exceções que **não** alargaram: `retEvento/infEvento/@Id` continua
+  `ID[0-9]{15}` (schema da SEFAZ — se ela devolver 17 dígitos ali, nosso gate
+  de entrada recusa a resposta de um evento já registrado; um reenvio de
+  cancelamento recupera via 573), e o pacote de Consulta Cadastro 2.00
+  (`generated/conscad`) mantém `TStat` com 3 dígitos.
 
-**Implicação para o código**: parsers de cStat precisam aceitar 3 **ou** 4
-dígitos. Validar com regex `^[0-9]{3,4}$`, não `^[0-9]{3}$`.
+**Implicação para o código**: um cStat vindo da SEFAZ já passou pelo gate XSD.
+Para um valor que não passou (armazenado, montado à mão) use `isCStat`
+(`packages/integrations/nfe/src/state/index.ts`) — nunca um regex local. O
+`classifyCStat` compara strings exatas, então todo código de 4 dígitos da RTC
+cai em `rejeitada` → `done-rejected`, que é o tratamento certo. Pins:
+`test/xsd/larguras-cstat-nprot.test.ts` e `test/danfe/nprot-17.test.ts`.
 
 ## Principais novas RVs (rejeições)
 
@@ -331,10 +448,16 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `B10a-20` | 1154 | dPrevEntrega > 3 meses após dhSaiEnt |
 | `B10a-30` | 1155 | dPrevEntrega anterior a dhSaiEnt |
 | `B10a-40` | 1156 | dPrevEntrega informado para finNFe ≠ 1 (normal) ou 4 (devolução) |
-| `B25-30` a `B25-50` | 254/255/269 | NF-e referenciada ausente/duplicada/CNPJ divergente para finNFe=2/5/6 |
-| `B25-80` | 1001 | Crédito/Débito com ICMS/ISSQN/PIS/COFINS informado (deveria só ter IBS/CBS) |
-| `B25-100` | 1003 | NF-e de Crédito referenciando modelo ≠ 55 |
+| `B25-30` / `B25-40` | 254 / 255 | NF referenciada ausente / mais de uma — finNFe=2 e crédito 01/03/04 |
+| `B25-50` / `B25-60` | 269 / 678 | NF referenciada de outro CNPJ / outra UF — finNFe=2 e crédito 03/04 |
+| `B25-65` | 1027 | crédito 02 (ZFM) com NF referenciada |
+| `B25-80` | 1001 | Crédito/Débito com ICMS/ISSQN/IPI/II/PIS/COFINS(-ST)/ICMSUFDest/impostoDevol (exceto crédito 03/04/06 e débito 07) |
+| `B25-100` | 1003 | NF-e de Crédito referenciando modelo ≠ 55 (crédito 03 aceita 65) |
+| `B25-110` / `B25-120` | 1161 / 1162 | crédito que não é entrada / débito que não é saída |
+| `B25.1-10` / `B25.1-20` | 1139 / 1009 | `tpNFDebito` sem finNFe=6 / finNFe=6 sem `tpNFDebito` |
+| `B25.2-10` / `B25.2-20` | 1163 / 1164 | `tpNFCredito` sem finNFe=5 / finNFe=5 sem `tpNFCredito` |
 | `B25.2-30` | 1145 | NF-e de Crédito tipo 2 (ZFM) com ano emissão < 2029 |
+| `B25.2-40` | 1152 | crédito 03 (retorno) que não é entrada |
 
 ### IBS/CBS — Item
 
@@ -346,7 +469,8 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `UB13-30` | 1022 | gIBSCBS ausente quando CST exige |
 | `UB14-10` | 1023 | cClassTrib inexistente |
 | `UB14-20` | 1024 | cClassTrib incompatível com CST |
-| `UB14-60` | 1202 | cClassTrib incompatível com tpNFDebito/Credito |
+| `UB14-60` | 1202 | cClassTrib vinculado a um tipo de nota (410030, 800001/2, 810001, 811001/2/3) em outra nota |
+| `UB14-70` / `UB14-80` | 1200 / 1201 | cClassTrib diferente do exigido pelo `tpNFDebito` / `tpNFCredito` |
 | `UB16-10` | 1104 | Base de cálculo IBS/CBS difere do somatório |
 | `UB18-10` | 1026 | pIBSUF inválida para o ano (0,1% em 2025-2026, 0,05% em 2027-2028) |
 | `UB35-10` | 1041 | vIBSUF difere do calculado |
@@ -390,17 +514,52 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 | `nfe_v4.00.xsd` | Layout da NF-e atualizado |
 | `envEventoNFe_v9.99.xsd` | Wrapper genérico de envio de eventos |
 | `e112110_v1.00.xsd` … `e412130_v1.00.xsd` | Schemas específicos por evento (um por código de evento listado acima) |
-| `retEnviNFe_v2.00.xsd` | Retorno enviNFe com cStat de 4 dígitos e nProt de 15/17 |
 
 Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 `codegen.md`), incluir esses schemas — eles ainda não estão sob
 `packages/integrations/nfe/generated/`.
 
+## PL_010f_v1.04 (NT 2025.002 v1.50/v1.51) — o que o pacote mudou
+
+Vendorizado sobre o PL_010d: só `leiauteNFe_v4.00.xsd` e
+`DFeTiposBasicos_v1.00.xsd` mudaram de conteúdo (os outros três arquivos do zip
+diferem só no `
+` final). Pinado por `test/xsd/pl010f.test.ts`, que também
+falha contra o pacote anterior (verificado):
+
+- **`tpNFCredito` 06** — retorno por recusa parcial na entrega.
+- **`ide/cIndOp`** (6 dígitos, entre `indIntermed` e `procEmi`) — não modelado
+  (os códigos que o usam exigem `<retirada>`) — e **`emit/ISUFEmit`** (8–9
+  dígitos, depois de `CRT`) — emitido desde o #331, a partir de `filial.isuf`.
+- **`emit/IE` virou opcional.** O DANFE imprime o campo vazio quando falta.
+- **`vNFTot`** passou de `TDec_1302Opc` a `TDec_1302`: aceita `0.00`.
+- **`IS/pISEspec` → `IS/adRemIS`.** ⚠️ O XSD nunca foi uma escolha entre os
+  modos: com o grupo de valores aberto, `vBCIS` e `pIS` são SEMPRE
+  obrigatórios, depois `adRemIS` opcional e o par `uTrib`+`qTrib`. O caminho
+  “por unidade” do `buildIS` emitia `pISEspec` sozinho — inválido em todo
+  pacote; agora leva a base, `pIS` 0 e `adRemIS`. (A UB13-40 soma
+  `qTrib × adRemIS / 100` ao valor — “implementação futura”, e o `/100` para
+  uma alíquota POR UNIDADE parece erro do texto; mantivemos `qTrib × adRemIS`.)
+- **`gIBSCBS` passou a ser `TCIBS_NFe`** — idêntico ao `TCIBS` anterior mais
+  o `gCBS/gALCZFMCBS` opcional: nosso XML não muda.
+- **Monofásica reestruturada** (`gIBSMonoAdRem`/`gIBSMonoAdValorem`,
+  `gCBSMonoAdRem`/`gCBSMonoAdValorem`) — não emitimos monofásica.
+- **`protNFe/infProt`**: o par `cMsg`+`xMsg` pode repetir até 5 vezes e `xMsg`
+  vai a 255. O codegen não propaga `maxOccurs` de uma `xs:sequence` aos filhos
+  (vide `codegen.md`), então o `parse` fica com a PRIMEIRA mensagem; nada lê
+  esses campos hoje.
+- **Regras da v1.51 que tocam o que emitimos**: B25-80 ganhou exceções para o
+  débito 06 (PIS/COFINS em 2026 e IPI **permitidos**, não exigidos — o débito
+  06 continua só IBS/CBS); VC02-30 isenta o débito 07; VC02-14 (devolução)
+  passou a exigir referência **por item**, sem a lista de CFOPs de exceção, e
+  vai à produção em **05/10/2026** (#1683). Crédito 02 e 05 seguem recusados
+  pelos mesmos motivos da v1.40.
+
 ## Anexos do NT 2025.002
 
-Per the NT's own **page 82**, **none of these annex tables are embedded in the
-PDF** (verified — the vendored `NT_2025.002_v1.40_*.pdf` carries the layout, RVs
-and events, but no code lists):
+Per the NT's own annex page (**82** in v1.40, **95** in v1.51), **none of these
+annex tables are embedded in the PDF** (verified in both vendored PDFs — they
+carry the layout, RVs and events, but no code lists):
 
 - **Anexo I** — NCM do Imposto Seletivo (NCMs sujeitos a IS). *"Tabela a ser publicada."*
 - **Anexo II** — Tabela `cClassTribIS` (classificação do IS). *"Tabela a ser publicada."*
@@ -447,25 +606,23 @@ default** (PR #313). What exists:
 - **Registration UI**: the RTC editor is the shared `components/imposto/RtcSection`
   (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas + optional IS), rendered behind the
   produto, operação and categoria screens via `ImpostoConfigEditor` (#352). CST +
-  cClassTrib are searchable `Autocomplete`s driven by the vendored seed (#333),
+  cClassTrib are searchable `Autocomplete`s driven by the vendored table (#333),
   with free-entry + a non-blocking compatibility warning.
-- **Codes are validated, not pure free-text (#333)** — a **verified seed** of
-  Anexo III + CST IBS/CBS lives in `@delfrance/schemas` (`imposto/cclasstrib.ts`);
-  the emit-time schema enforces the structural `cClassTrib[0:3] === CST` rule, and
-  the UI warns on unknown/mismatched codes while still allowing free-entry of
-  unseeded codes. The full table + `cClassTribIS` (Anexo II) / `cCredPres`
-  (Anexo IV) remain deferred. See "CST + cClassTrib model" → "In-repo validation
-  + picker (#333)".
+- **Codes are validated, not pure free-text (#333)** — the NF-e rows of Anexo III,
+  the CST IBS/CBS table (with indicators) and Anexo IV live in `@delfrance/schemas`
+  (`imposto/cclasstrib*.ts`, `imposto/ccredpres.ts`); the emit-time schema
+  enforces the structural `cClassTrib[0:3] === CST` rule, and the UI warns on
+  unknown/mismatched codes while still allowing free-entry. `cClassTribIS`
+  (Anexo II) is still unpublished. See "CST + cClassTrib model" → "In-repo
+  validation + picker (#333)".
 - **Live homologação proof**: `test/operations/rtc.homologacao.test.ts` (serie
   4) emits a CRT=1 NF-e with the RTC groups against SEFAZ-SP homologação and
   asserts `cStat=100` — advisory in `ci-nfe.yml`'s `nfe-live` job, fatal on
-  `workflow_dispatch`. The fixture codes are best-guess; refine
-  `impostoCsosn102ComRtc` from the logged `cStat`+`xMotivo` on a first-run
-  rejection.
+  `workflow_dispatch`. Its cClassTrib `000001` is a row of the vendored table;
+  only the alíquotas are test values.
 
-**Deferred (tracked follow-ups):** the categoria RTC view; 4-digit `cStat` /
-15-17-digit `nProt` response parsing; `finNFe` 5/6 (nota de crédito/débito);
+**Deferred (tracked follow-ups):** the categoria RTC view; `finNFe` 5/6 (nota de crédito/débito);
 Grupo BB/BC + the Grupo B additions; the new RTC events (112110…412130);
-importing the Anexo III/IV code tables; and RTC activation for CRT=3 (Phase D,
+and RTC activation for CRT=3 (Phase D,
 #312). **Simples Nacional RTC stays off in produção** until SEFAZ publishes the
 Simples rules (mandatory only 2027-01-04).

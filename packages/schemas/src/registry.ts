@@ -24,6 +24,7 @@ import {
   historicoFtIni,
   historicoModificacaoPedido,
   orderML,
+  linkPgtoMercadoPago,
 } from './pedido';
 import { counter } from './counter';
 import { configIa } from './configIa';
@@ -82,6 +83,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   historicoFtIni,
   historicoModificacaoPedido,
   orderML,
+  linkPgtoMercadoPago,
   counter,
   configIa,
   conversa,

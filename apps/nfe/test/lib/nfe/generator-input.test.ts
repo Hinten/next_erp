@@ -5,23 +5,41 @@ import {
   CRT,
   CSOSN,
   CST_PIS_COFINS,
+  IND_INCENTIVO,
+  IND_ISS,
   MODALIDADE_FRETE,
+  MODO_GRUPOS_IMPOSTO,
   ORIGEM,
   FORMA_PAGAMENTO,
+  GRUPO_AJUSTE_RTC,
   INTEGRACAO_TIPO,
+  UF_SIGLA,
   freteDoPedidoSchema,
   pagamentoSchema,
+  type Endereco,
   type FreteDoPedido,
   type IntegracaoTipo,
 } from '@delfrance/schemas';
 
+import { generateNFe } from '@delfrance/integrations-nfe';
+
 import {
+  ajusteDoItem,
   apportionDescontos,
-  assertItemsBuildable,
+  assertNotaBuildable,
   buildGeneratorInput,
   buildGenItems,
+  isInterstateFor,
+  modoGruposFor,
+  rtcDaNota,
 } from '../../../lib/nfe/orchestrator/generator-input';
-import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
+import {
+  lerAjusteRtc,
+  lerDfeReferenciado,
+  type EntregaDoPedido,
+  type FiscalItem,
+  type PedidoBundle,
+} from '../../../lib/nfe/orchestrator/bundle';
 import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 /**
@@ -36,21 +54,57 @@ import { NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
 /**
  * Minimal bundle carrying only the fields buildGenItems/apportionDescontos read,
- * plus the two UFs `isInterstateFor` compares (assertItemsBuildable derives
- * interstate itself). Both default to 'SP' — an intra-state sale.
+ * plus the UFs `isInterstateFor` compares (assertNotaBuildable derives
+ * interstate itself). Both default to 'SP' — an intra-state sale — and the
+ * goods go to the fiscal address unless `entrega` says otherwise (#422).
  */
 function bundleWith(
   operacao: Record<string, unknown>,
   pedido: Record<string, unknown> = {},
   ufs: { readonly dest?: string; readonly sede?: string } = {},
+  entrega: EntregaDoPedido = { tipo: 'enderecoFiscal' },
 ): PedidoBundle {
   return {
     pedidoId: 'PED-TEST',
     operacao,
     pedido,
+    cliente: CLIENTE_PF,
     enderecoDest: { estado: ufs.dest ?? 'SP' },
+    entrega,
     filial: { sede: { estado: ufs.sede ?? 'SP' } },
   } as unknown as PedidoBundle;
+}
+
+/** A pessoa-física cliente with a valid CPF — the `<entrega>` fallback identity. */
+const CLIENTE_PF = { tipo: '0', cpf_cnpj: '52998224725', nome: 'Cliente Teste' };
+
+/** A resolvable delivery address in `uf`, cMun/CEP consistent with it. */
+function enderecoEntrega(uf: 'RJ' | 'SP' | 'MG'): Endereco {
+  const porUf = {
+    RJ: { cidade: 'Rio de Janeiro', codigoMunicipio: '3304557', cep: '20010000' },
+    SP: { cidade: 'Sao Paulo', codigoMunicipio: '3550308', cep: '01310100' },
+    MG: { cidade: 'Belo Horizonte', codigoMunicipio: '3106200', cep: '30130010' },
+  }[uf];
+  return {
+    logradouro: 'Rua da Entrega',
+    numero: '10',
+    bairro: 'Centro',
+    complemento: null,
+    estado: uf,
+    cPais: null,
+    pais: null,
+    nome: null,
+    cpf_cnpj: null,
+    ...porUf,
+  } as unknown as Endereco;
+}
+
+function outroEndereco(uf: 'RJ' | 'SP' | 'MG'): EntregaDoPedido {
+  return {
+    tipo: 'outroEndereco',
+    path: `clientes/C-1/enderecos/E-${uf}`,
+    endereco: enderecoEntrega(uf),
+  };
 }
 
 /** Minimal FiscalItem — `vProd` is net-of-unit-discount, `vProdBruto` is gross. */
@@ -196,6 +250,7 @@ function fullBundle(opts: {
     filial: { sede: { estado: 'SP' } },
     cliente: {},
     enderecoDest: { estado: 'SP' },
+    entrega: { tipo: 'enderecoFiscal' },
     integracao: null,
     integracaoTipo: opts.integracaoTipo,
     frete: opts.frete ?? null,
@@ -809,22 +864,40 @@ function orchestratorMessage(fn: () => unknown): string {
   return expect.fail('expected an NFeOrchestratorError, nothing was thrown');
 }
 
-describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', () => {
+/**
+ * The item() default imposto (CSOSN 102) with a complete, schema-valid ISSQN
+ * config. The engine CAN build its `<ISSQN>` group; the orchestrator refuses it
+ * because it emits no `<ISSQNtot>` (#1656).
+ */
+const IMPOSTO_ISSQN = {
+  origem: ORIGEM.nacional,
+  unidade: 'UN',
+  NCM: '61091000',
+  cfop: '5102',
+  configuracaoICMS: { crt: CRT.simplesNacional, csosn: CSOSN.tributadaSemCredito },
+  configuracaoISSQN: {
+    vBC: 500,
+    vAliq: 5,
+    vISSQN: 25,
+    cMunFG: '3550308',
+    cListServ: '01.05',
+    indISS: IND_ISS.exigivel,
+    indIncentivo: IND_INCENTIVO.nao,
+  },
+} as const;
+
+describe('assertNotaBuildable — pre-allocation tribute pre-flight (#506)', () => {
   it('passes for a buildable item and leaves the generation projection unchanged', () => {
     const items = [item({ precoDeVenda: 100, quantidade: 2, descontoUnitario: 10 })];
     const bundle = bundleWith(OP);
     const before = buildGenItems(items, bundle, false);
-    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+    expect(assertNotaBuildable(bundle, items, false)).toBeUndefined();
     expect(buildGenItems(items, bundle, false)).toEqual(before);
   });
 
   it('wraps a partial CSOSN 900 group as NFeOrchestratorError prefixed with pedido/item/produto', () => {
     const msg = orchestratorMessage(() =>
-      assertItemsBuildable(
-        bundleWith(OP),
-        [item({ imposto: IMPOSTO_900_PARCIAL as never })],
-        false,
-      ),
+      assertNotaBuildable(bundleWith(OP), [item({ imposto: IMPOSTO_900_PARCIAL as never })], false),
     );
     expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
     expect(msg).toContain("CSOSN '900'");
@@ -839,7 +912,7 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
       item({ precoDeVenda: 10, quantidade: 1, imposto: IMPOSTO_900_PARCIAL as never }),
     ];
     const bundle = bundleWith(OP, { descontoTotal: 999 });
-    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
     expect(msg).toMatch(/desconto .* exceeds the gross item value/);
     expect(msg).not.toContain('CSOSN');
     expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
@@ -850,9 +923,9 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
     // so an interstate sale has no CFOP to project — an intra-state one does.
     const opSemInterestadual = { cfop: '5102', NCM: '61091000', unidade: 'UN' };
     const items = [item({})];
-    expect(assertItemsBuildable(bundleWith(opSemInterestadual), items, false)).toBeUndefined();
+    expect(assertNotaBuildable(bundleWith(opSemInterestadual), items, false)).toBeUndefined();
     const msg = orchestratorMessage(() =>
-      assertItemsBuildable(bundleWith(opSemInterestadual, {}, { dest: 'RJ' }), items, false),
+      assertNotaBuildable(bundleWith(opSemInterestadual, {}, { dest: 'RJ' }), items, false),
     );
     expect(msg).toBe(
       `${ITEM_PREFIX} no cfopInterestadual — neither imposto.cfopInterestadual nor operacao.cfopInterestadual is set`,
@@ -876,12 +949,12 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
       }),
     ];
     const bundle = bundleWith(OP);
-    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, true));
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, true));
     expect(msg.startsWith(`${ITEM_PREFIX} Invalid configuracaoIBSCBS`)).toBe(true);
     expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false, true)));
     // Near-miss: the same item with RTC off never reads the draft, so it passes —
     // the pre-flight honours the filial's emitRtc like generation does.
-    expect(assertItemsBuildable(bundle, items, false)).toBeUndefined();
+    expect(assertNotaBuildable(bundle, items, false)).toBeUndefined();
   });
 
   it('converts ONLY the engine tribute errors — any other throw from the engine propagates untouched (rule 6)', () => {
@@ -905,7 +978,7 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
     const items = [item({ imposto: imposto as never })];
     const bundle = bundleWith(OP);
     for (const run of [
-      () => assertItemsBuildable(bundle, items, false),
+      () => assertNotaBuildable(bundle, items, false),
       () => buildGenItems(items, bundle, false),
     ]) {
       expect(run).toThrow(RangeError);
@@ -933,14 +1006,14 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
     const overflowing = [item({ precoDeVenda: Number.MAX_VALUE, imposto: imposto as never })];
     const bundle = bundleWith(OP);
     const expected = `${ITEM_PREFIX} vPIS must be finite, got Infinity`;
-    expect(orchestratorMessage(() => assertItemsBuildable(bundle, overflowing, false))).toBe(
+    expect(orchestratorMessage(() => assertNotaBuildable(bundle, overflowing, false))).toBe(
       expected,
     );
     expect(orchestratorMessage(() => buildGenItems(overflowing, bundle, false))).toBe(expected);
     // Near-miss: the same imposto on an ordinary price builds, so the overflow,
     // not the config, is what trips the format check.
     const ordinary = [item({ precoDeVenda: 100, imposto: imposto as never })];
-    expect(assertItemsBuildable(bundle, ordinary, false)).toBeUndefined();
+    expect(assertNotaBuildable(bundle, ordinary, false)).toBeUndefined();
   });
 
   it('buildGenItems at generation time surfaces the same NFeOrchestratorError', () => {
@@ -950,7 +1023,362 @@ describe('assertItemsBuildable — pre-allocation tribute pre-flight (#506)', ()
     expect(msg.startsWith(ITEM_PREFIX)).toBe(true);
     expect(msg).toContain("CSOSN '900'");
     expect(msg).toContain('ICMS próprio missing: modBC');
-    expect(msg).toBe(orchestratorMessage(() => assertItemsBuildable(bundle, items, false)));
+    expect(msg).toBe(orchestratorMessage(() => assertNotaBuildable(bundle, items, false)));
+  });
+
+  it('refuses an ISSQN imposto as NFeOrchestratorError naming pedido/item/produto (#1656)', () => {
+    // The engine would emit <ISSQN> for this item, but the ERP emits no
+    // <ISSQNtot>, counts the service in ICMSTot.vProd and carries the config's
+    // fixed R$ vBC/vISSQN on every sale — so it is refused before a número.
+    const items = [item({ imposto: IMPOSTO_ISSQN as never })];
+    const bundle = bundleWith(OP);
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
+    expect(msg.startsWith(`${ITEM_PREFIX} ISSQN`)).toBe(true);
+    expect(msg).toMatch(/ISSQN \(configuracaoISSQN\) is not supported for emission/);
+    // One projection: generation says exactly what the pre-flight says, and the
+    // filial's RTC switch does not change the verdict.
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+    expect(msg).toBe(orchestratorMessage(() => assertNotaBuildable(bundle, items, true)));
+  });
+
+  it('lets the same imposto through once its ISSQN config is null (#1656 near-miss)', () => {
+    // `!= null`, not truthiness of a flag: a cleared switch stores null, and the
+    // item then builds its <ICMS> as before.
+    const items = [item({ imposto: { ...IMPOSTO_ISSQN, configuracaoISSQN: null } as never })];
+    expect(assertNotaBuildable(bundleWith(OP), items, false)).toBeUndefined();
+  });
+
+  it('keeps generation precedence — a desconto error wins over an ISSQN imposto (#1656)', () => {
+    // The refusal sits where the imposto is built, after the vDesc check, so the
+    // operator is told about the defect generation meets first.
+    const items = [item({ precoDeVenda: 10, quantidade: 1, imposto: IMPOSTO_ISSQN as never })];
+    const bundle = bundleWith(OP, { descontoTotal: 999 });
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
+    expect(msg).toMatch(/desconto .* exceeds the gross item value/);
+    expect(msg).not.toContain('ISSQN');
+    expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #422 — the DELIVERY address decides interstate (CFOP + idDest), and a
+// delivery address the nota cannot carry is refused before a número exists.
+// ---------------------------------------------------------------------------
+
+describe('isInterstateFor — delivery UF over fiscal UF (#422)', () => {
+  // [label, fiscal UF, entrega, expected] — the emitente is SP throughout.
+  const CASES: Array<[string, string, EntregaDoPedido, boolean]> = [
+    ['fiscal SP, goods to the fiscal address', 'SP', { tipo: 'enderecoFiscal' }, false],
+    ['fiscal RJ, goods to the fiscal address', 'RJ', { tipo: 'enderecoFiscal' }, true],
+    ['fiscal SP, delivered in RJ', 'SP', outroEndereco('RJ'), true],
+    ['fiscal RJ, delivered in SP', 'RJ', outroEndereco('SP'), false],
+    ['fiscal MG, delivered in RJ', 'MG', outroEndereco('RJ'), true],
+  ];
+  it.each(CASES)('%s → interstate %s', (_label, dest, entrega, expected) => {
+    expect(isInterstateFor(bundleWith(OP, {}, { dest }, entrega))).toBe(expected);
+  });
+
+  it('an export ignores the delivery UF: a forwarder in the emitente UF still picks cfopInterestadual', () => {
+    // idDest=3 is decided by ehExterior alone, so the delivery UF must not pick
+    // the CFOP either — SP here would have meant `cfop` beside idDest=3.
+    const exportacao = { ...OP, ehExterior: true };
+    expect(isInterstateFor(bundleWith(exportacao, {}, { dest: 'EX' }, outroEndereco('SP')))).toBe(
+      true,
+    );
+    // Near-miss: the same bundle as a domestic sale does follow the delivery UF.
+    expect(isInterstateFor(bundleWith(OP, {}, { dest: 'EX' }, outroEndereco('SP')))).toBe(false);
+  });
+});
+
+describe('assertNotaBuildable — the delivery address (#422)', () => {
+  const opSemInterestadual = { cfop: '5102', NCM: '61091000', unidade: 'UN' };
+  const items = [item({})];
+
+  it('a delivery-driven interstate sale needs a cfopInterestadual — refused like any other', () => {
+    // Fiscal SP (intra-state on its own) but delivered in RJ: before #422 this
+    // emitted 5102 + idDest=1 for goods leaving the state.
+    expect(assertNotaBuildable(bundleWith(opSemInterestadual), items, false)).toBeUndefined();
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(opSemInterestadual, {}, {}, outroEndereco('RJ')),
+        items,
+        false,
+      ),
+    );
+    expect(msg).toBe(
+      `${ITEM_PREFIX} no cfopInterestadual — neither imposto.cfopInterestadual nor operacao.cfopInterestadual is set`,
+    );
+  });
+
+  it('refuses an unresolvable delivery address, naming why — no fallback to the fiscal UF', () => {
+    const irresolvivel: EntregaDoPedido = {
+      tipo: 'irresolvivel',
+      motivo:
+        "pedido 'PED-TEST'.freteInicial.enderecoFreteOuterReference: endereco 'x/y' not found",
+    };
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(bundleWith(OP, {}, {}, irresolvivel), items, false),
+    );
+    expect(msg).toBe(`pedido 'PED-TEST': ${irresolvivel.motivo}`);
+  });
+
+  it('the delivery address is judged BEFORE the items (generation precedence)', () => {
+    // Both defects at once: an unresolvable delivery AND an interstate item
+    // with no cfopInterestadual. Which CFOP applies depends on the delivery UF,
+    // so the delivery address must be reported first.
+    const irresolvivel: EntregaDoPedido = { tipo: 'irresolvivel', motivo: 'motivo X' };
+    const bundle = bundleWith(opSemInterestadual, {}, { dest: 'RJ' }, irresolvivel);
+    expect(orchestratorMessage(() => assertNotaBuildable(bundle, items, false))).toBe(
+      "pedido 'PED-TEST': motivo X",
+    );
+  });
+
+  it('refuses a delivery address the <entrega> group cannot carry, as NFeOrchestratorError', () => {
+    // cMun from São Paulo on an RJ address (rule 279). Left to generation this
+    // would be an NFePartiesError — a class the batch path does not carry, so it
+    // would consume the número (#506).
+    const entrega: EntregaDoPedido = {
+      tipo: 'outroEndereco',
+      path: 'clientes/C-1/enderecos/E-RJ',
+      endereco: { ...enderecoEntrega('RJ'), codigoMunicipio: '3550308' },
+    };
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(bundleWith(OP, {}, {}, entrega), items, false),
+    );
+    expect(msg).toMatch(/^pedido 'PED-TEST': delivery address — /);
+    expect(msg).toContain("is not a município of UF 'RJ'");
+  });
+
+  describe('an export (ehExterior) has no delivery address', () => {
+    const exportacao = { ...OP, ehExterior: true };
+    /** A foreign buyer: no CPF/CNPJ, so no `<entrega>` recebedor exists. */
+    const estrangeiro = { tipo: '2', cpf_cnpj: null, idEstrangeiro: 'P123456', nome: 'Buyer' };
+    const entregaExterior: EntregaDoPedido = {
+      tipo: 'outroEndereco',
+      path: 'clientes/C-1/enderecos/E-EX',
+      endereco: {
+        ...enderecoEntrega('SP'),
+        estado: 'EX',
+        codigoMunicipio: '9999999',
+        cep: null,
+      } as unknown as Endereco,
+    };
+    const exportBundle = (entrega: EntregaDoPedido) =>
+      ({
+        ...bundleWith(exportacao, {}, { dest: 'EX' }, entrega),
+        cliente: estrangeiro,
+      }) as PedidoBundle;
+
+    it('a separate foreign delivery address is not refused', () => {
+      expect(assertNotaBuildable(exportBundle(entregaExterior), items, false)).toBeUndefined();
+      // Near-miss: the same address on a domestic sale reaches buildEntrega and
+      // is refused — the export is exempt, not the address valid.
+      const domestico = { ...exportBundle(entregaExterior), operacao: OP } as PedidoBundle;
+      expect(orchestratorMessage(() => assertNotaBuildable(domestico, items, false))).toMatch(
+        /^pedido 'PED-TEST': delivery address — /,
+      );
+    });
+
+    it('an unreadable delivery ref refuses nothing — the export never reads it', () => {
+      const irresolvivel: EntregaDoPedido = { tipo: 'irresolvivel', motivo: 'motivo X' };
+      expect(assertNotaBuildable(exportBundle(irresolvivel), items, false)).toBeUndefined();
+    });
+  });
+});
+
+describe('buildGeneratorInput — enderecoEntrega (#422)', () => {
+  const entregaBundle = (entrega: EntregaDoPedido) =>
+    ({ ...fullBundle({}), cliente: CLIENTE_PF, entrega }) as PedidoBundle;
+
+  it('hands the generator the delivery address and projects the interstate CFOP', () => {
+    const input = build(entregaBundle(outroEndereco('RJ')));
+    expect(input.enderecoEntrega).toEqual(enderecoEntrega('RJ'));
+    expect(input.itens[0]!.CFOP).toBe('6102');
+  });
+
+  it('sets no enderecoEntrega when the goods go to the fiscal address', () => {
+    const input = build(entregaBundle({ tipo: 'enderecoFiscal' }));
+    expect('enderecoEntrega' in input).toBe(false);
+    expect(input.itens[0]!.CFOP).toBe('5102');
+  });
+
+  it('an export sets no enderecoEntrega and keeps cfopInterestadual, even delivered in SP', () => {
+    const exportacao = {
+      ...entregaBundle(outroEndereco('SP')),
+      operacao: { ...fullBundle({}).operacao, ehExterior: true },
+      enderecoDest: { estado: UF_SIGLA.EX },
+    } as PedidoBundle;
+    // `exporta` needs the sede city; nothing else of the export path is under test.
+    const input = build({
+      ...exportacao,
+      filial: { sede: { estado: 'SP', cidade: 'Sao Paulo' } },
+    } as unknown as PedidoBundle);
+    expect('enderecoEntrega' in input).toBe(false);
+    expect(input.itens[0]!.CFOP).toBe('6102');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 — item-level references (det/DFeReferenciado): the SAME document rules
+// the pedido editor shows (`violacoesDoDocumento`), refused before a número.
+// ---------------------------------------------------------------------------
+
+describe('lerDfeReferenciado — best-effort read of the stored item field', () => {
+  it('reads the stored shape and absence', () => {
+    expect(lerDfeReferenciado(null)).toBeNull();
+    expect(lerDfeReferenciado(undefined)).toBeNull();
+    expect(lerDfeReferenciado({ chaveAcesso: 'X', nItem: 2 })).toEqual({
+      chaveAcesso: 'X',
+      nItem: 2,
+    });
+    expect(lerDfeReferenciado({ chaveAcesso: 'X', nItem: null })).toEqual({
+      chaveAcesso: 'X',
+      nItem: null,
+    });
+  });
+
+  it('keeps a malformed value as an UNUSABLE reference — never drops it silently', () => {
+    expect(lerDfeReferenciado('X')).toEqual({ chaveAcesso: '', nItem: Number.NaN });
+    expect(lerDfeReferenciado({ chaveAcesso: 7, nItem: '3' })).toEqual({
+      chaveAcesso: '',
+      nItem: Number.NaN,
+    });
+  });
+});
+
+describe('assertNotaBuildable — the document rules (#330)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  const comRef = (dfeReferenciado: FiscalItem['dfeReferenciado']) => [item({ dfeReferenciado })];
+
+  it('passes a valid item reference with the Reforma Tributária on', () => {
+    expect(
+      assertNotaBuildable(bundleWith(OP), comRef({ chaveAcesso: CHAVE, nItem: 2 }), true),
+    ).toBeUndefined();
+  });
+
+  it('refuses an item reference with the Reforma Tributária off', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(bundleWith(OP), comRef({ chaveAcesso: CHAVE, nItem: 2 }), false),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': A referência por item (DF-e referenciado) só é emitida com a Reforma Tributária ativa nesta filial.",
+    );
+  });
+
+  it('lists EVERY blocking violation, with the item and the SEFAZ code', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(OP, { chNFeReferenciadas: [CHAVE] }),
+        comRef({ chaveAcesso: CHAVE, nItem: null }),
+        true,
+      ),
+    );
+    expect(msg).toContain('(SEFAZ 1010)');
+    expect(msg).toContain(
+      'Item 1: Informe o número do item da nota referenciada (nItem). (SEFAZ 1048)',
+    );
+  });
+
+  it('a nota with no item reference is untouched by the rules (NFref alone is fine)', () => {
+    expect(
+      assertNotaBuildable(bundleWith(OP, { chNFeReferenciadas: [CHAVE] }), [item({})], false),
+    ).toBeUndefined();
+  });
+
+  it('buildGenItems hands the reference to the generator (nItem only when set)', () => {
+    const [comNItem] = buildGenItems(
+      comRef({ chaveAcesso: CHAVE, nItem: 2 }),
+      bundleWith(OP),
+      false,
+    );
+    expect(comNItem!.dfeReferenciado).toEqual({ chaveAcesso: CHAVE, nItem: 2 });
+    const [semNItem] = buildGenItems(
+      comRef({ chaveAcesso: CHAVE, nItem: null }),
+      bundleWith(OP),
+      false,
+    );
+    expect(semNItem!.dfeReferenciado).toEqual({ chaveAcesso: CHAVE });
+    const [semRef] = buildGenItems([item({})], bundleWith(OP), false);
+    expect('dfeReferenciado' in semRef!).toBe(false);
+  });
+});
+
+/**
+ * The coupling that matters to SEFAZ (732/733, 772): the orchestrator's CFOP
+ * and the generator's idDest come from ONE destination, and `<entrega>` rides
+ * exactly when that destination is a separate delivery address. Run through the
+ * REAL `generateNFe`, not a mock — a divergence between the two layers is only
+ * visible on the wire.
+ */
+describe('CFOP ↔ idDest ↔ <entrega> on the generated XML (#422)', () => {
+  const FILIAL_SP = {
+    cnpj: '14200166000187',
+    razaoSocial: 'Loja Teste S.A.',
+    fantasia: null,
+    ie: '111111111111',
+    iest: null,
+    imun: null,
+    cnae: null,
+    sede: {
+      logradouro: 'Rua Direita',
+      numero: '100',
+      bairro: 'Centro',
+      complemento: null,
+      cep: '01001000',
+      codigoMunicipio: '3550308',
+      cidade: 'Sao Paulo',
+      estado: 'SP',
+    },
+  };
+  const OPERACAO_COMPLETA = {
+    ...OP,
+    naturezaDaOperacao: 'Venda de mercadoria',
+    tipo: 1,
+    finNFe: 1,
+    ehExterior: false,
+    ehConsumidorFinal: true,
+    indPres: '2',
+    indIntermed: '0',
+    infCpl: null,
+  };
+  const completo = (fiscal: 'SP' | 'RJ', entrega: EntregaDoPedido) =>
+    ({
+      ...fullBundle({}),
+      operacao: OPERACAO_COMPLETA,
+      filial: FILIAL_SP,
+      cliente: {
+        ...CLIENTE_PF,
+        idEstrangeiro: null,
+        ie: null,
+        isUF: null,
+        imun: null,
+        email: null,
+      },
+      enderecoDest: enderecoEntrega(fiscal),
+      entrega,
+    }) as unknown as PedidoBundle;
+
+  const CASES: Array<[string, 'SP' | 'RJ', EntregaDoPedido, string, string | null]> = [
+    // [label, fiscal UF, entrega, expected idDest, expected entrega/UF]
+    ['SP → fiscal', 'SP', { tipo: 'enderecoFiscal' }, '1', null],
+    ['RJ → fiscal', 'RJ', { tipo: 'enderecoFiscal' }, '2', null],
+    ['SP → delivered RJ', 'SP', outroEndereco('RJ'), '2', 'RJ'],
+    ['RJ → delivered SP', 'RJ', outroEndereco('SP'), '1', 'SP'],
+    ['RJ → delivered RJ', 'RJ', outroEndereco('RJ'), '2', 'RJ'],
+  ];
+
+  it.each(CASES)('%s: idDest %s, entrega %s', (_label, fiscal, entrega, idDest, entregaUF) => {
+    const input = buildGeneratorInput(completo(fiscal, entrega), ITEM_100, 7, 1, 'homologacao');
+    const { nfeXml } = generateNFe({ ...input, cNF: '00000001' });
+    expect(/<idDest>(\d)<\/idDest>/.exec(nfeXml)?.[1]).toBe(idDest);
+    // 732/733: the CFOP's first digit agrees with idDest, by construction.
+    const cfop = /<CFOP>(\d{4})<\/CFOP>/.exec(nfeXml)?.[1];
+    expect(cfop?.[0]).toBe(idDest === '2' ? '6' : '5');
+    // <entrega> present iff a separate delivery address decided — and its UF
+    // is the one that decided.
+    const uf = /<entrega>.*?<UF>([A-Z]{2})<\/UF>.*?<\/entrega>/.exec(nfeXml)?.[1] ?? null;
+    expect(uf).toBe(entregaUF);
   });
 });
 
@@ -1143,7 +1571,7 @@ describe('PIS/COFINS item ↔ ICMSTot (cStat 602/603)', () => {
   });
 });
 
-describe('assertItemsBuildable — PIS/COFINS configs the engine refuses (#509)', () => {
+describe('assertNotaBuildable — PIS/COFINS configs the engine refuses (#509)', () => {
   const CST_49 = CST_PIS_COFINS.outrasOperacoesSaida;
 
   function mensagem(
@@ -1152,7 +1580,7 @@ describe('assertItemsBuildable — PIS/COFINS configs the engine refuses (#509)'
   ): string {
     const items = [item({ imposto: impostoPisCofins(configuracaoPIS, configuracaoCOFINS) })];
     const bundle = bundleWith(OP);
-    const msg = orchestratorMessage(() => assertItemsBuildable(bundle, items, false));
+    const msg = orchestratorMessage(() => assertNotaBuildable(bundle, items, false));
     // The pre-flight IS generation's projection: same class, same message.
     expect(msg).toBe(orchestratorMessage(() => buildGenItems(items, bundle, false)));
     return msg;
@@ -1195,7 +1623,357 @@ describe('assertItemsBuildable — PIS/COFINS configs the engine refuses (#509)'
       { CST: CST_49, pPIS: 0, vAliqProd: 0.1 },
     ]) {
       const items = [item({ imposto: impostoPisCofins(pis, null) })];
-      expect(assertItemsBuildable(bundle, items, false), JSON.stringify(pis)).toBeUndefined();
+      expect(assertNotaBuildable(bundle, items, false), JSON.stringify(pis)).toBeUndefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 — nota de crédito / débito (finNFe 5/6): the item tax groups come from
+// ONE mode (`modoGruposFor`), the document rules refuse before the items.
+// ---------------------------------------------------------------------------
+
+describe('nota de crédito / débito (finNFe 5/6, #330)', () => {
+  const IMPOSTO_RTC = {
+    ...item({}).imposto,
+    configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+    configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  } as FiscalItem['imposto'];
+  const DEBITO_06 = { ...OP, tipo: 1, finNFe: 6, tpNFDebito: '06', tpNFCredito: null };
+  const ITENS_RTC = [item({ imposto: IMPOSTO_RTC })];
+
+  it('modoGruposFor reads the operação once: débito 06 is IBS/CBS only, crédito 04 is not', () => {
+    expect(modoGruposFor(bundleWith(DEBITO_06))).toBe(MODO_GRUPOS_IMPOSTO.somenteIbsCbs);
+    expect(
+      modoGruposFor(bundleWith({ ...OP, tipo: 0, finNFe: 5, tpNFCredito: '04', tpNFDebito: null })),
+    ).toBe(MODO_GRUPOS_IMPOSTO.completo);
+    expect(modoGruposFor(bundleWith(OP))).toBe(MODO_GRUPOS_IMPOSTO.completo);
+  });
+
+  it('débito 06: the det and the total agree — IBS/CBS on the wire, no PIS/COFINS anywhere', () => {
+    const bundle = { ...fullBundle({}), operacao: { ...fullBundle({}).operacao, ...DEBITO_06 } };
+    const input = buildGeneratorInput(
+      bundle as PedidoBundle,
+      ITENS_RTC,
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+    const det = input.itens[0]!.impostoXml;
+    expect(det).toContain('<IBSCBS>');
+    for (const grupo of ['<ICMS>', '<PIS>', '<COFINS>']) expect(det).not.toContain(grupo);
+    expect(input.totalXml).toContain('<vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>');
+    expect(input.totalXml).toContain('<vNFTot>101.00</vNFTot>');
+    expect(input.operacao.tpNFDebito).toBe('06');
+  });
+
+  it('near-miss: the same items on a normal nota carry PIS/COFINS in the det AND the total', () => {
+    const input = buildGeneratorInput(
+      fullBundle({}),
+      ITENS_RTC,
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+    expect(input.itens[0]!.impostoXml).toContain('<PIS>');
+    expect(input.totalXml).toContain('<vPIS>1.65</vPIS>');
+  });
+
+  it('refuses with the Reforma Tributária off — a document verdict, not a tribute error', () => {
+    expect(
+      orchestratorMessage(() => assertNotaBuildable(bundleWith(DEBITO_06), ITENS_RTC, false)),
+    ).toBe(
+      "pedido 'PED-TEST': Nota de crédito/débito só é emitida com a Reforma Tributária (IBS/CBS) ativa nesta filial.",
+    );
+  });
+
+  it('the document rules run BEFORE the items: an unbuildable item does not mask them', () => {
+    // No CFOP anywhere would be the first item error; the tipo speaks first.
+    const semCfop = [item({ imposto: { ...IMPOSTO_RTC, cfop: null } as FiscalItem['imposto'] })];
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        // Crédito 05 is a tipo the ERP does not emit (contradictory in NT v1.40).
+        bundleWith({ ...OP, tipo: 0, finNFe: 5, tpNFCredito: '05', tpNFDebito: null, cfop: null }),
+        semCfop,
+        true,
+      ),
+    );
+    expect(msg).toContain('ainda não é emitido');
+    expect(msg).not.toContain('cfop');
+  });
+
+  it('refuses an item without IBS/CBS, naming it', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(bundleWith(DEBITO_06), [...ITENS_RTC, item({ itemIndex: 1 })], true),
+    );
+    expect(msg).toBe(
+      "pedido 'PED-TEST': Item 2: Todo item de nota de crédito/débito precisa da configuração de IBS/CBS (CST e cClassTrib).",
+    );
+  });
+
+  it('passes a buildable débito 06', () => {
+    expect(assertNotaBuildable(bundleWith(DEBITO_06), ITENS_RTC, true)).toBeUndefined();
+  });
+
+  it('judges the NFref of a crédito against the filial as emitente (269/678)', () => {
+    const CHAVE_SP = '35260514200166000187550010000000071000000011';
+    const credito04 = { ...OP, tipo: 0, finNFe: 5, tpNFCredito: '04', tpNFDebito: null };
+    const bundle = (cnpj: string) =>
+      ({
+        ...bundleWith(credito04, { chNFeReferenciadas: [CHAVE_SP] }),
+        filial: { cnpj, sede: { estado: 'SP' } },
+      }) as unknown as PedidoBundle;
+    expect(assertNotaBuildable(bundle('14200166000187'), ITENS_RTC, true)).toBeUndefined();
+    expect(
+      orchestratorMessage(() => assertNotaBuildable(bundle('11222333000181'), ITENS_RTC, true)),
+    ).toContain('(SEFAZ 269)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #330 part 3 — a nota de débito whose tipo binds a fixed cClassTrib: the tipo
+// supplies CST + cClassTrib + group, the item its amounts (`itens[*].ajusteRtc`).
+// ---------------------------------------------------------------------------
+
+describe('lerAjusteRtc — best-effort read of the stored item field', () => {
+  it('reads the stored shape and absence', () => {
+    expect(lerAjusteRtc(null)).toBeNull();
+    expect(lerAjusteRtc(undefined)).toBeNull();
+    expect(lerAjusteRtc({ vIBS: 1, vCBS: 9, competApur: '2026-04' })).toEqual({
+      vIBS: 1,
+      vCBS: 9,
+      competApur: '2026-04',
+    });
+  });
+
+  it('keeps a malformed value as UNUSABLE amounts — refused by name, never dropped', () => {
+    expect(lerAjusteRtc('x')).toEqual({ vIBS: Number.NaN, vCBS: Number.NaN, competApur: null });
+    expect(lerAjusteRtc({ vIBS: '1', vCBS: 2, competApur: 202604 })).toEqual({
+      vIBS: Number.NaN,
+      vCBS: 2,
+      competApur: null,
+    });
+  });
+});
+
+describe('nota de débito with an IBS/CBS adjustment (#330, part 3)', () => {
+  /** The produto's OWN classification — which an adjustment item must not emit. */
+  const IMPOSTO_RTC = {
+    ...item({}).imposto,
+    configuracaoIBSCBS: { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 },
+  } as FiscalItem['imposto'];
+  const debito = (tpNFDebito: string) => ({
+    ...OP,
+    tipo: 1,
+    finNFe: 6,
+    tpNFDebito,
+    tpNFCredito: null,
+  });
+  const comAjuste = (ajusteRtc: FiscalItem['ajusteRtc']) => [
+    item({ imposto: IMPOSTO_RTC, ajusteRtc }),
+  ];
+  const gerar = (tpNFDebito: string, ajusteRtc: FiscalItem['ajusteRtc']) => {
+    const base = fullBundle({});
+    return buildGeneratorInput(
+      { ...base, operacao: { ...base.operacao, ...debito(tpNFDebito) } } as PedidoBundle,
+      comAjuste(ajusteRtc),
+      7,
+      1,
+      'homologacao',
+      1,
+      undefined,
+      null,
+      true,
+    );
+  };
+
+  it('ajusteDoItem: the tipo supplies classification + group, the item its amounts', () => {
+    const it = comAjuste({ vIBS: 1, vCBS: 9, competApur: null })[0]!;
+    expect(ajusteDoItem(bundleWith(debito('05')), it)).toEqual({
+      cClassTrib: '800001',
+      grupo: GRUPO_AJUSTE_RTC.transfCred,
+      vIBS: 1,
+      vCBS: 9,
+      competApur: null,
+    });
+    // Near-misses: a tipo with no fixed cClassTrib, and an item without amounts.
+    expect(ajusteDoItem(bundleWith(debito('06')), it)).toBeUndefined();
+    expect(ajusteDoItem(bundleWith(debito('05')), { ...it, ajusteRtc: null })).toBeUndefined();
+  });
+
+  it('débito 05: the det carries 800001 + gTransfCred, not the produto classification', () => {
+    const input = gerar('05', { vIBS: 10, vCBS: 90, competApur: null });
+    const det = input.itens[0]!.impostoXml;
+    expect(det).toBe(
+      '<imposto><IBSCBS><CST>800</CST><cClassTrib>800001</cClassTrib>' +
+        '<gTransfCred><vIBS>10.00</vIBS><vCBS>90.00</vCBS></gTransfCred></IBSCBS></imposto>',
+    );
+    // W47/W56: IBSCBSTot sums gIBSCBS only — the transfer never enters vIBS/vCBS.
+    expect(input.totalXml).toContain('<vBCIBSCBS>0.00</vBCIBSCBS>');
+    expect(input.totalXml).not.toContain('<gEstornoCred>');
+  });
+
+  it('débito 07: ICMS stays, gEstornoCred on the det AND in IBSCBSTot', () => {
+    const input = gerar('07', { vIBS: 3, vCBS: 27, competApur: null });
+    expect(input.itens[0]!.impostoXml).toContain('<ICMS>');
+    expect(input.itens[0]!.impostoXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+    expect(input.totalXml).toContain(
+      '<gEstornoCred><vIBSEstCred>3.00</vIBSEstCred><vCBSEstCred>27.00</vCBSEstCred></gEstornoCred>',
+    );
+  });
+
+  it('pre-flight: an adjustment item without its amounts is refused, naming it', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(bundleWith(debito('01')), comAjuste(null), true),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': Item 1: Informe os valores de IBS e CBS do ajuste deste item (aba Fiscal).",
+    );
+  });
+
+  it('pre-flight: 1129 on a zero transfer; a positive one passes', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(
+          bundleWith(debito('01')),
+          comAjuste({ vIBS: 0, vCBS: 0, competApur: null }),
+          true,
+        ),
+      ),
+    ).toContain('(SEFAZ 1129)');
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('01')),
+        comAjuste({ vIBS: 0, vCBS: 0.01, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: UB14-70 judges the cClassTrib the TIPO supplies, not the produto’s', () => {
+    // The produto says 000001; débito 05 binds 800001 — and 800001 is emitted.
+    expect(
+      assertNotaBuildable(
+        bundleWith(debito('05')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: null }),
+        true,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('pre-flight: a future competApur on gAjusteCompet is refused', () => {
+    const msg = orchestratorMessage(() =>
+      assertNotaBuildable(
+        bundleWith(debito('02')),
+        comAjuste({ vIBS: 1, vCBS: 1, competApur: '2999-01' }),
+        true,
+      ),
+    );
+    expect(msg).toContain('mês da emissão ou um mês anterior');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #331 — dPrevEntrega, gPagAntecipado and ISUFEmit, only with the RTC on.
+// ---------------------------------------------------------------------------
+
+describe('rtcDaNota — NT 2025.002 ide/emit fields (#331)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  /** 2026-09-29 12:00 in São Paulo. */
+  const DH_EMI = new Date('2026-09-29T12:00:00-03:00');
+  /** µs of a São Paulo wall-clock instant. */
+  const us = (iso: string) => new Date(iso).getTime() * 1000;
+  const bundle = (over: {
+    previsao?: string | null;
+    finNFe?: number;
+    isuf?: string | null;
+    pedido?: Record<string, unknown>;
+  }) =>
+    ({
+      ...fullBundle({ pedido: over.pedido }),
+      operacao: { ...OP, finNFe: over.finNFe ?? 1 },
+      filial: { sede: { estado: 'SP' }, isuf: over.isuf ?? null },
+      frete:
+        over.previsao === undefined
+          ? null
+          : { dataPrevisaoEntrega: over.previsao == null ? null : us(over.previsao) },
+    }) as unknown as PedidoBundle;
+
+  it('emits the forecast as a São Paulo date, inside the B10a windows', () => {
+    // 23:30 on 2026-10-14 in São Paulo is already the 15th in UTC — the date is SP's.
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-10-14T23:30:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({ dPrevEntrega: '2026-10-14' });
+  });
+
+  it('omits the forecast SEFAZ would refuse — never refuses the nota', () => {
+    const dentro = '2026-10-14T12:00:00-03:00';
+    expect(rtcDaNota(bundle({ previsao: dentro }), DH_EMI, MODALIDADE_FRETE.fob)).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: dentro, finNFe: 2 }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(
+      rtcDaNota(bundle({ previsao: '2026-09-28T12:00:00-03:00' }), DH_EMI, MODALIDADE_FRETE.cif),
+    ).toEqual({});
+    expect(rtcDaNota(bundle({ previsao: null }), DH_EMI, MODALIDADE_FRETE.cif)).toEqual({});
+  });
+
+  it('carries the pedido’s pagamento-antecipado chaves and the filial’s ISUF', () => {
+    expect(
+      rtcDaNota(
+        bundle({ pedido: { chNFePagamentoAntecipado: [CHAVE, ''] }, isuf: '200123456' }),
+        DH_EMI,
+        MODALIDADE_FRETE.semTransporte,
+      ),
+    ).toEqual({ pagAntecipado: [CHAVE], isufEmit: '200123456' });
+  });
+
+  it('buildGeneratorInput passes them only with the RTC on', () => {
+    const b = { ...fullBundle({ pedido: { chNFePagamentoAntecipado: [CHAVE] } }) } as PedidoBundle;
+    const on = buildGeneratorInput(b, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true);
+    expect(on.rtc).toEqual({ pagAntecipado: [CHAVE] });
+    // RTC off: a filial ISUF is simply not emitted (the pedido chaves above would
+    // be REFUSED instead — the next test).
+    const zfm = {
+      ...fullBundle({}),
+      filial: { isuf: '200123456', sede: { estado: 'AM', codigoMunicipio: '1302603' } },
+    } as unknown as PedidoBundle;
+    expect('rtc' in buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao')).toBe(false);
+    expect(
+      buildGeneratorInput(zfm, ITEM_100, 7, 1, 'homologacao', 1, undefined, null, true).rtc,
+    ).toEqual({ isufEmit: '200123456' });
+  });
+
+  it('pre-flight: pagamento-antecipado chaves with the RTC off are refused (policy)', () => {
+    const b = bundleWith(OP, { chNFePagamentoAntecipado: [CHAVE] });
+    expect(orchestratorMessage(() => assertNotaBuildable(b, ITEM_100, false))).toBe(
+      "pedido 'PED-TEST': As NF-e de pagamento antecipado só são referenciadas com a Reforma Tributária ativa nesta filial.",
+    );
+    expect(assertNotaBuildable(b, ITEM_100, true)).toBeUndefined();
+  });
+
+  it('pre-flight: 1185 — an ISUF on a filial outside the ZFM/ALC', () => {
+    const b = (codigoMunicipio: string) =>
+      ({
+        ...bundleWith(OP),
+        filial: { isuf: '200123456', sede: { estado: 'SP', codigoMunicipio } },
+      }) as unknown as PedidoBundle;
+    expect(orchestratorMessage(() => assertNotaBuildable(b('3550308'), ITEM_100, true))).toContain(
+      '(SEFAZ 1185)',
+    );
+    // Near-miss: RTC off — ISUFEmit is not on the wire, nothing to judge.
+    expect(assertNotaBuildable(b('3550308'), ITEM_100, false)).toBeUndefined();
   });
 });

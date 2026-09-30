@@ -19,14 +19,17 @@ import {
   buildTotalXml,
   buildTranspXml,
   aggregateTotals,
+  type AjusteIbsCbsItem,
   type Imposto,
 } from '../../src/tribute';
 import {
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
+  MODO_GRUPOS_IMPOSTO,
   ORIGEM,
   TIPO_CLIENTE,
   UF_SIGLA,
+  type ModoGruposImposto,
 } from '@delfrance/schemas';
 
 import type { GeneratorInput } from '../../src/generator';
@@ -111,12 +114,23 @@ export interface HomologacaoFixtureOpts {
   readonly imposto?: Imposto;
   /** Emit the Reforma Tributária (IBS/CBS/IS) item + total groups. */
   readonly emitRtc?: boolean;
+  /** Which `<imposto>` groups the item carries (`modoGruposImposto`); default `completo`. */
+  readonly grupos?: ModoGruposImposto;
+  /** Fields merged over the default saída/venda operação (e.g. a nota de débito, #330). */
+  readonly operacao?: Partial<GeneratorInput['operacao']>;
+  /**
+   * The item's IBS/CBS adjustment (a nota de débito whose tipo binds a fixed
+   * cClassTrib, #330) — handed to BOTH builders, as apps/nfe does.
+   */
+  readonly ajuste?: AjusteIbsCbsItem;
 }
 
 /** Build a complete single-item `GeneratorInput` against homologação. */
 export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): GeneratorInput {
   const imposto = opts.imposto ?? impostoCsosn102();
   const emitRtc = opts.emitRtc === true;
+  const grupos = opts.grupos ?? MODO_GRUPOS_IMPOSTO.completo;
+  const ajuste = opts.ajuste;
   const item = {
     nItem: 1,
     // xProd flows through sanitizeNFeText — accents + restricted chars
@@ -136,10 +150,18 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     vUnTrib: 1500,
     // qTrib matches the det's qCom/qTrib above: it is the per-unit PIS/COFINS
     // qBCProd, so the default (null PIS/COFINS) fixture's XML is unchanged.
-    impostoXml: buildImpostoXml(imposto, { vProd: 1500, qTrib: 1 }, { emitRtc }),
+    impostoXml: buildImpostoXml(
+      imposto,
+      { vProd: 1500, qTrib: 1 },
+      { emitRtc, grupos, ...(ajuste != null ? { ajuste } : {}) },
+    ),
   } as const;
 
-  const totals = aggregateTotals([{ item: { vProd: 1500, qTrib: 1 }, imposto }], {}, { emitRtc });
+  const totals = aggregateTotals(
+    [{ item: { vProd: 1500, qTrib: 1 }, imposto, ...(ajuste != null ? { ajuste } : {}) }],
+    {},
+    { emitRtc, grupos },
+  );
 
   return {
     ambiente: 'homologacao',
@@ -161,6 +183,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       cnae: null,
       ie: opts.ie,
       iest: null,
+      isuf: null,
       imun: null,
       ultimaModificacao: null,
       sede: {
@@ -207,6 +230,8 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       movimentaIndisponivelEstoque: true,
       ehFiscal: true,
       finNFe: 1,
+      tpNFDebito: null,
+      tpNFCredito: null,
       indPres: IND_PRES_OPERACAO.naoPresencialInternet,
       // indIntermed='1' means the sale was brokered by a marketplace.
       // Pairs with the `infIntermed` block below (CNPJ + seller's
@@ -219,6 +244,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       unidade: 'UN',
       infCpl: null,
       ultimaModificacao: null,
+      ...opts.operacao,
     },
     cliente: {
       tipo: TIPO_CLIENTE.pessoaFisica,

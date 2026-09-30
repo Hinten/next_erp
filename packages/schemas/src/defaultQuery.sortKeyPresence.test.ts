@@ -82,7 +82,7 @@ describe('sort keys are always present', () => {
   // shape change, a barrel refactor — while every assertion below still passed
   // over the remnant. These numbers only ever grow; raise them when they do.
   it('discovers the whole registry', () => {
-    expect(bundles.length).toBeGreaterThanOrEqual(61);
+    expect(bundles.length).toBeGreaterThanOrEqual(62);
     expect(listBundles.length).toBeGreaterThanOrEqual(20);
   });
 

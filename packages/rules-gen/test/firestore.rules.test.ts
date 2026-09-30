@@ -426,6 +426,150 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned pagamento link attribution (meta.serverOwnedFields) — #367', () => {
+    // `linkPagamentoId` (which Checkout Pro link a payment settled) and
+    // `primeiroNomePagador` (the payer's FIRST name, LGPD-minimised) are stamped
+    // ONLY by apps/mercado-pago, through the rules-bypassing Admin SDK. A client
+    // able to write them could re-attribute money from one payer's link to
+    // another's, or plant a name on a payment — so the guard is ANDed outside the
+    // `su` bypass, exactly like `lastProviderUpdate` above.
+    //
+    // ⚠️ Every "forged" value below is WELL-FORMED for `v_pedidos_pagamentos`
+    // (20-character id, short name), on purpose: a value the validator rejects
+    // would fail for that reason and prove nothing about the serverOwnedFields
+    // guard. The guard is what these cases pin.
+    const pagamentoWriter = () => db({ d_pagamento: 2 });
+    const su = () => db(rulesClaimsFromBits((1n << 128n) - 1n));
+
+    const CAMPOS = [
+      {
+        campo: 'linkPagamentoId',
+        gravado: 'AbCdEfGhIjKlMnOpQrSt',
+        forjado: 'ZyXwVuTsRqPoNmLkJiHg',
+      },
+      { campo: 'primeiroNomePagador', gravado: 'Maria', forjado: 'Joana' },
+    ] as const;
+
+    for (const { campo, gravado, forjado } of CAMPOS) {
+      it(`allows a create carrying ${campo} only as null, or omitting it`, async () => {
+        await assertSucceeds(
+          setDoc(doc(pagamentoWriter(), `pedidos/atr-null-${campo}/pagamentos/p-null`), {
+            valor: 10,
+            [campo]: null,
+          }),
+        );
+        await assertSucceeds(
+          setDoc(doc(pagamentoWriter(), `pedidos/atr-null-${campo}/pagamentos/p-absent`), {
+            valor: 10,
+          }),
+        );
+      });
+
+      it(`denies a create forging ${campo} for normal and super users`, async () => {
+        for (const [client, quem] of [
+          [pagamentoWriter(), 'normal'],
+          [su(), 'su'],
+        ] as const) {
+          await assertFails(
+            setDoc(doc(client, `pedidos/atr-forge-${campo}/pagamentos/p-${quem}`), {
+              valor: 10,
+              [campo]: forjado,
+            }),
+          );
+        }
+      });
+
+      it(`denies any update touching ${campo} — replace, clear or delete`, async () => {
+        await seed(`pedidos/atr-upd-${campo}/pagamentos/p1`, { valor: 10, [campo]: gravado });
+        for (const client of [pagamentoWriter(), su()]) {
+          const ref = doc(client, `pedidos/atr-upd-${campo}/pagamentos/p1`);
+          // Re-attribution: point the payment at someone else.
+          await assertFails(updateDoc(ref, { [campo]: forjado }));
+          await assertFails(updateDoc(ref, { [campo]: null }));
+          await assertFails(updateDoc(ref, { [campo]: deleteField() }));
+        }
+      });
+
+      it(`denies stamping ${campo} onto a pagamento that has none yet`, async () => {
+        // The near-miss for the case above: a guard that only protected a value
+        // ALREADY on the document would let a client attribute an unattributed
+        // payment (absent key) or one stored as null.
+        await seed(`pedidos/atr-stamp-${campo}/pagamentos/p-absent`, { valor: 10 });
+        await seed(`pedidos/atr-stamp-${campo}/pagamentos/p-null`, { valor: 10, [campo]: null });
+        for (const client of [pagamentoWriter(), su()]) {
+          await assertFails(
+            updateDoc(doc(client, `pedidos/atr-stamp-${campo}/pagamentos/p-absent`), {
+              [campo]: gravado,
+            }),
+          );
+          await assertFails(
+            updateDoc(doc(client, `pedidos/atr-stamp-${campo}/pagamentos/p-null`), {
+              [campo]: gravado,
+            }),
+          );
+        }
+      });
+
+      it(`keeps a pagamento carrying ${campo} editable and deletable`, async () => {
+        await seed(`pedidos/atr-other-${campo}/pagamentos/p1`, { valor: 10, [campo]: gravado });
+        await seed(`pedidos/atr-other-${campo}/pagamentos/p2`, { valor: 10, [campo]: gravado });
+        await assertSucceeds(
+          updateDoc(doc(pagamentoWriter(), `pedidos/atr-other-${campo}/pagamentos/p1`), {
+            valor: 20,
+          }),
+        );
+        // The lock is on the attribution, not on the payment: an operator can
+        // still remove a payment that was entered by mistake.
+        await assertSucceeds(
+          deleteDoc(doc(db({ d_pagamento: 4 }), `pedidos/atr-other-${campo}/pagamentos/p2`)),
+        );
+      });
+    }
+
+    it('guards the two fields independently — a null on one does not excuse the other', async () => {
+      await assertSucceeds(
+        setDoc(doc(pagamentoWriter(), 'pedidos/atr-both/pagamentos/p-nulls'), {
+          valor: 10,
+          linkPagamentoId: null,
+          primeiroNomePagador: null,
+        }),
+      );
+      // The guards are ANDed: an OR between them would let the null field vouch
+      // for the forged one.
+      await assertFails(
+        setDoc(doc(pagamentoWriter(), 'pedidos/atr-both/pagamentos/p-nome'), {
+          valor: 10,
+          linkPagamentoId: null,
+          primeiroNomePagador: 'Maria',
+        }),
+      );
+      await assertFails(
+        setDoc(doc(pagamentoWriter(), 'pedidos/atr-both/pagamentos/p-link'), {
+          valor: 10,
+          linkPagamentoId: 'AbCdEfGhIjKlMnOpQrSt',
+          primeiroNomePagador: null,
+        }),
+      );
+    });
+
+    it('does not disturb the pre-existing lastProviderUpdate guard next to them', async () => {
+      // Adding fields to `serverOwnedFields` rewrites the whole guard list; pin
+      // that the original member is still locked and still null-tolerant.
+      await assertSucceeds(
+        setDoc(doc(pagamentoWriter(), 'pedidos/atr-lpu/pagamentos/p-null'), {
+          valor: 10,
+          lastProviderUpdate: null,
+        }),
+      );
+      await assertFails(
+        setDoc(doc(pagamentoWriter(), 'pedidos/atr-lpu/pagamentos/p-forge'), {
+          valor: 10,
+          lastProviderUpdate: 1_700_000_000_000_000,
+        }),
+      );
+    });
+  });
+
   describe('server-owned metodo_pgto.user_id (meta.serverOwnedFields) — #1034', () => {
     // The Mercado Pago sibling of the `integracao` case below: `user_id` is the
     // COLLECTOR id an inbound payment notification resolves the account by, so a
@@ -626,6 +770,83 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
       await assertFails(setDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p3'), entry));
       await assertFails(deleteDoc(doc(su, 'pedidos/ped-hist/historicoDeModificacoes/evt-p1')));
+    });
+  });
+
+  describe('server-owned pedidos/linkPgtoMercadoPago (meta.serverOwned) — #367', () => {
+    // The Mercado Pago Checkout Pro links of a pedido, written EXCLUSIVELY by
+    // apps/mercado-pago (Admin SDK, which bypasses rules). Reads ride the
+    // PAGAMENTO read bit — not the pedido's — so anyone who can see a link can
+    // always see the payments that settle it. ALL client writes are denied,
+    // including a superuser (no `su` bypass), unlike the per-field guard above.
+    const linkId = 'AbCdEfGhIjKlMnOpQrSt';
+    const colecao = 'pedidos/lk-ped/linkPgtoMercadoPago';
+    const link = {
+      contaMercadoPagoOuterRef: 'documents/metodo_pgto/mp1',
+      valorCobrado: 50.5,
+      link: 'https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=1-x',
+      id: '1-x',
+      dataCriacao: 1_727_000_000_000,
+      dataExpiracao: 1_727_100_000_000,
+      modo: 'individual',
+      nomePagador: 'Maria',
+      quantidadeMaxima: 1,
+      status: 'aberto',
+    };
+
+    it('the pagamento read bit reads a single link and lists the subcollection', async () => {
+      await seed(`${colecao}/${linkId}`, link);
+      const leitor = db({ d_pagamento: 1 });
+      await assertSucceeds(getDoc(doc(leitor, `${colecao}/${linkId}`)));
+      await assertSucceeds(getDocs(collection(leitor, colecao)));
+    });
+
+    it('is bit-exact: only the pagamento READ bit reads a link', async () => {
+      await seed(`${colecao}/${linkId}`, link);
+      // The pedido bits (all three of them) do not reach a link, and neither do
+      // the pagamento write/delete bits without the read bit — a `>=` lattice
+      // would have let {d_pagamento: 6} through.
+      for (const claims of [
+        { d_pedido: 1 },
+        { d_pedido: 7 },
+        { d_pagamento: 2 },
+        { d_pagamento: 6 },
+        { d_metodoPagamento: 7 },
+      ]) {
+        const cliente = db(claims);
+        await assertFails(getDoc(doc(cliente, `${colecao}/${linkId}`)));
+        await assertFails(getDocs(collection(cliente, colecao)));
+      }
+      await assertFails(getDoc(doc(db(), `${colecao}/${linkId}`)));
+    });
+
+    it('denies every client write, even with the pagamento and pedido write bits', async () => {
+      await seed(`${colecao}/${linkId}`, link);
+      const escritor = db({ d_pagamento: 7, d_pedido: 7 });
+      await assertFails(setDoc(doc(escritor, `${colecao}/ZyXwVuTsRqPoNmLkJiHg`), link));
+      await assertFails(updateDoc(doc(escritor, `${colecao}/${linkId}`), { status: 'cancelado' }));
+      await assertFails(deleteDoc(doc(escritor, `${colecao}/${linkId}`)));
+    });
+
+    it('denies every write even for a superuser (no su bypass)', async () => {
+      await seed(`${colecao}/${linkId}`, link);
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(setDoc(doc(su, `${colecao}/ZyXwVuTsRqPoNmLkJiHg`), link));
+      await assertFails(updateDoc(doc(su, `${colecao}/${linkId}`), { status: 'cancelado' }));
+      await assertFails(deleteDoc(doc(su, `${colecao}/${linkId}`)));
+    });
+
+    it('collection-group queries follow the same pagamento read bit', async () => {
+      // The default `{path=**}/linkPgtoMercadoPago` block is emitted (the leaf is
+      // unique, so the union of read claims is just the pagamento bit). The
+      // near-misses: the pedido and metodo_pgto bits, and the write-only bit.
+      await seed(`${colecao}/${linkId}`, link);
+      await assertSucceeds(getDocs(collectionGroup(db({ d_pagamento: 1 }), 'linkPgtoMercadoPago')));
+      await assertFails(getDocs(collectionGroup(db({ d_pedido: 7 }), 'linkPgtoMercadoPago')));
+      await assertFails(
+        getDocs(collectionGroup(db({ d_metodoPagamento: 7 }), 'linkPgtoMercadoPago')),
+      );
+      await assertFails(getDocs(collectionGroup(db({ d_pagamento: 2 }), 'linkPgtoMercadoPago')));
     });
   });
 

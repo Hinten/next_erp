@@ -75,8 +75,9 @@ function numero(v: unknown): number | null {
  * `filialId`, ou com `tpNF`/`finNFe` que o schema não reconhece — tem as notas
  * dela contadas em `notasIndeterminadas`, porque são notas cuja contribuição
  * ninguém sabe. A exceção é a linha SEM filial que o par `(tpNF, finNFe)` já
- * diz ser neutra (ajuste, devolução de compra): essa não é receita de ninguém,
- * então bloquear por causa dela seria um falso positivo permanente.
+ * diz ser neutra (ajuste, devolução de compra, nota de crédito/débito): essa
+ * não é receita de ninguém, então bloquear por causa dela seria um falso
+ * positivo permanente.
  *
  * ⚠️ `nIlegiveis` é somado de TODAS as linhas — inclusive das descartadas como
  * grupo. Somá-lo só das válidas perderia justamente a nota que o contador
@@ -98,7 +99,11 @@ export function interpretarLinhasDoAgregado(
     const filialId = linha.filialId;
 
     const tpOk = tpNF === 0 || tpNF === 1;
-    const finOk = finNFe === 1 || finNFe === 2 || finNFe === 3 || finNFe === 4;
+    // 5/6 (nota de crédito/débito, NT 2025.002) are known codes: they fold to a
+    // neutral group, never to `notasIndeterminadas`, which would block the
+    // apuração for as long as one of them sits in the window.
+    const finOk =
+      finNFe === 1 || finNFe === 2 || finNFe === 3 || finNFe === 4 || finNFe === 5 || finNFe === 6;
     if (!tpOk || !finOk) {
       // Códigos que o schema não reconhece: não dá para dizer se é receita.
       notasIndeterminadas += notas;
@@ -130,7 +135,7 @@ export function interpretarLinhasDoAgregado(
  * `sinalDe` em vez de importá-lo, porque aqui a pergunta é binária e o import
  * criaria um ciclo entre este módulo e o runner que o tipa.
  */
-function sinalNaoNeutro(tpNF: 0 | 1, finNFe: 1 | 2 | 3 | 4): boolean {
+function sinalNaoNeutro(tpNF: 0 | 1, finNFe: GrupoReceita['finNFe']): boolean {
   return tpNF === 1 ? finNFe === 1 || finNFe === 2 : finNFe === 4;
 }
 

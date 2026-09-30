@@ -31,6 +31,14 @@
  *
  * A miss is also safe: an id the batch did not return simply is not seeded, and
  * that cell's own query runs as usual.
+ *
+ * ⚠️ Only refs INTO `clientes` are batched (#1656), through the same
+ * `refDeClienteOuNull` gate `ClienteCell` uses. The batch reads `clientes/<id>`
+ * BY ID, so a ref into another collection would fetch a DIFFERENT document and
+ * seed it under a key that `readClienteByRef` fills from the foreign doc — two
+ * provenances for one key, the #1303 bug class. That gate is also total: this
+ * runs inside `onRows`, which `TableView` calls from an effect, where a throw
+ * would blank the whole page.
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
@@ -39,9 +47,8 @@ import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { Pedido } from '@delfrance/schemas';
 
 import { clienteCollection } from '@/lib/data/clienteCollection';
-import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
-import { clienteQueryKey } from '@/lib/data/readClienteByRef';
+import { clienteQueryKey, refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 /**
@@ -224,10 +231,12 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
       deadlineRef.current = setTimeout(() => {
         if (runId === runIdRef.current) setStatus('settled');
       }, PREFETCH_MAX_WAIT_MS);
-      const { clientes } = collectRowReadTargets(rows, (ref) => {
-        const deref = dereferenceOuterRef(db, ref);
-        return deref?.path ?? null;
-      });
+      // Only refs INTO `clientes` (#1656) — see the module doc. The gate is
+      // total, so a malformed ref can no longer throw out of this effect.
+      const { clientes } = collectRowReadTargets(
+        rows,
+        (ref) => refDeClienteOuNull(db, ref)?.path ?? null,
+      );
       if (clientes.length === 0) {
         setStatus('settled');
         return;

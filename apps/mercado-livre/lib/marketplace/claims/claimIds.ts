@@ -26,6 +26,8 @@
  */
 import { createHash } from 'node:crypto';
 
+import { parseIsoToMillis } from '@delfrance/core/datetime';
+
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input, 'utf8').digest('hex');
 }
@@ -135,11 +137,11 @@ export function dartUtcDateTimeToString(iso: string): string {
 
   const hasOffset = /(?:Z|z|[+-]\d{2}:?\d{2})$/.test(iso);
   if (hasOffset) {
-    // Truncate the fraction to ms BEFORE Date.parse — engines differ on >3
-    // fractional digits, and the µs digits are re-appended from the source.
+    // Truncate the fraction to ms BEFORE parsing — the µs digits are
+    // re-appended from the source, so only the ms instant is needed here.
     const msIso = fracMatch ? iso.replace(/\.\d+/, `.${ms3}`) : iso;
-    const epochMs = Date.parse(msIso);
-    if (Number.isNaN(epochMs)) return iso;
+    const epochMs = parseIsoToMillis(msIso);
+    if (epochMs == null) return iso;
     const d = new Date(epochMs);
     const p2 = (n: number) => String(n).padStart(2, '0');
     const p4 = (n: number) => String(n).padStart(4, '0');

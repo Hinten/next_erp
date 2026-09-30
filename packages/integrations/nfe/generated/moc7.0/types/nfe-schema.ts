@@ -148,9 +148,10 @@ export interface TNFe_infNFe_ide_NFref {
 }
 
 export interface TCompraGov {
-  tpEnteGov: '1' | '2' | '3' | '4';
+  tpEnteGov: '1' | '2' | '3' | '4' | '5' | '6';
   pRedutor: string;
-  tpOperGov: '1' | '2';
+  tpOperGov: '1' | '2' | '3' | '4';
+  refDFeAnt?: Array<string>;
 }
 
 export interface TNFe_infNFe_ide_gPagAntecipado {
@@ -171,16 +172,17 @@ export interface TNFe_infNFe_ide {
   idDest: '1' | '2' | '3';
   cMunFG: string;
   cMunFGIBS?: string;
-  tpImp: '0' | '1' | '2' | '3' | '4' | '5';
+  tpImp: '0' | '1' | '2' | '3' | '4' | '5' | '6';
   tpEmis: '1' | '2' | '3' | '4' | '5' | '6' | '7' | '9';
   cDV: string;
   tpAmb: '1' | '2';
   finNFe: '1' | '2' | '3' | '4' | '5' | '6';
   tpNFDebito?: '01' | '02' | '03' | '04' | '05' | '06' | '07' | '08';
-  tpNFCredito?: '01' | '02' | '03' | '04' | '05';
+  tpNFCredito?: '01' | '02' | '03' | '04' | '05' | '06';
   indFinal: '0' | '1';
   indPres: '0' | '1' | '2' | '3' | '4' | '5' | '9';
   indIntermed?: '0' | '1';
+  cIndOp?: string;
   procEmi: '0' | '1' | '2' | '3' | '4';
   verProc: string;
   dhCont?: string;
@@ -210,11 +212,12 @@ export interface TNFe_infNFe_emit {
   xNome: string;
   xFant?: string;
   enderEmit: TEnderEmi;
-  IE: string;
+  IE?: string;
   IEST?: string;
   IM?: string;
   CNAE?: string;
   CRT: '1' | '2' | '3' | '4';
+  ISUFEmit?: string;
 }
 
 export interface TNFe_infNFe_avulsa {
@@ -973,7 +976,7 @@ export interface TIS {
   cClassTribIS: string;
   vBCIS?: string;
   pIS?: string;
-  pISEspec?: string;
+  adRemIS?: string;
   uTrib?: string;
   qTrib?: string;
   vIS?: string;
@@ -985,6 +988,7 @@ export interface TDif {
 }
 
 export interface TDevTrib {
+  pDevTrib?: string;
   vDevTrib: string;
 }
 
@@ -993,7 +997,7 @@ export interface TRed {
   pAliqEfet: string;
 }
 
-export interface TCIBS_gIBSUF {
+export interface TCIBS_NFe_gIBSUF {
   pIBSUF: string;
   gDif?: TDif;
   gDevTrib?: TDevTrib;
@@ -1001,7 +1005,7 @@ export interface TCIBS_gIBSUF {
   vIBSUF: string;
 }
 
-export interface TCIBS_gIBSMun {
+export interface TCIBS_NFe_gIBSMun {
   pIBSMun: string;
   gDif?: TDif;
   gDevTrib?: TDevTrib;
@@ -1009,11 +1013,19 @@ export interface TCIBS_gIBSMun {
   vIBSMun: string;
 }
 
-export interface TCIBS_gCBS {
+export interface TALCZFMCBS_NFe {
+  tpALCZFMCBS: '1' | '2';
+  nProcSuframa?: string;
+  pAliqEfetRegCBS: string;
+  vTribRegCBS: string;
+}
+
+export interface TCIBS_NFe_gCBS {
   pCBS: string;
   gDif?: TDif;
   gDevTrib?: TDevTrib;
   gRed?: TRed;
+  gALCZFMCBS?: TALCZFMCBS_NFe;
   vCBS: string;
 }
 
@@ -1037,52 +1049,136 @@ export interface TTribCompraGov {
   vTribCBS: string;
 }
 
-export interface TCIBS {
+export interface TCIBS_NFe {
   vBC: string;
-  gIBSUF: TCIBS_gIBSUF;
-  gIBSMun: TCIBS_gIBSMun;
+  gIBSUF: TCIBS_NFe_gIBSUF;
+  gIBSMun: TCIBS_NFe_gIBSMun;
   vIBS: string;
-  gCBS: TCIBS_gCBS;
+  gCBS: TCIBS_NFe_gCBS;
   gTribRegular?: TTribRegular;
   gTribCompraGov?: TTribCompraGov;
 }
 
-export interface TMonofasia_gMonoPadrao {
+export interface TMonofasia_gIBSMonoAdRem_gMonoPadrao {
   qBCMono: string;
   adRemIBS: string;
-  adRemCBS: string;
   vIBSMono: string;
-  vCBSMono: string;
 }
 
-export interface TMonofasia_gMonoReten {
+export interface TMonofasia_gIBSMonoAdRem_gMonoReten {
   qBCMonoReten: string;
   adRemIBSReten: string;
   vIBSMonoReten: string;
+}
+
+export interface TMonofasia_gIBSMonoAdRem_gMonoRet {
+  vIBSMonoRet: string;
+}
+
+export interface TMonofasia_gIBSMonoAdRem_gpBioDiferenca {
+  qBCBioComb: string;
+  vIBSDiferenca: string;
+}
+
+export interface TMonofasia_gIBSMonoAdRem {
+  gMonoPadrao?: TMonofasia_gIBSMonoAdRem_gMonoPadrao;
+  gMonoReten?: TMonofasia_gIBSMonoAdRem_gMonoReten;
+  gMonoRet?: TMonofasia_gIBSMonoAdRem_gMonoRet;
+  gpBioDiferenca?: TMonofasia_gIBSMonoAdRem_gpBioDiferenca;
+}
+
+export interface TMonofasia_gIBSMonoAdValorem_gMonoPadrao {
+  vBCMono: string;
+  pAliqMonoUF: string;
+  vIBSMonoUF: string;
+  pAliqMonoMun: string;
+  vIBSMonoMun: string;
+  vIBSMono: string;
+}
+
+export interface TMonofasia_gIBSMonoAdValorem_gMonoReten {
+  vBCMonoReten: string;
+  pAliqMonoReten: string;
+  vIBSMonoReten: string;
+}
+
+export interface TMonofasia_gIBSMonoAdValorem_gMonoRet {
+  vIBSMonoRet: string;
+}
+
+export interface TMonofasia_gIBSMonoAdValorem_gpBioDiferenca {
+  qBCBioComb: string;
+  vIBSDiferenca: string;
+}
+
+export interface TMonofasia_gIBSMonoAdValorem {
+  gMonoPadrao?: TMonofasia_gIBSMonoAdValorem_gMonoPadrao;
+  gMonoReten?: TMonofasia_gIBSMonoAdValorem_gMonoReten;
+  gMonoRet?: TMonofasia_gIBSMonoAdValorem_gMonoRet;
+  gpBioDiferenca?: TMonofasia_gIBSMonoAdValorem_gpBioDiferenca;
+}
+
+export interface TMonofasia_gCBSMonoAdRem_gMonoPadrao {
+  qBCMono: string;
+  adRemCBS: string;
+  vCBSMono: string;
+}
+
+export interface TMonofasia_gCBSMonoAdRem_gMonoReten {
+  qBCMonoReten: string;
   adRemCBSReten: string;
   vCBSMonoReten: string;
 }
 
-export interface TMonofasia_gMonoRet {
-  qBCMonoRet: string;
-  adRemIBSRet: string;
-  vIBSMonoRet: string;
-  adRemCBSRet: string;
+export interface TMonofasia_gCBSMonoAdRem_gMonoRet {
   vCBSMonoRet: string;
 }
 
-export interface TMonofasia_gMonoDif {
-  pDifIBS: string;
-  vIBSMonoDif: string;
-  pDifCBS: string;
-  vCBSMonoDif: string;
+export interface TMonofasia_gCBSMonoAdRem_gpBioDiferenca {
+  qBCBioComb: string;
+  vCBSDiferenca: string;
+}
+
+export interface TMonofasia_gCBSMonoAdRem {
+  gMonoPadrao?: TMonofasia_gCBSMonoAdRem_gMonoPadrao;
+  gMonoReten?: TMonofasia_gCBSMonoAdRem_gMonoReten;
+  gMonoRet?: TMonofasia_gCBSMonoAdRem_gMonoRet;
+  gpBioDiferenca?: TMonofasia_gCBSMonoAdRem_gpBioDiferenca;
+}
+
+export interface TMonofasia_gCBSMonoAdValorem_gMonoPadrao {
+  vBCMono: string;
+  pAliqMonoCBS: string;
+  vCBSMono: string;
+}
+
+export interface TMonofasia_gCBSMonoAdValorem_gMonoReten {
+  vBCMonoReten: string;
+  pAliqMonoReten: string;
+  vCBSMonoReten: string;
+}
+
+export interface TMonofasia_gCBSMonoAdValorem_gMonoRet {
+  vCBSMonoRet: string;
+}
+
+export interface TMonofasia_gCBSMonoAdValorem_gpBioDiferenca {
+  qBCBioComb: string;
+  vCBSDiferenca: string;
+}
+
+export interface TMonofasia_gCBSMonoAdValorem {
+  gMonoPadrao?: TMonofasia_gCBSMonoAdValorem_gMonoPadrao;
+  gMonoReten?: TMonofasia_gCBSMonoAdValorem_gMonoReten;
+  gMonoRet?: TMonofasia_gCBSMonoAdValorem_gMonoRet;
+  gpBioDiferenca?: TMonofasia_gCBSMonoAdValorem_gpBioDiferenca;
 }
 
 export interface TMonofasia {
-  gMonoPadrao?: TMonofasia_gMonoPadrao;
-  gMonoReten?: TMonofasia_gMonoReten;
-  gMonoRet?: TMonofasia_gMonoRet;
-  gMonoDif?: TMonofasia_gMonoDif;
+  gIBSMonoAdRem?: TMonofasia_gIBSMonoAdRem;
+  gIBSMonoAdValorem?: TMonofasia_gIBSMonoAdValorem;
+  gCBSMonoAdRem?: TMonofasia_gCBSMonoAdRem;
+  gCBSMonoAdValorem?: TMonofasia_gCBSMonoAdValorem;
   vTotIBSMonoItem: string;
   vTotCBSMonoItem: string;
 }
@@ -1126,7 +1222,7 @@ export interface TTribNFe {
   CST: string;
   cClassTrib: string;
   indDoacao?: '1';
-  gIBSCBS?: TCIBS;
+  gIBSCBS?: TCIBS_NFe;
   gIBSCBSMono?: TMonofasia;
   gTransfCred?: TTransfCred;
   gAjusteCompet?: TAjusteCompet;
@@ -1867,6 +1963,7 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'tpEnteGov', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'pRedutor', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'tpOperGov', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'refDFeAnt', kind: 'element', type: '#string', optional: true, list: true },
   ],
   TNFe_infNFe_ide_gPagAntecipado: [
     { name: 'refNFe', kind: 'element', type: '#string', optional: false, list: true },
@@ -1895,6 +1992,7 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'indFinal', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'indPres', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'indIntermed', kind: 'element', type: '#string', optional: true, list: false },
+    { name: 'cIndOp', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'procEmi', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'verProc', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'dhCont', kind: 'element', type: '#string', optional: true, list: false },
@@ -1922,11 +2020,12 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'xNome', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'xFant', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'enderEmit', kind: 'element', type: 'TEnderEmi', optional: false, list: false },
-    { name: 'IE', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'IE', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'IEST', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'IM', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'CNAE', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'CRT', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'ISUFEmit', kind: 'element', type: '#string', optional: true, list: false },
   ],
   TNFe_infNFe_avulsa: [
     { name: 'CNPJ', kind: 'element', type: '#string', optional: false, list: false },
@@ -2623,7 +2722,7 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'cClassTribIS', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vBCIS', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'pIS', kind: 'element', type: '#string', optional: true, list: false },
-    { name: 'pISEspec', kind: 'element', type: '#string', optional: true, list: false },
+    { name: 'adRemIS', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'uTrib', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'qTrib', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'vIS', kind: 'element', type: '#string', optional: true, list: false },
@@ -2633,31 +2732,39 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'vDif', kind: 'element', type: '#string', optional: false, list: false },
   ],
   TDevTrib: [
+    { name: 'pDevTrib', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'vDevTrib', kind: 'element', type: '#string', optional: false, list: false },
   ],
   TRed: [
     { name: 'pRedAliq', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'pAliqEfet', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TCIBS_gIBSUF: [
+  TCIBS_NFe_gIBSUF: [
     { name: 'pIBSUF', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'gDif', kind: 'element', type: 'TDif', optional: true, list: false },
     { name: 'gDevTrib', kind: 'element', type: 'TDevTrib', optional: true, list: false },
     { name: 'gRed', kind: 'element', type: 'TRed', optional: true, list: false },
     { name: 'vIBSUF', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TCIBS_gIBSMun: [
+  TCIBS_NFe_gIBSMun: [
     { name: 'pIBSMun', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'gDif', kind: 'element', type: 'TDif', optional: true, list: false },
     { name: 'gDevTrib', kind: 'element', type: 'TDevTrib', optional: true, list: false },
     { name: 'gRed', kind: 'element', type: 'TRed', optional: true, list: false },
     { name: 'vIBSMun', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TCIBS_gCBS: [
+  TALCZFMCBS_NFe: [
+    { name: 'tpALCZFMCBS', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'nProcSuframa', kind: 'element', type: '#string', optional: true, list: false },
+    { name: 'pAliqEfetRegCBS', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vTribRegCBS', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TCIBS_NFe_gCBS: [
     { name: 'pCBS', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'gDif', kind: 'element', type: 'TDif', optional: true, list: false },
     { name: 'gDevTrib', kind: 'element', type: 'TDevTrib', optional: true, list: false },
     { name: 'gRed', kind: 'element', type: 'TRed', optional: true, list: false },
+    { name: 'gALCZFMCBS', kind: 'element', type: 'TALCZFMCBS_NFe', optional: true, list: false },
     { name: 'vCBS', kind: 'element', type: '#string', optional: false, list: false },
   ],
   TTribRegular: [
@@ -2678,47 +2785,115 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'pAliqCBS', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vTribCBS', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TCIBS: [
+  TCIBS_NFe: [
     { name: 'vBC', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'gIBSUF', kind: 'element', type: 'TCIBS_gIBSUF', optional: false, list: false },
-    { name: 'gIBSMun', kind: 'element', type: 'TCIBS_gIBSMun', optional: false, list: false },
+    { name: 'gIBSUF', kind: 'element', type: 'TCIBS_NFe_gIBSUF', optional: false, list: false },
+    { name: 'gIBSMun', kind: 'element', type: 'TCIBS_NFe_gIBSMun', optional: false, list: false },
     { name: 'vIBS', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'gCBS', kind: 'element', type: 'TCIBS_gCBS', optional: false, list: false },
+    { name: 'gCBS', kind: 'element', type: 'TCIBS_NFe_gCBS', optional: false, list: false },
     { name: 'gTribRegular', kind: 'element', type: 'TTribRegular', optional: true, list: false },
     { name: 'gTribCompraGov', kind: 'element', type: 'TTribCompraGov', optional: true, list: false },
   ],
-  TMonofasia_gMonoPadrao: [
+  TMonofasia_gIBSMonoAdRem_gMonoPadrao: [
     { name: 'qBCMono', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'adRemIBS', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'adRemCBS', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vIBSMono', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'vCBSMono', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TMonofasia_gMonoReten: [
+  TMonofasia_gIBSMonoAdRem_gMonoReten: [
     { name: 'qBCMonoReten', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'adRemIBSReten', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vIBSMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdRem_gMonoRet: [
+    { name: 'vIBSMonoRet', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdRem_gpBioDiferenca: [
+    { name: 'qBCBioComb', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSDiferenca', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdRem: [
+    { name: 'gMonoPadrao', kind: 'element', type: 'TMonofasia_gIBSMonoAdRem_gMonoPadrao', optional: true, list: false },
+    { name: 'gMonoReten', kind: 'element', type: 'TMonofasia_gIBSMonoAdRem_gMonoReten', optional: true, list: false },
+    { name: 'gMonoRet', kind: 'element', type: 'TMonofasia_gIBSMonoAdRem_gMonoRet', optional: true, list: false },
+    { name: 'gpBioDiferenca', kind: 'element', type: 'TMonofasia_gIBSMonoAdRem_gpBioDiferenca', optional: true, list: false },
+  ],
+  TMonofasia_gIBSMonoAdValorem_gMonoPadrao: [
+    { name: 'vBCMono', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'pAliqMonoUF', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSMonoUF', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'pAliqMonoMun', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSMonoMun', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSMono', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdValorem_gMonoReten: [
+    { name: 'vBCMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'pAliqMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdValorem_gMonoRet: [
+    { name: 'vIBSMonoRet', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdValorem_gpBioDiferenca: [
+    { name: 'qBCBioComb', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vIBSDiferenca', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gIBSMonoAdValorem: [
+    { name: 'gMonoPadrao', kind: 'element', type: 'TMonofasia_gIBSMonoAdValorem_gMonoPadrao', optional: true, list: false },
+    { name: 'gMonoReten', kind: 'element', type: 'TMonofasia_gIBSMonoAdValorem_gMonoReten', optional: true, list: false },
+    { name: 'gMonoRet', kind: 'element', type: 'TMonofasia_gIBSMonoAdValorem_gMonoRet', optional: true, list: false },
+    { name: 'gpBioDiferenca', kind: 'element', type: 'TMonofasia_gIBSMonoAdValorem_gpBioDiferenca', optional: true, list: false },
+  ],
+  TMonofasia_gCBSMonoAdRem_gMonoPadrao: [
+    { name: 'qBCMono', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'adRemCBS', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vCBSMono', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdRem_gMonoReten: [
+    { name: 'qBCMonoReten', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'adRemCBSReten', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vCBSMonoReten', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TMonofasia_gMonoRet: [
-    { name: 'qBCMonoRet', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'adRemIBSRet', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'vIBSMonoRet', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'adRemCBSRet', kind: 'element', type: '#string', optional: false, list: false },
+  TMonofasia_gCBSMonoAdRem_gMonoRet: [
     { name: 'vCBSMonoRet', kind: 'element', type: '#string', optional: false, list: false },
   ],
-  TMonofasia_gMonoDif: [
-    { name: 'pDifIBS', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'vIBSMonoDif', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'pDifCBS', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'vCBSMonoDif', kind: 'element', type: '#string', optional: false, list: false },
+  TMonofasia_gCBSMonoAdRem_gpBioDiferenca: [
+    { name: 'qBCBioComb', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vCBSDiferenca', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdRem: [
+    { name: 'gMonoPadrao', kind: 'element', type: 'TMonofasia_gCBSMonoAdRem_gMonoPadrao', optional: true, list: false },
+    { name: 'gMonoReten', kind: 'element', type: 'TMonofasia_gCBSMonoAdRem_gMonoReten', optional: true, list: false },
+    { name: 'gMonoRet', kind: 'element', type: 'TMonofasia_gCBSMonoAdRem_gMonoRet', optional: true, list: false },
+    { name: 'gpBioDiferenca', kind: 'element', type: 'TMonofasia_gCBSMonoAdRem_gpBioDiferenca', optional: true, list: false },
+  ],
+  TMonofasia_gCBSMonoAdValorem_gMonoPadrao: [
+    { name: 'vBCMono', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'pAliqMonoCBS', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vCBSMono', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdValorem_gMonoReten: [
+    { name: 'vBCMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'pAliqMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vCBSMonoReten', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdValorem_gMonoRet: [
+    { name: 'vCBSMonoRet', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdValorem_gpBioDiferenca: [
+    { name: 'qBCBioComb', kind: 'element', type: '#string', optional: false, list: false },
+    { name: 'vCBSDiferenca', kind: 'element', type: '#string', optional: false, list: false },
+  ],
+  TMonofasia_gCBSMonoAdValorem: [
+    { name: 'gMonoPadrao', kind: 'element', type: 'TMonofasia_gCBSMonoAdValorem_gMonoPadrao', optional: true, list: false },
+    { name: 'gMonoReten', kind: 'element', type: 'TMonofasia_gCBSMonoAdValorem_gMonoReten', optional: true, list: false },
+    { name: 'gMonoRet', kind: 'element', type: 'TMonofasia_gCBSMonoAdValorem_gMonoRet', optional: true, list: false },
+    { name: 'gpBioDiferenca', kind: 'element', type: 'TMonofasia_gCBSMonoAdValorem_gpBioDiferenca', optional: true, list: false },
   ],
   TMonofasia: [
-    { name: 'gMonoPadrao', kind: 'element', type: 'TMonofasia_gMonoPadrao', optional: true, list: false },
-    { name: 'gMonoReten', kind: 'element', type: 'TMonofasia_gMonoReten', optional: true, list: false },
-    { name: 'gMonoRet', kind: 'element', type: 'TMonofasia_gMonoRet', optional: true, list: false },
-    { name: 'gMonoDif', kind: 'element', type: 'TMonofasia_gMonoDif', optional: true, list: false },
+    { name: 'gIBSMonoAdRem', kind: 'element', type: 'TMonofasia_gIBSMonoAdRem', optional: true, list: false, choiceGroup: 22 },
+    { name: 'gIBSMonoAdValorem', kind: 'element', type: 'TMonofasia_gIBSMonoAdValorem', optional: true, list: false, choiceGroup: 22 },
+    { name: 'gCBSMonoAdRem', kind: 'element', type: 'TMonofasia_gCBSMonoAdRem', optional: true, list: false, choiceGroup: 23 },
+    { name: 'gCBSMonoAdValorem', kind: 'element', type: 'TMonofasia_gCBSMonoAdValorem', optional: true, list: false, choiceGroup: 23 },
     { name: 'vTotIBSMonoItem', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'vTotCBSMonoItem', kind: 'element', type: '#string', optional: false, list: false },
   ],
@@ -2737,8 +2912,8 @@ export const META: Record<string, readonly FieldDef[]> = {
   ],
   TCredPres: [
     { name: 'pCredPres', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'vCredPres', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 23 },
-    { name: 'vCredPresCondSus', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 23 },
+    { name: 'vCredPres', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 25 },
+    { name: 'vCredPresCondSus', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 25 },
   ],
   TCredPresOper: [
     { name: 'vBCCredPres', kind: 'element', type: '#string', optional: false, list: false },
@@ -2755,13 +2930,13 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'CST', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'cClassTrib', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'indDoacao', kind: 'element', type: '#string', optional: true, list: false },
-    { name: 'gIBSCBS', kind: 'element', type: 'TCIBS', optional: true, list: false, choiceGroup: 21 },
+    { name: 'gIBSCBS', kind: 'element', type: 'TCIBS_NFe', optional: true, list: false, choiceGroup: 21 },
     { name: 'gIBSCBSMono', kind: 'element', type: 'TMonofasia', optional: true, list: false, choiceGroup: 21 },
     { name: 'gTransfCred', kind: 'element', type: 'TTransfCred', optional: true, list: false, choiceGroup: 21 },
     { name: 'gAjusteCompet', kind: 'element', type: 'TAjusteCompet', optional: true, list: false, choiceGroup: 21 },
     { name: 'gEstornoCred', kind: 'element', type: 'TEstornoCred', optional: true, list: false },
-    { name: 'gCredPresOper', kind: 'element', type: 'TCredPresOper', optional: true, list: false, choiceGroup: 22 },
-    { name: 'gCredPresIBSZFM', kind: 'element', type: 'TCredPresIBSZFM', optional: true, list: false, choiceGroup: 22 },
+    { name: 'gCredPresOper', kind: 'element', type: 'TCredPresOper', optional: true, list: false, choiceGroup: 24 },
+    { name: 'gCredPresIBSZFM', kind: 'element', type: 'TCredPresIBSZFM', optional: true, list: false, choiceGroup: 24 },
   ],
   TNFe_infNFe_det_imposto: [
     { name: 'vTotTrib', kind: 'element', type: '#string', optional: true, list: false },
@@ -2919,8 +3094,8 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'vNFTot', kind: 'element', type: '#string', optional: true, list: false },
   ],
   TNFe_infNFe_transp_transporta: [
-    { name: 'CNPJ', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 24 },
-    { name: 'CPF', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 24 },
+    { name: 'CNPJ', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 26 },
+    { name: 'CPF', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 26 },
     { name: 'xNome', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'IE', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'xEnder', kind: 'element', type: '#string', optional: true, list: false },
@@ -2956,10 +3131,10 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'modFrete', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'transporta', kind: 'element', type: 'TNFe_infNFe_transp_transporta', optional: true, list: false },
     { name: 'retTransp', kind: 'element', type: 'TNFe_infNFe_transp_retTransp', optional: true, list: false },
-    { name: 'veicTransp', kind: 'element', type: 'TVeiculo', optional: true, list: false, choiceGroup: 25 },
-    { name: 'reboque', kind: 'element', type: 'TVeiculo', optional: true, list: true, choiceGroup: 25 },
-    { name: 'vagao', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 25 },
-    { name: 'balsa', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 25 },
+    { name: 'veicTransp', kind: 'element', type: 'TVeiculo', optional: true, list: false, choiceGroup: 27 },
+    { name: 'reboque', kind: 'element', type: 'TVeiculo', optional: true, list: true, choiceGroup: 27 },
+    { name: 'vagao', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 27 },
+    { name: 'balsa', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 27 },
     { name: 'vol', kind: 'element', type: 'TNFe_infNFe_transp_vol', optional: true, list: true },
   ],
   TNFe_infNFe_cobr_fat: [
@@ -3075,8 +3250,8 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'nGuia', kind: 'element', type: '#string', optional: false, list: false },
   ],
   TNFe_infNFe_agropecuario: [
-    { name: 'defensivo', kind: 'element', type: 'TNFe_infNFe_agropecuario_defensivo', optional: true, list: true, choiceGroup: 26 },
-    { name: 'guiaTransito', kind: 'element', type: 'TNFe_infNFe_agropecuario_guiaTransito', optional: true, list: false, choiceGroup: 26 },
+    { name: 'defensivo', kind: 'element', type: 'TNFe_infNFe_agropecuario_defensivo', optional: true, list: true, choiceGroup: 28 },
+    { name: 'guiaTransito', kind: 'element', type: 'TNFe_infNFe_agropecuario_guiaTransito', optional: true, list: false, choiceGroup: 28 },
   ],
   TNFe_infNFe_infPAA_PAASignature: [
     { name: 'SignatureValue', kind: 'element', type: '#string', optional: false, list: false },
@@ -3155,8 +3330,8 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'xEvento', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'nSeqEvento', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'cOrgaoAutor', kind: 'element', type: '#string', optional: true, list: false },
-    { name: 'CNPJDest', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 27 },
-    { name: 'CPFDest', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 27 },
+    { name: 'CNPJDest', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 29 },
+    { name: 'CPFDest', kind: 'element', type: '#string', optional: true, list: false, choiceGroup: 29 },
     { name: 'emailDest', kind: 'element', type: '#string', optional: true, list: false },
     { name: 'dhRegEvento', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'nProt', kind: 'element', type: '#string', optional: true, list: false },
@@ -3296,8 +3471,8 @@ export const META: Record<string, readonly FieldDef[]> = {
     { name: 'xMotivo', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'cUF', kind: 'element', type: '#string', optional: false, list: false },
     { name: 'dhRecbto', kind: 'element', type: '#string', optional: false, list: false },
-    { name: 'infRec', kind: 'element', type: 'TRetEnviNFe_infRec', optional: true, list: false, choiceGroup: 28 },
-    { name: 'protNFe', kind: 'element', type: 'TProtNFe', optional: true, list: false, choiceGroup: 28 },
+    { name: 'infRec', kind: 'element', type: 'TRetEnviNFe_infRec', optional: true, list: false, choiceGroup: 30 },
+    { name: 'protNFe', kind: 'element', type: 'TProtNFe', optional: true, list: false, choiceGroup: 30 },
     { name: 'versao', kind: 'attribute', type: '#string', optional: false, list: false },
   ],
 };

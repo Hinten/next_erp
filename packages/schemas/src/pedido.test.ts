@@ -35,6 +35,8 @@ const baseItem: ItemDoPedido = {
   custo: null,
   timestamp: null,
   imposto: null,
+  dfeReferenciado: null,
+  ajusteRtc: null,
 };
 
 describe('pedidoSchema', () => {

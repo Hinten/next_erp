@@ -22,6 +22,8 @@ function item(over: Partial<ItemDoPedido> = {}): ItemDoPedido {
     custo: null,
     timestamp: null,
     imposto: null,
+    dfeReferenciado: null,
+    ajusteRtc: null,
     ...over,
   };
 }

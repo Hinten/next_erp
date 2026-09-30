@@ -6,6 +6,7 @@ import { bandeiraSchema } from '../../bandeiraCartao';
 import { outerRefSchema } from '../../shared/outerRef';
 import { ESTADO_PEDIDO, marketplacePedidoTipoSchema } from './pedido';
 import type { EstadoPedido } from './pedido';
+import { linkPagamentoIdSchema } from './linkPgtoMercadoPago';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
 const PERM_PAGAMENTO_WRITE = 1n << 25n;
@@ -425,6 +426,29 @@ export const pagamentoSchema = z.object({
    * Never compare this clock with `ultimaModificacao`, which is local recency.
    */
   lastProviderUpdate: microsSinceEpoch('Última atualização do provedor').nullable().optional(),
+  /**
+   * Doc id of the `pedidos/{pedidoId}/linkPgtoMercadoPago` link this Mercado Pago
+   * payment was made through (#367) — stamped by `apps/mercado-pago` from the
+   * preference's `metadata.link_id`. Absent on every payment that did not come
+   * from a link (and on every legacy one). ⚠️ The DOC id, never that link's `id`
+   * field (the preference id).
+   *
+   * `.nullable().optional()` and not `.default(null)`, like `lastProviderUpdate`:
+   * a server-stamped field the client never writes. A `.default(null)` would make
+   * every ML wholesale `tx.set` and every marketplace create start writing `null`
+   * keys, and `diffDocumentFields` reads absent → `null` as a change, so existing
+   * pagamentos would log spurious `historicoDeModificacoes` rows.
+   */
+  linkPagamentoId: linkPagamentoIdSchema.nullable().optional().describe('Link de pagamento'),
+  /**
+   * The payer's FIRST NAME only (LGPD data minimisation, #367): the payer's or
+   * cardholder's first name Mercado Pago reported, run through `extrairPrimeiroNome`
+   * (Latin letters, title-cased, <= 20 chars) by the mapper. Server-stamped, so
+   * `.nullable().optional()` for the same reason as `linkPagamentoId`. Never a
+   * surname, e-mail, CPF or card number — and it is kept out of
+   * `historicoDeModificacoes` (`onPagamentoChanged` `ignoreFields`).
+   */
+  primeiroNomePagador: z.string().min(1).max(20).nullable().optional().describe('Pagante'),
   dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
   dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
@@ -493,7 +517,7 @@ export const pagamentoMeta: CollectionMetadata = {
     write: PERM_PAGAMENTO_WRITE,
     delete: PERM_PAGAMENTO_DELETE,
   },
-  serverOwnedFields: ['lastProviderUpdate'],
+  serverOwnedFields: ['lastProviderUpdate', 'linkPagamentoId', 'primeiroNomePagador'],
 };
 
 export const pagamento = { schema: pagamentoSchema, meta: pagamentoMeta };

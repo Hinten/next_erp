@@ -7,6 +7,7 @@
  * apps/mercado-livre/lib/marketplace/core/respond.ts.
  */
 import { NextResponse } from 'next/server';
+import { CODIGO_ERRO_LINK } from '@delfrance/schemas';
 import {
   MercadoPagoError,
   MercadoPagoHttpError,
@@ -36,7 +37,13 @@ export function mercadoPagoErrorResponse(err: KnownError): NextResponse {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
   if (err instanceof MercadoPagoContaNotConfiguredError) {
-    return NextResponse.json({ error: err.message }, { status: 404 });
+    // Carries a `code` (#367) so the web client can tell this real answer about
+    // the account apart from the code-less HTML 404 of a backend that predates
+    // the link routes (or a proxy) — see `CODIGO_ERRO_LINK` in `@delfrance/schemas`.
+    return NextResponse.json(
+      { error: err.message, code: CODIGO_ERRO_LINK.contaNaoConfigurada },
+      { status: 404 },
+    );
   }
   if (err instanceof MercadoPagoReauthRequiredError) {
     // The stored grant is dead — the account must reconnect via OAuth.

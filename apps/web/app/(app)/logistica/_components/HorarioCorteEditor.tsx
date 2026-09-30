@@ -2,6 +2,7 @@
 
 import {
   ActionIcon,
+  Box,
   Button,
   Fieldset,
   Group,
@@ -108,7 +109,7 @@ export function HorarioCorteEditor({
           const marked = row[DELETE_MARK] === true;
           const errIdx = errIndices[i] ?? -1;
           return (
-            <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
+            <Group key={i} align="flex-start" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
               <Select
                 label="Dia da semana"
                 aria-label={`Dia da semana ${i + 1}`}
@@ -128,33 +129,35 @@ export function HorarioCorteEditor({
               {numberCell(i, errIdx, marked, 'prazoDePostagem', 'Dias úteis', 31)}
               {numberCell(i, errIdx, marked, 'horaPostagem', 'Postagem (h)', 23)}
               {numberCell(i, errIdx, marked, 'minutosPostagem', 'Postagem (min)', 59)}
-              {marked ? (
-                <Group gap={4} wrap="nowrap">
-                  <Text size="xs" c="red" fw={500}>
-                    Será excluído
-                  </Text>
+              <Box pt={25}>
+                {marked ? (
+                  <Group gap={4} wrap="nowrap">
+                    <Text size="xs" c="red" fw={500}>
+                      Será excluído
+                    </Text>
+                    <ActionIcon
+                      type="button"
+                      variant="subtle"
+                      aria-label={`Desfazer exclusão do horário ${i + 1}`}
+                      onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                      disabled={disabled}
+                    >
+                      <IconArrowBackUp size={16} />
+                    </ActionIcon>
+                  </Group>
+                ) : (
                   <ActionIcon
                     type="button"
                     variant="subtle"
-                    aria-label={`Desfazer exclusão do horário ${i + 1}`}
-                    onClick={() => patchRow(i, { [DELETE_MARK]: false })}
+                    color="red"
+                    aria-label={`Excluir horário ${i + 1}`}
+                    onClick={() => patchRow(i, { [DELETE_MARK]: true })}
                     disabled={disabled}
                   >
-                    <IconArrowBackUp size={16} />
+                    <IconTrash size={16} />
                   </ActionIcon>
-                </Group>
-              ) : (
-                <ActionIcon
-                  type="button"
-                  variant="subtle"
-                  color="red"
-                  aria-label={`Excluir horário ${i + 1}`}
-                  onClick={() => patchRow(i, { [DELETE_MARK]: true })}
-                  disabled={disabled}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              )}
+                )}
+              </Box>
             </Group>
           );
         })}

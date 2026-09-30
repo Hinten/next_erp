@@ -786,13 +786,15 @@ export const configuracaoIPISchema = z.object({
 export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
 
 // ---------------------------------------------------------------------------
-// configuracaoISSQN — mirror of the Flutter class (per-item ISSQN, services)
+// configuracaoISSQN — per-item ISSQN (services)
 // ---------------------------------------------------------------------------
 
 /**
- * Mirror of the Flutter `ConfiguracaoISSQN`. Driven by the XSD `<ISSQN>` shape.
- * The XSD makes `<imposto>` carry **either** `<ICMS>` **or** `<ISSQN>`
- * (xs:choice) — the dispatcher emits `<ISSQN>` and skips `<ICMS>` when set.
+ * Driven by the XSD `<ISSQN>` shape; the legacy Flutter app had no such class
+ * and never emitted ISSQN. The XSD makes `<imposto>` carry **either** `<ICMS>`
+ * **or** `<ISSQN>` (xs:choice) — the engine's dispatcher emits `<ISSQN>` and
+ * skips `<ICMS>` when set. NF-e emission refuses an item carrying it today
+ * (no `<ISSQNtot>`, NF-e conjugada not supported — #1656).
  */
 export const configuracaoISSQNSchema = z.object({
   vBC: z.number().nonnegative(),
@@ -846,7 +848,11 @@ export type Retencao = z.infer<typeof retencaoSchema>;
 
 /**
  * RTC `IS` (Imposto Seletivo) per-item sub-config. `pIS` (ad valorem over a
- * base) OR `pISEspec` (per unit, with `qTrib`) drives the value.
+ * base) OR `pISEspec` (per unit, with `qTrib` and `uTrib`) drives the value.
+ * This strict schema runs at emission (`parseRtcConfig`); the stored field is
+ * the lenient `configuracaoIBSCBSDraftSchema`. Its refine checks only that a
+ * mode is present. The per-unit `uTrib` is decided by `vereditoIsRtc`
+ * (`regrasDeEmissao.ts`), which the engine and the web editor share.
  */
 export const configuracaoISRtcSchema = z
   .object({
@@ -903,8 +909,9 @@ export const configuracaoIBSCBSSchema = z
   // Structural rule only (NT 2025.002, RV UB13/UB14): cClassTrib's first 3
   // digits == CST. Always correct, independent of any vendored table — so it
   // is the one cross-field check enforced at emit time (`parseRtcConfig`).
-  // Table *membership* is a UI-only warning (the vendored seed is a subset),
-  // never an emit-time block. Guard on format so we don't double-report.
+  // Table *membership* is a UI-only warning (the vendored table is a dated
+  // snapshot; SEFAZ adds codes outside the NT cycle), never an emit-time
+  // block. Guard on format so we don't double-report.
   .superRefine((cfg, ctx) => {
     if (
       /^\d{3}$/.test(cfg.CST) &&
