@@ -120,6 +120,12 @@ runConfig:
 #                           the 30-minute reprocess sweep drains it (sweep-only
 #                           mode). Use before the functions IAM is granted;
 #                           never a silent drop.
+#                           NF-e (step 14): with the valve on, the
+#                           `onNfeAprovadaShopee` trigger raises one aviso
+#                           `tasks-desabilitadas` per pedido instead of
+#                           enqueuing, and `/enviar-nfe` answers 503 — there is
+#                           no NF-e sweep; recover with the route or
+#                           `enviar:nfe`.
 #   SHOPEE_STOCK_MANUAL_DEADLINE_MS
 #                           OPTIONAL — the manual stock push's wall-clock budget
 #                           in ms (default 120000). It is what normally ENDS that

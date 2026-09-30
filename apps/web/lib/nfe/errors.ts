@@ -21,6 +21,7 @@ import {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeTimeoutError,
   NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -370,6 +371,14 @@ export function notificationForNFeError(
       message: err.message,
       color: 'red',
     };
+  }
+  // ⚠️ BEFORE the NFeNetworkError arm — it is a subclass (#1094). "Não foi
+  // possível alcançar o servidor" would be false here: the request may have
+  // reached `apps/nfe` and still be running, so the error's own message says
+  // what to check before repeating. Yellow, not red: the outcome is unknown,
+  // not a failure, and a red toast is what invites the re-click.
+  if (err instanceof NFeTimeoutError) {
+    return { title: 'Tempo esgotado', message: err.message, color: 'yellow' };
   }
   if (err instanceof NFeNetworkError) {
     return {

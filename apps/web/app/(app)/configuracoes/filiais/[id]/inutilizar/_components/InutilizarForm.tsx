@@ -21,12 +21,16 @@ import {
   NFeHttpError,
   NFeInutilizacaoAbortedError,
   NFeNetworkError,
+  NFeTimeoutError,
   NFeRejectedError,
   type NFeInutilizarResult,
 } from '@delfrance/integrations-nfe/http-provider';
 
 import { useNFeClient } from '@/lib/nfe/client';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 import { InutilizacaoHistory } from './InutilizacaoHistory';
 
 const XJUST_MIN = 15;
@@ -100,6 +104,17 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
       if (err instanceof NFeInutilizacaoAbortedError) {
         // Pre-check abort: a número in the range belongs to an authorized NF-e.
         showErrorNotification({ title: 'Inutilização não permitida', message: err.message });
+        return;
+      }
+      // ⚠️ #1094: before the generic arm — a timeout IS an NFeNetworkError. The
+      // outcome is unknown (the event may still be registering at SEFAZ), so a
+      // red "Falha" would invite the re-click that registers a second one.
+      if (err instanceof NFeTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado',
+          message: err.message,
+          color: 'yellow',
+        });
         return;
       }
       // The client throws NFeHttpError subclasses (incl. NFeRejectedError) or

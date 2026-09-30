@@ -16,7 +16,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
 import { safeLog } from '@/lib/nfe/log';
 import { sefazCallFor, tpEmisFromChave } from '@/lib/nfe/orchestrator/sefaz-call';
-import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, isNFeRuntimeMisconfig } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -48,7 +48,10 @@ export async function GET(req: Request): Promise<NextResponse> {
   try {
     base = getNFeRuntime();
   } catch (e) {
-    return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
+    // A misconfigured deploy (NFE_AMBIENTE / NFE_UF / TLS chain) → 503.
+    // Anything else is a bug and must surface, not hide behind a 503.
+    if (!isNFeRuntimeMisconfig(e)) throw e;
+    return authError(503, { error: e.message });
   }
 
   // The consulta signs the mTLS handshake with the cert of the filial that owns
@@ -76,6 +79,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       nProt: protInf?.nProt ?? null,
       raw: ret,
     });
+    // Last-resort 500 on purpose: an `NFeTransportError` carries the raw SEFAZ
+    // reply, so the error is logged only through the redacting `safeLog`
+    // (rule 9). A rethrow would hand Next the raw error object to log.
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort 500, logged redacted
   } catch (e) {
     safeLog('error', '[nfe/consultar]', e);
     return authError(500, {

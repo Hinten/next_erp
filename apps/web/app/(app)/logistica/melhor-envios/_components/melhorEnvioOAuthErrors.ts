@@ -3,6 +3,7 @@
 import {
   FreightHttpError,
   FreightNetworkError,
+  FreightTimeoutError,
 } from '@delfrance/integrations-freight-br/http-client';
 
 import type { ConnectionFailure } from '@/components/oauth/ConnectionPanel';
@@ -79,6 +80,8 @@ export const MELHOR_ENVIO_OAUTH_TOAST = {
  */
 export function describeMelhorEnvioConnectFailure(err: unknown): string | null {
   if (err instanceof FreightHttpError) return err.message;
+  // Before the network arm: a timeout is a subclass, and its message is the copy.
+  if (err instanceof FreightTimeoutError) return err.message;
   if (err instanceof FreightNetworkError) return 'Falha de rede ao iniciar a conexão.';
   return null;
 }
@@ -96,8 +99,11 @@ export function describeMelhorEnvioContaFailure(err: unknown): ConnectionFailure
   const message =
     err instanceof FreightHttpError
       ? err.message
-      : err instanceof FreightNetworkError
-        ? 'Falha de rede ao consultar a conta.'
-        : 'Não foi possível consultar a conta.';
+      : // Before the network arm: a timeout is a subclass, and its message is the copy.
+        err instanceof FreightTimeoutError
+        ? err.message
+        : err instanceof FreightNetworkError
+          ? 'Falha de rede ao consultar a conta.'
+          : 'Não foi possível consultar a conta.';
   return { message, retryable: false };
 }
