@@ -33,9 +33,10 @@ Nothing of either is deployed anywhere.
 Everything here is **offline-verified**. No module has uploaded to a Brazilian
 shop, and none can in the sandbox: that shop is SG, which Shopee answers with
 `invoice_data: null`, and staging emits homologação (`tpAmb 2`) notes, which the
-shared predicate never sends. No probe result is recorded in this tree yet.
-Until one is, every wire fact below comes from Shopee's documentation and the
-legacy app, and §16 names what settles each one.
+shared predicate never sends. The sandbox probe ran on 2026-09-30 on one
+fresh SG order (§16): it settled the multipart SHAPE and the SG refusal, and
+nothing BR-specific. Beyond it, every wire fact below comes from Shopee's
+documentation and the legacy app, and §16 names what settles each one.
 
 ## 1. The modules, in families
 
@@ -1027,16 +1028,18 @@ table, with the same numbers and statuses, is the Built-14 bullet of
 `.master_plans/shopee/shopee-marketplace-integration.md` §4. None of the
 items is a gate.
 
-- **Settled by the sandbox probe** (a synthetic XML with an impossible UF and a
-  repeated-digit CNPJ, on ONE fresh SG Console order, against the COMMITTED
-  op; each answer flips one named constant, in a commit quoting the probe
-  step). Items: 184 (the multipart shape: parts, `file_type` as text `'4'`,
-  filename, content type), 185 (what an SG order answers), 194's half
-  (whether `international_label` is accepted on a replacing field list; if
-  refused, the export arm and its motivo go), 195 (whether "1MB" is 10⁶ or
-  2²⁰ bytes, which is the ceiling literal), and 186 and 188 when the probe
-  reaches them (the success envelope's `error: ""` vs absent, and the
-  same-order resend text, which is N2's needle).
+- **The sandbox probe (ran 2026-09-30** — a synthetic XML with an impossible UF
+  and a repeated-digit CNPJ, on ONE fresh SG Console order, against the
+  COMMITTED op). Settled: 184's SHAPE (the shipped call reached business
+  validation; an omitted `file_type` is "a required field"); 185 (SG answers
+  `order.upload_invoice_error` "File error." in an HTTP-200 envelope, no TAB
+  in the code, for EVERY file variant — N12 maps it); 194's first half (SG
+  refuses `international_label` with "only supported in [br]" — BR support
+  stated by Shopee, so the field and the export arm are KEPT; a handler run
+  against the SG sandbox therefore fails at its pre-read, which is never a
+  production path). NOT settled: 195 (both probe sizes got the same "File
+  error." — the 1 MiB literal stays), 186 and 188 (P9 needs a SUCCESSFUL
+  upload). No constant flipped.
 - **Needs a Brazilian shop, and is not rehearsable in the sandbox** (the
   migration window's first watched upload, W5 below):
   - 186 if the probe did not answer it;
