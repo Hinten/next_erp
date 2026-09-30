@@ -124,6 +124,12 @@ export type CheckoutDanfeFormat = 'simplificadoPdf' | 'retrato' | 'paisagem' | '
  * first caller to use that entry point (#376). Once a real Zebra has confirmed
  * it, this can switch to `printDanfe(..., 'etq')` too; until then a download is
  * the honest default for a fiscal document.
+ *
+ * ⚠️ That switch is NOT a one-liner. The agent matches the content type with
+ * `==`, and the DANFE route answers `text/plain; charset=utf-8`, which
+ * `printDanfe` would forward as is: the job would fail inside the agent behind
+ * a `200 OK`, so no download fallback and no toast. Send the bare `text/plain`,
+ * as `genericLabel.ts` does.
  */
 export async function printDanfeForCheckout(
   client: NFeHttpClient,
