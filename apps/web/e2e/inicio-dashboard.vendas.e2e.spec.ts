@@ -103,11 +103,12 @@ test.describe.serial('Início — dashboard e links de despacho', () => {
       0,
     );
     const checkout = page.getByRole('region', { name: 'Checkout', exact: true });
-    await expect(checkout.getByText(userId, { exact: true })).toBeVisible();
+    const collaborator = checkout.getByRole('paragraph').filter({ hasText: userId });
+    await expect(collaborator).toBeVisible();
     await checkout.getByText('Semana', { exact: true }).last().click();
-    await expect(checkout.getByText(userId, { exact: true })).toBeVisible();
+    await expect(collaborator).toBeVisible();
     await checkout.getByText('Mês', { exact: true }).last().click();
-    await expect(checkout.getByText(userId, { exact: true })).toBeVisible();
+    await expect(collaborator).toBeVisible();
   });
   test('links the unique packed-order Total, persists reload/detail navigation, and clears', async ({
     page,
