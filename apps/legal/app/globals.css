@@ -1,0 +1,250 @@
+:root {
+  color-scheme: light;
+  --ink: #212529;
+  --muted: #495057;
+  --blue: #1864ab;
+  --line: #dee2e6;
+  --surface: #f8f9fa;
+  --paper: #ffffff;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+a {
+  color: var(--blue);
+  text-underline-offset: 0.2em;
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+a:focus-visible,
+[tabindex='-1']:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 4px;
+}
+h1,
+h2 {
+  line-height: 1.25;
+  text-wrap: balance;
+}
+h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  margin: 0 0 1rem;
+}
+h2 {
+  font-size: 1.375rem;
+  margin: 0 0 1rem;
+  font-weight: 650;
+}
+p {
+  margin: 0 0 1rem;
+}
+ul,
+ol {
+  padding-left: 1.5rem;
+}
+li + li {
+  margin-top: 0.5rem;
+}
+main {
+  max-width: 75ch;
+  margin: 0 auto;
+  padding: 3.5rem 1.5rem 2rem;
+}
+.site-header,
+.site-footer {
+  max-width: 75ch;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem;
+}
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+.site-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  font-size: 0.9375rem;
+}
+.site-footer {
+  color: var(--muted);
+  font-size: 0.875rem;
+  border-top: 1px solid var(--line);
+}
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: 0;
+  transform: translateY(-150%);
+  padding: 0.75rem 1rem;
+  background: var(--paper);
+  z-index: 1;
+}
+.skip-link:focus {
+  transform: translateY(0.5rem);
+}
+.document-intro {
+  color: var(--muted);
+  font-size: 1.1875rem;
+  line-height: 1.65;
+}
+.revision {
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+.legal-identity {
+  margin: 2rem 0;
+  padding: 1.25rem;
+  background: var(--surface);
+  border-left: 3px solid var(--blue);
+  overflow-wrap: anywhere;
+}
+.legal-identity dl {
+  margin: 0;
+}
+.legal-identity dl > div + div {
+  margin-top: 0.75rem;
+}
+.legal-identity dt {
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+.legal-identity dd {
+  margin: 0;
+}
+.config-notice {
+  font-size: 0.9375rem;
+}
+.config-notice p,
+.config-notice ul {
+  margin-bottom: 0;
+}
+.legal-identity dl + .config-notice {
+  margin-top: 1rem;
+}
+.contents {
+  border-block: 1px solid var(--line);
+  padding: 1.5rem 0;
+  margin: 2rem 0 3rem;
+}
+.contents ol {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+.contents li + li {
+  margin-top: 0.25rem;
+}
+.legal-document section {
+  margin: 0 0 2.5rem;
+}
+.legal-document section h2 {
+  scroll-margin-top: 1.5rem;
+}
+.document-footer {
+  padding: 1rem 0;
+}
+.document-links {
+  margin: 2.5rem 0;
+  border-top: 1px solid var(--line);
+}
+.document-links > a {
+  display: block;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--line);
+  text-decoration: none;
+}
+.document-links > a:hover h2 {
+  text-decoration: underline;
+}
+.document-links h2 {
+  margin-bottom: 0.5rem;
+}
+.document-links p {
+  margin: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 480px) {
+  .site-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  main {
+    padding-top: 2rem;
+  }
+  .legal-identity {
+    padding: 1rem;
+  }
+}
+
+@media print {
+  :root {
+    --ink: #000000;
+    --muted: #000000;
+    --blue: #000000;
+  }
+  body {
+    font-size: 10pt;
+    line-height: 1.5;
+  }
+  main {
+    max-width: none;
+    padding: 0;
+  }
+  .site-header,
+  .site-footer,
+  .skip-link,
+  .contents,
+  .document-footer,
+  .config-notice {
+    display: none;
+  }
+  h1 {
+    font-size: 22pt;
+  }
+  h2 {
+    font-size: 13pt;
+    break-after: avoid;
+  }
+  p,
+  li {
+    orphans: 3;
+    widows: 3;
+  }
+  .legal-identity {
+    background: none;
+    border-left: 1px solid black;
+    break-inside: avoid;
+  }
+  a {
+    text-decoration: none;
+  }
+  a[href^='https://']::after {
+    content: ' (' attr(href) ')';
+    font-size: 8pt;
+    overflow-wrap: anywhere;
+  }
+}
