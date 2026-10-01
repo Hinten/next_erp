@@ -105,6 +105,31 @@ export class ShopeeClientNetworkError extends Error {
 }
 
 /**
+ * Read a response BODY, turning a connection that dies mid-body into the same
+ * {@link ShopeeClientNetworkError} a failed `fetch` becomes.
+ *
+ * ⚠️ Wrapping only `fetch` is not enough: the headers can arrive and the socket
+ * still drop while the body streams, and `text()` / `blob()` then reject with a
+ * bare `TypeError` ("terminated" in Node, "network error" in Chrome). Unwrapped,
+ * that escaped every handler in the label loop — an unhandled rejection on the
+ * `/pedidos` row and a skipped reset on the checkout (#1748 review). The loop
+ * reads one body per poll for up to two minutes, so the window is wide.
+ *
+ * An abort WE asked for rethrows untouched: the caller tells its own deadline
+ * apart by `signal.aborted`, and must keep seeing the abort itself. Any error
+ * that is not a `TypeError` is not a transport failure and rethrows too.
+ */
+async function lerCorpo<T>(ler: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  try {
+    return await ler();
+  } catch (err) {
+    if (signal?.aborted === true) throw err;
+    if (err instanceof TypeError) throw new ShopeeClientNetworkError(err.message, err);
+    throw err;
+  }
+}
+
+/**
  * What to say when the backend answered a non-2xx WITHOUT our JSON envelope —
  * the case where the request never reached one of its routes at all.
  *
@@ -171,7 +196,9 @@ export interface ShopeeClient {
    * failure — a {@link ShopeeClientNetworkError} whose `cause` is the
    * `DOMException` — while the request is in flight; an abort during the BODY
    * read rejects with that `DOMException` itself. A caller telling its own
-   * deadline apart reads `signal.aborted`, which covers both.
+   * deadline apart reads `signal.aborted`, which covers both. A connection that
+   * drops mid-body WITHOUT an abort is a {@link ShopeeClientNetworkError} too
+   * (`lerCorpo`), never a bare `TypeError`.
    */
   etiqueta(
     p: ShopeeEtiquetaPedido,
@@ -337,7 +364,7 @@ export function createShopeeClient(config: {
       throw new ShopeeClientNetworkError(err instanceof Error ? err.message : 'fetch falhou', err);
     }
 
-    const text = await res.text();
+    const text = await lerCorpo(() => res.text());
     if (!res.ok) throw erroHttp(path, res, text);
     return lerCorpoJson(path, res.status, text, schema);
   }
@@ -371,14 +398,17 @@ export function createShopeeClient(config: {
       throw new ShopeeClientNetworkError(err instanceof Error ? err.message : 'fetch falhou', err);
     }
 
-    if (!res.ok) throw erroHttp(ETIQUETA_PATH, res, await res.text());
+    const sinal = opts?.signal;
+    if (!res.ok) {
+      throw erroHttp(ETIQUETA_PATH, res, await lerCorpo(() => res.text(), sinal));
+    }
 
     // ---- 202: a wait or a question — JSON only. ----
     if (res.status === 202) {
       const pendente = lerCorpoJson(
         ETIQUETA_PATH,
         res.status,
-        await res.text(),
+        await lerCorpo(() => res.text(), sinal),
         shopeeEtiquetaPendenteSchema,
       );
       return { ...pendente, tipo: 'pendente' };
@@ -401,7 +431,7 @@ export function createShopeeClient(config: {
     // A proxy login page or an App Hosting error page arrives as HTML: the
     // request never reached the route, which answers a label or nothing.
     if (essencia === 'text/html') {
-      logarCorpoNaoJson(ETIQUETA_PATH, res.status, await res.text());
+      logarCorpoNaoJson(ETIQUETA_PATH, res.status, await lerCorpo(() => res.text(), sinal));
       throw new ShopeeClientRespostaInvalidaError(
         `A integração com a Shopee respondeu HTTP ${String(res.status)} com uma página HTML ` +
           'em vez da etiqueta — o pedido não chegou à rota esperada. Atualize a página e, se ' +
@@ -423,7 +453,7 @@ export function createShopeeClient(config: {
       );
     }
 
-    const blob = await res.blob();
+    const blob = await lerCorpo(() => res.blob(), sinal);
     // "A 2xx with an empty body is a failed label" — never a blank print.
     if (blob.size === 0) {
       logarCorpoNaoJson(ETIQUETA_PATH, res.status, '(corpo vazio)');

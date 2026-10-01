@@ -879,3 +879,78 @@ describe('etiqueta — non-2xx: the backend’s own sentence', () => {
     expect(err.message).not.toContain('<!DOCTYPE');
   });
 });
+
+/**
+ * The headers arrived and the socket died while the BODY streamed: `text()` /
+ * `blob()` reject with a bare `TypeError` ("terminated" in Node, "network error"
+ * in Chrome). Wrapping only `fetch` let that escape every handler in the label
+ * loop (#1748 review), so every body read goes through `lerCorpo`.
+ */
+class RespostaQueCaiNoCorpo extends Response {
+  constructor(
+    status: number,
+    headers: Record<string, string>,
+    private readonly erro: unknown = new TypeError('terminated'),
+  ) {
+    super(null, { status, headers });
+  }
+  override text(): Promise<string> {
+    return Promise.reject(this.erro);
+  }
+  override blob(): Promise<Blob> {
+    return Promise.reject(this.erro);
+  }
+}
+
+describe('a connection that drops while the BODY is read (#1748 review)', () => {
+  const PDF = { 'content-type': 'application/pdf' };
+  const JSON_CT = { 'content-type': 'application/json' };
+
+  it.each([
+    ['a 202 (the JSON wait)', 202, JSON_CT],
+    ['a 200 (the label bytes)', 200, PDF],
+    ['a 409 (the refusal)', 409, JSON_CT],
+    ['a 200 HTML page (logged before refusing)', 200, { 'content-type': 'text/html' }],
+  ])('%s ⇒ ShopeeClientNetworkError carrying the TypeError', async (_rotulo, status, headers) => {
+    const queda = new TypeError('terminated');
+    const c = client(async () => new RespostaQueCaiNoCorpo(status, headers, queda));
+
+    const err = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+    expect((err as ShopeeClientNetworkError).cause).toBe(queda);
+  });
+
+  it('the GET path (`conta`) wraps a dropped body the same way', async () => {
+    const c = client(async () => new RespostaQueCaiNoCorpo(200, JSON_CT));
+
+    const err = await c.conta('int-1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+  });
+
+  it('near-miss — a body read that rejects after OUR abort rethrows untouched (the caller reads `signal.aborted`)', async () => {
+    const ctrl = new AbortController();
+    const abortado = new DOMException('The operation was aborted.', 'AbortError');
+    const c = client(async () => {
+      ctrl.abort();
+      return new RespostaQueCaiNoCorpo(202, JSON_CT, abortado);
+    });
+
+    const err = await c
+      .etiqueta({ pedidoId: 'ped-1', formato: 'pdf' }, { signal: ctrl.signal })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(abortado);
+    expect(err).not.toBeInstanceOf(ShopeeClientNetworkError);
+  });
+
+  it('near-miss — a rejection that is not a TypeError is not a transport failure and rethrows untouched', async () => {
+    const outro = new RangeError('não é uma queda de rede');
+    const c = client(async () => new RespostaQueCaiNoCorpo(202, JSON_CT, outro));
+
+    const err = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' }).catch((e: unknown) => e);
+
+    expect(err).toBe(outro);
+  });
+});
