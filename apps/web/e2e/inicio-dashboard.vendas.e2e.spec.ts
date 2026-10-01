@@ -135,6 +135,7 @@ test.describe.serial('Início — dashboard e links de despacho', () => {
     await page.reload();
     await expectRowVisible(page, pedidoId);
     await page.getByRole('link', { name: pedidoId, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/pedidos/${pedidoId}`));
     await page.goBack();
     await expectRowVisible(page, pedidoId);
     await expect(page).toHaveURL(/inicioDespacho=/);
