@@ -52,14 +52,13 @@ test.describe.serial('Início — dashboard e links de despacho', () => {
       db().collection('usuarios').doc(userId),
       usuarioSchema.parse({ nome: userId, colaborador: true }),
     );
-    batch.set(
-      db().collection('pedidos').doc(pedidoId),
-      pedidoSchema.parse({
+    batch.set(db().collection('pedidos').doc(pedidoId), {
+      ...pedidoSchema.parse({
         numero: pedidoId,
         ehSaida: true,
         estado: ESTADO_PEDIDO.pago,
         timestamp: Date.now() * 1000,
-        integracaoPedidoOuterRef: `integracao/${canalId}`,
+        integracaoPedidoOuterRef: `documents/integracao/${canalId}`,
         freteInicial: {
           ...seedFreteInicial(MODALIDADE_FRETE.semTransporte, true),
           estado: ESTADO_FRETE.empacotado,
@@ -67,7 +66,9 @@ test.describe.serial('Início — dashboard e links de despacho', () => {
         },
         foiImpresso: false,
       }),
-    );
+      // Seed the legacy wire encoding after validating the current write shape.
+      integracaoPedidoOuterRef: `integracao/${canalId}`,
+    });
     batch.set(
       db().collection('pedidos').doc(pedidoId).collection('checkout').doc(`${prefix}-checkout`),
       checkoutFretePedidoSchema.parse({
