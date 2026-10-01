@@ -104,6 +104,35 @@ describe('AvisosPanel', () => {
     expect(screen.queryByText('Abrir')).toBeNull();
   });
 
+  it('shows the provider deadline from the `prazo` FIELD, as a date and not as µs', () => {
+    // Noon UTC, so the calendar day is the same in every zone the runner might
+    // be in (UTC-11 to UTC+11); only the day is asserted, never the hour.
+    const prazoUs = Date.UTC(2026, 10, 2, 12, 0) * 1000;
+    renderPanel([row('a1', { tipo: TIPO_AVISO.anuncioComViolacao, prazo: prazoUs })]);
+
+    const prazo = screen.getByTestId('aviso-prazo');
+    expect(prazo.textContent).toContain('Prazo:');
+    expect(prazo.textContent).toContain('02/11/2026');
+    expect(prazo.textContent).not.toContain(String(prazoUs));
+  });
+
+  it('shows no deadline line when the provider gave none', () => {
+    renderPanel([row('a1', { prazo: null })]);
+    expect(screen.queryByTestId('aviso-prazo')).toBeNull();
+  });
+
+  it('never prints a deadline smuggled into `params` as the raw µs integer', () => {
+    // The wording used to interpolate `params.prazo` through `p()`, which reads a
+    // stored µs number as text. The deadline belongs to the field above.
+    renderPanel([
+      row('a1', {
+        tipo: TIPO_AVISO.anuncioComViolacao,
+        params: { anuncio: '123', violacao: 'proibido', prazo: 1_789_000_000_000_000 },
+      }),
+    ]);
+    expect(screen.queryByText(/1789000000000000/)).toBeNull();
+  });
+
   it('renders NO external link for a hostile or off-allowlist URL', () => {
     // The row is provider-supplied. A `javascript:` URL must degrade to "no
     // button", never reach an href.

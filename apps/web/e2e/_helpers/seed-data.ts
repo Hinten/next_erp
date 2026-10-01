@@ -9,7 +9,9 @@
  * tracking ids.
  */
 import { createHash } from 'node:crypto';
+import { FieldValue } from 'firebase-admin/firestore';
 import {
+  CANAL_AVISO,
   clienteSchema,
   ESTADO_FRETE,
   ESTADO_PEDIDO,
@@ -20,12 +22,15 @@ import {
   MODALIDADE_FRETE,
   MODO_LINK_PAGAMENTO,
   seedFreteInicial,
+  SEVERIDADE_AVISO,
   STATUS_LINK_PAGAMENTO,
   STATUS_PAGAMENTO,
+  TIPO_AVISO,
   TIPO_INTEGRACAO_PGTO,
   whatsappIdentidadeSchema,
 } from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
+import { escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
 import { db } from '@delfrance/test-fixtures';
 import { getRunId, workerIndex } from './run-id';
 
@@ -4462,6 +4467,33 @@ export async function seedAvisoUnico(id: string, loja: string): Promise<void> {
       resolvidoEm: null,
       resolucaoMotivo: null,
     });
+}
+
+/**
+ * Raise a broadcast aviso through the REAL producer seam, `escreverAviso` — not a
+ * hand-written document. Calling it again is a repeat; calling it after
+ * {@link resolverAvisoReal} is a reopen. That is the point: the create / repeat /
+ * reopen branch, and the `criadoEm` it decides, belong to the writer, and a copy
+ * of it here would only prove the copy.
+ */
+export async function escreverAvisoReal(conta: string, loja: string): Promise<string> {
+  const { chave } = await escreverAviso(
+    db(),
+    {
+      tipo: TIPO_AVISO.shopeeAutorizacaoExpirando,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.shopee,
+      conta,
+      params: { loja, dias: 5 },
+    },
+    { increment: (by) => FieldValue.increment(by), agoraUs: millisToMicros(Date.now()) },
+  );
+  return chave;
+}
+
+/** Resolve an aviso through the real resolver — the first half of a reopen. */
+export async function resolverAvisoReal(chave: string): Promise<void> {
+  await resolverAviso(db(), chave, 'e2e', { agoraUs: millisToMicros(Date.now()) });
 }
 
 /* -------------------------------------------------------------------------- */

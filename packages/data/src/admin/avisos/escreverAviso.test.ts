@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
-import { SEVERIDADE_AVISO, TIPO_AVISO, chaveDeAviso } from '@delfrance/schemas';
+import {
+  SEVERIDADE_AVISO,
+  TIPO_AVISO,
+  avisoNaoLido,
+  chaveDeAviso,
+  entradaDeLeitura,
+  type Aviso,
+} from '@delfrance/schemas';
 import {
   AvisoEscalacaoError,
   escreverAviso,
@@ -162,6 +169,41 @@ describe('escreverAviso — the reopen, which MUST re-alert', () => {
     expect(store[PATH]?.data.resolvidoEm).toBeNull();
     expect(store[PATH]?.data.resolucaoMotivo).toBeNull();
     expect(store[PATH]?.data.criadoEm).toBe(AGORA_US + 20);
+  });
+});
+
+describe('escreverAviso × avisoNaoLido — what the operator actually sees', () => {
+  // Crosses the writer and the read rule, because each half was correct alone
+  // and the pair was not: the reopen moved `criadoEm` while the reader accepted a
+  // bare id from `lidos` before ever looking at it, so an aviso read individually
+  // stayed read after it came back.
+  const UID = 'uid-1';
+
+  function naoLido(data: Record<string, unknown> | undefined, lidos: string[]): boolean {
+    const visto = data as Pick<Aviso, 'criadoEm' | 'destinatarioUid' | 'resolvidoEm'>;
+    return avisoNaoLido(visto, CHAVE, { ultimaVisualizacaoUs: 0, lidos }, UID);
+  }
+
+  it('re-alerts a reopened aviso the operator had marked read individually', async () => {
+    const { db, store } = makeDb();
+    await escreverAviso(db, PLANO, deps);
+    const lidos = [entradaDeLeitura(CHAVE, store[PATH]?.data.criadoEm as number)];
+    expect(naoLido(store[PATH]?.data, lidos)).toBe(false);
+
+    await resolverAviso(db, CHAVE, 'reautorizado', { agoraUs: AGORA_US + 10 });
+    await escreverAviso(db, PLANO, { ...deps, agoraUs: AGORA_US + 20 });
+
+    expect(naoLido(store[PATH]?.data, lidos)).toBe(true);
+  });
+
+  it('keeps a repeat read — the near-miss that must NOT re-alert', async () => {
+    const { db, store } = makeDb();
+    await escreverAviso(db, PLANO, deps);
+    const lidos = [entradaDeLeitura(CHAVE, store[PATH]?.data.criadoEm as number)];
+
+    await escreverAviso(db, PLANO, { ...deps, agoraUs: AGORA_US + 999 });
+
+    expect(naoLido(store[PATH]?.data, lidos)).toBe(false);
   });
 });
 
