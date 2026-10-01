@@ -11,6 +11,7 @@ import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wire
 import { ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import { SHOPEE_ETIQUETA_DETALHE_CAMPOS } from './constantesEtiqueta';
 import {
+  arranjadoNaBusca,
   CANAIS_ARRANJO_AUTOMATICO,
   CANAIS_ETIQUETA_COM_PRAZO,
   decidirArranjoAutomatico,
@@ -1380,5 +1381,13 @@ describe('ehPedidoFbsShopee — a ÚNICA dobra do FBS (review 3a, Q4-2)', () => 
         String(fulfillment_flag),
       ).toBe(ehPedidoFbsShopee(fulfillment_flag));
     }
+  });
+});
+
+describe('arranjadoNaBusca — a triagem GRÁTIS da varredura (15b PR 3b)', () => {
+  it('só um `true` é arranjado; `false` e `null` deixam a linha fresca decidir (S22)', () => {
+    expect(arranjadoNaBusca({ is_shipment_arranged: true })).toBe(true);
+    expect(arranjadoNaBusca({ is_shipment_arranged: false })).toBe(false);
+    expect(arranjadoNaBusca({ is_shipment_arranged: null })).toBe(false);
   });
 });

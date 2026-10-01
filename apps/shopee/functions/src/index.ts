@@ -21,7 +21,17 @@ import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
 import { runShopeeAuthorizationExpirySweep } from '../../lib/shopee/conta/expiracaoSweep';
 import { shopeeConfig } from '../../lib/shopee/env';
 import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
+import type { FasePacote } from '../../lib/shopee/etiqueta/faseEtiqueta';
 import { SHOPEE_NFE_UPLOAD_QUEUE } from '../../lib/shopee/nfe/constantesNfe';
+import { SHOPEE_ARRANJO_AUTOMATICO_DISABLED_ENV } from '../../lib/shopee/pedidos/arranjoAutomatico';
+import {
+  MOTIVO_ARRANJO_DESLIGADO,
+  MOTIVO_SWEEP_DESLIGADO,
+  MOTIVO_TASKS_DESABILITADO,
+  SHOPEE_ARRANJO_SWEEP_DISABLED_ENV,
+  runShopeeArranjoAutomaticoSweep,
+  type ArranjoAutomaticoSweepResult,
+} from '../../lib/shopee/pedidos/arranjoAutomaticoSweep';
 import { runShopeeEscrowSettlement } from '../../lib/shopee/pedidos/liquidacaoSweep';
 import {
   RESERVA_TRAVADA_FLAG_ENV,
@@ -132,13 +142,21 @@ import * as stockSendHandlers from './sendStock';
  * trigger raises one aviso per pedido instead, and `/enviar-nfe` / `enviar:nfe`
  * are the re-drives. ⚠️ The trigger is NOT named `onNfeAprovada` — Mercado
  * Livre's codebase deploys that name into the same project (#1707).
+ *
+ * Master plan step 15b (#1744) adds the ELEVENTH `onSchedule`,
+ * `sweepShopeeAutoArrange` — the five-minute poll behind the automatic arrange
+ * of a Turbo package. It writes nothing and arranges nothing itself: it
+ * enqueues synthetic notifications onto `processShopeeNotification`, whose
+ * code-30 arm owns the arrange. ⚠️ It is NOT a pure backstop: when the NF-e is
+ * validated after the package's last push, Shopee documents no push at all, so
+ * for that case this tick is the PRIMARY signal.
  */
 
 /**
  * The Shopee partner credentials, bound to every trigger that can reach a
  * PUBLIC-signed Shopee call.
  *
- * ⚠️ It covers the seven `onSchedule` triggers defined in THIS file only. The
+ * ⚠️ It covers the eight `onSchedule` triggers defined in THIS file only. The
  * FIVE queue functions — `processShopeeNotification` (./processNotification),
  * `processShopeeMassImport` (./processMassImport, master plan step 9),
  * `sendShopeeStock` (./sendStock, step 12), `processShopeePriceSync`
@@ -641,6 +659,156 @@ export const backfillShopeeOrders = onSchedule(
     });
     if (erros.length > 0) {
       logger.warn('[shopee] order backfill com falhas por conta', {
+        erros: erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The variable an operator flips for each reason the auto-arrange sweep did not
+ * run — keyed by the sweep's own `motivo` constants, so a fourth reason without
+ * a row here does not compile.
+ */
+const VARIAVEL_DO_MOTIVO_ARRANJO = {
+  [MOTIVO_SWEEP_DESLIGADO]: SHOPEE_ARRANJO_SWEEP_DISABLED_ENV,
+  [MOTIVO_ARRANJO_DESLIGADO]: SHOPEE_ARRANJO_AUTOMATICO_DISABLED_ENV,
+  // `shopeeTasks.ts` reads this one through `shopeeTasksDesabilitado()` and
+  // exports no constant for its name.
+  [MOTIVO_TASKS_DESABILITADO]: 'SHOPEE_TASKS_DISABLED',
+} as const satisfies Record<NonNullable<ArranjoAutomaticoSweepResult['motivo']>, string>;
+
+/**
+ * The AUTO-ARRANGE SWEEP (master plan step 15b, #1744) — every five minutes,
+ * per active conta, ONE `search_package_list` for the packages of the
+ * auto-arrange channels (`CANAIS_ARRANJO_AUTOMATICO`) that are ready to ship
+ * and not invoice-pending, then ONE batched `get_package_detail` and the shared
+ * eligibility predicate. Each candidate becomes ONE synthetic code 30 onto
+ * `processShopeeNotification`, whose arm runs the arrange
+ * (`lib/shopee/pedidos/arranjoAutomatico.ts`) — the schedule never calls
+ * `ship_order` itself. A package whose pedido does not exist yet gets ONE
+ * synthetic code 3 per order instead; the next tick finds the pedido.
+ *
+ * ⚠️ NOT a pure backstop, unlike the four delivery backstops in this file
+ * (the lost-push sweep, the push monitor, the backfill and the stuck-reservation
+ * sweep). When the NF-e is validated after the package's last push, Shopee
+ * documents NO push for the package becoming arrangeable, so for that case —
+ * the normal BR one — this tick is the PRIMARY signal, and its cadence is its
+ * whole term in 1573's 15-minute SLA.
+ *
+ * Every five minutes on the minutes ≡ 2 (mod 5): every minute the other ten
+ * schedules hold is a multiple of five, so this set touches none of them — a
+ * property `index.test.ts` DERIVES from the crons rather than trusting this
+ * sentence. `every 5 minutes` would land on all ten, against one undocumented
+ * per-APP rate-limit budget.
+ *
+ * ⚠️ It ships ON, with its own opt-in-to-DISABLE valve
+ * `SHOPEE_ARRANJO_SWEEP_DISABLED` (exactly `'1'`), and it also stops — reading
+ * NOTHING, not Firestore, not Shopee — when the arrange itself is off
+ * (`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`) or the queue is
+ * (`SHOPEE_TASKS_DISABLED`): every task it could enqueue would end in
+ * `desligado` or in a persisted `failed` row.
+ *
+ * ⚠️ It writes NOTHING to Firestore and runs no transaction; the only guard
+ * between it, a push and an operator's click is Shopee's own
+ * (`is_shipment_arranged`, `package_already_shipped`). It ENQUEUES and it is
+ * Shop-signed: the same `TASKS_INVOKER_SA` requirement as the lost-push sweep,
+ * the backfill and the settlement sweep, plus a live access token per conta.
+ */
+export const sweepShopeeAutoArrange = onSchedule(
+  {
+    schedule: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // ⚠️ Deliberately BELOW the 300 s between ticks, and NOT the 540 every other
+    // per-conta sweep here carries: two ticks can never overlap, so a slow tick
+    // cannot hand the next one the same packages to enqueue twice. The ceiling
+    // per conta is 5 search pages, 10 batched detail reads, 100 pedido reads
+    // and 100 enqueues; the steady state is ONE search that answers nothing.
+    timeoutSeconds: 240,
+    // No `region:` anywhere in this file — `options.ts` sets it globally.
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin app
+    // exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runShopeeArranjoAutomaticoSweep(getDb(), {
+      scheduler: createShopeeTaskScheduler(),
+      nowMs: Date.now(),
+      logger,
+    });
+    if (!result.enabled) {
+      // ONE info line, naming the variable, so "why is nothing being arranged"
+      // is answerable from the log without reading the source. Nothing was read
+      // on this tick: not Firestore, not Shopee.
+      logger.info('[shopee] auto-arrange sweep inativo — nada lido', {
+        motivo: result.motivo,
+        variavel: result.motivo === null ? null : VARIAVEL_DO_MOTIVO_ARRANJO[result.motivo],
+      });
+      return;
+    }
+    const somar = (pegar: (conta: (typeof result.contas)[number]) => number): number =>
+      result.contas.reduce((total, conta) => total + pegar(conta), 0);
+    // Every phase PRESENT, zeros included, even on a tick that walked no conta:
+    // an absent key is indistinguishable from an arm that never existed.
+    // `satisfies` makes the set total at compile time, both directions.
+    const fases = {
+      'nfe-pendente': 0,
+      'nao-pronto': 0,
+      retido: 0,
+      programar: 0,
+      arranjado: 0,
+      'janela-fechada': 0,
+      inelegivel: 0,
+      desconhecido: 0,
+    } satisfies Record<FasePacote, number>;
+    for (const conta of result.contas) {
+      for (const fase of Object.keys(fases) as FasePacote[]) fases[fase] += conta.fases[fase];
+    }
+    const erros = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] auto-arrange sweep', {
+      contas: result.contas.length,
+      // ⚠️ Never summed with `processadas`: it counts contas connected by main
+      // account only, which cannot be shop-signed at all.
+      semShopId: result.semShopId,
+      processadas: result.contas.filter((conta) => conta.error === null).length,
+      paginasLidas: somar((conta) => conta.paginasLidas),
+      // Shopee's own `total_count` — a diagnostic, never the loop's bound.
+      totalInformado: somar((conta) => conta.totalInformado),
+      linhas: somar((conta) => conta.linhas),
+      ilegiveisNaBusca: somar((conta) => conta.ilegiveisNaBusca),
+      duplicadas: somar((conta) => conta.duplicadas),
+      jaArranjadosNaBusca: somar((conta) => conta.jaArranjadosNaBusca),
+      // Register 224's instrument: a row on a KNOWN channel the server-side
+      // filter should have excluded. Anything above zero is evidence.
+      foraDoCanal: somar((conta) => conta.foraDoCanal),
+      consultadosNoDetalhe: somar((conta) => conta.consultadosNoDetalhe),
+      ausentesNoDetalhe: somar((conta) => conta.ausentesNoDetalhe),
+      ilegiveisNoDetalhe: somar((conta) => conta.ilegiveisNoDetalhe),
+      foraDoCanalNoDetalhe: somar((conta) => conta.foraDoCanalNoDetalhe),
+      naoConsultadosPeloLimite: somar((conta) => conta.naoConsultadosPeloLimite),
+      fases,
+      // Register 222's instrument: a package the `invoice_pending: false`
+      // filter RETURNED whose fresh detail says pending. Above zero proves
+      // `false` means "no filter"; zero proves nothing.
+      nfePendenteNaBusca: somar((conta) => conta.nfePendenteNaBusca),
+      enfileiradosPacote: somar((conta) => conta.enfileiradosPacote),
+      enfileiradosPedido: somar((conta) => conta.enfileiradosPedido),
+      // A truncated conta is re-read from page 1 on the next tick — there is no
+      // cursor. A count that stays high tick after tick is a conta that can no
+      // longer keep up, and that is invisible in every other counter here.
+      contasTruncadas: result.contas.filter((conta) => conta.truncada).length,
+      // A rate limit ABORTS the tick: the contas after it were not walked at all.
+      interrompidoPorLimite: result.interrompidoPorLimite,
+      errorCount: erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (erros.length > 0) {
+      logger.warn('[shopee] auto-arrange sweep com falhas por conta', {
         erros: erros.slice(0, 10),
       });
     }

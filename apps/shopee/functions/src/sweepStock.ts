@@ -111,7 +111,7 @@ const SHOPEE_SECRETS = ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'];
 /**
  * The shared `onSchedule` options, minus the schedule itself.
  *
- * ⚠️ No `region:` key, exactly like the seven schedules in `index.ts`:
+ * ⚠️ No `region:` key, exactly like the eight schedules in `index.ts`:
  * `options.ts` sets it globally for this codebase from the build-time inlined
  * `FUNCTIONS_REGION`, and it defaults the enqueuer's region to the same value.
  * A local override would let the two drift, and a queue path pointing at the
