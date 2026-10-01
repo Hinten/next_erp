@@ -1,9 +1,43 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import type { PerguntaDeEnvio, RespostaDeEnvio } from '@/components/etiqueta/EscolherEnvioDialog';
+
+import type { UseConfirmDialogResult } from './ConfirmDialog';
+
+/**
+ * A switch for the queue's failure branch: when set, the NEXT confirm the host
+ * opens (its `perguntar`) REJECTS with it instead of opening. Neither real
+ * dialog ever rejects today, so "one failed question cannot wedge every later
+ * one" needs a question that does. Transparent while `null` — every other test
+ * runs the real `useConfirmDialog`.
+ */
+const falha = vi.hoisted(() => ({ proximoConfirm: null as TypeError | null }));
+vi.mock('./ConfirmDialog', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./ConfirmDialog')>();
+  // Keyed on the real (stable) `confirm`, so the wrapper is stable too.
+  const embrulhados = new WeakMap<object, UseConfirmDialogResult['confirm']>();
+  return {
+    ...real,
+    useConfirmDialog: (): UseConfirmDialogResult => {
+      const r = real.useConfirmDialog();
+      let confirm = embrulhados.get(r.confirm);
+      if (confirm === undefined) {
+        const abrir = r.confirm;
+        confirm = (opts) => {
+          const erro = falha.proximoConfirm;
+          if (erro === null) return abrir(opts);
+          falha.proximoConfirm = null;
+          return Promise.reject(erro);
+        };
+        embrulhados.set(r.confirm, confirm);
+      }
+      return { ...r, confirm };
+    },
+  };
+});
 
 import {
   EtiquetaAcaoHost,
@@ -323,5 +357,50 @@ describe('EtiquetaAcaoHost — as perguntas de dois pedidos entram numa FILA', (
     await drenar();
     expect(confirmA).toEqual({ respondida: true, valor: false });
     expect(envioB).toEqual({ respondida: true, valor: null });
+  });
+});
+
+/**
+ * The queue's two defensive edges (#1523 review 2 mutation pass, H3/H5): a
+ * flow still running when the page leaves keeps asking (its provider loop asks
+ * its NEXT question), and a question that fails must not take the queue down.
+ */
+describe('EtiquetaAcaoHost — as bordas da fila', () => {
+  beforeEach(() => {
+    falha.proximoConfirm = null;
+  });
+
+  it('H3: uma pergunta feita DEPOIS de a página sair responde cancelada na hora (nada fica pendurado)', async () => {
+    const host = montar();
+    const valor = host();
+    host.view.unmount();
+    // The flow outlived the page and asks again — onto dialogs that are gone.
+    const confirmTarde = observar(
+      valor.confirm({ title: 'Atenção', message: 'Frete já postado.' }),
+    );
+    const envioTarde = observar(valor.escolherEnvio(perguntaPickup('1003')));
+    await drenar();
+    expect(confirmTarde).toEqual({ respondida: true, valor: false });
+    expect(envioTarde).toEqual({ respondida: true, valor: null });
+  });
+
+  it('H5: uma pergunta que FALHA não trava a fila — quem perguntou vê a falha, e a próxima ainda abre', async () => {
+    const host = montar();
+    const erro = new TypeError('o diálogo falhou');
+    falha.proximoConfirm = erro;
+    let confirmA!: Promise<boolean>;
+    let envioB!: ReturnType<typeof observar<RespostaDeEnvio>>;
+    act(() => {
+      confirmA = host().confirm({ title: 'Atenção', message: 'Frete já postado.' });
+      envioB = observar(host().escolherEnvio(perguntaPickup('1002')));
+    });
+    // The caller of the failed question still sees ITS rejection, verbatim…
+    await expect(confirmA).rejects.toBe(erro);
+    // …and the question queued behind it opens, and answers, as if nothing failed.
+    expect(await screen.findByText('Pedido 1002 — Como enviar o pacote')).toBeTruthy();
+    expect(envioB.respondida).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await drenar();
+    expect(envioB.valor).toEqual({ modo: 'pickup', enderecoId: '200001', horarioId: 'slot-1' });
   });
 });

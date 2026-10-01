@@ -924,6 +924,49 @@ describe('shopeeProvider — the question', () => {
     expect(out).toEqual({ status: 'error', message: TEMPO_SEM_RESPOSTA });
     expect(escolherEnvio).not.toHaveBeenCalled();
   });
+
+  // Review 2 (P9): the boundary of the check above. A budget spent EXACTLY is
+  // spent — `>=`, not `>`: under `>` the dialog opens and the answer's call
+  // (floor-exempt) starts with 0 ms of the click left, past the honest bound's
+  // "no call starts after totalMs".
+  it('near-miss — EXACTLY totalMs spent when the question arrives: no dialog, the time sentence', async () => {
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += SHOPEE_ETIQUETA_LIMITES.totalMs;
+        return escolher();
+      },
+      arquivo(),
+    ]);
+    const escolherEnvio = vi.fn(async () => ({ modo: 'dropoff' as const }));
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(
+      makeInput({ client, ui: { escolherEnvio } }),
+    );
+    expect(out).toEqual({ status: 'error', message: TEMPO_SEM_RESPOSTA });
+    expect(escolherEnvio).not.toHaveBeenCalled();
+    expect(etiqueta).toHaveBeenCalledTimes(1);
+  });
+
+  it('near-miss — 1 ms UNDER totalMs: the dialog opens and the answer’s call still starts', async () => {
+    const r = relogio();
+    const { client, etiqueta } = fakeClient([
+      async () => {
+        r.t += SHOPEE_ETIQUETA_LIMITES.totalMs - 1;
+        return escolher();
+      },
+      arquivo(),
+    ]);
+    const escolherEnvio = vi.fn(async () => ({ modo: 'dropoff' as const }));
+    const out = await createShopeeProvider({ agora: r.agora }).emitirOuImprimir(
+      makeInput({ client, ui: { escolherEnvio } }),
+    );
+    expect(out).toEqual({ status: 'printed' });
+    expect(escolherEnvio).toHaveBeenCalledTimes(1);
+    expect(corpos(etiqueta).map((c) => c.envio)).toEqual([
+      undefined,
+      { pacote: PACOTE_A, modo: 'dropoff' },
+    ]);
+  });
 });
 
 describe('shopeeProvider — per package', () => {

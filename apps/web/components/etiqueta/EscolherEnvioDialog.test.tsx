@@ -230,6 +230,25 @@ describe('EscolherEnvioDialog — a pergunta de envio da Shopee', () => {
     expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
   });
 
+  it('fecha SÓ pelos botões — um clique FORA (no overlay) não fecha nem responde', async () => {
+    const { resposta } = abrir(pergunta());
+    let respondida = false;
+    void resposta.then(() => {
+      respondida = true;
+    });
+    // The backdrop Mantine closes on by default (`closeOnClickOutside`): a stray
+    // click there would silently cancel the label the operator is waiting on.
+    const overlay = document.querySelector('.mantine-Modal-overlay');
+    expect(overlay).not.toBeNull();
+    fireEvent.click(overlay!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(respondida).toBe(false);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirmar' })).toBeTruthy();
+  });
+
   // The hook's OWN last resort, kept on purpose (#1523 review 2, Q2-F1): a view
   // whose flows can overlap must serialise its questions BEFORE this hook, and
   // `/pedidos` does (`EtiquetaAcaoHost`'s FIFO, pinned in its own test) — so

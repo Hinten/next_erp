@@ -228,4 +228,41 @@ describe('resolverIntFrete — reads the document when there is one, then applie
       ),
     ).rejects.toBe(boom);
   });
+
+  // Review 2 (I3): the reader's half of the same-tipo pair. A reader that
+  // skipped the `getDoc` under a marketplace block would still pass every
+  // `bloco` row above — only a block WITH its own-tipo document tells it apart.
+  it('a MIGRATED legacy Shopee pedido: a shopee block with a shopee document ⇒ doc, read once', async () => {
+    const ref = { __ref: 'int_frete/int-1' };
+    h.dereferenceOuterRef.mockReturnValue(ref);
+    const d = docDe(shopee);
+    h.getDoc.mockResolvedValue(snapDe(d));
+
+    const r = await resolverIntFrete(
+      db,
+      frete({
+        integracaoFreteOuterRef: 'documents/int_frete/int-1',
+        externalOptionIntegracao: shopee,
+      }),
+    );
+    expect(h.getDoc).toHaveBeenCalledTimes(1);
+    expect(h.getDoc).toHaveBeenCalledWith(ref);
+    expect(r).toEqual(doc(d));
+  });
+
+  it('an ML block with its ML document ⇒ doc through the reader (today’s ML path)', async () => {
+    h.dereferenceOuterRef.mockReturnValue({ __ref: 'int_frete/int-ml' });
+    const d = docDe(mercadoLivre, 'int-ml');
+    h.getDoc.mockResolvedValue(snapDe(d));
+    expect(
+      await resolverIntFrete(
+        db,
+        frete({
+          integracaoFreteOuterRef: 'documents/int_frete/int-ml',
+          externalOptionIntegracao: mercadoLivre,
+        }),
+      ),
+    ).toEqual(doc(d));
+    expect(h.getDoc).toHaveBeenCalledTimes(1);
+  });
 });

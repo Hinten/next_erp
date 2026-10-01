@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ESTADO_FRETE,
   FREIGHT_TIPO_CAPS,
@@ -333,5 +333,68 @@ describe('the posted-risk confirm follows the provider’s `reimpressao` (#1523 
     const input = makeInput({ modalidade: '9', confirmRisk, tipo: INTEGRACAO_FRETE.shopee });
     expect(await emitirOuImprimirEtiqueta(input)).toEqual({ status: 'skipped' });
     expect(confirmRisk).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------- an EXPLICIT `pode-duplicar` is the default, not a skip -------------- */
+
+describe('an EXPLICIT `reimpressao: pode-duplicar` still asks (review 2, RG2)', () => {
+  // No registered provider DECLARES `'pode-duplicar'` today, so a gate keyed on
+  // `reimpressao === undefined` agrees with the real `!== 'mesmo-documento'` on
+  // every one of them. The near-miss that tells the two apart is a provider that
+  // spells the default out: a stub swapped in for the ML provider in a FRESH
+  // registry module (the static imports above keep the real providers).
+  async function registroCom(provider: CheckoutEtiquetaProvider) {
+    vi.resetModules();
+    vi.doMock('./providers/mercadoLivre', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./providers/mercadoLivre')>()),
+      mercadoLivreProvider: provider,
+    }));
+    return import('./registry');
+  }
+
+  afterEach(() => {
+    vi.doUnmock('./providers/mercadoLivre');
+    vi.resetModules();
+  });
+
+  function stubPodeDuplicar() {
+    const emitirOuImprimir = vi.fn(async () => ({ status: 'printed' as const }));
+    const provider: CheckoutEtiquetaProvider = {
+      tipos: [INTEGRACAO_FRETE.mercadoLivre],
+      reimpressao: 'pode-duplicar',
+      emitirOuImprimir,
+    };
+    return { provider, emitirOuImprimir };
+  }
+
+  it('asks on `postado`, and a "no" skips before the provider', async () => {
+    const { provider, emitirOuImprimir } = stubPodeDuplicar();
+    const registro = await registroCom(provider);
+    const confirmRisk = vi.fn(async () => false);
+    const input = makeInput({
+      estado: ESTADO_FRETE.postado,
+      confirmRisk,
+      tipo: INTEGRACAO_FRETE.mercadoLivre,
+    });
+    expect(await registro.emitirOuImprimirEtiqueta(input)).toEqual({ status: 'skipped' });
+    expect(confirmRisk).toHaveBeenCalledTimes(1);
+    expect(emitirOuImprimir).not.toHaveBeenCalled();
+  });
+
+  it('a "yes" dispatches to THAT stub — the near-miss ran on it, not on the real ML provider', async () => {
+    const { provider, emitirOuImprimir } = stubPodeDuplicar();
+    const registro = await registroCom(provider);
+    expect(registro.PROVIDERS[INTEGRACAO_FRETE.mercadoLivre]).toBe(provider);
+    const confirmRisk = vi.fn(async () => true);
+    const input = makeInput({
+      estado: ESTADO_FRETE.postado,
+      confirmRisk,
+      tipo: INTEGRACAO_FRETE.mercadoLivre,
+    });
+    expect(await registro.emitirOuImprimirEtiqueta(input)).toEqual({ status: 'printed' });
+    expect(confirmRisk).toHaveBeenCalledTimes(1);
+    expect(emitirOuImprimir).toHaveBeenCalledTimes(1);
+    expect(emitirOuImprimir).toHaveBeenCalledWith(input);
   });
 });

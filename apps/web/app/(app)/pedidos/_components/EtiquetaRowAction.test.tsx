@@ -322,3 +322,58 @@ describe('EtiquetaRowAction — alcance da Shopee (#1523)', () => {
     await waitFor(() => expect(botao(ZPL2).disabled).toBe(false));
   });
 });
+
+/**
+ * The twins of "a pergunta de envio sobrevive ao HoverCard fechar" for the
+ * row's two CONFIRMS (#1523 review 2 mutation pass, R7/R8). Under a host the
+ * row renders no dialog of its own (`dialogosLocais` is null), so a confirm
+ * routed through the row-local instance opens on NOTHING: the click awaits an
+ * invisible dialog and the row stays "em andamento" for good.
+ */
+describe('EtiquetaRowAction — os confirms da linha são do HOST', () => {
+  it('R7: o confirm de risco (frete já postado) abre pelo host, sobrevive ao HoverCard fechar e responde', async () => {
+    clientes.ml = ML_CLIENT;
+    let risco: unknown = 'pendente';
+    emitirMock.mockImplementation(async (input: EtiquetaProviderInput) => {
+      risco = await input.ui.confirmRisk('Frete já postado.');
+      return { status: 'printed' };
+    });
+    renderComHost(
+      pedidoCom({
+        externalOptionIntegracao: INTEGRACAO_FRETE.mercadoLivre,
+        estado: ESTADO_FRETE.postado,
+      }),
+    );
+    fireEvent.click(botao(ZPL2));
+    expect(await screen.findByText('Frete já postado.')).toBeTruthy();
+    // The HoverCard closes (the row unmounts) — the confirm is the HOST's.
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    expect(screen.queryByRole('button', { name: ZPL2 })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    await waitFor(() => expect(risco).toBe(true));
+  });
+
+  it('R8: o confirm de direção (frete reverso numa saída) abre pelo host, sobrevive ao HoverCard fechar, e só então despacha', async () => {
+    renderComHost(
+      pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.shopee, ehReverso: true }),
+    );
+    fireEvent.click(botao(ZPL2));
+    expect(await screen.findByText(/Este pedido é uma Saída/)).toBeTruthy();
+    // Asked BEFORE the registry is reached.
+    expect(emitirMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('alternar hovercard'));
+    expect(screen.queryByRole('button', { name: ZPL2 })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    await waitFor(() => expect(emitirMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('R8 near-miss: Cancelar no confirm de direção não despacha nada e libera a linha', async () => {
+    renderComHost(
+      pedidoCom({ externalOptionIntegracao: INTEGRACAO_FRETE.shopee, ehReverso: true }),
+    );
+    fireEvent.click(botao(ZPL2));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(botao(ZPL2).disabled).toBe(false));
+    expect(emitirMock).not.toHaveBeenCalled();
+  });
+});

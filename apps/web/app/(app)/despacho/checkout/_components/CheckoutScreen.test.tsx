@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { Pedido } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
+import type { EtiquetaProviderUi } from '@/lib/checkout/etiqueta/types';
 import type { CheckoutData } from '@/lib/checkout/loadPedidoCheckout';
 import type { PostSaveResult } from '@/lib/checkout/postSave';
 
@@ -21,6 +22,8 @@ const h = vi.hoisted(() => ({
   SHOPEE_SENTINEL: { __sentinela: 'shopee' },
   runCheckoutPostSave: vi.fn(),
   getDoc: vi.fn(),
+  /** Every props object the "Outros Checkouts" reprint modal is rendered with. */
+  outroCheckoutModal: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -61,7 +64,21 @@ vi.mock('./useScanPipeline', () => ({
 vi.mock('./useComprarEtiquetaBridge', () => ({
   useComprarEtiquetaBridge: () => ({ comprarEtiqueta: vi.fn(), element: null }),
 }));
-vi.mock('./CheckoutSidebar', () => ({ CheckoutSidebar: () => null }));
+// The REAL `CheckoutSidebar` and `OutrosCheckoutsPane` render: the reprint
+// modal's Shopee client travels screen → sidebar → pane → modal, and every hop
+// is a prop a refactor can drop (#1523 review 2 mutation pass, C4). Their
+// leaves are stubbed, and the modal only records the props it is handed.
+vi.mock('./NfeStatusTile', () => ({ NfeStatusTile: () => null }));
+vi.mock('./FreteSummary', () => ({ FreteSummary: () => null }));
+vi.mock('./useOutrosCheckouts', () => ({
+  useOutrosCheckouts: () => ({ rows: [], loading: false, error: undefined }),
+}));
+vi.mock('./OutroCheckoutModal', () => ({
+  OutroCheckoutModal: (props: Record<string, unknown>) => {
+    h.outroCheckoutModal(props);
+    return null;
+  },
+}));
 vi.mock('./ExpectedPane', () => ({ ExpectedPane: () => null }));
 vi.mock('./ScanLogPane', () => ({ ScanLogPane: () => null }));
 vi.mock('./PedidoHeader', () => ({ PedidoHeader: () => null }));
@@ -104,5 +121,61 @@ describe("CheckoutScreen — the post-save gets the SCREEN's Shopee client (#152
     expect(h.runCheckoutPostSave).toHaveBeenCalledWith(
       expect.objectContaining({ pedidoId: 'PED-1', shopeeClient: h.SHOPEE_SENTINEL }),
     );
+  });
+});
+
+function renderTela() {
+  return render(
+    <MantineTestProvider>
+      <CheckoutScreen fixture={staticFixture(DADOS)} />
+    </MantineTestProvider>,
+  );
+}
+
+async function salvar() {
+  const botao = (await screen.findByRole('button', { name: /Salvar/ })) as HTMLButtonElement;
+  await waitFor(() => expect(botao.disabled).toBe(false));
+  fireEvent.click(botao);
+}
+
+describe('CheckoutScreen — the reprint pane and the pickup question (#1523)', () => {
+  it('C4: the "Outros Checkouts" reprint modal gets the SAME client — screen → sidebar → pane → modal', async () => {
+    renderTela();
+    await waitFor(() => expect(h.outroCheckoutModal).toHaveBeenCalled());
+    // Every render, never a transient null: a null anywhere on the chain fails
+    // every Shopee reprint from this pane with the missing-client error.
+    for (const [props] of h.outroCheckoutModal.mock.calls) {
+      expect(props).toEqual(expect.objectContaining({ shopeeClient: h.SHOPEE_SENTINEL }));
+    }
+  });
+
+  it("C5: the post-save's pickup question opens ON the screen, and Cancelar settles it (the save ends)", async () => {
+    let resposta: unknown = 'pendente';
+    h.runCheckoutPostSave.mockImplementation(async (args: { ui: EtiquetaProviderUi }) => {
+      resposta = await args.ui.escolherEnvio({
+        pedidoRotulo: '1234',
+        pacoteRotulo: null,
+        mensagem: 'Escolha como enviar o pacote.',
+        enderecos: [
+          {
+            id: '200001',
+            rotulo: 'Rua A, 10',
+            principal: true,
+            horarios: [{ id: 'slot-1', rotulo: 'Amanhã 08:00–12:00', recomendado: true }],
+          },
+        ],
+        permiteDropoff: true,
+        escolhaInvalida: false,
+      });
+      return { nfe: { ok: true }, danfe: null, etiqueta: null } as unknown as PostSaveResult;
+    });
+    renderTela();
+    await salvar();
+
+    expect(await screen.findByText('Pedido 1234 — Como enviar o pacote')).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(resposta).toBeNull());
+    // The post-save returned, so the screen reset for the next pedido.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Salvar/ })).toBeNull());
   });
 });
