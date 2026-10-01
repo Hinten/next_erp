@@ -215,18 +215,13 @@ export const MOT_DES_ICMS_LABELS: Record<string, string> = {
   '90': '90 - Solicitado pelo Fisco',
 };
 
-/** Origem da mercadoria (codegen also has this). */
+/** Origem da mercadoria — shared by operation defaults and per-item tax snapshots. */
 export const origemSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
 export type Origem = z.infer<typeof origemSchema>;
 
 /**
  * Named members of {@link origemSchema} — the SEFAZ "origem da mercadoria"
- * table. There is no label map here, so the names come straight from that table.
- *
- * `operacao.ts` declares this same concept a second time as
- * `OrigemProdutoImposto`, with an identical member set. `prefer-schema-enum`
- * tells them apart by name (it reads the schema variable off the declaration),
- * so both are enforced — but the duplication is still worth collapsing.
+ * table. Names come from {@link ORIGEM_PRODUTO_LABELS}.
  */
 export const ORIGEM = {
   nacional: '0',
@@ -239,6 +234,19 @@ export const ORIGEM = {
   estrangeiraMercadoInternoSemSimilar: '7',
   nacionalConteudoImportacaoAcima70: '8',
 } as const satisfies Record<string, Origem>;
+
+/** Origem da mercadoria (ICMS) — labels shared by both tax editors. */
+export const ORIGEM_PRODUTO_LABELS: Record<Origem, string> = {
+  '0': '0 - Nacional',
+  '1': '1 - Estrangeira - Importação direta',
+  '2': '2 - Estrangeira - Adquirida no mercado interno',
+  '3': '3 - Nacional, conteúdo de importação 40%–70%',
+  '4': '4 - Nacional, processos produtivos básicos',
+  '5': '5 - Nacional, conteúdo de importação ≤ 40%',
+  '6': '6 - Estrangeira - Importação direta, sem similar nacional',
+  '7': '7 - Estrangeira - Adquirida no mercado interno, sem similar nacional',
+  '8': '8 - Nacional, conteúdo de importação > 70%',
+};
 
 /** CST PIS / COFINS (the most common codes; full surface = ~33 codes). */
 export const cstPisCofinsSchema = z.enum([

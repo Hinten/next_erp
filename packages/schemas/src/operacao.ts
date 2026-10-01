@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { ufSchema } from './endereco';
-import { taxConfigFields } from './imposto/tribute';
+import { origemSchema, taxConfigFields } from './imposto/tribute';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth.
 const PERM_FISCAL_READ = 1n << 72n;
@@ -164,33 +164,6 @@ export const IND_INTERMED_OPERACAO_LABELS: Record<IndIntermedOperacao, string> =
 };
 
 /**
- * origemProdutoImposto — string-coded ('0'..'8').
- */
-export const origemProdutoImpostoSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
-export type OrigemProdutoImposto = z.infer<typeof origemProdutoImpostoSchema>;
-
-/**
- * Named members of {@link origemProdutoImpostoSchema} — the SEFAZ "origem da
- * mercadoria" table, same names as `ORIGEM` in `imposto/tribute.ts`.
- *
- * This enum and `Origem` are the same concept declared twice, with an identical
- * member set. `prefer-schema-enum` keeps them straight by name — `imposto.origem`
- * resolves to `ORIGEM`, this field to `ORIGEM_PRODUTO_IMPOSTO` — so both are
- * enforced. Collapsing the duplicate is still worth doing on its own merits.
- */
-export const ORIGEM_PRODUTO_IMPOSTO = {
-  nacional: '0',
-  estrangeiraImportacaoDireta: '1',
-  estrangeiraMercadoInterno: '2',
-  nacionalConteudoImportacaoAte70: '3',
-  nacionalProcessoProdutivoBasico: '4',
-  nacionalConteudoImportacaoAte40: '5',
-  estrangeiraImportacaoDiretaSemSimilar: '6',
-  estrangeiraMercadoInternoSemSimilar: '7',
-  nacionalConteudoImportacaoAcima70: '8',
-} as const satisfies Record<string, OrigemProdutoImposto>;
-
-/**
  * Operacao — operação fiscal (CFOPs, configurações tributárias). Mirrors
  * `Operacao` em `.old/packages/operacao_fiscal/lib/src/models.dart`.
  *
@@ -223,7 +196,7 @@ export const operacaoSchema = z.object({
 
   cfop: z.string().nullable(),
   cfopInterestadual: z.string().nullable(),
-  origem: origemProdutoImpostoSchema.nullable().optional(),
+  origem: origemSchema.nullable().optional(),
 
   NCM: z.string().max(8).nullable(),
   CEST: z.string().max(7).nullable(),

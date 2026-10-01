@@ -67,8 +67,8 @@
 // single-digit SEFAZ enums, so those were routine, not edge cases. Two follow
 // from dropping it: an operand narrowed by control flow now IS flagged (its
 // declaration is unchanged by narrowing), and two enums sharing a member set —
-// `Origem` and `OrigemProdutoImposto` are both '0'…'8' — are told apart by name,
-// so the ambiguity guard that #718 needed is gone with the mechanism.
+// the historical merchandise-origin pair (unified in #750) — are told apart
+// by name, so the ambiguity guard that #718 needed is gone with the mechanism.
 //
 // Error (not warn): the constants exist precisely so the enum members have one
 // spelling; a second spelling drifting back in is the thing this prevents.
@@ -312,7 +312,7 @@ function annotatedTypeNameOf(typeNode) {
  * Two shapes count, and both name the enum EXPLICITLY rather than inferring it
  * from the shape of a type:
  *
- *  1. a Zod object property — `origem: origemProdutoImpostoSchema.nullable()` —
+ *  1. a Zod object property — `origem: origemSchema.nullable()` —
  *     whose initializer walks back to the schema variable;
  *  2. a written annotation — `declare const o: Origem`, `(e: EstadoPedido) => …`.
  *
