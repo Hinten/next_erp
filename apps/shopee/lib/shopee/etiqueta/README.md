@@ -302,7 +302,13 @@ waiting for its NF-e" — and then `fasePacote` itself: `candidato` is exactly
 package, so FBS, `CANCELLED`, `IN_CANCEL` (refused before any parameter read)
 and whether the ship names the package (the ORDER's package count, never the
 row) are this section's rules, not a copy. A document-step action cannot follow
-a `candidato`; if one ever did, it answers `status-desconhecido`.
+a `candidato`; if one ever did, it answers `status-desconhecido`. Step 15b's
+sweep (`pedidos/arranjoAutomaticoSweep.ts`) runs the same
+`elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(row))` over each
+fresh detail row, and reads the `search_package_list` row's own flag only
+through `arranjadoNaBusca` (here: `=== true`, so a `null` is not arranged), so
+the sweep adds no read of `is_shipment_arranged` outside this file
+(`umaSoCopia.test.ts` pins the set).
 
 ## 6. The shipping mode, and the one irreversible call
 
@@ -463,8 +469,8 @@ and the hook raises the `nfe` class of the `despachoAutomaticoPendente` aviso,
 which asks for the emission; step 14 owns every retry of its upload
 (`pedidos/arranjoAutomatico.ts` never imports `nfe/reenvioNfe.ts`). A validated
 note reaches the arrange through no DOCUMENTED push (register 227): the next
-observation of the package arranges it — a later push for it, or the
-`search_package_list` sweep of step 15b's PR 3b (stacked).
+observation of the package arranges it — a later push for it, or the next tick
+of step 15b's five-minute `search_package_list` sweep, `sweepShopeeAutoArrange`.
 
 ## 8. The tracking number, the document, and the budget
 
@@ -634,8 +640,10 @@ is re-parked with NO owning step. Rows already parked stay parked.
   frete write has already committed — so every Shopee answer comes back as a
   value (`acaoArranjo`), and only our own misconfiguration, a gRPC failure or
   an unknown error escapes, each a `throw` there (plus a `ZodError` from its
-  aviso writer, which parks as a mapper bug). Its `search_package_list`
-  sweep is step 15b's PR 3b (stacked). The `update_tracking_status` operator
+  aviso writer, which parks as a mapper bug). Its five-minute
+  `search_package_list` sweep, `sweepShopeeAutoArrange`
+  (`pedidos/arranjoAutomaticoSweep.ts`), arranges nothing either: it enqueues
+  a synthetic code 30 per candidate onto that same push path. The `update_tracking_status` operator
   buttons for the seller-fulfilled channels were DEFERRED (C5) to the
   Seller-Logistics SPI-app decision, so none exists, and 90021 stays
   non-operable end to end.
@@ -643,7 +651,7 @@ is re-parked with NO owning step. Rows already parked stay parked.
 - **An agency (branch) picker.** The Seller Centre is the picker (§6).
 - **`batch_ship_order`, `mass_ship_order`, `search_package_list`.** One order
   per click; the route knows its `order_sn`, and `search_package_list` has no
-  order filter.
+  order filter (step 15b's sweep is its one caller).
 - **A `non_integrated` arrange.** Shopee prints no label for it.
 - **Any window operation.** No index, rule, TTL, backfill or trigger; the route
   runs no query.

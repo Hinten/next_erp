@@ -102,8 +102,8 @@ export const processShopeeNotification = onTaskDispatched(
     // never reaches its `persistFailure`, so no `failed` row exists for the
     // sweep, and the delivery is DROPPED. The package is then re-observed only
     // by the next push about it — Shopee sends one once a ship landed, none for
-    // a package still un-arranged — or, once it lands, by PR 3b's sweep
-    // (stacked on this one).
+    // a package still un-arranged — or by the next tick of
+    // `sweepShopeeAutoArrange` (≤ 5 min), while its valve is on.
     timeoutSeconds: 300,
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,

@@ -352,9 +352,62 @@ note 360 s after its approval (`ATRASO_SERPRO_S`) and Shopee validates it on its
 own clock, and
 **no push is documented for that validation** (register 227). So the arrange
 needs a re-observation of the package — a later push for it, or the
-`search_package_list` sweep of step 15b's PR 3b (stacked) — and announcement
-1573's 15-minute SLA is met only when the NF-e is emitted within minutes of the
-order. Emission is human; the ERP can only say it.
+five-minute sweep below — and announcement 1573's 15-minute SLA is met only
+when the NF-e is emitted within minutes of the order. Emission is human; the ERP
+can only say it.
+
+**The sweep: `sweepShopeeAutoArrange` (`arranjoAutomaticoSweep.ts`, step
+15b).** Every five minutes, on the minutes ≡ 2 (mod 5) so it shares no minute
+with another schedule, and `timeoutSeconds: 240`, below the cadence, so two
+ticks never overlap. It arranges nothing and writes nothing: it finds the
+packages no push announced and hands each one to the arm above as ONE synthetic
+code 30 (`notificacaoSinteticaDePacote`, `origem: 'arranjo-automatico'`), so
+the arrange keeps its ONE site. ⚠️ It is NOT a pure backstop: for a late NF-e
+it is the PRIMARY signal.
+
+- **Three gates, in order, each answering having read NOTHING:** its own valve
+  `SHOPEE_ARRANJO_SWEEP_DISABLED`, the arrange's (`arranjoAutomaticoDesligado`)
+  and `shopeeTasksDesabilitado()` — read before deciding, never learnt from a
+  caught `ShopeeTasksDisabledError`, which `erroContidoPorConta` would count as
+  N contained conta failures.
+- **Per active conta** (no `shop_id` ⇒ counted in `semShopId`, never called):
+  ONE `search_package_list` per page — `package_status 2`, `fulfillment_type
+2`, `invoice_pending: false`, `logistics_channel_ids` =
+  `CANAIS_ARRANJO_AUTOMATICO` itself, ShipByDate ascending, 100 rows a page, at
+  most `MAX_PAGINAS_ARRANJO_POR_CONTA` (5) pages — ending on `more` alone,
+  because Shopee answers `next_cursor: ""` when it is false. Every tick restarts
+  at page 1; a tail a cap cut is re-read five minutes later.
+- **A free triage of each search row:** an unreadable row or a number that is
+  no package (`-`, blank, a comma — the detail guard would refuse it with a
+  `ShopeeConfigError`, which fails the tick), a repeat, `arranjadoNaBusca`
+  (`=== true` only; a `null` is not arranged), and a KNOWN channel off the set
+  (`foraDoCanal`, register 224's instrument) are counted and dropped. An unknown
+  channel goes on to the detail.
+- **ONE `get_package_detail` per ≤ 50 survivors, reconciled by
+  `package_number`**, never by position, then
+  `elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(row))` — the hook's
+  own rungs, pinned as raw text so the sweep never grows a copy. Only a
+  `candidato` is enqueued: an invoice-pending package (`nfePendenteNaBusca`,
+  register 222's instrument) or a `PICKUP_RETRY` one costs a count, never a task
+  every five minutes.
+- **Per candidate, ONE pedido-existence read** (`makePedidoIdShopee`; two
+  packages of one order cost one read): present ⇒ the code 30; absent ⇒ ONE
+  code 3 per `order_sn` — a code 30 would mint a deferred failure row per
+  package per tick — and the next tick enqueues the package. At most
+  `MAX_ENFILEIRADOS_ARRANJO_POR_CONTA` (100) enqueues per conta; once reached,
+  no further detail read is spent.
+- **Containment.** `ShopeeRateLimitError` (burst or daily) is tested FIRST and
+  ends the whole tick: the quota is per APP, and the next tick is the retry.
+  Every class `erroContidoPorConta` names is recorded on its conta and the walk
+  moves on; anything else — `ShopeeConfigError` above all — fails the tick. A
+  contained `ShopeeApiError` is described by its class and Shopee code only,
+  because its message quotes Shopee's text.
+- **No write, and ids and counts only.** No transaction and no cursor
+  document; between two ticks, a push and an operator the only guard is
+  Shopee's (`is_shipment_arranged`, `package_already_shipped`). No log line or
+  result field carries an `order_sn`, a package or a tracking number, and the
+  schedule's one info line sums the per-conta counters with every `FasePacote`
+  key present.
 
 **What this step never writes.** `lastMarketplaceUpdate` — the ORDER clock,
 step 5's single writer, and comparing a package event against it is ADR 0011's
