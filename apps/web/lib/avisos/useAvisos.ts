@@ -7,6 +7,7 @@ import {
   type AvisosLeitura,
   avisoNaoLido,
   avisosLeituraSchema,
+  entradaDeLeitura,
   marcarTodosComoLidos,
 } from '@delfrance/schemas';
 import { useDocSnapshot, useSnapshot, type SnapshotRow } from '@delfrance/data/hooks';
@@ -109,6 +110,16 @@ export function useAvisos(): UseAvisosResult {
   const marcarComoLido = useCallback(
     async (avisoId: string) => {
       if (!uid) return;
+      // The entry names the VERSION the operator is looking at — the row's
+      // `criadoEm` — never a clock reading (see `entradaDeLeitura`). That is what
+      // lets a reopen, which keeps the id and moves `criadoEm`, re-alert.
+      //
+      // ⚠️ Clicked from a snapshot that predates a reopen, this records the OLD
+      // version: the row stays unread and the operator clicks again. That is the
+      // loser surfacing to the human (rule 7 tier 3), and it is the safe direction
+      // — a stale click can never silence a problem that came back.
+      const row = rows.find((r) => r.id === avisoId);
+      if (!row) return;
       // `arrayUnion`, not a read-modify-write: two tabs marking different avisos
       // read at the same instant must both stick (rule 7 tier 0 — nothing to
       // compare, nothing to lose).
@@ -121,11 +132,11 @@ export function useAvisos(): UseAvisosResult {
       // sentinel needs anyway, since `arrayUnion` is not a value Zod validates.
       await setDoc(
         avisosLeituraCollection.docRef(getFirebaseFirestore(), {}, uid).withConverter(null),
-        { lidos: arrayUnion(avisoId) },
+        { lidos: arrayUnion(entradaDeLeitura(avisoId, row.aviso.criadoEm)) },
         { merge: true },
       );
     },
-    [uid],
+    [uid, rows],
   );
 
   const marcarTodosLidos = useCallback(async () => {
