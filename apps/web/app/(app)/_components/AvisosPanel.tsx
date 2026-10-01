@@ -8,6 +8,7 @@ import {
   urlExternaSegura,
   type SeveridadeAviso,
 } from '@delfrance/schemas';
+import { microsToMillis } from '@delfrance/core/datetime';
 import { HOSTS_EXTERNOS_PERMITIDOS, MENSAGENS_POR_TIPO } from '@/lib/avisos/mensagens';
 import type { AvisoRow } from '@/lib/avisos/useAvisos';
 
@@ -16,6 +17,23 @@ const COR_POR_SEVERIDADE: Record<SeveridadeAviso, string> = {
   [SEVERIDADE_AVISO.atencao]: 'yellow',
   [SEVERIDADE_AVISO.informativo]: 'gray',
 };
+
+/**
+ * The provider's deadline (`aviso.prazo`, µs) as the operator's local date and
+ * time. Rendered from the FIELD, never from a `params` entry: a deadline in
+ * `params` would be interpolated raw by the wording and read as a µs integer,
+ * which is why producers keep it out of there. This is a browser surface, so the
+ * local zone is the operator's own and the right one to show.
+ */
+function formatarPrazo(prazoUs: number): string {
+  return new Date(microsToMillis(prazoUs)).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export interface AvisosPanelProps {
   rows: AvisoRow[];
@@ -141,6 +159,12 @@ function LinhaAviso({
       <Text size="xs" c="dimmed" lineClamp={completo ? undefined : 3}>
         {mensagem.corpo(aviso.params)}
       </Text>
+
+      {aviso.prazo != null && (
+        <Text size="xs" fw={500} data-testid="aviso-prazo">
+          Prazo: {formatarPrazo(aviso.prazo)}
+        </Text>
+      )}
 
       {mensagem.runbook !== undefined && (
         <Text size="xs" c="dimmed" fs="italic">
