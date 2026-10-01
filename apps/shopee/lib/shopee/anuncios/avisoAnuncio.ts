@@ -153,11 +153,10 @@ export interface EventoAnuncioComViolacao {
  * escalates out of the app, which in a three-person team must stay rare enough
  * that nobody learns to ignore it.
  *
- * ⚠️ **`params.prazo` is deliberately OMITTED.** The rendered wording
- * interpolates that param raw, so a number there would read as
- * `Prazo para corrigir: 1789000000000000.` — the µs the schema stores. Omitting
- * the param makes that branch not fire, and the `prazo` FIELD below carries the
- * deadline for the panel to format properly.
+ * ⚠️ **No `params.prazo`, ever.** The deadline is the `prazo` FIELD below, which
+ * the avisos panel formats as a date for every tipo. A param would be
+ * interpolated raw by the wording and read as the µs the schema stores
+ * (`1789000000000000`), so the wording carries no deadline at all.
  */
 export function avisarAnuncioComViolacao(
   db: Firestore,

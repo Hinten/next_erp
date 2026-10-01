@@ -675,3 +675,116 @@ describe('fetchArtifact — a 200 that is not a label', () => {
     expect(art.contentType).toBe('application/pdf');
   });
 });
+
+/**
+ * The headers arrived and the socket died while the BODY streamed: `text()` /
+ * `blob()` reject with a bare `TypeError` ("terminated" in Node, "network error"
+ * in Chrome). `call` and `fetchArtifact` wrapped only `fetch`, so that escaped
+ * every `instanceof` chain in `apps/web` — the etiqueta provider's
+ * `mlErrorMessage` rethrew it: an unhandled rejection on the `/pedidos` row and
+ * a skipped reset after "Checkout salvo". Every body read now goes through
+ * `lerCorpo`.
+ */
+class RespostaQueCaiNoCorpo extends Response {
+  constructor(
+    status: number,
+    contentType: string,
+    private readonly erro: unknown = new TypeError('terminated'),
+  ) {
+    super(null, { status, headers: { 'content-type': contentType } });
+  }
+  override text(): Promise<string> {
+    return Promise.reject(this.erro);
+  }
+  override blob(): Promise<Blob> {
+    return Promise.reject(this.erro);
+  }
+}
+
+describe('a connection that drops while the BODY is read', () => {
+  it.each([
+    ['a 200 answer', 200],
+    ['a 409 refusal', 409],
+  ])(
+    '`call` — %s ⇒ MercadoLivreClientNetworkError carrying the TypeError',
+    async (_rotulo, status) => {
+      const queda = new TypeError('terminated');
+      const c = client(async () => new RespostaQueCaiNoCorpo(status, 'application/json', queda));
+
+      const err = await c.conta('i1').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(MercadoLivreClientNetworkError);
+      expect((err as MercadoLivreClientNetworkError).cause).toBe(queda);
+    },
+  );
+
+  it.each([
+    ['the label bytes (200)', 200, 'application/pdf'],
+    ['the JSON refusal (409)', 409, 'application/json'],
+    ['an HTML page (200), read only to be logged', 200, 'text/html'],
+  ])(
+    '`etiqueta` — %s ⇒ MercadoLivreClientNetworkError carrying the TypeError',
+    async (_rotulo, status, contentType) => {
+      const queda = new TypeError('terminated');
+      const c = client(async () => new RespostaQueCaiNoCorpo(status, contentType, queda));
+
+      const err = await c.etiqueta('p1', 'pdf').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(MercadoLivreClientNetworkError);
+      expect((err as MercadoLivreClientNetworkError).cause).toBe(queda);
+    },
+  );
+
+  it('near-miss — OUR abort mid-body stays the bare AbortError the push providers read as a cancel', async () => {
+    // ⚠️ The ML push providers (estoque, preço, anúncio-status) recognise
+    // Cancelar by `err instanceof DOMException && err.name === 'AbortError'`.
+    // A wrap that caught this too would turn a cancelled run into 'rede'
+    // falha rows.
+    const ctrl = new AbortController();
+    const abortado = new DOMException('The operation was aborted.', 'AbortError');
+    const c = client(async () => {
+      ctrl.abort();
+      return new RespostaQueCaiNoCorpo(200, 'application/json', abortado);
+    });
+
+    const err = await c
+      .enviarEstoque({ integracaoId: 'i1', produtoIds: ['p1'], signal: ctrl.signal })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(abortado);
+  });
+
+  it('near-miss — once WE aborted, even a TypeError rethrows untouched: the caller owns that outcome', async () => {
+    // A conforming runtime rejects an aborted body read with the abort reason
+    // (the case above), so this pairing should not arise. It pins the
+    // `signal.aborted` guard itself, which the case above cannot: a
+    // `DOMException` is not a `TypeError` and rethrows with or without it.
+    const ctrl = new AbortController();
+    const queda = new TypeError('terminated');
+    const c = client(async () => {
+      ctrl.abort();
+      return new RespostaQueCaiNoCorpo(200, 'application/json', queda);
+    });
+
+    const err = await c
+      .enviarEstoque({ integracaoId: 'i1', produtoIds: ['p1'], signal: ctrl.signal })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(queda);
+  });
+
+  it.each([
+    ['`call`', (c: ReturnType<typeof client>) => c.conta('i1')],
+    ['`etiqueta`', (c: ReturnType<typeof client>) => c.etiqueta('p1', 'pdf')],
+  ])(
+    'near-miss — %s: a rejection that is not a TypeError is not a transport failure and rethrows untouched',
+    async (_rotulo, chamar) => {
+      const outro = new RangeError('não é uma queda de rede');
+      const c = client(async () => new RespostaQueCaiNoCorpo(200, 'application/pdf', outro));
+
+      const err = await chamar(c).catch((e: unknown) => e);
+
+      expect(err).toBe(outro);
+    },
+  );
+});

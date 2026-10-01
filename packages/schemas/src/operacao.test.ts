@@ -98,6 +98,31 @@ describe('operacaoSchema', () => {
   });
 });
 
+describe('operacaoSchema — shared merchandise origin', () => {
+  it.each(['0', '1', '2', '3', '4', '5', '6', '7', '8'])(
+    'round-trips origin %s without changing its wire value',
+    (origem) => {
+      expect(operacaoSchema.parse({ ...MINIMAL, origem }).origem).toBe(origem);
+    },
+  );
+
+  it('preserves an explicitly null origin', () => {
+    expect(operacaoSchema.parse({ ...MINIMAL, origem: null }).origem).toBeNull();
+  });
+
+  it('keeps an omitted origin absent instead of materializing a default', () => {
+    expect(operacaoSchema.parse(MINIMAL)).not.toHaveProperty('origem');
+  });
+
+  it('continues to accept an explicitly undefined origin', () => {
+    expect(operacaoSchema.parse({ ...MINIMAL, origem: undefined }).origem).toBeUndefined();
+  });
+
+  it.each(['9', '00', '', 0, 1, 2, 3, 4, 5, 6, 7, 8])('rejects invalid origin %j', (origem) => {
+    expect(operacaoSchema.safeParse({ ...MINIMAL, origem }).success).toBe(false);
+  });
+});
+
 describe('Operacao enums and labels', () => {
   it('TIPO_NFE_LABELS covers every tipo', () => {
     expect(TIPO_NFE_LABELS[0]).toBeDefined();

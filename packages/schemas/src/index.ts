@@ -800,11 +800,9 @@ export {
   finNFeOperacaoSchema,
   indPresOperacaoSchema,
   indIntermedOperacaoSchema,
-  origemProdutoImpostoSchema,
   TIPO_NFE,
   IND_PRES_OPERACAO,
   IND_INTERMED_OPERACAO,
-  ORIGEM_PRODUTO_IMPOSTO,
   TIPO_NFE_LABELS,
   FIN_NFE_OPERACAO,
   FIN_NFE_OPERACAO_LABELS,
@@ -823,7 +821,6 @@ export {
   type TpNFDebito,
   type IndPresOperacao,
   type IndIntermedOperacao,
-  type OrigemProdutoImposto,
 } from './operacao';
 
 export {
@@ -961,7 +958,6 @@ export {
   impostoProdutoSchema,
   impostoProdutoMeta,
   operacaoIdFromImpostoRef,
-  ORIGEM_PRODUTO_LABELS,
   type ImpostoProduto,
 } from './impostoProduto';
 
@@ -1044,6 +1040,7 @@ export {
   impostoPersistidoSchema,
   normalizeNCM,
   // label maps
+  ORIGEM_PRODUTO_LABELS,
   CRT_LABELS,
   CSOSN_LABELS,
   CST_ICMS_LABELS,
@@ -1324,6 +1321,7 @@ export {
   ROTAS_AVISO,
   chaveDeAviso,
   avisoNaoLido,
+  entradaDeLeitura,
   marcarTodosComoLidos,
   urlExternaSegura,
   rotaInternaSegura,

@@ -528,15 +528,28 @@ export const avisosLeituraSchema = z
     /** Everything created at or before this instant counts as read. */
     ultimaVisualizacaoUs: microsSinceEpoch('Última visualização').default(0),
     /**
-     * Aviso ids read individually SINCE `ultimaVisualizacaoUs`.
+     * Avisos read individually SINCE `ultimaVisualizacaoUs`, one
+     * {@link entradaDeLeitura} per read — `<avisoId>@<criadoEm>`, the aviso id
+     * AND the version the operator saw, **never a bare id**.
+     *
+     * ⚠️ The version is the point. `escreverAviso` reopens a resolved aviso under
+     * the SAME document id with a fresh `criadoEm`, precisely so it re-alerts. A
+     * bare id would keep matching after that reopen and the problem that came
+     * back would stay silenced until somebody pressed "marcar todas"; an entry
+     * names the version it covered and stops matching the moment `criadoEm`
+     * moves. A repeat keeps `criadoEm`, so it keeps matching — which is what dedup
+     * is for.
+     *
      * {@link marcarTodosComoLidos} advances the watermark and clears this array
-     * in the same write, so it holds only avisos raised since the last "marcar
+     * in the same write, so it holds only reads made since the last "marcar
      * todas como lidas".
      *
      * ⚠️ That is a reset, **not a bound**: an operator who only ever marks rows
-     * individually never triggers it, and the array grows by one per read aviso
-     * — roughly 1.4 years to Firestore's 1 MiB document limit at 50 avisos/day.
-     * Slow, but real, and worth stating rather than implying otherwise.
+     * individually never triggers it, and the array grows by one per individual
+     * read — roughly 1.4 years to Firestore's 1 MiB document limit at 50
+     * avisos/day. Re-reading a REOPENED aviso adds a second entry for the same id;
+     * the older one never matches again and waits for the same reset. Slow, but
+     * real, and worth stating rather than implying otherwise.
      *
      * Deliberately not pruned client-side. Dropping ids that have left the
      * visible page would need a read-modify-write, and the write path uses
@@ -631,11 +644,39 @@ export function chaveDeAviso(input: ChaveAvisoInput): string {
 }
 
 /**
+ * The `avisosLeitura.lidos` entry recording that an operator read
+ * `avisoId` AS OF `criadoEmUs` — the version they saw, not the moment they
+ * clicked.
+ *
+ * ⚠️ **A version, never a clock reading.** `criadoEm` is stamped by a Cloud
+ * Function and the read happens in a browser, so "read at <browser now>"
+ * compared against `criadoEm` would compare two different clocks — the trap
+ * {@link marcarTodosComoLidos} documents. A client running slow would record its
+ * read "before" a reopen it had already seen, and the row it just marked would
+ * stay bold. Equality on the version the operator saw involves no clock at all.
+ *
+ * ⚠️ This is an equivalence fold — it decides when two reads are "the same" — so
+ * its scope is pinned both ways in `aviso.test.ts`. Ids CAN contain `@`
+ * ({@link chaveDeAviso} does not fold it), but `String(number)` never does, so
+ * the LAST `@` splits an entry uniquely: no two `(avisoId, criadoEm)` pairs can
+ * produce the same string.
+ */
+export function entradaDeLeitura(avisoId: string, criadoEmUs: number): string {
+  return `${avisoId}@${String(criadoEmUs)}`;
+}
+
+/**
  * Is this aviso unread FOR THIS OPERATOR, and addressed to them at all?
  *
  * Pure and total so the bell, the `/inicio` list and any future consumer cannot
  * disagree — the failure mode #1369 documents, where two copies of one rule drift
  * toward plausible and both look right in review.
+ *
+ * An individual read covers only the VERSION it names ({@link entradaDeLeitura}):
+ * a repeat keeps `criadoEm` and stays read, a reopen moves it and reads as unread
+ * again — the re-alert `escreverAviso` promises. ⚠️ A bare id in `lidos` counts
+ * for nothing, deliberately: honouring it "for compatibility" is exactly the
+ * check that kept a reopened aviso silenced.
  */
 export function avisoNaoLido(
   aviso: Pick<Aviso, 'criadoEm' | 'destinatarioUid' | 'resolvidoEm'>,
@@ -646,7 +687,7 @@ export function avisoNaoLido(
   if (aviso.resolvidoEm != null) return false;
   if (aviso.destinatarioUid != null && aviso.destinatarioUid !== uid) return false;
   if (leitura == null) return true;
-  if (leitura.lidos.includes(avisoId)) return false;
+  if (leitura.lidos.includes(entradaDeLeitura(avisoId, aviso.criadoEm))) return false;
   return aviso.criadoEm > leitura.ultimaVisualizacaoUs;
 }
 
