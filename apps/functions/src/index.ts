@@ -52,3 +52,4 @@ export { reconciliarPagamentoPedido } from './pedidos/reconciliarPagamentoPedido
 export { liberarBloqueioIncidente } from './pedidos/liberarBloqueioIncidente';
 export { finalizarBalanco, processarBalanco } from './estoques/aplicarBalanco';
 export { sweepAvisosResolvidos } from './avisos/sweepAvisosResolvidos';
+export { consultarVendasInicio } from './inicio/consultarVendasInicio';

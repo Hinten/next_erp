@@ -23,6 +23,7 @@ export {
   PIPELINE_ID_FIELD,
   PipelineUnsupportedError,
   buildPipeline,
+  pipelinePredicate,
   isPipelineSupported,
   sanitizeSearchDsl,
   type Pipeline,

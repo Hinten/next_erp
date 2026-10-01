@@ -16,6 +16,7 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
     startsWith: (f: unknown, t: unknown) => ({ kind: 'startsWith', f, t }),
     regexContains: (f: unknown, p: unknown) => ({ kind: 'regexContains', f, p }),
     equal: (l: unknown, r: unknown) => ({ kind: 'equal', l, r }),
+    equalAny: (l: unknown, r: unknown) => ({ kind: 'in', l, r }),
     lessThan: (l: unknown, r: unknown) => ({ kind: 'lt', l, r }),
     lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
     greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
@@ -107,6 +108,38 @@ describe('isPipelineSupported', () => {
 });
 
 describe('buildPipeline', () => {
+  it('applies a typed AND/OR tree before projection and pagination', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'pedidos',
+      predicate: {
+        and: [
+          { field: 'ehSaida', op: 'eq', value: true },
+          {
+            or: [
+              { field: 'estado', op: 'eq', value: 'pago' },
+              { field: 'estado', op: 'in', value: ['finalizado'] },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ field: 'timestamp', direction: 'desc' }],
+      select: ['numero'],
+      limit: 100,
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'and',
+        xs: [
+          { kind: 'equal', l: expect.objectContaining({ name: 'ehSaida' }), r: true },
+          expect.objectContaining({ kind: 'or' }),
+        ],
+      }),
+    );
+    expect(stage.__calls).toEqual(['where', 'sort', 'select', 'limit']);
+    expect(stage.limit).toHaveBeenCalledWith(100);
+    expect(stage.select).toHaveBeenCalled();
+  });
   it('throws PipelineUnsupportedError when db.pipeline is missing', () => {
     const { db } = makeDb(false);
     expect(() => buildPipeline(db, { collection: 'clientes' })).toThrow(PipelineUnsupportedError);

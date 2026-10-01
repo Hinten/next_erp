@@ -1,6 +1,47 @@
 {
   "indexes": [
     {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "vendedorPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" },
+        { "fieldPath": "valorCobrado", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" },
+        { "fieldPath": "foiImpresso", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
+        { "fieldPath": "foiImpresso", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "usuarios",
       "queryScope": "COLLECTION",
       "fields": [
