@@ -7,7 +7,7 @@ metadata:
 
 # GitHub Workflow Routing
 
-Prefer the connected GitHub plugin for server-side GitHub state. Use the CLI fallback below when the connector is unavailable.
+Use the connected GitHub plugin as the source of truth for server-side GitHub state.
 
 ## Route GitHub tasks
 
@@ -18,49 +18,6 @@ Prefer the connected GitHub plugin for server-side GitHub state. Use the CLI fal
 - Fall back only after the connector is absent or an actual connector call fails. State the failure and the fallback used.
 - Use local Git for working-tree state, local diffs, commits, and branches. Do not invoke the plugin for a purely local Git request.
 - Do not repeat a successful connector lookup through a second source unless verification is materially necessary.
-
-## Windows connector failure and CLI fallback
-
-An installed, connected GitHub plugin can still expose no callable tools when
-Codex's `codex_apps` MCP service fails to initialize. On 2026-09-30, the desktop
-logs reported `server=codex_apps`, `status=failed`, and
-`error decoding response body` during the initialize request across multiple
-chats. Restarting Windows and signing out and back in did not recover it.
-This identifies the failed connector startup; the underlying response-decoding
-cause remains unconfirmed.
-
-When tools are missing, inspect available plugin discovery or permission tools
-and, if needed, matching startup errors in the latest desktop log under
-`%LOCALAPPDATA%\Codex\Logs\YYYY\MM\DD`. Inspect only relevant lines and redact
-credentials before sharing evidence. A tool appearing in a catalog is not proof
-that a call can execute. State the connector failure, then continue the
-authorized GitHub task through `gh` and local Git.
-
-- Try a scoped read such as
-  `gh pr view <number> --repo <owner/repo> --json number,url,state`.
-- If sandboxed `gh` reports `Access is denied` for its configuration, or remote
-  Git reports `schannel: AcquireCredentialsHandle failed: SEC_E_NO_CREDENTIALS`,
-  retry the scoped command through `exec_command` with
-  `sandbox_permissions: "require_escalated"` and a task-specific justification.
-  On this Windows host, sandboxed commands ran as `CodexSandboxOffline`; approved
-  commands ran as the signed-in Windows user and could use the existing GitHub
-  authentication. If the retry still fails, use `whoami` to verify the execution
-  identity and report the actual error. Honor any approval rejection.
-- Reuse the existing user authentication through the approved command path.
-  Do not copy tokens into the repository, expose credential-file contents, or
-  broaden filesystem ACLs to make the sandbox read credentials.
-- For authorized publication of an existing local commit, use `git push` to
-  preserve its SHA, then `gh pr create --draft` when a draft is requested. Use
-  `--body-file` for a multiline description. Read CI with `gh pr checks` or
-  targeted `gh api` calls, and attach any created PR to the current chat.
-- A successful read and repository `push` permission establish a usable CLI
-  path; they do not prove a push or PR creation was executed. Publish only when
-  the user's task authorizes it. Diagnostic tasks remain read-only.
-
-The fallback changes the tool used, not the task's scope or approval policy.
-Apply the same CI/review follow-through and stopping conditions below. If no
-permitted execution path works, report the blocker and the relevant startup
-error rather than repeatedly requesting a restart or sign-in.
 
 ## Complete pull requests created by Codex
 
