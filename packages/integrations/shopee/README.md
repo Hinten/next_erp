@@ -14,7 +14,7 @@ What ships here:
 | `api.ts`       | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
 | `types.ts`     | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
 | `errors.ts`    | The typed error hierarchy and the classification of Shopee's `error` code strings          |
-| `logistica.ts` | The label operations' paths, request shapes, guards and wire constants (step 15)           |
+| `logistica.ts` | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
 | `arquivo.ts`   | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
 
 ## Label operations (step 15)
@@ -63,6 +63,31 @@ position and a length — never a value.
   `fail_error`, code verbatim). Rows arrive in Shopee's order: reconcile them
   by `(order_sn, package_number)`, never by position, and a FAILED row carries
   no `package_number` at all.
+
+## Package search (step 15b)
+
+One more operation on the SHOP client, `searchPackageList` — ONE page of the
+packages a shop has not shipped yet (`v2.order.search_package_list`, a POST
+with the filters in a JSON body). It is an order-module path serving the
+arrange flow, so its path, filter enums (`SHOPEE_PACKAGE_STATUS_FILTRO`,
+`SHOPEE_FULFILLMENT_TYPE_FILTRO`, `SHOPEE_ORDER_TYPE_FILTRO`,
+`SHOPEE_PACKAGE_SORT`), request shape and guard live in `logistica.ts`; it
+lists and never arranges.
+
+- **The three filters Shopee defaults are always SENT** (`package_status`,
+  `fulfillment_type`, `invoice_pending` — `false` included): what
+  `invoice_pending: false` filters is register 222, readable only if we know
+  exactly what went out.
+- **It does NOT auto-page.** Terminate on `pagination.more === false`, never on a
+  row count and never on the cursor (`next_cursor` is `""` when `more` is
+  false). The `cursor` key is ABSENT on page 1; `''` is refused, and a cursor is
+  sent back verbatim.
+- **An empty channel list is refused** — it may read as "no channel filter";
+  omit the key instead. The guard runs before the access token is asked for and
+  names the field, a position or a type, never a value.
+- **A row is a pointer, not a verdict**: it carries no `fulfillment_status` and
+  no `invoice_pending`, and ToProcess mixes LOGISTICS_READY with
+  LOGISTICS_PICKUP_RETRY. Confirm with `getPackageDetail` before `shipOrder`.
 
 ## What it deliberately is not
 

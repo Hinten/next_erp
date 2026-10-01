@@ -4508,3 +4508,125 @@ export const shopeeResultadoDeDocumentoPaginaSchema = paginaDeDocumento(
 export type ShopeeResultadoDeDocumentoPagina = z.infer<
   typeof shopeeResultadoDeDocumentoPaginaSchema
 >;
+
+/* -------------------------------------------------------------------------- */
+/*                       The package search (step 15b)                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * `search_package_list` — an ORDER-module path that serves the arrange flow, and
+ * the step-15b sweep's only LIST read. The path, the request params, the filter
+ * enums and the guard live in `logistica.ts`; this block only reads.
+ *
+ * Read off the cached page (`api v2.order.search_package_list`), then MEASURED
+ * on the SG sandbox shop (2026-10-01, three read-only calls; the redacted bodies
+ * are `apps/shopee/lib/shopee/fixtures/__wire__/search_package_list.sg-*.json`).
+ * Where the page and the wire disagree, the wire wins, and each case is written
+ * on the field it concerns.
+ */
+
+/**
+ * One row of `search_package_list.response.packages_list` — a POINTER to a
+ * package awaiting shipment, never a verdict.
+ *
+ * ⚠️ A row carries no `fulfillment_status`, no `invoice_pending` and no
+ * `ship_by_date`, and ToProcess mixes `LOGISTICS_READY` with
+ * `LOGISTICS_PICKUP_RETRY` (guide 229 §10). Every decision is taken off a FRESH
+ * `get_package_detail` row; this one only says which packages to read.
+ *
+ * ⚠️ `order_sn` and `package_number` are `.min(1)` STRICT — identities, as on
+ * {@link shopeePackageDetailRowSchema}: the caller reconciles the detail by
+ * `package_number` and derives the pedido id from `order_sn`. A blank one turns
+ * the WHOLE ROW into the page's `null` sentinel, never into a row with a null
+ * identity.
+ *
+ * ⚠️ The other two fields catch PER FIELD, and the asymmetry is the point: an
+ * unreadable one reads as "unknown", which the caller re-checks on the detail
+ * row anyway, so it never costs the row.
+ *
+ * ⚠️ **DELIBERATELY UNDECLARED:** `product_location_id` (a string here, on the
+ * page and on the SG wire alike, but the SAME name is an array on
+ * `get_order_detail`'s item — and nothing reads it: it only feeds Mass
+ * ArrangeShipment, which we do not call) and `sorting_group` (TW 30029 only).
+ * Both ride `.passthrough()`. `types.test.ts` pins the exact `.shape` key set.
+ */
+export const shopeeSearchPackageRowSchema = z
+  .object({
+    order_sn: z.string().min(1),
+    package_number: z.string().min(1),
+    /**
+     * int32. A quoted number is read (`"90011"` → 90011, #1087); anything else —
+     * absent, a fraction, a non-numeric string — reads as `null`, an UNKNOWN
+     * channel the caller keeps for the detail row to decide.
+     */
+    logistics_channel_id: wireInt().nullable().catch(null),
+    /**
+     * "Only effective when the package's logistics_status/fulfillment_status is
+     * LOGISTICS_READY" — a HINT. ⚠️ STRICT boolean: anything but `true`/`false`
+     * reads as `null`, which the caller reads as NOT arranged
+     * (`faseEtiqueta.ts`). A coerced `"false"` STRING would read `true` and skip
+     * a package nobody arranged.
+     */
+    is_shipment_arranged: z.boolean().nullable().catch(null),
+  })
+  .passthrough();
+export type ShopeeSearchPackageRow = z.infer<typeof shopeeSearchPackageRowSchema>;
+
+/**
+ * The inner payload of `search_package_list` — ONE page.
+ *
+ * ⚠️ **Per-ELEMENT tolerance with a `null` sentinel**, the
+ * {@link shopeePackageDetailPayloadSchema} precedent: one malformed row must not
+ * cost the page's other 99. The sentinel is `null`, which no real row can be, so
+ * the caller COUNTS the unreadable rows instead of mistaking one for data.
+ * `.default([])`: the SG wire answers an empty page with `packages_list: []`,
+ * and an absent key reads the same.
+ *
+ * ⚠️ `pagination` is NULLABLE. Every observed answer carries it — the SG empty
+ * page sends `{total_count: 0, more: false, next_cursor: ""}` — but tolerating
+ * its absence costs nothing: the caller reads `null` with no rows as drained
+ * and `null` with rows as truncated.
+ *
+ * ⚠️ `more` is a STRICT `z.boolean()` when `pagination` is present, for
+ * {@link shopeeOrderListPayloadSchema}'s reason: it is the loop's ONLY
+ * terminator, and a coerced `"false"` string either spins the caller or
+ * truncates it in silence — so it fails the whole page instead. Never terminate
+ * on the row count, and never on `next_cursor`, which is `""` when `more` is
+ * false.
+ *
+ * ⚠️ `next_cursor` is OPAQUE (the page samples a composite `"<seconds>,<id>"`)
+ * and goes back VERBATIM; nothing may parse or synthesize one.
+ *
+ * ⚠️ The response `sort` is DELIBERATELY UNDECLARED: the page documents
+ * `{sort_type, is_asc}` while the SG wire echoes `{sort_type, ascending}`, and
+ * nothing reads the echo. It rides `.passthrough()`.
+ *
+ * `total_count` (int64) is a diagnostic only, so an unreadable or oversized one
+ * reads `null` rather than failing the page.
+ */
+export const shopeeSearchPackageListPayloadSchema = z
+  .object({
+    packages_list: z.array(shopeeSearchPackageRowSchema.nullable().catch(null)).default([]),
+    pagination: z
+      .object({
+        total_count: wireInt().nullable().catch(null),
+        next_cursor: z.string().nullable().default(null),
+        more: z.boolean(),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeSearchPackageList = z.infer<typeof shopeeSearchPackageListPayloadSchema>;
+
+/**
+ * `POST /api/v2/order/search_package_list` — WRAPPED under `response`.
+ *
+ * ⚠️ The page's response TABLE spells the envelope key `mesage`; its sample and
+ * the SG wire send `message`. Nothing here depends on either: `error` alone
+ * decides, and an envelope carrying only `mesage` still parses
+ * (`.passthrough()`).
+ */
+export const shopeeSearchPackageListSchema = wrappedOp(shopeeSearchPackageListPayloadSchema);
+export type ShopeeSearchPackageListResponse = z.infer<typeof shopeeSearchPackageListSchema>;

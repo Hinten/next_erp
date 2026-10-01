@@ -110,16 +110,24 @@ import {
 import {
   SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH,
   SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH,
+  SHOPEE_FULFILLMENT_TYPE_FILTRO,
   SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH,
   SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
   SHOPEE_GET_SHIPPING_PARAMETER_PATH,
   SHOPEE_GET_TRACKING_NUMBER_PATH,
+  SHOPEE_ORDER_TYPE_FILTRO,
+  SHOPEE_PACKAGE_SORT,
+  SHOPEE_PACKAGE_STATUS_FILTRO,
+  SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE,
+  SHOPEE_SEARCH_PACKAGE_LIST_PATH,
   SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS,
   SHOPEE_SHIPPING_DOCUMENT_STATUS,
   SHOPEE_SHIP_ORDER_DROPOFF_VAZIO,
   SHOPEE_SHIP_ORDER_PATH,
+  type SearchPackageListParams,
   type ShipOrderParams,
   type ShopeeAlvoDePacote,
+  assertSearchPackageListParams,
   falhaDaLinha,
 } from '../src/logistica';
 
@@ -6738,6 +6746,388 @@ describe('a etiqueta (passo 15)', () => {
       'catch',
     ]) {
       expect(ship, proibido).not.toContain(proibido);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            A busca de pacotes (passo 15b) — a oitava operação               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O pedido que a varredura do arranjo automático faz, por conta e por tique —
+ * montado com as constantes do fio, nunca com números soltos.
+ */
+const BUSCA_DO_SWEEP: SearchPackageListParams = {
+  pageSize: SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE,
+  filtro: {
+    packageStatus: SHOPEE_PACKAGE_STATUS_FILTRO.aProcessar,
+    fulfillmentType: SHOPEE_FULFILLMENT_TYPE_FILTRO.vendedor,
+    invoicePending: false,
+    logisticsChannelIds: [90011, 90012, 90026],
+  },
+  ordenacao: { sortType: SHOPEE_PACKAGE_SORT.prazoDeEnvio, ascending: true },
+};
+
+/** O corpo da página 1, BYTE A BYTE — o literal do desenho (§2.10), nunca uma reconstrução. */
+const CORPO_DA_PAGINA_1 =
+  '{"filter":{"package_status":2,"fulfillment_type":2,"invoice_pending":false,"logistics_channel_ids":[90011,90012,90026]},"pagination":{"page_size":100},"sort":{"sort_type":1,"ascending":true}}';
+
+/** Uma página com UMA linha e `more: true` — o cursor COMPOSTO da amostra da página, ids de fixture. */
+const BUSCA_PACOTES_BODY = {
+  error: '',
+  message: '',
+  request_id: 'req-busca-pacotes',
+  response: {
+    packages_list: [
+      {
+        order_sn: PEDIDO_ETQ,
+        package_number: PACOTE_1,
+        logistics_channel_id: 90011,
+        product_location_id: 'BRZ',
+        sorting_group: '',
+        is_shipment_arranged: false,
+      },
+    ],
+    pagination: { total_count: 2, next_cursor: '1767000000,987654', more: true },
+    // ⚠️ O eco do SG (`ascending`, não o `is_asc` da página): ninguém o declara.
+    sort: { sort_type: 1, ascending: true },
+  },
+};
+
+/** A resposta VAZIA medida no SG (Apêndice B): `packages_list: []` E `pagination`, cursor `""`. */
+const BUSCA_VAZIA_BODY = {
+  error: '',
+  message: '',
+  request_id: 'req-busca-vazia',
+  response: {
+    packages_list: [],
+    pagination: { total_count: 0, more: false, next_cursor: '' },
+    sort: { sort_type: 1, ascending: true },
+  },
+};
+
+/** A busca da varredura com campos do FILTRO trocados. ⚠️ Cast de propósito: é o chamador JS. */
+function buscaComFiltro(troca: Record<string, unknown>): SearchPackageListParams {
+  return {
+    ...BUSCA_DO_SWEEP,
+    filtro: { ...BUSCA_DO_SWEEP.filtro, ...troca },
+  } as unknown as SearchPackageListParams;
+}
+
+/** A busca da varredura com campos de FORA do filtro trocados. ⚠️ Cast de propósito. */
+function buscaCom(troca: Record<string, unknown>): SearchPackageListParams {
+  return { ...BUSCA_DO_SWEEP, ...troca } as unknown as SearchPackageListParams;
+}
+
+describe('a busca de pacotes (passo 15b)', () => {
+  it('B1 — o caminho e os enums do fio; POST shop-signed com só as chaves comuns na query; sai pelo index do pacote, SÓ no cliente da loja, e a página volta DESEMBRULHADA', async () => {
+    expect(SHOPEE_SEARCH_PACKAGE_LIST_PATH).toBe('/api/v2/order/search_package_list');
+    expect(SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE).toBe(100);
+    // Os valores do FIO, verbatim da página — cada enum por inteiro.
+    expect(SHOPEE_PACKAGE_STATUS_FILTRO).toEqual({
+      todos: 0,
+      pendente: 1,
+      aProcessar: 2,
+      processado: 3,
+    });
+    expect(SHOPEE_FULFILLMENT_TYPE_FILTRO).toEqual({ semFiltro: 0, shopee: 1, vendedor: 2 });
+    expect(SHOPEE_ORDER_TYPE_FILTRO).toEqual({ todos: 0, regular: 1, instantaneo: 2 });
+    expect(SHOPEE_PACKAGE_SORT).toEqual({ prazoDeEnvio: 1, criacao: 2, confirmacao: 3 });
+
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_PACOTES_BODY));
+    const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock, getAccessToken));
+    const pagina = await client.searchPackageList(BUSCA_DO_SWEEP);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_SEARCH_PACKAGE_LIST_PATH);
+    expect(init?.method).toBe('POST');
+    // Os filtros vão no CORPO: a query leva só as chaves comuns, a da loja incluída.
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(url.searchParams.get('shop_id')).toBe(String(TEST_SHOP_ID));
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+
+    // DESEMBRULHADA: o envelope não chega ao chamador.
+    expect('response' in pagina).toBe(false);
+    expect('error' in pagina).toBe(false);
+    expect(pagina.packages_list).toHaveLength(1);
+    expect(pagina.packages_list[0]?.order_sn).toBe(PEDIDO_ETQ);
+    expect(pagina.packages_list[0]?.package_number).toBe(PACOTE_1);
+    expect(pagina.packages_list[0]?.is_shipment_arranged).toBe(false);
+    expect(pagina.pagination?.more).toBe(true);
+
+    // Pela porta PÚBLICA (`index.ts` re-exporta `logistica.ts` por wildcard)…
+    expect(pacote.SHOPEE_SEARCH_PACKAGE_LIST_PATH).toBe(SHOPEE_SEARCH_PACKAGE_LIST_PATH);
+    expect(pacote.SHOPEE_PACKAGE_STATUS_FILTRO).toBe(SHOPEE_PACKAGE_STATUS_FILTRO);
+    expect(pacote.assertSearchPackageListParams).toBe(assertSearchPackageListParams);
+    // …e só no cliente da LOJA: a página é `type=Shop`.
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+    expect('searchPackageList' in partner).toBe(false);
+  });
+
+  it('B2 — mutantes 71/72/73/93: o corpo da página 1 BYTE A BYTE — sem `cursor`, `invoice_pending:false` PRESENTE, ShipByDate ascendente; ⛔ QUASE-IGUAL: o corpo que confia no padrão da Shopee é OUTRO pedido', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const vazia = await client.searchPackageList(BUSCA_DO_SWEEP);
+
+    const corpo = corpoEnviado(fetchMock);
+    expect(corpo).toBe(CORPO_DA_PAGINA_1);
+    const lido = JSON.parse(corpo) as {
+      filter: Record<string, unknown>;
+      pagination: Record<string, unknown>;
+    };
+    // A chave EXISTE e é `false` — nem ausente, nem `undefined`, nem `true`.
+    expect(Object.prototype.hasOwnProperty.call(lido.filter, 'invoice_pending')).toBe(true);
+    expect(lido.filter.invoice_pending).toBe(false);
+    // ⛔ Página 1: nenhuma chave `cursor` — nem `""`, nem o literal de duas aspas das amostras.
+    expect(Object.keys(lido.pagination)).toEqual(['page_size']);
+
+    // ⛔ QUASE-IGUAL: sem `invoice_pending`, o filtro é o MESMO pelo padrão
+    // documentado ("Default value = false") — e é outro pedido no fio, onde o
+    // registro 222 não se lê. Ele difere do enviado SÓ por essa chave, e o
+    // enviado nunca é ele.
+    const filtroPeloPadrao: Record<string, unknown> = { ...lido.filter };
+    delete filtroPeloPadrao.invoice_pending;
+    const pedidoPeloPadrao = JSON.stringify({ ...lido, filter: filtroPeloPadrao });
+    expect(pedidoPeloPadrao).toBe(CORPO_DA_PAGINA_1.replace('"invoice_pending":false,', ''));
+    expect(corpo).not.toBe(pedidoPeloPadrao);
+
+    // A resposta vazia do SG atravessa o cliente: lista vazia, paginação presente.
+    expect(vazia.packages_list).toEqual([]);
+    expect(vazia.pagination?.more).toBe(false);
+
+    // PARES: o que o chamador manda é o que vai — o pacote não fixa nenhum dos três.
+    const variantes: readonly (readonly [string, SearchPackageListParams, string])[] = [
+      [
+        'invoice_pending true',
+        buscaComFiltro({ invoicePending: true }),
+        CORPO_DA_PAGINA_1.replace('"invoice_pending":false', '"invoice_pending":true'),
+      ],
+      [
+        'sort descendente por criação',
+        buscaCom({ ordenacao: { sortType: SHOPEE_PACKAGE_SORT.criacao, ascending: false } }),
+        CORPO_DA_PAGINA_1.replace(
+          '"sort":{"sort_type":1,"ascending":true}',
+          '"sort":{"sort_type":2,"ascending":false}',
+        ),
+      ],
+      [
+        // O mínimo: sem canais, sem `order_type`, sem `sort` — as chaves SOMEM,
+        // e as três do padrão da Shopee continuam indo, `false` incluído.
+        'mínimo',
+        {
+          pageSize: 50,
+          filtro: {
+            packageStatus: SHOPEE_PACKAGE_STATUS_FILTRO.todos,
+            fulfillmentType: SHOPEE_FULFILLMENT_TYPE_FILTRO.semFiltro,
+            invoicePending: false,
+          },
+        },
+        '{"filter":{"package_status":0,"fulfillment_type":0,"invoice_pending":false},"pagination":{"page_size":50}}',
+      ],
+      [
+        'order_type depois dos canais',
+        {
+          pageSize: 1,
+          filtro: {
+            packageStatus: SHOPEE_PACKAGE_STATUS_FILTRO.aProcessar,
+            fulfillmentType: SHOPEE_FULFILLMENT_TYPE_FILTRO.vendedor,
+            invoicePending: true,
+            logisticsChannelIds: [90011],
+            orderType: SHOPEE_ORDER_TYPE_FILTRO.instantaneo,
+          },
+        },
+        '{"filter":{"package_status":2,"fulfillment_type":2,"invoice_pending":true,"logistics_channel_ids":[90011],"order_type":2},"pagination":{"page_size":1}}',
+      ],
+    ];
+    for (const [nome, params, esperado] of variantes) {
+      fetchMock.mockClear();
+      await client.searchPackageList(params);
+      expect(corpoEnviado(fetchMock), nome).toBe(esperado);
+    }
+  });
+
+  it('B2b — a página 2 manda o `next_cursor` VERBATIM (composto e opaco, nada aparado), dentro de `pagination` e depois de `page_size`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    for (const cursor of ['1767000000,987654', ' 1767000000,987654 ']) {
+      fetchMock.mockClear();
+      await client.searchPackageList({ ...BUSCA_DO_SWEEP, cursor });
+      expect(corpoEnviado(fetchMock), JSON.stringify(cursor)).toBe(
+        CORPO_DA_PAGINA_1.replace(
+          '"pagination":{"page_size":100}',
+          `"pagination":{"page_size":100,"cursor":${JSON.stringify(cursor)}}`,
+        ),
+      );
+    }
+  });
+
+  it('B3 — mutante 89: cada recusa acontece ANTES do token e do fetch, espiões em zero — a lista de canais VAZIA incluída; ⛔ QUASE-IGUAIS: os limites ACEITOS custam uma chamada cada', async () => {
+    const recusas: readonly (readonly [string, SearchPackageListParams])[] = [
+      ['page_size 0', buscaCom({ pageSize: 0 })],
+      ['page_size 101', buscaCom({ pageSize: 101 })],
+      ['page_size 1.5', buscaCom({ pageSize: 1.5 })],
+      ["page_size '100'", buscaCom({ pageSize: '100' })],
+      ['page_size NaN', buscaCom({ pageSize: Number.NaN })],
+      ["cursor ''", buscaCom({ cursor: '' })],
+      ['cursor em branco', buscaCom({ cursor: ' \t' })],
+      ['cursor numérico', buscaCom({ cursor: 1_767_000_000 })],
+      ['filter ausente', buscaCom({ filtro: undefined })],
+      ['filter null', buscaCom({ filtro: null })],
+      ['package_status 4', buscaComFiltro({ packageStatus: 4 })],
+      ["package_status '2'", buscaComFiltro({ packageStatus: '2' })],
+      ['package_status ausente', buscaComFiltro({ packageStatus: undefined })],
+      ['fulfillment_type 3', buscaComFiltro({ fulfillmentType: 3 })],
+      ['fulfillment_type ausente', buscaComFiltro({ fulfillmentType: undefined })],
+      ['invoice_pending ausente', buscaComFiltro({ invoicePending: undefined })],
+      ["invoice_pending 'false'", buscaComFiltro({ invoicePending: 'false' })],
+      ['invoice_pending 0', buscaComFiltro({ invoicePending: 0 })],
+      ['invoice_pending null', buscaComFiltro({ invoicePending: null })],
+      ['order_type 3', buscaComFiltro({ orderType: 3 })],
+      ['canais: lista VAZIA', buscaComFiltro({ logisticsChannelIds: [] })],
+      ['canais: repetido', buscaComFiltro({ logisticsChannelIds: [90011, 90012, 90011] })],
+      ['canais: 0', buscaComFiltro({ logisticsChannelIds: [0] })],
+      ['canais: -1', buscaComFiltro({ logisticsChannelIds: [-1] })],
+      ['canais: 2^31', buscaComFiltro({ logisticsChannelIds: [2 ** 31] })],
+      ["canais: '90011'", buscaComFiltro({ logisticsChannelIds: ['90011'] })],
+      ['canais: 1.5', buscaComFiltro({ logisticsChannelIds: [1.5] })],
+      ['canais: não é lista', buscaComFiltro({ logisticsChannelIds: 90011 })],
+      ['sort_type 0', buscaCom({ ordenacao: { sortType: 0, ascending: true } })],
+      ['sort_type 4', buscaCom({ ordenacao: { sortType: 4, ascending: true } })],
+      ["ascending 'true'", buscaCom({ ordenacao: { sortType: 1, ascending: 'true' } })],
+      ['sort null', buscaCom({ ordenacao: null })],
+    ];
+    for (const [nome, params] of recusas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+      const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+      const client = createShopeeClient(shopConfig(fetchMock, getAccessToken));
+      const erro = await erroDe(client.searchPackageList(params));
+      expect(erro, nome).toBeInstanceOf(ShopeeConfigError);
+      expect(getAccessToken, nome).not.toHaveBeenCalled();
+      expect(fetchMock, nome).not.toHaveBeenCalled();
+      // E o guarda exportado diz o mesmo, sozinho.
+      expect(() => assertSearchPackageListParams(params), nome).toThrow(ShopeeConfigError);
+    }
+
+    // As frases que dizem ao chamador o que fazer: OMITIR, nunca mandar vazio.
+    const mensagemDe = async (params: SearchPackageListParams): Promise<string> => {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+      return (
+        (await erroDe(createShopeeClient(shopConfig(fetchMock)).searchPackageList(params))) as Error
+      ).message;
+    };
+    expect(await mensagemDe(buscaComFiltro({ logisticsChannelIds: [] }))).toContain('omita');
+    expect(await mensagemDe(buscaCom({ cursor: '' }))).toContain(
+      'omita o parâmetro na primeira página',
+    );
+    // O repetido nomeia as DUAS posições.
+    expect(
+      await mensagemDe(buscaComFiltro({ logisticsChannelIds: [90011, 90012, 90011] })),
+    ).toContain('posições 0 e 2');
+
+    // ⛔ QUASE-IGUAIS: os limites ACEITOS — cada um custa EXATAMENTE uma chamada.
+    const aceitas: readonly (readonly [string, SearchPackageListParams])[] = [
+      ['page_size 1', buscaCom({ pageSize: 1 })],
+      ['page_size 100', buscaCom({ pageSize: 100 })],
+      ['canais 1 e 2^31 - 1', buscaComFiltro({ logisticsChannelIds: [1, 2 ** 31 - 1] })],
+      ['cursor composto', buscaCom({ cursor: '1767000000,987654' })],
+      ['fulfillment_type 0 (sem filtro)', buscaComFiltro({ fulfillmentType: 0 })],
+      ['order_type 0', buscaComFiltro({ orderType: SHOPEE_ORDER_TYPE_FILTRO.todos })],
+      [
+        'sort 3 descendente',
+        buscaCom({ ordenacao: { sortType: SHOPEE_PACKAGE_SORT.confirmacao, ascending: false } }),
+      ],
+    ];
+    for (const [nome, params] of aceitas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+      await createShopeeClient(shopConfig(fetchMock)).searchPackageList(params);
+      expect(fetchMock, nome).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('B4 — nenhuma recusa ecoa um VALOR: nem o cursor (opaco — pode carregar um id), nem um canal, nem o que veio no lugar de um enum', async () => {
+    const MARCADOR = 'MARCADOR-BUSCA-15B';
+    const NUMERO = 987_654_321;
+    // ⚠️ Espaços INCOMUNS de propósito (NBSP, em space): um guarda que fizesse
+    // `JSON.stringify` do valor os carregaria para a mensagem.
+    const incomuns = [' ', ' '];
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_VAZIA_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const recusas: readonly SearchPackageListParams[] = [
+      // Um cursor VÁLIDO ao lado de um campo ruim: a recusa não despeja os parâmetros.
+      buscaCom({ pageSize: 0, cursor: `1767000000,${MARCADOR}` }),
+      buscaCom({ cursor: '  ' }),
+      buscaCom({ cursor: { toString: () => MARCADOR } }),
+      buscaCom({ pageSize: MARCADOR }),
+      buscaCom({ pageSize: NUMERO }),
+      buscaCom({ filtro: MARCADOR }),
+      buscaComFiltro({ packageStatus: MARCADOR }),
+      buscaComFiltro({ fulfillmentType: NUMERO }),
+      buscaComFiltro({ invoicePending: MARCADOR }),
+      buscaComFiltro({ orderType: NUMERO }),
+      buscaComFiltro({ logisticsChannelIds: [90011, NUMERO, NUMERO] }),
+      buscaComFiltro({ logisticsChannelIds: [MARCADOR] }),
+      buscaComFiltro({ logisticsChannelIds: [2 ** 31] }),
+      buscaCom({ ordenacao: { sortType: NUMERO, ascending: true } }),
+      buscaCom({ ordenacao: { sortType: 1, ascending: MARCADOR } }),
+    ];
+    for (const params of recusas) {
+      const erro = await erroDe(client.searchPackageList(params));
+      expect(erro).toBeInstanceOf(ShopeeConfigError);
+      const mensagem = (erro as Error).message;
+      expect(mensagem).not.toContain(MARCADOR);
+      expect(mensagem).not.toContain(String(NUMERO));
+      expect(mensagem).not.toContain(String(2 ** 31));
+      for (const c of incomuns) expect(mensagem).not.toContain(c);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('B6 — um envelope de erro com SÓ `mesage` (a grafia da TABELA da página) continua um `ShopeeApiError` com o seu código: a classificação nunca lê o texto', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: 'error_param', mesage: 'Wrong parameters.', request_id: 'req-mesage' }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).searchPackageList(BUSCA_DO_SWEEP),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_param');
+    // A frase da Shopee se perde (só no log): `message` ausente lê `null`.
+    expect((erro as ShopeeApiError).providerMessage).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('B7 — mutante 98: UMA chamada por página, mesmo com `more: true` — o pacote nunca pagina sozinho, o cursor volta ao CHAMADOR; e na FONTE: guarda antes do token, um `shopeeCall`, nenhum laço, nenhuma tolerância', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_PACOTES_BODY));
+    const pagina = await createShopeeClient(shopConfig(fetchMock)).searchPackageList(
+      BUSCA_DO_SWEEP,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(pagina.pagination?.more).toBe(true);
+    expect(pagina.pagination?.next_cursor).toBe('1767000000,987654');
+
+    const bloco = blocoDoMetodo('searchPackageList: async');
+    const guarda = bloco.indexOf('assertSearchPackageListParams(p)');
+    expect(guarda).toBeGreaterThan(-1);
+    // O guarda corre ANTES do token — o B3 no nível da fonte.
+    expect(guarda).toBeLessThan(bloco.indexOf('signedCall()'));
+    expect(bloco.split('shopeeCall(').length - 1).toBe(1);
+    expect(bloco).toContain('SHOPEE_SEARCH_PACKAGE_LIST_PATH');
+    expect(bloco).toContain('shopeeSearchPackageListSchema');
+    expect(bloco).toContain('buscaDePacotesNoFio(p)');
+    for (const proibido of [
+      'payloadNoErro',
+      'avisoEmLista',
+      'erroAusenteEhSucesso',
+      'emptyErrorAliases',
+      'for (',
+      'while',
+      'catch',
+      '.then(',
+    ]) {
+      expect(bloco, proibido).not.toContain(proibido);
     }
   });
 });

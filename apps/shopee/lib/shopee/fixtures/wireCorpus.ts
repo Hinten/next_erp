@@ -2,14 +2,16 @@
  * Reader for the committed `__wire__/` corpus — Shopee response bodies, redacted
  * by `redact.ts` before they were written.
  *
- * ⚠️ **Two provenances, and they are not equally strong.** THREE of these bodies
+ * ⚠️ **Two provenances, and they are not equally strong.** SIX of these bodies
  * are what SHOPEE SENT — the SG sandbox order in `READY_TO_SHIP` (pasted
  * 2026-09-09), its `get_escrow_detail` twin and the same order re-read after
- * arrange-shipment (both pasted 2026-09-10); the other two are the samples
- * Shopee's own documentation PRINTS. Both beat a hand-written fixture, which
- * agrees with our belief about the wire rather than with the wire — but a doc
- * sample can still be wrong about the live API, and one of them demonstrably is
- * (see `__wire__/README.md`, the kit ids). The file names say which is which.
+ * arrange-shipment (both pasted 2026-09-10), and step 15b's three
+ * `search_package_list` answers (a read-only probe, 2026-10-01); the other three
+ * are the samples Shopee's own documentation PRINTS. Both beat a hand-written
+ * fixture, which agrees with our belief about the wire rather than with the
+ * wire — but a doc sample can still be wrong about the live API, and two of them
+ * demonstrably are (see `__wire__/README.md`: the kit ids, and the package
+ * search's `sort` echo). The file names say which is which.
  *
  * ⚠️ **Read them, never rewrite them.** A test that edits a body to make an
  * assertion pass has converted the only evidence in the suite back into a
@@ -22,8 +24,10 @@ import { join } from 'node:path';
 import {
   type ShopeeEscrowDetailResponse,
   type ShopeeOrderDetailResponse,
+  type ShopeeSearchPackageListResponse,
   shopeeEscrowDetailSchema,
   shopeeOrderDetailSchema,
+  shopeeSearchPackageListSchema,
 } from '@delfrance/integrations-shopee';
 
 import type { WireValue } from './redact';
@@ -59,6 +63,52 @@ export const FIXTURE_ESCROW_DETAIL_DOC_KIT = 'get_escrow_detail.doc-kit.json';
  */
 export const FIXTURE_ESCROW_DETAIL_QTY2_SG = 'get_escrow_detail.qty2-sg.json';
 
+/**
+ * Shopee's own `search_package_list` sample — a VN channel (50021), one row,
+ * `more: true` with the composite cursor. ⚠️ Its `sort` echo (`is_asc`) is NOT
+ * what the wire sends; see {@link FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA}.
+ */
+export const FIXTURE_SEARCH_PACKAGE_LIST_DOC = 'search_package_list.doc.json';
+/**
+ * The SG sandbox shop's `search_package_list` over its OWN two channels,
+ * `invoice_pending: false` — ONE row, the step-14 `READY_TO_SHIP` order, not yet
+ * arranged. Shopee SENT it (2026-10-01).
+ *
+ * ⚠️ **Its ids are FIXTURE ids, not the wire's.** The probe overwrote every
+ * `order_sn` with `260910KJBHUJDM` and every `package_number` with
+ * `OFG000000000001` before writing the body. So this row is NOT the quantity-2
+ * order the other SG bodies carry under the same `order_sn` — that one has been
+ * `PROCESSED` since 2026-09-10 and cannot be ToProcess. Never join two corpus
+ * bodies on an id.
+ *
+ * ⚠️ It is the body that corrects the page: the response `sort` echoes
+ * `{sort_type, ascending}` — the REQUEST's key — where the page's response
+ * table and sample document `is_asc`. The row keys are the page's six, exactly.
+ */
+export const FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA =
+  'search_package_list.sg-canais-da-loja.json';
+/**
+ * The same call with `invoice_pending: true` — ZERO rows. Shopee SENT it.
+ *
+ * ⚠️ It proves `true` FILTERS (the shop's non-pending package is excluded); it
+ * cannot tell what `false` means (register 222), because the SG shop has no
+ * pending package to show either way.
+ */
+export const FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE =
+  'search_package_list.sg-invoice-pending-true.json';
+/**
+ * The sweep's own channel set `[90011, 90012, 90026]` — channels the SG shop
+ * does not have — `invoice_pending: false`: ZERO rows. Shopee SENT it.
+ *
+ * ⚠️ The empty answer's SHAPE (register 223): `packages_list: []`, never `null`
+ * or absent, WITH `pagination {total_count: 0, more: false, next_cursor: ""}`.
+ * And the channel filter is honoured SERVER-side (register 224): the shop's own
+ * package, listed by {@link FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA}, is
+ * not here.
+ */
+export const FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO =
+  'search_package_list.sg-canais-turbo.json';
+
 /** Every committed body, sorted. Excludes the README and any dotfile. */
 export function listarFixtures(): string[] {
   if (!existsSync(WIRE_DIR)) return [];
@@ -86,4 +136,13 @@ export function lerPedidoDetalhe(file: string): ShopeeOrderDetailResponse {
 /** One `get_escrow_detail` body through the package schema. Throws, same reason. */
 export function lerEscrowDetalhe(file: string): ShopeeEscrowDetailResponse {
   return shopeeEscrowDetailSchema.parse(lerFixture(file));
+}
+
+/**
+ * One `search_package_list` body through the package schema. Throws, same
+ * reason — and here it matters twice: a page whose rows went `null` would PARSE,
+ * so a test must also look at the rows it got, never only at "no throw".
+ */
+export function lerBuscaDePacotes(file: string): ShopeeSearchPackageListResponse {
+  return shopeeSearchPackageListSchema.parse(lerFixture(file));
 }

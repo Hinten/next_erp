@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { shopeeEscrowDetailSchema, shopeeOrderDetailSchema } from '@delfrance/integrations-shopee';
+import {
+  shopeeEscrowDetailSchema,
+  shopeeOrderDetailSchema,
+  shopeeSearchPackageListSchema,
+} from '@delfrance/integrations-shopee';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -10,7 +14,12 @@ import {
   FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
   FIXTURE_ORDER_DETAIL_QTY2_SG,
   FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
+  FIXTURE_SEARCH_PACKAGE_LIST_DOC,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
   WIRE_DIR,
+  lerBuscaDePacotes,
   lerEscrowDetalhe,
   lerFixture,
   lerPedidoDetalhe,
@@ -22,13 +31,18 @@ describe('o inventário do corpus', () => {
     // ⚠️ Conjunto EXATO, não um piso: "nunca adicione um arquivo à mão" só vale
     // se adicionar um quebrar algo. O escrow do pedido de sandbox CHEGOU
     // (2026-09-10), e este teste, os loaders e a tabela do README mudaram no
-    // MESMO commit — que é a revisão que uma fixture nova precisa ter.
+    // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
+    // 15b fez o mesmo com os quatro corpos de `search_package_list`.
     expect(listarFixtures()).toEqual([
       FIXTURE_ESCROW_DETAIL_DOC_KIT,
       FIXTURE_ESCROW_DETAIL_QTY2_SG,
       FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
       FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
       FIXTURE_ORDER_DETAIL_QTY2_SG,
+      FIXTURE_SEARCH_PACKAGE_LIST_DOC,
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
     ]);
   });
 
@@ -39,6 +53,10 @@ describe('o inventário do corpus', () => {
     expect(readme).toContain(FIXTURE_ORDER_DETAIL_DOC_MASKED_VN);
     expect(readme).toContain(FIXTURE_ESCROW_DETAIL_DOC_KIT);
     expect(readme).toContain(FIXTURE_ESCROW_DETAIL_QTY2_SG);
+    expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_DOC);
+    expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA);
+    expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO);
+    expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE);
     expect(readme).toContain('unverified for BR');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
@@ -308,5 +326,164 @@ describe('o exemplo da doc do escrow', () => {
     // página imprime; o `api.test.ts` do pacote prende que isso é uma falha.
     const corpo = lerFixture(FIXTURE_ESCROW_DETAIL_DOC_KIT) as { error: string };
     expect(corpo.error).toBe(' ');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            A busca de pacotes (passo 15b): o exemplo da doc + o SG          */
+/* -------------------------------------------------------------------------- */
+
+/** Os quatro corpos de `search_package_list`, na ordem do inventário. */
+const CORPOS_BUSCA = [
+  FIXTURE_SEARCH_PACKAGE_LIST_DOC,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+  FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+] as const;
+
+/** O corpo CRU de `search_package_list`, para as asserções que o schema esconde. */
+interface BuscaCrua {
+  message?: unknown;
+  mesage?: unknown;
+  request_id?: unknown;
+  response: {
+    packages_list: Record<string, unknown>[] | null;
+    pagination?: unknown;
+    sort?: Record<string, unknown>;
+  };
+}
+
+function lerBuscaCrua(file: string): BuscaCrua {
+  return lerFixture(file) as unknown as BuscaCrua;
+}
+
+describe('a busca de pacotes — os quatro corpos, pelo schema do pacote', () => {
+  it.each(CORPOS_BUSCA)('%s parseia INTEIRO — nenhuma linha virou a sentinela `null`', (file) => {
+    // ⚠️ `lerBuscaDePacotes` lançar não basta: uma linha ilegível PARSEIA como
+    // `null`. Um corpo commitado que perdesse linhas em silêncio passaria num
+    // "não lança" e este teste existe para dizer o contrário.
+    expect(() => shopeeSearchPackageListSchema.parse(lerFixture(file))).not.toThrow();
+    const pagina = lerBuscaDePacotes(file).response;
+    expect(pagina.packages_list.filter((linha) => linha === null)).toEqual([]);
+    expect(pagina.packages_list).toHaveLength(lerBuscaCrua(file).response.packages_list!.length);
+    // E todo corpo — a doc E os três do SG — traz a `pagination`.
+    expect(pagina.pagination).not.toBeNull();
+  });
+
+  it.each(CORPOS_BUSCA)(
+    '%s carrega `message` — a grafia `mesage` da TABELA não aparece',
+    (file) => {
+      const cru = lerBuscaCrua(file);
+      expect(cru.message).toBe('');
+      expect('mesage' in cru).toBe(false);
+      // `request_id` saiu antes do commit, em todos.
+      expect('request_id' in cru).toBe(false);
+    },
+  );
+});
+
+describe('o exemplo da doc de search_package_list (VN)', () => {
+  const pagina = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_DOC).response;
+
+  it('uma linha não arranjada, num canal VN — ⚠️ não verificado para o BR', () => {
+    expect(pagina.packages_list).toHaveLength(1);
+    const linha = pagina.packages_list[0]!;
+    expect(linha.is_shipment_arranged).toBe(false);
+    expect(linha.logistics_channel_id).toBe(50021);
+  });
+
+  it('`more: true` com o cursor COMPOSTO, verbatim — é o único corpo que mostra uma página 2', () => {
+    expect(pagina.pagination?.more).toBe(true);
+    expect(pagina.pagination?.next_cursor).toMatch(/^\d+,\d+$/);
+    expect(pagina.pagination?.total_count).toBe(320);
+  });
+
+  it('o eco do `sort` da doc diz `is_asc` — o que o fio SG NÃO manda', () => {
+    const sort = lerBuscaCrua(FIXTURE_SEARCH_PACKAGE_LIST_DOC).response.sort!;
+    expect(Object.keys(sort).sort()).toEqual(['is_asc', 'sort_type']);
+  });
+});
+
+describe('o SG sandbox — os três corpos que a Shopee MANDOU (2026-10-01)', () => {
+  it('nos canais DA LOJA: UMA linha, o pedido do passo 14, ainda NÃO arranjado', () => {
+    const pagina = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA).response;
+    expect(pagina.packages_list).toHaveLength(1);
+    const linha = pagina.packages_list[0]!;
+    // ⚠️ Ids de FIXTURE, gravados pela sonda no lugar dos do fio: o `order_sn`
+    // coincide com o dos corpos de `get_order_detail` por CONVENÇÃO, não porque
+    // seja o mesmo pedido — aquele está `PROCESSED` desde 2026-09-10.
+    expect(linha.order_sn).toBe('260910KJBHUJDM');
+    expect(linha.package_number).toBe('OFG000000000001');
+    expect(linha.package_number).not.toBe(
+      lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!.package_list![0]!
+        .package_number,
+    );
+    expect(linha.is_shipment_arranged).toBe(false);
+    expect(linha.logistics_channel_id).toBe(11006);
+    // Drenada: `more: false` E `next_cursor: ""` — quem termina o laço é o
+    // `more`; o cursor vazio é só o que vem junto.
+    expect(pagina.pagination).toEqual({ total_count: 1, more: false, next_cursor: '' });
+  });
+
+  it('as chaves da linha no fio são EXATAMENTE as seis da página, e `product_location_id` é STRING', () => {
+    const cru = lerBuscaCrua(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA);
+    const linha = cru.response.packages_list![0]!;
+    expect(Object.keys(linha).sort()).toEqual([
+      'is_shipment_arranged',
+      'logistics_channel_id',
+      'order_sn',
+      'package_number',
+      'product_location_id',
+      'sorting_group',
+    ]);
+    expect(typeof linha.product_location_id).toBe('string');
+  });
+
+  it('⚠️ o eco do `sort` no fio é `{sort_type, ascending}` — a chave do PEDIDO, não o `is_asc` da doc', () => {
+    // QUASE-IGUAL com o exemplo da doc logo acima: mesma operação, mesma
+    // posição, outra chave. É por isso que o `sort` da resposta não é declarado.
+    for (const file of [
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+      FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+    ]) {
+      expect(lerBuscaCrua(file).response.sort, file).toEqual({ sort_type: 1, ascending: true });
+    }
+  });
+
+  it.each([
+    FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
+    FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+  ])('a resposta VAZIA (%s) é `packages_list: []` COM `pagination` — registro 223', (file) => {
+    // ⚠️ Um ARRAY vazio, nunca `null` nem ausente — e a `pagination` vem
+    // inteira. O schema tolera os dois ausentes; o fio não os manda.
+    const cru = lerBuscaCrua(file);
+    expect(Array.isArray(cru.response.packages_list)).toBe(true);
+    expect(cru.response.packages_list).toEqual([]);
+    expect(cru.response.pagination).toEqual({ total_count: 0, more: false, next_cursor: '' });
+
+    const pagina = lerBuscaDePacotes(file).response;
+    expect(pagina.packages_list).toEqual([]);
+    expect(pagina.pagination).toEqual({ total_count: 0, more: false, next_cursor: '' });
+  });
+
+  it('o filtro de canal é aplicado no SERVIDOR — registro 224', () => {
+    // A loja TEM um pacote pronto (o corpo dos canais da loja); pedido nos
+    // canais Turbo, que a loja SG não tem, ele some. Nenhuma linha fora do
+    // filtro chegou para o chamador descartar.
+    const daLoja = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA).response;
+    const turbo = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO).response;
+    expect(daLoja.packages_list.map((l) => l?.package_number)).toEqual(['OFG000000000001']);
+    expect(turbo.packages_list.map((l) => l?.package_number)).not.toContain('OFG000000000001');
+  });
+
+  it('`invoice_pending: true` FILTRA: o pacote não pendente sai — mas o `false` segue sem leitura (registro 222)', () => {
+    // ⚠️ Prova só METADE: sem pacote pendente no SG, "false = só não pendentes"
+    // e "false = sem filtro" respondem igual. O registro 222 é BR-only, e quem
+    // o fecha é o contador `nfePendenteNaBusca` da varredura.
+    const pendentes = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE);
+    expect(pendentes.response.packages_list).toEqual([]);
+    const daLoja = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA);
+    expect(daLoja.response.packages_list).toHaveLength(1);
   });
 });
