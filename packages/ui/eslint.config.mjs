@@ -13,7 +13,7 @@ export default [
   // So the components every CRUD screen in the ERP is built from, `TableView`
   // and `ObjectView`, were the one React surface with no hook linting at all.
   //
-  // Severities match what the 8 Next apps already get from next, deliberately:
+  // Severities match what the 9 Next apps already get from next, deliberately:
   //
   //  - `rules-of-hooks` as ERROR is free — ZERO violations here. A conditional
   //    or nested hook call is never stylistic; it desynchronises the hook order
