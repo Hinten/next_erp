@@ -19,6 +19,15 @@ Use the connected GitHub plugin as the source of truth for server-side GitHub st
 - Use local Git for working-tree state, local diffs, commits, and branches. Do not invoke the plugin for a purely local Git request.
 - Do not repeat a successful connector lookup through a second source unless verification is materially necessary.
 
+## Windows connection troubleshooting
+
+On this Windows host, if the GitHub plugin becomes unavailable or fails with
+`error decoding response body`, remind the user to recheck Norton's HTTPS scanning
+and the `https://chatgpt.com` exclusion. This exception followed by a normal Codex
+restart restored access on 2026-10-01 while Codex remained non-elevated. Verify
+recovery with an actual GitHub plugin call; a new failure alone does not confirm
+Norton as the cause.
+
 ## Complete pull requests created by Codex
 
 When the user asks Codex to create a pull request, treat bounded follow-through on that same pull request as part of the task:
