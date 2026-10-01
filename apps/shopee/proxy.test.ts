@@ -90,3 +90,31 @@ describe('CORS allow-list', () => {
     ).toBeNull();
   });
 });
+
+describe('exposed headers (step 15, the ML #1680 twin)', () => {
+  const ETIQUETA = 'http://localhost:3009/api/marketplace/shopee/etiqueta';
+
+  function post(origin: string): Response {
+    return proxy(
+      new NextRequest(ETIQUETA, { method: 'POST', headers: { origin } }),
+    ) as unknown as Response;
+  }
+
+  it('exposes Content-Disposition to an allowed origin — the label keeps its real name', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = post('https://app.example.com');
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+    expect(res.headers.get('access-control-expose-headers')).toBe('Content-Disposition');
+  });
+
+  it('exposes nothing to an unlisted origin', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ALLOWED_ADMIN_ORIGINS', 'https://app.example.com');
+
+    const res = post('https://evil.example.com');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-expose-headers')).toBeNull();
+  });
+});

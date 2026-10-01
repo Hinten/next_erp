@@ -90,7 +90,8 @@ export interface PacoteObservadoShopee {
  *
  * ⚠️ **Three schemas, not one with aliases, and the casing is why.** `push 2`
  * and `push 33` spell the order key `ordersn`; `push 44` spells it `order_sn`.
- * Worse, `push 17` (code 15, step 15's) contradicts ITSELF — its parameter
+ * Worse, `push 17` (code 15 — `ack` since step 15, whose label flow polls
+ * `get_shipping_document_result` instead) contradicts ITSELF — its parameter
  * table says `order_sn` while its own JSON sample sends `ordersn` — so a push
  * page's table is not authoritative even over its own sample. Each schema
  * therefore declares its DOCUMENTED spelling and reads the other as tolerance,

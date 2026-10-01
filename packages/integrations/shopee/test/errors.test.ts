@@ -8,6 +8,7 @@ import {
   SHOPEE_SURFACE,
   ShopeeApiError,
   ShopeeApiPartialError,
+  ShopeeArquivoVazioError,
   ShopeeConfigError,
   ShopeeError,
   type ShopeeErrorKind,
@@ -18,6 +19,7 @@ import {
   ShopeeSchemaError,
   classifyShopeeError,
   shopeeCodeSemPrefixoDeModulo,
+  shopeeCodigoCanonico,
   shopeeErrorFromEnvelope,
 } from '../src/errors';
 
@@ -697,5 +699,72 @@ describe('ShopeeApiError.providerMessage', () => {
       parsed: {},
     });
     expect(parcial.providerMessage).toBe('File error.');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       `ShopeeArquivoVazioError` — o 2xx vazio de um download (passo 15)       */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeArquivoVazioError', () => {
+  const init = { httpStatus: 200, path: '/api/v2/logistics/download_shipping_document' } as const;
+
+  it('é um ShopeeSchemaError — todo braço `instanceof ShopeeSchemaError` existente continua pegando', () => {
+    // ⚠️ SUBCLASSE, não irmã: o 502 do `respond.ts` do app e o `isShopeeError`
+    // (que casa `ShopeeError`) pegam este erro sem edição nenhuma.
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).toBeInstanceOf(ShopeeArquivoVazioError);
+    expect(err).toBeInstanceOf(ShopeeSchemaError);
+    expect(err).toBeInstanceOf(ShopeeError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('ShopeeArquivoVazioError');
+    expect(err.httpStatus).toBe(200);
+    expect(err.path).toBe(init.path);
+    expect(err.campos).toEqual([]);
+  });
+
+  it('⛔ QUASE-IGUAL — fica FORA do ramo ShopeeApiError: não houve envelope, então não há código', () => {
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).not.toBeInstanceOf(ShopeeApiError);
+    expect(primeiroBraco(ESCADA_CORRETA, err)).toBe('rethrow');
+    // E o inverso: um ShopeeSchemaError comum NÃO é um arquivo vazio — o fluxo
+    // da etiqueta pode estreitar o vazio para "tente de novo" sem pegar os outros.
+    expect(new ShopeeSchemaError('x', init)).not.toBeInstanceOf(ShopeeArquivoVazioError);
+  });
+});
+
+// Review 1 of step 15, R5-4: the ONE code fold. `api.ts`'s batch reader and the
+// app's `codigoCanonicoShopee` both call it, so these pairs pin every reader.
+describe('shopeeCodigoCanonico — a ÚNICA dobra de código', () => {
+  it.each<[string, string, string]>([
+    [
+      'o espaço À ESQUERDA da página do ship',
+      ' logistics.package_already_shipped',
+      'package_already_shipped',
+    ],
+    ['o TAB À DIREITA da página da NF-e', 'order.upload_invoice_error\t', 'upload_invoice_error'],
+    ['o código do lote, com e sem módulo', 'common.batch_api_all_failed', 'batch_api_all_failed'],
+    ['sem módulo nenhum, aparado', ' batch_api_all_failed\t', 'batch_api_all_failed'],
+    ['o código seguido de branco', 'logistics.error_param\t', 'error_param'],
+    ['um branco LOGO DEPOIS do módulo (o 2º trim)', 'logistics.\terror_param', 'error_param'],
+  ])('PAR — %s', (_rotulo, bruto, canonico) => {
+    expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
+  });
+
+  it.each<[string, string, string]>([
+    ['DOIS segmentos: só UM sai (nunca um corte guloso)', 'a.b.error_limit', 'b.error_limit'],
+    ['um sufixo MAIOR continua maior', 'common.batch_api_all_failed_x', 'batch_api_all_failed_x'],
+    ['a CAIXA fica', 'logistics.Error_Param', 'Error_Param'],
+    ['um módulo com maiúscula não é módulo', 'Logistics.error_param', 'Logistics.error_param'],
+    ['o prefixo sozinho é o código inteiro', 'product.', 'product.'],
+  ])('QUASE-MISS — %s', (_rotulo, bruto, canonico) => {
+    expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
+  });
+
+  it('QUASE-MISS por valor: as dobras dos quase-iguais NÃO coincidem com a do código', () => {
+    const alvo = shopeeCodigoCanonico('common.batch_api_all_failed');
+    expect(shopeeCodigoCanonico('logistics.common.batch_api_all_failed')).not.toBe(alvo);
+    expect(shopeeCodigoCanonico('common.batch_api_all_failed_x')).not.toBe(alvo);
+    expect(shopeeCodigoCanonico('Common.batch_api_all_failed')).not.toBe(alvo);
   });
 });

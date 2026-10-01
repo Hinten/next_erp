@@ -71,6 +71,7 @@ import {
   ShopeeApiPartialError,
   ShopeeConfigError,
   ShopeeHttpError,
+  ShopeeNetworkError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
@@ -106,6 +107,21 @@ import {
   shopeeUpdatePriceSchema,
   shopeeUpdateStockSchema,
 } from '../src/types';
+import {
+  SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH,
+  SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH,
+  SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH,
+  SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
+  SHOPEE_GET_SHIPPING_PARAMETER_PATH,
+  SHOPEE_GET_TRACKING_NUMBER_PATH,
+  SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS,
+  SHOPEE_SHIPPING_DOCUMENT_STATUS,
+  SHOPEE_SHIP_ORDER_DROPOFF_VAZIO,
+  SHOPEE_SHIP_ORDER_PATH,
+  type ShipOrderParams,
+  type ShopeeAlvoDePacote,
+  falhaDaLinha,
+} from '../src/logistica';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -4567,8 +4583,9 @@ describe('update_stock — a ÚNICA escrita do passo 12', () => {
     expect(bloco).not.toContain(tolerancia);
     // E a flag NOVA mora em exatamente DUAS operações: esta e `updatePrice`, onde
     // a sonda do passo 13 MEDIU o erro chegando junto com o `failure_list`
-    // (T-P6/T-P17 fixam o outro call site).
-    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
+    // (T-P6/T-P17 fixam o outro call site). O passo 15 somou UM terceiro, o
+    // leitor de lote `lerLoteLogistico` (o teste E-L1 o fixa).
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(3);
   });
 });
 
@@ -5409,9 +5426,10 @@ describe('update_price (passo 13)', () => {
       expect(bloco).not.toContain(tolerancia);
     }
     // As contagens do ARQUIVO inteiro: a de chave ausente não se moveu com o
-    // passo 13; a de carga foi de 1 para 2 — este call site.
+    // passo 13; a de carga foi de 1 para 2 — este call site — e de 2 para 3 com
+    // o leitor de lote do passo 15 (o teste E-L1 o fixa).
     expect(FONTE_API.split('erroAusenteEhSucesso').length - 1).toBe(2);
-    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(3);
 
     // O LUGAR: depois da última leitura do passo 12, e NUNCA dentro do recorte
     // que o teste 100 lê.
@@ -5832,7 +5850,8 @@ describe('upload_invoice_doc (passo 14)', () => {
       expect(bloco).not.toContain(tolerancia);
     }
     expect(FONTE_API.split('erroAusenteEhSucesso').length - 1).toBe(2);
-    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(2);
+    // 3 desde o passo 15: o leitor de lote `lerLoteLogistico` (o teste E-L1).
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(3);
   });
 
   it('N10 — a operação mora SÓ no cliente da LOJA: o de parceiro não a ganha', () => {
@@ -5868,5 +5887,857 @@ describe('upload_invoice_doc (passo 14)', () => {
     expect(erro.providerMessage).toBe('File error.');
     await client.uploadInvoiceDoc(paramsNfe());
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 A etiqueta (passo 15) — as sete operações                   */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ Ids de FIXTURE — nunca um pedido, pacote ou rastreio real. */
+const PEDIDO_ETQ = '260910KJBHUJDM';
+const PACOTE_1 = 'OFG000000000001';
+const PACOTE_2 = 'OFG000000000002';
+const RASTREIO_ETQ = 'BR000000000000T';
+
+/** A amostra de resposta da própria página, com ids de fixture. */
+const SHIPPING_PARAMETER_BODY = {
+  error: '',
+  message: '',
+  request_id: 'req-param-envio',
+  response: {
+    info_needed: { dropoff: [], pickup: ['address_id', 'pickup_time_id'] },
+    dropoff: null,
+    pickup: {
+      address_list: [
+        {
+          address_id: 123,
+          region: 'SG',
+          state: '',
+          city: '',
+          district: '',
+          town: '',
+          address: '',
+          zipcode: '40009',
+          address_flag: ['default_address', 'pickup_address', 'return_address'],
+          time_slot_list: null,
+        },
+        {
+          address_id: 234,
+          region: 'SG',
+          address_flag: ['pickup_address'],
+          // ⚠️ Um id de horário NUMÉRICO no fio: volta como os seus dígitos.
+          time_slot_list: [
+            { date: 1_767_000_000, time_text: 'manhã', pickup_time_id: 77, flags: [] },
+          ],
+        },
+      ],
+    },
+  },
+};
+
+const SHIP_ORDER_BODY = { error: '', message: '', request_id: 'req-ship' };
+
+const TRACKING_BODY = {
+  error: '',
+  message: '',
+  request_id: 'req-rastreio',
+  response: { tracking_number: RASTREIO_ETQ, hint: 'sem dica', first_mile_tracking_number: '-' },
+};
+
+/** `get_shipping_document_parameter` — a amostra da página: um aviso em LISTA e uma linha falha SEM package_number. */
+const PARAM_DOC_BODY = {
+  error: '',
+  message: '',
+  request_id: 'req-param-doc',
+  response: {
+    result_list: [
+      {
+        order_sn: PEDIDO_ETQ,
+        package_number: PACOTE_1,
+        suggest_shipping_document_type: 'THERMAL_AIR_WAYBILL',
+        selectable_shipping_document_type: ['THERMAL_AIR_WAYBILL'],
+      },
+      {
+        order_sn: PEDIDO_ETQ,
+        fail_error: 'logistics.order_not_exist',
+        fail_message: 'The order_sn you provided is not exist. Please check',
+      },
+    ],
+  },
+  warning: [{ order_sn: PEDIDO_ETQ }],
+};
+
+/** `create_shipping_document` — a amostra de ERRO da página: todas falharam, com a linha junto. */
+function loteTodoFalhou(
+  error = 'common.batch_api_all_failed',
+  resultList: readonly unknown[] = [
+    {
+      order_sn: PEDIDO_ETQ,
+      fail_error: 'logistics.package_can_not_print',
+      fail_message: 'The package can not print now.',
+    },
+  ],
+): Record<string, unknown> {
+  return {
+    error,
+    message: 'Failed, please check result_list for more details.',
+    response: { result_list: resultList },
+    request_id: 'req-todo-falhou',
+  };
+}
+
+/** Um bloco de método de `createShopeeClient`, do marcador à primeira `},` na indentação das operações. */
+function blocoDoMetodo(marcador: string): string {
+  expect(FONTE_API.split(marcador).length - 1).toBe(1);
+  const resto = FONTE_API.slice(FONTE_API.indexOf(marcador));
+  const fim = resto.search(/\n {4}\},/);
+  expect(fim).toBeGreaterThan(0);
+  return resto.slice(0, fim);
+}
+
+function corpoEnviado(fetchMock: {
+  readonly mock: { readonly calls: Parameters<typeof globalThis.fetch>[] };
+}): string {
+  return String(fetchMock.mock.calls[0]![1]?.body);
+}
+
+describe('a etiqueta (passo 15)', () => {
+  it('E1 — os sete caminhos, verbo a verbo da página, e as sete operações saem pelo index do pacote', async () => {
+    expect(SHOPEE_GET_SHIPPING_PARAMETER_PATH).toBe('/api/v2/logistics/get_shipping_parameter');
+    expect(SHOPEE_SHIP_ORDER_PATH).toBe('/api/v2/logistics/ship_order');
+    expect(SHOPEE_GET_TRACKING_NUMBER_PATH).toBe('/api/v2/logistics/get_tracking_number');
+    expect(SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH).toBe(
+      '/api/v2/logistics/get_shipping_document_parameter',
+    );
+    expect(SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH).toBe('/api/v2/logistics/create_shipping_document');
+    expect(SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH).toBe(
+      '/api/v2/logistics/get_shipping_document_result',
+    );
+    expect(SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH).toBe(
+      '/api/v2/logistics/download_shipping_document',
+    );
+    expect(SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS).toBe(50);
+    // P3: o padrão é o `{}` documentado, nunca o corpo de nulos do legado.
+    expect(SHOPEE_SHIP_ORDER_DROPOFF_VAZIO).toBe('objeto-vazio');
+
+    // ⚠️ `index.ts` re-exporta por WILDCARD e `logistica.ts` é um módulo NOVO:
+    // sem a sua linha lá, nada abaixo sairia pela porta pública.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(SHIP_ORDER_BODY));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+    const operacoes = [
+      'getShippingParameter',
+      'shipOrder',
+      'getTrackingNumber',
+      'getShippingDocumentParameter',
+      'createShippingDocument',
+      'getShippingDocumentResult',
+      'downloadShippingDocument',
+    ] as const;
+    for (const nome of operacoes) expect(typeof client[nome]).toBe('function');
+    expect(pacote.SHOPEE_SHIP_ORDER_PATH).toBe(SHOPEE_SHIP_ORDER_PATH);
+    expect(pacote.SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH).toBe(
+      SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH,
+    );
+    expect(pacote.falhaDaLinha).toBe(falhaDaLinha);
+    expect(typeof pacote.assertShippingParameterParams).toBe('function');
+    expect(pacote.SHOPEE_SHIPPING_DOCUMENT_STATUS).toBe(SHOPEE_SHIPPING_DOCUMENT_STATUS);
+    // E só no cliente da LOJA: o de parceiro não ganha nenhuma.
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+    for (const nome of operacoes) expect(nome in partner).toBe(false);
+  });
+
+  it('E2 — getShippingParameter: GET shop-signed, `package_number` APARADO quando dado e AUSENTE quando não (S16), e a amostra da página volta DESEMBRULHADA', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(SHIPPING_PARAMETER_BODY),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const param = await client.getShippingParameter({ orderSn: PEDIDO_ETQ });
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_GET_SHIPPING_PARAMETER_PATH);
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    // ⛔ QUASE-IGUAL: nenhuma chave `package_number` — nem vazia.
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS, 'order_sn'].sort());
+    expect(url.searchParams.get('order_sn')).toBe(PEDIDO_ETQ);
+
+    // A leitura: `info_needed` com `[]` (oferecido, nada a preencher) ≠ ausente.
+    expect(param.info_needed?.dropoff).toEqual([]);
+    expect(param.info_needed?.non_integrated).toBeNull();
+    expect(param.dropoff).toBeNull();
+    const enderecos = param.pickup?.address_list ?? [];
+    expect(enderecos.map((e) => e?.address_id)).toEqual([123, 234]);
+    expect(enderecos[1]?.time_slot_list?.[0]?.pickup_time_id).toBe('77');
+    expect('response' in param).toBe(false);
+
+    // PAR: com o pacote, a chave vai — APARADA, o que o guarda julgou.
+    await client.getShippingParameter({ orderSn: PEDIDO_ETQ, packageNumber: ` ${PACOTE_1} ` });
+    const url2 = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(url2.searchParams.get('package_number')).toBe(PACOTE_1);
+  });
+
+  it('E3 — shipOrder: os três corpos BYTE A BYTE; o dropoff sem nada a preencher é `"dropoff":{}` (S15), e sem pacote a chave `package_number` não existe (S16)', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(SHIP_ORDER_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'dropoff', dropoff: {} });
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_SHIP_ORDER_PATH);
+    expect(init?.method).toBe('POST');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    // ⛔ QUASE-IGUAIS: nunca `"dropoff":null`, nunca a chave ausente, nunca o
+    // objeto de nulos do legado, e nunca `"package_number":""`.
+    expect(corpoEnviado(fetchMock)).toBe(`{"order_sn":"${PEDIDO_ETQ}","dropoff":{}}`);
+
+    const corpos: readonly [ShipOrderParams, string][] = [
+      [
+        {
+          orderSn: PEDIDO_ETQ,
+          packageNumber: ` ${PACOTE_2} `,
+          modo: 'pickup',
+          pickup: { addressId: 234, pickupTimeId: '77' },
+        },
+        `{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_2}","pickup":{"address_id":234,"pickup_time_id":"77"}}`,
+      ],
+      // Sem horário: a chave `pickup_time_id` some — "sellers can arrange
+      // shipment without selecting any time slot".
+      [
+        { orderSn: PEDIDO_ETQ, modo: 'pickup', pickup: { addressId: 123 } },
+        `{"order_sn":"${PEDIDO_ETQ}","pickup":{"address_id":123}}`,
+      ],
+      [
+        { orderSn: PEDIDO_ETQ, modo: 'dropoff', dropoff: { branchId: 7 } },
+        `{"order_sn":"${PEDIDO_ETQ}","dropoff":{"branch_id":7}}`,
+      ],
+      [
+        { orderSn: PEDIDO_ETQ, modo: 'non_integrated', nonIntegrated: {} },
+        `{"order_sn":"${PEDIDO_ETQ}","non_integrated":{}}`,
+      ],
+      [
+        {
+          orderSn: PEDIDO_ETQ,
+          modo: 'non_integrated',
+          nonIntegrated: { trackingNumber: RASTREIO_ETQ },
+        },
+        `{"order_sn":"${PEDIDO_ETQ}","non_integrated":{"tracking_number":"${RASTREIO_ETQ}"}}`,
+      ],
+    ];
+    for (const [params, esperado] of corpos) {
+      fetchMock.mockClear();
+      const res = await client.shipOrder(params);
+      expect(corpoEnviado(fetchMock)).toBe(esperado);
+      // A escrita devolve o envelope NU inteiro.
+      expect(res.request_id).toBe('req-ship');
+      expect(res.error).toBe('');
+    }
+
+    // ⚠️ Um modo por corpo, IMPOSSÍVEL de construir em tempo de compilação.
+    const invalido: ShipOrderParams = {
+      orderSn: PEDIDO_ETQ,
+      modo: 'pickup',
+      pickup: { addressId: 1 },
+      // @ts-expect-error — `dropoff` não cabe num corpo de modo `pickup`.
+      dropoff: {},
+    };
+    expect(invalido.modo).toBe('pickup');
+  });
+
+  it('E4 — P3: com a constante virada para `nulos-explicitos`, o dropoff sai como o corpo do legado — cada campo não preenchido um `null` EXPLÍCITO', async () => {
+    // ⚠️ A virada é da SONDA (P3), numa constante só: aqui ela é simulada
+    // trocando o módulo, e o padrão acima continua sendo o `{}`.
+    vi.resetModules();
+    vi.doMock('../src/logistica', async (importOriginal) => ({
+      ...(await importOriginal<object>()),
+      SHOPEE_SHIP_ORDER_DROPOFF_VAZIO: 'nulos-explicitos',
+    }));
+    try {
+      const api = await import('../src/api');
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(SHIP_ORDER_BODY));
+      const client = api.createShopeeClient(shopConfig(fetchMock));
+      await client.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'dropoff', dropoff: { branchId: 7 } });
+      expect(corpoEnviado(fetchMock)).toBe(
+        `{"order_sn":"${PEDIDO_ETQ}","dropoff":{"branch_id":7,"sender_real_name":null,"tracking_number":null,"slug":null}}`,
+      );
+    } finally {
+      vi.doUnmock('../src/logistica');
+      vi.resetModules();
+    }
+  });
+
+  it('E5 — shipOrder NUNCA é repetido pelo pacote: rede, HTTP e `error_timeout` custam UMA chamada cada (o desfecho é DESCONHECIDO)', async () => {
+    const params: ShipOrderParams = {
+      orderSn: PEDIDO_ETQ,
+      modo: 'pickup',
+      pickup: { addressId: 123 },
+    };
+
+    const rede = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('fetch failed');
+    });
+    const erroRede = await erroDe(createShopeeClient(shopConfig(rede)).shipOrder(params));
+    expect(erroRede).toBeInstanceOf(ShopeeNetworkError);
+    expect(rede).toHaveBeenCalledTimes(1);
+
+    const http = vi.fn<typeof globalThis.fetch>(
+      async () => new Response('<html>gateway</html>', { status: 502 }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const erroHttp = await erroDe(createShopeeClient(shopConfig(http)).shipOrder(params));
+    expect(erroHttp).toBeInstanceOf(ShopeeHttpError);
+    expect(http).toHaveBeenCalledTimes(1);
+
+    const timeout = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req-ship-timeout',
+        error: 'logistics.error_timeout',
+        message: 'Timeout to call external system.',
+      }),
+    );
+    const erroTimeout = await erroDe(createShopeeClient(shopConfig(timeout)).shipOrder(params));
+    expect(erroTimeout).toBeInstanceOf(ShopeeApiError);
+    expect(erroTimeout).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((erroTimeout as ShopeeApiError).code).toBe('logistics.error_timeout');
+    expect(timeout).toHaveBeenCalledTimes(1);
+  });
+
+  it('E6 — getTrackingNumber: SEM `response_optional_fields` por padrão (S19); pedido, é UM escalar unido por vírgula; e o `-` volta VERBATIM', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TRACKING_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const rastreio = await client.getTrackingNumber({
+      orderSn: PEDIDO_ETQ,
+      packageNumber: PACOTE_1,
+    });
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_GET_TRACKING_NUMBER_PATH);
+    expect(init?.method).toBe('GET');
+    // ⛔ QUASE-IGUAL: nenhuma chave de campo opcional — nem vazia.
+    expect([...url.searchParams.keys()].sort()).toEqual(
+      [...CHAVES_COMUNS, 'order_sn', 'package_number'].sort(),
+    );
+    expect(url.searchParams.get('package_number')).toBe(PACOTE_1);
+    expect(rastreio.tracking_number).toBe(RASTREIO_ETQ);
+    expect(rastreio.first_mile_tracking_number).toBe('-');
+    expect(rastreio.hint).toBe('sem dica');
+    expect(rastreio.plp_number).toBeNull();
+
+    // Sem pacote: a chave some.
+    await client.getTrackingNumber({ orderSn: PEDIDO_ETQ });
+    const url2 = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(url2.searchParams.has('package_number')).toBe(false);
+
+    // PAR: pedidos, os campos vão num escalar só, a grafia da página.
+    await client.getTrackingNumber({
+      orderSn: PEDIDO_ETQ,
+      responseOptionalFields: ['plp_number', 'first_mile_tracking_number'],
+    });
+    const url3 = new URL(String(fetchMock.mock.calls[2]![0]));
+    expect(url3.searchParams.getAll('response_optional_fields')).toEqual([
+      'plp_number,first_mile_tracking_number',
+    ]);
+  });
+
+  it('E7 — S17: cada operação recusa um parâmetro ruim ANTES do token e do fetch', async () => {
+    const recusas: readonly (readonly [string, (c: ShopeeClient) => Promise<unknown>])[] = [
+      ['parâmetro: order_sn em branco', (c) => c.getShippingParameter({ orderSn: '  ' })],
+      [
+        'parâmetro: package_number ""',
+        (c) => c.getShippingParameter({ orderSn: PEDIDO_ETQ, packageNumber: '' }),
+      ],
+      [
+        'parâmetro: package_number "-" (aparado)',
+        (c) => c.getShippingParameter({ orderSn: PEDIDO_ETQ, packageNumber: ' - ' }),
+      ],
+      [
+        'ship: address_id 0',
+        (c) => c.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'pickup', pickup: { addressId: 0 } }),
+      ],
+      [
+        'ship: address_id inseguro',
+        (c) =>
+          c.shipOrder({
+            orderSn: PEDIDO_ETQ,
+            modo: 'pickup',
+            pickup: { addressId: Number.MAX_SAFE_INTEGER + 1 },
+          }),
+      ],
+      [
+        'ship: pickup_time_id vazio',
+        (c) =>
+          c.shipOrder({
+            orderSn: PEDIDO_ETQ,
+            modo: 'pickup',
+            pickup: { addressId: 123, pickupTimeId: '' },
+          }),
+      ],
+      [
+        'ship: branch_id fracionário',
+        (c) => c.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'dropoff', dropoff: { branchId: 1.5 } }),
+      ],
+      [
+        'ship: sender_real_name em branco',
+        (c) =>
+          c.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'dropoff', dropoff: { senderRealName: ' ' } }),
+      ],
+      [
+        'ship: tracking "-"',
+        (c) =>
+          c.shipOrder({
+            orderSn: PEDIDO_ETQ,
+            modo: 'non_integrated',
+            nonIntegrated: { trackingNumber: '-' },
+          }),
+      ],
+      [
+        'ship: modo desconhecido',
+        (c) => c.shipOrder({ orderSn: PEDIDO_ETQ, modo: 'correio' } as unknown as ShipOrderParams),
+      ],
+      [
+        'rastreio: lista de campos vazia',
+        (c) => c.getTrackingNumber({ orderSn: PEDIDO_ETQ, responseOptionalFields: [] }),
+      ],
+      [
+        'rastreio: campo com vírgula',
+        (c) => c.getTrackingNumber({ orderSn: PEDIDO_ETQ, responseOptionalFields: ['a,b'] }),
+      ],
+      ['doc-parâmetro: lista vazia', (c) => c.getShippingDocumentParameter({ pacotes: [] })],
+      [
+        'criar: tracking em branco',
+        (c) =>
+          c.createShippingDocument({
+            documentos: [{ orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1, trackingNumber: ' ' }],
+          }),
+      ],
+      [
+        'resultado: tipo em branco',
+        (c) =>
+          c.getShippingDocumentResult({
+            documentos: [{ orderSn: PEDIDO_ETQ, shippingDocumentType: '' }],
+          }),
+      ],
+      [
+        'baixar: tipo em branco',
+        (c) =>
+          c.downloadShippingDocument({
+            shippingDocumentType: '  ',
+            documentos: [{ orderSn: PEDIDO_ETQ }],
+          }),
+      ],
+    ];
+    for (const [nome, chamar] of recusas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(SHIP_ORDER_BODY));
+      const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+      const erro = await erroDe(chamar(createShopeeClient(shopConfig(fetchMock, getAccessToken))));
+      expect(erro, nome).toBeInstanceOf(ShopeeConfigError);
+      expect(getAccessToken, nome).not.toHaveBeenCalled();
+      expect(fetchMock, nome).not.toHaveBeenCalled();
+    }
+  });
+
+  it('E8 — as listas: 1…50, e um par (order_sn, package_number) repetido é recusado — julgado no que VAI (o pacote aparado)', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PARAM_DOC_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const pacotes = (n: number): ShopeeAlvoDePacote[] =>
+      Array.from({ length: n }, (_, i) => ({
+        orderSn: PEDIDO_ETQ,
+        packageNumber: `OFG${String(i).padStart(12, '0')}`,
+      }));
+
+    // PAR no teto: 50 passam; ⛔ QUASE-IGUAL: 51 não.
+    await client.getShippingDocumentParameter({
+      pacotes: pacotes(SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const acima = await erroDe(
+      client.getShippingDocumentParameter({
+        pacotes: pacotes(SHOPEE_SHIPPING_DOCUMENT_MAX_ORDERS + 1),
+      }),
+    );
+    expect(acima).toBeInstanceOf(ShopeeConfigError);
+    expect((acima as Error).message).toContain('51');
+
+    // PAR: o MESMO pedido com dois pacotes é legítimo, e o pedido sem pacote
+    // é um terceiro par.
+    await client.getShippingDocumentParameter({
+      pacotes: [
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1 },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+        { orderSn: PEDIDO_ETQ },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // ⛔ O par repetido — e repetido DEPOIS de aparar, que é o que o fio leva.
+    const repetidos: readonly (readonly ShopeeAlvoDePacote[])[] = [
+      [
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1 },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1 },
+      ],
+      [
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1 },
+        { orderSn: PEDIDO_ETQ, packageNumber: ` ${PACOTE_1}\t` },
+      ],
+      [
+        { orderSn: PEDIDO_ETQ },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+        { orderSn: PEDIDO_ETQ },
+      ],
+    ];
+    for (const lista of repetidos) {
+      const erro = await erroDe(client.downloadShippingDocument({ documentos: lista }));
+      expect(erro).toBeInstanceOf(ShopeeConfigError);
+      expect((erro as Error).message).toContain('repete o par');
+    }
+    const erroCriar = await erroDe(
+      client.createShippingDocument({
+        documentos: [
+          { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2, trackingNumber: RASTREIO_ETQ },
+          { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+        ],
+      }),
+    );
+    expect(erroCriar).toBeInstanceOf(ShopeeConfigError);
+    // A POSIÇÃO de uma entrada ruim é nomeada.
+    const erroPosicao = await erroDe(
+      client.getShippingDocumentResult({
+        documentos: [{ orderSn: PEDIDO_ETQ }, { orderSn: PEDIDO_ETQ, packageNumber: '-' }],
+      }),
+    );
+    expect((erroPosicao as Error).message).toContain('posição 1');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('E9 — S18: nenhuma recusa ecoa um VALOR — só o campo, a posição e o tamanho', async () => {
+    const MARCADOR = 'MARCADOR-ETQ-S18';
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(SHIP_ORDER_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    // ⚠️ Espaços INCOMUNS de propósito (NBSP, em space): `trim()` os remove, e
+    // um guarda que fizesse `JSON.stringify` do valor os carregaria para a
+    // mensagem.
+    const incomuns = ['\u00a0', '\u2003'];
+    const chamadas: readonly Promise<unknown>[] = [
+      client.getShippingParameter({ orderSn: '\u00a0\u2003' }),
+      client.getShippingParameter({ orderSn: PEDIDO_ETQ, packageNumber: '\u00a0-\u2003' }),
+      client.getTrackingNumber({ orderSn: PEDIDO_ETQ, responseOptionalFields: [`${MARCADOR},x`] }),
+      client.getShippingParameter({ orderSn: { toString: () => MARCADOR } as unknown as string }),
+      client.shipOrder({
+        orderSn: MARCADOR,
+        modo: 'dropoff',
+        dropoff: { branchId: 0, senderRealName: MARCADOR, slug: MARCADOR },
+      }),
+      client.shipOrder({
+        orderSn: MARCADOR,
+        modo: 'dropoff',
+        dropoff: { senderRealName: MARCADOR, trackingNumber: '\u00a0-\u00a0' },
+      }),
+      client.getShippingDocumentParameter({
+        pacotes: [
+          { orderSn: MARCADOR, packageNumber: `${MARCADOR}-P` },
+          { orderSn: MARCADOR, packageNumber: `${MARCADOR}-P` },
+        ],
+      }),
+      client.createShippingDocument({
+        documentos: [{ orderSn: MARCADOR, trackingNumber: '\u2003' }],
+      }),
+    ];
+    for (const chamada of chamadas) {
+      const erro = await erroDe(chamada);
+      expect(erro).toBeInstanceOf(ShopeeConfigError);
+      const mensagem = (erro as Error).message;
+      expect(mensagem).not.toContain(MARCADOR);
+      for (const c of incomuns) expect(mensagem).not.toContain(c);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('E10 — getShippingDocumentParameter: POST com a lista BYTE A BYTE, e a amostra da página (aviso em LISTA + linha falha sem pacote) vira o LOTE', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PARAM_DOC_BODY));
+    const avisos: string[] = [];
+    const client = createShopeeClient({
+      ...shopConfig(fetchMock),
+      onWarning: (w) => avisos.push(w.warning),
+    });
+
+    const lote = await client.getShippingDocumentParameter({
+      pacotes: [{ orderSn: PEDIDO_ETQ, packageNumber: ` ${PACOTE_1}` }, { orderSn: PEDIDO_ETQ }],
+    });
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(rawUrl)).pathname).toBe(SHOPEE_GET_SHIPPING_DOCUMENT_PARAMETER_PATH);
+    expect(init?.method).toBe('POST');
+    expect(corpoEnviado(fetchMock)).toBe(
+      `{"order_list":[{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_1}"},{"order_sn":"${PEDIDO_ETQ}"}]}`,
+    );
+
+    expect(lote.todasFalharam).toBe(false);
+    expect(lote.requestId).toBe('req-param-doc');
+    expect(lote.linhasIlegiveis).toBe(0);
+    expect(lote.linhas).toHaveLength(2);
+    expect(lote.linhas[0]?.suggest_shipping_document_type).toBe('THERMAL_AIR_WAYBILL');
+    expect(falhaDaLinha(lote.linhas[0]!)).toBeNull();
+    expect(lote.linhas[1]?.package_number).toBeNull();
+    expect(falhaDaLinha(lote.linhas[1]!)).toEqual({
+      code: 'logistics.order_not_exist',
+      mensagem: 'The order_sn you provided is not exist. Please check',
+    });
+    // ⚠️ O aviso é a FRASE de contagem — a mesma que o transporte deu ao
+    // `onWarning` — e nunca as linhas (que carregam um `order_sn`).
+    expect(lote.avisos).toBe('1 aviso(s) por pedido/pacote');
+    expect(avisos).toEqual([lote.avisos]);
+    expect(lote.avisos).not.toContain(PEDIDO_ETQ);
+  });
+
+  it('E11 — createShippingDocument: `tracking_number` e o tipo POR ENTRADA, ausentes quando não dados; e a amostra de ERRO da página (todas falharam) volta como VALOR', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(loteTodoFalhou()));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const lote = await client.createShippingDocument({
+      documentos: [
+        {
+          orderSn: PEDIDO_ETQ,
+          packageNumber: PACOTE_1,
+          trackingNumber: RASTREIO_ETQ,
+          shippingDocumentType: 'THERMAL_AIR_WAYBILL',
+        },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+      ],
+    });
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      SHOPEE_CREATE_SHIPPING_DOCUMENT_PATH,
+    );
+    expect(corpoEnviado(fetchMock)).toBe(
+      `{"order_list":[{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_1}","tracking_number":"${RASTREIO_ETQ}","shipping_document_type":"THERMAL_AIR_WAYBILL"},{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_2}"}]}`,
+    );
+
+    expect(lote.todasFalharam).toBe(true);
+    expect(lote.requestId).toBe('req-todo-falhou');
+    expect(lote.linhas).toHaveLength(1);
+    expect(falhaDaLinha(lote.linhas[0]!)).toEqual({
+      code: 'logistics.package_can_not_print',
+      mensagem: 'The package can not print now.',
+    });
+    expect(lote.avisos).toBeNull();
+  });
+
+  it('E12 — getShippingDocumentResult: o tipo POR ENTRADA; as linhas são conciliadas por (order_sn, package_number), NUNCA por posição (S13); o `status` é texto LIVRE', async () => {
+    const corpo = {
+      error: '',
+      message: '',
+      request_id: 'req-resultado',
+      // ⚠️ A Shopee responde na ORDEM DELA — invertida em relação ao pedido.
+      response: {
+        result_list: [
+          { status: 'READY', order_sn: PEDIDO_ETQ, package_number: PACOTE_2 },
+          { status: 'STATUS_NOVO', order_sn: PEDIDO_ETQ, package_number: PACOTE_1 },
+          { order_sn: '', fail_error: 'logistics.x' },
+        ],
+      },
+      warning: [{ order_sn: PEDIDO_ETQ, package_number: PACOTE_1 }, null],
+    };
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpo));
+    const lote = await createShopeeClient(shopConfig(fetchMock)).getShippingDocumentResult({
+      documentos: [
+        {
+          orderSn: PEDIDO_ETQ,
+          packageNumber: PACOTE_1,
+          shippingDocumentType: 'NORMAL_AIR_WAYBILL',
+        },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+      ],
+    });
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
+    );
+    expect(corpoEnviado(fetchMock)).toBe(
+      `{"order_list":[{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_1}","shipping_document_type":"NORMAL_AIR_WAYBILL"},{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_2}"}]}`,
+    );
+
+    const doPacote = (numero: string) => lote.linhas.find((l) => l.package_number === numero);
+    expect(doPacote(PACOTE_1)?.status).toBe('STATUS_NOVO');
+    expect(doPacote(PACOTE_2)?.status).toBe(SHOPEE_SHIPPING_DOCUMENT_STATUS.pronto);
+    // A ordem da Shopee é preservada — nada reordena nem re-rotula por índice.
+    expect(lote.linhas.map((l) => l.package_number)).toEqual([PACOTE_2, PACOTE_1]);
+    // A linha sem `order_sn` é a sentinela `null`, contada.
+    expect(lote.linhasIlegiveis).toBe(1);
+    // A contagem conta os DOIS elementos do aviso, o ilegível incluído.
+    expect(lote.avisos).toBe('2 aviso(s) por pedido/pacote');
+  });
+
+  it('E13 — S11/S12: o leitor de lote dobra EXATAMENTE `batch_api_all_failed` COM linhas legíveis; todo o resto relança', async () => {
+    const ler = async (corpo: unknown): Promise<unknown> => {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpo));
+      return createShopeeClient(shopConfig(fetchMock))
+        .getShippingDocumentResult({ documentos: [{ orderSn: PEDIDO_ETQ }] })
+        .catch((e: unknown) => e);
+    };
+
+    // PAR — a dobra de UM segmento de módulo, dos dois lados, e o espaço nas pontas.
+    for (const codigo of [
+      'common.batch_api_all_failed',
+      'batch_api_all_failed',
+      ' common.batch_api_all_failed',
+      'logistics.batch_api_all_failed\t',
+    ]) {
+      const lote = (await ler(loteTodoFalhou(codigo))) as { todasFalharam: boolean };
+      expect(lote, codigo).not.toBeInstanceOf(Error);
+      expect(lote.todasFalharam, codigo).toBe(true);
+    }
+
+    // ⛔ QUASE-IGUAIS: outro código (S11), DOIS segmentos, um erro de parâmetro
+    // que chegou com linhas, um limite de taxa com linhas.
+    for (const codigo of [
+      'common.batch_api_all_failed_x',
+      'logistics.common.batch_api_all_failed',
+      'logistics.error_param',
+      'error_rate_limit',
+    ]) {
+      const erro = await ler(loteTodoFalhou(codigo));
+      expect(erro, codigo).toBeInstanceOf(ShopeeApiPartialError);
+      expect((erro as ShopeeApiPartialError).code, codigo).toBe(codigo);
+    }
+
+    // ⛔ S12: "todas falharam" SEM nenhuma linha legível é injulgável — relança.
+    for (const linhas of [[], [{ fail_error: 'logistics.x' }], [null]]) {
+      const erro = await ler(loteTodoFalhou('common.batch_api_all_failed', linhas));
+      expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    }
+    // ⛔ E sem `response` nenhum: a classe comum, nada anexado.
+    const semResposta = await ler({
+      error: 'common.batch_api_all_failed',
+      message: 'Failed.',
+      request_id: 'req-sem-resposta',
+    });
+    expect(semResposta).toBeInstanceOf(ShopeeApiError);
+    expect(semResposta).not.toBeInstanceOf(ShopeeApiPartialError);
+  });
+
+  it('E14 — S14: `falhaDaLinha` é EXATA — `" "` é falha, `""` e `null` são sucesso, e o código volta VERBATIM', () => {
+    expect(falhaDaLinha({ fail_error: ' ', fail_message: null })).toEqual({
+      code: ' ',
+      mensagem: null,
+    });
+    expect(falhaDaLinha({ fail_error: '', fail_message: 'ignorada' })).toBeNull();
+    expect(falhaDaLinha({ fail_error: null, fail_message: null })).toBeNull();
+    expect(
+      falhaDaLinha({ fail_error: ' logistics.package_already_shipped\t', fail_message: 'x' }),
+    ).toEqual({ code: ' logistics.package_already_shipped\t', mensagem: 'x' });
+  });
+
+  it('E15 — downloadShippingDocument: POST com UM tipo para a lista, BYTES de volta byte a byte, e um envelope de erro continua um erro', async () => {
+    const pdf = new Uint8Array([
+      0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0xe2, 0xe3, 0xcf, 0xd3,
+    ]);
+    const fetchMock = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(pdf, {
+          status: 200,
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': 'attachment; filename="etiqueta.pdf"',
+          },
+        }),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const arquivo = await client.downloadShippingDocument({
+      shippingDocumentType: 'NORMAL_AIR_WAYBILL',
+      documentos: [
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_1 },
+        { orderSn: PEDIDO_ETQ, packageNumber: PACOTE_2 },
+      ],
+    });
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe(SHOPEE_DOWNLOAD_SHIPPING_DOCUMENT_PATH);
+    expect(init?.method).toBe('POST');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect(corpoEnviado(fetchMock)).toBe(
+      `{"shipping_document_type":"NORMAL_AIR_WAYBILL","order_list":[{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_1}"},{"order_sn":"${PEDIDO_ETQ}","package_number":"${PACOTE_2}"}]}`,
+    );
+    expect(arquivo.bytes).toEqual(pdf);
+    expect(arquivo.contentType).toBe('application/pdf');
+    expect(arquivo.contentDisposition).toBe('attachment; filename="etiqueta.pdf"');
+    expect(arquivo.httpStatus).toBe(200);
+
+    // Sem tipo: a chave some — o padrão é da Shopee.
+    const semTipo = vi.fn<typeof globalThis.fetch>(async () => new Response(pdf, { status: 200 }));
+    await createShopeeClient(shopConfig(semTipo)).downloadShippingDocument({
+      documentos: [{ orderSn: PEDIDO_ETQ }],
+    });
+    expect(corpoEnviado(semTipo)).toBe(`{"order_list":[{"order_sn":"${PEDIDO_ETQ}"}]}`);
+
+    // Um envelope de erro num 200 é o erro da Shopee, nunca uma etiqueta.
+    const erroFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'logistics.shipping_document_should_print_first',
+        message: 'The package can not print now, please create shipping document first.',
+        request_id: 'req-baixar-erro',
+      }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(erroFetch)).downloadShippingDocument({
+        documentos: [{ orderSn: PEDIDO_ETQ }],
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('logistics.shipping_document_should_print_first');
+  });
+
+  it('E-L1 — FONTE: as duas flags de lote moram UMA vez, dentro de `lerLoteLogistico`; os três lotes passam por ele; e shipOrder não carrega tolerância nem laço', () => {
+    // ⚠️ Asserção de FONTE: o `catch` do leitor DEPENDE do `payloadNoErro` —
+    // sem ele as linhas são descartadas no ponto do throw —, e um lote que
+    // chamasse `shopeeCall` direto passaria por todo teste cujo corpo não trouxesse
+    // linhas junto de um erro.
+    const inicio = FONTE_API.indexOf('async function lerLoteLogistico');
+    const fim = FONTE_API.indexOf('export function createShopeePartnerClient');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    const leitor = FONTE_API.slice(inicio, fim);
+    expect(leitor.split('payloadNoErro: true').length - 1).toBe(1);
+    expect(leitor.split('avisoEmLista: true').length - 1).toBe(1);
+    expect(FONTE_API.split('avisoEmLista: true').length - 1).toBe(1);
+    expect(FONTE_API.split('payloadNoErro: true').length - 1).toBe(3);
+
+    const guardas: readonly (readonly [string, string])[] = [
+      ['getShippingParameter: async', 'assertShippingParameterParams(p)'],
+      ['shipOrder: async', 'assertShipOrderParams(p)'],
+      ['getTrackingNumber: async', 'assertTrackingNumberParams(p)'],
+      ['getShippingDocumentParameter: async', 'assertShippingDocumentParameterParams(p)'],
+      ['createShippingDocument: async', 'assertCreateShippingDocumentParams(p)'],
+      ['getShippingDocumentResult: async', 'assertShippingDocumentResultParams(p)'],
+      ['downloadShippingDocument: async', 'assertDownloadShippingDocumentParams(p)'],
+    ];
+    for (const [marcador, guarda] of guardas) {
+      const bloco = blocoDoMetodo(marcador);
+      // O guarda corre ANTES do token — o S17 no nível da fonte.
+      expect(bloco.indexOf(guarda), marcador).toBeGreaterThan(-1);
+      expect(bloco.indexOf(guarda), marcador).toBeLessThan(bloco.indexOf('signedCall()'));
+    }
+    for (const lote of [
+      'getShippingDocumentParameter: async',
+      'createShippingDocument: async',
+      'getShippingDocumentResult: async',
+    ]) {
+      const bloco = blocoDoMetodo(lote);
+      expect(bloco, lote).toContain('lerLoteLogistico(');
+      expect(bloco, lote).not.toContain('shopeeCall(');
+    }
+    expect(blocoDoMetodo('downloadShippingDocument: async')).toContain('shopeeCallArquivo(');
+
+    const ship = blocoDoMetodo('shipOrder: async');
+    expect(ship.split('shopeeCall(').length - 1).toBe(1);
+    for (const proibido of [
+      'payloadNoErro',
+      'avisoEmLista',
+      'erroAusenteEhSucesso',
+      'emptyErrorAliases',
+      'for (',
+      'while',
+      'catch',
+    ]) {
+      expect(ship, proibido).not.toContain(proibido);
+    }
   });
 });

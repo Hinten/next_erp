@@ -4058,3 +4058,418 @@ export type ShopeeWarehouse = z.infer<typeof shopeeWarehouseSchema>;
  */
 export const shopeeWarehouseDetailSchema = wrappedOp(z.array(shopeeWarehouseSchema));
 export type ShopeeWarehouseDetailResponse = z.infer<typeof shopeeWarehouseDetailSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                          The label flow (step 15)                          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The response schemas of six of the seven label operations. The seventh,
+ * `download_shipping_document`, answers BYTES and never reaches a schema
+ * (`arquivo.ts`, `shopeeCallArquivo`). The paths, the request shapes, the
+ * guards and the constants the readers compare against
+ * (`SHOPEE_ADDRESS_FLAG`, `SHOPEE_TIME_SLOT_FLAG`,
+ * `SHOPEE_SHIPPING_DOCUMENT_STATUS`, `SHOPEE_SHIPPING_DOCUMENT_TYPES`) live in
+ * `logistica.ts`; this block only reads.
+ *
+ * Every field was re-read off the cached pages (`api v2.logistics.<op>`) on
+ * 2026-09-30. Nothing here has been seen on the wire yet — the step-15 probe
+ * has not run — so every judgement is the page's.
+ */
+
+/* ------------------------- get_shipping_parameter ------------------------- */
+
+/**
+ * The preprocess of `pickup_time_id` — {@link paraIdOpaco}, except that a
+ * number that is not a SAFE integer is left a number, so the `z.string()`
+ * behind it refuses it.
+ *
+ * ⚠️ This id is SENT BACK (`ship_order.pickup.pickup_time_id`), and by the time
+ * a preprocess runs `JSON.parse` has already rounded an integer above
+ * `Number.MAX_SAFE_INTEGER`: its digits are a plausible slot that is not the one
+ * Shopee offered. Refusing it costs ONE slot (the list's `null` sentinel), which
+ * is the `address_id` rule — a rounded id is never sent back.
+ */
+function paraIdDeHorario(v: unknown): unknown {
+  return typeof v === 'number' && Number.isSafeInteger(v) ? String(v) : v;
+}
+
+/**
+ * One pickup time slot of one address —
+ * `get_shipping_parameter.pickup.address_list[].time_slot_list[]`.
+ *
+ * ⚠️ `pickup_time_id` is a STRING on the page and goes back verbatim, so it is
+ * an OPAQUE string here: a numeric one is carried as its digits
+ * ({@link paraIdDeHorario}). REQUIRED and non-empty — a slot without its id
+ * cannot be chosen, so it is the list's `null` sentinel, never a slot whose id
+ * is `null`.
+ *
+ * ⚠️ `date` is SECONDS ("In timestamp"), and nullable: "Some logistics channels
+ * may not return any date or time for pickup time slots."
+ *
+ * ⚠️ `flags` is a FREE string list whose one documented value is `recommended`
+ * (`SHOPEE_TIME_SLOT_FLAG.recomendado`, 2025-03-24) — a suggestion Shopee makes,
+ * never a requirement: "they can also choose other time slots".
+ */
+export const shopeePickupTimeSlotSchema = z
+  .object({
+    /** SECONDS. */
+    date: wireInt().nullable().default(null),
+    time_text: z.string().nullable().default(null),
+    /** ⚠️ OPAQUE — sent back verbatim, never a number. */
+    pickup_time_id: z.preprocess(paraIdDeHorario, z.string().min(1)),
+    flags: z.array(z.string()).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeePickupTimeSlot = z.infer<typeof shopeePickupTimeSlotSchema>;
+
+/**
+ * One pickup address of the SELLER — `get_shipping_parameter.pickup.address_list[]`.
+ *
+ * ⚠️ `address_id` is `int64` on the page and goes back as a NUMBER in
+ * `ship_order.pickup.address_id`. `wireInt()` FAILS above
+ * `Number.MAX_SAFE_INTEGER` (Zod 4's `.int()` answers `too_big`), and here that
+ * failure is the point: the ROW becomes the list's `null` sentinel instead of a
+ * rounded id — which could name ANOTHER address of the same seller — being sent
+ * back. Its siblings survive.
+ *
+ * ⚠️ `address_flag` decides eligibility, and it is FREE strings: the page names
+ * four (`SHOPEE_ADDRESS_FLAG`), and only `pickup_address` makes an address a
+ * pickup address — `default_address` alone does not (announcement 1327). It is
+ * `.nullable()` rather than `.default([])` because this page writes `null` for
+ * an empty list (`time_slot_list: null` and `dropoff: null` in its own sample),
+ * and `.default([])` would turn that `null` into a refused ROW.
+ *
+ * ⚠️ The address TEXT (`region` … `zipcode`) is the SELLER's own and is declared
+ * for exactly one reader, the chooser's `rotulo`. It must never reach a log
+ * line; no buyer datum is on this page.
+ *
+ * ⚠️ `time_slot_list` is `null` in the page's own sample, and legal: "sellers
+ * can arrange shipment without selecting any time slot". Per-element sentinels,
+ * so one unreadable slot costs that slot.
+ */
+export const shopeePickupAddressSchema = z
+  .object({
+    /** ⚠️ int64 — an unsafe one refuses the ROW. See the block comment. */
+    address_id: wireInt(),
+    region: z.string().nullable().default(null),
+    state: z.string().nullable().default(null),
+    city: z.string().nullable().default(null),
+    district: z.string().nullable().default(null),
+    town: z.string().nullable().default(null),
+    address: z.string().nullable().default(null),
+    zipcode: z.string().nullable().default(null),
+    address_flag: z.array(z.string()).nullable().default(null),
+    time_slot_list: z
+      .array(shopeePickupTimeSlotSchema.nullable().catch(null))
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeePickupAddress = z.infer<typeof shopeePickupAddressSchema>;
+
+/**
+ * One dropoff branch — `get_shipping_parameter.dropoff.branch_list[]`.
+ *
+ * ⚠️ `branch_id` is `int` on this page and `int64` on `ship_order`'s request,
+ * where it goes back as a NUMBER: `wireInt()`, and an unsafe one costs the ROW,
+ * for {@link shopeePickupAddressSchema}'s reason. The address text is a
+ * carrier branch's, declared for the same one reader and never logged.
+ */
+export const shopeeDropoffBranchSchema = z
+  .object({
+    branch_id: wireInt(),
+    region: z.string().nullable().default(null),
+    state: z.string().nullable().default(null),
+    city: z.string().nullable().default(null),
+    address: z.string().nullable().default(null),
+    zipcode: z.string().nullable().default(null),
+    district: z.string().nullable().default(null),
+    town: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeDropoffBranch = z.infer<typeof shopeeDropoffBranchSchema>;
+
+/** One TW 3PL drop-off partner — `dropoff.slug_list[]`. Not BR; declared so a body carrying it is read. */
+export const shopeeDropoffSlugSchema = z
+  .object({
+    slug: z.string().nullable().default(null),
+    slug_name: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeDropoffSlug = z.infer<typeof shopeeDropoffSlugSchema>;
+
+/**
+ * `get_shipping_parameter.info_needed` — WHICH modes this package offers, and
+ * what each one needs filled.
+ *
+ * ⚠️ ABSENT and EMPTY are DIFFERENT answers, so every list is
+ * `.nullable().default(null)` and never `.default([])`: `null` = the mode is NOT
+ * offered; `[]` = offered with nothing to fill ("If it has empty value,
+ * developer should still include "dropoff" field"). A `.default([])` would offer
+ * every mode to every package. A near-miss pins `{ dropoff: [] }` ≠ `{}`.
+ *
+ * ⚠️ The page's own sample offers TWO modes at once (`dropoff: []` beside
+ * `pickup: ['address_id', 'pickup_time_id']`). Choosing is the app's
+ * (`modoDeEnvio.ts`), never this schema's.
+ *
+ * ⚠️ The page's prose also spells the third key `non-integrated`, with a
+ * hyphen. Only `non_integrated` is declared: a hyphen key rides
+ * `.passthrough()` and reads as NO mode, so the chooser refuses what it does
+ * not know instead of guessing.
+ *
+ * The items are FREE strings (`branch_id`, `sender_real_name`, `tracking_no`,
+ * `slug`, `address_id`, `pickup_time_id`, `tracking_number`).
+ */
+export const shopeeInfoNeededSchema = z
+  .object({
+    dropoff: z.array(z.string()).nullable().default(null),
+    pickup: z.array(z.string()).nullable().default(null),
+    non_integrated: z.array(z.string()).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeInfoNeeded = z.infer<typeof shopeeInfoNeededSchema>;
+
+/**
+ * The inner payload of `get_shipping_parameter` — one package's shipping
+ * options.
+ *
+ * ⚠️ Per-ELEMENT `null` sentinels on the four lists (addresses, their slots,
+ * branches, slugs), the {@link shopeePackageDetailPayloadSchema} precedent: one
+ * unreadable row — an unsafe int64 id above all — costs that row, and a reader
+ * that meets a `null` knows it met one. Deliberately NOT per field: the ids are
+ * what goes back to `ship_order`, and a per-field catch would manufacture a
+ * `null` id.
+ *
+ * ⚠️ `dropoff` and `pickup` are `null` when the mode is not offered — the page's
+ * own sample prints `"dropoff": null` beside an `info_needed.dropoff` of `[]`.
+ * Which modes are offered is `info_needed`'s to say; these two only carry the
+ * options.
+ *
+ * No recipient, driver or buyer field is on this page.
+ */
+export const shopeeShippingParameterPayloadSchema = z
+  .object({
+    info_needed: shopeeInfoNeededSchema.nullable().default(null),
+    dropoff: z
+      .object({
+        branch_list: z
+          .array(shopeeDropoffBranchSchema.nullable().catch(null))
+          .nullable()
+          .default(null),
+        slug_list: z.array(shopeeDropoffSlugSchema.nullable().catch(null)).nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    pickup: z
+      .object({
+        address_list: z
+          .array(shopeePickupAddressSchema.nullable().catch(null))
+          .nullable()
+          .default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+/** What `getShippingParameter` answers — the UNWRAPPED payload. */
+export type ShopeeShippingParameter = z.infer<typeof shopeeShippingParameterPayloadSchema>;
+
+/** `GET /api/v2/logistics/get_shipping_parameter` — WRAPPED under `response`. */
+export const shopeeShippingParameterSchema = wrappedOp(shopeeShippingParameterPayloadSchema);
+export type ShopeeShippingParameterResponse = z.infer<typeof shopeeShippingParameterSchema>;
+
+/* ------------------------------- ship_order ------------------------------- */
+
+/**
+ * `POST /api/v2/logistics/ship_order` — the BARE envelope: the page returns no
+ * tracking number, no state and no `response`.
+ *
+ * ⚠️ `flatOp({})`, the {@link shopeeUploadInvoiceDocSchema} rule, and its own
+ * constant rather than a shared ack for the same reason: the day this write
+ * grows a `response`, splitting a shared constant would be the edit.
+ *
+ * ⚠️ NOT idempotent, and its client method is never retried by the package: a
+ * transport failure here is an UNKNOWN outcome, and the caller re-derives the
+ * package state before anything is sent again.
+ */
+export const shopeeShipOrderSchema = flatOp({});
+export type ShopeeShipOrderResponse = z.infer<typeof shopeeShipOrderSchema>;
+
+/* --------------------------- get_tracking_number -------------------------- */
+
+/**
+ * The inner payload of `get_tracking_number`.
+ *
+ * ⚠️ Every field VERBATIM, `""` and `"-"` included — the
+ * {@link shopeePackageDetailRowSchema} `tracking_number` rule. An empty number
+ * is NOT an error ("The api response can return tracking_number empty, since
+ * this info is dependent from the 3PL"); the app normalises in step 7's ONE
+ * function and never sends a blank one on.
+ *
+ * ⚠️ `plp_number`, `first_mile_tracking_number` and `last_mile_tracking_number`
+ * arrive only when `response_optional_fields` asks for them, which the client
+ * does not do by default; declared so a caller that asks reads them typed.
+ * `hint` explains an empty number ("cannot get tracking_number when cvs store
+ * is closed"). `pickup_code` is ID-only.
+ */
+export const shopeeTrackingNumberPayloadSchema = z
+  .object({
+    tracking_number: z.string().nullable().default(null),
+    plp_number: z.string().nullable().default(null),
+    first_mile_tracking_number: z.string().nullable().default(null),
+    last_mile_tracking_number: z.string().nullable().default(null),
+    hint: z.string().nullable().default(null),
+    pickup_code: z.string().nullable().default(null),
+  })
+  .passthrough();
+/** What `getTrackingNumber` answers — the UNWRAPPED payload. */
+export type ShopeeTrackingNumber = z.infer<typeof shopeeTrackingNumberPayloadSchema>;
+
+/** `GET /api/v2/logistics/get_tracking_number` — WRAPPED under `response`. */
+export const shopeeTrackingNumberSchema = wrappedOp(shopeeTrackingNumberPayloadSchema);
+export type ShopeeTrackingNumberResponse = z.infer<typeof shopeeTrackingNumberSchema>;
+
+/* ---------------------- the three shipping-document pages ----------------- */
+
+/**
+ * One element of the ARRAY `warning` the three shipping-document pages declare
+ * — `warning: object[] {order_sn, package_number}`.
+ *
+ * ⚠️ It carries an `order_sn` and a package number, so it must never reach a log
+ * line. The ENVELOPE never sees it as rows: `call.ts`'s `avisoEmLista`
+ * tolerance turns the array into a COUNT sentence at stage 1. Stage 2 reads the
+ * original text through the page schemas below, which declare both shapes.
+ */
+export const shopeeAvisoDeLoteSchema = z
+  .object({
+    order_sn: z.string().nullable().default(null),
+    package_number: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeAvisoDeLote = z.infer<typeof shopeeAvisoDeLoteSchema>;
+
+/**
+ * The `warning` of the three shipping-document pages: a STRING or an ARRAY of
+ * {@link shopeeAvisoDeLoteSchema}, both declared and neither folded — the
+ * `channel_relation_rules` technique. The pages declare `object[]` and two of
+ * their own SUCCESS samples print one; `create_shipping_document`'s prints
+ * `null`, and every other page of this API prints a string.
+ *
+ * ⚠️ Per-element `null` sentinel: a warning is a diagnostic, and an unreadable
+ * one must never cost the batch it rides on.
+ */
+const avisosDeLoteSchema = z
+  .union([z.string(), z.array(shopeeAvisoDeLoteSchema.nullable().catch(null))])
+  .nullable()
+  .default(null);
+
+/**
+ * One `result_list` row of `create_shipping_document` — and the four fields
+ * every row of the three pages shares.
+ *
+ * ⚠️ `order_sn` is `.min(1)` STRICT, an identity: rows are reconciled by
+ * `(order_sn, package_number)` and never by position, so a blank one would key
+ * a row onto nothing. A row without it is the page's `null` sentinel.
+ *
+ * ⚠️ `package_number` is NULLABLE, not strict: the pages' own FAILED rows carry
+ * none (`get_shipping_document_parameter`'s sample, both all-failed samples).
+ * It arrives verbatim.
+ *
+ * ⚠️ `fail_error` / `fail_message` arrive VERBATIM and are never trimmed: the
+ * row verdict (`falhaDaLinha`, `logistica.ts`) is `fail_error` NON-EMPTY, so
+ * `' '` is a failure — the envelope's `error` rule. A row with a `fail_error`
+ * is a failure whatever else it says.
+ */
+export const shopeeLinhaDeLoteSchema = z
+  .object({
+    order_sn: z.string().min(1),
+    package_number: z.string().nullable().default(null),
+    fail_error: z.string().nullable().default(null),
+    fail_message: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeLinhaDeLote = z.infer<typeof shopeeLinhaDeLoteSchema>;
+
+/**
+ * One `result_list` row of `get_shipping_document_parameter`.
+ *
+ * ⚠️ EXTENDED from {@link shopeeLinhaDeLoteSchema}, so the four shared keys
+ * cannot drift (`types.test.ts` asserts the shared set).
+ *
+ * ⚠️ Both document-type fields are FREE strings: `THERMAL_UNPACKAGED_LABEL`
+ * was once missing from the published enum, and the app forwards the
+ * `suggest_…` value VERBATIM ("If you don't select any shipping document type,
+ * Shopee will use this as default"). `SHOPEE_SHIPPING_DOCUMENT_TYPES` names the
+ * five known ones; nothing here judges.
+ */
+export const shopeeParametroDeDocumentoSchema = shopeeLinhaDeLoteSchema.extend({
+  suggest_shipping_document_type: z.string().nullable().default(null),
+  selectable_shipping_document_type: z.array(z.string()).nullable().default(null),
+});
+export type ShopeeParametroDeDocumento = z.infer<typeof shopeeParametroDeDocumentoSchema>;
+
+/**
+ * One `result_list` row of `get_shipping_document_result`.
+ *
+ * ⚠️ `status` is a FREE string (`SHOPEE_SHIPPING_DOCUMENT_STATUS` names
+ * `READY` / `FAILED` / `PROCESSING`): an unknown status is carried and the app
+ * treats it as NOT ready, never as a refused page. The page's own sample prints
+ * a row with a `fail_error` and NO status beside two `READY` ones.
+ */
+export const shopeeResultadoDeDocumentoSchema = shopeeLinhaDeLoteSchema.extend({
+  status: z.string().nullable().default(null),
+});
+export type ShopeeResultadoDeDocumento = z.infer<typeof shopeeResultadoDeDocumentoSchema>;
+
+/**
+ * A shipping-document PAGE: the envelope with the {@link avisosDeLoteSchema}
+ * `warning`, and `response.result_list` of the given row.
+ *
+ * ⚠️ The same schema reads a SUCCESS and a `common.batch_api_all_failed`
+ * failure — the pages' error samples carry the rows beside the failing `error`,
+ * and the client's batch reader re-parses that body through THIS schema (the
+ * transport's `payloadNoErro`). Judging success stays the transport's job.
+ *
+ * ⚠️ Per-ELEMENT `null` sentinels on `result_list`, the
+ * {@link shopeePackageDetailPayloadSchema} precedent: a batch of up to 50 must
+ * not lose 49 rows to one. An ABSENT and a `null` list both read as `[]`
+ * (review 1 of step 15, R4-4): this API's house style prints `null` for an
+ * empty list (`get_shipping_parameter`'s own sample: `time_slot_list: null`),
+ * fewer rows than were asked for is a valid answer, and the reader reconciles
+ * by identity — so a `null` there is "no rows", never a 502.
+ */
+function paginaDeDocumento<Linha extends z.ZodType>(linha: Linha) {
+  return wrappedOp(
+    z
+      .object({
+        result_list: z
+          .array(linha.nullable().catch(null))
+          .nullish()
+          .transform((v) => v ?? []),
+      })
+      .passthrough(),
+  ).extend({ warning: avisosDeLoteSchema });
+}
+
+/** `POST /api/v2/logistics/get_shipping_document_parameter`. */
+export const shopeeParametroDeDocumentoPaginaSchema = paginaDeDocumento(
+  shopeeParametroDeDocumentoSchema,
+);
+export type ShopeeParametroDeDocumentoPagina = z.infer<
+  typeof shopeeParametroDeDocumentoPaginaSchema
+>;
+
+/** `POST /api/v2/logistics/create_shipping_document`. */
+export const shopeeLinhaDeLotePaginaSchema = paginaDeDocumento(shopeeLinhaDeLoteSchema);
+export type ShopeeLinhaDeLotePagina = z.infer<typeof shopeeLinhaDeLotePaginaSchema>;
+
+/** `POST /api/v2/logistics/get_shipping_document_result`. */
+export const shopeeResultadoDeDocumentoPaginaSchema = paginaDeDocumento(
+  shopeeResultadoDeDocumentoSchema,
+);
+export type ShopeeResultadoDeDocumentoPagina = z.infer<
+  typeof shopeeResultadoDeDocumentoPaginaSchema
+>;

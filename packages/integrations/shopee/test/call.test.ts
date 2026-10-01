@@ -7,10 +7,14 @@ import {
   type ShopeeTransport,
   type ShopeeWarning,
   shopeeCall,
+  shopeeCallArquivo,
 } from '../src/call';
+import { SHOPEE_ARQUIVO_ACCEPT, classificarArquivoDeEnvio } from '../src/arquivo';
 import {
   ShopeeApiError,
   ShopeeApiPartialError,
+  ShopeeArquivoVazioError,
+  ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
   ShopeeSchemaError,
@@ -649,5 +653,538 @@ describe('shopeeCall — `providerMessage` sobrevive à reconstrução do parcia
     expect(erro).toBeInstanceOf(ShopeeRateLimitError);
     expect((erro as ShopeeRateLimitError).code).toBe('http_429');
     expect((erro as ShopeeRateLimitError).providerMessage).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*             `shopeeCallArquivo` — o modo BYTES (passo 15, etiqueta)          */
+/* -------------------------------------------------------------------------- */
+
+const DOWNLOAD_PATH = '/api/v2/logistics/download_shipping_document';
+const ORDER_SN = '260910KJBHUJDM';
+const PACOTE = 'OFG000000000001';
+const PACOTE_2 = 'OFG000000000002';
+
+/**
+ * Um PDF cujo corpo tem bytes ≥ 0x80 — a linha binária de marcação `%âãÏÓ` e
+ * sequências UTF-8 INVÁLIDAS (`0x80`, `0xFF 0xFE`, `0xC3 0x28`). Um `text()`
+ * trocaria cada uma por U+FFFD, e o arquivo que sai não seria o que chegou.
+ */
+const PDF_ETIQUETA = new Uint8Array([
+  0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a, 0x80,
+  0xff, 0xfe, 0x00, 0xc3, 0x28, 0x0a,
+]);
+const ZIP_ETIQUETA = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x08, 0x00, 0xa7, 0x9c]);
+
+const CORPO_DOWNLOAD = {
+  shipping_document_type: 'NORMAL_AIR_WAYBILL',
+  order_list: [{ order_sn: ORDER_SN, package_number: PACOTE }],
+};
+
+function chamarDownload(fetchImpl: typeof globalThis.fetch) {
+  return shopeeCallArquivo(transporte(fetchImpl), {
+    method: 'POST',
+    path: DOWNLOAD_PATH,
+    call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+    surface: 'business',
+    body: CORPO_DOWNLOAD,
+  });
+}
+
+function resposta(
+  corpo: BodyInit | null,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(corpo, { status, headers });
+}
+
+/** Um corpo de texto como BYTES — sem o `content-type` que um corpo string ganharia. */
+function bytesDe(texto: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(texto);
+}
+
+describe('shopeeCallArquivo — o modo BYTES', () => {
+  it('B1 — S1: um PDF com bytes ≥ 0x80 volta BYTE A BYTE igual, com os cabeçalhos VERBATIM', async () => {
+    // ⚠️ O teste que prova `arrayBuffer()` e não `text()`. E o content type volta
+    // como veio — aqui um octet-stream sobre um PDF —, nunca o veredicto do
+    // sniff: quem decide o formato é o `classificarArquivoDeEnvio`, no chamador.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      resposta(PDF_ETIQUETA.slice(), 200, {
+        'content-type': 'application/octet-stream',
+        'content-disposition': 'attachment; filename="etiqueta.pdf"',
+      }),
+    );
+    const arquivo = await chamarDownload(fetchMock);
+
+    expect(Array.from(arquivo.bytes)).toEqual(Array.from(PDF_ETIQUETA));
+    expect(arquivo.bytes.byteLength).toBe(PDF_ETIQUETA.byteLength);
+    expect(arquivo.contentType).toBe('application/octet-stream');
+    expect(arquivo.contentDisposition).toBe('attachment; filename="etiqueta.pdf"');
+    expect(arquivo.httpStatus).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('B2 — um ZIP volta inteiro, e um cabeçalho AUSENTE é `null`, nunca `""`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => resposta(ZIP_ETIQUETA.slice()));
+    const arquivo = await chamarDownload(fetchMock);
+
+    expect(Array.from(arquivo.bytes)).toEqual(Array.from(ZIP_ETIQUETA));
+    expect(arquivo.contentType).toBeNull();
+    expect(arquivo.contentDisposition).toBeNull();
+    expect(classificarArquivoDeEnvio(arquivo.bytes).formato).toBe('zip');
+  });
+
+  it('B3 — linha 0: POST com `Accept: */*`, o corpo JSON do shopeeCall e a MESMA assinatura para o mesmo caminho', async () => {
+    const arquivoFetch = vi.fn<typeof globalThis.fetch>(async () => resposta(PDF_ETIQUETA.slice()));
+    await chamarDownload(arquivoFetch);
+
+    const [, init] = arquivoFetch.mock.calls[0]!;
+    expect(init?.method).toBe('POST');
+    expect(cabecalhosEnviados(arquivoFetch)).toEqual({
+      Accept: SHOPEE_ARQUIVO_ACCEPT,
+      'Content-Type': 'application/json',
+    });
+    expect(init?.body).toBe(JSON.stringify(CORPO_DOWNLOAD));
+    expect(urlEnviada(arquivoFetch).pathname).toBe(DOWNLOAD_PATH);
+
+    // O MESMO pedido pelo shopeeCall: só o `Accept` muda — a query assinada
+    // (sign, timestamp, token, shop_id) é idêntica, byte a byte.
+    const jsonFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '', message: null, warning: null, request_id: 'req-x' }),
+    );
+    await shopeeCall(transporte(jsonFetch), {
+      method: 'POST',
+      path: DOWNLOAD_PATH,
+      call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+      schema: z.object({ error: z.string() }).passthrough(),
+      surface: 'business',
+      body: CORPO_DOWNLOAD,
+    });
+    expect(urlEnviada(arquivoFetch).search).toBe(urlEnviada(jsonFetch).search);
+    expect(urlEnviada(arquivoFetch).searchParams.get('sign')).toMatch(/^[0-9a-f]{64}$/);
+    expect(cabecalhosEnviados(jsonFetch).Accept).toBe('application/json');
+  });
+
+  it('B4 — linha 4, S2: um 200 VAZIO é ShopeeArquivoVazioError — nunca `{ bytes: [] }`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      resposta(null, 200, { 'content-type': 'application/pdf' }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeArquivoVazioError);
+    // ⚠️ Uma subclasse: o 502 do `respond.ts` continua pegando sem edição.
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeArquivoVazioError).httpStatus).toBe(200);
+    expect((erro as ShopeeArquivoVazioError).path).toBe(DOWNLOAD_PATH);
+  });
+
+  it('B5 — linha 2: um 429 VAZIO é ShopeeRateLimitError `burst`, com o Retry-After', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      resposta(null, 429, { 'retry-after': '7' }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeRateLimitError);
+    expect((erro as ShopeeRateLimitError).kind).toBe('burst');
+    expect((erro as ShopeeRateLimitError).code).toBe('http_429');
+    expect((erro as ShopeeRateLimitError).retryAfterSeconds).toBe(7);
+  });
+
+  it('B6 — linha 3, ⛔ QUASE-IGUAL do B4: um 503 VAZIO é ShopeeHttpError, NÃO o arquivo vazio', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => resposta(null, 503));
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeHttpError);
+    expect(erro).not.toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeHttpError).httpStatus).toBe(503);
+  });
+
+  it('B7 — linha 5: um envelope de ERRO num 200 é o veredicto de sempre — ShopeeApiError, código VERBATIM', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'logistics.shipping_document_should_print_first',
+        message: 'The package can not print now, please create shipping document first.',
+        warning: null,
+        request_id: 'req-download',
+      }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('logistics.shipping_document_should_print_first');
+    expect((erro as ShopeeApiError).kind).toBe('other');
+    expect((erro as ShopeeApiError).requestId).toBe('req-download');
+    expect((erro as ShopeeApiError).providerMessage).toBe(
+      'The package can not print now, please create shipping document first.',
+    );
+  });
+
+  it('B8 — linha 5: um limite no envelope sai como ShopeeRateLimitError, `burst` e `daily` separados', async () => {
+    const limite = (error: string) =>
+      vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse({ error, message: 'limite', warning: null, request_id: 'req-limite' }),
+      );
+    const burst = await chamarDownload(limite('error_rate_limit')).catch((e: unknown) => e);
+    const diario = await chamarDownload(limite('error_limit')).catch((e: unknown) => e);
+
+    expect(burst).toBeInstanceOf(ShopeeRateLimitError);
+    expect((burst as ShopeeRateLimitError).kind).toBe('burst');
+    expect(diario).toBeInstanceOf(ShopeeRateLimitError);
+    expect((diario as ShopeeRateLimitError).kind).toBe('daily');
+  });
+
+  it('B9 — linha 5, S3: um envelope de SUCESSO nunca é uma etiqueta — ShopeeSchemaError nomeando `waybill`', async () => {
+    // ⚠️ Devolver estes bytes mandaria um documento JSON ao agente de impressão.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: '', message: '', warning: null, request_id: 'req-download' }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect(erro).not.toBeInstanceOf(ShopeeArquivoVazioError);
+    expect((erro as ShopeeSchemaError).campos).toEqual(['waybill']);
+    expect((erro as ShopeeSchemaError).message).toContain('SUCESSO sem arquivo');
+  });
+
+  it('B9b — ⛔ QUASE-IGUAL do B9: `error: " "` é FALHA (igualdade EXATA com `""`), nunca o envelope de sucesso', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ error: ' ', message: '', warning: null, request_id: 'req-download' }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe(' ');
+  });
+
+  it('B10 — S4: um BOM UTF-8 e espaço antes do `{` continuam no caminho do ENVELOPE', async () => {
+    // ⚠️ Se o sniff ignorasse o BOM/o espaço, este envelope de erro voltaria como
+    // se fosse uma etiqueta, e nada lançaria.
+    const corpo = new Uint8Array([
+      0xef,
+      0xbb,
+      0xbf,
+      ...bytesDe(
+        ' \n\t {"error":"error_param","message":"Wrong parameters","request_id":"req-bom"}',
+      ),
+    ]);
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => resposta(corpo));
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_param');
+    expect((erro as ShopeeApiError).requestId).toBe('req-bom');
+  });
+
+  it('B11 — JSON que NÃO é envelope: 200 ⇒ ShopeeSchemaError nomeando `error`; 500 ⇒ ShopeeHttpError', async () => {
+    const em200 = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => jsonResponse({ resultado: 'ok' })),
+    ).catch((e: unknown) => e);
+    const em500 = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => jsonResponse({ resultado: 'ok' }, 500)),
+    ).catch((e: unknown) => e);
+    const lista = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => resposta(bytesDe('[1,2]'))),
+    ).catch((e: unknown) => e);
+
+    expect(em200).toBeInstanceOf(ShopeeSchemaError);
+    expect((em200 as ShopeeSchemaError).campos).toContain('error');
+    expect(em500).toBeInstanceOf(ShopeeHttpError);
+    expect((em500 as ShopeeHttpError).httpStatus).toBe(500);
+    expect(lista).toBeInstanceOf(ShopeeSchemaError);
+  });
+
+  it('B12 — JSON MALFORMADO (começa com `{` e não fecha): 200 ⇒ ShopeeSchemaError; 502 ⇒ ShopeeHttpError', async () => {
+    const em200 = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => resposta(bytesDe('{"error":'))),
+    ).catch((e: unknown) => e);
+    const em502 = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => resposta(bytesDe('{"error":'), 502)),
+    ).catch((e: unknown) => e);
+
+    expect(em200).toBeInstanceOf(ShopeeSchemaError);
+    expect(em200).not.toBeInstanceOf(ShopeeArquivoVazioError);
+    expect(em502).toBeInstanceOf(ShopeeHttpError);
+  });
+
+  it('B13 — linha 6: um 429 sem envelope (texto) é ShopeeRateLimitError `burst` — e um 429 JSON-não-envelope também', async () => {
+    const texto = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => resposta('Too Many Requests', 429)),
+    ).catch((e: unknown) => e);
+    const json = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () => jsonResponse({ motivo: 'devagar' }, 429)),
+    ).catch((e: unknown) => e);
+
+    for (const erro of [texto, json]) {
+      expect(erro).toBeInstanceOf(ShopeeRateLimitError);
+      expect((erro as ShopeeRateLimitError).kind).toBe('burst');
+      expect((erro as ShopeeRateLimitError).code).toBe('http_429');
+    }
+  });
+
+  it('B14 — linha 7: um 403 HTML (a borda do allow-list de IP) é ShopeeHttpError', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      resposta('<html><body>403 Forbidden</body></html>', 403, { 'content-type': 'text/html' }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeHttpError);
+    expect((erro as ShopeeHttpError).httpStatus).toBe(403);
+    expect((erro as ShopeeHttpError).path).toBe(DOWNLOAD_PATH);
+  });
+
+  it('B15 — linha 8: um 2xx NÃO-JSON volta mesmo sem ser etiqueta conhecida — quem RECUSA é o classificador', async () => {
+    // A divisão de trabalho: o transporte garante "não vazio e não envelope"; o
+    // formato (e a recusa do `desconhecido`) é do chamador.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      resposta(bytesDe('<html>não é etiqueta</html>')),
+    );
+    const arquivo = await chamarDownload(fetchMock);
+
+    expect(arquivo.bytes.byteLength).toBeGreaterThan(0);
+    expect(classificarArquivoDeEnvio(arquivo.bytes)).toEqual({ formato: 'desconhecido' });
+  });
+
+  it('B16 — uma falha de rede é ShopeeNetworkError que nomeia só o CAMINHO', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('fetch failed: https://x/?access_token=token-inventado');
+    });
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeNetworkError);
+    expect((erro as ShopeeNetworkError).message).toContain(DOWNLOAD_PATH);
+    expect((erro as ShopeeNetworkError).message).not.toContain('token-inventado');
+  });
+
+  it('B17 — S5: NENHUM caminho de falha loga um byte do corpo — só caminho, status, tamanho e content type', async () => {
+    // ⚠️ Uma etiqueta traz nome e endereço do comprador. O marcador vai no CORPO
+    // de cada caminho de falha; nenhum argumento de console pode contê-lo. Um
+    // `logarCorpoNaoJson` aqui (que loga 500 caracteres) reprova este teste.
+    const MARCADOR = 'MARCADOR-DO-CORPO-7f3a';
+    const espioes = (['error', 'warn', 'log', 'info', 'debug'] as const).map((metodo) =>
+      vi.spyOn(console, metodo).mockImplementation(() => undefined),
+    );
+
+    const corpos: (() => Response)[] = [
+      () => jsonResponse({ marcador: MARCADOR }),
+      () => jsonResponse({ marcador: MARCADOR }, 500),
+      () => jsonResponse({ marcador: MARCADOR }, 429),
+      () => resposta(bytesDe(`{"marcador":"${MARCADOR}"`)),
+      () => resposta(bytesDe(`{"marcador":"${MARCADOR}"`), 502),
+      () => resposta(`<html>${MARCADOR}</html>`, 403),
+      () => resposta(`${MARCADOR} Too Many Requests`, 429),
+      () =>
+        jsonResponse({ error: 'error_param', message: MARCADOR, warning: null, request_id: 'r' }),
+      () =>
+        jsonResponse({
+          error: '',
+          message: '',
+          warning: null,
+          request_id: 'r',
+          response: { m: MARCADOR },
+        }),
+      () => resposta(null, 200),
+      () => resposta(null, 503),
+    ];
+    for (const corpo of corpos) {
+      const erro = await chamarDownload(vi.fn<typeof globalThis.fetch>(async () => corpo())).catch(
+        (e: unknown) => e,
+      );
+      // Todo caminho desta lista é uma FALHA — um que voltasse bytes seria um
+      // caminho a menos sob o espião.
+      expect(erro).toBeInstanceOf(Error);
+    }
+
+    const chamadas = espioes.flatMap((espiao) => espiao.mock.calls);
+    for (const argumentos of chamadas) {
+      for (const argumento of argumentos) {
+        expect(String(JSON.stringify(argumento))).not.toContain(MARCADOR);
+      }
+    }
+    // ÂNCORA: o espião está vivo — sem isto, a varredura acima passaria sobre
+    // uma lista VAZIA — e a linha que ele pegou diz o que deve dizer.
+    expect(chamadas.length).toBeGreaterThanOrEqual(8);
+    expect(String(chamadas[0]![0])).toContain(DOWNLOAD_PATH);
+    expect(String(chamadas[0]![0])).toMatch(/\d+ bytes/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          `avisoEmLista` — o `warning` em LISTA dos lotes (passo 15)          */
+/* -------------------------------------------------------------------------- */
+
+const RESULTADO_PATH = '/api/v2/logistics/get_shipping_document_result';
+
+/**
+ * O schema da OPERAÇÃO como o passo 15 o declara: o envelope inteiro, com o
+ * `warning` nas DUAS formas (string e lista), mais o `response` exigido.
+ */
+const resultadoSchema = z
+  .object({
+    request_id: z.string().nullable().default(null),
+    error: z.string(),
+    message: z.string().nullable().default(null),
+    warning: z
+      .union([
+        z.string(),
+        z.array(
+          z
+            .object({
+              order_sn: z.string().nullable().default(null),
+              package_number: z.string().nullable().default(null),
+            })
+            .passthrough()
+            .nullable()
+            .catch(null),
+        ),
+      ])
+      .nullable()
+      .default(null),
+    response: z
+      .object({
+        result_list: z.array(
+          z
+            .object({
+              order_sn: z.string(),
+              package_number: z.string().nullable().default(null),
+              status: z.string().nullable().default(null),
+              fail_error: z.string().nullable().default(null),
+            })
+            .passthrough(),
+        ),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+/**
+ * A amostra de SUCESSO da própria página do `get_shipping_document_result`, com
+ * ids de fixture: um `warning` que é uma LISTA de `{order_sn, package_number}`.
+ */
+function corpoComAvisoEmLista(
+  opcoes: { readonly error?: string; readonly avisos?: number } = {},
+): Record<string, unknown> {
+  const avisos = Array.from({ length: opcoes.avisos ?? 1 }, () => ({
+    order_sn: ORDER_SN,
+    package_number: PACOTE_2,
+  }));
+  return {
+    message: '',
+    warning: avisos,
+    request_id: 'req-resultado',
+    response: {
+      result_list: [
+        { status: 'READY', order_sn: ORDER_SN, package_number: PACOTE },
+        {
+          fail_message: 'The package can not print now, please create shipping document first.',
+          order_sn: ORDER_SN,
+          fail_error: 'logistics.shipping_document_should_print_first',
+          package_number: PACOTE_2,
+        },
+      ],
+    },
+    error: opcoes.error ?? '',
+  };
+}
+
+function chamarResultado(
+  fetchImpl: typeof globalThis.fetch,
+  opcoes: { readonly avisoEmLista?: boolean; readonly payloadNoErro?: boolean } = {},
+  onWarning?: (w: ShopeeWarning) => void,
+) {
+  return shopeeCall(transporte(fetchImpl, onWarning), {
+    method: 'POST',
+    path: RESULTADO_PATH,
+    call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+    schema: resultadoSchema,
+    surface: 'business',
+    body: { order_list: [{ order_sn: ORDER_SN, package_number: PACOTE }] },
+    ...opcoes,
+  });
+}
+
+describe('shopeeCall — `avisoEmLista`, o warning em LISTA dos lotes de documento', () => {
+  it('A1 — S10 PAR: com a flag, a amostra da página é SUCESSO; o onWarning recebe a CONTAGEM, nunca um order_sn', async () => {
+    const avisos: ShopeeWarning[] = [];
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoComAvisoEmLista()),
+    );
+    const res = await chamarResultado(fetchMock, { avisoEmLista: true }, (w) => avisos.push(w));
+
+    expect(avisos).toEqual([
+      { path: RESULTADO_PATH, warning: '1 aviso(s) por pedido/pacote', requestId: 'req-resultado' },
+    ]);
+    expect(JSON.stringify(avisos)).not.toContain(ORDER_SN);
+    expect(JSON.stringify(avisos)).not.toContain(PACOTE_2);
+    // ⚠️ A etapa 2 lê o texto ORIGINAL: as linhas do aviso chegam ao chamador
+    // inteiras, pelo schema da operação — a contagem é só do canal do envelope.
+    expect(res.warning).toEqual([{ order_sn: ORDER_SN, package_number: PACOTE_2 }]);
+    expect(res.response.result_list).toHaveLength(2);
+    expect(res.response.result_list[0]!.status).toBe('READY');
+  });
+
+  it('A2 — S9 ⛔ QUASE-IGUAL: SEM a flag, o MESMO corpo é ShopeeSchemaError nomeando `warning`', async () => {
+    // O par do A1. A tolerância é opt-in por CALL SITE (três ops de documento):
+    // se ela virasse global, nada além desta linha diria.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoComAvisoEmLista()),
+    );
+    const erro = await chamarResultado(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeSchemaError).campos).toContain('warning');
+  });
+
+  it('A3 — um `error` REAL com warning em lista continua ShopeeApiError, e o `warning` do erro é a CONTAGEM', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoComAvisoEmLista({ error: 'logistics.error_param', avisos: 2 })),
+    );
+    const erro = await chamarResultado(fetchMock, { avisoEmLista: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect(erro).not.toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeApiError).code).toBe('logistics.error_param');
+    expect((erro as ShopeeApiError).warning).toBe('2 aviso(s) por pedido/pacote');
+  });
+
+  it('A4 — com `payloadNoErro` (a combinação dos lotes), `batch_api_all_failed` é parcial: o erro leva a CONTAGEM, o `parsed` leva as LINHAS', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoComAvisoEmLista({ error: 'common.batch_api_all_failed' })),
+    );
+    const erro = await chamarResultado(fetchMock, {
+      avisoEmLista: true,
+      payloadNoErro: true,
+    }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiPartialError);
+    expect((erro as ShopeeApiPartialError).warning).toBe('1 aviso(s) por pedido/pacote');
+    const carga = resultadoSchema.parse((erro as ShopeeApiPartialError).parsed);
+    expect(carga.warning).toEqual([{ order_sn: ORDER_SN, package_number: PACOTE_2 }]);
+    expect(carga.response.result_list).toHaveLength(2);
+  });
+
+  it('A5 — ⛔ QUASE-IGUAL: um warning STRING passa intocado pela flag, e `null` não avisa nada', async () => {
+    const avisos: ShopeeWarning[] = [];
+    const comString = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...corpoComAvisoEmLista(), warning: 'um aviso qualquer' }),
+    );
+    const semAviso = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...corpoComAvisoEmLista(), warning: null }),
+    );
+    const res = await chamarResultado(comString, { avisoEmLista: true }, (w) => avisos.push(w));
+    await chamarResultado(semAviso, { avisoEmLista: true }, (w) => avisos.push(w));
+
+    expect(res.warning).toBe('um aviso qualquer');
+    expect(avisos.map((w) => w.warning)).toEqual(['um aviso qualquer']);
+  });
+
+  it('A6 — ⛔ QUASE-IGUAL: a flag não é a tolerância do `error` AUSENTE — sem `error`, continua recusado nomeando `error`', async () => {
+    const semError = corpoComAvisoEmLista();
+    delete semError.error;
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(semError));
+    const erro = await chamarResultado(fetchMock, { avisoEmLista: true }).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeSchemaError).campos).toContain('error');
   });
 });

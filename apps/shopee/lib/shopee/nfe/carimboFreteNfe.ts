@@ -66,7 +66,10 @@
  * ⚠️ Stock-neutral by construction: `error ∈ ESTADOS_FRETE_IGNORAR_REMOCAO` and is
  * only ever written over an estado outside `ESTADOS_FRETE_REMOVE_ESTOQUE`, so the
  * pedido→estoque sync never sees a removal undone. Step 7 keeps the stamp
- * (`erro-preservado`) until the parcel physically moves into a removal estado.
+ * (`erro-preservado`) until it writes an estado of the removal set — and, as
+ * step 15 corrected, that is when step 7 observes `LOGISTICS_REQUEST_CREATED`
+ * (`aguardandoPostagem`), i.e. right after OUR `ship_order`, not after a
+ * physical pickup.
  *
  * No log line here: the handler's ONE completion line carries the returned
  * motivo as `carimbo`.

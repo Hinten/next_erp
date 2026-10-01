@@ -841,7 +841,12 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     [16, 'anuncio'],
     [27, 'anuncio'],
     [10, 'parado'],
-    [15, 'parado'],
+    // ⚠️ O passo 15 tirou o 15 do bloco parado e APAGOU a linha de
+    // `MOTIVO_PARADO` — mas para `ack`, não para um handler: o fluxo da
+    // etiqueta consulta `get_shipping_document_result` dentro da requisição,
+    // então o push não tem consumidor, e parado (TERMINAL) deixaria uma linha
+    // morta por documento de envio criado.
+    [15, 'ack'],
     [29, 'parado'],
     // ⚠️ 24 e 25 (booking) chegaram no teste de sandbox de 2026-09-09 SEM estar
     // (o 24 continua parado depois do passo 7 — RE-parado, com motivo novo)
@@ -885,7 +890,7 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
   // code 15 é o status do documento de envio. Rotear pelo número errado
   // despacharia em silêncio para o handler errado.
   it('o code 15 é o documento de envio, NÃO a autorização (push_api_id 15)', () => {
-    expect(destinoDoCodigo(15)).toBe('parado');
+    expect(destinoDoCodigo(15)).toBe('ack');
     expect(destinoDoCodigo(1)).toBe('conta');
   });
 
@@ -901,7 +906,7 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
 
   it('o motivo do parque nomeia o passo dono do handler', () => {
     expect(motivoDoParque(29)).toContain('passo 17');
-    expect(motivoDoParque(25)).toContain('passo 15');
+    expect(motivoDoParque(25)).toContain('Sem passo dono');
     expect(motivoDoParque(999)).toContain('desconhecido');
   });
 
@@ -929,26 +934,40 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     }
   });
 
+  // ⚠️ O QUARTO par da mesma família, e o primeiro que não é um handler: o
+  // passo 15 tirou o 15 do bloco parado para `ack` e APAGOU a linha de
+  // `MOTIVO_PARADO` correspondente. `motivoDoParque(15)` só pode responder o
+  // texto de fallback ("código novo") — que nunca é escrito, porque o `ack` é
+  // decidido antes do parque —, e não pode mais prometer o passo 15.
+  it('o code 15 tem destino — é ack, e o motivo não promete mais o passo 15', () => {
+    expect(destinoDoCodigo(15)).toBe('ack');
+    expect(motivoDoParque(15)).not.toContain('passo 15');
+  });
+
   // ⚠️ O par de quase-falha do de cima: 24 e 25 são a família BOOKING, e o
-  // motivo tem de dizer isso — o passo 15 é dono do code 15 (documento de envio
-  // do PACOTE), então o número do passo sozinho não distingue a linha parada.
+  // motivo tem de dizer isso — o número do passo sozinho não distingue a linha
+  // parada.
   //
-  // ⚠️ E o 24 é o caso que o passo 7 RE-parou: ele dizia "o handler é o passo 7"
-  // e isso era FALSO — uma booking é uma parcela de Advance Fulfillment
+  // ⚠️ E 24 e 25 são os casos RE-parados: o 24 pelo passo 7 ("o handler é o
+  // passo 7"), o 25 pelo passo 15 ("o handler é o passo 15"), e as duas
+  // promessas eram FALSAS — uma booking é uma parcela de Advance Fulfillment
   // (ID/PH/VN/TH, nunca BR) cujo payload traz só `booking_sn`, do qual nenhum
-  // pedido é derivável. O motivo novo tem de nomear o programa e dizer que NÃO
+  // pedido é derivável. O motivo tem de nomear o programa e dizer que NÃO
   // existe passo dono, em vez de apontar para um que não o construiu.
-  it('o motivo dos codes de booking nomeia a reserva, e o 24 não promete passo dono', () => {
+  it('o motivo dos codes de booking nomeia a reserva, e nem o 24 nem o 25 prometem passo dono', () => {
     expect(motivoDoParque(24)).toMatch(/reserva/i);
     expect(motivoDoParque(24)).toContain('Advance Fulfillment');
     expect(motivoDoParque(24)).toContain('Sem passo dono');
     expect(motivoDoParque(24)).not.toContain('o handler é o passo');
-    expect(motivoDoParque(25)).toContain('reserva');
-    expect(motivoDoParque(25)).toContain('passo 15');
-    // A quase-falha: o 4 não tem MAIS linha nenhuma (ele tem handler), então a
-    // âncora passou a ser o 15 — ainda parado, e ainda não é uma reserva.
-    expect(motivoDoParque(15)).not.toMatch(/reserva/i);
-    expect(motivoDoParque(15)).toContain('passo 15');
+    expect(motivoDoParque(25)).toMatch(/reserva/i);
+    expect(motivoDoParque(25)).toContain('Advance Fulfillment');
+    expect(motivoDoParque(25)).toContain('Sem passo dono');
+    expect(motivoDoParque(25)).not.toContain('o handler é o passo');
+    // A quase-falha: o 4 e o 15 não têm MAIS linha nenhuma (um tem handler, o
+    // outro é ack), então a âncora passou a ser o 29 — ainda parado, com passo
+    // dono, e não é uma reserva.
+    expect(motivoDoParque(29)).not.toMatch(/reserva/i);
+    expect(motivoDoParque(29)).toContain('passo 17');
   });
 });
 
@@ -1077,6 +1096,8 @@ describe('processNotificationPayload — a ordem das portas', () => {
     [13, 'reconhecido'],
     [22, 'reconhecido'],
     [28, 'reconhecido'],
+    // O 15 veio da lista do parque abaixo no passo 15 (ack, sem consumidor).
+    [15, 'reconhecido'],
   ])('push_code %i é ack (detail %s) e NÃO lê nenhuma conta', async (code, detail) => {
     const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
     expect(out).toMatchObject({ kind: 'ack', detail });
@@ -1110,10 +1131,12 @@ describe('processNotificationPayload — a ordem das portas', () => {
   // ⚠️ O 3 SAIU desta lista no passo 5 — ele agora resolve a conta de propósito.
   // ⚠️ E 4, 30 e 47 saíram no passo 7, pela mesma razão e com a mesma nota: eles
   // resolvem a conta porque têm handler. ⚠️ E 16 e 27 saíram no passo 11, pela
-  // mesma razão ainda. O 24 FICA — a booking continua sem passo dono. Todo o
-  // resto continua tendo de parar antes de qualquer leitura: um code sem handler
-  // não pode custar uma consulta ao Firestore por entrega.
-  it.each([10, 15, 24, 25, 29, 999])(
+  // mesma razão ainda. O 24 FICA — a booking continua sem passo dono. ⚠️ E o
+  // 15 saiu no passo 15, mas para a lista do ack acima, não para um handler; o
+  // 25 FICA, re-parado como gêmeo do 24. Todo o resto continua tendo de parar
+  // antes de qualquer leitura: um code sem handler não pode custar uma consulta
+  // ao Firestore por entrega.
+  it.each([10, 24, 25, 29, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
