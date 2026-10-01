@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertShipOrderParams,
   shopeeShippingParameterPayloadSchema,
   type ShopeeShippingParameter,
 } from '@delfrance/integrations-shopee';
 
-import { escolherModoDeEnvio, type EscolhaDeEnvio, type ModoEscolhido } from './modoDeEnvio';
+import {
+  escolherModoAutomatico,
+  escolherModoDeEnvio,
+  type EscolhaDeEnvio,
+  type ModoEscolhido,
+} from './modoDeEnvio';
 import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
 
 /* --------------------------------- fixtures --------------------------------- */
@@ -721,6 +727,349 @@ describe('escolherModoDeEnvio — pura', () => {
     const a = escolherModoDeEnvio(p, escolhaColeta('5', 'h2'));
     const b = escolherModoDeEnvio(p, escolhaColeta('5', 'h2'));
     expect(a).toStrictEqual(b);
+    expect(JSON.stringify(p)).toBe(antes);
+  });
+});
+
+/* ------------------------ the automatic mode (step 15b) ---------------------- */
+
+const RECOMENDADO = 'recommended';
+const agenciaAuto = (id: number) => ({ branch_id: id, city: 'Cidade', address: 'Agência' });
+const CORPO_POSTAGEM_VAZIA: ModoEscolhido = {
+  tipo: 'corpo',
+  corpo: { modo: 'dropoff', dropoff: {} },
+};
+
+/** A decided pickup — `pickupTimeId` ABSENT (never `undefined`) when not given. */
+function corpoColeta(addressId: number, pickupTimeId?: string): ModoEscolhido {
+  return {
+    tipo: 'corpo',
+    corpo: {
+      modo: 'pickup',
+      pickup: pickupTimeId === undefined ? { addressId } : { addressId, pickupTimeId },
+    },
+  };
+}
+
+describe('escolherModoAutomatico — o endereço de coleta, sem operador (R-g)', () => {
+  it('UM endereço elegível ⇒ ele, mesmo sem ser o principal', () => {
+    expect(escolherModoAutomatico(soColeta([endereco(5, [COLETA])]))).toStrictEqual(corpoColeta(5));
+  });
+
+  it('vários elegíveis ⇒ o ÚNICO principal, onde quer que esteja na lista', () => {
+    const p = soColeta([
+      endereco(5, [COLETA]),
+      endereco(6, [COLETA, PADRAO]),
+      endereco(7, [COLETA]),
+    ]);
+    expect(escolherModoAutomatico(p)).toStrictEqual(corpoColeta(6));
+  });
+
+  it('mutante 16: vários elegíveis e NENHUM principal ⇒ pergunta — um default_address que não é de coleta não conta', () => {
+    const p = soColeta([endereco(5, [COLETA]), endereco(6, [COLETA]), endereco(7, [PADRAO])]);
+    const modo = escolherModoAutomatico(p);
+    expect(modo).toMatchObject({ tipo: 'pergunta', permiteDropoff: false, escolhaInvalida: false });
+    if (modo.tipo !== 'pergunta') throw new Error('esperava pergunta');
+    expect(modo.enderecos.map((e) => e.id)).toStrictEqual(['5', '6']);
+  });
+
+  it('mutante 17: DOIS principais ⇒ pergunta, nunca o primeiro', () => {
+    const p = soColeta([endereco(5, [COLETA, PADRAO]), endereco(6, [PADRAO, COLETA])]);
+    expect(escolherModoAutomatico(p)).toMatchObject({
+      tipo: 'pergunta',
+      escolhaInvalida: false,
+    });
+  });
+
+  it('sem endereço de coleta elegível, ou um item que o ERP não preenche ⇒ a recusa do chooser do operador', () => {
+    expect(escolherModoAutomatico(soColeta([endereco(5, [PADRAO])]))).toStrictEqual(
+      recusa('semEnderecoDeColeta'),
+    );
+    expect(
+      escolherModoAutomatico(soColeta([endereco(5, [COLETA])], ['address_id', 'tracking_number'])),
+    ).toStrictEqual(recusa('modoNaoSuportado'));
+  });
+});
+
+describe('escolherModoAutomatico — os horários, sem operador (R-g)', () => {
+  it('mutante 21: ZERO horários ⇒ corpo SEM a chave pickupTimeId (lista null, lista vazia, ou não pedida)', () => {
+    for (const p of [
+      soColeta([endereco(5, [COLETA], null)]),
+      soColeta([endereco(5, [COLETA], [])]),
+      soColeta(
+        [endereco(5, [COLETA], [horario('h1'), horario('h2', [RECOMENDADO])])],
+        ['address_id'],
+      ),
+    ]) {
+      const modo = escolherModoAutomatico(p);
+      expect(modo).toStrictEqual(corpoColeta(5));
+      if (modo.tipo !== 'corpo' || modo.corpo.modo !== 'pickup') throw new Error('esperava pickup');
+      expect('pickupTimeId' in modo.corpo.pickup).toBe(false);
+    }
+  });
+
+  it('UM horário ⇒ ele, recomendado ou não', () => {
+    expect(
+      escolherModoAutomatico(soColeta([endereco(5, [COLETA], [horario('h1')])])),
+    ).toStrictEqual(corpoColeta(5, 'h1'));
+  });
+
+  it('mutante 18: vários horários e UM recomendado ⇒ o recomendado, onde quer que esteja', () => {
+    const p = soColeta([
+      endereco(5, [COLETA], [horario('h1'), horario('h2', [RECOMENDADO]), horario('h3')]),
+    ]);
+    expect(escolherModoAutomatico(p)).toStrictEqual(corpoColeta(5, 'h2'));
+  });
+
+  it('mutante 19: vários horários e NENHUM recomendado ⇒ pergunta, nunca o primeiro', () => {
+    const p = soColeta([endereco(5, [COLETA], [horario('h1'), horario('h2')])]);
+    expect(escolherModoAutomatico(p)).toMatchObject({
+      tipo: 'pergunta',
+      escolhaInvalida: false,
+    });
+  });
+
+  it('mutante 20: DOIS recomendados ⇒ pergunta, nunca o primeiro', () => {
+    const p = soColeta([
+      endereco(5, [COLETA], [horario('h1', [RECOMENDADO]), horario('h2', [RECOMENDADO])]),
+    ]);
+    expect(escolherModoAutomatico(p)).toMatchObject({
+      tipo: 'pergunta',
+      escolhaInvalida: false,
+    });
+  });
+
+  it.each([' recommended', 'recommended_x', 'not_recommended'])(
+    'near-miss: a flag %j só CONTÉM recommended ⇒ não recomenda (pergunta)',
+    (flag) => {
+      expect(flag).toContain(RECOMENDADO); // the substring is really there
+      const p = soColeta([endereco(5, [COLETA], [horario('h1'), horario('h2', [flag])])]);
+      expect(escolherModoAutomatico(p)).toMatchObject({ tipo: 'pergunta' });
+    },
+  );
+
+  it('o principal com vários horários ⇒ o recomendado DELE; o recomendado de um irmão não conta', () => {
+    const irmao = endereco(5, [COLETA], [horario('a1', [RECOMENDADO]), horario('a2')]);
+    expect(
+      escolherModoAutomatico(
+        soColeta([
+          irmao,
+          endereco(6, [COLETA, PADRAO], [horario('b1'), horario('b2', [RECOMENDADO])]),
+        ]),
+      ),
+    ).toStrictEqual(corpoColeta(6, 'b2'));
+    expect(
+      escolherModoAutomatico(
+        soColeta([irmao, endereco(6, [COLETA, PADRAO], [horario('b1'), horario('b2')])]),
+      ),
+    ).toMatchObject({ tipo: 'pergunta', escolhaInvalida: false });
+  });
+});
+
+describe('escolherModoAutomatico — pickup × dropoff, sem operador (R-g)', () => {
+  it('mutante 22: os dois construíveis e o pickup DECIDIDO ⇒ o PICKUP (o operador sem resposta é perguntado)', () => {
+    for (const postagem of [
+      { itens: [], agencias: null },
+      { itens: ['branch_id'], agencias: [agenciaAuto(31)] },
+    ]) {
+      const p = parametro({
+        info_needed: { pickup: ['address_id', 'pickup_time_id'], dropoff: postagem.itens },
+        pickup: { address_list: [endereco(5, [COLETA], [horario('h1')])] },
+        dropoff: { branch_list: postagem.agencias },
+      });
+      expect(escolherModoAutomatico(p)).toStrictEqual(corpoColeta(5, 'h1'));
+      expect(escolherModoDeEnvio(p, null)).toMatchObject({
+        tipo: 'pergunta',
+        permiteDropoff: true,
+      });
+    }
+  });
+
+  it('mutante 23: o pickup OFERECIDO mas indeciso + um dropoff construível ⇒ pergunta, nunca o dropoff em silêncio', () => {
+    for (const enderecos of [
+      [endereco(5, [COLETA]), endereco(6, [COLETA])], // no principal
+      [endereco(5, [COLETA], [horario('h1'), horario('h2')])], // no recommended slot
+    ]) {
+      const p = parametro({
+        info_needed: { pickup: ['address_id', 'pickup_time_id'], dropoff: [] },
+        pickup: { address_list: enderecos },
+      });
+      const modo = escolherModoAutomatico(p);
+      expect(modo).toMatchObject({
+        tipo: 'pergunta',
+        permiteDropoff: true,
+        escolhaInvalida: false,
+      });
+      if (modo.tipo !== 'pergunta') throw new Error('esperava pergunta');
+      expect(modo.enderecos.map((e) => e.id)).toStrictEqual(
+        enderecos.map((e) => String(e.address_id)),
+      );
+    }
+  });
+
+  it('o pickup indeciso + um dropoff que não se constrói ⇒ pergunta SEM dropoff', () => {
+    const p = parametro({
+      info_needed: { pickup: ['address_id'], dropoff: ['branch_id'] },
+      pickup: { address_list: [endereco(5, [COLETA]), endereco(6, [COLETA])] },
+      dropoff: { branch_list: [agenciaAuto(31), agenciaAuto(32)] },
+    });
+    expect(escolherModoAutomatico(p)).toMatchObject({
+      tipo: 'pergunta',
+      permiteDropoff: false,
+      escolhaInvalida: false,
+    });
+  });
+
+  it.each([
+    ['sem a chave pickup', { info_needed: { dropoff: [] } }],
+    [
+      'um pickup que não se constrói (tracking_number)',
+      {
+        info_needed: { pickup: ['address_id', 'tracking_number'], dropoff: [] },
+        pickup: { address_list: [endereco(5, [COLETA])] },
+      },
+    ],
+    [
+      'um pickup sem endereço de coleta',
+      {
+        info_needed: { pickup: ['address_id'], dropoff: [] },
+        pickup: { address_list: [endereco(5, [PADRAO])] },
+      },
+    ],
+  ])('%s + dropoff [] ⇒ o DROPOFF, com "dropoff": {}', (_nome, raw) => {
+    expect(escolherModoAutomatico(parametro(raw))).toStrictEqual(CORPO_POSTAGEM_VAZIA);
+  });
+
+  it('dropoff com UMA agência e nenhum pickup ⇒ ela', () => {
+    const p = parametro({
+      info_needed: { dropoff: ['branch_id'] },
+      dropoff: { branch_list: [agenciaAuto(31)] },
+    });
+    expect(escolherModoAutomatico(p)).toStrictEqual({
+      tipo: 'corpo',
+      corpo: { modo: 'dropoff', dropoff: { branchId: 31 } },
+    });
+  });
+
+  it.each([
+    ['só non_integrated', { info_needed: { non_integrated: [] } }, 'semEtiquetaShopee'],
+    ['info_needed vazio', { info_needed: {} }, 'modoNaoSuportado'],
+    [
+      'várias agências sozinhas',
+      {
+        info_needed: { dropoff: ['branch_id'] },
+        dropoff: { branch_list: [agenciaAuto(31), agenciaAuto(32)] },
+      },
+      'agenciaPrecisaEscolha',
+    ],
+    [
+      'um pickup que não se constrói + várias agências',
+      {
+        info_needed: { pickup: ['address_id', 'tracking_number'], dropoff: ['branch_id'] },
+        pickup: { address_list: [endereco(5, [COLETA])] },
+        dropoff: { branch_list: [agenciaAuto(31), agenciaAuto(32)] },
+      },
+      'agenciaPrecisaEscolha',
+    ],
+    [
+      'um dropoff pedindo sender_real_name',
+      { info_needed: { dropoff: ['sender_real_name'] } },
+      'modoNaoSuportado',
+    ],
+    [
+      'um pickup sem endereço de coleta, sozinho',
+      { info_needed: { pickup: ['address_id'] }, pickup: { address_list: [] } },
+      'semEnderecoDeColeta',
+    ],
+  ] as const)(
+    'nada construível (%s) ⇒ a MESMA recusa do chooser do operador',
+    (_nome, raw, chave) => {
+      const p = parametro(raw);
+      expect(escolherModoAutomatico(p)).toStrictEqual(recusa(chave));
+      expect(escolherModoDeEnvio(p, null)).toStrictEqual(recusa(chave));
+    },
+  );
+});
+
+describe('escolherModoAutomatico — REFINA a resposta do operador sem escolha', () => {
+  it('onde o operador decide ou recusa, o mesmo; onde pergunta, decide ou faz a MESMA pergunta — e todo corpo passa no assert do pacote (RT3)', () => {
+    const itensColeta = [
+      ['address_id', 'pickup_time_id'],
+      ['address_id'],
+      ['address_id', 'tracking_number'],
+      null,
+    ] as const;
+    const itensPostagem = [[], ['branch_id'], ['sender_real_name'], null] as const;
+    const enderecosDoMundo = [
+      [],
+      [endereco(5, [COLETA], null)],
+      [endereco(5, [COLETA], [horario('h1')])],
+      [endereco(5, [COLETA], [horario('h1'), horario('h2', [RECOMENDADO])])],
+      [endereco(5, [COLETA], [horario('h1'), horario('h2')])],
+      [
+        endereco(5, [COLETA]),
+        endereco(6, [COLETA, PADRAO], [horario('h3', [RECOMENDADO]), horario('h4')]),
+      ],
+      [endereco(5, [COLETA]), endereco(6, [COLETA])],
+      [endereco(5, [COLETA, PADRAO]), endereco(6, [COLETA, PADRAO])],
+    ];
+    const agenciasDoMundo = [[agenciaAuto(31)], [agenciaAuto(31), agenciaAuto(32)]];
+    const contagem = { igual: 0, mesmaPergunta: 0, decidiuOndePergunta: 0 };
+    for (const pickup of itensColeta) {
+      for (const dropoff of itensPostagem) {
+        for (const address_list of enderecosDoMundo) {
+          for (const branch_list of agenciasDoMundo) {
+            const p = parametro({
+              info_needed: { pickup, dropoff },
+              pickup: { address_list },
+              dropoff: { branch_list },
+            });
+            const operador = escolherModoDeEnvio(p, null);
+            const automatico = escolherModoAutomatico(p);
+            if (operador.tipo !== 'pergunta') {
+              expect(automatico).toStrictEqual(operador);
+              contagem.igual += 1;
+            } else if (automatico.tipo === 'pergunta') {
+              expect(automatico).toStrictEqual(operador);
+              contagem.mesmaPergunta += 1;
+            } else {
+              expect(automatico.tipo).toBe('corpo');
+              contagem.decidiuOndePergunta += 1;
+            }
+            if (automatico.tipo === 'corpo') {
+              // RT3: the package's own guard accepts every automatic body, with
+              // and without the package number.
+              const corpo = automatico.corpo;
+              expect(() =>
+                assertShipOrderParams({ orderSn: '260910KJBHUJDM', ...corpo }),
+              ).not.toThrow();
+              expect(() =>
+                assertShipOrderParams({
+                  orderSn: '260910KJBHUJDM',
+                  packageNumber: 'OFG000000000001',
+                  ...corpo,
+                }),
+              ).not.toThrow();
+            }
+          }
+        }
+      }
+    }
+    // The sweep really reached all three arms.
+    expect(contagem.igual).toBeGreaterThan(0);
+    expect(contagem.mesmaPergunta).toBeGreaterThan(0);
+    expect(contagem.decidiuOndePergunta).toBeGreaterThan(0);
+  });
+
+  it('pura: não muda a entrada e responde igual duas vezes', () => {
+    const p = soColeta([
+      endereco(5, [COLETA]),
+      endereco(6, [COLETA, PADRAO], [horario('h1'), horario('h2', [RECOMENDADO])]),
+    ]);
+    const antes = JSON.stringify(p);
+    const a = escolherModoAutomatico(p);
+    expect(a).toStrictEqual(corpoColeta(6, 'h2'));
+    expect(escolherModoAutomatico(p)).toStrictEqual(a);
     expect(JSON.stringify(p)).toBe(antes);
   });
 });

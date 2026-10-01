@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  assertShipOrderParams,
   SHOPEE_SURFACE,
   ShopeeConfigError,
   ShopeeHttpError,
@@ -15,7 +16,7 @@ import {
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { TENTAR_EM_SHOPEE_MS } from './constantesEtiqueta';
-import type { EscolhaDeEnvio } from './modoDeEnvio';
+import { ENVIO_AUTOMATICO, type EscolhaDeEnvio } from './modoDeEnvio';
 import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
 import { programarPacoteShopee, type AlvoDaProgramacao } from './programarPacote';
 
@@ -479,5 +480,183 @@ describe('programarPacoteShopee — a leitura do parâmetro', () => {
     const g = fakeClient({ ship: [estranho] });
     await expect(programarPacoteShopee(g.client, ALVO, null, AGORA)).rejects.toBe(estranho);
     expect(g.shipOrder).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ------------------------ ENVIO_AUTOMATICO (step 15b) ------------------------ */
+
+function enderecoComFlags(id: number, flags: string[], slots: unknown[] | null) {
+  return { ...endereco(id, slots), address_flag: flags };
+}
+
+/** One address, two slots, the SECOND recommended: the operator is asked, the automatic mode decides. */
+const HORARIO_RECOMENDADO = {
+  info_needed: { pickup: ['address_id', 'pickup_time_id'] },
+  pickup: {
+    address_list: [
+      endereco(2001, [horario('slot-1'), { ...horario('slot-2'), flags: ['recommended'] }]),
+    ],
+  },
+};
+
+/** Two addresses, the SECOND the seller's principal: the automatic mode ships it. */
+const DOIS_COM_PRINCIPAL = {
+  info_needed: { pickup: ['address_id', 'pickup_time_id'] },
+  pickup: {
+    address_list: [
+      endereco(2001, [horario('slot-1')]),
+      enderecoComFlags(2002, ['pickup_address', 'default_address'], [horario('slot-2')]),
+    ],
+  },
+};
+
+/** RT3: the package's own guard accepts the body the fake received. */
+function aceitoPeloPacote(shipOrder: ReturnType<typeof fakeClient>['shipOrder'], i = 0): void {
+  expect(() => assertShipOrderParams(corpoDoShip(shipOrder, i))).not.toThrow();
+}
+
+describe('programarPacoteShopee — ENVIO_AUTOMATICO (step 15b, R-g)', () => {
+  it('mutante 24: um recomendado entre DOIS horários — o operador sem resposta é PERGUNTADO, a sentinela envia o recomendado', async () => {
+    const operador = fakeClient({ parametro: HORARIO_RECOMENDADO });
+    const r = await programarPacoteShopee(operador.client, ALVO, null, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', escolhaInvalida: false });
+    expect(operador.shipOrder).not.toHaveBeenCalled();
+
+    const auto = fakeClient({ parametro: HORARIO_RECOMENDADO });
+    await expect(
+      programarPacoteShopee(auto.client, ALVO, ENVIO_AUTOMATICO, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'programado', semPacote: true });
+    expect(auto.getShippingParameter).toHaveBeenCalledWith({
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+    });
+    expect(auto.shipOrder).toHaveBeenCalledTimes(1);
+    expect(corpoDoShip(auto.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      modo: 'pickup',
+      pickup: { addressId: 2001, pickupTimeId: 'slot-2' },
+    });
+    aceitoPeloPacote(auto.shipOrder);
+  });
+
+  it('a sentinela não nomeia pacote: o filtro de escolha.pacote não a descarta, e o pedido dividido leva o número', async () => {
+    const f = fakeClient({ parametro: DOIS_COM_PRINCIPAL });
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, ENVIO_AUTOMATICO, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'programado', semPacote: false });
+    expect(corpoDoShip(f.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      modo: 'pickup',
+      pickup: { addressId: 2002, pickupTimeId: 'slot-2' },
+    });
+    aceitoPeloPacote(f.shipOrder);
+  });
+
+  it('sem horário nenhum ⇒ o ship não leva a chave pickupTimeId', async () => {
+    const f = fakeClient({
+      parametro: {
+        info_needed: { pickup: ['address_id', 'pickup_time_id'] },
+        pickup: { address_list: [endereco(2001, null)] },
+      },
+    });
+    await programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA);
+    const corpo = corpoDoShip(f.shipOrder);
+    expect(corpo).toStrictEqual({ orderSn: ORDER_SN, modo: 'pickup', pickup: { addressId: 2001 } });
+    if (corpo.modo !== 'pickup') throw new Error('esperava pickup');
+    expect('pickupTimeId' in corpo.pickup).toBe(false);
+    aceitoPeloPacote(f.shipOrder);
+  });
+
+  it('pickup decidido + dropoff construível ⇒ o ship é o PICKUP', async () => {
+    const f = fakeClient({
+      parametro: { ...UM_ENDERECO, info_needed: { ...UM_ENDERECO.info_needed, dropoff: [] } },
+    });
+    await programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA);
+    expect(corpoDoShip(f.shipOrder)).toStrictEqual({
+      orderSn: ORDER_SN,
+      modo: 'pickup',
+      pickup: { addressId: 2001, pickupTimeId: 'slot-1' },
+    });
+  });
+
+  it('indecisa (dois endereços, nenhum principal) ⇒ pergunta com escolhaInvalida false, ZERO ship', async () => {
+    const f = fakeClient({ parametro: DOIS_ENDERECOS });
+    const r = await programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA);
+    expect(r).toMatchObject({ tipo: 'pergunta', permiteDropoff: false, escolhaInvalida: false });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('nada construível ⇒ a recusa, ZERO ship', async () => {
+    const f = fakeClient({
+      parametro: {
+        info_needed: { dropoff: ['branch_id'] },
+        dropoff: { branch_list: [{ branch_id: 31 }, { branch_id: 32 }] },
+      },
+    });
+    await expect(
+      programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA),
+    ).resolves.toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha,
+    });
+    expect(f.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['logistics.ship_order_pickup_time_invalid', 'Invalid pickup time id.'],
+    [
+      'logistics.ship_order_need_address_pickup_time',
+      'Parameter address_id and pickup_time_id are required.',
+    ],
+  ])(
+    'mutante 25: %s sob a sentinela ⇒ aguardar programando, UM ship e UMA leitura — nunca a pergunta, nunca o 2º ship',
+    async (code, frase) => {
+      // The operator chooser would RE-ASK here (two addresses), so a sentinel
+      // that fell through to the operator path answers `pergunta`, not `aguardar`.
+      const f = fakeClient({ parametro: DOIS_COM_PRINCIPAL, ship: [envelope(code, frase)] });
+      await expect(
+        programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA),
+      ).resolves.toStrictEqual({
+        tipo: 'aguardar',
+        fase: 'programando',
+        tentarEmMs: TENTAR_EM_SHOPEE_MS,
+      });
+      expect(f.shipOrder).toHaveBeenCalledTimes(1);
+      expect(f.getShippingParameter).toHaveBeenCalledTimes(1);
+
+      // Near-miss: the operator's answer for the same address meets the same
+      // refusal ⇒ re-asked, marked stale — still ONE ship.
+      const g = fakeClient({ parametro: DOIS_COM_PRINCIPAL, ship: [envelope(code, frase)] });
+      const escolha: EscolhaDeEnvio = {
+        pacote: PACOTE,
+        modo: 'pickup',
+        enderecoId: '2002',
+        horarioId: 'slot-2',
+      };
+      const r = await programarPacoteShopee(g.client, ALVO, escolha, AGORA);
+      expect(r).toMatchObject({ tipo: 'pergunta', escolhaInvalida: true });
+      expect(g.shipOrder).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('a sentinela muda SÓ o reescolher: o reenvio documentado de R-l continua UM só', async () => {
+    const f = fakeClient({
+      ship: [envelope('logistics.ship_order_not_need_pacakge_number', null)],
+    });
+    await expect(
+      programarPacoteShopee(f.client, ALVO_DIVIDIDO, ENVIO_AUTOMATICO, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'programado', semPacote: true });
+    expect(f.shipOrder).toHaveBeenCalledTimes(2);
+    aceitoPeloPacote(f.shipOrder, 0);
+    aceitoPeloPacote(f.shipOrder, 1);
+  });
+
+  it('" logistics.package_already_shipped" sob a sentinela ⇒ ja-programado, UM ship', async () => {
+    const f = fakeClient({ ship: [envelope(' logistics.package_already_shipped', 'shipped')] });
+    await expect(
+      programarPacoteShopee(f.client, ALVO, ENVIO_AUTOMATICO, AGORA),
+    ).resolves.toStrictEqual({ tipo: 'ja-programado' });
+    expect(f.shipOrder).toHaveBeenCalledTimes(1);
   });
 });

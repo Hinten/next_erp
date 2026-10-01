@@ -10,6 +10,14 @@
  * a terminal answer. Every call re-derives from Shopee, which is what makes the
  * route resumable: re-clicking the button IS the resume path.
  *
+ * Since step 15b (#1744) this module is also the automatic arrange's
+ * eligibility, and ONE ladder serves the label route, the hook and the sweep
+ * (reconcile R-d): the two wire projections ({@link observacaoDaOrdemShopee},
+ * {@link observacaoDoPacoteShopee}), the announcement-1573 channel sets and
+ * {@link elegibilidadeDoArranjoAutomatico} / {@link decidirArranjoAutomatico}
+ * live here. A second copy of a projection — above all of the
+ * `invoice_pending` fold — is the "two copies" smell the root CLAUDE.md names.
+ *
  * ## The package phase ({@link fasePacote})
  *
  * The fulfilment token is read with step 7's rule — an EXACT lookup, both alias
@@ -19,14 +27,18 @@
  * (`ESTADO_FRETE_DE_TOKEN_SHOPEE`), so a token step 7 learns is a COMPILE error
  * here until this table decides its phase — the two readers cannot drift apart
  * by comment. Anything else, `LOGISTICS_PENDING_ARRANGE` (a return token)
- * included, is `desconhecido`, and nothing acts on it.
+ * included, is `desconhecido`, and nothing acts on it. The lookup alone is
+ * {@link faseDoTokenShopee}; {@link fasePacote} is it plus the refinements below.
  *
  * ⚠️ **The invoice is checked FIRST among the pre-arrange phases** — and only
- * there (review 1, R4-5). An invoice-pending package reads
- * `LOGISTICS_NOT_START`, so a table consulted before the invoice would answer
- * `nao-pronto` and the operator would never be told the NF-e is what blocks
- * (S21). But announcement 1521 returns the pending reason "only when the order
- * or package is in a shipment-ready status": on a package already ARRANGED
+ * there (review 1, R4-5). Whether an invoice-pending BR package reads
+ * `LOGISTICS_NOT_START` (step 15's assumption) or `LOGISTICS_READY` (FAQ 727's
+ * `package_status 2` + `invoice_pending` filter) is UNVERIFIED (register 227);
+ * the gate holds under both, because both are pre-arrange phases. Under
+ * NOT_START a table consulted before the invoice would answer `nao-pronto` and
+ * the operator would never be told the NF-e is what blocks (S21). But
+ * announcement 1521 returns the pending reason "only when the order or package
+ * is in a shipment-ready status": on a package already ARRANGED
  * (`REQUEST_CREATED`, `PICKUP_RETRY`, `READY` + arranged) or excluded from the
  * print by rule 2 (`janela-fechada`, `inelegivel`) a `pending` is stale, and
  * reading it would turn a printable — or an excluded — package into rule 4's
@@ -55,11 +67,28 @@
  *
  * Lucas ruled on 2026-09-30 (reconcile Appendix A): legacy parity, never ask.
  * There is no `pay_time` in the order observation and no question action.
+ * (Step 15b's 1-hour PRINT alert is an aviso, not a confirm: only its channel
+ * set, {@link CANAIS_ETIQUETA_COM_PRAZO}, lives here.)
+ *
+ * ## The automatic arrange (step 15b)
+ *
+ * Announcement 1573 obliges the seller's system to call `ship_order` on its own
+ * for the Entrega Turbo channels. Eligibility is the CHANNEL first, then
+ * {@link fasePacote} — so the invoice gate, S22, PICKUP_RETRY and the `"-"`
+ * zero-fill hold for the hook exactly as for the button. The order facts then
+ * go through {@link decidirProximaAcao} itself ({@link decidirArranjoAutomatico}),
+ * so FBS, CANCELLED, IN_CANCEL and `comPacote` are step 15's rules, not a copy.
  */
+import type { ShopeeOrderDetailRow, ShopeePackageDetailRow } from '@delfrance/integrations-shopee';
+
 import type { ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import { textoShopeeUtilizavel } from '../pedidos/orderMapping';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
-import { IMPRIMIR_SEM_RASTREIO, SHOPEE_SHIP_ORDER_PACOTE } from './constantesEtiqueta';
+import {
+  IMPRIMIR_SEM_RASTREIO,
+  RASTREIO_DO_PACOTE_VALE,
+  SHOPEE_SHIP_ORDER_PACOTE,
+} from './constantesEtiqueta';
 import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 
 /* -------------------------------- the types -------------------------------- */
@@ -145,6 +174,50 @@ export type AcaoEtiqueta =
   | { tipo: 'baixar'; pacotes: readonly string[]; tipoDocumento: string | null }
   | { tipo: 'por-pacote'; pacotes: readonly string[] };
 
+/* ------------------------------ the channel sets ---------------------------- */
+
+/**
+ * Announcement 1573: the channels whose `ship_order` must fire AUTOMATICALLY —
+ * Shopee cancels an order there that saw no dispatch attempt (step 15b).
+ *
+ * ⚠️ `logistics_channel_id`s, never `shipping_carrier`: Shopee renames
+ * carriers (announcement 1465) and appends a service code on these very
+ * channels. Hard-coded from 1573's own list — never derived from
+ * `service_type_identifier` or `order_type`, both UNVERIFIED for BR, and an
+ * "instant" class may hold channels 1573 does not oblige. 90026 stays IN (1573
+ * names it; inert until a Seller-Logistics SPI app exists); 90021 and 90025
+ * stay OUT. A TUPLE, not a set: the sweep hands it verbatim to the wire filter.
+ * A wire FACT, not a bound we chose — which is why it is not in
+ * `constantesEtiqueta.ts`; it lives beside its predicate.
+ */
+export const CANAIS_ARRANJO_AUTOMATICO = [90011, 90012, 90026] as const;
+
+/**
+ * Announcement 1573 item 2: the channels whose label must be printed within 1
+ * hour of the order — 90011 and 90012 ONLY; 1573's own words leave 90026 out.
+ *
+ * ⚠️ Its own literal, never derived by dropping an element of
+ * {@link CANAIS_ARRANJO_AUTOMATICO} in code; a test pins it as a SUBSET.
+ */
+export const CANAIS_ETIQUETA_COM_PRAZO = [90011, 90012] as const;
+
+const CANAL_DE_ARRANJO_AUTOMATICO: ReadonlySet<number> = new Set<number>(CANAIS_ARRANJO_AUTOMATICO);
+const CANAL_DE_ETIQUETA_COM_PRAZO: ReadonlySet<number> = new Set<number>(CANAIS_ETIQUETA_COM_PRAZO);
+
+/**
+ * Whether the channel is one 1573 obliges to arrange automatically. An EXACT
+ * number match (`SameValueZero`): `null` — a row with no channel — is never
+ * one, and neither is a string spelling of an id.
+ */
+export function ehCanalDeArranjoAutomatico(canalId: number | null): boolean {
+  return canalId !== null && CANAL_DE_ARRANJO_AUTOMATICO.has(canalId);
+}
+
+/** Whether the channel carries 1573's 1-hour print obligation. `null` ⇒ `false`. */
+export function ehCanalDeEtiquetaComPrazo(canalId: number | null): boolean {
+  return canalId !== null && CANAL_DE_ETIQUETA_COM_PRAZO.has(canalId);
+}
+
 /* ----------------------------- the package phase ---------------------------- */
 
 type TokenLogistico = keyof typeof ESTADO_FRETE_DE_TOKEN_SHOPEE;
@@ -195,6 +268,23 @@ function temTermoPendente(termos: readonly string[]): boolean {
 }
 
 /**
+ * The TOKEN half of {@link fasePacote}: one fulfilment token → its phase by the
+ * exact {@link FASE_DO_TOKEN} lookup; unknown or `null` ⇒ `desconhecido`.
+ *
+ * ⚠️ `LOGISTICS_READY` answers `programar` HERE — the token alone cannot say
+ * whether the package is arranged, held or still to arrange. A reader that
+ * needs only "has the token moved past the arrange" (step 15b's aviso
+ * resolver) reads this; a reader that DECIDES an action reads
+ * {@link fasePacote}.
+ */
+export function faseDoTokenShopee(token: string | null): FasePacote {
+  // `Object.hasOwn`, so `'constructor'` and friends answer `desconhecido`.
+  return token === null || !Object.hasOwn(FASE_DO_TOKEN, token)
+    ? 'desconhecido'
+    : FASE_DO_TOKEN[token as TokenLogistico];
+}
+
+/**
  * ONE package's phase. The token first — READY refined by `arranjado`; then
  * the invoice, on the pre-arrange phases only; then, on a READY package nobody
  * arranged, its usable `pending_terms`.
@@ -204,16 +294,73 @@ function temTermoPendente(termos: readonly string[]): boolean {
  * arrange's 403 on it rather than a reprint (R2-5).
  */
 export function fasePacote(p: ObservacaoPacoteEtiqueta): FasePacote {
-  const token = p.fulfillment;
-  // `Object.hasOwn`, so `'constructor'` and friends answer `desconhecido`.
-  const doToken: FasePacote =
-    token === null || !Object.hasOwn(FASE_DO_TOKEN, token)
-      ? 'desconhecido'
-      : FASE_DO_TOKEN[token as TokenLogistico];
+  const doToken = faseDoTokenShopee(p.fulfillment);
   const fase: FasePacote = doToken === 'programar' && p.arranjado === true ? 'arranjado' : doToken;
   if (p.nfePendente && FASES_DO_PORTAO_DA_NFE.has(fase)) return 'nfe-pendente';
   if (fase !== 'programar') return fase;
   return temTermoPendente(p.termosPendentes) ? 'retido' : 'programar';
+}
+
+/* ------------------------------ the projections ----------------------------- */
+
+/** `invoice_pending.status` that holds the ship (FAQ 727), trimmed + lower-cased. */
+const NF_PENDENTE = 'pending';
+
+/** `fulfillment_flag` of an order Shopee fulfils itself, trimmed + lower-cased. */
+const FULFILLMENT_SHOPEE = 'fulfilled_by_shopee';
+
+/**
+ * A `get_order_detail` row → the ORDER observation: the ONE copy the label
+ * runner and step 15b's arrange both build (R-d).
+ *
+ * Package numbers go through step 7's string reader (a `"-"` or a blank is no
+ * package) and are deduped in Shopee's order. A `null` row — Shopee answered
+ * none for the `order_sn` — observes no status, no FBS and no package, which
+ * {@link decidirProximaAcao} refuses as `sem-pacotes`.
+ *
+ * ⚠️ Reads `order_status`, `fulfillment_flag` and `package_list` and nothing
+ * else — `SHOPEE_ETIQUETA_DETALHE_CAMPOS` asks for exactly those optional
+ * fields, and no order clock enters the observation (R-f).
+ */
+export function observacaoDaOrdemShopee(row: ShopeeOrderDetailRow | null): ObservacaoOrdemEtiqueta {
+  const numeros = (row?.package_list ?? [])
+    .map((p) => textoShopeeUtilizavel(p.package_number))
+    .filter((n): n is string => n !== null);
+  return {
+    status: row?.order_status ?? null,
+    fbs: row?.fulfillment_flag?.trim().toLowerCase() === FULFILLMENT_SHOPEE,
+    pacotes: [...new Set(numeros)],
+  };
+}
+
+/**
+ * One FRESH `get_package_detail` row → the package observation, carrying
+ * nothing learned in-call: no document type, document state `desconhecido`,
+ * not re-created. The label runner layers its in-call memory on top (an
+ * arrange it made stays arranged, a tracking number it read survives a re-read
+ * that shows none); step 15b's hook and sweep read it as is.
+ *
+ * ⚠️ `arranjado` is `is_shipment_arranged` VERBATIM, `null` included —
+ * {@link fasePacote} reads `null` as NOT arranged (S22). `pending_terms` keeps
+ * Shopee's zero-fill too; {@link fasePacote} drops it.
+ *
+ * ⚠️ The invoice fold lives HERE and only here: `invoice_pending.status`
+ * trimmed + lower-cased, EXACTLY `'pending'` — `valid`, a blank, an absent
+ * block or any other word does not hold the ship.
+ */
+export function observacaoDoPacoteShopee(row: ShopeePackageDetailRow): ObservacaoPacoteEtiqueta {
+  return {
+    numero: row.package_number.trim(),
+    canalId: row.logistics_channel_id,
+    fulfillment: row.fulfillment_status,
+    arranjado: row.is_shipment_arranged,
+    termosPendentes: row.pending_terms ?? [],
+    nfePendente: row.invoice_pending?.status?.trim().toLowerCase() === NF_PENDENTE,
+    rastreio: RASTREIO_DO_PACOTE_VALE ? textoShopeeUtilizavel(row.tracking_number) : null,
+    tipoDocumento: null,
+    documento: 'desconhecido',
+    recriadoNestaChamada: false,
+  };
 }
 
 /* ------------------------------ download groups ----------------------------- */
@@ -411,6 +558,79 @@ export function decidirProximaAcao(
     };
   }
   return { tipo: 'por-pacote', pacotes: numeros(arranjados) };
+}
+
+/* -------------------------- the automatic arrange --------------------------- */
+
+/**
+ * Whether step 15b's automatic arrange may act on one package: the hook's
+ * first rungs and the sweep's enqueue test, ONE answer (R-d).
+ */
+export type ElegibilidadeDoArranjo =
+  | { readonly tipo: 'candidato' }
+  | { readonly tipo: 'fora-do-canal' }
+  | { readonly tipo: 'fase'; readonly fase: Exclude<FasePacote, 'programar'> };
+
+/**
+ * The CHANNEL first, then {@link fasePacote} — the very function the label
+ * route decides with. `candidato` is exactly "on a 1573 channel AND
+ * `programar`"; any other phase is reported as is.
+ *
+ * ⚠️ The channel is checked FIRST: a package off 1573's channels is
+ * `fora-do-canal` whatever its phase. An invoice-pending Xpress package must
+ * never read as a Turbo package waiting for its NF-e — the hook raises an aviso
+ * on the second and must say nothing at all on the first.
+ */
+export function elegibilidadeDoArranjoAutomatico(
+  p: ObservacaoPacoteEtiqueta,
+): ElegibilidadeDoArranjo {
+  if (!ehCanalDeArranjoAutomatico(p.canalId)) return { tipo: 'fora-do-canal' };
+  const fase = fasePacote(p);
+  return fase === 'programar' ? { tipo: 'candidato' } : { tipo: 'fase', fase };
+}
+
+/**
+ * The automatic arrange's decision for ONE package of an order:
+ * {@link decidirProximaAcao} over that package alone (`corpo.pacote` = its
+ * number), mapped onto the three answers an arrange can act on. Rule 1 (FBS,
+ * CANCELLED, no package, a package the order does not list), rule 6 (IN_CANCEL
+ * refused BEFORE any shipping-parameter read, R-v) and the `comPacote` rule —
+ * from the ORDER's package count, never the row — are step 15's own.
+ *
+ * ⚠️ Every DOCUMENT-step action answers `status-desconhecido`. Reaching one
+ * means the package is already arranged, which the eligibility pre-gate rules
+ * out — unreachable from a `candidato`, so an answer this map cannot explain is
+ * refused rather than acted on. The switch is exhaustive: a new action stops
+ * compiling here until it decides.
+ */
+export function decidirArranjoAutomatico(
+  o: ObservacaoOrdemEtiqueta,
+  p: ObservacaoPacoteEtiqueta,
+):
+  | { readonly tipo: 'programar'; readonly comPacote: boolean }
+  | { readonly tipo: 'recusa'; readonly motivo: MotivoEtiquetaShopee }
+  | { readonly tipo: 'nfe-pendente' } {
+  const acao = decidirProximaAcao(o, [p], { pacote: p.numero });
+  switch (acao.tipo) {
+    case 'programar':
+      return { tipo: 'programar', comPacote: acao.comPacote };
+    case 'recusa':
+      return { tipo: 'recusa', motivo: acao.motivo };
+    case 'nfe-pendente':
+      return { tipo: 'nfe-pendente' };
+    case 'buscar-rastreio':
+    case 'ler-parametros-documento':
+    case 'ler-resultado':
+    case 'criar-documento':
+    case 'aguardar-documento':
+    case 'baixar':
+    case 'por-pacote':
+      return { tipo: 'recusa', motivo: MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido };
+    default: {
+      const nunca: never = acao;
+      return nunca;
+    }
+  }
 }
 
 /* -------------------------------- the progress ------------------------------- */

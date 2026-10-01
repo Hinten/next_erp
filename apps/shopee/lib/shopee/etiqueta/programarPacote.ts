@@ -3,7 +3,8 @@
  * `get_shipping_parameter` read → {@link escolherModoDeEnvio} → `ship_order`.
  *
  * The runner (`executarEtiqueta.ts`) calls it once per package it decided to
- * arrange; step 15b's Turbo auto-arrange will call it from the step-7 push arm.
+ * arrange, and step 15b's automatic arrange (`pedidos/arranjoAutomatico.ts`,
+ * reached from the step-7 push arm) calls it with {@link ENVIO_AUTOMATICO}.
  * So it is Next-free and Firestore-free — the client and the clock come in as
  * parameters, and every outcome is a VALUE ({@link ResultadoProgramacao}).
  *
@@ -59,6 +60,16 @@
  * must never arrange this one. Any other choice is `null`, and this package's
  * own question is asked.
  *
+ * ## No operator: {@link ENVIO_AUTOMATICO} (step 15b, R-g)
+ *
+ * The sentinel swaps the operator chooser for {@link escolherModoAutomatico},
+ * which decides from this read alone or asks. It names no package, so the
+ * filter above never applies to it. ⚠️ When Shopee refuses the slot or the
+ * address it chose (`reescolher-envio`), the answer is `aguardar` — never the
+ * re-asked question (nobody is there to answer it) and never a second ship
+ * in-call: the next run re-reads the parameter and takes Shopee's NEW
+ * recommended slot. The operator path is untouched.
+ *
  * ## An unknown refusal is observable
  *
  * `recusa-desconhecida` carries the operation and, when the classifier could
@@ -82,6 +93,8 @@ import {
 } from './errosEtiqueta';
 import type { FaseEtiqueta } from './faseEtiqueta';
 import {
+  ENVIO_AUTOMATICO,
+  escolherModoAutomatico,
   escolherModoDeEnvio,
   type CorpoDeEnvio,
   type EnderecoDeColeta,
@@ -230,6 +243,14 @@ async function enviarUmaVez(
 }
 
 /**
+ * Wait for the NEXT read: Shopee refused what this read offered, and
+ * re-shipping it in-call is exactly what this module never does.
+ */
+function aguardarNovaLeitura(): ResultadoProgramacao {
+  return { tipo: 'aguardar', fase: 'programando', tentarEmMs: TENTAR_EM_SHOPEE_MS };
+}
+
+/**
  * Shopee refused the chosen slot or address AFTER this read offered it: ask
  * again, marked stale. When this read leaves nothing to ask about — its one
  * option is the one just refused — the call waits instead: the next read may
@@ -247,7 +268,7 @@ function perguntarDeNovo(parametro: ShopeeShippingParameter): ResultadoProgramac
     };
   }
   if (agora.tipo === 'recusa') return recusa(agora.motivo);
-  return { tipo: 'aguardar', fase: 'programando', tentarEmMs: TENTAR_EM_SHOPEE_MS };
+  return aguardarNovaLeitura();
 }
 
 /**
@@ -256,13 +277,14 @@ function perguntarDeNovo(parametro: ShopeeShippingParameter): ResultadoProgramac
  * @param client the conta's shop client.
  * @param alvo the order, the package, whether the ship names the package, and
  *   whether this call already arranged the order without one.
- * @param escolha the operator's answer — honoured only for THIS package.
+ * @param escolha the operator's answer — honoured only for THIS package — or
+ *   {@link ENVIO_AUTOMATICO} when there is no operator at all.
  * @param nowMs the caller's clock, for the daily quota's reset only.
  */
 export async function programarPacoteShopee(
   client: ShopeeClient,
   alvo: AlvoDaProgramacao,
-  escolha: EscolhaDeEnvio | null,
+  escolha: EscolhaDeEnvio | typeof ENVIO_AUTOMATICO | null,
   nowMs: number,
 ): Promise<ResultadoProgramacao> {
   // ---- 1. this call's FRESH parameter read (the package is always named) ----
@@ -279,9 +301,15 @@ export async function programarPacoteShopee(
   }
 
   // ---- 2. the mode — a choice made for another package is no choice here ----
+  // The sentinel names no package: it skips that filter and decides alone.
+  const automatico = escolha === ENVIO_AUTOMATICO;
   const escolhaDoPacote =
-    escolha !== null && escolha.pacote === alvo.packageNumber ? escolha : null;
-  const modo = escolherModoDeEnvio(parametro, escolhaDoPacote);
+    escolha !== null && escolha !== ENVIO_AUTOMATICO && escolha.pacote === alvo.packageNumber
+      ? escolha
+      : null;
+  const modo = automatico
+    ? escolherModoAutomatico(parametro)
+    : escolherModoDeEnvio(parametro, escolhaDoPacote);
   if (modo.tipo === 'recusa') return recusa(modo.motivo);
   if (modo.tipo === 'pergunta') {
     return {
@@ -315,6 +343,10 @@ export async function programarPacoteShopee(
   if (envio.tipo === 'reenviar-sem-pacote' || envio.tipo === 'reenviar-com-pacote') {
     return recusa(MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram);
   }
-  if (envio.tipo === 'reescolher-envio') return perguntarDeNovo(parametro);
+  if (envio.tipo === 'reescolher-envio') {
+    // ⚠️ No operator to re-ask: wait for the next read and Shopee's new
+    // suggestion — never a second ship in this call.
+    return automatico ? aguardarNovaLeitura() : perguntarDeNovo(parametro);
+  }
   return envio;
 }

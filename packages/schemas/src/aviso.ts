@@ -92,6 +92,8 @@ export const TIPO_AVISO_LABELS = {
   anuncioComViolacao: 'Anúncio com violação',
   jobConcluidoComFalhas: 'Processamento concluído com falhas',
   estoqueAcimaDoDisponivel: 'Estoque enviado acima do disponível',
+  despachoAutomaticoPendente: 'Despacho automático pendente',
+  etiquetaComPrazo: 'Etiqueta com prazo de impressão',
 } as const;
 
 /**
@@ -121,7 +123,7 @@ export const TIPO_AVISO_LABELS = {
  *    channel that lets a promotion hold stock can produce it — and `canal`
  *    already carries which one did. A `shopee…` prefix here would force a second
  *    tipo, a second wording and a second resolver the first time another channel
- *    needed the same sentence. None of the existing nine fits:
+ *    needed the same sentence. None of the tipos before it fits:
  *    `anuncioComViolacao` means the channel took the listing down,
  *    `pedidoPrecisaDecisao` is per pedido, `jobConcluidoComFalhas` is per job.
  *  - **Machine resolver** (this docblock's own rule, above): **the next send of
@@ -170,6 +172,77 @@ export const TIPO_AVISO_LABELS = {
  *    `ESTADOS_FRETE_REMOVE_ESTOQUE` by either caller of the channel's
  *    frete transaction — the parcel moved, so the problem has ended
  *    (`frete-despachado`).
+ *
+ * ---
+ *
+ * **`despachoAutomaticoPendente`** (first producer: Shopee step 15b, #1744 —
+ * `apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`) — a package on a
+ * channel where the SELLER must arrange the shipment within minutes reached
+ * the automatic arrange, and the arrange did NOT happen for a reason a person
+ * must act on: the NF-e is not validated yet, or the automation cannot decide
+ * or complete the arrange by itself. Without a dispatch attempt the channel
+ * cancels the order.
+ *
+ *  - **Name is CHANNEL-NEUTRAL on purpose** (the `estoqueAcimaDoDisponivel`
+ *    rule above): the provider's own name for these channels has been renamed
+ *    once already, a `tipo` is persisted and not free to rename, and `canal`
+ *    already carries which channel raised it.
+ *  - **Machine resolvers** (this docblock's own rule, above), each reporting a
+ *    TRANSITION: the package arranged by anyone — our arrange, the operator's
+ *    checkout, the channel itself — seen by the producer or by the shipment
+ *    token either caller of the channel's frete transaction observes
+ *    (`arranjado`); the invoice cleared while the package was still waiting to
+ *    be arranged, class `nfe` only (`nfe-validada`); the shipment ended without
+ *    an arrange (`envio-encerrado`); the order cancelled (`pedido-cancelado`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade, janela:
+ *    classe })` with `entidade` = `<pedidoId>:<packageNumber>` — ONE row per
+ *    PACKAGE per CLASS. Per package because the arrange, its refusal and its
+ *    resolution are per package: a per-pedido row on a split order would be
+ *    closed by the first package while the second is still blocked. `janela`
+ *    is the CLASS (`nfe` | `manual`), not a time window: it is a finite pair
+ *    the resolver recomputes, so the windowed-key trap above does not apply —
+ *    and it is what makes the dangerous transition (the NF-e validated, then
+ *    OUR arrange refused) open a NEW, unread row instead of repeating one the
+ *    operator has already read. The inner `:` folds to `_`
+ *    ({@link chaveDeAviso}); a `pedidoId` is fixed-length, so the fold cannot
+ *    collide.
+ *  - **Severity by CLASS** (per call site, as {@link severidadeAvisoSchema}
+ *    allows): `nfe` ⇒ `atencao` — the routine state of a fresh order whose
+ *    NF-e is not emitted yet, and `critico` on every such order would teach the
+ *    team to ignore it; `manual` ⇒ `critico` — the automation could not arrange
+ *    and the channel cancels the order unless a person acts (the
+ *    `shopeePushSuspenso` reason: orders are lost otherwise).
+ *  - **`params` are exactly `pedido`** (the display number) **and `situacao`**
+ *    (a lowercase pt-BR fragment, remedy first, no trailing period — the
+ *    `nfeUploadRejeitado.erro` shape); `motivo` carries the producer's kebab
+ *    reason. ⚠️ No deadline param: a repeat REPLACES `params` wholesale, so a
+ *    deadline known only to the run that read the order would be erased by the
+ *    next repeat that did not read it.
+ *
+ * ---
+ *
+ * **`etiquetaComPrazo`** (first producer: Shopee step 15b, #1744 — the same
+ * module) — the shipment of a pedido on a channel with a PRINT deadline is
+ * arranged and not yet collected: the channel requires the label to be issued
+ * and printed within 1 hour of the order's creation (Shopee announcement 1573,
+ * channels 90011/90012 only — a subset of the auto-arrange channels).
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the reason above.
+ *  - **Machine resolvers**, each a TRANSITION: the shipment collected — the
+ *    frete transaction's confirmed estado at or past `postado`, never
+ *    `aguardandoPostagem` or `checkFinalizado` (`coletado`); the order
+ *    cancelled or the dispatch denied (`pedido-cancelado`). ⚠️ Nothing observes
+ *    a PRINT (the print agent answers 200 on a failed print), so the row closes
+ *    on the collection, and the wording tells the operator so.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: pedidoId })`
+ *    — ONE row per PEDIDO, no `janela`: one checkout prints every package of
+ *    the pedido.
+ *  - **Severity `atencao`**: the arrange already happened, so the
+ *    no-dispatch cancellation does not apply; missing the hour costs the rider's
+ *    wait and the channel's delivery window.
+ *  - **`params` are exactly `pedido`.** No deadline param, for the reason above:
+ *    the wording states the rule ("1 hora após a criação do pedido") instead of
+ *    an instant.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -183,6 +256,8 @@ export const tipoAvisoSchema = z
     'anuncioComViolacao',
     'jobConcluidoComFalhas',
     'estoqueAcimaDoDisponivel',
+    'despachoAutomaticoPendente',
+    'etiquetaComPrazo',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -199,6 +274,8 @@ export const TIPO_AVISO = {
   anuncioComViolacao: 'anuncioComViolacao',
   jobConcluidoComFalhas: 'jobConcluidoComFalhas',
   estoqueAcimaDoDisponivel: 'estoqueAcimaDoDisponivel',
+  despachoAutomaticoPendente: 'despachoAutomaticoPendente',
+  etiquetaComPrazo: 'etiquetaComPrazo',
 } as const satisfies Record<string, TipoAviso>;
 
 /* -------------------------------------------------------------------------- */
@@ -248,6 +325,12 @@ export const ROTAS_AVISO = {
   produto: {
     padrao: '/produtos/[id]',
     build: (produtoId: string) => `/produtos/${produtoId}`,
+  },
+  // ⚠️ The CHECKOUT, not `pedido`: the form's Frete tab is read-only for a marketplace
+  // pedido, while the checkout emits the NF-e, prints the DANFE and fetches the label.
+  despachoCheckout: {
+    padrao: '/despacho/checkout',
+    build: (pedidoId: string) => `/despacho/checkout?pedido=${encodeURIComponent(pedidoId)}`,
   },
   inicio: {
     padrao: '/inicio',

@@ -1,12 +1,14 @@
 /*
- * The vocabulary and its text table (#1523, step 15). Both `describe` blocks
- * below were CUT from `errosEtiqueta.test.ts` and pasted unedited when the
- * vocabulary moved to `motivosEtiqueta.ts` (review 1, R5-2).
+ * The vocabulary and its text table (#1523, step 15). The first two `describe`
+ * blocks below were CUT from `errosEtiqueta.test.ts` and pasted unedited when
+ * the vocabulary moved to `motivosEtiqueta.ts` (review 1, R5-2); the third is
+ * step 15b's (#1744), the fragment accessor the despacho aviso embeds.
  */
 import { describe, expect, it } from 'vitest';
 
 import {
   MOTIVO_ETIQUETA_SHOPEE,
+  fraseDoMotivoEtiqueta,
   mensagemDoMotivoEtiqueta,
   type MotivoEtiquetaShopee,
 } from './motivosEtiqueta';
@@ -123,5 +125,63 @@ describe('mensagemDoMotivoEtiqueta — a frase do operador', () => {
     expect(mensagemDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta)).toMatch(
       /endereço de coleta/,
     );
+  });
+});
+
+/** The first letter capitalized, re-derived here — the module's own helper is not imported. */
+function capitalizar(texto: string): string {
+  return `${texto.charAt(0).toLocaleUpperCase('pt-BR')}${texto.slice(1)}`;
+}
+
+/**
+ * A FRAGMENT: non-empty, no surrounding blank, opens on a letter that
+ * capitalizing CHANGES, and carries no closing period.
+ */
+function ehFragmento(texto: string): boolean {
+  if (texto.length === 0 || texto !== texto.trim()) return false;
+  if (texto.endsWith('.')) return false;
+  return texto.charAt(0) !== capitalizar(texto).charAt(0);
+}
+
+describe('fraseDoMotivoEtiqueta — o fragmento que o aviso de despacho embute (passo 15b)', () => {
+  it.each(TODOS)('%s: é um FRAGMENTO — começa minúsculo e não termina em ponto', (motivo) => {
+    expect(ehFragmento(fraseDoMotivoEtiqueta(motivo))).toBe(true);
+  });
+
+  it.each(TODOS)(
+    '%s: a frase do operador é EXATAMENTE o fragmento capitalizado + UM ponto',
+    (motivo) => {
+      const fragmento = fraseDoMotivoEtiqueta(motivo);
+      expect(mensagemDoMotivoEtiqueta(motivo)).toBe(`${capitalizar(fragmento)}.`);
+      // NEAR-MISSES: the fragment is neither the sentence itself nor the
+      // sentence minus its period — capitalizing it must CHANGE it.
+      expect(fragmento).not.toBe(mensagemDoMotivoEtiqueta(motivo));
+      expect(fragmento).not.toBe(capitalizar(fragmento));
+    },
+  );
+
+  it('o fragmento por valor é a frase congelada acima sem a maiúscula e sem o ponto', () => {
+    expect(fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha)).toBe(
+      'escolha a agência na Central do Vendedor e clique de novo — a Shopee oferece mais de uma agência para este envio',
+    );
+    expect(fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.semHorarioOuAgencia)).toBe(
+      'tente de novo mais tarde ou organize o envio na Central do Vendedor — a Shopee não encontrou horário de coleta ou agência de postagem disponível para este envio',
+    );
+  });
+
+  it('o próprio predicado de fragmento pega o que deve pegar (near-miss onde capitalizar não muda nada)', () => {
+    // The pair: plain and accented lowercase starts are fragments.
+    expect(ehFragmento('escolha a agência')).toBe(true);
+    expect(ehFragmento('é feito pela logística do vendedor')).toBe(true);
+    // Near-misses where capitalizing changes NOTHING — an already capitalized
+    // start, or no letter at all — so the equality above could not tell the
+    // fragment from the sentence.
+    expect(ehFragmento('Escolha a agência')).toBe(false);
+    expect(ehFragmento('É feito pela logística do vendedor')).toBe(false);
+    expect(ehFragmento('— a Shopee recusou')).toBe(false);
+    // …and the other two shapes a fragment must not take.
+    expect(ehFragmento('escolha a agência.')).toBe(false);
+    expect(ehFragmento(' escolha a agência')).toBe(false);
+    expect(ehFragmento('')).toBe(false);
   });
 });

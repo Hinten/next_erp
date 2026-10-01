@@ -1,14 +1,31 @@
-import { SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS } from '@delfrance/integrations-shopee';
+import {
+  SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS,
+  shopeeOrderDetailRowSchema,
+  shopeePackageDetailRowSchema,
+  type ShopeeOrderDetailRow,
+  type ShopeePackageDetailRow,
+} from '@delfrance/integrations-shopee';
 import { describe, expect, it } from 'vitest';
 
+import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import { SHOPEE_ETIQUETA_DETALHE_CAMPOS } from './constantesEtiqueta';
 import {
+  CANAIS_ARRANJO_AUTOMATICO,
+  CANAIS_ETIQUETA_COM_PRAZO,
+  decidirArranjoAutomatico,
   decidirProximaAcao,
+  ehCanalDeArranjoAutomatico,
+  ehCanalDeEtiquetaComPrazo,
+  elegibilidadeDoArranjoAutomatico,
+  faseDoTokenShopee,
   fasePacote,
   gruposDeDownload,
+  observacaoDaOrdemShopee,
+  observacaoDoPacoteShopee,
   progressoDe,
   type AcaoEtiqueta,
+  type ElegibilidadeDoArranjo,
   type FasePacote,
   type ObservacaoOrdemEtiqueta,
   type ObservacaoPacoteEtiqueta,
@@ -629,5 +646,631 @@ describe('SHOPEE_ETIQUETA_DETALHE_CAMPOS — o que a observação da ordem lê',
     ]) {
       expect(SHOPEE_ETIQUETA_DETALHE_CAMPOS as readonly string[]).not.toContain(proibido);
     }
+  });
+});
+
+/* ===================== step 15b — the automatic arrange ===================== */
+
+const ORDER_SN = '260910KJBHUJDM';
+const TURBO = 90011;
+
+/** A raw `get_package_detail` row through the REAL package schema (defaults applied). */
+function linhaDePacote(extra: Record<string, unknown> = {}): ShopeePackageDetailRow {
+  return shopeePackageDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    package_number: P1,
+    fulfillment_status: 'LOGISTICS_READY',
+    logistics_channel_id: TURBO,
+    is_shipment_arranged: false,
+    ...extra,
+  });
+}
+
+/** A raw `get_order_detail` row through the REAL package schema (defaults applied). */
+function linhaDeOrdem(extra: Record<string, unknown> = {}): ShopeeOrderDetailRow {
+  return shopeeOrderDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    order_status: 'READY_TO_SHIP',
+    package_list: [{ package_number: P1 }],
+    fulfillment_flag: 'fulfilled_by_local_seller',
+    ...extra,
+  });
+}
+
+/** A READY package on a 1573 channel that nobody arranged — the `candidato`. */
+function turbo(extra: Partial<ObservacaoPacoteEtiqueta> = {}): ObservacaoPacoteEtiqueta {
+  return pacote({ canalId: TURBO, ...extra });
+}
+
+/** Every token step 7 knows, plus tokens nobody knows (the `desconhecido` side). */
+const TOKENS: readonly string[] = [
+  ...Object.keys(ESTADO_FRETE_DE_TOKEN_SHOPEE),
+  'LOGISTICS_NOVO',
+  'LOGISTICS_PENDING_ARRANGE',
+  'logistics_ready',
+];
+
+describe('faseDoTokenShopee — a metade do TOKEN de fasePacote (15b)', () => {
+  it.each<[string, FasePacote]>([
+    ['LOGISTICS_NOT_START', 'nao-pronto'],
+    ['LOGISTICS_NOT_STARTED', 'nao-pronto'],
+    ['LOGISTICS_READY', 'programar'],
+    ['LOGISTICS_REQUEST_CREATED', 'arranjado'],
+    ['LOGISTICS_PICKUP_RETRY', 'arranjado'],
+    ['LOGISTICS_PICKUP_DONE', 'janela-fechada'],
+    ['LOGISTICS_DELIVERY_DONE', 'janela-fechada'],
+    ['LOGISTICS_DELIVERY_FAILED', 'janela-fechada'],
+    ['LOGISTICS_LOST', 'janela-fechada'],
+    ['LOGISTICS_INVALID', 'inelegivel'],
+    ['LOGISTICS_REQUEST_CANCELED', 'inelegivel'],
+    ['LOGISTICS_REQUEST_CANCELLED', 'inelegivel'],
+    ['LOGISTICS_PICKUP_FAILED', 'inelegivel'],
+    ['LOGISTICS_COD_REJECTED', 'inelegivel'],
+  ])('%s ⇒ %s', (token, esperado) => {
+    expect(faseDoTokenShopee(token)).toBe(esperado);
+  });
+
+  it('a tabela cobre TODO token do passo 7 — nenhum cai em desconhecido', () => {
+    for (const token of Object.keys(ESTADO_FRETE_DE_TOKEN_SHOPEE)) {
+      expect(faseDoTokenShopee(token), token).not.toBe('desconhecido');
+    }
+  });
+
+  it('lido EXATO: espaço, caixa, sufixo, protótipo, vazio e null ⇒ desconhecido', () => {
+    for (const token of [
+      ' LOGISTICS_READY',
+      'LOGISTICS_READY ',
+      'logistics_ready',
+      'LOGISTICS_REQUEST_CANCELLED_X',
+      'LOGISTICS_PENDING_ARRANGE',
+      'constructor',
+      'toString',
+      '__proto__',
+      '',
+    ]) {
+      expect(faseDoTokenShopee(token), token).toBe('desconhecido');
+    }
+    expect(faseDoTokenShopee(null)).toBe('desconhecido');
+  });
+
+  it('fasePacote é faseDoTokenShopee + os refinamentos: sem arranjo, NF-e nem termo, as duas concordam', () => {
+    for (const token of TOKENS) {
+      for (const arranjado of [false, null]) {
+        expect(fasePacote(pacote({ fulfillment: token, arranjado })), token).toBe(
+          faseDoTokenShopee(token),
+        );
+      }
+    }
+    expect(fasePacote(pacote({ fulfillment: null }))).toBe(faseDoTokenShopee(null));
+    // Near-miss: only fasePacote refines READY — the token half alone cannot know it is arranged.
+    expect(faseDoTokenShopee('LOGISTICS_READY')).toBe('programar');
+    expect(fasePacote(pacote({ arranjado: true }))).toBe('arranjado');
+  });
+});
+
+describe('os canais do anúncio 1573 (15b)', () => {
+  it('CANAIS_ARRANJO_AUTOMATICO é exatamente 90011, 90012 e 90026 — NÚMEROS (mutantes 1 e 2)', () => {
+    expect([...CANAIS_ARRANJO_AUTOMATICO]).toEqual([90011, 90012, 90026]);
+    for (const canal of CANAIS_ARRANJO_AUTOMATICO) expect(typeof canal).toBe('number');
+  });
+
+  it('CANAIS_ETIQUETA_COM_PRAZO é exatamente 90011 e 90012 — um SUBCONJUNTO do arranjo, sem o 90026 (mutante 5)', () => {
+    expect([...CANAIS_ETIQUETA_COM_PRAZO]).toEqual([90011, 90012]);
+    const arranjo: readonly number[] = CANAIS_ARRANJO_AUTOMATICO;
+    for (const canal of CANAIS_ETIQUETA_COM_PRAZO) {
+      expect(arranjo).toContain(canal);
+      expect(ehCanalDeArranjoAutomatico(canal)).toBe(true);
+    }
+    // Near-miss: 1573 names 90026 for the arrange and leaves it out of the print alert.
+    expect(ehCanalDeArranjoAutomatico(90026)).toBe(true);
+    expect(ehCanalDeEtiquetaComPrazo(90026)).toBe(false);
+  });
+
+  it.each([90011, 90012, 90026])('arranjo automático: %i ⇒ true', (canal) => {
+    expect(ehCanalDeArranjoAutomatico(canal)).toBe(true);
+  });
+
+  it.each([90021, 90025, 9001, 900110, 90013, 0, -90011, Number.NaN])(
+    'arranjo automático, near-miss: %d ⇒ false',
+    (canal) => {
+      expect(ehCanalDeArranjoAutomatico(canal)).toBe(false);
+    },
+  );
+
+  it.each([90011, 90012])('etiqueta com prazo: %i ⇒ true', (canal) => {
+    expect(ehCanalDeEtiquetaComPrazo(canal)).toBe(true);
+  });
+
+  it.each([90026, 90021, 90025, 9001, 0, Number.NaN])(
+    'etiqueta com prazo, near-miss: %d ⇒ false',
+    (canal) => {
+      expect(ehCanalDeEtiquetaComPrazo(canal)).toBe(false);
+    },
+  );
+
+  it('canal null nunca é um canal — nos dois predicados (mutante 4)', () => {
+    expect(ehCanalDeArranjoAutomatico(null)).toBe(false);
+    expect(ehCanalDeEtiquetaComPrazo(null)).toBe(false);
+  });
+
+  it("a GRAFIA em string de um id não casa — '90011' ≠ 90011 (mutante 3)", () => {
+    // The wire string is coerced by the schema BEFORE it reaches the predicate
+    // (see the round trip below); a string that reaches it raw is not a channel.
+    const comoTexto = '90011' as unknown as number;
+    expect(ehCanalDeArranjoAutomatico(comoTexto)).toBe(false);
+    expect(ehCanalDeEtiquetaComPrazo(comoTexto)).toBe(false);
+  });
+});
+
+describe('observacaoDoPacoteShopee — a linha FRESCA do get_package_detail (15b)', () => {
+  it('projeta cada campo da linha — e nada que só a chamada aprendeu', () => {
+    const linha = linhaDePacote({
+      package_number: ` ${P1} `,
+      logistics_channel_id: '90012',
+      is_shipment_arranged: true,
+      pending_terms: ['SYSTEM_PENDING'],
+      invoice_pending: { status: ' Pending ', pending_reason: null },
+      tracking_number: ` ${RASTREIO} `,
+    });
+    expect(observacaoDoPacoteShopee(linha)).toEqual({
+      numero: P1,
+      canalId: 90012,
+      fulfillment: 'LOGISTICS_READY',
+      arranjado: true,
+      termosPendentes: ['SYSTEM_PENDING'],
+      nfePendente: true,
+      rastreio: RASTREIO,
+      tipoDocumento: null,
+      documento: 'desconhecido',
+      recriadoNestaChamada: false,
+    });
+  });
+
+  it('a linha mínima: os defaults do schema viram uma observação neutra — arranjado null CONTINUA null', () => {
+    const linha = shopeePackageDetailRowSchema.parse({ order_sn: ORDER_SN, package_number: P2 });
+    expect(observacaoDoPacoteShopee(linha)).toEqual({
+      numero: P2,
+      canalId: null,
+      fulfillment: null,
+      arranjado: null,
+      termosPendentes: [],
+      nfePendente: false,
+      rastreio: null,
+      tipoDocumento: null,
+      documento: 'desconhecido',
+      recriadoNestaChamada: false,
+    });
+  });
+
+  it('a dobra da NF-e: só "pending" (aparado, sem caixa) segura — near-miss: valid, pendente, sufixos, vazio, ausente', () => {
+    // Pair: the spellings that must fold to "pending".
+    for (const status of ['pending', 'PENDING', ' Pending\t']) {
+      const linha = linhaDePacote({ invoice_pending: { status } });
+      expect(observacaoDoPacoteShopee(linha).nfePendente, status).toBe(true);
+    }
+    // Near-miss: everything else — a neighbour word included — must stay distinct.
+    for (const invoice_pending of [
+      { status: 'valid' },
+      { status: 'pendente' },
+      { status: 'pending_review' },
+      { status: 'not pending' },
+      { status: '' },
+      { status: null },
+      {},
+      null,
+    ]) {
+      const linha = linhaDePacote({ invoice_pending });
+      expect(observacaoDoPacoteShopee(linha).nfePendente, JSON.stringify(invoice_pending)).toBe(
+        false,
+      );
+    }
+  });
+
+  it('o rastreio passa pelo leitor do passo 7: "-", vazio e branco ⇒ null — near-miss: um número com hífen fica', () => {
+    for (const tracking_number of ['-', ' - ', '', '   ', null]) {
+      expect(observacaoDoPacoteShopee(linhaDePacote({ tracking_number })).rastreio).toBeNull();
+    }
+    expect(
+      observacaoDoPacoteShopee(linhaDePacote({ tracking_number: 'BR-000000000T' })).rastreio,
+    ).toBe('BR-000000000T');
+  });
+
+  it("R4-2: pending_terms ['-'] chega CRU e fasePacote o descarta — near-miss: um termo real retém", () => {
+    const zeroFill = observacaoDoPacoteShopee(linhaDePacote({ pending_terms: ['-'] }));
+    expect(zeroFill.termosPendentes).toEqual(['-']);
+    expect(fasePacote(zeroFill)).toBe('programar');
+    const real = observacaoDoPacoteShopee(linhaDePacote({ pending_terms: ['SYSTEM_PENDING'] }));
+    expect(fasePacote(real)).toBe('retido');
+  });
+});
+
+describe('observacaoDaOrdemShopee — a linha do get_order_detail (15b)', () => {
+  it('linha nula ⇒ nada observado — e a decisão recusa sem-pacotes', () => {
+    const o = observacaoDaOrdemShopee(null);
+    expect(o).toEqual({ status: null, fbs: false, pacotes: [] });
+    expect(decidirProximaAcao(o, [], { pacote: null })).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.semPacotes),
+    );
+  });
+
+  it('a dobra do FBS: fulfilled_by_shopee aparado e sem caixa — near-miss: o vendedor local, o cross-border, um sufixo', () => {
+    for (const fulfillment_flag of ['fulfilled_by_shopee', ' FULFILLED_BY_SHOPEE ']) {
+      expect(observacaoDaOrdemShopee(linhaDeOrdem({ fulfillment_flag })).fbs).toBe(true);
+    }
+    for (const fulfillment_flag of [
+      'fulfilled_by_local_seller',
+      'fulfilled_by_cb_seller',
+      'fulfilled_by_shopee_x',
+      'shopee',
+      '',
+      null,
+    ]) {
+      expect(
+        observacaoDaOrdemShopee(linhaDeOrdem({ fulfillment_flag })).fbs,
+        String(fulfillment_flag),
+      ).toBe(false);
+    }
+  });
+
+  it('pacotes pelo leitor do passo 7, sem repetição, na ordem da Shopee', () => {
+    const linha = linhaDeOrdem({
+      package_list: [
+        { package_number: P2 },
+        { package_number: '-' },
+        { package_number: null },
+        { package_number: ` ${P1} ` },
+        { package_number: P2 },
+        {},
+      ],
+    });
+    expect(observacaoDaOrdemShopee(linha).pacotes).toEqual([P2, P1]);
+    expect(observacaoDaOrdemShopee(linhaDeOrdem({ package_list: null })).pacotes).toEqual([]);
+  });
+
+  it('o status chega VERBATIM — IN_CANCEL e CANCELLED como a Shopee mandou', () => {
+    for (const order_status of ['IN_CANCEL', 'CANCELLED', 'READY_TO_SHIP']) {
+      expect(observacaoDaOrdemShopee(linhaDeOrdem({ order_status })).status).toBe(order_status);
+    }
+  });
+
+  it('o corpo do SG (fixture): READY_TO_SHIP, o vendedor local NÃO é FBS, e só três chaves — nenhum relógio (R-f)', () => {
+    const linha =
+      lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list.find(
+        (r) => r.order_sn === ORDER_SN,
+      ) ?? null;
+    expect(linha).not.toBeNull();
+    const o = observacaoDaOrdemShopee(linha);
+    expect(Object.keys(o).sort()).toEqual(['fbs', 'pacotes', 'status']);
+    expect(o.status).toBe('READY_TO_SHIP');
+    expect(o.fbs).toBe(false);
+    expect(o.pacotes).toEqual(
+      (linha?.package_list ?? []).map((p) => (p.package_number ?? '').trim()),
+    );
+    expect(o.pacotes).toHaveLength(1);
+  });
+});
+
+describe('elegibilidadeDoArranjoAutomatico — o CANAL primeiro, depois fasePacote (15b)', () => {
+  const candidato: ElegibilidadeDoArranjo = { tipo: 'candidato' };
+  const fora: ElegibilidadeDoArranjo = { tipo: 'fora-do-canal' };
+
+  it.each([90011, 90012, 90026])(
+    'um pacote pronto e não programado no canal %i é candidato',
+    (canalId) => {
+      expect(elegibilidadeDoArranjoAutomatico(pacote({ canalId }))).toEqual(candidato);
+    },
+  );
+
+  it.each([1, 90021, 90025, null])(
+    'canal %s ⇒ fora-do-canal, mesmo pronto para programar',
+    (canalId) => {
+      expect(elegibilidadeDoArranjoAutomatico(pacote({ canalId }))).toEqual(fora);
+    },
+  );
+
+  it('mutante 6: o canal vem ANTES da fase — fora do canal com NF-e pendente é fora-do-canal', () => {
+    expect(elegibilidadeDoArranjoAutomatico(pacote({ canalId: 1, nfePendente: true }))).toEqual(
+      fora,
+    );
+    expect(
+      elegibilidadeDoArranjoAutomatico(
+        pacote({ canalId: null, fulfillment: 'LOGISTICS_NOT_START', nfePendente: true }),
+      ),
+    ).toEqual(fora);
+    // Near-miss: the SAME row on a Turbo channel is the hook's nfe-pendente.
+    expect(elegibilidadeDoArranjoAutomatico(turbo({ nfePendente: true }))).toEqual({
+      tipo: 'fase',
+      fase: 'nfe-pendente',
+    });
+  });
+
+  it('fora do canal, QUALQUER fase é fora-do-canal — programado, desconhecido, coletado', () => {
+    for (const extra of [
+      { arranjado: true },
+      { fulfillment: 'LOGISTICS_NOVO' },
+      { fulfillment: 'LOGISTICS_PICKUP_DONE' },
+      { termosPendentes: ['SYSTEM_PENDING'] },
+    ]) {
+      expect(elegibilidadeDoArranjoAutomatico(pacote({ canalId: 1, ...extra }))).toEqual(fora);
+    }
+  });
+
+  it('S22 (mutante 7): is_shipment_arranged null ⇒ candidato; true ⇒ fase arranjado', () => {
+    expect(elegibilidadeDoArranjoAutomatico(turbo({ arranjado: null }))).toEqual(candidato);
+    expect(elegibilidadeDoArranjoAutomatico(turbo({ arranjado: true }))).toEqual({
+      tipo: 'fase',
+      fase: 'arranjado',
+    });
+  });
+
+  it('PICKUP_RETRY (mutante 8) é arranjado, nunca candidato — com arranjado false, null ou true', () => {
+    for (const arranjado of [false, null, true]) {
+      expect(
+        elegibilidadeDoArranjoAutomatico(
+          turbo({ fulfillment: 'LOGISTICS_PICKUP_RETRY', arranjado }),
+        ),
+      ).toEqual({ tipo: 'fase', fase: 'arranjado' });
+    }
+  });
+
+  it("R4-2 (mutante 9): pending_terms ['-'] ⇒ candidato; um termo real ⇒ fase retido", () => {
+    for (const termosPendentes of [['-'], [''], ['  ', '-']]) {
+      expect(elegibilidadeDoArranjoAutomatico(turbo({ termosPendentes }))).toEqual(candidato);
+    }
+    for (const termosPendentes of [['SYSTEM_PENDING'], ['-', 'KYC_PENDING']]) {
+      expect(elegibilidadeDoArranjoAutomatico(turbo({ termosPendentes }))).toEqual({
+        tipo: 'fase',
+        fase: 'retido',
+      });
+    }
+  });
+
+  it.each<[string, Partial<ObservacaoPacoteEtiqueta>, FasePacote]>([
+    ['NOT_START', { fulfillment: 'LOGISTICS_NOT_START' }, 'nao-pronto'],
+    ['REQUEST_CREATED', { fulfillment: 'LOGISTICS_REQUEST_CREATED' }, 'arranjado'],
+    ['PICKUP_DONE', { fulfillment: 'LOGISTICS_PICKUP_DONE' }, 'janela-fechada'],
+    ['INVALID', { fulfillment: 'LOGISTICS_INVALID' }, 'inelegivel'],
+    ['REQUEST_CANCELLED', { fulfillment: 'LOGISTICS_REQUEST_CANCELLED' }, 'inelegivel'],
+    ['um token desconhecido', { fulfillment: 'LOGISTICS_NOVO' }, 'desconhecido'],
+    ['sem token', { fulfillment: null }, 'desconhecido'],
+    ['NF-e pendente', { nfePendente: true }, 'nfe-pendente'],
+  ])('no canal Turbo, %s ⇒ fase %s', (_, extra, fase) => {
+    expect(elegibilidadeDoArranjoAutomatico(turbo(extra))).toEqual({ tipo: 'fase', fase });
+  });
+
+  it('é fasePacote, não uma cópia: candidato ⇔ programar em todo o produto token × arranjado × NF-e × termos', () => {
+    for (const fulfillment of TOKENS) {
+      for (const arranjado of [true, false, null]) {
+        for (const nfePendente of [true, false]) {
+          for (const termosPendentes of [[], ['-'], ['SYSTEM_PENDING']]) {
+            const p = turbo({ fulfillment, arranjado, nfePendente, termosPendentes });
+            const fase = fasePacote(p);
+            const esperado: ElegibilidadeDoArranjo =
+              fase === 'programar' ? candidato : { tipo: 'fase', fase };
+            expect(elegibilidadeDoArranjoAutomatico(p)).toEqual(esperado);
+            // …and the same package off-channel is never anything but fora-do-canal.
+            expect(elegibilidadeDoArranjoAutomatico({ ...p, canalId: 90021 })).toEqual(fora);
+          }
+        }
+      }
+    }
+  });
+
+  it('mutante 10: decide a linha FRESCA — uma linha já programada nunca é candidata', () => {
+    for (const extra of [
+      { is_shipment_arranged: true },
+      { fulfillment_status: 'LOGISTICS_REQUEST_CREATED' },
+      { fulfillment_status: 'LOGISTICS_PICKUP_RETRY', is_shipment_arranged: null },
+    ]) {
+      expect(
+        elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(linhaDePacote(extra))),
+      ).toEqual({ tipo: 'fase', fase: 'arranjado' });
+    }
+    // Near-miss: the same fresh row, not arranged, is the candidate.
+    expect(elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(linhaDePacote()))).toEqual(
+      candidato,
+    );
+  });
+
+  it('ida e volta: linha crua (canal em string) → schema → projeção → elegibilidade', () => {
+    const turboEmTexto = linhaDePacote({ logistics_channel_id: '90011' });
+    expect(elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(turboEmTexto))).toEqual(
+      candidato,
+    );
+    const xpressEmTexto = linhaDePacote({ logistics_channel_id: '90021' });
+    expect(elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(xpressEmTexto))).toEqual(fora);
+    const pendente = linhaDePacote({ invoice_pending: { status: 'pending' } });
+    expect(elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(pendente))).toEqual({
+      tipo: 'fase',
+      fase: 'nfe-pendente',
+    });
+  });
+});
+
+describe('decidirArranjoAutomatico — o ladder do passo 15 sobre UM pacote (15b)', () => {
+  it('pedido de UM pacote ⇒ programar SEM package_number', () => {
+    expect(decidirArranjoAutomatico(ordem(), turbo())).toEqual({
+      tipo: 'programar',
+      comPacote: false,
+    });
+  });
+
+  it('mutante 14: pedido de DOIS pacotes ⇒ programar COM package_number, para qualquer dos dois', () => {
+    const o = ordem({ pacotes: [P1, P2] });
+    expect(decidirArranjoAutomatico(o, turbo({ numero: P1 }))).toEqual({
+      tipo: 'programar',
+      comPacote: true,
+    });
+    expect(decidirArranjoAutomatico(o, turbo({ numero: P2 }))).toEqual({
+      tipo: 'programar',
+      comPacote: true,
+    });
+    // Near-miss: a package number repeated by the order is not a split.
+    expect(decidirArranjoAutomatico(ordem({ pacotes: [P1, P1] }), turbo())).toEqual({
+      tipo: 'programar',
+      comPacote: false,
+    });
+  });
+
+  it('mutante 12: IN_CANCEL ⇒ recusa pedido-em-cancelamento — near-miss: READY_TO_SHIP programa', () => {
+    expect(decidirArranjoAutomatico(ordem({ status: 'IN_CANCEL' }), turbo())).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoEmCancelamento),
+    );
+    expect(decidirArranjoAutomatico(ordem({ status: 'READY_TO_SHIP' }), turbo())).toMatchObject({
+      tipo: 'programar',
+    });
+  });
+
+  it('mutante 13: CANCELLED ⇒ pedido-cancelado; FBS ⇒ pedido-fbs (o FBS vence o CANCELLED)', () => {
+    expect(decidirArranjoAutomatico(ordem({ status: 'CANCELLED' }), turbo())).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoCancelado),
+    );
+    expect(decidirArranjoAutomatico(ordem({ fbs: true }), turbo())).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoFbs),
+    );
+    expect(decidirArranjoAutomatico(ordem({ fbs: true, status: 'CANCELLED' }), turbo())).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoFbs),
+    );
+  });
+
+  it('mutante 15 (a defesa): uma ordem que não lista o pacote ⇒ pacote-inexistente; ordem nula ⇒ sem-pacotes', () => {
+    // A row of ANOTHER order (matched by position, say) lists other packages.
+    expect(decidirArranjoAutomatico(ordem({ pacotes: [P2] }), turbo({ numero: P1 }))).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pacoteInexistente),
+    );
+    expect(decidirArranjoAutomatico(observacaoDaOrdemShopee(null), turbo())).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.semPacotes),
+    );
+  });
+
+  it.each<[string, Partial<ObservacaoPacoteEtiqueta>, unknown]>([
+    ['NF-e pendente', { nfePendente: true }, { tipo: 'nfe-pendente' }],
+    [
+      'retido',
+      { termosPendentes: ['SYSTEM_PENDING'] },
+      recusa(MOTIVO_ETIQUETA_SHOPEE.retidoPelaShopee),
+    ],
+    [
+      'não pronto',
+      { fulfillment: 'LOGISTICS_NOT_START' },
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pacoteNaoPronto),
+    ],
+    [
+      'coletado',
+      { fulfillment: 'LOGISTICS_PICKUP_DONE' },
+      recusa(MOTIVO_ETIQUETA_SHOPEE.janelaFechada),
+    ],
+    [
+      'inelegível',
+      { fulfillment: 'LOGISTICS_INVALID' },
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pacoteInelegivel),
+    ],
+    [
+      'token desconhecido',
+      { fulfillment: 'LOGISTICS_NOVO' },
+      recusa(MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido),
+    ],
+  ])('%s ⇒ a resposta do passo 15, tal qual', (_, extra, esperado) => {
+    expect(decidirArranjoAutomatico(ordem(), turbo(extra))).toEqual(esperado);
+  });
+
+  it.each<[AcaoEtiqueta['tipo'], Partial<ObservacaoPacoteEtiqueta>]>([
+    ['buscar-rastreio', { arranjado: true }],
+    ['ler-parametros-documento', { arranjado: true, rastreio: RASTREIO }],
+    ['ler-resultado', { arranjado: true, rastreio: RASTREIO, tipoDocumento: 'NORMAL_AIR_WAYBILL' }],
+    [
+      'criar-documento',
+      {
+        arranjado: true,
+        rastreio: RASTREIO,
+        tipoDocumento: 'NORMAL_AIR_WAYBILL',
+        documento: 'inexistente',
+      },
+    ],
+    [
+      'aguardar-documento',
+      {
+        arranjado: true,
+        rastreio: RASTREIO,
+        tipoDocumento: 'NORMAL_AIR_WAYBILL',
+        documento: 'processando',
+      },
+    ],
+    [
+      'baixar',
+      {
+        arranjado: true,
+        rastreio: RASTREIO,
+        tipoDocumento: 'NORMAL_AIR_WAYBILL',
+        documento: 'pronto',
+      },
+    ],
+  ])(
+    'um passo de DOCUMENTO (%s) ⇒ recusa status-desconhecido — nunca agir no que não sabe explicar',
+    (tipo, extra) => {
+      const p = turbo(extra);
+      // The arm IS reached: step 15 answers that document step for this package…
+      expect(decidirProximaAcao(ordem(), [p], { pacote: p.numero }).tipo).toBe(tipo);
+      // …and the arrange refuses it.
+      expect(decidirArranjoAutomatico(ordem(), p)).toEqual(
+        recusa(MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido),
+      );
+    },
+  );
+
+  it('um CANDIDATO nunca chega a um passo de documento: é decidirProximaAcao, mapeado sem perda', () => {
+    const candidatos = [
+      turbo(),
+      turbo({ arranjado: null }),
+      turbo({ termosPendentes: ['-'] }),
+      turbo({ numero: P2, canalId: 90026 }),
+    ];
+    const ordens = [
+      ordem(),
+      ordem({ pacotes: [P1, P2] }),
+      ordem({ pacotes: [P2] }),
+      ordem({ status: 'IN_CANCEL', pacotes: [P1, P2] }),
+      ordem({ status: 'CANCELLED' }),
+      ordem({ fbs: true }),
+      ordem({ pacotes: [] }),
+    ];
+    for (const p of candidatos) {
+      expect(elegibilidadeDoArranjoAutomatico(p)).toEqual({ tipo: 'candidato' });
+      for (const o of ordens) {
+        const acao = decidirProximaAcao(o, [p], { pacote: p.numero });
+        expect(['programar', 'recusa']).toContain(acao.tipo);
+        const decisao = decidirArranjoAutomatico(o, p);
+        if (acao.tipo === 'programar') {
+          expect(decisao).toEqual({ tipo: 'programar', comPacote: acao.comPacote });
+        } else {
+          expect(decisao).toEqual(acao);
+          expect(decisao).not.toEqual(recusa(MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido));
+        }
+      }
+    }
+  });
+
+  it('é pura e de dois parâmetros — nenhum relógio, nenhuma entrada mudada', () => {
+    expect(decidirArranjoAutomatico.length).toBe(2);
+    const o = Object.freeze(ordem({ pacotes: Object.freeze([P1, P2]) }));
+    const p = Object.freeze(turbo());
+    expect(decidirArranjoAutomatico(o, p)).toEqual(decidirArranjoAutomatico(o, p));
+  });
+
+  it('ida e volta com o corpo do SG: a ordem real + a linha do MESMO pacote num canal Turbo ⇒ programar sem package_number', () => {
+    const linhaSg =
+      lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list.find(
+        (r) => r.order_sn === ORDER_SN,
+      ) ?? null;
+    const o = observacaoDaOrdemShopee(linhaSg);
+    expect(o.pacotes).toHaveLength(1);
+    const numero = o.pacotes[0] ?? '';
+    const p = observacaoDoPacoteShopee(linhaDePacote({ package_number: numero }));
+    expect(elegibilidadeDoArranjoAutomatico(p)).toEqual({ tipo: 'candidato' });
+    expect(decidirArranjoAutomatico(o, p)).toEqual({ tipo: 'programar', comPacote: false });
+    // Near-miss: the same order once it has moved to IN_CANCEL refuses before any ship.
+    expect(decidirArranjoAutomatico({ ...o, status: 'IN_CANCEL' }, p)).toEqual(
+      recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoEmCancelamento),
+    );
   });
 });

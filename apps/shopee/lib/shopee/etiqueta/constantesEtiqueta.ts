@@ -17,7 +17,7 @@
  * constant, no confirm flag and no auto-arrange channel list here. The legacy
  * app never asked, Shopee only RECOMMENDS the wait, and a constant nothing reads
  * would be dead code under the unused-vars gate. The auto-arrange channel list
- * arrives with step 15b, beside its first reader.
+ * (step 15b) lives in `faseEtiqueta.ts`, beside its predicate.
  */
 
 /* ------------------------------- the budgets ------------------------------- */
