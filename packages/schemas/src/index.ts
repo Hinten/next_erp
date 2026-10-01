@@ -1324,6 +1324,7 @@ export {
   ROTAS_AVISO,
   chaveDeAviso,
   avisoNaoLido,
+  entradaDeLeitura,
   marcarTodosComoLidos,
   urlExternaSegura,
   rotaInternaSegura,

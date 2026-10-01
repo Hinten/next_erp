@@ -7,6 +7,7 @@ import {
   avisoSchema,
   avisosLeituraSchema,
   chaveDeAviso,
+  entradaDeLeitura,
   marcarTodosComoLidos,
   rotaInternaSegura,
   urlExternaSegura,
@@ -216,7 +217,10 @@ describe('avisoNaoLido', () => {
   });
 
   it('honours a per-item read WITHOUT touching the others', () => {
-    const leitura = avisosLeituraSchema.parse({ ultimaVisualizacaoUs: 0, lidos: ['a1'] });
+    const leitura = avisosLeituraSchema.parse({
+      ultimaVisualizacaoUs: 0,
+      lidos: [entradaDeLeitura('a1', AGORA_US)],
+    });
     expect(avisoNaoLido(umAviso(), 'a1', leitura, 'uid-1')).toBe(false);
     expect(avisoNaoLido(umAviso(), 'a2', leitura, 'uid-1')).toBe(true);
   });
@@ -225,6 +229,60 @@ describe('avisoNaoLido', () => {
     const leitura = avisosLeituraSchema.parse({ ultimaVisualizacaoUs: AGORA_US });
     expect(avisoNaoLido(umAviso({ criadoEm: AGORA_US }), 'a1', leitura, 'uid-1')).toBe(false);
     expect(avisoNaoLido(umAviso({ criadoEm: AGORA_US + 1 }), 'a2', leitura, 'uid-1')).toBe(true);
+  });
+
+  it('re-alerts a REOPENED aviso the operator had read individually', () => {
+    // `escreverAviso` reopens a resolved aviso under the SAME id and stamps a
+    // fresh `criadoEm`. The read named the version before that, so it no longer
+    // covers this one.
+    const leitura = avisosLeituraSchema.parse({
+      ultimaVisualizacaoUs: 0,
+      lidos: [entradaDeLeitura('a1', AGORA_US)],
+    });
+    expect(avisoNaoLido(umAviso({ criadoEm: AGORA_US + 10 }), 'a1', leitura, 'uid-1')).toBe(true);
+  });
+
+  it('keeps a REPEAT read: the same id at the same `criadoEm` stays read', () => {
+    // The near-miss of the reopen above. A repeat bumps `ocorrencias` and leaves
+    // `criadoEm` alone, and nagging the operator about it again is precisely what
+    // dedup exists to stop.
+    const leitura = avisosLeituraSchema.parse({
+      ultimaVisualizacaoUs: 0,
+      lidos: [entradaDeLeitura('a1', AGORA_US)],
+    });
+    expect(
+      avisoNaoLido(umAviso({ criadoEm: AGORA_US, ocorrencias: 7 }), 'a1', leitura, 'uid-1'),
+    ).toBe(false);
+  });
+
+  it('gives a bare id no credit — the "compatible" check is the bug', () => {
+    // `lidos.includes(avisoId)` is what kept a reopened aviso silenced. A bare id
+    // names no version, so it cannot say whether it covers the current one.
+    const leitura = avisosLeituraSchema.parse({ ultimaVisualizacaoUs: 0, lidos: ['a1'] });
+    expect(avisoNaoLido(umAviso(), 'a1', leitura, 'uid-1')).toBe(true);
+  });
+});
+
+describe('entradaDeLeitura', () => {
+  it('is deterministic: the same (id, criadoEm) is the same entry', () => {
+    expect(entradaDeLeitura('a1', AGORA_US)).toBe(entradaDeLeitura('a1', AGORA_US));
+  });
+
+  it('keeps one microsecond of `criadoEm` apart', () => {
+    expect(entradaDeLeitura('a1', AGORA_US)).not.toBe(entradaDeLeitura('a1', AGORA_US + 1));
+  });
+
+  it('never aliases two pairs, even for ids that contain `@` and digits', () => {
+    // `chaveDeAviso` does not fold `@`, so an id can carry one. The entry stays
+    // injective only because a number never stringifies with an `@` in it. The
+    // grid needs an id ENDING in a digit: without a separator `('x1', 2)` and
+    // `('x', 12)` both spell `x12`, which is what fails if the `@` is ever dropped
+    // or swapped for a digit.
+    const entradas = new Set<string>();
+    for (const id of ['x', 'x1', 'x@1']) {
+      for (const criadoEm of [1, 2, 12]) entradas.add(entradaDeLeitura(id, criadoEm));
+    }
+    expect(entradas.size).toBe(9);
   });
 });
 
@@ -249,12 +307,15 @@ describe('marcarTodosComoLidos', () => {
     expect(avisoNaoLido(umAviso({ criadoEm: AGORA_US + 1 }), 'novo', leitura, 'uid-1')).toBe(true);
   });
 
-  it('does not resurrect a stale id: a re-raised aviso under an old id reads as UNREAD', () => {
-    // The trap the clear exists to prevent. `chave` is stable, so the same
-    // document id comes back when an aviso is re-raised. If `lidos` still carried
-    // that id from before the watermark moved, a genuinely new occurrence would
-    // render as already-read.
-    const antes = avisosLeituraSchema.parse({ ultimaVisualizacaoUs: 0, lidos: ['recorrente'] });
+  it('does not resurrect a stale entry: the clear leaves only the watermark to answer', () => {
+    // `chave` is stable, so the same document id comes back when an aviso is
+    // re-raised. Once the watermark moves, the per-item entries it replaced must
+    // be gone, or the array grows forever and still answers for rows the
+    // watermark now owns.
+    const antes = avisosLeituraSchema.parse({
+      ultimaVisualizacaoUs: 0,
+      lidos: [entradaDeLeitura('recorrente', AGORA_US + 5)],
+    });
     expect(avisoNaoLido(umAviso({ criadoEm: AGORA_US + 5 }), 'recorrente', antes, 'uid-1')).toBe(
       false,
     );

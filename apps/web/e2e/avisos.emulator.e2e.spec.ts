@@ -5,7 +5,9 @@ import { e2eUserEmail } from './_helpers/run-id';
 import {
   cleanupAvisos,
   e2ePrefix,
+  escreverAvisoReal,
   resetAvisosLeitura,
+  resolverAvisoReal,
   seedAvisoUnico,
   seedAvisos,
 } from './_helpers/seed-data';
@@ -100,5 +102,35 @@ test.describe.serial('Avisos — a caixa de avisos do operador', () => {
     await page.goto('/inicio');
     await expect(page.getByText(`${prefix}-nova-loja`)).toBeVisible();
     await expect(page.locator('[data-testid="aviso-row"][data-nao-lido="true"]')).toHaveCount(1);
+  });
+
+  test('um aviso lido individualmente volta a contar como não lido quando REABRE, e não quando repete', async ({
+    page,
+  }) => {
+    // The writer reopens a resolved aviso under the SAME id with a fresh
+    // `criadoEm`, so the problem that came back re-alerts. A per-item read must
+    // cover only the version it saw, or the reopen stays silenced; and a repeat
+    // (same `criadoEm`) must NOT re-alert, or dedup is pointless. Both are driven
+    // through the real `escreverAviso` / `resolverAviso`.
+    const loja = `${prefix}-reaberta`;
+    const chave = await escreverAvisoReal(`${prefix}-conta-reaberta`, loja);
+    ids.push(chave);
+    const linha = () => page.locator('[data-testid="aviso-row"]').filter({ hasText: loja });
+
+    await page.goto('/inicio');
+    await expect(linha()).toHaveAttribute('data-nao-lido', 'true');
+    await linha().getByText('Marcar como lida').click();
+    await expect(linha()).toHaveAttribute('data-nao-lido', 'false');
+
+    // Repeat: same problem, another occurrence — stays read.
+    await escreverAvisoReal(`${prefix}-conta-reaberta`, loja);
+    await page.reload();
+    await expect(linha()).toHaveAttribute('data-nao-lido', 'false');
+
+    // Reopen: resolved, then raised again — unread for this operator again.
+    await resolverAvisoReal(chave);
+    await escreverAvisoReal(`${prefix}-conta-reaberta`, loja);
+    await page.reload();
+    await expect(linha()).toHaveAttribute('data-nao-lido', 'true');
   });
 });

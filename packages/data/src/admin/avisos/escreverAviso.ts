@@ -123,8 +123,10 @@ function camposInformados(plano: PlanoAviso): Record<string, unknown> {
  * `criadoEm` must stay put on a repeat (a recurring warning about the same
  * pending problem should not nag the operator again — that is what dedup is FOR,
  * and `ocorrencias` already records it) but must move on a REOPEN, because a
- * problem that went away and came back is genuinely new and has to clear the
- * read watermark.
+ * problem that went away and came back is genuinely new and has to read as
+ * unread to everyone — past the operator's watermark AND past any individual
+ * read, since each of those names the `criadoEm` it covered
+ * (`entradaDeLeitura` in `@delfrance/schemas`).
  *
  * So: `create` first (atomic, no read); on ALREADY_EXISTS, read and update under
  * a `lastUpdateTime` precondition — rule 7 tier 1, recomputing the patch from a
@@ -204,7 +206,8 @@ export async function escreverAviso(
       resolvidoEm: null,
       resolucaoMotivo: null,
       // A repeat keeps its original `criadoEm` so it does not re-alert; a reopen
-      // takes a new one so it clears the operator's read watermark.
+      // takes a new one so it re-alerts — it clears the read watermark and stops
+      // matching every individual read, which names the old `criadoEm`.
       ...(reaberto ? { criadoEm: deps.agoraUs } : {}),
     };
 
