@@ -87,9 +87,11 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   [TIPO_AVISO.anuncioComViolacao]: {
     titulo: 'Anúncio com violação',
+    // ⚠️ No deadline here. The deadline is the aviso's `prazo` FIELD, which the
+    // panel formats for every tipo; a `params.prazo` interpolated through `p()`
+    // would print the stored µs integer as if it were a date.
     corpo: (params) =>
-      `O anúncio ${p(params, 'anuncio')} está com violação (${p(params, 'violacao')}).` +
-      (params.prazo === undefined ? '' : ` Prazo para corrigir: ${p(params, 'prazo')}.`),
+      `O anúncio ${p(params, 'anuncio')} está com violação (${p(params, 'violacao')}).`,
   },
   [TIPO_AVISO.jobConcluidoComFalhas]: {
     titulo: 'Processamento concluído com falhas',
