@@ -6835,7 +6835,12 @@ describe('a busca de pacotes (passo 15b)', () => {
     expect(SHOPEE_ORDER_TYPE_FILTRO).toEqual({ todos: 0, regular: 1, instantaneo: 2 });
     expect(SHOPEE_PACKAGE_SORT).toEqual({ prazoDeEnvio: 1, criacao: 2, confirmacao: 3 });
 
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_PACOTES_BODY));
+    // ⚠️ UMA resposta `more: true`, depois rejeição — como no B7: respondida
+    // para sempre, um pacote que paginasse sozinho travaria o worker AQUI.
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(BUSCA_PACOTES_BODY))
+      .mockRejectedValue(new Error('uma SEGUNDA chamada: o pacote paginou sozinho'));
     const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
     const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock, getAccessToken));
     const pagina = await client.searchPackageList(BUSCA_DO_SWEEP);
@@ -7099,15 +7104,28 @@ describe('a busca de pacotes (passo 15b)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('B7 — mutante 98: UMA chamada por página, mesmo com `more: true` — o pacote nunca pagina sozinho, o cursor volta ao CHAMADOR; e na FONTE: guarda antes do token, um `shopeeCall`, nenhum laço, nenhuma tolerância', async () => {
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(BUSCA_PACOTES_BODY));
-    const pagina = await createShopeeClient(shopConfig(fetchMock)).searchPackageList(
-      BUSCA_DO_SWEEP,
-    );
+  it('B7 — mutante 98: UMA chamada por página, mesmo com `more: true` — o pacote nunca pagina sozinho, o cursor volta ao CHAMADOR; uma SEGUNDA chamada cai numa rejeição e a CONTAGEM a acusa', async () => {
+    // ⚠️ A página `more: true` responde UMA vez; toda chamada seguinte REJEITA.
+    // Com a mesma página respondida para sempre, um pacote que paginasse
+    // sozinho nunca voltaria: o worker morria e o vermelho lia como queda do
+    // pool, não como este teste. Assim o laço para na segunda chamada.
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(BUSCA_PACOTES_BODY))
+      .mockRejectedValue(new Error('uma SEGUNDA chamada: o pacote paginou sozinho'));
+    const chamada = createShopeeClient(shopConfig(fetchMock)).searchPackageList(BUSCA_DO_SWEEP);
+    // Assentada sem lançar: a contagem é afirmada ANTES de o resultado ser lido,
+    // então quem paginou falha AQUI, por asserção — rejeitando ou não.
+    const assentada = await erroDe(chamada);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(assentada).not.toBeInstanceOf(ShopeeNetworkError);
+    const pagina = await chamada;
+    expect(pagina.packages_list).toHaveLength(1);
     expect(pagina.pagination?.more).toBe(true);
     expect(pagina.pagination?.next_cursor).toBe('1767000000,987654');
+  });
 
+  it('B7b — mutante 98 na FONTE: guarda antes do token, um `shopeeCall`, nenhum laço, nenhuma tolerância — não chama nada, então corre mesmo se a chamada do B7 nunca voltar', () => {
     const bloco = blocoDoMetodo('searchPackageList: async');
     const guarda = bloco.indexOf('assertSearchPackageListParams(p)');
     expect(guarda).toBeGreaterThan(-1);

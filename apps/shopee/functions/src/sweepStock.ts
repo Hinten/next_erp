@@ -26,8 +26,11 @@ import { getDb } from './lib/admin';
  * | `sweepShopeeStockReconciliacao` | `10 3 1 * *` | reconciliação |
  *
  * ⚠️ **The minutes are chosen, not inherited, and TWO weekly overlaps are
- * accepted.** The seven schedules this codebase already runs draw on ONE
- * undocumented partner rate-limit budget. Five of them pin a minute —
+ * accepted.** The seven schedules this codebase ran when step 12 landed draw on
+ * ONE undocumented partner rate-limit budget (step 15b's `sweepShopeeAutoArrange`
+ * since added an eighth on `2,7,…,57` — every minute ≡ 2 mod 5 — which meets
+ * none of the fixed minutes below, this tick's included). Five of them pin a
+ * minute —
  * `sweepShopeeAuthorizationExpiry` `:00`, `sweepShopeeLostPushes` `:20`,
  * `monitorShopeePushConfig` `:45`, `sweepShopeeEscrowSettlement` `:10` (Mondays
  * 05:10) and `sweepShopeeStuckReservations` `:40` (Mondays 04:40) — while
@@ -84,8 +87,10 @@ import { getDb } from './lib/admin';
  *
  * Timeout 540: worst case per tick is N contas × (bounded discovery pages + up
  * to `maxTasksPerSweep()` sequential Cloud Tasks enqueues), which the gen2 60 s
- * `onSchedule` default cannot absorb. It matches the six other sweeps in this
- * codebase that do per-conta work.
+ * `onSchedule` default cannot absorb. It matches the six 540 s schedules in
+ * `index.ts`; the other two there differ on purpose — `monitorShopeePushConfig`
+ * (one Public GET, 120) and step 15b's per-conta `sweepShopeeAutoArrange` (240,
+ * below its own 300 s period).
  *
  * ⚠️ These functions ENQUEUE. Their runtime service account therefore needs
  * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on `sendShopeeStock`,

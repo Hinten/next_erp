@@ -68,7 +68,8 @@ export const processShopeeMassImport = onTaskDispatched(
     // either name breaks one of the two legs invisibly.
     ...tasksInvokerOptions(),
     secrets: ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'],
-    // ⚠️ 300, and NOT the 540 every `onSchedule` in this codebase carries — a
+    // ⚠️ 300, and NOT the 540 most `onSchedule`s in this codebase carry (the
+    // push-config monitor runs 120 and the auto-arrange sweep 240) — a
     // budget far above the work's real ceiling does not make a slow dispatch
     // succeed, it makes a HUNG one invisible for that much longer. The drain is
     // sized to it rather than the other way round: `ITENS_POR_DESPACHO` items

@@ -16,14 +16,23 @@
  * Every eligible package becomes ONE synthetic code-30 notification on the
  * existing `processShopeeNotification` queue (`notificacaoSinteticaDePacote`),
  * so the arrange stays in ONE place — the arm's hook, which re-reads the
- * package itself. The only Firestore operations here are the conta enumeration
- * and one pedido-existence READ per order; there is no write, no cursor
- * document and no multi-document atomic block anywhere (rule 7 tier 0: nothing
- * to race). ⚠️ That last API is deliberately not NAMED in this file, comments
- * included — the transaction-inventory guard greps raw text.
+ * package itself. The only Firestore operations here are READS: the conta
+ * enumeration, the conta's credential document (the dead-grant skip), one
+ * pedido-existence read per order and — on the absent-pedido path only — one
+ * read of that order's code-3 failure row. There is no write, no cursor
+ * document and no multi-document atomic block anywhere in this module (rule 7
+ * tier 0: nothing to race). ⚠️ That last API is deliberately not NAMED in this
+ * file, comments included — the transaction-inventory guard greps raw text.
+ * ⚠️ "Writes nothing" is this module's own code: a conta whose access token is
+ * due for renewal pays the token store's lease inside its first Shopee call
+ * (`core/tokenStore.ts`), as every shop-signed caller does.
  *
  * Every tick restarts at page 1, most urgent first (ShipByDate ascending): a
- * tail cut by a cap is simply re-read five minutes later.
+ * tail cut by a cap is re-read five minutes later. ⚠️ Unless the head never
+ * clears — a package the hook refuses stays READY and unarranged, so it sorts
+ * first and spends its share of the 100-enqueue cap on every tick; with 100 or
+ * more of them on one conta, a newer eligible package is never enqueued (R-m's
+ * residual, implausible at today's volume).
  *
  * ## The tick
  *
@@ -36,7 +45,17 @@
  *    `erroContidoPorConta`, so learning it by a catch would read as N contained
  *    conta failures).
  * 2. `listarContasShopeeAtivas`. A conta without `shop_id` is counted in
- *    `semShopId` and costs nothing.
+ *    `semShopId` and costs nothing. Before STARTING each other conta:
+ *    - the tick's own budget ({@link PRAZO_DO_TICK_ARRANJO_MS}, on the injected
+ *      ELAPSED clock): once spent, no further conta is started and the tick
+ *      reports `interrompidoPorPrazo`;
+ *    - the conta's credential document, read RAW: a refresh the token store
+ *      stamped TERMINAL (`falhaRefreshOf`, the store's own reader) means only a
+ *      re-consent can revive the grant, so the conta is counted in
+ *      `reconexaoPendente` and costs no Shopee call. Without it a dead grant
+ *      paid a lease, a refresh POST and a release on every tick — 288 a day —
+ *      until a human reconnected. A re-consent or a successful refresh clears
+ *      the stamp, and the next tick walks the conta again.
  * 3. Per conta, ONE `search_package_list` per page (≤
  *    {@link MAX_PAGINAS_ARRANJO_POR_CONTA}), terminating on `more` — never on a
  *    row count, never on the cursor (`next_cursor` is `""` when `more` is
@@ -49,7 +68,10 @@
  *    the set (`foraDoCanal` — Shopee ignored the server-side filter, register
  *    224's instrument). An unknown (`null`) channel is kept: the detail decides.
  * 5. ONE `get_package_detail` per ≤ 50 survivors, reconciled BY
- *    `package_number`, never by position; each fresh row through
+ *    `package_number`, never by position — and EXACTLY, the way the handler the
+ *    code 30 feeds finds its row (`rastrearPedido.ts`): a detail row that spells
+ *    the number differently (padded) leaves the package `ausentesNoDetalhe`,
+ *    never a task the arm would only park. Each fresh row goes through
  *    `elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(row))` — the
  *    hook's own first rungs, never a second copy of them (R-d). Only a
  *    `candidato` is enqueued: an invoice-pending package (whatever
@@ -57,9 +79,20 @@
  *    (ToProcess, but arranged) cost a count, never a task every five minutes.
  * 6. Per `candidato`, the pedido-existence read (`makePedidoIdShopee`):
  *    present ⇒ the code 30; absent ⇒ ONE code 3 per `order_sn`, so the step-5
- *    import creates the pedido and the next tick enqueues the package. ⚠️ A
- *    code 30 for an absent pedido would mint one DEFERRED failure row per
- *    package per tick, each re-driven daily. At most
+ *    import creates the pedido and the next tick enqueues the package. (A code
+ *    30 for an absent pedido would only defer one row per package and enqueue
+ *    the same code 3 one hop later.) ⚠️ That code 3 is stamped with the START
+ *    of the UTC day, never `nowMs`, so its doc id `3:<shop>:<order>:<day>` is
+ *    stable for the day — and before enqueuing it the sweep reads that ONE
+ *    `notificacoesShopee` document: present means today's import already
+ *    failed (failed, deferred or parked), and the order is skipped and counted
+ *    in `pedidosComFalhaHoje`. A deterministically failing import therefore
+ *    costs at most one attempt and one row per order per UTC day, where a
+ *    per-tick stamp minted a fresh parked row every five minutes (no TTL keeps
+ *    that collection) and re-paid `get_order_detail` each time. Flooring the
+ *    stamp is safe: the code-3 arm imports with the pipeline's own clock and
+ *    the order's `update_time` watermark, never the envelope stamp — and the
+ *    pedido is absent, so there is no watermark to compare. At most
  *    {@link MAX_ENFILEIRADOS_ARRANJO_POR_CONTA} enqueues per conta.
  *
  * ## Containment (per conta), with the rate limit FIRST
@@ -71,13 +104,26 @@
  * conta and the walk moves on; anything else — `ShopeeConfigError` above all,
  * our own misconfiguration — rethrows and fails the tick loudly.
  *
+ * ⚠️ A Cloud Tasks enqueue failure is NOT a gRPC-coded error, whatever
+ * `core/containment.ts` assumes: `TaskQueue.enqueue` is a REST client and
+ * throws `FirebaseFunctionsError` / `FirebaseAppError` with STRING codes, which
+ * the shared boundary does not recognise. So the transient ones are narrowed
+ * AT the enqueue ({@link CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO}) into a class
+ * of this module, and contained per conta like any outage. A permission, a
+ * missing queue or a bad argument is a broken deploy, and still rethrows.
+ *
  * ## Idempotence across ticks is Shopee's, not ours
  *
  * Two ticks, or a tick and a push, can hand the hook the same package. The only
  * guard between arrangers is Shopee's own state — the hook's fresh
  * `is_shipment_arranged` read and a duplicate ship absorbed as
- * `package_already_shipped` — exactly step 15's accepted residual. Two ticks of
- * this schedule never overlap (`timeoutSeconds: 240` < the 300 s cadence).
+ * `package_already_shipped` — exactly step 15's accepted residual. Ticks are
+ * BOUNDED, not exclusive: the Scheduler's attempt deadline is the function's
+ * `timeoutSeconds` (240 s) and it never retries, and this module stops
+ * starting contas once {@link PRAZO_DO_TICK_ARRANJO_MS} is spent. But a conta
+ * already started — or a Shopee call that hangs, bounded only by #1094 — can
+ * run past both, and Cloud Run does not promise to stop a handler at its
+ * request timeout, so a tick may still overlap the next one.
  *
  * ## Logs: ids and counts ONLY
  *
@@ -85,10 +131,17 @@
  * or the result — a test serialises every one of them. ⚠️ That is why a
  * contained `ShopeeApiError` is described by its class and Shopee `error` code
  * only: its message carries Shopee's own `message` VERBATIM, which may quote
- * the package it refused.
+ * the package it refused. An enqueue failure is described the same way, by
+ * class and code.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { pedidoCollection } from '@delfrance/data/admin/collections';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseFunctionsError } from 'firebase-admin/functions';
+import {
+  credenciaisIntegracaoCollection,
+  notificacaoShopeeCollection,
+  pedidoCollection,
+} from '@delfrance/data/admin/collections';
 import {
   SHOPEE_FULFILLMENT_TYPE_FILTRO,
   SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES,
@@ -105,6 +158,7 @@ import {
 import type { SweepLogger } from '../conta/expiracaoSweep';
 import { erroContidoPorConta } from '../core/containment';
 import { listarContasShopeeAtivas } from '../core/contas';
+import { falhaRefreshOf, SHOPEE_CREDENCIAL_DOC_ID } from '../core/credentialStore';
 import { loadShopeeContext } from '../core/shopee';
 import {
   arranjadoNaBusca,
@@ -114,6 +168,7 @@ import {
   observacaoDoPacoteShopee,
   type FasePacote,
 } from '../etiqueta/faseEtiqueta';
+import { docIdOf, type ShopeeNotificationPayload } from '../notificacoes/notificacao';
 import {
   notificacaoSinteticaDePacote,
   notificacaoSinteticaDePedido,
@@ -165,6 +220,16 @@ export const MAX_PAGINAS_ARRANJO_POR_CONTA = 5;
  */
 export const MAX_ENFILEIRADOS_ARRANJO_POR_CONTA = 100;
 
+/**
+ * The tick's own budget, on the ELAPSED clock: once this much has passed since
+ * the tick began, no further conta is STARTED (the one in flight finishes). 40 s
+ * below the function's `timeoutSeconds` (240), so the summary line still gets
+ * written and the contas left over are NAMED as such instead of dying with the
+ * instance. ⚠️ It bounds the start of a conta, never its end: a conta begun at
+ * 199 s, or a hung Shopee call (#1094), can still run into the platform's kill.
+ */
+export const PRAZO_DO_TICK_ARRANJO_MS = 200_000;
+
 export const MOTIVO_SWEEP_DESLIGADO = 'sweep-desligado';
 export const MOTIVO_ARRANJO_DESLIGADO = 'arranjo-desligado';
 export const MOTIVO_TASKS_DESABILITADO = 'tasks-desabilitado';
@@ -182,6 +247,39 @@ export const TRUNCAGEM_ARRANJO = {
 } as const;
 export type TruncagemArranjo = (typeof TRUNCAGEM_ARRANJO)[keyof typeof TRUNCAGEM_ARRANJO];
 
+/**
+ * The Cloud Tasks enqueue failures this sweep contains per conta — every one a
+ * TRANSIENT outcome of `TaskQueue.enqueue` in the PINNED `firebase-admin`
+ * (14.2.0). ⚠️ That SDK maps only nine Cloud Tasks statuses to a code of its
+ * own, so a 503 `UNAVAILABLE`, a 429 `RESOURCE_EXHAUSTED`, a deadline or a
+ * non-JSON body all arrive as `functions/unknown-error`; a socket failure is
+ * `FirebaseAppError` `app/network-error` / `app/network-timeout` (after the
+ * SDK's own retries). Everything else that class carries — `permission-denied`,
+ * `unauthenticated`, `not-found` (no queue in that region), `invalid-argument`,
+ * `failed-precondition`, `invalid-credential` — is a broken deploy, and it must
+ * fail the tick loudly rather than read as N contained conta outages (#778).
+ */
+const CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO: ReadonlySet<string> = new Set([
+  'functions/unknown-error',
+  'functions/internal-error',
+  'functions/aborted',
+  'app/network-error',
+  'app/network-timeout',
+]);
+
+/**
+ * A transient enqueue failure, narrowed AT the enqueue — so a Firebase error
+ * raised anywhere else is never contained by accident. Its message is the
+ * original class and code only: never the SDK's message, which may carry a
+ * response body.
+ */
+class EnfileiramentoTransitorioError extends Error {
+  constructor(classe: 'FirebaseFunctionsError' | 'FirebaseAppError', codigo: string) {
+    super(`${classe} ${codigo}`);
+    this.name = 'EnfileiramentoTransitorioError';
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  contract                                   */
 /* -------------------------------------------------------------------------- */
@@ -190,6 +288,14 @@ export interface ArranjoAutomaticoSweepDeps {
   readonly scheduler: ShopeeTaskScheduler;
   /** ONE clock read for the whole tick, MILLISECONDS — the synthetic stamp. */
   readonly nowMs: number;
+  /**
+   * The ELAPSED clock (ms) behind {@link PRAZO_DO_TICK_ARRANJO_MS} — read when
+   * the tick begins and before each conta is started. ⚠️ Never measured
+   * against {@link nowMs}: that is a STAMP and may be any injected instant, so
+   * `nowMs + budget` would trip on the first conta of a test (the
+   * `estoque/enviarEstoqueManual.ts` trap). Default `Date.now`.
+   */
+  readonly agoraMs?: () => number;
   readonly logger?: SweepLogger;
   /** Default: `loadShopeeContext(db, id).createShopClient()`. */
   readonly clientFor?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
@@ -200,7 +306,8 @@ export interface ArranjoAutomaticoSweepDeps {
  *
  *     linhas = ilegiveisNaBusca + duplicadas + jaArranjadosNaBusca + foraDoCanal
  *            + consultadosNoDetalhe + naoConsultadosPeloLimite
- *     consultadosNoDetalhe = ausentesNoDetalhe + foraDoCanalNoDetalhe + Σ fases
+ *     consultadosNoDetalhe = ausentesNoDetalhe + foraDoCanalNoDetalhe
+ *                          + canalDesconhecidoNoDetalhe + Σ fases
  *
  * `ilegiveisNoDetalhe` (the unreadable rows of the detail answer) is NOT in the
  * second sum: such a row names no package, so the package it hid is counted as
@@ -221,12 +328,18 @@ export interface ArranjoAutomaticoContaResult {
   /** A KNOWN channel off the set on a SEARCH row — register 224's instrument. */
   readonly foraDoCanal: number;
   readonly consultadosNoDetalhe: number;
-  /** Asked for, and no readable row came back. */
+  /** Asked for, and no readable row came back under EXACTLY that number. */
   readonly ausentesNoDetalhe: number;
   /** Detail rows that name no package: the `null` sentinel, or an unusable number / `order_sn`. */
   readonly ilegiveisNoDetalhe: number;
-  /** The FRESH row says the package is off 1573's channels. */
+  /** The FRESH row names a KNOWN channel off 1573's set — register 224's instrument too. */
   readonly foraDoCanalNoDetalhe: number;
+  /**
+   * The FRESH row's channel is `null` (absent or unreadable) — UNKNOWN, not off
+   * the set: never enqueued (the eligibility refuses it), and kept out of the
+   * register-224 warn, which it would otherwise fire on a schema drift.
+   */
+  readonly canalDesconhecidoNoDetalhe: number;
   /** Survivors left unread because the enqueue cap was reached. */
   readonly naoConsultadosPeloLimite: number;
   /** Every {@link FasePacote} key, zeros present. `programar` = the candidates. */
@@ -239,6 +352,11 @@ export interface ArranjoAutomaticoContaResult {
   readonly nfePendenteNaBusca: number;
   readonly enfileiradosPacote: number;
   readonly enfileiradosPedido: number;
+  /**
+   * Absent-pedido orders NOT re-enqueued: today's code-3 failure row already
+   * exists, so today's import already failed (step 6 of the header).
+   */
+  readonly pedidosComFalhaHoje: number;
   readonly truncada: boolean;
   readonly truncadaPor: TruncagemArranjo | null;
   /** `<class>: <detail>` of a contained failure (never Shopee's own text). */
@@ -258,8 +376,18 @@ export interface ArranjoAutomaticoSweepResult {
    * called, and NOT in {@link ArranjoAutomaticoSweepResult.contas}.
    */
   readonly semShopId: number;
+  /**
+   * Active contas whose stored refresh failed TERMINALLY — a dead grant only a
+   * re-consent revives. Counted, never called, and NOT in `contas`.
+   */
+  readonly reconexaoPendente: number;
   /** A rate limit aborted the tick; the contas after it were not walked. */
   readonly interrompidoPorLimite: 'burst' | 'daily' | null;
+  /**
+   * {@link PRAZO_DO_TICK_ARRANJO_MS} was spent: the contas after the last one
+   * started were not walked (the next tick starts again from the first).
+   */
+  readonly interrompidoPorPrazo: boolean;
   /** One entry per conta WALKED (a shop id, whatever the outcome), in order. */
   readonly contas: readonly ArranjoAutomaticoContaResult[];
 }
@@ -302,6 +430,14 @@ const FASES_ZERADAS = {
   desconhecido: 0,
 } as const satisfies Record<FasePacote, number>;
 
+/** One UTC day in milliseconds — epoch arithmetic, no zone involved. */
+const DIA_MS = 86_400_000;
+
+/** The START of the UTC day `nowMs` falls in — the absent-pedido code 3's stamp. */
+function inicioDoDiaUtcMs(nowMs: number): number {
+  return Math.floor(nowMs / DIA_MS) * DIA_MS;
+}
+
 /** A fresh detail row, with the `order_sn` the string reader accepted. */
 interface LinhaReconciliada {
   readonly linha: ShopeePackageDetailRow;
@@ -321,10 +457,12 @@ interface Contagem {
   ausentesNoDetalhe: number;
   ilegiveisNoDetalhe: number;
   foraDoCanalNoDetalhe: number;
+  canalDesconhecidoNoDetalhe: number;
   naoConsultadosPeloLimite: number;
   fases: Record<FasePacote, number>;
   enfileiradosPacote: number;
   enfileiradosPedido: number;
+  pedidosComFalhaHoje: number;
   truncadaPor: TruncagemArranjo | null;
 }
 
@@ -341,10 +479,12 @@ function contagemVazia(): Contagem {
     ausentesNoDetalhe: 0,
     ilegiveisNoDetalhe: 0,
     foraDoCanalNoDetalhe: 0,
+    canalDesconhecidoNoDetalhe: 0,
     naoConsultadosPeloLimite: 0,
     fases: { ...FASES_ZERADAS },
     enfileiradosPacote: 0,
     enfileiradosPedido: 0,
+    pedidosComFalhaHoje: 0,
     truncadaPor: null,
   };
 }
@@ -367,11 +507,13 @@ function resultadoDaConta(
     ausentesNoDetalhe: c.ausentesNoDetalhe,
     ilegiveisNoDetalhe: c.ilegiveisNoDetalhe,
     foraDoCanalNoDetalhe: c.foraDoCanalNoDetalhe,
+    canalDesconhecidoNoDetalhe: c.canalDesconhecidoNoDetalhe,
     naoConsultadosPeloLimite: c.naoConsultadosPeloLimite,
     fases: { ...c.fases },
     nfePendenteNaBusca: c.fases['nfe-pendente'],
     enfileiradosPacote: c.enfileiradosPacote,
     enfileiradosPedido: c.enfileiradosPedido,
+    pedidosComFalhaHoje: c.pedidosComFalhaHoje,
     truncada: c.truncadaPor !== null,
     truncadaPor: c.truncadaPor,
     error,
@@ -383,7 +525,8 @@ function resultadoDaConta(
  * `ShopeeApiError`'s message carries it verbatim (`shopeeErrorFromEnvelope`),
  * and a refusal may quote the package or order it refused. Its `error` code
  * is the classification and is enough. Every other contained class builds its
- * message from our own text (a path, a status, an integração id).
+ * message from our own text (a path, a status, an integração id, or — for an
+ * enqueue — a class and a code).
  */
 function descreverErro(err: Error): string {
   if (err instanceof ShopeeApiError) return `${err.name}: ${err.code}`;
@@ -409,6 +552,48 @@ async function clienteDaConta(
   if (deps.clientFor !== undefined) return deps.clientFor(db, integracaoId);
   const ctx = await loadShopeeContext(db, integracaoId);
   return ctx.createShopClient();
+}
+
+/**
+ * Whether the conta's stored refresh failed TERMINALLY (step 2 of the header).
+ *
+ * The SAME fixed `current` document the token store reads, through the same
+ * collection handle — read RAW rather than through the store's soft
+ * `parseRead`, which would warn every tick on a legacy partial document (the
+ * `core/contas.ts` reasoning: only one field is needed). The verdict is the
+ * store's own reader, `falhaRefreshOf`, never a second spelling of the stamp:
+ * a malformed stamp reads as NO failure, so the doubtful case is walked.
+ */
+async function aguardaReconexao(db: Firestore, integracaoId: string): Promise<boolean> {
+  const snap = await credenciaisIntegracaoCollection
+    .docRef(db, { integracaoId }, SHOPEE_CREDENCIAL_DOC_ID)
+    .get();
+  return snap.exists && falhaRefreshOf(snap.data() ?? {})?.terminal === true;
+}
+
+/**
+ * The ONE enqueue of this module. A transient Cloud Tasks failure becomes
+ * {@link EnfileiramentoTransitorioError}, which the per-conta boundary
+ * contains; every other failure — a deploy error included — is rethrown as is.
+ */
+async function enfileirar(
+  scheduler: ShopeeTaskScheduler,
+  payload: ShopeeNotificationPayload,
+): Promise<void> {
+  try {
+    await scheduler.enqueue(payload);
+  } catch (err) {
+    if (
+      err instanceof FirebaseFunctionsError &&
+      CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)
+    ) {
+      throw new EnfileiramentoTransitorioError('FirebaseFunctionsError', err.code);
+    }
+    if (err instanceof FirebaseAppError && CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)) {
+      throw new EnfileiramentoTransitorioError('FirebaseAppError', err.code);
+    }
+    throw err;
+  }
 }
 
 function emLotes<T>(itens: readonly T[], tamanho: number): T[][] {
@@ -529,7 +714,7 @@ async function varrerConta(
 
   /** Pedido existence per `order_sn` — two packages of one order cost ONE read. */
   const existePedido = new Map<string, boolean>();
-  /** Orders already given their ONE code 3 this tick. */
+  /** Orders already given their ONE code 3 this tick (or found failed today). */
   const pedidosEnfileirados = new Set<string>();
   const lotes = emLotes(sobreviventes, SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES);
 
@@ -546,19 +731,24 @@ async function varrerConta(
     const detalhe = await client.getPackageDetail({ packageNumbers: lote });
     c.consultadosNoDetalhe += lote.length;
     // ⚠️ BY `package_number`, never by position: the answer may be shorter,
-    // reordered, or carry a `null` sentinel in place of an unreadable row. Both
-    // identities go through the SAME reader as the search side, so a padded
-    // number is one package and a row without a usable `order_sn` (no pedido id
-    // can be derived from it) names nothing.
+    // reordered, or carry a `null` sentinel in place of an unreadable row.
+    // ⚠️ And by the RAW spelling, EXACTLY: the handler the code 30 feeds finds
+    // its row with `r.package_number === packageNumber` (`rastrearPedido.ts`),
+    // so a padded detail row is one it would never find — it would park the
+    // task, every tick. Here the package stays `ausentesNoDetalhe` instead.
+    // The usability check only decides what counts as ILLEGIBLE; a row without
+    // a usable `order_sn` names nothing either (no pedido id derives from it).
+    // First row wins, as the handler's `.find` does.
     const porNumero = new Map<string, LinhaReconciliada>();
     for (const row of detalhe.package_list) {
-      const numero = row === null ? null : textoShopeeUtilizavel(row.package_number);
       const orderSn = row === null ? null : textoShopeeUtilizavel(row.order_sn);
-      if (row === null || numero === null || orderSn === null) {
+      if (row === null || textoShopeeUtilizavel(row.package_number) === null || orderSn === null) {
         c.ilegiveisNoDetalhe += 1;
         continue;
       }
-      if (!porNumero.has(numero)) porNumero.set(numero, { linha: row, orderSn });
+      if (!porNumero.has(row.package_number)) {
+        porNumero.set(row.package_number, { linha: row, orderSn });
+      }
     }
 
     for (const numero of lote) {
@@ -572,7 +762,10 @@ async function varrerConta(
       // phase), never re-derived here (R-d; mutant 99's raw-text pin).
       const elegibilidade = elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(linha));
       if (elegibilidade.tipo === 'fora-do-canal') {
-        c.foraDoCanalNoDetalhe += 1;
+        // The verdict is the shared one; only the COUNTER is split. A `null`
+        // channel is UNKNOWN, not off the set — register 224 asks the second.
+        if (linha.logistics_channel_id === null) c.canalDesconhecidoNoDetalhe += 1;
+        else c.foraDoCanalNoDetalhe += 1;
         continue;
       }
       if (elegibilidade.tipo === 'fase') {
@@ -585,10 +778,10 @@ async function varrerConta(
         c.truncadaPor ??= TRUNCAGEM_ARRANJO.enfileirados;
         continue;
       }
-      // Both identities are the DETAIL row's — the fresh read — as the reader
-      // returned them: the `order_sn` keys the pedido id, and the package number
-      // makes the code 30's identity (`30:<shop>:<package>`) one string however
-      // Shopee padded it.
+      // Both identities as the readers returned them: the `order_sn` keys the
+      // pedido id, and the package number — the search spelling, which the
+      // detail row matched EXACTLY — makes the code 30's identity
+      // (`30:<shop>:<package>`) the very string the handler will ask for.
       let existe = existePedido.get(orderSn);
       if (existe === undefined) {
         // A SKIP, not a guard (the `rastrearPedido.ts` precedent): the hook
@@ -598,7 +791,8 @@ async function varrerConta(
         existePedido.set(orderSn, existe);
       }
       if (existe) {
-        await deps.scheduler.enqueue(
+        await enfileirar(
+          deps.scheduler,
           notificacaoSinteticaDePacote({
             shopId,
             orderSn,
@@ -612,14 +806,24 @@ async function varrerConta(
         // ONE per order, never per package: the import creates the pedido with
         // all its packages, and the next tick enqueues each of them.
         pedidosEnfileirados.add(orderSn);
-        await deps.scheduler.enqueue(
-          notificacaoSinteticaDePedido({
-            shopId,
-            orderSn,
-            nowMs: deps.nowMs,
-            origem: 'arranjo-automatico',
-          }),
-        );
+        // ⚠️ The DAY's stamp, never `nowMs` (step 6 of the header): the doc id
+        // is stable for the day, so ONE read says whether today's import
+        // already failed — and a failure row standing means it did.
+        const sintetico = notificacaoSinteticaDePedido({
+          shopId,
+          orderSn,
+          nowMs: inicioDoDiaUtcMs(deps.nowMs),
+          origem: 'arranjo-automatico',
+        });
+        const docId = docIdOf(sintetico);
+        if (
+          docId !== null &&
+          (await notificacaoShopeeCollection.docRef(db, {}, docId).get()).exists
+        ) {
+          c.pedidosComFalhaHoje += 1;
+          continue;
+        }
+        await enfileirar(deps.scheduler, sintetico);
         c.enfileiradosPedido += 1;
       }
     }
@@ -634,6 +838,25 @@ async function varrerConta(
       foraDoCanalNoDetalhe: c.foraDoCanalNoDetalhe,
     });
   }
+  if (
+    c.ilegiveisNaBusca + c.ilegiveisNoDetalhe + c.ausentesNoDetalhe + c.canalDesconhecidoNoDetalhe >
+    0
+  ) {
+    // ⚠️ A schema drift must not turn the PRIMARY signal into a silent no-op:
+    // one type drift in ANY optional field nulls a whole detail row, so a Turbo
+    // package Shopee will auto-cancel would simply never be enqueued. Counts
+    // only — never which package.
+    logger.warn(
+      '[shopee/arranjo-automatico] linhas ilegíveis ou ausentes — pacotes não avaliados',
+      {
+        integracaoId,
+        ilegiveisNaBusca: c.ilegiveisNaBusca,
+        ilegiveisNoDetalhe: c.ilegiveisNoDetalhe,
+        ausentesNoDetalhe: c.ausentesNoDetalhe,
+        canalDesconhecidoNoDetalhe: c.canalDesconhecidoNoDetalhe,
+      },
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -642,7 +865,8 @@ async function varrerConta(
 
 /**
  * One tick: the three gates, then every ACTIVE Shopee conta, contained per
- * conta — except a rate limit, which ends the tick.
+ * conta — except a rate limit, which ends the tick, and the tick's own budget,
+ * which stops it starting another.
  */
 export async function runShopeeArranjoAutomaticoSweep(
   db: Firestore,
@@ -657,16 +881,29 @@ export async function runShopeeArranjoAutomaticoSweep(
         ? MOTIVO_TASKS_DESABILITADO
         : null;
   if (motivo !== null) {
-    return { enabled: false, motivo, semShopId: 0, interrompidoPorLimite: null, contas: [] };
+    return {
+      enabled: false,
+      motivo,
+      semShopId: 0,
+      reconexaoPendente: 0,
+      interrompidoPorLimite: null,
+      interrompidoPorPrazo: false,
+      contas: [],
+    };
   }
 
   const logger = loggerDe(deps);
+  // ⚠️ ELAPSED wall clock, from HERE, through the injected reader.
+  const agora = deps.agoraMs ?? Date.now;
+  const inicioMs = agora();
   // The ONE `(tipo, ativo)` enumeration (`core/contas.ts` — its index exists).
   const ativas = await listarContasShopeeAtivas(db);
 
   const contas: ArranjoAutomaticoContaResult[] = [];
   let semShopId = 0;
+  let reconexaoPendente = 0;
   let interrompidoPorLimite: 'burst' | 'daily' | null = null;
+  let interrompidoPorPrazo = false;
 
   for (const [indice, { integracaoId, shopId }] of ativas.entries()) {
     if (shopId === null) {
@@ -676,8 +913,29 @@ export async function runShopeeArranjoAutomaticoSweep(
       continue;
     }
 
+    const decorridoMs = agora() - inicioMs;
+    if (decorridoMs >= PRAZO_DO_TICK_ARRANJO_MS) {
+      // Stop STARTING contas: the summary still gets written, and what was left
+      // is named rather than lost with the instance.
+      interrompidoPorPrazo = true;
+      logger.warn(
+        '[shopee/arranjo-automatico] prazo do tick esgotado — contas restantes não varridas',
+        {
+          decorridoMs,
+          contasNaoVarridas: ativas.length - indice,
+        },
+      );
+      break;
+    }
+
     const c = contagemVazia();
     try {
+      // ⚠️ BEFORE the client: a dead grant costs this one read, never a lease,
+      // a refresh POST and a release.
+      if (await aguardaReconexao(db, integracaoId)) {
+        reconexaoPendente += 1;
+        continue;
+      }
       const client = await clienteDaConta(db, deps, integracaoId);
       await varrerConta(db, deps, logger, client, integracaoId, shopId, c);
       contas.push(resultadoDaConta(integracaoId, c, null));
@@ -694,8 +952,9 @@ export async function runShopeeArranjoAutomaticoSweep(
         });
         break;
       }
-      // `ShopeeConfigError` is NOT in the boundary: ours, so the tick fails.
-      if (!erroContidoPorConta(err)) throw err;
+      // `ShopeeConfigError` is NOT in the boundary: ours, so the tick fails. A
+      // transient enqueue failure is, through this module's own class.
+      if (!(err instanceof EnfileiramentoTransitorioError) && !erroContidoPorConta(err)) throw err;
       const descricao = descreverErro(err);
       logger.warn('[shopee/arranjo-automatico] conta contida após falha', {
         integracaoId,
@@ -705,5 +964,13 @@ export async function runShopeeArranjoAutomaticoSweep(
     }
   }
 
-  return { enabled: true, motivo: null, semShopId, interrompidoPorLimite, contas };
+  return {
+    enabled: true,
+    motivo: null,
+    semShopId,
+    reconexaoPendente,
+    interrompidoPorLimite,
+    interrompidoPorPrazo,
+    contas,
+  };
 }

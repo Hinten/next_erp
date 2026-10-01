@@ -13,6 +13,7 @@ import {
 } from '../../lib/shopee/nfe/constantesNfe';
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
+import { PRAZO_DO_TICK_ARRANJO_MS } from '../../lib/shopee/pedidos/arranjoAutomaticoSweep';
 import {
   ENVIO_PRECO_MAX_TENTATIVAS,
   SHOPEE_PRICE_SYNC_QUEUE,
@@ -442,22 +443,26 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     // validated after the package's last push no push is documented at all, so
     // this tick is the PRIMARY signal and lists the package at most five minutes
     // after Shopee clears `invoice_pending`. The MINUTES are chosen, not
-    // inherited — every one is ≡ 2 (mod 5), which no sibling minute is (the
-    // derived test below).
+    // inherited — every one is ≡ 2 (mod 5), which no minute of the eight
+    // fixed-minute crons is (the derived test below); the two `every N minutes`
+    // siblings have no fixed minute to avoid.
     expect(gatilhoDe(sweepShopeeAutoArrange).schedule).toBe(
       '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
     );
     expect(gatilhoDe(sweepShopeeAutoArrange).timeZone).toBe('America/Sao_Paulo');
   });
 
-  it('⛔ QUASE-FALHA: NÃO é `every 5 minutes` nem `*/5 * * * *` — e os dois co-disparariam com TODOS os dez vizinhos', () => {
+  it('⛔ QUASE-FALHA: NÃO é `every 5 minutes` nem `*/5 * * * *` — e os dois co-disparariam com TODOS os dez vizinhos (os `every N minutes` lidos alinhados)', () => {
     // The two spellings a reviewer would write first, each the same cadence at a
-    // glance. Both fire on the multiples of five, and EVERY minute the other ten
-    // schedules hold is one — so either would put this sweep's
+    // glance. Both fire on the multiples of five, and EVERY minute the eight
+    // fixed-minute crons hold is one — so either would put this sweep's
     // `search_package_list` on the same minute as every other family of Shopee
-    // calls, against one undocumented per-APP rate-limit budget. Derived, not
-    // asserted: the same reader the next test uses must SEE the collision, or
-    // that test proves nothing about them.
+    // calls, against one undocumented per-APP rate-limit budget. The two
+    // `every N minutes` siblings have no fixed minute: they collide here only
+    // under the ALIGNED reading `minutosDoCron` applies, and under the
+    // unaligned one nothing could avoid them. Derived, not asserted: the same
+    // reader the next test uses must SEE the collision, or that test proves
+    // nothing about them.
     expect(gatilhoDe(sweepShopeeAutoArrange).schedule).not.toBe('every 5 minutes');
     expect(gatilhoDe(sweepShopeeAutoArrange).schedule).not.toBe('*/5 * * * *');
     for (const quaseFalha of ['every 5 minutes', '*/5 * * * *']) {
@@ -470,11 +475,15 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     }
   });
 
-  it('⚠️ os minutos NÃO cruzam NENHUM outro agendamento — derivado dos crons, nunca afirmado', () => {
+  it('⚠️ os minutos NÃO cruzam nenhum dos oito crons de minuto fixo (nem os dois `every N minutes`, lidos alinhados) — derivado dos crons, nunca afirmado', () => {
     // Every sibling is read, none skipped: a cron this reader cannot parse is a
     // FAILURE here, never a silent pass — the derived-overlap test of the stock
     // describe skips the `every N minutes` pair, and a step form like
-    // `2-57/5` would have been skipped by it too.
+    // `2-57/5` would have been skipped by it too. ⚠️ The claim is exact for the
+    // eight fixed-minute crons only. The two `every N minutes` siblings have no
+    // fixed minute; they are read ALIGNED (multiples of N from :00), the one
+    // reading under which a choice of minutes matters, and under the unaligned
+    // one no choice of minutes could avoid them.
     const meus = new Set(minutosDoCron(gatilhoDe(sweepShopeeAutoArrange).schedule ?? '') ?? []);
     // ÂNCORA: the literal really parsed into twelve minutes.
     expect(meus.size).toBe(12);
@@ -493,17 +502,36 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     expect(periodoEmSegundos()).toBe(300);
   });
 
-  it('tem timeoutSeconds 240 — ABAIXO dos 300 s entre ticks, então dois ticks nunca se sobrepõem', () => {
+  it('tem timeoutSeconds 240 — ABAIXO dos 300 s entre ticks: o prazo da tentativa do Scheduler, sem retry', () => {
     // A tick still running when the next one starts would list the same
     // packages and enqueue each a second time. Shopee guards the arrange itself
     // (`is_shipment_arranged`, `package_already_shipped`), so the overlap would
     // cost duplicate tasks rather than a double ship — the bound is still free.
+    // ⚠️ It is a BOUND, not a proof that ticks never overlap: Cloud Scheduler's
+    // attempt deadline follows this number and the job sets no retry, and the
+    // sweep stops STARTING contas at its own per-tick budget; a call already in
+    // flight is bounded only by #1094 (`shopeeCall` sets no timeout), and
+    // nothing here shows the platform killing a handler at 240 s.
     const timeout = endpointOf(sweepShopeeAutoArrange).timeoutSeconds;
     expect(timeout).toBe(240);
     expect(timeout as number).toBeLessThan(periodoEmSegundos());
   });
 
-  it('⛔ QUASE-FALHA: NÃO é 540 — o teto de toda outra varredura por conta, que sobreporia os ticks', () => {
+  it('o prazo PRÓPRIO do tique (`PRAZO_DO_TICK_ARRANJO_MS`) fica ABAIXO de timeoutSeconds, com folga para o resumo', () => {
+    // The sweep stops STARTING contas at its own budget so the summary line is
+    // still written before the platform's deadline, and the contas it left are
+    // NAMED (`interrompidoPorPrazo`) rather than lost with the instance. A
+    // budget at or above the timeout never fires before the kill. The margin
+    // is a heuristic, not a bound: a conta started just under the budget still
+    // runs its calls, and only #1094 would bound a hung one.
+    const timeoutMs = (endpointOf(sweepShopeeAutoArrange).timeoutSeconds as number) * 1000;
+    expect(PRAZO_DO_TICK_ARRANJO_MS).toBeLessThan(timeoutMs);
+    expect(timeoutMs - PRAZO_DO_TICK_ARRANJO_MS).toBeGreaterThanOrEqual(30_000);
+    // ÂNCORA: a budget that starves every tick would pass the two lines above.
+    expect(PRAZO_DO_TICK_ARRANJO_MS).toBeGreaterThanOrEqual(timeoutMs / 2);
+  });
+
+  it('⛔ QUASE-FALHA: NÃO é 540 — o teto das outras varreduras por conta, maior que o próprio período', () => {
     // 540 is what a copy of `backfillShopeeOrders` brings along, and it reads
     // as the codebase's house number. Here it is longer than the period itself.
     expect(endpointOf(sweepShopeeAutoArrange).timeoutSeconds).not.toBe(540);

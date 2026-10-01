@@ -1,9 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi, type Mock } from 'vitest';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
 import type { Firestore } from 'firebase-admin/firestore';
-import { integracaoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
+import { FirebaseFunctionsError } from 'firebase-admin/functions';
+import {
+  credenciaisIntegracaoCollection,
+  integracaoCollection,
+  notificacaoShopeeCollection,
+  pedidoCollection,
+} from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import {
   SHOPEE_ERROR_KIND,
@@ -25,6 +32,7 @@ import {
   type ShopeeSearchPackageList,
 } from '@delfrance/integrations-shopee';
 
+import { SHOPEE_CREDENCIAL_DOC_ID } from '../core/credentialStore';
 import { CANAIS_ARRANJO_AUTOMATICO, type FasePacote } from '../etiqueta/faseEtiqueta';
 import {
   FIXTURE_SEARCH_PACKAGE_LIST_DOC,
@@ -42,6 +50,7 @@ import {
   MOTIVO_ARRANJO_DESLIGADO,
   MOTIVO_SWEEP_DESLIGADO,
   MOTIVO_TASKS_DESABILITADO,
+  PRAZO_DO_TICK_ARRANJO_MS,
   SHOPEE_ARRANJO_SWEEP_DISABLED_ENV,
   TRUNCAGEM_ARRANJO,
   arranjoSweepDesligado,
@@ -69,13 +78,19 @@ vi.mock('../core/shopee', async (importActual) => {
 /* -------------------------------------------------------------------------- */
 
 const AGORA_MS = 1_767_000_000_000;
+/** The START of AGORA_MS's UTC day (AGORA_MS is 9 h 20 min into it) — the code 3's stamp. */
+const DIA_DE_AGORA_MS = 1_766_966_400_000;
+const DIA_MS = 86_400_000;
 const INTEGRACAO_PATH = integracaoCollection.resolvePath({});
 const PEDIDO_PATH = pedidoCollection.resolvePath({});
+const NOTIFICACAO_PATH = notificacaoShopeeCollection.resolvePath({});
 const INT_A = 'int-1';
 const INT_B = 'int-2';
+const INT_C = 'int-3';
 const INT_SEM_SHOP = 'int-sem-shop';
 const SHOP_A = 987654;
 const SHOP_B = 987655;
+const SHOP_C = 987656;
 const ORDER_SN = '260910KJBHUJDM';
 const ORDER_SN_2 = '260910SEGUNDO';
 const PACOTE = 'OFG000000000001';
@@ -205,6 +220,45 @@ function semearPedido(c: Cenario, integracaoId: string, orderSn: string): void {
   c.db.seed(caminhoDoPedido(integracaoId, orderSn), { numero: orderSn });
 }
 
+/** The conta's FIXED `current` credential document — where the token store stamps a dead refresh. */
+function caminhoDaCredencial(integracaoId: string): string {
+  return credenciaisIntegracaoCollection.docPath({ integracaoId }, SHOPEE_CREDENCIAL_DOC_ID);
+}
+
+/** A stored credential carrying `ultimaFalhaRefresh` exactly as given (fixture tokens only). */
+function semearCredencial(c: Cenario, integracaoId: string, ultimaFalhaRefresh: unknown): void {
+  c.db.seed(caminhoDaCredencial(integracaoId), {
+    access_token: 'access-inventado',
+    refresh_token: 'refresh-inventado',
+    expirationDate: AGORA_MS - 1,
+    provider: 'shopee',
+    ultimaFalhaRefresh,
+  });
+}
+
+/** The code-3 failure row the pipeline would have written for `orderSn` on the day starting at `diaMs`. */
+function caminhoDaFalhaDoPedido(orderSn: string, diaMs: number, shopId = SHOP_A): string {
+  return `${NOTIFICACAO_PATH}/3:${String(shopId)}:${orderSn}:${String(diaMs)}`;
+}
+
+/** `TaskQueue.enqueue`'s REAL HTTP failure (firebase-admin 14.2.0's `toFirebaseError`). */
+function falhaDoFunctions(code: string): FirebaseFunctionsError {
+  // ⚠️ The SDK's message may carry the response body — here it names the
+  // package and the order, so a description built from it would leak both.
+  return new FirebaseFunctionsError({
+    code,
+    message: `Unexpected response with status: 503 and body: ${PACOTE} ${ORDER_SN}`,
+  });
+}
+
+/** `TaskQueue.enqueue`'s REAL socket failure (the SDK's HTTP client, after its own retries). */
+function falhaDoApp(code: string): FirebaseAppError {
+  return new FirebaseAppError({
+    code,
+    message: `Error while making request: socket hang up (${PACOTE}). Error code: ECONNRESET`,
+  });
+}
+
 function rodar(
   c: Cenario,
   over: Partial<ArranjoAutomaticoSweepDeps> = {},
@@ -261,7 +315,9 @@ function esperarParticao(r: ArranjoAutomaticoContaResult): void {
       r.naoConsultadosPeloLimite,
   );
   const somaFases = Object.values(r.fases).reduce((t, n) => t + n, 0);
-  expect(r.consultadosNoDetalhe).toBe(r.ausentesNoDetalhe + r.foraDoCanalNoDetalhe + somaFases);
+  expect(r.consultadosNoDetalhe).toBe(
+    r.ausentesNoDetalhe + r.foraDoCanalNoDetalhe + r.canalDesconhecidoNoDetalhe + somaFases,
+  );
   expect(r.nfePendenteNaBusca).toBe(r.fases['nfe-pendente']);
 }
 
@@ -387,7 +443,9 @@ describe('runShopeeArranjoAutomaticoSweep — as três válvulas', () => {
         enabled: false,
         motivo,
         semShopId: 0,
+        reconexaoPendente: 0,
         interrompidoPorLimite: null,
+        interrompidoPorPrazo: false,
         contas: [],
       });
       expect(clientFor).not.toHaveBeenCalled();
@@ -439,6 +497,16 @@ describe('runShopeeArranjoAutomaticoSweep — as três válvulas', () => {
     vi.stubEnv(SHOPEE_ARRANJO_SWEEP_DISABLED_ENV, 'true');
     expect(arranjoSweepDesligado()).toBe(false);
     expect(SHOPEE_ARRANJO_SWEEP_DISABLED_ENV).toBe('SHOPEE_ARRANJO_SWEEP_DISABLED');
+  });
+
+  // T7 (review 3b, a TYPE pin — `pnpm typecheck` is what fails it): a constant
+  // widened to `string` widens `motivo` with it, and then the handler's
+  // `satisfies Record<NonNullable<motivo>, string>` accepts ANY rows — a fourth
+  // reason without a variable would compile.
+  it('`motivo` é a união LITERAL dos três motivos, nunca `string`', () => {
+    expectTypeOf<ArranjoAutomaticoSweepResult['motivo']>().toEqualTypeOf<
+      'sweep-desligado' | 'arranjo-desligado' | 'tasks-desabilitado' | null
+    >();
   });
 });
 
@@ -832,13 +900,20 @@ describe('o pré-filtro do detalhe', () => {
     esperarParticao(r);
   });
 
-  it('o número é comparado APARADO (o par) — e um número diferente continua ausente (o quase-igual)', async () => {
+  // ⚠️ S2-2 (review 3b): the handler the code 30 feeds finds its row with
+  // `r.package_number === packageNumber` (`rastrearPedido.ts`), EXACT. A sweep
+  // that matched the detail TRIMMED enqueued a package the handler could never
+  // find — one parked row and two detail calls per tick, the package never
+  // arranged. One reader: the detail is matched exactly here too.
+  it('o número do DETALHE é comparado EXATO, como o handler: o exato vira tarefa (o par); o ACOLCHOADO é ausente, nunca tarefa (o quase-igual)', async () => {
     const c = cenario();
     semearConta(c, INT_A);
     semearPedido(c, INT_A, ORDER_SN);
-    // Shopee pads the number on the DETAIL side too: still the same package.
+    // The detail spells OFG…1 padded: the handler would never find it.
     naShopee(c, PACOTE, { package_number: `  ${PACOTE} ` });
-    // `' OFG…1 '` and `'OFG…1'` are ONE package (a duplicate); OFG…2 is not OFG…1.
+    naShopee(c, PACOTE_2);
+    // The SEARCH side still trims (the number goes OUT in the detail request):
+    // `' OFG…1 '` and `'OFG…1'` are ONE package, a duplicate.
     c.busca.mockResolvedValueOnce(
       pagina([linhaBusca(` ${PACOTE} `), linhaBusca(PACOTE), linhaBusca(PACOTE_2)]),
     );
@@ -848,11 +923,57 @@ describe('o pré-filtro do detalhe', () => {
     expect(lotesDoDetalhe(c)).toEqual([[PACOTE, PACOTE_2]]);
     expect(r.duplicadas).toBe(1);
     expect(r.ausentesNoDetalhe).toBe(1);
+    expect(r.ilegiveisNoDetalhe).toBe(0);
     expect(r.enfileiradosPacote).toBe(1);
-    // The code 30 carries the ONE trimmed spelling — its identity is a string.
-    const p = enfileirado(c, 0);
-    expect(p.data?.package_number).toBe(PACOTE);
-    expect(dedupKeyOf(p)).toBe(`30:${String(SHOP_A)}:${PACOTE}`);
+    // Only the EXACT one is a task — and its identity is the string the handler asks for.
+    expect(c.enqueue.mock.calls.map(([p]) => p.data?.package_number)).toEqual([PACOTE_2]);
+    expect(dedupKeyOf(enfileirado(c, 0))).toBe(`30:${String(SHOP_A)}:${PACOTE_2}`);
+    // A padded spelling is a drift, and the ONE package it hid is said out loud (S1-3).
+    expect(c.logs).toEqual([
+      {
+        msg: '[shopee/arranjo-automatico] linhas ilegíveis ou ausentes — pacotes não avaliados',
+        meta: {
+          integracaoId: INT_A,
+          ilegiveisNaBusca: 0,
+          ilegiveisNoDetalhe: 0,
+          ausentesNoDetalhe: 1,
+          canalDesconhecidoNoDetalhe: 0,
+        },
+      },
+    ]);
+    esperarParticao(r);
+  });
+
+  // S1-7 (review 3b): a `null` fresh channel is UNKNOWN, not off the set.
+  it('um canal `null` no DETALHE conta em `canalDesconhecidoNoDetalhe`, fora do warn do registro 224 — e nunca vira tarefa', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    naShopee(c, PACOTE, { logistics_channel_id: null });
+    c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+
+    const r = unica(await rodar(c));
+
+    expect(r).toMatchObject({
+      canalDesconhecidoNoDetalhe: 1,
+      foraDoCanalNoDetalhe: 0,
+      foraDoCanal: 0,
+    });
+    expect(c.enqueue).not.toHaveBeenCalled();
+    // NOT register 224's warn — the unreadable-rows one, and only that (S1-3).
+    expect(c.logs).toEqual([
+      {
+        msg: '[shopee/arranjo-automatico] linhas ilegíveis ou ausentes — pacotes não avaliados',
+        meta: {
+          integracaoId: INT_A,
+          ilegiveisNaBusca: 0,
+          ilegiveisNoDetalhe: 0,
+          ausentesNoDetalhe: 0,
+          canalDesconhecidoNoDetalhe: 1,
+        },
+      },
+    ]);
+    esperarParticao(r);
   });
 
   it('cada fase conta na SUA chave (todas presentes); só `programar` vira tarefa — nunca uma NF-e pendente', async () => {
@@ -952,24 +1073,104 @@ describe('o enfileiramento', () => {
 
     const r = unica(await rodar(c));
 
+    // ⚠️ Stamped with the START of the UTC day, never `nowMs` (S1-4 / S2-1).
     expect(c.enqueue.mock.calls.map(([p]) => p)).toEqual([
       {
         code: 3,
         shopId: SHOP_A,
-        timestamp: AGORA_MS,
+        timestamp: DIA_DE_AGORA_MS,
         data: { ordersn: ORDER_SN, origem: 'arranjo-automatico' },
       },
       {
         code: 3,
         shopId: SHOP_A,
-        timestamp: AGORA_MS,
+        timestamp: DIA_DE_AGORA_MS,
         data: { ordersn: ORDER_SN_2, origem: 'arranjo-automatico' },
       },
     ]);
-    expect(r).toMatchObject({ enfileiradosPacote: 0, enfileiradosPedido: 2 });
+    expect(r).toMatchObject({
+      enfileiradosPacote: 0,
+      enfileiradosPedido: 2,
+      pedidosComFalhaHoje: 0,
+    });
     expect(r.fases.programar).toBe(3);
     const leituras = c.db.opLog.filter((o) => o.path === caminhoDoPedido(INT_A, ORDER_SN));
     expect(leituras).toEqual([{ op: 'get', path: caminhoDoPedido(INT_A, ORDER_SN) }]);
+    // …and ONE read of each order's failure row for today — per ORDER, not per package.
+    const falhas = c.db.opLog.filter((o) => o.path.startsWith(`${NOTIFICACAO_PATH}/`));
+    expect(falhas).toEqual([
+      { op: 'get', path: caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS) },
+      { op: 'get', path: caminhoDaFalhaDoPedido(ORDER_SN_2, DIA_DE_AGORA_MS) },
+    ]);
+  });
+
+  describe('o code 3 de um pedido ausente: no máximo UMA tentativa por pedido por dia UTC (S1-4 / S2-1)', () => {
+    /** One order, two packages, NO pedido yet. */
+    function pedidoAusente(): Cenario {
+      const c = cenario();
+      semearConta(c, INT_A);
+      naShopee(c, PACOTE);
+      naShopee(c, PACOTE_2);
+      c.busca.mockResolvedValue(pagina([linhaBusca(PACOTE), linhaBusca(PACOTE_2)]));
+      return c;
+    }
+
+    it('o carimbo é o INÍCIO do dia UTC: o mesmo dia ⇒ o MESMO doc id; o dia seguinte ⇒ outro (o quase-igual)', async () => {
+      expect(DIA_DE_AGORA_MS % DIA_MS).toBe(0);
+      expect(AGORA_MS - DIA_DE_AGORA_MS).toBeLessThan(DIA_MS);
+      const ids: (string | null)[] = [];
+      // 09:20, 23:20 (past noon: a ROUNDING floor would move it) and 09:20 the next day.
+      for (const nowMs of [AGORA_MS, AGORA_MS + 14 * 3_600_000, AGORA_MS + DIA_MS]) {
+        const c = pedidoAusente();
+        await rodar(c, { nowMs });
+        expect(c.enqueue).toHaveBeenCalledTimes(1);
+        ids.push(docIdOf(enfileirado(c, 0)));
+      }
+      expect(ids).toEqual([
+        `3:${String(SHOP_A)}:${ORDER_SN}:${String(DIA_DE_AGORA_MS)}`,
+        `3:${String(SHOP_A)}:${ORDER_SN}:${String(DIA_DE_AGORA_MS)}`,
+        `3:${String(SHOP_A)}:${ORDER_SN}:${String(DIA_DE_AGORA_MS + DIA_MS)}`,
+      ]);
+    });
+
+    it('a linha de falha de HOJE existe ⇒ NÃO reenfileira, conta `pedidosComFalhaHoje` (uma leitura, dois pacotes)', async () => {
+      const c = pedidoAusente();
+      c.db.seed(caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS), { status: 'parked' });
+
+      const r = unica(await rodar(c));
+
+      expect(c.enqueue).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ pedidosComFalhaHoje: 1, enfileiradosPedido: 0 });
+      expect(r.fases.programar).toBe(2);
+      expect(
+        c.db.opLog.filter((o) => o.path === caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS)),
+      ).toHaveLength(1);
+      esperarParticao(r);
+    });
+
+    it.each([
+      ['de ONTEM', caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS - DIA_MS)],
+      ['de OUTRO pedido', caminhoDaFalhaDoPedido(ORDER_SN_2, DIA_DE_AGORA_MS)],
+      ['de OUTRA loja', caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS, SHOP_B)],
+    ])('quase-igual: uma linha de falha %s não impede o code 3 de hoje', async (_caso, caminho) => {
+      const c = pedidoAusente();
+      c.db.seed(caminho, { status: 'parked' });
+
+      const r = unica(await rodar(c));
+
+      expect(c.enqueue).toHaveBeenCalledTimes(1);
+      expect(r).toMatchObject({ pedidosComFalhaHoje: 0, enfileiradosPedido: 1 });
+    });
+
+    it('com o pedido PRESENTE, a linha de falha nem é lida (a leitura é só do caminho ausente)', async () => {
+      const c = pedidoAusente();
+      semearPedido(c, INT_A, ORDER_SN);
+
+      await rodar(c);
+
+      expect(c.enqueue).toHaveBeenCalledTimes(2);
+      expect(c.db.caminhos.some((p) => p.startsWith(`${NOTIFICACAO_PATH}/`))).toBe(false);
+    });
   });
 
   it('no tick seguinte, com o pedido já importado, cada pacote vira o SEU code 30', async () => {
@@ -1130,11 +1331,38 @@ describe('a contenção por conta', () => {
       'detalhe',
       'ShopeeSchemaError: formato inesperado',
     ],
+    // ⚠️ The REAL enqueue failures (S1-1): STRING codes, which the shared
+    // gRPC check does not recognise — a numeric `grpc(14)` stand-in here once
+    // passed while the real class killed the tick.
     [
-      'gRPC no enqueue (Cloud Tasks)',
-      () => grpc(14, 'UNAVAILABLE'),
+      'FirebaseFunctionsError unknown-error no enqueue (503/429 do Cloud Tasks)',
+      () => falhaDoFunctions('unknown-error'),
       'enqueue',
-      'Error: UNAVAILABLE',
+      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/unknown-error',
+    ],
+    [
+      'FirebaseFunctionsError internal-error no enqueue',
+      () => falhaDoFunctions('internal-error'),
+      'enqueue',
+      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/internal-error',
+    ],
+    [
+      'FirebaseFunctionsError aborted no enqueue',
+      () => falhaDoFunctions('aborted'),
+      'enqueue',
+      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/aborted',
+    ],
+    [
+      'FirebaseAppError network-error no enqueue (socket)',
+      () => falhaDoApp(AppErrorCode.NETWORK_ERROR),
+      'enqueue',
+      'EnfileiramentoTransitorioError: FirebaseAppError app/network-error',
+    ],
+    [
+      'FirebaseAppError network-timeout no enqueue',
+      () => falhaDoApp(AppErrorCode.NETWORK_TIMEOUT),
+      'enqueue',
+      'EnfileiramentoTransitorioError: FirebaseAppError app/network-timeout',
     ],
     [
       'ShopeeTasksDisabledError no enqueue',
@@ -1166,6 +1394,90 @@ describe('a contenção por conta', () => {
       );
     },
   );
+
+  it('a falha REAL do enqueue é descrita por classe e código — nunca pela mensagem do SDK, que pode citar o corpo', async () => {
+    const c = duasContas();
+    semearPedido(c, INT_A, ORDER_SN);
+    c.clientPor.set(INT_B, clienteB(c).client);
+    c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+    const erro = falhaDoFunctions('unknown-error');
+    // The positive control: the real class, the real string code, and a message that DOES leak.
+    expect(erro.code).toBe('functions/unknown-error');
+    expect(erro.message).toContain(PACOTE);
+    c.enqueue.mockRejectedValueOnce(erro);
+
+    const r = await rodar(c);
+
+    expect(r.contas.map((x) => [x.integracaoId, x.error])).toEqual([
+      [INT_A, 'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/unknown-error'],
+      [INT_B, null],
+    ]);
+    // The failed enqueue is not counted as one.
+    expect(r.contas[0]).toMatchObject({ fases: { programar: 1 }, enfileiradosPacote: 0 });
+    const texto = JSON.stringify([c.logs, r]);
+    for (const segredo of [ORDER_SN, PACOTE]) expect(texto).not.toContain(segredo);
+  });
+
+  // ⚠️ The near-misses: the same two CLASSES carrying a deploy-shaped code, the
+  // transient code on a look-alike that is not the class, and the class raised
+  // somewhere other than the enqueue — each fails the tick, and B is never walked.
+  it.each<[string, () => Error, 'busca' | 'enqueue']>([
+    [
+      'functions/permission-denied (falta o IAM)',
+      () => falhaDoFunctions('permission-denied'),
+      'enqueue',
+    ],
+    ['functions/not-found (sem fila nessa região)', () => falhaDoFunctions('not-found'), 'enqueue'],
+    ['functions/invalid-argument', () => falhaDoFunctions('invalid-argument'), 'enqueue'],
+    ['functions/unauthenticated', () => falhaDoFunctions('unauthenticated'), 'enqueue'],
+    ['functions/failed-precondition', () => falhaDoFunctions('failed-precondition'), 'enqueue'],
+    ['app/invalid-credential', () => falhaDoApp(AppErrorCode.INVALID_CREDENTIAL), 'enqueue'],
+    ['app/internal-error', () => falhaDoApp(AppErrorCode.INTERNAL_ERROR), 'enqueue'],
+    [
+      'um Error comum com o MESMO código (a forma, não a classe)',
+      () => Object.assign(new Error('503'), { code: 'functions/unknown-error' }),
+      'enqueue',
+    ],
+    [
+      'app/network-error FORA do enqueue (na busca)',
+      () => falhaDoApp(AppErrorCode.NETWORK_ERROR),
+      'busca',
+    ],
+  ])('%s NÃO é contido: o tick falha alto e B nunca é varrida', async (_nome, erro, onde) => {
+    const c = duasContas();
+    semearPedido(c, INT_A, ORDER_SN);
+    const b = clienteB(c);
+    c.clientPor.set(INT_B, b.client);
+    const lancado = erro();
+    if (onde === 'busca') c.busca.mockRejectedValueOnce(lancado);
+    else {
+      c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+      c.enqueue.mockRejectedValueOnce(lancado);
+    }
+
+    await expect(rodar(c)).rejects.toBe(lancado);
+    expect(b.busca).not.toHaveBeenCalled();
+  });
+
+  it('gRPC do Firestore ao carregar o contexto da conta A (o caminho padrão) é CONTIDO; B ainda é varrida', async () => {
+    const c = duasContas();
+    const b = clienteB(c);
+    h.loadCtx
+      .mockRejectedValueOnce(grpc(14, 'UNAVAILABLE'))
+      .mockResolvedValueOnce({ createShopClient: () => b.client });
+
+    const r = await runShopeeArranjoAutomaticoSweep(asDb(c.db), {
+      scheduler: { enqueue: c.enqueue },
+      nowMs: AGORA_MS,
+      logger: { warn: () => {} },
+    });
+
+    expect(r.contas.map((x) => [x.integracaoId, x.error])).toEqual([
+      [INT_A, 'Error: UNAVAILABLE'],
+      [INT_B, null],
+    ]);
+    expect(b.busca).toHaveBeenCalledTimes(1);
+  });
 
   it('`ShopeeConfigError` NÃO é contido: o tick falha alto e B nunca é tocada', async () => {
     const c = duasContas();
@@ -1270,6 +1582,218 @@ describe('a contenção por conta', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*                         a autorização morta (S1-2)                          */
+/* -------------------------------------------------------------------------- */
+
+describe('a conta cuja renovação o token store carimbou TERMINAL (S1-2)', () => {
+  it('é CONTADA em `reconexaoPendente`, sem cliente e sem chamada — e fora de `contas`; as outras seguem', async () => {
+    const c = cenario();
+    semearConta(c, INT_A, SHOP_A);
+    semearConta(c, INT_B, SHOP_B);
+    semearCredencial(c, INT_A, { em: 1_000, codigo: 'refresh_token_expired', terminal: true });
+    const clientFor = vi.fn((_db: Firestore, _id: string) => Promise.resolve(c.client));
+
+    const r = await rodar(c, { clientFor });
+
+    expect(r.reconexaoPendente).toBe(1);
+    expect(clientFor.mock.calls.map(([, id]) => id)).toEqual([INT_B]);
+    expect(r.contas.map((x) => x.integracaoId)).toEqual([INT_B]);
+    expect(c.busca).toHaveBeenCalledTimes(1);
+    // ONE read of the fixed `current` document, and no write: the sweep never touches the stamp.
+    expect(c.db.opLog.filter((o) => o.path === caminhoDaCredencial(INT_A))).toEqual([
+      { op: 'get', path: caminhoDaCredencial(INT_A) },
+    ]);
+    expect(c.db.writes).toEqual([]);
+    expect(c.logs).toEqual([]);
+  });
+
+  it('o caminho PADRÃO também: o contexto da conta morta nem é carregado', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearCredencial(c, INT_A, { em: 1_000, codigo: 'refresh_token_expired', terminal: true });
+
+    const r = await runShopeeArranjoAutomaticoSweep(asDb(c.db), {
+      scheduler: { enqueue: c.enqueue },
+      nowMs: AGORA_MS,
+      logger: { warn: () => {} },
+    });
+
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ reconexaoPendente: 1, contas: [] });
+  });
+
+  // ⚠️ The near-misses go through the token store's OWN reader (`falhaRefreshOf`):
+  // a transient stamp, a malformed one and none at all are all WALKED.
+  it.each<[string, unknown]>([
+    ['NÃO terminal (um limite)', { em: 1_000, codigo: 'error_rate_limit', terminal: false }],
+    [
+      'malformado (`terminal: "true"`)',
+      { em: 1_000, codigo: 'refresh_token_expired', terminal: 'true' },
+    ],
+    ['ausente (`null`, o que um reconsentimento grava)', null],
+  ])('quase-igual: um carimbo %s ⇒ a conta é varrida', async (_caso, carimbo) => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearCredencial(c, INT_A, carimbo);
+
+    const r = await rodar(c);
+
+    expect(r.reconexaoPendente).toBe(0);
+    expect(r.contas.map((x) => x.integracaoId)).toEqual([INT_A]);
+    expect(c.busca).toHaveBeenCalledTimes(1);
+  });
+
+  it('sem documento de credencial a conta é varrida (o cliente decide — `ShopeeSemCredencialError` é contido)', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+
+    const r = await rodar(c);
+
+    expect(r.reconexaoPendente).toBe(0);
+    expect(c.busca).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                            o prazo do tick (S1-6)                           */
+/* -------------------------------------------------------------------------- */
+
+describe('o prazo do tick (S1-6) — no relógio DECORRIDO, injetado', () => {
+  /** Three contas with a shop id, A → B → C in enumeration order. */
+  function tresContas(): Cenario {
+    const c = cenario();
+    semearConta(c, INT_A, SHOP_A);
+    semearConta(c, INT_B, SHOP_B);
+    semearConta(c, INT_C, SHOP_C);
+    return c;
+  }
+
+  /** An elapsed clock answering `leituras` in order — and failing loudly past them. */
+  function relogio(leituras: number[]): () => number {
+    const fila = [...leituras];
+    return () => {
+      const v = fila.shift();
+      if (v === undefined)
+        throw new Error('o relógio decorrido foi lido mais vezes que o previsto');
+      return v;
+    };
+  }
+
+  it('é 200 s — abaixo dos 240 s do `timeoutSeconds`', () => {
+    expect(PRAZO_DO_TICK_ARRANJO_MS).toBe(200_000);
+  });
+
+  it('a 199 999 ms uma conta ainda COMEÇA (o quase-igual); a EXATAMENTE 200 000 nenhuma mais — truncado, um warn, e o resto nem é lido', async () => {
+    const c = tresContas();
+    const clientFor = vi.fn((_db: Firestore, _id: string) => Promise.resolve(c.client));
+    // ⚠️ Far from `nowMs` on purpose: the budget is ELAPSED time, never `nowMs + budget`.
+    const BASE = 9_000_000_000_000;
+
+    const r = await rodar(c, {
+      clientFor,
+      agoraMs: relogio([BASE, BASE, BASE + 199_999, BASE + 200_000]),
+    });
+
+    expect(clientFor.mock.calls.map(([, id]) => id)).toEqual([INT_A, INT_B]);
+    expect(r.contas.map((x) => x.integracaoId)).toEqual([INT_A, INT_B]);
+    expect(r.interrompidoPorPrazo).toBe(true);
+    expect(r.interrompidoPorLimite).toBeNull();
+    expect(c.logs).toEqual([
+      {
+        msg: '[shopee/arranjo-automatico] prazo do tick esgotado — contas restantes não varridas',
+        meta: { decorridoMs: 200_000, contasNaoVarridas: 1 },
+      },
+    ]);
+    // C was never STARTED: not even its credential was read.
+    expect(c.db.caminhos).not.toContain(caminhoDaCredencial(INT_C));
+  });
+
+  it('dentro do prazo, todas as contas são varridas e nada é truncado', async () => {
+    const c = tresContas();
+    const BASE = 9_000_000_000_000;
+
+    const r = await rodar(c, {
+      agoraMs: relogio([BASE, BASE + 1, BASE + 2, BASE + 199_999]),
+    });
+
+    expect(r.contas).toHaveLength(3);
+    expect(r.interrompidoPorPrazo).toBe(false);
+    expect(c.logs).toEqual([]);
+  });
+
+  it('o prazo NUNCA é medido contra `nowMs`: um `nowMs` de meses atrás não trunca nada (o relógio padrão)', async () => {
+    const c = tresContas();
+
+    // `nowMs` is AGORA_MS (2025-12-29); the default elapsed clock is the real one.
+    const r = await rodar(c, { nowMs: AGORA_MS - 365 * DIA_MS });
+
+    expect(r.contas).toHaveLength(3);
+    expect(r.interrompidoPorPrazo).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     linhas ilegíveis não são silêncio (S1-3)                 */
+/* -------------------------------------------------------------------------- */
+
+describe('linhas ilegíveis ou ausentes ⇒ UM warn por conta, só contagens (S1-3)', () => {
+  it('busca ilegível + detalhe ilegível + ausente + canal desconhecido ⇒ exatamente um warn, sem id de pacote', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    naShopee(c, pacoteN(3), { logistics_channel_id: null });
+    // The detail answers TWO rows that name no package — the schema's sentinel
+    // and a `-` number (this wire's absence sentinel) — omits both PACOTE and
+    // PACOTE_2 by name, and names OFG…3 with no channel.
+    c.detalhe.mockImplementationOnce(() =>
+      Promise.resolve(
+        shopeePackageDetailPayloadSchema.parse({
+          package_list: [
+            { order_sn: '' },
+            { ...c.pacotes.get(pacoteN(3)), package_number: '-' },
+            c.pacotes.get(pacoteN(3)),
+          ],
+        }),
+      ),
+    );
+    c.busca.mockResolvedValueOnce(
+      pagina([null, linhaBusca(PACOTE), linhaBusca(PACOTE_2), linhaBusca(pacoteN(3))]),
+    );
+
+    const r = unica(await rodar(c));
+
+    expect(c.enqueue).not.toHaveBeenCalled();
+    expect(c.logs).toEqual([
+      {
+        msg: '[shopee/arranjo-automatico] linhas ilegíveis ou ausentes — pacotes não avaliados',
+        meta: {
+          integracaoId: INT_A,
+          ilegiveisNaBusca: 1,
+          ilegiveisNoDetalhe: 2,
+          ausentesNoDetalhe: 2,
+          canalDesconhecidoNoDetalhe: 1,
+        },
+      },
+    ]);
+    expect(JSON.stringify(c.logs)).not.toContain('OFG');
+    esperarParticao(r);
+  });
+
+  it('quase-igual: um tick de linhas todas legíveis não loga nada', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    naShopee(c, PACOTE);
+    c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+
+    await rodar(c);
+
+    expect(c.enqueue).toHaveBeenCalledTimes(1);
+    expect(c.logs).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                            zero escritas, zero PII                          */
 /* -------------------------------------------------------------------------- */
 
@@ -1359,13 +1883,17 @@ describe('o que o tick NUNCA faz', () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(ORDER_SN);
   });
 
-  it('as partições dos contadores fecham num tick misto', async () => {
+  it('as partições dos contadores fecham num tick misto — com TODOS os contadores, os novos incluídos', async () => {
     const c = cenario();
     semearConta(c, INT_A);
     semearPedido(c, INT_A, ORDER_SN);
     naShopee(c, pacoteN(1));
     naShopee(c, pacoteN(2), { invoice_pending: { status: 'pending', pending_reason: 'x' } });
     naShopee(c, pacoteN(3), { logistics_channel_id: 90025 });
+    naShopee(c, pacoteN(5), { logistics_channel_id: null });
+    // An order with NO pedido whose import already failed today.
+    naShopee(c, pacoteN(6), { order_sn: ORDER_SN_2 });
+    c.db.seed(caminhoDaFalhaDoPedido(ORDER_SN_2, DIA_DE_AGORA_MS), { status: 'parked' });
     c.busca
       .mockResolvedValueOnce(
         pagina(
@@ -1376,7 +1904,7 @@ describe('o que o tick NUNCA faz', () => {
             linhaBusca(pacoteN(9), { is_shipment_arranged: true }),
             linhaBusca(pacoteN(8), { logistics_channel_id: CANAL_FORA }),
           ],
-          { total_count: 8, more: true, next_cursor: 'p2' },
+          { total_count: 10, more: true, next_cursor: 'p2' },
         ),
       )
       .mockResolvedValueOnce(
@@ -1384,22 +1912,36 @@ describe('o que o tick NUNCA faz', () => {
           linhaBusca(pacoteN(2)),
           linhaBusca(pacoteN(3), { logistics_channel_id: null }),
           linhaBusca(pacoteN(4)),
+          linhaBusca(pacoteN(5)),
+          linhaBusca(pacoteN(6), { order_sn: ORDER_SN_2 }),
         ]),
       );
 
     const r = unica(await rodar(c));
 
-    expect(r).toMatchObject({
-      linhas: 8,
+    expect(r).toEqual({
+      integracaoId: INT_A,
+      paginasLidas: 2,
+      totalInformado: 10,
+      linhas: 10,
       ilegiveisNaBusca: 1,
       duplicadas: 1,
       jaArranjadosNaBusca: 1,
       foraDoCanal: 1,
-      consultadosNoDetalhe: 4,
+      consultadosNoDetalhe: 6,
       ausentesNoDetalhe: 1,
+      ilegiveisNoDetalhe: 0,
       foraDoCanalNoDetalhe: 1,
+      canalDesconhecidoNoDetalhe: 1,
+      naoConsultadosPeloLimite: 0,
+      fases: { ...FASES_ZERO, programar: 2, 'nfe-pendente': 1 },
       nfePendenteNaBusca: 1,
       enfileiradosPacote: 1,
+      enfileiradosPedido: 0,
+      pedidosComFalhaHoje: 1,
+      truncada: false,
+      truncadaPor: null,
+      error: null,
     });
     esperarParticao(r);
   });
@@ -1446,8 +1988,12 @@ describe('o sweep não reimplementa nada (pinos de texto cru)', () => {
     );
   });
 
-  it('sem relógio próprio e sem a API de transação (o inventário lê o texto cru)', () => {
+  it('UM relógio só — o decorrido do prazo, INJETÁVEL, nunca chamado direto — e sem a API de transação', () => {
+    // The stamp is `deps.nowMs`; the one clock the module may hold is the
+    // DEFAULT of the injected elapsed reader (S1-6), never a call of its own.
     expect(fonte).not.toContain('Date.now(');
+    expect(codigo.split('Date.now').length - 1).toBe(1);
+    expect(codigo).toContain('deps.agoraMs ?? Date.now');
     expect(fonte).not.toContain('runTransaction');
   });
 });
@@ -1520,6 +2066,12 @@ describe('RT1 — a amostra da documentação pelo cliente REAL, até UMA tarefa
       sort: { sort_type: 1, ascending: true },
     });
     expect(corpos[1]).toMatchObject({ pagination: { page_size: 100, cursor: cursorDoc } });
+    // …and page 2 BYTE for byte too (S2-4): the same request with the doc's
+    // composite cursor VERBATIM inside `pagination`, after `page_size`.
+    expect(cursorDoc).toBe('1730437200,184066343203459');
+    expect(corposBrutos[1]).toBe(
+      '{"filter":{"package_status":2,"fulfillment_type":2,"invoice_pending":false,"logistics_channel_ids":[90011,90012,90026]},"pagination":{"page_size":100,"cursor":"1730437200,184066343203459"},"sort":{"sort_type":1,"ascending":true}}',
+    );
     expect(c.enqueue).toHaveBeenCalledTimes(1);
     expect(enfileirado(c, 0)).toEqual({
       code: 30,
@@ -1532,5 +2084,121 @@ describe('RT1 — a amostra da documentação pelo cliente REAL, até UMA tarefa
       },
     });
     expect(r).toMatchObject({ paginasLidas: 2, totalInformado: 320, truncada: false });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            as lacunas da mutação (review 3b S4: R07, R13, R14, R27, R35)     */
+/* -------------------------------------------------------------------------- */
+
+describe('as lacunas da mutação do review 3b', () => {
+  // R07: first-wins AGREES with the handler, whose lookup is a `.find` (the
+  // first match) — the pin keeps the two from deciding on different rows.
+  it('G1 — o MESMO pacote duas vezes na resposta do detalhe: a PRIMEIRA linha decide', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    naShopee(c, PACOTE);
+    const fresca = c.pacotes.get(PACOTE);
+    c.detalhe.mockImplementationOnce(() =>
+      Promise.resolve(
+        shopeePackageDetailPayloadSchema.parse({
+          package_list: [fresca, { ...fresca, is_shipment_arranged: true }],
+        }),
+      ),
+    );
+    c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+
+    const r = unica(await rodar(c));
+
+    expect(c.enqueue).toHaveBeenCalledTimes(1);
+    expect(r.fases).toMatchObject({ programar: 1, arranjado: 0 });
+    esperarParticao(r);
+  });
+
+  // R13: the OUTER cap's `??=` — a page cap that already cut the list stays the cause.
+  it('G2 — o teto de PÁGINAS que já cortou a lista continua a causa quando o de ENFILEIRADOS chega ENTRE lotes', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    let n = 0;
+    c.busca.mockImplementation(() => {
+      const linhas = Array.from({ length: 31 }, () => {
+        n += 1;
+        naShopee(c, pacoteN(n));
+        return linhaBusca(pacoteN(n));
+      });
+      return Promise.resolve(
+        pagina(linhas, { total_count: 999, more: true, next_cursor: `c${String(n)}` }),
+      );
+    });
+
+    const r = unica(await rodar(c));
+
+    expect(c.busca).toHaveBeenCalledTimes(5);
+    expect(lotesDoDetalhe(c).map((l) => l.length)).toEqual([50, 50]);
+    expect(c.enqueue).toHaveBeenCalledTimes(100);
+    expect(r.truncadaPor).toBe(TRUNCAGEM_ARRANJO.paginas);
+    esperarParticao(r);
+  });
+
+  // R14: the INNER cap's `??=`, the same promise one level down.
+  it('G3 — …e quando o de ENFILEIRADOS chega NO MEIO de um lote', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    let n = 0;
+    c.busca.mockImplementation(() => {
+      const linhas = Array.from({ length: 30 }, () => {
+        n += 1;
+        // The first 10 are arranged on the FRESH row: the 100th enqueue lands mid-lot.
+        naShopee(c, pacoteN(n), { is_shipment_arranged: n <= 10 });
+        return linhaBusca(pacoteN(n));
+      });
+      return Promise.resolve(
+        pagina(linhas, { total_count: 999, more: true, next_cursor: `c${String(n)}` }),
+      );
+    });
+
+    const r = unica(await rodar(c));
+
+    expect(lotesDoDetalhe(c).map((l) => l.length)).toEqual([50, 50, 50]);
+    expect(c.enqueue).toHaveBeenCalledTimes(100);
+    expect(r.truncadaPor).toBe(TRUNCAGEM_ARRANJO.paginas);
+    esperarParticao(r);
+  });
+
+  // R27: every unread lot is counted, not only the next one.
+  it('G4 — DOIS ou mais lotes não lidos depois do teto: todos contam em naoConsultadosPeloLimite', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    semearPedido(c, INT_A, ORDER_SN);
+    const numeros = Array.from({ length: 250 }, (_, i) => pacoteN(i + 1));
+    for (const n of numeros) naShopee(c, n);
+    c.busca.mockResolvedValueOnce(pagina(numeros.map((n) => linhaBusca(n))));
+
+    const r = unica(await rodar(c));
+
+    expect(lotesDoDetalhe(c).map((l) => l.length)).toEqual([50, 50]);
+    expect(r.naoConsultadosPeloLimite).toBe(150);
+    esperarParticao(r);
+  });
+
+  // R35: the truncation was asserted, its warn was not.
+  it('G5 — linhas sem `pagination` ⇒ UM warn, com id e contagens só', async () => {
+    const c = cenario();
+    semearConta(c, INT_A);
+    c.busca.mockResolvedValueOnce(
+      paginaSemPaginacao([linhaBusca(PACOTE, { is_shipment_arranged: true })]),
+    );
+
+    await rodar(c);
+
+    expect(c.logs).toEqual([
+      {
+        msg: '[shopee/arranjo-automatico] página sem paginação — conta truncada',
+        meta: { integracaoId: INT_A, paginasLidas: 1 },
+      },
+    ]);
   });
 });

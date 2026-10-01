@@ -696,21 +696,30 @@ const VARIAVEL_DO_MOTIVO_ARRANJO = {
  * the normal BR one — this tick is the PRIMARY signal, and its cadence is its
  * whole term in 1573's 15-minute SLA.
  *
- * Every five minutes on the minutes ≡ 2 (mod 5): every minute the other ten
- * schedules hold is a multiple of five, so this set touches none of them — a
- * property `index.test.ts` DERIVES from the crons rather than trusting this
- * sentence. `every 5 minutes` would land on all ten, against one undocumented
- * per-APP rate-limit budget.
+ * Every five minutes on the minutes ≡ 2 (mod 5): no minute shared with the
+ * eight fixed-minute crons, every one of whose minutes is a multiple of five —
+ * a property `index.test.ts` DERIVES from the crons rather than trusting this
+ * sentence. The two `every N minutes` schedules (the reprocess sweep and the
+ * backfill) have no fixed minute, so no choice of minutes here can avoid them;
+ * the test reads them ALIGNED (multiples of N from :00), the one reading under
+ * which a choice of minutes matters at all. `every 5 minutes` would land on all
+ * eight crons, against one undocumented per-APP rate-limit budget.
  *
  * ⚠️ It ships ON, with its own opt-in-to-DISABLE valve
  * `SHOPEE_ARRANJO_SWEEP_DISABLED` (exactly `'1'`), and it also stops — reading
  * NOTHING, not Firestore, not Shopee — when the arrange itself is off
- * (`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`) or the queue is
- * (`SHOPEE_TASKS_DISABLED`): every task it could enqueue would end in
- * `desligado` or in a persisted `failed` row.
+ * (`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`: every task would only re-run the frete
+ * merge and answer `desligado`) or the queue is (`SHOPEE_TASKS_DISABLED`): no
+ * task would land at all, and the scheduler's `ShopeeTasksDisabledError` is
+ * inside `erroContidoPorConta`, so learning it by a catch would read as N
+ * contained per-conta failures under a green tick. The sweep READS that valve
+ * before deciding, rather than catching the throw.
  *
- * ⚠️ It writes NOTHING to Firestore and runs no transaction; the only guard
- * between it, a push and an operator's click is Shopee's own
+ * ⚠️ Its own code writes NOTHING to Firestore and runs no transaction (a conta
+ * whose access token is due pays the token store's renewal lease inside its
+ * first Shopee call, as every shop-signed caller does; a dead grant is skipped
+ * before any); the only guard between it, a push and an operator's click is
+ * Shopee's own
  * (`is_shipment_arranged`, `package_already_shipped`). It ENQUEUES and it is
  * Shop-signed: the same `TASKS_INVOKER_SA` requirement as the lost-push sweep,
  * the backfill and the settlement sweep, plus a live access token per conta.
@@ -720,9 +729,19 @@ export const sweepShopeeAutoArrange = onSchedule(
     schedule: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
     timeZone: 'America/Sao_Paulo',
     secrets: SHOPEE_SECRETS,
-    // ⚠️ Deliberately BELOW the 300 s between ticks, and NOT the 540 every other
-    // per-conta sweep here carries: two ticks can never overlap, so a slow tick
-    // cannot hand the next one the same packages to enqueue twice. The ceiling
+    // ⚠️ Deliberately BELOW the 300 s between ticks, and NOT the 540 the other
+    // per-conta sweeps here carry, so that a slow tick rarely hands the next
+    // one the same packages to enqueue twice. What holds is BOUNDED, not
+    // structural: Cloud Scheduler's attempt deadline follows this number
+    // (240 s) and the job sets no retry, so the Scheduler never starts a
+    // second attempt of one tick; and the sweep stops STARTING contas once its
+    // own per-tick budget (`PRAZO_DO_TICK_ARRANJO_MS`, 200 s — `index.test.ts`
+    // pins it below this number) is spent. Neither stops a call already in
+    // flight — a timed-out request answers 504, nothing here shows the platform
+    // killing the handler, and `shopeeCall` has no timeout of its own (#1094) —
+    // so ONE hung call can still outlive the next tick's start. The cost is a
+    // duplicate enqueue, never a double ship: the guard between arrangers is
+    // Shopee's (`is_shipment_arranged`, `package_already_shipped`). The ceiling
     // per conta is 5 search pages, 10 batched detail reads, 100 pedido reads
     // and 100 enqueues; the steady state is ONE search that answers nothing.
     timeoutSeconds: 240,
@@ -773,6 +792,11 @@ export const sweepShopeeAutoArrange = onSchedule(
       // ⚠️ Never summed with `processadas`: it counts contas connected by main
       // account only, which cannot be shop-signed at all.
       semShopId: result.semShopId,
+      // ⚠️ Never summed with `processadas` either: a dead grant — a refresh the
+      // token store stamped TERMINAL — waits for a re-consent, costs no Shopee
+      // call, and is NOT in `contas`. A count that stays above zero is a seller
+      // to call, not an outage.
+      reconexaoPendente: result.reconexaoPendente,
       processadas: result.contas.filter((conta) => conta.error === null).length,
       paginasLidas: somar((conta) => conta.paginasLidas),
       // Shopee's own `total_count` — a diagnostic, never the loop's bound.
@@ -788,6 +812,9 @@ export const sweepShopeeAutoArrange = onSchedule(
       ausentesNoDetalhe: somar((conta) => conta.ausentesNoDetalhe),
       ilegiveisNoDetalhe: somar((conta) => conta.ilegiveisNoDetalhe),
       foraDoCanalNoDetalhe: somar((conta) => conta.foraDoCanalNoDetalhe),
+      // A `null` channel on the FRESH row: UNKNOWN, not off the set, so it is
+      // kept out of register 224 — above zero reads as a schema drift.
+      canalDesconhecidoNoDetalhe: somar((conta) => conta.canalDesconhecidoNoDetalhe),
       naoConsultadosPeloLimite: somar((conta) => conta.naoConsultadosPeloLimite),
       fases,
       // Register 222's instrument: a package the `invoice_pending: false`
@@ -796,12 +823,19 @@ export const sweepShopeeAutoArrange = onSchedule(
       nfePendenteNaBusca: somar((conta) => conta.nfePendenteNaBusca),
       enfileiradosPacote: somar((conta) => conta.enfileiradosPacote),
       enfileiradosPedido: somar((conta) => conta.enfileiradosPedido),
+      // Absent-pedido orders NOT re-enqueued: today's code-3 failure row already
+      // stands, so the import failed once today and waits for the UTC day.
+      pedidosComFalhaHoje: somar((conta) => conta.pedidosComFalhaHoje),
       // A truncated conta is re-read from page 1 on the next tick — there is no
       // cursor. A count that stays high tick after tick is a conta that can no
       // longer keep up, and that is invisible in every other counter here.
       contasTruncadas: result.contas.filter((conta) => conta.truncada).length,
       // A rate limit ABORTS the tick: the contas after it were not walked at all.
       interrompidoPorLimite: result.interrompidoPorLimite,
+      // The tick's own budget (`PRAZO_DO_TICK_ARRANJO_MS`) was spent: no conta
+      // after the last one started was walked. The next tick starts again from
+      // the first conta, so a persistently slow head starves the same tail.
+      interrompidoPorPrazo: result.interrompidoPorPrazo,
       errorCount: erros.length,
       // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
       // process — they are separate deployments.
