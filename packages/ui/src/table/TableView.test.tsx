@@ -173,6 +173,87 @@ function wrap(node: React.ReactNode) {
 }
 
 describe('TableView', () => {
+  describe('named presets', () => {
+    const predicate = {
+      and: [
+        { field: 'tipo', op: 'eq' as const, value: '0' },
+        {
+          or: [
+            { field: 'nome', op: 'eq' as const, value: 'Alice' },
+            { field: 'nome', op: 'eq' as const, value: 'Bob' },
+          ],
+        },
+      ],
+    };
+    const presetFilters = [
+      {
+        key: 'inicioDespacho',
+        label: 'Despacho',
+        formatValue: () => 'Canal A · Faltam',
+        resolve: (filter: { value: unknown }) =>
+          filter.value === 'valid'
+            ? { predicate, orderBy: { field: 'nome', direction: 'desc' as const } }
+            : { error: 'Filtro de despacho inválido' },
+      },
+    ];
+    it('passes its tree server-side without losing projection/pagination and clears its chip', () => {
+      searchParamsRef.current = new URLSearchParams('inicioDespacho=eq:valid&pages=2');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          presetFilters={presetFilters}
+          defaultColumns={['nome']}
+          pageSize={10}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          predicate,
+          select: ['nome'],
+          limit: 20,
+          orderBy: [{ field: 'nome', direction: 'desc' }],
+        }),
+      );
+      expect(screen.getByText('Despacho: Canal A · Faltam')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+      expect(new URL(window.location.href).searchParams.has('inicioDespacho')).toBe(false);
+    });
+    it('passes its tree to the classic query builder', () => {
+      searchParamsRef.current = new URLSearchParams('inicioDespacho=eq:valid');
+      pipelineSupportedRef.current = false;
+      buildQuerySpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          presetFilters={presetFilters}
+        />,
+      );
+      expect(buildQuerySpy).toHaveBeenCalledWith(expect.anything(), expect.any(Array), predicate);
+    });
+    it.each(['eq:bad', 'bad', 'other:valid'])('fails closed for %s', (raw) => {
+      searchParamsRef.current = new URLSearchParams({ inicioDespacho: raw });
+      buildPipelineSpy.mockClear();
+      buildQuerySpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          presetFilters={presetFilters}
+        />,
+      );
+      expect(screen.getByText('Filtro de despacho inválido')).toBeTruthy();
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      expect(buildQuerySpy).not.toHaveBeenCalled();
+      expect(screen.queryByText('Alice')).toBeNull();
+    });
+  });
   afterEach(() => {
     // useLocalStorage persists visible columns; clear so cases don't leak.
     localStorage.clear();

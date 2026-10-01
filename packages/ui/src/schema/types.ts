@@ -58,7 +58,7 @@ export interface FieldDescriptor {
 export type FilterableField = Pick<
   FieldDescriptor,
   'key' | 'kind' | 'label' | 'enumValues' | 'dateUnit'
->;
+> & { preset?: boolean };
 
 /**
  * A single column filter — the value emitted by a ColumnFilter / virtual

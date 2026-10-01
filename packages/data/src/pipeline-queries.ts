@@ -14,6 +14,7 @@ import {
   documentId,
   documentMatches,
   equal,
+  equalAny,
   field,
   greaterThan,
   greaterThanOrEqual,
@@ -23,6 +24,7 @@ import {
   regexContains,
   startsWith,
 } from 'firebase/firestore/pipelines';
+import { mapQueryPredicate, type QueryPredicate } from '@delfrance/schemas';
 
 /**
  * Field alias under which `buildPipeline` projects the document id when a
@@ -111,6 +113,8 @@ export interface PipelineSpec {
    * "filter icon" affordance in each TableView column header.
    */
   filters?: PipelineFieldFilter[];
+  /** A typed AND/OR tree, combined with the scalar filters. */
+  predicate?: QueryPredicate;
   orderBy?: PipelineOrderSpec[];
   /**
    * Project only these fields (Pipeline `select` stage) to cut data
@@ -271,6 +275,17 @@ export function buildSimilarityRegExp(term: string): RegExp | null {
   return new RegExp(pattern.replace(/^\(\?i\)/, ''), 'i');
 }
 
+export function pipelinePredicate(predicate: QueryPredicate): BooleanExpression {
+  return mapQueryPredicate(predicate, {
+    and: (children) =>
+      children.length === 1 ? children[0]! : and(children[0]!, children[1]!, ...children.slice(2)),
+    or: (children) =>
+      children.length === 1 ? children[0]! : or(children[0]!, children[1]!, ...children.slice(2)),
+    leaf: (leaf) =>
+      leaf.op === 'in' ? equalAny(field(leaf.field), [...leaf.value]) : filterExpr(leaf),
+  });
+}
+
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
   // Only `array-contains-any` takes a candidate LIST; every other op compares
   // against a single scalar. The type on `PipelineFieldFilter.value` admits
@@ -393,6 +408,8 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
         ? pipe.where(exprs[0]!)
         : pipe.where(and(exprs[0]!, exprs[1]!, ...exprs.slice(2)));
   }
+
+  if (spec.predicate) pipe = pipe.where(pipelinePredicate(spec.predicate));
 
   if (spec.orderBy?.length) {
     const orderings = spec.orderBy.map((o) =>

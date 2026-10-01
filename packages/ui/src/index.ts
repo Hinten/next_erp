@@ -24,6 +24,7 @@ export type {
 
 // Table primitives
 export { TableView, type TableViewProps } from './table/TableView';
+export type { TablePresetFilter } from './table/presetFilters';
 export { ColumnPicker, type ColumnPickerItem, type ColumnPickerProps } from './table/ColumnPicker';
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export { useCollectionMonitor, type CollectionMonitorResult } from './table/useCollectionMonitor';
