@@ -12,6 +12,7 @@ import {
   MOD_BCST,
   MOD_BCST_LABELS,
   ORIGEM,
+  ORIGEM_PRODUTO_LABELS,
   configuracaoIBSCBSDraftSchema,
   configuracaoIBSCBSSchema,
   configuracaoICMSSchema,
@@ -23,8 +24,52 @@ import {
   nveField,
   nveCarriesValue,
   nveFromScalar,
+  origemSchema,
   taxConfigFields,
 } from './tribute';
+
+describe('origemSchema — merchandise origin shared by fiscal defaults and snapshots', () => {
+  it('preserves the named SEFAZ wire codes', () => {
+    expect(ORIGEM).toEqual({
+      nacional: '0',
+      estrangeiraImportacaoDireta: '1',
+      estrangeiraMercadoInterno: '2',
+      nacionalConteudoImportacaoAte70: '3',
+      nacionalProcessoProdutivoBasico: '4',
+      nacionalConteudoImportacaoAte40: '5',
+      estrangeiraImportacaoDiretaSemSimilar: '6',
+      estrangeiraMercadoInternoSemSimilar: '7',
+      nacionalConteudoImportacaoAcima70: '8',
+    });
+  });
+
+  it('the enum, named constants and labels cover exactly the nine wire codes', () => {
+    const members = [...origemSchema.options].sort();
+    expect(members).toEqual(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
+    expect(Object.values(ORIGEM).sort()).toEqual(members);
+    expect(Object.keys(ORIGEM_PRODUTO_LABELS).sort()).toEqual(members);
+    expect(Object.values(ORIGEM_PRODUTO_LABELS).every((label) => label.length > 0)).toBe(true);
+  });
+
+  it.each(origemSchema.options)('round-trips origin %s in both tax-object schemas', (origem) => {
+    expect(impostoSchema.parse({ origem }).origem).toBe(origem);
+    expect(impostoPersistidoSchema.parse({ origem }).origem).toBe(origem);
+  });
+
+  it.each(['9', '00', '', 0, 1, 2, 3, 4, 5, 6, 7, 8])('rejects invalid origin %j', (origem) => {
+    expect(origemSchema.safeParse(origem).success).toBe(false);
+    expect(impostoSchema.safeParse({ origem }).success).toBe(false);
+    expect(impostoPersistidoSchema.safeParse({ origem }).success).toBe(false);
+  });
+
+  it('still requires a non-null origin in a tax object', () => {
+    for (const schema of [impostoSchema, impostoPersistidoSchema]) {
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ origem: null }).success).toBe(false);
+      expect(schema.safeParse({ origem: undefined }).success).toBe(false);
+    }
+  });
+});
 
 describe('configuracaoICMSSchema — Simples Nacional', () => {
   it('round-trips a CSOSN 101 config (com crédito)', () => {

@@ -9,22 +9,6 @@ const PERM_IMPOSTO_PRODUTO_WRITE = 1n << 76n;
 const PERM_IMPOSTO_PRODUTO_DELETE = 1n << 77n;
 
 /**
- * Origem da mercadoria (ICMS) — single-digit codes 0–8 (Flutter
- * `OrigemProdutoImposto`). Exposed for the Dados Gerais select.
- */
-export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
-  '0': '0 - Nacional',
-  '1': '1 - Estrangeira - Importação direta',
-  '2': '2 - Estrangeira - Adquirida no mercado interno',
-  '3': '3 - Nacional, conteúdo de importação 40%–70%',
-  '4': '4 - Nacional, processos produtivos básicos',
-  '5': '5 - Nacional, conteúdo de importação ≤ 40%',
-  '6': '6 - Estrangeira - Importação direta, sem similar nacional',
-  '7': '7 - Estrangeira - Adquirida no mercado interno, sem similar nacional',
-  '8': '8 - Nacional, conteúdo de importação > 70%',
-};
-
-/**
  * ImpostoProduto — subcoleção `produtos/{produtoId}/imposto/{operacaoId}`.
  * Per-produto Imposto override, looked up by the orchestrator's
  * `resolveItemImposto` cascade when a pedido item lacks pre-stamped `imposto`.
