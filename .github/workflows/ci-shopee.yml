@@ -12,13 +12,14 @@ name: CI — Shopee
 # their own gate. Step 22 (#1530) may move the offline job in here when it adds
 # the Firestore-only emulator job; until then the smaller blast radius wins.
 #
-# ⚠️ ONE job, SIX suite files (11 tests) since step 14: the receiver round trip
-# (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
+# ⚠️ ONE job, SEVEN suite files (12 tests) since step 15b: the receiver round
+# trip (`app/api/webhooks/shopee/route.tasks.test.ts`, 3), the mass-import one
 # (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2), the push-16 one
 # (`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts`, 1), the stock one
 # (`lib/shopee/estoque/enviarEstoque.tasks.test.ts`, 1), the price-job one
-# (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3) and the NF-e one
-# (`lib/shopee/nfe/enviarNfe.tasks.test.ts`, 1). Adding a file with
+# (`lib/shopee/precos/atualizarPrecos.tasks.test.ts`, 3), the NF-e one
+# (`lib/shopee/nfe/enviarNfe.tasks.test.ts`, 1) and the auto-arrange one
+# (`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts`, 1). Adding a file with
 # the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
 # name, no new row in the gate manifest.
 #
@@ -91,8 +92,9 @@ name: CI — Shopee
 # invented values, not credentials, and demo-erp holds no real refresh_token, so
 # a call that escapes the kill-switch answers `error_sign` rather than burning
 # anything. Keep the tasks suites on paths that need no Shopee call at all —
-# a push code whose arm makes none, or a refusal that fires before a client is
-# constructed.
+# a push code whose arm makes none, a refusal that fires before a client is
+# constructed, or (step 15b's suite) a conta with NO credential document, whose
+# token read throws before the first signed request is built.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/shopee/vitest.config.ts` EXCLUDES
 # `**/*.tasks.test.ts` (and `**/*.firestore.test.ts`, listed before that lane

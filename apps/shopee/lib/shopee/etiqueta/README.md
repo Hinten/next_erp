@@ -14,12 +14,15 @@ has the label's bytes, a question for the operator, a refusal, or no time left.
 It holds nothing between calls: every call starts from Shopee's own answers.
 
 **What it does NOT do.** It writes no Firestore document, emits no NF-e, picks
-no agency, ships no batch of orders, and builds nothing of step 15b (#1744).
-§12 lists the rest.
+no agency and ships no batch of orders. It does not RUN step 15b's automatic
+arrange (#1744) either: that is `pedidos/arranjoAutomatico.ts`, on the step-7
+push path, and it reuses this folder's pure parts — the eligibility ladder
+(§5), the `automatico` mode (§6) and `programarPacote.ts` — rather than a copy
+of them. §12 lists the rest.
 
-Step 15 ships in two stacked PRs: PR 1 is the server (this folder, the route,
-the package's seven operations and the CLI), and PR 2 is the web. Neither is
-merged, and nothing is deployed anywhere.
+Step 15 shipped in two stacked PRs: PR 1 is the server (this folder, the route,
+the package's seven operations and the CLI), and PR 2 is the web. Both merged
+into main on 2026-10-01; deploying them is Lucas's (§15).
 
 Everything here is **offline-verified**. The step-15 sandbox probe has NOT run
 yet: it needs one fresh SG Console order. Every wire fact below comes from
@@ -33,8 +36,12 @@ is a named constant (§14).
   ONE order-read field list, the format → document-type table and the probe
   constants. A bound the WIRE states (the 50-entry batch cap, the document
   type and status spellings) is the package's, imported.
-  `motivosEtiqueta.ts` holds the twenty-nine-member `MotivoEtiquetaShopee`
-  vocabulary and its ONE total pt-BR text table, and imports nothing.
+  `motivosEtiqueta.ts` holds the thirty-member `MotivoEtiquetaShopee`
+  vocabulary and its ONE total pt-BR text table, and imports nothing. The
+  table is read two ways: as the sentence (`mensagemDoMotivoEtiqueta`) and,
+  since step 15b, as the lowercase fragment the automatic-arrange aviso embeds
+  (`fraseDoMotivoEtiqueta`); the sentence is the fragment capitalised, plus a
+  period.
   `errosEtiqueta.ts` holds THE refusal classifier (§9), which answers in that
   vocabulary.
 - **The pure decisions.** `faseEtiqueta.ts` turns what Shopee said into one
@@ -42,12 +49,17 @@ is a named constant (§14).
   `get_shipping_parameter` answer, plus the operator's choice, into a
   `ship_order` body, a question or a refusal (§6). `alvoEtiqueta.ts` is the
   pedido → conta ladder, the ONE copy the route and the CLI both run (§4).
-  No clock, no I/O, and none of them loads the classifier.
+  No clock, no I/O, and none of them loads the classifier. Since step 15b,
+  `faseEtiqueta.ts` also holds the two wire projections the runner and the
+  automatic arrange share, the announcement-1573 channel sets and the
+  arrange's eligibility (§5), and `modoDeEnvio.ts` a second chooser for when
+  there is no operator (§6).
 - **The actions.** `programarPacote.ts` arranges ONE package: the fresh
   parameter read, the chooser, the ship (§6). It is Next-free and
-  Firestore-free, because step 15b's automatic arrange will call it from the
-  step-7 push arm. `executarEtiqueta.ts` is the runner: the loop, the reads,
-  the document steps, the download and the budget (§8).
+  Firestore-free, because step 15b's automatic arrange
+  (`pedidos/arranjoAutomatico.ts`) calls it from the step-7 push arm, with the
+  `ENVIO_AUTOMATICO` sentinel. `executarEtiqueta.ts` is the runner: the loop,
+  the reads, the document steps, the download and the budget (§8).
 - **The answers.** `pendenteEtiqueta.ts` holds the 202 body type, the frozen
   pt-BR phase sentences, the NF-e outcome type and the filename; it is pure,
   so the runner that reads its sentences stays Next-free.
@@ -77,6 +89,10 @@ Outside the folder, and why each lives where it does:
   package's `shopeeCodigoCanonico`, the ONE copy the batch reader uses too.
 - `notificacoes/notificacao.ts`: push code 15 is `ack` and code 25 re-parked
   (§11).
+- `pedidos/arranjoAutomatico.ts` + `avisos/despachoAutomatico.ts`: step 15b's
+  automatic arrange and its two avisos. They reuse this folder's eligibility,
+  mode chooser, classifier and `programarPacote.ts` — never the runner, the
+  route or the CLI (§12).
 - `proxy.ts`: exposes `Content-Disposition` to a cross-origin caller, so the
   filename the route chose reaches the browser (§10).
 - `@delfrance/integrations-shopee`: the seven `v2.logistics.*` operations
@@ -214,11 +230,15 @@ own answer to a missing document (the route's 404, the CLI's
 **One package's phase** (`fasePacote`), in this order:
 
 1. The invoice first among the PRE-ARRANGE phases (`LOGISTICS_NOT_START`,
-   `LOGISTICS_READY` not arranged, an unknown token). An invoice-pending package
-   reads `LOGISTICS_NOT_START`, so a table consulted before the invoice would
-   answer "not ready" and the operator would never learn that the NF-e is what
-   blocks (§7). An arranged, collected or ineligible package IGNORES a stale
-   `invoice_pending`: it must never hold the rest of the order.
+   `LOGISTICS_READY` not arranged, an unknown token). Whether an
+   invoice-pending BR package reads `LOGISTICS_NOT_START` (step 15's
+   assumption) or `LOGISTICS_READY` (FAQ 727's `package_status 2` +
+   `invoice_pending` filter) is UNVERIFIED (register 227); the gate holds under
+   both, because both are pre-arrange phases. Under NOT_START a table consulted
+   before the invoice would answer "not ready" and the operator would never
+   learn that the NF-e is what blocks (§7). An arranged, collected or
+   ineligible package IGNORES a stale `invoice_pending`: it must never hold the
+   rest of the order.
 2. The `LOGISTICS_*` token, read with step 7's rule: an EXACT lookup, both alias
    spellings as their own keys, no trim, no case fold. The table is typed on
    step 7's own token table, so a token step 7 learns is a COMPILE error here
@@ -255,6 +275,34 @@ own answer to a missing document (the route's 404, the CLI's
 11. Any still processing ⇒ wait.
 12. All ready: ONE download group sharing ONE document type ⇒ download; else ⇒
     `baixar-por-pacote`.
+
+**The observations come from ONE pair of readers.** `observacaoDaOrdemShopee`
+turns a `get_order_detail` row into the order observation (the status, FBS and
+the package numbers through step 7's string reader, deduped in Shopee's order),
+and `observacaoDoPacoteShopee` turns a FRESH `get_package_detail` row into the
+package observation, with the ONE `invoice_pending` fold (trimmed,
+lower-cased, exactly `pending`). The runner layers only its in-call memory on
+top — a package it just shipped stays arranged, a tracking number it read
+survives a re-read that shows none — and step 15b's automatic arrange reads
+them as they are, so the button and the arrange cannot disagree about a phase.
+A test pins the fold as raw text to `faseEtiqueta.ts` alone.
+
+**The automatic arrange's eligibility (step 15b).** Announcement 1573 obliges
+the seller's system to arrange the Entrega Turbo channels by itself.
+`CANAIS_ARRANJO_AUTOMATICO` (90011, 90012, 90026) and
+`CANAIS_ETIQUETA_COM_PRAZO` (90011 and 90012, the 1-hour print alert — 1573
+leaves 90026 out) live here beside their predicates: channel ids, never
+`shipping_carrier`, and a fact the WIRE states rather than a bound we chose,
+which is why they are not in `constantesEtiqueta.ts`.
+`elegibilidadeDoArranjoAutomatico` checks the CHANNEL first — an
+invoice-pending Xpress package says `fora-do-canal`, never "a Turbo package
+waiting for its NF-e" — and then `fasePacote` itself: `candidato` is exactly
+"on a 1573 channel and `programar`", and any other phase is reported as it is.
+`decidirArranjoAutomatico` then runs `decidirProximaAcao` over that one
+package, so FBS, `CANCELLED`, `IN_CANCEL` (refused before any parameter read)
+and whether the ship names the package (the ORDER's package count, never the
+row) are this section's rules, not a copy. A document-step action cannot follow
+a `candidato`; if one ever did, it answers `status-desconhecido`.
 
 ## 6. The shipping mode, and the one irreversible call
 
@@ -335,6 +383,40 @@ means nothing was arranged, so the same body goes once more without it.
 - A slot or address Shopee refuses AFTER offering it is asked again, marked
   stale; if this read leaves nothing to ask, the call waits for the next read.
 
+**No operator: the `automatico` mode (step 15b).** The automatic arrange has
+nobody to ask, so `programarPacoteShopee` also takes the SENTINEL
+`ENVIO_AUTOMATICO` (`'automatico'`) as its `escolha` — a value, not a flag, so
+the runner's call is untouched and `null` still means "the operator has not
+answered yet". The sentinel routes the fresh read to `escolherModoAutomatico`,
+which decides from THIS read alone or asks; it never guesses:
+
+- **Pickup.** One eligible address ⇒ it; several ⇒ the UNIQUE one the seller
+  also marked `default_address` (the question's `principal`); none or two ⇒
+  undecided. Slots: zero ⇒ no `pickup_time_id` is sent; one ⇒ it; several ⇒
+  the UNIQUE `recommended` one; none or two ⇒ undecided. ⚠️ There is no
+  "first slot" fallback: `recommended` is Shopee's suggestion, and the earliest
+  date would be the ERP's guess.
+- **Dropoff** and **`non_integrated`** follow the operator chooser's own rules
+  and refusals.
+- **A decided pickup wins** even when a dropoff is buildable (a Turbo rider
+  collects). ⚠️ A pickup OFFERED but undecided is a `pergunta` even then —
+  never a silent switch to the mode that puts a physical trip on the seller.
+  The automatic arrange reports that question as `precisa-escolha`, and the
+  question's address and slot labels never leave its module. A pickup absent
+  or unbuildable ⇒ the dropoff; nothing buildable ⇒ the operator chooser's
+  refusal.
+- **`reescolher-envio` under the sentinel is a wait** (`aguardar`,
+  `programando`): nobody is there to answer a re-asked question, and a second
+  ship in the same call is exactly what this flow never sends. The next run
+  re-reads the parameter. The documented re-send without `package_number` is
+  unchanged.
+
+So the automatic answer REFINES the operator's unanswered one: where
+`escolherModoDeEnvio(parametro, null)` decides or refuses, it answers the
+same; where that asks, it either decides or asks the very same question. The
+refinement is one-way — an operator who has not answered is still ASKED where
+the automatic mode takes the recommended slot.
+
 ## 7. The invoice gate, and the NF-e re-drive
 
 A Brazilian order ships only with its NF-e attached (step 14). The gate is the
@@ -374,6 +456,15 @@ aviso de NF-e" sentence. `nfe-nao-encontrada` is unreachable from this route
 ⚠️ The answer is a 409, TERMINAL for the click. A 202 would make the caller
 poll, and every poll would enqueue the re-drive again. The operator clicks again
 once Shopee has the note. The CLI never re-drives: it prints "use `enviar:nfe`".
+
+**The automatic arrange never re-drives the NF-e** (step 15b). Under the same
+gate an invoice-pending package answers `nfe-pendente` with zero Shopee calls,
+and the hook raises the `nfe` class of the `despachoAutomaticoPendente` aviso,
+which asks for the emission; step 14 owns every retry of its upload
+(`pedidos/arranjoAutomatico.ts` never imports `nfe/reenvioNfe.ts`). A validated
+note reaches the arrange through no DOCUMENTED push (register 227): the next
+observation of the package arranges it — a later push for it, or the
+`search_package_list` sweep of step 15b's PR 3b (stacked).
 
 ## 8. The tracking number, the document, and the budget
 
@@ -532,16 +623,22 @@ is re-parked with NO owning step. Rows already parked stay parked.
 
 ## 12. What it does NOT do, on purpose
 
-- **Step 15b (#1744)**: the Turbo automatic arrange (announcement 1573), hooked
-  into step 7's push arm after `resolverAvisoNfeSeEncerrado`; the per-conta
-  `search_package_list` backstop sweep; and `update_tracking_status` operator
-  buttons for the seller-fulfilled channels (90021 stays non-operable end to
-  end without the Seller-Logistics SPI app). ⚠️ The coupling 15b must design
-  first: a Shopee error escaping that hook reaches the push arm's ONE narrow
-  catch, `disposicaoDaFalhaDeRastreio`, which can park or defer a delivery
-  whose frete write has already committed — so the hook classifies its own
-  failures. `programarPacoteShopee` and `escolherModoDeEnvio` carry no
-  automatic mode yet; 15b adds the parameter.
+- **Running step 15b's automatic arrange (#1744).** It is
+  `pedidos/arranjoAutomatico.ts`, called by step 7's push handler — after the
+  frete write and the NF-e and despacho aviso resolvers — through
+  `deps.arranjar`, which only the push arm supplies (`rastrear:pedido` never
+  arranges). It reuses §5's eligibility, §6's `automatico` mode and
+  `programarPacote.ts`; its alerts are `avisos/despachoAutomatico.ts`'s. ⚠️ A
+  Shopee error escaping it would reach the push arm's ONE narrow catch,
+  `disposicaoDaFalhaDeRastreio`, which can park or defer a delivery whose
+  frete write has already committed — so every Shopee answer comes back as a
+  value (`acaoArranjo`), and only our own misconfiguration, a gRPC failure or
+  an unknown error escapes, each a `throw` there (plus a `ZodError` from its
+  aviso writer, which parks as a mapper bug). Its `search_package_list`
+  sweep is step 15b's PR 3b (stacked). The `update_tracking_status` operator
+  buttons for the seller-fulfilled channels were DEFERRED (C5) to the
+  Seller-Logistics SPI-app decision, so none exists, and 90021 stays
+  non-operable end to end.
 - **`printLabelId` and `codRastreio`** (§11).
 - **An agency (branch) picker.** The Seller Centre is the picker (§6).
 - **`batch_ship_order`, `mass_ship_order`, `search_package_list`.** One order
@@ -602,7 +699,10 @@ The rows with no constant, each already handled both ways:
 - **212, 213, 216** — what the THERMAL file contains, the PDF's page size and
   the print agent's exact MIME handling: the file and printer side, settled on
   a BR shop and the warehouse PC.
-- **214, 215** — step 15b's.
+- **214** — `update_tracking_status`'s spelling, deferred with PR 4 (C5): the
+  op is not built, and the evidence now leans `logistics_*`. **215** — Lucas's
+  Shopee ticket on announcement 1573's 15-minute clock, now three questions
+  (master plan). Step 15b's own rows are **222–230**.
 
 P8 (a download after the Console "Pickup") gives the closed-window error its
 text, which becomes a classifier needle. The SG sandbox's channels, addresses

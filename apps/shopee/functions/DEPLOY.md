@@ -94,16 +94,20 @@ locally without deploying: `node apps/shopee/functions/build.mjs` (writes
 the full servable folder at `.deploy/shopee-functions`. Both need
 `FUNCTIONS_REGION` set — `requireBuildRegion` throws without it, on purpose.
 
-⚠️ **The inline proof.** **Three** handlers reach this bundle through a
+⚠️ **The inline proof.** **Four** handlers reach this bundle through a
 **dynamic** `import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so
 the App Hosting receiver's own bundle never carries the pedido tree or the
-publish tree. The functions bundle is the half that must carry them, and the
-bundler inlining them is not something any test asserts. Check it after a build:
+publish tree. Step 15b's `arranjarPacoteAutomatico` is the fourth: the shipment
+arm imports it right after `rastrearPedidoShopee` and BEFORE calling the
+handler, so a bundle without it would THROW every code-4/30/47 delivery that
+reaches a conta — the shipment merge included, not only the arrange. The
+functions bundle is the half that must carry them, and the bundler inlining
+them is not something any test asserts. Check it after a build:
 
 ```bash
 FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
-for n in importarPedidoShopee rastrearPedidoShopee tratarPushDeAnuncio \
-         onProdutoShopeeLinkChanged; do
+for n in importarPedidoShopee rastrearPedidoShopee arranjarPacoteAutomatico \
+         tratarPushDeAnuncio onProdutoShopeeLinkChanged; do
   grep -q "$n" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
 done
 grep -q '"default"' .deploy/shopee-functions/index.js || echo 'AUSENTE database id'
@@ -111,8 +115,9 @@ grep -q '"default"' .deploy/shopee-functions/index.js || echo 'AUSENTE database 
 
 Silence is the pass: every name is in the bundle. An `AUSENTE <nome>` line says
 the dispatched function would park (step 5), never reach the shipment merge
-(step 7) or never reach the listing-lifecycle handler (step 11) instead of
-running it — green everywhere else, because nothing but this check looks.
+(step 7 — and, for `arranjarPacoteAutomatico`, step 15b's arrange with it) or
+never reach the listing-lifecycle handler (step 11) instead of running it —
+green everywhere else, because nothing but this check looks.
 `onProdutoShopeeLinkChanged` is not a dynamic import but an EXPORT, so its
 absence would mean the trigger was not deployed at all.
 
@@ -210,7 +215,7 @@ loses everything not already in the lost-push queue. That is why the receiver
 answers 204 on every path it can and never converts an enqueue failure into a
 5xx.
 
-## Runtime env (step 4's two valves + step 8's three + step 12's ten + step 13's two)
+## Runtime env (step 4's two valves + step 8's three + step 12's ten + step 13's two + step 15b's one)
 
 None of them is a secret and none belongs in Secret Manager: they are operator
 switches read with `process.env.X === '1'` at the use site (the exceptions are
@@ -296,6 +301,21 @@ route answers 503, and a self re-enqueue ends as `tasks-desabilitadas`. ⚠️
 **There is no NF-e sweep behind it**, unlike the push receiver: the aviso list
 is the worklist, and the recovery is the route or `enviar:nfe` once the valve
 lifts.
+
+**Step 15b's one follows the rule.** `SHOPEE_ARRANJO_AUTOMATICO_DISABLED` is
+read, per call, only by the automatic arrange
+(`lib/shopee/pedidos/arranjoAutomatico.ts`), which runs only in this codebase's
+shipment arm — `processShopeeNotification` and the re-drives of
+`reprocessShopeeNotifications`. ⚠️ **It SHIPS ON**: only
+the literal `1` disables it (`true`, `0`, blank and unset all leave it on — the
+lost-push valve's polarity), so a missing value can never leave an Entrega
+Turbo order un-arranged until Shopee cancels it. With it set, a candidate
+package answers `desligado` with zero Shopee calls and raises the `manual`
+`despachoAutomaticoPendente` aviso (`critico`) instead of arranging. ⚠️ So the
+first deploy of these functions into a project with live Turbo orders starts
+arranging their packages as the shipment pushes arrive; to keep the arrange off
+at the cutover, set it in that project's `.env.deploy` (or
+`.env.deploy.<project-id>`) BEFORE that deploy.
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
@@ -432,6 +452,16 @@ the wipe. Create `apps/shopee/functions/.env.deploy` (gitignored):
 # Listed for the pointer only.
 # SHOPEE_PRICE_MANUAL_DEADLINE_MS=120000
 # SHOPEE_PRICE_MANUAL_CONCURRENCY=2
+# ---- The AUTOMATIC ARRANGE (step 15b, #1744). ----
+# SHIPS ON: only the literal `1` disables it (`true`, `0`, blank and unset all
+# leave it on). With it set, an Entrega Turbo package the shipment arm could
+# arrange answers `desligado` with zero Shopee calls and raises the `manual`
+# despachoAutomaticoPendente aviso (critico) instead — Shopee cancels an order
+# on these channels that saw no dispatch attempt, so a person must arrange it.
+# ⚠️ Default ON means the first deploy into a project with live Turbo orders
+# starts calling `ship_order`; uncomment this in that project's file BEFORE the
+# deploy if the cutover should keep the arrange off.
+# SHOPEE_ARRANJO_AUTOMATICO_DISABLED=1
 ```
 
 ⚠️ The scheduled function is deployed either way — a flag only decides whether a
