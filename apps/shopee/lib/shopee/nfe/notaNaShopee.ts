@@ -64,6 +64,7 @@
 import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
 import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
 
+import { ehPedidoFbsShopee } from '../etiqueta/faseEtiqueta';
 import { pedidoForaDoBrasil } from '../pedidos/orderMapping';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
 import { MOTIVO_NFE_SHOPEE } from './errosNfe';
@@ -319,8 +320,11 @@ export function lerNotaNaShopee(
 /*                          may the order take a note?                          */
 /* -------------------------------------------------------------------------- */
 
-/** `fulfillment_flag` values, lower-case: Shopee's own fulfilment, and a cross-border seller. */
-const FULFILLMENT_SHOPEE = 'fulfilled_by_shopee';
+/**
+ * `fulfillment_flag` of a cross-border seller, lower-case. Shopee's OWN
+ * fulfilment is not spelt here: it is `ehPedidoFbsShopee`, the label and
+ * arrange gate's one fold (review 3a, Q4-2).
+ */
 const FULFILLMENT_CROSS_BORDER = 'fulfilled_by_cb_seller';
 
 /** The five deterministic reasons an order takes no upload. */
@@ -336,10 +340,14 @@ type MotivoDoPortao = (typeof MOTIVO_NFE_SHOPEE)[
  * order (the first match answers):
  *
  * 1. `pedidoForaDoBrasil(row.region)` ⇒ `pedido-nao-br`;
- * 2. `fulfillment_flag` (`trim()` + lower-case, EXACT) `fulfilled_by_shopee` ⇒
- *    `pedido-fbs` — Shopee handles that order's invoices itself;
- * 3. … `fulfilled_by_cb_seller` ⇒ `loja-cross-border` (step 13's spelling, the
- *    same fact); `fulfilled_by_local_seller`, `null` or anything else ⇒ on;
+ * 2. `ehPedidoFbsShopee(fulfillment_flag)` ⇒ `pedido-fbs` — Shopee handles that
+ *    order's invoices itself. The fold (`trim()` + lower-case, EXACT
+ *    `fulfilled_by_shopee`) is the label/arrange gate's own, imported from
+ *    `etiqueta/faseEtiqueta.ts`: a second copy here would let a new spelling
+ *    upload a note for an order the arrange refuses as FBS, or the reverse;
+ * 3. the same `trim()` + lower-case, EXACT `fulfilled_by_cb_seller` ⇒
+ *    `loja-cross-border` (step 13's spelling, the same fact);
+ *    `fulfilled_by_local_seller`, `null` or anything else ⇒ on;
  * 4. `is_international === true` (asked for through `international_label`) ⇒
  *    `pedido-exportacao` — Shopee emits the note of an export order (`ann
  *    1086`); `null` / `false` ⇒ on;
@@ -359,8 +367,10 @@ export function portaoDoPedido(
   if (pedidoForaDoBrasil(row.region)) {
     return { segue: false, motivo: MOTIVO_NFE_SHOPEE.pedidoNaoBr };
   }
+  if (ehPedidoFbsShopee(row.fulfillment_flag)) {
+    return { segue: false, motivo: MOTIVO_NFE_SHOPEE.pedidoFbs };
+  }
   const flag = row.fulfillment_flag === null ? null : row.fulfillment_flag.trim().toLowerCase();
-  if (flag === FULFILLMENT_SHOPEE) return { segue: false, motivo: MOTIVO_NFE_SHOPEE.pedidoFbs };
   if (flag === FULFILLMENT_CROSS_BORDER) {
     return { segue: false, motivo: MOTIVO_NFE_SHOPEE.lojaCrossBorder };
   }

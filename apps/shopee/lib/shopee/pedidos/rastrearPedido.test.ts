@@ -19,7 +19,7 @@ import {
   shopeePackageDetailRowSchema,
 } from '@delfrance/integrations-shopee';
 
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, increment } from '../testing/fakeDb';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import type { ShopeeNotificationPayload } from '../notificacoes/notificacao';
 import { observadoDoPacoteDetalhe, type DiagnosticoPushFrete } from './fretePushShopee';
@@ -40,7 +40,9 @@ import {
 import {
   CLASSE_DESPACHO_PENDENTE,
   RESOLUCAO_AVISO_DESPACHO,
+  acoesDeAvisoDoDespacho,
   chaveAvisoDespachoPendente,
+  chaveAvisoEtiquetaComPrazo,
   executarAcoesDeAvisoDoDespacho,
   type EncerramentoDespachoShopee,
 } from '../avisos/despachoAutomatico';
@@ -887,6 +889,7 @@ async function abrirAvisoDespachoNfe(db: FakeDb): Promise<void> {
       packageNumber: PKG_A,
       linha: linhaTurbo({ invoice_pending: { status: 'pending' } }),
       nowMs,
+      estadoFreteConfirmado: null,
     },
     [{ tipo: 'abrir-despacho', classe: CLASSE_DESPACHO_PENDENTE.nfe, motivo: 'nfe-pendente' }],
     { increment: (by: number) => ({ __increment: by }), nowMs },
@@ -976,6 +979,8 @@ describe('rastrearPedidoShopee — o arranjo automático (passo 15b): QUANDO rod
       packageNumber: PKG_A,
       linha: row,
       nowMs: AGORA_MS,
+      // The transaction's CONFIRMED estado — the READY row it just wrote.
+      estadoFreteConfirmado: ESTADO_FRETE.despachoAutorizado,
     });
     // ⚠️ A linha, nunca o `observado`: só ela carrega o que o gancho decide.
     expect(arr.entradas[0]!.linha).toBe(row);
@@ -1027,6 +1032,12 @@ describe('rastrearPedidoShopee — o arranjo automático (passo 15b): QUANDO rod
     expect(arr.entradas).toHaveLength(2);
     expect(arr.entradas[1]!.linha.fulfillment_status).toBe('LOGISTICS_NOT_START');
     expect(r.arranjo).toEqual(resultadoArranjo());
+    // ⚠️ Q2-F1: the hook is handed the transaction's CONFIRMED estado — the
+    // NEWER diary's (READY ⇒ despachoAutorizado) — never the stale row's
+    // (NOT_START ⇒ iniciado). That pair is what lets the producer refuse an
+    // open the newer fact contradicts.
+    expect(arr.entradas[1]!.estadoFreteConfirmado).toBe(ESTADO_FRETE.despachoAutorizado);
+    expect(arr.entradas[1]!.estadoFreteConfirmado).not.toBe(ESTADO_FRETE.iniciado);
   });
 
   it('os outros desfechos SEM escrita (`-sem-frete-inicial`, `-desconhecido`) também arranjam', async () => {
@@ -1212,6 +1223,127 @@ describe('rastrearPedidoShopee — o resolvedor do despacho e a ORDEM (passo 15b
   });
 });
 
+/**
+ * A hook stand-in that answers a GIVEN result and then runs the REAL producer
+ * (the table + the executor, with FakeDb's increment sentinel) on the entrada
+ * the HANDLER built — so handler → `estadoFreteConfirmado` → table → writer is
+ * production code end to end, while the arrange itself stays unloaded (this
+ * file's rule: the handler under test never loads `ship_order`).
+ */
+function arranjadorComProdutorReal(resultado: ResultadoArranjoAutomatico): ArranjadorFake {
+  const base = arranjador(resultado);
+  return {
+    ...base,
+    arranjar: async (db, client, e) => {
+      const r = await base.arranjar(db, client, e);
+      await executarAcoesDeAvisoDoDespacho(db, e, acoesDeAvisoDoDespacho(e, r), {
+        increment,
+        nowMs: e.nowMs,
+      });
+      return r;
+    },
+  };
+}
+
+const AVISO_ETIQUETA_PATH = `avisos/${chaveAvisoEtiquetaComPrazo(CONTA, PEDIDO_ID)}`;
+
+describe('rastrearPedidoShopee — a linha VELHA não reabre o que a nova resolveu (review 3a, Q2-F1)', () => {
+  it('⚠️ B: REQUEST_CREATED → PICKUP_DONE → a REQUEST_CREATED velha (`ignorado-obsoleto`) ARRANJA, mas B fica resolvido', async () => {
+    const db = pedidoSemeado();
+    const arranjado = linhaTurbo({
+      fulfillment_status: 'LOGISTICS_REQUEST_CREATED',
+      is_shipment_arranged: true,
+      update_time: T_S + 100,
+    });
+    const jaProgramado = arranjadorComProdutorReal(
+      resultadoArranjo({ desfecho: 'ja-programado', fase: 'arranjado' }),
+    );
+
+    // 1 — arranjado: B ABRE (o QUASE-ERRO — aguardandoPostagem é o pacote que
+    // o aviso existe para alertar, e não pode suprimir).
+    await rastrearPedidoShopee(asDb(db), alvo(), entregaTurbo([arranjado], jaProgramado));
+    expect(jaProgramado.entradas[0]!.estadoFreteConfirmado).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(db.store[AVISO_ETIQUETA_PATH]!.data.resolvidoEm).toBeNull();
+
+    // 2 — PICKUP_DONE: o resolvedor entre passos fecha B `coletado`.
+    const r2 = await rastrearPedidoShopee(
+      asDb(db),
+      alvo({ nowMs: AGORA_MS + 60_000 }),
+      entregaTurbo(
+        [linhaTurbo({ fulfillment_status: 'LOGISTICS_PICKUP_DONE', update_time: T_S + 600 })],
+        arranjadorComProdutorReal(
+          resultadoArranjo({ desfecho: 'nao-elegivel', fase: 'janela-fechada' }),
+        ),
+      ),
+    );
+    expect(r2.estadoEscrito).toBe(ESTADO_FRETE.postado);
+    const fechado = { ...db.store[AVISO_ETIQUETA_PATH]!.data };
+    expect(fechado.resolucaoMotivo).toBe(RESOLUCAO_AVISO_DESPACHO.coletado);
+
+    // 3 — uma réplica atrasada devolve a linha de (1).
+    const r3 = await rastrearPedidoShopee(
+      asDb(db),
+      alvo({ nowMs: AGORA_MS + 120_000 }),
+      entregaTurbo([arranjado], jaProgramado),
+    );
+
+    expect(r3.acao).toBe('ignorado-obsoleto');
+    // O arranjo AINDA rodou (mutante 35), com o estado CONFIRMADO mais novo.
+    expect(jaProgramado.entradas).toHaveLength(2);
+    expect(jaProgramado.entradas[1]!.estadoFreteConfirmado).toBe(ESTADO_FRETE.postado);
+    // …e B não foi reaberto: nem `resolvidoEm`, nem `criadoEm` andaram.
+    expect(db.store[AVISO_ETIQUETA_PATH]!.data).toEqual(fechado);
+  });
+
+  it('⚠️ A nfe: READY+pendente → REQUEST_CREATED → a READY+pendente velha não reabre A', async () => {
+    const db = pedidoSemeado();
+    const pendente = linhaTurbo({
+      invoice_pending: { status: 'pending' },
+      update_time: T_S + 100,
+    });
+    const nfePendente = arranjadorComProdutorReal(
+      resultadoArranjo({ desfecho: 'nfe-pendente', fase: 'nfe-pendente' }),
+    );
+
+    // 1 — a nota pendente num pacote PRÉ-arranjo: A ABRE (o QUASE-ERRO).
+    await rastrearPedidoShopee(asDb(db), alvo(), entregaTurbo([pendente], nfePendente));
+    expect(nfePendente.entradas[0]!.estadoFreteConfirmado).toBe(ESTADO_FRETE.despachoAutorizado);
+    expect(db.store[AVISO_DESPACHO_NFE_PATH]!.data.resolvidoEm).toBeNull();
+
+    // 2 — arranjado em outro lugar: o resolvedor fecha A `arranjado`.
+    await rastrearPedidoShopee(
+      asDb(db),
+      alvo({ nowMs: AGORA_MS + 60_000 }),
+      entregaTurbo(
+        [
+          linhaTurbo({
+            fulfillment_status: 'LOGISTICS_REQUEST_CREATED',
+            is_shipment_arranged: true,
+            update_time: T_S + 600,
+          }),
+        ],
+        arranjadorComProdutorReal(
+          resultadoArranjo({ desfecho: 'ja-programado', fase: 'arranjado' }),
+        ),
+      ),
+    );
+    const fechado = { ...db.store[AVISO_DESPACHO_NFE_PATH]!.data };
+    expect(fechado.resolucaoMotivo).toBe(RESOLUCAO_AVISO_DESPACHO.arranjado);
+
+    // 3 — a réplica atrasada devolve a linha de (1).
+    const r3 = await rastrearPedidoShopee(
+      asDb(db),
+      alvo({ nowMs: AGORA_MS + 120_000 }),
+      entregaTurbo([pendente], nfePendente),
+    );
+
+    expect(r3.acao).toBe('ignorado-obsoleto');
+    expect(nfePendente.entradas).toHaveLength(2);
+    expect(nfePendente.entradas[1]!.estadoFreteConfirmado).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(db.store[AVISO_DESPACHO_NFE_PATH]!.data).toEqual(fechado);
+  });
+});
+
 describe('rastrearPedidoShopee — o arranjo na ÚNICA linha de log (passo 15b)', () => {
   it('49 — campos PLANOS, lista FECHADA, e nem `rotulo` nem o valor da preparação', async () => {
     const SENTINELA_ROTULO = 'SENTINELA-ENDERECO-DE-COLETA-DO-VENDEDOR';
@@ -1269,5 +1401,25 @@ describe('rastrearPedidoShopee — o arranjo na ÚNICA linha de log (passo 15b)'
       entregaTurbo([linhaTurbo()], arranjador()),
     );
     expect(linhasDoBraco()[0]!.temPreparacaoAutomatica).toBe(false);
+  });
+
+  it('Q3-1 — ⚠️ QUASE-ERRO: o zero-fill da Shopee (`preparation_end_time: 0`) NÃO é presença', async () => {
+    // Esta página zero-preenche int64 ausentes (a própria amostra manda
+    // `pickup_done_time: 0`): ler `0` como "presente" responderia o registro 230
+    // com "sim" para toda loja cujas linhas zero-preenchem.
+    for (const [preparacao, esperado] of [
+      [0, false],
+      // Abaixo do piso de 2020 também não é um prazo.
+      [1_000_000_000, false],
+      [1_788_980_017, true],
+    ] as const) {
+      infos.length = 0;
+      await rastrearPedidoShopee(
+        asDb(pedidoSemeado()),
+        alvo(),
+        entregaTurbo([linhaTurbo({ preparation_end_time: preparacao })], arranjador()),
+      );
+      expect(linhasDoBraco()[0]!.temPreparacaoAutomatica, String(preparacao)).toBe(esperado);
+    }
   });
 });

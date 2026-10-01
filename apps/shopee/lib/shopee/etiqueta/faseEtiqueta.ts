@@ -17,6 +17,11 @@
  * {@link elegibilidadeDoArranjoAutomatico} / {@link decidirArranjoAutomatico}
  * live here. A second copy of a projection — above all of the
  * `invoice_pending` fold — is the "two copies" smell the root CLAUDE.md names.
+ * So do the two predicates other folders need: {@link ehPedidoFbsShopee} (the
+ * ONE FBS fold — step 14's NF-e gate reads it too) and
+ * {@link faseTemPortaoDeNfe} (which phases the invoice gate decides — step
+ * 15b's aviso rule N reads it). `umaSoCopia.test.ts` pins the wire tokens of
+ * all of them, in code, to this file.
  *
  * ## The package phase ({@link fasePacote})
  *
@@ -115,7 +120,7 @@ export type FaseEtiqueta =
 export interface ObservacaoOrdemEtiqueta {
   /** `order_status`, verbatim (a base field — never asked for). */
   readonly status: string | null;
-  /** `fulfillment_flag` trimmed + lower-cased `=== 'fulfilled_by_shopee'`. */
+  /** {@link ehPedidoFbsShopee} over `fulfillment_flag`. */
   readonly fbs: boolean;
   /** `package_list[].package_number`, in Shopee's order. */
   readonly pacotes: readonly string[];
@@ -249,14 +254,51 @@ const FASE_DO_TOKEN = {
 /**
  * The phases on which `invoice_pending` still decides (R4-5): the pre-arrange
  * ones — `nao-pronto` and a READY package nobody arranged, BEFORE its
- * `pending_terms` are read — plus an unknown token. Every other phase ignores
- * the flag (see the module docblock).
+ * `pending_terms` are read (`programar`, and `retido`, which is `programar`
+ * refined by those terms) — plus an unknown token. Every other phase ignores
+ * the flag (see the module docblock). Read only through
+ * {@link faseTemPortaoDeNfe}.
  */
 const FASES_DO_PORTAO_DA_NFE: ReadonlySet<FasePacote> = new Set<FasePacote>([
   'nao-pronto',
   'programar',
+  'retido',
   'desconhecido',
 ]);
+
+/**
+ * Whether a PENDING invoice turns this phase into `nfe-pendente` — the ONE
+ * answer to "did the invoice gate decide on this package?", read by
+ * {@link fasePacote} itself and by step 15b's aviso rule N (`avisos/
+ * despachoAutomatico.ts`, reconcile R-d), so the two cannot drift apart by
+ * comment (review 3a, Q4-3). Over every phase `fasePacote` answers:
+ *
+ * - `true` for `nao-pronto`, `programar`, `retido` and `desconhecido`: had the
+ *   invoice been pending, the answer would have been `nfe-pendente` — the
+ *   invoice was READ for a package answered on one of them, and did not hold
+ *   it.
+ * - `false` for `arranjado`, `janela-fechada` and `inelegivel`: there a
+ *   `pending` is stale and never read, so the phase says nothing about the
+ *   invoice either way.
+ * - `false` for `nfe-pendente` itself: it is the gate's VERDICT, not a phase
+ *   the gate guards — `true` there would let a caller read "the gate passed"
+ *   off the one phase that says it did not.
+ *
+ * ⚠️ `retido` is IN although `fasePacote` never tests it: the hold is read
+ * AFTER the gate, so a held package was `programar` when its invoice was
+ * checked. And `desconhecido` means what `fasePacote` means by it — an unknown
+ * TOKEN, whose invoice WAS read; a caller that labels an UNOBSERVED package
+ * `desconhecido` itself ({@link decidirProximaAcao}'s rule 3) must not ask this.
+ * ⚠️ "Read and not pending" is not "validated" everywhere: announcement 1521
+ * returns the pending reason only in a shipment-ready status, and nothing says
+ * an unknown token is one — a caller that turns `true` into "the NF-e is
+ * clear" (rule N) decides that inference for itself.
+ * `faseEtiqueta.test.ts` proves the predicate against `fasePacote` over every
+ * token × arranged × terms combination, both ways.
+ */
+export function faseTemPortaoDeNfe(fase: FasePacote): boolean {
+  return FASES_DO_PORTAO_DA_NFE.has(fase);
+}
 
 /**
  * A `pending_terms` entry that says something: step 7's string reader, so
@@ -296,7 +338,7 @@ export function faseDoTokenShopee(token: string | null): FasePacote {
 export function fasePacote(p: ObservacaoPacoteEtiqueta): FasePacote {
   const doToken = faseDoTokenShopee(p.fulfillment);
   const fase: FasePacote = doToken === 'programar' && p.arranjado === true ? 'arranjado' : doToken;
-  if (p.nfePendente && FASES_DO_PORTAO_DA_NFE.has(fase)) return 'nfe-pendente';
+  if (p.nfePendente && faseTemPortaoDeNfe(fase)) return 'nfe-pendente';
   if (fase !== 'programar') return fase;
   return temTermoPendente(p.termosPendentes) ? 'retido' : 'programar';
 }
@@ -308,6 +350,22 @@ const NF_PENDENTE = 'pending';
 
 /** `fulfillment_flag` of an order Shopee fulfils itself, trimmed + lower-cased. */
 const FULFILLMENT_SHOPEE = 'fulfilled_by_shopee';
+
+/**
+ * Whether Shopee fulfils the order itself (FBS): the ONE fold of
+ * `fulfillment_flag?.trim().toLowerCase() === 'fulfilled_by_shopee'` — trim,
+ * lower-case, then an EXACT match. Read by {@link observacaoDaOrdemShopee} (the
+ * label route and the automatic arrange refuse `pedido-fbs`) and by step 14's
+ * `nfe/notaNaShopee.ts` (`portaoDoPedido` skips the upload) — so the arrange
+ * and the NF-e can never disagree on which order is FBS (review 3a, Q4-2).
+ *
+ * EQUAL: `' Fulfilled_By_Shopee '` is FBS. DISTINCT: `fulfilled_by_shopee_x`,
+ * `fulfilled by shopee`, `fulfilled_by_cb_seller`, a blank, `null` and an
+ * absent field — a prefix or substring test would refuse a seller's own order.
+ */
+export function ehPedidoFbsShopee(fulfillmentFlag: string | null | undefined): boolean {
+  return fulfillmentFlag?.trim().toLowerCase() === FULFILLMENT_SHOPEE;
+}
 
 /**
  * A `get_order_detail` row → the ORDER observation: the ONE copy the label
@@ -328,7 +386,7 @@ export function observacaoDaOrdemShopee(row: ShopeeOrderDetailRow | null): Obser
     .filter((n): n is string => n !== null);
   return {
     status: row?.order_status ?? null,
-    fbs: row?.fulfillment_flag?.trim().toLowerCase() === FULFILLMENT_SHOPEE,
+    fbs: ehPedidoFbsShopee(row?.fulfillment_flag),
     pacotes: [...new Set(numeros)],
   };
 }

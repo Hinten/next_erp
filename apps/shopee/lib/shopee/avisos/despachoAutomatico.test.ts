@@ -23,12 +23,20 @@ import {
 // este produtor entrega (quais campos ele declara, quais OMITE) e a chave que
 // ele escreve, e um escritor mockado não mostra nenhuma das duas.
 // `nfe/avisoNfe.test.ts` é o precedente do arnês.
-import { CANAIS_ARRANJO_AUTOMATICO, type FasePacote } from '../etiqueta/faseEtiqueta';
+import {
+  CANAIS_ARRANJO_AUTOMATICO,
+  fasePacote,
+  observacaoDoPacoteShopee,
+  type FasePacote,
+} from '../etiqueta/faseEtiqueta';
 import { MOTIVO_ETIQUETA_SHOPEE, fraseDoMotivoEtiqueta } from '../etiqueta/motivosEtiqueta';
-import type {
-  DesfechoArranjoAutomatico,
-  EntradaArranjoAutomatico,
-  ResultadoArranjoAutomatico,
+// The motivo → desfecho table is the ONE authority over which motivos reach the
+// `manual` row (a VALUE here, in the test — the module itself imports types only).
+import {
+  DESFECHO_DO_MOTIVO,
+  type DesfechoArranjoAutomatico,
+  type EntradaArranjoAutomatico,
+  type ResultadoArranjoAutomatico,
 } from '../pedidos/arranjoAutomatico';
 import { ESCADA_FRETE_SHOPEE, ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
@@ -36,6 +44,7 @@ import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import {
   CLASSE_DESPACHO_PENDENTE,
   ESTADOS_FRETE_CANCELADO_SHOPEE,
+  ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE,
   ESTADOS_FRETE_POS_COLETA_SHOPEE,
   MOTIVO_DESPACHO_PROPRIO,
   RESOLUCAO_AVISO_DESPACHO,
@@ -133,6 +142,7 @@ function entrada(over: Partial<EntradaArranjoAutomatico> = {}): EntradaArranjoAu
     packageNumber: PACOTE,
     linha: linha(),
     nowMs: AGORA_MS,
+    estadoFreteConfirmado: null,
     ...over,
   };
 }
@@ -158,6 +168,60 @@ function acoes(
   over: Partial<ResultadoArranjoAutomatico> = {},
 ): readonly AcaoDeAvisoDespacho[] {
   return acoesDeAvisoDoDespacho(entrada(), resultado(desfecho, over));
+}
+
+/** {@link acoes}, with the frete transaction's CONFIRMED estado on the entrada. */
+function acoesCom(
+  estadoFreteConfirmado: EstadoFrete | null,
+  desfecho: DesfechoArranjoAutomatico,
+  over: Partial<ResultadoArranjoAutomatico> = {},
+): readonly AcaoDeAvisoDespacho[] {
+  return acoesDeAvisoDoDespacho(entrada({ estadoFreteConfirmado }), resultado(desfecho, over));
+}
+
+/**
+ * One REAL row per phase `fasePacote` answers with the invoice CLEAR — through
+ * the label route's own projection — so rule N is measured against the gate
+ * itself, never against a phase list written here (review 3a, Q4-3).
+ */
+const LINHA_DA_FASE: Readonly<
+  Record<Exclude<FasePacote, 'nfe-pendente'>, Record<string, unknown>>
+> = {
+  'nao-pronto': { fulfillment_status: 'LOGISTICS_NOT_START' },
+  programar: { fulfillment_status: 'LOGISTICS_READY', is_shipment_arranged: false },
+  retido: {
+    fulfillment_status: 'LOGISTICS_READY',
+    is_shipment_arranged: false,
+    pending_terms: ['TERMO_DE_TESTE'],
+  },
+  arranjado: { fulfillment_status: 'LOGISTICS_REQUEST_CREATED' },
+  'janela-fechada': { fulfillment_status: 'LOGISTICS_PICKUP_DONE' },
+  inelegivel: { fulfillment_status: 'LOGISTICS_INVALID' },
+  desconhecido: { fulfillment_status: 'LOGISTICS_TOKEN_INVENTADO' },
+};
+
+function observacaoDaFase(fase: Exclude<FasePacote, 'nfe-pendente'>, nfePendente: boolean) {
+  return observacaoDoPacoteShopee(
+    shopeePackageDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      package_number: PACOTE,
+      logistics_channel_id: TURBO,
+      ...LINHA_DA_FASE[fase],
+      ...(nfePendente ? { invoice_pending: { status: 'pending' } } : {}),
+    }),
+  );
+}
+
+/**
+ * Did the REAL invoice gate decide on the way to this phase? The same package
+ * with the invoice flipped to PENDING must answer `nfe-pendente`. The phase
+ * `nfe-pendente` is the gate having fired — never "passed".
+ */
+function portaoDecidiuNaFase(fase: FasePacote): boolean {
+  if (fase === 'nfe-pendente') return false;
+  // A exceção DELIBERADA da regra N: um token desconhecido nunca fecha a linha `nfe`.
+  if (fase === 'desconhecido') return false;
+  return fasePacote(observacaoDaFase(fase, true)) === 'nfe-pendente';
 }
 
 const abrirNfe: AcaoDeAvisoDespacho = {
@@ -204,6 +268,43 @@ const SITUACAO_DESLIGADO =
 const SITUACAO_ILEGIVEL =
   'organize o envio pelo checkout ou pela Central do Vendedor — o despacho automático não ' +
   'conseguiu ler a resposta da Shopee';
+
+/**
+ * The `manual` motivos whose label-flow wording is wrong in the bell (review 3a,
+ * Q3-4) — a "clique de novo" with no button, or a refused LABEL for what was a
+ * refused SHIPMENT. NOT copied by `mensagens.test.ts` (that file copies the
+ * `nfe-pendente` and `precisa-escolha` literals only).
+ */
+const SITUACAO_SEM_ENDERECO =
+  'marque um endereço de coleta na Central do Vendedor e organize o envio por lá ou pelo ' +
+  'checkout — a loja não tem endereço de coleta para este envio';
+const SITUACAO_AGENCIA =
+  'escolha a agência e organize o envio pela Central do Vendedor — a Shopee oferece mais de uma ' +
+  'agência de postagem para este envio, e o ERP não escolhe a agência';
+const SITUACAO_MODO_NAO_SUPORTADO =
+  'organize o envio pela Central do Vendedor — a Shopee pede dados de envio que o ERP não preenche';
+const SITUACAO_ETIQUETA_INDISPONIVEL =
+  'organize o envio pela Central do Vendedor, ou pelo checkout mais tarde — a Shopee ainda não ' +
+  'libera o envio na situação atual do pedido';
+const SITUACAO_RECUSA_DESCONHECIDA =
+  'organize o envio pelo checkout ou pela Central do Vendedor — a Shopee recusou o despacho ' +
+  'automático por um motivo que o ERP não reconhece';
+
+/** Every motivo with a fragment of this module's own, and its literal. */
+const FRASES_PROPRIAS: ReadonlyMap<MotivoDespachoPendente, string> = new Map<
+  MotivoDespachoPendente,
+  string
+>([
+  [MOTIVO_ETIQUETA_SHOPEE.nfePendente, SITUACAO_NFE_PENDENTE],
+  [MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta, SITUACAO_SEM_ENDERECO],
+  [MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha, SITUACAO_AGENCIA],
+  [MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado, SITUACAO_MODO_NAO_SUPORTADO],
+  [MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel, SITUACAO_ETIQUETA_INDISPONIVEL],
+  [MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida, SITUACAO_RECUSA_DESCONHECIDA],
+  [MOTIVO_DESPACHO_PROPRIO.precisaEscolha, SITUACAO_PRECISA_ESCOLHA],
+  [MOTIVO_DESPACHO_PROPRIO.arranjoDesligado, SITUACAO_DESLIGADO],
+  [MOTIVO_DESPACHO_PROPRIO.respostaIlegivel, SITUACAO_ILEGIVEL],
+]);
 
 const URL_INTERNA = { rota: `/despacho/checkout?pedido=${PEDIDO_ID}`, campo: null };
 
@@ -295,16 +396,48 @@ describe('1 — as chaves', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('2 — fraseDoDespachoPendente', () => {
-  it('as quatro frases próprias, LITERAIS (§2.6)', () => {
-    expect(fraseDoDespachoPendente(MOTIVO_ETIQUETA_SHOPEE.nfePendente)).toBe(SITUACAO_NFE_PENDENTE);
-    expect(fraseDoDespachoPendente(MOTIVO_DESPACHO_PROPRIO.precisaEscolha)).toBe(
-      SITUACAO_PRECISA_ESCOLHA,
-    );
-    expect(fraseDoDespachoPendente(MOTIVO_DESPACHO_PROPRIO.arranjoDesligado)).toBe(
-      SITUACAO_DESLIGADO,
-    );
-    expect(fraseDoDespachoPendente(MOTIVO_DESPACHO_PROPRIO.respostaIlegivel)).toBe(
-      SITUACAO_ILEGIVEL,
+  it('as frases próprias, LITERAIS (§2.6 + review 3a, Q3-4)', () => {
+    // ÂNCORA anti-vacuidade: as quatro do §2.6 + as cinco do Q3-4.
+    expect(FRASES_PROPRIAS.size).toBe(9);
+    for (const [motivo, literal] of FRASES_PROPRIAS) {
+      expect(fraseDoDespachoPendente(motivo), motivo).toBe(literal);
+    }
+  });
+
+  it('⚠️ Q3-4: nenhuma frase que a linha `manual` pode mostrar manda "clicar de novo" ou culpa a ETIQUETA', () => {
+    // A linha `manual` abre num `recusado` (com o motivo da recusa) e nos três
+    // motivos próprios — a tabela motivo → desfecho do gancho é quem diz quais.
+    const daLinhaManual: MotivoDespachoPendente[] = [
+      ...Object.values(MOTIVO_ETIQUETA_SHOPEE).filter((m) => DESFECHO_DO_MOTIVO[m] === 'recusado'),
+      ...Object.values(MOTIVO_DESPACHO_PROPRIO),
+    ];
+    // ÂNCORA: os quatro motivos do achado estão mesmo entre os que abrem a linha.
+    for (const motivo of [
+      MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta,
+      MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha,
+      MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado,
+      MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida,
+    ]) {
+      expect(daLinhaManual, motivo).toContain(motivo);
+    }
+    for (const motivo of daLinhaManual) {
+      const frase = fraseDoDespachoPendente(motivo);
+      expect(frase, motivo).not.toMatch(/clique/i);
+      expect(frase, motivo).not.toMatch(/recusou a etiqueta/i);
+    }
+  });
+
+  it('QUASE-ERRO do Q3-4: o fluxo de ETIQUETA (a rota, com botão) segue dizendo "clique de novo"', () => {
+    // A frase própria é deste aviso; a tabela do clique não mudou.
+    for (const motivo of [
+      MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta,
+      MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha,
+      MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado,
+    ]) {
+      expect(fraseDoMotivoEtiqueta(motivo), motivo).toContain('clique de novo');
+    }
+    expect(fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida)).toContain(
+      'recusou a etiqueta',
     );
   });
 
@@ -324,9 +457,7 @@ describe('2 — fraseDoDespachoPendente', () => {
   });
 
   it('PAR IGUAL: todo outro motivo é a frase do fluxo de etiqueta, verbatim', () => {
-    const outros = Object.values(MOTIVO_ETIQUETA_SHOPEE).filter(
-      (m) => m !== MOTIVO_ETIQUETA_SHOPEE.nfePendente,
-    );
+    const outros = Object.values(MOTIVO_ETIQUETA_SHOPEE).filter((m) => !FRASES_PROPRIAS.has(m));
     // ÂNCORA anti-vacuidade.
     expect(outros.length).toBeGreaterThanOrEqual(20);
     for (const motivo of outros) {
@@ -334,10 +465,12 @@ describe('2 — fraseDoDespachoPendente', () => {
     }
   });
 
-  it('QUASE-ERRO: `nfe-pendente` tem frase PRÓPRIA — a do clique fala em imprimir a etiqueta', () => {
-    expect(fraseDoDespachoPendente(MOTIVO_ETIQUETA_SHOPEE.nfePendente)).not.toBe(
-      fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.nfePendente),
-    );
+  it('QUASE-ERRO: todo motivo do fluxo de etiqueta com frase PRÓPRIA tem frase DIFERENTE da do clique', () => {
+    const proprios = Object.values(MOTIVO_ETIQUETA_SHOPEE).filter((m) => FRASES_PROPRIAS.has(m));
+    expect(proprios).toHaveLength(6);
+    for (const motivo of proprios) {
+      expect(fraseDoDespachoPendente(motivo), motivo).not.toBe(fraseDoMotivoEtiqueta(motivo));
+    }
   });
 
   it('toda frase é um FRAGMENTO: minúscula no início, sem ponto final, sem espaço nas pontas', () => {
@@ -473,16 +606,40 @@ describe('3 — acoesDeAvisoDoDespacho (a tabela)', () => {
     expect(acoes('verificar')).toEqual([NFE_VALIDADA]);
   });
 
-  it('regra N: resolve a nfe só nas fases pré-arranjo em que o portão da nota PASSOU — mutante 57', () => {
+  it('regra N: resolve a nfe só nas fases em que o portão da nota DECIDIU e PASSOU — mutante 57', () => {
     for (const fase of FASES) {
-      const esperado = fase === 'nao-pronto' || fase === 'programar' || fase === 'retido';
       expect(
         acoes('aguardando', { fase }).some(
           (a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada',
         ),
         fase,
-      ).toBe(esperado);
+      ).toBe(portaoDecidiuNaFase(fase));
     }
+  });
+
+  it('⚠️ Q4-3: a regra N É o portão do `fasePacote` REAL — fase a fase, a nota pendente vira nfe-pendente exatamente onde ela resolve', () => {
+    const resolvidas: FasePacote[] = [];
+    for (const fase of Object.keys(LINHA_DA_FASE) as Exclude<FasePacote, 'nfe-pendente'>[]) {
+      // ÂNCORA: a linha é mesmo desta fase com a nota LIVRE.
+      expect(fasePacote(observacaoDaFase(fase, false)), fase).toBe(fase);
+      const resolve = acoes('aguardando', { fase }).some(
+        (a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada',
+      );
+      // A ÚNICA exceção: `desconhecido` passa pelo portão, mas um "não pendente"
+      // num token que o repo não sabe situar não prova que a nota validou.
+      expect(resolve, fase).toBe(
+        fase !== 'desconhecido' && fasePacote(observacaoDaFase(fase, true)) === 'nfe-pendente',
+      );
+      if (resolve) resolvidas.push(fase);
+    }
+    // QUASE-ERRO da exceção: o portão LÊ a nota no token desconhecido…
+    expect(fasePacote(observacaoDaFase('desconhecido', true))).toBe('nfe-pendente');
+    // …e mesmo assim a regra N não fecha nada nele.
+    // ÂNCORA do valor de hoje (nem vazio, nem tudo): `retido` está DENTRO — o
+    // termo pendente é lido DEPOIS do portão.
+    expect(resolvidas.sort()).toEqual(['nao-pronto', 'programar', 'retido']);
+    // QUASE-ERRO: a fase que É o veredito do portão nunca diz que ele passou.
+    expect(acoes('aguardando', { fase: 'nfe-pendente' })).toEqual([]);
   });
 
   it('VARREDURA: desfecho × fase × canal contra a tabela reescrita como predicados', () => {
@@ -530,10 +687,7 @@ describe('3 — acoesDeAvisoDoDespacho (a tabela)', () => {
           expect(
             lista.some((a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada'),
             rotulo,
-          ).toBe(
-            daRegraN.has(desfecho) &&
-              (fase === 'nao-pronto' || fase === 'programar' || fase === 'retido'),
-          );
+          ).toBe(daRegraN.has(desfecho) && portaoDecidiuNaFase(fase));
           expect(
             lista.some((a) => a.tipo === 'resolver-despacho' && a.resolucao === 'arranjado'),
             rotulo,
@@ -548,6 +702,101 @@ describe('3 — acoesDeAvisoDoDespacho (a tabela)', () => {
       }
     }
     expect(casos).toBe(13 * 8 * 3);
+  });
+
+  it('⚠️ Q2-F1: com o estado confirmado COLETADO ou CANCELADO, a linha velha não reabre B — e os resolves ficam', () => {
+    const fechamB = [...ESTADOS_FRETE_POS_COLETA_SHOPEE, ...ESTADOS_FRETE_CANCELADO_SHOPEE];
+    // ÂNCORA anti-vacuidade.
+    expect(fechamB).toHaveLength(9);
+    for (const estado of fechamB) {
+      for (const fase of ['arranjado', 'programar'] as const) {
+        expect(acoesCom(estado, 'ja-programado', { fase }), `${estado}/${fase}`).toEqual([
+          resolver('nfe', 'arranjado'),
+          resolver('manual', 'arranjado'),
+        ]);
+      }
+    }
+  });
+
+  it('⚠️ QUASE-ERRO Q2-F1: `programado` (o NOSSO ship, NESTA rodada) abre B mesmo assim — é o fato mais novo', () => {
+    // A transação confirmou o estado ANTES do ship; um pacote re-arranjado
+    // depois de um cancelamento é a ressurreição do passo 7, e um ship
+    // irreversível não perde o aviso de impressão.
+    for (const estado of [...ESTADOS_FRETE_POS_COLETA_SHOPEE, ...ESTADOS_FRETE_CANCELADO_SHOPEE]) {
+      expect(acoesCom(estado, 'programado'), estado).toEqual([
+        resolver('nfe', 'arranjado'),
+        resolver('manual', 'arranjado'),
+        { tipo: 'abrir-etiqueta' },
+      ]);
+    }
+  });
+
+  it('QUASE-ERRO Q2-F1: sem estado confirmado, arranjado (aguardandoPostagem), pré-arranjo ou suspenso, B ABRE', () => {
+    // `aguardandoPostagem` é o pacote ARRANJADO para o qual o aviso existe; e o
+    // resolvedor não fecha B em `suspenso` (a coleta falha e é re-agendada).
+    for (const estado of [
+      null,
+      ESTADO_FRETE.aguardandoPostagem,
+      ESTADO_FRETE.despachoAutorizado,
+      ESTADO_FRETE.iniciado,
+      ESTADO_FRETE.suspenso,
+    ]) {
+      expect(acoesCom(estado, 'ja-programado', { fase: 'arranjado' }), String(estado)).toEqual([
+        resolver('nfe', 'arranjado'),
+        resolver('manual', 'arranjado'),
+        { tipo: 'abrir-etiqueta' },
+      ]);
+    }
+  });
+
+  it('⚠️ Q2-F1: com o estado confirmado ARRANJADO ou ENCERRADO, a linha velha não reabre A — nenhuma classe; a regra N fica', () => {
+    // ÂNCORA anti-vacuidade.
+    expect(ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.size).toBe(8);
+    for (const estado of ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE) {
+      expect(acoesCom(estado, 'nfe-pendente', { fase: 'nfe-pendente' }), estado).toEqual([]);
+      expect(
+        acoesCom(estado, 'recusado', { motivo: MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta }),
+        estado,
+      ).toEqual([NFE_VALIDADA]);
+      for (const desfecho of ['precisa-escolha', 'desligado', 'resposta-ilegivel'] as const) {
+        expect(acoesCom(estado, desfecho), `${estado}/${desfecho}`).toEqual([NFE_VALIDADA]);
+      }
+    }
+  });
+
+  it('QUASE-ERRO Q2-F1: sem estado confirmado, ou com um estado PRÉ-arranjo, A ABRE', () => {
+    for (const estado of [null, ESTADO_FRETE.iniciado, ESTADO_FRETE.despachoAutorizado]) {
+      expect(acoesCom(estado, 'nfe-pendente', { fase: 'nfe-pendente' }), String(estado)).toEqual([
+        abrirNfe,
+      ]);
+      expect(acoesCom(estado, 'precisa-escolha'), String(estado)).toEqual([
+        NFE_VALIDADA,
+        abrirManual(MOTIVO_DESPACHO_PROPRIO.precisaEscolha),
+      ]);
+    }
+  });
+
+  it('VARREDURA Q2-F1: todo estado × todo desfecho — a guarda só TIRA aberturas, e só as que o estado contradiz', () => {
+    const tiraA = (e: EstadoFrete) => ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.has(e);
+    const tiraB = (e: EstadoFrete, desfecho: DesfechoArranjoAutomatico) =>
+      desfecho !== 'programado' &&
+      (ESTADOS_FRETE_POS_COLETA_SHOPEE.has(e) || ESTADOS_FRETE_CANCELADO_SHOPEE.has(e));
+    let casos = 0;
+    for (const estado of estadoFreteSchema.options) {
+      for (const desfecho of DESFECHOS) {
+        const over = { fase: 'programar' as const, motivo: MOTIVO_ETIQUETA_SHOPEE.pedidoCancelado };
+        const sem = acoes(desfecho, over);
+        const com = acoesCom(estado, desfecho, over);
+        const esperado = sem.filter(
+          (a) =>
+            !(a.tipo === 'abrir-despacho' && tiraA(estado)) &&
+            !(a.tipo === 'abrir-etiqueta' && tiraB(estado, desfecho)),
+        );
+        expect(com, `${estado}/${desfecho}`).toEqual(esperado);
+        casos += 1;
+      }
+    }
+    expect(casos).toBe(estadoFreteSchema.options.length * DESFECHOS.length);
   });
 
   it('é PURA: a mesma entrada dá a mesma lista, e a entrada não é alterada', () => {
@@ -626,7 +875,11 @@ describe('4 — executarAcoesDeAvisoDoDespacho', () => {
     await executarAcoesDeAvisoDoDespacho(
       asDb(db),
       entrada(),
-      [abrirNfe, abrirManual(MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado), { tipo: 'abrir-etiqueta' }],
+      [
+        abrirNfe,
+        abrirManual(MOTIVO_ETIQUETA_SHOPEE.semHorarioOuAgencia),
+        { tipo: 'abrir-etiqueta' },
+      ],
       deps(),
     );
 
@@ -638,9 +891,10 @@ describe('4 — executarAcoesDeAvisoDoDespacho', () => {
       'pedido',
       'situacao',
     ]);
+    // A frase do fluxo de etiqueta, lida pela ÚNICA tabela (segundo leitor, não cópia).
     expect(armazenado(db, PATH_MANUAL).params).toEqual({
       pedido: ORDER_SN,
-      situacao: fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado),
+      situacao: fraseDoMotivoEtiqueta(MOTIVO_ETIQUETA_SHOPEE.semHorarioOuAgencia),
     });
     expect(Object.keys(armazenado(db, PATH_ETIQUETA).params as object)).toEqual(['pedido']);
     for (const path of [PATH_NFE, PATH_MANUAL, PATH_ETIQUETA]) {
@@ -656,6 +910,27 @@ describe('4 — executarAcoesDeAvisoDoDespacho', () => {
       expect(armazenado(db, path).canal, path).toBe(CANAL_AVISO.shopee);
       expect(armazenado(db, path).urlExterna, path).toBeNull();
     }
+  });
+
+  it('Q3-4: um `recusado` por modo não suportado grava a frase PRÓPRIA, sem "clique de novo"', async () => {
+    const db = new FakeDb();
+
+    await executarAcoesDeAvisoDoDespacho(
+      asDb(db),
+      entrada(),
+      acoesDeAvisoDoDespacho(
+        entrada(),
+        resultado('recusado', { motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado }),
+      ),
+      deps(),
+    );
+
+    const doc = armazenado(db, PATH_MANUAL);
+    expect(doc.params).toEqual({ pedido: ORDER_SN, situacao: SITUACAO_MODO_NAO_SUPORTADO });
+    expect(avisoSchema.parse(doc)).toMatchObject({
+      severidade: SEVERIDADE_AVISO.critico,
+      motivo: MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado,
+    });
   });
 
   it('⚠️ uma REPETIÇÃO não escreve prazo, relógio de evento nem link externo — mutantes 60 e 61', async () => {
@@ -892,6 +1167,31 @@ describe('6 — os conjuntos de estado de frete', () => {
   it('todo estado dos dois conjuntos é um estado de frete válido', () => {
     for (const estado of [...ESTADOS_FRETE_POS_COLETA_SHOPEE, ...ESTADOS_FRETE_CANCELADO_SHOPEE]) {
       expect(estadoFreteSchema.safeParse(estado).success, estado).toBe(true);
+    }
+  });
+
+  it('Q2-F1: despacho encerrado = arranjado + coletado + cancelado + suspenso — o valor de hoje', () => {
+    expect([...ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE].sort()).toEqual(
+      [
+        ESTADO_FRETE.aguardandoPostagem,
+        ESTADO_FRETE.postado,
+        ESTADO_FRETE.entregue,
+        ESTADO_FRETE.falhaNaEntrega,
+        ESTADO_FRETE.objetoExtraviado,
+        ESTADO_FRETE.cancelado,
+        ESTADO_FRETE.despachoNegado,
+        ESTADO_FRETE.suspenso,
+      ].sort(),
+    );
+    // QUASE-ERRO: READY (arranjado ou não, o token não diz), NOT_START, e o
+    // que nenhum token produz (o estado confirmado é a dobra do diário).
+    for (const estado of [
+      ESTADO_FRETE.despachoAutorizado,
+      ESTADO_FRETE.iniciado,
+      ESTADO_FRETE.checkFinalizado,
+      ESTADO_FRETE.error,
+    ]) {
+      expect(ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.has(estado), estado).toBe(false);
     }
   });
 });
@@ -1177,6 +1477,34 @@ describe('7 — resolverAvisosDeDespachoSeEncerrado', () => {
     }
   });
 
+  it('⚠️ PRECEDÊNCIA B: pós-coleta VENCE o pedido CANCELLED — `coletado`, nunca `pedido-cancelado` (O25)', async () => {
+    // Alcançável pela IMPORTAÇÃO (o push passa `orderStatus: null`): um pedido
+    // 90011/90012 coletado e DEPOIS cancelado. O motivo persistido diz o fato
+    // físico — a mercadoria saiu.
+    for (const estado of ESTADOS_FRETE_POS_COLETA_SHOPEE) {
+      const db = await comTudoAberto();
+
+      await resolverAvisosDeDespachoSeEncerrado(
+        asDb(db),
+        encerramento({ estadoConfirmado: estado, orderStatus: SHOPEE_ORDER_STATUS.cancelled }),
+        DEPOIS,
+      );
+
+      expect(armazenado(db, PATH_ETIQUETA).resolucaoMotivo, estado).toBe('coletado');
+    }
+    // QUASE-ERRO: arranjado mas NÃO coletado + CANCELLED ⇒ `pedido-cancelado`.
+    const db = await comTudoAberto();
+    await resolverAvisosDeDespachoSeEncerrado(
+      asDb(db),
+      encerramento({
+        estadoConfirmado: ESTADO_FRETE.aguardandoPostagem,
+        orderStatus: SHOPEE_ORDER_STATUS.cancelled,
+      }),
+      DEPOIS,
+    );
+    expect(armazenado(db, PATH_ETIQUETA).resolucaoMotivo).toBe('pedido-cancelado');
+  });
+
   it('B: frete cancelado ou despacho negado ⇒ `pedido-cancelado`', async () => {
     for (const estado of ESTADOS_FRETE_CANCELADO_SHOPEE) {
       const db = await comTudoAberto();
@@ -1309,6 +1637,119 @@ describe('7 — resolverAvisosDeDespachoSeEncerrado', () => {
     const r = await resolverAvisosDeDespachoSeEncerrado(asDb(db), obs, DEPOIS);
 
     expect(r).toEqual({ despachoResolvidos: 2, etiquetaResolvida: true });
+  });
+
+  it('Q2-F1: a DERIVAÇÃO — um estado é "despacho encerrado" sse o token que leva a ele fecha as linhas A AQUI', async () => {
+    // Um conjunto escrito à mão ao lado do resolvedor seria a terceira cópia:
+    // o resolvedor REAL decide, token a token do passo 7.
+    const tokens = Object.entries(ESTADO_FRETE_DE_TOKEN_SHOPEE);
+    // ÂNCORA anti-vacuidade: os dois lados aparecem (11 tokens fecham; NOT_START,
+    // NOT_STARTED e READY não).
+    const fecham = tokens.filter(([, e]) => ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.has(e));
+    expect(fecham).toHaveLength(11);
+    expect(tokens.length - fecham.length).toBe(3);
+    for (const [token, estado] of tokens) {
+      const db = await comTudoAberto();
+      const r = await resolverAvisosDeDespachoSeEncerrado(
+        asDb(db),
+        encerramento({ pacotes: [pacote(token)] }),
+        DEPOIS,
+      );
+      expect(r.despachoResolvidos, token).toBe(
+        ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.has(estado) ? 2 : 0,
+      );
+    }
+  });
+
+  it('⚠️ Q2-F1 (B): coletado ⇒ resolvido; a entrega VELHA seguinte (ja-programado, confirmado `postado`) NÃO reabre', async () => {
+    const db = new FakeDb();
+    // 1 — REQUEST_CREATED: o gancho diz ja-programado, B abre.
+    await avisarArranjoAutomatico(
+      asDb(db),
+      entrada({ estadoFreteConfirmado: ESTADO_FRETE.aguardandoPostagem }),
+      resultado('ja-programado', { fase: 'arranjado' }),
+    );
+    expect(armazenado(db, PATH_ETIQUETA).resolvidoEm).toBeNull();
+    // 2 — PICKUP_DONE: o resolvedor fecha B `coletado`.
+    await resolverAvisosDeDespachoSeEncerrado(
+      asDb(db),
+      encerramento({
+        pacotes: [pacote('LOGISTICS_PICKUP_DONE')],
+        estadoConfirmado: ESTADO_FRETE.postado,
+      }),
+      DEPOIS,
+    );
+    const fechado = { ...armazenado(db, PATH_ETIQUETA) };
+    expect(fechado.resolucaoMotivo).toBe('coletado');
+    zerarLogs(db);
+
+    // 3 — a réplica atrasada devolve a linha REQUEST_CREATED velha: a transação
+    // diz `ignorado-obsoleto` e confirma `postado`; o gancho repete ja-programado.
+    await avisarArranjoAutomatico(
+      asDb(db),
+      entrada({ nowMs: AGORA_MS + 9000, estadoFreteConfirmado: ESTADO_FRETE.postado }),
+      resultado('ja-programado', { fase: 'arranjado' }),
+    );
+
+    expect(armazenado(db, PATH_ETIQUETA)).toEqual(fechado);
+    // Só os dois resolves de A leram — B nem foi lido.
+    expect(docsTocados(db)).toEqual([PATH_NFE, PATH_MANUAL]);
+  });
+
+  it('QUASE-ERRO Q2-F1 (B): a MESMA entrega velha SEM estado confirmado reabriria — a guarda é o que segura', async () => {
+    const db = new FakeDb();
+    await avisarArranjoAutomatico(asDb(db), entrada(), resultado('ja-programado'));
+    await resolverAvisosDeDespachoSeEncerrado(
+      asDb(db),
+      encerramento({ estadoConfirmado: ESTADO_FRETE.postado }),
+      DEPOIS,
+    );
+
+    await avisarArranjoAutomatico(
+      asDb(db),
+      entrada({ nowMs: AGORA_MS + 9000 }),
+      resultado('ja-programado'),
+    );
+
+    expect(armazenado(db, PATH_ETIQUETA)).toMatchObject({
+      resolvidoEm: null,
+      criadoEm: (AGORA_MS + 9000) * 1000,
+    });
+  });
+
+  it('⚠️ Q2-F1 (A nfe): arranjado ⇒ resolvido; a entrega VELHA seguinte (READY + nota pendente) NÃO reabre', async () => {
+    const db = new FakeDb();
+    // 1 — READY + nota pendente: A nfe abre.
+    await avisarArranjoAutomatico(
+      asDb(db),
+      entrada({ estadoFreteConfirmado: ESTADO_FRETE.despachoAutorizado }),
+      resultado('nfe-pendente', { fase: 'nfe-pendente' }),
+    );
+    expect(armazenado(db, PATH_NFE).resolvidoEm).toBeNull();
+    // 2 — REQUEST_CREATED: o resolvedor fecha A `arranjado`.
+    await resolverAvisosDeDespachoSeEncerrado(
+      asDb(db),
+      encerramento({
+        pacotes: [pacote('LOGISTICS_REQUEST_CREATED')],
+        estadoConfirmado: ESTADO_FRETE.aguardandoPostagem,
+      }),
+      DEPOIS,
+    );
+    const fechado = { ...armazenado(db, PATH_NFE) };
+    expect(fechado.resolucaoMotivo).toBe('arranjado');
+    zerarLogs(db);
+
+    // 3 — a linha velha READY + pendente: `ignorado-obsoleto`, confirmado aguardandoPostagem.
+    await avisarArranjoAutomatico(
+      asDb(db),
+      entrada({ nowMs: AGORA_MS + 9000, estadoFreteConfirmado: ESTADO_FRETE.aguardandoPostagem }),
+      resultado('nfe-pendente', { fase: 'nfe-pendente' }),
+    );
+
+    expect(armazenado(db, PATH_NFE)).toEqual(fechado);
+    // A lista ficou VAZIA: zero leituras, zero escritas.
+    expect(db.opLog).toEqual([]);
+    expect(db.writes).toEqual([]);
   });
 
   it('o canal do arranjo do resolvedor é o MESMO conjunto do gancho', () => {

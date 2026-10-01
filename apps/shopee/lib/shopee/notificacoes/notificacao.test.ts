@@ -29,6 +29,8 @@ import type {
 } from '../pedidos/arranjoAutomatico';
 import type { AlvoDePushDeAnuncioShopee, ResultadoPushAnuncio } from '../anuncios/pushAnuncio';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
+// A pure leaf (no import of its own) — loading it as a VALUE pulls nothing else in.
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from '../etiqueta/motivosEtiqueta';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import {
   ShopeeContaSemShopIdError,
@@ -2138,6 +2140,48 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     expect(out.kind === 'frete' && out.acaoArranjo).toBeNull();
     expect(Object.prototype.hasOwnProperty.call(out, 'acaoArranjo')).toBe(true);
   });
+
+  // 13d — mutante O34b. Todo fixture acima monta o arranjo com `motivo: null`,
+  // então um mapeamento que CONSULTASSE o motivo (`motivo !== null ? null :
+  // desfecho` compila e passava em tudo) seria invisível. Na vida real todo
+  // `recusado` / `retido` / `aguardando` (pacotes-mudaram) / `nao-elegivel`
+  // (pedido-cancelado) chega COM motivo — e o token do log tem de ser o desfecho.
+  const DESFECHOS_COM_MOTIVO: readonly [DesfechoArranjoAutomatico, MotivoEtiquetaShopee][] = [
+    ['recusado', MOTIVO_ETIQUETA_SHOPEE.limiteDiario],
+    ['retido', MOTIVO_ETIQUETA_SHOPEE.retidoPelaShopee],
+    ['aguardando', MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram],
+    ['nao-elegivel', MOTIVO_ETIQUETA_SHOPEE.pedidoCancelado],
+  ];
+  it.each(DESFECHOS_COM_MOTIVO)(
+    '(13d) `acaoArranjo` é o DESFECHO mesmo com motivo — %s/%s (O34b)',
+    async (desfecho, motivo) => {
+      rastrearPedido.mockResolvedValue(
+        resultadoDeRastreio({ arranjo: resultadoDeArranjo({ desfecho, motivo }) }),
+      );
+
+      const out = await processNotificationPayload(db, push30(), deps);
+
+      expect(out).toMatchObject({ kind: 'frete', acaoArranjo: desfecho });
+      // Só o DESFECHO atravessa — o motivo é do log do handler, não do outcome.
+      expect(JSON.stringify(out)).not.toContain(motivo);
+      expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'frete' });
+
+      // …e pelo pipeline até o TaskResult, com o MESMO token.
+      const r = await handleNotificationTask(
+        asDb(new FakeDb()),
+        {
+          code: 30,
+          shopId: SHOP_ID,
+          timestamp: AGORA_MS,
+          data: { ordersn: ORDER_SN, package_number: PACOTE },
+        },
+        0,
+        deps,
+      );
+      expect(r.outcome).toBe('done');
+      expect(r.acaoArranjo).toBe(desfecho);
+    },
+  );
 
   // 14 — O PAR DOBRA-IGUAL, e a sua quase-falha.
   it('(14) ⚠️ DOIS pushes com valores PRÓPRIOS diferentes produzem o MESMO argumento de handler', async () => {

@@ -1012,8 +1012,19 @@ describe('escolherModoAutomatico — REFINA a resposta do operador sem escolha',
       ],
       [endereco(5, [COLETA]), endereco(6, [COLETA])],
       [endereco(5, [COLETA, PADRAO]), endereco(6, [COLETA, PADRAO])],
+      // Review 3a, Q1-F1: ids the ship guard refuses (0, negative, a blank
+      // slot) — they must never reach a body.
+      [endereco(0, [COLETA])],
+      [endereco(-5, [COLETA], [horario('h1')]), endereco(6, [COLETA])],
+      [endereco(5, [COLETA], [horario('  ')])],
+      [endereco(5, [COLETA], [horario(' \t'), horario('h1'), horario('h2', [RECOMENDADO])])],
     ];
-    const agenciasDoMundo = [[agenciaAuto(31)], [agenciaAuto(31), agenciaAuto(32)]];
+    const agenciasDoMundo = [
+      [agenciaAuto(31)],
+      [agenciaAuto(31), agenciaAuto(32)],
+      [agenciaAuto(0)],
+      [agenciaAuto(-31)],
+    ];
     const contagem = { igual: 0, mesmaPergunta: 0, decidiuOndePergunta: 0 };
     for (const pickup of itensColeta) {
       for (const dropoff of itensPostagem) {
@@ -1071,5 +1082,93 @@ describe('escolherModoAutomatico — REFINA a resposta do operador sem escolha',
     expect(a).toStrictEqual(corpoColeta(6, 'h2'));
     expect(escolherModoAutomatico(p)).toStrictEqual(a);
     expect(JSON.stringify(p)).toBe(antes);
+  });
+});
+
+/* ------------- what the ship guard refuses never becomes a body (review 3a) ------------- */
+
+/** A decided body must pass the package's own guard — the one the real `shipOrder` runs first. */
+function aceitoPeloGuarda(modo: ModoEscolhido): void {
+  if (modo.tipo !== 'corpo') throw new Error(`esperava corpo, veio ${modo.tipo}`);
+  expect(() => assertShipOrderParams({ orderSn: '260910KJBHUJDM', ...modo.corpo })).not.toThrow();
+}
+
+const soAgencias = (agencias: unknown[]) =>
+  parametro({ info_needed: { dropoff: ['branch_id'] }, dropoff: { branch_list: agencias } });
+
+describe('os dois choosers — um id que o guarda do ship recusa nunca vira corpo (review 3a, Q1-F1)', () => {
+  // Before the fix the read ACCEPTED `address_id: 0`, `branch_id: 0` and a blank
+  // `pickup_time_id`, the chooser built a body from them, and `shipOrder`'s
+  // guard threw `ShopeeConfigError` BEFORE the fetch — our misconfiguration
+  // class, so the automatic arrange rethrew it on Shopee's own data and the
+  // delivery looped to `failed` with no aviso. Now the read makes each one the
+  // list's `null` sentinel, and these are the chooser's answers to that.
+  it.each([
+    ['address_id 0', soColeta([endereco(0, [COLETA])]), 'semEnderecoDeColeta'],
+    [
+      'address_id negativo',
+      soColeta([endereco(-5, [COLETA], [horario('h1')])]),
+      'semEnderecoDeColeta',
+    ],
+    ['branch_id 0', soAgencias([agenciaAuto(0)]), 'modoNaoSuportado'],
+    ['branch_id negativo', soAgencias([agenciaAuto(-31)]), 'modoNaoSuportado'],
+  ] as const)('%s, o ÚNICO oferecido ⇒ a recusa, nos DOIS choosers', (_nome, p, chave) => {
+    expect(escolherModoDeEnvio(p, null)).toStrictEqual(recusa(chave));
+    expect(escolherModoAutomatico(p)).toStrictEqual(recusa(chave));
+  });
+
+  it('⛔ QUASE-IGUAL: o MENOR positivo (1) é um id — corpo nos dois choosers, e o irmão de uma linha recusada segue', () => {
+    const coleta = soColeta([endereco(0, [COLETA]), endereco(1, [COLETA])]);
+    expect(escolherModoDeEnvio(coleta, null)).toStrictEqual(corpoColeta(1));
+    expect(escolherModoAutomatico(coleta)).toStrictEqual(corpoColeta(1));
+    aceitoPeloGuarda(escolherModoAutomatico(coleta));
+
+    const postagem = soAgencias([agenciaAuto(1)]);
+    const corpo: ModoEscolhido = {
+      tipo: 'corpo',
+      corpo: { modo: 'dropoff', dropoff: { branchId: 1 } },
+    };
+    expect(escolherModoDeEnvio(postagem, null)).toStrictEqual(corpo);
+    expect(escolherModoAutomatico(postagem)).toStrictEqual(corpo);
+    aceitoPeloGuarda(escolherModoAutomatico(postagem));
+  });
+
+  it('um pickup_time_id EM BRANCO nunca é oferecido nem casa uma resposta; ⛔ QUASE-IGUAL: o acolchoado é um id, byte a byte', () => {
+    const p = soColeta([endereco(5, [COLETA], [horario('  '), horario('h1'), horario(' h2 ')])]);
+    const pergunta = escolherModoDeEnvio(p, null);
+    if (pergunta.tipo !== 'pergunta') throw new Error('esperava pergunta');
+    expect(pergunta.enderecos[0]?.horarios.map((h) => h.id)).toStrictEqual(['h1', ' h2 ']);
+    // An answer naming the blank id (stale or forged) is re-asked, never shipped.
+    expect(escolherModoDeEnvio(p, escolhaColeta('5', '  '))).toMatchObject({
+      tipo: 'pergunta',
+      escolhaInvalida: true,
+    });
+    const acolchoado = escolherModoDeEnvio(p, escolhaColeta('5', ' h2 '));
+    expect(acolchoado).toStrictEqual(corpoColeta(5, ' h2 '));
+    aceitoPeloGuarda(acolchoado);
+  });
+
+  it('sem operador: um recomendado EM BRANCO não conta — o único recomendado legível é enviado', () => {
+    const p = soColeta([
+      endereco(
+        5,
+        [COLETA],
+        [horario('  ', [RECOMENDADO]), horario('h1'), horario('h2', [RECOMENDADO])],
+      ),
+    ]);
+    const modo = escolherModoAutomatico(p);
+    expect(modo).toStrictEqual(corpoColeta(5, 'h2'));
+    aceitoPeloGuarda(modo);
+  });
+
+  it('o ÚNICO horário em branco ⇒ o endereço SEM horário (a regra dos zero horários) — ⚠️ um corpo, não uma recusa', () => {
+    // An unreadable slot reads as NO slot — the rule an unsafe numeric id
+    // already followed — and the page allows an arrange with no slot. So the
+    // blank id is never SENT, but the package still ships.
+    const p = soColeta([endereco(5, [COLETA], [horario('\t')])]);
+    for (const modo of [escolherModoDeEnvio(p, null), escolherModoAutomatico(p)]) {
+      expect(modo).toStrictEqual(corpoColeta(5));
+      aceitoPeloGuarda(modo);
+    }
   });
 });

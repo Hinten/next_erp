@@ -40,20 +40,22 @@
  *
  * Then the aviso producer, on every desfecho but `fora-do-canal`.
  *
- * ## ⚠️ It throws NO Shopee class (R-b)
+ * ## ⚠️ No Shopee ANSWER escapes as an error (R-b)
  *
  * Step 15 already turned every Shopee transient into a VALUE, and a throw would
  * re-run the whole delivery (pull + merge + resolvers) on top of whatever next
  * names the package — two retriers during a rate-limit burst. So every Shopee
- * answer is a desfecho, and the delivery still resolves `frete` whatever it
- * says. The catch is narrow (rule 6): the five credential classes ⇒
- * `credencial` (the conta aviso is their ONE producer; the handler's own
- * `get_package_detail` throws them first, so here they are a seconds-wide
- * race), `ShopeeSchemaError` ⇒ `resposta-ilegivel` (our drift — it must never
- * park the delivery). Everything else — `ShopeeConfigError`, a gRPC failure, a
- * coding bug — is RETHROWN to the arm's `throw`. `arranjoAutomatico.test.ts`
- * pins that table against `disposicaoDaFalhaDeRastreio`, class by class and
- * call site by call site.
+ * answer — API, rate limit, transport, credential, schema — is a desfecho, and
+ * the delivery still resolves `frete` whatever it says. The catch is narrow
+ * (rule 6): the five credential classes ⇒ `credencial` (the conta aviso is
+ * their ONE producer; the handler's own `get_package_detail` throws them first,
+ * so here they are a seconds-wide race), `ShopeeSchemaError` ⇒
+ * `resposta-ilegivel` (our drift — it must never park the delivery). What is
+ * RETHROWN to the arm's `throw` is not an answer: our own config error
+ * (`ShopeeConfigError` — a `ShopeeError` subclass, so "no Shopee class" would
+ * be false), a gRPC failure, a coding bug. `arranjoAutomatico.test.ts` pins
+ * that table against `disposicaoDaFalhaDeRastreio`, class by class and call
+ * site by call site.
  *
  * ⚠️ The aviso call sits OUTSIDE that catch. Its Firestore failure propagates:
  * the redelivery re-runs the idempotent frete merge, this hook re-reads
@@ -81,6 +83,7 @@
  * `precisa-escolha` is all a caller learns.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import type { EstadoFrete } from '@delfrance/schemas';
 import {
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
@@ -161,6 +164,18 @@ export interface EntradaArranjoAutomatico {
   readonly linha: ShopeePackageDetailRow;
   /** The task's one clock read, ms. */
   readonly nowMs: number;
+  /**
+   * The frete transaction's `estadoConfirmado` for this delivery — the block
+   * estado the package diary corroborates once the merge is over, or `null`.
+   *
+   * ⚠️ The hook itself NEVER reads it: the arrange runs on the row whatever this
+   * says (mutant 35 — Shopee absorbs a duplicate ship, a lost arrange is an
+   * order Shopee cancels). Only the aviso producer does, to drop an OPEN that a
+   * newer delivery already contradicted: on `ignorado-obsoleto` the row is OLDER
+   * than the stored diary (a lagging replica, register 208), and an open keyed
+   * on it would resurrect the alert that delivery resolved (review 3a, Q2-F1).
+   */
+  readonly estadoFreteConfirmado: EstadoFrete | null;
 }
 
 /**
@@ -489,7 +504,8 @@ async function arranjarCandidato(
  * @param client the conta's shop client (the handler's own).
  * @param e the package, its pedido, the FRESH row and the task's clock.
  * @param deps the valve's environment and the aviso producer, both injectable.
- * @returns the desfecho — never a thrown Shopee class.
+ * @returns the desfecho — no Shopee answer escapes as an error; our own config
+ *   error, gRPC errors and bugs are rethrown.
  */
 export async function arranjarPacoteAutomatico(
   db: Firestore,

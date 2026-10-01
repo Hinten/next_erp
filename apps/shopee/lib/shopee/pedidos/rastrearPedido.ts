@@ -41,14 +41,22 @@
  *
  *  - It runs on EVERY frete outcome except the transaction's own
  *    `ignorado-sem-pedido`: a replay answers `ignorado-sem-mudanca` and a late
- *    push `ignorado-obsoleto`, and the row is fresh on both. Never gated on step
- *    14's `error` stamp (that would deadlock a re-sent note).
+ *    push `ignorado-obsoleto`, and the row is freshly PULLED on both (on the
+ *    second it can still be older than the stored diary — see below). Never
+ *    gated on step 14's `error` stamp (that would deadlock a re-sent note).
  *  - ⚠️ The two resolvers run BEFORE it, so a resolve driven by the pre-arrange
  *    estado can never close an alert the arrange opens in the same delivery.
- *  - It throws no Shopee class: every Shopee outcome comes back as a desfecho
- *    (`arranjo`), and the delivery's disposition stays the frete's. What it
- *    does rethrow (config, gRPC, unknown, an aviso write) propagates here like
- *    any other failure of this handler.
+ *  - ⚠️ That order has a price when the row is OLDER than the stored diary
+ *    (`ignorado-obsoleto` — a lagging replica): the resolver acts on the newer
+ *    confirmed estado, and an open keyed on the stale row would land LAST and
+ *    resurrect what it resolved. So the hook is handed the transaction's
+ *    `estadoConfirmado` too (`estadoFreteConfirmado`), and the aviso producer
+ *    drops the opens that estado contradicts. The ARRANGE still runs on that
+ *    row: a duplicate ship is absorbed, a lost one is an order Shopee cancels.
+ *  - No Shopee ANSWER escapes it as an error: every one comes back as a
+ *    desfecho (`arranjo`), and the delivery's disposition stays the frete's.
+ *    What it does rethrow — our own config error, gRPC errors, bugs, an aviso
+ *    write — propagates here like any other failure of this handler.
  *
  * ## Microseconds — this module is µs **SITE 6**
  *
@@ -127,6 +135,7 @@ import {
 import type { ArranjadorDePacote, ResultadoArranjoAutomatico } from './arranjoAutomatico';
 import { salvarFreteShopee, type AcaoFreteShopee } from './freteTx';
 import { makePedidoIdShopee } from './orderIds';
+import { segundosShopeeUtilizaveis } from './orderMapping';
 
 /* -------------------------------------------------------------------------- */
 /*                                  contract                                   */
@@ -305,7 +314,11 @@ export async function rastrearPedidoShopee(
     } else {
       // Auto Call Driver's own deadline (register 230): Shopee arranges by itself
       // when it passes, and our ship may race it. PRESENCE only, never the value.
-      temPreparacaoAutomatica = linha.preparation_end_time != null;
+      // ⚠️ Through the 2020-floor reader, never `!= null`: this page zero-fills
+      // an absent int64 stamp (its own sample sends `pickup_done_time: 0`), and a
+      // `0` read as "present" would answer register 230 "yes" for every package
+      // of a shop whose rows zero-fill (review 3a, Q3-1).
+      temPreparacaoAutomatica = segundosShopeeUtilizaveis(linha.preparation_end_time) !== null;
       observado = observadoDoPacoteDetalhe(linha);
       if (observado === null) {
         acao = ACAO_FRETE_PACOTE_AUSENTE;
@@ -378,6 +391,9 @@ export async function rastrearPedidoShopee(
         // `acao === 'atualizado'`: a replay (`ignorado-sem-mudanca`) or a late
         // push (`ignorado-obsoleto`) still carries a fresh row, and a lost
         // arrange is an order Shopee cancels.
+        // ⚠️ `estadoFreteConfirmado` is the SAME estado the resolver above was
+        // handed — it is what lets the producer refuse an open the newer diary
+        // already contradicts (see the module header).
         arranjo =
           deps.arranjar !== undefined && resultado.acao !== ACAO_FRETE_SEM_PEDIDO
             ? await deps.arranjar(db, client, {
@@ -387,6 +403,7 @@ export async function rastrearPedidoShopee(
                 packageNumber,
                 linha,
                 nowMs,
+                estadoFreteConfirmado: resultado.estadoConfirmado,
               })
             : null;
       }

@@ -17,9 +17,11 @@ import {
   decidirProximaAcao,
   ehCanalDeArranjoAutomatico,
   ehCanalDeEtiquetaComPrazo,
+  ehPedidoFbsShopee,
   elegibilidadeDoArranjoAutomatico,
   faseDoTokenShopee,
   fasePacote,
+  faseTemPortaoDeNfe,
   gruposDeDownload,
   observacaoDaOrdemShopee,
   observacaoDoPacoteShopee,
@@ -1272,5 +1274,111 @@ describe('decidirArranjoAutomatico — o ladder do passo 15 sobre UM pacote (15b
     expect(decidirArranjoAutomatico({ ...o, status: 'IN_CANCEL' }, p)).toEqual(
       recusa(MOTIVO_ETIQUETA_SHOPEE.pedidoEmCancelamento),
     );
+  });
+});
+
+/* ============ review 3a (Q4) — the predicates other folders read ============ */
+
+/**
+ * Every phase `fasePacote` can answer → whether the invoice gate decides there.
+ * A `Record` over the union, so a new phase is a COMPILE error here until it
+ * says which side it is on.
+ */
+const PORTAO_DA_NFE: Readonly<Record<FasePacote, boolean>> = {
+  'nao-pronto': true,
+  programar: true,
+  retido: true,
+  desconhecido: true,
+  arranjado: false,
+  'janela-fechada': false,
+  inelegivel: false,
+  'nfe-pendente': false,
+};
+
+describe('faseTemPortaoDeNfe — as fases em que a NF-e pendente decide (review 3a, Q4-3)', () => {
+  it.each(Object.entries(PORTAO_DA_NFE) as [FasePacote, boolean][])('%s ⇒ %s', (fase, esperado) => {
+    expect(faseTemPortaoDeNfe(fase)).toBe(esperado);
+  });
+
+  it('é a pergunta de fasePacote, nas DUAS direções — token × arranjado × termos', () => {
+    // For every package: with the invoice pending, fasePacote answers
+    // nfe-pendente EXACTLY when the predicate holds on the phase it answers
+    // without it; and where the predicate is false the invoice changes nothing.
+    const vistas = new Set<FasePacote>();
+    for (const fulfillment of [...TOKENS, null]) {
+      for (const arranjado of [true, false, null]) {
+        for (const termosPendentes of [[], ['-'], ['SYSTEM_PENDING']]) {
+          const sem = fasePacote(pacote({ fulfillment, arranjado, termosPendentes }));
+          const com = fasePacote(
+            pacote({ fulfillment, arranjado, termosPendentes, nfePendente: true }),
+          );
+          const rotulo = `${String(fulfillment)}/${String(arranjado)}/${termosPendentes.join()}`;
+          expect(com === 'nfe-pendente', rotulo).toBe(faseTemPortaoDeNfe(sem));
+          if (!faseTemPortaoDeNfe(sem)) expect(com, rotulo).toBe(sem);
+          vistas.add(sem);
+        }
+      }
+    }
+    // ANCHOR: the grid reached every phase fasePacote answers without the
+    // invoice — both sides of the predicate, `retido` and `desconhecido` included.
+    expect([...vistas].sort()).toEqual(
+      (Object.keys(PORTAO_DA_NFE) as FasePacote[]).filter((f) => f !== 'nfe-pendente').sort(),
+    );
+  });
+
+  it('⚠️ retido está DENTRO: o termo é lido DEPOIS do portão — near-miss: arranjado com termo fica fora', () => {
+    const retido = pacote({ termosPendentes: ['SYSTEM_PENDING'] });
+    expect(fasePacote(retido)).toBe('retido');
+    expect(fasePacote({ ...retido, nfePendente: true })).toBe('nfe-pendente');
+    expect(faseTemPortaoDeNfe('retido')).toBe(true);
+    // Near-miss: arranged AND holding a term — the arrange wins, the gate never runs.
+    const arranjado = pacote({ arranjado: true, termosPendentes: ['SYSTEM_PENDING'] });
+    expect(fasePacote({ ...arranjado, nfePendente: true })).toBe('arranjado');
+    expect(faseTemPortaoDeNfe(fasePacote(arranjado))).toBe(false);
+  });
+
+  it('nfe-pendente é o VEREDITO do portão, não uma fase guardada ⇒ false (nunca "a nota passou")', () => {
+    expect(faseTemPortaoDeNfe(fasePacote(pacote({ nfePendente: true })))).toBe(false);
+  });
+});
+
+describe('ehPedidoFbsShopee — a ÚNICA dobra do FBS (review 3a, Q4-2)', () => {
+  /** The PAIR: every spelling below is Shopee's own fulfilment. */
+  const FBS: readonly string[] = [
+    'fulfilled_by_shopee',
+    ' Fulfilled_By_Shopee ',
+    'FULFILLED_BY_SHOPEE',
+    '\tfulfilled_by_shopee\n',
+  ];
+  /** The NEAR-MISSES: none of them is — a prefix, substring or separator fold would say yes. */
+  const NAO_FBS: readonly (string | null | undefined)[] = [
+    'fulfilled_by_local_seller',
+    'fulfilled_by_cb_seller',
+    'fulfilled_by_shopee_x',
+    'xfulfilled_by_shopee',
+    'fulfilled by shopee',
+    'fulfilled-by-shopee',
+    'shopee',
+    '',
+    '   ',
+    null,
+    undefined,
+  ];
+
+  it.each(FBS)('PAR: %j ⇒ true', (flag) => {
+    expect(ehPedidoFbsShopee(flag)).toBe(true);
+  });
+
+  it.each(NAO_FBS)('QUASE-MISS: %j ⇒ false', (flag) => {
+    expect(ehPedidoFbsShopee(flag)).toBe(false);
+  });
+
+  it('observacaoDaOrdemShopee lê o FBS POR ELA — a mesma resposta em toda grafia', () => {
+    for (const fulfillment_flag of [...FBS, ...NAO_FBS]) {
+      expect(
+        observacaoDaOrdemShopee(linhaDeOrdem({ fulfillment_flag })).fbs,
+        String(fulfillment_flag),
+      ).toBe(ehPedidoFbsShopee(fulfillment_flag));
+    }
   });
 });

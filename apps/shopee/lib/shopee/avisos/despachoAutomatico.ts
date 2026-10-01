@@ -48,6 +48,15 @@
  * "motivos that alert" (the two-copies smell). An empty list makes the executor
  * read nothing at all.
  *
+ * ⚠️ …and every OPEN is then checked against the frete transaction's CONFIRMED
+ * estado (`EntradaArranjoAutomatico.estadoFreteConfirmado`). The hook runs on
+ * `ignorado-obsoleto` too — a row OLDER than the stored diary, a lagging
+ * replica — and the resolvers run BEFORE it, so an open keyed on that row would
+ * land last and resurrect the alert the newer fact resolved (review 3a, Q2-F1).
+ * The guard drops exactly the opens a FRESH read of the confirmed estado could
+ * never produce, through the resolvers' own closing predicates; resolves are
+ * never dropped.
+ *
  * ## The resolvers
  *
  * - The HOOK's own, through the same table: our arrange happened, or Shopee
@@ -67,6 +76,13 @@
  * TRANSITION). This module runs no multi-document atomic write and NAMES none —
  * the inventory greps raw text. The aviso is not a guard between arrangers:
  * Shopee's `is_shipment_arranged` / `package_already_shipped` is.
+ *
+ * ⚠️ Residual: there is no event-clock tier here (R-j, the `params` section),
+ * so the confirmed-estado guard catches a stale row only when the NEWER
+ * delivery's transaction committed before the stale one's. Two deliveries truly in flight
+ * together — X reads before a transition, Y after it, and Y's resolve lands
+ * inside X's window — can still reopen a row for seconds; the next fresh
+ * delivery closes it again (review 3a, Q2-F2).
  *
  * ## Units
  *
@@ -97,7 +113,7 @@ import {
   ehCanalDeArranjoAutomatico,
   ehCanalDeEtiquetaComPrazo,
   faseDoTokenShopee,
-  type FasePacote,
+  faseTemPortaoDeNfe,
 } from '../etiqueta/faseEtiqueta';
 import {
   MOTIVO_ETIQUETA_SHOPEE,
@@ -109,7 +125,7 @@ import type {
   EntradaArranjoAutomatico,
   ResultadoArranjoAutomatico,
 } from '../pedidos/arranjoAutomatico';
-import { ESCADA_FRETE_SHOPEE } from '../pedidos/freteShopeeMapping';
+import { ESCADA_FRETE_SHOPEE, ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import type { PacoteObservadoShopee } from '../pedidos/fretePushShopee';
 import { SHOPEE_ORDER_STATUS } from '../pedidos/orderStatusMaps';
 import { type AvisoDeps, agoraUsDe, depsDeEscrita } from './autorizacao';
@@ -203,6 +219,44 @@ export const ESTADOS_FRETE_CANCELADO_SHOPEE: ReadonlySet<EstadoFrete> = new Set<
   ESTADO_FRETE.despachoNegado,
 ]);
 
+/**
+ * The confirmed estados that END a dispatch row — what makes the stale-row
+ * guard drop an `abrir-despacho` (module docblock).
+ *
+ * ⚠️ DERIVED, never listed: an estado is in iff EVERY step-7 token that maps to
+ * it is one the cross-step resolver closes a dispatch row on
+ * ({@link resolucaoDoPacote} — arranged, past the window, or the shipment
+ * cancelled / failed). So the guard drops exactly the opens a FRESH read of
+ * that estado's token could never produce, and it is the resolver's own
+ * closing fact rather than a third list. Today:
+ * `aguardandoPostagem` (rung 7, REQUEST_CREATED / PICKUP_RETRY), the
+ * collected estados, `cancelado`, `despachoNegado` and `suspenso`
+ * (PICKUP_FAILED — the label flow refuses it, and the resolver closes on it).
+ * Not `despachoAutorizado` (READY: arranged or not, the token cannot say) nor
+ * `iniciado`. The ladder rungs no token produces (`checkFinalizado`,
+ * `recebidoPelaTransportadora`, …) are absent and unreachable: a confirmed
+ * estado is the diary's fold, and every diary estado is a token's projection.
+ * An estado that a closing and a non-closing token SHARE is left out, so its
+ * opens stand — the safe direction, since a lost open is an order Shopee
+ * cancels.
+ */
+export const ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE: ReadonlySet<EstadoFrete> = estadosDeTodoToken(
+  (token) => resolucaoDoPacote(token, false) !== null,
+);
+
+/**
+ * The estados every one of whose step-7 tokens satisfies `encerra` — see
+ * {@link ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE}.
+ */
+function estadosDeTodoToken(encerra: (token: string) => boolean): ReadonlySet<EstadoFrete> {
+  const sim = new Set<EstadoFrete>();
+  const nao = new Set<EstadoFrete>();
+  for (const [token, estado] of Object.entries(ESTADO_FRETE_DE_TOKEN_SHOPEE)) {
+    (encerra(token) ? sim : nao).add(estado);
+  }
+  return new Set<EstadoFrete>([...sim].filter((estado) => !nao.has(estado)));
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  the chaves                                 */
 /* -------------------------------------------------------------------------- */
@@ -269,14 +323,29 @@ export function chaveAvisoEtiquetaComPrazo(integracaoId: string, pedidoId: strin
 /** The motivos whose fragment is this module's own, not the label flow's. */
 type MotivoComFrasePropria =
   | typeof MOTIVO_ETIQUETA_SHOPEE.nfePendente
+  | typeof MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta
+  | typeof MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha
+  | typeof MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado
+  | typeof MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel
+  | typeof MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida
   | (typeof MOTIVO_DESPACHO_PROPRIO)[keyof typeof MOTIVO_DESPACHO_PROPRIO];
 
 /**
- * The NF-e class and the hook's three own reasons get a sentence of their own
- * — a different promise from the label flow's click-context wording, not a
- * copy of it (`nfe-pendente` there says "antes de imprimir a etiqueta"; here
- * the arrange happens by itself once the note validates). Lowercase, remedy
+ * The fragments that are this module's own — a different promise from the
+ * label flow's click-context wording, never a copy of it. Lowercase, remedy
  * first, no trailing period.
+ *
+ * - The NF-e class: the label flow's `nfe-pendente` says "antes de imprimir a
+ *   etiqueta"; here the arrange happens by itself once the note validates.
+ * - The hook's three own reasons.
+ * - ⚠️ Every `manual` motivo whose label wording is WRONG in the bell (review
+ *   3a, Q3-4): the label flow says "… e clique de novo" (`sem-endereco-de-coleta`,
+ *   `agencia-precisa-escolha`, `modo-nao-suportado`) — the bell has no button —
+ *   or blames the LABEL for what, on the hook's three calls (order read,
+ *   parameter read, ship), was Shopee refusing the SHIPMENT
+ *   (`recusa-desconhecida`, `etiqueta-indisponivel`). Where the checkout would
+ *   refuse the same way (the operator chooser also cannot pick an agency or
+ *   fill the unsupported data), the remedy names the Seller Centre alone.
  *
  * ⚠️ `satisfies Record<…>`: a new own motivo without a fragment is a COMPILE
  * error, never a fall-through to the label flow's table.
@@ -284,6 +353,16 @@ type MotivoComFrasePropria =
 const FRASE_PROPRIA_DO_DESPACHO = {
   [MOTIVO_ETIQUETA_SHOPEE.nfePendente]:
     'emita a NF-e do pedido — a Shopee só libera o envio com a nota validada, e o despacho automático é feito assim que ela validar',
+  [MOTIVO_ETIQUETA_SHOPEE.semEnderecoDeColeta]:
+    'marque um endereço de coleta na Central do Vendedor e organize o envio por lá ou pelo checkout — a loja não tem endereço de coleta para este envio',
+  [MOTIVO_ETIQUETA_SHOPEE.agenciaPrecisaEscolha]:
+    'escolha a agência e organize o envio pela Central do Vendedor — a Shopee oferece mais de uma agência de postagem para este envio, e o ERP não escolhe a agência',
+  [MOTIVO_ETIQUETA_SHOPEE.modoNaoSuportado]:
+    'organize o envio pela Central do Vendedor — a Shopee pede dados de envio que o ERP não preenche',
+  [MOTIVO_ETIQUETA_SHOPEE.etiquetaIndisponivel]:
+    'organize o envio pela Central do Vendedor, ou pelo checkout mais tarde — a Shopee ainda não libera o envio na situação atual do pedido',
+  [MOTIVO_ETIQUETA_SHOPEE.recusaDesconhecida]:
+    'organize o envio pelo checkout ou pela Central do Vendedor — a Shopee recusou o despacho automático por um motivo que o ERP não reconhece',
   [MOTIVO_DESPACHO_PROPRIO.precisaEscolha]:
     'organize o envio pelo checkout ou pela Central do Vendedor — a Shopee pede uma escolha de endereço, horário ou modalidade que o despacho automático não faz sozinho',
   [MOTIVO_DESPACHO_PROPRIO.arranjoDesligado]:
@@ -299,8 +378,8 @@ function temFrasePropria(motivo: MotivoDespachoPendente): motivo is MotivoComFra
 
 /**
  * The `situacao` fragment of a dispatch row: this module's own sentence for the
- * four motivos above, and the label flow's ONE table (`fraseDoMotivoEtiqueta`)
- * for every other — the second reader of that table, not a copy of it.
+ * motivos above, and the label flow's ONE table (`fraseDoMotivoEtiqueta`) for
+ * every other — the second reader of that table, not a copy of it.
  */
 export function fraseDoDespachoPendente(motivo: MotivoDespachoPendente): string {
   return temFrasePropria(motivo)
@@ -328,26 +407,28 @@ export type AcaoDeAvisoDespacho =
   | { readonly tipo: 'resolver-etiqueta'; readonly resolucao: ResolucaoAvisoDespacho };
 
 /**
- * Rule N's phases: the PRE-arrange ones on which `fasePacote` answered without
- * `nfe-pendente` — so the invoice gate PASSED, and an open `nfe` row is over.
- */
-const FASES_DA_NFE_LIBERADA: ReadonlySet<FasePacote> = new Set<FasePacote>([
-  'nao-pronto',
-  'programar',
-  'retido',
-]);
-
-/**
  * Rule N: resolve the `nfe` row with `nfe-validada` iff the invoice gate passed
- * on a pre-arrange phase AND the run did not end on the invoice itself.
+ * on the way to this phase AND the run did not end on the invoice itself.
  *
- * ⚠️ Both halves are load-bearing. The phase half keeps an arranged, collected
- * or cancelled package from claiming an invoice fact it never checked; the
- * desfecho half covers the ship that answered `nfe-pendente` on a `programar`
- * phase — Shopee refused for the invoice our read thought clear.
+ * ⚠️ The phase half is the GATE's own predicate (`faseTemPortaoDeNfe`,
+ * `etiqueta/faseEtiqueta.ts`) — never a phase list kept here (review 3a, Q4-3):
+ * an edit to the gate moves rule N with it. A phase that predicate answers
+ * `true` for would have been `nfe-pendente` had the invoice been pending, so a
+ * package answered on it passed the gate; it keeps an arranged, collected or
+ * cancelled package from claiming an invoice fact it never checked.
+ * `despachoAutomatico.test.ts` pins rule N against the REAL `fasePacote`, phase
+ * by phase. The desfecho half covers the ship that answered `nfe-pendente` on a
+ * `programar` phase — Shopee refused for the invoice our read thought clear.
+ *
+ * ⚠️ ONE deliberate exception to the gate: `desconhecido`. The gate reads the
+ * invoice on an unknown token too (a pending invoice there still refuses the
+ * ship), but "not pending" on a token this repo cannot place is weak evidence
+ * that the NF-e cleared — announcement 1521 reports a pending invoice only in a
+ * shipment-ready status. So an unknown token never CLOSES the `nfe` row; the
+ * next delivery on a known phase does.
  */
 function regraN(r: ResultadoArranjoAutomatico): readonly AcaoDeAvisoDespacho[] {
-  return FASES_DA_NFE_LIBERADA.has(r.fase) && r.desfecho !== 'nfe-pendente'
+  return faseTemPortaoDeNfe(r.fase) && r.fase !== 'desconhecido' && r.desfecho !== 'nfe-pendente'
     ? [resolverDespacho(CLASSE_DESPACHO_PENDENTE.nfe, RESOLUCAO_AVISO_DESPACHO.nfeValidada)]
     : [];
 }
@@ -389,13 +470,54 @@ function resolverDespacho(
  *   one on every refusal); it opens on `recusa-desconhecida` rather than
  *   staying silent, because the order is still at risk.
  *
- * The entrada is in the signature so the table and the executor see the same
- * pair; no row reads it today.
+ * Then {@link semAberturaContradita} drops the OPENS the entrada's confirmed
+ * frete estado contradicts — the stale-row guard (module docblock). No row of
+ * the table reads the entrada; only that guard does.
  */
 export function acoesDeAvisoDoDespacho(
-  _entrada: EntradaArranjoAutomatico,
+  e: EntradaArranjoAutomatico,
   r: ResultadoArranjoAutomatico,
 ): readonly AcaoDeAvisoDespacho[] {
+  return semAberturaContradita(e.estadoFreteConfirmado, r, acoesDoDesfecho(r));
+}
+
+/**
+ * The stale-row guard: drop each OPEN that a fresh read of the confirmed
+ * (newer) estado could never produce, and nothing else.
+ *
+ * - `abrir-despacho` (both classes) when the estado ENDS a dispatch row
+ *   ({@link ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE} — arranged, collected,
+ *   cancelled).
+ * - `abrir-etiqueta` when the estado alone CLOSES the print row — the
+ *   resolver's own predicate ({@link resolucaoDaEtiqueta}): collected or the
+ *   shipment cancelled. ⚠️ Never on `aguardandoPostagem`: that is the arranged
+ *   package the print alert exists for. ⚠️ And never on `programado`: OUR
+ *   `ship_order` succeeded in THIS run, after the transaction — the one fact
+ *   newer than the confirmed estado (a package re-arranged after a cancel is
+ *   step 7's resurrection), and an irreversible ship must not lose its print
+ *   alert.
+ *
+ * ⚠️ `null` drops nothing — no corroborated estado, no contradiction. And the
+ * resolves always stand: closing a row the newer fact ended is never wrong.
+ */
+function semAberturaContradita(
+  estado: EstadoFrete | null,
+  r: ResultadoArranjoAutomatico,
+  acoes: readonly AcaoDeAvisoDespacho[],
+): readonly AcaoDeAvisoDespacho[] {
+  if (estado === null) return acoes;
+  const despachoEncerrado = ESTADOS_FRETE_DESPACHO_ENCERRADO_SHOPEE.has(estado);
+  const etiquetaEncerrada =
+    r.desfecho !== 'programado' && resolucaoDaEtiqueta(estado, false) !== null;
+  return acoes.filter(
+    (a) =>
+      !(a.tipo === 'abrir-despacho' && despachoEncerrado) &&
+      !(a.tipo === 'abrir-etiqueta' && etiquetaEncerrada),
+  );
+}
+
+/** The table's rows: one hook result → its effects, before the stale-row guard. */
+function acoesDoDesfecho(r: ResultadoArranjoAutomatico): readonly AcaoDeAvisoDespacho[] {
   const comPrazo = ehCanalDeEtiquetaComPrazo(r.canalId);
   switch (r.desfecho) {
     case 'fora-do-canal':

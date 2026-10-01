@@ -749,9 +749,10 @@ export type ShopeeProcessOutcome =
        *
        * ⚠️ Named `acaoArranjo` and NOT `acao`, for {@link acaoFrete}'s reason —
        * the #1087 shape, a third time. ⚠️ And it is INFORMATION, never a
-       * disposition: the hook turns every Shopee outcome into a value (it throws
-       * no Shopee class), so a `frete` outcome resolves `frete` whatever this
-       * says — `toDisposition` does not read it.
+       * disposition: the hook turns every Shopee outcome into a value (no Shopee
+       * ANSWER escapes as an error; our own config error, gRPC errors and bugs
+       * are rethrown), so a `frete` outcome resolves `frete` whatever this says
+       * — `toDisposition` does not read it.
        */
       acaoArranjo: DesfechoArranjoAutomatico | null;
       orderSn: string;
@@ -1544,7 +1545,7 @@ export async function processNotificationPayload(
     return {
       kind: 'frete',
       acaoFrete: rastreio.acao,
-      // Step 15b — copied for the task log ONLY. The arrange already ran inside
+      // Step 15b — copied for the `TaskResult` ONLY. The arrange already ran inside
       // the handler (after the frete transaction and the two resolvers), so by
       // the time it reaches here it is a fact to report, never a branch to take.
       acaoArranjo: rastreio.arranjo === null ? null : rastreio.arranjo.desfecho,
@@ -1945,9 +1946,15 @@ export interface TaskResult {
   acaoFrete?: AcaoFreteShopee;
   /**
    * The automatic arrange's desfecho on a code-4/30/47 delivery (#1744, step
-   * 15b) — an enum token, so `programado` / `nfe-pendente` / `precisa-escolha`
-   * are filterable in the task log without opening a document. ABSENT (never
-   * `null`) when the hook did not run.
+   * 15b) — an enum token (`programado` / `nfe-pendente` / `precisa-escolha` …).
+   * ABSENT (never `null`) when the hook did not run.
+   *
+   * ⚠️ It does NOT reach the task log today: `processShopeeNotification`'s one
+   * `logger.info` names its fields one by one and this is not among them (nor
+   * are `acaoFrete` and `acaoPagamentos`). The line an operator can filter on is
+   * the handler's own `[shopee/frete] entrega de rastreio`, which carries
+   * `acaoArranjo` beside `motivoArranjo`, `canalArranjo` and `faseArranjo`. Here
+   * it is the seam a caller — and a test — reads.
    *
    * ⚠️ `acaoArranjo`, never `acao`, for {@link acaoFrete}'s reason.
    */

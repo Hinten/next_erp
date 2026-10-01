@@ -57,12 +57,13 @@ vi.mock('./pagamentoTx', async (importOriginal) => {
 /**
  * Step 15b (#1744) — the two aviso resolvers, behind the same kind of
  * DELEGATING seam: it records their call ORDER and what the despacho one was
- * handed, and calls the real implementation every time — so the step-14 tests
- * below still run production code.
+ * handed, and calls the real implementation unless `resolvedores.falha` is set
+ * — so the step-14 tests below still run production code.
  */
 const resolvedores = vi.hoisted(() => ({
   ordem: [] as string[],
   encerramentos: [] as EncerramentoDespachoShopee[],
+  falha: null as unknown,
 }));
 vi.mock('../nfe/avisoNfe', async (importOriginal) => {
   const real = await importOriginal<typeof import('../nfe/avisoNfe')>();
@@ -85,6 +86,7 @@ vi.mock('../avisos/despachoAutomatico', async (importOriginal) => {
     ): ReturnType<typeof real.resolverAvisosDeDespachoSeEncerrado> => {
       resolvedores.ordem.push('resolver-despacho');
       resolvedores.encerramentos.push(args[1]);
+      if (resolvedores.falha != null) throw resolvedores.falha;
       return real.resolverAvisosDeDespachoSeEncerrado(...args);
     },
   };
@@ -223,6 +225,7 @@ afterEach(() => {
   pag.erro = null;
   resolvedores.ordem.length = 0;
   resolvedores.encerramentos.length = 0;
+  resolvedores.falha = null;
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1330,6 +1333,7 @@ async function abrirAvisoDespachoNfe(db: FakeDb): Promise<void> {
         invoice_pending: { status: 'pending' },
       }),
       nowMs: NOW_MS,
+      estadoFreteConfirmado: null,
     },
     [{ tipo: 'abrir-despacho', classe: CLASSE_DESPACHO_PENDENTE.nfe, motivo: 'nfe-pendente' }],
     { increment: (by: number) => ({ __increment: by }), nowMs: NOW_MS },
@@ -1405,6 +1409,47 @@ describe('importarPedidoShopee — o resolvedor do despacho (passo 15b)', () => 
     cen2.getOrderDetail.mockRejectedValue(erroApi(SHOPEE_ERRO_ORDER_NOT_FOUND));
     expect((await importar(cen2)).acao).toBe('ignorado-inexistente');
     expect(resolvedores.ordem).toEqual([]);
+  });
+
+  it('65 — uma falha do Firestore ao resolver o despacho SOBE: a importação rejeita e a redelivery repete (O43)', async () => {
+    // §2.6 "failures propagate": engolida, a falha deixaria o aviso aberto e a
+    // redelivery — que é quem re-tenta a resolução — nunca aconteceria.
+    const cen = cenario({ detalhe: detalheTurbo() });
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    resolvedores.falha = falha;
+
+    await expect(importar(cen)).rejects.toBe(falha);
+    // O frete já tinha commitado: a falha é só a do resolvedor.
+    expect(freteDoPedido(cen.db).pacotes).toHaveLength(1);
+
+    resolvedores.falha = null;
+    const r = await importar(cen);
+
+    // A re-importação chama o resolvedor de novo, com o frete inalterado.
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(resolvedores.encerramentos).toHaveLength(2);
+    expect(resolvedores.encerramentos[1]).toEqual(resolvedores.encerramentos[0]);
+  });
+
+  it('pedido com DOIS pacotes: o resolvedor recebe OS DOIS, na projeção do diário, em ordem (O44)', async () => {
+    const pacote = detalheSG().package_list![0]!;
+    const cen = cenario({
+      detalhe: linha({
+        package_list: [
+          { ...pacote, package_number: 'OFG000000000001', logistics_channel_id: CANAL_TURBO },
+          { ...pacote, package_number: 'OFG000000000002', logistics_channel_id: CANAL_TURBO },
+        ],
+      }),
+    });
+
+    await importar(cen);
+
+    expect(resolvedores.encerramentos).toHaveLength(1);
+    const numeros = resolvedores.encerramentos[0]!.pacotes.map((p) => p.packageNumber);
+    expect(numeros).toEqual(['OFG000000000001', 'OFG000000000002']);
+    // A MESMA projeção que o frete gravou — nunca uma segunda leitura.
+    const diario = freteDoPedido(cen.db).pacotes as Record<string, unknown>[];
+    expect(numeros).toEqual(diario.map((d) => d.numero));
   });
 
   it('uma order SEM pacote Turbo não LÊ aviso nenhum — o resolvedor novo não encarece a importação', async () => {

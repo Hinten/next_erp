@@ -108,6 +108,8 @@ import {
   shopeeWriteAckSchema,
   wrappedOp,
 } from '../src/types';
+import { ShopeeConfigError } from '../src/errors';
+import { assertShipOrderParams, type ShipOrderParams } from '../src/logistica';
 import { z } from 'zod';
 
 const SHOP_INFO = {
@@ -4818,6 +4820,125 @@ describe('a etiqueta (passo 15)', () => {
       'TIPO_NOVO',
       'THERMAL_UNPACKAGED_LABEL',
     ]);
+  });
+
+  // Review 3a of step 15b, Q1-F1: a value this read accepted and the ship guard
+  // refused came back from `shipOrder` as a `ShopeeConfigError` — OUR
+  // misconfiguration class — so the automatic arrange rethrew it and the
+  // delivery looped to `failed` with no aviso, on Shopee's own data.
+  it('19 — ⛔ QUASE-IGUAL: `address_id`/`branch_id` 0 ou negativo e `pickup_time_id` EM BRANCO custam AQUELA linha; o menor positivo e o id acolchoado sobrevivem', () => {
+    const coleta = parametroCom({
+      pickup: {
+        address_list: [
+          enderecoEtq({ address_id: 0 }),
+          enderecoEtq({ address_id: -5 }),
+          enderecoEtq({ address_id: '0' }),
+          enderecoEtq({ address_id: 1 }),
+        ],
+      },
+    });
+    expect(coleta.response.pickup?.address_list?.map((e) => e?.address_id ?? null)).toEqual([
+      null,
+      null,
+      null,
+      1,
+    ]);
+
+    const postagem = parametroCom({
+      info_needed: { dropoff: ['branch_id'] },
+      dropoff: { branch_list: [{ branch_id: 0 }, { branch_id: -31 }, { branch_id: 1 }] },
+    });
+    expect(postagem.response.dropoff?.branch_list?.map((b) => b?.branch_id ?? null)).toEqual([
+      null,
+      null,
+      1,
+    ]);
+    // A linha sozinha RECUSA alto e claro; o sentinela é da LISTA.
+    expect(shopeeDropoffBranchSchema.safeParse({ branch_id: 0 }).success).toBe(false);
+
+    const endereco = parametroCom({
+      pickup: {
+        address_list: [
+          enderecoEtq({
+            time_slot_list: [
+              horarioEtq({ pickup_time_id: '  ' }),
+              horarioEtq({ pickup_time_id: '\t' }),
+              horarioEtq({ pickup_time_id: ' slot-1 ' }),
+              horarioEtq({ pickup_time_id: 0 }),
+            ],
+          }),
+        ],
+      },
+    }).response.pickup?.address_list?.[0];
+    // O horário em branco custa o HORÁRIO, nunca o endereço.
+    expect(endereco?.address_id).toBe(123);
+    expect(endereco?.time_slot_list?.map((h) => h?.pickup_time_id ?? null)).toEqual([
+      null,
+      null,
+      // ⛔ QUASE-IGUAL: acolchoado NÃO é em branco — e é carregado byte a byte, nunca aparado.
+      ' slot-1 ',
+      // ⛔ QUASE-IGUAL: o id do horário é OPACO — um zero é um id; só os ids NUMÉRICOS recusam 0.
+      '0',
+    ]);
+  });
+
+  it('20 — a leitura e o guarda do `ship_order` recusam os MESMOS valores: o que a leitura aceita o guarda aceita, VERBATIM', () => {
+    /** O guarda aceita este corpo? `ShopeeConfigError` ⇒ não; qualquer outra coisa sobe. */
+    function guardaAceita(p: ShipOrderParams): boolean {
+      try {
+        assertShipOrderParams(p);
+        return true;
+      } catch (err) {
+        if (err instanceof ShopeeConfigError) return false;
+        throw err;
+      }
+    }
+    const veredictos = new Set<boolean>();
+
+    const idsNumericos = [1, 2001, Number.MAX_SAFE_INTEGER, 0, -0, -1, -5, 1.5, 2 ** 53];
+    for (const id of idsNumericos) {
+      const endereco =
+        parametroCom({ pickup: { address_list: [enderecoEtq({ address_id: id })] } }).response
+          .pickup?.address_list?.[0] ?? null;
+      const aceito = guardaAceita({
+        orderSn: ORDER_SN_ETQ,
+        modo: 'pickup',
+        pickup: { addressId: id },
+      });
+      expect({ id, lido: endereco !== null }).toEqual({ id, lido: aceito });
+      if (endereco !== null) expect(endereco.address_id).toBe(id);
+      veredictos.add(aceito);
+
+      const agencia =
+        parametroCom({ dropoff: { branch_list: [{ branch_id: id }] } }).response.dropoff
+          ?.branch_list?.[0] ?? null;
+      expect({ id, lido: agencia !== null }).toEqual({
+        id,
+        lido: guardaAceita({ orderSn: ORDER_SN_ETQ, modo: 'dropoff', dropoff: { branchId: id } }),
+      });
+      if (agencia !== null) expect(agencia.branch_id).toBe(id);
+    }
+
+    const idsDeHorario = ['slot-1', ' slot-1 ', '012', '0', '', ' ', '  ', '\t', '\n \t'];
+    for (const id of idsDeHorario) {
+      const horario =
+        parametroCom({
+          pickup: {
+            address_list: [enderecoEtq({ time_slot_list: [horarioEtq({ pickup_time_id: id })] })],
+          },
+        }).response.pickup?.address_list?.[0]?.time_slot_list?.[0] ?? null;
+      const aceito = guardaAceita({
+        orderSn: ORDER_SN_ETQ,
+        modo: 'pickup',
+        pickup: { addressId: 123, pickupTimeId: id },
+      });
+      expect({ id, lido: horario !== null }).toEqual({ id, lido: aceito });
+      if (horario !== null) expect(horario.pickup_time_id).toBe(id);
+      veredictos.add(aceito);
+    }
+
+    // A tabela tem os DOIS lados — senão o teste não prova nada.
+    expect([...veredictos].sort()).toEqual([false, true]);
   });
 });
 

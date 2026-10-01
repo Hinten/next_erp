@@ -317,6 +317,12 @@ runs the same two resolvers after its own frete write, over the same
   every frete outcome except the transaction's own `ignorado-sem-pedido`: a
   replay and a late push still carry a fresh row, and a lost arrange is an
   order Shopee cancels. It is never gated on step 14's `error` stamp.
+  ⚠️ Its aviso OPENS are gated on the transaction's CONFIRMED frete estado
+  (`estadoFreteConfirmado`), not on the row alone: when the row is older than
+  the stored frete (`ignorado-obsoleto`, a lagging replica) the arrange still
+  runs — Shopee absorbs a duplicate ship — but an open that estado has already
+  overtaken is dropped, so a stale row cannot resurrect an alert a newer
+  delivery resolved.
 - **Its result is information, never a disposition.** The arrange turns every
   Shopee answer into a desfecho (`ResultadoRastreioShopee.arranjo`, `null` when
   it did not run); what escapes it is our own `ShopeeConfigError`, a gRPC
@@ -328,6 +334,16 @@ runs the same two resolvers after its own frete write, over the same
   `shopeeCodeArranjo`, `temPreparacaoAutomatica`) beside `despachoResolvidos` /
   `etiquetaResolvida`, picked field by field and never the object spread in;
   the seller's pickup address and slot text never leave the arrange.
+- **Rule 7 residuals (R-m), each cleared by the next fresh delivery for the
+  package.** Two CONCURRENT deliveries can still reopen an alert for seconds:
+  one that read its row before a transition and committed its frete write
+  FIRST opens after the other's resolve, and the confirmed estado cannot see
+  that order. `resolverAviso` gives up on a `FAILED_PRECONDITION` (pre-existing,
+  `packages/data`), so a resolve that lost to a concurrent repeat is dropped
+  without a re-read. And when another arranger shipped first, a Shopee refusal
+  other than `package_already_shipped` opens the `manual` class (critico) on a
+  package that is already arranged, until the next push's resolver sees the
+  arranged token.
 
 **When the NF-e comes after the order (the normal BR case).** The arrange never
 ships an invoice-pending package: it opens the `nfe` class of

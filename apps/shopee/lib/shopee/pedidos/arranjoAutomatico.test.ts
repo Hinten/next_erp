@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
+import { ESTADO_FRETE, type EstadoFrete } from '@delfrance/schemas';
 import * as pacoteShopee from '@delfrance/integrations-shopee';
 import {
   assertShipOrderParams,
@@ -105,7 +106,10 @@ function linhaDeOrdem(extra: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-function entrada(linha: Record<string, unknown> = {}): EntradaArranjoAutomatico {
+function entrada(
+  linha: Record<string, unknown> = {},
+  estadoFreteConfirmado: EstadoFrete | null = null,
+): EntradaArranjoAutomatico {
   return {
     integracaoId: INTEGRACAO,
     pedidoId: PEDIDO_ID,
@@ -113,6 +117,7 @@ function entrada(linha: Record<string, unknown> = {}): EntradaArranjoAutomatico 
     packageNumber: P1,
     linha: linhaDePacote(linha),
     nowMs: AGORA,
+    estadoFreteConfirmado,
   };
 }
 
@@ -1159,6 +1164,31 @@ describe('o avisador — fora do try (mutantes 46 e 47)', () => {
     expect(entradaRecebida).toBe(e);
     expect(resultado).toBe(r);
   });
+
+  it.each([
+    null,
+    ESTADO_FRETE.despachoAutorizado,
+    ESTADO_FRETE.aguardandoPostagem,
+    ESTADO_FRETE.postado,
+    ESTADO_FRETE.cancelado,
+  ])(
+    '⚠️ Q2-F1 / mutante 35: o estado CONFIRMADO (%s) nunca segura o ARRANJO — só o produtor o lê',
+    async (estado) => {
+      // A linha velha de um `ignorado-obsoleto` ainda arranja: a Shopee absorve
+      // um ship duplicado, e um arranjo perdido é um pedido que ela cancela.
+      const f = fakeClient();
+      const avisar = vi.fn<AvisadorDeArranjo>(async () => {});
+      const e = entrada({}, estado);
+
+      const r = await arranjarPacoteAutomatico(DB, f.client, e, { env: {}, avisar });
+
+      expect(r.desfecho).toBe('programado');
+      expect(f.chamadas).toStrictEqual(CHAMADAS_DO_ARRANJO);
+      // …e o produtor recebe a entrada INTEIRA, o estado confirmado incluído.
+      expect(avisar.mock.calls[0]?.[1]).toBe(e);
+      expect(avisar.mock.calls[0]?.[1].estadoFreteConfirmado).toBe(estado);
+    },
+  );
 
   it.each([
     ['gRPC 14 (R-b: a redelivery re-levanta o aviso)', () => grpc(14)],

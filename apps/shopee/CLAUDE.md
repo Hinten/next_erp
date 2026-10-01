@@ -423,11 +423,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **84** suites in this app name (82 drive it), and since step 8 it has a
+  **86** suites in this app name (84 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
   step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 today — the two `*.tasks.test.ts` suites it counts name the double in a
+  84 after step 15, 86 after step 15b — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1504,8 +1504,9 @@ channels (`CANAIS_ARRANJO_AUTOMATICO`) the code-4/30/47 arm ships unattended.
   arm's lazy default; `rastrear:pedido --live` passes none and never ships.
 - The outcome field is `acaoArranjo`, never `acao` (#1087); a `frete` outcome
   resolves `frete` whatever it says.
-- It throws NO Shopee class — every answer is a desfecho; config, gRPC and bugs
-  rethrow. The aviso write sits OUTSIDE that catch.
+- No Shopee answer escapes as an error — each is a desfecho; our own config
+  error, gRPC errors and bugs are rethrown. The aviso write sits OUTSIDE that
+  catch.
 - It writes only avisos; between arrangers the ONLY guard is Shopee's
   (`is_shipment_arranged`, `package_already_shipped`).
 - `despachoAutomaticoPendente` (per package; `nfe` atencao, `manual` critico)

@@ -613,11 +613,15 @@ describe('o ensaio `rastrear:pedido --live` (passo 15b)', () => {
     expect(codigo).not.toMatch(/arranj/i);
   });
 
-  it('16b. o grafo do script não CARREGA o arranjo: entre ele e o gancho só há `import type`', () => {
+  it('16b. os DOIS elos até o gancho — `rastrearPedido.ts` e `despachoAutomatico.ts` → `arranjoAutomatico` — são só `import type`', () => {
     // O script carrega `rastrearPedido.ts`, que carrega o produtor de avisos;
     // nenhum dos dois pode puxar `arranjoAutomatico.ts` (e com ele o
     // `ship_order`) como VALOR — só o braço da notificação o carrega, pelo
     // import dinâmico do seu padrão.
+    // ⚠️ DOIS elos, não o grafo (review 3a, Q4-5): um import por valor do
+    // gancho vindo de OUTRO módulo que o script alcança não é visto aqui. A
+    // garantia de segurança — o ensaio nunca DESPACHA — é a do teste 16: sem
+    // `deps`, não há `arranjar`.
     const elos = [
       { arquivo: './rastrearPedido.ts', modulo: './arranjoAutomatico' },
       { arquivo: '../avisos/despachoAutomatico.ts', modulo: '../pedidos/arranjoAutomatico' },

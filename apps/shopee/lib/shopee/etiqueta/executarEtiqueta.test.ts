@@ -1449,7 +1449,7 @@ describe('executarEtiquetaShopee — UMA cópia das projeções (15b, R-d, mutan
   });
 
   it('o fold do fulfillment_flag também: faseEtiqueta.ts e SÓ lá', () => {
-    expect(FONTE_DA_FASE).toContain('fulfillment_flag?.trim().toLowerCase()');
+    expect(FONTE_DA_FASE).toContain('ehPedidoFbsShopee(row?.fulfillment_flag)');
     expect(FONTE_DO_RUNNER).not.toContain('fulfillment_flag');
   });
 
