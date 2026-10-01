@@ -122,6 +122,33 @@ export class MercadoLivreClientNetworkError extends Error {
 }
 
 /**
+ * Read a response BODY, turning a connection that dies mid-body into the same
+ * {@link MercadoLivreClientNetworkError} a failed `fetch` becomes.
+ *
+ * ⚠️ Wrapping only `fetch` is not enough: the headers can arrive and the socket
+ * still drop while the body streams, and `text()` / `blob()` then reject with a
+ * bare `TypeError` ("terminated" in Node, "network error" in Chrome). Every
+ * catch site in `apps/web` narrows to this client's classes and rethrows the
+ * rest, so unwrapped it escaped all of them — on the label path, an unhandled
+ * rejection on the `/pedidos` row and a skipped reset after "Checkout salvo".
+ *
+ * An abort WE asked for rethrows untouched: the push providers recognise
+ * Cancelar by the bare `AbortError` a cancelled body read rejects with, and a
+ * caller that aborted owns that outcome. Any error that is not a `TypeError` is
+ * not a transport failure and rethrows too. Precedent: the Shopee web client
+ * (#1748).
+ */
+async function lerCorpo<T>(ler: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  try {
+    return await ler();
+  } catch (err) {
+    if (signal?.aborted === true) throw err;
+    if (err instanceof TypeError) throw new MercadoLivreClientNetworkError(err.message, err);
+    throw err;
+  }
+}
+
+/**
  * The mercado-livre backend answered 200, but not to the question that was
  * asked — so the "success" describes work that did not happen.
  *
@@ -913,7 +940,7 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const text = await res.text();
+    const text = await lerCorpo(() => res.text(), signal);
 
     if (!res.ok) {
       let parsed: unknown = null;
@@ -995,7 +1022,7 @@ export function createMercadoLivreClient(config: {
     if (!res.ok) {
       let parsed: unknown = null;
       let nonJsonBody: string | null = null;
-      const text = await res.text();
+      const text = await lerCorpo(() => res.text());
       if (text.length > 0) {
         try {
           parsed = JSON.parse(text);
@@ -1024,7 +1051,7 @@ export function createMercadoLivreClient(config: {
     // printer fed a chunk of markup. The route answers PDF or ZPL and never
     // HTML, so `text/html` on a 2xx means the request did not reach it.
     if (contentType !== null && /^\s*text\/html\b/i.test(contentType)) {
-      logarCorpoNaoJson(path, res.status, await res.text());
+      logarCorpoNaoJson(path, res.status, await lerCorpo(() => res.text()));
       throw new MercadoLivreClientRespostaInvalidaError(
         `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} com uma página ` +
           'HTML em vez da etiqueta — o pedido não chegou à rota esperada. Atualize a página e, ' +
@@ -1034,7 +1061,7 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const blob = await res.blob();
+    const blob = await lerCorpo(() => res.blob());
     return {
       blob,
       // The route names the file via Content-Disposition, which the proxy
