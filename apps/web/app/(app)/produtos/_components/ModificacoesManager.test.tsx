@@ -6,9 +6,11 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore, FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
+import type { ObjectViewTransactionDocuments } from '@delfrance/ui';
 
 // Hoisted mocks (vi.mock factories can't close over normal consts).
 const h = vi.hoisted(() => ({
+  documents: { current: null as ObjectViewTransactionDocuments | null },
   getDocs: vi.fn(),
   getDoc: vi.fn(),
   buildRevertPrefill: vi.fn((): { key: string; value: unknown } => ({
@@ -59,7 +61,12 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useSnapshotWithDocs: () => h.snapState.current };
 });
 
-vi.mock('firebase/firestore', () => ({ getDocs: h.getDocs, getDoc: h.getDoc }));
+vi.mock('firebase/firestore', () => ({
+  getDocs: h.getDocs,
+  getDoc: h.getDoc,
+  getDocsFromServer: h.getDocs,
+  getDocFromServer: h.getDoc,
+}));
 vi.mock('@/lib/data/historicoModificacoesCollection', () => ({
   historicoModificacoesCollection: {
     resolvePath: () => 'produtos/p1/historicoDeModificacoes',
@@ -76,20 +83,32 @@ vi.mock('@mantine/notifications', () => ({
 // The seeding reads' handles. Stubbed rather than built through the real
 // `defineCollection`, which the `@delfrance/data` mock above does not provide.
 vi.mock('@/lib/data/impostoProdutoCollection', () => ({
-  impostoProdutoCollection: { ref: () => ({ __marker: 'impostoRef' }) },
+  impostoProdutoCollection: {
+    ref: () => ({ __marker: 'impostoRef' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({
+      id,
+      path: 'produtos/p1/imposto/' + id,
+    }),
+  },
 }));
 vi.mock('@/lib/data/operacaoCollection', () => ({
   operacaoCollection: { ref: () => ({ __marker: 'operacaoRef' }) },
 }));
 vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
   produtoExtraDataCollection: {
-    docRef: (_db: unknown, ctx: unknown, id: string) => ({ __marker: 'extraDataRef', ctx, id }),
+    docRef: (_db: unknown, ctx: unknown, id: string) => ({
+      __marker: 'extraDataRef',
+      ctx,
+      id,
+      path: 'produtos/p1/extraData/' + id,
+    }),
   },
 }));
 // `ObjectView` publishes this in production; the tab optional-chains it, so a
 // spy is what makes the "jump to the field's tab" half of a revert assertable.
 vi.mock('@delfrance/ui', () => ({
   useObjectViewSections: () => h.sections.current,
+  useObjectViewTransactionDocuments: () => h.documents.current,
 }));
 vi.mock('@/lib/produtos/revert', () => ({
   buildRevertPrefill: h.buildRevertPrefill,
@@ -220,6 +239,7 @@ beforeEach(() => {
 
 afterEach(() => {
   h.snapState.current = { data: undefined, loading: true, error: undefined };
+  h.documents.current = null;
   h.getDocs.mockReset();
   h.getDoc.mockReset();
   h.buildRevertPrefill.mockReset();
@@ -652,6 +672,47 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
         }),
         expect.anything(),
       );
+    });
+
+    function captureBaselines() {
+      const documents = {
+        getBaseline: vi.fn(() => undefined),
+        seedBaseline: vi.fn(),
+        rebase: vi.fn(),
+        seedFormField: vi.fn(),
+        getFormBaseline: vi.fn(() => undefined),
+        rebaseFormField: vi.fn(),
+        clear: vi.fn(),
+        subscribe: () => () => {},
+        getVersion: () => 0,
+      } satisfies ObjectViewTransactionDocuments;
+      h.documents.current = documents;
+      return documents;
+    }
+
+    it('binds a staged undelete to the confirmed absent version, even if the prefill read sees a later recreation', async () => {
+      const documents = captureBaselines();
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Later recreation' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', null);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    });
+
+    it('binds the save guard to the version explicitly confirmed in the restore dialog', async () => {
+      const documents = captureBaselines();
+      const reviewed = { descricao: 'Reviewed recreation' };
+      h.checkDocumentRestore.mockResolvedValue({ conflict: true, currentData: reviewed });
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Third writer' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).not.toHaveBeenCalled();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+      });
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', reviewed);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
     });
 
     it('moves the operator to the tab the restored document renders in', async () => {
