@@ -15,8 +15,9 @@ description: >-
   externalOptionId, externalOptionIntegracao, externalOptionData,
   comprarEtiqueta, addToCart, ensureCartAgency, calculate,
   loadMelhorEnvioContext, tokenMelEnv, printLabelId, codRastreio,
-  FREIGHT_TIPO_CAPS, marketplaceOwned, labelMode, and adding a new freight
-  provider / integradora (marketplace freight, emit vs fetch labels).
+  FREIGHT_TIPO_CAPS, marketplaceOwned, labelMode, canFetchLabel,
+  resolverIntFrete, and adding a new freight provider / integradora
+  (marketplace freight, emit vs fetch labels).
 ---
 
 # Freight integrations
@@ -24,10 +25,12 @@ description: >-
 The freight domain ports the legacy Flutter ERP's despacho/frete flow with
 **byte-compatible Firestore wire shapes** (the migrated corpus is stored in
 them, so a field rename or shape drift orphans inherited data). The only
-**live** provider today is **Melhor Envio** (ME) — a shipping aggregator with an
-OAuth API for quoting, buying and printing labels across many carriers (Correios,
-Jadlog, …). The architecture is built so other providers (marketplace freight,
-another aggregator) slot in by **category** — see *Provider categories* below.
+**live emit** provider today is **Melhor Envio** (ME) — a shipping aggregator
+with an OAuth API for quoting, buying and printing labels across many carriers
+(Correios, Jadlog, …); **Mercado Livre** and **Shopee** are the live **fetch**
+providers (the marketplace generates the label, the app fetches + prints it).
+The architecture is built so other providers (marketplace freight, another
+aggregator) slot in by **category** — see *Provider categories* below.
 
 ## Where it lives (architecture map)
 
@@ -36,7 +39,7 @@ another aggregator) slot in by **category** — see *Provider categories* below.
 | **ME core** (platform-neutral) | `packages/integrations/freight-br` (`@delfrance/integrations-freight-br`) | OAuth, token lifecycle, the `MelhorEnvioApi` client, `calculate`/`cart`/`comprarEtiqueta` pipeline. **Deps: only `zod`** — no firebase, no Next. Tests mock `fetch`. |
 | ↳ browser-safe client | `freight-br/src/http-client` (subpath `…/http-client`) | The typed `FreightHttpClient` `apps/web` calls (`.conta()`/`.comprar()`/`.imprimir()`/`.rastrear()`/`.calculate()`) + pure builders (`buildCartItem`, `buildCalculatePayload`). Every method has a deadline from `FREIGHT_NIVEL_POR_OPERACAO` (#1094): `curto` 60 s for reads, `longo` 360 s for `comprar` (past the platform's own 504); a timeout — or a gateway 504 — is a `FreightTimeoutError` (a `FreightNetworkError` subclass) whose message is the operator copy. |
 | **ME app** (API-only) | `apps/melhor-envio` (`@delfrance/melhor-envio-app`, `:3005`) | Thin route handlers under `app/api/freight/melhor-envio/{oauth/start,calculate,conta,comprar,imprimir,rastrear}`, the OAuth `callback`, the `webhooks/melhor-envio` receiver, and `lib/freight/*` (`loadMelhorEnvioContext`, the Firestore token store, signed-state HMAC, error→HTTP mapper). Has its **own** `CLAUDE.md`. |
-| **Web UI** (client-first) | `apps/web/app/(app)/pedidos/_components` + `…/logistica` | Frete tab (`tabs/FreteTab.tsx` + `tabs/frete/*`), the `/pedidos` etiqueta row action (`EtiquetaRowAction` → `EtiquetaComprarModal`), the object-view print/track panel (`EtiquetaMelhorEnvioPanel`), the `/logistica` `int_frete` CRUD. `useFreightClient()` targets the ME app via `NEXT_PUBLIC_MELHOR_ENVIO_URL`. |
+| **Web UI** (client-first) | `apps/web/app/(app)/pedidos/_components` + `…/logistica` | Frete tab (`tabs/FreteTab.tsx` + `tabs/frete/*`), the `/pedidos` etiqueta row action (`EtiquetaRowAction` → `EtiquetaComprarModal`; its confirm and Shopee pickup dialogs and its in-flight state live in the page-level `EtiquetaAcaoHost`, because the FreteCell HoverCard unmounts the row on a mouse move), the object-view print/track panel (`EtiquetaMelhorEnvioPanel`), the `/logistica` `int_frete` CRUD. `useFreightClient()` targets the ME app via `NEXT_PUBLIC_MELHOR_ENVIO_URL`. |
 | **Schemas** | `packages/schemas/src/integracao.ts` + `packages/schemas/src/shared/frete.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`, and **`FREIGHT_TIPO_CAPS`** (the per-tipo capability table). Source of truth → `firestore.rules`. |
 
 Freight does **not** use a `core/plugins` registry contract (the old
@@ -56,7 +59,7 @@ without a caps row is a **compile error**.
 | Category (`labelMode`) | Who makes the label | Status / tracking | Frete tab | Examples |
 | --- | --- | --- | --- | --- |
 | **emit** | the app buys + generates it (OAuth → quote → cart → checkout → generate → print) | a freight **webhook** (`webhooks/melhor-envio`) | editable | `melhorEnvios` |
-| **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` / `amz` / `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
+| **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` — live (`canFetchLabel`, their only `can*`); `amz` / `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
 | **generic / none** | no carrier API — the app renders the label itself from the pedido (`generic`, `lib/etiqueta-generica/`) or there is none (`none`) | none (manual) | editable | `motoboy` / `outros`; `retiradaNaLoja` / `fob` |
 
 ⚠️ **The `can*` flags drive behavior, and `labelMode` now drives one branch of
@@ -75,11 +78,28 @@ load-bearing.
 
 Printable today: `melhorEnvios` (bought label) plus `motoboy` / `outros` (an
 on-demand PDF rendered client-side from the pedido — `lib/etiqueta-generica/`).
-`retiradaNaLoja` / `fob` are `labelMode: 'none'` and
-still resolve to `unsupported`, as does every marketplace except `mercadoLivre`'s
-`canFetchLabel`. Don't flip a marketplace `canPrint` true until its fetch flow +
-client route exist, or a marketplace pedido carrying a `printLabelId` would route
-"Imprimir" to the ME backend.
+Fetched today: `mercadoLivre` and `shopee` (`canFetchLabel` → the row's
+`'fetch-label'` action). `retiradaNaLoja` / `fob` are `labelMode: 'none'` and
+still resolve to `unsupported`, as does every other marketplace.
+
+### The etiqueta dispatch — `apps/web/lib/checkout/etiqueta/README.md`
+
+The provider registry, its drift guard, the contract and the steps to add a
+provider live in that README. Two traps are worth carrying here:
+
+- ⚠️ **Never flip a marketplace `canPrint`** — not even once its fetch flow and
+  client route exist. That flow IS `canFetchLabel`, and `etiquetaRowState`
+  tests `canPrint` FIRST, so a marketplace pedido carrying a `printLabelId`
+  would route "Imprimir" to the ME backend. Shopee (#1523) flipped
+  `canFetchLabel` ALONE; its `channel` stays `null` (a FREIGHT HTTP segment —
+  its label route lives on `apps/shopee`).
+- ⚠️ **Resolve the integração with `resolverIntFrete`** (`intFrete.ts`), never
+  by requiring the `int_frete` document: a marketplace-owned tipo in
+  `freteInicial.externalOptionIntegracao` dispatches with or without one
+  (`fonte: 'bloco'`). A pedido imported by THIS app carries no
+  `integracaoFreteOuterRef` (Shopee's step 5 sets none); a migrated legacy one
+  carries the legacy FreteShopee doc's ref and dispatches as `'doc'` when that
+  doc's tipo is `shopee` — the Shopee provider reads neither.
 
 ### The provider-neutral surface (what every category writes through)
 
@@ -216,18 +236,30 @@ reads; `buildCartItem` tolerates a blank/null key.
    `FreteTab.renderTipoFields()` (the switch stays until ≥2 providers with
    converged Fields props). `marketplaceOwned: true` auto-locks the header via the
    caps read — no separate list to edit.
-5. **Etiqueta dispatch — automatic from caps.** `etiquetaRowState` routes off
-   the caps (via **`freightCapsFor(tipo)`** — the tolerant accessor; index
+5. **Etiqueta dispatch.** `etiquetaRowState` routes off the caps (via
+   **`freightCapsFor(tipo)`** — the tolerant accessor; index
    `FREIGHT_TIPO_CAPS` directly only with a parsed `tipo`, since UI `tipo` comes
    unparsed from Firestore and an unknown value must degrade to "unsupported",
    not crash). Set `canQuote` / `canBuy` / `canPrint` and the `/pedidos` row
    action lights up (quote-first / comprar / imprimir). ⚠️ For a **carrier-less**
    provider that is not enough — also set `labelMode: 'generic'`, or the
    `'imprimir'` branch keeps waiting for a `printLabelId` that never arrives.
-   Add a branch in `EtiquetaRowAction.tsx` for a genuinely NEW action kind (e.g.
-   a fetch-label download) — **or** when an existing kind needs a different
-   dispatch, as `'imprimir'` does: it renders one branch for a bought Melhor
-   Envio label and another for the generic on-demand one, keyed on
+   A **fetch** (marketplace) provider is NOT automatic from caps. Shopee
+   (#1523) is the worked example and needed all six (detail: the etiqueta
+   README § *Adding a provider*):
+   1. the caps flip — `canFetchLabel` only; the tipo leaves `unsupportedMarketplace.ts`;
+   2. the provider — `providers/<tipo>.ts` + its `registry.ts` row;
+   3. the client threading — a REQUIRED `EtiquetaProviderDeps` member through
+      the three entry points and the checkout screens;
+   4. the UI capability through the host — a REQUIRED `EtiquetaProviderUi`
+      member (`escolherEnvio`), served on `/pedidos` by `EtiquetaAcaoHost`;
+   5. the row action's per-tipo client-presence branch (`EtiquetaRowAction`);
+   6. the drift guard — `registry.test.ts` reds 1 or 2 alone: land them together.
+
+   Add a branch in `EtiquetaRowAction.tsx` for a genuinely NEW action kind —
+   **or** when an existing kind needs a different dispatch, as `'imprimir'`
+   does: it renders one branch for a bought Melhor Envio label and another for
+   the generic on-demand one, keyed on
    `freightCapsFor(tipo).labelMode === 'generic'`.
 6. **Client route (emit / routed providers only).** If the provider needs server
    compute (OAuth / secret / API), give it `channel: '<slug>'` in caps, add

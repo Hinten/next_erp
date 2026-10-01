@@ -8,14 +8,23 @@ import { runEtiquetaGates } from './gates';
 import { genericLabelProvider } from './providers/genericLabel';
 import { melhorEnviosProvider } from './providers/melhorEnvios';
 import { mercadoLivreProvider } from './providers/mercadoLivre';
+import { shopeeProvider } from './providers/shopee';
 import { unsupportedMarketplaceProvider } from './providers/unsupportedMarketplace';
 import type { CheckoutEtiquetaProvider, EtiquetaOutcome, EtiquetaProviderInput } from './types';
 
 /**
  * The etiqueta provider registry — the carrier-agnostic dispatch that replaces
- * the legacy `switch (tipo)` in `emitirOuImprimirFrete.dart`. Adding a carrier
- * is one provider file + one `PROVIDERS` row (see `README.md`); gates, the UI
- * bridge, and the other providers stay untouched.
+ * the legacy `switch (tipo)` in `emitirOuImprimirFrete.dart`.
+ *
+ * Adding a carrier starts with one provider file + one `PROVIDERS` row, and
+ * stops there only when it needs nothing the contract does not already carry.
+ * A marketplace fetch provider needs more — Shopee (#1523) touched all of it:
+ * its `FREIGHT_TIPO_CAPS` flip (and leaving `unsupportedMarketplace.ts`), a
+ * NEW client threaded as a REQUIRED `deps` member through the three entry
+ * points and the checkout screens, a NEW operator question as a REQUIRED `ui`
+ * member served on `/pedidos` by `EtiquetaAcaoHost`, the row action's
+ * client-presence branch, and the drift guard in `registry.test.ts`. The full
+ * list is in `README.md` ("Adding a provider").
  */
 
 /** Registered providers, indexed by every tipo each one claims via `.tipos`. */
@@ -23,6 +32,7 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoFrete, CheckoutEtiquet
   buildProviderMap([
     melhorEnviosProvider,
     mercadoLivreProvider,
+    shopeeProvider,
     unsupportedMarketplaceProvider,
     genericLabelProvider,
   ]);
@@ -66,21 +76,31 @@ export function resolveEtiquetaProvider(
 }
 
 /**
- * The shared entry point: run the pre-gates, then dispatch to the resolved
- * provider. A `skip` (semFrete) or a blocked gate (the operator declined a
+ * The shared entry point: resolve the provider, run the pre-gates, then
+ * dispatch. A `skip` (semFrete) or a blocked gate (the operator declined a
  * risky reprint) short-circuits before any provider runs. `input.intFrete` is
- * already resolved by the caller (the UI reads the integração doc first).
+ * already resolved by the caller (`resolverIntFrete`).
+ *
+ * ⚠️ The provider is resolved FIRST — resolution is pure, so it costs no I/O
+ * and asks no one anything — because the gates depend on it: a provider whose
+ * reprint is the SAME document (`reimpressao: 'mesmo-documento'`, Shopee) gets
+ * no posted-risk confirm, whose whole rationale is a duplicate PAID label
+ * (#1523 R-f). Every other provider keeps it exactly as before; an absent
+ * `reimpressao` means `'pode-duplicar'`.
  */
 export async function emitirOuImprimirEtiqueta(
   input: EtiquetaProviderInput,
 ): Promise<EtiquetaOutcome> {
-  const gate = await runEtiquetaGates(input);
-  if (gate.status === 'skip') return { status: 'skipped' };
-  if (gate.status === 'blocked') return gate.outcome;
-
   const provider = resolveEtiquetaProvider(
     input.intFrete.tipo,
     freightCapsFor(input.intFrete.tipo),
   );
+
+  const gate = await runEtiquetaGates(input, {
+    confirmarPostado: provider.reimpressao !== 'mesmo-documento',
+  });
+  if (gate.status === 'skip') return { status: 'skipped' };
+  if (gate.status === 'blocked') return gate.outcome;
+
   return provider.emitirOuImprimir(input);
 }

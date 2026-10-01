@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { oauthStartResponseSchema, shopeeContaStatusSchema, shopeeLojaSchema } from './wire';
+import {
+  oauthStartResponseSchema,
+  shopeeContaStatusSchema,
+  shopeeEtiquetaPendenteSchema,
+  shopeeLojaSchema,
+} from './wire';
 
 /**
  * What these guard is the set of DECISIONS the schemas encode. Each one is a
@@ -301,5 +306,392 @@ describe('⚠️ ANTI-VACUITY — a wrong body is still rejected', () => {
 
   it('rejects a missing authorizeUrl', () => {
     expect(oauthStartResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * The label 202 body (#1523, step 15) — the mirror of the backend's `EtiquetaPendente`
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The mirror rule (reconcile R-aa): every 202 variant the BACKEND's own tests
+ * build, copied here as a literal and named by its source, must parse through
+ * this browser's schema. A rename on either side then reds this block instead
+ * of a label flow in production. Only the fixtures are copied — the sentences
+ * are the backend's frozen `MENSAGEM_DA_FASE` / `MENSAGEM_ESCOLHER_ENVIO`.
+ *
+ * The sources: `route.test.ts` is `apps/shopee/app/api/marketplace/shopee/etiqueta/`;
+ * `respostaEtiqueta.test.ts`, `etiquetaCli.test.ts` and `executarEtiqueta.test.ts`
+ * are `apps/shopee/lib/shopee/etiqueta/`.
+ */
+/** `apps/shopee/app/api/marketplace/shopee/etiqueta/route.test.ts` `AGUARDAR`. */
+const AGUARDAR: Record<string, unknown> = {
+  acao: 'aguardar',
+  fase: 'aguardando-rastreio',
+  tentarEmMs: 5_000,
+  mensagem: 'Envio organizado; aguardando o código de rastreio da transportadora.',
+  progresso: { total: 1, organizados: 1, comRastreio: 0, prontos: 0 },
+};
+
+/** `apps/shopee/app/api/marketplace/shopee/etiqueta/route.test.ts` `ESCOLHER`. */
+const ESCOLHER: Record<string, unknown> = {
+  acao: 'escolher-envio',
+  fase: 'programando',
+  pacote: 'OFG000000000001',
+  pacoteRotulo: null,
+  mensagem:
+    'Escolha como enviar o pacote: o endereço e o horário da coleta, ou a postagem na agência.',
+  enderecos: [
+    {
+      id: '2001',
+      rotulo: 'Rua do Vendedor, 100',
+      principal: true,
+      horarios: [{ id: 'slot-1', rotulo: '09:00', recomendado: true }],
+    },
+  ],
+  permiteDropoff: true,
+  escolhaInvalida: false,
+  progresso: { total: 1, organizados: 0, comRastreio: 0, prontos: 0 },
+};
+
+/** `apps/shopee/app/api/marketplace/shopee/etiqueta/route.test.ts` — the `baixar-por-pacote` row. */
+const BAIXAR: Record<string, unknown> = {
+  acao: 'baixar-por-pacote',
+  fase: 'baixando',
+  pacotes: ['OFG000000000001', 'OFG000000000002'],
+  mensagem: 'x',
+  progresso: { total: 2, organizados: 2, comRastreio: 2, prontos: 2 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/executarEtiqueta.test.ts` — the three-package
+ * poll whose budget ran out: that test pins `acao`, `fase` and `tentarEmMs: 0`
+ * (`toMatchObject`); the sentence and the counts are filled in here.
+ */
+const AGUARDAR_SEM_ESPERA: Record<string, unknown> = {
+  acao: 'aguardar',
+  fase: 'aguardando-rastreio',
+  tentarEmMs: 0,
+  mensagem: 'Envio organizado; aguardando o código de rastreio da transportadora.',
+  progresso: { total: 3, organizados: 3, comRastreio: 0, prontos: 0 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/executarEtiqueta.test.ts` "51 pacotes prontos
+ * do mesmo canal ⇒ baixar-por-pacote com os 51, ZERO download" (review 1,
+ * mutantes 60 e 61) — pinned WHOLE (`toStrictEqual`), its `prontos(51)` package
+ * names and `MENSAGEM_BAIXAR_POR_PACOTE` included. Past Shopee's 50-package
+ * download ceiling the backend asks for the per-package loop ON PURPOSE, so a
+ * cap on `pacotes` here is a label that never prints (review 2, Q1-1).
+ */
+const BAIXAR_51: Record<string, unknown> = {
+  acao: 'baixar-por-pacote',
+  fase: 'baixando',
+  pacotes: Array.from({ length: 51 }, (_, i) => `PACOTE-TESTE-${String(i).padStart(3, '0')}`),
+  mensagem:
+    'Os pacotes deste pedido vão por transportadoras diferentes; cada etiqueta é baixada separadamente.',
+  progresso: { total: 51, organizados: 51, comRastreio: 51, prontos: 51 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/executarEtiqueta.test.ts` "a volta completa",
+ * step 1 ("the question, ZERO ship") — the PICKUP-ONLY question: two addresses,
+ * no dropoff on offer. That test pins `acao`, `fase`, `pacote`, `pacoteRotulo`,
+ * `escolhaInvalida`, `permiteDropoff: false` and the address ids `2001`/`2002`
+ * (`toMatchObject`); the sentence (`MENSAGEM_ESCOLHER_ENVIO`), the labels (as
+ * `modoDeEnvio.ts` projects its `DOIS_ENDERECOS`) and the counts are filled in
+ * here.
+ */
+const ESCOLHER_SO_COLETA: Record<string, unknown> = {
+  acao: 'escolher-envio',
+  fase: 'programando',
+  pacote: 'OFG000000000001',
+  pacoteRotulo: null,
+  mensagem:
+    'Escolha como enviar o pacote: o endereço e o horário da coleta, ou a postagem na agência.',
+  enderecos: [
+    {
+      id: '2001',
+      rotulo: 'Rua do Vendedor, 100',
+      principal: false,
+      horarios: [{ id: 'slot-1', rotulo: '21/09/2026 · 09:00', recomendado: false }],
+    },
+    {
+      id: '2002',
+      rotulo: 'Rua do Vendedor, 200',
+      principal: false,
+      horarios: [{ id: 'slot-2', rotulo: '21/09/2026 · 14:00', recomendado: false }],
+    },
+  ],
+  permiteDropoff: false,
+  escolhaInvalida: false,
+  progresso: { total: 1, organizados: 0, comRastreio: 0, prontos: 0 },
+};
+
+/**
+ * `apps/shopee/lib/shopee/etiqueta/etiquetaCli.test.ts` "uma resposta que a
+ * Shopee não aceita é respondida UMA vez: a segunda pergunta encerra" — the
+ * SECOND call, the RE-ASKED question (`escolhaInvalida: true`, an `enderecoId`
+ * that matches no address). That test pins `tipo` and `escolhaInvalida: true`
+ * on the call's summary; the rest is how `executarEtiqueta.ts`'s `'pergunta'`
+ * arm projects it over that file's `DOIS_ENDERECOS` — `MENSAGEM_ESCOLHA_INVALIDA`
+ * above all, the one sentence only this variant carries.
+ */
+const ESCOLHER_DE_NOVO: Record<string, unknown> = {
+  ...ESCOLHER_SO_COLETA,
+  mensagem:
+    'A opção escolhida não está mais disponível na Shopee — escolha de novo como enviar o pacote.',
+  enderecos: [
+    {
+      id: '2001',
+      rotulo: 'Rua do Vendedor, 100, Cidade do Vendedor',
+      principal: false,
+      horarios: [{ id: 'slot-1', rotulo: '21/09/2026 · 09:00', recomendado: false }],
+    },
+    {
+      id: '2002',
+      rotulo: 'Rua do Vendedor, 200, Cidade do Vendedor',
+      principal: false,
+      horarios: [{ id: 'slot-2', rotulo: '21/09/2026 · 14:00', recomendado: false }],
+    },
+  ],
+  escolhaInvalida: true,
+};
+
+const PENDENTES_DO_BACKEND: [string, Record<string, unknown>][] = [
+  ['route.test.ts `AGUARDAR`', AGUARDAR],
+  ['route.test.ts `ESCOLHER`', ESCOLHER],
+  ['route.test.ts `baixar-por-pacote`', BAIXAR],
+  [
+    'respostaEtiqueta.test.ts `202 pendente` (a ZERO-SLOT address, "Pacote 1 de 2")',
+    {
+      acao: 'escolher-envio',
+      fase: 'programando',
+      pacote: 'OFG000000000001',
+      pacoteRotulo: 'Pacote 1 de 2',
+      mensagem: 'm',
+      enderecos: [{ id: '2001', rotulo: 'Rua do Vendedor', principal: true, horarios: [] }],
+      permiteDropoff: true,
+      escolhaInvalida: false,
+      progresso: { total: 1, organizados: 1, comRastreio: 0, prontos: 0 },
+    },
+  ],
+  [
+    'etiquetaCli.test.ts `R2-4 PAR` (NO address, dropoff only)',
+    {
+      acao: 'escolher-envio',
+      fase: 'programando',
+      pacote: 'OFG000000000002',
+      pacoteRotulo: 'Pacote 2 de 2',
+      mensagem: 'm',
+      enderecos: [],
+      permiteDropoff: true,
+      escolhaInvalida: false,
+      progresso: { total: 2, organizados: 1, comRastreio: 0, prontos: 0 },
+    },
+  ],
+  ['executarEtiqueta.test.ts `tentarEmMs: 0` (the budget ran out mid-poll)', AGUARDAR_SEM_ESPERA],
+  ['executarEtiqueta.test.ts `51 pacotes prontos` (past the 50-package download)', BAIXAR_51],
+  [
+    'executarEtiqueta.test.ts `a volta completa` step 1 (PICKUP ONLY, `permiteDropoff: false`)',
+    ESCOLHER_SO_COLETA,
+  ],
+  [
+    'etiquetaCli.test.ts `respondida UMA vez` call 2 (RE-ASKED, `escolhaInvalida: true`)',
+    ESCOLHER_DE_NOVO,
+  ],
+];
+
+describe('the label 202 — every variant the BACKEND builds parses here (R-aa)', () => {
+  it.each(PENDENTES_DO_BACKEND)('%s', (_fonte, corpo) => {
+    const r = shopeeEtiquetaPendenteSchema.safeParse(corpo);
+
+    expect(r.success).toBe(true);
+    // Value-for-value: the mirror neither drops nor rewrites a field the
+    // backend sent (every literal carries `escolhaInvalida` when it applies).
+    expect(r.data).toEqual(corpo);
+  });
+
+  it('exactly three members, and the three the backend has', () => {
+    // A member dropped here reds the parse above; a member ADDED here without
+    // a backend producing it is dead code nobody would notice.
+    expect(shopeeEtiquetaPendenteSchema.options.map((o) => o.shape.acao.value).sort()).toEqual([
+      'aguardar',
+      'baixar-por-pacote',
+      'escolher-envio',
+    ]);
+  });
+});
+
+describe('the label 202 — an unknown acao is REJECTED, an unknown key passes', () => {
+  it('⭐ W17: REJECTS an acao this build does not know — it is never read as a wait', () => {
+    // A new member is a question the caller would have to ANSWER. Folding it
+    // into `aguardar` would poll a question nobody asks until the budget ran out.
+    for (const acao of ['confirmar', 'ignorar', 'AGUARDAR', '']) {
+      const r = shopeeEtiquetaPendenteSchema.safeParse({ ...AGUARDAR, acao });
+
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it('⚠️ the removed 1-hour `confirmar` shape stays rejected, WHATEVER it carries', () => {
+    // Appendix A deleted the member on both sides. A body shaped like its old
+    // design (`pergunta`, `mensagem`) must not slip through another member.
+    const r = shopeeEtiquetaPendenteSchema.safeParse({
+      acao: 'confirmar',
+      fase: 'programando',
+      pergunta: 'menos-de-uma-hora',
+      mensagem: 'm',
+      progresso: { total: 1, organizados: 0, comRastreio: 0, prontos: 0 },
+    });
+
+    expect(r.success).toBe(false);
+  });
+
+  it('keeps parsing when a variant grows a key this build never heard of — and strips it', () => {
+    const r = shopeeEtiquetaPendenteSchema.parse({ ...ESCOLHER, campoNovo: { a: 1 } });
+
+    expect(r.acao).toBe('escolher-envio');
+    expect('campoNovo' in r).toBe(false);
+  });
+
+  it('a phase this build never heard of passes — `fase` is a free string', () => {
+    // The browser shows the backend's own `mensagem` and only compares two
+    // phases for equality; an enum would kill the flow on a forward deploy.
+    const r = shopeeEtiquetaPendenteSchema.parse({
+      ...AGUARDAR,
+      fase: 'fase-do-futuro',
+    });
+
+    expect(r.fase).toBe('fase-do-futuro');
+  });
+
+  it('⚠️ NEAR MISS — an EMPTY fase is rejected (the free string is not blanket)', () => {
+    expect(shopeeEtiquetaPendenteSchema.safeParse({ ...AGUARDAR, fase: '' }).success).toBe(false);
+  });
+});
+
+describe('the label 202 — `progresso` is REQUIRED on every member', () => {
+  it.each(PENDENTES_DO_BACKEND)('rejects %s WITHOUT progresso', (_fonte, corpo) => {
+    // It is what makes the give-up message deterministic; no deployed backend
+    // omits it, so a default would only hide our own bug.
+    const { progresso: _drop, ...sem } = corpo;
+    const r = shopeeEtiquetaPendenteSchema.safeParse(sem);
+
+    expect(r.success).toBe(false);
+  });
+
+  it('⚠️ rejects a QUOTED or negative count — the backend computed it (rule 3)', () => {
+    for (const total of ['1', -1, 1.5]) {
+      const r = shopeeEtiquetaPendenteSchema.safeParse({
+        ...AGUARDAR,
+        progresso: { total, organizados: 0, comRastreio: 0, prontos: 0 },
+      });
+
+      expect(r.success).toBe(false);
+    }
+  });
+});
+
+describe('the label 202 — `escolhaInvalida` defaults to false, and only when ABSENT', () => {
+  it('⭐ an absent escolhaInvalida reads as false', () => {
+    const { escolhaInvalida: _drop, ...sem } = ESCOLHER;
+    const r = shopeeEtiquetaPendenteSchema.parse(sem);
+
+    expect(r.acao === 'escolher-envio' ? r.escolhaInvalida : null).toBe(false);
+  });
+
+  it('⚠️ NEAR MISS — a backend that sends `true` keeps it (the re-asked question)', () => {
+    const r = shopeeEtiquetaPendenteSchema.parse({ ...ESCOLHER, escolhaInvalida: true });
+
+    expect(r.acao === 'escolher-envio' ? r.escolhaInvalida : null).toBe(true);
+  });
+
+  it('⚠️ REJECTS a non-boolean — the default covers ABSENT, never malformed', () => {
+    for (const escolhaInvalida of ['true', 1, null]) {
+      expect(shopeeEtiquetaPendenteSchema.safeParse({ ...ESCOLHER, escolhaInvalida }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('the label 202 — a question must be answerable', () => {
+  it('⭐ NO address is legal only WITH the dropoff on offer', () => {
+    const semEndereco = { ...ESCOLHER, enderecos: [] };
+
+    expect(
+      shopeeEtiquetaPendenteSchema.safeParse({ ...semEndereco, permiteDropoff: true }).success,
+    ).toBe(true);
+    const r = shopeeEtiquetaPendenteSchema.safeParse({ ...semEndereco, permiteDropoff: false });
+    expect(r.success).toBe(false);
+    const campos = r.success ? [] : r.error.issues.map((i) => i.path.join('.'));
+    expect(campos).toContain('enderecos');
+  });
+
+  it('an address WITHOUT the dropoff is a question too — the pickup-only offer', () => {
+    // The near miss of the refine: it gates the EMPTY list, never the dropoff.
+    expect(
+      shopeeEtiquetaPendenteSchema.safeParse({ ...ESCOLHER, permiteDropoff: false }).success,
+    ).toBe(true);
+  });
+
+  it('⚠️ REJECTS a numeric address id — ids are opaque STRINGS on this wire', () => {
+    // The backend `String()`s Shopee's int64 `address_id`; a number here is our
+    // own serialisation bug, and a browser that echoed it back as a number
+    // would be refused by the route's strict `envio` reader.
+    const r = shopeeEtiquetaPendenteSchema.safeParse({
+      ...ESCOLHER,
+      enderecos: [{ id: 2001, rotulo: 'Rua', principal: true, horarios: [] }],
+    });
+
+    expect(r.success).toBe(false);
+  });
+
+  it('⚠️ REJECTS an empty pacote — it is echoed back in `envio.pacote`', () => {
+    expect(shopeeEtiquetaPendenteSchema.safeParse({ ...ESCOLHER, pacote: '' }).success).toBe(false);
+  });
+});
+
+describe('the label 202 — `baixar-por-pacote` lists 2 or more packages, with NO upper bound', () => {
+  const pacotes = (n: number) =>
+    Array.from({ length: n }, (_, i) => `OFG${String(i + 1).padStart(12, '0')}`);
+  const baixar = (lista: string[]) => ({ ...BAIXAR, pacotes: lista });
+
+  it('accepts the lower bound, 50, and ⭐ 51 — past Shopee’s download ceiling, the backend asks for THIS loop', () => {
+    // Q1-1: 50 is Shopee's cap on ONE download, which is WHY the backend sends
+    // the per-package loop for 51 (the `BAIXAR_51` mirror row above). A cap
+    // here turned that body into "faça o deploy de apps/shopee" on every click.
+    for (const n of [2, 50, 51, 120]) {
+      expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(n))).success).toBe(true);
+    }
+  });
+
+  it('⚠️ NEAR MISS — rejects one package (not a split) and none', () => {
+    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(pacotes(1))).success).toBe(false);
+    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar([])).success).toBe(false);
+  });
+
+  it('⚠️ NEAR MISS — rejects an EMPTY package number anywhere in a long list', () => {
+    // The dropped cap is not blanket tolerance: each entry is still echoed
+    // back as `pacote` on its own call.
+    const lista = pacotes(51);
+    lista[50] = '';
+    expect(shopeeEtiquetaPendenteSchema.safeParse(baixar(lista)).success).toBe(false);
+  });
+});
+
+describe('the label 202 — `tentarEmMs`', () => {
+  it('accepts 0 — the CALLER clamps the wait, never the schema (W10 lives in the provider)', () => {
+    expect(AGUARDAR_SEM_ESPERA).toMatchObject({ tentarEmMs: 0 });
+    expect(shopeeEtiquetaPendenteSchema.safeParse(AGUARDAR_SEM_ESPERA).success).toBe(true);
+  });
+
+  it('⚠️ REJECTS a negative or QUOTED wait — ours, hence strict', () => {
+    for (const tentarEmMs of [-1, '5000', null]) {
+      expect(shopeeEtiquetaPendenteSchema.safeParse({ ...AGUARDAR, tentarEmMs }).success).toBe(
+        false,
+      );
+    }
   });
 });

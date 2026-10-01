@@ -345,7 +345,9 @@ export const INTEGRACAO_FRETE = {
  *                   quote → cart → checkout → generate → print → webhook status.
  *   - `'fetch'`   — the marketplace already generated it; the app only fetches +
  *                   prints, and status arrives via the marketplace order-sync
- *                   (NOT a freight webhook). Phase 5/6 — not implemented yet.
+ *                   (NOT a freight webhook). Live for Mercado Livre and Shopee
+ *                   (their `canFetchLabel`); the other marketplaces are not
+ *                   implemented yet.
  *   - `'generic'` — no carrier API; render a generic PDF on demand (a deferred
  *                   follow-up for motoboy / outros).
  *   - `'none'`    — nothing to print (retirada na loja / fob).
@@ -359,7 +361,8 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  *
  * ⚠️ The **`can*` flags are the behavioral truth**. Every marketplace-owned
  * tipo (fetch category) stays ALL FALSE until its fetch flow + client route
- * exist — `mercadoLivre`'s `canFetchLabel` is the one live exception — so
+ * exist — `mercadoLivre`'s and `shopee`'s `canFetchLabel` are the two live
+ * exceptions, and `canFetchLabel` is the ONLY flag either sets — so
  * `etiquetaRowState` yields `'unsupported'` for the rest, byte-identical to
  * the previous `tipo !== 'melhorEnvios'` reject. The generic-label tipos
  * (`motoboy`/`outros`) are the other exception: `canPrint` is true for them
@@ -367,11 +370,12 @@ export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
  * buy step) — it dispatches to the on-demand generic PDF instead of the
  * Melhor Envio reprint. `labelMode` is **descriptive** (documents intended
  * Phase-5/6 marketplace behavior and today's generic/none split); it does NOT
- * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true
- * until the fetch flow + its client route exist, or a marketplace pedido
- * carrying a `printLabelId` would wrongly route "Imprimir" to the Melhor
- * Envio backend. `marketplaceOwned` is behavioral — it reproduces the old
- * `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
+ * drive the dispatch by itself. Do not flip a marketplace `canPrint` to true,
+ * not even once its fetch flow + client route exist — that flow IS
+ * `canFetchLabel`, and `etiquetaRowState` tests `canPrint` BEFORE it, so a
+ * marketplace pedido carrying a `printLabelId` would wrongly route "Imprimir"
+ * to the Melhor Envio backend. `marketplaceOwned` is behavioral — it
+ * reproduces the old `MARKETPLACE_TIPOS` read-only lock on the Frete tab.
  */
 export interface FreightTipoCapabilities {
   /** The importing marketplace owns the whole freight block → Frete tab read-only. */
@@ -395,7 +399,9 @@ export interface FreightTipoCapabilities {
    * Backend channel segment for the freight HTTP client (`/api/freight/<channel>/*`),
    * or `null` when the tipo has no server route (marketplace/manual/generic).
    * Only `'melhor-envio'` is non-null today; the per-channel client router that
-   * consumes this lands with provider #2.
+   * consumes this lands with provider #2. A marketplace's label route is NOT a
+   * freight channel — Shopee's `POST /api/marketplace/shopee/etiqueta` lives on
+   * its marketplace backend, so `shopee.channel` stays `null` (#1523).
    */
   readonly channel: string | null;
 }
@@ -418,9 +424,10 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'emit',
     channel: 'melhor-envio',
   },
-  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre is the one
-  // live fetch provider (`canFetchLabel`); the rest are Phase-5/6 stubs, so
-  // every `can*` stays false (→ `'unsupported'` in the row action).
+  // Marketplace-managed (fetch-only, read-only tab). Mercado Livre and Shopee
+  // are the live fetch providers (`canFetchLabel`, and no other `can*`); the
+  // rest are Phase-5/6 stubs, so every `can*` stays false (→ `'unsupported'`
+  // in the row action).
   mercadoLivre: {
     marketplaceOwned: true,
     canQuote: false,
@@ -461,12 +468,18 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
     labelMode: 'fetch',
     channel: null,
   },
+  // #1523 — fetch via `apps/shopee`'s marketplace route
+  // (`POST /api/marketplace/shopee/etiqueta`). ⚠️ `canFetchLabel` is the ONE
+  // flag that flipped: `canPrint` would route a `printLabelId` to Melhor Envio
+  // (see the interface doc), `channel` is the FREIGHT route segment and this
+  // route is not one, and `canTrack` has no reader (step 7's order pushes
+  // track Shopee regardless — ML keeps `false` beside a live handler too).
   shopee: {
     marketplaceOwned: true,
     canQuote: false,
     canBuy: false,
     canPrint: false,
-    canFetchLabel: false,
+    canFetchLabel: true,
     canTrack: false,
     labelMode: 'fetch',
     channel: null,

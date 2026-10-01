@@ -32,6 +32,7 @@ import {
 import { ContingenciaBanner } from './ContingenciaBanner';
 import { ClienteColumnFilter, formatClienteFilterValue } from './ClienteColumnFilter';
 import { EmitirLoteDialog } from './EmitirLoteDialog';
+import { EtiquetaAcaoHost } from './EtiquetaAcaoHost';
 import { IntegracaoColumnFilter } from './IntegracaoColumnFilter';
 import { formatIntegracaoFilterValue, type IntegracaoLookup } from './integracaoLookup';
 import { NfColumnFilter } from './NfColumnFilter';
@@ -287,79 +288,93 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   );
   return (
     <PedidoRowReadsContext.Provider value={rowReads.status}>
-      <DirecaoSurface direcao={direcao}>
-        <ContingenciaBanner />
-        <TableView
-          onRowsChange={rowReads.onRows}
-          title={
-            direcao === 'entrada' ? (
-              <Group gap="xs" align="center">
-                <Title order={2}>{cfg.listTitle}</Title>
-                <DirecaoBadge direcao={direcao} />
-              </Group>
-            ) : (
-              cfg.listTitle
-            )
-          }
-          description={cfg.listDescription}
-          schema={pedidoSchema}
-          collection={pedidoCollection}
-          db={getFirebaseFirestore()}
-          meta={pedidoMeta}
-          queryParams={{ ehSaida: cfg.ehSaida }}
-          virtualColumns={virtualColumns}
-          fields={{
-            estado: {
-              label: 'Pagamento',
-              renderCell: (value) => (
-                <Badge variant="light">{ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}</Badge>
-              ),
-            },
-          }}
-          rowHref={(id) => cfg.editarPath(id)}
-          // The column set is FIXED here, and that is what makes
-          // `defaultQuery.columns` authoritative. Left at the default `true`,
-          // `TableView` reads the per-browser `localStorage` set instead
-          // (`visibleKeysArr = showColumnPicker ? storedKeysArr : …`) — and
-          // Mantine's `useLocalStorage` WRITES `defaultValue` to storage on
-          // mount, with no user interaction at all. So every browser that has
-          // ever opened this list carries a set frozen at that visit, and a
-          // newly declared column (`disputa`) would reach only a browser that
-          // had never been here. Same reasoning as `/produtos`.
-          showColumnPicker={false}
-          rowLinkColumn={PEDIDO_ROW_LINK_COLUMN}
-          renderNewButton={() => (
-            <Button component={Link} href={cfg.novoPath}>
-              {cfg.newButtonLabel}
-            </Button>
-          )}
-          selectable
-          // 6 actions on saída (emit + print + download anexos + duplicar +
-          // confirmar entrega + devolução integral). Default ActionBar
-          // threshold is 3 → overflow menu, which hid labeled buttons and
-          // broke every pedidos bulk-action e2e.
-          overflowThreshold={6}
-          actions={[
-            emitNFeAction,
-            printAction,
-            downloadAnexosAction,
-            duplicarAction,
-            confirmarEntregaAction,
-            ...extraActions,
-          ]}
-        />
-        <EmitirLoteDialog
-          opened={loteModal.opened}
-          pedidoIds={loteModal.pedidoIds}
-          onClose={loteModal.close}
-        />
-        <PrintComumDialog
-          opened={printModal.opened}
-          pedidoIds={printModal.pedidoIds}
-          alreadyPrintedCount={printModal.alreadyPrintedCount}
-          onClose={printModal.close}
-        />
-      </DirecaoSurface>
+      {/* The etiqueta row action's dialogs, question queue and in-flight flags
+          (#1523): page level, because the FreteCell HoverCard unmounts the
+          action on the first mouse move — see `EtiquetaAcaoHost`.
+          ⚠️ No unit test pins THIS mount: without it the row falls back to its
+          own instance (`host === null`) and every unit test stays green while
+          the pickup dialog dies with the HoverCard again. Its pin is the e2e
+          `pedidos-etiqueta-shopee.vendas.e2e.spec.ts` ("answers the pickup
+          question by mouse…"), the step that moves the mouse off the card,
+          waits for the PDF button to unmount and expects the question still
+          open. */}
+      <EtiquetaAcaoHost>
+        <DirecaoSurface direcao={direcao}>
+          <ContingenciaBanner />
+          <TableView
+            onRowsChange={rowReads.onRows}
+            title={
+              direcao === 'entrada' ? (
+                <Group gap="xs" align="center">
+                  <Title order={2}>{cfg.listTitle}</Title>
+                  <DirecaoBadge direcao={direcao} />
+                </Group>
+              ) : (
+                cfg.listTitle
+              )
+            }
+            description={cfg.listDescription}
+            schema={pedidoSchema}
+            collection={pedidoCollection}
+            db={getFirebaseFirestore()}
+            meta={pedidoMeta}
+            queryParams={{ ehSaida: cfg.ehSaida }}
+            virtualColumns={virtualColumns}
+            fields={{
+              estado: {
+                label: 'Pagamento',
+                renderCell: (value) => (
+                  <Badge variant="light">
+                    {ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}
+                  </Badge>
+                ),
+              },
+            }}
+            rowHref={(id) => cfg.editarPath(id)}
+            // The column set is FIXED here, and that is what makes
+            // `defaultQuery.columns` authoritative. Left at the default `true`,
+            // `TableView` reads the per-browser `localStorage` set instead
+            // (`visibleKeysArr = showColumnPicker ? storedKeysArr : …`) — and
+            // Mantine's `useLocalStorage` WRITES `defaultValue` to storage on
+            // mount, with no user interaction at all. So every browser that has
+            // ever opened this list carries a set frozen at that visit, and a
+            // newly declared column (`disputa`) would reach only a browser that
+            // had never been here. Same reasoning as `/produtos`.
+            showColumnPicker={false}
+            rowLinkColumn={PEDIDO_ROW_LINK_COLUMN}
+            renderNewButton={() => (
+              <Button component={Link} href={cfg.novoPath}>
+                {cfg.newButtonLabel}
+              </Button>
+            )}
+            selectable
+            // 6 actions on saída (emit + print + download anexos + duplicar +
+            // confirmar entrega + devolução integral). Default ActionBar
+            // threshold is 3 → overflow menu, which hid labeled buttons and
+            // broke every pedidos bulk-action e2e.
+            overflowThreshold={6}
+            actions={[
+              emitNFeAction,
+              printAction,
+              downloadAnexosAction,
+              duplicarAction,
+              confirmarEntregaAction,
+              ...extraActions,
+            ]}
+          />
+          <EmitirLoteDialog
+            opened={loteModal.opened}
+            pedidoIds={loteModal.pedidoIds}
+            onClose={loteModal.close}
+          />
+          <PrintComumDialog
+            opened={printModal.opened}
+            pedidoIds={printModal.pedidoIds}
+            alreadyPrintedCount={printModal.alreadyPrintedCount}
+            onClose={printModal.close}
+          />
+        </DirecaoSurface>
+      </EtiquetaAcaoHost>
     </PedidoRowReadsContext.Provider>
   );
 }

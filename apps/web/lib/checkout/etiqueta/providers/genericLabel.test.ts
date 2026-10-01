@@ -24,18 +24,25 @@ function makeInput(over: {
   formato?: 'pdf' | 'zpl2';
   printJob?: EtiquetaProviderInput['deps']['printJob'];
   notify?: EtiquetaProviderInput['ui']['notify'];
+  intFrete?: EtiquetaProviderInput['intFrete'];
 }): EtiquetaProviderInput {
   return {
     db: {} as never,
     pedido: { numero: '1234' } as never,
     pedidoId: 'p1',
     frete: {} as never,
-    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.motoboy, data: {} as never },
+    intFrete: over.intFrete ?? {
+      fonte: 'doc',
+      id: 'if1',
+      tipo: INTEGRACAO_FRETE.motoboy,
+      data: {} as never,
+    },
     formato: over.formato ?? 'pdf',
     deps: {
       freightClient: null,
       nfeClient: null,
       mercadoLivreClient: null,
+      shopeeClient: null,
       printJob: over.printJob ?? (vi.fn(async () => 'printed') as never),
     },
     ui: {
@@ -43,6 +50,7 @@ function makeInput(over: {
       notify: over.notify ?? vi.fn(),
       openUrl: vi.fn(),
       comprarEtiqueta: vi.fn(),
+      escolherEnvio: vi.fn(),
     },
   };
 }
@@ -192,5 +200,52 @@ describe('genericLabelProvider', () => {
     const out = await genericLabelProvider.emitirOuImprimir(makeInput({ notify }));
     expect(out).toEqual({ status: 'error', message: 'canvas boom' });
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
+  });
+
+  it('W6 — refuses a `bloco` integration (no int_frete document): no model, no render, no print', async () => {
+    // The subtitle names the int_frete ACCOUNT, so the label needs the document.
+    // The registry never routes a bloco here (its tipo is always
+    // marketplace-owned); this pins the provider's own refusal.
+    const printJob = vi.fn(async () => 'printed' as const);
+    const notify = vi.fn();
+    for (const formato of ['pdf', 'zpl2'] as const) {
+      const out = await genericLabelProvider.emitirOuImprimir(
+        makeInput({
+          formato,
+          printJob,
+          notify,
+          intFrete: { fonte: 'bloco', id: null, tipo: INTEGRACAO_FRETE.motoboy, data: null },
+        }),
+      );
+      expect(out).toEqual({ status: 'error', message: 'Integração de frete não encontrada.' });
+    }
+    expect(buildModelMock).not.toHaveBeenCalled();
+    expect(renderPdfMock).not.toHaveBeenCalled();
+    expect(renderZplMock).not.toHaveBeenCalled();
+    expect(printJob).not.toHaveBeenCalled();
+  });
+
+  it('near-miss of W6 — the same tipo as a `doc` integration still prints', async () => {
+    const printJob = vi.fn(async () => 'printed' as const);
+    const out = await genericLabelProvider.emitirOuImprimir(
+      makeInput({
+        printJob,
+        intFrete: {
+          fonte: 'doc',
+          id: 'int-1',
+          tipo: INTEGRACAO_FRETE.motoboy,
+          data: { tipo: INTEGRACAO_FRETE.motoboy } as never,
+        },
+      }),
+    );
+    expect(out).toEqual({ status: 'printed' });
+    expect(buildModelMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'p1',
+      expect.anything(),
+      expect.objectContaining({ fonte: 'doc', id: 'int-1' }),
+    );
+    expect(printJob).toHaveBeenCalledOnce();
   });
 });
