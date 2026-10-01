@@ -100,7 +100,7 @@ function Card<T>({
           <Skeleton height={100} />
         ) : query.isError ? (
           <Alert color="red" title="Erro ao carregar">
-            {query.error.message}
+            Não foi possível carregar estes dados. Use Atualizar para tentar novamente.
           </Alert>
         ) : (
           children(query.data)
@@ -271,7 +271,7 @@ export function InicioDashboard({ uid }: { uid: string }) {
         <Skeleton height={130} />
       ) : channels.isError ? (
         <Alert color="red" title="Erro ao carregar canais">
-          {channels.error.message}
+          Não foi possível carregar os canais. Tente atualizar o painel.
         </Alert>
       ) : channels.data.length === 0 ? (
         <Text c="dimmed">Nenhum canal de vendas ativo.</Text>

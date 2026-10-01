@@ -174,7 +174,7 @@ export function inicioDespachoBase(canalId: string): QueryPredicate {
 export function inicioDespachoPredicado(value: InicioDespacho): QueryPredicate {
   return { and: [inicioDespachoBase(value.canalId), inicioDespachoCondicao(value)] };
 }
-/** Source union for the seven conditional counters, excluding old prepared orders. */
+/** Source union: pending orders, plus prepared orders from the window's start. */
 export function inicioDespachoFonte(value: Omit<InicioDespacho, 'metrica'>): QueryPredicate {
   return {
     and: [

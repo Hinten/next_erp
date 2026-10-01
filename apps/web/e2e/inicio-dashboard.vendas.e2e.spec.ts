@@ -92,10 +92,15 @@ test.describe.serial('Início — dashboard e links de despacho', () => {
     page,
   }) => {
     await page.goto('/inicio');
-    for (const id of channelIds.slice(0, 6))
-      await expect(page.getByRole('region', { name: id, exact: true })).toBeVisible({
+    for (const id of channelIds.slice(0, 6)) {
+      const channel = page.getByRole('region', { name: id, exact: true });
+      await expect(channel).toBeVisible({
         timeout: 60_000,
       });
+      const total = channel.getByRole('link', { name: 'Total', exact: true });
+      await expect(total).toBeVisible();
+      if (id !== canalId) await expect(total.locator('..')).toContainText('0');
+    }
     await expect(page.getByRole('region', { name: `${prefix}-facebook`, exact: true })).toHaveCount(
       0,
     );

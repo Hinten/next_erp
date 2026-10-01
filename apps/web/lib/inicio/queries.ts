@@ -31,14 +31,16 @@ import { usuarioCollection } from '@/lib/data/usuarioCollection';
 export const INICIO_CACHE_MS = 60_000;
 export const DESPACHO_KEYS = Object.keys(DESPACHO_METRICAS) as DespachoMetrica[];
 const count = z.number().int().nonnegative().safe();
+// Firestore SUM over an empty input returns null, including conditional sums.
+const dispatchCount = count.nullable().transform((value) => value ?? 0);
 export const despachoContagensSchema = z.strictObject({
-  faltam: count,
-  atrasados: count,
-  despachados: count,
-  faltaImprimir: count,
-  proximosDias: count,
-  proximosDiasSemImpressao: count,
-  total: count,
+  faltam: dispatchCount,
+  atrasados: dispatchCount,
+  despachados: dispatchCount,
+  faltaImprimir: dispatchCount,
+  proximosDias: dispatchCount,
+  proximosDiasSemImpressao: dispatchCount,
+  total: dispatchCount,
 });
 
 export async function loadVendasInicio() {
@@ -62,7 +64,7 @@ export function buildDespachoInicioPipeline(
   db: Firestore,
   window: Omit<InicioDespacho, 'metrica'>,
 ) {
-  // Upcoming pending orders participate too; old dispatched orders do not.
+  // Prepared-only orders before the window cannot contribute to any counter.
   const source = inicioDespachoFonte(window);
   return db
     .pipeline()

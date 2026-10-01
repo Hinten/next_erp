@@ -61,8 +61,7 @@ describe('dashboard aggregates', () => {
     buildDespachoInicioPipeline(db, { canalId: 'a', inicioUs: 1000, fimUs: 2000 });
     expect(stage.aggregate.mock.calls[0]![0].accumulators).toHaveLength(7);
     expect(stage.where).toHaveBeenCalledOnce();
-    mocks.execute.mockResolvedValue({ results: [] });
-    expect(await loadDespachoInicio(db, { canalId: 'a', inicioUs: 1, fimUs: 2 })).toEqual({
+    const zeros = {
       faltam: 0,
       atrasados: 0,
       despachados: 0,
@@ -70,7 +69,18 @@ describe('dashboard aggregates', () => {
       proximosDias: 0,
       proximosDiasSemImpressao: 0,
       total: 0,
+    };
+    for (const data of [
+      undefined,
+      Object.fromEntries(Object.keys(zeros).map((key) => [key, null])),
+    ]) {
+      mocks.execute.mockResolvedValue({ results: data ? [{ data: () => data }] : [] });
+      expect(await loadDespachoInicio(db, { canalId: 'a', inicioUs: 1, fimUs: 2 })).toEqual(zeros);
+    }
+    mocks.execute.mockResolvedValue({
+      results: [{ data: () => ({ ...zeros, total: 'invalid' }) }],
     });
+    await expect(loadDespachoInicio(db, { canalId: 'a', inicioUs: 1, fimUs: 2 })).rejects.toThrow();
   });
   it('groups all three checkout periods once and resolves every returned user without a top-20 cap', async () => {
     const window = inicioCheckoutJanela(new Date(2026, 9, 1, 13));
