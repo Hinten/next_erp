@@ -60,6 +60,7 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  */
 const KNOWN_APPHOSTING_APPS = [
   'apps/integrations',
+  'apps/legal',
   'apps/melhor-envio',
   'apps/mercado-livre',
   'apps/mercado-pago',

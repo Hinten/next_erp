@@ -8,11 +8,12 @@ Open-source ERP for business process automation: clients, products, orders, paym
 
 Multi-app Turborepo monorepo split by **persona/runtime**, not by ERP domain:
 
-| App                  | Persona                                              | Runtime         | Hosting              |
-| -------------------- | ---------------------------------------------------- | --------------- | -------------------- |
-| `apps/web/`          | Internal staff (auth) + customer-facing public pages | SSR             | Firebase App Hosting |
-| `apps/integrations/` | External systems (webhooks, OAuth callbacks)         | SSR API-only    | Firebase App Hosting |
-| `apps/docs/`         | Contributors / users                                 | Astro Starlight | external (TBD)       |
+| App                  | Persona                                          | Runtime         | Hosting              |
+| -------------------- | ------------------------------------------------ | --------------- | -------------------- |
+| `apps/web/`          | Internal staff (auth)                            | SSR             | Firebase App Hosting |
+| `apps/legal/`        | Public Terms of Use and Privacy Policy (no auth) | SSR             | Firebase App Hosting |
+| `apps/integrations/` | External systems (webhooks, OAuth callbacks)     | SSR API-only    | Firebase App Hosting |
+| `apps/docs/`         | Contributors / users                             | Astro Starlight | external (TBD)       |
 
 Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 22 + the existing Python functions).
 
@@ -44,7 +45,15 @@ pnpm install
 pnpm dev
 ```
 
-Boots `apps/web` on :3000 and `apps/integrations` on :3001.
+Boots all apps, including `apps/web` on :3000, `apps/integrations` on :3001 and
+`apps/legal` on :3002. To run only the public legal documents:
+
+```bash
+pnpm --filter @delfrance/legal dev
+```
+
+See [legal app configuration](apps/legal/README.md) for public identity variables
+and the login links.
 
 ## Domain integrations
 

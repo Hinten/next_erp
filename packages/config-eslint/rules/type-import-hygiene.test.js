@@ -104,13 +104,13 @@ describe('the plugins those rules need are registered, and only when they should
    * `eslint-config-next`'s is `eslint-import-resolver-typescript` — so pnpm
    * hands out two distinct module objects and ESLint's duplicate check compares
    * by identity. Registering `import` unconditionally throws "Cannot redefine
-   * plugin" in all 8 Next apps rather than silently deduping.
+   * plugin" in all 9 Next apps rather than silently deduping.
    */
   it('registers both plugins by default, for workspaces that do not spread next', () => {
     expect(Object.keys(block().plugins ?? {}).sort()).toEqual(['@typescript-eslint', 'import']);
   });
 
-  it('registers NEITHER when registerPlugin is false, which is what the 8 Next apps pass', () => {
+  it('registers NEITHER when registerPlugin is false, which is what the 9 Next apps pass', () => {
     expect(Object.keys(block({ registerPlugin: false }).plugins ?? {})).toEqual([]);
   });
 
