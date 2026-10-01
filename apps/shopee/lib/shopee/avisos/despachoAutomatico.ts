@@ -420,15 +420,26 @@ export type AcaoDeAvisoDespacho =
  * by phase. The desfecho half covers the ship that answered `nfe-pendente` on a
  * `programar` phase — Shopee refused for the invoice our read thought clear.
  *
- * ⚠️ ONE deliberate exception to the gate: `desconhecido`. The gate reads the
- * invoice on an unknown token too (a pending invoice there still refuses the
- * ship), but "not pending" on a token this repo cannot place is weak evidence
- * that the NF-e cleared — announcement 1521 reports a pending invoice only in a
- * shipment-ready status. So an unknown token never CLOSES the `nfe` row; the
- * next delivery on a known phase does.
+ * ⚠️ TWO deliberate exceptions to the gate: `desconhecido` and `nao-pronto`.
+ * The gate reads the invoice on both (a pending invoice there still refuses the
+ * ship), but announcement 1521 reports a pending invoice ONLY in a
+ * shipment-ready status — so "not pending" on a token this repo cannot place,
+ * or on a package that is not ready yet, is weak evidence that the NF-e
+ * cleared. And the hook runs on a STALE row by design (`ignorado-obsoleto`): a
+ * lagging `LOGISTICS_NOT_START` row arriving after a READY + pending row opened
+ * the `nfe` alert would otherwise close it as `nfe-validada`, and nothing
+ * re-observes a package held at READY by its invoice until the next push or
+ * sweep tick (PR #1754's review). Only `programar` / `retido` — phases on a
+ * READY package, where Shopee does report the flag — may close it; a package
+ * leaving NOT_START is re-observed at READY, where the arrange closes the row
+ * as `arranjado` anyway. A wrong close loses the urgent "emit the NF-e" alert;
+ * a late close only keeps it a little longer.
  */
 function regraN(r: ResultadoArranjoAutomatico): readonly AcaoDeAvisoDespacho[] {
-  return faseTemPortaoDeNfe(r.fase) && r.fase !== 'desconhecido' && r.desfecho !== 'nfe-pendente'
+  return faseTemPortaoDeNfe(r.fase) &&
+    r.fase !== 'desconhecido' &&
+    r.fase !== 'nao-pronto' &&
+    r.desfecho !== 'nfe-pendente'
     ? [resolverDespacho(CLASSE_DESPACHO_PENDENTE.nfe, RESOLUCAO_AVISO_DESPACHO.nfeValidada)]
     : [];
 }

@@ -219,8 +219,10 @@ function observacaoDaFase(fase: Exclude<FasePacote, 'nfe-pendente'>, nfePendente
  */
 function portaoDecidiuNaFase(fase: FasePacote): boolean {
   if (fase === 'nfe-pendente') return false;
-  // A exceção DELIBERADA da regra N: um token desconhecido nunca fecha a linha `nfe`.
-  if (fase === 'desconhecido') return false;
+  // As exceções DELIBERADAS da regra N: um token desconhecido e um pacote ainda
+  // não pronto nunca fecham a linha `nfe` (a 1521 só reporta a nota pendente num
+  // status pronto para envio — review do PR #1754).
+  if (fase === 'desconhecido' || fase === 'nao-pronto') return false;
   return fasePacote(observacaoDaFase(fase, true)) === 'nfe-pendente';
 }
 
@@ -583,9 +585,12 @@ describe('3 — acoesDeAvisoDoDespacho (a tabela)', () => {
       MOTIVO_ETIQUETA_SHOPEE.statusDesconhecido,
       null,
     ]) {
-      expect(acoes('nao-elegivel', { motivo, fase: 'nao-pronto' }), String(motivo)).toEqual([
+      // A recusa da ORDEM (FBS, IN_CANCEL…) chega num pacote PRONTO: a regra N fecha.
+      expect(acoes('nao-elegivel', { motivo, fase: 'programar' }), String(motivo)).toEqual([
         NFE_VALIDADA,
       ]);
+      // …mas num pacote ainda não pronto a nota "livre" não prova nada (review do PR #1754).
+      expect(acoes('nao-elegivel', { motivo, fase: 'nao-pronto' }), String(motivo)).toEqual([]);
       expect(acoes('nao-elegivel', { motivo, fase: 'janela-fechada' }), String(motivo)).toEqual([]);
     }
   });
@@ -625,21 +630,50 @@ describe('3 — acoesDeAvisoDoDespacho (a tabela)', () => {
       const resolve = acoes('aguardando', { fase }).some(
         (a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada',
       );
-      // A ÚNICA exceção: `desconhecido` passa pelo portão, mas um "não pendente"
-      // num token que o repo não sabe situar não prova que a nota validou.
+      // As DUAS exceções: `desconhecido` e `nao-pronto` passam pelo portão, mas
+      // um "não pendente" fora de um status pronto não prova que a nota validou.
       expect(resolve, fase).toBe(
-        fase !== 'desconhecido' && fasePacote(observacaoDaFase(fase, true)) === 'nfe-pendente',
+        fase !== 'desconhecido' &&
+          fase !== 'nao-pronto' &&
+          fasePacote(observacaoDaFase(fase, true)) === 'nfe-pendente',
       );
       if (resolve) resolvidas.push(fase);
     }
-    // QUASE-ERRO da exceção: o portão LÊ a nota no token desconhecido…
+    // QUASE-ERRO das exceções: o portão LÊ a nota nas duas fases…
     expect(fasePacote(observacaoDaFase('desconhecido', true))).toBe('nfe-pendente');
-    // …e mesmo assim a regra N não fecha nada nele.
-    // ÂNCORA do valor de hoje (nem vazio, nem tudo): `retido` está DENTRO — o
-    // termo pendente é lido DEPOIS do portão.
-    expect(resolvidas.sort()).toEqual(['nao-pronto', 'programar', 'retido']);
+    expect(fasePacote(observacaoDaFase('nao-pronto', true))).toBe('nfe-pendente');
+    // …e mesmo assim a regra N não fecha nada nelas.
+    // ÂNCORA do valor de hoje (nem vazio, nem tudo): só as fases de um pacote
+    // PRONTO fecham; `retido` está DENTRO — o termo pendente é lido DEPOIS do portão.
+    expect(resolvidas.sort()).toEqual(['programar', 'retido']);
     // QUASE-ERRO: a fase que É o veredito do portão nunca diz que ele passou.
     expect(acoes('aguardando', { fase: 'nfe-pendente' })).toEqual([]);
+  });
+
+  it('⚠️ review do PR #1754: uma linha NOT_START ATRASADA não fecha o aviso `nfe` que uma linha READY + pendente abriu', () => {
+    // 1. A linha READY com a nota pendente ABRE a linha `nfe`.
+    const fasePendente = fasePacote(observacaoDaFase('programar', true));
+    expect(fasePendente).toBe('nfe-pendente');
+    expect(acoesCom(null, 'nfe-pendente', { fase: fasePendente })).toEqual([
+      expect.objectContaining({ tipo: 'abrir-despacho', classe: 'nfe' }),
+    ]);
+    // 2. Uma entrega com réplica atrasada devolve a linha NOT_START mais antiga
+    //    (a transação diz `ignorado-obsoleto`; o hook roda mesmo assim, de propósito).
+    const faseAtrasada = fasePacote(observacaoDaFase('nao-pronto', false));
+    expect(faseAtrasada).toBe('nao-pronto');
+    const atrasada = acoesCom(ESTADO_FRETE.despachoAutorizado, 'nao-elegivel', {
+      fase: faseAtrasada,
+    });
+    expect(
+      atrasada.some((a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada'),
+    ).toBe(false);
+    // QUASE-ERRO: a MESMA nota livre numa linha PRONTA fecha como `nfe-validada`.
+    const pronta = acoesCom(ESTADO_FRETE.despachoAutorizado, 'aguardando', {
+      fase: fasePacote(observacaoDaFase('programar', false)),
+    });
+    expect(
+      pronta.some((a) => a.tipo === 'resolver-despacho' && a.resolucao === 'nfe-validada'),
+    ).toBe(true);
   });
 
   it('VARREDURA: desfecho × fase × canal contra a tabela reescrita como predicados', () => {

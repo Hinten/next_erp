@@ -1041,8 +1041,9 @@ its reason, the quoted literals that are not this vocabulary: the stamp's
   push for it — the NOT_START → READY code 30, if a pending package is
   `LOGISTICS_NOT_START` and Shopee sends that push (registers 227, 228) — or
   the `search_package_list` sweep of step 15b's PR 3b (stacked). The `nfe` row
-  closes on that observation: `nfe-validada` when the package is seen past the
-  invoice gate, `arranjado` once it is arranged.
+  closes on that observation: `nfe-validada` when the package is seen READY past
+  the invoice gate (never on a not-ready or unknown status — Shopee reports a
+  pending invoice only in a shipment-ready one), `arranjado` once it is arranged.
 - **A sweep or a schedule** (§13), and a `get_order_list` walk on
   `INVOICE_PENDING` (register 202, answered NOT NEEDED by step 15).
 - **`add_invoice_data`.** It exists behind a login-gated page, and it is
