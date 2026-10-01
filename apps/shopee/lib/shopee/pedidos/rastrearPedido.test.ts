@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pedidoCollection } from '@delfrance/data/admin/collections';
 import {
   ESTADO_FRETE,
   ESTADO_PEDIDO,
@@ -7,13 +8,21 @@ import {
   seedFreteInicial,
   type FreteDoPedido,
 } from '@delfrance/schemas';
-import type { ShopeeClient, ShopeePackageDetail } from '@delfrance/integrations-shopee';
-import { ShopeeApiError, SHOPEE_ERROR_KIND } from '@delfrance/integrations-shopee';
+import type {
+  ShopeeClient,
+  ShopeePackageDetail,
+  ShopeePackageDetailRow,
+} from '@delfrance/integrations-shopee';
+import {
+  ShopeeApiError,
+  SHOPEE_ERROR_KIND,
+  shopeePackageDetailRowSchema,
+} from '@delfrance/integrations-shopee';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import type { ShopeeNotificationPayload } from '../notificacoes/notificacao';
-import type { DiagnosticoPushFrete } from './fretePushShopee';
+import { observadoDoPacoteDetalhe, type DiagnosticoPushFrete } from './fretePushShopee';
 import { makePedidoIdShopee } from './orderIds';
 import { microsDeSegundosShopee } from './orderMapping';
 import {
@@ -24,6 +33,64 @@ import {
 } from './rastrearPedido';
 import { avisarNfeShopee, chaveAvisoNfeShopee } from '../nfe/avisoNfe';
 import { MOTIVO_NFE_SHOPEE } from '../nfe/errosNfe';
+import {
+  elegibilidadeDoArranjoAutomatico,
+  observacaoDoPacoteShopee,
+} from '../etiqueta/faseEtiqueta';
+import {
+  CLASSE_DESPACHO_PENDENTE,
+  RESOLUCAO_AVISO_DESPACHO,
+  chaveAvisoDespachoPendente,
+  executarAcoesDeAvisoDoDespacho,
+  type EncerramentoDespachoShopee,
+} from '../avisos/despachoAutomatico';
+// ⚠️ TYPES only — the handler under test must never load the arrange either.
+import type {
+  ArranjadorDePacote,
+  EntradaArranjoAutomatico,
+  ResultadoArranjoAutomatico,
+} from './arranjoAutomatico';
+
+/**
+ * Step 15b — the two aviso resolvers are reached through a DELEGATING seam, so
+ * a test can read their CALL ORDER against the arrange, read what the despacho
+ * one was handed, and make it fail.
+ *
+ * ⚠️ Both delegate to the REAL implementation unless `seam.erroDespacho` is
+ * set, so every other assertion in this file (the step-14 ones included) is
+ * still about production code and not about a double.
+ */
+const seam = vi.hoisted(() => ({
+  ordem: [] as string[],
+  encerramentos: [] as EncerramentoDespachoShopee[],
+  erroDespacho: null as unknown,
+}));
+vi.mock('../nfe/avisoNfe', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../nfe/avisoNfe')>();
+  return {
+    ...real,
+    resolverAvisoNfeSeEncerrado: async (
+      ...args: Parameters<typeof real.resolverAvisoNfeSeEncerrado>
+    ): ReturnType<typeof real.resolverAvisoNfeSeEncerrado> => {
+      seam.ordem.push('resolver-nfe');
+      return real.resolverAvisoNfeSeEncerrado(...args);
+    },
+  };
+});
+vi.mock('../avisos/despachoAutomatico', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../avisos/despachoAutomatico')>();
+  return {
+    ...real,
+    resolverAvisosDeDespachoSeEncerrado: async (
+      ...args: Parameters<typeof real.resolverAvisosDeDespachoSeEncerrado>
+    ): ReturnType<typeof real.resolverAvisosDeDespachoSeEncerrado> => {
+      seam.ordem.push('resolver-despacho');
+      seam.encerramentos.push(args[1]);
+      if (seam.erroDespacho != null) throw seam.erroDespacho;
+      return real.resolverAvisosDeDespachoSeEncerrado(...args);
+    },
+  };
+});
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — invented ids only. Never a real partner, shop, order or buyer.  */
@@ -166,6 +233,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   infos.length = 0;
   avisos.length = 0;
+  seam.ordem.length = 0;
+  seam.encerramentos.length = 0;
+  seam.erroDespacho = null;
 });
 
 /** The whole log of a run, flattened, so a "never appears" claim is total. */
@@ -694,5 +764,510 @@ describe('rastrearPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
       resolvidoEm: AGORA_MS * 1000,
       resolucaoMotivo: 'frete-despachado',
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     step 15b (#1744) — o resolvedor do despacho e o arranjo automático       */
+/* -------------------------------------------------------------------------- */
+
+/** Announcement 1573's first Turbo channel — a fixture of the wire's own list. */
+const CANAL_TURBO = 90011;
+
+/**
+ * A package the automatic arrange must ship: a Turbo channel, READY, not
+ * arranged, no invoice pending, no terms — PARSED by the real schema, so the
+ * row the handler hands over carries every field `observado` drops.
+ */
+function linhaTurbo(over: Record<string, unknown> = {}): ShopeePackageDetailRow {
+  return shopeePackageDetailRowSchema.parse(
+    linha({
+      logistics_channel_id: CANAL_TURBO,
+      fulfillment_status: 'LOGISTICS_READY',
+      is_shipment_arranged: false,
+      ...over,
+    }),
+  );
+}
+
+/**
+ * A client that answers `get_package_detail` and RECORDS every other member a
+ * caller reaches for, rejecting it — so "exactly ONE Shopee call" is a claim
+ * about the WHOLE client, not about the one member a fake happens to define.
+ */
+function clienteQueContaTudo(rows: readonly ShopeePackageDetailRow[]): {
+  readonly client: ShopeeClient;
+  readonly chamadas: string[];
+} {
+  const chamadas: string[] = [];
+  const client = new Proxy(
+    {},
+    {
+      get(_alvo, nome) {
+        // `then` must stay absent, or `Promise.resolve(client)` would adopt it.
+        if (typeof nome !== 'string' || nome === 'then') return undefined;
+        return () => {
+          chamadas.push(nome);
+          return nome === 'getPackageDetail'
+            ? Promise.resolve({ package_list: rows } as unknown as ShopeePackageDetail)
+            : Promise.reject(new TypeError(`chamada Shopee inesperada: ${nome}`));
+        };
+      },
+    },
+  ) as unknown as ShopeeClient;
+  return { client, chamadas };
+}
+
+function resultadoArranjo(
+  over: Partial<ResultadoArranjoAutomatico> = {},
+): ResultadoArranjoAutomatico {
+  return {
+    desfecho: 'programado',
+    canalId: CANAL_TURBO,
+    fase: 'programar',
+    motivo: null,
+    shopeeCode: null,
+    operacao: null,
+    semPacote: false,
+    ...over,
+  };
+}
+
+interface ArranjadorFake {
+  readonly arranjar: ArranjadorDePacote;
+  readonly entradas: EntradaArranjoAutomatico[];
+  readonly clientes: ShopeeClient[];
+}
+
+/** A fake hook that records each call — into the shared ORDER log too. */
+function arranjador(resultado: ResultadoArranjoAutomatico = resultadoArranjo()): ArranjadorFake {
+  const entradas: EntradaArranjoAutomatico[] = [];
+  const clientes: ShopeeClient[] = [];
+  return {
+    entradas,
+    clientes,
+    arranjar: (_db, client, e) => {
+      seam.ordem.push('arranjar');
+      entradas.push(e);
+      clientes.push(client);
+      return Promise.resolve(resultado);
+    },
+  };
+}
+
+/** The deps of a delivery whose pull answers `rows`, with the fake hook wired. */
+function entregaTurbo(rows: readonly ShopeePackageDetailRow[], arr: ArranjadorFake) {
+  return {
+    clientFor: () => Promise.resolve(clienteQueResponde(rows).client),
+    scheduler: agendador().scheduler,
+    arranjar: arr.arranjar,
+  };
+}
+
+const AVISO_DESPACHO_NFE_PATH = `avisos/${chaveAvisoDespachoPendente(
+  CONTA,
+  PEDIDO_ID,
+  PKG_A,
+  CLASSE_DESPACHO_PENDENTE.nfe,
+)}`;
+
+/**
+ * Abre o aviso `despachoAutomaticoPendente` (classe `nfe`) do pacote pelo
+ * EXECUTOR real do produtor, como o gancho faria ao ver a nota pendente. A
+ * criação não usa o incremento. Zera `caminhos` e a ordem ao final.
+ */
+async function abrirAvisoDespachoNfe(db: FakeDb): Promise<void> {
+  const nowMs = AGORA_MS - 60_000;
+  await executarAcoesDeAvisoDoDespacho(
+    asDb(db),
+    {
+      integracaoId: CONTA,
+      pedidoId: PEDIDO_ID,
+      orderSn: ORDER_SN,
+      packageNumber: PKG_A,
+      linha: linhaTurbo({ invoice_pending: { status: 'pending' } }),
+      nowMs,
+    },
+    [{ tipo: 'abrir-despacho', classe: CLASSE_DESPACHO_PENDENTE.nfe, motivo: 'nfe-pendente' }],
+    { increment: (by: number) => ({ __increment: by }), nowMs },
+  );
+  expect(db.store[AVISO_DESPACHO_NFE_PATH]!.data.resolvidoEm).toBeNull();
+  db.caminhos.length = 0;
+  seam.ordem.length = 0;
+}
+
+/** Every key the arm's ONE line carries — a CLOSED list, so a new one is looked at. */
+const CAMPOS_DA_LINHA_DO_BRACO = [
+  'integracaoId',
+  'shopId',
+  'orderSn',
+  'pedidoId',
+  'packageNumber',
+  'code',
+  'acao',
+  'estadoEscrito',
+  'campos',
+  'statusMarketplace',
+  'statusDoPush',
+  'camposMudados',
+  'divergePushVsPull',
+  'temTrackingNoPush',
+  'temTrackingNoPull',
+  'relogioDoPushS',
+  'relogioDoPacoteS',
+  'ilegiveis',
+  'sintetica',
+  'avisoNfeResolvido',
+  'despachoResolvidos',
+  'etiquetaResolvida',
+  'acaoArranjo',
+  'motivoArranjo',
+  'canalArranjo',
+  'faseArranjo',
+  'shopeeCodeArranjo',
+  'temPreparacaoAutomatica',
+] as const;
+
+describe('rastrearPedidoShopee — o arranjo automático (passo 15b): QUANDO roda', () => {
+  it('32 — SEM `arranjar` não há arranjo: um pacote Turbo candidato custa EXATAMENTE uma chamada e `arranjo: null`', async () => {
+    const row = linhaTurbo();
+    // ÂNCORA: a linha É uma candidata para o gancho real — sem isto o negativo
+    // abaixo seria vácuo (um pacote que o gancho recusaria de graça).
+    expect(elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(row)).tipo).toBe('candidato');
+
+    const db = pedidoSemeado();
+    const cli = clienteQueContaTudo([row]);
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), {
+      clientFor: () => Promise.resolve(cli.client),
+      scheduler: agendador().scheduler,
+    });
+
+    // ⚠️ É o que mantém `rastrear:pedido --live` (que não passa deps) longe do
+    // `ship_order`: um padrão aqui leria a ordem, os parâmetros, e despacharia.
+    expect(cli.chamadas).toEqual(['getPackageDetail']);
+    expect(r.acao).toBe('atualizado');
+    expect(r.arranjo).toBeNull();
+    expect(linhasDoBraco()[0]).toMatchObject({
+      acaoArranjo: null,
+      motivoArranjo: null,
+      canalArranjo: null,
+      faseArranjo: null,
+      shopeeCodeArranjo: null,
+    });
+    // E ninguém abriu aviso nenhum.
+    expect(Object.keys(db.store).filter((p) => p.startsWith('avisos/'))).toEqual([]);
+
+    // O PAR: a MESMA entrega, com o gancho ligado, arranja UMA vez, no MESMO
+    // cliente, com a linha FRESCA do pull e o relógio da tarefa.
+    const db2 = pedidoSemeado();
+    const cli2 = clienteQueContaTudo([row]);
+    const arr = arranjador();
+    const r2 = await rastrearPedidoShopee(asDb(db2), alvo(), {
+      clientFor: () => Promise.resolve(cli2.client),
+      scheduler: agendador().scheduler,
+      arranjar: arr.arranjar,
+    });
+    expect(arr.entradas).toHaveLength(1);
+    expect(arr.clientes[0] === cli2.client).toBe(true);
+    expect(arr.entradas[0]).toEqual({
+      integracaoId: CONTA,
+      pedidoId: PEDIDO_ID,
+      orderSn: ORDER_SN,
+      packageNumber: PKG_A,
+      linha: row,
+      nowMs: AGORA_MS,
+    });
+    // ⚠️ A linha, nunca o `observado`: só ela carrega o que o gancho decide.
+    expect(arr.entradas[0]!.linha).toBe(row);
+    expect(arr.entradas[0]!.linha.is_shipment_arranged).toBe(false);
+    expect(r2.arranjo).toEqual(resultadoArranjo());
+    // O fake não chama a Shopee: a ÚNICA chamada continua sendo o pull.
+    expect(cli2.chamadas).toEqual(['getPackageDetail']);
+  });
+
+  it('34 — uma REPETIÇÃO (`ignorado-sem-mudanca`) AINDA arranja: o gate nunca é `acao === atualizado`', async () => {
+    const db = pedidoSemeado();
+    const arr = arranjador();
+    const deps = entregaTurbo([linhaTurbo()], arr);
+
+    const r1 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    const r2 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r1.acao).toBe('atualizado');
+    // ⚠️ A repetição é o caminho NORMAL de um arranjo que ainda não aconteceu:
+    // o frete não muda, e um gate em `atualizado` perderia o pedido para o
+    // cancelamento automático da Shopee.
+    expect(r2.acao).toBe('ignorado-sem-mudanca');
+    expect(arr.entradas).toHaveLength(2);
+    expect(r2.arranjo).toEqual(resultadoArranjo());
+    expect(linhasDoBraco()[1]!.acaoArranjo).toBe('programado');
+  });
+
+  it('35 — um push ATRASADO (`ignorado-obsoleto`) AINDA arranja: a linha que ele lê é fresca', async () => {
+    const db = pedidoSemeado();
+    const arr = arranjador();
+    await rastrearPedidoShopee(
+      asDb(db),
+      alvo(),
+      entregaTurbo([linhaTurbo({ update_time: T_S + 600 })], arr),
+    );
+
+    // Um relógio de pacote MAIS VELHO que o guardado — o lag de leitura depois
+    // de uma escrita, ou uma réplica atrasada.
+    const r = await rastrearPedidoShopee(
+      asDb(db),
+      alvo(),
+      entregaTurbo(
+        [linhaTurbo({ update_time: T_S, fulfillment_status: 'LOGISTICS_NOT_START' })],
+        arr,
+      ),
+    );
+
+    expect(r.acao).toBe('ignorado-obsoleto');
+    expect(arr.entradas).toHaveLength(2);
+    expect(arr.entradas[1]!.linha.fulfillment_status).toBe('LOGISTICS_NOT_START');
+    expect(r.arranjo).toEqual(resultadoArranjo());
+  });
+
+  it('os outros desfechos SEM escrita (`-sem-frete-inicial`, `-desconhecido`) também arranjam', async () => {
+    // Sem bloco de frete: o passo 5 ainda não semeou — o pacote existe e é
+    // fresco do mesmo jeito.
+    const semBloco = new FakeDb();
+    semBloco.seed(PEDIDO_PATH, {
+      estado: ESTADO_PEDIDO.pago,
+      numero: ORDER_SN,
+      lastMarketplaceUpdate: microsDeSegundosShopee(T_S),
+      ultimaModificacao: microsDeSegundosShopee(T_S),
+    });
+    const arr1 = arranjador();
+    const r1 = await rastrearPedidoShopee(
+      asDb(semBloco),
+      alvo(),
+      entregaTurbo([linhaTurbo()], arr1),
+    );
+    expect(r1.acao).toBe('ignorado-sem-frete-inicial');
+    expect(arr1.entradas).toHaveLength(1);
+
+    // Um token que o passo 7 não conhece, repetido: a segunda entrega não
+    // escreve e responde `ignorado-desconhecido`.
+    const db = pedidoSemeado();
+    const arr2 = arranjador();
+    const deps = entregaTurbo(
+      [linhaTurbo({ fulfillment_status: 'LOGISTICS_TOKEN_INVENTADO' })],
+      arr2,
+    );
+    await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    const r2 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    expect(r2.acao).toBe('ignorado-desconhecido');
+    expect(arr2.entradas).toHaveLength(2);
+  });
+
+  it('36 — NÃO arranja no `ignorado-sem-pedido` da TRANSAÇÃO (o pedido sumiu entre a leitura barata e o pull)', async () => {
+    const db = pedidoSemeado();
+    const arr = arranjador();
+    const ag = agendador();
+    let pulls = 0;
+    const client = {
+      getPackageDetail: async () => {
+        pulls += 1;
+        // O pedido some DEPOIS da leitura barata e ANTES da transação.
+        await pedidoCollection.docRef(asDb(db), {}, PEDIDO_ID).delete();
+        return { package_list: [linhaTurbo()] } as unknown as ShopeePackageDetail;
+      },
+    } as unknown as ShopeeClient;
+
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), {
+      clientFor: () => Promise.resolve(client),
+      scheduler: ag.scheduler,
+      arranjar: arr.arranjar,
+    });
+
+    // ÂNCORA: é o veredito da TRANSAÇÃO, não a leitura barata — o pull aconteceu.
+    expect(pulls).toBe(1);
+    expect(r.acao).toBe(ACAO_FRETE_SEM_PEDIDO);
+    expect(ag.enfileirados).toHaveLength(1);
+    // ⚠️ Sem pedido não há o que arranjar: o code 3 sintético cria o pedido, e
+    // a re-entrega seguinte arranja.
+    expect(arr.entradas).toEqual([]);
+    expect(r.arranjo).toBeNull();
+    expect(seam.ordem).not.toContain('arranjar');
+  });
+
+  it('36b — nem com o pedido AUSENTE na leitura barata, nem com o pacote AUSENTE do pull', async () => {
+    const arr = arranjador();
+
+    // Pedido ausente: nenhum cliente é construído, nenhum resolvedor roda.
+    let clientes = 0;
+    const r1 = await rastrearPedidoShopee(asDb(new FakeDb()), alvo(), {
+      clientFor: () => {
+        clientes += 1;
+        return Promise.resolve(clienteQueResponde([linhaTurbo()]).client);
+      },
+      scheduler: agendador().scheduler,
+      arranjar: arr.arranjar,
+    });
+    expect(r1.acao).toBe(ACAO_FRETE_SEM_PEDIDO);
+    expect(clientes).toBe(0);
+    expect(r1.arranjo).toBeNull();
+
+    // Pacote ausente: a resposta só traz OUTRO pacote.
+    const r2 = await rastrearPedidoShopee(
+      asDb(pedidoSemeado()),
+      alvo(),
+      entregaTurbo([linhaTurbo({ package_number: PKG_B })], arr),
+    );
+    expect(r2.acao).toBe(ACAO_FRETE_PACOTE_AUSENTE);
+    expect(r2.arranjo).toBeNull();
+
+    expect(arr.entradas).toEqual([]);
+    expect(seam.encerramentos).toEqual([]);
+  });
+});
+
+describe('rastrearPedidoShopee — o resolvedor do despacho e a ORDEM (passo 15b, R-a/R-k)', () => {
+  it('a ordem é NF-e → despacho → arranjo: os resolvedores rodam ANTES do gancho', async () => {
+    const db = pedidoSemeado();
+    const arr = arranjador();
+
+    await rastrearPedidoShopee(asDb(db), alvo(), entregaTurbo([linhaTurbo()], arr));
+
+    // ⚠️ Resolvedores primeiro: um resolve guiado pelo estado PRÉ-arranjo nunca
+    // pode fechar um aviso que o gancho abre nesta MESMA entrega.
+    expect(seam.ordem).toEqual(['resolver-nfe', 'resolver-despacho', 'arranjar']);
+  });
+
+  it('uma falha do resolvedor do despacho SOBE, e o arranjo NUNCA roda depois dela', async () => {
+    const db = pedidoSemeado();
+    const arr = arranjador();
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    seam.erroDespacho = falha;
+
+    await expect(
+      rastrearPedidoShopee(asDb(db), alvo(), entregaTurbo([linhaTurbo()], arr)),
+    ).rejects.toBe(falha);
+
+    expect(seam.ordem).toEqual(['resolver-nfe', 'resolver-despacho']);
+    expect(arr.entradas).toEqual([]);
+  });
+
+  it('65 — recebe o estado CONFIRMADO e o pacote OBSERVADO em todo desfecho, inclusive na repetição', async () => {
+    const db = pedidoSemeado();
+    const row = linhaTurbo({ fulfillment_status: 'LOGISTICS_REQUEST_CREATED' });
+    const deps = entregaTurbo([row], arranjador());
+
+    const r1 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+    const r2 = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r1.acao).toBe('atualizado');
+    expect(r2.acao).toBe('ignorado-sem-mudanca');
+    // ⚠️ DUAS chamadas: um resolvedor só no `atualizado` nunca re-tentaria uma
+    // resolução que falhou depois de o frete ter commitado.
+    const esperado: EncerramentoDespachoShopee = {
+      integracaoId: CONTA,
+      pedidoId: PEDIDO_ID,
+      estadoConfirmado: ESTADO_FRETE.aguardandoPostagem,
+      // O caminho do push não tem linha de ordem, então não tem status de ordem.
+      orderStatus: null,
+      pacotes: [observadoDoPacoteDetalhe(row)!],
+    };
+    expect(seam.encerramentos).toEqual([esperado, esperado]);
+  });
+
+  it('65 — ⚠️ uma falha do Firestore ao RESOLVER o despacho sobe, e a REPETIÇÃO resolve (o gêmeo do mutante 57)', async () => {
+    const db = pedidoSemeado();
+    await abrirAvisoDespachoNfe(db);
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    db.falhasDeUpdate.set(AVISO_DESPACHO_NFE_PATH, falha);
+    const arr = arranjador();
+    // O pacote ANDOU: a Shopee já o arranjou (o nosso ou o Auto Call Driver).
+    const deps = entregaTurbo(
+      [linhaTurbo({ fulfillment_status: 'LOGISTICS_REQUEST_CREATED', is_shipment_arranged: true })],
+      arr,
+    );
+
+    await expect(rastrearPedidoShopee(asDb(db), alvo(), deps)).rejects.toBe(falha);
+    // O frete já tinha commitado, o aviso segue aberto e o gancho não rodou.
+    const frete = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    expect(frete.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(db.store[AVISO_DESPACHO_NFE_PATH]!.data.resolvidoEm).toBeNull();
+    expect(arr.entradas).toEqual([]);
+
+    // A fila re-entrega a MESMA entrega: o frete volta `ignorado-sem-mudanca`,
+    // e o resolvedor tenta de novo — agora com sucesso, e só então o gancho.
+    db.falhasDeUpdate.delete(AVISO_DESPACHO_NFE_PATH);
+    const r = await rastrearPedidoShopee(asDb(db), alvo(), deps);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    // RT8 pelo lado do chamador: a chave que o abridor escreveu é a que o
+    // resolvedor recomputa a partir do pacote observado.
+    expect(db.store[AVISO_DESPACHO_NFE_PATH]!.data).toMatchObject({
+      resolvidoEm: AGORA_MS * 1000,
+      resolucaoMotivo: RESOLUCAO_AVISO_DESPACHO.arranjado,
+    });
+    expect(arr.entradas).toHaveLength(1);
+    expect(linhasDoBraco().at(-1)).toMatchObject({
+      despachoResolvidos: 1,
+      etiquetaResolvida: false,
+    });
+  });
+});
+
+describe('rastrearPedidoShopee — o arranjo na ÚNICA linha de log (passo 15b)', () => {
+  it('49 — campos PLANOS, lista FECHADA, e nem `rotulo` nem o valor da preparação', async () => {
+    const SENTINELA_ROTULO = 'SENTINELA-ENDERECO-DE-COLETA-DO-VENDEDOR';
+    const PREPARACAO_S = 1_788_980_017;
+    // Um resultado CONTAMINADO: o tipo não admite `rotulo`, e um gancho com
+    // defeito que o vazasse no objeto não pode levá-lo ao log.
+    const contaminado = {
+      ...resultadoArranjo({
+        desfecho: 'recusado',
+        motivo: 'recusa-desconhecida',
+        shopeeCode: 'logistics.erro_de_teste',
+        operacao: 'programar',
+      }),
+      rotulo: SENTINELA_ROTULO,
+      endereco: { address: SENTINELA_ROTULO },
+    } as unknown as ResultadoArranjoAutomatico;
+
+    const db = pedidoSemeado();
+    const r = await rastrearPedidoShopee(
+      asDb(db),
+      alvo(),
+      entregaTurbo([linhaTurbo({ preparation_end_time: PREPARACAO_S })], arranjador(contaminado)),
+    );
+
+    // ÂNCORA: o sentinela viajou mesmo — está no resultado que o handler devolve.
+    expect(JSON.stringify(r.arranjo)).toContain(SENTINELA_ROTULO);
+
+    const doBraco = linhasDoBraco();
+    expect(doBraco).toHaveLength(1);
+    const linhaLog = doBraco[0]!;
+    expect(linhaLog).toMatchObject({
+      despachoResolvidos: 0,
+      etiquetaResolvida: false,
+      acaoArranjo: 'recusado',
+      motivoArranjo: 'recusa-desconhecida',
+      canalArranjo: CANAL_TURBO,
+      faseArranjo: 'programar',
+      shopeeCodeArranjo: 'logistics.erro_de_teste',
+      // ⚠️ PRESENÇA, nunca o valor.
+      temPreparacaoAutomatica: true,
+    });
+    // A lista é FECHADA: um `arranjo` inteiro (ou um spread dele) entraria aqui.
+    expect(Object.keys(linhaLog).sort()).toEqual([...CAMPOS_DA_LINHA_DO_BRACO].sort());
+
+    const tudo = logInteiro();
+    expect(tudo).not.toContain(SENTINELA_ROTULO);
+    expect(tudo).not.toContain('rotulo');
+    expect(tudo).not.toContain(String(PREPARACAO_S));
+
+    // O PAR: sem prazo de preparação, a presença é `false`.
+    infos.length = 0;
+    await rastrearPedidoShopee(
+      asDb(pedidoSemeado()),
+      alvo(),
+      entregaTurbo([linhaTurbo()], arranjador()),
+    );
+    expect(linhasDoBraco()[0]!.temPreparacaoAutomatica).toBe(false);
   });
 });

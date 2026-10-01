@@ -24,17 +24,41 @@
  *     `get_order_detail` may, and the per-element `.catch(null)` means a sibling
  *     row can be illegible without costing this one;
  *  5. `salvarFreteShopee` — the class-B transaction, which owns every write;
+ *     then, outside it and in THIS order, the two aviso resolvers (step 14's
+ *     NF-e one, step 15b's despacho one) and LAST the automatic arrange (step
+ *     15b, `deps.arranjar`) — see "The automatic arrange" below;
  *  6. ONE synthetic code 3 when the pedido is missing (see the bound below);
  *  7. one `console.info` line.
+ *
+ * ## The automatic arrange (step 15b, #1744)
+ *
+ * Announcement 1573 obliges a `ship_order` with no human in the loop on its
+ * Turbo channels, and THIS handler is the one place that runs it: it holds the
+ * FRESH `get_package_detail` row and a live client. It is reached only through
+ * {@link ShopeeRastrearPedidoDeps.arranjar}, which is ABSENT by default and
+ * wired by the notification arm alone — `rastrear:pedido --live` passes no deps,
+ * so a rehearsal never ships and its import graph never loads the arrange.
+ *
+ *  - It runs on EVERY frete outcome except the transaction's own
+ *    `ignorado-sem-pedido`: a replay answers `ignorado-sem-mudanca` and a late
+ *    push `ignorado-obsoleto`, and the row is fresh on both. Never gated on step
+ *    14's `error` stamp (that would deadlock a re-sent note).
+ *  - ⚠️ The two resolvers run BEFORE it, so a resolve driven by the pre-arrange
+ *    estado can never close an alert the arrange opens in the same delivery.
+ *  - It throws no Shopee class: every Shopee outcome comes back as a desfecho
+ *    (`arranjo`), and the delivery's disposition stays the frete's. What it
+ *    does rethrow (config, gRPC, unknown, an aviso write) propagates here like
+ *    any other failure of this handler.
  *
  * ## Microseconds — this module is µs **SITE 6**
  *
  * It performs the single `millisToMicros(nowMs)` of the push path and hands
  * `nowUs` DOWN as a parameter, exactly as `importarPedido.ts` (site 2) does for
  * the import path. There is no other clock read anywhere on this path: `nowMs`
- * arrives from the pipeline's injectable clock. (The step-14 NF-e aviso
- * resolve after the frete write hands the same `nowMs` to the aviso writers'
- * own seam in `avisos/autorizacao.ts`, which is not a site of this path.)
+ * arrives from the pipeline's injectable clock. (The step-14 NF-e and step-15b
+ * despacho aviso resolves after the frete write — and the arrange's own avisos
+ * — hand the same `nowMs` to the aviso writers' own seam in
+ * `avisos/autorizacao.ts`, which is not a site of this path.)
  * `freteTx.ts` (site 7) is where
  * the wire SECONDS of the package cross into µs; `fretePushShopee.ts` and
  * `freteShopeeMapping.ts` convert nothing at all.
@@ -83,6 +107,7 @@ import { pedidoCollection } from '@delfrance/data/admin/collections';
 import type { EstadoFrete } from '@delfrance/schemas';
 import type { ShopeeClient } from '@delfrance/integrations-shopee';
 
+import { resolverAvisosDeDespachoSeEncerrado } from '../avisos/despachoAutomatico';
 import { loadShopeeContext } from '../core/shopee';
 import { resolverAvisoNfeSeEncerrado } from '../nfe/avisoNfe';
 import { notificacaoSinteticaDePedido } from '../notificacoes/notificacaoSintetica';
@@ -97,6 +122,9 @@ import {
   type DiagnosticoPushFrete,
   type PacoteObservadoShopee,
 } from './fretePushShopee';
+// ⚠️ TYPE-only: the arrange is a VALUE only in the arm's lazy default, so the
+// `rastrear:pedido` script, which imports this module, never loads `ship_order`.
+import type { ArranjadorDePacote, ResultadoArranjoAutomatico } from './arranjoAutomatico';
 import { salvarFreteShopee, type AcaoFreteShopee } from './freteTx';
 import { makePedidoIdShopee } from './orderIds';
 
@@ -148,6 +176,12 @@ export interface ResultadoRastreioShopee {
   readonly campos: readonly string[];
   /** Whether the ONE synthetic code 3 really reached the queue (the valve). */
   readonly sinteticaEnfileirada: boolean;
+  /**
+   * What the automatic arrange (step 15b) answered, or `null` when it did not
+   * run: no `arranjar` seam, no pedido (the cheap skip or the transaction's own
+   * verdict), or the package absent from the pull.
+   */
+  readonly arranjo: ResultadoArranjoAutomatico | null;
   /** A short machine-readable tail for the log filter. */
   readonly detail: string;
 }
@@ -161,6 +195,14 @@ export interface ShopeeRastrearPedidoDeps {
   readonly clientFor?: (db: Firestore, integracaoId: string) => Promise<ShopeeClient>;
   /** The synthetic-code-3 enqueue seam. Default: the real Cloud Tasks scheduler. */
   readonly scheduler?: ShopeeTaskScheduler;
+  /**
+   * The automatic arrange (step 15b). ⚠️ ABSENT means NO arrange, and there is
+   * deliberately no default: `ship_order` is irreversible, and the
+   * `rastrear:pedido --live` rehearsal calls this handler with no deps at all —
+   * a default here would make a rehearsal ship a real package. The notification
+   * arm's lazy default is the ONE place that supplies it.
+   */
+  readonly arranjar?: ArranjadorDePacote;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -239,6 +281,10 @@ export async function rastrearPedidoShopee(
   let ilegiveis = 0;
   let pedidoIdDoResultado: string | null = pedidoId;
   let avisoNfeResolvido = false;
+  let despachoResolvidos = 0;
+  let etiquetaResolvida = false;
+  let arranjo: ResultadoArranjoAutomatico | null = null;
+  let temPreparacaoAutomatica = false;
 
   if (existe) {
     const client = await clienteShopee(db, integracaoId, deps);
@@ -257,6 +303,9 @@ export async function rastrearPedidoShopee(
       pedidoIdDoResultado = null;
       detail = `pacote ${packageNumber} não veio na resposta (linhas ilegíveis: ${String(ilegiveis)})`;
     } else {
+      // Auto Call Driver's own deadline (register 230): Shopee arranges by itself
+      // when it passes, and our ship may race it. PRESENCE only, never the value.
+      temPreparacaoAutomatica = linha.preparation_end_time != null;
       observado = observadoDoPacoteDetalhe(linha);
       if (observado === null) {
         acao = ACAO_FRETE_PACOTE_AUSENTE;
@@ -302,6 +351,44 @@ export async function rastrearPedidoShopee(
           },
           { nowMs },
         );
+
+        // Step 15b (#1744) — the despacho aviso's cross-step resolver: the NF-e
+        // resolver's twin, with its reasoning (the confirmed estado, EVERY
+        // outcome, a failure PROPAGATES so the redelivery retries it). It gates
+        // on the channel first, so a non-Turbo package costs ZERO reads. No
+        // order row on this path, hence no order status.
+        const despacho = await resolverAvisosDeDespachoSeEncerrado(
+          db,
+          {
+            integracaoId,
+            pedidoId,
+            estadoConfirmado: resultado.estadoConfirmado,
+            orderStatus: null,
+            pacotes: [observado],
+          },
+          { nowMs },
+        );
+        despachoResolvidos = despacho.despachoResolvidos;
+        etiquetaResolvida = despacho.etiquetaResolvida;
+
+        // Step 15b — the automatic arrange, LAST (see the module header), on
+        // the FRESH `linha`: never `observado`, which drops
+        // `is_shipment_arranged`, `invoice_pending` and `pending_terms`.
+        // ⚠️ Gated on the transaction's "no pedido" verdict ONLY — never on
+        // `acao === 'atualizado'`: a replay (`ignorado-sem-mudanca`) or a late
+        // push (`ignorado-obsoleto`) still carries a fresh row, and a lost
+        // arrange is an order Shopee cancels.
+        arranjo =
+          deps.arranjar !== undefined && resultado.acao !== ACAO_FRETE_SEM_PEDIDO
+            ? await deps.arranjar(db, client, {
+                integracaoId,
+                pedidoId,
+                orderSn,
+                packageNumber,
+                linha,
+                nowMs,
+              })
+            : null;
       }
     }
   }
@@ -334,6 +421,11 @@ export async function rastrearPedidoShopee(
   // resurrection warn), and repeating them here would double every one of them.
   // What this line adds is the PUSH-vs-PULL comparison, which nothing else sees:
   // settle-live register item 28.
+  //
+  // ⚠️ The arrange rides it as FLAT enum tokens and numbers, picked field by
+  // field — never the result object spread in. The arrange logs nothing of its
+  // own (one line per delivery), and the seller's pickup address and slot text
+  // must never reach a task log.
   // eslint-disable-next-line no-console -- expected on every healthy delivery; a warn nobody can act on is what hides the real ones
   console.info('[shopee/frete] entrega de rastreio', {
     integracaoId,
@@ -359,6 +451,14 @@ export async function rastrearPedidoShopee(
     ilegiveis,
     sintetica,
     avisoNfeResolvido,
+    despachoResolvidos,
+    etiquetaResolvida,
+    acaoArranjo: arranjo?.desfecho ?? null,
+    motivoArranjo: arranjo?.motivo ?? null,
+    canalArranjo: arranjo?.canalId ?? null,
+    faseArranjo: arranjo?.fase ?? null,
+    shopeeCodeArranjo: arranjo?.shopeeCode ?? null,
+    temPreparacaoAutomatica,
   });
 
   return {
@@ -371,6 +471,7 @@ export async function rastrearPedidoShopee(
     estadoEscrito,
     campos,
     sinteticaEnfileirada: sintetica,
+    arranjo,
     detail,
   };
 }
