@@ -21,11 +21,11 @@
  * `retryAfterSeconds`; durable retry belongs to the Cloud Tasks pipeline.
  *
  * ⚠️ **No paging loop anywhere.** `getShopsByPartner`, `getBrandList`,
- * `getOrderList`, `getLostPushMessages` and `getEscrowList` each fetch ONE page
- * and surface the cursor (or the page number); the caller loops. Auto-paging
- * inside a client hides an unbounded number of provider calls behind one
- * innocuous `await`, and Shopee's brand API is slow enough that the difference is
- * visible to an operator.
+ * `getOrderList`, `getLostPushMessages`, `getEscrowList` and
+ * `searchPackageList` each fetch ONE page and surface the cursor (or the page
+ * number); the caller loops. Auto-paging inside a client hides an unbounded
+ * number of provider calls behind one innocuous `await`, and Shopee's brand API
+ * is slow enough that the difference is visible to an operator.
  *
  * ## The push and order reads (step 4)
  *
@@ -229,6 +229,16 @@
  * rows back in the SAME projection a success produces. That fold is exactly one
  * code, gated on the rows being there; everything else rethrows.
  *
+ * ## The package search (step 15b)
+ *
+ * ONE more read on the SHOP client: `searchPackageList`, one page of the
+ * packages a shop has not shipped yet — a `v2.order.*` path that serves the
+ * arrange flow, so its path, filter enums, request shape and guard live in
+ * `logistica.ts` beside the label flow's. It is a POST whose filters travel in
+ * a JSON body, byte-exact in `api.test.ts`: the three filters Shopee defaults
+ * are always SENT, `cursor` is ABSENT on page 1, and no tolerance of any kind
+ * rides on it.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -259,13 +269,16 @@ import {
   SHOPEE_GET_SHIPPING_DOCUMENT_RESULT_PATH,
   SHOPEE_GET_SHIPPING_PARAMETER_PATH,
   SHOPEE_GET_TRACKING_NUMBER_PATH,
+  SHOPEE_SEARCH_PACKAGE_LIST_PATH,
   SHOPEE_SHIP_ORDER_DROPOFF_VAZIO,
   SHOPEE_SHIP_ORDER_PATH,
+  type SearchPackageListParams,
   type ShipOrderParams,
   type ShopeeAlvoDePacote,
   type ShopeeLoteLogistico,
   assertCreateShippingDocumentParams,
   assertDownloadShippingDocumentParams,
+  assertSearchPackageListParams,
   assertShipOrderParams,
   assertShippingDocumentParameterParams,
   assertShippingDocumentResultParams,
@@ -327,6 +340,7 @@ import {
   type ShopeeParametroDeDocumento,
   type ShopeeProfile,
   type ShopeeResultadoDeDocumento,
+  type ShopeeSearchPackageList,
   type ShopeeShipOrderResponse,
   type ShopeeShippingParameter,
   type ShopeeShopHolidayMode,
@@ -371,6 +385,7 @@ import {
   shopeeParametroDeDocumentoPaginaSchema,
   shopeeProfileSchema,
   shopeeResultadoDeDocumentoPaginaSchema,
+  shopeeSearchPackageListSchema,
   shopeeShipOrderSchema,
   shopeeShippingParameterSchema,
   shopeeShopHolidayModeSchema,
@@ -2242,6 +2257,33 @@ export interface ShopeeClient {
    * unknown one — is `classificarArquivoDeEnvio`'s job, at the caller.
    */
   downloadShippingDocument(p: BaixarDocumentoParams): Promise<ShopeeArquivoBaixado>;
+
+  /* --------------------- the package search (step 15b) -------------------- */
+
+  /**
+   * ONE page of this shop's packages awaiting shipment, by filter — UNWRAPPED,
+   * like every read. The automatic-arrange sweep's (step 15b) only list read.
+   *
+   * ⚠️ **It does NOT auto-page**, like every other read here: terminate on
+   * `pagination.more === false`, NEVER on a row count and never on the cursor
+   * — Shopee answers `next_cursor: ""` when `more` is false.
+   *
+   * ⚠️ **A row is a POINTER, not a verdict.** It carries no
+   * `fulfillment_status`, no `invoice_pending` and no `ship_by_date`, and
+   * ToProcess mixes LOGISTICS_READY with LOGISTICS_PICKUP_RETRY: confirm with
+   * {@link ShopeeClient.getPackageDetail} before any
+   * {@link ShopeeClient.shipOrder} (FAQ 727).
+   *
+   * ⚠️ `pagination` may arrive `null`: every answer observed so far carries it
+   * (the SG rehearsal, 2026-10-01, the empty one included), but the page does
+   * not promise it. A caller reads `null` + no rows as drained and `null` +
+   * rows as truncated.
+   *
+   * ⚠️ The three filters Shopee defaults are always SENT and `cursor` is ABSENT
+   * on page 1 — see {@link SearchPackageListParams}. Every guard runs BEFORE the
+   * access token is asked for.
+   */
+  searchPackageList(p: SearchPackageListParams): Promise<ShopeeSearchPackageList>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -3306,6 +3348,35 @@ function shipOrderNoFio(p: ShipOrderParams): Record<string, unknown> {
   }
 }
 
+/**
+ * The `search_package_list` body, in a FIXED key order (`api.test.ts` pins it
+ * byte by byte): `filter` — the three filters Shopee defaults, then the channel
+ * list and `order_type` when given —, `pagination`, and `sort` when given.
+ *
+ * ⚠️ `invoice_pending` travels EVERY time, `false` included: a body relying on
+ * Shopee's "Default value = false" is a different request for register 222.
+ *
+ * ⚠️ `cursor` is ABSENT on page 1 — the key itself, never `""` and never the
+ * samples' two-quote literal — and VERBATIM after that: it is opaque, so
+ * nothing here trims it.
+ */
+function buscaDePacotesNoFio(p: SearchPackageListParams): Record<string, unknown> {
+  const filtro = p.filtro;
+  return {
+    filter: {
+      package_status: filtro.packageStatus,
+      fulfillment_type: filtro.fulfillmentType,
+      invoice_pending: filtro.invoicePending,
+      ...seHouver('logistics_channel_ids', filtro.logisticsChannelIds),
+      ...seHouver('order_type', filtro.orderType),
+    },
+    pagination: { page_size: p.pageSize, ...seHouver('cursor', p.cursor) },
+    ...(p.ordenacao === undefined
+      ? {}
+      : { sort: { sort_type: p.ordenacao.sortType, ascending: p.ordenacao.ascending } }),
+  };
+}
+
 /** What the three document pages share once parsed — the reader's view of them. */
 interface PaginaDeLote<Row> {
   readonly request_id: string | null;
@@ -4355,6 +4426,27 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
           order_list: p.documentos.map(pacoteNoFio),
         },
       });
+    },
+
+    /* ------------------- the package search (step 15b) ------------------- */
+
+    searchPackageList: async (p) => {
+      // ⚠️ Every guard runs BEFORE the token is asked for — see `logistica.ts`.
+      assertSearchPackageListParams(p);
+      const res = await shopeeCall(transport, {
+        // POST with the filters in a JSON body — the page's own verb.
+        method: 'POST',
+        path: SHOPEE_SEARCH_PACKAGE_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeSearchPackageListSchema,
+        surface: SHOPEE_SURFACE.business,
+        // No tolerance of any kind rides here: the page samples `"error": ""`,
+        // and the SG rehearsal answered exactly that.
+        body: buscaDePacotesNoFio(p),
+      });
+      // ONE page, no auto-paging: `pagination.more` travels on the payload and
+      // the caller decides whether to ask for the next one.
+      return res.response;
     },
   };
 }

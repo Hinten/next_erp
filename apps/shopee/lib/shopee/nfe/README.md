@@ -1040,7 +1040,9 @@ its reason, the quoted literals that are not this vocabulary: the stamp's
   RE-OBSERVATION of the package once Shopee clears `invoice_pending`: a later
   push for it — the NOT_START → READY code 30, if a pending package is
   `LOGISTICS_NOT_START` and Shopee sends that push (registers 227, 228) — or
-  the `search_package_list` sweep of step 15b's PR 3b (stacked). The `nfe` row
+  the next five-minute tick of step 15b's `search_package_list` sweep,
+  `sweepShopeeAutoArrange`, which enqueues a synthetic code 30 for the package
+  once Shopee clears `invoice_pending`. The `nfe` row
   closes on that observation: `nfe-validada` when the package is seen READY past
   the invoice gate (never on a not-ready or unknown status — Shopee reports a
   pending invoice only in a shipment-ready one), `arranjado` once it is arranged.

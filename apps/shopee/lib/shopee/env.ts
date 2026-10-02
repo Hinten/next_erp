@@ -28,7 +28,12 @@
  *    `SHOPEE_ARRANJO_AUTOMATICO_DISABLED`, step 15b's automatic-arrange valve,
  *    read PER CALL. Opt-in-to-DISABLE (`=== '1'`; unset or blank leaves the
  *    arrange ON) and NOT an `env.ts` export, for the backfill flag's reason:
- *    only the nested functions codebase's shipment arm ever loads it.
+ *    only the nested functions codebase (its shipment arm, and the sweep below,
+ *    which stops on it) ever loads it.
+ *  - `lib/shopee/pedidos/arranjoAutomaticoSweep.ts` —
+ *    `SHOPEE_ARRANJO_SWEEP_DISABLED`, the valve of step 15b's five-minute
+ *    sweep, read per call as the tick's FIRST gate. Same polarity and same
+ *    reason: only the functions codebase's `sweepShopeeAutoArrange` loads it.
  *  - `lib/shopee/estoque/constantesEstoque.ts` — the step-12 stock knobs
  *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family**. It
  *    goes through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which

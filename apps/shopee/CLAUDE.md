@@ -227,9 +227,9 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/etiqueta/` + `app/api/marketplace/shopee/etiqueta/route.ts` —
   step 15's label flow and route (`PERM.frete.read`; the ship needs
   `frete.write`). Narrative: `lib/shopee/etiqueta/README.md`.
-- `lib/shopee/pedidos/arranjoAutomatico.ts` + `lib/shopee/avisos/despachoAutomatico.ts`
-  — step 15b's automatic arrange of a Turbo package and its two avisos. See
-  **Auto-arrange** under Labels.
+- `lib/shopee/pedidos/{arranjoAutomatico,arranjoAutomaticoSweep}.ts` + `lib/shopee/avisos/despachoAutomatico.ts`
+  — step 15b's automatic arrange of a Turbo package, its 5-minute sweep and its
+  two avisos. See **Auto-arrange** under Labels.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -406,11 +406,11 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/notificacoes/orderBackfill.ts` — `runShopeeOrderBackfill`: the
   15-minute per-conta `get_order_list` walk on a durable cursor, DOUBLY gated
   (an env flag AND a structural guard that reads the dispatch table).
-- `lib/shopee/notificacoes/notificacaoSintetica.ts` —
-  `notificacaoSinteticaDePedido`, the ONE builder for a synthesized code-3
-  payload. Shared with step 8's stuck-reservation sweep, so the two produce the
-  same shape and the same dedup key — the doc id still carries each tick's own
-  clock, so step 8 owes its own idempotence.
+- `lib/shopee/notificacoes/notificacaoSintetica.ts` — the ONE builder per
+  synthesized code: `notificacaoSinteticaDePedido` (code 3, five producers) and
+  `notificacaoSinteticaDePacote` (code 30, step 15b's sweep). Every producer
+  shares them, so the shape and the dedup key agree — the doc id still carries
+  each tick's own clock, so each producer owes its own idempotence.
 - `lib/shopee/notificacoes/pushConfigMonitor.ts` —
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
@@ -423,11 +423,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **86** suites in this app name (84 drive it), and since step 8 it has a
+  **87** suites in this app name (85 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
   step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 after step 15, 86 after step 15b — the two `*.tasks.test.ts` suites it counts name the double in a
+  84 after step 15, 87 after step 15b — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -826,10 +826,12 @@ step 6's `sweepShopeeEscrowSettlement` reads money that Shopee exposes only once
 the escrow is RELEASED — no push was ever sent for it, so none was ever missed.
 It is documented under **Payments and settlement**, not here; filing it as a
 fifth backstop would make "a way a push never arrives" mean nothing. The honest
-count is **ten** `onSchedule` triggers — seven in `functions/src/index.ts` plus
-step 12's three stock sweeps in `functions/src/sweepStock.ts` — with
-`index.test.ts` pinning ten distinct crons. `ci-shopee.yml` says TEN too; the
-two must never disagree.
+count is **eleven** `onSchedule` triggers — eight in `functions/src/index.ts`
+plus step 12's three stock sweeps in `functions/src/sweepStock.ts` — with
+`index.test.ts` pinning eleven distinct crons. `ci-shopee.yml` says ELEVEN too;
+the two must never disagree. ⚠️ Step 15b's `sweepShopeeAutoArrange` is NOT a
+pure backstop: for a late NF-e no push is documented, so it is the primary
+signal (**Auto-arrange**, under Labels).
 
 ⚠️ **Step 8's sweep IS a backstop by that same criterion, and it is the only one
 that reaches past three days.** A subscription Shopee SUSPENDS loses every push
@@ -1509,6 +1511,10 @@ channels (`CANAIS_ARRANJO_AUTOMATICO`) the code-4/30/47 arm ships unattended.
   catch.
 - It writes only avisos; between arrangers the ONLY guard is Shopee's
   (`is_shipment_arranged`, `package_already_shipped`).
+- `sweepShopeeAutoArrange` (`pedidos/arranjoAutomaticoSweep.ts`, every 5 min)
+  lists 1573's channels with `search_package_list`, keeps the hook's own
+  `candidato`s and enqueues a synthetic code 30 each (a code 3 when the pedido
+  is absent). It writes nothing; a rate limit ends the tick.
 - `despachoAutomaticoPendente` (per package; `nfe` atencao, `manual` critico)
   and `etiquetaComPrazo` (90011/90012) open `/despacho/checkout`. Deploy
   `apps/web` (their `mensagens.ts` rows) BEFORE the functions.
@@ -1616,6 +1622,9 @@ read by nothing.
 - **`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`** — `'1'` and nothing else stops the
   auto-arrange (a candidate answers `desligado`, zero Shopee calls); unset is
   ON. Functions-only: home `functions/.env.deploy`, never `apphosting.yaml`.
+- **`SHOPEE_ARRANJO_SWEEP_DISABLED`** — the same for `sweepShopeeAutoArrange`,
+  which also reads nothing while the valve above or `SHOPEE_TASKS_DISABLED` is
+  `'1'`.
 
 ## CI
 
@@ -1796,8 +1805,8 @@ lists the expected caveats.
 Firebase App Hosting, own backend, root `apps/shopee`. Env + secrets via the
 Firebase console / Secret Manager. The nested Cloud Functions codebase
 (`functions/`) deploys separately — see **`functions/DEPLOY.md`**, including the
-three IAM roles the receiver needs before it can enqueue. Since step 14 it
-holds **seventeen** functions: ten `onSchedule`s, five queues and two
+three IAM roles the receiver needs before it can enqueue. Since step 15b it
+holds **eighteen** functions: eleven `onSchedule`s, five queues and two
 Firestore triggers.
 `firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
 deploys nothing, running it is a manual coordinated human step (root CLAUDE.md

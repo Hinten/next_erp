@@ -1,22 +1,31 @@
 # `__wire__` — Shopee response bodies, redacted
 
-Five bodies today, for the step-5 order import (#1513). Two provenances, and they
-are **not equally strong**:
+Nine bodies today: five for the step-5 order import (#1513) and four for step
+15b's package search (#1744). Two provenances, and they are **not equally
+strong**:
 
-| file                                      | endpoint            | provenance                                                                                   | verified against the live API?                                                  |
-| ----------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `get_order_detail.qty2-sg.json`           | `get_order_detail`  | a **real call** against the Singapore SANDBOX shop, quantity 2, `READY_TO_SHIP` (2026-09-09) | ✅ Shopee sent this                                                             |
-| `get_escrow_detail.qty2-sg.json`          | `get_escrow_detail` | the **escrow twin of that same order**, SG sandbox (2026-09-10)                              | ✅ Shopee sent this                                                             |
-| `get_order_detail.qty2-sg-processed.json` | `get_order_detail`  | the **same order re-read after arrange-shipment**, `PROCESSED`, SG sandbox (2026-09-10)      | ✅ Shopee sent this                                                             |
-| `get_order_detail.doc-masked-vn.json`     | `get_order_detail`  | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                          |
-| `get_escrow_detail.doc-kit.json`          | `get_escrow_detail` | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below |
+| file                                               | endpoint              | provenance                                                                                   | verified against the live API?                                                  |
+| -------------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `get_order_detail.qty2-sg.json`                    | `get_order_detail`    | a **real call** against the Singapore SANDBOX shop, quantity 2, `READY_TO_SHIP` (2026-09-09) | ✅ Shopee sent this                                                             |
+| `get_escrow_detail.qty2-sg.json`                   | `get_escrow_detail`   | the **escrow twin of that same order**, SG sandbox (2026-09-10)                              | ✅ Shopee sent this                                                             |
+| `get_order_detail.qty2-sg-processed.json`          | `get_order_detail`    | the **same order re-read after arrange-shipment**, `PROCESSED`, SG sandbox (2026-09-10)      | ✅ Shopee sent this                                                             |
+| `search_package_list.sg-canais-da-loja.json`       | `search_package_list` | the SG shop's own two channels, `invoice_pending: false` — one row (2026-10-01)              | ✅ Shopee sent this — ⚠️ ids are fixture ids, see below                         |
+| `search_package_list.sg-invoice-pending-true.json` | `search_package_list` | the same call with `invoice_pending: true` — zero rows (2026-10-01)                          | ✅ Shopee sent this                                                             |
+| `search_package_list.sg-canais-turbo.json`         | `search_package_list` | `[90011, 90012, 90026]`, channels the SG shop lacks — zero rows (2026-10-01)                 | ✅ Shopee sent this                                                             |
+| `get_order_detail.doc-masked-vn.json`              | `get_order_detail`    | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                          |
+| `get_escrow_detail.doc-kit.json`                   | `get_escrow_detail`   | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below |
+| `search_package_list.doc.json`                     | `search_package_list` | the sample printed on the `v2.order.search_package_list` reference page (a **VN** channel)   | ❌ doc only — a VN channel id, unverified for BR; its `sort` echo is wrong      |
 
-The two doc samples were pulled with `.master_plans/shopee/shopee-doc.mjs`
-(`api v2.order.get_order_detail`, `api v2.payment.get_escrow_detail`); the three
-sandbox bodies were pasted from the Shopee console's own test tool. All five went
-through `redactWireBody` (`../redact.ts`) — with `request_id` dropped — before
-being written. `../piiScan.test.ts` re-checks every file here independently on
-every run.
+The three doc samples were pulled with `.master_plans/shopee/shopee-doc.mjs`
+(`api v2.order.get_order_detail`, `api v2.payment.get_escrow_detail`,
+`api v2.order.search_package_list`); the first three sandbox bodies were pasted
+from the Shopee console's own test tool, and the three `search_package_list` ones
+were written by a read-only probe script (see below). All nine went through
+`redactWireBody` (`../redact.ts`) before being committed — for the four
+`search_package_list` bodies it changed nothing, since no key on that page is
+denylisted — with `request_id` dropped from every body but the first two doc
+samples, which kept the page's own placeholder. `../piiScan.test.ts` re-checks
+every file here independently on every run.
 
 ## Rules
 
@@ -97,6 +106,9 @@ prevent.
   placeholder, not a protocol variant: `shopeeCall` treats anything but `''` as a
   failure, and this operation carries no `emptyErrorAliases`. The fixture records
   the oddity; it does not license it.
+- `search_package_list.doc.json` — valid JSON as printed; only `request_id` was
+  dropped. Its `sort` echo `{sort_type, is_asc}` is kept VERBATIM although the
+  wire disagrees (see below): it is what the page prints.
 
 ⚠️ **kit ids.** That same sample prints `0.1` for `kit_items.original_product_id`,
 `original_model_id` and `total_qty` — the page's filler value for every float,
@@ -155,3 +167,43 @@ can separate what MOVES from what does not:
   indistinguishable — settle-live register item 5 stands. `actual_shipping_fee` is
   still `0` (the real freight is known only after pickup) and `pickup_done_time`
   is still `0`.
+
+## What the package search settled (step 15b, 2026-10-01)
+
+The three `search_package_list.sg-*.json` bodies are one read-only probe against
+the SG sandbox shop, sending step 15b's EXACT body (`package_status: 2`,
+`fulfillment_type: 2`, `invoice_pending`, the channel list, `page_size: 100`,
+ShipByDate ascending; page 1 with NO `cursor` key, which Shopee accepted). Each
+fact below is asserted in `wireCorpus.test.ts`:
+
+- **The empty answer's shape (register 223).** `packages_list: []` — an array,
+  never `null` or absent — WITH `pagination {total_count: 0, more: false,
+next_cursor: ""}`. The schema still tolerates both absent; the wire sends
+  neither.
+- **The channel filter is server-side (register 224, on SG).** Asked for
+  `[90011, 90012, 90026]`, channels the shop lacks, Shopee left out the shop's own
+  ready package.
+- **`invoice_pending: true` filters**: the same shop's non-pending package is
+  excluded. ⚠️ What `false` means — "not pending" or "no filter" — is still
+  register 222, BR only: with no pending package on SG the two readings answer the
+  same. The sweep's `nfePendenteNaBusca` counter is the instrument.
+- **The row keys are exactly the page's six**: `order_sn`, `package_number`,
+  `logistics_channel_id`, `product_location_id` (a string, as the page says),
+  `sorting_group`, `is_shipment_arranged`. Four are declared; the other two ride
+  `.passthrough()`.
+- ⚠️ **The response `sort` echoes `{sort_type, ascending}`** — the REQUEST's key —
+  where the page's response table and sample print `is_asc`. Nothing declares
+  `response.sort`, so neither spelling is read.
+- **The envelope key is `message`**, in the page's sample and on the wire; the
+  response table's `mesage` appears in no body.
+- `next_cursor` is `""` when `more` is `false`: the loop terminates on `more`,
+  never on the cursor.
+
+⚠️ **The ids in these three bodies are FIXTURE ids, not the wire's.** The probe
+overwrote every `order_sn` with `260910KJBHUJDM` and every `package_number` with
+`OFG000000000001` before writing (and its digit sweep had turned the latter into
+`OFG1000001` in `sg-canais-da-loja`, repaired by hand to the fixture id — the only
+edit made to any of the three). So the one row is the step-14 `READY_TO_SHIP`
+order, NOT the quantity-2 order the `get_order_detail` bodies carry under the same
+`order_sn`: that one has been `PROCESSED` since 2026-09-10 and cannot be ToProcess.
+Never join two bodies here on an id.

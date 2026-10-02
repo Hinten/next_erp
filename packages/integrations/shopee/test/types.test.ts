@@ -38,6 +38,8 @@ import {
   type ShopeeParametroDeDocumento,
   type ShopeePromocaoDeItem,
   type ShopeeResultadoDeDocumento,
+  type ShopeeSearchPackageList,
+  type ShopeeSearchPackageRow,
   type ShopeeShippingParameter,
   type ShopeeTrackingNumber,
   dataOp,
@@ -86,6 +88,9 @@ import {
   shopeePromocaoDeItemSchema,
   shopeeResultadoDeDocumentoPaginaSchema,
   shopeeResultadoDeDocumentoSchema,
+  shopeeSearchPackageListPayloadSchema,
+  shopeeSearchPackageListSchema,
+  shopeeSearchPackageRowSchema,
   shopeeShipOrderSchema,
   shopeeShippingParameterSchema,
   shopeeShopHolidayModePayloadSchema,
@@ -4970,4 +4975,275 @@ describe('as três páginas de documento — `result_list: null` é uma lista va
       }
     },
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  A busca de pacotes (passo 15b)                            */
+/* -------------------------------------------------------------------------- */
+
+/** Uma linha mínima e VÁLIDA de `search_package_list` — ids de FIXTURE. */
+function linhaBusca(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    order_sn: ORDER_SN_ETQ,
+    package_number: PACOTE_ETQ,
+    logistics_channel_id: 90011,
+    is_shipment_arranged: false,
+    ...extra,
+  };
+}
+
+/** A mesma linha SEM a chave dada — ausente, não `undefined` nem `null`. */
+function linhaBuscaSem(chave: string): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(linhaBusca()).filter(([k]) => k !== chave));
+}
+
+/** Uma página drenada com UMA linha, salvo o que `response` sobrescrever. */
+function corpoBusca(response: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    error: '',
+    message: '',
+    response: {
+      packages_list: [linhaBusca()],
+      pagination: { total_count: 1, more: false, next_cursor: '' },
+      ...response,
+    },
+  };
+}
+
+/** A página lida, sem a `pagination` (ausente, não `null`). */
+function corpoBuscaSemPaginacao(): Record<string, unknown> {
+  return { error: '', message: '', response: { packages_list: [linhaBusca()] } };
+}
+
+/**
+ * UMA linha lida PELA PÁGINA — é na página que mora a sentinela `null`, então
+ * ler a linha pelo schema da linha sozinho não diria o que o chamador recebe.
+ */
+function lerLinhaBusca(linha: unknown): ShopeeSearchPackageRow | null {
+  const lista = shopeeSearchPackageListSchema.parse(corpoBusca({ packages_list: [linha] })).response
+    .packages_list;
+  expect(lista).toHaveLength(1);
+  return lista[0] ?? null;
+}
+
+describe('a busca de pacotes (search_package_list, passo 15b)', () => {
+  it('1 — a linha declara EXATAMENTE quatro chaves, e a página só `packages_list` + `pagination`: NENHUM `sort`', () => {
+    // ⚠️ `product_location_id` e `sorting_group` ficam FORA de propósito: nada os
+    // lê, e o mesmo nome é array no item do `get_order_detail`. O `sort` da
+    // resposta fica fora porque a doc diz `is_asc` e o fio SG ecoa `ascending`
+    // — e ninguém lê o eco.
+    expect(Object.keys(shopeeSearchPackageRowSchema.shape).sort()).toEqual([
+      'is_shipment_arranged',
+      'logistics_channel_id',
+      'order_sn',
+      'package_number',
+    ]);
+    expect(Object.keys(shopeeSearchPackageListPayloadSchema.shape).sort()).toEqual([
+      'packages_list',
+      'pagination',
+    ]);
+    // …e o que não é declarado ATRAVESSA pelo `.passthrough()`, verbatim.
+    expect(
+      lerLinhaBusca(linhaBusca({ product_location_id: 'SGZ', sorting_group: '' })),
+    ).toMatchObject({ product_location_id: 'SGZ', sorting_group: '' });
+  });
+
+  it('2 — PAR / ⛔ QUASE-IGUAL: `logistics_channel_id` lê o número CITADO (`"90011"` ≡ 90011) e nada além disso', () => {
+    // O par que TEM de sair igual: a tolerância do #1087.
+    const citado = lerLinhaBusca(linhaBusca({ logistics_channel_id: '90011' }));
+    const numero = lerLinhaBusca(linhaBusca({ logistics_channel_id: 90011 }));
+    expect(citado?.logistics_channel_id).toBe(90011);
+    expect(citado?.logistics_channel_id).toBe(numero?.logistics_channel_id);
+
+    // ⛔ QUASE-IGUAL: um canal VIZINHO continua outro canal — a dobra lê a aspa,
+    // nunca o valor.
+    expect(lerLinhaBusca(linhaBusca({ logistics_channel_id: '9001' }))?.logistics_channel_id).toBe(
+      9001,
+    );
+
+    // O que não é um inteiro vira `null` — um canal DESCONHECIDO — e custa o
+    // CAMPO, nunca a linha: o chamador reconfere o canal na linha do detalhe.
+    for (const ilegivel of ['90011a', '9.0011e4', '90 011', 90011.5, true, null, {}]) {
+      const linha = lerLinhaBusca(linhaBusca({ logistics_channel_id: ilegivel }));
+      expect(linha, JSON.stringify(ilegivel)).not.toBeNull();
+      expect(linha?.logistics_channel_id, JSON.stringify(ilegivel)).toBeNull();
+      expect(linha?.package_number).toBe(PACOTE_ETQ);
+    }
+    const ausente = lerLinhaBusca(linhaBuscaSem('logistics_channel_id'));
+    expect(ausente).not.toBeNull();
+    expect(ausente?.logistics_channel_id).toBeNull();
+  });
+
+  it('3 — `is_shipment_arranged` é booleano ESTRITO: só `true` lê arranjado; texto, número e ausência leem `null`', () => {
+    // ⚠️ O mutante 76 (metade do schema): um `"false"` COERCIDO é uma string
+    // não vazia — `true` — e a varredura pularia um pacote que ninguém
+    // arranjou. `null` é o que o chamador lê como NÃO arranjado.
+    expect(lerLinhaBusca(linhaBusca({ is_shipment_arranged: true }))?.is_shipment_arranged).toBe(
+      true,
+    );
+    expect(lerLinhaBusca(linhaBusca({ is_shipment_arranged: false }))?.is_shipment_arranged).toBe(
+      false,
+    );
+    for (const ilegivel of ['false', 'true', 1, 0, null]) {
+      const linha = lerLinhaBusca(linhaBusca({ is_shipment_arranged: ilegivel }));
+      expect(linha, JSON.stringify(ilegivel)).not.toBeNull();
+      expect(linha?.is_shipment_arranged, JSON.stringify(ilegivel)).toBeNull();
+    }
+    expect(lerLinhaBusca(linhaBuscaSem('is_shipment_arranged'))?.is_shipment_arranged).toBeNull();
+  });
+
+  it('4 — uma identidade ilegível derruba a LINHA inteira (sentinela `null`), a página sobrevive e a perda é CONTÁVEL', () => {
+    // ⚠️ O mutante 96: um catch POR CAMPO em `order_sn` fabricaria uma linha com
+    // identidade NULA — e a varredura derivaria um id de pedido de `null`. A
+    // sentinela é por ELEMENTO, e é `null`, que nenhuma linha real pode ser.
+    const pagina = shopeeSearchPackageListSchema.parse(
+      corpoBusca({
+        packages_list: [
+          linhaBusca({ order_sn: '' }),
+          linhaBusca({ package_number: '' }),
+          linhaBuscaSem('order_sn'),
+          linhaBuscaSem('package_number'),
+          linhaBusca({ order_sn: 260910 }),
+          'lixo',
+          linhaBusca({ package_number: PACOTE_ETQ_2 }),
+        ],
+      }),
+    ).response;
+    expect(pagina.packages_list).toHaveLength(7);
+    expect(pagina.packages_list.slice(0, 6)).toEqual([null, null, null, null, null, null]);
+    // A contagem que o chamador faz — o único diagnóstico que um `.catch` custa.
+    expect(pagina.packages_list.filter((linha) => linha === null)).toHaveLength(6);
+    expect(pagina.packages_list[6]?.package_number).toBe(PACOTE_ETQ_2);
+    expect(pagina.packages_list[6]?.order_sn).toBe(ORDER_SN_ETQ);
+
+    // ⛔ QUASE-IGUAL: os DOIS campos que NÃO são identidade, ilegíveis juntos,
+    // custam só os campos — a linha fica, com as identidades intactas.
+    const soCampos = lerLinhaBusca(
+      linhaBusca({ logistics_channel_id: 'x', is_shipment_arranged: 'x' }),
+    );
+    expect(soCampos).toEqual({
+      order_sn: ORDER_SN_ETQ,
+      package_number: PACOTE_ETQ,
+      logistics_channel_id: null,
+      is_shipment_arranged: null,
+    });
+  });
+
+  it('5 — `pagination` AUSENTE ou `null` lê `null` e a página parseia: tolerar custa nada', () => {
+    // ⚠️ O mutante 97: uma `pagination` estrita recusaria a página inteira —
+    // e a página VAZIA é o caso comum de uma varredura a cada 5 minutos. Todo
+    // corpo observado no SG a traz; a tolerância fica mesmo assim.
+    const ausente = shopeeSearchPackageListSchema.parse(corpoBuscaSemPaginacao()).response;
+    expect(ausente.pagination).toBeNull();
+    expect(ausente.packages_list).toHaveLength(1);
+
+    const nula = shopeeSearchPackageListSchema.parse(corpoBusca({ pagination: null })).response;
+    expect(nula.pagination).toBeNull();
+
+    // ⛔ QUASE-IGUAL: PRESENTE ela é lida, e não vira `null` por engano.
+    const presente = shopeeSearchPackageListSchema.parse(corpoBusca()).response;
+    expect(presente.pagination).toEqual({ total_count: 1, more: false, next_cursor: '' });
+  });
+
+  it('6 — `more` é ESTRITO: `"false"`, `"true"`, 0, 1, `null` e AUSENTE recusam a página inteira', () => {
+    // ⚠️ O mutante 90. `more` é o ÚNICO terminador do laço: um `"false"`
+    // coercido para `true` gira a varredura até o teto de páginas; para `false`,
+    // trunca em silêncio. Recusar a página é a falha alta — e o precedente é o
+    // `get_order_list` deste mesmo módulo.
+    for (const more of ['false', 'true', 0, 1, null]) {
+      const lido = shopeeSearchPackageListSchema.safeParse(
+        corpoBusca({ pagination: { total_count: 1, more, next_cursor: '' } }),
+      );
+      expect(lido.success, JSON.stringify(more)).toBe(false);
+      expect(lido.error?.issues.map((i) => i.path.join('.'))).toContain('response.pagination.more');
+    }
+    const semMore = shopeeSearchPackageListSchema.safeParse(
+      corpoBusca({ pagination: { total_count: 1, next_cursor: '' } }),
+    );
+    expect(semMore.success).toBe(false);
+
+    // PAR: os dois booleanos de verdade passam, e passam DISTINTOS.
+    const fim = shopeeSearchPackageListSchema.parse(corpoBusca()).response.pagination;
+    const continua = shopeeSearchPackageListSchema.parse(
+      corpoBusca({ pagination: { total_count: 320, more: true, next_cursor: '1789405354,1' } }),
+    ).response.pagination;
+    expect(fim?.more).toBe(false);
+    expect(continua?.more).toBe(true);
+  });
+
+  it('7 — `next_cursor` volta VERBATIM; `""` continua `""` e AUSENTE é `null` — os dois não se confundem', () => {
+    // O cursor é OPACO (a doc mostra um composto `"<segundos>,<id>"`): nada o
+    // interpreta. E o `""` do fio quando `more` é false é um VALOR, que só
+    // `more` — nunca o cursor — transforma em "acabou".
+    const composto = shopeeSearchPackageListSchema.parse(
+      corpoBusca({ pagination: { total_count: 2, more: true, next_cursor: '1789405354,1' } }),
+    ).response.pagination;
+    expect(composto?.next_cursor).toBe('1789405354,1');
+
+    const vazio = shopeeSearchPackageListSchema.parse(corpoBusca()).response.pagination;
+    expect(vazio?.next_cursor).toBe('');
+
+    const ausente = shopeeSearchPackageListSchema.parse(
+      corpoBusca({ pagination: { total_count: 0, more: false } }),
+    ).response.pagination;
+    expect(ausente?.next_cursor).toBeNull();
+    expect(ausente?.next_cursor).not.toBe(vazio?.next_cursor);
+  });
+
+  it('8 — `packages_list` vazio e ausente leem `[]`; um `total_count` ilegível vira `null` sem custar a página', () => {
+    const vazia = shopeeSearchPackageListSchema.parse(corpoBusca({ packages_list: [] })).response;
+    expect(vazia.packages_list).toEqual([]);
+    const semLista = shopeeSearchPackageListSchema.parse({
+      error: '',
+      message: '',
+      response: { pagination: { total_count: 0, more: false, next_cursor: '' } },
+    }).response;
+    expect(semLista.packages_list).toEqual([]);
+
+    // `total_count` é diagnóstico: CITADO lê, ilegível ou acima do int seguro
+    // vira `null` — e a página inteira continua lida.
+    for (const [total, esperado] of [
+      ['320', 320],
+      ['muitos', null],
+      [2 ** 63, null],
+      [null, null],
+    ] as const) {
+      const pagina = shopeeSearchPackageListSchema.parse(
+        corpoBusca({ pagination: { total_count: total, more: false, next_cursor: '' } }),
+      ).response;
+      expect(pagina.pagination?.total_count, String(total)).toBe(esperado);
+      expect(pagina.packages_list).toHaveLength(1);
+    }
+  });
+
+  it('9 — o `sort` da resposta NÃO é lido: o eco da doc (`is_asc`), o do fio SG (`ascending`) e até um lixo parseiam iguais', () => {
+    for (const sort of [
+      { sort_type: 1, is_asc: false },
+      { sort_type: 1, ascending: true },
+      'lixo',
+    ]) {
+      const lido = shopeeSearchPackageListSchema.safeParse(corpoBusca({ sort }));
+      expect(lido.success, JSON.stringify(sort)).toBe(true);
+      expect(lido.data?.response.packages_list).toHaveLength(1);
+    }
+  });
+
+  it('10 — `mesage` (a grafia da TABELA) no lugar de `message` ainda parseia: só `error` decide', () => {
+    const lido = shopeeSearchPackageListSchema.parse({
+      error: '',
+      mesage: '',
+      response: { packages_list: [], pagination: { total_count: 0, more: false, next_cursor: '' } },
+    });
+    expect(lido.message).toBeNull();
+    expect(lido.response.packages_list).toEqual([]);
+  });
+
+  it('11 — TIPADO: a lista é `(linha | null)[]` e a `pagination` é anulável — o chamador é obrigado a tratar os dois', () => {
+    const pagina: ShopeeSearchPackageList =
+      shopeeSearchPackageListSchema.parse(corpoBusca()).response;
+    const linhas: readonly (ShopeeSearchPackageRow | null)[] = pagina.packages_list;
+    expect(linhas).toHaveLength(1);
+    // @ts-expect-error — `pagination` é anulável: ler `more` exige estreitar antes.
+    expect(pagina.pagination.more).toBe(false);
+  });
 });

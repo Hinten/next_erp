@@ -144,7 +144,8 @@ name: CI — Shopee
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
 #     the digest.
-#   - None of the TEN `onSchedule` triggers — seven, plus step 12's three stock
+#   - None of the ELEVEN `onSchedule` triggers — eight in index.ts (step 15b
+#     added `sweepShopeeAutoArrange`), plus step 12's three stock
 #     sweeps. MEASURED: the functions emulator logs each of them as "ignored
 #     because the pubsub emulator does not exist or is not running", so this lane
 #     loads them and never runs them. Their bodies are covered by the unit suites
@@ -406,7 +407,7 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # FIFTEEN of the codebase's seventeen triggers declare both of these as
+      # SIXTEEN of the codebase's eighteen triggers declare both of these as
       # `secrets:` — the exceptions are the two Firestore triggers, which never
       # call Shopee — and demo-erp has no Secret Manager. Invented values are
       # safe AND sufficient: every exercised path refuses before any Shopee call,
