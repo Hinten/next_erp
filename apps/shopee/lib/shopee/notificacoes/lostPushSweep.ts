@@ -178,10 +178,12 @@ export interface LostPushSweepResult {
 }
 
 /**
- * Admin-SDK and Cloud Tasks transport failures surface as `Error`s carrying a
- * numeric gRPC status `code`. Narrowed to the real status range (integers 1–16;
- * 0 = OK never rides an error) so a coding-bug `Error` that happens to expose
- * some other numeric `code` is NOT contained. Mirrors `expiracaoSweep`.
+ * Admin-SDK Firestore failures surface as `Error`s carrying a numeric gRPC
+ * status `code`. Narrowed to the real status range (integers 1–16; 0 = OK never
+ * rides an error) so a coding-bug `Error` that happens to expose some other
+ * numeric `code` is NOT contained. Mirrors `expiracaoSweep`. ⚠️ A Cloud Tasks
+ * enqueue failure never matches it — the SDK throws STRING codes — and none
+ * needs to here: this sweep's enqueue catch is total (the entry is persisted).
  */
 function isGrpcCodedError(err: unknown): err is Error {
   if (!(err instanceof Error)) return false;

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MissingRegionError } from '@delfrance/core/region';
 
-import { ShopeeTasksDisabledError } from '../shopeeTasks';
+import { ShopeeTasksDisabledError, ShopeeTasksTransientError } from '../shopeeTasks';
+import { CORPO_DA_RESPOSTA_DO_TASKS, falhaDoFunctions } from '../testing/falhaDeEnfileiramento';
 import { SHOPEE_STOCK_SEND_QUEUE } from './constantesEstoque';
 import { ShopeeStockTasksDisabledError } from './errosEstoque';
 import type { TarefaDeEstoqueShopee } from './planoEstoque';
@@ -29,7 +30,9 @@ const h = vi.hoisted(() => ({
   valvula: vi.fn((): boolean | null => null),
 }));
 
-vi.mock('firebase-admin/functions', () => ({
+// The REAL error classes stay: the shared classifier narrows on them.
+vi.mock('firebase-admin/functions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase-admin/functions')>()),
   getFunctions: (...args: unknown[]) => {
     h.getFunctions(...args);
     return { taskQueue: h.taskQueue };
@@ -258,9 +261,38 @@ describe('createShopeeStockTaskScheduler', () => {
     const nome = ['SHOPEE', 'TASKS', 'DISABLED'].join('_');
     expect(FONTE).not.toContain(`process.env.${nome}`);
     expect(FONTE).not.toContain(`process.env[`);
-    expect(FONTE).toContain(
-      "import { shopeeTasksDesabilitado, shopeeTasksRegion } from '../shopeeTasks'",
+    expect(FONTE).toMatch(
+      /import \{[^}]*\bshopeeTasksDesabilitado\b[^}]*\} from '\.\.\/shopeeTasks'/,
     );
     expect(FONTE).toContain('shopeeTasksDesabilitado()');
+  });
+
+  // The stock sweep's per-conta boundary contains `ShopeeTasksTransientError`,
+  // never the SDK classes: an adapter that skipped the shared classifier would
+  // put the sweep back to losing its whole tick on one 503.
+  it('13 — uma falha TRANSITÓRIA do transporte (503) sai nomeada, sem o corpo', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    h.enqueue.mockRejectedValueOnce(falhaDoFunctions('unknown-error'));
+
+    const rejeitado = await createShopeeStockTaskScheduler()
+      .enqueue(payload, { scheduleDelaySeconds: 30 })
+      .then(
+        () => expect.unreachable('o transporte rejeitou'),
+        (e: unknown) => e,
+      );
+
+    expect(rejeitado).toBeInstanceOf(ShopeeTasksTransientError);
+    expect(rejeitado).toMatchObject({ codigo: 'functions/unknown-error', httpStatus: 503 });
+    expect((rejeitado as Error).message).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+  });
+
+  it('14 — ⚠️ QUASE-IGUAL: uma falha de DEPLOY (not-found, sem fila na região) sai INTACTA', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    const sdk = falhaDoFunctions('not-found', 404);
+    h.enqueue.mockRejectedValueOnce(sdk);
+
+    await expect(createShopeeStockTaskScheduler().enqueue(payload)).rejects.toBe(sdk);
   });
 });

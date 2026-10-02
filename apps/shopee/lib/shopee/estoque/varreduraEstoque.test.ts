@@ -15,6 +15,11 @@ import { INTEGRACAO_TIPO, MODO_VARREDURA_ESTOQUE } from '@delfrance/schemas';
 
 import { proximaViradaDaCotaMs } from '../anuncios/pausarAnuncio';
 import { type DocData, FakeDb, asDb } from '../testing/fakeDb';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
 import { SHOPEE_STOCK_SYNC_FLAG_ENV } from './constantesEstoque';
 import { MOTIVO_ESTOQUE_SHOPEE, ShopeeStockTasksDisabledError } from './errosEstoque';
 import type {
@@ -957,6 +962,62 @@ describe('runShopeeStockSweep — contenção por conta', () => {
     ).rejects.toBeInstanceOf(ShopeeStockTasksDisabledError);
     // And nothing was recorded as a per-conta failure on the way out.
     expect(escritasDeEstado(db)).toEqual([]);
+  });
+
+  /** Two contas, each with one family that sends — so each enqueues once. */
+  function duasContasQueEnviam(db: FakeDb) {
+    db.seed(`${INTEGRACAO_PATH}/${INT}`, contaDoc());
+    db.seed(`${INTEGRACAO_PATH}/${OUTRA_INT}`, contaDoc({ shop_id: OUTRO_SHOP }));
+    return montarDeps({
+      porConta: {
+        [INT]: [pagina([familiaQueEnvia()])],
+        [OUTRA_INT]: [
+          pagina([
+            familiaQueEnvia({
+              anchorId: 'prod-b',
+              links: [link({ contaProdutoShopeeOuterRef: `integracao/${OUTRA_INT}` })],
+            }),
+          ]),
+        ],
+      },
+    });
+  }
+
+  // ⚠️ The REAL Cloud Tasks failure — the SDK's class and STRING code through
+  // the shared classifier the real scheduler runs. Unlike the stock valve (29),
+  // it is an outage the next tick retries: the conta keeps its cursor and the
+  // walk moves on.
+  it('29b — uma falha TRANSITÓRIA real do Cloud Tasks no enqueue da conta A é CONTIDA; B ainda envia', async () => {
+    const db = new FakeDb();
+    const { deps, agendador } = duasContasQueEnviam(db);
+    vi.spyOn(agendador, 'enqueue').mockImplementationOnce(() =>
+      rejeicaoDoTransporte(falhaDoFunctions('unknown-error')),
+    );
+
+    const res = await runShopeeStockSweep(asDb(db), MODO_VARREDURA_ESTOQUE.incremental, deps);
+
+    const mensagem =
+      'enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)';
+    expect(res.contas[0]).toMatchObject({ integracaoId: INT, error: mensagem });
+    expect(res.contas[1]).toMatchObject({ integracaoId: OUTRA_INT, error: null, enqueued: 1 });
+    expect(agendador.tarefas).toHaveLength(1);
+    expect(escritasDeEstado(db, INT)).toEqual([
+      { lastError: mensagem, lastErrorAtMs: AGORA, lastSweepAtMs: AGORA },
+    ]);
+    expect(JSON.stringify([res, db.writes])).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+  });
+
+  it('29c — ⚠️ QUASE-IGUAL: uma falha de DEPLOY do Cloud Tasks (not-found) rejeita o tick inteiro', async () => {
+    const db = new FakeDb();
+    const { deps, agendador } = duasContasQueEnviam(db);
+    const sdk = falhaDoFunctions('not-found', 404);
+    vi.spyOn(agendador, 'enqueue').mockImplementationOnce(() => rejeicaoDoTransporte(sdk));
+
+    await expect(
+      runShopeeStockSweep(asDb(db), MODO_VARREDURA_ESTOQUE.incremental, deps),
+    ).rejects.toBe(sdk);
+    expect(escritasDeEstado(db)).toEqual([]);
+    expect(escritasDeEstado(db, OUTRA_INT)).toEqual([]);
   });
 
   it('30 — um TypeError (bug de código) também rejeita o tick inteiro', async () => {

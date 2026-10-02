@@ -11,8 +11,16 @@ import {
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 
+import { AppErrorCode } from 'firebase-admin/app';
+
 import { grpc } from '../testing/fakeDb';
-import { ShopeeTasksDisabledError } from '../shopeeTasks';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDoApp,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
+import { ShopeeTasksDisabledError, ShopeeTasksTransientError } from '../shopeeTasks';
 import { ShopeeCredencialInvalidaError } from './credentialStore';
 import { ShopeeContaNotConfiguredError } from './shopee';
 import {
@@ -62,6 +70,7 @@ describe('erroContidoPorConta', () => {
       new ShopeeRefreshEmAndamentoError('lease ocupada', 1),
       new ShopeeCredencialInvalidaError('credencial parcial', ['access_token']),
       new ShopeeTasksDisabledError(),
+      new ShopeeTasksTransientError('FirebaseFunctionsError', 'functions/unknown-error', 503),
       grpc(14, 'UNAVAILABLE'),
     ];
 
@@ -92,6 +101,108 @@ describe('erroContidoPorConta', () => {
     expect(erroContidoPorConta(new Error('boom'))).toBe(false);
     expect(erroContidoPorConta('string')).toBe(false);
     expect(erroContidoPorConta(null)).toBe(false);
+  });
+});
+
+/** The rejection itself — `rejeicaoDoTransporte` never resolves for these inputs. */
+async function rejeicao(err: Error): Promise<unknown> {
+  return rejeicaoDoTransporte(err).then(
+    () => expect.unreachable('o transporte rejeitou; o enqueue também deveria'),
+    (e: unknown) => e,
+  );
+}
+
+describe('erroContidoPorConta — a falha REAL do enqueue no Cloud Tasks', () => {
+  // ⚠️ The SDK's own classes and codes, never a numeric gRPC stand-in:
+  // `TaskQueue.enqueue` is a REST client, and a `grpc(14)` here is what once
+  // passed while the real `functions/unknown-error` killed the whole tick.
+  it.each<[string, () => Error, string, number | null]>([
+    [
+      '503 (unknown-error)',
+      () => falhaDoFunctions('unknown-error'),
+      'functions/unknown-error',
+      503,
+    ],
+    [
+      '429 (unknown-error)',
+      () => falhaDoFunctions('unknown-error', 429),
+      'functions/unknown-error',
+      429,
+    ],
+    [
+      '500 (internal-error)',
+      () => falhaDoFunctions('internal-error', 500),
+      'functions/internal-error',
+      500,
+    ],
+    ['409 aborted', () => falhaDoFunctions('aborted', 409), 'functions/aborted', 409],
+    [
+      'socket (network-error)',
+      () => falhaDoApp(AppErrorCode.NETWORK_ERROR),
+      'app/network-error',
+      null,
+    ],
+    [
+      'socket (network-timeout)',
+      () => falhaDoApp(AppErrorCode.NETWORK_TIMEOUT),
+      'app/network-timeout',
+      null,
+    ],
+  ])('7 — %s é nomeada no enqueue e CONTIDA', async (_nome, falha, codigo, httpStatus) => {
+    const sdk = falha();
+    // The positive control: the real class carries the real STRING code, and
+    // the boundary does NOT contain it raw — the naming is what contains it.
+    expect(sdk).toHaveProperty('code', codigo);
+    expect(erroContidoPorConta(sdk)).toBe(false);
+
+    const nomeada = await rejeicao(sdk);
+
+    expect(nomeada).toBeInstanceOf(ShopeeTasksTransientError);
+    expect(nomeada).toMatchObject({ codigo, httpStatus });
+    expect(erroContidoPorConta(nomeada)).toBe(true);
+  });
+
+  it('8 — a mensagem nomeada traz classe, código e status, NUNCA o corpo que o SDK cita', async () => {
+    const sdk = falhaDoFunctions('unknown-error');
+    expect(sdk.message).toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+
+    const nomeada = await rejeicao(sdk);
+
+    // The sweeps write `err.message` to `lastError` and to their logs.
+    expect((nomeada as Error).message).toBe(
+      'enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)',
+    );
+    expect(JSON.stringify(nomeada)).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    expect((nomeada as Error).cause).toBeUndefined();
+  });
+
+  // ⚠️ The NEAR-MISSES: the same two classes carrying a deploy-shaped code. A
+  // missing IAM grant or a queue absent from the region is OURS (#778) — each
+  // must fail the tick, and must reach it as the very object the SDK threw.
+  it.each<[string, () => Error]>([
+    ['functions/permission-denied (falta o IAM)', () => falhaDoFunctions('permission-denied', 403)],
+    ['functions/not-found (sem fila nessa região)', () => falhaDoFunctions('not-found', 404)],
+    ['functions/invalid-argument', () => falhaDoFunctions('invalid-argument', 400)],
+    ['functions/unauthenticated', () => falhaDoFunctions('unauthenticated', 401)],
+    ['functions/failed-precondition', () => falhaDoFunctions('failed-precondition', 400)],
+    ['app/invalid-credential', () => falhaDoApp(AppErrorCode.INVALID_CREDENTIAL)],
+    ['app/internal-error', () => falhaDoApp(AppErrorCode.INTERNAL_ERROR)],
+  ])('9 — ⚠️ NEAR-MISS: %s passa INTACTA e RELANÇA', async (_nome, falha) => {
+    const sdk = falha();
+
+    const rejeitado = await rejeicao(sdk);
+
+    expect(rejeitado).toBe(sdk);
+    expect(erroContidoPorConta(rejeitado)).toBe(false);
+  });
+
+  it('10 — ⚠️ NEAR-MISS: o MESMO código num Error comum (a forma, não a classe) RELANÇA', async () => {
+    const parecido = Object.assign(new Error('503'), { code: 'functions/unknown-error' });
+
+    const rejeitado = await rejeicao(parecido);
+
+    expect(rejeitado).toBe(parecido);
+    expect(erroContidoPorConta(rejeitado)).toBe(false);
   });
 });
 
