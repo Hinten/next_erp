@@ -47,6 +47,25 @@ export function falhaDoFunctions(code: string, status = 503): FirebaseFunctionsE
 }
 
 /**
+ * The SDK's CONFIG failure, thrown before any request when `getProjectId()` /
+ * `getServiceAccount()` cannot resolve the app's project or service account
+ * (`functions-api-client-internal.js`, verbatim messages). The SAME
+ * `unknown-error` code as a 503 — and NO `httpResponse`, which is the only
+ * thing that tells the two apart.
+ */
+export function falhaDeConfiguracaoDoFunctions(
+  qual: 'projeto' | 'conta-de-servico',
+): FirebaseFunctionsError {
+  return new FirebaseFunctionsError({
+    code: 'unknown-error',
+    message:
+      qual === 'projeto'
+        ? 'Failed to determine project ID. Initialize the SDK with service account credentials or set project ID as an app option. Alternatively, set the GOOGLE_CLOUD_PROJECT environment variable.'
+        : 'Failed to determine service account. Initialize the SDK with service account credentials or set service account ID as an app option.',
+  });
+}
+
+/**
  * The SDK HTTP client's own failure — a socket error after its retries, or a
  * credential it could not mint. No response, so no `httpResponse`. `code` is
  * UNPREFIXED (`AppErrorCode.NETWORK_ERROR`); the class adds `app/`.

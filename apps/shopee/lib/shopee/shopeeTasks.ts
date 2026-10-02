@@ -112,6 +112,13 @@ export class ShopeeTasksDisabledError extends Error {
  * `failed-precondition`, `invalid-credential` — is a broken DEPLOY, and is
  * rethrown exactly as the SDK threw it, so a per-conta sweep fails its tick
  * loudly instead of reporting N identical contained outages (#778).
+ *
+ * ⚠️ A `functions/*` code is transient only when Cloud Tasks actually ANSWERED
+ * (`httpResponse` present — every HTTP path of the SDK sets it). The SDK also
+ * throws `functions/unknown-error` with NO response, before any request, when
+ * `getProjectId()` / `getServiceAccount()` cannot resolve the project or the
+ * service account: a deterministic config error that must fail the tick, not
+ * read as a contained outage on every conta.
  */
 const CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO: ReadonlySet<string> = new Set([
   'functions/unknown-error',
@@ -169,14 +176,17 @@ export async function enfileirarNomeandoFalhaTransitoria(
   try {
     await enfileirar();
   } catch (err) {
+    // No `httpResponse` ⇒ no request was answered: the SDK's own config
+    // failure (project id, service account), never a Cloud Tasks hiccup.
     if (
       err instanceof FirebaseFunctionsError &&
+      err.httpResponse !== undefined &&
       CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)
     ) {
       throw new ShopeeTasksTransientError(
         'FirebaseFunctionsError',
         err.code,
-        err.httpResponse?.status ?? null,
+        err.httpResponse.status,
       );
     }
     if (err instanceof FirebaseAppError && CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)) {

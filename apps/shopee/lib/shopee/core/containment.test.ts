@@ -12,10 +12,12 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { AppErrorCode } from 'firebase-admin/app';
+import { FirebaseFunctionsError } from 'firebase-admin/functions';
 
 import { grpc } from '../testing/fakeDb';
 import {
   CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDeConfiguracaoDoFunctions,
   falhaDoApp,
   falhaDoFunctions,
   rejeicaoDoTransporte,
@@ -197,13 +199,39 @@ describe('erroContidoPorConta — a falha REAL do enqueue no Cloud Tasks', () =>
   });
 
   it('10 — ⚠️ NEAR-MISS: o MESMO código num Error comum (a forma, não a classe) RELANÇA', async () => {
-    const parecido = Object.assign(new Error('503'), { code: 'functions/unknown-error' });
+    // The FULL shape — the code AND an HTTP response — so only the class check
+    // can refuse it (the response guard alone would hide a shape-based mutant).
+    const parecido = Object.assign(new Error('503'), {
+      code: 'functions/unknown-error',
+      httpResponse: { status: 503, headers: {} },
+    });
 
     const rejeitado = await rejeicao(parecido);
 
     expect(rejeitado).toBe(parecido);
     expect(erroContidoPorConta(rejeitado)).toBe(false);
   });
+
+  // ⚠️ The sharpest near-miss: the SAME class and the SAME `unknown-error` code
+  // as the 503 in 7, thrown by the SDK BEFORE any request when it cannot
+  // resolve the project or the service account. A config error is ours (#778);
+  // only the absent `httpResponse` tells it apart, and containing it would
+  // read as one outage per conta under a green tick.
+  it.each(['projeto', 'conta-de-servico'] as const)(
+    '11 — ⚠️ NEAR-MISS: unknown-error SEM resposta HTTP (config: %s) passa INTACTA e RELANÇA',
+    async (qual) => {
+      const sdk = falhaDeConfiguracaoDoFunctions(qual);
+      // The positive control: it really is the transient code, on the real class.
+      expect(sdk).toBeInstanceOf(FirebaseFunctionsError);
+      expect(sdk.code).toBe('functions/unknown-error');
+      expect(sdk.httpResponse).toBeUndefined();
+
+      const rejeitado = await rejeicao(sdk);
+
+      expect(rejeitado).toBe(sdk);
+      expect(erroContidoPorConta(rejeitado)).toBe(false);
+    },
+  );
 });
 
 describe('isGrpcCodedError', () => {

@@ -17,6 +17,7 @@ import {
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
 import {
   CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDeConfiguracaoDoFunctions,
   falhaDoFunctions,
   rejeicaoDoTransporte,
 } from '../testing/falhaDeEnfileiramento';
@@ -887,16 +888,25 @@ describe('runShopeeOrderBackfill — contenção por conta', () => {
     expect(JSON.stringify([r, c.db.writes])).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
   });
 
-  it('⚠️ NEAR-MISS: uma falha de DEPLOY do Cloud Tasks (permission-denied) RELANÇA e B nem roda', async () => {
-    const c = cenario();
-    duasContas(c);
-    c.getOrderList.mockResolvedValue(pagina(['SN1'], false));
-    const sdk = falhaDoFunctions('permission-denied', 403);
-    c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(sdk));
+  // The second row is the sharp one: the SAME `unknown-error` code as the 503
+  // above, but thrown with no HTTP response — the SDK could not resolve the
+  // project. That is our config, and it must fail the tick (#778).
+  it.each<[string, () => Error]>([
+    ['permission-denied', () => falhaDoFunctions('permission-denied', 403)],
+    ['unknown-error SEM resposta (projeto)', () => falhaDeConfiguracaoDoFunctions('projeto')],
+  ])(
+    '⚠️ NEAR-MISS: uma falha de DEPLOY do Cloud Tasks (%s) RELANÇA e B nem roda',
+    async (_nome, falha) => {
+      const c = cenario();
+      duasContas(c);
+      c.getOrderList.mockResolvedValue(pagina(['SN1'], false));
+      const sdk = falha();
+      c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(sdk));
 
-    await expect(rodar(c)).rejects.toBe(sdk);
-    expect(c.enqueue).toHaveBeenCalledTimes(1);
-  });
+      await expect(rodar(c)).rejects.toBe(sdk);
+      expect(c.enqueue).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('um erro com code gRPC inteiro 1–16 é contido', async () => {
     const c = cenario();

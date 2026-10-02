@@ -38,7 +38,7 @@ const {
   shopeeTasksDesabilitado,
   shopeeTasksRegion,
 } = await import('./shopeeTasks');
-const { CORPO_DA_RESPOSTA_DO_TASKS, falhaDoApp, falhaDoFunctions } =
+const { CORPO_DA_RESPOSTA_DO_TASKS, falhaDeConfiguracaoDoFunctions, falhaDoApp, falhaDoFunctions } =
   await import('./testing/falhaDeEnfileiramento');
 
 const payload = {
@@ -164,10 +164,15 @@ describe('createShopeeTaskScheduler', () => {
     },
   );
 
-  it('⚠️ NEAR-MISS: uma falha de DEPLOY do transporte (permission-denied) sai INTACTA', async () => {
+  it.each<[string, () => Error]>([
+    ['permission-denied', () => falhaDoFunctions('permission-denied', 403)],
+    // Same code as the 503, no HTTP response: the SDK could not resolve the
+    // service account — config, not a hiccup.
+    ['unknown-error SEM resposta HTTP', () => falhaDeConfiguracaoDoFunctions('conta-de-servico')],
+  ])('⚠️ NEAR-MISS: uma falha de DEPLOY do transporte (%s) sai INTACTA', async (_nome, falha) => {
     vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
     vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
-    const sdk = falhaDoFunctions('permission-denied', 403);
+    const sdk = falha();
     h.enqueue.mockRejectedValueOnce(sdk);
 
     await expect(createShopeeTaskScheduler().enqueue(payload)).rejects.toBe(sdk);
