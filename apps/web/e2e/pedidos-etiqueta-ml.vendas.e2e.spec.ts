@@ -100,12 +100,17 @@ test.describe.serial('Pedidos — etiqueta Mercado Livre (row action)', () => {
     // The FreteCell HoverCard on the row's 'Postado' badge offers the two
     // legacy entries (ZPL2 primary + PDF sub-action).
     const row = page.getByRole('row', { name: new RegExp(fixtures.mktPedidoId) });
-    await row.getByText('Postado', { exact: true }).hover();
     const zpl2 = page.getByRole('button', { name: 'Imprimir Etiqueta Transporte (ZPL2)' });
-    await expect(zpl2).toBeVisible({ timeout: 15_000 });
-    await expect(
-      page.getByRole('button', { name: 'Imprimir Etiqueta Transporte (PDF)' }),
-    ).toBeVisible();
+    // The live contingency banner can move the table after the initial hover,
+    // leaving the pointer outside the badge and closing its HoverCard. Re-hover
+    // while waiting for the menu; both entries must still appear within 15s.
+    await expect(async () => {
+      await row.getByText('Postado', { exact: true }).hover();
+      await expect(zpl2).toBeVisible({ timeout: 1_000 });
+      await expect(
+        page.getByRole('button', { name: 'Imprimir Etiqueta Transporte (PDF)' }),
+      ).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
 
     // A 'postado' frete → the risk confirm gates the fetch.
     await zpl2.click();

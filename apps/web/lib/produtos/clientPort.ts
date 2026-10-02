@@ -17,8 +17,19 @@ import {
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
-import type { TransactionWrite } from '@delfrance/ui';
-import type { ImpostoProduto, ParentParaMembroUnico, ProdutoExtraData } from '@delfrance/schemas';
+import type {
+  TransactionWrite,
+  TransactionWriteContext,
+  TransactionDocumentGuard,
+} from '@delfrance/ui';
+import {
+  impostoProdutoSchema,
+  produtoExtraDataSchema,
+  operacaoIdFromImpostoRef,
+  type ImpostoProduto,
+  type ParentParaMembroUnico,
+  type ProdutoExtraData,
+} from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
@@ -97,13 +108,47 @@ export function buildProdutoTransactionWrites(
    * has variations.
    */
   modo: 'criar' | 'editar' = 'editar',
+  context?: TransactionWriteContext,
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
   const pushOp = (op: ProdutoWriteOp) => {
     const ref = refForPath(db, op.path) as DocumentReference<unknown>;
-    if (op.type === 'delete') writes.push({ type: 'delete', ref });
-    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data });
-    else writes.push({ type: 'set', ref, data: op.data });
+    const sub = op.path.split('/')[2];
+    const guard: TransactionDocumentGuard | undefined =
+      sub === 'extraData'
+        ? {
+            baseline: modo === 'criar' ? null : context?.getBaseline(ref.path),
+            label: 'Descrição / SEO e marketing',
+            formField: 'extraData',
+            toFormValue: (current) =>
+              current === null ? null : produtoExtraDataSchema.parse(current),
+          }
+        : sub === 'imposto'
+          ? {
+              baseline: modo === 'criar' ? null : context?.getBaseline(ref.path),
+              label: `Imposto — operação ${ref.id}`,
+              formField: 'impostos',
+              toFormValue: (current, formValue) => {
+                const rows = (formValue as ImpostoProduto[] | null) ?? [];
+                const next = impostoProdutoSchema.parse(
+                  current === null
+                    ? { impostoOpercaoOuterRef: `operacao/${ref.id}` }
+                    : { ...current, id: ref.id, impostoOpercaoOuterRef: `operacao/${ref.id}` },
+                );
+                const found = rows.some(
+                  (row) => operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === ref.id,
+                );
+                return found
+                  ? rows.map((row) =>
+                      operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === ref.id ? next : row,
+                    )
+                  : [...rows, next];
+              },
+            }
+          : undefined;
+    if (op.type === 'delete') writes.push({ type: 'delete', ref, guard });
+    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data, guard });
+    else writes.push({ type: 'set', ref, data: op.data, guard });
   };
 
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;

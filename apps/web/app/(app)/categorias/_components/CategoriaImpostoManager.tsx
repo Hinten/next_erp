@@ -10,6 +10,10 @@ import {
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import {
+  useObjectViewTransactionDocuments,
+  useObjectViewTransactionDocumentSeed,
+} from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
 import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
@@ -76,11 +80,19 @@ export function CategoriaImpostoManager({
     [db, categoriaId],
   );
   const impostosSnap = useSnapshot(impostosQuery);
+  const documents = useObjectViewTransactionDocuments();
 
   useEffect(() => {
     if (value != null) return;
     if (operacoesSnap.loading) return;
     if (categoriaId && impostosSnap.loading) return;
+    if (
+      documents &&
+      (operacoesSnap.fromCache !== false ||
+        operacoesSnap.hasPendingWrites ||
+        (categoriaId && (impostosSnap.fromCache !== false || impostosSnap.hasPendingWrites)))
+    )
+      return;
     if (operacoes.length === 0) return;
     const byOperacao = new Map<string, ImpostoCategoria>();
     for (const d of impostosSnap.data ?? []) {
@@ -92,9 +104,27 @@ export function CategoriaImpostoManager({
         impostoCategoriaOperacaoOuterRef: `operacao/${opId}`,
       });
     }
-    onChange(operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id)));
+    const initial = operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id));
+    if (documents && categoriaId)
+      for (const row of impostosSnap.data ?? [])
+        documents.seedBaseline(
+          impostoCategoriaCollection.docRef(db, { categoriaId }, row.id).path,
+          row.data,
+        );
+    documents?.seedFormField('impostos', initial);
+    onChange(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoriaId, operacoesSnap.loading, impostosSnap.loading, operacoes.length, value]);
+  }, [
+    categoriaId,
+    operacoesSnap.loading,
+    impostosSnap.loading,
+    operacoesSnap.fromCache,
+    impostosSnap.fromCache,
+    operacoesSnap.hasPendingWrites,
+    impostosSnap.hasPendingWrites,
+    operacoes.length,
+    value,
+  ]);
 
   const defaultOperacaoId = useMemo(
     () => operacoes.find((o) => o.padrao)?.id ?? operacoes[0]?.id ?? null,
@@ -104,6 +134,37 @@ export function CategoriaImpostoManager({
   const activeId = pickedId ?? defaultOperacaoId;
 
   const rows = value ?? [];
+  const hasRows = value !== null;
+  const activeRef = useMemo(
+    () =>
+      categoriaId && activeId && hasRows
+        ? impostoCategoriaCollection.docRef(db, { categoriaId }, activeId)
+        : null,
+    [db, categoriaId, activeId, hasRows],
+  );
+  const activeSeed = useObjectViewTransactionDocumentSeed(activeRef, (data) => {
+    if (!activeId) return;
+    const next = data
+      ? { ...data, id: activeId, impostoCategoriaOperacaoOuterRef: `operacao/${activeId}` }
+      : emptyImposto(activeId);
+    const replace = (list: ImpostoCategoria[]) =>
+      list.map((row) =>
+        operacaoIdFromImpostoRef(row.impostoCategoriaOperacaoOuterRef) === activeId ? next : row,
+      );
+    documents?.rebaseFormField(
+      'impostos',
+      replace((documents.getFormBaseline('impostos') as ImpostoCategoria[] | undefined) ?? rows),
+    );
+    onChange(replace(rows));
+  });
+  disabled = disabled || Boolean(documents && (value === null || !activeSeed.ready));
+
+  if (activeSeed.error)
+    return (
+      <Text c="red" size="sm">
+        Falha ao carregar imposto: {activeSeed.error.message}
+      </Text>
+    );
 
   if (operacoesSnap.error) {
     return (
@@ -143,6 +204,11 @@ export function CategoriaImpostoManager({
 
   return (
     <Stack>
+      {!activeSeed.ready && (
+        <Text c="dimmed" size="sm">
+          Carregando imposto do servidor…
+        </Text>
+      )}
       <Select
         label="Operação"
         description="Cada operação fiscal pode ter um imposto específico para esta categoria."
