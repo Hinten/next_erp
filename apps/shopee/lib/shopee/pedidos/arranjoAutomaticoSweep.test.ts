@@ -1048,11 +1048,11 @@ describe('o enfileiramento', () => {
     expect(p).toEqual({
       code: 30,
       shopId: SHOP_A,
-      timestamp: AGORA_MS,
+      timestamp: DIA_DE_AGORA_MS,
       data: { ordersn: ORDER_SN, package_number: PACOTE, origem: 'arranjo-automatico' },
     });
     expect(Object.keys(p.data ?? {}).sort()).toEqual(['ordersn', 'origem', 'package_number']);
-    expect(docIdOf(p)).toBe(`30:${String(SHOP_A)}:${PACOTE}:${String(AGORA_MS)}`);
+    expect(docIdOf(p)).toBe(`30:${String(SHOP_A)}:${PACOTE}:${String(DIA_DE_AGORA_MS)}`);
     expect(dedupKeyOf(p)).toBe(`30:${String(SHOP_A)}:${PACOTE}`);
     expect(r).toMatchObject({ enfileiradosPacote: 1, enfileiradosPedido: 0 });
   });
@@ -1169,7 +1169,73 @@ describe('o enfileiramento', () => {
       await rodar(c);
 
       expect(c.enqueue).toHaveBeenCalledTimes(2);
-      expect(c.db.caminhos.some((p) => p.startsWith(`${NOTIFICACAO_PATH}/`))).toBe(false);
+      // Only the code-3 row: the code 30 of a PRESENT pedido reads ITS OWN row
+      // (`pacotesComFalhaHoje`, PR #1758's review).
+      expect(c.db.caminhos.some((p) => p.startsWith(`${NOTIFICACAO_PATH}/3:`))).toBe(false);
+    });
+  });
+
+  describe('o code 30 de HOJE (review do PR #1758: o mesmo teto do code 3)', () => {
+    function caminhoDaFalhaDoPacote(pacote: string, diaMs: number, shopId = SHOP_A): string {
+      return `${NOTIFICACAO_PATH}/30:${String(shopId)}:${pacote}:${String(diaMs)}`;
+    }
+
+    function pedidoPresente(): Cenario {
+      const c = cenario();
+      semearConta(c, INT_A);
+      semearPedido(c, INT_A, ORDER_SN);
+      naShopee(c, PACOTE);
+      c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
+      return c;
+    }
+
+    it('a linha de falha de HOJE do pacote existe ⇒ NÃO reenfileira, conta `pacotesComFalhaHoje` (uma leitura)', async () => {
+      const c = pedidoPresente();
+      c.db.seed(caminhoDaFalhaDoPacote(PACOTE, DIA_DE_AGORA_MS), { status: 'parked' });
+
+      const r = unica(await rodar(c));
+
+      expect(c.enqueue).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ pacotesComFalhaHoje: 1, enfileiradosPacote: 0 });
+      expect(r.fases.programar).toBe(1);
+      expect(
+        c.db.opLog.filter((o) => o.path === caminhoDaFalhaDoPacote(PACOTE, DIA_DE_AGORA_MS)),
+      ).toHaveLength(1);
+      esperarParticao(r);
+    });
+
+    it.each([
+      ['de ONTEM', caminhoDaFalhaDoPacote(PACOTE, DIA_DE_AGORA_MS - DIA_MS)],
+      ['de OUTRO pacote', caminhoDaFalhaDoPacote(PACOTE_2, DIA_DE_AGORA_MS)],
+      ['de OUTRA loja', caminhoDaFalhaDoPacote(PACOTE, DIA_DE_AGORA_MS, SHOP_B)],
+      ['do code 3 do MESMO pedido', caminhoDaFalhaDoPedido(ORDER_SN, DIA_DE_AGORA_MS)],
+    ])(
+      'quase-igual: uma linha de falha %s não impede o code 30 de hoje',
+      async (_caso, caminho) => {
+        const c = pedidoPresente();
+        c.db.seed(caminho, { status: 'parked' });
+
+        const r = unica(await rodar(c));
+
+        expect(c.enqueue).toHaveBeenCalledTimes(1);
+        expect(r).toMatchObject({ pacotesComFalhaHoje: 0, enfileiradosPacote: 1 });
+      },
+    );
+
+    it('o carimbo é o INÍCIO do dia UTC: dois ticks do mesmo dia dão o MESMO doc id; o dia seguinte, outro', async () => {
+      const ids: string[] = [];
+      for (const nowMs of [AGORA_MS, AGORA_MS + 14 * 3_600_000, AGORA_MS + DIA_MS]) {
+        const c = pedidoPresente();
+        await rodar(c, { nowMs });
+        const id = docIdOf(enfileirado(c, 0));
+        if (id === null) throw new Error('code 30 sem doc id');
+        ids.push(id);
+      }
+      expect(ids).toEqual([
+        `30:${String(SHOP_A)}:${PACOTE}:${String(DIA_DE_AGORA_MS)}`,
+        `30:${String(SHOP_A)}:${PACOTE}:${String(DIA_DE_AGORA_MS)}`,
+        `30:${String(SHOP_A)}:${PACOTE}:${String(DIA_DE_AGORA_MS + DIA_MS)}`,
+      ]);
     });
   });
 
@@ -1939,6 +2005,7 @@ describe('o que o tick NUNCA faz', () => {
       enfileiradosPacote: 1,
       enfileiradosPedido: 0,
       pedidosComFalhaHoje: 1,
+      pacotesComFalhaHoje: 0,
       truncada: false,
       truncadaPor: null,
       error: null,
@@ -2076,7 +2143,7 @@ describe('RT1 — a amostra da documentação pelo cliente REAL, até UMA tarefa
     expect(enfileirado(c, 0)).toEqual({
       code: 30,
       shopId: SHOP_A,
-      timestamp: AGORA_MS,
+      timestamp: DIA_DE_AGORA_MS,
       data: {
         ordersn: linhaDoc.order_sn,
         package_number: linhaDoc.package_number,

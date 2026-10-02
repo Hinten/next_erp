@@ -132,6 +132,7 @@ function contaZerada(integracaoId: string): ArranjoAutomaticoContaResult {
     enfileiradosPacote: 0,
     enfileiradosPedido: 0,
     pedidosComFalhaHoje: 0,
+    pacotesComFalhaHoje: 0,
     truncada: false,
     truncadaPor: null,
     error: null,

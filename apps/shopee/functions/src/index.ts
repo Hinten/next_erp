@@ -826,6 +826,7 @@ export const sweepShopeeAutoArrange = onSchedule(
       // Absent-pedido orders NOT re-enqueued: today's code-3 failure row already
       // stands, so the import failed once today and waits for the UTC day.
       pedidosComFalhaHoje: somar((conta) => conta.pedidosComFalhaHoje),
+      pacotesComFalhaHoje: somar((conta) => conta.pacotesComFalhaHoje),
       // A truncated conta is re-read from page 1 on the next tick — there is no
       // cursor. A count that stays high tick after tick is a conta that can no
       // longer keep up, and that is invisible in every other counter here.

@@ -420,7 +420,12 @@ it is the PRIMARY signal.
   document: present means today's import already failed, so the order is
   skipped and counted in `pedidosComFalhaHoje`. A deterministically failing
   import costs at most one attempt and one row per order per UTC day, where a
-  per-tick stamp minted a fresh parked row every five minutes. At most
+  per-tick stamp minted a fresh parked row every five minutes. The code 30
+  for a PRESENT pedido gets the same bound (PR #1758's review): the day's
+  stamp, one read of `30:<shop>:<package>:<day>`, and a skip counted in
+  `pacotesComFalhaHoje` while that row stands (the store deletes a row once
+  it resolves, so a standing row means today's delivery is still failing).
+  At most
   `MAX_ENFILEIRADOS_ARRANJO_POR_CONTA` (100) enqueues per conta; once reached,
   no further detail read is spent.
 - **Containment.** `ShopeeRateLimitError` (burst or daily) is tested FIRST and

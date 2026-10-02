@@ -92,7 +92,12 @@
  *    that collection) and re-paid `get_order_detail` each time. Flooring the
  *    stamp is safe: the code-3 arm imports with the pipeline's own clock and
  *    the order's `update_time` watermark, never the envelope stamp — and the
- *    pedido is absent, so there is no watermark to compare. At most
+ *    pedido is absent, so there is no watermark to compare. The code 30 for a
+ *    PRESENT pedido gets the same bound (PR #1758's review): the day's stamp,
+ *    one read of `30:<shop>:<package>:<day>`, and a skip counted in
+ *    `pacotesComFalhaHoje` while that row stands — the store DELETES a row
+ *    once it resolves, so a standing row means today's delivery is still
+ *    failing; the frete arm never reads the envelope stamp. At most
  *    {@link MAX_ENFILEIRADOS_ARRANJO_POR_CONTA} enqueues per conta.
  *
  * ## Containment (per conta), with the rate limit FIRST
@@ -357,6 +362,12 @@ export interface ArranjoAutomaticoContaResult {
    * exists, so today's import already failed (step 6 of the header).
    */
   readonly pedidosComFalhaHoje: number;
+  /**
+   * Present-pedido packages NOT re-enqueued: today's code-30 failure row
+   * already exists, so today's delivery is still failing (step 6 of the
+   * header — PR #1758's review applied the code-3 bound to the code 30).
+   */
+  readonly pacotesComFalhaHoje: number;
   readonly truncada: boolean;
   readonly truncadaPor: TruncagemArranjo | null;
   /** `<class>: <detail>` of a contained failure (never Shopee's own text). */
@@ -463,6 +474,7 @@ interface Contagem {
   enfileiradosPacote: number;
   enfileiradosPedido: number;
   pedidosComFalhaHoje: number;
+  pacotesComFalhaHoje: number;
   truncadaPor: TruncagemArranjo | null;
 }
 
@@ -485,6 +497,7 @@ function contagemVazia(): Contagem {
     enfileiradosPacote: 0,
     enfileiradosPedido: 0,
     pedidosComFalhaHoje: 0,
+    pacotesComFalhaHoje: 0,
     truncadaPor: null,
   };
 }
@@ -514,6 +527,7 @@ function resultadoDaConta(
     enfileiradosPacote: c.enfileiradosPacote,
     enfileiradosPedido: c.enfileiradosPedido,
     pedidosComFalhaHoje: c.pedidosComFalhaHoje,
+    pacotesComFalhaHoje: c.pacotesComFalhaHoje,
     truncada: c.truncadaPor !== null,
     truncadaPor: c.truncadaPor,
     error,
@@ -791,16 +805,33 @@ async function varrerConta(
         existePedido.set(orderSn, existe);
       }
       if (existe) {
-        await enfileirar(
-          deps.scheduler,
-          notificacaoSinteticaDePacote({
-            shopId,
-            orderSn,
-            packageNumber: numero,
-            nowMs: deps.nowMs,
-            origem: 'arranjo-automatico',
-          }),
-        );
+        // ⚠️ The DAY's stamp here too (PR #1758's review): a per-tick stamp gave
+        // every tick a fresh doc id `30:<shop>:<package>:<nowMs>`, so a code-30
+        // delivery that fails the same way every time (a frete merge the
+        // pipeline parks, a transient that exhausts the queue) minted a new
+        // failure row every five minutes and re-paid `get_package_detail`. With
+        // the day's stamp the id is stable for the day, and ONE read says
+        // whether today's delivery is still failing — the store DELETES a row
+        // once it resolves, so a standing row means failed, deferred or parked.
+        // Flooring is safe: the frete arm (codes 4/30/47) never reads the
+        // envelope stamp — its clock is the pipeline's, its watermark the
+        // package's own `update_time`.
+        const sintetico = notificacaoSinteticaDePacote({
+          shopId,
+          orderSn,
+          packageNumber: numero,
+          nowMs: inicioDoDiaUtcMs(deps.nowMs),
+          origem: 'arranjo-automatico',
+        });
+        const docId = docIdOf(sintetico);
+        if (
+          docId !== null &&
+          (await notificacaoShopeeCollection.docRef(db, {}, docId).get()).exists
+        ) {
+          c.pacotesComFalhaHoje += 1;
+          continue;
+        }
+        await enfileirar(deps.scheduler, sintetico);
         c.enfileiradosPacote += 1;
       } else if (!pedidosEnfileirados.has(orderSn)) {
         // ONE per order, never per package: the import creates the pedido with

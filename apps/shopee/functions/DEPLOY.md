@@ -1121,7 +1121,9 @@ package of that conta is ever reached. An order whose pedido is absent and
 whose import keeps failing costs at most ONE import attempt and ONE parked
 notification per UTC day: the sweep stamps that order's code 3 with the start
 of the UTC day and skips the order (`pedidosComFalhaHoje`) while that day's
-`notificacoesShopee` row exists. Two ACTIVE contas on one `shop_id`
+`notificacoesShopee` row exists; a present pedido's code 30 gets the same
+bound (`pacotesComFalhaHoje`), so a package whose delivery keeps failing
+costs at most one row per UTC day too. Two ACTIVE contas on one `shop_id`
 (pre-existing, shared with the backfill) are walked twice. And the 200 s
 per-tick budget only stops STARTING contas: a conta already started or a hung
 Shopee call (bounded only by #1094) can outlive the next tick's start — the
