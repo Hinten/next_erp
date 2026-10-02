@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,7 +9,9 @@ import {
   shopeeErrorFromEnvelope,
   shopeeLinhaDeLoteSchema,
   shopeeOrderDetailPayloadSchema,
+  shopeeOrderDetailRowSchema,
   shopeePackageDetailPayloadSchema,
+  shopeePackageDetailRowSchema,
   shopeeParametroDeDocumentoSchema,
   shopeeResultadoDeDocumentoSchema,
   shopeeShippingParameterPayloadSchema,
@@ -24,6 +27,8 @@ import {
   type ShopeeApiError,
   type ShopeeClient,
   type ShopeeLoteLogistico,
+  type ShopeeOrderDetailRow,
+  type ShopeePackageDetailRow,
 } from '@delfrance/integrations-shopee';
 
 import {
@@ -39,7 +44,15 @@ import {
   type EntradaEtiqueta,
   type ResultadoEtiqueta,
 } from './executarEtiqueta';
-import { MOTIVO_ETIQUETA_SHOPEE } from './motivosEtiqueta';
+import {
+  decidirProximaAcao,
+  fasePacote,
+  observacaoDaOrdemShopee,
+  observacaoDoPacoteShopee,
+  type AcaoEtiqueta,
+  type FasePacote,
+} from './faseEtiqueta';
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from './motivosEtiqueta';
 import { MENSAGEM_BAIXAR_POR_PACOTE, MENSAGEM_DA_FASE } from './pendenteEtiqueta';
 
 /* ---------------------------------- the world -------------------------------- */
@@ -1416,5 +1429,378 @@ describe('executarEtiquetaShopee — S13 no runner: as linhas do lote por NÚMER
       ),
     ).toStrictEqual([[P1, P2], [P1, P2], [P2]]);
     expect(s.downloadShippingDocument).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------- step 15b: ONE copy of the projections (R-d) ------------------- */
+
+/**
+ * Both sources as RAW text, comments included — the way the folder discipline
+ * reads them: a pin that stripped comments would let a second copy hide behind
+ * a `//`.
+ */
+const FONTE_DO_RUNNER = readFileSync(new URL('./executarEtiqueta.ts', import.meta.url), 'utf8');
+const FONTE_DA_FASE = readFileSync(new URL('./faseEtiqueta.ts', import.meta.url), 'utf8');
+
+describe('executarEtiquetaShopee — UMA cópia das projeções (15b, R-d, mutante 11)', () => {
+  it('o fold do invoice_pending vive em faseEtiqueta.ts e SÓ lá', () => {
+    expect(FONTE_DA_FASE).toContain('invoice_pending?.status');
+    expect(FONTE_DO_RUNNER).not.toContain('invoice_pending');
+  });
+
+  it('o fold do fulfillment_flag também: faseEtiqueta.ts e SÓ lá', () => {
+    expect(FONTE_DA_FASE).toContain('ehPedidoFbsShopee(row?.fulfillment_flag)');
+    expect(FONTE_DO_RUNNER).not.toContain('fulfillment_flag');
+  });
+
+  // The other wire fields the two projections read, their private constants and
+  // both fold literals: any of them named in the runner is a second copy
+  // starting to grow. `is_shipment_arranged`, `package_number` and
+  // `tracking_number` are deliberately NOT here — the runner's docblock, its
+  // batch matching and its `get_tracking_number` read name them for reasons of
+  // their own.
+  it.each([
+    'pending_terms',
+    'logistics_channel_id',
+    'fulfillment_status',
+    'order_status',
+    'NF_PENDENTE',
+    'FULFILLMENT_SHOPEE',
+    "'pending'",
+    "'fulfilled_by_shopee'",
+    'RASTREIO_DO_PACOTE_VALE',
+  ])('o runner não nomeia %s — quem o lê é a projeção', (termo) => {
+    expect(FONTE_DO_RUNNER).not.toContain(termo);
+  });
+
+  it('o par: o runner CHAMA as duas projeções, cada uma sobre a linha que leu', () => {
+    expect(FONTE_DO_RUNNER).toContain('observacaoDaOrdemShopee(linha)');
+    expect(FONTE_DO_RUNNER).toContain('observacaoDoPacoteShopee(row)');
+  });
+});
+
+/* ---------- RT6: the runner's phase IS the projection's (15b, R-d) ----------- */
+
+/** A `get_package_detail` row as the client hands it over: raw wire fields through the REAL schema. */
+function linhaDePacote(numero: string, campos: Record<string, unknown>): ShopeePackageDetailRow {
+  return shopeePackageDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    package_number: numero,
+    ...campos,
+  });
+}
+
+/** A `get_order_detail` row, the same way: one package (P1), not FBS, READY_TO_SHIP. */
+function linhaDePedido(campos: Record<string, unknown> = {}): ShopeeOrderDetailRow {
+  return shopeeOrderDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    order_status: 'READY_TO_SHIP',
+    fulfillment_flag: 'fulfilled_by_local_seller',
+    package_list: [{ package_number: P1 }],
+    ...campos,
+  });
+}
+
+/** READY, not arranged, a VALID invoice, only the `"-"` zero-fill: the package that reaches `programar`. */
+const MOTOR: Record<string, unknown> = {
+  fulfillment_status: 'LOGISTICS_READY',
+  is_shipment_arranged: false,
+  logistics_channel_id: 90011,
+  tracking_number: '-',
+  pending_terms: ['-'],
+  invoice_pending: { status: 'valid', pending_reason: null },
+};
+
+/**
+ * The ORACLE: the pure ladder over the two projections — what step 15b's hook
+ * and sweep see for the same rows. `fases` is the per-position phase the
+ * runner's `simulado` reports.
+ */
+function prever(
+  pedido: ShopeeOrderDetailRow | null,
+  pacotes: readonly ShopeePackageDetailRow[],
+  alvo: string | null,
+): { readonly acao: AcaoEtiqueta; readonly fases: readonly FasePacote[] } {
+  const ordem = observacaoDaOrdemShopee(pedido);
+  const obs = pacotes.map(observacaoDoPacoteShopee);
+  const porNumero = new Map(obs.map((o) => [o.numero, o] as const));
+  return {
+    acao: decidirProximaAcao(ordem, obs, { pacote: alvo }),
+    fases: ordem.pacotes.map((n): FasePacote => {
+      const o = porNumero.get(n);
+      return o === undefined ? 'desconhecido' : fasePacote(o);
+    }),
+  };
+}
+
+/**
+ * The RUNNER over the very same rows, read-only: the fake answers the two
+ * reads with them verbatim, and `somenteLeitura` stops it at the first write.
+ */
+async function runnerSobre(
+  pedido: ShopeeOrderDetailRow | null,
+  pacotes: readonly ShopeePackageDetailRow[],
+  alvo: string | null,
+) {
+  const s = montar(mundo([pacote(P1)]));
+  s.getOrderDetail.mockResolvedValue({ order_list: pedido === null ? [] : [pedido] });
+  s.getPackageDetail.mockResolvedValue({ package_list: [...pacotes] });
+  const r = await s.rodar({ pacote: alvo }, { somenteLeitura: true });
+  return { r, s };
+}
+
+/** The runner's answer for an oracle action this parity covers (a refusal, the NF-e, or the arrange). */
+function respostaEsperada(p: ReturnType<typeof prever>, r: ResultadoEtiqueta): void {
+  switch (p.acao.tipo) {
+    case 'recusa':
+      expect(r).toStrictEqual({ tipo: 'recusa', motivo: p.acao.motivo });
+      return;
+    case 'nfe-pendente':
+      expect(r).toStrictEqual({ tipo: 'nfe-pendente' });
+      return;
+    case 'programar':
+      expect(r).toMatchObject({ tipo: 'simulado', acao: p.acao, fases: p.fases });
+      return;
+    // A document step needs more fake calls than a parity of the READS should.
+    case 'buscar-rastreio':
+    case 'ler-parametros-documento':
+    case 'ler-resultado':
+    case 'criar-documento':
+    case 'aguardar-documento':
+    case 'baixar':
+    case 'por-pacote':
+      throw new Error(`fixture fora do alcance da paridade: ${p.acao.tipo}`);
+  }
+}
+
+describe('executarEtiquetaShopee — RT6: a fase do runner É a da projeção (15b, R-d)', () => {
+  // P2 is the package under test; P1 (`MOTOR`) is what the runner is asked to
+  // arrange, so it reaches `simulado` and reports EVERY package's phase by
+  // position — P2's included, whatever it is. Each phase is ALSO pinned as a
+  // literal, so the parity cannot pass on two equal wrong answers.
+  const CASOS: readonly { nome: string; campos: Record<string, unknown>; fase: FasePacote }[] = [
+    {
+      nome: 'organizado: READY + is_shipment_arranged true',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: true,
+        tracking_number: RASTREIO,
+      },
+      fase: 'arranjado',
+    },
+    {
+      nome: 'organizado: REQUEST_CREATED',
+      campos: { fulfillment_status: 'LOGISTICS_REQUEST_CREATED', is_shipment_arranged: true },
+      fase: 'arranjado',
+    },
+    {
+      nome: 'NF-e pendente: NOT_START + " Pending " (o fold: trim + caixa)',
+      campos: {
+        fulfillment_status: 'LOGISTICS_NOT_START',
+        invoice_pending: { status: ' Pending ', pending_reason: 'motivo-de-teste' },
+      },
+      fase: 'nfe-pendente',
+    },
+    {
+      nome: 'NF-e pendente: READY não organizado + "PENDING"',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: false,
+        invoice_pending: { status: 'PENDING' },
+      },
+      fase: 'nfe-pendente',
+    },
+    {
+      nome: 'near-miss: NF-e "valid" ⇒ programar',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: false,
+        invoice_pending: { status: 'valid' },
+      },
+      fase: 'programar',
+    },
+    {
+      nome: 'near-miss: NF-e "pending_review" não é "pending" ⇒ programar',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: false,
+        invoice_pending: { status: 'pending_review' },
+      },
+      fase: 'programar',
+    },
+    {
+      nome: 'um "pending" VELHO num pacote já organizado não segura nada (R4-5)',
+      campos: {
+        fulfillment_status: 'LOGISTICS_REQUEST_CREATED',
+        invoice_pending: { status: 'pending' },
+      },
+      fase: 'arranjado',
+    },
+    {
+      nome: 'PICKUP_RETRY é organizado (is_shipment_arranged false não é lido)',
+      campos: { fulfillment_status: 'LOGISTICS_PICKUP_RETRY', is_shipment_arranged: false },
+      fase: 'arranjado',
+    },
+    {
+      nome: 'pending_terms com um termo ⇒ retido',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: false,
+        pending_terms: ['TERMO_DE_TESTE'],
+      },
+      fase: 'retido',
+    },
+    {
+      nome: 'near-miss: pending_terms ["-"] (o zero-fill) ⇒ programar',
+      campos: {
+        fulfillment_status: 'LOGISTICS_READY',
+        is_shipment_arranged: false,
+        pending_terms: ['-'],
+      },
+      fase: 'programar',
+    },
+    {
+      nome: 'READY com is_shipment_arranged null ⇒ programar (S22)',
+      campos: { fulfillment_status: 'LOGISTICS_READY', is_shipment_arranged: null },
+      fase: 'programar',
+    },
+    {
+      nome: 'PICKUP_DONE ⇒ janela-fechada',
+      campos: { fulfillment_status: 'LOGISTICS_PICKUP_DONE', tracking_number: RASTREIO },
+      fase: 'janela-fechada',
+    },
+    {
+      nome: 'REQUEST_CANCELED ⇒ inelegivel',
+      campos: { fulfillment_status: 'LOGISTICS_REQUEST_CANCELED' },
+      fase: 'inelegivel',
+    },
+    {
+      nome: 'um token que ninguém conhece ⇒ desconhecido',
+      campos: { fulfillment_status: 'LOGISTICS_ALGO_NOVO' },
+      fase: 'desconhecido',
+    },
+  ];
+
+  it.each(CASOS)('$nome', async ({ campos, fase }) => {
+    const pedido = linhaDePedido({
+      package_list: [{ package_number: P1 }, { package_number: P2 }],
+    });
+    const sujeito = linhaDePacote(P2, campos);
+    const pacotes = [linhaDePacote(P1, MOTOR), sujeito];
+
+    expect(fasePacote(observacaoDoPacoteShopee(sujeito))).toBe(fase);
+    const previsto = prever(pedido, pacotes, P1);
+    expect(previsto.acao).toStrictEqual({ tipo: 'programar', pacote: P1, comPacote: true });
+    expect(previsto.fases).toStrictEqual(['programar', fase]);
+
+    const { r, s } = await runnerSobre(pedido, pacotes, P1);
+    respostaEsperada(previsto, r);
+    // ONE read of each, and nothing written.
+    expect(s.getOrderDetail).toHaveBeenCalledTimes(1);
+    expect(s.getPackageDetail).toHaveBeenCalledTimes(1);
+    expect(s.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('o mesmo pacote, sozinho e sem alvo: a decisão do runner É a do oráculo (nfe-pendente)', async () => {
+    const pedido = linhaDePedido();
+    const pacotes = [
+      linhaDePacote(P1, {
+        ...MOTOR,
+        invoice_pending: { status: '\tpending ', pending_reason: null },
+      }),
+    ];
+    const previsto = prever(pedido, pacotes, null);
+    expect(previsto.acao).toStrictEqual({ tipo: 'nfe-pendente' });
+    const { r, s } = await runnerSobre(pedido, pacotes, null);
+    respostaEsperada(previsto, r);
+    expect(s.getShippingParameter).not.toHaveBeenCalled();
+  });
+
+  // The ORDER half: the same oracle, over `get_order_detail` rows.
+  const CASOS_DO_PEDIDO: readonly {
+    nome: string;
+    campos: Record<string, unknown>;
+    esperado: MotivoEtiquetaShopee | 'programar';
+  }[] = [
+    {
+      nome: 'FBS: "fulfilled_by_shopee" ⇒ pedido-fbs',
+      campos: { fulfillment_flag: 'fulfilled_by_shopee' },
+      esperado: MOTIVO_ETIQUETA_SHOPEE.pedidoFbs,
+    },
+    {
+      nome: 'FBS: o fold — "\\tFULFILLED_BY_SHOPEE " ⇒ pedido-fbs',
+      campos: { fulfillment_flag: '\tFULFILLED_BY_SHOPEE ' },
+      esperado: MOTIVO_ETIQUETA_SHOPEE.pedidoFbs,
+    },
+    {
+      nome: 'near-miss: "fulfilled_by_local_seller" ⇒ programar',
+      campos: { fulfillment_flag: 'fulfilled_by_local_seller' },
+      esperado: 'programar',
+    },
+    {
+      nome: 'near-miss: "fulfilled_by_shopee_x" ⇒ programar',
+      campos: { fulfillment_flag: 'fulfilled_by_shopee_x' },
+      esperado: 'programar',
+    },
+    {
+      nome: 'near-miss: fulfillment_flag null ⇒ programar',
+      campos: { fulfillment_flag: null },
+      esperado: 'programar',
+    },
+    {
+      nome: 'CANCELLED ⇒ pedido-cancelado',
+      campos: { order_status: 'CANCELLED' },
+      esperado: MOTIVO_ETIQUETA_SHOPEE.pedidoCancelado,
+    },
+    {
+      nome: 'IN_CANCEL ⇒ pedido-em-cancelamento',
+      campos: { order_status: 'IN_CANCEL' },
+      esperado: MOTIVO_ETIQUETA_SHOPEE.pedidoEmCancelamento,
+    },
+    {
+      nome: 'package_list com "-" e o MESMO número repetido ⇒ UM pacote, sem package_number',
+      campos: {
+        package_list: [{ package_number: P1 }, { package_number: '-' }, { package_number: P1 }],
+      },
+      esperado: 'programar',
+    },
+    {
+      nome: 'dois pacotes ⇒ comPacote',
+      campos: { package_list: [{ package_number: P1 }, { package_number: P2 }] },
+      esperado: 'programar',
+    },
+  ];
+
+  it.each(CASOS_DO_PEDIDO)('$nome', async ({ campos, esperado }) => {
+    const pedido = linhaDePedido(campos);
+    const pacotes = [linhaDePacote(P1, MOTOR), linhaDePacote(P2, MOTOR)];
+    const previsto = prever(pedido, pacotes, null);
+    expect(previsto.acao.tipo === 'recusa' ? previsto.acao.motivo : previsto.acao.tipo).toBe(
+      esperado,
+    );
+    const { r, s } = await runnerSobre(pedido, pacotes, null);
+    respostaEsperada(previsto, r);
+    expect(s.shipOrder).not.toHaveBeenCalled();
+  });
+
+  it('as fases e o comPacote do caso "-"/repetido são as do pacote ÚNICO', () => {
+    const pedido = linhaDePedido({
+      package_list: [{ package_number: P1 }, { package_number: '-' }, { package_number: P1 }],
+    });
+    expect(prever(pedido, [linhaDePacote(P1, MOTOR)], null)).toStrictEqual({
+      acao: { tipo: 'programar', pacote: P1, comPacote: false },
+      fases: ['programar'],
+    });
+  });
+
+  it('nenhuma linha do pedido ⇒ sem-pacotes, e ZERO get_package_detail', async () => {
+    const previsto = prever(null, [], null);
+    expect(previsto.acao).toStrictEqual({
+      tipo: 'recusa',
+      motivo: MOTIVO_ETIQUETA_SHOPEE.semPacotes,
+    });
+    const { r, s } = await runnerSobre(null, [], null);
+    respostaEsperada(previsto, r);
+    expect(s.getPackageDetail).not.toHaveBeenCalled();
   });
 });

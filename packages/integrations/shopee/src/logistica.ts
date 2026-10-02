@@ -153,7 +153,9 @@ export interface GetShippingParameterParams {
  *
  * ⚠️ `addressId` / `branchId` are NUMBERS on the wire (int64): they come from a
  * `wireInt()` read of `get_shipping_parameter`, which refuses an unsafe one
- * rather than rounding it. `pickupTimeId` is an OPAQUE string, sent back
+ * rather than rounding it — and, since step 15b, a zero or negative one, exactly
+ * what the guard below refuses (`types.test.ts` runs both over one table, so the
+ * read and the guard cannot drift apart). `pickupTimeId` is an OPAQUE string, sent back
  * verbatim; omitted when the address offers no slot ("sellers can arrange
  * shipment without selecting any time slot").
  */

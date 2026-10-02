@@ -16,6 +16,13 @@ import {
   type ShopeeOrderDetailRow,
 } from '@delfrance/integrations-shopee';
 
+import {
+  CLASSE_DESPACHO_PENDENTE,
+  RESOLUCAO_AVISO_DESPACHO,
+  chaveAvisoDespachoPendente,
+  executarAcoesDeAvisoDoDespacho,
+  type EncerramentoDespachoShopee,
+} from '../avisos/despachoAutomatico';
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 import { observadoDoPacoteDetalhe, type PacoteObservadoShopee } from './fretePushShopee';
@@ -43,6 +50,44 @@ vi.mock('./pagamentoTx', async (importOriginal) => {
     ): ReturnType<typeof real.salvarPagamentosShopee> => {
       if (pag.erro != null) throw pag.erro;
       return real.salvarPagamentosShopee(...args);
+    },
+  };
+});
+
+/**
+ * Step 15b (#1744) — the two aviso resolvers, behind the same kind of
+ * DELEGATING seam: it records their call ORDER and what the despacho one was
+ * handed, and calls the real implementation unless `resolvedores.falha` is set
+ * — so the step-14 tests below still run production code.
+ */
+const resolvedores = vi.hoisted(() => ({
+  ordem: [] as string[],
+  encerramentos: [] as EncerramentoDespachoShopee[],
+  falha: null as unknown,
+}));
+vi.mock('../nfe/avisoNfe', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../nfe/avisoNfe')>();
+  return {
+    ...real,
+    resolverAvisoNfeSeEncerrado: async (
+      ...args: Parameters<typeof real.resolverAvisoNfeSeEncerrado>
+    ): ReturnType<typeof real.resolverAvisoNfeSeEncerrado> => {
+      resolvedores.ordem.push('resolver-nfe');
+      return real.resolverAvisoNfeSeEncerrado(...args);
+    },
+  };
+});
+vi.mock('../avisos/despachoAutomatico', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../avisos/despachoAutomatico')>();
+  return {
+    ...real,
+    resolverAvisosDeDespachoSeEncerrado: async (
+      ...args: Parameters<typeof real.resolverAvisosDeDespachoSeEncerrado>
+    ): ReturnType<typeof real.resolverAvisosDeDespachoSeEncerrado> => {
+      resolvedores.ordem.push('resolver-despacho');
+      resolvedores.encerramentos.push(args[1]);
+      if (resolvedores.falha != null) throw resolvedores.falha;
+      return real.resolverAvisosDeDespachoSeEncerrado(...args);
     },
   };
 });
@@ -178,6 +223,9 @@ afterEach(() => {
   avisos.length = 0;
   infos.length = 0;
   pag.erro = null;
+  resolvedores.ordem.length = 0;
+  resolvedores.encerramentos.length = 0;
+  resolvedores.falha = null;
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1241,5 +1289,206 @@ describe('importarPedidoShopee — o gancho do aviso de NF-e (passo 14)', () => 
       resolvidoEm: NOW_US,
       resolucaoMotivo: 'frete-despachado',
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     step 15b (#1744) — o resolvedor dos avisos de despacho (R-k)            */
+/* -------------------------------------------------------------------------- */
+
+/** Announcement 1573's first Turbo channel — a fixture of the wire's own list. */
+const CANAL_TURBO = 90011;
+
+/** The SG order with its ONE package moved onto a Turbo channel. */
+function detalheTurbo(patch: Record<string, unknown> = {}): ShopeeOrderDetailRow {
+  const pacote = detalheSG().package_list![0]!;
+  return linha({ package_list: [{ ...pacote, logistics_channel_id: CANAL_TURBO }], ...patch });
+}
+
+const AVISO_DESPACHO_NFE_PATH = `avisos/${chaveAvisoDespachoPendente(
+  INT,
+  PEDIDO_ID,
+  PACOTE_SG,
+  CLASSE_DESPACHO_PENDENTE.nfe,
+)}`;
+
+/**
+ * Abre o aviso `despachoAutomaticoPendente` (classe `nfe`) do pacote pelo
+ * EXECUTOR real do produtor, como o gancho do push faria. A criação não usa o
+ * incremento.
+ */
+async function abrirAvisoDespachoNfe(db: FakeDb): Promise<void> {
+  await executarAcoesDeAvisoDoDespacho(
+    asDb(db),
+    {
+      integracaoId: INT,
+      pedidoId: PEDIDO_ID,
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE_SG,
+      linha: shopeePackageDetailRowSchema.parse({
+        order_sn: ORDER_SN,
+        package_number: PACOTE_SG,
+        fulfillment_status: 'LOGISTICS_READY',
+        logistics_channel_id: CANAL_TURBO,
+        invoice_pending: { status: 'pending' },
+      }),
+      nowMs: NOW_MS,
+      estadoFreteConfirmado: null,
+    },
+    [{ tipo: 'abrir-despacho', classe: CLASSE_DESPACHO_PENDENTE.nfe, motivo: 'nfe-pendente' }],
+    { increment: (by: number) => ({ __increment: by }), nowMs: NOW_MS },
+  );
+  expect(avisoDespachoNfe(db).resolvidoEm).toBeNull();
+}
+
+function avisoDespachoNfe(db: FakeDb): Record<string, unknown> {
+  return db.store[AVISO_DESPACHO_NFE_PATH]!.data;
+}
+
+/** The `i`-th import's ONE log line. */
+function linhaDoImport(i: number): Record<string, unknown> {
+  const linhas = infos.filter((args) => String(args[0]).includes('pedido importado'));
+  return linhas[i]![1] as Record<string, unknown>;
+}
+
+describe('importarPedidoShopee — o resolvedor do despacho (passo 15b)', () => {
+  it('roda DEPOIS do de NF-e, com o estado CONFIRMADO, o status VERBATIM e a MESMA projeção de pacotes que o frete gravou', async () => {
+    const cen = cenario();
+
+    await importar(cen);
+
+    expect(resolvedores.ordem).toEqual(['resolver-nfe', 'resolver-despacho']);
+    expect(resolvedores.encerramentos).toHaveLength(1);
+    const enc = resolvedores.encerramentos[0]!;
+    expect(enc).toMatchObject({
+      integracaoId: INT,
+      pedidoId: PEDIDO_ID,
+      estadoConfirmado: ESTADO_FRETE.despachoAutorizado,
+      orderStatus: detalheSG().order_status,
+    });
+    expect(enc.pacotes).toEqual([
+      expect.objectContaining({
+        packageNumber: PACOTE_SG,
+        fulfillmentStatus: 'LOGISTICS_READY',
+        logisticsChannelId: CANAL_SG,
+      }),
+    ]);
+    // ⚠️ A MESMA projeção: os pacotes que o resolvedor julga são as linhas que o
+    // diário do frete acabou de guardar — nunca uma segunda leitura do detalhe.
+    const diario = freteDoPedido(cen.db).pacotes as Record<string, unknown>[];
+    expect(enc.pacotes.map((p) => p.packageNumber)).toEqual(diario.map((d) => d.numero));
+  });
+
+  it('65 — uma RE-importação cujo frete volta `ignorado-sem-mudanca` AINDA chama o resolvedor', async () => {
+    const cen = cenario();
+    await importar(cen);
+
+    const r = await importar(cen);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    // ⚠️ Um resolvedor só no `atualizado` nunca re-tentaria uma resolução que
+    // falhou depois de o frete ter commitado.
+    expect(resolvedores.encerramentos).toHaveLength(2);
+    expect(resolvedores.encerramentos[1]).toEqual(resolvedores.encerramentos[0]);
+  });
+
+  it('QUASE-ERRO: `ignorado-obsoleto` no pedido não chama nenhum dos dois, e `ignorado-inexistente` nunca chega', async () => {
+    const cen = cenario();
+    await importar(cen);
+    cen.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'UNPAID', update_time: UPDATE_TIME_S - 60 })],
+    });
+    resolvedores.ordem.length = 0;
+
+    const r = await importar(cen);
+
+    expect(r.acao).toBe('ignorado-obsoleto');
+    expect(resolvedores.ordem).toEqual([]);
+
+    const cen2 = cenario();
+    cen2.getOrderDetail.mockRejectedValue(erroApi(SHOPEE_ERRO_ORDER_NOT_FOUND));
+    expect((await importar(cen2)).acao).toBe('ignorado-inexistente');
+    expect(resolvedores.ordem).toEqual([]);
+  });
+
+  it('65 — uma falha do Firestore ao resolver o despacho SOBE: a importação rejeita e a redelivery repete (O43)', async () => {
+    // §2.6 "failures propagate": engolida, a falha deixaria o aviso aberto e a
+    // redelivery — que é quem re-tenta a resolução — nunca aconteceria.
+    const cen = cenario({ detalhe: detalheTurbo() });
+    const falha = Object.assign(new Error('UNAVAILABLE'), { code: 14 });
+    resolvedores.falha = falha;
+
+    await expect(importar(cen)).rejects.toBe(falha);
+    // O frete já tinha commitado: a falha é só a do resolvedor.
+    expect(freteDoPedido(cen.db).pacotes).toHaveLength(1);
+
+    resolvedores.falha = null;
+    const r = await importar(cen);
+
+    // A re-importação chama o resolvedor de novo, com o frete inalterado.
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(resolvedores.encerramentos).toHaveLength(2);
+    expect(resolvedores.encerramentos[1]).toEqual(resolvedores.encerramentos[0]);
+  });
+
+  it('pedido com DOIS pacotes: o resolvedor recebe OS DOIS, na projeção do diário, em ordem (O44)', async () => {
+    const pacote = detalheSG().package_list![0]!;
+    const cen = cenario({
+      detalhe: linha({
+        package_list: [
+          { ...pacote, package_number: 'OFG000000000001', logistics_channel_id: CANAL_TURBO },
+          { ...pacote, package_number: 'OFG000000000002', logistics_channel_id: CANAL_TURBO },
+        ],
+      }),
+    });
+
+    await importar(cen);
+
+    expect(resolvedores.encerramentos).toHaveLength(1);
+    const numeros = resolvedores.encerramentos[0]!.pacotes.map((p) => p.packageNumber);
+    expect(numeros).toEqual(['OFG000000000001', 'OFG000000000002']);
+    // A MESMA projeção que o frete gravou — nunca uma segunda leitura.
+    const diario = freteDoPedido(cen.db).pacotes as Record<string, unknown>[];
+    expect(numeros).toEqual(diario.map((d) => d.numero));
+  });
+
+  it('uma order SEM pacote Turbo não LÊ aviso nenhum — o resolvedor novo não encarece a importação', async () => {
+    const cen = cenario();
+
+    await importar(cen);
+
+    // ÂNCORA: o resolvedor RODOU — o silêncio abaixo é o portão do canal.
+    expect(resolvedores.ordem).toContain('resolver-despacho');
+    expect(cen.db.caminhos.filter((p) => /^avisos(\/|$)/.test(p))).toEqual([]);
+    expect(linhaDoImport(0)).toMatchObject({ despachoResolvidos: 0, etiquetaResolvida: false });
+  });
+
+  it('65 — ⚠️ uma order Turbo CANCELLED fecha o aviso de despacho aberto, inclusive numa RE-importação sem escrita de frete', async () => {
+    const cen = cenario({ detalhe: detalheTurbo() });
+    await importar(cen);
+    cen.getOrderDetail.mockResolvedValue({
+      order_list: [
+        detalheTurbo({
+          order_status: SHOPEE_ORDER_STATUS.cancelled,
+          update_time: UPDATE_TIME_S + 60,
+        }),
+      ],
+    });
+    await importar(cen);
+    // Aberto DEPOIS do cancelamento: só a re-importação seguinte pode fechá-lo.
+    await abrirAvisoDespachoNfe(cen.db);
+
+    const r = await importar(cen);
+
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    // O status da order chega VERBATIM — um `null` aqui (o do push) nunca fecharia.
+    expect(resolvedores.encerramentos.at(-1)!.orderStatus).toBe(SHOPEE_ORDER_STATUS.cancelled);
+    // RT8 pelo lado do chamador: a chave que o abridor escreveu é a que o
+    // resolvedor recomputa a partir do pacote observado no detalhe.
+    expect(avisoDespachoNfe(cen.db)).toMatchObject({
+      resolvidoEm: NOW_US,
+      resolucaoMotivo: RESOLUCAO_AVISO_DESPACHO.pedidoCancelado,
+    });
+    expect(linhaDoImport(2)).toMatchObject({ despachoResolvidos: 1, etiquetaResolvida: false });
   });
 });

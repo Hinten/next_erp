@@ -270,14 +270,91 @@ packageNumber, reason, sintetica }` defers. ⚠️ The field is `acaoFrete` and 
 here would put an import action in the frete column of the task log.
 `TaskResult` gained `packageNumber?` and `acaoFrete?`, both spread only when
 present (the key is ABSENT, never `null`), and `acaoFrete` rides a **code-3**
-delivery too — there it is the BACKSTOP's verdict.
+delivery too — there it is the BACKSTOP's verdict. Since step 15b the `frete`
+outcome also carries `acaoArranjo` (the automatic arrange's desfecho, or `null`
+when it did not run) and `TaskResult` gains `acaoArranjo?` on the same terms —
+a third vocabulary on the same log line, so again never `acao`.
 
 ⚠️ **The arm reaches both the reader and the handler through
 `await import(...)`.** A static import would pull the schema tree into the
 receiver route's Next bundle: `fretePushShopee.ts` imports the small tolerant
 readers from `orderMapping.ts`, which imports `@delfrance/schemas` as VALUES. A
 test bans any static value import from `../pedidos/` in `notificacao.ts` for
-exactly that reason, and it covers the reader as well as the handler.
+exactly that reason, and it covers the reader as well as the handler. Since
+step 15b the handler's lazy default makes a SECOND dynamic import,
+`../pedidos/arranjoAutomatico`, and hands its `arranjarPacoteAutomatico` to the
+handler as `deps.arranjar` — the ONE place the automatic arrange is wired.
+Folding it into the first import (a re-export through `rastrearPedido.ts`)
+would make the `rastrear:pedido` script load `ship_order`; both specifiers are
+pinned literally.
+
+**After the frete transaction: two aviso resolvers, then the arrange (steps 14
+and 15b).** `salvarFreteShopee` owns every write of this step. What runs after
+it returns, OUTSIDE it and in this order, is step 14's
+`resolverAvisoNfeSeEncerrado`, step 15b's `resolverAvisosDeDespachoSeEncerrado`
+and — on the push path only — step 15b's automatic arrange. The code-3 import
+runs the same two resolvers after its own frete write, over the same
+`observados` projection the transaction stored, and never arranges.
+
+- **The despacho resolver** is the NF-e resolver's twin: it receives the
+  CONFIRMED estado, runs on every frete outcome (a replay included, so a
+  delivery whose resolve failed retries it) and lets a Firestore failure
+  PROPAGATE. It gates on the channel FIRST, so a pedido with no auto-arrange
+  package — every Shopee Xpress order — costs ZERO reads. It only RESOLVES: a
+  `despachoAutomaticoPendente` row by its own package's token (past the
+  arrange ⇒ `arranjado`; cancelled or refused by Shopee ⇒ `envio-encerrado`) or
+  by an order `CANCELLED` (the import's order row — the push path has none);
+  the `etiquetaComPrazo` row on a post-collection estado (`coletado`) or a
+  cancelled shipment or order. `IN_CANCEL` resolves nothing. Resolving is a correct
+  observation on any path, so it runs under `rastrear:pedido --live` too.
+- **The arrange** (`arranjoAutomatico.ts`) runs LAST, so a resolve driven by
+  the pre-arrange estado can never close an alert the arrange opens in the same
+  delivery. It is reached only through `ShopeeRastrearPedidoDeps.arranjar`,
+  ABSENT by default: `ship_order` is irreversible, and `rastrear:pedido --live`
+  calls this handler with no deps, so a rehearsal never ships. It gets the
+  FRESH `get_package_detail` row — never `observado`, which drops
+  `is_shipment_arranged`, `invoice_pending` and `pending_terms` — and runs on
+  every frete outcome except the transaction's own `ignorado-sem-pedido`: a
+  replay and a late push still carry a fresh row, and a lost arrange is an
+  order Shopee cancels. It is never gated on step 14's `error` stamp.
+  ⚠️ Its aviso OPENS are gated on the transaction's CONFIRMED frete estado
+  (`estadoFreteConfirmado`), not on the row alone: when the row is older than
+  the stored frete (`ignorado-obsoleto`, a lagging replica) the arrange still
+  runs — Shopee absorbs a duplicate ship — but an open that estado has already
+  overtaken is dropped, so a stale row cannot resurrect an alert a newer
+  delivery resolved.
+- **Its result is information, never a disposition.** The arrange turns every
+  Shopee answer into a desfecho (`ResultadoRastreioShopee.arranjo`, `null` when
+  it did not run); what escapes it is our own `ShopeeConfigError`, a gRPC
+  failure or an unknown error — each a `throw` at `disposicaoDaFalhaDeRastreio`
+  — plus a `ZodError` from its aviso writer, which parks as a mapper bug. So no
+  Shopee answer to the arrange can park or defer a delivery whose frete write
+  committed. The handler's one log line carries the result as flat fields
+  (`acaoArranjo`, `motivoArranjo`, `canalArranjo`, `faseArranjo`,
+  `shopeeCodeArranjo`, `temPreparacaoAutomatica`) beside `despachoResolvidos` /
+  `etiquetaResolvida`, picked field by field and never the object spread in;
+  the seller's pickup address and slot text never leave the arrange.
+- **Rule 7 residuals (R-m), each cleared by the next fresh delivery for the
+  package.** Two CONCURRENT deliveries can still reopen an alert for seconds:
+  one that read its row before a transition and committed its frete write
+  FIRST opens after the other's resolve, and the confirmed estado cannot see
+  that order. `resolverAviso` gives up on a `FAILED_PRECONDITION` (pre-existing,
+  `packages/data`), so a resolve that lost to a concurrent repeat is dropped
+  without a re-read. And when another arranger shipped first, a Shopee refusal
+  other than `package_already_shipped` opens the `manual` class (critico) on a
+  package that is already arranged, until the next push's resolver sees the
+  arranged token.
+
+**When the NF-e comes after the order (the normal BR case).** The arrange never
+ships an invoice-pending package: it opens the `nfe` class of
+`despachoAutomaticoPendente` (atenção) and waits. Step 14's trigger uploads the
+note 360 s after its approval (`ATRASO_SERPRO_S`) and Shopee validates it on its
+own clock, and
+**no push is documented for that validation** (register 227). So the arrange
+needs a re-observation of the package — a later push for it, or the
+`search_package_list` sweep of step 15b's PR 3b (stacked) — and announcement
+1573's 15-minute SLA is met only when the NF-e is emitted within minutes of the
+order. Emission is human; the ERP can only say it.
 
 **What this step never writes.** `lastMarketplaceUpdate` — the ORDER clock,
 step 5's single writer, and comparing a package event against it is ADR 0011's

@@ -4095,14 +4095,43 @@ function paraIdDeHorario(v: unknown): unknown {
 }
 
 /**
+ * An int64 id that `ship_order` sends BACK — `pickup.address_id`,
+ * `dropoff.branch_id` — read EXACTLY as `logistica.ts`'s `assertIdNumerico`
+ * accepts it: a POSITIVE safe integer.
+ *
+ * ⚠️ The read and the ship guard must refuse the SAME values (review 3a,
+ * Q1-F1). An id this schema accepted and the guard refuses comes back from
+ * `shipOrder` as a `ShopeeConfigError` thrown BEFORE the fetch — the class that
+ * means OUR misconfiguration — so the automatic arrange rethrows it and the
+ * delivery loops to `failed` with no aviso, on Shopee's own data. Refused HERE,
+ * it costs the ROW (the list's `null` sentinel) and the chooser refuses before
+ * any ship. A test runs the schema and the guard over one table of values.
+ *
+ * `wireInt()` already fails above `Number.MAX_SAFE_INTEGER`; this adds `> 0`.
+ */
+function idDeEnvio() {
+  return wireInt().refine((n) => n > 0, { message: 'deve ser um inteiro positivo' });
+}
+
+/**
+ * `assertIdLogistico`'s rule for a TEXT id `ship_order` sends back: non-BLANK
+ * after a trim. ⚠️ It JUDGES the trimmed value and never returns it — the id
+ * travels verbatim. Same reason as {@link idDeEnvio}.
+ */
+function naoEmBranco(s: string): boolean {
+  return s.trim() !== '';
+}
+
+/**
  * One pickup time slot of one address —
  * `get_shipping_parameter.pickup.address_list[].time_slot_list[]`.
  *
  * ⚠️ `pickup_time_id` is a STRING on the page and goes back verbatim, so it is
  * an OPAQUE string here: a numeric one is carried as its digits
- * ({@link paraIdDeHorario}). REQUIRED and non-empty — a slot without its id
- * cannot be chosen, so it is the list's `null` sentinel, never a slot whose id
- * is `null`.
+ * ({@link paraIdDeHorario}). REQUIRED and non-BLANK ({@link naoEmBranco}, the
+ * ship guard's own rule) — a slot without a usable id cannot be chosen, so it
+ * is the list's `null` sentinel, never a slot whose id is `null` or `"  "`. A
+ * padded id (`" slot-1 "`) is NOT blank and is kept byte for byte.
  *
  * ⚠️ `date` is SECONDS ("In timestamp"), and nullable: "Some logistics channels
  * may not return any date or time for pickup time slots."
@@ -4116,8 +4145,11 @@ export const shopeePickupTimeSlotSchema = z
     /** SECONDS. */
     date: wireInt().nullable().default(null),
     time_text: z.string().nullable().default(null),
-    /** ⚠️ OPAQUE — sent back verbatim, never a number. */
-    pickup_time_id: z.preprocess(paraIdDeHorario, z.string().min(1)),
+    /** ⚠️ OPAQUE — sent back verbatim, never a number; a blank one refuses the SLOT. */
+    pickup_time_id: z.preprocess(
+      paraIdDeHorario,
+      z.string().refine(naoEmBranco, { message: 'não pode ser vazio' }),
+    ),
     flags: z.array(z.string()).nullable().default(null),
   })
   .passthrough();
@@ -4131,7 +4163,8 @@ export type ShopeePickupTimeSlot = z.infer<typeof shopeePickupTimeSlotSchema>;
  * `Number.MAX_SAFE_INTEGER` (Zod 4's `.int()` answers `too_big`), and here that
  * failure is the point: the ROW becomes the list's `null` sentinel instead of a
  * rounded id — which could name ANOTHER address of the same seller — being sent
- * back. Its siblings survive.
+ * back. Its siblings survive. ⚠️ A `0` or a negative id costs the row too
+ * ({@link idDeEnvio}): the ship guard would refuse it.
  *
  * ⚠️ `address_flag` decides eligibility, and it is FREE strings: the page names
  * four (`SHOPEE_ADDRESS_FLAG`), and only `pickup_address` makes an address a
@@ -4150,8 +4183,8 @@ export type ShopeePickupTimeSlot = z.infer<typeof shopeePickupTimeSlotSchema>;
  */
 export const shopeePickupAddressSchema = z
   .object({
-    /** ⚠️ int64 — an unsafe one refuses the ROW. See the block comment. */
-    address_id: wireInt(),
+    /** ⚠️ int64 — an unsafe, zero or negative one refuses the ROW. See the block comment. */
+    address_id: idDeEnvio(),
     region: z.string().nullable().default(null),
     state: z.string().nullable().default(null),
     city: z.string().nullable().default(null),
@@ -4172,13 +4205,14 @@ export type ShopeePickupAddress = z.infer<typeof shopeePickupAddressSchema>;
  * One dropoff branch — `get_shipping_parameter.dropoff.branch_list[]`.
  *
  * ⚠️ `branch_id` is `int` on this page and `int64` on `ship_order`'s request,
- * where it goes back as a NUMBER: `wireInt()`, and an unsafe one costs the ROW,
- * for {@link shopeePickupAddressSchema}'s reason. The address text is a
- * carrier branch's, declared for the same one reader and never logged.
+ * where it goes back as a NUMBER: {@link idDeEnvio}, and an unsafe, zero or
+ * negative one costs the ROW, for {@link shopeePickupAddressSchema}'s reason.
+ * The address text is a carrier branch's, declared for the same one reader and
+ * never logged.
  */
 export const shopeeDropoffBranchSchema = z
   .object({
-    branch_id: wireInt(),
+    branch_id: idDeEnvio(),
     region: z.string().nullable().default(null),
     state: z.string().nullable().default(null),
     city: z.string().nullable().default(null),
@@ -4236,7 +4270,8 @@ export type ShopeeInfoNeeded = z.infer<typeof shopeeInfoNeededSchema>;
  *
  * ⚠️ Per-ELEMENT `null` sentinels on the four lists (addresses, their slots,
  * branches, slugs), the {@link shopeePackageDetailPayloadSchema} precedent: one
- * unreadable row — an unsafe int64 id above all — costs that row, and a reader
+ * unreadable row — an unsafe int64 id above all, or any id `ship_order`'s guard
+ * would refuse ({@link idDeEnvio}) — costs that row, and a reader
  * that meets a `null` knows it met one. Deliberately NOT per field: the ids are
  * what goes back to `ship_order`, and a per-field catch would manufacture a
  * `null` id.

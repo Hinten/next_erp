@@ -24,6 +24,11 @@
  *    by the nested functions codebase, not Shopee CONFIGURATION this app hands
  *    to the package, and the blank-guard rule below buys an `=== '1'`
  *    comparison nothing.
+ *  - `lib/shopee/pedidos/arranjoAutomatico.ts` —
+ *    `SHOPEE_ARRANJO_AUTOMATICO_DISABLED`, step 15b's automatic-arrange valve,
+ *    read PER CALL. Opt-in-to-DISABLE (`=== '1'`; unset or blank leaves the
+ *    arrange ON) and NOT an `env.ts` export, for the backfill flag's reason:
+ *    only the nested functions codebase's shipment arm ever loads it.
  *  - `lib/shopee/estoque/constantesEstoque.ts` — the step-12 stock knobs
  *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family**. It
  *    goes through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which

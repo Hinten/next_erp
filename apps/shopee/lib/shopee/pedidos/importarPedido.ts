@@ -10,8 +10,9 @@
  *
  *  1. ONE clock read (`nowMs` → `nowUs`, converted ONCE here and handed DOWN —
  *     nothing below this module converts a clock, except the aviso writers'
- *     own seam in `avisos/autorizacao.ts`, which the step-14 NF-e aviso
- *     resolve after the frete write goes through with the same `nowMs`);
+ *     own seam in `avisos/autorizacao.ts`, which the step-14 NF-e and step-15b
+ *     despacho aviso resolves after the frete write go through with the same
+ *     `nowMs`);
  *  2. `get_order_detail` — the authority for every field;
  *  3. `get_escrow_detail`, **CONTAINED**: it refines PRICES, and losing a
  *     refinement must not lose the pedido;
@@ -88,6 +89,7 @@ import {
   type ShopeeOrderItem,
 } from '@delfrance/integrations-shopee';
 
+import { resolverAvisosDeDespachoSeEncerrado } from '../avisos/despachoAutomatico';
 import { readConta } from '../core/contaCache';
 import { loadShopeeContext } from '../core/shopee';
 import { resolverAvisoNfeSeEncerrado } from '../nfe/avisoNfe';
@@ -617,6 +619,8 @@ export async function importarPedidoShopee(
   let pagamentos: ResultadoPagamentosShopee | null = null;
   let frete7: ResultadoFreteShopee | null = null;
   let avisoNfeResolvido = false;
+  let despachoResolvidos = 0;
+  let etiquetaResolvida = false;
   if (resultado.acao !== 'ignorado-obsoleto') {
     mapeadosPag = mapearPagamentosShopee({
       linha,
@@ -653,13 +657,16 @@ export async function importarPedidoShopee(
     // seven refreshable fields, so it says nothing at all about `estado`,
     // `codRastreio` or the diary — a package can move while the order row does
     // not. Only `ignorado-obsoleto` skips, exactly like the pagamentos.
+    // ⚠️ ONE projection, handed to the transaction AND to the step-15b despacho
+    // resolver below, so the two can never read different packages.
+    const observados = observadosDoDetalheDoPedido(linha, {
+      // ⚠️ SECONDS, the value BEFORE step 5 converted it — never `watermarkUs / 1e6`.
+      relogioDoPedidoS: segundosShopeeUtilizaveis(linha.update_time),
+    }).observados;
     frete7 = await salvarFreteShopee(db, {
       pedidoId,
       orderSn,
-      // ⚠️ SECONDS, the value BEFORE step 5 converted it — never `watermarkUs / 1e6`.
-      observados: observadosDoDetalheDoPedido(linha, {
-        relogioDoPedidoS: segundosShopeeUtilizaveis(linha.update_time),
-      }).observados,
+      observados,
       // The ORDER clock as the package clock: `get_order_detail` carries no
       // per-package one, and an absent clock is not evidence of order.
       relogioDaOrdemUs: watermarkUs,
@@ -692,6 +699,26 @@ export async function importarPedidoShopee(
       },
       { nowMs },
     );
+
+    // Step 15b (#1744) — the despacho avisos' cross-step resolver, the NF-e
+    // one's twin and AFTER it, on the same terms: the confirmed estado, EVERY
+    // frete outcome (a failure PROPAGATES and the re-import retries it), the
+    // order status verbatim (a CANCELLED order closes both alerts). It gates on
+    // the channel first, so an import with no Turbo package costs ZERO reads.
+    // The import never ARRANGES — that is the push path's alone.
+    const despacho = await resolverAvisosDeDespachoSeEncerrado(
+      db,
+      {
+        integracaoId,
+        pedidoId,
+        estadoConfirmado: frete7.estadoConfirmado,
+        orderStatus: linha.order_status,
+        pacotes: observados,
+      },
+      { nowMs },
+    );
+    despachoResolvidos = despacho.despachoResolvidos;
+    etiquetaResolvida = despacho.etiquetaResolvida;
   }
 
   // AFTER the write, and driven by the snapshot the transaction actually saw: a
@@ -776,6 +803,9 @@ export async function importarPedidoShopee(
     tokensFreteDesconhecidos: frete7?.tokensDesconhecidos ?? null,
     // ── step 14: whether this import closed the pedido's NF-e aviso. A boolean.
     avisoNfeResolvido,
+    // ── step 15b: the despacho avisos this import closed. A count and a boolean.
+    despachoResolvidos,
+    etiquetaResolvida,
   });
 
   return {

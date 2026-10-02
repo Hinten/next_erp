@@ -106,6 +106,27 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `para uma promoção, mas o ERP tem ${p(params, 'disponivel')}. O estoque foi enviado no ` +
       'valor da reserva. Reduza a reserva ou reponha o estoque.',
   },
+  // Sem `runbook` nos dois abaixo: ambos têm conserto dentro do app — o checkout
+  // (`ROTAS_AVISO.despachoCheckout`) emite a NF-e, imprime o DANFE e busca a etiqueta.
+  [TIPO_AVISO.despachoAutomaticoPendente]: {
+    titulo: 'Despacho automático pendente',
+    // ⚠️ A `situacao` traz a causa E o que fazer (um fragmento do produtor, em
+    // minúsculas e sem ponto final); a frase fixa só diz o que se perde sem agir.
+    corpo: (params) =>
+      `O despacho automático de um pacote do pedido ${p(params, 'pedido')} não foi feito: ` +
+      `${p(params, 'situacao')}. Sem uma tentativa de despacho, a Shopee cancela o pedido.`,
+  },
+  [TIPO_AVISO.etiquetaComPrazo]: {
+    titulo: 'Etiqueta com prazo de impressão',
+    // ⚠️ Nada observa a IMPRESSÃO (o agente de impressão responde 200 mesmo quando
+    // falha), então o aviso se encerra na COLETA — e a frase diz isso, para quem já
+    // imprimiu pelo checkout não achar que o aviso ficou preso.
+    corpo: (params) =>
+      `O envio do pedido ${p(params, 'pedido')} já está organizado. Emita e imprima a ` +
+      'etiqueta em até 1 hora após a criação do pedido — a Shopee exige isso neste canal de ' +
+      'entrega rápida. Se ela já foi impressa, nada a fazer: o aviso se encerra quando a ' +
+      'Shopee registrar a coleta.',
+  },
 };
 
 /**

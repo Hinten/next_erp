@@ -94,27 +94,58 @@ locally without deploying: `node apps/shopee/functions/build.mjs` (writes
 the full servable folder at `.deploy/shopee-functions`. Both need
 `FUNCTIONS_REGION` set — `requireBuildRegion` throws without it, on purpose.
 
-⚠️ **The inline proof.** **Three** handlers reach this bundle through a
+⚠️ **The inline proof.** **Four** handlers reach this bundle through a
 **dynamic** `import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so
 the App Hosting receiver's own bundle never carries the pedido tree or the
-publish tree. The functions bundle is the half that must carry them, and the
-bundler inlining them is not something any test asserts. Check it after a build:
+publish tree. Step 15b's `arranjarPacoteAutomatico` is the fourth: the shipment
+arm imports it right after `rastrearPedidoShopee` and BEFORE calling the
+handler, so a bundle without it would THROW every code-4/30/47 delivery that
+reaches a conta — the shipment merge included, not only the arrange. The
+functions bundle is the half that must carry them. For the shipment arm's two
+(`rastrearPedidoShopee`, `arranjarPacoteAutomatico`) a test asserts it since
+step 15b: the tasks suite drives a synthetic code 30 through both imports in
+the BUILT artifact (see "What CI proves" below). For `importarPedidoShopee` and
+`tratarPushDeAnuncio` the bundler inlining them is still asserted by no test,
+and this check is the only one. Run it after a build:
 
 ```bash
 FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
-for n in importarPedidoShopee rastrearPedidoShopee tratarPushDeAnuncio \
-         onProdutoShopeeLinkChanged; do
-  grep -q "$n" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
+for n in importarPedidoShopee rastrearPedidoShopee arranjarPacoteAutomatico \
+         tratarPushDeAnuncio; do
+  grep -q "function $n(" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
 done
+grep -Eq "import\(['\"]\.\./" .deploy/shopee-functions/index.js &&
+  echo 'IMPORT DINAMICO NAO INLINADO'
+grep -q onProdutoShopeeLinkChanged .deploy/shopee-functions/index.js ||
+  echo 'AUSENTE onProdutoShopeeLinkChanged'
 grep -q '"default"' .deploy/shopee-functions/index.js || echo 'AUSENTE database id'
 ```
 
-Silence is the pass: every name is in the bundle. An `AUSENTE <nome>` line says
-the dispatched function would park (step 5), never reach the shipment merge
-(step 7) or never reach the listing-lifecycle handler (step 11) instead of
-running it — green everywhere else, because nothing but this check looks.
-`onProdutoShopeeLinkChanged` is not a dynamic import but an EXPORT, so its
-absence would mean the trigger was not deployed at all.
+Silence is the pass. ⚠️ **Grep the DEFINITION, never the bare name.** The
+caller's own destructuring — `const { arranjarPacoteAutomatico } = await
+import(...)` — puts every handler's name in the bundle whether or not its
+module was inlined: an import esbuild leaves external survives verbatim as
+`await import("../pedidos/arranjoAutomatico")`, so a bare-name `grep` stays
+green over exactly the bundle it exists to refuse. Only an INLINED module
+carries `async function <name>(`, and only a non-inlined one leaves an
+`import("../…")` behind — the build is one unminified file (`build.mjs`: no
+splitting, no `minify`), and the artifact holds no dynamic `import(` at all
+today. Measured on 2026-10-01 (step 15b): rebuilt with
+`../pedidos/arranjoAutomatico`, `../pedidos/importarPedido` or
+`../anuncios/pushAnuncio` marked external, each bundle passed the old
+bare-name loop in silence and failed both new checks; the real artifact passes
+them. A collision rename by esbuild (a `…2` suffix on the definition) reads as
+`AUSENTE` — the loud direction; confirm it by hand.
+
+An `AUSENTE <nome>` line, or the not-inlined one, says the dispatched function
+would THROW on every such delivery — the queue's retries, the hot re-drives,
+then a terminal parked row — instead of importing the order (step 5), merging
+the shipment (step 7 — and, for `arranjarPacoteAutomatico`, step 15b's arrange
+with it) or running the listing-lifecycle handler (step 11).
+`onProdutoShopeeLinkChanged` is not a dynamic import but an EXPORT — a `var`, so
+the definition grep does not apply — and its absence would mean the trigger was
+not deployed at all; what really pins it is `src/index.test.ts`'s `GATILHOS`
+map.
 
 ⚠️ **The last line is a SMOKE CHECK, not the guard.** The thing that really
 pins the inlined Firestore database id is `src/index.test.ts`'s exact-equality
@@ -144,7 +175,7 @@ completeness check when it is a dynamic-import smoke check.
 
 | Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | -------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `processShopeeNotification`      | `onTaskDispatched` (Cloud Tasks queue) | #1511 / #1513 — process one queued Shopee push: dispatch on the **push code**, run the conta arms (1 / 2 / 12) and, since step 5, the **order import** on code 3 (`get_order_detail` + `get_escrow_detail` → one pedido transaction; an unmapped shop DEFERS, a reauth/credential/daily-quota failure defers, a provider/schema/write failure parks); park a code whose handler is not built yet. Rate-limited + retry-with-backoff; `timeoutSeconds 300` (two Shopee calls + per-line queries + the transaction; 3 × 300 s + backoff stays inside the hot sweep's hour); the receiver enqueues and answers 204. Persists to `notificacoesShopee` only on retry-exhaustion / park / defer.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `processShopeeNotification`      | `onTaskDispatched` (Cloud Tasks queue) | #1511 / #1513 — process one queued Shopee push: dispatch on the **push code**, run the conta arms (1 / 2 / 12) and, since step 5, the **order import** on code 3 (`get_order_detail` + `get_escrow_detail` → one pedido transaction; an unmapped shop DEFERS, a reauth/credential/daily-quota failure defers, a provider/schema/write failure parks); park a code whose handler is not built yet. Rate-limited + retry-with-backoff; `timeoutSeconds 300` (two Shopee calls + per-line queries + the transaction; 3 × 300 s + backoff stays inside the hot sweep's hour). ⚠️ Since step 15b a Turbo shipment delivery is the costliest path: up to FIVE Shopee calls (`get_package_detail`, `get_order_detail`, `get_shipping_parameter`, `ship_order` and its one documented re-send, plus a possible token refresh) beside the frete transaction, the resolvers' reads and the aviso writes — seconds to tens of seconds, so 300 s still holds and the ladder pin is untouched. No Shopee call carries a timeout of its own (#1094), so ONE hung call can spend the whole budget: a kill after `ship_order` landed converges on the redelivery (the fresh row reads arranged ⇒ `ja-programado`, or a re-ship is absorbed as `package_already_shipped`), while a kill on the LAST attempt never reaches the failure persist and DROPS the delivery until the next push names the package or PR 3b's sweep lists it. The receiver enqueues and answers 204. Persists to `notificacoesShopee` only on retry-exhaustion / park / defer.                                                                                                                                                                                                                                                                                                                            |
 | `processShopeeMassImport`        | `onTaskDispatched` (Cloud Tasks queue) | #1517 / master-plan step 9 — the RESUMABLE MASS PRODUCT IMPORT: one dispatch of an `importacoesShopee` job. Scans one `get_item_list` page when both queues are empty (the server's `next_offset`, never a computed one), drains up to ten listings per dispatch through the step-9 importer (one batched `get_item_base_info`, one `get_model_list` per has-model item), checkpoints the job document after EVERY item and then re-enqueues ITSELF for the next slice. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }` — ONE dispatch at a time, deliberately, because Shopee's rate limit is per app and a second worker would only spend the same quota twice; `timeoutSeconds 300` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 1500 s, inside Cloud Tasks' 1800 s. A burst rate limit is a PAUSE, not a failure: the drain stops, the job checkpoints and re-enqueues with `scheduleDelaySeconds`. A daily quota, a reauth/credential/config refusal and the Tasks valve stamp the job `failed` on the FIRST attempt. Enqueued by the `/importar-todos` route (App Hosting runtime SA) **and by itself** (functions runtime SA) — two identities, see the IAM section.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `sendShopeeStock`                | `onTaskDispatched` (Cloud Tasks queue) | #1520 / master-plan step 12 — the STOCK PUSH, and the channel's THIRD queue: one dispatch is ONE `update_stock` for ONE listing, carrying up to 50 of its models with a per-model `success_list`/`failure_list`. `timeoutSeconds 120` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 960 s, inside Cloud Tasks' 1800 s. `rateLimits { maxConcurrentDispatches, maxDispatchesPerSecond }` are read from `SHOPEE_STOCK_CONCURRENT_DISPATCHES` / `SHOPEE_STOCK_DISPATCHES_PER_SECOND` **in the deploying shell**, defaulting to **2/2** — see the deploy-shell knobs below. Binds both secrets; **no per-function `region:`**. ⚠️ **It ENQUEUES ITSELF**, twice over: a burst rate limit becomes a delayed re-enqueue that consumes no attempt, and the conta-pause rung re-enqueues for `pausadoAte` — so the functions runtime SA is an enqueuer on this queue, exactly like the mass import. ⚠️ **The export name IS the queue name** (`SHOPEE_STOCK_SEND_QUEUE = 'sendShopeeStock'`); `src/index.ts` carries a third rename-safety `if` whose one static literal names **`functions/src/sendStock.ts`** — the file holding the export to rename — and which compares against `SHOPEE_STOCK_SEND_QUEUE`, declared in **`lib/shopee/estoque/constantesEstoque.ts`** (`shopeeStockTasks.ts` only imports it). Its own `if` rather than a loop, because the message must name its own file in one static literal. ⚠️ It **never** sets `ignoreSyncFlag` (pinned twice, on the built deps object and on the comment-stripped source): with `SHOPEE_STOCK_SYNC_ENABLED` unset the handler answers `pulado` at step 0.5 and reads NOTHING. **Resolving is success to the queue** — every outcome, `descartado` and `erro-registrado` included; only a throw asks for a retry, so do not wrap the body in a try/catch that logs and returns. |
 | `processShopeePriceSync`         | `onTaskDispatched` (Cloud Tasks queue) | #1521 / master-plan step 13 — the ACCOUNT-WIDE PRICE JOB, and the channel's FOURTH queue: one dispatch of an `enviosPrecoShopee` job either PLANS one page of anchors into its `fila` as identities (`SHOPEE_PRICE_PAGE_LIMIT`, default 25) or DRAINS up to `SHOPEE_PRICE_ITEMS_PER_DISPATCH` listings (default 10, also the ceiling) — each priced at DRAIN time, sent as ONE `update_price` and checkpointed with its report rows in ONE batch — and then re-enqueues ITSELF. `timeoutSeconds 300` with a 3-attempt ladder (30 s → 300 s, ×2), so the whole ladder closes at 1500 s, inside Cloud Tasks' 1800 s; `maxAttempts` IS `ENVIO_PRECO_MAX_TENTATIVAS`, which the job reads to know its LAST attempt. `rateLimits { maxConcurrentDispatches: 1, maxDispatchesPerSecond: 1 }` **LITERAL** — the job document is the checkpoint, so two concurrent dispatches would race it — hence no deploy-shell knob and no preflight row. A burst is a delayed self re-enqueue that consumes no attempt; the daily quota PARKS the job until 00:00 UTC+8. Binds both secrets, and needs them even on a plan-only dispatch, because the conta context it loads first reads the partner configuration; **no per-function `region:`**. ⚠️ **The export name IS the queue name** (`SHOPEE_PRICE_SYNC_QUEUE`, declared in **`lib/shopee/precos/constantesPreco.ts`**); `src/index.ts` carries a FOURTH rename-safety `if` whose one static literal names **`functions/src/processPriceSync.ts`**. No valve of its own: every job is an operator's start, and the `/atualizar-precos` route refuses with 503 BEFORE creating one while `SHOPEE_TASKS_DISABLED` is set. Enqueued by that route (App Hosting runtime SA) **and by itself** (functions runtime SA) — two identities, see the IAM section.                                                                    |
@@ -210,7 +241,7 @@ loses everything not already in the lost-push queue. That is why the receiver
 answers 204 on every path it can and never converts an enqueue failure into a
 5xx.
 
-## Runtime env (step 4's two valves + step 8's three + step 12's ten + step 13's two)
+## Runtime env (step 4's two valves + step 8's three + step 12's ten + step 13's two + step 15b's one)
 
 None of them is a secret and none belongs in Secret Manager: they are operator
 switches read with `process.env.X === '1'` at the use site (the exceptions are
@@ -296,6 +327,34 @@ route answers 503, and a self re-enqueue ends as `tasks-desabilitadas`. ⚠️
 **There is no NF-e sweep behind it**, unlike the push receiver: the aviso list
 is the worklist, and the recovery is the route or `enviar:nfe` once the valve
 lifts.
+
+**Step 15b's one follows the rule.** `SHOPEE_ARRANJO_AUTOMATICO_DISABLED` is
+read, per call, only by the automatic arrange
+(`lib/shopee/pedidos/arranjoAutomatico.ts`), which runs only in this codebase's
+shipment arm — `processShopeeNotification` and the re-drives of
+`reprocessShopeeNotifications`. ⚠️ **It SHIPS ON**: only
+the literal `1` disables it (`true`, `0`, blank and unset all leave it on — the
+lost-push valve's polarity), so a missing value can never leave an Entrega
+Turbo order un-arranged until Shopee cancels it. With it set, a candidate
+package answers `desligado` with zero Shopee calls and raises the `manual`
+`despachoAutomaticoPendente` aviso (`critico`) instead of arranging. ⚠️ So the
+first deploy of these functions into a project with live Turbo orders starts
+arranging their packages as the shipment pushes arrive; to keep the arrange off
+at the cutover, set it in that project's `.env.deploy` (or
+`.env.deploy.<project-id>`) BEFORE that deploy.
+
+⚠️ **Step 15b's deploy order, twice over.** First, deploy `apps/web` BEFORE
+these functions: they write two new aviso tipos (`despachoAutomaticoPendente`,
+`etiquetaComPrazo`), and a row whose tipo the deployed web does not know fails
+the web's schema parse — the opposite of step 14's order under Cutover, where
+the web could come last because `nfeUploadRejeitado` already existed and only
+its wording changed. Second, wherever Turbo orders are live,
+deploy PR 3a's functions TOGETHER with PR 3b's sweep (stacked, not built in
+3a), or with `SHOPEE_ARRANJO_AUTOMATICO_DISABLED=1`: without the sweep a
+transient arrange outcome — `aguardando` on a rate-limit burst, `verificar` on a
+`ship_order` that did not land — is retried by NOTHING. The delivery resolves
+`frete`, no push follows a package that was never arranged, those desfechos
+raise no aviso, and Shopee cancels the order.
 
 firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
 `.env.<project-id>` file in the functions **source** directory. Here that
@@ -432,6 +491,16 @@ the wipe. Create `apps/shopee/functions/.env.deploy` (gitignored):
 # Listed for the pointer only.
 # SHOPEE_PRICE_MANUAL_DEADLINE_MS=120000
 # SHOPEE_PRICE_MANUAL_CONCURRENCY=2
+# ---- The AUTOMATIC ARRANGE (step 15b, #1744). ----
+# SHIPS ON: only the literal `1` disables it (`true`, `0`, blank and unset all
+# leave it on). With it set, an Entrega Turbo package the shipment arm could
+# arrange answers `desligado` with zero Shopee calls and raises the `manual`
+# despachoAutomaticoPendente aviso (critico) instead — Shopee cancels an order
+# on these channels that saw no dispatch attempt, so a person must arrange it.
+# ⚠️ Default ON means the first deploy into a project with live Turbo orders
+# starts calling `ship_order`; uncomment this in that project's file BEFORE the
+# deploy if the cutover should keep the arrange off.
+# SHOPEE_ARRANJO_AUTOMATICO_DISABLED=1
 ```
 
 ⚠️ The scheduled function is deployed either way — a flag only decides whether a
@@ -822,6 +891,29 @@ real event on a real engine, the fifth queue's name resolves to a deployed
 prove: the SERPRO wait and the recheck delay (both `scheduleDelaySeconds`,
 ignored by the emulator), and the upload itself — every step of it needs a
 Shopee call.
+
+Since step 15b the job drives a SIXTH shape, and the first to reach a shipment
+handler with a pedido that EXISTS
+(`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts`, one case): the code-30
+builder PR 3b's sweep will use (`notificacaoSinteticaDePacote`) → the real
+region-qualified enqueue → the tasks emulator → the real
+`processShopeeNotification` → the push reader → the seeded conta → the arm's
+lazy default, whose TWO sequential dynamic imports (`../pedidos/rastrearPedido`,
+`../pedidos/arranjoAutomatico`) run before the handler is called → the pedido
+read (present) → the token read of a conta WITHOUT a credential →
+`ShopeeSemCredencialError` → a `deferred` row with `tentativas: 0` and the
+classifier's `rastreio:` reason. ZERO Shopee calls, by CALL ORDER: the token is
+part of the signed query, so the package awaits it before it builds a request.
+What it proves and nothing offline can: BOTH imports resolve in the built
+artifact — a chunk the bundler failed to carry THROWS into the retry ladder,
+which surfaces as the poll's timeout or `failed`, never as `deferred` on the
+first attempt — the builder's body survives Cloud Tasks' JSON and the push
+reader accepts it (a refused body would PARK), and the row sits at the id
+`docIdOf` derives for a synthetic code 30. What it cannot prove: the hook
+itself, the two aviso resolvers and the frete transaction — all three sit
+after `get_package_detail`, so they are pinned offline
+(`arranjoAutomatico.test.ts`, and the arm's copy of the desfecho in
+`notificacao.test.ts`).
 
 Three gaps to know about:
 

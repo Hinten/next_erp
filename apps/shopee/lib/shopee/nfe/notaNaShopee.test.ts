@@ -14,6 +14,7 @@ import { shopeeInvoiceDataSchema, type ShopeeOrderDetailRow } from '@delfrance/i
 import { CHAVE_NFE_REGEX } from '@delfrance/schemas';
 import { describe, expect, it } from 'vitest';
 
+import { ehPedidoFbsShopee } from '../etiqueta/faseEtiqueta';
 import { pedidoForaDoBrasil } from '../pedidos/orderMapping';
 import { MOTIVOS_QUE_AVISAM, MOTIVOS_QUE_CARIMBAM, MOTIVO_NFE_SHOPEE } from './errosNfe';
 import {
@@ -616,5 +617,35 @@ describe('portaoDoPedido — o portão do pedido, na ORDEM declarada', () => {
     ];
     expect(motivos.filter((m) => MOTIVOS_QUE_AVISAM.has(m))).toEqual(['pedido-exportacao']);
     expect(motivos.filter((m) => MOTIVOS_QUE_CARIMBAM.has(m))).toEqual([]);
+  });
+});
+
+describe('portaoDoPedido — o FBS é a dobra da etiqueta, não uma cópia (review 3a, Q4-2)', () => {
+  it('13 — `pedido-fbs` ⇔ ehPedidoFbsShopee em toda grafia: o PAR e os QUASE-MISSES dos dois lados', () => {
+    // The NF-e skips the upload EXACTLY on the orders the label and the
+    // automatic arrange refuse as FBS — one fold, so a new spelling can never
+    // upload a note for an order the arrange will not ship, or the reverse.
+    const grafias = [
+      'fulfilled_by_shopee',
+      ' Fulfilled_By_Shopee ',
+      'FULFILLED_BY_SHOPEE\n',
+      'fulfilled_by_local_seller',
+      'fulfilled_by_cb_seller',
+      'fulfilled_by_shopee_x',
+      'xfulfilled_by_shopee',
+      'fulfilled by shopee',
+      '',
+      '   ',
+      null,
+    ];
+    let fbs = 0;
+    for (const fulfillment_flag of grafias) {
+      const r = portaoDoPedido(linhaDoPortao({ fulfillment_flag }));
+      const recusouFbs = !r.segue && r.motivo === MOTIVO_NFE_SHOPEE.pedidoFbs;
+      expect(recusouFbs, String(fulfillment_flag)).toBe(ehPedidoFbsShopee(fulfillment_flag));
+      if (recusouFbs) fbs += 1;
+    }
+    // ANCHOR: both sides of the fold were reached.
+    expect(fbs).toBe(3);
   });
 });
