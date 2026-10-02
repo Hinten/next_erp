@@ -34,6 +34,11 @@
  *     task is **silently dropped** while the receiver still answers 204
  *     (#1108). An unset value THROWS on the first enqueue rather than guessing.
  *
+ * Failures: a TRANSIENT Cloud Tasks failure rejects as
+ * {@link ShopeeTasksTransientError}, which `core/containment.ts` contains per
+ * conta; every other transport failure — a deploy error — rejects exactly as
+ * the SDK threw it. See {@link CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO}.
+ *
  * ⚠️ Two candidates, in that order, and the order is the point. Mercado Livre
  * carries a warning that its single-candidate form is deliberate — its
  * functions deploy to a DIFFERENT region from its App Hosting backend, so a
@@ -43,7 +48,8 @@
  * than reordering it.
  */
 import { requireRegion } from '@delfrance/core/region';
-import { getFunctions } from 'firebase-admin/functions';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseFunctionsError, getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
 import {
@@ -63,6 +69,13 @@ export function shopeeTasksRegion(): string {
  * The enqueue seam. The receiver depends on this interface, not the transport,
  * so unit tests pass a fake recorder; the real one comes from
  * {@link createShopeeTaskScheduler}.
+ *
+ * What a rejection MEANS is part of the contract, because the per-conta sweeps
+ * decide on it (`core/containment.ts`): {@link ShopeeTasksDisabledError} is the
+ * valve, {@link ShopeeTasksTransientError} a Cloud Tasks hiccup the next tick
+ * clears, and anything else a broken deploy. ⚠️ So a fake that rejects with a
+ * raw `FirebaseFunctionsError` stands in for a scheduler this module never
+ * builds — the real one never lets a transient one through unnamed.
  */
 export interface ShopeeTaskScheduler {
   enqueue(payload: ShopeeNotificationPayload): Promise<void>;
@@ -79,6 +92,110 @@ export class ShopeeTasksDisabledError extends Error {
   }
 }
 
+/**
+ * The Cloud Tasks enqueue failures that are TRANSIENT — every one an outcome of
+ * `TaskQueue.enqueue` in the PINNED `firebase-admin` (14.2.0) that a later
+ * attempt can clear.
+ *
+ * ⚠️ `TaskQueue.enqueue` is a REST client, not a gRPC one: it throws
+ * `FirebaseFunctionsError` / `FirebaseAppError` with STRING codes, never a
+ * numeric gRPC status, so `isGrpcCodedError` matches none of them. And that SDK
+ * maps only nine Cloud Tasks statuses to a code of its own
+ * (`FUNCTIONS_ERROR_CODE_MAPPING`), so a 503 `UNAVAILABLE`, a 429
+ * `RESOURCE_EXHAUSTED`, a 504 `DEADLINE_EXCEEDED` and a non-JSON body all
+ * arrive as `functions/unknown-error` — there is no `functions/unavailable`. A
+ * socket failure, after the SDK's own retries, is `FirebaseAppError`
+ * `app/network-error` / `app/network-timeout`.
+ *
+ * Everything else those two classes carry — `permission-denied`,
+ * `unauthenticated`, `not-found` (no queue in that region), `invalid-argument`,
+ * `failed-precondition`, `invalid-credential` — is a broken DEPLOY, and is
+ * rethrown exactly as the SDK threw it, so a per-conta sweep fails its tick
+ * loudly instead of reporting N identical contained outages (#778).
+ *
+ * ⚠️ A `functions/*` code is transient only when Cloud Tasks actually ANSWERED
+ * (`httpResponse` present — every HTTP path of the SDK sets it). The SDK also
+ * throws `functions/unknown-error` with NO response, before any request, when
+ * `getProjectId()` / `getServiceAccount()` cannot resolve the project or the
+ * service account: a deterministic config error that must fail the tick, not
+ * read as a contained outage on every conta.
+ */
+const CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO: ReadonlySet<string> = new Set([
+  'functions/unknown-error',
+  'functions/internal-error',
+  'functions/aborted',
+  'app/network-error',
+  'app/network-timeout',
+]);
+
+/**
+ * A transient enqueue failure ({@link CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO}),
+ * named AT the enqueue by {@link enfileirarNomeandoFalhaTransitoria} — so
+ * `core/containment.ts` contains THIS class, and a Firebase error raised
+ * anywhere else in a sweep is never contained by accident.
+ *
+ * ⚠️ Its message is the original class, code and HTTP status ONLY — never the
+ * SDK's message, which for a non-JSON answer quotes the response BODY verbatim
+ * (`Unexpected response with status: 503 and body: …`), while the sweeps write
+ * `err.message` to a conta's `lastError` and to their logs. No `cause` either:
+ * a logger that serialises causes would print that body anyway.
+ */
+export class ShopeeTasksTransientError extends Error {
+  readonly classe: 'FirebaseFunctionsError' | 'FirebaseAppError';
+  readonly codigo: string;
+  /** The status Cloud Tasks answered; `null` when no response arrived (a socket failure). */
+  readonly httpStatus: number | null;
+
+  constructor(
+    classe: 'FirebaseFunctionsError' | 'FirebaseAppError',
+    codigo: string,
+    httpStatus: number | null,
+  ) {
+    const status = httpStatus === null ? '' : `, HTTP ${String(httpStatus)}`;
+    super(`enqueue no Cloud Tasks falhou de forma transitória (${classe} ${codigo}${status})`);
+    this.name = 'ShopeeTasksTransientError';
+    this.classe = classe;
+    this.codigo = codigo;
+    this.httpStatus = httpStatus;
+  }
+}
+
+/**
+ * Run ONE transport enqueue and name its transient failure as
+ * {@link ShopeeTasksTransientError}; anything else — a deploy-shaped code, the
+ * region guard's `MissingRegionError`, a coding bug — is rethrown untouched.
+ *
+ * Exported for this channel's other queue adapter whose callers sit inside the
+ * per-conta boundary: `estoque/shopeeStockTasks.ts`, for the stock sweep. An
+ * adapter whose callers are only task handlers and routes does not need it —
+ * there the failure goes to the queue's retry or the route's answer either way.
+ */
+export async function enfileirarNomeandoFalhaTransitoria(
+  enfileirar: () => Promise<void>,
+): Promise<void> {
+  try {
+    await enfileirar();
+  } catch (err) {
+    // No `httpResponse` ⇒ no request was answered: the SDK's own config
+    // failure (project id, service account), never a Cloud Tasks hiccup.
+    if (
+      err instanceof FirebaseFunctionsError &&
+      err.httpResponse !== undefined &&
+      CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)
+    ) {
+      throw new ShopeeTasksTransientError(
+        'FirebaseFunctionsError',
+        err.code,
+        err.httpResponse.status,
+      );
+    }
+    if (err instanceof FirebaseAppError && CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)) {
+      throw new ShopeeTasksTransientError('FirebaseAppError', err.code, null);
+    }
+    throw err;
+  }
+}
+
 /** Real scheduler — enqueues onto the `processShopeeNotification` queue. */
 class FirebaseShopeeTaskScheduler implements ShopeeTaskScheduler {
   // Region-qualified name so the queue resolves to the deployed function's
@@ -91,7 +208,7 @@ class FirebaseShopeeTaskScheduler implements ShopeeTaskScheduler {
   }
 
   async enqueue(payload: ShopeeNotificationPayload): Promise<void> {
-    await this.queue().enqueue(payload);
+    await enfileirarNomeandoFalhaTransitoria(() => this.queue().enqueue(payload));
   }
 }
 
@@ -103,7 +220,7 @@ class FirebaseShopeeTaskScheduler implements ShopeeTaskScheduler {
  * ⚠️ It exists for step 8's stuck-reservation sweep, which owes a verdict of its
  * own when the queue is off. Learning that by CATCHING
  * {@link ShopeeTasksDisabledError} could not produce one: the class is inside
- * `erroContidoPorConta` (`core/containment.ts:87`), so a disabled queue would
+ * `erroContidoPorConta` (`core/containment.ts:107`), so a disabled queue would
  * come out as one contained per-conta `lastError` and every candidate of that
  * conta would be skipped uncounted — an invisible outage where an observable one
  * belongs. And a DRY RUN never reaches the enqueue at all, so it could never

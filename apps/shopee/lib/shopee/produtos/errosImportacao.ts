@@ -19,7 +19,7 @@
  * contained failure lands on the conta's cursor and the sweep moves on, which
  * is the wrong verdict for "this one listing cannot be imported". But
  * `erroContidoPorConta` names its classes EXPLICITLY and deliberately never
- * names the base — `containment.ts:46-52` spells out why (`ShopeeConfigError`
+ * names the base — `containment.ts:54-60` spells out why (`ShopeeConfigError`
  * extends the base and must RETHROW). So extending `ShopeeError` costs nothing
  * there, and it buys the whole channel's `instanceof` discipline: one base for
  * every Shopee-shaped failure the app raises. `errosImportacao.test.ts` pins

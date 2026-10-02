@@ -15,6 +15,12 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDeConfiguracaoDoFunctions,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import {
@@ -861,6 +867,46 @@ describe('runShopeeOrderBackfill — contenção por conta', () => {
     expect(r.contas[0]?.error).toContain('SHOPEE_TASKS_DISABLED');
     expect(ultimoPatch(c.db, INT_A)).not.toHaveProperty('cursorMs');
   });
+
+  // ⚠️ The REAL Cloud Tasks failure — the SDK's class and STRING code, through
+  // the shared classifier the real scheduler runs — never a numeric gRPC
+  // stand-in: `TaskQueue.enqueue` throws no gRPC code, and the stand-in passed
+  // while one 503 on conta A cost conta B its tick.
+  it('uma falha TRANSITÓRIA real do Cloud Tasks no enqueue da conta A é contida; B roda e A não avança o cursor', async () => {
+    const c = cenario();
+    duasContas(c);
+    c.getOrderList.mockResolvedValue(pagina(['SN1'], false));
+    c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(falhaDoFunctions('unknown-error')));
+
+    const r = await rodar(c);
+
+    expect(r.contas[0]?.error).toBe(
+      'enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)',
+    );
+    expect(r.contas[1]).toMatchObject({ integracaoId: INT_B, error: null, enqueued: 1 });
+    expect(ultimoPatch(c.db, INT_A)).not.toHaveProperty('cursorMs');
+    expect(JSON.stringify([r, c.db.writes])).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+  });
+
+  // The second row is the sharp one: the SAME `unknown-error` code as the 503
+  // above, but thrown with no HTTP response — the SDK could not resolve the
+  // project. That is our config, and it must fail the tick (#778).
+  it.each<[string, () => Error]>([
+    ['permission-denied', () => falhaDoFunctions('permission-denied', 403)],
+    ['unknown-error SEM resposta (projeto)', () => falhaDeConfiguracaoDoFunctions('projeto')],
+  ])(
+    '⚠️ NEAR-MISS: uma falha de DEPLOY do Cloud Tasks (%s) RELANÇA e B nem roda',
+    async (_nome, falha) => {
+      const c = cenario();
+      duasContas(c);
+      c.getOrderList.mockResolvedValue(pagina(['SN1'], false));
+      const sdk = falha();
+      c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(sdk));
+
+      await expect(rodar(c)).rejects.toBe(sdk);
+      expect(c.enqueue).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('um erro com code gRPC inteiro 1–16 é contido', async () => {
     const c = cenario();

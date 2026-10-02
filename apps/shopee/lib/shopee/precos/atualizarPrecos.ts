@@ -145,7 +145,7 @@
  * verdict refusal or a conta-wide fatal stamps the motivo and its pt-BR
  * sentence; an exception stamps a sentence naming its CLASS, plus Shopee's own
  * `error` CODE (a token, verbatim) for the `ShopeeApiError` family or the gRPC
- * status for a Firestore/Tasks failure. The message goes to the log. The one
+ * status for a Firestore failure. The message goes to the log. The one
  * exception is the closed set of this app's OWN conta classes, whose message the
  * app composes from its own ids and field paths — see `erroDaFalha`.
  *
@@ -783,7 +783,7 @@ const CODIGO_SHOPEE = /^[\w.-]{1,100}$/;
  *   message, which this app wrote, plus its class.
  * - Anything else: its CLASS, plus Shopee's `error` code verbatim for the
  *   `ShopeeApiError` family (when it is a {@link CODIGO_SHOPEE} token) or the
- *   gRPC status for a Firestore/Tasks failure. A `ShopeeApiError`'s message
+ *   gRPC status for a Firestore failure. A `ShopeeApiError`'s message
  *   quotes Shopee's own `message`, which can carry ids and is not ours to
  *   store; a transport message can carry a URL or a body (the start route's
  *   rule). The message goes to the log, where {@link processarEnvioPrecoShopee}

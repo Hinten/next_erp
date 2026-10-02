@@ -40,6 +40,11 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
 import { ShopeeSemCredencialError } from '../core/tokenStore';
 import { FIXTURE_ESCROW_DETAIL_QTY2_SG, lerEscrowDetalhe } from '../fixtures/wireCorpus';
 import { dedupKeyOf, docIdOf, type ShopeeNotificationPayload } from '../notificacoes/notificacao';
@@ -710,6 +715,42 @@ describe('runShopeeEscrowSettlement — contenção por conta', () => {
     } as unknown as ShopeeClient);
 
     await expect(rodar(c)).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(c.db.writes.filter((w) => w.path.startsWith(CURSOR_PATH))).toEqual([]);
+  });
+
+  // ⚠️ The REAL Cloud Tasks failure on the synthetic code 3 — the SDK's class
+  // and STRING code through the shared classifier, never a gRPC stand-in.
+  it('13b. uma falha TRANSITÓRIA real do Cloud Tasks na sintética da conta A é CONTIDA; B roda', async () => {
+    const c = cenario();
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_B}`, contaDoc({ shop_id: SHOP_B }));
+    // A's only row has no pedido ⇒ one synthetic code 3, whose enqueue fails.
+    c.getEscrowList.mockResolvedValueOnce(pagina([{ order_sn: 'SN-SEM-PEDIDO' }], false));
+    c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(falhaDoFunctions('unknown-error')));
+
+    const r = await rodar(c);
+
+    const a = r.contas.find((x) => x.integracaoId === INT_A)!;
+    const b = r.contas.find((x) => x.integracaoId === INT_B)!;
+    const mensagem =
+      'enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)';
+    expect(a.error).toBe(mensagem);
+    expect(b.error).toBeNull();
+    expect(b.drenada).toBe(true);
+    expect(ultimoPatch(c.db, INT_A)).toEqual({ lastSweepAtMs: AGORA_MS, lastError: mensagem });
+    expect(JSON.stringify([r, c.db.writes])).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+  });
+
+  it('13c. ⚠️ NEAR-MISS: uma falha de DEPLOY do Cloud Tasks (not-found) RELANÇA e B nem roda', async () => {
+    const c = cenario();
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_B}`, contaDoc({ shop_id: SHOP_B }));
+    c.getEscrowList.mockResolvedValueOnce(pagina([{ order_sn: 'SN-SEM-PEDIDO' }], false));
+    const sdk = falhaDoFunctions('not-found', 404);
+    c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(sdk));
+
+    await expect(rodar(c)).rejects.toBe(sdk);
+    expect(c.getEscrowList).toHaveBeenCalledTimes(1);
     expect(c.db.writes.filter((w) => w.path.startsWith(CURSOR_PATH))).toEqual([]);
   });
 
