@@ -209,11 +209,19 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
     if (subcolecao === 'extraData' && base.extraData === null) {
       const ref = produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID);
       const snap = await getDocFromServer(ref);
-      documents?.seedBaseline(ref.path, snap.data() ?? null);
-      documents?.seedFormField('extraData', snap.data() ?? null);
+      const data = snap.data() ?? null;
       // A missing singleton has no siblings to lose — the schema's empty shape
       // is the honest base, and the revert supplies the one field it carries.
-      base.extraData = produtoExtraDataSchema.parse(snap.data() ?? {});
+      base.extraData = produtoExtraDataSchema.parse(data ?? {});
+      if (documents?.getBaseline(ref.path) === null && data !== null) {
+        // This empty form is now based on the recreated server document.
+        // Bind its guard to that version; existing edit baselines stay frozen.
+        documents.rebase(ref.path, data);
+        documents.rebaseFormField('extraData', data);
+      } else {
+        documents?.seedBaseline(ref.path, data);
+        documents?.seedFormField('extraData', data);
+      }
     }
 
     if (subcolecao === 'imposto' && base.impostos === null) {

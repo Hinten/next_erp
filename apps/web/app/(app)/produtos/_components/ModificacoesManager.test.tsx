@@ -7,16 +7,19 @@ import type { Firestore, FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
 import type { ObjectViewTransactionDocuments } from '@delfrance/ui';
+import type { RevertPrefillBase } from '@/lib/produtos/revert';
 
 // Hoisted mocks (vi.mock factories can't close over normal consts).
 const h = vi.hoisted(() => ({
   documents: { current: null as ObjectViewTransactionDocuments | null },
   getDocs: vi.fn(),
   getDoc: vi.fn(),
-  buildRevertPrefill: vi.fn((): { key: string; value: unknown } => ({
-    key: 'nome',
-    value: 'Antigo',
-  })),
+  buildRevertPrefill: vi.fn(
+    (_target: unknown, _base: RevertPrefillBase): { key: string; value: unknown } => ({
+      key: 'nome',
+      value: 'Antigo',
+    }),
+  ),
   checkRevert: vi.fn(),
   isRevertible: vi.fn(() => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null }),
   buildDocumentRestorePrefill: vi.fn((): { key: string; value: unknown } => ({
@@ -460,6 +463,70 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
     });
   }
 
+  function captureBaselines(baseline?: Record<string, unknown> | null) {
+    const documents = {
+      getBaseline: vi.fn((_path: string) => baseline),
+      seedBaseline: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        if (baseline === undefined) baseline = data;
+      }),
+      rebase: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        baseline = data;
+      }),
+      seedFormField: vi.fn(),
+      getFormBaseline: vi.fn(() => undefined),
+      rebaseFormField: vi.fn(),
+      clear: vi.fn(),
+      subscribe: () => () => {},
+      getVersion: () => 0,
+    } satisfies ObjectViewTransactionDocuments;
+    h.documents.current = documents;
+    return documents;
+  }
+
+  it.each([
+    { baseline: null, shouldRebase: true },
+    { baseline: undefined, shouldRebase: false },
+    { baseline: { descricao: 'Original version' }, shouldRebase: false },
+  ])(
+    'keeps an extraData field prefill bound to its server version ($baseline)',
+    async ({ baseline, shouldRebase }) => {
+      const documents = captureBaselines(baseline);
+      const recreated = { descricao: 'nova', marca: 'Server brand' };
+      h.getDoc.mockResolvedValue({ data: () => recreated });
+      h.buildRevertPrefill.mockImplementation((_target, base) => ({
+        key: 'extraData',
+        value: { ...base.extraData, descricao: 'antiga' },
+      }));
+      renderManager([
+        {
+          ...nomeUpdate,
+          subcolecao: 'extraData',
+          docId: 'singleton',
+          campos: ['descricao'],
+          changes: { descricao: { old: 'antiga', new: 'nova' } },
+        },
+      ]);
+      await clickRestaurar('descricao');
+
+      expect(formRef.current?.getValues('extraData')).toMatchObject({
+        descricao: 'antiga',
+        marca: 'Server brand',
+      });
+      expect(documents.getBaseline('produtos/p1/extraData/singleton')).toEqual(
+        baseline ?? recreated,
+      );
+      if (shouldRebase) {
+        expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', recreated);
+        expect(documents.rebaseFormField).toHaveBeenCalledWith('extraData', recreated);
+      } else {
+        expect(documents.rebase).not.toHaveBeenCalled();
+        expect(documents.rebaseFormField).not.toHaveBeenCalled();
+      }
+      expect(formIsDirty()).toBe(true);
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    },
+  );
+
   it('stages the old value in the FORM and writes nothing (#660)', async () => {
     renderManager([nomeUpdate]);
     await clickRestaurar();
@@ -673,22 +740,6 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
         expect.anything(),
       );
     });
-
-    function captureBaselines() {
-      const documents = {
-        getBaseline: vi.fn(() => undefined),
-        seedBaseline: vi.fn(),
-        rebase: vi.fn(),
-        seedFormField: vi.fn(),
-        getFormBaseline: vi.fn(() => undefined),
-        rebaseFormField: vi.fn(),
-        clear: vi.fn(),
-        subscribe: () => () => {},
-        getVersion: () => 0,
-      } satisfies ObjectViewTransactionDocuments;
-      h.documents.current = documents;
-      return documents;
-    }
 
     it('binds a staged undelete to the confirmed absent version, even if the prefill read sees a later recreation', async () => {
       const documents = captureBaselines();
