@@ -39,24 +39,30 @@ import {
   operacoesAtivas,
 } from '@/lib/produtos/impostoRows';
 import {
+  buildDocumentRestorePrefill,
   buildRevertPrefill,
+  checkDocumentRestore,
   checkRevert,
+  isDocumentRestorable,
   isRevertible,
   RevertPrefillError,
+  type DocumentRestoreTarget,
   type RevertPrefillBase,
   type RevertTarget,
 } from '@/lib/produtos/revert';
 
 /**
  * "Modificações" tab — the produto's unified `historicoDeModificacoes` feed with
- * per-field revert ("Restaurar") for a whitelist of safe fields
- * (`@/lib/produtos/revert`).
+ * per-field revert ("Restaurar") for a whitelist of safe fields, plus
+ * document-level undelete ("Restaurar documento", #648) for a `delete`-kind
+ * entry on the `extraData`/`imposto` subcollections (`@/lib/produtos/revert`).
  *
  * The feed itself (live page 1 + cursor tail, expand, actor rendering) lives in
  * the shared `ModificacaoHistoryFeed`, which the pedido tab reuses. This wrapper
- * owns ONLY what is produto-specific: the revert path and its conflict modal.
- * `create`/`delete` entries stay display-only — v1 reverts a field-level
- * `update` change and nothing else.
+ * owns ONLY what is produto-specific: the revert/restore paths and their
+ * conflict modals. `create` entries stay display-only (nothing to revert TO),
+ * and so does a `delete` entry for the produto document itself — see
+ * `revert.ts`'s module doc for why that one is permanently out of scope.
  *
  * ## Restaurar STAGES, it does not write (#660)
  *
@@ -85,6 +91,14 @@ interface ConflictState {
   field: string;
   target: RevertTarget;
   currentValue: unknown;
+}
+
+/** Advisory conflict state for a document-level "Restaurar documento" (#648). */
+interface DocConflictState {
+  entryId: string;
+  entryTimestamp: number | null;
+  target: DocumentRestoreTarget;
+  currentData: Record<string, unknown> | null;
 }
 
 /** A revert sitting in the form, unwritten. Keyed like `pendingKey`. */
@@ -143,6 +157,12 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [staged, setStaged] = useState<Record<string, StagedRevert>>({});
+  // Document-level restore ("Restaurar documento", #648) — separate pending/
+  // conflict state from the per-field one above; the two act on different
+  // targets and can be in flight independently.
+  const [docPendingId, setDocPendingId] = useState<string | null>(null);
+  const [docConflict, setDocConflict] = useState<DocConflictState | null>(null);
+  const [docConfirming, setDocConfirming] = useState(false);
 
   // Both are typed non-null by their libraries but ARE null outside their
   // providers — this component renders standalone in its own unit tests, and
@@ -333,6 +353,89 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
     }
   }
 
+  /**
+   * "Restaurar documento" (#648) — the document-level counterpart of
+   * {@link finishRestaurar}. Undeletes a `delete`-kind entry's whole document
+   * (`extraData` singleton or one `imposto` row) by staging the RECONSTRUCTED
+   * document into the form, same "stage, never write" contract as the
+   * field-level revert.
+   */
+  async function finishRestaurarDocumento(
+    entry: { id: string; timestamp: number | null },
+    target: DocumentRestoreTarget,
+  ) {
+    if (!form) {
+      notifications.show({
+        color: 'red',
+        title: 'Falha ao restaurar',
+        message: 'O formulário do produto não está disponível nesta tela.',
+      });
+      return;
+    }
+    const base = await loadPrefillBase(target.subcolecao);
+    const { key, value } = buildDocumentRestorePrefill(target, base);
+
+    const section = sections?.sectionOfField(key);
+    if (section) sections?.goToSection(section);
+
+    form.setValue(key, value, { shouldDirty: true, shouldValidate: true });
+
+    setStaged((prev) => ({
+      ...prev,
+      // Distinct field name (`__document__`) so this note never collides with
+      // a per-field revert note staged into the very same form key.
+      [`${entry.id}:__document__`]: { key, field: '__document__', timestamp: entry.timestamp },
+    }));
+    notifications.show({
+      color: 'blue',
+      title: 'Documento restaurado no formulário',
+      message: 'Nada foi gravado ainda — clique em "Salvar alterações" para aplicar.',
+    });
+  }
+
+  async function handleRestaurarDocumento(entry: ListEntry) {
+    const target: DocumentRestoreTarget = {
+      produtoId,
+      subcolecao: entry.subcolecao,
+      docId: entry.docId,
+      changes: entry.changes,
+    };
+    setDocPendingId(entry.id);
+    try {
+      const { conflict: hasConflict, currentData } = await checkDocumentRestore(db, target);
+      if (hasConflict) {
+        setDocConflict({
+          entryId: entry.id,
+          entryTimestamp: entry.timestamp,
+          target,
+          currentData,
+        });
+        return;
+      }
+      await finishRestaurarDocumento(entry, target);
+    } catch (err) {
+      if (!reportRestaurarError(err)) throw err;
+    } finally {
+      setDocPendingId(null);
+    }
+  }
+
+  async function handleConfirmDocConflict() {
+    if (!docConflict) return;
+    setDocConfirming(true);
+    try {
+      await finishRestaurarDocumento(
+        { id: docConflict.entryId, timestamp: docConflict.entryTimestamp },
+        docConflict.target,
+      );
+      setDocConflict(null);
+    } catch (err) {
+      if (!reportRestaurarError(err)) throw err;
+    } finally {
+      setDocConfirming(false);
+    }
+  }
+
   return (
     <Stack gap="md">
       {stagedCount > 0 && (
@@ -359,7 +462,48 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
             onRestaurar={() => void handleRestaurar(entry, field, change)}
           />
         )}
+        renderEntryActions={(entry) => (
+          <RestaurarDocumentoAction
+            entry={entry}
+            disabled={disabled}
+            pending={docPendingId === entry.id}
+            staged={stagedVisible[`${entry.id}:__document__`]}
+            onRestaurar={() => void handleRestaurarDocumento(entry)}
+          />
+        )}
       />
+      <Modal
+        opened={docConflict !== null}
+        onClose={() => setDocConflict(null)}
+        title="Documento já existe"
+        centered
+      >
+        {docConflict && (
+          <Stack gap="xs">
+            <Text size="sm">
+              Já existe um documento nesta posição — restaurar substituiria o conteúdo atual pelo da
+              modificação excluída.
+            </Text>
+            <Text size="sm">Conteúdo atual: {renderValue(docConflict.currentData)}</Text>
+            <Group justify="flex-end" mt="sm">
+              <Button
+                variant="default"
+                onClick={() => setDocConflict(null)}
+                disabled={docConfirming}
+              >
+                Cancelar
+              </Button>
+              <Button
+                color="red"
+                onClick={() => void handleConfirmDocConflict()}
+                loading={docConfirming}
+              >
+                Restaurar mesmo assim
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
       <Modal
         opened={conflict !== null}
         onClose={() => setConflict(null)}
@@ -409,8 +553,9 @@ function RestaurarAction({
   staged,
   onRestaurar,
 }: RestaurarActionProps) {
-  // Only a field-level UPDATE is revertible; a create/delete would need
-  // document-level restore, which is a separate feature (#648).
+  // Only a field-level UPDATE is revertible; a `delete` entry's document-level
+  // undelete is a separate control, `RestaurarDocumentoAction` below (#648).
+  // `create` has no document-level counterpart — there is nothing to restore.
   if (entry.kind !== 'update') return null;
 
   // Read-only viewers can never commit a staged value — see the prop's comment.
@@ -463,5 +608,80 @@ function RestaurarAction({
         </Text>
       )}
     </>
+  );
+}
+
+interface RestaurarDocumentoActionProps {
+  entry: ListEntry;
+  disabled?: boolean;
+  pending: boolean;
+  staged?: StagedRevert;
+  onRestaurar: () => void;
+}
+
+/**
+ * "Restaurar documento" (#648) — undelete the WHOLE document a `delete`-kind
+ * entry recorded, scoped to `extraData`/`imposto` (see `revert.ts`'s module
+ * doc for why the produto document itself is out of scope). Rendered once per
+ * entry via `renderEntryActions`, unlike `RestaurarAction` which renders once
+ * PER FIELD.
+ */
+function RestaurarDocumentoAction({
+  entry,
+  disabled,
+  pending,
+  staged,
+  onRestaurar,
+}: RestaurarDocumentoActionProps) {
+  if (entry.kind !== 'delete') return null;
+  if (disabled) return null;
+
+  const gate = isDocumentRestorable(entry.subcolecao, entry.changes);
+
+  // The produto document's own delete entries (`subcolecao === null`) are
+  // permanently out of scope, not merely momentarily blocked — showing a
+  // disabled button on every one of them would be noise the operator can never
+  // act on. A REAL block (a truncated field on an otherwise-restorable scope)
+  // still gets the disabled-with-reason treatment below.
+  if (!gate.ok && entry.subcolecao === null) return null;
+
+  if (!gate.ok) {
+    return (
+      <Tooltip label={gate.reason ?? undefined}>
+        <Button
+          size="xs"
+          variant="light"
+          color="gray"
+          disabled
+          leftSection={<IconArrowBackUp size={14} />}
+          aria-label="Restaurar documento"
+          title={gate.reason ?? undefined}
+        >
+          Restaurar documento
+        </Button>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Group gap="xs" wrap="wrap">
+      <Button
+        size="xs"
+        variant="light"
+        leftSection={<IconArrowBackUp size={14} />}
+        loading={pending}
+        onClick={onRestaurar}
+        aria-label="Restaurar documento"
+      >
+        Restaurar documento
+      </Button>
+      {staged && (
+        <Text size="xs" c="yellow.8">
+          Documento restaurado da modificação de{' '}
+          {staged.timestamp ? dateFmt.format(microsToDate(staged.timestamp)) : '—'} — salve para
+          aplicar.
+        </Text>
+      )}
+    </Group>
   );
 }
