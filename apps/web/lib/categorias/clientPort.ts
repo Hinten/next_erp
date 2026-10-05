@@ -7,7 +7,12 @@ import {
   operacaoIdFromImpostoRef,
 } from '@delfrance/schemas';
 import { nowMillis } from '@delfrance/core/datetime';
-import type { TransactionWrite, ValidationIssue } from '@delfrance/ui';
+import type {
+  TransactionWrite,
+  TransactionWriteContext,
+  TransactionDocumentGuard,
+  ValidationIssue,
+} from '@delfrance/ui';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
 
 /**
@@ -85,6 +90,7 @@ export function buildCategoriaImpostoTransactionWrites(
   db: Firestore,
   categoriaId: string,
   values: Record<string, unknown>,
+  context?: TransactionWriteContext,
 ): TransactionWrite[] {
   const impostos = (values.impostos as ImpostoCategoria[] | null) ?? null;
   if (!impostos || impostos.length === 0) return [];
@@ -97,10 +103,38 @@ export function buildCategoriaImpostoTransactionWrites(
       { categoriaId },
       operacaoId,
     ) as DocumentReference<unknown>;
+    const guard: TransactionDocumentGuard = {
+      baseline: context?.getBaseline(ref.path),
+      label: `Imposto da categoria — operação ${operacaoId}`,
+      formField: 'impostos',
+      toFormValue: (current, formValue) => {
+        const rows = (formValue as ImpostoCategoria[] | null) ?? [];
+        const next = impostoCategoriaSchema.parse(
+          current === null
+            ? { impostoCategoriaOperacaoOuterRef: `operacao/${operacaoId}` }
+            : {
+                ...current,
+                id: operacaoId,
+                impostoCategoriaOperacaoOuterRef: `operacao/${operacaoId}`,
+              },
+        );
+        const found = rows.some(
+          (row) => operacaoIdFromImpostoRef(row.impostoCategoriaOperacaoOuterRef) === operacaoId,
+        );
+        return found
+          ? rows.map((row) =>
+              operacaoIdFromImpostoRef(row.impostoCategoriaOperacaoOuterRef) === operacaoId
+                ? next
+                : row,
+            )
+          : [...rows, next];
+      },
+    };
     if (categoriaImpostoCarriesInfo(imp)) {
       writes.push({
         type: 'set',
         ref,
+        guard,
         data: impostoCategoriaSchema.parse({
           ...imp,
           id: operacaoId,
@@ -109,7 +143,7 @@ export function buildCategoriaImpostoTransactionWrites(
         }) as Record<string, unknown>,
       });
     } else if (imp.id != null) {
-      writes.push({ type: 'delete', ref });
+      writes.push({ type: 'delete', ref, guard });
     }
   }
   return writes;

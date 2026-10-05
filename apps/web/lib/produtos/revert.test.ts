@@ -32,13 +32,18 @@ vi.mock('@/lib/data/impostoProdutoCollection', () => ({
   impostoProdutoCollection: { docRef: h.impostoDocRef, merge: h.impostoMerge },
 }));
 
+import { impostoProdutoSchema, produtoExtraDataSchema } from '@delfrance/schemas';
 import {
   REVERTIBLE_EXTRA_DATA_FIELDS,
   REVERTIBLE_PRODUTO_FIELDS,
+  buildDocumentRestorePrefill,
   buildRevertPrefill,
+  checkDocumentRestore,
   checkRevert,
+  isDocumentRestorable,
   isRevertible,
   RevertPrefillError,
+  type DocumentRestoreTarget,
   type RevertPrefillBase,
   type RevertTarget,
 } from './revert';
@@ -68,6 +73,17 @@ function target(overrides: Partial<RevertTarget> = {}): RevertTarget {
     field: 'nome',
     oldValue: 'Antigo',
     newValue: 'Novo',
+    ...overrides,
+  };
+}
+
+/** A `delete`-kind entry's target, as `buildDocumentRestorePrefill` needs it. */
+function docTarget(overrides: Partial<DocumentRestoreTarget> = {}): DocumentRestoreTarget {
+  return {
+    produtoId: 'prod1',
+    subcolecao: 'extraData',
+    docId: 'singleton',
+    changes: { descricao: { old: 'Descrição antiga', new: null } },
     ...overrides,
   };
 }
@@ -315,5 +331,190 @@ describe('buildRevertPrefill', () => {
     expect(() => buildRevertPrefill(target({ field: 'fotos', oldValue: [] }), base())).toThrow(
       /não é restaurável/,
     );
+  });
+});
+
+describe('isDocumentRestorable', () => {
+  it('rejects the produto document itself — permanently out of scope (#648)', () => {
+    const result = isDocumentRestorable(null, { nome: { old: 'A', new: null } });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeTruthy();
+  });
+
+  it('rejects an unknown subcolecao', () => {
+    expect(isDocumentRestorable('estoques', { quantidade: { old: 1, new: null } }).ok).toBe(false);
+  });
+
+  it('accepts extraData with no truncated fields', () => {
+    expect(isDocumentRestorable('extraData', { descricao: { old: 'x', new: null } })).toEqual({
+      ok: true,
+      reason: null,
+    });
+  });
+
+  it('accepts imposto with no truncated fields', () => {
+    expect(isDocumentRestorable('imposto', { origem: { old: '0', new: null } })).toEqual({
+      ok: true,
+      reason: null,
+    });
+  });
+
+  it('rejects when ANY field is truncated, even a restorable scope', () => {
+    const result = isDocumentRestorable('extraData', {
+      descricao: { old: { [TRUNCATED_VALUE_KEY]: true, _bytes: 999 }, new: null },
+      marca: { old: 'Marca X', new: null },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeTruthy();
+  });
+});
+
+describe('checkDocumentRestore', () => {
+  it('reports no conflict when the document is still gone', async () => {
+    h.getDocFromServer.mockResolvedValue({ data: () => undefined });
+    const result = await checkDocumentRestore(db, docTarget());
+    expect(result).toEqual({ conflict: false, currentData: null });
+  });
+
+  it('reports a conflict when something occupies the document again — even an empty one', async () => {
+    h.getDocFromServer.mockResolvedValue({ data: () => ({}) });
+    const result = await checkDocumentRestore(db, docTarget());
+    expect(result).toEqual({ conflict: true, currentData: {} });
+  });
+
+  it('surfaces the current document data on conflict', async () => {
+    h.getDocFromServer.mockResolvedValue({ data: () => ({ descricao: 'Recriado depois' }) });
+    const result = await checkDocumentRestore(db, docTarget());
+    expect(result).toEqual({ conflict: true, currentData: { descricao: 'Recriado depois' } });
+  });
+
+  it('reads through the extraData handle with the produtoId context', async () => {
+    h.getDocFromServer.mockResolvedValue({ data: () => undefined });
+    await checkDocumentRestore(db, docTarget({ subcolecao: 'extraData', docId: 'singleton' }));
+    expect(h.extraDataDocRef).toHaveBeenCalledWith(db, { produtoId: 'prod1' }, 'singleton');
+  });
+
+  it('reads through the imposto handle with the produtoId context', async () => {
+    h.getDocFromServer.mockResolvedValue({ data: () => undefined });
+    await checkDocumentRestore(db, docTarget({ subcolecao: 'imposto', docId: 'op1' }));
+    expect(h.impostoDocRef).toHaveBeenCalledWith(db, { produtoId: 'prod1' }, 'op1');
+  });
+});
+
+describe('buildDocumentRestorePrefill', () => {
+  it('writes nothing to Firestore — the produto handles are never touched', () => {
+    buildDocumentRestorePrefill(docTarget(), base());
+    expect(h.produtoMerge).not.toHaveBeenCalled();
+    expect(h.extraDataMerge).not.toHaveBeenCalled();
+    expect(h.impostoMerge).not.toHaveBeenCalled();
+  });
+
+  it('throws on the produto document scope instead of silently no-op-ing', () => {
+    expect(() => buildDocumentRestorePrefill(docTarget({ subcolecao: null }), base())).toThrow(
+      /não é restaurável/,
+    );
+  });
+
+  it('refuses when a field is the truncation sentinel', () => {
+    expect(() =>
+      buildDocumentRestorePrefill(
+        docTarget({
+          changes: {
+            descricao: { old: { [TRUNCATED_VALUE_KEY]: true, _bytes: 999 }, new: null },
+          },
+        }),
+        base(),
+      ),
+    ).toThrow(/não é restaurável/);
+  });
+
+  it('reconstructs the whole extraData singleton, schema-defaulting untouched fields', () => {
+    const result = buildDocumentRestorePrefill(
+      docTarget({
+        subcolecao: 'extraData',
+        docId: 'singleton',
+        changes: {
+          descricao: { old: 'Descrição antiga', new: null },
+          marca: { old: 'Marca X', new: null },
+        },
+      }),
+      base(),
+    );
+    expect(result.key).toBe('extraData');
+    expect(result.value).toEqual(
+      produtoExtraDataSchema.parse({ descricao: 'Descrição antiga', marca: 'Marca X' }),
+    );
+  });
+
+  it('reconstructs extraData even when the singleton tab has never been loaded', () => {
+    // Unlike the field-level revert, a document restore has nothing of the
+    // CURRENT `extraData` to fold into — the deleted entry's `changes` already
+    // carries the whole object — so an unloaded tab (`base.extraData: null`)
+    // is not a blocker here.
+    const result = buildDocumentRestorePrefill(
+      docTarget({ subcolecao: 'extraData', docId: 'singleton' }),
+      base(),
+    );
+    expect(result.key).toBe('extraData');
+  });
+
+  it('replaces ONLY the imposto row the entry names, dropping id/timestamp', () => {
+    const rows = [impostoRow('op1'), impostoRow('op2'), impostoRow('op3')];
+    const result = buildDocumentRestorePrefill(
+      docTarget({
+        subcolecao: 'imposto',
+        docId: 'op2',
+        changes: {
+          id: { old: 'op2', new: null },
+          timestamp: { old: 123456, new: null },
+          impostoOpercaoOuterRef: { old: 'operacao/op2', new: null },
+          origem: { old: '3', new: null },
+          cfop: { old: '5102', new: null },
+        },
+      }),
+      base({ impostos: rows }),
+    );
+    expect(result.key).toBe('impostos');
+    const next = result.value as typeof rows;
+    expect(next[1]).toEqual(
+      impostoProdutoSchema.parse({
+        origem: '3',
+        cfop: '5102',
+        impostoOpercaoOuterRef: 'operacao/op2',
+      }),
+    );
+    // `id`/`timestamp` are server/doc identity — dropped, not carried over from
+    // the deleted snapshot; the save path re-derives both.
+    expect(next[1]).toMatchObject({ id: null, timestamp: null });
+    // The untouched rows come through byte-identical, and the input is not mutated.
+    expect(next[0]).toEqual(rows[0]);
+    expect(next[2]).toEqual(rows[2]);
+    expect(rows[1]).toMatchObject({ origem: '0' });
+  });
+
+  it('refuses an imposto restore whose operação is no longer among the rows', () => {
+    expect(() =>
+      buildDocumentRestorePrefill(
+        docTarget({
+          subcolecao: 'imposto',
+          docId: 'op-inativa',
+          changes: { origem: { old: '3', new: null } },
+        }),
+        base({ impostos: [impostoRow('op1')] }),
+      ),
+    ).toThrow(RevertPrefillError);
+  });
+
+  it('refuses an imposto restore when the tab rows have not been loaded', () => {
+    expect(() =>
+      buildDocumentRestorePrefill(
+        docTarget({
+          subcolecao: 'imposto',
+          docId: 'op1',
+          changes: { origem: { old: '3', new: null } },
+        }),
+        base(),
+      ),
+    ).toThrow(RevertPrefillError);
   });
 });

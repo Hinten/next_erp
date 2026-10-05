@@ -10,6 +10,10 @@ import {
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import {
+  useObjectViewTransactionDocuments,
+  useObjectViewTransactionDocumentSeed,
+} from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
 import {
@@ -79,6 +83,7 @@ export function ImpostoManager({
     [db, produtoId],
   );
   const impostosSnap = useSnapshot(impostosQuery);
+  const documents = useObjectViewTransactionDocuments();
 
   // Seed the transient array once operações (and, in edit mode, the imposto
   // docs) have loaded — one entry per active operação merged with its saved doc.
@@ -86,10 +91,35 @@ export function ImpostoManager({
     if (value != null) return;
     if (operacoesSnap.loading) return;
     if (produtoId && impostosSnap.loading) return;
+    if (
+      documents &&
+      (operacoesSnap.fromCache !== false ||
+        operacoesSnap.hasPendingWrites ||
+        (produtoId && (impostosSnap.fromCache !== false || impostosSnap.hasPendingWrites)))
+    )
+      return;
     if (operacoes.length === 0) return;
-    onChange(montarLinhasImposto(operacoes, impostosSnap.data ?? []));
+    const initial = montarLinhasImposto(operacoes, impostosSnap.data ?? []);
+    if (documents && produtoId)
+      for (const row of impostosSnap.data ?? [])
+        documents.seedBaseline(
+          impostoProdutoCollection.docRef(db, { produtoId }, row.id).path,
+          row.data,
+        );
+    documents?.seedFormField('impostos', initial);
+    onChange(initial);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtoId, operacoesSnap.loading, impostosSnap.loading, operacoes.length, value]);
+  }, [
+    produtoId,
+    operacoesSnap.loading,
+    impostosSnap.loading,
+    operacoesSnap.fromCache,
+    impostosSnap.fromCache,
+    operacoesSnap.hasPendingWrites,
+    impostosSnap.hasPendingWrites,
+    operacoes.length,
+    value,
+  ]);
 
   // The picked operação tab (default = padrão, else the first active operação).
   const defaultOperacaoId = useMemo(
@@ -102,6 +132,30 @@ export function ImpostoManager({
   const activeId = pickedId ?? defaultOperacaoId;
 
   const rows = value ?? [];
+  const hasRows = value !== null;
+  const activeRef = useMemo(
+    () =>
+      produtoId && activeId && hasRows
+        ? impostoProdutoCollection.docRef(db, { produtoId }, activeId)
+        : null,
+    [db, produtoId, activeId, hasRows],
+  );
+  const activeSeed = useObjectViewTransactionDocumentSeed(activeRef, (data) => {
+    if (!activeId) return;
+    const next = data
+      ? { ...data, id: activeId, impostoOpercaoOuterRef: `operacao/${activeId}` }
+      : emptyImposto(activeId);
+    const replace = (list: ImpostoProduto[]) =>
+      list.map((row) =>
+        operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === activeId ? next : row,
+      );
+    documents?.rebaseFormField(
+      'impostos',
+      replace((documents.getFormBaseline('impostos') as ImpostoProduto[] | undefined) ?? rows),
+    );
+    onChange(replace(rows));
+  });
+  disabled = disabled || Boolean(documents && (value === null || !activeSeed.ready));
 
   // What the NF-e engine would refuse in EACH row (#1655): the page's save
   // (`produtoPageIssues`) checks every seeded row, not just the one on screen.
@@ -109,6 +163,13 @@ export function ImpostoManager({
     () => (value ?? []).map((linha) => problemasDeEmissaoDoImposto(linha)),
     [value],
   );
+
+  if (activeSeed.error)
+    return (
+      <Text c="red" size="sm">
+        Falha ao carregar imposto: {activeSeed.error.message}
+      </Text>
+    );
 
   if (operacoesSnap.error) {
     return (
@@ -157,6 +218,11 @@ export function ImpostoManager({
 
   return (
     <Stack>
+      {!activeSeed.ready && (
+        <Text c="dimmed" size="sm">
+          Carregando imposto do servidor…
+        </Text>
+      )}
       <Select
         label="Operação"
         description="Cada operação fiscal pode ter um imposto específico."

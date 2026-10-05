@@ -6,17 +6,30 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore, FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { HistoricoModificacao } from '@delfrance/schemas';
+import type { ObjectViewTransactionDocuments } from '@delfrance/ui';
+import type { RevertPrefillBase } from '@/lib/produtos/revert';
 
 // Hoisted mocks (vi.mock factories can't close over normal consts).
 const h = vi.hoisted(() => ({
+  documents: { current: null as ObjectViewTransactionDocuments | null },
   getDocs: vi.fn(),
   getDoc: vi.fn(),
-  buildRevertPrefill: vi.fn((): { key: string; value: unknown } => ({
-    key: 'nome',
-    value: 'Antigo',
-  })),
+  buildRevertPrefill: vi.fn(
+    (_target: unknown, _base: RevertPrefillBase): { key: string; value: unknown } => ({
+      key: 'nome',
+      value: 'Antigo',
+    }),
+  ),
   checkRevert: vi.fn(),
   isRevertible: vi.fn(() => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null }),
+  buildDocumentRestorePrefill: vi.fn((): { key: string; value: unknown } => ({
+    key: 'extraData',
+    value: { descricao: 'Antigo' },
+  })),
+  checkDocumentRestore: vi.fn(),
+  isDocumentRestorable: vi.fn(
+    () => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null },
+  ),
   /** Re-declared here because the module under mock is fully replaced. */
   RevertPrefillError: class RevertPrefillError extends Error {},
   toasts: [] as Array<{ title?: string; message?: string }>,
@@ -51,7 +64,12 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useSnapshotWithDocs: () => h.snapState.current };
 });
 
-vi.mock('firebase/firestore', () => ({ getDocs: h.getDocs, getDoc: h.getDoc }));
+vi.mock('firebase/firestore', () => ({
+  getDocs: h.getDocs,
+  getDoc: h.getDoc,
+  getDocsFromServer: h.getDocs,
+  getDocFromServer: h.getDoc,
+}));
 vi.mock('@/lib/data/historicoModificacoesCollection', () => ({
   historicoModificacoesCollection: {
     resolvePath: () => 'produtos/p1/historicoDeModificacoes',
@@ -68,25 +86,40 @@ vi.mock('@mantine/notifications', () => ({
 // The seeding reads' handles. Stubbed rather than built through the real
 // `defineCollection`, which the `@delfrance/data` mock above does not provide.
 vi.mock('@/lib/data/impostoProdutoCollection', () => ({
-  impostoProdutoCollection: { ref: () => ({ __marker: 'impostoRef' }) },
+  impostoProdutoCollection: {
+    ref: () => ({ __marker: 'impostoRef' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({
+      id,
+      path: 'produtos/p1/imposto/' + id,
+    }),
+  },
 }));
 vi.mock('@/lib/data/operacaoCollection', () => ({
   operacaoCollection: { ref: () => ({ __marker: 'operacaoRef' }) },
 }));
 vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
   produtoExtraDataCollection: {
-    docRef: (_db: unknown, ctx: unknown, id: string) => ({ __marker: 'extraDataRef', ctx, id }),
+    docRef: (_db: unknown, ctx: unknown, id: string) => ({
+      __marker: 'extraDataRef',
+      ctx,
+      id,
+      path: 'produtos/p1/extraData/' + id,
+    }),
   },
 }));
 // `ObjectView` publishes this in production; the tab optional-chains it, so a
 // spy is what makes the "jump to the field's tab" half of a revert assertable.
 vi.mock('@delfrance/ui', () => ({
   useObjectViewSections: () => h.sections.current,
+  useObjectViewTransactionDocuments: () => h.documents.current,
 }));
 vi.mock('@/lib/produtos/revert', () => ({
   buildRevertPrefill: h.buildRevertPrefill,
   checkRevert: h.checkRevert,
   isRevertible: h.isRevertible,
+  buildDocumentRestorePrefill: h.buildDocumentRestorePrefill,
+  checkDocumentRestore: h.checkDocumentRestore,
+  isDocumentRestorable: h.isDocumentRestorable,
   RevertPrefillError: h.RevertPrefillError,
 }));
 // The actor column reads `usuarios` behind a permission gate — a whole
@@ -191,7 +224,15 @@ beforeEach(() => {
   h.buildRevertPrefill.mockReturnValue({ key: 'nome', value: 'Antigo' });
   h.checkRevert.mockResolvedValue({ conflict: false, currentValue: 'Novo' });
   h.isRevertible.mockReturnValue({ ok: true, reason: null });
-  h.sectionOfField.mockImplementation((key: string) => (key === 'nome' ? 'Dados gerais' : null));
+  h.buildDocumentRestorePrefill.mockReturnValue({
+    key: 'extraData',
+    value: { descricao: 'Antigo' },
+  });
+  h.checkDocumentRestore.mockResolvedValue({ conflict: false, currentData: null });
+  h.isDocumentRestorable.mockReturnValue({ ok: true, reason: null });
+  h.sectionOfField.mockImplementation((key: string) =>
+    key === 'nome' || key === 'extraData' ? 'Dados gerais' : null,
+  );
   h.sections.current = {
     activeSection: 'Modificações',
     goToSection: h.goToSection,
@@ -201,11 +242,15 @@ beforeEach(() => {
 
 afterEach(() => {
   h.snapState.current = { data: undefined, loading: true, error: undefined };
+  h.documents.current = null;
   h.getDocs.mockReset();
   h.getDoc.mockReset();
   h.buildRevertPrefill.mockReset();
   h.checkRevert.mockReset();
   h.isRevertible.mockReset();
+  h.buildDocumentRestorePrefill.mockReset();
+  h.checkDocumentRestore.mockReset();
+  h.isDocumentRestorable.mockReset();
   h.goToSection.mockReset();
   h.sectionOfField.mockReset();
   h.sections.current = null;
@@ -328,6 +373,13 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
   });
 
   it('never shows Restaurar on a create or delete row, even with revertible fields', async () => {
+    // The produto DOCUMENT's own delete entries (`subcolecao: null`) are
+    // permanently out of scope for "Restaurar documento" — real
+    // `isDocumentRestorable` says so; mirrored here since it's mocked.
+    h.isDocumentRestorable.mockReturnValue({
+      ok: false,
+      reason: 'Este documento não pode ser restaurado.',
+    });
     renderManager([
       {
         id: 'evt-create',
@@ -410,6 +462,70 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       fireEvent.click(await screen.findByRole('button', { name: `Restaurar ${field}` }));
     });
   }
+
+  function captureBaselines(baseline?: Record<string, unknown> | null) {
+    const documents = {
+      getBaseline: vi.fn((_path: string) => baseline),
+      seedBaseline: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        if (baseline === undefined) baseline = data;
+      }),
+      rebase: vi.fn((_path: string, data: Record<string, unknown> | null) => {
+        baseline = data;
+      }),
+      seedFormField: vi.fn(),
+      getFormBaseline: vi.fn(() => undefined),
+      rebaseFormField: vi.fn(),
+      clear: vi.fn(),
+      subscribe: () => () => {},
+      getVersion: () => 0,
+    } satisfies ObjectViewTransactionDocuments;
+    h.documents.current = documents;
+    return documents;
+  }
+
+  it.each([
+    { baseline: null, shouldRebase: true },
+    { baseline: undefined, shouldRebase: false },
+    { baseline: { descricao: 'Original version' }, shouldRebase: false },
+  ])(
+    'keeps an extraData field prefill bound to its server version ($baseline)',
+    async ({ baseline, shouldRebase }) => {
+      const documents = captureBaselines(baseline);
+      const recreated = { descricao: 'nova', marca: 'Server brand' };
+      h.getDoc.mockResolvedValue({ data: () => recreated });
+      h.buildRevertPrefill.mockImplementation((_target, base) => ({
+        key: 'extraData',
+        value: { ...base.extraData, descricao: 'antiga' },
+      }));
+      renderManager([
+        {
+          ...nomeUpdate,
+          subcolecao: 'extraData',
+          docId: 'singleton',
+          campos: ['descricao'],
+          changes: { descricao: { old: 'antiga', new: 'nova' } },
+        },
+      ]);
+      await clickRestaurar('descricao');
+
+      expect(formRef.current?.getValues('extraData')).toMatchObject({
+        descricao: 'antiga',
+        marca: 'Server brand',
+      });
+      expect(documents.getBaseline('produtos/p1/extraData/singleton')).toEqual(
+        baseline ?? recreated,
+      );
+      if (shouldRebase) {
+        expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', recreated);
+        expect(documents.rebaseFormField).toHaveBeenCalledWith('extraData', recreated);
+      } else {
+        expect(documents.rebase).not.toHaveBeenCalled();
+        expect(documents.rebaseFormField).not.toHaveBeenCalled();
+      }
+      expect(formIsDirty()).toBe(true);
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    },
+  );
 
   it('stages the old value in the FORM and writes nothing (#660)', async () => {
     renderManager([nomeUpdate]);
@@ -579,6 +695,157 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
     await expandRow(0);
 
     expect(screen.queryByRole('button', { name: /^Restaurar/ })).toBeNull();
+  });
+
+  describe('Restaurar documento (#648)', () => {
+    /** A deleted `extraData` singleton — every field's `old` side, `new: null`. */
+    const extraDataDelete: RawEntry = {
+      id: 'evt-delete-extradata',
+      path: 'produtos/p1/extraData/singleton',
+      subcolecao: 'extraData',
+      docId: 'singleton',
+      kind: 'delete',
+      campos: ['descricao'],
+      timestamp: 5,
+      changes: { descricao: { old: 'Descrição antiga', new: null } },
+    };
+
+    async function clickRestaurarDocumento() {
+      await expandRow(0);
+      await act(async () => {
+        fireEvent.click(await screen.findByRole('button', { name: 'Restaurar documento' }));
+      });
+    }
+
+    beforeEach(() => {
+      // `loadPrefillBase` reads the (unloaded) extraData singleton the same way
+      // the field-level revert does — see `retires an extraData note too` above.
+      h.getDoc.mockResolvedValue({ data: () => ({}) });
+    });
+
+    it('stages the reconstructed document in the FORM and writes nothing', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(formIsDirty()).toBe(true);
+      expect(h.buildDocumentRestorePrefill).toHaveBeenCalledTimes(1);
+      expect(h.buildDocumentRestorePrefill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          produtoId: 'p1',
+          subcolecao: 'extraData',
+          docId: 'singleton',
+          changes: extraDataDelete.changes,
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('binds a staged undelete to the confirmed absent version, even if the prefill read sees a later recreation', async () => {
+      const documents = captureBaselines();
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Later recreation' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', null);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(h.toasts.at(-1)?.message).toContain('Nada foi gravado ainda');
+    });
+
+    it('binds the save guard to the version explicitly confirmed in the restore dialog', async () => {
+      const documents = captureBaselines();
+      const reviewed = { descricao: 'Reviewed recreation' };
+      h.checkDocumentRestore.mockResolvedValue({ conflict: true, currentData: reviewed });
+      h.getDoc.mockResolvedValue({ data: () => ({ descricao: 'Third writer' }) });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+      expect(documents.rebase).not.toHaveBeenCalled();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+      });
+      expect(documents.rebase).toHaveBeenCalledWith('produtos/p1/extraData/singleton', reviewed);
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+    });
+
+    it('moves the operator to the tab the restored document renders in', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(h.sectionOfField).toHaveBeenCalledWith('extraData');
+      expect(h.goToSection).toHaveBeenCalledWith('Dados gerais');
+    });
+
+    it('says the document is staged, not saved', async () => {
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+      expect(h.toasts.at(-1)?.title).toBe('Documento restaurado no formulário');
+    });
+
+    it('checks for a conflict before staging, and warns instead of overwriting', async () => {
+      h.checkDocumentRestore.mockResolvedValue({
+        conflict: true,
+        currentData: { descricao: 'Já preenchido de novo' },
+      });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(await screen.findByText('Documento já existe')).toBeTruthy();
+      expect(h.buildDocumentRestorePrefill).not.toHaveBeenCalled();
+      expect(formIsDirty()).toBe(false);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restaurar mesmo assim' }));
+      });
+      expect(formRef.current?.getValues('extraData')).toEqual({ descricao: 'Antigo' });
+      expect(formIsDirty()).toBe(true);
+    });
+
+    it('shows a disabled Restaurar documento with a reason when a value is too large', async () => {
+      h.isDocumentRestorable.mockReturnValue({
+        ok: false,
+        reason: 'Um ou mais valores são grandes demais para restaurar automaticamente.',
+      });
+      renderManager([extraDataDelete]);
+      await expandRow(0);
+
+      const button = (await screen.findByRole('button', {
+        name: 'Restaurar documento',
+      })) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe(
+        'Um ou mais valores são grandes demais para restaurar automaticamente.',
+      );
+    });
+
+    it('reports a restore that has nowhere to land instead of crashing', async () => {
+      h.buildDocumentRestorePrefill.mockImplementation(() => {
+        throw new h.RevertPrefillError('A operação deste imposto não está mais ativa');
+      });
+      renderManager([extraDataDelete]);
+      await clickRestaurarDocumento();
+
+      expect(h.toasts.at(-1)).toEqual({
+        title: 'Falha ao restaurar',
+        message: 'A operação deste imposto não está mais ativa',
+      });
+      expect(formIsDirty()).toBe(false);
+    });
+
+    it('offers no Restaurar documento to a read-only viewer', async () => {
+      setSnap({ data: [extraDataDelete].map(toRow), loading: false });
+      render(<Harness disabled />);
+      await expandRow(0);
+
+      expect(screen.queryByRole('button', { name: 'Restaurar documento' })).toBeNull();
+    });
+
+    it('never appears on an update-kind entry, only delete', async () => {
+      renderManager([{ ...extraDataDelete, kind: 'update' }]);
+      await expandRow(0);
+
+      expect(screen.queryByRole('button', { name: 'Restaurar documento' })).toBeNull();
+    });
   });
 
   it('shows an enabled Restaurar for a whitelisted update field (changes come from the stream)', async () => {

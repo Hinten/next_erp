@@ -10,6 +10,30 @@ import type { z, ZodTypeAny } from 'zod';
 import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { isEmpty, pickDirty, valuesEqual } from './diff';
+import type { DocumentBaseline } from './ObjectViewTransactionDocuments';
+
+export interface TransactionDocumentGuard {
+  /** null means server-confirmed absence; undefined means not yet loaded. */
+  baseline: DocumentBaseline | undefined;
+  label: string;
+  formField: string;
+  ignoreFields?: ReadonlySet<string>;
+  /** Pure adapter; array rows must be selected by stable document identity. */
+  toFormValue: (current: DocumentBaseline, formValue: unknown) => unknown;
+}
+
+export interface TransactionDocumentConflict {
+  path: string;
+  current: DocumentBaseline;
+  fields: string[];
+  guard: TransactionDocumentGuard;
+}
+
+export interface CommittedTransactionDocument {
+  path: string;
+  data: DocumentBaseline;
+  guard: TransactionDocumentGuard;
+}
 
 /**
  * A sibling document write that must ride the SAME transaction as the main
@@ -22,10 +46,11 @@ import { isEmpty, pickDirty, valuesEqual } from './diff';
  * removes the doc (e.g. an imposto whose operação was cleared) — `data` is
  * ignored for `delete`.
  */
-export type TransactionWrite =
+export type TransactionWrite = (
   | { type: 'set'; ref: DocumentReference<unknown>; data: Record<string, unknown> }
   | { type: 'update'; ref: DocumentReference<unknown>; data: Record<string, unknown> }
-  | { type: 'delete'; ref: DocumentReference<unknown> };
+  | { type: 'delete'; ref: DocumentReference<unknown> }
+) & { guard?: TransactionDocumentGuard };
 
 /** Pure delta derived from the current document on every transaction attempt. */
 export type DeriveTransactionPatch = (
@@ -58,14 +83,10 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    * is empty but siblings exist (so a save that only touched a sibling still
    * commits it); `NothingChangedError` is thrown only when BOTH are empty.
    *
-   * ⚠️ A `type: 'set'` sibling is an UPSERT, and deliberately so — it is what
-   * creates the singleton on a record's first save. It therefore RESURRECTS a
-   * sibling another operator deleted in the meantime. What {@link
-   * SaveRecordInput.baseline} does cover is the case that actually orphans data:
-   * the PARENT being deleted mid-edit, which now aborts the whole transaction
-   * before any sibling is written. A sibling deleted on its own, under a parent
-   * that still exists, is still an upsert; a call site that must not recreate
-   * one should pass `type: 'update'`, which fails NOT_FOUND instead.
+   * Updates require a server-seeded guard for EVERY sibling. Full replacements
+   * and deletes compare the whole document; partial updates compare written
+   * fields. Confirmed absence is null; undefined refuses the save. Parent
+   * deletion and conflicting sibling changes abort the entire transaction.
    */
   siblingWrites?: (id: string) => TransactionWrite[];
   /** Additional validated fields, recomputed from the transaction's fresh read. */
@@ -119,6 +140,14 @@ export interface SaveRecordResult<T> {
   id: string;
   /** What actually went to Firestore — full doc on create, patch on update. */
   patch: Partial<T> | T;
+  documents: CommittedTransactionDocument[];
+}
+
+export class MissingTransactionBaselineError extends Error {
+  constructor(label: string) {
+    super(`Aguarde o carregamento de ${label} no servidor antes de salvar.`);
+    this.name = 'MissingTransactionBaselineError';
+  }
 }
 
 export class NothingChangedError extends Error {
@@ -144,6 +173,7 @@ export class RecordConflictError extends Error {
     readonly current: Record<string, unknown> | null,
     readonly fields: string[],
     readonly missing = false,
+    readonly documents: TransactionDocumentConflict[] = [],
   ) {
     super(
       missing
@@ -161,6 +191,54 @@ export class RecordConflictError extends Error {
  * those through `ignoreFields`.
  */
 const ALWAYS_IGNORED = ['ultimaModificacao', 'timestamp', 'dataCadastro', 'lastMarketplaceUpdate'];
+
+function siblingIgnored(guard: TransactionDocumentGuard): Set<string> {
+  return new Set(['id', ...ALWAYS_IGNORED, ...(guard.ignoreFields ?? [])]);
+}
+
+/** Full replacements/deletes compare every field, including removed keys. */
+function siblingConflictingFields(
+  write: TransactionWrite,
+  baseline: DocumentBaseline,
+  current: DocumentBaseline,
+): string[] {
+  if (baseline === null || current === null) return baseline === current ? [] : ['@exists'];
+  const keys =
+    write.type === 'update'
+      ? Object.keys(write.data)
+      : [...new Set([...Object.keys(baseline), ...Object.keys(current)])];
+  const ignored = siblingIgnored(write.guard!);
+  return keys.filter((key) => !ignored.has(key) && !valuesEqual(baseline[key], current[key]));
+}
+
+function siblingUnchanged(write: TransactionWrite): boolean {
+  const baseline = write.guard?.baseline;
+  if (baseline === undefined) return false;
+  if (write.type === 'delete') return baseline === null;
+  if (baseline === null) return false;
+  const ignored = siblingIgnored(write.guard!);
+  const keys =
+    write.type === 'update'
+      ? Object.keys(write.data)
+      : [...new Set([...Object.keys(baseline), ...Object.keys(write.data)])];
+  return keys.every((key) => ignored.has(key) || valuesEqual(baseline[key], write.data[key]));
+}
+
+/** Ignoring server metadata must never cause a stale copy to overwrite it. */
+function siblingData(
+  write: Exclude<TransactionWrite, { type: 'delete' }>,
+  current: DocumentBaseline,
+) {
+  const data = { ...write.data };
+  if (current && write.guard) {
+    for (const field of siblingIgnored(write.guard)) {
+      if (write.type === 'update') delete data[field];
+      else if (field in current) data[field] = current[field];
+      else delete data[field];
+    }
+  }
+  return data;
+}
 
 /**
  * Fields whose stored value differs from the baseline AND which this save would
@@ -228,7 +306,16 @@ export async function saveRecord<
         ),
       );
 
-  const siblings = input.siblingWrites?.(ref.id) ?? [];
+  const proposedSiblings = input.siblingWrites?.(ref.id) ?? [];
+  if (isUpdate) {
+    for (const write of proposedSiblings) {
+      if (write.guard?.baseline === undefined)
+        throw new MissingTransactionBaselineError(write.guard?.label ?? 'dados adicionais');
+    }
+  }
+  const siblings = isUpdate
+    ? proposedSiblings.filter((write) => !siblingUnchanged(write))
+    : proposedSiblings;
 
   // The main doc is written on every create, and on an update only when its
   // dirty patch is non-empty. A sibling-only update (empty patch) skips the main
@@ -291,17 +378,36 @@ export async function saveRecord<
   const guarded = isUpdate && input.baseline != null;
   const ignored = new Set([...ALWAYS_IGNORED, ...(input.ignoreFields ?? [])]);
 
-  const committedPatch = await runTransaction(input.db, async (tx: Transaction) => {
+  const result = await runTransaction(input.db, async (tx: Transaction) => {
     let current: Record<string, unknown> | null = null;
-    if (guarded || (isUpdate && input.deriveTransactionPatch)) {
+    let fields: string[] = [];
+    if (isUpdate && (guarded || siblings.length > 0 || input.deriveTransactionPatch)) {
       const snap = await tx.get(ref);
       if (!snap.exists()) throw new RecordConflictError(null, [], true);
       current = snap.data() as Record<string, unknown>;
-      if (guarded) {
-        const fields = conflictingFields(input.baseline!, current, patch, ignored);
-        if (fields.length > 0) throw new RecordConflictError(current, fields);
+      if (guarded) fields = conflictingFields(input.baseline!, current, patch, ignored);
+    }
+
+    // All reads precede all writes, and every OCC retry repeats the comparisons.
+    const siblingCurrent = new Map<string, DocumentBaseline>();
+    const documentConflicts: TransactionDocumentConflict[] = [];
+    if (isUpdate) {
+      for (const write of siblings) {
+        const snap = await tx.get(write.ref);
+        const data = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+        siblingCurrent.set(write.ref.path, data);
+        const changed = siblingConflictingFields(write, write.guard!.baseline!, data);
+        if (changed.length > 0)
+          documentConflicts.push({
+            path: write.ref.path,
+            current: data,
+            fields: changed,
+            guard: write.guard!,
+          });
       }
     }
+    if (fields.length > 0 || documentConflicts.length > 0)
+      throw new RecordConflictError(current, fields, false, documentConflicts);
 
     // A fresh object per attempt: a losing attempt's derived history must never
     // become input to its retry. The callback cannot perform reads or writes.
@@ -325,13 +431,21 @@ export async function saveRecord<
     // Sibling writes ride the SAME atomic boundary — they commit with the main
     // record (or on their own, for a sibling-only save) or not at all, in one
     // round-trip (robust on a flaky connection).
+    const committedDocuments: CommittedTransactionDocument[] = [];
     for (const w of siblings) {
-      if (w.type === 'update') tx.update(w.ref as DocumentReference, w.data as never);
-      else if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
-      else tx.set(w.ref as DocumentReference, w.data as never);
+      const before = siblingCurrent.get(w.ref.path) ?? null;
+      let data: DocumentBaseline = null;
+      if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
+      else {
+        const payload = siblingData(w, before);
+        if (w.type === 'update') tx.update(w.ref as DocumentReference, payload as never);
+        else tx.set(w.ref as DocumentReference, payload as never);
+        data = w.type === 'update' ? { ...before, ...payload } : payload;
+      }
+      if (w.guard) committedDocuments.push({ path: w.ref.path, data, guard: w.guard });
     }
-    return effectivePatch;
+    return { documents: committedDocuments, patch: effectivePatch };
   });
 
-  return { id: ref.id, patch: committedPatch as Partial<T> | T };
+  return { id: ref.id, patch: result.patch as Partial<T> | T, documents: result.documents };
 }

@@ -27,6 +27,7 @@ vi.mock('@delfrance/data', () => ({
   limit: vi.fn(),
 }));
 vi.mock('@delfrance/data/hooks', () => ({
+  useDocSnapshot: () => ({ data: undefined, loading: false, error: undefined }),
   useSnapshot: (q: { base: { kind: string } } | null) => {
     if (!q) return { data: undefined, loading: false, error: undefined };
     return {
@@ -40,7 +41,12 @@ vi.mock('@/lib/data/operacaoCollection', () => ({
   operacaoCollection: { ref: () => ({ kind: 'operacoes' }) },
 }));
 vi.mock('@/lib/data/impostoCategoriaCollection', () => ({
-  impostoCategoriaCollection: { ref: () => ({ kind: 'impostos' }) },
+  impostoCategoriaCollection: {
+    ref: () => ({ kind: 'impostos' }),
+    docRef: (_db: unknown, context: { categoriaId: string }, id: string) => ({
+      path: 'categorias/' + context.categoriaId + '/imposto/' + id,
+    }),
+  },
 }));
 
 import { CategoriaImpostoManager } from './CategoriaImpostoManager';

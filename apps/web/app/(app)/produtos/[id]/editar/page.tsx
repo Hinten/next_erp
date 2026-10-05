@@ -569,7 +569,9 @@ export default function EditarProdutoPage() {
       // Pending Mercado Livre and independent-variation-price edits live
       // outside this RHF form, so both must arm the shared leave guard.
       extraDirty={mlDirty || variationPriceDirty}
-      transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
+      transactionWrites={(id, values, context) =>
+        buildProdutoTransactionWrites(db, id, values, 'editar', context)
+      }
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
         // by ordem, canonical group-major fake paths for the variants. The

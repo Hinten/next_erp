@@ -133,6 +133,37 @@ describe('ModificacaoHistoryFeed — pagination is driven by OWN rows only', () 
   });
 });
 
+describe('ModificacaoHistoryFeed — renderEntryActions', () => {
+  it('renders the entry-level action once the row is expanded, not before', () => {
+    h.snapState.current = { data: [ownRow('e1', 300)], loading: false, error: undefined };
+    render(
+      <MantineTestProvider>
+        <ModificacaoHistoryFeed
+          db={db}
+          collection={collection}
+          ctx={{ pedidoId: 'ped1' }}
+          renderEntryActions={(entry) => <button>Restaurar documento {entry.id}</button>}
+        />
+      </MantineTestProvider>,
+    );
+
+    expect(screen.queryByRole('button', { name: /Restaurar documento/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detalhes da modificação' }));
+
+    expect(screen.getByRole('button', { name: 'Restaurar documento e1' })).toBeTruthy();
+  });
+
+  it('renders nothing extra when the caller passes no renderEntryActions', () => {
+    h.snapState.current = { data: [ownRow('e1', 300)], loading: false, error: undefined };
+    renderFeed();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Detalhes da modificação' }));
+
+    expect(screen.queryByRole('button', { name: /Restaurar documento/ })).toBeNull();
+  });
+});
+
 describe('ModificacaoHistoryFeed — superseded injected rows', () => {
   it('hides an injected row when the entry it duplicates is loaded', () => {
     h.snapState.current = { data: [ownRow('evt-1', 300)], loading: false, error: undefined };

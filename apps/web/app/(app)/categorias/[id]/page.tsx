@@ -121,7 +121,9 @@ export default function CategoriaPage() {
         fields={fields}
         excludedFields={CATEGORIA_EXCLUDED}
         transientFields={CATEGORIA_TRANSIENT}
-        transactionWrites={(id, values) => buildCategoriaImpostoTransactionWrites(db, id, values)}
+        transactionWrites={(id, values, context) =>
+          buildCategoriaImpostoTransactionWrites(db, id, values, context)
+        }
         validate={validarImpostosDaCategoria}
         deriveOnSave={(values) => {
           const existing = typeof values.nomeCompleto === 'string' ? values.nomeCompleto : null;

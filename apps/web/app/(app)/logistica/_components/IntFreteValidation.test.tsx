@@ -56,8 +56,8 @@ const { txSet } = vi.hoisted(() => ({ txSet: vi.fn() }));
 
 vi.mock('firebase/firestore', async (importOriginal) => ({
   ...(await importOriginal<typeof import('firebase/firestore')>()),
-  runTransaction: async (_db: unknown, fn: (tx: unknown) => Promise<void>) => {
-    await fn({ set: txSet, update: vi.fn(), get: vi.fn() });
+  runTransaction: async (_db: unknown, fn: (tx: unknown) => Promise<unknown>) => {
+    return await fn({ set: txSet, update: vi.fn(), get: vi.fn() });
   },
   doc: () => ({ id: 'NEW_ID' }),
   collection: () => ({ withConverter: () => 'COLL_REF' }),

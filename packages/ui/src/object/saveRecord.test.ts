@@ -5,7 +5,15 @@ import type { CollectionHandle } from '@delfrance/data';
 // `vi.mock` is hoisted, so anything its factory closes over must come from
 // `vi.hoisted`.
 const { firestoreMock } = vi.hoisted(() => {
-  const txMock = { get: vi.fn(), set: vi.fn(), update: vi.fn(), delete: vi.fn() };
+  const txMock = {
+    set: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    get: vi.fn(async (ref: { id: string }) => ({
+      exists: () => true,
+      data: (): Record<string, unknown> => (ref.id === 'sibling' ? {} : { x: 1 }),
+    })),
+  };
   const runTransactionMock = vi.fn(
     async (_db: unknown, fn: (tx: typeof txMock) => Promise<unknown>) => {
       return await fn(txMock);
@@ -126,7 +134,7 @@ describe('saveRecord', () => {
       { nome: 'novo nome' },
     );
     expect(firestoreMock.txMock.set).not.toHaveBeenCalled();
-    expect(result).toEqual({ id: 'EXISTING_ID', patch: { nome: 'novo nome' } });
+    expect(result).toEqual({ id: 'EXISTING_ID', patch: { nome: 'novo nome' }, documents: [] });
   });
 
   it('preserves explicit null in the patch (NullClearButton path)', async () => {
@@ -164,7 +172,8 @@ describe('saveRecord', () => {
 describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => {
   const sibling: TransactionWrite = {
     type: 'set',
-    ref: { id: 'sibling' } as never,
+    ref: { id: 'sibling', path: 'clientes/EXISTING_ID/extra/sibling' } as never,
+    guard: { baseline: {}, label: 'Extra', formField: 'extra', toFormValue: (data) => data },
     data: { x: 1 },
   };
 
@@ -230,7 +239,18 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
       values: { nome: 'novo nome' },
       dirtyFields: { nome: true },
       currentUserUid: 'u1',
-      siblingWrites: () => [{ type: 'delete', ref: { id: 'gone' } as never }],
+      siblingWrites: () => [
+        {
+          type: 'delete',
+          ref: { id: 'gone', path: 'clientes/EXISTING_ID/extra/gone' } as never,
+          guard: {
+            baseline: { x: 1 },
+            label: 'Extra',
+            formField: 'extra',
+            toFormValue: (data) => data,
+          },
+        },
+      ],
     });
     expect(firestoreMock.txMock.delete).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'gone' }),
