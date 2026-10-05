@@ -84,7 +84,11 @@
  * go through {@link decidirProximaAcao} itself ({@link decidirArranjoAutomatico}),
  * so FBS, CANCELLED, IN_CANCEL and `comPacote` are step 15's rules, not a copy.
  */
-import type { ShopeeOrderDetailRow, ShopeePackageDetailRow } from '@delfrance/integrations-shopee';
+import type {
+  ShopeeOrderDetailRow,
+  ShopeePackageDetailRow,
+  ShopeeSearchPackageRow,
+} from '@delfrance/integrations-shopee';
 
 import type { ESTADO_FRETE_DE_TOKEN_SHOPEE } from '../pedidos/freteShopeeMapping';
 import { textoShopeeUtilizavel } from '../pedidos/orderMapping';
@@ -221,6 +225,19 @@ export function ehCanalDeArranjoAutomatico(canalId: number | null): boolean {
 /** Whether the channel carries 1573's 1-hour print obligation. `null` ⇒ `false`. */
 export function ehCanalDeEtiquetaComPrazo(canalId: number | null): boolean {
   return canalId !== null && CANAL_DE_ETIQUETA_COM_PRAZO.has(canalId);
+}
+
+/**
+ * The `search_package_list` row's own arrange flag — step 15b's sweep uses it
+ * as a FREE triage before paying for `get_package_detail`. ⚠️ `=== true` only:
+ * the search row's flag is strict-boolean-or-null, and a `null` is NOT arranged
+ * (S22) — the detail row decides. It lives here, beside the detail-row fold,
+ * so the flag is read in ONE file (`umaSoCopia.test.ts`).
+ */
+export function arranjadoNaBusca(
+  row: Pick<ShopeeSearchPackageRow, 'is_shipment_arranged'>,
+): boolean {
+  return row.is_shipment_arranged === true;
 }
 
 /* ----------------------------- the package phase ---------------------------- */

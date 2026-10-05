@@ -188,6 +188,60 @@ describe('notificacaoSinteticaDePedido', () => {
     expect(rastreio.data?.origem).not.toBe(backfill.data?.origem);
   });
 
+  it('origem `arranjo-automatico` (passo 15b) monta um code 3 que o schema da tarefa devolve IGUAL, com a identidade do backfill', () => {
+    // ⚠️ The fifth producer, and the one origem that sits in BOTH unions: the
+    // package sweep enqueues THIS code 3 — one per order_sn, never a code 30 —
+    // for a candidate package whose pedido does not exist here yet.
+    const arranjo = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      nowMs: AGORA_MS,
+      origem: 'arranjo-automatico',
+    });
+    const backfill = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      nowMs: AGORA_MS,
+      origem: 'backfill',
+    });
+
+    expect(arranjo.code).toBe(3);
+    expect(destinoDoCodigo(arranjo.code)).toBe('pedido');
+    // EXACTLY two keys: neither package read carries an `order_status`, so the
+    // key is ABSENT (never null), and no `update_time` is ever synthesized.
+    expect(arranjo.data).toEqual({ ordersn: ORDER_SN_DO_PACOTE, origem: 'arranjo-automatico' });
+    // It parses where it is read: the task handler re-validates every payload
+    // after the JSON hop, and the failure path stores `data` through
+    // `sanitizarData`.
+    expect(shopeeNotificationTaskSchema.parse(JSON.parse(JSON.stringify(arranjo)))).toEqual(
+      arranjo,
+    );
+    expect(sanitizarData(arranjo.data)).toEqual(arranjo.data);
+    // Same work as any other producer's code 3 for the order…
+    expect(docIdOf(arranjo)).toBe(`3:${String(SHOP)}:${ORDER_SN_DO_PACOTE}:${String(AGORA_MS)}`);
+    expect(docIdOf(arranjo)).toBe(docIdOf(backfill));
+    expect(dedupKeyOf(arranjo)).toBe(dedupKeyOf(backfill));
+    // …and the anchor that keeps that from being vacuous: the payloads differ.
+    expect(arranjo.data?.origem).not.toBe(backfill.data?.origem);
+  });
+
+  it('a origem é o nome do PRODUTOR, nunca do canal: `arranjo-turbo` não compila no code 3', () => {
+    // The near-miss of the member above. "Turbo" is a channel name Shopee has
+    // already renamed once (announcement 1465); the producer's name is
+    // channel-neutral. The builder copies `origem` verbatim at runtime, so the
+    // union is the WHOLE guard — which the second assertion makes visible.
+    const p = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      nowMs: AGORA_MS,
+      // @ts-expect-error — `'arranjo-turbo'` names a channel; the code-3 union names producers.
+      origem: 'arranjo-turbo',
+    });
+
+    expect(p.code).toBe(3);
+    expect(p.data).toHaveProperty('origem', 'arranjo-turbo');
+  });
+
   it('docIdOf/dedupKeyOf batem com o contrato escrito no docblock', () => {
     const p = notificacaoSinteticaDePedido({
       shopId: SHOP,

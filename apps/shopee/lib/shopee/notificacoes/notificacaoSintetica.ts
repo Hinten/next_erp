@@ -4,10 +4,11 @@
  *
  *  - **Code 3, an ORDER** ({@link notificacaoSinteticaDePedido}). Its producers
  *    are the {@link OrigemSintetica} members, each documented there — the
- *    sweeps that walk orders, and the shipment arm when a package push names a
- *    pedido that does not exist yet. All of them hand the notification
- *    pipeline a payload shaped exactly like a parsed `push 1`, so an order
- *    found by a sweep takes the SAME import path as one Shopee pushed.
+ *    sweeps that walk orders or settlements, plus two that hold a PACKAGE whose
+ *    pedido does not exist yet: the shipment arm (driven by a push) and step
+ *    15b's package sweep (a poll). All of them hand the notification pipeline a
+ *    payload shaped exactly like a parsed `push 1`, so an order found by any of
+ *    them takes the SAME import path as one Shopee pushed.
  *  - **Code 30, a PACKAGE** ({@link notificacaoSinteticaDePacote}, step 15b,
  *    #1744). Shaped like a parsed `push 33`, so a package found by POLLING
  *    takes the same shipment path — `alvoDoPushDeFrete`, then
@@ -66,14 +67,16 @@
 import type { ShopeeNotificationPayload } from './notificacao';
 
 /**
- * Which sweep synthesized the push. It rides inside `data` and is NOT part of
- * the identity, so two sweeps finding the same order share ONE dedup key — and,
- * WITHIN one tick, one create-only document.
+ * Which PRODUCER synthesized the push — a sweep for every member but
+ * `'rastreio'`, which a push drives. It rides inside `data` and is NOT part of
+ * the identity, so two producers finding the same order share ONE dedup key —
+ * and, on one shared clock reading, one create-only document.
  *
- * ⚠️ The producers do NOT collapse onto one row across ticks: the carimbo is
+ * ⚠️ The producers do NOT collapse onto one row across runs: the carimbo is
  * the synthesis clock (`docIdOf` → `3:<shop>:<ordersn>:<nowMs>`), and two
- * schedules never share a `Date.now()` read. The dedup key is per-RUN only
- * (each sweep's own `Set`), so every producer owes its own idempotence; what it
+ * producers never share a clock read. Dedup is per-RUN only — whatever bound
+ * the producer keeps itself (the backfill's in-tick `Set`, `'rastreio'`'s
+ * per-delivery bound) — so every producer owes its own idempotence; what it
  * gets from this module is a payload shaped exactly like step 4's.
  *
  * ⚠️ `'liquidacao'` (#1514, step 6) is the WEEKLY settlement sweep, and it is
@@ -89,8 +92,23 @@ import type { ShopeeNotificationPayload } from './notificacao';
  * producer driven by a PUSH rather than by a sweep, so it synthesizes at most
  * once per delivery per lane run; the bound is in `rastrearPedido.ts`'s
  * docblock.
+ *
+ * ⚠️ `'arranjo-automatico'` (#1744, step 15b) is the automatic-arrange package
+ * sweep (`pedidos/arranjoAutomaticoSweep.ts`), and the one literal that sits in
+ * BOTH unions: it lists PACKAGES, and a candidate whose pedido exists becomes
+ * the code 30 below. A candidate whose pedido does NOT exist here yet becomes
+ * one code 3 per `order_sn` instead — `'rastreio'`'s situation reached by a
+ * poll rather than a push — so the import creates the pedido and a later tick
+ * enqueues the package. Neither package read carries an `order_status`, so it
+ * supplies none. Its bound is per conta per tick
+ * (`MAX_ENFILEIRADOS_ARRANJO_POR_CONTA`, in that module).
  */
-export type OrigemSintetica = 'backfill' | 'reserva-travada' | 'liquidacao' | 'rastreio';
+export type OrigemSintetica =
+  | 'backfill'
+  | 'reserva-travada'
+  | 'liquidacao'
+  | 'rastreio'
+  | 'arranjo-automatico';
 
 export interface NotificacaoSinteticaDePedidoParams {
   /** The conta's `shop_id` — top level on a real code 3. */
@@ -155,8 +173,9 @@ export function notificacaoSinteticaDePedido(
  * ⚠️ Its OWN type, never an alias of {@link OrigemSintetica}: the two builders
  * describe different resources (an order vs a package), so an order sweep's
  * origem (`'backfill'`, `'liquidacao'`, …) must not type-check here. A literal
- * MAY sit in both unions — an origem names a producer, and one producer can
- * synthesize both codes — but membership is declared per builder.
+ * MAY sit in both unions — an origem names a producer, and
+ * `'arranjo-automatico'` is the producer that synthesizes both codes — but
+ * membership is declared per builder.
  *
  * `'arranjo-automatico'` (#1744, step 15b) — the automatic-arrange path's
  * package poll: a package on an automatic-arrange channel that became eligible

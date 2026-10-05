@@ -1,0 +1,25 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "packages_list": [
+      {
+        "order_sn": "260910KJBHUJDM",
+        "package_number": "OFG000000000001",
+        "logistics_channel_id": 11006,
+        "product_location_id": "SGZ",
+        "sorting_group": "",
+        "is_shipment_arranged": false
+      }
+    ],
+    "pagination": {
+      "total_count": 1,
+      "more": false,
+      "next_cursor": ""
+    },
+    "sort": {
+      "sort_type": 1,
+      "ascending": true
+    }
+  }
+}

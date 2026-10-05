@@ -352,9 +352,112 @@ note 360 s after its approval (`ATRASO_SERPRO_S`) and Shopee validates it on its
 own clock, and
 **no push is documented for that validation** (register 227). So the arrange
 needs a re-observation of the package — a later push for it, or the
-`search_package_list` sweep of step 15b's PR 3b (stacked) — and announcement
-1573's 15-minute SLA is met only when the NF-e is emitted within minutes of the
-order. Emission is human; the ERP can only say it.
+five-minute sweep below — and announcement 1573's 15-minute SLA is met only
+when the NF-e is emitted within minutes of the order. Emission is human; the ERP
+can only say it.
+
+**The sweep: `sweepShopeeAutoArrange` (`arranjoAutomaticoSweep.ts`, step
+15b).** Every five minutes, on the minutes ≡ 2 (mod 5) so it shares no minute
+with the eight fixed-minute crons (the two `every N minutes` schedules have no
+fixed minute, so no choice of minutes could avoid them), and `timeoutSeconds:
+240`, below the cadence. That bounds a tick, it does not make overlap
+impossible: 240 s is the Scheduler's attempt deadline, never retried, and the
+sweep stops STARTING contas once its own budget (`PRAZO_DO_TICK_ARRANJO_MS`,
+200 s) is spent, but a conta already started or a hung Shopee call (bounded
+only by #1094) can run past both — an overlap costs a duplicate enqueue, never
+a double ship. It arranges nothing and its own code writes nothing (a due
+access-token renewal pays the token store's lease, as for every shop-signed
+caller): it finds the
+packages no push announced and hands each one to the arm above as ONE synthetic
+code 30 (`notificacaoSinteticaDePacote`, `origem: 'arranjo-automatico'`), so
+the arrange keeps its ONE site. ⚠️ It is NOT a pure backstop: for a late NF-e
+it is the PRIMARY signal.
+
+- **Three gates, in order, each answering having read NOTHING:** its own valve
+  `SHOPEE_ARRANJO_SWEEP_DISABLED`, the arrange's (`arranjoAutomaticoDesligado`)
+  and `shopeeTasksDesabilitado()` — read before deciding, never learnt from a
+  caught `ShopeeTasksDisabledError`, which `erroContidoPorConta` would count as
+  N contained conta failures.
+- **Per active conta** (no `shop_id` ⇒ counted in `semShopId`, never called).
+  Before starting each other conta: the tick's budget (once spent, no further
+  conta starts and the tick reports `interrompidoPorPrazo`), then ONE raw read
+  of its credential document — a refresh the token store stamped TERMINAL
+  (`falhaRefreshOf`) needs a re-consent, so the conta is counted in
+  `reconexaoPendente` and costs no Shopee call, where it used to pay a lease, a
+  refresh POST and a release every tick. Then ONE `search_package_list` per
+  page — `package_status 2`, `fulfillment_type 2`, `invoice_pending: false`,
+  `logistics_channel_ids` = `CANAIS_ARRANJO_AUTOMATICO` itself, ShipByDate
+  ascending, 100 rows a page, at most `MAX_PAGINAS_ARRANJO_POR_CONTA` (5) pages
+  — ending on `more` alone, because Shopee answers `next_cursor: ""` when it is
+  false. Every tick restarts at page 1; a tail a cap cut is re-read five
+  minutes later — unless the head never drains (the stuck packages under
+  **Residuals** below).
+- **A free triage of each search row:** an unreadable row or a number that is
+  no package (`-`, blank, a comma — the detail guard would refuse it with a
+  `ShopeeConfigError`, which fails the tick), a repeat, `arranjadoNaBusca`
+  (`=== true` only; a `null` is not arranged), and a KNOWN channel off the set
+  (`foraDoCanal`, register 224's instrument) are counted and dropped. An unknown
+  channel goes on to the detail, where one still unknown is counted apart
+  (`canalDesconhecidoNoDetalhe`), never as off the set.
+- **ONE `get_package_detail` per ≤ 50 survivors, reconciled by
+  `package_number`**, never by position and EXACTLY, the way the handler the
+  code 30 feeds finds its row (`rastrearPedido.ts`) — a detail row that spells
+  the number differently is `ausentesNoDetalhe`, never a task the arm would only
+  park. Unreadable, absent or unknown-channel rows raise ONE warn per conta,
+  counts only, so a schema drift is never a silent no-op. Then
+  `elegibilidadeDoArranjoAutomatico(observacaoDoPacoteShopee(row))` — the hook's
+  own rungs, pinned as raw text so the sweep never grows a copy. Only a
+  `candidato` is enqueued: an invoice-pending package (`nfePendenteNaBusca`,
+  register 222's instrument) or a `PICKUP_RETRY` one costs a count, never a task
+  every five minutes.
+- **Per candidate, ONE pedido-existence read** (`makePedidoIdShopee`; two
+  packages of one order cost one read): present ⇒ the code 30; absent ⇒ ONE
+  code 3 per `order_sn`, and the tick after the import enqueues the package (a
+  code 30 would only defer a row per package and enqueue the same code 3 one hop
+  later). ⚠️ That code 3 is stamped with the START of the UTC day, never the
+  tick's clock, so its doc id `3:<shop>:<order>:<day>` is stable for the day,
+  and on this path only the sweep first reads that ONE `notificacoesShopee`
+  document: present means today's import already failed, so the order is
+  skipped and counted in `pedidosComFalhaHoje`. A deterministically failing
+  import costs at most one attempt and one row per order per UTC day, where a
+  per-tick stamp minted a fresh parked row every five minutes. The code 30
+  for a PRESENT pedido gets the same bound (PR #1758's review): the day's
+  stamp, one read of `30:<shop>:<package>:<day>`, and a skip counted in
+  `pacotesComFalhaHoje` while that row stands (the store deletes a row once
+  it resolves, so a standing row means today's delivery is still failing).
+  At most
+  `MAX_ENFILEIRADOS_ARRANJO_POR_CONTA` (100) enqueues per conta; once reached,
+  no further detail read is spent.
+- **Containment.** `ShopeeRateLimitError` (burst or daily) is tested FIRST and
+  ends the whole tick: the quota is per APP, and the next tick is the retry.
+  Every class `erroContidoPorConta` names is recorded on its conta and the walk
+  moves on; anything else — `ShopeeConfigError` above all — fails the tick. ⚠️
+  A Cloud Tasks enqueue failure carries a STRING code (`FirebaseFunctionsError`,
+  `FirebaseAppError`), which that boundary's gRPC check misses, so the real
+  scheduler (`shopeeTasks.ts`, #1759) names the transient ones
+  `ShopeeTasksTransientError` and the boundary contains them per conta too; a
+  permission, a missing queue or a bad argument is a broken deploy and still
+  fails the tick. A contained `ShopeeApiError` is described by its class and
+  Shopee code only, because its message quotes Shopee's text.
+- **No write of its own, and ids and counts only.** No transaction and no
+  cursor document; between two ticks, a push and an operator the only guard is
+  Shopee's (`is_shipment_arranged`, `package_already_shipped`). No log line or
+  result field carries an `order_sn`, a package or a tracking number, and the
+  schedule's one info line sums the per-conta counters with every `FasePacote`
+  key present.
+- **Residuals, stated rather than fixed (R-m / V9).** A STUCK package — a
+  candidate the hook refuses every time (`precisa-escolha`, or a Shopee
+  refusal) — is re-enqueued every tick, and each task spends up to FIVE Shopee
+  calls (`get_package_detail`, `get_order_detail`, `get_shipping_parameter`,
+  `ship_order` and its one documented re-send; the design's "≤ 3" undercounted),
+  so a Shopee-side refusal is one failed `ship_order` per tick until a human
+  acts on the `manual` aviso or Shopee cancels the order. With 100 or more stuck
+  packages on one conta they fill the enqueue cap every tick — ShipByDate
+  ascending puts the oldest first — and no newer package of that conta is
+  reached. Two ACTIVE contas on one `shop_id` (pre-existing, shared with the
+  backfill) are walked twice, and the one `findIntegracaoByShopId` does not
+  pick reads every pedido as absent. The stuck case is bounded by Shopee's
+  auto-cancel and judged zero at Delfrance's volume today.
 
 **What this step never writes.** `lastMarketplaceUpdate` — the ORDER clock,
 step 5's single writer, and comparing a package event against it is ADR 0011's

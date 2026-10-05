@@ -32,6 +32,21 @@
  * with no repeated `(order_sn, package_number)` pair**: the answer's rows are
  * reconciled by that pair and never by position, and a repeated pair makes the
  * reconciliation ambiguous.
+ *
+ * ## The eighth operation — the package search (step 15b)
+ *
+ * `searchPackageList` lives here although its path is `v2.order.*`: it is an
+ * ORDER-module path that serves the arrange flow — it LISTS the packages a shop
+ * has not shipped yet, and it never arranges anything. Its section at the end
+ * of this module holds the path, the filter enums, the request shape and the
+ * guard; the schema is `types.ts`'s and the member is `api.ts`'s, like the
+ * seven above.
+ *
+ * ⚠️ **The three filters Shopee defaults are REQUIRED here and always SENT**
+ * (`package_status`, `fulfillment_type`, `invoice_pending`). A default is a
+ * provider fact that can change without notice, and what
+ * `invoice_pending: false` filters ("not pending" or "no filter", register
+ * 222) can only be read off the wire if we know exactly what went out.
  */
 import { ShopeeConfigError } from './errors';
 
@@ -466,4 +481,223 @@ export function assertShippingDocumentResultParams(p: DocumentoParams): void {
 export function assertDownloadShippingDocumentParams(p: BaixarDocumentoParams): void {
   assertTextoOpcional('shipping_document_type', p.shippingDocumentType);
   assertListaDePacotes('order_list', p.documentos);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     The package search (step 15b)                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `POST` — Shop-signed, JSON body. ONE page of this shop's packages not yet
+ * SHIPPED, cursor-paged. ⚠️ An `order` path serving the arrange flow — see the
+ * module header.
+ */
+export const SHOPEE_SEARCH_PACKAGE_LIST_PATH = '/api/v2/order/search_package_list';
+
+/** `pagination.page_size` — "between 1 and 100", REQUIRED. */
+export const SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE = 100;
+
+/**
+ * `filter.package_status` — "0: All 1: Pending 2: ToProcess 3: Processed".
+ *
+ * ⚠️ ToProcess is LOGISTICS_READY **or** LOGISTICS_PICKUP_RETRY (guide 229 §10):
+ * a row of it is a pointer to a package, never a verdict that it may be
+ * arranged.
+ */
+export const SHOPEE_PACKAGE_STATUS_FILTRO = {
+  todos: 0,
+  pendente: 1,
+  aProcessar: 2,
+  processado: 3,
+} as const;
+
+/** `filter.fulfillment_type` — "0: None (not apply filter) 1: Shopee 2: Seller". */
+export const SHOPEE_FULFILLMENT_TYPE_FILTRO = { semFiltro: 0, shopee: 1, vendedor: 2 } as const;
+
+/**
+ * `filter.order_type` — "0: All 1: Regular Order 2: Instant Order". ⚠️ Which BR
+ * channels Shopee counts as "Instant" is UNVERIFIED, so nothing in this repo
+ * sends it today; it can only narrow a search.
+ */
+export const SHOPEE_ORDER_TYPE_FILTRO = { todos: 0, regular: 1, instantaneo: 2 } as const;
+
+/** `sort.sort_type` — "1: ShipByDate 2: CreateDate 3: ConfirmedDate". */
+export const SHOPEE_PACKAGE_SORT = { prazoDeEnvio: 1, criacao: 2, confirmacao: 3 } as const;
+
+/**
+ * `logistics_channel_ids` is `int32[]` on the page: anything above this is not a
+ * channel id Shopee can hold.
+ */
+const SHOPEE_INT32_MAX = 2_147_483_647;
+
+/**
+ * `search_package_list` — ONE page.
+ *
+ * ⚠️ **Deliberately NOT exposed** (the absence is the statement):
+ * `product_location_ids` (multi-warehouse is a step-12 refusal), `sorting_group`
+ * (TW only), `is_pre_order` and `shipping_priority`. A future caller adds one
+ * WITH its guard.
+ */
+export interface SearchPackageListParams {
+  /** 1…{@link SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE}. */
+  readonly pageSize: number;
+  /**
+   * The previous page's `next_cursor`, VERBATIM and OPAQUE — nothing trims it.
+   *
+   * ⚠️ OMIT it on page 1, and the key is then ABSENT on the wire. `''` is
+   * REFUSED rather than normalised away (the `getOrderList` rule): Shopee
+   * answers `next_cursor: ""` when `more` is false, so a caller feeding it back
+   * would silently restart from page 1. Terminate on `more`, never on the
+   * cursor.
+   */
+  readonly cursor?: string;
+  readonly filtro: {
+    /** ⚠️ REQUIRED here although Shopee defaults it: always SENT, never left to a default. */
+    readonly packageStatus: (typeof SHOPEE_PACKAGE_STATUS_FILTRO)[keyof typeof SHOPEE_PACKAGE_STATUS_FILTRO];
+    /** ⚠️ REQUIRED and always SENT, like `packageStatus`. */
+    readonly fulfillmentType: (typeof SHOPEE_FULFILLMENT_TYPE_FILTRO)[keyof typeof SHOPEE_FULFILLMENT_TYPE_FILTRO];
+    /**
+     * ⚠️ REQUIRED and always SENT, `false` included — its polarity is register
+     * 222, and an omitted key would make the request unreadable for it.
+     */
+    readonly invoicePending: boolean;
+    /**
+     * 1…N positive int32 ids, no repeats. ⚠️ An EMPTY list is REFUSED: it may
+     * read as "no channel filter" on Shopee's side. Omit the key instead.
+     */
+    readonly logisticsChannelIds?: readonly number[];
+    readonly orderType?: (typeof SHOPEE_ORDER_TYPE_FILTRO)[keyof typeof SHOPEE_ORDER_TYPE_FILTRO];
+  };
+  /** Absent ⇒ no `sort` key at all (Shopee's ShipByDate, ascending). */
+  readonly ordenacao?: {
+    readonly sortType: (typeof SHOPEE_PACKAGE_SORT)[keyof typeof SHOPEE_PACKAGE_SORT];
+    readonly ascending: boolean;
+  };
+}
+
+/** One of an enum's wire values. Names the allowed set and the TYPE received — never the value. */
+function assertValorDoFiltro(
+  nome: string,
+  valor: unknown,
+  permitidos: Readonly<Record<string, number>>,
+): void {
+  const valores = Object.values(permitidos);
+  if (typeof valor !== 'number' || !valores.includes(valor)) {
+    throw new ShopeeConfigError(
+      `${nome} deve ser um de ${valores.join(', ')} (recebido: ${typeof valor}).`,
+    );
+  }
+}
+
+/**
+ * A boolean that goes out AS a boolean. ⚠️ A JS caller's string `'false'` is
+ * truthy and would travel as a string — refused, never coerced.
+ */
+function assertBooleano(nome: string, valor: unknown): void {
+  if (typeof valor !== 'boolean') {
+    throw new ShopeeConfigError(`${nome} deve ser um booleano (recebido: ${typeof valor}).`);
+  }
+}
+
+/**
+ * Every `search_package_list` bound, checked BEFORE the access token is asked
+ * for — a caller bug is a `ShopeeConfigError`, never a provider failure, so a
+ * sweep's per-conta containment must not swallow it.
+ *
+ * ⚠️ No refusal carries a VALUE (the module rule): the cursor is opaque — an
+ * echo habit is how an `order_sn` inside a composite cursor reaches a log — so
+ * every message names the field, a position, a length or a TYPE.
+ */
+export function assertSearchPackageListParams(p: SearchPackageListParams): void {
+  const tamanho: unknown = p.pageSize;
+  if (
+    typeof tamanho !== 'number' ||
+    !Number.isSafeInteger(tamanho) ||
+    tamanho < 1 ||
+    tamanho > SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE
+  ) {
+    throw new ShopeeConfigError(
+      `pagination.page_size deve ser um inteiro de 1 a ${String(SHOPEE_SEARCH_PACKAGE_LIST_MAX_PAGE_SIZE)} (recebido: ${typeof tamanho}).`,
+    );
+  }
+
+  if (p.cursor !== undefined) {
+    // ⚠️ Refused, never normalised away. See `SearchPackageListParams.cursor`.
+    if (p.cursor === '') {
+      throw new ShopeeConfigError(
+        'pagination.cursor não pode ser vazio — omita o parâmetro na primeira página, e termine pelo `more`, nunca pelo cursor.',
+      );
+    }
+    assertIdLogistico('pagination.cursor', p.cursor);
+  }
+
+  // A JS caller (or a cast) can still omit it; the type cannot.
+  const filtro: unknown = p.filtro;
+  if (typeof filtro !== 'object' || filtro === null) {
+    throw new ShopeeConfigError(
+      `filter é obrigatório (recebido: ${filtro === null ? 'null' : typeof filtro}).`,
+    );
+  }
+  assertValorDoFiltro(
+    'filter.package_status',
+    p.filtro.packageStatus,
+    SHOPEE_PACKAGE_STATUS_FILTRO,
+  );
+  assertValorDoFiltro(
+    'filter.fulfillment_type',
+    p.filtro.fulfillmentType,
+    SHOPEE_FULFILLMENT_TYPE_FILTRO,
+  );
+  assertBooleano('filter.invoice_pending', p.filtro.invoicePending);
+  if (p.filtro.orderType !== undefined) {
+    assertValorDoFiltro('filter.order_type', p.filtro.orderType, SHOPEE_ORDER_TYPE_FILTRO);
+  }
+
+  const canais: unknown = p.filtro.logisticsChannelIds;
+  if (canais !== undefined) {
+    if (!Array.isArray(canais)) {
+      throw new ShopeeConfigError(
+        `filter.logistics_channel_ids deve ser uma lista (recebido: ${typeof canais}).`,
+      );
+    }
+    // ⚠️ Refused, never normalised away: an empty list may read as "no channel
+    // filter" on Shopee's side, the opposite of what the caller meant.
+    if (canais.length === 0) {
+      throw new ShopeeConfigError(
+        'filter.logistics_channel_ids não pode ser uma lista vazia — omita o parâmetro.',
+      );
+    }
+    const vistos = new Map<number, number>();
+    canais.forEach((canal: unknown, posicao: number) => {
+      if (
+        typeof canal !== 'number' ||
+        !Number.isSafeInteger(canal) ||
+        canal < 1 ||
+        canal > SHOPEE_INT32_MAX
+      ) {
+        throw new ShopeeConfigError(
+          `filter.logistics_channel_ids deve conter inteiros de 1 a ${String(SHOPEE_INT32_MAX)}${ondeEsta(posicao)} (recebido: ${typeof canal}).`,
+        );
+      }
+      const anterior = vistos.get(canal);
+      if (anterior !== undefined) {
+        throw new ShopeeConfigError(
+          `filter.logistics_channel_ids repete um canal nas posições ${String(anterior)} e ${String(posicao)}.`,
+        );
+      }
+      vistos.set(canal, posicao);
+    });
+  }
+
+  const ordenacao = p.ordenacao;
+  if (ordenacao !== undefined) {
+    const bruta: unknown = ordenacao;
+    if (typeof bruta !== 'object' || bruta === null) {
+      throw new ShopeeConfigError(
+        `sort deve ser um objeto (recebido: ${bruta === null ? 'null' : typeof bruta}).`,
+      );
+    }
+    assertValorDoFiltro('sort.sort_type', ordenacao.sortType, SHOPEE_PACKAGE_SORT);
+    assertBooleano('sort.ascending', ordenacao.ascending);
+  }
 }

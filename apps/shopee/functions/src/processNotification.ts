@@ -40,15 +40,16 @@ export const processShopeeNotification = onTaskDispatched(
     // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
     ...tasksInvokerOptions(),
     secrets: ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'],
-    // ⚠️ NOT the gen2 default of 60 s, and not this codebase's `onSchedule`
-    // value of 540 either. Since step 5 a code-3 delivery runs the order
+    // ⚠️ NOT the gen2 default of 60 s, and not the 540 most `onSchedule`s in
+    // this codebase carry either. Since step 5 a code-3 delivery runs the order
     // import: two Shopee calls (`get_order_detail` + `get_escrow_detail`), up to
     // two collectionGroup queries and up to four SKU probes PER LINE, one
     // transaction and one incidente create per unbound line. On a 20-line order
     // that is comfortably past 60 s, and a timeout mid-import is the one failure
     // that hands a half-written pedido to a retry.
     //
-    // ⚠️ Why not simply take 540, the value every `onSchedule` here carries. A
+    // ⚠️ Why not simply take 540, the value most `onSchedule`s here carry (not
+    // all: the push-config monitor runs 120 and the auto-arrange sweep 240). A
     // budget far above the work's real ceiling does not make a slow import
     // succeed — it makes a HUNG one invisible for that much longer, which is
     // exactly the argument `monitorShopeePushConfig` records for its 120 s
@@ -102,8 +103,9 @@ export const processShopeeNotification = onTaskDispatched(
     // never reaches its `persistFailure`, so no `failed` row exists for the
     // sweep, and the delivery is DROPPED. The package is then re-observed only
     // by the next push about it — Shopee sends one once a ship landed, none for
-    // a package still un-arranged — or, once it lands, by PR 3b's sweep
-    // (stacked on this one).
+    // a package still un-arranged — or by the next tick of
+    // `sweepShopeeAutoArrange` (≤ 5 min), while the sweep is enabled
+    // (`SHOPEE_ARRANJO_SWEEP_DISABLED` unset).
     timeoutSeconds: 300,
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
