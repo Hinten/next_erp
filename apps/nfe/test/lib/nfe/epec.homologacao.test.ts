@@ -339,6 +339,11 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação EPEC contingência', () 
     await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
+    // Tripwire before any SEFAZ call: this suite must only ever talk to
+    // homologação. The vitest config pins NFE_AMBIENTE; this fails loudly if
+    // that pin (or the runtime's ambiente → tpAmb derivation) ever regresses.
+    expect(rt.ambiente).toBe('homologacao');
+    expect(rt.tpAmb).toBe('2');
   }, 60_000);
 
   afterAll(async () => {

@@ -32,8 +32,8 @@ function stripThenNullIfEmpty(value: unknown): unknown {
  *
  * ⚠️ The stored shape is deliberately independent of what Melhor Envio
  * receives: `melhorEnvioCart.ts` strips the country code at the boundary, so
- * `from.phone` stays the local 10/11-digit shape ME's own docs and every
- * fixture use, whatever is stored here (#868).
+ * `from.phone` stays in the local 10/11-digit shape documented by ME, whatever
+ * is stored here. #868 made that provider-boundary contract explicit.
  */
 const enderecoOrigemFields: Record<string, FieldConfig> = {
   ...enderecoNestedFields,

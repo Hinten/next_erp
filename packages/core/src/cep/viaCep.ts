@@ -155,6 +155,12 @@ export function createViaCepClient(config: ViaCepConfig = {}): ViaCepClient {
     try {
       bruto = (await res.json()) as unknown;
     } catch (err) {
+      // The timeout covers the body read too (`request`): a signal that fires
+      // after the headers errors the body stream, and `json()` rejects with the
+      // abort's DOMException ('AbortError') — the fetch phase's timeout, late.
+      if (err instanceof DOMException) {
+        throw new ViaCepError(`Tempo esgotado ao consultar o CEP ${clean}.`, clean, { cause: err });
+      }
       if (err instanceof SyntaxError || err instanceof TypeError) {
         throw new ViaCepError(`Resposta inválida do ViaCEP para o CEP ${clean}.`, clean, {
           cause: err,

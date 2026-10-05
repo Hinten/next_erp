@@ -20,7 +20,17 @@ export const melhorEnviosProvider: CheckoutEtiquetaProvider = {
   tipos: ['melhorEnvios'],
 
   async emitirOuImprimir(input: EtiquetaProviderInput): Promise<EtiquetaOutcome> {
-    const { pedidoId, frete, intFrete, formato, deps, ui } = input;
+    const { pedidoId, frete, formato, deps, ui } = input;
+
+    // ME needs its `int_frete` ACCOUNT — the id is what `imprimir` and the buy
+    // modal route on. A `'bloco'` integration has no document, so there is no
+    // account to route to. `resolverIntFrete` only produces one for a
+    // marketplace-owned tipo, which the registry never sends here; this is the
+    // compile-time half of that guarantee (#1523).
+    if (input.intFrete.fonte !== 'doc') {
+      return { status: 'error', message: 'Integração de frete não encontrada.' };
+    }
+    const intFrete = input.intFrete;
 
     // ME prints PDF only — warn and continue (the URL below is a PDF anyway).
     if (formato === 'zpl2') {

@@ -5,7 +5,9 @@
  * No IO here — `publish.ts` loads the graph and calls the ML API; this module
  * holds the decisions (ported from the old Flutter `toMercadoLivre` call sites):
  *
- *  - price comes from `produto.precos[<tabelaNormal list id>]` — NO fallback:
+ *  - price comes from `produto.precos[<tabelaNormal list id>]`, read through
+ *    `precoDaTabela` and — for a User-Products member — `precoDoFilhoNaTabela`
+ *    (`@delfrance/schemas`, the rules the price sync binds too) — NO fallback:
  *    a missing price is a validation error naming the produto (repo rule:
  *    no magic defaults on user data);
  *  - condition: the link doc's persisted `condition` wins (edits keep it),
@@ -38,10 +40,14 @@ import {
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  ESTADO_PUBLICACAO_ML,
   MARCA_ATTRIBUTE_ID,
   dimensoesDoPacote,
   marcaArmazenadaDe,
   parseFakePath,
+  precoDaTabela,
+  precoDoFilhoNaTabela,
+  propagaPrecoAosFilhos,
   resolveCondicaoAnuncio,
   resolveMarcaAnuncio,
 } from '@delfrance/schemas';
@@ -71,12 +77,11 @@ export interface PublishProduto {
   precos: Record<string, { valor: number }> | null;
   ordem?: number | null;
   /**
-   * Parent only. `false` prices each User-Products member from its OWN `precos`
-   * entry instead of the anchor's — the rule `precoPlan.buildPrecoDrafts`
-   * already applies, and publish must agree with it or a first publish lands a
-   * price the very next price sync overwrites. Undefined/true = anchor,
-   * matching the schema default. Meaningless under the legacy model, where ML
-   * requires one uniform price for the whole family.
+   * Parent only, raw. Folded by `propagaPrecoAosFilhos` in
+   * {@link resolveMemberPrice}: only a stored literal `false` prices each
+   * User-Products member from its OWN `precos` entry instead of the anchor's;
+   * anything else (the schema default) propagates. Meaningless under the legacy
+   * model, where ML requires one uniform price for the whole family.
    */
   propagatePriceToChildren?: boolean | null;
 }
@@ -93,7 +98,10 @@ export interface PublishLink {
   isUserProductModel?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
-  /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
+  /**
+   * `estadoPublicacaoMl` wire code. Two values are read here, both refusals:
+   * `'am'` (mid-UPtin) and `'rm'` (removed by ML moderation, #1226).
+   */
   estado?: string | null;
 }
 
@@ -351,6 +359,26 @@ export function publishModeIssues(args: {
     );
   }
 
+  // ⚠️ THE refusal #1226 exists for, and the one that stops the damage rather
+  // than describing it. `assemblePublishInput` derives `isUpdate` from
+  // `link.id != null`, so a listing Mercado Livre REMOVED keeps its dead item id
+  // and every republish goes out as `PUT /items/<id ML deleted>` — a call that
+  // cannot succeed, on a produto with no other way back into the catalogue.
+  // Nothing cleared `link.id`, so the operator's only recourse was editing
+  // Firestore by hand.
+  //
+  // Refusing here (rather than clearing the id automatically) is the decision on
+  // the issue: the two ways out — "Descartar anúncio removido", which keeps the
+  // form and drops the dead identity, and "Excluir anúncio" — are OPERATOR
+  // actions on the produto's Mercado Livre tab, so the message names them
+  // instead of doing either silently.
+  if (args.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) {
+    issues.push(
+      'anúncio removido pelo Mercado Livre e não pode ser reativado — use "Descartar anúncio ' +
+        'removido" para publicar um novo com os mesmos dados, ou exclua o anúncio',
+    );
+  }
+
   // A User-Products family whose variations were ALL deleted — the one childless
   // UP state publish must REFUSE rather than repair. `link.id` holds a FAMILY id,
   // so there is no item to PUT and no member to derive one from: inventing a sole
@@ -455,6 +483,11 @@ export function classificarMembroUnico(args: {
  * sight. `nome` is null when `id` itself is null, or when the IO layer's
  * cached lookup could not resolve one — in that case the message is
  * IDENTICAL to what it always was, id-only.
+ *
+ * The value is `precoDaTabela`'s (`@delfrance/schemas`) — the reader the price
+ * sync binds too — so it is `roundReais`'d, and positivity is checked AFTER
+ * rounding: a stored `7.891` publishes as `7.89`, and a stored `0.004` is "no
+ * price" (this issue), never a `0.004` listing.
  */
 export function resolvePrice(
   produto: PublishProduto,
@@ -465,21 +498,58 @@ export function resolvePrice(
     issues.push('integração sem tabela de preços (tabelaNormalOuterRef)');
     return null;
   }
-  const valor = produto.precos?.[priceList.id]?.valor;
-  if (valor == null || valor <= 0) {
-    // `nome` is read through a soft-parse cache (listaDePrecosCache.ts) that
-    // returns RAW data on schema mismatch (packages/data/src/zodParse.ts's
-    // `parseSoftRead`) — so despite the declared type, a legacy/malformed doc
-    // can hand back a blank, whitespace-only, or even non-string `nome`.
-    // Treat anything but a genuinely usable label as unresolved, so the
-    // message truly falls back to the id-only pre-fix form instead of
-    // showing `tabela "" (id)`.
-    const nome = typeof priceList.nome === 'string' ? priceList.nome.trim() : '';
-    const tabela = nome !== '' ? `"${nome}" (${priceList.id})` : priceList.id;
-    issues.push(`produto "${produto.nome}" sem preço na tabela ${tabela}`);
+  const valor = precoDaTabela(produto.precos, priceList.id);
+  if (valor == null) {
+    issues.push(semPrecoIssue(produto, { id: priceList.id, nome: priceList.nome }));
     return null;
   }
   return valor;
+}
+
+/**
+ * A User-Products member's price — `precoDoFilhoNaTabela`, the ONE child-price
+ * rule `precoPlan.buildPrecoDrafts` and Shopee's publish and price sync bind, so
+ * publish and the price sync cannot disagree about what a member costs. The
+ * PARENT's raw flag is folded by `propagaPrecoAosFilhos`: propagating (the
+ * default), the member carries the anchor's price and its own map is never a
+ * fallback; a stored literal `false` gives it its own entry and never reads the
+ * anchor.
+ *
+ * A `null` raises an issue only on the member's OWN arm, naming the member. On
+ * the propagating arm the anchor's {@link resolvePrice} has already named the
+ * parent, and a missing price list likewise — one issue each, not one per member.
+ */
+export function resolveMemberPrice(
+  family: { pai: PublishProduto; membro: PublishProduto },
+  priceList: { id: string | null; nome: string | null },
+  issues: string[],
+): number | null {
+  if (!priceList.id) return null;
+  const propagaPreco = propagaPrecoAosFilhos(family.pai.propagatePriceToChildren);
+  const valor = precoDoFilhoNaTabela(
+    { precosDoPai: family.pai.precos, propagaPreco, precosDoFilho: family.membro.precos },
+    priceList.id,
+  );
+  if (valor == null && !propagaPreco) {
+    issues.push(semPrecoIssue(family.membro, { id: priceList.id, nome: priceList.nome }));
+  }
+  return valor;
+}
+
+function semPrecoIssue(
+  produto: PublishProduto,
+  priceList: { id: string; nome: string | null },
+): string {
+  // `nome` is read through a soft-parse cache (listaDePrecosCache.ts) that
+  // returns RAW data on schema mismatch (packages/data/src/zodParse.ts's
+  // `parseSoftRead`) — so despite the declared type, a legacy/malformed doc
+  // can hand back a blank, whitespace-only, or even non-string `nome`.
+  // Treat anything but a genuinely usable label as unresolved, so the
+  // message truly falls back to the id-only pre-fix form instead of
+  // showing `tabela "" (id)`.
+  const nome = typeof priceList.nome === 'string' ? priceList.nome.trim() : '';
+  const tabela = nome !== '' ? `"${nome}" (${priceList.id})` : priceList.id;
+  return `produto "${produto.nome}" sem preço na tabela ${tabela}`;
 }
 
 /**
@@ -1148,15 +1218,16 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       order: child.produto.ordem ?? null,
       availableQuantity: child.availableQuantity,
       // User-Products only (the legacy branch ignores it and copies the
-      // anchor's price down — ML requires a uniform family price there). Same
-      // rule `precoPlan.buildPrecoDrafts` applies, so publish and the price
-      // sync cannot disagree about what a member should cost. Resolved only in
-      // the branch that uses it: a child with no own `precos` entry is a
-      // blocking issue there and irrelevant everywhere else.
-      price:
-        args.isUserProductSeller && args.produto.propagatePriceToChildren === false
-          ? resolvePrice(child.produto, { id: args.priceListId, nome: args.priceListNome }, issues)
-          : null,
+      // anchor's price down — ML requires a uniform family price there).
+      // Resolved only in the branch that uses it: a child with no own `precos`
+      // entry is a blocking issue there and irrelevant everywhere else.
+      price: args.isUserProductSeller
+        ? resolveMemberPrice(
+            { pai: args.produto, membro: child.produto },
+            { id: args.priceListId, nome: args.priceListNome },
+            issues,
+          )
+        : null,
       pictureIds: child.pictureIds,
       attributeCombinations: finalCombos,
       attributes: attrs,

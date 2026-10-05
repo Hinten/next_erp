@@ -317,7 +317,7 @@ describe('mlPaymentToPagamento — parcelas/aVista/timestamps', () => {
     expect(mapped.aVista).toBe(true);
   });
 
-  it('ultimaModificacao prefers last_modified, then date_last_updated, then nowUs', () => {
+  it('separates local recency from the provider event clock', () => {
     const withLastModified = mlPaymentToPagamento({
       payment: payment({
         last_modified: '2026-07-21T00:00:00.000Z',
@@ -326,14 +326,16 @@ describe('mlPaymentToPagamento — parcelas/aVista/timestamps', () => {
       contaCpfCnpj: null,
       nowUs: NOW_US,
     });
-    expect(withLastModified.ultimaModificacao).toBe(Date.parse('2026-07-21T00:00:00.000Z') * 1000);
+    expect(withLastModified.ultimaModificacao).toBe(NOW_US);
+    expect(withLastModified.lastProviderUpdate).toBe(Date.parse('2026-07-21T00:00:00.000Z') * 1000);
 
     const withDateLastUpdated = mlPaymentToPagamento({
       payment: payment({ last_modified: null, date_last_updated: '2026-07-20T00:00:00.000Z' }),
       contaCpfCnpj: null,
       nowUs: NOW_US,
     });
-    expect(withDateLastUpdated.ultimaModificacao).toBe(
+    expect(withDateLastUpdated.ultimaModificacao).toBe(NOW_US);
+    expect(withDateLastUpdated.lastProviderUpdate).toBe(
       Date.parse('2026-07-20T00:00:00.000Z') * 1000,
     );
 
@@ -343,6 +345,7 @@ describe('mlPaymentToPagamento — parcelas/aVista/timestamps', () => {
       nowUs: NOW_US,
     });
     expect(withNeither.ultimaModificacao).toBe(NOW_US);
+    expect(withNeither.lastProviderUpdate).toBe(NOW_US);
   });
 
   it('dataCadastro/dataAprovacao come from date_created/date_approved', () => {

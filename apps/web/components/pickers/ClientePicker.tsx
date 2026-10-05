@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Anchor, Stack } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
+import { clientePhoneSearchQuery, describeClienteOption } from './clientePhoneSearch';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { usePermission } from '@/lib/auth';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
@@ -47,6 +48,7 @@ export interface ClientePickerProps {
   required?: boolean;
   disabled?: boolean;
   error?: string;
+  allowCreate?: boolean;
 }
 
 export function ClientePicker({
@@ -59,6 +61,7 @@ export function ClientePicker({
   required,
   disabled,
   error,
+  allowCreate = true,
 }: ClientePickerProps) {
   const { allowed: canCreateCliente } = usePermission(PERM.cliente.write);
   const [modalOpen, setModalOpen] = useState(false);
@@ -70,6 +73,8 @@ export function ClientePicker({
         labelField="nome"
         searchFields={SEARCH_FIELDS}
         optionHintField="cpf_cnpj"
+        extraSearchQuery={clientePhoneSearchQuery}
+        optionDescription={describeClienteOption}
         fieldName={fieldName}
         label={label}
         hint={hint}
@@ -82,7 +87,7 @@ export function ClientePicker({
         limit={INITIAL_LIMIT}
         orderBy={RECENCY_ORDER}
       />
-      {!disabled && canCreateCliente && (
+      {!disabled && allowCreate && canCreateCliente && (
         <Anchor component="button" type="button" size="xs" onClick={() => setModalOpen(true)}>
           + Novo cliente
         </Anchor>

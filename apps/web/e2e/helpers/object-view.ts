@@ -78,14 +78,18 @@ function parseBrlText(raw: string): number | null {
  * string varies with focus (`R$ 40` vs `R$ 40,00`), so the assertion has to go
  * through the same parse `typeMoney` verifies with. Retried, because the value
  * can arrive from a form write rather than a keystroke.
+ *
+ * `exact` is opt-in for screens that deliberately repeat a list label in a
+ * more specific accessible name (for example parent and variation prices).
  */
 export async function expectMoneyValue(
   page: Page,
   name: string,
   value: number | null,
+  options: { exact?: boolean } = {},
   timeout = 15_000,
 ): Promise<void> {
-  const input = page.getByRole('textbox', { name });
+  const input = page.getByRole('textbox', { name, exact: options.exact });
   await expect(async () => {
     expect(parseBrlText(await input.inputValue())).toBe(value);
   }).toPass({ timeout });
@@ -109,9 +113,17 @@ export async function expectMoneyValue(
  *
  * Verification is on the number the field HOLDS, never on the keystrokes sent —
  * the append case sends exactly the right keystrokes.
+ *
+ * `exact` is opt-in for screens that deliberately repeat a list label in a
+ * more specific accessible name (for example parent and variation prices).
  */
-export async function typeMoney(page: Page, name: string, value: string): Promise<void> {
-  const input = page.getByRole('textbox', { name });
+export async function typeMoney(
+  page: Page,
+  name: string,
+  value: string,
+  options: { exact?: boolean } = {},
+): Promise<void> {
+  const input = page.getByRole('textbox', { name, exact: options.exact });
   const wanted = parseBrlText(value);
   await expect(input).toBeEnabled();
 

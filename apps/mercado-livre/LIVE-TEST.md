@@ -612,6 +612,43 @@ mistakes are each other's mirror image.
 | 8.2b | Same on a **Full** order (the flow ML migrated first)           | same, with `path` carrying `/conversations/`. Confirms the agent half still works — the fix must not trade one flow for the other |        |
 | 8.2c | Reply again after ML has blocked the thread                     | 409 with ML's own reason, no bubble written                                                                                       |        |
 
+### 8.3 — Per-SKU fiscal data reaches ML's Faturador (#745)
+
+Every publish now registers each SKU with `items/fiscal_information` and links it
+to its item; "Enviar dados fiscais" on the produto's Mercado Livre tab re-sends it
+without republishing. The data is what OUR nota would say — the NF-e's own
+imposto cascade through the conta's `operacaoOuterRef` — so the conta under test
+**must have an operação of venda set**, or every SKU reports `omitido` and nothing
+is called.
+
+⚠️ **An ML refusal never fails a publish.** It lands on the SKU's link
+(`dadosFiscaisEstado: 'erro'` + ML's message) and in the publish toast; the
+listing itself is untouched. Read the link doc, not just the toast.
+
+| Row  | Step                                                                            | Assert                                                                                                                                                | Result |
+| ---- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 8.3a | Publish a SIMPLE item whose imposto resolves (Simples, CFOP 5101/5102, NCM set) | toast `Dados fiscais: 1 SKU enviado`; `GET /items/fiscal_information/{sku}` echoes our NCM / CEST / `origin_detail` / `csosn`; link `podeFaturar` set |        |
+| 8.3b | `GET /items/{id}/fiscal_information/detail` and `GET /can_invoice/items/{id}`   | the SKU is linked to the item; record `can_invoice.status` verbatim                                                                                   |        |
+| 8.3c | Publish a User-Products family                                                  | one SKU per MEMBER, each linked to the member's OWN item (not the family id)                                                                          |        |
+| 8.3d | Republish 8.3a unchanged                                                        | the `PUT` repeats, the link call does NOT (link doc already records the pair)                                                                         |        |
+| 8.3e | Edit the produto's imposto (e.g. CEST), press **Enviar dados fiscais**          | `GET /items/fiscal_information/{sku}` shows the new value                                                                                             |        |
+| 8.3f | A produto with no NCM anywhere                                                  | `omitido` with "sem NCM válido", and **no** fiscal call for that SKU                                                                                  |        |
+
+**Settle-live register** — each was written against the docs alone; record what
+ML actually does:
+
+1. **A `PUT` on a SKU ML has never seen** — the code treats a 404 **or** a 400
+   carrying `10086` as "unknown SKU" and falls back to the `POST`. Which one is it?
+2. **Re-linking an already-linked SKU ↔ item** — 201 again, or an error? (The
+   republish path skips the call when the link doc records the pair, so this only
+   bites when that record is missing.)
+3. **`measurement_unit`** — we send the imposto/operação `unidade` verbatim
+   (`UN`, `PC`, `KG`…). Which values does ML accept?
+4. **Can a TEST-USER conta register fiscal data at all?** The docs name no
+   prerequisite (PJ/IE/A1/opt-in gate ML's _issuing_, not the data), but a test
+   user is a PF account. A 403 short-circuits the run with one reason per SKU.
+5. **`title`** — we send the listing title; ML documents no length limit.
+
 ### 8.1 — Moderation reasons reach the link doc (#1087)
 
 The bug this closes was observed on this project on 2026-08-19: `MLB5095421681`

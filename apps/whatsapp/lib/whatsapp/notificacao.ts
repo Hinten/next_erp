@@ -61,6 +61,7 @@ import {
 } from './processMessages';
 import type { StatusesReport } from './processStatus';
 import type { MediaCacheContext } from './media';
+import { replayVinculoWhatsapp } from './vinculoReplay';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -173,8 +174,15 @@ export async function processChangePayload(
   payload: WhatsappNotificationPayload,
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<ProcessOutcome> {
+  if (payload.field === 'whatsapp-vinculo-replay') {
+    const parsed = z.object({ vinculoId: z.string().min(1) }).safeParse(payload.value);
+    if (!parsed.success) return { kind: 'failed', reason: 'Replay de vínculo inválido.' };
+    return replayVinculoWhatsapp(db, parsed.data.vinculoId, deps, (id) =>
+      pipelineFor(deps).redrive(db, id, 'Vínculo resolvido; recuperar mudança original.'),
+    );
+  }
   if (payload.field === WEBHOOK_FIELD_MESSAGES) {
-    return processMessagesField(db, payload.value, deps);
+    return processMessagesField(db, payload.value, deps, payload.messageId);
   }
   console.warn('[whatsapp] campo não suportado — dropping', { field: payload.field });
   return {
@@ -185,7 +193,7 @@ export async function processChangePayload(
 }
 
 export interface TaskResult {
-  outcome: 'done' | 'failed' | 'dropped';
+  outcome: 'done' | 'failed' | 'parked' | 'deferred' | 'dropped';
   contaId?: string;
   field?: string;
   /**
@@ -299,6 +307,7 @@ function pipelineFor(deps: WhatsappProcessDeps) {
         }
         return { kind: 'resolve', label: 'processed' };
       }
+      if (outcome.kind === 'parked') return { kind: 'park', reason: outcome.reason };
       if (outcome.kind === 'dropped') return { kind: 'drop', reason: outcome.reason };
       return { kind: 'fail', reason: outcome.reason };
     },
@@ -347,10 +356,8 @@ export async function handleNotificationTask(
   const statuses = r.result && 'statuses' in r.result ? r.result.statuses : null;
   const mensagens = r.result && 'mensagens' in r.result ? r.result.mensagens : null;
   return {
-    // WhatsApp produces neither a `park` nor a `defer` disposition, so both
-    // arms are unreachable here — mapped defensively rather than widening this
-    // channel's public union with arms it cannot emit (mirrors Mercado Pago).
-    outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
+    // Pending identification is parked durably and must remain distinct from a retryable failure.
+    outcome: r.outcome,
     ...(contaId != null ? { contaId } : {}),
     ...(r.payload ? { field: r.payload.field } : {}),
     // `kind` needs no `in` check — every arm of a discriminated union has it, so
@@ -376,4 +383,26 @@ export function reprocessNotifications(
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<ReprocessResult> {
   return pipelineFor(deps).reprocess(db, opts);
+}
+
+/** Durable intent precedes enqueue: the normal notification sweep covers queue outages. */
+export async function solicitarReplayVinculo(db: Firestore, id: string): Promise<void> {
+  const payload: WhatsappNotificationPayload = {
+    field: 'whatsapp-vinculo-replay',
+    phoneNumberId: null,
+    messageId: 'replay-vinculo-' + id,
+    value: { vinculoId: id },
+  };
+  await pipelineFor(defaultWhatsappProcessDeps).persistFailure(
+    db,
+    payload,
+    'Vínculo resolvido; recuperar mensagens.',
+  );
+  const { createWhatsappTaskScheduler, WhatsappTasksDisabledError } = await import('./waTasks');
+  try {
+    await createWhatsappTaskScheduler().enqueue(payload);
+  } catch (error) {
+    if (!(error instanceof WhatsappTasksDisabledError)) throw error;
+    // The durable intent is already in the existing notification sweep.
+  }
 }

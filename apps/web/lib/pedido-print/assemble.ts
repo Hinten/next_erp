@@ -11,13 +11,16 @@
  * waves.
  */
 import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import { roundReais } from '@delfrance/core/money';
 import {
   ESTADO_PEDIDO_LABELS,
   MODALIDADE_FRETE_LABELS,
   estoqueDisponivel,
+  flattenPedidoItens,
   itemSubtotal,
   makeEstoqueUid,
+  nomeDoItem,
   parseFakePath,
   unidadeVendavel,
   type Cliente,
@@ -26,8 +29,6 @@ import {
   type Filial,
   type GrupoDeVariacoes,
   type Integracao,
-  type ItemDoPedido,
-  type Pedido,
   type Produto,
 } from '@delfrance/schemas';
 import { arquivoCollection } from '@delfrance/storage';
@@ -145,17 +146,36 @@ async function readRef<T>(db: Firestore, outerRef: unknown): Promise<T | null> {
   return snap.exists() ? (snap.data() as T) : null;
 }
 
-/** Flatten the grouped `pedido.itens` record, deriving produtoUid from the map key. */
-function flattenItens(grouped: Pedido['itens']): ItemDoPedido[] {
-  const out: ItemDoPedido[] = [];
-  for (const [key, list] of Object.entries(grouped)) {
-    const keyUid = key && key !== 'NONE' ? key : null;
-    for (const item of list) {
-      out.push({ ...item, produtoUid: item.produtoUid ?? keyUid });
-    }
+/**
+ * The vendedor is the ONE header ref whose read may legitimately be refused.
+ *
+ * ⚠️ `usuarios` is `allow read: if isSuperUser() || p('d_configuracoes', 1)`, a
+ * bit a plain operator does not hold — the same reason `VendedorField` answers
+ * the common case from the auth session instead of reading. That was harmless
+ * while the field was null on the plain-create path, because the read never
+ * happened. Now that `PedidoForm` stamps every new pedido it does, and an
+ * unguarded rejection inside the `Promise.all` below takes the WHOLE print model
+ * down: a "Missing or insufficient permissions" toast on share, or a `failures`
+ * entry in the batch waves.
+ *
+ * `vendedorNome` is `string | null` in the model and the sheet omits the line
+ * when it is null, so degrading to "no seller line" is the same output those
+ * pedidos had before. Only `permission-denied` degrades — every other
+ * FirebaseError (unavailable, not-found on a malformed path) still throws, and a
+ * non-Firebase error is rethrown untouched (CLAUDE.md rule 6). Exported for
+ * `assemble.vendedor.test.ts`, which pins both halves — what it swallows and
+ * what it must still let through.
+ */
+export async function readVendedor(
+  db: Firestore,
+  outerRef: unknown,
+): Promise<{ displayName?: string; nome?: string; email?: string } | null> {
+  try {
+    return await readRef<{ displayName?: string; nome?: string; email?: string }>(db, outerRef);
+  } catch (err) {
+    if (err instanceof FirebaseError && err.code === 'permission-denied') return null;
+    throw err;
   }
-  out.sort((a, b) => a.ordem - b.ordem);
-  return out;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -173,7 +193,10 @@ export async function buildPrintModel(
   const pedidoSnap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
   if (!pedidoSnap.exists()) throw new PedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data();
-  const items = flattenItens(pedido.itens);
+  // ⚠️ `flattenPedidoItens` was lifted OUT of this file so the assembler and the
+  // checkout engine would share one implementation, and the local copy it left
+  // behind was never deleted — two identical bodies, nothing keeping them equal.
+  const items = flattenPedidoItens(pedido.itens);
   const frete = pedido.freteInicial;
 
   // 2. Header references (parallel) -----------------------------------------
@@ -184,10 +207,7 @@ export async function buildPrintModel(
       readRef<Endereco>(db, pedido.enderecoFiscalOuterRef),
       frete ? readRef<{ nome?: string; tipo?: string }>(db, frete.integracaoFreteOuterRef) : null,
       frete ? readRef<Endereco>(db, frete.enderecoFreteOuterReference) : null,
-      readRef<{ displayName?: string; nome?: string; email?: string }>(
-        db,
-        pedido.vendedorPedidoOuterRef,
-      ),
+      readVendedor(db, pedido.vendedorPedidoOuterRef),
     ]);
 
   const filial = integracao
@@ -249,7 +269,7 @@ export async function buildPrintModel(
     return {
       produtoId: item.produtoUid,
       sku: produto?.sku ?? item.sku,
-      nome: produto?.nome ?? item.nomeDeVenda,
+      nome: nomeDoItem(item, produto),
       variacoesText: variacoesTextOf(item.produtoUid),
       fotoUrl: fotoUrlOf(item.produtoUid),
       quantidade: item.quantidade,

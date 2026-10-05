@@ -161,7 +161,12 @@ export function ConversaActionsMenu({
     }
     setBusy(true);
     try {
-      await whatsappClient.templateMessage(conversaId);
+      await whatsappClient.templateMessage(conversaId, {
+        whatsappDestino: conversa.whatsappDestino ?? null,
+        whatsappIntegracaoId: conversa.integracaoOuterRef
+          ? idFromRef(conversa.integracaoOuterRef)
+          : null,
+      });
       notifications.show({
         color: 'teal',
         title: 'Mensagem padrão enviada',
@@ -410,6 +415,7 @@ export function ConversaActionsMenu({
                 void (async () => {
                   try {
                     await confirm?.run();
+                    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- last-resort UI boundary; the error is shown, not swallowed
                   } catch (err) {
                     if (!(err instanceof Error)) throw err;
                     notifications.show({

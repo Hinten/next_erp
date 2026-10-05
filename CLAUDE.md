@@ -12,7 +12,7 @@ single cutover (rule 8) and never runs beside it. The Flutter app is a separate
 repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
-CI — the nine lanes in `.github/workflows/` run **concurrently**, gated on
+CI — the ten lanes in `.github/workflows/` run **concurrently**, gated on
 nothing. **"CI green" means "the suite passed."** Each lane derives its own scope
 from the workspace dependency graph and reports through one unskippable check;
 `ci.yml` excludes the nfe/freight/storage/functions/mercado-livre tests, which
@@ -29,10 +29,11 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The fifteen pinnable ones are
+   unique repo-wide. The sixteen pinnable ones are
    `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules)` and — since `ci.yml` split
-   its single `lint-typecheck-test` job into seven concurrent ones —
+   `CI gate (nfe|freight|mercado-livre|storage|rules|shopee)` and — since
+   `ci.yml` split its single `lint-typecheck-test` job into seven concurrent
+   ones —
    `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
    `CI test web 1of2`, `CI test web 2of2`, `CI build`. ⚠️ The last two are a
    `vitest --shard` **partition** of `@delfrance/web`, and `CI test` excludes
@@ -42,8 +43,14 @@ Five rules you must not break without reading it first:
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.
-4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
-   `pull_request:` goes without.
+4. ⚠️ Domain-lane `push:` triggers **keep** their `paths:` deliberately;
+   `pull_request:` never has them. The three E2E lanes deliberately have an
+   unfiltered `push:` only for `codex/**`, so every published Codex branch gets
+   the complete staging/emulator suite before a PR exists. The NFe domain lane is
+   intentionally asymmetric: a `codex/**` push runs its offline suite only;
+   `nfe-live` is forced for `workflow_dispatch` and main/master pushes, while a PR
+   reaches it only through the narrow `--only-paths` decision. Never make an
+   agent's per-commit push an unconditional SEFAZ emission.
 5. ⚠️ **The workflow YAML comes from the MERGE REF, the checkout from the PR
    HEAD — so a scope step must degrade to running the lane, never to failing
    the job.** The caller is always at least as new as
@@ -62,9 +69,19 @@ must be a registered lane or an explicitly excused one, and no scope invocation
 may go unguarded.
 
 Every `pull_request` base filter is
-`[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
-the PR's **base**, so a **stacked PR** must sit on one of those prefixes — on
-anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
+`[master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']`. That
+key matches the PR's **base**, so a **stacked PR** must sit on one of those
+prefixes — on anything else (`chore/`, `docs/`, …) it reports zero checks, not
+failures.
+
+A push to a published `codex/**` branch runs `ci.yml`, every path-matched domain
+lane, and all three E2E lanes. A local-only worktree cannot trigger Actions. The
+workflow concurrency key normalises push and PR refs to repository + source
+branch, but includes the event name: push and PR runs must not cancel each other,
+because their checks share one SHA and a cancelled required check blocks the PR
+even when the other event passes. Newer runs still cancel older runs of the same
+event and branch. This deliberately pays for two batches while a PR is open; do
+not "deduplicate" them without changing how required checks are published.
 
 ## Critical rules
 
@@ -215,9 +232,17 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 - `web` (:3000) — internal ERP UI, client-first. Only app with Playwright e2e.
 - `integrations` (:3001) — generic webhook/OAuth scaffolding; per-channel routes
   have moved out to their own apps.
-- `webchat` (:3002) static-export chat widget · `docs` (:3003) Astro Starlight
-  (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
-  script: `pnpm --filter @delfrance/example demo`, no dev server.
+- `legal` (:3002) — public Terms of Use and Privacy Policy, server-rendered without
+  auth or Firebase SDKs. Canonical PT-BR text and runtime public identity config.
+- `docs` (:3003) Astro Starlight (hosts the ADRs) — the only app left in this
+  bullet, because **both of its former neighbours are gone**. :3002 now serves
+  `legal`; it was `webchat`, the embeddable widget, **dropped on 2026-09-07** and never to be
+  ported (#153, #558 closed as not planned). The `site` origem it produced STAYS in
+  `conversaSchema` — the imported legacy corpus carries `site` conversas and `origem`
+  defaults to it, so the writer went and the reader stayed. ⚠️ `apps/example` (the OSS
+  demo) was **deleted** in #1444 — it demoed the plugin registry, and nothing ever ran
+  it, so the rest of it had silently drifted out of sync with the schemas. A
+  replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
   `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic
@@ -231,7 +256,7 @@ pnpm workspace members — the parent app's tsconfig/eslint/vitest cover them.
 **packages/** — `schemas` (Zod schemas + collection metadata, **the** source of
 truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `TableView`/`ObjectView` derived from the schemas) · `core` · `auth` ·
-`storage` · `plugin-sdk` · `rules-gen` · `config-{eslint,tsconfig,vitest}` ·
+`storage` · `rules-gen` · `config-{eslint,tsconfig,vitest}` ·
 `ai` (the shared model runtime — ⚠️ its ROOT entry is browser-safe because
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
@@ -247,13 +272,22 @@ fetch-only package (the Shopee master plan, step 1) — it declares no
 **That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
-`@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly two
-contracts (tax/invoice) — `PaymentGateway` went the same way in #1429, for the same
-reason plus one more: its `webhook` had ALREADY shipped outside it, on
-`defineNotificationPipeline` — and nothing in-tree registers at boot. ADR 0015 +
-the `marketplace-integration` skill; guarded by
-`packages/config-eslint/rules/removed-plugin-contracts.test.js`, because
-re-adding the interface fails nothing.
+`@delfrance/core/marketplace`. ⚠️ **`packages/core/src/plugins` and
+`packages/plugin-sdk` NO LONGER EXIST — there is no plugin system at all.** Five
+contracts were declared there over time and all five were deleted: `FreightProvider`
+(#262), `MarketplaceChannel` (#815), `PaymentGateway` (#1429 — its `webhook` had
+ALREADY shipped outside it, on `defineNotificationPipeline`), and `TaxProvider` +
+`InvoiceProvider` with `PluginRegistry` (#1444). The last two were the ones ADR 0015
+had SPARED as "a defensible altitude", and that was the error: pure and
+fetch-shaped they were, but `calculate({ amount, ncm })` carries no CRT, CST/CSOSN,
+origem or UF pair while `buildImpostoXml` emits XSD-valid XML per CST, and
+`issue(orderId)` → 3 statuses cannot express `aguardandoVinculo`, cStat 136,
+SVC/EPEC, filial, ambiente or série. **A contract whose altitude is defensible but
+which no implementation can satisfy is still the wrong contract.** Nothing in-tree
+ever registered at boot. ADR 0015 + the `marketplace-integration` skill; guarded by
+`packages/config-eslint/rules/removed-plugin-contracts.test.js`, which now asserts
+both paths are ABSENT and scans every file under `packages/core/src`, because
+re-adding an interface fails nothing.
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
@@ -319,6 +353,18 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `@delfrance/data/admin/cache` (`createReadCache` / `createCachedDocReader`)
   via the `firestore-read-cache` skill; TTL is mandatory and *is* the staleness
   bound. **Never** cache a `tx.get()`, an OAuth token, or a value you write back.
+- **Data that should expire → a Firestore TTL policy**, a `fieldOverrides` entry
+  (`"ttl": true`) in `firestore.indexes.json` that deploys with the indexes
+  (verified on Enterprise, #1639). The field is always a NEW `expiraEm:
+  ttlExpiry()` stamped by the writer — a real `Timestamp`, because the policy
+  silently ignores our numeric epochs — plus a `TTL_POLICIES` row in
+  `@delfrance/schemas` (`ttl.policies.test.ts` pairs the two). Only stamped docs
+  expire, so a row to keep simply gets no stamp. ⚠️ Never key a policy on an
+  existing date field: legacy `chat/*/mensagem.createdAt` is a Timestamp, and a
+  policy there would wipe the imported chat history. ⚠️ To turn one OFF, set
+  `"ttl": false`, deploy, and only THEN delete the entry: deleting the block alone
+  leaves the policy deleting in production (the `false` path verified on staging,
+  #1639; the delete-alone half is read from the CLI source, never measured).
 - **New CRUD screen** (`TableView` + `ObjectView`) → the `schema-driven-crud`
   skill. **New page or form in `apps/web`** → `apps/web/CLAUDE.md`.
 - **New channel webhook or OAuth callback** → its **own app**,
@@ -548,10 +594,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   type — never by the member set, which is not an identity: `'1' | '2'` is both
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
-- Firebase App Hosting deploys every Next app **except `webchat`** (static
-  export served by `firebase.json` hosting — 8 `apphosting.yaml` files, 9 Next
-  apps); heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
-  public pages are deferred. ⚠️ An `apphosting.yaml` carries only `runConfig` +
+- Firebase App Hosting deploys **every** Next app — 9 `apphosting.yaml` files, 9
+  Next apps, no exception since `webchat` (the one static export, served by
+  `firebase.json` hosting) was dropped on 2026-09-07; `firebase.json` no longer
+  has a `hosting` key at all. Heavy work goes to Cloud Functions. Public legal
+  pages live in `apps/legal`; broader public portal pages remain deferred.
+  ⚠️ An `apphosting.yaml` carries only `runConfig` +
   `env` — no build-root and no build command — so anything the **buildpack**
   gets wrong has to be fixed in the manifest itself (see the `next` pin under
   the catalog bullet below).
@@ -565,7 +613,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
   `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
-  **`next` in the 8 `apps/*/package.json` that have an `apphosting.yaml`** —
+  **`next` in the 9 `apps/*/package.json` that have an `apphosting.yaml`** —
   an exact literal there, never `catalog:` and never a `^` range. The App
   Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
   from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
@@ -588,13 +636,14 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
   "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
   and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
-  reference: the catalog is still where a bump *starts*, but it is **9
-  deliberate edits** — the catalog plus the 8 App Hosting app manifests — and
-  the guard above fails on drift. Its only remaining `catalog:` consumers are
-  `apps/webchat` (static export, no buildpack) and `packages/ui`'s
-  devDependency, which makes them load-bearing: literalise BOTH and
-  `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
-  next install. Do not bump it with `pnpm add` — under `catalogMode: strict`
+  reference: the catalog is still where a bump *starts*, but it is **10
+  deliberate edits** — the catalog plus the 9 App Hosting app manifests — and
+  the guard above fails on drift. ⚠️ `packages/ui`'s devDependency is now its
+  **SOLE** remaining `catalog:` consumer — `apps/webchat` was the other, deleted
+  with the webchat widget — which makes that one spec load-bearing: literalise it
+  and `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
+  next install, leaving the 9 app pins agreeing with nothing. There is no margin
+  left; a change that must touch it adds a replacement keeper in the same commit. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
   deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack
   honours it over any activated default, so CI runs only `corepack enable`

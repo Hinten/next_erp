@@ -263,7 +263,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
           <Text size="xs" c="dimmed">
             Reclamação Mercado Livre #{claimId}
           </Text>
-          <Button size="compact-xs" variant="light" onClick={() => setAberto(true)}>
+          <Button type="button" size="compact-xs" variant="light" onClick={() => setAberto(true)}>
             Ver situação e ações
           </Button>
         </Group>
@@ -291,6 +291,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
             )}
           </Group>
           <Button
+            type="button"
             size="compact-xs"
             variant="subtle"
             leftSection={<IconRefresh size={14} />}
@@ -406,6 +407,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                     a.verbos.some((v) => estado.data.acoesDisponiveis.includes(v)),
                   ).map((a) => (
                     <Button
+                      type="button"
                       key={a.acao}
                       size="compact-xs"
                       variant="light"
@@ -429,6 +431,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
                       do" visible instead of silently dropping it. */}
                   {mostraBotaoParcial && (
                     <Button
+                      type="button"
                       size="compact-xs"
                       variant="light"
                       color="red"

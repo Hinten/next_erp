@@ -10,6 +10,7 @@
  *   - 200 supported:true with friendly-keyed infCad (xNome→razaoSocial, xLgr→logradouro, …)
  *   - 200 supported:true infCad:[] on a no-match cStat (259)
  *   - 200 degraded on a transport error (NFeTransportError), never 5xx
+ *   - 500 (not degraded) when either side fails the XSD (NFeXsdValidationError, #1602)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +35,7 @@ import { NextResponse } from 'next/server';
 import {
   NFeCertError,
   NFeTransportError,
+  NFeXsdValidationError,
   consultarCadastro,
   getConsultaCadastroEndpoint,
   type ConsultaCadastroResult,
@@ -92,7 +94,7 @@ const RET_111: ConsultaCadastroResult = {
       UF: 'SP',
       cSit: '1',
       indCredNFe: '1',
-      indCredNFCe: '0',
+      indCredCTe: '0',
       xNome: 'EMPRESA TESTE LTDA',
       ender: {
         xLgr: 'RUA DAS FLORES',
@@ -137,6 +139,31 @@ describe('POST /api/nfe/consulta-cadastro', () => {
 
   it('400 on a malformed cnpj', async () => {
     const res = await POST(req({ cnpj: '123', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts an ALPHANUMERIC cnpj and forwards it verbatim to SEFAZ', async () => {
+    // ⚠️ This gate stung the most: everything behind it was already
+    // alfa-correct, and Consulta Cadastro is the ONLY registry that can answer
+    // for an alphanumeric CNPJ (RFB IN 2.229/2024) — BrasilAPI cannot.
+    const res = await POST(req({ cnpj: '12ABC34501DE35', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(consultarCadastro)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cnpj: '12ABC34501DE35' }),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: 400 when the two CHECK DIGITS are letters', async () => {
+    // The shape is `[0-9A-Z]{12}[0-9]{2}`, never `[0-9A-Z]{14}` — the DVs stay
+    // numeric. A rule that accepted fourteen letters would hand SEFAZ a value
+    // its own XSD facet refuses.
+    const res = await POST(req({ cnpj: '12ABC34501DEFG', uf: 'SP', filialId: FILIAL }));
+    expect(res.status).toBe(400);
+  });
+
+  it('⚠️ NEAR-MISS: 400 on a lowercase cnpj — the canonical form is uppercase', async () => {
+    const res = await POST(req({ cnpj: '12abc34501de35', uf: 'SP', filialId: FILIAL }));
     expect(res.status).toBe(400);
   });
 
@@ -251,5 +278,23 @@ describe('POST /api/nfe/consulta-cadastro', () => {
     vi.mocked(consultarCadastro).mockRejectedValue(new Error('retConsCad missing <infCons>'));
     const res = await POST(req());
     expect(res.status).toBe(500);
+  });
+
+  it('500 — not the degraded 200 — when SEFAZ reply fails the XSD (#1602)', async () => {
+    vi.mocked(consultarCadastro).mockRejectedValue(
+      new NFeXsdValidationError('retConsCad', [
+        {
+          message: "Element 'infCons': Missing child element(s). Expected is ( dhCons ).",
+          line: 1,
+        },
+      ]),
+    );
+    const res = await POST(req());
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('NFeXsdValidationError');
+    expect(body.error).toContain('<retConsCad>');
+    expect(body).not.toHaveProperty('degraded');
+    expect(body).not.toHaveProperty('infCad');
   });
 });

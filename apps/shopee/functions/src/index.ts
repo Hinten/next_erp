@@ -1,0 +1,1173 @@
+// Import side-effect first: registers global function options (region) before
+// any trigger is defined. See options.ts.
+//
+// ⚠️ This bare import is load-bearing precisely because it has NO binding —
+// there is nothing here to look unused, so `no-unused-vars` can never point
+// anyone at deleting it. Keep it that way, and keep it FIRST: ESM evaluates
+// modules in the order their import declarations appear, so a second
+// `from './options'` further down would satisfy `import/no-duplicates` by
+// merging INTO that one, moving the option registration after the trigger
+// modules. That un-registers the global options for every trigger in this file,
+// and it is invisible: the functions deploy fine, to the wrong region (#1108).
+import './options';
+
+import { FieldValue } from 'firebase-admin/firestore';
+import { logger } from 'firebase-functions/v2';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+
+import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
+import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
+
+import { runShopeeAuthorizationExpirySweep } from '../../lib/shopee/conta/expiracaoSweep';
+import { shopeeConfig } from '../../lib/shopee/env';
+import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
+import type { FasePacote } from '../../lib/shopee/etiqueta/faseEtiqueta';
+import { SHOPEE_NFE_UPLOAD_QUEUE } from '../../lib/shopee/nfe/constantesNfe';
+import { SHOPEE_ARRANJO_AUTOMATICO_DISABLED_ENV } from '../../lib/shopee/pedidos/arranjoAutomatico';
+import {
+  MOTIVO_ARRANJO_DESLIGADO,
+  MOTIVO_SWEEP_DESLIGADO,
+  MOTIVO_TASKS_DESABILITADO,
+  SHOPEE_ARRANJO_SWEEP_DISABLED_ENV,
+  runShopeeArranjoAutomaticoSweep,
+  type ArranjoAutomaticoSweepResult,
+} from '../../lib/shopee/pedidos/arranjoAutomaticoSweep';
+import { runShopeeEscrowSettlement } from '../../lib/shopee/pedidos/liquidacaoSweep';
+import {
+  RESERVA_TRAVADA_FLAG_ENV,
+  runReservaTravadaSweep,
+} from '../../lib/shopee/pedidos/reservaTravadaSweep';
+import { runShopeeLostPushSweep } from '../../lib/shopee/notificacoes/lostPushSweep';
+import {
+  SHOPEE_NOTIFICATION_QUEUE,
+  reprocessDeferredNotifications,
+  reprocessNotifications,
+} from '../../lib/shopee/notificacoes/notificacao';
+import {
+  SHOPEE_ORDER_BACKFILL_FLAG_ENV,
+  runShopeeOrderBackfill,
+} from '../../lib/shopee/notificacoes/orderBackfill';
+import { runShopeePushConfigMonitor } from '../../lib/shopee/notificacoes/pushConfigMonitor';
+import { SHOPEE_PRICE_SYNC_QUEUE } from '../../lib/shopee/precos/constantesPreco';
+import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
+import { createShopeeTaskScheduler } from '../../lib/shopee/shopeeTasks';
+import { getDb } from './lib/admin';
+import * as massImportHandlers from './processMassImport';
+import * as nfeUploadHandlers from './processNfeUpload';
+import * as notificationHandlers from './processNotification';
+import * as priceSyncHandlers from './processPriceSync';
+import * as stockSendHandlers from './sendStock';
+
+/**
+ * Shopee Cloud Functions (gen2), codebase `shopee`. Deployed as a
+ * deploy-artifact sub-build of `@delfrance/shopee-app` (see
+ * scripts/prepare-deploy.mjs and `firebase.shopee.deploy.json`, which ships
+ * INERT — the rollout is step 22's, #1530, and running it is a manual
+ * coordinated human step).
+ *
+ * Master plan step 3 (#1511) wires the resilient notification pipeline as a
+ * **Cloud Tasks queue** (`processShopeeNotification`, ./processNotification) +
+ * an `onSchedule` reprocess sweep, and adds the weekly authorization-expiry
+ * sweep that posts to the operator avisos inbox. Mirrors
+ * apps/mercado-pago/functions, with the deferred lane from
+ * apps/mercado-livre/functions.
+ *
+ * Master plan step 4 (#1512) adds the three DELIVERY BACKSTOPS — the lost-push
+ * sweep, the daily push-health monitor and the flag-gated order backfill. They
+ * are what decision P3 spends the receiver's cold-start cost on: everything
+ * Shopee's own retry ladder fails to deliver is recovered by a schedule here,
+ * never by the receiver.
+ *
+ * Master plan step 6 (#1514) adds the WEEKLY settlement sweep. ⚠️ It is not a
+ * backstop: nothing failed to arrive, because Shopee never sends a payment event
+ * at all — the final money exists only behind `get_escrow_list`, and a schedule
+ * is the only thing that can go and read it.
+ *
+ * Master plan step 8 (#1516) adds the WEEKLY stuck-reservation sweep — the
+ * fourth delivery backstop, and the only one that reaches past the 3-day
+ * lost-push window. It never ends a sale by itself: it re-drives the step-5
+ * import and surfaces what it cannot decide as an operator aviso.
+ *
+ * Master plan step 9 (#1517) adds the SECOND Cloud Tasks queue
+ * (`processShopeeMassImport`, ./processMassImport) — the resumable mass product
+ * import. ⚠️ Unlike every trigger above it, nothing here re-drives it: the
+ * handler re-enqueues onto its OWN queue for each scan/drain continuation and
+ * for the rate-limit pause, so there is no sweep behind it and a dropped
+ * dispatch leaves the job document `running` for ever. That is why its
+ * disposition table stamps the job `failed` rather than letting a dispatch end
+ * quietly, and why the rename-safety assertion below matters more for it than
+ * for the first queue.
+ *
+ * Master plan step 11 (#1519) adds the codebase's FIRST Firestore trigger,
+ * `onProdutoShopeeLinkChanged` (./onProdutoShopeeLinkChanged) — the owner of
+ * the Shopee half of `produtos.integracoesComProduto`, derived from the
+ * `prodshopee` link documents instead of from a stamp every writer has to
+ * remember. ⚠️ It is neither a schedule nor a queue, so neither exhaustiveness
+ * test above could see it: an `eventTrigger` export was read by NOTHING until
+ * `index.test.ts` gained the third map, `GATILHOS`. The failure that hole hides
+ * is the silent one — an `onDocument*` that omits `database` deploys fine,
+ * binds to the non-existent `(default)` and NEVER FIRES.
+ *
+ * Master plan step 12 (#1520) adds the THIRD Cloud Tasks queue
+ * (`sendShopeeStock`, ./sendStock) and THREE more `onSchedule`s
+ * (./sweepStock) — the stock sync, and the first thing in this codebase that
+ * writes a QUANTITY to Shopee. The sweeps discover what moved in the ERP and
+ * enqueue one task per `update_stock` call; the queue sends it and records the
+ * outcome on the link document. ⚠️ Like the mass import, the queue re-enqueues
+ * onto ITSELF — twice, for a paused conta and for a 429 — so its rename-safety
+ * assertion protects the MIDDLE of a run, not its start. ⚠️ And unlike every
+ * other tier here, the monthly `sweepShopeeStockReconciliacao` is the ONLY one
+ * that can see a listing whose ERP stock never moved, which is why it ships ON
+ * with no flag of its own: the single valve `SHOPEE_STOCK_SYNC_ENABLED` covers
+ * all four, and a second flag would let the corrector be off while an operator
+ * believed stock sync was on.
+ *
+ * Master plan step 13 (#1521) adds the FOURTH Cloud Tasks queue
+ * (`processShopeePriceSync`, ./processPriceSync) — the account-wide price job
+ * ("Atualizar preços"). It is the mass import's shape: a job document is the
+ * checkpoint, the `/atualizar-precos` route enqueues the first dispatch and the
+ * handler re-enqueues onto ITSELF for every plan/drain continuation, for a burst
+ * pause and for the daily-quota park — three self-re-enqueue arms, and no sweep
+ * behind any of them. No `onSchedule` arrives with it: every run is an
+ * operator's click (the manual push runs in-process and never enqueues).
+ *
+ * Master plan step 14 (#1522) adds the FIFTH Cloud Tasks queue
+ * (`processShopeeNfeUpload`, ./processNfeUpload) and the SECOND Firestore
+ * trigger (`onNfeAprovadaShopee`, ./onNfeAprovadaShopee) — the NF-e XML upload
+ * that must land before `ship_order`. The trigger enqueues on the EDGE into
+ * "approved" (never on the level: the window's `nfe-totais` migration rewrites
+ * every approved document), held for the SERPRO window; the handler re-enqueues
+ * onto ITSELF for the SERPRO wait, the burst pause, the daily park and the
+ * ~15-min recheck. ⚠️ There is NO sweep behind either: with the valve shut the
+ * trigger raises one aviso per pedido instead, and `/enviar-nfe` / `enviar:nfe`
+ * are the re-drives. ⚠️ The trigger is NOT named `onNfeAprovada` — Mercado
+ * Livre's codebase deploys that name into the same project (#1707).
+ *
+ * Master plan step 15b (#1744) adds the ELEVENTH `onSchedule`,
+ * `sweepShopeeAutoArrange` — the five-minute poll behind the automatic arrange
+ * of a Turbo package. It writes nothing and arranges nothing itself: it
+ * enqueues synthetic notifications onto `processShopeeNotification`, whose
+ * code-30 arm owns the arrange. ⚠️ It is NOT a pure backstop: when the NF-e is
+ * validated after the package's last push, Shopee documents no push at all, so
+ * for that case this tick is the PRIMARY signal.
+ */
+
+/**
+ * The Shopee partner credentials, bound to every trigger that can reach a
+ * PUBLIC-signed Shopee call.
+ *
+ * ⚠️ It covers the eight `onSchedule` triggers defined in THIS file only. The
+ * FIVE queue functions — `processShopeeNotification` (./processNotification),
+ * `processShopeeMassImport` (./processMassImport, master plan step 9),
+ * `sendShopeeStock` (./sendStock, step 12), `processShopeePriceSync`
+ * (./processPriceSync, step 13) and `processShopeeNfeUpload`
+ * (./processNfeUpload, step 14) — and the three step-12 sweeps
+ * (./sweepStock) each declare their own copy of the same two names, each pinned
+ * by its own module's test, so this constant does not by itself stop a NEW
+ * trigger picking a different subset; the exact-set assertions do, and
+ * `index.test.ts` makes them mandatory for both families: `AGENDAMENTOS` plus
+ * its exhaustiveness test for the schedules, `FILAS` plus its own for the
+ * queues. Either map missing an export is what keeps the count from silently
+ * going stale again.
+ *
+ * ⚠️ Without these the sweep and the conta arms of the queue handlers throw
+ * `ShopeeConfigError` on their first call, which the pipeline treats as
+ * transient — so the symptom is retries and parked documents, not a startup
+ * failure that names the missing binding.
+ */
+const SHOPEE_SECRETS = ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'];
+
+// Rename-safety: the DEPLOYED function name is the export KEY of the handler
+// below, and the receiver enqueues against `SHOPEE_NOTIFICATION_QUEUE`. ESM
+// export names must be static literals (you can't compute an `export const`
+// name), so instead of deriving one from the other we assert — at module load,
+// i.e. during Firebase's deploy codebase-analysis — that they never drifted. A
+// rename that updates only one side fails the deploy loudly here instead of
+// silently enqueuing onto a queue that doesn't exist.
+if (!(SHOPEE_NOTIFICATION_QUEUE in notificationHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processNotification.ts must export a ' +
+      `handler named '${SHOPEE_NOTIFICATION_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_NOTIFICATION_QUEUE constant together.',
+  );
+}
+
+/** The queue-based notification processor (rate-limited, retry-with-backoff). */
+export { processShopeeNotification } from './processNotification';
+
+// The same rename-safety assertion for the SECOND queue of this codebase (master
+// plan step 9's mass product import). It is a separate `if` rather than a loop
+// over the two on purpose: the message has to name the FILE to fix, and the
+// two constants live in different modules.
+//
+// ⚠️ This one has a second enqueuer the notification queue does not: the handler
+// re-enqueues onto its OWN queue for every scan/drain continuation and for the
+// rate-limit pause, so a half-rename here breaks the job MID-RUN — the first
+// dispatch works, the continuation is enqueued onto a queue that does not exist,
+// and the job stays `running` for ever with nothing to re-drive it.
+if (!(SHOPEE_MASS_IMPORT_QUEUE in massImportHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processMassImport.ts must export a ' +
+      `handler named '${SHOPEE_MASS_IMPORT_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_MASS_IMPORT_QUEUE constant together.',
+  );
+}
+
+/** The queue-based mass product import (one dispatch at a time, self-continued). */
+export { processShopeeMassImport } from './processMassImport';
+
+// The same rename-safety assertion for the THIRD queue of this codebase (master
+// plan step 12's stock push). Its OWN `if`, never folded into a loop over the
+// three: the message has to name the FILE to fix, and the three constants live
+// in three different modules.
+//
+// ⚠️ This one carries the mass import's hazard TWICE OVER. The handler
+// re-enqueues onto its own queue from two arms — the pause rung (the conta was
+// paused between the plan and the dispatch) and the burst arm (a 429) — so a
+// half-rename does not break the first dispatch, it breaks the sweep MID-RUN:
+// the tasks that went out before the pause landed, the re-enqueued ones aim at
+// a queue that does not exist, and every surface still reports success while
+// those listings keep the quantity they had.
+if (!(SHOPEE_STOCK_SEND_QUEUE in stockSendHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/sendStock.ts must export a ' +
+      `handler named '${SHOPEE_STOCK_SEND_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_STOCK_SEND_QUEUE constant together.',
+  );
+}
+
+/** The queue-based stock push — one task, one `update_stock`, self-re-enqueued. */
+export { sendShopeeStock } from './sendStock';
+
+// The same rename-safety assertion for the FOURTH queue of this codebase (master
+// plan step 13's account-wide price job). Its OWN `if`, never folded into a loop
+// over the four: the message has to name the FILE to fix, and the four
+// constants live in four different modules.
+//
+// ⚠️ This one has the mass import's hazard with a THIRD arm. The handler
+// re-enqueues onto its own queue for every plan/drain continuation, for a burst
+// pause and for the daily-quota park, so a half-rename does not break the
+// route's first dispatch — it breaks the CONTINUATION: the re-enqueued task aims
+// at a queue that does not exist, the enqueue still returns success, and the job
+// document stays `running` until the six-hour orphan reclaim takes it.
+if (!(SHOPEE_PRICE_SYNC_QUEUE in priceSyncHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processPriceSync.ts must export a ' +
+      `handler named '${SHOPEE_PRICE_SYNC_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_PRICE_SYNC_QUEUE constant together.',
+  );
+}
+
+/** The queue-based account-wide price job (one dispatch at a time, self-continued). */
+export { processShopeePriceSync } from './processPriceSync';
+
+// The same rename-safety assertion for the FIFTH queue of this codebase (master
+// plan step 14's NF-e upload). Its OWN `if`, never folded into a loop over the
+// five: the message has to name the FILE to fix, and the five constants live in
+// five different modules.
+//
+// ⚠️ Two producers aim at this name from OUTSIDE the handler — the
+// `onNfeAprovadaShopee` trigger and the `/enviar-nfe` route — and the handler
+// re-enqueues onto it for the SERPRO wait, the pauses and the recheck. A
+// half-rename therefore drops the FIRST upload of every approved NF-e while
+// both producers report success, and there is no NF-e sweep to find it later.
+if (!(SHOPEE_NFE_UPLOAD_QUEUE in nfeUploadHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processNfeUpload.ts must export a ' +
+      `handler named '${SHOPEE_NFE_UPLOAD_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_NFE_UPLOAD_QUEUE constant together.',
+  );
+}
+
+/** The queue-based NF-e XML upload (one dispatch at a time, self re-enqueued). */
+export { processShopeeNfeUpload } from './processNfeUpload';
+
+// Master plan step 11 (#1519): the Shopee half of `produtos.integracoesComProduto`,
+// derived from the `prodshopee` links. No `secrets:` — it never calls Shopee.
+export { onProdutoShopeeLinkChanged } from './onProdutoShopeeLinkChanged';
+
+// Master plan step 14 (#1522): the NF-e approval trigger, the first producer of
+// `processShopeeNfeUpload`. No `secrets:` — it never calls Shopee.
+export { onNfeAprovadaShopee } from './onNfeAprovadaShopee';
+
+/**
+ * Reprocess backstop, draining BOTH retry lanes on the same tick:
+ *
+ *  - the HOT lane — persisted `failed` pushes older than 1h (the queued task
+ *    exhausted its retries, or the receiver could not enqueue at all because
+ *    `SHOPEE_TASKS_DISABLED` was on or the queue was unreachable);
+ *  - the DEFERRED lane — a push whose `shop_id` matches no ACTIVE Shopee
+ *    integração, waiting on an operator to connect that shop, on a 24h window
+ *    and a horizon of `MAX_TENTATIVAS_DEFERRED` days.
+ *
+ * Both run each doc inline, per-doc isolated, deduped, bounded — success deletes
+ * the doc, a persistent blocker parks it at its lane's cap.
+ *
+ * The deferred lane rides this 30-minute schedule rather than an `onSchedule` of
+ * its own because its 24h WINDOW is already the per-doc cadence: 47 runs out of
+ * 48 it is one indexed query that returns nothing.
+ *
+ * Secrets: the conta arms sign a PUBLIC Shopee call, so a re-drive needs the
+ * partner credentials bound exactly as the queue handler does.
+ */
+export const reprocessShopeeNotifications = onSchedule(
+  {
+    schedule: 'every 30 minutes',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to a bounded page of docs processed SEQUENTIALLY, each of which may
+    // make a Shopee round trip — the gen2 60s onSchedule default cannot absorb
+    // that. 540s matches the sweep below.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const hotMark = readCacheMark();
+    const result = await reprocessNotifications(getDb());
+    logger.info('[shopee] reprocess sweep', {
+      processed: result.processed,
+      outcomes: result.outcomes,
+      errorCount: result.errors.length,
+      // Read-cache hits/misses accrued by THIS lane. Reports the SWEEP process's
+      // caches, not the task consumer's — they are separate deployments.
+      readCache: readCacheDelta(hotMark),
+    });
+    if (result.errors.length > 0) {
+      logger.warn('[shopee] reprocess sweep had per-doc failures', {
+        errors: result.errors.slice(0, 10),
+      });
+    }
+
+    // The deferred lane is logged SEPARATELY, never merged into the counts
+    // above: the two answer different operational questions ("is processing
+    // healthy" vs "how many shops still owe us a connect"), and summing them
+    // would hide a growing deferred backlog inside a healthy `processed`.
+    const deferredMark = readCacheMark();
+    const deferred = await reprocessDeferredNotifications(getDb());
+    logger.info('[shopee] deferred lane sweep', {
+      processed: deferred.processed,
+      outcomes: deferred.outcomes,
+      errorCount: deferred.errors.length,
+      readCache: readCacheDelta(deferredMark),
+    });
+    if (deferred.errors.length > 0) {
+      logger.warn('[shopee] deferred lane sweep had per-doc failures', {
+        errors: deferred.errors.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The WEEKLY authorization-expiry sweep (master plan P8).
+ *
+ * A Shopee consent lasts 7–365 days and nothing renews it: when it lapses every
+ * order import, stock push and label stops at once, and the legacy Flutter app
+ * never read that clock at all — the first signal was the day everything went
+ * quiet. This walks the partner's authorized shops (`get_shops_by_partner`,
+ * PUBLIC-signed, so no token is read anywhere in it) and raises an operator
+ * aviso at 30 days or less, resolving it once a re-consent pushes the clock
+ * back out.
+ *
+ * Monday 04:00 America/Sao_Paulo: a weekly cadence is enough for a 30-day
+ * horizon, and the aviso does not nag — a repeat bumps `ocorrencias` and
+ * refreshes the day count without moving `criadoEm`.
+ *
+ * Shopee's `push 12` describes the same expiry from the other side and runs the
+ * SAME producer scoped to the shops it names, so the two collapse onto one aviso
+ * row rather than racing to create two.
+ */
+export const sweepShopeeAuthorizationExpiry = onSchedule(
+  {
+    schedule: '0 4 * * 1',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // One enumeration page per 100 shops plus a Firestore round trip per shop,
+    // sequentially — the gen2 60s onSchedule default cannot absorb that.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const mark = readCacheMark();
+    const result = await runShopeeAuthorizationExpirySweep(getDb(), {
+      partnerClient: createShopeePartnerClient(shopeeConfig()),
+      // Injected because `packages/data/src/admin/**` may only `import type`
+      // from firebase-admin — the aviso counter is a tier-0 FieldValue, so two
+      // producers landing together cannot lose each other's bump.
+      increment: (by: number) => FieldValue.increment(by),
+      nowMs: Date.now(),
+      logger,
+    });
+    logger.info('[shopee] authorization expiry sweep', {
+      lojasEnumeradas: result.lojasEnumeradas,
+      paginasLidas: result.paginasLidas,
+      // A truncated walk means `lojasEnumeradas` is a PREFIX — the shops past
+      // the page cap were not examined at all.
+      truncado: result.truncado,
+      // ⚠️ Never sum `semIntegracao` with `avisados`: it counts shops the sweep
+      // deliberately did NOT act on, and adding the two would read as coverage.
+      semIntegracao: result.semIntegracao,
+      avisados: result.avisados,
+      resolvidos: result.resolvidos,
+      // The per-verdict breakdown behind `avisados`: "30 shops, 30 criado" and
+      // "30 shops, 30 repetido" must not look alike in a log.
+      resultados: result.resultados,
+      errorCount: result.erros.length,
+      readCache: readCacheDelta(mark),
+    });
+    if (result.erros.length > 0) {
+      logger.warn('[shopee] authorization expiry sweep had per-shop failures', {
+        erros: result.erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The LOST-PUSH sweep (master plan step 4, #1512) — the backstop decision P3
+ * spends the receiver's cold-start cost on.
+ *
+ * A push that exhausts Shopee's own ladder (+5 min / +30 min / +3 h) lands in a
+ * partner-level queue holding "the earliest 100 lost within 3 days and not
+ * confirmed". Paging is cursor-by-ACKNOWLEDGEMENT: the only way to advance is
+ * to confirm, so ONE entry we never make durable blocks every later one until
+ * it expires. That is the ordering rule the sweep body is built around — every
+ * entry enqueued, persisted `failed` or parked FIRST, then one confirm per
+ * page, and never a confirm on an empty page.
+ *
+ * Every 2 h at :20 — 36 ticks inside the 3-day window, so losing 30 consecutive
+ * ticks still leaves 12 h of margin (the invariant `index.test.ts` derives from
+ * the cron literal). The :20 keeps it clear of the 30-minute reprocess sweep's
+ * :00/:30 and of the Monday 04:00 walk, all of which draw on one undocumented
+ * rate-limit budget — `rate_limit` is published EMPTY on both push pages.
+ *
+ * Secrets: both provider calls are PUBLIC-signed, so they still work when every
+ * conta's access token is dead — which is exactly when they matter — but they
+ * are signed with the partner key all the same.
+ *
+ * ⚠️ This function ENQUEUES. Its runtime service account therefore needs
+ * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on
+ * `processShopeeNotification`, and `TASKS_INVOKER_SA` is AUTHORITATIVE — a
+ * deploy REPLACES the members of both bindings, so an identity left out of that
+ * list LOSES the role. See functions/DEPLOY.md; granting it is step 22's.
+ */
+export const sweepShopeeLostPushes = onSchedule(
+  {
+    schedule: '20 */2 * * *',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to 5 pages × 100 sequential enqueues plus two provider round trips per
+    // page — the gen2 60s onSchedule default cannot absorb that.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin
+    // app exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runShopeeLostPushSweep(getDb(), {
+      partnerClient: createShopeePartnerClient(shopeeConfig()),
+      // No `region:` anywhere in this file — `options.ts` sets it globally, and
+      // it already defaults `SHOPEE_TASKS_REGION` to the inlined
+      // `FUNCTIONS_REGION` for exactly this case, "a sweep re-driving a push
+      // through the queue". Do not copy `apps/mercado-livre`'s explicit region:
+      // its functions and its backend live in different regions, Shopee's do
+      // not, and `no-hardcoded-gcp-region` is the backstop either way.
+      scheduler: createShopeeTaskScheduler(),
+      nowMs: Date.now(),
+      logger,
+    });
+    logger.info('[shopee] lost push sweep', {
+      paginas: result.paginas,
+      encontradas: result.encontradas,
+      enfileiradas: result.enfileiradas,
+      persistidas: result.persistidas,
+      // Unreadable entries confirmed PAST — never summed with `enfileiradas`:
+      // one is recovery, the other is a terminal row an operator must look at.
+      paradas: result.paradas,
+      duplicadas: result.duplicadas,
+      // PAGES, not entries — the ack is per page. `confirmadas < paginas` means
+      // a page was left for the next tick, which is the safe direction and the
+      // whole design.
+      confirmadas: result.confirmadas,
+      truncado: result.truncado,
+      maisAntigaMs: result.maisAntigaMs,
+      // The `"error": "-"` doc contradiction (D1), settled by live traffic:
+      // this is the GETTER envelope's `error` VERBATIM — the confirm's would be
+      // absent on exactly the rehearsal tick
+      // (`SHOPEE_LOST_PUSH_CONFIRM_DISABLED`) this field exists for. Delete the
+      // field once a week of ticks has read the same value.
+      envelopeError: result.envelopeError,
+      errorCount: result.erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (result.erros.length > 0) {
+      logger.warn('[shopee] lost push sweep had page failures', {
+        erros: result.erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The DAILY push-health monitor (master plan step 4, #1512).
+ *
+ * `get_app_push_config.live_push_status` is the only API surface on Shopee's
+ * warning/auto-disable ladder (>600 pushes / 6 h AND <70 % success ⇒ Warning;
+ * AND <30 % ⇒ the subscription is DISABLED). There is no API for the success
+ * rate itself — the Console is the only place it exists — and a suspension
+ * loses everything not already in the 3-day lost-push queue, which is why the
+ * sweep above does NOT cover it and why the suspended aviso is `critico`.
+ *
+ * Daily at 05:45: one Public GET and one reading, on a minute nothing else in
+ * this codebase shares, fresh when the operator's day starts. ⚠️ The reading is
+ * meaningless until the production callback URL points at the deployed receiver
+ * — a human step (#1534 / #1208).
+ *
+ * ⚠️ It never calls `set_app_push_config`, and the package exposes no such
+ * operation: that absence is the enforcement. The config is app-wide with a
+ * single `callback_url`, setting it fires a live test push, and its partial-body
+ * semantics are undocumented — a read-modify-write would drop every code above
+ * 13, which is most of them.
+ */
+export const monitorShopeePushConfig = onSchedule(
+  {
+    schedule: '45 5 * * *',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // ⚠️ Deliberately NOT 540. One provider GET plus at most three aviso round
+    // trips; 540 would claim this might legitimately take nine minutes and
+    // would hide a hang for that long — `shopeeCall` carries no timeout of its
+    // own.
+    timeoutSeconds: 120,
+  },
+  async () => {
+    const mark = readCacheMark();
+    const result = await runShopeePushConfigMonitor(getDb(), {
+      partnerClient: createShopeePartnerClient(shopeeConfig()),
+      // Injected because `packages/data/src/admin/**` may only `import type`
+      // from firebase-admin — the aviso counter is a tier-0 FieldValue, so two
+      // producers landing together cannot lose each other's bump.
+      increment: (by: number) => FieldValue.increment(by),
+      nowMs: Date.now(),
+      logger,
+    });
+    logger.info('[shopee] push config monitor', {
+      status: result.status,
+      // Shopee's string VERBATIM — the only record of a value we do not know,
+      // and what settles the documented `Suspended` against the page's own
+      // lowercase `suspended` sample.
+      statusBruto: result.statusBruto,
+      avisados: result.avisados,
+      // Rows actually CLOSED — a transition, never "we asked about two rows".
+      resolvidos: result.resolvidos,
+      resultados: result.resultados,
+      callbackDivergente: result.callbackDivergente,
+      codigosDesligados: result.codigosDesligados,
+      lojasBloqueadas: result.lojasBloqueadas,
+      readCache: readCacheDelta(mark),
+    });
+    // The three log-only findings: no aviso tipo exists for any of them, so a
+    // warn is the whole signal. They are raised together because each one alone
+    // is a configuration answer to "why did a push never arrive".
+    if (
+      result.callbackDivergente ||
+      result.codigosDesligados.length > 0 ||
+      result.lojasBloqueadas > 0
+    ) {
+      logger.warn('[shopee] push config divergences', {
+        callbackDivergente: result.callbackDivergente,
+        codigosDesligados: result.codigosDesligados,
+        lojasBloqueadas: result.lojasBloqueadas,
+      });
+    }
+  },
+);
+
+/**
+ * The ORDER BACKFILL (master plan step 4, #1512) — the 15-minute safety net
+ * behind the push receiver, and the ONLY documented recovery from a suspended
+ * subscription: "you will not receive Push Mechanism notifications missed
+ * during the period where your subscription was disabled", which the lost-push
+ * queue does not cover either.
+ *
+ * Per active conta it pages `get_order_list` on `update_time` from a durable
+ * per-conta cursor with overlap, and enqueues one SYNTHETIC code-3 notification
+ * per `order_sn` — the same import path a real push takes, so the step-5 arms
+ * stay the single writer. It is also the only way to reach `PENDING`,
+ * `RETRY_SHIP`, `TO_CONFIRM_RECEIVE` and `TO_RETURN` orders, which Shopee's
+ * `order_status` filter cannot list (hence: no status filter, ever).
+ *
+ * ⚠️ SINGLY GATED since step 5. `SHOPEE_ORDER_BACKFILL_ENABLED === '1'` ships
+ * OFF and is now the ONLY gate: the structural guard (the sweep refuses while
+ * `destinoDoCodigo(3) === 'parado'`) flipped itself the moment `DISPATCH[3]`
+ * became `'pedido'`, exactly as designed. Turning the flag on is a runtime env
+ * change for the migration window — the first enabled tick enqueues one task
+ * per order in the cursor window, and each one writes a pedido.
+ *
+ * ⚠️ This function ENQUEUES and it is Shop-signed: the same `TASKS_INVOKER_SA`
+ * requirement as the lost-push sweep above, plus a live access token per conta.
+ */
+export const backfillShopeeOrders = onSchedule(
+  {
+    schedule: 'every 15 minutes',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to 20 pages per conta, sequentially, each followed by one enqueue per
+    // order — the gen2 60s onSchedule default cannot absorb that.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const mark = readCacheMark();
+    const result = await runShopeeOrderBackfill(getDb(), {
+      scheduler: createShopeeTaskScheduler(),
+      nowMs: Date.now(),
+      logger,
+    });
+    if (!result.enabled) {
+      // ONE info line, naming the variable, so "why is nothing importing" is
+      // answerable from the log without reading the source. Nothing was read on
+      // this tick: not Firestore, not Shopee.
+      logger.info('[shopee] order backfill inativo — nada lido', {
+        motivo: result.motivo,
+        flag: SHOPEE_ORDER_BACKFILL_FLAG_ENV,
+      });
+      return;
+    }
+    const erros = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] order backfill', {
+      contas: result.contas.length,
+      // ⚠️ Never summed with `processadas`: it counts contas connected by main
+      // account only, which cannot be shop-signed at all, and adding the two
+      // would read as coverage.
+      semShopId: result.semShopId,
+      processadas: result.contas.filter((conta) => conta.pulada === null).length,
+      paginasLidas: result.contas.reduce((total, conta) => total + conta.paginas, 0),
+      pedidosEncontrados: result.contas.reduce((total, conta) => total + conta.ordersFound, 0),
+      enfileirados: result.contas.reduce((total, conta) => total + conta.enqueued, 0),
+      duplicadosNoTick: result.contas.reduce((total, conta) => total + conta.duplicadas, 0),
+      janelasDrenadas: result.contas.filter((conta) => conta.drenada).length,
+      // A truncated window advances NOTHING and persists a pending triple — the
+      // next tick replays it. A count that stays high tick after tick is a
+      // conta that can no longer keep up, and that is invisible in every other
+      // counter here.
+      janelasTruncadas: result.contas.filter((conta) => conta.truncada).length,
+      janelasRetomadas: result.contas.filter((conta) => conta.retomada).length,
+      errorCount: erros.length,
+      readCache: readCacheDelta(mark),
+    });
+    if (erros.length > 0) {
+      logger.warn('[shopee] order backfill com falhas por conta', {
+        erros: erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The variable an operator flips for each reason the auto-arrange sweep did not
+ * run — keyed by the sweep's own `motivo` constants, so a fourth reason without
+ * a row here does not compile.
+ */
+const VARIAVEL_DO_MOTIVO_ARRANJO = {
+  [MOTIVO_SWEEP_DESLIGADO]: SHOPEE_ARRANJO_SWEEP_DISABLED_ENV,
+  [MOTIVO_ARRANJO_DESLIGADO]: SHOPEE_ARRANJO_AUTOMATICO_DISABLED_ENV,
+  // `shopeeTasks.ts` reads this one through `shopeeTasksDesabilitado()` and
+  // exports no constant for its name.
+  [MOTIVO_TASKS_DESABILITADO]: 'SHOPEE_TASKS_DISABLED',
+} as const satisfies Record<NonNullable<ArranjoAutomaticoSweepResult['motivo']>, string>;
+
+/**
+ * The AUTO-ARRANGE SWEEP (master plan step 15b, #1744) — every five minutes,
+ * per active conta, ONE `search_package_list` for the packages of the
+ * auto-arrange channels (`CANAIS_ARRANJO_AUTOMATICO`) that are ready to ship
+ * and not invoice-pending, then ONE batched `get_package_detail` and the shared
+ * eligibility predicate. Each candidate becomes ONE synthetic code 30 onto
+ * `processShopeeNotification`, whose arm runs the arrange
+ * (`lib/shopee/pedidos/arranjoAutomatico.ts`) — the schedule never calls
+ * `ship_order` itself. A package whose pedido does not exist yet gets ONE
+ * synthetic code 3 per order instead; the next tick finds the pedido.
+ *
+ * ⚠️ NOT a pure backstop, unlike the four delivery backstops in this file
+ * (the lost-push sweep, the push monitor, the backfill and the stuck-reservation
+ * sweep). When the NF-e is validated after the package's last push, Shopee
+ * documents NO push for the package becoming arrangeable, so for that case —
+ * the normal BR one — this tick is the PRIMARY signal, and its cadence is its
+ * whole term in 1573's 15-minute SLA.
+ *
+ * Every five minutes on the minutes ≡ 2 (mod 5): no minute shared with the
+ * eight fixed-minute crons, every one of whose minutes is a multiple of five —
+ * a property `index.test.ts` DERIVES from the crons rather than trusting this
+ * sentence. The two `every N minutes` schedules (the reprocess sweep and the
+ * backfill) have no fixed minute, so no choice of minutes here can avoid them;
+ * the test reads them ALIGNED (multiples of N from :00), the one reading under
+ * which a choice of minutes matters at all. `every 5 minutes` would land on all
+ * eight crons, against one undocumented per-APP rate-limit budget.
+ *
+ * ⚠️ It ships ON, with its own opt-in-to-DISABLE valve
+ * `SHOPEE_ARRANJO_SWEEP_DISABLED` (exactly `'1'`), and it also stops — reading
+ * NOTHING, not Firestore, not Shopee — when the arrange itself is off
+ * (`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`: every task would only re-run the frete
+ * merge and answer `desligado`) or the queue is (`SHOPEE_TASKS_DISABLED`): no
+ * task would land at all, and the scheduler's `ShopeeTasksDisabledError` is
+ * inside `erroContidoPorConta`, so learning it by a catch would read as N
+ * contained per-conta failures under a green tick. The sweep READS that valve
+ * before deciding, rather than catching the throw.
+ *
+ * ⚠️ Its own code writes NOTHING to Firestore and runs no transaction (a conta
+ * whose access token is due pays the token store's renewal lease inside its
+ * first Shopee call, as every shop-signed caller does; a dead grant is skipped
+ * before any); the only guard between it, a push and an operator's click is
+ * Shopee's own
+ * (`is_shipment_arranged`, `package_already_shipped`). It ENQUEUES and it is
+ * Shop-signed: the same `TASKS_INVOKER_SA` requirement as the lost-push sweep,
+ * the backfill and the settlement sweep, plus a live access token per conta.
+ */
+export const sweepShopeeAutoArrange = onSchedule(
+  {
+    schedule: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // ⚠️ Deliberately BELOW the 300 s between ticks, and NOT the 540 the other
+    // per-conta sweeps here carry, so that a slow tick rarely hands the next
+    // one the same packages to enqueue twice. What holds is BOUNDED, not
+    // structural: Cloud Scheduler's attempt deadline follows this number
+    // (240 s) and the job sets no retry, so the Scheduler never starts a
+    // second attempt of one tick; and the sweep stops STARTING contas once its
+    // own per-tick budget (`PRAZO_DO_TICK_ARRANJO_MS`, 200 s — `index.test.ts`
+    // pins it below this number) is spent. Neither stops a call already in
+    // flight — a timed-out request answers 504, nothing here shows the platform
+    // killing the handler, and `shopeeCall` has no timeout of its own (#1094) —
+    // so ONE hung call can still outlive the next tick's start. The cost is a
+    // duplicate enqueue, never a double ship: the guard between arrangers is
+    // Shopee's (`is_shipment_arranged`, `package_already_shipped`). The ceiling
+    // per conta is 5 search pages, 10 batched detail reads, 100 pedido reads
+    // and 100 enqueues; the steady state is ONE search that answers nothing.
+    timeoutSeconds: 240,
+    // No `region:` anywhere in this file — `options.ts` sets it globally.
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin app
+    // exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runShopeeArranjoAutomaticoSweep(getDb(), {
+      scheduler: createShopeeTaskScheduler(),
+      nowMs: Date.now(),
+      logger,
+    });
+    if (!result.enabled) {
+      // ONE info line, naming the variable, so "why is nothing being arranged"
+      // is answerable from the log without reading the source. Nothing was read
+      // on this tick: not Firestore, not Shopee.
+      logger.info('[shopee] auto-arrange sweep inativo — nada lido', {
+        motivo: result.motivo,
+        variavel: result.motivo === null ? null : VARIAVEL_DO_MOTIVO_ARRANJO[result.motivo],
+      });
+      return;
+    }
+    const somar = (pegar: (conta: (typeof result.contas)[number]) => number): number =>
+      result.contas.reduce((total, conta) => total + pegar(conta), 0);
+    // Every phase PRESENT, zeros included, even on a tick that walked no conta:
+    // an absent key is indistinguishable from an arm that never existed.
+    // `satisfies` makes the set total at compile time, both directions.
+    const fases = {
+      'nfe-pendente': 0,
+      'nao-pronto': 0,
+      retido: 0,
+      programar: 0,
+      arranjado: 0,
+      'janela-fechada': 0,
+      inelegivel: 0,
+      desconhecido: 0,
+    } satisfies Record<FasePacote, number>;
+    for (const conta of result.contas) {
+      for (const fase of Object.keys(fases) as FasePacote[]) fases[fase] += conta.fases[fase];
+    }
+    const erros = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] auto-arrange sweep', {
+      contas: result.contas.length,
+      // ⚠️ Never summed with `processadas`: it counts contas connected by main
+      // account only, which cannot be shop-signed at all.
+      semShopId: result.semShopId,
+      // ⚠️ Never summed with `processadas` either: a dead grant — a refresh the
+      // token store stamped TERMINAL — waits for a re-consent, costs no Shopee
+      // call, and is NOT in `contas`. A count that stays above zero is a seller
+      // to call, not an outage.
+      reconexaoPendente: result.reconexaoPendente,
+      processadas: result.contas.filter((conta) => conta.error === null).length,
+      paginasLidas: somar((conta) => conta.paginasLidas),
+      // Shopee's own `total_count` — a diagnostic, never the loop's bound.
+      totalInformado: somar((conta) => conta.totalInformado),
+      linhas: somar((conta) => conta.linhas),
+      ilegiveisNaBusca: somar((conta) => conta.ilegiveisNaBusca),
+      duplicadas: somar((conta) => conta.duplicadas),
+      jaArranjadosNaBusca: somar((conta) => conta.jaArranjadosNaBusca),
+      // Register 224's instrument: a row on a KNOWN channel the server-side
+      // filter should have excluded. Anything above zero is evidence.
+      foraDoCanal: somar((conta) => conta.foraDoCanal),
+      consultadosNoDetalhe: somar((conta) => conta.consultadosNoDetalhe),
+      ausentesNoDetalhe: somar((conta) => conta.ausentesNoDetalhe),
+      ilegiveisNoDetalhe: somar((conta) => conta.ilegiveisNoDetalhe),
+      foraDoCanalNoDetalhe: somar((conta) => conta.foraDoCanalNoDetalhe),
+      // A `null` channel on the FRESH row: UNKNOWN, not off the set, so it is
+      // kept out of register 224 — above zero reads as a schema drift.
+      canalDesconhecidoNoDetalhe: somar((conta) => conta.canalDesconhecidoNoDetalhe),
+      naoConsultadosPeloLimite: somar((conta) => conta.naoConsultadosPeloLimite),
+      fases,
+      // Register 222's instrument: a package the `invoice_pending: false`
+      // filter RETURNED whose fresh detail says pending. Above zero proves
+      // `false` means "no filter"; zero proves nothing.
+      nfePendenteNaBusca: somar((conta) => conta.nfePendenteNaBusca),
+      enfileiradosPacote: somar((conta) => conta.enfileiradosPacote),
+      enfileiradosPedido: somar((conta) => conta.enfileiradosPedido),
+      // Absent-pedido orders NOT re-enqueued: today's code-3 failure row already
+      // stands, so the import failed once today and waits for the UTC day.
+      pedidosComFalhaHoje: somar((conta) => conta.pedidosComFalhaHoje),
+      pacotesComFalhaHoje: somar((conta) => conta.pacotesComFalhaHoje),
+      // A truncated conta is re-read from page 1 on the next tick — there is no
+      // cursor. A count that stays high tick after tick is a conta that can no
+      // longer keep up, and that is invisible in every other counter here.
+      contasTruncadas: result.contas.filter((conta) => conta.truncada).length,
+      // A rate limit ABORTS the tick: the contas after it were not walked at all.
+      interrompidoPorLimite: result.interrompidoPorLimite,
+      // The tick's own budget (`PRAZO_DO_TICK_ARRANJO_MS`) was spent: no conta
+      // after the last one started was walked. The next tick starts again from
+      // the first conta, so a persistently slow head starves the same tail.
+      interrompidoPorPrazo: result.interrompidoPorPrazo,
+      errorCount: erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (erros.length > 0) {
+      logger.warn('[shopee] auto-arrange sweep com falhas por conta', {
+        erros: erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The WEEKLY SETTLEMENT SWEEP (master plan step 6, #1514) — the only thing in
+ * this channel that ever learns what the marketplace actually PAID.
+ *
+ * Shopee ships no payment push and no payment resource of its own: the order
+ * import writes a pagamento from `get_order_detail` + `get_escrow_detail` on the
+ * code-3 task, but `escrow_amount` is documented to MOVE until the order
+ * completes, and `escrow_release_time` — the field that says the money really
+ * left — is exposed by exactly ONE endpoint, `get_escrow_list`. So the final
+ * figure cannot arrive by event; it has to be fetched, and this is the schedule
+ * that fetches it.
+ *
+ * Per active conta it pages that listing over a release-time window from a
+ * durable cursor (`liquidacaoShopee/{integracaoId}`, MILLISECONDS, this sweep
+ * its only writer, one merge per conta per tick, no transaction), reads the
+ * fresh escrow of every row whose pagamento exists and stamps the top-level
+ * `pagamento.liquidacao`. A row whose pagamento is not here yet is PARKED and
+ * re-driven through the normal import path with a synthetic code 3, capped at
+ * 50 per tick.
+ *
+ * Mondays 05:10 America/Sao_Paulo. Weekly because an escrow release is weekly
+ * business — it lags delivery by 7–15 days — and the minute keeps it clear of
+ * every sibling schedule's :00/:15/:20/:30/:45, between the 04:00 expiry walk
+ * and the 05:45 push monitor, all of which draw on one undocumented partner
+ * rate-limit budget. A daily cadence would be `'10 5 * * *'`, one character
+ * away, which is why `index.test.ts` pins the near-miss explicitly.
+ *
+ * ⚠️ It ships **ON, with no `*_ENABLED` flag** — deliberately, and unlike the
+ * order backfill. A backstop that ships off is #778's failure; the fan-out here
+ * is bounded on every axis (300 settlements and 50 synthetic pushes per tick),
+ * and the only pedido-CREATING side effect is that synthetic code 3, which lands
+ * on a deterministic id a migrated pedido already occupies.
+ *
+ * ⚠️ This function ENQUEUES and it is Shop-signed: the same `TASKS_INVOKER_SA`
+ * requirement as the lost-push sweep and the backfill, plus a live access token
+ * per conta.
+ */
+export const sweepShopeeEscrowSettlement = onSchedule(
+  {
+    schedule: '10 5 * * 1',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to MAX_LIQUIDACOES_POR_TICK (300) `get_escrow_detail` calls, each
+    // followed by one transaction, plus up to 20 list pages per conta. 540 is
+    // the gen2 ceiling and the per-tick budget is sized against it (≈ 370 s), so
+    // the ceiling is margin rather than a claim that nine minutes is normal.
+    timeoutSeconds: 540,
+    // No `region:` anywhere in this file — `options.ts` sets it globally.
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin app
+    // exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runShopeeEscrowSettlement(getDb(), {
+      nowMs: Date.now(),
+      scheduler: createShopeeTaskScheduler(),
+      logger,
+    });
+    const erros = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] escrow settlement sweep', {
+      contas: result.contas.length,
+      // ⚠️ Never summed with `processadas`: it counts contas connected by main
+      // account only, which cannot be shop-signed at all, and adding the two
+      // would read as coverage.
+      semShopId: result.semShopId,
+      processadas: result.contas.filter((conta) => conta.pulada === null).length,
+      paginasLidas: result.contas.reduce((total, conta) => total + conta.paginas, 0),
+      linhas: result.contas.reduce((total, conta) => total + conta.linhas, 0),
+      liquidados: result.contas.reduce((total, conta) => total + conta.liquidados, 0),
+      // The idempotent steady state: a re-covered overlap row writes NOTHING, so
+      // a high `semMudanca` beside a low `liquidados` is the healthy week.
+      semMudanca: result.contas.reduce((total, conta) => total + conta.semMudanca, 0),
+      obsoletos: result.contas.reduce((total, conta) => total + conta.obsoletos, 0),
+      pendentes: result.contas.reduce((total, conta) => total + conta.pendentes, 0),
+      sinteticas: result.contas.reduce((total, conta) => total + conta.sinteticas, 0),
+      puladas: result.contas.reduce((total, conta) => total + conta.puladas, 0),
+      janelasDrenadas: result.contas.filter((conta) => conta.drenada).length,
+      // A truncated window advances NOTHING and persists its page number — the
+      // next tick replays it. A count that stays high week after week is a conta
+      // that can no longer keep up, and that is invisible in every other counter
+      // here.
+      janelasTruncadas: result.contas.filter((conta) => conta.truncada).length,
+      janelasRetomadas: result.contas.filter((conta) => conta.retomada).length,
+      errorCount: erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (erros.length > 0) {
+      logger.warn('[shopee] escrow settlement sweep com falhas por conta', {
+        erros: erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The WEEKLY STUCK-RESERVATION SWEEP (master plan step 8, #1516) — the backstop
+ * BEHIND the other three, and the only one that reaches PAST the 3-day
+ * lost-push window.
+ *
+ * Step 5 imports an `UNPAID`/`PENDING` order as
+ * `aguardandoConfirmacaoDePagamento`, which RESERVES the unit deliberately — the
+ * reservation ships PAIRED with its release, and the release is the `CANCELLED`
+ * push through step 5's ladder. When that push never arrives the unit is held
+ * for ever, and there are four populations where it never arrives: pushes lost
+ * while the subscription was SUSPENDED (Shopee never replays those), anything
+ * older than the 3-day lost-push queue, the silent `UNPAID → PENDING`
+ * transition (`announcement 682` §4 Q1 documents NO push for it at all), and
+ * everything whatsoever while `SHOPEE_ORDER_BACKFILL_ENABLED` ships off.
+ *
+ * ⚠️ **It never writes the pedido** — not the estado, not an incidente, not a
+ * field — so the pedido's estado keeps exactly ONE writer, step 5, and this
+ * tick runs no transaction. What it does is two things: it RE-DRIVES an order
+ * Shopee reports as MOVED, through one synthetic code 3
+ * (`origem: 'reserva-travada'`) on the normal import path, so the step-5 arms
+ * stay the single writer; and it SURFACES the residual — an order Shopee still
+ * reports `UNPAID`/`PENDING` past the horizon, or no longer knows at all — as a
+ * `pedidoPrecisaDecisao` aviso with its own machine resolver, which the same
+ * tick's reconciliation pass closes once the pedido leaves the reserve set.
+ *
+ * ⚠️ **DOUBLY GATED, and it SHIPS OFF.** `SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED
+ * === '1'` is read as the FIRST statement of the run, and an off tick reads
+ * NOTHING — not Firestore, not Shopee. `SHOPEE_PEDIDO_TRAVADO_DRY_RUN === '1'`
+ * is the rehearsal: it reads Firestore AND Shopee and decides and counts
+ * exactly as a live run would, skipping exactly two effects — the enqueue and
+ * the aviso writes. Turning either on is a runtime env change for the migration
+ * window (root CLAUDE.md rule 8): surface it, do not do it.
+ *
+ * ⚠️ This function ENQUEUES and it is Shop-signed: the same `TASKS_INVOKER_SA`
+ * requirement as the lost-push sweep, the backfill and the settlement sweep —
+ * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on
+ * `processShopeeNotification` — and that variable is AUTHORITATIVE, so a deploy
+ * REPLACES the members of both bindings and an identity left out of the list
+ * LOSES the role. It also WRITES avisos, which no other enqueuing schedule in
+ * this file does.
+ *
+ * Mondays 04:40 America/Sao_Paulo. WEEKLY because the horizon is what bounds
+ * the lateness anyway — a 7-day `MAX_IDADE_D` on a weekly tick is an EFFECTIVE
+ * 7–14 days, since a pedido that goes stale just after a tick waits for the
+ * next one — and because a DAILY walk would re-read the SAME stuck population
+ * seven times against an endpoint whose published rate limit is `[0,0,0]`, i.e.
+ * unknown, so the only safe assumption is that one exists. The :40 keeps it
+ * clear of every sibling's :00/:10/:15/:20/:30/:45, between the 04:00 expiry
+ * walk and the 05:10 settlement sweep, all of which draw on ONE undocumented
+ * partner rate-limit budget.
+ */
+export const sweepShopeeStuckReservations = onSchedule(
+  {
+    schedule: '40 4 * * 1',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to MAX_PAGINAS (10) paged candidate queries of PAGE_LIMIT (200) rows,
+    // one whole `pagamentos` subcollection read per candidate (≤ 200), then per
+    // conta ⌈200/50⌉ = 4 batched `get_order_detail` calls — up to 204 when an
+    // unknown `order_sn` forces the per-order fallback on every batch — plus
+    // ≤ 200 enqueues and ≤ 200 aviso round trips, all SEQUENTIAL. That is a
+    // ≈ 300 s budget; 540 is the gen2 ceiling it is sized against, so the
+    // ceiling is margin rather than a claim that nine minutes is normal, and the
+    // gen2 60s onSchedule default cannot absorb even the first batch. A timeout
+    // mid-tick writes nothing partial — there is no cursor document, so the tick
+    // simply repeats next Monday.
+    timeoutSeconds: 540,
+    // No `region:` anywhere in this file — `options.ts` sets it globally.
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin app
+    // exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runReservaTravadaSweep(getDb(), {
+      scheduler: createShopeeTaskScheduler(),
+      nowMs: Date.now(),
+      // Injected because `packages/data/src/admin/**` may only `import type`
+      // from firebase-admin — the aviso counter is a tier-0 FieldValue, so two
+      // producers landing together cannot lose each other's bump.
+      increment: (by: number) => FieldValue.increment(by),
+      logger,
+    });
+    if (!result.enabled) {
+      // ONE info line, naming the variable, so "why is nothing being swept" is
+      // answerable from the log without reading the source. Nothing was read on
+      // this tick: not Firestore, not Shopee. `dryRun` is reported HONESTLY
+      // here — it is the line an operator reads while setting the pair up, and
+      // "the master flag is off AND the dry run is on" is a different situation
+      // from "the master flag is off".
+      logger.info('[shopee] stuck reservation sweep inativo — nada lido', {
+        motivo: result.motivo,
+        flag: RESERVA_TRAVADA_FLAG_ENV,
+        dryRun: result.dryRun,
+      });
+      return;
+    }
+    const somar = (pegar: (conta: (typeof result.contas)[number]) => number): number =>
+      result.contas.reduce((total, conta) => total + pegar(conta), 0);
+    // The RAW `error_not_found` / `order_not_found` spellings, folded across
+    // contas. Both mean "Shopee does not know this order" and the aviso folds
+    // them to ONE motivo — this is the only place they stay distinguishable,
+    // which is what makes settle-live register item 38 readable from a log line
+    // rather than from a guess.
+    const codigosInexistente: Record<string, number> = {};
+    for (const conta of result.contas) {
+      for (const [codigo, quantas] of Object.entries(conta.codigosInexistente)) {
+        codigosInexistente[codigo] = (codigosInexistente[codigo] ?? 0) + quantas;
+      }
+    }
+    const errosPorConta = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] stuck reservation sweep', {
+      // Report-only: it read everything and decided everything, and skipped
+      // exactly two effects — the enqueue and the aviso writes.
+      dryRun: result.dryRun,
+      // A VERDICT decided by READING `SHOPEE_TASKS_DISABLED`, never by catching
+      // a throw: a dry run never reaches an enqueue at all, so a verdict derived
+      // from the failure could not be produced on the tick that matters.
+      tasksDesabilitado: result.tasksDesabilitado,
+      maxIdadeDias: result.maxIdadeDias,
+      cutoffUs: result.cutoffUs,
+      // Rows the candidate query RETURNED, across pages — the scan, not the set.
+      examinados: result.examinados,
+      paginas: result.paginas,
+      // The paging hit its cap: `examinados` is a PREFIX and the oldest stuck
+      // pedidos past it were not examined at all. Truncation week after week is
+      // the signal for reconsidering a `marketplace.tipo` composite index
+      // (migration window, settle-live register item 45).
+      truncado: result.truncado,
+      // ⚠️ Never summed with `candidatos`: these four count rows the channel did
+      // NOT prove it owns — a manual pedido, an adopted id, an inactive conta, a
+      // CLI scope — and adding them to the set the sweep acted on would read as
+      // coverage. A page of 2 000 rows can be 1 800 `naoMarketplace`.
+      naoMarketplace: result.naoMarketplace,
+      adotado: result.adotado,
+      contaInativa: result.contaInativa,
+      foraDoEscopo: result.foraDoEscopo,
+      // ⚠️ Never summed with `candidatos` either: it counts contas connected by
+      // main account only, which cannot be shop-signed at all.
+      semShopId: result.semShopId,
+      candidatos: result.candidatos,
+      contas: result.contas.length,
+      processadas: result.contas.filter((conta) => conta.pulada === null).length,
+      // These four live ONLY per conta — summed here, never returned pre-summed,
+      // so the per-conta rows stay the place one conta's blow-up is visible.
+      chamadas: somar((conta) => conta.chamadas),
+      enfileirados: somar((conta) => conta.enfileirados),
+      avisosEscritos: somar((conta) => conta.avisosEscritos),
+      avisosResolvidos: somar((conta) => conta.avisosResolvidos),
+      // Batches that had to fall back to per-order calls. The documented
+      // envelope `error_not_found` fires only when EVERY `order_sn` of a call is
+      // unknown, so a number above zero costs up to 50 calls for that batch.
+      lotesComFallback: somar((conta) => conta.lotesComFallback),
+      codigosInexistente,
+      // Per-verdict, NEVER a single total: "examined 200, re-driven 0" and
+      // "examined 200, re-driven 200" must not look alike in a log. Zero-valued
+      // arms are PRESENT — an absent key is indistinguishable from an arm that
+      // never existed, and this sweep's entire output is counters.
+      veredictos: result.veredictos,
+      // The reconciliation pass over the OPEN avisos — the machine resolver the
+      // `serverOwned` collection requires, since no human can dismiss a row.
+      avisosVarridos: result.avisosVarridos,
+      // Rows actually CLOSED — a transition, never "we looked at 200 rows".
+      reconciliados: result.reconciliados,
+      reconciliacaoTruncada: result.reconciliacaoTruncada,
+      // A candidate whose stored `marketplace.status` ALREADY equalled the live
+      // one on a `redirecionado-*`: a delivery was accepted and the estado still
+      // did not move. There is no feedback channel from the task back to the
+      // sweep, so this counter is the only place that shows up at all
+      // (settle-live register item 42).
+      redriveAparentementeNaoAplicado: result.redriveAparentementeNaoAplicado,
+      // ⚠️ The four diagnostic tables, logged WHOLE and deliberately: they are
+      // computed from `marketplace.status`/`statusEm` after the gates and BEFORE
+      // any Shopee call, so they are the ZERO-CALL instrument for settle-live
+      // register item 37 — does Shopee auto-cancel an unpaid BR order, after how
+      // long. No page in the cached corpus answers it; this distribution does.
+      statusArmazenado: result.statusArmazenado,
+      idadeStatusDias: result.idadeStatusDias,
+      statusPorIdade: result.statusPorIdade,
+      statusArmazenadoPorVeredito: result.statusArmazenadoPorVeredito,
+      errorCount: result.erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (result.erros.length > 0) {
+      logger.warn('[shopee] stuck reservation sweep com falhas por candidato', {
+        erros: result.erros.slice(0, 10),
+      });
+    }
+    if (errosPorConta.length > 0) {
+      // A contained conta failure costs the tick nothing for the others — its
+      // remaining candidates counted `nao-verificavel` and the loop moved on —
+      // so it is a SEPARATE line from the per-candidate one above: one says "one
+      // shop is unreachable", the other says "these orders could not be
+      // decided".
+      logger.warn('[shopee] stuck reservation sweep com falhas por conta', {
+        erros: errosPorConta.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The THREE STOCK-SYNC SWEEPS (master plan step 12, #1520) — the quarter-hourly
+ * incremental tier, the nightly diário and the monthly reconciliação, all three
+ * over ONE function and defined in ./sweepStock.
+ *
+ * They live in their own module rather than inline here because the three share
+ * an options builder and a summary logger, and because the incremental one
+ * skips two slots of its own cron IN CODE (02:10 is the diário's, the 1st's
+ * 03:10 the reconciliação's) — logic a schedule declaration cannot carry.
+ *
+ * ⚠️ All three ENQUEUE, onto `sendShopeeStock` above: the same
+ * `TASKS_INVOKER_SA` requirement as the lost-push sweep, the backfill and the
+ * settlement sweep, and the list is AUTHORITATIVE.
+ */
+export {
+  sweepShopeeStock,
+  sweepShopeeStockDaily,
+  sweepShopeeStockReconciliacao,
+} from './sweepStock';

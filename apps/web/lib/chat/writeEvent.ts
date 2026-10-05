@@ -47,6 +47,8 @@ export function writeEvent(
     // An event is authored by an OPERATOR (a real `usuarios` doc) or by the
     // system — never by the contact, so the cliente-author ref is always null.
     clienteMensagemOuterRef: null,
+    whatsappDestino: null,
+    whatsappIntegracaoId: null,
     urlAvatar: null,
     midGroup: null,
     error: null,

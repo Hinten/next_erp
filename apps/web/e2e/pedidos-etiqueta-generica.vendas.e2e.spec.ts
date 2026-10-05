@@ -114,8 +114,9 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
     const job = stubs.printJobs[0]!;
     expect(job.tamanhoFolhaImpressao).toBe('etq');
     // The agent routes on contentType: plain text is its RAW-spooler channel,
-    // the one the Zebra reads.
-    expect(job.contentType).toBe('text/plain;charset=utf-8');
+    // the one the Zebra reads. It matches with `==`, so the string must be the
+    // bare type — a `;charset=` suffix fails inside the agent behind a 200.
+    expect(job.contentType).toBe('text/plain');
     expect(job.docName).toBe(`etiqueta-${fixtures.motPedidoId}.zpl2`);
     // Real ZPL, not an empty blob — decoding pins the whole render, not just
     // that a POST happened.

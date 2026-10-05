@@ -67,6 +67,7 @@ function conversa(partial: Partial<Conversa> = {}): Conversa {
     origem: ORIGEM_CONVERSA.whatsapp,
     usarioOuterRef: null,
     clienteOuterRef: null,
+    whatsappDestino: null,
     respostaBloqueada: null,
     integracaoOuterRef: null,
     pedidoOuterRef: null,

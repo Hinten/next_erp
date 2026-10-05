@@ -7,6 +7,7 @@ import {
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  BANDEIRA,
   ESTADOS_PEDIDO_RESERVA,
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
@@ -649,6 +650,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
       id: '800',
       valor: 999,
       ultimaModificacao: Date.parse('2026-07-22T00:00:00.000Z') * 1000,
+      lastProviderUpdate: Date.parse('2026-07-22T00:00:00.000Z') * 1000,
     });
 
     const api = makeApi({
@@ -660,7 +662,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     expect(db.docs('pedidos/PED-STALE/pagamentos').get(pagId)!.valor).toBe(999); // untouched
   });
 
-  it('proceeds when the stored pagamento has a null ultimaModificacao (null-tolerant)', async () => {
+  it('initializes a null provider watermark without falling back to local recency', async () => {
     const db = makeDb();
     seedPedido(db, 'PED-NULLSTALE');
     seedOrderMl(db, 'PED-NULLSTALE', '112', { id: 112 });
@@ -668,14 +670,19 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     db.seed('pedidos/PED-NULLSTALE/pagamentos', pagId, {
       id: '801',
       valor: 50,
-      ultimaModificacao: null,
+      ultimaModificacao: Date.parse('2030-01-01T00:00:00.000Z') * 1000,
+      lastProviderUpdate: null,
     });
 
     const api = makeApi({ 801: payment({ id: 801, order_id: 112, transaction_amount: 200 }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 801);
 
     expect(res.skipped).toBeNull();
-    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)!.valor).toBe(200);
+    expect(db.docs('pedidos/PED-NULLSTALE/pagamentos').get(pagId)).toMatchObject({
+      valor: 200,
+      lastProviderUpdate: Date.parse('2026-07-20T10:00:00.000Z') * 1000,
+      ultimaModificacao: Date.parse('2030-01-01T00:00:00.000Z') * 1000,
+    });
   });
 
   it('every read inside the transaction happens before the first write', async () => {
@@ -707,7 +714,7 @@ describe('importPagamentoMercadoLivre — update-merge (existing pagamento)', ()
       aVista: false,
       duplicata: true,
       status_pagamento: STATUS_PAGAMENTO.pendente,
-      cartao: { tpIntegra: '2', bandeira: 5, numeroCartao: 'OLD-CARD' },
+      cartao: { tpIntegra: '2', bandeira: BANDEIRA.diners, numeroCartao: 'OLD-CARD' },
       descricaoPagamento: 'old desc',
       // Realistic µs values — pagamentoSchema's tolerant datetime reader
       // normalizes small numbers as ms (×1000), so a toy value like `12345`
@@ -745,7 +752,16 @@ describe('importPagamentoMercadoLivre — update-merge (existing pagamento)', ()
     expect(stored.aVista).toBe(true);
     expect(stored.duplicata).toBe(false);
     // nullable mapped fields: mapped is null here → the stored value survives.
-    expect(stored.cartao).toEqual({ tpIntegra: '2', bandeira: 5, numeroCartao: 'OLD-CARD' });
+    expect(stored.cartao).toEqual({
+      tpIntegra: '2',
+      bandeira: BANDEIRA.diners,
+      numeroCartao: 'OLD-CARD',
+      cAut: null,
+      cnpj_instituicao: null,
+      tarifa: null,
+      tarifaFixa: null,
+      prazoRecebimento: null,
+    });
     expect(stored.dataAprovacao).toBe(Date.parse('2026-06-15T00:00:00.000Z') * 1000);
     // fields the mapper never sets at all: untouched.
     expect(stored.metodoPagamentoOuterRef).toBe('documents/metodo_pgto/abc');

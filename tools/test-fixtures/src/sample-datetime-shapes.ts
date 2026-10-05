@@ -1,16 +1,16 @@
 /**
- * Staging datetime wire-shape sampler (issue #483, prerequisite of #155/#485).
+ * Staging datetime wire-shape sampler (issue #483, a child of #155).
  *
  * READ-ONLY. Samples a few live docs per validator-whitelisted collection and
  * reports the actual runtime shape (`number` / `iso-string` / `Timestamp` /
  * `null`) of every schema-declared datetime field, plus any datetime-shaped
- * value discovered nested where the schema doesn't declare one (this is how the
- * `Cheque.bomPara` / webchat `abertura`/`fechamento` ISO exceptions surface).
+ * value discovered nested where the schema doesn't declare one. A legacy
+ * `Cheque.bomPara` ISO value now appears on its declared field row.
  *
- * The point (#155): before the rules-gen validator skip for `format:'date-time'`
- * is lifted (#485) or the non-fiscal datetime wire shape is standardized (#484),
- * confirm on real data whether legacy docs still carry ms/µs ints, ISO strings,
- * or Firestore Timestamps. Paste this script's Markdown output into #155.
+ * Why it was built (#155): to confirm on real data what the datetime fields carry
+ * before the rules-gen `format:'date-time'` skip was retired. That question is
+ * settled — #484 standardized on epoch ints, and rules-gen now REFUSES an ISO
+ * datetime field (#485) — so this stays as a staging diagnostic.
  *
  * Usage (staging, from repo root):
  *   pnpm --filter @delfrance/test-fixtures sample:datetime
@@ -289,8 +289,14 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
   // Explicit ISO-exception check (acceptance criterion of #483).
   lines.push('');
   lines.push('### ISO-exception check');
-  const bomPara: DiscoveredReport[] = [];
+  const bomPara: Array<{ path: string; shape: ValueShape; count: number }> = [];
   for (const report of reports) {
+    for (const field of report.fields) {
+      if (field.path.split('.').pop()?.replace(/\[\]$/, '') !== 'bomPara') continue;
+      for (const [shape, count] of field.shapeCounts) {
+        bomPara.push({ path: field.path, shape, count });
+      }
+    }
     for (const d of report.discovered) {
       if (d.path.split('.').pop()?.replace(/\[\]$/, '') === 'bomPara') {
         bomPara.push(d);
@@ -303,7 +309,7 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
         .map((d) => `\`${d.path}\` ${d.shape}×${d.count}`)
         .join(
           ', ',
-        )}. (New schema writes µs-int via \`microsSinceEpoch()\`; a legacy ISO string here is the documented exception.)`,
+        )}. (The schema writes µs-int via \`microsSinceEpoch()\`; a legacy ISO string here is the documented exception.)`,
     );
   } else {
     lines.push(
@@ -311,7 +317,7 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
     );
   }
   lines.push(
-    '- webchat `abertura`/`fechamento`: out of scope — `webchat` is not in `VALIDATOR_WHITELIST`, so it is not sampled here. Any ISO `abertura`/`fechamento` nested in the sampled collections would appear in the discovered rows above.',
+    '- legacy `webchat` collection `abertura`/`fechamento`: out of scope — `webchat` is not in `VALIDATOR_WHITELIST`, so it is not sampled here (and never will be: the webchat widget was dropped 2026-09-07, so no new `webchat` collection is created). Any ISO `abertura`/`fechamento` nested in the sampled collections would appear in the discovered rows above.',
   );
   return lines.join('\n');
 }

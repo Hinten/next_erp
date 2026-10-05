@@ -1,6 +1,61 @@
 {
   "indexes": [
     {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "vendedorPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" },
+        { "fieldPath": "valorCobrado", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" },
+        { "fieldPath": "foiImpresso", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        { "fieldPath": "ehSaida", "order": "ASCENDING" },
+        { "fieldPath": "integracaoPedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "estado", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.estado", "order": "ASCENDING" },
+        { "fieldPath": "foiImpresso", "order": "ASCENDING" },
+        { "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "usuarios",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "cargos",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "integracao",
       "queryScope": "COLLECTION",
       "fields": [
@@ -42,6 +97,38 @@
         },
         {
           "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "shop_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
           "order": "ASCENDING"
         }
       ]
@@ -113,6 +200,76 @@
       ]
     },
     {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "anexoStorage",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "audio.audio",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "image.image",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "video.video",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "sticker.sticker",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "genericDocument.genericDocument",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagens",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "arquivoId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "chat",
       "queryScope": "COLLECTION",
       "fields": [
@@ -141,6 +298,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesMelhorEnvio",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "importacoesMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
@@ -155,6 +326,20 @@
       ]
     },
     {
+      "collectionGroup": "importacoesShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "enviosPrecoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
@@ -170,6 +355,34 @@
     },
     {
       "collectionGroup": "enviosPrecoMercadoLivre",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enviosPrecoShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enviosPrecoShopee",
       "queryScope": "COLLECTION",
       "fields": [
         {
@@ -231,6 +444,7 @@
           }
         }
       ],
+      "density": "SPARSE_ANY",
       "searchIndexOptions": {
         "textLanguage": "pt-BR"
       }
@@ -241,6 +455,34 @@
       "fields": [
         {
           "fieldPath": "sku",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "variashopee",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "model_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaVariacaoShopeeOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "prodshopee",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "item_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaProdutoShopeeOuterRef",
           "order": "ASCENDING"
         }
       ]
@@ -291,6 +533,16 @@
       "fields": [
         {
           "fieldPath": "categoriaPaiOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "freteInicial.printLabelId",
           "order": "ASCENDING"
         }
       ]
@@ -449,6 +701,36 @@
       "fields": [
         {
           "fieldPath": "data",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "linkPgtoMercadoPago",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dataCriacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pagamentos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pagamentos",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "dataCadastro",
           "order": "DESCENDING"
         }
       ]
@@ -964,6 +1246,50 @@
       ]
     },
     {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.tpNF",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.finNFe",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.receitaBruta",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "cartacorrecao",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
@@ -1017,6 +1343,22 @@
       "fields": [
         {
           "fieldPath": "markedForDeletionAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "checkout",
+      "queryScope": "COLLECTION_GROUP",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "usuarioCheckoutFretePedidoOuterRef",
           "order": "ASCENDING"
         }
       ]
@@ -1744,6 +2086,42 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoPedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "chNFeReferenciadas",
           "order": "ASCENDING"
         },
@@ -1752,7 +2130,242 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "criadoEm",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "balanco",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dataFinalizado",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filiais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "whatsappVinculos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaMensagemEm",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "whatsappVinculos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaMensagemEm",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "processada",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "whatsappIdentidadeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estadoEnvio",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "clientes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "telefonesAdicionais",
+          "arrayConfig": "CONTAINS"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagens",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "processada",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "historicoDeModificacoes",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "enviosPrecoMercadoLivre",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "enviosPrecoShopee",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "relatorios",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "mensagens",
+      "fieldPath": "expiraEm",
+      "ttl": true,
+      "indexes": []
+    }
+  ]
 }

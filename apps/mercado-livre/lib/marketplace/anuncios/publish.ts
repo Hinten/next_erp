@@ -63,7 +63,6 @@ import {
   tabelaDeMedidasCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
-import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 
 import {
   MercadoLivrePublishError,
@@ -81,6 +80,12 @@ import {
   resolveSkuPaiAtributo,
 } from './publishCore';
 import { garantirMembroUnico } from './upSoleMemberWrite';
+import {
+  type AlvoFiscal,
+  type ResumoDadosFiscais,
+  enviarDadosFiscais,
+  registradoFiscal,
+} from './dadosFiscais';
 import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
 import { readListaDePrecos } from './listaDePrecosCache';
 import {
@@ -103,9 +108,6 @@ const MAX_PICTURES = 10;
  */
 type PictureMemo = Map<string, { id: string; arquivoId: string } | null>;
 
-/** Compare-and-set retries for the child denorm stamp (see stampChildMarketplace). */
-const MAX_STAMP_ATTEMPTS = 3;
-
 export interface PublishDeps {
   db: Firestore;
   api: MercadoLivreApi;
@@ -127,6 +129,13 @@ export interface PublishDeps {
    * without it), never anything else.
    */
   sellerUserId?: number | null;
+  /**
+   * The conta's `operacaoOuterRef` — what the per-SKU fiscal registration
+   * (#745) resolves each `Imposto` through, because it is the operação every ML
+   * order importer stamps on the pedido and so the one the nota uses. Null or
+   * absent reports every SKU `omitido` and makes no fiscal call at all.
+   */
+  operacaoOuterRef?: string | null;
   /** Listing type for FIRST publishes (link doc value wins on re-publish). */
   listingTypeId?: string | null;
   /**
@@ -162,6 +171,12 @@ export interface PublishResult {
   itemIds: string[];
   /** Items closed because their ERP variation no longer exists (UP only). */
   orfaosEncerrados: string[];
+  /**
+   * The per-SKU fiscal registration with ML's Faturador (#745). Best-effort:
+   * a refusal here never fails the publish — it is reported, and stamped on
+   * each SKU's link.
+   */
+  dadosFiscais: ResumoDadosFiscais;
 }
 
 export async function publishProduto(deps: PublishDeps, produtoId: string): Promise<PublishResult> {
@@ -699,7 +714,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const parentExternalId = family ? (family.familyId ?? family.itemIds[0]!) : item.id;
 
   // ---- Persist the link docs from the response ---------------------------
-  const estado = estadoFromMlStatus(item.status);
+  const estado = estadoFromMlStatus(item.status, item.sub_status ?? null);
   await writeLinkDoc({
     sku: produto.sku ?? null,
     condition: input.condition,
@@ -777,76 +792,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     ultimaModificacao: now,
   });
 
-  // ---- Legacy denorm stamps (DEAD WEIGHT — see the schema note) ---------
-  // ⛔ `marketplace` / `marketplaceIds` have NO QUERY CONSUMERS in this repo —
-  // nothing filters, projects or orders by them, and the only reads are these
-  // fields' own read-modify-write maintenance (`stampChildMarketplace` below is
-  // one). They are deleted at the decommission (#961 audited it; the canonical
-  // note is on `produtoSchema` in `packages/schemas`). Do not repair them, do
-  // not add a reader, do not give them a trigger — an entry is never removed
-  // when a link doc is deleted, and that is deliberate.
-  //
-  // The deployed Flutter backend resolves an incoming ML order item via
-  // `marketplace array-contains {integracaoUid, externalId}` (EXACT map match
-  // — hence no `relevantData`, the shape its own webhook repair writes), so
-  // these two stamps keep running until it is gone.
-  //
-  // ⚠️ `integracoesComProduto` is NOT stamped here any more (#920). It is not
-  // legacy-only — the new app's own sweeps anchor on it
-  // (`bulkEstoquePlan.fetchStockFamilies` S1, `precoPlan.fetchPrecoPage`), served
-  // by a declared `produtos` composite — and a comment here once claimed the
-  // opposite, which would have made #431 a SILENT stock + price outage: the
-  // sweeps select zero produtos and log `SEM_LINK` skips rather than erroring.
-  // Its sole writers are now `onProdutoMercadoLivreLinkChanged` and
-  // `onVariacaoMercadoLivreLinkChanged`, which derive it from the link
-  // subcollections — see the sibling `integracoesComProduto.ts`.
-  //
-  // That leaves TWO locks on the arrays below, not the three #431 opened with:
-  //  1. ARCHITECTURE — the stock sweep needs an index-SEEKABLE per-conta term
-  //     on `produtos`. MEASURED and settled (spike #890, staging 2026-08-07):
-  //     the link post-filter reads ×7.5 the data, so `integracoesComProduto`
-  //     stays as the pre-filter permanently. It is no longer a "deprecated
-  //     array" at all — it is an app-owned denorm with a server owner.
-  //  2. ~~COUPLING~~ — BROKEN by #920. The array used to be removable only by
-  //     deriving it from `marketplace`, which is why the three were an
-  //     all-or-nothing cluster; the triggers derive it from the links instead.
-  //  3. ~~DUAL-RUN~~ — VOID. This assumed the Flutter backend read these stamps
-  //     while running alongside us; there is no dual run (root `CLAUDE.md`
-  //     rule 8), so nothing outside this repo consumes them and #992 waits on
-  //     no decommission. `marketplace` + `marketplaceIds` go with them.
-  //
-  // The stamps run once the ML item write has SUCCEEDED (the error path above
-  // never stamps) — a later failure (e.g. the description step) leaves them in
-  // place, same as the old app, which committed this batch before sending the
-  // description. Tracked removal: #992.
-  await produtoCollection.docRef(db, {}, produtoId).update({
-    marketplace: FieldValue.arrayUnion({
-      integracaoUid: integracaoId,
-      externalId: parentExternalId,
-    }),
-    marketplaceIds: FieldValue.arrayUnion(parentExternalId),
-  });
-
-  // Under User Products the child links are written INSIDE the fan-out, one at
-  // a time as ML confirms each member (see `publishUserProduct.ts`). All that
-  // is left here is the same dead-weight denorm the legacy variations branch
-  // stamps below — with the family id where a legacy child carries the parent
-  // ITEM id, and the member's own item id where it carries a variation id
-  // (`exportarProdutos.dart:267-286`, the identical shape).
-  if (family?.familyId != null) {
-    for (const member of family.written) {
-      await stampChildMarketplace(
-        db,
-        integracaoId,
-        family.familyId,
-        member.produtoId,
-        member.itemId,
-      );
-    }
-  }
-
   // Variation links live under each CHILD produto, keyed back to the parent
   // link doc — matched by seller_custom_field (= the child produto id).
+  /** One fiscal SKU per variation ML confirmed (#745), collected as its link lands. */
+  const alvosFiscaisLegado: AlvoFiscal[] = [];
   for (const respVar of family ? [] : (item.variations ?? [])) {
     const childId = respVar.seller_custom_field;
     if (!childId) continue;
@@ -878,8 +827,18 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         sku: child.produto.sku ?? null,
       }),
     );
-    if (respVar.id != null) {
-      await stampChildMarketplace(db, integracaoId, item.id, childId, String(respVar.id));
+    const childDoc = children.find((c) => c.id === childId);
+    if (childDoc) {
+      alvosFiscaisLegado.push({
+        produtoId: childId,
+        produto: childDoc.data,
+        pai: produto,
+        titulo: item.title ?? null,
+        itemId: item.id,
+        variationId: typeof respVar.id === 'number' ? respVar.id : null,
+        link: { colecao: 'variacaoMercadoLivre', produtoId: childId, docId: varDocId },
+        registrado: registradoFiscal(existing?.raw),
+      });
     }
   }
 
@@ -964,12 +923,59 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }
   }
 
+  // ---- Per-SKU fiscal data for ML's Faturador (#745) ----------------------
+  // Runs LAST, when the listing is already correct: no ML refusal here fails the
+  // publish (each is recorded on its SKU's link). One SKU per ERP produto ML now holds — every member of a
+  // UP family, every legacy variation, or the produto itself for a simple item.
+  const alvosFiscais: AlvoFiscal[] = family
+    ? family.written.flatMap((m, i): AlvoFiscal[] => {
+        const childDoc = children.find((c) => c.id === m.produtoId);
+        if (!childDoc) return [];
+        const state = upMembers.find((u) => u.produtoId === m.produtoId);
+        return [
+          {
+            produtoId: m.produtoId,
+            produto: childDoc.data,
+            pai: produto,
+            titulo: family.items[i]?.title ?? null,
+            itemId: m.itemId,
+            // Each UP member is its own item — there is no variation id to link.
+            variationId: null,
+            link: {
+              colecao: 'variacaoMercadoLivre',
+              produtoId: m.produtoId,
+              docId: m.varLinkDocId,
+            },
+            registrado: registradoFiscal(state?.raw),
+          },
+        ];
+      })
+    : children.length > 0
+      ? alvosFiscaisLegado
+      : [
+          {
+            produtoId,
+            produto,
+            pai: null,
+            titulo: item.title ?? null,
+            itemId: item.id,
+            variationId: null,
+            link: { colecao: 'produtoMercadoLivre', produtoId, docId: linkDocId },
+            registrado: registradoFiscal(linkDoc?.data),
+          },
+        ];
+  const dadosFiscais = await enviarDadosFiscais(
+    { db, api, operacaoOuterRef: deps.operacaoOuterRef ?? null },
+    alvosFiscais,
+  );
+
   return {
     itemId: parentExternalId,
     estado,
     permalink: item.permalink ?? null,
     itemIds: family ? family.itemIds : [item.id],
     orfaosEncerrados,
+    dadosFiscais,
   };
 }
 
@@ -1199,91 +1205,6 @@ function motivoDaResolucao(
         dominioDaCategoria: resolucao.dominioDaCategoria,
         nome,
       };
-  }
-}
-
-/**
- * Legacy stamp for a VARIATION CHILD's deprecated `marketplace` arrays —
- * legacy read-clean-write semantics (`exportarProdutos.dart` variation loop):
- * drop stale same-conta entries for this listing (a recreated variation gets a
- * new ML id) and parent-shaped entries wrongly sitting on a child, then append
- * the fresh `{integracaoUid, externalParentId, externalId}` entry (no
- * `relevantData` — the legacy order-import probe matches the map EXACTLY and
- * carries none). arrayUnion can't express the cleanup, so this mirrors the old
- * `transform(newValues:)` full-field write.
- *
- * ⚠️ `integracoesComProduto` is deliberately absent from the patch (#920) —
- * `onVariacaoMercadoLivreLinkChanged` owns it now, deriving it from the child's
- * `variacaoMercadoLivre` link. Do not add it back: two writers, one of them a
- * read-clean-write, is exactly how a conta gets silently dropped while a live
- * listing still exists, and that failure is invisible (the sweeps just stop
- * selecting the produto).
- *
- * ⛔ What remains is DEAD WEIGHT: no query consumers, deleted at the
- * decommission (#992; audited in #961). The read-clean-write below is not a
- * counter-example — it reads `marketplace` only to compute the next
- * `marketplace`, which is maintenance, not consumption. The canonical note is on
- * `produtoSchema`. Do not extend this to remove entries when a link doc is
- * deleted — that gap is known and deliberate; the arrays die with the consumer.
- */
-async function stampChildMarketplace(
-  db: Firestore,
-  integracaoId: string,
-  itemId: string,
-  childId: string,
-  variationId: string,
-): Promise<void> {
-  // A genuine read-clean-write: `arrayUnion` cannot express "drop every stale
-  // entry for this conta", so this is the one place publish needs a
-  // compare-and-set (root CLAUDE.md rule 7, tier 1). ⚠️ The old reason — a
-  // live Flutter writer on the child produto — is VOID (rule 8: there is no
-  // dual run). The guard survives because this repo races ITSELF on that same
-  // doc: `importVariations.ts` arrayUnions these very arrays,
-  // `onVariacaoMercadoLivreLinkChanged` writes `integracoesComProduto` beside
-  // them, and a retried Cloud Task or a second operator re-drives this publish.
-  // The previous unconditional merge re-applied an array derived from a
-  // snapshot that may already have lost. On a precondition failure we re-READ
-  // and re-DERIVE — never re-apply the patch computed from the losing snapshot.
-  const ref = produtoCollection.docRef(db, {}, childId);
-  for (let attempt = 0; ; attempt++) {
-    const snap = await ref.get();
-    if (!snap.exists) return;
-    const raw = (snap.data() ?? {}) as Record<string, unknown>;
-
-    const current = Array.isArray(raw.marketplace)
-      ? (raw.marketplace as Array<Record<string, unknown>>)
-      : [];
-    const cleaned = current.filter((e) => {
-      if (e?.integracaoUid !== integracaoId) return true; // other conta — keep
-      if (e.externalParentId == null) return false; // parent-shaped on a child
-      // Drop EVERY entry for this conta+listing (stale id or already-correct):
-      // the fresh push below is the single source of truth, so an up-to-date
-      // entry can't be duplicated on re-publish.
-      return e.externalParentId !== itemId;
-    });
-    cleaned.push({
-      integracaoUid: integracaoId,
-      externalParentId: itemId,
-      externalId: variationId,
-    });
-
-    const ids = new Set(Array.isArray(raw.marketplaceIds) ? (raw.marketplaceIds as string[]) : []);
-    ids.add(variationId);
-
-    const patch = produtoCollection.parseMerge({
-      marketplace: cleaned,
-      marketplaceIds: [...ids],
-    });
-    try {
-      await ref.update(patch, { lastUpdateTime: snap.updateTime! });
-      return;
-    } catch (err) {
-      // Someone wrote between our read and our update. Retry a bounded number
-      // of times; a persistent loser is a real problem, not something to hide.
-      if (isFailedPrecondition(err) && attempt < MAX_STAMP_ATTEMPTS - 1) continue;
-      if (isNotFound(err)) return; // deleted meanwhile — nothing to stamp
-      throw err;
-    }
   }
 }
 

@@ -23,6 +23,14 @@ export interface DevolucaoEditRow {
   originLabel: string;
   /** Produto uid; `null` until an avulso produto is picked (locked for origin rows). */
   produtoUid: string | null;
+  /**
+   * The line's `nomeDeVenda`, EDITED AND PERSISTED — `buildItensDevolvidos`
+   * writes it straight back onto the item. ⚠️ It is NOT a display string: never
+   * seed it from `nomeDoItem`, whose tail steps are placeholders (the raw doc
+   * id, then "Sem nome"), or the placeholder becomes the stored sale name.
+   * The DISPLAY resolves through `nomeDoItem` in `DevolucaoTab`; blank here is
+   * the honest value.
+   */
   nome: string;
   sku: string | null;
   precoDeVenda: number;
@@ -75,7 +83,7 @@ function rowFromItem(
     originId,
     originLabel,
     produtoUid,
-    nome: item.nomeDeVenda ?? produtoUid ?? '',
+    nome: item.nomeDeVenda ?? '',
     sku: item.sku ?? null,
     precoDeVenda: item.precoDeVenda,
     descontoUnitario: item.descontoUnitario ?? 0,

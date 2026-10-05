@@ -8,6 +8,8 @@
  */
 import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
 
+import type { CompraGovInput } from './compraGov';
+
 export type Ambiente = 'producao' | 'homologacao';
 
 /** SEFAZ `tpEmis` — emission type. Phase A uses `1` (normal). */
@@ -26,6 +28,25 @@ export interface GeneratorItem {
   readonly NCM: string;
   /** CEST classification (7 digits) — when the product is in the CEST list. */
   readonly CEST?: string;
+  /**
+   * NVE — Nomenclatura de Valor aduaneiro e Estatístico. Up to 8 codes, each
+   * `[A-Z]{2}[0-9]{4}` (XSD `minOccurs="0" maxOccurs="8"`).
+   */
+  readonly NVE?: readonly string[];
+  /**
+   * Produção em escala relevante (Convênio ICMS 52/2017). Stored as a boolean
+   * and emitted as `'S'`/`'N'`.
+   *
+   * ⚠️ The XSD nests this with `CNPJFab` in a group whose `CEST` is REQUIRED,
+   * so `buildProd` drops both when `CEST` is absent — see its note.
+   */
+  readonly indEscala?: boolean;
+  /** CNPJ do fabricante, for a product in escala NÃO relevante. */
+  readonly CNPJFab?: string;
+  /** Código de Benefício Fiscal applied to the item. */
+  readonly cBenef?: string;
+  /** Código EX da TIPI. */
+  readonly EXTIPI?: string;
   /** CFOP resolved by the caller against the UF combo + Operacao. */
   readonly CFOP: string;
   /** Unidade comercial (e.g. `'UN'`). */
@@ -66,6 +87,14 @@ export interface GeneratorItem {
    * it in as-is; tributary computation lives in the caller (Phase D follow-up).
    */
   readonly impostoXml: string;
+  /**
+   * `det/DFeReferenciado` (NT 2025.002 Grupo VC) — the item of ANOTHER NF-e this
+   * line refers to. The caller has already judged the document rules
+   * (`violacoesDoDocumento` in `@delfrance/schemas`: RTC on, no `NFref`, one
+   * chave, `nItem` present…); the generator only emits it, re-checking just the
+   * shapes the XSD would refuse. Absent ⇒ byte-identical det.
+   */
+  readonly dfeReferenciado?: { readonly chaveAcesso: string; readonly nItem?: number };
 }
 
 export interface InfRespTec {
@@ -189,7 +218,17 @@ export interface GeneratorInput {
   readonly filial: Filial;
   readonly operacao: Operacao;
   readonly cliente: Cliente;
+  /** The destinatário's FISCAL address — always `<dest><enderDest>`. */
   readonly enderecoDest: Endereco;
+  /**
+   * The delivery address, when it is a DIFFERENT document from the fiscal one
+   * (#422). Present ⇒ the generator emits `<entrega>` AND decides `idDest` from
+   * its UF (`ufDestinoOperacao`); absent/null ⇒ neither, and the XML is
+   * byte-identical to a nota without it. The caller decides "different" — the
+   * generator never compares addresses. Its `codigoMunicipio` must already be
+   * resolved, like `enderecoDest`'s.
+   */
+  readonly enderecoEntrega?: Endereco | null;
   readonly itens: ReadonlyArray<GeneratorItem>;
   /** Pre-built `<total>...</total>` XML. */
   readonly totalXml: string;
@@ -222,16 +261,34 @@ export interface GeneratorInput {
    */
   readonly cNF?: string;
   /**
-   * Chaves de acesso (44 digits each) of the NF-es this document references,
+   * Chaves de acesso (44 characters each) of the NF-es this document references,
    * emitted as `ide.NFref[].refNFe`. Required for devolução (finNFe=4) and
    * complementar (finNFe=2) notes so SEFAZ links them to the original. Sourced
    * from `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
    */
   readonly chNFeReferenciadas?: readonly string[];
+  /**
+   * NT 2025.002 fields of `ide` / `emit` beyond the tax groups (#331). The
+   * caller passes them only with the Reforma Tributária on; absent (or empty),
+   * the XML is byte-identical.
+   */
+  readonly rtc?: GeneratorRtc;
+}
+
+/** See {@link GeneratorInput.rtc}. */
+export interface GeneratorRtc {
+  /** `ide/dPrevEntrega`, `AAAA-MM-DD` — pass only a date `dPrevEntregaParaEmissao` returned. */
+  readonly dPrevEntrega?: string;
+  /** `ide/gPagAntecipado/refNFe` — the NF-e de pagamento antecipado (1–99). */
+  readonly pagAntecipado?: readonly string[];
+  /** `ide/gCompraGov` — library-only today (see `compraGov.ts`). */
+  readonly compraGov?: CompraGovInput;
+  /** `emit/ISUFEmit` — the filial's SUFRAMA inscription (8–9 digits). */
+  readonly isufEmit?: string;
 }
 
 export interface GeneratorOutput {
-  /** 44-digit chave de acesso (anti-loss anchor). */
+  /** 44-character chave de acesso (anti-loss anchor). */
   readonly chave: string;
   /** The 8-digit `cNF` baked into the chave. */
   readonly cNF: string;

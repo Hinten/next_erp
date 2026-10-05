@@ -4,6 +4,7 @@ import {
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
+  nveCarriesValue,
   derivarFilhoUnico,
   montarMembroUnico,
   operacaoIdFromImpostoRef,
@@ -266,9 +267,7 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
     imp.cfop,
     imp.cfopInterestadual,
     imp.NCM,
-    imp.NVE,
     imp.CEST,
-    imp.indEscala,
     imp.CNPJFab,
     imp.cBenef,
     imp.extipi,
@@ -288,8 +287,22 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
   ];
   // An explicit `compoeValorTotalDaNFe` (true OR false) is a real override worth
   // keeping; only a pristine `null` counts as empty.
+  // ⚠️ `NVE` and `indEscala` are NOT strings on the wire (#466) — they must be
+  // checked in their own shapes. Folding them into `strings` above made a
+  // typed value read as "no info", which DELETES a configured doc instead of
+  // writing it (the defect that forced the revert on #1279).
+  //
+  // ⚠️ `nveCarriesValue` accepts BOTH shapes, and that matters here: this
+  // function runs on the value as it arrived, BEFORE `impostoProdutoSchema.parse`
+  // below, and `parseSoftRead` hands back a RAW document whenever the parse
+  // failed for any unrelated reason — `NVE` is then still the pre-#466 scalar.
+  // A bare `Array.isArray` would read that as empty and delete the doc.
+  // `indEscala` needs no such helper: `!= null` already covers a raw string,
+  // and folding it here would turn unrecognised text into a delete.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
+    nveCarriesValue(imp.NVE) ||
+    imp.indEscala != null ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||
     rtcConfigHasValue(imp)
@@ -297,11 +310,12 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
 }
 
 /**
- * True when the passthrough Reforma Tributária blob (`configuracaoIBSCBS`)
- * carries at least one non-null value. The RTC config rides on the imposto row
- * via `.passthrough()` (not typed on `ImpostoProduto`), so a row whose ONLY
- * content is RTC config must still persist — `impostoCarriesInfo` would
- * otherwise drop it. A toggled-on-but-empty blob (all null) counts as empty.
+ * True when the Reforma Tributária blob (`configuracaoIBSCBS`) carries at least
+ * one non-null value. `taxConfigFields` restricts the RTC key set but leaves
+ * code formats and numeric ranges lenient until emission, so a row whose ONLY
+ * content is a half-filled RTC draft must still persist or
+ * `impostoCarriesInfo` would drop it. A toggled-on-but-empty blob (all null)
+ * counts as empty.
  */
 function rtcConfigHasValue(imp: ImpostoProduto): boolean {
   return hasNonNullLeaf((imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS);
@@ -324,10 +338,10 @@ function hasNonNullLeaf(v: unknown): boolean {
  * Build the imposto writes for a produto save (Flutter `Produto.save()` imposto
  * loop, `produtoTableProvider.dart:597`). Each entry maps to one doc at
  * `produtos/<id>/imposto/<operacaoId>` (deterministic id = operação id, so a
- * re-save is idempotent). A configured entry is `set` (full doc, configs
- * preserved via passthrough); an entry that was loaded (`id` set) but is now
- * fully cleared is `delete`d; a pristine empty row is skipped. The wire shape is
- * parsed here so the agent/admin path has no Zod converter to lean on.
+ * re-save is idempotent). A configured entry is `set` (the full typed doc); an
+ * entry that was loaded (`id` set) but is now fully cleared is `delete`d; a
+ * pristine empty row is skipped. The wire shape is parsed here so the
+ * agent/admin path has no Zod converter to lean on.
  */
 export function buildImpostoWriteOps(
   produtoId: string,
@@ -776,9 +790,9 @@ const SUFIXO_DUPLICATA = ' (cópia)';
  *   would name a produto that is not its parent.
  * - `codFornecedor` — the supplier's code for that one stocked item.
  *
- * **Marketplace links** (`marketplace`/`marketplaceIds`/`integracoesComProduto`/
- * `statusProdutosMarketplace`) — copying a live external listing id onto a new
- * produto would make two documents claim the same anúncio. ⚠️ The anúncios
+ * **Marketplace links** (`integracoesComProduto`) — copying a live external
+ * listing association onto a new produto would make two documents claim the
+ * same anúncio. ⚠️ The anúncios
  * THEMSELVES are the produto's `PRODUTO_SUBCOLLECTION_NAMES` subcollections and
  * are never cloned at all: {@link buildDuplicarProdutoWriteOps} emits no
  * subcollection path except the produto's own `extraData`/`imposto`, which is
@@ -792,9 +806,6 @@ const SUFIXO_DUPLICATA = ' (cópia)';
  * **Lifecycle** — `publicado` goes back to `false`. A produto is born a draft
  * and is published explicitly (see that field's own docstring); a clone that
  * arrived already visible in the catalogue would have been published by nobody.
- *
- * **Server-managed** — `nome_embedding` describes the SOURCE's name, which the
- * parent clone changes below; stale from the moment it is written.
  *
  * ⚠️ What deliberately DOES carry over, because none of it is an identity:
  * `categoriaProdutoOuterRef`; `tabelaDeMedidasModaUid` (a tabela de medidas is
@@ -811,16 +822,12 @@ function limparParaDuplicar(dados: Produto): Record<string, unknown> {
     gtin: null,
     codPai: null,
     codFornecedor: null,
-    marketplace: [],
-    marketplaceIds: null,
-    statusProdutosMarketplace: null,
     integracoesComProduto: [],
     fotos: null,
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
     publicado: false,
-    nome_embedding: null,
   };
 }
 
@@ -955,8 +962,7 @@ export function ehFamiliaDeUmParaDuplicar(
  * produto save uses, so their wire shapes cannot drift from those.
  *
  * ⚠️ `googleMerchantData.id` is cleared: that is the Google Merchant OFFER id,
- * an external identifier for one produto, and the reasoning that clears
- * `marketplaceIds` applies to it unchanged. `title` stays — operator copy, not
+ * an external identifier for one produto. `title` stays — operator copy, not
  * an identifier.
  *
  * ⚠️ Each cloned `imposto` row is re-stamped `now` (`timestamp: null` makes

@@ -81,7 +81,11 @@ export const consultaTaskPayloadSchema = z.object({
     z.literal(7),
     z.literal(9),
   ]),
-  /** 0-based consult attempt; the reconciler caps it at `MAX_RECONCILE_ATTEMPTS`. */
+  /**
+   * 0-based consult attempt — drives the backoff delay only; the per-doc
+   * `retries` counter, which every in-flight receipt round advances by one,
+   * is what `reconcileByRecibo` caps at `MAX_RECONCILE_ATTEMPTS`.
+   */
   attempt: z.number().int().min(0),
 });
 export type ConsultaTaskPayload = z.infer<typeof consultaTaskPayloadSchema>;
@@ -176,6 +180,42 @@ export class NFeTasksConfigError extends Error {
   }
 }
 
+/**
+ * An enqueue that failed below the Admin SDK's own error classes (#1654).
+ *
+ * `FunctionsApiClient.enqueue` converts only an HTTP error reply
+ * (`FirebaseFunctionsError`), and the access-token fetch arrives as a
+ * `FirebaseAppError`; anything else it rethrows raw. On the deployed backends
+ * that "anything else" is real: with no explicit credential
+ * (`lib/firebase/admin.ts`) the SDK runs on Application Default Credentials,
+ * and the first enqueue of each instance asks the metadata server for the
+ * service-account email that signs the task's OIDC token, unwrapped — so a
+ * failed lookup arrives as gaxios' own `GaxiosError`. That lookup runs after
+ * the lote was sent, like every other enqueue failure, so
+ * `orchestrator/falhas.ts` tables this class and a batch member reports it.
+ */
+export class NFeTasksEnqueueError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'NFeTasksEnqueueError';
+  }
+}
+
+/**
+ * The registry symbol gaxios brands every `GaxiosError` with (the key is the
+ * same in gaxios 6 and 7; the value is the package version).
+ * `GaxiosError[Symbol.hasInstance]` checks it too, but also demands an EQUAL
+ * version, and the version is exactly what differs between copies: the
+ * `nfe` functions bundle inlines its own, while the external firebase-admin
+ * installs whatever npm resolves at deploy. Importing the class would also
+ * pull google-auth-library into that bundle — so the brand is read directly.
+ */
+const MARCA_DO_GAXIOS = Symbol.for('gaxios-gaxios-error');
+
+function ehErroDoGaxios(e: unknown): e is Error {
+  return e instanceof Error && MARCA_DO_GAXIOS in e;
+}
+
 /** Real scheduler — enqueues onto the `reconciliarNfe` Firebase task queue. */
 class FirebaseTaskQueueScheduler implements TaskScheduler {
   // Region-qualified name so the queue resolves to the deployed function's region
@@ -187,6 +227,25 @@ class FirebaseTaskQueueScheduler implements TaskScheduler {
     );
   }
 
+  /**
+   * Enqueue `payload`. A gaxios failure the SDK let through raw becomes an
+   * {@link NFeTasksEnqueueError}; the SDK's own classes and anything else (a
+   * bug) propagate unchanged.
+   */
+  private async enfileirar(payload: TaskPayload, scheduleAtMs: number): Promise<void> {
+    try {
+      await this.queue().enqueue(payload, { scheduleTime: new Date(scheduleAtMs) });
+    } catch (e) {
+      if (ehErroDoGaxios(e)) {
+        throw new NFeTasksEnqueueError(
+          `Falha ao enfileirar a tarefa ${RECONCILE_FUNCTION} (${payload.kind}): ${e.message}`,
+          { cause: e },
+        );
+      }
+      throw e;
+    }
+  }
+
   async enqueueConsulta(input: ConsultaTaskInput): Promise<void> {
     const payload: ConsultaTaskPayload = {
       kind: 'consulta-lote',
@@ -195,7 +254,7 @@ class FirebaseTaskQueueScheduler implements TaskScheduler {
       tpEmis: input.tpEmis,
       attempt: input.attempt,
     };
-    await this.queue().enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
+    await this.enfileirar(payload, input.scheduleAtMs);
   }
 
   async enqueueCceVinculo(input: CceVinculoTaskInput): Promise<void> {
@@ -207,7 +266,7 @@ class FirebaseTaskQueueScheduler implements TaskScheduler {
       nSeqEvento: input.nSeqEvento,
       attempt: input.attempt,
     };
-    await this.queue().enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
+    await this.enfileirar(payload, input.scheduleAtMs);
   }
 }
 

@@ -47,15 +47,13 @@ export type ItemCheckoutError = (typeof ITEM_CHECKOUT_ERRORS)[keyof typeof ITEM_
  * rule 8 rules out. (The repo default elsewhere is
  * µs; the tolerant `millisSinceEpoch` read still parses either).
  */
-export const itemCheckoutPedidoSchema = z
-  .object({
-    produtoCheckoutPedidoOuterRef: outerRefSchema.nullable().default(null),
-    quantidade: z.number().int().min(1).default(1),
-    dataExclusao: millisSinceEpoch('Excluído em').nullable().default(null),
-    error: z.string().nullable().default(null),
-    timestamp: millisSinceEpoch('Lançado em').nullable().default(null),
-  })
-  .passthrough();
+export const itemCheckoutPedidoSchema = z.strictObject({
+  produtoCheckoutPedidoOuterRef: outerRefSchema.nullable().default(null),
+  quantidade: z.number().int().min(1).default(1),
+  dataExclusao: millisSinceEpoch('Excluído em').nullable().default(null),
+  error: z.string().nullable().default(null),
+  timestamp: millisSinceEpoch('Lançado em').nullable().default(null),
+});
 export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
 
 /**
@@ -86,9 +84,8 @@ export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
  *   values WERE null reaches us missing those keys entirely — so all three stay
  *   nullable-with-default and this schema must parse their absence. (Not every
  *   doc: one written with a real `title` carries the key, exactly as the
- *   omit-when-null rule above implies.) The base-model
- *   keys `docId`/`createTime`/`updateTime`/`readTime` (also omit-when-null) are
- *   NOT part of this body schema; `.passthrough()` keeps them on read.
+ *   omit-when-null rule above implies.) Base-model metadata is not part of the
+ *   stored body and is rejected by this strict schema.
  *
  * `usuarioCheckoutFretePedidoOuterRef` = `documents/usuarios/<uid>`, where the
  * usuario doc id IS the Firebase auth uid (`.old/lib/user/providers/auth.dart:377`).
@@ -101,17 +98,15 @@ export type ItemCheckoutPedido = z.infer<typeof itemCheckoutPedidoSchema>;
  * PLAIN object, NO cross-field `.refine()` — keeps it `.pick()`-able under Zod 4
  * (see the `zod4-pick-refine-runtime-crash` gotcha).
  */
-export const checkoutFretePedidoSchema = z
-  .object({
-    title: z.string().nullable().default(null),
-    obs: z.string().nullable().default(null),
-    freteNoMomentoDoCheckout: freteDoPedidoSchema,
-    ehDoFreteInicial: z.boolean().nullable().default(null),
-    usuarioCheckoutFretePedidoOuterRef: outerRefSchema,
-    itensCheckout: z.array(itemCheckoutPedidoSchema).nullable().default(null),
-    timestamp: millisSinceEpoch('Data do checkout').nullable().default(null),
-  })
-  .passthrough();
+export const checkoutFretePedidoSchema = z.strictObject({
+  title: z.string().nullable().default(null),
+  obs: z.string().nullable().default(null),
+  freteNoMomentoDoCheckout: freteDoPedidoSchema,
+  ehDoFreteInicial: z.boolean().nullable().default(null),
+  usuarioCheckoutFretePedidoOuterRef: outerRefSchema,
+  itensCheckout: z.array(itemCheckoutPedidoSchema).nullable().default(null),
+  timestamp: millisSinceEpoch('Data do checkout').nullable().default(null),
+});
 export type CheckoutFretePedido = z.infer<typeof checkoutFretePedidoSchema>;
 
 export const checkoutFretePedidoMeta: CollectionMetadata = {

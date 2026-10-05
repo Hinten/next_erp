@@ -47,11 +47,8 @@ describe('itemCheckoutPedidoSchema', () => {
 });
 
 describe('checkoutFretePedidoSchema', () => {
-  it('parses a verbatim legacy doc (omitted-null keys, base-model keys, explicit-null items)', () => {
+  it('parses a legacy body with omitted-null keys and explicit-null items', () => {
     const legacy = {
-      // base-model keys the Flutter writer emits (omit-when-null) — kept by passthrough
-      docId: 'chk-1',
-      createTime: 1_700_000_000_000,
       // legacy OMITS title/obs/ehDoFreteInicial when null; here title is present, the rest absent
       title: '12345',
       freteNoMomentoDoCheckout: frete,
@@ -81,8 +78,17 @@ describe('checkoutFretePedidoSchema', () => {
     expect(out.itensCheckout).toHaveLength(2);
     expect(out.itensCheckout?.[1]?.error).toBe('Produto não esperado');
     expect(out.timestamp).toBe(1_700_000_000_500);
-    // passthrough keeps the base-model keys the Flutter writer added
-    expect((out as Record<string, unknown>).docId).toBe('chk-1');
+  });
+
+  it('rejects unknown document and item metadata', () => {
+    const valid = {
+      freteNoMomentoDoCheckout: frete,
+      usuarioCheckoutFretePedidoOuterRef: 'documents/usuarios/uid-1',
+    };
+    expect(checkoutFretePedidoSchema.safeParse({ ...valid, docId: 'chk-1' }).success).toBe(false);
+    expect(itemCheckoutPedidoSchema.safeParse({ quantidade: 1, scanId: 'extra' }).success).toBe(
+      false,
+    );
   });
 
   it('round-trips a new-writer doc (explicit nulls, empty itensCheckout array)', () => {

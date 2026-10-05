@@ -265,9 +265,45 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // (get_kit_item_limit), composition frozen after create. survey C §7.
     kitVirtual: 'sim',
     // unlist_item {unlist:false} re-lists (guide 221 §6) — but its own error list
-    // carries `error_set_normal_unlisted_item`; step 11 verifies live before this
-    // row flips implementado.
+    // carries `error_set_normal_unlisted_item`. Step 11 MEASURED it live on the SG
+    // SANDBOX shop, 2026-09-17: {unlist:false} re-listed a SELLER-created UNLIST
+    // item (success_list: 1, no failures), so that is the first door and
+    // `update_item {item_status: 'NORMAL'}` is the built fallback.
+    // ⚠️ Only HALF settled. The Shopee PRE-LAUNCH UNLIST — the state that actually
+    // answers `error_set_normal_unlisted_item` — cannot be produced on that shop,
+    // and an SG sandbox answer is evidence about the API, never about BR.
+    // `implementado` stays `false` until step 22 regardless.
     pausarAnuncio: 'sim',
+    // Measured live on the SG SANDBOX shop, 2026-09-21, through the shipped step-12
+    // package ops, with Lucas’s explicit go and a `delete_item` cleanup. Every
+    // line names the probe that answers it; a line reading NAO MEDIDO says what is
+    // still owed rather than keeping a guess.
+    //   stock: 0 on UPDATE   — aceito                                          (P6)
+    //   stock: 1 vs min_limit — NAO MEDIDO: the sandbox category declares no
+    //     stock_limit at all (min_limit and max_limit both null), so the band
+    //     could not be exercised; `bandaMax` is nullable in practice.          (P7)
+    //   echo vs read-back    — iguais (but the read-back stays the authority:
+    //     step 11 measured a STALE `update_item` echo)                         (P4)
+    //   update_time moveu    — nao; faq 180 is right and the API page is wrong,
+    //     so `get_item_list?update_time_from` detects no stock drift.          (P5)
+    //   stock_list PARCIAL   — omitidos preservados (the #831 shape answered NO
+    //     for stock), so one item’s models may be split across calls.          (P8)
+    //   um modelo invalido   — so failure_list, on an HTTP 200 whose `error` is
+    //     the EMPTY string: `error_busi_update_stock_failed` never fired, so the
+    //     happy-path envelope is the primary attribution path.                 (P9)
+    //   sem promocao         — an EMPTY `promotion` array. Which of the two
+    //     declared `total_reserved_stock` positions is live stays UNVERIFIED — the
+    //     sandbox carries no Discount module (guide 644).                      (P1)
+    //   feriado PARCIAL      — nao bloqueia, so the `loja-em-ferias` conta gate is
+    //     rightly FULL-only.                                                  (P10)
+    //   feriado TOTAL        — NAO MEDIDO: a FULL holiday cannot be set over an
+    //     active PARTIAL one (numeric refusal `10002`); transicao — NAO MEDIDO, and
+    //     `error_holiday_mode_change_stock` has never been seen.              (P10)
+    //   warehouse            — sem-multi-armazem, refused PREFIXED on the wire as
+    //     `warehouse.error_not_in_whitelist`.                                  (P3)
+    // ⚠️ An SG sandbox answer is evidence about the API, never about BR: the
+    //    promotion regime, kits and multi-warehouse are not rehearsable there.
+    // `implementado` stays `false` until step 22.
     estoque: {
       suporte: 'sim',
       // One item per call (api v2.product.update_stock); the item's models ride
@@ -275,13 +311,51 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
       // per LISTING, attribution per MODEL.
       protocolo: 'por-anuncio',
       loteMax: 50, // models per call, not items
-      multiDeposito: 'sim', // location_id from get_warehouse_detail — WHITELIST feature; structure is sticky
+      // location_id from get_warehouse_detail — a WHITELIST feature; the structure
+      // is sticky. Probe P3 measured the refusal on the sandbox shop and it
+      // arrives PREFIXED on the wire (`warehouse.error_not_in_whitelist`), which
+      // is why every reader folds the module prefix on BOTH sides.
+      multiDeposito: 'sim',
     },
-    enviarPreco: 'sim', // update_price, one item ≤50 models, 2 decimals in BR, LOCKED during a promotion
+    // Measured live on the SG SANDBOX shop, 2026-09-24, through the shipped step-13
+    // `updatePrice` plus raw signed calls, with Lucas’s explicit go and a
+    // `delete_item` cleanup of both throwaway UNLIST items. Same format as the
+    // stock lines above: each names its probe, and NAO MEDIDO says what is owed.
+    //   region / is_cb       — "SG" / false; the sandbox flag and the RESOLVED
+    //     apiHost agree, which is what the region gate's one override keys on (P0)
+    //   price_limit          — null: the sandbox category declares no band    (P1)
+    //   original_price       — no zero-fill on a fresh item. ⚠️ has_promotion
+    //     read TRUE on an item with no promotion at all: never a gate.        (P2)
+    //   model_id sem modelo  — 0 and an omitted key both land, but the success
+    //     entry carries NO model_id key at all (the schema reads it as null) (P4/P6)
+    //   update_time moveu    — nao: it confirms no price write               (P5)
+    //   terceira decimal     — arredondada half-up; the validator never sends one (P7)
+    //   price_list PARCIAL   — the unsent sibling keeps its price, so the body
+    //     carries only the models whose price changes                        (P8)
+    //   um modelo invalido   — HTTP 200 with `error: ''` and BOTH lists       (P9)
+    //   error + listas       — COEXIST (a bogus model on a no-model item), so
+    //     updatePrice carries payloadNoErro                              (P4c-bogus)
+    //   error_update_price_fail — Shopee's ONE answer, never transient, to a ratio
+    //     breach (against an UNSENT sibling too: 4.5× aceito, 5.5× recusado on SG),
+    //     a deleted item, a has-model item without a model and all-bogus models;
+    //     `error_edit_item_price_for_item_has_model` never fired (P10/P11/P11b/P12/P15)
+    //   promocoes, BRL, o 4× do BR, price_limit do BR, push 22 — NAO MEDIDO: an SG
+    //     sandbox answer is evidence about the API, never about BR (no Discount
+    //     module, no BR shop). MODEL_UNAVAILABLE — NAO MEDIDO (P14 not run).
+    // update_price: one item, ≤ 50 models, 2 decimals. Locked by MOST promotion types
+    // from SCHEDULED on (faq 140) — not wholesale, selling price, add-on main, PwP,
+    // the gift. `implementado` stays `false` until step 22.
+    enviarPreco: 'sim',
     importarPedido: 'sim',
-    // No payment resource and no payment push: payment = pay_time != null on
-    // get_order_detail, fees/settlement = get_escrow_detail (floats, one order
-    // per call). survey B §3.
+    // No payment push, and no gateway-shaped payment resource — but a BR
+    // per-order one DOES exist: get_order_detail.payment_info[] (per NT
+    // 2025.001; provided "for orders with status READY_TO_SHIP", must be named
+    // in response_optional_fields). pay_time/payment_method/total_amount are
+    // OPTIONAL fields: an absent one means "not asked for", never "unpaid".
+    // Fees = get_escrow_detail (floats, ONE order per call; the batch lacks
+    // buyer_total_amount and has no per-order error, so it cannot replace it).
+    // Settlement = get_escrow_list on escrow_release_time, page_no paging.
+    // survey B §3.
     importarPagamento: 'sim',
     // One order → N packages (package_list). Many orders → one parcel exists only
     // as a read-only group_shipment_id with no seller action; split_order is not

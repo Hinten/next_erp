@@ -7,7 +7,7 @@ import { emitRules } from './emit';
 
 function domain(
   collectionPath: string,
-  permissions = {
+  permissions: DomainSchema<z.ZodTypeAny>['meta']['permissions'] = {
     read: PERM.cliente.read,
     write: PERM.cliente.write,
     delete: PERM.cliente.delete,
@@ -30,6 +30,24 @@ describe('emitRules', () => {
     expect(out).toContain('match /bar/{docId} {');
     expect(out).toContain("allow create, update: if isSuperUser() || p('d_cliente', 2);");
     expect(out).not.toContain('v_bar');
+  });
+
+  it('emits an explicit delete deny with no su bypass when permissions.delete is null', () => {
+    const permissions = {
+      read: PERM.configuracoes.read,
+      write: PERM.configuracoes.write,
+      delete: null,
+    };
+    const filial = domain('filiais', permissions);
+    const out = emitRules([filial], [], new Set());
+
+    expect(resolvePermissions(filial.meta).delete).toBeNull();
+    expect(out).toContain("allow create, update: if isSuperUser() || p('d_configuracoes', 2);");
+    expect(out).toContain(
+      '// Client delete disabled by collection metadata — no su bypass.\n' +
+        '      allow delete: if false;',
+    );
+    expect(out).not.toContain("allow delete: if isSuperUser() || p('d_configuracoes', 2);");
   });
 
   it('gates serverOwnedFields: create allows only null, update denies any touch', () => {

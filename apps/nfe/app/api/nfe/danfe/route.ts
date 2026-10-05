@@ -82,8 +82,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (e instanceof NFeDanfeError) {
       return authError(422, { error: e.message });
     }
-    // Corrupted persisted XML (malformed date lexical) — deterministic
-    // "not renderable", same 422 semantics as NFeDanfeError, not a 500.
+    // Deterministic "not renderable", same 422 semantics as NFeDanfeError and
+    // not a 500 (for example, corrupted persisted XML with a malformed date
+    // lexical, or a malformed chave). The message tells the operator what to
+    // do, so it is passed through verbatim.
     if (e instanceof NFeDanfeFormatError) {
       return authError(422, { error: e.message });
     }

@@ -3,11 +3,13 @@ import { ESTADO_NFE } from '@delfrance/schemas';
 import {
   NFeHttpError,
   NFeNetworkError,
+  NFeTimeoutError,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import { nfeCollection } from '../data/nfeCollection';
+import { carregadorContextoRejeicao } from '../nfe/contextoRejeicao';
 import {
-  notificationForNFeError,
+  notificationForNFeErrorComContexto,
   notificationForNFeResult,
   type NotificationShape,
 } from '../nfe/errors';
@@ -44,18 +46,25 @@ export async function resolveAprovadaNfe(
 
 export type EnsureNfeResult =
   | { ok: true; nfeId: string; chave: string; reused: boolean }
-  /** the NF-e is processing async (enviando / aguardandoResposta) — the reconciler lands it. */
+  /**
+   * The outcome is not final yet: the NF-e is processing async (enviando /
+   * aguardandoResposta, which the reconciler lands), OR the emit call timed out
+   * (#1094) and the emission may or may not be running. Either way the operator
+   * reprints later — a reprint re-checks, and emits if nothing exists.
+   */
   | { ok: false; pending: true }
   /** rejected or errored — carries a ready-to-show notification. */
   | { ok: false; pending: false; notification: NotificationShape };
 
 /**
  * Ensure the pedido has a printable NF-e: reuse an existing aprovada/EPEC doc, or
- * emit one. The server dedups (an existing bloqueada NF-e → `reused:true`), so
- * this reproduces the legacy "aprovada OR bloqueada → don't re-emit". A pending
- * estado is NOT an error — the async reconciler finishes it; the operator reprints
- * from the Outros Checkouts panel. Errors narrow to the typed NF-e classes (per
- * the no-generic-catch rule); anything unexpected rethrows.
+ * emit one. The server dedups a SEQUENTIAL repeat (an existing bloqueada NF-e →
+ * `reused:true`), so this reproduces the legacy "aprovada OR bloqueada → don't
+ * re-emit". ⚠️ It does NOT dedup a repeat that overlaps a still-running emission
+ * (#1675) — which is why a timeout below is `pending`, never an error. A pending
+ * estado is NOT an error — the async reconciler finishes it; the operator
+ * reprints from the Outros Checkouts panel. Errors narrow to the typed NF-e
+ * classes (per the no-generic-catch rule); anything unexpected rethrows.
  */
 export async function ensureNfeAprovada(
   db: Firestore,
@@ -75,8 +84,24 @@ export async function ensureNfeAprovada(
     }
     return { ok: false, pending: false, notification: notificationForNFeResult(result) };
   } catch (err) {
+    // ⚠️ #1094: a timeout — our deadline, or the platform's gateway 504 — means
+    // the emission may STILL BE RUNNING on the server, possibly mid-SOAP with
+    // SEFAZ. That is "em processamento", not a failure: a red error here sends
+    // the operator to reprint, and the reprint calls `emitir` again over the live
+    // run. Checked before the generic arm because it is an `NFeNetworkError`.
+    if (err instanceof NFeTimeoutError) return { ok: false, pending: true };
     if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
-      return { ok: false, pending: false, notification: notificationForNFeError(err) };
+      // A cStat 805 rejection reads the rejected NF-e, the pedido and the cliente
+      // (#852) so the notification can say what to fix and link the cadastro.
+      // Those extra reads happen ONLY on 805 — every other error maps without a
+      // read. On the reprint path (`reprintCheckout.ts`) they run INSIDE the
+      // `withDeadline` wrapping this whole function (REPRINT_STAGE_TIMEOUT_MS,
+      // 30s), so they share that budget rather than extending it.
+      return {
+        ok: false,
+        pending: false,
+        notification: await notificationForNFeErrorComContexto(err, carregadorContextoRejeicao(db)),
+      };
     }
     throw err;
   }
@@ -99,6 +124,12 @@ export type CheckoutDanfeFormat = 'simplificadoPdf' | 'retrato' | 'paisagem' | '
  * first caller to use that entry point (#376). Once a real Zebra has confirmed
  * it, this can switch to `printDanfe(..., 'etq')` too; until then a download is
  * the honest default for a fiscal document.
+ *
+ * ⚠️ That switch is NOT a one-liner. The agent matches the content type with
+ * `==`, and the DANFE route answers `text/plain; charset=utf-8`, which
+ * `printDanfe` would forward as is: the job would fail inside the agent behind
+ * a `200 OK`, so no download fallback and no toast. Send the bare `text/plain`,
+ * as `genericLabel.ts` does.
  */
 export async function printDanfeForCheckout(
   client: NFeHttpClient,

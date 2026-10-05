@@ -43,7 +43,8 @@ const h = vi.hoisted(() => ({
    */
   client: {} as Record<string, unknown>,
   createListingDraft: vi.fn(async () => ({ docId: 'novo', outcome: 'created' as const })),
-  removeListingDraft: vi.fn(async () => 'removed' as const),
+  removeListing: vi.fn(async () => 'removed' as const),
+  descartarAnuncioRemovido: vi.fn(async () => 'descartado' as const),
   /**
    * Which permission bits `usePermission` grants.
    *
@@ -126,7 +127,8 @@ vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
 }));
 vi.mock('@/lib/mercado-livre/listingDraft', () => ({
   createListingDraft: h.createListingDraft,
-  removeListingDraft: h.removeListingDraft,
+  removeListing: h.removeListing,
+  descartarAnuncioRemovido: h.descartarAnuncioRemovido,
 }));
 
 /**
@@ -196,7 +198,8 @@ beforeEach(() => {
   h.notify.mockClear();
   h.client = {};
   h.createListingDraft.mockClear();
-  h.removeListingDraft.mockClear();
+  h.removeListing.mockClear();
+  h.descartarAnuncioRemovido.mockClear();
   h.permitidos = new Set([PERM.integracao.write, PERM.produto.delete]);
 });
 
@@ -1089,12 +1092,12 @@ describe('Excluir anúncio', () => {
     await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-B')).toBeDefined());
 
     fireEvent.click(botaoExcluir('L-B')!);
-    expect(h.removeListingDraft).not.toHaveBeenCalled();
+    expect(h.removeListing).not.toHaveBeenCalled();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
     });
-    expect(h.removeListingDraft).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
+    expect(h.removeListing).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
   });
 
   it("drops the listing's blocked-publish issues with the listing", async () => {
@@ -1142,7 +1145,7 @@ describe('Excluir anúncio', () => {
     // The race the transaction catches. It is reported, not retried: the doc is
     // a live anúncio now and deleting it is no longer the right action.
     h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
-    h.removeListingDraft.mockResolvedValueOnce('published' as never);
+    h.removeListing.mockResolvedValueOnce('published' as never);
     renderEditor();
     await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
 
@@ -1157,6 +1160,123 @@ describe('Excluir anúncio', () => {
         message: expect.stringContaining('publicado enquanto você confirmava'),
       }),
     );
+  });
+
+  /**
+   * #1226. The delete's own refusal rests on "removing a PUBLISHED one would
+   * orphan a live anúncio" — which is exactly what does NOT hold once ML has
+   * removed the listing, and that produto is otherwise stuck for ever.
+   */
+  it('IS offered on a listing Mercado Livre removed, despite its item id', async () => {
+    h.links = [link('L-RM', { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    expect(botaoExcluir('L-RM')).toBeDefined();
+  });
+
+  it('warns that the copy is lost, which the draft wording never had to', async () => {
+    // ⚠️ The old modal asserted "Este anúncio nunca foi publicado" — false, and
+    // reassuring, on precisely the listing that carries member links and hours
+    // of authored copy with it.
+    h.links = [link('L-RM', { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    fireEvent.click(botaoExcluir('L-RM')!);
+    const dialogo = screen.getByRole('dialog');
+    expect(dialogo.textContent).not.toContain('nunca foi publicado');
+    expect(dialogo.textContent).toContain('Descartar anúncio removido');
+  });
+});
+
+/* ------------------- Descartar anúncio removido (#1226) ------------------- */
+
+describe('Descartar anúncio removido', () => {
+  function botaoDescartar(linkDocId: string) {
+    return [...screen.getByTestId(`ml-anuncio-${linkDocId}`).querySelectorAll('button')].find(
+      (b) => b.textContent === 'Descartar anúncio removido',
+    );
+  }
+
+  const REMOVIDO = { id: 'MLB777', estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao };
+
+  it('is offered only on a listing Mercado Livre removed', async () => {
+    h.links = [
+      link('L-RM', REMOVIDO),
+      // ⚠️ The near-miss: same ML `status`, a listing still under review — the
+      // one that must NOT be written off.
+      link('L-REV', { id: 'MLB888', estado: ESTADO_PUBLICACAO_ML.emRevisao }),
+      link('L-PUB', { id: 'MLB999' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    expect(botaoDescartar('L-RM')).toBeDefined();
+    expect(botaoDescartar('L-REV')).toBeUndefined();
+    expect(botaoDescartar('L-PUB')).toBeUndefined();
+  });
+
+  it("follows the produto's DELETE permission, not integracao.write", async () => {
+    // Same argument as the delete's: it destroys the link doc's ML identity, and
+    // Firestore gates the subcollection by the parent produto's permissions.
+    // Publish is deliberately left granted so a control gated on the wrong bit
+    // would still be visible here.
+    h.permitidos = new Set([PERM.integracao.write]);
+    h.links = [link('L-RM', REMOVIDO)];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    expect(botaoDescartar('L-RM')).toBeUndefined();
+  });
+
+  it('asks before discarding, then discards the listing it was opened for', async () => {
+    h.links = [link('L-A', REMOVIDO), link('L-B', REMOVIDO)];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-B')).toBeDefined());
+
+    fireEvent.click(botaoDescartar('L-B')!);
+    expect(h.descartarAnuncioRemovido).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Descartar' }));
+    });
+    expect(h.descartarAnuncioRemovido).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
+  });
+
+  it('says so when the listing left the removed state while the confirm was open', async () => {
+    // The mirror of the delete's `'published'` race: discarding the identity of
+    // a listing that is live again would abandon a real anúncio.
+    h.links = [link('L-RM', REMOVIDO)];
+    h.descartarAnuncioRemovido.mockResolvedValueOnce('nao-removido' as never);
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    fireEvent.click(botaoDescartar('L-RM')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Descartar' }));
+    });
+
+    expect(h.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('mudou de estado'),
+      }),
+    );
+  });
+
+  it('refuses the republish and says why, rather than round-tripping to a 422', async () => {
+    h.links = [link('L-RM', REMOVIDO)];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-RM')).toBeDefined());
+
+    const bloco = screen.getByTestId('ml-anuncio-L-RM');
+    const republicar = [...bloco.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Republicar',
+    );
+    expect(republicar).toBeDefined();
+    expect(republicar!.disabled).toBe(true);
+    expect(bloco.textContent).toContain('removeu este anúncio');
   });
 });
 

@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Tabs, Text } from '@mantine/core';
+import { Alert, Badge, Tabs, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
@@ -15,15 +15,16 @@ import {
   ESTADO_NFE_LABELS,
   ESTADO_PEDIDO_LABELS,
   nfeFiscalEncerrada,
+  pagamentosTravadosPorNFe,
   pedidoPageIssues,
   travarInclusaoProduto,
-  travarPagamentoComNFe,
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
   idFromRef,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { aplicarPlanoDeCopiaDeEndereco, type PedidoEnderecoCopyPlan } from '@delfrance/data/pedido';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { useServerTruthSeed, useUnsavedChangesGuard } from '@delfrance/ui';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -37,26 +38,45 @@ import {
   EstoqueSyncTab,
   FiscalTab,
   FreteTab,
-  IncidentesTab,
   ModificacoesTab,
-  PlaceholderTab,
   PrincipalTab,
 } from './tabs';
+import { LazyIncidentesTab } from './tabs/LazyIncidentesTab';
+import { LazyLinkPagamentoTab } from './tabs/LazyLinkPagamentoTab';
+import type { IncidenteFlush } from './tabs/IncidentesTab';
 import { BloqueioMarketplaceAlert } from './BloqueioMarketplaceAlert';
 import { PagamentosSection } from './PagamentosSection';
 import { PedidoFooter } from './PedidoFooter';
-import { regroupItens } from './regroupItens';
+import { linhaViraItem, regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
 import { pedidoTabs, summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
 import type { FlatItem, PedidoFormState } from './types';
 
+export interface PedidoSubmitPreparation {
+  enderecoCopyPlan: PedidoEnderecoCopyPlan | null;
+}
+
+interface ConfirmedPedidoSubmitPreparation {
+  prepareSubmit: NonNullable<PedidoFormProps['prepareSubmit']>;
+  selection: {
+    clientePedidoOuterRef: Pedido['clientePedidoOuterRef'];
+    enderecoFiscalOuterRef: Pedido['enderecoFiscalOuterRef'];
+    enderecoFreteOuterReference:
+      | NonNullable<Pedido['freteInicial']>['enderecoFreteOuterReference']
+      | null;
+  };
+  preparation: PedidoSubmitPreparation;
+}
+
 export interface PedidoFormProps {
   defaultValues?: Pedido;
   /**
    * Firestore id of the pedido being edited. Absent in create mode.
-   * When present, the Pagamento tab renders the real (read-only)
-   * `PagamentosSection` instead of the placeholder.
+   * When present, the Pagamento tab renders the real `PagamentosSection` and the
+   * Link Pgto tab renders the payment-link editor; in create mode both show a
+   * "save the pedido first" hint (their data lives in subcollections keyed by
+   * this id).
    */
   pedidoId?: string;
   submitLabel?: string;
@@ -91,6 +111,8 @@ export interface PedidoFormProps {
    * held the cached copy, and that mismatch reads as a phantom conflict (#972).
    */
   onSeeded?: (serverTruth: boolean) => void;
+  /** Runs before incidentes or any pedido/address write. `false` cancels all. */
+  prepareSubmit?: (values: Pedido) => Promise<PedidoSubmitPreparation | false>;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -103,9 +125,15 @@ export interface PedidoFormProps {
   onSubmit: (
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
-    opts: { continueEditing: boolean },
+    opts: {
+      continueEditing: boolean;
+      incidenteSaved: boolean;
+      preparation: PedidoSubmitPreparation;
+    },
   ) => Promise<void | boolean>;
 }
+
+type IncidenteFlushResult = 'none' | 'saved' | 'blocked';
 
 const EMPTY_DEFAULTS: PedidoFormState = {
   id: null,
@@ -126,16 +154,13 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   entradasRelacionadas: null,
   saidasRelacionadas: null,
   chNFeReferenciadas: null,
+  chNFePagamentoAntecipado: null,
   itens: {},
   itensIds: [],
   itensDevolvidos: null,
   freteInicial: null,
   valorCobrado: null,
   descontoTotal: 0,
-  valorDespesasIncidentes: null,
-  valorFretesIncidentes: null,
-  valorComissoes: null,
-  impostos: null,
   timestamp: null,
   ultimaModificacao: null,
   dataFinalExpedicao: null,
@@ -181,11 +206,7 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   // produto" button appends a blank row before a produto is picked). Strip both
   // synthetic fields (`_rowId`, `_delete`) so neither reaches Firestore.
   const cleanItens = (_itensFlat ?? [])
-    .filter((row) => {
-      const r = row as FlatItem;
-      if (r._delete) return false;
-      return !!r.produtoUid || !!r.mktplaceId;
-    })
+    .filter((row) => linhaViraItem(row as FlatItem))
     .map((row) => {
       const { _rowId, _delete, ...item } = row as FlatItem;
       return item;
@@ -227,6 +248,7 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
     chNFeReferenciadas: merged.chNFeReferenciadas,
+    chNFePagamentoAntecipado: merged.chNFePagamentoAntecipado,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
@@ -271,8 +293,25 @@ function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: stri
   return null;
 }
 
-function buildDefaults(existing?: Pedido, pedidoId?: string, ehSaida = true): PedidoFormState {
-  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida };
+/**
+ * ⚠️ `usuarioRef` seeds the CREATE branch only. On edit the loaded doc's own
+ * `vendedorPedidoOuterRef` is spread through untouched — re-stamping it would
+ * reattribute someone else's pedido to whoever happened to open it, which is
+ * the same lie the Vendedor field used to tell on screen.
+ */
+function buildDefaults(
+  existing?: Pedido,
+  pedidoId?: string,
+  ehSaida = true,
+  usuarioRef: string | null = null,
+): PedidoFormState {
+  // Create: the operator IS the vendedor. Nothing on the plain-create path wrote
+  // this field — `createPedidoWithNumero` passes `values` through verbatim — so
+  // every pedido made at /pedidos/novo landed with a null vendedor while the
+  // screen displayed the operator's email for the whole session. Duplicar and
+  // Devolução arrive here WITH an `existing` seed that already carries its own
+  // vendedor (`packages/data/src/pedido/{duplicar,devolucao}.ts`), and it wins.
+  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida, vendedorPedidoOuterRef: usuarioRef };
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
@@ -296,17 +335,38 @@ export function PedidoForm({
   ehSaida = true,
   fromCache,
   onSeeded,
+  prepareSubmit,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('principal');
+  // Incidentes and Link Pgto are the persistent pedido tabs. Neither is even
+  // imported until its first activation, then it remains mounted so its draft
+  // and listeners survive navigation through the other tabs — Incidentes keeps
+  // its editor, listener and flush callback; Link Pgto keeps a half-typed
+  // vaquinha and the retry ids of a create that never got a response.
+  const [incidentesOpened, setIncidentesOpened] = useState(false);
+  const [linkPgtoOpened, setLinkPgtoOpened] = useState(false);
+  const [incidenteDirty, setIncidenteDirty] = useState(false);
+  const incidenteFlushRef = useRef<IncidenteFlush | null>(null);
+  // An invalid pedido still runs the pre-write address confirmation so an
+  // independent incidente can be flushed safely. Keep that confirmation for
+  // the next valid submit, but only while the exact client/address selection
+  // and the permission-aware preparation callback remain unchanged.
+  const confirmedPreparationRef = useRef<ConfirmedPedidoSubmitPreparation | null>(null);
   const db = useMemo(() => getFirebaseFirestore(), []);
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
+  // The `(app)` layout renders a Loader until auth resolves (`layout.tsx`
+  // returns early while `!user`), so `user` is already non-null when this form
+  // mounts and the create seed below cannot miss it. Same ref string shape
+  // NovoPedidoView builds for the Duplicar / Devolução seeds.
+  const usuarioRef = user ? `documents/usuarios/${user.uid}` : null;
+
   const initial = useMemo(
-    () => buildDefaults(defaultValues, pedidoId, ehSaida),
-    [defaultValues, pedidoId, ehSaida],
+    () => buildDefaults(defaultValues, pedidoId, ehSaida, usuarioRef),
+    [defaultValues, pedidoId, ehSaida, usuarioRef],
   );
 
   // Direction is immutable (enforced by the page model via `ehSaidaOriginal`),
@@ -323,7 +383,17 @@ export function PedidoForm({
   // Warn before navigating away from an unsaved pedido. The schema-driven
   // screens get this from ObjectView; PedidoForm is a custom form, so wire the
   // shared guard directly.
-  useUnsavedChangesGuard(form.formState.isDirty);
+  useUnsavedChangesGuard(form.formState.isDirty || incidenteDirty);
+
+  const handleIncidenteDirtyChange = useCallback((dirty: boolean) => {
+    setIncidenteDirty(dirty);
+  }, []);
+
+  function selectTab(next: string | null) {
+    if (next === 'incidentes') setIncidentesOpened(true);
+    if (next === 'link-pgto') setLinkPgtoOpened(true);
+    setActiveTab(next);
+  }
 
   // Paint the first emission, then correct to server truth once — the same
   // contract ObjectView follows, wired here because this form takes
@@ -333,7 +403,7 @@ export function PedidoForm({
     fromCache,
     isDirty: form.formState.isDirty,
     onSeed: (serverTruth) => {
-      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida));
+      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida, usuarioRef));
       onSeeded?.(serverTruth);
     },
   });
@@ -351,45 +421,157 @@ export function PedidoForm({
     }
   }, [liveEstado, form]);
 
+  async function flushIncidentesPendentes(): Promise<IncidenteFlushResult> {
+    if (!incidenteDirty) return 'none';
+
+    const flush = incidenteFlushRef.current;
+    if (!flush) {
+      selectTab('incidentes');
+      setSubmitError(
+        'A edição de incidente ainda está carregando. Revise a aba Incidentes e tente novamente.',
+      );
+      return 'blocked';
+    }
+
+    try {
+      const flushed = await flush();
+      if (!flushed) {
+        selectTab('incidentes');
+        notifications.show({
+          color: 'red',
+          title: 'Incidente não salvo',
+          message: 'Revise o erro na aba Incidentes antes de salvar o pedido.',
+        });
+        return 'blocked';
+      }
+      return 'saved';
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        selectTab('incidentes');
+        setSubmitError(err.message);
+        return 'blocked';
+      }
+      throw err;
+    }
+  }
+
+  async function preparePedidoSubmit(values: Pedido): Promise<PedidoSubmitPreparation | false> {
+    if (!prepareSubmit) return { enderecoCopyPlan: null };
+
+    const selection: ConfirmedPedidoSubmitPreparation['selection'] = {
+      clientePedidoOuterRef: values.clientePedidoOuterRef,
+      enderecoFiscalOuterRef: values.enderecoFiscalOuterRef,
+      enderecoFreteOuterReference: values.freteInicial?.enderecoFreteOuterReference ?? null,
+    };
+    const confirmed = confirmedPreparationRef.current;
+    if (
+      confirmed?.prepareSubmit === prepareSubmit &&
+      confirmed.selection.clientePedidoOuterRef === selection.clientePedidoOuterRef &&
+      confirmed.selection.enderecoFiscalOuterRef === selection.enderecoFiscalOuterRef &&
+      confirmed.selection.enderecoFreteOuterReference === selection.enderecoFreteOuterReference
+    ) {
+      return confirmed.preparation;
+    }
+
+    confirmedPreparationRef.current = null;
+    const preparation = await prepareSubmit(values);
+    if (preparation !== false && preparation.enderecoCopyPlan !== null) {
+      confirmedPreparationRef.current = { prepareSubmit, selection, preparation };
+    }
+    return preparation;
+  }
+
   // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
   // navigates away; "Salvar e continuar editando" reloads in place. The footer's
-  // continue button runs the second RHF submit programmatically, so the page's
-  // onSubmit gets `continueEditing` without a shared ref.
+  // continue button runs the same RHF validation programmatically with the
+  // explicit `continueEditing` intent.
   async function handleSubmit(values: Pedido, continueEditing: boolean) {
     setSubmitError(null);
+    let incidenteSaved = false;
     try {
+      const preparation = await preparePedidoSubmit(values);
+      if (preparation === false) return;
+
+      const incidenteResult = await flushIncidentesPendentes();
+      if (incidenteResult === 'blocked') return;
+      incidenteSaved = incidenteResult === 'saved';
+
       const saved = await onSubmit(
         values,
         form.formState.dirtyFields as Readonly<Record<string, unknown>>,
-        { continueEditing },
+        { continueEditing, incidenteSaved, preparation },
       );
+      if (saved !== false) confirmedPreparationRef.current = null;
+      if (saved === false && incidenteSaved) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Incidente salvo; pedido pendente',
+          message: 'O incidente foi gravado, mas o pedido ainda precisa ser revisado e salvo.',
+        });
+      }
       // "Salvar e continuar editando" stays on the page; re-baseline the form to
       // the just-saved values so it's no longer dirty — otherwise the unsaved-
       // changes guard would prompt on the next navigation (and a hard reload here
       // would trip its `beforeunload` confirmation). Skip when the save did not
       // commit (`false`: conflict / nothing changed) so edits stay dirty.
       if (continueEditing && saved !== false) {
-        form.reset(form.getValues());
+        const current = form.getValues();
+        const rewritten = aplicarPlanoDeCopiaDeEndereco(values, preparation.enderecoCopyPlan);
+        form.reset({
+          ...current,
+          enderecoFiscalOuterRef: rewritten.enderecoFiscalOuterRef,
+          freteInicial: rewritten.freteInicial as PedidoFormState['freteInicial'],
+        });
       }
     } catch (err) {
       if (err instanceof FirebaseError) {
-        setSubmitError(err.message);
+        setSubmitError(
+          incidenteSaved
+            ? `O incidente foi salvo, mas o pedido não pôde ser salvo: ${err.message}`
+            : err.message,
+        );
         return;
       }
       throw err;
     }
   }
 
-  // Invalid submit. Without this, an error on a non-active tab is silent: RHF
-  // blocks the save and the inline message sits in a hidden panel. Jump to the
-  // first erroring tab and name the offenders in a red toast — the same
-  // behavior ObjectView gives its tabbed forms.
-  function onInvalid(errors: FieldErrors<PedidoFormState>) {
+  // Invalid pedido fields still block the pedido write, but they must not make
+  // incidente operations unreachable: legacy pedidos may lack fields the
+  // current editor requires, and operators still need to record or delete an
+  // incidente on those documents. Flush the independent subcollection first,
+  // then keep the pedido on screen and route to its validation errors.
+  async function onInvalid(errors: FieldErrors<PedidoFormState>) {
+    setSubmitError(null);
+    // Incidentes can be flushed even when the pedido itself is invalid. Keep
+    // the same pre-write gate here so choosing “Revisar” never persists that
+    // independent subcollection behind the cancelled address-copy decision.
+    const preparation = await preparePedidoSubmit(form.getValues() as unknown as Pedido);
+    if (preparation === false) return;
+    const incidenteResult = await flushIncidentesPendentes();
+    if (incidenteResult === 'blocked') return;
+
+    if (incidenteResult === 'saved') {
+      notifications.show({
+        color: 'yellow',
+        title: 'Incidente salvo; pedido inválido',
+        message: 'O incidente foi gravado, mas corrija os campos do pedido antes de salvá-lo.',
+      });
+    }
+
     const summary = summarizePedidoErrors(Object.keys(errors));
     if (summary.firstTab && (!activeTab || !summary.errorTabValues.has(activeTab))) {
       setActiveTab(summary.firstTab);
     }
     notifications.show({ color: 'red', message: summary.message });
+  }
+
+  function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
+    void form.handleSubmit((values) => handleSubmit(values, false), onInvalid)(event);
+  }
+
+  function handleSaveAndContinue() {
+    void form.handleSubmit((values) => handleSubmit(values, true), onInvalid)();
   }
 
   // Tabs containing invalid fields. Read the `formState.errors` proxy during
@@ -461,9 +643,10 @@ export function PedidoForm({
   // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
   // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
   // editable regardless of estado — a soft "unexpected payment" warning
-  // (PagamentosSection) covers the already-paid case instead.
-  const pagamentosBloqueadosPorNFe =
-    nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  // (PagamentosSection) covers the already-paid case instead. The rule lives in
+  // `pagamentosTravadosPorNFe` (schemas) so the Link Pgto tab and the server's
+  // link gate read the SAME predicate instead of a second copy of it.
+  const pagamentosBloqueadosPorNFe = pagamentosTravadosPorNFe(nfeEstado, estadoNow);
   const pagamentosTravados = nfeCarregando || pagamentosBloqueadosPorNFe;
   const dadosGeraisLockNotice = itensTravados
     ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
@@ -482,7 +665,7 @@ export function PedidoForm({
     // hidden tab (see ObjectView's form for the full story).
     <form
       noValidate
-      onSubmit={form.handleSubmit((values) => handleSubmit(values, false), onInvalid)}
+      onSubmit={handleFormSubmit}
       // Flex column that fills the page (the page Stack sets a viewport-tall
       // min-height): the tab area grows so the sticky footer is pushed to the
       // bottom even when a tab's content is short — it no longer floats up.
@@ -506,7 +689,15 @@ export function PedidoForm({
       <BloqueioMarketplaceAlert bloqueio={defaultValues ?? undefined} />
 
       <div style={{ flex: '1 0 auto', minHeight: 0 }}>
-        <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
+        <Tabs
+          value={activeTab}
+          onChange={selectTab}
+          keepMounted={false}
+          // Inactive ordinary tabs still unmount. The Incidentes panel opts into
+          // keepMounted below, and display-none keeps its effects alive as well
+          // as its React state (Mantine's Activity mode suspends effects).
+          keepMountedMode="display-none"
+        >
           <Tabs.List>
             <Tabs.Tab value="principal" {...tabErrorProps('principal')}>
               Principal
@@ -527,7 +718,19 @@ export function PedidoForm({
             )}
             {visibleTabs.has('incidentes') && (
               <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
-                Incidentes
+                <span>Incidentes</span>
+                {incidenteDirty && (
+                  <Badge
+                    component="span"
+                    size="xs"
+                    color="orange"
+                    variant="light"
+                    ml="xs"
+                    aria-label="alterações de incidente não salvas"
+                  >
+                    Pendente
+                  </Badge>
+                )}
               </Tabs.Tab>
             )}
             {visibleTabs.has('devolucao') && (
@@ -555,12 +758,13 @@ export function PedidoForm({
                 {dadosGeraisLockNotice}
               </Alert>
             )}
+            {/* Vendedor is not passed in: the tab reads it off the form, so the
+                value shown and the value saved are the same one. */}
             <PrincipalTab
               form={form}
               db={db}
               disabled={dadosGeraisDisabled}
               observacoesDisabled={disabled}
-              vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
 
@@ -586,18 +790,25 @@ export function PedidoForm({
                   pedidoId={pedidoId}
                   disabled={disabled || pagamentosTravados}
                   estado={estadoNow}
-                  // `getValues` (not `watch`): the total is stable while the
-                  // Pagamento tab is open (items are edited on Principal), so no
-                  // subscription/re-render is needed.
-                  pedidoTotal={form.getValues('valorCobrado') ?? 0}
+                  // The PERSISTED total + devolução (the live doc behind
+                  // `defaultValues`), not the form's unsaved edits: the server
+                  // reconcile compares payments against the STORED values, so the
+                  // "valor restante" autofill must too. `getValues` is only the
+                  // fallback for a form with no loaded doc.
+                  pedidoCobertura={{
+                    valorCobrado:
+                      defaultValues?.valorCobrado ?? form.getValues('valorCobrado') ?? 0,
+                    ehSaida: !isEntrada,
+                    itensDevolvidos: defaultValues?.itensDevolvidos ?? null,
+                  }}
                 />
               </>
             ) : (
-              // Payment is fully ported (PagamentosSection below); it's just
+              // Payment is fully ported (PagamentosSection above); it's just
               // unavailable until the doc exists, since pagamentos are a
               // subcollection keyed by pedidoId. Match the sibling create-mode
-              // empty states (Estoque / Estado / Incidentes) — NOT PlaceholderTab,
-              // which wrongly reads "em breve, use o app antigo".
+              // empty states (Estoque / Estado / Incidentes): a dimmed hint, never
+              // an "em breve, use o app antigo" placeholder.
               <Text c="dimmed" size="sm">
                 Salve o pedido para registrar pagamentos.
               </Text>
@@ -605,25 +816,53 @@ export function PedidoForm({
           </Tabs.Panel>
 
           {visibleTabs.has('link-pgto') && (
-            <Tabs.Panel value="link-pgto" pt="md">
-              <PlaceholderTab name="Link de pagamento" />
+            // keepMounted + a first-activation latch, exactly like Incidentes
+            // (the Tabs above unmount every other inactive panel): a half-typed
+            // vaquinha must survive a glance at the Pagamento tab. Create mode has
+            // no draft to keep, so its panel unmounts like any ordinary one.
+            <Tabs.Panel value="link-pgto" pt="md" keepMounted={Boolean(pedidoId && defaultValues)}>
+              {pedidoId && defaultValues ? (
+                linkPgtoOpened && (
+                  <LazyLinkPagamentoTab
+                    pedidoId={pedidoId}
+                    // The live snapshot doc (EditarPedidoView re-passes it on every
+                    // emission), NOT `form.getValues`: the links are sized against
+                    // the PERSISTED total and devolução the server reconciles with,
+                    // never the operator's unsaved edits.
+                    pedido={defaultValues}
+                    estado={estadoNow}
+                    formDirty={form.formState.isDirty}
+                    fromCache={fromCache ?? false}
+                    nfeEstado={nfeEstado}
+                    nfeCarregando={nfeCarregando}
+                  />
+                )
+              ) : (
+                <Text c="dimmed" size="sm">
+                  Salve o pedido para gerar links de pagamento.
+                </Text>
+              )}
             </Tabs.Panel>
           )}
 
           {visibleTabs.has('incidentes') && (
-            <Tabs.Panel value="incidentes" pt="md">
-              <IncidentesTab
-                pedidoId={pedidoId}
-                disabled={disabled}
-                // ⚠️ The ML claim lives on the account the pedido came through.
-                // Absent for a pedido with no integração, which is exactly when
-                // the panel must not render.
-                integracaoId={
-                  defaultValues?.integracaoPedidoOuterRef
-                    ? idFromRef(defaultValues.integracaoPedidoOuterRef)
-                    : null
-                }
-              />
+            <Tabs.Panel value="incidentes" pt="md" keepMounted>
+              {incidentesOpened && (
+                <LazyIncidentesTab
+                  pedidoId={pedidoId}
+                  disabled={disabled}
+                  onDirtyChange={handleIncidenteDirtyChange}
+                  flushRef={incidenteFlushRef}
+                  // ⚠️ The ML claim lives on the account the pedido came through.
+                  // Absent for a pedido with no integração, which is exactly when
+                  // the panel must not render.
+                  integracaoId={
+                    defaultValues?.integracaoPedidoOuterRef
+                      ? idFromRef(defaultValues.integracaoPedidoOuterRef)
+                      : null
+                  }
+                />
+              )}
             </Tabs.Panel>
           )}
 
@@ -679,11 +918,7 @@ export function PedidoForm({
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}
         ehSaida={!isEntrada}
-        onSaveAndContinue={
-          pedidoId
-            ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)
-            : undefined
-        }
+        onSaveAndContinue={pedidoId ? handleSaveAndContinue : undefined}
       />
     </form>
   );

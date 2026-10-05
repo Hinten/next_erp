@@ -31,6 +31,10 @@ import {
   type MlItem,
   type MlItemsMultiget,
   type MlItemDescription,
+  type MlCanInvoice,
+  type MlFiscalInformation,
+  type MlFiscalInformationBody,
+  type MlFiscalInformationLink,
   type MlItemPrices,
   type MlListingPrices,
   type MlMigrationLiveListing,
@@ -67,6 +71,9 @@ import {
   categorySchema,
   domainDiscoverySchema,
   itemDescriptionSchema,
+  mlCanInvoiceSchema,
+  mlFiscalInformationLinkSchema,
+  mlFiscalInformationSchema,
   itemPricesSchema,
   itemSchema,
   ML_MULTIGET_MAX_IDS,
@@ -439,6 +446,35 @@ export interface MercadoLivreApi {
     plainText: string,
     opts?: { replace?: boolean },
   ): Promise<MlItemDescription>;
+  /**
+   * `POST /items/fiscal_information` — register ONE fiscal SKU with ML's
+   * Faturador (#745). The SKU is seller-scoped: a second POST for the same SKU
+   * is refused, so a caller that may be re-sending goes through
+   * {@link MercadoLivreApi.updateFiscalInformation} first.
+   */
+  createFiscalInformation(body: MlFiscalInformationBody): Promise<MlFiscalInformation>;
+  /**
+   * `PUT /items/fiscal_information/{sku}` — a FULL replace of a registered SKU
+   * (the POST body without `sku`). An unknown SKU is an `MercadoLivreHttpError`
+   * — which status ML answers it with is a settle-live item (`LIVE-TEST.md`).
+   */
+  updateFiscalInformation(
+    sku: string,
+    body: Omit<MlFiscalInformationBody, 'sku'>,
+  ): Promise<MlFiscalInformation>;
+  /**
+   * `POST /items/fiscal_information/items` — link a registered SKU to a
+   * listing. `variationId` only for a legacy `variations[]` item; `null` omits
+   * the key, which ML documents as the no-variation shape. Under User Products
+   * ML replicates the link to the item's siblings of the SAME user product.
+   */
+  linkFiscalInformationItem(link: {
+    sku: string;
+    itemId: string;
+    variationId: string | number | null;
+  }): Promise<MlFiscalInformationLink>;
+  /** `GET /can_invoice/items/{id}[/variations/{vid}]` — can the Faturador invoice it? */
+  getCanInvoice(itemId: string, variationId?: string | number | null): Promise<MlCanInvoice>;
   /** `GET /sites/MLB/domain_discovery/search?q=` — category suggestion. */
   suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
   getCategory(id: string): Promise<MlCategory>;
@@ -1232,6 +1268,33 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         : request('POST', `/items/${id}/description`, itemDescriptionSchema, {
             body: { plain_text: plainText },
           }),
+    createFiscalInformation: (body) =>
+      request('POST', '/items/fiscal_information', mlFiscalInformationSchema, { body }),
+    // The SKU is seller-typed free text — it is a path SEGMENT here, so it is
+    // encoded; a `/` or `?` in a SKU must not re-route the call.
+    updateFiscalInformation: (sku, body) =>
+      request(
+        'PUT',
+        `/items/fiscal_information/${encodeURIComponent(sku)}`,
+        mlFiscalInformationSchema,
+        { body },
+      ),
+    linkFiscalInformationItem: ({ sku, itemId, variationId }) =>
+      request('POST', '/items/fiscal_information/items', mlFiscalInformationLinkSchema, {
+        body: {
+          sku,
+          item_id: itemId,
+          ...(variationId != null ? { variation_id: variationId } : {}),
+        },
+      }),
+    getCanInvoice: (itemId, variationId) =>
+      request(
+        'GET',
+        variationId != null
+          ? `/can_invoice/items/${itemId}/variations/${variationId}`
+          : `/can_invoice/items/${itemId}`,
+        mlCanInvoiceSchema,
+      ),
     suggestCategories: (query, limit) =>
       request('GET', '/sites/MLB/domain_discovery/search', domainDiscoverySchema, {
         query: { q: query, limit },

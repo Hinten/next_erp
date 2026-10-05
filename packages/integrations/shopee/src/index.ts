@@ -40,6 +40,30 @@
  *
  * ⚠️ `call.ts` is internal and deliberately NOT re-exported: it is the shared
  * transport `oauth.ts` and `api.ts` are both built on, not a public surface.
+ * ⚠️ That is also why the multipart types (`ShopeeMultipartBody`,
+ * `ShopeeMultipartFile`) stay unexported from here: only `api.ts` may build a
+ * request, and the TWO uploads it builds are
+ * {@link ShopeePartnerClient.uploadImage} (step 11) and
+ * {@link ShopeeClient.uploadInvoiceDoc} (step 14).
+ *
+ * ⚠️ Step 14's additions — `uploadInvoiceDoc`, `UploadInvoiceDocParams`,
+ * `SHOPEE_UPLOAD_INVOICE_DOC_PATH`, the five `upload_invoice_doc` literals and
+ * schema in `types.ts`, and `ShopeeApiError.providerMessage` — ride the same
+ * wildcards; `test/api.test.ts` pins them at this door.
+ *
+ * ⚠️ Step 15 (the label flow) added two NEW MODULES, each with its own line
+ * below: `arquivo.ts` (the downloaded label's bytes and their sniff) and
+ * `logistica.ts` (the seven
+ * `v2.logistics.*` paths, request shapes, guards and wire constants — the
+ * operations themselves are `api.ts`'s, the response schemas `types.ts`'s).
+ * `test/api.test.ts` pins the seven operations at this door.
+ *
+ * ⚠️ These eight re-exports are WILDCARD, so every step-11 addition — the twelve
+ * operations, their wire-shaped request interfaces, the response schemas and the
+ * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
+ * here. A NEW MODULE would need one; a new export inside these eight does not,
+ * and a test in `test/api.test.ts` pins the twelve operation names so a rename
+ * cannot silently drop one from the public surface.
  */
 
 export * from './errors';
@@ -48,3 +72,5 @@ export * from './hosts';
 export * from './sign';
 export * from './oauth';
 export * from './api';
+export * from './arquivo';
+export * from './logistica';

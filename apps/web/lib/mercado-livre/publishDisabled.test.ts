@@ -13,6 +13,7 @@ function input(over: Partial<PublishDisabledInput> = {}): PublishDisabledInput {
     produtoDirty: false,
     contaDirty: false,
     missingCategoria: false,
+    removidoPorModeracao: false,
     ...over,
   };
 }
@@ -121,6 +122,37 @@ describe('publishDisabledReason', () => {
       input({ canPublish: false, produtoDirty: true, missingCategoria: true }),
     );
     expect(reason).toMatch(/permissão/i);
+  });
+
+  /**
+   * #1226. ⚠️ The near-miss is the whole test: this rung sits ABOVE the dirty
+   * and categoria ones, unlike every other "most-actionable first" rung, because
+   * saving and choosing a category BOTH end at this same refusal. Ordered by the
+   * usual rule it would tell the operator to save their edits, then to pick a
+   * category, and only then that none of it can work.
+   */
+  it('reports a removed listing above anything saving could fix', () => {
+    expect(publishDisabledReason(input({ removidoPorModeracao: true }))).toMatch(/removeu/i);
+    expect(
+      publishDisabledReason(
+        input({ removidoPorModeracao: true, produtoDirty: true, contaDirty: true }),
+      ),
+    ).toMatch(/removeu/i);
+    expect(
+      publishDisabledReason(input({ removidoPorModeracao: true, missingCategoria: true })),
+    ).toMatch(/removeu/i);
+  });
+
+  it('still leads with the reasons that outrank a removal', () => {
+    // It is NOT the first rung: while the data is loading every input is
+    // unreliable, and a permission the operator lacks is not fixed by a
+    // different button either.
+    expect(publishDisabledReason(input({ removidoPorModeracao: true, loading: true }))).toMatch(
+      /Carregando/,
+    );
+    expect(publishDisabledReason(input({ removidoPorModeracao: true, canPublish: false }))).toMatch(
+      /permissão/i,
+    );
   });
 
   it('reports a fixable blocker before the categoria decision', () => {

@@ -1,0 +1,166 @@
+import { logger } from 'firebase-functions';
+import { onTaskDispatched } from 'firebase-functions/v2/tasks';
+
+import {
+  SHOPEE_NOTIFICATION_QUEUE,
+  TASK_MAX_ATTEMPTS,
+  handleNotificationTask,
+} from '../../lib/shopee/notificacoes/notificacao';
+import { getDb } from './lib/admin';
+import { readCacheSummary } from '@delfrance/data/admin/cache';
+import { tasksInvokerOptions } from './tasksInvoker';
+
+/**
+ * Cloud Tasks dispatcher for Shopee push notifications (master plan step 3). The
+ * receiver (App Hosting route) enqueues the lean payload onto this function's
+ * auto-provisioned queue and answers **204 with an empty body** — a JSON body is
+ * a FAILURE to Shopee — and the queue dispatches here, running the work
+ * **in-process** (no HTTP hop, no OIDC) at a rate bounded by `rateLimits`.
+ *
+ * `retryConfig.maxAttempts` mirrors `TASK_MAX_ATTEMPTS`: the handler retries a
+ * transient failure with backoff, and on the FINAL attempt persists it as
+ * `failed` (so the `onSchedule` sweep re-drives it) instead of throwing — the
+ * throw/persist disposition lives in `handleNotificationTask` so it stays
+ * unit-testable. The happy path persists NOTHING (the cost win).
+ *
+ * ⚠️ `secrets` — the conta arms sign a PUBLIC Shopee call (`get_shops_by_partner`
+ * behind the authorization-expiry producer), so this function needs the partner
+ * credentials bound. Without them every conta-code delivery throws
+ * `ShopeeConfigError`, which the pipeline treats as transient and parks after
+ * the retries; the ack and park arms would keep working, so the failure would
+ * look partial rather than like a missing binding.
+ *
+ * ⚠️ The export name below IS the deployed function + queue name — it MUST equal
+ * `SHOPEE_NOTIFICATION_QUEUE` (the receiver enqueues against that string).
+ * Rename both together, or the enqueue targets a non-existent queue (silent drop).
+ */
+export const processShopeeNotification = onTaskDispatched(
+  {
+    // roles/run.invoker on this service + roles/cloudtasks.enqueuer on its
+    // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
+    ...tasksInvokerOptions(),
+    secrets: ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'],
+    // ⚠️ NOT the gen2 default of 60 s, and not the 540 most `onSchedule`s in
+    // this codebase carry either. Since step 5 a code-3 delivery runs the order
+    // import: two Shopee calls (`get_order_detail` + `get_escrow_detail`), up to
+    // two collectionGroup queries and up to four SKU probes PER LINE, one
+    // transaction and one incidente create per unbound line. On a 20-line order
+    // that is comfortably past 60 s, and a timeout mid-import is the one failure
+    // that hands a half-written pedido to a retry.
+    //
+    // ⚠️ Why not simply take 540, the value most `onSchedule`s here carry (not
+    // all: the push-config monitor runs 120 and the auto-arrange sweep 240). A
+    // budget far above the work's real ceiling does not make a slow import
+    // succeed — it makes a HUNG one invisible for that much longer, which is
+    // exactly the argument `monitorShopeePushConfig` records for its 120 s
+    // (`shopeeCall` carries no timeout of its own). The retry ladder is the
+    // second half: 3 attempts of 300 s plus 2 backoffs of ≤ 300 s is ~25 min, so
+    // a delivery is durable as `failed` well inside the hot reprocess sweep's
+    // hourly window. At 540 it would be ~37 min — still inside the hour, but
+    // with half the slack, and claiming a nine-minute import is legitimate.
+    //
+    // ⚠️ Step 6 adds writes to this path but NO new Shopee call: the same
+    // `get_escrow_detail` the import already makes now also produces the
+    // pagamento, so the delivery gains a SECOND transaction — two reads (the
+    // pedido, then the WHOLE `pagamentos` subcollection, which a combined
+    // payment makes load-bearing) and one `create`/`update` per mapped
+    // document — and nothing that touches the network. The budget above is
+    // unchanged, and the ladder invariant `index.test.ts` pins
+    // (3 × 300 + 2 × 300 = 1 500 ≤ 1 800) is untouched.
+    //
+    // ⚠️ Step 7 (#1515) adds ONE Shopee call to this path — `get_package_detail`,
+    // one package per code-4/30/47 delivery — plus one document read and one
+    // transaction. That is the first time this budget's premise has moved since
+    // step 5, and it moves DOWNWARD: a shipment delivery makes one GET where an
+    // order import makes two, resolves no produto, writes ONE document and
+    // creates no incidentes. A delivery whose pedido does not exist yet spends
+    // NO call at all — the pedido read comes first, the handler defers and
+    // enqueues one synthetic code 3. The budget above is unchanged, the ladder
+    // invariant `index.test.ts` pins is untouched, and there is NO new queue
+    // function: the arm rides this one.
+    //
+    // ⚠️ Step 15b (#1744) moves it back UP, and the "one GET" above no longer
+    // holds for a Turbo package. After the merge, the automatic arrange can make
+    // up to FOUR more Shopee calls — `get_order_detail`, `get_shipping_parameter`,
+    // `ship_order` and its one documented re-send — so a shipment delivery makes
+    // up to FIVE (plus a possible token refresh), on top of the frete
+    // transaction, the two aviso resolvers' read/update pairs and up to three
+    // aviso writes from the hook. Absent a hang that is seconds to tens of
+    // seconds: `timeoutSeconds: 300` still holds and is NOT changed, and the
+    // ladder invariant `index.test.ts` pins is untouched. Every package off
+    // 1573's list (Xpress included), and a Turbo one in any phase but
+    // `programar`, still makes the one GET.
+    //
+    // ⚠️ But no Shopee call carries a timeout of its own (#1094: `shopeeCall`
+    // sets none, and the runtime's fetch waits 300 s for headers), so ONE hung
+    // call can spend this whole budget and the attempt is KILLED, with no
+    // catch running. A kill AFTER `ship_order` landed converges on the
+    // redelivery: the merge is idempotent, the fresh row now says arranged, and
+    // the hook answers `ja-programado` — the dispatch alerts resolve and the
+    // print alert opens on a print-deadline channel (a row that still lags
+    // re-ships, and Shopee's `package_already_shipped` is that same
+    // `ja-programado`). A kill on the LAST attempt is different: the pipeline
+    // never reaches its `persistFailure`, so no `failed` row exists for the
+    // sweep, and the delivery is DROPPED. The package is then re-observed only
+    // by the next push about it — Shopee sends one once a ship landed, none for
+    // a package still un-arranged — or by the next tick of
+    // `sweepShopeeAutoArrange` (≤ 5 min), while the sweep is enabled
+    // (`SHOPEE_ARRANJO_SWEEP_DISABLED` unset).
+    timeoutSeconds: 300,
+    retryConfig: {
+      maxAttempts: TASK_MAX_ATTEMPTS,
+      minBackoffSeconds: 30,
+      maxBackoffSeconds: 300,
+      maxDoublings: 2,
+    },
+    rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 5 },
+  },
+  async (req) => {
+    // Read off the RAW payload, not the `TaskResult`: these two survive the
+    // shared pipeline's schema-parse drop, where there is no validated payload
+    // and no channel result at all — which is precisely the case an operator
+    // most needs named.
+    const payload = req.data as { code?: unknown; shopId?: unknown } | null;
+    const result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);
+    // ⚠️ `outcome` alone is not enough, and that gap is not theoretical: on
+    // Mercado Livre's first live run the equivalent line reported a bare success
+    // for every delivery while nothing was being written, because one
+    // disposition covered both "did the work" and "found nothing to do" (#1087).
+    //
+    // `kind` separates an aviso from an ack the channel decided on, from a park,
+    // and from the shared pipeline's schema-parse drop (which carries no `kind`
+    // at all); `detail` names WHICH ack or park; `code` is Shopee's push_code,
+    // the only thing that says what the delivery was about; `shopId` is the
+    // shop it named, which is what a `defer` for an unmapped shop is ABOUT.
+    //
+    // ONE call on purpose — the fields land in `jsonPayload` and are filterable
+    // (`jsonPayload.detail="nenhuma-loja-mapeada"`), so more fields beat more
+    // lines. `?? null` rather than leaving them undefined: Cloud Logging drops
+    // `undefined` keys, so the key would vanish instead of reading as absent.
+    //
+    // Never the push BODY, `data`, or any credential: this line is read by
+    // operators and Shopee payloads carry buyer-facing resource ids.
+    //
+    // ⚠️ `orderSn` is the ONE exception to that last sentence, and it is not a
+    // relaxation: `order_sn` is the pedido's `numero`, an operator's only search
+    // handle, and it already sits in the clear as a segment of the
+    // `notificacoesShopee` doc id (`3:<shop>:<ordersn>:<carimbo>`). It names no
+    // buyer. `itensSemProduto` rides beside it because a successful import that
+    // bound no produto is the one "done" an operator must still act on.
+    logger.info('[shopee] processed notification task', {
+      queue: SHOPEE_NOTIFICATION_QUEUE,
+      outcome: result.outcome,
+      kind: result.kind ?? null,
+      detail: result.detail ?? null,
+      code: typeof payload?.code === 'number' ? payload.code : null,
+      shopId: typeof payload?.shopId === 'number' ? payload.shopId : null,
+      lojas: result.lojas ?? null,
+      orderSn: result.orderSn ?? null,
+      itensSemProduto: result.itensSemProduto ?? null,
+      retryCount: req.retryCount ?? 0,
+      // CUMULATIVE for this instance — a notification has no tick to bracket
+      // (the sweeps in `index.ts` bracket their own with mark/delta instead).
+      readCache: readCacheSummary(),
+    });
+  },
+);

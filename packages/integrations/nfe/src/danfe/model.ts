@@ -16,7 +16,7 @@
  * `getVICMS` / … helpers did), transporte, duplicatas/fatura, ISSQN,
  * entrega/retirada and the autorização protocolo.
  */
-import { parse } from '../xml';
+import { parse, rootElementName } from '../xml';
 import type {
   TNFe,
   TNfeProc,
@@ -28,7 +28,6 @@ import type {
   TProcEvento,
   TRetEnvEvento,
 } from '../types/nfe-schema';
-import { onlyDigits } from './format';
 
 /** A structured address (raw values — the renderers format cep/fone). */
 export interface DanfeEndereco {
@@ -171,7 +170,7 @@ export interface DanfeProtocolo {
 }
 
 export interface DanfeModel {
-  /** 44-digit chave de acesso (no `NFe` prefix, no formatting). */
+  /** 44-character chave de acesso (no `NFe` prefix, no formatting). */
   readonly chave: string;
   /** `true` when `tpAmb === '2'` — drives the "SEM VALOR FISCAL" watermark. */
   readonly homologacao: boolean;
@@ -327,7 +326,16 @@ function mapIssqn(t: TNFe_infNFe_total_ISSQNtot | undefined): DanfeIssqn | null 
 function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel {
   const { ide, emit, dest, cobr } = infNFe;
   return {
-    chave: onlyDigits(infNFe.Id),
+    // ⚠️ `replace(/^NFe/, '')`, NEVER `onlyDigits`. The intent is only to drop
+    // the `NFe` prefix off the Id attribute; `onlyDigits` also stripped the
+    // LETTERS out of the chave body (positions 6–17 carry the emitente CNPJ,
+    // alphanumeric since RFB IN 2.229/2024). `formatChaveAcesso` was hardened
+    // to preserve them and carries a comment describing exactly that failure —
+    // but it was handed an already-stripped value one line up, so the
+    // protection was void: every DANFE renderer printed a SHORT chave and
+    // encoded a WRONG Code 128 barcode on a legally reproduced fiscal
+    // document, with nothing failing anywhere.
+    chave: infNFe.Id.replace(/^NFe/, ''),
     homologacao: ide.tpAmb === '2',
     ide: {
       natOp: ide.natOp,
@@ -345,7 +353,9 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       nome: emit.xNome,
       cnpj: emit.CNPJ ?? null,
       cpf: emit.CPF ?? null,
-      ie: emit.IE,
+      // Optional since PL_010f (NT 2025.002 v1.50+): an emitente without IE
+      // prints an empty box, the way the XML carries no element.
+      ie: emit.IE ?? '',
       iest: emit.IEST ?? null,
       im: emit.IM ?? null,
       endereco: mapEndereco(emit.enderEmit),
@@ -430,19 +440,26 @@ export interface CceRetorno {
   readonly dhRegEvento: string | null;
   /** Event protocolo (`nProt`), or null. */
   readonly nProt: string | null;
-  /** 44-digit chave the event was bound to, or null. */
+  /** 44-character chave the event was bound to, or null. */
   readonly chNFe: string | null;
 }
 
 /**
- * Parse the persisted `xml_retorno` (`retEnvEvento`) of a CC-e to recover the
- * SEFAZ-stamped `dhRegEvento` (+ `nProt` / `chNFe`) the DANFE-CC-e prints. The
- * record already carries `nProt`, but `dhRegEvento` lives only in the XML. When
- * the reply carried no `<retEvento>` (a lote-level rejection) every field is
- * null so the renderer degrades gracefully instead of throwing.
+ * Parse a CC-e's proof of registration to recover the SEFAZ-stamped
+ * `dhRegEvento` (+ `nProt` / `chNFe`) the DANFE-CC-e prints. The record already
+ * carries `nProt`, but `dhRegEvento` lives only in the XML. Two shapes:
+ *   - the send reply `retEnvEvento` persisted as `xml_retorno` — when it carried
+ *     no `<retEvento>` (a lote-level rejection) every field is null, so the
+ *     renderer degrades gracefully instead of throwing;
+ *   - a `procEventoNFe` — the archival event document, and the ONLY proof a CC-e
+ *     has when its send reply was lost and SEFAZ's copy was recovered through a
+ *     consSit (`extrairEventosNFe`, #1094 F1b).
  */
 export function parseCceRetorno(xmlRetorno: string): CceRetorno {
-  const ev = parse<TRetEnvEvento>('retEnvEvento', xmlRetorno).retEvento?.[0]?.infEvento;
+  const ev =
+    rootElementName(xmlRetorno) === 'procEventoNFe'
+      ? parse<TProcEvento>('procEventoNFe', xmlRetorno).retEvento?.infEvento
+      : parse<TRetEnvEvento>('retEnvEvento', xmlRetorno).retEvento?.[0]?.infEvento;
   return {
     dhRegEvento: ev?.dhRegEvento ?? null,
     nProt: ev?.nProt ?? null,

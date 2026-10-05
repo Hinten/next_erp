@@ -67,7 +67,12 @@ const SIGNATURE_ROOM_MM = 11;
 /** Code 128 strip height. Kept compact so a maximal reverse label still fits. */
 const BARCODE_H_MM = 10;
 
-const INNER_W_MM = LABEL_W_MM - 2 * SIDE_MM;
+/**
+ * Usable width between the side margins — and the width of the barcode box, so
+ * it is what divides a Code 128 symbol's module count into an X-dimension. See
+ * `barcode.ts`'s `MIN_MODULE_MM`: narrowing this narrows every bar.
+ */
+export const INNER_W_MM = LABEL_W_MM - 2 * SIDE_MM;
 
 /**
  * Advance of one text line, in mm. Helvetica's ascent+descent is ~0.925em and
@@ -127,7 +132,7 @@ export function wrapText(
   return out.length > 0 ? out : [''];
 }
 
-/** The 44-digit chave in eleven blocks of four, for human reading. */
+/** The 44-character chave in eleven blocks of four, for human reading. */
 export function groupChave(chave: string): string {
   return (chave.match(/.{1,4}/g) ?? []).join(' ');
 }
@@ -149,7 +154,7 @@ export type EtiquetaOp =
       bold: boolean;
       align: 'left' | 'center';
     }
-  /** Code 128 strip. `data` is the raw payload (digits only, for subset C). */
+  /** Code 128 strip. `data` is the raw 44-character NF-e chave, possibly alphanumeric. */
   | { readonly kind: 'barcode'; x: number; y: number; w: number; h: number; data: string };
 
 export interface EtiquetaGenericaLayout {

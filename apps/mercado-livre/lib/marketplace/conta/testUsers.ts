@@ -128,12 +128,10 @@ export class TestUserGuardError extends Error {
  * a document was replaced or never written. It is carried out to the wire for
  * exactly that reason.
  *
- * ⚠️ It is a READ-side field and must never travel back into a write.
- * {@link usuarioTesteMercadoLivreSchema} is `.passthrough()`, so a `docId` that
- * reached {@link TestUserStore.put} or {@link TestUserStore.create} would be
- * persisted silently as a record field. {@link toRecord} is the only producer of
- * a written record and returns a bare {@link UsuarioTesteMercadoLivre}; keep it
- * that way.
+ * ⚠️ It is a READ-side field and must never travel back into a write. The
+ * persisted schema is strict, and {@link toRecord} is the only producer of a
+ * written record; it returns a bare {@link UsuarioTesteMercadoLivre} before the
+ * read-side `docId` is attached.
  */
 export type UsuarioTesteRegistrado = UsuarioTesteMercadoLivre & { readonly docId: string };
 
@@ -363,9 +361,8 @@ export async function criarUsuariosTeste(
     } else {
       await deps.store.put(record);
     }
-    // ⚠️ `docId` is attached HERE, after the write, never inside `record`: the
-    // stored shape is `.passthrough()`, so handing it to the store would persist
-    // a document's own id as one of its fields.
+    // ⚠️ `docId` is attached HERE, after the write, never inside `record`: it is
+    // read-side metadata and the strict stored schema rejects it.
     usuarios.push({ ...record, docId });
     criados.push(role);
   }

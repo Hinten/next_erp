@@ -125,3 +125,28 @@ describe('mensagemEhNossa', () => {
     });
   });
 });
+
+it('identifies inbound cliente authors without a usuario, including a conflicting legacy operator id', () => {
+  expect(
+    mensagemEhNossa(
+      m({
+        user_id: null,
+        clienteMensagemOuterRef: 'documents/clientes/c1',
+        estadoEnvio: ESTADO_ENVIO.recebido,
+      }),
+      { myUid: EU, origem: WA },
+    ),
+  ).toBe(false);
+  expect(
+    mensagemEhNossa(m({ user_id: EU, clienteMensagemOuterRef: 'documents/clientes/c1' }), {
+      myUid: EU,
+      origem: WA,
+    }),
+  ).toBe(false);
+  expect(
+    mensagemEhNossa(
+      m({ user_id: null, clienteMensagemOuterRef: null, estadoEnvio: ESTADO_ENVIO.recebido }),
+      { myUid: EU, origem: WA },
+    ),
+  ).toBe(true);
+});

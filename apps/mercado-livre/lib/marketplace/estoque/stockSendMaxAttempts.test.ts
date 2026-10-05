@@ -25,6 +25,7 @@ import { STOCK_SEND_MAX_ATTEMPTS } from './bulkEstoquePlan';
  */
 describe('STOCK_SEND_MAX_ATTEMPTS', () => {
   const source = readFileSync(join(__dirname, '../../../functions/src/sendStock.ts'), 'utf8');
+  const manualSource = readFileSync(join(__dirname, 'estoqueManual.ts'), 'utf8');
 
   it('is the value the handler ladder assumes', () => {
     // A cap below 2 would collapse the ladder: attempt 0 would be the last one,
@@ -40,6 +41,12 @@ describe('STOCK_SEND_MAX_ATTEMPTS', () => {
 
   it('reaches the handler — the ladder is dead without req.retryCount', () => {
     expect(source).toMatch(/retryCount:\s*req\.retryCount\s*\?\?\s*0/);
+  });
+
+  it('enables delayed-stock refresh only for the queue, never the manual ladder', () => {
+    expect(source).toMatch(/refreshStockOnRetry:\s*true/);
+    expect(manualSource).toMatch(/refreshStockOnRetry:\s*false/);
+    expect(manualSource).not.toMatch(/refreshStockOnRetry:\s*true/);
   });
 
   /**

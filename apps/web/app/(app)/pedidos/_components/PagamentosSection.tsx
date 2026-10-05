@@ -27,7 +27,13 @@ import { FirebaseError } from 'firebase/app';
 import { getDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { deletePagamento, saveChequeSplit, savePagamento } from '@delfrance/data/pedido';
+import {
+  PagamentoConflictError,
+  PagamentoNothingChangedError,
+  deletePagamento,
+  saveChequeSplit,
+  savePagamento,
+} from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
   ESTADO_PEDIDO_LABELS,
@@ -35,11 +41,13 @@ import {
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
   bandeiraCartaoSchema,
+  pagamentoSchema,
   pagamentoInesperado,
   type Bandeira,
   type EstadoPedido,
   type FormaPagamento,
   type Pagamento,
+  type PedidoCoberturaInput,
   type StatusPagamento,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
@@ -60,10 +68,13 @@ import {
   isChequeSplit,
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
+  pagamentoPatchFromForm,
   remainingToPay,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
+import { RecordConflictModal } from './PedidoConflictModal';
+import { recordConflictFields } from './conflictFields';
 
 const brl = (n: number): string => formatReais(n);
 
@@ -109,14 +120,18 @@ export function PagamentosSection({
   pedidoId,
   disabled,
   estado,
-  pedidoTotal = 0,
+  pedidoCobertura = { valorCobrado: 0 },
 }: {
   pedidoId: string;
   disabled?: boolean;
   /** Live pedido estado — drives the soft "unexpected payment" warning. */
   estado?: EstadoPedido;
-  /** Pedido charged total (`valorCobrado`) — drives the "valor restante" autofill. */
-  pedidoTotal?: number;
+  /**
+   * Pedido charged total (`valorCobrado`) plus its devolução (`ehSaida` +
+   * `itensDevolvidos`) — drives the "valor restante" autofill, which nets the
+   * troca devolução credit off the amount still owed (`coberturaDoPedido`).
+   */
+  pedidoCobertura?: PedidoCoberturaInput;
 }) {
   const q = useMemo(() => {
     const base = pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId });
@@ -131,8 +146,16 @@ export function PagamentosSection({
   const [form, setForm] = useState<PagamentoFormState>(EMPTY_PAGAMENTO_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; baseline: Pagamento } | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
+  const [conflict, setConflict] = useState<{
+    baseline: Pagamento;
+    current: Pagamento;
+    patch: Record<string, unknown>;
+    fields: ReadonlyArray<string>;
+  } | null>(null);
   const [reconciling, setReconciling] = useState(false);
   // Reconciles can overlap (e.g. flipping the status on two rows in quick
   // succession), so the indicator is refcounted — a boolean would be cleared by
@@ -196,8 +219,12 @@ export function PagamentosSection({
   //
   // Best-effort: the pagamento itself is already committed, so a failed reconcile must
   // not surface as a save error — but it IS surfaced loudly, because the estado is now
-  // genuinely stale and only a human can settle it. `functions/not-found` in particular
-  // means the callable was never deployed (deploy is manual — apps/functions/CLAUDE.md).
+  // genuinely stale and only a human can settle it. A transient failure has already
+  // been retried by the time it lands here (`callReconciliarPagamentoPedido`, #703), so
+  // the toast means the call failed 3 times or failed deterministically — the spinner
+  // stays up across the backoff because the refcount only drops in `finally`.
+  // `functions/not-found` in particular means the callable was never deployed (deploy
+  // is manual — apps/functions/CLAUDE.md).
   async function reconcileEstado() {
     reconcilesEmVoo.current += 1;
     setReconciling(true);
@@ -235,6 +262,51 @@ export function PagamentosSection({
     setSaveError(null);
   }
 
+  async function saveExistingPagamento(
+    pagamentoId: string,
+    baseline: Pagamento,
+    patch: Record<string, unknown>,
+  ): Promise<boolean> {
+    try {
+      await savePagamento(createClientPedidoPort(getFirebaseFirestore()), {
+        mode: 'update',
+        pedidoId,
+        pagamentoId,
+        patch,
+        baseline: baseline as unknown as Record<string, unknown>,
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof PagamentoConflictError) {
+        if (err.current === null) {
+          setSaveError(err.message);
+          return false;
+        }
+        const parsed = pagamentoSchema.safeParse(err.current);
+        if (!parsed.success) {
+          setSaveError('O pagamento mudou e a versão atual não pôde ser carregada para revisão.');
+          return false;
+        }
+        setConflict({
+          baseline,
+          current: parsed.data,
+          patch,
+          fields: err.fields,
+        });
+        return false;
+      }
+      if (err instanceof PagamentoNothingChangedError) {
+        setSaveError(err.message);
+        return false;
+      }
+      if (err instanceof FirebaseError) {
+        setSaveError(err.message);
+        return false;
+      }
+      throw err;
+    }
+  }
+
   async function handleSave() {
     if (!editing) return;
     const validationError = validatePagamentoForm(form);
@@ -251,12 +323,21 @@ export function PagamentosSection({
           pedidoId,
           pagamentos: buildChequeSplitPagamentos(form, editing.base),
         });
-      } else {
+      } else if (editing.id === null) {
         await savePagamento(port, {
+          mode: 'create',
           pedidoId,
-          pagamentoId: editing.id,
           pagamento: pagamentoDataFromForm(form, editing.base),
         });
+      } else {
+        const baseline = editing.base;
+        if (baseline === null) return;
+        const saved = await saveExistingPagamento(
+          editing.id,
+          baseline,
+          pagamentoPatchFromForm(form, baseline),
+        );
+        if (!saved) return;
       }
       setEditing(null);
       await reconcileEstado();
@@ -271,17 +352,44 @@ export function PagamentosSection({
     }
   }
 
+  async function handleForceSave() {
+    if (!editing?.id || !conflict) return;
+    setSaving(true);
+    setSaveError(null);
+    const reviewed = conflict.current;
+    const patch = conflict.patch;
+    setConflict(null);
+    try {
+      const saved = await saveExistingPagamento(editing.id, reviewed, patch);
+      if (!saved) return;
+      setEditing(null);
+      await reconcileEstado();
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
       await deletePagamento(createClientPedidoPort(getFirebaseFirestore()), {
         pedidoId,
-        pagamentoId: deleteTarget,
+        pagamentoId: deleteTarget.id,
+        baseline: deleteTarget.baseline as unknown as Record<string, unknown>,
       });
       setDeleteTarget(null);
       await reconcileEstado();
     } catch (err) {
+      if (err instanceof PagamentoConflictError) {
+        setDeleteTarget(null);
+        notifications.show({
+          color: 'yellow',
+          title: 'Pagamento alterado — exclusão cancelada',
+          message: 'Revise a versão atual do pagamento e confirme a exclusão novamente.',
+        });
+        return;
+      }
       if (err instanceof FirebaseError) {
         // `deleteTarget` is only cleared on success, so the confirm modal stays
         // open and the user can retry or cancel.
@@ -302,11 +410,12 @@ export function PagamentosSection({
   // owed (drives the Valor autofill — excludes the payment being edited).
   const vis = pagamentoFieldVisibility(form.forma);
   const remaining = remainingToPay(
-    pedidoTotal,
+    pedidoCobertura,
     (data ?? []).map(({ id, data: p }) => ({
       id,
       valor: p.valor,
       status_pagamento: p.status_pagamento,
+      forma_de_pagamento: p.forma_de_pagamento,
     })),
     editing?.id ?? null,
   );
@@ -327,7 +436,7 @@ export function PagamentosSection({
           )}
         </Group>
         {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled || reconciling}>
+          <Button type="button" size="xs" onClick={openAdd} disabled={disabled || reconciling}>
             + Adicionar pagamento
           </Button>
         )}
@@ -389,6 +498,7 @@ export function PagamentosSection({
                 rightSection={
                   <Tooltip label={`Preencher com o valor restante (${brl(remaining)})`} withArrow>
                     <ActionIcon
+                      type="button"
                       variant="subtle"
                       aria-label="Preencher com o valor restante"
                       disabled={disabled || remaining <= 0}
@@ -663,10 +773,21 @@ export function PagamentosSection({
             )}
             {saveError && <Alert color="red">{saveError}</Alert>}
             <Group justify="flex-end">
-              <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
+              <Button
+                type="button"
+                variant="default"
+                onClick={() => setEditing(null)}
+                disabled={saving}
+              >
                 Cancelar
               </Button>
-              <Button onClick={handleSave} loading={saving} disabled={disabled} color="green">
+              <Button
+                type="button"
+                onClick={handleSave}
+                loading={saving}
+                disabled={disabled}
+                color="green"
+              >
                 {editing.id ? 'Salvar alterações' : 'Adicionar'}
               </Button>
             </Group>
@@ -699,7 +820,7 @@ export function PagamentosSection({
                 pagamento={pgto}
                 disabled={disabled}
                 onEdit={() => openEdit(id, pgto)}
-                onDelete={() => setDeleteTarget(id)}
+                onDelete={() => setDeleteTarget({ id, baseline: pgto })}
                 onAfterChange={reconcileEstado}
               />
             ))}
@@ -716,15 +837,41 @@ export function PagamentosSection({
         <Stack>
           <Text>Tem certeza que deseja excluir este pagamento?</Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            <Button
+              type="button"
+              variant="default"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+            >
               Cancelar
             </Button>
-            <Button color="red" onClick={handleDelete} loading={deleting}>
+            <Button type="button" color="red" onClick={handleDelete} loading={deleting}>
               Excluir
             </Button>
           </Group>
         </Stack>
       </Modal>
+
+      <RecordConflictModal
+        opened={conflict !== null}
+        fields={
+          conflict
+            ? recordConflictFields(
+                pagamentoSchema,
+                conflict.baseline as unknown as Record<string, unknown>,
+                conflict.current as unknown as Record<string, unknown>,
+                [...conflict.fields],
+                conflict.patch,
+              )
+            : []
+        }
+        saving={saving}
+        entityLabel="Este pagamento"
+        title="Pagamento alterado"
+        actionLabel="Salvar mesmo assim"
+        onForceSave={handleForceSave}
+        onCancel={() => setConflict(null)}
+      />
     </Stack>
   );
 }
@@ -756,12 +903,24 @@ function PagamentoRow({
     setSavingStatus(true);
     try {
       await savePagamento(createClientPedidoPort(getFirebaseFirestore()), {
+        mode: 'update',
         pedidoId,
         pagamentoId: id,
-        pagamento: { ...pagamento, status_pagamento: nextStatus },
+        patch: { status_pagamento: nextStatus },
+        baseline: pagamento as unknown as Record<string, unknown>,
       });
       await onAfterChange();
     } catch (err) {
+      if (err instanceof PagamentoConflictError) {
+        notifications.show({
+          color: 'yellow',
+          title: 'Status não alterado',
+          message:
+            'O pagamento mudou enquanto você editava. A versão recebida do servidor foi mantida; revise e tente novamente.',
+        });
+        return;
+      }
+      if (err instanceof PagamentoNothingChangedError) return;
       // Same shape as `handleDelete`: without this a rejected save escapes as an
       // unhandled rejection and the Select silently snaps back with no message.
       if (!(err instanceof FirebaseError)) throw err;
@@ -800,10 +959,17 @@ function PagamentoRow({
         <Table.Td align="right">{pagamento.parcelas}</Table.Td>
         <Table.Td>
           <Group gap="xs">
-            <Button size="xs" variant="light" onClick={onEdit} disabled={disabled}>
+            <Button type="button" size="xs" variant="light" onClick={onEdit} disabled={disabled}>
               Editar
             </Button>
-            <Button size="xs" variant="light" color="red" onClick={onDelete} disabled={disabled}>
+            <Button
+              type="button"
+              size="xs"
+              variant="light"
+              color="red"
+              onClick={onDelete}
+              disabled={disabled}
+            >
               Excluir
             </Button>
           </Group>

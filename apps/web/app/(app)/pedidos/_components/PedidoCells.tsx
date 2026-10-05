@@ -22,7 +22,9 @@ import {
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
   type EstadoNFe,
+  INTEGRACAO_TIPO_LABELS,
   type IntegracaoFrete,
+  type IntegracaoTipo,
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
@@ -33,7 +35,9 @@ import {
 } from '@delfrance/schemas';
 import { microsToMillis } from '@delfrance/core/datetime';
 import { formatReais } from '@delfrance/core/money';
+import { formatCpfCnpj } from '@delfrance/core/documents';
 import {
+  Alert,
   Anchor,
   Badge,
   Box,
@@ -57,9 +61,16 @@ import {
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
+import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
+import type { IntegracaoLookup } from './integracaoLookup';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { cadastroClienteRejeicao } from '@/lib/nfe/contextoRejeicao';
+import type { DestinatarioNFe } from '@/lib/nfe/destinatarioNFe';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
+import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 import { DanfeMenu } from '@/components/DanfeMenu';
+import { ANONIMO_LABEL } from './ClienteColumnFilter';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
 import {
@@ -93,7 +104,8 @@ function formatMicros(us: number | null | undefined): string {
 /*  (ordered by `ultima_modificacao` desc, limit 1 — see `useLatestNfe`, which */
 /*  owns the query and its viewport gate). Hovering the badge opens a          */
 /*  HoverCard with the Estado, cStat, xMotivo, Número, Chave and Erro fields — */
-/*  each copyable via an icon button when present.                            */
+/*  each copyable via an icon button when present. A cStat that needs context */
+/*  (805, #852) adds the operator guidance right under Estado.                */
 /* -------------------------------------------------------------------------- */
 
 const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
@@ -110,7 +122,19 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
   [ESTADO_NFE.error]: 'red',
 };
 
-export function NFCell({ pedidoId }: { pedidoId: string }) {
+export function NFCell({
+  pedidoId,
+  clientePedidoOuterRef,
+}: {
+  pedidoId: string;
+  /**
+   * The pedido's cliente — only the cStat 805 guidance reads it, to name the
+   * cliente and link its cadastro. OPTIONAL: without it the guidance still
+   * renders, as "o cliente deste pedido" with no link. `PedidosListView`
+   * passes it (pinned by `PedidosListView.columns.test.ts`).
+   */
+  clientePedidoOuterRef?: Pedido['clientePedidoOuterRef'] | null;
+}) {
   const { ref, status, badge: latest, doc, latestId } = useLatestNfe(pedidoId);
   const router = useRouter();
 
@@ -181,6 +205,16 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Text>
             <Text size="sm">{label}</Text>
           </Group>
+
+          {/* Guidance ABOVE the raw cStat/xMotivo rows, which stay: SEFAZ's own
+              words remain on screen and copyable. */}
+          {rejeicaoPrecisaContexto(latest.cStat) && (
+            <OrientacaoRejeicaoCliente
+              cStat={latest.cStat}
+              destinatario={latest.destinatario}
+              clientePedidoOuterRef={clientePedidoOuterRef ?? null}
+            />
+          )}
 
           {latest.cStat != null && (
             <Group gap="xs" wrap="nowrap">
@@ -299,6 +333,75 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   );
 }
 
+/**
+ * The cStat 805 guidance inside NFCell's HoverCard (#852): the same pure
+ * `orientacaoRejeicaoNFe` the toasts and the lote dialog call, fed by the
+ * badge's `destinatario` (what was SENT, from the signed XML) and the cliente
+ * cadastro (what it says NOW). Renders nothing when the mapping has no guidance
+ * — e.g. an 805 whose XML did not carry `indIEDest=2`.
+ *
+ * Mounts only while an 805 badge's dropdown is open (Mantine mounts dropdown
+ * children on open), so the cliente read below costs one `getDoc` per
+ * hover-open of an 805 row, and nothing on any other row.
+ */
+function OrientacaoRejeicaoCliente({
+  cStat,
+  destinatario,
+  clientePedidoOuterRef,
+}: {
+  readonly cStat: string | null;
+  readonly destinatario: DestinatarioNFe | null;
+  readonly clientePedidoOuterRef: Pedido['clientePedidoOuterRef'] | null;
+}) {
+  const db = getFirebaseFirestore();
+  const rowReads = usePedidoRowReads();
+  // Only a ref INTO `clientes` names the cadastro `/clientes/{id}` opens — the
+  // same id under another collection is a different document. Anything else
+  // (absent, malformed, foreign) is "o cliente deste pedido" with no link, and
+  // reads nothing. Total: the dereference never throws in render (#1656).
+  const ref = useMemo(
+    () => refDeClienteOuNull(db, clientePedidoOuterRef),
+    [db, clientePedidoOuterRef],
+  ) as DocumentReference<ClienteDoc> | null;
+  const path = ref?.path ?? null;
+
+  const { data, isError } = useQuery<ClienteDoc | null>({
+    // ⚠️ The SAME key and reader as `ClienteCell` — one provenance (#1303).
+    queryKey: clienteQueryKey(path ?? ''),
+    queryFn: async () => (ref ? readClienteByRef<ClienteDoc>(db, ref) : null),
+    enabled: !!ref && rowReads === 'settled',
+    // ⚠️ 0, not ClienteCell's 5 min: the guidance switches to "Cadastro do
+    // cliente já alterado" once the cadastro stops declaring ISENTO, and a
+    // cadastro fixed a minute ago must show it. Each hover-open of an 805 badge
+    // re-reads the cliente, which also refreshes ClienteCell's shared entry.
+    staleTime: 0,
+  });
+
+  // Unknown while loading or on error — the mapping then keeps the fix-it text,
+  // which is true either way. Re-checked field by field: the shared key can hold
+  // a RAW soft-read document, and a non-string `ie` would throw in `normalizarIe`.
+  const cadastro = !isError && data ? cadastroClienteRejeicao(data) : null;
+  const orientacao = orientacaoRejeicaoNFe(cStat, {
+    destinatario,
+    cliente: ref ? { id: ref.id, cadastro } : null,
+  });
+  if (orientacao == null) return null;
+  return (
+    <Alert color={orientacao.cor} title={orientacao.titulo} p="xs">
+      <Stack gap={4}>
+        <Text size="xs">{orientacao.texto}</Text>
+        {/* No stopPropagation of its own: the dropdown's Stack already stops the
+            row click for everything inside it. */}
+        {orientacao.link && (
+          <Anchor component={Link} href={orientacao.link.href} size="xs">
+            {orientacao.link.label}
+          </Anchor>
+        )}
+      </Stack>
+    </Alert>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                ClienteCell                                 */
 /*                                                                            */
@@ -309,32 +412,25 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
 /*  cliente share the cached fetch.                                           */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The cliente fields read under `clienteQueryKey` — by `ClienteCell` and by
+ * NFCell's `OrientacaoRejeicaoCliente` (which also needs `ie`, #852).
+ */
 interface ClienteDoc {
   readonly nome?: string | null;
   readonly cpf_cnpj?: string | null;
   readonly tipo?: TipoCliente | null;
-}
-
-/**
- * Format a CPF (11 digits) or CNPJ (14 digits) for display. Falls back to
- * the raw value when the length doesn't match either pattern.
- */
-function formatCpfCnpj(raw: string): string {
-  const d = raw.replace(/\D/g, '');
-  if (d.length === 11) {
-    return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
-  }
-  if (d.length === 14) {
-    return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
-  }
-  return raw;
+  readonly ie?: string | null;
 }
 
 export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const db = getFirebaseFirestore();
   const rowReads = usePedidoRowReads();
+  // ⚠️ Through the cliente gate, not the bare dereference: a ref into ANOTHER
+  // collection would link `/clientes/{id}` to a different cadastro and read a
+  // foreign doc under the shared key (#1656). Null here = no read, no link.
   const ref = useMemo(
-    () => dereferenceOuterRef(db, pedido.clientePedidoOuterRef),
+    () => refDeClienteOuNull(db, pedido.clientePedidoOuterRef),
     [db, pedido.clientePedidoOuterRef],
   ) as DocumentReference<ClienteDoc> | null;
   const path = ref?.path ?? null;
@@ -355,7 +451,21 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
     staleTime: 5 * 60 * 1000,
   });
 
-  if (!ref) return <Text c="dimmed">Anônimo</Text>;
+  // "Anônimo" is exactly what the column filter's isNull finds
+  // (`ClienteColumnFilter`), so it is reserved for a pedido with NO ref.
+  if (pedido.clientePedidoOuterRef == null) return <Text c="dimmed">{ANONIMO_LABEL}</Text>;
+  // A ref is present but names no cliente — foreign, or it does not
+  // dereference. Said so, the way IntegracaoCell flags a `desconhecida` id.
+  if (!ref) {
+    return (
+      <Tooltip
+        label="A referência de cliente deste pedido não aponta para um cadastro de cliente."
+        withinPortal
+      >
+        <Text c="dimmed">Cliente não reconhecido</Text>
+      </Tooltip>
+    );
+  }
   if (isLoading) return <Skeleton height={20} width={120} />;
   const nome = data?.nome ?? 'Anônimo';
   const cpfCnpj = data?.cpf_cnpj ? formatCpfCnpj(data.cpf_cnpj) : null;
@@ -375,6 +485,73 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
       >
         {nome}
       </Anchor>
+    </Tooltip>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               IntegracaoCell                               */
+/*                                                                            */
+/*  The pedido's canal de venda. Takes the lookup as a PROP rather than       */
+/*  calling `useIntegracoes` itself: the list resolves it once for the whole  */
+/*  page and hands the same map to every row, so the column costs one extra   */
+/*  projected scalar and ZERO extra Firestore reads. Mirrors                  */
+/*  `ProdutoIntegracoesCell` on /produtos.                                    */
+/* -------------------------------------------------------------------------- */
+
+export function IntegracaoCell({ pedido, lookup }: { pedido: Pedido; lookup: IntegracaoLookup }) {
+  const db = getFirebaseFirestore();
+  const id = useMemo(
+    // ⚠️ Through the deref helper, never `split('/').pop()` — that is what
+    // tolerates the legacy ref shapes the imported corpus carries.
+    () => dereferenceOuterRef(db, pedido.integracaoPedidoOuterRef)?.id ?? null,
+    [db, pedido.integracaoPedidoOuterRef],
+  );
+
+  if (id === null) return <Text c="dimmed">{DASH}</Text>;
+
+  // ⚠️ An empty `byId` means three different things — still loading, the read
+  // was denied, or the collection really is empty — and a renderer that cannot
+  // tell them apart reports a system problem as a data problem. Branch on the
+  // status first (`useIntegracoes`' own docstring says so).
+  if (lookup.status === 'pending') {
+    // Badge-sized, so the column does not reflow when the lookup lands.
+    return <Skeleton h={20} w={72} radius="xl" />;
+  }
+  if (lookup.status === 'error') {
+    return (
+      <Tooltip label="Não foi possível carregar os canais de venda." withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          indisponível
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  const integracao = lookup.byId.get(id);
+  if (!integracao) {
+    return (
+      <Tooltip label={`Integração não encontrada (${id})`} withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          desconhecida
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  // No registered `cor` → a neutral badge rather than an invented colour.
+  const style = integracaoBadgeStyle(integracao.cor);
+  const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
+  return (
+    <Tooltip label={`${integracao.nome} (${tipoLabel})`} withArrow>
+      <Badge
+        size="sm"
+        variant={style ? 'filled' : 'light'}
+        color={style ? undefined : 'gray'}
+        style={style ?? undefined}
+      >
+        {integracao.nome}
+      </Badge>
     </Tooltip>
   );
 }

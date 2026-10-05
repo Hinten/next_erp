@@ -11,10 +11,11 @@ import { createTestEnv, EMULATED } from './helpers';
 
 /**
  * CRUD coverage matrix (#160). For EVERY registered domain, a fully-permissioned
- * superuser must be able to create/get/update/delete — i.e. no collection or
- * operation is silently default-denied for lack of a match block. This is the
- * guard that would have caught the produto marketplace subcollections (#160):
- * they were missing from the ruleset, so even a superuser was denied.
+ * superuser must be able to create/get/update and receive the delete result
+ * declared by metadata — i.e. no collection or operation is silently
+ * default-denied for lack of a match block. This is the guard that would have
+ * caught the produto marketplace subcollections (#160): they were missing from
+ * the ruleset, so even a superuser was denied.
  *
  * Per-bit gating (the "denied without the right claim" cases) is covered by
  * firestore.rules.test.ts; this suite only asserts the positive coverage floor.
@@ -62,13 +63,17 @@ describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#
   for (const domain of ALL_DOMAINS) {
     const path = domain.meta.collectionPath;
     if (domain.meta.serverOwned) continue;
-    it(`${path}: superuser can create, get, update, delete`, async () => {
+    it(`${path}: superuser can create/get/update and delete follows metadata`, async () => {
       const ref = doc(su(), concretePath(path));
       const payload = VALIDATED_PAYLOAD[path] ?? { mtx: 1 };
       await assertSucceeds(setDoc(ref, payload)); // create
       await assertSucceeds(getDoc(ref)); // get
       await assertSucceeds(updateDoc(ref, payload)); // update
-      await assertSucceeds(deleteDoc(ref)); // delete
+      if (domain.meta.permissions.delete === null) {
+        await assertFails(deleteDoc(ref)); // explicit deny, including su
+      } else {
+        await assertSucceeds(deleteDoc(ref)); // permission-gated delete
+      }
     });
   }
 

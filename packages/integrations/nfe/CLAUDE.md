@@ -4,8 +4,8 @@ NF-e (Nota Fiscal Eletrônica) library. The orchestrator + HTTP host
 live in `apps/nfe`; this package is the typed, version-pinned
 library they consume. **Server-mostly**: the kitchen-sink barrel
 (`.`) ships PEM keys + a 3 MB WASM blob and is Node-only. A
-browser-safe subpath (`./http-provider`) carries only the HTTP
-client + typed errors.
+browser-safe subpaths (`./http-provider` and `./code128`) carry only pure or
+web-compatible code.
 
 ## Subpath exports
 
@@ -14,7 +14,8 @@ Declared in `package.json`'s `exports` field:
 | Subpath | Contents | Consumers |
 |---|---|---|
 | `.` | Kitchen sink: cert, sign, soap, xsd, safety, xml, generator, operations, tribute, numeracao, recovery, state, http-provider. **Pulls `node:fs`, `node-forge`, `soap`, `xmllint-wasm`.** | `apps/nfe` (Node) |
-| `./http-provider` | Typed `NFeHttpClient` + the eight typed error classes (NFeRejectedError, NFePedidoNotFoundError, …). Imports only `@delfrance/schemas` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
+| `./http-provider` | Typed `NFeHttpClient` + its typed error classes (NFeRejectedError, NFePedidoNotFoundError, NFeTimeoutError, …) and `isRetryableNFeHttpError`, plus `extrairTotaisNFe` (`src/totals/`, the `<ICMSTot>` → modeled-numbers fold shared by the emitter, the backfill and the CSV report — #1491). Every method has a deadline from `NFE_NIVEL_POR_OPERACAO` (#1094): `curto` 90 s where a repeat is harmless, `longo` 360 s (past the platform's own 504) wherever a repeat could overlap a live run; a timeout is never retryable. Imports only `zod`, `@delfrance/schemas`, `@delfrance/core/{money,wire}` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
+| `./code128` | Pure NF-e-chave → Zebra Code 128 field encoding, including the NT 2026.004 mixed C/B/C path. Imports only `@delfrance/schemas`; **zero server deps**. | DANFE ZPL + `apps/web` generic label |
 
 `apps/web/eslint.config.mjs` carries a `no-restricted-imports` rule
 forbidding the root specifier from anywhere under `apps/web/**` —
@@ -22,9 +23,9 @@ violators get a friendly redirect to the subpath.
 
 ### Adding a new browser-safe module
 
-1. Drop the module under `src/http-provider/` (or anywhere it can
-   be imported from there without pulling a server dep).
-2. Re-export from `src/http-provider/index.ts`.
+1. Drop the module under `src/http-provider/` and re-export it there, or give a
+   standalone pure concern (such as `./code128`) its own explicit subpath.
+2. Add the subpath to `package.json` when it is not part of `./http-provider`.
 3. **Verify the transitive graph is clean**: run
    `pnpm --filter @delfrance/web build` (Turbopack will surface
    any `node:fs` / `soap` / `node-forge` it walks into).
@@ -51,13 +52,22 @@ packages/integrations/nfe/
       schemas/     # 28 XSDs (vendored from SEFAZ for MOC 7.0)
                    #   + MANIFEST.json — provenance for THIS MOC's packs
       types/       # codegen output (interfaces + META + Zod mirrors)
+    conscad/       # Consulta Cadastro layout 2.00 — its OWN codegen pack:
+                   #   *.xsd + README.md (provenance), types/conscad-schema.ts
   src/
     types/
       nfe-schema.ts      # SHIM — re-exports generated/moc7.0/types/nfe-schema
       nfe-schema-zod.ts  # SHIM — re-exports generated/moc7.0/types/nfe-schema-zod
-    codegen/generate.mjs # reads MOC_DIR/schemas, writes MOC_DIR/types
+      conscad-schema.ts  # SHIM — re-exports generated/conscad/types/conscad-schema
+    codegen/generate.mjs # one pack per run (--pack moc|conscad): its XSDs → its types/
     xsd/index.ts         # reads MOC_DIR/schemas for validateXsd()
 ```
+
+⚠️ `generated/conscad/` must never move into `moc7.0/schemas/`. Both
+leiautes declare a `TEndereco`, and one codegen run resolves a shared type
+name by file order, so one pack's address would silently take the other's
+shape (#251). `gen:nfe-types` runs both packs, each in its own process;
+`test/xml/xml.test.ts` pins that each `META` kept its own.
 
 Internal consumers import `'../types/nfe-schema'` (the shim), never
 the versioned path directly. Four places know the active MOC
@@ -169,8 +179,31 @@ the upload/storage path only, never SEFAZ emission.**
 
 ## SN-only tribute engine
 
-Phase A is Simples Nacional only (`src/tribute/imposto.ts:75` throws
-on CRT=3/4). Regime Normal (CST 00/10/20/…) is Phase D.
+Phase A is Simples Nacional only (`buildICMS` in `src/tribute/imposto.ts`
+throws on CRT=3/4 — `vereditoIcmsSn`'s `naoSimplesNacional`). Regime
+Normal (CST 00/10/20/…) is Phase D.
+
+Every XSD-shape rule (sub-group completeness, pair choices) is a
+**throw inside `buildImpostoXml`**, never a Zod refine on the shared
+schemas: those schemas gate the resolver cascade and collection reads,
+so a stored doc that fails to parse silently drops to a lower resolver
+tier. The config-level rules the engine applies (the ICMSSN CSOSN →
+sub-config → sub-group choice and the PIS/COFINS CST → rate choice) are
+decided as verdicts in `@delfrance/schemas` `src/imposto/regrasDeEmissao.ts`
+(`vereditoIcmsSn`, `vereditoPisCofins`): the engine only formats a refusal
+into its `NFeTributeError`, the web imposto editor can refuse the same
+configs before a save, and it is still never a refine (#1655). ⚠️ The
+ICMSTot roll-up (`src/tribute/total.ts`) still mirrors two of those
+choices with its own checks — which CSOSN slot it sums, and which items
+are ISSQN — so a change to `SUBCONFIG_POR_CSOSN` or `usaIssqn` must reach
+it too.
+`apps/nfe` makes sure such a throw never consumes a número (#506):
+the single-pedido transaction generates before its first write, and the
+batch dry-runs the per-item projection before its chunk transaction
+counts a member that would generate. Throw `NFeTributeError`
+(`src/tribute/errors.ts`, dependency-free so `rtc.ts` can use it), never a
+plain `Error`: `apps/nfe` converts only the in-repo tribute classes, so a
+plain one fails a batch member in prep whatever its nfev4 doc holds.
 
 ## Numeração
 

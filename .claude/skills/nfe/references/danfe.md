@@ -19,9 +19,10 @@ EspecificaçõesTécnicas - Danfe-Código-Barras-2.pdf`).
 - **No valor fiscal of its own.** The footer states the DANFE is not a fiscal
   document. In **homologação** (`tpAmb=2`) it carries a **"SEM VALOR FISCAL"**
   watermark (see `homologacao.md`).
-- **Barcode = Code 128C of the 44-digit chave.** Model 55 DANFE carries the
-  chave as a **Code 128C** linear barcode (the chave is all-digits, even length
-  → subset C packs two digits per symbol). **No QR code** — the QR is NFC-e
+- **Barcode = Code 128 of the 44-character chave.** A numeric chave uses subset
+  C end-to-end. Under NT 2026.004, positions 6–17 may contain `A`–`Z`: ZPL uses
+  mixed C/B/C for the numeric prefix, 12-character CNPJ body and numeric suffix;
+  PDF delegates subset selection to bwip-js. **No QR code** — the QR is NFC-e
   (model 65) only, via `infNFeSupl/qrCode`, and is out of scope here.
 - **Build the chave text grouped** in eleven blocks of four for human reading.
 
@@ -59,6 +60,9 @@ no font embedding needed.
   (`parseProcNFe(xml): DanfeModel` over the codegen `parse('nfeProc', …)`),
   `format.ts` (chave/cpf-cnpj/cep/money/date helpers), `barcode.ts`
   (`code128Png` via **bwip-js**), `zpl2.ts`, `pdf/*` (**pdfkit**).
+- **Browser-safe ZPL encoding:** `@delfrance/integrations-nfe/code128` validates
+  with `CHAVE_NFE_REGEX` and produces the native Zebra payload used by both ZPL
+  renderers without importing the server-only DANFE barrel.
 - **Server-only:** exposed via the `@delfrance/integrations-nfe/danfe` subpath
   (NOT the package root barrel) so pdfkit/bwip-js never enter the `apps/web`
   bundle. `apps/web` only calls the route.
@@ -77,7 +81,11 @@ no rasterisation:
   203 dpi** (8 dots/mm → ~800×1200 for 10×15 cm); **300 dpi** supported
   (~1200×1800). Author layout in millimetres; scale once.
 - Native scalable font `^A0N,h,w`; native Code 128 **`^BCN,h,N,N,N`** fed the
-  raw 44-digit chave (no embedded image).
+  shared encoded payload: `>;{44 digits}` for a numeric chave, or
+  `>;{6 digits}>6{12 CNPJ chars}>5{26 digits}` for an alphanumeric chave (no
+  embedded image).
 - Strip `^`/`~` from field data so a razão social/endereço can't inject a
   command.
-- **Preview** any output at https://labelary.com before a physical run.
+- **Preview** any output at https://labelary.com before a physical run. A mixed
+  payload is not accepted until both layouts have also been printed on a real
+  supported Zebra and scanned back to the exact 44 characters.

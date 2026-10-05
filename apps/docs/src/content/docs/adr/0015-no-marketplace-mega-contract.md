@@ -42,9 +42,9 @@ price tables store and ML's wire format speaks". The NF-e upload recorded that
 
 Severity, stated fairly: most of this was **unreached type surface**, not broken
 production code. It still mattered, because validating the contract was the entire
-reason for doing Mercado Livre first — and the plugin-authoring guide went on
-instructing authors to implement four throwing members and register them into a
-registry nothing read.
+reason for doing Mercado Livre first — and the authoring guide went on instructing
+authors to implement four throwing members and register them into a registry nothing
+read.
 
 ## The root cause
 
@@ -142,6 +142,23 @@ does not exist yet: the same unreached surface, one round later.
   how #288 built the contract this ADR removed. Payments also vary per ACCOUNT, not
   per provider. The table lands with provider #2, per the procedure on
   `tipoIntegracaoPgtoSchema`.
+- **#1444 finished the job.** `TaxProvider`, `InvoiceProvider`, `PluginRegistry` and
+  `@delfrance/plugin-sdk` are gone, so `packages/core` declares **no** plugin contract
+  at all and there is no registry left to sit empty. The measurement was the same as
+  the two above — one `register*` caller each, and both were tests — but with an edge
+  the others did not have: ⚠️ **these two were the ones this ADR's own reasoning had
+  spared**, on the grounds that `calculate(items)` is pure and `issue(orderId)` is
+  close to fetch-and-return. That altitude argument was right about the SHAPE and
+  wrong about the DOMAIN. `calculate({ amount, ncm })` carries no CRT, no CST/CSOSN,
+  no origem and no UF pair, while the real engine (`buildImpostoXml`) emits XSD-valid
+  XML per CST and the tax configuration is a resolver chain (`impostoProduto` /
+  `impostoCategoria` / `regraImposto`) that never mentions the contract;
+  `issue(orderId)` → three statuses cannot express `aguardandoVinculo`, cStat 136
+  reconciliation, SVC/EPEC contingência, filial, ambiente or série. The one
+  implementation, `createNFeProvider()`, had zero callers, and its own sibling comment
+  already described it as superseded. **A contract at a defensible altitude that no
+  implementation can satisfy is still the wrong contract** — the lesson this ADR did
+  not yet have when it spared them.
 - The other deferrals from this decision are #1430 (wire the caps table into the `apps/web` provider
   registries), #1431 (the four `verifyCaller`/`hmac` copies), #1432 (generalizing
   the listing editor — blocked on a second channel, for this ADR's own reason) and
@@ -149,7 +166,11 @@ does not exist yet: the same unreached surface, one round later.
 - The invariant is enforced by
   `packages/config-eslint/rules/removed-plugin-contracts.test.js`, because every
   part of it is silent when violated: re-adding the interface typechecks, lints,
-  builds and passes every suite.
+  builds and passes every suite. ⚠️ Since #1444 that guard changed shape twice over —
+  it asserts `packages/core/src/plugins/` and `packages/plugin-sdk/` do **not** exist,
+  and it scans every file under `packages/core/src` instead of reading the one path
+  the contracts used to occupy, which a re-creation one directory over would have
+  walked straight past.
 - **`packages/integrations/shopee` exists again — in this ADR's shape, not the
   deleted one.** Step 1 of the Shopee master plan re-created it as a real
   fetch-only library: the HMAC request signature, the hosts, the consent URL and

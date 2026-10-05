@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  COM_NFE_ALFA_MODEL,
   COM_NFE_MODEL,
   LONG_STRINGS_MODEL,
   MAXIMAL_MODEL,
@@ -31,6 +32,7 @@ const OUT_DIR = join(process.cwd(), 'etiqueta-samples');
 const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
   ['minima', MINIMAL_MODEL],
   ['com-nfe', COM_NFE_MODEL],
+  ['com-nfe-alfa', COM_NFE_ALFA_MODEL],
   ['reverso', REVERSO_MODEL],
   ['retirada-na-loja', RETIRADA_MODEL],
   ['maxima', MAXIMAL_MODEL],
@@ -39,10 +41,21 @@ const SAMPLES: ReadonlyArray<readonly [string, EtiquetaGenericaModel]> = [
 
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
+  let written = 0;
   for (const [name, model] of SAMPLES) {
     const blob = await renderEtiquetaGenericaPdf(model);
     writeFileSync(join(OUT_DIR, `etiqueta-${name}.pdf`), Buffer.from(await blob.arrayBuffer()));
-    writeFileSync(join(OUT_DIR, `etiqueta-${name}.zpl`), renderEtiquetaGenericaZpl(model), 'utf8');
+    const zplName = name === 'com-nfe-alfa' ? `etiqueta-${name}-203.zpl` : `etiqueta-${name}.zpl`;
+    writeFileSync(join(OUT_DIR, zplName), renderEtiquetaGenericaZpl(model), 'utf8');
+    written += 2;
+    if (name === 'com-nfe-alfa') {
+      writeFileSync(
+        join(OUT_DIR, `etiqueta-${name}-300.zpl`),
+        renderEtiquetaGenericaZpl(model, { dpi: 300 }),
+        'utf8',
+      );
+      written += 1;
+    }
     const { contentHeightMm, scale, slack } = buildEtiquetaGenericaLayout(model);
     const fill = ((contentHeightMm / LABEL_H_MM) * 100).toFixed(0);
     const squeeze = [
@@ -52,10 +65,10 @@ async function main(): Promise<void> {
       .filter(Boolean)
       .join(', ');
     process.stdout.write(
-      `etiqueta-${name}.{pdf,zpl} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})\n`,
+      `etiqueta-${name} — ${contentHeightMm.toFixed(1)}mm of ${LABEL_H_MM}mm (${fill}%${squeeze ? `, ${squeeze}` : ''})\n`,
     );
   }
-  process.stdout.write(`\nWrote ${SAMPLES.length * 2} samples to ${OUT_DIR}\n`);
+  process.stdout.write(`\nWrote ${written} samples to ${OUT_DIR}\n`);
 }
 
 await main();

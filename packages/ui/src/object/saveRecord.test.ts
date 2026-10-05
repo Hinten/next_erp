@@ -11,11 +11,11 @@ const { firestoreMock } = vi.hoisted(() => {
     delete: vi.fn(),
     get: vi.fn(async (ref: { id: string }) => ({
       exists: () => true,
-      data: () => (ref.id === 'sibling' ? {} : { x: 1 }),
+      data: (): Record<string, unknown> => (ref.id === 'sibling' ? {} : { x: 1 }),
     })),
   };
   const runTransactionMock = vi.fn(
-    async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
+    async (_db: unknown, fn: (tx: typeof txMock) => Promise<unknown>) => {
       return await fn(txMock);
     },
   );
@@ -51,12 +51,55 @@ function fakeCollection(): CollectionHandle<typeof _schema> {
 }
 
 beforeEach(() => {
+  firestoreMock.txMock.get.mockReset();
   firestoreMock.txMock.set.mockReset();
   firestoreMock.txMock.update.mockReset();
   firestoreMock.txMock.delete.mockReset();
   firestoreMock.runTransactionMock.mockClear();
   firestoreMock.docMock.mockClear();
   firestoreMock.collectionMock.mockClear();
+});
+
+describe('saveRecord — transactional derivation', () => {
+  it('derives create fields with null current and returns the committed document', async () => {
+    const derive = vi.fn(() => ({ telefoneGerenciado: true }));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'Nova' },
+      dirtyFields: {},
+      currentUserUid: 'u1',
+      deriveTransactionPatch: derive,
+    });
+    expect(derive).toHaveBeenCalledWith(null, { nome: 'Nova' });
+    expect(result.patch).toEqual({ nome: 'Nova', telefoneGerenciado: true });
+    expect(firestoreMock.txMock.set).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
+
+  it('reads current state even without a baseline and returns derived update fields', async () => {
+    const current = { nome: 'Antes', telefonesAdicionais: ['14155552671'] };
+    firestoreMock.txMock.get.mockResolvedValue({ exists: () => true, data: () => current });
+    const derive = vi.fn((fresh: Readonly<Record<string, unknown>> | null) => ({
+      telefonesAdicionais: [...(fresh?.telefonesAdicionais as string[]), '5511999998888'],
+    }));
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'existing',
+      values: { nome: 'Depois' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      deriveTransactionPatch: derive,
+    });
+    expect(derive).toHaveBeenCalledWith(current, { nome: 'Depois' });
+    expect(result.patch).toEqual({
+      nome: 'Depois',
+      telefonesAdicionais: ['14155552671', '5511999998888'],
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(expect.anything(), result.patch);
+  });
 });
 
 describe('saveRecord', () => {

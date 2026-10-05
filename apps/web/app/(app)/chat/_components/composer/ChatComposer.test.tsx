@@ -4,13 +4,13 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { conversaSchema, type Conversa } from '@delfrance/schemas';
 
-const { batchSet, batchCommit, newDocIdMock, uploadFileMock, setDocMock, responderConversa } =
+const { batchSet, batchCommit, newDocIdMock, uploadChatFileMock, setDocMock, responderConversa } =
   vi.hoisted(() => ({
     batchSet: vi.fn(),
     batchCommit: vi.fn(async () => undefined),
     newDocIdMock: vi.fn(() => 'evt-id'),
-    uploadFileMock: vi.fn(),
-    setDocMock: vi.fn(async () => undefined),
+    uploadChatFileMock: vi.fn(),
+    setDocMock: vi.fn(async (_ref: unknown, _data: unknown) => undefined),
     responderConversa: vi.fn(),
   }));
 
@@ -27,7 +27,13 @@ vi.mock('@/lib/data/newDocId', () => ({ newDocId: newDocIdMock }));
 // the upload itself so the tests drive success / failure deterministically.
 vi.mock('@delfrance/storage', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/storage')>();
-  return { ...actual, uploadFile: uploadFileMock };
+  return {
+    ...actual,
+    uploadChatFile: uploadChatFileMock,
+    arquivoCollection: {
+      docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __arquivoRef: id }),
+    },
+  };
 });
 
 vi.mock('@/lib/data/conversaCollection', () => ({
@@ -47,6 +53,25 @@ vi.mock('firebase/firestore', async (importActual) => {
     ...actual,
     writeBatch: () => ({ set: batchSet, commit: batchCommit }),
     setDoc: setDocMock,
+    runTransaction: async (
+      _db: unknown,
+      callback: (tx: {
+        get: (ref: unknown) => Promise<unknown>;
+        set: (ref: unknown, data: unknown) => void;
+      }) => Promise<void>,
+    ) => {
+      const writes: Array<[unknown, unknown]> = [];
+      await callback({
+        get: async (ref: unknown) =>
+          typeof ref === 'object' && ref !== null && '__arquivoRef' in ref
+            ? { exists: () => true }
+            : { data: () => conversaFull },
+        set: (ref, data) => {
+          writes.push([ref, data]);
+        },
+      });
+      for (const [ref, data] of writes) await setDocMock(ref, data);
+    },
     arrayUnion: (v: unknown) => ({ __arrayUnion: v }),
   };
 });
@@ -67,6 +92,14 @@ const conversaEnter: Conversa = conversaSchema.parse({
   usuarios: [],
   estadoConversa: 1,
   origem: 'whatsapp',
+  integracaoOuterRef: 'documents/integracao/wa1',
+  whatsappDestino: {
+    tipo: 'telefone',
+    valor: '5511999998888',
+    identidadeId: 'wa-contact',
+    revision: 1,
+    ultimaMensagemEm: 1,
+  },
   nome: 'Cliente',
 });
 
@@ -75,6 +108,14 @@ const conversaFull: Conversa = conversaSchema.parse({
   usuarios: ['op1'],
   estadoConversa: 1,
   origem: 'whatsapp',
+  integracaoOuterRef: 'documents/integracao/wa1',
+  whatsappDestino: {
+    tipo: 'telefone',
+    valor: '5511999998888',
+    identidadeId: 'wa-contact',
+    revision: 1,
+    ultimaMensagemEm: 1,
+  },
   nome: 'Cliente',
 });
 
@@ -106,8 +147,33 @@ afterEach(() => {
 });
 
 describe('ChatComposer — attachment upload + audio caption hint', () => {
+  it('preserves a WhatsApp JPEG and uploads the original bytes through uploadFile', async () => {
+    uploadChatFileMock.mockResolvedValueOnce({ id: 'jpeg-1', arquivo: { filetype: 'image' } });
+    const { container } = wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaFull}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    const jpeg = new File(['jpeg-bytes'], 'foto.jpg', { type: 'image/jpeg' });
+
+    selectFile(container, jpeg);
+
+    await waitFor(() =>
+      expect(uploadChatFileMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bytes: jpeg,
+          contentType: 'image/jpeg',
+          originalFilename: 'foto.jpg',
+        }),
+      ),
+    );
+  });
+
   it('flags an attachment as errored when the upload rejects (StorageUploadError)', async () => {
-    uploadFileMock.mockRejectedValueOnce(new StorageUploadError('Falha no upload do arquivo'));
+    uploadChatFileMock.mockRejectedValueOnce(new StorageUploadError('Falha no upload do arquivo'));
     const { container } = wrap(
       <ChatComposer
         conversaId="c1"
@@ -144,7 +210,7 @@ describe('ChatComposer — attachment upload + audio caption hint', () => {
   });
 
   it('hints that an audio caption is dropped once audio + text coexist', async () => {
-    uploadFileMock.mockResolvedValueOnce({ id: 'a1', arquivo: { filetype: 'audio' } });
+    uploadChatFileMock.mockResolvedValueOnce({ id: 'a1', arquivo: { filetype: 'audio' } });
     const { container } = wrap(
       <ChatComposer
         conversaId="c1"
@@ -220,11 +286,14 @@ describe('ChatComposer — "Entrar na conversa" gate', () => {
 
 describe('ChatComposer — send capability (#817)', () => {
   /**
-   * A webchat thread. ⚠️ NOT an ML one: all three ML surfaces gained a sender
-   * (#533, #768), and this fixture has to be an origem that genuinely has none
-   * — the inert-fixture trap #813 named, hit three times in this stack.
+   * A legacy `site` thread — one imported from the old app's webchat, which was
+   * never ported (dropped 2026-09-07). ⚠️ NOT an ML one: all three ML surfaces
+   * gained a sender (#533, #768), and this fixture has to be an origem that
+   * genuinely has none — the inert-fixture trap #813 named, hit three times in
+   * this stack. `site` still qualifies, and now permanently: with no widget there
+   * is no outbound path to build, so this fixture cannot silently go inert.
    */
-  const conversaMlClaims: Conversa = conversaSchema.parse({
+  const conversaSite: Conversa = conversaSchema.parse({
     usuarios: ['op1'],
     estadoConversa: 1,
     origem: 'site',
@@ -238,7 +307,7 @@ describe('ChatComposer — send capability (#817)', () => {
     wrap(
       <ChatComposer
         conversaId="c1"
-        conversa={conversaMlClaims}
+        conversa={conversaSite}
         addOptimistic={vi.fn()}
         markOptimisticError={vi.fn()}
       />,
@@ -275,6 +344,14 @@ describe('ChatComposer — send capability (#817)', () => {
           usuarios: ['op1'],
           estadoConversa: 1,
           origem: 'whatsapp',
+          integracaoOuterRef: 'documents/integracao/wa1',
+          whatsappDestino: {
+            tipo: 'telefone',
+            valor: '5511999998888',
+            identidadeId: 'wa-contact',
+            revision: 1,
+            ultimaMensagemEm: 1,
+          },
           nome: 'Cliente',
           respostaBloqueada: 'Prazo de resposta encerrado',
         })}

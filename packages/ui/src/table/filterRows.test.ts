@@ -59,6 +59,18 @@ describe('applyColumnFilters', () => {
     expect(result).toHaveLength(2);
   });
 
+  it('isNull matches missing/null, and nothing that merely looks empty', () => {
+    // Agrees with the `eq null` case above by construction — it is what
+    // `expandColumnFilter` turns it into. The near-misses are the point: `''`
+    // and `0` are falsy and `'null'` is what a naive URL encoding produces.
+    // Full coverage of the op lives in `isNullFilter.test.ts`.
+    const result = applyColumnFilters(
+      rows({ nome: 'Alice' }, { nome: null }, {}, { nome: '' }, { nome: 'null' }),
+      { nome: { op: 'isNull', value: null } },
+    );
+    expect(result).toHaveLength(2);
+  });
+
   it('numeric comparisons (lt/lte/gt/gte)', () => {
     const input = rows({ preco: 10 }, { preco: 20 }, { preco: 30 });
     expect(

@@ -7,7 +7,7 @@ export default defineConfig({
     environment: 'node',
     // `proxy.ts` (the CORS middleware) sits at the app root, outside every
     // directory glob above — name its test explicitly or it never runs.
-    include: ['{app,lib}/**/*.test.ts', 'proxy.test.ts'],
+    include: ['{app,lib,functions/src}/**/*.test.ts', 'proxy.test.ts'],
   },
   resolve: {
     alias: {

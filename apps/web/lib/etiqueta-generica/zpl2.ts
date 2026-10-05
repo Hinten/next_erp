@@ -20,7 +20,9 @@
  *
  * Preview any output at https://labelary.com before a physical run.
  */
-import { encodeCode128C } from './barcode';
+import { encodeChaveNfeZpl } from '@delfrance/integrations-nfe/code128';
+
+import { EtiquetaGenericaFormatError } from './errors';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, LABEL_W_MM } from './layout';
 import type { EtiquetaGenericaModel } from './model';
 
@@ -46,6 +48,13 @@ export function renderEtiquetaGenericaZpl(
   model: EtiquetaGenericaModel,
   opts: EtiquetaZplOptions = {},
 ): string {
+  if (model.nfeChave && !encodeChaveNfeZpl(model.nfeChave)) {
+    throw new EtiquetaGenericaFormatError(
+      `A etiqueta ZPL recebeu uma chave NF-e inválida (${model.nfeChave}); esperado: ` +
+        '6 dígitos, 12 caracteres 0-9/A-Z do corpo do CNPJ e 26 dígitos.',
+    );
+  }
+
   const dpi = opts.dpi ?? 203;
   const dotsPerMm = dpi / 25.4;
   const mm = (v: number): number => Math.round(v * dotsPerMm);
@@ -92,19 +101,37 @@ export function renderEtiquetaGenericaZpl(
         break;
       }
       case 'barcode': {
-        const symbol = encodeCode128C(op.data);
-        // Same rule as the PDF: an unencodable payload drops the barcode rather
-        // than printing a wrong one — the human-readable chave still carries it.
-        if (!symbol) break;
-        // The module width has to be a whole number of dots, so the printed
-        // symbol is narrower than the space reserved for it. Centre it in that
-        // space rather than letting it hang off the left inset.
-        const moduleDots = Math.max(2, Math.floor(mm(op.w) / symbol.modules));
-        const barcodeDots = moduleDots * symbol.modules;
+        const code128 = encodeChaveNfeZpl(op.data);
+        if (!code128) {
+          throw new EtiquetaGenericaFormatError(
+            `A etiqueta ZPL recebeu uma chave NF-e inválida (${op.data}).`,
+          );
+        }
+        // Preserve the historical numeric geometry byte-for-byte. A mixed
+        // symbol needs the physical ~0.25mm X-dimension instead: fitting it
+        // strictly inside the 90mm op box would choose 2 dots on a 300dpi head
+        // (~0.169mm), below the scanner-safe floor. The surrounding 5mm label
+        // margins carry its quiet zones instead.
+        const moduleDots =
+          code128.kind === 'numeric'
+            ? Math.max(2, Math.floor(mm(op.w) / code128.modules))
+            : Math.max(2, Math.round(0.25 * dotsPerMm));
+        const barcodeDots = moduleDots * code128.modules;
         const x = mm(op.x) + Math.round((mm(op.w) - barcodeDots) / 2);
-        // `>;` forces subset C, matching what `encodeCode128C` counted: the
-        // 44-digit chave packs two digits per symbol instead of one.
-        out.push(`^FO${x},${mm(op.y)}^BY${moduleDots}^BCN,${mm(op.h)},N,N,N^FD>;${op.data}^FS`);
+        const quietDots = 10 * moduleDots;
+        const labelDots = mm(LABEL_W_MM);
+        if (
+          code128.kind === 'mixed' &&
+          (x < quietDots || x + barcodeDots + quietDots > labelDots)
+        ) {
+          throw new EtiquetaGenericaFormatError(
+            `A etiqueta ZPL não comporta a chave ${op.data} em ${dpi} dpi com as ` +
+              'zonas de silêncio obrigatórias do Code 128.',
+          );
+        }
+        out.push(
+          `^FO${x},${mm(op.y)}^BY${moduleDots}^BCN,${mm(op.h)},N,N,N^FD${code128.payload}^FS`,
+        );
         break;
       }
     }

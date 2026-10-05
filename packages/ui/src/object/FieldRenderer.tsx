@@ -1,7 +1,20 @@
 'use client';
 
-import { Fieldset, NumberInput, Select, Stack, Switch, TextInput, Textarea } from '@mantine/core';
+import {
+  Button,
+  Fieldset,
+  Group,
+  Modal,
+  NumberInput,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  Textarea,
+} from '@mantine/core';
 import { DatePickerInput, DateTimePicker } from '@mantine/dates';
+import { useState } from 'react';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
 import type { ZodObject, ZodRawShape } from 'zod';
 import type { FieldConfig, FieldDescriptor, FieldRenderProps } from '../schema/types';
@@ -42,6 +55,7 @@ export interface FieldRendererProps {
  * renderer instead of a hand-coded component.
  */
 export function FieldRenderer({ control, descriptor, config, namePrefix }: FieldRendererProps) {
+  const [confirmDisableOpen, setConfirmDisableOpen] = useState(false);
   const label = config?.label ?? descriptor.label;
   const hint = config?.hint ?? descriptor.hint;
   const editable = config?.editable !== false;
@@ -71,8 +85,11 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
       });
 
     // Nullable object: a Switch toggles the whole value between `null` and a
-    // seeded object. The parent Controller owns only the null/non-null state;
-    // the leaves keep their own Controllers on `<fieldName>.<childKey>`.
+    // seeded object. Turning it OFF is destructive, so it first asks for an
+    // explicit confirmation; the parent form still owns the actual save, and
+    // its unsaved-changes guard remains the last line of defence. The parent
+    // Controller owns only the null/non-null state; the leaves keep their own
+    // Controllers on `<fieldName>.<childKey>`.
     if (descriptor.nullable) {
       // Seed the object when toggled on: schema empty-defaults overlaid with
       // `config.defaultValue`, restricted to keys that exist in the nested
@@ -100,13 +117,51 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                   description={hint}
                   checked={enabled}
                   disabled={!editable}
-                  onChange={(e) => field.onChange(e.currentTarget.checked ? seedObject() : null)}
+                  onChange={(e) => {
+                    if (e.currentTarget.checked) {
+                      field.onChange(seedObject());
+                    } else {
+                      setConfirmDisableOpen(true);
+                    }
+                  }}
                 />
                 {enabled && (
                   <Fieldset legend={label}>
                     <Stack>{subFields}</Stack>
                   </Fieldset>
                 )}
+                <Modal
+                  opened={confirmDisableOpen}
+                  onClose={() => setConfirmDisableOpen(false)}
+                  title={`Descartar dados de “${label}”?`}
+                  centered
+                >
+                  <Stack>
+                    <Text size="sm">
+                      Ao desligar esta opção, os valores preenchidos serão removidos do formulário e
+                      a remoção será aplicada somente ao salvar.
+                    </Text>
+                    <Group justify="flex-end">
+                      <Button
+                        type="button"
+                        variant="default"
+                        onClick={() => setConfirmDisableOpen(false)}
+                      >
+                        Cancelar
+                      </Button>
+                      <Button
+                        type="button"
+                        color="red"
+                        onClick={() => {
+                          field.onChange(null);
+                          setConfirmDisableOpen(false);
+                        }}
+                      >
+                        Descartar dados
+                      </Button>
+                    </Group>
+                  </Stack>
+                </Modal>
               </Stack>
             );
           }}
@@ -299,8 +354,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 value={dateStr}
                 onChange={(v) => {
                   // v is `string | null` (YYYY-MM-DD). Promote to full ISO
-                  // to keep wire format stable.
-                  field.onChange(v ? new Date(`${v}T00:00:00.000Z`).toISOString() : v);
+                  // to keep wire format stable — the literal IS what
+                  // `new Date(...).toISOString()` printed for any valid day.
+                  field.onChange(v ? `${v}T00:00:00.000Z` : v);
                 }}
               />
             );

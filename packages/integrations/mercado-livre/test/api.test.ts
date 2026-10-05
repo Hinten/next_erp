@@ -1672,7 +1672,7 @@ describe('sanitizeRequestPath (#1347)', () => {
       `${BASE}/users/1/shipping_options/free?item_id=MLB1%0A%5Bmercado-livre%2Fapi%5D+FORGED`,
     );
     expect(path).not.toBeNull();
-    expect(/[ -]/.test(path!)).toBe(false);
+    expect(/[\u0000-\u001f\u007f]/.test(path!)).toBe(false);
     expect(path).toContain('%0A');
   });
 

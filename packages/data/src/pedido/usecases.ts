@@ -3,14 +3,27 @@ import {
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
   bloqueioFinalizarAtivo,
+  coberturaDoPedido,
+  estadoPedidoSchema,
+  isFreteMarketplaceOwned,
+  podeAutorizarDespacho,
   seedFreteInicial,
+  travarInclusaoProduto,
+  valorDevolvido,
   valuesEqual,
   type BloqueioPedido,
+  type EstadoFrete,
   type EstadoPedido,
   type FreteDoPedido,
   type Pedido,
 } from '@delfrance/schemas';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
+import {
+  aplicarPlanoDeCopiaAoPatch,
+  buildEnderecoCopyOps,
+  enderecoCopyReadPaths,
+  type PedidoEnderecoCopyPlan,
+} from './enderecoCopy';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -148,7 +161,24 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'disputaAbertaEm',
   'devolucaoAbertaEm',
   'bloqueiosLiberados',
-  // Removed derived caches (#796). `baseline`/`current` are NOT raw
+  // The marketplace lifecycle flag + the buyer-capture diary (#1513, step 5) —
+  // the same failure as the three above, one importer later. `marketplace`
+  // mirrors the provider's own `order_status` and `capturaComprador` records
+  // what a masked buyer refused; neither is authorable in the pedido editor
+  // (`buildPedidoPatch` has no control that emits either key), and the Shopee
+  // importer writes them on EVERY delivery of an order — a push, a Cloud Tasks
+  // retry, the sweep, the backfill. Without these two, an operator with the
+  // pedido open gets a conflict modal naming a field they can neither see nor
+  // edit, several times per order.
+  //
+  // ⚠️ Unlike the three above, these are NOT in `pedidoMeta.serverOwnedFields`
+  // — the rules DO let a client write them (they gate nothing; see the schema
+  // docblocks). The ignore is therefore about authorship, exactly as the rule
+  // at the top of this list states it: no interactive editor authors them.
+  'marketplace',
+  'capturaComprador',
+  // Removed money fields — the five derived caches (#796) below, then the four
+  // aggregate pass-throughs (#1151) after them. `baseline`/`current` are NOT raw
   // `snap.data()` — `PedidoDocData`'s contract (`port.ts`) requires the
   // parsed wire shape, and the client adapter gets that "for free by reading
   // through the Zod converter" (`clientPort.ts`'s `updatePedido` reads via
@@ -165,12 +195,25 @@ const CONCURRENCY_IGNORE = new Set<string>([
   // fails validation) but not the other, which can still expose a
   // stale/mismatched value here. Without this ignore, either path could
   // surface a conflict modal naming a field the operator cannot see or have
-  // authored, which is exactly the question this set answers.
+  // authored, which is exactly the question this set answers. The same holds
+  // for the four below, which #1151 removed for a different reason but which
+  // reach this diff by the identical route.
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
   'valorDevolucao',
   'valorCustoDevolvidos',
+  // The four aggregate pass-throughs (#1151), here for exactly the mechanism
+  // spelled out above and no other: they were never derived from this document
+  // (a pipeline aggregates `incidentes` / `orderML` at read time instead), but
+  // the migrated corpus still stores them, nothing in this app has ever written
+  // one, and no interactive editor can author one — so a value surfacing on the
+  // raw-fallback path could only ever raise a conflict modal naming a field the
+  // operator cannot see.
+  'valorComissoes',
+  'valorDespesasIncidentes',
+  'valorFretesIncidentes',
+  'impostos',
 ]);
 
 /**
@@ -220,6 +263,9 @@ export function remotelyChangedFields(
  * of clobbered blindly. Always stamps a fresh `ultimaModificacao` on the write
  * (after the no-op check, so an unchanged save still throws
  * `PedidoNothingChangedError`).
+ *
+ * Returns what the committed write did to the two inputs of the payment-driven
+ * estado rule — see {@link SavePedidoResultado} / {@link deveReconciliarAposSalvar}.
  */
 export async function savePedido(
   port: PedidoDataPort,
@@ -228,17 +274,150 @@ export async function savePedido(
     patch: Record<string, unknown>;
     /** The pedido document as loaded into the editor — the concurrency baseline. */
     baseline: Record<string, unknown>;
+    /** Confirmed address copies to commit in the same transaction, if any. */
+    enderecoCopyPlan?: PedidoEnderecoCopyPlan | null;
   },
-): Promise<void> {
+): Promise<SavePedidoResultado> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
-  await port.updatePedido(args.pedidoId, (current) => {
-    if (current === null) throw new PedidoConflictError(null);
-    if (remotelyChangedFields(args.baseline, current).length > 0) {
-      throw new PedidoConflictError(current);
-    }
-    return { ...args.patch, ultimaModificacao: port.now() };
+  // Reassigned on EVERY run of `apply`: a transaction retry re-runs the callback
+  // against a fresh read, and only the last run is the one that committed.
+  const lido: { current?: Record<string, unknown>; patch?: Record<string, unknown> } = {};
+  if (args.enderecoCopyPlan) {
+    const pedidoPath = `pedidos/${args.pedidoId}`;
+    await port.transact({
+      reads: [pedidoPath, ...enderecoCopyReadPaths(args.enderecoCopyPlan)],
+      apply(docs) {
+        const current = docs.get(pedidoPath) ?? null;
+        if (current === null) throw new PedidoConflictError(null);
+        if (remotelyChangedFields(args.baseline, current).length > 0) {
+          throw new PedidoConflictError(current);
+        }
+        lido.current = current;
+        const patch = aplicarPlanoDeCopiaAoPatch(
+          args.patch,
+          { ...current, ...args.patch } as unknown as Pedido,
+          args.enderecoCopyPlan,
+        );
+        lido.patch = patch;
+        const now = port.now();
+        return [
+          ...buildEnderecoCopyOps(args.enderecoCopyPlan, docs, now),
+          {
+            type: 'update',
+            path: pedidoPath,
+            data: { ...patch, ultimaModificacao: now },
+          },
+        ];
+      },
+    });
+  } else {
+    await port.updatePedido(args.pedidoId, (current) => {
+      if (current === null) throw new PedidoConflictError(null);
+      if (remotelyChangedFields(args.baseline, current).length > 0) {
+        throw new PedidoConflictError(current);
+      }
+      lido.current = current;
+      return { ...args.patch, ultimaModificacao: port.now() };
+    });
+  }
+  if (lido.current === undefined) {
+    // A port that resolves without running `apply` broke its contract — there is
+    // no committed read to answer from, and guessing would decide a reconcile.
+    throw new Error('savePedido: updatePedido resolved without running apply');
+  }
+  return resultadoDoSave(lido.patch ?? args.patch, lido.current);
+}
+
+/**
+ * What a committed {@link savePedido} did to the two inputs of the
+ * payment-driven estado rule (`nextPedidoEstado`), read off the SAME transaction
+ * that committed it (#703).
+ */
+export interface SavePedidoResultado {
+  /**
+   * The total OR the devolução credit moved: `valorCobrado` rode the patch AND
+   * differs from the stored value it replaced, or `itensDevolvidos` rode it AND
+   * the credit they add to the paid side (`valorDevolvido`,
+   * `packages/schemas/src/pedido/pureLogic/cobertura.ts`) differs from the stored
+   * one. `buildPedidoPatch` adds `valorCobrado` whenever items / desconto / frete
+   * / devolução are dirty, including an edit the operator reverted — so presence
+   * alone proves nothing and the stored value is the comparison. The credit needs
+   * its own arm because `valorCobrado` stays GROSS: an edit that only adds or
+   * removes returned items leaves it untouched while moving what the payments are
+   * measured against.
+   */
+  totalMudou: boolean;
+  /**
+   * The estado the pedido holds after the write: the patch's when it carried
+   * one, else the stored one. `null` when neither is a valid `EstadoPedido`.
+   */
+  estadoGravado: EstadoPedido | null;
+}
+
+function resultadoDoSave(
+  patch: Record<string, unknown>,
+  current: Record<string, unknown>,
+): SavePedidoResultado {
+  // A plain `!==`, never a fold: a false "changed" costs one idempotent
+  // reconcile that writes nothing, while a false "unchanged" is the stale estado
+  // this result exists to prevent.
+  const totalMudou =
+    ('valorCobrado' in patch && patch.valorCobrado !== current.valorCobrado) ||
+    creditoDeDevolucaoMudou(patch, current);
+  const estado = estadoPedidoSchema.safeParse('estado' in patch ? patch.estado : current.estado);
+  return { totalMudou, estadoGravado: estado.success ? estado.data : null };
+}
+
+/**
+ * Whether the patch moved the devolução credit the estado rule counts as paid —
+ * `valorDevolvido` of the patch's `itensDevolvidos` (under the direction the
+ * pedido will HOLD after the write) against the same figure off the stored doc.
+ * Compares the ROUNDED credit with a plain `!==`, same stance as the total above:
+ * key order and other no-op re-serializations of the same items compare equal
+ * because the credit is a number, while a one-cent move never folds away. Read
+ * off `current` — the committed read of the transaction that wrote the patch.
+ */
+function creditoDeDevolucaoMudou(
+  patch: Record<string, unknown>,
+  current: Record<string, unknown>,
+): boolean {
+  if (!('itensDevolvidos' in patch)) return false;
+  const depois = valorDevolvido({
+    ehSaida: ('ehSaida' in patch ? patch.ehSaida : current.ehSaida) as boolean | null | undefined,
+    itensDevolvidos: patch.itensDevolvidos,
   });
+  const antes = valorDevolvido({
+    ehSaida: current.ehSaida as boolean | null | undefined,
+    itensDevolvidos: current.itensDevolvidos,
+  });
+  return depois !== antes;
+}
+
+/**
+ * Whether a pedido save must re-derive `estado` from the payments (#703): the
+ * total (or the troca devolução credit counted beside the payments) moved, so
+ * the sum it was compared against is gone.
+ *
+ * ⚠️ Gated on the estados where the editor lets the total move at all
+ * (`!travarInclusaoProduto` — the cart/checkout phase plus `error`), read off the
+ * COMMITTED write rather than the editor's copy. The gate is not decoration: a
+ * Mercado Livre pedido in `carrinho` can be promoted to `emProcessamento` by the
+ * ML import while an operator edits its items, and the save still commits
+ * (`estado` isn't dirty, so the baseline takes the live value). Reconciling it
+ * then would move it off `emProcessamento` — after which ML can never advance it
+ * to `pago` (#703 blocker 1). The callable re-applies the same gate inside its
+ * own transaction; this one only avoids calling it, and bounds the window when
+ * the deployed callable is older than the web. The callable ALSO refuses any
+ * marketplace pedido (`reconcilePedidoEstado`'s channel gate) — a gate that
+ * needs the integração's `tipo`, so it lives only on the server.
+ */
+export function deveReconciliarAposSalvar(resultado: SavePedidoResultado): boolean {
+  return (
+    resultado.totalMudou &&
+    resultado.estadoGravado !== null &&
+    !travarInclusaoProduto(resultado.estadoGravado)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -301,43 +480,138 @@ export async function deleteIncidente(
 const PAGAMENTO_PATH = (pedidoId: string, docId: string): string =>
   `pedidos/${pedidoId}/pagamentos/${docId}`;
 
-/**
- * Build a set-op for a pagamento. Create (`pagamentoId` null → mint an id +
- * stamp `dataCadastro`, the field the list sorts by) or update (id given →
- * preserve the caller-supplied `dataCadastro` + the passthrough `cartao` /
- * `cheque` / `metodoPagamentoOuterRef`, which the editor spreads from the
- * existing doc). Always stamps `ultimaModificacao`. The adapter's `set` runs
- * through the Zod converter (validates + fills defaults). No auto-`estado` side
- * effect (legacy `statusToEstadoPedido` stays a TODO).
- */
+/** Build a create-only pagamento set-op with a fresh id and both local stamps. */
 export function buildPagamentoOp(
   port: PedidoDataPort,
   pedidoId: string,
-  pagamentoId: string | null,
   pagamento: Record<string, unknown>,
 ): PedidoWriteOp {
-  const id = pagamentoId ?? port.newId();
-  const data: Record<string, unknown> = { ...pagamento, ultimaModificacao: port.now() };
-  if (pagamentoId === null) data.dataCadastro = port.now();
+  const id = port.newId();
+  const now = port.now();
+  const data: Record<string, unknown> = {
+    ...pagamento,
+    ultimaModificacao: now,
+    dataCadastro: now,
+  };
   return { type: 'set', path: PAGAMENTO_PATH(pedidoId, id), data };
 }
 
-/** Create (no `pagamentoId`) or update a pagamento. */
-export async function savePagamento(
-  port: PedidoDataPort,
-  args: { pedidoId: string; pagamentoId?: string | null; pagamento: Record<string, unknown> },
-): Promise<void> {
-  await port.commit([
-    buildPagamentoOp(port, args.pedidoId, args.pagamentoId ?? null, args.pagamento),
-  ]);
+/** A pagamento edit lost its optimistic-concurrency comparison. */
+export class PagamentoConflictError extends Error {
+  constructor(
+    readonly current: PedidoDocData,
+    readonly fields: ReadonlyArray<string>,
+  ) {
+    super(
+      current === null
+        ? 'O pagamento não existe mais — pode ter sido excluído.'
+        : 'O pagamento foi alterado por outra pessoa. Revise antes de salvar.',
+    );
+    this.name = 'PagamentoConflictError';
+  }
 }
 
-/** Delete a pagamento. */
+/** Thrown when an edit contains no effective pagamento changes. */
+export class PagamentoNothingChangedError extends Error {
+  constructor() {
+    super('Nenhuma alteração no pagamento para salvar.');
+    this.name = 'PagamentoNothingChangedError';
+  }
+}
+
+export type SavePagamentoArgs =
+  | {
+      mode: 'create';
+      pedidoId: string;
+      pagamento: Record<string, unknown>;
+    }
+  | {
+      mode: 'update';
+      pedidoId: string;
+      pagamentoId: string;
+      patch: Record<string, unknown>;
+      baseline: Record<string, unknown>;
+    };
+
+function changedFields(
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+  fields: Iterable<string>,
+): string[] {
+  return [...fields].filter((field) => !valuesEqual(baseline[field], current[field]));
+}
+
+/**
+ * Local recency is deliberately non-regressing, even when a stored client clock
+ * is in the future. External event ordering never consults this field; provider
+ * importers use `lastProviderUpdate` instead.
+ */
+function monotonicPagamentoModification(current: Record<string, unknown>, now: number): number {
+  const stored = current.ultimaModificacao;
+  return typeof stored === 'number' && Number.isFinite(stored) ? Math.max(stored, now) : now;
+}
+
+/** Create a full pagamento or update only an explicitly edited patch. */
+export async function savePagamento(port: PedidoDataPort, args: SavePagamentoArgs): Promise<void> {
+  if (args.mode === 'create') {
+    await port.commit([buildPagamentoOp(port, args.pedidoId, args.pagamento)]);
+    return;
+  }
+
+  const patchKeys = Object.keys(args.patch);
+  if (patchKeys.length === 0) throw new PagamentoNothingChangedError();
+
+  const path = PAGAMENTO_PATH(args.pedidoId, args.pagamentoId);
+  await port.transact({
+    reads: [path],
+    apply(docs) {
+      const current = docs.get(path) ?? null;
+      if (current === null) throw new PagamentoConflictError(null, patchKeys);
+
+      const conflicts = changedFields(args.baseline, current, patchKeys);
+      if (conflicts.length > 0) throw new PagamentoConflictError(current, conflicts);
+
+      const effectivePatch = Object.fromEntries(
+        Object.entries(args.patch).filter(([field, value]) => !valuesEqual(current[field], value)),
+      );
+      if (Object.keys(effectivePatch).length === 0) throw new PagamentoNothingChangedError();
+
+      return [
+        {
+          type: 'update',
+          path,
+          data: {
+            ...effectivePatch,
+            ultimaModificacao: monotonicPagamentoModification(current, port.now()),
+          },
+        },
+      ];
+    },
+  });
+}
+
+/**
+ * Delete only when the entire document still matches the confirmed baseline.
+ * This is intentionally stricter than edit conflict detection: provider-owned
+ * fields are part of the comparison because any write after confirmation must
+ * cancel a destructive action and make the operator review the fresh snapshot.
+ */
 export async function deletePagamento(
   port: PedidoDataPort,
-  args: { pedidoId: string; pagamentoId: string },
+  args: { pedidoId: string; pagamentoId: string; baseline: Record<string, unknown> },
 ): Promise<void> {
-  await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
+  const path = PAGAMENTO_PATH(args.pedidoId, args.pagamentoId);
+  await port.transact({
+    reads: [path],
+    apply(docs) {
+      const current = docs.get(path) ?? null;
+      if (current === null) throw new PagamentoConflictError(null, Object.keys(args.baseline));
+      const fields = new Set([...Object.keys(args.baseline), ...Object.keys(current)]);
+      const conflicts = changedFields(args.baseline, current, fields);
+      if (conflicts.length > 0) throw new PagamentoConflictError(current, conflicts);
+      return [{ type: 'delete', path }];
+    },
+  });
 }
 
 /**
@@ -352,7 +626,7 @@ export async function saveChequeSplit(
   args: { pedidoId: string; pagamentos: Record<string, unknown>[] },
 ): Promise<void> {
   await port.commit(
-    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, null, pagamento)),
+    args.pagamentos.map((pagamento) => buildPagamentoOp(port, args.pedidoId, pagamento)),
   );
 }
 
@@ -381,37 +655,62 @@ const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
 ]);
 
 /**
- * Pure rule: the pedido `estado` implied by how much has been paid, or `null`
+ * Pure rule: the pedido `estado` implied by how much has been settled, or `null`
  * when there is no transition (current estado already matches, the estado isn't
  * payment-driven, or the pedido has no total). Ports the legacy auto-transition
  * that ran after each pagamento change:
  *
- *  - **fully paid** (`valorPago ≥ total`, `total > 0`) → `pago` and authorize
- *    frete dispatch (`despachoAutorizado`);
- *  - **partially paid** (`0 < valorPago < total`) → `aguardandoConfirmacaoDePagamento`;
+ *  - **fully settled** (`valorQuitado ≥ total`, `total > 0`) → `pago` and
+ *    authorize frete dispatch (`despachoAutorizado`);
+ *  - **partially paid** (`valorPagoAlemDaDevolucao > 0`, `valorQuitado < total`)
+ *    → `aguardandoConfirmacaoDePagamento`;
  *  - a **`pago`** pedido that drops below its total → downgraded back to
  *    `aguardandoConfirmacaoDePagamento`.
+ *
+ * `valorQuitado` is the PAID side of a troca: the paying pagamentos PLUS the
+ * devolução credit (`coberturaDoPedido`, `@delfrance/schemas`), measured against
+ * the GROSS `total`. `valorPagoAlemDaDevolucao` is the money paid BEYOND the
+ * returned value — the paying pagamentos minus a crédito loja that only registers
+ * the return. A pedido without returned items has no credit and all three
+ * coincide, but a troca's returned items count as paid (legacy
+ * `tasks.dart:64-68`). The credit is added to the paid side rather than
+ * subtracted from the total because `total <= 0` returns `null`, so a net total
+ * of zero (an even swap) would never settle.
+ *
+ * ⚠️ The returned value settles; it never makes a pedido PARTIALLY paid. The
+ * partial branch requires money beyond it. A troca whose returned items cover
+ * part of the total, with nothing more paid, stays in its estado (items
+ * editable) until a real payment moves it (#367 OD4, owner decision: "a partial
+ * credit stays iniciado and editable; the first link or payment moves it
+ * forward") — whether the return is only in `itensDevolvidos` or also registered
+ * as a crédito-loja pagamento. That makes creation ({@link aplicarQuitacaoNaCriacao},
+ * where no pagamento can exist) and every later reconcile agree on the same
+ * estado for the same return and payments. Legacy moved a credit-only partial to
+ * aguardando everywhere — the form's save, creation included
+ * (`cadastroPedidoProvider.dart:1137`), and the Mercado Pago webhook
+ * (`tasks.dart:101`) — locking the items before anyone had paid.
  *
  * Only the {@link AUTO_ESTADO_SOURCES} states are touched, so a cancelado /
  * finalizado / estornado* / fraude pedido is never reverted by a payment sum. A
  * zero-total pedido is left alone (nothing to settle). Inputs are expected
- * already 2-decimal-rounded (`derivePedidoTotals` / `sumPagamentosPagos`).
+ * already 2-decimal-rounded (`derivePedidoTotals` / `coberturaDoPedido`).
  */
 export function nextPedidoEstado(
   estado: EstadoPedido,
   total: number,
-  valorPago: number,
+  valorQuitado: number,
+  valorPagoAlemDaDevolucao: number,
 ): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
   if (!AUTO_ESTADO_SOURCES.has(estado)) return null;
   if (total <= 0) return null;
-  const fullyPaid = valorPago >= total;
+  const fullyPaid = valorQuitado >= total;
   if (fullyPaid) {
     return estado === ESTADO_PEDIDO.pago
       ? null
       : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
   if (
-    valorPago > 0 &&
+    valorPagoAlemDaDevolucao > 0 &&
     estado !== ESTADO_PEDIDO.pago &&
     estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
   ) {
@@ -422,6 +721,91 @@ export function nextPedidoEstado(
     return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
   return null;
+}
+
+/**
+ * The `freteInicial` block a payment-driven `pago` transition writes — the block
+ * with `estado` set to `despachoAutorizado` — or `null` when it must be left
+ * alone (no block, a block the marketplace owns, or one already past
+ * authorization). The single rule behind the server reconcile
+ * (`applyEstadoTransition` in `../admin/pedidoReconcile`) and the create-time
+ * settlement ({@link aplicarQuitacaoNaCriacao}), so the two cannot disagree on
+ * which frete estados a payment may rewrite.
+ *
+ * Authorizes dispatch ONLY from a state that precedes authorization
+ * ({@link podeAutorizarDespacho}) — or from a malformed block carrying no estado
+ * at all, which the flip repairs — and never on a freight block the marketplace
+ * importer owns (#702). This used to be `!isFreteJaPostado(...)`, which answers
+ * the label-reprint question and let a `pago` transition regress `empacotado` /
+ * `emSeparacao` / `checkFinalizado` back to `despachoAutorizado` — erasing
+ * warehouse progress, and (via `CAMPOS_OBSERVADOS`) re-running the estoque sync
+ * against a state that no longer removes stock.
+ *
+ * Pure and read-free by design: the ownership tipo is read off
+ * `externalOptionIntegracao`, which lives on the frete block itself. That matters
+ * to the webhook reconcile, which has already written the pagamento by the time
+ * it decides this and Firestore forbids a read after a write.
+ */
+export function freteComDespachoAutorizado(frete: unknown): Record<string, unknown> | null {
+  if (!frete || typeof frete !== 'object') return null;
+  const freteRecord = frete as Record<string, unknown>;
+  const freteEstado = freteRecord.estado as EstadoFrete | undefined;
+  const podeAutorizar = !freteEstado || podeAutorizarDespacho(freteEstado);
+  const marketplaceOwned = isFreteMarketplaceOwned(
+    freteRecord.externalOptionIntegracao as string | null | undefined,
+  );
+  if (!podeAutorizar || marketplaceOwned) return null;
+  return { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
+}
+
+/**
+ * Create-time settlement of a troca whose devolução credit FULLY covers its
+ * total (legacy parity for the even swap, `cadastroPedidoProvider.dart:1111-1136`):
+ * the saída is created directly as `pago`, with `freteInicial` authorized through
+ * {@link freteComDespachoAutorizado}. Without it the even swap would sit in
+ * `iniciado` forever — it has no pagamento to trigger the reconcile and, with
+ * nothing left to pay, none will ever be added.
+ *
+ * The rule is {@link nextPedidoEstado} fed the create-time cobertura: no
+ * pagamento can exist yet (they are a subcollection only reachable once the doc
+ * does), so `valorQuitado` is the credit alone and nothing is paid beyond it.
+ * Anything short of `pago` — a PARTIAL credit, an entrada (no credit), a zero
+ * total, an estado the payment rule does not drive, or one that is already
+ * `pago` — returns `values` UNTOUCHED and the pedido stays editable in the
+ * estado it was created with.
+ *
+ * A partial credit stays put for the SAME reason on every later reconcile (the
+ * save's, `aposAlterarTotal`, and a pagamento's): they apply the same rule, whose
+ * partial branch needs money beyond the returned value — so the estado never
+ * depends on whether the troca was just created or just edited (#367 OD4, see
+ * {@link nextPedidoEstado}).
+ *
+ * Done client-side, in the very write that creates the pedido, and NOT through
+ * the `reconciliarPagamentoPedido` callable after it: the operator keeps the
+ * estado attribution (the callable would record a null usuário), the pedido is
+ * never observable in the wrong estado, and there is no second writer to race —
+ * the doc does not exist until this write. Pure: no clock, no I/O.
+ */
+export function aplicarQuitacaoNaCriacao<T extends object>(values: T): T {
+  const doc = values as unknown as Record<string, unknown>;
+  const estado = estadoPedidoSchema.safeParse(doc.estado);
+  if (!estado.success) return values;
+  const { valorCobrado, valorQuitado, valorPagoAlemDaDevolucao } = coberturaDoPedido(
+    {
+      valorCobrado: doc.valorCobrado as number | null | undefined,
+      ehSaida: doc.ehSaida as boolean | null | undefined,
+      itensDevolvidos: doc.itensDevolvidos,
+    },
+    [],
+  );
+  const next = nextPedidoEstado(estado.data, valorCobrado, valorQuitado, valorPagoAlemDaDevolucao);
+  if (next?.estado !== ESTADO_PEDIDO.pago) return values;
+  const frete = freteComDespachoAutorizado(doc.freteInicial);
+  return {
+    ...values,
+    estado: ESTADO_PEDIDO.pago,
+    ...(frete === null ? {} : { freteInicial: frete }),
+  };
 }
 
 // The client-side reconcile that used to live here

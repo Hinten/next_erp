@@ -32,19 +32,53 @@
  * ONE conta — the legacy sender loops every one, functions.dart:275-282, and
  * `buildSendTasks` emits tasks per listing) + the variation children
  * server-side in ONE pipeline execution per conta per sweep page, with a
- * minimal `select`, and hand the sender a payload it NEVER re-reads
- * produtos/estoques for.
+ * minimal `select`, and hand the sender a quantity-bearing payload. Attempt
+ * zero never re-reads produtos/estoques; delayed retries refresh from the exact
+ * estoque document ids captured by the sweep (including legacy auto-ids).
+ *
+ * ---- ⚠️ THE ARITHMETIC NOW LIVES IN `@delfrance/data/admin/estoque` (step 12,
+ * #1520). The quantity fold, the floor/clamp pair, the window-start
+ * reconstruction and the send policy were promoted there VERBATIM, because
+ * Shopee's stock sync needs the same answers for `update_stock` and for
+ * `init_tier_variation`'s `seller_stock`, and `apps/shopee` has no dependency
+ * edge to this app (none is possible) — so a rule two surfaces need either moves
+ * or gets written twice, and a second copy of a decision this expensive drifts
+ * toward plausible while reading correct (root `CLAUDE.md`, #1369). ONE
+ * function, two bindings: the ONLY change the move made was turning each
+ * tunable the arithmetic used to read from the ambient environment into a
+ * required parameter. This file keeps every exported name and every signature,
+ * and supplies Mercado Livre's own values through `opcoesML()`; Shopee supplies
+ * its own through `opcoesShopee()`, beside its own sender. The env readers below
+ * (`estoqueMax()`, `limiarEstoqueAlto()`, `kitIncluiEstoqueProprio()`,
+ * `pularKitVirtual()`) stayed here and now only FEED the core.
+ * ⚠️ What did NOT move, and why it cannot: the two discovery pipelines and the
+ * ledger aggregate (`packages/data` declares no dependency on the admin
+ * Firestore SDK's Pipelines package, and its bundle-safety test scans for
+ * `firebase-admin` only, so an import there would fail nothing and break at
+ * resolution time in whichever app imported it next), `resolverModoEstoque` and
+ * the multiorigem symbols, `podeEnviarEstoque` (six ML listing statuses),
+ * `buildSendTasks` / `SendUnitKind` / `SendSkipReason` (the task shape and the
+ * skip vocabulary are per channel), and the two queue constants.
+ * ⚠️ **This file keeps its PATH**, whatever a later tidy-up suggests:
+ * `tools/deploy-env/preflight.mjs:114` reads it BY PATH for the
+ * `MERCADO_LIVRE_STOCK_{CONCURRENT_DISPATCHES,DISPATCHES_PER_SECOND}` literals
+ * (pinned by `preflight.test.js:230`), and `apps/mercado-livre/CLAUDE.md` names
+ * it. Its four suites (`bulkEstoquePlan`, `estoqueSweep`, `estoqueSend`,
+ * `estoqueManual`) are byte-unedited across the promotion, and that is the only
+ * proof the promotion changed no behaviour — an edit to one of them to make this
+ * compile would destroy the evidence.
  *
  * Owner decisions locked 2026-07-27:
  *  1. Standalone produtos (no children): the legacy query EXCLUDED the
  *     anchor's own estoque as a change trigger — deliberately FIXED here: the
  *     anchor's own estoque is a first-class trigger (`maxOwn` in S3/S4).
  *     Expect a one-time correction burst on the first post-deploy sweep.
- *  2. Retry staleness: tasks are sent VERBATIM (legacy parity, zero extra
- *     reads at send time). Quantities are computed once, at sweep time, and
- *     carried in the task payload; the send handler logs
- *     `ageMs = now − sweepComputedAtMs` on every send and the next sweep
- *     converges any staleness.
+ *  2. Retry freshness (#693): quantities are computed once at sweep time and
+ *     attempt zero sends them verbatim. A real Cloud Tasks retry or pause
+ *     re-enqueue refreshes them from deterministic produto point reads plus the
+ *     exact estoque document ids captured by the sweep;
+ *     the manual sender remains verbatim. `ageMs` always measures the original
+ *     payload age and `stockRefresh` logs the read cost/source.
  *
  * Timestamp units: produto/estoque timestamps AND `historicoEstoque.timestamp`
  * are MS since epoch — the movement pre-pass windows on ms, so nothing here
@@ -238,14 +272,71 @@ import {
   type ComponentesKit,
   componentesKitEntries,
   ESTADO_PUBLICACAO_ML,
-  estoqueDisponivel,
-  kitEstoqueDisponivel,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
+// The promoted stock compute core (step 12, #1520) — see the ⚠️ paragraph in the
+// module docblock. A NARROW subpath on purpose: the `@delfrance/data/admin`
+// barrel re-exports none of it, so importing the quantity fold drags neither the
+// notifications nor the pipelines modules in behind it.
+import {
+  chaveMovimento,
+  componentesNaoResolvidos,
+  deveEnviarFamiliaCore,
+  envFlag,
+  envInt,
+  kitNaoVerificavel,
+  quantidadeDoMembroCore,
+  quantidadeParaEnvioCore,
+  quantidadesAnterioresCore,
+  quantidadesDaFamiliaCore,
+  STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+  STOCK_TASK_ENCODED_BODY_WARN_BYTES,
+  stockTaskEncodedBodyBytes,
+} from '@delfrance/data/admin/estoque';
+// `FetchMovimentosArgs` is deliberately absent from this list: it is re-exported
+// below for the consumers that name it, but nothing in this file annotates with
+// it, and an unused local type is an ERROR in both gates here.
+import type {
+  FetchMovimentosDaJanela,
+  MovimentoDaJanela,
+  MovimentosDaJanela,
+  OpcoesDeQuantidade,
+  QuantidadeParaEnvioArgs as QuantidadeParaEnvioArgsCore,
+  RawEstoqueRow,
+} from '@delfrance/data/admin/estoque';
+
+/* ------------------- the promoted core, re-exported here ------------------- */
+
+/**
+ * Re-exported so every consumer of this module keeps importing the name it
+ * always imported (`estoqueSweep`, `estoqueManual`, `estoqueSend`, the nested
+ * functions codebase and the four suites). The bodies live in
+ * `@delfrance/data/admin/estoque`; nothing about them changed.
+ *
+ * ⚠️ `ESTOQUE_MIN` is the LOWER clamp and is NOT a tunable — the upper one is,
+ * and it is `estoqueMax()` below, fed into the core as a required parameter.
+ */
+export {
+  chaveMovimento,
+  disponivelByProdutoIdFrom,
+  ESTOQUE_MIN,
+  envFlag,
+  envInt,
+  STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+  STOCK_TASK_ENCODED_BODY_WARN_BYTES,
+  stockTaskEncodedBodyBytes,
+} from '@delfrance/data/admin/estoque';
+export type {
+  FetchMovimentosArgs,
+  FetchMovimentosDaJanela,
+  MovimentoDaJanela,
+  MovimentosDaJanela,
+  RawEstoqueRow,
+} from '@delfrance/data/admin/estoque';
 
 /* ------------------------------ configuration ----------------------------- */
 
@@ -302,28 +393,8 @@ export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
  */
 export const STOCK_SEND_MAX_ATTEMPTS = 3;
 
-/** Lower clamp of every quantity sent to ML (legacy clamp >= 0). */
-export const ESTOQUE_MIN = 0;
-
 /** Max jitter (seconds) added when a paused conta's task re-enqueues itself (PR B). */
 export const PAUSE_REENQUEUE_JITTER_MAX_S = 30;
-
-/**
- * Read a non-negative integer tunable from `process.env` — LAZILY, at call
- * time, so tests can mutate the env and a value change needs only a redeploy,
- * never a code edit. Unset/blank/non-integer/negative → `fallback`.
- */
-export function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : fallback;
-}
-
-/** Read a boolean env flag — true only when the value is exactly `'1'`. */
-export function envFlag(name: string): boolean {
-  return process.env[name] === '1';
-}
 
 /** Master flag — the sweeps and the send handler are no-ops while OFF. */
 export function isStockSyncEnabled(): boolean {
@@ -445,6 +516,33 @@ export function pularKitVirtual(): boolean {
   return envFlag(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV);
 }
 
+/**
+ * **Mercado Livre's binding of the promoted quantity core** (#1520) — the three
+ * tunables the arithmetic used to read from the ambient environment mid-fold,
+ * resolved here and passed in.
+ *
+ * ⚠️ ONE reader per sweep, exactly as before. Every wrapper below calls this
+ * once and threads the RESULT down; resolving the options separately per call
+ * site is how `quantidadesDaFamilia` and {@link buildSendTasks} would end up
+ * disagreeing about the same tick, which is the thing the single lazy reader
+ * existed to prevent.
+ *
+ * ⚠️ All three defaults are load-bearing and none may be dropped: `estoqueMax()`
+ * was read UNCONDITIONALLY inside the old body (it is the `available_quantity`
+ * ceiling, api.dart:1182-1203), while the other two were optional per-call
+ * overrides — `publish.ts` pins `pularKitVirtual: false`, where skipping is not
+ * an option ML offers. The argument's value wins whenever it is supplied, and
+ * `??` (never `||`) is what keeps a legitimate `false`/`0` from falling through
+ * to the environment.
+ */
+function opcoesML(a?: Partial<OpcoesDeQuantidade>): OpcoesDeQuantidade {
+  return {
+    incluirEstoqueProprioDoKit: a?.incluirEstoqueProprioDoKit ?? kitIncluiEstoqueProprio(),
+    pularKitVirtual: a?.pularKitVirtual ?? pularKitVirtual(),
+    estoqueMax: a?.estoqueMax ?? estoqueMax(),
+  };
+}
+
 /** Anchor-page size of THE query — family rows are heavy, keep pages small. */
 export function anchorPageLimit(): number {
   return envInt('MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT', 250);
@@ -476,29 +574,6 @@ export function concurrentDispatches(): number {
 }
 
 /* -------------------- THE query: joined stock families --------------------- */
-
-/**
- * One raw estoque row joined server-side — unvalidated, read defensively like
- * a `doc.data()` record. Component rows (`componentEstoques`) carry the
- * `parentId` produto-id denorm the join keys on; the member's own estoque row
- * omits it (the owner is the member itself).
- *
- * ⚠️ "Omits it" is a fact about the PROJECTION, not a hint to compensate for.
- * Any consumer that needs the owner of an own row must take it from
- * `member.produtoId`; reading `row.parentId` there always yields `undefined`
- * and silently degrades to "no data" (#932). The stored document does carry the
- * field — a kit's own estoque doc is written with it for structural uniformity
- * (ADR 0014 §2) — but nothing projects it, and nothing reads it: a kit can never
- * be a component of another kit (#239), so the one query that matches on
- * `parentId` can never reach a kit's own row.
- */
-export interface RawEstoqueRow {
-  parentId?: unknown;
-  quantidade?: unknown;
-  quantidadeReservada?: unknown;
-  ultimaModificacao?: unknown;
-  [key: string]: unknown;
-}
 
 /**
  * One raw `produtoMercadoLivre` link row — ONE of the conta's listings on the
@@ -640,7 +715,12 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
       .subcollection('estoques')
       .where(depMatch())
       .limit(1)
-      .select('quantidade', 'quantidadeReservada', 'ultimaModificacao')
+      .select(
+        pipelines.documentId(pipelines.field('__name__')).as('estoqueDocId'),
+        'quantidade',
+        'quantidadeReservada',
+        'ultimaModificacao',
+      )
       .toScalarExpression();
 
   const ownEstoqueMax = () =>
@@ -667,7 +747,13 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
             depMatch(),
           ),
         )
-        .select('parentId', 'quantidade', 'quantidadeReservada', 'ultimaModificacao')
+        .select(
+          pipelines.documentId(pipelines.field('__name__')).as('estoqueDocId'),
+          'parentId',
+          'quantidade',
+          'quantidadeReservada',
+          'ultimaModificacao',
+        )
         .toArrayExpression(),
       pipelines.array([]),
     );
@@ -1066,47 +1152,14 @@ function coerceMember(produtoId: string, raw: Record<string, unknown>): FamilyMe
 
 /* ------------------------- ledger movement pre-pass ------------------------ */
 
-/** Net movement of one `(produto, depósito)` pair over the sweep's window. */
-export interface MovimentoDaJanela {
-  /** Σ `movimento` — the signed change in `quantidade`. */
-  dq: number;
-  /** Σ `movimentoReservada` — the signed change in `quantidadeReservada`. */
-  dr: number;
-  /**
-   * At least one row in the window carries **no `movimento` key**, so the sums
-   * above do not account for the whole window and `anterior` cannot be
-   * reconstructed. Consumers must treat the pair as *unknown* and send —
-   * never as "the sums say it did not move", which is how a legacy row would
-   * otherwise silence a real movement.
-   *
-   * ⚠️ "Unknown" has exactly ONE wire representation: the field is **absent**.
-   * `historicoEstoque` v2 writes `movimento` on every row it creates, and the
-   * v1→v2 migration OMITS the key on a balanço whose delta it cannot recover
-   * rather than storing an explicit `null` — precisely so this single
-   * existence test is complete. Keep it that way.
-   */
-  desconhecido: boolean;
-}
-
-/** Map key for {@link MovimentosDaJanela}. Exported so tests build fixtures. */
-export function chaveMovimento(produtoId: string, depositoId: string): string {
-  return `${produtoId}/${depositoId}`;
-}
-
-export type MovimentosDaJanela = ReadonlyMap<string, MovimentoDaJanela>;
-
-export interface FetchMovimentosArgs {
-  /** Inclusive lower bound (ms since epoch) — the sweep's frozen window start. */
-  desdeMs: number;
-  /** Scopes the aggregate to the conta's depósito. */
-  depositoId: string;
-}
-
-/** The movement seam the sweeps consume — injectable so tests stub it. */
-export type FetchMovimentosDaJanela = (
-  db: Firestore,
-  args: FetchMovimentosArgs,
-) => Promise<MovimentosDaJanela>;
+// The ledger CONTRACT — `MovimentoDaJanela`, `MovimentosDaJanela`,
+// `chaveMovimento`, `FetchMovimentosArgs`, `FetchMovimentosDaJanela` — now lives
+// in `@delfrance/data/admin/estoque/ledger`, re-exported at the top of this
+// file. Only the TYPES moved: the aggregate below is a Firestore **Pipelines**
+// execution, and `packages/data` declares no dependency on that package at all.
+// Each channel keeps its own implementation beside its own query and injects it,
+// which is also what makes the pre-pass testable — pipelines never run in the
+// emulator.
 
 /**
  * The UNCORRELATED ledger pre-pass: **ONE** pipeline execution per tick,
@@ -1238,89 +1291,57 @@ export function podeEnviarEstoque(
 
 /* ----------------------------- quantity compute ---------------------------- */
 
-export interface QuantidadeParaEnvioArgs {
-  ehKit: boolean;
-  ehKitVirtual: boolean;
-  componentesKit: ComponentesKit | null | undefined;
-  /** The produto's own `disponivel` (quantidade − reservada) at the depósito. */
-  ownDisponivel: number;
-  /** Component produto id → its `disponivel` at the same depósito. */
-  disponivelByProdutoId: Record<string, number | null | undefined>;
+/**
+ * The promoted core's argument shape (`ehKit`, `ehKitVirtual`, `componentesKit`,
+ * `ownDisponivel`, `disponivelByProdutoId`) plus Mercado Livre's TWO per-call
+ * overrides — which is why this name stays an ML type rather than a re-export.
+ *
+ * Both overrides keep the exact meaning they had before the promotion: absent
+ * means "read my environment" ({@link opcoesML}), supplied means "use this".
+ * `publish.ts` pins `pularKitVirtual: false` — see `quantidadeParaPublicar`,
+ * where skipping is not an option ML offers.
+ *
+ * ⚠️ There is deliberately NO `estoqueMax` override here. It was never one: the
+ * old body read `estoqueMax()` unconditionally, so adding it as an optional
+ * third would widen the public signature under cover of a refactor.
+ */
+export type QuantidadeParaEnvioArgs = QuantidadeParaEnvioArgsCore & {
   /** Override for the kit own-stock hook — defaults to `kitIncluiEstoqueProprio()`. */
   incluirEstoqueProprioDoKit?: boolean;
-  /**
-   * Override for the #1087 escape hatch — defaults to `pularKitVirtual()`.
-   *
-   * ⚠️ Same shape and same reason as `incluirEstoqueProprioDoKit` above: this
-   * function stays PURE for a caller that supplies the value, and the env is
-   * consulted only to fill an absent one. `publish.ts` pins it `false` — see
-   * `quantidadeParaPublicar`, where skipping is not an option ML offers.
-   */
+  /** Override for the #1087 escape hatch — defaults to `pularKitVirtual()`. */
   pularKitVirtual?: boolean;
-}
+};
 
 /**
- * The quantity to publish for one produto at one depósito. Kits wrap
- * `kitEstoqueDisponivel` (component-min, estoques.dart:94-131 — unrounded,
- * missing component = 0); a `null` min (no component constrains) falls back to
- * the produto's own stock. The opt-in own-stock hook ADDS `ownDisponivel` to a
- * constrained kit min. Result is floored, then clamped
+ * The quantity to publish for one produto at one depósito — Mercado Livre's
+ * binding of the promoted core (`quantidadeParaEnvioCore`). The arithmetic is
+ * unchanged and documented there: kits take the component-min
+ * (estoques.dart:94-131 — unrounded, missing component = 0 per #238), a `null`
+ * min falls back to the produto's own stock, the opt-in hook ADDS
+ * `ownDisponivel` to a constrained min, and the result is floored then clamped
  * `ESTOQUE_MIN..estoqueMax()` (api.dart:1182-1203).
  *
  * ⚠️ **A VIRTUAL kit takes the ordinary kit branch (#1087)** — `ehKit ||
  * ehKitVirtual`, byte-for-byte what `publish.ts`'s `quantidadeParaPublicar`
- * asks for, because they are now the same call. The old `if (args.ehKitVirtual)
+ * asks for, because they are the same call. The old `if (args.ehKitVirtual)
  * return null` was legacy parity (`functions.dart:286-289`) resting on a
  * premise this repo had already refuted: it assumed ML derives the quantity
  * from the components, which ML does only for its own Virtual Kits — a
  * User-Products feature (`POST /items/kits`) this port never creates. So the
  * listing kept advertising its publish-time quantity for ever, and oversold.
  *
- * ⚠️ **The OR is load-bearing on its own**, independently of the `null`. Keying
- * the kit branch on `args.ehKit` alone while sending virtual kits computes no
- * min at all and falls back to `ownDisponivel` — a WRONG number rather than a
- * refusal, and nothing reports it. Pinned by the near-miss test.
- *
  * `null` survives only as the escape hatch's answer ({@link pularKitVirtual}),
  * meaning "do not push a stock update for this produto".
+ *
+ * ⚠️ The widened `args` is handed to the core UNCHANGED and the options are
+ * built separately, so the two override keys are read in exactly one place
+ * ({@link opcoesML}) and cannot be read twice with different answers.
  */
 export function quantidadeParaEnvio(args: QuantidadeParaEnvioArgs): number | null {
-  if (args.ehKitVirtual && (args.pularKitVirtual ?? pularKitVirtual())) return null;
-
-  let disponivel: number;
-  if (args.ehKit || args.ehKitVirtual) {
-    const kitMin = kitEstoqueDisponivel(args.componentesKit, args.disponivelByProdutoId);
-    if (kitMin == null) {
-      disponivel = args.ownDisponivel; // unconstrained kit → own stock stands alone
-    } else {
-      const incluirProprio = args.incluirEstoqueProprioDoKit ?? kitIncluiEstoqueProprio();
-      disponivel = kitMin + (incluirProprio ? args.ownDisponivel : 0);
-    }
-  } else {
-    disponivel = args.ownDisponivel;
-  }
-
-  return Math.min(Math.max(Math.floor(disponivel), ESTOQUE_MIN), estoqueMax());
+  return quantidadeParaEnvioCore(args, opcoesML(args));
 }
 
 /* ------------------------- quantities at sweep time ------------------------ */
-
-/**
- * Component `disponivel` map from the joined estoque rows, keyed by the
- * `parentId` produto-id denorm. Junk rows (no string parentId) are skipped;
- * non-finite quantities read as 0 (legacy tolerance).
- */
-export function disponivelByProdutoIdFrom(rows: RawEstoqueRow[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const row of rows) {
-    if (typeof row.parentId !== 'string' || row.parentId === '') continue;
-    out[row.parentId] = estoqueDisponivel({
-      quantidade: finiteNumber(row.quantidade) ?? 0,
-      quantidadeReservada: finiteNumber(row.quantidadeReservada) ?? 0,
-    });
-  }
-  return out;
-}
 
 /**
  * One member's send quantity from its OWN joined rows — no I/O, computed at
@@ -1329,93 +1350,13 @@ export function disponivelByProdutoIdFrom(rows: RawEstoqueRow[]): Record<string,
  * counts as 0 through the kit min (#238); a virtual kit takes the ordinary kit
  * branch and answers `null` only while the #1087 escape hatch is on.
  *
- * ⚠️ It deliberately passes NO `pularKitVirtual`, so the whole sweep resolves
- * the flag through one reader ({@link quantidadeParaEnvio}). Threading an
- * override down from here would let `quantidadesDaFamilia` and
- * {@link buildSendTasks} disagree about the same tick.
+ * ⚠️ It deliberately supplies NO override, so the whole sweep resolves the
+ * three tunables through one reader ({@link opcoesML}). Threading an override
+ * down from here would let `quantidadesDaFamilia` and {@link buildSendTasks}
+ * disagree about the same tick.
  */
 export function quantidadeDoMembro(member: FamilyMember): number | null {
-  const ownDisponivel =
-    member.estoque == null
-      ? 0
-      : estoqueDisponivel({
-          quantidade: finiteNumber(member.estoque.quantidade) ?? 0,
-          quantidadeReservada: finiteNumber(member.estoque.quantidadeReservada) ?? 0,
-        });
-  return quantidadeParaEnvio({
-    ehKit: member.ehKit,
-    ehKitVirtual: member.ehKitVirtual,
-    componentesKit: member.componentesKit,
-    ownDisponivel,
-    disponivelByProdutoId: disponivelByProdutoIdFrom(member.componentEstoques),
-  });
-}
-
-/**
- * The constraining components this kit declares that the join did **not** bring
- * back — i.e. the ones whose stock we cannot see. Empty for a non-kit, for a kit
- * with no constraining component, and for a kit whose components all resolved.
- *
- * "Constraining" has to mean exactly what {@link kitEstoqueDisponivel} means by
- * it, or the guard and the arithmetic drift apart: `limitarEstoque !== false`
- * and a finite `quantidade > 0`, over `componentesKitEntries`' shape filter.
- *
- * The usual cause is a stale `componentesKitKeys` denorm: the join is keyed on
- * that array, so a component missing from it is never fetched and
- * `kitEstoqueDisponivel` scores it 0 (#238) — the kit floors to 0 without
- * anything having gone wrong with its actual stock. A component that genuinely
- * has no estoque doc at this depósito lands here too, and is treated the same,
- * because from here the two are indistinguishable.
- *
- * ⚠️ **`ehKit || ehKitVirtual`, matching {@link quantidadeParaEnvio} (#1087).**
- * This predicate has to admit exactly the members whose quantity that function
- * derives from components, or the two drift and the guard stops covering the
- * arithmetic it guards. Excluding virtual kits here — which is what it used to
- * do — left `kitNaoVerificavel` permanently false for them, so a virtual kit
- * with a stale denorm published 0 with no `console.error` naming the components
- * AND, worse, was never omitted from `quantidadesAnteriores`: the
- * reconstruction rebuilt the same 0 from the same broken component set, read
- * "unchanged", and skipped the send that would have corrected ML.
- */
-function componentesNaoResolvidos(member: FamilyMember): string[] {
-  if (!(member.ehKit || member.ehKitVirtual)) return [];
-  const disponiveis = disponivelByProdutoIdFrom(member.componentEstoques);
-  return componentesKitEntries(member.componentesKit)
-    .filter(([, kit]) => kit.limitarEstoque !== false)
-    .filter(([, kit]) => Number.isFinite(kit.quantidade) && kit.quantidade > 0)
-    .filter(([produtoId]) => typeof disponiveis[produtoId] !== 'number')
-    .map(([produtoId]) => produtoId);
-}
-
-/**
- * True when a kit's published quantity **cannot be verified**: it declares
- * constraining components and not one of them resolved.
- *
- * ⚠️ This does NOT suppress the send — it forces it. See
- * {@link quantidadesAnteriores}, which omits such a member so
- * {@link deveEnviarFamilia} fails open, and the `console.error` in
- * {@link buildSendTasks}. The full reasoning lives in ADR 0014, but the short
- * version belongs here because this is where it would be inverted:
- *
- * **An unverifiable kit publishes 0, and that is the safe direction.** ML
- * auto-reactivates a listing paused as `out_of_stock` the moment a positive
- * quantity arrives (see {@link podeEnviarEstoque}, which keeps sending to
- * exactly that state), so a zeroed listing heals itself. Leaving ML holding
- * whatever it already has does not: if that number is positive, the listing
- * keeps selling stock the ERP cannot account for, and an oversell cannot be
- * un-sold.
- *
- * ⚠️ #806 S12 proposed the opposite — skip rather than send 0 — and that was
- * **deliberately inverted**, not left undone. Do not "restore" it from the issue
- * text.
- */
-function kitNaoVerificavel(member: FamilyMember): boolean {
-  const declarados = componentesKitEntries(member.componentesKit).filter(
-    ([, kit]) =>
-      kit.limitarEstoque !== false && Number.isFinite(kit.quantidade) && kit.quantidade > 0,
-  );
-  if (declarados.length === 0) return false;
-  return componentesNaoResolvidos(member).length === declarados.length;
+  return quantidadeDoMembroCore(member, opcoesML());
 }
 
 /**
@@ -1425,70 +1366,17 @@ function kitNaoVerificavel(member: FamilyMember): boolean {
  * virtual kit while the escape hatch is on, so by default nothing is omitted.
  */
 export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const member of [row.anchor, ...row.children]) {
-    const quantidade = quantidadeDoMembro(member);
-    if (quantidade != null) out.set(member.produtoId, quantidade);
-  }
-  return out;
+  return quantidadesDaFamiliaCore(row, opcoesML());
 }
 
-/**
- * The window's net movement for the pair one estoque row belongs to.
- *
- * ⚠️ The owning produto is passed **in**, never read off the row — that is #932.
- * THE query does not project `parentId` on a member's OWN estoque row
- * (`ownEstoque`'s `select`, and it has no reason to: a `subcollection('estoques')`
- * probe is already bound to the produto being processed, so the owner IS
- * `member.produtoId`). Reading the denorm here instead made every own row
- * unkeyable, and an unkeyable row reads as "did not move" — a silent skip that
- * dropped every ordinary produto's stock change on every tier. Component rows
- * DO carry the denorm, because their join (`compEstoques`) matches on it.
- */
-function movimentoDaLinha(
-  produtoId: unknown,
-  depositoId: string,
-  movimentos: MovimentosDaJanela,
-): MovimentoDaJanela | null {
-  // No join key ⇒ nothing in the ledger can be attributed to this row. Reads as
-  // "did not move", the same as a pair with no rows in the window.
-  if (typeof produtoId !== 'string' || produtoId === '') return null;
-  return movimentos.get(chaveMovimento(produtoId, depositoId)) ?? null;
-}
-
-/**
- * Rebuild ONE member's estoque row as it stood at the window start, by undoing
- * the window's net movement. `null` when the pair never moved — the caller reads
- * that as "unchanged", which is exactly right.
- *
- * ⚠️ Only call this once {@link movimentoDesconhecido} has cleared the row. A
- * pair with an unreadable row has meaningless sums, and subtracting them would
- * manufacture a *confident* wrong `anterior` — the one outcome the fail-open
- * contract exists to prevent.
- */
-function desfazerMovimento(
-  row: RawEstoqueRow,
-  produtoId: unknown,
-  depositoId: string,
-  movimentos: MovimentosDaJanela,
-): RawEstoqueRow | null {
-  const mov = movimentoDaLinha(produtoId, depositoId, movimentos);
-  if (mov == null) return null;
-  return {
-    ...row,
-    quantidade: (finiteNumber(row.quantidade) ?? 0) - mov.dq,
-    quantidadeReservada: (finiteNumber(row.quantidadeReservada) ?? 0) - mov.dr,
-  };
-}
-
-/** True when this row's pair moved by an amount the ledger cannot report. */
-function movimentoDesconhecido(
-  produtoId: unknown,
-  depositoId: string,
-  movimentos: MovimentosDaJanela,
-): boolean {
-  return movimentoDaLinha(produtoId, depositoId, movimentos)?.desconhecido === true;
-}
+// `componentesNaoResolvidos` and `kitNaoVerificavel` were private here and are
+// now EXPORTED from `@delfrance/data/admin/estoque` — the unverifiable-kit alarm
+// in `buildSendTasks` below imports them. So did the three ledger helpers
+// (`movimentoDaLinha`, `desfazerMovimento`, `movimentoDesconhecido`), which had
+// no caller outside the reconstruction that moved with them. Their reasoning —
+// #932's two keying rules, and ⚠️ why the reconstruction OMITS a member it
+// cannot rebuild rather than falling back to the current row — travelled with
+// the code and is unchanged there.
 
 /**
  * Every family member's send quantity **as it stood at the window start** —
@@ -1515,41 +1403,7 @@ export function quantidadesAnteriores(
   depositoId: string,
   movimentos: MovimentosDaJanela,
 ): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const member of [row.anchor, ...row.children]) {
-    // ⚠️ THE OMISSION IS THE MECHANISM, for both arms below. A member left out
-    // of this map is read by `deveEnviarFamilia` as *unknown* and SENDS.
-    // Falling back to the current row instead would make `anterior === atual`
-    // and skip — which is a silent drop, not a safe default.
-    const desconhecido =
-      (member.estoque != null && movimentoDesconhecido(member.produtoId, depositoId, movimentos)) ||
-      member.componentEstoques.some((e) =>
-        movimentoDesconhecido(e.parentId, depositoId, movimentos),
-      );
-    // A kit whose components did not resolve is unverifiable, and the ledger
-    // cannot tell us so: the reconstruction would rebuild `anterior` from the
-    // SAME broken component set, land on the same 0, and conclude "unchanged"
-    // about a listing whose published number may be badly wrong. Omitting it
-    // forces the send, and what gets sent is 0 — the safe direction, because ML
-    // auto-reactivates on qty > 0 while an oversell cannot be undone. This is
-    // #806 S12, resolved in the opposite direction to the one it proposed; see
-    // {@link kitNaoVerificavel} and ADR 0014 before changing it.
-    if (desconhecido || kitNaoVerificavel(member)) continue;
-    const anterior: FamilyMember = {
-      ...member,
-      estoque:
-        member.estoque == null
-          ? null
-          : (desfazerMovimento(member.estoque, member.produtoId, depositoId, movimentos) ??
-            member.estoque),
-      componentEstoques: member.componentEstoques.map(
-        (e) => desfazerMovimento(e, e.parentId, depositoId, movimentos) ?? e,
-      ),
-    };
-    const quantidade = quantidadeDoMembro(anterior);
-    if (quantidade != null) out.set(member.produtoId, quantidade);
-  }
-  return out;
+  return quantidadesAnterioresCore(row, depositoId, movimentos, opcoesML());
 }
 
 /**
@@ -1584,18 +1438,7 @@ export function deveEnviarFamilia(
   anteriores: ReadonlyMap<string, number> | null,
   incremental: boolean,
 ): boolean {
-  if (anteriores == null) return true;
-  const limiar = limiarEstoqueAlto();
-  for (const [produtoId, atual] of quantidadesAtuais) {
-    const anterior = anteriores.get(produtoId);
-    if (anterior == null) return true; // unknown ⇒ send
-    if (anterior === atual) continue; // this member did not move
-    if (!incremental) return true; // daily/full: any change is enough
-    if (Math.min(anterior, atual) <= limiar) return true; // near the danger zone
-    // Changed, but high on both sides — not worth the fast lane. Keep looking:
-    // a sibling variation may still be low enough to justify the whole send.
-  }
-  return false;
+  return deveEnviarFamiliaCore(quantidadesAtuais, anteriores, incremental, limiarEstoqueAlto());
 }
 
 /* -------------------------------- send tasks ------------------------------- */
@@ -1611,16 +1454,12 @@ export type SendUnitKind =
    */
   | 'userProductStock';
 
-/**
- * Hard cap on one old-model bulk task's `variations` array. Cloud Tasks
- * rejects payloads over ~100 KB at ENQUEUE time — and a rejected enqueue means
- * the sweep re-attempts the same unsendable family forever. One serialized
- * entry (`{"id":<~13-digit ML id>,"available_quantity":<=99999},`) is ~40 B,
- * so 2000 entries ≈ 80 KB — comfortably under the limit with headroom for the
- * task envelope. Above the cap NO task is built: the listing skips
- * `'variations-excede-limite'` + `console.error`.
- */
-export const MAX_VARIATIONS_PER_TASK = 2000;
+// The Cloud Tasks body budget (`STOCK_TASK_ENCODED_BODY_BUDGET_BYTES`, its 80%
+// warning twin and `stockTaskEncodedBodyBytes`) moved to
+// `@delfrance/data/admin/estoque/tarefas` and is re-exported at the top of this
+// file: the number is an arithmetic fact about firebase-admin's enqueue and
+// about Cloud Tasks' own limit, not a channel preference, and a per-channel copy
+// would drift the moment one of them "rounded" it.
 
 export type SendSkipReason =
   | 'sem-link'
@@ -1635,6 +1474,14 @@ export type SendSkipReason =
    */
   | 'sem-user-product'
   | 'aguardando-migracao'
+  /**
+   * #1226: Mercado Livre REMOVED the listing (`under_review` + `forbidden`), so
+   * the stored item id is dead and no `PUT` can land. Distinct from
+   * `'status-nao-enviavel'`, which is a listing that may become sendable again:
+   * this one never will, and the remedy is an operator action on the produto's
+   * ML tab ("Descartar anúncio removido", or excluir).
+   */
+  | 'anuncio-removido'
   | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   /**
@@ -1654,7 +1501,7 @@ export type SendSkipReason =
    * class 1, and here it also aborted the whole family (see `buildSendTasks`).
    */
   | 'conta-fora-do-produto'
-  | 'variations-excede-limite';
+  | 'task-excede-limite';
 
 export interface SendSkip {
   /** The produto the reason applies to — the family anchor, or the UP child. */
@@ -1680,17 +1527,37 @@ export interface SendSkip {
 export interface StockVariationEntry {
   /** Numeric ML variation id (the variação link's `id` field). */
   id: number;
+  /**
+   * ERP produto that owns this variation's stock. Internal task metadata only:
+   * the sender strips it before building the Mercado Livre `variations[]`
+   * body. It is what lets a queue retry refresh by deterministic point reads
+   * instead of resolving the family with a query (#693).
+   */
+  produtoId: string;
   available_quantity: number;
+}
+
+/** One exact estoque-row locator carried only inside the Cloud Task payload. */
+export interface StockDocumentLocator {
+  produtoId: string;
+  /** Exact legacy/canonical doc id, or null when the sweep observed no row. */
+  estoqueDocId: string | null;
+}
+
+/** Sweep-time read map used to point-read the same rows on a delayed retry. */
+export interface StockTaskEstoqueSnapshot {
+  depositoId: string;
+  refs: StockDocumentLocator[];
 }
 
 /**
  * One ready-to-enqueue send task — the `mlStockSendTaskSchema` wire shape
  * (the zod schema lives on the stacked send-queue branch; this local type
  * mirrors it). Exactly ONE of `quantidade` / `variations` is non-null. The
- * payload is sent VERBATIM by the handler (owner decision 3 — legacy parity,
- * zero reads at send time; the handler logs `ageMs = now −
- * sweepComputedAtMs` and the next sweep converges staleness). `linkDocId` is
- * the status-writeback target — never re-resolved.
+ * payload is sent verbatim on attempt zero (legacy parity, zero hot-path stock
+ * reads). Queue retries and pause re-enqueues may replace only its quantities
+ * using deterministic point reads; `linkDocId` remains the status-writeback
+ * target and is never re-resolved.
  */
 export interface StockSendTaskDraft {
   integracaoId: string;
@@ -1725,6 +1592,8 @@ export interface StockSendTaskDraft {
   linkDocId: string;
   quantidade: number | null;
   variations: StockVariationEntry[] | null;
+  /** Internal only; never forwarded to a Mercado Livre endpoint. */
+  estoqueSnapshot: StockTaskEstoqueSnapshot;
   sweepId: string;
   /** When the sweep computed the quantities (ms since epoch). */
   sweepComputedAtMs: number;
@@ -1738,6 +1607,8 @@ export interface BuildSendTasksResult {
 
 export interface BuildSendTasksOpts {
   integracaoId: string;
+  /** Depósito whose exact estoque row ids were joined into `row`. */
+  depositoId: string;
   sweepId: string;
   sweepComputedAtMs: number;
   /**
@@ -1751,6 +1622,59 @@ export interface BuildSendTasksOpts {
 /** A projected `userProductId` that is actually usable, else null (#706). */
 function asUserProductId(raw: unknown): string | null {
   return typeof raw === 'string' && raw !== '' ? raw : null;
+}
+
+/** Components whose stock participates in `quantidadeParaEnvio`'s kit minimum. */
+function constrainingComponentIdsForMember(member: FamilyMember): string[] {
+  if (!(member.ehKit || member.ehKitVirtual)) return [];
+  return componentesKitEntries(member.componentesKit)
+    .filter(([, component]) => component.limitarEstoque !== false)
+    .filter(([, component]) => Number.isFinite(component.quantidade) && component.quantidade > 0)
+    .map(([produtoId]) => produtoId);
+}
+
+/** Exact sweep-time estoque rows needed to recompute the supplied members. */
+function estoqueSnapshotForMembers(
+  members: readonly FamilyMember[],
+  depositoId: string,
+): StockTaskEstoqueSnapshot {
+  const refs: StockDocumentLocator[] = [];
+  const refIndexByProdutoId = new Map<string, number>();
+
+  const add = (produtoId: string, row: RawEstoqueRow | null): void => {
+    const estoqueDocId =
+      row == null
+        ? null
+        : typeof row.estoqueDocId === 'string' && row.estoqueDocId !== ''
+          ? row.estoqueDocId
+          : undefined;
+    // A present row without the projected id is indeterminate. Omitting it makes
+    // the retry fall back atomically instead of pretending the row was absent.
+    if (estoqueDocId === undefined) return;
+
+    const previousIndex = refIndexByProdutoId.get(produtoId);
+    if (previousIndex == null) {
+      refIndexByProdutoId.set(produtoId, refs.length);
+      refs.push({ produtoId, estoqueDocId });
+      return;
+    }
+    // Shared components should resolve identically. Prefer a concrete locator
+    // over an earlier null while preserving the first-seen order.
+    if (refs[previousIndex]!.estoqueDocId == null && estoqueDocId != null) {
+      refs[previousIndex] = { produtoId, estoqueDocId };
+    }
+  };
+
+  for (const member of members) {
+    // Always carry own stock: the own-stock kit flag may change before a retry.
+    add(member.produtoId, member.estoque);
+    for (const componentId of constrainingComponentIdsForMember(member)) {
+      const componentRow = member.componentEstoques.find((row) => row.parentId === componentId);
+      add(componentId, componentRow ?? null);
+    }
+  }
+
+  return { depositoId, refs };
 }
 
 function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResult {
@@ -1855,11 +1779,9 @@ function membroPodeEnviar(
  * PUT, and refuses to send at all when it cannot. So an exclusion below costs a
  * missed stock UPDATE for that child — never the child's existence — and adding
  * a fifth exclusion is safe in the same way. ALL children excluded
- * → NO task for that listing (skips only); a `variations` array past
- * `MAX_VARIATIONS_PER_TASK` also builds NO task (the enqueue would blow the
- * ~100 KB Cloud Tasks payload limit and the sweep would retry forever) —
- * skip `'variations-excede-limite'` + `console.error`, with the existing
- * >1000 warn kept as the early warning below the cap. Old model childless → one `'item'`
+ * → NO task for that listing (skips only). Every completed task candidate is
+ * measured after Base64 encoding; an oversized task builds nothing and records
+ * `task-excede-limite`. Old model childless → one `'item'`
  * task with the anchor quantity. User Products: one `'variationItem'` task
  * per child (each variation is its own ML item); a childless UP listing
  * degenerates to a single `'item'` task with the anchor quantity.
@@ -1951,6 +1873,35 @@ export function buildSendTasks(
 
   const tasks: StockSendTaskDraft[] = [];
   const skips: SendSkip[] = [];
+  const memberById = new Map(
+    [row.anchor, ...row.children].map((member) => [member.produtoId, member] as const),
+  );
+
+  const emitTask = (
+    task: StockSendTaskDraft,
+    skipTarget: { produtoId: string; itemId: string; linkDocId: string },
+  ): boolean => {
+    const encodedBodyBytes = stockTaskEncodedBodyBytes(task);
+    const details = {
+      integracaoId: opts.integracaoId,
+      produtoId: skipTarget.produtoId,
+      itemId: skipTarget.itemId,
+      variations: task.variations?.length ?? 0,
+      estoqueLocators: task.estoqueSnapshot.refs.length,
+      encodedBodyBytes,
+      budgetBytes: STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    };
+    if (encodedBodyBytes > STOCK_TASK_ENCODED_BODY_BUDGET_BYTES) {
+      console.error('[mercado-livre] stock-sync: task excede o limite de payload', details);
+      skips.push({ ...skipTarget, reason: 'task-excede-limite' });
+      return false;
+    }
+    if (encodedBodyBytes >= STOCK_TASK_ENCODED_BODY_WARN_BYTES) {
+      console.warn('[mercado-livre] stock-sync: task próxima do limite de payload', details);
+    }
+    tasks.push(task);
+    return true;
+  };
   // Cycle-wide dedup across ALL of the family's listings (legacy
   // processedUpFamilies / processedUpVariationItems): each ML item id is sent
   // at most once per cycle; a duplicate drops silently (legacy debug print).
@@ -1979,6 +1930,17 @@ export function buildSendTasks(
     }
     if (link.estado === 'am') {
       skips.push({ produtoId: anchorId, reason: 'aguardando-migracao', itemId, linkDocId });
+      continue;
+    }
+    // #1226: ML removed the listing, so the item id is dead and no send can
+    // land. The produto normally leaves `integracoesComProduto` the moment this
+    // estado is stamped (`linkHasLiveListing`) and never reaches this loop — but
+    // it DOES reach it while another listing on the same conta keeps the produto
+    // in the anchor query, and that is exactly the case that would otherwise pay
+    // a doomed PUT ladder per tick. Its own reason, not `status-nao-enviavel`:
+    // the remedy is an operator action on the produto's ML tab, not waiting.
+    if (link.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) {
+      skips.push({ produtoId: anchorId, reason: 'anuncio-removido', itemId, linkDocId });
       continue;
     }
     // #781: the send handler's terminal branch stamps `'E'` when ML confirmed the
@@ -2074,12 +2036,13 @@ export function buildSendTasks(
       // listings resolving to the same UP would otherwise race each other's
       // `x-version` and trade 409s all tick.
       const emitUp = (
-        produtoId: string,
+        member: FamilyMember,
         unitItemId: string,
         userProductId: string | null,
         variacaoProdutoId: string | null,
         varLinkDocId: string | null,
       ): void => {
+        const produtoId = member.produtoId;
         const dedupKey = userProductId ?? `item:${unitItemId}`;
         if (emittedUpKeys.has(dedupKey)) return; // cycle-wide dedup — silent
         const quantidade = quantidades.get(produtoId) ?? null;
@@ -2087,8 +2050,7 @@ export function buildSendTasks(
           skips.push({ produtoId, reason: 'kit-virtual', itemId: unitItemId, linkDocId });
           return;
         }
-        emittedUpKeys.add(dedupKey);
-        tasks.push({
+        const task: StockSendTaskDraft = {
           ...base,
           kind: 'userProductStock',
           itemId: unitItemId,
@@ -2097,13 +2059,17 @@ export function buildSendTasks(
           variacaoProdutoId,
           quantidade,
           variations: null,
-        });
+          estoqueSnapshot: estoqueSnapshotForMembers([member], opts.depositoId),
+        };
+        if (emitTask(task, { produtoId, itemId: unitItemId, linkDocId })) {
+          emittedUpKeys.add(dedupKey);
+        }
       };
 
       if (row.children.length === 0) {
         // Childless: the parent link IS the stock unit, so a lazily resolved UP
         // belongs on it — hence no `varLinkDocId`.
-        emitUp(anchorId, itemId, asUserProductId(link.userProductId), null, null);
+        emitUp(row.anchor, itemId, asUserProductId(link.userProductId), null, null);
         continue;
       }
 
@@ -2147,7 +2113,7 @@ export function buildSendTasks(
         // `varItemId ?? itemId`: with a UP id in hand the item is only used for
         // logging, so the family's own id is a fine stand-in.
         emitUp(
-          child.produtoId,
+          child,
           varItemId ?? itemId,
           upId,
           child.produtoId,
@@ -2170,8 +2136,7 @@ export function buildSendTasks(
         skips.push({ produtoId: anchorId, reason: 'kit-virtual' });
         continue;
       }
-      emittedItemIds.add(itemId);
-      tasks.push({
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'item',
         itemId,
@@ -2180,7 +2145,11 @@ export function buildSendTasks(
         variacaoProdutoId: null,
         quantidade,
         variations: null,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers([row.anchor], opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: anchorId, itemId, linkDocId })) {
+        emittedItemIds.add(itemId);
+      }
       continue;
     }
 
@@ -2235,39 +2204,14 @@ export function buildSendTasks(
           skips.push({ produtoId: child.produtoId, reason: 'kit-virtual', itemId, linkDocId });
           continue;
         }
-        variations.push({ id: varId, available_quantity: quantidade });
+        variations.push({ id: varId, produtoId: child.produtoId, available_quantity: quantidade });
       }
       if (variations.length === 0) continue; // nothing sendable on this listing
-      if (variations.length > MAX_VARIATIONS_PER_TASK) {
-        // Hard cap (see MAX_VARIATIONS_PER_TASK): past it the Cloud Tasks
-        // enqueue itself would reject the ~100 KB+ payload and the sweep
-        // would re-attempt the same unsendable family forever — build NO task.
-        console.error(
-          '[mercado-livre] stock-sync: família excede o limite de variations por task',
-          {
-            integracaoId: opts.integracaoId,
-            produtoId: anchorId,
-            itemId,
-            variations: variations.length,
-            max: MAX_VARIATIONS_PER_TASK,
-          },
-        );
-        skips.push({ produtoId: anchorId, reason: 'variations-excede-limite', itemId, linkDocId });
-        continue;
-      }
-      if (variations.length > 1000) {
-        // Early warning below the MAX_VARIATIONS_PER_TASK cap (~40 B/entry
-        // against the 100 KB Cloud Tasks payload limit) — families this large
-        // deserve a look before they grow into the hard limit.
-        console.warn('[mercado-livre] stock-sync: família com variations acima de 1000 entradas', {
-          integracaoId: opts.integracaoId,
-          produtoId: anchorId,
-          itemId,
-          variations: variations.length,
-        });
-      }
-      emittedItemIds.add(itemId);
-      tasks.push({
+      const taskMembers = variations.flatMap((variation) => {
+        const member = memberById.get(variation.produtoId);
+        return member == null ? [] : [member];
+      });
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'item',
         itemId,
@@ -2276,7 +2220,11 @@ export function buildSendTasks(
         variacaoProdutoId: null,
         quantidade: null,
         variations,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers(taskMembers, opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: anchorId, itemId, linkDocId })) {
+        emittedItemIds.add(itemId);
+      }
       continue;
     }
 
@@ -2328,8 +2276,7 @@ export function buildSendTasks(
         });
         continue;
       }
-      emittedItemIds.add(varItemId);
-      tasks.push({
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'variationItem',
         itemId: varItemId,
@@ -2338,7 +2285,11 @@ export function buildSendTasks(
         variacaoProdutoId: child.produtoId,
         quantidade,
         variations: null,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers([child], opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: child.produtoId, itemId: varItemId, linkDocId })) {
+        emittedItemIds.add(varItemId);
+      }
     }
   }
 

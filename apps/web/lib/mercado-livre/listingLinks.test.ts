@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  dadosFiscaisSummary,
   estadoLabel,
   publishSummary,
   isStockLatched,
@@ -95,7 +96,47 @@ describe('listingPermalink', () => {
   });
 });
 
+describe('dadosFiscaisSummary (#745)', () => {
+  it('everything sent: just the count', () => {
+    expect(dadosFiscaisSummary({ enviados: 2, omitidos: [], erros: [] })).toBe(
+      'Dados fiscais: 2 SKUs enviados.',
+    );
+    expect(dadosFiscaisSummary({ enviados: 1, omitidos: [], erros: [] })).toBe(
+      'Dados fiscais: 1 SKU enviado.',
+    );
+  });
+
+  it('an ML refusal is named first, verbatim — it is the thing to fix', () => {
+    expect(
+      dadosFiscaisSummary({
+        enviados: 1,
+        omitidos: [{ sku: 'B', motivo: 'sem NCM' }],
+        erros: [{ sku: 'A', mensagem: 'ML 400: tax_information.fci: FCI inválida' }],
+      }),
+    ).toBe(
+      'Dados fiscais: 1 SKU enviado, 1 omitido(s), 1 com erro — A: ML 400: tax_information.fci: FCI inválida.',
+    );
+  });
+
+  it('with no error, the first omission says why — and a SKU-less one says so', () => {
+    expect(
+      dadosFiscaisSummary({ enviados: 0, omitidos: [{ sku: null, motivo: 'sem SKU' }], erros: [] }),
+    ).toBe('Dados fiscais: 0 SKUs enviados, 1 omitido(s) — sem SKU: sem SKU.');
+  });
+});
+
 describe('publishSummary (#798)', () => {
+  it('appends the fiscal line when the backend sent one (#745)', () => {
+    expect(
+      publishSummary({
+        itemId: 'MLB1',
+        estado: 'p',
+        itemIds: ['MLB1'],
+        dadosFiscais: { enviados: 1, omitidos: [], erros: [] },
+      }),
+    ).toBe('Anúncio MLB1 — Publicado. Dados fiscais: 1 SKU enviado.');
+  });
+
   it('a single item keeps naming it', () => {
     expect(publishSummary({ itemId: 'MLB1', estado: 'p', itemIds: ['MLB1'] })).toBe(
       'Anúncio MLB1 — Publicado.',

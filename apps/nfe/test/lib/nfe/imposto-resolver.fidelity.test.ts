@@ -71,6 +71,8 @@ function categoriaDoc(
     id: `${categoriaUid}-imp`,
     impostoCategoriaOperacaoOuterRef: scope,
     dataCadastro: null,
+    NVE: null,
+    indEscala: null,
     ...impostoBlob(csosn),
   };
 }

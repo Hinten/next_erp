@@ -47,6 +47,14 @@ describe('describeFilter', () => {
     expect(d('Tipo', { op: 'eq', value: '9' }, TIPO)).toBe('Tipo: 9');
   });
 
+  it('phrases isNull as an empty value, whatever the field kind is', () => {
+    // The op carries `value: null`, which the kind branches below it would each
+    // answer wrongly and confidently — `Tipo: null` from the enum branch, and
+    // `Ativo: Não` from the boolean one. Full coverage in `isNullFilter.test.ts`.
+    expect(d('Tipo', { op: 'isNull', value: null }, TIPO)).toBe('Tipo: (vazio)');
+    expect(d('Nome', { op: 'isNull', value: null }, NOME)).toBe('Nome: (vazio)');
+  });
+
   it.each([
     [true, 'Ativo: Sim'],
     [false, 'Ativo: Não'],

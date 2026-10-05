@@ -39,6 +39,8 @@ vi.mock('../useEstoqueDisponivel', () => ({
 vi.mock('@/components/ProdutoThumbnail', () => ({
   ProdutoThumbnail: () => null,
 }));
+// Reads `usuarios` through react-query — network child, stubbed like the rest.
+vi.mock('../VendedorField', () => ({ VendedorField: () => null }));
 vi.mock('../ProdutoVariacaoLabel', () => ({
   ProdutoVariacaoLabel: () => null,
 }));

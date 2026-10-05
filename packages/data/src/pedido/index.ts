@@ -13,6 +13,8 @@ export type {
 export {
   buildPedidoPatch,
   savePedido,
+  deveReconciliarAposSalvar,
+  type SavePedidoResultado,
   isIgnoredForConcurrency,
   remotelyChangedFields,
   buildIncidenteOp,
@@ -23,11 +25,16 @@ export {
   deletePagamento,
   saveChequeSplit,
   nextPedidoEstado,
+  freteComDespachoAutorizado,
+  aplicarQuitacaoNaCriacao,
   cancelarPedido,
   confirmarEntregaPedido,
   type ConfirmarEntregaResultado,
   PedidoConflictError,
   PedidoNothingChangedError,
+  PagamentoConflictError,
+  PagamentoNothingChangedError,
+  type SavePagamentoArgs,
 } from './usecases';
 export {
   PEDIDO_COUNTER_DOC_ID,
@@ -38,6 +45,20 @@ export {
   mintNumeros,
   operacaoNumeroPrefix,
 } from './numero';
+export { criarPedidoComNumero } from './create';
+export {
+  PedidoEnderecoOrigemAusenteError,
+  aplicarPlanoDeCopiaAoPatch,
+  aplicarPlanoDeCopiaDeEndereco,
+  buildEnderecoCopyOps,
+  detectarEnderecosDeOutroCliente,
+  enderecoCopyReadPaths,
+  planejarCopiasDeEndereco,
+  type PedidoEnderecoCopyEntry,
+  type PedidoEnderecoCopyPlan,
+  type PedidoEnderecoMismatch,
+  type PedidoEnderecoUso,
+} from './enderecoCopy';
 export {
   DEVOLUCAO_INTEGRAL_STRIP_KEYS,
   PEDIDO_PATH,

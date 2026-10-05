@@ -128,6 +128,34 @@ beforeEach(() => {
 });
 
 describe('saveRecord — tier 3 concurrency guard (#824)', () => {
+  it('re-derives history on OCC retry and reports only the winning patch', async () => {
+    db.seed(DOC_PATH, { ...BASELINE, historico: ['primeiro'] });
+    let fired = false;
+    db.occ.beforeCommit = async () => {
+      if (fired) return;
+      fired = true;
+      db.occ.beforeCommit = null;
+      await db.occ.runTransaction(async (tx) => {
+        tx.update(db.docRef(DOC_PATH) as never, { historico: ['primeiro', 'concorrente'] });
+      });
+    };
+    const derive = vi.fn((current: Readonly<Record<string, unknown>> | null) => ({
+      historico: [...(current?.historico as string[]), 'nosso'],
+    }));
+    const result = await save({ baseline: BASELINE, deriveTransactionPatch: derive });
+    expect(derive).toHaveBeenCalledTimes(2);
+    expect(result.patch).toMatchObject({ historico: ['primeiro', 'concorrente', 'nosso'] });
+    expect(db.read(DOC_PATH)).toMatchObject(result.patch);
+  });
+
+  it('refuses a user-field conflict before calling the derivation', async () => {
+    db.seed(DOC_PATH, { nome: 'P', precos: { varejo: 120, atacado: 80 } });
+    const derive = vi.fn(() => ({ historico: [] }));
+    await expect(
+      save({ baseline: BASELINE, deriveTransactionPatch: derive }),
+    ).rejects.toBeInstanceOf(RecordConflictError);
+    expect(derive).not.toHaveBeenCalled();
+  });
   it('refuses when another writer changed a field this save writes', async () => {
     // A got there first: `varejo` is now 120.
     db.seed(DOC_PATH, { nome: 'P', precos: { varejo: 120, atacado: 80 } });
@@ -248,6 +276,54 @@ function sibling(
 }
 
 describe('saveRecord — guarded transaction documents', () => {
+  it('re-derives the parent and returns committed sibling baselines after an OCC retry', async () => {
+    db.seed(DOC_PATH, { ...BASELINE, historico: ['first'] });
+    db.seed(EXTRA_PATH, { descricao: 'loaded', timestamp: 1 });
+    db.occ.beforeCommit = async () => {
+      db.occ.beforeCommit = null;
+      await db.occ.runTransaction(async (tx) => {
+        tx.update(db.docRef(DOC_PATH) as never, { historico: ['first', 'other'] });
+        tx.update(db.docRef(EXTRA_PATH) as never, { timestamp: 2 });
+      });
+    };
+    const derive = vi.fn((current: Readonly<Record<string, unknown>> | null) => ({
+      historico: [...(current?.historico as string[]), 'ours'],
+    }));
+    const result = await save({
+      baseline: BASELINE,
+      deriveTransactionPatch: derive,
+      siblingWrites: () => [sibling({ descricao: 'loaded', timestamp: 1 })],
+    });
+    expect(derive).toHaveBeenCalledTimes(2);
+    expect(result.patch).toMatchObject({ historico: ['first', 'other', 'ours'] });
+    expect(db.read(DOC_PATH)).toMatchObject(result.patch);
+    expect(db.read(EXTRA_PATH)).toEqual({ descricao: 'local', timestamp: 2 });
+    expect(result.documents[0]?.data).toEqual(db.read(EXTRA_PATH));
+  });
+
+  it('a sibling conflict on retry aborts the derived parent history too', async () => {
+    db.seed(DOC_PATH, { ...BASELINE, historico: ['first'] });
+    db.seed(EXTRA_PATH, { descricao: 'loaded' });
+    db.occ.beforeCommit = async () => {
+      db.occ.beforeCommit = null;
+      await db.occ.runTransaction(async (tx) => {
+        tx.update(db.docRef(EXTRA_PATH) as never, { descricao: 'other' });
+      });
+    };
+    const derive = vi.fn((current: Readonly<Record<string, unknown>> | null) => ({
+      historico: [...(current?.historico as string[]), 'ours'],
+    }));
+    await expect(
+      save({
+        baseline: BASELINE,
+        deriveTransactionPatch: derive,
+        siblingWrites: () => [sibling({ descricao: 'loaded' })],
+      }),
+    ).rejects.toMatchObject({ documents: [{ fields: ['descricao'] }] });
+    expect(derive).toHaveBeenCalledTimes(1);
+    expect(db.read(DOC_PATH)).toEqual({ ...BASELINE, historico: ['first'] });
+    expect(db.read(EXTRA_PATH)).toEqual({ descricao: 'other' });
+  });
   it('refuses an unknown baseline before opening a transaction', async () => {
     await expect(save({ siblingWrites: () => [sibling(undefined)] })).rejects.toMatchObject({
       name: 'MissingTransactionBaselineError',

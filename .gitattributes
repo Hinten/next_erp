@@ -54,3 +54,8 @@ apps/mercado-livre/lib/marketplace/fixtures/__wire__/** text eol=lf
 # with a shebang. Same vite/Windows hazard as the .mjs rules above; kept total
 # by `shebang-files-lf.test.js`.
 .master_plans/**/*.mjs text eol=lf
+
+# Sixth instance: the Codex push hook (`.codex/verify-codex-push.mjs`) starts
+# with a shebang and is imported by its own node:test suite. Same hazard as the
+# `.claude/hooks/*.mjs` rule above; kept total by `shebang-files-lf.test.js`.
+.codex/*.mjs text eol=lf

@@ -13,7 +13,9 @@ import {
   expectEmptyState,
   expectRowHidden,
   expectRowVisible,
+  expectListMode,
   firstRowText,
+  transitionListMode,
 } from './helpers/table-view';
 import {
   clickSave,
@@ -58,19 +60,28 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
   test('TableView query works without a filter', async ({ page }) => {
     await page.goto('/clientes');
     await expect(page.getByRole('heading', { name: 'Clientes' })).toBeVisible();
-    // The table only mounts once the (one-shot) Pipelines query resolves —
-    // a preview API that can lag well past the 5s default expect timeout.
+    // The table waits for the declared-query listener's first snapshot.
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
-    // A failed pipeline query renders an "Erro ao carregar" alert.
+    await expectListMode(page, 'live', null, 'live');
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
 
   test('filters rows by the Nome (text) and Tipo (enum) columns', async ({ page }) => {
     await page.goto('/clientes');
-    await applyTextFilter(page, 'Nome', row(3));
+    await transitionListMode(
+      page,
+      { mode: 'live', policy: 'live', reason: null },
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      () => applyTextFilter(page, 'Nome', row(3)),
+    );
     await expectRowVisible(page, row(3));
     await expectRowHidden(page, row(1));
-    await clearColumnFilter(page, 'Nome');
+    await transitionListMode(
+      page,
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      { mode: 'live', policy: 'live', reason: null },
+      () => clearColumnFilter(page, 'Nome'),
+    );
 
     // Seeded tipo cycles ['1','2','0',...] over i=1..7 → tipo '0' at i=3,6.
     await applyTextFilter(page, 'Nome', prefix);
@@ -150,6 +161,30 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.getByRole('row', { name: new RegExp(row(2)) }).click();
     await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 10_000 });
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
+  });
+
+  test('opens an existing cliente from the list with the keyboard', async ({ page }) => {
+    await page.goto('/clientes');
+    await applyTextFilter(page, 'Nome', row(2));
+    await expectRowVisible(page, row(2));
+
+    // The row itself is not focusable and never will be — a <tr> carrying a
+    // link role would break the table's required owned structure. What makes
+    // the row reachable is the anchor `rowLinkColumn` puts in the Nome cell.
+    // `press` focuses before pressing, so this asserts BOTH reachability and
+    // Enter-activation. A literal Tab walk is deliberately avoided: the number
+    // of stops before the first row depends on the search box, the ⚙, every
+    // column's filter button and the selection checkbox, so a Tab count would
+    // break on unrelated toolbar changes rather than on this behaviour.
+    await page.getByRole('link', { name: row(2), exact: true }).press('Enter');
+    await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 10_000 });
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
+
+    // One history entry, not two. The anchor's handler stops the click from
+    // also reaching the row's own `router.push`; without that guard both fire
+    // and a single Back lands back on the detail page.
+    await page.goBack();
+    await page.waitForURL(/\/clientes(\?.*)?$/, { timeout: 10_000 });
   });
 
   test('keeps the list filter after opening a cliente and going back', async ({ page }) => {

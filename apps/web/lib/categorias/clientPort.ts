@@ -2,6 +2,8 @@ import type { DocumentReference, Firestore } from 'firebase/firestore';
 import {
   type ImpostoCategoria,
   impostoCategoriaSchema,
+  issuesDeEmissaoDasLinhas,
+  nveCarriesValue,
   operacaoIdFromImpostoRef,
 } from '@delfrance/schemas';
 import { nowMillis } from '@delfrance/core/datetime';
@@ -9,8 +11,21 @@ import type {
   TransactionWrite,
   TransactionWriteContext,
   TransactionDocumentGuard,
+  ValidationIssue,
 } from '@delfrance/ui';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
+
+/**
+ * The categoria page's `validate`: refuses to save a per-operação imposto row
+ * the NF-e engine would refuse (#1655) — the same verdicts the engine throws
+ * from, behind its own tier gate, so a row with no `origem` is never blocked.
+ * `impostos` stays null until the Impostos tab seeds it, so a save that never
+ * opened the tab checks nothing; once seeded, EVERY row is checked (each is
+ * rewritten on save). Module-level so ObjectView's resolver memo stays stable.
+ */
+export function validarImpostosDaCategoria(values: Record<string, unknown>): ValidationIssue[] {
+  return issuesDeEmissaoDasLinhas(values.impostos as unknown[] | null | undefined, 'impostos');
+}
 
 /**
  * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
@@ -33,9 +48,7 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     imp.cfop,
     imp.cfopInterestadual,
     imp.NCM,
-    imp.NVE,
     imp.CEST,
-    imp.indEscala,
     imp.CNPJFab,
     imp.cBenef,
     imp.extipi,
@@ -50,8 +63,16 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     imp.configuracaoISSQN,
     imp.retencao,
   ];
+  // ⚠️ `NVE` and `indEscala` are NOT strings on the wire (#466) — see the twin
+  // check in `packages/data/src/produto/usecases.ts`, which carries the full
+  // note. `nveCarriesValue` is shared with it precisely because these two are
+  // character-identical and have drifted before; it accepts the raw pre-#466
+  // scalar a failed `parseSoftRead` hands back, which this decision runs on
+  // BEFORE `impostoCategoriaSchema.parse` below.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
+    nveCarriesValue(imp.NVE) ||
+    imp.indEscala != null ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||
     hasNonNullLeaf(imp.configuracaoIBSCBS)

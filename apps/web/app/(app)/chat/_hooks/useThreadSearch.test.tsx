@@ -45,20 +45,25 @@ describe('useThreadSearch', () => {
   });
 
   it('matches conteudo case-insensitively', () => {
-    const { result } = renderHook(() => useThreadSearch('OLÁ', messages));
+    const { result } = renderHook(() => useThreadSearch('OLA', messages));
     expect(result.current.isLiteral).toBe(false);
     expect(result.current.matches).toEqual(['m1']);
   });
 
   it('matches over transcription and media caption, skipping event messages', () => {
     const { result } = renderHook(() => useThreadSearch('a', messages));
-    // 'a' (regex 'iu', NOT accent-folded) hits m2 (ação), m4 (transcrito/aqui),
-    // m5 (foto da nota). Event m3 is skipped even though it contains 'a';
-    // m1 ("Olá, tudo bem?") has only an accented 'á', so it does NOT match.
+    // Accent folding lets 'a' hit m1's 'á' as well as m2, m4 and m5. Event m3
+    // stays excluded even though it contains an ordinary 'a'.
     expect(result.current.matches).not.toContain('m3');
-    expect(result.current.matches).not.toContain('m1');
+    expect(result.current.matches).toContain('m1');
     expect(result.current.matches).toContain('m4'); // transcription
     expect(result.current.matches).toContain('m5'); // caption
+  });
+
+  it('does not fold a different base letter or punctuation into a match', () => {
+    const nearMisses = [msg('n1', { conteudo: 'acaso' }), msg('n2', { conteudo: 'a-ção' })];
+    const { result } = renderHook(() => useThreadSearch('^acao$', nearMisses));
+    expect(result.current.matches).toEqual([]);
   });
 
   it('supports unicode/accented regex patterns', () => {

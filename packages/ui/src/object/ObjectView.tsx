@@ -50,6 +50,7 @@ import {
   MissingTransactionBaselineError,
   RecordConflictError,
   saveRecord,
+  type DeriveTransactionPatch,
   type TransactionWrite,
   type TransactionDocumentConflict,
 } from './saveRecord';
@@ -97,6 +98,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   /** undefined ⇒ create mode. */
   recordId?: string;
   defaultValues?: Partial<z.infer<S>>;
+  /** Prepare a copy's form seed before validation; omit identities and retain input provenance. */
+  transformCopiedValues?: (source: Readonly<Record<string, unknown>>) => Record<string, unknown>;
 
   /** Hide these field keys completely (e.g. embeddings). */
   excludedFields?: string[];
@@ -125,6 +128,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * `undefined` (Firestore rejects it). Must be pure.
    */
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+  /** Pure domain delta computed from the latest document inside each save attempt. */
+  deriveTransactionPatch?: DeriveTransactionPatch;
 
   /**
    * Cross-document validation run alongside the schema resolver (after each
@@ -301,11 +306,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   pathContext = {},
   recordId,
   defaultValues,
+  transformCopiedValues,
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
   persistentSections,
   deriveOnSave,
+  deriveTransactionPatch,
   validate,
   transientFields = [],
   transactionWrites,
@@ -355,11 +362,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // Once a create-mode save lands, retain the new id so subsequent saves on
   // the same mount are treated as updates (partial patches).
   const [internalId, setInternalId] = useState<string | undefined>(recordId);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs internalId from recordId; a create-mode save keeps its new id until recordId itself changes
   useEffect(() => setInternalId(recordId), [recordId]);
 
   const docRef = useMemo(
     () => (internalId ? collection.docRef(db, pathContext, internalId) : null),
     // pathContext intentionally identity-tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext intentionally untracked: its {} default is a new object every render, and useDocSnapshot keys on ref identity
     [db, collection, internalId],
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
@@ -373,6 +382,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const copyDocRef = useMemo(
     () => (copyFromId ? collection.docRef(db, pathContext, copyFromId) : null),
     // pathContext intentionally identity-tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathContext intentionally untracked: its {} default is a new object every render, and useDocSnapshot keys on ref identity
     [db, collection, copyFromId],
   );
   const copySnap = useDocSnapshot<Doc>(copyDocRef);
@@ -513,6 +523,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
       baseline.current = null;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds on snapshot transitions only; defaultValues / emptyDefaults / form are read, not triggers (novo pages pass defaultValues inline)
   }, [docSnap.data?.id, docSnap.fromCache, docSnap.data?.data]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
@@ -527,8 +538,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     form.reset({
       ...emptyDefaults,
       ...(defaultValues ?? {}),
-      ...source,
+      ...(transformCopiedValues ? transformCopiedValues(source) : source),
     } as FieldValues);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seeds once per copy source; re-running on its other inputs would overwrite what the operator typed
   }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -680,6 +692,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         siblingWrites: transactionWrites
           ? (id) => transactionWrites(id, values, transactionDocuments)
           : undefined,
+        deriveTransactionPatch,
         currentUserUid,
         // ADR 0011 tier 3. "Salvar mesmo assim" does NOT come through here with
         // the guard off — it comes through with `baseline.current` already
@@ -742,7 +755,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       // staged child documents). Runs on BOTH save paths; a failure surfaces
       // in the form alert and skips onSaved (the record itself is saved — the
       // user can retry just the sibling step by saving again).
-      await onAfterSave?.(result.id, values);
+      await onAfterSave?.(result.id, committedValues);
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -849,7 +862,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       (map[section] ??= []).push(d);
     }
     return map;
-  }, [visibleDescriptors, fieldOverrides, sections?.join('|')]);
+  }, [visibleDescriptors, fieldOverrides, sections]);
 
   // Reverse of `grouped`: top-level field key → section name, for mapping
   // validation errors to tabs. RHF nests sub-field errors under the
@@ -922,6 +935,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       },
       sectionOfField: (fieldKey) => sectionOf.get(fieldKey) ?? null,
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the sections' VALUES: callers pass an inline array, and a plain `sections` dep makes the compiler drop this memo
     [effectiveSection, sections?.join('|'), sectionOf],
   );
 

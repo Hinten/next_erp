@@ -20,6 +20,7 @@
  * NF-e documents and the typed operation calls in `src/operations`.
  */
 import type { TRetConsReciNFe, TRetConsSitNFe, TRetEnviNFe } from '../types/nfe-schema';
+import { coerceToMillis } from '@delfrance/core/datetime';
 import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import { classifyCStat, type SefazOutcome } from '../state';
 
@@ -30,8 +31,28 @@ import { classifyCStat, type SefazOutcome } from '../state';
 /** Match the `nRec` slug SEFAZ embeds in `xMotivo` on cStat 204/205/218/539. */
 export const RE_NREC = /nRec:(\d+)/;
 
-/** Match the `chNFe` slug SEFAZ embeds in `xMotivo` on cStat 539. */
-export const RE_CHNFE = /chNFe:(\d+)/;
+/**
+ * Match the `chNFe` slug SEFAZ embeds in `xMotivo` on cStat 539.
+ *
+ * ⚠️ `[0-9A-Z]{44}`, never `\d+`. Since RFB IN 2.229/2024 the chave's positions
+ * 6–17 carry the emitente CNPJ and may be alphanumeric. With `\d+` an alfa
+ * chave captured only the six digits before the first letter — and the result
+ * was **truthy**, so `recoverFrom539` sailed past its `if (!recoveredChave)`
+ * guard, looked `'432601'` up in the audit log, found nothing and called
+ * `markAsLost`. On an alfa emitente that turned EVERY cStat 539 from an
+ * automatic recovery into a terminal error needing manual SEFAZ-portal work —
+ * on the one path whose whole purpose is not losing an authorized NF-e — and
+ * the operator-facing message named a 6-character "chave" that pointed nowhere
+ * near the cause.
+ *
+ * ⚠️ The length is anchored at 44 deliberately: a bare `[0-9A-Z]+` would run
+ * past the closing bracket on a malformed `xMotivo`. Shape validation beyond
+ * the length is `CHAVE_NFE_REGEX`'s job, not this extractor's — here a
+ * near-miss must fail to match so the caller takes its "sem marcador" branch.
+ *
+ * ⚠️ `RE_NREC` stays `\d+` on purpose: `nRec` is a lote receipt, always numeric.
+ */
+export const RE_CHNFE = /chNFe:([0-9A-Z]{44})/;
 
 /**
  * Extract the `nRec` (lote receipt) and `chNFe` (server-truth chave)
@@ -40,6 +61,7 @@ export const RE_CHNFE = /chNFe:(\d+)/;
  * Example inputs SEFAZ has been seen to produce:
  *   - `'Rejeição: Duplicidade de NF-e [nRec:351000000000123]'`
  *   - `'Rejeição: Duplicidade NF-e com diferença na chave [chNFe:35200714200166000187550010000000071000000017][nRec:351000000000123]'`
+ *   - the same with an ALFA emitente: `[chNFe:432601PC3D315K000193550010000000071000000012]`
  *
  * Both markers are optional — older NTs sometimes omit `nRec`.
  */
@@ -222,18 +244,31 @@ export const DEFAULT_STUCK_TIMEOUT_MS = 5 * 60_000; // 5 minutes
 /** Minimum NFe-doc shape needed to decide whether it's stuck. */
 export interface MaybeStuckNFe {
   readonly estado: EstadoNFe;
-  /** ISO 8601 timestamp of the last write. */
-  readonly ultima_modificacao?: string | null | undefined;
+  /**
+   * The last write, as the RAW stored value: the sweep reads `doc.data()`
+   * without the schema, so nothing has normalized it. `nfeSchema` stores a ms
+   * number, and so does the legacy Flutter corpus. A µs number, a pre-#220 ISO
+   * string or a `Date` are read too, through `coerceToMillis` — the same reader
+   * `millisSinceEpoch()` preprocesses with. Never `Date.parse` it: on a number
+   * that is NaN, and NaN once made every such doc stuck on sight (#1653).
+   */
+  readonly ultima_modificacao?: unknown;
 }
 
 /**
- * True when an NF-e is in `enviando` / `aguardandoResposta` and the
- * last write is older than `timeoutMs`. The `processar-pendentes`
- * route handler runs this against every NF-e doc it scans, then
- * invokes `consSitNFe(chave)` for the ones that come back true.
+ * True when an NF-e is in `enviando` / `aguardandoResposta` and its last write
+ * is at least `timeoutMs` old (the bound is inclusive).
  *
- * SEFAZ commits to 95% of lotes within 3 minutes; the 5-minute default
- * is a small safety margin past that.
+ * The backstop sweep (`runProcessarPendentes` in `apps/nfe`) applies it only to
+ * docs with no `proximaConsultaEm` of their own — the persist-before-send
+ * anchor, the chave-less batch placeholder, #512's `enviando` dispositions and
+ * imported legacy docs — and recovers the ones that come back true. A paced
+ * doc is judged by its `proximaConsultaEm` instead.
+ *
+ * SEFAZ commits to 95% of lotes within 3 minutes; the 5-minute default is a
+ * small safety margin past that. Being longer than the 60 s SOAP timeout, it
+ * is also what keeps the sweep off a send still in flight: a consSit made
+ * before SEFAZ records the NF-e answers 217, which lands as `rejeitada`.
  */
 export function isStuckEnviando(
   nfe: MaybeStuckNFe,
@@ -243,11 +278,16 @@ export function isStuckEnviando(
   if (nfe.estado !== ESTADO_NFE.enviando && nfe.estado !== ESTADO_NFE.aguardandoResposta) {
     return false;
   }
-  if (!nfe.ultima_modificacao) {
-    // No timestamp — treat as stuck (defensive: better to re-query than ignore).
+  const last = coerceToMillis(nfe.ultima_modificacao);
+  if (last === null) {
+    // Two cases, one answer — stuck, so the doc is re-queried, never ignored:
+    //  - MISSING (absent, null, undefined): there is no timestamp at all;
+    //  - present but UNREADABLE (a non-date string, a number in the ms/µs gap,
+    //    NaN, ±Infinity, an object such as a Firestore Timestamp — which no
+    //    writer stores — or a boolean). Deliberate: ignoring it could strand
+    //    an anti-loss anchor forever, and the consult's persist re-stamps a ms
+    //    number, so from then on the doc is judged on the timeout.
     return true;
   }
-  const last = Date.parse(nfe.ultima_modificacao);
-  if (Number.isNaN(last)) return true;
   return now.getTime() - last >= timeoutMs;
 }

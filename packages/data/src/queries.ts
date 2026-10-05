@@ -13,7 +13,12 @@ import {
   query,
   startAfter,
   where,
+  and,
+  type QueryFieldFilterConstraint,
+  type QueryNonFilterConstraint,
 } from 'firebase/firestore';
+import type { QueryPredicate } from '@delfrance/schemas';
+import { classicPredicate } from './query-predicate';
 
 /**
  * Tiny composable query helpers. Wraps the Firestore SDK so app code reads
@@ -88,7 +93,16 @@ export function paginate(input: {
  * Each constraint must be created via the helpers above so the call site
  * stays free of `firebase/firestore` imports.
  */
-export function buildQuery<T>(base: Query<T>, constraints: QueryConstraint[]): Query<T> {
+export function buildQuery<T>(
+  base: Query<T>,
+  constraints: QueryConstraint[],
+  predicate?: QueryPredicate,
+): Query<T> {
+  if (predicate) {
+    const filters = constraints.filter((c) => c.type === 'where') as QueryFieldFilterConstraint[];
+    const remaining = constraints.filter((c) => c.type !== 'where') as QueryNonFilterConstraint[];
+    return query(base, and(classicPredicate(predicate), ...filters), ...remaining);
+  }
   if (constraints.length === 0) return base;
   return query(base, ...constraints);
 }

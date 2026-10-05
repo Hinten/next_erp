@@ -30,10 +30,9 @@
  *
  * ---- One thing it did that this module deliberately does NOT: **delete.**
  *
- * Legacy rewrote the child produto's `marketplace` denorm array. In this port
- * that array is documented dead weight with no query consumers, deleted whole at
- * the Flutter decommission (#961/#992) — so the nearest equivalent would be
- * deleting the `variacaoMercadoLivre` link doc, which is a STRONGER action than
+ * Legacy rewrote a retired child-produto denormalization. In this port the
+ * nearest equivalent would be deleting the `variacaoMercadoLivre` link doc,
+ * which is a STRONGER action than
  * legacy ever took and destroys the member's `sku` + `attributes` (its ML
  * variation combination), which a republish would have to rebuild from nothing.
  *

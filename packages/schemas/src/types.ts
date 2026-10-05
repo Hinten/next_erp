@@ -89,20 +89,29 @@ export interface CollectionMetadata {
    * subcollections (e.g. `'clientes/{clienteId}/enderecos'`). The runtime
    * resolves placeholders using the context passed to the data layer.
    *
-   * Multi-tenancy in Delfrance is enforced via document fields
-   * (`grupoEconomico`, `userCliente`, etc.) inside Firestore rules — not via
-   * path prefixes — to keep parity with the Flutter app's existing data.
+   * ⚠️ No tenant segment belongs in this path. The app is SINGLE-TENANT
+   * (ADR 0016, issue #14 closed won't-fix): tenancy is not modelled by a path
+   * prefix, and it is not modelled by a document field either. This comment
+   * used to claim it was "enforced via document fields (`grupoEconomico`,
+   * `userCliente`, etc.) inside Firestore rules"; that was false — no
+   * generated rule filters access on either field (`userCliente` appears only
+   * in a type-validator whitelist), and access control is permission bits.
    */
   collectionPath: string;
   /**
    * Permission bits required to read/write/delete. BigInt literals so we can
    * express permission sets larger than 53 bits (Firestore claims store them
    * as strings).
+   *
+   * `delete: null` is an explicit client-side deny, including the `su`
+   * break-glass claim. The Admin SDK still bypasses Firestore rules. Use it
+   * when a collection remains client-editable but its root document carries
+   * durable descendants that a client must never orphan or destroy.
    */
   permissions: {
     read: bigint;
     write: bigint;
-    delete: bigint;
+    delete: bigint | null;
   };
   /**
    * Cascade declarations: subcollection paths that must be deleted with the

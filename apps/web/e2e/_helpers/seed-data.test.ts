@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { e2ePrefix, fixtureClienteCnpj } from './seed-data';
+import { e2ePrefix, filialSeedCnpj, fixtureClienteCnpj } from './seed-data';
 
 /**
  * Backstop for the fixture-namespace shape (`e2e-<runId>-w<worker>-<tag>`).
@@ -39,13 +39,29 @@ function cnpjFor(worker: string | undefined): string {
 }
 
 /**
- * Independent mod-11 CNPJ check — deliberately NOT reusing `validTestCnpj`,
- * which is the function under test.
+ * Independent mod-11 CNPJ check — deliberately NOT reusing `validTestCnpj` (the
+ * function under test) nor `validateCNPJ` from `@delfrance/core/documents` (the
+ * implementation the seeder's consumers run). Both would make this assert that
+ * an implementation agrees with itself; the point is to assert the RULE.
+ *
+ * ⚠️ Alphanumeric-aware, and it has to be. This used to gate on `/^\d{14}$/`
+ * with `Number(digits[k])`, so it answered `false` for a perfectly VALID alfa
+ * CNPJ — a backstop that would have failed a correct seed and passed an
+ * incorrect one. The rule since RFB IN 2.229/2024: the first 12 positions may
+ * be `[0-9A-Z]`, the two check digits stay numeric, and every character enters
+ * the sum as `charCode - 48` (identical to its value for `0-9`, which is why
+ * numeric CNPJs are unaffected).
  */
 function isValidCnpj(cnpj: string): boolean {
-  if (!/^\d{14}$/.test(cnpj)) return false;
-  const dv = (digits: string, weights: number[]): number => {
-    const sum = weights.reduce((acc, w, k) => acc + Number(digits[k]) * w, 0);
+  if (!/^[0-9A-Z]{12}\d{2}$/.test(cnpj)) return false;
+  // ⚠️ Repdigits are banned by the rule, not by the checksum. `00000000000000`
+  // computes DVs of `00` and would otherwise pass here — then be rejected by
+  // the schema the seeded documents are read through, which is the worst place
+  // to find out. Every other repdigit (`11111111111111` and friends) fails the
+  // mod-11 anyway, so this guard earns its keep on exactly one value.
+  if (/^(\d)\1{13}$/.test(cnpj)) return false;
+  const dv = (chars: string, weights: number[]): number => {
+    const sum = weights.reduce((acc, w, k) => acc + (chars.charCodeAt(k) - 48) * w, 0);
     const rest = sum % 11;
     return rest < 2 ? 0 : 11 - rest;
   };
@@ -142,6 +158,99 @@ describe('e2ePrefix', () => {
     const long = prefixFor('2', 'pedpag');
 
     expect(sweepDeletes(short, long)).toBe(false);
+  });
+
+  /**
+   * ⚠️ Every FILIAL CNPJ the seeder writes must be checksum-valid, and the
+   * reason is not tidiness. Since #1619 `filialFormSchema` carries a checksum,
+   * so a filial seeded with an invalid CNPJ cannot be saved back through the
+   * form — and the symptom surfaces far away from here: `filiais.cadastros`'s
+   * "edits a filial and saves" went red on the CNPJ field while editing the
+   * Nome Fantasia, a test that has nothing to do with CNPJs. The seeder used
+   * `String(10000000000000 + i)` and three hand-written literals, none of them
+   * real CNPJs.
+   *
+   * Checked with `isValidCnpj` above — this file's deliberately independent
+   * mod-11 implementation, so this asserts against the RULE rather than
+   * against `validTestCnpj` agreeing with itself.
+   */
+  describe('seeded filial CNPJs are checksum-valid', () => {
+    it('the generated ones, across the seeded range', () => {
+      const seen = new Set<string>();
+      for (let i = 1; i <= 20; i += 1) {
+        const cnpj = filialSeedCnpj(i);
+        expect(cnpj, `filialSeedCnpj(${i})`).toHaveLength(14);
+        expect(isValidCnpj(cnpj), `filialSeedCnpj(${i}) = ${cnpj}`).toBe(true);
+        seen.add(cnpj);
+      }
+      // Distinct per filial: a 14-digit seed would collapse them all to
+      // `0000000000xx`, since `validTestCnpj` keeps only the LAST 12 chars.
+      expect(seen.size).toBe(20);
+    });
+
+    it('every hand-written cnpj literal in the seeder', () => {
+      const src = readFileSync(join(E2E_DIR, '_helpers', 'seed-data.ts'), 'utf8');
+      // ⚠️ `[0-9A-Z]`, not `\d`. The harvest used to be digits-only, which made
+      // this backstop blind to exactly the case it now has to catch: an
+      // alphanumeric literal was not FAILED, it was silently skipped, so an
+      // invalid alfa CNPJ would have sailed through into the seeds.
+      const literals = [...src.matchAll(/\bcnpj: '([0-9A-Z]+)'/g)].map((m) => m[1]!);
+      // Anti-vacuity: a regex that matched nothing would assert over an empty
+      // list. Three filial literals live in the seeder today.
+      //
+      // ⚠️ The scan is deliberately FILE-WIDE, not filial-scoped. Every `cnpj:`
+      // literal here happens to be a filial today, but the checksum rule is the
+      // same for any of them, and narrowing the regex to filial call sites would
+      // re-open the blind spot this test exists to close. Note `cpf_cnpj:` is
+      // NOT harvested — `\b` does not fire between `_` and `c` — so a CPF is
+      // excluded by accident rather than by design. Do not rely on that: a
+      // 14-character `cpf_cnpj:` literal would go unchecked.
+      expect(literals.length).toBeGreaterThanOrEqual(3);
+      for (const cnpj of literals) {
+        expect(isValidCnpj(cnpj), `seed-data.ts carries an invalid CNPJ: ${cnpj}`).toBe(true);
+      }
+    });
+
+    it('the harvest itself sees an alphanumeric literal', () => {
+      // ⚠️ Guards the guard. The assertion above cannot distinguish "every
+      // literal is valid" from "the regex matched nothing alphanumeric", and
+      // that indistinguishability WAS the bug. So pin the harvest against a
+      // synthetic source: an invalid alfa literal must be found, and must fail.
+      const fakeSrc = "  cnpj: '12ABC678000X99',\n  cnpj: '99999999999962',\n";
+      const literals = [...fakeSrc.matchAll(/\bcnpj: '([0-9A-Z]+)'/g)].map((m) => m[1]!);
+      expect(literals).toEqual(['12ABC678000X99', '99999999999962']);
+      expect(isValidCnpj('12ABC678000X99')).toBe(false);
+    });
+
+    it('accepts a checksum-valid ALPHANUMERIC CNPJ', () => {
+      // The other half of the near-miss pair: the widened validator must not
+      // just stop rejecting letters, it must compute the right DVs for them.
+      //
+      // ⚠️ The expected values are LITERALS, deliberately. Deriving them here
+      // with a copy of the same `dv` would pin `isValidCnpj` against a
+      // transcription of itself — the exact objection this file's JSDoc raises
+      // about reusing `validateCNPJ`. Both literals below are checked against
+      // the rule: base `12ABC6780001` weighted by ASCII-48 gives DV1 0, then
+      // `12ABC67800010` gives DV2 7. `12ABC34501DE35` is RFB's own published
+      // alphanumeric example from IN 2.229/2024.
+      expect(isValidCnpj('12ABC678000107')).toBe(true);
+      expect(isValidCnpj('12ABC34501DE35')).toBe(true);
+      // A one-character near-miss on the check digits must stay rejected.
+      expect(isValidCnpj('12ABC678000108')).toBe(false);
+      // …and so must a near-miss in the alfa body, which changes the sum.
+      expect(isValidCnpj('12ABD678000107')).toBe(false);
+      // Lowercase is not a valid CNPJ character, and must not be folded in.
+      expect(isValidCnpj('12abc678000107')).toBe(false);
+    });
+
+    it('rejects the all-zero CNPJ even though it satisfies the checksum', () => {
+      // `00000000000000` computes DVs of `00`, so only the repdigit ban stops
+      // it. Pinned separately because it is the single value where this
+      // validator would otherwise disagree with `@delfrance/core`'s
+      // `validateCNPJ`, and a backstop that disagrees with the schema its
+      // seeds are read through is worse than no backstop.
+      expect(isValidCnpj('00000000000000')).toBe(false);
+    });
   });
 
   it('has no run-scoped-only cliente CNPJ left in the seeder', () => {

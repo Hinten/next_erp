@@ -1,27 +1,7 @@
 /**
- * Byte-parity identity layer for the WhatsApp inbound pipeline — pure,
- * dependency-free ID derivations that MUST match the legacy Flutter formulas
- * exactly. ⚠️ The original reason — a dual run in which both handlers wrote the
- * same database (#527) — is void; there is no dual run (root `CLAUDE.md`
- * rule 8). Byte parity is still REQUIRED, for the migrated corpus: every
- * `chat/*` conversa and `chat/{id}/mensagem/*` mensagem inherited from the
- * legacy handler is keyed by these formulas, so a new inbound event must derive
- * the same id or it forks a second document instead of continuing the existing
- * conversa.
- *
- * Ports:
- *  - `generateUid` — `.old/packages/global/lib/src/utils.dart:74`
- *    (`sha256(utf8("$canalDeVendas-${id}"))`, lowercase hex digest).
- *  - `Usuario.generateExternalId` — `.old/packages/user/lib/src/models.dart:100`
- *    (byte-identical to `generateUid`, kept as its own name for intent).
- *  - `generateConversaSenderId` / `getFromNumberFromSenderId` —
- *    `.old/packages/canais_de_venda/whatsapp_cloud_api/lib/src/utils/generate_conversa_sender_id.dart`.
- *  - the conversa/mensagem doc ids —
- *    `.old/.../whatsapp_cloud_api/lib/src/notificacoes/messages.dart:60` and `:298`
- *    (`generateUid(conta_whatsapp.docId.pathWithDocuments, sender_id | message.id)`).
- *
- * `conta.docId.pathWithDocuments` for a `Conta_Whatsapp` (collection `integracao`,
- * unchanged from legacy) is `documents/integracao/<contaId>` — see {@link contaPath}.
+ * Hash primitives and legacy ID formulas, retained for imported data/fixtures.
+ * New conversations use the integration + cliente reservation in contatos.ts.
+ * mensagemDocId remains the live provider-message ID formula.
  */
 import { createHash } from 'node:crypto';
 

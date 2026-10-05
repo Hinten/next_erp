@@ -19,9 +19,23 @@ export type ShapeBucket =
   | 'micros'
   /** Millisecond int (<= 9e12) — the legacy Flutter wire format for pedido/frete. */
   | 'millis'
-  /** ISO-8601 string — the legacy Flutter wire format for pagamento. */
+  /** ISO-8601 string that carries its zone (`Z` / `±hh[:mm]`) — read exactly. */
   | 'iso-string'
-  /** A string that is not a parseable date. */
+  /**
+   * ISO-8601 string with NO zone — `2024-05-01T00:00:00.000`, or date-only. It is
+   * what Dart's `toIso8601String()` emits for a local `DateTime`. `coerceToMicros`
+   * converts it, resolving it as UTC by design, so a value a São Paulo device wrote
+   * lands 3h early: local midnight becomes the previous day at 21:00. It converts,
+   * so it is not a STOP — `formatReport` flags it with a CHECK line instead.
+   */
+  | 'iso-sem-fuso'
+  /**
+   * A string `coerceToMicros` refuses — not ISO-8601 (`June 16, 2026`,
+   * `2024/05/01`), or not a date at all. Decided by the converter itself, never by
+   * `Date.parse`, so this report agrees with `--apply` by construction: the two
+   * disagree in both directions (`Date.parse` takes human formats Temporal
+   * refuses, and refuses `,5Z` / a bare `-03` offset that Temporal takes).
+   */
   | 'string-invalida'
   /**
    * A number in the undeterminable gap `(9e12, 1e14)` — year 2255-5138 read as
@@ -62,15 +76,23 @@ export interface ShapeStats {
    */
   microsPadded: number;
   microsReais: number;
+  /**
+   * Counted for intelligence only: `--apply` never converts this field. Its
+   * refused values therefore cannot be "left wrong by the backfill", and "extend
+   * the converter" would not clear them — so they stay OUT of the OK/STOP verdict
+   * and get their own CHECK line.
+   */
+  reportOnly: boolean;
 }
 
-export function emptyStats(): ShapeStats {
+export function emptyStats(reportOnly = false): ShapeStats {
   return {
     counts: {
       ausente: 0,
       micros: 0,
       millis: 0,
       'iso-string': 0,
+      'iso-sem-fuso': 0,
       'string-invalida': 0,
       'zona-morta': 0,
       'timestamp-ou-outro': 0,
@@ -80,8 +102,20 @@ export function emptyStats(): ShapeStats {
     digitos: {},
     microsPadded: 0,
     microsReais: 0,
+    reportOnly,
   };
 }
+
+/** RFC 9557 suffix annotations (`[America/Sao_Paulo]`, `[u-ca=iso8601]`) — they never carry the offset. */
+const ANOTACOES = /(?:\[[^\]]*\])+$/;
+
+/**
+ * A zone designator that follows a TIME (`hh`, `hh:mm`, `hhmmss`, fractions with
+ * `.` or `,`). Anchoring it after the time is the point: a date-only `2024-05-01`
+ * ends in `-01`, which is the day, not a `-01` offset — and a date-only string has
+ * no zone either.
+ */
+const ZONA_APOS_HORA = /[T ]\d{2}(?::?\d{2}(?::?\d{2}(?:[.,]\d+)?)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)$/i;
 
 export function classify(value: unknown): ShapeBucket {
   if (value == null) return 'ausente';
@@ -92,7 +126,8 @@ export function classify(value: unknown): ShapeBucket {
     return 'zona-morta';
   }
   if (typeof value === 'string') {
-    return Number.isNaN(Date.parse(value)) ? 'string-invalida' : 'iso-string';
+    if (coerceToMicros(value) == null) return 'string-invalida';
+    return ZONA_APOS_HORA.test(value.trim().replace(ANOTACOES, '')) ? 'iso-string' : 'iso-sem-fuso';
   }
   if (value instanceof Date) return 'iso-string';
   // A firebase-admin `Timestamp`, a map, an array — anything the converter
@@ -126,6 +161,7 @@ const ORDEM: readonly ShapeBucket[] = [
   'micros',
   'millis',
   'iso-string',
+  'iso-sem-fuso',
   'zona-morta',
   'string-invalida',
   'timestamp-ou-outro',
@@ -140,6 +176,8 @@ function iso(us: number | null): string {
 export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string {
   const linhas: string[] = [];
   let bloqueia = 0;
+  const semFuso: string[] = [];
+  const recusadosSomenteLeitura: string[] = [];
 
   for (const [campo, s] of [...porCampo].sort(([a], [b]) => a.localeCompare(b))) {
     const total = Object.values(s.counts).reduce((n, v) => n + v, 0);
@@ -149,7 +187,12 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
       .sort(([a], [b]) => Number(a) - Number(b))
       .map(([d, n]) => `${d}d×${n}`)
       .join(' ');
-    bloqueia += s.counts['timestamp-ou-outro'] + s.counts['zona-morta'];
+    const recusados = s.counts['timestamp-ou-outro'] + s.counts['zona-morta'];
+    // The verdict is scoped to what `--apply` converts: a report-only field's
+    // refusals go on their own CHECK line instead.
+    if (!s.reportOnly) bloqueia += recusados;
+    else if (recusados > 0) recusadosSomenteLeitura.push(campo);
+    if (s.counts['iso-sem-fuso'] > 0) semFuso.push(campo);
     // Precision census — NOT part of the verdict, purely intelligence about
     // whether this field's microseconds carry information or are padding.
     const convertidos = s.microsPadded + s.microsReais;
@@ -163,7 +206,8 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
       `  ${campo.padEnd(42)} ${partes.join(' ')}` +
         (digitos ? `  [${digitos}]` : '') +
         `  ${iso(s.minUs)} → ${iso(s.maxUs)}` +
-        precisao,
+        precisao +
+        (s.reportOnly ? '  (report-only)' : ''),
     );
   }
 
@@ -174,5 +218,33 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
         'coerceToMicros refuses these, so the backfill would SKIP them and they would stay ' +
         'wrong. Extend the converter before applying.';
 
-  return ['', 'Shape report (nothing was written):', ...linhas, '', veredito, ''].join('\n');
+  // Both deliberately OUTSIDE the verdict: an offset-less string converts fine, it
+  // may just convert to the wrong instant; a report-only field is never converted.
+  const avisos: string[] = [];
+  if (semFuso.length > 0) {
+    avisos.push(
+      `⚠️  CHECK: offset-less ISO string(s) (\`iso-sem-fuso\`) in ${semFuso.join(', ')}. ` +
+        'coerceToMicros reads them as UTC, so a value a São Paulo device wrote lands 3h ' +
+        'early (local midnight → the previous day at 21:00). The verdict above does not ' +
+        "count these — confirm the writer's zone before --apply or before trusting the field.",
+    );
+  }
+  if (recusadosSomenteLeitura.length > 0) {
+    avisos.push(
+      '⚠️  CHECK: report-only field(s) holding values coerceToMicros refuses ' +
+        `(\`timestamp-ou-outro\` / \`zona-morta\`) in ${recusadosSomenteLeitura.join(', ')}. ` +
+        '--apply never converts them, so the verdict above does not count them — but their ' +
+        'schema reader cannot parse them either. Look at those documents by hand.',
+    );
+  }
+
+  return [
+    '',
+    'Shape report (nothing was written):',
+    ...linhas,
+    '',
+    veredito,
+    '',
+    ...avisos.flatMap((a) => [a, '']),
+  ].join('\n');
 }

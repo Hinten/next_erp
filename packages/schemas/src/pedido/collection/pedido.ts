@@ -3,6 +3,7 @@ import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { freteDoPedidoSchema } from '../../shared/frete';
 import { outerRefSchema } from '../../shared/outerRef';
+import { impostoPersistidoSchema } from '../../imposto/tribute';
 // One-way edge: `incidente.ts` imports nothing from here, so this cannot cycle.
 import { acaoBloqueadaSchema } from './incidente';
 
@@ -102,31 +103,58 @@ export const ESTADO_PEDIDO = {
 } as const satisfies Record<string, EstadoPedido>;
 
 /**
+ * `det/DFeReferenciado` for one item (NT 2025.002 Grupo VC): the item of ANOTHER
+ * NF-e this line refers to — its chave and, usually, its `nItem` (1–990).
+ * Required per item on some notas de crédito/débito and, once the NT's VC02-14
+ * applies, on a devolução; mutually exclusive with the note-level
+ * `chNFeReferenciadas` (`NFref`, rule 1010).
+ *
+ * The SHAPE is stored loosely, like `chNFeReferenciadas` (a string): the chave
+ * format, its check digit and the `nItem` range are page-model rules
+ * (`pedidoPageIssues`) so a half-typed value gets a readable message instead of
+ * a failed save, and the emission pre-flight re-checks them.
+ */
+export const dfeReferenciadoItemSchema = z.strictObject({
+  chaveAcesso: z.string(),
+  nItem: z.number().int().nullable().default(null),
+});
+export type DfeReferenciadoItem = z.infer<typeof dfeReferenciadoItemSchema>;
+
+/**
+ * The IBS/CBS amounts one item of a nota de débito carries when its tipo binds
+ * a fixed cClassTrib (NT 2025.002 UB14-70): débito 01/05 carry them in
+ * `gTransfCred`, 02/03/08 in `gAjusteCompet` (with `competApur`, AAAA-MM),
+ * 07 in `gEstornoCred`. They are AMOUNTS the operator states, never rates — no
+ * alíquota applies to a transfer, an adjustment or a reversal of credit.
+ *
+ * Which group they ride in is the operação's tipo, deliberately not stored
+ * here: a changed tipo re-reads the same amounts instead of leaving a stale
+ * group name behind. Loose like `dfeReferenciado`: the page model checks the
+ * values, `violacoesDoDocumento` whether the tipo needs them.
+ */
+export const ajusteRtcItemSchema = z.strictObject({
+  vIBS: z.number(),
+  vCBS: z.number(),
+  competApur: z.string().nullable().default(null),
+});
+export type AjusteRtcItem = z.infer<typeof ajusteRtcItemSchema>;
+
+/**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido — all 13 legacy fields
  * (`.old` `models.dart:57–195`) are enumerated below (confirmed 100% by the
- * #462 parity audit). `imposto` stays `z.unknown()`: it round-trips a
- * point-in-time `Imposto` (produto subcollection) snapshot, not a reference,
- * and full modeling is tracked separately (the sibling "nested strictness
- * gap" issue — that issue also covers making this schema itself reject an
- * unknown key on write, see the note below).
+ * #462 parity audit). `imposto` is a point-in-time fiscal snapshot, not a
+ * reference, and therefore uses the recursively strict persisted variant.
  *
- * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
- * `parseSoftRead` (`@delfrance/data`) tolerates an unmodeled key here: it
- * strips it silently rather than throwing, which is what keeps a legacy
- * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
- * 8). ⚠️ On WRITE, `parseForWrite`/`parseMergePatch`'s strict re-check (same
- * package, `zodParse.ts`) is **top-level only** — it diffs `Object.keys` of
- * the caller's `pedidoSchema` input against the parsed output, and Zod's
- * `.strict()` does not recurse into a nested schema. A pedido write with an
- * unmodeled key on an ITEM inside `itens`/`itensDevolvidos` does not throw:
- * `itens` itself is present on both sides, so nothing looks dropped at the
- * top level, and the item-level key is silently stripped the same way a
- * lenient read strips one. This schema's own `.strict()` (exercised directly
- * in `pedido.test.ts`) is therefore not a shape any production write path
- * actually applies.
+ * The item is a closed persisted shape: the #462 parity audit enumerated all
+ * 13 legacy ItemDoPedido keys, and #469 closes the embedded fiscal snapshot
+ * through `impostoPersistidoSchema`. Direct parses and registered writes reject
+ * unknown item or fiscal keys instead of silently stripping them. On READ, an
+ * incompatible nested legacy shape makes `parseSoftRead` return the complete
+ * raw pedido unchanged; it preserves the corpus document but intentionally
+ * applies none of this schema's defaults or coercions to that fallback value.
  */
-export const itemDoPedidoSchema = z.object({
+export const itemDoPedidoSchema = z.strictObject({
   produtoUid: z.string().nullable().default(null),
   ordem: z.number().int().default(1),
   ensureUniqueId: z.string().nullable().default(null),
@@ -145,7 +173,14 @@ export const itemDoPedidoSchema = z.object({
   quantidade: z.number().min(0),
   custo: z.number().nullable().default(null),
   timestamp: microsSinceEpoch().nullable().default(null),
-  imposto: z.unknown().nullable().default(null),
+  imposto: impostoPersistidoSchema.nullable().default(null),
+  // NOT a legacy field (the 13 above are): the item-level reference of
+  // NT 2025.002 Grupo VC, emitted as `det/DFeReferenciado` (#330). Absent on
+  // every migrated item, hence nullable + default null.
+  dfeReferenciado: dfeReferenciadoItemSchema.nullable().default(null),
+  // NOT a legacy field either: the adjustment amounts of a nota de débito
+  // (NT 2025.002 gTransfCred / gAjusteCompet / gEstornoCred, #330).
+  ajusteRtc: ajusteRtcItemSchema.nullable().default(null),
 });
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
@@ -166,7 +201,7 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  * without it the appended units sell with no movement at all (overselling). See
  * `detectarCrescimentoLegado` in `apps/functions`.
  */
-export const estoqueAplicadoSchema = z.object({
+export const estoqueAplicadoSchema = z.strictObject({
   /** Depósito that received the applied movements (id, not a path). */
   depositoId: z.string(),
   /** Operação that authorized them (audit — reversal uses the maps, not config). */
@@ -184,6 +219,122 @@ export const estoqueAplicadoSchema = z.object({
 });
 
 export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*        Marketplace lifecycle flag + buyer-capture diary (#1513, step 5)      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which marketplace's lifecycle `pedido.marketplace` is reporting.
+ *
+ * A closed enum with a companion const, unlike `status` below, because this one
+ * is OURS and it will grow (magalu, amazon…): `delfrance/prefer-schema-enum`
+ * then binds every caller to {@link MARKETPLACE_PEDIDO_TIPO} instead of a bare
+ * string literal.
+ */
+export const marketplacePedidoTipoSchema = z
+  .enum(['shopee'])
+  .meta({ labels: { shopee: 'Shopee' } });
+export type MarketplacePedidoTipo = z.infer<typeof marketplacePedidoTipoSchema>;
+
+/** Named members of {@link marketplacePedidoTipoSchema}. */
+export const MARKETPLACE_PEDIDO_TIPO = {
+  shopee: 'shopee',
+} as const satisfies Record<string, MarketplacePedidoTipo>;
+
+/**
+ * The marketplace's own lifecycle, mirrored beside the ERP `estado` it drives.
+ *
+ * ⚠️ **NOT a guard.** `estado` is what moves stock and what the operator acts
+ * on; this block is the provider's word, kept verbatim so a status the ERP
+ * ladder does not model is still visible (Shopee's `TO_RETURN` is the case that
+ * earned it: `estado` reads `pago` and every other cell reads healthy).
+ *
+ * ⚠️ `status` is `z.string()` and must STAY one. An enum would turn the very
+ * case the ladder exists for — a status the provider invents — into a parse
+ * throw ON WRITE, so the pedido that most needs `estado: error` could not be
+ * written at all. The closed set lives in the channel's own ladder module, where
+ * an unknown value is DATA.
+ *
+ * ⚠️ Deliberately NOT in `serverOwnedFields`: forging it changes nothing (the
+ * next delivery re-derives every field from the wire, and `estado` — which does
+ * gate stock — is not here). It IS in `PEDIDO_HISTORY_IGNORE_FIELDS` and
+ * `CONCURRENCY_IGNORE`, because no interactive editor can author it and a
+ * marketplace re-import would otherwise write a phantom "Sistema" audit row and
+ * raise a phantom conflict in an open editor.
+ */
+export const marketplacePedidoSchema = z.strictObject({
+  tipo: marketplacePedidoTipoSchema,
+  /** The provider's `order_status`, VERBATIM. Never an enum — see above. */
+  status: z.string().nullable().default(null),
+  /**
+   * When the provider stamped that status (µs). Same value as
+   * `pedido.lastMarketplaceUpdate` — that one is the WATERMARK the importer
+   * compares, this one is what a screen renders.
+   */
+  statusEm: microsSinceEpoch('Status do marketplace em').nullable().default(null),
+  /**
+   * `null` = we did not ask (or the provider does not answer); `[]` = we asked
+   * and the order carries none. The distinction is the whole value of the
+   * field, so do not collapse it to an empty array.
+   */
+  pendingTerms: z.array(z.string()).nullable().default(null),
+  completedScenario: z.string().nullable().default(null),
+  cancelReason: z.string().nullable().default(null),
+  cancelBy: z.string().nullable().default(null),
+});
+export type MarketplacePedido = z.infer<typeof marketplacePedidoSchema>;
+
+/** Where the buyer capture stands for one pedido. */
+export const capturaCompradorEstadoSchema = z.enum(['pendente', 'capturado', 'expirado']).meta({
+  labels: { pendente: 'Pendente', capturado: 'Capturado', expirado: 'Expirado' },
+});
+export type CapturaCompradorEstado = z.infer<typeof capturaCompradorEstadoSchema>;
+
+/**
+ * Named members of {@link capturaCompradorEstadoSchema}.
+ *
+ * ⚠️ `packages/schemas` cannot import an app, so the channel adapter
+ * (`apps/shopee/lib/shopee/pedidos/comprador.ts`) declares the same three
+ * tokens; it `satisfies` THIS type, which is what stops the two vocabularies
+ * drifting.
+ */
+export const CAPTURA_COMPRADOR_ESTADO = {
+  pendente: 'pendente',
+  capturado: 'capturado',
+  expirado: 'expirado',
+} as const satisfies Record<string, CapturaCompradorEstado>;
+
+/**
+ * Why a marketplace order's buyer is (or is not) linked to a cliente.
+ *
+ * Marketplaces redact buyer data outside a bounded "unmask window", per FIELD:
+ * a masked import must write NOTHING, and this block is what says so afterwards
+ * — otherwise a pedido with no `clientePedidoOuterRef` is indistinguishable from
+ * one nobody tried to resolve.
+ *
+ * ⚠️ **A DIARY, never a GUARD.** The capture decision is re-derived from the
+ * FRESH wire payload on every delivery through the shared usable-value
+ * predicate; nothing may branch on the stored block. That is exactly why it can
+ * stay client-writable: forging `capturado` unblocks no NF-e (the orchestrator
+ * refuses on the absent `clientePedidoOuterRef`) and stops no re-attempt. Any
+ * later step that wants to GATE on it must first move the field into
+ * `serverOwnedFields` and pay the ruleset regeneration (rule 2).
+ *
+ * ⚠️ `camposRecusados` carries `<campo>:<veredito>` entries — field NAMES and
+ * verdicts only (`'nome:mascarado'`, `'cpf_cnpj:invalido'`, `'regiao:nao-br'`).
+ * **Never a value**, masked or not, and never a length or a prefix of one.
+ */
+export const capturaCompradorSchema = z.strictObject({
+  estado: capturaCompradorEstadoSchema,
+  /** The provider `order_status` observed at the last attempt. */
+  statusObservado: z.string().nullable().default(null),
+  /** When that attempt ran (µs, wall clock). */
+  em: microsSinceEpoch('Captura do comprador em').nullable().default(null),
+  tentativas: z.number().int().min(0).default(0),
+  camposRecusados: z.array(z.string()).nullable().default(null),
+});
+export type CapturaComprador = z.infer<typeof capturaCompradorSchema>;
 
 /**
  * Pedido schema — aligned with the legacy Flutter `Pedido` class
@@ -252,6 +403,14 @@ export const pedidoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Chaves de NF-e referenciadas'),
+  // NT 2025.002 `ide/gPagAntecipado` (#331): the NF-e de pagamento antecipado
+  // (a nota de débito 06) whose installments this nota settles. Not a legacy
+  // field — nullable, default null. Checked by the page model and at emission.
+  chNFePagamentoAntecipado: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('NF-e de pagamento antecipado'),
 
   // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
   itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),
@@ -272,23 +431,45 @@ export const pedidoSchema = z.object({
   // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
   estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
 
-  // Totals. `valorCobrado` is the ONE derived money cache still persisted:
-  // it backs a server-side `orderBy` + currency filter on `/pedidos`
+  // Totals. `valorCobrado` is the ONE money field still persisted here: it
+  // backs a server-side `orderBy` + currency filter on `/pedidos`
   // (`PedidosListView.tsx`) and the two indexes serving them, so it cannot be
-  // computed at read time. The other five Flutter wrote here
-  // (`valorCusto`, `valorFreteInicial`, `custoFreteInicial`, `valorDevolucao`,
-  // `valorCustoDevolvidos`) were REMOVED: each was a pure function of `itens`
-  // or `freteInicial` on this same document, with no reader, no query and no
-  // index, so a cache could only ever drift from the value it cached (#796).
-  // `derivePedidoTotals` still computes all six — they are display values now.
-  // ⚠️ Do not re-add one to "make a report easier": reports sum item
-  // subtotals, NF-e reads `frete.valorCobrado`, the footer derives live.
+  // computed at read time. NINE others Flutter wrote here were REMOVED, in two
+  // passes with two different reasons:
+  //
+  //  - The five DERIVED caches (`valorCusto`, `valorFreteInicial`,
+  //    `custoFreteInicial`, `valorDevolucao`, `valorCustoDevolvidos`) — each a
+  //    pure function of `itens` or `freteInicial` on this same document, so a
+  //    cache could only ever drift from the value it cached (#796).
+  //    `derivePedidoTotals` still computes all six; they are display values now.
+  //  - The four AGGREGATE pass-throughs (`valorComissoes`,
+  //    `valorDespesasIncidentes`, `valorFretesIncidentes`, `impostos`) — never
+  //    derivable from this document, which is exactly why they were persisted:
+  //    the only way to report them used to be a stored cache. They had no
+  //    writer in this app and no reader anywhere, and Enterprise's Pipelines
+  //    API removed the constraint that created them: a correlated subquery
+  //    CAN aggregate the pedido's own subcollections at read time —
+  //    `incidentes` (`valor`, `frete`) for the two incident totals, `orderML`
+  //    (`unnest(order_items)` → `sale_fee`) for the commission.
+  //    ⚠️ No such pipeline is WRITTEN — nothing read these fields, so there is
+  //    no number to replace and nothing regressed. The shape is proven by
+  //    `bulkEstoquePlan.ts` (`apps/mercado-livre`), which runs exactly this
+  //    kind of `subcollection()` aggregate; what changed is that the reason
+  //    for persisting a cache is gone, not that a report now exists.
+  //    `impostos` went with them for the same "no writer" reason, but it is
+  //    the one a pipeline canNOT reach at all: `nfev4` persists the NF-e as
+  //    raw XML, which no aggregation can parse. Keeping the field produced no
+  //    number either way; giving it a real fiscal source is #1491. (#1151.)
+  //
+  // ⚠️ Do not re-add one to "make a report easier" — that is precisely the
+  // reasoning #1151 retired. Reports should AGGREGATE: item subtotals and the
+  // subcollections above, through a pipeline. NF-e reads `frete.valorCobrado`,
+  // and the footer derives live. A re-added field also costs more than a dead
+  // column: `TableView` offers every non-`hidden` schema field in its column
+  // picker, and `/pedidos` sorts server-side, so one header click on an
+  // unindexed field is a silent full scan billed by the byte (rule 1).
   valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
   descontoTotal: z.number().default(0).describe('Desconto total'),
-  valorDespesasIncidentes: z.number().nullable().default(null).describe('Despesas incidentes'),
-  valorFretesIncidentes: z.number().nullable().default(null).describe('Fretes incidentes'),
-  valorComissoes: z.number().nullable().default(null).describe('Comissões'),
-  impostos: z.number().nullable().default(null).describe('Impostos'),
 
   // Timestamps — all stored as µs since epoch ----------------------------
   timestamp: microsSinceEpoch('Criação').nullable().default(null),
@@ -316,6 +497,19 @@ export const pedidoSchema = z.object({
   infCpl: z.string().nullable().default(null).describe('Informações complementares'),
   /** Persisted error message from the last failed write / emission. */
   error: z.string().nullable().default(null).describe('Erro'),
+
+  // Marketplace lifecycle + buyer capture (#1513) ---------------------------
+  // Two blocks the marketplace importers own end to end. Both are DIARIES: they
+  // report what the provider said and what the import could do with it, and
+  // nothing in this repo gates on either. `null` on every pedido no marketplace
+  // importer wrote. See the two schemas above for why neither is server-owned
+  // and why `marketplace.status` is a plain string.
+  marketplace: marketplacePedidoSchema.nullable().default(null).describe('Marketplace'),
+  capturaComprador: capturaCompradorSchema
+    .nullable()
+    .default(null)
+    .describe('Captura do comprador'),
+
   // Marketplace dispute overlay (#1322) ------------------------------------
   // Two denormalized markers, µs of the OLDEST still-open blocking incidente
   // of each kind (null = none). Derived state: the source of truth is the
@@ -383,6 +577,8 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
+    // Mercado Pago Checkout Pro links (#367) — the legacy leaf, serverOwned.
+    { path: 'pedidos/{pedidoId}/linkPgtoMercadoPago', onDelete: 'cascade' },
     // Freight-history / checkout / checkin subcollections, all three reusing
     // the legacy leaf names, which is where the migrated corpus sits. The new app
     // writes two of them: `checkout` (saveCheckout, schema
@@ -477,10 +673,31 @@ export const pedidoMeta: CollectionMetadata = {
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 50,
-    // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
+    // The nine columns legacy showed, plus `disputa` (#1322) and `integracao`.
+    // ⚠️ `disputa` is declared in `PedidosListView` but was never listed HERE,
+    // so it rendered on no fresh browser — the ColumnPicker was its only route
+    // on screen, and that picker is going away. Its own docstring calls this
+    // list "the dispatch surface" and notes every other cell reads healthy
+    // while a mediation is open, so dropping it is a silent regression.
+    // Legacy reference: `pedidoTableView.dart:2221-2256`.
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
-    columns: ['numero', 'estado', 'nf', 'cliente', 'expedicao', 'vlr', 'frete', 'criacao', 'imp'],
+    columns: [
+      'numero',
+      'estado',
+      'nf',
+      'disputa',
+      'cliente',
+      // Carries the Canal filter. A TableView filter affordance lives in a
+      // column header, so an operator who works one marketplace at a time
+      // cannot narrow the list without this column being on screen.
+      'integracao',
+      'expedicao',
+      'vlr',
+      'frete',
+      'criacao',
+      'imp',
+    ],
   },
   // All three estoque-sync fields are written ONLY by the
   // `sincronizarEstoquePedido` Cloud Function, and this list must stay in step
@@ -516,6 +733,9 @@ export const pedidoMeta: CollectionMetadata = {
     'disputaAbertaEm',
     'devolucaoAbertaEm',
     'bloqueiosLiberados',
+    // Provider event-clock watermark. Client creates may omit/seed null, but
+    // only server importers may advance, change or remove it afterwards.
+    'lastMarketplaceUpdate',
   ],
 };
 

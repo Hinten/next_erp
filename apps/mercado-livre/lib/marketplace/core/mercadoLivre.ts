@@ -216,9 +216,7 @@ export function buildMercadoLivreContext(
 /**
  * The ML-relevant slice of an `integracao` account, typed off
  * `integracaoSchema` (#289) rather than an ad-hoc `Record<string, unknown>`
- * read: `user_id` (the ML seller id). The Mercado-Shops price-table refs the
- * bag used to carry were dropped with the schema fields (Mercado Shops was
- * discontinued 2025-12-31; nothing ever consumed them).
+ * read: `user_id` (the ML seller id).
  */
 export function mercadoLivreAccountBag(conta: Integracao): Readonly<Record<string, unknown>> {
   return {

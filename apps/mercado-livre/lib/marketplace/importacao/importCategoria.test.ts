@@ -88,6 +88,11 @@ describe('buildCategoriaChain', () => {
           categoriaGoogleId: null,
           categoriaPaiOuterRef: null,
           timestamp: 1000,
+          // Stamped alongside `timestamp`. Without it an imported categoria carries no
+          // `ultimaModificacao` key, and the TableView update-monitor orders by that
+          // field with a CLASSIC query — which EXCLUDES documents missing it, so every
+          // ML-imported categoria was invisible to the staleness check.
+          ultimaModificacao: 1000,
         },
       },
     ]);

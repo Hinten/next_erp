@@ -172,6 +172,14 @@ export const whatsappFields: Record<string, FieldConfig> = {
       'Usado nas chamadas de nível de conta do Graph — por ex. a verificação de inscrição do ' +
       'webhook (subscribed_apps) na checagem de saúde da conta.',
   },
+  portfolioId: {
+    label: 'ID do portfólio empresarial Meta',
+    section: 'Conexão (Cloud API)',
+    hint:
+      'ID do portfólio empresarial que contém esta conta, nas configurações do negócio da Meta. ' +
+      'Define o escopo dos identificadores de contato (BSUID) e permite reconhecer contatos ' +
+      'sem telefone informado. Contas do mesmo portfólio devem usar o mesmo ID.',
+  },
   mensagem_automatica: {
     label: 'Mensagem automática (dentro do horário de atendimento)',
     section: 'Atendimento',

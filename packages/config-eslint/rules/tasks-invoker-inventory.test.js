@@ -14,7 +14,7 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
  * region fall-through from `mlTasks.ts` and left the four copy-pasted siblings
  * alone, and because each sibling had its own test pinning its own stale
  * default, four queues aimed at a region with no Cloud Tasks and CI stayed
- * green. A per-file lint rule cannot express "these five agree"; that IS the
+ * green. A per-file lint rule cannot express "these seven agree"; that IS the
  * defect. Same shape as `runtime-deps-pinned.test.js` (six manifests must agree)
  * and `reserva-arithmetic-inventory.test.js`.
  *
@@ -31,6 +31,8 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
 
 /** Path → what the function is, so a new one has to be read, not just listed. */
 const INVENTORY = {
+  'apps/functions/src/access/processAccessOperation.ts':
+    'Access propagation, enqueued by the operation-created trigger, worker continuations and watchdog (functions runtime SA).',
   // ---- codebase `mercado-livre` (apps/mercado-livre/functions) -------------
   'apps/mercado-livre/functions/src/processNotification.ts':
     'The ML webhook notification handler. Enqueued by the receiver route AND by two onSchedule sweeps (order backfill, missed_feeds) running as the FUNCTIONS runtime SA.',
@@ -46,6 +48,22 @@ const INVENTORY = {
   // ---- codebase `mercado-pago` --------------------------------------------
   'apps/mercado-pago/functions/src/processNotification.ts':
     'The Mercado Pago IPN handler. Enqueued by the receiver route only.',
+
+  // ---- codebase `melhor-envio` -------------------------------------------
+  'apps/melhor-envio/functions/src/processNotification.ts':
+    'The Melhor Envio order-status webhook handler. Enqueued by the receiver route only.',
+
+  // ---- codebase `shopee` --------------------------------------------------
+  'apps/shopee/functions/src/processNotification.ts':
+    'The Shopee push notification handler. Enqueued by the receiver route (App Hosting runtime SA) AND by the functions runtime SA: five onSchedule producers (the lost-push sweep and the order backfill, step 4; the escrow-settlement sweep, step 6; the stuck-reservation sweep, step 8; the auto-arrange sweep, step 15b) and the handler ITSELF since step 7 (one synthetic code 3 when a shipment push finds no pedido, also reached by the inline re-drives of the reprocess sweep) — so two identities dispatch it.',
+  'apps/shopee/functions/src/processMassImport.ts':
+    'The Shopee mass product import ("importar todos os anuncios", master-plan step 9). Enqueued by the /importar-todos route under the App Hosting runtime SA and re-enqueued by ITSELF — for every scan/drain continuation AND for the rate-limit pause (scheduleDelaySeconds) — so two identities dispatch it.',
+  'apps/shopee/functions/src/sendStock.ts':
+    'The Shopee stock push (master-plan step 12). Enqueued by the three onSchedule stock sweeps (functions runtime SA) and self-re-enqueued on a rate-limit pause — the burst arm and the pause rung both re-enqueue onto this queue with scheduleDelaySeconds — so two identities dispatch it. The manual push (/enviar-estoque) runs IN-PROCESS and never enqueues.',
+  'apps/shopee/functions/src/processPriceSync.ts':
+    'The Shopee account-wide price job ("atualizar precos", master-plan step 13). Enqueued by the /atualizar-precos route (App Hosting runtime SA) and re-enqueued by ITSELF for every plan/drain continuation, the burst pause and the daily park (scheduleDelaySeconds) — two identities. The manual price push (/enviar-precos) runs IN-PROCESS and never enqueues.',
+  'apps/shopee/functions/src/processNfeUpload.ts':
+    'The Shopee NF-e XML upload (master-plan step 14). Enqueued by the onNfeAprovadaShopee Firestore trigger (functions runtime SA) and by the /enviar-nfe route (App Hosting runtime SA), and re-enqueued by ITSELF for the SERPRO wait on error #5, the burst pause, the daily park and the ~15-min recheck (scheduleDelaySeconds) — two identities. The enviar:nfe CLI runs the handler IN-PROCESS and enqueues nothing.',
 
   // ---- codebase `whatsapp` ------------------------------------------------
   'apps/whatsapp/functions/src/processNotification.ts':
@@ -74,8 +92,8 @@ const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-esl
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 9;
-const MIN_CODEBASES = 5;
+const MIN_TASK_FILES = 17;
+const MIN_CODEBASES = 7;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');
@@ -95,7 +113,7 @@ function taskFunctionFiles() {
 /**
  * The functions codebases, DISCOVERED from the task files rather than listed.
  *
- * ⚠️ This is the whole point. Enumerating the five `build.mjs` and the five
+ * ⚠️ This is the whole point. Enumerating the seven `build.mjs` and the seven
  * `tasksInvoker.ts` would leave a SIXTH codebase checked by `INVENTORY` (its
  * task function is forced into the list, and forced to spread the helper) while
  * nothing asserted its build carries the `define`. That state passes every

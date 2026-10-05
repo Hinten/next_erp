@@ -3,6 +3,11 @@
 Backfills `chat/{id}.clienteOuterRef` from `usarioOuterRef`, so the inbox's
 **Cliente** filter can be a single equality on one field.
 
+**WhatsApp é excluído desta passagem desde #1084.** Use
+`migrate:whatsapp-contato-cliente`, que também registra identidades, consolida
+histórico e preserva links. Esta passagem continua atendendo os outros canais;
+duas migrações não devem decidir o cliente de uma mesma conversa WhatsApp.
+
 ```bash
 # pre-flight — counts every verdict, logs no per-doc lines, writes nothing
 pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id> --report-only

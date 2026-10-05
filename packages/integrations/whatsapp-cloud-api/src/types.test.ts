@@ -144,6 +144,73 @@ describe('webhookEnvelopeSchema', () => {
 });
 
 describe('incomingMessageSchema', () => {
+  it('keeps a BSUID-only message and contact when Meta omits every phone field', () => {
+    const parsed = valuePayloadSchema.parse(
+      baseValue({
+        contacts: [{ user_id: 'BR.opaque', profile: { name: 'Ana' } }],
+        messages: [
+          {
+            from_user_id: 'BR.opaque',
+            id: 'wamid.private',
+            timestamp: '1700000000',
+            type: 'text',
+            text: { body: 'Oi' },
+          },
+        ],
+        statuses: [
+          {
+            id: 'wamid.sent',
+            recipient_user_id: 'BR.opaque',
+            timestamp: '1700000001',
+            status: 'read',
+          },
+        ],
+      }),
+    );
+    expect(parsed.contacts?.[0]).toEqual({ user_id: 'BR.opaque', profile: { name: 'Ana' } });
+    expect(parsed.messages?.[0]).toMatchObject({ from_user_id: 'BR.opaque', id: 'wamid.private' });
+    expect(parsed.messages?.[0]).not.toHaveProperty('from');
+    expect(parsed.statuses?.[0]).toMatchObject({ recipient_user_id: 'BR.opaque' });
+    expect(parsed.statuses?.[0]).not.toHaveProperty('recipient_id');
+  });
+
+  it.each(['user_changed_number', 'user_changed_user_id'])(
+    'preserves the structured %s system transition',
+    (type) => {
+      const parsed = incomingMessageSchema.parse({
+        from: '5511999998888',
+        id: 'wamid.changed',
+        timestamp: '1700000002',
+        type: 'system',
+        system: {
+          type,
+          user_id: 'BR.new',
+          previous_user_id: 'BR.old',
+          wa_id: '5511888887777',
+          body: 'Texto traduzível, sem função de identidade',
+        },
+      });
+      expect(parsed.system).toEqual({
+        type,
+        user_id: 'BR.new',
+        previous_user_id: 'BR.old',
+        wa_id: '5511888887777',
+        body: 'Texto traduzível, sem função de identidade',
+      });
+    },
+  );
+
+  it('accepts a number change without previous BSUID or visible new phone', () => {
+    const parsed = incomingMessageSchema.parse({
+      from: '5511999998888',
+      id: 'wamid.changed',
+      timestamp: '1700000002',
+      type: 'system',
+      system: { type: 'user_changed_number', user_id: 'BR.new' },
+    });
+    expect(parsed.system).toEqual({ type: 'user_changed_number', user_id: 'BR.new' });
+  });
+
   it('parses a reaction message', () => {
     const parsed = incomingMessageSchema.parse({
       from: '5511999990000',

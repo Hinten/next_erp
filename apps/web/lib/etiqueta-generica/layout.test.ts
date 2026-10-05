@@ -282,7 +282,7 @@ describe('wrapText', () => {
 });
 
 describe('groupChave', () => {
-  it('groups the 44-digit chave in eleven blocks of four', () => {
+  it('groups the 44-character chave in eleven blocks of four', () => {
     const grouped = groupChave(CHAVE);
     expect(grouped.split(' ')).toHaveLength(11);
     expect(grouped.replace(/ /g, '')).toBe(CHAVE);

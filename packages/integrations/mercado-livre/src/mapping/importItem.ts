@@ -40,7 +40,9 @@ import {
   type MlAttribute,
   attributesWithValue,
 } from './attributes';
-import { type EstadoPublicacao, estadoFromMlStatus } from './itemPayload';
+import type { EstadoPublicacaoMl } from '@delfrance/schemas';
+
+import { estadoFromMlStatus } from './itemPayload';
 import type { MlItem, MlItemAttribute } from '../types';
 
 /**
@@ -94,7 +96,7 @@ export interface MappedMlItem {
   categoryId: string | null;
   listingTypeId: string | null;
   condition: 'new' | 'used';
-  estado: EstadoPublicacao;
+  estado: EstadoPublicacaoMl;
   /** Raw ML status / sub_status (for the maintenance bot, #440). */
   status: string | null;
   subStatus: string[] | null;
@@ -621,7 +623,7 @@ export function mapMlItemToImport(item: MlItem, extras: MapMlItemExtras = {}): M
     categoryId: item.category_id ?? null,
     listingTypeId: item.listing_type_id ?? null,
     condition,
-    estado: estadoFromMlStatus(item.status),
+    estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
     status: item.status ?? null,
     subStatus: item.sub_status ?? null,
     freteGratis: item.shipping?.free_shipping === true,

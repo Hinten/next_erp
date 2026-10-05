@@ -14,6 +14,12 @@
  * **Scope**: Simples Nacional (CSOSN) + the optional RTC groups. Regime Normal
  * (CST 00/10/20/…) is Phase D — the dispatcher in `imposto.ts` throws a clear
  * "not implemented" error on `crt='3'`/`'4'`.
+ *
+ * The emission rules those configs must satisfy (the ICMS SN CSOSN/sub-config/
+ * XSD-group choice and the PIS/COFINS group choice) are re-exported too: they
+ * are decided, as verdicts, in `@delfrance/schemas`
+ * (`src/imposto/regrasDeEmissao.ts`); `total.ts`'s ICMSTot roll-up still
+ * mirrors the CSOSN-slot and ISSQN choices with its own checks.
  */
 import { z } from 'zod';
 
@@ -74,6 +80,32 @@ export {
   type ConfiguracaoISRtc,
   type ConfiguracaoIBSCBS,
   type Imposto,
+  // The emission rules as verdicts (#1655): `imposto.ts` throws from them, and
+  // the web imposto editor can check the same ones before a save.
+  CRTS_SIMPLES_NACIONAL,
+  ehCrtSimplesNacional,
+  usaIssqn,
+  SUBCONFIGS_ICMS_SN,
+  SUBCONFIG_POR_CSOSN,
+  GRUPO_XSD_FCP_ST,
+  GRUPOS_XSD_ICMSSN500,
+  GRUPOS_XSD_ICMSSN900,
+  GRUPOS_XSD_POR_SUBCONFIG,
+  vereditoIcmsSn,
+  ALIQUOTA_PIS_COFINS_LIMITE,
+  vereditoPisCofins,
+  type CrtSimplesNacional,
+  type SubConfigIcmsSn,
+  type GrupoXsd,
+  type GrupoXsdIncompleto,
+  type IcmsSnEmitivel,
+  type VereditoIcmsSn,
+  type CstPisCofinsAliq,
+  type CstPisCofinsQtde,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type BasePisCofinsOutr,
+  type VereditoPisCofins,
 } from '@delfrance/schemas';
 
 /**
@@ -84,5 +116,14 @@ export {
 export const tributeItemSchema = z.object({
   /** Pre-rounded item line total: `(precoDeVenda - desconto) × qCom`. */
   vProd: z.number().nonnegative(),
+  /**
+   * The det's `<qTrib>` — the item quantity. It is the `qBCProd` ("Quantidade
+   * Vendida", NT 2011/004) of the per-unit PIS/COFINS groups: PISQtde /
+   * COFINSQtde (CST 03) and the `(qBCProd + vAliqProd)` branch of PISOutr /
+   * COFINSOutr (CST 49–99). `nullish` because only a per-unit rate reads it —
+   * a caller that configures one without passing the quantity gets an
+   * `NFeTributeError` naming `qTrib`, never a silent `qBCProd` of 1.
+   */
+  qTrib: z.number().nonnegative().nullish(),
 });
 export type TributeItem = z.infer<typeof tributeItemSchema>;

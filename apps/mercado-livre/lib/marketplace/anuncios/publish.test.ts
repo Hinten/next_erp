@@ -650,52 +650,6 @@ describe('publishProduto — legacy wire shape', () => {
     expect(link.site_id).toBe('MLB');
   });
 
-  it('re-derives the child denorm stamp when the doc moves under it (rule 7 tier 1)', async () => {
-    const db = new FakeDb();
-    seedBase(db);
-    db.seed('produtos', 'child-1', {
-      nome: 'Camiseta M',
-      sku: 'SKU-1-M',
-      paiId: PROD,
-      precos: { 'lista-1': { valor: 79.9 } },
-      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
-    });
-    db.seed('grupoDeVariacoes', 'g-tam', {
-      nome: 'Tamanho',
-      tipo: 1,
-      variacoes: [{ id: 'v-m', nome: 'M' }],
-    });
-    const { api } = makeApi({
-      createItem: vi.fn(async () => ({
-        ...ITEM_RESPONSE,
-        variations: [{ id: 555, seller_custom_field: 'child-1' }],
-      })),
-    });
-    // Another writer lands on the child produto inside the stamp's
-    // read-modify-write window, exactly once.
-    // The concurrent write lands on `marketplaceIds` — a field the stamp still
-    // owns since #920 moved `integracoesComProduto` to the link trigger. Any
-    // write fails the `lastUpdateTime` precondition, but only a field the stamp
-    // re-derives can show whether the retry RE-DERIVED or blindly re-applied.
-    db.afterGet = {
-      path: 'produtos/child-1',
-      fn: () => {
-        const cur = db.docs('produtos').get('child-1')!;
-        db.seed('produtos', 'child-1', { ...cur, marketplaceIds: ['concorrente'] });
-      },
-    };
-
-    await publishProduto(makeDeps(db, api), PROD);
-
-    const child = db.docs('produtos').get('child-1')!;
-    // The first update failed the precondition; the retry re-READ and
-    // re-DERIVED, so the concurrent value is folded in rather than erased.
-    expect(child.marketplaceIds).toEqual(expect.arrayContaining(['concorrente', '555']) as unknown);
-    expect(child.marketplace).toEqual([
-      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
-    ]);
-  });
-
   it('a link without category_id is blocked, and never asks ML to pick one (#799)', async () => {
     const db = new FakeDb();
     seedBase(db);
@@ -911,150 +865,6 @@ describe('publishProduto — legacy wire shape', () => {
     expect(link.contaOuterRef).toBe(`documents/integracao/${CONTA}`);
     expect(link.title).toBe('Título antigo');
     expect(link.site_id).toBe('MLB');
-  });
-
-  it('stamps the parent deprecated arrays in the legacy order-import shape (#431)', async () => {
-    const db = new FakeDb();
-    seedBase(db, {
-      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
-    });
-    const { api } = makeApi();
-
-    await publishProduto(makeDeps(db, api), PROD);
-
-    const update = db.updates.find((u) => u.path === `produtos/${PROD}`);
-    expect(update).toBeDefined();
-    // Exact probe shape: {integracaoUid, externalId} — NO relevantData, or the
-    // legacy array-contains (exact map equality) would miss it.
-    expect(
-      (update!.patch.marketplace as FieldValue).isEqual(
-        FieldValue.arrayUnion({ integracaoUid: CONTA, externalId: 'MLB777' }),
-      ),
-    ).toBe(true);
-    expect(
-      (update!.patch.marketplaceIds as FieldValue).isEqual(FieldValue.arrayUnion('MLB777')),
-    ).toBe(true);
-    // #920: `integracoesComProduto` is NOT in this patch any more —
-    // `onProdutoMercadoLivreLinkChanged` derives it from the link doc written
-    // above. Two writers is how a conta gets silently dropped while a live
-    // listing exists, so this assertion guards the removal.
-    expect(update!.patch).not.toHaveProperty('integracoesComProduto');
-  });
-
-  it('stamps each variation child with the legacy cleanup semantics (#431)', async () => {
-    const db = new FakeDb();
-    seedBase(db, {
-      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
-    });
-    const { api } = makeApi({
-      createItem: vi.fn(async () => ({
-        ...ITEM_RESPONSE,
-        variations: [{ id: 555, seller_custom_field: 'child-1' }],
-      })),
-    });
-    db.seed('produtos', 'child-1', {
-      nome: 'Camiseta M',
-      sku: 'SKU-1-M',
-      paiId: PROD,
-      ordem: 0,
-      precos: { 'lista-1': { valor: 79.9 } },
-      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
-      marketplace: [
-        // Stale: same conta + same listing, but an old variation id.
-        { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '111' },
-        // Parent-shaped entry wrongly on a child — legacy removes it.
-        { integracaoUid: CONTA, externalId: 'MLB777' },
-        // Another conta's entry must survive untouched.
-        { integracaoUid: 'outra-conta', externalParentId: 'MLB999', externalId: '42' },
-      ],
-      marketplaceIds: ['111'],
-      integracoesComProduto: ['outra-conta'],
-    });
-    db.seed('produtos/child-1/estoques', 'est-c', {
-      depositoOuterRef: 'documents/depositos/dep-1',
-      quantidade: 4,
-      quantidadeReservada: 0,
-    });
-    db.seed('grupoDeVariacoes', 'g-tam', {
-      nome: 'Tamanho',
-      tipo: 1,
-      variacoes: [{ id: 'v-m', nome: 'M' }],
-    });
-
-    await publishProduto(makeDeps(db, api), PROD);
-
-    const child = db.docs('produtos').get('child-1')!;
-    expect(child.marketplace).toEqual([
-      { integracaoUid: 'outra-conta', externalParentId: 'MLB999', externalId: '42' },
-      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
-    ]);
-    expect(child.marketplaceIds).toEqual(['111', '555']);
-    // #920: the stamp no longer touches this array — the child's
-    // `variacaoMercadoLivre` link carries `contaOuterRef` and
-    // `onVariacaoMercadoLivreLinkChanged` derives it. The seeded value must
-    // come through untouched, CONTA included only by the trigger.
-    expect(child.integracoesComProduto).toEqual(['outra-conta']);
-  });
-
-  it('re-publish with an already-correct child entry does not duplicate it (#432 review)', async () => {
-    const db = new FakeDb();
-    seedBase(db, {
-      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
-    });
-    const { api } = makeApi({
-      createItem: vi.fn(async () => ({
-        ...ITEM_RESPONSE,
-        variations: [{ id: 555, seller_custom_field: 'child-1' }],
-      })),
-    });
-    db.seed('produtos', 'child-1', {
-      nome: 'Camiseta M',
-      sku: 'SKU-1-M',
-      paiId: PROD,
-      ordem: 0,
-      precos: { 'lista-1': { valor: 79.9 } },
-      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
-      // Already exactly what this publish will produce.
-      marketplace: [{ integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' }],
-      marketplaceIds: ['555'],
-      integracoesComProduto: [CONTA],
-    });
-    db.seed('produtos/child-1/estoques', 'est-c', {
-      depositoOuterRef: 'documents/depositos/dep-1',
-      quantidade: 4,
-      quantidadeReservada: 0,
-    });
-    db.seed('grupoDeVariacoes', 'g-tam', {
-      nome: 'Tamanho',
-      tipo: 1,
-      variacoes: [{ id: 'v-m', nome: 'M' }],
-    });
-
-    await publishProduto(makeDeps(db, api), PROD);
-
-    const child = db.docs('produtos').get('child-1')!;
-    expect(child.marketplace).toEqual([
-      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
-    ]);
-    expect(child.marketplaceIds).toEqual(['555']);
-    expect(child.integracoesComProduto).toEqual([CONTA]);
-  });
-
-  it('does NOT stamp the deprecated arrays when the ML call fails', async () => {
-    const db = new FakeDb();
-    seedBase(db, {
-      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
-    });
-    const { api } = makeApi({
-      createItem: vi.fn(async () => {
-        throw new MercadoLivreHttpError('rejected', 400, {});
-      }),
-    });
-
-    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('rejected');
-
-    expect(db.updates.find((u) => u.path === `produtos/${PROD}`)).toBeUndefined();
-    expect(db.docs('produtos').get(PROD)!.marketplace).toBeUndefined();
   });
 
   it('binds the tabela de medidas chart end-to-end (SIZE_GRID_*, SIZE swap, descrição, foto)', async () => {
@@ -3497,5 +3307,222 @@ describe('#1087 — the sweep and publish must compute the SAME quantity', () =>
     } finally {
       delete process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV];
     }
+  });
+});
+
+describe('publishProduto — per-SKU fiscal data for ML’s Faturador (#745)', () => {
+  const OPERACAO = 'op-venda';
+  /** An operação whose own tax config is a usable default — the cascade's tier 5. */
+  function seedOperacao(db: FakeDb): void {
+    db.seed('operacao', OPERACAO, {
+      nome: 'Venda Mercado Livre',
+      origem: '0',
+      cfop: '5101',
+      NCM: '61091000',
+      unidade: 'UN',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+    });
+  }
+
+  function fiscalMocks(overrides: Record<string, unknown> = {}) {
+    return {
+      updateFiscalInformation: vi.fn(async () => ({})),
+      createFiscalInformation: vi.fn(async () => ({})),
+      linkFiscalInformationItem: vi.fn(async () => ({ status: 'active' })),
+      getCanInvoice: vi.fn(async () => ({ status: true })),
+      ...overrides,
+    };
+  }
+
+  const comOperacao = (deps: PublishDeps): PublishDeps => ({
+    ...deps,
+    operacaoOuterRef: `documents/operacao/${OPERACAO}`,
+  });
+
+  it('a simple item: its own SKU, resolved through the conta’s operação, linked to the item', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedOperacao(db);
+    const { api, mocks } = makeApi(fiscalMocks());
+
+    const result = await publishProduto(comOperacao(makeDeps(db, api)), PROD);
+
+    expect(result.dadosFiscais).toEqual({ enviados: 1, omitidos: [], erros: [] });
+    expect(mocks.updateFiscalInformation).toHaveBeenCalledWith(
+      'SKU-1',
+      expect.objectContaining({
+        type: 'single',
+        tax_information: expect.objectContaining({
+          ncm: '61091000',
+          csosn: '102',
+          origin_type: 'manufacturer',
+        }),
+      }),
+    );
+    expect(mocks.linkFiscalInformationItem).toHaveBeenCalledWith({
+      sku: 'SKU-1',
+      itemId: 'MLB777',
+      variationId: null,
+    });
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link).toMatchObject({
+      dadosFiscaisEstado: 'enviado',
+      dadosFiscaisSku: 'SKU-1',
+      dadosFiscaisItemId: 'MLB777',
+      podeFaturar: true,
+    });
+  });
+
+  it('⚠️ ML refusing every fiscal call does NOT fail the publish — the listing is already right', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedOperacao(db);
+    const recusa = new MercadoLivreHttpError('ML 400', 400, { message: 'NCM inválido' });
+    const { api } = makeApi(
+      fiscalMocks({
+        updateFiscalInformation: vi.fn(async () => Promise.reject(recusa)),
+        createFiscalInformation: vi.fn(async () => Promise.reject(recusa)),
+      }),
+    );
+
+    const result = await publishProduto(comOperacao(makeDeps(db, api)), PROD);
+
+    expect(result.itemId).toBe('MLB777');
+    expect(result.dadosFiscais.erros).toHaveLength(1);
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    // The listing's own diagnosis stays clean: a fiscal refusal is a SEPARATE fact.
+    expect(link.estado).not.toBe('E');
+    expect(link.errors).toEqual([]);
+    expect(link).toMatchObject({ dadosFiscaisEstado: 'erro' });
+  });
+
+  it('no operação on the conta: publish unchanged — no fiscal call at all, reported as omitido', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    // `makeApi` carries NO fiscal mocks: any call would throw a TypeError.
+    const { api } = makeApi();
+
+    const result = await publishProduto(makeDeps(db, api), PROD);
+
+    expect(result.dadosFiscais.enviados).toBe(0);
+    expect(result.dadosFiscais.omitidos).toEqual([
+      expect.objectContaining({ produtoId: PROD, sku: 'SKU-1' }),
+    ]);
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).not.toHaveProperty('dadosFiscaisEstado');
+  });
+
+  it('a legacy variations[] item: one SKU per CHILD, linked with its ML variation id', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedOperacao(db);
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+    const { api, mocks } = makeApi(
+      fiscalMocks({
+        createItem: vi.fn(async () => ({
+          ...ITEM_RESPONSE,
+          variations: [{ id: 555, seller_custom_field: 'child-1' }],
+        })),
+      }),
+    );
+
+    const result = await publishProduto(comOperacao(makeDeps(db, api)), PROD);
+
+    expect(result.dadosFiscais.enviados).toBe(1);
+    // The CHILD's SKU — the parent's never is: an ML order line binds to the child.
+    expect(mocks.updateFiscalInformation).toHaveBeenCalledTimes(1);
+    expect(mocks.updateFiscalInformation).toHaveBeenCalledWith('SKU-1-M', expect.anything());
+    expect(mocks.linkFiscalInformationItem).toHaveBeenCalledWith({
+      sku: 'SKU-1-M',
+      itemId: 'MLB777',
+      variationId: 555,
+    });
+    const varLink = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]!;
+    expect(varLink).toMatchObject({
+      dadosFiscaisEstado: 'enviado',
+      dadosFiscaisSku: 'SKU-1-M',
+      dadosFiscaisVariationId: '555',
+    });
+  });
+
+  it('a User-Products family: one SKU per MEMBER, each linked to its OWN item', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedOperacao(db);
+    for (const [id, sku, v] of [
+      ['child-1', 'SKU-1-M', 'v-m'],
+      ['child-2', 'SKU-1-G', 'v-g'],
+    ] as const) {
+      db.seed('produtos', id, {
+        nome: `Camiseta ${v}`,
+        sku,
+        paiId: PROD,
+        precos: { 'lista-1': { valor: 79.9 } },
+        variacoesUid: [`documents/grupoDeVariacoes/g-tam/variacoes/${v}`],
+      });
+    }
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [
+        { id: 'v-m', nome: 'M' },
+        { id: 'v-g', nome: 'G' },
+      ],
+    });
+    let n = 0;
+    const { api, mocks } = makeApi(
+      fiscalMocks({
+        getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+        createItem: vi.fn(async () => ({
+          ...ITEM_RESPONSE,
+          id: `MLB90${++n}`,
+          family_id: 4260899048783356,
+        })),
+        getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['MLBU1', 'MLBU2'] })),
+        searchItemsByUserProduct: vi.fn(async () => ({ results: ['MLB901', 'MLB902'] })),
+        getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+          ids.map((id) => ({ code: 200, body: { id, user_product_id: 'MLBU1' } })),
+        ),
+      }),
+    );
+
+    const result = await publishProduto(comOperacao(makeDeps(db, api)), PROD);
+
+    expect(result.dadosFiscais.enviados).toBe(2);
+    expect(mocks.linkFiscalInformationItem!.mock.calls.map((c) => c[0])).toEqual([
+      { sku: 'SKU-1-M', itemId: 'MLB901', variationId: null },
+      { sku: 'SKU-1-G', itemId: 'MLB902', variationId: null },
+    ]);
+    const m1 = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]!;
+    const m2 = [...db.docs('produtos/child-2/variacaoMercadoLivre').values()][0]!;
+    expect(m1).toMatchObject({ itemId: 'MLB901', dadosFiscaisItemId: 'MLB901' });
+    expect(m2).toMatchObject({ itemId: 'MLB902', dadosFiscaisItemId: 'MLB902' });
+  });
+
+  it('a republish of an already-linked SKU re-sends the data but does NOT re-link', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedOperacao(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      dadosFiscaisSku: 'SKU-1',
+      dadosFiscaisItemId: 'MLB777',
+    });
+    const { api, mocks } = makeApi(fiscalMocks());
+
+    await publishProduto(comOperacao(makeDeps(db, api)), PROD);
+
+    expect(mocks.updateFiscalInformation).toHaveBeenCalledTimes(1);
+    expect(mocks.linkFiscalInformationItem).not.toHaveBeenCalled();
   });
 });

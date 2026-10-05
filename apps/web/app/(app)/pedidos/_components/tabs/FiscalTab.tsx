@@ -1,26 +1,18 @@
 'use client';
 
 import { useMemo } from 'react';
-import {
-  ActionIcon,
-  Alert,
-  Button,
-  Card,
-  Checkbox,
-  Group,
-  Stack,
-  Text,
-  Textarea,
-  TextInput,
-} from '@mantine/core';
+import { Card, Checkbox, Stack, Text, Textarea } from '@mantine/core';
 import { Controller, type UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
-import type { Pedido } from '@delfrance/schemas';
+import { CHAVE_NFE_REGEX, decomporChaveAcesso, type Pedido } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { EnderecoPicker } from '@/components/pickers/EnderecoPicker';
 import type { PedidoFormState } from '../types';
+import { AjusteRtcSection } from './AjusteRtcSection';
+import { ChaveListEditor } from './ChaveListEditor';
+import { ReferenciaPorItemSection } from './ReferenciaPorItemSection';
 
 export interface FiscalTabProps {
   form: UseFormReturn<PedidoFormState, unknown, Pedido>;
@@ -46,6 +38,13 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
   const chNFeList = form.watch('chNFeReferenciadas') ?? [];
   const updateChNFe = (next: string[]) => {
     form.setValue('chNFeReferenciadas', next.length === 0 ? null : next, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  };
+  const antecipadoList = form.watch('chNFePagamentoAntecipado') ?? [];
+  const updateAntecipado = (next: string[]) => {
+    form.setValue('chNFePagamentoAntecipado', next.length === 0 ? null : next, {
       shouldDirty: true,
       shouldValidate: true,
     });
@@ -118,66 +117,59 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
         )}
       />
 
-      <Stack gap="xs">
-        <Group justify="space-between" align="center">
-          <Text fw={500}>NF-e referenciadas</Text>
-          <Button
-            type="button"
-            size="xs"
-            variant="light"
-            onClick={() => updateChNFe([...chNFeList, ''])}
-            disabled={disabled}
-          >
-            + Adicionar
-          </Button>
-        </Group>
-        {chNFeList.length === 0 && (
-          <Text size="sm" c="dimmed">
-            Nenhuma chave de acesso referenciada.
-          </Text>
-        )}
-        {chNFeList.map((value, index) => {
-          const current = value ?? '';
-          // Same rule the save-blocking page-model check uses (`^\d{44}$`), so the
-          // per-input hint and the submit guard agree — a 44-char non-numeric value
-          // is flagged here, not only at save.
-          const invalid = current !== '' && !/^\d{44}$/.test(current);
-          return (
-            <Group key={index} align="end">
-              <TextInput
-                style={{ flex: 1 }}
-                label={index === 0 ? 'Chave de acesso (44 dígitos)' : undefined}
-                value={current}
-                onChange={(e) => {
-                  const next = [...chNFeList];
-                  next[index] = e.currentTarget.value;
-                  updateChNFe(next);
-                }}
-                maxLength={44}
-                error={invalid ? 'Deve ter 44 dígitos numéricos' : undefined}
-                disabled={disabled}
-              />
-              <ActionIcon
-                type="button"
-                color="red"
-                variant="subtle"
-                onClick={() => updateChNFe(chNFeList.filter((_, i) => i !== index))}
-                aria-label="Remover chave"
-                disabled={disabled}
-              >
-                ✕
-              </ActionIcon>
-            </Group>
-          );
-        })}
-      </Stack>
+      <ChaveListEditor
+        titulo="NF-e referenciadas"
+        vazio="Nenhuma chave de acesso referenciada."
+        value={chNFeList}
+        onChange={updateChNFe}
+        // ⚠️ The SHARED constant, so this agrees with the save-blocking
+        // page-model check by construction. It stopped agreeing the moment
+        // `pageModel.ts` moved to `CHAVE_NFE_REGEX` (positions 6–17 may be
+        // letters, RFB IN 2.229/2024) while this copy still said `^\d{44}$`:
+        // a valid alfa chave showed a red field error on a form that SAVED
+        // successfully. A comment claiming two rules match is the smell —
+        // there is one rule now.
+        validar={(c) =>
+          CHAVE_NFE_REGEX.test(c)
+            ? undefined
+            : 'Deve ter 44 caracteres no formato da chave de acesso'
+        }
+        labelPrimeiro="Chave de acesso (44 caracteres)"
+        rotuloAdicionar="Adicionar chave referenciada"
+        rotuloRemover="Remover chave"
+        disabled={disabled}
+      />
 
-      <Alert color="gray" variant="light">
-        <Text size="sm">
-          A reatribuição de endereço a outro cliente (quando o endereço fiscal pertence a outro
-          cliente) ainda usa o app antigo.
-        </Text>
-      </Alert>
+      <ChaveListEditor
+        titulo="NF-e de pagamento antecipado"
+        descricao="Notas de débito de pagamento antecipado cujas parcelas esta nota abate (Reforma Tributária, gPagAntecipado). Só são emitidas com a Reforma Tributária ativa na filial."
+        vazio="Nenhuma NF-e de pagamento antecipado."
+        value={antecipadoList}
+        onChange={updateAntecipado}
+        // The page model's own rule (BC02): an NF-e modelo 55 with a valid DV.
+        validar={(c) =>
+          decomporChaveAcesso(c)?.mod === '55'
+            ? undefined
+            : 'Chave inválida: NF-e modelo 55, com dígito verificador correto'
+        }
+        labelPrimeiro="Chave de acesso da NF-e de pagamento antecipado"
+        rotuloAdicionar="Adicionar NF-e de pagamento antecipado"
+        rotuloRemover="Remover NF-e de pagamento antecipado"
+        erro={
+          (form.formState.errors as Record<string, { message?: string } | undefined>)
+            .chNFePagamentoAntecipado?.message
+        }
+        disabled={disabled}
+      />
+
+      <ReferenciaPorItemSection
+        form={form}
+        db={db}
+        destinatarioDocumento={clienteDoc?.data.cpf_cnpj ?? null}
+        disabled={disabled}
+      />
+
+      <AjusteRtcSection form={form} db={db} disabled={disabled} />
     </Stack>
   );
 }

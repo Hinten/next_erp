@@ -73,6 +73,7 @@ export function AtendentePickerModal({
   // A selection must not survive close/reopen — a stale pick would leave the
   // confirm button armed and invite an accidental transfer/include.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset-on-close: a stale pick must not survive reopen (invisible while closed)
     if (!opened) setSelected(null);
   }, [opened]);
 

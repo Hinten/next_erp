@@ -46,3 +46,10 @@ Deploys to Firebase App Hosting on :3001. Required by `apps/web` for admin endpo
 ## Rewrite note (2026-07-24)
 
 Dead scaffolding removed: `lib/queue/dispatch.ts` (stub, never integrated), `app/api/webhooks/_test/` (smoke test replaced by `lib/signatures/withSignature.test.ts`), and stale OAuth/webhook docs. The app now documents what it **is** — shared verifiers — rather than what it was planned to be.
+
+## Coordinated access administration
+
+Cargo CRUD, user edits, creation and manual claims refresh all use the global
+access coordinator. See [ACCESS_OPERATIONS.md](ACCESS_OPERATIONS.md) for HTTP
+contracts, recovery, activation order and test boundaries. Do not add direct
+Auth-claims or usuario/cargo writers beside this coordinator.

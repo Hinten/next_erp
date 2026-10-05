@@ -3,9 +3,8 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
-import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { filialSchema } from '@delfrance/schemas';
+import { filialFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -20,11 +19,6 @@ export default function FilialPage() {
   const { allowed: canWrite } = usePermission(PERM.configuracoes.write);
   const db = getFirebaseFirestore();
 
-  async function handleDelete(id: string) {
-    await deleteDoc(filialCollection.docRef(db, {}, id));
-    router.replace('/configuracoes/filiais');
-  }
-
   return (
     <Stack>
       <Group justify="space-between" align="center">
@@ -36,7 +30,7 @@ export default function FilialPage() {
 
       <FilialTabs filialId={params.id}>
         <ObjectView
-          schema={filialSchema}
+          schema={filialFormSchema}
           collection={filialCollection}
           db={db}
           currentUserUid={user?.uid ?? ''}
@@ -46,8 +40,6 @@ export default function FilialPage() {
           saveLabel="Salvar alterações"
           canEdit={canWrite}
           readOnly={!canWrite}
-          canDelete={canWrite}
-          onDelete={handleDelete}
           onSaved={() => router.replace('/configuracoes/filiais')}
         />
       </FilialTabs>

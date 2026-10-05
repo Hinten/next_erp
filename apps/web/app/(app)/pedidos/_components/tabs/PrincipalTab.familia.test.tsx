@@ -96,6 +96,8 @@ vi.mock('@delfrance/data/hooks', async () => {
 vi.mock('../useEstoqueDisponivel', () => ({ useEstoqueDisponivel: () => null }));
 vi.mock('@/components/ProdutoThumbnail', () => ({ ProdutoThumbnail: () => null }));
 vi.mock('../ProdutoVariacaoLabel', () => ({ ProdutoVariacaoLabel: () => null }));
+// Reads `usuarios` through react-query — network child, stubbed like the rest.
+vi.mock('../VendedorField', () => ({ VendedorField: () => null }));
 vi.mock('@/components/pickers/ClientePicker', () => ({ ClientePicker: () => null }));
 vi.mock('@/components/pickers/OperacaoPicker', () => ({ OperacaoPicker: () => null }));
 vi.mock('@/components/pickers/IntegracaoPicker', () => ({ IntegracaoPicker: () => null }));

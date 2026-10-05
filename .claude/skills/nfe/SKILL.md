@@ -3,8 +3,9 @@ name: nfe
 description: >-
   Domain reference for Brazilian NF-e (Nota Fiscal Eletrônica, model 55, layout
   4.00) on **MOC 7.0** as amended by Notas Técnicas through **NT 2025.001**
-  (sync mode when lote=1) and **NT 2025.002** (Reforma Tributária — IBS/CBS/IS,
-  mandatory in produção since 03/08/2026). Use when implementing, debugging or
+  (sync mode when lote=1), **NT 2025.002** (Reforma Tributária — IBS/CBS/IS,
+  mandatory in produção since 03/08/2026) and **NT 2026.007** (LCC-RFB cadastral
+  validation of every CNPJ in the document — cStat 178–186). Use when implementing, debugging or
   reviewing NF-e generation, XML digital signing, SEFAZ SOAP transmission,
   síncrono vs assíncrono response handling, the NF-e state machine,
   contingency, cancelamento / inutilização / carta de correção, the chave de
@@ -13,6 +14,8 @@ description: >-
   enviNFe, retEnviNFe, consReciNFe, consSitNFe, indSinc, SEFAZ, cStat, nRec,
   duplicidade, protNFe, procNFe, tpEmis, certificado A1, ICP-Brasil, IBS, CBS,
   IS, RTC, Reforma Tributária, gIBSCBS, cClassTrib, NT 2025.001, NT 2025.002,
+  NT 2026.007, LCC-RFB, cStat 178, cStat 181, "não cadastrado na Receita
+  Federal", situação cadastral, 02-Ativa, cSitCNPJ,
   DANFE, DANFE Simplificado, retrato, paisagem, etiqueta, canhoto, Code128,
   bwip-js, pdfkit, ZPL, ZPL2, Zebra.
 ---
@@ -22,7 +25,7 @@ description: >-
 The NF-e is a digitally-signed XML fiscal document. It is only valid once SEFAZ
 (the state tax authority) grants an **Autorização de Uso**. This skill distills
 the SEFAZ **MOC 7.0** baseline and the Notas Técnicas that amended it through
-**NT 2025.001** (sync mode) and **NT 2025.002 v1.40** (Reforma Tributária),
+**NT 2025.001** (sync mode) and **NT 2025.002 v1.51** (Reforma Tributária — XSD pack PL_010f_v1.04),
 so NF-e code can be written without re-reading thousands of PDF pages.
 
 Original SEFAZ PDFs are committed under `references/sources/` for provenance
@@ -32,7 +35,7 @@ re-readable source).
 ## The lifecycle (happy path)
 
 ```
-1. GENERATE   build infNFe XML from order data; compute the 44-digit chave
+1. GENERATE   build infNFe XML from order data; compute the 44-char chave
 2. SIGN       enveloped XMLDSig over <infNFe> with the A1 certificate
 3. SEND       SOAP to NfeAutorizacao — enviNFe lote (1–50 NF-e)
                  lote = 1  → indSinc=1 (mandatory since 03/11/2025; NT 2025.001)
@@ -92,7 +95,7 @@ re-readable source).
 
 | File | Use for |
 |---|---|
-| `references/chave-acesso.md` | 44-digit key composition + módulo-11 DV |
+| `references/chave-acesso.md` | 44-char key composition + módulo-11 DV (alfa at 6–17) |
 | `references/assinatura.md` | XMLDSig signing rules, certificate, A1/A3 |
 | `references/webservices.md` | SOAP services, sync/async lote flow, leiautes |
 | `references/sincrono-vs-assincrono.md` | NT 2025.001 sync-when-lote-1 in depth |

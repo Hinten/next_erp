@@ -19,18 +19,22 @@ import { notifications } from '@mantine/notifications';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
+  aplicarPlanoDeCopiaAoPatch,
   buildPedidoPatch,
   novosOriginsDeTroca,
   PedidoConflictError,
+  PedidoEnderecoOrigemAusenteError,
   PedidoNothingChangedError,
   savePedido,
+  type PedidoEnderecoCopyPlan,
 } from '@delfrance/data/pedido';
 import type { Pedido } from '@delfrance/schemas';
-import { PedidoForm } from './PedidoForm';
+import { PedidoForm, type PedidoSubmitPreparation } from './PedidoForm';
 import { PedidoConflictModal } from './PedidoConflictModal';
 import { conflictFields } from './conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { marcarInteracaoDoUsuario } from '@/lib/pedidos/interacaoDoUsuario';
+import { reconciliarEstadoSeTotalMudou } from '@/lib/pedidos/reconciliarAposSalvarPedido';
 import { StatusBadge } from './StatusBadge';
 import { DIRECAO, direcaoOf } from './direcao';
 import { DirecaoBadge } from './DirecaoBadge';
@@ -42,6 +46,7 @@ import { emitirNFeComNotificacao } from './emitirNFeComNotificacao';
 import { registrarIncidentesDeTrocaBestEffort } from './trocaIncidentesBestEffort';
 import { useNFeClient } from '@/lib/nfe/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { usePedidoEnderecoCopyPreparation } from './usePedidoEnderecoCopyPreparation';
 
 /**
  * The edit-pedido page, shared by `/pedidos/[id]/editar` and
@@ -88,6 +93,8 @@ export function EditarPedidoView() {
   const nfeClient = useNFeClient();
 
   const { promptEmitirEntrada, element: emitirEntradaPromptElement } = useEmitirEntradaPrompt();
+  const { prepareSubmit: prepareEnderecoCopy, element: enderecoCopyPromptElement } =
+    usePedidoEnderecoCopyPreparation();
 
   // The conflict the snapshot guard tripped on. Holds the pending patch, the
   // baseline the user reviewed, and the remote doc so the modal can show the diff
@@ -96,6 +103,7 @@ export function EditarPedidoView() {
     patch: Record<string, unknown>;
     baseline: Record<string, unknown>;
     current: Record<string, unknown>;
+    enderecoCopyPlan: PedidoEnderecoCopyPlan | null;
   } | null>(null);
   const [savingConflict, setSavingConflict] = useState(false);
 
@@ -142,8 +150,32 @@ export function EditarPedidoView() {
   async function handleSubmit(
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
-    opts: { continueEditing: boolean },
+    opts: {
+      continueEditing: boolean;
+      incidenteSaved: boolean;
+      preparation: PedidoSubmitPreparation;
+    },
   ): Promise<boolean> {
+    const enderecoCopyPlan = opts.preparation.enderecoCopyPlan;
+    const pedidoPatch = aplicarPlanoDeCopiaAoPatch(
+      buildPedidoPatch(values, dirtyFields),
+      values,
+      enderecoCopyPlan,
+    );
+
+    // The shared footer also commits Incidentes. When that is the only pending
+    // work, there is no pedido write (and therefore no PedidoNothingChangedError)
+    // but the action is still a successful save with the usual navigation
+    // semantics.
+    if (Object.keys(pedidoPatch).length === 0 && opts.incidenteSaved) {
+      if (opts.continueEditing) {
+        notifications.show({ color: 'green', message: cfg.savedToast });
+      } else {
+        router.replace(cfg.listPath);
+      }
+      return true;
+    }
+
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     //
@@ -175,13 +207,23 @@ export function EditarPedidoView() {
     // in the patch — rather than being appended by the port — so the "salvar e
     // continuar editando" re-baseline below picks it up and the next save doesn't
     // read it as a remote change.
-    const patch = marcarInteracaoDoUsuario(buildPedidoPatch(values, dirtyFields));
+    const patch = marcarInteracaoDoUsuario(pedidoPatch);
     const port = createClientPedidoPort(getFirebaseFirestore());
     try {
       // An estado change is recorded in `historicoEstadoPedido` by the
       // `onPedidoEstadoChanged` Cloud Function, which observes this very write —
       // nothing to append from here.
-      await savePedido(port, { pedidoId: params.id, patch, baseline });
+      const salvo = await savePedido(port, {
+        pedidoId: params.id,
+        patch,
+        baseline,
+        enderecoCopyPlan,
+      });
+      // A save that moved the total re-derives `estado` from the payments (#703).
+      // Not awaited: navigation must not wait on a callable cold start. When the
+      // editor stays open, the new estado arrives through the live snapshot, and
+      // the baseline refresh above keeps it from reading as a conflict.
+      void reconciliarEstadoSeTotalMudou(params.id, salvo);
       await registrarTrocaIncidentesIfNeeded(port, patch, loaded);
       await promptEmitirIfEntradaPaga(patch, baseline);
       if (opts.continueEditing) {
@@ -211,10 +253,14 @@ export function EditarPedidoView() {
         // Doc changed remotely → let the user review + decide (modal). Doc deleted
         // (`current` null) → nothing to overwrite, just a toast.
         if (err.current) {
-          setConflict({ patch, baseline, current: err.current });
+          setConflict({ patch, baseline, current: err.current, enderecoCopyPlan });
         } else {
           showErrorNotification({ title: 'Pedido alterado', message: err.message });
         }
+        return false;
+      }
+      if (err instanceof PedidoEnderecoOrigemAusenteError) {
+        showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
         return false;
       }
       throw err;
@@ -232,11 +278,13 @@ export function EditarPedidoView() {
     try {
       // As in handleSubmit: an estado change is recorded in historicoEstadoPedido
       // by the `onPedidoEstadoChanged` Cloud Function observing this write.
-      await savePedido(port, {
+      const salvo = await savePedido(port, {
         pedidoId: params.id,
         patch: conflict.patch,
         baseline: conflict.current,
+        enderecoCopyPlan: conflict.enderecoCopyPlan,
       });
+      void reconciliarEstadoSeTotalMudou(params.id, salvo);
       await registrarTrocaIncidentesIfNeeded(port, conflict.patch, conflict.current);
       await promptEmitirIfEntradaPaga(conflict.patch, conflict.current);
       setConflict(null);
@@ -245,11 +293,21 @@ export function EditarPedidoView() {
       if (err instanceof PedidoConflictError) {
         if (err.current) {
           // Changed again since the modal opened — re-review the newer version.
-          setConflict({ patch: conflict.patch, baseline: conflict.current, current: err.current });
+          setConflict({
+            patch: conflict.patch,
+            baseline: conflict.current,
+            current: err.current,
+            enderecoCopyPlan: conflict.enderecoCopyPlan,
+          });
         } else {
           showErrorNotification({ title: 'Pedido alterado', message: err.message });
           setConflict(null);
         }
+        return;
+      }
+      if (err instanceof PedidoEnderecoOrigemAusenteError) {
+        showErrorNotification({ title: 'Endereço não encontrado', message: err.message });
+        setConflict(null);
         return;
       }
       throw err;
@@ -357,6 +415,7 @@ export function EditarPedidoView() {
         />
 
         {emitirEntradaPromptElement}
+        {enderecoCopyPromptElement}
 
         <PedidoForm
           defaultValues={p}
@@ -365,6 +424,7 @@ export function EditarPedidoView() {
           liveEstado={p.estado}
           fromCache={fromCache}
           onSeeded={seedBaseline}
+          prepareSubmit={prepareEnderecoCopy}
           onSubmit={handleSubmit}
         />
       </Stack>

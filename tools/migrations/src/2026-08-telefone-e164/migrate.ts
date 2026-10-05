@@ -4,6 +4,7 @@ import {
   type Query,
   type QueryDocumentSnapshot,
 } from 'firebase-admin/firestore';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 import {
   isMainModule,
   type MigrationContext,
@@ -25,10 +26,10 @@ import { buildUpdate, planTelefone, readNested } from './transform';
  *     --project <id> --target clientes,cheque     # pick targets explicitly
  *
  * ⚠️ Targets are OPT-IN and the default is `clientes` alone. The endereço
- * family (`endereco`, `filial`, `intFrete`) feeds Melhor Envio's `from.phone` /
- * `to.phone`, and whether ME accepts a `55`-prefixed value is an OPEN QUESTION
- * — normalizing those before it is answered could break label purchase. Do not
- * enable that group until the ME issue closes.
+ * family (`endereco`, `filial`, `intFrete`) is safe to normalize because the
+ * Melhor Envio boundary converts stored E.164 BR phones back to the provider's
+ * documented local shape (#868). Production execution still belongs only to
+ * the coordinated migration window in #1208.
  */
 
 const PAGE_SIZE = 300;
@@ -53,19 +54,19 @@ const TARGETS: readonly TelefoneTarget[] = [
     name: 'endereco',
     collectionGroup: 'enderecos',
     field: ['telefone'],
-    note: 'GATED on the Melhor Envio shape decision — feeds to.phone',
+    note: 'feeds ME to.phone through the local-phone provider boundary',
   },
   {
     name: 'filial',
     collectionGroup: 'filiais',
     field: ['sede', 'telefone'],
-    note: 'GATED on the Melhor Envio shape decision — feeds from.phone',
+    note: 'feeds ME from.phone through the local-phone provider boundary',
   },
   {
     name: 'intFrete',
     collectionGroup: 'int_frete',
     field: ['enderecoDeOrigem', 'telefone'],
-    note: 'GATED on the Melhor Envio shape decision — the freight-origin address',
+    note: 'freight-origin phone; ME receives the documented local shape',
   },
   {
     name: 'cheque',
@@ -139,8 +140,16 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     for await (const docs of pagesByDocId(ctx.db.collectionGroup(target.collectionGroup))) {
       for (const doc of docs) {
         docsScanned += 1;
-        const stored = readNested(doc.data() as Record<string, unknown>, target.field);
-        const plan = planTelefone(stored);
+        const data = doc.data() as Record<string, unknown>;
+        const stored = readNested(data, target.field);
+        const explicitInternational =
+          typeof stored === 'string' && stored.trimStart().startsWith('+');
+        const international =
+          target.name === 'clientes' &&
+          (data.tipo === TIPO_CLIENTE.estrangeiro ||
+            data.telefoneGerenciado === true ||
+            explicitInternational);
+        const plan = planTelefone(stored, { internacional: international });
         const field = target.field.join('.');
         if (plan.action === 'skip') {
           // An absent field is the overwhelming majority on a collection group
@@ -150,9 +159,17 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
           }
           continue;
         }
+        // Persist known international context for a short foreign number: a
+        // second pass must not guess BR from a digits-only +1 result.
+        const patch: Record<string, unknown> = buildUpdate(target.field, plan.to);
+        if (target.name === 'clientes' && international) patch.telefoneGerenciado = true;
+        const changed = await ctx.writer.updateGuarded(doc.ref, patch, doc.updateTime);
+        if (!changed) {
+          ctx.sink.skip(doc.ref.path, field, stored, 'documento alterado depois da leitura');
+          continue;
+        }
         ctx.sink.change(doc.ref.path, field, plan.from, plan.to);
         docsChanged += 1;
-        await ctx.writer.update(doc.ref, buildUpdate(target.field, plan.to));
       }
     }
   }

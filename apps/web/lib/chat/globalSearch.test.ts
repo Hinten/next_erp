@@ -32,14 +32,22 @@ describe('matchFetched', () => {
   ];
 
   it('keeps only docs whose searchable text matches, preserving order', () => {
-    const rows = matchFetched(docs, /orçamento/iu);
+    const rows = matchFetched(docs, /orcamento/iu);
     expect(rows.map((r) => r.mensagemId)).toEqual(['m1', 'm4']); // m3 event skipped
     expect(rows[0]).toMatchObject({ conversaId: 'c1', timestamp: 30 });
     expect(rows[1]).toMatchObject({ conversaId: 'c2', text: 'segue o orçamento gravado' });
   });
 
   it('is case-insensitive via the supplied regex flags', () => {
-    expect(matchFetched(docs, /ORÇAMENTO/iu)).toHaveLength(2);
+    expect(matchFetched(docs, /ORCAMENTO/iu)).toHaveLength(2);
+  });
+
+  it('keeps accent-only folding narrower than punctuation and letter changes', () => {
+    const nearMisses = [
+      fetched('c1', 'a', 2, { conteudo: 'orcamen-to' }),
+      fetched('c1', 'b', 1, { conteudo: 'orcamenta' }),
+    ];
+    expect(matchFetched(nearMisses, /^orcamento$/iu)).toEqual([]);
   });
 
   it('does not skip on a repeated match (global regex lastIndex reset)', () => {
@@ -104,5 +112,10 @@ describe('buildSnippet', () => {
     expect(snippet.text).toBe('aa TARGET bb');
     expect(snippet.prefixEllipsis).toBe(true);
     expect(snippet.suffixEllipsis).toBe(true);
+  });
+
+  it('centres on an accent-folded match using original-text offsets', () => {
+    const snippet = buildSnippet(`${'x'.repeat(20)}orçamento${'y'.repeat(20)}`, /orcamento/iu, 3);
+    expect(snippet.text).toBe('xxxorçamentoyyy');
   });
 });

@@ -5,10 +5,14 @@ import {
   STATUS_PAGAMENTO,
   cartaoSchema,
   chequeSchema,
-  isPagamentoPagante,
+  coberturaDoPedido,
   sumPagamentosPagos,
+  valuesEqual,
   type FormaPagamento,
+  type Cartao,
+  type Cheque,
   type Pagamento,
+  type PedidoCoberturaInput,
   type StatusPagamento,
 } from '@delfrance/schemas';
 
@@ -118,9 +122,8 @@ export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   quantidadeIntervalo: 1,
 };
 
-/** Populate the form from an existing pagamento doc (edit mode). The embedded
- * `cartao` / `cheque` maps are opaque (`z.unknown()`) on the doc, so parse them
- * leniently — a missing or legacy-shaped object just yields empty fields. */
+/** Populate the form from an existing pagamento doc (edit mode). Re-parse the
+ * embedded blocks defensively because a soft-read may return a raw legacy doc. */
 export function formFromPagamento(p: Pagamento): PagamentoFormState {
   const cartao = cartaoSchema.safeParse(p.cartao);
   const cheque = chequeSchema.safeParse(p.cheque);
@@ -200,22 +203,31 @@ export interface PagamentoSummary {
   id: string;
   valor: number;
   status_pagamento?: number | null;
+  /** `FORMA_PAGAMENTO` code — a paying "crédito loja" row is subtracted from the
+   * devolução credit (see `coberturaDoPedido`), so it must reach the rule. */
+  forma_de_pagamento?: number | null;
 }
 
 /**
- * The amount still owed so the pedido becomes fully paid: the pedido total minus
- * the sum of the OTHER {@link isPagamentoPagante} payments (excluding the one
- * being edited). Never negative. Drives the Valor autofill.
+ * The amount still owed so the pedido becomes fully paid — the `restante` of
+ * `coberturaDoPedido`: the pedido total minus the OTHER paying payments
+ * (excluding the one being edited) AND minus the troca devolução credit (the
+ * value of the returned items, less any "crédito loja" payment that already
+ * carries it). Never negative. Drives the Valor autofill.
+ *
+ * `pedido` is the PERSISTED total + devolução (the server reconcile compares
+ * against the stored values, so the autofill must too); an entrada carries no
+ * credit.
  */
 export function remainingToPay(
-  pedidoTotal: number,
+  pedido: PedidoCoberturaInput,
   pagamentos: ReadonlyArray<PagamentoSummary>,
   editingId: string | null,
 ): number {
-  const covered = pagamentos
-    .filter((p) => p.id !== editingId && isPagamentoPagante(p.status_pagamento))
-    .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-  return Math.max(0, roundReais(pedidoTotal - covered));
+  return coberturaDoPedido(
+    pedido,
+    pagamentos.filter((p) => p.id !== editingId),
+  ).restante;
 }
 
 /**
@@ -241,28 +253,19 @@ export function validatePagamentoForm(form: PagamentoFormState): string | null {
   return null;
 }
 
-/** Narrow an opaque (`z.unknown()`) value to a plain object for spreading; any
- * non-object (null, array, primitive) yields `{}`. */
-function asRecord(v: unknown): Record<string, unknown> {
-  return v != null && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-}
-
 /**
- * Build the embedded `cartao` map from the form (card formas only). Spreads any
- * existing card first for legacy pass-through keys, then overrides the known
- * fields from the form — `bandeira` + the catalog fields (`tarifa`, `tarifaFixa`,
+ * Build the embedded `cartao` map from the form (card formas only). Preserves
+ * known existing fields, then overrides them from the form — `bandeira` + the catalog fields (`tarifa`, `tarifaFixa`,
  * `cnpj_instituicao`, `prazoRecebimento`) are either the values preserved by
  * `formFromPagamento` from the existing doc, or whatever a fresh
  * `bandeirasCartao` pick resolved into the form (see the `CollectionSelect` in
  * `PagamentosSection`). `tpIntegra` stays `'2'` (não integrado) unless the base
  * set it.
  */
-function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
-  return {
+function buildCartao(form: PagamentoFormState, base: Pagamento | null): Cartao {
+  return cartaoSchema.parse({
     tpIntegra: '2',
-    ...asRecord(base?.cartao),
+    ...(base?.cartao ?? {}),
     bandeira: form.bandeira === '' ? null : form.bandeira,
     numeroCartao: trimToNull(form.numeroCartao),
     cAut: trimToNull(form.cAut),
@@ -270,16 +273,43 @@ function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<s
     tarifa: form.tarifa,
     tarifaFixa: form.tarifaFixa,
     prazoRecebimento: form.prazoRecebimento,
-  };
+  });
+}
+
+/**
+ * The formas the NF-e treats as CARD-LIKE: 03 crédito, 04 débito and **17 PIX**.
+ *
+ * ⚠️ NT 2022.001 requires a `<card>` block on every one of them, and
+ * `apps/nfe`'s `generator-input.ts` deliberately stamps no placeholder — a leg
+ * on one of these formas with no `cartao` is SEFAZ cStat 391, no nota at all.
+ * PIX is the odd one out: it is card-like to the fisco but has no card DETAIL
+ * to show, so {@link pagamentoFieldVisibility} hides the group — and a hidden
+ * group must be PRESERVED, never nulled. The edit projection omits an unchanged
+ * stored block, while a create carries the block returned below.
+ */
+const FORMAS_COM_CARD_NA_NFE: ReadonlySet<number> = new Set<number>([
+  FORMA_PAGAMENTO.cartao_credito,
+  FORMA_PAGAMENTO.cartao_debito,
+  FORMA_PAGAMENTO.pix,
+]);
+
+/**
+ * What `cartao` becomes when the card group is HIDDEN: the stored block for a
+ * card-like forma (preserve), `null` for anything else (a forma switch away
+ * from a card really must clear a stale card).
+ */
+function cartaoComGrupoOculto(form: PagamentoFormState, base: Pagamento | null): Cartao | null {
+  if (!FORMAS_COM_CARD_NA_NFE.has(Number(form.forma))) return null;
+  return base?.cartao ?? null;
 }
 
 /** Build the embedded `cheque` map from the form (cheque forma only). */
-function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
+function buildCheque(form: PagamentoFormState, base: Pagamento | null): Cheque {
   const numeroStr = form.numeroCheque.trim();
   const numero = Number(numeroStr);
   const telefoneStr = trimToNull(form.telefone);
-  return {
-    ...asRecord(base?.cheque),
+  return chequeSchema.parse({
+    ...(base?.cheque ?? {}),
     banco: trimToNull(form.banco),
     agencia: trimToNull(form.agencia),
     conta: trimToNull(form.conta),
@@ -288,15 +318,16 @@ function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<s
     cpf_cnpj: trimToNull(form.cpfCnpj),
     telefone: telefoneStr ? normalizeTelefone(telefoneStr) : null,
     bomPara: form.bomPara,
-  };
+  });
 }
 
 /**
- * Build the full pagamento record handed to `savePagamento`. Spreads the existing
- * doc first so the passthrough/out-of-band fields (`metodoPagamentoOuterRef`,
- * `dataCadastro`, `dataAprovacao`, …) survive, then overrides the edited fields.
- * The `cartao` / `cheque` maps are rebuilt for their forma (and reset to `null`
- * otherwise). Assumes the form passed {@link validatePagamentoForm}.
+ * Build only the form-owned pagamento fields. Provider/integration fields,
+ * identifiers, creation/approval dates and watermarks are deliberately absent.
+ * The `cartao` / `cheque` maps are rebuilt for their forma; `cheque` and a
+ * non-card-like `cartao` are reset to `null`, while a card-LIKE forma whose card
+ * group is hidden (PIX) keeps the stored block — see {@link cartaoComGrupoOculto}.
+ * Assumes the form passed {@link validatePagamentoForm}.
  */
 export function pagamentoDataFromForm(
   form: PagamentoFormState,
@@ -307,7 +338,6 @@ export function pagamentoDataFromForm(
   const vis = pagamentoFieldVisibility(form.forma);
   const duplicata = vis.duplicata ? form.duplicata : false;
   return {
-    ...((base as unknown as Record<string, unknown>) ?? {}),
     forma_de_pagamento: Number(form.forma) as FormaPagamento,
     status_pagamento: form.status === '' ? null : (Number(form.status) as StatusPagamento),
     valor: form.valor ?? 0,
@@ -321,9 +351,29 @@ export function pagamentoDataFromForm(
     aVista: vis.aVista ? form.aVista : !duplicata,
     duplicata,
     nFat: vis.nFat ? trimToNull(form.nFat) : null,
-    cartao: vis.cartao ? buildCartao(form, base) : null,
+    // ⚠️ Hidden ≠ absent. For a card-LIKE forma whose group this form does not
+    // show — PIX, forma 17 — the stored block is carried through instead of
+    // nulled. The patch builder below then omits it when unchanged. See
+    // {@link cartaoComGrupoOculto}.
+    cartao: vis.cartao ? buildCartao(form, base) : cartaoComGrupoOculto(form, base),
     cheque: vis.cheque ? buildCheque(form, base) : null,
   };
+}
+
+/**
+ * Project an edit into the smallest safe top-level patch. Nested `cartao` and
+ * `cheque` are intentionally compared as blocks: a concurrent change anywhere
+ * in one of them must conflict before the editor overwrites that block.
+ */
+export function pagamentoPatchFromForm(
+  form: PagamentoFormState,
+  baseline: Pagamento,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(pagamentoDataFromForm(form, baseline)).filter(
+      ([field, value]) => !valuesEqual(baseline[field as keyof Pagamento], value),
+    ),
+  );
 }
 
 /**
@@ -360,7 +410,7 @@ export function buildChequeSplitPagamentos(
   const initialBomPara = form.bomPara;
   const perRowValor = roundReais((form.valor ?? 0) / n);
   const template = pagamentoDataFromForm(form, base);
-  const chequeTemplate = template.cheque as Record<string, unknown>;
+  const chequeTemplate = template.cheque as Cheque;
   return Array.from({ length: n }, (_, i) => ({
     ...template,
     parcelas: 1,

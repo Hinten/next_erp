@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the apps/shopee/functions (codebase `shopee`) Cloud Functions — the queued push processor `processShopeeNotification`, the 30-minute `reprocessShopeeNotifications` backstop (hot + deferred lanes) and the weekly `sweepShopeeAuthorizationExpiry` (master plan P8, #1511). Contains ONLY a functions block — deliberately NO firestore/storage/emulators keys — so a stray deploy with this config can push the functions codebase and NOTHING else; it cannot reach a ruleset or an index. Shipping it INERT: the file existing does not deploy anything, and the deploy itself is a MANUAL, coordinated human step (root `CLAUDE.md` rule 8) — agents never run `firebase deploy`. Master-plan step 22 (#1530) still owns the rollout, `firebase.shopee.json` (the firestore-only emulator config), `apphosting.yaml`'s `vpcAccess` + the real `SHOPEE_TASKS_REGION`, and flipping `implementado`. The predeploy hook runs tools/deploy-env/preflight.mjs (which ABORTS on a missing TASKS_INVOKER_SA or a region without Cloud Tasks) and then apps/shopee/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the functions + writes a MINIMAL workspace-free package.json. The functions need FIREBASE_PROJECT_ID + admin creds in their env, plus SHOPEE_PARTNER_ID/SHOPEE_PARTNER_KEY in Secret Manager. Deploy: firebase deploy --only functions:shopee --config firebase.shopee.deploy.json --project <id>. See apps/shopee/functions/DEPLOY.md.",
+  "functions": [
+    {
+      "source": ".deploy/shopee-functions",
+      "codebase": "shopee",
+      "runtime": "nodejs22",
+      "predeploy": [
+        "node tools/deploy-env/preflight.mjs shopee",
+        "node apps/shopee/functions/scripts/prepare-deploy.mjs"
+      ],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

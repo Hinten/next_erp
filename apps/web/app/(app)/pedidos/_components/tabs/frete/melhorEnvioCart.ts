@@ -13,6 +13,8 @@
  * `invoice.key` and flips `non_commercial` off (#209); without one it sends
  * `non_commercial: true` (declaração de conteúdo).
  */
+import { normalizeDocumento } from '@delfrance/core/documents';
+
 import { localTelefoneOrNull } from '@delfrance/core/phone';
 import {
   type CartInsertRequest,
@@ -38,17 +40,18 @@ export interface ClienteDestinoLike {
  * Why `from.phone` / `to.phone` go out in the LOCAL BR shape (DDD + subscriber,
  * no country code), through `localTelefoneOrNull` below:
  *
- * That is what ME's own documented example uses, what every fixture in
- * `packages/integrations/freight-br` sends, and what the legacy Flutter app
- * demonstrably sent. This app, meanwhile, stores phones `55`-prefixed
- * (`normalizeTelefone`), so without the strip the shape on the wire would
- * change silently the moment a cliente or a freight origin is edited in this
- * UI — and whether ME accepts, normalizes or mangles a `55…` value is an OPEN
- * question (#868), answerable only against their sandbox. Stripping at the
- * boundary decouples the stored shape from the wire: correct whichever way
- * #868 lands, and a no-op on the legacy raw values already in the corpus.
- * `localTelefone` only ever strips a leading `55`, so a foreign number keeps
- * its own country code.
+ * That is the documented ME contract: the cart reference uses `11912345678`
+ * / `41912345678`, and the store-phone reference uses `11987654321`. Neither
+ * promises that an E.164 `55…` value is accepted or normalized. This app,
+ * meanwhile, stores phones `55`-prefixed (`normalizeTelefone`), so #868 chose
+ * the documented local shape at this provider boundary rather than depending
+ * on undocumented tolerance. The strip is a no-op on legacy raw values already
+ * in the corpus. `localTelefone` only ever strips a leading `55`, so a foreign
+ * number keeps its own country code.
+ *
+ * References (checked 2026-09-25):
+ * https://docs.melhorenvio.com.br/reference/inserir-fretes-no-carrinho
+ * https://docs.melhorenvio.com.br/reference/cadastrar-telefones-de-uma-loja
  */
 
 export interface BuildPedidoCartInput {
@@ -72,9 +75,16 @@ export interface BuildPedidoCartInput {
   readonly invoiceKey?: string | null;
 }
 
-/** 14 digits = CNPJ (PJ); anything else (typically 11 = CPF) is treated as PF. */
+/**
+ * 14 characters = CNPJ (PJ); anything else (typically 11 = CPF) is treated as PF.
+ *
+ * ⚠️ Normalises punctuation without stripping letters. A `replace(/\D/g, '')`
+ * here classified an alphanumeric-CNPJ cliente (RFB IN 2.229/2024) as PF, so
+ * Melhor Envio received the document under the wrong party key and the label
+ * went out with the wrong party type — no error anywhere.
+ */
 function isPessoaJuridica(document: string | null): boolean {
-  return (document ?? '').replace(/\D/g, '').length === 14;
+  return normalizeDocumento(document ?? '').length === 14;
 }
 
 /**

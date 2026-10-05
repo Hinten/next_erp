@@ -9,23 +9,20 @@ import {
 } from './onProdutoChanged';
 
 describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
-  it('is exactly the noisy/denorm-churn field set (owner list, 2026-07-21; +integracoesComProduto #920, +marketplaceIds #961)', () => {
+  it('is exactly the noisy/denorm-churn field set', () => {
     expect([...PRODUTO_HISTORY_IGNORE_FIELDS].sort()).toEqual(
       [
         'componentesKitKeys',
         'fotosArquivosIds',
         // #920 moved this array's maintenance into the two ML link triggers, so
         // every publish/import/cancel now writes it from the server. It is
-        // denorm churn exactly like its `marketplace` sibling above, and an
-        // operator never edits it by hand.
+        // denorm churn, and an operator never edits it by hand.
         'integracoesComProduto',
-        'marketplace',
-        // #961: written by the same five stamps as `marketplace`, but it was
-        // missing from this list — so one of the pair produced history rows and
-        // the other did not.
-        'marketplaceIds',
+        // Kept even though `produtoSchema` no longer declares the field: the
+        // sweep that deletes the stored key fires this trigger per produto, and
+        // a disappearing key is a CHANGE to `diffDocumentFields`. Without this
+        // entry that sweep writes one history row per produto.
         'nome_embedding',
-        'statusProdutosMarketplace',
         'timestamp',
         'ultimaModificacao',
       ].sort(),
@@ -42,8 +39,12 @@ describe('produtoExtraIgnores', () => {
     expect(produtoExtraIgnores({}, {})).toEqual([]);
   });
 
-  it('ignores precos for a variation child write (paiId set via after)', () => {
+  it('ignores precos for an Admin-SDK variation child write (paiId set via after)', () => {
     expect(produtoExtraIgnores({}, { paiId: 'pai1' })).toEqual(['precos']);
+  });
+
+  it('audits precos for an authenticated variation child write', () => {
+    expect(produtoExtraIgnores({}, { paiId: 'pai1' }, 'documents/usuarios/u1')).toEqual([]);
   });
 
   it('falls back to before.paiId when after is undefined (delete of a variation child)', () => {

@@ -7,17 +7,25 @@
  * Shaped on `apps/melhor-envio/lib/freight/melhorEnvio.ts`.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { READ_CACHE_TTL, createCachedDocReader } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO, type CredenciaisIntegracao, type Integracao } from '@delfrance/schemas';
 import {
   type ShopeeAuthSubject,
+  type ShopeeClient,
   type ShopeeOAuthConfig,
+  type ShopeeRefreshSubject,
+  createShopeeClient,
   exchangeCode,
 } from '@delfrance/integrations-shopee';
 
 import { type ShopeeConfig, shopeeConfig } from '../env';
+import { invalidateShopeeConta, readConta } from './contaCache';
 import { createShopeeCredentialStore, credentialFromTokenPair } from './credentialStore';
+import {
+  ShopeeContaSemShopIdError,
+  createShopeeTokenStore,
+  getOrRefreshAccessToken,
+} from './tokenStore';
 
 /** The account doc is missing or is not a Shopee conta. Maps to HTTP 404. */
 export class ShopeeContaNotConfiguredError extends Error {
@@ -38,72 +46,25 @@ export interface ShopeeContext {
   readCredential(): Promise<CredenciaisIntegracao | null>;
   /** Exchange a consent `code` and persist the resulting pair. */
   exchangeAndPersist(code: string, subject: ShopeeAuthSubject, now?: number): Promise<void>;
-}
-
-/**
- * Injectable clock. `createReadCache` captures `opts.now` ONCE at construction,
- * which for a module-scope cache is import time — so the reader below reads this
- * binding through an arrow rather than handing over the reference, which would
- * freeze it. Production never moves it.
- */
-let cacheClock: () => number = Date.now;
-
-/**
- * The `integracao` document behind every Shopee call.
- *
- * ⚠️ **None of the three forbidden cases applies** (`@delfrance/data/admin/cache`):
- *
- *  - **No `tx.get`.** Nothing here runs inside a transaction.
- *  - **No read-modify-write.** `exchangeAndPersist` does not derive its patch
- *    from this document: `shop_id` / `main_account_id` come from the CALLBACK's
- *    own query parameters, and the cache is evicted immediately after the write.
- *  - **No token.** The OAuth credential lives in the `credenciais`
- *    subcollection and `readCredential()` below is an uncached `get` on every
- *    single call. Caching an OAuth token is the case the primitive names first.
- *
- * `isFresh: conta.shop_id != null` — a conta that has never completed the
- * consent has no `shop_id`, and `exchangeAndPersist` back-fills it on a
- * DIFFERENT instance from the ones that will read it. Refusing such a document
- * on every hit is what makes a 15-minute TTL safe, and it costs nothing once the
- * field is set.
- *
- * ⚠️ It is deliberately NOT `main_account_id != null`: a shop-scoped consent
- * (the normal BR case) never sets that field, so the predicate would refuse
- * every hit forever for a perfectly connected conta.
- *
- * `negativeTtlMs: 0` — an absent document means an operator deleted the
- * integração; caching that wins nothing and only delays the recovery.
- *
- * `sampleEvery: 0` — the built-in sampler logs through `console.warn`, the wrong
- * severity for a metric, and at its default of 500 an instance serving fewer
- * gets logs nothing at all.
- *
- * ℹ️ Inline rather than extracted, ME-style. When step 3 adds a second reader
- * (the receiver resolving a conta by `shop_id`), move both into
- * `lib/shopee/core/contaCache.ts` the way `apps/mercado-livre` did.
- */
-const contaReader = createCachedDocReader(integracaoCollection, {
-  name: 'shopee:integracao',
-  ttlMs: READ_CACHE_TTL.config,
-  maxEntries: 64,
-  isFresh: (conta) => conta.shop_id != null,
-  negativeTtlMs: 0,
-  now: () => cacheClock(),
-  sampleEvery: 0,
-});
-
-/** Drop the cached conta — call after any write that changes it. */
-export function invalidateShopeeConta(integracaoId: string): void {
-  contaReader.invalidate({}, integracaoId);
-}
-
-/**
- * Test-only. The cache is module-scope and captures `now` at construction, so
- * the clock is swapped through this binding rather than passed per call. Pair it
- * with `__resetAllReadCaches()`.
- */
-export function __setShopeeCacheClockForTests(now: () => number = Date.now): void {
-  cacheClock = now;
+  /**
+   * A live shop-scoped access token, refreshing it when it is about to lapse.
+   *
+   * ⚠️ Throws `ShopeeContaSemShopIdError` when the stored consent was
+   * main-account-scoped. That is NOT a broken conta — the conta route's own
+   * `shopId == null` branch answers 200 with `connected: false`, echoing
+   * `mainAccountId` and the credential clock — which is why the throw lives here
+   * and never in {@link loadShopeeContext}, where it would cost every caller the
+   * whole context over a state that renders perfectly well.
+   */
+  getAccessToken(): Promise<string>;
+  /**
+   * A shop-signed client for this conta.
+   *
+   * ⚠️ The token is handed to the package as a FUNCTION, not as a string:
+   * `createShopeeClient` calls it once per shop-signed request, so a token that
+   * lapses in the middle of a batch is renewed rather than replayed dead.
+   */
+  createShopClient(): ShopeeClient;
 }
 
 /** The package's OAuth config, from ours. Kept in one place so it cannot drift. */
@@ -116,8 +77,10 @@ export async function loadShopeeContext(
   integracaoId: string,
 ): Promise<ShopeeContext> {
   // The cached reader replaces the READ, not the contract — both throws below
-  // are unchanged, and a `null` stands in for `!snap.exists`.
-  const conta = await contaReader.get(db, {}, integracaoId);
+  // are unchanged, and a `null` stands in for `!snap.exists`. It now lives in
+  // `./contaCache`, shared with the `shop_id` resolver the push receiver and the
+  // authorization-expiry sweep use.
+  const conta = await readConta(db, integracaoId);
   if (conta == null) {
     throw new ShopeeContaNotConfiguredError(`Integração ${integracaoId} não encontrada.`);
   }
@@ -130,6 +93,34 @@ export async function loadShopeeContext(
   // Shopee — and, in `oauth/start`, before any state is minted.
   const config = shopeeConfig();
   const store = createShopeeCredentialStore(db, integracaoId);
+  const tokenStore = createShopeeTokenStore(db, integracaoId);
+
+  /**
+   * Which id class this conta's token pair is refreshed on.
+   *
+   * ⚠️ `ShopeeRefreshSubject` is NOT `ShopeeAuthSubject`: `main_account_id` is a
+   * consent-time identity and is never a refresh key, so a main-account conta
+   * has no subject here at all until the shop fan-out lands.
+   */
+  const shopIdDaConta = conta.shop_id;
+  function shopSubject(): Extract<ShopeeRefreshSubject, { kind: 'shop' }> {
+    const shopId = shopIdDaConta;
+    if (shopId == null) {
+      throw new ShopeeContaSemShopIdError(
+        `Integração ${integracaoId} está conectada por conta principal e ainda não tem uma loja (shop_id) para assinar chamadas.`,
+      );
+    }
+    return { kind: 'shop', shopId };
+  }
+
+  async function getAccessToken(): Promise<string> {
+    return getOrRefreshAccessToken({
+      store: tokenStore,
+      config: oauthConfigFrom(config),
+      subject: shopSubject(),
+      integracaoId,
+    });
+  }
 
   return {
     integracaoId,
@@ -138,6 +129,38 @@ export async function loadShopeeContext(
 
     async readCredential(): Promise<CredenciaisIntegracao | null> {
       return store.load();
+    },
+
+    getAccessToken,
+
+    createShopClient(): ShopeeClient {
+      // ⚠️ The subject is resolved EAGERLY, before the package sees anything.
+      // `createShopeeClient` asserts a positive-integer `shop_id` and raises
+      // `ShopeeConfigError` — a 500 reading as "the backend is misconfigured" —
+      // for what is really a legitimate main-account conta. Resolving here turns
+      // that into the 409 the panel knows how to render.
+      const subject = shopSubject();
+      return createShopeeClient({
+        partnerId: config.partnerId,
+        partnerKey: config.partnerKey,
+        hosts: config.hosts,
+        shopId: subject.shopId,
+        getAccessToken,
+        // ⚠️ The key is OMITTED when there is no override, never sent as an
+        // explicit `undefined`. Nothing enforces that today — the repo does not
+        // set `exactOptionalPropertyTypes`, and `api.ts` resolves the override
+        // with `config.paths?.getVariations === undefined`, so both spellings
+        // land on the default path. It is a convention, kept so that turning
+        // that flag on later is a compiler change and not a behaviour change.
+        // What the package DOES do with the value it receives is validate it at
+        // CONSTRUCTION: a malformed `SHOPEE_VARIATIONS_PATH` raises
+        // `ShopeeConfigError` before any call, because the path is inside the
+        // HMAC base string and a wrong one comes back as `error_sign` rather
+        // than as a 404.
+        ...(config.variationsPath !== null
+          ? { paths: { getVariations: config.variationsPath } }
+          : {}),
+      });
     },
 
     async exchangeAndPersist(

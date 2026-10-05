@@ -118,18 +118,41 @@ export interface WhatsAppClientConfig {
   graphApiVersion?: string;
 }
 
-export interface SendTextInput {
-  to: string;
+/** Meta gives phone `to` precedence over BSUID `recipient`; never send both. */
+export type WhatsAppRecipient =
+  | { to: string; recipient?: never }
+  | { recipient: string; to?: never };
+
+export class WhatsAppRecipientError extends Error {
+  constructor() {
+    super('Informe exatamente um destinatário WhatsApp: telefone ou BSUID.');
+    this.name = 'WhatsAppRecipientError';
+  }
+}
+
+function recipientFields(input: WhatsAppRecipient): Record<string, string> {
+  if (input.to !== undefined) {
+    if (input.recipient !== undefined || typeof input.to !== 'string' || input.to.trim() === '') {
+      throw new WhatsAppRecipientError();
+    }
+    return { to: input.to };
+  }
+  if (typeof input.recipient !== 'string' || input.recipient.trim() === '') {
+    throw new WhatsAppRecipientError();
+  }
+  return { recipient: input.recipient };
+}
+
+export type SendTextInput = WhatsAppRecipient & {
   text: string;
   /**
    * If set, marks `text` as a reply to the given inbound message ID.
    */
   replyTo?: string;
-}
+};
 
 /** Outbound media message sent by LINK (a publicly-fetchable URL). */
-export interface SendMediaInput {
-  to: string;
+export type SendMediaInput = WhatsAppRecipient & {
   /**
    * WhatsApp media kind. The Graph API nests the media object under a key
    * equal to this value (`image`/`video`/`audio`/`document`).
@@ -148,7 +171,7 @@ export interface SendMediaInput {
   caption?: string;
   /** If set, marks this as a reply to the given inbound message ID. */
   replyTo?: string;
-}
+};
 
 /**
  * Outbound TEMPLATE message — a pre-approved Meta message template, the only
@@ -157,8 +180,7 @@ export interface SendMediaInput {
  * (`.old/.../api_v23/message.dart:125`) + `enviarMensagemPadraoWhatsapp`
  * (`.old/lib/whatsapp/providers/provider.dart:150-161`).
  */
-export interface SendTemplateInput {
-  to: string;
+export type SendTemplateInput = WhatsAppRecipient & {
   /** The approved template's name (e.g. `reabertura_conversa`). */
   templateName: string;
   /**
@@ -166,7 +188,7 @@ export interface SendTemplateInput {
    * `pt_BR` — the only locale the legacy `reabertura_conversa` template uses.
    */
   languageCode?: string;
-}
+};
 
 export interface SendResult {
   messageId: string;
@@ -228,7 +250,7 @@ export class WhatsAppClient {
   async sendText(input: SendTextInput): Promise<SendResult> {
     const body: Record<string, unknown> = {
       messaging_product: 'whatsapp',
-      to: input.to,
+      ...recipientFields(input),
       type: 'text',
       text: { body: input.text, preview_url: false },
     };
@@ -271,7 +293,7 @@ export class WhatsAppClient {
     if (input.caption) media.caption = input.caption;
     const body: Record<string, unknown> = {
       messaging_product: 'whatsapp',
-      to: input.to,
+      ...recipientFields(input),
       type: input.type,
       [input.type]: media,
     };
@@ -316,7 +338,7 @@ export class WhatsAppClient {
     const body: Record<string, unknown> = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to: input.to,
+      ...recipientFields(input),
       type: 'template',
       template: {
         name: input.templateName,

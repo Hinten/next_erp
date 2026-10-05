@@ -28,6 +28,7 @@ const ui: EtiquetaProviderUi = {
   notify: vi.fn(),
   openUrl: vi.fn(),
   comprarEtiqueta: vi.fn(),
+  escolherEnvio: vi.fn(),
 };
 
 beforeEach(() => {
@@ -60,6 +61,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       freightClient: {} as never,
       nfeClient: null,
       mercadoLivreClient: mlClient,
+      shopeeClient: null,
       formato: 'pdf',
       ui,
     });
@@ -76,6 +78,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
     expect(input.pedidoId).toBe('PEDA');
     expect(input.frete).toBe(freteA); // the fetched pedido's OWN live frete block
     expect(input.intFrete).toEqual({
+      fonte: 'doc',
       id: 'INT1',
       tipo: 'melhorEnvios',
       data: { tipo: 'melhorEnvios' },
@@ -94,6 +97,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
       freightClient: {} as never,
       nfeClient: null,
       mercadoLivreClient: null,
+      shopeeClient: null,
       formato: 'pdf',
       ui,
     });
@@ -110,6 +114,7 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         freightClient: {} as never,
         nfeClient: null,
         mercadoLivreClient: null,
+        shopeeClient: null,
         formato: 'pdf',
         ui,
       }),
@@ -129,10 +134,50 @@ describe('reprintCheckoutEtiqueta — targets the row.pedidoId, its OWN live fre
         freightClient: {} as never,
         nfeClient: null,
         mercadoLivreClient: null,
+        shopeeClient: null,
         formato: 'pdf',
         ui,
       }),
     ).toEqual({ status: 'no-integration' });
+  });
+
+  it('a Shopee pedido with NO int_frete ref reprints on the block, not no-integration (#1523)', async () => {
+    const freteShopee = {
+      integracaoFreteOuterRef: null,
+      externalOptionIntegracao: 'shopee',
+      modalidade: '0',
+      estado: 'aguardandoPostagem',
+    };
+    h.getDoc.mockResolvedValueOnce({
+      exists: () => true,
+      data: () => ({ freteInicial: freteShopee }),
+    });
+    h.dereferenceOuterRef.mockReturnValue(null);
+    h.emitirOuImprimirEtiqueta.mockResolvedValue({ status: 'printed' });
+    const shopeeClient = { __shopee: true } as never;
+
+    const res = await reprintCheckoutEtiqueta({
+      db,
+      pedidoId: 'PEDS',
+      freightClient: null,
+      nfeClient: null,
+      mercadoLivreClient: null,
+      shopeeClient,
+      formato: 'zpl2',
+      ui,
+    });
+
+    expect(res).toEqual({ status: 'printed' });
+    // Only the pedido was read — no int_frete document exists to read.
+    expect(h.getDoc).toHaveBeenCalledTimes(1);
+    const input = h.emitirOuImprimirEtiqueta.mock.calls[0]![0] as {
+      frete: unknown;
+      intFrete: unknown;
+      deps: { shopeeClient: unknown };
+    };
+    expect(input.frete).toBe(freteShopee);
+    expect(input.intFrete).toEqual({ fonte: 'bloco', id: null, tipo: 'shopee', data: null });
+    expect(input.deps.shopeeClient).toBe(shopeeClient);
   });
 });
 
@@ -156,6 +201,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         freightClient: {} as never,
         nfeClient: null,
         mercadoLivreClient: null,
+        shopeeClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,
@@ -199,6 +245,7 @@ describe('reprintCheckoutEtiqueta — a stalled stage becomes a reported failure
         freightClient: {} as never,
         nfeClient: null,
         mercadoLivreClient: null,
+        shopeeClient: null,
         formato: 'pdf',
         ui,
         timeoutMs: 30_000,
@@ -251,8 +298,10 @@ describe('reprintCheckoutDanfe — bounded on the same terms as its twin', () =>
   it('does NOT bound the print itself, so a timeout can never double-print', async () => {
     // The invariant every deadline in this module rests on: each bounded stage
     // is BEFORE a side effect, so "timeout, then re-click" is safe. If a future
-    // change wraps `printDanfeForCheckout` (or `freightClient.imprimir`), that
-    // stops being true and a re-click prints twice.
+    // change wraps `printDanfeForCheckout` (or the etiqueta registry that opens
+    // the label), that stops being true and a re-click prints twice. The
+    // transports' own deadlines (#1094) fire BEFORE the print: a timed-out
+    // download prints nothing.
     vi.useFakeTimers();
     try {
       h.ensureNfeAprovada.mockResolvedValue({ ok: true, nfeId: 'NFE1' });

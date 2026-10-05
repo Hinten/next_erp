@@ -1,23 +1,32 @@
 /**
- * `infNFe.emit` (from Filial) and `infNFe.dest` (from Cliente + Endereco).
+ * `infNFe.emit` (from Filial), `infNFe.dest` (from Cliente + Endereco) and
+ * `infNFe.entrega` (the delivery address, when it differs — #422).
  *
  * Sanitisation is owned here — callers hand raw domain strings; the generator
  * is the SEFAZ-safety boundary. Homologação override of `dest.xNome` lives
  * here too (see `.claude/skills/nfe/references/homologacao.md`).
  */
+import { normalizeDocumento, validateCNPJ, validateCPF } from '@delfrance/core/documents';
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
-import { IE_SENTINELA, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
+import { IE_SENTINELA, ISUF_EMIT_REGEX, TIPO_CLIENTE, normalizarIe } from '@delfrance/schemas';
 
 import { sanitizeNFeEmail, sanitizeNFeText, temTextoCorrompido } from '../sanitize';
-import type { TEnderEmi, TEndereco, TNFe_infNFe_dest, TNFe_infNFe_emit } from '../types/nfe-schema';
+import type {
+  TEnderEmi,
+  TEndereco,
+  TLocal,
+  TNFe_infNFe_dest,
+  TNFe_infNFe_emit,
+} from '../types/nfe-schema';
+import { UF_TO_IBGE } from './tz';
 import type { Ambiente } from './types';
 
 export const HOMOLOGACAO_XNOME = 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
 
 /**
  * CRT default — Simples Nacional. Phase A's tribute engine is SN-only
- * (it builds CSOSN variants and throws on CRT=3/4 — see
- * `src/tribute/imposto.ts:75`), so the `<emit><CRT>` value MUST match
+ * (it builds CSOSN variants and throws on CRT=3/4 — see `buildICMS` in
+ * `src/tribute/imposto.ts`), so the `<emit><CRT>` value MUST match
  * to keep the XML internally consistent. SEFAZ rejects with cStat=591
  * ("Informado CSOSN para emissor que não é do Simples Nacional") when
  * a CRT=3 emit contains a CSOSN item. Production target (DEL FRANCE)
@@ -33,7 +42,14 @@ export class NFePartiesError extends Error {
   }
 }
 
-export function buildEmit(filial: Filial): TNFe_infNFe_emit {
+/**
+ * `emit`. `isufEmit` is `emit/ISUFEmit` (NT 2025.002 C22, #331) — the caller
+ * passes it only with the Reforma Tributária on; absent, `emit` is unchanged.
+ */
+export function buildEmit(filial: Filial, isufEmit?: string): TNFe_infNFe_emit {
+  if (isufEmit != null && !ISUF_EMIT_REGEX.test(isufEmit)) {
+    throw new NFePartiesError(`emit/ISUFEmit must be 8 or 9 digits, got '${isufEmit}'`);
+  }
   if (!filial.cnpj) throw new NFePartiesError('filial.cnpj is required');
   if (!filial.razaoSocial) throw new NFePartiesError('filial.razaoSocial is required');
 
@@ -63,6 +79,7 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
     IM: filial.imun ?? undefined,
     CNAE: filial.cnae ?? undefined,
     CRT: DEFAULT_CRT,
+    ...(isufEmit != null ? { ISUFEmit: isufEmit } : {}),
   };
 }
 
@@ -139,12 +156,15 @@ export function buildDest(
   //
   // ⚠️ DEVIATION from the legacy ladder, decided by the owner: legacy maps an
   // ABSENT ie on a PJ to '2', and that value is barely emittable. NT 2025.001
-  // rule E16a-30 made "destinatário isento de IE" a REJECTION (cStat=805) on an
-  // internal operation (idDest=1) in 17 UFs — AL, AM, BA, CE, DF, ES, GO, MG,
-  // MS, MT, PB, PE, RJ, RN, RS, SE and SP included. Our own homologação lane
+  // (v1.03) rule E16a-30 made "destinatário isento de IE" a REJECTION
+  // (cStat=805) on internal AND interstate operations (idDest=1 or 2) whenever
+  // the DESTINATÁRIO's UF is one of 17 — AL, AM, BA, CE, DF, ES, GO, MG, MS, MT,
+  // PB, PE, RJ, RN, RS, SE, SP — and rule E16a-35 lets any other UF reject it on
+  // internal operations too; both exempt only a note with ICMS-ST on some item
+  // or an isenta / imune / não tributada operation. Our own homologação lane
   // caught it live. A cliente nobody ever filled an IE for would therefore be
-  // emittable interstate but not in-state, which is a worse outcome than
-  // defaulting the classification.
+  // unemittable — in-state or interstate — whenever it sits in one of those UFs,
+  // which is a worse outcome than defaulting the classification.
   //
   // So '2' is now reachable ONLY by an explicit `ISENTO` in the cadastro — it is
   // a claim the operator makes, never one inferred from a blank field. ⚠️ Legacy
@@ -213,6 +233,119 @@ function buildEnderDest(endereco: Endereco): TEndereco {
     cPais: endereco.cPais ?? '1058',
     xPais: sanitizeOptional('endereco.pais', endereco.pais, 60) ?? 'BRASIL',
   };
+}
+
+/**
+ * `infNFe.entrega` — Grupo G, "Identificação do Local de Entrega" (`TLocal`),
+ * for a delivery address that is a different document from the fiscal one
+ * (#422). The caller decides "different"; this only builds the group.
+ *
+ * Why it must exist at all: once the delivery UF decides `idDest`
+ * (`ufDestinoOperacao`), a SP-registered buyer receiving in RJ gets `idDest=2`
+ * with `enderDest/UF = SP` — rejected with 772 unless `entrega/UF` differs from
+ * the emitente's (MOC 7.0 E12-30 exceptions), and 523/773 carry the same
+ * exception. Legacy never emitted this group and relied on luck.
+ *
+ * Identity (the XSD's CNPJ|CPF choice is MANDATORY): the endereço's own
+ * recebedor fields when a document is filled in, else the pedido's cliente.
+ * Name and document always come from the SAME source — a recebedor's CPF next
+ * to the cliente's name would describe nobody. A filled-in recebedor document
+ * that does not validate throws instead of falling back: the operator typed
+ * it, and silently replacing it with the cliente's would sign a different
+ * recebedor than the one on the cadastro.
+ *
+ * Deliberately minimal: no `fone`/`email`/`IE`/`cPais`/`xPais` — each is one
+ * more rejection surface, and none is required for a Brazilian delivery. The
+ * name is the REAL one even in homologação: the fictitious-name rule (598) is
+ * `dest/xNome` only.
+ */
+export function buildEntrega(cliente: Cliente, endereco: Endereco): TLocal {
+  const cMun = requireCMun('entrega.codigoMunicipio', endereco.codigoMunicipio);
+  // Rule 279: cMun must belong to the UF. A mismatch here is a cadastro whose
+  // CEP was resolved to another state's município — refuse it with the values.
+  const cUF = UF_TO_IBGE[endereco.estado];
+  if (!cMun.startsWith(cUF)) {
+    throw new NFePartiesError(
+      `entrega.codigoMunicipio='${cMun}' is not a município of UF '${endereco.estado}' ` +
+        `(IBGE codes there start with '${cUF}'). Fix the delivery address.`,
+    );
+  }
+  const cep = (endereco.cep ?? '').replace(/\D/g, '');
+  if (!/^\d{8}$/.test(cep)) {
+    throw new NFePartiesError(
+      `entrega.cep=${JSON.stringify(endereco.cep ?? null)} must have 8 digits`,
+    );
+  }
+  return {
+    ...recebedorDaEntrega(cliente, endereco),
+    xLgr: requireSanitizedMin2('entrega.logradouro', endereco.logradouro),
+    nro: requireSanitized('entrega.numero', endereco.numero, 60),
+    xCpl: sanitizeOptional('entrega.complemento', endereco.complemento, 60),
+    xBairro: requireSanitizedMin2('entrega.bairro', endereco.bairro),
+    cMun,
+    xMun: requireSanitizedMin2('entrega.cidade', endereco.cidade),
+    UF: endereco.estado as TLocal['UF'],
+    CEP: cep,
+  };
+}
+
+type RecebedorDaEntrega = Pick<TLocal, 'CNPJ' | 'CPF' | 'xNome'>;
+
+function recebedorDaEntrega(cliente: Cliente, endereco: Endereco): RecebedorDaEntrega {
+  const docRecebedor = normalizeDocumento(endereco.cpf_cnpj ?? '');
+  if (docRecebedor.length > 0) {
+    requireIntegro('entrega.nome', endereco.nome);
+    const nome = sanitizeNFeText(endereco.nome, 60);
+    return {
+      ...documentoValido('entrega.cpf_cnpj (recebedor)', docRecebedor),
+      // xNome is optional in TLocal but 2–60 when present: a blank or
+      // one-character recebedor name is omitted, never replaced by the cliente's.
+      ...(nome && nome.length >= 2 ? { xNome: nome } : {}),
+    };
+  }
+
+  const docCliente = normalizeDocumento(cliente.cpf_cnpj ?? '');
+  if (
+    docCliente.length === 0 ||
+    (cliente.tipo !== TIPO_CLIENTE.pessoaFisica && cliente.tipo !== TIPO_CLIENTE.pessoaJuridica)
+  ) {
+    throw new NFePartiesError(
+      `the delivery address needs an identified recebedor (CPF or CNPJ) and the cliente has ` +
+        `none to fall back on (tipo='${cliente.tipo}'). Fill in "Recebedor (NF-e)" on the ` +
+        `delivery address.`,
+    );
+  }
+  requireIntegro('cliente.nome', cliente.nome);
+  const nome = sanitizeNFeText(cliente.nome, 60);
+  return {
+    ...documentoValido('cliente.cpf_cnpj', docCliente),
+    ...(nome && nome.length >= 2 ? { xNome: nome } : {}),
+  };
+}
+
+/**
+ * A normalized CPF (11 digits) or CNPJ (14, alphanumeric body allowed) with a
+ * valid check digit, as the matching TLocal field — anything else throws.
+ * Length picks the field; the check digit keeps a typo out of a signed nota
+ * (optional-per-UF rules 514/541 would otherwise catch it only in some UFs).
+ */
+function documentoValido(name: string, doc: string): Pick<TLocal, 'CNPJ' | 'CPF'> {
+  if (doc.length === 11 && validateCPF(doc)) return { CPF: doc };
+  if (doc.length === 14 && validateCNPJ(doc)) return { CNPJ: doc };
+  throw new NFePartiesError(`${name}='${doc}' is not a valid CPF or CNPJ`);
+}
+
+/**
+ * {@link requireSanitized} plus the 2-character minimum TLocal puts on
+ * `xLgr`/`xBairro`/`xMun`. Without it a one-letter value passes here and dies
+ * at the pre-send XSD gate with a message that names no field.
+ */
+function requireSanitizedMin2(name: string, value: string | null | undefined): string {
+  const cleaned = requireSanitized(name, value, 60);
+  if (cleaned.length < 2) {
+    throw new NFePartiesError(`${name}=${JSON.stringify(cleaned)} must have at least 2 characters`);
+  }
+  return cleaned;
 }
 
 /**

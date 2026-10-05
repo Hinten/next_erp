@@ -7,7 +7,25 @@
  *     pedidoId recovered from the doc path;
  *   - a 468 result (estado stays 'p') counts stillPending, success recovers;
  *   - a stuck non-EPEC doc is still consulted at the authorizer that owns its
- *     persisted tpEmis (SVC doc → SVC consulta URL).
+ *     persisted tpEmis (SVC doc → SVC consulta URL);
+ *   - the docs an async lote reply WITHOUT infRec leaves behind (#512) are
+ *     consulted by chave only once their own pacing says so, and a refused
+ *     fresh member (rejeitada / error) is never scanned at all;
+ *   - an in-flight doc with no pacing of its own (no `proximaConsultaEm`: the
+ *     pre-send anchor, #512's `enviando` dispositions) is consulted only once
+ *     its stored ms `ultima_modificacao` is `DEFAULT_STUCK_TIMEOUT_MS` old — or
+ *     the operator's `timeoutMs` — so the sweep stays off a send that may still
+ *     be in flight (#1653);
+ *   - the consSit breaker of every by-chave round (#513, #1654) spans the due
+ *     lotes of one filial, never another filial's — a 656 all of them, an
+ *     outage only those at the same authorizer (home / SVC-AN) — and it
+ *     survives a lote whose reconcile THREW after tripping it (#1654);
+ *   - rule 6 in the sweep (#1654): a failure of a KNOWN class
+ *     (`descreverFalhaConhecida`) is recorded in `errors` and the run goes on,
+ *     at each of the four catch sites; an unknown class (a bug) aborts the
+ *     run, which the route answers 500;
+ *   - the legacy consult-by-chave branch writes a recovered 539's chave swap
+ *     in the SAME merge as its outcome (#1654 §2d).
  * Auth, runtime, Firestore and the EPEC transmit are mocked; the scan logic,
  * `loadNfeConfigForEmission` and `sefazCallFor` run REAL against an in-memory
  * fake that supports `collectionGroup`.
@@ -18,19 +36,43 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/auth')>();
   return { ...actual, verifyCaller: vi.fn() };
 });
-vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
+// The real module's classes stay (the sweep's failure table names
+// `NFeRuntimeConfigError`); only the runtime itself is faked.
+vi.mock('@/lib/nfe/runtime', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/runtime')>();
+  return { ...actual, getNFeRuntime: vi.fn() };
+});
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: vi.fn() }));
 vi.mock('@/lib/nfe/orchestrator/epec', () => ({ transmitirPosEpec: vi.fn() }));
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
-  return { ...actual, consultarSituacaoNFe: vi.fn() };
+  // Both SEFAZ consult bindings are mocked: an offline test must never reach
+  // the real transport, even at a fake `https://example/…` host.
+  return { ...actual, consultarLote: vi.fn(), consultarSituacaoNFe: vi.fn() };
+});
+vi.mock('@/lib/nfe/filial-cert', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nfe/filial-cert')>();
+  return { ...actual, resolveFilialRuntimeByCnpj: vi.fn() };
 });
 
-import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
+import { nowMicros } from '@delfrance/core/datetime';
+import { nfev4Collection } from '@delfrance/data/admin/collections';
+import {
+  consultarLote,
+  consultarSituacaoNFe,
+  DEFAULT_STUCK_TIMEOUT_MS,
+  encryptSecret,
+  NFeTransportError,
+  RECONCILE_BASE_DELAY_MS,
+  RECONCILE_SWEEP_GRACE_MS,
+} from '@delfrance/integrations-nfe';
 import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
+import { persistPatch } from '@/lib/nfe/orchestrator/audit';
+import { CONSUMO_INDEVIDO_ESPERA_MS, patchForLoteSemRecibo } from '@/lib/nfe/orchestrator/emitir';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
@@ -85,8 +127,14 @@ function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
  * In-memory Firestore for the route: `doc(path).get/set` (config reads +
  * recovery patches) and a `collectionGroup` that filters seeded docs by their
  * parent collection name + the `estado in [...]` constraint.
+ *
+ * `falhaNaTransacao` makes every transaction that reads that doc path reject
+ * with that error — a guarded write failing in Firestore itself.
  */
-function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
+function fakeFirestore(
+  seed: Record<string, Record<string, unknown> | null>,
+  opts: { readonly falhaNaTransacao?: { readonly path: string; readonly erro: Error } } = {},
+) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
 
@@ -115,9 +163,13 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
 
   function collectionGroup(groupId: string) {
     let estados: unknown[] | null = null;
+    // Any other `field == value` (reconcileByRecibo's `nRec == …`): without it
+    // every lote's query would return every seeded member.
+    const iguais: Array<readonly [string, unknown]> = [];
     const q = {
-      where(field: string, _op: string, value: unknown) {
+      where(field: string, op: string, value: unknown) {
         if (field === 'estado') estados = value as unknown[];
+        else if (op === '==') iguais.push([field, value]);
         return q;
       },
       limit(_n: number) {
@@ -127,6 +179,9 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         const items = Object.entries(docs)
           .filter(([k, v]) => v != null && k.split('/').at(-2) === groupId)
           .filter(([, v]) => !estados || estados.includes((v as { estado?: unknown }).estado))
+          .filter(([, v]) =>
+            iguais.every(([f, valor]) => (v as Record<string, unknown>)[f] === valor),
+          )
           .map(([k, v]) => ({
             id: k.split('/').pop()!,
             ref: ref(k),
@@ -142,8 +197,57 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
   return {
     fs: {
       doc: (p: string) => ref(p),
-      collection: (p: string) => ({ doc: (id: string) => ref(`${p}/${id}`) }),
+      collection: (p: string) => ({
+        doc: (id: string) => ref(`${p}/${id}`),
+        // The receipt path audits each consult as a new enviNfe doc.
+        async add(data: Record<string, unknown>) {
+          const path = `${p}/auto-${writes.length}`;
+          writes.push({ path, data });
+          docs[path] = data;
+          return ref(path);
+        },
+        // The 539 recovery's audit lookup (`findLatestEnviNFeMsgWithNRec`):
+        // `where(targetsChnfe array-contains …).orderBy(…).limit(…)` over the
+        // seeded docs directly under `p`.
+        where(field: string, op: string, value: unknown) {
+          const q = {
+            orderBy: () => q,
+            limit: () => q,
+            async get() {
+              const profundidade = p.split('/').length + 1;
+              const items = Object.entries(docs)
+                .filter(([k, v]) => v != null && k.startsWith(`${p}/`))
+                .filter(([k]) => k.split('/').length === profundidade)
+                .filter(([, v]) => {
+                  const campo = (v as Record<string, unknown>)[field];
+                  return op === 'array-contains' && Array.isArray(campo) && campo.includes(value);
+                })
+                .map(([k, v]) => ({ id: k.split('/').pop()!, ref: ref(k), data: () => v }));
+              return { docs: items, size: items.length, empty: items.length === 0 };
+            },
+          };
+          return q;
+        },
+      }),
       collectionGroup,
+      // The seam the REAL guarded persist (`persistPatchUnlessFinal`) uses —
+      // every by-chave round of a receipt (`reconcilePorChave`) writes through it.
+      async runTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+        type Ref = ReturnType<typeof ref> & {
+          get(): Promise<unknown>;
+          set(data: Record<string, unknown>, opt?: { merge?: boolean }): Promise<void>;
+        };
+        return fn({
+          get: async (r: Ref) => {
+            const falha = opts.falhaNaTransacao;
+            if (falha != null && falha.path === r.path) throw falha.erro;
+            return r.get();
+          },
+          set: (r: Ref, data: Record<string, unknown>, opt?: { merge?: boolean }) => {
+            void r.set(data, opt);
+          },
+        });
+      },
     } as never,
     docs,
     writes,
@@ -383,16 +487,64 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     );
   });
 
-  it('preserves the nRec saved on cStat=103 — a consSit outcome carries no receipt', async () => {
+  it('a stuck doc with nRec + filialId is reconciled by receipt, never consSit — and keeps its nRec', async () => {
+    // This case used to reach the REAL consultarLote (the binding was not
+    // mocked) and passed only because the sweep's catch swallowed the transport
+    // failure. It now asserts the receipt path actually ran.
     const { fs, docs } = fakeFirestore({
       'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103' }),
     });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockResolvedValue({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SVC_AN',
+      nRec: 'REC-103',
+      cStat: '105',
+      xMotivo: 'Lote em processamento',
+      cUF: '35',
+      dhRecbto: '2026-06-11T09:00:00-03:00',
+    } as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, stillPending: 1, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tpAmb: '2', url: 'https://example/svc-an/ret' }),
+      { nRec: 'REC-103' },
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    const doc = docs['pedidos/PED-2/nfev4/s6'] as { cStat: string; retries: number; nRec: string };
+    expect(doc.cStat).toBe('105');
+    expect(doc.retries).toBe(1);
+    expect(doc.nRec).toBe('REC-103');
+  });
+
+  it('preserves the nRec saved on cStat=103 when a legacy doc (no filialId) is recovered by consSit', async () => {
+    // No filialId → the receipt path cannot resolve a cert, so the sweep consults
+    // by chave with the cert resolved from the emit CNPJ inside the chave.
+    const { fs, docs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103', filialId: null }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(resolveFilialRuntimeByCnpj).mockResolvedValueOnce(fakeRuntime());
     vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
 
     const res = await POST(req());
-    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
 
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, recovered: 1, errors: [] });
+    expect(vi.mocked(resolveFilialRuntimeByCnpj)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      CHAVE.slice(6, 20),
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
     // persistPatch omits nRec when the patch lacks one — the receipt the
     // lote response saved must survive the recovery merge.
     expect((docs['pedidos/PED-2/nfev4/s6'] as { nRec: string }).nRec).toBe('REC-103');
@@ -430,5 +582,934 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
     expect(docWrites.some((w) => typeof w.data.xml_nfe_proc === 'string')).toBe(false);
     expect(docWrites.some((w) => w.data.xml_assinado === null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #512 — what the backstop sweep does with the docs an async lote reply
+// WITHOUT infRec leaves behind. The emit path persists one disposition per
+// member and enqueues nothing, so this sweep is the ONLY thing that ever
+// consults them — and it must do so only where the disposition asks for it,
+// once per doc, by chave (there is no receipt).
+// ---------------------------------------------------------------------------
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+/** `buildPersistData`'s own pacing for a first (retries 0, no tMed) `aguardandoResposta`. */
+const DEFAULT_PACING_MS = RECONCILE_BASE_DELAY_MS + RECONCILE_SWEEP_GRACE_MS;
+
+/** A distinct 44-digit chave per seeded member: `nNF` in positions 26–34. Shape only — no cDV. */
+function chaveDe(nNF: number): string {
+  return CHAVE.slice(0, 25) + String(nNF).padStart(9, '0') + CHAVE.slice(34);
+}
+
+interface LoteSemReciboSeed {
+  readonly nNF: number;
+  /** The LOTE-level cStat/xMotivo of the retEnviNFe that carried no infRec. */
+  readonly cStat: string;
+  readonly xMotivo: string;
+  /** A #396 crash-window member — retransmitted with its STORED signed bytes. */
+  readonly storedBytes: boolean;
+  /** How long before the sweep runs the reply was persisted. */
+  readonly persistedAgoMs: number;
+}
+
+/**
+ * The persist-before-send anchor as `buildNfeDocWrite` stamps it at
+ * `persistedAt`: the same fields, through the same `nfev4Collection` schema, so
+ * `ultima_modificacao` is the ms NUMBER real docs carry — and the legacy
+ * Flutter corpus carries a ms number too. The ISO strings in the older fixtures
+ * above are the pre-#220 shape of this repo's own staging docs. In flight, no
+ * cStat and no `proximaConsultaEm`: nothing paces it but the stuck timeout.
+ */
+function anchorDoc(nNF: number, persistedAt: number): Record<string, unknown> {
+  const agora = new Date(persistedAt).toISOString();
+  return nfev4Collection.parse({
+    numeracao: nNF,
+    serie: 1,
+    tpEmis: 1,
+    estado: ESTADO_NFE.enviando,
+    filialId: 'F-1',
+    chave: chaveDe(nNF),
+    idLote: '4',
+    infNFe: null,
+    xml_nfe_proc: null,
+    xml_epec_proc: null,
+    xml_assinado: `<NFe>…signed nNF ${nNF}…</NFe>`,
+    nRec: null,
+    retries: 0,
+    cStat: null,
+    xMotivo: null,
+    data_emissao: agora,
+    data_autorizacao: null,
+    dataContingencia: null,
+    justificativaContingencia: null,
+    error: null,
+    ultima_modificacao: agora,
+  });
+}
+
+/**
+ * An nfev4 doc EXACTLY as #512 leaves it, built by the real code rather than
+ * written by hand, so a change to the disposition moves these seeds with it:
+ *  1. the pre-send anchor — `anchorDoc`, stamped at the frozen clock;
+ *  2. the reply merged over it through the REAL `patchForLoteSemRecibo` and the
+ *     `buildPersistData` mapping — via `persistPatch`, which writes the payload
+ *     `persistPatchUnlessFinal` writes inside its transaction
+ *     (audit.persist.test.ts pins the two equal); the explicit
+ *     `proximaConsultaEm` is computed exactly as `persistLoteSemRecibo` does.
+ * Both run with the clock frozen `persistedAgoMs` before the sweep, so the
+ * doc's OWN pacing is what the sweep judges. The crash-window member's anchor
+ * really predates this lote (only its `idLote` was re-stamped); every field the
+ * sweep reads is the same either way.
+ */
+async function seedLoteSemRecibo(
+  seed: LoteSemReciboSeed,
+): Promise<{ doc: Record<string, unknown>; persistedAt: number }> {
+  const persistedAt = Date.now() - seed.persistedAgoMs;
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(persistedAt);
+    let doc = anchorDoc(seed.nNF, persistedAt);
+    const { patch, consultaDelayMs } = patchForLoteSemRecibo(
+      { cStat: seed.cStat, xMotivo: seed.xMotivo },
+      { storedBytes: seed.storedBytes },
+    );
+    const captureRef = {
+      async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
+        expect(opt?.merge).toBe(true);
+        doc = { ...doc, ...data };
+      },
+    };
+    await persistPatch(
+      captureRef as never,
+      patch,
+      consultaDelayMs != null
+        ? { proximaConsultaEm: nowMicros() + consultaDelayMs * 1000 }
+        : undefined,
+    );
+    return { doc, persistedAt };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/** A consSit that authorizes exactly the chave it was asked about. */
+function autorizadaPara(chave: string): never {
+  const ret = consSitRet('100', true) as {
+    chNFe: string;
+    protNFe: { infProt: { chNFe: string } };
+  };
+  ret.chNFe = chave;
+  ret.protNFe.infProt.chNFe = chave;
+  return ret as never;
+}
+
+function pathDe(nNF: number): string {
+  return `pedidos/PED-${nNF}/nfev4/s${nNF}`;
+}
+
+/** The consSit requests the sweep made, by chave — each MUST be at the home SEFAZ in homologação. */
+function consultedChaves(): string[] {
+  return vi.mocked(consultarSituacaoNFe).mock.calls.map(([call, body]) => {
+    expect(call).toEqual(
+      expect.objectContaining({ tpAmb: '2', url: 'https://example/sefaz/cons' }),
+    );
+    return body.chave;
+  });
+}
+
+describe('POST /api/nfe/processar-pendentes — docs an async lote without infRec leaves (#512)', () => {
+  beforeEach(() => {
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, body) =>
+      autorizadaPara(body.chave),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a FRESH member the lote refused (656 → error, 108 → rejeitada) is never scanned, even hours later', async () => {
+    const erro = await seedLoteSemRecibo({
+      nNF: 11,
+      cStat: '656',
+      xMotivo: 'Rejeição: Consumo Indevido',
+      storedBytes: false,
+      persistedAgoMs: 3 * HOUR_MS,
+    });
+    const rejeitada = await seedLoteSemRecibo({
+      nNF: 12,
+      cStat: '108',
+      xMotivo: 'Serviço Paralisado Momentaneamente (curto prazo)',
+      storedBytes: false,
+      persistedAgoMs: 3 * HOUR_MS,
+    });
+    // Precondition — the shapes #512 persists for a fresh refused member.
+    expect(erro.doc).toMatchObject({
+      estado: ESTADO_NFE.error,
+      cStat: '656',
+      nRec: null,
+      proximaConsultaEm: null,
+      chave: chaveDe(11),
+      xml_assinado: expect.any(String),
+    });
+    expect(rejeitada.doc).toMatchObject({
+      estado: ESTADO_NFE.rejeitada,
+      cStat: '108',
+      nRec: null,
+      proximaConsultaEm: null,
+      chave: chaveDe(12),
+      xml_assinado: expect.any(String),
+    });
+    const { fs, writes } = fakeFirestore({ [pathDe(11)]: erro.doc, [pathDe(12)]: rejeitada.doc });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ scanned: 0, recovered: 0, stillPending: 0, errors: [] });
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  // Each in-flight disposition, one minute either side of its own pacing. The
+  // 656 anchor's "before" is the near-miss that pins the 1 h wait actually
+  // reaching the sweep: under the default pacing it would be due at 59 min.
+  describe.each<[string, Pick<LoteSemReciboSeed, 'cStat' | 'xMotivo' | 'storedBytes'>, number]>([
+    [
+      '103 without infRec (fresh) → aguardandoResposta',
+      { cStat: '103', xMotivo: 'Lote recebido com sucesso', storedBytes: false },
+      DEFAULT_PACING_MS,
+    ],
+    [
+      '#396 crash-window anchor refused with 225 → aguardandoResposta',
+      { cStat: '225', xMotivo: 'Rejeição: Falha no Schema XML da NFe', storedBytes: true },
+      DEFAULT_PACING_MS,
+    ],
+    [
+      '#396 crash-window anchor refused with 656 → aguardandoResposta paced 1 h',
+      { cStat: '656', xMotivo: 'Rejeição: Consumo Indevido', storedBytes: true },
+      CONSUMO_INDEVIDO_ESPERA_MS,
+    ],
+  ])('%s', (_caso, seed, pacingMs) => {
+    it('is still pending one minute before its pacing ends — not consulted', async () => {
+      const { doc, persistedAt } = await seedLoteSemRecibo({
+        ...seed,
+        nNF: 21,
+        persistedAgoMs: pacingMs - MINUTE_MS,
+      });
+      expect(doc).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        cStat: seed.cStat,
+        nRec: null,
+        retries: 0,
+        proximaConsultaEm: (persistedAt + pacingMs) * 1000,
+        xml_assinado: expect.any(String),
+      });
+      const { fs, writes } = fakeFirestore({ [pathDe(21)]: doc });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      expect(writes).toEqual([]);
+    });
+
+    it('is consulted by chave exactly once one minute after it — never by receipt', async () => {
+      const { doc } = await seedLoteSemRecibo({
+        ...seed,
+        nNF: 22,
+        persistedAgoMs: pacingMs + MINUTE_MS,
+      });
+      const { fs, docs } = fakeFirestore({ [pathDe(22)]: doc });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(body).toEqual({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+      expect(consultedChaves()).toEqual([chaveDe(22)]);
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      // The consult's verdict lands, and the proc is stitched from the bytes
+      // the doc kept — for a crash-window member, its STORED bytes (#396).
+      const after = docs[pathDe(22)] as Record<string, unknown>;
+      expect(after.estado).toBe(ESTADO_NFE.aprovada);
+      expect(after.xml_nfe_proc).toContain(`<NFe>…signed nNF 22…</NFe>`);
+      expect(after.xml_assinado).toBeNull();
+    });
+  });
+
+  it('deferral: an enviando doc with a per-NF-e cStat at lote level (100) has no pacing; the sweep consults it by chave exactly once', async () => {
+    const { doc } = await seedLoteSemRecibo({
+      nNF: 31,
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+      storedBytes: false,
+      persistedAgoMs: 3 * HOUR_MS,
+    });
+    // Precondition: NOT aprovada (no protNFe was read), unpaced, and the
+    // timestamp in the unit real docs store — a ms number, not an ISO string.
+    expect(doc).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      cStat: '100',
+      nRec: null,
+      proximaConsultaEm: null,
+      xml_nfe_proc: null,
+      xml_assinado: expect.any(String),
+    });
+    expect(typeof doc.ultima_modificacao).toBe('number');
+    const { fs, docs } = fakeFirestore({ [pathDe(31)]: doc });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+    expect(consultedChaves()).toEqual([chaveDe(31)]);
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect((docs[pathDe(31)] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+  });
+
+  it('near-miss: an enviando doc with a lote-level 107 persisted ONE minute ago — well inside DEFAULT_STUCK_TIMEOUT_MS — is NOT consulted on this tick (#1653)', async () => {
+    const { doc, persistedAt } = await seedLoteSemRecibo({
+      nNF: 32,
+      cStat: '107',
+      xMotivo: 'Servico em Operacao',
+      storedBytes: false,
+      persistedAgoMs: MINUTE_MS,
+    });
+    // Precondition: unpaced, and `ultima_modificacao` is the ms NUMBER real
+    // docs store — one minute old.
+    expect(doc).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      cStat: '107',
+      nRec: null,
+      proximaConsultaEm: null,
+      ultima_modificacao: persistedAt,
+    });
+    expect(MINUTE_MS).toBeLessThan(DEFAULT_STUCK_TIMEOUT_MS);
+    const { fs, docs, writes } = fakeFirestore({ [pathDe(32)]: doc });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    // With no `proximaConsultaEm` the sweep falls back to `isStuckEnviando`,
+    // which judges the stored ms NUMBER against the stuck timeout. It used to
+    // `Date.parse` that number into NaN and count NaN as stuck, so this doc
+    // was consulted one minute after its write (#1653). Now it waits.
+    expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+    expect((docs[pathDe(32)] as { estado: string }).estado).toBe(ESTADO_NFE.enviando);
+  });
+
+  it('one sweep tick over every #512 shape consults only the due in-flight docs, once each', async () => {
+    // [nNF, lote cStat, crash-window (stored bytes)?, persisted how long ago]
+    const seeds: ReadonlyArray<readonly [number, string, boolean, number]> = [
+      // Refused fresh members — out of the scan.
+      [41, '656', false, 3 * HOUR_MS],
+      [42, '108', false, 3 * HOUR_MS],
+      // Paced and not yet due.
+      [43, '103', false, 0],
+      [44, '656', true, 30 * MINUTE_MS],
+      // Unpaced and not yet due: an enviando doc one minute old waits the
+      // stuck timeout from its last write, like the near-miss above (#1653).
+      [47, '107', false, MINUTE_MS],
+      // Due.
+      [45, '225', true, 3 * MINUTE_MS],
+      [46, '100', false, 3 * HOUR_MS],
+    ];
+    const seed: Record<string, Record<string, unknown>> = {};
+    for (const [nNF, cStat, storedBytes, persistedAgoMs] of seeds) {
+      const xMotivo = `lote cStat ${cStat}`;
+      const s = { nNF, cStat, xMotivo, storedBytes, persistedAgoMs };
+      seed[pathDe(nNF)] = (await seedLoteSemRecibo(s)).doc;
+    }
+    const { fs } = fakeFirestore(seed);
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 5, recovered: 2, stillPending: 3, errors: [] });
+    expect(consultedChaves().sort()).toEqual([chaveDe(45), chaveDe(46)]);
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1653 — an in-flight doc with no pacing of its own (no `proximaConsultaEm`:
+// the persist-before-send anchor, #512's `enviando` dispositions) falls back to
+// `isStuckEnviando`, which judges its stored ms `ultima_modificacao` against
+// the stuck timeout. That 5-min margin, longer than the 60 s SOAP timeout, is
+// also what keeps the sweep off a send still in flight: a consSit made before
+// SEFAZ records the NF-e answers 217, which lands as `rejeitada`.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — an unpaced in-flight doc waits the stuck timeout (#1653)', () => {
+  beforeEach(() => {
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, body) =>
+      autorizadaPara(body.chave),
+    );
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** #512's lote-level 107 disposition: `enviando`, cStat recorded, unpaced. */
+  async function disposicao107(nNF: number, persistedAgoMs: number) {
+    const { doc } = await seedLoteSemRecibo({
+      nNF,
+      cStat: '107',
+      xMotivo: 'Servico em Operacao',
+      storedBytes: false,
+      persistedAgoMs,
+    });
+    return doc;
+  }
+
+  it('the raw pre-send anchor, 30 s old, is not consulted — its send may still be in flight', async () => {
+    const doc = anchorDoc(51, Date.now() - 30_000);
+    // Precondition: the anchor as written before the SOAP request — in
+    // flight, no answer yet, unpaced, stamped with a ms number.
+    expect(doc).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      cStat: null,
+      proximaConsultaEm: null,
+    });
+    expect(typeof doc.ultima_modificacao).toBe('number');
+    const { fs, writes } = fakeFirestore({ [pathDe(51)]: doc });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  // Each unpaced shape, one minute either side of the stuck timeout.
+  describe.each<
+    [
+      string,
+      (nNF: number, persistedAgoMs: number) => Promise<Record<string, unknown>>,
+      number,
+      number,
+    ]
+  >([
+    [
+      'the pre-send anchor',
+      async (nNF, persistedAgoMs) => anchorDoc(nNF, Date.now() - persistedAgoMs),
+      52,
+      54,
+    ],
+    ['#512’s lote-level 107 disposition', disposicao107, 53, 55],
+  ])('%s', (_caso, semear, nNFAntes, nNFDepois) => {
+    it('is still pending one minute before DEFAULT_STUCK_TIMEOUT_MS — not consulted', async () => {
+      const doc = await semear(nNFAntes, DEFAULT_STUCK_TIMEOUT_MS - MINUTE_MS);
+      expect(doc).toMatchObject({ estado: ESTADO_NFE.enviando, proximaConsultaEm: null });
+      expect(typeof doc.ultima_modificacao).toBe('number');
+      const { fs, writes } = fakeFirestore({ [pathDe(nNFAntes)]: doc });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      expect(writes).toEqual([]);
+    });
+
+    it('is consulted by chave exactly once one minute after it — never by receipt', async () => {
+      const doc = await semear(nNFDepois, DEFAULT_STUCK_TIMEOUT_MS + MINUTE_MS);
+      const { fs, docs } = fakeFirestore({ [pathDe(nNFDepois)]: doc });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(body).toEqual({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+      expect(consultedChaves()).toEqual([chaveDe(nNFDepois)]);
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      const after = docs[pathDe(nNFDepois)] as Record<string, unknown>;
+      expect(after.estado).toBe(ESTADO_NFE.aprovada);
+      expect(after.xml_nfe_proc).toContain(`<NFe>…signed nNF ${nNFDepois}…</NFe>`);
+      expect(after.xml_assinado).toBeNull();
+    });
+  });
+
+  it('the operator’s timeoutMs still reaches it: {"timeoutMs":60000} consults the 2-min-old doc, not the 30-s-old one', async () => {
+    // Under the default 5 min neither would be due; the knob is what moves 56.
+    const { fs } = fakeFirestore({
+      [pathDe(56)]: await disposicao107(56, 2 * MINUTE_MS),
+      [pathDe(57)]: await disposicao107(57, 30_000),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req('{"timeoutMs":60000}'));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 2, recovered: 1, stillPending: 1, errors: [] });
+    expect(consultedChaves()).toEqual([chaveDe(56)]);
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #513 / #1654 — the consSit breaker of every by-chave round spans the later
+// lotes of one sweep. A 656 spans every lote of the FILIAL: the throttle is per
+// CNPJ+IP, so a 656 on one lote's chave must stop the consSit for the filial's
+// next lotes. An outage spans only the filial's lotes at the SAME authorizer:
+// the home SEFAZ being down says nothing about SVC-AN. The sweep owns the
+// breaker CELL, so a trip survives a lote whose reconcile then throws.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — the consSit breaker spans the lotes of a filial (#513)', () => {
+  /** `chaveDe(nNF)` with its tpEmis digit (position 35, index 34) set to `tpEmis`. */
+  function chaveComTpEmis(nNF: number, tpEmis: number): string {
+    const c = chaveDe(nNF);
+    return c.slice(0, 34) + String(tpEmis) + c.slice(35);
+  }
+
+  /** A due in-flight member of lote `nRec` (home SEFAZ, tpEmis 1, unless told otherwise). */
+  function membroDoLote(
+    nNF: number,
+    nRec: string,
+    filialId: string,
+    tpEmis = 1,
+  ): Record<string, unknown> {
+    return stuckDoc({ tpEmis, chave: chaveComTpEmis(nNF, tpEmis), nRec, filialId });
+  }
+
+  /** The consSit requests the sweep made, as `[chave, url]` — the url names the authorizer. */
+  function consSitFeitas(): Array<readonly [string, string]> {
+    return vi
+      .mocked(consultarSituacaoNFe)
+      .mock.calls.map(([call, body]) => [body.chave, call.url] as const);
+  }
+
+  /** consSit answering 108 (serviço paralisado) for `chave` — trips the `indisponivel` breaker. */
+  function servicoParalisado(chave: string): never {
+    return {
+      ...consSitRet('108', false),
+      chNFe: chave,
+      xMotivo: 'Servico Paralisado Momentaneamente',
+    } as never;
+  }
+
+  /** A processed lote (104) whose reply carries NO protNFe at all. */
+  function processadoSemProtocolo(nRec: string): never {
+    return {
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SP_NFE_PL_009_V4',
+      nRec,
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-06-11T09:00:00-03:00',
+    } as never;
+  }
+
+  /** consSit answering 656 (consumo indevido) for `chave`. */
+  function consumoIndevido(chave: string): never {
+    return {
+      ...consSitRet('656', false),
+      chNFe: chave,
+      xMotivo: 'Rejeicao: Consumo Indevido',
+    } as never;
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('consSit on lote 1 answers 656 → lote 2 of the SAME filial goes terminal with NO consSit; another filial is still consulted', async () => {
+    const { fs, docs } = fakeFirestore({
+      [pathDe(61)]: membroDoLote(61, 'REC-A', 'F-1'),
+      [pathDe(62)]: membroDoLote(62, 'REC-B', 'F-1'),
+      // Near-miss: a different filial (another CNPJ) is not throttled by F-1's 656.
+      [pathDe(63)]: membroDoLote(63, 'REC-C', 'F-2'),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === chaveDe(61) ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // Each lote consulted by receipt once; A + B terminal (errored folds into
+    // recovered here), C approved.
+    expect(body).toEqual({ scanned: 3, recovered: 3, stillPending: 0, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // ONE consSit for F-1 (the 656), none for lote 2 — and F-2's is still made.
+    expect(consultedChaves()).toEqual([chaveDe(61), chaveDe(63)]);
+
+    const a = docs[pathDe(61)] as { estado: string; cStat: string; xMotivo: string };
+    expect(a).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(a.xMotivo).toContain('cStat 656');
+    const b = docs[pathDe(62)] as { estado: string; cStat: string; xMotivo: string };
+    expect(b).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(b.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+    expect(b.xMotivo).toContain(chaveDe(61));
+    expect((docs[pathDe(63)] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+  });
+
+  it('an OUTAGE (consSit 108) on a home-SEFAZ lote → the filial’s next HOME lote (tpEmis 4) is counted with NO consSit; its SVC-AN lote (tpEmis 6) is still consulted', async () => {
+    const home1 = chaveComTpEmis(71, 1);
+    const svcAn = chaveComTpEmis(72, 6);
+    const { fs, docs } = fakeFirestore({
+      [pathDe(71)]: membroDoLote(71, 'REC-A', 'F-1', 1),
+      // Near-miss: same filial, ANOTHER authorizer — not suppressed by the home outage.
+      [pathDe(72)]: membroDoLote(72, 'REC-B', 'F-1', 6),
+      // The equal pair: same filial, the SAME authorizer (4 authorizes at home too).
+      [pathDe(73)]: membroDoLote(73, 'REC-C', 'F-1', 4),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === home1 ? servicoParalisado(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // 71 and 73 stay counted (pending); 72 is approved.
+    expect(body).toEqual({ scanned: 3, recovered: 1, stillPending: 2, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // One consSit at the home SEFAZ (the outage), one at SVC-AN — none for 73.
+    expect(consSitFeitas()).toEqual([
+      [home1, 'https://example/sefaz/cons'],
+      [svcAn, 'https://example/svc-an/cons'],
+    ]);
+
+    expect(docs[pathDe(71)]).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '104',
+      retries: 1,
+    });
+    expect(docs[pathDe(72)]).toMatchObject({ estado: ESTADO_NFE.aprovada, cStat: '100' });
+    // Counted without a call — the xMotivo says which sighting it was.
+    const c = docs[pathDe(73)] as {
+      estado: string;
+      cStat: string;
+      retries: number;
+      xMotivo: string;
+    };
+    expect(c).toMatchObject({ estado: ESTADO_NFE.aguardandoResposta, cStat: '104', retries: 1 });
+    expect(c.xMotivo).toMatch(/consulta 1\//);
+  });
+
+  it('a 656 on a home-SEFAZ lote still stops the consSit of the filial’s SVC-AN lote — consumo indevido stays filial-wide', async () => {
+    const home = chaveComTpEmis(81, 1);
+    const { fs, docs } = fakeFirestore({
+      [pathDe(81)]: membroDoLote(81, 'REC-D', 'F-1', 1),
+      [pathDe(82)]: membroDoLote(82, 'REC-E', 'F-1', 6),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === home ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ scanned: 2, recovered: 2, stillPending: 0, errors: [] });
+    // ONE consSit — the 656 at home; none at SVC-AN.
+    expect(consSitFeitas()).toEqual([[home, 'https://example/sefaz/cons']]);
+    const b = docs[pathDe(82)] as { estado: string; cStat: string; xMotivo: string };
+    expect(b).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(b.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+  });
+
+  it('a lote whose reconcile THROWS after its consSit answered 656 still stops the filial’s next lote — the trip lives in the sweep’s cell (#1654)', async () => {
+    // REC-A (F-1): A's consSit answers 656 (the trip); B then goes terminal
+    // with no call, and THAT write fails in Firestore (gRPC 3, not transient),
+    // so the whole lote's reconcile throws and returns no result.
+    const falha = Object.assign(new Error('3 INVALID_ARGUMENT: gravação recusada'), { code: 3 });
+    const { fs, docs } = fakeFirestore(
+      {
+        [pathDe(91)]: membroDoLote(91, 'REC-A', 'F-1'),
+        [pathDe(92)]: membroDoLote(92, 'REC-A', 'F-1'),
+        [pathDe(93)]: membroDoLote(93, 'REC-B', 'F-1'),
+        // Near-miss: another filial is not throttled by F-1's 656.
+        [pathDe(94)]: membroDoLote(94, 'REC-C', 'F-2'),
+      },
+      { falhaNaTransacao: { path: pathDe(92), erro: falha } },
+    );
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarLote).mockImplementation(async (_call, { nRec }) =>
+      processadoSemProtocolo(nRec),
+    );
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, { chave }) =>
+      chave === chaveDe(91) ? consumoIndevido(chave) : autorizadaPara(chave),
+    );
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    // REC-A's failure is a known class (a Firestore RPC error): recorded, and
+    // the run goes on. REC-B is terminal (errored folds into recovered), and
+    // REC-C approved.
+    expect(body).toEqual({
+      scanned: 4,
+      recovered: 2,
+      stillPending: 0,
+      errors: [{ chave: null, error: `nRec REC-A: ${falha.message}` }],
+    });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(3);
+    // REC-B's chave is NEVER consulted — the 656 of the lote that threw still
+    // holds for the filial. F-2's is.
+    expect(consultedChaves()).toEqual([chaveDe(91), chaveDe(94)]);
+    const c = docs[pathDe(93)] as { estado: string; cStat: string; xMotivo: string };
+    expect(c).toMatchObject({ estado: ESTADO_NFE.error, cStat: '104' });
+    expect(c.xMotivo).toMatch(/suspensa nesta rodada após cStat 656/);
+    expect(c.xMotivo).toContain(chaveDe(91));
+    expect((docs[pathDe(94)] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1654 — rule 6 in the sweep. Each of its four catch sites (the EPEC
+// transmission, the legacy consult by chave, the lote reconcile, the CC-e sweep
+// in sweepCce.test.ts) reads the failure through `descreverFalhaConhecida`: a
+// KNOWN class is recorded in `errors` with the message it always had, and the
+// run goes on; an unknown class — a bug — is rethrown, so the run aborts
+// loudly (the scheduled function fails and the next tick retries; the manual
+// route answers 500) instead of dressing the bug up as a per-doc error.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — a known failure is recorded, an unknown one aborts the run (#1654, rule 6)', () => {
+  /** An Admin-SDK Firestore failure: an `Error` carrying the numeric gRPC `code`. */
+  const grpc = (code: number): Error =>
+    Object.assign(new Error(`${code} UNAVAILABLE: sem conexão`), { code });
+
+  /** One catch site: its seed, the SEFAZ/transmit binding that fails there, and the error it records. */
+  interface Sitio {
+    readonly seed: Record<string, Record<string, unknown>>;
+    falhar(erro: Error): void;
+    readonly registro: (mensagem: string) => { chave: string | null; error: string };
+  }
+
+  const SITIOS: Readonly<Record<string, Sitio>> = {
+    'the pós-EPEC transmission': {
+      seed: {
+        'filiais/F-1/nfeconfig/default': CFG_NONE as unknown as Record<string, unknown>,
+        'pedidos/PED-1/nfev4/s4': pDoc(),
+      },
+      falhar: (erro) => vi.mocked(transmitirPosEpec).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: CHAVE, error: mensagem }),
+    },
+    'the legacy consult by chave': {
+      seed: { 'pedidos/PED-2/nfev4/s6': stuckDoc() },
+      falhar: (erro) => vi.mocked(consultarSituacaoNFe).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: CHAVE, error: mensagem }),
+    },
+    'the lote reconcile by receipt': {
+      seed: { 'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9' }) },
+      falhar: (erro) => vi.mocked(consultarLote).mockRejectedValue(erro),
+      registro: (mensagem) => ({ chave: null, error: `nRec REC-9: ${mensagem}` }),
+    },
+  };
+
+  const casosConhecidos = Object.keys(SITIOS).flatMap((sitio) =>
+    [
+      ['NFeTransportError', () => new NFeTransportError('connect ETIMEDOUT')] as const,
+      ['a transient Firestore RPC error (gRPC 14)', () => grpc(14)] as const,
+    ].map(([nome, erro]) => [sitio, nome, erro] as const),
+  );
+
+  it.each(casosConhecidos)(
+    '%s: a %s is recorded in errors, with its message, and the run answers 200',
+    async (sitio, _nome, erro) => {
+      const s = SITIOS[sitio]!;
+      const { fs } = fakeFirestore(s.seed);
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      const e = erro();
+      s.falhar(e);
+
+      const res = await POST(req());
+      const body = (await res.json()) as Record<string, unknown>;
+
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ scanned: 1, recovered: 0, errors: [s.registro(e.message)] });
+    },
+  );
+
+  it.each(Object.keys(SITIOS))(
+    '%s: an UNKNOWN class (a TypeError) aborts the run — the POST rejects, which Next answers 500',
+    async (sitio) => {
+      const s = SITIOS[sitio]!;
+      const { fs } = fakeFirestore(s.seed);
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      const bug = new TypeError("Cannot read properties of undefined (reading 'infProt')");
+      s.falhar(bug);
+
+      await expect(POST(req())).rejects.toBe(bug);
+    },
+  );
+
+  it("one filial's stored cert that no longer decrypts (a rotated NFE_CERT_ENC_KEY) is an NFeCertError: recorded for ITS lote, and the next filial's lote is still reconciled", async () => {
+    // F-2's key was encrypted under a master key the env no longer holds; F-1
+    // has no stored cert and signs with the env fallback.
+    process.env.NFE_CERT_ENC_KEY = Buffer.alloc(32, 7).toString('base64');
+    try {
+      const { fs } = fakeFirestore({
+        'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9', filialId: 'F-2' }),
+        'pedidos/PED-3/nfev4/s6': stuckDoc({ nRec: 'REC-10', chave: chaveDe(97) }),
+        'filiais/F-2/certificadoSecreto/default': {
+          encPrivateKey: encryptSecret('chave privada de teste', Buffer.alloc(32, 8)),
+          certificatePem: 'pem de teste',
+          certificateDerBase64: 'ZGVy',
+          subjectCommonName: 'ACME:99999999000191',
+          cnpj: '99999999000191',
+          notAfter: Date.parse('2027-01-01T00:00:00.000Z'),
+          algoritmo: 'aes-256-gcm',
+          keyVersion: 1,
+          uploadedAt: Date.parse('2026-01-01T00:00:00.000Z'),
+        },
+      });
+      vi.mocked(getAdminFirestore).mockReturnValue(fs);
+      vi.mocked(consultarLote).mockResolvedValue({
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'SVC_AN',
+        nRec: 'REC-10',
+        cStat: '105',
+        xMotivo: 'Lote em processamento',
+        cUF: '35',
+        dhRecbto: '2026-06-11T09:00:00-03:00',
+      } as never);
+
+      const res = await POST(req());
+      const body = (await res.json()) as { errors: Array<{ chave: string | null; error: string }> };
+
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ scanned: 2, stillPending: 1 });
+      expect(body.errors).toHaveLength(1);
+      expect(body.errors[0]!.chave).toBeNull();
+      expect(body.errors[0]!.error).toMatch(/^nRec REC-9: Filial 'F-2'/);
+      // F-2's lote never reached SEFAZ; F-1's did, once.
+      expect(vi.mocked(consultarLote).mock.calls.map(([, args]) => args.nRec)).toEqual(['REC-10']);
+    } finally {
+      delete process.env.NFE_CERT_ENC_KEY;
+    }
+  });
+
+  it('the abort is immediate: the lotes after the failing one are not reconciled', async () => {
+    const { fs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-9' }),
+      'pedidos/PED-3/nfev4/s6': stuckDoc({ nRec: 'REC-10', chave: chaveDe(97) }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    const bug = new TypeError("Cannot read properties of undefined (reading 'cStat')");
+    vi.mocked(consultarLote).mockRejectedValue(bug);
+
+    await expect(POST(req())).rejects.toBe(bug);
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1654 §2d — the legacy consult-by-chave branch (a doc without an nRec)
+// recovering a 539: the recovered chave rides the SAME merge as the outcome,
+// instead of a separate plain merge landing first.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — a 539 recovered by the legacy consult is ONE write (#1654 §2d)', () => {
+  /** The chave SEFAZ asserts holds our número — shape only (nNF 99). */
+  const OUTRA = chaveDe(99);
+
+  it('consSit 539 [chNFe:OUTRA] → the earlier receipt authorizes OUTRA → ONE merge carrying the recovered estado AND the chave, no proc', async () => {
+    const { fs, docs, writes } = fakeFirestore({
+      // No nRec → the legacy branch; filialId F-1 → the 539 gate runs; SVC-AN (tpEmis 6).
+      'pedidos/PED-2/nfev4/s6': stuckDoc(),
+      // The audit log knows OUTRA from an earlier lote, receipt REC-0.
+      'filiais/F-1/enviNfe/anterior': {
+        targetsChnfe: [OUTRA],
+        nRec: 'REC-0',
+        timestamp: '2026-06-01T10:00:00.000Z',
+      },
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue({
+      ...consSitRet('539', false),
+      xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA}]`,
+    } as never);
+    vi.mocked(consultarLote).mockResolvedValue({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'SVC_AN',
+      nRec: 'REC-0',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-06-01T10:01:00-03:00',
+      protNFe: [
+        {
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'SVC_AN',
+            chNFe: OUTRA,
+            dhRecbto: '2026-06-01T10:01:00-03:00',
+            nProt: '635260000000999',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    } as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ tpAmb: '2', url: 'https://example/svc-an/ret' }),
+      { nRec: 'REC-0' },
+    );
+    const escritas = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(escritas).toHaveLength(1);
+    expect(escritas[0]!.data).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      cStat: '100',
+      chave: OUTRA,
+    });
+    // Our stored bytes are for the OLD chave — no proc, the anchor stays.
+    expect(escritas[0]!.data.xml_nfe_proc).toBeUndefined();
+    expect(docs['pedidos/PED-2/nfev4/s6']).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      chave: OUTRA,
+      xml_assinado: '<NFe>…signed…</NFe>',
+    });
   });
 });

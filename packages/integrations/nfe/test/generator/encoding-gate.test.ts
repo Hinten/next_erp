@@ -50,6 +50,7 @@ const ENDERECO: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const CLIENTE: Cliente = {
@@ -62,12 +63,13 @@ const CLIENTE: Cliente = {
   isUF: null,
   email: null,
   telefone: null,
+  telefonesAdicionais: [],
+  telefoneGerenciado: false,
   observacoesInternas: null,
   timestamp: null,
-  nome_embedding: null,
-  telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const FILIAL: Filial = {
@@ -77,8 +79,10 @@ const FILIAL: Filial = {
   cnpj: '14200166000187',
   ie: '111111111111',
   iest: null,
+  isuf: null,
   imun: null,
   sede: { ...ENDERECO, logradouro: 'Rua Direita', numero: '100', bairro: 'Centro' },
+  ultimaModificacao: null,
 };
 
 const ITEM: GeneratorItem = {

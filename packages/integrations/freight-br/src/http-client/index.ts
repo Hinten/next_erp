@@ -1,9 +1,11 @@
 /**
- * Browser-safe entry — the typed client for the `apps/integrations`
+ * Browser-safe entry — the typed client for the `apps/melhor-envio`
  * Melhor Envio freight routes. Imported by `apps/web`. No server deps.
  */
 export {
   createFreightHttpClient,
+  FREIGHT_NIVEL_POR_OPERACAO,
+  FREIGHT_PRAZO_MS,
   type FreightAgenciasResult,
   type FreightComprarResult,
   type FreightContaResult,
@@ -24,6 +26,7 @@ export {
   FreightReauthRequiredError,
   FreightSchemaError,
   FreightServerError,
+  FreightTimeoutError,
   FreightValidationError,
 } from './errors';
 

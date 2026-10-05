@@ -2,7 +2,19 @@ import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { TIPO_CLIENTE, type ClienteResolveFields } from '@delfrance/schemas';
 
-import { buildClienteUpdatePatch, findOrCreateCliente } from './findOrCreateCliente';
+import {
+  OccEngine,
+  deferred,
+  type OccPrecondition,
+  type OccTransaction,
+  type OccWriteKind,
+} from '../../testing';
+import { clienteIdentidadesDosCampos } from './clienteIdentidade';
+import {
+  ClienteSemIdentidadeForteError,
+  buildClienteUpdatePatch,
+  findOrCreateCliente,
+} from './findOrCreateCliente';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Copied from apps/mercado-livre/lib/marketplace/pedidos/orderCliente.test.ts, where
@@ -23,6 +35,8 @@ function matchClause(fieldValue: unknown, op: string, value: unknown): boolean {
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
+  readonly versions = new Map<string, number>();
+  readonly occ: OccEngine;
   private autoN = 0;
   /** Rows examined by the last `.get()` — proves `.limit()` actually applied. */
   lastPageSize = 0;
@@ -35,6 +49,13 @@ class FakeDb {
   /** Iteration order handed to a query, mimicking an unspecified index order. */
   docOrder: 'insertion' | 'reverse' = 'insertion';
 
+  constructor() {
+    this.occ = new OccEngine({
+      applyWrite: (kind, path, data, precondition) =>
+        this.applyWrite(kind, path, data, precondition),
+    });
+  }
+
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
@@ -42,6 +63,8 @@ class FakeDb {
   }
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+    const key = `${path}/${id}`;
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
   }
   seedMany(path: string, docs: Array<[string, DocData]>): void {
     for (const [id, data] of docs) this.seed(path, id, data);
@@ -53,12 +76,39 @@ class FakeDb {
     return this.col(path).size;
   }
 
-  private query(entries: Array<[string, DocData]>) {
+  private applyWrite(
+    kind: OccWriteKind,
+    docPath: string,
+    data: DocData,
+    precondition?: OccPrecondition,
+  ): void {
+    const splitAt = docPath.lastIndexOf('/');
+    const path = docPath.slice(0, splitAt);
+    const id = docPath.slice(splitAt + 1);
+    const col = this.col(path);
+    const current = col.get(id);
+    if (kind === 'create' && current != null) {
+      throw Object.assign(new Error('already exists'), { code: 6 });
+    }
+    if (kind === 'update' && current == null) {
+      throw Object.assign(new Error('not found'), { code: 5 });
+    }
+    if (
+      precondition?.lastUpdateTime != null &&
+      precondition.lastUpdateTime !== this.versions.get(docPath)
+    ) {
+      throw Object.assign(new Error('concurrent update'), { code: 9 });
+    }
+    this.seed(path, id, kind === 'update' ? { ...current, ...data } : { ...data });
+  }
+
+  private query(path: string, entries: Array<[string, DocData]>) {
     const self = this;
     const rowsIn = self.docOrder === 'reverse' ? [...entries].reverse() : entries;
     const clauses: Array<[string, string, unknown]> = [];
     let lim: number | null = null;
     const q = {
+      path,
       where(field: string, op: string, value: unknown) {
         clauses.push([field, op, value]);
         return q;
@@ -75,7 +125,12 @@ class FakeDb {
         self.lastPageSize = rows.length;
         self.queryCount += 1;
         return {
-          docs: rows.map(([id, d]) => ({ id, data: () => d, exists: true })),
+          docs: rows.map(([id, d]) => ({
+            id,
+            data: () => d,
+            exists: true,
+            updateTime: self.versions.get(`${path}/${id}`),
+          })),
           empty: rows.length === 0,
         };
       },
@@ -90,25 +145,40 @@ class FakeDb {
       doc: (id?: string) => {
         const docId = id ?? `auto-${++self.autoN}`;
         return {
+          path: `${path}/${docId}`,
           id: docId,
           get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
           set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            self.seed(
+              path,
+              docId,
+              opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data },
+            );
           },
-          update: async (patch: DocData) => {
-            col.set(docId, { ...(col.get(docId) ?? {}), ...patch });
+          update: async (patch: DocData, precondition?: { lastUpdateTime?: number }) => {
+            if (
+              precondition?.lastUpdateTime != null &&
+              precondition.lastUpdateTime !== self.versions.get(`${path}/${docId}`)
+            ) {
+              throw Object.assign(new Error('concurrent update'), { code: 9 });
+            }
+            self.seed(path, docId, { ...(col.get(docId) ?? {}), ...patch });
           },
         };
       },
       where: (field: string, op: string, value: unknown) =>
-        self.query([...col.entries()]).where(field, op, value),
-      limit: (n: number) => self.query([...col.entries()]).limit(n),
+        self.query(path, [...col.entries()]).where(field, op, value),
+      limit: (n: number) => self.query(path, [...col.entries()]).limit(n),
       add: async (data: DocData) => {
         const id = `auto-${++self.autoN}`;
-        col.set(id, { ...data });
+        self.seed(path, id, { ...data });
         return { id };
       },
     };
+  }
+
+  runTransaction<T>(callback: (tx: OccTransaction) => Promise<T>): Promise<T> {
+    return this.occ.runTransaction(callback);
   }
 }
 
@@ -118,6 +188,7 @@ function db(fake: FakeDb): Firestore {
 
 const NOW_MS = 1_753_180_800_000; // 2026-07-22T00:00:00.000Z (arbitrary, fixed)
 const CLIENTES = 'clientes';
+const CLIENTE_IDENTIDADES = 'clienteIdentidades';
 
 // Real mod-11-valid documents: the create path round-trips clienteSchema's
 // `validateCpfCnpj` refine, so a made-up number would throw instead of testing
@@ -139,6 +210,36 @@ function fields(overrides: Partial<ClienteResolveFields> = {}): ClienteResolveFi
     email: null,
     ...overrides,
   };
+}
+
+async function findConcurrently(
+  fake: FakeDb,
+  firstFields: ClienteResolveFields,
+  secondFields: ClienteResolveFields,
+) {
+  const firstStaged = deferred();
+  const allowFirstCommit = deferred();
+  let heldFirstCreate = false;
+  fake.occ.beforeCommit = async ({ writes }) => {
+    const createsCliente = writes.some(
+      (write) => write.kind === 'create' && write.path.startsWith(`${CLIENTES}/`),
+    );
+    if (!heldFirstCreate && createsCliente) {
+      heldFirstCreate = true;
+      firstStaged.resolve();
+      await allowFirstCommit.promise;
+    }
+  };
+
+  const first = findOrCreateCliente(db(fake), { fields: firstFields, nowMs: NOW_MS });
+  await firstStaged.promise;
+  const secondResult = await findOrCreateCliente(db(fake), {
+    fields: secondFields,
+    nowMs: NOW_MS,
+  });
+  allowFirstCommit.resolve();
+
+  return { first: await first, second: secondResult };
 }
 
 /* ----------------------------- acceptance cases ---------------------------- */
@@ -474,6 +575,59 @@ describe('findOrCreateCliente — cascade and stamps', () => {
 /* ------------------------------ telefone hygiene --------------------------- */
 
 describe('findOrCreateCliente — telefone hygiene', () => {
+  it('does not replace an existing primary with a different order phone', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: '5511888887777' });
+    await findOrCreateCliente(db(fake), {
+      fields: fields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')?.telefone).toBe('5511888887777');
+  });
+
+  it('re-resolves after losing to a deliberate phone clear instead of refilling it', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: null });
+    const importerStaged = deferred();
+    const allowImporterCommit = deferred();
+    let heldImporter = false;
+    fake.occ.beforeCommit = async ({ writes }) => {
+      const isImporter = writes.some(
+        (write) =>
+          write.path === `${CLIENTES}/cli-a` && write.data.telefone === TELEFONE_NORMALIZED,
+      );
+      if (!heldImporter && isImporter) {
+        heldImporter = true;
+        importerStaged.resolve();
+        await allowImporterCommit.promise;
+      }
+    };
+
+    const importing = findOrCreateCliente(db(fake), {
+      fields: fields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    await importerStaged.promise;
+
+    const clienteRef = fake.collection(CLIENTES).doc('cli-a');
+    await fake.runTransaction(async (tx) => {
+      await tx.get(clienteRef);
+      tx.update(clienteRef, {
+        telefone: null,
+        telefoneGerenciado: true,
+        telefonesAdicionais: [],
+      });
+    });
+    allowImporterCommit.resolve();
+    await importing;
+
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({
+      telefone: null,
+      telefoneGerenciado: true,
+    });
+    expect(fake.queryCount).toBeGreaterThan(1);
+  });
+
   it('drops a MASKED telefone on the CREATE path instead of throwing', async () => {
     // Before #786 the `*` skip existed only on the merge path: on create,
     // `normalizeTelefone` stripped the mask down to 6 digits, which failed
@@ -608,7 +762,7 @@ describe('findOrCreateCliente — telefone hygiene', () => {
     });
   });
 
-  it('writes a genuinely different telefone', async () => {
+  it('keeps the primary when an old order observes a different telefone', async () => {
     const fake = new FakeDb();
     fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', cpf_cnpj: CPF_A, telefone: TELEFONE_RAW });
 
@@ -617,7 +771,7 @@ describe('findOrCreateCliente — telefone hygiene', () => {
       nowMs: NOW_MS,
     });
 
-    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({ telefone: '5511777776666' });
+    expect(fake.storedDoc(CLIENTES, 'cli-a')).toMatchObject({ telefone: TELEFONE_RAW });
   });
 });
 
@@ -647,6 +801,15 @@ describe('buildClienteUpdatePatch', () => {
     expect(
       buildClienteUpdatePatch(stored, fields({ idEstrangeiro: 'ZZ-999999' })),
     ).not.toHaveProperty('idEstrangeiro');
+  });
+
+  it.each(['', '...'])('does not persist an unusable document %j on update', (documento) => {
+    const patch = buildClienteUpdatePatch(
+      { nome: 'Ana Maria Souza', cpf_cnpj: null, idEstrangeiro: null } as never,
+      fields({ cpf_cnpj: documento, idEstrangeiro: documento }),
+    );
+    expect(patch).not.toHaveProperty('cpf_cnpj');
+    expect(patch).not.toHaveProperty('idEstrangeiro');
   });
 
   it('does not wipe a stored tipo when the caller does not know one', () => {
@@ -706,6 +869,199 @@ function perguntaFields(overrides: Partial<ClienteResolveFields> = {}): ClienteR
     ...overrides,
   };
 }
+
+describe('findOrCreateCliente — transactional strong-identity index', () => {
+  it('converges two simultaneous creates carrying the same cpf_cnpj', async () => {
+    const fake = new FakeDb();
+
+    const result = await findConcurrently(fake, fields(), fields());
+
+    expect(result.first.clienteId).toBe(result.second.clienteId);
+    expect([result.first.created, result.second.created].sort()).toEqual([false, true]);
+    expect(fake.docCount(CLIENTES)).toBe(1);
+    expect(fake.occ.txLog.some((entry) => entry.phase === 'abort')).toBe(true);
+
+    const cpfSpec = clienteIdentidadesDosCampos(fields())[0]!;
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, cpfSpec.id)).toMatchObject({
+      tipo: 'cpf_cnpj',
+      clienteIds: [result.first.clienteId],
+    });
+  });
+
+  it('converges simultaneous creates carrying the same cpf_cnpj and buyer id', async () => {
+    const fake = new FakeDb();
+    const incoming = fields({ idMercadoLivre: ML_BUYER_A });
+
+    const result = await findConcurrently(fake, incoming, incoming);
+
+    expect(result.first.clienteId).toBe(result.second.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(1);
+    expect(fake.storedDoc(CLIENTES, result.first.clienteId)).toMatchObject({
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('preserves two clientes for the same cpf_cnpj with contradictory buyer ids', async () => {
+    const fake = new FakeDb();
+
+    const result = await findConcurrently(
+      fake,
+      fields({ idMercadoLivre: ML_BUYER_A }),
+      fields({ idMercadoLivre: ML_BUYER_B }),
+    );
+
+    expect(result.first.clienteId).not.toBe(result.second.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(2);
+    const cpfSpec = clienteIdentidadesDosCampos(fields())[0]!;
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, cpfSpec.id)?.clienteIds).toEqual(
+      [result.first.clienteId, result.second.clienteId].sort(),
+    );
+  });
+
+  it('keeps one owner for a buyer id when simultaneous creates carry contradictory CPFs', async () => {
+    const fake = new FakeDb();
+
+    const result = await findConcurrently(
+      fake,
+      fields({ cpf_cnpj: CPF_A, idMercadoLivre: ML_BUYER_A }),
+      fields({ cpf_cnpj: CPF_B, idMercadoLivre: ML_BUYER_A }),
+    );
+
+    expect(result.first.clienteId).not.toBe(result.second.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(2);
+    const owners = [result.first.clienteId, result.second.clienteId].filter(
+      (id) => fake.storedDoc(CLIENTES, id)?.idMercadoLivre === ML_BUYER_A,
+    );
+    expect(owners).toHaveLength(1);
+    const mlSpec = clienteIdentidadesDosCampos(perguntaFields())[0]!;
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, mlSpec.id)?.clienteIds).toEqual(owners);
+  });
+
+  it('converges equivalent spellings of a foreign document through the side index', async () => {
+    const fake = new FakeDb();
+
+    const result = await findConcurrently(
+      fake,
+      fields({ cpf_cnpj: null, idEstrangeiro: 'ab-123 / 45' }),
+      fields({ cpf_cnpj: null, idEstrangeiro: 'AB12345' }),
+    );
+
+    expect(result.first.clienteId).toBe(result.second.clienteId);
+    expect(fake.docCount(CLIENTES)).toBe(1);
+  });
+
+  it('prunes missing and changed owners from a stale identity index', async () => {
+    const fake = new FakeDb();
+    const cpfSpec = clienteIdentidadesDosCampos(fields())[0]!;
+    fake.seed(CLIENTES, 'cli-changed', { nome: 'Outra pessoa', cpf_cnpj: CPF_B });
+    fake.seed(CLIENTE_IDENTIDADES, cpfSpec.id, {
+      tipo: cpfSpec.tipo,
+      clienteIds: ['cli-changed', 'cli-deleted'],
+      ultimaModificacao: 1,
+    });
+
+    const result = await findOrCreateCliente(db(fake), { fields: fields(), nowMs: NOW_MS });
+
+    expect(result.created).toBe(true);
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, cpfSpec.id)).toEqual({
+      tipo: 'cpf_cnpj',
+      clienteIds: [result.clienteId],
+      ultimaModificacao: NOW_MS,
+    });
+  });
+
+  it('reads every indexed owner in one batch so a compatible fork beyond the query limit wins', async () => {
+    const fake = new FakeDb();
+    const incoming = fields({ idMercadoLivre: ML_BUYER_A });
+    const cpfSpec = clienteIdentidadesDosCampos(fields())[0]!;
+    const conflictingOwners = Array.from({ length: 11 }, (_, index) => {
+      const id = `cli-conflict-${String(index).padStart(2, '0')}`;
+      fake.seed(CLIENTES, id, {
+        nome: `Conta ${index}`,
+        cpf_cnpj: CPF_A,
+        idMercadoLivre: ML_BUYER_B,
+      });
+      return id;
+    });
+    const compatibleId = 'cli-z-compatible';
+    fake.seed(CLIENTES, compatibleId, {
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+    const indexedOwners = [...conflictingOwners, compatibleId].sort();
+    fake.seed(CLIENTE_IDENTIDADES, cpfSpec.id, {
+      tipo: cpfSpec.tipo,
+      clienteIds: indexedOwners,
+      ultimaModificacao: 1,
+    });
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: incoming,
+      nowMs: NOW_MS,
+      candidateLimit: 1,
+    });
+
+    expect(result).toMatchObject({
+      clienteId: compatibleId,
+      created: false,
+      matchedBy: 'cpf_cnpj',
+    });
+    expect(fake.occ.getAllCount).toBe(1);
+    expect(fake.storedDoc(CLIENTE_IDENTIDADES, cpfSpec.id)?.clienteIds).toEqual(indexedOwners);
+  });
+
+  it.each(['', '...'])('does not treat an unusable cpf_cnpj %j as a cascade key', async (cpf) => {
+    const fake = new FakeDb();
+    const stranger = { nome: 'Carlos Pereira', cpf_cnpj: '' };
+    fake.seed(CLIENTES, 'cli-stranger', stranger);
+
+    const result = await findOrCreateCliente(db(fake), {
+      fields: fields({ nome: 'Ana Maria Souza', cpf_cnpj: cpf, idMercadoLivre: ML_BUYER_A }),
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({ created: true, matchedBy: null, rejected: [] });
+    expect(result.clienteId).not.toBe('cli-stranger');
+    expect(fake.storedDoc(CLIENTES, 'cli-stranger')).toEqual(stranger);
+    expect(fake.storedDoc(CLIENTES, result.clienteId)).toMatchObject({
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: null,
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('keeps an empty cpf_cnpj distinct from a real one', async () => {
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-blank', { nome: 'Sem documento', cpf_cnpj: '' });
+    fake.seed(CLIENTES, 'cli-real', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+
+    const result = await findOrCreateCliente(db(fake), { fields: fields(), nowMs: NOW_MS });
+
+    expect(result).toMatchObject({ clienteId: 'cli-real', matchedBy: 'cpf_cnpj' });
+    expect(fake.storedDoc(CLIENTES, 'cli-blank')).toEqual({
+      nome: 'Sem documento',
+      cpf_cnpj: '',
+    });
+  });
+
+  it('does not write anything when a new cliente has no strong identity', async () => {
+    const fake = new FakeDb();
+    const weakOnly = fields({
+      cpf_cnpj: null,
+      idEstrangeiro: null,
+      idMercadoLivre: null,
+      telefone: TELEFONE_RAW,
+    });
+
+    await expect(
+      findOrCreateCliente(db(fake), { fields: weakOnly, nowMs: NOW_MS }),
+    ).rejects.toBeInstanceOf(ClienteSemIdentidadeForteError);
+    expect(fake.docCount(CLIENTES)).toBe(0);
+    expect(fake.docCount(CLIENTE_IDENTIDADES)).toBe(0);
+  });
+});
 
 describe('findOrCreateCliente — Mercado Livre buyer id', () => {
   it('resolves a pre-sale question to the existing cliente instead of blind-creating', async () => {

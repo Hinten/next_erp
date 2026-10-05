@@ -54,7 +54,15 @@ export function proxy(req: NextRequest) {
   }
 
   const res = NextResponse.next();
-  if (allowed) applyCors(res.headers, allowed);
+  if (allowed) {
+    applyCors(res.headers, allowed);
+    // The etiqueta route (step 15) names its file via Content-Disposition —
+    // and the label Shopee hands back may be a PDF, a ZIP or raw ZPL, whose
+    // real name only that header carries. Unexposed, a cross-origin `fetch`
+    // reads it as `null` and the web falls back to a guessed name (ML's
+    // #1680 saved a ZIP as `.pdf` exactly that way).
+    res.headers.set('Access-Control-Expose-Headers', 'Content-Disposition');
+  }
   return res;
 }
 

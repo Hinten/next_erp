@@ -5,6 +5,7 @@ import { PedidoConflictError } from './usecases';
 import { PEDIDO_COUNTER_PATH } from './numero';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import { DUPLICAR_PEDIDO_STRIP_KEYS } from './duplicar';
+import { planejarCopiasDeEndereco } from './enderecoCopy';
 import {
   DEVOLUCAO_INTEGRAL_STRIP_KEYS,
   PEDIDO_PATH,
@@ -379,6 +380,39 @@ describe('criarSaidaComDevolucao', () => {
     expect(devolucao?.saidasRelacionadas).toEqual(['o1', 'o2']);
   });
 
+  it('uses the rewritten address in both troca pedidos and creates one copy', async () => {
+    const fake = createFakeDevolucaoPort({
+      docs: {
+        'counters/pedido': { value: 10 },
+        'pedidos/o1': { numero: 'VEN-000001' },
+        'clientes/c1/enderecos/e1': { nome: 'Origem', timestamp: 1, ultimaModificacao: 2 },
+      },
+      operacaoEntradaPadrao: { id: 'opDev', data: OPERACAO_DEVOLUCAO },
+    });
+    const values = saidaValues({
+      clientePedidoOuterRef: 'documents/clientes/c2',
+      enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
+      itensDevolvidos: { o1: { p1: [item('p1', 1, 50)] } },
+    });
+    const prepared = await prepareDevolucaoSave(fake.port, { values });
+    if (prepared === null) throw new Error('prepared must not be null');
+    const enderecoCopyPlan = planejarCopiasDeEndereco(values, () => 'copy');
+    const result = await criarSaidaComDevolucao(fake.port, {
+      values,
+      prepared,
+      saidaOperacaoNome: 'Venda',
+      enderecoCopyPlan,
+    });
+
+    expect(fake.docs.get('clientes/c2/enderecos/copy')).toMatchObject({ nome: 'Origem' });
+    expect(fake.docs.get(PEDIDO_PATH(result.saidaId))?.enderecoFiscalOuterRef).toBe(
+      'documents/clientes/c2/enderecos/copy',
+    );
+    expect(fake.docs.get(PEDIDO_PATH(result.devolucaoId))?.enderecoFiscalOuterRef).toBe(
+      'documents/clientes/c2/enderecos/copy',
+    );
+  });
+
   it('rejects with PedidoConflictError (zero writes) when an origin drifted', async () => {
     const { port, docs, txWrites, values, prepared } = await setup((d) => {
       const o1 = { ...(d.get('pedidos/o1') ?? {}), numero: 'VEN-999999' };
@@ -533,6 +567,9 @@ describe('buildDevolucaoIntegralSeed', () => {
     ultimaModificacao: 333,
     timestamp: 444,
     foiImpresso: true,
+    // The prepayment the ORIGIN settles (#331): carried over, the entrada would
+    // emit it as its own gPagAntecipado and abate it a second time.
+    chNFePagamentoAntecipado: ['35260514200166000187550010000000071000000011'],
   };
 
   function setup() {
@@ -563,6 +600,9 @@ describe('buildDevolucaoIntegralSeed', () => {
     for (const key of refilledToNull) {
       expect(values[key]).toBeNull();
     }
+    // Named explicitly: the loop above only checks what the list already holds,
+    // so it cannot notice a key missing from it.
+    expect(values.chNFePagamentoAntecipado).toBeNull();
   });
 
   it('seeds an entrada with the origin items, ALL approved chaves + the resolved operação', async () => {
@@ -629,6 +669,34 @@ describe('criarEntradaDevolucaoIntegral', () => {
       entradasRelacionadas: ['prev', entradaId],
       ultimaModificacao: NOW,
     });
+  });
+
+  it('copies a cross-customer address in the same integral-return transaction', async () => {
+    const { port, docs } = createFakeDevolucaoPort({
+      docs: {
+        'counters/pedido': { value: 5 },
+        'pedidos/o1': { numero: 'VEN-000001' },
+        'clientes/c1/enderecos/e1': { nome: 'Origem', timestamp: 1, ultimaModificacao: 2 },
+      },
+    });
+    const values = entradaValues();
+    const changed = {
+      ...values,
+      clientePedidoOuterRef: 'documents/clientes/c2',
+      enderecoFiscalOuterRef: 'documents/clientes/c1/enderecos/e1',
+    } as Pedido;
+    const enderecoCopyPlan = planejarCopiasDeEndereco(changed, () => 'copy');
+    const result = await criarEntradaDevolucaoIntegral(port, {
+      values: changed,
+      originId: 'o1',
+      operacaoNome: 'Devolução',
+      enderecoCopyPlan,
+    });
+
+    expect(docs.get('clientes/c2/enderecos/copy')).toMatchObject({ nome: 'Origem' });
+    expect(docs.get(PEDIDO_PATH(result.entradaId))?.enderecoFiscalOuterRef).toBe(
+      'documents/clientes/c2/enderecos/copy',
+    );
   });
 
   it('rejects with PedidoConflictError (zero writes) when the origin is gone', async () => {

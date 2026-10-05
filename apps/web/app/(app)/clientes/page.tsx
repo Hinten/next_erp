@@ -147,6 +147,7 @@ export default function ClientesPage() {
           db={db}
           meta={clienteMeta}
           rowHref={(id) => `/clientes/${id}`}
+          rowLinkColumn="nome"
           queryOverride={queryOverride}
           renderNewButton={() => (
             <Button component={Link} href="/clientes/novo">
@@ -155,6 +156,7 @@ export default function ClientesPage() {
           )}
           copyHref="/clientes/novo"
           fields={{
+            telefoneGerenciado: { hidden: true },
             tipo: {
               renderCell: (value) =>
                 value ? (

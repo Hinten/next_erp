@@ -46,7 +46,6 @@ const STATIC_ROUTES: string[] = [
   '/canais/magalu',
   '/canais/mercado-livre',
   '/canais/shopee',
-  '/canais/webchat',
   '/whatsapp',
   '/logistica/fob',
   '/logistica/melhor-envios',

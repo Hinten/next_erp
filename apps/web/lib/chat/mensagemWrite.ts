@@ -8,14 +8,9 @@ import { mediaSubObject, tipoForFiletype } from './mediaKind';
  *     { estadoEnvio: salva (1), tipo not in {'e','!'}, mid: null }  on a
  *     `whatsapp`-origem conversa → the trigger sends it.
  *
- * ── PRESERVE the text shape byte-for-byte ──────────────────────────────────────
- * {@link buildTextMensagem} returns the identical 17-field object the original
- * `MensagemThread.handleSend` wrote (`mid:null, conteudo, tipo:'c', canal:0,
- * estadoEnvio:salva, user_id, timestamp, resposta:null, usarioMensagemOuterRef:
- * null, urlAvatar:null, midGroup:null, error:null, visualizado:null,
- * transcription:null, anexo:null, anexo_url:null`), plus
- * `clienteMensagemOuterRef:null`. Do not reorder/rename keys —
- * `MensagemThread.test.tsx` asserts on this write shape.
+ * WhatsApp destination fields start empty in these channel-neutral builders.
+ * `persistWhatsappMensagens` stamps the accepted destination and integration
+ * while checking the current conversation inside the write transaction.
  *
  * ⚠️ `clienteMensagemOuterRef` is ALWAYS null here and that is not an omission:
  * these builders produce OPERATOR-authored messages, and the field identifies a
@@ -63,6 +58,8 @@ export function buildTextMensagem(input: {
     usarioMensagemOuterRef: null,
     // Operator-authored: the contact-author ref is for INBOUND messages.
     clienteMensagemOuterRef: null,
+    whatsappDestino: null,
+    whatsappIntegracaoId: null,
     urlAvatar: null,
     midGroup: null,
     error: null,
@@ -102,6 +99,8 @@ export function buildMediaMensagem(input: {
     usarioMensagemOuterRef: null,
     // Operator-authored: the contact-author ref is for INBOUND messages.
     clienteMensagemOuterRef: null,
+    whatsappDestino: null,
+    whatsappIntegracaoId: null,
     urlAvatar: null,
     midGroup: input.midGroup ?? null,
     error: null,

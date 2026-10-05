@@ -7,6 +7,7 @@ import {
   classifyCStat,
   type consultarLote,
   type consultarSituacaoNFe,
+  extrairTotaisNFe,
   isEstadoFinalNFe,
   nextConsultaDelayMs,
   outcomeFromInfProt,
@@ -22,10 +23,12 @@ import {
   ESTADO_NFE,
   type EnviNFeMsg,
   type EstadoNFe,
+  type NFeTotais,
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
 import type { EmitResult } from './bundle';
+import { NFeDocAusenteError } from './errors';
 
 /** A filial's `enviNfe` audit-log subcollection, via the validated handle. */
 export function enviNfeCollection(fs: Firestore, filialId: string) {
@@ -197,8 +200,21 @@ export function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch 
 export function swapAnchorForProc(nfeProcXml: string): {
   xml_nfe_proc: string;
   xml_assinado: null;
+  totais?: NFeTotais;
 } {
-  return { xml_nfe_proc: nfeProcXml, xml_assinado: null };
+  // `totais` rides this same write on purpose (#1491): it is a pure function of
+  // the very bytes being persisted, so there is no window in which the XML and
+  // the numbers derived from it can disagree, and no second writer to race
+  // (root `CLAUDE.md` rule 7 — class A, self-contained).
+  //
+  // ⚠️ OMITTED, never `null`, when the parse fails. A merge patch that carries
+  // the key would overwrite a good stored block with `null`; omitting it leaves
+  // whatever is there untouched. That absence is meant to stay legible to the
+  // monthly apuração planned in #1491, which will count unreadable notes and
+  // refuse to publish a rate while any exist — that consumer is NOT written
+  // yet, so today the absence is simply preserved rather than acted on.
+  const totais = extrairTotaisNFe(nfeProcXml);
+  return { xml_nfe_proc: nfeProcXml, xml_assinado: null, ...(totais != null ? { totais } : {}) };
 }
 
 /**
@@ -267,9 +283,10 @@ export function buildProcForAuthorizedOutcome(params: {
  * anyway; this copy is just for the NFCell.
  *
  * `extras` lets the caller stamp other fields in the same write —
- * currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
- * generic so future fields (e.g. `data_autorizacao`, `nProt`) can
- * ride along without another method.
+ * currently used for `xml_nfe_proc` on cStat=100 (autorizada), a
+ * recovered 539's `chave` (`extrasDaTrocaDeChave`) and the paced
+ * `proximaConsultaEm`. Kept generic so future fields (e.g.
+ * `data_autorizacao`, `nProt`) can ride along without another method.
  *
  * `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
  * patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
@@ -312,15 +329,91 @@ export async function persistPatch(
   await nfeRef.set(buildPersistData(patch, extras), { merge: true });
 }
 
+/**
+ * The premise a `persistPatchUnlessFinal` write was decided on, re-checked on
+ * the transaction's own `tx.get` snapshot: when ANY condition given does not
+ * hold on the stored doc, nothing is written. Every field is optional and an
+ * omitted one is not checked, so each caller states exactly its own premise.
+ *
+ *  - #512 / #1654 §1 (`persistirGuardadoPeloLote`, emitir.ts) ties the write
+ *    to ONE lote — the reply answers the lote whose `idLote` the doc was
+ *    stamped with before the send, and is stale for a doc a newer lote has
+ *    re-stamped since. Two emit paths write through it: every member of an
+ *    async lote reply without `infRec` (`persistLoteSemRecibo`), and a sync
+ *    reply without our protNFe and without `infRec`, plus the anchor /
+ *    blocking-terminal dispositions of its inline consult by chave
+ *    (`applyAutorizadoOutcome`).
+ *  - #513 / #1654 (`reconcileByRecibo`, and `reconcilePorChave` under it)
+ *    ties each write to the receipt, the `retries` its decision was computed
+ *    from, and an in-flight estado: its `data` was read before the
+ *    `consReciNFe` await (and before the earlier docs' consSit calls), so a
+ *    concurrent terminal `error`/`rejeitada` or a concurrent counted write by
+ *    another runner must refuse the write rather than be overwritten by it.
+ *    Every one of those writes that leaves the doc in flight is a COUNTED
+ *    write (the `retries` as read + 1), so none of them ever lowers it.
+ */
+export interface PersistGuard {
+  /** #512 — the lote this write answers, as stamped on the nfev4 doc (`String(idLote)`). */
+  readonly expectedIdLote?: string;
+  /** #513 — the receipt this write answers; refused when the stored `nRec` differs. */
+  readonly expectedNRec?: string;
+  /**
+   * #513 — the `retries` this write was decided from; refused when the stored
+   * `retries ?? 0` differs (another runner counted in between).
+   */
+  readonly expectedRetries?: number;
+  /** #513 — refused unless the stored estado is in flight (`enviando` / `aguardandoResposta`). */
+  readonly requireInFlight?: true;
+}
+
+/** True when every condition `guard` states holds on the stored doc. */
+function guardHolds(guard: PersistGuard, current: NotaFiscalEletronica): boolean {
+  // `idLote` is stamped as `String(idLote)`; String() on both sides keeps a
+  // read-tolerated legacy number comparable. A stored `null` never matches.
+  if (
+    guard.expectedIdLote != null &&
+    (current.idLote == null || String(current.idLote) !== String(guard.expectedIdLote))
+  ) {
+    return false;
+  }
+  if (guard.expectedNRec != null && (current.nRec ?? null) !== guard.expectedNRec) {
+    return false;
+  }
+  if (guard.expectedRetries != null && (current.retries ?? 0) !== guard.expectedRetries) {
+    return false;
+  }
+  if (
+    guard.requireInFlight === true &&
+    current.estado !== ESTADO_NFE.enviando &&
+    current.estado !== ESTADO_NFE.aguardandoResposta
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** What a refused write under a guard was answering — for the missing-doc error. */
+function alvoDaGuarda(guard: PersistGuard): string {
+  if (guard.expectedIdLote != null) return `o retorno do lote ${guard.expectedIdLote}`;
+  if (guard.expectedNRec != null) return `o retorno do recibo ${guard.expectedNRec}`;
+  return 'a gravação guardada';
+}
+
 /** Outcome of `persistPatchUnlessFinal` — either written, or skipped with the doc's live truth. */
 export type GuardedPersistResult =
   | { readonly written: true }
   | {
       readonly written: false;
-      /** The doc's CURRENT terminal estado that blocked the write. */
+      /**
+       * The doc's CURRENT estado that blocked the write — final, or one on
+       * which a {@link PersistGuard} condition failed (re-stamped by a newer
+       * lote, another receipt, counted by another runner, no longer in flight).
+       */
       readonly estadoAtual: EstadoNFe;
       readonly cStatAtual: string | null;
       readonly xMotivoAtual: string | null;
+      /** The doc's CURRENT `nRec` — a newer lote's receipt when one re-stamped it. */
+      readonly nRecAtual: string | null;
     };
 
 /**
@@ -335,26 +428,71 @@ export type GuardedPersistResult =
  * the doc's real state. Otherwise it writes exactly what `persistPatch` writes
  * (shared `buildPersistData` mapping).
  *
- * `reconcileByRecibo` / `runProcessarPendentes` deliberately stay on the plain
- * `persistPatch`: their in-flight queries already filter to non-final docs and
- * their write cadence is task/sweep-paced, so the plain merge is enough there.
+ * With a `guard` ({@link PersistGuard}) the write is ALSO skipped, with the
+ * same `{ written: false, … }` result, when any condition it states fails on
+ * the stored doc:
+ *  - emitir.ts's `persistirGuardadoPeloLote` passes `expectedIdLote` — a
+ *    stored `idLote` that differs (a stored `null` included) means a newer
+ *    lote re-stamped the doc, so this reply is stale for it. Its two callers:
+ *    #512's `persistLoteSemRecibo`, writing a lote reply that carried no
+ *    `infRec` to every member, and (#1654 §1) `applyAutorizadoOutcome` — a
+ *    sync reply with no protNFe for the chave and no `infRec`, and the anchor
+ *    / blocking-terminal dispositions of its inline consult by chave;
+ *  - `reconcileByRecibo` (#513, #1654) uses it for EVERY write it makes, with
+ *    `expectedNRec` + `expectedRetries` + `requireInFlight`: its in-flight
+ *    query runs before the `consReciNFe` await, so an estado filter on that
+ *    pre-read is no guard at write time. The counted in-flight writes (105,
+ *    lote-level non-answer — paced by `proximaConsultaEm` on a paralisado
+ *    receipt —, a recovered 539) and the 104-with-our-protNFe (proc swap
+ *    included) / 539 / blocking-terminal / cap writes state the `retries` as
+ *    read; the by-chave branch (`reconcilePorChave`) states it as read for
+ *    its counted write and as just counted for every write after its consSit.
+ *    A concurrent terminal (a 656 `error`, a 217 `rejeitada`) or a concurrent
+ *    counted write by another runner therefore refuses the write instead of
+ *    being overwritten by a decision taken on a pre-read.
+ * Under a guard a MISSING doc throws `NFeDocAusenteError` (an
+ * `NFeOrchestratorError`, carrying the doc's `path`) and nothing is written —
+ * every guarded writer anchored the doc before its SEFAZ call, so a merge
+ * would only mint a partial doc; `reconcileByRecibo` skips that one doc and
+ * reconciles the rest of the lote (#1654). Without a guard it is written as
+ * before. Every check is decided on the `tx.get` snapshot, never on a
+ * pre-read.
+ *
+ * A recovered 539's chave swap rides the caller's own write as `extras`
+ * (`extrasDaTrocaDeChave`, #1654 §2d), so here — `reconcileByRecibo` and the
+ * manual verify — a refused write swaps nothing either. Still unguarded on the
+ * reconcile paths: `runProcessarPendentes`' consult-by-chave branch for
+ * legacy (no-`nRec`) docs (the plain `persistPatch`, whose merge now carries
+ * that swap atomically with the outcome, but cannot be refused).
  */
 export async function persistPatchUnlessFinal(
   fs: Firestore,
   nfeRef: FirebaseFirestore.DocumentReference,
   patch: NFeStatePatch,
   extras?: Record<string, unknown>,
+  guard?: PersistGuard,
 ): Promise<GuardedPersistResult> {
   return await fs.runTransaction(async (tx): Promise<GuardedPersistResult> => {
     const snap = await tx.get(nfeRef);
+    if (!snap.exists && guard != null) {
+      // Thrown inside the callback: the transaction aborts (a non-Firestore
+      // error is never retried) with no write.
+      throw new NFeDocAusenteError(
+        nfeRef.path,
+        `nfev4 ${nfeRef.path} ausente ao gravar ${alvoDaGuarda(guard)} — nada gravado`,
+      );
+    }
     if (snap.exists) {
       const current = nfev4Collection.parseRead(snap.data(), nfeRef.path);
-      if (isEstadoFinalNFe(current.estado) && current.estado !== patch.estado) {
+      const finalBlocks = isEstadoFinalNFe(current.estado) && current.estado !== patch.estado;
+      const premiseFailed = guard != null && !guardHolds(guard, current);
+      if (finalBlocks || premiseFailed) {
         return {
           written: false,
           estadoAtual: current.estado,
           cStatAtual: current.cStat ?? null,
           xMotivoAtual: current.xMotivo ?? null,
+          nRecAtual: current.nRec ?? null,
         };
       }
     }

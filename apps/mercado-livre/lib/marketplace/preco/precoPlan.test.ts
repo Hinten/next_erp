@@ -466,6 +466,50 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
     ]);
   });
 
+  // #1226: unlike every other skip on this planner, this one is not a
+  // "not now". ML removed the listing and the id is dead for good.
+  it("estado 'rm' (removed by ML moderation) → ANUNCIO_REMOVIDO, siblings still draft", () => {
+    const res = buildPrecoDrafts(
+      familyRow({
+        links: [
+          linkRow({ estado: 'rm', status: 'under_review', sub_status: ['forbidden'] }),
+          linkRow({ linkDocId: 'link2', id: 'MLB222' }),
+        ],
+      }),
+      OPTS,
+    );
+    expect(res.skips).toEqual([
+      {
+        itemId: 'MLB111',
+        produtoId: 'PROD',
+        code: 'ANUNCIO_REMOVIDO',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
+    ]);
+    expect(res.drafts).toEqual([
+      {
+        kind: 'item',
+        itemId: 'MLB222',
+        produtoId: 'PROD',
+        variacaoProdutoId: null,
+        linkDocId: 'link2',
+        preco: 10,
+      },
+    ]);
+  });
+
+  // The near-miss. `podeEnviarPreco` refuses this listing at SEND time either
+  // way, so omitting the rung would still send nothing — it would just spend a
+  // `GET /items` per run to rediscover what the stored estado already says, and
+  // report the generic send-time refusal instead of the one motivo naming an
+  // operator action. Assert the CODE, not the absence of a draft.
+  it("estado 'rm' is planned as its own code, not left to the send-time gate", () => {
+    const res = buildPrecoDrafts(familyRow({ links: [linkRow({ estado: 'rm' })] }), OPTS);
+    expect(res.drafts).toEqual([]);
+    expect(res.skips[0]?.code).toBe('ANUNCIO_REMOVIDO');
+  });
+
   it('the STORED status never gates the plan (fresh-GET gate at send time)', () => {
     const res = buildPrecoDrafts(
       familyRow({ links: [linkRow({ status: 'closed', sub_status: ['deleted'] })] }),

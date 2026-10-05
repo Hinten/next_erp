@@ -11,6 +11,7 @@ export default defineConfig({
     // `proxy.ts` (the CORS middleware) sits at the app root, outside every
     // directory glob above — name its test explicitly or it never runs.
     include: ['{app,lib,functions}/**/*.test.ts', 'proxy.test.ts'],
+    exclude: ['**/*.firestore.test.ts'],
   },
   resolve: {
     alias: {

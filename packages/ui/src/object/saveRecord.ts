@@ -52,6 +52,12 @@ export type TransactionWrite = (
   | { type: 'delete'; ref: DocumentReference<unknown> }
 ) & { guard?: TransactionDocumentGuard };
 
+/** Pure delta derived from the current document on every transaction attempt. */
+export type DeriveTransactionPatch = (
+  current: Readonly<Record<string, unknown>> | null,
+  patch: Readonly<Record<string, unknown>>,
+) => Record<string, unknown>;
+
 export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, unknown>> {
   db: Firestore;
   collection: CollectionHandle<S>;
@@ -83,6 +89,8 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
    * deletion and conflicting sibling changes abort the entire transaction.
    */
   siblingWrites?: (id: string) => TransactionWrite[];
+  /** Additional validated fields, recomputed from the transaction's fresh read. */
+  deriveTransactionPatch?: DeriveTransactionPatch;
   /**
    * Wire unit for create/last-modified stamps, resolved from the schema by the
    * caller (ObjectView reads the field descriptor). `'iso'` (the default)
@@ -370,10 +378,10 @@ export async function saveRecord<
   const guarded = isUpdate && input.baseline != null;
   const ignored = new Set([...ALWAYS_IGNORED, ...(input.ignoreFields ?? [])]);
 
-  const documents = await runTransaction(input.db, async (tx: Transaction) => {
+  const result = await runTransaction(input.db, async (tx: Transaction) => {
     let current: Record<string, unknown> | null = null;
     let fields: string[] = [];
-    if (isUpdate && (guarded || siblings.length > 0)) {
+    if (isUpdate && (guarded || siblings.length > 0 || input.deriveTransactionPatch)) {
       const snap = await tx.get(ref);
       if (!snap.exists()) throw new RecordConflictError(null, [], true);
       current = snap.data() as Record<string, unknown>;
@@ -401,15 +409,22 @@ export async function saveRecord<
     if (fields.length > 0 || documentConflicts.length > 0)
       throw new RecordConflictError(current, fields, false, documentConflicts);
 
+    // A fresh object per attempt: a losing attempt's derived history must never
+    // become input to its retry. The callback cannot perform reads or writes.
+    const effectivePatch =
+      writeMainDoc && input.deriveTransactionPatch
+        ? { ...patch, ...input.deriveTransactionPatch(current, { ...patch }) }
+        : { ...patch };
+
     if (writeMainDoc) {
       if (isUpdate) {
         // tx.update bypasses the Firestore converter (only set/add invoke it).
         // The dirty-field patch already passed zodResolver per-field on the
         // client, so we accept the partial write as-is.
-        tx.update(ref, patch as never);
+        tx.update(ref, effectivePatch as never);
       } else {
         // Full create — runs through the converter, which calls schema.parse.
-        tx.set(ref, input.values as never);
+        tx.set(ref, effectivePatch as never);
       }
     }
 
@@ -429,8 +444,8 @@ export async function saveRecord<
       }
       if (w.guard) committedDocuments.push({ path: w.ref.path, data, guard: w.guard });
     }
-    return committedDocuments;
+    return { documents: committedDocuments, patch: effectivePatch };
   });
 
-  return { id: ref.id, patch, documents };
+  return { id: ref.id, patch: result.patch as Partial<T> | T, documents: result.documents };
 }

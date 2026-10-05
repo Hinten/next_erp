@@ -41,6 +41,7 @@ export default function MercadoPagoPage() {
         db={db}
         meta={metodoPagamentoMeta}
         rowHref={(id) => `/pagamentos/mercado-pago/${id}`}
+        rowLinkColumn="nome"
         renderNewButton={() => (
           <Button component={Link} href="/pagamentos/mercado-pago/novo">
             Nova conta

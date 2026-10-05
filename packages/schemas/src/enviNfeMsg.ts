@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
+import { CHAVE_NFE_REGEX } from './nfe';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth, matching
 // the Flutter `EasyFirebase` declaration `perm: 'nf1'` on `EnviNFeMsg`
@@ -87,8 +88,16 @@ export const ESTADO_ENVI_NFE_MSG = {
  * comes later when those flows are wired.
  */
 export const enviNfeMsgSchema = z.object({
-  /** Chaves this msg covers. Phase A always single-element; batch is N. */
-  targetsChnfe: z.array(z.string().length(44)).default([]).describe('Chaves NF-e'),
+  /**
+   * Chaves this msg covers. Phase A always single-element; batch is N.
+   *
+   * ⚠️ `CHAVE_NFE_REGEX`, not a bare `.length(44)`: a length check already
+   * ACCEPTED the alphanumeric chave (RFB IN 2.229/2024), so this is a
+   * TIGHTENING rather than part of the alfa widening — it costs nothing here
+   * because every value is one we emitted through the chave builder, and it
+   * refuses the 44 characters of garbage the old rule did not.
+   */
+  targetsChnfe: z.array(z.string().regex(CHAVE_NFE_REGEX)).default([]).describe('Chaves NF-e'),
   /** SEFAZ lote id. Set on autorizarLote messages; null on cons*. */
   idLote: z.number().int().nullable().describe('Lote'),
   /** '0' async / '1' sync. Set on autorizarLote messages. */
@@ -124,6 +133,28 @@ export const enviNfeMsgMeta: CollectionMetadata = {
     read: PERM_FISCAL_READ,
     write: PERM_FISCAL_WRITE,
     delete: PERM_FISCAL_DELETE,
+  },
+  /**
+   * Declares the query `/nfe/comunicacoes` was already issuing, so it stops
+   * being the one list screen outside both index guards.
+   *
+   * `defaultQuery.indexes.test.ts` and the `default-query-needs-index` lint
+   * rule BOTH open with `if (!meta.defaultQuery) continue;`, and so does the
+   * update-monitor pass — so a collection with no declared query is not
+   * checked leniently, it is not checked at all. This screen sorts a fiscal
+   * log by `timestamp desc` and its monitor watches the same key (no
+   * `ultimaModificacao` on this schema — the field here is `ultima_modificacao`,
+   * which the resolver does not match, so it falls through to `timestamp`).
+   *
+   * ⚠️ This adds NO index. `enviNfe(timestamp DESCENDING)` is already declared
+   * and already serving both queries; what was missing was the declaration
+   * that brings them under the guard. `columns` is deliberately omitted: the
+   * screen passes its own `defaultColumns`, which wins, and a second copy here
+   * would be a list nothing checks and everything could drift from.
+   */
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
   },
 };
 

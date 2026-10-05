@@ -194,7 +194,7 @@ const out = generateNFe({
   transpXml: '<transp>...</transp>',
   pagXml: '<pag>...</pag>',
 });
-// out.chave is the 44-digit access key (anti-loss anchor)
+// out.chave is the 44-character access key (anti-loss anchor)
 // out.nfeXml is the unsigned <NFe>...</NFe>
 
 const signedXml = signNFe(out.nfeXml, cert);
@@ -206,7 +206,7 @@ const signedXml = signNFe(out.nfeXml, cert);
 | Module            | Job                                                                                                                     |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `src/operations/` | **Typed entry points** — start here                                                                                     |
-| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-digit chave                                                                         |
+| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-char chave                                                                          |
 | `src/sign/`       | XMLDSig signing via `xml-crypto`                                                                                        |
 | `src/xsd/`        | Canonical SEFAZ XSD validation (`xmllint-wasm`)                                                                         |
 | `src/safety/`     | Produção guards — `assertSafeTpAmb` (generator entry), `assertSafeTpAmbForTransport` (every POST; no `NODE_ENV` escape) |

@@ -1,0 +1,225 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { MissingRegionError } from '@delfrance/core/region';
+
+/**
+ * Mocked: the transport seams (the Functions SDK's queue/enqueue and the admin
+ * app binding) and the adapter module, which is imported here only for the
+ * queue-name constant. The scheduler's own env-driven wiring runs real.
+ */
+const h = vi.hoisted(() => ({
+  enqueue: vi.fn(async (_payload: unknown) => {}),
+  taskQueue: vi.fn(),
+  getFunctions: vi.fn(),
+}));
+
+// The REAL error classes stay: the scheduler narrows on them, and a mocked
+// class would make every `instanceof` below a test of the mock.
+vi.mock('firebase-admin/functions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase-admin/functions')>()),
+  getFunctions: (...args: unknown[]) => {
+    h.getFunctions(...args);
+    return { taskQueue: h.taskQueue };
+  },
+}));
+
+vi.mock('../firebase/admin', () => ({ getAdminApp: () => ({ __app: true }) }));
+
+// Only the constant is needed, and loading the real adapter would drag the
+// whole pipeline (and Firestore) into a test about a queue name.
+vi.mock('./notificacoes/notificacao', () => ({
+  SHOPEE_NOTIFICATION_QUEUE: 'processShopeeNotification',
+}));
+
+const {
+  ShopeeTasksDisabledError,
+  ShopeeTasksTransientError,
+  createShopeeTaskScheduler,
+  shopeeTasksDesabilitado,
+  shopeeTasksRegion,
+} = await import('./shopeeTasks');
+const { CORPO_DA_RESPOSTA_DO_TASKS, falhaDeConfiguracaoDoFunctions, falhaDoApp, falhaDoFunctions } =
+  await import('./testing/falhaDeEnfileiramento');
+
+const payload = {
+  code: 1,
+  shopId: 987654,
+  timestamp: 1_660_616_278_000,
+  data: { authorize_type: 'shop authorization by user', shop_id: 987654 },
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.taskQueue.mockReturnValue({ enqueue: h.enqueue });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('createShopeeTaskScheduler', () => {
+  it('enfileira na fila processShopeeNotification qualificada pela região', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    const scheduler = createShopeeTaskScheduler();
+    await scheduler.enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east1/functions/processShopeeNotification',
+    );
+    expect(h.enqueue).toHaveBeenCalledWith(payload);
+  });
+
+  it('cai para FUNCTIONS_REGION quando SHOPEE_TASKS_REGION não está definida', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', 'southamerica-east1');
+    await createShopeeTaskScheduler().enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/southamerica-east1/functions/processShopeeNotification',
+    );
+  });
+
+  // NEAR-MISS do fallback: uma variável DECLARADA e vazia não é "definida".
+  // `SHOPEE_TASKS_REGION=` em branco produziria `locations//functions/...`, e o
+  // enqueue seria descartado em silêncio (#887 / #1108).
+  it('trata SHOPEE_TASKS_REGION em branco como não definida', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', '   ');
+    vi.stubEnv('FUNCTIONS_REGION', 'us-east1');
+    await createShopeeTaskScheduler().enqueue(payload);
+    expect(h.taskQueue).toHaveBeenCalledWith(
+      'locations/us-east1/functions/processShopeeNotification',
+    );
+  });
+
+  it('SHOPEE_TASKS_REGION tem precedência sobre FUNCTIONS_REGION', () => {
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    vi.stubEnv('FUNCTIONS_REGION', 'southamerica-east1');
+    expect(shopeeTasksRegion()).toBe('us-east1');
+  });
+
+  it('RECUSA enfileirar quando nenhuma região está configurada', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', undefined);
+    vi.stubEnv('FUNCTIONS_REGION', undefined);
+    const scheduler = createShopeeTaskScheduler();
+
+    // Não existe default de propósito: um enqueue contra a região errada NÃO
+    // falha — o Admin SDK resolve us-central1, a fila não existe, e a tarefa é
+    // descartada enquanto o receiver ainda responde 204 (#1108).
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('lança ShopeeTasksDisabledError com SHOPEE_TASKS_DISABLED=1, sem tocar no transporte', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '1');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    const scheduler = createShopeeTaskScheduler();
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(ShopeeTasksDisabledError);
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  // NEAR-MISS da válvula: ela é opt-in EXATAMENTE em '1'.
+  it.each(['0', 'true', 'yes', '', ' 1'])(
+    'SHOPEE_TASKS_DISABLED=%j NÃO desabilita a fila',
+    async (raw) => {
+      vi.stubEnv('SHOPEE_TASKS_DISABLED', raw);
+      vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+      await createShopeeTaskScheduler().enqueue(payload);
+      expect(h.enqueue).toHaveBeenCalledWith(payload);
+    },
+  );
+
+  // The scheduler is where the transient failure is NAMED: the per-conta
+  // boundary contains `ShopeeTasksTransientError`, never the SDK classes, so a
+  // real scheduler that forgot to call the classifier would put every sweep
+  // back to losing its whole tick on one 503.
+  it.each<[string, () => Error, string, number | null]>([
+    [
+      '503 → functions/unknown-error',
+      () => falhaDoFunctions('unknown-error'),
+      'functions/unknown-error',
+      503,
+    ],
+    ['socket → app/network-error', () => falhaDoApp('network-error'), 'app/network-error', null],
+  ])(
+    'uma falha TRANSITÓRIA do transporte (%s) sai nomeada',
+    async (_nome, falha, codigo, status) => {
+      vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+      vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+      h.enqueue.mockRejectedValueOnce(falha());
+
+      const rejeitado = await createShopeeTaskScheduler()
+        .enqueue(payload)
+        .then(
+          () => expect.unreachable('o transporte rejeitou'),
+          (e: unknown) => e,
+        );
+
+      expect(rejeitado).toBeInstanceOf(ShopeeTasksTransientError);
+      expect(rejeitado).toMatchObject({ codigo, httpStatus: status });
+      expect((rejeitado as Error).message).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    },
+  );
+
+  it.each<[string, () => Error]>([
+    ['permission-denied', () => falhaDoFunctions('permission-denied', 403)],
+    // Same code as the 503, no HTTP response: the SDK could not resolve the
+    // service account — config, not a hiccup.
+    ['unknown-error SEM resposta HTTP', () => falhaDeConfiguracaoDoFunctions('conta-de-servico')],
+  ])('⚠️ NEAR-MISS: uma falha de DEPLOY do transporte (%s) sai INTACTA', async (_nome, falha) => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    const sdk = falha();
+    h.enqueue.mockRejectedValueOnce(sdk);
+
+    await expect(createShopeeTaskScheduler().enqueue(payload)).rejects.toBe(sdk);
+  });
+
+  it('a mensagem do erro de desabilitado nomeia a variável e diz o que acontece', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '1');
+    try {
+      await createShopeeTaskScheduler().enqueue(payload);
+      expect.unreachable('enqueue deveria ter lançado');
+    } catch (err) {
+      if (!(err instanceof ShopeeTasksDisabledError)) throw err;
+      expect(err.message).toContain('SHOPEE_TASKS_DISABLED');
+      expect(err.message).toContain('sweep');
+    }
+  });
+});
+
+/**
+ * O leitor da válvula (passo 8, #1516). Uma varredura precisa do veredito ANTES
+ * de decidir — pegar `ShopeeTasksDisabledError` não serve, porque a classe está
+ * dentro de `erroContidoPorConta` e porque um dry-run nunca chega ao enqueue.
+ */
+describe('shopeeTasksDesabilitado', () => {
+  // NEAR-MISS junto: ' 1' com espaço e 'true' NÃO desabilitam nada.
+  it.each<[string | undefined, boolean]>([
+    ['1', true],
+    ['0', false],
+    ['true', false],
+    ['', false],
+    [' 1', false],
+    [undefined, false],
+  ])('shopeeTasksDesabilitado lê exatamente "1" — %j ⇒ %s', (raw, esperado) => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', raw);
+    expect(shopeeTasksDesabilitado()).toBe(esperado);
+  });
+
+  it('createShopeeTaskScheduler passa pelo mesmo leitor', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '1');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+
+    // Um só leitor: o que o preditor responde é o que o scheduler faz.
+    expect(shopeeTasksDesabilitado()).toBe(true);
+    await expect(createShopeeTaskScheduler().enqueue(payload)).rejects.toBeInstanceOf(
+      ShopeeTasksDisabledError,
+    );
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+});

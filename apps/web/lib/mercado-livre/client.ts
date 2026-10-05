@@ -19,6 +19,7 @@ import type { z } from 'zod';
 import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
+import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import * as wire from './wire';
 import type {
@@ -34,6 +35,7 @@ import type {
   MercadoLivreChartDomain,
   MercadoLivreChartSpecs,
   MercadoLivreConta,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioPrecoResult,
   MercadoLivreIaModelos,
@@ -121,6 +123,33 @@ export class MercadoLivreClientNetworkError extends Error {
 }
 
 /**
+ * Read a response BODY, turning a connection that dies mid-body into the same
+ * {@link MercadoLivreClientNetworkError} a failed `fetch` becomes.
+ *
+ * ⚠️ Wrapping only `fetch` is not enough: the headers can arrive and the socket
+ * still drop while the body streams, and `text()` / `blob()` then reject with a
+ * bare `TypeError` ("terminated" in Node, "network error" in Chrome). Every
+ * catch site in `apps/web` narrows to this client's classes and rethrows the
+ * rest, so unwrapped it escaped all of them — on the label path, an unhandled
+ * rejection on the `/pedidos` row and a skipped reset after "Checkout salvo".
+ *
+ * An abort WE asked for rethrows untouched: the push providers recognise
+ * Cancelar by the bare `AbortError` a cancelled body read rejects with, and a
+ * caller that aborted owns that outcome. Any error that is not a `TypeError` is
+ * not a transport failure and rethrows too. Precedent: the Shopee web client
+ * (#1748).
+ */
+async function lerCorpo<T>(ler: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  try {
+    return await ler();
+  } catch (err) {
+    if (signal?.aborted === true) throw err;
+    if (err instanceof TypeError) throw new MercadoLivreClientNetworkError(err.message, err);
+    throw err;
+  }
+}
+
+/**
  * The mercado-livre backend answered 200, but not to the question that was
  * asked — so the "success" describes work that did not happen.
  *
@@ -173,6 +202,8 @@ export type {
   MercadoLivreChartValidationError,
   MercadoLivreConselhoParcial,
   MercadoLivreConta,
+  MercadoLivreDadosFiscaisResumo,
+  MercadoLivreEnviarDadosFiscaisResult,
   MercadoLivreEnvioEstoqueListing,
   MercadoLivreEnvioEstoqueResult,
   MercadoLivreEnvioEstoqueSemEnvio,
@@ -360,6 +391,16 @@ export interface MercadoLivreClient {
     produtoId: string;
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
+  /**
+   * (Re-)send ONE anúncio's per-SKU fiscal data to ML's Faturador without
+   * republishing it (PERM.integracao.write, #745) — after an imposto edit, say.
+   * A SKU ML refuses is DATA in the summary, never an HTTP error.
+   */
+  enviarDadosFiscais(input: {
+    integracaoId: string;
+    produtoId: string;
+    linkDocId: string;
+  }): Promise<MercadoLivreEnviarDadosFiscaisResult>;
   /**
    * PAUSE or REACTIVATE listings on Mercado Livre (PERM.integracao.write).
    *
@@ -838,21 +879,6 @@ export function mercadoLivreHttpFallbackMessage(status: number): string {
   return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
 }
 
-/** Pull the filename out of a `Content-Disposition` header, if present. */
-function filenameFromDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
-  if (!m?.[1]) return null;
-  try {
-    return decodeURIComponent(m[1]);
-  } catch (err) {
-    // A stray '%' in the server-sent name must not fail a byte-successful
-    // fetch — keep the undecoded filename.
-    if (err instanceof URIError) return m[1];
-    throw err;
-  }
-}
-
 export function createMercadoLivreClient(config: {
   baseUrl: string;
   getAuthToken: () => Promise<string>;
@@ -900,7 +926,7 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const text = await res.text();
+    const text = await lerCorpo(() => res.text(), signal);
 
     if (!res.ok) {
       let parsed: unknown = null;
@@ -982,7 +1008,7 @@ export function createMercadoLivreClient(config: {
     if (!res.ok) {
       let parsed: unknown = null;
       let nonJsonBody: string | null = null;
-      const text = await res.text();
+      const text = await lerCorpo(() => res.text());
       if (text.length > 0) {
         try {
           parsed = JSON.parse(text);
@@ -1011,7 +1037,7 @@ export function createMercadoLivreClient(config: {
     // printer fed a chunk of markup. The route answers PDF or ZPL and never
     // HTML, so `text/html` on a 2xx means the request did not reach it.
     if (contentType !== null && /^\s*text\/html\b/i.test(contentType)) {
-      logarCorpoNaoJson(path, res.status, await res.text());
+      logarCorpoNaoJson(path, res.status, await lerCorpo(() => res.text()));
       throw new MercadoLivreClientRespostaInvalidaError(
         `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} com uma página ` +
           'HTML em vez da etiqueta — o pedido não chegou à rota esperada. Atualize a página e, ' +
@@ -1021,12 +1047,12 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    const blob = await res.blob();
+    const blob = await lerCorpo(() => res.blob());
     return {
       blob,
-      // The route names the file via Content-Disposition, but the proxy does
-      // not CORS-expose the header to the browser — tolerate its absence with
-      // a client-side fallback (nfe `fetchArtifact` precedent).
+      // The route names the file via Content-Disposition, which the proxy
+      // CORS-exposes (#1680). Keep the client-side fallback anyway: a backend
+      // deployed before that change still hides the header.
       filename:
         filenameFromDisposition(res.headers.get('content-disposition')) ?? fallback.filename,
       contentType: res.headers.get('content-type') ?? fallback.contentType,
@@ -1050,6 +1076,12 @@ export function createMercadoLivreClient(config: {
       call(
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         wire.reverificarResultSchema,
+        input,
+      ),
+    enviarDadosFiscais: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/dados-fiscais',
+        wire.enviarDadosFiscaisResultSchema,
         input,
       ),
     definirStatusAnuncios: ({ signal, ...input }) =>

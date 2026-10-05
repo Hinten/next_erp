@@ -103,4 +103,37 @@ describe('firestore text-search indexes', () => {
     ]);
     expect(idx.searchIndexOptions.textLanguage).toBe('pt-BR');
   });
+
+  it('declares SPARSE_ANY density on every text index, because an absent one is not neutral', () => {
+    // ⚠️⚠️ THE ONE THAT HAS ALREADY REGRESSED, TWICE UNNOTICED.
+    //
+    // The backend builds a search index `SPARSE_ANY`. firebase-tools compares
+    // density as part of index IDENTITY and resolves an absent one to a default
+    // that is `DENSE` on Enterprise (`optionalDensityMatches`, its
+    // `firestore/api.js`; SPARSE_ALL is the STANDARD-edition default). So an
+    // entry with no density describes an index the database does not have, and
+    // the same physical index is then classified twice: as a live index missing
+    // from this file, and as a file index missing from the server.
+    //
+    // The visible symptom is a delete prompt on every `firebase deploy --only
+    // firestore:indexes`. The invisible one is worse: the deploy's delete loop
+    // runs AFTER its create loop, so accepting that prompt drops the live index
+    // and leaves the replacement on `textLanguage: und` — silently undoing the
+    // out-of-band `set-text-index-language.mjs` step, because `firebase deploy`
+    // cannot send `searchIndexOptions` at all (see the file header).
+    //
+    // History, which is why this is a test and not a comment: `b5f8a898` added
+    // this key for exactly that 409-plus-delete-prompt symptom, and `02009f5e`
+    // dropped it two hours later while rewriting the entry for pt-BR. Nothing
+    // failed. The three tests above all still passed — they pin the language and
+    // the field shape, and density is neither.
+    for (const idx of lerIndexes().indexes.filter(ehTextIndex)) {
+      expect(
+        idx.density,
+        `${idx.collectionGroup}: a text index must declare "density": "SPARSE_ANY" — ` +
+          `an absent one reads as DENSE on Enterprise and makes the deploy offer to ` +
+          `DELETE the live index`,
+      ).toBe('SPARSE_ANY');
+    }
+  });
 });

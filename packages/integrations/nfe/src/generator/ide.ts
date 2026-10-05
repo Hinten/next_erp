@@ -5,23 +5,28 @@
  * value the XML serializer can emit. See
  * `.claude/skills/nfe/references/leiaute.md` for field-by-field meaning.
  */
-import type { UF } from '@delfrance/schemas';
+import {
+  CHAVE_NFE_REGEX,
+  SEVERIDADE_VIOLACAO,
+  descreverViolacaoDocumento,
+  violacoesDaOperacao,
+  type UF,
+} from '@delfrance/schemas';
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
-import { formatSefazDateTime, UF_TO_IBGE } from './tz';
+import { buildCompraGov } from './compraGov';
+import { ufDestinoOperacao } from './destino';
+import { NFeIdeError } from './ide-error';
+import { datePartsInOffset, formatSefazDateTime, UF_TO_IBGE } from './tz';
 import type { Ambiente, GeneratorInput } from './types';
 
 // UF ↔ IBGE mapping lives in ./tz (shared with the offset helpers); re-exported
 // here so existing consumers keep importing it from ide.
 export { UF_TO_IBGE };
 
-export class NFeIdeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NFeIdeError';
-  }
-}
+// Declared in `./ide-error` so `compraGov.ts` can throw it without a cycle.
+export { NFeIdeError };
 
 /** Resolve a UF (e.g. `'SP'`) to its 2-digit IBGE cUF code (`'35'`). */
 export function cUFFromUF(uf: UF): string {
@@ -52,7 +57,10 @@ interface IdeParts {
 export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_ide {
   const filialUF = input.filial.sede.estado;
   const utcOffset = parts.utcOffsetMinutes;
-  const destUF = input.enderecoDest.estado;
+  // The delivery UF decides when there is a separate delivery address (#422) —
+  // the same `enderecoEntrega` that makes `generateNFe` emit `<entrega>`, so
+  // idDest and the group SEFAZ judges it against can never disagree.
+  const destUF = ufDestinoOperacao(input.enderecoDest, input.enderecoEntrega);
   if (!input.filial.sede.codigoMunicipio) {
     throw new NFeIdeError('filial.sede.codigoMunicipio (IBGE) is required for cMunFG');
   }
@@ -66,26 +74,70 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
 
   const tpAmb: TNFe_infNFe_ide['tpAmb'] = parts.ambiente === 'producao' ? '1' : '2';
   const finNFe = (input.operacao.finNFe ?? 1).toString() as TNFe_infNFe_ide['finNFe'];
+  const tpNF: TNFe_infNFe_ide['tpNF'] = input.operacao.tipo === 1 ? '1' : '0';
+  // finNFe 5/6 and their tipo (B25-110/120, B25.1, B25.2 — NT 2025.002). Both
+  // fields are XSD-optional, so the schema gate cannot catch a nota de débito
+  // without its tpNFDebito; the SHARED operação rules can, and are the same
+  // ones apps/nfe refuses with before a número is consumed.
+  const tpNFDebito = input.operacao.tpNFDebito ?? null;
+  const tpNFCredito = input.operacao.tpNFCredito ?? null;
+  const bloqueios = violacoesDaOperacao({
+    finNFe: input.operacao.finNFe ?? 1,
+    tpNF,
+    tpNFDebito,
+    tpNFCredito,
+    anoEmissao: datePartsInOffset(input.dhEmi, utcOffset).year,
+  }).filter((v) => v.severidade === SEVERIDADE_VIOLACAO.bloqueia);
+  if (bloqueios.length > 0) {
+    throw new NFeIdeError(bloqueios.map(descreverViolacaoDocumento).join('; '));
+  }
 
   // NFref (BA) — referenced NF-es (devolução finNFe=4 / complementar finNFe=2).
-  // Each must be a 44-digit chave; a malformed one is an upstream data error we
-  // surface here rather than letting SEFAZ reject the whole lote (rejection 269).
+  // Each must be a 44-character chave; a malformed one is an upstream data error
+  // we surface here rather than letting SEFAZ reject the whole lote (269).
+  //
+  // ⚠️ Uses the SHARED `CHAVE_NFE_REGEX` rather than a local copy. This used to
+  // inline `/^\d{44}$/`, a second copy of the same predicate the pedido layer
+  // already applies to this very array — so when NT 2026.004 made the chave
+  // alphanumeric (positions 6–17, the emitente CNPJ's body), fixing one copy
+  // would have left the other rejecting valid chaves from a counterparty with an
+  // alfa CNPJ. One predicate, one place (root CLAUDE.md).
   const nfRefs = (input.chNFeReferenciadas ?? []).filter((c): c is string => !!c);
   for (const chave of nfRefs) {
-    if (!/^\d{44}$/.test(chave)) {
-      throw new NFeIdeError(`chNFeReferenciada inválida (esperado 44 dígitos): '${chave}'`);
+    if (!CHAVE_NFE_REGEX.test(chave)) {
+      throw new NFeIdeError(
+        `chNFeReferenciada inválida (esperado 44 caracteres no formato ` +
+          `${CHAVE_NFE_REGEX.source}): '${chave}'`,
+      );
+    }
+  }
+
+  // NT 2025.002 `ide` fields (#331) — the caller passes them only with the
+  // Reforma Tributária on; absent, the ide is byte-identical.
+  const rtc = input.rtc;
+  if (rtc?.dPrevEntrega != null && !/^\d{4}-\d{2}-\d{2}$/.test(rtc.dPrevEntrega)) {
+    throw new NFeIdeError(`dPrevEntrega must be AAAA-MM-DD, got '${rtc.dPrevEntrega}'`);
+  }
+  const pagAntecipado = [...(rtc?.pagAntecipado ?? [])];
+  if (pagAntecipado.length > 99) {
+    throw new NFeIdeError(`gPagAntecipado takes at most 99 refNFe, got ${pagAntecipado.length}`);
+  }
+  for (const chave of pagAntecipado) {
+    if (!CHAVE_NFE_REGEX.test(chave)) {
+      throw new NFeIdeError(`gPagAntecipado.refNFe is not a chave de acesso: '${chave}'`);
     }
   }
 
   return {
     cUF,
     cNF: parts.cNF,
+    ...(rtc?.dPrevEntrega != null ? { dPrevEntrega: rtc.dPrevEntrega } : {}),
     natOp: sanitizeNFeText(input.operacao.naturezaDaOperacao) ?? '',
     mod: '55',
     serie: input.serie.toString(),
     nNF: input.numeracao.toString(),
     dhEmi: formatSefazDateTime(input.dhEmi, utcOffset),
-    tpNF: input.operacao.tipo === 1 ? '1' : '0',
+    tpNF,
     idDest,
     cMunFG: input.filial.sede.codigoMunicipio,
     tpImp: '1',
@@ -93,11 +145,15 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     cDV: parts.cDV,
     tpAmb,
     finNFe,
+    ...(tpNFDebito != null ? { tpNFDebito } : {}),
+    ...(tpNFCredito != null ? { tpNFCredito } : {}),
     indFinal: input.operacao.ehConsumidorFinal ? '1' : '0',
     indPres: input.operacao.indPres,
     indIntermed: input.operacao.indIntermed,
     procEmi: PROC_EMI as TNFe_infNFe_ide['procEmi'],
     verProc: VER_PROC,
+    ...(rtc?.compraGov != null ? { gCompraGov: buildCompraGov(rtc.compraGov) } : {}),
+    ...(pagAntecipado.length > 0 ? { gPagAntecipado: { refNFe: pagAntecipado } } : {}),
     // BA — referenced NF-es (empty ⇒ omit; META serializer places it last in ide).
     ...(nfRefs.length > 0 ? { NFref: nfRefs.map((refNFe) => ({ refNFe })) } : {}),
     // B28/B29 — only emitted in contingency. validateInput already enforced

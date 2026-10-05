@@ -1,14 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
-import { ESTADO_NFE } from '@delfrance/schemas';
-import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
+import { ESTADO_NFE, IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
+import type { Integracao, NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
+
+import { nfeAssinadoXml, type NfeAssinadoFixtureInput } from '@/lib/nfe/nfeAssinadoFixture';
 
 // Hoisted, mutable state objects so each test can swap the value the mocked
 // hooks return before re-rendering. Mirrors the pattern in
 // `packages/ui/src/table/TableView.test.tsx`.
-const { intersecting, observeRef, snapState, queryState, dereferenceMock } = vi.hoisted(() => ({
+const {
+  intersecting,
+  observeRef,
+  snapState,
+  queryState,
+  useQueryCalls,
+  dereferenceMock,
+  authUid,
+  firestoreDb,
+  readClienteMock,
+} = vi.hoisted(() => ({
   // NFCell's listener is gated on the row being on screen (#1216). These tests
   // are about what the cell RENDERS, so the row is on screen by default; the
   // gate itself is proved in `useLatestNfe.test.ts`.
@@ -28,21 +40,48 @@ const { intersecting, observeRef, snapState, queryState, dereferenceMock } = vi.
       // Shared by every `useQuery` call site the mocked hook stands in for:
       // `ClienteCell`'s cliente doc (an object) and the `intFreteTipo` lookup
       // `FreteCell`/`EtiquetaRowAction` both make (a bare tipo string).
-      data: null as
-        | { nome?: string | null; cpf_cnpj?: string | null; tipo?: string | null }
-        | string
-        | null,
+      data: null,
       isLoading: false,
+    } as {
+      data:
+        | {
+            nome?: string | null;
+            cpf_cnpj?: string | null;
+            tipo?: string | null;
+            ie?: string | null;
+          }
+        | string
+        | null;
+      isLoading: boolean;
+      // Read by NFCell's `OrientacaoRejeicaoCliente`; absent = no error.
+      isError?: boolean;
     },
   },
-  // The ClienteCell calls `dereferenceOuterRef` once with the pedido's
-  // outer ref; the test toggles its return shape between a fake doc ref
-  // and `null` to exercise the "Anônimo" branch.
+  // Every options object the mocked `useQuery` received — so a test can assert
+  // WHICH key, staleness and gate a call site used, not just what it rendered.
+  useQueryCalls: vi.fn(),
+  // ClienteCell (via `refDeClienteOuNull`) calls `dereferenceOuterRef` once
+  // for a PRESENT outer ref — a null one never reaches it; the test toggles its
+  // return shape between a fake doc ref (`parent.id` decides whether it points
+  // into `clientes`) and `null`.
   dereferenceMock: vi.fn(),
+  // `null` = the real (provider-less) auth context. A uid lets `useLatestNfe`
+  // remember a badge, which the memo-backed NFCell render needs.
+  authUid: { current: null as string | null },
+  // ONE db object, so a test can pin WHICH handle a query function reads with.
+  firestoreDb: { __db: true },
+  // The shared cliente reader behind `clienteQueryKey` (#1303) — spied so a
+  // test can run a recorded `queryFn` and see what it read.
+  readClienteMock: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/client', () => ({
-  getFirebaseFirestore: () => ({}),
+  getFirebaseFirestore: () => firestoreDb,
+}));
+
+vi.mock('@/lib/data/readClienteByRef', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/data/readClienteByRef')>()),
+  readClienteByRef: (...args: unknown[]) => readClienteMock(...args),
 }));
 
 vi.mock('@/lib/data/nfeCollection', () => ({
@@ -88,7 +127,26 @@ vi.mock('@delfrance/data/hooks', async () => {
 vi.mock('@tanstack/react-query', async () => {
   const actual =
     await vi.importActual<typeof import('@tanstack/react-query')>('@tanstack/react-query');
-  return { ...actual, useQuery: () => queryState.current };
+  return {
+    ...actual,
+    useQuery: (options: unknown) => {
+      useQueryCalls(options);
+      return queryState.current;
+    },
+  };
+});
+
+vi.mock('@/lib/auth', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/auth')>('@/lib/auth');
+  return {
+    ...actual,
+    useAuth: () => {
+      const real = actual.useAuth();
+      return authUid.current === null
+        ? real
+        : ({ user: { uid: authUid.current }, loading: false } as unknown as typeof real);
+    },
+  };
 });
 
 // firebase/firestore.getDoc is wrapped by the mocked useQuery, but the
@@ -104,7 +162,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
+import { ClienteCell, FreteCell, ImpCell, IntegracaoCell, NFCell, VlrCell } from './PedidoCells';
+import type { IntegracaoLookup } from './integracaoLookup';
+import { PedidoRowReadsContext, clienteQueryKey } from './rowReadPrefetch';
 import { NFE_LISTENER_UNSEEN_MS, __resetLatestNfeMemo } from './useLatestNfe';
 
 function wrap(node: React.ReactNode) {
@@ -138,6 +198,7 @@ function makeNFe(
     data_autorizacao: null,
     dataContingencia: null,
     justificativaContingencia: null,
+    totais: null,
     error: null,
     ultima_modificacao: null,
     ...overrides,
@@ -477,6 +538,300 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
     });
   });
+
+  describe('cStat 805 guidance in the HoverCard (#852)', () => {
+    const XMOTIVO_805 =
+      'Rejeição: A SEFAZ do destinatário não permite Contribuinte Isento de Inscrição Estadual';
+    const CLIENTE_REF = 'documents/clientes/cli-1';
+    const CLIENTE_PATH = 'clientes/cli-1';
+    /** What `dereferenceOuterRef` returns for {@link CLIENTE_REF} — one object, so identity is assertable. */
+    const CLIENTE_DOC_REF = { id: 'cli-1', path: CLIENTE_PATH, parent: { id: 'clientes' } };
+    const TITULO_CORRIGIR = 'Inscrição estadual do cliente recusada pela SEFAZ';
+    const TITULO_REEMITIR = 'Cadastro do cliente já alterado';
+
+    /** A rejeitada doc whose signed XML (homologação fixture) says what was sent. */
+    function rejeitada(cStat: string, xml: NfeAssinadoFixtureInput): NotaFiscalEletronica {
+      return makeNFe(ESTADO_NFE.rejeitada, {
+        cStat,
+        xMotivo: cStat === '805' ? XMOTIVO_805 : 'Rejeição: Duplicidade de NF-e',
+        xml_assinado: nfeAssinadoXml(xml),
+      });
+    }
+
+    async function openHoverCard(container: HTMLElement): Promise<void> {
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      await screen.findByText('Estado:');
+    }
+
+    /** Options of every `useQuery` call made under the shared cliente key. */
+    function clienteQueryOptions(path: string): Array<Record<string, unknown>> {
+      const key = JSON.stringify(clienteQueryKey(path));
+      return useQueryCalls.mock.calls
+        .map(([options]) => options as Record<string, unknown>)
+        .filter((options) => JSON.stringify(options.queryKey) === key);
+    }
+
+    beforeEach(() => {
+      useQueryCalls.mockClear();
+      readClienteMock.mockReset();
+      dereferenceMock.mockReset();
+      dereferenceMock.mockImplementation((_db: unknown, ref: unknown) =>
+        ref === CLIENTE_REF ? CLIENTE_DOC_REF : null,
+      );
+      queryState.current = {
+        data: { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: IE_SENTINELA.isento },
+        isLoading: false,
+      };
+    });
+
+    afterEach(() => {
+      dereferenceMock.mockReset();
+      queryState.current = { data: null, isLoading: false };
+      authUid.current = null;
+    });
+
+    it('shows the fix-it Alert ABOVE the raw cStat / xMotivo rows, which stay', async () => {
+      const nfe = rejeitada('805', { idDest: '1', indIEDest: '2', ufDest: 'SP' });
+      expect(nfe.xml_assinado).toContain('<tpAmb>2</tpAmb>');
+      setSnap({ data: [rowFromNFe(nfe)] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      const texto = alert.textContent ?? '';
+      expect(texto).toContain('foi enviada com o cliente ACME LTDA');
+      expect(texto).toContain('SEFAZ-SP');
+      expect(texto).toContain('operação interna');
+      expect(texto).toContain('Buscar dados do CNPJ');
+      expect(texto).toContain(IE_SENTINELA.naoContribuinte);
+      const link = within(alert).getByRole('link', { name: 'Abrir cadastro de ACME LTDA' });
+      expect(link.getAttribute('href')).toBe('/clientes/cli-1');
+
+      // SEFAZ's own words stay on screen, BELOW the guidance.
+      const cStatLabel = screen.getByText('cStat:');
+      expect(screen.getByText('805')).toBeTruthy();
+      expect(screen.getByText(XMOTIVO_805)).toBeTruthy();
+      expect(alert.compareDocumentPosition(cStatLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      // …and the guidance sits under the Estado row.
+      expect(
+        screen.getByText('Estado:').compareDocumentPosition(alert) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+      // The shared key and reader as ClienteCell, but never stale: a cadastro
+      // fixed a minute ago must flip the copy to "já alterado".
+      expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), CLIENTE_REF);
+      const opts = clienteQueryOptions(CLIENTE_PATH);
+      expect(opts.length).toBeGreaterThan(0);
+      expect(opts.at(-1)).toMatchObject({ staleTime: 0, enabled: true });
+
+      // …and the recorded query function reads through the SHARED reader, with
+      // the page's db and the dereferenced ref itself — the #1303 provenance.
+      const cadastro = { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: '1' };
+      readClienteMock.mockResolvedValue(cadastro);
+      const queryFn = opts.at(-1)?.queryFn as () => Promise<unknown>;
+      await expect(queryFn()).resolves.toBe(cadastro);
+      expect(readClienteMock).toHaveBeenCalledTimes(1);
+      const [dbArg, refArg] = readClienteMock.mock.calls[0] ?? [];
+      expect(dbArg).toBe(firestoreDb);
+      expect(refArg).toBe(CLIENTE_DOC_REF);
+    });
+
+    it('a failed cliente read never vouches for a changed cadastro: isError → the fix-it text', async () => {
+      // The data still in the shared key would say "já alterado"; an error
+      // makes the cadastro unknown, and unknown keeps the fix-it text.
+      queryState.current = {
+        data: { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: '123456789' },
+        isLoading: false,
+        isError: true,
+      };
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      expect(within(alert).queryByText(TITULO_REEMITIR)).toBeNull();
+      // The id is still known, so the id-only link survives.
+      expect(within(alert).getByRole('link').getAttribute('href')).toBe('/clientes/cli-1');
+    });
+
+    it('waits for the page batch: under a pending row-read context the cliente query is disabled', async () => {
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(
+        <PedidoRowReadsContext.Provider value="pending">
+          <NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />
+        </PedidoRowReadsContext.Provider>,
+      );
+      await openHoverCard(container);
+
+      const opts = clienteQueryOptions(CLIENTE_PATH);
+      expect(opts.length).toBeGreaterThan(0);
+      expect(opts.at(-1)).toMatchObject({ enabled: false });
+    });
+
+    it('a cliente ref into ANOTHER collection names "o cliente deste pedido", links nothing and reads nothing', async () => {
+      // Same id, other collection: `/clientes/cli-1` would open a DIFFERENT cadastro.
+      const OUTRO_REF = 'documents/fornecedores/cli-1';
+      const OUTRO_PATH = 'fornecedores/cli-1';
+      dereferenceMock.mockImplementation((_db: unknown, ref: unknown) =>
+        ref === OUTRO_REF
+          ? { id: 'cli-1', path: OUTRO_PATH, parent: { id: 'fornecedores' } }
+          : null,
+      );
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={OUTRO_REF} />);
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      expect(alert.textContent).toContain('o cliente deste pedido');
+      // The mocked query still "returns" ACME — that name belongs to no cliente here.
+      expect(alert.textContent).not.toContain('ACME LTDA');
+      expect(within(alert).queryByRole('link')).toBeNull();
+      expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), OUTRO_REF);
+      expect(clienteQueryOptions(OUTRO_PATH)).toEqual([]);
+      expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+    });
+
+    it('a legacy ref that does not dereference (null) names "o cliente deste pedido", links nothing and reads nothing', async () => {
+      // Regression guard, not the proof: `dereferenceOuterRef` is TOTAL since
+      // #1656 — an odd opaque `{ path }` ref returns null instead of throwing
+      // out of `doc()` — and that is proved on the real SDK in
+      // `lib/data/dereferenceOuterRef.test.ts`. This pins the cell's side of
+      // the contract: null means no cliente, never a crash in render.
+      const REF_IMPAR = { path: 'clientes' };
+      dereferenceMock.mockReturnValue(null);
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(
+        <NFCell
+          pedidoId="p1"
+          clientePedidoOuterRef={REF_IMPAR as unknown as Pedido['clientePedidoOuterRef']}
+        />,
+      );
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      expect(alert.textContent).toContain('o cliente deste pedido');
+      expect(alert.textContent).not.toContain('ACME LTDA');
+      expect(within(alert).queryByRole('link')).toBeNull();
+      expect(dereferenceMock).toHaveBeenCalledWith(expect.anything(), REF_IMPAR);
+      expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+    });
+
+    it('switches to the "já alterado" variant once the cadastro no longer declares ISENTO', async () => {
+      queryState.current = {
+        data: { nome: 'ACME LTDA', tipo: TIPO_CLIENTE.pessoaJuridica, ie: '123456789' },
+        isLoading: false,
+      };
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_REEMITIR)).toBeTruthy();
+      expect(within(alert).queryByText(TITULO_CORRIGIR)).toBeNull();
+      expect(alert.textContent).toContain('emita a NF-e novamente');
+      expect(
+        within(alert)
+          .getByRole('link', { name: 'Abrir cadastro de ACME LTDA' })
+          .getAttribute('href'),
+      ).toBe('/clientes/cli-1');
+    });
+
+    it('a RAW cliente doc with a non-string ie reads it as blank instead of throwing', async () => {
+      // The shared key can hold a soft-read RAW document; `normalizarIe` would
+      // throw on a number, during the dropdown's render. The shared mapper
+      // (`cadastroClienteRejeicao`, the loader's too) reads it as `null`.
+      queryState.current = {
+        data: {
+          nome: 'ACME LTDA',
+          tipo: TIPO_CLIENTE.pessoaJuridica,
+          ie: 123 as unknown as string,
+        },
+        isLoading: false,
+      };
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+      // A PJ whose ie is unreadable no longer yields indIEDest=2 → "reemitir".
+      expect(within(screen.getByRole('alert')).getByText(TITULO_REEMITIR)).toBeTruthy();
+    });
+
+    it.each<[string, NfeAssinadoFixtureInput]>([
+      ['indIEDest 9 (não contribuinte)', { idDest: '1', indIEDest: '9' }],
+      ['indIEDest 1 (contribuinte)', { idDest: '1', indIEDest: '1' }],
+      ['idDest 3 (exterior)', { idDest: '3', indIEDest: '2' }],
+    ])('an 805 whose XML says %s shows no guidance — only the raw rows', async (_l, xml) => {
+      setSnap({ data: [rowFromNFe(rejeitada('805', xml))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByText(XMOTIVO_805)).toBeTruthy();
+    });
+
+    it('any other cStat mounts no guidance and reads no cliente', async () => {
+      setSnap({ data: [rowFromNFe(rejeitada('226', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(clienteQueryOptions(CLIENTE_PATH)).toEqual([]);
+      expect(dereferenceMock).not.toHaveBeenCalled();
+    });
+
+    it('without the cliente ref (the optional prop omitted) names "o cliente deste pedido" and links nothing', async () => {
+      setSnap({ data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      await openHoverCard(container);
+
+      const alert = screen.getByRole('alert');
+      expect(within(alert).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      expect(alert.textContent).toContain('o cliente deste pedido');
+      // The mocked query still "returns" ACME — a name must never appear
+      // without a ref to vouch for whose cadastro it is.
+      expect(alert.textContent).not.toContain('ACME LTDA');
+      expect(within(alert).queryByRole('link')).toBeNull();
+      expect(dereferenceMock).not.toHaveBeenCalled();
+      expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+    });
+
+    it('idDest 2 (the owner decision) gets the interstate wording with the destinatário UF', async () => {
+      setSnap({
+        data: [rowFromNFe(rejeitada('805', { idDest: '2', indIEDest: '2', ufDest: 'MG' }))],
+      });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+
+      const texto = screen.getByRole('alert').textContent ?? '';
+      expect(texto).toContain('SEFAZ-MG');
+      expect(texto).toContain('interestadual');
+      expect(texto).not.toContain('operação interna');
+    });
+
+    it('a memo-backed render (no live doc) still shows the guidance', async () => {
+      // The remembered badge carries `destinatario`, so a scrolled-back row
+      // explains its 805 without the XML — while offering no XML action.
+      authUid.current = 'user-a';
+      setSnap({
+        data: [rowFromNFe(rejeitada('805', { idDest: '1', indIEDest: '2' }))],
+        fromCache: false,
+      });
+      const live = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      live.unmount();
+
+      setSnap({ data: undefined, loading: true });
+      const { container } = wrap(<NFCell pedidoId="p1" clientePedidoOuterRef={CLIENTE_REF} />);
+      await openHoverCard(container);
+
+      expect(within(screen.getByRole('alert')).getByText(TITULO_CORRIGIR)).toBeTruthy();
+      // Proof the render is memo-backed: the live-doc-only action is absent.
+      expect(screen.queryByRole('button', { name: /baixar xml/i })).toBeNull();
+    });
+  });
 });
 
 describe('ClienteCell — static cached read', () => {
@@ -489,10 +844,15 @@ describe('ClienteCell — static cached read', () => {
     dereferenceMock.mockReturnValue(null);
     wrap(<ClienteCell pedido={{ clientePedidoOuterRef: null } as unknown as Pedido} />);
     expect(screen.getByText('Anônimo')).toBeTruthy();
+    expect(screen.queryByText('Cliente não reconhecido')).toBeNull();
   });
 
   it('renders nome inside a link to /clientes/<id>', () => {
-    dereferenceMock.mockReturnValue({ id: 'abc', path: 'clientes/abc' });
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
     queryState.current = {
       data: { nome: 'Acme Ltda', cpf_cnpj: '12345678000190', tipo: '1' },
       isLoading: false,
@@ -504,10 +864,53 @@ describe('ClienteCell — static cached read', () => {
     );
     const link = screen.getByRole('link', { name: 'Acme Ltda' });
     expect(link.getAttribute('href')).toBe('/clientes/abc');
+    expect(screen.queryByText('Cliente não reconhecido')).toBeNull();
+  });
+
+  it('a ref into ANOTHER collection shows "Cliente não reconhecido", links nothing and reads nothing (#1656)', () => {
+    // Same id, other collection: `/clientes/abc` would open a DIFFERENT
+    // cadastro, and the foreign doc's nome belongs to no cliente.
+    useQueryCalls.mockClear();
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'fornecedores/abc',
+      parent: { id: 'fornecedores' },
+    });
+    // The mocked query still "returns" a name — it must never reach the screen.
+    queryState.current = { data: { nome: 'Acme Ltda' }, isLoading: false };
+    wrap(
+      <ClienteCell
+        pedido={{ clientePedidoOuterRef: 'documents/fornecedores/abc' } as unknown as Pedido}
+      />,
+    );
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.queryByText('Acme Ltda')).toBeNull();
+    expect(screen.getByText('Cliente não reconhecido')).toBeTruthy();
+    expect(screen.queryByText('Anônimo')).toBeNull();
+    expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
+  });
+
+  it('a PRESENT ref that does not dereference is not "Anônimo" — that word is the null-ref filter (#1656)', () => {
+    // "Anônimo" is what `ClienteColumnFilter`'s isNull finds; a row carrying a
+    // ref it cannot resolve would be labelled with a word its filter never
+    // matches.
+    useQueryCalls.mockClear();
+    dereferenceMock.mockReturnValue(null);
+    wrap(
+      <ClienteCell pedido={{ clientePedidoOuterRef: { path: 'clientes' } } as unknown as Pedido} />,
+    );
+    expect(screen.getByText('Cliente não reconhecido')).toBeTruthy();
+    expect(screen.queryByText('Anônimo')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(useQueryCalls.mock.calls.at(-1)?.[0]).toMatchObject({ enabled: false });
   });
 
   it('shows a skeleton while the one-shot query is in flight', () => {
-    dereferenceMock.mockReturnValue({ id: 'abc', path: 'clientes/abc' });
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
     queryState.current = { data: null, isLoading: true };
     const { container } = wrap(
       <ClienteCell
@@ -515,6 +918,68 @@ describe('ClienteCell — static cached read', () => {
       />,
     );
     expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+});
+
+describe('IntegracaoCell — page-wide lookup, no per-row read', () => {
+  const integracao = (nome: string, tipo: number, cor: number | null) =>
+    ({ nome, tipo, cor, ativo: true }) as unknown as Integracao;
+
+  const lookup = (
+    status: IntegracaoLookup['status'],
+    entries: Array<[string, Integracao]> = [],
+  ): IntegracaoLookup => ({ rows: [], byId: new Map(entries), status });
+
+  const pedido = (ref: unknown) => ({ integracaoPedidoOuterRef: ref }) as unknown as Pedido;
+
+  afterEach(() => {
+    dereferenceMock.mockReset();
+  });
+
+  it('renders a dash when the pedido carries no integração', () => {
+    dereferenceMock.mockReturnValue(null);
+    wrap(<IntegracaoCell pedido={pedido(null)} lookup={lookup('success')} />);
+    expect(screen.getByText('—')).toBeTruthy();
+  });
+
+  it('shows a skeleton while the shared lookup is in flight', () => {
+    // ⚠️ Status first: an empty `byId` while pending must NOT read as
+    // "this integração does not exist".
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    const { container } = wrap(
+      <IntegracaoCell pedido={pedido('documents/integracao/ml-1')} lookup={lookup('pending')} />,
+    );
+    expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+
+  it('says the lookup is unavailable when the read failed, not that the id is unknown', () => {
+    // A user without `PERM.integracao.read` gets `permission-denied`, which
+    // leaves `byId` empty — a system problem, reported as one.
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    wrap(<IntegracaoCell pedido={pedido('documents/integracao/ml-1')} lookup={lookup('error')} />);
+    expect(screen.getByText('indisponível')).toBeTruthy();
+  });
+
+  it('flags an id the loaded lookup genuinely does not hold', () => {
+    dereferenceMock.mockReturnValue({ id: 'gone' });
+    wrap(
+      <IntegracaoCell
+        pedido={pedido('documents/integracao/gone')}
+        lookup={lookup('success', [['ml-1', integracao('ML Principal', 1, null)]])}
+      />,
+    );
+    expect(screen.getByText('desconhecida')).toBeTruthy();
+  });
+
+  it('renders the channel name once the lookup resolves it', () => {
+    dereferenceMock.mockReturnValue({ id: 'ml-1' });
+    wrap(
+      <IntegracaoCell
+        pedido={pedido('documents/integracao/ml-1')}
+        lookup={lookup('success', [['ml-1', integracao('ML Principal', 1, 0x1e88e5)]])}
+      />,
+    );
+    expect(screen.getByText('ML Principal')).toBeTruthy();
   });
 });
 

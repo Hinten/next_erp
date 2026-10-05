@@ -46,7 +46,7 @@ export function NfColumnFilter({ value, onChange }: NfColumnFilterProps) {
       <SegmentedControl
         value={mode}
         // Reset the term on toggle: número and chave are different value types
-        // (an integer vs a 44-digit string), so carrying one into the other
+        // (an integer vs a 44-character string), so carrying one into the other
         // would be invalid.
         onChange={(m) => {
           setMode(m);

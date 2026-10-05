@@ -13,10 +13,10 @@ import {
   expectRowHidden,
   expectRowVisible,
   firstRowText,
+  selectRowByText,
 } from './helpers/table-view';
 import {
   clickSave,
-  confirmDelete,
   expectFieldAfterReload,
   expectFieldError,
   fillField,
@@ -27,7 +27,7 @@ import { warmRoutes } from './helpers/warmup';
 /**
  * End-to-end coverage for the `/configuracoes/filiais` TableView + ObjectView
  * flow, driven by the `filialSchema`. Exercises listing, per-column
- * filtering, sorting, create/edit/delete, the nested `sede` (endereço)
+ * filtering, sorting, create/edit, the hard-delete prohibition, the nested `sede` (endereço)
  * fieldset, schema-validation feedback, the unsaved-changes guard, URL
  * query-param persistence and the placeholder tabs. Runs serially — later
  * steps consume earlier state.
@@ -104,16 +104,19 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
-  test('shows the save-first hints on the new-filial NFe + certificado tabs', async ({ page }) => {
+  test('shows the save-first hints on the new-filial id-bound tabs', async ({ page }) => {
     await page.goto('/configuracoes/filiais/novo');
-    // Both the NFe config and the certificado upload need a saved filial; the
-    // create page shows a save-first hint on each. They share the same alert
-    // TITLE ("Salve a filial primeiro"), so assert each tab's UNIQUE body text
-    // to avoid a strict-mode collision across the kept-mounted panels.
+    // The NFe config, the certificado upload and the Simples Nacional config
+    // all need a saved filial; the create page shows a save-first hint on each.
+    // They share the same alert TITLE ("Salve a filial primeiro"), so assert
+    // each tab's UNIQUE body text to avoid a strict-mode collision across the
+    // kept-mounted panels.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
     await expect(page.getByText(/a configuração de nf-e/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/o envio do certificado digital a1/i)).toBeVisible();
+    await page.getByRole('tab', { name: 'Simples Nacional' }).click();
+    await expect(page.getByText(/a configuração do simples nacional/i)).toBeVisible();
   });
 
   test('creates a new filial with a sede address', async ({ page }) => {
@@ -144,6 +147,53 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.goto('/configuracoes/filiais');
     await applyTextFilter(page, 'Razão Social', nome);
     await expectRowVisible(page, nome);
+  });
+
+  /**
+   * CNPJ alfanumérico on our own emitente (RFB IN 2.229/2024 · #1619).
+   *
+   * This is the one step the offline suites cannot show. The filial `CnpjInput`
+   * used to `replace(/\D/g, '')` on every keystroke, so an operator typing
+   * `PC3D315K000193` watched the letters vanish and landed on `3315000193` —
+   * which `filialSchema` (`max(18)`, no minimum, no checksum) saved without a
+   * word. Only a real browser typing into the real field proves that is gone.
+   */
+  test('creates a filial with an ALPHANUMERIC CNPJ, un-truncated', async ({ page }) => {
+    const nome = `${prefix}-alfa`;
+    const cnpjAlfa = 'PC3D315K000193';
+    await page.goto('/configuracoes/filiais/novo');
+    await fillField(page, 'Razão Social', nome);
+    await fillField(page, 'CNPJ', cnpjAlfa);
+    // The letters survive typing — this is the assertion the old input failed.
+    await expect(page.getByLabel('CNPJ', { exact: true })).toHaveValue(cnpjAlfa);
+    await fillField(page, 'Inscrição Estadual', '123456789');
+    await fillSede(page);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) =>
+        /^\/configuracoes\/filiais\/[^/]+$/.test(url.pathname) &&
+        url.pathname !== '/configuracoes/filiais/novo',
+      { timeout: 15_000 },
+    );
+    // …and survive the Firestore round trip, in the canonical uppercase form
+    // that `inutilizar.ts` and `filial-cert.ts` compare byte-for-byte against a
+    // CNPJ sliced out of a chave.
+    await expectFieldAfterReload(page, 'CNPJ', cnpjAlfa);
+    await expect
+      .poll(() => docExistsByField('filiais', 'cnpj', cnpjAlfa), { timeout: 15_000 })
+      .toBe(true);
+  });
+
+  test('rejects a filial whose alphanumeric CNPJ has a bad check digit', async ({ page }) => {
+    // The near-miss: one digit off `PC3D315K000193`. `filialSchema` accepts it
+    // (read-tolerance), `filialFormSchema` is what refuses to save it.
+    await page.goto('/configuracoes/filiais/novo');
+    await fillField(page, 'Razão Social', `${prefix}-alfa-dv`);
+    await fillField(page, 'CNPJ', 'PC3D315K000194');
+    await fillSede(page);
+    await clickSave(page, 'Criar');
+    await expectFieldError(page, 'CNPJ');
+    await expect(page).toHaveURL(/\/configuracoes\/filiais\/novo$/);
   });
 
   test('rejects creating a filial with an empty Razão Social', async ({ page }) => {
@@ -202,14 +252,30 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/sem certificado/i)).toBeVisible();
     await expect(page.getByText(/formato \.pfx ou \.p12/i)).toBeVisible();
+    // ⚠️ The Simples tab is asserted only as far as the TAB, deliberately.
+    // Its panel reads `filiais/{id}/simplesnacional/default`, and the rules
+    // granting that read are generated in this same change and deployed by a
+    // human — so on staging the read is denied and the panel renders its error
+    // alert instead of the "not configured" one. Asserting the panel's content
+    // here would be asserting a DEPLOYMENT STATE (`apps/web/CLAUDE.md` rule 8):
+    // green the day the rules ship, red on every PR until then. The three query
+    // states are covered deterministically in `SimplesNacionalPanel.test.tsx`,
+    // and the panel's save-first hint has its own test on the create page.
+    const simples = page.getByRole('tab', { name: 'Simples Nacional' });
+    await simples.click();
+    await expect(simples).toHaveAttribute('aria-selected', 'true');
   });
 
-  test('deletes a filial through the typed-confirm modal', async ({ page }) => {
-    await page.goto(`/configuracoes/filiais/${row(7)}`);
-    await confirmDelete(page);
-    await page.waitForURL(/\/configuracoes\/filiais$/, { timeout: 15_000 });
+  test('does not expose hard delete on either the list or detail', async ({ page }) => {
+    await page.goto('/configuracoes/filiais');
     await applyTextFilter(page, 'Razão Social', row(7));
-    await expectEmptyState(page);
+    await expectRowVisible(page, row(7));
+    await selectRowByText(page, row(7));
+    await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
+
+    await page.goto(`/configuracoes/filiais/${row(7)}`);
+    await expect(page.getByRole('heading', { name: 'Filial' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Excluir', exact: true })).toHaveCount(0);
   });
 
   test('keeps column filters in the URL query string', async ({ page }) => {

@@ -30,8 +30,10 @@
  * **Homologação-only, by construction**: every URL comes from
  * `getSvcEndpoints(<authorizer>, 'homologacao')` — the produção table is
  * never referenced — and every `SefazCall` carries `tpAmb: '2'` (the
- * pipeline's `assertSafeTpAmb` additionally rejects tpAmb='1' without
- * `NFE_ALLOW_PRODUCAO`). The fixture's `ambiente` is `'homologacao'`.
+ * transport's `assertSafeTpAmbForTransport` additionally rejects tpAmb='1'
+ * without `NFE_ALLOW_PRODUCAO`, NODE_ENV=test notwithstanding, and
+ * `assertSafeEndpointForTransport` refuses any produção-only host). The
+ * fixture's `ambiente` is `'homologacao'`.
  *
  * These status checks deliberately do NOT live in ci-nfe.yml's "status
  * gate" step: an SVC outage must fail only this suite, never block the
@@ -255,13 +257,50 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // ⚠️ SKIPPED pending #1471 — a deliberate, TEMPORARY pause, not a deletion.
   // Flip to `false` to restore the test exactly as it was; nothing else changes.
   //
-  // SVC-AN rejects this emission with `cStat=178` ("CNPJ do Emitente não
-  // cadastrado na Receita Federal"). The cause is NOT here: in the same CI run
-  // the same certificate and CNPJ are AUTHORIZED by SEFAZ-SP (`cStat=100`), so
-  // the issuer is plainly registered and it is SVC-AN's own cadastro replica
-  // that intermittently disagrees. It flaps — a pass is a clean `100` — which is
-  // why this is a pause and not a fix. Nothing in this repo can fix it;
-  // registering the CNPJ on the SVC-AN side is an external step (#1471).
+  // SVC-AN rejects this emission with `cStat=178` — **NT 2026.007 §5.10, RV
+  // 12C02-10**: "Acessar LCC-RFB (Chave: UF Emitente, CNPJ Emitente)… CNPJ do
+  // Emitente não cadastrado na Receita Federal". The LCC-RFB is a national copy
+  // of the Receita Federal CNPJ register synced to each autorizadora. The rule
+  // went live in homologação on 2026-09-01; produção follows on 2026-11-03.
+  //
+  // The cause is NOT in this repo. After that date the SAME certificate and
+  // emitente are authorized by SEFAZ-SP (`cStat=100` on the ci-nfe `NFe live`
+  // lane, e.g. 2026-09-25), and EPEC through the Ambiente Nacional completed its
+  // round-trip (2026-09-03). Only SVC-AN's copy fails to list us. Nothing here
+  // can change that; the investigation — and the produção risk it carries — is
+  // #1667.
+  //
+  // ⚠️ It does NOT flap, and it is not healing on its own. An earlier version of
+  // this comment said it "demonstrably" returned `100` on its own; that was a
+  // misreading of CI. The only verified SVC-AN `100` is 2026-08-31 — the day
+  // BEFORE the rule existed. Every 2026-09-03 run once counted as a "pass" was
+  // one where the SVC suite merely did not fail: four logged `SVC-AN host
+  // unreachable` (the emission test was SKIPPED, #337), one never ran the suite,
+  // and none printed the `[SVC-AN lote]` line every attempted emission logs
+  // before its assertion. Every attempt that reached SVC-AN since the rule went
+  // live has answered 178. ⭐ So read the `[SVC-AN protNFe]` line, never the
+  // suite's pass/fail: a green suite does not mean SVC-AN authorized.
+  //
+  // 181 (RV 12E02-10) is the destinatário twin; it blocked the SEFAZ-SP suites
+  // from 2026-09-17 until the fixture's destinatário moved to a PESSOA FÍSICA
+  // (CPF, tag E03), which the rule does not reach at all (#1612). ⚠️ An official
+  // CCC test CNPJ was tried FIRST and drew 181 too — the CCC is the states'
+  // register and the RV queries the federal LCC-RFB — so do not re-try one.
+  //
+  // ⚠️ That fix does NOT reach this test, and the reason is the tag. 12E02-10
+  // reads the DESTINATÁRIO (E02) and was answered by changing who we sell to;
+  // 12C02-10 reads the EMITENTE (C02) — our own certificate's CNPJ, which no
+  // fixture edit can change. The two rejections are twins in the NT and
+  // unrelated in what it takes to clear them.
+  //
+  // ⚠️ The skip condition below stays `&& !isFatalRun`, for a narrower reason
+  // than this comment once gave. Not because the cadastro is expected to heal by
+  // itself — nothing observed says it will — but because the weekly FATAL run is
+  // the cheapest detector for the day something changes: SVC-AN's copy gaining
+  // the CNPJ, or SEFAZ amending the rule. 181 could be left behind by emitting to
+  // a tag the rule does not read; that door does not exist here, because the
+  // emitente is our own certificate. Silencing the fatal run too would leave
+  // nothing that would notice. A future `[SVC-AN protNFe] cStat=100` is NEWS.
   //
   // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
   // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the
@@ -280,10 +319,12 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // That is #1247 gap (a) exactly, the bug this same file just gained a gate
   // for in the SVC-RS half; shipping its inverse here would be indefensible.
   //
-  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run will go RED while
-  // SVC-AN keeps answering 178. That is the intended trade — it is also the only
-  // remaining detector for when the cadastro HEALS, since the skip removes the
-  // `[SVC-AN protNFe]` line that would otherwise say so.
+  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run goes RED while
+  // SVC-AN keeps answering 178, and `report-failure` comments on the open
+  // tracker (#1500) — never close it while this holds: the lookup is `is:open`,
+  // so a closed tracker makes every Monday open a NEW issue. That is the intended
+  // trade — it is also the only remaining detector IF the cadastro ever changes,
+  // since the skip removes the `[SVC-AN protNFe]` line from every other run.
   //
   // ⚠️ `process.stdout.write`, NOT `console.warn`. Vitest 4's default reporter
   // only replays intercepted `console.*` for FAILING files, so a `console.warn`

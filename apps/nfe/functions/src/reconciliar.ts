@@ -17,7 +17,9 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * kinds of task onto this function's auto-provisioned queue, discriminated by
  * `kind` and **executed in-process** (no HTTP hop, no OIDC):
  *   - `consulta-lote` (#77) — consult an async lote by recibo (`runReconcile`)
- *     and re-enqueue the next consult while still cStat 105.
+ *     and re-enqueue the next consult while any doc of the lote is still
+ *     pending — every in-flight round counted and capped per doc (#1654), a
+ *     serviço paralisado receipt re-enqueued no sooner than one hour.
  *   - `cce-vinculo` (#81) — re-check a pending cStat-136 CC-e
  *     (`runReconcileCce`) and re-enqueue the next re-check while still 136.
  *
@@ -27,6 +29,11 @@ import { tasksInvokerOptions } from './tasksInvoker';
  *   - bad payload (Zod) / `NFeCertError` → **return** (deterministic; the
  *     backstop sweep covers a cert that's not yet uploaded).
  *   - runtime-not-ready / transport / Firestore → **throw** (bounded queue retry).
+ *     Inside a lote, three per-doc causes no longer throw (#1654,
+ *     `reconcileByRecibo`): a doc deleted mid-round is skipped, a transient
+ *     Firestore failure on one doc leaves it pending for the next round, and a
+ *     failed SOAP call of a 539 recovery counts the round — so the run returns,
+ *     with the consSit breaker it tripped, and re-enqueues at normal backoff.
  */
 /** The dispatcher body, extracted so the throw/return disposition is unit-testable. */
 export async function handleReconciliarTask(data: unknown): Promise<void> {
@@ -75,7 +82,8 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
         `recovered=${result.recovered} errored=${result.errored} ` +
         `stillPending=${result.stillPending} reEnqueued=${result.reEnqueued}`,
     );
-    // handled — including 656 / cap (stillPending=0) → no re-enqueue, no retry.
+    // handled — including 656 / the per-doc 105/104 cap (stillPending=0) → no
+    // re-enqueue, no retry.
   } catch (e) {
     if (e instanceof NFeCertError) {
       logger.error(`${RECONCILE_FUNCTION} ${label}: cert unavailable — backstop will retry`, {

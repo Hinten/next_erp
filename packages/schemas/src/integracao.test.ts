@@ -168,18 +168,13 @@ describe('integracaoSchema per-channel fields', () => {
     expect(parsed.tenant_id).toBe('tenant-xyz');
   });
 
-  it('rides legacy Mercado-Shops refs through passthrough (fields no longer modeled)', () => {
-    // Mercado Shops was discontinued (2025-12-31); the two refs were dropped
-    // from the schema. Legacy Flutter docs still carry them — they must keep
-    // parsing and survive the round-trip untouched (legacy-wire guarantee).
+  it('rejects the discontinued Mercado Shops fields on write', () => {
     const doc = {
       ...base,
       tabelaMercadoShopsOuterRef: 'documents/listaDePrecos/ms1',
       tabelaMercadoShopsPromocionalOuterRef: 'documents/listaDePrecos/ms2',
     };
-    const parsed = integracaoSchema.parse(doc) as Record<string, unknown>;
-    expect(parsed.tabelaMercadoShopsOuterRef).toBe('documents/listaDePrecos/ms1');
-    expect(parsed.tabelaMercadoShopsPromocionalOuterRef).toBe('documents/listaDePrecos/ms2');
+    expect(integracaoSchema.strict().safeParse(doc).success).toBe(false);
   });
 
   it('parses modalidadeFreteImportacao as a string enum, including null', () => {
@@ -248,14 +243,13 @@ describe('integracaoSchema per-channel fields', () => {
     }
   });
 
-  it('passes a legacy Loja Integrada doc with token_id through untouched (not modeled)', () => {
+  it('rejects token_id from the client-readable integração document', () => {
     const doc = {
       ...base,
       tipo: 3,
       token_id: 'li-static-api-key-abc123',
     };
-    const parsed = integracaoSchema.parse(doc) as Record<string, unknown>;
-    expect(parsed.token_id).toBe('li-static-api-key-abc123');
+    expect(integracaoSchema.strict().safeParse(doc).success).toBe(false);
   });
 });
 
@@ -354,6 +348,15 @@ describe('integracaoSchema WhatsApp fields', () => {
     expect(full.domingo).toEqual({ abertura: 1, fechamento: 2 });
     expect(full.sabado).toEqual({ abertura: 3, fechamento: 4 });
     expect(full.segunda).toBeNull();
+  });
+
+  it('rejects unknown properties in periods and hour entries', () => {
+    expect(periodoWhatsappSchema.safeParse({ feriado: null }).success).toBe(false);
+    expect(
+      periodoWhatsappSchema.safeParse({
+        segunda: { abertura: 1, fechamento: 2, timezone: 'America/Sao_Paulo' },
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -462,6 +465,12 @@ describe('credenciaisWhatsappSchema', () => {
         credenciaisWhatsappSchema.safeParse({ permanent_token: 'tok', pin: bad }).success,
       ).toBe(false);
     }
+  });
+
+  it('rejects unknown secret metadata', () => {
+    expect(
+      credenciaisWhatsappSchema.safeParse({ permanent_token: 'tok', docId: 'cred-1' }).success,
+    ).toBe(false);
   });
 
   it('targets the credenciaisWhatsapp subcollection path', () => {
@@ -674,6 +683,12 @@ describe('Mercado Livre test-user collection', () => {
     // A blank password parses as "stored" while being useless, and ML will not
     // reissue it — fail at the write instead.
     expect(() => usuarioTesteMercadoLivreSchema.parse({ ...minted, password: '' })).toThrow();
+  });
+
+  it('rejects read-side docId when validating a stored record', () => {
+    expect(usuarioTesteMercadoLivreSchema.safeParse({ ...minted, docId: 'seller' }).success).toBe(
+      false,
+    );
   });
 
   it('is admin-only / default-deny — it stores a password in the clear', () => {

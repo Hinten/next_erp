@@ -20,23 +20,57 @@ substitute.
 
 | NT | Production | Topic | Skill impact |
 |---|---|---|---|
-| `2026.004 v1.00` | — | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | Schema regen needed (codegen.md). Affects chave structure if alfanumérico estende-se a NF-e. |
-| `2026.003 v1.00` | — | DANFE Simplificado Tipo 2 | Out of scope — **NFC-e** (model 65) layout. Our model-55 DANFE render is in scope (`references/danfe.md`); this Tipo 2 simplificado is not. |
-| `2026.002 v1.00` | — | (details: PDF) | tbd — see PDF |
+| **`2026.007 v1.00`** | **teste 01/09/2026 · prod 03/11/2026** | **Emissão por Contribuinte exclusivo do IBS/CBS + RVs de cadastro LCC-RFB** | **MAJOR para os testes live.** §5.10 obriga todo CNPJ citado (emitente `C02`, destinatário `E02`, retirada `F02`, entrega `G02`, autor de evento) a existir na **LCC-RFB** — réplica nacional do cadastro CNPJ da RFB — e a estar `02-Ativa`. Novos cStat **178–186**, numa faixa que nenhuma tabela pública catalogava. É a causa do `181` em `emission.homologacao` e do `178` em SVC-AN (#1471, #1612). Também permite NF-e **sem IE** para contribuinte exclusivo de IBS/CBS (RVs C17-11/42/43, C18-50) e veda NFC-e a esse emitente. Detalhe em `cstat-rejeicoes.md` §178–186. |
+| `2026.006 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Baixar do portal e vendorar antes de assumir irrelevância. |
+| `2026.005 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Idem. |
+| **`2026.004 v1.01`** | **teste 01/06/2026 · prod 01/07/2026** | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | ✅ **Schema pack trocado e tipos regerados** — `PL_010d_v1.03` vendorado, substituindo `PL_010c` (ver `sources/nt/2026/` e o `MANIFEST.json`). `TCnpj`/`TCnpjVar` → `[0-9A-Z]{12}[0-9]{2}`, `TCnpjOpc` → `[0-9]{0}|[0-9A-Z]{12}[0-9]{2}`, `TChNFe` → `[0-9]{6}[0-9A-Z]{12}[0-9]{26}`, `infNFe/@Id` idem. ⚠️ A janela alfanumérica da chave é **exatamente as posições 6–17** (o corpo de 12 caracteres do CNPJ); os 2 DV do CNPJ e todo o resto seguem numéricos — por isso os consumidores de `chave.slice(6,20)` continuam corretos. O pacote traz de carona o grupo PAA da NT 2026.001 (`infPAA`/`PAASignature`). Pinado por `test/xsd/cnpj-alfanumerico.test.ts`. |
+| `2026.003 v1.00` | — | ⚠️ **não vendorada — atribuição não verificada** | Esta linha dizia "DANFE Simplificado Tipo 2", mas esse é o assunto da **2026.002** (verificado na capa do PDF vendorado). Sem o PDF da 2026.003 não há como dizer do que ela trata. |
+| `2026.002 v1.00` | Maio/2026 | **Operações de vendas presenciais e não presenciais com impressão do DANFE Simplificado Tipo 2** | Out of scope — layout **NFC-e** (modelo 65). Nosso DANFE modelo 55 está em `references/danfe.md`; o Tipo 2 simplificado não. ⚠️ Corrigido: a tabela antes marcava esta linha como "tbd" e atribuía o assunto à 2026.003. Título lido da capa de `sources/nt/2026/NT_2026.002_v1.00.pdf`. |
 | `2026.001 v1.00` | — | PAA — Pagamento Antecipado de Adquirente | New flow related to RTC; cross-reference with `rtc-ibs-cbs-is.md` (gPagAntecipado Grupo BC). |
+
+⚠️ **A numeração das NTs não é densa aqui** — este repositório só conhece as que
+alguém vendorou à mão. `*.fazenda.gov.br` é bloqueado pelo proxy de egresso do
+sandbox (ver o cabeçalho deste arquivo), então **nenhum agente consegue baixar
+uma NT**: peça o PDF ao humano e coloque-o em `sources/nt/<ano>/`. A 2026.007 só
+entrou aqui porque foi enviada dessa forma, e ela já havia quebrado o CI duas
+vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
+
+> **LCC-RFB ≠ NT 2024.002.** A LCC-RFB é descrita num **Boletim Técnico**, série
+> distinta das Notas Técnicas. Não confundir `Boletim Técnico 2024.002` com a
+> `NT 2024.002` (eConf — confirmação eletrônica) da tabela de 2024 abaixo:
+> mesmo número, séries diferentes, assuntos sem relação. As RVs que o CI
+> encontra estão na **NT 2026.007**, que é o que está vendorado.
 
 > **CNPJ Alfanumérico**: a separate companion document
 > `DFe NTCJ 2025.001 CNPJ Alfa v1.00` (under `nt/2025/`) introduces the
-> alphanumeric CNPJ format. Production for CNPJ alfa starts mid-2026; the
-> NFe schemas were updated by NT 2026.004. If the project uses CNPJ
-> validation regex anywhere, audit for `[0-9]{14}` patterns that need to
-> become `[0-9A-Z]{14}`.
+> alphanumeric CNPJ format (RFB Instrução Normativa 2.229/2024). The NF-e
+> schemas were updated by NT 2026.004 and **the pack swap is done** (row above).
+> ⚠️ The correct shape is `[0-9A-Z]{12}[0-9]{2}` — **not** `[0-9A-Z]{14}`: the two
+> check digits stay numeric. `validateCNPJ` in `@delfrance/core/documents` already
+> implements it (módulo 11 weighting each character by `charCodeAt − 48`) and is
+> the canonical implementation — reuse it, never re-derive it.
+> ⚠️ **Existing CNPJs never become alphanumeric**; only newly registered ones do,
+> so our own emitente CNPJ will not change format on its own — it becomes real
+> the day a NEW filial is opened. The application nonetheless supports it end to
+> end since #1619: `filial.cnpj` accepts `[0-9A-Z]{12}[0-9]{2}`, `computeCDV`
+> weights by `ASCII − 48`, and the DANFE/ZPL renderers carry the letters through
+> to the barcode. We must of course still accept alfa from every counterparty.
+> ✅ **The migration is COMPLETE.** Both the schema and the application layer
+> are migrated: #1615 (schema pack), #1616 + #1618 (every counterparty field,
+> the PII-redaction regexes, `raizCnpj`, the Melhor Envio PJ/PF split, the CNPJ
+> lookup gates), #1620 (the homologação fixture) and #1619 (the emitente —
+> `filial.cnpj`, the chave de acesso and its DV, the filial `CnpjInput`, the
+> DANFE chave and its Code 128 subset). ⚠️ Two things stay numeric-only ON
+> PURPOSE and are not gaps: `filial.ie`/`iest`/`imun` (Inscrição Estadual is a
+> state register, untouched by IN 2.229/2024) and `consultaCnpj.ts`'s BrasilAPI
+> gate (the public base genuinely cannot answer for an alfa CNPJ — SEFAZ
+> Consulta Cadastro is the only registry that can).
 
 ## 2025 — the big year
 
 | NT | Production | Topic | Skill impact |
 |---|---|---|---|
-| **`2025.002 v1.40`** | **03/08/2026 (CRT=3)** | **Reforma Tributária — IBS/CBS/IS** | **MAJOR.** Full new tax layer (Grupo UB item-level, Grupo W03 totals), new finalities (Crédito/Débito), cClassTrib, new events 112110-412130, cStat ampliado a 4 dígitos, nProt a 15/17. Dedicated reference: `rtc-ibs-cbs-is.md`. |
+| **`2025.002 v1.51`** (jul/2026; v1.40 mai/2026, v1.50 jun/2026) | **03/08/2026 (CRT=3)** | **Reforma Tributária — IBS/CBS/IS** | **MAJOR.** Full new tax layer (Grupo UB item-level, Grupo W03 totals), new finalities (Crédito/Débito), cClassTrib, new events 112110-412130, cStat ampliado a 4 dígitos, nProt a 15/17. v1.50 reformulou a monofásica de combustíveis; v1.51 alterou B25-80, VC02-14 (devolução só por item, produção 05/10/2026), VC02-30, UB112-10, UB116-10, UB131-20 e o cronograma da UB12-10. XSD pack **PL_010f_v1.04** vendorizado (`tpNFCredito` 06, `cIndOp`, `ISUFEmit`, `emit/IE` opcional, `IS/adRemIS`, `tpImp` 6 = DANFE Simplificado Tipo 2). Dedicated reference: `rtc-ibs-cbs-is.md` (seção PL_010f). |
 | **`2025.001 v1.03`** | **03/11/2025** | **Simplificação Operacional** | **MAJOR.** Síncrono mandatório para lote=1 (cStat 452); atraso na emissão reduzido de 30→7 dias; novas RVs em cobrança/pagamento; NFC-e QR Code v3. Dedicated reference: `sincrono-vs-assincrono.md`. cstat-rejeicoes.md atualizado. |
 
 ## 2024

@@ -699,8 +699,10 @@ Two equivalent routes, both **per App**:
    Shopee will send an HTTP POST request to the callback URL."
 2. **API** — `api v2.push.set_app_push_config` (POST `/api/v2/push/set_app_push_config`), a **Public**
    API taking `callback_url`, `set_push_config_on[]`, `set_push_config_off[]`,
-   `blocked_shop_id_list[]`. Read back with `api v2.push.get_app_push_config`, which additionally
-   returns `live_push_status` (`Normal` / `Warning` / `Suspended`) and `suspended_time`.
+   `blocked_shop_id_list[]`. Read back with `api v2.push.get_app_push_config` — a **GET**
+   (`method: 2`; the setter is a genuine POST, `method: 1`) — which additionally returns
+   `live_push_status` (`Normal` / `Warning` / `Suspended`, though its own sample prints the
+   lowercase `"suspended"`) and `suspended_time`.
 
 **One callback URL per App, for all shops.** `set_app_push_config` is a Public API keyed only by
 `partner_id`, with a single scalar `callback_url` and no per-shop addressing; `get_app_push_config`
@@ -755,7 +757,13 @@ Shopee's **inbound** push sources (§10, opposite direction from the outbound wh
 
 ## 6. Lost push recovery
 
-`api v2.push.get_lost_push_message` — POST `/api/v2/push/get_lost_push_message`, **Public**.
+`api v2.push.get_lost_push_message` — **GET** `/api/v2/push/get_lost_push_message`, **Public**, with
+**zero request params** (only `partner_id`, `timestamp`, `sign`).
+
+> ⚠️ **Correction, 2026-09-09.** This line said POST until today, and the "POST header vs GET samples"
+> contradiction it implied was **ours, not Shopee's**: `shopee-doc.mjs` printed the verb from
+> `is_get_method`, a field that is `0` on all 20 cached API pages. The page's real field is `method`
+> (1 = POST, 2 = GET) and it agrees with every request sample. Reader fixed at `shopee-doc.mjs:166`.
 
 Definition, verbatim:
 
@@ -786,6 +794,16 @@ Sample, verbatim — note `data` is a stringified copy of the **entire original 
 `api v2.push.confirm_consumed_lost_push_message` — POST
 `/api/v2/push/confirm_consumed_lost_push_message`, **Public**, body `{"last_message_id": 176610}`
 ("The last_message_id returned by v2.push.get_lost_push_message"). Returns only the bare envelope.
+(POST here is genuine — `method: 1` on that page. The verb differs between the two APIs.)
+
+⚠️ **Both pages contradict themselves about the SUCCESS MARKER** (observed 2026-09-09). Their
+parameter tables declare `error` with `sample: ""` and "Empty if no error happened"; the rendered
+response samples above print `"error": "-"`, `"message": "-"`, `"warning": "-"`. Every other cached
+page — `get_app_push_config` included — samples `""`, so `-` reads as a doc-authoring placeholder on
+these two pages, not a protocol variant. **The sandbox cannot exercise either API**, so the package
+accepts `-` as success on THESE TWO OPERATIONS ONLY (`emptyErrorAliases`, exact equality — `' '` is
+still a failure), and the first production tick logs the envelope's `error` verbatim to settle it.
+See `packages/integrations/shopee/src/call.ts` and unverified item 28 of `caps-verify-result.md`.
 
 **Answers:**
 

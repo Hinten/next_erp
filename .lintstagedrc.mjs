@@ -21,16 +21,23 @@ const ROOT = process.cwd();
 //
 // Sorted longest-first so a nested workspace (`packages/integrations/nfe`)
 // matches before any shorter prefix (`packages/integrations`).
-const WORKSPACE_GLOBS = ['apps', 'packages', 'packages/integrations', 'tools'];
+const WORKSPACE_GLOBS = ['.claude', '.codex', 'apps', 'packages', 'packages/integrations', 'tools'];
 
-const ESLINT_WORKSPACES = WORKSPACE_GLOBS.flatMap((dir) => {
-  const abs = path.join(ROOT, dir);
-  if (!existsSync(abs)) return [];
-  return readdirSync(abs, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => `${dir}/${e.name}`)
-    .filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
-}).sort((a, b) => b.length - a.length);
+const ESLINT_WORKSPACES = [
+  ...new Set(
+    WORKSPACE_GLOBS.flatMap((dir) => {
+      const abs = path.join(ROOT, dir);
+      if (!existsSync(abs)) return [];
+      const candidates = [
+        dir,
+        ...readdirSync(abs, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => `${dir}/${e.name}`),
+      ];
+      return candidates.filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
+    }),
+  ),
+].sort((a, b) => b.length - a.length);
 
 // ⚠️ `.js`/`.mjs`/`.cjs` are included deliberately. They used to be absent, so
 // every custom rule and backstop under `packages/config-eslint/rules` and the
@@ -39,11 +46,40 @@ const ESLINT_WORKSPACES = WORKSPACE_GLOBS.flatMap((dir) => {
 // re-enabled for exactly that surface.
 const CODE_RE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
-// POSIX single-quote escaping: wrap in single quotes and replace every embedded
-// single quote with `'\''`. This keeps names containing spaces, `$`, backticks,
-// quotes, etc. intact as they pass through lint-staged's own shell parsing —
-// applied to both the file arguments and the whole inner `sh -c` command.
-const sq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+// ⚠️ lint-staged does NOT hand a task string to a shell. `lib/getSpawnedTask.js`
+// splits it with `string-argv` and spawns argv[0] directly, and string-argv
+// understands exactly two things: whitespace separates tokens, and a token
+// wrapped in `'…'` or `"…"` loses its quotes. There is NO escape of any kind.
+// This file used to emit `sh -c '<cd ws && eslint …>'` with POSIX `'\''`
+// escaping, which string-argv shreds: `sh` got `-c` plus the fragment `cd `,
+// changed to `$HOME`, exited 0, and ESLint never ran. That was true from the
+// gate's first commit (2026-06-08) until the runner below replaced it, so the
+// `--max-warnings 0` ratchet had never once executed — on any platform, which
+// makes the Windows-separator story further down only half the reason. The two
+// backstops that existed read the command STRING, where the quoting looked
+// right; `rules/lint-staged-argv.test.js` now reads it through lint-staged's
+// own parser, and `rules/lint-staged-gate-runs.test.js` runs the real binary.
+//
+// So every token goes through `argvToken`: verbatim when it needs no quoting,
+// otherwise wrapped in whichever quote it does not contain. A name containing
+// BOTH quote characters has no string-argv spelling at all — refuse it loudly
+// rather than hand a tool a mangled path (Windows cannot even create one: `"`
+// is illegal in a filename there).
+const argvToken = (s) => {
+  if (s !== '' && !/[\s'"]/.test(s)) return s;
+  if (!s.includes('"')) return `"${s}"`;
+  if (!s.includes("'")) return `'${s}'`;
+  throw new Error(
+    `lint-staged cannot pass ${JSON.stringify(s)} to a task: its argv parser ` +
+      `(string-argv) has no escape, so a path containing both ' and " cannot be ` +
+      `spelled. Rename the file.`,
+  );
+};
+
+// `cd <ws> && eslint …`, done in Node instead of a shell — see the runner's
+// header. Repo-relative, like ROOT above: lint-staged spawns every task from
+// the repository root.
+const ESLINT_IN_WORKSPACE = 'packages/config-eslint/lint-staged/eslint-in-workspace.mjs';
 
 // ⚠️ Separator normalisation, load-bearing on Windows rather than tidiness.
 // `path.relative` returns the PLATFORM separator, so `rel` came back as
@@ -59,9 +95,10 @@ const sq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 // already reporting all 30 workspaces uncovered locally while CI, where
 // `path.sep === '/'`, stayed green.
 //
-// The workspace-relative paths are then handed to `sh -c`, which wants POSIX
-// separators too. Split on `path.sep` rather than replacing `\` globally: on
-// POSIX a backslash is a legal filename character and `path.sep` is already
+// The workspace-relative paths are then handed to ESLint with POSIX separators
+// too, so the emitted command is the same on every platform (ESLint accepts
+// either on Windows). Split on `path.sep` rather than replacing `\` globally:
+// on POSIX a backslash is a legal filename character and `path.sep` is already
 // `/`, so this is a no-op there.
 const toPosix = (p) => p.split(path.sep).join('/');
 
@@ -72,13 +109,14 @@ export default function lintStaged(stagedFiles) {
   // 1) Prettier formats every staged file. `--ignore-unknown` skips file types
   //    Prettier can't parse; `.prettierignore` is still honoured for the rest.
   if (stagedFiles.length > 0) {
-    commands.push(`prettier --write --ignore-unknown ${stagedFiles.map(sq).join(' ')}`);
+    commands.push(`prettier --write --ignore-unknown ${stagedFiles.map(argvToken).join(' ')}`);
   }
 
   // 2) ESLint --fix, grouped by owning workspace. Code files that live outside
   //    any ESLint-config workspace get Prettier only — that is repo-root files
-  //    and `.github/scripts/**` / `.claude/hooks/**`, which belong to no
-  //    workspace and which no root flat config covers.
+  //    and `.github/scripts/**`, which belongs to no workspace and which no
+  //    root flat config covers. `.claude/hooks` is a workspace so its shared
+  //    Claude/Codex hook code is linted and tested by the normal gates.
   //    ⚠️ It used to name `packages/core` and `packages/ui` as the examples.
   //    Both ship an `eslint.config.mjs` and are discovered above — `packages/ui`
   //    is a workspace this same PR adds hook rules to — so the examples were
@@ -91,7 +129,7 @@ export default function lintStaged(stagedFiles) {
     const ws = ESLINT_WORKSPACES.find((w) => rel === w || rel.startsWith(`${w}/`));
     if (!ws) continue;
     if (!byWorkspace.has(ws)) byWorkspace.set(ws, []);
-    // Path relative to the workspace dir, since the command cd's into it.
+    // Path relative to the workspace dir, since ESLint runs with that CWD.
     byWorkspace.get(ws).push(toPosix(path.relative(ws, rel)));
   }
 
@@ -106,8 +144,8 @@ export default function lintStaged(stagedFiles) {
   //    developer deliberately staged, so skipping the ignored ones silently is
   //    the intended behaviour.
   for (const [ws, files] of byWorkspace) {
-    const inner = `cd ${sq(ws)} && eslint --fix --max-warnings 0 --no-warn-ignored ${files.map(sq).join(' ')}`;
-    commands.push(`sh -c ${sq(inner)}`);
+    const args = [ws, '--fix', '--max-warnings', '0', '--no-warn-ignored', ...files];
+    commands.push(`node ${ESLINT_IN_WORKSPACE} ${args.map(argvToken).join(' ')}`);
   }
 
   return commands;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { microsSinceEpoch, millisSinceEpoch, pagamentoSchema } from '@delfrance/schemas';
 import { clausesForSchema } from './constraints';
 
 function exprOf(schema: z.ZodTypeAny, field: string): string | undefined {
@@ -60,9 +61,27 @@ describe('clausesForSchema', () => {
     expect(exprOf(schema, 'tipo')).toBe("(!c.hasAny(['tipo']) || d.get('tipo', null) == 1)");
   });
 
-  it('skips datetime fields entirely (Flutter writes real Timestamps)', () => {
-    const schema = z.object({ timestamp: z.string().datetime().nullable() });
-    expect(exprOf(schema, 'timestamp')).toBeUndefined();
+  it('refuses an ISO datetime field — datetimes are epoch integers (#484)', () => {
+    expect(() => clausesForSchema(z.object({ timestamp: z.string().datetime() }))).toThrow(
+      /'timestamp'.*millisSinceEpoch/,
+    );
+    // The nullable wrapper recurses into the same check — it is not a way around it.
+    expect(() =>
+      clausesForSchema(z.object({ vencimento: z.string().datetime().nullable() })),
+    ).toThrow(/'vencimento'.*millisSinceEpoch/);
+  });
+
+  it('emits `is int` for the epoch datetime builders the refusal points at', () => {
+    const schema = z.object({
+      ultimaModificacao: millisSinceEpoch(),
+      vencimento: microsSinceEpoch().nullable().default(null),
+    });
+    expect(exprOf(schema, 'ultimaModificacao')).toBe(
+      "(!c.hasAny(['ultimaModificacao']) || d.get('ultimaModificacao', null) is int)",
+    );
+    expect(exprOf(schema, 'vencimento')).toBe(
+      "(!c.hasAny(['vencimento']) || (d.get('vencimento', null) == null || d.get('vencimento', null) is int))",
+    );
   });
 
   it('skips unknown/any fields, including nullable ones', () => {
@@ -81,5 +100,83 @@ describe('clausesForSchema', () => {
 
   it('rejects non-object schemas', () => {
     expect(() => clausesForSchema(z.string())).toThrow(/object schemas/);
+  });
+});
+
+/**
+ * `pedidos/{pedidoId}/pagamentos` is one of the five `VALIDATOR_WHITELIST`
+ * entries, so every nullable field added to `pagamentoSchema` costs one clause
+ * in BOTH rulesets and both committed snapshots (#1533's class). Step 6 (#1514)
+ * added two. The typed `cartao` and `cheque` maps add two more — asserted here,
+ * at the generator, so their rules cost and shape cannot drift silently.
+ */
+describe('clausesForSchema(pagamentoSchema) — the step-6 marketplace fields', () => {
+  const mapClauses = clausesForSchema(pagamentoSchema).filter((cl) => cl.expr.includes('is map'));
+
+  it('emits one `is map` clause for each typed embedded map, and no others', () => {
+    // Exhaustive, not `toContain`: the generator validates only the top-level
+    // map shape, while Zod enforces each embedded object's strict fields.
+    expect(mapClauses.map((cl) => cl.field)).toEqual([
+      'cartao',
+      'cheque',
+      'liquidacao',
+      'marketplace',
+    ]);
+  });
+
+  it('guards each one behind hasAny and lets null through (both are nullable)', () => {
+    expect(exprOf(pagamentoSchema, 'liquidacao')).toBe(
+      "(!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))",
+    );
+    expect(exprOf(pagamentoSchema, 'marketplace')).toBe(
+      "(!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))",
+    );
+  });
+
+  it('does not recurse: the nested escrow fields emit nothing of their own', () => {
+    // The generator is shape-only by design (expression budget). The near-miss
+    // that would prove otherwise — a clause naming a field that exists ONLY
+    // inside the nested block — must be absent.
+    const fields = clausesForSchema(pagamentoSchema).map((cl) => cl.field);
+    expect(fields).not.toContain('escrowReleaseTimeUs');
+    expect(fields).not.toContain('tarifasBrutas');
+    // The anchor: the top-level namesake IS there, so the two absences above
+    // are recursion not happening, not the scan finding nothing.
+    expect(fields).toContain('tarifas');
+  });
+});
+
+/**
+ * #367 stamps two server-owned attribution fields on `pagamentoSchema` (which
+ * Mercado Pago link settled a payment, and the payer's FIRST name). Each costs
+ * one clause in `v_pedidos_pagamentos` — in BOTH rulesets and both snapshots —
+ * and the size bound is the only shape the rules enforce on them, since the
+ * `serverOwnedFields` guard denies every client write anyway. Pinned here, at
+ * the generator, so a schema edit that loosens either bound reads as a test
+ * failure and not as a snapshot diff someone refreshes with `-u`.
+ */
+describe('clausesForSchema(pagamentoSchema) — the link-attribution fields (#367)', () => {
+  it('bounds linkPagamentoId to 20 characters (the newDocId() shape) and lets null through', () => {
+    expect(exprOf(pagamentoSchema, 'linkPagamentoId')).toBe(
+      "(!c.hasAny(['linkPagamentoId']) || (d.get('linkPagamentoId', null) == null || d.get('linkPagamentoId', null) is string && d.get('linkPagamentoId', null).size() <= 20))",
+    );
+  });
+
+  it('bounds primeiroNomePagador to 20 characters and lets null through', () => {
+    expect(exprOf(pagamentoSchema, 'primeiroNomePagador')).toBe(
+      "(!c.hasAny(['primeiroNomePagador']) || (d.get('primeiroNomePagador', null) == null || d.get('primeiroNomePagador', null) is string && d.get('primeiroNomePagador', null).size() <= 20))",
+    );
+  });
+
+  it('adds exactly those two size-bounded string clauses beside the existing nFat one', () => {
+    // Exhaustive, not `toContain`: a third string field that gained a bound (or
+    // either of these losing it) changes the ruleset size and must be deliberate.
+    const bounded = clausesForSchema(pagamentoSchema)
+      .filter((cl) => cl.expr.includes('.size() <='))
+      .map((cl) => cl.field);
+    expect(bounded).toEqual(['linkPagamentoId', 'nFat', 'primeiroNomePagador']);
+    // The anchor: the pre-existing 60-character bound is untouched, so the two
+    // 20s above are per-field bounds and not a shared one applied to every string.
+    expect(exprOf(pagamentoSchema, 'nFat')).toContain('.size() <= 60');
   });
 });

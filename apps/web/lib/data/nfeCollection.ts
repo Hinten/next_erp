@@ -4,7 +4,7 @@ import { nfeSchema } from '@delfrance/schemas';
 /**
  * Subcollection: `pedidos/{pedidoId}/nfev4`. Use the {pedidoId}
  * placeholder in the path context. Each doc is keyed by NFe `chave`
- * (44-digit). The TableView's NF cell subscribes to the latest doc
+ * (44 characters). The TableView's NF cell subscribes to the latest doc
  * (orderBy `ultima_modificacao` desc, limit 1 — NOT `timestamp`, which this
  * schema never sets) to display the current state; see `useLatestNfe`.
  */

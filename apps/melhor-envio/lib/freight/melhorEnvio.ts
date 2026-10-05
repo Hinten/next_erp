@@ -23,28 +23,9 @@ import {
 } from '@delfrance/integrations-freight-br';
 
 import { createFirestoreTokenStore } from './tokenStore';
+import { MelhorEnvioContaNotConfiguredError, MelhorEnvioConfigError } from './melhorEnvioErrors';
 
-/** The account doc is missing, not a Melhor Envio tipo, or has no credentials. */
-export class MelhorEnvioContaNotConfiguredError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'MelhorEnvioContaNotConfiguredError';
-  }
-}
-
-/**
- * Server is misconfigured — the app-wide Melhor Envio OAuth credentials
- * (`MELHOR_ENVIO_CLIENT_ID` / `MELHOR_ENVIO_CLIENT_SECRET`) aren't set. These
- * identify the single registered ME application (one app, many connected
- * accounts), so they live in env / Cloud Secret Manager, not per-integration.
- * Maps to HTTP 500.
- */
-export class MelhorEnvioConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'MelhorEnvioConfigError';
-  }
-}
+export { MelhorEnvioContaNotConfiguredError, MelhorEnvioConfigError } from './melhorEnvioErrors';
 
 const DEFAULT_USER_AGENT = '@delfrance/erp-next (contato@delfrance.com.br)';
 

@@ -72,10 +72,18 @@ const INVENTARIO = {
     'Defines `reservaEfetiva` (the single floor) and `estoqueDisponivel`. The schema deliberately carries NO `.min(0)` — it failed the whole document in `parseSoftRead`.',
 
   // ---- Reads it, floors via reservaEfetiva / estoqueDisponivel -----------
+  'packages/data/src/admin/estoque/quantidades.ts':
+    'The PROMOTED marketplace quantity core (#1520 R9) — the same sweep math, now shared by Mercado Livre and Shopee. Every availability read goes through `estoqueDisponivel`; `desfazerMovimento` may synthesize a negative reservation on purpose (it is arithmetic, not a stored value) and that floor downstream is the ONLY thing keeping it harmless, pinned by a test.',
+  'packages/data/src/admin/estoque/ledger.ts':
+    'Declares `MovimentoDaJanela.dr`, the window ledger’s SIGNED change in the reservation. Types only — no implementation, no arithmetic; each channel supplies its own aggregate and `quantidades.ts` above is what subtracts the value.',
   'apps/mercado-livre/lib/marketplace/importacao/importCore.ts':
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
   'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts':
-    'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
+    'After the #1520 promotion this file no longer does the arithmetic — it SUPPLIES it. The joins `select` the raw counter into the rows the quantity core reads, and the ledger pre-pass sums `movimentoReservada` into a SIGNED per-window delta that is deliberately NOT floored (flooring one leg of a movement would destroy units). Every availability read, and the negative reservation the window-start reconstruction may synthesize on purpose, now live in `packages/data/src/admin/estoque/quantidades.ts` above.',
+  'apps/shopee/lib/shopee/estoque/descobertaEstoque.ts':
+    'Shopee’s stock discovery (#1520) — the twin of `bulkEstoquePlan.ts` directly above, and the same position: it does no arithmetic, it SUPPLIES it. The estoque joins `select` the raw `quantidadeReservada` into the rows the promoted quantity core reads, and the ledger aggregate sums `movimentoReservada` into a SIGNED per-window delta that is deliberately NOT floored — flooring one leg of a movement destroys units. Every availability read, and the negative reservation the window-start reconstruction may synthesize on purpose, live in `packages/data/src/admin/estoque/quantidades.ts` above.',
+  'apps/mercado-livre/lib/marketplace/estoque/estoqueRetryRefresh.ts':
+    'Retry refresh reads the stored reservation from each deduplicated estoque document, tolerantly coerces a missing/non-finite value to zero, and computes availability only through `estoqueDisponivel`, so a negative reservation cannot invent stock.',
   'apps/mercado-livre/lib/marketplace/anuncios/upSoleMember.ts':
     '#1087 sole-member plan. SPLITS the parent row when publish gives a User-Products produto its one child: the child takes `quantidade - reservaEfetiva(...)` and the parent is left holding exactly the reserve. Floored through `reservaEfetiva`, then `Math.max(0, ...)` on the difference, so a negative stored value can neither inflate what moves nor push the remainder below zero. The reserve stays put deliberately — an open pedido’s release decrements the produto its LINE names, which is the parent.',
   'apps/mercado-livre/lib/marketplace/anuncios/upSoleMemberWrite.ts':
@@ -88,6 +96,14 @@ const INVENTARIO = {
     'Estoque tab. Displays the stored value verbatim (deliberately — the defect must stay visible) and computes availability through `estoqueDisponivel`.',
   'apps/web/app/(app)/produtos/_components/EstoqueMovimentacaoModal.tsx':
     'Movement editor. Local input state only; availability preview goes through `estoqueDisponivel`.',
+  'apps/web/lib/reports/productLocation.ts':
+    'Product-location report. Displays the stored reservation verbatim and computes availability through `estoqueDisponivel`, so a negative stored value stays visible without inventing stock.',
+  'apps/shopee/lib/shopee/produtos/mapeamento.ts':
+    'Shopee listing import (#1517). Adds the reservation BACK into `quantidade` (Σ `seller_stock[].stock` is the BUYABLE count, i.e. `disponivel`). Floored with `reservaEfetiva` on the one branch that reads it — the overwrite of an existing row — so a stored negative cannot shrink the ERP count below Shopee’s on every re-import (#931); on the create branch the reserve is a literal 0. Pure: it plans the number and writes nothing.',
+
+  // ---- A DIFFERENT reservation, named only to be told apart ---------------
+  'apps/shopee/lib/shopee/estoque/reservaPromocao.ts':
+    '⚠️ NOT this reservation. Shopee’s `total_reserved_stock` is a PROMOTION reserve that sets a FLOOR the stock sender clamps UP to, whereas `quantidadeReservada` is SUBTRACTED to get availability — two numbers with the same name pulling in OPPOSITE directions, which is exactly why the file is inventoried: the disclaimer has to be a reviewed artifact rather than folklore, and the two must never be summed, compared or folded into one another. The ERP counter is named once, in that sentence, and touched nowhere else — the quantity reaches this module already computed and already floored by `packages/data/src/admin/estoque/quantidades.ts`, and every function here only ever RAISES it. Pure: no Firestore, no clock, and no arithmetic on the ERP reservation at all.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':
@@ -118,8 +134,12 @@ const INVENTARIO = {
     'Second copy of `readEstoque`, same contract.',
   'apps/functions/src/estoques/aplicarBalanco.ts':
     'Passes the stored counters into `planejarItemBalanco` straight off `.data()`, uncoerced on purpose — `finalizePlan` owns both the coercion and the `>= 0` sanity check.',
+  'apps/shopee/lib/shopee/produtos/estoquePrecos.ts':
+    'Shopee listing import (#1517), the I/O half. `lerLinhaDeEstoque` answers the stored reservation RAW (a missing/non-numeric field reads as 0, a stored negative is carried through intact) because its only consumer is the pure planner in `mapeamento.ts`, which floors it with `reservaEfetiva` — one floor, in one place, and the evidence #931 wants is not laundered on the way there. This file does no arithmetic on the value at all, and it never WRITES the counter: the overwrite arm is a merge naming only `quantidade` + `ultimaModificacao` (the picking flow owns the reserve), and the create arm writes the plan’s literal 0.',
 
   // ---- Declarations, display, diagnostics — no arithmetic -----------------
+  'apps/whatsapp/lib/whatsapp/vinculos.ts':
+    '#1084: the conflict message "A conversa reservada..." refers to the transactionally claimed canonical WhatsApp conversation. This is conversation-identity terminology only: no stock reservation is read, written, or used in arithmetic.',
   'packages/schemas/src/produto/collection/historicoEstoque.ts':
     'Ledger schema: declares `movimentoReservada` / `saldoReservada`. No arithmetic.',
   'packages/schemas/src/pedido/collection/pedido.ts':

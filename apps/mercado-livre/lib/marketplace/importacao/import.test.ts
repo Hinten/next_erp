@@ -381,7 +381,7 @@ describe('importProduto — guards', () => {
 });
 
 describe('importProduto — create', () => {
-  it('creates a produto (deterministic per-item id), extraData, estoque, link + denorm', async () => {
+  it('creates a produto (deterministic per-item id), extraData, estoque and link', async () => {
     const db = new FakeDb();
     const api = makeApi(SIMPLE_ITEM);
     const res = await importProduto(deps(db, api), 'MLB123');
@@ -401,8 +401,6 @@ describe('importProduto — create', () => {
     });
     const link = [...db.docs(`produtos/${pid}/produtoMercadoLivre`).values()][0]!;
     expect(link).toMatchObject({ id: 'MLB123', estado: 'p', status: 'active' });
-    // legacy denorm applied
-    expect(db.updates.some((u) => u.path === `produtos/${pid}`)).toBe(true);
   });
 
   it('two SKU-less ML items sharing a seller_custom_field create SEPARATE produtos (#2 collision fix)', async () => {
@@ -818,7 +816,7 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
     ],
   };
 
-  it('imports the parent + one child produto per variation, with links/estoque/denorm', async () => {
+  it('imports the parent + one child produto per variation, with links and estoque', async () => {
     const db = new FakeDb();
     const api = makeApi(VARIATION_ITEM);
     const res = await importProduto(deps(db, api), 'MLB999');
@@ -858,13 +856,6 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
       expect(estoques.size).toBe(1);
       const [, estoqueData] = [...estoques.entries()][0]!;
       expect(typeof estoqueData.quantidade).toBe('number');
-
-      // legacy denorm: the child's marketplace entry carries externalParentId
-      // (the parent's own entry never does — models.dart `ProdMarketplace` json).
-      const update = db.updates.find(
-        (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
-      );
-      expect(update).toBeDefined();
     }
   });
 
@@ -1530,11 +1521,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
   const expectedChildId = (memberId: string) =>
     `XMLB000000000000000${expectedParentLinkId}vMLB${memberId}`;
 
-  /** `FieldValue.arrayUnion(...)`'s public `elements` array — the appended entries. */
-  function arrayUnionElements(v: unknown): unknown[] {
-    return (v as { elements: unknown[] }).elements;
-  }
-
   function makeUpApi(opts: {
     items: Record<string, DocData>;
     family?: DocData | Error;
@@ -1877,7 +1863,7 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     });
   });
 
-  it('imports the family parent + the called member as a child — literal parity ids, denorm, skip-stock', async () => {
+  it('imports the family parent + the called member as a child — literal parity ids and skip-stock', async () => {
     const db = new FakeDb();
     const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
     const res = await importProduto(deps(db, api), MEMBER_A_ID);
@@ -1908,17 +1894,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       .get(expectedParentLinkId);
     expect(parentLink).toMatchObject({ id: FAMILY_ID, isUserProductModel: true });
 
-    // parent denorm carries relevantData.isUserProductModel (parity — ProdMarketplace.relevantData).
-    const parentUpdate = db.updates.find(
-      (u) => u.path === `produtos/${expectedParentId}` && 'marketplace' in u.patch,
-    );
-    expect(parentUpdate).toBeDefined();
-    expect(arrayUnionElements(parentUpdate!.patch.marketplace)[0]).toMatchObject({
-      integracaoUid: 'conta-A',
-      externalId: FAMILY_ID,
-      relevantData: { isUserProductModel: true },
-    });
-
     // child: produto id AND link doc id are the SAME literal fixed-width string.
     const childId = expectedChildId(MEMBER_A_ID);
     expect(db.docs('produtos').get(childId)).toMatchObject({
@@ -1932,16 +1907,6 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     const childEstoques = db.docs(`produtos/${childId}/estoques`);
     expect(childEstoques.size).toBe(1);
     expect([...childEstoques.values()][0]).toMatchObject({ quantidade: 5 });
-
-    // child denorm also carries relevantData + externalParentId = family id.
-    const childUpdate = db.updates.find(
-      (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
-    );
-    expect(arrayUnionElements(childUpdate!.patch.marketplace)[0]).toMatchObject({
-      externalId: MEMBER_A_ID,
-      externalParentId: FAMILY_ID,
-      relevantData: { isUserProductModel: true },
-    });
   });
 
   it('a second member of the same family resolves the SAME parent via the family-id link', async () => {

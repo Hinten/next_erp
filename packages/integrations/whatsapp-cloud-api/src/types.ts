@@ -96,7 +96,18 @@ export const messageErrorSchema = z
 
 export const incomingMessageSchema = z
   .object({
-    from: z.string(),
+    from: z.string().optional(),
+    from_user_id: z.string().optional(),
+    system: z
+      .object({
+        type: z.string(),
+        user_id: z.string().optional(),
+        previous_user_id: z.string().optional(),
+        wa_id: z.string().optional(),
+        body: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
     id: z.string(),
     timestamp: z.string(),
     /**
@@ -179,7 +190,8 @@ export function narrowWaStatus(raw: string): WaStatus {
 export const statusUpdateSchema = z
   .object({
     id: z.string(),
-    recipient_id: z.string(),
+    recipient_id: z.string().optional(),
+    recipient_user_id: z.string().optional(),
     /**
      * ⚠️ The RAW wire string, NOT `z.enum(WA_STATUS_KNOWN)` — narrowed at the
      * point of use by {@link narrowWaStatus}.
@@ -221,7 +233,8 @@ export const valuePayloadSchema = z
         z
           .object({
             profile: z.object({ name: z.string() }).optional(),
-            wa_id: z.string(),
+            wa_id: z.string().optional(),
+            user_id: z.string().optional(),
           })
           .passthrough(),
       )

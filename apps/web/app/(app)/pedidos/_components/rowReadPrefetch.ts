@@ -31,18 +31,36 @@
  *
  * A miss is also safe: an id the batch did not return simply is not seeded, and
  * that cell's own query runs as usual.
+ *
+ * ⚠️ Only refs INTO `clientes` are batched (#1656), through the same
+ * `refDeClienteOuNull` gate `ClienteCell` uses. The batch reads `clientes/<id>`
+ * BY ID, so a ref into another collection would fetch a DIFFERENT document and
+ * seed it under a key that `readClienteByRef` fills from the foreign doc — two
+ * provenances for one key, the #1303 bug class. That gate is also total: this
+ * runs inside `onRows`, which `TableView` calls from an effect, where a throw
+ * would blank the whole page.
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { Pedido } from '@delfrance/schemas';
 
 import { clienteCollection } from '@/lib/data/clienteCollection';
-import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
+import { clienteQueryKey, refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+
+/**
+ * The cliente key and its ONE reader live in `@/lib/data/readClienteByRef`
+ * since #852 — a plain module, so `lib/nfe`'s rejection-context loader can share
+ * them without this file's `'use client'` graph. Re-exported here so
+ * `PedidoCells` (`ClienteCell`, NFCell's `OrientacaoRejeicaoCliente`),
+ * `OrigemPedidoPicker` and the tests keep importing them from this module. The
+ * batch below seeds the key; see that module for the #1303 provenance rule every
+ * consumer must keep.
+ */
+export { clienteQueryKey, readClienteByRef } from '@/lib/data/readClienteByRef';
 
 /**
  * How long a cell will wait for the page-level batch before falling back to its
@@ -75,11 +93,6 @@ export function usePedidoRowReads(): RowReadsStatus {
   return useContext(PedidoRowReadsContext);
 }
 
-/** The TanStack key `ClienteCell` reads its cliente under. */
-export function clienteQueryKey(path: string): readonly unknown[] {
-  return ['cliente', path];
-}
-
 /**
  * The TanStack key `FreteCell` / `EtiquetaRowAction` read the tipo under.
  *
@@ -103,30 +116,6 @@ export function clienteQueryKey(path: string): readonly unknown[] {
 export function intFreteTipoQueryKey(path: string): readonly unknown[] {
   return ['intFreteTipo', path];
 }
-
-/**
- * Read ONE cliente exactly as the batch reads them, so every consumer of
- * {@link clienteQueryKey} fills that key with the same provenance. There are
- * three today — `ClienteCell`, `OrigemPedidoPicker` and this batch — and a key
- * written by one and read by another is only safe while they agree.
- *
- * ⚠️ Guards the collection rather than assuming it. `dereferenceOuterRef`
- * accepts three legacy ref shapes and nothing guarantees the path addresses
- * `clientes`; reading `clienteCollection.docRef(db, {}, ref.id)` for a ref that
- * points elsewhere would silently fetch a DIFFERENT document that happens to
- * share an id. Anything outside `clientes` is read as the ref given.
- */
-export async function readClienteByRef<T>(
-  db: Firestore,
-  ref: DocumentReference,
-): Promise<T | null> {
-  const target =
-    ref.parent.id === CLIENTES_COLLECTION_ID ? clienteCollection.docRef(db, {}, ref.id) : ref;
-  const snap = await getDoc(target);
-  return (snap.data() as T | undefined) ?? null;
-}
-
-const CLIENTES_COLLECTION_ID = 'clientes';
 
 /** `clientes/abc` → `abc`. Returns null for anything that is not a doc path. */
 function idFromPath(path: string): string | null {
@@ -188,6 +177,21 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
   const [status, setStatus] = useState<RowReadsStatus>('pending');
   const runIdRef = useRef(0);
 
+  /**
+   * Cliente ids this mount has already fetched.
+   *
+   * ⚠️ Load-bearing since the list STREAMS (#40). `onRowsChange` fires whenever
+   * the row id set changes, and under `onSnapshot` that now includes every
+   * insertion the ML importer makes while the operator is just looking at the
+   * page — each of which used to re-issue a chunked read for the WHOLE window's
+   * clientes. Batching only the ids that are actually new turns that back into
+   * one read per arriving pedido.
+   *
+   * Populated only after a successful fetch: an id recorded on a failed batch
+   * would never be retried by a later one.
+   */
+  const fetchedClienteIdsRef = useRef<Set<string>>(new Set());
+
   const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Insurance against `onRowsChange` never firing at all. Long on purpose — it
@@ -227,11 +231,21 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
       deadlineRef.current = setTimeout(() => {
         if (runId === runIdRef.current) setStatus('settled');
       }, PREFETCH_MAX_WAIT_MS);
-      const { clientes } = collectRowReadTargets(rows, (ref) => {
-        const deref = dereferenceOuterRef(db, ref);
-        return deref?.path ?? null;
-      });
+      // Only refs INTO `clientes` (#1656) — see the module doc. The gate is
+      // total, so a malformed ref can no longer throw out of this effect.
+      const { clientes } = collectRowReadTargets(
+        rows,
+        (ref) => refDeClienteOuNull(db, ref)?.path ?? null,
+      );
       if (clientes.length === 0) {
+        setStatus('settled');
+        return;
+      }
+      // Only what this mount has not already read. A streaming list re-fires
+      // this on every insertion, and re-reading the whole window each time is
+      // the cost that made the batch worth having in the first place.
+      const pending = clientes.filter((c) => !fetchedClienteIdsRef.current.has(c.id));
+      if (pending.length === 0) {
         setStatus('settled');
         return;
       }
@@ -240,12 +254,15 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
           const clienteDocs = await getDocsByIds(
             db,
             clienteCollection,
-            clientes.map((c) => c.id),
+            pending.map((c) => c.id),
           );
           // A newer page superseded this batch — its seeds are for rows nobody
           // is looking at, and its `settled` would race the newer run's.
           if (runId !== runIdRef.current) return;
-          seedRowReads(queryClient, clientes, clienteDocs);
+          seedRowReads(queryClient, pending, clienteDocs);
+          // Recorded only here, on the success path: an id marked before the
+          // read would be skipped by every later batch if this one threw.
+          for (const c of pending) fetchedClienteIdsRef.current.add(c.id);
         } catch (err) {
           // A prefetch is pure optimisation: every cell reads for itself in the
           // `finally` below, so a Firestore failure here costs a fallback read

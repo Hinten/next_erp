@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,14 +7,19 @@ import {
   SHOPEE_ERROR_KIND,
   SHOPEE_SURFACE,
   ShopeeApiError,
+  ShopeeApiPartialError,
+  ShopeeArquivoVazioError,
   ShopeeConfigError,
   ShopeeError,
+  type ShopeeErrorKind,
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
   classifyShopeeError,
+  shopeeCodeSemPrefixoDeModulo,
+  shopeeCodigoCanonico,
   shopeeErrorFromEnvelope,
 } from '../src/errors';
 
@@ -152,6 +159,131 @@ describe('classifyShopeeError', () => {
   });
 });
 
+/* -------------------------------------------------------------------------- */
+/*          O prefixo de módulo (`product.error_param`) — passo 11             */
+/* -------------------------------------------------------------------------- */
+
+describe('shopeeCodeSemPrefixoDeModulo', () => {
+  // ⚠️ Este é um FOLD: ele decide que dois códigos são o MESMO para efeito de
+  // consulta. Por isso vêm os dois lados — o que TEM de casar e o que TEM de
+  // continuar distinto.
+
+  it('PAR — remove o prefixo de módulo que a Shopee imprime nos próprios exemplos', () => {
+    // `unlist_item` lista `error_param` e o Error example da mesma página imprime
+    // `product.error_param`; `delete_item` faz igual; `add_item` traz
+    // `product.error_busi`; `get_channel_list` traz `common.invalid_shop`.
+    expect(shopeeCodeSemPrefixoDeModulo('product.error_param')).toBe('error_param');
+    expect(shopeeCodeSemPrefixoDeModulo('product.error_limit')).toBe('error_limit');
+    expect(shopeeCodeSemPrefixoDeModulo('common.invalid_shop')).toBe('invalid_shop');
+    expect(shopeeCodeSemPrefixoDeModulo('order.order_list_invalid_time')).toBe(
+      'order_list_invalid_time',
+    );
+  });
+
+  it('⛔ NEAR-MISS — sem prefixo devolve null, e não uma string vazia', () => {
+    // `null` distingue "não havia prefixo" de "o prefixo era o código inteiro".
+    // Com `''`, `KIND_BY_CODE.get('')` vira uma consulta viva.
+    expect(shopeeCodeSemPrefixoDeModulo('error_param')).toBeNull();
+    expect(shopeeCodeSemPrefixoDeModulo('')).toBeNull();
+    expect(shopeeCodeSemPrefixoDeModulo('.error_param')).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS — o prefixo sendo o código INTEIRO (`product.`) devolve null', () => {
+    expect(shopeeCodeSemPrefixoDeModulo('product.')).toBeNull();
+    expect(shopeeCodeSemPrefixoDeModulo('a.')).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS — remove UM segmento só, nunca de forma gulosa', () => {
+    // Um `/^.*\./` faria qualquer SUFIXO casar: um código novo que só termine em
+    // algo conhecido entraria numa escada à qual não pertence.
+    expect(shopeeCodeSemPrefixoDeModulo('a.b.error_limit')).toBe('b.error_limit');
+    expect(shopeeCodeSemPrefixoDeModulo('a.b.error_limit')).not.toBe('error_limit');
+  });
+
+  it('⛔ NEAR-MISS — só um módulo em minúsculas conta como prefixo', () => {
+    expect(shopeeCodeSemPrefixoDeModulo('Product.error_limit')).toBeNull();
+    expect(shopeeCodeSemPrefixoDeModulo('1product.error_limit')).toBeNull();
+  });
+});
+
+describe('classifyShopeeError com prefixo de módulo', () => {
+  it('T9 — PAR: `product.error_limit` classifica como daily, igual a `error_limit`', () => {
+    // Sem a tolerância, a COTA DIÁRIA chegaria como falha comum, seria repetida
+    // na hora e queimaria a escada até 00:00 (UTC+8).
+    expect(classifyShopeeError('product.error_limit', SHOPEE_SURFACE.business)).toBe('daily');
+    expect(classifyShopeeError('error_limit', SHOPEE_SURFACE.business)).toBe('daily');
+    expect(classifyShopeeError('product.error_rate_limit', SHOPEE_SURFACE.business)).toBe('burst');
+    expect(classifyShopeeError('product.error_server', SHOPEE_SURFACE.business)).toBe('transient');
+  });
+
+  it('T10 — ⛔ NEAR-MISS: `error.param` (o typo da Shopee) NÃO vira o código `param`', () => {
+    // ⚠️ A string inteira é consultada PRIMEIRO, e o código lançado continua
+    // verbatim. `error.param` aparece na lista de estoque do `add_item` com o
+    // ponto no lugar do underscore; lê-lo como módulo `error` + código `param`
+    // seria inventar um código que a Shopee nunca mandou.
+    expect(classifyShopeeError('error.param', SHOPEE_SURFACE.business)).toBe('other');
+    const err = shopeeErrorFromEnvelope(envelope('error.param'), {
+      path: '/api/v2/product/add_item',
+      httpStatus: 200,
+      surface: SHOPEE_SURFACE.business,
+    });
+    expect(err.code).toBe('error.param');
+    expect(err.kind).toBe('other');
+  });
+
+  it('T11 — ⛔ NEAR-MISS: `a.b.error_limit` continua `other` — só UM segmento sai', () => {
+    expect(classifyShopeeError('a.b.error_limit', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('b.error_limit', SHOPEE_SURFACE.business)).toBe('daily');
+  });
+
+  it('T12 — `product.error_auth` é `other` num negócio e `reauth` no auth: o portão de superfície sobrevive ao corte', () => {
+    // ⚠️ Num negócio, `error_auth` quer dizer *Invalid sign* — defeito NOSSO. Um
+    // `reauth` aqui desconectaria uma conta saudável e a culpa pareceria da
+    // Shopee. O prefixo não pode fazer o código escapar desse portão.
+    expect(classifyShopeeError('product.error_auth', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('product.error_auth', SHOPEE_SURFACE.auth)).toBe('reauth');
+    expect(
+      classifyShopeeError(`media_space.${SHOPEE_AMBIGUOUS_AUTH_CODE}`, SHOPEE_SURFACE.auth),
+    ).toBe('reauth');
+  });
+
+  it('T13 — `ShopeeApiError.code` guarda a string VERBATIM, com prefixo', () => {
+    // O corte é uma consulta, nunca uma reescrita: o classificador de publicação
+    // e todo log leem a string crua. Normalizá-la aqui faria um grep pelo que a
+    // Shopee mandou não achar nada.
+    const err = shopeeErrorFromEnvelope(envelope('product.error_limit'), {
+      path: '/api/v2/product/add_item',
+      httpStatus: 200,
+      surface: SHOPEE_SURFACE.business,
+      retryAfterSeconds: 60,
+    });
+    expect(err).toBeInstanceOf(ShopeeRateLimitError);
+    expect(err.code).toBe('product.error_limit');
+    expect(err.code).not.toBe('error_limit');
+    expect(err.kind).toBe('daily');
+  });
+
+  it('T14 — `common.invalid_shop` continua `other`: o corte não fabrica entrada nenhuma', () => {
+    // Anti-vacuidade. `invalid_shop` não está na tabela, e o corte não pode
+    // colocá-lo lá por semelhança com `invalid_shop_id`.
+    expect(classifyShopeeError('common.invalid_shop', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('product.error_busi', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('product.', SHOPEE_SURFACE.business)).toBe('other');
+  });
+
+  it('os dois erros de access_token do `upload_image` NÃO viram reauth num negócio', () => {
+    // ⚠️ A página é `type=Public` e a lista dela traz
+    // `error_param: There is no access_token in query.` e
+    // `error_auth: Invalid access_token.` — numa chamada de negócio isso quer
+    // dizer que o MODO DE ASSINATURA aqui está errado, não que a autorização do
+    // vendedor morreu. Um `reauth` mandaria o operador reconectar uma conta sã.
+    expect(classifyShopeeError('error_param', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('media_space.error_param', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('error_auth', SHOPEE_SURFACE.business)).toBe('other');
+    expect(classifyShopeeError('media_space.error_auth', SHOPEE_SURFACE.business)).toBe('other');
+  });
+});
+
 describe('shopeeErrorFromEnvelope', () => {
   it('returns the reauth subclass and preserves the code', () => {
     const err = shopeeErrorFromEnvelope(envelope('refresh_token_expired'), {
@@ -203,5 +335,436 @@ describe('shopeeErrorFromEnvelope', () => {
     });
     expect(err.message).not.toContain('—');
     expect(err.kind).toBe('transient');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     A lista de erros do `update_stock`, VERBATIM — e o que ela classifica    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ Toda grafia abaixo é a da PÁGINA, erro de digitação incluído: `upate`,
+ * `cannt`, `cantnot`, e o `error.param` com PONTO no lugar do underscore.
+ * "Corrigir" qualquer uma delas aqui faria o casamento parar de acontecer em
+ * silêncio no dia em que alguém keyasse um mapa por estas strings.
+ *
+ * ⚠️ Superfície `business`: `update_stock` é uma chamada de negócio. É por isso
+ * que `error_auth` — a grafia de DUAS das quatro do piso reservado — cai em
+ * `'other'` aqui e em `'reauth'` no `auth`. Um `reauth` neste ponto mandaria o
+ * operador reconectar uma conta perfeitamente saudável por causa de um estoque
+ * abaixo do reservado.
+ */
+const CODIGOS_UPDATE_STOCK_OUTROS = [
+  // --- o piso reservado: QUATRO grafias, duas famílias de código ------------
+  'error_auth', // "Total stock must be more than reserved stock." / "Stock should be larger…"
+  'error.param', // ⚠️ com PONTO — "Can not update item with stock less than reserved stock"
+  'error_param', // "…less than reserve stock" (a segunda grafia de "reserved")
+  // --- bloqueios de promoção (regime diferente do piso) --------------------
+  'error_cannt_edit_stock_in_promotion',
+  'error_promotion_cantnot_update_stock',
+  'error_model_update_stock_model_in_promotion',
+  'error_in_item_promotion_nomodel_to_models',
+  // --- forma da loja / do item ---------------------------------------------
+  'error_wms_shop_block_upate_stock',
+  'error_busi_cannot_edit_vsku',
+  'error_seller_under_penalty',
+  'error_perm_non_admin',
+  'error_item_uneditable',
+  'error_edit_item_stock_for_item_has_model',
+  // --- modo férias ----------------------------------------------------------
+  'error_holiday_mode_change_stock',
+  // --- falha por modelo -----------------------------------------------------
+  'error_busi_update_stock_failed',
+  // --- âncora perdida (a listagem sumiu ou não é nossa) ---------------------
+  'error_item_not_belong_shop',
+  'error_item_not_found',
+  'error_param_shop_id_not_found',
+  'error_nil_shopid_or_itemid',
+  'error_shop',
+  // --- estrutura de armazém -------------------------------------------------
+  'error_busi',
+  // --- o único código prefixado que a documentação mostra na forma do fio ---
+  'product.cnsc_shop_block',
+] as const;
+
+describe('os códigos do `update_stock`, verbatim', () => {
+  it.each(CODIGOS_UPDATE_STOCK_OUTROS)(
+    'classifica %s como `other` numa chamada de negócio — nenhum deles entra na escada de retentativa',
+    (code) => {
+      expect(classifyShopeeError(code, SHOPEE_SURFACE.business)).toBe(SHOPEE_ERROR_KIND.other);
+    },
+  );
+
+  it('⛔ ANTI-VACUIDADE — a mesma tabela ainda devolve os outros quatro veredictos', () => {
+    // ⚠️ Sem este par, um `classifyShopeeError` que devolvesse a constante
+    // `'other'` passaria por TODAS as linhas acima. O que a lista pina é que
+    // esta página específica não tem nada na escada, não que a escada sumiu.
+    expect(classifyShopeeError('error_limit', SHOPEE_SURFACE.business)).toBe('daily');
+    expect(classifyShopeeError('error_rate_limit', SHOPEE_SURFACE.business)).toBe('burst');
+    expect(classifyShopeeError('error_server', SHOPEE_SURFACE.business)).toBe('transient');
+    expect(classifyShopeeError('error_network', SHOPEE_SURFACE.business)).toBe('transient');
+    expect(classifyShopeeError('shop_banned', SHOPEE_SURFACE.business)).toBe('reauth');
+    expect(classifyShopeeError('shop_no_linked', SHOPEE_SURFACE.business)).toBe('reauth');
+  });
+
+  it('`error_inner` e `error_system_busy` ficam FORA da tabela de propósito: no update_stock `error_inner` também quer dizer "Invalid stock location ID", um defeito PERMANENTE por item', () => {
+    // ⚠️ C-i. Os dois estão na lista desta página com texto de erro interno
+    // ("System error, please try again later"), o que convidaria a um
+    // `transient` global. Mas `KIND_BY_CODE` vale para TODA operação do
+    // monorepo, e aqui `error_inner` carrega uma segunda leitura documentada —
+    // `Invalid stock location ID` — que nenhuma retentativa conserta. Um código
+    // cuja classe depende da MENSAGEM não pode receber um `kind` global: quem
+    // desambigua é o remetente, lendo a mensagem, e não esta tabela.
+    expect(classifyShopeeError('error_inner', SHOPEE_SURFACE.business)).toBe(
+      SHOPEE_ERROR_KIND.other,
+    );
+    expect(classifyShopeeError('error_system_busy', SHOPEE_SURFACE.business)).toBe(
+      SHOPEE_ERROR_KIND.other,
+    );
+    // ⚠️ E nas duas superfícies, porque a tabela não tem portão de superfície
+    // para eles — só `error_auth` tem.
+    expect(classifyShopeeError('error_inner', SHOPEE_SURFACE.auth)).toBe('other');
+    expect(classifyShopeeError('error_system_busy', SHOPEE_SURFACE.auth)).toBe('other');
+    // O near-miss do mesmo raciocínio: `error_server` ESTÁ na tabela e continua
+    // `transient`, embora esta página também o use para uma recusa permanente
+    // ("The current item belong to the full FBS shop…"). A desambiguação por
+    // mensagem é do remetente nos DOIS casos.
+    expect(classifyShopeeError('error_server', SHOPEE_SURFACE.business)).toBe('transient');
+  });
+
+  it('`error.param` — o corte de prefixo ACONTECE e devolve `param`; o que segura o veredicto é a tabela não ter essa chave', () => {
+    // ⚠️ A mecânica exata, pinada como ela é e não como seria confortável.
+    // `shopeeCodeSemPrefixoDeModulo` casa `error.` como módulo e devolve
+    // `param` — ele não sabe que esta grafia é um typo da Shopee. O que impede
+    // a reclassificação é que a busca da string INTEIRA vem primeiro (e erra) e
+    // `param` não é chave de `KIND_BY_CODE` (e erra também). Se alguém um dia
+    // acrescentar `param:` à tabela, este teste fica vermelho — que é
+    // exatamente o dia em que `error.param` viraria outro veredicto sem
+    // ninguém pedir.
+    expect(shopeeCodeSemPrefixoDeModulo('error.param')).toBe('param');
+    expect(classifyShopeeError('error.param', SHOPEE_SURFACE.business)).toBe('other');
+    // ⛔ QUASE-IGUAL: a grafia de underscore é uma chave de verdade, e as duas
+    // chegam no MESMO veredicto por caminhos diferentes.
+    expect(shopeeCodeSemPrefixoDeModulo('error_param')).toBeNull();
+    expect(classifyShopeeError('error_param', SHOPEE_SURFACE.business)).toBe('other');
+    // E o código lançado continua VERBATIM nas duas.
+    const comPonto = shopeeErrorFromEnvelope(envelope('error.param'), {
+      path: '/api/v2/product/update_stock',
+      httpStatus: 200,
+      surface: SHOPEE_SURFACE.business,
+    });
+    expect(comPonto.code).toBe('error.param');
+    expect(comPonto.code).not.toBe('param');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*      `ShopeeApiPartialError` — a subclasse e a ORDEM da escada que a lê      */
+/* -------------------------------------------------------------------------- */
+
+/** Um braço de escada: o nome que ele responde e o `instanceof` que ele testa. */
+type BracoDeEscada = readonly [nome: string, casa: (err: unknown) => boolean];
+
+/**
+ * Anda a escada EM ORDEM e devolve o nome do primeiro braço que casa — a forma
+ * exata que um `if (err instanceof …) … else if …` tem, escrita de um jeito em
+ * que a ORDEM é um dado e pode ser asserida.
+ */
+function primeiroBraco(escada: readonly BracoDeEscada[], err: unknown): string {
+  for (const [nome, casa] of escada) if (casa(err)) return nome;
+  return 'rethrow';
+}
+
+/** A ordem declarada: limite → reauth → parcial → base. */
+const ESCADA_CORRETA: readonly BracoDeEscada[] = [
+  ['limite', (err) => err instanceof ShopeeRateLimitError],
+  ['reauth', (err) => err instanceof ShopeeReauthRequiredError],
+  ['parcial', (err) => err instanceof ShopeeApiPartialError],
+  ['base', (err) => err instanceof ShopeeApiError],
+];
+
+/** A mesma escada com a classe BASE no topo — o erro que engole as outras três. */
+const ESCADA_INVERTIDA: readonly BracoDeEscada[] = [
+  ['base', (err) => err instanceof ShopeeApiError],
+  ['limite', (err) => err instanceof ShopeeRateLimitError],
+  ['reauth', (err) => err instanceof ShopeeReauthRequiredError],
+  ['parcial', (err) => err instanceof ShopeeApiPartialError],
+];
+
+const initBase = (code: string, kind: ShopeeErrorKind = SHOPEE_ERROR_KIND.other) => ({
+  code,
+  kind,
+  httpStatus: 200,
+  path: '/api/v2/product/update_stock',
+});
+
+describe('ShopeeApiPartialError', () => {
+  it('é um ShopeeApiError e NÃO é um ShopeeRateLimitError', () => {
+    const err = new ShopeeApiPartialError('x', {
+      ...initBase('error_busi_update_stock_failed'),
+      parsed: { response: { failure_list: [], success_list: [] } },
+    });
+    expect(err).toBeInstanceOf(ShopeeApiError);
+    expect(err).toBeInstanceOf(ShopeeError);
+    expect(err).not.toBeInstanceOf(ShopeeRateLimitError);
+    expect(err).not.toBeInstanceOf(ShopeeReauthRequiredError);
+    expect(err).not.toBeInstanceOf(ShopeeSchemaError);
+    expect(err.name).toBe('ShopeeApiPartialError');
+    expect(err.parsed).toEqual({ response: { failure_list: [], success_list: [] } });
+    // Os carregadores opcionais seguem o padrão da base: `null`, nunca undefined.
+    expect(err.requestId).toBeNull();
+    expect(err.warning).toBeNull();
+  });
+
+  it('carrega exatamente a classificação que a base carregaria para o mesmo código', () => {
+    // ⚠️ A subclasse não reclassifica nada. Ela é construída a partir do erro
+    // que `shopeeErrorFromEnvelope` já montou, então `code`, `kind` e a mensagem
+    // são os MESMOS — um segundo formatador aqui poderia divergir, e a única
+    // coisa que não pode diferir entre as duas classes é como o mesmo envelope
+    // se lê.
+    const ctx = {
+      path: '/api/v2/product/update_stock',
+      httpStatus: 200,
+      surface: SHOPEE_SURFACE.business,
+    };
+    const base = shopeeErrorFromEnvelope(envelope('error_busi_update_stock_failed'), ctx);
+    const parcial = new ShopeeApiPartialError(base.message, {
+      code: base.code,
+      kind: base.kind,
+      httpStatus: base.httpStatus,
+      path: base.path,
+      requestId: base.requestId,
+      warning: base.warning,
+      parsed: { ok: true },
+    });
+    expect(parcial.kind).toBe(classifyShopeeError(base.code, SHOPEE_SURFACE.business));
+    expect(parcial.kind).toBe(base.kind);
+    expect(parcial.code).toBe(base.code);
+    expect(parcial.message).toBe(base.message);
+  });
+
+  it('PAR — na ordem declarada (limite → reauth → parcial → base) cada erro cai no SEU braço', () => {
+    const parcial = new ShopeeApiPartialError('x', {
+      ...initBase('error_busi_update_stock_failed'),
+      parsed: {},
+    });
+    const limite = new ShopeeRateLimitError('x', {
+      ...initBase('error_limit'),
+      kind: SHOPEE_ERROR_KIND.daily,
+    });
+    const reauth = new ShopeeReauthRequiredError('x', {
+      ...initBase('shop_banned', SHOPEE_ERROR_KIND.reauth),
+    });
+    const base = new ShopeeApiError('x', initBase('error_param'));
+
+    expect(primeiroBraco(ESCADA_CORRETA, limite)).toBe('limite');
+    expect(primeiroBraco(ESCADA_CORRETA, reauth)).toBe('reauth');
+    expect(primeiroBraco(ESCADA_CORRETA, parcial)).toBe('parcial');
+    expect(primeiroBraco(ESCADA_CORRETA, base)).toBe('base');
+    // Quem não é dessa família nenhuma continua subindo.
+    expect(
+      primeiroBraco(
+        ESCADA_CORRETA,
+        new ShopeeSchemaError('x', { httpStatus: 200, path: '/api/v2/product/update_stock' }),
+      ),
+    ).toBe('rethrow');
+  });
+
+  it('⛔ QUASE-IGUAL — com a classe BASE no topo, a escada engole as TRÊS subclasses de uma vez', () => {
+    // ⚠️ É a lição que `apps/shopee` já escreveu em três lugares: as quatro
+    // classes estão numa cadeia `instanceof` só, e um `instanceof ShopeeApiError`
+    // acima de qualquer braço específico casa primeiro. A subclasse nova é a
+    // quarta ponta dessa armadilha — um limite de burst lido como "recusa
+    // parcial" retentaria contra uma cota que só abre às 00:00 (UTC+8).
+    const parcial = new ShopeeApiPartialError('x', {
+      ...initBase('error_busi_update_stock_failed'),
+      parsed: {},
+    });
+    const limite = new ShopeeRateLimitError('x', {
+      ...initBase('error_rate_limit'),
+      kind: SHOPEE_ERROR_KIND.burst,
+    });
+    const reauth = new ShopeeReauthRequiredError('x', {
+      ...initBase('shop_banned', SHOPEE_ERROR_KIND.reauth),
+    });
+
+    expect(primeiroBraco(ESCADA_INVERTIDA, parcial)).toBe('base');
+    expect(primeiroBraco(ESCADA_INVERTIDA, limite)).toBe('base');
+    expect(primeiroBraco(ESCADA_INVERTIDA, reauth)).toBe('base');
+    // O contraste é o ponto: os MESMOS três erros, a mesma escada, só a ordem
+    // diferente.
+    expect(primeiroBraco(ESCADA_CORRETA, parcial)).not.toBe('base');
+    expect(primeiroBraco(ESCADA_CORRETA, limite)).not.toBe('base');
+    expect(primeiroBraco(ESCADA_CORRETA, reauth)).not.toBe('base');
+  });
+});
+
+describe('a classification key never carries a module prefix', () => {
+  // ⚠️ Esta é a PREMISSA que torna a ordem das duas buscas de
+  // `classifyShopeeError` (string cheia primeiro, depois a sem prefixo)
+  // inobservável hoje: nenhuma chave da tabela tem ponto, então para um código
+  // prefixado a primeira busca sempre erra e para um código nu a segunda nunca
+  // acontece. Trocar a ordem não muda nada — e é exatamente por isso que uma
+  // entrada com ponto, no dia em que alguém a acrescentar, tem de doer AQUI.
+  const FONTE_ERROS = readFileSync(new URL('../src/errors.ts', import.meta.url), 'utf8');
+
+  const tabela = (() => {
+    const inicio = FONTE_ERROS.indexOf('const KIND_BY_CODE = new Map');
+    const fim = FONTE_ERROS.indexOf('satisfies Record<string, ShopeeErrorKind>', inicio);
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    return FONTE_ERROS.slice(inicio, fim);
+  })();
+
+  const chaves = [...tabela.matchAll(/^\s{4}([^\s:]+):\s*SHOPEE_ERROR_KIND\./gm)].map((m) => m[1]!);
+
+  it('ÂNCORA — a fatia lida é mesmo a tabela, com as chaves que ela tem hoje', () => {
+    // Sem isto, um `indexOf` que deslizasse deixaria a asserção abaixo passar
+    // sobre uma lista VAZIA.
+    expect(chaves).toContain('refresh_token_expired');
+    expect(chaves).toContain('error_limit');
+    expect(chaves.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it('nenhuma chave da tabela tem `.` — e por isso as duas grafias concordam', () => {
+    expect(chaves.filter((chave) => chave.includes('.'))).toEqual([]);
+    for (const chave of chaves) {
+      expect(classifyShopeeError(`product.${chave}`, SHOPEE_SURFACE.business)).toBe(
+        classifyShopeeError(chave, SHOPEE_SURFACE.business),
+      );
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        `providerMessage` — a frase do provedor, VERBATIM (passo 14)          */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeApiError.providerMessage', () => {
+  const ctxNegocio = {
+    path: '/api/v2/order/upload_invoice_doc',
+    httpStatus: 200,
+    surface: SHOPEE_SURFACE.business,
+  } as const;
+
+  it('PAR — é o `message` do envelope byte a byte: espaços, TAB e pontuação preservados', () => {
+    const frase = '  Wrong parameters, detail: Invalid NF-e.\t';
+    const err = shopeeErrorFromEnvelope(envelope('error_param', { message: frase }), ctxNegocio);
+    expect(err.providerMessage).toBe(frase);
+    // ⛔ QUASE-IGUAL: o `message` FORMATADO não é a frase — ele carrega o
+    // caminho e o código, que já contêm `upload`, `invoice` e `error`.
+    expect(err.message).not.toBe(frase);
+    expect(err.message).toContain(ctxNegocio.path);
+  });
+
+  it('⛔ QUASE-IGUAL — `null` continua `null` e `""` continua `""`: nenhuma dobra entre ausência e vazio', () => {
+    const semFrase = shopeeErrorFromEnvelope(envelope('error_param'), ctxNegocio);
+    const vazia = shopeeErrorFromEnvelope(envelope('error_param', { message: '' }), ctxNegocio);
+    expect(semFrase.providerMessage).toBeNull();
+    expect(vazia.providerMessage).toBe('');
+  });
+
+  it('viaja nas TRÊS classes que o envelope produz — reauth, limite e a base', () => {
+    const frase = 'frase do provedor';
+    const reauth = shopeeErrorFromEnvelope(envelope('shop_access_expired', { message: frase }), {
+      ...ctxNegocio,
+      surface: SHOPEE_SURFACE.auth,
+    });
+    const limite = shopeeErrorFromEnvelope(
+      envelope('error_rate_limit', { message: frase }),
+      ctxNegocio,
+    );
+    const base = shopeeErrorFromEnvelope(envelope('error_server', { message: frase }), ctxNegocio);
+
+    expect(reauth).toBeInstanceOf(ShopeeReauthRequiredError);
+    expect(limite).toBeInstanceOf(ShopeeRateLimitError);
+    expect(base).not.toBeInstanceOf(ShopeeRateLimitError);
+    for (const err of [reauth, limite, base]) expect(err.providerMessage).toBe(frase);
+  });
+
+  it('omitido no init é `null` (nunca `undefined`) — e cada construção existente continua compilando sem ele', () => {
+    const err = new ShopeeApiError('x', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/p',
+    });
+    expect(err.providerMessage).toBeNull();
+    const parcial = new ShopeeApiPartialError('x', {
+      code: 'error_param',
+      kind: SHOPEE_ERROR_KIND.other,
+      httpStatus: 200,
+      path: '/p',
+      providerMessage: 'File error.',
+      parsed: {},
+    });
+    expect(parcial.providerMessage).toBe('File error.');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*       `ShopeeArquivoVazioError` — o 2xx vazio de um download (passo 15)       */
+/* -------------------------------------------------------------------------- */
+
+describe('ShopeeArquivoVazioError', () => {
+  const init = { httpStatus: 200, path: '/api/v2/logistics/download_shipping_document' } as const;
+
+  it('é um ShopeeSchemaError — todo braço `instanceof ShopeeSchemaError` existente continua pegando', () => {
+    // ⚠️ SUBCLASSE, não irmã: o 502 do `respond.ts` do app e o `isShopeeError`
+    // (que casa `ShopeeError`) pegam este erro sem edição nenhuma.
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).toBeInstanceOf(ShopeeArquivoVazioError);
+    expect(err).toBeInstanceOf(ShopeeSchemaError);
+    expect(err).toBeInstanceOf(ShopeeError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('ShopeeArquivoVazioError');
+    expect(err.httpStatus).toBe(200);
+    expect(err.path).toBe(init.path);
+    expect(err.campos).toEqual([]);
+  });
+
+  it('⛔ QUASE-IGUAL — fica FORA do ramo ShopeeApiError: não houve envelope, então não há código', () => {
+    const err = new ShopeeArquivoVazioError('x', init);
+    expect(err).not.toBeInstanceOf(ShopeeApiError);
+    expect(primeiroBraco(ESCADA_CORRETA, err)).toBe('rethrow');
+    // E o inverso: um ShopeeSchemaError comum NÃO é um arquivo vazio — o fluxo
+    // da etiqueta pode estreitar o vazio para "tente de novo" sem pegar os outros.
+    expect(new ShopeeSchemaError('x', init)).not.toBeInstanceOf(ShopeeArquivoVazioError);
+  });
+});
+
+// Review 1 of step 15, R5-4: the ONE code fold. `api.ts`'s batch reader and the
+// app's `codigoCanonicoShopee` both call it, so these pairs pin every reader.
+describe('shopeeCodigoCanonico — a ÚNICA dobra de código', () => {
+  it.each<[string, string, string]>([
+    [
+      'o espaço À ESQUERDA da página do ship',
+      ' logistics.package_already_shipped',
+      'package_already_shipped',
+    ],
+    ['o TAB À DIREITA da página da NF-e', 'order.upload_invoice_error\t', 'upload_invoice_error'],
+    ['o código do lote, com e sem módulo', 'common.batch_api_all_failed', 'batch_api_all_failed'],
+    ['sem módulo nenhum, aparado', ' batch_api_all_failed\t', 'batch_api_all_failed'],
+    ['o código seguido de branco', 'logistics.error_param\t', 'error_param'],
+    ['um branco LOGO DEPOIS do módulo (o 2º trim)', 'logistics.\terror_param', 'error_param'],
+  ])('PAR — %s', (_rotulo, bruto, canonico) => {
+    expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
+  });
+
+  it.each<[string, string, string]>([
+    ['DOIS segmentos: só UM sai (nunca um corte guloso)', 'a.b.error_limit', 'b.error_limit'],
+    ['um sufixo MAIOR continua maior', 'common.batch_api_all_failed_x', 'batch_api_all_failed_x'],
+    ['a CAIXA fica', 'logistics.Error_Param', 'Error_Param'],
+    ['um módulo com maiúscula não é módulo', 'Logistics.error_param', 'Logistics.error_param'],
+    ['o prefixo sozinho é o código inteiro', 'product.', 'product.'],
+  ])('QUASE-MISS — %s', (_rotulo, bruto, canonico) => {
+    expect(shopeeCodigoCanonico(bruto)).toBe(canonico);
+  });
+
+  it('QUASE-MISS por valor: as dobras dos quase-iguais NÃO coincidem com a do código', () => {
+    const alvo = shopeeCodigoCanonico('common.batch_api_all_failed');
+    expect(shopeeCodigoCanonico('logistics.common.batch_api_all_failed')).not.toBe(alvo);
+    expect(shopeeCodigoCanonico('common.batch_api_all_failed_x')).not.toBe(alvo);
+    expect(shopeeCodigoCanonico('Common.batch_api_all_failed')).not.toBe(alvo);
   });
 });

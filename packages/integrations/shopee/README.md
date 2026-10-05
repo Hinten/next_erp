@@ -6,14 +6,88 @@ attempts, the push receiver, the sweeps — lives in `apps/shopee`.
 
 What ships here:
 
-| Module      | Holds                                                                                      |
-| ----------- | ------------------------------------------------------------------------------------------ |
-| `sign.ts`   | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
-| `hosts.ts`  | The production and sandbox API + consent hosts, and the env-override resolver              |
-| `oauth.ts`  | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
-| `api.ts`    | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
-| `types.ts`  | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
-| `errors.ts` | The typed error hierarchy and the classification of Shopee's `error` code strings          |
+| Module         | Holds                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `sign.ts`      | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
+| `hosts.ts`     | The production and sandbox API + consent hosts, and the env-override resolver              |
+| `oauth.ts`     | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
+| `api.ts`       | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
+| `types.ts`     | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
+| `errors.ts`    | The typed error hierarchy and the classification of Shopee's `error` code strings          |
+| `logistica.ts` | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
+| `arquivo.ts`   | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
+
+## Label operations (step 15)
+
+Seven `v2.logistics.*` operations on the SHOP client arrange a shipment and
+fetch its label: `getShippingParameter`, `shipOrder` and `getTrackingNumber`;
+the batch pages `getShippingDocumentParameter`, `createShippingDocument` and
+`getShippingDocumentResult` (1…50 packages each); and
+`downloadShippingDocument`, which answers BYTES. Their guards run BEFORE the
+access token is asked for and throw `ShopeeConfigError` naming the field, the
+position and a length — never a value.
+
+- ⚠️ **`shipOrder` is NOT idempotent and is never retried here.** A transport
+  failure after it is an UNKNOWN outcome; the caller re-reads the package
+  before anything is sent again.
+- **`package_number` is omitted when absent, never `""`**, on every operation.
+  This package sends it whenever it is given: sending it only on a SPLIT
+  order's `ship_order` is the app's rule (`SHOPEE_SHIP_ORDER_PACOTE`), because
+  Shopee refuses it in both directions and only the app knows how many
+  packages the order has.
+- **A dropoff with nothing to fill is sent as `"dropoff": {}`** — never `null`,
+  never absent, as the page requires (`SHOPEE_SHIP_ORDER_DROPOFF_VAZIO`, probe
+  P3; `'nulos-explicitos'` is the legacy body, never measured). Undefined
+  sub-fields are dropped.
+- **The bytes mode, `shopeeCallArquivo`** (`call.ts`), shares the request half
+  with `shopeeCall` and reads `arrayBuffer()`, never `text()`. The FIRST
+  significant byte decides, never the status or the content type: a body that
+  starts with `{` or `[` (after an optional BOM and JSON whitespace) takes the
+  envelope verdict, and a SUCCESS envelope is a failure too — it is never a
+  label. An empty 2xx is `ShopeeArquivoVazioError`. It logs the path, status,
+  length and content type of a refused body, never a byte. What format the
+  bytes are is `classificarArquivoDeEnvio`'s answer (`pdf` / `zip` / `zpl`,
+  each with an exact, parameter-free content type, or `desconhecido`, which the
+  caller refuses).
+- **`avisoEmLista`.** The three batch pages send `warning` as an ARRAY of rows,
+  while the envelope's `warning` is a string. The flag lets the envelope read
+  an array as a COUNT sentence (`"<n> aviso(s) por pedido/pacote"`), only after
+  the strict read failed, so `onWarning` and `ShopeeApiError.warning` stay
+  `string | null` and never carry a row (an `order_sn`). The operation schema
+  still reads the rows.
+- **`ShopeeLoteLogistico<Row>`** is what the three batch pages answer, the same
+  projection for a success and for a `common.batch_api_all_failed` that
+  carried at least one READABLE row (`todasFalharam: true`) — that one code,
+  one module segment stripped, is the only failure read as a value; everything
+  else rethrows. The verdict is per row (`falhaDaLinha`: a non-empty
+  `fail_error`, code verbatim). Rows arrive in Shopee's order: reconcile them
+  by `(order_sn, package_number)`, never by position, and a FAILED row carries
+  no `package_number` at all.
+
+## Package search (step 15b)
+
+One more operation on the SHOP client, `searchPackageList` — ONE page of the
+packages a shop has not shipped yet (`v2.order.search_package_list`, a POST
+with the filters in a JSON body). It is an order-module path serving the
+arrange flow, so its path, filter enums (`SHOPEE_PACKAGE_STATUS_FILTRO`,
+`SHOPEE_FULFILLMENT_TYPE_FILTRO`, `SHOPEE_ORDER_TYPE_FILTRO`,
+`SHOPEE_PACKAGE_SORT`), request shape and guard live in `logistica.ts`; it
+lists and never arranges.
+
+- **The three filters Shopee defaults are always SENT** (`package_status`,
+  `fulfillment_type`, `invoice_pending` — `false` included): what
+  `invoice_pending: false` filters is register 222, readable only if we know
+  exactly what went out.
+- **It does NOT auto-page.** Terminate on `pagination.more === false`, never on a
+  row count and never on the cursor (`next_cursor` is `""` when `more` is
+  false). The `cursor` key is ABSENT on page 1; `''` is refused, and a cursor is
+  sent back verbatim.
+- **An empty channel list is refused** — it may read as "no channel filter";
+  omit the key instead. The guard runs before the access token is asked for and
+  names the field, a position or a type, never a value.
+- **A row is a pointer, not a verdict**: it carries no `fulfillment_status` and
+  no `invoice_pending`, and ToProcess mixes LOGISTICS_READY with
+  LOGISTICS_PICKUP_RETRY. Confirm with `getPackageDetail` before `shipOrder`.
 
 ## What it deliberately is not
 

@@ -13,7 +13,6 @@ describe('produtoSchema', () => {
       ofereceFreteGratis: false,
       permiteVendaSemEstoque: false,
       integracoesComProduto: [],
-      marketplace: [],
     });
   });
 
@@ -100,6 +99,15 @@ describe('produtoSchema', () => {
   it('accepts a precos entry at or above R$ 0,01', () => {
     const parsed = produtoSchema.parse({ nome: 'X', precos: { listaA: { valor: 0.01 } } });
     expect(parsed.precos).toEqual({ listaA: { valor: 0.01 } });
+  });
+
+  it('rejects unknown properties inside a price entry', () => {
+    expect(
+      produtoSchema.safeParse({
+        nome: 'X',
+        precos: { listaA: { valor: 10, moeda: 'BRL' } },
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects a precos entry of 0 or below R$ 0,01 (min price)', () => {

@@ -93,9 +93,32 @@ describe('GET /api/nfe/consultar', () => {
     expect(res.status).toBe(401);
   });
 
-  it('400 on a malformed chave (not 44 digits)', async () => {
+  it('400 on a malformed chave (not 44 characters)', async () => {
     const res = await GET(req('123'));
     expect(res.status).toBe(400);
+  });
+
+  it('accepts an ALPHANUMERIC chave and slices the emit CNPJ out of it', async () => {
+    // Positions 6–17 are the emitente CNPJ, which RFB IN 2.229/2024 allows to
+    // be alphanumeric; `CHAVE_NFE_REGEX` is that shape. The cert lookup still
+    // reads `slice(6, 20)` — the whole 14-character CNPJ, DVs included.
+    const alfa = `352605${'12ABC34501DE'}${CHAVE.slice(18)}`;
+    expect(alfa).toHaveLength(44);
+    const res = await GET(req(alfa));
+    expect(res.status).toBe(200);
+    expect(vi.mocked(resolveFilialRuntimeByCnpj)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      alfa.slice(6, 20),
+    );
+  });
+
+  it('⚠️ NEAR-MISS: 400 for a letter OUTSIDE positions 6–17', async () => {
+    // The old `^\d{44}$` and the shared constant disagree only inside that
+    // window; everywhere else the shared one is strictly NARROWER, which is
+    // what makes the swap a drop-in rather than a loosening.
+    expect((await GET(req(`${CHAVE.slice(0, 43)}A`))).status).toBe(400);
+    expect((await GET(req(`${CHAVE.slice(0, 5)}A${CHAVE.slice(6)}`))).status).toBe(400);
   });
 
   it('resolves the signing cert from the chave emit CNPJ and returns the flattened protocolo', async () => {

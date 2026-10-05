@@ -5,12 +5,12 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
-import type { IntFrete, IntegracaoFrete, Pedido } from '@delfrance/schemas';
 import type { MercadoLivreClient } from '../mercado-livre/client';
+import type { ShopeeClient } from '../shopee/client';
 import { pedidoCollection } from '../data/pedidoCollection';
-import { dereferenceOuterRef } from '../data/dereferenceOuterRef';
 import { notificationForNFeError, type NotificationShape } from '../nfe/errors';
 import { ensureNfeAprovada, printDanfeForCheckout, type CheckoutDanfeFormat } from './nfeFlow';
+import { resolverIntFrete } from './etiqueta/intFrete';
 import { emitirOuImprimirEtiqueta } from './etiqueta/registry';
 import type { EtiquetaOutcome, EtiquetaProviderUi } from './etiqueta/types';
 import { printJob } from '../print-agent/printJob';
@@ -28,21 +28,10 @@ import { DeadlineExceededError, REPRINT_STAGE_TIMEOUT_MS, withDeadline } from '.
  * "current pedido" and never the frozen checkout snapshot. So a reprint can only
  * ever target its own row's order. Reuses the exact post-save machinery
  * (`ensureNfeAprovada` / `printDanfeForCheckout` / the etiqueta registry + gates)
- * so a reprint behaves identically to the original emit/print.
+ * so a reprint behaves identically to the original emit/print — including the
+ * integração itself, which is `resolverIntFrete`, the one rule all three
+ * etiqueta entry points share (#1523).
  */
-
-/** Resolve the frete integração doc → `{id, tipo, data}` (mirrors postSave). */
-async function resolveIntFrete(
-  db: Firestore,
-  frete: Pedido['freteInicial'],
-): Promise<{ id: string; tipo: IntegracaoFrete; data: IntFrete } | null> {
-  const ref = dereferenceOuterRef(db, frete?.integracaoFreteOuterRef);
-  if (ref === null) return null;
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  const data = snap.data() as IntFrete;
-  return { id: snap.id, tipo: data.tipo, data };
-}
 
 export type ReprintEtiquetaResult =
   | EtiquetaOutcome
@@ -68,13 +57,16 @@ export async function reprintCheckoutEtiqueta(args: {
   freightClient: FreightHttpClient | null;
   nfeClient: NFeHttpClient | null;
   mercadoLivreClient: MercadoLivreClient | null;
+  /** Required like the provider dep it feeds — a screen must say which client it threads. */
+  shopeeClient: ShopeeClient | null;
   formato: 'pdf' | 'zpl2';
   ui: EtiquetaProviderUi;
   printJobFn?: typeof printJob;
   /** Per-stage deadline; defaults to {@link REPRINT_STAGE_TIMEOUT_MS}. */
   timeoutMs?: number;
 }): Promise<ReprintEtiquetaResult> {
-  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, formato, ui } = args;
+  const { db, pedidoId, freightClient, nfeClient, mercadoLivreClient, shopeeClient, formato, ui } =
+    args;
   const timeoutMs = args.timeoutMs ?? REPRINT_STAGE_TIMEOUT_MS;
 
   // Every await here is bounded and NAMED. Before this, a stall in any one of
@@ -93,19 +85,31 @@ export async function reprintCheckoutEtiqueta(args: {
 
     const intFrete = await withDeadline(
       'resolver a integração de frete',
-      resolveIntFrete(db, frete),
+      resolverIntFrete(db, frete),
       timeoutMs,
     );
     if (intFrete === null) return { status: 'no-integration' };
 
     // ⚠️ NOT bounded, for two independent reasons — either alone is sufficient.
     // (1) The registry can legitimately await the OPERATOR: the already-posted
-    // risk confirm and the ME buy modal both block on a human, and a deadline
-    // would cancel a dialog someone is reading. (2) It reaches the side effect —
-    // `freightClient.imprimir` prints, and `comprarEtiqueta` BUYS a label. Every
-    // bounded stage in this file sits strictly before any side effect, which is
-    // what makes "timeout, then re-click" safe; a deadline past that point frees
-    // the mutex after the POST and the re-click buys a second label.
+    // risk confirm, the ME buy modal and the Shopee pickup/drop-off question
+    // (`ui.escolherEnvio`) all block on a human, and a deadline would cancel a
+    // dialog someone is reading. (2) It reaches the side effects —
+    // `comprarEtiqueta` BUYS a label, and the provider opens/prints the label URL
+    // once `freightClient.imprimir` returns it. Every bounded stage in this file
+    // sits strictly before any side effect, which is what makes "timeout, then
+    // re-click" safe; a deadline around the whole registry would free the mutex
+    // after the buy POST and the re-click would buy a second label.
+    //
+    // What IS bounded inside it (#1094) is each FREIGHT transport call on its own
+    // terms: `imprimir` only FETCHES the URL (a read), so it gives up at 60 s
+    // before anything opens; `comprar` waits past the platform's own request
+    // ceiling and then reports "may still be in progress", never a plain failure.
+    // The Shopee provider bounds its OWN calls (`SHOPEE_ETIQUETA_LIMITES` in
+    // `etiqueta/providers/shopee.ts`: machine time, dialogs excluded) — safe
+    // there because its route is resumable and never ships a package twice.
+    // ⚠️ The Mercado Livre client and the print agent this registry also reaches
+    // are NOT bounded yet (#1678) — a stall there still spins until a reload.
     return await emitirOuImprimirEtiqueta({
       db,
       pedido,
@@ -113,7 +117,13 @@ export async function reprintCheckoutEtiqueta(args: {
       frete,
       intFrete,
       formato,
-      deps: { freightClient, nfeClient, mercadoLivreClient, printJob: args.printJobFn ?? printJob },
+      deps: {
+        freightClient,
+        nfeClient,
+        mercadoLivreClient,
+        shopeeClient,
+        printJob: args.printJobFn ?? printJob,
+      },
       ui,
     });
   } catch (err) {
@@ -161,8 +171,9 @@ export async function reprintCheckoutDanfe(args: {
     // much: this button shares `usePrintInFlight` with that one, and BOTH render
     // `loading={printInFlight.inFlight}` — so a stall here spins both buttons
     // and looks identical to the failure this module exists to eliminate.
-    // `ensureNfeAprovada` wraps an unbounded `getDocs` plus `client.emitir`, and
-    // the NF-e HTTP client sends no `AbortSignal` either.
+    // `ensureNfeAprovada` wraps an unbounded `getDocs` plus `client.emitir`, whose
+    // own transport deadline (#1094) is the platform ceiling + 60 s — far past
+    // this stage's budget.
     const nfe = await withDeadline(
       'carregar a NF-e',
       ensureNfeAprovada(db, nfeClient, pedidoId),
@@ -178,14 +189,18 @@ export async function reprintCheckoutDanfe(args: {
     // stage sits BEFORE any side effect, so "timeout, then the operator
     // re-clicks" cannot double-print. This call IS the side effect — a deadline
     // here would free the mutex after the job reached the print agent, and the
-    // re-click would print a second copy. The same trap applies to
-    // `freightClient.imprimir` on the etiqueta side, and to any future attempt
-    // to push cancellation down into the transports: moving the line past a
-    // side effect silently converts a hang into a duplicate.
+    // re-click would print a second copy. #1094 pushed deadlines down into the
+    // transports WITHOUT moving that line: the DANFE download inside this call is
+    // bounded, but it resolves before `printJob` runs, so a timed-out download
+    // printed nothing. A deadline placed past a side effect silently converts a
+    // hang into a duplicate.
     //
-    // (`ensureNfeAprovada` is safe to bound despite calling `emitir` because the
-    // server dedups — it returns the existing NF-e with `reused: true` rather
-    // than emitting a second one.)
+    // (`ensureNfeAprovada` is bounded above although it calls `emitir`: the server
+    // dedups a SEQUENTIAL repeat — the existing NF-e comes back `reused: true`.
+    // ⚠️ It does NOT dedup a repeat that overlaps an emission still inside its
+    // SOAP call (#1675), and this stage's 30 s is shorter than an emission can
+    // take, so a re-click after this timeout can overlap one. Pre-existing; the
+    // server-side fix is #1675.)
     const outcome = await printDanfeForCheckout(
       nfeClient,
       pedidoId,

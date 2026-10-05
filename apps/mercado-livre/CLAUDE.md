@@ -165,10 +165,9 @@ The per-surface notes below stay the authority on behaviour.
   buyer record says `role: 'comprador'` whether it sits at the pair's bare `comprador`
   document or an additional mint's `comprador-<mlUserId>`, so the records alone cannot
   tell "the new buyer landed beside the old one" from "it landed on top of it" from "it
-  was never created". Nothing may write `docId` back: the stored schema is
-  `.passthrough()`, so a `docId` reaching `put`/`create` is persisted silently as a
-  record field. `toRecord` is the only producer of a written record and returns a bare
-  record; the doc id is attached AFTER the write.
+  was never created". Nothing may write `docId` back: the stored schema is strict,
+  `toRecord` is the only producer of a written record and returns a bare record, and
+  the doc id is attached only AFTER a read.
   ⚠️ **`credencialRevogada` is also apps/web's CAPABILITY PROBE — never drop it, never
   make it optional.** Before the single-role mint this route ignored its body entirely,
   so a backend older than that answers a `{role}` POST by running the PAIR bootstrap:
@@ -665,9 +664,17 @@ produto shape — and since #1399 the sweep SENDS virtual kits) and
 `status-nao-enviavel` firing on a member **ML itself** paused. So `estoqueSend`
 reads the listing before any bulk PUT and completes the array with the live ids
 and quantities of the variations it is not changing
-(`estoque/variacoesReconciliacao.ts`); the payload's own numbers still ride
-verbatim, so the sweep stays the sole authority on what the stock IS. Only this
-one `kind` pays the extra `GET /items`.
+(`estoque/variacoesReconciliacao.ts`). Attempt zero still uses the payload's own
+numbers verbatim. A real Cloud Tasks retry or pause re-enqueue first refreshes
+those numbers through at most two deterministic BatchGets (#693), with no query,
+scan, depósito read or cache. The sweep carries the exact estoque document ids
+it already joined, including legacy auto-ids, plus explicit `null` locators for
+rows that were absent. A changed depósito skips; a newly participating component
+without a locator, or an ambiguous pre-snapshot task, falls back to the complete
+original stock intent so a bulk never mixes fresh and stale values. This is only
+the quantity-source fallback; the complete live `variations[]` reconciliation
+below still has no fallback. Only the legacy bulk `kind` pays the extra
+`GET /items` needed to preserve the complete live variation list.
 ⚠️ **A planner-side completeness check could NOT have covered this, and that is
 what decided where the fix lives.** A variation existing on ML with no local
 `variacaoMercadoLivre` link produces no child row at all — nothing is skipped,
@@ -1056,6 +1063,25 @@ disposition table only so it acks instead of parking a document per delivery.
 makes it the inert fixture the notification suite keys ~20 tests on
 (`INERT_TOPIC` in `notificacao.test.ts`, pinned by its own guard) — every other
 quiet-looking topic is a handler waiting to happen.
+
+### Per-SKU fiscal data for ML's Faturador (#745)
+
+Every publish ends by registering each SKU with `items/fiscal_information` and
+linking it to its item; `POST /dados-fiscais` re-sends from the stored links.
+Reasoning: `lib/marketplace/anuncios/README.md`. The rules a change must keep:
+
+- ⚠️ **Send what OUR nota says.** The `Imposto` comes from the NF-e's own cascade
+  (`@delfrance/data/admin/imposto`) through the conta's `operacaoOuterRef`, and
+  the per-field operação fallback + cEAN rule from `camposProdutoFiscal` /
+  `gtinFiscal` (`@delfrance/schemas`). A local copy of either is the drift the
+  root `CLAUDE.md` names.
+- ⚠️ **Best-effort toward ML** — it runs last, and no ML refusal fails a publish
+  (a Firestore error or a bug still throws, rule 6); a refusal
+  is `dadosFiscaisEstado: 'erro'` on the SKU's link, a FIELD beside `errors`,
+  which it must never touch (the #781 latch reads those).
+- Simples only (`csosn`); Regime Normal's `tax_rule_id` waits for the NF-e to
+  support CRT 3. A kit is ONE `single` SKU. `origin_type` is derived from the
+  resolved CFOP, never guessed. No operação on the conta ⇒ zero calls.
 
 ## Env
 

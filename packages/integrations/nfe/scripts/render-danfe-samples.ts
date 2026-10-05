@@ -1,5 +1,5 @@
 /**
- * Render DANFE sample PDFs (+ a ZPL) for **manual** review — not a test.
+ * Render DANFE sample PDFs and ZPL for **manual** review — not a test.
  *
  *   pnpm --filter @delfrance/integrations-nfe render:danfe-samples
  *
@@ -17,6 +17,7 @@ import { renderRetrato } from '../src/danfe/pdf/retrato';
 import { renderSimplificado } from '../src/danfe/pdf/simplificado';
 import { renderSimplificadoZpl } from '../src/danfe/zpl2';
 import {
+  PROCNFE_ALFA_FIXTURE,
   PROCNFE_FIXTURE,
   PROCNFE_MAXFIELDS_FIXTURE,
   PROCNFE_MINFIELDS_FIXTURE,
@@ -51,6 +52,11 @@ async function main(): Promise<void> {
   write('paisagem-base.pdf', await renderPaisagem(base));
   write('simplificado-base.pdf', await renderSimplificado(base));
   write('etiqueta-base.zpl', renderSimplificadoZpl(base));
+
+  // NT 2026.004 mixed Code 128 payloads for physical print-and-scan acceptance.
+  const alfa = parseProcNFe(PROCNFE_ALFA_FIXTURE);
+  write('etiqueta-alfa-203.zpl', renderSimplificadoZpl(alfa, { dpi: 203 }));
+  write('etiqueta-alfa-300.zpl', renderSimplificadoZpl(alfa, { dpi: 300 }));
 
   // Simplificado fit edge cases (#93): a maximal B2B label (dest with IE + long
   // values) and a minimal one (CPF emitente, no dest doc/endereço, no infCpl).

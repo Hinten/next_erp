@@ -35,4 +35,5 @@ export {
   validateCpfCnpj,
   formatCPF,
   formatCNPJ,
+  formatCpfCnpj,
 } from './br';

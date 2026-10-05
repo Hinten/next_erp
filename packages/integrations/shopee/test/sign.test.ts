@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
+import { type ShopeeMultipartBody, shopeeCall } from '../src/call';
 import {
   SHOPEE_SIGN_WINDOW_SECONDS,
+  type ShopeeQueryValue,
   merchantBaseString,
   publicBaseString,
   shopBaseString,
@@ -204,6 +207,185 @@ describe('signedQuery', () => {
         call: { class: 'shop', accessToken, shopId: DOC_SHOP_ID },
       }).get('sign');
     expect(call('token-a')).not.toBe(call('token-b'));
+  });
+
+  /* ------------------------------------------------------------------------ */
+  /*            A chave repetida do `item_status` (passo 9)                    */
+  /* ------------------------------------------------------------------------ */
+
+  describe('um valor em ARRAY vira chave REPETIDA', () => {
+    const chamar = (extra: Readonly<Record<string, ShopeeQueryValue>>) =>
+      signedQuery({
+        ...base,
+        path: '/api/v2/product/get_item_list',
+        call: { class: 'shop', accessToken: DOC_ACCESS_TOKEN, shopId: DOC_SHOP_ID },
+        extra,
+      });
+
+    it('S1 — repete a chave uma vez por elemento, na ORDEM dada', () => {
+      // ⚠️ A única frase explícita sobre repetição em todo o corpus da Shopee
+      // está na página do `get_item_list`: "please upload the url like this:
+      // item_status=NORMAL&item_status=BANNED".
+      const qs = chamar({ item_status: ['NORMAL', 'UNLIST'] });
+      expect(qs.getAll('item_status')).toEqual(['NORMAL', 'UNLIST']);
+      // E na string crua, que é o que a Shopee lê.
+      expect(qs.toString()).toContain('item_status=NORMAL&item_status=UNLIST');
+    });
+
+    it('S2 — um array NÃO muda a assinatura (mesmo sign que o escalar)', () => {
+      // ⚠️ FOLD, par IGUAL: a base string não lê `extra`. Uma chamada com
+      // `['NORMAL']` e outra com `'NORMAL'` assinam idêntico.
+      expect(chamar({ item_status: ['NORMAL'] }).get('sign')).toBe(
+        chamar({ item_status: 'NORMAL' }).get('sign'),
+      );
+    });
+
+    it('S3 — ⛔ NEAR-MISS: dois arrays DIFERENTES têm o MESMO sign — a query não é assinada', () => {
+      // O que muda é só a query. Quem "consertar" isso assinando os parâmetros
+      // quebra todas as chamadas de uma vez, e o erro chega como `error_sign`,
+      // que se lê como problema de credencial.
+      const um = chamar({ item_status: ['NORMAL'] });
+      const dois = chamar({ item_status: ['NORMAL', 'UNLIST'] });
+      expect(dois.get('sign')).toBe(um.get('sign'));
+      expect(dois.toString()).not.toBe(um.toString());
+    });
+
+    it('S4 — um array VAZIO não emite chave nenhuma', () => {
+      // ⚠️ Igual a `undefined`: este módulo é um construtor de query e não tem
+      // vocabulário de recusa. Quem recusa uma lista obrigatória vazia é o
+      // guarda de `api.ts`, que sabe que o parâmetro é obrigatório.
+      const qs = chamar({ item_status: [] });
+      expect(qs.has('item_status')).toBe(false);
+      expect(qs.getAll('item_status')).toEqual([]);
+    });
+
+    it('S5 — um escalar continua SUBSTITUINDO: nunca aparece duas vezes', () => {
+      const qs = chamar({ page_size: 100 });
+      expect(qs.getAll('page_size')).toEqual(['100']);
+    });
+
+    it('S6 — números dentro de um array são serializados como escalares', () => {
+      const qs = chamar({ ids: [1, 2] });
+      expect(qs.getAll('ids')).toEqual(['1', '2']);
+      expect(qs.toString()).toContain('ids=1&ids=2');
+    });
+
+    it('S7 — `undefined` continua sendo descartado, com ou sem array por perto', () => {
+      const qs = chamar({ item_status: ['NORMAL'], ausente: undefined });
+      expect(qs.has('ausente')).toBe(false);
+      expect(qs.getAll('item_status')).toEqual(['NORMAL']);
+    });
+
+    it('55 — um array não altera a base string de NENHUMA das três classes', () => {
+      // ⚠️ A prova direta do invariante, classe por classe: `baseStringFor` lê
+      // partner_id, path, timestamp (+ token e id) e NUNCA `extra`.
+      const classes = [
+        { class: 'public' } as const,
+        { class: 'shop', accessToken: DOC_ACCESS_TOKEN, shopId: DOC_SHOP_ID } as const,
+        { class: 'merchant', accessToken: DOC_ACCESS_TOKEN, merchantId: 987 } as const,
+      ];
+      for (const call of classes) {
+        const semArray = signedQuery({ ...base, path: SHOP_INFO_PATH, call });
+        const comArray = signedQuery({
+          ...base,
+          path: SHOP_INFO_PATH,
+          call,
+          extra: { item_status: ['NORMAL', 'UNLIST', 'BANNED'] },
+        });
+        expect(comArray.get('sign')).toBe(semArray.get('sign'));
+        expect(comArray.getAll('item_status')).toHaveLength(3);
+      }
+    });
+  });
+
+  /* ------------------------------------------------------------------------ */
+  /*        O corpo NÃO é assinado — nem o JSON, nem o multipart (passo 11)     */
+  /* ------------------------------------------------------------------------ */
+
+  describe('o corpo multipart não entra na base string', () => {
+    // ⚠️ `sign.ts` não muda no passo 11, e ESTA é a afirmação que o prova. A base
+    // string (`baseStringFor`) lê partner_id, path e timestamp (+ token e id) e
+    // nunca o corpo — mas `signedQuery` sequer RECEBE um corpo, de modo que a
+    // única forma de observar o invariante é pelo transporte, mandando dois
+    // corpos diferentes e comparando os dois `sign`.
+    const UPLOAD_PATH = '/api/v2/media_space/upload_image';
+    const OUTRO_PATH = '/api/v2/media_space/upload_video';
+
+    const corpo = (bytes: readonly number[], filename: string): ShopeeMultipartBody => ({
+      file: {
+        field: 'image',
+        filename,
+        contentType: 'image/png',
+        bytes: new Uint8Array(bytes),
+      },
+    });
+
+    async function assinarUpload(
+      multipart: ShopeeMultipartBody,
+      path = UPLOAD_PATH,
+    ): Promise<string> {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: '',
+              message: null,
+              warning: null,
+              request_id: 'req-sign',
+              response: {},
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      );
+      await shopeeCall(
+        {
+          partnerId: DOC_PARTNER_ID,
+          partnerKey: TEST_PARTNER_KEY,
+          apiHost: 'https://partner.test-stable.shopeemobile.com',
+          fetch: fetchMock,
+          now: () => 1_655_714_431_000,
+        },
+        {
+          method: 'POST',
+          path,
+          call: { class: 'public' },
+          schema: z.object({}).passthrough(),
+          surface: 'business',
+          multipart,
+        },
+      );
+      const assinatura = new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('sign');
+      expect(assinatura).not.toBeNull();
+      return assinatura!;
+    }
+
+    it('T3 — PAIR: dois BYTES diferentes produzem o MESMO sign', async () => {
+      // A assinatura cobre partner_id + path + timestamp e mais nada. Quem
+      // "consertar" isso passando o corpo para a base string quebra TODAS as
+      // chamadas de uma vez, e a Shopee responde `error_sign` — que se lê como
+      // problema de credencial, não como um refactor de ontem.
+      const a = await assinarUpload(corpo([1, 2, 3], 'a.png'));
+      const b = await assinarUpload(corpo([9, 9, 9, 9, 9], 'b.png'));
+      expect(a).toBe(b);
+    });
+
+    it('T4 — ⛔ NEAR-MISS: um PATH diferente produz um sign DIFERENTE', async () => {
+      // Sem este par, o T3 passaria até com uma assinatura calculada sobre
+      // NADA. O path é o que precisa continuar dentro da base string.
+      const a = await assinarUpload(corpo([1, 2, 3], 'a.png'), UPLOAD_PATH);
+      const b = await assinarUpload(corpo([1, 2, 3], 'a.png'), OUTRO_PATH);
+      expect(a).not.toBe(b);
+      expect(a).toBe(
+        signBaseString(
+          publicBaseString({
+            partnerId: DOC_PARTNER_ID,
+            path: UPLOAD_PATH,
+            timestamp: DOC_TIMESTAMP,
+          }),
+          TEST_PARTNER_KEY,
+        ),
+      );
+    });
   });
 
   it('never puts the partner key in the query', () => {

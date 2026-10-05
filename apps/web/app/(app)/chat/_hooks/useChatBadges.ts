@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import type { Conversa } from '@delfrance/schemas';
+import { idFromRef, type Conversa } from '@delfrance/schemas';
 import {
   ESTADO_CONVERSA_EM_RESPOSTA,
   ESTADO_CONVERSA_NAO_RESPONDIDO,
@@ -62,7 +62,7 @@ export function useChatBadges(uid: string | null | undefined): ChatBadges {
   const pendentes = useSnapshot<Conversa>(pendentesQuery);
   const ativas = useSnapshot<Conversa>(ativasQuery);
 
-  const ativasRows = ativas.data ?? [];
+  const ativasRows = useMemo(() => ativas.data ?? [], [ativas.data]);
   const lastMsgs = useQueries({
     queries: ativasRows.map((row) => lastMensagemQueryOptions(row.id, row.data.ultima_modificacao)),
   });
@@ -71,7 +71,15 @@ export function useChatBadges(uid: string | null | undefined): ChatBadges {
     const lastData = lastMsgs.map((q) => q.data as LastMensagem | undefined);
     return {
       pendentes: formatBadgeCount(pendentes.data?.length ?? 0),
-      atendimento: formatBadgeCount(countAwaitingReply(lastData)),
+      atendimento: formatBadgeCount(
+        countAwaitingReply(
+          lastData,
+          ativasRows.map((row) => ({
+            origem: row.data.origem,
+            customerUid: row.data.usarioOuterRef ? idFromRef(row.data.usarioOuterRef) : null,
+          })),
+        ),
+      ),
     };
-  }, [pendentes.data, lastMsgs]);
+  }, [pendentes.data, lastMsgs, ativasRows]);
 }

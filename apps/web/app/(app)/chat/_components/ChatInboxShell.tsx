@@ -3,6 +3,7 @@
 import { Suspense, type ReactNode } from 'react';
 import { Box, Group, Skeleton, Stack } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
+import { WhatsappVinculosButton } from './WhatsappVinculosButton';
 import { ConversaListPane } from './ConversaListPane';
 
 /** Fixed width of the list pane (px). */
@@ -27,7 +28,10 @@ export function ChatInboxShell({
 }) {
   return (
     <Stack h="calc(100vh - 96px)" gap="md">
-      <PageHeader title="Chat" description="Atendimentos em tempo real" />
+      <Group justify="space-between">
+        <PageHeader title="Chat" description="Atendimentos em tempo real" />
+        <WhatsappVinculosButton />
+      </Group>
       <Group align="stretch" gap="md" style={{ flex: 1, minHeight: 0 }} wrap="nowrap">
         <Box
           w={LIST_PANE_WIDTH}

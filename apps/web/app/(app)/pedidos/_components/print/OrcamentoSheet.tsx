@@ -184,14 +184,14 @@ export const OrcamentoSheet = forwardRef<HTMLDivElement, OrcamentoSheetProps>(
                   <td>
                     {item.fotoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- raster capture needs a plain <img>
-                      <img className="foto" src={item.fotoUrl} alt={item.nome ?? 'Produto'} />
+                      <img className="foto" src={item.fotoUrl} alt={item.nome} />
                     ) : (
                       <div className="foto-empty">sem foto</div>
                     )}
                   </td>
                   <td>{item.sku ?? '—'}</td>
                   <td>
-                    <div className="prod-nome">{item.nome ?? 'Produto'}</div>
+                    <div className="prod-nome">{item.nome}</div>
                     {item.variacoesText && <div className="prod-var">{item.variacoesText}</div>}
                   </td>
                   <td className="center">{item.quantidade}</td>

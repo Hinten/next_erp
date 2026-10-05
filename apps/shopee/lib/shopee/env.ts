@@ -7,10 +7,52 @@
  * the environment becomes a typed config object.
  *
  * ⚠️ Not the app's only `process.env` reader, and the narrower claim is the
- * true one: Firebase credentials are read by `lib/firebase/admin.ts` and the
- * CORS allow-list by `proxy.ts`, neither of which follows the rule below.
- * Scoping the claim to the Shopee values is what makes that rule enforceable
- * here instead of an app-wide invariant two other modules already break.
+ * true one. In the Next runtime these modules read the environment directly and
+ * none of them follows the rule below:
+ *
+ *  - `lib/firebase/admin.ts` — the Firebase credentials;
+ *  - `proxy.ts` — the CORS allow-list;
+ *  - `lib/shopee/shopeeTasks.ts` — `SHOPEE_TASKS_REGION`/`FUNCTIONS_REGION`
+ *    (handed to `requireRegion`, which trims and THROWS on a blank value, so a
+ *    copy of the guard here would be a second, drifting one) and
+ *    `SHOPEE_TASKS_DISABLED` (an `=== '1'` opt-in, blank-safe by construction
+ *    like `shopeeSandbox`);
+ *  - `lib/shopee/notificacoes/orderBackfill.ts` —
+ *    `SHOPEE_ORDER_BACKFILL_ENABLED`, the master flag of the step-4 order
+ *    backfill, read as the sweep's FIRST statement. Same `=== '1'` opt-in, and
+ *    deliberately NOT an `env.ts` export: it is a deploy-time switch read only
+ *    by the nested functions codebase, not Shopee CONFIGURATION this app hands
+ *    to the package, and the blank-guard rule below buys an `=== '1'`
+ *    comparison nothing.
+ *  - `lib/shopee/pedidos/arranjoAutomatico.ts` —
+ *    `SHOPEE_ARRANJO_AUTOMATICO_DISABLED`, step 15b's automatic-arrange valve,
+ *    read PER CALL. Opt-in-to-DISABLE (`=== '1'`; unset or blank leaves the
+ *    arrange ON) and NOT an `env.ts` export, for the backfill flag's reason:
+ *    only the nested functions codebase (its shipment arm, and the sweep below,
+ *    which stops on it) ever loads it.
+ *  - `lib/shopee/pedidos/arranjoAutomaticoSweep.ts` —
+ *    `SHOPEE_ARRANJO_SWEEP_DISABLED`, the valve of step 15b's five-minute
+ *    sweep, read per call as the tick's FIRST gate. Same polarity and same
+ *    reason: only the functions codebase's `sweepShopeeAutoArrange` loads it.
+ *  - `lib/shopee/estoque/constantesEstoque.ts` — the step-12 stock knobs
+ *    (`SHOPEE_STOCK_*`), the app's **second `process.env` reader family**. It
+ *    goes through `envInt`/`envFlag` from `@delfrance/data/admin/estoque`, which
+ *    already treat a blank value as unset, so the rule below would buy it
+ *    nothing; that file's own docblock states the split and is PATH-BOUND to
+ *    `tools/deploy-env/preflight.mjs`.
+ *  - `lib/shopee/precos/constantesPreco.ts` — the step-13 price knobs
+ *    (`SHOPEE_PRICE_*`), the app's **third `process.env` reader family**, and
+ *    the only file under `precos/` that reads the environment at all. Same
+ *    `envInt` family and the same reason the rule below would buy it nothing;
+ *    unlike the stock file it is NOT path-bound to the preflight, because no
+ *    price queue rate is env-driven.
+ *
+ * The nested `functions/` codebase reads more of it still (`options.ts`,
+ * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a
+ * number goes stale silently and the list is what a reader needs.
+ *
+ * Scoping the claim to the Shopee CONFIGURATION values is what makes that rule
+ * enforceable here instead of an app-wide invariant those readers break.
  *
  * ## Every SHOPEE read is BLANK-GUARDED, never `??`
  *
@@ -54,6 +96,11 @@ export interface ShopeeConfig {
   readonly hosts: ShopeeHosts;
   readonly redirectUri: string;
   readonly sandbox: boolean;
+  /**
+   * Override for the `get_variations` path, or `null` for the built-in default.
+   * See {@link shopeeVariationsPath}.
+   */
+  readonly variationsPath: string | null;
 }
 
 /**
@@ -101,6 +148,34 @@ export function shopeeHosts(): ShopeeHosts {
 }
 
 /**
+ * Override for the taxonomy `get_variations` API path, or `null` when unset.
+ *
+ * ## Why this variable exists at all
+ *
+ * The `get_variations` documentation page contradicts ITSELF: its `path`, `url`
+ * and `test_url` fields all say `/api/v2/product/get_variation_tree`, while all
+ * four of its own samples call `/api/v2/product/get_variations`. The package
+ * defaults to the samples' path.
+ *
+ * ⚠️ The path is INSIDE the HMAC base string, so the wrong one does not fail as
+ * a 404 — it fails as a SIGN error, which reads exactly like a bad partner key.
+ * That is why this is settled by one live call in the sandbox and flipped with
+ * an environment variable rather than a redeploy, the same technique
+ * `hosts.ts` uses for its three open host contradictions.
+ *
+ * ⚠️ Blank-guarded, and SHAPE-agnostic on purpose. This module answers "what
+ * did the operator type"; the package's `normalizeApiPath` decides whether that
+ * is a usable API path (bare path, leading `/`, no host, no query) and raises
+ * `ShopeeConfigError` naming this variable when it is not. Validating it here
+ * as well would be a second, drifting copy of that rule — and the package's is
+ * the one that runs for every caller, not only for callers who came through
+ * `apps/shopee`.
+ */
+export function shopeeVariationsPath(): string | null {
+  return envValue('SHOPEE_VARIATIONS_PATH');
+}
+
+/**
  * The OAuth redirect target, absolute.
  *
  * It must match a redirect URL whose DOMAIN is registered on the Shopee app.
@@ -111,6 +186,30 @@ export function shopeeHosts(): ShopeeHosts {
 export function shopeeRedirectUri(): string {
   const base = stripTrailingSlash(envValue('SHOPEE_PUBLIC_URL') ?? 'http://localhost:3009');
   return `${base}/api/oauth/shopee/callback`;
+}
+
+/**
+ * The push callback URL **exactly as registered with Shopee**, or `null` when
+ * unset/blank (the receiver answers 503 — the verifier never runs unconfigured).
+ *
+ * ⚠️ **Deliberately NOT slash-stripped**, unlike {@link shopeeRedirectUri} and
+ * {@link webBase}. This string goes INSIDE the push HMAC base string
+ * (`callback_url + '|' + raw_body`), so normalizing it here would silently
+ * change every digest we compute and make every genuine push fail
+ * verification — with nothing in the failure pointing at a trailing slash.
+ * `pushSignature.test.ts` pins that a trailing slash changes the digest.
+ *
+ * ⚠️ One URL per backend: `guide 18`'s Push Mechanism page takes a single
+ * scalar `callback_url` per App, with no per-shop addressing. Registering it is
+ * a separate, human step (#1534) — this variable only says what we will sign.
+ *
+ * ⚠️ WHICH url string Shopee actually signs (configured vs received, scheme,
+ * port, trailing slash) is undocumented — `guide 18` says only "URL". The
+ * receiver logs configured-vs-received on its first deliveries so the answer
+ * comes from live traffic rather than from a guess.
+ */
+export function shopeePushCallbackUrl(): string | null {
+  return envValue('SHOPEE_PUSH_CALLBACK_URL');
 }
 
 /**
@@ -148,6 +247,7 @@ export function shopeeConfig(): ShopeeConfig {
     hosts: shopeeHosts(),
     redirectUri: shopeeRedirectUri(),
     sandbox: shopeeSandbox(),
+    variationsPath: shopeeVariationsPath(),
   };
 }
 

@@ -45,7 +45,7 @@ export function proxy(req: NextRequest) {
     }
     const res = new NextResponse(null, { status: 204 });
     applyCors(res.headers, allowed);
-    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.headers.set('Access-Control-Allow-Headers', 'authorization, content-type');
     res.headers.set('Access-Control-Max-Age', '86400');
     return res;

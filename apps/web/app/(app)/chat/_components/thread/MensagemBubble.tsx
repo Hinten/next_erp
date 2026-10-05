@@ -109,7 +109,8 @@ export function MensagemBubble(props: MensagemBubbleProps) {
   const mine = isOptimistic(mensagem) || mensagemEhNossa(mensagem, { myUid, origem });
   const isCustomer =
     !mine &&
-    (mensagem.estadoEnvio === ESTADO_ENVIO.recebido ||
+    (!!mensagem.clienteMensagemOuterRef ||
+      mensagem.estadoEnvio === ESTADO_ENVIO.recebido ||
       (!!customerUid && mensagem.user_id === customerUid));
   const isOtherAgent = !mine && !isCustomer && !!mensagem.user_id;
 

@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
-import { CHAVE, COM_NFE_MODEL, LONG_STRINGS_MODEL, MAXIMAL_MODEL, MINIMAL_MODEL } from './fixtures';
+import {
+  ALFA_CHAVE,
+  CHAVE,
+  COM_NFE_ALFA_MODEL,
+  COM_NFE_MODEL,
+  LONG_STRINGS_MODEL,
+  MAXIMAL_MODEL,
+  MINIMAL_MODEL,
+} from './fixtures';
 import { buildEtiquetaGenericaLayout, LABEL_H_MM, type EtiquetaOp } from './layout';
+import { EtiquetaGenericaFormatError } from './errors';
 import { renderEtiquetaGenericaZpl } from './zpl2';
 
 describe('renderEtiquetaGenericaZpl', () => {
+  it.each([203, 300])('keeps the numeric ZPL byte-identical at %i dpi', (dpi) => {
+    expect(renderEtiquetaGenericaZpl(COM_NFE_MODEL, { dpi })).toMatchSnapshot();
+  });
+
   it('emits a well-formed ZPL label', () => {
     const zpl = renderEtiquetaGenericaZpl(MINIMAL_MODEL);
     expect(zpl.startsWith('^XA')).toBe(true);
@@ -61,6 +74,53 @@ describe('renderEtiquetaGenericaZpl', () => {
     // `>;` switches Code 128 to subset C: two digits per symbol, half the width.
     expect(zpl).toContain(`^FD>;${CHAVE}^FS`);
     expect(zpl).toMatch(/\^BY[2-9]\^BCN/);
+  });
+
+  it.each([203, 300])(
+    'encodes an alphanumeric chave as C/B/C and fits with quiet zones at %i dpi',
+    (dpi) => {
+      const zpl = renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL, { dpi });
+      const pw = /\^PW(\d+)/.exec(zpl);
+      const bc = /\^FO(\d+),\d+\^BY(\d+)\^BCN,[^^]*\^FD([^^]*)\^FS/.exec(zpl);
+      expect(pw).not.toBeNull();
+      expect(bc).not.toBeNull();
+      expect(bc![3]).toBe('>;352601>6ABCDEFGHIJKL>587550010000001234567890120');
+
+      const widthDots = Number(pw![1]);
+      const x = Number(bc![1]);
+      const moduleDots = Number(bc![2]);
+      const barcodeDots = 365 * moduleDots;
+      const quietDots = 10 * moduleDots;
+      expect(x).toBeGreaterThanOrEqual(quietDots);
+      expect(x + barcodeDots + quietDots).toBeLessThanOrEqual(widthDots);
+      expect(zpl).toContain(ALFA_CHAVE.match(/.{1,4}/g)!.join(' '));
+    },
+  );
+
+  it('refuses an invalid odd-length chave instead of printing a wrong symbol', () => {
+    const odd = '3526011420016600018755001000000012345678901';
+    expect(odd).toHaveLength(43);
+    expect(() => renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: odd })).toThrow(
+      EtiquetaGenericaFormatError,
+    );
+  });
+
+  it('refuses a mixed symbol when the requested density cannot carry its quiet zones', () => {
+    expect(() => renderEtiquetaGenericaZpl(COM_NFE_ALFA_MODEL, { dpi: 150 })).toThrow(
+      /zonas de silêncio/,
+    );
+  });
+
+  it('does not throw on an empty chave — the layout emits no barcode for it', () => {
+    // The guard keys on the same truthiness as `layout.ts`. A `!= null` check
+    // would throw on a label the PDF renders perfectly well, naming an empty
+    // value the operator cannot act on.
+    const zpl = renderEtiquetaGenericaZpl({ ...COM_NFE_MODEL, nfeChave: '' });
+    expect(zpl).not.toContain('^BCN');
+  });
+
+  it('still renders a label with no NF-e at all', () => {
+    expect(() => renderEtiquetaGenericaZpl(MINIMAL_MODEL)).not.toThrow();
   });
 
   it('draws no barcode when the pedido has no authorized NF-e', () => {

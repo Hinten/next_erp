@@ -1,4 +1,5 @@
 import { FieldPath, type Query, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { ORIGEM_CONVERSA } from '@delfrance/schemas';
 import {
   type MigrationContext,
   type MigrationSummary,
@@ -109,6 +110,10 @@ async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
     for (const doc of docs) {
       docsScanned += 1;
       const d = doc.data();
+      if (d.origem === ORIGEM_CONVERSA.whatsapp) {
+        conta(veredito, 'whatsapp-passe-especifico');
+        continue;
+      }
       const v = planConversaClienteRef(
         { clienteOuterRef: d.clienteOuterRef, usarioOuterRef: d.usarioOuterRef },
         indice,
@@ -158,6 +163,10 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     for (const doc of docs) {
       docsScanned += 1;
       const d = doc.data();
+      if (d.origem === ORIGEM_CONVERSA.whatsapp) {
+        ctx.sink.skip(doc.ref.path, 'origem', d.origem, 'usar migrate:whatsapp-contato-cliente');
+        continue;
+      }
       const verdict = planConversaClienteRef(
         { clienteOuterRef: d.clienteOuterRef, usarioOuterRef: d.usarioOuterRef },
         indice,

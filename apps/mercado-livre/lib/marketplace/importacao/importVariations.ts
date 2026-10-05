@@ -2,8 +2,7 @@
  * Variation-children orchestration (IO layer, ML→ERP) — issue #520, extended
  * for User-Products (#521). Called from `import.ts` once the parent produto +
  * its `produtoMercadoLivre` link exist: writes one child produto per usable
- * entry — its own produto doc, `variacaoMercadoLivre` link, estoque, and the
- * legacy `marketplace` denorm — using the taxonomy resolved by
+ * entry — its own produto doc, `variacaoMercadoLivre` link and estoque — using the taxonomy resolved by
  * `importTaxonomia` (#519) and the pure assembly in
  * `importCore.assembleVariationChildPlan`.
  *
@@ -29,8 +28,8 @@
  * one is what makes an ERP-FIRST catalogue safe: children created in the ERP or
  * the Flutter app, never linked to ML and without a matching `SELLER_SKU`, are
  * invisible to the first two, so before it existed the first import minted a
- * whole SECOND set of children (duplicate stock rows, duplicate denorm entries,
- * a split catalogue to merge by hand).
+ * whole SECOND set of children (duplicate stock rows and a split catalogue to
+ * merge by hand).
  *
  * No photo import here (legacy parity): `variations[].picture_ids` /
  * User-Products per-member pictures are never imported — only the
@@ -38,7 +37,7 @@
  * `importPhotos.ts`, after this module returns).
  */
 import { createHash } from 'node:crypto';
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import { type MappedMlVariation, idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 import { type MlModeracao, sameCombo } from '@delfrance/schemas';
 import {
@@ -267,30 +266,6 @@ export async function importVariationChildren(
     await variacaoMercadoLivreLinkCollection
       .docRef(db, { produtoId }, linkDocId)
       .set(variacaoMercadoLivreLinkCollection.parse(plan.link));
-
-    // Legacy denorm (DEAD WEIGHT; #992, audited in #961 — no query consumers in
-    // this repo, deleted at the decommission. Canonical note on
-    // `produtoSchema`; the lock list is at `publish.ts`'s parent stamp).
-    // Child entries carry `externalParentId` (the
-    // parent's ML item id), unlike the parent's own entry which omits it
-    // (models.dart:2325). User-Products children also carry
-    // `relevantData.isUserProductModel` (`plan.denorm.relevantData`, set by
-    // `assembleVariationChildPlan` only when `up` was passed) — omitted entirely
-    // for a legacy variations[] child, so that path's denorm shape stays
-    // byte-identical.
-    //
-    // ⚠️ `integracoesComProduto` is NOT stamped here (#920) — the
-    // `variacaoMercadoLivre` link written just above carries `contaOuterRef`,
-    // and `onVariacaoMercadoLivreLinkChanged` derives the array from it.
-    await produtoCollection.docRef(db, {}, produtoId).update({
-      marketplace: FieldValue.arrayUnion({
-        integracaoUid: integracaoId,
-        externalId: plan.denorm.externalId,
-        externalParentId: plan.denorm.externalParentId,
-        ...(plan.denorm.relevantData ? { relevantData: plan.denorm.relevantData } : {}),
-      }),
-      marketplaceIds: FieldValue.arrayUnion(plan.denorm.externalId),
-    });
 
     if (isCreate) created += 1;
     medidas.push({ produtoId, ...medidasEfetivas(baseProduto, plan.produto?.data) });

@@ -30,6 +30,7 @@ function grupos(): GrupoComId[] {
           { id: 'M', nome: 'M', codigo: 'M' },
           { id: 'G', nome: 'G', codigo: 'G' },
         ],
+        ultimaModificacao: null,
       },
     },
     {
@@ -43,6 +44,7 @@ function grupos(): GrupoComId[] {
           { id: 'AZ', nome: 'Azul', codigo: 'AZ' },
           { id: 'VM', nome: 'Vermelho', codigo: 'VM' },
         ],
+        ultimaModificacao: null,
       },
     },
   ];

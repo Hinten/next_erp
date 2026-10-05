@@ -31,14 +31,18 @@
  *    is `.strict()`. `apps/web` calls the DEPLOYED channel backend, so the
  *    browser is routinely OLDER *or* NEWER than the thing answering it — a
  *    strict object would turn every forward deploy into an outage.
- * 2. ⚠️ **Nothing is optional today, and that is a measured claim rather than a
- *    default.** All four return paths of `GET /api/marketplace/shopee/conta` are
- *    total over these eight keys (they all spread `CONTA_DESCONECTADA`), so
- *    there is no field a deployed backend can omit. **The maintenance rule:**
- *    when a field is added to `status.ts`, declare it here as
+ * 2. ⚠️ **A field is required here only while no deployed backend can omit it.**
+ *    All four return paths of `GET /api/marketplace/shopee/conta` are total over
+ *    the eight top-level keys (they all spread `CONTA_DESCONECTADA`), which is a
+ *    measured claim rather than a default, so those eight stay required. **The
+ *    maintenance rule** for anything added later: declare it
  *    `.optional()`/`.default(…)` with the fallback the panel already applies —
  *    an OLDER backend answering a NEWER browser is the risk, and a required
  *    field is what turns that skew into a dead screen.
+ *    `credencial.renovacaoFalhou` is the first field to take that rule up: it
+ *    defaults to `false`, so a browser carrying it still reads a payload written
+ *    before the field existed, and the only cost of the skew is that a failed
+ *    renewal is not announced until the backend catches up.
  * 3. ⚠️ **Numbers are tolerant when the value ORIGINATES outside our own
  *    arithmetic** (`wireInt()` from `@delfrance/core/wire`) and strict
  *    (`z.number()`) when the backend computed it. `shopId` / `mainAccountId` are
@@ -54,8 +58,9 @@ import { z } from 'zod';
 import { wireInt } from '@delfrance/core/wire';
 
 /**
- * `get_shop_info`'s projection — the SIDE read, absent (`loja: null`) whenever
- * the ~4-hour access token is dead.
+ * `get_shop_info`'s projection — a SIDE read, absent (`loja: null`) whenever the
+ * backend could not make it. A stale stored access token does NOT imply that
+ * absence, and the absence implies nothing about either clock.
  */
 export const shopeeLojaSchema = z.object({
   shopName: z.string().nullable(),
@@ -87,10 +92,26 @@ export const shopeeContaStatusSchema = z.object({
   expireTime: wireInt().nullable(),
   /** Whole days to that lapse, floored by the backend. Ours, hence strict. */
   diasParaExpirar: z.number().int().nullable(),
-  /** `null` while the access token is dead — `get_shop_info` needs a live one. */
+  /** `null` whenever the backend could not read `get_shop_info` at all. */
   loja: shopeeLojaSchema.nullable(),
   /** The OTHER clock. `null` when no credential is stored at all. */
-  credencial: z.object({ expiraEm: z.number().int(), expirada: z.boolean() }).nullable(),
+  credencial: z
+    .object({
+      expiraEm: z.number().int(),
+      expirada: z.boolean(),
+      /**
+       * The last renewal of the access token failed TERMINALLY and none has
+       * succeeded since — the one credential state an operator can act on
+       * (everything else heals on the next call that needs a token).
+       *
+       * ⚠️ `.default(false)` under rule 2: a payload written before this field
+       * existed still parses, and reads as "no failure known", which is the
+       * tolerant direction — a browser one deploy ahead of the backend shows
+       * the healthy copy for a while instead of a dead screen.
+       */
+      renovacaoFalhou: z.boolean().default(false),
+    })
+    .nullable(),
 });
 export type ShopeeContaStatus = z.infer<typeof shopeeContaStatusSchema>;
 
@@ -104,3 +125,144 @@ export type ShopeeContaStatus = z.infer<typeof shopeeContaStatusSchema>;
  */
 export const oauthStartResponseSchema = z.object({ authorizeUrl: z.string().min(1) });
 export type ShopeeOauthStart = z.infer<typeof oauthStartResponseSchema>;
+
+/* ---------------------------------------------------------------------------
+ * The label (#1523, step 15) — the 202 body of `POST /api/marketplace/shopee/etiqueta`
+ * ------------------------------------------------------------------------- */
+
+// ⚠️ The same KNOWN duplication as the rest of this file, with a different
+// source: `apps/shopee/lib/shopee/etiqueta/pendenteEtiqueta.ts` (`EtiquetaPendente`,
+// `Progresso`) and `modoDeEnvio.ts` (`EnderecoDeColeta`, `EscolhaDeEnvio`).
+// The NAMES below are identical to those, so a rename shows up in a diff; the
+// test file parses literals copied from the backend's own tests (reconcile
+// R-aa). This block owns what the BROWSER accepts, nothing more.
+//
+// Every number and string in this body is computed by the backend (rule 3):
+// strict `z.number()`, never `wireInt()`. Every field is required (rule 2) —
+// no deployed backend predates this route — except `escolhaInvalida`, whose
+// default is the reading an absent key can only mean ("nothing was answered
+// yet"). Unknown keys pass (rule 1).
+
+/** A count the backend computed — strict, never negative. */
+const contagem = () => z.number().int().nonnegative();
+
+/**
+ * The counts every 202 carries — what makes the give-up message deterministic
+ * (`organizados === total && total > 0` means "already arranged"). Counts only.
+ */
+export const shopeeEtiquetaProgressoSchema = z.object({
+  total: contagem(),
+  organizados: contagem(),
+  comRastreio: contagem(),
+  prontos: contagem(),
+});
+export type Progresso = z.infer<typeof shopeeEtiquetaProgressoSchema>;
+
+/**
+ * One pickup address offered in an `escolher-envio` question. Ids are OPAQUE
+ * STRINGS here (Shopee's `address_id` is an int64): the browser echoes them
+ * back verbatim and never does arithmetic on them.
+ */
+export const shopeeEnderecoDeColetaSchema = z.object({
+  id: z.string().min(1),
+  rotulo: z.string(),
+  principal: z.boolean(),
+  /** May be EMPTY — a zero-slot address, where Shopee schedules the pickup. */
+  horarios: z.array(
+    z.object({
+      id: z.string().min(1),
+      rotulo: z.string(),
+      recomendado: z.boolean(),
+    }),
+  ),
+});
+export type EnderecoDeColeta = z.infer<typeof shopeeEnderecoDeColetaSchema>;
+
+/**
+ * The backend's phase — a FREE string here, never a closed enum. The browser
+ * only compares two of them (one toast per phase) and shows the backend's own
+ * `mensagem`, so a phase added to a newer backend costs nothing; an enum would
+ * turn it into a dead label flow for every browser one deploy behind.
+ */
+const fase = z.string().min(1);
+
+const aguardarSchema = z.object({
+  acao: z.literal('aguardar'),
+  fase,
+  /** Milliseconds to wait before the next call. `0` is legal (the caller clamps it). */
+  tentarEmMs: z.number().int().nonnegative(),
+  mensagem: z.string().min(1),
+  progresso: shopeeEtiquetaProgressoSchema,
+});
+
+const escolherEnvioSchema = z
+  .object({
+    acao: z.literal('escolher-envio'),
+    fase,
+    /** The ONE package this question is about — echoed back in `envio.pacote`. */
+    pacote: z.string().min(1),
+    /** "Pacote i de n" on a split order, `null` otherwise. */
+    pacoteRotulo: z.string().nullable(),
+    mensagem: z.string().min(1),
+    enderecos: z.array(shopeeEnderecoDeColetaSchema),
+    permiteDropoff: z.boolean(),
+    /** The previous answer no longer matches Shopee — the question is asked AGAIN. */
+    escolhaInvalida: z.boolean().default(false),
+    progresso: shopeeEtiquetaProgressoSchema,
+  })
+  // ⚠️ A question with no address AND no dropoff has no answer: the dialog
+  // would offer nothing but "Cancelar". The backend refuses that case as a 409
+  // (`sem-endereco-de-coleta`), so a 202 carrying it is not a question at all.
+  .refine((q) => q.enderecos.length > 0 || q.permiteDropoff, {
+    message: 'uma pergunta sem endereço precisa oferecer a postagem na agência',
+    path: ['enderecos'],
+  });
+
+const baixarPorPacoteSchema = z.object({
+  acao: z.literal('baixar-por-pacote'),
+  fase,
+  /**
+   * One call per package, with `pacote`. `.min(2)`: one package is not a split.
+   *
+   * ⚠️ NO upper bound, on purpose. Shopee's own 50-package ceiling on one
+   * download is a reason the backend asks for THIS loop, not a bound on it — it
+   * sends more than 50 here (truth: `executarEtiqueta.ts`; pinned by
+   * `executarEtiqueta.test.ts` "51 pacotes prontos … ⇒ baixar-por-pacote com os
+   * 51", mirrored in `wire.test.ts`). A `.max(50)` rejected that body and sent
+   * the operator to a deploy that fixed nothing (review 2, Q1-1).
+   */
+  pacotes: z.array(z.string().min(1)).min(2),
+  mensagem: z.string().min(1),
+  progresso: shopeeEtiquetaProgressoSchema,
+});
+
+/**
+ * The 202 body: a wait, a question, or "download the packages one at a time" —
+ * three members, and only three (the 1-hour confirm was removed with its whole
+ * apparatus, reconcile Appendix A).
+ *
+ * ⚠️ An unknown `acao` REJECTS the body. Unlike an unknown KEY, a new member is
+ * something the caller would have to ANSWER, and treating it as a wait would
+ * poll a question nobody asks (W17).
+ */
+export const shopeeEtiquetaPendenteSchema = z.discriminatedUnion('acao', [
+  aguardarSchema,
+  escolherEnvioSchema,
+  baixarPorPacoteSchema,
+]);
+export type ShopeeEtiquetaPendente = z.infer<typeof shopeeEtiquetaPendenteSchema>;
+
+/**
+ * The operator's answer to an `escolher-envio` question — what the browser
+ * SENDS, so a type and no schema. `horarioId: null` is meaningful: a zero-slot
+ * address, where Shopee schedules the pickup. The backend judges each shape
+ * against its EXACT key set, so the client rebuilds it by name before sending.
+ */
+export type EscolhaDeEnvio =
+  | {
+      readonly pacote: string;
+      readonly modo: 'pickup';
+      readonly enderecoId: string;
+      readonly horarioId: string | null;
+    }
+  | { readonly pacote: string; readonly modo: 'dropoff' };

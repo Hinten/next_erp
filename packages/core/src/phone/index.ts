@@ -18,16 +18,29 @@
  *
  * BR assumption: any 10/11-digit input is treated as Brazilian, since that
  * is the only shape this ERP receives without a country code. A foreign
- * subscriber number of that length typed WITHOUT its country code would be
- * mis-prefixed with `55` — foreign callers must include the country code
- * (≥12 digits). Inputs of 12+ digits — already-normalized `55…` values and
+ * subscriber number of that length typed WITHOUT an explicit `+` would be
+ * mis-prefixed with `55` — foreign callers use `+` with their country code.
+ * Providers use `normalizeTelefoneInternacional` instead. Inputs of 12+ digits — already-normalized `55…` values and
  * any number that already carries a country code — pass through unchanged,
  * which makes the function idempotent.
  */
 export function normalizeTelefone(input: string): string {
   const digits = input.replace(/\D/g, '');
+  // An explicit country code must survive even when the complete foreign
+  // number has 10/11 digits (e.g. +1 415 555 2671).
+  if (input.trimStart().startsWith('+')) return digits;
   if (digits.length === 10 || digits.length === 11) return `55${digits}`;
   return digits;
+}
+
+/**
+ * A provider phone already contains its country code. Never infer Brazil from
+ * its length, and never turn an opaque BSUID or a masked value into a phone.
+ */
+export function normalizeTelefoneInternacional(input: string): string | null {
+  if (!/^\+?[\d\s().-]+$/.test(input.trim())) return null;
+  const digits = input.replace(/\D/g, '');
+  return /^[1-9]\d{9,14}$/.test(digits) ? digits : null;
 }
 
 /**
@@ -49,7 +62,7 @@ export function isValidTelefone(value: string): boolean {
 export function telefoneQueryShapes(input: string): string[] {
   const digits = input.replace(/\D/g, '');
   if (digits === '') return [];
-  const shapes = new Set([digits, normalizeTelefone(digits)]);
+  const shapes = new Set([digits, normalizeTelefone(input)]);
   if ((digits.length === 12 || digits.length === 13) && digits.startsWith('55')) {
     shapes.add(digits.slice(2));
   }
@@ -57,6 +70,20 @@ export function telefoneQueryShapes(input: string): string[] {
 }
 
 /* --------------------------------- display --------------------------------- */
+
+/**
+ * Display a known canonical E.164 phone (provider identity or migrated cadastro).
+ * Keeps the country code visible; unlike the legacy formatter, 10/11 digits
+ * never imply Brazil here.
+ */
+export function formatTelefoneInternacional(input: string): string {
+  const phone = normalizeTelefoneInternacional(input);
+  if (!phone) return input;
+  if (phone.startsWith('55') && (phone.length === 12 || phone.length === 13)) {
+    return `+55 ${formatTelefoneLocal(phone.slice(2))}`;
+  }
+  return `+${phone}`;
+}
 
 /**
  * Drop the BR country code from a stored phone, yielding the local number

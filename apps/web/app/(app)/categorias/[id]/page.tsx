@@ -12,7 +12,10 @@ import { type FieldConfig, ObjectView } from '@delfrance/ui';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
-import { buildCategoriaImpostoTransactionWrites } from '@/lib/categorias/clientPort';
+import {
+  buildCategoriaImpostoTransactionWrites,
+  validarImpostosDaCategoria,
+} from '@/lib/categorias/clientPort';
 import {
   cascadeCategoriaNomeCompleto,
   listDescendantIdsForPicker,
@@ -121,6 +124,7 @@ export default function CategoriaPage() {
         transactionWrites={(id, values, context) =>
           buildCategoriaImpostoTransactionWrites(db, id, values, context)
         }
+        validate={validarImpostosDaCategoria}
         deriveOnSave={(values) => {
           const existing = typeof values.nomeCompleto === 'string' ? values.nomeCompleto : null;
           const nomeCompleto = deriveNomeCompletoOnSave({

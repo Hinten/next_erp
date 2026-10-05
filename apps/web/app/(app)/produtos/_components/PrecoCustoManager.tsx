@@ -19,7 +19,10 @@ import { getDocsByIds } from '@/lib/data/getDocsByIds';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { CurrencyInput } from './CurrencyInput';
 import { stripKitForSave } from './KitManager';
+import type { PrecoDraft } from './precosDraft';
 import { ProdutoHistoryButton } from './ProdutoHistoryButton';
+
+export { stripPrecosForSave } from './precosDraft';
 
 /** A `listaDePrecos` snapshot row, supplied by the page's bounded query. */
 export interface ListaComId {
@@ -27,36 +30,8 @@ export interface ListaComId {
   data: ListaDePrecos;
 }
 
-/**
- * A working precos entry: the wire `{ valor }` plus a transient `_delete`
- * marker for staged removal. `valor` may be absent while the user is editing
- * (a cleared input) — that surfaces as a validation error, never a silent drop.
- */
-interface PrecoDraft {
-  valor?: number;
-  _delete?: boolean;
-}
-
 /** RHF nested error for the `precos` record: `{ [listaId]: { valor: { message } } }`. */
 type PrecosErrorTree = Record<string, { valor?: { message?: string } } | undefined> | undefined;
-
-/**
- * Drop staged-deleted entries and the transient `_delete` marker before the
- * value is validated/saved (wired as the precos field's `prepareForSave`).
- * Kept entries keep their `valor` as-is — an empty one stays so Zod flags it
- * (a price is removed only by the trash button, never by clearing the input).
- */
-export function stripPrecosForSave(value: unknown): Record<string, { valor: number }> | null {
-  const map = (value ?? {}) as Record<string, PrecoDraft>;
-  const out: Record<string, { valor: number }> = {};
-  for (const [listaId, entry] of Object.entries(map)) {
-    if (entry?._delete) continue;
-    const { _delete, ...rest } = entry ?? {};
-    void _delete;
-    out[listaId] = rest as { valor: number };
-  }
-  return Object.keys(out).length > 0 ? out : null;
-}
 
 export interface PrecoCustoManagerProps {
   /** `null` in create mode — prices still editable, history buttons hidden. */

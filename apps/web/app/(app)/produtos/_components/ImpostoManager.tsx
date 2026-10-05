@@ -3,7 +3,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Select, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import { operacaoIdFromImpostoRef, type ImpostoProduto } from '@delfrance/schemas';
+import {
+  operacaoIdFromImpostoRef,
+  problemasDeEmissaoDoImposto,
+  type ImpostoProduto,
+} from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import {
@@ -20,7 +24,12 @@ import {
   operacoesAtivas,
   type OperacaoRow,
 } from '@/lib/produtos/impostoRows';
-import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
+import {
+  ImpostoConfigEditor,
+  OperacoesComProblemas,
+  type ImpostoConfigValue,
+  type LinhaDeOperacao,
+} from '@/components/imposto';
 
 export interface ImpostoManagerProps {
   produtoId: string | null;
@@ -148,6 +157,13 @@ export function ImpostoManager({
   });
   disabled = disabled || Boolean(documents && (value === null || !activeSeed.ready));
 
+  // What the NF-e engine would refuse in EACH row (#1655): the page's save
+  // (`produtoPageIssues`) checks every seeded row, not just the one on screen.
+  const problemasPorLinha = useMemo(
+    () => (value ?? []).map((linha) => problemasDeEmissaoDoImposto(linha)),
+    [value],
+  );
+
   if (activeSeed.error)
     return (
       <Text c="red" size="sm">
@@ -180,6 +196,14 @@ export function ImpostoManager({
 
   const v = (active ?? emptyImposto(activeId ?? '')) as ImpostoConfigValue;
 
+  const nomeDaOperacao = new Map(operacoes.map((o) => [o.id, o.nome]));
+  const linhas: LinhaDeOperacao[] = rows.flatMap((r, i) => {
+    const operacaoId = operacaoIdFromImpostoRef(r.impostoOpercaoOuterRef);
+    if (!operacaoId) return [];
+    const nome = nomeDaOperacao.get(operacaoId) ?? operacaoId;
+    return [{ operacaoId, nome, problemas: problemasPorLinha[i] ?? [] }];
+  });
+
   const handleChange = (next: ImpostoConfigValue) => {
     if (!activeId) return;
     const nextRows = [...rows];
@@ -209,11 +233,14 @@ export function ImpostoManager({
         disabled={disabled}
       />
 
+      <OperacoesComProblemas linhas={linhas} ativa={activeId} onSelecionar={setPickedId} />
+
       <ImpostoConfigEditor
         value={v}
         onChange={handleChange}
         disabled={disabled}
         errorTree={errNode}
+        problemas={activeIndex >= 0 ? problemasPorLinha[activeIndex] : undefined}
       />
     </Stack>
   );

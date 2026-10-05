@@ -19,12 +19,20 @@ import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Text } from '@man
 import { useQuery } from '@tanstack/react-query';
 import { formatReais } from '@delfrance/core/money';
 import type { Pedido } from '@delfrance/schemas';
-import { type Agency, withCartAgency } from '@delfrance/integrations-freight-br/http-client';
+import {
+  type Agency,
+  FreightTimeoutError,
+  withCartAgency,
+} from '@delfrance/integrations-freight-br/http-client';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { freightQueryRetry } from '@/lib/freight/queryRetry';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '@/lib/notifications/showErrorNotification';
 import { resolveEtiquetaCartInput } from './etiquetaActions';
 
 interface BuyResult {
@@ -82,6 +90,8 @@ export function EtiquetaComprarModal({
     queryKey: ['freightConta', intFreteId],
     enabled: opened && client != null && intFreteId != null,
     staleTime: 0,
+    // Never re-sent after a timeout (#1094) — the default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () => client!.conta(intFreteId!),
   });
   const saldo = conta.data?.balance?.balance ?? null;
@@ -122,6 +132,10 @@ export function EtiquetaComprarModal({
       resolved?.remetente.cidade,
     ],
     enabled: agenciasEnabled,
+    // ⚠️ Not after a timeout (#1094): `agenciasSettling` below holds Comprar
+    // disabled until this settles, so a retried timeout blocked the buy for two
+    // full budgets. The default single retry otherwise.
+    retry: freightQueryRetry,
     queryFn: () =>
       client!.agencias(resolved!.intFreteId, {
         service: resolved!.payload.service,
@@ -174,6 +188,22 @@ export function EtiquetaComprarModal({
       );
       setResult({ printUrl: r.printUrl, tracking: r.tracking });
     } catch (err) {
+      // ⚠️ A timed-out buy (our 360 s deadline, or the platform's 504) may still
+      // be running on the server, and nothing stops a concurrent second buy from
+      // PAYING for a second label (#1677). So it is not a red "Falha" with
+      // Comprar re-enabled: a yellow check-first notice, and the modal closes —
+      // no button left to re-click; reopening re-resolves the cart from the
+      // pedido, after the operator has checked it (#1094; the server-side claim
+      // that makes a concurrent buy impossible is #1677).
+      if (err instanceof FreightTimeoutError) {
+        showCopyableNotification({
+          title: 'Tempo esgotado ao comprar etiqueta',
+          message: err.message,
+          color: 'yellow',
+        });
+        handleClose();
+        return;
+      }
       const msg = freightErrorMessage(err);
       if (msg === null) throw err;
       showErrorNotification({ title: 'Falha ao comprar etiqueta', message: msg });

@@ -119,6 +119,13 @@ describe('firestore.indexes.json coverage', () => {
       // collection rendered with a custom table — e.g. produtos — would over-
       // require here, but those happen to carry no monitor field, so the set
       // stays exact. An unused monitor index is harmless anyway.)
+      //
+      // ⚠️ TableView now runs the monitor only while a list is on the FROZEN
+      // transport, and that does NOT narrow this set: any list drops to frozen
+      // on a column filter, a search term or a header sort, so the query stays
+      // reachable on every collection below. Do not "optimise" this loop down
+      // to the ones that open static — Enterprise answers a missing index with
+      // a silent full scan, not an error.
       if (!meta.defaultQuery) continue;
       const field = monitorField(schema);
       if (!field) continue;

@@ -326,7 +326,7 @@ export async function enviarPrecoDraft(
   const ehMembro = draft.kind === 'variationItem';
   const writeback: Record<string, unknown> = { ultimaModificacao: nowMs };
   if (!ehMembro) {
-    writeback.estado = estadoFromMlStatus(resp.status);
+    writeback.estado = estadoFromMlStatus(resp.status, resp.sub_status ?? null);
     writeback.status = resp.status ?? null;
     writeback.sub_status = resp.sub_status ?? [];
     writeback.precoPublicado = draft.preco;

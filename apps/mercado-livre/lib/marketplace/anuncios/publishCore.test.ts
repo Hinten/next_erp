@@ -19,6 +19,7 @@ import {
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
+  resolveMemberPrice,
   resolvePrice,
   resolveSkuPaiAtributo,
   sizeChartIssue,
@@ -94,9 +95,24 @@ describe('publishModeIssues', () => {
     ]);
   });
 
+  /**
+   * #1226, and THE refusal that stops the damage rather than describing it.
+   * `assemblePublishInput` derives `isUpdate` from `link.id != null`, so without
+   * this every republish is a `PUT /items/<id ML deleted>` — a call that cannot
+   * succeed, on a produto with no other way back into the catalogue.
+   */
+  it("estado 'rm' blocks the publish and names the way out", () => {
+    const issues = publishModeIssues({ ...base, estado: 'rm' });
+    expect(issues).toEqual([expect.stringContaining('removido pelo Mercado Livre')]);
+    // The remedy is an operator action, not a wait — so the message has to name
+    // it. A bare "não pode ser reativado" leaves the produto stuck.
+    expect(issues[0]).toContain('Descartar anúncio removido');
+  });
+
   it('every OTHER estado publishes normally', () => {
     // Including null (a first publish) — the block must not fire on a listing
-    // that has no state yet.
+    // that has no state yet. ⚠️ `'v'` is the near-miss: a listing merely under
+    // review is savable and must stay publishable.
     for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
       expect(publishModeIssues({ ...base, estado })).toEqual([]);
     }
@@ -203,6 +219,108 @@ describe('resolvePrice', () => {
     // at runtime despite `nome`'s declared `string | null` type.
     expect(resolvePrice(produto, { id: 'lista-x', nome: 42 }, issues)).toBeNull();
     expect(issues).toEqual(['produto "Camiseta Básica" sem preço na tabela lista-x']);
+  });
+
+  // The price reads through `precoDaTabela`, the reader the price sync binds.
+  // Before, publish listed the raw stored `valor`: `7.891` went up as `7.891`
+  // while `buildPrecoDrafts` sent `7.89` for the same produto.
+  const precoDe = (valor: unknown) => {
+    const issues: string[] = [];
+    const preco = resolvePrice(
+      { ...produto, precos: { 'lista-1': { valor } } as PublishProduto['precos'] },
+      { id: 'lista-1', nome: null },
+      issues,
+    );
+    return { preco, issues };
+  };
+
+  it('PAIR: a stored 7.891 publishes as 7.89 — the same centavo as a stored 7.89', () => {
+    expect(precoDe(7.891)).toEqual({ preco: 7.89, issues: [] });
+    expect(precoDe(7.89)).toEqual({ preco: 7.89, issues: [] });
+  });
+
+  it('NEAR-MISS: a stored 7.899 publishes as 7.9 — one centavo up, never folded into 7.89', () => {
+    expect(precoDe(7.899)).toEqual({ preco: 7.9, issues: [] });
+  });
+
+  it('a sub-centavo price is NO price — 0.004 rounds to 0 and blocks, naming the produto', () => {
+    // Positivity is checked AFTER rounding: a `0.004` must never reach ML.
+    expect(precoDe(0.004)).toEqual({
+      preco: null,
+      issues: ['produto "Camiseta Básica" sem preço na tabela lista-1'],
+    });
+  });
+
+  it('NEAR-MISS: 0.005 rounds UP to 0.01 and IS a price', () => {
+    expect(precoDe(0.005)).toEqual({ preco: 0.01, issues: [] });
+  });
+
+  it('a non-number valor is no price — a raw legacy "10" string is never listed as-is', () => {
+    // `parseRead` falls back to RAW data on a schema mismatch, so a legacy
+    // string can reach here despite the declared type. It used to pass
+    // `valor <= 0` and be handed to ML as a string.
+    expect(precoDe('10')).toEqual({
+      preco: null,
+      issues: ['produto "Camiseta Básica" sem preço na tabela lista-1'],
+    });
+  });
+});
+
+describe('resolveMemberPrice', () => {
+  const tabela = { id: 'lista-1', nome: null };
+  const pai = (propagatePriceToChildren: PublishProduto['propagatePriceToChildren']) => ({
+    ...produto,
+    nome: 'Camiseta',
+    precos: { 'lista-1': { valor: 50.004 } },
+    propagatePriceToChildren,
+  });
+  const membro: PublishProduto = {
+    ...produto,
+    id: 'child-1',
+    nome: 'Camiseta M',
+    precos: { 'lista-1': { valor: 60.006 } },
+  };
+
+  it('propagating (absent, null or true) — the ANCHOR price, rounded; the member map is never read', () => {
+    for (const flag of [undefined, null, true]) {
+      const issues: string[] = [];
+      expect(resolveMemberPrice({ pai: pai(flag), membro }, tabela, issues)).toBe(50);
+      expect(issues).toEqual([]);
+    }
+  });
+
+  it('NEAR-MISS: only a stored literal false gives the member its OWN price', () => {
+    const issues: string[] = [];
+    expect(resolveMemberPrice({ pai: pai(false), membro }, tabela, issues)).toBe(60.01);
+    expect(issues).toEqual([]);
+  });
+
+  it('propagating from an unpriced anchor: null, never the member map — and NO per-member issue', () => {
+    // The anchor's own `resolvePrice` names the parent once; repeating it per
+    // member would list the same fault N times.
+    const issues: string[] = [];
+    expect(
+      resolveMemberPrice({ pai: { ...pai(true), precos: null }, membro }, tabela, issues),
+    ).toBeNull();
+    expect(issues).toEqual([]);
+  });
+
+  it('own arm: an unpriced (or sub-centavo) member blocks, naming the MEMBER', () => {
+    for (const precos of [null, { 'lista-1': { valor: 0.004 } }]) {
+      const issues: string[] = [];
+      expect(
+        resolveMemberPrice({ pai: pai(false), membro: { ...membro, precos } }, tabela, issues),
+      ).toBeNull();
+      expect(issues).toEqual(['produto "Camiseta M" sem preço na tabela lista-1']);
+    }
+  });
+
+  it('no price list: null and no issue — the anchor already said so, once', () => {
+    const issues: string[] = [];
+    expect(
+      resolveMemberPrice({ pai: pai(false), membro }, { id: null, nome: null }, issues),
+    ).toBeNull();
+    expect(issues).toEqual([]);
   });
 });
 

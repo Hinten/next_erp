@@ -1,14 +1,22 @@
 import {
   aggregateTotals,
+  buildEntrega,
   buildImpostoXml,
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  cUFFromUF,
   datePartsInOffset,
+  NFePartiesError,
+  NFeTributeError,
   offsetForUF,
   sanitizeNFeText,
+  TributeFormatError,
+  ufDestinoOperacao,
+  type AjusteIbsCbsItem,
   type GeneratorInput,
   type GeneratorItem,
+  type GeneratorRtc,
   type Payment,
 } from '@delfrance/integrations-nfe';
 import { microsToMillis } from '@delfrance/core/datetime';
@@ -17,9 +25,23 @@ import {
   MODALIDADE_FRETE,
   IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
+  SEVERIDADE_VIOLACAO,
+  bloqueiaEmissao,
+  cClassTribDoTipo,
+  camposProdutoFiscal,
+  grupoDeAjusteDoTipo,
+  descreverViolacaoDocumento,
+  dPrevEntregaParaEmissao,
+  modoGruposImposto,
+  violacoesDoDocumento,
+  ehMarketplace,
+  gtinFiscal,
+  type Endereco,
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type ModalidadeFrete,
+  type ModoGruposImposto,
   type Operacao,
   type Pagamento,
 } from '@delfrance/schemas';
@@ -27,6 +49,258 @@ import {
 import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
 import type { FiscalItem, PedidoBundle } from './bundle';
+
+/**
+ * `tPag` for dinheiro. DERIVED from the schema enum rather than written as
+ * '01' so it cannot drift from `buildPaymentsFromPagamentos`, which builds
+ * every `tPag` the same way (`String(forma).padStart(2, '0')`).
+ */
+const TPAG_DINHEIRO = String(FORMA_PAGAMENTO.dinheiro).padStart(2, '0');
+
+/**
+ * The delivery address the nota carries as `<entrega>` — `null` when the goods
+ * go to the fiscal address (#422). An unresolvable delivery ref is refused
+ * HERE, where a nota is being built, rather than at bundle load: consultas and
+ * the stored-bytes retransmit paths share the loader and must not depend on it.
+ *
+ * There is deliberately no fallback to the fiscal UF: a delivery address the
+ * operator declared but we cannot read may be interstate, and guessing
+ * intrastate is exactly the defect #422 fixes.
+ *
+ * ⚠️ An EXPORT (`operacao.ehExterior`) has no delivery address, whatever the
+ * frete ref says: `buildIde` sends `idDest=3` without looking at any UF, so a
+ * delivery UF here would decide the CFOP pick alone (a forwarder in the
+ * emitente's UF → `cfop` beside `idDest=3`), and `buildEntrega` cannot describe
+ * a foreign place (no `cPais`/`xPais`, and a foreign buyer has no CPF/CNPJ
+ * recebedor). Returning `null` keeps "`<entrega>` present ⇔ it decided the
+ * destination" and the pre-#422 export behaviour: the fiscal `EX` address picks
+ * `cfopInterestadual`, and an unreadable delivery ref refuses nothing.
+ */
+export function entregaDaOperacao(bundle: PedidoBundle): Endereco | null {
+  if (bundle.operacao.ehExterior) return null;
+  const { entrega } = bundle;
+  if (entrega.tipo === 'enderecoFiscal') return null;
+  if (entrega.tipo === 'outroEndereco') return entrega.endereco;
+  throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}': ${entrega.motivo}`);
+}
+
+/**
+ * Interestadual iff the operation's destination UF — the DELIVERY UF when there
+ * is a separate delivery address (#422), the fiscal one otherwise — differs
+ * from the emitente's sede UF; it picks `cfopInterestadual` over `cfop` per
+ * item. The destination comes from the library's `ufDestinoOperacao`, the same
+ * function `buildIde` decides `idDest` with, over the same `enderecoEntrega`
+ * this module hands the generator — so CFOP and idDest cannot disagree (SEFAZ
+ * 732/733). ONE derivation shared by generation (`buildGeneratorInput`) and the
+ * batch pre-allocation pre-flight (`assertNotaBuildable`).
+ */
+export function isInterstateFor(bundle: PedidoBundle): boolean {
+  return (
+    ufDestinoOperacao(bundle.enderecoDest, entregaDaOperacao(bundle)) !== bundle.filial.sede.estado
+  );
+}
+
+/**
+ * Which `<imposto>` groups every item of this nota carries — `somenteIbsCbs`
+ * for a nota de crédito/débito (finNFe 5/6, RV B25-80), `completo` otherwise.
+ * Derived ONCE from the operação by the shared `modoGruposImposto` and handed
+ * to BOTH the per-item `buildImpostoXml` and `aggregateTotals`, so a det and
+ * the total can never disagree on which buckets are on the wire.
+ */
+export function modoGruposFor(bundle: PedidoBundle): ModoGruposImposto {
+  return modoGruposImposto({
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  });
+}
+
+/**
+ * The IBS/CBS adjustment one item carries — or `undefined` when the nota's
+ * tipo binds no fixed cClassTrib (an ordinary `gIBSCBS` item) or the item has
+ * no amounts (the document rules refuse that before generation). The tipo
+ * supplies classification and group, the item its amounts. ONE projection for
+ * the det (`buildImpostoXml`) and the total (`aggregateTotals`).
+ */
+export function ajusteDoItem(bundle: PedidoBundle, it: FiscalItem): AjusteIbsCbsItem | undefined {
+  const tipo = {
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  };
+  const cClassTrib = cClassTribDoTipo(tipo);
+  const grupo = grupoDeAjusteDoTipo(tipo);
+  if (cClassTrib == null || grupo == null || it.ajusteRtc == null) return undefined;
+  return { cClassTrib, grupo, ...it.ajusteRtc };
+}
+
+/**
+ * The part of a nota that can fail on operator-fixable data, projected ONCE
+ * for both generation and the batch pre-flight so they cannot drift: the
+ * delivery address (unresolvable → refused), the document rules (a nota SEFAZ
+ * would reject whatever its items say), the per-item projection (CFOP / NCM /
+ * unidade / vDesc / imposto, in that order), and the `<entrega>` group's own
+ * wire checks. Every failure is an `NFeOrchestratorError` naming the pedido.
+ *
+ * The document rules run BEFORE the items so a nota the ERP does not emit at
+ * all (a nota de débito with the Reforma Tributária off, a tipo whose
+ * adjustment group is not built yet) says so, instead of surfacing as the
+ * first item's tribute error.
+ */
+function projetarNota(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): { readonly genItems: GeneratorItem[]; readonly enderecoEntrega: Endereco | null } {
+  const enderecoEntrega = entregaDaOperacao(bundle);
+  assertDocumentoEmitivel(bundle, items, emitRtc);
+  const genItems = buildGenItems(
+    items,
+    bundle,
+    isInterstateFor(bundle),
+    emitRtc,
+    modoGruposFor(bundle),
+  );
+  if (enderecoEntrega) assertEntregaEmitivel(bundle, enderecoEntrega);
+  return { genItems, enderecoEntrega };
+}
+
+/**
+ * The note-level references (`ide.NFref`), non-empty entries of
+ * `pedido.chNFeReferenciadas`. ONE reader for generation and the document
+ * rules, so rule 1010 (NFref and item references together) judges exactly the
+ * list that would be emitted.
+ */
+export function chNFeReferenciadasDe(bundle: PedidoBundle): string[] {
+  const raw = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
+  return Array.isArray(raw)
+    ? raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+}
+
+/**
+ * The NT 2025.002 `ide` / `emit` fields beyond the tax groups (#331) of a nota
+ * emitted at `dhEmi` — called only with the Reforma Tributária on:
+ *  - `dPrevEntrega` from the pedido's `freteInicial.dataPrevisaoEntrega`, read
+ *    as a date in the emitente's legal time and OMITTED when B10a would refuse
+ *    it (`dPrevEntregaParaEmissao`) — a derived value never blocks a nota;
+ *  - `gPagAntecipado` from `pedido.chNFePagamentoAntecipado`, which the
+ *    document rules judged before generation;
+ *  - `ISUFEmit` from `filial.isuf` (C22-10 judged by the same rules).
+ */
+export function rtcDaNota(
+  bundle: PedidoBundle,
+  dhEmi: Date,
+  modFrete: ModalidadeFrete,
+): GeneratorRtc {
+  const offset = offsetForUF(bundle.filial.sede.estado);
+  const dia = (d: Date) => {
+    const p = datePartsInOffset(d, offset);
+    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+  };
+  const previsaoUs = bundle.frete?.dataPrevisaoEntrega ?? null;
+  const dPrevEntrega = dPrevEntregaParaEmissao({
+    previsao: previsaoUs == null ? null : dia(new Date(microsToMillis(previsaoUs))),
+    emissao: dia(dhEmi),
+    finNFe: bundle.operacao.finNFe ?? 1,
+    modFrete,
+  });
+  const pagAntecipado = chNFePagamentoAntecipadoDe(bundle);
+  const isuf = bundle.filial.isuf ?? null;
+  return {
+    ...(dPrevEntrega != null ? { dPrevEntrega } : {}),
+    ...(pagAntecipado.length > 0 ? { pagAntecipado } : {}),
+    ...(isuf != null ? { isufEmit: isuf } : {}),
+  };
+}
+
+/**
+ * `ide/gPagAntecipado/refNFe` (#331): non-empty entries of
+ * `pedido.chNFePagamentoAntecipado`. ONE reader for generation and the
+ * document rules, like {@link chNFeReferenciadasDe}.
+ */
+export function chNFePagamentoAntecipadoDe(bundle: PedidoBundle): string[] {
+  const raw = (bundle.pedido as { chNFePagamentoAntecipado?: unknown }).chNFePagamentoAntecipado;
+  return Array.isArray(raw)
+    ? raw.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+}
+
+/**
+ * The NT 2025.002 document rules (`violacoesDoDocumento`, `@delfrance/schemas`
+ * — the SAME verdicts the pedido editor shows) over the nota about to be built.
+ * A `bloqueia` violation refuses it as an `NFeOrchestratorError` listing every
+ * one, before a número is consumed; an `aviso` (a rule this ERP cannot fully
+ * judge, e.g. a Nota Fiscal Avulsa in 1193/1194) is left to SEFAZ.
+ */
+function assertDocumentoEmitivel(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): void {
+  const uf = bundle.filial.sede.estado;
+  const hoje = datePartsInOffset(new Date(), offsetForUF(uf));
+  // A tipo that binds a fixed cClassTrib supplies it to every item (the item's
+  // own config is not read), so the UB14 rules judge what will be emitted.
+  const cClassTribFixo = cClassTribDoTipo({
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+  });
+  const violacoes = violacoesDoDocumento({
+    emitRtc,
+    finNFe: bundle.operacao.finNFe ?? 1,
+    tpNF: bundle.operacao.tipo === 1 ? '1' : '0',
+    tpNFDebito: bundle.operacao.tpNFDebito,
+    tpNFCredito: bundle.operacao.tpNFCredito,
+    // 1145 and the adjustment's competApur read them. Time moves forward, so a
+    // pre-flight pass stays a pass at generation; the reverse can only refuse
+    // at the turn of a month.
+    anoEmissao: hoje.year,
+    mesEmissao: hoje.month,
+    chNFeReferenciadas: chNFeReferenciadasDe(bundle),
+    destinatarioDocumento: bundle.cliente.cpf_cnpj ?? null,
+    emitenteDocumento: bundle.filial.cnpj,
+    emitenteCUF: cUFFromUF(uf),
+    chNFePagamentoAntecipado: chNFePagamentoAntecipadoDe(bundle),
+    emitenteISUF: bundle.filial.isuf ?? null,
+    emitenteCMun: bundle.filial.sede.codigoMunicipio ?? null,
+    // nItem = the det position `buildGenItems` assigns (i + 1); cClassTrib is
+    // the resolved imposto's — null when the item carries no IBS/CBS config.
+    itens: items.map((it, i) => ({
+      nItem: i + 1,
+      dfeReferenciado: it.dfeReferenciado,
+      cClassTrib: cClassTribFixo ?? it.imposto.configuracaoIBSCBS?.cClassTrib ?? null,
+      ajusteRtc: it.ajusteRtc,
+    })),
+  });
+  if (!bloqueiaEmissao(violacoes)) return;
+  const motivos = violacoes
+    .filter((v) => v.severidade === SEVERIDADE_VIOLACAO.bloqueia)
+    .map(descreverViolacaoDocumento);
+  throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}': ${motivos.join('; ')}`);
+}
+
+/**
+ * Dry-run the library's `buildEntrega` — the exact builder `generateNFe` runs —
+ * so a delivery address the group cannot carry (no identifiable recebedor, a
+ * cMun from another UF, a one-letter street…) fails as an `NFeOrchestratorError`
+ * BEFORE a número is allocated. Left to generation, `NFePartiesError` is a class
+ * the batch path does not carry: it would consume the número and leave a
+ * placeholder (#506).
+ */
+function assertEntregaEmitivel(bundle: PedidoBundle, enderecoEntrega: Endereco): void {
+  try {
+    buildEntrega(bundle.cliente, enderecoEntrega);
+  } catch (err) {
+    if (err instanceof NFePartiesError) {
+      throw new NFeOrchestratorError(
+        `pedido '${bundle.pedidoId}': delivery address — ${err.message}`,
+      );
+    }
+    throw err;
+  }
+}
 
 /**
  * Project the validated fiscal items + filial + cliente + operação +
@@ -51,8 +325,7 @@ export function buildGeneratorInput(
   contingencia?: { readonly dhCont: Date | null; readonly xJust: string | null } | null,
   emitRtc?: boolean,
 ): GeneratorInput {
-  const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
-  const genItems = buildGenItems(items, bundle, isInterstate, emitRtc === true);
+  const { genItems, enderecoEntrega } = projetarNota(bundle, items, emitRtc === true);
 
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto a det's prod.vFrete (item level)
@@ -92,15 +365,24 @@ export function buildGeneratorInput(
   const totals = aggregateTotals(
     // `vProd` = GROSS (rolls into ICMSTot.vProd = Σ wire <vProd>); `vBaseTributavel`
     // = net-of-unit-discount base for the RTC total (matches the per-item base
-    // buildGenItems passes to buildImpostoXml). vNF subtracts `vDesc` below.
+    // buildGenItems passes to buildImpostoXml) — also the PIS/COFINS percent
+    // base, so ICMSTot vPIS/vCOFINS equal Σ item values (602/603). vNF
+    // subtracts `vDesc` below. `qTrib` is the det's `<qTrib>`, the per-unit
+    // PIS/COFINS `qBCProd` (same `it.quantidade` buildItemImpostoXml passes).
     // `indTot` mirrors the det projection (same `indTotFor`) so the wire flag
     // and the ICMSTot gating can never diverge.
     items.map((it) => ({
-      item: { vProd: it.vProdBruto, vBaseTributavel: it.vProd, indTot: indTotFor(it) },
+      item: {
+        vProd: it.vProdBruto,
+        vBaseTributavel: it.vProd,
+        qTrib: it.quantidade,
+        indTot: indTotFor(it),
+      },
       imposto: it.imposto,
+      ajuste: ajusteDoItem(bundle, it),
     })),
     { vFrete, vDesc },
-    { emitRtc: emitRtc === true },
+    { emitRtc: emitRtc === true, grupos: modoGruposFor(bundle) },
   );
   const payments = buildPaymentsFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
@@ -113,40 +395,114 @@ export function buildGeneratorInput(
   // instead, naming the values so the operator fixes the pagamentos. Skipped
   // when every entry is tPag='90' (sem pagamento — the empty-list default and
   // explicit no-payment records legitimately carry vPag=0 ≠ vNF).
+  //
+  // ONE mismatch is not an error: an over-payment on a channel WE settle
+  // ourselves is change handed back, and emits <vTroco> instead of throwing.
+  // See the block below.
   const allSemPagamento = payments.every((pay) => pay.tPag === '90');
+  // Change handed back to the customer — `Σ vPag − vNF`. Rounded HERE so the
+  // wire, this guard and SEFAZ's own YA03 summation all see the same 2 decimals
+  // (`buildPagObject` documents that the caller rounds). 0 ⇒ no <vTroco>.
+  let vTroco = 0;
   if (!allSemPagamento) {
     const somaVPag = roundReais(payments.reduce((sum, pay) => sum + pay.vPag, 0));
     if (somaVPag !== totals.vNF) {
-      // ⚠️ Name the frete-emitente override when it is the likely cause (#1322).
-      // The shortfall is EXACTLY the freight whenever the issuer contracts the
-      // carrier and there is more than one pagamento: the adjustment that would
-      // have absorbed it is gated on `pagamentos.length === 1` (Flutter parity,
-      // `pedido_nfe_base.dart:1790-1821`). Without this sentence an operator
-      // reads "fix the pagamentos" while looking at two pagamentos that are
-      // both correct, with no route to the real explanation.
-      const freteEmitente =
-        bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
-      const pista =
-        freteEmitente && bundle.pagamentos.length > 1
-          ? ` O frete é por conta do emitente (R$ ${(bundle.frete?.valorCobrado ?? 0).toFixed(2)}) e o pedido tem ${bundle.pagamentos.length} pagamentos — o ajuste que soma o frete ao pagamento só se aplica quando há UM único pagamento.`
-          : '';
-      throw new NFeOrchestratorError(
-        `pedido '${bundle.pedidoId}': payments total (R$ ${somaVPag.toFixed(2)}) differs ` +
-          `from the NF-e total (R$ ${totals.vNF.toFixed(2)}) — SEFAZ would reject with cStat ` +
-          `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.${pista}`,
+      // An over-payment is LEGAL with a troco: 866 is literally "ausência de
+      // troco quando o valor dos pagamentos informados for maior que o total da
+      // nota" (YA03-20) — the rejection names its own remedy. Emit one wherever
+      // emitting one is honest, instead of blocking the nota and leaving the
+      // operator to edit the pagamento down (destroying the cash record).
+      //
+      // TWO axes must agree, and BOTH are load-bearing.
+      //
+      // (1) WHO SETTLES THE PAYMENT — never buyer presence. A WhatsApp order
+      //     paid in cash to the motoboy is `indPres='2'` (não presencial) and
+      //     still hands back real change, so `indPres` is the wrong axis and
+      //     must not be "fixed" back to it. On a marketplace the platform settles
+      //     the payment and no change can exist, so there Σ vPag > vNF is a data
+      //     defect (duplicated / over-recorded pagamento) — precisely what this
+      //     guard was built to catch (#394) — and must keep throwing.
+      //
+      // (2) HOW MUCH OF THE EXCESS CAN BE REAL — change comes out of CASH. No
+      //     acquirer refunds R$ 10 on a R$ 110 card capture, and a PIX / boleto /
+      //     vale over-payment is the SAME over-recorded pagamento as on a
+      //     marketplace, just on our own counter. Axis (1) alone would wave all
+      //     of those through on balcão/whatsapp/nenhuma, silently emitting a nota
+      //     for a row that used to throw and telling the operator nothing.
+      //
+      //     ⚠️ This is also what keeps <pag> and <cobr> consistent.
+      //     `buildCobrFromPagamentos` builds the duplicatas from
+      //     `bundle.pagamentos`, knows nothing about a troco, and its doc block
+      //     requires them to stay consistent with <pag> and vNF. A duplicata is
+      //     never `tPag='01'`, so an over-recorded one can no longer emit a
+      //     R$ 110 fatura beside a R$ 10 troco on a R$ 100 nota — a receivable
+      //     overstated against its own nota, the change pure fiction on an
+      //     `indPag='1'` payment where no money has moved yet.
+      //
+      //     `cheque` (`tPag='02'`) is deliberately NOT cash-like: handing cash
+      //     back against a cheque is not this counter's flow. Widening it is one
+      //     entry in the filter, and a business decision, not a mechanical one.
+      //
+      // ⚠️ `ehMarketplace` is TOLERANT by design (see its doc comment): a tipo
+      // outside the enum — the migrated legacy corpus carries wire-format enums
+      // `integracaoTipoSchema` does not model — answers "is a marketplace", and
+      // an unreadable tipo reaches us as null, which takes the same arm. Unknown
+      // channel ⇒ no troco ⇒ throw. Do NOT invert this into a whitelist of
+      // marketplace tipos: that would let an unreadable tipo emit a troco.
+      const excedente = roundReais(somaVPag - totals.vNF);
+      const vDinheiro = roundReais(
+        payments
+          .filter((pay) => pay.tPag === TPAG_DINHEIRO)
+          .reduce((sum, pay) => sum + pay.vPag, 0),
       );
+      const canalDevolveTroco =
+        bundle.integracaoTipo != null && !ehMarketplace(bundle.integracaoTipo);
+      if (excedente > 0 && canalDevolveTroco && excedente <= vDinheiro) {
+        vTroco = excedente;
+      } else {
+        // ⚠️ Name the frete-emitente override when it is the likely cause (#1322).
+        // The shortfall is EXACTLY the freight whenever the issuer contracts the
+        // carrier and there is more than one pagamento: the adjustment that would
+        // have absorbed it is gated on `pagamentos.length === 1` (Flutter parity,
+        // `pedido_nfe_base.dart:1790-1821`). Without this sentence an operator
+        // reads "fix the pagamentos" while looking at two pagamentos that are
+        // both correct, with no route to the real explanation.
+        const freteEmitente =
+          bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
+        const pista =
+          freteEmitente && bundle.pagamentos.length > 1
+            ? ` O frete é por conta do emitente (R$ ${(bundle.frete?.valorCobrado ?? 0).toFixed(2)}) e o pedido tem ${bundle.pagamentos.length} pagamentos — o ajuste que soma o frete ao pagamento só se aplica quando há UM único pagamento.`
+            : '';
+        // On an over-payment, say WHY troco was not the answer — otherwise "fix
+        // the pagamentos" reads as nonsense next to a footer showing a Troco.
+        let pistaTroco = '';
+        if (excedente > 0) {
+          if (bundle.integracaoTipo == null) {
+            pistaTroco = ` A integração do pedido não informa o campo "tipo", então o excedente não pode ser emitido como troco — confira o cadastro da integração.`;
+          } else if (!canalDevolveTroco) {
+            pistaTroco = ` O pagamento é administrado pelo canal de venda (integracao.tipo=${bundle.integracaoTipo}), que não devolve troco — confira se há pagamento duplicado ou com valor acima do cobrado.`;
+          } else {
+            pistaTroco = ` O excedente de R$ ${excedente.toFixed(2)} só seria troco se houvesse dinheiro (tPag=01) que o cobrisse, e este pedido tem R$ ${vDinheiro.toFixed(2)} em dinheiro — não se devolve troco de cartão, PIX, boleto ou vale. Confira se há pagamento duplicado ou com valor acima do cobrado.`;
+          }
+        }
+        throw new NFeOrchestratorError(
+          `pedido '${bundle.pedidoId}': payments total (R$ ${somaVPag.toFixed(2)}) differs ` +
+            `from the NF-e total (R$ ${totals.vNF.toFixed(2)}) — SEFAZ would reject with cStat ` +
+            `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.${pista}${pistaTroco}`,
+        );
+      }
     }
   }
 
   // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
-  // stores chaves in `chNFeReferenciadas` (44-digit validated on the FiscalTab);
+  // stores chaves in `chNFeReferenciadas` (CHAVE_NFE_REGEX-validated on the FiscalTab);
   // buildIde re-validates each and throws on a malformed one.
-  const rawRefs = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
-  const chNFeReferenciadas = Array.isArray(rawRefs)
-    ? rawRefs.filter((c): c is string => typeof c === 'string' && c.length > 0)
-    : [];
+  const chNFeReferenciadas = chNFeReferenciadasDe(bundle);
 
   const transpOpts = buildTranspFromFrete(bundle.frete);
+  // ONE instant for the nota and for the forecast window judged against it.
+  const dhEmi = new Date();
+  const rtc = emitRtc === true ? rtcDaNota(bundle, dhEmi, transpOpts.modFrete) : null;
   const cobr = buildCobrFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
     frete: bundle.frete,
@@ -162,21 +518,25 @@ export function buildGeneratorInput(
     numeracao,
     serie,
     tpEmis,
-    dhEmi: new Date(),
+    dhEmi,
     filial: bundle.filial,
     operacao: bundle.operacao,
     cliente: bundle.cliente,
     enderecoDest: bundle.enderecoDest,
+    // The same value isInterstateFor decided the CFOPs with — the generator
+    // decides idDest and emits <entrega> from it (#422).
+    ...(enderecoEntrega ? { enderecoEntrega } : {}),
     itens: genItems,
     totalXml: buildTotalXml(totals),
     transpXml: buildTranspXml(transpOpts),
-    pagXml: buildPagXml(payments),
+    pagXml: buildPagXml(payments, vTroco),
     ...(cobr ? { cobr } : {}),
     ...(infAdic ? { infAdic } : {}),
     ...(exporta ? { exporta } : {}),
     ...(infIntermed ? { infIntermed } : {}),
     ...(cNF ? { cNF } : {}),
     ...(chNFeReferenciadas.length > 0 ? { chNFeReferenciadas } : {}),
+    ...(rtc != null && Object.keys(rtc).length > 0 ? { rtc } : {}),
     // B28/B29 — the generator's validateInput enforces presence (tpEmis≠1)
     // and absence (tpEmis=1); here we only thread the values through.
     ...(contingencia?.dhCont ? { dhCont: contingencia.dhCont } : {}),
@@ -201,24 +561,29 @@ export function buildGenItems(
   bundle: PedidoBundle,
   isInterstate: boolean,
   emitRtc = false,
+  grupos: ModoGruposImposto = modoGruposFor(bundle),
 ): GeneratorItem[] {
   const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
   const vDescByIndex = apportionDescontos(items, bundle);
   return items.map((it, i) => {
     const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
-    const cfop = it.imposto[cfopField] ?? bundle.operacao[cfopField];
+    // The per-field operação fallback is SHARED (`@delfrance/schemas`, #745): a
+    // marketplace registering this produto's fiscal data must say what this nota
+    // says. The throws stay here — absence is the nota's decision to make.
+    const campos = camposProdutoFiscal(it.imposto, bundle.operacao);
+    const cfop = campos[cfopField];
     if (!cfop) {
       throw new NFeOrchestratorError(
         `${where}: no ${cfopField} — neither imposto.${cfopField} nor operacao.${cfopField} is set`,
       );
     }
-    const NCM = it.imposto.NCM ?? bundle.operacao.NCM;
+    const NCM = campos.NCM;
     if (!NCM) {
       throw new NFeOrchestratorError(
         `${where}: no NCM — neither imposto.NCM nor operacao.NCM is set`,
       );
     }
-    const unidade = it.imposto.unidade ?? bundle.operacao.unidade;
+    const unidade = campos.unidade;
     if (!unidade) {
       throw new NFeOrchestratorError(
         `${where}: no unidade — neither imposto.unidade nor operacao.unidade is set`,
@@ -226,10 +591,10 @@ export function buildGenItems(
     }
     // CEST is optional — required only when the product is in the CEST
     // list. Item wins, operação as fallback, omit when neither set.
-    const CEST = it.imposto.CEST ?? bundle.operacao.CEST;
+    const CEST = campos.CEST;
 
     const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
-    const cEAN = it.gtin && /^\d{8,14}$/.test(it.gtin) ? it.gtin : 'SEM GTIN';
+    const cEAN = gtinFiscal(it.gtin) ?? 'SEM GTIN';
     const vDesc = vDescByIndex[i]!;
     if (vDesc > it.vProdBruto) {
       throw new NFeOrchestratorError(
@@ -244,6 +609,16 @@ export function buildGenItems(
       xProd: it.nomeDeVenda!, // guarded in flattenAndValidate
       NCM,
       ...(CEST ? { CEST } : {}),
+      // The remaining `<prod>` children, straight off the resolved tier — the
+      // resolver picks ONE tier whole, so there is no per-field fallback to the
+      // operação here (unlike CEST above, which the operação can supply).
+      // `buildProd` validates the NVE format and enforces the XSD's
+      // CEST-required group around `indEscala`/`CNPJFab`.
+      ...(it.imposto.NVE && it.imposto.NVE.length > 0 ? { NVE: it.imposto.NVE } : {}),
+      ...(it.imposto.indEscala != null ? { indEscala: it.imposto.indEscala } : {}),
+      ...(it.imposto.CNPJFab ? { CNPJFab: it.imposto.CNPJFab } : {}),
+      ...(it.imposto.cBenef ? { cBenef: it.imposto.cBenef } : {}),
+      ...(it.imposto.extipi ? { EXTIPI: it.imposto.extipi } : {}),
       CFOP: cfop,
       uCom: unidade,
       qCom: it.quantidade,
@@ -259,9 +634,113 @@ export function buildGenItems(
       indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
-      impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc }),
+      impostoXml: buildItemImpostoXml(it, emitRtc, grupos, ajusteDoItem(bundle, it), where),
+      // det/DFeReferenciado (#330) — judged by the document rules in projetarNota.
+      ...(it.dfeReferenciado
+        ? {
+            dfeReferenciado: {
+              chaveAcesso: it.dfeReferenciado.chaveAcesso,
+              ...(it.dfeReferenciado.nItem != null ? { nItem: it.dfeReferenciado.nItem } : {}),
+            },
+          }
+        : {}),
     };
   });
+}
+
+/**
+ * Why an item whose resolved imposto carries `configuracaoISSQN` is refused
+ * (#1656). This is an ERP policy, not an XSD-shape rule: the engine CAN build
+ * the det's `<ISSQN>` group, but an NF-e conjugada needs more than that, and
+ * none of it is emitted here:
+ *   - no `<ISSQNtot>` — `aggregateISSQN` has no caller, so the ISS totals never
+ *     reach the wire, nor do the vPIS/vCOFINS it does not sum (608/609);
+ *   - the service's `vProd` still counts in `ICMSTot.vProd` (`aggregateTotals`),
+ *     where a conjugada reports it as `ISSQNtot.vServ`;
+ *   - `buildISSQN` copies the config's `vBC`/`vISSQN` verbatim, and the editor
+ *     stores them as fixed R$ per produto/categoria/operação, so every sale
+ *     would carry the same ISS base and value whatever its price or quantity.
+ * The legacy Flutter app never emitted ISSQN either. The refusal is thrown in
+ * `buildItemImpostoXml`, so it rides #506's seat: no número is consumed.
+ */
+const ISSQN_NAO_SUPORTADO =
+  "ISSQN (configuracaoISSQN) is not supported for emission — this ERP emits no <ISSQNtot> (NF-e conjugada, #1656). Remove the ISSQN config from the item's imposto (produto, categoria, regra or operação)";
+
+/**
+ * `buildImpostoXml` for one item, with the engine's operator-fixable tribute
+ * errors (`NFeTributeError` — a partial ICMSSN500/900 sub-group, a missing
+ * CSOSN sub-config, CRT 3/4, a draft `configuracaoIBSCBS` while RTC is on —
+ * and `TributeFormatError`, a value the wire format cannot carry) re-thrown as
+ * `NFeOrchestratorError` prefixed with the item's `where`. That is the same
+ * class `flattenAndValidate` and the CFOP / NCM / unidade checks above report:
+ * the route answers 400 (not retried by the client) and the batch path files
+ * it under errorCode 'NFeOrchestratorError'. Anything else is not an
+ * operator-fixable config defect and is re-thrown untouched (rule 6).
+ *
+ * An imposto carrying `configuracaoISSQN` is refused the same way, before the
+ * engine is called (`ISSQN_NAO_SUPORTADO`, #1656). Being here, inside
+ * `buildGenItems`, is what keeps it from failing a member that will not
+ * generate. The single path generates before the allocation's first write and
+ * never for a stored-bytes, EPEC, skip or in-flight doc. The batch dry-runs it
+ * for EVERY prepped member through `assertNotaBuildable` (`tributePreflight`),
+ * but `runChunkAllocateTx` applies that verdict only to a member that would
+ * allocate or regenerate, and discards it for those docs. Never move it into
+ * `prepareEmission`, whose throw fails the member whatever its nfev4 doc holds.
+ */
+function buildItemImpostoXml(
+  it: FiscalItem,
+  emitRtc: boolean,
+  grupos: ModoGruposImposto,
+  ajuste: AjusteIbsCbsItem | undefined,
+  where: string,
+): string {
+  if (it.imposto.configuracaoISSQN != null) {
+    throw new NFeOrchestratorError(`${where}: ${ISSQN_NAO_SUPORTADO}`);
+  }
+  try {
+    // `qTrib` is the per-unit PIS/COFINS `qBCProd` (CST 03, and CST 49–99 with
+    // `vAliqProd`); it equals the det's `<qTrib>` by construction — both come
+    // from `it.quantidade`. The PIS/COFINS percent base stays `it.vProd` (net
+    // of the unit discount), in parity with PISAliq and RTC, and is the same
+    // `vBaseTributavel` the aggregateTotals item above sums from.
+    return buildImpostoXml(
+      it.imposto,
+      { vProd: it.vProd, qTrib: it.quantidade },
+      { emitRtc, grupos, ...(ajuste != null ? { ajuste } : {}) },
+    );
+  } catch (err) {
+    if (err instanceof NFeTributeError || err instanceof TributeFormatError) {
+      throw new NFeOrchestratorError(`${where}: ${err.message}`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Pre-allocation tribute pre-flight (#506): dry-run the per-item projection
+ * and discard it. The batch path needs it because its chunk transaction
+ * commits the nNF and a chave-less placeholder BEFORE generating, so a throw
+ * at generation consumes an nNF and leaves a placeholder needing fix +
+ * re-emit or inutilização. `emitir.ts` runs it per member after prep
+ * (`tributePreflight`) and `runChunkAllocateTx` applies the verdict only to a
+ * member that would allocate or regenerate — never to one whose nfev4 doc is
+ * skipped or retransmitted from stored bytes. The single path does not use
+ * it: its transaction generates before its first write.
+ *
+ * It is the SAME projection generation runs — `projetarNota`, with the same
+ * `emitRtc`, never a parallel re-implementation — so:
+ *   - the error precedence (delivery address → CFOP → NCM → unidade → vDesc →
+ *     imposto → `<entrega>` wire checks) and the messages are identical to
+ *     generation's;
+ *   - a pass guarantees generation's projection cannot throw: it is pure over
+ *     the same captured bundle, `items` and `emitRtc`.
+ */
+export function assertNotaBuildable(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  emitRtc: boolean,
+): void {
+  projetarNota(bundle, items, emitRtc);
 }
 
 /**

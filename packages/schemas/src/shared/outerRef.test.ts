@@ -7,6 +7,7 @@ import {
   outerRefLooseSchema,
   outerRefSchema,
   parseRef,
+  toDocPathOrNull,
   toOuterRef,
   toOuterRefOrNull,
 } from './outerRef';
@@ -74,6 +75,50 @@ describe('outerRef helpers', () => {
   it('toOuterRefOrNull returns null for every non-string (raw snapshot fields)', () => {
     for (const bad of [null, undefined, 42, true, {}, [], { path: 'col/id' }]) {
       expect(toOuterRefOrNull(bad)).toBeNull();
+    }
+  });
+
+  // `toDocPathOrNull` is a FOLD: its output decides which document an SDK
+  // `doc()` call reads, and apps/nfe keys its batch read memo on it. So pin both
+  // halves — the forms that must land on the SAME path, and the near-misses that
+  // must NOT (CLAUDE.md, "test the fold's SCOPE").
+  it('toDocPathOrNull folds the canonical and the bare form onto one bare path', () => {
+    expect(toDocPathOrNull('documents/clientes/C1')).toBe('clientes/C1');
+    expect(toDocPathOrNull('clientes/C1')).toBe('clientes/C1');
+    expect(toDocPathOrNull('documents/clientes/C1/enderecos/E1')).toBe('clientes/C1/enderecos/E1');
+    expect(toDocPathOrNull('clientes/C1/enderecos/E1')).toBe('clientes/C1/enderecos/E1');
+  });
+
+  it('toDocPathOrNull keeps a different parent or id distinct', () => {
+    const base = toDocPathOrNull('documents/clientes/C1/enderecos/E1');
+    expect(toDocPathOrNull('documents/clientes/C2/enderecos/E1')).not.toBe(base);
+    expect(toDocPathOrNull('documents/clientes/C1/enderecos/E2')).not.toBe(base);
+    // Same id under another collection is another document.
+    expect(toDocPathOrNull('documents/fornecedores/C1/enderecos/E1')).not.toBe(base);
+  });
+
+  it('toDocPathOrNull never returns a documents/-prefixed or odd-segment path', () => {
+    for (const raw of ['documents/col/id', 'col/id', 'documents/a/b/c/d']) {
+      const path = toDocPathOrNull(raw)!;
+      expect(path.startsWith('documents/')).toBe(false);
+      expect(path.split('/').length % 2).toBe(0);
+    }
+  });
+
+  it('toDocPathOrNull returns null for anything that is not a document path', () => {
+    for (const bad of [
+      'bareId',
+      '',
+      'documents',
+      'documents/col',
+      'documents/clientes/C1/enderecos',
+      null,
+      undefined,
+      42,
+      {},
+      { path: 'col/id' },
+    ]) {
+      expect(toDocPathOrNull(bad)).toBeNull();
     }
   });
 

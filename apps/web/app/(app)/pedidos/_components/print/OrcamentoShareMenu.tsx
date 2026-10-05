@@ -92,6 +92,7 @@ export function OrcamentoShareMenu({ db, pedidoId }: OrcamentoShareMenuProps) {
             withArrow
           >
             <ActionIcon
+              type="button"
               variant="default"
               size="lg"
               aria-label="Compartilhar orçamento"

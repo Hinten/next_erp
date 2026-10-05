@@ -26,10 +26,22 @@ import { useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO_LABELS,
+  emissaoNFeBloqueadaPorEstado,
+} from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 
+import { getFirebaseFirestore } from '@/lib/firebase/client';
+
 import { useNFeClient } from './client';
-import { notificationForNFeError, notificationForNFeResult } from './errors';
+import { carregadorContextoRejeicao } from './contextoRejeicao';
+import {
+  notificationForNFeErrorComContexto,
+  notificationForNFeResult,
+  type CarregarContextoRejeicao,
+} from './errors';
 import {
   showCopyableNotification,
   showErrorNotification,
@@ -68,10 +80,19 @@ interface PedidoRow {
  * Pure dispatcher — extracted from the React hook for unit testing.
  * Single-pedido path only; N>1 throws `NFeLoteNotImplementedError`
  * so the caller (React hook) knows to open the dialog instead.
+ *
+ * `carregarContexto` is REQUIRED, deliberately without a default: it
+ * is what turns a cStat 805 rejection into guidance plus a cadastro
+ * link (#852), and an optional parameter would let a caller drop it
+ * and silently fall back to the generic toast. It runs only for a
+ * rejection that needs context — never on success, never for any
+ * other error. It reads the pedido itself rather than taking the row's
+ * `data`: the Pipelines projection only guarantees `dependsOn` fields.
  */
 export async function dispatchEmitirNFe(
   client: NFeHttpClient,
   rows: ReadonlyArray<PedidoRow>,
+  carregarContexto: CarregarContextoRejeicao,
 ): Promise<void> {
   if (rows.length === 0) return;
   if (rows.length > 1) {
@@ -84,9 +105,10 @@ export async function dispatchEmitirNFe(
     // "não sincronizado" wait-and-retry) need to be copy-pasteable for
     // diagnosis, exactly like the error path below.
     showCopyableNotification(notificationForNFeResult(result));
+    // eslint-disable-next-line delfrance/no-error-as-sole-instanceof -- UI boundary: notificationForNFeErrorComContexto maps every error to a toast; a rethrow would show nothing
   } catch (err) {
     if (!(err instanceof Error)) throw err;
-    showErrorNotification(notificationForNFeError(err));
+    showErrorNotification(await notificationForNFeErrorComContexto(err, carregarContexto));
   }
 }
 
@@ -121,6 +143,32 @@ export function useEmitirNFeAction(): {
     label: 'Emitir NF-e',
     color: 'teal',
     requiresSelection: true,
+    /**
+     * Refuse a pedido the emission would reject anyway, and say which.
+     *
+     * The estado half REUSES the server predicate rather than restating its
+     * set: `prepareEmission` blocks the same states and answers with
+     * `NFeBlockedError`, so a second copy of that list here would drift toward
+     * plausible while both stayed green.
+     *
+     * ⚠️ The FRETE half has no server counterpart — a cancelled shipment does
+     * NOT block emission server-side, so this is the only place it is caught.
+     * That makes it the half actually worth having: the estado half moves
+     * where the operator learns, this one is new information.
+     */
+    rowIneligibleReason: (row) => {
+      const p = row.data;
+      if (p.estado && emissaoNFeBloqueadaPorEstado(p.estado)) {
+        return `${p.numero ?? row.id}: pedido ${ESTADO_PEDIDO_LABELS[p.estado] ?? p.estado}`;
+      }
+      if (p.freteInicial?.estado === ESTADO_FRETE.cancelado) {
+        return `${p.numero ?? row.id}: frete cancelado`;
+      }
+      return null;
+    },
+    // Read by the predicate above, so they must survive the Pipelines
+    // `select()` projection — see `ActionConfig.rowEligibilityFields`.
+    rowEligibilityFields: ['estado', 'numero', 'freteInicial'],
     // No `refreshOnComplete`: the NF column (`NFCell`) is a live `onSnapshot` on
     // `pedidos/{id}/nfev4`, so it reflects the new estado on its own. A table-wide
     // re-query here would only flash the list to skeletons and drop the selection
@@ -151,7 +199,7 @@ export function useEmitirNFeAction(): {
         return;
       }
       try {
-        await dispatchEmitirNFe(client, rows);
+        await dispatchEmitirNFe(client, rows, carregadorContextoRejeicao(getFirebaseFirestore()));
       } catch (err) {
         if (err instanceof NFeLoteNotImplementedError) {
           // Defensive — the rows.length>1 check above should have

@@ -5,8 +5,14 @@
  * (`../types/nfe-schema`, see ADR 0004) to build and parse documents in the
  * exact `xs:sequence` order SEFAZ requires. Output carries no formatting
  * whitespace (MOC §4.2.1.3) so the signed `infNFe` digest is stable.
+ *
+ * Consulta Cadastro (layout 2.00) is a separate codegen pack
+ * (`../types/conscad-schema`) and gets its own `serializeConsCad` /
+ * `parseConsCad` pair over the same walker — its type names are never looked
+ * up in the NF-e `META`, and vice versa.
  */
-import { META, ROOTS } from '../types/nfe-schema';
+import { META as CONSCAD_META, ROOTS as CONSCAD_ROOTS } from '../types/conscad-schema';
+import { META, ROOTS, type FieldDef } from '../types/nfe-schema';
 
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
@@ -20,7 +26,9 @@ export class NFeXmlError extends Error {
 /** A document value: nested objects, string leaves, and arrays of either. */
 export type XmlValue = { [key: string]: unknown };
 
+type Meta = Record<string, readonly FieldDef[]>;
 type RootKey = keyof typeof ROOTS;
+type ConsCadRootKey = keyof typeof CONSCAD_ROOTS;
 
 // ---------------------------------------------------------------------------
 // Serialize
@@ -35,16 +43,32 @@ function escapeAttr(s: string): string {
 /** Serialize a value into the XML for a root element (e.g. `enviNFe`). */
 export function serialize(root: RootKey, value: XmlValue): string {
   const { xmlName, type } = ROOTS[root];
-  return `<?xml version="1.0" encoding="UTF-8"?>${buildElement(xmlName, type, value, true)}`;
+  return serializeDocument(META, xmlName, type, value);
+}
+
+/** Serialize a value into the XML for a Consulta Cadastro root (`ConsCad`). */
+export function serializeConsCad(root: ConsCadRootKey, value: XmlValue): string {
+  const { xmlName, type } = CONSCAD_ROOTS[root];
+  return serializeDocument(CONSCAD_META, xmlName, type, value);
 }
 
 /** Serialize a value as a bare element (no XML declaration, no namespace). */
 export function serializeFragment(type: string, tag: string, value: XmlValue): string {
-  return buildElement(tag, type, value, false);
+  return buildElement(META, tag, type, value, false);
 }
 
-function buildElement(tag: string, typeName: string, value: XmlValue, isRoot: boolean): string {
-  const defs = META[typeName];
+function serializeDocument(meta: Meta, tag: string, typeName: string, value: XmlValue): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>${buildElement(meta, tag, typeName, value, true)}`;
+}
+
+function buildElement(
+  meta: Meta,
+  tag: string,
+  typeName: string,
+  value: XmlValue,
+  isRoot: boolean,
+): string {
+  const defs = meta[typeName];
   if (!defs) throw new NFeXmlError(`Unknown complexType '${typeName}'`);
   let attrs = isRoot ? ` xmlns="${NFE_NS}"` : '';
   let body = '';
@@ -63,7 +87,7 @@ function buildElement(tag: string, typeName: string, value: XmlValue, isRoot: bo
       } else if (d.type === '#string') {
         body += `<${d.name}>${escapeText(String(item))}</${d.name}>`;
       } else {
-        body += buildElement(d.name, d.type, item as XmlValue, false);
+        body += buildElement(meta, d.name, d.type, item as XmlValue, false);
       }
     }
   }
@@ -82,14 +106,62 @@ interface XNode {
   raw: string;
 }
 
+const ENTIDADES: Readonly<Record<string, string>> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
+
+/**
+ * Decode the five predefined entities AND numeric character references
+ * (`&#231;`, `&#xE3;`) in ONE pass, so a decoded `&` is never decoded again.
+ * Numeric references are legal anywhere XML text is, and signing does not pin
+ * them (C14N writes the character), so SEFAZ may hand back `Corre&#231;&#227;o`
+ * for a text we sent as `Correção` — left raw, a comparison against our own
+ * text would call it different (#1094 F1b). A reference to anything that is
+ * not an XML `Char` (XML 1.0 §2.2 — `&#0;`, a lone surrogate, `&#xFFFE;`, past
+ * U+10FFFF) is left as written rather than turned into an ill-formed string.
+ */
 function unescapeText(s: string): string {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
+  return s.replace(/&(lt|gt|amp|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);/g, (ref, nome: string) => {
+    if (!nome.startsWith('#')) return ENTIDADES[nome] ?? ref;
+    const codigo = nome[1] === 'x' ? parseInt(nome.slice(2), 16) : parseInt(nome.slice(1), 10);
+    return ehCharXml(codigo) ? String.fromCodePoint(codigo) : ref;
+  });
+}
+
+/** XML 1.0 §2.2 `Char`: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]. */
+function ehCharXml(c: number): boolean {
+  return (
+    c === 0x9 ||
+    c === 0xa ||
+    c === 0xd ||
+    (c >= 0x20 && c <= 0xd7ff) ||
+    (c >= 0xe000 && c <= 0xfffd) ||
+    (c >= 0x10000 && c <= 0x10ffff)
+  );
+}
+
+/**
+ * Index of the `>` that ends the tag opened at `from`, skipping any `>` inside a
+ * quoted attribute value — `a="x/>"` must neither end the tag nor make it look
+ * self-closing. -1 when truncated input never closes it.
+ */
+function fimDaTag(text: string, from: number): number {
+  let aspas: string | null = null;
+  for (let j = from; j < text.length; j++) {
+    const ch = text[j];
+    if (aspas !== null) {
+      if (ch === aspas) aspas = null;
+    } else if (ch === '"' || ch === "'") {
+      aspas = ch;
+    } else if (ch === '>') {
+      return j;
+    }
+  }
+  return -1;
 }
 
 const localName = (tag: string): string =>
@@ -110,30 +182,47 @@ function parseXml(text: string): XNode {
       break;
     }
     if (lt > i) top().node.text += text.slice(i, lt);
+    // Each of these branches scans for a terminator. On truncated input the
+    // scan returns -1, and `-1 + n` would move `i` BACKWARDS — the loop then
+    // re-reads earlier tags forever. Break instead, so `i` only moves forward
+    // and the caller sees a partial tree (a missing root/child it can reject).
     if (text.startsWith('<?', lt)) {
-      i = text.indexOf('?>', lt) + 2;
+      const close = text.indexOf('?>', lt);
+      if (close === -1) break;
+      i = close + 2;
       continue;
     }
     if (text.startsWith('<!--', lt)) {
-      i = text.indexOf('-->', lt) + 3;
+      const close = text.indexOf('-->', lt);
+      if (close === -1) break;
+      i = close + 3;
       continue;
     }
     if (text.startsWith('<![CDATA[', lt)) {
       const end = text.indexOf(']]>', lt);
-      top().node.text += text.slice(lt + 9, end);
+      if (end === -1) break;
+      // CDATA is literal: escape it into `text` so the ONE decode every reader
+      // applies gives back exactly what was written (`&amp;` stays `&amp;`).
+      top().node.text += escapeText(text.slice(lt + 9, end));
       i = end + 3;
       continue;
     }
     if (text.startsWith('<!', lt)) {
-      i = text.indexOf('>', lt) + 1;
+      const close = text.indexOf('>', lt);
+      if (close === -1) break;
+      i = close + 1;
       continue;
     }
-    const gt = text.indexOf('>', lt);
+    const gt = fimDaTag(text, lt);
     if (gt === -1) break;
     let inner = text.slice(lt + 1, gt).trim();
     if (inner.startsWith('/')) {
-      const closed = stack.pop();
-      if (closed) closed.node.raw = text.slice(closed.start, gt + 1);
+      // A stray close tag with nothing open is ignored: popping `root` would
+      // leave `top()` undefined and crash the next read.
+      if (stack.length > 1) {
+        const closed = stack.pop();
+        if (closed) closed.node.raw = text.slice(closed.start, gt + 1);
+      }
       i = gt + 1;
       continue;
     }
@@ -168,8 +257,8 @@ function findNode(node: XNode, name: string): XNode | undefined {
   return undefined;
 }
 
-function parseElement(node: XNode, typeName: string): XmlValue {
-  const defs = META[typeName];
+function parseElement(meta: Meta, node: XNode, typeName: string): XmlValue {
+  const defs = meta[typeName];
   if (!defs) throw new NFeXmlError(`Unknown complexType '${typeName}'`);
   const obj: XmlValue = {};
   for (const d of defs) {
@@ -185,7 +274,7 @@ function parseElement(node: XNode, typeName: string): XmlValue {
         ? c.raw
         : d.type === '#string'
           ? unescapeText(c.text)
-          : parseElement(c, d.type);
+          : parseElement(meta, c, d.type);
     obj[d.name] = d.list ? matches.map(convert) : convert(first);
   }
   return obj;
@@ -194,8 +283,95 @@ function parseElement(node: XNode, typeName: string): XmlValue {
 /** Parse the XML for a root element into a typed object. */
 export function parse<T = XmlValue>(root: RootKey, xml: string): T {
   const { xmlName, type } = ROOTS[root];
-  const doc = parseXml(xml);
-  const node = findNode(doc, xmlName);
+  return parseDocument(META, xmlName, type, xml) as T;
+}
+
+/** Parse the XML for a Consulta Cadastro root (`retConsCad`) into a typed object. */
+export function parseConsCad<T = XmlValue>(root: ConsCadRootKey, xml: string): T {
+  const { xmlName, type } = CONSCAD_ROOTS[root];
+  return parseDocument(CONSCAD_META, xmlName, type, xml) as T;
+}
+
+function parseDocument(meta: Meta, xmlName: string, typeName: string, xml: string): XmlValue {
+  const node = findNode(parseXml(xml), xmlName);
   if (!node) throw new NFeXmlError(`Root element <${xmlName}> not found`);
-  return parseElement(node, type) as T;
+  return parseElement(meta, node, typeName);
+}
+
+// ---------------------------------------------------------------------------
+// Untyped reads — for the parts of a SEFAZ reply that must stay BYTES
+// ---------------------------------------------------------------------------
+
+/**
+ * The outer XML of every `<name>` element in `xml`, in document order, as the
+ * EXACT slices of the input — never re-serialized, so a signed element keeps
+ * the bytes its digest was computed over (the same reason `retEvento` is lifted
+ * verbatim in `buildProcEventoNFe`). Matches on the local name, so a `ns:`
+ * prefix is ignored; an element nested inside a match is not reported on its
+ * own, and a match left unclosed by truncated input is skipped.
+ */
+export function sliceElements(xml: string, name: string): string[] {
+  const out: string[] = [];
+  const walk = (node: XNode): void => {
+    for (const c of node.children) {
+      if (localName(c.tag) !== name) walk(c);
+      else if (c.raw !== '') out.push(c.raw);
+    }
+  };
+  walk(parseXml(xml));
+  return out;
+}
+
+/** The local name of `xml`'s document element (prolog skipped), or null when it has none. */
+export function rootElementName(xml: string): string | null {
+  const first = parseXml(xml).children[0];
+  return first === undefined ? null : localName(first.tag);
+}
+
+/** The XML-unescaped text of the first `<name>` element in `xml`, or null when there is none. */
+export function textOfFirst(xml: string, name: string): string | null {
+  const node = findNode(parseXml(xml), name);
+  return node === undefined ? null : unescapeText(node.text);
+}
+
+/**
+ * The namespaces a FRAGMENT relies on without declaring them itself — what a
+ * slice cut out of a larger document inherited from ancestors it no longer has.
+ * Scope-aware: a declaration covers only its own element and descendants.
+ *   - `padrao`: some unprefixed element has no default-namespace declaration
+ *     (`xmlns="…"`, including an explicit `xmlns=""`) in scope within the slice;
+ *   - `prefixos`: element/attribute prefixes used with no `xmlns:p` in scope
+ *     (`xml:` is predeclared and never reported).
+ */
+export function namespacesNaoDeclarados(xml: string): {
+  readonly padrao: boolean;
+  readonly prefixos: readonly string[];
+} {
+  let padrao = false;
+  const prefixos = new Set<string>();
+  const walk = (node: XNode, padraoEmEscopo: boolean, emEscopo: ReadonlySet<string>): void => {
+    for (const c of node.children) {
+      const declarados = new Set(emEscopo);
+      let padraoAqui = padraoEmEscopo;
+      const nomes: { nome: string; elemento: boolean }[] = [{ nome: c.tag, elemento: true }];
+      for (const k of Object.keys(c.attrs)) {
+        if (k === 'xmlns') padraoAqui = true;
+        else if (k.startsWith('xmlns:')) declarados.add(k.slice('xmlns:'.length));
+        else nomes.push({ nome: k, elemento: false });
+      }
+      for (const { nome, elemento } of nomes) {
+        const doisPontos = nome.indexOf(':');
+        if (doisPontos === -1) {
+          // An unprefixed ATTRIBUTE is in no namespace; only elements inherit one.
+          if (elemento && !padraoAqui) padrao = true;
+          continue;
+        }
+        const p = nome.slice(0, doisPontos);
+        if (p !== 'xml' && !declarados.has(p)) prefixos.add(p);
+      }
+      walk(c, padraoAqui, declarados);
+    }
+  };
+  walk(parseXml(xml), false, new Set());
+  return { padrao, prefixos: [...prefixos] };
 }

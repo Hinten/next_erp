@@ -1,4 +1,56 @@
-import { type Page, expect } from '@playwright/test';
+import { type Locator, type Page, expect } from '@playwright/test';
+
+export type ListMode = 'live' | 'static';
+
+export type ListModeReason =
+  | 'override'
+  | 'no-declared-query'
+  | 'filter'
+  | 'search'
+  | 'ids'
+  | 'sort';
+
+export interface ListModeExpectation {
+  mode: ListMode;
+  policy: ListMode;
+  reason: ListModeReason | null;
+}
+
+type ListModeScope = Page | Locator;
+
+/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
+function listModeIndicator(scope: ListModeScope) {
+  return scope.locator('[data-list-mode]');
+}
+
+/** Assert the TableView transport, plus its policy state when supplied. */
+export async function expectListMode(
+  scope: ListModeScope,
+  mode: ListMode,
+  reason?: ListModeReason | null,
+  policy?: ListMode,
+): Promise<void> {
+  const indicator = listModeIndicator(scope);
+  await expect(indicator).toHaveAttribute('data-list-mode', mode, { timeout: 15_000 });
+  if (reason !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-reason', reason ?? '');
+  }
+  if (policy !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-policy', policy);
+  }
+}
+
+/** Verify both sides of a list-mode transition around one completed gesture. */
+export async function transitionListMode(
+  scope: ListModeScope,
+  before: ListModeExpectation,
+  after: ListModeExpectation,
+  gesture: () => Promise<unknown>,
+): Promise<void> {
+  await expectListMode(scope, before.mode, before.reason, before.policy);
+  await gesture();
+  await expectListMode(scope, after.mode, after.reason, after.policy);
+}
 
 /**
  * Helpers for driving the generic `TableView` (`@delfrance/ui`): per-column
@@ -48,17 +100,46 @@ export async function firstRowText(page: Page): Promise<string> {
 }
 
 /**
- * Open a column's filter popover via its `Filtrar <label>` icon, type a
- * substring and apply (string columns → `contains`).
+ * The open filter popover for one column.
+ *
+ * ⚠️ Every control inside a filter popover MUST be located through this, never
+ * through `page`. Mantine's `Popover.Dropdown` carries `role="dialog"` plus
+ * `aria-labelledby` pointing at the `Filtrar <label>` trigger, so each open
+ * popover is a dialog with a UNIQUE accessible name — that is the only thing
+ * distinguishing its "Aplicar" / "Limpar" / `<label> contém` controls from
+ * identically-named controls anywhere else on the page.
+ *
+ * Page-scoped locators worked only while the column header was the sole filter
+ * surface. `ActiveFilters.tsx` already records the sibling rule for chips
+ * ("Nothing here may render a bare column label"); this is the same invariant
+ * one layer up, and it is what lets a screen grow a filter panel without
+ * reopening every call site.
+ *
+ * Every input inside renders with `withinPortal: false` (ColumnFilter.tsx), so
+ * Select listboxes and date pickers live inside this dialog too, not in a portal.
+ */
+function filterPopover(page: Page, columnLabel: string) {
+  return page.getByRole('dialog', { name: `Filtrar ${columnLabel}`, exact: true });
+}
+
+/** Open a column's filter popover via its `Filtrar <label>` icon. */
+async function openColumnFilter(page: Page, columnLabel: string) {
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  return filterPopover(page, columnLabel);
+}
+
+/**
+ * Open a column's filter popover, type a substring and apply (string columns →
+ * `contains`).
  */
 export async function applyTextFilter(
   page: Page,
   columnLabel: string,
   value: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
-  await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
+  await popover.getByRole('button', { name: 'Aplicar', exact: true }).click();
 }
 
 /**
@@ -70,26 +151,109 @@ export async function applySelectFilter(
   columnLabel: string,
   optionLabel: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
   // `getByLabel` also matches the Select's `role="listbox"` popup (same
   // `aria-labelledby`); target the combobox input explicitly.
-  await page.getByRole('combobox', { name: columnLabel, exact: true }).click();
-  await page.getByRole('option', { name: optionLabel, exact: true }).click();
+  await popover.getByRole('combobox', { name: columnLabel, exact: true }).click();
+  await popover.getByRole('option', { name: optionLabel, exact: true }).click();
+}
+
+/**
+ * Open a column's filter popover and pick one segment of a `SegmentedControl`
+ * (the NF and Cliente popovers on /pedidos use one to switch input mode). The
+ * segment applies on change; no Apply click needed.
+ *
+ * ⚠️ The radio input is NOT clickable. Mantine renders each segment as a
+ * visually hidden `<input type="radio">` (0×0, `opacity: 0`) plus a real
+ * `<label>` carrying the text. `getByRole('radio')` resolves the input — that
+ * is where its accessible name comes from — but Playwright refuses to click
+ * something that is not visible (`element is not visible`, then a 30s timeout).
+ * The label is the clickable surface, so start from the role+name and hop to
+ * the label bound to that input.
+ *
+ * ⚠️ A component test cannot catch this: jsdom has no visibility or
+ * hit-testing model, so `fireEvent.click` on the same hidden input works there.
+ * `ClienteColumnFilter.test.tsx` passes and always did.
+ *
+ * `label` cannot be located by its text instead — `hasText` is a substring
+ * match and a popover routinely holds other labels (the Cliente popover has
+ * `Filtrar por cliente`), so asking for `Cliente` would resolve two and fail
+ * strict mode.
+ *
+ * ⚠️ Nothing inside the popover can be asserted AFTER the click, and that is
+ * structural rather than a timing problem: a segment that applies a filter puts
+ * the new query in flight, `showSkeleton` goes true, and `TableView` swaps the
+ * whole `<Table>` — header, filter popovers and all — for skeletons
+ * (`TableView.tsx`, the `showSkeleton` branch). `FilterPopover` keeps `opened`
+ * in local state, so it remounts closed. The caller's row assertions are what
+ * prove the filter landed; `applySelectFilter` above has always worked this way
+ * for the same reason.
+ */
+export async function applySegmentedFilter(
+  page: Page,
+  columnLabel: string,
+  segmentLabel: string,
+): Promise<void> {
+  const popover = await openColumnFilter(page, columnLabel);
+  const radio = popover.getByRole('radio', { name: segmentLabel, exact: true });
+  const id = await radio.getAttribute('id');
+  expect(
+    id,
+    `SegmentedControl segment "${segmentLabel}" has no id to bind a label to`,
+  ).toBeTruthy();
+  await popover.locator(`label[for="${id}"]`).click();
+}
+
+/**
+ * Dismiss whatever filter popover is open.
+ *
+ * Belt-and-braces for the filters that apply on CHANGE (a Select, a segmented
+ * control), which have no "Aplicar" to dismiss themselves — unlike the text and
+ * numeric bodies, whose Apply button closes the popover.
+ *
+ * Usually there is nothing left to close: applying a filter puts the query in
+ * flight, and `TableView` swaps the whole table away for skeletons while it
+ * loads, taking every popover with it. This covers the case where it does not —
+ * a result served straight from cache, where `loading` never flips — so the
+ * next `Filtrar <label>` click is unambiguously a trigger rather than also a
+ * click-outside for a popover that is still open.
+ *
+ * Two presses: the first closes an inline Select listbox if one is still
+ * expanded, the second the popover. Both are no-ops when nothing is open.
+ */
+export async function closeColumnFilter(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+}
+
+/**
+ * The active-filter chip row's text for one chip, asserted by its phrase.
+ *
+ * ⚠️ Scoped to the chip row, never `page`: a chip's phrase carries its column
+ * label, which also appears in the table header and inside the filter popover.
+ */
+export function activeFilterChip(page: Page, text: string) {
+  return page.getByLabel('Filtros ativos').getByText(text, { exact: true });
 }
 
 /** Open a column's filter popover and click "Limpar". */
 export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByRole('button', { name: 'Limpar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByRole('button', { name: 'Limpar', exact: true }).click();
 }
 
 /**
  * Click a column header to cycle its sort (different col → asc; same → flip).
  * Targets the header's label span by exact text — the sort `onClick` lives on
  * the wrapping group, so the click bubbles up to it.
+ *
+ * ⚠️ Scoped to `thead`. The label text is not unique on the page: a filter
+ * surface listing the same column names would make a page-scoped
+ * `getByText(label, { exact: true })` resolve to several nodes and fail
+ * Playwright strict mode on every sort call site at once.
  */
 export async function clickColumnSort(page: Page, columnLabel: string): Promise<void> {
-  await page.getByText(columnLabel, { exact: true }).click();
+  await page.locator('thead').getByText(columnLabel, { exact: true }).click();
 }
 
 /** Check the selection checkbox of the row containing `text`. */

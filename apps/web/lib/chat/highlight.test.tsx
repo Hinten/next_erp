@@ -20,8 +20,19 @@ describe('splitHighlight', () => {
   });
 
   it('handles unicode / accented matches', () => {
-    const segs = splitHighlight('ação e reação', /ação/giu);
+    const segs = splitHighlight('ação e reação', /acao/giu);
     expect(marked(segs)).toEqual(['ação', 'ação']);
+  });
+
+  it('keeps decomposed accent marks inside the highlighted original span', () => {
+    const text = 'ac\u0327a\u0303o';
+    const segs = splitHighlight(text, /acao/giu);
+    expect(marked(segs)).toEqual([text]);
+    expect(segs.map((s) => s.text).join('')).toBe(text);
+  });
+
+  it('does not highlight accent-fold near misses', () => {
+    expect(marked(splitHighlight('acaso a-ção', /acao/giu))).toEqual([]);
   });
 
   it('marks adjacent matches without empty gaps', () => {
@@ -31,6 +42,10 @@ describe('splitHighlight', () => {
       { text: 'a', match: true },
       { text: 'a', match: true },
     ]);
+  });
+
+  it('coalesces a folded-only match touching an exact match', () => {
+    expect(splitHighlight('áa', /a/iu)).toEqual([{ text: 'áa', match: true }]);
   });
 
   it('guards a zero-width pattern (empty match) instead of looping forever', () => {

@@ -13,6 +13,10 @@ export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
+export {
+  apuracaoSimplesCollection,
+  simplesNacionalConfigCollection,
+} from './simplesNacionalConfigCollection';
 export { certificadoSecretoCollection } from './certificadoSecretoCollection';
 export { filialCollection } from './filialCollection';
 export { inutNumeracaoCollection } from './inutNumeracaoCollection';
@@ -50,20 +54,34 @@ export {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
 } from './produtoMercadoLivreLinkCollection';
+export {
+  produtoShopeeLinkCollection,
+  variacaoShopeeLinkCollection,
+} from './produtoShopeeLinkCollection';
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
+export { importacaoShopeeCollection } from './importacaoShopeeCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
+export {
+  impostoCategoriaCollection,
+  impostoProdutoCollection,
+  regraImpostoCollection,
+} from './impostoCollection';
 export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
 export { pagamentoCollection } from './pagamentoCollection';
+export { linkPgtoMercadoPagoCollection } from './linkPgtoMercadoPagoCollection';
 export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
 export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
+export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
+export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { clienteCollection } from './clienteCollection';
+export { clienteIdentidadeCollection } from './clienteIdentidadeCollection';
 export { conversaCollection } from './conversaCollection';
 export { mensagemCollection } from './mensagemCollection';
 export { credenciaisWhatsappCollection } from './credenciaisWhatsappCollection';
@@ -71,9 +89,18 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { backfillPedidosShopeeCollection } from './backfillPedidosShopeeCollection';
+export { liquidacaoShopeeCollection } from './liquidacaoShopeeCollection';
 export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
+export { estoqueShopeeSyncCollection } from './estoqueShopeeSyncCollection';
 export {
   envioPrecoMercadoLivreCollection,
   relatorioEnvioPrecoMercadoLivreCollection,
 } from './envioPrecoMercadoLivreCollection';
+export {
+  envioPrecoShopeeCollection,
+  relatorioEnvioPrecoShopeeCollection,
+} from './envioPrecoShopeeCollection';
+export { avisoCollection } from './avisoCollection';
+export * from './whatsappContatoCollection';

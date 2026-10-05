@@ -6,28 +6,77 @@
  * `validateXsd('NFe', signedXml)` — so XSD drift surfaces locally,
  * not as a SEFAZ cStat=215 in production.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import forge from 'node-forge';
 
-import { signNFe, validateXsd, type NFeCertificate } from '../../src/index';
+import {
+  computePisCofinsItemValues as rootComputePisCofinsItemValues,
+  signNFe,
+  validateXsd,
+  type NFeCertificate,
+} from '../../src/index';
 
 import {
   aggregateISSQN,
   aggregateRetTrib,
   aggregateTotals,
   buildImpostoXml,
+  buildIS,
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  computePisCofinsItemValues,
   fmtMoney,
+  fmtQuantity,
   fmtRate,
+  fmtUnitValue,
   NFeTributeError,
   TributeFormatError,
+  type ConfCOFINS,
+  type ConfiguracaoICMS,
+  type ConfiguracaoISRtc,
   type ConfiguracaoISSQN,
+  type ConfPIS,
   type Imposto,
+  type ModBCST,
   type Retencao,
+  type TributeItem,
 } from '../../src/tribute/index';
-import { IND_INCENTIVO, IND_ISS, ORIGEM } from '@delfrance/schemas';
+// Not on the barrel (only `buildPagXml` is) — reached directly so the typed
+// <pag> value can be asserted without widening the package's public surface.
+import { buildPagObject } from '../../src/tribute/pag';
+import type {
+  TNFe_infNFe_det_imposto_COFINS_COFINSAliq,
+  TNFe_infNFe_det_imposto_COFINS_COFINSNT,
+  TNFe_infNFe_det_imposto_COFINS_COFINSOutr,
+  TNFe_infNFe_det_imposto_COFINS_COFINSQtde,
+  TNFe_infNFe_det_imposto_ICMS_ICMSSN201,
+  TNFe_infNFe_det_imposto_ICMS_ICMSSN202,
+  TNFe_infNFe_det_imposto_ICMS_ICMSSN900,
+  TNFe_infNFe_det_imposto_PIS_PISAliq,
+  TNFe_infNFe_det_imposto_PIS_PISNT,
+  TNFe_infNFe_det_imposto_PIS_PISOutr,
+  TNFe_infNFe_det_imposto_PIS_PISQtde,
+} from '../../src/types/nfe-schema';
+import {
+  confICMSSN500Schema,
+  confICMSSN900Schema,
+  CRT,
+  CSOSN,
+  CST_PIS_COFINS,
+  cstPisCofinsSchema,
+  IND_INCENTIVO,
+  IND_ISS,
+  MOD_BC,
+  MOD_BCST,
+  MODO_GRUPOS_IMPOSTO,
+  ORIGEM,
+  vereditoPisCofins,
+  type CstPisCofinsAliq,
+  type CstPisCofinsNT,
+  type CstPisCofinsOutr,
+  type CstPisCofinsQtde,
+} from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -57,8 +106,22 @@ function fixtureCert(): NFeCertificate {
   };
 }
 
-/** Wrap an imposto/total/transp/pag set inside a signable <NFe>. */
-function wrap(impostoXml: string, totalXml: string, transpXml: string, pagXml: string): string {
+/**
+ * Wrap an imposto/total/transp/pag set inside a signable <NFe>. The single
+ * det's vProd is fixed at 1500.00; `det.qTrib` (default 1) sets its qCom/qTrib
+ * and the matching unit price, so a per-unit PIS/COFINS fixture embeds a det
+ * whose quantity equals its qBCProd (#509). The default is byte-identical to
+ * the det this helper always emitted.
+ */
+function wrap(
+  impostoXml: string,
+  totalXml: string,
+  transpXml: string,
+  pagXml: string,
+  det: { qTrib: number } = { qTrib: 1 },
+): string {
+  const quantidade = fmtQuantity('qTrib', det.qTrib);
+  const valorUnitario = fmtUnitValue('vUnTrib', 1500 / det.qTrib);
   return (
     `<NFe xmlns="${NFE_NS}">` +
     `<infNFe Id="NFe${CHAVE}" versao="4.00">` +
@@ -90,9 +153,9 @@ function wrap(impostoXml: string, totalXml: string, transpXml: string, pagXml: s
     '<det nItem="1"><prod>' +
     '<cProd>SKU-1</cProd><cEAN>SEM GTIN</cEAN><xProd>Bicicleta</xProd>' +
     '<NCM>87120000</NCM><CFOP>5102</CFOP><uCom>UN</uCom>' +
-    '<qCom>1.0000</qCom><vUnCom>1500.0000000000</vUnCom><vProd>1500.00</vProd>' +
+    `<qCom>${quantidade}</qCom><vUnCom>${valorUnitario}</vUnCom><vProd>1500.00</vProd>` +
     '<cEANTrib>SEM GTIN</cEANTrib><uTrib>UN</uTrib>' +
-    '<qTrib>1.0000</qTrib><vUnTrib>1500.0000000000</vUnTrib>' +
+    `<qTrib>${quantidade}</qTrib><vUnTrib>${valorUnitario}</vUnTrib>` +
     '<indTot>1</indTot>' +
     '</prod>' +
     impostoXml +
@@ -113,6 +176,36 @@ async function assertXsdValid(impostoXml: string) {
     buildTotalXml(totals),
     buildTranspXml(),
     buildPagXml([{ tPag: '17', vPag: 1500 }]),
+  );
+  const signed = signNFe(xml, cert);
+  await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+}
+
+/**
+ * Like {@link assertXsdValid}, but the <total> aggregates the REAL `imposto`,
+ * the det carries `item.qTrib` (so a per-unit fixture's det quantity equals
+ * its qBCProd) and the payment is the aggregated vNF.
+ *
+ * ⚠️ XSD/format coverage ONLY: xmllint checks facets and structure, never a
+ * cross-element sum, so passing here proves nothing about item ↔ ICMSTot
+ * parity (SEFAZ 602/603). That is pinned by the numeric aggregateTotals tests.
+ */
+async function assertXsdValidWithRealTotals(
+  impostoXml: string,
+  imposto: Imposto,
+  item: TributeItem = item1500,
+): Promise<void> {
+  // wrap() fixes the det's vProd at 1500.00 — a different item base would
+  // embed a det that disagrees with the <imposto> under test.
+  expect(item.vProd).toBe(1500);
+  const cert = fixtureCert();
+  const totals = aggregateTotals([{ item, imposto }]);
+  const xml = wrap(
+    impostoXml,
+    buildTotalXml(totals),
+    buildTranspXml(),
+    buildPagXml([{ tPag: '17', vPag: totals.vNF }]),
+    { qTrib: item.qTrib ?? 1 },
   );
   const signed = signNFe(xml, cert);
   await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
@@ -144,6 +237,29 @@ function impostoFor500(): Imposto {
   return impostoFor('500', {
     csosn500: { vBCSTRet: 1500, pST: 18, vICMSSTRet: 270 },
   });
+}
+
+/** Capture the message of the NFeTributeError buildImpostoXml throws. */
+function tributeErrorMessage(imposto: Imposto, item: TributeItem = item1500): string {
+  try {
+    buildImpostoXml(imposto, item);
+  } catch (err) {
+    if (err instanceof NFeTributeError) return err.message;
+    throw err;
+  }
+  throw new Error('expected buildImpostoXml to throw NFeTributeError');
+}
+
+/** The `<tag>…</tag>` slice of a built `<imposto>`, for exact-byte pins. */
+function groupXmlOf(impostoXml: string, tag: 'ICMS' | 'PIS' | 'COFINS'): string {
+  // `<PIS>` with its closing '>' never matches `<PISOutr>`/`<PISST>`.
+  const match = new RegExp(`<${tag}>.*?</${tag}>`).exec(impostoXml);
+  if (match == null) throw new Error(`expected a <${tag}> group in the built <imposto>`);
+  return match[0];
+}
+
+function icmsXmlOf(impostoXml: string): string {
+  return groupXmlOf(impostoXml, 'ICMS');
 }
 
 // ---------------------------------------------------------------------------
@@ -208,17 +324,18 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
 
   it('CSOSN 500 → ICMSSN500 (ST já retido)', async () => {
     const xml = buildImpostoXml(impostoFor500(), item1500);
-    expect(xml).toContain('<ICMSSN500>');
-    expect(xml).toContain('<vBCSTRet>1500.00</vBCSTRet>');
-    expect(xml).toContain('<pST>18.0000</pST>');
-    expect(xml).toContain('<vICMSSTRet>270.00</vICMSSTRet>');
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<vBCSTRet>1500.00</vBCSTRet><pST>18.0000</pST><vICMSSTRet>270.00</vICMSSTRet>' +
+        '</ICMSSN500></ICMS>',
+    );
     await assertXsdValid(xml);
   });
 
-  it('CSOSN 900 → ICMSSN900 (kitchen sink, all optional)', async () => {
+  it('CSOSN 900 → ICMSSN900 (own ICMS + crédito SN groups)', async () => {
     const imposto = impostoFor('900', {
       csosn900: {
-        modBC: '3',
+        modBC: MOD_BC.valorOperacao,
         vBC: 1500,
         pICMS: 18,
         vICMS: 270,
@@ -227,36 +344,644 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
       },
     });
     const xml = buildImpostoXml(imposto, item1500);
-    expect(xml).toContain('<ICMSSN900>');
-    expect(xml).toContain('<vBC>1500.00</vBC>');
-    expect(xml).toContain('<vICMS>270.00</vICMS>');
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>3</modBC><vBC>1500.00</vBC><pICMS>18.0000</pICMS><vICMS>270.00</vICMS>' +
+        '<pCredSN>1.2500</pCredSN><vCredICMSSN>18.75</vCredICMSSN>' +
+        '</ICMSSN900></ICMS>',
+    );
     await assertXsdValid(xml);
   });
 
-  // PIS / COFINS Outr regression — SEFAZ XSD requires vBC + pPIS (or
-  // qBCProd + vAliqProd) before vPIS even when the SN flow emits zeros.
-  // Previously the dispatcher emitted only `{ CST, vPIS: '0.00' }` and
-  // xmllint-wasm rejected with "vPIS not expected, expected vBC or qBCProd".
-  it.each(['49', '99'])(
-    'PIS CST %s → PISOutr with vBC + pPIS + vPIS (SEFAZ xs:choice)',
-    async (cst) => {
-      const imposto: Imposto = {
-        ...impostoFor102(),
-        configuracaoPIS: { CST: cst as never },
-        configuracaoCOFINS: { CST: cst as never },
-      };
-      const xml = buildImpostoXml(imposto, item1500);
-      expect(xml).toContain('<PISOutr>');
-      expect(xml).toContain(`<CST>${cst}</CST>`);
-      expect(xml).toContain('<vBC>0.00</vBC>');
-      expect(xml).toContain('<pPIS>0.0000</pPIS>');
-      expect(xml).toContain('<vPIS>0.00</vPIS>');
-      expect(xml).toContain('<COFINSOutr>');
-      expect(xml).toContain('<pCOFINS>0.0000</pCOFINS>');
-      expect(xml).toContain('<vCOFINS>0.00</vCOFINS>');
+  // Characterization pins (#506): the exact <ICMS> bytes with every XSD
+  // sub-group of ICMSSN500 / ICMSSN900 complete and every optional member set,
+  // in the XSD sequence order — so a group guard can be shown not to move a
+  // byte of a valid config.
+  it('CSOSN 500 → ICMSSN500 with every group complete (incl. vICMSSubstituto)', async () => {
+    const imposto = impostoFor(CSOSN.icmsCobradoAnteriormente, {
+      csosn500: {
+        vBCSTRet: 1500,
+        pST: 20,
+        vICMSSubstituto: 120,
+        vICMSSTRet: 180,
+        vBCFCPSTRet: 1500,
+        pFCPSTRet: 2,
+        vFCPSTRet: 30,
+        pRedBCEfet: 10,
+        vBCEfet: 1350,
+        pICMSEfet: 18,
+        vICMSEfet: 243,
+      },
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        // ICMS-ST retido
+        '<vBCSTRet>1500.00</vBCSTRet><pST>20.0000</pST>' +
+        '<vICMSSubstituto>120.00</vICMSSubstituto><vICMSSTRet>180.00</vICMSSTRet>' +
+        // FCP-ST retido
+        '<vBCFCPSTRet>1500.00</vBCFCPSTRet><pFCPSTRet>2.0000</pFCPSTRet>' +
+        '<vFCPSTRet>30.00</vFCPSTRet>' +
+        // ICMS efetivo
+        '<pRedBCEfet>10.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 900 → ICMSSN900 with every group complete and every optional set', async () => {
+    const imposto = impostoFor(CSOSN.outros, {
+      csosn900: {
+        modBC: MOD_BC.valorOperacao,
+        vBC: 1350,
+        pRedBC: 10,
+        pICMS: 18,
+        vICMS: 243,
+        modBCST: MOD_BCST.margemValorAgregado,
+        pMVAST: 40,
+        pRedBCST: 10,
+        vBCST: 1890,
+        pICMSST: 18,
+        vICMSST: 97.2,
+        vBCFCPST: 1890,
+        pFCPST: 2,
+        vFCPST: 37.8,
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+      },
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        // ICMS próprio
+        '<modBC>3</modBC><vBC>1350.00</vBC><pRedBC>10.0000</pRedBC>' +
+        '<pICMS>18.0000</pICMS><vICMS>243.00</vICMS>' +
+        // ICMS-ST
+        '<modBCST>4</modBCST><pMVAST>40.0000</pMVAST><pRedBCST>10.0000</pRedBCST>' +
+        '<vBCST>1890.00</vBCST><pICMSST>18.0000</pICMSST><vICMSST>97.20</vICMSST>' +
+        // FCP-ST (nested inside the ST sequence)
+        '<vBCFCPST>1890.00</vBCFCPST><pFCPST>2.0000</pFCPST><vFCPST>37.80</vFCPST>' +
+        // crédito SN
+        '<pCredSN>1.2500</pCredSN><vCredICMSSN>18.75</vCredICMSSN>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // modBCST '6' (Valor da Operação, NT 2019.001 §1.6) is passed straight
+  // through to every ICMSSN variant carrying an ST group (#509). CSOSN 900
+  // gets a COMPLETE ST group (no pMVAST) so the #506 group guard admits it.
+  const ST_VALOR_OPERACAO = {
+    modBCST: MOD_BCST.valorOperacao,
+    vBCST: 1500,
+    pICMSST: 18,
+    vICMSST: 270,
+  } as const;
+  it.each([
+    [
+      CSOSN.tributadaComCreditoComSt,
+      'ICMSSN201',
+      { csosn201: { ...ST_VALOR_OPERACAO, pCredSN: 1.25, vCredICMSSN: 18.75 } },
+    ],
+    [CSOSN.tributadaSemCreditoComSt, 'ICMSSN202', { csosn202ou203: ST_VALOR_OPERACAO }],
+    [CSOSN.isencaoFaixaReceitaBrutaComSt, 'ICMSSN202', { csosn202ou203: ST_VALOR_OPERACAO }],
+    [CSOSN.outros, 'ICMSSN900', { csosn900: ST_VALOR_OPERACAO }],
+  ] as const)(
+    'CSOSN %s with modBCST 6 (Valor da Operação) → %s carries <modBCST>6</modBCST>',
+    async (csosn, tag, extra) => {
+      const xml = buildImpostoXml(impostoFor(csosn, extra), item1500);
+      const icms = icmsXmlOf(xml);
+      expect(icms).toContain(`<${tag}>`);
+      expect(icms).toContain('<modBCST>6</modBCST>');
+      expect(icms).not.toContain('<pMVAST>');
       await assertXsdValid(xml);
     },
   );
+
+  it('modBCST drift guard: every ST-bearing ICMSSN wire type enumerates exactly ModBCST', () => {
+    // Compile-time (tsc): the codegen types are the XSD's enumerations, so a
+    // modalidade the XSD gains — or the schema loses — fails typecheck here.
+    expectTypeOf<TNFe_infNFe_det_imposto_ICMS_ICMSSN201['modBCST']>().toEqualTypeOf<ModBCST>();
+    expectTypeOf<TNFe_infNFe_det_imposto_ICMS_ICMSSN202['modBCST']>().toEqualTypeOf<ModBCST>();
+    expectTypeOf<
+      NonNullable<TNFe_infNFe_det_imposto_ICMS_ICMSSN900['modBCST']>
+    >().toEqualTypeOf<ModBCST>();
+  });
+
+  // PIS / COFINS Outr zero default — SEFAZ XSD requires vBC + pPIS (or
+  // qBCProd + vAliqProd) before vPIS even when nothing is due. Previously the
+  // dispatcher emitted only `{ CST, vPIS: '0.00' }` and xmllint-wasm rejected
+  // with "vPIS not expected, expected vBC or qBCProd". With no rate configured
+  // the shape is byte-identical to the pre-#509 output, and it demands no qTrib.
+  it.each([
+    CST_PIS_COFINS.outrasOperacoesSaida,
+    CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno,
+    CST_PIS_COFINS.outrasOperacoesEntrada,
+    CST_PIS_COFINS.outrasOperacoes,
+  ])('PIS/COFINS CST %s with no rate → the zero (vBC + p) choice, exact bytes', async (cst) => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoPIS: { CST: cst },
+      configuracaoCOFINS: { CST: cst },
+    };
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(groupXmlOf(xml, 'PIS')).toBe(
+      `<PIS><PISOutr><CST>${cst}</CST><vBC>0.00</vBC><pPIS>0.0000</pPIS>` +
+        '<vPIS>0.00</vPIS></PISOutr></PIS>',
+    );
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      `<COFINS><COFINSOutr><CST>${cst}</CST><vBC>0.00</vBC><pCOFINS>0.0000</pCOFINS>` +
+        '<vCOFINS>0.00</vCOFINS></COFINSOutr></COFINS>',
+    );
+    expect(computePisCofinsItemValues(imposto, item1500)).toEqual({ vPIS: 0, vCOFINS: 0 });
+    await assertXsdValid(xml);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PIS / COFINS groups (#509)
+//
+// PISOutr/COFINSOutr (CST 49–99) carry the XSD xs:choice `(vBC + p)` |
+// `(qBCProd + vAliqProd)`: the configured percent or per-unit rate is emitted
+// (a rate counts only when > 0), both at once is rejected, neither keeps the
+// zero shape above. CST 03 (PISQtde/COFINSQtde) takes qBCProd from the item
+// qTrib. Values are computed from the RAW operands and only the result is
+// rounded. Every expected fragment is transcribed from the XSD sequence order.
+// ---------------------------------------------------------------------------
+
+function impostoPisCofins(
+  pis: ConfPIS | null | undefined,
+  cofins: ConfCOFINS | null | undefined,
+): Imposto {
+  return { ...impostoFor102(), configuracaoPIS: pis, configuracaoCOFINS: cofins };
+}
+
+const OUTR_ZERO_PIS_49 =
+  '<PIS><PISOutr><CST>49</CST><vBC>0.00</vBC><pPIS>0.0000</pPIS><vPIS>0.00</vPIS></PISOutr></PIS>';
+
+describe('buildImpostoXml — PIS/COFINS configured values (#509)', () => {
+  // -- PISOutr / COFINSOutr: percent path -----------------------------------
+
+  it('CST 49 with pPIS 0.65 / pCOFINS 3 → the (vBC + p) choice on the item base', async () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65 },
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 3 },
+    );
+    const item = { vProd: 1500, qTrib: 1 };
+    const xml = buildImpostoXml(imposto, item);
+    expect(groupXmlOf(xml, 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><vBC>1500.00</vBC><pPIS>0.6500</pPIS>' +
+        '<vPIS>9.75</vPIS></PISOutr></PIS>',
+    );
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      '<COFINS><COFINSOutr><CST>49</CST><vBC>1500.00</vBC><pCOFINS>3.0000</pCOFINS>' +
+        '<vCOFINS>45.00</vCOFINS></COFINSOutr></COFINS>',
+    );
+    expect(xml).not.toContain('<qBCProd>');
+    expect(computePisCofinsItemValues(imposto, item)).toEqual({ vPIS: 9.75, vCOFINS: 45 });
+    await assertXsdValidWithRealTotals(xml, imposto, item);
+  });
+
+  // -- PISOutr / COFINSOutr: per-unit path ----------------------------------
+
+  it('CST 99 with vAliqProd → the (qBCProd + vAliqProd) choice, qBCProd = item qTrib', async () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.1234 },
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.5678 },
+    );
+    const item = { vProd: 1500, qTrib: 3 };
+    const xml = buildImpostoXml(imposto, item);
+    // 3 × 0.1234 = 0.3702 → 0.37; 3 × 0.5678 = 1.7034 → 1.70.
+    expect(groupXmlOf(xml, 'PIS')).toBe(
+      '<PIS><PISOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.1234</vAliqProd>' +
+        '<vPIS>0.37</vPIS></PISOutr></PIS>',
+    );
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      '<COFINS><COFINSOutr><CST>99</CST><qBCProd>3.0000</qBCProd><vAliqProd>0.5678</vAliqProd>' +
+        '<vCOFINS>1.70</vCOFINS></COFINSOutr></COFINS>',
+    );
+    expect(xml).not.toContain('<vBC>');
+    expect(xml).not.toContain('<pPIS>');
+    expect(computePisCofinsItemValues(imposto, item)).toEqual({ vPIS: 0.37, vCOFINS: 1.7 });
+    // The det embedded by the helper carries qTrib 3.0000 — the same quantity.
+    await assertXsdValidWithRealTotals(xml, imposto, item);
+  });
+
+  it('mixed: PIS percent + COFINS per-unit on one item → each tribute picks its own branch', async () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65 },
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.25 },
+    );
+    const item = { vProd: 1500, qTrib: 2 };
+    const xml = buildImpostoXml(imposto, item);
+    expect(groupXmlOf(xml, 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><vBC>1500.00</vBC><pPIS>0.6500</pPIS>' +
+        '<vPIS>9.75</vPIS></PISOutr></PIS>',
+    );
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      '<COFINS><COFINSOutr><CST>99</CST><qBCProd>2.0000</qBCProd><vAliqProd>0.2500</vAliqProd>' +
+        '<vCOFINS>0.50</vCOFINS></COFINSOutr></COFINS>',
+    );
+    await assertXsdValidWithRealTotals(xml, imposto, item);
+  });
+
+  // -- PISOutr / COFINSOutr: both rates → rejected --------------------------
+
+  it('PIS CST 49 with BOTH pPIS and vAliqProd → NFeTributeError naming the choice', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.1 },
+      null,
+    );
+    const item = { vProd: 1500, qTrib: 1 };
+    expect(tributeErrorMessage(imposto, item)).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+    // The helper every total/pre-flight reads rejects the same config.
+    expect(() => computePisCofinsItemValues(imposto, item)).toThrow(NFeTributeError);
+    expect(() => computePisCofinsItemValues(imposto, item)).toThrow(/^PIS CST=49 .*not both/);
+  });
+
+  it('COFINS-only both-rates violation (PIS valid) → the message names COFINS', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65 },
+      { CST: CST_PIS_COFINS.outrasOperacoes, pCOFINS: 3, vAliqProd: 0.1 },
+    );
+    const item = { vProd: 1500, qTrib: 1 };
+    expect(tributeErrorMessage(imposto, item)).toBe(
+      'COFINS CST=99 (COFINSOutr) must carry exactly one of `(vBC + pCOFINS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pCOFINS` or `vAliqProd`',
+    );
+    expect(() => computePisCofinsItemValues(imposto, item)).toThrow(/^COFINS CST=99 .*not both/);
+  });
+
+  // -- zero semantics near-misses: a rate counts only when > 0 ---------------
+
+  it('pPIS 0 alone → the zero shape (0 is "not configured", not a 0% base)', () => {
+    const imposto = impostoPisCofins({ CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0 }, null);
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(OUTR_ZERO_PIS_49);
+  });
+
+  it('pPIS 0 + vAliqProd 0 → the zero shape, no throw and no qTrib demanded', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0, vAliqProd: 0 },
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 0, vAliqProd: 0 },
+    );
+    // item1500 carries no qTrib: a 0 per-unit rate must not ask for one.
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(groupXmlOf(xml, 'PIS')).toBe(OUTR_ZERO_PIS_49);
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      '<COFINS><COFINSOutr><CST>49</CST><vBC>0.00</vBC><pCOFINS>0.0000</pCOFINS>' +
+        '<vCOFINS>0.00</vCOFINS></COFINSOutr></COFINS>',
+    );
+    expect(computePisCofinsItemValues(imposto, item1500)).toEqual({ vPIS: 0, vCOFINS: 0 });
+  });
+
+  it('pPIS 0 + vAliqProd 0.5 → the per-unit branch (the 0 percent is not a second rate)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, { vProd: 1500, qTrib: 2 }), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><qBCProd>2.0000</qBCProd><vAliqProd>0.5000</vAliqProd>' +
+        '<vPIS>1.00</vPIS></PISOutr></PIS>',
+    );
+  });
+
+  it('pPIS 0.65 + vAliqProd 0 → the percent branch (the 0 per-unit is not a second rate)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><vBC>1500.00</vBC><pPIS>0.6500</pPIS>' +
+        '<vPIS>9.75</vPIS></PISOutr></PIS>',
+    );
+  });
+
+  it('pPIS 0.0001 → the percent branch, even though the value rounds to 0.00', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.0001 },
+      null,
+    );
+    // 1500 × 0.0001% = 0.0015 → 0.00: the smallest positive rate still counts.
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><vBC>1500.00</vBC><pPIS>0.0001</pPIS>' +
+        '<vPIS>0.00</vPIS></PISOutr></PIS>',
+    );
+  });
+
+  // -- the per-unit branch needs the item quantity -------------------------
+
+  it('per-unit CST 49 with no item qTrib → NFeTributeError naming `qTrib`', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500 })).toBe(
+      'PIS CST=49 por unidade (vAliqProd) requires the item quantity `qTrib`',
+    );
+    expect(() => computePisCofinsItemValues(imposto, { vProd: 1500 })).toThrow(NFeTributeError);
+  });
+
+  it('per-unit with qTrib 0 → qBCProd 0.0000, vPIS 0.00 (engine boundary; fragment only)', () => {
+    // No XSD wrap: a zero-quantity det cannot be made consistent, and apps/nfe
+    // rejects quantidade 0 before it ever reaches the engine.
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, { vProd: 1500, qTrib: 0 }), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><qBCProd>0.0000</qBCProd><vAliqProd>0.5000</vAliqProd>' +
+        '<vPIS>0.00</vPIS></PISOutr></PIS>',
+    );
+  });
+
+  // -- CST 01/02: PISAliq / COFINSAliq -------------------------------------
+
+  it.each([CST_PIS_COFINS.tributavelAliquotaBasica, CST_PIS_COFINS.tributavelAliquotaDiferenciada])(
+    'CST %s → PISAliq/COFINSAliq with vBC = item base and the configured rate',
+    async (cst) => {
+      const imposto = impostoPisCofins({ CST: cst, pPIS: 1.65 }, { CST: cst, pCOFINS: 7.6 });
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(groupXmlOf(xml, 'PIS')).toBe(
+        `<PIS><PISAliq><CST>${cst}</CST><vBC>1500.00</vBC><pPIS>1.6500</pPIS>` +
+          '<vPIS>24.75</vPIS></PISAliq></PIS>',
+      );
+      expect(groupXmlOf(xml, 'COFINS')).toBe(
+        `<COFINS><COFINSAliq><CST>${cst}</CST><vBC>1500.00</vBC><pCOFINS>7.6000</pCOFINS>` +
+          '<vCOFINS>114.00</vCOFINS></COFINSAliq></COFINS>',
+      );
+      expect(computePisCofinsItemValues(imposto, item1500)).toEqual({
+        vPIS: 24.75,
+        vCOFINS: 114,
+      });
+      await assertXsdValidWithRealTotals(xml, imposto);
+    },
+  );
+
+  it('CST 01/02 without the rate → the unchanged missing-rate messages', () => {
+    expect(
+      tributeErrorMessage(impostoPisCofins({ CST: CST_PIS_COFINS.tributavelAliquotaBasica }, null)),
+    ).toBe('PIS CST=01 requires `pPIS`');
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(null, { CST: CST_PIS_COFINS.tributavelAliquotaDiferenciada }),
+      ),
+    ).toBe('COFINS CST=02 requires `pCOFINS`');
+  });
+
+  // -- CST 03: PISQtde / COFINSQtde ----------------------------------------
+
+  it('CST 03 → PISQtde/COFINSQtde with qBCProd = item qTrib, value = qTrib × vAliqProd', async () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0.5 },
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0.75 },
+    );
+    const item = { vProd: 1500, qTrib: 4 };
+    const xml = buildImpostoXml(imposto, item);
+    // Before #509: qBCProd was hardcoded 1.0000 and vPIS = vAliqProd (0.50).
+    expect(groupXmlOf(xml, 'PIS')).toBe(
+      '<PIS><PISQtde><CST>03</CST><qBCProd>4.0000</qBCProd><vAliqProd>0.5000</vAliqProd>' +
+        '<vPIS>2.00</vPIS></PISQtde></PIS>',
+    );
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      '<COFINS><COFINSQtde><CST>03</CST><qBCProd>4.0000</qBCProd><vAliqProd>0.7500</vAliqProd>' +
+        '<vCOFINS>3.00</vCOFINS></COFINSQtde></COFINS>',
+    );
+    expect(computePisCofinsItemValues(imposto, item)).toEqual({ vPIS: 2, vCOFINS: 3 });
+    await assertXsdValidWithRealTotals(xml, imposto, item);
+  });
+
+  it('CST 03 without vAliqProd → the unchanged messages; without qTrib → names `qTrib`', () => {
+    const item = { vProd: 1500, qTrib: 4 };
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins({ CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade }, null),
+        item,
+      ),
+    ).toBe('PIS CST=03 requires `vAliqProd`');
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(null, { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade }),
+        item,
+      ),
+    ).toBe('COFINS CST=03 requires `vAliqProd`');
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(
+          { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0.5 },
+          null,
+        ),
+        { vProd: 1500 },
+      ),
+    ).toBe('PIS CST=03 por unidade (vAliqProd) requires the item quantity `qTrib`');
+  });
+
+  it('the missing-qTrib message names COFINS on the COFINS side (not a hardcoded PIS)', () => {
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(null, { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.5 }),
+        { vProd: 1500 },
+      ),
+    ).toBe('COFINS CST=99 por unidade (vAliqProd) requires the item quantity `qTrib`');
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(null, {
+          CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade,
+          vAliqProd: 0.5,
+        }),
+        { vProd: 1500 },
+      ),
+    ).toBe('COFINS CST=03 por unidade (vAliqProd) requires the item quantity `qTrib`');
+  });
+
+  // -- CST 01/02/03 keep `== null`: a stored 0 is a configured rate ---------
+  //    (unlike CST 49–99, where 0 means "not configured" — pinned above)
+
+  it('CST 03 with vAliqProd 0 → PISQtde at 0.0000, not the missing-vAliqProd throw', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, { vProd: 1500, qTrib: 2 }), 'PIS')).toBe(
+      '<PIS><PISQtde><CST>03</CST><qBCProd>2.0000</qBCProd><vAliqProd>0.0000</vAliqProd>' +
+        '<vPIS>0.00</vPIS></PISQtde></PIS>',
+    );
+  });
+
+  it('CST 01 with pPIS 0 → PISAliq on the item base at 0.0000, not the missing-rate throw', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 0 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(
+      '<PIS><PISAliq><CST>01</CST><vBC>1500.00</vBC><pPIS>0.0000</pPIS>' +
+        '<vPIS>0.00</vPIS></PISAliq></PIS>',
+    );
+  });
+
+  // -- the rate must fit TDec_0302a04 (at most three integer digits) ---------
+
+  it.each([
+    ['PISAliq (CST 01)', { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1000 }],
+    ['PISOutr (CST 49)', { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1000 }],
+  ] as const)('%s with pPIS 1000 → NFeTributeError at build time', (_label, pis) => {
+    const message = tributeErrorMessage(impostoPisCofins(pis, null), item1500);
+    expect(message).toMatch(/^PIS CST=(01|49): `pPIS` 1000 does not fit the XSD rate format/);
+  });
+
+  it('COFINS rate bound names COFINS / pCOFINS', () => {
+    expect(
+      tributeErrorMessage(
+        impostoPisCofins(null, { CST: CST_PIS_COFINS.outrasOperacoes, pCOFINS: 1234.5 }),
+      ),
+    ).toMatch(/^COFINS CST=99: `pCOFINS` 1234\.5 does not fit the XSD rate format/);
+  });
+
+  it('near-miss: pPIS 999.9999 still builds and is XSD-valid', async () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 999.9999 },
+      null,
+    );
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(groupXmlOf(xml, 'PIS')).toContain('<pPIS>999.9999</pPIS>');
+    await assertXsdValidWithRealTotals(xml, imposto);
+  });
+
+  // -- CST 04–09: PISNT / COFINSNT -----------------------------------------
+
+  it.each([
+    CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero,
+    CST_PIS_COFINS.tributavelSubstituicaoTributaria,
+    CST_PIS_COFINS.tributavelAliquotaZero,
+    CST_PIS_COFINS.isentaContribuicao,
+    CST_PIS_COFINS.semIncidenciaContribuicao,
+    CST_PIS_COFINS.suspensaoContribuicao,
+  ])('CST %s → PISNT/COFINSNT, CST only, even with rates stored', (cst) => {
+    const imposto = impostoPisCofins(
+      { CST: cst, pPIS: 1.65, vAliqProd: 0.25 },
+      { CST: cst, pCOFINS: 7.6, vAliqProd: 0.25 },
+    );
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(groupXmlOf(xml, 'PIS')).toBe(`<PIS><PISNT><CST>${cst}</CST></PISNT></PIS>`);
+    expect(groupXmlOf(xml, 'COFINS')).toBe(
+      `<COFINS><COFINSNT><CST>${cst}</CST></COFINSNT></COFINS>`,
+    );
+    expect(computePisCofinsItemValues(imposto, item1500)).toEqual({ vPIS: 0, vCOFINS: 0 });
+  });
+
+  it('null PIS/COFINS config → the SN default PISNT/COFINSNT CST 07, value 0', () => {
+    const imposto = impostoFor102();
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(groupXmlOf(xml, 'PIS')).toBe('<PIS><PISNT><CST>07</CST></PISNT></PIS>');
+    expect(groupXmlOf(xml, 'COFINS')).toBe('<COFINS><COFINSNT><CST>07</CST></COFINSNT></COFINS>');
+    expect(computePisCofinsItemValues(imposto, item1500)).toEqual({ vPIS: 0, vCOFINS: 0 });
+  });
+
+  // -- rounding convention: RAW operands, only the result rounded ------------
+  //
+  // The wire shows the operands at 4 decimals, so these flip if someone
+  // recomputes from the formatted operands — a convention shared with
+  // computeRtcItemValues / IS, which must move together.
+
+  it('per-unit rounding: vAliqProd 0.123456 × 1000 → vPIS 123.46 (raw), not 123.50 (wire)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.123456 },
+      null,
+    );
+    const item = { vProd: 1500, qTrib: 1000 };
+    expect(groupXmlOf(buildImpostoXml(imposto, item), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>99</CST><qBCProd>1000.0000</qBCProd><vAliqProd>0.1235</vAliqProd>' +
+        '<vPIS>123.46</vPIS></PISOutr></PIS>',
+    );
+    expect(computePisCofinsItemValues(imposto, item).vPIS).toBe(123.46);
+  });
+
+  it('percent rounding: pPIS 1.23456 on 100000 → vPIS 1234.56 (raw), not 1234.60 (wire)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1.23456 },
+      null,
+    );
+    const item = { vProd: 100000, qTrib: 1 };
+    expect(groupXmlOf(buildImpostoXml(imposto, item), 'PIS')).toBe(
+      '<PIS><PISOutr><CST>49</CST><vBC>100000.00</vBC><pPIS>1.2346</pPIS>' +
+        '<vPIS>1234.56</vPIS></PISOutr></PIS>',
+    );
+    expect(computePisCofinsItemValues(imposto, item).vPIS).toBe(1234.56);
+  });
+
+  // -- the shared helper ≡ the builder, over every CST ----------------------
+
+  // Every CST × {no rate, percent, per-unit, both}: the builder, the helper and
+  // the ICMSTot aggregation either ALL throw NFeTributeError or none does (the
+  // pre-flight ≡ build equivalence), and when they emit, the helper and the
+  // total both carry exactly the <vPIS>/<vCOFINS> the builder wrote (602/603).
+  const RATE_CASES = [
+    ['no rate', {}, {}],
+    ['percent', { pPIS: 1.65 }, { pCOFINS: 7.6 }],
+    ['per-unit', { vAliqProd: 0.25 }, { vAliqProd: 0.25 }],
+    ['both', { pPIS: 1.65, vAliqProd: 0.25 }, { pCOFINS: 7.6, vAliqProd: 0.25 }],
+  ] as const;
+  const SWEEP = Object.values(CST_PIS_COFINS).flatMap((cst) =>
+    RATE_CASES.map(([label, pis, cofins]) => [cst, label, pis, cofins] as const),
+  );
+  const SWEEP_ITEM = { vProd: 123.45, qTrib: 2 };
+
+  it.each(SWEEP)(
+    'CST %s, %s → buildImpostoXml ≡ computePisCofinsItemValues ≡ aggregateTotals',
+    (cst, _l, p, c) => {
+      const imposto = impostoPisCofins({ CST: cst, ...p }, { CST: cst, ...c });
+      const item = SWEEP_ITEM;
+      const aggregate = () => aggregateTotals([{ item, imposto }]);
+      let xml: string | null = null;
+      let buildError: NFeTributeError | null = null;
+      try {
+        xml = buildImpostoXml(imposto, item);
+      } catch (err) {
+        if (!(err instanceof NFeTributeError)) throw err;
+        buildError = err;
+      }
+      if (buildError != null) {
+        expect(() => computePisCofinsItemValues(imposto, item)).toThrow(buildError.message);
+        expect(aggregate).toThrow(NFeTributeError);
+        expect(aggregate).toThrow(buildError.message);
+        return;
+      }
+      const valueOf = (tag: string): number => {
+        const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml ?? '');
+        if (match == null) return 0; // an NT group carries no value element
+        return Number(match[1]);
+      };
+      const emitted = { vPIS: valueOf('vPIS'), vCOFINS: valueOf('vCOFINS') };
+      expect(computePisCofinsItemValues(imposto, item)).toEqual(emitted);
+      const totals = aggregate();
+      expect({ vPIS: totals.vPIS, vCOFINS: totals.vCOFINS }).toEqual(emitted);
+    },
+  );
+
+  it('the sweep reaches every outcome — rejected, a zero value and a non-zero value', () => {
+    // Guards the table itself: a sweep whose rows all land on one outcome
+    // would pass above while proving nothing about the other two.
+    const outcomes = new Set(
+      SWEEP.map(([cst, , p, c]) => {
+        const imposto = impostoPisCofins({ CST: cst, ...p }, { CST: cst, ...c });
+        try {
+          const { vPIS, vCOFINS } = aggregateTotals([{ item: SWEEP_ITEM, imposto }]);
+          return vPIS === 0 && vCOFINS === 0 ? 'zero' : 'value';
+        } catch (err) {
+          if (err instanceof NFeTributeError) return 'rejected';
+          throw err;
+        }
+      }),
+    );
+    expect([...outcomes].sort()).toEqual(['rejected', 'value', 'zero']);
+  });
+
+  it('computePisCofinsItemValues is on the package root (apps/nfe imports it there)', () => {
+    expect(rootComputePisCofinsItemValues).toBe(computePisCofinsItemValues);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -599,6 +1324,386 @@ describe('buildImpostoXml — failure modes', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Exact config-error messages and their precedence (#1655 characterization)
+//
+// The failure-mode tests above assert only the error class (or /csosn/i).
+// These pin every config-level message BYTE-FOR-BYTE, and which check wins
+// when a config breaks more than one rule, so moving the rules into
+// `@delfrance/schemas` can be shown not to change a character or a winner.
+// They pass on the engine as it stood before that move: a refactor's proof,
+// not a fix's.
+// ---------------------------------------------------------------------------
+
+/** Every Simples Nacional sub-config slot explicitly null — the stored shape. */
+const SN_SLOTS_NULL = {
+  csosn101: null,
+  csosn201: null,
+  csosn202ou203: null,
+  csosn500: null,
+  csosn900: null,
+} as const;
+
+describe('buildImpostoXml — exact config-error messages and precedence (#1655)', () => {
+  // -- ICMS: CRT, CSOSN, sub-config ------------------------------------------
+
+  it.each([
+    [
+      CRT.regimeNormal,
+      'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
+        'Use Simples Nacional configs only.',
+    ],
+    [CRT.meiSimplesNacional, 'CRT=4 (MEI) is not implemented.'],
+  ] as const)('CRT %s → the exact not-implemented message', (crt, message) => {
+    const imposto: Imposto = { origem: ORIGEM.nacional, configuracaoICMS: { crt, csosn: null } };
+    expect(tributeErrorMessage(imposto)).toBe(message);
+  });
+
+  it.each([
+    [CRT.simplesNacional, 'CRT=1 requires a non-null csosn'],
+    [CRT.simplesNacionalExcessoSublimite, 'CRT=2 requires a non-null csosn'],
+  ] as const)('CRT %s with csosn null → %s', (crt, message) => {
+    const imposto: Imposto = { origem: ORIGEM.nacional, configuracaoICMS: { crt, csosn: null } };
+    expect(tributeErrorMessage(imposto)).toBe(message);
+  });
+
+  const SUB_CONFIG_AUSENTE = [
+    [CSOSN.tributadaComCredito, "CSOSN '101' requires `configuracaoICMS.csosn101`"],
+    [CSOSN.tributadaComCreditoComSt, "CSOSN '201' requires `configuracaoICMS.csosn201`"],
+    [CSOSN.tributadaSemCreditoComSt, "CSOSN '202' requires `configuracaoICMS.csosn202ou203`"],
+    [CSOSN.isencaoFaixaReceitaBrutaComSt, "CSOSN '203' requires `configuracaoICMS.csosn202ou203`"],
+    [CSOSN.icmsCobradoAnteriormente, "CSOSN '500' requires `configuracaoICMS.csosn500`"],
+    [CSOSN.outros, "CSOSN '900' requires `configuracaoICMS.csosn900`"],
+  ] as const;
+
+  it.each(SUB_CONFIG_AUSENTE)('CSOSN %s with its sub-config key absent → %s', (csosn, message) => {
+    expect(tributeErrorMessage(impostoFor(csosn))).toBe(message);
+  });
+
+  // The web editor nulls every SN slot when the CSOSN changes, so the stored
+  // shape carries `csosnXXX: null`, not a missing key.
+  it.each(SUB_CONFIG_AUSENTE)('CSOSN %s with every SN slot null → %s', (csosn, message) => {
+    expect(tributeErrorMessage(impostoFor(csosn, SN_SLOTS_NULL))).toBe(message);
+  });
+
+  it("CSOSN 202 with csosn201 filled and csosn202ou203 null → names csosn202ou203, not 201's slot", () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCreditoComSt, {
+      csosn201: {
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+      csosn202ou203: null,
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      "CSOSN '202' requires `configuracaoICMS.csosn202ou203`",
+    );
+  });
+
+  it('CSOSN 203 with a partial FCP-ST trio → the exact group message names 203, not the slot', () => {
+    const imposto = impostoFor(CSOSN.isencaoFaixaReceitaBrutaComSt, {
+      csosn202ou203: {
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+        vBCFCPST: 1800,
+      },
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      "CSOSN '203': XSD sub-groups must be emitted complete or omitted — " +
+        'FCP-ST missing: pFCPST, vFCPST',
+    );
+  });
+
+  it('neither configuracaoICMS nor configuracaoISSQN → the exact message', () => {
+    expect(tributeErrorMessage({ origem: ORIGEM.nacional })).toBe(
+      'imposto requires either `configuracaoICMS` or `configuracaoISSQN`',
+    );
+  });
+
+  // -- ICMS precedence: CRT, then csosn, then slot, then groups --------------
+
+  it('CRT 3 with csosn 500 and a null slot → the CRT message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: {
+        crt: CRT.regimeNormal,
+        csosn: CSOSN.icmsCobradoAnteriormente,
+        csosn500: null,
+      },
+    };
+    expect(tributeErrorMessage(imposto)).toBe(
+      'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
+        'Use Simples Nacional configs only.',
+    );
+  });
+
+  it('CRT 4 with csosn 900 and a partial group → the CRT message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: {
+        crt: CRT.meiSimplesNacional,
+        csosn: CSOSN.outros,
+        csosn900: { vBC: 1500 },
+      },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('CRT=4 (MEI) is not implemented.');
+  });
+
+  it('CRT 1 with csosn null and a leftover partial csosn500 → the csosn message wins', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: CRT.simplesNacional, csosn: null, csosn500: { pST: 20 } },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('CRT=1 requires a non-null csosn');
+  });
+
+  it('CSOSN 102 with leftover partial csosn500/csosn900 → ICMSSN102, the other slots ignored', () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCredito, {
+      csosn500: { pST: 20 },
+      csosn900: { vBC: 1500 },
+    });
+    expect(icmsXmlOf(buildImpostoXml(imposto, item1500))).toBe(
+      '<ICMS><ICMSSN102><orig>0</orig><CSOSN>102</CSOSN></ICMSSN102></ICMS>',
+    );
+  });
+
+  it('CSOSN 202 with a complete csosn202ou203 and a partial-trio csosn201 → builds ICMSSN202', () => {
+    const imposto = impostoFor(CSOSN.tributadaSemCreditoComSt, {
+      csosn201: {
+        pCredSN: 1.25,
+        vCredICMSSN: 18.75,
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+        vBCFCPST: 1800,
+      },
+      csosn202ou203: {
+        modBCST: MOD_BCST.margemValorAgregado,
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+    });
+    expect(icmsXmlOf(buildImpostoXml(imposto, item1500))).toBe(
+      '<ICMS><ICMSSN202><orig>0</orig><CSOSN>202</CSOSN><modBCST>4</modBCST>' +
+        '<vBCST>1800.00</vBCST><pICMSST>18.0000</pICMSST><vICMSST>324.00</vICMSST>' +
+        '</ICMSSN202></ICMS>',
+    );
+  });
+
+  it('ISSQN set with CRT 3 → <ISSQN>, the ICMS config never checked', () => {
+    const imposto: Imposto = {
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: CRT.regimeNormal, csosn: null },
+      configuracaoISSQN: issqnFor(),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).not.toContain('<ICMS>');
+  });
+
+  // -- PIS and COFINS are built before ICMS, PIS before COFINS ---------------
+
+  it('PIS CST 01 without pPIS + CSOSN 500 with a null slot → the PIS message wins', () => {
+    const imposto: Imposto = {
+      ...impostoFor(CSOSN.icmsCobradoAnteriormente, SN_SLOTS_NULL),
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('PIS CST=01 requires `pPIS`');
+  });
+
+  it('COFINS CST 02 without pCOFINS + CSOSN 900 with a partial group → the COFINS message wins', () => {
+    const imposto: Imposto = {
+      ...impostoFor(CSOSN.outros, { csosn900: { vBC: 1500 } }),
+      configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaDiferenciada },
+    };
+    expect(tributeErrorMessage(imposto)).toBe('COFINS CST=02 requires `pCOFINS`');
+  });
+
+  it('PIS CST 49 with both rates + COFINS CST 03 without vAliqProd → the PIS message wins', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.1 },
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade },
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500, qTrib: 1 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  // -- PIS/COFINS: the rate bound, exact, and each group's precedence --------
+
+  it('CST 01 with pPIS 1000 → the exact rate-format message', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1000 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe(
+      'PIS CST=01: `pPIS` 1000 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+
+  it('CST 99 with pCOFINS 1234.5 → the exact rate-format message', () => {
+    const imposto = impostoPisCofins(null, {
+      CST: CST_PIS_COFINS.outrasOperacoes,
+      pCOFINS: 1234.5,
+    });
+    expect(tributeErrorMessage(imposto)).toBe(
+      'COFINS CST=99: `pCOFINS` 1234.5 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+
+  it('CST 01 without pPIS but with vAliqProd → still the missing-pPIS message', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, vAliqProd: 5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe('PIS CST=01 requires `pPIS`');
+  });
+
+  it('CST 01 with pPIS 1000 and a vAliqProd → the rate-format message (Aliq ignores vAliqProd)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toMatch(/^PIS CST=01: `pPIS` 1000 does not fit/);
+  });
+
+  it('CST 03 without vAliqProd on an item without qTrib → the config message, not qTrib', () => {
+    const imposto = impostoPisCofins({ CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade }, null);
+    expect(tributeErrorMessage(imposto, { vProd: 1500 })).toBe('PIS CST=03 requires `vAliqProd`');
+  });
+
+  it('CST 03 with pPIS 1000 → PISQtde, the percent rate never read', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, { vProd: 1500, qTrib: 2 }), 'PIS')).toBe(
+      '<PIS><PISQtde><CST>03</CST><qBCProd>2.0000</qBCProd><vAliqProd>0.5000</vAliqProd>' +
+        '<vPIS>1.00</vPIS></PISQtde></PIS>',
+    );
+  });
+
+  it('CST 07 with pPIS 1000 → PISNT, the rate never read', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.isentaContribuicao, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(groupXmlOf(buildImpostoXml(imposto, item1500), 'PIS')).toBe(
+      '<PIS><PISNT><CST>07</CST></PISNT></PIS>',
+    );
+  });
+
+  it('CST 49 with pPIS 1000 and vAliqProd 0.5 → the both-rates message, not the rate bound', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1000, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500, qTrib: 1 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  it('CST 49 with both rates on an item without qTrib → the both-rates message, not qTrib', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65, vAliqProd: 0.5 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto, { vProd: 1500 })).toBe(
+      'PIS CST=49 (PISOutr) must carry exactly one of `(vBC + pPIS)` or ' +
+        '`(qBCProd + vAliqProd)`, not both — configure `pPIS` or `vAliqProd`',
+    );
+  });
+
+  it('CST 49 with pPIS 1000 and vAliqProd 0 → the rate bound (a 0 per-unit is no second rate)', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1000, vAliqProd: 0 },
+      null,
+    );
+    expect(tributeErrorMessage(imposto)).toBe(
+      'PIS CST=49: `pPIS` 1000 does not fit the XSD rate format ' +
+        '(TDec_0302a04, at most 999.9999)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The emission rules in @delfrance/schemas ↔ the XSD (#1655)
+//
+// `vereditoPisCofins` decides which PIS/COFINS group a CST selects; the engine
+// emits that group. The codegen types are the XSD's own enumerations, so the
+// type pins fail typecheck the moment a helper CST subset drifts from its
+// group, and the sweep builds every CST through the real engine and validates
+// the result against the XSD — the authority, not a hand copy of the table.
+// ---------------------------------------------------------------------------
+
+describe('regrasDeEmissao ↔ the XSD (#1655)', () => {
+  it('the helper CST subsets equal the codegen PIS/COFINS group enumerations', () => {
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISAliq['CST']>();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISQtde['CST']>();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<TNFe_infNFe_det_imposto_PIS_PISOutr['CST']>();
+    expectTypeOf<CstPisCofinsAliq>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSAliq['CST']
+    >();
+    expectTypeOf<CstPisCofinsQtde>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSQtde['CST']
+    >();
+    expectTypeOf<CstPisCofinsNT>().toEqualTypeOf<TNFe_infNFe_det_imposto_COFINS_COFINSNT['CST']>();
+    expectTypeOf<CstPisCofinsOutr>().toEqualTypeOf<
+      TNFe_infNFe_det_imposto_COFINS_COFINSOutr['CST']
+    >();
+  });
+
+  // One ok input per group: Aliq a percent, Qtde a per-unit rate (the item
+  // carries qTrib), NT nothing, and Outr each branch of its xs:choice.
+  const ENTRADAS_OK = {
+    Aliq: [['percent', { pPIS: 0.65 }, { pCOFINS: 3 }]],
+    Qtde: [['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }]],
+    NT: [['no rate', {}, {}]],
+    Outr: [
+      ['percent', { pPIS: 0.65 }, { pCOFINS: 3 }],
+      ['per-unit', { vAliqProd: 0.5 }, { vAliqProd: 0.75 }],
+      ['no rate', {}, {}],
+    ],
+  } as const;
+  const XSD_SWEEP = cstPisCofinsSchema.options.flatMap((cst) => {
+    // The group the helper assigns (both rates set: Outr answers ambasAliquotas).
+    const v = vereditoPisCofins(cst, 0.65, 0.5);
+    const grupo = v.tipo === 'ok' ? v.grupo : 'Outr';
+    return ENTRADAS_OK[grupo].map(
+      ([modo, pis, cofins]) => [cst, grupo, modo, pis, cofins] as const,
+    );
+  });
+
+  it('the sweep covers every CST, and every Outr CST in all three branches', () => {
+    expect(new Set(XSD_SWEEP.map(([cst]) => cst)).size).toBe(cstPisCofinsSchema.options.length);
+    expect(XSD_SWEEP).toHaveLength(2 + 1 + 6 + 24 * 3);
+  });
+
+  it.each(XSD_SWEEP)(
+    'CST %s (%s, %s) → the engine emits an XSD-valid PIS/COFINS group',
+    async (cst, grupo, _modo, pis, cofins) => {
+      const imposto = impostoPisCofins({ CST: cst, ...pis }, { CST: cst, ...cofins });
+      const item = { vProd: 1500, qTrib: 2 };
+      const xml = buildImpostoXml(imposto, item);
+      expect(groupXmlOf(xml, 'PIS')).toContain(`<PIS${grupo}><CST>${cst}</CST>`);
+      expect(groupXmlOf(xml, 'COFINS')).toContain(`<COFINS${grupo}><CST>${cst}</CST>`);
+      await assertXsdValidWithRealTotals(xml, imposto, item);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // FCP-ST all-or-nothing trio (#507)
 //
 // The FCP-ST base/rate/value trio must be emitted together or not at all;
@@ -699,17 +1804,6 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
     },
   );
 
-  /** Capture the message of the NFeTributeError buildImpostoXml throws. */
-  function tributeErrorMessage(imposto: Imposto): string {
-    try {
-      buildImpostoXml(imposto, item1500);
-    } catch (err) {
-      if (err instanceof NFeTributeError) return err.message;
-      throw err;
-    }
-    throw new Error('expected buildImpostoXml to throw NFeTributeError');
-  }
-
   // Each single-field-present and each two-fields-present combination rejects.
   it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
     // Annotated `readonly string[]`: `trio` is a union across CASES, so the
@@ -741,6 +1835,479 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
       for (const m of missing) expect(missingClause).toContain(m);
       for (const p of present) expect(missingClause).not.toContain(p);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ICMSSN500 / ICMSSN900 XSD sub-groups all-or-nothing (#506)
+//
+// Each `xs:sequence minOccurs="0"` sub-group is emitted complete or omitted;
+// anything in between is rejected at build time by ONE NFeTributeError naming
+// every incomplete group and its missing REQUIRED members, in XSD order. The
+// fixtures below are transcribed from leiauteNFe_v4.00.xsd (ICMSSN500
+// L4142-4230, ICMSSN900 L4231-4377), not from the engine's own tables.
+// ---------------------------------------------------------------------------
+
+type ConfSN500 = NonNullable<ConfiguracaoICMS['csosn500']>;
+type ConfSN900 = NonNullable<ConfiguracaoICMS['csosn900']>;
+
+/**
+ * Parse a #506 group error into `{ group label → missing required members }`,
+ * keys in message order. Splits on the message's own separators (' — ', '; ',
+ * ' missing: ', ', ') so assertions compare exact field tokens: the names are
+ * prefixes of one another (vICMS ⊂ vICMSST ⊂ vICMSSTRet, vICMSSubstituto,
+ * vICMSEfet), so a `toContain` would pass on the wrong field.
+ */
+function missingByGroup(message: string): Record<string, string[]> {
+  const parts = message.split(' — ');
+  if (parts.length !== 2) throw new Error(`expected exactly one ' — ' in: ${message}`);
+  const out: Record<string, string[]> = {};
+  for (const clause of parts[1]!.split('; ')) {
+    const halves = clause.split(' missing: ');
+    if (halves.length !== 2) throw new Error(`malformed clause '${clause}' in: ${message}`);
+    const [label, fields] = halves as [string, string];
+    if (label in out) throw new Error(`group '${label}' reported twice in: ${message}`);
+    out[label] = fields.split(', ');
+  }
+  return out;
+}
+
+/** Build, expect the #506 group error for `csosn`, and parse its clauses. */
+function groupViolations(csosn: string, imposto: Imposto): Record<string, string[]> {
+  const message = tributeErrorMessage(imposto);
+  expect(message).toMatch(
+    new RegExp(`^CSOSN '${csosn}': XSD sub-groups must be emitted complete or omitted — `),
+  );
+  return missingByGroup(message);
+}
+
+function imposto500(sub: ConfSN500): Imposto {
+  return impostoFor(CSOSN.icmsCobradoAnteriormente, { csosn500: sub });
+}
+function imposto900(sub: ConfSN900): Imposto {
+  return impostoFor(CSOSN.outros, { csosn900: sub });
+}
+
+/** `sub` with `field` removed (the key gone, not nulled). */
+function without<T extends object>(sub: T, field: keyof T): T {
+  const copy: Partial<T> = { ...sub };
+  delete copy[field];
+  return copy as T;
+}
+
+/**
+ * `present` with every OTHER member of the sub-config's schema set to an
+ * explicit `null` — the shape a STORED config has. Every csosn500/csosn900
+ * member is `.optional().nullable()` and the web imposto editor writes `null`
+ * for a cleared field, so a real document carries `pICMS: null` where
+ * `without()` leaves the key out. `shape` is the Zod object's `.shape`, so the
+ * padding follows the schema rather than this file's fixtures.
+ */
+function nullPadded<T extends object>(shape: Record<keyof T, unknown>, present: T): T {
+  const nulls = Object.fromEntries(Object.keys(shape).map((key) => [key, null]));
+  return { ...nulls, ...present } as T;
+}
+
+/**
+ * Cartesian product of per-group options into named sub-configs; an option
+ * named '' is the group left absent.
+ */
+function variants<T extends object>(
+  axes: ReadonlyArray<ReadonlyArray<readonly [string, Partial<T>]>>,
+): Array<[string, T]> {
+  const rows = axes.reduce<Array<[string[], Partial<T>]>>(
+    (acc, axis) =>
+      acc.flatMap(([names, sub]) =>
+        axis.map(([name, part]): [string[], Partial<T>] => [
+          name === '' ? names : [...names, name],
+          { ...sub, ...part },
+        ]),
+      ),
+    [[[], {}]],
+  );
+  return rows.map(([names, sub]) => [names.join(' + ') || 'no groups', sub as T]);
+}
+
+// One complete instance of each group's REQUIRED members (the characterization
+// pins' values); optional members are layered on per test.
+const SN500_GROUP = {
+  stRet: { vBCSTRet: 1500, pST: 20, vICMSSTRet: 180 },
+  fcpStRet: { vBCFCPSTRet: 1500, pFCPSTRet: 2, vFCPSTRet: 30 },
+  efet: { pRedBCEfet: 10, vBCEfet: 1350, pICMSEfet: 18, vICMSEfet: 243 },
+} satisfies Record<string, ConfSN500>;
+const SN900_GROUP = {
+  proprio: { modBC: MOD_BC.valorOperacao, vBC: 1350, pICMS: 18, vICMS: 243 },
+  st: { modBCST: MOD_BCST.margemValorAgregado, vBCST: 1890, pICMSST: 18, vICMSST: 97.2 },
+  fcpSt: { vBCFCPST: 1890, pFCPST: 2, vFCPST: 37.8 },
+  credSN: { pCredSN: 1.25, vCredICMSSN: 18.75 },
+} satisfies Record<string, ConfSN900>;
+
+/** Every group complete and every optional member set. */
+const SN500_FULL: ConfSN500 = {
+  ...SN500_GROUP.stRet,
+  vICMSSubstituto: 120,
+  ...SN500_GROUP.fcpStRet,
+  ...SN500_GROUP.efet,
+};
+const SN900_FULL: ConfSN900 = {
+  ...SN900_GROUP.proprio,
+  pRedBC: 10,
+  ...SN900_GROUP.st,
+  pMVAST: 40,
+  pRedBCST: 10,
+  ...SN900_GROUP.fcpSt,
+  ...SN900_GROUP.credSN,
+};
+
+const ST_900_REQUIRED = ['modBCST', 'vBCST', 'pICMSST', 'vICMSST'];
+
+describe('buildImpostoXml — ICMSSN500/ICMSSN900 XSD groups all-or-nothing (#506)', () => {
+  // -- rejections -----------------------------------------------------------
+
+  // Dropping ONE required member from the fully-populated config names exactly
+  // that group and that field: the other (complete) groups add no clause.
+  it.each([
+    ['ICMS próprio', 'modBC'],
+    ['ICMS próprio', 'vBC'],
+    ['ICMS próprio', 'pICMS'],
+    ['ICMS próprio', 'vICMS'],
+    ['ICMS-ST', 'modBCST'],
+    ['ICMS-ST', 'vBCST'],
+    ['ICMS-ST', 'pICMSST'],
+    ['ICMS-ST', 'vICMSST'],
+    ['FCP-ST', 'vBCFCPST'],
+    ['FCP-ST', 'pFCPST'],
+    ['FCP-ST', 'vFCPST'],
+    ['crédito SN', 'pCredSN'],
+    ['crédito SN', 'vCredICMSSN'],
+  ] as const)('CSOSN 900: %s without %s → names only that field', (label, field) => {
+    const imposto = imposto900(without(SN900_FULL, field));
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(groupViolations('900', imposto)).toEqual({ [label]: [field] });
+  });
+
+  it.each([
+    ['ICMS-ST retido', 'vBCSTRet'],
+    ['ICMS-ST retido', 'pST'],
+    ['ICMS-ST retido', 'vICMSSTRet'],
+    ['FCP-ST retido', 'vBCFCPSTRet'],
+    ['FCP-ST retido', 'pFCPSTRet'],
+    ['FCP-ST retido', 'vFCPSTRet'],
+    ['ICMS efetivo', 'pRedBCEfet'],
+    ['ICMS efetivo', 'vBCEfet'],
+    ['ICMS efetivo', 'pICMSEfet'],
+    ['ICMS efetivo', 'vICMSEfet'],
+  ] as const)('CSOSN 500: %s without %s → names only that field', (label, field) => {
+    const imposto = imposto500(without(SN500_FULL, field));
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(groupViolations('500', imposto)).toEqual({ [label]: [field] });
+  });
+
+  // A partial group with every other group absent — including an OPTIONAL
+  // member on its own, which still opens its group and forces the required ones.
+  const PARTIAL_900: ReadonlyArray<readonly [string, ConfSN900, Record<string, string[]>]> = [
+    [
+      'vBC but no pICMS (the #506 report)',
+      { modBC: MOD_BC.valorOperacao, vBC: 1500, vICMS: 270 },
+      { 'ICMS próprio': ['pICMS'] },
+    ],
+    ['pRedBC alone', { pRedBC: 10 }, { 'ICMS próprio': ['modBC', 'vBC', 'pICMS', 'vICMS'] }],
+    ['pMVAST alone', { pMVAST: 40 }, { 'ICMS-ST': ST_900_REQUIRED }],
+    ['pRedBCST alone', { pRedBCST: 10 }, { 'ICMS-ST': ST_900_REQUIRED }],
+    // The FCP-ST sequence is NESTED inside the ST one (xsd:4345-4361 within
+    // 4295-4362): a complete trio with no ST group is schema-invalid, and only
+    // the ST clause is reported — the trio itself is complete. #507 let it by.
+    ['complete FCP-ST trio with no ST group', SN900_GROUP.fcpSt, { 'ICMS-ST': ST_900_REQUIRED }],
+    ['pCredSN alone', { pCredSN: 1.25 }, { 'crédito SN': ['vCredICMSSN'] }],
+    ['vCredICMSSN alone', { vCredICMSSN: 18.75 }, { 'crédito SN': ['pCredSN'] }],
+  ];
+  it.each(PARTIAL_900)('CSOSN 900: %s → rejected', (_name, sub, expected) => {
+    expect(groupViolations('900', imposto900(sub))).toEqual(expected);
+  });
+
+  const PARTIAL_500: ReadonlyArray<readonly [string, ConfSN500, Record<string, string[]>]> = [
+    [
+      'vICMSSubstituto alone',
+      { vICMSSubstituto: 120 },
+      { 'ICMS-ST retido': ['vBCSTRet', 'pST', 'vICMSSTRet'] },
+    ],
+    [
+      'vBCEfet alone',
+      { vBCEfet: 1350 },
+      { 'ICMS efetivo': ['pRedBCEfet', 'pICMSEfet', 'vICMSEfet'] },
+    ],
+  ];
+  it.each(PARTIAL_500)('CSOSN 500: %s → rejected', (_name, sub, expected) => {
+    expect(groupViolations('500', imposto500(sub))).toEqual(expected);
+  });
+
+  // Every violation lands in ONE error, clauses in XSD document order.
+  it('CSOSN 900: two incomplete groups → one error, clauses in XSD order', () => {
+    const imposto = imposto900({ vBC: 1500, pCredSN: 1.25 });
+    const message = tributeErrorMessage(imposto);
+    expect(message).toBe(
+      "CSOSN '900': XSD sub-groups must be emitted complete or omitted — " +
+        'ICMS próprio missing: modBC, pICMS, vICMS; crédito SN missing: vCredICMSSN',
+    );
+    const violations = missingByGroup(message);
+    expect(Object.keys(violations)).toEqual(['ICMS próprio', 'crédito SN']);
+  });
+
+  it('CSOSN 900: a partial FCP-ST trio with no ST group → the ST clause, then the FCP-ST one', () => {
+    const violations = groupViolations('900', imposto900({ vBCFCPST: 1890 }));
+    expect(Object.keys(violations)).toEqual(['ICMS-ST', 'FCP-ST']);
+    expect(violations).toEqual({ 'ICMS-ST': ST_900_REQUIRED, 'FCP-ST': ['pFCPST', 'vFCPST'] });
+  });
+
+  it('CSOSN 500: all three groups incomplete → three clauses in XSD order', () => {
+    const violations = groupViolations(
+      '500',
+      imposto500({ pST: 20, pFCPSTRet: 2, vICMSEfet: 243 }),
+    );
+    expect(Object.keys(violations)).toEqual(['ICMS-ST retido', 'FCP-ST retido', 'ICMS efetivo']);
+    expect(violations).toEqual({
+      'ICMS-ST retido': ['vBCSTRet', 'vICMSSTRet'],
+      'FCP-ST retido': ['vBCFCPSTRet', 'vFCPSTRet'],
+      'ICMS efetivo': ['pRedBCEfet', 'vBCEfet', 'pICMSEfet'],
+    });
+  });
+
+  // Near-misses on the presence test (`!= null`). A numeric 0 is PRESENT, so on
+  // its own it opens the group: these fail against a `!value` regression, which
+  // would read the lone 0 as absent and let the group through. The modBC '0'
+  // row cannot catch `!value` ('0' is a truthy string) — it catches a numeric
+  // coercion (`Number(v) === 0`, `v === '0'`) that would drop MOD_BC's '0'.
+  it.each([
+    ['{ pRedBC: 0 } alone (optional member)', { pRedBC: 0 }, ['modBC', 'vBC', 'pICMS', 'vICMS']],
+    ['{ vICMS: 0 } alone (required member)', { vICMS: 0 }, ['modBC', 'vBC', 'pICMS']],
+    [
+      '{ modBC: MOD_BC.margemValorAgregado } alone',
+      { modBC: MOD_BC.margemValorAgregado },
+      ['vBC', 'pICMS', 'vICMS'],
+    ],
+  ] as const)('CSOSN 900: %s → rejected (0 is present)', (_name, sub, missing) => {
+    expect(groupViolations('900', imposto900(sub))).toEqual({ 'ICMS próprio': [...missing] });
+  });
+
+  // Scope near-miss: <ICMS> and <ISSQN> are an xs:choice and ISSQN wins, so a
+  // partial ICMS group on an ISSQN item is never built — hence never validated.
+  it('ISSQN item carrying a partial csosn900 → no throw, <ISSQN> and no <ICMS>', async () => {
+    const imposto: Imposto = { ...imposto900({ vBC: 1500 }), configuracaoISSQN: issqnFor() };
+    let xml = '';
+    expect(() => {
+      xml = buildImpostoXml(imposto, { vProd: 500 });
+    }).not.toThrow();
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+
+  // -- complete variants: emitted, exactly the configured tags, XSD-valid -----
+
+  // Absent is legal for every group.
+  it.each([
+    [CSOSN.icmsCobradoAnteriormente, { csosn500: {} }, 'ICMSSN500'],
+    [CSOSN.outros, { csosn900: {} }, 'ICMSSN900'],
+  ] as const)('CSOSN %s with no groups at all → orig + CSOSN only', async (csosn, extra, tag) => {
+    const xml = buildImpostoXml(impostoFor(csosn, extra), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      `<ICMS><${tag}><orig>0</orig><CSOSN>${csosn}</CSOSN></${tag}></ICMS>`,
+    );
+    await assertXsdValid(xml);
+  });
+
+  /** Build `sub`, assert each of its members — and no other — is emitted, then round-trip. */
+  async function expectCompleteVariant(imposto: Imposto, sub: object, all: object): Promise<void> {
+    const xml = buildImpostoXml(imposto, item1500);
+    const icms = icmsXmlOf(xml);
+    const present = Object.keys(sub);
+    // `<name>` with its closing '>' is an exact tag match (no prefix collision).
+    for (const f of present) expect(icms).toContain(`<${f}>`);
+    for (const f of Object.keys(all).filter((k) => !present.includes(k))) {
+      expect(icms).not.toContain(`<${f}>`);
+    }
+    await assertXsdValid(xml);
+  }
+
+  // ICMSSN500: every subset of its three groups, ICMS-ST retido with and
+  // without its optional vICMSSubstituto.
+  it.each(
+    variants<ConfSN500>([
+      [
+        ['', {}],
+        ['ICMS-ST retido', SN500_GROUP.stRet],
+        ['ICMS-ST retido + vICMSSubstituto', { ...SN500_GROUP.stRet, vICMSSubstituto: 120 }],
+      ],
+      [
+        ['', {}],
+        ['FCP-ST retido', SN500_GROUP.fcpStRet],
+      ],
+      [
+        ['', {}],
+        ['ICMS efetivo', SN500_GROUP.efet],
+      ],
+    ]),
+  )('CSOSN 500 complete variant: %s', async (_name, sub) => {
+    await expectCompleteVariant(imposto500(sub), sub, SN500_FULL);
+  });
+
+  // ICMSSN900: own ICMS × ICMS-ST (bare, with its optionals, with the nested
+  // FCP-ST trio) × crédito SN.
+  it.each(
+    variants<ConfSN900>([
+      [
+        ['', {}],
+        ['ICMS próprio', SN900_GROUP.proprio],
+        ['ICMS próprio + pRedBC', { ...SN900_GROUP.proprio, pRedBC: 10 }],
+      ],
+      [
+        ['', {}],
+        ['ICMS-ST', SN900_GROUP.st],
+        ['ICMS-ST + pMVAST + pRedBCST', { ...SN900_GROUP.st, pMVAST: 40, pRedBCST: 10 }],
+        ['ICMS-ST + FCP-ST', { ...SN900_GROUP.st, ...SN900_GROUP.fcpSt }],
+      ],
+      [
+        ['', {}],
+        ['crédito SN', SN900_GROUP.credSN],
+      ],
+    ]),
+  )('CSOSN 900 complete variant: %s', async (_name, sub) => {
+    await expectCompleteVariant(imposto900(sub), sub, SN900_FULL);
+  });
+
+  // The emit side of the presence near-misses: a COMPLETE group holding a 0 (or
+  // modBC '0') member is emitted as-is and validates.
+  it('CSOSN 900: complete own group with vICMS 0, pRedBC 0 and modBC 0 → emitted', async () => {
+    const imposto = imposto900({
+      ...SN900_GROUP.proprio,
+      modBC: MOD_BC.margemValorAgregado,
+      pRedBC: 0,
+      vICMS: 0,
+    });
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>0</modBC><vBC>1350.00</vBC><pRedBC>0.0000</pRedBC>' +
+        '<pICMS>18.0000</pICMS><vICMS>0.00</vICMS>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 500: complete ICMS efetivo group with pRedBCEfet 0 → emitted', async () => {
+    const xml = buildImpostoXml(imposto500({ ...SN500_GROUP.efet, pRedBCEfet: 0 }), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<pRedBCEfet>0.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // -- explicit null: the STORED shape ----------------------------------------
+  //
+  // Every fixture above leaves an absent member's key out, but a stored config
+  // carries `field: null` (see `nullPadded`). Presence is `!= null`, so a null
+  // member must read exactly like a missing key: it neither opens a group nor
+  // completes one. A `!== undefined` regression counts every null as present;
+  // the partial-group and lone-null tests below fail against it, and the
+  // all-null / complete-group ones pin the emit side of the same fold.
+
+  it('CSOSN 900 with EVERY schema member null → orig + CSOSN only', async () => {
+    const sub = nullPadded<ConfSN900>(confICMSSN900Schema.shape, {});
+    // The padding covers exactly the members the fully-populated fixture sets.
+    expect(Object.keys(sub).sort()).toEqual(Object.keys(SN900_FULL).sort());
+    const xml = buildImpostoXml(imposto900(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN></ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it('CSOSN 500 with EVERY schema member null → orig + CSOSN only', async () => {
+    const sub = nullPadded<ConfSN500>(confICMSSN500Schema.shape, {});
+    expect(Object.keys(sub).sort()).toEqual(Object.keys(SN500_FULL).sort());
+    const xml = buildImpostoXml(imposto500(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN></ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // The null twin of the `{ vICMS: 0 } alone` near-miss: a lone 0 opens its
+  // group, a lone null (one cleared field, every other key never written) does
+  // not — for every member, required and optional alike.
+  it.each(Object.keys(confICMSSN900Schema.shape))(
+    'CSOSN 900: { %s: null } alone → no group opened, orig + CSOSN only',
+    (field) => {
+      const xml = buildImpostoXml(imposto900({ [field]: null }), item1500);
+      expect(icmsXmlOf(xml)).toBe(
+        '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN></ICMSSN900></ICMS>',
+      );
+    },
+  );
+
+  it.each(Object.keys(confICMSSN500Schema.shape))(
+    'CSOSN 500: { %s: null } alone → no group opened, orig + CSOSN only',
+    (field) => {
+      const xml = buildImpostoXml(imposto500({ [field]: null }), item1500);
+      expect(icmsXmlOf(xml)).toBe(
+        '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN></ICMSSN500></ICMS>',
+      );
+    },
+  );
+
+  it("CSOSN 900: complete 'ICMS próprio', every other member null → only that group", async () => {
+    const sub = nullPadded(confICMSSN900Schema.shape, SN900_GROUP.proprio);
+    const xml = buildImpostoXml(imposto900(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN900><orig>0</orig><CSOSN>900</CSOSN>' +
+        '<modBC>3</modBC><vBC>1350.00</vBC><pICMS>18.0000</pICMS><vICMS>243.00</vICMS>' +
+        '</ICMSSN900></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  it("CSOSN 500: only 'ICMS efetivo' filled, every other member null → only that group", async () => {
+    const sub = nullPadded(confICMSSN500Schema.shape, SN500_GROUP.efet);
+    const xml = buildImpostoXml(imposto500(sub), item1500);
+    expect(icmsXmlOf(xml)).toBe(
+      '<ICMS><ICMSSN500><orig>0</orig><CSOSN>500</CSOSN>' +
+        '<pRedBCEfet>10.0000</pRedBCEfet><vBCEfet>1350.00</vBCEfet>' +
+        '<pICMSEfet>18.0000</pICMSEfet><vICMSEfet>243.00</vICMSEfet>' +
+        '</ICMSSN500></ICMS>',
+    );
+    await assertXsdValid(xml);
+  });
+
+  // The rejection side: a partial group padded with nulls names exactly the
+  // members the key-absent version names — a null member is still missing.
+  it.each(PARTIAL_900)(
+    'CSOSN 900: %s, every other member null → rejected',
+    (_name, sub, expected) => {
+      expect(
+        groupViolations('900', imposto900(nullPadded(confICMSSN900Schema.shape, sub))),
+      ).toEqual(expected);
+    },
+  );
+
+  it.each(PARTIAL_500)(
+    'CSOSN 500: %s, every other member null → rejected',
+    (_name, sub, expected) => {
+      expect(
+        groupViolations('500', imposto500(nullPadded(confICMSSN500Schema.shape, sub))),
+      ).toEqual(expected);
+    },
+  );
+
+  it('CSOSN 500: all three groups incomplete, the gaps null → three clauses, only the null members', () => {
+    const sub = nullPadded(confICMSSN500Schema.shape, { pST: 20, pFCPSTRet: 2, vICMSEfet: 243 });
+    expect(groupViolations('500', imposto500(sub))).toEqual({
+      'ICMS-ST retido': ['vBCSTRet', 'vICMSSTRet'],
+      'FCP-ST retido': ['vBCFCPSTRet', 'vFCPSTRet'],
+      'ICMS efetivo': ['pRedBCEfet', 'vBCEfet', 'pICMSEfet'],
+    });
   });
 });
 
@@ -879,6 +2446,198 @@ describe('aggregateTotals', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ICMSTot vPIS / vCOFINS — Σ of the items that carry <ICMS> (602/603, #509)
+// ---------------------------------------------------------------------------
+
+/**
+ * A `<tag>` of a built fragment in integer cents — `fmtMoney` always writes two
+ * decimals, so the sum stays exact integer arithmetic. Absent (an NT group) = 0.
+ */
+function wireCents(xml: string, tag: 'vPIS' | 'vCOFINS'): number {
+  const match = new RegExp(`<${tag}>(\\d+)\\.(\\d{2})</${tag}>`).exec(xml);
+  if (match == null) return 0;
+  return Number(match[1]) * 100 + Number(match[2]);
+}
+
+describe('aggregateTotals — ICMSTot vPIS/vCOFINS (602/603, #509)', () => {
+  const PIS_49_PERCENT = { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1.65 };
+  const COFINS_49_PERCENT = { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 7.6 };
+
+  it('sums a mix of every PIS/COFINS group to Σ the <vPIS>/<vCOFINS> the items emit', () => {
+    const items = [
+      {
+        // PISAliq / COFINSAliq: 1500 × 1.65% = 24.75, × 7.6% = 114.00
+        item: { vProd: 1500, qTrib: 1 },
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+          { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+        ),
+      },
+      {
+        // PISQtde / COFINSQtde: 4 × 0.50 = 2.00, 4 × 0.75 = 3.00
+        item: { vProd: 200, qTrib: 4 },
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0.5 },
+          { CST: CST_PIS_COFINS.tributavelAliquotaPorUnidade, vAliqProd: 0.75 },
+        ),
+      },
+      {
+        // PISOutr percent: 333.33 × 0.65% = 2.1666… → 2.17, × 3% = 9.9999 → 10.00
+        item: { vProd: 333.33, qTrib: 1 },
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0.65 },
+          { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 3 },
+        ),
+      },
+      {
+        // PISOutr per-unit: 3 × 0.1234 = 0.3702 → 0.37, 3 × 0.5678 = 1.7034 → 1.70
+        item: { vProd: 60, qTrib: 3 },
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.1234 },
+          { CST: CST_PIS_COFINS.outrasOperacoes, vAliqProd: 0.5678 },
+        ),
+      },
+      {
+        // PISOutr, nothing configured: the zero shape
+        item: { vProd: 10, qTrib: 1 },
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+          { CST: CST_PIS_COFINS.outrasOperacoesSaida },
+        ),
+      },
+      // Null config: the SN default PISNT/COFINSNT CST 07, no value element
+      { item: { vProd: 5, qTrib: 1 }, imposto: impostoFor102() },
+    ];
+    const xmls = items.map(({ item, imposto }) => buildImpostoXml(imposto, item));
+    const emittedPis = xmls.reduce((sum, xml) => sum + wireCents(xml, 'vPIS'), 0);
+    const emittedCofins = xmls.reduce((sum, xml) => sum + wireCents(xml, 'vCOFINS'), 0);
+    // 24.75 + 2.00 + 2.17 + 0.37; 114.00 + 3.00 + 10.00 + 1.70
+    expect(emittedPis).toBe(2929);
+    expect(emittedCofins).toBe(12870);
+
+    const totals = aggregateTotals(items);
+    expect(totals.vPIS).toBe(29.29);
+    expect(totals.vCOFINS).toBe(128.7);
+    const totalXml = buildTotalXml(totals);
+    expect(wireCents(totalXml, 'vPIS')).toBe(emittedPis);
+    expect(wireCents(totalXml, 'vCOFINS')).toBe(emittedCofins);
+    expect(totalXml).toContain('<vPIS>29.29</vPIS><vCOFINS>128.70</vCOFINS>');
+  });
+
+  it('uses the net vBaseTributavel, not the gross vProd — the base the item was built on', () => {
+    const imposto = impostoPisCofins(PIS_49_PERCENT, COFINS_49_PERCENT);
+    const totals = aggregateTotals([
+      { item: { vProd: 200, vBaseTributavel: 180, qTrib: 2 }, imposto },
+    ]);
+    // 180 × 1.65% = 2.97 and 180 × 7.6% = 13.68; the gross 200 would give 3.30 / 15.20.
+    expect(totals.vPIS).toBe(2.97);
+    expect(totals.vCOFINS).toBe(13.68);
+    const itemXml = buildImpostoXml(imposto, { vProd: 180, qTrib: 2 });
+    expect(wireCents(itemXml, 'vPIS')).toBe(297);
+    expect(wireCents(itemXml, 'vCOFINS')).toBe(1368);
+    // ICMSTot.vProd still sums the GROSS value.
+    expect(totals.vProd).toBe(200);
+  });
+
+  it('sums the per-item ROUNDED values: 3 × 0.334 → 0.99, not the rounded raw Σ 1.00', () => {
+    const imposto = impostoPisCofins(
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 1 },
+      { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 1 },
+    );
+    const item = { vProd: 33.4, qTrib: 1 };
+    // Each det emits 33.40 × 1% = 0.334 → 0.33; SEFAZ sums those three 0.33s.
+    expect(wireCents(buildImpostoXml(imposto, item), 'vPIS')).toBe(33);
+    const totals = aggregateTotals([
+      { item, imposto },
+      { item, imposto },
+      { item, imposto },
+    ]);
+    expect(totals.vPIS).toBe(0.99);
+    expect(totals.vCOFINS).toBe(0.99);
+  });
+
+  it('leaves an ISSQN item out: its PIS/COFINS belong to ISSQNtot (608/609), not ICMSTot', () => {
+    const onIcms = impostoPisCofins(PIS_49_PERCENT, COFINS_49_PERCENT);
+    const onIssqn: Imposto = { ...onIcms, configuracaoISSQN: issqnFor() };
+    const item = { vProd: 1000, qTrib: 1 };
+    // The ISSQN item DOES emit a <vPIS> — under <ISSQN>, with no <ICMS> group.
+    const issqnXml = buildImpostoXml(onIssqn, item);
+    expect(issqnXml).toContain('<ISSQN>');
+    expect(issqnXml).not.toContain('<ICMS>');
+    expect(wireCents(issqnXml, 'vPIS')).toBe(1650);
+
+    // The same config adds 16.50 / 76.00 on the ICMS item and 0 on the ISSQN one.
+    const totals = aggregateTotals([
+      { item, imposto: onIcms },
+      { item, imposto: onIssqn },
+    ]);
+    expect(totals.vPIS).toBe(16.5);
+    expect(totals.vCOFINS).toBe(76);
+    const issqnOnly = aggregateTotals([{ item, imposto: onIssqn }]);
+    expect(issqnOnly.vPIS).toBe(0);
+    expect(issqnOnly.vCOFINS).toBe(0);
+  });
+
+  it("counts an indTot='0' item's vPIS/vCOFINS while its vProd stays out of vProd/vNF", () => {
+    const totals = aggregateTotals([
+      { item: { vProd: 1000, qTrib: 1 }, imposto: impostoFor102() },
+      {
+        item: { vProd: 500, qTrib: 1, indTot: '0' },
+        imposto: impostoPisCofins(PIS_49_PERCENT, COFINS_49_PERCENT),
+      },
+    ]);
+    expect(totals.vProd).toBe(1000);
+    expect(totals.vNF).toBe(1000);
+    // 602/603 compare against every item with an ICMS group — no indTot filter.
+    expect(totals.vPIS).toBe(8.25); // 500 × 1.65%
+    expect(totals.vCOFINS).toBe(38); // 500 × 7.6%
+  });
+
+  it('leaves vNF unchanged — its formula has no PIS/COFINS term', () => {
+    const item = { vProd: 1500, qTrib: 1 };
+    const withPisCofins = aggregateTotals([
+      {
+        item,
+        imposto: impostoPisCofins(
+          { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 1.65 },
+          { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 7.6 },
+        ),
+      },
+    ]);
+    const without = aggregateTotals([{ item, imposto: impostoFor102() }]);
+    expect(withPisCofins.vPIS).toBe(24.75);
+    expect(withPisCofins.vCOFINS).toBe(114);
+    expect(withPisCofins.vNF).toBe(1500);
+    expect(withPisCofins.vNF).toBe(without.vNF);
+  });
+
+  it('zero default: no-rate and 0-rate configs total 0.00, byte-equal to the null-PIS total', () => {
+    const zeroConfigs = [
+      ...[
+        CST_PIS_COFINS.outrasOperacoesSaida,
+        CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno,
+        CST_PIS_COFINS.outrasOperacoesEntrada,
+        CST_PIS_COFINS.outrasOperacoes,
+      ].map((cst) => impostoPisCofins({ CST: cst }, { CST: cst })),
+      impostoPisCofins(
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida, pPIS: 0, vAliqProd: 0 },
+        { CST: CST_PIS_COFINS.outrasOperacoesSaida, pCOFINS: 0, vAliqProd: 0 },
+      ),
+    ];
+    // item1500 carries no qTrib — a zero config must not demand one here either.
+    const zero = aggregateTotals(zeroConfigs.map((imposto) => ({ item: item1500, imposto })));
+    const nullPis = aggregateTotals(
+      zeroConfigs.map(() => ({ item: item1500, imposto: impostoFor102() })),
+    );
+    expect(zero.vPIS).toBe(0);
+    expect(zero.vCOFINS).toBe(0);
+    const totalXml = buildTotalXml(zero);
+    expect(totalXml).toBe(buildTotalXml(nullPis));
+    expect(totalXml).toContain('<vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS>');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Transp / Pag builders
 // ---------------------------------------------------------------------------
 
@@ -985,6 +2744,43 @@ describe('buildPagXml', () => {
   it('rejects a negative vPag', () => {
     expect(() => buildPagXml([{ tPag: '17', vPag: -1 }])).toThrow();
   });
+
+  // <vTroco> — the second parameter. SEFAZ 866 (YA03-20) is "ausência de troco
+  // quando o valor dos pagamentos informados for maior que o total da nota", so
+  // an over-payment is only legal WITH this element.
+  it('emits <vTroco> after </detPag> when change is supplied', () => {
+    const xml = buildPagXml([{ tPag: '01', vPag: 100 }], 10);
+    expect(xml).toBe(
+      '<pag><detPag><tPag>01</tPag><vPag>100.00</vPag></detPag><vTroco>10.00</vTroco></pag>',
+    );
+  });
+
+  it('formats the troco to 2 decimals', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], 0.5)).toContain('<vTroco>0.50</vTroco>');
+  });
+
+  // ⚠️ The omission cases. A <vTroco>0.00</vTroco> is XSD-valid (TDec_1302
+  // matches "0.00"), so nothing downstream would catch it — these are the only
+  // guard that an absent troco stays absent.
+  it('omits <vTroco> entirely when not supplied', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }])).not.toContain('vTroco');
+  });
+
+  it('omits <vTroco> when the troco is 0 or null', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], 0)).not.toContain('vTroco');
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], null)).not.toContain('vTroco');
+  });
+
+  it('rejects a negative troco (that would be a shortfall — 865, not a troco)', () => {
+    expect(() => buildPagXml([{ tPag: '01', vPag: 100 }], -1)).toThrow(/vTroco/);
+  });
+
+  it('buildPagObject carries the troco on the <pag> GROUP, not on a detPag', () => {
+    const pag = buildPagObject([{ tPag: '01', vPag: 100 }], 10);
+    expect(pag.vTroco).toBe('10.00');
+    expect(pag.detPag).toHaveLength(1);
+    expect(pag.detPag[0]).not.toHaveProperty('vTroco');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1086,15 +2882,50 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
     await assertRtcXsdValid(xml, imposto);
   });
 
-  it('throws when emitRtc is on but the registered config is incomplete', () => {
+  it('a per-unit IS carries the base, a pIS of 0 and adRemIS — XSD-valid (PL_010f)', async () => {
+    // The XSD requires vBCIS + pIS whenever the IS values open; the per-unit
+    // path used to emit pISEspec alone, which no pack accepted.
+    const isPorUnidade = (uTrib: string | null): Imposto => ({
+      origem: ORIGEM.nacional,
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000000', pISEspec: 1.25, qTrib: 4, uTrib },
+      },
+    });
+    const imposto = isPorUnidade('UN');
+    const xml = buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(xml).toContain(
+      '<IS><CSTIS>000</CSTIS><cClassTribIS>000000</cClassTribIS><vBCIS>1500.00</vBCIS>' +
+        '<pIS>0.0000</pIS><adRemIS>1.2500</adRemIS><uTrib>UN</uTrib><qTrib>4.0000</qTrib>' +
+        '<vIS>5.00</vIS></IS>',
+    );
+    await assertRtcXsdValid(xml, imposto);
+    // uTrib and qTrib are one XSD sequence: a per-unit IS without uTrib is refused.
+    expect(() => buildImpostoXml(isPorUnidade(null), item1500, { emitRtc: true })).toThrow(
+      /per-unit IS \(pISEspec \+ qTrib\) also needs uTrib/,
+    );
+  });
+
+  it('throws NFeTributeError when emitRtc is on but the registered config is incomplete', () => {
     const imposto = {
       origem: '0',
       configuracaoICMS: { crt: '1', csosn: '102' },
       configuracaoIBSCBS: { CST: '000' }, // missing cClassTrib + rates
     } as unknown as Imposto;
-    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(
-      /configuracaoIBSCBS/,
-    );
+    // The engine's operator-fixable class, like a partial ICMSSN900 group — a
+    // plain Error would escape every caller that narrows on the in-repo classes
+    // (#506). The item builder and the totals aggregator share `parseRtcConfig`.
+    const build = () => buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/^Invalid configuracaoIBSCBS \(RTC emission is on for this item\): /);
+    expect(() =>
+      aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, { emitRtc: true }),
+    ).toThrow(NFeTributeError);
   });
 
   it('throws when an IS sub-config is configured without a rate', () => {
@@ -1110,7 +2941,18 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
         is: { CSTIS: '000', cClassTribIS: '000001' }, // no pIS / pISEspec+qTrib
       },
     } as unknown as Imposto;
-    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(/IS requires/);
+    const build = () => buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/IS requires/);
+  });
+
+  it("buildIS's backstop (unreachable through the schema refine) is an NFeTributeError too", () => {
+    // `configuracaoISRtcSchema` rejects a rate-less IS before buildIS runs, so
+    // only a direct call reaches the backstop.
+    const rateless = { CSTIS: '000', cClassTribIS: '000001' } as unknown as ConfiguracaoISRtc;
+    const build = () => buildIS(rateless, 1500);
+    expect(build).toThrow(NFeTributeError);
+    expect(build).toThrow(/^buildIS: IS requires pIS \(ad valorem\) or pISEspec \+ qTrib/);
   });
 });
 
@@ -1189,5 +3031,108 @@ describe('aggregateTotals — indTot=0 (não compõe o total, #398)', () => {
     const absent = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor102() }]);
     expect(explicit).toEqual(absent);
     expect(explicit.vProd).toBe(1500);
+  });
+});
+
+// ── Nota de crédito / débito: IBS/CBS only (finNFe 5/6, RV B25-80) ───────────
+describe('IBS/CBS-only mode (a nota de crédito/débito)', () => {
+  const somente = { emitRtc: true, grupos: MODO_GRUPOS_IMPOSTO.somenteIbsCbs } as const;
+  /** Every group B25-80 forbids is CONFIGURED — none may reach the wire. */
+  const carregado = (): Imposto => ({
+    ...impostoForRtc(),
+    configuracaoIPI: { cEnq: '999', CST: '50', vBC: 1500, pIPI: 10, vIPI: 150 },
+    configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pPIS: 0.65 },
+    configuracaoCOFINS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica, pCOFINS: 3 },
+  });
+
+  it('emits IBSCBS alone — no ICMS, IPI, PIS or COFINS — and XSD-validates', async () => {
+    const imposto = carregado();
+    const xml = buildImpostoXml(imposto, item1500, somente);
+    expect(xml).toContain('<IBSCBS>');
+    for (const grupo of ['<ICMS>', '<ISSQN>', '<IPI>', '<PIS>', '<COFINS>']) {
+      expect(xml).not.toContain(grupo);
+    }
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, somente);
+    const xmlNota = wrap(
+      xml,
+      buildTotalXml(totals),
+      buildTranspXml(),
+      buildPagXml([{ tPag: '90', vPag: 0 }]),
+    );
+    await expect(validateXsd('NFe', signNFe(xmlNota, fixtureCert()))).resolves.toBeUndefined();
+  });
+
+  it('near-miss: the same item under `completo` still carries every group', () => {
+    const xml = buildImpostoXml(carregado(), item1500, {
+      emitRtc: true,
+      grupos: MODO_GRUPOS_IMPOSTO.completo,
+    });
+    for (const grupo of ['<ICMS>', '<IPI>', '<PIS>', '<COFINS>', '<IBSCBS>']) {
+      expect(xml).toContain(grupo);
+    }
+    expect(xml).toBe(buildImpostoXml(carregado(), item1500, { emitRtc: true }));
+  });
+
+  it('keeps the IS group — B25-80 does not list it', () => {
+    const imposto: Imposto = {
+      ...impostoForRtc(),
+      configuracaoIBSCBS: {
+        ...impostoForRtc().configuracaoIBSCBS!,
+        is: { CSTIS: '000', cClassTribIS: '000000', pIS: 2 },
+      },
+    };
+    const xml = buildImpostoXml(imposto, item1500, somente);
+    expect(xml).toContain('<IS>');
+    expect(xml).toContain('<IBSCBS>');
+    expect(xml).not.toContain('<ICMS>');
+  });
+
+  it('does not even read the configs it omits — a broken PIS cannot block it', () => {
+    const imposto: Imposto = {
+      ...impostoForRtc(),
+      // CST 01 without its rate: the ordinary builder throws on it.
+      configuracaoPIS: { CST: CST_PIS_COFINS.tributavelAliquotaBasica },
+    };
+    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500, somente)).not.toThrow();
+  });
+
+  it('refuses without the RTC or without configuracaoIBSCBS — both builders alike', () => {
+    const semRtc = { emitRtc: false, grupos: MODO_GRUPOS_IMPOSTO.somenteIbsCbs } as const;
+    expect(() => buildImpostoXml(impostoForRtc(), item1500, semRtc)).toThrow(
+      /must emit the Reforma Tributária/,
+    );
+    expect(() => buildImpostoXml(impostoFor102(), item1500, somente)).toThrow(
+      /has no configuracaoIBSCBS/,
+    );
+    for (const [imposto, opts] of [
+      [impostoForRtc(), semRtc],
+      [impostoFor102(), somente],
+    ] as const) {
+      expect(() => aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, opts)).toThrow(
+        NFeTributeError,
+      );
+    }
+  });
+
+  it('totals: the omitted buckets are zero, vNF is the goods, vNFTot adds IBS/CBS', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 1500 }, imposto: carregado() }],
+      { vDesc: 100 },
+      somente,
+    );
+    expect(totals).toMatchObject({ vIPI: 0, vPIS: 0, vCOFINS: 0, vICMS: 0, vBC: 0 });
+    expect(totals.vProd).toBe(1500);
+    expect(totals.vNF).toBe(1400);
+    expect(totals.rtc).toMatchObject({ vIBS: 1.5, vCBS: 13.5 });
+    // Near-miss: `completo` counts the same stored configs.
+    const completo = aggregateTotals(
+      [{ item: { vProd: 1500 }, imposto: carregado() }],
+      { vDesc: 100 },
+      { emitRtc: true },
+    );
+    expect(completo.vIPI).toBe(150);
+    expect(completo.vNF).toBe(1550);
+    expect(buildTotalXml(totals)).toContain('<vNFTot>1415.00</vNFTot>');
   });
 });

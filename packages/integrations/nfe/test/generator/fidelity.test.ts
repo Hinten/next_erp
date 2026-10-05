@@ -69,7 +69,9 @@ const SENT_FILIAL: Filial = {
   cnpj: SENT_CNPJ_EMIT,
   ie: SENT_IE_EMIT,
   iest: null,
+  isuf: null,
   imun: null,
+  ultimaModificacao: null,
   sede: {
     idExterno: null,
     logradouro: 'Rua Emit',
@@ -90,6 +92,7 @@ const SENT_FILIAL: Filial = {
     email: null,
     telefone: null,
     timestamp: null,
+    ultimaModificacao: null,
   },
 };
 
@@ -103,12 +106,13 @@ const SENT_CLIENTE: Cliente = {
   isUF: SENT_CLIENTE_ISUF,
   email: SENT_CLIENTE_EMAIL,
   telefone: null,
+  telefonesAdicionais: [],
+  telefoneGerenciado: false,
   observacoesInternas: null,
   timestamp: null,
-  nome_embedding: null,
-  telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const SENT_ENDERECO_DEST: Endereco = {
@@ -131,6 +135,7 @@ const SENT_ENDERECO_DEST: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const SENT_OPERACAO: Operacao = {
@@ -146,6 +151,8 @@ const SENT_OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
+  tpNFDebito: null,
+  tpNFCredito: null,
   indPres: IND_PRES_OPERACAO.naoPresencialInternet,
   indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',
@@ -154,6 +161,7 @@ const SENT_OPERACAO: Operacao = {
   CEST: null,
   unidade: null,
   infCpl: null,
+  ultimaModificacao: null,
 };
 
 const SENT_IMPOSTO_XML_A =
