@@ -163,7 +163,7 @@ export const TOKENS_DE_RETORNO_SHOPEE: ReadonlySet<string> = new Set<string>([
 
 /** Why {@link estadoFreteDeTokenShopee} produced no `EstadoFrete`. */
 export type MotivoTokenShopee =
-  /** A value the docs give to reverse logistics only — step 17 owns it. */
+  /** A value the docs give to reverse logistics only — see {@link ESTADOS_FRETE_RETORNO}. */
   | 'retorno'
   /** Anything this table does not name, including a future `LOGISTICS_*`. */
   | 'desconhecido';
@@ -263,7 +263,13 @@ export const ESTADOS_FRETE_SHOPEE_TERMINAL: ReadonlySet<EstadoFrete> = new Set<E
   ESTADO_FRETE.devolvido,
 ]);
 
-/** Step 17 owns reverse logistics. Step 7 never walks one back. */
+/**
+ * The reverse leg's estados. Step 7 never walks one back.
+ *
+ * Step 17 (#1525) stores the reverse-logistics tokens on the incidente's
+ * `devolucaoShopee` block and writes no frete estado; a reverse-leg estado is an
+ * open follow-up (`lib/shopee/devolucoes/README.md` §14).
+ */
 export const ESTADOS_FRETE_RETORNO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
   ESTADO_FRETE.aCaminhoDoRemetente,
   ESTADO_FRETE.devolvido,
@@ -300,7 +306,7 @@ export type MotivoFreteShopee =
   | 'sem-mudanca'
   /** Backwards on the ordered ladder (a late package event). */
   | 'regressivo'
-  /** The stored estado belongs to reverse logistics — step 17's. */
+  /** The stored estado belongs to reverse logistics ({@link ESTADOS_FRETE_RETORNO}). */
   | 'retorno-preservado'
   /** The stored estado is step 14's NF-e stamp and the target is routine churn. */
   | 'erro-preservado'
