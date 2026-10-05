@@ -55,7 +55,7 @@ const INVENTORY = {
 
   // ---- codebase `shopee` --------------------------------------------------
   'apps/shopee/functions/src/processNotification.ts':
-    'The Shopee push notification handler. Enqueued by the receiver route (App Hosting runtime SA) AND by the functions runtime SA: five onSchedule producers (the lost-push sweep and the order backfill, step 4; the escrow-settlement sweep, step 6; the stuck-reservation sweep, step 8; the auto-arrange sweep, step 15b) and the handler ITSELF since step 7 (one synthetic code 3 when a shipment push finds no pedido, also reached by the inline re-drives of the reprocess sweep) — so two identities dispatch it.',
+    'The Shopee push notification handler. Enqueued by the receiver route and, since step 17, the reclamacao/acao route (one synthetic code 29 after a seller action) — both under the App Hosting runtime SA — AND by the functions runtime SA: six onSchedule producers (the lost-push sweep and the order backfill, step 4; the escrow-settlement sweep, step 6; the stuck-reservation sweep, step 8; the auto-arrange sweep, step 15b; the returns sweep, step 17) and the handler ITSELF since step 7 (one synthetic code 3 when a shipment push — or, since step 17, a return push — finds no pedido, also reached by the inline re-drives of the reprocess sweep) — so two identities dispatch it.',
   'apps/shopee/functions/src/processMassImport.ts':
     'The Shopee mass product import ("importar todos os anuncios", master-plan step 9). Enqueued by the /importar-todos route under the App Hosting runtime SA and re-enqueued by ITSELF — for every scan/drain continuation AND for the rate-limit pause (scheduleDelaySeconds) — so two identities dispatch it.',
   'apps/shopee/functions/src/sendStock.ts':

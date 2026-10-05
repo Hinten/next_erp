@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { nfev4Collection, produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 import { nfeMeta } from '@delfrance/schemas';
 
+import { JANELA_DEVOLUCOES_SEGUNDOS } from '../../lib/shopee/devolucoes/devolucoesSweep';
 import { SHOPEE_STOCK_SEND_QUEUE } from '../../lib/shopee/estoque/constantesEstoque';
 import {
   NFE_SHOPEE_MAX_TENTATIVAS,
@@ -84,6 +85,7 @@ const {
   sweepShopeeAutoArrange,
   sweepShopeeEscrowSettlement,
   sweepShopeeLostPushes,
+  sweepShopeeReturns,
   sweepShopeeStock,
   sweepShopeeStockDaily,
   sweepShopeeStockReconciliacao,
@@ -117,6 +119,7 @@ const AGENDAMENTOS = {
   sweepShopeeStockDaily,
   sweepShopeeStockReconciliacao,
   sweepShopeeAutoArrange,
+  sweepShopeeReturns,
 } as const;
 
 /**
@@ -443,7 +446,7 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     // validated after the package's last push no push is documented at all, so
     // this tick is the PRIMARY signal and lists the package at most five minutes
     // after Shopee clears `invoice_pending`. The MINUTES are chosen, not
-    // inherited — every one is ≡ 2 (mod 5), which no minute of the eight
+    // inherited — every one is ≡ 2 (mod 5), which no minute of the nine
     // fixed-minute crons is (the derived test below); the two `every N minutes`
     // siblings have no fixed minute to avoid.
     expect(gatilhoDe(sweepShopeeAutoArrange).schedule).toBe(
@@ -452,9 +455,9 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     expect(gatilhoDe(sweepShopeeAutoArrange).timeZone).toBe('America/Sao_Paulo');
   });
 
-  it('⛔ QUASE-FALHA: NÃO é `every 5 minutes` nem `*/5 * * * *` — e os dois co-disparariam com TODOS os dez vizinhos (os `every N minutes` lidos alinhados)', () => {
+  it('⛔ QUASE-FALHA: NÃO é `every 5 minutes` nem `*/5 * * * *` — e os dois co-disparariam com TODOS os onze vizinhos (os `every N minutes` lidos alinhados)', () => {
     // The two spellings a reviewer would write first, each the same cadence at a
-    // glance. Both fire on the multiples of five, and EVERY minute the eight
+    // glance. Both fire on the multiples of five, and EVERY minute the nine
     // fixed-minute crons hold is one — so either would put this sweep's
     // `search_package_list` on the same minute as every other family of Shopee
     // calls, against one undocumented per-APP rate-limit budget. The two
@@ -475,19 +478,20 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     }
   });
 
-  it('⚠️ os minutos NÃO cruzam nenhum dos oito crons de minuto fixo (nem os dois `every N minutes`, lidos alinhados) — derivado dos crons, nunca afirmado', () => {
+  it('⚠️ os minutos NÃO cruzam nenhum dos nove crons de minuto fixo (nem os dois `every N minutes`, lidos alinhados) — derivado dos crons, nunca afirmado', () => {
     // Every sibling is read, none skipped: a cron this reader cannot parse is a
     // FAILURE here, never a silent pass — the derived-overlap test of the stock
     // describe skips the `every N minutes` pair, and a step form like
     // `2-57/5` would have been skipped by it too. ⚠️ The claim is exact for the
-    // eight fixed-minute crons only. The two `every N minutes` siblings have no
+    // nine fixed-minute crons only. The two `every N minutes` siblings have no
     // fixed minute; they are read ALIGNED (multiples of N from :00), the one
     // reading under which a choice of minutes matters, and under the unaligned
     // one no choice of minutes could avoid them.
     const meus = new Set(minutosDoCron(gatilhoDe(sweepShopeeAutoArrange).schedule ?? '') ?? []);
     // ÂNCORA: the literal really parsed into twelve minutes.
     expect(meus.size).toBe(12);
-    expect(OUTROS).toHaveLength(10);
+    // Eleven siblings since step 17's `sweepShopeeReturns`.
+    expect(OUTROS).toHaveLength(11);
     for (const [nome, fn] of OUTROS) {
       const deles = minutosDoCron(gatilhoDe(fn).schedule ?? '');
       expect(deles, nome).not.toBeNull();
@@ -555,6 +559,91 @@ describe('sweepShopeeAutoArrange (arranjo automático, passo 15b)', () => {
     expect(fonte).not.toMatch(/^\s*region\s*:/m);
     // ÂNCORA: the file really was read, and really declares this schedule.
     expect(fonte).toContain('export const sweepShopeeAutoArrange = onSchedule(');
+  });
+});
+
+describe('sweepShopeeReturns (devoluções, passo 17)', () => {
+  const OUTROS = Object.entries(AGENDAMENTOS).filter(([nome]) => nome !== 'sweepShopeeReturns');
+
+  /** The tick period in HOURS, read off the cron literal's hour field — never a constant beside it. */
+  const periodoEmHoras = (): number => {
+    const campoDaHora = gatilhoDe(sweepShopeeReturns).schedule?.split(' ')[1] ?? '';
+    const passo = /^\*\/(\d+)$/.exec(campoDaHora);
+    expect(passo).not.toBeNull();
+    const horas = Number(passo?.[1]);
+    expect(Number.isInteger(horas)).toBe(true);
+    return horas;
+  };
+
+  it('roda a cada 6 horas, aos :35, America/Sao_Paulo', () => {
+    // Four ticks a day over a 15-day window: each return is re-read ~60 times,
+    // so a missed tick costs nothing, and a return code 29 never announced is
+    // reconciled at most six hours late. The MINUTE is chosen, not inherited —
+    // :35 is fixed by no sibling (the derived test below).
+    expect(gatilhoDe(sweepShopeeReturns).schedule).toBe('35 */6 * * *');
+    expect(gatilhoDe(sweepShopeeReturns).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⛔ QUASE-FALHA: NÃO é `every 6 hours`, nem `35 6 * * *`, nem `*/35 * * * *`', () => {
+    // `every 6 hours` has no fixed minute, so nothing could keep it off its
+    // siblings; `35 6 * * *` is ONE character away and runs once a day;
+    // `*/35` reads alike and fires at :00 and :35 of EVERY hour.
+    for (const quaseFalha of ['every 6 hours', '35 6 * * *', '*/35 * * * *']) {
+      expect(gatilhoDe(sweepShopeeReturns).schedule).not.toBe(quaseFalha);
+    }
+  });
+
+  it('⚠️ o minuto :35 NÃO cruza nenhum vizinho (os `every N minutes` lidos alinhados) — derivado dos crons, nunca afirmado', () => {
+    // Every sibling is read, none skipped: a cron this reader cannot parse is a
+    // FAILURE here, never a silent pass. A copy of `40 4 * * 1`'s minute — or
+    // of the stock tier's :10/:25/:40/:55 — is the mutant this pins.
+    const meus = new Set(minutosDoCron(gatilhoDe(sweepShopeeReturns).schedule ?? '') ?? []);
+    // ÂNCORA: the literal really parsed into ONE minute.
+    expect([...meus]).toEqual([35]);
+    expect(OUTROS).toHaveLength(11);
+    for (const [nome, fn] of OUTROS) {
+      const deles = minutosDoCron(gatilhoDe(fn).schedule ?? '');
+      expect(deles, nome).not.toBeNull();
+      expect(
+        (deles ?? []).filter((m) => meus.has(m)),
+        nome,
+      ).toEqual([]);
+    }
+    // QUASE-FALHA: the same reader DOES see a collision on a sibling's minute.
+    const vizinhoDeQuarenta = OUTROS.filter(([, fn]) =>
+      (minutosDoCron(gatilhoDe(fn).schedule ?? '') ?? []).includes(40),
+    ).map(([nome]) => nome);
+    expect(vizinhoDeQuarenta.length).toBeGreaterThan(0);
+  });
+
+  it('a janela de 15 d − 300 s cobre o período DERIVADO com folga — um tick perdido não custa nada', () => {
+    // The window is what makes a missed tick free: a return updated during a
+    // failed tick is still inside the NEXT tick's window. Read off the cron.
+    const periodoS = periodoEmHoras() * 3_600;
+    expect(periodoEmHoras()).toBe(6);
+    expect(JANELA_DEVOLUCOES_SEGUNDOS).toBeGreaterThanOrEqual(2 * periodoS);
+  });
+
+  it('tem timeoutSeconds 300 — muito abaixo das 6 h entre ticks', () => {
+    // Per conta ≤ 10 list calls, 10 batched reads, 200 failure-row reads and
+    // 200 sequential enqueues: the gen2 60 s default cannot absorb that, and two
+    // ticks can never overlap.
+    const timeout = endpointOf(sweepShopeeReturns).timeoutSeconds;
+    expect(timeout).toBe(300);
+    expect(timeout as number).toBeLessThan(periodoEmHoras() * 3_600);
+  });
+
+  it('vincula exatamente as duas credenciais e herda a região inlinada, sem `region:` próprio', () => {
+    // Every `get_return_list` is HMAC-signed with the partner key even though it
+    // is Shop-signed.
+    const nomes = (
+      endpointOf(sweepShopeeReturns).secretEnvironmentVariables as { key?: string }[] | undefined
+    )?.map((s) => s.key);
+    expect(nomes).toEqual(SEGREDOS);
+    expect(endpointOf(sweepShopeeReturns).region).toEqual([process.env.FUNCTIONS_REGION]);
+    const fonte = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8');
+    // ÂNCORA: the file really declares this schedule.
+    expect(fonte).toContain('export const sweepShopeeReturns = onSchedule(');
   });
 });
 
@@ -678,7 +767,8 @@ describe('sweepShopeeStock (incremental, passo 12)', () => {
     }
     // Os dois `every N minutes` não ancoram minuto nenhum. O do passo 15b
     // (`sweepShopeeAutoArrange`) ancora DOZE, e nenhum deles toca este tique
-    // (≡ 2 mod 5) — por isso `vizinhos` abaixo continua sendo os dois semanais.
+    // (≡ 2 mod 5); o do passo 17 (`sweepShopeeReturns`) ancora o :35, que
+    // também não — por isso `vizinhos` abaixo continua sendo os dois semanais.
     expect([...minutosFixos.keys()].sort()).toEqual(
       [
         'monitorShopeePushConfig',
@@ -686,6 +776,7 @@ describe('sweepShopeeStock (incremental, passo 12)', () => {
         'sweepShopeeAutoArrange',
         'sweepShopeeEscrowSettlement',
         'sweepShopeeLostPushes',
+        'sweepShopeeReturns',
         'sweepShopeeStock',
         'sweepShopeeStockDaily',
         'sweepShopeeStockReconciliacao',
@@ -870,15 +961,16 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
 
   it('os agendamentos são DISTINTOS — nenhum PAR compartilha um cron', () => {
     // All-pairs, not "the first two differ": a copy-paste that left two of the
-    // ELEVEN on the same cron would satisfy every per-function assertion above
+    // TWELVE on the same cron would satisfy every per-function assertion above
     // taken one at a time, and would run one of them twice while the other
     // never ran at all. ⚠️ TEN since step 12 added the three stock sweeps —
     // which are also the likeliest copy-paste pair in the map, since they are
-    // three wrappers over one function — and ELEVEN since step 15b added
+    // three wrappers over one function — ELEVEN since step 15b added
     // `sweepShopeeAutoArrange`, whose likeliest copy is `backfillShopeeOrders`
-    // (it was written on that body's pattern).
+    // (it was written on that body's pattern), and TWELVE since step 17 added
+    // `sweepShopeeReturns`, written on the auto-arrange sweep's.
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
-    expect(crons).toHaveLength(11);
+    expect(crons).toHaveLength(12);
     expect(new Set(crons).size).toBe(crons.length);
   });
 
@@ -1029,12 +1121,13 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
       })
       .map(([nome]) => nome);
     expect(exportados.sort()).toEqual(Object.keys(AGENDAMENTOS).sort());
-    // ⚠️ The COUNT as well, the `FILAS` precedent below: eight in index.ts plus
-    // the three of ./sweepStock since step 15b. A map that grows while every
+    // ⚠️ The COUNT as well, the `FILAS` precedent below: nine in index.ts plus
+    // the three of ./sweepStock since step 17. A map that grows while every
     // document's count stays put is a list again — `ci-shopee.yml`,
     // `CLAUDE.md` and `DEPLOY.md` each say this number in prose.
-    expect(exportados).toHaveLength(11);
+    expect(exportados).toHaveLength(12);
     expect(exportados).toContain('sweepShopeeAutoArrange');
+    expect(exportados).toContain('sweepShopeeReturns');
   });
 });
 

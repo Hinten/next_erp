@@ -28,8 +28,9 @@ import { getDb } from './lib/admin';
  * ⚠️ **The minutes are chosen, not inherited, and TWO weekly overlaps are
  * accepted.** The seven schedules this codebase ran when step 12 landed draw on
  * ONE undocumented partner rate-limit budget (step 15b's `sweepShopeeAutoArrange`
- * since added an eighth on `2,7,…,57` — every minute ≡ 2 mod 5 — which meets
- * none of the fixed minutes below, this tick's included). Five of them pin a
+ * since added an eighth on `2,7,…,57` — every minute ≡ 2 mod 5 — and step 17's
+ * `sweepShopeeReturns` a ninth every six hours at minute `:35`; neither meets any of the
+ * fixed minutes below, this tick's included). Five of them pin a
  * minute —
  * `sweepShopeeAuthorizationExpiry` `:00`, `sweepShopeeLostPushes` `:20`,
  * `monitorShopeePushConfig` `:45`, `sweepShopeeEscrowSettlement` `:10` (Mondays
@@ -88,9 +89,9 @@ import { getDb } from './lib/admin';
  * Timeout 540: worst case per tick is N contas × (bounded discovery pages + up
  * to `maxTasksPerSweep()` sequential Cloud Tasks enqueues), which the gen2 60 s
  * `onSchedule` default cannot absorb. It matches the six 540 s schedules in
- * `index.ts`; the other two there differ on purpose — `monitorShopeePushConfig`
- * (one Public GET, 120) and step 15b's per-conta `sweepShopeeAutoArrange` (240,
- * below its own 300 s period).
+ * `index.ts`; the other three there differ on purpose — `monitorShopeePushConfig`
+ * (one Public GET, 120), step 15b's per-conta `sweepShopeeAutoArrange` (240,
+ * below its own 300 s period) and step 17's `sweepShopeeReturns` (300).
  *
  * ⚠️ These functions ENQUEUE. Their runtime service account therefore needs
  * `roles/cloudtasks.enqueuer` plus `roles/run.invoker` on `sendShopeeStock`,
@@ -116,7 +117,7 @@ const SHOPEE_SECRETS = ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'];
 /**
  * The shared `onSchedule` options, minus the schedule itself.
  *
- * ⚠️ No `region:` key, exactly like the eight schedules in `index.ts`:
+ * ⚠️ No `region:` key, exactly like the nine schedules in `index.ts`:
  * `options.ts` sets it globally for this codebase from the build-time inlined
  * `FUNCTIONS_REGION`, and it defaults the enqueuer's region to the same value.
  * A local override would let the two drift, and a queue path pointing at the
