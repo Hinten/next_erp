@@ -1,20 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   CANAL_AVISO,
+  PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoSchema,
+  pendenciaReclamacaoSchema,
 } from '@delfrance/schemas';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
  * The two dispatch tipos of Shopee step 15b (#1744), rendered with the params
- * their producer writes (`apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`).
+ * their producer writes (`apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`),
+ * and the return tipo of step 17 (#1525) further down.
  *
  * `rotas.test.ts` already proves every row renders `{}` without "undefined".
- * This file pins the two sentences verbatim and renders the producer's planos
+ * This file pins the sentences verbatim and renders the producers' planos
  * as LITERALS: `apps/web` has no dependency edge to `apps/shopee`, so a copied
  * literal is the only way to hold the writer's params against the reader's
  * wording — the producer's own test asserts the same values.
@@ -128,6 +131,113 @@ describe('MENSAGENS_POR_TIPO.etiquetaComPrazo', () => {
 
   it('is titled like its label and carries no runbook — the checkout is the in-app fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.etiquetaComPrazo);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The return tipo of Shopee step 17 (#1525), rendered with the params its
+ * producer writes (`apps/shopee/lib/shopee/devolucoes/avisoDevolucao.ts`):
+ * exactly `{ pedido, devolucao, pendencia }`, `pendencia` a CODE.
+ */
+describe('MENSAGENS_POR_TIPO.reclamacaoAguardandoVendedor', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.reclamacaoAguardandoVendedor];
+  const RETURN_SN = '260910ABCDE0001';
+  const RESTO =
+    '. Sem resposta até o prazo, o canal decide sozinho — em geral a favor do comprador. ' +
+    'Abra a aba Incidentes do pedido.';
+  const corpoCom = (pendencia: string | number | undefined) =>
+    mensagem.corpo({
+      pedido: ORDER_SN,
+      devolucao: RETURN_SN,
+      ...(pendencia === undefined ? {} : { pendencia }),
+    });
+
+  it('renders every pendência code as its own phrase, in its slot', () => {
+    const FRASES: Record<string, string> = {
+      [PENDENCIA_RECLAMACAO.responderSolicitacao]: 'responda à solicitação de devolução',
+      [PENDENCIA_RECLAMACAO.responderProposta]:
+        'o comprador fez uma proposta e aguarda sua resposta',
+      [PENDENCIA_RECLAMACAO.enviarEvidencias]: 'o canal pediu evidências',
+    };
+    // Every member of the closed set has a pinned phrase — a code added to the
+    // schema without one fails here, not as a blank slot in the bell.
+    expect(Object.keys(FRASES).sort()).toEqual([...pendenciaReclamacaoSchema.options].sort());
+    for (const [codigo, frase] of Object.entries(FRASES)) {
+      expect(corpoCom(codigo), codigo).toBe(
+        `A devolução ${RETURN_SN} do pedido ${ORDER_SN} aguarda você: ${frase}${RESTO}`,
+      );
+    }
+  });
+
+  it('falls back on an unknown, absent or inherited code — never "undefined"', () => {
+    // A code newer than this build, a near-miss spelling, the pickup that is NOT
+    // a pendência in v1, a number, nothing at all, and a key every object inherits.
+    for (const pendencia of [
+      'organizar-coleta',
+      'responder_solicitacao',
+      'RESPONDER-SOLICITACAO',
+      '',
+      0,
+      undefined,
+      'toString',
+      '__proto__',
+    ]) {
+      const corpo = corpoCom(pendencia);
+      expect(corpo, String(pendencia)).toBe(
+        `A devolução ${RETURN_SN} do pedido ${ORDER_SN} aguarda você: ` +
+          `confira a situação da devolução${RESTO}`,
+      );
+      expect(corpo, String(pendencia)).not.toContain('undefined');
+    }
+  });
+
+  it('renders `{}` with the placeholders and the fallback, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(
+      `A devolução — do pedido — aguarda você: confira a situação da devolução${RESTO}`,
+    );
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('interpolates no `params.prazo` — the deadline is the `prazo` FIELD', () => {
+    // A `prazo` param through `p()` would print the raw µs integer as if it were a
+    // date; the bell formats the field for every tipo (#1751).
+    const prazoUs = AGORA_US + 86_400_000_000;
+    const corpo = mensagem.corpo({
+      pedido: ORDER_SN,
+      devolucao: RETURN_SN,
+      pendencia: PENDENCIA_RECLAMACAO.responderProposta,
+      prazo: prazoUs,
+    });
+    expect(corpo).not.toContain(String(prazoUs));
+    expect(corpo).toBe(corpoCom(PENDENCIA_RECLAMACAO.responderProposta));
+  });
+
+  it('renders the producer plano as stored, with the prazo on the field', () => {
+    const prazoUs = AGORA_US + 86_400_000_000;
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.reclamacaoAguardandoVendedor,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.shopee,
+      params: {
+        pedido: ORDER_SN,
+        devolucao: RETURN_SN,
+        pendencia: PENDENCIA_RECLAMACAO.enviarEvidencias,
+      },
+      motivo: 'REQUESTED',
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      prazo: prazoUs,
+    });
+    expect(aviso.prazo).toBe(prazoUs);
+    expect(aviso.urlInterna?.rota).toBe(`/pedidos/${PEDIDO_ID}/editar`);
+    expect(mensagem.corpo(aviso.params)).toBe(
+      `A devolução ${RETURN_SN} do pedido ${ORDER_SN} aguarda você: o canal pediu evidências${RESTO}`,
+    );
+  });
+
+  it('is titled like its label and carries no runbook — the panel is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor);
     expect(mensagem.runbook).toBeUndefined();
   });
 });

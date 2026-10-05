@@ -1,4 +1,11 @@
-import { TIPO_AVISO, type Aviso, type TipoAviso } from '@delfrance/schemas';
+import {
+  PENDENCIA_RECLAMACAO,
+  TIPO_AVISO,
+  pendenciaReclamacaoSchema,
+  type Aviso,
+  type PendenciaReclamacao,
+  type TipoAviso,
+} from '@delfrance/schemas';
 
 /**
  * pt-BR wording for each aviso `tipo`, rendered at READ time from the row's
@@ -27,6 +34,30 @@ export interface MensagemAviso {
 function p(params: Aviso['params'], chave: string, fallback = '—'): string {
   const valor = params[chave];
   return valor === undefined || valor === '' ? fallback : String(valor);
+}
+
+/**
+ * pt-BR do que a reclamação espera do vendedor — TOTAL sobre o código
+ * (`params.pendencia`, um {@link PENDENCIA_RECLAMACAO}). O produtor grava o
+ * CÓDIGO, nunca a frase, para que corrigir uma redação valha para todo aviso já
+ * gravado.
+ */
+const FRASE_PENDENCIA_RECLAMACAO: Record<PendenciaReclamacao, string> = {
+  [PENDENCIA_RECLAMACAO.responderSolicitacao]: 'responda à solicitação de devolução',
+  [PENDENCIA_RECLAMACAO.responderProposta]: 'o comprador fez uma proposta e aguarda sua resposta',
+  [PENDENCIA_RECLAMACAO.enviarEvidencias]: 'o canal pediu evidências',
+};
+
+/**
+ * A frase da pendência, ou um texto neutro. ⚠️ Um código mais novo que esta tela
+ * (ou um param ausente) cai no fallback — nunca em "undefined". O `safeParse` é
+ * o que impede um `'toString'` gravado de achar uma chave herdada do objeto.
+ */
+function frasePendencia(valor: Aviso['params'][string] | undefined): string {
+  const codigo = pendenciaReclamacaoSchema.safeParse(valor);
+  return codigo.success
+    ? FRASE_PENDENCIA_RECLAMACAO[codigo.data]
+    : 'confira a situação da devolução';
 }
 
 export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
@@ -126,6 +157,19 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       'etiqueta em até 1 hora após a criação do pedido — a Shopee exige isso neste canal de ' +
       'entrega rápida. Se ela já foi impressa, nada a fazer: o aviso se encerra quando a ' +
       'Shopee registrar a coleta.',
+  },
+  // Sem `runbook`: o conserto está no app (o painel da devolução, na aba Incidentes)
+  // ou, para as evidências, nomeado na própria frase.
+  [TIPO_AVISO.reclamacaoAguardandoVendedor]: {
+    titulo: 'Reclamação aguardando o vendedor',
+    // ⚠️ Sem prazo no texto: o prazo é o CAMPO `prazo` (formatado pelo painel para
+    // todo tipo, #1751) — um `params.prazo` passado por `p()` imprimiria o µs cru. A
+    // frase diz o que se perde: sem resposta, o canal decide sozinho (faq 477: o
+    // reembolso é emitido ao comprador).
+    corpo: (params) =>
+      `A devolução ${p(params, 'devolucao')} do pedido ${p(params, 'pedido')} aguarda você: ` +
+      `${frasePendencia(params.pendencia)}. Sem resposta até o prazo, o canal decide sozinho — ` +
+      'em geral a favor do comprador. Abra a aba Incidentes do pedido.',
   },
 };
 

@@ -266,37 +266,127 @@ export async function escreverAviso(
  * Never a plain `merge`: an admin `merge` is an UPSERT and would happily
  * resurrect a document the retention sweep already deleted, as a ghost carrying
  * only the patch keys. The read + `lastUpdateTime` precondition (rule 7 tier 1)
- * keeps that property and adds the transition: a writer that lost the race sees
- * `FAILED_PRECONDITION` and reports `false` rather than overwriting the winner.
+ * keeps that property and adds the transition: a CLOCK-LESS writer that lost the
+ * race sees `FAILED_PRECONDITION` and reports `false` rather than overwriting the
+ * winner. (With a clock the loser re-reads instead — see the last bullet below.)
+ *
+ * ## The event clock (`opts.relogioEvento`, rule 7 tier 2)
+ *
+ * The precondition orders two writes; it cannot order two OBSERVATIONS. A
+ * resolver that derived "resolved" from an older provider state than the one
+ * that last raised the row — two deliveries of one return, the newer committing
+ * first — would close a problem that is open again. So a resolver that has the
+ * provider's clock passes it, in the same unit its raise passes to
+ * {@link escreverAviso}:
+ *
+ *  - stored `relogioEvento` non-null and `>=` the given one ⇒ the resolve is
+ *    stale: no write, `false`. EQUAL is stale too, exactly as `escreverAviso`
+ *    drops an equal raise.
+ *  - otherwise the resolve also STAMPS the given clock, so a late, older raise
+ *    arriving after it is dropped by `escreverAviso`'s own guard instead of
+ *    reopening the row. A watermark not advanced on the write that wins is a
+ *    guard that never rejects anything.
+ *  - An ALREADY-resolved row is still not re-resolved (`resolvidoEm` and the
+ *    motivo stay put, the answer is `false`), but a NEWER clock still ADVANCES
+ *    its `relogioEvento` — alone, under the same `lastUpdateTime`
+ *    precondition. Otherwise resolved → open → closed with the last two effects
+ *    run in inverted order would let the late, older raise reopen a closed row:
+ *    its clock beats the stale stamp, but not the one the closing observation
+ *    carried. An equal or older clock on a resolved row writes nothing.
+ *  - With a clock, a LOST PRECONDITION is re-decided, never conceded. Without
+ *    one, "someone else wrote the row" means someone else resolved it, so
+ *    `false` is the truth. With one it is not: the effects run concurrently (a
+ *    task queue dispatching more than one at a time — Shopee's return effects —
+ *    plus its reprocess sweep), so the winner can be an OLDER raise — it read
+ *    the row before this resolve's write landed, beat its stored clock, and kept
+ *    the row open (or reopened a resolved one, with a fresh `criadoEm` that
+ *    re-alerts the operator about a closed problem). Nothing re-drives a
+ *    terminal state afterwards, so conceding would leave that older observation
+ *    standing for good. So, in EITHER branch, a `FAILED_PRECONDITION` loops:
+ *    re-read, re-decide every rule above against the winner's row, write again —
+ *    bounded by `escreverAviso`'s own `MAX_TENTATIVAS_PRECONDICAO`. A winner at
+ *    an equal or newer clock makes the retry stale (`false`, nothing written);
+ *    an older one is overwritten and stamped. A writer that keeps winning past
+ *    the bound gets `false`, never a spin. `NOT_FOUND` (swept between read and
+ *    write) is `false` on any path.
+ *
+ * Omitted ⇒ exactly the behaviour above minus the clock rules: the periodic
+ * resolvers carry no clock, a stored one is left untouched, and a lost
+ * precondition is `false` on the first attempt.
  */
 export async function resolverAviso(
   db: Firestore,
   chave: string,
   motivo: string,
   deps: Pick<EscreverAvisoDeps, 'agoraUs'>,
+  opts?: { relogioEvento?: number },
 ): Promise<boolean> {
   const ref = avisoCollection.docRef(db, {}, chave);
-  const snap = await ref.get();
-  if (!snap.exists) return false;
+  const relogioEvento = opts?.relogioEvento;
 
-  const armazenado = avisoCollection.parseRead(snap.data(), `avisos/${chave}`);
-  if (armazenado.resolvidoEm != null) return false;
+  for (let tentativa = 0; tentativa < MAX_TENTATIVAS_PRECONDICAO; tentativa += 1) {
+    // Every decision below is derived from THIS attempt's read — rule 7: a retry
+    // that re-applies what the losing attempt decided is the lost update again.
+    const snap = await ref.get();
+    if (!snap.exists) return false;
 
-  const patch = avisoCollection.parseMerge({
-    resolvidoEm: deps.agoraUs,
-    resolucaoMotivo: motivo,
-    atualizadoEm: deps.agoraUs,
-  });
+    const armazenado = avisoCollection.parseRead(snap.data(), `avisos/${chave}`);
 
-  try {
-    await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
-    return true;
-  } catch (err) {
-    // Someone else resolved (or swept) the row between our read and our write:
-    // their write stands, and this call closed nothing.
-    if (isNotFound(err) || isFailedPrecondition(err)) return false;
-    throw err;
+    if (armazenado.resolvidoEm != null) {
+      // Not a transition — but a newer observation of "closed" must still move
+      // the watermark, or a late older raise reopens the row (see the docblock).
+      if (
+        relogioEvento === undefined ||
+        (armazenado.relogioEvento != null && armazenado.relogioEvento >= relogioEvento)
+      ) {
+        return false;
+      }
+      try {
+        await ref.update(avisoCollection.parseMerge({ relogioEvento }) as Record<string, unknown>, {
+          lastUpdateTime: snap.updateTime,
+        });
+        return false;
+      } catch (err) {
+        if (isNotFound(err)) return false;
+        if (!isFailedPrecondition(err)) throw err;
+        // The winner may be an OLDER raise that just reopened the row: re-read
+        // and re-decide (the docblock's last bullet). Only reachable with a clock.
+        continue;
+      }
+    }
+
+    if (
+      relogioEvento !== undefined &&
+      armazenado.relogioEvento != null &&
+      armazenado.relogioEvento >= relogioEvento
+    ) {
+      return false;
+    }
+
+    const patch = avisoCollection.parseMerge({
+      resolvidoEm: deps.agoraUs,
+      resolucaoMotivo: motivo,
+      atualizadoEm: deps.agoraUs,
+      ...(relogioEvento === undefined ? {} : { relogioEvento }),
+    });
+
+    try {
+      await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
+      return true;
+    } catch (err) {
+      // Swept between our read and our write: there is nothing left to close.
+      if (isNotFound(err)) return false;
+      if (!isFailedPrecondition(err)) throw err;
+      // Clock-less: someone else resolved the row; their write stands and this
+      // call closed nothing. With a clock the winner may be an OLDER raise that
+      // kept the row open — loop, re-read, re-decide.
+      if (relogioEvento === undefined) return false;
+    }
   }
+
+  // A writer that kept winning every attempt: report no transition rather than
+  // spin. The row holds whatever the last winner wrote.
+  return false;
 }
 
 /**

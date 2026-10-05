@@ -1319,6 +1319,8 @@ export {
   CANAL_AVISO,
   CANAL_AVISO_LABELS,
   ROTAS_AVISO,
+  pendenciaReclamacaoSchema,
+  PENDENCIA_RECLAMACAO,
   chaveDeAviso,
   avisoNaoLido,
   entradaDeLeitura,
@@ -1333,6 +1335,7 @@ export {
   type CanalAviso,
   type ChaveAvisoInput,
   type RotaAvisoKey,
+  type PendenciaReclamacao,
 } from './aviso';
 export * from './shared/inicio';
 
