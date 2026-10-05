@@ -23,8 +23,14 @@ import type {
   ResultadoImportacaoPedidoShopee,
 } from '../pedidos/importarPedido';
 import type { AlvoDeRastreioShopee, ResultadoRastreioShopee } from '../pedidos/rastrearPedido';
+import type {
+  DesfechoArranjoAutomatico,
+  ResultadoArranjoAutomatico,
+} from '../pedidos/arranjoAutomatico';
 import type { AlvoDePushDeAnuncioShopee, ResultadoPushAnuncio } from '../anuncios/pushAnuncio';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
+// A pure leaf (no import of its own) — loading it as a VALUE pulls nothing else in.
+import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from '../etiqueta/motivosEtiqueta';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import {
   ShopeeContaSemShopIdError,
@@ -80,6 +86,34 @@ vi.mock('../avisos/autorizacao', async (importOriginal) => ({
 
 vi.mock('../conta/expiracaoSweep', () => ({
   runShopeeAuthorizationExpirySweep: (...args: unknown[]) => h.sweep(...(args as [])),
+}));
+
+/**
+ * Step 15b — the arm's LAZY DEFAULT, observed from outside. Both modules are
+ * replaced at the dynamic-import boundary so `defaultProcessDeps.rastrearPedido`
+ * can be CALLED here without a Firestore or a Shopee client: what is pinned is
+ * the WIRING (which function the default hands the handler), never the handler.
+ * Nothing else in this file loads either module as a value — every arm test
+ * takes its handler from `deps`, and the `import type`s above are erased.
+ */
+const arm = vi.hoisted(() => ({
+  rastrearPedidoShopee:
+    vi.fn<
+      (
+        db: Firestore,
+        alvo: AlvoDeRastreioShopee,
+        deps?: Readonly<Record<string, unknown>>,
+      ) => Promise<ResultadoRastreioShopee>
+    >(),
+  arranjarPacoteAutomatico: vi.fn<() => Promise<ResultadoArranjoAutomatico>>(),
+}));
+
+vi.mock('../pedidos/rastrearPedido', () => ({
+  rastrearPedidoShopee: arm.rastrearPedidoShopee,
+}));
+
+vi.mock('../pedidos/arranjoAutomatico', () => ({
+  arranjarPacoteAutomatico: arm.arranjarPacoteAutomatico,
 }));
 
 const {
@@ -180,10 +214,58 @@ function resultadoDeRastreio(over: Partial<ResultadoRastreioShopee> = {}): Resul
     estadoEscrito: ESTADO_FRETE.aguardandoPostagem,
     campos: ['freteInicial.estado', 'freteInicial.pacotes'],
     sinteticaEnfileirada: false,
+    // Step 15b (#1744): the default is "the hook did not run" — the seam the
+    // `rastrear:pedido` CLI calls with. Every test that wants a desfecho says so.
+    arranjo: null,
     detail: 'atualizado',
     ...over,
   };
 }
+
+/**
+ * The step-15b hook's happy path on a Turbo package: shipped WITH the package
+ * number. The channel is 90011 — announcement 1573's own example id, never an
+ * account's.
+ */
+function resultadoDeArranjo(
+  over: Partial<ResultadoArranjoAutomatico> = {},
+): ResultadoArranjoAutomatico {
+  return {
+    desfecho: 'programado',
+    canalId: 90011,
+    fase: 'programar',
+    motivo: null,
+    shopeeCode: null,
+    operacao: null,
+    semPacote: false,
+    ...over,
+  };
+}
+
+/**
+ * EVERY desfecho of the hook, as a VALUE list — the union is a type and cannot
+ * be iterated. ⚠️ Total at COMPILE time: `totalidadeDosDesfechos` below stops
+ * this file compiling the day the hook gains a desfecho nobody listed here, so
+ * the RT4 table can never silently skip the new one.
+ */
+const DESFECHOS_DO_ARRANJO = [
+  'fora-do-canal',
+  'nao-elegivel',
+  'retido',
+  'nfe-pendente',
+  'ja-programado',
+  'desligado',
+  'programado',
+  'verificar',
+  'aguardando',
+  'precisa-escolha',
+  'recusado',
+  'credencial',
+  'resposta-ilegivel',
+] as const satisfies readonly DesfechoArranjoAutomatico[];
+type DesfechoNaoListado = Exclude<DesfechoArranjoAutomatico, (typeof DESFECHOS_DO_ARRANJO)[number]>;
+const totalidadeDosDesfechos: [DesfechoNaoListado] extends [never] ? true : false = true;
+void totalidadeDosDesfechos;
 
 /**
  * The codes-4/30/47 seam. Injected on EVERY call in this file for the same
@@ -1025,6 +1107,7 @@ describe('toDisposition', () => {
     const d = toDisposition({
       kind: 'frete',
       acaoFrete: 'atualizado',
+      acaoArranjo: null,
       orderSn: ORDER_SN,
       packageNumber: PACOTE,
       pedidoId: 'ped-1',
@@ -1034,6 +1117,38 @@ describe('toDisposition', () => {
       detail: 'atualizado',
     });
     expect(d).toEqual({ kind: 'resolve', label: 'frete' });
+  });
+
+  // ⚠️ RT4 (passo 15b, #1744): o arranjo NUNCA muda a disposição da entrega. O
+  // hook não lança classe nenhuma da Shopee — todo desfecho dela volta como
+  // VALOR —, então uma fusão de frete bem-sucedida resolve `frete` diga o
+  // `acaoArranjo` o que disser. Um `credencial` virando `defer`, ou um
+  // `recusado` virando `park`, re-rodaria a entrega INTEIRA por cima da varredura
+  // (dois re-tentadores numa rajada) por uma coisa que o aviso já disse.
+  it.each([...DESFECHOS_DO_ARRANJO, null])(
+    'RT4 — frete com acaoArranjo %s ⇒ resolve rotulado "frete", sempre',
+    (desfecho) => {
+      const d = toDisposition({
+        kind: 'frete',
+        acaoFrete: 'ignorado-sem-mudanca',
+        acaoArranjo: desfecho,
+        orderSn: ORDER_SN,
+        packageNumber: PACOTE,
+        pedidoId: 'ped-1',
+        statusMarketplace: 'LOGISTICS_READY',
+        estadoEscrito: null,
+        campos: [],
+        detail: 'ignorado-sem-mudanca',
+      });
+      expect(d).toEqual({ kind: 'resolve', label: 'frete' });
+    },
+  );
+
+  it('RT4 — a lista de desfechos é a do hook, sem repetição (a totalidade é de compilação)', () => {
+    // ÂNCORA da tabela acima: treze desfechos DISTINTOS. Uma lista que repetisse
+    // um membro e perdesse outro passaria no `satisfies` e encolheria a tabela.
+    expect(new Set(DESFECHOS_DO_ARRANJO).size).toBe(DESFECHOS_DO_ARRANJO.length);
+    expect(DESFECHOS_DO_ARRANJO).toHaveLength(13);
   });
 
   it('frete-adiado ⇒ defer, com a razão que nomeia a corrida com o code 3', () => {
@@ -1972,6 +2087,7 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     expect(out).toEqual({
       kind: 'frete',
       acaoFrete: 'atualizado',
+      acaoArranjo: null,
       orderSn: ORDER_SN,
       packageNumber: PACOTE,
       pedidoId: 'ped-abc',
@@ -1982,6 +2098,90 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     });
     expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'frete' });
   });
+
+  // 13b — passo 15b (#1744): o desfecho do arranjo viaja no outcome, e só nele
+  it('(13b) ⚠️ o desfecho do arranjo viaja como `acaoArranjo` — jamais como `acao` — e não mexe na disposição', async () => {
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({
+        acao: 'ignorado-sem-mudanca',
+        arranjo: resultadoDeArranjo({ desfecho: 'precisa-escolha', fase: 'programar' }),
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push30(), deps);
+
+    expect(out).toEqual({
+      kind: 'frete',
+      acaoFrete: 'ignorado-sem-mudanca',
+      acaoArranjo: 'precisa-escolha',
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      pedidoId: 'ped-abc',
+      statusMarketplace: 'LOGISTICS_REQUEST_CREATED',
+      estadoEscrito: ESTADO_FRETE.aguardandoPostagem,
+      campos: ['freteInicial.estado', 'freteInicial.pacotes'],
+      detail: 'ignorado-sem-mudanca',
+    });
+    // ⚠️ `acaoArranjo`, nunca `acao`: o outcome `pedido` já carrega um `acao` de
+    // OUTRO vocabulário, e `handleNotificationTask` lê por `in` — um `acao` aqui
+    // poria um desfecho de arranjo na coluna da importação (a forma do #1087).
+    expect(Object.prototype.hasOwnProperty.call(out, 'acao')).toBe(false);
+    // …e o pior desfecho que não vira valor de aviso ainda RESOLVE a entrega.
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'frete' });
+    // Só o DESFECHO atravessa: o resto do resultado do hook (canal, fase,
+    // motivo, código da Shopee) é do log do handler, não do outcome.
+    expect(JSON.stringify(out)).not.toContain('90011');
+  });
+
+  it('(13c) a quase-falha: com o hook SEM rodar, `acaoArranjo` é `null` — presente no outcome, e não um desfecho inventado', async () => {
+    const out = await processNotificationPayload(db, push4(), deps);
+
+    expect(out.kind).toBe('frete');
+    expect(out.kind === 'frete' && out.acaoArranjo).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(out, 'acaoArranjo')).toBe(true);
+  });
+
+  // 13d — mutante O34b. Todo fixture acima monta o arranjo com `motivo: null`,
+  // então um mapeamento que CONSULTASSE o motivo (`motivo !== null ? null :
+  // desfecho` compila e passava em tudo) seria invisível. Na vida real todo
+  // `recusado` / `retido` / `aguardando` (pacotes-mudaram) / `nao-elegivel`
+  // (pedido-cancelado) chega COM motivo — e o token do log tem de ser o desfecho.
+  const DESFECHOS_COM_MOTIVO: readonly [DesfechoArranjoAutomatico, MotivoEtiquetaShopee][] = [
+    ['recusado', MOTIVO_ETIQUETA_SHOPEE.limiteDiario],
+    ['retido', MOTIVO_ETIQUETA_SHOPEE.retidoPelaShopee],
+    ['aguardando', MOTIVO_ETIQUETA_SHOPEE.pacotesMudaram],
+    ['nao-elegivel', MOTIVO_ETIQUETA_SHOPEE.pedidoCancelado],
+  ];
+  it.each(DESFECHOS_COM_MOTIVO)(
+    '(13d) `acaoArranjo` é o DESFECHO mesmo com motivo — %s/%s (O34b)',
+    async (desfecho, motivo) => {
+      rastrearPedido.mockResolvedValue(
+        resultadoDeRastreio({ arranjo: resultadoDeArranjo({ desfecho, motivo }) }),
+      );
+
+      const out = await processNotificationPayload(db, push30(), deps);
+
+      expect(out).toMatchObject({ kind: 'frete', acaoArranjo: desfecho });
+      // Só o DESFECHO atravessa — o motivo é do log do handler, não do outcome.
+      expect(JSON.stringify(out)).not.toContain(motivo);
+      expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'frete' });
+
+      // …e pelo pipeline até o TaskResult, com o MESMO token.
+      const r = await handleNotificationTask(
+        asDb(new FakeDb()),
+        {
+          code: 30,
+          shopId: SHOP_ID,
+          timestamp: AGORA_MS,
+          data: { ordersn: ORDER_SN, package_number: PACOTE },
+        },
+        0,
+        deps,
+      );
+      expect(r.outcome).toBe('done');
+      expect(r.acaoArranjo).toBe(desfecho);
+    },
+  );
 
   // 14 — O PAR DOBRA-IGUAL, e a sua quase-falha.
   it('(14) ⚠️ DOIS pushes com valores PRÓPRIOS diferentes produzem o MESMO argumento de handler', async () => {
@@ -2935,6 +3135,65 @@ describe('a fiação do pipeline', () => {
     expect(fonte).toContain("await import('../pedidos/fretePushShopee')");
   });
 
+  // ⚠️ Passo 15b (#1744, reconcile R-a): o arranjo automático chega por um
+  // SEGUNDO import dinâmico, e este default é o ÚNICO lugar que o arma. O
+  // `rastrear:pedido --live` chama o handler sem deps, então um ensaio de
+  // terminal nunca despacha e nem CARREGA o `ship_order` — e é isso que um
+  // re-export pelo primeiro import (ou um import estático) desfaria.
+  it('⚠️ passo 15b — o default arma o arranjo por um SEGUNDO import dinâmico, num lugar só', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    const literal = "await import('../pedidos/arranjoAutomatico')";
+    expect(fonte).toContain(literal);
+    // UMA vez: um segundo sítio seria o braço chamando o hook DEPOIS do handler
+    // — a opção que a reconciliação rejeitou (o handler teria de devolver a
+    // linha crua e um cliente vivo através da costura).
+    expect(fonte.split(literal).length - 1).toBe(1);
+    // …e o ÚNICO import estático do módulo do hook é de TIPO.
+    expect(fonte).toMatch(
+      /^import type \{ DesfechoArranjoAutomatico \} from '\.\.\/pedidos\/arranjoAutomatico';/m,
+    );
+    expect(fonte).not.toMatch(
+      /^import\s+(?!type\b)[^;]*from\s+'\.\.\/pedidos\/arranjoAutomatico'/m,
+    );
+  });
+
+  it('⚠️ passo 15b — o default ENTREGA ao handler exatamente `{ arranjar }`, e não roda o hook ele mesmo', async () => {
+    // O alvo exatamente como o braço o monta: uma entrega code 30 real, pelo
+    // leitor de push real, capturada na costura injetada.
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    await processNotificationPayload(
+      db,
+      payload({
+        code: 30,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { ordersn: ORDER_SN, package_number: PACOTE },
+      }),
+      deps,
+    );
+    const alvo = rastrearPedido.mock.calls[0]![1];
+    const esperado = resultadoDeRastreio({ arranjo: resultadoDeArranjo() });
+    arm.rastrearPedidoShopee.mockResolvedValueOnce(esperado);
+
+    const r = await defaultProcessDeps.rastrearPedido!(db, alvo);
+
+    // O que o handler devolve é o que o braço recebe — o default não reescreve.
+    expect(r).toBe(esperado);
+    expect(arm.rastrearPedidoShopee).toHaveBeenCalledTimes(1);
+    const [dbRecebido, alvoRecebido, depsRecebidos] = arm.rastrearPedidoShopee.mock.calls[0]!;
+    expect(dbRecebido).toBe(db);
+    expect(alvoRecebido).toBe(alvo);
+    // ⚠️ A função do SEGUNDO módulo, por IDENTIDADE — sem ela o handler não
+    // arranja nunca (a costura ausente é "sem arranjo", por desenho).
+    expect(depsRecebidos?.arranjar).toBe(arm.arranjarPacoteAutomatico);
+    // …e NADA além dela: nenhum `clientFor` nem `scheduler` sobrepostos, que
+    // trocariam o cliente real e a fila real do handler em produção.
+    expect(Object.keys(depsRecebidos ?? {})).toEqual(['arranjar']);
+    // O default ARMA o hook; quem decide RODAR é o handler, depois da transação
+    // e dos dois resolvedores.
+    expect(arm.arranjarPacoteAutomatico).not.toHaveBeenCalled();
+  });
+
   // ⚠️ O gêmeo do passo 11, e ele precisa da sua PRÓPRIA negativa: o
   // `not.toMatch` do primeiro teste cobre `../pedidos/` e NADA mais, então nada
   // impediria um `import { tratarPushDeAnuncio } from '../anuncios/pushAnuncio'`
@@ -3197,6 +3456,76 @@ describe('handleNotificationTask — `acaoFrete` e `packageNumber` no TaskResult
     // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
     expect(r.kind).toBe('pedido');
     expect(r.orderSn).toBe(ORDER_SN);
+  });
+});
+
+// ── handleNotificationTask — `acaoArranjo` (#1744, passo 15b) ───────────────
+
+describe('handleNotificationTask — `acaoArranjo` no TaskResult', () => {
+  /** Uma entrega code 30 como o braço a recebe — a da varredura ou a da Shopee. */
+  const tarefa30 = {
+    code: 30,
+    shopId: SHOP_ID,
+    timestamp: AGORA_MS,
+    data: { ordersn: ORDER_SN, package_number: PACOTE },
+  };
+
+  // ⚠️ RT4 ponta a ponta: braço → outcome → `toDisposition` → pipeline → leitor
+  // estrutural. Todo desfecho termina `done` (nada persistido) e chega ao log da
+  // tarefa com o MESMO token — inclusive `credencial` e `resposta-ilegivel`, que
+  // um leitor apressado converteria em adiamento ou parque.
+  it.each(DESFECHOS_DO_ARRANJO)(
+    'RT4 — desfecho `%s` ⇒ entrega `done`, e o token chega como `acaoArranjo`',
+    async (desfecho) => {
+      h.find.mockResolvedValue(INTEGRACAO_ID);
+      rastrearPedido.mockResolvedValue(
+        resultadoDeRastreio({ arranjo: resultadoDeArranjo({ desfecho }) }),
+      );
+      const fake = new FakeDb();
+
+      const r = await handleNotificationTask(asDb(fake), tarefa30, 0, deps);
+
+      expect(r.outcome).toBe('done');
+      expect(r.kind).toBe('frete');
+      expect(r.acaoArranjo).toBe(desfecho);
+      // O veredito da TRANSAÇÃO continua na sua própria coluna, ao lado.
+      expect(r.acaoFrete).toBe('atualizado');
+      // ⚠️ `acaoArranjo`, jamais `acao` (a forma do #1087).
+      expect(Object.prototype.hasOwnProperty.call(r, 'acao')).toBe(false);
+      // `done` não persiste NADA: nenhuma linha de falha, de adiamento ou de parque.
+      expect(Object.keys(fake.store)).toEqual([]);
+    },
+  );
+
+  it('⚠️ quando o hook NÃO roda, a chave fica AUSENTE — não `null`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(asDb(fake), tarefa30, 0, deps);
+
+    // "não rodou" e "rodou e respondeu X" são fatos diferentes, e uma chave
+    // ausente é como este repo escreve o primeiro (regra 7, `camposInformados`).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoArranjo')).toBe(false);
+    // …e a âncora: a fusão chegou, então o negativo não é vácuo.
+    expect(r.kind).toBe('frete');
+    expect(r.acaoFrete).toBe('atualizado');
+    expect(r.packageNumber).toBe(PACOTE);
+  });
+
+  it('⚠️ uma entrega code 3 não carrega `acaoArranjo` — o arranjo é do braço de frete só', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoArranjo')).toBe(false);
+    expect(r.kind).toBe('pedido');
+    expect(rastrearPedido).not.toHaveBeenCalled();
   });
 });
 

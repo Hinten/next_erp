@@ -3,6 +3,7 @@ import {
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
+  TIPO_AVISO_LABELS,
   avisoNaoLido,
   avisoSchema,
   avisosLeituraSchema,
@@ -10,6 +11,7 @@ import {
   entradaDeLeitura,
   marcarTodosComoLidos,
   rotaInternaSegura,
+  tipoAvisoSchema,
   urlExternaSegura,
   type Aviso,
   type AvisosLeitura,
@@ -54,6 +56,30 @@ describe('avisoSchema', () => {
     // must not surface as a 1970 date in the panel.
     const parsed = umAviso({ criadoEm: 1_760_000_000_000 });
     expect(parsed.criadoEm).toBe(AGORA_US);
+  });
+});
+
+describe('TIPO_AVISO_LABELS', () => {
+  it('covers every tipo — nothing else fails when a label is missing', () => {
+    // `MENSAGENS_POR_TIPO` is total by its `Record<TipoAviso, …>` type, but this
+    // map is a bare `as const` handed to `.meta()`: a tipo added without its label
+    // typechecks everywhere, so only this test says so.
+    expect(Object.keys(TIPO_AVISO_LABELS).sort()).toEqual([...tipoAvisoSchema.options].sort());
+    for (const [tipo, label] of Object.entries(TIPO_AVISO_LABELS)) {
+      expect(label.trim(), tipo).not.toBe('');
+    }
+  });
+
+  it('keeps the named-member constant in step with the enum', () => {
+    // `satisfies Record<string, TipoAviso>` proves every member is a tipo, not
+    // that every tipo has a member.
+    expect(Object.keys(TIPO_AVISO).sort()).toEqual([...tipoAvisoSchema.options].sort());
+    for (const [nome, valor] of Object.entries(TIPO_AVISO)) expect(valor, nome).toBe(nome);
+  });
+
+  it('labels the two dispatch tipos without a provider product name', () => {
+    expect(TIPO_AVISO_LABELS.despachoAutomaticoPendente).toBe('Despacho automático pendente');
+    expect(TIPO_AVISO_LABELS.etiquetaComPrazo).toBe('Etiqueta com prazo de impressão');
   });
 });
 
@@ -193,6 +219,57 @@ describe('chaveDeAviso — what must stay DISTINCT (the near-miss half)', () => 
     expect(() =>
       chaveDeAviso({ tipo: TIPO_AVISO.anuncioComViolacao, entidade: 'x'.repeat(1600) }),
     ).toThrow(RangeError);
+  });
+});
+
+describe('chaveDeAviso — the two dispatch tipos (Shopee step 15b)', () => {
+  // The producer opens `despachoAutomaticoPendente` per PACKAGE per CLASS and
+  // `etiquetaComPrazo` per PEDIDO, and the frete callers' resolver must RECOMPUTE
+  // the same ids from what it observes: a key it cannot recompute is a row that
+  // stands until retention sweeps it.
+  const PEDIDO_ID = '0123456789abcdef'.repeat(4); // fixed-length hex, like a Shopee pedido id
+  const despacho = (pacote: string, classe: 'nfe' | 'manual') =>
+    chaveDeAviso({
+      tipo: TIPO_AVISO.despachoAutomaticoPendente,
+      conta: 'int-1',
+      entidade: `${PEDIDO_ID}:${pacote}`,
+      janela: classe,
+    });
+
+  it('folds the inner `:` of the entity and keeps the class LAST', () => {
+    expect(despacho('OFG000000000001', 'nfe')).toBe(
+      `despachoAutomaticoPendente:int-1:${PEDIDO_ID}_OFG000000000001:nfe`,
+    );
+    // The accepted cost of that fold: `:` and `_` inside the entity are one key.
+    // Harmless here — the pedido id is fixed-length hex, so the package number
+    // always starts at the same offset and two packages cannot meet.
+    expect(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.despachoAutomaticoPendente,
+        conta: 'int-1',
+        entidade: `${PEDIDO_ID}_OFG000000000001`,
+        janela: 'nfe',
+      }),
+    ).toBe(despacho('OFG000000000001', 'nfe'));
+  });
+
+  it('separates two packages of one pedido — a split order keeps one row per package', () => {
+    expect(despacho('OFG000000000001', 'nfe')).not.toBe(despacho('OFG000000000002', 'nfe'));
+  });
+
+  it('separates the two classes of one package — a refused arrange after the NF-e is a NEW row', () => {
+    expect(despacho('OFG000000000001', 'nfe')).not.toBe(despacho('OFG000000000001', 'manual'));
+  });
+
+  it('keys the print alert per PEDIDO, apart from every dispatch row of that pedido', () => {
+    const etiqueta = chaveDeAviso({
+      tipo: TIPO_AVISO.etiquetaComPrazo,
+      conta: 'int-1',
+      entidade: PEDIDO_ID,
+    });
+    expect(etiqueta).toBe(`etiquetaComPrazo:int-1:${PEDIDO_ID}`);
+    expect(etiqueta).not.toBe(despacho('OFG000000000001', 'nfe'));
+    expect(etiqueta).not.toBe(despacho('OFG000000000001', 'manual'));
   });
 });
 
@@ -342,6 +419,27 @@ describe('ROTAS_AVISO', () => {
 
   it('builds a concrete Shopee conta route', () => {
     expect(ROTAS_AVISO.canalShopee.build('abc')).toBe('/canais/shopee/abc');
+  });
+
+  it('lands a dispatch aviso on the checkout, with the pedido id as `?pedido=`', () => {
+    expect(ROTAS_AVISO.despachoCheckout.padrao).toBe('/despacho/checkout');
+    expect(ROTAS_AVISO.despachoCheckout.build('abc')).toBe('/despacho/checkout?pedido=abc');
+    expect(ROTAS_AVISO.despachoCheckout.build('a&b=c d')).toBe(
+      '/despacho/checkout?pedido=a%26b%3Dc%20d',
+    );
+  });
+
+  it('encodes the pedido id, so the checkout reads back exactly the id it was given', () => {
+    // The checkout reads `searchParams.get('pedido')` and looks the pedido up by
+    // doc id. Unencoded, `&` would end the value early, `#` would start a
+    // fragment and `%41`/`+` would decode into another string — each one a
+    // lookup of a DIFFERENT pedido, or of none.
+    const ids = ['0123456789abcdef'.repeat(4), 'a&b=c', 'a#b', 'a b', 'a+b', 'a/b', 'a?b', '%41'];
+    for (const id of ids) {
+      const rota = ROTAS_AVISO.despachoCheckout.build(id);
+      expect(new URL(rota, 'https://erp.invalid').searchParams.get('pedido'), id).toBe(id);
+      expect(rotaInternaSegura(rota), id).toBe(rota);
+    }
   });
 });
 

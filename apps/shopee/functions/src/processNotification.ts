@@ -77,6 +77,33 @@ export const processShopeeNotification = onTaskDispatched(
     // enqueues one synthetic code 3. The budget above is unchanged, the ladder
     // invariant `index.test.ts` pins is untouched, and there is NO new queue
     // function: the arm rides this one.
+    //
+    // ⚠️ Step 15b (#1744) moves it back UP, and the "one GET" above no longer
+    // holds for a Turbo package. After the merge, the automatic arrange can make
+    // up to FOUR more Shopee calls — `get_order_detail`, `get_shipping_parameter`,
+    // `ship_order` and its one documented re-send — so a shipment delivery makes
+    // up to FIVE (plus a possible token refresh), on top of the frete
+    // transaction, the two aviso resolvers' read/update pairs and up to three
+    // aviso writes from the hook. Absent a hang that is seconds to tens of
+    // seconds: `timeoutSeconds: 300` still holds and is NOT changed, and the
+    // ladder invariant `index.test.ts` pins is untouched. Every package off
+    // 1573's list (Xpress included), and a Turbo one in any phase but
+    // `programar`, still makes the one GET.
+    //
+    // ⚠️ But no Shopee call carries a timeout of its own (#1094: `shopeeCall`
+    // sets none, and the runtime's fetch waits 300 s for headers), so ONE hung
+    // call can spend this whole budget and the attempt is KILLED, with no
+    // catch running. A kill AFTER `ship_order` landed converges on the
+    // redelivery: the merge is idempotent, the fresh row now says arranged, and
+    // the hook answers `ja-programado` — the dispatch alerts resolve and the
+    // print alert opens on a print-deadline channel (a row that still lags
+    // re-ships, and Shopee's `package_already_shipped` is that same
+    // `ja-programado`). A kill on the LAST attempt is different: the pipeline
+    // never reaches its `persistFailure`, so no `failed` row exists for the
+    // sweep, and the delivery is DROPPED. The package is then re-observed only
+    // by the next push about it — Shopee sends one once a ship landed, none for
+    // a package still un-arranged — or, once it lands, by PR 3b's sweep
+    // (stacked on this one).
     timeoutSeconds: 300,
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,

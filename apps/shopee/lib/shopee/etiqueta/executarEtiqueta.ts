@@ -18,6 +18,13 @@
  * 2. `decidirProximaAcao` (pure) names ONE action; this module runs it and
  *    folds the answer into the observations; repeat.
  *
+ * ⚠️ The two reads become observations through `faseEtiqueta.ts`'s
+ * projections, `observacaoDaOrdemShopee` and `observacaoDoPacoteShopee` — the
+ * ONE copy step 15b's automatic arrange reads too (R-d). This module only
+ * layers what THIS call learned on top (an arrange, a tracking number, the
+ * document); it never reads a wire field of its own into a phase, so the label
+ * button and the hook cannot disagree about a package.
+ *
  * ⚠️ **An incomplete read never decides** (review 1, M1). A package read is
  * COMPLETE only when every lot of 50 was folded in: a lot that a wait
  * interrupted (a network drop, a burst limit, Shopee's hiccup) is read again
@@ -130,7 +137,6 @@ import {
   INTERVALO_DOCUMENTO_MS,
   INTERVALO_RASTREIO_MS,
   ORCAMENTO_ETIQUETA_MS,
-  RASTREIO_DO_PACOTE_VALE,
   SHOPEE_ETIQUETA_DETALHE_CAMPOS,
   TENTAR_EM_SHOPEE_MS,
   TIPO_DOCUMENTO_DO_FORMATO,
@@ -145,6 +151,8 @@ import {
 import {
   decidirProximaAcao,
   fasePacote,
+  observacaoDaOrdemShopee,
+  observacaoDoPacoteShopee,
   progressoDe,
   type AcaoEtiqueta,
   type FaseEtiqueta,
@@ -237,12 +245,6 @@ export async function executarEtiquetaShopee(
 }
 
 /* ------------------------------ private helpers ----------------------------- */
-
-/** `invoice_pending.status` that holds the ship (FAQ 727), trimmed + lower-cased. */
-const NF_PENDENTE = 'pending';
-
-/** `fulfillment_flag` of an order Shopee fulfils itself, trimmed + lower-cased. */
-const FULFILLMENT_SHOPEE = 'fulfilled_by_shopee';
 
 /** How a step ended: carry on deciding, or answer the call. */
 type Passo =
@@ -644,14 +646,8 @@ class ChamadaDeEtiqueta {
       return passo;
     }
 
-    const numeros = (linha?.package_list ?? [])
-      .map((p) => textoShopeeUtilizavel(p.package_number))
-      .filter((n): n is string => n !== null);
-    this.ordem = {
-      status: linha?.order_status ?? null,
-      fbs: linha?.fulfillment_flag?.trim().toLowerCase() === FULFILLMENT_SHOPEE,
-      pacotes: [...new Set(numeros)],
-    };
+    // The ONE order projection, shared with step 15b's arrange (R-d).
+    this.ordem = observacaoDaOrdemShopee(linha);
 
     const leitura = await this.lerPacotes(this.ordem.pacotes, 'consultando', isento);
     if (leitura.lidos.length < this.ordem.pacotes.length) this.precisaLerTudo = true;
@@ -697,23 +693,21 @@ class ChamadaDeEtiqueta {
   }
 
   /**
-   * One `get_package_detail` row → the package's observation. What only THIS
-   * call learned is kept: an arrange stays arranged, and a tracking number
-   * read from `get_tracking_number` survives a re-read that shows none yet.
+   * One `get_package_detail` row → the package's observation: the FRESH
+   * projection (`observacaoDoPacoteShopee`, the one copy step 15b's hook and
+   * sweep read too — R-d) with this call's memory layered on top. What only
+   * THIS call learned is kept: an arrange stays arranged, a tracking number
+   * read from `get_tracking_number` survives a re-read that shows none yet,
+   * and the document type and state carry over.
    */
   private dobrarPacote(numero: string, row: ShopeePackageDetailRow): void {
     const anterior = this.pacotes.get(numero);
-    const rastreioDaLinha = RASTREIO_DO_PACOTE_VALE
-      ? textoShopeeUtilizavel(row.tracking_number)
-      : null;
+    const fresco = observacaoDoPacoteShopee(row);
     this.pacotes.set(numero, {
+      ...fresco,
       numero,
-      canalId: row.logistics_channel_id,
-      fulfillment: row.fulfillment_status,
-      arranjado: this.programados.has(numero) ? true : row.is_shipment_arranged,
-      termosPendentes: row.pending_terms ?? [],
-      nfePendente: row.invoice_pending?.status?.trim().toLowerCase() === NF_PENDENTE,
-      rastreio: rastreioDaLinha ?? anterior?.rastreio ?? null,
+      arranjado: this.programados.has(numero) ? true : fresco.arranjado,
+      rastreio: fresco.rastreio ?? anterior?.rastreio ?? null,
       tipoDocumento: anterior?.tipoDocumento ?? null,
       documento: anterior?.documento ?? 'desconhecido',
       recriadoNestaChamada: anterior?.recriadoNestaChamada ?? false,

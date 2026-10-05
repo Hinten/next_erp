@@ -1,7 +1,8 @@
 /**
  * The label flow's vocabulary (#1523, step 15): WHY a click on "Imprimir
  * etiqueta" ended in a refusal, and the pt-BR sentence the operator reads for
- * each reason.
+ * each reason. Since step 15b (#1744) the same wording also reaches the avisos
+ * inbox, as a FRAGMENT the automatic-arrange aviso embeds in its own sentence.
  *
  * The split is step 14's (`nfe/errosNfe.ts`): the vocabulary, its companion
  * const and the ONE text table in one small module; every producer elsewhere.
@@ -81,9 +82,10 @@ export type MotivoEtiquetaShopee =
 /**
  * The pt-BR FRAGMENT for every member — the ONE text table of this folder.
  *
- * Each entry is a **lowercase fragment with no trailing period**;
- * {@link mensagemDoMotivoEtiqueta} capitalizes it and adds the period. Where
- * the operator has something to DO, the remedy comes FIRST and the cause
+ * Each entry is a **lowercase fragment with no trailing period**, read through
+ * exactly two accessors: {@link fraseDoMotivoEtiqueta} hands it out verbatim,
+ * and {@link mensagemDoMotivoEtiqueta} capitalizes it and adds the period.
+ * Where the operator has something to DO, the remedy comes FIRST and the cause
  * follows the dash; where nothing is theirs to do, the fragment states the
  * fact. (The step-14 shape, `FRASE_DO_MOTIVO_NFE`.)
  *
@@ -161,10 +163,25 @@ const FRASE_DO_MOTIVO_ETIQUETA: Record<MotivoEtiquetaShopee, string> = {
 };
 
 /**
- * The route's and the CLI's SENTENCE for a motivo: the fragment with its first
- * letter capitalized and a closing period.
+ * The FRAGMENT for a motivo — lowercase start, no trailing period — for a
+ * caller that embeds it in a sentence of its own (step 15b's
+ * `despachoAutomaticoPendente` aviso, whose `situacao` param is rendered
+ * mid-sentence after a colon, and which closes the sentence itself).
+ *
+ * ⚠️ The fragment, never the sentence: the aviso's template adds its own
+ * period, so a capitalized, closed sentence here would reach the inbox with a
+ * capital after the colon and TWO periods at the end. There is ONE table and
+ * this is its second reader, not a second copy of the wording.
+ */
+export function fraseDoMotivoEtiqueta(motivo: MotivoEtiquetaShopee): string {
+  return FRASE_DO_MOTIVO_ETIQUETA[motivo];
+}
+
+/**
+ * The route's and the CLI's SENTENCE for a motivo: {@link fraseDoMotivoEtiqueta}
+ * with its first letter capitalized and a closing period.
  */
 export function mensagemDoMotivoEtiqueta(motivo: MotivoEtiquetaShopee): string {
-  const frase = FRASE_DO_MOTIVO_ETIQUETA[motivo];
+  const frase = fraseDoMotivoEtiqueta(motivo);
   return `${frase.charAt(0).toLocaleUpperCase('pt-BR')}${frase.slice(1)}.`;
 }

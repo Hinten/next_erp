@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { dedupKeyOf, destinoDoCodigo, docIdOf } from './notificacao';
-import { notificacaoSinteticaDePedido } from './notificacaoSintetica';
+import { alvoDoPushDeFrete } from '../pedidos/fretePushShopee';
+import {
+  dedupKeyOf,
+  destinoDoCodigo,
+  docIdOf,
+  parseNotificationBody,
+  sanitizarData,
+  shopeeNotificationTaskSchema,
+} from './notificacao';
+import { notificacaoSinteticaDePacote, notificacaoSinteticaDePedido } from './notificacaoSintetica';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — invented values only. No real shop id, partner id or key.      */
@@ -10,6 +18,10 @@ import { notificacaoSinteticaDePedido } from './notificacaoSintetica';
 const SHOP = 987654;
 const AGORA_MS = 1_760_000_000_000;
 const ORDER_SN = '2601010ABCDEF';
+/** The code-30 fixtures: the shared step-15b order and its two packages. */
+const ORDER_SN_DO_PACOTE = '260910KJBHUJDM';
+const PACOTE = 'OFG000000000001';
+const PACOTE_2 = 'OFG000000000002';
 
 describe('notificacaoSinteticaDePedido', () => {
   it('monta um code 3 com timestamp em MILISSEGUNDOS — a síntese, não o relógio do evento', () => {
@@ -224,5 +236,167 @@ describe('notificacaoSinteticaDePedido', () => {
     // collapses them for anything that asks "same work?".
     expect(docIdOf(primeiro)).not.toBe(docIdOf(segundo));
     expect(dedupKeyOf(primeiro)).toBe(dedupKeyOf(segundo));
+  });
+});
+
+describe('notificacaoSinteticaDePacote (passo 15b, #1744)', () => {
+  function pacote(
+    sobrescrever: Partial<Parameters<typeof notificacaoSinteticaDePacote>[0]> = {},
+  ): ReturnType<typeof notificacaoSinteticaDePacote> {
+    return notificacaoSinteticaDePacote({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      packageNumber: PACOTE,
+      nowMs: AGORA_MS,
+      origem: 'arranjo-automatico',
+      ...sobrescrever,
+    });
+  }
+
+  it('monta um code 30 com timestamp em MILISSEGUNDOS, roteado para o braço de frete', () => {
+    const p = pacote();
+
+    expect(p.code).toBe(30);
+    expect(p.shopId).toBe(SHOP);
+    expect(p.timestamp).toBe(AGORA_MS);
+    // The magnitude check of the code-3 suite: a SECONDS stamp would be ~1.76e9.
+    expect(p.timestamp).toBeGreaterThan(1_000_000_000_000);
+    // ⚠️ The LITERAL destination, never `destinoDoCodigo(30)` against itself.
+    expect(destinoDoCodigo(p.code)).toBe('frete');
+  });
+
+  it('data carrega EXATAMENTE ordersn, package_number e origem — sem update_time, sem fulfillment_status', () => {
+    const p = pacote();
+
+    expect(Object.keys(p.data ?? {}).sort()).toEqual(['ordersn', 'origem', 'package_number']);
+    expect(p.data).toEqual({
+      ordersn: ORDER_SN_DO_PACOTE,
+      package_number: PACOTE,
+      origem: 'arranjo-automatico',
+    });
+    // The two absences, named: a synthetic witnessed no transition (no event
+    // clock) and observed no token of its own (the push-vs-pull diagnostic).
+    expect(p.data).not.toHaveProperty('update_time');
+    expect(p.data).not.toHaveProperty('fulfillment_status');
+    // …and the wire spelling of the order key never leaks through.
+    expect(p.data).not.toHaveProperty('order_sn');
+  });
+
+  it('docIdOf/dedupKeyOf batem com o contrato do docblock — o PACOTE é o recurso, o carimbo é a síntese', () => {
+    const p = pacote();
+
+    expect(docIdOf(p)).toBe(`30:${String(SHOP)}:${PACOTE}:${String(AGORA_MS)}`);
+    expect(dedupKeyOf(p)).toBe(`30:${String(SHOP)}:${PACOTE}`);
+  });
+
+  it('dois PACOTES do mesmo pedido no mesmo tick não colapsam — o near-miss do dedup', () => {
+    const a = pacote();
+    const b = pacote({ packageNumber: PACOTE_2 });
+
+    expect(dedupKeyOf(a)).not.toBe(dedupKeyOf(b));
+    expect(docIdOf(a)).not.toBe(docIdOf(b));
+  });
+
+  it('dois TICKS do mesmo pacote são dois documentos e uma só chave de dedup', () => {
+    const primeiro = pacote();
+    const segundo = pacote({ nowMs: AGORA_MS + 300_000 });
+
+    expect(docIdOf(primeiro)).not.toBe(docIdOf(segundo));
+    expect(dedupKeyOf(primeiro)).toBe(dedupKeyOf(segundo));
+  });
+
+  it('um push 33 REAL do mesmo pacote é o mesmo trabalho (dedup) e nunca o mesmo documento', () => {
+    // A real delivery, through the receiver's own parser: `update_time` is the
+    // wire's SECONDS and becomes the carimbo, so it can never collide with the
+    // synthetic's millisecond carimbo — while the dedup key, which drops the
+    // carimbo, says "same package" for both.
+    const agoraS = AGORA_MS / 1000;
+    const real = parseNotificationBody({
+      code: 30,
+      shop_id: SHOP,
+      timestamp: agoraS,
+      data: {
+        ordersn: ORDER_SN_DO_PACOTE,
+        package_number: PACOTE,
+        fulfillment_status: 'LOGISTICS_READY',
+        update_time: agoraS,
+      },
+    });
+    if (real === null)
+      throw new Error('parseNotificationBody devolveu null para um envelope válido');
+    const sintetica = pacote();
+
+    expect(dedupKeyOf(sintetica)).toBe(dedupKeyOf(real));
+    expect(docIdOf(sintetica)).not.toBe(docIdOf(real));
+    expect(docIdOf(real)).toBe(`30:${String(SHOP)}:${PACOTE}:${String(agoraS)}`);
+  });
+
+  it('o code 30 do pacote nunca colapsa no code 3 do pedido — o código faz parte da identidade', () => {
+    const doPacote = pacote();
+    const doPedido = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      nowMs: AGORA_MS,
+      origem: 'backfill',
+    });
+
+    expect(dedupKeyOf(doPacote)).not.toBe(dedupKeyOf(doPedido));
+    expect(docIdOf(doPacote)).not.toBe(docIdOf(doPedido));
+  });
+
+  it('o payload atravessa o fio do Cloud Tasks: o schema da tarefa e a sanitização o devolvem IGUAL', () => {
+    const p = pacote();
+
+    // The task handler re-validates every payload with this schema after a
+    // JSON hop; the failure path stores `data` through `sanitizarData`.
+    expect(shopeeNotificationTaskSchema.parse(JSON.parse(JSON.stringify(p)))).toEqual(p);
+    expect(sanitizarData(p.data)).toEqual(p.data);
+  });
+
+  it('o leitor do braço de frete aceita o payload — `origem` a mais é tolerado, e o alvo é o MESMO pacote', () => {
+    const p = pacote();
+    const alvo = alvoDoPushDeFrete(p.code, p.data);
+
+    expect(alvo).toEqual({
+      ok: true,
+      code: 30,
+      orderSn: ORDER_SN_DO_PACOTE,
+      packageNumber: PACOTE,
+      diagnostico: {
+        code: 30,
+        grafiaDoPedido: 'ordersn',
+        trackingNoDoPush: null,
+        // The two absences again, as the arm sees them: no token to compare
+        // against the pull, and no push clock to log beside the package's.
+        statusDoPush: null,
+        camposMudados: null,
+        shipByDateAntigaS: null,
+        shipByDateNovaS: null,
+        canalAntigo: null,
+        canalNovo: null,
+        relogioDoPushS: null,
+      },
+    });
+  });
+
+  it('near-miss do leitor: sem package_number o MESMO leitor recusa — o aceite acima não é vácuo', () => {
+    const p = pacote();
+    const semPacote = Object.fromEntries(
+      Object.entries(p.data ?? {}).filter(([chave]) => chave !== 'package_number'),
+    );
+
+    expect(alvoDoPushDeFrete(30, semPacote).ok).toBe(false);
+  });
+
+  it('a origem do pacote é um tipo PRÓPRIO: uma origem de varredura de pedidos não compila aqui', () => {
+    notificacaoSinteticaDePacote({
+      shopId: SHOP,
+      orderSn: ORDER_SN_DO_PACOTE,
+      packageNumber: PACOTE,
+      nowMs: AGORA_MS,
+      // @ts-expect-error — `'backfill'` names an ORDER sweep; the package builder's union is its own.
+      origem: 'backfill',
+    });
+    expect(pacote().data).toHaveProperty('origem', 'arranjo-automatico');
   });
 });

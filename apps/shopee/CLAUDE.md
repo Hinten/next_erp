@@ -235,6 +235,9 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/etiqueta/` + `app/api/marketplace/shopee/etiqueta/route.ts` —
   step 15's label flow and route (`PERM.frete.read`; the ship needs
   `frete.write`). Narrative: `lib/shopee/etiqueta/README.md`.
+- `lib/shopee/pedidos/arranjoAutomatico.ts` + `lib/shopee/avisos/despachoAutomatico.ts`
+  — step 15b's automatic arrange of a Turbo package and its two avisos. See
+  **Auto-arrange** under Labels.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -420,19 +423,19 @@ a page of the 3-day queue irreversibly.
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
 - `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
-  avisos, and the second of the **six** modules in this app that write to the
+  avisos, and the second of the **seven** modules in this app that write to the
   avisos inbox (`autorizacao.ts`, this one, step 8's `reservaTravada.ts`, step
-  11's `anuncios/avisoAnuncio.ts`, step 12's `estoque/avisoEstoque.ts` and
-  step 14's `nfe/avisoNfe.ts`). It
+  11's `anuncios/avisoAnuncio.ts`, step 12's `estoque/avisoEstoque.ts`,
+  step 14's `nfe/avisoNfe.ts` and step 15b's `despachoAutomatico.ts`). It
   holds NO `millisToMicros`: it takes the µs helpers from
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **84** suites in this app name (82 drive it), and since step 8 it has a
+  **86** suites in this app name (84 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
   step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 today — the two `*.tasks.test.ts` suites it counts name the double in a
+  84 after step 15, 86 after step 15b — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1502,6 +1505,22 @@ One stateless POST route; every call re-derives the phase from Shopee
   supplies the clock and the sleep, and the µs list above still says eight.
 - Deploy `apps/shopee` BEFORE `apps/web`.
 
+**Auto-arrange (step 15b, `pedidos/arranjoAutomatico.ts`).** On 1573's
+channels (`CANAIS_ARRANJO_AUTOMATICO`) the code-4/30/47 arm ships unattended.
+
+- ONE site: `rastrearPedidoShopee`'s `deps.arranjar`, supplied only by the
+  arm's lazy default; `rastrear:pedido --live` passes none and never ships.
+- The outcome field is `acaoArranjo`, never `acao` (#1087); a `frete` outcome
+  resolves `frete` whatever it says.
+- No Shopee answer escapes as an error — each is a desfecho; our own config
+  error, gRPC errors and bugs are rethrown. The aviso write sits OUTSIDE that
+  catch.
+- It writes only avisos; between arrangers the ONLY guard is Shopee's
+  (`is_shipment_arranged`, `package_already_shipped`).
+- `despachoAutomaticoPendente` (per package; `nfe` atencao, `manual` critico)
+  and `etiquetaComPrazo` (90011/90012) open `/despacho/checkout`. Deploy
+  `apps/web` (their `mensagens.ts` rows) BEFORE the functions.
+
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
@@ -1600,19 +1619,26 @@ read by nothing.
   schedule is weekly and a pedido that goes stale just after a tick waits for the
   next one. Nothing may document "7" as a promise.
 
+## Env added by step 15b
+
+- **`SHOPEE_ARRANJO_AUTOMATICO_DISABLED`** — `'1'` and nothing else stops the
+  auto-arrange (a candidate answers `desligado`, zero Shopee calls); unset is
+  ON. Functions-only: home `functions/.env.deploy`, never `apphosting.yaml`.
+
 ## CI
 
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 14 that job runs
-**six suite FILES and eleven tests**
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 15b that job runs
+**seven suite FILES and twelve tests**
 (`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
 `lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
 `lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
 `lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1,
 `lib/shopee/precos/atualizarPrecos.tasks.test.ts` ×3,
-`lib/shopee/nfe/enviarNfe.tasks.test.ts` ×1) — still one job, still
+`lib/shopee/nfe/enviarNfe.tasks.test.ts` ×1,
+`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts` ×1) — still one job, still
 one check name, no new gate-manifest row. The lane's header carries the same
 pair of numbers.
 
@@ -1625,9 +1651,9 @@ emulator → the real `sendShopeeStock` → a seeded LINK document stamped
 `erp:task-excede-limite`, from a 51-model task the chunker cuts. Step 13's is
 a FOURTH: the real `processShopeePriceSync` takes a job whose anchors all skip
 at PLAN time to `completed` (the drain's lazy client is never built), answers
-`noop` once cancelled and fails a wrong-`tipo` conta. All ten (step 14's,
-below, included) are chosen for the same reason — each is decided with NO
-Shopee call; nine write a document, and the cancelled job's dispatch writes
+`noop` once cancelled and fails a wrong-`tipo` conta. All eleven (steps 14's
+and 15b's, below, included) are chosen for the same reason — each is decided
+with NO Shopee call; ten write a document, and the cancelled job's dispatch writes
 NOTHING (a sentinel job behind it proves it ran): the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
@@ -1638,7 +1664,7 @@ client, so the guarantee there is CALL ORDER and never a mock.
 cover the dispatched function, which runs in the emulator's own process, so a
 code-3 case that reached `importarPedidoShopee` — or a code-4 one that reached
 `rastrearPedidoShopee` — would really leave the runner. Keep the tasks suites on
-paths that need no token.
+paths that need no token, or on a conta that has none.
 
 Step 14's file is a FIFTH hop, and the first that starts at a Firestore WRITE:
 an `nfev4` doc created aprovada with a keyless tpAmb-1 sale proc fires the
@@ -1646,6 +1672,11 @@ real `onNfeAprovadaShopee` → the real queue → `processShopeeNfeUpload` →
 `xml-invalido` → the aviso plus `freteInicial.estado = error`, `pacotes`
 preserved. No Shopee call, by CALL ORDER: the key check sits above the conta
 gate and the client.
+
+Step 15b's file enqueues a synthetic code 30 for a PRESENT pedido on a conta
+with NO credential: the arm's two dynamic imports resolve and the token read
+throws before any fetch (`deferred`). The hook, after `get_package_detail`, is
+out of reach.
 
 ⚠️ **No tasks suite exercises the mass import's burst pause**: the
 scheduler sets `scheduleDelaySeconds` there, the emulator ignores it

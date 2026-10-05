@@ -1028,6 +1028,22 @@ its reason, the quoted literals that are not this vocabulary: the stamp's
   ⚠️ Corrected by step 15: "after the parcel moves" means after step 7
   observes `LOGISTICS_REQUEST_CREATED` (`aguardandoPostagem`), i.e. right after
   OUR `ship_order`, not after a physical pickup.
+- **The automatic arrange** (step 15b, `pedidos/arranjoAutomatico.ts`). Nothing
+  here calls it, and it never re-drives this step's upload: an invoice-pending
+  package makes it answer `nfe-pendente` with zero Shopee calls and open the
+  `nfe` class of the `despachoAutomaticoPendente` aviso, and every retry of the
+  upload stays this step's. ⚠️ After a valid upload **no push is documented**:
+  `invoice_pending` is not a fulfilment status (push 33), an upload does not
+  move `order_status` (`pedidos/orderStatusMaps.ts`), and this step's recheck
+  triggers nothing else. So on an auto-arrange channel
+  (`CANAIS_ARRANJO_AUTOMATICO`, announcement 1573) the arrange needs a
+  RE-OBSERVATION of the package once Shopee clears `invoice_pending`: a later
+  push for it — the NOT_START → READY code 30, if a pending package is
+  `LOGISTICS_NOT_START` and Shopee sends that push (registers 227, 228) — or
+  the `search_package_list` sweep of step 15b's PR 3b (stacked). The `nfe` row
+  closes on that observation: `nfe-validada` when the package is seen READY past
+  the invoice gate (never on a not-ready or unknown status — Shopee reports a
+  pending invoice only in a shipment-ready one), `arranjado` once it is arranged.
 - **A sweep or a schedule** (§13), and a `get_order_list` walk on
   `INVOICE_PENDING` (register 202, answered NOT NEEDED by step 15).
 - **`add_invoice_data`.** It exists behind a login-gated page, and it is

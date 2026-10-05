@@ -15,6 +15,11 @@
  *  - **13** pins that the rehearsal's `DiagnosticoPushFrete` CLAIMS nothing: a
  *    fabricated status or tracking number would put an assertion into a task log
  *    that no Shopee delivery ever made.
+ *
+ * And one more since step 15b (#1744), **16**: `--live` must never ARRANGE. The
+ * script calls `rastrearPedidoShopee` with no deps, so the handler's absent
+ * `arranjar` seam means no `ship_order`; a raw-text pin on the script (and on
+ * the two modules between it and the arrange) is the only test that can see it.
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -509,6 +514,135 @@ describe('DIAGNOSTICO_DE_ENSAIO', () => {
 /* ========================================================================== */
 /*  15 · o bloco guardado, relido depois de um --live                          */
 /* ========================================================================== */
+
+/* ========================================================================== */
+/*  16 · o ensaio NUNCA arranja (passo 15b)                                   */
+/* ========================================================================== */
+
+/** A source file, read as raw text relative to this test. */
+function fonteDe(caminho: string): string {
+  return readFileSync(new URL(caminho, import.meta.url), 'utf8');
+}
+
+/**
+ * The CODE of a TypeScript source: comments dropped, string and template
+ * contents kept. A pin on what the code DOES must not red on a comment that
+ * merely names the arrange (a docs edit saying "this never arranges").
+ * ⚠️ Not a parser: a regex LITERAL holding a quote would derail it, and none
+ * of the files read below has one.
+ */
+function semComentarios(fonte: string): string {
+  let saida = '';
+  let i = 0;
+  while (i < fonte.length) {
+    const c = fonte[i]!;
+    const proximo = fonte[i + 1];
+    if (c === '/' && proximo === '/') {
+      while (i < fonte.length && fonte[i] !== '\n') i += 1;
+    } else if (c === '/' && proximo === '*') {
+      const fim = fonte.indexOf('*/', i + 2);
+      i = fim < 0 ? fonte.length : fim + 2;
+    } else if (c === "'" || c === '"' || c === '`') {
+      const inicio = i;
+      i += 1;
+      while (i < fonte.length && fonte[i] !== c) i += fonte[i] === '\\' ? 2 : 1;
+      i += 1;
+      saida += fonte.slice(inicio, i);
+    } else {
+      saida += c;
+      i += 1;
+    }
+  }
+  return saida;
+}
+
+/**
+ * The top-level arguments of every call `nome(…)` in `codigo`, as trimmed
+ * source slices — brackets balanced, string contents skipped, a trailing comma
+ * tolerated. Enough for this repo's own formatted sources; not a parser.
+ */
+function argumentosDasChamadas(codigo: string, nome: string): string[][] {
+  const chamadas: string[][] = [];
+  const padrao = new RegExp(`(?<![\\w$.])${nome}\\(`, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = padrao.exec(codigo)) !== null) {
+    const args: string[] = [];
+    let profundidade = 0;
+    let inicio = m.index + m[0].length;
+    let i = inicio;
+    for (; i < codigo.length; i += 1) {
+      const c = codigo[i]!;
+      if (c === "'" || c === '"' || c === '`') {
+        i += 1;
+        while (i < codigo.length && codigo[i] !== c) i += codigo[i] === '\\' ? 2 : 1;
+      } else if (c === '(' || c === '[' || c === '{') {
+        profundidade += 1;
+      } else if (c === ')' && profundidade === 0) {
+        break;
+      } else if (c === ')' || c === ']' || c === '}') {
+        profundidade -= 1;
+      } else if (c === ',' && profundidade === 0) {
+        args.push(codigo.slice(inicio, i).trim());
+        inicio = i + 1;
+      }
+    }
+    args.push(codigo.slice(inicio, i).trim());
+    chamadas.push(args.filter((a) => a !== ''));
+  }
+  return chamadas;
+}
+
+describe('o ensaio `rastrear:pedido --live` (passo 15b)', () => {
+  it('16. o script chama o handler SEM deps e não nomeia o arranjo em código nenhum', () => {
+    const codigo = semComentarios(fonteDe('../../../scripts/rastrear-pedido.ts'));
+
+    // ÂNCORA: o script carrega mesmo o handler e o chama — o negativo abaixo
+    // não pode passar por ausência.
+    expect(codigo).toContain("await import('../lib/shopee/pedidos/rastrearPedido')");
+    const chamadas = argumentosDasChamadas(codigo, 'rastrearPedidoShopee');
+    expect(chamadas.length).toBeGreaterThan(0);
+
+    // ⚠️ DOIS argumentos em toda chamada (`db` e o alvo): um terceiro é um
+    // `deps`, e o único `deps` que importa aqui é `{ arranjar }` — com ele, o
+    // ensaio despacharia um pacote real (`ship_order` é irreversível).
+    for (const args of chamadas) {
+      expect(args, args.join(' | ')).toHaveLength(2);
+      expect(args[0]).toBe('db');
+    }
+    // …e nada no código nomeia o gancho, o seu módulo ou a sua dependência.
+    expect(codigo).not.toMatch(/arranj/i);
+  });
+
+  it('16b. os DOIS elos até o gancho — `rastrearPedido.ts` e `despachoAutomatico.ts` → `arranjoAutomatico` — são só `import type`', () => {
+    // O script carrega `rastrearPedido.ts`, que carrega o produtor de avisos;
+    // nenhum dos dois pode puxar `arranjoAutomatico.ts` (e com ele o
+    // `ship_order`) como VALOR — só o braço da notificação o carrega, pelo
+    // import dinâmico do seu padrão.
+    // ⚠️ DOIS elos, não o grafo (review 3a, Q4-5): um import por valor do
+    // gancho vindo de OUTRO módulo que o script alcança não é visto aqui. A
+    // garantia de segurança — o ensaio nunca DESPACHA — é a do teste 16: sem
+    // `deps`, não há `arranjar`.
+    const elos = [
+      { arquivo: './rastrearPedido.ts', modulo: './arranjoAutomatico' },
+      { arquivo: '../avisos/despachoAutomatico.ts', modulo: '../pedidos/arranjoAutomatico' },
+    ];
+    for (const { arquivo, modulo } of elos) {
+      const codigo = semComentarios(fonteDe(arquivo));
+      const literal = `'${modulo}'`;
+      const declaracoes = [
+        ...codigo.matchAll(/\bimport\s+(type\s+)?\{[^}]*\}\s*from\s*('[^']+')/g),
+      ].filter((d) => d[2] === literal);
+      // ÂNCORA: o elo existe — o módulo importa mesmo os TIPOS do gancho.
+      expect(declaracoes.length, arquivo).toBeGreaterThan(0);
+      for (const d of declaracoes) expect(d[1]?.trim(), `${arquivo}: ${d[0]}`).toBe('type');
+      // Nenhuma outra forma de carregar o módulo: um import dinâmico, um
+      // `import x from`, um side-effect import ou um re-export — toda menção do
+      // literal no CÓDIGO é uma das declarações acima.
+      const todas = codigo.split(literal).length - 1;
+      expect(todas, arquivo).toBe(declaracoes.length);
+    }
+  });
+});
 
 describe('resumoDoFreteArmazenado', () => {
   it('15. lê o bloco CRU por lista de permissão — o endereço e a bagagem do Melhor Envio não têm por onde passar', () => {

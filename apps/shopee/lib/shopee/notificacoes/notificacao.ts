@@ -87,6 +87,11 @@ import type {
 import type { AcaoPagamentosShopee } from '../pedidos/pagamentoTx';
 import type { AcaoFreteShopee } from '../pedidos/freteTx';
 import type { AlvoDeRastreioShopee, ResultadoRastreioShopee } from '../pedidos/rastrearPedido';
+// ⚠️ TYPE-ONLY too (step 15b, #1744): the hook module reaches the label flow's
+// `programarPacote` — `ship_order` — and the avisos writer, so a VALUE import
+// here would carry the arrange into the receiver's Next bundle. The value
+// arrives through the second dynamic import in `defaultProcessDeps`.
+import type { DesfechoArranjoAutomatico } from '../pedidos/arranjoAutomatico';
 // ⚠️ TYPE-ONLY, and it has to stay that way for the reason the `../pedidos/`
 // block above states: `anuncios/pushAnuncio.ts` imports `@delfrance/schemas` and
 // `@delfrance/data/admin/collections` as VALUES, and the receiver route's Next
@@ -734,6 +739,22 @@ export type ShopeeProcessOutcome =
        * import action in the frete column of the task log. The #1087 shape.
        */
       acaoFrete: AcaoFreteShopee;
+      /**
+       * The automatic arrange's desfecho (step 15b, #1744), or `null` when the
+       * hook did not run: the handler was called without its `arranjar` seam
+       * (the `rastrear:pedido` CLI's shape, or an injected `rastrearPedido`).
+       * The two handler actions that skip the hook for a missing pedido or
+       * package never become this outcome — the arm turns them into
+       * `frete-adiado` / `parado` first.
+       *
+       * ⚠️ Named `acaoArranjo` and NOT `acao`, for {@link acaoFrete}'s reason —
+       * the #1087 shape, a third time. ⚠️ And it is INFORMATION, never a
+       * disposition: the hook turns every Shopee outcome into a value (no Shopee
+       * ANSWER escapes as an error; our own config error, gRPC errors and bugs
+       * are rethrown), so a `frete` outcome resolves `frete` whatever this says
+       * — `toDisposition` does not read it.
+       */
+      acaoArranjo: DesfechoArranjoAutomatico | null;
       orderSn: string;
       packageNumber: string;
       pedidoId: string;
@@ -823,7 +844,8 @@ export interface ShopeeProcessDeps {
    * The codes-4/30/47 arm (step 7). OPTIONAL for the same reason
    * {@link importarPedido} is (every conta-arm test stays drivable without a
    * shop-scoped client), and LAZY for the same reason — see
-   * {@link defaultProcessDeps}.
+   * {@link defaultProcessDeps}, whose default is also the one place step 15b's
+   * automatic arrange is wired in.
    */
   rastrearPedido?: (db: Firestore, alvo: AlvoDeRastreioShopee) => Promise<ResultadoRastreioShopee>;
   /**
@@ -864,9 +886,18 @@ export const defaultProcessDeps: ShopeeProcessDeps = {
   // the pedido collection and every schema they touch. The functions bundle pays
   // for it (the inline proof in `apps/shopee/functions/DEPLOY.md` greps for the
   // name); the receiver does not.
+  //
+  // ⚠️ TWO sequential imports since step 15b (#1744), and this arrow is the ONLY
+  // place the automatic arrange is wired. `rastrearPedidoShopee` arranges only
+  // when handed `arranjar`, and its other caller — `rastrear:pedido --live` —
+  // passes no deps, so a terminal rehearsal never ships and never even LOADS the
+  // arrange. Folding the hook into the first import (a re-export through
+  // `rastrearPedido`) would make that CLI load `ship_order` too; two literal pins
+  // in `notificacao.test.ts` hold both specifiers.
   rastrearPedido: async (db, alvo) => {
     const { rastrearPedidoShopee } = await import('../pedidos/rastrearPedido');
-    return rastrearPedidoShopee(db, alvo);
+    const { arranjarPacoteAutomatico } = await import('../pedidos/arranjoAutomatico');
+    return rastrearPedidoShopee(db, alvo, { arranjar: arranjarPacoteAutomatico });
   },
   // ⚠️ The same lazy arrow over a DYNAMIC import, for the same reason:
   // `anuncios/pushAnuncio` reaches the link collection, the avisos writer, the
@@ -1517,6 +1548,10 @@ export async function processNotificationPayload(
     return {
       kind: 'frete',
       acaoFrete: rastreio.acao,
+      // Step 15b — copied for the `TaskResult` ONLY. The arrange already ran inside
+      // the handler (after the frete transaction and the two resolvers), so by
+      // the time it reaches here it is a fact to report, never a branch to take.
+      acaoArranjo: rastreio.arranjo === null ? null : rastreio.arranjo.desfecho,
       orderSn: alvo.orderSn,
       packageNumber: alvo.packageNumber,
       pedidoId: rastreio.pedidoId,
@@ -1837,7 +1872,10 @@ export function toDisposition(outcome: ShopeeProcessOutcome): NotificationDispos
     case 'pedido':
       return { kind: 'resolve', label: 'pedido' };
     // ⚠️ Its own LABEL too, so the sweep's `outcomes` map separates a shipment
-    // merge from an order import and from an aviso.
+    // merge from an order import and from an aviso. ⚠️ `acaoArranjo` is not
+    // read (step 15b): the delivery's own work — the merge — succeeded, and
+    // whatever the arrange had to say it said through its own avisos, inside
+    // the hook.
     case 'frete':
       return { kind: 'resolve', label: 'frete' };
     // ⚠️ Its own LABEL too, so the sweep's `outcomes` map separates a violation
@@ -1909,6 +1947,21 @@ export interface TaskResult {
    * one, where it is the BACKSTOP's own verdict.
    */
   acaoFrete?: AcaoFreteShopee;
+  /**
+   * The automatic arrange's desfecho on a code-4/30/47 delivery (#1744, step
+   * 15b) — an enum token (`programado` / `nfe-pendente` / `precisa-escolha` …).
+   * ABSENT (never `null`) when the hook did not run.
+   *
+   * ⚠️ It does NOT reach the task log today: `processShopeeNotification`'s one
+   * `logger.info` names its fields one by one and this is not among them (nor
+   * are `acaoFrete` and `acaoPagamentos`). The line an operator can filter on is
+   * the handler's own `[shopee/frete] entrega de rastreio`, which carries
+   * `acaoArranjo` beside `motivoArranjo`, `canalArranjo` and `faseArranjo`. Here
+   * it is the seam a caller — and a test — reads.
+   *
+   * ⚠️ `acaoArranjo`, never `acao`, for {@link acaoFrete}'s reason.
+   */
+  acaoArranjo?: DesfechoArranjoAutomatico;
   /**
    * The Shopee `item_id` a code-16/27 delivery names (#1519, step 11).
    *
@@ -2042,6 +2095,9 @@ export async function handleNotificationTask(
   // outcome already carries an `acao` of its OWN vocabulary, so an `acao` here
   // would put an import action in the frete column of the task log (#1087).
   const acaoFrete = r.result && 'acaoFrete' in r.result ? (r.result.acaoFrete ?? null) : null;
+  // ⚠️ Read structurally too, and deliberately NOT `acao` (step 15b): the hook's
+  // desfecho is a third vocabulary on the same task log line (#1087).
+  const acaoArranjo = r.result && 'acaoArranjo' in r.result ? (r.result.acaoArranjo ?? null) : null;
   // ⚠️ Read structurally too, and deliberately NOT `acao`/`itemId`: the `pedido`
   // outcome already carries an `acao`, and a bare `itemId` would be the same trap
   // one collection down the day another arm gains one (#1087).
@@ -2059,6 +2115,7 @@ export async function handleNotificationTask(
     ...(acaoPagamentos != null ? { acaoPagamentos } : {}),
     ...(packageNumber != null ? { packageNumber } : {}),
     ...(acaoFrete != null ? { acaoFrete } : {}),
+    ...(acaoArranjo != null ? { acaoArranjo } : {}),
     ...(itemIdAnuncio != null ? { itemIdAnuncio } : {}),
     ...(acaoAnuncio != null ? { acaoAnuncio } : {}),
   };
