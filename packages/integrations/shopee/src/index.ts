@@ -58,10 +58,18 @@
  * operations themselves are `api.ts`'s, the response schemas `types.ts`'s).
  * `test/api.test.ts` pins the seven operations at this door.
  *
- * ⚠️ These eight re-exports are WILDCARD, so every step-11 addition — the twelve
+ * ⚠️ Step 17 (returns, #1525) added one more NEW MODULE, with its own line below:
+ * `devolucoes.ts` — the six `v2.returns.*` paths, request shapes and guards,
+ * `SHOPEE_RETURNS_ERROR_ALIASES`, the outbound `ReturnSolution` enum and
+ * `normalizarSolucaoDeDevolucao`, the one reader of its three encodings. The
+ * operations are `api.ts`'s and the response schemas `types.ts`'s section
+ * "Returns (step 17)" — the only schemas here that STRIP (buyer data).
+ * `test/devolucoes.test.ts` pins this module at this door.
+ *
+ * ⚠️ These nine re-exports are WILDCARD, so every step-11 addition — the twelve
  * operations, their wire-shaped request interfaces, the response schemas and the
  * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
- * here. A NEW MODULE would need one; a new export inside these eight does not,
+ * here. A NEW MODULE would need one; a new export inside these nine does not,
  * and a test in `test/api.test.ts` pins the twelve operation names so a rename
  * cannot silently drop one from the public surface.
  */
@@ -74,3 +82,4 @@ export * from './oauth';
 export * from './api';
 export * from './arquivo';
 export * from './logistica';
+export * from './devolucoes';

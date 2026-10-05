@@ -6,16 +6,17 @@ attempts, the push receiver, the sweeps — lives in `apps/shopee`.
 
 What ships here:
 
-| Module         | Holds                                                                                      |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| `sign.ts`      | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
-| `hosts.ts`     | The production and sandbox API + consent hosts, and the env-override resolver              |
-| `oauth.ts`     | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
-| `api.ts`       | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
-| `types.ts`     | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
-| `errors.ts`    | The typed error hierarchy and the classification of Shopee's `error` code strings          |
-| `logistica.ts` | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
-| `arquivo.ts`   | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
+| Module          | Holds                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `sign.ts`       | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
+| `hosts.ts`      | The production and sandbox API + consent hosts, and the env-override resolver              |
+| `oauth.ts`      | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
+| `api.ts`        | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
+| `types.ts`      | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
+| `errors.ts`     | The typed error hierarchy and the classification of Shopee's `error` code strings          |
+| `logistica.ts`  | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
+| `arquivo.ts`    | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
+| `devolucoes.ts` | The returns ops' paths, request shapes, guards, wire constants, solution reader (17)       |
 
 ## Label operations (step 15)
 
@@ -88,6 +89,46 @@ lists and never arranges.
 - **A row is a pointer, not a verdict**: it carries no `fulfillment_status` and
   no `invoice_pending`, and ToProcess mixes LOGISTICS_READY with
   LOGISTICS_PICKUP_RETRY. Confirm with `getPackageDetail` before `shipOrder`.
+
+## Returns (step 17)
+
+Six `v2.returns.*` operations on the SHOP client: three reads —
+`getReturnList` (ONE page), `getReturnDetail` and
+`getReturnAvailableSolutions` — and the three seller actions the ERP drives —
+`confirmReturn`, `offerReturn` and `acceptReturnOffer`. Their paths, request
+shapes, guards and wire constants live in `devolucoes.ts`; their response
+schemas in `types.ts`.
+
+- **All six return the WHOLE parsed envelope, the reads included.** Every
+  returns page samples a NON-empty `error` on success (`" "` on four, `"-"` on
+  `get_return_list` and `get_return_detail`), so each of the six call sites
+  carries `SHOPEE_RETURNS_ERROR_ALIASES` (`[' ', '-']`). The match is EXACT —
+  `'  '`, `'\t'` and `' -'` stay failures — and per call site, never global:
+  `' '` is still a failure on every other operation. A body with an alias and
+  no `response` is a `ShopeeSchemaError`, never a success. The caller logs the
+  observed `error` VALUE until a BR shop settles which one Shopee sends
+  (register 231).
+- **Buyer data never leaves the package.** The returns response schemas STRIP
+  unknown keys — the one exception to "every object is `.passthrough()`" — and
+  declare only what the app reads, so the buyer's name, email, pickup address,
+  photos, videos, free text and the reverse tracking number do not exist past
+  the parse. A field the app needs later is a one-line schema addition.
+- **`return_sn` travels verbatim**: blank refused, nothing trimmed, and never a
+  digits-only check — the pages' own samples are alphanumeric. Every guard runs
+  BEFORE the access token is asked for and names the field, never a value.
+- **`getReturnList` does not auto-page**: terminate on `more === false`.
+  `page_no` is sent verbatim (page index vs entry offset is register 235); each
+  time window is both bounds or neither and at most 15 days — one second past
+  is refused, never truncated. No status filter is exposed.
+- **`offerReturn` never picks an amount.** An absent amount sends NO key (never
+  `null`, never `0`); a present one with more than two decimals is refused,
+  never rounded. The min/max are per return (`getReturnAvailableSolutions`) and
+  are the app's check.
+- **The actions move money and are NOT idempotent** — nothing here retries,
+  and nothing here decides whether an action is allowed. The dispute half
+  (`dispute`, `cancel_dispute`, `upload_proof`, `convert_image`, `query_proof`,
+  `get_return_dispute_reason`) is deliberately not built: both dispute writes
+  REQUIRE an operator email whose source is undecided.
 
 ## What it deliberately is not
 

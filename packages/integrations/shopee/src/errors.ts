@@ -76,7 +76,12 @@ export class ShopeeConfigError extends ShopeeError {
   }
 }
 
-/** `fetch` threw: DNS, TLS, connection reset, abort. There is no response. */
+/**
+ * The transport failed: `fetch` threw (DNS, TLS, connection reset, abort — no
+ * response), or the connection died while the BODY streamed (`call.ts`'s
+ * `lerCorpo`: the headers arrived, the body did not — on a write the request
+ * may have landed).
+ */
 export class ShopeeNetworkError extends ShopeeError {
   constructor(
     message: string,

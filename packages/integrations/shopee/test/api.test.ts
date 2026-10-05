@@ -130,6 +130,23 @@ import {
   assertSearchPackageListParams,
   falhaDaLinha,
 } from '../src/logistica';
+import {
+  type GetReturnListParams,
+  type OfferReturnParams,
+  SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+  SHOPEE_GET_RETURN_DETAIL_PATH,
+  SHOPEE_GET_RETURN_LIST_PATH,
+  SHOPEE_RETURNS_ERROR_ALIASES,
+  SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+  SHOPEE_RETURN_CONFIRM_PATH,
+  SHOPEE_RETURN_LIST_MAX_PAGE_SIZE,
+  SHOPEE_RETURN_LIST_MAX_WINDOW_SECONDS,
+  SHOPEE_RETURN_OFFER_PATH,
+  SHOPEE_RETURN_SOLUTION,
+  assertAlvoDeDevolucao,
+  assertOfferReturnParams,
+  assertReturnListParams,
+} from '../src/devolucoes';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -7147,5 +7164,988 @@ describe('a busca de pacotes (passo 15b)', () => {
     ]) {
       expect(bloco, proibido).not.toContain(proibido);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          As devoluções (passo 17) — três leituras e três ações              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ O return_sn ALFANUMÉRICO congelado pela reconciliação do passo 17: as
+ * amostras das páginas são alfanuméricas, e um id só de dígitos esconderia
+ * exatamente o formato que um guarda de dígitos quebraria.
+ */
+const RETURN_SN_ALFA = '260910ABCDE0001';
+const RETURN_SN_DIGITOS = '2609100000000001';
+const PEDIDO_DEVOLUCAO = '260910KJBHUJDM';
+const INICIO_JANELA_S = 1_760_000_000;
+
+/**
+ * ⚠️ Marcadores INVENTADOS no lugar de cada dado de comprador que as páginas de
+ * devolução carregam — nenhum é um dado real. O teste D12 prova que nenhum
+ * atravessa o cliente.
+ */
+const COMPRADOR_FICTICIO = {
+  usuario: 'usuario-ficticio-do-comprador',
+  email: 'comprador-ficticio@exemplo.invalid',
+  retrato: 'https://exemplo.invalid/retrato-ficticio.jpg',
+  endereco: 'RUA-FICTICIA-DO-COMPRADOR',
+  nome: 'NOME-FICTICIO-DO-COMPRADOR',
+  telefone: 'TELEFONE-FICTICIO-DO-COMPRADOR',
+  imagem: 'https://exemplo.invalid/foto-ficticia.jpg',
+  video: 'https://exemplo.invalid/video-ficticio.mp4',
+  textoLivre: 'TEXTO-LIVRE-FICTICIO-DO-COMPRADOR',
+  rastreioReverso: 'RASTREIO-REVERSO-FICTICIO',
+  criadorDaOferta: 'CRIADOR-FICTICIO-DA-OFERTA',
+  naoDeclarado: 'CAMPO-NAO-DECLARADO-FICTICIO',
+} as const;
+
+/** Os campos de comprador de uma devolução, como as páginas os imprimem — valores inventados. */
+const CAMPOS_DE_COMPRADOR = {
+  text_reason: COMPRADOR_FICTICIO.textoLivre,
+  image: [COMPRADOR_FICTICIO.imagem],
+  buyer_videos: [{ thumbnail_url: COMPRADOR_FICTICIO.imagem, video_url: COMPRADOR_FICTICIO.video }],
+  tracking_number: COMPRADOR_FICTICIO.rastreioReverso,
+  user: {
+    username: COMPRADOR_FICTICIO.usuario,
+    email: COMPRADOR_FICTICIO.email,
+    portrait: COMPRADOR_FICTICIO.retrato,
+  },
+  return_pickup_address: {
+    address: COMPRADOR_FICTICIO.endereco,
+    name: COMPRADOR_FICTICIO.nome,
+    phone: COMPRADOR_FICTICIO.telefone,
+    region: 'BR',
+  },
+  // ⚠️ Um campo que NENHUMA página documenta: o corte é por omissão, não por lista.
+  campo_que_a_shopee_inventou_amanha: COMPRADOR_FICTICIO.naoDeclarado,
+};
+
+/** O exemplo de sucesso de `get_return_detail` — `error: "-"`, como a PÁGINA imprime; ids de fixture. */
+const DEVOLUCAO_DETALHE_BODY = {
+  error: '-',
+  message: '-',
+  request_id: 'req-devolucao-detalhe',
+  response: {
+    return_sn: RETURN_SN_ALFA,
+    order_sn: PEDIDO_DEVOLUCAO,
+    status: 'REQUESTED',
+    create_time: INICIO_JANELA_S,
+    update_time: INICIO_JANELA_S + 86_400,
+    due_date: INICIO_JANELA_S + 345_600,
+    return_ship_due_date: 0,
+    return_seller_due_date: INICIO_JANELA_S + 259_200,
+    reason: 'NOT_RECEIPT',
+    reassessed_request_reason: 'NONE',
+    refund_amount: 59.9,
+    amount_before_discount: 69.9,
+    currency: 'BRL',
+    return_solution: 0,
+    return_refund_type: 'RRBOC',
+    return_refund_request_type: 0,
+    validation_type: 'seller_validation',
+    is_seller_arrange: false,
+    logistics_status: 'LOGISTICS_NOT_STARTED',
+    reverse_logistics_status: 'LOGISTICS_NOT_STARTED',
+    seller_proof: {
+      seller_proof_status: 'PENDING',
+      seller_evidence_deadline: INICIO_JANELA_S + 400_000,
+    },
+    seller_compensation: {
+      seller_compensation_status: 'PENDING_REQUEST',
+      seller_compensation_due_date: 0,
+      compensation_amount: 0,
+    },
+    negotiation: {
+      negotiation_status: 'PENDING_RESPOND',
+      latest_solution: 'REFUND',
+      latest_offer_amount: 30,
+      latest_offer_creator: COMPRADOR_FICTICIO.criadorDaOferta,
+      counter_limit: 2,
+      offer_due_date: INICIO_JANELA_S + 300_000,
+    },
+    ...CAMPOS_DE_COMPRADOR,
+  },
+};
+
+/**
+ * Uma página de `get_return_list` — `error: "-"`, `more: true` — com uma linha
+ * legível e uma SEM `update_time`, que a lista anula sem perder a página.
+ */
+const DEVOLUCAO_LISTA_BODY = {
+  error: '-',
+  message: '-',
+  request_id: 'req-devolucao-lista',
+  response: {
+    more: true,
+    return: [
+      {
+        return_sn: RETURN_SN_ALFA,
+        order_sn: PEDIDO_DEVOLUCAO,
+        status: 'REQUESTED',
+        update_time: INICIO_JANELA_S + 86_400,
+        due_date: INICIO_JANELA_S + 345_600,
+        refund_amount: 59.9,
+        negotiation_status: 'PENDING_RESPOND',
+        seller_proof_status: 'PENDING',
+        seller_compensation_status: 'PENDING_REQUEST',
+        ...CAMPOS_DE_COMPRADOR,
+      },
+      { return_sn: RETURN_SN_DIGITOS, order_sn: PEDIDO_DEVOLUCAO, status: 'CLOSED' },
+    ],
+  },
+};
+
+/** O exemplo de sucesso de `get_available_solutions` — `error: " "` (um ESPAÇO), como a página imprime. */
+const SOLUCOES_DEVOLUCAO_BODY = {
+  error: ' ',
+  message: '',
+  request_id: 'req-devolucao-solucoes',
+  response: {
+    return_sn: RETURN_SN_ALFA,
+    offer_return_refund: { eligibility: false, refund_amount_adjustable: false },
+    offer_refund: {
+      eligibility: true,
+      refund_amount_adjustable: true,
+      max_refund_amount: 59.9,
+      min_refund_amount: 1,
+    },
+  },
+};
+
+/** O sucesso de `confirm` / `offer` / `accept_offer` — `error: " "` e o eco do `return_sn`. */
+function corpoDeEscritaDeDevolucao(requestId: string): Record<string, unknown> {
+  return {
+    error: ' ',
+    message: '',
+    request_id: requestId,
+    response: { return_sn: RETURN_SN_ALFA },
+  };
+}
+
+/** A leitura da varredura: UMA página, janela por atualização de exatamente 15 dias. */
+const LISTA_DE_DEVOLUCOES: GetReturnListParams = {
+  pageNo: 0,
+  pageSize: SHOPEE_RETURN_LIST_MAX_PAGE_SIZE,
+  updateTimeFromS: INICIO_JANELA_S,
+  updateTimeToS: INICIO_JANELA_S + SHOPEE_RETURN_LIST_MAX_WINDOW_SECONDS,
+};
+
+interface OperacaoDeDevolucao {
+  readonly nome: string;
+  readonly caminho: string;
+  readonly verbo: 'GET' | 'POST';
+  /** O `error` que a PRÓPRIA página imprime no seu exemplo de sucesso. */
+  readonly erroDaPagina: (typeof SHOPEE_RETURNS_ERROR_ALIASES)[number];
+  readonly corpo: Readonly<Record<string, unknown>>;
+  readonly chamar: (client: ShopeeClient) => Promise<unknown>;
+}
+
+/** As seis operações, cada uma com o corpo de sucesso que a SUA página imprime. */
+const OPERACOES_DE_DEVOLUCAO: readonly OperacaoDeDevolucao[] = [
+  {
+    nome: 'getReturnList',
+    caminho: SHOPEE_GET_RETURN_LIST_PATH,
+    verbo: 'GET',
+    erroDaPagina: '-',
+    corpo: DEVOLUCAO_LISTA_BODY,
+    chamar: (c) => c.getReturnList(LISTA_DE_DEVOLUCOES),
+  },
+  {
+    nome: 'getReturnDetail',
+    caminho: SHOPEE_GET_RETURN_DETAIL_PATH,
+    verbo: 'GET',
+    erroDaPagina: '-',
+    corpo: DEVOLUCAO_DETALHE_BODY,
+    chamar: (c) => c.getReturnDetail({ returnSn: RETURN_SN_ALFA }),
+  },
+  {
+    nome: 'getReturnAvailableSolutions',
+    caminho: SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+    verbo: 'GET',
+    erroDaPagina: ' ',
+    corpo: SOLUCOES_DEVOLUCAO_BODY,
+    chamar: (c) => c.getReturnAvailableSolutions({ returnSn: RETURN_SN_ALFA }),
+  },
+  {
+    nome: 'confirmReturn',
+    caminho: SHOPEE_RETURN_CONFIRM_PATH,
+    verbo: 'POST',
+    erroDaPagina: ' ',
+    corpo: corpoDeEscritaDeDevolucao('req-devolucao-confirm'),
+    chamar: (c) => c.confirmReturn({ returnSn: RETURN_SN_ALFA }),
+  },
+  {
+    nome: 'offerReturn',
+    caminho: SHOPEE_RETURN_OFFER_PATH,
+    verbo: 'POST',
+    erroDaPagina: ' ',
+    corpo: corpoDeEscritaDeDevolucao('req-devolucao-offer'),
+    chamar: (c) =>
+      c.offerReturn({
+        returnSn: RETURN_SN_ALFA,
+        proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+        proposedAdjustedRefundAmount: 12.34,
+      }),
+  },
+  {
+    nome: 'acceptReturnOffer',
+    caminho: SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+    verbo: 'POST',
+    erroDaPagina: ' ',
+    corpo: corpoDeEscritaDeDevolucao('req-devolucao-accept'),
+    chamar: (c) => c.acceptReturnOffer({ returnSn: RETURN_SN_ALFA }),
+  },
+];
+
+/** A operação `nome` com o seu corpo de sucesso trocado. */
+function respondendo(
+  op: OperacaoDeDevolucao,
+  troca: Record<string, unknown>,
+): {
+  readonly fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>;
+  readonly client: ShopeeClient;
+} {
+  const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+    jsonResponse({ ...op.corpo, ...troca }),
+  );
+  return { fetchMock, client: createShopeeClient(shopConfig(fetchMock)) };
+}
+
+describe('as devoluções (passo 17)', () => {
+  it('D1 — os seis caminhos e o verbo de cada página; saem pelo index do pacote, SÓ no cliente da loja; a constante de apelidos é `[" ", "-"]`', async () => {
+    expect(SHOPEE_GET_RETURN_LIST_PATH).toBe('/api/v2/returns/get_return_list');
+    expect(SHOPEE_GET_RETURN_DETAIL_PATH).toBe('/api/v2/returns/get_return_detail');
+    expect(SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH).toBe('/api/v2/returns/get_available_solutions');
+    expect(SHOPEE_RETURN_CONFIRM_PATH).toBe('/api/v2/returns/confirm');
+    expect(SHOPEE_RETURN_OFFER_PATH).toBe('/api/v2/returns/offer');
+    expect(SHOPEE_RETURN_ACCEPT_OFFER_PATH).toBe('/api/v2/returns/accept_offer');
+    // ⚠️ Um ESPAÇO e um hífen, e nada mais — nem `''` (que já é sucesso), nem um trim.
+    expect(SHOPEE_RETURNS_ERROR_ALIASES).toEqual([' ', '-']);
+
+    // Pela porta PÚBLICA: `index.ts` re-exporta `devolucoes.ts` por wildcard.
+    expect(pacote.SHOPEE_GET_RETURN_DETAIL_PATH).toBe(SHOPEE_GET_RETURN_DETAIL_PATH);
+    expect(pacote.SHOPEE_RETURNS_ERROR_ALIASES).toBe(SHOPEE_RETURNS_ERROR_ALIASES);
+    expect(pacote.assertAlvoDeDevolucao).toBe(assertAlvoDeDevolucao);
+    expect(pacote.assertReturnListParams).toBe(assertReturnListParams);
+    expect(pacote.assertOfferReturnParams).toBe(assertOfferReturnParams);
+
+    for (const op of OPERACOES_DE_DEVOLUCAO) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(op.corpo));
+      const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+      const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock, getAccessToken));
+      await op.chamar(client);
+      const [rawUrl, init] = fetchMock.mock.calls[0]!;
+      const url = new URL(String(rawUrl));
+      expect(url.pathname, op.nome).toBe(op.caminho);
+      expect(init?.method, op.nome).toBe(op.verbo);
+      expect(url.searchParams.get('shop_id'), op.nome).toBe(String(TEST_SHOP_ID));
+      // Shop-signed: o token é pedido UMA vez por chamada.
+      expect(getAccessToken, op.nome).toHaveBeenCalledTimes(1);
+      expect(fetchMock, op.nome).toHaveBeenCalledTimes(1);
+      // …e só no cliente da LOJA: as páginas são `type=Shop`.
+      expect(op.nome in createShopeePartnerClient(partnerConfig(fetchMock)), op.nome).toBe(false);
+    }
+  });
+
+  it('D2 — mutantes M15/M16: as duas leituras de UMA devolução mandam GET sem corpo e o `return_sn` VERBATIM na query — alfanumérico, só dígitos e até acolchoado, nada aparado', async () => {
+    for (const op of ['getReturnDetail', 'getReturnAvailableSolutions'] as const) {
+      for (const returnSn of [RETURN_SN_ALFA, RETURN_SN_DIGITOS, ` ${RETURN_SN_ALFA} `]) {
+        const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+          jsonResponse(op === 'getReturnDetail' ? DEVOLUCAO_DETALHE_BODY : SOLUCOES_DEVOLUCAO_BODY),
+        );
+        await createShopeeClient(shopConfig(fetchMock))[op]({ returnSn });
+        const [rawUrl, init] = fetchMock.mock.calls[0]!;
+        const url = new URL(String(rawUrl));
+        expect(init?.body, op).toBeUndefined();
+        expect([...url.searchParams.keys()].sort(), op).toEqual(
+          [...CHAVES_COMUNS, 'return_sn'].sort(),
+        );
+        // Os BYTES dados são os bytes enviados — o guarda julga, nunca reescreve.
+        expect(url.searchParams.get('return_sn'), `${op} ${JSON.stringify(returnSn)}`).toBe(
+          returnSn,
+        );
+      }
+    }
+  });
+
+  it('D3 — mutante M24: a query de get_return_list é EXATA — `page_no: 0` presente, uma janela não pedida não emite chave, e as duas janelas vão inteiras', async () => {
+    const casos: readonly (readonly [string, GetReturnListParams, Record<string, string>])[] = [
+      [
+        'sem janela',
+        { pageNo: 0, pageSize: 100 },
+        // ⚠️ `0` é falsy e VAI: o pacote nunca troca a página por um padrão.
+        { page_no: '0', page_size: '100' },
+      ],
+      [
+        'janela de atualização (a da varredura)',
+        LISTA_DE_DEVOLUCOES,
+        {
+          page_no: '0',
+          page_size: '100',
+          update_time_from: String(INICIO_JANELA_S),
+          update_time_to: String(INICIO_JANELA_S + SHOPEE_RETURN_LIST_MAX_WINDOW_SECONDS),
+        },
+      ],
+      [
+        'as duas janelas, update_from == create_from',
+        {
+          pageNo: 3,
+          pageSize: 1,
+          createTimeFromS: INICIO_JANELA_S,
+          createTimeToS: INICIO_JANELA_S + 60,
+          updateTimeFromS: INICIO_JANELA_S,
+          updateTimeToS: INICIO_JANELA_S + 120,
+        },
+        {
+          page_no: '3',
+          page_size: '1',
+          create_time_from: String(INICIO_JANELA_S),
+          create_time_to: String(INICIO_JANELA_S + 60),
+          update_time_from: String(INICIO_JANELA_S),
+          update_time_to: String(INICIO_JANELA_S + 120),
+        },
+      ],
+    ];
+    for (const [nome, params, esperado] of casos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse(DEVOLUCAO_LISTA_BODY),
+      );
+      await createShopeeClient(shopConfig(fetchMock)).getReturnList(params);
+      const [rawUrl, init] = fetchMock.mock.calls[0]!;
+      const url = new URL(String(rawUrl));
+      expect(init?.method, nome).toBe('GET');
+      expect(init?.body, nome).toBeUndefined();
+      const daOperacao = Object.fromEntries(
+        [...url.searchParams.entries()].filter(
+          ([chave]) => !(CHAVES_COMUNS as readonly string[]).includes(chave),
+        ),
+      );
+      expect(daOperacao, nome).toEqual(esperado);
+      // Nenhuma chave repetida: cada parâmetro é UM escalar.
+      expect(url.searchParams.getAll('page_no'), nome).toHaveLength(1);
+    }
+  });
+
+  it('D4 — mutante M31 (R-17): as SEIS devolvem o envelope INTEIRO — leituras incluídas — com o `error` da página legível como VALOR (registro 231)', async () => {
+    for (const op of OPERACOES_DE_DEVOLUCAO) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(op.corpo));
+      const resultado = (await op.chamar(createShopeeClient(shopConfig(fetchMock)))) as Record<
+        string,
+        unknown
+      >;
+      // ⛔ Desembrulhar (`res.response`) apagaria `error` e `request_id`.
+      expect(resultado.error, op.nome).toBe(op.erroDaPagina);
+      expect(resultado.request_id, op.nome).toBe(op.corpo.request_id);
+      expect(typeof resultado.response, op.nome).toBe('object');
+      expect(resultado.response, op.nome).not.toBeNull();
+    }
+
+    // E a carga é a da operação, lida por `.response`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(DEVOLUCAO_DETALHE_BODY),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getReturnDetail({
+      returnSn: RETURN_SN_ALFA,
+    });
+    expect(detalhe.response.return_sn).toBe(RETURN_SN_ALFA);
+    expect(detalhe.response.order_sn).toBe(PEDIDO_DEVOLUCAO);
+    expect(detalhe.response.update_time).toBe(INICIO_JANELA_S + 86_400);
+    expect(detalhe.response.negotiation?.negotiation_status).toBe('PENDING_RESPOND');
+    expect(detalhe.response.seller_proof?.seller_evidence_deadline).toBe(INICIO_JANELA_S + 400_000);
+    // VERBATIM: o `0` de um prazo ausente e o `'NONE'` atravessam o pacote — dobrá-los é da app.
+    expect(detalhe.response.return_ship_due_date).toBe(0);
+    expect(detalhe.response.reassessed_request_reason).toBe('NONE');
+  });
+
+  it('D5 — mutante M6: o apelido está em CADA uma das seis — o `error` da própria página, o do outro lado da família e o `""` padrão são sucesso em todas', async () => {
+    for (const op of OPERACOES_DE_DEVOLUCAO) {
+      for (const valor of ['', ' ', '-']) {
+        const { fetchMock, client } = respondendo(op, { error: valor });
+        await expect(
+          op.chamar(client),
+          `${op.nome} ${JSON.stringify(valor)}`,
+        ).resolves.toBeDefined();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it('D6 — mutante M8: ⛔ QUASE-IGUAIS — igualdade EXATA contra cada apelido: dois espaços, TAB, NBSP, `" -"`, `"- "` e um código real são FALHA em todas as seis, com o código verbatim', async () => {
+    for (const op of OPERACOES_DE_DEVOLUCAO) {
+      for (const valor of ['  ', '\t', ' ', ' -', '- ', '--', 'error_param']) {
+        const { fetchMock, client } = respondendo(op, { error: valor });
+        const erro = await erroDe(op.chamar(client));
+        const rotulo = `${op.nome} ${JSON.stringify(valor)}`;
+        expect(erro, rotulo).toBeInstanceOf(ShopeeApiError);
+        expect((erro as ShopeeApiError).code, rotulo).toBe(valor);
+        // Uma chamada, nenhuma repetição: a escrita NÃO é idempotente.
+        expect(fetchMock, rotulo).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it('D7 — mutante M9: a metade "`response` presente" — um corpo de SUCESSO aparente sem `response` é `ShopeeSchemaError` em todas as seis, nunca um sucesso', async () => {
+    for (const op of OPERACOES_DE_DEVOLUCAO) {
+      for (const valor of [' ', '-', '']) {
+        const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+          jsonResponse({ error: valor, message: 'x', request_id: 'req-sem-response' }),
+        );
+        const erro = await erroDe(op.chamar(createShopeeClient(shopConfig(fetchMock))));
+        expect(erro, `${op.nome} ${JSON.stringify(valor)}`).toBeInstanceOf(ShopeeSchemaError);
+      }
+    }
+  });
+
+  it('D8 — mutante M7: a tolerância NÃO ficou global — `" "` continua FALHA no get_order_detail e no search_package_list, e `"-"` no get_order_detail', async () => {
+    const pedido = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ORDER_DETAIL_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(pedido)).getOrderDetail({ orderSnList: [ORDER_SN] }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+    const pedidoHifen = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ORDER_DETAIL_BODY, error: '-' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(pedidoHifen)).getOrderDetail({ orderSnList: [ORDER_SN] }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+    const busca = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...BUSCA_VAZIA_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(busca)).searchPackageList(BUSCA_DO_SWEEP),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+
+  it('D9 — mutantes M16/M22: as três AÇÕES postam o corpo BYTE A BYTE — só as chaves comuns na query, `return_sn` verbatim, e um valor AUSENTE não emite chave (nem `null`, nem `0`)', async () => {
+    const casos: readonly (readonly [string, (c: ShopeeClient) => Promise<unknown>, string])[] = [
+      [
+        'confirm',
+        (c) => c.confirmReturn({ returnSn: RETURN_SN_ALFA }),
+        '{"return_sn":"260910ABCDE0001"}',
+      ],
+      [
+        'confirm acolchoado',
+        (c) => c.confirmReturn({ returnSn: ` ${RETURN_SN_ALFA}` }),
+        '{"return_sn":" 260910ABCDE0001"}',
+      ],
+      [
+        'accept_offer',
+        (c) => c.acceptReturnOffer({ returnSn: RETURN_SN_DIGITOS }),
+        '{"return_sn":"2609100000000001"}',
+      ],
+      [
+        'offer sem valor',
+        (c) =>
+          c.offerReturn({
+            returnSn: RETURN_SN_ALFA,
+            proposedSolution: SHOPEE_RETURN_SOLUTION.devolucaoEReembolso,
+          }),
+        '{"return_sn":"260910ABCDE0001","proposed_solution":"RETURN_REFUND"}',
+      ],
+      [
+        // ⚠️ Cast de propósito: é o chamador JS que escreve a chave com `undefined`.
+        'offer com o valor explicitamente undefined',
+        (c) =>
+          c.offerReturn({
+            returnSn: RETURN_SN_ALFA,
+            proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+            proposedAdjustedRefundAmount: undefined,
+          } as unknown as OfferReturnParams),
+        '{"return_sn":"260910ABCDE0001","proposed_solution":"REFUND"}',
+      ],
+      [
+        'offer com valor',
+        (c) =>
+          c.offerReturn({
+            returnSn: RETURN_SN_ALFA,
+            proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+            proposedAdjustedRefundAmount: 12.34,
+          }),
+        '{"return_sn":"260910ABCDE0001","proposed_solution":"REFUND","proposed_adjusted_refund_amount":12.34}',
+      ],
+      [
+        // PAR do D10: um valor que a APP arredondou passa por construção, e vai como saiu de `roundReais`.
+        'offer com valor arredondado pela app',
+        (c) =>
+          c.offerReturn({
+            returnSn: RETURN_SN_ALFA,
+            proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+            proposedAdjustedRefundAmount: roundReais(19.9 * 3),
+          }),
+        '{"return_sn":"260910ABCDE0001","proposed_solution":"REFUND","proposed_adjusted_refund_amount":59.7}',
+      ],
+      // ⚠️ G5 (#1525 review M, X-M16d/e): o acolchoado nas OUTRAS duas escritas.
+      // Sem estas linhas, só o scan de fonte do D16 (`.trim(`) guardava `offer`
+      // e `accept_offer`, e um `String.prototype.trim.call(…)` passava por ele.
+      [
+        'offer acolchoado',
+        (c) =>
+          c.offerReturn({
+            returnSn: ` ${RETURN_SN_ALFA}`,
+            proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+          }),
+        '{"return_sn":" 260910ABCDE0001","proposed_solution":"REFUND"}',
+      ],
+      [
+        'accept_offer acolchoado',
+        (c) => c.acceptReturnOffer({ returnSn: `${RETURN_SN_DIGITOS} ` }),
+        '{"return_sn":"2609100000000001 "}',
+      ],
+    ];
+    for (const [nome, chamar, esperado] of casos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse(corpoDeEscritaDeDevolucao('req-escrita')),
+      );
+      await chamar(createShopeeClient(shopConfig(fetchMock)));
+      const [rawUrl, init] = fetchMock.mock.calls[0]!;
+      const url = new URL(String(rawUrl));
+      expect(init?.method, nome).toBe('POST');
+      expect((init?.headers as Record<string, string>)['Content-Type'], nome).toBe(
+        'application/json',
+      );
+      // O corpo NÃO é assinado: a query leva só as chaves comuns.
+      expect([...url.searchParams.keys()].sort(), nome).toEqual([...CHAVES_COMUNS].sort());
+      expect(corpoEnviado(fetchMock), nome).toBe(esperado);
+    }
+  });
+
+  it('D10 — mutantes M17/M21/M23/M24/M25/M26: cada recusa acontece ANTES do token e do fetch, espiões em zero; ⛔ QUASE-IGUAIS: os limites ACEITOS custam uma chamada cada', async () => {
+    const alvo = (returnSn: unknown) => ({ returnSn }) as unknown as { returnSn: string };
+    const oferta = (troca: Record<string, unknown>): OfferReturnParams =>
+      ({
+        returnSn: RETURN_SN_ALFA,
+        proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+        ...troca,
+      }) as unknown as OfferReturnParams;
+    const lista = (troca: Record<string, unknown>): GetReturnListParams =>
+      ({ pageNo: 0, pageSize: 100, ...troca }) as unknown as GetReturnListParams;
+    const JANELA = SHOPEE_RETURN_LIST_MAX_WINDOW_SECONDS;
+
+    const recusas: readonly (readonly [string, (c: ShopeeClient) => Promise<unknown>])[] = [
+      ...(
+        [
+          'getReturnDetail',
+          'getReturnAvailableSolutions',
+          'confirmReturn',
+          'acceptReturnOffer',
+        ] as const
+      ).flatMap((op) =>
+        (
+          [
+            ['vazio', ''],
+            ['espaços', '   '],
+            ['TAB', '\t'],
+            ['ausente', undefined],
+            ['null', null],
+            ['número', 2_609_100_000_000_001],
+          ] as const
+        ).map(
+          ([nome, sn]) =>
+            [`${op} return_sn ${nome}`, (c: ShopeeClient) => c[op](alvo(sn))] as const,
+        ),
+      ),
+      ['offer return_sn vazio', (c) => c.offerReturn(oferta({ returnSn: ' ' }))],
+      ["offer solução 'refund'", (c) => c.offerReturn(oferta({ proposedSolution: 'refund' }))],
+      [
+        "offer solução 'RETURN_AND_REFUND'",
+        (c) => c.offerReturn(oferta({ proposedSolution: 'RETURN_AND_REFUND' })),
+      ],
+      ['offer solução 0', (c) => c.offerReturn(oferta({ proposedSolution: 0 }))],
+      ['offer solução ausente', (c) => c.offerReturn(oferta({ proposedSolution: undefined }))],
+      // ⚠️ M21: RECUSADO, nunca arredondado — o pacote não escolhe valor.
+      [
+        'offer valor 12.345',
+        (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: 12.345 })),
+      ],
+      ['offer valor 0', (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: 0 }))],
+      ['offer valor -1', (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: -1 }))],
+      [
+        'offer valor NaN',
+        (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: Number.NaN })),
+      ],
+      [
+        'offer valor Infinity',
+        (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: Number.POSITIVE_INFINITY })),
+      ],
+      [
+        "offer valor '12.34'",
+        (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: '12.34' })),
+      ],
+      ['offer valor null', (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: null }))],
+      ['list page_size 0', (c) => c.getReturnList(lista({ pageSize: 0 }))],
+      // ⚠️ M26.
+      ['list page_size 101', (c) => c.getReturnList(lista({ pageSize: 101 }))],
+      ['list page_size 1.5', (c) => c.getReturnList(lista({ pageSize: 1.5 }))],
+      ["list page_size '100'", (c) => c.getReturnList(lista({ pageSize: '100' }))],
+      ['list page_no -1', (c) => c.getReturnList(lista({ pageNo: -1 }))],
+      ['list page_no 1.5', (c) => c.getReturnList(lista({ pageNo: 1.5 }))],
+      ["list page_no '0'", (c) => c.getReturnList(lista({ pageNo: '0' }))],
+      ['list page_no ausente', (c) => c.getReturnList(lista({ pageNo: undefined }))],
+      // ⚠️ M24: MEIA janela é recusada, nunca completada por um padrão.
+      [
+        'list só create_time_from',
+        (c) => c.getReturnList(lista({ createTimeFromS: INICIO_JANELA_S })),
+      ],
+      ['list só update_time_to', (c) => c.getReturnList(lista({ updateTimeToS: INICIO_JANELA_S }))],
+      // ⚠️ M23: um segundo além de 15 dias é ERRO, não truncamento.
+      [
+        'list janela de atualização 15 d + 1 s',
+        (c) =>
+          c.getReturnList(
+            lista({
+              updateTimeFromS: INICIO_JANELA_S,
+              updateTimeToS: INICIO_JANELA_S + JANELA + 1,
+            }),
+          ),
+      ],
+      [
+        'list janela de criação 15 d + 1 s',
+        (c) =>
+          c.getReturnList(
+            lista({
+              createTimeFromS: INICIO_JANELA_S,
+              createTimeToS: INICIO_JANELA_S + JANELA + 1,
+            }),
+          ),
+      ],
+      [
+        'list from == to',
+        (c) =>
+          c.getReturnList(
+            lista({ updateTimeFromS: INICIO_JANELA_S, updateTimeToS: INICIO_JANELA_S }),
+          ),
+      ],
+      [
+        'list from > to',
+        (c) =>
+          c.getReturnList(
+            lista({ updateTimeFromS: INICIO_JANELA_S + 1, updateTimeToS: INICIO_JANELA_S }),
+          ),
+      ],
+      [
+        'list segundos fracionários',
+        (c) =>
+          c.getReturnList(
+            lista({ updateTimeFromS: INICIO_JANELA_S + 0.5, updateTimeToS: INICIO_JANELA_S + 60 }),
+          ),
+      ],
+      [
+        'list segundos 0',
+        (c) => c.getReturnList(lista({ updateTimeFromS: 0, updateTimeToS: INICIO_JANELA_S })),
+      ],
+      // ⚠️ M25: com as DUAS janelas, update_time_from < create_time_from é a recusa da própria página.
+      [
+        'list update_from < create_from',
+        (c) =>
+          c.getReturnList(
+            lista({
+              createTimeFromS: INICIO_JANELA_S,
+              createTimeToS: INICIO_JANELA_S + 60,
+              updateTimeFromS: INICIO_JANELA_S - 1,
+              updateTimeToS: INICIO_JANELA_S + 60,
+            }),
+          ),
+      ],
+    ];
+    for (const [nome, chamar] of recusas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse(corpoDeEscritaDeDevolucao('req-nunca')),
+      );
+      const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+      const erro = await erroDe(chamar(createShopeeClient(shopConfig(fetchMock, getAccessToken))));
+      expect(erro, nome).toBeInstanceOf(ShopeeConfigError);
+      expect(getAccessToken, nome).not.toHaveBeenCalled();
+      expect(fetchMock, nome).not.toHaveBeenCalled();
+    }
+
+    // ⛔ QUASE-IGUAIS: os limites ACEITOS — cada um custa EXATAMENTE uma chamada.
+    const aceitas: readonly (readonly [string, (c: ShopeeClient) => Promise<unknown>, unknown])[] =
+      [
+        ['list page_size 1', (c) => c.getReturnList(lista({ pageSize: 1 })), DEVOLUCAO_LISTA_BODY],
+        [
+          'list page_size 100',
+          (c) => c.getReturnList(lista({ pageSize: 100 })),
+          DEVOLUCAO_LISTA_BODY,
+        ],
+        [
+          'list janela de EXATAMENTE 15 dias',
+          (c) =>
+            c.getReturnList(
+              lista({ createTimeFromS: INICIO_JANELA_S, createTimeToS: INICIO_JANELA_S + JANELA }),
+            ),
+          DEVOLUCAO_LISTA_BODY,
+        ],
+        [
+          'list só a janela de atualização',
+          (c) => c.getReturnList(LISTA_DE_DEVOLUCOES),
+          DEVOLUCAO_LISTA_BODY,
+        ],
+        [
+          'list update_from == create_from',
+          (c) =>
+            c.getReturnList(
+              lista({
+                createTimeFromS: INICIO_JANELA_S,
+                createTimeToS: INICIO_JANELA_S + 60,
+                updateTimeFromS: INICIO_JANELA_S,
+                updateTimeToS: INICIO_JANELA_S + 60,
+              }),
+            ),
+          DEVOLUCAO_LISTA_BODY,
+        ],
+        [
+          'offer valor 0.01',
+          (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: 0.01 })),
+          corpoDeEscritaDeDevolucao('req-aceita'),
+        ],
+        [
+          'offer valor inteiro',
+          (c) => c.offerReturn(oferta({ proposedAdjustedRefundAmount: 30 })),
+          corpoDeEscritaDeDevolucao('req-aceita'),
+        ],
+        [
+          'detail só dígitos',
+          (c) => c.getReturnDetail({ returnSn: RETURN_SN_DIGITOS }),
+          DEVOLUCAO_DETALHE_BODY,
+        ],
+      ];
+    for (const [nome, chamar, corpo] of aceitas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(corpo));
+      await chamar(createShopeeClient(shopConfig(fetchMock)));
+      expect(fetchMock, nome).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('D11 — mutante M18: nenhuma recusa ecoa um VALOR — nem o return_sn (identifica a devolução de um comprador), nem um valor de dinheiro, nem um segundo', async () => {
+    const SEGUNDOS = 1_760_123_457;
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoDeEscritaDeDevolucao('req-nunca')),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const recusas: readonly (readonly [string, Promise<unknown>])[] = [
+      // Um return_sn VÁLIDO ao lado de um campo ruim: a recusa não despeja os parâmetros.
+      [
+        'solução ruim',
+        client.offerReturn({
+          returnSn: RETURN_SN_ALFA,
+          proposedSolution: RETURN_SN_ALFA,
+        } as unknown as OfferReturnParams),
+      ],
+      [
+        'valor ruim',
+        client.offerReturn({
+          returnSn: RETURN_SN_ALFA,
+          proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+          proposedAdjustedRefundAmount: 12.345,
+        }),
+      ],
+      [
+        'return_sn numérico',
+        client.getReturnDetail({ returnSn: 2_609_100_000_000_001 } as unknown as {
+          returnSn: string;
+        }),
+      ],
+      [
+        'return_sn objeto',
+        client.confirmReturn({ returnSn: { toString: () => RETURN_SN_ALFA } } as unknown as {
+          returnSn: string;
+        }),
+      ],
+      [
+        'meia janela',
+        client.getReturnList({ pageNo: 0, pageSize: 100, updateTimeFromS: SEGUNDOS }),
+      ],
+      [
+        'janela longa',
+        client.getReturnList({
+          pageNo: 0,
+          pageSize: 100,
+          updateTimeFromS: SEGUNDOS,
+          updateTimeToS: SEGUNDOS + SHOPEE_RETURN_LIST_MAX_WINDOW_SECONDS + 1,
+        }),
+      ],
+    ];
+    for (const [nome, chamada] of recusas) {
+      const erro = await erroDe(chamada);
+      expect(erro, nome).toBeInstanceOf(ShopeeConfigError);
+      const mensagem = (erro as Error).message;
+      expect(mensagem, nome).not.toContain(RETURN_SN_ALFA);
+      expect(mensagem, nome).not.toContain(RETURN_SN_DIGITOS);
+      expect(mensagem, nome).not.toContain('12.345');
+      expect(mensagem, nome).not.toContain(String(SEGUNDOS));
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('D12 — mutantes M10/M11/M12: NENHUM dado de comprador atravessa o cliente — nem pelas chaves, nem pelos valores, no detalhe e na linha da lista; o campo que nenhuma página documenta some também', async () => {
+    const detalheFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(DEVOLUCAO_DETALHE_BODY),
+    );
+    const listaFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(DEVOLUCAO_LISTA_BODY),
+    );
+    const detalhe = await createShopeeClient(shopConfig(detalheFetch)).getReturnDetail({
+      returnSn: RETURN_SN_ALFA,
+    });
+    const lista = await createShopeeClient(shopConfig(listaFetch)).getReturnList(
+      LISTA_DE_DEVOLUCOES,
+    );
+
+    // O VALOR: cada marcador inventado, em qualquer chave, em qualquer profundidade.
+    for (const [nome, saida] of [
+      ['detalhe', detalhe],
+      ['lista', lista],
+    ] as const) {
+      const texto = JSON.stringify(saida);
+      for (const marcador of Object.values(COMPRADOR_FICTICIO)) {
+        expect(texto, `${nome}: ${marcador}`).not.toContain(marcador);
+      }
+    }
+    // A CHAVE: nenhuma das que carregam o comprador sobrevive no detalhe.
+    const chaves = new Set<string>();
+    const andar = (v: unknown): void => {
+      if (Array.isArray(v)) {
+        for (const item of v) andar(item);
+      } else if (typeof v === 'object' && v !== null) {
+        for (const [chave, filho] of Object.entries(v)) {
+          chaves.add(chave);
+          andar(filho);
+        }
+      }
+    };
+    andar(detalhe.response);
+    andar(lista.response);
+    for (const proibida of [
+      'user',
+      'username',
+      'email',
+      'portrait',
+      'return_pickup_address',
+      'image',
+      'buyer_videos',
+      'text_reason',
+      'tracking_number',
+      'latest_offer_creator',
+      'campo_que_a_shopee_inventou_amanha',
+    ]) {
+      expect(chaves.has(proibida), proibida).toBe(false);
+    }
+    // ⛔ QUASE-IGUAL: o corte não levou o que a app LÊ.
+    expect(detalhe.response.refund_amount).toBe(59.9);
+    expect(detalhe.response.negotiation?.latest_solution).toBe('REFUND');
+    expect(lista.response.return[0]?.seller_compensation_status).toBe('PENDING_REQUEST');
+  });
+
+  it('D13 — mutantes M13/M30: `update_time` ausente FALHA o detalhe inteiro (`ShopeeSchemaError` que o nomeia), mas anula só a LINHA da lista — a página sobrevive', async () => {
+    const semRelogio = { ...DEVOLUCAO_DETALHE_BODY.response } as Record<string, unknown>;
+    delete semRelogio.update_time;
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...DEVOLUCAO_DETALHE_BODY, response: semRelogio }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).getReturnDetail({ returnSn: RETURN_SN_ALFA }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as Error).message).toContain('update_time');
+
+    const listaFetch = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(DEVOLUCAO_LISTA_BODY),
+    );
+    const pagina = await createShopeeClient(shopConfig(listaFetch)).getReturnList(
+      LISTA_DE_DEVOLUCOES,
+    );
+    expect(pagina.response.more).toBe(true);
+    expect(pagina.response.return).toHaveLength(2);
+    expect(pagina.response.return[0]?.return_sn).toBe(RETURN_SN_ALFA);
+    expect(pagina.response.return[1]).toBeNull();
+  });
+
+  it('D14 — UMA chamada por página, mesmo com `more: true`: o pacote nunca pagina sozinho; uma SEGUNDA chamada cai numa rejeição e a CONTAGEM a acusa', async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(DEVOLUCAO_LISTA_BODY))
+      .mockRejectedValue(new Error('uma SEGUNDA chamada: o pacote paginou sozinho'));
+    const chamada = createShopeeClient(shopConfig(fetchMock)).getReturnList(LISTA_DE_DEVOLUCOES);
+    const assentada = await erroDe(chamada);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(assentada).not.toBeInstanceOf(ShopeeNetworkError);
+    expect((await chamada).response.more).toBe(true);
+  });
+
+  it('D15 — a recusa da Shopee chega como `ShopeeApiError` com o código e a FRASE verbatim (o classificador da app lê `providerMessage`), sem repetição — nem a da escrita, nem a "não permite oferecer" das soluções, que nunca vira resposta vazia', async () => {
+    const recusas: readonly (readonly [OperacaoDeDevolucao, string, string])[] = [
+      [
+        OPERACOES_DE_DEVOLUCAO[3]!,
+        'error_return_status',
+        'The return status cannot support this action',
+      ],
+      [
+        OPERACOES_DE_DEVOLUCAO[2]!,
+        'error_data',
+        'Type of return does not allow seller to offer refund',
+      ],
+      [OPERACOES_DE_DEVOLUCAO[5]!, 'err_data', 'Cannot accept your own offer.'],
+    ];
+    for (const [op, codigo, frase] of recusas) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse({ error: codigo, message: frase, request_id: 'req-recusa' }),
+      );
+      const erro = await erroDe(op.chamar(createShopeeClient(shopConfig(fetchMock))));
+      expect(erro, op.nome).toBeInstanceOf(ShopeeApiError);
+      expect((erro as ShopeeApiError).code, op.nome).toBe(codigo);
+      expect((erro as ShopeeApiError).providerMessage, op.nome).toBe(frase);
+      expect((erro as ShopeeApiError).requestId, op.nome).toBe('req-recusa');
+      expect(fetchMock, op.nome).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('D16 — FONTE: cada bloco tem o guarda ANTES do token, UM `shopeeCall`, o apelido UMA vez, nenhum `.response`, nenhum laço, nenhum trim e nenhuma outra tolerância; seis call sites do apelido, nove no arquivo; os métodos vêm DEPOIS do searchPackageList', () => {
+    const blocos: readonly (readonly [string, string, 'GET' | 'POST'])[] = [
+      ['getReturnList: async', 'assertReturnListParams(p)', 'GET'],
+      ['getReturnDetail: async', 'assertAlvoDeDevolucao(p)', 'GET'],
+      ['getReturnAvailableSolutions: async', 'assertAlvoDeDevolucao(p)', 'GET'],
+      ['confirmReturn: async', 'assertAlvoDeDevolucao(p)', 'POST'],
+      ['offerReturn: async', 'assertOfferReturnParams(p)', 'POST'],
+      ['acceptReturnOffer: async', 'assertAlvoDeDevolucao(p)', 'POST'],
+    ];
+    const apelido = 'emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES';
+    for (const [marcador, guarda, verbo] of blocos) {
+      const bloco = blocoDoMetodo(marcador);
+      expect(bloco.indexOf(guarda), marcador).toBeGreaterThan(-1);
+      expect(bloco.indexOf(guarda), marcador).toBeLessThan(bloco.indexOf('signedCall()'));
+      expect(bloco.split('shopeeCall(').length - 1, marcador).toBe(1);
+      expect(bloco.split(apelido).length - 1, marcador).toBe(1);
+      expect(bloco, marcador).toContain(`method: '${verbo}'`);
+      // ⚠️ R-17: o envelope INTEIRO — nem `res.response`, nem um `.response` qualquer.
+      expect(bloco, marcador).toContain('return shopeeCall(');
+      for (const proibido of [
+        '.response',
+        '.trim(',
+        'payloadNoErro',
+        'avisoEmLista',
+        'erroAusenteEhSucesso',
+        'for (',
+        'while',
+        'catch',
+        '.then(',
+      ]) {
+        expect(bloco, `${marcador} ${proibido}`).not.toContain(proibido);
+      }
+    }
+    // O valor ausente da oferta: `seHouver`, nunca `?? null` ou `?? 0`.
+    expect(blocoDoMetodo('offerReturn: async')).toContain(
+      "seHouver('proposed_adjusted_refund_amount', p.proposedAdjustedRefundAmount)",
+    );
+    // As contagens do ARQUIVO: seis call sites do apelido das devoluções, e nove
+    // `emptyErrorAliases:` ao todo (dois lost-push, o get_package_detail, as seis).
+    expect(FONTE_API.split(apelido).length - 1).toBe(6);
+    expect(FONTE_API.split('emptyErrorAliases:').length - 1).toBe(9);
+    // O LUGAR: depois do último método do passo 15b — nenhum recorte antigo se alarga.
+    expect(FONTE_API.indexOf('getReturnList: async')).toBeGreaterThan(
+      FONTE_API.indexOf('searchPackageList: async'),
+    );
   });
 });

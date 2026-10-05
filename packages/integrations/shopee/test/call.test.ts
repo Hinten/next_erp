@@ -1188,3 +1188,128 @@ describe('shopeeCall — `avisoEmLista`, o warning em LISTA dos lotes de documen
     expect((erro as ShopeeSchemaError).campos).toContain('error');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*        A conexão que cai no meio do CORPO — `lerCorpo` (#1525 R4 F1)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Uma `Response` DE VERDADE cujo corpo entrega um PREFIXO e então morre — o que
+ * o undici devolve quando o socket cai DEPOIS dos cabeçalhos: `text()` e
+ * `arrayBuffer()` rejeitam com o erro do stream, um `TypeError` ("terminated")
+ * cru. O `fetch` já resolveu, então o `catch` de `enviarRequisicao` nunca o vê.
+ */
+function respostaQueCaiNoCorpo(
+  prefixo: Uint8Array,
+  erro: unknown = new TypeError('terminated'),
+  status = 200,
+  headers: Record<string, string> = { 'content-type': 'application/json' },
+): Response {
+  let puxadas = 0;
+  const corpo = new ReadableStream<Uint8Array>({
+    pull(controle) {
+      if (puxadas++ === 0) controle.enqueue(prefixo);
+      else controle.error(erro);
+    },
+  });
+  return new Response(corpo, { status, headers });
+}
+
+/** Uma ESCRITA de devolução — o caso em que "tente de novo" é o conselho errado. */
+const ESCRITA_PATH = '/api/v2/returns/confirm';
+
+function chamarEscrita(fetchImpl: typeof globalThis.fetch) {
+  return shopeeCall(transporte(fetchImpl), {
+    method: 'POST',
+    path: ESCRITA_PATH,
+    call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+    schema: z.object({}).passthrough(),
+    surface: 'business',
+    body: { return_sn: '2609100000000001' },
+  });
+}
+
+const MENSAGEM_DA_LEITURA = `Falha de rede ao ler a resposta da Shopee em ${ESCRITA_PATH} — a requisição foi enviada e o resultado é desconhecido.`;
+
+describe('a conexão que cai no meio do CORPO — `lerCorpo` (#1525 R4 F1, o padrão do #1749)', () => {
+  it.each([
+    ['um 200 (a escrita pode ter sido feita)', 200],
+    ['um 500 (o status chegou, o corpo não)', 500],
+  ] as const)(
+    'shopeeCall, %s ⇒ ShopeeNetworkError com o TypeError como causa — nunca o TypeError cru',
+    async (_rotulo, status) => {
+      const queda = new TypeError('terminated');
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        respostaQueCaiNoCorpo(bytesDe('{"error":"","request_id":"req-esc'), queda, status),
+      );
+      const erro = await chamarEscrita(fetchMock).catch((e: unknown) => e);
+
+      expect(erro).toBeInstanceOf(ShopeeNetworkError);
+      expect((erro as ShopeeNetworkError).cause).toBe(queda);
+      expect((erro as ShopeeNetworkError).message).toBe(MENSAGEM_DA_LEITURA);
+      // Nenhuma nova tentativa: a escrita pode ter chegado.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('shopeeCallArquivo: a etiqueta que cai no meio dos BYTES ⇒ ShopeeNetworkError, nunca um TypeError cru', async () => {
+    const queda = new TypeError('terminated');
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      respostaQueCaiNoCorpo(PDF_ETIQUETA.slice(0, 8), queda, 200, {
+        'content-type': 'application/pdf',
+      }),
+    );
+    const erro = await chamarDownload(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeNetworkError);
+    expect((erro as ShopeeNetworkError).cause).toBe(queda);
+    expect((erro as ShopeeNetworkError).message).toContain(DOWNLOAD_PATH);
+    expect((erro as ShopeeNetworkError).message).toContain('ao ler a resposta');
+  });
+
+  it('a mensagem nomeia o CAMINHO, nunca a `err.message` — que pode ecoar a URL com o `access_token`', async () => {
+    const queda = new TypeError('terminated: https://x/?access_token=token-inventado');
+    const escrita = await chamarEscrita(
+      vi.fn<typeof globalThis.fetch>(async () => respostaQueCaiNoCorpo(bytesDe('{'), queda)),
+    ).catch((e: unknown) => e);
+    const download = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () =>
+        respostaQueCaiNoCorpo(PDF_ETIQUETA.slice(0, 8), queda),
+      ),
+    ).catch((e: unknown) => e);
+
+    for (const erro of [escrita, download]) {
+      expect(erro).toBeInstanceOf(ShopeeNetworkError);
+      expect((erro as ShopeeNetworkError).message).not.toContain('token-inventado');
+    }
+  });
+
+  it('⛔ QUASE-IGUAL: uma rejeição que NÃO é TypeError não é queda de transporte — sobe INTOCADA, pelas duas portas', async () => {
+    const outro = new RangeError('não é uma queda de rede');
+    const escrita = await chamarEscrita(
+      vi.fn<typeof globalThis.fetch>(async () => respostaQueCaiNoCorpo(bytesDe('{'), outro)),
+    ).catch((e: unknown) => e);
+    const download = await chamarDownload(
+      vi.fn<typeof globalThis.fetch>(async () =>
+        respostaQueCaiNoCorpo(PDF_ETIQUETA.slice(0, 8), outro),
+      ),
+    ).catch((e: unknown) => e);
+
+    expect(escrita).toBe(outro);
+    expect(download).toBe(outro);
+  });
+
+  it('⛔ QUASE-IGUAL: a queda ANTES dos cabeçalhos guarda a mensagem do fetch — as duas se distinguem no log', async () => {
+    const erro = await chamarEscrita(
+      vi.fn<typeof globalThis.fetch>(async () => {
+        throw new TypeError('fetch failed');
+      }),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeNetworkError);
+    expect((erro as ShopeeNetworkError).message).toBe(
+      `Falha de rede ao contatar a Shopee em ${ESCRITA_PATH}.`,
+    );
+    expect((erro as ShopeeNetworkError).message).not.toBe(MENSAGEM_DA_LEITURA);
+  });
+});

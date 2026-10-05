@@ -2,11 +2,24 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+  SHOPEE_GET_RETURN_DETAIL_PATH,
+  SHOPEE_GET_RETURN_LIST_PATH,
+  SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+  SHOPEE_RETURN_CONFIRM_PATH,
+  SHOPEE_RETURN_OFFER_PATH,
+  SHOPEE_RETURN_SOLUTION,
+  type ShopeeClient,
+  createShopeeClient,
+  resolveShopeeHosts,
   shopeeEscrowDetailSchema,
   shopeeOrderDetailSchema,
+  shopeeReturnAvailableSolutionsSchema,
+  shopeeReturnWriteSchema,
   shopeeSearchPackageListSchema,
 } from '@delfrance/integrations-shopee';
-import { describe, expect, it } from 'vitest';
+import { ehReturnSnShopee } from '@delfrance/schemas';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   FIXTURE_ESCROW_DETAIL_DOC_KIT,
@@ -14,17 +27,35 @@ import {
   FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
   FIXTURE_ORDER_DETAIL_QTY2_SG,
   FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
+  FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+  FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
+  FIXTURE_RETURN_CONFIRM_DOC,
+  FIXTURE_RETURN_DETAIL_DOC,
+  FIXTURE_RETURN_LIST_DOC,
+  FIXTURE_RETURN_OFFER_DOC,
   FIXTURE_SEARCH_PACKAGE_LIST_DOC,
   FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
   FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
   FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
   WIRE_DIR,
   lerBuscaDePacotes,
+  lerDevolucaoDetalhe,
   lerEscrowDetalhe,
   lerFixture,
+  lerListaDeDevolucoes,
   lerPedidoDetalhe,
   listarFixtures,
 } from './wireCorpus';
+
+/** The six returns bodies (step 17), in the inventory's order. */
+const CORPOS_DEVOLUCAO = [
+  FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+  FIXTURE_RETURN_CONFIRM_DOC,
+  FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
+  FIXTURE_RETURN_DETAIL_DOC,
+  FIXTURE_RETURN_LIST_DOC,
+  FIXTURE_RETURN_OFFER_DOC,
+] as const;
 
 describe('o inventário do corpus', () => {
   it('é exatamente o conjunto de corpos que este passo promoveu', () => {
@@ -32,13 +63,20 @@ describe('o inventário do corpus', () => {
     // se adicionar um quebrar algo. O escrow do pedido de sandbox CHEGOU
     // (2026-09-10), e este teste, os loaders e a tabela do README mudaram no
     // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
-    // 15b fez o mesmo com os quatro corpos de `search_package_list`.
+    // 15b fez o mesmo com os quatro corpos de `search_package_list`, e o 17 com
+    // os seis das devoluções.
     expect(listarFixtures()).toEqual([
+      FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+      FIXTURE_RETURN_CONFIRM_DOC,
+      FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
       FIXTURE_ESCROW_DETAIL_DOC_KIT,
       FIXTURE_ESCROW_DETAIL_QTY2_SG,
       FIXTURE_ORDER_DETAIL_DOC_MASKED_VN,
       FIXTURE_ORDER_DETAIL_QTY2_SG_PROCESSED,
       FIXTURE_ORDER_DETAIL_QTY2_SG,
+      FIXTURE_RETURN_DETAIL_DOC,
+      FIXTURE_RETURN_LIST_DOC,
+      FIXTURE_RETURN_OFFER_DOC,
       FIXTURE_SEARCH_PACKAGE_LIST_DOC,
       FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
       FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
@@ -57,6 +95,7 @@ describe('o inventário do corpus', () => {
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA);
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO);
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE);
+    for (const file of CORPOS_DEVOLUCAO) expect(readme, file).toContain(`\`${file}\``);
     expect(readme).toContain('unverified for BR');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
@@ -486,4 +525,348 @@ describe('o SG sandbox — os três corpos que a Shopee MANDOU (2026-10-01)', ()
     const daLoja = lerBuscaDePacotes(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA);
     expect(daLoja.response.packages_list).toHaveLength(1);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        As devoluções (passo 17, #1525): os seis exemplos da doc            */
+/* -------------------------------------------------------------------------- */
+
+/** O `error` que CADA página imprime no exemplo de sucesso — nenhum é `''`. */
+const ERRO_DA_PAGINA: Readonly<Record<(typeof CORPOS_DEVOLUCAO)[number], string>> = {
+  [FIXTURE_RETURN_ACCEPT_OFFER_DOC]: ' ',
+  [FIXTURE_RETURN_CONFIRM_DOC]: ' ',
+  [FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC]: ' ',
+  [FIXTURE_RETURN_DETAIL_DOC]: '-',
+  [FIXTURE_RETURN_LIST_DOC]: '-',
+  [FIXTURE_RETURN_OFFER_DOC]: ' ',
+};
+
+/** O `return_sn` de FIXTURE que cada corpo carrega no lugar do da página. */
+const RETURN_SN_DO_CORPO: Readonly<Record<(typeof CORPOS_DEVOLUCAO)[number], string>> = {
+  [FIXTURE_RETURN_ACCEPT_OFFER_DOC]: '2609100000000002',
+  [FIXTURE_RETURN_CONFIRM_DOC]: '2609100000000001',
+  [FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC]: '2609100000000002',
+  [FIXTURE_RETURN_DETAIL_DOC]: '260910ABCDE0001',
+  [FIXTURE_RETURN_LIST_DOC]: '2609100000000001',
+  [FIXTURE_RETURN_OFFER_DOC]: '2609100000000002',
+};
+
+/**
+ * As chaves de COMPRADOR que as duas páginas de leitura carregam (redigidas no
+ * arquivo). Nenhuma pode sobreviver ao parse do pacote — o schema delas é um
+ * `z.object` que DESCARTA o que não declara (#1525 R-11).
+ */
+const CHAVES_DO_COMPRADOR = [
+  'user',
+  'username',
+  'email',
+  'portrait',
+  'return_pickup_address',
+  'address',
+  'phone',
+  'image',
+  'images',
+  'buyer_videos',
+  'text_reason',
+  'dispute_text_reason',
+  'tracking_number',
+  'virtual_contact_number',
+  'package_query_number',
+  'latest_offer_creator',
+  'name',
+] as const;
+
+/** Toda chave, em qualquer profundidade — a caminhada do T-PII-1. */
+function todasAsChaves(v: unknown, acc: Set<string> = new Set()): Set<string> {
+  if (Array.isArray(v)) {
+    for (const x of v) todasAsChaves(x, acc);
+  } else if (v !== null && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) {
+      acc.add(k);
+      todasAsChaves(x, acc);
+    }
+  }
+  return acc;
+}
+
+/** O corpo CRU de uma devolução, para as asserções que o schema esconde. */
+interface DevolucaoCrua {
+  error?: unknown;
+  message?: unknown;
+  request_id?: unknown;
+  response: Record<string, unknown>;
+}
+
+function lerDevolucaoCrua(file: string): DevolucaoCrua {
+  return lerFixture(file) as unknown as DevolucaoCrua;
+}
+
+describe('as devoluções — os seis corpos crus (exemplos da doc, ❌ não verificados para o BR)', () => {
+  it.each(CORPOS_DEVOLUCAO)(
+    '%s guarda o `error` da PÁGINA verbatim, e saiu sem `request_id`',
+    (file) => {
+      // ⚠️ Nenhum é `''`: é exatamente por isso que as seis operações carregam
+      // `SHOPEE_RETURNS_ERROR_ALIASES`, e é este byte que o teste do cliente,
+      // abaixo, faz passar pelo transporte de verdade.
+      const cru = lerDevolucaoCrua(file);
+      expect(cru.error).toBe(ERRO_DA_PAGINA[file]);
+      expect(cru.error).not.toBe('');
+      expect(cru.message).toBe(ERRO_DA_PAGINA[file]);
+      expect('request_id' in cru).toBe(false);
+    },
+  );
+
+  it.each(CORPOS_DEVOLUCAO)(
+    '%s carrega um return_sn de FIXTURE que o predicado único aceita',
+    (file) => {
+      const rsn = lerDevolucaoCrua(file).response;
+      const valor =
+        file === FIXTURE_RETURN_LIST_DOC
+          ? (rsn.return as Record<string, unknown>[])[0]!.return_sn
+          : rsn.return_sn;
+      expect(valor).toBe(RETURN_SN_DO_CORPO[file]);
+      expect(ehReturnSnShopee(valor)).toBe(true);
+    },
+  );
+
+  it('⚠️ o do DETALHE é ALFANUMÉRICO, como o exemplo da página — um guard só de dígitos o recusaria', () => {
+    const rsn = lerDevolucaoCrua(FIXTURE_RETURN_DETAIL_DOC).response.return_sn as string;
+    expect(rsn).toMatch(/[A-Z]/);
+    expect(rsn).not.toMatch(/^\d+$/);
+  });
+
+  it('o detalhe carrega as TRÊS grafias em que a página contradiz a própria tabela', () => {
+    const r = lerDevolucaoCrua(FIXTURE_RETURN_DETAIL_DOC).response;
+    // `reverse_logistic_status` sem `s` — a tabela tem `s` (registro 241).
+    expect(r.reverse_logistic_status).toBe('LOGISTICS_REQUEST_CREATED');
+    expect('reverse_logistics_status' in r).toBe(false);
+    // `dispute_reason` NÚMERO — a tabela diz `string[]`.
+    expect(r.dispute_reason).toBe(2);
+    // `dispute_text_reason` STRING (redigida) — a tabela diz `string[]`.
+    expect(r.dispute_text_reason).toBe('REDACTED');
+    // …e o `seller_compensation_status` SEM prefixo (registro 240), mais o
+    // `original_price` do `activity` ENTRE ASPAS.
+    expect((r.seller_compensation as Record<string, unknown>).seller_compensation_status).toBe(
+      'PENDING_REQUEST',
+    );
+    expect(
+      ((r.activity as Record<string, unknown>[])[0]!.items as Record<string, unknown>[])[0]!
+        .original_price,
+    ).toBe('12.34');
+  });
+
+  it('os blocos do comprador CHEGARAM ao arquivo — e saíram redigidos, máscara incluída', () => {
+    // Âncora do sentido inverso do T-PII abaixo: as chaves EXISTEM no corpo cru,
+    // então "o parse não as tem" é uma frase sobre o STRIP, não sobre o arquivo.
+    const detalhe = lerDevolucaoCrua(FIXTURE_RETURN_DETAIL_DOC).response;
+    expect(detalhe.user).toEqual({ username: 'REDACTED', email: 'REDACTED', portrait: 'REDACTED' });
+    expect((detalhe.return_pickup_address as Record<string, unknown>).name).toBe('REDACTED');
+    expect(detalhe.tracking_number).toBe('REDACTED');
+    expect(detalhe.text_reason).toBe('REDACTED');
+    const linha = (
+      lerDevolucaoCrua(FIXTURE_RETURN_LIST_DOC).response.return as Record<string, unknown>[]
+    )[0]!;
+    expect((linha.user as Record<string, unknown>).email).toBe('REDACTED');
+    expect(linha.dispute_text_reason).toEqual(['REDACTED']);
+  });
+});
+
+describe('as devoluções pelo schema do pacote', () => {
+  it('o detalhe parseia INTEIRO, e o que o importador lê está lá', () => {
+    const env = lerDevolucaoDetalhe(FIXTURE_RETURN_DETAIL_DOC);
+    const d = env.response;
+    expect(env.error).toBe('-');
+    expect(d.return_sn).toBe('260910ABCDE0001');
+    expect(d.order_sn).toBe('260910KJBHUJDM');
+    expect(d.status).toBe('ACCEPTED');
+    expect(d.update_time).toBe(1_655_219_544);
+    expect(d.create_time).toBe(1_655_205_084);
+    expect(d.refund_amount).toBe(13.97);
+    expect(d.due_date).toBe(1_655_377_883);
+    expect(d.return_seller_due_date).toBe(1_655_438_205);
+    expect(d.return_solution).toBe(0);
+    expect(d.return_refund_request_type).toBe(0);
+    expect(d.validation_type).toBe('seller_validation');
+    expect(d.is_seller_arrange).toBe(true);
+    // ⚠️ A grafia SEM `s` do exemplo chega como a da TABELA (registro 241).
+    expect(d.reverse_logistics_status).toBe('LOGISTICS_REQUEST_CREATED');
+    expect(d.seller_proof?.seller_proof_status).toBe('PENDING');
+    expect(d.seller_compensation?.seller_compensation_status).toBe('PENDING_REQUEST');
+    expect(d.negotiation?.negotiation_status).toBe('PENDING_RESPOND');
+    expect(d.negotiation?.latest_solution).toBe('RETURN_REFUND');
+    expect(d.negotiation?.offer_due_date).toBe(1_655_438_336);
+  });
+
+  it('a lista parseia INTEIRA — nenhuma linha virou a sentinela `null`', () => {
+    const env = lerListaDeDevolucoes(FIXTURE_RETURN_LIST_DOC);
+    expect(env.error).toBe('-');
+    expect(env.response.more).toBe(true);
+    expect(env.response.return).toHaveLength(1);
+    const linha = env.response.return[0]!;
+    expect(linha).not.toBeNull();
+    expect(linha.return_sn).toBe('2609100000000001');
+    expect(linha.status).toBe('CANCELLED');
+    expect(linha.update_time).toBe(1_580_729_377);
+    expect(linha.refund_amount).toBe(1409);
+    // Os três sub-status vêm PLANOS na lista.
+    expect(linha.negotiation_status).toBe('PENDING_RESPOND');
+    expect(linha.seller_proof_status).toBe('PENDING');
+    expect(linha.seller_compensation_status).toBe('PENDING_REQUEST');
+  });
+
+  it.each([FIXTURE_RETURN_DETAIL_DOC, FIXTURE_RETURN_LIST_DOC])(
+    '⚠️ T-PII sobre o CORPUS (%s): nenhuma chave nem valor redigido sobrevive ao parse',
+    (file) => {
+      const parseado =
+        file === FIXTURE_RETURN_DETAIL_DOC ? lerDevolucaoDetalhe(file) : lerListaDeDevolucoes(file);
+      const chaves = todasAsChaves(parseado);
+      expect(CHAVES_DO_COMPRADOR.filter((k) => chaves.has(k))).toEqual([]);
+      // O gêmeo por VALOR: toda folha que a redação tocou é uma chave que o
+      // schema não declara — então nenhum `REDACTED` chega à saída. Um campo de
+      // comprador declarado por engano reapareceria aqui com o placeholder.
+      expect(JSON.stringify(parseado)).not.toContain('REDACTED');
+      // …e o cru TEM as chaves: a ausência acima é obra do strip.
+      expect(todasAsChaves(lerFixture(file)).has('user')).toBe(true);
+    },
+  );
+
+  it('as soluções disponíveis: as duas ofertas com mínimo e máximo, e o `15.0` da página no byte', () => {
+    const r = shopeeReturnAvailableSolutionsSchema.parse(
+      lerFixture(FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC),
+    ).response;
+    expect(r.return_sn).toBe('2609100000000002');
+    expect(r.offer_return_refund).toMatchObject({
+      eligibility: true,
+      refund_amount_adjustable: true,
+      max_refund_amount: 15,
+      min_refund_amount: 5,
+    });
+    expect(r.offer_refund).toMatchObject({
+      eligibility: true,
+      refund_amount_adjustable: true,
+      max_refund_amount: 10,
+      min_refund_amount: 5,
+    });
+    // Os literais FLOAT da página ficaram como ela os imprime.
+    const texto = readFileSync(join(WIRE_DIR, FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC), 'utf8');
+    expect(texto).toContain('"max_refund_amount": 15.0');
+    expect(texto).toContain('"min_refund_amount": 5.0');
+  });
+
+  it.each([
+    FIXTURE_RETURN_CONFIRM_DOC,
+    FIXTURE_RETURN_OFFER_DOC,
+    FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+  ] as const)(
+    '%s: `{return_sn}` sob um `response` PRESENTE — a metade "response presente" do alias',
+    (file) => {
+      const env = shopeeReturnWriteSchema.parse(lerFixture(file));
+      expect(env.error).toBe(' ');
+      expect(env.response.return_sn).toBe(RETURN_SN_DO_CORPO[file]);
+      expect(env.response.msg).toBeNull();
+    },
+  );
+});
+
+/**
+ * Um cliente REAL do pacote cujo `fetch` responde o TEXTO do arquivo commitado —
+ * nunca uma cópia à mão: é o corpus que carrega a evidência do alias.
+ */
+function clienteDoCorpus(file: string): {
+  readonly client: ShopeeClient;
+  readonly caminhos: string[];
+} {
+  const texto = readFileSync(join(WIRE_DIR, file), 'utf8');
+  const caminhos: string[] = [];
+  const transporte = vi.fn<typeof globalThis.fetch>((entrada) => {
+    const url =
+      typeof entrada === 'string' ? entrada : entrada instanceof URL ? entrada.href : entrada.url;
+    caminhos.push(new URL(url).pathname);
+    return Promise.resolve(
+      new Response(texto, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+  });
+  const client = createShopeeClient({
+    partnerId: 1000001,
+    partnerKey: 'chave-de-teste-nao-e-credencial',
+    hosts: resolveShopeeHosts({ sandbox: true }),
+    fetch: transporte,
+    shopId: 987654,
+    getAccessToken: () => Promise.resolve('access-inventado'),
+  });
+  return { client, caminhos };
+}
+
+/** [arquivo, caminho, chamada, o parse que o cliente tem de devolver INTEIRO]. */
+const CHAMADAS_DE_DEVOLUCAO: readonly (readonly [
+  (typeof CORPOS_DEVOLUCAO)[number],
+  string,
+  (c: ShopeeClient) => Promise<unknown>,
+  (corpo: unknown) => unknown,
+])[] = [
+  [
+    FIXTURE_RETURN_LIST_DOC,
+    SHOPEE_GET_RETURN_LIST_PATH,
+    (c) => c.getReturnList({ pageNo: 0, pageSize: 10 }),
+    () => lerListaDeDevolucoes(FIXTURE_RETURN_LIST_DOC),
+  ],
+  [
+    FIXTURE_RETURN_DETAIL_DOC,
+    SHOPEE_GET_RETURN_DETAIL_PATH,
+    (c) => c.getReturnDetail({ returnSn: '260910ABCDE0001' }),
+    () => lerDevolucaoDetalhe(FIXTURE_RETURN_DETAIL_DOC),
+  ],
+  [
+    FIXTURE_RETURN_AVAILABLE_SOLUTIONS_DOC,
+    SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+    (c) => c.getReturnAvailableSolutions({ returnSn: '2609100000000002' }),
+    (corpo) => shopeeReturnAvailableSolutionsSchema.parse(corpo),
+  ],
+  [
+    FIXTURE_RETURN_CONFIRM_DOC,
+    SHOPEE_RETURN_CONFIRM_PATH,
+    (c) => c.confirmReturn({ returnSn: '2609100000000001' }),
+    (corpo) => shopeeReturnWriteSchema.parse(corpo),
+  ],
+  [
+    FIXTURE_RETURN_OFFER_DOC,
+    SHOPEE_RETURN_OFFER_PATH,
+    (c) =>
+      c.offerReturn({
+        returnSn: '2609100000000002',
+        proposedSolution: SHOPEE_RETURN_SOLUTION.soReembolso,
+      }),
+    (corpo) => shopeeReturnWriteSchema.parse(corpo),
+  ],
+  [
+    FIXTURE_RETURN_ACCEPT_OFFER_DOC,
+    SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+    (c) => c.acceptReturnOffer({ returnSn: '2609100000000002' }),
+    (corpo) => shopeeReturnWriteSchema.parse(corpo),
+  ],
+];
+
+describe('as devoluções pelo CLIENTE do pacote, com o corpo commitado no fio', () => {
+  it('cobre as seis operações, uma vez cada', () => {
+    // Âncora anti-vacuidade do `it.each` abaixo.
+    expect(CHAMADAS_DE_DEVOLUCAO.map(([file]) => file).sort()).toEqual(
+      [...CORPOS_DEVOLUCAO].sort(),
+    );
+  });
+
+  it.each(CHAMADAS_DE_DEVOLUCAO)(
+    '%s RESOLVE pelo transporte de verdade — só porque a operação carrega o alias',
+    async (file, caminho, chamar, parse) => {
+      // ⚠️ O `error` deste corpo é `"-"` ou `" "`, e `shopeeCall` só aceita `''`
+      // como sucesso sem alias: tirar `SHOPEE_RETURNS_ERROR_ALIASES` de qualquer
+      // uma das seis faz ESTA linha rejeitar com `ShopeeApiError`.
+      const { client, caminhos } = clienteDoCorpus(file);
+      const resposta = await chamar(client);
+      expect(caminhos).toEqual([caminho]);
+      // O envelope INTEIRO (R-17), não só `response`: o `error` da página volta
+      // como VALOR — é o instrumento do registro 231.
+      expect(resposta).toEqual(parse(lerFixture(file)));
+      expect((resposta as { error: unknown }).error).toBe(ERRO_DA_PAGINA[file]);
+    },
+  );
 });

@@ -38,6 +38,9 @@ import {
   type ShopeeParametroDeDocumento,
   type ShopeePromocaoDeItem,
   type ShopeeResultadoDeDocumento,
+  type ShopeeReturnAvailableSolutions,
+  type ShopeeReturnDetail,
+  type ShopeeReturnListRow,
   type ShopeeSearchPackageList,
   type ShopeeSearchPackageRow,
   type ShopeeShippingParameter,
@@ -88,6 +91,12 @@ import {
   shopeePromocaoDeItemSchema,
   shopeeResultadoDeDocumentoPaginaSchema,
   shopeeResultadoDeDocumentoSchema,
+  shopeeReturnAvailableSolutionsSchema,
+  shopeeReturnDetailBodySchema,
+  shopeeReturnDetailSchema,
+  shopeeReturnListRowSchema,
+  shopeeReturnListSchema,
+  shopeeReturnWriteSchema,
   shopeeSearchPackageListPayloadSchema,
   shopeeSearchPackageListSchema,
   shopeeSearchPackageRowSchema,
@@ -115,6 +124,7 @@ import {
 } from '../src/types';
 import { ShopeeConfigError } from '../src/errors';
 import { assertShipOrderParams, type ShipOrderParams } from '../src/logistica';
+import { SHOPEE_RETURN_SOLUTION, normalizarSolucaoDeDevolucao } from '../src/devolucoes';
 import { z } from 'zod';
 
 const SHOP_INFO = {
@@ -3421,17 +3431,26 @@ describe('as escritas de anúncio (passo 11)', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * O trecho do passo 12 — a seção de estoque, do marcador dela até o fim do
- * arquivo, MAIS o bloco de limites, que fica lá em cima junto com os outros
- * limites de fio.
+ * O trecho do passo 12 — a seção de estoque, do marcador dela até a seção das
+ * devoluções (passo 17), MAIS o bloco de limites, que fica lá em cima junto com
+ * os outros limites de fio.
  *
  * ⚠️ São DOIS recortes porque o passo 12 declara em dois lugares de propósito:
  * os limites moram todos no mesmo bloco (um limite solto perto do schema que o
  * usa é como se perde a conta de quais existem), e os schemas moram no fim.
  * Colá-los aqui é o que deixa uma asserção falar do passo inteiro sem varrer o
  * passo 11 junto.
+ *
+ * ⚠️ O recorte de estoque PARA nas devoluções. Antes ia até o fim do arquivo, e
+ * o "nenhum `z.number()` cru" do teste 20 cobria o passo 17 por tabela — até a
+ * união CRUA de `return_solution` (#1525 R3-1), que é deliberada e tem o seu
+ * PRÓPRIO pino de fonte, com a linha nomeada (o describe "`return_solution` do
+ * fio até a dobra"). Os passos 13–15b continuam aqui dentro.
  */
-const SECAO_ESTOQUE_12 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The stock sync (step 12)'));
+const SECAO_ESTOQUE_12 = FONTE_TYPES.slice(
+  FONTE_TYPES.indexOf('The stock sync (step 12)'),
+  FONTE_TYPES.indexOf('Returns (step 17)'),
+);
 const SECAO_LIMITES_12 = FONTE_TYPES.slice(
   FONTE_TYPES.indexOf('the stock bounds (step 12)'),
   FONTE_TYPES.indexOf('the envelope-only writes'),
@@ -3947,8 +3966,8 @@ describe('a sincronização de estoque (passo 12)', () => {
 
 /**
  * O bloco de `update_price` na FONTE — do marcador dele até o `get_item_promotion`
- * seguinte. Ele mora DENTRO de {@link SECAO_ESTOQUE_12} (que vai até o fim do
- * arquivo), então o invariante "nenhum `z.number()` cru" do passo 12 já o cobre;
+ * seguinte. Ele mora DENTRO de {@link SECAO_ESTOQUE_12} (que vai até a seção
+ * das devoluções), então o invariante "nenhum `z.number()` cru" do passo 12 já o cobre;
  * este recorte é o que deixa uma asserção falar SÓ do passo 13.
  */
 const INICIO_PRECO_13 = FONTE_TYPES.indexOf('update_price (step 13)');
@@ -5245,5 +5264,825 @@ describe('a busca de pacotes (search_package_list, passo 15b)', () => {
     expect(linhas).toHaveLength(1);
     // @ts-expect-error — `pagination` é anulável: ler `more` exige estreitar antes.
     expect(pagina.pagination.more).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                        As devoluções (passo 17, #1525)                     */
+/* -------------------------------------------------------------------------- */
+
+/** Ids de fixture — o `return_sn` ALFANUMÉRICO é o formato das amostras da doc. */
+const DEV_RETURN_SN = '260910ABCDE0001';
+const DEV_RETURN_SN_DIGITOS = '2609100000000001';
+const DEV_ORDER_SN = '260910KJBHUJDM';
+/** 2026-09-10T00:00:00Z, em SEGUNDOS. */
+const DEV_T0 = 1_788_998_400;
+const DEV_DIA = 86_400;
+
+/**
+ * Os valores de COMPRADOR dos corpos de exemplo — SINTÉTICOS, cada um único,
+ * para que a varredura por VALOR (T-PII-2) prove que nenhum sobrevive nem sob
+ * outra chave. Os corpos têm a FORMA das amostras da doc (`api
+ * v2.returns.get_return_detail` / `get_return_list`), nunca os seus valores.
+ */
+const COMPRADOR = {
+  foto: 'https://exemplo.invalid/foto-do-comprador.jpg',
+  miniaturaDoVideo: 'https://exemplo.invalid/miniatura-do-comprador.jpg',
+  video: 'https://exemplo.invalid/video-do-comprador.mp4',
+  textoLivre: 'texto livre do comprador',
+  rastreioReverso: 'RASTREIO-REVERSO-DE-TESTE',
+  textoDaDisputa: 'texto da disputa de teste',
+  usuario: 'usuario-comprador-de-teste',
+  email: '********te@exemplo.invalid',
+  retrato: 'https://exemplo.invalid/retrato-do-comprador.jpg',
+  nomeDoItem: 'nome do item de teste',
+  fotoDoItem: 'https://exemplo.invalid/foto-do-item.jpg',
+  endereco: 'Rua Ficticia de Teste, 0',
+  nome: 'Nome Ficticio De Teste',
+  telefone: '5500000000000',
+  bairro: 'Bairro Ficticio',
+  cidade: 'Cidade Ficticia',
+  cep: '00000-000',
+  contatoVirtual: '0900000000',
+  consultaDePacote: '99990000',
+  criadorDaOferta: 'criador-da-oferta-de-teste',
+} as const;
+
+/** As chaves de comprador (e as não lidas) que NÃO podem existir na saída de um parse de devolução. */
+const CHAVES_PROIBIDAS = [
+  'user',
+  'username',
+  'email',
+  'portrait',
+  'return_pickup_address',
+  'address',
+  'phone',
+  'zipcode',
+  'image',
+  'images',
+  'buyer_videos',
+  'video_url',
+  'thumbnail_url',
+  'text_reason',
+  'dispute_text_reason',
+  'tracking_number',
+  'virtual_contact_number',
+  'package_query_number',
+  'latest_offer_creator',
+  'name',
+  'item',
+  'activity',
+  'dispute_reason',
+  'compensation_amount_list',
+  'needs_logistics',
+  'follow_up_action_list',
+  'return_address',
+  'reverse_logistic_channel_name',
+  'reverse_logistic_status',
+] as const;
+
+/** Toda chave de todo objeto, em qualquer profundidade. */
+function todasAsChaves(v: unknown, acc: Set<string> = new Set()): Set<string> {
+  if (Array.isArray(v)) {
+    for (const x of v) todasAsChaves(x, acc);
+  } else if (typeof v === 'object' && v !== null) {
+    for (const [k, x] of Object.entries(v)) {
+      acc.add(k);
+      todasAsChaves(x, acc);
+    }
+  }
+  return acc;
+}
+
+/** O que a carga do detalhe e a linha da lista COMPARTILHAM — a lista de permitidos. */
+const CAMPOS_COMUNS_DA_DEVOLUCAO = [
+  'return_sn',
+  'order_sn',
+  'status',
+  'update_time',
+  'create_time',
+  'reason',
+  'reassessed_request_reason',
+  'return_solution',
+  'refund_amount',
+  'amount_before_discount',
+  'currency',
+  'due_date',
+  'return_ship_due_date',
+  'return_seller_due_date',
+  'return_refund_type',
+  'return_refund_request_type',
+  'validation_type',
+  'is_seller_arrange',
+];
+
+/** Um corpo de `get_return_detail` com a FORMA da amostra da doc — `extra` entra em `response`. */
+function corpoDetalheDevolucao(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    request_id: 'req-devolucao-1',
+    error: '-',
+    message: '-',
+    response: {
+      image: [COMPRADOR.foto],
+      buyer_videos: [{ thumbnail_url: COMPRADOR.miniaturaDoVideo, video_url: COMPRADOR.video }],
+      reason: 'NOT_RECEIPT',
+      text_reason: COMPRADOR.textoLivre,
+      reassessed_request_reason: 'NONE',
+      return_sn: DEV_RETURN_SN,
+      refund_amount: 13.97,
+      currency: 'BRL',
+      create_time: DEV_T0,
+      update_time: DEV_T0 + 3_600,
+      status: 'REQUESTED',
+      due_date: DEV_T0 + 2 * DEV_DIA,
+      tracking_number: COMPRADOR.rastreioReverso,
+      // ⚠️ O exemplo da doc imprime um NÚMERO nu num campo que a tabela tipa
+      // `string[]` — não declarado aqui, então não custa nada.
+      dispute_reason: 2,
+      dispute_text_reason: COMPRADOR.textoDaDisputa,
+      needs_logistics: false,
+      amount_before_discount: 13.99,
+      user: { username: COMPRADOR.usuario, email: COMPRADOR.email, portrait: COMPRADOR.retrato },
+      item: [
+        {
+          model_id: 2000458802,
+          name: COMPRADOR.nomeDoItem,
+          images: [COMPRADOR.fotoDoItem],
+          amount: 1,
+          item_price: 10,
+          is_add_on_deal: false,
+          is_main_item: false,
+          add_on_deal_id: 0,
+          item_id: 2500139861,
+          item_sku: 'SKU-DE-TESTE',
+          variation_sku: 'VARIACAO-DE-TESTE',
+          refund_amount: 12.34,
+        },
+      ],
+      order_sn: DEV_ORDER_SN,
+      return_ship_due_date: DEV_T0 + 7 * DEV_DIA,
+      return_seller_due_date: DEV_T0 + 3 * DEV_DIA,
+      activity: [
+        {
+          activity_id: 123456789,
+          activity_type: 'BUNDLE',
+          original_price: '12.34',
+          discounted_price: '12.34',
+          items: [
+            {
+              item_id: 2500139861,
+              variation_id: 2000458802,
+              quantity_purchased: 2,
+              original_price: '12.34',
+            },
+          ],
+          refund_amount: 12.34,
+        },
+      ],
+      seller_proof: {
+        seller_proof_status: 'PENDING',
+        seller_evidence_deadline: DEV_T0 + 4 * DEV_DIA,
+      },
+      seller_compensation: {
+        seller_compensation_status: 'PENDING_REQUEST',
+        seller_compensation_due_date: DEV_T0 + 5 * DEV_DIA,
+        compensation_amount: 100,
+        compensation_amount_list: { compensation_type: 'TIPO-DE-TESTE', compensation_amount: 1 },
+      },
+      negotiation: {
+        negotiation_status: 'PENDING_RESPOND',
+        latest_solution: 'RETURN_REFUND',
+        latest_offer_amount: 12.34,
+        latest_offer_creator: COMPRADOR.criadorDaOferta,
+        counter_limit: 0,
+        offer_due_date: DEV_T0 + 6 * DEV_DIA,
+      },
+      logistics_status: 'LOGISTICS_REQUEST_CREATED',
+      // A grafia da AMOSTRA (sem `s`) — a da tabela está ausente neste corpo.
+      reverse_logistic_status: 'LOGISTICS_PICKUP_DONE',
+      return_pickup_address: {
+        address: COMPRADOR.endereco,
+        name: COMPRADOR.nome,
+        phone: COMPRADOR.telefone,
+        town: COMPRADOR.bairro,
+        district: COMPRADOR.bairro,
+        city: COMPRADOR.cidade,
+        state: 'Estado Ficticio',
+        region: 'BR',
+        zipcode: COMPRADOR.cep,
+      },
+      virtual_contact_number: COMPRADOR.contatoVirtual,
+      package_query_number: COMPRADOR.consultaDePacote,
+      return_address: { whs_id: 'ARMAZEM-DE-TESTE' },
+      return_refund_type: 'RRBOC',
+      return_solution: 0,
+      is_seller_arrange: true,
+      is_shipping_proof_mandatory: true,
+      has_uploaded_shipping_proof: false,
+      is_reverse_logistics_channel_integrated: false,
+      reverse_logistic_channel_name: 'canal-reverso-de-teste',
+      return_refund_request_type: 0,
+      validation_type: 'seller_validation',
+      is_arrived_at_warehouse: 3,
+      follow_up_action_list: [
+        {
+          item_id: 2500139861,
+          model_id: 2000458802,
+          qty: 2,
+          current_status: 2,
+          related_order_sn_list: [],
+          resell_failed_next_step: '',
+        },
+      ],
+      ...extra,
+    },
+  };
+}
+
+/** O que o parse do corpo acima DEVE devolver em `response` — campo a campo, nada a mais. */
+const DETALHE_DEVOLUCAO_ESPERADO: ShopeeReturnDetail = {
+  return_sn: DEV_RETURN_SN,
+  order_sn: DEV_ORDER_SN,
+  status: 'REQUESTED',
+  update_time: DEV_T0 + 3_600,
+  create_time: DEV_T0,
+  reason: 'NOT_RECEIPT',
+  reassessed_request_reason: 'NONE',
+  return_solution: 0,
+  refund_amount: 13.97,
+  amount_before_discount: 13.99,
+  currency: 'BRL',
+  due_date: DEV_T0 + 2 * DEV_DIA,
+  return_ship_due_date: DEV_T0 + 7 * DEV_DIA,
+  return_seller_due_date: DEV_T0 + 3 * DEV_DIA,
+  return_refund_type: 'RRBOC',
+  return_refund_request_type: 0,
+  validation_type: 'seller_validation',
+  is_seller_arrange: true,
+  logistics_status: 'LOGISTICS_REQUEST_CREATED',
+  reverse_logistics_status: 'LOGISTICS_PICKUP_DONE',
+  seller_proof: { seller_proof_status: 'PENDING', seller_evidence_deadline: DEV_T0 + 4 * DEV_DIA },
+  seller_compensation: {
+    seller_compensation_status: 'PENDING_REQUEST',
+    seller_compensation_due_date: DEV_T0 + 5 * DEV_DIA,
+    compensation_amount: 100,
+  },
+  negotiation: {
+    negotiation_status: 'PENDING_RESPOND',
+    latest_solution: 'RETURN_REFUND',
+    latest_offer_amount: 12.34,
+    counter_limit: 0,
+    offer_due_date: DEV_T0 + 6 * DEV_DIA,
+  },
+};
+
+/** Uma linha de `get_return_list` com a FORMA da amostra da doc. */
+function linhaDaListaDeDevolucoes(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    image: [COMPRADOR.foto],
+    reason: 'PHYSICAL_DMG',
+    text_reason: COMPRADOR.textoLivre,
+    return_sn: DEV_RETURN_SN,
+    refund_amount: 1409,
+    currency: 'BRL',
+    create_time: DEV_T0,
+    update_time: DEV_T0 + 600,
+    status: 'CANCELLED',
+    due_date: DEV_T0 + DEV_DIA,
+    tracking_number: COMPRADOR.rastreioReverso,
+    dispute_reason: ['UNKNOWN'],
+    dispute_text_reason: [COMPRADOR.textoDaDisputa],
+    needs_logistics: true,
+    amount_before_discount: 1409,
+    user: { username: COMPRADOR.usuario, email: COMPRADOR.email, portrait: COMPRADOR.retrato },
+    item: [
+      {
+        model_id: 0,
+        name: COMPRADOR.nomeDoItem,
+        images: [COMPRADOR.fotoDoItem],
+        amount: 1,
+        item_price: 1409.9,
+        item_id: 2500139861,
+        item_sku: 'SKU-DE-TESTE',
+        variation_sku: 'VARIACAO-DE-TESTE',
+      },
+    ],
+    order_sn: DEV_ORDER_SN,
+    return_ship_due_date: DEV_T0 + 2 * DEV_DIA,
+    return_seller_due_date: DEV_T0 + 2 * DEV_DIA,
+    negotiation_status: 'PENDING_RESPOND',
+    seller_proof_status: 'PENDING',
+    seller_compensation_status: 'PENDING_REQUEST',
+    return_refund_type: 'RRAOC',
+    return_solution: 0,
+    is_seller_arrange: false,
+    is_shipping_proof_mandatory: false,
+    return_refund_request_type: 0,
+    validation_type: 'seller_validation',
+    is_arrived_at_warehouse: 3,
+    follow_up_action_list: [
+      { item_id: 2500139861, model_id: 2000458802, qty: 2, current_status: 2 },
+    ],
+    ...extra,
+  };
+}
+
+const LINHA_DEVOLUCAO_ESPERADA: ShopeeReturnListRow = {
+  return_sn: DEV_RETURN_SN,
+  order_sn: DEV_ORDER_SN,
+  status: 'CANCELLED',
+  update_time: DEV_T0 + 600,
+  create_time: DEV_T0,
+  reason: 'PHYSICAL_DMG',
+  reassessed_request_reason: null,
+  return_solution: 0,
+  refund_amount: 1409,
+  amount_before_discount: 1409,
+  currency: 'BRL',
+  due_date: DEV_T0 + DEV_DIA,
+  return_ship_due_date: DEV_T0 + 2 * DEV_DIA,
+  return_seller_due_date: DEV_T0 + 2 * DEV_DIA,
+  return_refund_type: 'RRAOC',
+  return_refund_request_type: 0,
+  validation_type: 'seller_validation',
+  is_seller_arrange: false,
+  negotiation_status: 'PENDING_RESPOND',
+  seller_proof_status: 'PENDING',
+  seller_compensation_status: 'PENDING_REQUEST',
+};
+
+function corpoListaDeDevolucoes(
+  linhas: readonly unknown[],
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    request_id: 'req-lista-1',
+    error: '-',
+    message: '-',
+    response: { more: true, return: linhas, ...extra },
+  };
+}
+
+/** A carga do detalhe, ou falha o teste com os caminhos do Zod. */
+function cargaDoDetalhe(corpo: unknown): ShopeeReturnDetail {
+  return shopeeReturnDetailSchema.parse(corpo).response;
+}
+
+describe('as devoluções — o detalhe (get_return_detail, passo 17)', () => {
+  it('T-PII-1 — nenhuma chave de COMPRADOR sobrevive ao parse (varredura recursiva de chaves)', () => {
+    const chaves = todasAsChaves(cargaDoDetalhe(corpoDetalheDevolucao()));
+    for (const proibida of CHAVES_PROIBIDAS) {
+      expect(chaves.has(proibida), proibida).toBe(false);
+    }
+  });
+
+  it('T-PII-2 — nenhum VALOR de comprador sobrevive, sob chave nenhuma', () => {
+    const saida = JSON.stringify(shopeeReturnDetailSchema.parse(corpoDetalheDevolucao()));
+    for (const [rotulo, valor] of Object.entries(COMPRADOR)) {
+      expect(saida.includes(valor), rotulo).toBe(false);
+    }
+  });
+
+  it('T-PII-3 — padrão-NEGAR: uma chave NÃO declarada (raiz e cada sub-objeto) é descartada, não carregada', () => {
+    const intruso = { buyer_cpf_id: 'CPF-FICTICIO-DE-TESTE', user2: { email: COMPRADOR.email } };
+    const corpo = corpoDetalheDevolucao({
+      ...intruso,
+      seller_proof: { seller_proof_status: 'PENDING', seller_evidence_deadline: 1, ...intruso },
+      seller_compensation: { seller_compensation_status: 'PENDING_REQUEST', ...intruso },
+      negotiation: { negotiation_status: 'PENDING_RESPOND', ...intruso },
+    });
+    const carga = cargaDoDetalhe(corpo);
+    const chaves = todasAsChaves(carga);
+    expect(chaves.has('buyer_cpf_id')).toBe(false);
+    expect(chaves.has('user2')).toBe(false);
+    expect(JSON.stringify(carga)).not.toContain('CPF-FICTICIO-DE-TESTE');
+    // Os sub-objetos foram LIDOS (não viraram `null`) — só perderam o intruso.
+    expect(carga.seller_proof?.seller_proof_status).toBe('PENDING');
+    expect(carga.negotiation?.negotiation_status).toBe('PENDING_RESPOND');
+  });
+
+  it('T-PII-5 — quase-erro: TUDO o que está na lista de permitidos sobrevive, com o seu valor', () => {
+    // Mata o corte largo demais (um sub-objeto inteiro descartado "por
+    // segurança"): a saída é EXATAMENTE a lista de permitidos, nada a menos.
+    expect(cargaDoDetalhe(corpoDetalheDevolucao())).toStrictEqual(DETALHE_DEVOLUCAO_ESPERADO);
+  });
+
+  it('a lista de permitidos é EXATA — as chaves declaradas, e só elas', () => {
+    expect(Object.keys(shopeeReturnListRowSchema.shape).sort()).toEqual(
+      [
+        ...CAMPOS_COMUNS_DA_DEVOLUCAO,
+        'negotiation_status',
+        'seller_proof_status',
+        'seller_compensation_status',
+      ].sort(),
+    );
+    expect(Object.keys(shopeeReturnDetailBodySchema.out.shape).sort()).toEqual(
+      [
+        ...CAMPOS_COMUNS_DA_DEVOLUCAO,
+        'logistics_status',
+        'reverse_logistics_status',
+        'seller_proof',
+        'seller_compensation',
+        'negotiation',
+      ].sort(),
+    );
+  });
+
+  it.each(['return_sn', 'order_sn', 'status', 'update_time'])(
+    'os QUATRO obrigatórios: sem `%s` o detalhe FALHA inteiro, nomeando o campo',
+    (campo) => {
+      const corpo = corpoDetalheDevolucao();
+      delete (corpo.response as Record<string, unknown>)[campo];
+      const lido = shopeeReturnDetailSchema.safeParse(corpo);
+      expect(lido.success).toBe(false);
+      expect(lido.error?.issues.map((i) => i.path.join('.'))).toContain(`response.${campo}`);
+    },
+  );
+
+  it('`update_time` é a MARCA D’ÁGUA: `null` falha, nunca vira `null`; citado é lido como número', () => {
+    // ⚠️ Um detalhe sem relógio não pode ser ordenado contra outro: falha
+    // ALTO (`ShopeeSchemaError`) em vez de ser gravado sem guarda.
+    expect(
+      shopeeReturnDetailSchema.safeParse(corpoDetalheDevolucao({ update_time: null })).success,
+    ).toBe(false);
+    expect(cargaDoDetalhe(corpoDetalheDevolucao({ update_time: String(DEV_T0) })).update_time).toBe(
+      DEV_T0,
+    );
+  });
+
+  it('`status` é texto LIVRE: os sete documentados e um OITAVO parseiam verbatim; vazio falha', () => {
+    for (const status of [
+      'REQUESTED',
+      'ACCEPTED',
+      'CANCELLED',
+      'JUDGING',
+      'CLOSED',
+      'PROCESSING',
+      'SELLER_DISPUTE',
+      'UM_STATUS_NOVO',
+    ]) {
+      expect(cargaDoDetalhe(corpoDetalheDevolucao({ status })).status).toBe(status);
+    }
+    expect(shopeeReturnDetailSchema.safeParse(corpoDetalheDevolucao({ status: '' })).success).toBe(
+      false,
+    );
+  });
+
+  it('`return_sn`: o ALFANUMÉRICO passa; um NÚMERO JSON vira os seus dígitos; vazio falha', () => {
+    expect(cargaDoDetalhe(corpoDetalheDevolucao()).return_sn).toBe(DEV_RETURN_SN);
+    expect(
+      cargaDoDetalhe(corpoDetalheDevolucao({ return_sn: Number(DEV_RETURN_SN_DIGITOS) })).return_sn,
+    ).toBe(DEV_RETURN_SN_DIGITOS);
+    expect(
+      shopeeReturnDetailSchema.safeParse(corpoDetalheDevolucao({ return_sn: '' })).success,
+    ).toBe(false);
+  });
+
+  it('as duas grafias da logística reversa: a da AMOSTRA é lida; a da TABELA vence quando ambas vêm', () => {
+    // A base SEM nenhuma das duas grafias; `extra` diz quais vêm.
+    const ler = (extra: Record<string, unknown>) => {
+      const corpo = corpoDetalheDevolucao();
+      const resposta = corpo.response as Record<string, unknown>;
+      delete resposta.reverse_logistic_status;
+      return cargaDoDetalhe({ ...corpo, response: { ...resposta, ...extra } });
+    };
+    // Só a da amostra (sem `s`) — copiada para a da tabela.
+    expect(ler({ reverse_logistic_status: 'SEM_S' }).reverse_logistics_status).toBe('SEM_S');
+    // As duas — a da tabela vence.
+    expect(
+      ler({ reverse_logistic_status: 'SEM_S', reverse_logistics_status: 'COM_S' })
+        .reverse_logistics_status,
+    ).toBe('COM_S');
+    // Só a da tabela.
+    expect(ler({ reverse_logistics_status: 'COM_S' }).reverse_logistics_status).toBe('COM_S');
+    // ⚠️ A cópia acontece só quando a da tabela está AUSENTE: um `null` dela
+    // continua `null` — é um valor, não uma ausência.
+    expect(
+      ler({ reverse_logistic_status: 'SEM_S', reverse_logistics_status: null })
+        .reverse_logistics_status,
+    ).toBeNull();
+    // Nenhuma — `null`.
+    expect(ler({}).reverse_logistics_status).toBeNull();
+    // E a chave de origem nunca sobrevive.
+    expect(
+      todasAsChaves(ler({ reverse_logistic_status: 'SEM_S' })).has('reverse_logistic_status'),
+    ).toBe(false);
+  });
+
+  it('um sub-objeto À DERIVA vira `null` e não custa o detalhe — os irmãos continuam lidos', () => {
+    for (const [campo, deriva] of [
+      ['seller_compensation', 'lixo'],
+      ['seller_compensation', { compensation_amount: 'não é número' }],
+      ['seller_proof', { seller_evidence_deadline: 'amanhã' }],
+      ['seller_proof', 42],
+      ['negotiation', []],
+      ['negotiation', { counter_limit: 1, latest_offer_amount: { valor: 1 } }],
+    ] as const) {
+      const carga = cargaDoDetalhe(corpoDetalheDevolucao({ [campo]: deriva }));
+      expect(carga[campo], `${campo}: ${JSON.stringify(deriva)}`).toBeNull();
+      expect(carga.update_time).toBe(DEV_T0 + 3_600);
+      expect(carga.status).toBe('REQUESTED');
+    }
+    // `counter_limit` ilegível custa só o CAMPO (pega por campo), não a negociação.
+    const negociacao = cargaDoDetalhe(
+      corpoDetalheDevolucao({ negotiation: { negotiation_status: 'X', counter_limit: 'muitos' } }),
+    ).negotiation;
+    expect(negociacao?.negotiation_status).toBe('X');
+    expect(negociacao?.counter_limit).toBeNull();
+  });
+
+  it('um sub-objeto AUSENTE lê `null`', () => {
+    const corpo = corpoDetalheDevolucao();
+    const resposta = corpo.response as Record<string, unknown>;
+    delete resposta.seller_proof;
+    delete resposta.seller_compensation;
+    delete resposta.negotiation;
+    const carga = cargaDoDetalhe(corpo);
+    expect(carga.seller_proof).toBeNull();
+    expect(carga.seller_compensation).toBeNull();
+    expect(carga.negotiation).toBeNull();
+  });
+
+  it('`return_solution` é CRU: o int e a string passam VERBATIM — o int CITADO continua STRING; o resto vira `null`', () => {
+    const ler = (return_solution: unknown) =>
+      cargaDoDetalhe(corpoDetalheDevolucao({ return_solution })).return_solution;
+    expect(ler(0)).toBe(0);
+    expect(ler(1)).toBe(1);
+    // ⚠️ #1525 R3-1: NÃO `wireInt()`, que apara e converte. O citado chega como
+    // a Shopee o mandou, e quem decide o que ele quer dizer é a dobra
+    // (`normalizarSolucaoDeDevolucao`) — o describe "do fio até a dobra".
+    expect(ler('1')).toBe('1');
+    expect(ler(' 0')).toBe(' 0');
+    expect(ler('01')).toBe('01');
+    expect(ler('REFUND')).toBe('REFUND');
+    // Nem int nem string: `null`, nunca uma devolução recusada.
+    expect(ler(1.5)).toBeNull();
+    expect(ler({})).toBeNull();
+    expect(ler(null)).toBeNull();
+    const corpo = corpoDetalheDevolucao();
+    delete (corpo.response as Record<string, unknown>).return_solution;
+    expect(cargaDoDetalhe(corpo).return_solution).toBeNull();
+  });
+
+  it('as DUAS grafias de solução do mesmo detalhe (int no topo, string na negociação) leem igual pelo leitor único', () => {
+    const carga = cargaDoDetalhe(corpoDetalheDevolucao());
+    expect(normalizarSolucaoDeDevolucao(carga.return_solution)).toBe(
+      SHOPEE_RETURN_SOLUTION.devolucaoEReembolso,
+    );
+    expect(normalizarSolucaoDeDevolucao(carga.negotiation?.latest_solution)).toBe(
+      SHOPEE_RETURN_SOLUTION.devolucaoEReembolso,
+    );
+  });
+
+  it('um ZERO preenchido pela Shopee é mantido VERBATIM (o app lê `> 0` como presente); dinheiro citado é lido', () => {
+    const carga = cargaDoDetalhe(
+      corpoDetalheDevolucao({ due_date: 0, return_ship_due_date: 0, refund_amount: '13.97' }),
+    );
+    expect(carga.due_date).toBe(0);
+    expect(carga.return_ship_due_date).toBe(0);
+    expect(carga.refund_amount).toBe(13.97);
+  });
+
+  it('o que NÃO é declarado não custa o detalhe em nenhuma das suas formas (`dispute_reason` número, string, lista, lixo)', () => {
+    for (const dispute_reason of [2, 'UNKNOWN', ['UNKNOWN', 3], { x: 1 }]) {
+      const lido = shopeeReturnDetailSchema.safeParse(corpoDetalheDevolucao({ dispute_reason }));
+      expect(lido.success, JSON.stringify(dispute_reason)).toBe(true);
+      expect(todasAsChaves(lido.data).has('dispute_reason')).toBe(false);
+    }
+  });
+
+  it('o invólucro: o `error` `"-"` da amostra parseia como o TEXTO `"-"` — quem o lê como sucesso é o transporte', () => {
+    const lido = shopeeReturnDetailSchema.parse(corpoDetalheDevolucao());
+    expect(lido.error).toBe('-');
+    expect(lido.request_id).toBe('req-devolucao-1');
+    expect(lido.warning).toBeNull();
+  });
+
+  it('TIPADO: a carga não tem `user` — e `update_time` é `number`, nunca anulável', () => {
+    const carga: ShopeeReturnDetail = cargaDoDetalhe(corpoDetalheDevolucao());
+    const relogio: number = carga.update_time;
+    expect(relogio).toBe(DEV_T0 + 3_600);
+    // @ts-expect-error — `user` NÃO está na lista de permitidos.
+    expect(carga.user).toBeUndefined();
+  });
+});
+
+describe('as devoluções — a lista (get_return_list, passo 17)', () => {
+  it('T-PII-4 — a linha da lista: nenhuma chave nem valor de comprador sobrevive; o permitido sobrevive EXATO', () => {
+    const pagina = shopeeReturnListSchema.parse(
+      corpoListaDeDevolucoes([linhaDaListaDeDevolucoes({ buyer_cpf_id: 'CPF-FICTICIO-DE-TESTE' })]),
+    ).response;
+    const chaves = todasAsChaves(pagina);
+    for (const proibida of [...CHAVES_PROIBIDAS, 'buyer_cpf_id']) {
+      expect(chaves.has(proibida), proibida).toBe(false);
+    }
+    const texto = JSON.stringify(pagina);
+    for (const [rotulo, valor] of Object.entries(COMPRADOR)) {
+      expect(texto.includes(valor), rotulo).toBe(false);
+    }
+    expect(texto).not.toContain('CPF-FICTICIO-DE-TESTE');
+    expect(pagina.return).toStrictEqual([LINHA_DEVOLUCAO_ESPERADA]);
+    expect(pagina.more).toBe(true);
+  });
+
+  it('a página também DESCARTA uma chave desconhecida ao lado de `more`/`return`', () => {
+    const pagina = shopeeReturnListSchema.parse(
+      corpoListaDeDevolucoes([], { total_comprador: COMPRADOR.email }),
+    ).response;
+    expect(Object.keys(pagina).sort()).toEqual(['more', 'return']);
+  });
+
+  it.each(['return_sn', 'order_sn', 'status', 'update_time'])(
+    'uma linha sem `%s` vira a sentinela `null` — as irmãs sobrevivem e a PÁGINA não falha',
+    (campo) => {
+      const quebrada = linhaDaListaDeDevolucoes();
+      delete quebrada[campo];
+      const pagina = shopeeReturnListSchema.parse(
+        corpoListaDeDevolucoes([
+          linhaDaListaDeDevolucoes({ return_sn: DEV_RETURN_SN_DIGITOS }),
+          quebrada,
+          linhaDaListaDeDevolucoes(),
+        ]),
+      ).response;
+      expect(pagina.return).toHaveLength(3);
+      expect(pagina.return[0]?.return_sn).toBe(DEV_RETURN_SN_DIGITOS);
+      expect(pagina.return[1]).toBeNull();
+      expect(pagina.return[2]?.return_sn).toBe(DEV_RETURN_SN);
+    },
+  );
+
+  it('`more` é OBRIGATÓRIO e ESTRITO — o único terminador do laço; `return` ausente lê `[]`', () => {
+    const semMore = { request_id: 'r', error: '-', message: '-', response: { return: [] } };
+    expect(shopeeReturnListSchema.safeParse(semMore).success).toBe(false);
+    expect(
+      shopeeReturnListSchema.safeParse(corpoListaDeDevolucoes([], { more: 'false' })).success,
+    ).toBe(false);
+    const semLinhas = shopeeReturnListSchema.parse({
+      error: '-',
+      response: { more: false },
+    }).response;
+    expect(semLinhas.return).toEqual([]);
+    expect(semLinhas.more).toBe(false);
+  });
+
+  it('TIPADO: a lista é `(linha | null)[]` — o chamador é obrigado a tratar a sentinela', () => {
+    const linhas: readonly (ShopeeReturnListRow | null)[] = shopeeReturnListSchema.parse(
+      corpoListaDeDevolucoes([linhaDaListaDeDevolucoes()]),
+    ).response.return;
+    // @ts-expect-error — a linha pode ser `null`: ler `status` exige estreitar antes.
+    expect(linhas[0].status).toBe('CANCELLED');
+  });
+});
+
+/**
+ * A dobra COMPOSTA — o schema e o leitor juntos, o caminho que a importação
+ * faz (#1525 R3-1). O teste do leitor ISOLADO (`devolucoes.test.ts`) não vê o
+ * que o schema já dobrou antes dele: com `wireInt()` no schema, `' 0'` chegava
+ * ao leitor como `0` e `'01'` como `1`, e a devolução era gravada e mostrada
+ * com uma solução que a Shopee nunca imprimiu. As duas metades, pelos DOIS
+ * schemas de leitura: o par que DEVE sair igual, e o quase-igual que DEVE
+ * continuar distinto (`null`).
+ */
+describe('as devoluções — `return_solution` do fio até a dobra (schema → leitor)', () => {
+  const pelaLista = (return_solution: unknown) =>
+    shopeeReturnListSchema.parse(
+      corpoListaDeDevolucoes([linhaDaListaDeDevolucoes({ return_solution })]),
+    ).response.return[0]?.return_solution;
+  const peloDetalhe = (return_solution: unknown) =>
+    cargaDoDetalhe(corpoDetalheDevolucao({ return_solution })).return_solution;
+
+  it.each([
+    [0, SHOPEE_RETURN_SOLUTION.devolucaoEReembolso],
+    ['0', SHOPEE_RETURN_SOLUTION.devolucaoEReembolso],
+    ['RETURN_REFUND', SHOPEE_RETURN_SOLUTION.devolucaoEReembolso],
+    [1, SHOPEE_RETURN_SOLUTION.soReembolso],
+    ['1', SHOPEE_RETURN_SOLUTION.soReembolso],
+    ['REFUND', SHOPEE_RETURN_SOLUTION.soReembolso],
+  ] as const)('IGUAL: %j lê %s pela lista E pelo detalhe', (bruto, esperado) => {
+    expect(normalizarSolucaoDeDevolucao(pelaLista(bruto))).toBe(esperado);
+    expect(normalizarSolucaoDeDevolucao(peloDetalhe(bruto))).toBe(esperado);
+  });
+
+  it.each([' 0', '0 ', '01', '0.0', '-0', '1.0', '+1', ' 1', '2', 2, -1, 1.5, 'refund'])(
+    '⛔ QUASE-IGUAL: %j não é solução nenhuma — `null` pela lista E pelo detalhe, nunca a mais próxima',
+    (bruto) => {
+      expect(normalizarSolucaoDeDevolucao(pelaLista(bruto))).toBeNull();
+      expect(normalizarSolucaoDeDevolucao(peloDetalhe(bruto))).toBeNull();
+      // A LINHA sobrevive: um `return_solution` ilegível custa o campo, nunca a devolução.
+      expect(cargaDoDetalhe(corpoDetalheDevolucao({ return_solution: bruto })).status).toBe(
+        'REQUESTED',
+      );
+    },
+  );
+
+  it('FONTE — a seção do passo 17 tem UM número cru, e é este: a união CRUA de `return_solution`', () => {
+    // ⚠️ O par do `integration-response-numbers-tolerant.test.js` (que pula toda
+    // linha `z.union([`) e do teste 20 do passo 12 (cujo recorte agora PARA
+    // aqui): a exceção é UMA linha, nomeada — não um buraco por onde um
+    // `z.number()` novo do passo 17 passaria calado.
+    const inicio = FONTE_TYPES.indexOf('Returns (step 17)');
+    const codigo = semComentarios(FONTE_TYPES.slice(inicio));
+    expect(
+      codigo
+        .split('\n')
+        .filter((linha) => /z\.number\(\)/.test(linha))
+        .map((linha) => linha.trim()),
+    ).toEqual(['return_solution: z.union([z.number().int(), z.string()]).nullable().catch(null),']);
+    // ÂNCORA: a seção foi achada, tem corpo e tem números tolerantes dentro.
+    expect(inicio).toBeGreaterThan(-1);
+    expect(codigo.length).toBeGreaterThan(1000);
+    expect(codigo).toContain('wireInt()');
+  });
+});
+
+describe('as devoluções — soluções disponíveis e as escritas (passo 17)', () => {
+  const SOLUCOES = {
+    request_id: 'req-solucoes-1',
+    error: ' ',
+    message: ' ',
+    response: {
+      return_sn: DEV_RETURN_SN,
+      offer_return_refund: {
+        eligibility: true,
+        refund_amount_adjustable: true,
+        max_refund_amount: 15.0,
+        min_refund_amount: 5.0,
+      },
+      offer_refund: {
+        eligibility: true,
+        refund_amount_adjustable: true,
+        max_refund_amount: 10.0,
+        min_refund_amount: 5.0,
+      },
+    },
+  };
+
+  it('a amostra de `get_available_solutions` parseia com os quatro campos de cada solução', () => {
+    const lido: ShopeeReturnAvailableSolutions =
+      shopeeReturnAvailableSolutionsSchema.parse(SOLUCOES).response;
+    expect(lido.return_sn).toBe(DEV_RETURN_SN);
+    expect(lido.offer_return_refund).toEqual({
+      eligibility: true,
+      refund_amount_adjustable: true,
+      max_refund_amount: 15,
+      min_refund_amount: 5,
+    });
+    expect(lido.offer_refund?.max_refund_amount).toBe(10);
+  });
+
+  it('uma solução À DERIVA vira `null` (não ofertável) e a irmã continua lida; min/max ausentes leem `null`', () => {
+    const lido = shopeeReturnAvailableSolutionsSchema.parse({
+      ...SOLUCOES,
+      response: {
+        ...SOLUCOES.response,
+        offer_refund: 'lixo',
+        offer_return_refund: { eligibility: true, refund_amount_adjustable: false },
+      },
+    }).response;
+    expect(lido.offer_refund).toBeNull();
+    expect(lido.offer_return_refund?.eligibility).toBe(true);
+    expect(lido.offer_return_refund?.max_refund_amount).toBeNull();
+    expect(lido.offer_return_refund?.min_refund_amount).toBeNull();
+  });
+
+  it('`.passthrough()` aqui, de propósito: esta página não traz comprador, e o padrão do módulo vale', () => {
+    const lido = shopeeReturnAvailableSolutionsSchema.parse({
+      ...SOLUCOES,
+      response: { ...SOLUCOES.response, campo_novo: 1 },
+    }).response;
+    expect((lido as Record<string, unknown>).campo_novo).toBe(1);
+  });
+
+  it('a escrita: a amostra (`error: " "`, `response.return_sn`) parseia; o eco NÃO é obrigatório', () => {
+    const lido = shopeeReturnWriteSchema.parse({
+      request_id: 'req-escrita-1',
+      error: ' ',
+      message: ' ',
+      response: { return_sn: DEV_RETURN_SN },
+    });
+    expect(lido.error).toBe(' ');
+    expect(lido.response.return_sn).toBe(DEV_RETURN_SN);
+    expect(lido.response.msg).toBeNull();
+    expect(
+      shopeeReturnWriteSchema.parse({ error: ' ', response: {} }).response.return_sn,
+    ).toBeNull();
+  });
+
+  it('a escrita SEM `response` FALHA — é a metade "response presente" do alias `" "`', () => {
+    // ⚠️ Um `{error: " "}` sem `response` passa o estágio 1 com o alias e
+    // MORRE aqui, no estágio 2, como `ShopeeSchemaError` — nunca um sucesso.
+    for (const corpo of [
+      { error: ' ', message: ' ' },
+      { error: ' ', message: ' ', response: null },
+      { error: ' ', message: ' ', response: 'ok' },
+    ]) {
+      const lido = shopeeReturnWriteSchema.safeParse(corpo);
+      expect(lido.success, JSON.stringify(corpo)).toBe(false);
+      expect(lido.error?.issues.map((i) => i.path.join('.'))).toContain('response');
+    }
+    // E o mesmo vale para as duas leituras com alias.
+    expect(shopeeReturnDetailSchema.safeParse({ error: '-', message: '-' }).success).toBe(false);
+    expect(shopeeReturnListSchema.safeParse({ error: '-', message: '-' }).success).toBe(false);
+    expect(shopeeReturnAvailableSolutionsSchema.safeParse({ error: ' ' }).success).toBe(false);
   });
 });

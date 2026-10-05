@@ -11,10 +11,12 @@
  * OPERATION. The first is about the VALUE:
  * {@link ShopeeCallParams.emptyErrorAliases}. Three pages — the two on the
  * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
- * others print `""`, and the alias exists so those three operations can read it
- * as success. It is never a global widening: the default stays exact equality
- * with `''`, the opt-in is per CALL SITE — three of them, over TWO constants —
- * and a `' '` is a failure everywhere, aliases included.
+ * others print `""`, and the six `v2.returns.*` pages of step 17 print `"-"` or
+ * `" "` (one SPACE); the alias exists so those nine operations can read it as
+ * success. It is never a global widening: the default stays exact equality
+ * with `''`, the opt-in is per CALL SITE — nine of them, over THREE constants —
+ * and a `' '` is a failure everywhere except the six returns call sites, the
+ * only ones whose constant (`SHOPEE_RETURNS_ERROR_ALIASES`) names it.
  *
  * ⚠️ The second is about the KEY: {@link ShopeeCallParams.erroAusenteEhSucesso},
  * ONE call site (`get_item_violation_info`), whose SUCCESS body omits `error`
@@ -175,40 +177,49 @@ interface ShopeeCallBase<S extends z.ZodType> {
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
    *
-   * ⚠️ Exactly THREE call sites over TWO `['-']` constants — the two lost-push
-   * pages (`get_lost_push_message`, `confirm_consumed_lost_push_message`) SHARE
-   * `SHOPEE_LOST_PUSH_ERROR_ALIASES`, and `v2.order.get_package_detail` (step 7)
-   * carries its own `SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES` — and every one of
-   * them is here because the page CONTRADICTS ITSELF: its
+   * ⚠️ Exactly NINE call sites over THREE constants — the two lost-push pages
+   * (`get_lost_push_message`, `confirm_consumed_lost_push_message`) SHARE
+   * `SHOPEE_LOST_PUSH_ERROR_ALIASES` (`['-']`), `v2.order.get_package_detail`
+   * (step 7) carries its own `SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES` (`['-']`),
+   * and the six `v2.returns.*` operations (step 17) share
+   * `SHOPEE_RETURNS_ERROR_ALIASES` (`[' ', '-']`, `devolucoes.ts`) — and every
+   * one of them is here because the page CONTRADICTS ITSELF: its
    * parameter table samples `error` as `""` ("Empty if no error happened") while
-   * its rendered response sample prints `"-"` for `error`, `message` AND
-   * `warning`. Other cached pages, `get_app_push_config` and `get_order_detail`
-   * included, sample `""` — so the tolerance is opt-in per CALL SITE because the
+   * its rendered response sample prints `"-"` (or, on four returns pages, `" "`)
+   * for `error`, `message` AND `warning`. Other cached pages,
+   * `get_app_push_config` and `get_order_detail` included, sample `""` — so the
+   * tolerance is opt-in per CALL SITE because the
    * contradiction is per PAGE: the order op carries a SECOND constant rather
    * than reusing a lost-push-named one, while the two lost-push pages share
-   * theirs because they are one queue, one page family, one observation.
-   * ⚠️ That sharing is the edit hazard: narrowing ONE of those two pages means
-   * splitting the constant first, or the other page moves with it. The sandbox
-   * cannot exercise the two push APIs, so their first
-   * call is PRODUCTION; `get_package_detail` is rehearsable on the sandbox shop.
+   * theirs because they are one queue, one page family, one observation — the
+   * argument the six returns pages reuse for the THIRD.
+   * ⚠️ That sharing is the edit hazard: narrowing ONE of the pages that share a
+   * constant means splitting it first, or the others move with it (register
+   * 231 narrows the returns one). The sandbox cannot exercise the two push APIs
+   * nor the returns module, so their first call is PRODUCTION;
+   * `get_package_detail` is rehearsable on the sandbox shop.
    *
    * ⚠️ EXACT equality against each alias — never a trim, never a
-   * `.length === 0` fold. `' '` stays a failure on these operations too, and a
-   * test pins it. `-` appears on no documented error list anywhere (Shopee's are
-   * `error_data`, `error_param`, `error_server`, …), so the alias cannot mask a
-   * real code.
+   * `.length === 0` fold. `' '` stays a failure on every operation whose
+   * constant does not NAME it (the lost-push pair, `get_package_detail`, every
+   * other page), and a test pins it; on the returns operations `'  '`, `'\t'`
+   * and `' -'` stay failures. Neither `-` nor `' '` appears on any documented
+   * error list (Shopee's are `error_data`, `error_param`, `error_server`, …), so
+   * the alias cannot mask a real code — and every returns schema REQUIRES
+   * `response`, so a `' '` that meant failure still dies at stage 2.
    *
    * ⚠️ Cost of guessing wrong, in both directions: with the alias, a `-` that
    * really meant failure surfaces as a `ShopeeSchemaError` on the wrapped getter
    * (a failing body carries no `response`) or as duplicate work on the ack —
    * never as a loss. Without it, a live `-` would make the sweep throw on its
    * first production call and stay dead until a code change ships, with a 3-day
-   * expiry clock running.
+   * expiry clock running. (The returns constant's own cost is written on it.)
    *
    * ⚠️ `warning: "-"` is NOT filtered here: no config in this repo sets
    * `onWarning` today (grepped 2026-09-14 — `apps/shopee` wires none), and if one
-   * ever does it will see `-` as noise on these three operations,
+   * ever does it will see `-` as noise on the three `['-']` operations,
    * `get_package_detail` included: that page samples `"warning": "-"` as well.
+   * (No returns sample prints a `warning` at all.)
    */
   readonly emptyErrorAliases?: readonly string[];
   /**
@@ -501,6 +512,40 @@ async function enviarRequisicao(
 }
 
 /**
+ * Read a response BODY, turning a connection that dies mid-body into the same
+ * {@link ShopeeNetworkError} a failed `fetch` becomes — for BOTH entry points.
+ *
+ * ⚠️ Wrapping only `fetch` ({@link enviarRequisicao}) is not enough: the headers
+ * can arrive and the socket still drop while the body streams, and `text()` /
+ * `arrayBuffer()` then reject with a bare `TypeError` ("terminated" in Node).
+ * Unwrapped, that escaped every classifier above the package: a route answered
+ * a bare 500 for a WRITE that may already have landed at Shopee, and the panel
+ * said "try again" (#1525 review R4 F1). The same idiom as #1749's `lerCorpo`
+ * in `apps/web/lib/shopee/client.ts`, raising this layer's own class.
+ *
+ * ⚠️ The message names the PATH and says the request WENT OUT, never
+ * `err.message` — the same rule as the fetch boundary; the `TypeError` rides as
+ * `cause`. Any other rejection is not a transport failure and rethrows as
+ * itself. The package sets no `AbortSignal` (`ShopeeTransport` carries none),
+ * so a mid-body abort cannot reach here today; a deadline added to the
+ * transport (#1094) has to decide its class at BOTH reads, because the fetch
+ * boundary wraps every rejection and this one only the `TypeError`.
+ */
+async function lerCorpo<T>(path: string, ler: () => Promise<T>): Promise<T> {
+  try {
+    return await ler();
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new ShopeeNetworkError(
+        `Falha de rede ao ler a resposta da Shopee em ${path} — a requisição foi enviada e o resultado é desconhecido.`,
+        err,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * A bare 429 whose body is not an envelope — the same error from both entry
  * points, so the two cannot drift apart.
  */
@@ -527,7 +572,7 @@ export async function shopeeCall<S extends z.ZodType>(
 ): Promise<z.infer<S>> {
   const res = await enviarRequisicao(transport, p, 'application/json');
 
-  const text = await res.text();
+  const text = await lerCorpo(p.path, () => res.text());
   const sensitive = p.sensitive === true;
   const retryAfterSeconds = parseRetryAfter(res);
 
@@ -602,7 +647,7 @@ export async function shopeeCall<S extends z.ZodType>(
 
   // ⚠️ EXACT equality with the empty string, and EXACT equality with each alias.
   // `' '` is a failure — trimming here, on either side, would read a padded
-  // value as a success. See `emptyErrorAliases` for the three operations that
+  // value as a success. See `emptyErrorAliases` for the nine operations that
   // carry one and why the tolerance is per operation.
   const sucesso = envelope.error === '' || (p.emptyErrorAliases?.includes(envelope.error) ?? false);
   if (!sucesso) {
@@ -729,7 +774,7 @@ function logarArquivoRecusado(
  * | # | condition | outcome |
  * |---|---|---|
  * | 0 | request | `Accept: SHOPEE_ARQUIVO_ACCEPT`; a JSON body as in {@link shopeeCall} |
- * | 1 | read | `arrayBuffer()` — NEVER `text()` |
+ * | 1 | read | `arrayBuffer()` — NEVER `text()`; a mid-body drop is `ShopeeNetworkError` ({@link lerCorpo}) |
  * | 2 | 0 bytes, HTTP 429 | `ShopeeRateLimitError`, kind `burst` |
  * | 3 | 0 bytes, `!res.ok` | `ShopeeHttpError` |
  * | 4 | 0 bytes, 2xx | `ShopeeArquivoVazioError` |
@@ -759,7 +804,7 @@ export async function shopeeCallArquivo(
   // ⚠️ `arrayBuffer()`, never `text()`: decoding a PDF as UTF-8 replaces every
   // invalid sequence — its binary marker line is one — with U+FFFD, and the
   // file that comes out is not the file Shopee sent. A test pins it byte-equal.
-  const bytes = new Uint8Array(await res.arrayBuffer());
+  const bytes = new Uint8Array(await lerCorpo(p.path, () => res.arrayBuffer()));
   const httpStatus = res.status;
   const contentType = res.headers.get('content-type');
   const retryAfterSeconds = parseRetryAfter(res);

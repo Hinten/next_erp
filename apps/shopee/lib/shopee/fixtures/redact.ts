@@ -38,6 +38,11 @@
  *      `full_address`). It carries no personal data by construction.
  *
  *    Both also keep the fixpoint trivially: they map to themselves.
+ *
+ *    ⚠️ **ONE exception to the masked exit, and it is narrow**: a leaf under a
+ *    segment of {@link REDACTED_SUBTREES_SEM_EXCECAO} — the buyer blocks of a
+ *    RETURN (step 17, #1525) — is replaced even when Shopee masked it. The empty
+ *    exit still holds there. The order recipient keeps the masked exit untouched.
  */
 
 export type WireValue =
@@ -57,7 +62,9 @@ export type WireValue =
  * semantics, so `['payment_info', 'transaction_id']` matches nothing at all when
  * `payment_info` is a `z.array(...)`. Every entry below whose parent is an
  * object (`recipient_address`, `invoice_data`, `image_info`) is correct without
- * one; `payment_info` is the array, and carries the index.
+ * one; `payment_info` is the array, and carries the index — and so do step 17's
+ * `image`, `images`, the list form of `dispute_text_reason` and the list's
+ * `return` rows.
  *
  * ⚠️ **Suffixes, not bare key names, and that distinction is the whole design.**
  * `name` is `recipient_address.name` (a person) and it is also the neighbour of
@@ -146,6 +153,36 @@ export const REDACTED_PATH_SUFFIXES: readonly (readonly string[])[] = [
   // — a product image URL carries the shop and the listing, and image hosts log
   //   fetches; nothing offline needs the real one.
   ['image_info', 'image_url'],
+
+  // — a RETURN (step 17, #1525): the buyer's evidence, the buyer's prose and the
+  //   reverse parcel, on `get_return_detail` and `get_return_list`. The buyer's
+  //   identity and pickup address are whole SUBTREES, below. ⚠️ `image` and
+  //   `images` are `string[]` on the wire, so each carries the `*` the walker
+  //   pushes for an array level — the `payment_info` lesson above.
+  ['image', '*'],
+  // `item[].images` — the `image_info.image_url` class, one level deeper.
+  ['images', '*'],
+  // The buyer's free text — the same class as the four free-text entries above.
+  ['text_reason'],
+  // ⚠️ A STRING in the detail page's sample and a `string[]` in its table and in
+  // the list page's sample — BOTH spellings, because a single-segment suffix
+  // cannot match the array form (its last segment is the index).
+  ['dispute_text_reason'],
+  ['dispute_text_reason', '*'],
+  // The detail sample prints `"username"`: a person or a party, unknown — and
+  // `negotiation_status` already says whose turn it is, so nothing needs it.
+  ['latest_offer_creator'],
+  // TW non-integrated phone proxies — no BR body should carry them; redacted
+  // anyway, because the guard has to exist before the first capture.
+  ['virtual_contact_number'],
+  ['package_query_number'],
+  // The REVERSE leg's parcel id. ⚠️ Spelled with its parent on purpose: a bare
+  // `['tracking_number']` would also take a forward-leg tracking number the
+  // shipment fixtures may one day pin. `['response', 'tracking_number']` also
+  // matches a future `get_tracking_number` capture — accepted: conservative, and
+  // no forward body carries the key today.
+  ['response', 'tracking_number'],
+  ['return', '*', 'tracking_number'],
 ];
 
 /**
@@ -158,9 +195,43 @@ export const REDACTED_PATH_SUFFIXES: readonly (readonly string[])[] = [
  */
 export const REDACTED_PATH_SEGMENTS: readonly string[] = ['geolocation'];
 
+/**
+ * Path SEGMENTS whose whole subtree is redacted with **no masked exit** — the
+ * buyer-identity blocks of a return (step 17, #1525).
+ *
+ * ⚠️ The masked exit (the module header's property 3) exists because
+ * `valorUtilizavel` must be tested against Shopee's masking SHAPES on the ORDER
+ * recipient. No ERP code reads these blocks at all — the package's returns
+ * schemas STRIP them — so a masked value here is evidence of nothing, and a
+ * masked e-mail still carries a domain and two letters, which `piiScan`'s e-mail
+ * pattern reads as a leak: both doc samples print one (`get_return_detail` and
+ * `get_return_list`), so a suffix entry alone would keep the masked value and
+ * fail the corpus.
+ *
+ * - `user` — `{username, email, portrait}`, the buyer, on detail AND list rows.
+ * - `return_pickup_address` — the buyer's address; coarse `state`/`region`
+ *   included, unlike `recipient_address`: no ERP code reads either here.
+ * - `buyer_videos` — `{thumbnail_url, video_url}`, buyer-shot evidence.
+ *
+ * An empty string is still kept (the region-empty fact), and the fixpoint holds:
+ * every placeholder maps to itself. ⚠️ The deferred returns ops (`query_proof`'s
+ * evidence, `get_reverse_tracking_info`'s door photos — R-5, out of v1) add their
+ * own paths in the PR that ships them, beside the fixture that needs them.
+ */
+export const REDACTED_SUBTREES_SEM_EXCECAO: readonly string[] = [
+  'user',
+  'return_pickup_address',
+  'buyer_videos',
+];
+
 /** A value Shopee itself already masked — kept verbatim. See the module header. */
 export function ehValorMascarado(value: string): boolean {
   return value.includes('*');
+}
+
+/** True when `path` runs under a {@link REDACTED_SUBTREES_SEM_EXCECAO} segment. */
+export function ehSubarvoreSemExcecao(path: readonly string[]): boolean {
+  return path.some((segment) => REDACTED_SUBTREES_SEM_EXCECAO.includes(segment));
 }
 
 /**
@@ -200,9 +271,14 @@ export function placeholderFor(
   }
 }
 
-/** True when `path` ends with any entry of {@link REDACTED_PATH_SUFFIXES}. */
+/**
+ * True when `path` ends with any entry of {@link REDACTED_PATH_SUFFIXES}, or runs
+ * under a segment of {@link REDACTED_PATH_SEGMENTS} or
+ * {@link REDACTED_SUBTREES_SEM_EXCECAO}.
+ */
 export function isRedactedPath(path: readonly string[]): boolean {
   if (path.some((segment) => REDACTED_PATH_SEGMENTS.includes(segment))) return true;
+  if (ehSubarvoreSemExcecao(path)) return true;
   return REDACTED_PATH_SUFFIXES.some((suffix) => {
     if (suffix.length > path.length) return false;
     const offset = path.length - suffix.length;
@@ -220,8 +296,13 @@ function walk(value: WireValue, path: readonly string[]): WireValue {
   }
   if (!isRedactedPath(path)) return value;
   // ⚠️ Both exits are in the module header, and both are load-bearing: a masked
-  // value is the EVIDENCE, an empty one is the region-empty wire fact.
-  if (typeof value === 'string' && (value.trim() === '' || ehValorMascarado(value))) return value;
+  // value is the EVIDENCE, an empty one is the region-empty wire fact. The masked
+  // one is CLOSED under a return's buyer subtree (`REDACTED_SUBTREES_SEM_EXCECAO`)
+  // and nowhere else — `recipient_address.name: '****'` still survives.
+  if (typeof value === 'string') {
+    if (value.trim() === '') return value;
+    if (ehValorMascarado(value) && !ehSubarvoreSemExcecao(path)) return value;
+  }
   const key = path[path.length - 1] ?? '';
   return placeholderFor(key, value);
 }
