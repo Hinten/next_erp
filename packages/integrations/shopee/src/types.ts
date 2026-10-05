@@ -23,15 +23,18 @@
  * `get_app_push_config` and `get_order_detail` included — sample `""`. So `-` is
  * a doc-authoring placeholder on those pages, not a protocol variant, and it is
  * tolerated ONLY on those three operations, through
- * `ShopeeCallParams.emptyErrorAliases` in `call.ts` — three call sites over TWO
- * constants, the lost-push pair sharing one and `get_package_detail` carrying
- * its own. The second is the KEY: `get_item_violation_info`'s success body omits
+ * `ShopeeCallParams.emptyErrorAliases` in `call.ts`. Step 17 met the same
+ * contradiction with a NEW value: the six `v2.returns.*` pages print `" "` (one
+ * SPACE, four pages) or `"-"` (two) — so NINE call sites over THREE constants:
+ * the lost-push pair sharing one, `get_package_detail` carrying its own, and the
+ * six returns operations sharing `SHOPEE_RETURNS_ERROR_ALIASES`
+ * (`devolucoes.ts`), the only constant that names `' '`. The second is the KEY: `get_item_violation_info`'s success body omits
  * `error` entirely (MEASURED 2026-09-17 — see
  * {@link shopeeItemViolationInfoPayloadSchema}), and
  * `ShopeeCallParams.erroAusenteEhSucesso` reads an absent key as `''` for that
  * ONE operation, and only when the body carries a `response` object. The schemas
  * here are unchanged by either: `error` is still `z.string()` with no default,
- * `'-'` still parses as the string `'-'`, and a body without the key still
+ * `'-'` and `' '` still parse as those strings, and a body without the key still
  * fails.
  *
  * ## Flat vs wrapped vs data
@@ -55,9 +58,19 @@
  * `@delfrance/core/wire`, never a bare strict number: a serializer that quotes
  * ONE field must not cost the whole resource (#1087). Enforced repo-wide by
  * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`.
+ * ⚠️ ONE field is read RAW on purpose: `return_solution` (the returns section,
+ * step 17) is a strict int OR the string VERBATIM, because the reader behind it
+ * is a FOLD whose scope is its contract — a quoted spelling still parses (as the
+ * string Shopee sent), so the tolerance above holds, and nothing is parsed or
+ * trimmed before the fold sees it.
  *
  * Every object is `.passthrough()`: Shopee adds fields without notice, and an
- * unknown key must never fail a parse.
+ * unknown key must never fail a parse — with ONE deliberate exception. The
+ * `get_return_list` / `get_return_detail` payloads (section "Returns (step
+ * 17)") are plain `z.object`, which STRIPS every undeclared key: those pages
+ * carry the BUYER (name, email, pickup address, photos, free text), and a
+ * buyer datum must never exist past the parse. An unknown key still never
+ * fails there — it is dropped instead of carried.
  */
 import { z } from 'zod';
 
@@ -4630,3 +4643,259 @@ export type ShopeeSearchPackageList = z.infer<typeof shopeeSearchPackageListPayl
  */
 export const shopeeSearchPackageListSchema = wrappedOp(shopeeSearchPackageListPayloadSchema);
 export type ShopeeSearchPackageListResponse = z.infer<typeof shopeeSearchPackageListSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                             Returns (step 17)                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The response schemas of the six `v2.returns.*` operations (#1525). The paths,
+ * the request shapes, the guards, `SHOPEE_RETURNS_ERROR_ALIASES` and the
+ * solution reader (`normalizarSolucaoDeDevolucao`) live in `devolucoes.ts`;
+ * this block only reads. Every field was read off the pages
+ * (`api v2.returns.<op>`, fetched 2026-10-02); returns are NOT in the SG
+ * sandbox, so nothing here has been seen on the wire — the BR register rows
+ * 231–247 settle it.
+ *
+ * ⚠️ **THE ONE DELIBERATE EXCEPTION to "every object is `.passthrough()`"**
+ * (this module's header). `get_return_list` and `get_return_detail` carry the
+ * BUYER: `user{username, email, portrait}`, the pickup address, buyer-shot
+ * `image[]`/`buyer_videos[]`, the free-text `text_reason`, the reverse
+ * `tracking_number`. Their schemas are plain `z.object` — Zod STRIPS every key
+ * they do not name — so a buyer datum never exists past `shopeeCall`: not on
+ * the returned object, not in a `ShopeeSchemaError` re-parse, not in a future
+ * `console.log(detalhe)`. The allow-list is SHRUNK to what the app reads
+ * (#1525 R-11); `item[]`, `activity[]`, `dispute_reason`,
+ * `compensation_amount_list`, `needs_logistics` and every warehouse /
+ * reverse-leg field beyond the two status tokens are NOT declared, and each is
+ * a one-line addition the day a reader needs it. The cost is the point: a
+ * field Shopee adds tomorrow is dropped too.
+ *
+ * ⚠️ What the strip does NOT cover: a FAILING body is never parsed by these
+ * schemas (stage 1 reads the envelope only, and no returns op sets
+ * `payloadNoErro`), and a JSON body is never logged (`call.ts` logs only
+ * non-JSON bodies) — but `ShopeeApiError.providerMessage` is Shopee's sentence
+ * VERBATIM, and the returns pages' messages carry `{status}`/`{return_type}`
+ * placeholders. Never log it beside a buyer.
+ *
+ * ⚠️ Every RECEIVED token is a FREE string — `status` (`ReturnStatus`, seven
+ * documented values), `reason` (two spellings), the negotiation / proof /
+ * compensation statuses (prefixed in the guides, UNprefixed in both page
+ * samples), the logistics tokens. Never a `z.enum`: an eighth status must
+ * parse, and the app's status SETS decide what each one means.
+ */
+
+/** A returns id: a string on every page, a JSON number on none — read either, never a JS number. */
+const idDeDevolucao = () => z.preprocess(paraIdOpaco, z.string().min(1));
+/** Money in the return's `currency` (REAIS for a BR shop): a float, or a quoted one. */
+const dinheiro = () => wireNumber().nullable().default(null);
+/**
+ * SECONDS. ⚠️ Shopee zero-fills absent numerics, so the APP reads `> 0` as
+ * present; the package keeps a `0` verbatim. The µs conversion is the app's,
+ * through `microsDeSegundosShopee` only.
+ */
+const segundos = () => wireInt().nullable().default(null);
+const texto = () => z.string().nullable().default(null);
+const flag = () => z.boolean().nullable().default(null);
+
+/**
+ * The fields a list row and the detail share — the ALLOW-LIST.
+ *
+ * ⚠️ FOUR are REQUIRED, the ones a return cannot be imported without:
+ * `return_sn`, `order_sn` (the pedido is `makePedidoIdShopee(conta, order_sn)`),
+ * `status` and `update_time` — the importer's WATERMARK, which has no
+ * substitute: a detail with no clock cannot be ordered against another, so it
+ * fails LOUDLY (`ShopeeSchemaError campos=["response.update_time"]`) instead of
+ * being written unguarded. On the LIST the same failure nulls only that ROW.
+ *
+ * ⚠️ `return_solution` is RAW (`0|1` on these pages): read it through
+ * `normalizarSolucaoDeDevolucao`, a FOLD whose scope is its contract. So it is
+ * deliberately NOT `wireInt()`: that trims and parses, and would hand the fold
+ * `' 0'` / `'0.0'` as `0` and `'01'` / `'1.0'` / `'+1'` as `1` — a solution
+ * Shopee never printed, stored and shown to the operator (#1525 review R3-1). A
+ * strict int, or the string VERBATIM: a quoted `'0'` / `'1'` stays a STRING and
+ * the fold's own table reads it. Anything else (a float, an object) reads
+ * `null`, never a refused return. `reassessed_request_reason` keeps the literal
+ * `'NONE'`; the APP folds it.
+ */
+const camposComunsDaDevolucao = {
+  return_sn: idDeDevolucao(),
+  order_sn: idDeDevolucao(),
+  status: z.string().min(1),
+  /** SECONDS — REQUIRED, no default. See the block comment. */
+  update_time: wireInt(),
+  create_time: segundos(),
+  reason: texto(),
+  reassessed_request_reason: texto(),
+  return_solution: z.union([z.number().int(), z.string()]).nullable().catch(null),
+  refund_amount: dinheiro(),
+  amount_before_discount: dinheiro(),
+  currency: texto(),
+  /** "The last time seller deal with this return." */
+  due_date: segundos(),
+  /** The buyer's ship-back deadline. */
+  return_ship_due_date: segundos(),
+  /** "If the seller fails to respond by this date, the refund will be issued to the buyer." (faq 477) */
+  return_seller_due_date: segundos(),
+  /** `'RRBOC'` | `'RRAOC'`, free. */
+  return_refund_type: texto(),
+  /** int32 — 0 Normal / 1 In-transit / 2 Return-on-the-Spot. */
+  return_refund_request_type: wireInt().nullable().catch(null),
+  /** `'seller_validation'` | `'warehouse_validation'`, free. */
+  validation_type: texto(),
+  /** "would only be True for TW and BR". */
+  is_seller_arrange: flag(),
+};
+
+/**
+ * One row of `get_return_list.response.return` — a STRIP object.
+ *
+ * ⚠️ The list carries the three sub-statuses FLAT where the detail nests them
+ * in objects. Whether they agree with the detail's spelling is register 240.
+ */
+export const shopeeReturnListRowSchema = z.object({
+  ...camposComunsDaDevolucao,
+  negotiation_status: texto(),
+  seller_proof_status: texto(),
+  seller_compensation_status: texto(),
+});
+export type ShopeeReturnListRow = z.infer<typeof shopeeReturnListRowSchema>;
+
+/**
+ * `reverse_logistics_status` — the TABLE spells it with an `s`, the SAMPLE and
+ * the update log without. Both are read, and the table's spelling WINS: the
+ * other is copied over ONLY when the table's key is absent (register 241). It
+ * runs BEFORE the strip, which then drops the copied-from key.
+ */
+function grafiasDaLogisticaReversa(v: unknown): unknown {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return v;
+  const corpo = v as Record<string, unknown>;
+  if (corpo.reverse_logistics_status !== undefined) return v;
+  if (corpo.reverse_logistic_status === undefined) return v;
+  return { ...corpo, reverse_logistics_status: corpo.reverse_logistic_status };
+}
+
+/**
+ * The inner payload of `get_return_detail` — a STRIP object (see the block
+ * comment).
+ *
+ * ⚠️ Per-sub-object `.nullable().catch(null)`, the repo idiom: one drifted
+ * `seller_compensation` reads as ABSENT and never costs the return. Acceptable
+ * because every sub-object is re-read on the next import; the cost is one cycle
+ * of a stale panel row. The watermark is `update_time` alone, so a caught
+ * sub-object never moves it.
+ *
+ * ⚠️ `negotiation.latest_offer_creator` is NOT declared: the page samples
+ * `"username"`, and `negotiation_status` (`PENDING_RESPOND` vs
+ * `PENDING_BUYER_RESPOND`) already says whose turn it is.
+ *
+ * Six due dates, all SECONDS: the three common ones,
+ * `seller_proof.seller_evidence_deadline`,
+ * `seller_compensation.seller_compensation_due_date` and
+ * `negotiation.offer_due_date`.
+ */
+export const shopeeReturnDetailBodySchema = z.preprocess(
+  grafiasDaLogisticaReversa,
+  z.object({
+    ...camposComunsDaDevolucao,
+    /** "a legacy field that only reflects the reverse logistics status of Normal RR" — free. */
+    logistics_status: texto(),
+    /** The current reverse-leg token — free. See {@link grafiasDaLogisticaReversa}. */
+    reverse_logistics_status: texto(),
+    seller_proof: z
+      .object({ seller_proof_status: texto(), seller_evidence_deadline: segundos() })
+      .nullable()
+      .catch(null),
+    seller_compensation: z
+      .object({
+        seller_compensation_status: texto(),
+        seller_compensation_due_date: segundos(),
+        compensation_amount: dinheiro(),
+      })
+      .nullable()
+      .catch(null),
+    negotiation: z
+      .object({
+        negotiation_status: texto(),
+        /** The STRING `ReturnSolution` — read through `normalizarSolucaoDeDevolucao`. */
+        latest_solution: texto(),
+        latest_offer_amount: dinheiro(),
+        counter_limit: wireInt().nullable().catch(null),
+        offer_due_date: segundos(),
+      })
+      .nullable()
+      .catch(null),
+  }),
+);
+/** What `get_return_detail` carries under `response`. */
+export type ShopeeReturnDetail = z.infer<typeof shopeeReturnDetailBodySchema>;
+
+/** `GET /api/v2/returns/get_return_detail` — WRAPPED under a REQUIRED `response`. */
+export const shopeeReturnDetailSchema = wrappedOp(shopeeReturnDetailBodySchema);
+export type ShopeeReturnDetailEnvelope = z.infer<typeof shopeeReturnDetailSchema>;
+
+/**
+ * `GET /api/v2/returns/get_return_list` — ONE page, WRAPPED.
+ *
+ * ⚠️ Per-ROW `null` sentinel, the {@link shopeeSearchPackageListPayloadSchema}
+ * precedent: a row missing one of the four required fields costs that row
+ * only, and the sweep COUNTS the nulls instead of mistaking one for data.
+ * `more` is a STRICT boolean and REQUIRED — the loop's only terminator, so a
+ * page that cannot say it fails whole.
+ */
+export const shopeeReturnListSchema = wrappedOp(
+  z.object({
+    more: z.boolean(),
+    return: z.array(shopeeReturnListRowSchema.nullable().catch(null)).default([]),
+  }),
+);
+export type ShopeeReturnListEnvelope = z.infer<typeof shopeeReturnListSchema>;
+
+/**
+ * One offerable solution of `get_available_solutions`. Min/max are "Returned
+ * when refund_amount_adjustable is true". A drifted one reads `null` — not
+ * offerable — and never costs its sibling.
+ */
+const solucaoOferecida = z
+  .object({
+    eligibility: flag(),
+    refund_amount_adjustable: flag(),
+    max_refund_amount: dinheiro(),
+    min_refund_amount: dinheiro(),
+  })
+  .passthrough()
+  .nullable()
+  .catch(null);
+
+/**
+ * `GET /api/v2/returns/get_available_solutions` — WRAPPED. ⚠️ `.passthrough()`,
+ * the module default: this page carries no buyer datum.
+ */
+export const shopeeReturnAvailableSolutionsSchema = wrappedOp(
+  z
+    .object({
+      return_sn: texto(),
+      offer_return_refund: solucaoOferecida,
+      offer_refund: solucaoOferecida,
+    })
+    .passthrough(),
+);
+export type ShopeeReturnAvailableSolutions = z.infer<
+  typeof shopeeReturnAvailableSolutionsSchema
+>['response'];
+export type ShopeeReturnAvailableSolutionsEnvelope = z.infer<
+  typeof shopeeReturnAvailableSolutionsSchema
+>;
+
+/**
+ * `POST confirm` / `offer` / `accept_offer` — WRAPPED, and the `response` KEY is
+ * REQUIRED: it is the "present response" half of
+ * `SHOPEE_RETURNS_ERROR_ALIASES` (`devolucoes.ts`), so a `{error: ' '}` body
+ * without one is a `ShopeeSchemaError`, never a success. Its echo is not
+ * required. The client returns the WHOLE envelope — a write's `request_id` is
+ * what an operator quotes to Shopee support.
+ */
+export const shopeeReturnWriteSchema = wrappedOp(
+  z.object({ return_sn: texto(), msg: texto() }).passthrough(),
+);
+export type ShopeeReturnWriteResponse = z.infer<typeof shopeeReturnWriteSchema>;

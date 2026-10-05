@@ -1,0 +1,69 @@
+{
+  "error": "-",
+  "message": "-",
+  "response": {
+    "more": true,
+    "return": [
+      {
+        "image": ["REDACTED"],
+        "reason": "PHYSICAL_DMG",
+        "text_reason": "REDACTED",
+        "return_sn": "2609100000000001",
+        "refund_amount": 1409,
+        "currency": "SGD",
+        "create_time": 1580721513,
+        "update_time": 1580729377,
+        "status": "CANCELLED",
+        "due_date": 1580721513,
+        "tracking_number": "REDACTED",
+        "dispute_reason": ["UNKNOWN"],
+        "dispute_text_reason": ["REDACTED"],
+        "needs_logistics": true,
+        "amount_before_discount": 1409,
+        "user": {
+          "username": "REDACTED",
+          "email": "REDACTED",
+          "portrait": "REDACTED"
+        },
+        "item": [
+          {
+            "model_id": 0,
+            "name": "agsabdmnambd",
+            "images": ["REDACTED"],
+            "amount": 1,
+            "item_price": 1409.9,
+            "is_add_on_deal": false,
+            "is_main_item": false,
+            "add_on_deal_id": 0,
+            "item_id": 2500139861,
+            "item_sku": "USB",
+            "variation_sku": "RED"
+          }
+        ],
+        "order_sn": "260910KJBHUJDM",
+        "return_ship_due_date": 1655438336,
+        "return_seller_due_date": 1655438336,
+        "negotiation_status": "PENDING_RESPOND",
+        "seller_proof_status": "PENDING",
+        "seller_compensation_status": "PENDING_REQUEST",
+        "return_refund_type": "RRAOC",
+        "return_solution": 0,
+        "is_seller_arrange": false,
+        "is_shipping_proof_mandatory": false,
+        "return_refund_request_type": 0,
+        "validation_type": "seller_validation",
+        "is_arrived_at_warehouse": 3,
+        "follow_up_action_list": [
+          {
+            "item_id": 2500139861,
+            "model_id": 2000458802,
+            "qty": 2,
+            "current_status": 2,
+            "related_order_sn_list": [],
+            "resell_failed_next_step": ""
+          }
+        ]
+      }
+    ]
+  }
+}

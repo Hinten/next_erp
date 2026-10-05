@@ -21,9 +21,9 @@
  * `retryAfterSeconds`; durable retry belongs to the Cloud Tasks pipeline.
  *
  * ⚠️ **No paging loop anywhere.** `getShopsByPartner`, `getBrandList`,
- * `getOrderList`, `getLostPushMessages`, `getEscrowList` and
- * `searchPackageList` each fetch ONE page and surface the cursor (or the page
- * number); the caller loops. Auto-paging inside a client hides an unbounded
+ * `getOrderList`, `getLostPushMessages`, `getEscrowList`, `searchPackageList`
+ * and `getReturnList` each fetch ONE page and surface the cursor (or the page
+ * number, or `more`); the caller loops. Auto-paging inside a client hides an unbounded
  * number of provider calls behind one innocuous `await`, and Shopee's brand API
  * is slow enough that the difference is visible to an operator.
  *
@@ -32,10 +32,11 @@
  * Three Public-signed push operations — `getLostPushMessages`,
  * `confirmConsumedLostPushMessages`, `getAppPushConfig` — plus the Shop-signed
  * `getOrderList`. The first two carry the `emptyErrorAliases` exception to the
- * `error === ''` invariant (see `call.ts`) — and `getLostPushMessages` is the
- * ONE read here that hands back the whole parsed operation instead of
+ * `error === ''` invariant (see `call.ts`) — and `getLostPushMessages` was the
+ * FIRST read here that hands back the whole parsed operation instead of
  * `res.response`, because that exception is what its caller has to observe on
- * live traffic; the third deliberately does NOT, and
+ * live traffic (step 17's three returns reads do the same, for the same
+ * reason — see "The returns" below); the third deliberately does NOT, and
  * there is deliberately no `setAppPushConfig` at all — the absence is the
  * enforcement, and {@link ShopeePartnerClient.getAppPushConfig} says why.
  *
@@ -239,6 +240,43 @@
  * are always SENT, `cursor` is ABSENT on page 1, and no tolerance of any kind
  * rides on it.
  *
+ * ## The returns (step 17)
+ *
+ * Six `v2.returns.*` operations on the SHOP client: three reads
+ * (`getReturnList`, `getReturnDetail`, `getReturnAvailableSolutions`) and the
+ * three seller actions the ERP drives (`confirmReturn`, `offerReturn`,
+ * `acceptReturnOffer`). Their paths, request shapes, guards and wire constants
+ * live in `devolucoes.ts`, so this file only carries the members and their
+ * bodies. The dispute half (`dispute`, `cancel_dispute`, `upload_proof`,
+ * `convert_image`, `query_proof`, `get_return_dispute_reason`) is deliberately
+ * NOT built: `dispute` and `cancel_dispute` both REQUIRE an operator email
+ * whose source is undecided, and the other four drive nothing without them.
+ *
+ * ⚠️ **All six return the WHOLE parsed envelope — the three reads included.**
+ * Every one of these pages samples a NON-empty `error` on success (`" "` on
+ * four, `"-"` on `get_return_list` and `get_return_detail`), so all six carry
+ * {@link SHOPEE_RETURNS_ERROR_ALIASES} — the THIRD alias constant and the first
+ * to name `' '`. The caller logs the observed `error` VALUE (never the body)
+ * until a BR shop settles which one Shopee really sends (register 231);
+ * unwrapping to `res.response` would leave that field unreachable — the
+ * `getLostPushMessages` precedent. Read the payload off `.response`.
+ *
+ * ⚠️ The "present `response`" half of that tolerance needs no flag: every
+ * returns schema is `wrappedOp` with a REQUIRED `response`, so a body
+ * `{error: ' '}` with no payload passes the envelope verdict and dies at the
+ * schema as `ShopeeSchemaError` — never a success.
+ *
+ * ⚠️ **Buyer data never leaves these calls.** The returns response schemas
+ * STRIP unknown keys — the one deliberate exception to "every object is
+ * `.passthrough()`" in `types.ts` — and declare only what the app reads, so the
+ * buyer's name, email, pickup address, photos, videos, free text and the
+ * reverse tracking number do not exist past the parse.
+ *
+ * ⚠️ The three actions move MONEY and are NOT idempotent (a second `confirm`
+ * answers `error_return_status`): nothing here retries, and nothing here
+ * decides whether an action is allowed — the caller re-reads the return LIVE
+ * immediately before writing.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -248,6 +286,21 @@ import { roundReais } from '@delfrance/core/money';
 
 import type { ShopeeArquivoBaixado } from './arquivo';
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall, shopeeCallArquivo } from './call';
+import {
+  type GetReturnListParams,
+  type OfferReturnParams,
+  SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+  SHOPEE_GET_RETURN_DETAIL_PATH,
+  SHOPEE_GET_RETURN_LIST_PATH,
+  SHOPEE_RETURNS_ERROR_ALIASES,
+  SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+  SHOPEE_RETURN_CONFIRM_PATH,
+  SHOPEE_RETURN_OFFER_PATH,
+  type ShopeeAlvoDeDevolucao,
+  assertAlvoDeDevolucao,
+  assertOfferReturnParams,
+  assertReturnListParams,
+} from './devolucoes';
 import {
   SHOPEE_SURFACE,
   ShopeeApiError,
@@ -340,6 +393,10 @@ import {
   type ShopeeParametroDeDocumento,
   type ShopeeProfile,
   type ShopeeResultadoDeDocumento,
+  type ShopeeReturnAvailableSolutionsEnvelope,
+  type ShopeeReturnDetailEnvelope,
+  type ShopeeReturnListEnvelope,
+  type ShopeeReturnWriteResponse,
   type ShopeeSearchPackageList,
   type ShopeeShipOrderResponse,
   type ShopeeShippingParameter,
@@ -385,6 +442,10 @@ import {
   shopeeParametroDeDocumentoPaginaSchema,
   shopeeProfileSchema,
   shopeeResultadoDeDocumentoPaginaSchema,
+  shopeeReturnAvailableSolutionsSchema,
+  shopeeReturnDetailSchema,
+  shopeeReturnListSchema,
+  shopeeReturnWriteSchema,
   shopeeSearchPackageListSchema,
   shopeeShipOrderSchema,
   shopeeShippingParameterSchema,
@@ -765,7 +826,8 @@ export function encodeShopeeIdList(
  * page prints `""` — a doc-authoring placeholder, tolerated on those two
  * operations only. See `ShopeeCallParams.emptyErrorAliases` in `call.ts`.
  *
- * ⚠️ SHARED by BOTH lost-push call sites — the one constant over two operations.
+ * ⚠️ SHARED by BOTH lost-push call sites — one constant over two operations
+ * (step 17's `SHOPEE_RETURNS_ERROR_ALIASES` is the other shared one, over six).
  * Narrowing one of them (Shopee fixes `get_lost_push_message` and not the
  * confirm) means SPLITTING this constant first: emptying it here moves both.
  */
@@ -776,14 +838,19 @@ export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
  * its own parameter table says "Empty if no error happened" — the same
  * doc-authoring placeholder the two lost-push pages carry, on a third page.
  *
- * ⚠️ The SECOND constant — three call sites carry an alias, and this is the only
- * one that is not shared — rather than a reuse of
+ * ⚠️ The SECOND constant — of the nine call sites that carry an alias since
+ * step 17 (two lost-push, this one, six returns), this is the only one whose
+ * constant is not shared — rather than a reuse of
  * {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is opt-in per CALL SITE
  * because the contradiction is per PAGE (`get_app_push_config` samples `""` and
  * carries no alias, one method over), and a lost-push-named constant on an order
  * op would read as a copy rather than as a second observation. If Shopee ever
  * fixes this page and not the lost-push ones, two constants are two edits and
  * one constant is a decision nobody can make.
+ *
+ * ⚠️ The THIRD constant, {@link SHOPEE_RETURNS_ERROR_ALIASES} (step 17, in
+ * `devolucoes.ts`), names `' '` beside `'-'`, which is exactly why it is not
+ * reusable here: on THIS page `' '` stays a failure, and a test pins it.
  *
  * ⚠️ This page prints `"-"` for `message` and `warning` too, and its
  * `tracking_number` sample is `"-"` as well — the sentinel is on the PAYLOAD as
@@ -1633,7 +1700,8 @@ export interface ShopeePartnerClient {
    * ⚠️ Each entry's `data` is a STRING, and this package leaves it that way.
    *
    * ⚠️ **The WHOLE parsed operation comes back — envelope AND `response` — and
-   * this is the only read in this file that does not unwrap.** The reason is
+   * this was the first read in this file that does not unwrap** (step 17's
+   * three returns reads are the others, for the same reason). The reason is
    * D1: both lost-push pages sample `"error": "-"` where every other page
    * samples `""`, which is why {@link SHOPEE_LOST_PUSH_ERROR_ALIASES} exists at
    * all. The caller logs `error` VERBATIM so the first production tick settles
@@ -1894,7 +1962,8 @@ export interface ShopeeClient {
    * — the `confirmConsumedLostPushMessages` precedent. A write's `warning` is a
    * partial-failure channel (Shopee accepts the item and says what it ignored),
    * and unwrapping would drop it on the floor. The two READS below unwrap, like
-   * every other read in this file.
+   * every other read in this file but the lost-push one and step 17's three
+   * returns reads.
    *
    * ⚠️ Nothing in this repo reads the echo beyond `item_id`: listing state is
    * read back through `get_item_base_info` (`announcement 1394`), because
@@ -2284,6 +2353,96 @@ export interface ShopeeClient {
    * access token is asked for.
    */
   searchPackageList(p: SearchPackageListParams): Promise<ShopeeSearchPackageList>;
+
+  /* ---------------------- the returns (step 17) ---------------------- */
+
+  /**
+   * ONE page of this shop's returns — the WHOLE parsed envelope, not
+   * `res.response` (see "The returns" in the file docblock): read the page off
+   * `.response`, and log `error` as a value.
+   *
+   * ⚠️ **It does NOT auto-page**, like every list read here: terminate on
+   * `response.more === false`. `page_no` is sent VERBATIM — whether it is a page
+   * index or an entry offset, and its base, is UNVERIFIED (register 235), so the
+   * caller decides and watches for overlap.
+   *
+   * ⚠️ **A row is a POINTER, not a verdict.** It carries the three sub-statuses
+   * FLAT and none of the negotiation / proof / compensation detail, and a row
+   * Shopee answered unreadably arrives as `null` (the schema nulls the ROW, never
+   * the page). Re-read {@link ShopeeClient.getReturnDetail} before writing.
+   *
+   * ⚠️ No status / negotiation / proof / compensation filter is exposed: a
+   * misspelled filter silently matches nothing (the `getOrderList` precedent).
+   * Every guard — page bounds, each window both-or-neither and ≤ 15 days,
+   * `update_time_from >= create_time_from` — runs BEFORE the access token is
+   * asked for.
+   */
+  getReturnList(p: GetReturnListParams): Promise<ShopeeReturnListEnvelope>;
+
+  /**
+   * ONE return — the WHOLE parsed envelope. The returns importer's one read.
+   *
+   * ⚠️ `update_time` is REQUIRED by the schema: a detail with no clock cannot be
+   * ordered against another, so it fails as `ShopeeSchemaError` naming
+   * `response.update_time` rather than reaching a write unguarded.
+   *
+   * ⚠️ The answer is STRIPPED to what the app reads — no buyer field survives
+   * the parse (see "The returns" in the file docblock).
+   *
+   * ⚠️ `return_sn` travels VERBATIM: blank refused, nothing trimmed, and never a
+   * digits-only check — the page's own samples are alphanumeric.
+   */
+  getReturnDetail(p: ShopeeAlvoDeDevolucao): Promise<ShopeeReturnDetailEnvelope>;
+
+  /**
+   * Which counter-offers the seller may make on ONE return — the WHOLE parsed
+   * envelope: per solution, `eligibility`, whether the amount is adjustable and
+   * its min/max in REAIS.
+   *
+   * ⚠️ The bounds are PER RETURN and are the caller's live check before
+   * {@link ShopeeClient.offerReturn}; this package bounds no amount.
+   *
+   * ⚠️ "Type of return does not allow seller to offer refund" arrives as an
+   * `error_data` REFUSAL, not as an empty answer — the caller classifies it on
+   * `providerMessage`.
+   */
+  getReturnAvailableSolutions(
+    p: ShopeeAlvoDeDevolucao,
+  ): Promise<ShopeeReturnAvailableSolutionsEnvelope>;
+
+  /**
+   * Agree to the buyer's request (the page's "Confirm refund") — the WHOLE parsed
+   * envelope, like every write here; `response` echoes the `return_sn`.
+   *
+   * ⚠️ **MONEY moves, and it is NOT idempotent**: a second confirm answers
+   * `error_return_status`. Never retried here — an unknown outcome is re-derived
+   * by re-reading the detail, never by sending again. The page refuses it for an
+   * in-transit / return-on-the-spot request, a warehouse validation and an RRAOC
+   * return; deciding that BEFORE the call is the caller's live gate.
+   */
+  confirmReturn(p: ShopeeAlvoDeDevolucao): Promise<ShopeeReturnWriteResponse>;
+
+  /**
+   * Counter-offer one solution (`RETURN_REFUND` | `REFUND`, see
+   * `SHOPEE_RETURN_SOLUTION`) and, optionally, an adjusted refund amount in
+   * REAIS — the WHOLE parsed envelope.
+   *
+   * ⚠️ An ABSENT amount sends NO key — never `null`, never `0`. A present one
+   * must already be in centavos: `roundReais(v) !== v` is REFUSED before the
+   * fetch, never rounded here, so this package never picks an amount. The
+   * min/max are per return ({@link ShopeeClient.getReturnAvailableSolutions}) and
+   * are the caller's check; Shopee's own refusal stays the arbiter.
+   */
+  offerReturn(p: OfferReturnParams): Promise<ShopeeReturnWriteResponse>;
+
+  /**
+   * Accept the BUYER's latest proposal — the WHOLE parsed envelope.
+   *
+   * ⚠️ Only `return_sn` travels: what gets accepted is whatever Shopee holds as
+   * the latest proposal when the request ARRIVES. The caller compares it live
+   * against what the operator saw, immediately before this call.
+   */
+  acceptReturnOffer(p: ShopeeAlvoDeDevolucao): Promise<ShopeeReturnWriteResponse>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -4447,6 +4606,123 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       // ONE page, no auto-paging: `pagination.more` travels on the payload and
       // the caller decides whether to ask for the next one.
       return res.response;
+    },
+
+    /* ------------------------ the returns (step 17) ------------------------ */
+
+    getReturnList: async (p) => {
+      // ⚠️ Every guard of the returns runs BEFORE the token is asked for — see
+      // `devolucoes.ts`.
+      assertReturnListParams(p);
+      // ⚠️ The WHOLE envelope, the reads included (register 231): the caller
+      // logs `error` as a value. ONE page, no auto-paging — `response.more`
+      // travels on the payload and the caller decides.
+      return shopeeCall(transport, {
+        // GET — the page's own `method: 2`.
+        method: 'GET',
+        path: SHOPEE_GET_RETURN_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeReturnListSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `"-"`. Per CALL SITE and exact — never a trim.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        query: {
+          // VERBATIM: page index vs entry offset is register 235, the caller's.
+          page_no: p.pageNo,
+          page_size: p.pageSize,
+          // `undefined` is dropped by `signedQuery`, so a window not asked for
+          // emits NO key — and the guard has already refused half of one.
+          create_time_from: p.createTimeFromS,
+          create_time_to: p.createTimeToS,
+          update_time_from: p.updateTimeFromS,
+          update_time_to: p.updateTimeToS,
+          // ⚠️ No status / negotiation / proof / compensation filter: see the
+          // interface.
+        },
+      });
+    },
+
+    getReturnDetail: async (p) => {
+      assertAlvoDeDevolucao(p);
+      return shopeeCall(transport, {
+        // GET — the page's own `method: 2`.
+        method: 'GET',
+        path: SHOPEE_GET_RETURN_DETAIL_PATH,
+        call: await signedCall(),
+        // ⚠️ A STRIP object: no buyer field survives this parse.
+        schema: shopeeReturnDetailSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `"-"`.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        // VERBATIM: blank refused, nothing trimmed.
+        query: { return_sn: p.returnSn },
+      });
+    },
+
+    getReturnAvailableSolutions: async (p) => {
+      assertAlvoDeDevolucao(p);
+      return shopeeCall(transport, {
+        // GET — the page's own `method: 2`.
+        method: 'GET',
+        path: SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
+        call: await signedCall(),
+        schema: shopeeReturnAvailableSolutionsSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `" "` — one SPACE.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        query: { return_sn: p.returnSn },
+      });
+    },
+
+    confirmReturn: async (p) => {
+      assertAlvoDeDevolucao(p);
+      // ⚠️ A WRITE that moves money and is NOT idempotent: the whole envelope,
+      // and no retry of any kind here.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_RETURN_CONFIRM_PATH,
+        call: await signedCall(),
+        schema: shopeeReturnWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `" "` — one SPACE.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        body: { return_sn: p.returnSn },
+      });
+    },
+
+    offerReturn: async (p) => {
+      assertOfferReturnParams(p);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_RETURN_OFFER_PATH,
+        call: await signedCall(),
+        schema: shopeeReturnWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `" "` — one SPACE.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        body: {
+          return_sn: p.returnSn,
+          proposed_solution: p.proposedSolution,
+          // ⚠️ ABSENT ⇒ NO key: never `null`, never `0` — either would read as
+          // an amount. A present one was judged already rounded by the guard.
+          ...seHouver('proposed_adjusted_refund_amount', p.proposedAdjustedRefundAmount),
+        },
+      });
+    },
+
+    acceptReturnOffer: async (p) => {
+      assertAlvoDeDevolucao(p);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_RETURN_ACCEPT_OFFER_PATH,
+        call: await signedCall(),
+        schema: shopeeReturnWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page samples `" "` — one SPACE.
+        emptyErrorAliases: SHOPEE_RETURNS_ERROR_ALIASES,
+        // Only the return travels: Shopee accepts its OWN latest proposal.
+        body: { return_sn: p.returnSn },
+      });
     },
   };
 }

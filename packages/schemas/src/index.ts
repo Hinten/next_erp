@@ -1335,3 +1335,8 @@ export {
   type RotaAvisoKey,
 } from './aviso';
 export * from './shared/inicio';
+
+// The ONE copy of the Shopee `return_sn` shape (step 17, #1525) — the push
+// parser, the reclamação routes and the web mount all read it. Not a collection,
+// so no `registry.ts` entry; outside `pedido/`, so no NF-e live run.
+export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
