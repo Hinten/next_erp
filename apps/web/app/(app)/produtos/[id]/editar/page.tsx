@@ -539,7 +539,9 @@ export default function EditarProdutoPage() {
       // Pending Mercado Livre edits live in their own documents and their own
       // form, so the leave-guard needs to be told about them explicitly.
       extraDirty={mlDirty}
-      transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
+      transactionWrites={(id, values, context) =>
+        buildProdutoTransactionWrites(db, id, values, 'editar', context)
+      }
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
         // by ordem, canonical group-major fake paths for the variants. The

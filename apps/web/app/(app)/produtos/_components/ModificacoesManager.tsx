@@ -5,7 +5,12 @@ import { Alert, Button, Group, Modal, Stack, Text, Tooltip } from '@mantine/core
 import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconInfoCircle } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
+import {
+  getDocFromServer,
+  getDocsFromServer,
+  type DocumentReference,
+  type Firestore,
+} from 'firebase/firestore';
 import {
   useForm,
   useFormContext,
@@ -19,10 +24,12 @@ import { microsToDate } from '@delfrance/core/datetime';
 import {
   PRODUTO_EXTRA_DATA_DOC_ID,
   produtoExtraDataSchema,
+  impostoProdutoSchema,
+  operacaoIdFromImpostoRef,
   type ImpostoProduto,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
-import { useObjectViewSections } from '@delfrance/ui';
+import { useObjectViewSections, useObjectViewTransactionDocuments } from '@delfrance/ui';
 import {
   ModificacaoHistoryFeed,
   renderValue,
@@ -170,6 +177,7 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
   // `useFormContext` call site in this app.
   const form = useFormContext();
   const sections = useObjectViewSections();
+  const documents = useObjectViewTransactionDocuments();
   const dirtyFields = useDirtyFields(form?.control);
 
   // A note survives exactly as long as its OWN key is still dirty. A save
@@ -199,20 +207,29 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
     };
 
     if (subcolecao === 'extraData' && base.extraData === null) {
-      const snap = await getDoc(
-        produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID),
-      );
+      const ref = produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID);
+      const snap = await getDocFromServer(ref);
+      const data = snap.data() ?? null;
       // A missing singleton has no siblings to lose — the schema's empty shape
       // is the honest base, and the revert supplies the one field it carries.
-      base.extraData = produtoExtraDataSchema.parse(snap.data() ?? {});
+      base.extraData = produtoExtraDataSchema.parse(data ?? {});
+      if (documents?.getBaseline(ref.path) === null && data !== null) {
+        // This empty form is now based on the recreated server document.
+        // Bind its guard to that version; existing edit baselines stay frozen.
+        documents.rebase(ref.path, data);
+        documents.rebaseFormField('extraData', data);
+      } else {
+        documents?.seedBaseline(ref.path, data);
+        documents?.seedFormField('extraData', data);
+      }
     }
 
     if (subcolecao === 'imposto' && base.impostos === null) {
       const [operacoesSnap, impostosSnap] = await Promise.all([
-        getDocs(
+        getDocsFromServer(
           buildQuery(operacaoCollection.ref(db, {}), [orderByField('nome'), limit(OPERACAO_LIMIT)]),
         ),
-        getDocs(
+        getDocsFromServer(
           buildQuery(impostoProdutoCollection.ref(db, { produtoId }), [limit(IMPOSTO_LIMIT)]),
         ),
       ]);
@@ -220,6 +237,8 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
         operacoesAtivas(operacoesSnap.docs.map((d) => ({ id: d.id, data: d.data() }))),
         impostosSnap.docs.map((d) => ({ id: d.id, data: d.data() })),
       );
+      for (const row of impostosSnap.docs) documents?.seedBaseline(row.ref.path, row.data());
+      documents?.seedFormField('impostos', base.impostos);
     }
 
     return base;
@@ -238,6 +257,38 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
       return;
     }
     const base = await loadPrefillBase(target.subcolecao);
+    if (documents && (target.subcolecao === 'extraData' || target.subcolecao === 'imposto')) {
+      const ref =
+        target.subcolecao === 'extraData'
+          ? produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID)
+          : impostoProdutoCollection.docRef(db, { produtoId }, target.docId);
+      if (documents.getBaseline(ref.path) === undefined) {
+        const snap = await getDocFromServer(ref as DocumentReference<Record<string, unknown>>);
+        const data = snap.data() ?? null;
+        documents.seedBaseline(ref.path, data);
+        if (target.subcolecao === 'imposto') {
+          const next = impostoProdutoSchema.parse(
+            data === null
+              ? { impostoOpercaoOuterRef: `operacao/${target.docId}` }
+              : { ...data, id: target.docId, impostoOpercaoOuterRef: `operacao/${target.docId}` },
+          );
+          base.impostos =
+            base.impostos?.map((row) =>
+              operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === target.docId ? next : row,
+            ) ?? null;
+          const initialRows =
+            (documents.getFormBaseline('impostos') as ImpostoProduto[] | undefined) ??
+            base.impostos ??
+            [];
+          documents.rebaseFormField(
+            'impostos',
+            initialRows.map((row) =>
+              operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === target.docId ? next : row,
+            ),
+          );
+        }
+      }
+    }
     const { key, value } = buildRevertPrefill(target, base);
 
     // ⚠️ Jump BEFORE writing, not after. An inactive tab is hidden with
@@ -363,6 +414,7 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
   async function finishRestaurarDocumento(
     entry: { id: string; timestamp: number | null },
     target: DocumentRestoreTarget,
+    currentData: Record<string, unknown> | null,
   ) {
     if (!form) {
       notifications.show({
@@ -374,6 +426,14 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
     }
     const base = await loadPrefillBase(target.subcolecao);
     const { key, value } = buildDocumentRestorePrefill(target, base);
+    if (documents) {
+      const ref =
+        target.subcolecao === 'extraData'
+          ? produtoExtraDataCollection.docRef(db, { produtoId }, PRODUTO_EXTRA_DATA_DOC_ID)
+          : impostoProdutoCollection.docRef(db, { produtoId }, target.docId);
+      // Bind restoration to the checked/confirmed version, never a later listener.
+      documents.rebase(ref.path, currentData);
+    }
 
     const section = sections?.sectionOfField(key);
     if (section) sections?.goToSection(section);
@@ -412,7 +472,7 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
         });
         return;
       }
-      await finishRestaurarDocumento(entry, target);
+      await finishRestaurarDocumento(entry, target, currentData);
     } catch (err) {
       if (!reportRestaurarError(err)) throw err;
     } finally {
@@ -427,6 +487,7 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
       await finishRestaurarDocumento(
         { id: docConflict.entryId, timestamp: docConflict.entryTimestamp },
         docConflict.target,
+        docConflict.currentData,
       );
       setDocConflict(null);
     } catch (err) {
