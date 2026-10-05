@@ -3,9 +3,16 @@ import type { FormEvent } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { FirebaseError } from 'firebase/app';
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import { ESTADO_FRETE, type EstadoFrete, TIPO_INCIDENTE, type Incidente } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  type EstadoFrete,
+  ORIGEM_INCIDENTE,
+  TIPO_INCIDENTE,
+  type Incidente,
+} from '@delfrance/schemas';
 import { IncidenteConflictError, IncidenteMissingError } from '@/lib/pedidos/saveIncidenteEdit';
 import { IncidentesTab, type IncidenteFlush } from './IncidentesTab';
+import { ORIGEM_EXCLUSIVA_MSG } from './incidenteForm';
 
 // #374: legacy `bloquear` (`pedidoCadastro.dart:1437-1450`) locks the 3
 // incidente-level fields — Tipo, Motivo, Comentários — once the resolução's
@@ -49,6 +56,18 @@ vi.mock('@/lib/pedidos/saveIncidenteEdit', async (importOriginal) => ({
   saveIncidenteEdit: vi.fn(),
 }));
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
+// The channel panels are tested on their own; here only WHICH one mounts, and
+// with what, matters. Each stub prints the props it was handed.
+vi.mock('../ReclamacaoMlPanel', () => ({
+  ReclamacaoMlPanel: (p: { claimId: number; integracaoId: string }) => (
+    <div data-testid="painel-ml">{JSON.stringify(p)}</div>
+  ),
+}));
+vi.mock('../ReclamacaoShopeePanel', () => ({
+  ReclamacaoShopeePanel: (p: { integracaoId: string; pedidoId: string; returnSn: string }) => (
+    <div data-testid="painel-shopee">{JSON.stringify(p)}</div>
+  ),
+}));
 
 function withResolucaoFrete(estado: EstadoFrete): NonNullable<Incidente['resolucao']> {
   return {
@@ -361,5 +380,213 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     fireEvent.click(screen.getByRole('button', { name: 'Desfazer' }));
 
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     #1525 — which channel panel mounts, and the lock on imported rows      */
+/* -------------------------------------------------------------------------- */
+
+// ⚠️ The ALPHANUMERIC fixture return_sn on purpose: every Shopee sample is
+// alphanumeric, and a digits-only id would hide the one shape ML's
+// safe-integer test breaks.
+const RETURN_SN = '260910ABCDE0001';
+
+const linhaShopee = (over: Partial<Incidente> = {}) =>
+  incidente({
+    origem: ORIGEM_INCIDENTE.pedidoShopee,
+    tipo: TIPO_INCIDENTE.devolucao,
+    externalId: RETURN_SN,
+    ...over,
+  });
+// `mediations`, NOT the form's default `returns`, so "the tipo was kept" cannot
+// pass by coincidence.
+const linhaMl = (over: Partial<Incidente> = {}) =>
+  incidente({
+    origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
+    tipo: TIPO_INCIDENTE.mediacaoDoMarketplace,
+    externalId: '5123456789',
+    ...over,
+  });
+
+function renderRows(
+  rows: Incidente[],
+  props: { integracaoId?: string | null; disabled?: boolean } = { integracaoId: 'int-1' },
+) {
+  snapState.current = {
+    data: rows.map((data, i) => ({ id: `inc-${String(i + 1)}`, data })),
+    loading: false,
+    error: undefined,
+  };
+  return render(
+    <MantineTestProvider>
+      <IncidentesTab pedidoId="ped-1" flushRef={flushRef} {...props} />
+    </MantineTestProvider>,
+  );
+}
+
+const paineisShopee = () =>
+  screen
+    .queryAllByTestId('painel-shopee')
+    .map((el) => JSON.parse(el.textContent ?? '') as Record<string, unknown>);
+const paineisMl = () => screen.queryAllByTestId('painel-ml');
+
+/** The options the Origem dropdown offers, read from the open listbox. */
+function opcoesDaOrigem(): string[] {
+  fireEvent.click(screen.getByRole('combobox', { name: 'Origem' }));
+  const listbox = screen.getByRole('listbox', { name: 'Origem' });
+  return within(listbox)
+    .getAllByRole('option', { hidden: true })
+    .map((o) => o.textContent ?? '');
+}
+
+describe('IncidentesTab — the Shopee return panel (#1525)', () => {
+  it('mounts the Shopee panel on a Shopee row, with the conta, the pedido and the return_sn', () => {
+    // Padded on purpose: the panel and the label get the TRIMMED id — the one
+    // the shared predicate accepted — never the stored text verbatim.
+    renderRows([linhaShopee({ externalId: ` ${RETURN_SN} ` })]);
+
+    expect(paineisShopee()).toEqual([
+      { integracaoId: 'int-1', pedidoId: 'ped-1', returnSn: RETURN_SN },
+    ]);
+    expect(paineisMl()).toHaveLength(0);
+    expect(screen.getByText(`Shopee #${RETURN_SN}`)).toBeDefined();
+  });
+
+  it('keeps an ML claim on the ML panel — an all-digit id is a valid return_sn too', () => {
+    // ⚠️ The near-miss for "mount on externalId alone": ML's claim id passes the
+    // return_sn shape, so only the ORIGEM half keeps the Shopee panel off it.
+    renderRows([linhaMl()]);
+
+    expect(paineisMl()).toHaveLength(1);
+    expect(paineisShopee()).toEqual([]);
+    expect(screen.getByText('ML #5123456789')).toBeDefined();
+    expect(screen.queryByText(/Shopee #/)).toBeNull();
+  });
+
+  it('mounts one panel per return, each on its own return_sn', () => {
+    renderRows([linhaShopee(), linhaShopee({ externalId: '2609100000000002' })]);
+    expect(paineisShopee().map((p) => p.returnSn)).toEqual([RETURN_SN, '2609100000000002']);
+  });
+
+  it('mounts nothing on a manual row, nor on a Shopee row whose id is not a return_sn', () => {
+    renderRows([
+      incidente({ origem: ORIGEM_INCIDENTE.outros, externalId: RETURN_SN }),
+      linhaShopee({ externalId: '2609-ABC' }),
+    ]);
+
+    expect(paineisShopee()).toEqual([]);
+    expect(paineisMl()).toHaveLength(0);
+    expect(screen.queryByText(/Shopee #/)).toBeNull();
+    expect(screen.getByText(`Ref. externa: ${RETURN_SN}`)).toBeDefined();
+    expect(screen.getByText('Ref. externa: 2609-ABC')).toBeDefined();
+  });
+
+  it('labels the return but mounts no panel when the pedido has no conta', () => {
+    renderRows([linhaShopee()], { integracaoId: null });
+    expect(paineisShopee()).toEqual([]);
+    expect(screen.getByText(`Shopee #${RETURN_SN}`)).toBeDefined();
+  });
+
+  it('still mounts the panel on a read-only pedido — its actions act on the channel', () => {
+    // ⚠️ A finalised or locked pedido is exactly when a return still needs an
+    // answer; gating the panel on the form's `disabled` would hide it then.
+    renderRows([linhaShopee()], { integracaoId: 'int-1', disabled: true });
+    expect(paineisShopee()).toHaveLength(1);
+  });
+
+  it('unmounts the panel of a row staged for deletion', () => {
+    renderRows([linhaShopee()]);
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    expect(paineisShopee()).toEqual([]);
+  });
+});
+
+describe('IncidentesTab — origem and tipo of an imported row are the importer’s (#1525)', () => {
+  it.each([
+    ['Shopee', linhaShopee, 'Pedido Shopee', 'Devolução'],
+    ['Mercado Livre', linhaMl, 'Pedido Mercado Livre', 'Mediação do Marketplace'],
+  ] as const)(
+    'an imported %s row: Tipo and Origem locked, showing the stored values',
+    (_canal, linha, origemLabel, tipoLabel) => {
+      renderRows([linha()]);
+      fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+
+      const tipo = screen.getByRole('combobox', { name: 'Tipo' }) as HTMLInputElement;
+      const origem = screen.getByRole('combobox', { name: 'Origem' }) as HTMLInputElement;
+      expect(tipo.disabled).toBe(true);
+      expect(origem.disabled).toBe(true);
+      // The row's own origem stays an option, so the locked field still SHOWS it.
+      expect(origem.value).toBe(origemLabel);
+      expect(tipo.value).toBe(tipoLabel);
+      expect(screen.getByText('Definida pela importação do canal')).toBeDefined();
+      // The operator's own fields stay theirs.
+      expect(screen.getByLabelText('Motivo')).toHaveProperty('disabled', false);
+    },
+  );
+
+  it.each([
+    ['Shopee', linhaShopee],
+    ['Mercado Livre', linhaMl],
+  ] as const)(
+    'editing an imported %s row saves, and keeps its origem and tipo',
+    async (_canal, linha) => {
+      // ⚠️ The validator refuses a marketplace origem unless the STORED row
+      // already holds it. Called without that row, it applies the create rule
+      // and every edit of an imported row fails with ORIGEM_EXCLUSIVA_MSG.
+      const stored = linha();
+      renderRows([stored]);
+      fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+      fireEvent.change(motivoInput(), { target: { value: 'Anotação do operador' } });
+
+      expect(await flushIncidentes()).toBe(true);
+
+      expect(screen.queryByText(ORIGEM_EXCLUSIVA_MSG)).toBeNull();
+      expect(saveEditMock).toHaveBeenCalledTimes(1);
+      const { form, baseline } = saveEditMock.mock.calls[0]![1];
+      expect(baseline).toEqual(stored);
+      expect(form.origem).toBe(String(stored.origem));
+      expect(form.tipo).toBe(stored.tipo);
+      expect(form.motivo).toBe('Anotação do operador');
+    },
+  );
+
+  it('offers no marketplace origem on a manual row', () => {
+    renderRows([incidente()]);
+    fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+
+    expect((screen.getByRole('combobox', { name: 'Origem' }) as HTMLInputElement).disabled).toBe(
+      false,
+    );
+    const opcoes = opcoesDaOrigem();
+    expect(opcoes).toContain('Site');
+    expect(opcoes).toContain('Outros');
+    expect(opcoes).not.toContain('Pedido Shopee');
+    expect(opcoes).not.toContain('Pedido Mercado Livre');
+  });
+
+  it('offers no marketplace origem on a new incidente either', () => {
+    renderRows([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Novo incidente' }));
+
+    const opcoes = opcoesDaOrigem();
+    expect(opcoes).toContain('(nenhuma)');
+    expect(opcoes).not.toContain('Pedido Shopee');
+    expect(opcoes).not.toContain('Pedido Mercado Livre');
+  });
+
+  it('keeps a legacy row’s own marketplace origem editable when it carries no id', () => {
+    // A row tagged Mercado Livre by a person (no externalId) is not imported:
+    // it stays editable and keeps its displayable value — but Shopee is still
+    // not offered, since only an importer writes that one.
+    renderRows([incidente({ origem: ORIGEM_INCIDENTE.pedidoMercadoLivre })]);
+    fireEvent.click(screen.getByRole('button', { name: 'Editar' }));
+
+    const origem = screen.getByRole('combobox', { name: 'Origem' }) as HTMLInputElement;
+    expect(origem.disabled).toBe(false);
+    expect(origem.value).toBe('Pedido Mercado Livre');
+    const opcoes = opcoesDaOrigem();
+    expect(opcoes).toContain('Pedido Mercado Livre');
+    expect(opcoes).not.toContain('Pedido Shopee');
   });
 });

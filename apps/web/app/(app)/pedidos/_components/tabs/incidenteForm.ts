@@ -9,6 +9,8 @@ import {
 } from '@delfrance/schemas';
 import { valuesEqual } from '@delfrance/core/equality';
 
+import { ehIncidenteImportado, ehOrigemDeMarketplace } from './incidenteCanal';
+
 /**
  * Flat form state for the Incidentes editor. Enum-coded fields are kept as the
  * Mantine `Select` string values (`origem`/`resTipo` are the int code rendered
@@ -85,13 +87,31 @@ function trimToNull(s: string): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+/** The refusal for a marketplace origem a person tried to set. */
+export const ORIGEM_EXCLUSIVA_MSG = 'Origem exclusiva de incidentes importados do canal.';
+
 /**
- * Validate the resolução part of the form. Returns a user-facing error message,
- * or `null` when valid. Mirrors the legacy validators: `tipo` is required and
- * `valor` must be ≥ 0. Runs before `saveIncidente` so the Zod converter never
- * receives an invalid resolução (which would throw an uncaught `ZodError`).
+ * Validate the form. Returns a user-facing error message, or `null` when valid.
+ *
+ * - A MARKETPLACE origem is refused unless `doc` — the stored row being edited,
+ *   `null` on create — already carries that same origem (#1525). Only a channel
+ *   importer writes one: a hand-tagged row has no `claimStatus`, so it reads as
+ *   an OPEN claim and blocks the pedido until someone records a resolução. The
+ *   Origem options hide those values already (`opcoesDeOrigem`); this is the
+ *   save-time backstop, and a caller that passes no `doc` gets the CREATE rule,
+ *   which refuses — the loud direction.
+ * - The resolução mirrors the legacy validators: `tipo` is required and `valor`
+ *   must be ≥ 0. Runs before `saveIncidente` so the Zod converter never
+ *   receives an invalid resolução (which would throw an uncaught `ZodError`).
  */
-export function validateIncidenteForm(form: IncidenteFormState): string | null {
+export function validateIncidenteForm(
+  form: IncidenteFormState,
+  doc: Incidente | null = null,
+): string | null {
+  const origem = form.origem === '' ? null : Number(form.origem);
+  if (ehOrigemDeMarketplace(origem) && origem !== (doc?.origem ?? null)) {
+    return ORIGEM_EXCLUSIVA_MSG;
+  }
   if (!form.registrarResolucao) return null;
   if (form.resTipo === '') return 'Selecione o tipo de resolução.';
   if (form.resValor != null && form.resValor < 0)
@@ -195,15 +215,20 @@ const has = (patch: IncidentePatch, campo: CampoAutoralIncidente): boolean =>
  * The patch for an UPDATE: every authored field whose form value actually
  * differs from `doc`, and nothing else.
  *
- * Two properties carry the fix, and both come from dropping keys rather than
- * from checking them:
+ * Three properties carry the fix, and all three come from dropping keys rather
+ * than from checking them:
  *
  *  - a field the operator did not change is not written at all, so it cannot
  *    lose a race it never entered (tier 0, root `CLAUDE.md` rule 7);
  *  - `resolucao` is omitted entirely when `doc` is locked, so honouring the
  *    legacy `bloquear` guard stops being a re-write of the value we just read
  *    and becomes structural — there is no longer a version of the resolução in
- *    the payload to be stale.
+ *    the payload to be stale;
+ *  - `origem` and `tipo` are omitted entirely when a channel importer owns the
+ *    row (`ehIncidenteImportado`, #1525). Those two are what the pedido overlay
+ *    keys on, so retyping either lifts — or forges — a marketplace block; the
+ *    disabled Selects are the cosmetic half, this is the structural one. A
+ *    stale form can never write them, and they never enter a conflict.
  *
  * ⚠️ `doc` is load-bearing twice over: it supplies the lock state AND the
  * "unchanged" comparison. The caller passes the baseline to decide what the
@@ -222,11 +247,16 @@ export function buildIncidentePatch(
     comentarios: trimToNull(form.comentarios),
     resolucao: buildResolucao(form, doc, now),
   };
+  const importado = ehIncidenteImportado(doc);
   const patch: IncidentePatch = {};
   for (const campo of CAMPOS_AUTORAIS_INCIDENTE) {
     // The frete sub-editor is deferred, so a locked resolução has no editable
     // half left — drop the key rather than write the server's own value back.
     if (campo === 'resolucao' && isResolucaoLocked(doc)) continue;
+    // ⚠️ The editor never authors these on an imported row. The Shopee importer
+    // re-asserts both on its next write; the ML one does not, so for ML this
+    // skip is the ONLY thing between a retype and a lifted block.
+    if (importado && (campo === 'origem' || campo === 'tipo')) continue;
     if (valuesEqual(proposto[campo], doc[campo] ?? null)) continue;
     Object.assign(patch, { [campo]: proposto[campo] });
   }

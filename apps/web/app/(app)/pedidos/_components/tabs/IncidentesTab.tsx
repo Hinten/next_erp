@@ -52,19 +52,14 @@ import {
   type CampoAutoralIncidente,
   type IncidenteFormState,
 } from './incidenteForm';
+import { ehIncidenteImportado, opcoesDeOrigem, returnSnDoIncidente } from './incidenteCanal';
 import { IncidenteConflictModal } from './IncidenteConflictModal';
 import { ReclamacaoMlPanel } from '../ReclamacaoMlPanel';
+import { ReclamacaoShopeePanel } from '../ReclamacaoShopeePanel';
 
 const tipoOptions = (Object.entries(TIPO_INCIDENTE_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
 );
-const origemOptions = [
-  { value: '', label: '(nenhuma)' },
-  ...(Object.entries(ORIGEM_INCIDENTE_LABELS) as [string, string][]).map(([value, label]) => ({
-    value,
-    label,
-  })),
-];
 const resolucaoTipoOptions = (Object.entries(TIPO_RESOLUCAO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
 );
@@ -79,10 +74,12 @@ export interface IncidentesTabProps {
   /** Absent in create mode — there is no subcollection yet. */
   pedidoId?: string;
   /**
-   * The ML account this pedido came through, when it came through one.
+   * The marketplace account (Mercado Livre or Shopee) this pedido came through,
+   * when it came through one.
    *
-   * ⚠️ Required to reach the claim on ML. Absent for a pedido with no ML
-   * integração, which is why the panel is conditional rather than always shown.
+   * ⚠️ Required to reach the claim or the return on the channel. Absent for a
+   * pedido with no integração, which is why the panels are conditional rather
+   * than always shown.
    */
   integracaoId?: string | null;
   /** Publishes pending add/edit/delete work to PedidoForm's shared leave guard. */
@@ -213,6 +210,16 @@ function IncidentesManager({
   // save refuses rather than dropping their resolução edits silently.
   const resolucaoLocked = isResolucaoLocked(live);
   const hasFrete = (live?.resolucao?.frete ?? null) != null;
+  // A channel importer owns `origem` and `tipo` on this row (#1525): the pedido
+  // overlay keys on exactly those two, so retyping either lifts — or forges — a
+  // marketplace block. The disabled Selects are the cosmetic half;
+  // `buildIncidentePatch` dropping both keys is the structural one. Read off the
+  // LIVE row, falling back to the baseline once it was deleted under the form.
+  const linhaEditada = live ?? editingBase;
+  const importado = linhaEditada != null && ehIncidenteImportado(linhaEditada);
+  // The STORED origem decides which marketplace origem stays offered: none on a
+  // manual row (only an importer writes one), the row's own on a legacy one.
+  const origemOptions = opcoesDeOrigem(editingBase?.origem ?? null);
 
   // "Dirty" for the re-seed below: the form no longer matches the baseline it
   // was seeded from. Structural (`valuesEqual`) — `formFromIncidente` returns a
@@ -366,7 +373,9 @@ function IncidentesManager({
       setSaveError(new IncidenteMissingError().message);
       return false;
     }
-    const validationError = validateIncidenteForm(form);
+    // ⚠️ The STORED row, or the marketplace-origem rule applies its CREATE form
+    // and refuses every edit of an imported row. `null` on create, as it must be.
+    const validationError = validateIncidenteForm(form, editing.base);
     if (validationError) {
       setSaveError(validationError);
       return false;
@@ -489,14 +498,16 @@ function IncidentesManager({
                 value={form.tipo}
                 onChange={(v) => v && setForm((f) => ({ ...f, tipo: v }))}
                 allowDeselect={false}
-                disabled={resFieldsDisabled}
+                disabled={resFieldsDisabled || importado}
+                description={importado ? 'Definido pela importação do canal' : undefined}
               />
               <Select
                 label="Origem"
                 data={origemOptions}
                 value={form.origem}
                 onChange={(v) => setForm((f) => ({ ...f, origem: v ?? '' }))}
-                disabled={disabled}
+                disabled={disabled || importado}
+                description={importado ? 'Definida pela importação do canal' : undefined}
               />
             </SimpleGrid>
             <Textarea
@@ -632,6 +643,7 @@ function IncidentesManager({
         data?.map(({ id, data: inc }) => {
           const markedForDeletion = pendingDeleteIds.has(id);
           const claimId = claimIdDoIncidente(inc);
+          const returnSn = returnSnDoIncidente(inc);
 
           return (
             <Card
@@ -677,10 +689,15 @@ function IncidentesManager({
                     number"), and it would label a `site`/`troca`/`devolucao`
                     incidente as Mercado Livre. A mislabelled id is worse than an
                     unlabelled one, and the legacy export is read-tolerant
-                    territory (root `CLAUDE.md` rule 8). */}
+                    territory (root `CLAUDE.md` rule 8). The "Shopee #" prefix
+                    follows the same rule through `returnSnDoIncidente`. */}
                   {claimId != null ? (
                     <Text size="xs" c="dimmed">
                       ML #{inc.externalId}
+                    </Text>
+                  ) : returnSn != null ? (
+                    <Text size="xs" c="dimmed">
+                      Shopee #{returnSn}
                     </Text>
                   ) : (
                     inc.externalId && (
@@ -732,6 +749,17 @@ function IncidentesManager({
               </Group>
               {!markedForDeletion && claimId != null && integracaoId ? (
                 <ReclamacaoMlPanel claimId={claimId} integracaoId={integracaoId} />
+              ) : null}
+              {/* ⚠️ NOT gated on the form's `disabled`, like the ML panel: its
+                  actions act on the channel, never on this pedido document, and
+                  a read-only pedido is exactly when a return still needs an
+                  answer. Mounted per return — a pedido can carry several. */}
+              {!markedForDeletion && returnSn != null && integracaoId ? (
+                <ReclamacaoShopeePanel
+                  integracaoId={integracaoId}
+                  pedidoId={pedidoId}
+                  returnSn={returnSn}
+                />
               ) : null}
             </Card>
           );
