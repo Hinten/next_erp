@@ -16,6 +16,7 @@ runs them, from this worktree, against the project the environment points at.
 | `enviar-precos.ts`       | sends the price of up to 50 produtos through the real step-13 path | only with `--live`        |
 | `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)            | only with `--live`        |
 | `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)    | only with `--live`        |
+| `importar-devolucao.ts`  | rehearses the import of ONE return (step 17) — dry run ONLY        | never — there is no live  |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1683,3 +1684,124 @@ the failure path says so. Read it again with the dry run before repeating.
   BR's, so a sandbox rehearsal proves the wiring, not BR's wire.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — under `--live` it arranges
   a real shipment, and even a dry run calls Shopee.
+
+---
+
+## `importar:devolucao` — rehearsing the return import (dry run ONLY)
+
+A return normally arrives unattended: a `push 32` (code 29), the 6-hourly
+`sweepShopeeReturns` poller or the reclamação action route's post-click refresh
+→ Cloud Tasks → the code-29 arm → `importarDevolucaoShopee` → ONE
+`get_return_detail` → the incidente transaction → the
+`reclamacaoAguardandoVendedor` aviso. The SG sandbox has no Returns module
+(`guide 644`), so the first BR return this channel sees would otherwise be
+imported unobserved. This script pulls ONE named return and prints what that
+arm WOULD do with it — the decision on the stored incidente and the aviso
+effect — without writing anything. It is the instrument for the settle-live
+register's BR-only questions (231–247 in the master plan). The reasoning behind
+every line is `lib/shopee/devolucoes/README.md`.
+
+### 17.1 Environment
+
+Same `.env.local` as every other script here, and the same variables as §1. The
+preamble prints, on stderr and BEFORE anything is read: `modo`, `projeto`,
+`database`, the RAW `SHOPEE_SANDBOX` (only exactly `1` is the sandbox), the
+integração, the return_sn and the order_sn, then the resolved Shopee environment
+and the shop id. The integração must already be connected (§2): a conta with no
+`shop_id` stops the run, saying so.
+
+### 17.2 The dry run — the only mode
+
+```bash
+pnpm --filter @delfrance/shopee-app importar:devolucao --integracao <integracaoId> --return-sn <returnSn>
+```
+
+| flag                | meaning                                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | **required** — the integração DOCUMENT id                                                                                   |
+| `--return-sn <sn>`  | **required** — Shopee's return_sn, ALPHANUMERIC, at most 64 characters; anything else is REFUSED before anything is opened  |
+| `--order-sn <sn>`   | the order the delivery would name. Without it the detail's own `order_sn` names the pedido; with it, a mismatch is reported |
+| `--dry-run`         | the only mode, and redundant                                                                                                |
+| `--live`            | ⚠️ **REFUSED**, with the reason — see §17.4                                                                                 |
+| `--project <id>`    | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                       |
+| `--json`            | the same REDACTED summary as one parseable document on stdout; the preamble goes to stderr                                  |
+| `--help`, `-h`      | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                              |
+
+**What it calls, and what it can never call.** Shopee: ONE `get_return_detail`.
+Firestore: the conta, the pedido at its digest id, the incidente at
+`pedidos/<id>/incidentes/shopee-devolucao-<return_sn>` and the aviso row at its
+chave — reads only. It runs the two PURE decisions the live arm runs on its own
+snapshot — `preverIncidenteDevolucaoShopee` (`devolucaoTx.ts`) and
+`preverEfeitoDoAvisoDeDevolucao` (`avisoDevolucao.ts`) — so the verdict is the
+transaction's, not a second implementation's opinion of it. It calls no writer
+and builds no task scheduler — `salvarIncidenteDevolucaoShopee` and
+`aplicarAvisoDeDevolucao` live in those same two modules and the script never
+names them, and `importarDevolucao.ts` (pull + transaction + aviso + enqueue) is
+never imported — so nothing is written and nothing is enqueued.
+⚠️ The one write it can CAUSE is the token store's own: like every CLI here, the
+call may renew the conta's access token on its way to Shopee.
+
+⚠️ **One deliberate difference from the arm.** The arm reads the pedido FIRST
+and, when it is missing, makes ZERO Shopee calls (one synthetic code 3, then a
+defer). The rehearsal always pulls the detail — the pull is the instrument — and
+then reports `ignorado-sem-pedido` with the id of the code-3 row the arm would
+enqueue (`3:<shop>:<order_sn>:<UTC day start>`).
+
+### 17.3 What to read in the output
+
+A header, then four blocks. The rendering is an **allow-list**: ids, Shopee's
+TOKENS (statuses, reason codes, currency — anything that is not
+`[A-Za-z0-9_]{1,64}` prints as `<nao-token>`, never verbatim), counts, flags,
+stamps and the mapped amounts. The package's returns schemas STRIP every buyer
+field (`user`, addresses, images, videos, `text_reason`, the reverse tracking
+number) before the response reaches the script, so it is safe to paste into an
+issue — keep it that way if you extend it.
+
+| line                      | what it tells you                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `erro do envelope`        | the success envelope's raw `error`, JSON-quoted so `""`, `" "` and `"-"` stay distinct — **register 231**                                           |
+| `status`                  | the PULLED token (the push's own claim never wins), flagged `token DESCONHECIDO` outside the seven documented ones — an unknown token reads as OPEN |
+| `update_time (s)`         | the watermark's source, seconds plus ISO UTC — **register 233**                                                                                     |
+| `pedido existe?`          | `NÃO` ⇒ the arm would defer and enqueue one synthetic code 3 (its doc id is printed)                                                                |
+| `mapeado`                 | `claimStatus`, the watermark in µs, then every block field and the six deadlines — the logistics tokens answer **236, 240, 241**                    |
+| `decisão` → `ação`        | `criado`, `atualizado`, `relogio-avancado`, `ignorado-sem-mudanca` or `ignorado-obsoleto` — what the transaction would do to the stored incidente   |
+| `campos que gravaria`     | the patch's keys — the nine importer-owned keys, or only `relogioProvedorUs` + `ultimaModificacao` on a watermark-only advance                      |
+| `revisao` / `claimStatus` | before → after; `revisao` moves with CONTENT only                                                                                                   |
+| `aviso` → `efeito`        | `abrir` (with the pendência, its prazo, the status as motivo), `resolver` (with why) or `nenhum`, plus the `relogioEvento` it would carry           |
+| `armazenado`              | the stored aviso row's clock, `resolvidoEm` and occurrences — DATA to compare against: the inbox drops an equal or older `relogioEvento`            |
+
+Two other answers end the run early, both exit `0`: `ignorado-inexistente`
+(Shopee says the return does not exist in this shop — the arm would PARK it;
+the rehearsal also prints Shopee's code) and `ignorado-outro-pedido` (the detail describes another
+order or return than the flags named — the arm would park it, writing nothing).
+
+### 17.4 There is no live run
+
+`--live` is refused on purpose (reconcile R-19). A return's incidente has ONE
+writer — the code-29 arm — and that is rule 7's answer for this path (tier 2,
+the `relogioProvedorUs` watermark): a terminal import would be a second door into
+a transaction the push, the poller and the action route already drive. To apply
+a return for real, let the arm do it — the poller re-imports every return
+updated in its trailing 15-day window that is absent, newer, divergent or
+breaking an importer invariant.
+
+| code | when                                                                                  |
+| ---- | ------------------------------------------------------------------------------------- |
+| `0`  | any verdict — every `ignorado-*` included                                             |
+| `0`  | `--help`                                                                              |
+| `1`  | a bad command line (`--live` included); prints THIS command's usage                   |
+| `1`  | a conta with no `shop_id`                                                             |
+| `1`  | any throw, described by CLASS plus Shopee's `code`/`path` — ⚠️ never Shopee's message |
+
+### 17.5 Caveats you should expect to see (none of these is a bug)
+
+- **The sandbox shop is SG and has no Returns module**, so a sandbox run is
+  expected to end on a Shopee error (described by class and code) — the
+  rehearsal needs a BR shop.
+- **`ignorado-sem-mudanca` after a delivery already landed** — the arm had
+  already applied this exact detail; the aviso line then shows the effect the arm
+  re-applies on a replay, and `armazenado` shows it already standing.
+- **`relogio-avancado` with no aviso effect** — Shopee bumped `update_time`
+  without changing anything the incidente stores.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — it signs a real Shopee
+  call with a real conta's token.
