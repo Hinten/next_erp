@@ -61,9 +61,11 @@ everything only a Brazilian shop can settle is a register row (§16).
   (`ehReturnSnShopee`, the ONE return_sn shape) and the aviso tipo in
   `aviso.ts`; the web panel (§11).
 
-Every module here is reached ONLY dynamically from `notificacao.ts`, so the
-receiver bundle stays lean; static value imports from `../pedidos/*` are fine
-inside the folder.
+`notificacoes/notificacao.ts` reaches every module here ONLY dynamically (its
+static imports from this folder are `import type`, pinned by a test), so the
+receiver bundle stays lean; the routes, the sweep's function and the CLI import
+statically, and static value imports from `../pedidos/*` are fine inside the
+folder.
 
 ## 2. Code 29 is a POINTER — the flow, end to end
 
