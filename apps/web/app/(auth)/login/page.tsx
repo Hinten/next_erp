@@ -16,6 +16,7 @@ import {
   Title,
 } from '@mantine/core';
 import { getFirebaseAuth } from '@/lib/firebase/client';
+import { LegalLinks } from './LegalLinks';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -72,6 +73,7 @@ export default function LoginPage() {
             </Anchor>
           </Stack>
         </form>
+        <LegalLinks />
       </Paper>
     </Center>
   );

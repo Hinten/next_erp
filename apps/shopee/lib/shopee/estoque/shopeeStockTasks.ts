@@ -53,11 +53,25 @@
  * `./errosEstoque` (beside the rest of the stock vocabulary) so the callers can
  * `instanceof` it without importing this adapter, and this adapter imports none
  * of them.
+ *
+ * ⚠️ A TRANSIENT Cloud Tasks failure is the opposite case, and it IS shared: the
+ * real enqueue runs through `../shopeeTasks.ts`'s
+ * `enfileirarNomeandoFalhaTransitoria`, so a 503/429 or a socket reset rejects
+ * as `ShopeeTasksTransientError`, which the stock sweep contains per conta with
+ * the cursor NOT advanced — the next tick is the retry. The SDK's raw
+ * `FirebaseFunctionsError` carries a STRING code the boundary's gRPC check never
+ * matched, so before this one hiccup on any conta failed the whole tick. A
+ * deploy-shaped code (a missing IAM grant, no queue in the region) still
+ * rejects raw, and still fails it.
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../../firebase/admin';
-import { shopeeTasksDesabilitado, shopeeTasksRegion } from '../shopeeTasks';
+import {
+  enfileirarNomeandoFalhaTransitoria,
+  shopeeTasksDesabilitado,
+  shopeeTasksRegion,
+} from '../shopeeTasks';
 import { SHOPEE_STOCK_SEND_QUEUE } from './constantesEstoque';
 import { ShopeeStockTasksDisabledError } from './errosEstoque';
 import type { TarefaDeEstoqueShopee } from './planoEstoque';
@@ -108,9 +122,13 @@ class AgendadorFirebaseEstoqueShopee implements AgendadorEstoqueShopee {
    */
   async enqueue(payload: TarefaDeEstoqueShopee, opts?: OpcoesDeEnfileiramento): Promise<void> {
     const atraso = opts?.scheduleDelaySeconds;
-    await this.fila().enqueue(
-      payload,
-      atraso !== undefined ? { scheduleDelaySeconds: atraso } : undefined,
+    // A transient Cloud Tasks failure is named here, AT the transport, so the
+    // stock sweep's per-conta boundary contains it instead of losing the tick.
+    await enfileirarNomeandoFalhaTransitoria(() =>
+      this.fila().enqueue(
+        payload,
+        atraso !== undefined ? { scheduleDelaySeconds: atraso } : undefined,
+      ),
     );
   }
 }

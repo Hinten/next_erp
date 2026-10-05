@@ -91,6 +91,9 @@ import {
   useTableUrlState,
 } from './useTableUrlState';
 import { renderCell } from './cell-renderers';
+import { resolvePresetFilters, type TablePresetFilter } from './presetFilters';
+
+const NO_PRESETS: readonly TablePresetFilter[] = [];
 
 /**
  * Trailing debounce before a scroll offset is persisted. Long enough that a
@@ -347,6 +350,8 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * under `queryOverride` — that query is caller-owned.
    */
   extraFilters?: ReadonlyArray<PipelineFieldFilter>;
+  /** Named URL filters, validated and applied server-side on both transports. */
+  presetFilters?: readonly TablePresetFilter[];
 
   /**
    * Opt-in free-text search box, rendered above the table and owned by this
@@ -501,6 +506,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   forcedOrderBy,
   orderBy,
   extraFilters,
+  presetFilters = NO_PRESETS,
   search: searchConfig,
   queryOverride,
   actionsPanel,
@@ -610,8 +616,17 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [virtualColumns],
   );
   const filterableFields = useMemo<FilterableField[]>(
-    () => [...descriptors, ...virtualFilterFields],
-    [descriptors, virtualFilterFields],
+    () => [
+      ...descriptors,
+      ...virtualFilterFields,
+      ...presetFilters.map((p) => ({
+        key: p.key,
+        kind: 'string' as const,
+        label: p.label,
+        preset: true,
+      })),
+    ],
+    [descriptors, virtualFilterFields, presetFilters],
   );
 
   // URL-synced per-column filters + sort + search term (hydrated from the query
@@ -697,8 +712,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         out[f.field] = subcollectionLookupFormatter(f.subcollectionLookup.fields);
       }
     }
+    for (const preset of presetFilters) out[preset.key] = preset.formatValue;
     return out;
-  }, [virtualColumns]);
+  }, [virtualColumns, presetFilters]);
 
   // Everything currently narrowing the list, as chips. Labels resolve exactly
   // the way the column HEADER resolves them — a relabelled column whose chip
@@ -806,10 +822,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Filters pushed to the server / applied client-side, EXCLUDING the
   // subcollection-lookup keys (which are resolved via `idIn`, not a where()).
   const serverFilters = useMemo<Record<string, ColumnFilterValue>>(() => {
-    if (subLookupKeys.size === 0) return filters;
-    return Object.fromEntries(Object.entries(filters).filter(([k]) => !subLookupKeys.has(k)));
+    const presetKeys = new Set(presetFilters.map((p) => p.key));
+    return Object.fromEntries(
+      Object.entries(filters).filter(([k]) => !subLookupKeys.has(k) && !presetKeys.has(k)),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- filtersSerial stands in for filters: a value key, not an identity
-  }, [filtersSerial, subLookupKeys]);
+  }, [filtersSerial, subLookupKeys, presetFilters]);
+  const resolvedPresets = useMemo(
+    () => resolvePresetFilters(presetFilters, filters),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serialized filter values
+    [presetFilters, filtersSerial],
+  );
+  const presetSerial = JSON.stringify(resolvedPresets);
   const serverFiltersSerial = useMemo(
     () =>
       JSON.stringify(
@@ -947,7 +971,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * Ranked the other way round, typing in the search box while a date range was
    * open silently demoted the search's own range to a post-filter and scanned.
    */
-  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy ?? rangeForcedOrderBy;
+  const resolvedForcedOrderBy =
+    resolvedPresets.orderBy ?? forcedOrderBy ?? searchForcedOrderBy ?? rangeForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
         field: resolvedForcedOrderBy.field,
@@ -1003,7 +1028,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // passing either unmemoised re-executed the pipeline — a billed query — on
   // every parent render. Both callers today pass stable values; this keeps it
   // that way for the next one (#1704).
-  const columnFilterCount = Object.keys(serverFilters).length;
+  const columnFilterCount =
+    Object.keys(serverFilters).length + presetFilters.filter((p) => filters[p.key]).length;
   const extraFilterCount = effectiveExtraFilters?.length ?? 0;
   const listMode = useMemo(
     () =>
@@ -1090,6 +1116,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Always use the classic Query path when an override is supplied. Otherwise,
   // try Pipelines first; fall back to buildQuery when unsupported by the SDK.
   const pipeline: Pipeline | null = useMemo(() => {
+    if (resolvedPresets.error) return null;
     // The declared query streams instead. Returning null here routes it to
     // `fallbackQuery` below, which builds exactly `where(base) + orderBy(declared)
     // + limit` — the shape both index guards already assert an index for.
@@ -1104,6 +1131,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     if (extraEmpty) return null;
     try {
       return buildPipeline(db, {
+        predicate: resolvedPresets.predicate,
         collection: collection.resolvePath(pathContext),
         // Base equality filters (from meta.defaultQuery), the page-owned
         // extraFilters, AND the user's per-column filters (minus
@@ -1152,10 +1180,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     lookupEmpty,
     selectFieldsSerial,
     listMode,
+    presetSerial,
     refreshKey,
   ]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
+    if (resolvedPresets.error) return null;
+    if (queryOverride && resolvedPresets.predicate)
+      throw new Error('TableView presets cannot be combined with queryOverride.');
     if (queryOverride) return queryOverride;
     if (pipeline) return null;
     // An id restriction resolves via `idIn` (pipeline-only) — a subcollection
@@ -1216,7 +1248,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
     constraints.push(fsLimit(effectiveLimit));
-    return buildQuery(base, constraints);
+    return buildQuery(base, constraints, resolvedPresets.predicate);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on value serials (base/extra filters) and pathContext is untracked: an identity dep here reopens the listener on every render
   }, [
     db,
@@ -1234,6 +1266,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     baseFiltersSerial,
     extraFiltersSerial,
     extraEmpty,
+    presetSerial,
     refreshKey,
   ]);
 
@@ -1248,6 +1281,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
   const primaryRows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
+      if (resolvedPresets.error) return [];
       // A subcollection lookup that matched nothing, or an extra filter with
       // an empty candidate list → no rows (no query ran).
       if (lookupEmpty || extraEmpty) return [];
@@ -1256,7 +1290,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     },
     // serverFiltersSerial stands in for the `serverFilters` object content.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- serverFiltersSerial stands in for serverFilters: a value key, not an identity
-    [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
+    [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty, presetSerial],
   );
 
   // The window the rows `snap` currently holds were fetched at.
@@ -1342,12 +1376,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     (!snap.loading || pendingGrowth);
 
   const widenPipeline: Pipeline | null = useMemo(() => {
+    if (resolvedPresets.error) return null;
     if (!primarioVazio || !textQuery) return null;
     if (lookupLoading || lookupEmpty || extraEmpty) return null;
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
         textSearch: { query: textQuery },
+        predicate: resolvedPresets.predicate,
         // ⚠️ `extraFilters`, NOT `effectiveExtraFilters`. The latter carries the
         // search's own `toFilters` output — the very prefix range that just
         // returned nothing — and re-applying it would guarantee this query
@@ -1371,6 +1407,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     db,
     collection,
     primarioVazio,
+    presetSerial,
     textQuery,
     effectiveLimit,
     effectiveOrderBy,
@@ -2086,6 +2123,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           {/* ⚠️ `fromWiden.error` is deliberately NOT here — see the effect that
               logs it. A failed optional widening must not become the error state
               of a primary query that succeeded. */}
+          {resolvedPresets.error && (
+            <Alert color="red" title="Filtro inválido">
+              {resolvedPresets.error}
+            </Alert>
+          )}
           {(snap.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
               {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}

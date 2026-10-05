@@ -127,6 +127,12 @@ export function parseFiltersFromParams(
     if (RESERVED_PARAMS.has(key)) continue;
     const descriptor = byKey.get(key);
     if (!descriptor) continue;
+    // Presets fail closed. Keep even a malformed operation/value so the
+    // registered resolver can render an error instead of losing the filter.
+    if (descriptor.preset) {
+      out[key] = { op: 'eq', value: raw.startsWith('eq:') ? raw.slice(3) : `invalid:${raw}` };
+      continue;
+    }
     const sep = raw.indexOf(':');
     if (sep < 0) continue;
     const op = raw.slice(0, sep) as ColumnFilterOp;

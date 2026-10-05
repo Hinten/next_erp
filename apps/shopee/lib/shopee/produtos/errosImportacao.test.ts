@@ -137,7 +137,7 @@ describe('ShopeeImportBlockedError', () => {
 
   it('11 — ⛔ NEAR-MISS: NÃO é contido por conta, embora estenda ShopeeError', () => {
     // A célula decisiva. `erroContidoPorConta` nomeia CLASSES e nunca a base
-    // (`containment.ts:46-52`), então herdar de `ShopeeError` não transforma uma
+    // (`containment.ts:54-60`), então herdar de `ShopeeError` não transforma uma
     // recusa de UM anúncio numa pane da CONTA inteira — que é o que o argumento
     // "estenda Error" temia. Se alguém trocar a lista por um
     // `instanceof ShopeeError`, este teste é o que fica vermelho.
