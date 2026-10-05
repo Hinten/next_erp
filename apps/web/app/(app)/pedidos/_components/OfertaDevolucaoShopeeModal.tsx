@@ -33,8 +33,10 @@ import type { ShopeeSolucaoOfertavel, SolucaoDevolucaoShopee } from '@/lib/shope
  *  4. **An acknowledgement keyed on what it acknowledges** — the solução AND the
  *     centavos, never a boolean — so changing either one clears it.
  *  5. **The payload cannot be stale at commit**: confirm is blocked while the
- *     solutions are refetching, and a refetch that drops the chosen solução drops
- *     the selection (derived each render, never an effect).
+ *     solutions are refetching AND while their last read failed (TanStack keeps
+ *     the previous answer on an error, so the list on screen would be the one
+ *     from BEFORE a refusal — review on #1765), and a refetch that drops the
+ *     chosen solução drops the selection (derived each render, never an effect).
  *
  * ⚠️ **The amount leaves the browser as INTEGER centavos** (`valorReembolsoMinor`)
  * — the route converts once. And a NON-adjustable solução sends **no
@@ -50,6 +52,13 @@ export interface OfertaDevolucaoShopeeModalProps {
   solucoes: ShopeeSolucaoOfertavel[];
   /** True while the estado is being refetched — blocks the commit. */
   carregando: boolean;
+  /**
+   * True while the estado's LAST read failed — `solucoes` is then the answer
+   * from before the failure (a refusal's refetch that errored keeps the
+   * pre-refusal list), so it blocks the commit like `carregando` does. The
+   * panel's own buttons follow the same rule.
+   */
+  estadoComErro: boolean;
   enviando: boolean;
   erro: string | null;
   onConfirm: (p: { solucao: SolucaoDevolucaoShopee; valorReembolsoMinor?: number }) => void;
@@ -101,6 +110,7 @@ function avaliarValor(valor: number | null, s: ShopeeSolucaoOfertavel): Avaliaca
 export function OfertaDevolucaoShopeeModal({
   solucoes,
   carregando,
+  estadoComErro,
   enviando,
   erro,
   onConfirm,
@@ -138,7 +148,7 @@ export function OfertaDevolucaoShopeeModal({
   const chave = completa ? `${selecionada.solucao}|${valorMinor ?? 'sem-valor'}` : null;
   const ciente = chave !== null && cienteDe === chave;
 
-  const bloqueado = !completa || !ciente || carregando || enviando;
+  const bloqueado = !completa || !ciente || carregando || estadoComErro || enviando;
 
   function escolher(v: string) {
     setEscolha(v);
@@ -230,10 +240,17 @@ export function OfertaDevolucaoShopeeModal({
               />
             )}
 
-            {carregando && (
+            {carregando ? (
               <Text size="xs" c="dimmed">
                 Atualizando as soluções da Shopee…
               </Text>
+            ) : (
+              estadoComErro && (
+                <Alert color="yellow" variant="light">
+                  Não foi possível atualizar as soluções da Shopee, então as opções acima podem
+                  estar desatualizadas. Feche e tente de novo.
+                </Alert>
+              )
             )}
           </>
         )}

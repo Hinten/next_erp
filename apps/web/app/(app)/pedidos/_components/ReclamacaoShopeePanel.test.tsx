@@ -64,6 +64,7 @@ vi.mock('./OfertaDevolucaoShopeeModal', () => ({
     return (
       <div data-testid="oferta-modal">
         <span>carregando:{String(props.carregando)}</span>
+        <span>estadoComErro:{String(props.estadoComErro)}</span>
         <span>enviando:{String(props.enviando)}</span>
         <span>solucoes:{props.solucoes.map((s) => s.solucao).join(',')}</span>
         {props.erro !== null && <p>erro-do-modal:{props.erro}</p>}
@@ -865,7 +866,40 @@ describe('ReclamacaoShopeePanel — the offer flow', () => {
     const modal = await abrirOferta();
     expect(within(modal).getByText('solucoes:REFUND')).toBeTruthy();
     expect(within(modal).getByText('carregando:false')).toBeTruthy();
+    expect(within(modal).getByText('estadoComErro:false')).toBeTruthy();
     expect(within(modal).getByText('enviando:false')).toBeTruthy();
+  });
+
+  it('a 409 whose refetch FAILS leaves the modal BLOCKED on the stale list — and the panel sends nothing from it (review on #1765)', async () => {
+    const modal = await abrirOferta();
+    h.reclamacaoAcao.mockRejectedValueOnce(
+      new ShopeeClientHttpError(
+        'A Shopee não permite esta solução agora.',
+        409,
+        'SHOPEE_RECLAMACAO_RECUSADA_PELA_SHOPEE',
+      ),
+    );
+    h.reclamacaoEstado.mockRejectedValue(new ShopeeClientNetworkError('Failed to fetch'));
+    fireEvent.click(within(modal).getByRole('button', { name: 'stub enviar ajustável' }));
+    await screen.findByText('erro-do-modal:A Shopee não permite esta solução agora.');
+    // The refetch is OVER and failed: `carregando` is false, so only the error
+    // flag can block the commit — TanStack still holds the pre-refusal list.
+    await waitFor(() => expect(within(modal).getByText('estadoComErro:true')).toBeTruthy());
+    expect(within(modal).getByText('carregando:false')).toBeTruthy();
+    expect(within(modal).getByText('solucoes:REFUND')).toBeTruthy();
+
+    // The panel's backstop: even a send that reaches `onConfirm` goes nowhere.
+    fireEvent.click(within(modal).getByRole('button', { name: 'stub enviar ajustável' }));
+    await pausa(20);
+    expect(h.reclamacaoAcao).toHaveBeenCalledTimes(1);
+
+    // The near-miss: the block is the ERROR, not "a refusal happened" — a good
+    // read re-arms it, and the next send goes out.
+    comEstado({ acoesDisponiveis: ['ofertar'] });
+    fireEvent.click(botao('Atualizar'));
+    await waitFor(() => expect(within(modal).getByText('estadoComErro:false')).toBeTruthy());
+    fireEvent.click(within(modal).getByRole('button', { name: 'stub enviar ajustável' }));
+    await waitFor(() => expect(h.reclamacaoAcao).toHaveBeenCalledTimes(2));
   });
 
   it('sends the chosen solução and the CENTAVOS the modal assembled', async () => {

@@ -16,6 +16,7 @@ const SOLUCOES: ShopeeSolucaoOfertavel[] = [
 const base = (over: Partial<Props> = {}): Props => ({
   solucoes: SOLUCOES,
   carregando: false,
+  estadoComErro: false,
   enviando: false,
   erro: null,
   onConfirm: vi.fn(),
@@ -261,6 +262,35 @@ describe('OfertaDevolucaoShopeeModal — the payload cannot be stale at commit',
     expect(screen.getByText('Atualizando as soluções da Shopee…')).toBeTruthy();
     fireEvent.click(enviar());
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it('blocks confirm while the estado’s last read FAILED — the list is the one from before (review on #1765)', () => {
+    const { rerender, props, onConfirm } = montar();
+    fireEvent.click(apenasReembolso());
+    fireEvent.click(ciente());
+    expect(enviar().disabled).toBe(false);
+    expect(screen.queryByText(/podem estar desatualizadas/)).toBeNull();
+
+    rerender(modal({ ...props, estadoComErro: true }));
+    expect(enviar().disabled).toBe(true);
+    expect(screen.getByText(/podem estar desatualizadas/)).toBeTruthy();
+    // ⚠️ Not the refetch line: nothing is loading, and saying so would promise
+    // an update that is not coming.
+    expect(screen.queryByText('Atualizando as soluções da Shopee…')).toBeNull();
+    fireEvent.click(enviar());
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    // A retry in flight after the error shows the refetch line, not both.
+    rerender(modal({ ...props, estadoComErro: true, carregando: true }));
+    expect(screen.getByText('Atualizando as soluções da Shopee…')).toBeTruthy();
+    expect(screen.queryByText(/podem estar desatualizadas/)).toBeNull();
+    expect(enviar().disabled).toBe(true);
+
+    // The near-miss: a good read clears it and the same choice can be sent.
+    rerender(modal({ ...props, estadoComErro: false }));
+    expect(enviar().disabled).toBe(false);
+    fireEvent.click(enviar());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
   it('blocks confirm, Cancelar and the choices while the proposal is being sent', () => {
