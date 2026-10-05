@@ -238,6 +238,8 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/pedidos/{arranjoAutomatico,arranjoAutomaticoSweep}.ts` + `lib/shopee/avisos/despachoAutomatico.ts`
   — step 15b's automatic arrange of a Turbo package, its 5-minute sweep and its
   two avisos. See **Auto-arrange** under Labels.
+- `lib/shopee/devolucoes/` + `app/api/marketplace/shopee/reclamacao/` — step
+  17's returns. See **Returns**.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -415,27 +417,30 @@ a page of the 3-day queue irreversibly.
   15-minute per-conta `get_order_list` walk on a durable cursor, DOUBLY gated
   (an env flag AND a structural guard that reads the dispatch table).
 - `lib/shopee/notificacoes/notificacaoSintetica.ts` — the ONE builder per
-  synthesized code: `notificacaoSinteticaDePedido` (code 3, five producers) and
-  `notificacaoSinteticaDePacote` (code 30, step 15b's sweep). Every producer
+  synthesized code: `notificacaoSinteticaDePedido` (code 3, six producers),
+  `notificacaoSinteticaDePacote` (code 30, step 15b's sweep) and
+  `notificacaoSinteticaDeDevolucao` (code 29, step 17), plus the UTC-day stamp
+  `carimboDoDiaUtcMs`. Every producer
   shares them, so the shape and the dedup key agree — the doc id still carries
   each tick's own clock, so each producer owes its own idempotence.
 - `lib/shopee/notificacoes/pushConfigMonitor.ts` —
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
 - `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
-  avisos, and the second of the **seven** modules in this app that write to the
+  avisos, and the second of the **eight** modules in this app that write to the
   avisos inbox (`autorizacao.ts`, this one, step 8's `reservaTravada.ts`, step
   11's `anuncios/avisoAnuncio.ts`, step 12's `estoque/avisoEstoque.ts`,
-  step 14's `nfe/avisoNfe.ts` and step 15b's `despachoAutomatico.ts`). It
+  step 14's `nfe/avisoNfe.ts`, step 15b's `despachoAutomatico.ts` and step
+  17's `devolucoes/avisoDevolucao.ts`). It
   holds NO `millisToMicros`: it takes the µs helpers from
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **87** suites in this app name (85 drive it), and since step 8 it has a
+  **93** suites in this app name (91 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
   step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 after step 15, 87 after step 15b — the two `*.tasks.test.ts` suites it counts name the double in a
+  84 after step 15, 87 after step 15b, 93 after step 17 — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -466,7 +471,7 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — **eleven** dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — **twelve** dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
@@ -479,8 +484,9 @@ a page of the 3-day queue irreversibly.
   listing, `enviar-estoque.ts` (step 12) pushes the stock of up to 50 named
   produtos, `enviar-precos.ts` (step 13) their prices and `enviar-nfe.ts`
   (step 14) the approved NF-e of up to 50 named pedidos, in process, and
-  `etiqueta.ts` (step 15) the label of ONE pedido; the last ten **dry-run by
-  default**, `--live` to write. Their pure halves (arg parsing,
+  `etiqueta.ts` (step 15) the label of ONE pedido and `importar-devolucao.ts`
+  (step 17) ONE return; the ten before it **dry-run by default**, `--live` to
+  write, and it is read-only. Their pure halves (arg parsing,
   the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
   `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
@@ -490,10 +496,12 @@ a page of the 3-day queue irreversibly.
   `lib/shopee/anuncios/publicarAnuncioCli.ts`,
   `lib/shopee/estoque/enviarEstoqueCli.ts`,
   `lib/shopee/precos/enviarPrecoCli.ts`,
-  `lib/shopee/nfe/enviarNfeCli.ts` and
-  `lib/shopee/etiqueta/etiquetaCli.ts` **because `scripts/` is outside this
-  app's vitest `include`**, so logic written in a script file can never be
-  tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
+  `lib/shopee/nfe/enviarNfeCli.ts`,
+  `lib/shopee/etiqueta/etiquetaCli.ts` and
+  `lib/shopee/devolucoes/importarDevolucaoCli.ts` (its parser) **because
+  `scripts/` is outside this app's vitest `include`**, so logic written in a
+  script file can never be tested (the `pedidoMoneyAudit.ts` precedent in
+  `apps/mercado-livre`).
   Script-only, imported by no route and no bundle.
 
 The platform-neutral Shopee core (signer, hosts, typed clients, wire schemas,
@@ -634,11 +642,12 @@ same on the real host, and then it goes.
 constant: `shop_penalty_update_push` is code **28** and push_api_id **31**. The
 dispatch table is the only place this is written down — codes 1 / 2 / 12 are the
 conta arms, code 3 is the order import (step 5), codes 4 / 30 / 47 are the
-shipment merge (step 7), codes 16 / 27 the listing lifecycle (step 11), a listed
+shipment merge (step 7), codes 16 / 27 the listing lifecycle (step 11), code 29
+the returns import (step 17), a listed
 handful `ack`, data-bearing codes with no owner **park**, and an unlisted code
 parks too, which is the only signal a new code appeared. ⚠️ `DestinoPush` has
-**seven** members and the ladder that reads it is closed by a compile-time
-`const restante: 'conta' = destino` line: an eighth destino without an arm of
+**eight** members and the ladder that reads it is closed by a compile-time
+`const restante: 'conta' = destino` line: a ninth destino without an arm of
 its own stops compiling, rather than falling through to the authorization arms.
 
 ✅ **Codes 4, 30 and 47 route to the shipment merge (step 7).** Three codes, ONE
@@ -698,17 +707,20 @@ defers":
 | **code 3**, Shopee's DAILY quota (`error_limit`) | resets 00:00 UTC+8; the daily lane's cadence is what brackets it — a burst limit THROWS instead |
 | **codes 4 / 30 / 47**, a shop that maps to no active integração | the SAME reading as code 3, and the same `sem-conta` kind: connecting the shop makes the package **actionable** — `get_package_detail` still answers for it |
 | **codes 4 / 30 / 47**, the pedido does not exist yet | no page states an ordering between push codes, so a package event can precede the code 3 that creates the pedido; `kind: 'frete-adiado'`, and it enqueues ONE synthetic code 3 (`origem: 'rastreio'`) |
+| **code 29**, a shop that maps to no active integração | the same `sem-conta` reading: `get_return_detail` answers once the shop connects |
+| **code 29**, the pedido does not exist yet | `kind: 'devolucao-adiada'`, plus ONE synthetic code 3 (`origem: 'devolucao'`) stamped with the START of the UTC day — one code-3 row per order per day |
 | ⚠️ **code 2**, the same unmapped shop | **ACKED, not deferred** |
 
 ⚠️ **Every reason string an arm BUILDS is prefixed by it**, so a parked or
 deferred row says which one wrote it: `push_code 3:` for the order import,
-**`rastreio:`** for the shipment merge. ⚠️ The ONE exception is the shared
-`sem-conta` defer — the two unmapped-shop rows in the table above and their
-code-1 twin: all three arms emit the same UNPREFIXED `loja <id> não mapeia…`
+**`rastreio:`** for the shipment merge, `anuncio:` for listings, `devolucao:`
+for returns. ⚠️ The ONE exception is the shared
+`sem-conta` defer — the unmapped-shop rows in the table above and their
+code-1 twin: all five arms emit the same UNPREFIXED `loja <id> não mapeia…`
 template, so there the discriminator is the row's `kind` + `code`, never the
-string. The two error→disposition readers
-(`disposicaoDaFalhaDeImportacao`, `disposicaoDaFalhaDeRastreio`) are one private
-class table with two prefixes — step 5's behaviour is byte-identical and its
+string. The four error→disposition readers
+(`disposicaoDaFalhaDe{Importacao,Rastreio,Anuncio,Devolucao}`) are one private
+class table with four prefixes — step 5's behaviour is byte-identical and its
 tests are unedited, which is the proof that the refactor changed nothing.
 
 ⚠️ **The code-2 inversion, and why code 3 goes the other way.** For a code 2 the
@@ -834,12 +846,13 @@ step 6's `sweepShopeeEscrowSettlement` reads money that Shopee exposes only once
 the escrow is RELEASED — no push was ever sent for it, so none was ever missed.
 It is documented under **Payments and settlement**, not here; filing it as a
 fifth backstop would make "a way a push never arrives" mean nothing. The honest
-count is **eleven** `onSchedule` triggers — eight in `functions/src/index.ts`
+count is **twelve** `onSchedule` triggers — nine in `functions/src/index.ts`
 plus step 12's three stock sweeps in `functions/src/sweepStock.ts` — with
-`index.test.ts` pinning eleven distinct crons. `ci-shopee.yml` says ELEVEN too;
+`index.test.ts` pinning twelve distinct crons. `ci-shopee.yml` says TWELVE too;
 the two must never disagree. ⚠️ Step 15b's `sweepShopeeAutoArrange` is NOT a
 pure backstop: for a late NF-e no push is documented, so it is the primary
-signal (**Auto-arrange**, under Labels).
+signal (**Auto-arrange**, under Labels). Nor is step 17's `sweepShopeeReturns`:
+code 29 reports four fields, so for the rest it is the signal (**Returns**).
 
 ⚠️ **Step 8's sweep IS a backstop by that same criterion, and it is the only one
 that reaches past three days.** A subscription Shopee SUSPENDS loses every push
@@ -1527,6 +1540,35 @@ channels (`CANAIS_ARRANJO_AUTOMATICO`) the code-4/30/47 arm ships unattended.
   and `etiquetaComPrazo` (90011/90012) open `/despacho/checkout`. Deploy
   `apps/web` (their `mensagens.ts` rows) BEFORE the functions.
 
+## Returns (`lib/shopee/devolucoes/`, step 17)
+
+Code 29 is a POINTER: one `get_return_detail` per delivery, written as ONE
+incidente per `return_sn` at `shopee-devolucao-<return_sn>` on
+`makePedidoIdShopee`'s pedido. Depth: `devolucoes/README.md`.
+
+- Buyer data never reaches Firestore, a log or the corpus: the package's returns
+  schemas STRIP (the one exception to "every object is `.passthrough()`") and
+  declare only what the app reads.
+- Watermark `relogioProvedorUs` — the detail's `update_time` through
+  `microsDeSegundosShopee`, never `ultimaModificacao` (the web stamps wall-clock
+  µs there). Newer writes; equal writes only if the content differs; older
+  writes nothing. A stale detail neither opens nor closes the incidente or its
+  aviso.
+- origem 5 `pedidoShopee` (never 2 — the web reads origem 2 + digits as an ML
+  claim), tipo `returns` FOR LIFE: a Shopee return blocks `finalizar` only.
+  Terminal = {CLOSED, CANCELLED}; any other token, unknown included, is open.
+- `devolucoes/acoesDevolucao.ts` holds NO `db`: `reclamacao/acao` re-reads the
+  return live, refuses (409) what Shopee would, and enqueues a synthetic code 29
+  so the importer — the single writer — reflects the action.
+- `sweepShopeeReturns` (every 6 h at :35; valve
+  `SHOPEE_DEVOLUCAO_SWEEP_DISABLED`) re-imports what code 29 never announces: a
+  row newer, divergent, or breaking an importer invariant — only for returns
+  updated in the last 15 days. It writes nothing itself.
+- Aviso `reclamacaoAguardandoVendedor`, one per return; `prazo` = the nearest
+  seller deadline; `relogioEvento = relogioProvedorUs + min(revisao, 999 999)`.
+- Deploy: `apps/functions` → `apps/shopee` App Hosting → `apps/web` → this
+  codebase's functions.
+
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
@@ -1634,35 +1676,44 @@ read by nothing.
   which also reads nothing while the valve above or `SHOPEE_TASKS_DISABLED` is
   `'1'`.
 
+## Env added by step 17
+
+- **`SHOPEE_DEVOLUCAO_SWEEP_DISABLED`** — `'1'` and nothing else stops
+  `sweepShopeeReturns`; unset is ON. Functions-only: home
+  `functions/.env.deploy`. ⚠️ ON at the cutover deploy, it imports 15 days of
+  returns and starts blocking `finalizar` (rule 8).
+
 ## CI
 
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 15b that job runs
-**seven suite FILES and twelve tests**
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 17 that job runs
+**eight suite FILES and sixteen tests**
 (`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
 `lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
 `lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1,
 `lib/shopee/estoque/enviarEstoque.tasks.test.ts` ×1,
 `lib/shopee/precos/atualizarPrecos.tasks.test.ts` ×3,
 `lib/shopee/nfe/enviarNfe.tasks.test.ts` ×1,
-`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts` ×1) — still one job, still
+`lib/shopee/pedidos/arranjoAutomatico.tasks.test.ts` ×1,
+`lib/shopee/devolucoes/devolucao.tasks.test.ts` ×4) — still one job, still
 one check name, no new gate-manifest row. The lane's header carries the same
 pair of numbers.
 
-Four **push deliveries** go through the receiver hop: an unknown push code
-(→ `parked`); since step 5 a **code 3**, since step 7 a **code 4** and since
-step 11 a **code 16**, naming a shop that maps to no integração (→ `deferred`). Step 9's file is a different
+Five **push deliveries** go through the receiver hop: an unknown push code
+(→ `parked`); since step 5 a **code 3**, since step 7 a **code 4**, since
+step 11 a **code 16** and since step 17 a **code 29**, naming a shop that maps
+to no integração (→ `deferred`). Step 9's file is a different
 hop: enqueue → the tasks emulator → the real `processShopeeMassImport` → a
 seeded job stamped `failed`. Step 12's is a THIRD hop: enqueue → the tasks
 emulator → the real `sendShopeeStock` → a seeded LINK document stamped
 `erp:task-excede-limite`, from a 51-model task the chunker cuts. Step 13's is
 a FOURTH: the real `processShopeePriceSync` takes a job whose anchors all skip
 at PLAN time to `completed` (the drain's lazy client is never built), answers
-`noop` once cancelled and fails a wrong-`tipo` conta. All eleven (steps 14's
-and 15b's, below, included) are chosen for the same reason — each is decided
-with NO Shopee call; ten write a document, and the cancelled job's dispatch writes
+`noop` once cancelled and fails a wrong-`tipo` conta. All fifteen (steps 14's,
+15b's and 17's, below, included) are chosen for the same reason — each is decided
+with NO Shopee call; fourteen write a document, and the cancelled job's dispatch writes
 NOTHING (a sentinel job behind it proves it ran): the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
@@ -1686,6 +1737,12 @@ Step 15b's file enqueues a synthetic code 30 for a PRESENT pedido on a conta
 with NO credential: the arm's two dynamic imports resolve and the token read
 throws before any fetch (`deferred`). The hook, after `get_package_detail`, is
 out of reach.
+
+Step 17's file adds two synthetic code 29s (no credential ⇒ `deferred`
+`devolucao:`; no pedido ⇒ `deferred` plus the day-stamped code-3 row) and ONE
+in-process case: `importarDevolucaoShopee` with a stub client against the
+emulator's Firestore, since a dispatched `get_return_detail` would leave the
+runner.
 
 ⚠️ **No tasks suite exercises the mass import's burst pause**: the
 scheduler sets `scheduleDelaySeconds` there, the emulator ignores it
@@ -1719,7 +1776,9 @@ grew it by exactly four** — the job schema, the two Mercado Livre schemas it
 reuses and `shared/ttl.ts`. **Step 14 grew it by exactly two** —
 `packages/schemas/src/nfeEnvioCanal.ts` (the shared NF-e predicates) and
 `packages/schemas/src/nfe.ts` (`ESTADO_NFE`, `CHAVE_NFE_REGEX`, the trigger's
-`nfeMeta`) — for a closure of **50** entries today.
+`nfeMeta`). **Step 17 grew it by exactly one** —
+`packages/schemas/src/devolucaoShopee.ts` (`ehReturnSnShopee`) — for a closure
+of **51** entries today.
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -1768,7 +1827,7 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other ten CLIs are **dry-run by default** and, like `oauth:url`, are
+The other eleven CLIs are **dry-run by default** and, like `oauth:url`, are
 **never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
 output and the runbook for each live in `scripts/README.md`:
 
@@ -1783,6 +1842,7 @@ pnpm --filter @delfrance/shopee-app enviar:estoque --integracao <integracaoId> -
 pnpm --filter @delfrance/shopee-app enviar:precos --integracao <integracaoId> --produto <produtoId>
 pnpm --filter @delfrance/shopee-app enviar:nfe --pedido <pedidoId>
 pnpm --filter @delfrance/shopee-app baixar:etiqueta --pedido <pedidoId>
+pnpm --filter @delfrance/shopee-app importar:devolucao --integracao <integracaoId> --return-sn <returnSn>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1799,8 +1859,9 @@ up to 50 named produtos, `--produto` repeated, one flag per anchor; the eighth
 (step 13) does the same for prices (`--baixar-preco` allows a decrease); and
 the ninth (step 14) uploads the approved NF-e of up to 50 pedidos in process,
 enqueuing nothing — each pedido proves its own conta; the tenth (step 15)
-arranges and downloads ONE pedido's label, never writing the file.
-All ten still CALL Shopee in dry-run — what they do not do is write, with ONE
+arranges and downloads ONE pedido's label, never writing the file; the
+eleventh (step 17) prints what ONE return's import would write — no `--live`.
+All eleven still CALL Shopee in dry-run — what they do not do is write, with ONE
 documented exception: `publicar:anuncio` UPLOADS the pictures in both modes,
 because `montarAnuncio` needs real `image_id`s to build a body at all.
 `enviar:estoque`'s dry run calls `get_item_promotion` and nothing else.
@@ -1813,8 +1874,8 @@ lists the expected caveats.
 Firebase App Hosting, own backend, root `apps/shopee`. Env + secrets via the
 Firebase console / Secret Manager. The nested Cloud Functions codebase
 (`functions/`) deploys separately — see **`functions/DEPLOY.md`**, including the
-three IAM roles the receiver needs before it can enqueue. Since step 15b it
-holds **eighteen** functions: eleven `onSchedule`s, five queues and two
+three IAM roles the receiver needs before it can enqueue. Since step 17 it
+holds **nineteen** functions: twelve `onSchedule`s, five queues and two
 Firestore triggers.
 `firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
 deploys nothing, running it is a manual coordinated human step (root CLAUDE.md
