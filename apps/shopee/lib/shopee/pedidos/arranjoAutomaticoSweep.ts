@@ -176,6 +176,7 @@ import {
 } from '../etiqueta/faseEtiqueta';
 import { docIdOf } from '../notificacoes/notificacao';
 import {
+  carimboDoDiaUtcMs,
   notificacaoSinteticaDePacote,
   notificacaoSinteticaDePedido,
 } from '../notificacoes/notificacaoSintetica';
@@ -408,14 +409,6 @@ const FASES_ZERADAS = {
   inelegivel: 0,
   desconhecido: 0,
 } as const satisfies Record<FasePacote, number>;
-
-/** One UTC day in milliseconds — epoch arithmetic, no zone involved. */
-const DIA_MS = 86_400_000;
-
-/** The START of the UTC day `nowMs` falls in — the absent-pedido code 3's stamp. */
-function inicioDoDiaUtcMs(nowMs: number): number {
-  return Math.floor(nowMs / DIA_MS) * DIA_MS;
-}
 
 /** A fresh detail row, with the `order_sn` the string reader accepted. */
 interface LinhaReconciliada {
@@ -764,7 +757,7 @@ async function varrerConta(
           shopId,
           orderSn,
           packageNumber: numero,
-          nowMs: inicioDoDiaUtcMs(deps.nowMs),
+          nowMs: carimboDoDiaUtcMs(deps.nowMs),
           origem: 'arranjo-automatico',
         });
         const docId = docIdOf(sintetico);
@@ -787,7 +780,7 @@ async function varrerConta(
         const sintetico = notificacaoSinteticaDePedido({
           shopId,
           orderSn,
-          nowMs: inicioDoDiaUtcMs(deps.nowMs),
+          nowMs: carimboDoDiaUtcMs(deps.nowMs),
           origem: 'arranjo-automatico',
         });
         const docId = docIdOf(sintetico);

@@ -94,6 +94,7 @@ export const TIPO_AVISO_LABELS = {
   estoqueAcimaDoDisponivel: 'Estoque enviado acima do disponível',
   despachoAutomaticoPendente: 'Despacho automático pendente',
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
+  reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
 } as const;
 
 /**
@@ -243,6 +244,39 @@ export const TIPO_AVISO_LABELS = {
  *  - **`params` are exactly `pedido`.** No deadline param, for the reason above:
  *    the wording states the rule ("1 hora após a criação do pedido") instead of
  *    an instant.
+ *
+ * ---
+ *
+ * **`reclamacaoAguardandoVendedor`** (Shopee step 17, #1525 — first producer
+ * `apps/shopee/lib/shopee/devolucoes/avisoDevolucao.ts`) — a marketplace return
+ * waits for the SELLER (answer the request, answer the buyer's offer, send
+ * evidence), and the channel decides alone at its deadline (Shopee `faq 477`:
+ * the refund is issued to the buyer).
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above. ⚠️ And never `pedidoPrecisaDecisao`: that tipo is per PEDIDO, and
+ *    step 8's sweep closes its rows — it would close a return's row too.
+ *  - **Machine resolver** (this docblock's own rule, above): the Shopee return
+ *    importer, when the return no longer waits for the seller — terminal,
+ *    accepted, or the offer/evidence answered. It reports a TRANSITION of the
+ *    importer's CONFIRMED state, never the mere arrival of a delivery.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: returnSn })`
+ *    — ONE row per RETURN (a pedido can carry several), no `janela`. The
+ *    `entidade` is the return id ALONE: it is alphanumeric
+ *    (`ehReturnSnShopee`), so the segment fold never touches it.
+ *  - **`prazo`** = the provider's NEAREST seller-facing deadline among the
+ *    pendências that hold, copied — never computed.
+ *  - **`params` are exactly `pedido`** (the provider's order id, as displayed),
+ *    **`devolucao`** (the return id) **and `pendencia`** — a
+ *    {@link PENDENCIA_RECLAMACAO} CODE, never a fragment, so a wording fix in
+ *    `mensagens.ts` is retroactive. `motivo` = the provider's raw status token.
+ *  - **Severity `atencao`**: nothing is down; a missed deadline costs one
+ *    order's refund, and `critico` escalates out of the app.
+ *  - **`relogioEvento`** = the return's provider clock in µs plus its content
+ *    revision (capped below one second), so it rises STRICTLY with every content
+ *    change — `escreverAviso` drops an EQUAL clock — and the resolve passes the
+ *    same value to `resolverAviso`, so a late, older resolve cannot close a
+ *    newer row. ⚠️ Per-return µs: never compare it with another tipo's.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -258,6 +292,7 @@ export const tipoAvisoSchema = z
     'estoqueAcimaDoDisponivel',
     'despachoAutomaticoPendente',
     'etiquetaComPrazo',
+    'reclamacaoAguardandoVendedor',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -276,7 +311,38 @@ export const TIPO_AVISO = {
   estoqueAcimaDoDisponivel: 'estoqueAcimaDoDisponivel',
   despachoAutomaticoPendente: 'despachoAutomaticoPendente',
   etiquetaComPrazo: 'etiquetaComPrazo',
+  reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
 } as const satisfies Record<string, TipoAviso>;
+
+/**
+ * What a `reclamacaoAguardandoVendedor` return waits for — the aviso's
+ * `params.pendencia`, a CODE the wording in `apps/web/lib/avisos/mensagens.ts`
+ * renders (so a wording fix is retroactive, the `precoMotivos` precedent).
+ *
+ * The three things the seller can still do before the channel decides alone:
+ * answer the return request, answer the buyer's offer, send the evidence the
+ * channel asked for. ⚠️ Arranging the reverse pickup is deliberately NOT a
+ * member in v1: when the seller must act on it is unsettled (register 242), so
+ * it is shown on the panel and raises no aviso.
+ *
+ * Stored as an aviso PARAM (`z.record(string, string | number)`), so the aviso
+ * schema itself does not validate it: a code newer than the web build reaches
+ * the reader as a plain string, and `mensagens.ts` falls back rather than
+ * printing `undefined`.
+ */
+export const pendenciaReclamacaoSchema = z.enum([
+  'responder-solicitacao',
+  'responder-proposta',
+  'enviar-evidencias',
+]);
+export type PendenciaReclamacao = z.infer<typeof pendenciaReclamacaoSchema>;
+
+/** Named members of {@link pendenciaReclamacaoSchema} — see `delfrance/prefer-schema-enum`. */
+export const PENDENCIA_RECLAMACAO = {
+  responderSolicitacao: 'responder-solicitacao',
+  responderProposta: 'responder-proposta',
+  enviarEvidencias: 'enviar-evidencias',
+} as const satisfies Record<string, PendenciaReclamacao>;
 
 /* -------------------------------------------------------------------------- */
 /*                              Route builders                                */

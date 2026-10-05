@@ -34,8 +34,14 @@ export const incidenteHistorySource: ModificationHistorySource = {
    * that changed nothing else, and `incidenteDataFromForm` spreads the existing
    * doc first (specifically so out-of-band fields survive), which round-trips
    * `timestamp` on every edit. Neither is ever an operator edit.
+   *
+   * `relogioProvedorUs` is the Shopee return importer's watermark (step 17,
+   * #1525 — the pagamento source's `lastProviderUpdate` precedent): a newer
+   * detail with identical content advances ONLY it (and `ultimaModificacao`),
+   * and that must file no row. A real content change still files one, through
+   * the `devolucaoShopee` block it moves.
    */
-  ignoreFields: ['timestamp', 'ultimaModificacao'],
+  ignoreFields: ['timestamp', 'ultimaModificacao', 'relogioProvedorUs'],
   resolve(params) {
     // Both wildcards are always present at runtime; the Record index type
     // can't know that (same cast as `onEstoqueDeleted`).

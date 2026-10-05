@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
@@ -10,6 +11,7 @@ import {
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
+  pendenciaReclamacaoSchema,
   rotaInternaSegura,
   tipoAvisoSchema,
   urlExternaSegura,
@@ -80,6 +82,32 @@ describe('TIPO_AVISO_LABELS', () => {
   it('labels the two dispatch tipos without a provider product name', () => {
     expect(TIPO_AVISO_LABELS.despachoAutomaticoPendente).toBe('Despacho automático pendente');
     expect(TIPO_AVISO_LABELS.etiquetaComPrazo).toBe('Etiqueta com prazo de impressão');
+  });
+
+  it('labels the return tipo without a provider name — it is channel-neutral', () => {
+    expect(TIPO_AVISO.reclamacaoAguardandoVendedor).toBe('reclamacaoAguardandoVendedor');
+    expect(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor).toBe('Reclamação aguardando o vendedor');
+  });
+});
+
+describe('PENDENCIA_RECLAMACAO', () => {
+  it('keeps the named-member constant in step with the enum, member for member', () => {
+    expect(Object.values(PENDENCIA_RECLAMACAO).sort()).toEqual(
+      [...pendenciaReclamacaoSchema.options].sort(),
+    );
+    expect(PENDENCIA_RECLAMACAO).toEqual({
+      responderSolicitacao: 'responder-solicitacao',
+      responderProposta: 'responder-proposta',
+      enviarEvidencias: 'enviar-evidencias',
+    });
+  });
+
+  it('is CLOSED at three: the pickup is shown on the panel and raises no aviso in v1', () => {
+    // `organizar-coleta` is the near-miss: when the seller must act on the
+    // reverse pickup is unsettled (register 242), so it is not a pendência.
+    expect(pendenciaReclamacaoSchema.options).toHaveLength(3);
+    expect(pendenciaReclamacaoSchema.safeParse('organizar-coleta').success).toBe(false);
+    expect(pendenciaReclamacaoSchema.safeParse('responder_solicitacao').success).toBe(false);
   });
 });
 
@@ -270,6 +298,37 @@ describe('chaveDeAviso — the two dispatch tipos (Shopee step 15b)', () => {
     expect(etiqueta).toBe(`etiquetaComPrazo:int-1:${PEDIDO_ID}`);
     expect(etiqueta).not.toBe(despacho('OFG000000000001', 'nfe'));
     expect(etiqueta).not.toBe(despacho('OFG000000000001', 'manual'));
+  });
+});
+
+describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
+  // ONE row per RETURN, keyed on the return id alone. The importer raises and
+  // resolves it from two different deliveries, so it must recompute the SAME id
+  // from `(integracaoId, returnSn)` every time — a key it cannot recompute is a
+  // row nothing ever closes.
+  const devolucao = (conta: string, returnSn: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.reclamacaoAguardandoVendedor, conta, entidade: returnSn });
+
+  it('spells the return id verbatim — an alphanumeric id is never folded', () => {
+    expect(devolucao('int-1', '260910ABCDE0001')).toBe(
+      'reclamacaoAguardandoVendedor:int-1:260910ABCDE0001',
+    );
+    expect(devolucao('int-1', '260910ABCDE0001')).toBe(devolucao('int-1', '260910ABCDE0001'));
+  });
+
+  it('separates two returns of one pedido, and one return id under two contas', () => {
+    expect(devolucao('int-1', '2609100000000001')).not.toBe(devolucao('int-1', '2609100000000002'));
+    expect(devolucao('int-1', '2609100000000001')).not.toBe(devolucao('int-2', '2609100000000001'));
+  });
+
+  it('never meets the per-pedido decision row — a different tipo, a different row', () => {
+    expect(devolucao('int-1', '2609100000000001')).not.toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.pedidoPrecisaDecisao,
+        conta: 'int-1',
+        entidade: '2609100000000001',
+      }),
+    );
   });
 });
 

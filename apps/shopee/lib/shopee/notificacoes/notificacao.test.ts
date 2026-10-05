@@ -28,6 +28,14 @@ import type {
   ResultadoArranjoAutomatico,
 } from '../pedidos/arranjoAutomatico';
 import type { AlvoDePushDeAnuncioShopee, ResultadoPushAnuncio } from '../anuncios/pushAnuncio';
+import type { AcaoDevolucaoTx } from '../devolucoes/devolucaoTx';
+import type {
+  AlvoDeImportacaoDevolucaoShopee,
+  ResultadoImportacaoDevolucaoShopee,
+} from '../devolucoes/importarDevolucao';
+// A VALUE import that pulls nothing in: the synthetic builders take only a TYPE
+// from `./notificacao` (erased), so the mocks below still hold.
+import { notificacaoSinteticaDeDevolucao } from './notificacaoSintetica';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 // A pure leaf (no import of its own) — loading it as a VALUE pulls nothing else in.
 import { MOTIVO_ETIQUETA_SHOPEE, type MotivoEtiquetaShopee } from '../etiqueta/motivosEtiqueta';
@@ -116,12 +124,35 @@ vi.mock('../pedidos/arranjoAutomatico', () => ({
   arranjarPacoteAutomatico: arm.arranjarPacoteAutomatico,
 }));
 
+/**
+ * Step 17 — the code-29 arm's LAZY DEFAULT, observed from outside the same way:
+ * the importer module is replaced at the dynamic-import boundary so
+ * `defaultProcessDeps.importarDevolucao` can be CALLED here without a Firestore
+ * or a Shopee client. ⚠️ The PARSER (`../devolucoes/pushDevolucao`) is NOT
+ * mocked: it is pure, and the arm's refusals are its refusals — a mock would
+ * pin a parser nobody ships.
+ */
+const dev = vi.hoisted(() => ({
+  importarDevolucaoShopee:
+    vi.fn<
+      (
+        db: Firestore,
+        alvo: AlvoDeImportacaoDevolucaoShopee,
+      ) => Promise<ResultadoImportacaoDevolucaoShopee>
+    >(),
+}));
+
+vi.mock('../devolucoes/importarDevolucao', () => ({
+  importarDevolucaoShopee: dev.importarDevolucaoShopee,
+}));
+
 const {
   asDocId,
   CODIGO_AUSENTE,
   dedupKeyOf,
   defaultProcessDeps,
   destinoDoCodigo,
+  disposicaoDaFalhaDeDevolucao,
   disposicaoDaFalhaDeImportacao,
   docIdOf,
   handleNotificationTask,
@@ -161,6 +192,16 @@ const ITEM_ID = 2500139861;
 /** A second one, so "two pushes about two listings" is expressible. */
 const ITEM_ID_2 = 2500139862;
 const AGORA_MS = 1_700_000_000_000;
+/** Step 17's `order_sn` fixture — the doc-sample shape, never a real order. */
+const ORDER_SN_DEVOLUCAO = '260910KJBHUJDM';
+/** Step 17's `return_sn` fixtures — never a real return. */
+const RETURN_SN = '2609100000000001';
+const RETURN_SN_2 = '2609100000000002';
+/**
+ * ALPHANUMERIC, like every sample on Shopee's returns pages (`2411280EDT4JRV5`):
+ * a digits-only id would hide the one shape a digits guard breaks.
+ */
+const RETURN_SN_ALFA = '260910ABCDE0001';
 
 function resultadoDeImportacao(
   over: Partial<ResultadoImportacaoPedidoShopee> = {},
@@ -312,6 +353,57 @@ const tratarPushDeAnuncio = vi.fn(
     resultadoDeAnuncio(),
 );
 
+/**
+ * The step-17 importer's happy path: the detail was pulled, the transaction
+ * created the incidente, the aviso opened. `sinteticaEnfileirada` is `false`
+ * here on purpose — a synthetic code 3 is only ever enqueued on
+ * `ignorado-sem-pedido`, and every test that wants one says so.
+ */
+function resultadoDeDevolucao(
+  over: Partial<ResultadoImportacaoDevolucaoShopee> = {},
+): ResultadoImportacaoDevolucaoShopee {
+  return {
+    acao: 'criado',
+    pedidoId: 'ped-abc',
+    statusDevolucao: 'REQUESTED',
+    aviso: 'aberto',
+    sinteticaEnfileirada: false,
+    detail: 'criado',
+    ...over,
+  };
+}
+
+/**
+ * EVERY action of the return TRANSACTION, as a VALUE list — the union is a type.
+ * ⚠️ Total at COMPILE time (`totalidadeDasAcoesDeDevolucao` below), so the
+ * disposition table can never silently skip an action the transaction gains.
+ */
+const ACOES_DA_DEVOLUCAO = [
+  'criado',
+  'atualizado',
+  'relogio-avancado',
+  'ignorado-obsoleto',
+  'ignorado-sem-mudanca',
+  'ignorado-sem-pedido',
+] as const satisfies readonly AcaoDevolucaoTx[];
+type AcaoDevolucaoNaoListada = Exclude<AcaoDevolucaoTx, (typeof ACOES_DA_DEVOLUCAO)[number]>;
+const totalidadeDasAcoesDeDevolucao: [AcaoDevolucaoNaoListada] extends [never] ? true : false =
+  true;
+void totalidadeDasAcoesDeDevolucao;
+
+/**
+ * The code-29 seam. Injected on EVERY call in this file for the same reason
+ * {@link importarPedido} is: a routing bug that reaches the return importer from
+ * another code is caught here instead of dynamically importing the real
+ * devolução tree (which would open a Firestore and a Shopee client).
+ */
+const importarDevolucao = vi.fn(
+  async (
+    _db: Firestore,
+    _alvo: AlvoDeImportacaoDevolucaoShopee,
+  ): Promise<ResultadoImportacaoDevolucaoShopee> => resultadoDeDevolucao(),
+);
+
 const deps = {
   partnerClient: () => ({ getShopsByPartner: async () => ({}) }) as never,
   increment: (by: number) => by,
@@ -319,6 +411,7 @@ const deps = {
   importarPedido,
   rastrearPedido,
   tratarPushDeAnuncio,
+  importarDevolucao,
 };
 
 function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificationPayload {
@@ -344,6 +437,8 @@ beforeEach(() => {
   rastrearPedido.mockImplementation(async () => resultadoDeRastreio());
   tratarPushDeAnuncio.mockReset();
   tratarPushDeAnuncio.mockImplementation(async () => resultadoDeAnuncio());
+  importarDevolucao.mockReset();
+  importarDevolucao.mockImplementation(async () => resultadoDeDevolucao());
   h.find.mockResolvedValue(null);
   h.readConta.mockResolvedValue(null);
   h.resolverAvisos.mockResolvedValue({ expiracao: true, desautorizacao: false });
@@ -562,6 +657,26 @@ describe('docIdOf — uma linha por push_code', () => {
     ['15 documento de envio (só ordersn)', 15, { ordersn: 'ORD1' }, '15:111:ORD1:1000'],
     ['15 documento de envio (só order_sn)', 15, { order_sn: 'ORD1' }, '15:111:ORD1:1000'],
     ['29 devolução', 29, { return_sn: 'RET1' }, '29:111:RET1:1000'],
+    // ⚠️ Passo 17: o `push 32` NÃO tem relógio de topo (os dele ficam POR CAMPO
+    // em `updated_values[]`), então um `data.update_time` NÃO é da Shopee e não
+    // pode virar o carimbo — ao contrário do 3/30/47. Sem esta linha um
+    // `updateTime ?? stamp` no caso 29 passaria na de cima (que não traz um).
+    [
+      '29 devolução (um update_time de topo NÃO é o relógio)',
+      29,
+      { return_sn: 'RET1', update_time: 2222 },
+      '29:111:RET1:1000',
+    ],
+    // …e o relógio por campo também não: o carimbo continua o do envelope.
+    [
+      '29 devolução (os relógios de updated_values também não)',
+      29,
+      {
+        return_sn: 'RET1',
+        updated_values: [{ update_field: 'return_status', update_time: 3333 }],
+      },
+      '29:111:RET1:1000',
+    ],
     ['16 violação de anúncio', 16, { item_id: 55 }, '16:111:55:1000'],
     ['22 eco de preço', 22, { item_id: 55 }, '22:111:55:1000'],
     ['27 publicação agendada', 27, { item_id: 55 }, '27:111:55:1000'],
@@ -929,7 +1044,11 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     // então o push não tem consumidor, e parado (TERMINAL) deixaria uma linha
     // morta por documento de envio criado.
     [15, 'ack'],
-    [29, 'parado'],
+    // ⚠️ O passo 17 tirou o 29 do bloco parado e APAGOU a linha de
+    // `MOTIVO_PARADO` correspondente: UM code, UM destino. O push é um PONTEIRO,
+    // e um único `get_return_detail` responde por ele. ⚠️ Esta linha é também o
+    // que ARMA a varredura de devoluções (`destinoDoCodigo(29)`, não um literal).
+    [29, 'devolucao'],
     // ⚠️ 24 e 25 (booking) chegaram no teste de sandbox de 2026-09-09 SEM estar
     // (o 24 continua parado depois do passo 7 — RE-parado, com motivo novo)
     // na tabela — foram exatamente o "único sinal de que um código novo
@@ -987,9 +1106,44 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
   });
 
   it('o motivo do parque nomeia o passo dono do handler', () => {
-    expect(motivoDoParque(29)).toContain('passo 17');
+    // ⚠️ A âncora era o 29 até o passo 17 construir o handler dele; o 10 é o
+    // ÚNICO code parado que ainda tem passo dono.
+    expect(motivoDoParque(10)).toContain('passo 16');
     expect(motivoDoParque(25)).toContain('Sem passo dono');
     expect(motivoDoParque(999)).toContain('desconhecido');
+  });
+
+  // ⚠️ O QUINTO par da família — o passo 5 escreveu um pelo code 3, o 7 pelos
+  // três do frete, o 11 pelos dois do anúncio, o 15 pelo 15, e agora o passo 17
+  // pelo 29. Com o handler construído a linha 29 de `MOTIVO_PARADO` foi APAGADA:
+  // `motivoDoParque(29)` só pode responder o texto de fallback ("código novo"),
+  // que nunca é escrito (a devolução é decidida antes do parque) e não pode mais
+  // prometer o passo 17 — o passo que o construiu.
+  it('o code 29 tem handler — vai para a devolução, e o motivo não promete mais o passo 17', () => {
+    expect(destinoDoCodigo(29)).toBe('devolucao');
+    expect(motivoDoParque(29)).not.toContain('passo 17');
+    expect(motivoDoParque(29)).toBe(motivoDoParque(4242).replace('4242', '29'));
+  });
+
+  // ⚠️ A ESTRUTURA da tabela, pela função pública (`MOTIVO_PARADO` é privado):
+  // um code tem linha de motivo SE E SÓ SE o destino dele é `parado`. Uma linha
+  // esquecida (o 29 ainda prometendo o passo 17) ou uma faltando (o 10 caindo no
+  // "código novo") quebra a bijeção — e as linhas de hoje são exatamente 10, 24
+  // e 25.
+  it('⚠️ `MOTIVO_PARADO` tem linha exatamente para os codes `parado`: {10, 24, 25}', () => {
+    const fallback = (code: number) =>
+      `push_code ${String(code)} desconhecido — nenhum handler; primeiro sinal de um código novo`;
+    const comLinha: number[] = [];
+    const parados: number[] = [];
+    for (let code = 0; code <= 200; code += 1) {
+      if (motivoDoParque(code) !== fallback(code)) comLinha.push(code);
+      if (destinoDoCodigo(code) === 'parado') parados.push(code);
+    }
+    expect(comLinha).toEqual([10, 24, 25]);
+    expect(parados).toEqual(comLinha);
+    // ÂNCORA: o fallback acima é o texto real — sem isto um fallback mal copiado
+    // poria TODO code em `comLinha` e a igualdade acima falharia por outro motivo.
+    expect(motivoDoParque(999)).toBe(fallback(999));
   });
 
   // ⚠️ O par que substituiu `motivoDoParque(4) ⇒ 'passo 7'` — a reescrita que o
@@ -1046,10 +1200,10 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     expect(motivoDoParque(25)).toContain('Sem passo dono');
     expect(motivoDoParque(25)).not.toContain('o handler é o passo');
     // A quase-falha: o 4 e o 15 não têm MAIS linha nenhuma (um tem handler, o
-    // outro é ack), então a âncora passou a ser o 29 — ainda parado, com passo
-    // dono, e não é uma reserva.
-    expect(motivoDoParque(29)).not.toMatch(/reserva/i);
-    expect(motivoDoParque(29)).toContain('passo 17');
+    // outro é ack), e o 29 também não desde o passo 17, então a âncora passou a
+    // ser o 10 — ainda parado, com passo dono, e não é uma reserva.
+    expect(motivoDoParque(10)).not.toMatch(/reserva/i);
+    expect(motivoDoParque(10)).toContain('passo 16');
   });
 });
 
@@ -1192,6 +1346,48 @@ describe('toDisposition', () => {
       }),
     ).toEqual({ kind: 'defer', reason: 'anuncio: ShopeeReauthRequiredError' });
   });
+
+  // ⚠️ Passo 17 (#1525): rótulo PRÓPRIO mais uma vez — o mapa `outcomes` da
+  // varredura separa uma importação de devolução de todo o resto. E resolve
+  // SEMPRE, `ignorado-obsoleto` e `ignorado-sem-mudanca` inclusive: o trabalho da
+  // entrega — "vá e olhe" — foi feito, e um detalhe velho é um veredito sobre
+  // ESSE detalhe, não uma falha da entrega. Um obsoleto virando `defer`
+  // re-conduziria todo dia, por sete dias, uma entrega que já terminou.
+  it.each(ACOES_DA_DEVOLUCAO)(
+    'devolucao com acaoDevolucao %s ⇒ resolve rotulado "devolucao", sempre',
+    (acao) => {
+      const d = toDisposition({
+        kind: 'devolucao',
+        acaoDevolucao: acao,
+        orderSn: ORDER_SN_DEVOLUCAO,
+        returnSn: RETURN_SN,
+        pedidoId: 'ped-1',
+        statusDevolucao: 'REQUESTED',
+        avisoDevolucao: null,
+        detail: acao,
+      });
+      expect(d).toEqual({ kind: 'resolve', label: 'devolucao' });
+    },
+  );
+
+  it('a lista de ações da devolução é a da transação, sem repetição (a totalidade é de compilação)', () => {
+    // ÂNCORA da tabela acima: seis ações DISTINTAS.
+    expect(new Set(ACOES_DA_DEVOLUCAO).size).toBe(ACOES_DA_DEVOLUCAO.length);
+    expect(ACOES_DA_DEVOLUCAO).toHaveLength(6);
+  });
+
+  it('devolucao-adiada ⇒ defer, com a razão do braço', () => {
+    expect(
+      toDisposition({
+        kind: 'devolucao-adiada',
+        shopId: SHOP_ID,
+        orderSn: ORDER_SN_DEVOLUCAO,
+        returnSn: RETURN_SN,
+        reason: 'devolucao: pedido ainda não existe',
+        sintetica: true,
+      }),
+    ).toEqual({ kind: 'defer', reason: 'devolucao: pedido ainda não existe' });
+  });
 });
 
 // ── processNotificationPayload ──────────────────────────────────────────────
@@ -1248,10 +1444,11 @@ describe('processNotificationPayload — a ordem das portas', () => {
   // resolvem a conta porque têm handler. ⚠️ E 16 e 27 saíram no passo 11, pela
   // mesma razão ainda. O 24 FICA — a booking continua sem passo dono. ⚠️ E o
   // 15 saiu no passo 15, mas para a lista do ack acima, não para um handler; o
-  // 25 FICA, re-parado como gêmeo do 24. Todo o resto continua tendo de parar
-  // antes de qualquer leitura: um code sem handler não pode custar uma consulta
-  // ao Firestore por entrega.
-  it.each([10, 24, 25, 29, 999])(
+  // 25 FICA, re-parado como gêmeo do 24. ⚠️ E o 29 saiu no passo 17, para o
+  // braço da devolução. Todo o resto continua tendo de parar antes de qualquer
+  // leitura: um code sem handler não pode custar uma consulta ao Firestore por
+  // entrega.
+  it.each([10, 24, 25, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
@@ -2645,7 +2842,7 @@ describe('codes 16/27 — o braço do anúncio (passo 11)', () => {
     expect(doCode3.kind).toBe('sem-conta');
     const razaoAnuncio = doAnuncio.kind === 'sem-conta' ? doAnuncio.reason : '';
     const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
-    // O template é COMPARTILHADO pelos QUATRO braços: as razões são a mesma
+    // O template é COMPARTILHADO pelos CINCO braços: as razões são a mesma
     // string, e nenhuma começa por um prefixo de braço. Quem responde "qual braço
     // escreveu esta linha adiada" é o `kind` + o `code`, nunca o texto.
     expect(razaoAnuncio).toBe(razaoCode3);
@@ -2778,6 +2975,553 @@ describe('codes 16/27 — o braço do anúncio (passo 11)', () => {
     const c = tratarPushDeAnuncio.mock.calls[0]![1];
     expect(identidade(c)).not.toEqual(identidade(a!));
     expect(c.itemId).toBe(ITEM_ID_2);
+  });
+});
+
+describe('code 29 — o braço da devolução (passo 17)', () => {
+  /**
+   * Um `push 32` real (`return_updates_push`), ids trocados por fixtures:
+   * `order_sn` COM sublinhado, `return_sn`, e os relógios SÓ por campo dentro de
+   * `updated_values[]` — nenhum `update_time` de topo.
+   */
+  function push29(
+    data: Record<string, unknown> = {},
+    over: Partial<ShopeeNotificationPayload> = {},
+  ) {
+    return payload({
+      code: 29,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: {
+        order_sn: ORDER_SN_DEVOLUCAO,
+        return_sn: RETURN_SN,
+        updated_values: [
+          {
+            update_field: 'return_status',
+            old_value: 'JUDGING',
+            new_value: 'PROCESSING',
+            update_time: 1_732_796_767,
+          },
+        ],
+        ...data,
+      },
+      ...over,
+    });
+  }
+
+  beforeEach(() => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+  });
+
+  // 1
+  it('(1) chama importarDevolucao com a integração da loja, os dois ids, a origem, o diário e UM relógio', async () => {
+    const out = await processNotificationPayload(db, push29(), deps);
+
+    expect(h.find).toHaveBeenCalledTimes(1);
+    expect(h.find).toHaveBeenCalledWith(db, SHOP_ID);
+    expect(importarDevolucao).toHaveBeenCalledTimes(1);
+    const [dbRecebido, alvo] = importarDevolucao.mock.calls[0]!;
+    expect(dbRecebido).toBe(db);
+    expect(alvo).toEqual({
+      integracaoId: INTEGRACAO_ID,
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN_DEVOLUCAO,
+      returnSn: RETURN_SN,
+      // ⚠️ MILISSEGUNDOS, e o relógio é o do handler (`deps.nowMs()`): o push 32
+      // não tem relógio de topo, e a marca d'água da devolução é o `update_time`
+      // do `get_return_detail` que o importador re-busca (regra 7).
+      nowMs: AGORA_MS,
+      // Um push REAL não manda `origem` nenhuma.
+      origem: 'push',
+      // O diário é SÓ log: os campos que mudaram, o relógio por campo (SEGUNDOS)
+      // e o status que o push alega — nada disso vira dado.
+      diario: {
+        camposMudados: ['return_status'],
+        relogioDoPushS: 1_732_796_767,
+        statusNoPush: 'PROCESSING',
+      },
+    });
+    expect(out).toEqual({
+      kind: 'devolucao',
+      acaoDevolucao: 'criado',
+      orderSn: ORDER_SN_DEVOLUCAO,
+      returnSn: RETURN_SN,
+      pedidoId: 'ped-abc',
+      // O status PUXADO (o do importador), nunca o do push (`PROCESSING`).
+      statusDevolucao: 'REQUESTED',
+      avisoDevolucao: 'aberto',
+      detail: 'criado',
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'devolucao' });
+    // ⚠️ `acaoDevolucao`, jamais `acao`: o outcome `pedido` já carrega um `acao`
+    // de OUTRO vocabulário e a leitura do TaskResult é por `in` (a forma do #1087).
+    expect(Object.prototype.hasOwnProperty.call(out, 'acao')).toBe(false);
+    // …e nenhum outro handler foi alcançado por este code.
+    expect(importarPedido).not.toHaveBeenCalled();
+    expect(rastrearPedido).not.toHaveBeenCalled();
+    expect(tratarPushDeAnuncio).not.toHaveBeenCalled();
+  });
+
+  // 2 — o return_sn ALFANUMÉRICO (as amostras da Shopee são todas assim)
+  it('(2) o return_sn ALFANUMÉRICO chega ao importador verbatim — um guard só de dígitos para aqui', async () => {
+    const out = await processNotificationPayload(db, push29({ return_sn: RETURN_SN_ALFA }), deps);
+
+    expect(out.kind).toBe('devolucao');
+    expect(importarDevolucao.mock.calls[0]![1].returnSn).toBe(RETURN_SN_ALFA);
+    expect(out.kind === 'devolucao' && out.returnSn).toBe(RETURN_SN_ALFA);
+  });
+
+  // 3 — os dois produtores SINTÉTICOS
+  it.each(['reconciliacao', 'acao-vendedor'] as const)(
+    '(3) um code 29 SINTÉTICO (%s) roteia para a devolução, com a origem verbatim e o diário VAZIO',
+    async (origem) => {
+      // O builder REAL — a mesma forma que a varredura e a rota da ação enfileiram.
+      // O carimbo do ENVELOPE é o início do dia UTC (o da varredura), um relógio
+      // DIFERENTE do do handler — e é o do handler que o importador recebe.
+      const inicioDoDiaMs = Math.floor(AGORA_MS / 86_400_000) * 86_400_000;
+      const sintetico = notificacaoSinteticaDeDevolucao({
+        shopId: SHOP_ID,
+        orderSn: ORDER_SN_DEVOLUCAO,
+        returnSn: RETURN_SN_ALFA,
+        nowMs: inicioDoDiaMs,
+        origem,
+      });
+      // ⚠️ A metade que `notificacaoSintetica.test.ts` deixou para cá: lá o code
+      // 29 é fixado como LITERAL; o destino dele é desta tabela.
+      expect(destinoDoCodigo(sintetico.code)).toBe('devolucao');
+      // ÂNCORA: os dois relógios diferem de verdade, então o `nowMs` abaixo não
+      // passaria por coincidência.
+      expect(sintetico.timestamp).not.toBe(AGORA_MS);
+
+      const out = await processNotificationPayload(db, sintetico, deps);
+
+      expect(out.kind).toBe('devolucao');
+      expect(importarDevolucao.mock.calls[0]![1]).toEqual({
+        integracaoId: INTEGRACAO_ID,
+        shopId: SHOP_ID,
+        orderSn: ORDER_SN_DEVOLUCAO,
+        returnSn: RETURN_SN_ALFA,
+        // `deps.nowMs()`, nunca o carimbo do envelope: o importador põe no chão
+        // do dia SÓ o code 3 sintético dele, e a marca d'água é o `update_time`.
+        nowMs: AGORA_MS,
+        origem,
+        diario: { camposMudados: [], relogioDoPushS: null, statusNoPush: null },
+      });
+    },
+  );
+
+  // 4
+  it('(4) sem `shop_id` ⇒ parado com prefixo `devolucao:`, sem leitura de conta e sem importador', async () => {
+    const out = await processNotificationPayload(db, push29({}, { shopId: null }), deps);
+
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: 'devolucao: push de devolução sem shop_id — nada a resolver',
+    });
+    expect(toDisposition(out).kind).toBe('park');
+    expect(h.find).not.toHaveBeenCalled();
+    expect(importarDevolucao).not.toHaveBeenCalled();
+  });
+
+  // 5 — o return_sn em NÚMERO (nota do B1)
+  it('(5) ⚠️ um return_sn que chega como NÚMERO JSON PARA — antes de qualquer leitura — e a varredura é o backstop', async () => {
+    // Acima de 2^53 o `JSON.parse` já arredondou o número para um id PLAUSÍVEL
+    // que não é o que a Shopee mandou; o parser recusa o tipo inteiro.
+    const numero = Number(RETURN_SN);
+    const out = await processNotificationPayload(db, push29({ return_sn: numero }), deps);
+
+    expect(out.kind).toBe('parado');
+    const motivo = out.kind === 'parado' ? out.motivo : '';
+    expect(motivo.startsWith('devolucao: ')).toBe(true);
+    expect(motivo).toContain('return_sn');
+    // ⚠️ Nenhum VALOR: a recusa nomeia o CAMPO, nunca o id recusado (#1015).
+    expect(motivo).not.toContain(RETURN_SN);
+    expect(h.find).not.toHaveBeenCalled();
+    expect(importarDevolucao).not.toHaveBeenCalled();
+    // A identidade do parque ainda existe (o `texto` do docIdOf stringifica o
+    // número), então a linha parada é UMA por entrega e fica visível.
+    expect(docIdOf(push29({ return_sn: numero }))).toBe(
+      `29:${String(SHOP_ID)}:${String(numero)}:${String(AGORA_MS)}`,
+    );
+
+    // ⚠️ A QUASE-FALHA: os mesmos dígitos em STRING passam e importam.
+    const texto = await processNotificationPayload(db, push29({ return_sn: RETURN_SN }), deps);
+    expect(texto.kind).toBe('devolucao');
+    expect(importarDevolucao).toHaveBeenCalledTimes(1);
+  });
+
+  // 6
+  it.each([
+    ['sem return_sn', { return_sn: undefined }],
+    ['return_sn vazio', { return_sn: '' }],
+    ['return_sn fora do formato', { return_sn: '2609-100' }],
+    ['sem order_sn nem ordersn', { order_sn: undefined }],
+  ])('(6) %s ⇒ parado com prefixo `devolucao:`, antes de qualquer leitura', async (_n, data) => {
+    const out = await processNotificationPayload(db, push29(data), deps);
+
+    expect(out.kind).toBe('parado');
+    expect(out.kind === 'parado' && out.motivo.startsWith('devolucao: ')).toBe(true);
+    expect(h.find).not.toHaveBeenCalled();
+    expect(importarDevolucao).not.toHaveBeenCalled();
+  });
+
+  // 7 — a exceção compartilhada
+  it('(7) ⚠️ uma loja não mapeada ⇒ sem-conta, com o template COMPARTILHADO e sem prefixo', async () => {
+    h.find.mockResolvedValue(null);
+
+    const daDevolucao = await processNotificationPayload(db, push29(), deps);
+    const doCode3 = await processNotificationPayload(
+      db,
+      payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+
+    // DEFER, e a inversão do code 2 não se aplica: conectar a loja torna a
+    // devolução ACIONÁVEL (ela ainda existe na Shopee).
+    expect(daDevolucao).toEqual({
+      kind: 'sem-conta',
+      shopId: SHOP_ID,
+      reason: expect.any(String),
+    });
+    expect(toDisposition(daDevolucao).kind).toBe('defer');
+    const razao = daDevolucao.kind === 'sem-conta' ? daDevolucao.reason : '';
+    const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
+    // O template é o MESMO nos cinco braços — quem diz qual braço escreveu a
+    // linha adiada é o `kind` + o `code`, nunca o texto.
+    expect(razao).toBe(razaoCode3);
+    expect(razao.startsWith('devolucao')).toBe(false);
+    // ÂNCORA: a razão nomeia a loja — sem isto a negativa acima passaria com ''.
+    expect(razao).toContain(String(SHOP_ID));
+    expect(importarDevolucao).not.toHaveBeenCalled();
+  });
+
+  // 8 — o pedido ainda não existe
+  it.each([
+    [true, 'enfileirado'],
+    [false, 'NÃO enfileirado (válvula)'],
+  ])(
+    '(8) `ignorado-sem-pedido` (sintética %s) ⇒ devolucao-adiada nomeando o code 3 sintético',
+    async (sintetica, texto) => {
+      importarDevolucao.mockResolvedValue(
+        resultadoDeDevolucao({
+          acao: 'ignorado-sem-pedido',
+          pedidoId: null,
+          statusDevolucao: null,
+          aviso: null,
+          sinteticaEnfileirada: sintetica,
+          detail: 'ignorado-sem-pedido',
+        }),
+      );
+
+      const out = await processNotificationPayload(db, push29(), deps);
+
+      expect(out).toEqual({
+        kind: 'devolucao-adiada',
+        shopId: SHOP_ID,
+        orderSn: ORDER_SN_DEVOLUCAO,
+        returnSn: RETURN_SN,
+        reason: `devolucao: pedido ${ORDER_SN_DEVOLUCAO} ainda não existe — code 3 sintético ${texto}`,
+        sintetica,
+      });
+      // ADIA, nunca PARA: o code 3 sintético cria o pedido, e a fila diária é o
+      // que traz esta entrega de volta para aplicar a devolução.
+      expect(toDisposition(out).kind).toBe('defer');
+    },
+  );
+
+  // 9
+  it('(9) `ignorado-inexistente` ⇒ parado NOMEANDO a devolução', async () => {
+    importarDevolucao.mockResolvedValue(
+      resultadoDeDevolucao({
+        acao: 'ignorado-inexistente',
+        pedidoId: 'ped-abc',
+        statusDevolucao: null,
+        aviso: null,
+        detail: 'ignorado-inexistente',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push29({ return_sn: RETURN_SN_ALFA }), deps);
+
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: `devolucao: devolução ${RETURN_SN_ALFA} não existe na Shopee`,
+    });
+    expect(toDisposition(out).kind).toBe('park');
+  });
+
+  // 10 — o motivo é o `detail` do IMPORTADOR: só ele sabe QUAL id divergiu
+  it.each([
+    [
+      'o order_sn',
+      `ignorado-outro-pedido:devolução ${RETURN_SN} pertence a outro pedido`,
+      'descreve outra devolução',
+    ],
+    [
+      'o return_sn',
+      `ignorado-outro-pedido:o detalhe pedido para ${RETURN_SN} descreve outra devolução`,
+      'pertence a outro pedido',
+    ],
+  ])(
+    '(10) `ignorado-outro-pedido` (divergiu %s) ⇒ parado com o detail do importador, nada é escrito',
+    async (_campo, detail, fraseDoOutroCaso) => {
+      importarDevolucao.mockResolvedValue(
+        resultadoDeDevolucao({
+          acao: 'ignorado-outro-pedido',
+          pedidoId: 'ped-abc',
+          statusDevolucao: 'REQUESTED',
+          aviso: null,
+          detail,
+        }),
+      );
+
+      const out = await processNotificationPayload(db, push29(), deps);
+
+      // ⚠️ PARA mesmo com pedidoId e status preenchidos: arquivar a devolução
+      // sob a chave ERRADA não é uma devolução importada.
+      expect(out).toEqual({ kind: 'parado', motivo: `devolucao: ${detail}` });
+      expect(toDisposition(out).kind).toBe('park');
+      // ⛔ QUASE-FALHA: a frase do OUTRO caso, nunca — o braço escrevia
+      // "pertence a outro pedido" para os dois, e a linha parada culpava o id
+      // errado quando era o return_sn que divergia.
+      expect(out.kind === 'parado' ? out.motivo : '').not.toContain(fraseDoOutroCaso);
+    },
+  );
+
+  // 11 — o estreitamento do contrato, visível em vez de silencioso
+  it.each([
+    ['sem pedidoId', { pedidoId: null }],
+    ['sem statusDevolucao', { statusDevolucao: null }],
+  ])(
+    '(11) um resultado %s numa ação de transação PARA — contrato violado, visível',
+    async (_n, over) => {
+      importarDevolucao.mockResolvedValue(resultadoDeDevolucao({ acao: 'atualizado', ...over }));
+
+      const out = await processNotificationPayload(db, push29(), deps);
+
+      expect(out).toEqual({
+        kind: 'parado',
+        motivo:
+          'devolucao: importação devolveu "atualizado" sem pedidoId/status — contrato do handler violado',
+      });
+    },
+  );
+
+  // 12 — cada ação da transação que não é a do pedido ausente RESOLVE
+  it.each(ACOES_DA_DEVOLUCAO.filter((a) => a !== 'ignorado-sem-pedido'))(
+    '(12) a ação `%s` vira o outcome `devolucao` com o token na própria coluna',
+    async (acao) => {
+      importarDevolucao.mockResolvedValue(
+        resultadoDeDevolucao({ acao, aviso: 'inalterado', detail: acao }),
+      );
+
+      const out = await processNotificationPayload(db, push29(), deps);
+
+      expect(out).toMatchObject({
+        kind: 'devolucao',
+        acaoDevolucao: acao,
+        avisoDevolucao: 'inalterado',
+      });
+      expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'devolucao' });
+    },
+  );
+
+  // 13
+  it('(13) uma falha transitória SOBE, e sobe o erro ORIGINAL', async () => {
+    const err = new ShopeeNetworkError('ECONNRESET');
+    importarDevolucao.mockRejectedValueOnce(err);
+
+    await expect(processNotificationPayload(db, push29(), deps)).rejects.toBe(err);
+  });
+
+  // 14
+  it('(14) uma precondição humana ADIA com kind PRÓPRIO e prefixo `devolucao:` — e sem sintética', async () => {
+    importarDevolucao.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+
+    const out = await processNotificationPayload(db, push29(), deps);
+
+    expect(out).toEqual({
+      kind: 'devolucao-adiada',
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN_DEVOLUCAO,
+      returnSn: RETURN_SN,
+      reason: expect.stringMatching(/^devolucao: ShopeeReauthRequiredError/),
+      // Nada foi enfileirado: a falha veio antes do veredito "não há pedido".
+      sintetica: false,
+    });
+    expect(toDisposition(out).kind).toBe('defer');
+    // ⚠️ E NÃO levanta aviso de autorização: o produtor é avisos/autorizacao.ts.
+    expect(h.avisarDesautorizacao).not.toHaveBeenCalled();
+  });
+
+  // 15 — M71, a metade do braço
+  it('(15) um `error_permission` da Shopee PARA com o code — e não é lido como "não existe"', async () => {
+    importarDevolucao.mockRejectedValueOnce(
+      new ShopeeApiError('sem permissão', {
+        code: 'error_permission',
+        kind: SHOPEE_ERROR_KIND.other,
+        httpStatus: 200,
+        path: '/api/v2/returns/get_return_detail',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push29(), deps);
+
+    expect(out.kind).toBe('parado');
+    const motivo = out.kind === 'parado' ? out.motivo : '';
+    expect(motivo).toBe(
+      'devolucao: ShopeeApiError error_permission em /api/v2/returns/get_return_detail',
+    );
+    // A QUASE-FALHA: o texto do "não existe" é o de `ignorado-inexistente`, e um
+    // erro de permissão não é ele.
+    expect(motivo).not.toContain('não existe');
+  });
+
+  // 16
+  it('(16) a cota DIÁRIA adia; um limite de RAJADA sobe; um bug de código sobe (regra 6)', async () => {
+    importarDevolucao.mockRejectedValueOnce(
+      new ShopeeRateLimitError('cota diária', {
+        ...initApi('error_limit', SHOPEE_ERROR_KIND.daily),
+        kind: SHOPEE_ERROR_KIND.daily,
+      }),
+    );
+    const adiado = await processNotificationPayload(db, push29(), deps);
+    expect(adiado.kind).toBe('devolucao-adiada');
+    expect(adiado.kind === 'devolucao-adiada' && adiado.reason).toContain('cota diária');
+
+    const rajada = new ShopeeRateLimitError('limite curto', {
+      ...initApi('error_rate_limit', SHOPEE_ERROR_KIND.burst),
+      kind: SHOPEE_ERROR_KIND.burst,
+      retryAfterSeconds: 60,
+    });
+    importarDevolucao.mockRejectedValueOnce(rajada);
+    await expect(processNotificationPayload(db, push29(), deps)).rejects.toBe(rajada);
+
+    const bug = new TypeError('cannot read properties of undefined');
+    importarDevolucao.mockRejectedValueOnce(bug);
+    await expect(processNotificationPayload(db, push29(), deps)).rejects.toBe(bug);
+  });
+
+  // 17 — a mesma tabela, outro prefixo
+  it('(17) ⚠️ disposicaoDaFalhaDeDevolucao é a MESMA tabela com OUTRO prefixo', () => {
+    const erros: unknown[] = [
+      new ShopeeNetworkError('ECONNRESET'),
+      new ShopeeApiError('assinatura', initApi('error_sign', SHOPEE_ERROR_KIND.other)),
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+      new ShopeeSemCredencialError('nenhuma credencial'),
+      new ShopeeContaSemShopIdError('conta de main account'),
+      new ShopeeConfigError('SHOPEE_PARTNER_KEY ausente'),
+      grpcErro(14),
+      new TypeError('bug'),
+    ];
+    for (const err of erros) {
+      const daDevolucao = disposicaoDaFalhaDeDevolucao(err);
+      const doPedido = disposicaoDaFalhaDeImportacao(err);
+      // A CLASSE decide o tipo, igual nos dois braços…
+      expect(daDevolucao.tipo, String(err)).toBe(doPedido.tipo);
+      if (daDevolucao.tipo === 'throw' || doPedido.tipo === 'throw') continue;
+      // …e o PREFIXO é a única diferença.
+      expect(daDevolucao.reason.startsWith('devolucao: '), String(err)).toBe(true);
+      expect(daDevolucao.reason.replace(/^devolucao: /, '')).toBe(
+        doPedido.reason.replace(/^push_code 3: /, ''),
+      );
+    }
+    // ÂNCORA: a tabela acima tem parques e adiamentos de verdade, então o
+    // `continue` não esvaziou o laço.
+    expect(erros.filter((e) => disposicaoDaFalhaDeDevolucao(e).tipo !== 'throw')).toHaveLength(4);
+  });
+
+  // 18 — nenhum destino `devolucao` cai nos braços de autorização
+  it('(18) ⚠️ um code 29 VÁLIDO nunca alcança os braços de autorização', async () => {
+    // A metade de RUNTIME da linha `restante`: com o braço fora do lugar (depois
+    // da escada 12/1/2), o 29 viraria uma desautorização da loja.
+    const out = await processNotificationPayload(db, push29(), deps);
+
+    expect(out.kind).toBe('devolucao');
+    expect(importarDevolucao).toHaveBeenCalledTimes(1);
+    expect(h.sweep).not.toHaveBeenCalled();
+    expect(h.avisarDesautorizacao).not.toHaveBeenCalled();
+    expect(h.resolverAvisos).not.toHaveBeenCalled();
+  });
+
+  // 19
+  it('(19) ⚠️ o braço emite ZERO linhas de log — a única linha por entrega é a do importador', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const feliz = await processNotificationPayload(db, push29(), deps);
+    importarDevolucao.mockResolvedValue(
+      resultadoDeDevolucao({ acao: 'ignorado-inexistente', pedidoId: null, statusDevolucao: null }),
+    );
+    const parado = await processNotificationPayload(db, push29(), deps);
+    importarDevolucao.mockResolvedValue(
+      resultadoDeDevolucao({
+        acao: 'ignorado-sem-pedido',
+        pedidoId: null,
+        statusDevolucao: null,
+        sinteticaEnfileirada: true,
+      }),
+    );
+    const adiado = await processNotificationPayload(db, push29(), deps);
+
+    // ÂNCORA: as três entregas realmente ACONTECERAM.
+    expect([feliz.kind, parado.kind, adiado.kind]).toEqual([
+      'devolucao',
+      'parado',
+      'devolucao-adiada',
+    ]);
+    expect(info.mock.calls).toEqual([]);
+    expect(warn.mock.calls).toEqual([]);
+    expect(error.mock.calls).toEqual([]);
+  });
+
+  // 20 — o PONTEIRO: dois pushes que discordam produzem o MESMO alvo de decisão
+  it('(20) ⚠️ DOIS pushes com valores PRÓPRIOS diferentes produzem a MESMA identidade de importação', async () => {
+    await processNotificationPayload(db, push29(), deps);
+    await processNotificationPayload(
+      db,
+      push29(
+        {
+          updated_values: [
+            {
+              update_field: 'return_status',
+              old_value: 'PROCESSING',
+              new_value: 'ACCEPTED',
+              update_time: 1_732_800_000,
+            },
+          ],
+        },
+        { timestamp: AGORA_MS + 5_000 },
+      ),
+      deps,
+    );
+
+    const [a, b] = importarDevolucao.mock.calls.map(([, alvo]) => alvo);
+    const identidade = (alvo: AlvoDeImportacaoDevolucaoShopee) => ({
+      integracaoId: alvo.integracaoId,
+      shopId: alvo.shopId,
+      orderSn: alvo.orderSn,
+      returnSn: alvo.returnSn,
+    });
+    expect(identidade(a!)).toEqual(identidade(b!));
+    // O que difere é o DIÁRIO — que só vira log.
+    expect(a!.diario).not.toEqual(b!.diario);
+
+    // ⚠️ A QUASE-FALHA: uma devolução DIFERENTE tem de produzir outro alvo.
+    importarDevolucao.mockClear();
+    await processNotificationPayload(db, push29({ return_sn: RETURN_SN_2 }), deps);
+    const c = importarDevolucao.mock.calls[0]![1];
+    expect(identidade(c)).not.toEqual(identidade(a!));
+    expect(c.returnSn).toBe(RETURN_SN_2);
   });
 });
 
@@ -3210,7 +3954,55 @@ describe('a fiação do pipeline', () => {
     expect(fonte).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'\.\.\/anuncios\//m);
   });
 
-  // ⚠️ D9 — a linha que transforma um SÉTIMO membro de `DestinoPush` sem braço
+  // ⚠️ O gêmeo do passo 17, com a sua PRÓPRIA negativa pela razão do de cima: as
+  // duas negativas anteriores cobrem `../pedidos/` e `../anuncios/` e NADA mais.
+  // `devolucoes/importarDevolucao` alcança a transação do incidente, o escritor
+  // de avisos e o contexto da Shopee, e até o parser PURO importa
+  // `@delfrance/schemas` como VALOR. São DOIS literais: o parser (no braço) e o
+  // importador (no default).
+  it('⚠️ passo 17 — o default de importarDevolucao existe e é PREGUIÇOSO — nada de import estático de devolucoes/', () => {
+    expect(typeof defaultProcessDeps.importarDevolucao).toBe('function');
+
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain("await import('../devolucoes/importarDevolucao')");
+    expect(fonte).toContain("await import('../devolucoes/pushDevolucao')");
+    expect(fonte).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'\.\.\/devolucoes\//m);
+    // …e a QUASE-FALHA que mantém a negativa honesta: os imports de TIPO de
+    // `../devolucoes/` existem e são permitidos — o regex não proíbe tudo.
+    expect(fonte).toMatch(/^import type \{[^;]*\} from '\.\.\/devolucoes\/importarDevolucao';/m);
+  });
+
+  it('⚠️ passo 17 — o default ENTREGA ao importador exatamente `(db, alvo)` e devolve o que ele devolve', async () => {
+    // O alvo exatamente como o braço o monta: um push 32 real, pelo parser real,
+    // capturado na costura injetada.
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    await processNotificationPayload(
+      db,
+      payload({
+        code: 29,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { order_sn: ORDER_SN_DEVOLUCAO, return_sn: RETURN_SN },
+      }),
+      deps,
+    );
+    const alvo = importarDevolucao.mock.calls[0]![1];
+    const esperado = resultadoDeDevolucao({ acao: 'atualizado', detail: 'atualizado' });
+    dev.importarDevolucaoShopee.mockResolvedValueOnce(esperado);
+
+    const r = await defaultProcessDeps.importarDevolucao!(db, alvo);
+
+    expect(r).toBe(esperado);
+    expect(dev.importarDevolucaoShopee).toHaveBeenCalledTimes(1);
+    const chamada = dev.importarDevolucaoShopee.mock.calls[0]!;
+    expect(chamada[0]).toBe(db);
+    expect(chamada[1]).toBe(alvo);
+    // NADA além dos dois: nenhum `deps` sobreposto, que trocaria o cliente real,
+    // a fila real ou o escritor de avisos real do importador em produção.
+    expect(chamada).toHaveLength(2);
+  });
+
+  // ⚠️ D9 — a linha que transforma um NONO membro de `DestinoPush` sem braço
   // próprio em erro de compilação. A escada abaixo do braço de frete testa
   // `payload.code`, não `destino`, e não tem `default`: um destino novo cairia
   // nos braços de autorização em silêncio. Fixado pela FONTE porque a garantia é
@@ -3609,5 +4401,88 @@ describe('handleNotificationTask — `acaoAnuncio` e `itemIdAnuncio` no TaskResu
     expect(r.itemIdAnuncio).toBe(ITEM_ID);
     // Um adiamento não tem veredito de handler — a chave fica ausente.
     expect(Object.prototype.hasOwnProperty.call(r, 'acaoAnuncio')).toBe(false);
+  });
+});
+
+// ── handleNotificationTask — `acaoDevolucao` / `returnSn` (#1525, passo 17) ──
+
+describe('handleNotificationTask — `acaoDevolucao` e `returnSn` no TaskResult', () => {
+  /** Uma entrega code 29 como a fila a entrega — a da Shopee ou a sintética. */
+  const tarefa29 = {
+    code: 29,
+    shopId: SHOP_ID,
+    timestamp: AGORA_MS,
+    data: { order_sn: ORDER_SN_DEVOLUCAO, return_sn: RETURN_SN_ALFA },
+  };
+
+  it('⚠️ o veredito da transação da devolução e o return_sn chegam ao log da tarefa', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarDevolucao.mockResolvedValue(
+      resultadoDeDevolucao({ acao: 'relogio-avancado', aviso: 'inalterado' }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(asDb(fake), tarefa29, 0, deps);
+
+    expect(r.outcome).toBe('done');
+    expect(r.kind).toBe('devolucao');
+    expect(r.acaoDevolucao).toBe('relogio-avancado');
+    expect(r.returnSn).toBe(RETURN_SN_ALFA);
+    expect(r.orderSn).toBe(ORDER_SN_DEVOLUCAO);
+    // ⚠️ `acaoDevolucao`, jamais `acao`: o outcome `pedido` já carrega um `acao`
+    // de OUTRO vocabulário, e `handleNotificationTask` lê por `in` — um `acao`
+    // aqui poria uma ação de devolução na coluna da importação (a forma do #1087).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acao')).toBe(false);
+    // `done` não persiste NADA: nenhuma linha de falha, de adiamento ou de parque.
+    expect(Object.keys(fake.store)).toEqual([]);
+  });
+
+  it('⚠️ uma devolucao-adiada leva o return_sn, e o veredito fica AUSENTE — não `null`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarDevolucao.mockResolvedValue(
+      resultadoDeDevolucao({
+        acao: 'ignorado-sem-pedido',
+        pedidoId: null,
+        statusDevolucao: null,
+        aviso: null,
+        sinteticaEnfileirada: true,
+      }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(asDb(fake), tarefa29, 0, deps);
+
+    expect(r.outcome).toBe('deferred');
+    expect(r.kind).toBe('devolucao-adiada');
+    // É numa linha ADIADA que um operador procura "qual devolução ficou presa".
+    expect(r.returnSn).toBe(RETURN_SN_ALFA);
+    expect(r.orderSn).toBe(ORDER_SN_DEVOLUCAO);
+    // Um adiamento não tem veredito de transação — a chave fica ausente.
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoDevolucao')).toBe(false);
+    // …e a linha adiada existe, com o doc id do code 29 (`29:<loja>:<return_sn>:<carimbo>`).
+    expect(
+      fake.store[`notificacoesShopee/29:${String(SHOP_ID)}:${RETURN_SN_ALFA}:${String(AGORA_MS)}`]
+        ?.data,
+    ).toMatchObject({
+      status: 'deferred',
+    });
+  });
+
+  it('⚠️ uma entrega code 3 não carrega `acaoDevolucao` nem `returnSn`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoDevolucao')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(r, 'returnSn')).toBe(false);
+    // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
+    expect(r.kind).toBe('pedido');
+    expect(importarDevolucao).not.toHaveBeenCalled();
   });
 });

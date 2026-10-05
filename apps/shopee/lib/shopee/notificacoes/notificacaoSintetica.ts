@@ -15,6 +15,16 @@
  *    `rastrearPedidoShopee` — as one Shopee pushed. It is built for a producer
  *    that lists packages rather than receiving them: the moment a package
  *    becomes eligible for the automatic arrange has no DOCUMENTED push.
+ *  - **Code 29, a RETURN** ({@link notificacaoSinteticaDeDevolucao}, step 17,
+ *    #1525). Shaped like a parsed `push 32` without its diary, so a return
+ *    found by the returns POLL — or touched by a seller action in the ERP —
+ *    takes the same path as one Shopee pushed: the code-29 arm, which re-reads
+ *    `get_return_detail` and writes through the one importer. Push 32 reports
+ *    four fields; negotiation, compensation and every due date change
+ *    silently, and an action's own effect is never pushed back at all.
+ *
+ * And ONE helper every day-bounded producer stamps with,
+ * {@link carimboDoDiaUtcMs} (its section below).
  *
  * ⚠️ No count, on purpose: the counted sentence this header used to carry said
  * three producers while four existed, and nothing failed.
@@ -61,8 +71,24 @@
  *    28), and a token copied from the producer's own read would make that
  *    comparison agree by construction.
  *
- * The envelope `timestamp` is the SYNTHESIS moment, in MILLISECONDS, on both
- * codes: legal for logging and for the doc id, never as a watermark.
+ * ## What the code-29 payload deliberately does NOT carry
+ *
+ * A real `push 32` carries `data.updated_values[]` — per changed field, its
+ * name, the old and new value, and a per-field `update_time` (SECONDS) — and
+ * no `data.update_time` at all. Nothing of it is synthesized:
+ *
+ *  - ⚠️ **`updated_values`**, because it is a DIARY of a transition the
+ *    producer never witnessed: the poll read a list row, the route performed
+ *    an action. The code-29 reader turns it into a LOG-only diary (the changed
+ *    field names, the push's own clock) printed beside the pulled return's, and
+ *    an entry copied from the producer's own read would make that comparison
+ *    agree by construction — the code-30 `fulfillment_status` reason.
+ *  - ⚠️ **No status and no clock**: the push is a POINTER, and the importer's
+ *    watermark is `get_return_detail.update_time`, never a push — real or
+ *    synthetic.
+ *
+ * The envelope `timestamp` is the SYNTHESIS moment, in MILLISECONDS, on every
+ * code: legal for logging and for the doc id, never as a watermark.
  */
 import type { ShopeeNotificationPayload } from './notificacao';
 
@@ -102,13 +128,23 @@ import type { ShopeeNotificationPayload } from './notificacao';
  * enqueues the package. Neither package read carries an `order_status`, so it
  * supplies none. Its bound is per conta per tick
  * (`MAX_ENFILEIRADOS_ARRANJO_POR_CONTA`, in that module).
+ *
+ * ⚠️ `'devolucao'` (#1525, step 17) is a code-29 delivery — pushed, polled or
+ * after a seller action — whose pedido does not exist here yet: `'rastreio'`'s
+ * situation on the returns side. The returns importer defers the delivery and
+ * synthesizes ONE code 3 for its `order_sn`, with ZERO Shopee calls, stamped
+ * with {@link carimboDoDiaUtcMs} — so a delivery the pipeline keeps re-driving
+ * through the day lands on ONE failure row per order, never one per attempt. A
+ * return names no `order_status`, so it supplies none. Its bound is per
+ * delivery (`devolucoes/importarDevolucao.ts`).
  */
 export type OrigemSintetica =
   | 'backfill'
   | 'reserva-travada'
   | 'liquidacao'
   | 'rastreio'
-  | 'arranjo-automatico';
+  | 'arranjo-automatico'
+  | 'devolucao';
 
 export interface NotificacaoSinteticaDePedidoParams {
   /** The conta's `shop_id` — top level on a real code 3. */
@@ -229,4 +265,118 @@ export function notificacaoSinteticaDePacote(
       origem: p.origem,
     },
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       code 29 — a return (step 17)                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which producer synthesized a code-29 push. Like the other two unions it
+ * names the PRODUCER, rides inside `data` and is NOT part of the identity —
+ * and it is its OWN type: an order sweep's origem must not type-check here.
+ *
+ * - `'reconciliacao'` — the returns poll (`devolucoes/devolucoesSweep.ts`): a
+ *   `get_return_list` row that is absent here, newer than the stored
+ *   watermark, divergent from the stored block, or breaking an importer
+ *   invariant. It stamps {@link carimboDoDiaUtcMs}, so a return keeps ≤ 1
+ *   failure row per UTC day (re-creating that doc id is a no-op — the step-15b
+ *   bound), and ONE read of it lets the poller skip a return whose import
+ *   today PARKED, or DEFERRED while its pedido is still absent.
+ * - `'acao-vendedor'` — the `reclamacao/acao` route, after Shopee accepted a
+ *   seller action: the action's own effect (an offer moves
+ *   `negotiation_status`) is never pushed, so the route hands the importer —
+ *   the single writer — a pointer. Its stamp is the click's own ms.
+ *
+ * ⚠️ `'push'` is deliberately NOT a member: it is what the code-29 reader
+ * answers for a delivery that carries no origem — a real push is never
+ * synthesized.
+ */
+export type OrigemSinteticaDeDevolucao = 'reconciliacao' | 'acao-vendedor';
+
+export interface NotificacaoSinteticaDeDevolucaoParams {
+  /** The conta's `shop_id` — top level on a real code 29. */
+  readonly shopId: number;
+  /** Shopee's `order_sn`, verbatim off the wire. */
+  readonly orderSn: string;
+  /** Shopee's `return_sn`, verbatim off the wire — the resource. ALPHANUMERIC. */
+  readonly returnSn: string;
+  /**
+   * The SYNTHESIS moment, MILLISECONDS: the day's stamp for the poll, the
+   * click for an action (see {@link OrigemSinteticaDeDevolucao}).
+   */
+  readonly nowMs: number;
+  readonly origem: OrigemSinteticaDeDevolucao;
+}
+
+/**
+ * Build the parsed code-29 payload for one return.
+ *
+ * The parsed payload (ms), never a wire envelope — the code-3 builder's reason.
+ * `data` carries EXACTLY three keys: `order_sn`, `return_sn`, `origem`.
+ *
+ * Identity, traced through `identidadeDoPush` case 29 (push 32 has no
+ * top-level clock, so the carimbo is ALWAYS the envelope stamp; the order is
+ * NOT part of it — the return is the resource):
+ *
+ *  - `docIdOf`    → `29:<shopId>:<returnSn>:<nowMs>`
+ *  - `dedupKeyOf` → `29:<shopId>:<returnSn>`
+ *
+ * ⚠️ Unlike codes 3 and 30, a REAL code 29 is stamped in the same unit (the
+ * envelope's seconds, parsed to ms), so a real push delivered in the very
+ * second a UTC day starts shares the poll's doc id for that return. Accepted:
+ * both are the same POINTER ("re-read this return"), and either one's failure
+ * row is a true answer to the poll's question "did today's import fail?".
+ *
+ * ⚠️ Per TICK, like every synthetic: the producer owes its own idempotence.
+ */
+export function notificacaoSinteticaDeDevolucao(
+  p: NotificacaoSinteticaDeDevolucaoParams,
+): ShopeeNotificationPayload {
+  return {
+    code: 29,
+    shopId: p.shopId,
+    timestamp: p.nowMs,
+    data: {
+      // ⚠️ `order_sn` WITH the underscore — push 32's own spelling, and the
+      // OPPOSITE of the code-3/30 builders' `ordersn`. Code 29's identity reads
+      // only `return_sn`, and the code-29 reader takes `order_sn` first; a test
+      // asserts the literal key.
+      order_sn: p.orderSn,
+      return_sn: p.returnSn,
+      origem: p.origem,
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                               the day's stamp                               */
+/* -------------------------------------------------------------------------- */
+
+/** One UTC day in milliseconds — epoch arithmetic, no zone involved. */
+const DIA_MS = 86_400_000;
+
+/**
+ * The START of the UTC day `nowMs` falls in — the stamp of a producer that
+ * synthesizes every tick yet must leave at most ONE failure row per resource
+ * per UTC day (the step-15b review's bound, `3685867cc`): with it the doc id is
+ * stable for the day, so ONE read of `notificacoesShopee/<docIdOf(p)>` says
+ * whether today's delivery is still failing — the store deletes a row once it
+ * resolves.
+ *
+ * Moved here from `pedidos/arranjoAutomaticoSweep.ts` (its two call sites
+ * switched) when step 17 became its second module: ONE copy, beside the
+ * builders whose `nowMs` it feeds.
+ *
+ * ⚠️ Flooring is safe only where the arm never reads the envelope stamp as a
+ * clock — codes 3 (the importer's watermark is `get_order_detail.update_time`),
+ * 30 (the package's own `update_time`) and 29 (the detail's `update_time`).
+ *
+ * ⚠️ UTC by epoch arithmetic, NEVER a local-time floor: `apps/nfe` runs
+ * `TZ=America/Sao_Paulo` while every other backend runs UTC, so a floor through
+ * the process zone would move the day's boundary by three hours with the
+ * service that ran it.
+ */
+export function carimboDoDiaUtcMs(nowMs: number): number {
+  return Math.floor(nowMs / DIA_MS) * DIA_MS;
 }
