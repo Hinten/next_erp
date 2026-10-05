@@ -12,6 +12,7 @@ import {
 import {
   CAMPOS_AUTORAIS_INCIDENTE,
   EMPTY_INCIDENTE_FORM,
+  ORIGEM_EXCLUSIVA_MSG,
   buildIncidentePatch,
   buildResolucao,
   detectIncidenteConflict,
@@ -360,5 +361,160 @@ describe('detectIncidenteConflict', () => {
     const current = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
     const patch = buildIncidentePatch(pristine(baseline), baseline, NOW);
     expect(detectIncidenteConflict(baseline, current, patch).bloqueouAgora).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*     The channel lock — origem/tipo of an IMPORTED incidente (#1525, R-16)   */
+/* -------------------------------------------------------------------------- */
+
+/** A Shopee return as the importer writes it (fixture return_sn, alphanumeric). */
+const shopeeImportado = (overrides: Partial<Incidente> = {}): Incidente =>
+  incidente({
+    origem: ORIGEM_INCIDENTE.pedidoShopee,
+    tipo: TIPO_INCIDENTE.devolucao,
+    externalId: '260910ABCDE0001',
+    ...overrides,
+  });
+
+/** A row a person typed: no marketplace origem, no id. */
+const manual = (overrides: Partial<Incidente> = {}): Incidente =>
+  incidente({
+    origem: ORIGEM_INCIDENTE.outros,
+    externalId: null,
+    claimStatus: null,
+    ...overrides,
+  });
+
+/** What an operator would do to lift the overlay: retype both fields. */
+const retipado = (doc: Incidente): IncidenteFormState => ({
+  ...pristine(doc),
+  tipo: TIPO_INCIDENTE.troca,
+  origem: String(ORIGEM_INCIDENTE.troca),
+});
+
+describe('buildIncidentePatch — the channel lock', () => {
+  it.each([
+    ['Shopee', shopeeImportado()],
+    ['Mercado Livre', incidente()],
+  ])(
+    '⭐ W16: on an imported %s row, a retyped origem/tipo is DROPPED from the patch',
+    (_canal, doc) => {
+      const patch = buildIncidentePatch({ ...retipado(doc), motivo: 'Motivo novo' }, doc, NOW);
+      expect(patch).not.toHaveProperty('origem');
+      expect(patch).not.toHaveProperty('tipo');
+      // The lock is scoped to those two: the rest of the edit still lands.
+      expect(patch).toEqual({ motivoDoIncidente: 'Motivo novo' });
+    },
+  );
+
+  it('⭐ NEAR MISS: the SAME retype on a manual row is written', () => {
+    const doc = manual();
+    expect(buildIncidentePatch(retipado(doc), doc, NOW)).toEqual({
+      tipo: TIPO_INCIDENTE.troca,
+      origem: ORIGEM_INCIDENTE.troca,
+    });
+  });
+
+  it('NEAR MISS: a marketplace origem WITHOUT an id is a legacy hand-typed row — still editable', () => {
+    const doc = shopeeImportado({ externalId: '  ' });
+    expect(buildIncidentePatch(retipado(doc), doc, NOW)).toMatchObject({
+      tipo: TIPO_INCIDENTE.troca,
+      origem: ORIGEM_INCIDENTE.troca,
+    });
+  });
+
+  it('`outros` (99) with an id — step 5’s produto rows — is NOT locked', () => {
+    const doc = manual({ externalId: 'produto-1' });
+    expect(buildIncidentePatch(retipado(doc), doc, NOW)).toHaveProperty('origem');
+  });
+
+  it('the lock reads the doc it is HANDED: built against a now-imported current, the keys drop', () => {
+    // `saveIncidenteEdit` writes the intersection of the patch built against the
+    // baseline and the one built against the tx-fresh doc — so a lock that arms
+    // between the two drops the keys from the write without any extra check.
+    const form = retipado(manual());
+    expect(buildIncidentePatch(form, shopeeImportado(), NOW)).not.toHaveProperty('origem');
+    expect(buildIncidentePatch(form, shopeeImportado(), NOW)).not.toHaveProperty('tipo');
+  });
+});
+
+describe('detectIncidenteConflict — the channel lock', () => {
+  it('never reports origem/tipo on an imported row, however both moved remotely', () => {
+    const baseline = shopeeImportado();
+    const current = shopeeImportado({
+      origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
+      tipo: TIPO_INCIDENTE.troca,
+    });
+    const patch = buildIncidentePatch(retipado(baseline), baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toEqual({
+      conflito: false,
+      campos: [],
+      bloqueouAgora: false,
+    });
+  });
+
+  it('NEAR MISS: on a manual row the same remote move IS a conflict', () => {
+    const baseline = manual();
+    const current = manual({ tipo: TIPO_INCIDENTE.mediacaoDoMarketplace });
+    const patch = buildIncidentePatch(retipado(baseline), baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toMatchObject({
+      conflito: true,
+      campos: ['tipo'],
+    });
+  });
+});
+
+describe('validateIncidenteForm — a marketplace origem is the importer’s', () => {
+  it.each([ORIGEM_INCIDENTE.pedidoMercadoLivre, ORIGEM_INCIDENTE.pedidoShopee])(
+    '⭐ refuses origem %s on CREATE',
+    (origem) => {
+      expect(validateIncidenteForm(form({ origem: String(origem) }), null)).toBe(
+        ORIGEM_EXCLUSIVA_MSG,
+      );
+      // No doc given is the create rule — the loud direction.
+      expect(validateIncidenteForm(form({ origem: String(origem) }))).toBe(ORIGEM_EXCLUSIVA_MSG);
+    },
+  );
+
+  it('refuses hand-tagging a MANUAL row with one on edit', () => {
+    expect(
+      validateIncidenteForm(form({ origem: String(ORIGEM_INCIDENTE.pedidoShopee) }), manual()),
+    ).toBe(ORIGEM_EXCLUSIVA_MSG);
+  });
+
+  it('refuses switching an imported row to the OTHER marketplace', () => {
+    expect(
+      validateIncidenteForm(
+        form({ origem: String(ORIGEM_INCIDENTE.pedidoMercadoLivre) }),
+        shopeeImportado(),
+      ),
+    ).toBe(ORIGEM_EXCLUSIVA_MSG);
+  });
+
+  it('⭐ NEAR MISS: editing a row that ALREADY holds that origem passes (the imported row itself)', () => {
+    const doc = shopeeImportado();
+    expect(validateIncidenteForm(pristine(doc), doc)).toBeNull();
+    const ml = incidente();
+    expect(validateIncidenteForm(pristine(ml), ml)).toBeNull();
+  });
+
+  it('NEAR MISS: every non-marketplace origem, and none, passes on create', () => {
+    for (const origem of ['', '0', '1', '3', '4', '99']) {
+      expect(validateIncidenteForm(form({ origem }), null)).toBeNull();
+    }
+  });
+
+  it('the origem check runs before the resolução one — and the resolução rules still apply', () => {
+    expect(
+      validateIncidenteForm(
+        form({ origem: String(ORIGEM_INCIDENTE.pedidoShopee), registrarResolucao: true }),
+        null,
+      ),
+    ).toBe(ORIGEM_EXCLUSIVA_MSG);
+    const doc = shopeeImportado();
+    expect(
+      validateIncidenteForm({ ...pristine(doc), registrarResolucao: true, resTipo: '' }, doc),
+    ).toMatch(/tipo/i);
   });
 });

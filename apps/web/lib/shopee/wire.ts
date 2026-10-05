@@ -9,7 +9,9 @@
  * `apps/*` and none is possible, so a browser surface that needs a backend shape
  * has exactly two options — share it, or write it twice. The field names here
  * are IDENTICAL to that module's, which is the whole point: a drift then shows
- * up in a diff instead of at runtime.
+ * up in a diff instead of at runtime. The two later blocks name their own
+ * twins the same way — the label's `etiqueta/pendenteEtiqueta.ts`, and the
+ * returns' `devolucoes/estadoDevolucao.ts` (step 17).
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -55,7 +57,7 @@
  */
 import { z } from 'zod';
 
-import { wireInt } from '@delfrance/core/wire';
+import { wireInt, wireNumber } from '@delfrance/core/wire';
 
 /**
  * `get_shop_info`'s projection — a SIDE read, absent (`loja: null`) whenever the
@@ -266,3 +268,144 @@ export type EscolhaDeEnvio =
       readonly horarioId: string | null;
     }
   | { readonly pacote: string; readonly modo: 'dropoff' };
+
+/* ---------------------------------------------------------------------------
+ * Returns (#1525, step 17) — `GET …/reclamacao/estado` and `POST …/reclamacao/acao`
+ * ------------------------------------------------------------------------- */
+
+// ⚠️ The same KNOWN duplication as the rest of this file, with a different
+// source: `apps/shopee/lib/shopee/devolucoes/estadoDevolucao.ts`
+// (`EstadoDevolucaoShopee`, `acaoDevolucaoShopeeSchema`) and the two
+// `app/api/marketplace/shopee/reclamacao/{estado,acao}/route.ts` answers. The
+// NAMES below are identical to those, so a rename shows up in a diff. This block
+// owns what the BROWSER accepts, nothing more.
+//
+// How this file's three rules land here:
+// - every Shopee TOKEN (status, motivo, negotiation / proof / compensation
+//   status, validation type) is a FREE string — Shopee adds vocabulary without
+//   notice, and the labels (`reclamacaoLabels.ts`) show an unknown one raw;
+// - our own CODES the browser only LABELS (`prazos[].tipo`,
+//   `pendenciasForaDoErp`, `acoesDisponiveis`) are free strings too: a code a
+//   newer backend adds must cost a raw badge, never the whole panel;
+// - the solução is the one closed enum, because the browser SENDS it back (the
+//   offer's `solucao`, the accept's `solucaoExibida`) and it is ours, not a
+//   Shopee token: a member this build cannot send is not one it can act on, so
+//   a third one is a coordinated change of both sides;
+// - Shopee's numbers (amounts, the request type, the counter-offer count, the
+//   deadlines as Shopee seconds × 1000) are tolerant, `wireNumber()` /
+//   `wireInt()`;
+// - ⚠️ the four ARRAYS carry NO default. A defaulted `[]` reads "no actions /
+//   no deadlines" for a backend that did not answer them — the ML wire's lesson
+//   on `acoesDisponiveis`. No deployed backend predates this route, so every
+//   field is required (rule 2); a field added later is `.optional()` with the
+//   panel's fallback.
+
+/** A return's solution as the backend normalised it — the one closed enum here. */
+export const solucaoDevolucaoShopeeSchema = z.enum(['RETURN_REFUND', 'REFUND']);
+export type SolucaoDevolucaoShopee = z.infer<typeof solucaoDevolucaoShopeeSchema>;
+export const SOLUCAO_DEVOLUCAO_SHOPEE = {
+  devolucaoEReembolso: 'RETURN_REFUND',
+  soReembolso: 'REFUND',
+} as const satisfies Record<string, SolucaoDevolucaoShopee>;
+
+/**
+ * The seller actions the ERP can run on a return — what the browser SENDS as
+ * `acao`. The estado's `acoesDisponiveis` stays a free string list: the panel
+ * renders a code it knows as a button and any other as a badge.
+ */
+export const acaoReclamacaoShopeeSchema = z.enum(['confirmar', 'ofertar', 'aceitar-oferta']);
+export type AcaoReclamacaoShopee = z.infer<typeof acaoReclamacaoShopeeSchema>;
+export const ACAO_RECLAMACAO_SHOPEE = {
+  confirmar: 'confirmar',
+  ofertar: 'ofertar',
+  aceitarOferta: 'aceitar-oferta',
+} as const satisfies Record<string, AcaoReclamacaoShopee>;
+
+/** One seller-facing deadline. Only positive deadlines are sent. */
+export const shopeePrazoDevolucaoSchema = z.object({
+  /** Ours: `resposta-vendedor`, `final-vendedor`, `envio-comprador`, `evidencias`, `compensacao`, `proposta`. */
+  tipo: z.string().min(1),
+  /** Milliseconds — Shopee's own seconds × 1000, so tolerant (rule 3). */
+  prazoMs: wireInt(),
+  /** Shopee refunds the buyer on its own when this deadline lapses. */
+  reembolsoAutomatico: z.boolean(),
+});
+export type ShopeePrazoDevolucao = z.infer<typeof shopeePrazoDevolucaoSchema>;
+
+/** One ELIGIBLE solution the seller may offer. Bounds are REAIS, Shopee's floats. */
+export const shopeeSolucaoOfertavelSchema = z.object({
+  solucao: solucaoDevolucaoShopeeSchema,
+  ajustavel: z.boolean(),
+  minimo: wireNumber().nullable(),
+  maximo: wireNumber().nullable(),
+});
+export type ShopeeSolucaoOfertavel = z.infer<typeof shopeeSolucaoOfertavelSchema>;
+
+/**
+ * The live state of one Shopee return (`PERM.incidenteResolucao.read`).
+ *
+ * ⚠️ **A snapshot, never a cache.** `acoesDisponiveis` is the backend's answer
+ * to "what may the seller do right now"; the web holds no copy of that rule
+ * (#1369) and must refetch rather than remember.
+ */
+export const shopeeReclamacaoEstadoSchema = z.object({
+  returnSn: z.string().min(1),
+  orderSn: z.string().min(1),
+  /** The ERP pedido the return's order maps to — echoed back on every action. */
+  pedidoId: z.string().min(1),
+  status: z.string().min(1),
+  terminal: z.boolean(),
+  solucao: solucaoDevolucaoShopeeSchema.nullable(),
+  /** Raw Shopee reason tokens. */
+  motivo: z.string().nullable(),
+  motivoReavaliado: z.string().nullable(),
+  /** REAIS. */
+  valorReembolso: wireNumber().nullable(),
+  valorAntesDesconto: wireNumber().nullable(),
+  moeda: z.string().nullable(),
+  /** Shopee's `return_refund_request_type` (0 normal, 1 in transit, 2 on the spot). */
+  tipoRequisicao: wireInt().nullable(),
+  tipoValidacao: z.string().nullable(),
+  negociacao: z
+    .object({
+      status: z.string().nullable(),
+      solucaoOfertada: solucaoDevolucaoShopeeSchema.nullable(),
+      valorOfertado: wireNumber().nullable(),
+      contrapropostasRestantes: wireInt().nullable(),
+    })
+    .nullable(),
+  prova: z.object({ status: z.string().nullable() }).nullable(),
+  compensacao: z
+    .object({
+      status: z.string().nullable(),
+      valor: wireNumber().nullable(),
+    })
+    .nullable(),
+  prazos: z.array(shopeePrazoDevolucaoSchema),
+  /** Eligible solutions only; `[]` when none, or when Shopee refused the read. */
+  solucoes: z.array(shopeeSolucaoOfertavelSchema),
+  acoesDisponiveis: z.array(z.string()),
+  /** A pt-BR sentence when `acoesDisponiveis` is empty. */
+  motivoSemAcao: z.string().nullable(),
+  /** What the seller must do on the Seller Centre, which the ERP does not do. */
+  pendenciasForaDoErp: z.array(z.string()),
+});
+export type ShopeeReclamacaoEstado = z.infer<typeof shopeeReclamacaoEstadoSchema>;
+
+/**
+ * What a successful `POST …/reclamacao/acao` reports.
+ *
+ * ⚠️ `ok: z.literal(true)`: a 200 saying anything else is a contract breach,
+ * never a success to toast. `acao` / `returnSn` are echoes, read loosely — a
+ * parse failure AFTER an irreversible action would tell the operator the action
+ * failed when it did not. `atualizacao` says whether the post-action re-import
+ * was enqueued; it only changes a sentence, so an unknown value degrades to
+ * "not said" rather than costing the success.
+ */
+export const shopeeReclamacaoAcaoRespostaSchema = z.object({
+  ok: z.literal(true),
+  acao: z.string(),
+  returnSn: z.string(),
+  atualizacao: z.enum(['enfileirada', 'nao-enfileirada']).optional().catch(undefined),
+});
+export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;

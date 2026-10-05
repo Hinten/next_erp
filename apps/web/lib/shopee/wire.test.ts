@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACAO_RECLAMACAO_SHOPEE,
+  SOLUCAO_DEVOLUCAO_SHOPEE,
+  acaoReclamacaoShopeeSchema,
   oauthStartResponseSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeLojaSchema,
+  shopeeReclamacaoAcaoRespostaSchema,
+  shopeeReclamacaoEstadoSchema,
+  solucaoDevolucaoShopeeSchema,
 } from './wire';
 
 /**
@@ -693,5 +699,225 @@ describe('the label 202 — `tentarEmMs`', () => {
         false,
       );
     }
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Returns (#1525, step 17) — `GET …/reclamacao/estado`, `POST …/reclamacao/acao`
+ * ------------------------------------------------------------------------- */
+
+/** A REQUESTED return the backend lists `confirmar` on — fixture ids only. */
+const ESTADO = {
+  returnSn: '260910ABCDE0001',
+  orderSn: '260910KJBHUJDM',
+  pedidoId: 'pedido-1',
+  status: 'REQUESTED',
+  terminal: false,
+  solucao: 'REFUND',
+  motivo: 'ITEM_DAMAGED',
+  motivoReavaliado: null,
+  valorReembolso: 89.9,
+  valorAntesDesconto: 99.9,
+  moeda: 'BRL',
+  tipoRequisicao: 0,
+  tipoValidacao: 'seller_validation',
+  negociacao: {
+    status: 'PENDING_RESPOND',
+    solucaoOfertada: 'RETURN_REFUND',
+    valorOfertado: 50,
+    contrapropostasRestantes: 2,
+  },
+  prova: { status: 'NOT_NEEDED' },
+  compensacao: null,
+  prazos: [
+    { tipo: 'resposta-vendedor', prazoMs: 1_790_000_000_000, reembolsoAutomatico: true },
+    { tipo: 'proposta', prazoMs: 1_790_100_000_000, reembolsoAutomatico: false },
+  ],
+  solucoes: [{ solucao: 'REFUND', ajustavel: true, minimo: 10, maximo: 89.9 }],
+  acoesDisponiveis: ['confirmar', 'ofertar', 'aceitar-oferta'],
+  motivoSemAcao: null,
+  pendenciasForaDoErp: ['contestar'],
+};
+
+const parseEstado = (body: unknown) => shopeeReclamacaoEstadoSchema.safeParse(body);
+
+describe('the returns estado — every Shopee token is a FREE string', () => {
+  it('parses the estado the backend builds — the control', () => {
+    const r = parseEstado(ESTADO);
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual(ESTADO);
+  });
+
+  it('⭐ an UNKNOWN status, reason, sub-status or validation type passes — the label shows it raw', () => {
+    const r = parseEstado({
+      ...ESTADO,
+      status: 'SOME_NEW_STATUS',
+      motivo: 'SOME_NEW_REASON',
+      motivoReavaliado: 'OTHER_NEW',
+      tipoValidacao: 'drone_validation',
+      negociacao: { ...ESTADO.negociacao, status: 'PENDING_SHOPEE' },
+      prova: { status: 'UNDER_REVIEW' },
+      compensacao: { status: 'COMPENSATION_SOMETHING', valor: 3 },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('⭐ an UNKNOWN action, deadline or Seller-Centre code passes — a badge, never a dead panel', () => {
+    const r = parseEstado({
+      ...ESTADO,
+      acoesDisponiveis: ['contestar-no-erp'],
+      prazos: [{ tipo: 'prazo-novo', prazoMs: 1_790_000_000_000, reembolsoAutomatico: false }],
+      pendenciasForaDoErp: ['algo-novo'],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('unknown KEYS pass, top level and nested (rule 1)', () => {
+    const r = parseEstado({
+      ...ESTADO,
+      campoNovo: 1,
+      negociacao: { ...ESTADO.negociacao, autor: 'comprador' },
+      solucoes: [{ ...ESTADO.solucoes[0], moeda: 'BRL' }],
+    });
+    expect(r.success).toBe(true);
+  });
+});
+
+describe('the returns estado — Shopee numbers are tolerant, our flags are not', () => {
+  it('⭐ a QUOTED amount, deadline, request type or count is read (wireNumber / wireInt)', () => {
+    const r = parseEstado({
+      ...ESTADO,
+      valorReembolso: '12.34',
+      valorAntesDesconto: '20',
+      tipoRequisicao: '1',
+      negociacao: { ...ESTADO.negociacao, valorOfertado: '5.5', contrapropostasRestantes: '0' },
+      prazos: [{ tipo: 'final-vendedor', prazoMs: '1790000000000', reembolsoAutomatico: true }],
+      solucoes: [{ solucao: 'REFUND', ajustavel: true, minimo: '1.5', maximo: '89.90' }],
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.valorReembolso).toBe(12.34);
+    expect(r.data?.tipoRequisicao).toBe(1);
+    expect(r.data?.prazos[0]?.prazoMs).toBe(1_790_000_000_000);
+    expect(r.data?.solucoes[0]?.maximo).toBe(89.9);
+  });
+
+  it('NEAR MISS: a non-numeric amount, a fractional deadline or a quoted boolean is REJECTED', () => {
+    expect(parseEstado({ ...ESTADO, valorReembolso: 'doze' }).success).toBe(false);
+    expect(
+      parseEstado({
+        ...ESTADO,
+        prazos: [{ tipo: 'proposta', prazoMs: 1.5, reembolsoAutomatico: false }],
+      }).success,
+    ).toBe(false);
+    expect(parseEstado({ ...ESTADO, terminal: 'false' }).success).toBe(false);
+    expect(
+      parseEstado({
+        ...ESTADO,
+        solucoes: [{ solucao: 'REFUND', ajustavel: 'true', minimo: null, maximo: null }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('the returns estado — the four arrays carry NO default (W10)', () => {
+  it.each(['acoesDisponiveis', 'prazos', 'solucoes', 'pendenciasForaDoErp'] as const)(
+    '⭐ an ABSENT `%s` FAILS the parse — never read as "nothing"',
+    (campo) => {
+      const { [campo]: _omitido, ...semCampo } = ESTADO;
+      const r = parseEstado(semCampo);
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.path.join('.'))).toContain(campo);
+    },
+  );
+
+  it('NEAR MISS: an EMPTY array is a real answer and parses as empty', () => {
+    const r = parseEstado({
+      ...ESTADO,
+      acoesDisponiveis: [],
+      prazos: [],
+      solucoes: [],
+      pendenciasForaDoErp: [],
+      motivoSemAcao: 'A devolução está em análise pela Shopee.',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data?.acoesDisponiveis).toEqual([]);
+  });
+
+  it('`null` is not an array either — refused', () => {
+    expect(parseEstado({ ...ESTADO, acoesDisponiveis: null }).success).toBe(false);
+  });
+});
+
+describe('the returns estado — the solução is the one CLOSED enum (the browser sends it back)', () => {
+  it('accepts both members and null where nullable', () => {
+    for (const solucao of [SOLUCAO_DEVOLUCAO_SHOPEE.devolucaoEReembolso, 'REFUND', null]) {
+      expect(parseEstado({ ...ESTADO, solucao }).success).toBe(true);
+    }
+    expect(solucaoDevolucaoShopeeSchema.options).toEqual(['RETURN_REFUND', 'REFUND']);
+  });
+
+  it('NEAR MISS: Shopee’s int encoding, a lower-cased member or an unknown one is REJECTED', () => {
+    for (const solucao of [0, 1, '0', 'refund', 'RETURN_AND_REFUND']) {
+      expect(parseEstado({ ...ESTADO, solucao }).success).toBe(false);
+      expect(
+        parseEstado({ ...ESTADO, negociacao: { ...ESTADO.negociacao, solucaoOfertada: solucao } })
+          .success,
+      ).toBe(false);
+      expect(
+        parseEstado({
+          ...ESTADO,
+          solucoes: [{ solucao, ajustavel: false, minimo: null, maximo: null }],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('the companion constants agree with the enums (prefer-schema-enum)', () => {
+    expect(Object.values(SOLUCAO_DEVOLUCAO_SHOPEE).sort()).toEqual(
+      [...solucaoDevolucaoShopeeSchema.options].sort(),
+    );
+    expect(Object.values(ACAO_RECLAMACAO_SHOPEE).sort()).toEqual(
+      [...acaoReclamacaoShopeeSchema.options].sort(),
+    );
+  });
+});
+
+describe('the returns estado — ANTI-VACUITY', () => {
+  it.each([
+    ['returnSn', ''],
+    ['pedidoId', ''],
+    ['status', ''],
+    ['status', null],
+    ['terminal', null],
+    ['negociacao', 'nenhuma'],
+    ['prazos', [{ tipo: '', prazoMs: 1, reembolsoAutomatico: true }]],
+    ['acoesDisponiveis', [1]],
+  ] as const)('rejects `%s` = %j', (campo, valor) => {
+    expect(parseEstado({ ...ESTADO, [campo]: valor }).success).toBe(false);
+  });
+});
+
+describe('the acao answer', () => {
+  const RESPOSTA = { ok: true, acao: 'confirmar', returnSn: '260910ABCDE0001' };
+
+  it('parses with and without `atualizacao`', () => {
+    expect(
+      shopeeReclamacaoAcaoRespostaSchema.parse({ ...RESPOSTA, atualizacao: 'nao-enfileirada' }),
+    ).toEqual({ ...RESPOSTA, atualizacao: 'nao-enfileirada' });
+    expect(shopeeReclamacaoAcaoRespostaSchema.parse(RESPOSTA).atualizacao).toBeUndefined();
+  });
+
+  it('an unknown `atualizacao` degrades to "not said" — never a failure after an irreversible action', () => {
+    expect(
+      shopeeReclamacaoAcaoRespostaSchema.parse({ ...RESPOSTA, atualizacao: 'adiada' }).atualizacao,
+    ).toBeUndefined();
+  });
+
+  it('⭐ NEAR MISS: `ok: false` (or absent) is a contract breach, never a success', () => {
+    expect(shopeeReclamacaoAcaoRespostaSchema.safeParse({ ...RESPOSTA, ok: false }).success).toBe(
+      false,
+    );
+    const { ok: _ok, ...semOk } = RESPOSTA;
+    expect(shopeeReclamacaoAcaoRespostaSchema.safeParse(semOk).success).toBe(false);
   });
 });

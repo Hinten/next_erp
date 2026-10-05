@@ -10,8 +10,9 @@
  * The client is defined here and not in `@delfrance/integrations-shopee` on
  * purpose: that package signs every request with the partner key, which must
  * never be bundled into a browser. The browser never sees a Shopee access or
- * refresh token — it reads the connection STATUS, mints a consent URL and,
- * since step 15, fetches a pedido's shipping LABEL, and all three are answered
+ * refresh token — it reads the connection STATUS, mints a consent URL, since
+ * step 15 fetches a pedido's shipping LABEL and, since step 17, reads a
+ * return's live state and runs one seller action on it. Every one is answered
  * by `apps/shopee` over an authenticated cross-origin call (its `proxy.ts`
  * allows exactly `/api/marketplace/*`).
  *
@@ -30,13 +31,19 @@ import { useAuth } from '@/lib/auth/useAuth';
 import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import {
+  ACAO_RECLAMACAO_SHOPEE,
   oauthStartResponseSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
+  shopeeReclamacaoAcaoRespostaSchema,
+  shopeeReclamacaoEstadoSchema,
   type EscolhaDeEnvio,
   type ShopeeContaStatus,
   type ShopeeEtiquetaPendente,
   type ShopeeOauthStart,
+  type ShopeeReclamacaoAcaoResposta,
+  type ShopeeReclamacaoEstado,
+  type SolucaoDevolucaoShopee,
 } from './wire';
 
 const DEFAULT_SHOPEE_URL = 'http://localhost:3009';
@@ -182,6 +189,49 @@ export type ShopeeEtiquetaResposta =
   | { tipo: 'arquivo'; blob: Blob; filename: string; contentType: string }
   | ({ tipo: 'pendente' } & ShopeeEtiquetaPendente);
 
+/** Which return a seller action is about — every action carries all three. */
+interface AlvoDaReclamacaoShopee {
+  integracaoId: string;
+  /**
+   * The pedido the operator is LOOKING AT. The backend refuses (409
+   * `pedido-divergente`) when the return's order maps to another one, so a
+   * stale tab can never act on return X from pedido Y.
+   */
+  pedidoId: string;
+  returnSn: string;
+}
+
+/**
+ * One seller action on a Shopee return (`POST …/reclamacao/acao`), typed PER
+ * ACTION so a missing "what you saw" echo is a compile error rather than a 400:
+ *
+ * - `confirmar` — refund without the item back; echoes the refund the panel
+ *   showed, in integer centavos (`valorExibidoMinor`);
+ * - `ofertar` — propose a solution; `valorReembolsoMinor` (centavos) only for an
+ *   adjustable one, and ABSENT — never `0` — otherwise;
+ * - `aceitar-oferta` — accept the buyer's offer; echoes the amount AND the
+ *   solution the panel showed.
+ *
+ * The backend refuses with 409 when the live return no longer matches an echo,
+ * so a buyer counter-offer landing between the read and the click is never
+ * accepted unseen. Money travels as integer centavos, never a browser float.
+ */
+export type ReclamacaoAcaoShopeeInput =
+  | (AlvoDaReclamacaoShopee & {
+      acao: typeof ACAO_RECLAMACAO_SHOPEE.confirmar;
+      valorExibidoMinor: number | null;
+    })
+  | (AlvoDaReclamacaoShopee & {
+      acao: typeof ACAO_RECLAMACAO_SHOPEE.ofertar;
+      solucao: SolucaoDevolucaoShopee;
+      valorReembolsoMinor?: number;
+    })
+  | (AlvoDaReclamacaoShopee & {
+      acao: typeof ACAO_RECLAMACAO_SHOPEE.aceitarOferta;
+      valorExibidoMinor: number | null;
+      solucaoExibida: SolucaoDevolucaoShopee | null;
+    });
+
 export interface ShopeeClient {
   /** Mint the Shopee consent URL for an `integracao` conta (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<ShopeeOauthStart>;
@@ -204,10 +254,36 @@ export interface ShopeeClient {
     p: ShopeeEtiquetaPedido,
     opts?: { signal?: AbortSignal },
   ): Promise<ShopeeEtiquetaResposta>;
+  /**
+   * Live state of one Shopee return (`PERM.incidenteResolucao.read`).
+   *
+   * ⚠️ Never cache the result: `acoesDisponiveis` is stale the moment it
+   * leaves the backend, so the panel refetches rather than remembering.
+   */
+  reclamacaoEstado(input: {
+    integracaoId: string;
+    returnSn: string;
+  }): Promise<ShopeeReclamacaoEstado>;
+  /**
+   * Run one seller action on a Shopee return (`PERM.incidenteResolucao.write`).
+   *
+   * ⚠️ **Irreversible, and it moves money.** Writes NOTHING locally — the
+   * returns importer stays the single writer of the incidente, so the caller
+   * learns the outcome by refetching {@link reclamacaoEstado}.
+   *
+   * ⚠️ A {@link ShopeeClientNetworkError} here means the outcome is UNKNOWN,
+   * not that the action failed: a gateway timeout reaches the browser as a
+   * network error with no CORS headers. Never retry it automatically.
+   */
+  reclamacaoAcao(input: ReclamacaoAcaoShopeeInput): Promise<ShopeeReclamacaoAcaoResposta>;
 }
 
 /** The label route. */
 const ETIQUETA_PATH = '/api/marketplace/shopee/etiqueta';
+
+/** The two returns routes (#1525, step 17). */
+const RECLAMACAO_ESTADO_PATH = '/api/marketplace/shopee/reclamacao/estado';
+const RECLAMACAO_ACAO_PATH = '/api/marketplace/shopee/reclamacao/acao';
 
 /**
  * Log a body the operator will never see, capped so a whole HTML document
@@ -341,6 +417,43 @@ function corpoDaEtiqueta(p: ShopeeEtiquetaPedido): Record<string, unknown> {
   };
 }
 
+/**
+ * The returns action body, rebuilt BY NAME and per action: exactly the keys
+ * that action carries, an absent optional one OMITTED (never `null`-filled).
+ * The route's body is strict and forbids each key outside its own action
+ * (400), so a caller object carrying one more field — a `solucao` left over on
+ * a `confirmar` — must not reach it.
+ */
+function corpoDaReclamacao(p: ReclamacaoAcaoShopeeInput): Record<string, unknown> {
+  const alvo = { integracaoId: p.integracaoId, pedidoId: p.pedidoId, returnSn: p.returnSn };
+  switch (p.acao) {
+    case ACAO_RECLAMACAO_SHOPEE.confirmar:
+      return { ...alvo, acao: p.acao, valorExibidoMinor: p.valorExibidoMinor };
+    case ACAO_RECLAMACAO_SHOPEE.ofertar:
+      return {
+        ...alvo,
+        acao: p.acao,
+        solucao: p.solucao,
+        ...(p.valorReembolsoMinor === undefined
+          ? {}
+          : { valorReembolsoMinor: p.valorReembolsoMinor }),
+      };
+    case ACAO_RECLAMACAO_SHOPEE.aceitarOferta:
+      return {
+        ...alvo,
+        acao: p.acao,
+        valorExibidoMinor: p.valorExibidoMinor,
+        solucaoExibida: p.solucaoExibida,
+      };
+    default: {
+      // Exhaustive: a fourth action is a compile error here, never a body
+      // sent with whatever keys the caller happened to pass.
+      const nunca: never = p;
+      throw new TypeError(`ação de devolução desconhecida: ${JSON.stringify(nunca)}`);
+    }
+  }
+}
+
 export function createShopeeClient(config: {
   baseUrl: string;
   getAuthToken: () => Promise<string>;
@@ -349,16 +462,30 @@ export function createShopeeClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<S extends z.ZodType>(path: string, schema: S): Promise<z.infer<S>> {
+  /**
+   * One JSON round trip: a GET, or a POST exactly when `body` is given.
+   *
+   * ⚠️ `getAuthToken()` stays OUTSIDE the try, on purpose: a token failure is
+   * a `FirebaseError`, not a transport failure, and the caller narrows it on
+   * its own (the returns panel does, so an irreversible confirm never ends in
+   * silence). Wrapping it here would relabel it a network error.
+   */
+  async function call<S extends z.ZodType>(
+    path: string,
+    schema: S,
+    body?: Record<string, unknown>,
+  ): Promise<z.infer<S>> {
     const token = await config.getAuthToken();
     let res: Response;
     try {
       res = await doFetch(`${baseUrl}${path}`, {
-        method: 'GET',
+        method: body === undefined ? 'GET' : 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json',
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
       throw new ShopeeClientNetworkError(err instanceof Error ? err.message : 'fetch falhou', err);
@@ -500,6 +627,14 @@ export function createShopeeClient(config: {
         shopeeContaStatusSchema,
       ),
     etiqueta,
+    reclamacaoEstado: (input) =>
+      call(
+        `${RECLAMACAO_ESTADO_PATH}?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          `&returnSn=${encodeURIComponent(input.returnSn)}`,
+        shopeeReclamacaoEstadoSchema,
+      ),
+    reclamacaoAcao: (input) =>
+      call(RECLAMACAO_ACAO_PATH, shopeeReclamacaoAcaoRespostaSchema, corpoDaReclamacao(input)),
   };
 }
 

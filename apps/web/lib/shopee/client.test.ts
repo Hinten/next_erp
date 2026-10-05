@@ -1,3 +1,4 @@
+import { FirebaseError } from 'firebase/app';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -7,6 +8,7 @@ import {
   createShopeeClient,
   shopeeHttpFallbackMessage,
 } from './client';
+import { ACAO_RECLAMACAO_SHOPEE, SOLUCAO_DEVOLUCAO_SHOPEE } from './wire';
 
 /**
  * The regressions these pin are the ones both sibling clients paid for before
@@ -952,5 +954,353 @@ describe('a connection that drops while the BODY is read (#1748 review)', () => 
     const err = await c.etiqueta({ pedidoId: 'ped-1', formato: 'pdf' }).catch((e: unknown) => e);
 
     expect(err).toBe(outro);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Returns (#1525, step 17) — `reclamacaoEstado` (GET) and `reclamacaoAcao` (POST)
+ * ------------------------------------------------------------------------- */
+
+/** Fixture ids only — an ALPHANUMERIC return_sn, like every Shopee sample. */
+const RETURN_SN = '260910ABCDE0001';
+const ALVO = { integracaoId: 'int-1', pedidoId: 'pedido-1', returnSn: RETURN_SN };
+
+const ESTADO_DEVOLUCAO = {
+  returnSn: RETURN_SN,
+  orderSn: '260910KJBHUJDM',
+  pedidoId: 'pedido-1',
+  status: 'REQUESTED',
+  terminal: false,
+  solucao: 'REFUND',
+  motivo: 'ITEM_DAMAGED',
+  motivoReavaliado: null,
+  valorReembolso: 89.9,
+  valorAntesDesconto: null,
+  moeda: 'BRL',
+  tipoRequisicao: 0,
+  tipoValidacao: 'seller_validation',
+  negociacao: null,
+  prova: null,
+  compensacao: null,
+  prazos: [{ tipo: 'resposta-vendedor', prazoMs: 1_790_000_000_000, reembolsoAutomatico: true }],
+  solucoes: [],
+  acoesDisponiveis: ['confirmar'],
+  motivoSemAcao: null,
+  pendenciasForaDoErp: [],
+};
+
+const ACAO_OK = { ok: true, acao: 'confirmar', returnSn: RETURN_SN, atualizacao: 'enfileirada' };
+
+/** Records every request; answers `resposta` (a body string) with `status`. */
+function gravador(resposta: string, status = 200) {
+  const pedidos: { url: string; init: RequestInit | undefined }[] = [];
+  const fetchImpl = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+    pedidos.push({ url: String(u), init });
+    return new Response(resposta, { status, headers: { 'content-type': 'application/json' } });
+  });
+  return { c: client(fetchImpl), pedidos, fetchImpl };
+}
+
+const corpoEnviado = (init: RequestInit | undefined): unknown =>
+  JSON.parse(String(init?.body)) as unknown;
+
+describe('reclamacaoEstado — the GET', () => {
+  it('⭐ GETs the estado route with BOTH params percent-encoded, and no body', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ESTADO_DEVOLUCAO));
+
+    await c.reclamacaoEstado({ integracaoId: 'int/1 2&x', returnSn: 'A&B=C' });
+
+    expect(pedidos[0]?.url).toBe(
+      'http://localhost:3009/api/marketplace/shopee/reclamacao/estado' +
+        '?integracaoId=int%2F1%202%26x&returnSn=A%26B%3DC',
+    );
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init?.body).toBeUndefined();
+    expect(pedidos[0]?.init?.headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('parses the estado straight through — the control', async () => {
+    const { c } = gravador(JSON.stringify(ESTADO_DEVOLUCAO));
+
+    await expect(
+      c.reclamacaoEstado({ integracaoId: 'int-1', returnSn: RETURN_SN }),
+    ).resolves.toEqual(ESTADO_DEVOLUCAO);
+  });
+
+  it('⭐ a 2xx WITHOUT `acoesDisponiveis` is a RespostaInvalida naming it — never "no actions"', async () => {
+    const { acoesDisponiveis: _semAcoes, ...semAcoes } = ESTADO_DEVOLUCAO;
+    const { c } = gravador(JSON.stringify(semAcoes));
+
+    const err = await c
+      .reclamacaoEstado({ integracaoId: 'int-1', returnSn: RETURN_SN })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('acoesDisponiveis');
+  });
+
+  it('a 404 envelope is an HttpError carrying the backend’s sentence and code', async () => {
+    const { c } = gravador(
+      JSON.stringify({ error: 'Devolução não encontrada.', code: 'SHOPEE_RECLAMACAO_INEXISTENTE' }),
+      404,
+    );
+
+    const err = (await c
+      .reclamacaoEstado({ integracaoId: 'int-1', returnSn: RETURN_SN })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.status).toBe(404);
+    expect(err.message).toBe('Devolução não encontrada.');
+    expect(err.code).toBe('SHOPEE_RECLAMACAO_INEXISTENTE');
+  });
+
+  it('a body that drops mid-read is a NetworkError (the shared `lerCorpo`)', async () => {
+    const c = client(
+      async () => new RespostaQueCaiNoCorpo(200, { 'content-type': 'application/json' }),
+    );
+
+    const err = await c
+      .reclamacaoEstado({ integracaoId: 'int-1', returnSn: RETURN_SN })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+  });
+});
+
+describe('reclamacaoAcao — the POST body, rebuilt BY NAME per action', () => {
+  it('⭐ POSTs JSON with the Bearer token, the Content-Type and an Accept header', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ACAO_OK));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.confirmar,
+      valorExibidoMinor: 8990,
+    });
+
+    expect(pedidos[0]?.url).toBe('http://localhost:3009/api/marketplace/shopee/reclamacao/acao');
+    expect(pedidos[0]?.init?.method).toBe('POST');
+    expect(pedidos[0]?.init?.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('⭐ confirmar sends EXACTLY {integracaoId, pedidoId, returnSn, acao, valorExibidoMinor}', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ACAO_OK));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.confirmar,
+      valorExibidoMinor: 8990,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toEqual({
+      ...ALVO,
+      acao: 'confirmar',
+      valorExibidoMinor: 8990,
+    });
+  });
+
+  it('confirmar keeps a `null` echo as null — never dropped, never 0', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ACAO_OK));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.confirmar,
+      valorExibidoMinor: null,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toEqual({
+      ...ALVO,
+      acao: 'confirmar',
+      valorExibidoMinor: null,
+    });
+  });
+
+  it('⭐ ofertar WITHOUT an amount OMITS the key — never `null`, never 0', async () => {
+    const { c, pedidos } = gravador(JSON.stringify({ ...ACAO_OK, acao: 'ofertar' }));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.ofertar,
+      solucao: SOLUCAO_DEVOLUCAO_SHOPEE.devolucaoEReembolso,
+    });
+
+    const corpo = corpoEnviado(pedidos[0]?.init);
+    expect(corpo).toEqual({ ...ALVO, acao: 'ofertar', solucao: 'RETURN_REFUND' });
+    expect(corpo).not.toHaveProperty('valorReembolsoMinor');
+  });
+
+  it('ofertar WITH an amount sends it as the integer centavos it was given', async () => {
+    const { c, pedidos } = gravador(JSON.stringify({ ...ACAO_OK, acao: 'ofertar' }));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.ofertar,
+      solucao: SOLUCAO_DEVOLUCAO_SHOPEE.soReembolso,
+      valorReembolsoMinor: 1234,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toEqual({
+      ...ALVO,
+      acao: 'ofertar',
+      solucao: 'REFUND',
+      valorReembolsoMinor: 1234,
+    });
+  });
+
+  it('aceitar-oferta sends BOTH echoes — the amount and the solução the panel showed', async () => {
+    const { c, pedidos } = gravador(JSON.stringify({ ...ACAO_OK, acao: 'aceitar-oferta' }));
+
+    await c.reclamacaoAcao({
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.aceitarOferta,
+      valorExibidoMinor: 5000,
+      solucaoExibida: SOLUCAO_DEVOLUCAO_SHOPEE.devolucaoEReembolso,
+    });
+
+    expect(corpoEnviado(pedidos[0]?.init)).toEqual({
+      ...ALVO,
+      acao: 'aceitar-oferta',
+      valorExibidoMinor: 5000,
+      solucaoExibida: 'RETURN_REFUND',
+    });
+  });
+
+  it('⚠️ a stray key on the call — even one ANOTHER action carries — never reaches the strict route', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(ACAO_OK));
+    const comSobras = {
+      ...ALVO,
+      acao: ACAO_RECLAMACAO_SHOPEE.confirmar,
+      valorExibidoMinor: 8990,
+      solucao: SOLUCAO_DEVOLUCAO_SHOPEE.soReembolso,
+      valorReembolsoMinor: 1,
+      solucaoExibida: null,
+      campoNovo: 'x',
+    };
+
+    await c.reclamacaoAcao(comSobras);
+
+    expect(Object.keys(corpoEnviado(pedidos[0]?.init) as object).sort()).toEqual(
+      ['acao', 'integracaoId', 'pedidoId', 'returnSn', 'valorExibidoMinor'].sort(),
+    );
+  });
+
+  it('resolves the backend’s answer', async () => {
+    const { c } = gravador(JSON.stringify(ACAO_OK));
+
+    await expect(
+      c.reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 }),
+    ).resolves.toEqual(ACAO_OK);
+  });
+});
+
+describe('reclamacaoAcao — the answers an operator must read correctly', () => {
+  it('⭐ a 409 refusal is an HttpError whose message IS the backend’s sentence, with its code', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error: 'O valor da devolução mudou — confira e tente de novo.',
+        code: 'SHOPEE_RECLAMACAO_ACAO_RECUSADA',
+        motivo: 'valor-mudou',
+        acoesDisponiveis: ['confirmar'],
+      }),
+      409,
+    );
+
+    const err = (await c
+      .reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err).not.toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect(err.status).toBe(409);
+    expect(err.message).toBe('O valor da devolução mudou — confira e tente de novo.');
+    expect(err.code).toBe('SHOPEE_RECLAMACAO_ACAO_RECUSADA');
+  });
+
+  it('⭐ a 200 that does not say `ok: true` is a RespostaInvalida — never a success to toast', async () => {
+    const { c } = gravador(JSON.stringify({ ...ACAO_OK, ok: false }));
+
+    const err = await c
+      .reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+  });
+
+  it('⭐ a fetch rejection is a NetworkError — and the client sends the POST exactly ONCE', async () => {
+    // A gateway timeout reaches the browser as a network error: the action may
+    // have run. Retrying here would be a second refund attempt.
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const c = client(fetchImpl);
+
+    const err = await c
+      .reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('a body that drops mid-read on the POST is a NetworkError too', async () => {
+    const c = client(
+      async () => new RespostaQueCaiNoCorpo(200, { 'content-type': 'application/json' }),
+    );
+
+    const err = await c
+      .reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientNetworkError);
+  });
+
+  it('⚠️ a token failure surfaces AS ITSELF — not relabelled a network error, and nothing is sent', async () => {
+    // `getAuthToken()` stays outside the try: the panel narrows `FirebaseError`
+    // on its own, so a failed refresh after an irreversible confirm is shown,
+    // never swallowed as "a resposta não chegou".
+    const tokenFalhou = new FirebaseError(
+      'auth/network-request-failed',
+      'Falha ao renovar o token',
+    );
+    const fetchImpl = vi.fn();
+    const c = createShopeeClient({
+      baseUrl: 'http://localhost:3009',
+      getAuthToken: () => Promise.reject(tokenFalhou),
+      fetch: fetchImpl,
+    });
+
+    const err = await c
+      .reclamacaoAcao({ ...ALVO, acao: ACAO_RECLAMACAO_SHOPEE.confirmar, valorExibidoMinor: 1 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBe(tokenFalhou);
+    expect(err).not.toBeInstanceOf(ShopeeClientNetworkError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('W18 regression — only a call WITH a body is a POST', () => {
+  it.each([
+    ['conta', (c: ReturnType<typeof client>) => c.conta('int-1'), CONTA],
+    [
+      'oauthStart',
+      (c: ReturnType<typeof client>) => c.oauthStart('int-1'),
+      { authorizeUrl: 'https://shopee.test/auth' },
+    ],
+  ] as const)('%s still GETs with no body and no Content-Type', async (_nome, chamar, resposta) => {
+    const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+    await chamar(c);
+
+    expect(pedidos[0]?.init?.method).toBe('GET');
+    expect(pedidos[0]?.init).not.toHaveProperty('body');
+    expect(pedidos[0]?.init?.headers).toEqual({
+      Authorization: 'Bearer token',
+      Accept: 'application/json',
+    });
   });
 });
