@@ -12,6 +12,7 @@ import {
   pedidoSchema,
 } from '@delfrance/schemas';
 import { TableView, type ActionConfig, type VirtualColumn } from '@delfrance/ui';
+import { despachoInicioPreset } from '@/lib/inicio/despachoPreset';
 
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
@@ -286,6 +287,10 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
       }),
     [integracaoRows, integracaoById, integracaoStatus],
   );
+  const presetFilters = useMemo(
+    () => [despachoInicioPreset((id) => integracaoById.get(id)?.nome ?? id)],
+    [integracaoById],
+  );
   return (
     <PedidoRowReadsContext.Provider value={rowReads.status}>
       {/* The etiqueta row action's dialogs, question queue and in-flight flags
@@ -319,6 +324,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
             db={getFirebaseFirestore()}
             meta={pedidoMeta}
             queryParams={{ ehSaida: cfg.ehSaida }}
+            presetFilters={presetFilters}
             virtualColumns={virtualColumns}
             fields={{
               estado: {

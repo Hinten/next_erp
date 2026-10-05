@@ -23,14 +23,22 @@ import {
   ShopeeRefreshEmAndamentoError,
   ShopeeSemCredencialError,
 } from './tokenStore';
-import { ShopeeTasksDisabledError } from '../shopeeTasks';
+import { ShopeeTasksDisabledError, ShopeeTasksTransientError } from '../shopeeTasks';
 
 /**
- * Admin-SDK Firestore and Cloud Tasks enqueue failures surface as `Error`s
- * carrying a numeric gRPC status `code`. Narrowed to the actual status range
- * (integers 1–16; 0 = OK never rides an error) so a coding-bug `Error` that
- * happens to expose some other numeric `code` is NOT contained. Verbatim from
- * `conta/expiracaoSweep.ts`.
+ * Admin-SDK FIRESTORE failures surface as `Error`s carrying a numeric gRPC
+ * status `code`. Narrowed to the actual status range (integers 1–16; 0 = OK
+ * never rides an error) so a coding-bug `Error` that happens to expose some
+ * other numeric `code` is NOT contained. Verbatim from `conta/expiracaoSweep.ts`.
+ *
+ * ⚠️ A Cloud Tasks enqueue failure is NOT one of them, and this check never
+ * matches it. `TaskQueue.enqueue` is a REST client: it throws
+ * `FirebaseFunctionsError` / `FirebaseAppError` with STRING codes
+ * (`functions/unknown-error`, `app/network-error`). An earlier revision of this
+ * comment said otherwise, and every per-conta sweep that enqueues lost its
+ * whole tick to one transient Cloud Tasks hiccup on any conta. The transient
+ * ones are named by the real scheduler as {@link ShopeeTasksTransientError},
+ * contained below.
  */
 export function isGrpcCodedError(err: unknown): err is Error {
   if (!(err instanceof Error)) return false;
@@ -72,6 +80,18 @@ export function isGrpcCodedError(err: unknown): err is Error {
  * renders. All three are about ONE conta's grant, never about our deployment,
  * so each belongs on that conta's `lastError` rather than costing every other
  * conta its tick. `ShopeeConfigError` still rethrows: that one IS ours.
+ *
+ * ⚠️ The Cloud Tasks arm names {@link ShopeeTasksTransientError}, never the
+ * SDK's `FirebaseFunctionsError` / `FirebaseAppError`. Those classes carry
+ * deploy errors too — `permission-denied` (the IAM grant nobody applied),
+ * `not-found` (no queue in that region), `invalid-argument` — and containing
+ * one would report a broken deploy as N identical `lastError` strings under a
+ * green tick (#778). The transient subset is decided ONCE, at the enqueue, by
+ * `../shopeeTasks.ts` (`CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO`); every
+ * scheduler a sweep is handed in production goes through it, so a raw SDK
+ * error reaching this boundary is a deploy error and rethrows. Naming the
+ * wrapper rather than the SDK classes is also what keeps a Firebase error
+ * raised anywhere OUTSIDE an enqueue from being contained by accident.
  */
 export function erroContidoPorConta(err: unknown): err is Error {
   return (
@@ -85,6 +105,7 @@ export function erroContidoPorConta(err: unknown): err is Error {
     err instanceof ShopeeRefreshEmAndamentoError ||
     err instanceof ShopeeCredencialInvalidaError ||
     err instanceof ShopeeTasksDisabledError ||
+    err instanceof ShopeeTasksTransientError ||
     isGrpcCodedError(err)
   );
 }

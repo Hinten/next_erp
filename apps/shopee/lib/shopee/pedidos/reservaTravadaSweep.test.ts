@@ -50,6 +50,11 @@ import { dedupKeyOf, type ShopeeNotificationPayload } from '../notificacoes/noti
 import { notificacaoSinteticaDePedido } from '../notificacoes/notificacaoSintetica';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import { type DocData, FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
 import { makePedidoIdShopee } from './orderIds';
 import { DIA_US, VEREDITO_RESERVA_TRAVADA } from './reservaTravadaMapping';
 import {
@@ -1316,6 +1321,43 @@ describe('runReservaTravadaSweep — os dois efeitos', () => {
     expect(r.veredictos['pendente-pago']).toBe(0);
     expect(vistos[0]!.temPayTime).toBe(false);
     esperarInvariante(r);
+  });
+
+  // ⚠️ The REAL Cloud Tasks failure — the SDK's class and STRING code through
+  // the shared classifier. The `grpc(14)` stand-in in the next case is
+  // contained too, but `TaskQueue.enqueue` never throws one: before the
+  // classifier, the real 503 escaped the per-candidate boundary and failed the
+  // whole tick.
+  it('uma falha TRANSITÓRIA real do Cloud Tasks no enfileiramento vai para erros[] e o tick segue', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'CANCELLED')]]));
+    c.enqueue = vi.fn(() => rejeicaoDoTransporte(falhaDoFunctions('unknown-error')));
+
+    const r = await rodar(c);
+
+    expect(r.erros).toEqual([
+      {
+        pedidoId,
+        message:
+          'enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)',
+      },
+    ]);
+    expect(r.veredictos['redirecionado-cancelado']).toBe(1);
+    expect(r.contas[0]!.error).toBeNull();
+    expect(r.contas[0]!.enfileirados).toBe(0);
+    expect(JSON.stringify(r)).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    esperarInvariante(r);
+  });
+
+  it('⚠️ NEAR-MISS: uma falha de DEPLOY do Cloud Tasks (permission-denied) no enfileiramento RELANÇA', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'CANCELLED')]]));
+    const sdk = falhaDoFunctions('permission-denied', 403);
+    c.enqueue = vi.fn(() => rejeicaoDoTransporte(sdk));
+
+    await expect(rodar(c)).rejects.toBe(sdk);
   });
 
   it('um enfileiramento que falha por outro motivo vai para erros[], nunca para a contenção por conta', async () => {

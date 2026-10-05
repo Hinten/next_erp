@@ -13,7 +13,10 @@ const h = vi.hoisted(() => ({
   getFunctions: vi.fn(),
 }));
 
-vi.mock('firebase-admin/functions', () => ({
+// The REAL error classes stay: the scheduler narrows on them, and a mocked
+// class would make every `instanceof` below a test of the mock.
+vi.mock('firebase-admin/functions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('firebase-admin/functions')>()),
   getFunctions: (...args: unknown[]) => {
     h.getFunctions(...args);
     return { taskQueue: h.taskQueue };
@@ -30,10 +33,13 @@ vi.mock('./notificacoes/notificacao', () => ({
 
 const {
   ShopeeTasksDisabledError,
+  ShopeeTasksTransientError,
   createShopeeTaskScheduler,
   shopeeTasksDesabilitado,
   shopeeTasksRegion,
 } = await import('./shopeeTasks');
+const { CORPO_DA_RESPOSTA_DO_TASKS, falhaDeConfiguracaoDoFunctions, falhaDoApp, falhaDoFunctions } =
+  await import('./testing/falhaDeEnfileiramento');
 
 const payload = {
   code: 1,
@@ -125,6 +131,52 @@ describe('createShopeeTaskScheduler', () => {
       expect(h.enqueue).toHaveBeenCalledWith(payload);
     },
   );
+
+  // The scheduler is where the transient failure is NAMED: the per-conta
+  // boundary contains `ShopeeTasksTransientError`, never the SDK classes, so a
+  // real scheduler that forgot to call the classifier would put every sweep
+  // back to losing its whole tick on one 503.
+  it.each<[string, () => Error, string, number | null]>([
+    [
+      '503 → functions/unknown-error',
+      () => falhaDoFunctions('unknown-error'),
+      'functions/unknown-error',
+      503,
+    ],
+    ['socket → app/network-error', () => falhaDoApp('network-error'), 'app/network-error', null],
+  ])(
+    'uma falha TRANSITÓRIA do transporte (%s) sai nomeada',
+    async (_nome, falha, codigo, status) => {
+      vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+      vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+      h.enqueue.mockRejectedValueOnce(falha());
+
+      const rejeitado = await createShopeeTaskScheduler()
+        .enqueue(payload)
+        .then(
+          () => expect.unreachable('o transporte rejeitou'),
+          (e: unknown) => e,
+        );
+
+      expect(rejeitado).toBeInstanceOf(ShopeeTasksTransientError);
+      expect(rejeitado).toMatchObject({ codigo, httpStatus: status });
+      expect((rejeitado as Error).message).not.toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    },
+  );
+
+  it.each<[string, () => Error]>([
+    ['permission-denied', () => falhaDoFunctions('permission-denied', 403)],
+    // Same code as the 503, no HTTP response: the SDK could not resolve the
+    // service account — config, not a hiccup.
+    ['unknown-error SEM resposta HTTP', () => falhaDeConfiguracaoDoFunctions('conta-de-servico')],
+  ])('⚠️ NEAR-MISS: uma falha de DEPLOY do transporte (%s) sai INTACTA', async (_nome, falha) => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+    const sdk = falha();
+    h.enqueue.mockRejectedValueOnce(sdk);
+
+    await expect(createShopeeTaskScheduler().enqueue(payload)).rejects.toBe(sdk);
+  });
 
   it('a mensagem do erro de desabilitado nomeia a variável e diz o que acontece', async () => {
     vi.stubEnv('SHOPEE_TASKS_DISABLED', '1');

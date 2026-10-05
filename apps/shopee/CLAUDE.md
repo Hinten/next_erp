@@ -96,7 +96,14 @@ a page of the 3-day queue irreversibly.
   the derived doc id, the dispatch table on **push code**, and the conta arms.
 - `lib/shopee/shopeeTasks.ts` — the `processShopeeNotification` queue scheduler
   (`SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, no default; the
-  `SHOPEE_TASKS_DISABLED` valve → persist-for-the-sweep).
+  `SHOPEE_TASKS_DISABLED` valve → persist-for-the-sweep). It also owns the ONE
+  transient-enqueue classifier, `enfileirarNomeandoFalhaTransitoria`: the real
+  scheduler (and the stock queue's) rejects a 503/429/socket failure as
+  `ShopeeTasksTransientError`. ⚠️ `TaskQueue.enqueue` is REST, so the SDK
+  throws `FirebaseFunctionsError` / `FirebaseAppError` with STRING codes — never
+  a gRPC status — and a deploy-shaped code (`permission-denied`, `not-found`)
+  is rethrown raw. A sweep test fakes those with
+  `lib/shopee/testing/falhaDeEnfileiramento.ts`, never with `grpc(14)`.
 - `lib/shopee/core/contaCache.ts` — the two cached integração readers:
   `readConta` (by integração id, extracted out of `core/shopee.ts`) and
   `findIntegracaoByShopId`, which is what turns a push's `shop_id` into a conta.
@@ -110,7 +117,8 @@ a page of the 3-day queue irreversibly.
   share. It names the classes and **never** the `ShopeeError` base:
   `ShopeeConfigError` extends that base directly, so catching the base would
   swallow our own misconfiguration and turn #778 into N identical log lines and
-  a green tick.
+  a green tick. Its Cloud Tasks arm is `ShopeeTasksTransientError`, never the
+  SDK classes, which carry deploy errors too.
 - `lib/shopee/pedidos/` — the step-5 order import: `importarPedido.ts` (the
   orchestrator), `orderIds.ts` (the deterministic pedido and item ids),
   `orderMapping.ts` + `orderFreteMapping.ts` + `orderStatusMaps.ts` (the pure

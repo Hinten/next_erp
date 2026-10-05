@@ -49,7 +49,7 @@ cd ../.. && cat .env.example .env.secrets.example > .env.local && cd apps/web   
 pnpm dev                           # run ALL apps in parallel from the repo root
 ```
 
-`pnpm dev` at the root starts web (:3000), integrations (:3001) and docs (:3003) together (:3002 is free — it was webchat, dropped 2026-09-07) — required for admin features (user creation, claims refresh) since they POST to `apps/integrations` on :3001. The single-app form `pnpm --filter @delfrance/web dev` works for non-admin pages but causes a 404 on `POST /api/admin/users` because integrations isn't running.
+`pnpm dev` at the root starts all apps, including web (:3000), integrations (:3001), legal (:3002) and docs (:3003). The integrations backend is required for admin features (user creation, claims refresh) since they POST to :3001. The single-app form `pnpm --filter @delfrance/web dev` works for non-admin pages but causes a 404 on `POST /api/admin/users` because integrations isn't running. Login links to the public legal app use `NEXT_PUBLIC_PORTAL_URL`: localhost:3002 by default in development, hidden when unset in production.
 
 ## Deploy
 

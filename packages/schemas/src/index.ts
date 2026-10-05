@@ -1334,3 +1334,4 @@ export {
   type ChaveAvisoInput,
   type RotaAvisoKey,
 } from './aviso';
+export * from './shared/inicio';

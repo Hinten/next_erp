@@ -977,11 +977,13 @@ const PREFIXO_MOTIVO_FRETE = 'rastreio:';
 const PREFIXO_MOTIVO_ANUNCIO = 'anuncio:';
 
 /**
- * Admin-SDK Firestore and Cloud Tasks failures surface as `Error`s carrying a
- * numeric gRPC status `code`. Narrowed to the real status range (1–16; 0 = OK
- * never rides an error) so a coding-bug `Error` that happens to expose some
- * other numeric `code` is NOT swallowed as transient. Verbatim from
- * `orderBackfill.ts`, which took it from `conta/expiracaoSweep.ts`.
+ * Admin-SDK Firestore failures surface as `Error`s carrying a numeric gRPC
+ * status `code`. Narrowed to the real status range (1–16; 0 = OK never rides an
+ * error) so a coding-bug `Error` that happens to expose some other numeric
+ * `code` is NOT swallowed as transient. Verbatim from `orderBackfill.ts`, which
+ * took it from `conta/expiracaoSweep.ts`. ⚠️ A Cloud Tasks enqueue failure never
+ * matches it — the SDK throws STRING codes — and reaches the classifier's final
+ * `throw` instead, which is the same disposition.
  */
 function isGrpcCodedError(err: unknown): err is Error {
   if (!(err instanceof Error)) return false;
@@ -1122,7 +1124,8 @@ function classificarFalhaShopee(
         'ShopeeContaNotConfiguredError — a integração sumiu entre a resolução da loja e a leitura da conta',
     };
   }
-  // Firestore / Cloud Tasks, transient by construction.
+  // Firestore, transient by construction. (A Cloud Tasks enqueue failure is not
+  // gRPC-coded; it lands on the final `throw` below, the same disposition.)
   if (isGrpcCodedError(err)) return { tipo: 'throw' };
   // A pedido the write refused. ⚠️ #1087 one channel over: a `ZodError` inside a
   // write reads as transient and retries forever. It is a MAPPER bug — park it

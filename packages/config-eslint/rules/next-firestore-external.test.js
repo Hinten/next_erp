@@ -113,7 +113,7 @@ const KNOWN_IMPORTERS = {
  * degenerate to "the app's own source" and re-open the gap it exists to close.
  *
  * `@delfrance/data` is the load-bearing one: it is the shared Firestore layer, six of
- * the eight Next apps bundle it, and it is where an admin-SDK pipelines import would
+ * the nine Next apps bundle it, and it is where an admin-SDK pipelines import would
  * most plausibly land. `@delfrance/core` is reached only THROUGH it, so it also proves
  * the walk is transitive rather than one level deep.
  */
@@ -129,7 +129,7 @@ const KNOWN_CLOSURE = {
 // — so an `@google-cloud/firestore` import landing in `packages/data/src/admin/**` puts
 // the SDK in the bundle of EVERY backend importing it, while `firebase-admin` stays
 // external: the identical double-instance failure, arriving through a file no app owns.
-// Six of the eight Next apps bundle `@delfrance/data` today and five of them have no
+// Six of the nine Next apps bundle `@delfrance/data` today and five of them have no
 // `serverExternalPackages` key at all, so an `apps/`-only scan would report a clean
 // green for all of them. Root `CLAUDE.md` already advertises the Pipelines API as "used
 // in `packages/data`" — the client SDK there today (`firebase/firestore/pipelines`, a
