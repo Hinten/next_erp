@@ -388,7 +388,12 @@ export function ReclamacaoShopeePanel({
     solucao: SolucaoDevolucaoShopee;
     valorReembolsoMinor?: number;
   }): Promise<void> {
-    if (client == null) return;
+    // ⚠️ The panel's own rule (`bloqueado` below), restated here: while the
+    // estado's last read failed, the modal's list is the one from BEFORE the
+    // failure — a proposal is irreversible, so it never leaves from a list the
+    // panel would not let its own buttons use. The modal blocks it too
+    // (`estadoComErro`); this is the backstop if that ever drifts.
+    if (client == null || estado.isError) return;
     setOfertaErro(null);
     setAcaoErro(null);
     setEnviandoOferta(true);
@@ -688,6 +693,7 @@ export function ReclamacaoShopeePanel({
         <OfertaDevolucaoShopeeModal
           solucoes={dados?.solucoes ?? []}
           carregando={estado.isFetching}
+          estadoComErro={estado.isError}
           enviando={enviandoOferta}
           erro={ofertaErro}
           onConfirm={(e) => void confirmarOferta(e)}
