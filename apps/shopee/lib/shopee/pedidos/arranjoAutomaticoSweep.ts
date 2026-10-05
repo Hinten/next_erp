@@ -109,13 +109,15 @@
  * conta and the walk moves on; anything else — `ShopeeConfigError` above all,
  * our own misconfiguration — rethrows and fails the tick loudly.
  *
- * ⚠️ A Cloud Tasks enqueue failure is NOT a gRPC-coded error, whatever
- * `core/containment.ts` assumes: `TaskQueue.enqueue` is a REST client and
- * throws `FirebaseFunctionsError` / `FirebaseAppError` with STRING codes, which
- * the shared boundary does not recognise. So the transient ones are narrowed
- * AT the enqueue ({@link CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO}) into a class
- * of this module, and contained per conta like any outage. A permission, a
- * missing queue or a bad argument is a broken deploy, and still rethrows.
+ * ⚠️ A Cloud Tasks enqueue failure is NOT a gRPC-coded error:
+ * `TaskQueue.enqueue` is a REST client and throws `FirebaseFunctionsError` /
+ * `FirebaseAppError` with STRING codes. This module does not classify them —
+ * it calls `scheduler.enqueue` directly, and the real scheduler
+ * (`../shopeeTasks.ts`, `enfileirarNomeandoFalhaTransitoria`) names a
+ * transient one `ShopeeTasksTransientError`, which the shared boundary
+ * contains per conta like any outage. A permission, a missing queue or a bad
+ * argument reaches the boundary as the raw SDK class — a broken deploy — and
+ * still rethrows (#778).
  *
  * ## Idempotence across ticks is Shopee's, not ours
  *
@@ -136,12 +138,11 @@
  * or the result — a test serialises every one of them. ⚠️ That is why a
  * contained `ShopeeApiError` is described by its class and Shopee `error` code
  * only: its message carries Shopee's own `message` VERBATIM, which may quote
- * the package it refused. An enqueue failure is described the same way, by
- * class and code.
+ * the package it refused. A transient enqueue failure is described by the
+ * shared class's own message — class, code and HTTP status, never the SDK's
+ * message, which may quote the response body.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { FirebaseAppError } from 'firebase-admin/app';
-import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import {
   credenciaisIntegracaoCollection,
   notificacaoShopeeCollection,
@@ -173,7 +174,7 @@ import {
   observacaoDoPacoteShopee,
   type FasePacote,
 } from '../etiqueta/faseEtiqueta';
-import { docIdOf, type ShopeeNotificationPayload } from '../notificacoes/notificacao';
+import { docIdOf } from '../notificacoes/notificacao';
 import {
   notificacaoSinteticaDePacote,
   notificacaoSinteticaDePedido,
@@ -251,39 +252,6 @@ export const TRUNCAGEM_ARRANJO = {
   enfileirados: 'limite-de-enfileirados',
 } as const;
 export type TruncagemArranjo = (typeof TRUNCAGEM_ARRANJO)[keyof typeof TRUNCAGEM_ARRANJO];
-
-/**
- * The Cloud Tasks enqueue failures this sweep contains per conta — every one a
- * TRANSIENT outcome of `TaskQueue.enqueue` in the PINNED `firebase-admin`
- * (14.2.0). ⚠️ That SDK maps only nine Cloud Tasks statuses to a code of its
- * own, so a 503 `UNAVAILABLE`, a 429 `RESOURCE_EXHAUSTED`, a deadline or a
- * non-JSON body all arrive as `functions/unknown-error`; a socket failure is
- * `FirebaseAppError` `app/network-error` / `app/network-timeout` (after the
- * SDK's own retries). Everything else that class carries — `permission-denied`,
- * `unauthenticated`, `not-found` (no queue in that region), `invalid-argument`,
- * `failed-precondition`, `invalid-credential` — is a broken deploy, and it must
- * fail the tick loudly rather than read as N contained conta outages (#778).
- */
-const CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO: ReadonlySet<string> = new Set([
-  'functions/unknown-error',
-  'functions/internal-error',
-  'functions/aborted',
-  'app/network-error',
-  'app/network-timeout',
-]);
-
-/**
- * A transient enqueue failure, narrowed AT the enqueue — so a Firebase error
- * raised anywhere else is never contained by accident. Its message is the
- * original class and code only: never the SDK's message, which may carry a
- * response body.
- */
-class EnfileiramentoTransitorioError extends Error {
-  constructor(classe: 'FirebaseFunctionsError' | 'FirebaseAppError', codigo: string) {
-    super(`${classe} ${codigo}`);
-    this.name = 'EnfileiramentoTransitorioError';
-  }
-}
 
 /* -------------------------------------------------------------------------- */
 /*                                  contract                                   */
@@ -539,8 +507,9 @@ function resultadoDaConta(
  * `ShopeeApiError`'s message carries it verbatim (`shopeeErrorFromEnvelope`),
  * and a refusal may quote the package or order it refused. Its `error` code
  * is the classification and is enough. Every other contained class builds its
- * message from our own text (a path, a status, an integração id, or — for an
- * enqueue — a class and a code).
+ * message from our own text (a path, a status, an integração id, or — for a
+ * transient enqueue, `ShopeeTasksTransientError` — a class, a code and an HTTP
+ * status).
  */
 function descreverErro(err: Error): string {
   if (err instanceof ShopeeApiError) return `${err.name}: ${err.code}`;
@@ -583,31 +552,6 @@ async function aguardaReconexao(db: Firestore, integracaoId: string): Promise<bo
     .docRef(db, { integracaoId }, SHOPEE_CREDENCIAL_DOC_ID)
     .get();
   return snap.exists && falhaRefreshOf(snap.data() ?? {})?.terminal === true;
-}
-
-/**
- * The ONE enqueue of this module. A transient Cloud Tasks failure becomes
- * {@link EnfileiramentoTransitorioError}, which the per-conta boundary
- * contains; every other failure — a deploy error included — is rethrown as is.
- */
-async function enfileirar(
-  scheduler: ShopeeTaskScheduler,
-  payload: ShopeeNotificationPayload,
-): Promise<void> {
-  try {
-    await scheduler.enqueue(payload);
-  } catch (err) {
-    if (
-      err instanceof FirebaseFunctionsError &&
-      CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)
-    ) {
-      throw new EnfileiramentoTransitorioError('FirebaseFunctionsError', err.code);
-    }
-    if (err instanceof FirebaseAppError && CODIGOS_TRANSITORIOS_DO_ENFILEIRAMENTO.has(err.code)) {
-      throw new EnfileiramentoTransitorioError('FirebaseAppError', err.code);
-    }
-    throw err;
-  }
 }
 
 function emLotes<T>(itens: readonly T[], tamanho: number): T[][] {
@@ -831,7 +775,7 @@ async function varrerConta(
           c.pacotesComFalhaHoje += 1;
           continue;
         }
-        await enfileirar(deps.scheduler, sintetico);
+        await deps.scheduler.enqueue(sintetico);
         c.enfileiradosPacote += 1;
       } else if (!pedidosEnfileirados.has(orderSn)) {
         // ONE per order, never per package: the import creates the pedido with
@@ -854,7 +798,7 @@ async function varrerConta(
           c.pedidosComFalhaHoje += 1;
           continue;
         }
-        await enfileirar(deps.scheduler, sintetico);
+        await deps.scheduler.enqueue(sintetico);
         c.enfileiradosPedido += 1;
       }
     }
@@ -984,8 +928,9 @@ export async function runShopeeArranjoAutomaticoSweep(
         break;
       }
       // `ShopeeConfigError` is NOT in the boundary: ours, so the tick fails. A
-      // transient enqueue failure is, through this module's own class.
-      if (!(err instanceof EnfileiramentoTransitorioError) && !erroContidoPorConta(err)) throw err;
+      // transient enqueue failure is, as the real scheduler's
+      // `ShopeeTasksTransientError`; the raw SDK classes are not.
+      if (!erroContidoPorConta(err)) throw err;
       const descricao = descreverErro(err);
       logger.warn('[shopee/arranjo-automatico] conta contida após falha', {
         integracaoId,

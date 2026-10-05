@@ -433,8 +433,9 @@ it is the PRIMARY signal.
   Every class `erroContidoPorConta` names is recorded on its conta and the walk
   moves on; anything else — `ShopeeConfigError` above all — fails the tick. ⚠️
   A Cloud Tasks enqueue failure carries a STRING code (`FirebaseFunctionsError`,
-  `FirebaseAppError`), which that boundary's gRPC check misses, so the
-  transient ones are narrowed AT the enqueue and contained per conta too; a
+  `FirebaseAppError`), which that boundary's gRPC check misses, so the real
+  scheduler (`shopeeTasks.ts`, #1759) names the transient ones
+  `ShopeeTasksTransientError` and the boundary contains them per conta too; a
   permission, a missing queue or a bad argument is a broken deploy and still
   fails the tick. A contained `ShopeeApiError` is described by its class and
   Shopee code only, because its message quotes Shopee's text.

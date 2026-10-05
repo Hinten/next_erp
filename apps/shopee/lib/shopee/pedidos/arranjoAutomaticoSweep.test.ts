@@ -2,9 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi, type Mock } from 'vitest';
-import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import { AppErrorCode } from 'firebase-admin/app';
 import type { Firestore } from 'firebase-admin/firestore';
-import { FirebaseFunctionsError } from 'firebase-admin/functions';
 import {
   credenciaisIntegracaoCollection,
   integracaoCollection,
@@ -43,6 +42,12 @@ import {
 import { dedupKeyOf, docIdOf, type ShopeeNotificationPayload } from '../notificacoes/notificacao';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import { FakeDb, asDb, grpc } from '../testing/fakeDb';
+import {
+  CORPO_DA_RESPOSTA_DO_TASKS,
+  falhaDoApp,
+  falhaDoFunctions,
+  rejeicaoDoTransporte,
+} from '../testing/falhaDeEnfileiramento';
 import { SHOPEE_ARRANJO_AUTOMATICO_DISABLED_ENV } from './arranjoAutomatico';
 import {
   MAX_ENFILEIRADOS_ARRANJO_POR_CONTA,
@@ -239,24 +244,6 @@ function semearCredencial(c: Cenario, integracaoId: string, ultimaFalhaRefresh: 
 /** The code-3 failure row the pipeline would have written for `orderSn` on the day starting at `diaMs`. */
 function caminhoDaFalhaDoPedido(orderSn: string, diaMs: number, shopId = SHOP_A): string {
   return `${NOTIFICACAO_PATH}/3:${String(shopId)}:${orderSn}:${String(diaMs)}`;
-}
-
-/** `TaskQueue.enqueue`'s REAL HTTP failure (firebase-admin 14.2.0's `toFirebaseError`). */
-function falhaDoFunctions(code: string): FirebaseFunctionsError {
-  // ⚠️ The SDK's message may carry the response body — here it names the
-  // package and the order, so a description built from it would leak both.
-  return new FirebaseFunctionsError({
-    code,
-    message: `Unexpected response with status: 503 and body: ${PACOTE} ${ORDER_SN}`,
-  });
-}
-
-/** `TaskQueue.enqueue`'s REAL socket failure (the SDK's HTTP client, after its own retries). */
-function falhaDoApp(code: string): FirebaseAppError {
-  return new FirebaseAppError({
-    code,
-    message: `Error while making request: socket hang up (${PACOTE}). Error code: ECONNRESET`,
-  });
 }
 
 function rodar(
@@ -1371,7 +1358,7 @@ describe('a contenção por conta', () => {
     };
   }
 
-  it.each<[string, () => Error, 'busca' | 'detalhe' | 'enqueue', string]>([
+  it.each<[string, () => Error, 'busca' | 'detalhe' | 'enqueue' | 'transporte', string]>([
     ['ShopeeApiError', () => apiError('error_server'), 'busca', 'ShopeeApiError: error_server'],
     [
       'ShopeeReauthRequiredError',
@@ -1397,38 +1384,41 @@ describe('a contenção por conta', () => {
       'detalhe',
       'ShopeeSchemaError: formato inesperado',
     ],
-    // ⚠️ The REAL enqueue failures (S1-1): STRING codes, which the shared
-    // gRPC check does not recognise — a numeric `grpc(14)` stand-in here once
-    // passed while the real class killed the tick.
+    // ⚠️ The REAL enqueue failures (S1-1): the SDK's classes and STRING codes,
+    // which the shared gRPC check does not recognise — a numeric `grpc(14)`
+    // stand-in here once passed while the real class killed the tick. They
+    // reach the fake through `rejeicaoDoTransporte` ('transporte'), the SAME
+    // classifier the real scheduler runs: a raw SDK class rejected by the fake
+    // would stand in for a scheduler production never builds.
     [
       'FirebaseFunctionsError unknown-error no enqueue (503/429 do Cloud Tasks)',
       () => falhaDoFunctions('unknown-error'),
-      'enqueue',
-      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/unknown-error',
+      'transporte',
+      'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)',
     ],
     [
       'FirebaseFunctionsError internal-error no enqueue',
-      () => falhaDoFunctions('internal-error'),
-      'enqueue',
-      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/internal-error',
+      () => falhaDoFunctions('internal-error', 500),
+      'transporte',
+      'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/internal-error, HTTP 500)',
     ],
     [
       'FirebaseFunctionsError aborted no enqueue',
-      () => falhaDoFunctions('aborted'),
-      'enqueue',
-      'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/aborted',
+      () => falhaDoFunctions('aborted', 409),
+      'transporte',
+      'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/aborted, HTTP 409)',
     ],
     [
       'FirebaseAppError network-error no enqueue (socket)',
       () => falhaDoApp(AppErrorCode.NETWORK_ERROR),
-      'enqueue',
-      'EnfileiramentoTransitorioError: FirebaseAppError app/network-error',
+      'transporte',
+      'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseAppError app/network-error)',
     ],
     [
       'FirebaseAppError network-timeout no enqueue',
       () => falhaDoApp(AppErrorCode.NETWORK_TIMEOUT),
-      'enqueue',
-      'EnfileiramentoTransitorioError: FirebaseAppError app/network-timeout',
+      'transporte',
+      'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseAppError app/network-timeout)',
     ],
     [
       'ShopeeTasksDisabledError no enqueue',
@@ -1447,6 +1437,9 @@ describe('a contenção por conta', () => {
       else c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
       if (onde === 'detalhe') c.detalhe.mockRejectedValueOnce(erro());
       if (onde === 'enqueue') c.enqueue.mockRejectedValueOnce(erro());
+      if (onde === 'transporte') {
+        c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(erro()));
+      }
 
       const r = await rodar(c);
 
@@ -1469,40 +1462,54 @@ describe('a contenção por conta', () => {
     const erro = falhaDoFunctions('unknown-error');
     // The positive control: the real class, the real string code, and a message that DOES leak.
     expect(erro.code).toBe('functions/unknown-error');
-    expect(erro.message).toContain(PACOTE);
-    c.enqueue.mockRejectedValueOnce(erro);
+    expect(erro.message).toContain(CORPO_DA_RESPOSTA_DO_TASKS);
+    c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(erro));
 
     const r = await rodar(c);
 
     expect(r.contas.map((x) => [x.integracaoId, x.error])).toEqual([
-      [INT_A, 'EnfileiramentoTransitorioError: FirebaseFunctionsError functions/unknown-error'],
+      [
+        INT_A,
+        'ShopeeTasksTransientError: enqueue no Cloud Tasks falhou de forma transitória (FirebaseFunctionsError functions/unknown-error, HTTP 503)',
+      ],
       [INT_B, null],
     ]);
     // The failed enqueue is not counted as one.
     expect(r.contas[0]).toMatchObject({ fases: { programar: 1 }, enfileiradosPacote: 0 });
     const texto = JSON.stringify([c.logs, r]);
-    for (const segredo of [ORDER_SN, PACOTE]) expect(texto).not.toContain(segredo);
+    for (const segredo of [CORPO_DA_RESPOSTA_DO_TASKS, ORDER_SN, PACOTE]) {
+      expect(texto).not.toContain(segredo);
+    }
   });
 
-  // ⚠️ The near-misses: the same two CLASSES carrying a deploy-shaped code, the
-  // transient code on a look-alike that is not the class, and the class raised
-  // somewhere other than the enqueue — each fails the tick, and B is never walked.
-  it.each<[string, () => Error, 'busca' | 'enqueue']>([
+  // ⚠️ The near-misses: the same two CLASSES carrying a deploy-shaped code (the
+  // real classifier hands them back RAW), the transient code on a look-alike
+  // that is not the class, and the class raised somewhere other than the
+  // enqueue — each fails the tick, and B is never walked.
+  it.each<[string, () => Error, 'busca' | 'transporte']>([
     [
       'functions/permission-denied (falta o IAM)',
-      () => falhaDoFunctions('permission-denied'),
-      'enqueue',
+      () => falhaDoFunctions('permission-denied', 403),
+      'transporte',
     ],
-    ['functions/not-found (sem fila nessa região)', () => falhaDoFunctions('not-found'), 'enqueue'],
-    ['functions/invalid-argument', () => falhaDoFunctions('invalid-argument'), 'enqueue'],
-    ['functions/unauthenticated', () => falhaDoFunctions('unauthenticated'), 'enqueue'],
-    ['functions/failed-precondition', () => falhaDoFunctions('failed-precondition'), 'enqueue'],
-    ['app/invalid-credential', () => falhaDoApp(AppErrorCode.INVALID_CREDENTIAL), 'enqueue'],
-    ['app/internal-error', () => falhaDoApp(AppErrorCode.INTERNAL_ERROR), 'enqueue'],
+    [
+      'functions/not-found (sem fila nessa região)',
+      () => falhaDoFunctions('not-found', 404),
+      'transporte',
+    ],
+    ['functions/invalid-argument', () => falhaDoFunctions('invalid-argument', 400), 'transporte'],
+    ['functions/unauthenticated', () => falhaDoFunctions('unauthenticated', 401), 'transporte'],
+    [
+      'functions/failed-precondition',
+      () => falhaDoFunctions('failed-precondition', 400),
+      'transporte',
+    ],
+    ['app/invalid-credential', () => falhaDoApp(AppErrorCode.INVALID_CREDENTIAL), 'transporte'],
+    ['app/internal-error', () => falhaDoApp(AppErrorCode.INTERNAL_ERROR), 'transporte'],
     [
       'um Error comum com o MESMO código (a forma, não a classe)',
       () => Object.assign(new Error('503'), { code: 'functions/unknown-error' }),
-      'enqueue',
+      'transporte',
     ],
     [
       'app/network-error FORA do enqueue (na busca)',
@@ -1518,7 +1525,7 @@ describe('a contenção por conta', () => {
     if (onde === 'busca') c.busca.mockRejectedValueOnce(lancado);
     else {
       c.busca.mockResolvedValueOnce(pagina([linhaBusca(PACOTE)]));
-      c.enqueue.mockRejectedValueOnce(lancado);
+      c.enqueue.mockImplementationOnce(() => rejeicaoDoTransporte(lancado));
     }
 
     await expect(rodar(c)).rejects.toBe(lancado);
