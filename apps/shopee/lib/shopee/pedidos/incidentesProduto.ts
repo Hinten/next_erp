@@ -21,11 +21,17 @@
  *
  * `TIPO_INCIDENTE.outros` (`'o'`) is explicitly absent from
  * `TIPOS_INCIDENTE_BLOQUEANTES`, so a produto-não-vinculado row can never stop
- * despacho or NF-e. `ORIGEM_INCIDENTE.outros` (99) is used rather than a new
- * `pedidoShopee` member: `origemIncidenteSchema` is a closed `z.union`, and
- * widening it reaches BOTH generated rulesets (rule 2) for a value nothing
- * branches on here. Step 17 owns that decision, where the blocking overlay
- * actually reads `origem`.
+ * despacho or NF-e. `ORIGEM_INCIDENTE.outros` (99) is used, NEVER
+ * `ORIGEM_INCIDENTE.pedidoShopee` (5): step 17 (#1525) added that member for a
+ * Shopee RETURN, and it sits in `ORIGENS_INCIDENTE_MARKETPLACE` — the overlay's
+ * origem allow-list — which 99 never may. So both gates refuse this row, each
+ * on its own.
+ *
+ * ⚠️ An earlier revision of this comment said widening `origemIncidenteSchema`
+ * "reaches BOTH generated rulesets". It does not: `pedidos/{pedidoId}/incidentes`
+ * is absent from `VALIDATOR_WHITELIST` (`packages/rules-gen/src/registry.ts`),
+ * so its rules carry permissions and the `overrideBloqueio` guard but no field
+ * validator — step 17 widened the union with both `gen:rules*:check` green.
  *
  * `subtipo` is a FREE passthrough key — `incidenteSchema` has no such field and
  * is `.passthrough()`, which is what the estoque sync already relies on for its
