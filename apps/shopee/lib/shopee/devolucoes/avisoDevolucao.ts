@@ -31,10 +31,24 @@
  *
  * | outcome | effect |
  * |---|---|
- * | `criado`, `atualizado` | only when `mudouAviso` — the pendência, its deadline or the status token moved |
+ * | `criado`, `atualizado` | ALWAYS — every content change, `mudouAviso` or not (below) |
  * | `ignorado-sem-mudanca` | ALWAYS — the replay (below) |
  * | `relogio-avancado` | NONE — a watermark-only advance writes nothing here either |
  * | `ignorado-obsoleto`, `ignorado-sem-pedido` | NONE — nothing was confirmed by this delivery |
+ *
+ * ⚠️ **`atualizado` projects even when `mudouAviso` is false.** A delivery
+ * whose transaction committed and whose aviso write then failed is retried by
+ * the queue — and when Shopee changed a field the aviso does not show (the
+ * refund amount) in between, the retry reads `atualizado` with `mudouAviso:
+ * false`. Gating on that flag lost the effect for good: a REQUESTED return sat
+ * unalerted until Shopee refunded the buyer at its deadline (review on #1762).
+ * The price is bounded by Shopee's content revisions, never by bare
+ * `update_time` bumps (that is `relogio-avancado`, below): on an open row whose
+ * effect already landed, `escreverAviso` answers `repetido` — `ocorrencias` + 1
+ * and a newer clock, with `criadoEm` UNTOUCHED, so the read state
+ * (`avisoNaoLido` keys on `criadoEm`) stays and nothing re-alerts; the panel's
+ * `×N` then counts the return's revisions while it waits. On a resolved row it
+ * advances the clock alone (`resolverAviso`).
  *
  * ⚠️ **`ignorado-sem-mudanca` re-applies on purpose.** A delivery whose
  * transaction committed and whose aviso write then failed is redelivered by the
@@ -56,7 +70,7 @@
  * without a content change — the churn the watermark-only patch exists to
  * avoid. The price: a lost effect whose REPLAY reads a newer `update_time` with
  * the same content stays lost until a later delivery reads
- * `ignorado-sem-mudanca` or moves the pendência, the deadline or the status.
+ * `ignorado-sem-mudanca` or `atualizado` (any content change).
  * Rebuilding the old clock there would need the PREVIOUS watermark, which
  * {@link EstadoConfirmadoDevolucao} does not carry (and a chain of advances
  * would not preserve it).
@@ -173,7 +187,9 @@ function projetaOAviso(previsao: PrevisaoDevolucao): boolean {
   switch (previsao.acao) {
     case 'criado':
     case 'atualizado':
-      return previsao.mudouAviso;
+      // Every content change, `mudouAviso` or not: a lost effect's retry can
+      // read `atualizado` for a field the aviso never shows (module docblock).
+      return true;
     case 'ignorado-sem-mudanca':
       // The replay: idempotent under the event clock (module docblock).
       return true;
@@ -265,8 +281,9 @@ export interface AplicarAvisoDeDevolucaoParams {
  *   or there was no open row to close.
  *
  * A Firestore failure PROPAGATES (rule 6, no catch): the delivery fails, the
- * queue redelivers, the transaction reads `ignorado-sem-mudanca`, and this
- * effect is tried again (module docblock).
+ * queue redelivers, the transaction reads `ignorado-sem-mudanca` — or
+ * `atualizado`, when Shopee changed the return in between — and this effect is
+ * tried again (module docblock).
  */
 export async function aplicarAvisoDeDevolucao(
   db: Firestore,

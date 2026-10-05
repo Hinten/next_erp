@@ -130,19 +130,21 @@ export interface PrevisaoDevolucao {
   /** The incidente as this transaction READ it; `null` when it did not exist. */
   readonly anterior: EstadoConfirmadoDevolucao | null;
   /**
-   * The aviso may need a new effect: the seller's pending action
+   * What the aviso SHOWS changed: the seller's pending action
    * ({@link pendenciaDoVendedor} — the pendência or its deadline) or the raw
    * status token differs between {@link PrevisaoDevolucao.anterior} and
    * {@link PrevisaoDevolucao.confirmado}. Always `false` on a zero-write outcome
    * and on a watermark-only advance, where the two are the same stored state;
    * always `true` on a create (there was no status before).
    *
-   * ⚠️ It describes THIS transaction's change, so a REPLAY of a delivery whose
-   * transaction committed but whose aviso effect then failed reads `false`
-   * (`ignorado-sem-mudanca`). The effect is idempotent under its own clock —
-   * `escreverAviso` drops an equal `relogioEvento`, `resolverAviso` skips a
-   * stored one `>=` the given — which is what lets the caller re-apply it on that
-   * outcome without churn if it chooses to.
+   * ⚠️ A DIAGNOSTIC (the delivery log and `importar:devolucao` print it), never
+   * the aviso's gate. It describes THIS transaction's change, so the retry of a
+   * delivery whose transaction committed but whose aviso effect then failed
+   * reads `false` — on `ignorado-sem-mudanca`, and on an `atualizado` when
+   * Shopee changed only a field the aviso does not show in between. So
+   * `avisoDevolucao.ts` projects every content change and every replay: the
+   * effect is idempotent under its own clock — `escreverAviso` drops an equal
+   * `relogioEvento`, `resolverAviso` skips a stored one `>=` the given.
    */
   readonly mudouAviso: boolean;
 }

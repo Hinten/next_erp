@@ -273,10 +273,18 @@ resolve.
 
 | outcome                                    | aviso effect                                                   |
 | ------------------------------------------ | -------------------------------------------------------------- |
-| `criado`, `atualizado`                     | only when `mudouAviso` (pendência, deadline or status moved)   |
+| `criado`, `atualizado`                     | ALWAYS — `mudouAviso` is a diagnostic, never the gate (below)  |
 | `ignorado-sem-mudanca`                     | ALWAYS — a crash-replay re-applies, churn-free (below)         |
 | `relogio-avancado`                         | none — it would bump `ocorrencias` on every `update_time` bump |
 | `ignorado-obsoleto`, `ignorado-sem-pedido` | none                                                           |
+
+⚠️ **`atualizado` projects even when the aviso's fields did not move.** The
+retry of a delivery whose aviso write failed reads `atualizado` with
+`mudouAviso: false` when Shopee changed only an unshown field (the refund
+amount) in between; gating on the flag lost that aviso until the return's
+deadline (review on #1762). The cost is one `repetido` per Shopee revision
+while the return waits — `ocorrencias` + 1, `criadoEm` untouched, so no
+re-alert (`avisoNaoLido` keys on `criadoEm`).
 
 **The event clock.** `relogioEvento = relogioProvedorUs + min(revisao,
 999 999)` — strictly rising per content change (`escreverAviso` drops an EQUAL
@@ -529,7 +537,7 @@ never-imported order.
 ## 15. Residuals, stated rather than fixed
 
 - **A lost aviso effect behind a `relogio-avancado` replay** stays lost until a
-  later `ignorado-sem-mudanca` delivery or a pendência/deadline/status change:
+  later `ignorado-sem-mudanca` delivery or any content change (`atualizado`):
   rebuilding the old clock would need the PREVIOUS watermark, which the
   confirmed state does not carry.
 - **A resolve that finds no row stamps nothing**, so when the FIRST two

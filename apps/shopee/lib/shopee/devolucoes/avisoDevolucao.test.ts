@@ -7,7 +7,10 @@ import {
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
   TIPO_AVISO,
+  avisoNaoLido,
+  avisosLeituraSchema,
   chaveDeAviso,
+  entradaDeLeitura,
 } from '@delfrance/schemas';
 import type { ShopeeReturnDetail } from '@delfrance/integrations-shopee';
 
@@ -237,14 +240,20 @@ describe('preverEfeitoDoAvisoDeDevolucao — só o estado CONFIRMADO, e só nos 
     expect(e.relogioEvento).toBe(microsDeSegundosShopee(T0_S + 1) + 2);
   });
 
-  it('`atualizado` que NÃO muda o aviso (só o valor) ⇒ nenhum efeito', () => {
+  it('`atualizado` que NÃO muda o aviso (só o valor) PROJETA mesmo assim — o mesmo estado, com o relógio NOVO', () => {
     const { previsao, efeito: e } = prever(
       armazenado(detalhe(0)),
       detalhe(1, { refund_amount: 20 }),
     );
     expect(previsao.acao).toBe('atualizado');
     expect(previsao.mudouAviso).toBe(false);
-    expect(e).toEqual({ efeito: 'nenhum' });
+    expect(e).toEqual({
+      efeito: 'abrir',
+      pendencia: PENDENCIA_RECLAMACAO.responderProposta,
+      prazoUs: microsDeSegundosShopee(base().negotiation?.offer_due_date ?? 0),
+      status: 'ACCEPTED',
+      relogioEvento: microsDeSegundosShopee(T0_S + 1) + 2,
+    });
   });
 
   it('`ignorado-sem-mudanca` PROJETA mesmo com mudouAviso false — o replay, com o MESMO relógio da criação', () => {
@@ -537,7 +546,7 @@ describe('`relogio-avancado` não projeta — o custo e o resíduo, fixados', ()
     expect(aviso(db).ocorrencias).toBe(2);
   });
 
-  it('RESÍDUO: efeito perdido + replay com relógio NOVO e conteúdo igual ⇒ continua perdido até um `ignorado-sem-mudanca`', async () => {
+  it('RESÍDUO: efeito perdido + replay com relógio NOVO e conteúdo igual ⇒ continua perdido até um `ignorado-sem-mudanca` (ou uma mudança de conteúdo)', async () => {
     const db = dbComPedido();
     db.falhasDeCriacao.set(AVISO_PATH, grpc(14, 'UNAVAILABLE'));
     await expect(entregar(db, detalhe(0))).rejects.toThrow('UNAVAILABLE');
@@ -551,6 +560,111 @@ describe('`relogio-avancado` não projeta — o custo e o resíduo, fixados', ()
     const replay = await entregar(db, detalhe(3));
     expect(replay.previsao.acao).toBe('ignorado-sem-mudanca');
     expect(replay.aviso).toBe('aberto');
+  });
+});
+
+describe('o retry depois de uma mudança que o aviso NÃO mostra (review do #1762) — `atualizado` projeta', () => {
+  /** Only the refund amount moves: content, but nothing the aviso shows. */
+  const SO_O_VALOR: Partial<ShopeeReturnDetail> = { refund_amount: 20 };
+
+  /** The operator's read of the row as it stands, in the shape the bell stores. */
+  function lidoAgora(db: FakeDb) {
+    return avisosLeituraSchema.parse({
+      ultimaVisualizacaoUs: 0,
+      lidos: [entradaDeLeitura(CHAVE, aviso(db).criadoEm as number)],
+    });
+  }
+
+  function naoLido(db: FakeDb, leitura: ReturnType<typeof lidoAgora>): boolean {
+    const a = aviso(db);
+    return avisoNaoLido(
+      {
+        criadoEm: a.criadoEm as number,
+        destinatarioUid: null,
+        resolvidoEm: a.resolvidoEm as number | null,
+      },
+      CHAVE,
+      leitura,
+      'uid-1',
+    );
+  }
+
+  it('`criado` + falha no aviso; só o valor muda ⇒ o retry lê `atualizado` sem mudouAviso e ABRE o aviso', async () => {
+    const db = dbComPedido();
+    db.falhasDeCriacao.set(AVISO_PATH, grpc(14, 'UNAVAILABLE'));
+    await expect(entregar(db, detalhe(0, SOLICITADA))).rejects.toThrow('UNAVAILABLE');
+    expect(db.store[AVISO_PATH]).toBeUndefined();
+    db.falhasDeCriacao.clear();
+
+    const retry = await entregar(db, detalhe(1, { ...SOLICITADA, ...SO_O_VALOR }));
+    expect(retry.previsao.acao).toBe('atualizado');
+    expect(retry.previsao.mudouAviso).toBe(false);
+    expect(retry.aviso).toBe('aberto');
+    const a = aviso(db);
+    expect(a.params).toEqual({
+      pedido: ORDER_SN,
+      devolucao: RETURN_SN,
+      pendencia: PENDENCIA_RECLAMACAO.responderSolicitacao,
+    });
+    expect(a.motivo).toBe('REQUESTED');
+    expect(a.relogioEvento).toBe(microsDeSegundosShopee(T0_S + 1) + 2);
+    expect(a.ocorrencias).toBe(1);
+  });
+
+  it('quase-igual: o mesmo efeito perdido, mas o retry só traz relógio novo (`relogio-avancado`) ⇒ continua perdido', async () => {
+    const db = dbComPedido();
+    db.falhasDeCriacao.set(AVISO_PATH, grpc(14, 'UNAVAILABLE'));
+    await expect(entregar(db, detalhe(0, SOLICITADA))).rejects.toThrow('UNAVAILABLE');
+    db.falhasDeCriacao.clear();
+
+    const retry = await entregar(db, detalhe(1, SOLICITADA));
+    expect(retry.previsao.acao).toBe('relogio-avancado');
+    expect(retry.aviso).toBe('inalterado');
+    expect(db.store[AVISO_PATH]).toBeUndefined();
+  });
+
+  it('o mesmo no RESOLVE: encerrada + falha no resolve; só o valor muda ⇒ o retry FECHA a linha', async () => {
+    const db = dbComPedido();
+    await entregar(db, detalhe(0, SOLICITADA));
+    db.falhasDeUpdate.set(AVISO_PATH, grpc(14, 'UNAVAILABLE'));
+    await expect(entregar(db, detalhe(1, ENCERRADA))).rejects.toThrow('UNAVAILABLE');
+    expect(aviso(db).resolvidoEm).toBeNull();
+    db.falhasDeUpdate.clear();
+
+    const retry = await entregar(db, detalhe(2, { ...ENCERRADA, ...SO_O_VALOR }));
+    expect(retry.previsao.acao).toBe('atualizado');
+    expect(retry.previsao.mudouAviso).toBe(false);
+    expect(retry.aviso).toBe('resolvido');
+    expect(aviso(db).resolucaoMotivo).toBe(RESOLUCAO_AVISO_DEVOLUCAO.devolucaoEncerrada);
+  });
+
+  it('NÃO re-alerta: numa linha aberta e LIDA, a mudança só de valor é um `repetido` — criadoEm igual, continua lida', async () => {
+    const db = dbComPedido();
+    await entregar(db, detalhe(0, SOLICITADA));
+    const criadoEm = aviso(db).criadoEm;
+    const leitura = lidoAgora(db);
+    expect(naoLido(db, leitura)).toBe(false);
+
+    // A LATER clock, so a moved `criadoEm` would show.
+    const c = await commit(db, detalhe(1, { ...SOLICITADA, ...SO_O_VALOR }));
+    expect(c.previsao.mudouAviso).toBe(false);
+    expect(await efeito(db, c, AGORA_MS + 60_000)).toBe('aberto');
+    expect(aviso(db).ocorrencias).toBe(2);
+    expect(aviso(db).criadoEm).toBe(criadoEm);
+    expect(naoLido(db, leitura)).toBe(false);
+  });
+
+  it('quase-igual: a MESMA leitura não cobre uma REABERTURA — resolvido e pendente de novo ⇒ não lido', async () => {
+    const db = dbComPedido();
+    await entregar(db, detalhe(0, SOLICITADA));
+    const leitura = lidoAgora(db);
+
+    const fechou = await commit(db, detalhe(1, SEM_PENDENCIA));
+    expect(await efeito(db, fechou, AGORA_MS + 60_000)).toBe('resolvido');
+    const reabriu = await commit(db, detalhe(2, SOLICITADA));
+    expect(await efeito(db, reabriu, AGORA_MS + 120_000)).toBe('aberto');
+    expect(aviso(db).criadoEm).toBe((AGORA_MS + 120_000) * 1000);
+    expect(naoLido(db, leitura)).toBe(true);
   });
 });
 
