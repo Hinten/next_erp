@@ -190,7 +190,9 @@ renamed call site fails CI until it says which it is.
   them apart. Out-of-order detection needs the provider's clock.
 - **Pessimistic locking (a lease document per record)** → rejected. It adds a
   write, a TTL, and a new failure mode (a stale lease blocking a legitimate
-  edit), for a contention level this workload does not have.
+  edit), for a contention level this workload does not have. ⚠️ Still rejected
+  for ordinary edits — but see the *Addendum (2026-10)* below for the one narrow
+  case where a lease is the right tool.
 - **Do nothing and rely on review** → rejected: three instances of the same
   stale-closure bug reached production in reviewed code within a single audit
   pass.
@@ -230,3 +232,61 @@ no schema surface, not who the other writer is.
 If anything the correction **sharpens** the ADR. After the cutover this app is
 the *sole* writer of the real data: a lost update has no second codebase to
 attribute it to and no second source to reconstruct it from.
+
+## Addendum (2026-10): a lease only around a non-idempotent external act
+
+The rejection of lease documents above stands for **ordinary edits**: there a
+stale lease blocks a legitimate change, and the four tiers already decide every
+race between two Firestore writes. A lease is the right tool in exactly one
+shape — a **non-idempotent EXTERNAL act sits between two writes**, and doing it
+twice costs money or a credential. No transaction can enclose the external act,
+and OCC arbitrates writes, not calls to someone else's API, so the tiers alone
+let two runs both perform it.
+
+That shape exists three times today, and each is a lease:
+
+- **Shopee token refresh** (`apps/shopee/lib/shopee/core/tokenStore.ts`) — the
+  refresh token is single-use and rotating, so two instances spending it can
+  burn the pair.
+- **Access-claim propagation** (`packages/data/src/admin/cargoClaims/service.ts`)
+  — a worker pages Firebase Auth custom-claim writes under a lease longer than
+  its own lifetime.
+- **The Melhor Envio label purchase** (`apps/melhor-envio/lib/freight/compraEtiqueta.ts`,
+  #1677) — paying for a label twice spends wallet balance twice and leaves one
+  label the pedido never learns about.
+
+A NEW lease must meet all five of these conditions, and is reviewed against
+them:
+
+1. **It expires.** A boolean flag cannot recover from a crashed holder — the
+   balanço lock is this repo's example of a lock that never expires.
+2. **It is never renewed.** A lock that renews itself cannot expire either.
+3. **A corrupt lease reads as NO lease**, and so does one expiring implausibly
+   far ahead (allowing a little clock slack between instances) — the wrong-way
+   default: the failure mode of a bad lock is "no lock", never "locked for ever".
+4. **It is fenced by identity.** The lease alone is a timing argument, and
+   timing is not a guarantee: Cloud Run keeps running a request after its own
+   504 and can throttle its CPU, so a holder's timers fire late. So the external
+   act is started only after a fresh ownership check, and every write around it
+   re-derives, inside its own transaction, either ownership or the IDENTITY the
+   act was performed against — an anchor (the label id), a token (the refresh
+   token spent) — so a run that outlived its lease does no harm when it wakes.
+5. **It outlasts the window in which a holder can still be performing the act**
+   — for the comprar claim, the whole request (the backend's ceiling plus a
+   margin, pinned by `packages/config-eslint/rules/http-client-timeout-ceiling.test.js`)
+   — **or** a takeover is made harmless by the identity fence of condition 4.
+
+The two leases that predate this addendum do not meet every condition, and that
+is recorded here rather than papered over:
+
+- **Shopee's refresh lease** is 30 s, shorter than its 180 s request — it
+  relies on the second half of condition 5: its commit compares the stored
+  refresh token against the one it spent, so a takeover cannot overwrite a newer
+  pair. It has no far-future guard (condition 3).
+- **`cargoClaims`** has no far-future guard either (condition 3). Its fence is
+  the ownership/phase/cursor re-check on every checkpoint.
+
+Adding the far-future guard to both is a follow-up, not part of #1677.
+
+A lease that cannot meet these is not a lease this repo uses; a race between two
+Firestore writes is never a reason for one.

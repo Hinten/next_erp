@@ -124,10 +124,10 @@ find/guard/patch core is reusable — extract `applyFreightStatusUpdate` to
 persistence became `@delfrance/data/admin/notifications` — see the
 `webhook-notifications` skill.)
 
-⚠️ This receiver is also the **only** implemented one still processing inline —
-no queue, no failure persistence, no reprocess sweep — so a Firestore outage
-mid-webhook loses the update entirely. Putting it on the shared notification
-pipeline is tracked as a #360 follow-up.
+The receiver runs on the shared enqueue-first notification pipeline since #1595
+(`lib/freight/notificacao.ts` + the nested `functions/` task handler and
+reprocess sweep) — it used to process inline, so a Firestore outage mid-webhook
+lost the update.
 
 ## The flow (happy path)
 
@@ -147,9 +147,19 @@ pipeline is tracked as a #360 follow-up.
 The buy is driven from the **`/pedidos` row action** (`EtiquetaRowAction`), not
 the object view — `EtiquetaMelhorEnvioPanel` only prints/tracks an already-bought
 label. The comprar route is **server-authoritative**: it reads the persisted
-`freteInicial.printLabelId` from the fresh pedido doc and prefers it over the
-client value, so a double-click or stale client re-buy **resumes/reprints** the
-same label instead of double-spending.
+`freteInicial.printLabelId` from the fresh pedido doc (and ignores the client's
+value — #1677), so a SEQUENTIAL re-click or a stale client re-buy
+**resumes/reprints** the same label instead of double-spending.
+
+⚠️ The anchor alone only ever covered the sequential case: two CONCURRENT
+requests both read "no label yet" and each paid for one. Since #1677 the route
+holds an in-flight claim (`apps/melhor-envio/lib/freight/compraEtiqueta.ts`,
+admin-only at `pedidos/{id}/compraEtiqueta/current`): a second request while it
+is live gets **423 `ME_COMPRA_EM_ANDAMENTO`** before any ME call, the anchor is a
+compare-and-set, and `checkout`/`generate` are fenced (owner, a 240 s paid
+window, the anchor). After a paid step fails in transit the claim is KEPT until
+it expires (360 s), because whether it paid is unknown; a label paid but no
+longer linked to the pedido answers `412 ME_ETIQUETA_DESVINCULADA`, never 200.
 
 ## Critical wire-compat facts (the traps)
 

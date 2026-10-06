@@ -49,7 +49,8 @@ const MARGEM_MS = 60_000;
  * `{ curto, longo }` object in `cliente`; its `longo` is the value checked.
  *
  * ⚠️ Every HTTP client that grows a `longo` tier adds a row here (the #1094
- * program's F3 sweep adds the channel clients, F1a/F2 add their leases).
+ * program's F3 sweep adds the channel clients). Server LEASES go in `LEASES`
+ * below (the comprar claim, #1677).
  */
 const LINHAS = [
   {
@@ -63,6 +64,60 @@ const LINHAS = [
     backend: 'apps/nfe',
   },
 ];
+
+/**
+ * One row per server-side LEASE that must outlast its backend's ceiling (#1677).
+ * `constante` names an exported scalar `export const X = <ms>;` in `arquivo`.
+ *
+ * The inequality is the same one as the client rows', for the same reason seen
+ * from the server: a lease that expires while the request that holds it can
+ * still be running lets a SECOND request take over a non-idempotent operation
+ * the first is still performing — for the comprar claim, paying for a second
+ * label. So the lease must outlive the platform's own 504 plus the margin.
+ */
+const LEASES = [
+  {
+    arquivo: 'apps/melhor-envio/lib/freight/compraEtiqueta.ts',
+    constante: 'COMPRA_ETIQUETA_LEASE_MS',
+    backend: 'apps/melhor-envio',
+  },
+];
+
+/**
+ * One row per server-side PAID WINDOW (#1677): the latest a non-idempotent step
+ * may START inside a request. It is the INVERSE inequality — the window must
+ * close at least {@link MARGEM_JANELA_MS} before the platform gives up, so a paid
+ * step is never begun in a request about to be abandoned — and therefore uses
+ * the SMALLEST pinned ceiling, not the largest.
+ */
+const JANELAS = [
+  {
+    arquivo: 'apps/melhor-envio/lib/freight/compraEtiqueta.ts',
+    constante: 'COMPRA_ETIQUETA_JANELA_PAGA_MS',
+    backend: 'apps/melhor-envio',
+  },
+];
+
+/** Room between a paid window closing and the platform's 504. */
+const MARGEM_JANELA_MS = 30_000;
+
+/** The SMALLEST ceiling a backend can run under, in seconds (the default when unpinned). */
+function menorTetoDoBackendS(backend) {
+  const { pinados } = tetoDoBackendS(backend);
+  return pinados.length > 0 ? Math.min(...pinados) : TETO_APP_HOSTING_PADRAO_S;
+}
+
+/**
+ * The value of `export const <constante> = 360_000;`. Numeric separators are
+ * allowed; anything the regex cannot read is `null` and fails the anti-vacuity
+ * assertion rather than passing silently.
+ */
+function lerEscalarMs(fonte, constante) {
+  const m = new RegExp(`export const ${constante}\\s*=\\s*([\\d_]+)\\s*;`).exec(fonte);
+  if (m === null) return null;
+  const ms = Number(m[1].replaceAll('_', ''));
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
 
 /**
  * The `longo` value of `export const <constante> = { …, longo: 360_000 } …`.
@@ -154,6 +209,49 @@ describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', ()
     // 300 (the default is larger), so assert what was PARSED, not the ceiling.
     expect(tetoDoBackendS('apps/mercado-livre').pinados).toEqual([180]);
     expect(tetoDoBackendS('apps/shopee').pinados).toEqual([180]);
+  });
+
+  it('finds every server lease constant (anti-vacuity)', () => {
+    expect(LEASES.length).toBeGreaterThanOrEqual(1);
+    for (const { arquivo, constante } of LEASES) {
+      const fonte = readFileSync(resolve(REPO_ROOT, arquivo), 'utf8');
+      expect(lerEscalarMs(fonte, constante), `${arquivo}: ${constante}`).not.toBeNull();
+    }
+  });
+
+  it.each(LEASES)(
+    '$constante (server lease) ≥ the $backend ceiling + margin (#1677)',
+    ({ arquivo, constante, backend }) => {
+      const leaseMs = lerEscalarMs(readFileSync(resolve(REPO_ROOT, arquivo), 'utf8'), constante);
+      const { tetoS } = tetoDoBackendS(backend);
+      expect(
+        leaseMs,
+        `${constante} (${String(leaseMs)} ms) must be ≥ ${backend}'s ceiling (${String(tetoS)} s) + ` +
+          `${String(MARGEM_MS)} ms — otherwise the lease expires while its own request can still be ` +
+          'running, and a second request takes over a purchase that is still in progress.',
+      ).toBeGreaterThanOrEqual(tetoS * 1000 + MARGEM_MS);
+    },
+  );
+
+  it.each(JANELAS)(
+    '$constante (paid window) closes ≥ 30 s before the SMALLEST $backend ceiling (#1677)',
+    ({ arquivo, constante, backend }) => {
+      const janelaMs = lerEscalarMs(readFileSync(resolve(REPO_ROOT, arquivo), 'utf8'), constante);
+      expect(janelaMs, `${arquivo}: ${constante}`).not.toBeNull();
+      const tetoS = menorTetoDoBackendS(backend);
+      expect(
+        janelaMs + MARGEM_JANELA_MS,
+        `${constante} (${String(janelaMs)} ms) + ${String(MARGEM_JANELA_MS)} ms must be ≤ ` +
+          `${backend}'s smallest ceiling (${String(tetoS)} s) — otherwise a paid step can start ` +
+          'in a request the platform is about to abandon.',
+      ).toBeLessThanOrEqual(tetoS * 1000);
+    },
+  );
+
+  it('the scalar reader parses separators and refuses anything else', () => {
+    expect(lerEscalarMs('export const X = 360_000;', 'X')).toBe(360_000);
+    expect(lerEscalarMs('export const X = 5 * 60_000;', 'X')).toBeNull();
+    expect(lerEscalarMs('export const Y = 1;', 'X')).toBeNull();
   });
 
   it('a pin above the default raises the ceiling, and an unreadable one fails closed', () => {
