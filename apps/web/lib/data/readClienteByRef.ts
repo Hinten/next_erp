@@ -24,7 +24,7 @@
  *  - NFCell's `OrientacaoRejeicaoCliente` (the cStat 805 guidance, #852),
  *  - the `contextoRejeicao` loader (`lib/nfe/contextoRejeicao.ts`, #852).
  *
- * Every one of them except `OrigemPedidoPicker` first passes the pedido's ref
+ * Every one of them first passes the pedido's ref
  * through {@link refDeClienteOuNull} (#1656) — the one gate that says "this is
  * a cliente" before a read under that key or a `/clientes/{id}` link.
  */
@@ -46,7 +46,9 @@ export function clienteQueryKey(path: string): readonly unknown[] {
  * DIFFERENT document, so a link built from it would open the wrong cadastro.
  */
 export function ehRefDeCliente(ref: DocumentReference): boolean {
-  return ref.parent.id === CLIENTES_COLLECTION_ID;
+  return (
+    ref.parent.id === CLIENTES_COLLECTION_ID && ref.path === `${CLIENTES_COLLECTION_ID}/${ref.id}`
+  );
 }
 
 /**
@@ -56,9 +58,9 @@ export function ehRefDeCliente(ref: DocumentReference): boolean {
  * every ref it returns has the `parent` {@link ehRefDeCliente} reads (#1656).
  *
  * The ONE gate before reading {@link clienteQueryKey} or linking
- * `/clientes/{id}`: `ClienteCell`, the `/pedidos` row batch, NFCell's
- * `OrientacaoRejeicaoCliente` and the `contextoRejeicao` loader all go through
- * it, instead of each composing the dereference with {@link ehRefDeCliente}.
+ * `/clientes/{id}`, and before deriving a cliente id for an address list:
+ * the pedido cells, origin picker, row batch, Fiscal tab, address picker,
+ * chat hooks and rejection-context loader all go through it.
  */
 export function refDeClienteOuNull(db: Firestore, outerRef: unknown): DocumentReference | null {
   // An absent ref (the common marketplace-masked case) never reaches the dereference.
@@ -77,7 +79,8 @@ export function refDeClienteOuNull(db: Firestore, outerRef: unknown): DocumentRe
  * accepts three legacy ref shapes and nothing guarantees the path addresses
  * `clientes`; reading `clienteCollection.docRef(db, {}, ref.id)` for a ref that
  * points elsewhere would silently fetch a DIFFERENT document that happens to
- * share an id. Anything outside `clientes` is read as the ref given.
+ * share an id. Anything outside the TOP-LEVEL `clientes` collection is read
+ * as the ref given, including a subcollection also named `clientes`.
  */
 export async function readClienteByRef<T>(
   db: Firestore,

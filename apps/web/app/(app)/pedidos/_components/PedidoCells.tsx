@@ -62,6 +62,7 @@ import {
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
+import { resolveClienteDisplay } from '@/lib/clientes/clienteDisplay';
 import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
 import type { IntegracaoLookup } from './integracaoLookup';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -70,7 +71,6 @@ import type { DestinatarioNFe } from '@/lib/nfe/destinatarioNFe';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { orientacaoRejeicaoNFe, rejeicaoPrecisaContexto } from '@/lib/nfe/errors';
 import { DanfeMenu } from '@/components/DanfeMenu';
-import { ANONIMO_LABEL } from './ClienteColumnFilter';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
 import {
@@ -435,7 +435,7 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
   ) as DocumentReference<ClienteDoc> | null;
   const path = ref?.path ?? null;
 
-  const { data, isLoading } = useQuery<ClienteDoc | null>({
+  const { data, isLoading, isError } = useQuery<ClienteDoc | null>({
     queryKey: clienteQueryKey(path ?? ''),
     // ⚠️ The SHARED reader, matching how `rowReadPrefetch` batch-reads the same
     // documents. Every consumer of `clienteQueryKey` must fill it with the same
@@ -451,23 +451,26 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
     staleTime: 5 * 60 * 1000,
   });
 
-  // "Anônimo" is exactly what the column filter's isNull finds
-  // (`ClienteColumnFilter`), so it is reserved for a pedido with NO ref.
-  if (pedido.clientePedidoOuterRef == null) return <Text c="dimmed">{ANONIMO_LABEL}</Text>;
-  // A ref is present but names no cliente — foreign, or it does not
-  // dereference. Said so, the way IntegracaoCell flags a `desconhecida` id.
-  if (!ref) {
+  const display = resolveClienteDisplay({
+    hasReference: pedido.clientePedidoOuterRef != null,
+    recognized: ref != null,
+    data,
+    isLoading,
+    isError,
+  });
+  if (display.status === 'loading') return <Skeleton height={20} width={120} />;
+  if (display.status === 'unrecognized') {
     return (
       <Tooltip
         label="A referência de cliente deste pedido não aponta para um cadastro de cliente."
         withinPortal
       >
-        <Text c="dimmed">Cliente não reconhecido</Text>
+        <Text c="dimmed">{display.label}</Text>
       </Tooltip>
     );
   }
-  if (isLoading) return <Skeleton height={20} width={120} />;
-  const nome = data?.nome ?? 'Anônimo';
+  if (display.status !== 'found' || !ref) return <Text c="dimmed">{display.label}</Text>;
+  const nome = display.label;
   const cpfCnpj = data?.cpf_cnpj ? formatCpfCnpj(data.cpf_cnpj) : null;
   const tipoLabel = data?.tipo ? TIPO_CLIENTE_LABELS[data.tipo] : null;
   const tooltip =

@@ -14,13 +14,14 @@ import {
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
-import type { DocumentReference, Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_PEDIDO_LABELS, type Pedido } from '@delfrance/schemas';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { clienteQueryKey, readClienteByRef } from '../rowReadPrefetch';
-import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
+import { resolveClienteDisplay } from '@/lib/clientes/clienteDisplay';
 import { isReturnableOrigin } from './devolucaoForm';
 
 /** Firestore prefix-range upper sentinel (sorts above any string with the prefix). */
@@ -181,13 +182,10 @@ function OrigemPedidoList({
 
 /** The cliente's name for an order's `clientePedidoOuterRef` (deref + cached read). */
 function ClienteName({ db, outerRef }: { db: Firestore; outerRef: unknown }) {
-  const ref = useMemo(
-    () => dereferenceOuterRef(db, outerRef),
-    [db, outerRef],
-  ) as DocumentReference<{ nome?: string | null }> | null;
+  const ref = useMemo(() => refDeClienteOuNull(db, outerRef), [db, outerRef]);
   const path = ref?.path ?? null;
 
-  const { data } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     // Shares this cache key with `ClienteCell` and the /pedidos page-level
     // batch, so it must share their reader too — see `readClienteByRef`.
     queryKey: clienteQueryKey(path ?? ''),
@@ -196,9 +194,17 @@ function ClienteName({ db, outerRef }: { db: Firestore; outerRef: unknown }) {
     staleTime: 5 * 60 * 1000,
   });
 
+  const display = resolveClienteDisplay({
+    hasReference: outerRef != null,
+    recognized: ref != null,
+    data,
+    isLoading,
+    isError,
+  });
+  if (display.status === 'loading') return <Skeleton height={14} width={100} />;
   return (
     <Text size="xs" c="dimmed">
-      {data?.nome ?? 'Anônimo'}
+      {display.label}
     </Text>
   );
 }

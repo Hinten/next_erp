@@ -8,6 +8,7 @@ import { CHAVE_NFE_REGEX, decomporChaveAcesso, type Pedido } from '@delfrance/sc
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 import { EnderecoPicker } from '@/components/pickers/EnderecoPicker';
 import type { PedidoFormState } from '../types';
 import { AjusteRtcSection } from './AjusteRtcSection';
@@ -25,10 +26,13 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
 
   const clienteRef = useMemo(() => {
-    const r = dereferenceOuterRef(db, clientePedidoOuterRef);
+    const r = refDeClienteOuNull(db, clientePedidoOuterRef);
     return r ? clienteCollection.docRef(db, {}, r.id) : null;
   }, [db, clientePedidoOuterRef]);
-  const { data: clienteDoc } = useDocSnapshot(clienteRef);
+  const clienteSnapshot = useDocSnapshot(clienteRef);
+  // useDocSnapshot can retain the previous customer's data while a new ref loads.
+  const clienteDoc =
+    clienteRef && clienteSnapshot.documentPath === clienteRef.path ? clienteSnapshot.data : null;
 
   const enderecoFiscalRef = useMemo(
     () => dereferenceOuterRef(db, enderecoFiscalOuterRef),
@@ -70,16 +74,18 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           {!enderecoFiscalRef &&
             (clienteDoc ? (
               <Text size="sm" c="dimmed">
-                Sem endereço fiscal definido. Será inferido a partir do cliente
+                Sem endereço fiscal definido. A emissão da NF-e exige um endereço fiscal. Selecione
+                um endereço do cliente
                 <Text component="span" inherit fw={500}>
                   {' '}
                   {clienteDoc.data.nome ?? '(sem nome)'}
-                </Text>{' '}
-                na emissão fiscal.
+                </Text>
+                .
               </Text>
             ) : (
               <Text size="sm" c="dimmed">
-                Selecione um cliente na aba Principal para herdar o endereço fiscal.
+                Selecione um cliente na aba Principal e depois um endereço fiscal dele, obrigatório
+                para emitir a NF-e.
               </Text>
             ))}
         </Stack>
