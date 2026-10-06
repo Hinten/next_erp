@@ -15,9 +15,10 @@
  * Open while the CONFIRMED return waits for the seller —
  * {@link pendenciaDoVendedor} (`devolucaoMapping.ts`, the ONE home of that rule)
  * answers a pendência; resolved when it answers `null` (terminal, accepted, or
- * the offer/evidence answered). `params` are EXACTLY `{ pedido, devolucao,
- * pendencia }` (`apps/web/lib/avisos/mensagens.ts` renders those three and
- * nothing else); `motivo` is Shopee's raw status token; `prazo` is the CHOSEN
+ * the offer/evidence answered). Open-row `params` are exactly `{ pedido,
+ * devolucao, pendencia }`; a first observation that is already resolved carries
+ * only `{ pedido, devolucao }`, with no invented pending action. The wording
+ * lives in `apps/web/lib/avisos/mensagens.ts`; `motivo` is Shopee's raw status token; `prazo` is the CHOSEN
  * pendência's deadline, copied in µs — and an explicit `null` when that
  * pendência has none, because a stored deadline of an earlier state would be a
  * wrong promise, not an unknown. Severity `atencao`.
@@ -88,16 +89,12 @@
  * precondition to the other write re-reads and re-decides under the clock
  * (bounded, `escreverAviso.ts`) instead of reading the loss as "already
  * resolved".
- * ⚠️ Residual (the seam's), NOT repaired: a resolve that finds NO row writes
- * nothing — it must not upsert a ghost — so it stamps no clock, and the FIRST
- * raise of a return whose effect lands after a newer resolve's creates an OPEN
- * row. It needs a brand-new return whose first two deliveries race (a buyer who
- * opens and cancels within seconds). Nothing re-drives it: both deliveries
- * succeeded, so neither is replayed, and the poller finds an equal clock and
- * projection — the row stands until the return's next change, which for a
- * terminal return never comes (`devolucoes/README.md` §15). Follow-up
- * candidate: a resolve WITH a clock that finds no row creates the row already
- * resolved, carrying that clock, so the late raise loses to it.
+ * A resolve that finds no row atomically creates a complete resolved row with
+ * that clock, so a delayed FIRST raise also loses to the newer observation.
+ * Creating this row answers `inalterado`: no open notice was closed, and no
+ * operator is alerted. It expires under the existing 90-day retention sweep.
+ * A lost creation race re-reads the winner; exhausted clocked attempts throw
+ * so the delivery retries instead of succeeding without its clock.
  *
  * ## Units
  *
@@ -108,7 +105,7 @@
  * `apps/shopee/CLAUDE.md` still says eight.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
+import { escreverAviso, resolverAviso, type PlanoAviso } from '@delfrance/data/admin/avisos';
 import {
   CANAL_AVISO,
   ROTAS_AVISO,
@@ -278,7 +275,7 @@ export interface AplicarAvisoDeDevolucaoParams {
  * - `'aberto'` — `escreverAviso` wrote the row (created, repeated or reopened);
  * - `'resolvido'` — `resolverAviso` closed an open row;
  * - `'inalterado'` — nothing projected, or the event clock dropped the write,
- *   or there was no open row to close.
+ *   or there was no open row to close (a resolved clock may still be recorded).
  *
  * A Firestore failure PROPAGATES (rule 6, no catch): the delivery fails, the
  * queue redelivers, the transaction reads `ignorado-sem-mudanca` — or
@@ -291,6 +288,15 @@ export async function aplicarAvisoDeDevolucao(
   deps: AvisoDeps,
 ): Promise<ResultadoAvisoDevolucao> {
   const efeito = preverEfeitoDoAvisoDeDevolucao(p.previsao, p.relogioProvedorUs);
+  const base: Omit<PlanoAviso, 'relogioEvento'> = {
+    tipo: TIPO_AVISO.reclamacaoAguardandoVendedor,
+    conta: p.integracaoId,
+    entidade: p.returnSn,
+    severidade: SEVERIDADE_AVISO.atencao,
+    canal: CANAL_AVISO.shopee,
+    params: { pedido: p.orderSn, devolucao: p.returnSn },
+    urlInterna: { rota: ROTAS_AVISO.pedido.build(p.pedidoId), campo: null },
+  };
   switch (efeito.efeito) {
     case 'nenhum':
       return 'inalterado';
@@ -298,16 +304,9 @@ export async function aplicarAvisoDeDevolucao(
       const { resultado } = await escreverAviso(
         db,
         {
-          tipo: TIPO_AVISO.reclamacaoAguardandoVendedor,
-          conta: p.integracaoId,
-          entidade: p.returnSn,
-          severidade: SEVERIDADE_AVISO.atencao,
-          canal: CANAL_AVISO.shopee,
-          // Exactly these three, as CODES and ids: the pt-BR sentence around them
-          // lives in `apps/web/lib/avisos/mensagens.ts`.
-          params: { pedido: p.orderSn, devolucao: p.returnSn, pendencia: efeito.pendencia },
+          ...base,
+          params: { ...base.params, pendencia: efeito.pendencia },
           motivo: efeito.status,
-          urlInterna: { rota: ROTAS_AVISO.pedido.build(p.pedidoId), campo: null },
           // ⚠️ `null` is STATED, never omitted: the chosen pendência has no
           // deadline, and an earlier state's deadline must not survive it.
           prazo: efeito.prazoUs,
@@ -323,7 +322,7 @@ export async function aplicarAvisoDeDevolucao(
         chaveDoAvisoDeDevolucao(p.integracaoId, p.returnSn),
         efeito.resolucao,
         { agoraUs: agoraUsDe(deps) },
-        { relogioEvento: efeito.relogioEvento },
+        { ...base, relogioEvento: efeito.relogioEvento },
       );
       return fechou ? 'resolvido' : 'inalterado';
     }

@@ -303,6 +303,21 @@ precondition to the other write re-reads and re-decides under the clock
 the stored one, so a replay reuses the first run's clock and writes nothing if
 it already landed.
 
+A clocked resolve also supplies the notice's base metadata. If the row is absent,
+`resolverAviso` atomically creates a complete, already resolved row carrying the
+clock; an older or equal FIRST raise is then ignored. The seed has the pedido and
+devolução parameters, severity, channel and internal link; status, pending action
+and deadline remain null/absent until a newer raise supplies them. It returns
+`false` (`inalterado`), because it closed no existing open notice and alerts nobody.
+The initial occurrence count is 1, as for any first stored observation. A newer
+raise can reopen it normally. Resolved rows follow the existing 90-day retention.
+
+An ALREADY_EXISTS creation collision or FAILED_PRECONDITION update re-reads and
+re-decides against the winner; a clocked NOT_FOUND retries through the missing-row
+branch. Three unsuccessful clocked attempts throw so the delivery is retried,
+instead of reporting success without its newer observation. Clockless resolvers
+retain their existing behavior. Existing-row resolves never replace base metadata.
+
 ## 8. The poller — `sweepShopeeReturns` (PR 4)
 
 Code 29 reports four fields. Whether a negotiation, compensation or due-date
@@ -540,17 +555,6 @@ never-imported order.
   later `ignorado-sem-mudanca` delivery or any content change (`atualizado`):
   rebuilding the old clock would need the PREVIOUS watermark, which the
   confirmed state does not carry.
-- **A resolve that finds no row stamps nothing**, so when the FIRST two
-  deliveries of a brand-new return race (a buyer who opens and cancels within
-  seconds) and the newer one's resolve runs before the older one's raise, that
-  raise creates an OPEN aviso on a return whose confirmed state owes the seller
-  nothing. Nothing repairs it: no replay comes (both deliveries succeeded), and
-  the poller sees an equal clock and projection and enqueues nothing — so the
-  aviso stands until the return's next change, which for a TERMINAL return
-  never comes. Follow-up candidate: a resolve WITH a clock that finds no row
-  creates the row already resolved, carrying that clock
-  (`sweepAvisosResolvidos` ages it out in 90 days), so the late raise loses to
-  it.
 - **A hand-edited, unreadable block resets `revisao` to 1**, which can move the
   aviso clock backwards at an equal watermark. Not reachable by the importer.
 - **A JSON-number `return_sn` parks** (the parser refuses what `JSON.parse` may

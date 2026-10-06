@@ -506,7 +506,7 @@ export const avisoSchema = z
     prazo: microsSinceEpoch('Prazo').nullable().default(null),
     criadoEm: microsSinceEpoch('Criado em'),
     atualizadoEm: microsSinceEpoch('Atualizado em'),
-    /** Times this same `chave` has been raised. Bumped with `FieldValue.increment`. */
+    /** Starts at 1 for the first stored observation (open or resolved); each later raise increments it. */
     ocorrencias: z.number().int().positive().default(1).describe('Ocorrências'),
     /**
      * The provider's event clock for the delivery that last won, in whatever unit

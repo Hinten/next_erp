@@ -8,6 +8,7 @@ import {
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   avisoNaoLido,
+  avisoSchema,
   avisosLeituraSchema,
   chaveDeAviso,
   entradaDeLeitura,
@@ -368,12 +369,31 @@ describe('aplicarAvisoDeDevolucao — o plano escrito', () => {
     expect(a.relogioEvento).toBe(microsDeSegundosShopee(T0_S + 1) + 2);
   });
 
-  it('resolver sem linha nenhuma não cria fantasma: `inalterado`, zero escritas', async () => {
+  it('records a first closed observation without an open notice or transition', async () => {
     const db = dbComPedido();
     const r = await entregar(db, detalhe(0, ENCERRADA));
     expect(r.aviso).toBe('inalterado');
-    expect(db.store[AVISO_PATH]).toBeUndefined();
-    expect(escritasNoAviso(db)).toBe(0);
+    const row = avisoSchema.parse(aviso(db));
+    expect(row).toMatchObject({
+      tipo: TIPO_AVISO.reclamacaoAguardandoVendedor,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.shopee,
+      params: { pedido: ORDER_SN, devolucao: RETURN_SN },
+      urlInterna: { rota: ROTAS_AVISO.pedido.build(PEDIDO_ID), campo: null },
+      motivo: null,
+      prazo: null,
+      criadoEm: AGORA_MS * 1000,
+      atualizadoEm: AGORA_MS * 1000,
+      resolvidoEm: AGORA_MS * 1000,
+      resolucaoMotivo: RESOLUCAO_AVISO_DEVOLUCAO.devolucaoEncerrada,
+      relogioEvento: microsDeSegundosShopee(T0_S) + 1,
+      ocorrencias: 1,
+    });
+    expect(avisoNaoLido(row, CHAVE, null, 'operator')).toBe(false);
+    expect(escritasNoAviso(db)).toBe(1);
+    expect((await entregar(db, detalhe(0, ENCERRADA))).aviso).toBe('inalterado');
+    expect(aviso(db)).toEqual(row);
+    expect(escritasNoAviso(db)).toBe(1);
   });
 });
 
@@ -441,6 +461,53 @@ describe('RT-8 — um detalhe velho não abre nem fecha; a inversão pós-commit
     expect(await efeito(db, b)).toBe('inalterado');
     expect(aviso(db).resolvidoEm).not.toBeNull();
     expect(aviso(db).motivo).toBe('REQUESTED');
+  });
+
+  it.each([true, false])(
+    'the first two effects converge when the older raise runs first: %s',
+    async (raiseFirst) => {
+      const db = dbComPedido();
+      const older = await commit(db, detalhe(0, SOLICITADA));
+      const newer = await commit(db, detalhe(1, ENCERRADA));
+      if (raiseFirst) expect(await efeito(db, older)).toBe('aberto');
+      expect(await efeito(db, newer)).toBe(raiseFirst ? 'resolvido' : 'inalterado');
+      if (!raiseFirst) expect(await efeito(db, older)).toBe('inalterado');
+      const row = avisoSchema.parse(aviso(db));
+      expect(row.resolvidoEm).toBe(AGORA_MS * 1000);
+      expect(row.relogioEvento).toBe(microsDeSegundosShopee(T0_S + 1) + 2);
+      expect(row.ocorrencias).toBe(1);
+      expect(avisoNaoLido(row, CHAVE, null, 'operator')).toBe(false);
+    },
+  );
+
+  it('a newer pending state reopens a row whose first observation was already resolved', async () => {
+    const db = dbComPedido();
+    await entregar(db, detalhe(0, ENCERRADA));
+    const closed = avisoSchema.parse(aviso(db));
+    const nowMs = AGORA_MS + 30;
+    const newer = await commit(db, detalhe(1, SOLICITADA));
+    expect(await efeito(db, newer, nowMs)).toBe('aberto');
+    const reopened = avisoSchema.parse(aviso(db));
+    expect(reopened).toMatchObject({
+      motivo: 'REQUESTED',
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+      criadoEm: nowMs * 1000,
+      relogioEvento: microsDeSegundosShopee(T0_S + 1) + 2,
+      ocorrencias: 2,
+    });
+    expect(reopened.params.pendencia).toBeDefined();
+    expect(
+      avisoNaoLido(
+        reopened,
+        CHAVE,
+        {
+          ultimaVisualizacaoUs: closed.criadoEm,
+          lidos: [entradaDeLeitura(CHAVE, closed.criadoEm)],
+        },
+        'operator',
+      ),
+    ).toBe(true);
   });
 
   it('incidente apagado e recriado num segundo POSTERIOR: o raise da revisão 1 NÃO é descartado', async () => {

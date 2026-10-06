@@ -4,5 +4,6 @@ export {
   resolverAviso,
   type EscreverAvisoDeps,
   type PlanoAviso,
+  type ResolverAvisoOpts,
   type ResultadoAviso,
 } from './escreverAviso';
