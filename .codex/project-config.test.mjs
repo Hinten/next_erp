@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { deepStrictEqual, match, ok } from 'node:assert/strict';
+import { deepStrictEqual, doesNotMatch, match, ok } from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, posix, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -124,6 +124,35 @@ describe('Codex push destination hook', () => {
 });
 
 describe('Codex security parity', () => {
+  it('does not inherit reads of unrelated filesystem roots or mapped network drives', () => {
+    const permissions = CONFIG.slice(
+      CONFIG.indexOf('[permissions.next-erp]'),
+      CONFIG.indexOf('[mcp_servers.playwright]'),
+    );
+    doesNotMatch(permissions, /^\s*extends\s*=/m);
+    doesNotMatch(permissions, /":root"\s*=/);
+    // A project profile must never constrain an entire Windows drive or UNC
+    // share. Workspace rules stay relative so every new worktree is writable.
+    doesNotMatch(permissions, /["'][A-Za-z]:[\\/]*["']\s*(?:=|\])/);
+    doesNotMatch(permissions, /["'](?:\\\\|\/\/)[^"']+["']\s*(?:=|\])/);
+    match(permissions, /":minimal"\s*=\s*"read"/);
+    match(permissions, /\[permissions\.next-erp\.network\]\s*enabled\s*=\s*false/);
+  });
+
+  it('applies workspace writes and metadata protections to every runtime workspace root', () => {
+    const workspace = CONFIG.match(
+      /\[permissions\.next-erp\.filesystem\.":workspace_roots"\]([\s\S]*?)(?=\n\[)/,
+    )?.[1];
+    ok(workspace, 'Expected filesystem rules relative to the active workspace roots.');
+    match(workspace, /"\."\s*=\s*"write"/);
+    for (const directory of ['.git', '.codex', '.agents', '.aws']) {
+      match(workspace, new RegExp(`"${directory.replaceAll('.', '\\.')}"\\s*=\\s*"read"`));
+    }
+    for (const directory of [':tmpdir', ':slash_tmp']) {
+      match(CONFIG, new RegExp(`"${directory}"\\s*=\\s*"write"`));
+    }
+  });
+
   it('keeps credential-bearing local paths denied by the Codex sandbox', () => {
     match(CONFIG, /default_permissions\s*=\s*"next-erp"/);
     // Keep the forbidden filename out of source literals: the repository lint

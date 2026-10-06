@@ -30,13 +30,24 @@ project_doc_max_bytes = 196608
 # Command-level destructive operations are covered by .codex/rules/default.rules
 # and the shared PreToolUse hooks registered in .codex/hooks.json.
 [permissions.next-erp]
-description = "Edit this repository without reading local secrets."
-extends = ":workspace"
+description = "Edit this repository with runtime-only external reads and no local secrets."
 
+# Broad :workspace reads enumerate Windows network drives, including unrelated
+# shares that MXC cannot resolve when checking deny-read rules. Grant only the
+# runtime paths and the active workspace roots instead of inheriting :root reads.
 [permissions.next-erp.filesystem]
+":minimal" = "read"
+":tmpdir" = "write"
+":slash_tmp" = "write"
 glob_scan_max_depth = 8
 
 [permissions.next-erp.filesystem.":workspace_roots"]
+"." = "write"
+# Preserve the protected metadata directories normally inherited from :workspace.
+".git" = "read"
+".codex" = "read"
+".agents" = "read"
+".aws" = "read"
 ".env" = "deny"
 ".env.local" = "deny"
 ".env.secrets" = "deny"
@@ -53,6 +64,9 @@ glob_scan_max_depth = 8
 "**/secrets/**" = "deny"
 "**/.ignore" = "deny"
 "**/.ignore/**" = "deny"
+
+[permissions.next-erp.network]
+enabled = false
 
 # Reuse the repository-pinned Playwright MCP package. `.mcp.json` invokes the
 # same installed entry point for Claude, so package.json remains the version
