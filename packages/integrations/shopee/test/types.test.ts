@@ -107,6 +107,14 @@ import {
   shopeeShopInfoSchema,
   shopeeShopStatusSchema,
   shopeeShopsByPartnerSchema,
+  shopeeSizeChartColumnSchema,
+  shopeeSizeChartDetailPayloadSchema,
+  shopeeSizeChartDetailSchema,
+  shopeeSizeChartListPayloadSchema,
+  shopeeSizeChartListRowSchema,
+  shopeeSizeChartListSchema,
+  shopeeSizeChartMeasurementSchema,
+  shopeeSizeChartValueSchema,
   shopeeTierWriteSchema,
   shopeeTokenResponseSchema,
   shopeeTrackingNumberPayloadSchema,
@@ -6084,5 +6092,270 @@ describe('as devoluções — soluções disponíveis e as escritas (passo 17)',
     expect(shopeeReturnDetailSchema.safeParse({ error: '-', message: '-' }).success).toBe(false);
     expect(shopeeReturnListSchema.safeParse({ error: '-', message: '-' }).success).toBe(false);
     expect(shopeeReturnAvailableSolutionsSchema.safeParse({ error: ' ' }).success).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    As tabelas de medidas (passo 18)                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Um corpo de `apps/shopee/lib/shopee/fixtures/__wire__/` — as amostras da doc,
+ * verbatim menos `request_id`. ⚠️ Lido do ARQUIVO, nunca copiado para cá (o
+ * mesmo motivo de {@link CORPO_ESCROW_SG}): o arquivo é a autoridade, e se ele
+ * mudar de lugar este teste QUEBRA.
+ */
+function corpoDoFio(arquivo: string): unknown {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../../../../apps/shopee/lib/shopee/fixtures/__wire__/${arquivo}`, import.meta.url),
+      'utf8',
+    ),
+  );
+}
+
+/** A página da LISTA como o schema a lê, a partir de um `response` inline. */
+function listaLida(response: Record<string, unknown>) {
+  return shopeeSizeChartListSchema.parse({ error: '', message: '', response }).response;
+}
+
+/** Os ids lidos de UMA linha por valor bruto (`null` = a sentinela da linha). */
+function idDaLinha(bruto: unknown): number | null {
+  const linha = listaLida({ size_chart_list: [{ size_chart_id: bruto }] }).size_chart_list?.[0];
+  return linha === null || linha === undefined ? null : linha.size_chart_id;
+}
+
+describe('as tabelas de medidas — a lista (get_size_chart_list, passo 18)', () => {
+  it('T1 — a amostra da doc lê três ids NÚMEROS na ordem da Shopee, `total_count` 3 e `next_cursor` `""`', () => {
+    const pagina = shopeeSizeChartListSchema.parse(
+      corpoDoFio('get_size_chart_list.doc.json'),
+    ).response;
+    expect(pagina.size_chart_list?.map((l) => l?.size_chart_id)).toStrictEqual([
+      700024641, 700024613, 700024605,
+    ]);
+    // M27 — o id é um NÚMERO, nunca um texto opaco.
+    for (const linha of pagina.size_chart_list ?? []) {
+      expect(typeof linha?.size_chart_id).toBe('number');
+    }
+    expect(pagina.total_count).toBe(3);
+    expect(pagina.next_cursor).toBe('');
+  });
+
+  it('T2 — PAR que dobra: o corpo como a TABELA de parâmetros o tipa (ids e `total_count` em texto) lê os MESMOS números', () => {
+    // Variante feita à mão — NÃO é evidência: a tabela da página diz `string`, a amostra manda números.
+    const comoTexto = listaLida({
+      next_cursor: '',
+      size_chart_list: [
+        { size_chart_id: '700024641' },
+        { size_chart_id: '700024613' },
+        { size_chart_id: '700024605' },
+      ],
+      total_count: '3',
+    });
+    const comoNumero = shopeeSizeChartListSchema.parse(
+      corpoDoFio('get_size_chart_list.doc.json'),
+    ).response;
+    expect(comoTexto).toStrictEqual(comoNumero);
+  });
+
+  it('T3/M25 — o ESCOPO da dobra: o vizinho ±1 fica distinto; `0` (a sentinela de DESANEXAR), negativos, inseguros e não numéricos viram a sentinela da LINHA', () => {
+    // Distinto, sem arredondar.
+    expect(idDaLinha('700024642')).toBe(700024642);
+    expect(idDaLinha(700024640)).toBe(700024640);
+    for (const bruto of [0, '0', -1, '-1', 1.5, '1.5', '7e8', '0x1F', '1,5', '', '  ', true, {}]) {
+      expect(idDaLinha(bruto), JSON.stringify(bruto)).toBeNull();
+    }
+    // Inseguro: o TEXTO e o NÚMERO (que o `JSON.parse` já arredondou) — nunca um id inventado.
+    expect(idDaLinha('9007199254740993')).toBeNull();
+    const cru = '{"error":"","response":{"size_chart_list":[{"size_chart_id":9007199254740993}]}}';
+    expect(shopeeSizeChartListSchema.parse(JSON.parse(cru)).response.size_chart_list).toStrictEqual(
+      [null],
+    );
+    // ⚠️ Fixado como DOBRADO, e é o escopo documentado do `wireInt()`: são
+    // representações do MESMO inteiro, não vizinhos.
+    for (const bruto of [' 700024641 ', '+700024641', '700024641.0']) {
+      expect(idDaLinha(bruto), bruto).toBe(700024641);
+    }
+  });
+
+  it('T4/M26 — uma linha ruim nunca custa as vizinhas: a sentinela fica na POSIÇÃO', () => {
+    const pagina = listaLida({
+      size_chart_list: [
+        { size_chart_id: 1 },
+        { size_chart_id: 'x' },
+        'linha-que-nao-e-objeto',
+        null,
+        {},
+        { size_chart_id: 3, outro_campo: 'passa' },
+      ],
+    });
+    expect(pagina.size_chart_list?.map((l) => (l === null ? null : l.size_chart_id))).toStrictEqual(
+      [1, null, null, null, null, 3],
+    );
+    // `.passthrough()`: uma chave nova da Shopee não falha e é carregada.
+    expect(pagina.size_chart_list?.[5]).toMatchObject({ outro_campo: 'passa' });
+  });
+
+  it('T5 — `size_chart_list` ausente/nulo lê `null`; `total_count` ilegível ou ausente lê `null` e a página PASSA', () => {
+    expect(listaLida({}).size_chart_list).toBeNull();
+    expect(listaLida({ size_chart_list: null }).size_chart_list).toBeNull();
+    expect(listaLida({ size_chart_list: [] }).size_chart_list).toStrictEqual([]);
+    expect(listaLida({ total_count: 'abc' }).total_count).toBeNull();
+    expect(listaLida({ total_count: 1.5 }).total_count).toBeNull();
+    expect(listaLida({}).total_count).toBeNull();
+    // Mas a LISTA em si tem de ser uma lista: um objeto no lugar falha a página.
+    expect(
+      shopeeSizeChartListSchema.safeParse({ error: '', response: { size_chart_list: 'x' } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('T6/M41 — `next_cursor` é TEXTO verbatim; um número SEGURO lê os seus dígitos; um número INSEGURO (ou fracionário) FALHA a página', () => {
+    expect(listaLida({ next_cursor: '' }).next_cursor).toBe('');
+    expect(listaLida({ next_cursor: ' a+b/c= 1 ' }).next_cursor).toBe(' a+b/c= 1 ');
+    expect(listaLida({ next_cursor: 1683255510 }).next_cursor).toBe('1683255510');
+    // Ausente / `null` NÃO são `""` — o leitor os lê `sem-cursor` (registro 249).
+    expect(listaLida({}).next_cursor).toBeNull();
+    expect(listaLida({ next_cursor: null }).next_cursor).toBeNull();
+
+    const cru = '{"error":"","response":{"next_cursor":9007199254740993}}';
+    expect(shopeeSizeChartListSchema.safeParse(JSON.parse(cru)).success).toBe(false);
+    for (const ruim of [1.5, true, { c: 1 }]) {
+      expect(
+        shopeeSizeChartListSchema.safeParse({ error: '', response: { next_cursor: ruim } }).success,
+        JSON.stringify(ruim),
+      ).toBe(false);
+    }
+  });
+
+  it('as chaves declaradas — exatamente as da página (sem nome na lista; o resto passa por `.passthrough()`)', () => {
+    expect(Object.keys(shopeeSizeChartListRowSchema.shape)).toStrictEqual(['size_chart_id']);
+    expect(Object.keys(shopeeSizeChartListPayloadSchema.shape).sort()).toStrictEqual([
+      'next_cursor',
+      'size_chart_list',
+      'total_count',
+    ]);
+  });
+});
+
+describe('as tabelas de medidas — o detalhe (get_size_chart_detail, passo 18)', () => {
+  it('T7 — a amostra da doc: 3 colunas × 3 células, os TRÊS `input_type` verbatim, `unit: "cm"` na coluna de LISTA, o nome e o eco', () => {
+    const detalhe = shopeeSizeChartDetailSchema.parse(
+      corpoDoFio('get_size_chart_detail.doc.json'),
+    ).response;
+    expect(detalhe.size_chart_id).toBe(700024639);
+    expect(detalhe.size_chart_name).toBe('testtestt');
+    const colunas = detalhe.size_chart_table?.column_list ?? [];
+    expect(colunas).toHaveLength(3);
+    expect(colunas.map((c) => c?.measurement?.input_type)).toStrictEqual([
+      'Input Single Number',
+      'Input Range Number',
+      'Single Dropdown',
+    ]);
+    expect(colunas.map((c) => c?.measurement_value_list?.length)).toStrictEqual([3, 3, 3]);
+    // ⚠️ A unidade também vem na coluna de LISTA — um render que a cole em toda célula imprime "01s cm".
+    expect(colunas[2]?.measurement?.unit).toBe('cm');
+    expect(colunas[2]?.measurement_value_list?.map((v) => v?.option)).toStrictEqual([
+      '01s',
+      '01m',
+      '01l',
+    ]);
+    expect(colunas[0]?.measurement_value_list?.map((v) => v?.value)).toStrictEqual([1, 2, 3]);
+    expect(colunas[1]?.measurement_value_list?.[2]).toMatchObject({
+      min_value: 14,
+      max_value: 16,
+      option: null,
+      value: null,
+    });
+  });
+
+  it('T8/M40 — uma célula ilegível vira `null` NA POSIÇÃO e as irmãs ficam; uma coluna ilegível idem; um 4º `input_type` PASSA (M39)', () => {
+    // Variante feita à mão — NÃO é evidência.
+    const detalhe = shopeeSizeChartDetailPayloadSchema.parse({
+      size_chart_id: 700024639,
+      size_chart_table: {
+        column_list: [
+          {
+            measurement: { display_name: 'Busto', input_type: 'Input Multi Number', unit: 'cm' },
+            measurement_value_list: [{ value: 1 }, { value: 'abc' }, null, 'x', { value: '3' }],
+          },
+          'coluna-que-nao-e-objeto',
+          null,
+          { measurement: null, measurement_value_list: null },
+        ],
+      },
+    });
+    const colunas = detalhe.size_chart_table?.column_list ?? [];
+    expect(colunas).toHaveLength(4);
+    expect(colunas[0]?.measurement?.input_type).toBe('Input Multi Number');
+    expect(
+      colunas[0]?.measurement_value_list?.map((v) => (v === null ? null : v.value)),
+    ).toStrictEqual([1, null, null, null, 3]);
+    expect(colunas[1]).toBeNull();
+    expect(colunas[2]).toBeNull();
+    expect(colunas[3]).toStrictEqual({ measurement: null, measurement_value_list: null });
+    // Ausentes viram `null` — as quatro chaves da célula sempre presentes.
+    expect(colunas[0]?.measurement_value_list?.[0]).toStrictEqual({
+      option: null,
+      value: 1,
+      min_value: null,
+      max_value: null,
+    });
+  });
+
+  it('T8/M19 — `option` é VERBATIM (nunca aparado) e o zero-fill da Shopee chega INTACTO (a projeção escolhe pelo tipo, não pela forma)', () => {
+    const celula = shopeeSizeChartValueSchema.parse({ option: ' M', value: 0 });
+    expect(celula).toStrictEqual({ option: ' M', value: 0, min_value: null, max_value: null });
+    // Números como texto (a `wireNumber()`): o par que dobra e o vizinho distinto.
+    expect(shopeeSizeChartValueSchema.parse({ value: '50.5' }).value).toBe(50.5);
+    expect(shopeeSizeChartValueSchema.parse({ value: '50.6' }).value).toBe(50.6);
+  });
+
+  it('T9 — o ECO `size_chart_id` é diagnóstico: ilegível lê `null` e a página PASSA; em texto, dobra', () => {
+    for (const eco of ['abc', 1.5, true, {}]) {
+      const lido = shopeeSizeChartDetailPayloadSchema.parse({ size_chart_id: eco });
+      expect(lido.size_chart_id, JSON.stringify(eco)).toBeNull();
+    }
+    expect(
+      shopeeSizeChartDetailPayloadSchema.parse({ size_chart_id: '700024639' }).size_chart_id,
+    ).toBe(700024639);
+    expect(shopeeSizeChartDetailPayloadSchema.parse({}).size_chart_id).toBeNull();
+  });
+
+  it('a tabela ausente / nula / sem colunas lê `null` — e a PROJEÇÃO (`@delfrance/schemas`) é quem diz `sem-colunas`', () => {
+    expect(shopeeSizeChartDetailPayloadSchema.parse({}).size_chart_table).toBeNull();
+    expect(
+      shopeeSizeChartDetailPayloadSchema.parse({ size_chart_table: null }).size_chart_table,
+    ).toBeNull();
+    expect(
+      shopeeSizeChartDetailPayloadSchema.parse({ size_chart_table: {} }).size_chart_table,
+    ).toStrictEqual({ column_list: null });
+  });
+
+  it('as chaves declaradas — `input_type` é TEXTO cru (nunca `z.enum`), e não há `language` nem chave de imagem em lugar nenhum', () => {
+    expect(Object.keys(shopeeSizeChartValueSchema.shape).sort()).toStrictEqual([
+      'max_value',
+      'min_value',
+      'option',
+      'value',
+    ]);
+    expect(Object.keys(shopeeSizeChartMeasurementSchema.shape).sort()).toStrictEqual([
+      'display_name',
+      'input_type',
+      'unit',
+    ]);
+    expect(Object.keys(shopeeSizeChartColumnSchema.shape).sort()).toStrictEqual([
+      'measurement',
+      'measurement_value_list',
+    ]);
+    expect(Object.keys(shopeeSizeChartDetailPayloadSchema.shape).sort()).toStrictEqual([
+      'size_chart_id',
+      'size_chart_name',
+      'size_chart_table',
+    ]);
+    // M39: qualquer texto passa.
+    for (const t of ['Single Dropdown', 'Input Multi Number', '', 'single dropdown']) {
+      expect(shopeeSizeChartMeasurementSchema.parse({ input_type: t }).input_type).toBe(t);
+    }
   });
 });

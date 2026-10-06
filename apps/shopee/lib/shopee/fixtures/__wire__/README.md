@@ -1,8 +1,9 @@
 # `__wire__` — Shopee response bodies, redacted
 
-Fifteen bodies today: five for the step-5 order import (#1513), four for step
-15b's package search (#1744) and six for step 17's returns (#1525). Two
-provenances, and they are **not equally strong**:
+Nineteen bodies today: five for the step-5 order import (#1513), four for step
+15b's package search (#1744), six for step 17's returns (#1525) and four for
+step 18's size charts (#1526). Two provenances, and they are **not equally
+strong**:
 
 | file                                               | endpoint                  | provenance                                                                                   | verified against the live API?                                                   |
 | -------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -21,19 +22,25 @@ provenances, and they are **not equally strong**:
 | `confirm.doc.json`                                 | `confirm`                 | the sample printed on the `v2.returns.confirm` reference page                                | ❌ doc only — unverified for BR                                                  |
 | `offer.doc.json`                                   | `offer`                   | the sample printed on the `v2.returns.offer` reference page                                  | ❌ doc only — unverified for BR                                                  |
 | `accept_offer.doc.json`                            | `accept_offer`            | the sample printed on the `v2.returns.accept_offer` reference page                           | ❌ doc only — unverified for BR                                                  |
+| `get_size_chart_list.doc.json`                     | `get_size_chart_list`     | the response sample printed on the `v2.product.get_size_chart_list` reference page           | ❌ doc only — unverified for BR; ids typed `string` by its own table             |
+| `get_size_chart_list.doc-categoria-invalida.json`  | `get_size_chart_list`     | the ERROR example printed on that same page — `Category id is invalid`                       | ❌ doc only — unverified for BR                                                  |
+| `get_size_chart_detail.doc.json`                   | `get_size_chart_detail`   | the response sample printed on the `v2.product.get_size_chart_detail` reference page         | ❌ doc only — unverified for BR; a different chart from the list's ids           |
+| `get_size_chart_detail.doc-id-inexistente.json`    | `get_size_chart_detail`   | the ERROR example printed on that same page — `Size chart id not exist in this shop`         | ❌ doc only — unverified for BR                                                  |
 
-The nine doc samples were pulled with `.master_plans/shopee/shopee-doc.mjs`
+The thirteen doc samples were pulled with `.master_plans/shopee/shopee-doc.mjs`
 (`api v2.order.get_order_detail`, `api v2.payment.get_escrow_detail`,
-`api v2.order.search_package_list`, and `api v2.returns.<op>` for the six returns
-pages); the first three sandbox bodies were pasted
+`api v2.order.search_package_list`, `api v2.returns.<op>` for the six returns
+pages, and `api v2.product.get_size_chart_list` /
+`api v2.product.get_size_chart_detail` for the four size-chart bodies); the first
+three sandbox bodies were pasted
 from the Shopee console's own test tool, and the three `search_package_list` ones
-were written by a read-only probe script (see below). All fifteen went through
+were written by a read-only probe script (see below). All nineteen went through
 `redactWireBody` (`../redact.ts`) before being committed — for the four
-`search_package_list` bodies and the four one-id returns bodies it changed
-nothing, since no key on those pages is denylisted — with `request_id` dropped
-from every body but the first two doc samples, which kept the page's own
-placeholder. `../piiScan.test.ts` re-checks every file here independently on
-every run.
+`search_package_list` bodies, the four one-id returns bodies and the four
+size-chart bodies it changed nothing, since no key on those pages is denylisted
+— with `request_id` dropped from every body but the first two doc samples, which
+kept the page's own placeholder. `../piiScan.test.ts` re-checks every file here
+independently on every run.
 
 ## Rules
 
@@ -271,3 +278,52 @@ What they carry, each asserted in `wireCorpus.test.ts`:
   `tracking_number`, `latest_offer_creator`) is present in the file — redacted —
   and absent from the package's parse: the returns schemas STRIP (#1525 R-11),
   and a key walk over the parse pins it against this corpus.
+
+## The size-chart doc samples (step 18, #1526)
+
+Nothing here was sent by Shopee either. The four `get_size_chart_*` bodies are
+the two `v2.product` pages' own samples, pulled 2026-10-05: each page's
+**response** sample and its printed **error example**. ⚠️ The SG sandbox may
+have no size-chart templates at all — `guide 644` lists no template authoring in
+the sandbox Seller Centre, and the repo's sandbox shop is SG — so whether the
+list even answers there is register 260, and every claim below is ❌ unverified
+for BR until register 248–258 is read off a BR shop. What was done to them, and
+only this:
+
+- `request_id` dropped, Prettier-formatted. Valid JSON as printed; **no other
+  value was changed** — not even the ids, which are Shopee's own published
+  sample ids (doc placeholders, not a real shop's charts). `redactWireBody`
+  changes nothing: a chart is seller-authored measurement data with no buyer,
+  address or document in it, and `display_name` / `size_chart_name` do not
+  collide with the `recipient_address.name` suffix.
+- The detail body is the PAGE's sample (`testtestt`), not survey-c §6.3's block,
+  which mixes the parameter table's samples (`T shirt`, `weight`) into it.
+- ⚠️ **The two error examples are the corpus's first error-only bodies.** They
+  carry no `response`, so neither operation schema accepts them: they are read
+  with `lerFixture` alone, and served through a fake `fetch` they reject as
+  `ShopeeApiError`.
+
+What they carry, each asserted in `wireCorpus.test.ts`:
+
+- **Every success sample has `"error": ""`** — unlike the returns pages, no alias
+  is needed.
+- The list's `size_chart_id`s and `total_count` are JSON **numbers**, while the
+  page's own response table types both `string` (register 248: which one the BR
+  wire sends). The drained page answers `next_cursor: ""` — whether a last page
+  can instead omit it, or send `null`, is register 249.
+- **The two pages print DIFFERENT charts.** The detail's `size_chart_id` echo is
+  `700024639`, none of the list's `700024641` / `700024613` / `700024605`. Never
+  join two bodies here on an id: a list id fed to this detail is a REQUESTED id
+  that its echo contradicts, which the projector reports as `id-divergente`.
+- The detail is column-oriented, 3 columns × 3 cells — one column per documented
+  `input_type` spelling (`Input Single Number`, `Input Range Number`,
+  `Single Dropdown`, human strings WITH spaces) — and every cell carries **all
+  four** value keys, `null` except the one its column's type names. One sample
+  obeying that is not a guarantee: zero-filled siblings are what this wire does
+  elsewhere (register 254). ⚠️ `unit: "cm"` sits on the **dropdown** column too,
+  so a renderer that appends the unit to every cell would print `01s cm`.
+- ⚠️ **One code, two sentences.** Both error examples answer
+  `product.error_param`: `Size chart id not exist in this shop` (a stale pick)
+  and `Category id is invalid` (a category the list refuses). Only the sentence
+  tells them apart, which is why the classifier reads `providerMessage` and never
+  the code alone (register 258).

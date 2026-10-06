@@ -21,9 +21,9 @@
  * `retryAfterSeconds`; durable retry belongs to the Cloud Tasks pipeline.
  *
  * ⚠️ **No paging loop anywhere.** `getShopsByPartner`, `getBrandList`,
- * `getOrderList`, `getLostPushMessages`, `getEscrowList`, `searchPackageList`
- * and `getReturnList` each fetch ONE page and surface the cursor (or the page
- * number, or `more`); the caller loops. Auto-paging inside a client hides an unbounded
+ * `getOrderList`, `getLostPushMessages`, `getEscrowList`, `searchPackageList`,
+ * `getReturnList` and `getSizeChartList` each fetch ONE page and surface the
+ * cursor (or the page number, or `more`); the caller loops. Auto-paging inside a client hides an unbounded
  * number of provider calls behind one innocuous `await`, and Shopee's brand API
  * is slow enough that the difference is visible to an operator.
  *
@@ -277,6 +277,27 @@
  * decides whether an action is allowed — the caller re-reads the return LIVE
  * immediately before writing.
  *
+ * ## The size charts (step 18)
+ *
+ * Two Shop-signed GET reads on the `product` module, placed beside the taxonomy
+ * reads: `getSizeChartList` (ONE page of a category's TEMPLATE ids — no names)
+ * and `getSizeChartDetail` (one template's column-oriented table and its name).
+ * Their paths, request shapes, guards, wire constants and the ONE page reader
+ * (`lerPaginaDeTabelasDeMedidas`, a three-valued continuation) live in
+ * `tabelasDeMedidas.ts`, so this file only carries the members and their
+ * bodies. Read-only: templates are authored in Seller Centre, and attaching one
+ * to a listing is `add_item` / `update_item`'s `size_chart_info`, never these.
+ * That block is declared on both request types as `ShopeeSizeChartInfoRequest`
+ * (same module): EXACTLY one key — a template id, or an `upload_image` id for
+ * an image chart — guarded with the rest of each body, and never the `0` / `''`
+ * detach.
+ *
+ * ⚠️ Both are GET with a query string (the pages' `method: 2`; the issue's POST
+ * body was a doc-reader misreading), send no `language`, unwrap `res.response`
+ * (both samples carry `error: ""`, so no alias), and refuse `0` for every id —
+ * `size_chart_id: 0` is the add/update DETACH sentinel. `cursor` is ABSENT on
+ * page 1 and otherwise travels VERBATIM; `''` is refused.
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -339,6 +360,16 @@ import {
   assertTrackingNumberParams,
 } from './logistica';
 import type { SignedCall } from './sign';
+import {
+  type GetSizeChartDetailParams,
+  type GetSizeChartListParams,
+  SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
+  SHOPEE_GET_SIZE_CHART_LIST_PATH,
+  type ShopeeSizeChartInfoRequest,
+  assertSizeChartDetailParams,
+  assertSizeChartInfoRequest,
+  assertSizeChartListParams,
+} from './tabelasDeMedidas';
 import {
   SHOPEE_CONDITION,
   SHOPEE_INVOICE_FILE_TYPE_XML,
@@ -403,6 +434,8 @@ import {
   type ShopeeShopHolidayMode,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
+  type ShopeeSizeChartDetail,
+  type ShopeeSizeChartList,
   type ShopeeTierWriteResponse,
   type ShopeeTrackingNumber,
   type ShopeeUnlistItemResponse,
@@ -452,6 +485,8 @@ import {
   shopeeShopHolidayModeSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
+  shopeeSizeChartDetailSchema,
+  shopeeSizeChartListSchema,
   shopeeTierWriteSchema,
   shopeeTrackingNumberSchema,
   shopeeUnlistItemSchema,
@@ -1401,6 +1436,11 @@ export interface ShopeeAddItemRequest {
   readonly seller_stock?: readonly ShopeeSellerStockRequest[];
   readonly pre_order?: ShopeePreOrderRequest;
   readonly tax_info?: ShopeeTaxInfoRequest;
+  /**
+   * ONE key — a template id or an image id (`tabelasDeMedidas.ts`, step 18).
+   * Absent ⇒ no chart; never a `0` / `''` detach.
+   */
+  readonly size_chart_info?: ShopeeSizeChartInfoRequest;
   /** ⚠️ `'extended'` is whitelist-only; narrowed on purpose. */
   readonly description_type?: 'normal';
 }
@@ -1427,6 +1467,12 @@ export interface ShopeeUpdateItemRequest {
   readonly gtin_code?: string;
   readonly item_status?: ShopeeItemStatusWritable;
   readonly tax_info?: ShopeeTaxInfoRequest;
+  /**
+   * ONE key, as on create. ⚠️ Field-wise like the rest: an ABSENT key keeps
+   * whatever chart the listing has (a Seller-Centre one included) — the reason
+   * nothing here ever sends the `0` / `''` detach.
+   */
+  readonly size_chart_info?: ShopeeSizeChartInfoRequest;
   readonly description_type?: 'normal';
   /**
    * ⚠️ ABSENT from the page's request TABLE and PRESENT in all five of its
@@ -1786,6 +1832,45 @@ export interface ShopeeClient {
   getVariations(p: GetVariationsParams): Promise<ShopeeVariations>;
   /** Category ids Shopee suggests for an item name. Offered, never applied. */
   categoryRecommend(p: CategoryRecommendParams): Promise<ShopeeCategoryRecommend>;
+
+  /**
+   * ONE page of this shop's TEMPLATE size-chart ids for ONE category (step
+   * 18) — ids only, no names; the UNWRAPPED `response`. Read it through
+   * `lerPaginaDeTabelasDeMedidas` (`tabelasDeMedidas.ts`), the one reader of
+   * a page.
+   *
+   * ⚠️ `GET` with a query string — the page's `method: 2`; the issue's POST body
+   * was a doc-reader misreading. No `language` (the Product page has none).
+   * "Now only support local shop to use new size chart"; the rate limit is
+   * unpublished.
+   *
+   * ⚠️ **It does NOT auto-page.** Continue while the page reader says
+   * `seguinte`, sending its cursor VERBATIM; stop on `fim` (`next_cursor ===
+   * ''`). An ABSENT cursor is `sem-cursor` — not a proof of exhaustion
+   * (register 249) — and `total_count` is NEVER a terminator. `cursor` is
+   * ABSENT on page 1 and `''` is refused.
+   *
+   * ⚠️ Every guard — `categoryId` a positive safe integer, `pageSize` 1…50 —
+   * runs BEFORE the access token is asked for. The LEAF gate is the app's.
+   */
+  getSizeChartList(p: GetSizeChartListParams): Promise<ShopeeSizeChartList>;
+  /**
+   * One TEMPLATE's table and name (step 18) — the UNWRAPPED `response`.
+   * Column-oriented: row `i` is the i-th cell of every column, and nothing on
+   * the page promises the columns are equally long. Project it with
+   * `projetarTabelaShopee` (`@delfrance/schemas`), the one projection.
+   *
+   * ⚠️ `GET`, query `size_chart_id` only, no `language`. A stale id arrives as
+   * `ShopeeApiError { code: 'product.error_param', kind: 'other' }` with
+   * `providerMessage` "Size chart id not exist in this shop" — the SAME code as
+   * the list page's "Category id is invalid", so a caller tells them apart by
+   * the SENTENCE, never by the code alone and never by `.message`.
+   *
+   * ⚠️ `sizeChartId` must be a positive safe integer, checked BEFORE the access
+   * token is asked for — exactly what the list row reader accepts, so an id
+   * Shopee lists can always be detailed.
+   */
+  getSizeChartDetail(p: GetSizeChartDetailParams): Promise<ShopeeSizeChartDetail>;
 
   /**
    * ONE page of this shop's item ids.
@@ -2910,6 +2995,7 @@ function assertAddItemParams(req: ShopeeAddItemRequest): void {
   if (req.seller_stock !== undefined) assertEstoqueDoVendedor('seller_stock', req.seller_stock);
   if (req.brand !== undefined) assertMarca(req.brand);
   if (req.attribute_list !== undefined) assertAtributos(req.attribute_list);
+  if (req.size_chart_info !== undefined) assertSizeChartInfoRequest(req.size_chart_info);
 }
 
 /**
@@ -2941,6 +3027,7 @@ function assertUpdateItemParams(req: ShopeeUpdateItemRequest): void {
   if (req.condition !== undefined) assertCondicao(req.condition);
   if (req.item_status !== undefined) assertStatusGravavel(req.item_status);
   if (req.logistic_info !== undefined) assertLogistica(req.logistic_info);
+  if (req.size_chart_info !== undefined) assertSizeChartInfoRequest(req.size_chart_info);
 }
 
 /**
@@ -3921,6 +4008,37 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         schema: shopeeCategoryRecommendSchema,
         surface: SHOPEE_SURFACE.business,
         query: { item_name: p.itemName, product_cover_image: p.productCoverImage },
+      });
+      return res.response;
+    },
+
+    /* ------------------------- size charts (step 18) ------------------------ */
+
+    getSizeChartList: async (p) => {
+      assertSizeChartListParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_SIZE_CHART_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeSizeChartListSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ ONE page. `undefined` is dropped by `signedQuery`, so page 1 sends
+        // NO `cursor` key; a cursor goes out through `String()` +
+        // `URLSearchParams`, byte for byte — never trimmed here.
+        query: { category_id: p.categoryId, page_size: p.pageSize, cursor: p.cursor },
+      });
+      return res.response;
+    },
+
+    getSizeChartDetail: async (p) => {
+      assertSizeChartDetailParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
+        call: await signedCall(),
+        schema: shopeeSizeChartDetailSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: { size_chart_id: p.sizeChartId },
       });
       return res.response;
     },

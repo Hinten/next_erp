@@ -13,7 +13,12 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * TabelaDeMedidas — tabela de medidas (moda). Mirrors
  * `TabelaDeMedidas` em `.old/packages/moda/tabelaMedidas/lib/src/models.dart`.
  * Estruturas atreladas a marketplaces (Mercado Livre, Shopee) ficam
- * pass-through; Flutter ainda autora esses sub-objetos.
+ * pass-through aqui; quem as lê passa pelo slice de cada canal
+ * (`tabelaDeMedidasMercadoLivre.ts`, `tabelaDeMedidasShopee.ts`). Quem as
+ * grava é este repo: o mapa Shopee, a aba Shopee de `/medidas` (step 18); o
+ * mapa ML, a aba Mercado Livre e o sync de guias (`sizeChartSync.ts`). Não há
+ * escritor Flutter — não existe dual run (root `CLAUDE.md` regra 8); o legado
+ * chega só como DADO, e por isso os mapas toleram as formas do corpus.
  */
 export const tabelaDeMedidasSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
@@ -27,7 +32,18 @@ export const tabelaDeMedidasSchema = z.object({
   // Tabelas por integração — chave = integracao_id. Pass-through (cada
   // marketplace tem sua estrutura interna específica).
   tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
-  tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
+  // ⚠️ Per-conta value `z.unknown()` — the ML map's shape. The base schema
+  // judges NO Shopee value: `lerEntradasShopeeDaConta` reads each conta's list
+  // (and each element) one by one, and calls a non-list `lista-invalida`. Any
+  // stricter per-key type made ONE odd value fail the whole base parse: every
+  // reader of the doc (the ML publish/sync included) got the RAW doc with
+  // defaults unapplied, and — since ObjectView's resolver validates every field —
+  // every `/medidas` save of that tabela was blocked, for an edit the operator
+  // could not make (the Shopee tab shows such a value read-only). Now the value
+  // rides through every save verbatim. A loosening only ("never tighten in
+  // place"). The MAP itself stays a record: a field that is not a plain object
+  // (`campo-invalido`) still fails the base parse.
+  tabelasMedidasShopee: z.record(z.string(), z.unknown()).nullable().optional(),
 
   // Pass the label through the builder (folded into its describe JSON) — a
   // chained `.describe('…')` would clobber the `{ kind:'datetime', unit:'ms' }`
