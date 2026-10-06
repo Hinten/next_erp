@@ -35,11 +35,11 @@ export const incidenteHistorySource: ModificationHistorySource = {
    * doc first (specifically so out-of-band fields survive), which round-trips
    * `timestamp` on every edit. Neither is ever an operator edit.
    *
-   * `relogioProvedorUs` is the Shopee return importer's watermark (step 17,
-   * #1525 — the pagamento source's `lastProviderUpdate` precedent): a newer
-   * detail with identical content advances ONLY it (and `ultimaModificacao`),
-   * and that must file no row. A real content change still files one, through
-   * the `devolucaoShopee` block it moves.
+   * `relogioProvedorUs` is the marketplace importers' watermark — Shopee's
+   * returns (step 17, #1525) and Mercado Livre's claims (#1772), the pagamento
+   * source's `lastProviderUpdate` precedent: a newer delivery with identical
+   * content advances ONLY it (and `ultimaModificacao`), and that must file no
+   * row. A real content change still files one, through the fields it moves.
    */
   ignoreFields: ['timestamp', 'ultimaModificacao', 'relogioProvedorUs'],
   resolve(params) {

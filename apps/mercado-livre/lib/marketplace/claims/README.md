@@ -14,8 +14,14 @@ kept answerable only while a `send_message_to_*` action survives.
 and `claimActionability.ts`; this folder imports `chat/mensagemProvisoria.ts`.
 That is a property of today's code, not an accident of this layout.
 
-- `claimImport.ts` — the `claims` topic handler. Tier-2 guarded in **ms** on
-  `ultimaModificacaoIntegracao`; the gate is `>=`, not `>`.
+- `claimImport.ts` — the `claims` topic handler. The CONVERSA is tier-2 guarded
+  in **ms** on `ultimaModificacaoIntegracao`; the gate is `>=`, not `>`.
+- `claimIncidenteTx.ts` — the INCIDENTE write (#1772): one transaction, tier-2
+  guarded in **µs** on `relogioProvedorUs` (the field Shopee's returns already
+  use). Older ⇒ nothing, equal ⇒ only if the content differs, newer ⇒ write
+  and advance. ⚠️ Never `ultimaModificacao` — operators stamp wall-clock µs
+  there. Before it, a stale `opened` snapshot landing last reopened a closed
+  claim and re-blocked the pedido.
 - `claimMapping.ts` — pure Incidente / Conversa / Mensagem builders.
 - `claimIds.ts` — deterministic digest ids. **Also used by `chat/`** for
   questions and post-sale messages.
