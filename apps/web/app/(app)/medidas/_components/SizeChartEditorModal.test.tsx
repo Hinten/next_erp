@@ -1,6 +1,11 @@
 import type { ComponentProps } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { notifications } from '@mantine/notifications';
+import {
+  SizeChartConflictError,
+  SizeChartSyncUnconfirmedError,
+} from '@/lib/mercado-livre/chartConflict';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -309,4 +314,47 @@ describe('SizeChartEditorModal — why a control is off', () => {
     // can no longer say "Pronto para enviar." while the button is dead.
     expect(screen.queryByText('Pronto para enviar.')).toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('SizeChartEditorModal — a conflicting draft save', () => {
+  it.each([new SizeChartConflictError(), new SizeChartSyncUnconfirmedError()])(
+    'keeps typing and shows persistent reopen guidance when the transaction refuses the save: %s',
+    async (failure) => {
+      const shown = vi.spyOn(notifications, 'show').mockReturnValue('chart-conflict');
+      const onSaveDraft = vi.fn().mockRejectedValue(failure);
+      const onClose = vi.fn();
+      show(
+        {
+          sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS),
+          sizeChartSpecs: vi.fn().mockResolvedValue(BRAND_TEMPLATE_SPEC),
+        },
+        {
+          chart: { id: null, nome: 'Camisetas', domain_id: 'MLB-T_SHIRTS' },
+          onSaveDraft,
+          onClose,
+        },
+      );
+      fireEvent.change(screen.getByLabelText(/Nome da guia/), {
+        target: { value: 'Camisetas edição' },
+      });
+      fireEvent.click(await screen.findByRole('button', { name: 'Salvar rascunho' }));
+
+      await waitFor(() => {
+        expect(shown).toHaveBeenCalledWith({
+          color: 'red',
+          message: failure.message,
+          autoClose: false,
+        });
+      });
+      expect(onSaveDraft).toHaveBeenCalledTimes(1);
+      expect(onClose).not.toHaveBeenCalled();
+      expect((screen.getByLabelText(/Nome da guia/) as HTMLInputElement).value).toBe(
+        'Camisetas edição',
+      );
+    },
+  );
 });

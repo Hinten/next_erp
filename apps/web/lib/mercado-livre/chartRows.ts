@@ -261,6 +261,28 @@ export function toChartRows(
     });
 }
 
+/**
+ * Adopt ids from this send's response by submitted React key, keeping current
+ * cells and order. Deleted rows were omitted from the submitted wire array.
+ */
+export function adoptChartRowIds(
+  current: readonly ChartRowDraft[],
+  submitted: readonly ChartRowDraft[],
+  persisted: MlSizeChart,
+): ChartRowDraft[] {
+  const assigned = new Map<string, string>();
+  submitted
+    .filter((row) => !row.deleted)
+    .forEach((row, index) => {
+      const id = persisted.rows?.[index]?.id;
+      if (id != null && id !== '') assigned.set(row.key, id);
+    });
+  return current.map((row) => {
+    const id = assigned.get(row.key);
+    return id == null || id === row.id ? row : { ...row, id };
+  });
+}
+
 /* ------------------------------ duplication ------------------------------ */
 
 /**
@@ -297,8 +319,8 @@ export function duplicateChart(chart: MlSizeChart): MlSizeChart {
 /**
  * Is `candidate` still the guia the operator acted on?
  *
- * Guias live in a positional ARRAY that three writers touch (this editor, the
- * sync backend, the Flutter app), so **an index is not an identity**: an insert
+ * Guias live in a positional ARRAY touched by operators and the sync backend,
+ * so **an index is not an identity**: an insert
  * or a reorder makes position N point at a different chart, and acting on it
  * would edit or delete the wrong one. A sent guia is keyed by its ML id; a
  * draft has none, so its name + domain is the best key available.

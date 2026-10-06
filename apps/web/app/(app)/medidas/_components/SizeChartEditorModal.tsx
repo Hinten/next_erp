@@ -41,6 +41,7 @@ import {
   toChartRows,
   validateChartName,
   CHART_NAME_MAX,
+  adoptChartRowIds,
 } from '@/lib/mercado-livre/chartRows';
 import {
   type ChartCellKind,
@@ -123,7 +124,11 @@ export interface SizeChartEditorModalProps {
   onSend: (
     chart: MlSizeChart,
     chartIndex: number | null,
-  ) => Promise<{ validationErrors: MercadoLivreChartValidationError[]; chartIndex: number }>;
+  ) => Promise<{
+    validationErrors: MercadoLivreChartValidationError[];
+    chartIndex: number;
+    chart: MlSizeChart;
+  }>;
   /** Re-open the editor on an unsent copy of the current guia. */
   onDuplicate: (copy: MlSizeChart) => void;
 }
@@ -634,7 +639,9 @@ export function SizeChartEditorModal({
         onClose();
         return;
       }
+      const submittedRows = rows;
       const result = await onSend(built, chartIndex);
+      setRows((current) => adoptChartRowIds(current, submittedRows, result.chart));
       setErrorChartIndex(result.chartIndex);
       setValidationErrors(result.validationErrors);
       if (result.validationErrors.length === 0) {
