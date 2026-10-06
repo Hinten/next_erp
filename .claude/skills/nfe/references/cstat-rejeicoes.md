@@ -50,10 +50,13 @@ número/série**, exactly what the NT intends. Never treat them as blocking: a d
 refused with one of them must stay re-emittable (`STATUS_BLOQUEADORES` leaves
 them out on purpose, pinned by `test/state/state.test.ts` — see #1733).
 
-A denial (110/301/302 inside a `protNFe`) can now only describe an NF-e denied
-**before 2024-09-16** — a legacy chave, seen through `consSitNFe`, or a 205 /
-539 on a resend of such a número. THAT NF-e is recorded at SEFAZ and its número
-**is** consumed: never resend it.
+A denial — 110/301/302 returned by `consSitNFe` for a chave SEFAZ has stored,
+or met behind a 205 / 539 on a resend — can now only describe an NF-e denied
+**before 2024-09-16** (a legacy chave). THAT NF-e is recorded at SEFAZ and its
+número **is** consumed: never resend it. ⚠️ What tells the two apart is the
+**source**, not the element: a 302 inside the `protNFe` of a fresh
+authorization reply is today's rejection (the número is free), because SEFAZ
+returns rejections in `protNFe/infProt` too.
 
 ## Duplicidade — the recovery-critical codes
 
@@ -313,8 +316,10 @@ homologação use um recebedor pessoa física.
 - **Rejected** (not 100/150, not duplicidade) → NF-e was *not* stored → fix
   and resend, **same número/série**. Since NT 2024.001 that includes the
   cadastro irregularities 302/303/307/781 (formerly denials).
-- **Denegada** (110/301/302 in a `protNFe`) → only an NF-e denied before
-  2024-09-16 → stored, número consumed → never resend it.
+- **Denegada** (110/301/302 returned by `consSitNFe` for a stored chave, or
+  behind a 205) → only an NF-e denied before 2024-09-16 → stored, número
+  consumed → never resend it. A 302 in a fresh authorization reply is the
+  rejection above, not this.
 - **Duplicidade** → NF-e *may be* stored → `consSitNFe`, never blind-resend.
 - **Authorized but response lost** → `consSitNFe` recovers the protocol.
 - **Normal-emission NF-e pendente de retorno** that you give up on → it needs a
