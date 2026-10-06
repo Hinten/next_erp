@@ -6,10 +6,11 @@
  * are what SHOPEE SENT — the SG sandbox order in `READY_TO_SHIP` (pasted
  * 2026-09-09), its `get_escrow_detail` twin and the same order re-read after
  * arrange-shipment (both pasted 2026-09-10), and step 15b's three
- * `search_package_list` answers (a read-only probe, 2026-10-01); the other NINE
- * are the samples Shopee's own documentation PRINTS — six of them step 17's
- * returns pages, because the SG sandbox has no Returns module at all
- * (`guide 644`). Both beat a hand-written
+ * `search_package_list` answers (a read-only probe, 2026-10-01); the other
+ * THIRTEEN are the samples Shopee's own documentation PRINTS — six of them step
+ * 17's returns pages, because the SG sandbox has no Returns module at all
+ * (`guide 644`), and four step 18's size-chart pages, two of which are the
+ * pages' printed ERROR examples. Both beat a hand-written
  * fixture, which agrees with our belief about the wire rather than with the
  * wire — but a doc sample can still be wrong about the live API, and two of them
  * demonstrably are (see `__wire__/README.md`: the kit ids, and the package
@@ -29,11 +30,15 @@ import {
   type ShopeeReturnDetailEnvelope,
   type ShopeeReturnListEnvelope,
   type ShopeeSearchPackageListResponse,
+  type ShopeeSizeChartDetail,
+  type ShopeeSizeChartList,
   shopeeEscrowDetailSchema,
   shopeeOrderDetailSchema,
   shopeeReturnDetailSchema,
   shopeeReturnListSchema,
   shopeeSearchPackageListSchema,
+  shopeeSizeChartDetailSchema,
+  shopeeSizeChartListSchema,
 } from '@delfrance/integrations-shopee';
 
 import type { WireValue } from './redact';
@@ -158,6 +163,45 @@ export const FIXTURE_RETURN_OFFER_DOC = 'offer.doc.json';
 /** Shopee's own `accept_offer` sample — `{return_sn}` under `"error": " "`. */
 export const FIXTURE_RETURN_ACCEPT_OFFER_DOC = 'accept_offer.doc.json';
 
+/*
+ * The SIZE CHARTS (step 18, #1526) — the two `v2.product` pages' own samples,
+ * response AND printed error example each, and NOTHING Shopee sent: whether the
+ * SG sandbox can author a template at all is register 260, so every one of them
+ * is ❌ unverified for BR until register 248–258 is read off a BR shop.
+ *
+ * ⚠️ **Their ids are Shopee's PUBLISHED sample ids, kept verbatim** — they are
+ * doc placeholders, not a real shop's charts. And the two pages print DIFFERENT
+ * charts: the detail's echo `700024639` is none of the list's three ids. Never
+ * join two bodies on an id — a list id fed to this detail reads `id-divergente`.
+ *
+ * ⚠️ **The two error bodies carry no `response`**, so neither operation schema
+ * accepts them (its `response` is required): read them with {@link lerFixture}
+ * only. They are the evidence for the stale-id shape — the SAME code
+ * `product.error_param` with two different sentences, so only the sentence
+ * tells a stale pick from a bad category.
+ */
+
+/**
+ * Shopee's own `get_size_chart_list` sample — three ids, `total_count: 3`,
+ * `next_cursor: ""` (a drained page). ⚠️ The ids and `total_count` are JSON
+ * NUMBERS while the page's own table types both `string` (register 248).
+ */
+export const FIXTURE_SIZE_CHART_LIST_DOC = 'get_size_chart_list.doc.json';
+/** The list page's printed error example — `product.error_param`, "Category id is invalid". */
+export const FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA =
+  'get_size_chart_list.doc-categoria-invalida.json';
+/**
+ * Shopee's own `get_size_chart_detail` sample — `testtestt`, 3 columns × 3
+ * cells, one column per documented `input_type` spelling, all four value keys
+ * PRESENT with `null`s in every cell, and `unit: "cm"` on the DROPDOWN column
+ * too. ⚠️ The PAGE's sample, not survey-c §6.3's block (that one mixes the
+ * parameter table's samples into it).
+ */
+export const FIXTURE_SIZE_CHART_DETAIL_DOC = 'get_size_chart_detail.doc.json';
+/** The detail page's printed error example — `product.error_param`, "Size chart id not exist in this shop". */
+export const FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE =
+  'get_size_chart_detail.doc-id-inexistente.json';
+
 /** Every committed body, sorted. Excludes the README and any dotfile. */
 export function listarFixtures(): string[] {
   if (!existsSync(WIRE_DIR)) return [];
@@ -214,4 +258,28 @@ export function lerDevolucaoDetalhe(file: string): ShopeeReturnDetailEnvelope {
  */
 export function lerListaDeDevolucoes(file: string): ShopeeReturnListEnvelope {
   return shopeeReturnListSchema.parse(lerFixture(file));
+}
+
+/**
+ * One `get_size_chart_list` page through the package schema, answered as the
+ * PAYLOAD — exactly what `client.getSizeChartList` resolves with (the op returns
+ * `res.response`), so a fake client can hand it on unchanged. Throws, same
+ * reason as the loaders above — and, like {@link lerBuscaDePacotes}, a row that
+ * went `null` PARSES, so a test must look at the rows it got.
+ *
+ * ⚠️ An error body has no `response` and THROWS here: read those with
+ * {@link lerFixture}.
+ */
+export function lerListaDeTabelasDeMedidas(file: string): ShopeeSizeChartList {
+  return shopeeSizeChartListSchema.parse(lerFixture(file)).response;
+}
+
+/**
+ * One `get_size_chart_detail` body through the package schema, answered as the
+ * PAYLOAD — what `client.getSizeChartDetail` resolves with, and what the
+ * projector takes. Throws, same reason; a column or cell that went `null`
+ * PARSES, so a test must look at what it got.
+ */
+export function lerDetalheDeTabelaDeMedidas(file: string): ShopeeSizeChartDetail {
+  return shopeeSizeChartDetailSchema.parse(lerFixture(file)).response;
 }

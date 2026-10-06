@@ -577,7 +577,10 @@ export const shopeeDimensionLimitSchema = z
   .passthrough();
 export type ShopeeDimensionLimit = z.infer<typeof shopeeDimensionLimitSchema>;
 
-/** `size_chart_limit` — on the ITEM page only. Step 18 probes it. */
+/**
+ * `size_chart_limit` — on the ITEM page only. Step 18 reads it as ADVICE, never
+ * a gate (unverified for a BR shop — register 253).
+ */
 export const shopeeSizeChartLimitSchema = z
   .object({
     size_chart_mandatory: z.boolean().nullable().default(null),
@@ -2254,8 +2257,11 @@ const nestingAmbiguousShape = {
  * invite a read of a field that no longer arrives.
  *
  * ⚠️ `size_chart` is a URL and `size_chart_id` an id — there is no
- * `size_chart_info` on the read side. Both are carried and neither is consumed
- * (the size-chart step owns them).
+ * `size_chart_info` on the read side. Both are carried and read ONLY as the
+ * publish's diagnostic echo (step 18: the id raw, and whether a `size_chart`
+ * URL came back — never the URL itself). The pick lives on `tabMedi`, never
+ * derived from the read-back, and the write side's `size_chart` is an IMAGE ID,
+ * not this URL: never round-trip one into the other.
  */
 export const shopeeItemBaseInfoRowSchema = z
   .object({
@@ -4899,3 +4905,186 @@ export const shopeeReturnWriteSchema = wrappedOp(
   z.object({ return_sn: texto(), msg: texto() }).passthrough(),
 );
 export type ShopeeReturnWriteResponse = z.infer<typeof shopeeReturnWriteSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                          Size charts (step 18)                             */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The response schemas of the two size-chart READS (#1526): `get_size_chart_list`
+ * (ONE page of a category's template ids) and `get_size_chart_detail` (one
+ * template's column-oriented table and its name). The paths, the request
+ * shapes, the guards and the ONE page reader (`lerPaginaDeTabelasDeMedidas`)
+ * live in `tabelasDeMedidas.ts`; this block only reads. Read off the pages
+ * (`api v2.product.get_size_chart_{list,detail}`) — nothing here has been seen
+ * on a BR wire (register rows 248–258); the doc bodies are
+ * `apps/shopee/lib/shopee/fixtures/__wire__/get_size_chart_*.doc*.json`.
+ *
+ * ⚠️ `.passthrough()` everywhere, the module default: a chart is SELLER-authored
+ * measurement data — labels, units and numbers — and carries no buyer datum.
+ *
+ * ⚠️ Tolerance is per ROW / per COLUMN / per CELL with a `null` sentinel that
+ * keeps its POSITION: one bad entry never costs the page or the chart, and the
+ * reader counts the sentinels instead of mistaking one for data. The CHART's
+ * projection (type-first cells, rectangularity, problems as data) is
+ * `projetarTabelaShopee` in `@delfrance/schemas` — never here, never twice.
+ */
+
+/**
+ * One cell of a column. The doc sample carries ALL FOUR keys in every cell,
+ * `null` where unused; which one holds the value is keyed by the column's
+ * `input_type` (`option` for a dropdown, `value` for a single number,
+ * `min_value`/`max_value` for a range). ⚠️ Shopee zero-fills absent numerics
+ * elsewhere, so a live dropdown cell may also carry `value: 0` — the projector
+ * reads only the key its type names, never the shape.
+ */
+export const shopeeSizeChartValueSchema = z
+  .object({
+    /** Verbatim — never trimmed (`' M'` stays `' M'`). */
+    option: z.string().nullable().default(null),
+    /** "float", sampled as integers. */
+    value: wireNumber().nullable().default(null),
+    min_value: wireNumber().nullable().default(null),
+    max_value: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeSizeChartValue = z.infer<typeof shopeeSizeChartValueSchema>;
+
+/** A column's header — "a kind of measurement". */
+export const shopeeSizeChartMeasurementSchema = z
+  .object({
+    display_name: z.string().nullable().default(null),
+    /**
+     * ⚠️ A RAW string, never a `z.enum`: the page documents three human
+     * spellings WITH spaces (`Single Dropdown`, `Input Single Number`,
+     * `Input Range Number` — `SHOPEE_SIZE_CHART_INPUT_TYPE` in
+     * `@delfrance/schemas`), and a fourth must cost a problem line, never the
+     * chart (the #1488 lesson).
+     */
+    input_type: z.string().nullable().default(null),
+    /** ⚠️ Present on the DROPDOWN column too (`"cm"` beside `01s`/`01m`/`01l` in the sample). */
+    unit: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeSizeChartMeasurement = z.infer<typeof shopeeSizeChartMeasurementSchema>;
+
+/** One column: its header and its cells, top to bottom (row `i` = the i-th cell of every column). */
+export const shopeeSizeChartColumnSchema = z
+  .object({
+    measurement: shopeeSizeChartMeasurementSchema.nullable().default(null),
+    /**
+     * ⚠️ Per-CELL `.catch(null)`: an unreadable cell keeps its POSITION, so
+     * rectangularity stays checkable, and costs one cell — never the column.
+     */
+    measurement_value_list: z
+      .array(shopeeSizeChartValueSchema.nullable().catch(null))
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeSizeChartColumn = z.infer<typeof shopeeSizeChartColumnSchema>;
+
+/** The inner payload of `get_size_chart_detail`. */
+export const shopeeSizeChartDetailPayloadSchema = z
+  .object({
+    /**
+     * The ECHO of the requested id — diagnostics only: the caller keys on the
+     * id it ASKED for, so a malformed echo costs nothing (`.catch(null)`, the
+     * `code`/`timestamp` precedent) and a divergent one is a problem line.
+     */
+    size_chart_id: wireInt().nullable().catch(null),
+    /** The TEMPLATE's name (names exist only on this page). Verbatim. */
+    size_chart_name: z.string().nullable().default(null),
+    size_chart_table: z
+      .object({
+        /** ⚠️ Per-COLUMN `.catch(null)`, positions kept — one bad column never costs the chart. */
+        column_list: z
+          .array(shopeeSizeChartColumnSchema.nullable().catch(null))
+          .nullable()
+          .default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+/** `GET /api/v2/product/get_size_chart_detail` — WRAPPED under `response`. */
+export const shopeeSizeChartDetailSchema = wrappedOp(shopeeSizeChartDetailPayloadSchema);
+export type ShopeeSizeChartDetail = z.infer<typeof shopeeSizeChartDetailPayloadSchema>;
+
+/**
+ * A size-chart id as the LIST row carries it: `wireInt()` + `> 0` — the
+ * `idDeEnvio` rule, kept as its own helper so step 15b's code stays out of this
+ * step's diff.
+ *
+ * ⚠️ `0` is REFUSED: `size_chart_id: 0` is the DETACH sentinel of `add_item` /
+ * `update_item`. And the row reader must refuse exactly what
+ * `assertSizeChartDetailParams` (`tabelasDeMedidas.ts`) refuses — an id this
+ * schema accepted and the guard refused would come back from the detail read as
+ * OUR `ShopeeConfigError` on Shopee's own data. One value table runs both.
+ *
+ * ⚠️ The fold's SCOPE (#1372): `700024641` ≡ `"700024641"` — and, as
+ * `wireInt()` documents, `" 700024641 "`, `"+700024641"` and `"700024641.0"`,
+ * which are representations of the SAME integer. DISTINCT (→ the row's `null`):
+ * `0`, `"0"`, negatives, fractions, unsafe integers, `"7e8"`, `"0x1F"`,
+ * `"1,5"`, `""`, booleans.
+ */
+function idPositivoDoFio() {
+  return wireInt().refine((n) => n > 0, { message: 'deve ser um inteiro positivo' });
+}
+
+/**
+ * The preprocess of {@link cursorDoFio}: a JSON number that is a SAFE integer
+ * becomes its exact digits; anything else passes through for `z.string()` to
+ * judge.
+ */
+function paraCursorDeTexto(v: unknown): unknown {
+  return typeof v === 'number' && Number.isSafeInteger(v) ? String(v) : v;
+}
+
+/**
+ * `next_cursor` — TEXT (the page types it `string`; its request sample
+ * `1683255510` looks like epoch seconds). A JSON-number cursor is read as its
+ * digits, which is wire-identical on a GET.
+ *
+ * ⚠️ An UNSAFE number fails the PAGE (a `ShopeeSchemaError`), never a rounded
+ * string: by the time a preprocess runs `JSON.parse` has already rounded it, and
+ * sending those digits back would fetch a page Shopee never offered. A
+ * page-level field, a page-level failure.
+ *
+ * ⚠️ `null` / absent read `null`, which the page reader turns into
+ * `sem-cursor` — NOT the drained `''` (register 249).
+ */
+function cursorDoFio() {
+  return z.preprocess(paraCursorDeTexto, z.string()).nullable().default(null);
+}
+
+/** One row of `get_size_chart_list.response.size_chart_list` — an id, nothing else (no name). */
+export const shopeeSizeChartListRowSchema = z
+  .object({ size_chart_id: idPositivoDoFio() })
+  .passthrough();
+export type ShopeeSizeChartListRow = z.infer<typeof shopeeSizeChartListRowSchema>;
+
+/**
+ * The inner payload of `get_size_chart_list` — ONE page.
+ *
+ * ⚠️ The page's TABLE types `size_chart_id` and `total_count` as STRING while
+ * its sample sends NUMBERS — both read (register 248). One bad row is a `null`
+ * in place, counted by `lerPaginaDeTabelasDeMedidas`.
+ *
+ * ⚠️ `total_count` is a diagnostic, NEVER a terminator: an unreadable one reads
+ * `null` rather than costing the list.
+ */
+export const shopeeSizeChartListPayloadSchema = z
+  .object({
+    size_chart_list: z
+      .array(shopeeSizeChartListRowSchema.nullable().catch(null))
+      .nullable()
+      .default(null),
+    total_count: wireInt().nullable().catch(null),
+    next_cursor: cursorDoFio(),
+  })
+  .passthrough();
+/** `GET /api/v2/product/get_size_chart_list` — WRAPPED under `response`. */
+export const shopeeSizeChartListSchema = wrappedOp(shopeeSizeChartListPayloadSchema);
+export type ShopeeSizeChartList = z.infer<typeof shopeeSizeChartListPayloadSchema>;
