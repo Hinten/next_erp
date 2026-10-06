@@ -12,7 +12,7 @@ Everything here is **offline-verified only**. The probe measured the wire
 through the package's own operations against the **SG sandbox** shop; no module
 in this folder has ever run against a BR shop, staging or production.
 
-## The twenty-two modules, in five families
+## The twenty-four modules, in five families
 
 The families are the seam, not a filing convention.
 
@@ -22,7 +22,8 @@ The families are the seam, not a filing convention.
   constants; every WIRE bound stays in `@delfrance/integrations-shopee`),
   `montagemAnuncio.ts` (the `add_item` / `update_item` bodies and eighteen
   pre-write refusals), `taxInfoPublicacao.ts` (the ten-member BR `tax_info`
-  block), `logisticaPublicacao.ts` (`logistic_info`), `problemasPublicacao.ts`
+  block), `tabelaMedidasPublicacao.ts` (step 18's `size_chart_info` decision),
+  `logisticaPublicacao.ts` (`logistic_info`), `problemasPublicacao.ts`
   (Shopee's own rejection codes → a `problema` on a field),
   `statusAnuncio.ts` (the `estadoAnuncio` fold), `violacoesAnuncio.ts` (the ONE
   violation-detail builder) and `planoPublicacao.ts` (the plan as DATA, plus
@@ -34,8 +35,10 @@ The families are the seam, not a filing convention.
 - **The IO sequences** — `publicarAnuncio.ts` (`preparar` → `planejar` →
   `aplicar`, both write-backs, the re-list dance and the failure stamp),
   `fotosPublicacao.ts` (the photo up-direction), `lerImpostoDoProduto.ts` (the
-  memoised imposto reader over the promoted NF-e cascade) and `linkAnuncio.ts`
-  (the link readers and the ONE child-link sync).
+  memoised imposto reader over the promoted NF-e cascade),
+  `lerTabelaMedidasDoProduto.ts` (step 18: the produto's `tabMedi`, one read,
+  this conta's entries and the first photo) and `linkAnuncio.ts` (the link
+  readers and the ONE child-link sync).
 - **The lifecycle** — `pausarAnuncio.ts` (pause / re-list over a selection) and
   `reverificarAnuncio.ts` (what the listing really is, right now).
 - **The push arm and the surfaces** — `pushAnuncio.ts` (the codes-16/27
@@ -317,23 +320,81 @@ with a PAIR (`1.65` ≡ `1.6500001`) and a NEAR-MISS (`1.654` ≠ `1.655`) pinni
 that the rounding did not move; `cstConcordante` refuses a PIS/COFINS CST pair
 that disagrees (`'01'` vs `'02'`) instead of picking one.
 
+### `size_chart_info` (step 18): the template first, else the tabela's first photo
+
+Lucas, 2026-10-05 — the legacy order, re-verified in `.old/` (`exportar.dart`).
+`add_item` AND `update_item` carry `size_chart_info` with EXACTLY one key: the
+produto's tabela has an entry for THIS conta and the listing's RESOLVED category
+⇒ `{ size_chart_id }` (the template WINS and the photo is never uploaded); else
+the tabela's FIRST photo ⇒ `{ size_chart: <image_id> }`; else the KEY IS ABSENT —
+never `size_chart_id: 0` nor `size_chart: ''`, Shopee's DETACH sentinels, so a
+chart set in Seller Centre survives an update where nothing matched. ⚠️ Once
+something matches, EVERY republish puts the ERP's pick back over a Seller-Centre
+change (Q3); removing the entry in `/medidas` does NOT detach the live chart.
+
+- **Read, decide, upload, build — in the existing split.** `preparar` reads the
+  tabela (`lerTabelaMedidasDoProduto`, one `tabMedi` get, none without a ref);
+  `tabelaMedidasPublicacao.ts` decides; the photo pass in
+  `resolverFotosDaPublicacao` uploads the first photo through the SAME resolver
+  (`resolver([foto], { cap: 1 })`, its allow-list and its `externalIds` cache —
+  the dry run uploads it too); `montarAnuncio` builds both bodies.
+- ⚠️ **ONE category resolution.** The photo pass decides BEFORE `montarAnuncio`
+  runs, so both call `categoriaDoAnuncio` (`montagemAnuncio.ts`) — the stored
+  link's `category_id`, else the request's — and `preparar` does too. A second
+  copy of that cascade would upload against one category and build the body
+  against another (a link in 200 with an entry only for the request's 100
+  attaches NO TEMPLATE — the tabela's first photo when it has one, else nothing).
+- **`size_chart_limit` is advice**, with ONE vetoable exception: an explicit
+  `support_image_size_chart: false` withholds the photo. A matched template goes
+  out even under `support_template_size_chart: false`; a mandatory category with
+  nothing to send is a summary warning, never a refusal.
+- **Refusals are 422s on `size_chart_info`, never retried without the key, and
+  every one carries OUR sentence.** A stale template (`tabela-de-medidas-recusada`,
+  "…escolha outra em /medidas") is a wire rejection at `add_item`/`update_item`,
+  never falls back to the photo, and stamps an existing link's `falhaPublicacao`
+  like any wire rejection. It is decided by the size-chart routes' OWN classifier
+  (`classificarRecusaTabelaMedidas`, imported — the refusal table's FIRST row, a
+  predicate over the error rather than a phrase), so publish and the routes call
+  the same answers stale. The image validator's sentence and a failed upload of
+  that photo are `tabela-de-medidas-foto-recusada` — the failed upload decided by
+  the PLAN (`recusaTabelaDeMedidas`, `passos` stopping at the photo step) and
+  thrown as a `ShopeePublishRejectedError` at etapa `fotos` BEFORE the link read
+  and any listing write, so it stamps nothing. Its sentence and its headline
+  follow ONE predicate, `fotoDaTabelaRecusadaPelaShopee`: Shopee's own
+  `upload-recusado` reads "recusada pela Shopee — troque a primeira foto…";
+  anything Shopee never judged (a download, a network blip, a skipped file, no
+  `image_id`) reads "não foi possível enviar … — tente de novo" under the headline
+  "Publicação interrompida em fotos". Both motivos are problema-only: the blocked
+  vocabulary stays at 22. The C13 retry removes `tax_info` alone and keeps
+  `size_chart_info`.
+- **The echo is a diagnostic.** `ResultadoPublicacao.tabelaDeMedidas` carries
+  the read-back's raw `size_chart_id` and whether a `size_chart` URL came back
+  (never the URL; `http(s)://…` after a trim, so a `-` placeholder reads `false`)
+  — the log line and the CLI print them; the route body carries the decision
+  only.
+
+The depth, the refusal table and register rows 262–269 are
+`../tabelaMedidas/README.md` §6–§7.
+
 ### Photos up: the `externalIds` cache is the same one the import writes
 
 `criarResolvedorDeImagens` reads `arquivos.externalIds` — the field step 9's
 import already writes on a dedup hit and the field ML's own importer reads — and
 calls `upload_image` only on a miss. **ONE resolver per publish**, carried on
-the context, because the memo has to span the item pass AND every option pass;
-building a second one pays for the same picture twice.
+the context, because the memo has to span the item pass AND every option pass
+(and step 18's size-chart photo, a third pass at `cap: 1`); building a second
+one pays for the same picture twice.
 
 `image_id_list` is rendered POSITIONALLY by Shopee, so the list is never
 re-ordered and never sliced by a caller. The download is guarded by an anchored
 host allow-list and `redirect: 'manual'` (a fake fetch cannot show a redirect
 being followed, so the test asserts the OPTION); every log line carries the HOST
 and the `image_id` and never the URL. Ten `MotivoFotoPublicacao` members, none
-persisted; a picture-level problem is SKIPPED and counted, while a rate limit, a
-reauth, any other Shopee error and every Firestore error propagate and fail the
-publish. An empty `imageIds` is **not** a throw here — it is the `sem-fotos`
-refusal one level up.
+persisted; a picture-level problem is SKIPPED and counted — except on the
+tabela de medidas' photo, whose failure REFUSES the publish (Q1c; see
+`size_chart_info` above) — while a rate limit, a reauth, any other Shopee error
+and every Firestore error propagate and fail the publish. An empty `imageIds`
+is **not** a throw here — it is the `sem-fotos` refusal one level up.
 
 The option pass is **ALL-OR-NONE**: if any tier-1 option has no picture, no
 option image is sent at all, and `montarTiers` re-applies that defensively.
@@ -363,7 +424,13 @@ Shopee call, carrying `problemas` that is **non-empty by TYPE** — the guard
 no path can construct the class with a fallback member nothing legitimately
 produces. `ShopeePublishRejectedError` is SHOPEE's: an `etapa`, the provider
 `shopeeCode` **verbatim (module prefix and all)** and the classifier's problemas,
-which may be empty.
+which may be empty. ⚠️ ONE producer builds it with no Shopee answer to quote:
+step 18's size-chart photo that did not upload (etapa `fotos`, `shopeeCode: ''`,
+one `size_chart_info` problema naming the resolver's closed motivo) — Lucas's
+Q1c makes that a refusal of the publish, and it lands before any listing write.
+Its headline (`cabecalhoDaRecusa`, shared with the CLI) drops the empty `()` and,
+when Shopee never judged the photo (`recusadaPelaShopee: false`), says
+"Publicação interrompida em fotos" instead of "recusada pela Shopee".
 
 `problemaDeErroShopee` strips ONE leading `<module>.` before lookup and never
 rewrites the error's own code; the strip is a SECOND lookup, and it is
@@ -558,9 +625,11 @@ So nobody reads a gap as a bug:
   the number the listing was created with. (The category band's maximum is the
   other parameter the two do not share: publish clamps down to it, and the
   sync reads no band.)
-- **`size_chart_info` (step 18).** Never sent. A chart set in Seller Centre
-  survives a republish because `update_item` is field-wise. ⚠️ `size_chart` is
-  an image id on write and a URL on read — never round-trip it.
+- **Authoring a size chart, and detaching one.** Templates are authored in
+  Seller Centre (no API), and the publish never sends a detach sentinel, so a
+  `/medidas` entry that is removed leaves the live chart where it is.
+  ⚠️ `size_chart` is an image id on write and a URL on read — never round-trip
+  it (step 18 reads the URL's presence only).
 - **Publishing a kit ON Shopee (step 19).** A NATIVE Shopee kit is refused as
   `produto-e-kit` — `kitNativo` on the stored link, or `ehKitVirtual` on a first
   publish. An ordinary ERP `ehKit` produto publishes like any other.
@@ -627,6 +696,13 @@ a regression.
 | 87  | whether a Storage-emulator host can ever appear in `arquivo.url`                                                                    | ⏳ the allow-list's emulator entry is INERT today — a seeded emulator corpus                                                                                                    |
 | 88  | whether a PUSH envelope may enter `fixtures/__wire__/` (which holds RESPONSE bodies)                                                | ✅ sidestepped — the push-16 body stays inline in its test, and no new fixture was committed                                                                                    |
 | 89  | whether the conta's `operacaoOuterRef` is the right operação for a publish `tax_info`                                               | ✅ **yes** — the nota for an order from this listing resolves through that same operação                                                                                        |
+| 262 | `size_chart_info.size_chart_id` is accepted as a JSON NUMBER on add / update (announcement 1404 types it string)                    | ⏳ the first BR publish with a matched template — the CLI's `lido de volta` line (step 18's register, home `../tabelaMedidas/README.md` §7)                                     |
+| 263 | `update_item` WITHOUT `size_chart_info` keeps a Seller-Centre chart                                                                 | ⏳ sandbox / BR — the reason nothing here ever sends a detach                                                                                                                   |
+| 264 | add / update answer a stale template id with the detail page's sentence; how a template of ANOTHER category is refused              | ⏳ BR — an unmatched sentence still surfaces as `desconhecido` with Shopee's prose                                                                                              |
+| 265 | `get_item_base_info.size_chart_id` echoes the sent id; its value with no template (`0` / absent / `null`)                           | ⏳ sandbox — `lidaDeVolta` reads it raw                                                                                                                                         |
+| 267 | `size_chart` accepts an `upload_image` id from the default scene                                                                    | ⏳ BR shop: one photo-only publish                                                                                                                                              |
+| 268 | the image validator's exact sentence, per photo or per call                                                                         | ⏳ BR shop: one refused photo                                                                                                                                                   |
+| 269 | whether `support_image_size_chart: false` is ever answered for a BR apparel leaf, and honoured                                      | ⏳ BR shop: `get_item_limit` + one publish — the explicit-`false` withhold is the vetoable ruling                                                                               |
 
 Also unmeasured, and not a register line: nothing in this folder has met a BR
 shop. The `esperar` of 5 000 ms, the re-list door order, the daily-quota reset

@@ -783,8 +783,10 @@ function planejarEstoque(args: {
  * 11/12), `permiteVendaSemEstoque` (slated for removal),
  * `ofereceFreteGratis` (the legacy derived it from `logistic_info.every(is_free)`
  * and its own exporter rebuilt that block with `is_free: false`, so the value
- * round-trips to a lie) or `tabelaDeMedidasModaUid` (`size_chart` is a URL;
- * size charts are step 18).
+ * round-trips to a lie) or `tabelaDeMedidasModaUid` (the read-back
+ * `size_chart` is a URL, read only as publish's diagnostic echo and never
+ * round-tripped; step 18 keeps the pick on `tabMedi`, and nothing derives a
+ * produto's tabela from a listing).
  */
 export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoPaiShopee {
   const { entrada, existente, options, nowMs } = args;

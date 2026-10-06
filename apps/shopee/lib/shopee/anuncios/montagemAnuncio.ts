@@ -72,6 +72,22 @@
  * `0`, an empty `image_id_list`) instead of the module refusing to build a body
  * at all — a partial body type would force every caller to branch on a case that
  * never reaches the wire.
+ *
+ * ## `size_chart_info` (step 18, #1526)
+ *
+ * BOTH bodies carry it, decided by `anuncios/tabelaMedidasPublicacao.ts` over
+ * the produto's tabela as read for THIS conta and the listing's RESOLVED
+ * category ({@link categoriaDoAnuncio} — the same expression the leaf gate and
+ * `category_id` read): a matching template entry ⇒ `{ size_chart_id }` (the
+ * template WINS); else the tabela's FIRST photo, uploaded by the I/O half ⇒
+ * `{ size_chart: image_id }`; else the KEY IS ABSENT — never `size_chart_id: 0`
+ * and never `size_chart: ''`, which are Shopee's DETACH sentinels, so a chart
+ * set in Seller Centre survives an update where nothing matched. ⚠️ Once
+ * something matches, every republish puts the ERP's pick back over a
+ * Seller-Centre change (the legacy behaviour, Lucas's Q3). The decision never
+ * refuses: a photo that could not be uploaded is refused by the PLAN
+ * (`planoPublicacao.ts`, motivo `tabela-de-medidas-foto-recusada`), because that
+ * motivo is wire-only and no problema produced here may carry it.
  */
 import {
   type ShopeeAddItemRequest,
@@ -83,6 +99,7 @@ import {
   type ShopeeLogisticInfoRequest,
   type ShopeePreOrderRequest,
   type ShopeeSellerStockRequest,
+  type ShopeeSizeChartInfoRequest,
   type ShopeeTaxInfoRequest,
   type ShopeeUpdateItemRequest,
   SHOPEE_CONDITION,
@@ -107,6 +124,12 @@ import {
   limitarMensagemProblema,
   MOTIVO_PUBLICACAO_BLOQUEADA,
 } from './errosPublicacao';
+import type { LeituraTabelaDeMedidasShopee } from './lerTabelaMedidasDoProduto';
+import {
+  type ResultadoTabelaDeMedidasShopee,
+  FONTE_TABELA_MEDIDAS,
+  resolverTabelaDeMedidasDoAnuncio,
+} from './tabelaMedidasPublicacao';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Inputs                                   */
@@ -262,6 +285,19 @@ export interface ArgsMontarAnuncio {
   readonly ownDisponivel: number;
   /** Component produto id → its available stock, for the kit branch. */
   readonly disponivelByProdutoId: Record<string, number | null | undefined>;
+  /**
+   * The produto's tabela de medidas as read for THIS conta (step 18,
+   * `lerTabelaMedidasDoProduto`). REQUIRED, so a caller that forgot the read
+   * fails to compile instead of publishing every listing without a chart.
+   */
+  readonly tabelaDeMedidas: LeituraTabelaDeMedidasShopee;
+  /**
+   * The `image_id` the I/O half uploaded for the tabela's FIRST photo, or
+   * `null` — no photo was due, or its upload failed (the plan refuses that
+   * case). Read ONLY when the decision's `fonte` is `foto`: a template that
+   * matched always wins, whatever this holds.
+   */
+  readonly imagemTabelaDeMedidas: string | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -281,6 +317,11 @@ export interface ItemMontado {
    */
   readonly atualizar: ShopeeUpdateItemRequest | null;
   readonly problemas: readonly ProblemaPublicacao[];
+  /**
+   * The size-chart decision both bodies were built from — present on a BLOCKED
+   * montagem too, so the dry run reports the diagnosis whatever else refused.
+   */
+  readonly tabelaDeMedidas: ResultadoTabelaDeMedidasShopee;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -521,6 +562,53 @@ export function preOrderParaPublicar(
 export { quantidadeParaPublicarShopee };
 
 /* -------------------------------------------------------------------------- */
+/*                  The ONE category resolution, and the size chart            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The listing's RESOLVED category: the stored link's `category_id`, else the
+ * operator's choice (C36 — a stored value always wins, `null` meaning absent).
+ *
+ * ⚠️ **ONE expression, and every reader of "which category is this listing in"
+ * calls it** (step 18, A.1.3): {@link montarAnuncio} (the `category_id` of both
+ * bodies, the leaf gate and the size-chart pick), `prepararPublicacao` (the
+ * taxonomy reads) and the size-chart PHOTO pass in `publicarAnuncio.ts`, which
+ * has to decide whether to upload the tabela's first photo BEFORE this module
+ * runs. A second copy of this one-line cascade is how the photo
+ * pass would pick against one category while the body went out under another
+ * — a stored link in category 200 with an entry only for the operator's 100
+ * must attach no TEMPLATE, in both places at once (the tabela's first photo
+ * may still go, by the same decision).
+ */
+export function categoriaDoAnuncio(
+  link: { readonly category_id: number | null } | null,
+  categoryId: number | null,
+): number | null {
+  return link?.category_id ?? categoryId;
+}
+
+/**
+ * `size_chart_info` from the decision — EXACTLY one key, or `null` for an
+ * absent key.
+ *
+ * `modelo` ⇒ `{ size_chart_id }`, and the image is never looked at (the
+ * template wins, A.1.2); `foto` with an uploaded id ⇒ `{ size_chart }`;
+ * anything else ⇒ `null`. ⚠️ Never `{ size_chart_id: 0 }` and never
+ * `{ size_chart: '' }`: both are Shopee's DETACH sentinels, and the package
+ * guard refuses them anyway — a chart set in Seller Centre must survive an
+ * update where the ERP has nothing to say.
+ */
+export function sizeChartInfoParaPublicar(
+  decisao: ResultadoTabelaDeMedidasShopee,
+  imagem: string | null,
+): ShopeeSizeChartInfoRequest | null {
+  const fonte = decisao.fonte;
+  if (fonte.tipo === FONTE_TABELA_MEDIDAS.modelo) return { size_chart_id: fonte.sizeChartId };
+  if (fonte.tipo === FONTE_TABELA_MEDIDAS.foto && imagem !== null) return { size_chart: imagem };
+  return null;
+}
+
+/* -------------------------------------------------------------------------- */
 /*                           The native-kit predicate                          */
 /* -------------------------------------------------------------------------- */
 
@@ -661,7 +749,7 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
 
   /* ------------------------------- category ------------------------------- */
 
-  const categoryId = link?.category_id ?? args.categoryId;
+  const categoryId = categoriaDoAnuncio(link, args.categoryId);
   if (categoryId === null || args.veredictoFolha !== 'folha') {
     problemas.push(
       problema(
@@ -673,6 +761,18 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
       ),
     );
   }
+
+  /* --------------------------- size chart (step 18) ------------------------ */
+
+  // ⚠️ On the RESOLVED category, right here — never on `args.categoryId`: a
+  // stored link in another category than the operator's choice selects by the
+  // LINK's, exactly as `category_id` above does. The decision never refuses.
+  const tabelaDeMedidas = resolverTabelaDeMedidasDoAnuncio(
+    args.tabelaDeMedidas,
+    categoryId,
+    bandas.sizeChartLimit,
+  );
+  const sizeChartInfo = sizeChartInfoParaPublicar(tabelaDeMedidas, args.imagemTabelaDeMedidas);
 
   /* -------------------------------- weight -------------------------------- */
 
@@ -899,6 +999,8 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
     pre_order: preOrderParaPublicar(produto.crossdocking, limites, logistica.canaisHabilitados),
     // ⚠️ The KEY is absent under the omit arm — never `null`, never partial.
     ...(taxInfo !== null ? { tax_info: taxInfo } : {}),
+    // ⚠️ Absent when nothing matched — never a `0` / `''` detach sentinel.
+    ...(sizeChartInfo !== null ? { size_chart_info: sizeChartInfo } : {}),
   };
 
   const itemId = numeroPositivo(link?.item_id);
@@ -924,7 +1026,10 @@ export function montarAnuncio(args: ArgsMontarAnuncio): ItemMontado {
           ...(sku !== null ? { item_sku: sku } : {}),
           ...(gtin !== null ? { gtin_code: gtin } : {}),
           ...(taxInfo !== null ? { tax_info: taxInfo } : {}),
+          // The SAME pick as the create (Q3): an update re-sends the ERP's
+          // chart, and an absent key keeps Seller Centre's.
+          ...(sizeChartInfo !== null ? { size_chart_info: sizeChartInfo } : {}),
         };
 
-  return { criar, atualizar, problemas };
+  return { criar, atualizar, problemas, tabelaDeMedidas };
 }

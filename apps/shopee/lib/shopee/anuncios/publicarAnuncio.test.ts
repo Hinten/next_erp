@@ -5,8 +5,11 @@ import {
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_ITEM_STATUS_WRITABLE,
   SHOPEE_LOGISTICS_FEE_TYPE,
+  SHOPEE_SURFACE,
   ShopeeApiError,
+  shopeeErrorFromEnvelope,
   shopeeLogisticsChannelSchema,
+  shopeeSizeChartListSchema,
   type ShopeeClient,
   type ShopeeItemBaseInfo,
   type ShopeeItemWriteResponse,
@@ -18,21 +21,32 @@ import {
   ESTADO_ANUNCIO_SHOPEE,
   SHOPEE_ITEM_STATUS,
   SHOPEE_MODEL_STATUS,
+  entradaTabelaShopeeSchema,
   varianteFakePath,
 } from '@delfrance/schemas';
 
+import { FIXTURE_SIZE_CHART_DETAIL_DOC, lerDetalheDeTabelaDeMedidas } from '../fixtures/wireCorpus';
 import { FakeDb, asDb } from '../testing/fakeDb';
+import { listarTabelasDaCategoria } from '../tabelaMedidas/listarTabelasMedidas';
 import { construirIndice } from '../taxonomia/categorias';
 import { __setShopeeTaxonomiaClockForTests, type ShopeeTaxonomiaCtx } from '../taxonomia/cache';
 import {
+  ETAPA_PUBLICACAO,
+  MOTIVO_PROBLEMA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
 } from './errosPublicacao';
-import type { ResolvedorDeImagensShopee, ResultadoFotosPublicacao } from './fotosPublicacao';
+import {
+  MOTIVO_FOTO_PUBLICACAO,
+  type MotivoFotoPublicacao,
+  type ResolvedorDeImagensShopee,
+  type ResultadoFotosPublicacao,
+} from './fotosPublicacao';
 import { ORDEM_RELISTAGEM, planejarPublicacao, type PlanoPublicacao } from './planoPublicacao';
 import {
   aplicarPublicacao,
+  criarResolvedorDePublicacao,
   prepararPublicacao,
   publicarAnuncioShopee,
   resolverFotosDaPublicacao,
@@ -1994,5 +2008,714 @@ describe('publicar — o preço do filho é lido por precoDaTabela', () => {
       const atualizar = await planoDe(PAI_NAO_PROPAGA, true);
       expect(recusasDePreco(atualizar.problemas)).toEqual([['model', TEXTO_FILHO_NO_TIER]]);
     });
+  });
+});
+
+/* ========================================================================== */
+/*  (14) size_chart_info — passo 18 (#1526), §2.7 + A.1                        */
+/* ========================================================================== */
+
+describe('publicar — size_chart_info (passo 18)', () => {
+  const TABELA = 'tab-1';
+  const REF_TABELA = `documents/tabMedi/${TABELA}`;
+  /** Shopee's own doc-sample template id — never a real shop's. */
+  const MODELO = 700_024_641;
+  const OUTRA_CATEGORIA = CATEGORIA + 1;
+  const ARQ_TABELA = 'arq-tabela-1';
+  const ARQ_TABELA_2 = 'arq-tabela-2';
+  const IMG_TABELA = 'img-tabela-1';
+  const URL_LIDA = 'https://cf.shopee.invalido/file/sentinela-tabela';
+  const FRASE_ID_INEXISTENTE = 'Size chart id not exist in this shop';
+  const FRASE_VALIDADOR = 'Upload failed, please upload a more standard size chart image.';
+
+  function entradaDaTabela(categoryId: number, sizeChartId = MODELO) {
+    return { categoryId, size_chart_id: sizeChartId, name: 'Camisetas' };
+  }
+
+  /**
+   * The tabela as the CORPUS carries it: another conta's per-key `null` and a
+   * garbage ML map beside THIS conta's list (M77 — neither may cost a read),
+   * plus two photos, so "the FIRST one" is a claim with a near-miss.
+   */
+  function semearTabela(db: FakeDb, entradas: readonly unknown[]): void {
+    db.seed(`tabMedi/${TABELA}`, {
+      nome: 'Camisetas',
+      tabelasMedidasShopee: { 'int-2': null, [INTEGRACAO]: entradas },
+      tabelasDeMedidasMercadoLivre: 'lixo-do-corpus',
+      fotos: [
+        { arquivoOuterRef: `arquivos/${ARQ_TABELA}` },
+        { arquivoOuterRef: `arquivos/${ARQ_TABELA_2}` },
+      ],
+    });
+  }
+
+  function semearProdutoComTabela(db: FakeDb, over: Record<string, unknown> = {}): void {
+    semearCatalogo(db, { tabelaDeMedidasModaUid: REF_TABELA, ...over });
+  }
+
+  interface PassagemDaFoto {
+    readonly cap: number | null;
+    readonly arquivos: readonly string[];
+  }
+
+  /**
+   * The photo double, recording WHICH photos each pass asked for. The item pass
+   * answers two ids; a pass over the tabela's photo answers {@link IMG_TABELA},
+   * or a skipped picture when `falharTabela`.
+   */
+  function resolvedorDaTabela(
+    op: {
+      readonly falharTabela?: boolean;
+      /** Why the tabela's photo failed — default: Shopee refused the upload. */
+      readonly motivoDaFalha?: MotivoFotoPublicacao;
+    } = {},
+  ) {
+    const passes: PassagemDaFoto[] = [];
+    const resolvedor: ResolvedorDeImagensShopee = {
+      resolver: (fotos, opcoes) => {
+        const arquivos = fotos.map((f) => f.arquivoOuterRef);
+        passes.push({ cap: opcoes?.cap ?? null, arquivos });
+        const daTabela = arquivos.some((a) => a.includes('arq-tabela'));
+        const falhou = daTabela && op.falharTabela === true;
+        const ids = falhou ? [] : daTabela ? [IMG_TABELA] : ['img-1', 'img-2'];
+        const resultado: ResultadoFotosPublicacao = {
+          imageIds: ids,
+          reutilizadas: 0,
+          enviadas: ids.length,
+          falhas: falhou
+            ? [
+                {
+                  arquivoId: ARQ_TABELA,
+                  motivo: op.motivoDaFalha ?? MOTIVO_FOTO_PUBLICACAO.uploadRecusado,
+                  mensagem: 'upload recusado por índice: error_image_size',
+                },
+              ]
+            : [],
+          consideradas: fotos.length,
+          descartadasPeloLimite: 0,
+        };
+        return Promise.resolve(resultado);
+      },
+      resumo: () => ({
+        consideradas: 1,
+        reutilizadas: 0,
+        enviadas: 2,
+        falhas: 0,
+        descartadasPeloLimite: 0,
+      }),
+    };
+    const daTabela = (): PassagemDaFoto[] =>
+      passes.filter((p) => p.arquivos.some((a) => a.includes('arq-tabela')));
+    return { resolvedor, passes, daTabela };
+  }
+
+  /** The category's `size_chart_limit`, answered by `get_item_limit`. */
+  function comLimiteDeTabela(
+    fake: ClienteFake,
+    limite: {
+      size_chart_mandatory: boolean | null;
+      support_image_size_chart: boolean | null;
+      support_template_size_chart: boolean | null;
+    },
+  ): void {
+    Object.assign(fake.client, {
+      getItemLimit: () => {
+        fake.ops.push('get_item_limit');
+        return Promise.resolve({
+          ...BANDAS_DA_LOJA,
+          response: { ...BANDAS_DA_LOJA.response, size_chart_limit: limite },
+        });
+      },
+    });
+  }
+
+  /** The refusal exactly as the package's transport builds it from an envelope. */
+  function erroDaTabela(code: string, frase: string, path = '/api/v2/product/add_item') {
+    return shopeeErrorFromEnvelope(
+      { error: code, message: frase, request_id: null, warning: null },
+      { path, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+    );
+  }
+
+  function leiturasDaTabela(db: FakeDb): readonly string[] {
+    return db.opLog.filter((o) => o.path.startsWith('tabMedi/')).map((o) => o.path);
+  }
+
+  it('M76: um produto SEM ref não lê tabMedi nenhum; COM ref, UMA leitura — e nenhuma escrita', async () => {
+    const semRef = new FakeDb();
+    semearCatalogo(semRef);
+    semearTabela(semRef, [entradaDaTabela(CATEGORIA)]);
+    const ctx = await prepararPublicacao(
+      deps(semRef, clienteFake()),
+      entrada(),
+      resolvedorQueRecusa(),
+    );
+    expect(ctx?.tabelaDeMedidas).toEqual({ tipo: 'produto-sem-tabela' });
+    expect(leiturasDaTabela(semRef)).toEqual([]);
+
+    const comRef = new FakeDb();
+    semearProdutoComTabela(comRef);
+    semearTabela(comRef, [entradaDaTabela(CATEGORIA)]);
+    const lido = await prepararPublicacao(
+      deps(comRef, clienteFake()),
+      entrada(),
+      // ⚠️ preparar NUNCA sobe a foto da tabela: o resolvedor lança.
+      resolvedorQueRecusa(),
+    );
+    expect(lido?.tabelaDeMedidas.tipo).toBe('lida');
+    expect(leiturasDaTabela(comRef)).toEqual([`tabMedi/${TABELA}`]);
+    expect(comRef.writes).toEqual([]);
+  });
+
+  it('M-A1: o modelo casa e a tabela TEM fotos ⇒ ZERO envios da foto, e o add_item leva só { size_chart_id }', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(CATEGORIA)]);
+    const fake = clienteFake({
+      addItem: () => ecoDeItem(),
+      getItemBaseInfo: () =>
+        baseInfo([linhaDeLeitura({ size_chart_id: MODELO, size_chart: URL_LIDA })]),
+    });
+    const fotos = resolvedorDaTabela();
+
+    const r = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: fotos.resolvedor }),
+      entrada(),
+    );
+
+    expect(fotos.daTabela()).toEqual([]);
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(r?.tabelaDeMedidas).toEqual({
+      sizeChartId: MODELO,
+      fonte: 'modelo',
+      motivo: null,
+      fotoOmitida: null,
+      avisoObrigatoria: false,
+      // A releitura ecoa o id CRU; a URL vira só PRESENÇA.
+      lidaDeVolta: MODELO,
+      fotoLidaDeVolta: true,
+    });
+    // A linha de log leva a decisão e o eco — por NOME, nunca a URL.
+    const linha = infos.find((args) => args[0] === '[shopee/anuncios] publicação de anúncio');
+    expect(linha?.[1]).toMatchObject({
+      tabelaDeMedidas: {
+        fonte: 'modelo',
+        sizeChartId: MODELO,
+        lidaDeVolta: MODELO,
+        fotoLidaDeVolta: true,
+      },
+    });
+    expect(logInteiro()).not.toContain(URL_LIDA);
+  });
+
+  it('M-A2/M-A3: sem modelo ⇒ UM resolver([fotos[0]], { cap: 1 }) — a PRIMEIRA foto, nunca a segunda', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(OUTRA_CATEGORIA)]);
+    const fake = clienteFake({ addItem: () => ecoDeItem() });
+    const fotos = resolvedorDaTabela();
+
+    const r = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: fotos.resolvedor }),
+      entrada(),
+    );
+
+    expect(fotos.daTabela()).toEqual([{ cap: 1, arquivos: [`arquivos/${ARQ_TABELA}`] }]);
+    expect(JSON.stringify(fotos.passes)).not.toContain(ARQ_TABELA_2);
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+    expect(r?.tabelaDeMedidas).toMatchObject({
+      fonte: 'foto',
+      sizeChartId: null,
+      motivo: 'categoria-sem-entrada',
+      // A releitura padrão não traz tabela nenhuma.
+      lidaDeVolta: null,
+      fotoLidaDeVolta: false,
+    });
+    // O image_id da foto nunca chega à linha de log.
+    expect(logInteiro()).not.toContain(IMG_TABELA);
+  });
+
+  it('A.1.7: a releitura de uma FOTO — URL presente e size_chart_id 0 ⇒ fotoLidaDeVolta true, lidaDeVolta 0 (os dois ecos são independentes)', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    const fake = clienteFake({
+      addItem: () => ecoDeItem(),
+      // Uma tabela de IMAGEM não tem modelo: o id volta zerado e a URL presente.
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ size_chart_id: 0, size_chart: URL_LIDA })]),
+    });
+
+    const r = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: resolvedorDaTabela().resolvedor }),
+      entrada(),
+    );
+
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+    expect(r?.tabelaDeMedidas).toMatchObject({
+      fonte: 'foto',
+      lidaDeVolta: 0,
+      fotoLidaDeVolta: true,
+    });
+    expect(logInteiro()).not.toContain(URL_LIDA);
+  });
+
+  it('⚠️ NEAR-MISS do eco: um size_chart_id 0 de zero-fill fica 0 (DADO, nunca null) e uma URL em branco é AUSÊNCIA', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(CATEGORIA)]);
+    const fake = clienteFake({
+      addItem: () => ecoDeItem(),
+      getItemBaseInfo: () => baseInfo([linhaDeLeitura({ size_chart_id: 0, size_chart: '  ' })]),
+    });
+
+    const r = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: resolvedorDaTabela().resolvedor }),
+      entrada(),
+    );
+
+    expect(r?.tabelaDeMedidas.lidaDeVolta).toBe(0);
+    expect(r?.tabelaDeMedidas.fotoLidaDeVolta).toBe(false);
+  });
+
+  it('⚠️ fotoLidaDeVolta = uma URL http(s) — o "-" da Shopee (a amostra da própria página) é AUSÊNCIA, nunca "lida de volta"', async () => {
+    const lerDeVolta = async (sizeChart: string): Promise<boolean | null | undefined> => {
+      __resetAllReadCaches();
+      const db = new FakeDb();
+      semearProdutoComTabela(db);
+      semearTabela(db, []);
+      const fake = clienteFake({
+        addItem: () => ecoDeItem(),
+        getItemBaseInfo: () =>
+          baseInfo([linhaDeLeitura({ size_chart_id: 0, size_chart: sizeChart })]),
+      });
+      const r = await publicarAnuncioShopee(
+        deps(db, fake, { resolvedorDeImagens: resolvedorDaTabela().resolvedor }),
+        entrada(),
+      );
+      return r?.tabelaDeMedidas.fotoLidaDeVolta;
+    };
+
+    // PAR: qualquer URL http(s) — esquema em qualquer caixa, borda aparada.
+    for (const url of [
+      URL_LIDA,
+      'http://cf.shopee.invalido/file/x',
+      ` HTTPS://cf.shopee.invalido/x `,
+    ]) {
+      expect(await lerDeVolta(url), url).toBe(true);
+    }
+    // QUASE-PAR: o marcador de ausência da Shopee e o que não é uma URL de imagem.
+    for (const quase of [
+      '-',
+      ' - ',
+      '',
+      '   ',
+      'https://',
+      'ftp://cf.shopee.invalido/x',
+      '/file/x',
+    ]) {
+      expect(await lerDeVolta(quase), JSON.stringify(quase)).toBe(false);
+    }
+  });
+
+  it('M-A4: support_image_size_chart === false ⇒ nenhum envio e nenhuma chave; null ⇒ envia', async () => {
+    const recusa = new FakeDb();
+    semearProdutoComTabela(recusa);
+    semearTabela(recusa, []);
+    const fakeRecusa = clienteFake({ addItem: () => ecoDeItem() });
+    comLimiteDeTabela(fakeRecusa, {
+      size_chart_mandatory: null,
+      support_image_size_chart: false,
+      support_template_size_chart: null,
+    });
+    const fotosRecusa = resolvedorDaTabela();
+
+    const r = await publicarAnuncioShopee(
+      deps(recusa, fakeRecusa, { resolvedorDeImagens: fotosRecusa.resolvedor }),
+      entrada(),
+    );
+    expect(fotosRecusa.daTabela()).toEqual([]);
+    expect('size_chart_info' in (fakeRecusa.corpos[0] ?? {})).toBe(false);
+    expect(r?.tabelaDeMedidas).toMatchObject({
+      fonte: 'nenhuma',
+      fotoOmitida: 'categoria-sem-foto',
+    });
+
+    // ⚠️ NEAR-MISS: desconhecido (null) NÃO retém a foto.
+    __resetAllReadCaches();
+    const nulo = new FakeDb();
+    semearProdutoComTabela(nulo);
+    semearTabela(nulo, []);
+    const fakeNulo = clienteFake({ addItem: () => ecoDeItem() });
+    comLimiteDeTabela(fakeNulo, {
+      size_chart_mandatory: null,
+      support_image_size_chart: null,
+      support_template_size_chart: null,
+    });
+    const fotosNulo = resolvedorDaTabela();
+    await publicarAnuncioShopee(
+      deps(nulo, fakeNulo, { resolvedorDeImagens: fotosNulo.resolvedor }),
+      entrada(),
+    );
+    expect(fotosNulo.daTabela()).toHaveLength(1);
+    expect(fakeNulo.corpos[0]?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+  });
+
+  it('M-A5: um image_id já em cache em arquivos.externalIds ⇒ nenhum upload_image, nenhum download', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    const cache = (externalId: string) => ({
+      externalIds: [{ integracaoPath: REF_CONTA, externalId }],
+    });
+    db.seed('arquivos/arq-1', cache('img-cache-item'));
+    db.seed(`arquivos/${ARQ_TABELA}`, cache('img-cache-tabela'));
+    const fake = clienteFake();
+    const d = deps(db, fake, {
+      fetchImpl: () => Promise.reject(new Error('fixture: nada deveria ser baixado')),
+    });
+
+    // O resolvedor REAL — com o allow-list e o cache do passo 11 —, e um
+    // partner client que LANÇA: um upload_image aqui mataria o teste.
+    const contexto = await prepararPublicacao(d, entrada(), criarResolvedorDePublicacao(d, PAI));
+    if (contexto === null) throw new Error('fixture: contexto nulo');
+    const fotos = await resolverFotosDaPublicacao(contexto);
+    const plano = planejarPublicacao(contexto, fotos);
+
+    expect(fotos.tabelaDeMedidas).toEqual({ imageId: 'img-cache-tabela', falha: null });
+    expect(plano.item.criar.size_chart_info).toEqual({ size_chart: 'img-cache-tabela' });
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+    expect(fotos.resumo.enviadas).toBe(0);
+  });
+
+  it('M-A7: a foto da tabela NÃO sobe ⇒ 422 em size_chart_info (nunca image), ANTES de qualquer escrita — nem o carimbo', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    // Uma REpublicação: há vínculo, então um carimbo de falha SERIA possível.
+    semearLink(db);
+    const fake = clienteFake();
+    const fotos = resolvedorDaTabela({ falharTabela: true });
+
+    const erro = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: fotos.resolvedor }),
+      entrada(),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePublishRejectedError);
+    const recusa = erro as ShopeePublishRejectedError;
+    expect(recusa.etapa).toBe(ETAPA_PUBLICACAO.fotos);
+    expect(recusa.problemas).toEqual([
+      expect.objectContaining({
+        campo: 'size_chart_info',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+      }),
+    ]);
+    expect(recusa.problemas[0]?.mensagem).toContain(MOTIVO_FOTO_PUBLICACAO.uploadRecusado);
+    // A SHOPEE recusou o upload: a frase e o cabeçalho dizem isso — sem um "()" vazio.
+    expect(recusa.problemas[0]?.mensagem).toContain('recusada pela Shopee');
+    expect(recusa.recusadaPelaShopee).toBe(true);
+    expect(recusa.message).toBe(
+      `Publicação recusada pela Shopee em fotos no produto ${PAI} (item ${String(ITEM_ID)}): 1 problema`,
+    );
+    expect(fake.ops).not.toContain('add_item');
+    expect(fake.ops).not.toContain('update_item');
+    expect(db.writes).toEqual([]);
+  });
+
+  it('⛔ QUASE-PAR do M-A7: a foto que a Shopee NUNCA viu (download, rede) ⇒ o mesmo 422, mas "interrompida" e "tente de novo" — nunca "recusada pela Shopee"', async () => {
+    for (const motivo of [
+      MOTIVO_FOTO_PUBLICACAO.http,
+      MOTIVO_FOTO_PUBLICACAO.contentType,
+      MOTIVO_FOTO_PUBLICACAO.arquivoAusente,
+    ]) {
+      __resetAllReadCaches();
+      const db = new FakeDb();
+      semearProdutoComTabela(db);
+      semearTabela(db, []);
+      const fake = clienteFake();
+      const fotos = resolvedorDaTabela({ falharTabela: true, motivoDaFalha: motivo });
+
+      const erro = await publicarAnuncioShopee(
+        deps(db, fake, { resolvedorDeImagens: fotos.resolvedor }),
+        entrada(),
+      ).catch((e: unknown) => e);
+
+      expect(erro, motivo).toBeInstanceOf(ShopeePublishRejectedError);
+      const recusa = erro as ShopeePublishRejectedError;
+      // A RECUSA não muda (Q1c): a mesma etapa, o mesmo campo, o mesmo motivo.
+      expect(recusa.etapa, motivo).toBe(ETAPA_PUBLICACAO.fotos);
+      expect(recusa.problemas, motivo).toEqual([
+        expect.objectContaining({
+          campo: 'size_chart_info',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+        }),
+      ]);
+      // …mas ninguém culpa a Shopee, e o que fazer vem primeiro.
+      expect(recusa.recusadaPelaShopee, motivo).toBe(false);
+      expect(recusa.message, motivo).toBe(
+        `Publicação interrompida em fotos no produto ${PAI}: 1 problema`,
+      );
+      expect(recusa.problemas[0]?.mensagem, motivo).toContain(
+        'não foi possível enviar a foto da tabela de medidas — tente de novo',
+      );
+      expect(`${recusa.message} ${recusa.problemas[0]?.mensagem ?? ''}`, motivo).not.toContain(
+        'Shopee',
+      );
+      expect(fake.ops, motivo).not.toContain('add_item');
+      expect(db.writes, motivo).toEqual([]);
+    }
+  });
+
+  it('⛔ pelo resolvedor REAL: um fetch que REJEITA (TypeError) na foto da tabela ⇒ 422 "interrompida", "tente de novo"', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    // A foto do ITEM vem do cache; a da TABELA precisa ser baixada — e a rede cai.
+    db.seed('arquivos/arq-1', {
+      externalIds: [{ integracaoPath: REF_CONTA, externalId: 'img-cache-item' }],
+    });
+    db.seed(`arquivos/${ARQ_TABELA}`, {
+      url: 'https://firebasestorage.googleapis.com/v0/b/fixture/o/tabela.jpg?alt=media',
+    });
+    const fake = clienteFake();
+    // Sem `resolvedorDeImagens`: o publicador monta o REAL (allow-list, cache, falhas).
+    const d = deps(db, fake, {
+      fetchImpl: () => Promise.reject(new TypeError('fetch failed')),
+    });
+
+    const erro = await publicarAnuncioShopee(d, entrada()).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePublishRejectedError);
+    const recusa = erro as ShopeePublishRejectedError;
+    expect(recusa.message).toBe(`Publicação interrompida em fotos no produto ${PAI}: 1 problema`);
+    expect(recusa.problemas[0]?.mensagem).toBe(
+      'não foi possível enviar a foto da tabela de medidas — tente de novo; se repetir, troque a ' +
+        `primeira foto ou escolha um modelo em /medidas (envio da foto: ${MOTIVO_FOTO_PUBLICACAO.http}, tabela ${TABELA})`,
+    );
+    expect(fake.ops).not.toContain('add_item');
+  });
+
+  it('M-A8/M78: um modelo VELHO recusado no add_item ⇒ 422 em size_chart_info, UMA chamada, e NENHUMA tentativa de foto', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(CATEGORIA)]);
+    const fake = clienteFake({
+      addItem: () => {
+        throw erroDaTabela('product.error_param', FRASE_ID_INEXISTENTE);
+      },
+    });
+    const fotos = resolvedorDaTabela();
+
+    const erro = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: fotos.resolvedor }),
+      entrada(),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePublishRejectedError);
+    const recusa = erro as ShopeePublishRejectedError;
+    expect(recusa.etapa).toBe(ETAPA_PUBLICACAO.addItem);
+    expect(recusa.shopeeCode).toBe('product.error_param');
+    expect(recusa.problemas).toEqual([
+      expect.objectContaining({
+        campo: 'size_chart_info',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
+      }),
+    ]);
+    // Sem retentativa sem a chave (Q4), e o fallback de FOTO nunca entra.
+    expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(fotos.daTabela()).toEqual([]);
+    // Num create recusado no add_item não há vínculo: nada é gravado.
+    expect(db.writes).toEqual([]);
+  });
+
+  it('o mesmo modelo velho no update_item ⇒ 422 em size_chart_info, UMA chamada', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(CATEGORIA)]);
+    semearLink(db);
+    const fake = clienteFake({
+      updateItem: () => {
+        throw erroDaTabela(
+          'product.error_param',
+          FRASE_ID_INEXISTENTE,
+          '/api/v2/product/update_item',
+        );
+      },
+    });
+
+    const erro = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: resolvedorDaTabela().resolvedor }),
+      entrada(),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePublishRejectedError);
+    expect((erro as ShopeePublishRejectedError).etapa).toBe(ETAPA_PUBLICACAO.updateItem);
+    expect((erro as ShopeePublishRejectedError).problemas[0]).toMatchObject({
+      campo: 'size_chart_info',
+      motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
+    });
+    expect(fake.ops.filter((o) => o === 'update_item')).toHaveLength(1);
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart_id: MODELO });
+  });
+
+  it('M-A6: o validador de IMAGEM da Shopee recusa a foto ⇒ 422 em size_chart_info, sem retentativa', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    const fake = clienteFake({
+      addItem: () => {
+        throw erroDaTabela('product.error_busi', FRASE_VALIDADOR);
+      },
+    });
+
+    const erro = await publicarAnuncioShopee(
+      deps(db, fake, { resolvedorDeImagens: resolvedorDaTabela().resolvedor }),
+      entrada(),
+    ).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeePublishRejectedError);
+    expect((erro as ShopeePublishRejectedError).problemas).toEqual([
+      expect.objectContaining({
+        campo: 'size_chart_info',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+      }),
+    ]);
+    expect(fake.ops.filter((o) => o === 'add_item')).toHaveLength(1);
+    expect(fake.corpos[0]?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+    expect(db.writes).toEqual([]);
+  });
+
+  it('M75: a retentativa fiscal C13 tira SÓ tax_info — o size_chart_info fica no reenvio', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(CATEGORIA)]);
+    let chamadas = 0;
+    const fake = clienteFake({
+      addItem: () => {
+        chamadas += 1;
+        if (chamadas === 1) throw erroApi('product.error_param', `Shopee: ${FRASE_BR}`);
+        return ecoDeItem();
+      },
+    });
+
+    const { plano } = await planejar(db, fake);
+    const comFiscal: PlanoPublicacao = {
+      ...plano,
+      item: {
+        ...plano.item,
+        criar: { ...plano.item.criar, tax_info: { ncm: '61091000', cest: '2804200' } },
+      },
+    };
+    await aplicarPublicacao(deps(db, fake), comFiscal);
+
+    expect(chamadas).toBe(2);
+    expect(fake.corpos[0]).toHaveProperty('tax_info');
+    expect('tax_info' in (fake.corpos[1] ?? {})).toBe(false);
+    expect(fake.corpos[1]?.size_chart_info).toEqual({ size_chart_id: MODELO });
+  });
+
+  it('M75 (A.1.5): …e mantém o que foi enviado — a FOTO também sobrevive à retentativa fiscal', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, []);
+    let chamadas = 0;
+    const fake = clienteFake({
+      addItem: () => {
+        chamadas += 1;
+        if (chamadas === 1) throw erroApi('product.error_param', `Shopee: ${FRASE_BR}`);
+        return ecoDeItem();
+      },
+    });
+
+    const { plano } = await planejar(
+      db,
+      fake,
+      {},
+      {},
+      { resolvedor: resolvedorDaTabela().resolvedor, passes: [] },
+    );
+    expect(plano.item.criar.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+    const comFiscal: PlanoPublicacao = {
+      ...plano,
+      item: {
+        ...plano.item,
+        criar: { ...plano.item.criar, tax_info: { ncm: '61091000', cest: '2804200' } },
+      },
+    };
+    await aplicarPublicacao(deps(db, fake), comFiscal);
+
+    expect(chamadas).toBe(2);
+    expect('tax_info' in (fake.corpos[1] ?? {})).toBe(false);
+    expect(fake.corpos[1]?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+  });
+
+  it('⛔ M-A11: a passada da foto decide pela categoria do LINK — link 100017 + corpo 100018 + entrada só para 100018 ⇒ foto', async () => {
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [entradaDaTabela(OUTRA_CATEGORIA)]);
+    semearLink(db); // category_id = CATEGORIA
+    const fake = clienteFake();
+    const fotos = resolvedorDaTabela();
+
+    const { plano } = await planejar(
+      db,
+      fake,
+      {},
+      { categoryId: OUTRA_CATEGORIA },
+      { resolvedor: fotos.resolvedor, passes: [] },
+    );
+
+    // A entrada é do corpo da rota (100018); o anúncio está em 100017 ⇒ não casa,
+    // a foto é a fonte — e a passada e o corpo concordam sobre isso.
+    expect(plano.item.atualizar?.category_id).toBe(CATEGORIA);
+    expect(fotos.daTabela()).toHaveLength(1);
+    expect(plano.item.atualizar?.size_chart_info).toEqual({ size_chart: IMG_TABELA });
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+  });
+
+  it('RT3: uma linha "700024641" em TEXTO no fio ⇒ o walker REAL da rota de lista ⇒ entrada do corpus ⇒ tabMedi ⇒ o add_item leva o NÚMERO JSON', async () => {
+    // O PRODUTOR real da linha (`listarTabelasDaCategoria`, o que a rota `lista`
+    // responde), sobre a página e o detalhe como o PACOTE os resolve — a linha
+    // nunca é montada à mão. O detalhe é o da doc (pelo schema do pacote),
+    // ecoando o id pedido — a amostra ecoa OUTRO id (A.3).
+    const detalheDaDoc = lerDetalheDeTabelaDeMedidas(FIXTURE_SIZE_CHART_DETAIL_DOC);
+    const fake = clienteFake();
+    Object.assign(fake.client, {
+      getSizeChartList: () => {
+        fake.ops.push('get_size_chart_list');
+        return Promise.resolve(
+          shopeeSizeChartListSchema.parse({
+            error: '',
+            message: '',
+            response: { size_chart_list: [{ size_chart_id: '700024641' }], next_cursor: '' },
+          }).response,
+        );
+      },
+      getSizeChartDetail: (p: { readonly sizeChartId: number }) => {
+        fake.ops.push('get_size_chart_detail');
+        return Promise.resolve({ ...detalheDaDoc, size_chart_id: p.sizeChartId });
+      },
+    });
+    const lista = await listarTabelasDaCategoria({ client: fake.client }, CATEGORIA);
+    expect(lista.tabelas.map((t) => t.sizeChartId)).toEqual([MODELO]);
+    const [linha] = lista.tabelas;
+    if (linha === undefined) throw new Error('fixture: a lista não trouxe a linha');
+
+    // O que o /medidas grava a partir dessa linha: a entrada do corpus.
+    const guardada = entradaTabelaShopeeSchema.parse({
+      categoryId: CATEGORIA,
+      size_chart_id: linha.sizeChartId,
+      name: 'Camisetas',
+    });
+
+    const db = new FakeDb();
+    semearProdutoComTabela(db);
+    semearTabela(db, [guardada]);
+    const { plano } = await planejar(db, fake);
+
+    expect(JSON.stringify(plano.item.criar)).toContain(
+      '"size_chart_info":{"size_chart_id":700024641}',
+    );
   });
 });

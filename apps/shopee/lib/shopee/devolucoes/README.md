@@ -23,7 +23,7 @@ returns operations, schemas and the wire corpus; (3) this folder's importer,
 the code-29 arm, the aviso, the transaction and the tasks round trip; (4) the
 poller and its schedule and the `importar:devolucao` dry run; (5) the actions
 and the two routes; (6) the web panel and the Incidentes lock; (7) the docs.
-None is merged and nothing is deployed (§18).
+All seven merged on 2026-10-05 (#1760–#1766); nothing is deployed (§18).
 
 Everything here is **offline-verified**. The SG sandbox has no Returns module
 (`guide 644`), so every wire fact below comes from Shopee's documentation, and

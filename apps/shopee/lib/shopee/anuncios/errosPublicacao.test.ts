@@ -17,6 +17,7 @@ import {
   MOTIVO_PUBLICACAO_BLOQUEADA,
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
+  cabecalhoDaRecusa,
   limitarMensagemProblema,
   temProblemaDeBloqueio,
   type ProblemaDeBloqueio,
@@ -134,27 +135,36 @@ describe('MOTIVO_PUBLICACAO_BLOQUEADA', () => {
 });
 
 describe('MOTIVO_PROBLEMA_PUBLICACAO', () => {
-  it('5 — o vocabulário de problema é o bloqueado MAIS exatamente três slugs de wire', () => {
+  it('5 — o vocabulário de problema é o bloqueado MAIS exatamente cinco slugs de wire', () => {
+    // O passo 18 acrescentou os dois de `size_chart_info`: o modelo que a Shopee
+    // recusou e a foto da tabela que ela recusou (ou cujo upload falhou).
     expect([...Object.values(MOTIVO_PROBLEMA_PUBLICACAO)].sort()).toEqual(
       [
         ...Object.values(MOTIVO_PUBLICACAO_BLOQUEADA),
         'bloqueado-por-promocao',
         'imposto-recusado',
+        'tabela-de-medidas-recusada',
+        'tabela-de-medidas-foto-recusada',
         'desconhecido',
       ].sort(),
     );
-    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(25);
+    expect(Object.values(MOTIVO_PROBLEMA_PUBLICACAO)).toHaveLength(27);
   });
 
-  it('6 — ⛔ NEAR-MISS: os três slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
+  it('6 — ⛔ NEAR-MISS: os cinco slugs de WIRE não pertencem ao vocabulário BLOQUEADO', () => {
     // O publisher nunca RECUSA por um deles: nenhum é uma decisão tomada lendo
     // o produto. Se escorregassem para o conjunto bloqueado, um
     // `ShopeePublishBlockedError` passaria a poder dizer "bloqueado por
     // promoção" sem que uma única chamada tivesse sido feita.
+    // ⚠️ Os dois da tabela de medidas idem: um `avisoObrigatoria` é um AVISO
+    // (nunca um bloqueio), e o BLOQUEADO continua com 22 membros.
     const bloqueados: readonly string[] = Object.values(MOTIVO_PUBLICACAO_BLOQUEADA);
     expect(bloqueados).not.toContain('bloqueado-por-promocao');
     expect(bloqueados).not.toContain('imposto-recusado');
+    expect(bloqueados).not.toContain('tabela-de-medidas-recusada');
+    expect(bloqueados).not.toContain('tabela-de-medidas-foto-recusada');
     expect(bloqueados).not.toContain('desconhecido');
+    expect(bloqueados).toHaveLength(22);
   });
 });
 
@@ -382,6 +392,55 @@ describe('ShopeePublishRejectedError', () => {
     expect(err.problemas).toEqual([]);
     expect(err.message).toContain('0 problemas');
   });
+
+  it('20b — sem código da Shopee, o cabeçalho NÃO leva um "()" vazio (passo 18: a foto da tabela)', () => {
+    const semCodigo = new ShopeePublishRejectedError({
+      etapa: ETAPA_PUBLICACAO.fotos,
+      shopeeCode: '',
+      produtoId: PRODUTO_ID,
+      itemId: null,
+      problemas: [],
+    });
+    expect(semCodigo.message).toBe(
+      'Publicação recusada pela Shopee em fotos no produto prod-fixture-1: 0 problemas',
+    );
+    expect(semCodigo.message).not.toContain('()');
+    // O padrão é "a Shopee recusou" — todo produtor fora a foto da tabela.
+    expect(semCodigo.recusadaPelaShopee).toBe(true);
+    // ⚠️ QUASE-PAR: com código, os parênteses voltam — verbatim.
+    expect(recusado([], 'product.error_busi').message).toContain(
+      'em add_item (product.error_busi) ',
+    );
+  });
+
+  it('20c — uma foto que a Shopee NUNCA viu: "interrompida", nunca "recusada pela Shopee"', () => {
+    const err = new ShopeePublishRejectedError({
+      etapa: ETAPA_PUBLICACAO.fotos,
+      shopeeCode: '',
+      produtoId: PRODUTO_ID,
+      itemId: ITEM_ID,
+      problemas: [
+        {
+          campo: 'size_chart_info',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+          mensagem: 'mecanismo',
+        },
+      ],
+      recusadaPelaShopee: false,
+    });
+    expect(err.recusadaPelaShopee).toBe(false);
+    expect(err.message).toBe(
+      'Publicação interrompida em fotos no produto prod-fixture-1 (item 2500139861): 1 problema',
+    );
+    expect(err.message).not.toContain('Shopee');
+    // A CLI e a classe dizem a MESMA coisa: uma função só.
+    expect(cabecalhoDaRecusa(err.etapa, err.shopeeCode, err.recusadaPelaShopee)).toBe(
+      'Publicação interrompida em fotos',
+    );
+    expect(cabecalhoDaRecusa(ETAPA_PUBLICACAO.addItem, 'product.error_param', true)).toBe(
+      'Publicação recusada pela Shopee em add_item (product.error_param)',
+    );
+  });
 });
 
 describe('constantesAnuncio', () => {
@@ -487,6 +546,37 @@ describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublic
 
     expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
     expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(22);
+  });
+
+  it('os 5 motivos só de WIRE: cada um também é escrito por ALGUM outro arquivo', () => {
+    // A mesma regra para os membros que só um problema carrega — os dois de
+    // `size_chart_info` (passo 18) entraram com um produtor cada (as linhas da
+    // tabela de `problemasPublicacao.ts`), e um membro novo sem produtor fica
+    // vermelho aqui.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    expect(fontes.has('problemasPublicacao.ts')).toBe(true);
+
+    const bloqueados = new Set<string>(Object.values(MOTIVO_PUBLICACAO_BLOQUEADA));
+    const soDeWire = Object.entries(MOTIVO_PROBLEMA_PUBLICACAO).filter(
+      ([, slug]) => !bloqueados.has(slug),
+    );
+    expect(soDeWire.map(([chave]) => chave).sort()).toEqual([
+      'bloqueadoPorPromocao',
+      'desconhecido',
+      'impostoRecusado',
+      'tabelaDeMedidasFotoRecusada',
+      'tabelaDeMedidasRecusada',
+    ]);
+
+    const orfaos: string[] = [];
+    for (const [chave, slug] of soDeWire) {
+      const grafias = [`'${slug}'`, `"${slug}"`, `MOTIVO_PROBLEMA_PUBLICACAO.${chave}`];
+      const temProdutor = [...fontes.values()].some((fonte) =>
+        grafias.some((g) => fonte.includes(g)),
+      );
+      if (!temProdutor) orfaos.push(`${chave} (${slug})`);
+    }
+    expect(orfaos, 'motivos de wire declarados que NINGUÉM produz').toEqual([]);
   });
 
   it('os 11 motivos de tax_info omitido: cada um é escrito pela CONSTANTE companheira', () => {

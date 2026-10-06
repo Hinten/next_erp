@@ -35,10 +35,13 @@ import { warmRoutes } from './helpers/warmup';
  * `nome`-required validation, the unsaved-changes guard and URL persistence.
  *
  * The headline regression — `preserves the marketplace maps when editing` —
- * asserts that editing a tabela through the form leaves the
- * integration-authored size-chart maps it never renders byte-for-byte intact
- * (ObjectView writes a dirty-field patch, so untouched fields are never
- * clobbered). Runs serially.
+ * asserts that editing another field of a tabela leaves both size-chart maps
+ * byte-for-byte intact (ObjectView writes a dirty-field patch, so a field the
+ * edit never dirtied is never clobbered). The Mercado Livre map never enters
+ * the form; the Shopee map does (its tab stages picks and the save writes them —
+ * `medidas-shopee.cadastros.e2e.spec.ts`), so this also pins that the tab —
+ * mounted even unopened (Mantine `keepMounted`) — never dirties it on its own.
+ * Runs serially.
  */
 test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
   const prefix = e2ePrefix('med');
@@ -209,9 +212,10 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
   });
 
   test('preserves the marketplace maps when editing through the form', async ({ page }) => {
-    // The ML/Shopee size-chart maps are integration-authored, excluded from the
-    // form, and must survive a plain edit. Editing only Descrição produces a
-    // dirty-field patch that never touches the marketplace maps.
+    // Both size-chart maps must survive a plain edit. The ML map is excluded
+    // from the form; the Shopee map is a form field (the Shopee tab stages
+    // picks), but its tab never writes the value on mount, so editing only
+    // Descrição produces a dirty-field patch that touches neither map.
     await page.goto(`/medidas/${mkt.id}`);
     await fillField(page, 'Descrição', 'editado-mkt');
     await clickSave(page, 'Salvar alterações');

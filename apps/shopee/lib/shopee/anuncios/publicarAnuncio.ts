@@ -125,22 +125,34 @@ import {
   type ResumoFotosPublicacao,
 } from './fotosPublicacao';
 import { criarLeitorDeImpostoShopee } from './lerImpostoDoProduto';
+import { lerTabelaMedidasDoProduto } from './lerTabelaMedidasDoProduto';
 import { lerLinksDeVariacao, resolverLinkPorProduto, type LinkDeVariacao } from './linkAnuncio';
 import { aplicarModelos, type ResultadoModelos } from './modelosPublicacao';
 import {
+  categoriaDoAnuncio,
   kitNativoDoAnuncio,
   type LinkListagemLido,
   type ProdutoParaPublicar,
 } from './montagemAnuncio';
 import {
+  fotoDaTabelaRecusadaPelaShopee,
   planejarPublicacao,
   type ContextoPublicacao,
+  type FotoDaTabelaDeMedidas,
   type FotosResolvidas,
   type OrdemDeRelistagem,
   type PlanoPublicacao,
 } from './planoPublicacao';
 import { problemaDeErroShopee, problemasDeErroShopee } from './problemasPublicacao';
 import { agendadoParaMsDe, estadoDoAnuncio } from './statusAnuncio';
+import {
+  FONTE_TABELA_MEDIDAS,
+  resolverTabelaDeMedidasDoAnuncio,
+  type FotoTabelaMedidasOmitida,
+  type MotivoTabelaMedidasOmitida,
+  type ResultadoTabelaDeMedidasShopee,
+  type TipoFonteTabelaDeMedidas,
+} from './tabelaMedidasPublicacao';
 import { MOTIVO_TAX_INFO_OMITIDO, type MotivoTaxInfoOmitido } from './taxInfoPublicacao';
 import {
   fotoDaOpcaoDeTier,
@@ -220,6 +232,31 @@ export interface EntradaDePublicacao {
   readonly statusPedido: ShopeeItemStatusWritable;
 }
 
+/**
+ * What one publish did about the size chart (step 18) — the decision it SENT,
+ * plus the read-back's echo as a DIAGNOSTIC.
+ *
+ * ⚠️ `lidaDeVolta` is `get_item_base_info.size_chart_id` RAW (no fold — Shopee
+ * zero-fills absent numerics, so a `0` there is data), and it is what settles
+ * whether a JSON-number `size_chart_id` was accepted (register 262).
+ * `fotoLidaDeVolta` is the read-back `size_chart` URL's PRESENCE, never the URL
+ * — an `http(s)` URL; Shopee's `"-"` placeholder and a blank are absence.
+ * Both are `null` when the read-back degraded. Nothing reads either to decide
+ * anything: the pick lives on `tabMedi`, never derived from the read-back.
+ */
+export interface TabelaDeMedidasDaPublicacao {
+  /** The TEMPLATE sent — non-null ⇔ `fonte === 'modelo'`. */
+  readonly sizeChartId: number | null;
+  readonly fonte: TipoFonteTabelaDeMedidas;
+  /** Why no template — `null` only when one was sent. */
+  readonly motivo: MotivoTabelaMedidasOmitida | null;
+  readonly fotoOmitida: FotoTabelaMedidasOmitida | null;
+  /** The category declares a MANDATORY chart and nothing went out — a warning. */
+  readonly avisoObrigatoria: boolean;
+  readonly lidaDeVolta: number | null;
+  readonly fotoLidaDeVolta: boolean | null;
+}
+
 /** One publish, done. */
 export interface ResultadoPublicacao {
   readonly plano: PlanoPublicacao;
@@ -249,6 +286,8 @@ export interface ResultadoPublicacao {
   readonly avisoResolvido: boolean;
   /** `false` when the read-back could not find the listing (eventual consistency). */
   readonly leituraDeVolta: boolean;
+  /** The size chart this publish sent, and what the read-back echoed (step 18). */
+  readonly tabelaDeMedidas: TabelaDeMedidasDaPublicacao;
   /**
    * Shopee calls spent by **`aplicar` only** — the budget signal, like
    * `reverificarAnuncio.ts`'s field of the same name.
@@ -460,7 +499,10 @@ export function criarResolvedorDePublicacao(
  *
  * ⚠️ **It writes nothing**, and the proof is structural: {@link
  * PrepararPublicacaoDeps} reaches no writer, and the resolver it is handed is
- * never CALLED here (a test drives it with a resolver that throws).
+ * never CALLED here (a test drives it with a resolver that throws). That holds
+ * for step 18's tabela too: `lerTabelaMedidasDoProduto` READS the produto's
+ * `tabMedi` document (one get, none without a ref) and the size-chart photo is
+ * uploaded by {@link resolverFotosDaPublicacao}, never here.
  *
  * ⚠️ **`get_model_list` is never read here.** The live tier tree is read FRESH
  * inside `aplicarModelos`, immediately before `update_tier_variation` is built:
@@ -558,7 +600,8 @@ export async function prepararPublicacao(
   );
 
   /* ---- taxonomy: the leaf gate, the bands, the attributes. ----------------- */
-  const categoryId = link?.category_id ?? entrada.categoryId ?? null;
+  // ⚠️ The ONE resolution `montarAnuncio` and the size-chart photo pass call.
+  const categoryId = categoriaDoAnuncio(link, entrada.categoryId ?? null);
   const indice = await deps.categorias.carregar();
   const veredictoFolha = categoryId === null ? 'desconhecida' : ehFolha(indice, categoryId);
   const limites: LimitesDeItemLidos = await lerLimitesDeItem(deps.taxonomia, categoryId);
@@ -581,6 +624,14 @@ export async function prepararPublicacao(
     operacaoOuterRef: deps.operacaoOuterRef,
   }).ler(entrada.produtoId);
 
+  // Step 18: the produto's tabela de medidas, for THIS conta. At most ONE read,
+  // and none at all when the produto names no tabela; it writes nothing.
+  const tabelaDeMedidas = await lerTabelaMedidasDoProduto(
+    db,
+    raw.tabelaDeMedidasModaUid,
+    deps.integracaoId,
+  );
+
   return {
     integracaoId: deps.integracaoId,
     produto,
@@ -597,6 +648,7 @@ export async function prepararPublicacao(
     marca,
     canais,
     imposto,
+    tabelaDeMedidas,
     resolvedorDeImagens,
     ehAtualizacao,
     statusPedido: entrada.statusPedido,
@@ -918,6 +970,8 @@ async function resolverMarcaDoAnuncio(
  * empty list, `montarAnuncio` turns that into the `sem-fotos` refusal, and the
  * applier throws `ShopeePublishBlockedError` before `add_item` — so the operator
  * gets a body naming every refusal instead of one that stops at "no pictures".
+ *
+ * Then, step 18, the size-chart PHOTO pass ({@link resolverFotoDaTabelaDeMedidas}).
  */
 export async function resolverFotosDaPublicacao(
   contexto: ContextoPublicacao,
@@ -925,7 +979,43 @@ export async function resolverFotosDaPublicacao(
   const resolvedor = contexto.resolvedorDeImagens;
   const item = await resolvedor.resolver(contexto.produto.fotos);
   const imagensDeOpcao = await resolverImagensDeOpcao(contexto, resolvedor);
-  return { item, imagensDeOpcao, resumo: resolvedor.resumo() };
+  const tabelaDeMedidas = await resolverFotoDaTabelaDeMedidas(contexto, resolvedor);
+  return { item, imagensDeOpcao, tabelaDeMedidas, resumo: resolvedor.resumo() };
+}
+
+/**
+ * The tabela's FIRST photo as an image chart — uploaded ONLY when the size-chart
+ * decision says `foto` (step 18, A.1.4).
+ *
+ * ⚠️ **The decision is the item mapper's own**, made here BEFORE it runs because
+ * the upload is I/O: the SAME `resolverTabelaDeMedidasDoAnuncio` over the SAME
+ * resolved category ({@link categoriaDoAnuncio}) and the same band, so the photo
+ * uploaded here is exactly the one `montarAnuncio` will put on the body. A
+ * template that matched WINS and costs zero uploads; a category that explicitly
+ * takes no image chart costs zero uploads too.
+ *
+ * Step 11's resolver, `cap: 1`: its SSRF allow-list, its `arquivos.externalIds`
+ * cache (a re-publish reuses the cached `image_id` — the legacy behaviour) and
+ * its failure split, unchanged. The dry run uploads it too, step 11's documented
+ * exception. A skipped photo comes back as `imageId: null` with the resolver's
+ * own `falha`, and the PLAN refuses the publish on `size_chart_info` — never on
+ * `image`, and before any listing write (Lucas's Q1c). Anything the resolver
+ * propagates (a rate limit, a Firestore error) fails the publish here, as for
+ * the item pass.
+ */
+async function resolverFotoDaTabelaDeMedidas(
+  contexto: ContextoPublicacao,
+  resolvedor: ResolvedorDeImagensShopee,
+): Promise<FotoDaTabelaDeMedidas | null> {
+  const decisao = resolverTabelaDeMedidasDoAnuncio(
+    contexto.tabelaDeMedidas,
+    categoriaDoAnuncio(contexto.link, contexto.categoryId),
+    contexto.limites.limites.sizeChartLimit,
+  );
+  if (decisao.fonte.tipo !== FONTE_TABELA_MEDIDAS.foto) return null;
+  const resultado = await resolvedor.resolver([decisao.fonte.foto], { cap: 1 });
+  const imageId = resultado.imageIds[0] ?? null;
+  return { imageId, falha: imageId === null ? (resultado.falhas[0] ?? null) : null };
 }
 
 /** Which variante of `grupoId` one child occupies, from its fake paths. */
@@ -1447,6 +1537,23 @@ export async function aplicarPublicacao(
       problemas: plano.problemas,
     });
   }
+  // Step 18, Q1c: the tabela's photo did not upload ⇒ the publish is REFUSED
+  // on `size_chart_info`, before the link read and before any listing write —
+  // never published without the chart, and never retried without it. The
+  // REJECTED class (etapa `fotos`), because its motivo is outside the blocked
+  // vocabulary; `shopeeCode` is `''` — the resolver keeps the failure's closed
+  // motivo, not a code. ⚠️ "recusada pela Shopee" only when Shopee refused the
+  // upload: the same predicate the plan chose the problema's sentence with.
+  if (plano.recusaTabelaDeMedidas !== null) {
+    throw new ShopeePublishRejectedError({
+      etapa: ETAPA_PUBLICACAO.fotos,
+      shopeeCode: '',
+      produtoId: plano.produtoId,
+      itemId: plano.itemId,
+      problemas: [plano.recusaTabelaDeMedidas],
+      recusadaPelaShopee: fotoDaTabelaRecusadaPelaShopee(plano.fotos.tabelaDeMedidas),
+    });
+  }
 
   const produtoId = plano.produtoId;
   const avisos = new ColetorDeAviso();
@@ -1578,6 +1685,7 @@ export async function aplicarPublicacao(
       relistagem: relistagem?.porta ?? null,
       avisoResolvido,
       leituraDeVolta: leitura.item !== null,
+      tabelaDeMedidas: tabelaDeMedidasDaPublicacao(plano.item.tabelaDeMedidas, leitura.item),
       chamadasShopee,
     };
     registrarPublicacao(deps, resultado);
@@ -1764,6 +1872,50 @@ async function lerDeVolta(
   }
 }
 
+/**
+ * `http://` or `https://` (any case) followed by at least one non-space
+ * character, after an edge trim — the only `size_chart` value that counts as "a
+ * chart image came back".
+ */
+const URL_DE_IMAGEM_LIDA = /^https?:\/\/\S/i;
+
+/**
+ * Did the read-back's `size_chart` name an image?
+ *
+ * ⚠️ PRESENCE of a URL, never "a non-blank string": Shopee spells absence
+ * `"-"` on this very page's response sample (and on other pages' strings — the
+ * package keeps it verbatim), and a blank too. Counting the placeholder as an
+ * echo would make the register-267 instrument read a silently ignored image
+ * chart as accepted. Equal (`true`): an `http(s)://` URL, either scheme, either
+ * case, edge whitespace trimmed. Distinct (`false`): `"-"`, `''`, blanks, a bare
+ * `https://`, any other scheme, a relative path.
+ */
+function urlDeImagemLida(url: string | null): boolean {
+  return url !== null && URL_DE_IMAGEM_LIDA.test(url.trim());
+}
+
+/**
+ * The size-chart half of the result: the decision the bodies were built from
+ * (`plano.item`, the ONE place it lives) plus the read-back's echo.
+ *
+ * ⚠️ `size_chart` is a URL on the READ side; only its presence is kept.
+ */
+function tabelaDeMedidasDaPublicacao(
+  decisao: ResultadoTabelaDeMedidasShopee,
+  lido: ItemLido | null,
+): TabelaDeMedidasDaPublicacao {
+  return {
+    sizeChartId: decisao.sizeChartId,
+    fonte: decisao.fonte.tipo,
+    motivo: decisao.motivo,
+    fotoOmitida: decisao.fotoOmitida,
+    avisoObrigatoria: decisao.avisoObrigatoria,
+    // `?? null` only maps an ABSENT key; a zero-filled `0` stays `0` (data).
+    lidaDeVolta: lido === null ? null : (lido.base.size_chart_id ?? null),
+    fotoLidaDeVolta: lido === null ? null : urlDeImagemLida(lido.base.size_chart ?? null),
+  };
+}
+
 /** ONE line per publish: ids, counts, enum tokens and booleans. */
 function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao): void {
   // eslint-disable-next-line no-console -- expected on every healthy publish; a warn nobody can act on is what hides the real ones
@@ -1793,6 +1945,17 @@ function registrarPublicacao(deps: PublicarAnuncioDeps, r: ResultadoPublicacao):
       ignorados: r.modelos.ignorados,
     },
     canaisPulados: r.plano.logistica.pulados.length,
+    // A template id is not PII (brand ids are logged too); the photo's id and
+    // the read-back URL never are.
+    tabelaDeMedidas: {
+      fonte: r.tabelaDeMedidas.fonte,
+      sizeChartId: r.tabelaDeMedidas.sizeChartId,
+      motivo: r.tabelaDeMedidas.motivo,
+      fotoOmitida: r.tabelaDeMedidas.fotoOmitida,
+      avisoObrigatoria: r.tabelaDeMedidas.avisoObrigatoria,
+      lidaDeVolta: r.tabelaDeMedidas.lidaDeVolta,
+      fotoLidaDeVolta: r.tabelaDeMedidas.fotoLidaDeVolta,
+    },
     temAviso: r.avisoShopee !== null,
     avisoResolvido: r.avisoResolvido,
     chamadasShopee: r.chamadasShopee,

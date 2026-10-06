@@ -62,6 +62,10 @@
  *    forbids the non-custom ones (a custom value's name is the operator's own
  *    text); printing neither is the narrower promise and costs nothing, because
  *    the per-attribute VALUE COUNT already answers "did it arrive".
+ *  - **`size_chart_info` (step 18): the TEMPLATE id IS printed, the photo's
+ *    `image_id` is NOT.** A template id is a shop's catalogue reference, like
+ *    the brand id; the image chart is a picture, and pictures are counts here.
+ *    The read-back's `size_chart` is a URL and only its presence is carried.
  *
  * ## ⚠️ What a dry run can and cannot know
  *
@@ -76,6 +80,8 @@
  *  2. A dry run has already PAID for its pictures. `resolverFotosDaPublicacao`
  *     uploads, because `montarAnuncio` needs real `image_id`s to build a body at
  *     all. That cost is paid once — every id lands in `arquivos.externalIds`.
+ *     It includes the tabela de medidas' FIRST photo when no template matched
+ *     (step 18): `size_chart` is an `image_id` too.
  *
  * Ver apps/shopee/scripts/README.md.
  */
@@ -93,6 +99,7 @@ import { naoDocId } from './corpoPublicacao';
 import {
   ShopeePublishBlockedError,
   ShopeePublishRejectedError,
+  cabecalhoDaRecusa,
   type ProblemaPublicacao,
 } from './errosPublicacao';
 import type { MotivoFotoPublicacao } from './fotosPublicacao';
@@ -100,6 +107,11 @@ import type { MotivoCanalPulado } from './logisticaPublicacao';
 import { atributosParaPublicar } from './montagemAnuncio';
 import type { OrdemDeRelistagem, PassoPublicacao, PlanoPublicacao } from './planoPublicacao';
 import type { ResultadoPublicacao } from './publicarAnuncio';
+import type {
+  FotoTabelaMedidasOmitida,
+  MotivoTabelaMedidasOmitida,
+  TipoFonteTabelaDeMedidas,
+} from './tabelaMedidasPublicacao';
 import type { MotivoTaxInfoOmitido } from './taxInfoPublicacao';
 
 export { ArgumentoInvalidoError };
@@ -469,6 +481,36 @@ export interface ResumoTaxInfoShopee {
   readonly campos: readonly { readonly chave: string; readonly valor: string }[];
 }
 
+/**
+ * The size chart the plan would send (step 18), field by field.
+ *
+ * ⚠️ `enviado` is read off the BUILT `add_item` body — the same body the
+ * publisher sends — never re-derived from the decision, so a key the mapper
+ * stops sending disappears from here by itself. The photo's `image_id` is never
+ * carried: `enviado: 'size_chart'` is all a rehearsal needs to know.
+ */
+export interface ResumoTabelaDeMedidasShopee {
+  readonly fonte: TipoFonteTabelaDeMedidas;
+  /** Which `size_chart_info` key the body carries, or `null` for none. */
+  readonly enviado: 'size_chart_id' | 'size_chart' | null;
+  /** The TEMPLATE id — printed; `null` unless `fonte === 'modelo'`. */
+  readonly sizeChartId: number | null;
+  readonly motivo: MotivoTabelaMedidasOmitida | null;
+  readonly fotoOmitida: FotoTabelaMedidasOmitida | null;
+  readonly tabMediId: string | null;
+  readonly entradasNestaConta: number;
+  readonly ilegiveis: number;
+  readonly obrigatoria: boolean | null;
+  readonly suportaModelo: boolean | null;
+  readonly suportaFoto: boolean | null;
+  readonly avisoObrigatoria: boolean;
+  /**
+   * The plan's size-chart REFUSAL — the photo did not upload, so `--live` would
+   * answer 422 on `size_chart_info`. A MECHANISM sentence, like every problema.
+   */
+  readonly recusa: ProblemaPublicacao | null;
+}
+
 /** One picture this publish could not resolve. ⚠️ The `mensagem` is NOT carried. */
 export interface ResumoFalhaDeFotoShopee {
   readonly arquivoId: string;
@@ -531,6 +573,7 @@ export interface ResumoPublicacaoShopee {
   /** The NAMES of the mandatory attributes with no value — the refusal's own list. */
   readonly atributosFaltando: readonly string[];
   readonly taxInfo: ResumoTaxInfoShopee;
+  readonly tabelaDeMedidas: ResumoTabelaDeMedidasShopee;
   readonly logistica: readonly ResumoLogisticaShopee[];
   readonly canaisPulados: readonly ResumoCanalPuladoShopee[];
   readonly tiers: readonly ResumoTierShopee[];
@@ -669,6 +712,36 @@ function resumoDoTaxInfo(plano: PlanoPublicacao): ResumoTaxInfoShopee {
 }
 
 /**
+ * The size-chart decision, by NAME — plus which key the BUILT body carries.
+ *
+ * ⚠️ `size_chart`'s VALUE (an `image_id`) is read only to say the key is
+ * there; it is never copied. Same rule as the pictures above.
+ */
+function resumoDaTabelaDeMedidas(plano: PlanoPublicacao): ResumoTabelaDeMedidasShopee {
+  const decisao = plano.item.tabelaDeMedidas;
+  const bloco = plano.item.criar.size_chart_info;
+  let enviado: ResumoTabelaDeMedidasShopee['enviado'] = null;
+  if (bloco !== undefined) {
+    enviado = bloco.size_chart_id !== undefined ? 'size_chart_id' : 'size_chart';
+  }
+  return {
+    fonte: decisao.fonte.tipo,
+    enviado,
+    sizeChartId: decisao.sizeChartId,
+    motivo: decisao.motivo,
+    fotoOmitida: decisao.fotoOmitida,
+    tabMediId: decisao.tabMediId,
+    entradasNestaConta: decisao.entradasNestaConta,
+    ilegiveis: decisao.ilegiveis,
+    obrigatoria: decisao.obrigatoria,
+    suportaModelo: decisao.suportaModelo,
+    suportaFoto: decisao.suportaFoto,
+    avisoObrigatoria: decisao.avisoObrigatoria,
+    recusa: plano.recusaTabelaDeMedidas,
+  };
+}
+
+/**
  * The whole plan, reduced to the allow-list in the module header.
  *
  * `contexto` is read for exactly four things — the resolved category chain, each
@@ -754,6 +827,7 @@ export function resumoDaPublicacao(
     })),
     atributosFaltando: atributos.faltando,
     taxInfo: resumoDoTaxInfo(plano),
+    tabelaDeMedidas: resumoDaTabelaDeMedidas(plano),
     logistica: plano.logistica.logistic_info.map((row) => ({
       logisticId: row.logistic_id,
       feeType: feePorCanal.get(row.logistic_id) ?? null,
@@ -809,7 +883,12 @@ export function resumoDaPublicacao(
     },
     relistagem: plano.relistagem,
     passos: plano.passos.map(resumoDoPasso),
-    problemas: plano.problemas,
+    // ⚠️ The size-chart refusal is a refusal like the others for the operator:
+    // listed here, "NADA seria enviado" stays true and "publicável" never lies.
+    problemas:
+      plano.recusaTabelaDeMedidas === null
+        ? plano.problemas
+        : [...plano.problemas, plano.recusaTabelaDeMedidas],
   };
 }
 
@@ -829,6 +908,68 @@ function renderPassos(passos: readonly ResumoPassoShopee[]): string[] {
     if (p.ordem !== null) partes.push(`ordem=${p.ordem.join(' → ')}`);
     return `  ${String(i + 1).padStart(2)}. ${p.tipo.padEnd(22)} ${partes.join('  ')}`.trimEnd();
   });
+}
+
+/** A three-valued band flag: `—` is "not informed", never "no". */
+function tri(v: boolean | null): string {
+  return v === null ? '—' : sim(v);
+}
+
+/**
+ * The `### size_chart_info` section (step 18): what goes out, from which source,
+ * the category's band as ADVICE, and the warnings — never the photo's id.
+ */
+function renderTabelaDeMedidas(t: ResumoTabelaDeMedidasShopee): string[] {
+  const linhas: string[] = ['### size_chart_info'];
+  let envio: string;
+  if (t.enviado === 'size_chart_id') {
+    envio = `size_chart_id ${num(t.sizeChartId)} (o modelo escolhido em /medidas)`;
+  } else if (t.enviado === 'size_chart') {
+    envio = 'size_chart — a PRIMEIRA foto da tabela (o image_id é omitido de propósito)';
+  } else if (t.recusa !== null) {
+    envio = 'NADA — a foto da tabela não subiu e a publicação é RECUSADA';
+  } else {
+    envio = `— omitido (${txt(t.motivo)}${t.fotoOmitida === null ? '' : `; foto: ${t.fotoOmitida}`})`;
+  }
+  linhas.push(`  enviado ................. ${envio}`);
+  linhas.push(
+    `  fonte ................... ${t.fonte}${t.motivo === null ? '' : `  (sem modelo: ${t.motivo})`}`,
+  );
+  linhas.push(
+    `  tabMedi ................. ${txt(t.tabMediId)}  ${String(t.entradasNestaConta)} entrada(s) nesta conta · ${String(t.ilegiveis)} ilegível(is)`,
+  );
+  linhas.push(
+    `  size_chart_limit ........ ${
+      t.obrigatoria === null && t.suportaModelo === null && t.suportaFoto === null
+        ? '— (bloco ausente)'
+        : `obrigatória=${tri(t.obrigatoria)}  modelo=${tri(t.suportaModelo)}  foto=${tri(t.suportaFoto)}`
+    }  (conselho, nunca recusa)`,
+  );
+  if (t.avisoObrigatoria) {
+    linhas.push(
+      '  ⚠️ a categoria declara tabela OBRIGATÓRIA e nada será enviado — num CREATE a Shopee ' +
+        'pode recusar; num UPDATE só passa se o anúncio já tiver tabela no Seller Centre',
+    );
+  }
+  if (t.enviado === 'size_chart_id' && t.suportaModelo === false) {
+    linhas.push(
+      '  ⚠️ a categoria diz não aceitar modelo (support_template_size_chart=false) — o modelo ' +
+        'escolhido vai mesmo assim e a Shopee decide',
+    );
+  }
+  if (t.fotoOmitida === 'categoria-sem-foto') {
+    linhas.push(
+      '  ⚠️ a categoria não aceita foto de tabela (support_image_size_chart=false) — a primeira ' +
+        'foto da tabela NÃO é enviada',
+    );
+  }
+  if (t.recusa !== null) {
+    linhas.push(`  ⛔ ${t.recusa.mensagem}`);
+    linhas.push(
+      '  (o --live responderia 422 em size_chart_info, antes de qualquer escrita no anúncio)',
+    );
+  }
+  return linhas;
 }
 
 /** The human rendering of one publish plan — design-P2 §10.3's printout. */
@@ -901,6 +1042,9 @@ export function renderResumoPublicacao(r: ResumoPublicacaoShopee): string[] {
     // ⚠️ Values ON PURPOSE, unlike `importar:anuncio`. See the module header.
     linhas.push('  (os VALORES fiscais são impressos de propósito — são códigos de catálogo)');
   }
+
+  linhas.push('');
+  for (const linha of renderTabelaDeMedidas(r.tabelaDeMedidas)) linhas.push(linha);
 
   linhas.push('');
   linhas.push(`### logistic_info (${String(r.logistica.length)} a enviar)`);
@@ -1024,6 +1168,16 @@ export interface ResumoResultadoPublicacao {
   readonly leituraDeVolta: boolean;
   readonly relistagem: OrdemDeRelistagem | null;
   readonly taxInfoOmitido: MotivoTaxInfoOmitido | null;
+  /** What went out as `size_chart_info` and what the read-back echoed (step 18). */
+  readonly tabelaDeMedidas: {
+    readonly fonte: TipoFonteTabelaDeMedidas;
+    readonly sizeChartId: number | null;
+    readonly motivo: MotivoTabelaMedidasOmitida | null;
+    readonly fotoOmitida: FotoTabelaMedidasOmitida | null;
+    readonly avisoObrigatoria: boolean;
+    readonly lidaDeVolta: number | null;
+    readonly fotoLidaDeVolta: boolean | null;
+  };
   readonly avisoResolvido: boolean;
   readonly chamadasShopee: number;
   readonly modelos: {
@@ -1069,6 +1223,15 @@ export function resumoDoResultado(res: ResultadoPublicacao): ResumoResultadoPubl
     leituraDeVolta: res.leituraDeVolta,
     relistagem: res.relistagem,
     taxInfoOmitido: res.taxInfoOmitido,
+    tabelaDeMedidas: {
+      fonte: res.tabelaDeMedidas.fonte,
+      sizeChartId: res.tabelaDeMedidas.sizeChartId,
+      motivo: res.tabelaDeMedidas.motivo,
+      fotoOmitida: res.tabelaDeMedidas.fotoOmitida,
+      avisoObrigatoria: res.tabelaDeMedidas.avisoObrigatoria,
+      lidaDeVolta: res.tabelaDeMedidas.lidaDeVolta,
+      fotoLidaDeVolta: res.tabelaDeMedidas.fotoLidaDeVolta,
+    },
     avisoResolvido: res.avisoResolvido,
     chamadasShopee: res.chamadasShopee,
     modelos: {
@@ -1097,6 +1260,26 @@ export function resumoDoResultado(res: ResultadoPublicacao): ResumoResultadoPubl
   };
 }
 
+/**
+ * The live summary's ONE size-chart line: what was sent, then what the
+ * read-back echoed — `DIVERGE` when a sent template does not come back.
+ *
+ * ⚠️ That echo is the instrument for register 262 (is a JSON-number
+ * `size_chart_id` accepted?); `—` means the read-back degraded, never "absent".
+ */
+function linhaDaTabelaDeMedidas(t: ResumoResultadoPublicacao['tabelaDeMedidas']): string {
+  if (t.fonte === 'modelo') {
+    const lido = t.lidaDeVolta === null ? '—' : String(t.lidaDeVolta);
+    const diverge = t.lidaDeVolta !== null && t.lidaDeVolta !== t.sizeChartId ? '  DIVERGE' : '';
+    return `enviado ${num(t.sizeChartId)} · lido de volta ${lido}${diverge}`;
+  }
+  if (t.fonte === 'foto') {
+    const lida = t.fotoLidaDeVolta === null ? '—' : sim(t.fotoLidaDeVolta);
+    return `enviada a primeira foto da tabela · foto lida de volta: ${lida}`;
+  }
+  return `omitido (${txt(t.motivo)}${t.fotoOmitida === null ? '' : `; foto: ${t.fotoOmitida}`})`;
+}
+
 export function renderResumoResultado(r: ResumoResultadoPublicacao): string[] {
   const linhas: string[] = ['## O que a publicação gravou na Shopee e no ERP'];
   linhas.push(`  produtoId ............... ${r.produtoId}`);
@@ -1116,6 +1299,10 @@ export function renderResumoResultado(r: ResumoResultadoPublicacao): string[] {
   linhas.push(
     `  tax_info ................ ${r.taxInfoOmitido === null ? 'enviado' : `omitido (${r.taxInfoOmitido})`}`,
   );
+  linhas.push(`  size_chart_info ......... ${linhaDaTabelaDeMedidas(r.tabelaDeMedidas)}`);
+  if (r.tabelaDeMedidas.avisoObrigatoria) {
+    linhas.push('  ⚠️ a categoria declara tabela OBRIGATÓRIA e nenhuma foi enviada');
+  }
   linhas.push(
     `  aviso de violação ....... ${r.avisoResolvido ? 'RESOLVIDO por esta publicação' : 'sem transição'}`,
   );
@@ -1211,10 +1398,14 @@ export function descreverBloqueioPublicacao(err: ShopeePublishBlockedError): str
  * `etapa` is not a reason: it is the answer to "what exists on the channel now".
  * A rejection at `init_tier_variation` leaves an `UNLIST` item with no models;
  * one at `add_item` leaves nothing.
+ *
+ * The headline is the class's own clause ({@link cabecalhoDaRecusa}): no empty
+ * `()` when Shopee sent no code, and no "pela Shopee" for step 18's size-chart
+ * photo that never reached Shopee.
  */
 export function descreverRecusaPublicacao(err: ShopeePublishRejectedError): string[] {
   const linhas = [
-    `recusado pela Shopee em ${err.etapa} (${err.shopeeCode})`,
+    cabecalhoDaRecusa(err.etapa, err.shopeeCode, err.recusadaPelaShopee),
     `  produto ................. ${err.produtoId}`,
     `  item_id ................. ${err.itemId === null ? 'nenhum (o add_item foi recusado)' : String(err.itemId)}`,
     `  problemas (${String(err.problemas.length)}):`,

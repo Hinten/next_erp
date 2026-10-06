@@ -255,8 +255,9 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     importarAnuncio: 'sim', // get_item_list → get_item_base_info (50) → get_model_list (1/item)
     variacoes: 'sim', // ≤2 tiers, ≤50 models; standardise_tier_variation (guide 219, init_tier_variation)
     categoriasEAtributos: 'sim', // get_category / get_attribute_tree / get_brand_list / get_item_limit
-    // READ + ATTACH only: get_size_chart_list/detail + size_chart_info.size_chart_id
-    // on add/update_item. Authoring is Seller Centre only —
+    // READ + ATTACH only: get_size_chart_list/detail + size_chart_info on
+    // add/update_item — the template's size_chart_id, else the tabela's first
+    // photo as an image size_chart (step 18). Authoring is Seller Centre only —
     // v2.product.update_size_chart no longer exists (survey C §6).
     tabelaDeMedidas: 'sim',
     // Native kit SKU: add_kit_item mints an item_id whose category/attributes/brand

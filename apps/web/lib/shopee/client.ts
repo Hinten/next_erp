@@ -11,10 +11,17 @@
  * purpose: that package signs every request with the partner key, which must
  * never be bundled into a browser. The browser never sees a Shopee access or
  * refresh token — it reads the connection STATUS, mints a consent URL, since
- * step 15 fetches a pedido's shipping LABEL and, since step 17, reads a
- * return's live state and runs one seller action on it. Every one is answered
- * by `apps/shopee` over an authenticated cross-origin call (its `proxy.ts`
- * allows exactly `/api/marketplace/*`).
+ * step 15 fetches a pedido's shipping LABEL, since step 17 reads a return's
+ * live state and runs one seller action on it, and since step 18 browses a
+ * conta's category tree, its item bands and its size-chart templates (four
+ * reads, for the `/medidas` Shopee tab). Every one is answered by `apps/shopee`
+ * over an authenticated cross-origin call (its `proxy.ts` allows exactly
+ * `/api/marketplace/*`).
+ *
+ * ⚠️ This client retries NOTHING. Whether a failed READ is re-attempted is the
+ * query's decision (`shopeeQueryRetry`, `./erros.ts`), and that predicate never
+ * repeats a 502: a Shopee rate limit reaches the browser as a 502 carrying
+ * `kind`, and the size-chart list fans out one detail read per template.
  *
  * ⚠️ The three error classes carry a `Client` infix. `@delfrance/integrations-shopee`
  * already exports `ShopeeHttpError` and `ShopeeNetworkError` for Shopee's own
@@ -32,12 +39,20 @@ import { filenameFromDisposition } from '@/lib/http/filenameFromDisposition';
 
 import {
   ACAO_RECLAMACAO_SHOPEE,
+  detalheTabelaMedidasDtoSchema,
+  listaTabelasMedidasDtoSchema,
   oauthStartResponseSchema,
+  respostaCategoriasShopeeSchema,
+  respostaLimitesShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeReclamacaoAcaoRespostaSchema,
   shopeeReclamacaoEstadoSchema,
+  type DetalheTabelaMedidasDto,
   type EscolhaDeEnvio,
+  type ListaTabelasMedidasDto,
+  type RespostaCategoriasShopee,
+  type RespostaLimitesShopee,
   type ShopeeContaStatus,
   type ShopeeEtiquetaPendente,
   type ShopeeOauthStart,
@@ -62,6 +77,17 @@ export class ShopeeClientHttpError extends Error {
      * backend's sentence either way; `null` whenever the body has none.
      */
     readonly shopeeCode: string | null = null,
+    /**
+     * The backend's classification of a SHOPEE failure (`kind` on the
+     * `SHOPEE_HTTP_ERROR` 502 body): `burst` / `daily` are Shopee's rate
+     * limits, `transient` its own hiccup, `reauth`, `other`. A FREE string —
+     * a kind a newer backend adds must not cost the error — and `null`
+     * whenever the body has none, which is every non-Shopee failure.
+     *
+     * ⚠️ Read it, never the status: a rate limit and a malformed request are
+     * BOTH a 502, and only `kind` tells "wait" from "this will never work".
+     */
+    readonly kind: string | null = null,
   ) {
     super(message);
     this.name = 'ShopeeClientHttpError';
@@ -276,6 +302,42 @@ export interface ShopeeClient {
    * network error with no CORS headers. Never retry it automatically.
    */
   reclamacaoAcao(input: ReclamacaoAcaoShopeeInput): Promise<ShopeeReclamacaoAcaoResposta>;
+  /**
+   * The conta's category tree, one level at a time (`PERM.integracao.read`):
+   * the ROOTS when `categoryId` is `null` (the query key is then OMITTED,
+   * never sent empty), ONE node with its ancestors and children otherwise. An
+   * id the tree does not hold is a 404 `SHOPEE_CATEGORIA_DESCONHECIDA`.
+   */
+  categorias(input: {
+    integracaoId: string;
+    categoryId: number | null;
+  }): Promise<RespostaCategoriasShopee>;
+  /**
+   * One category's item bands, read for its `sizeChartLimit` only
+   * (`PERM.integracao.read`). ADVICE — never a reason to refuse a pick.
+   */
+  limites(input: { integracaoId: string; categoryId: number }): Promise<RespostaLimitesShopee>;
+  /**
+   * The size-chart templates of ONE leaf category (`PERM.integracao.read`). A
+   * non-leaf answers `leaf: false` with no templates; a category Shopee refuses
+   * for templates is a 404 `SHOPEE_TABELA_MEDIDAS_CATEGORIA_INVALIDA`.
+   *
+   * ⚠️ UNCACHED on the backend (a template made a minute ago must appear), and
+   * it costs one Shopee detail read per template — never poll it.
+   */
+  tabelaMedidasLista(input: {
+    integracaoId: string;
+    categoryId: number;
+  }): Promise<ListaTabelasMedidasDto>;
+  /**
+   * One template, projected by the backend (`PERM.integracao.read`). A
+   * template the shop no longer has is a 404 `SHOPEE_TABELA_MEDIDAS_INEXISTENTE`
+   * — the stored pick is stale, and the operator must choose another.
+   */
+  tabelaMedidasDetalhe(input: {
+    integracaoId: string;
+    sizeChartId: number;
+  }): Promise<DetalheTabelaMedidasDto>;
 }
 
 /** The label route. */
@@ -284,6 +346,26 @@ const ETIQUETA_PATH = '/api/marketplace/shopee/etiqueta';
 /** The two returns routes (#1525, step 17). */
 const RECLAMACAO_ESTADO_PATH = '/api/marketplace/shopee/reclamacao/estado';
 const RECLAMACAO_ACAO_PATH = '/api/marketplace/shopee/reclamacao/acao';
+
+/** The two taxonomy routes the size-chart tab reads (step 10's) and the two size-chart reads (#1526, step 18). */
+const CATEGORIAS_PATH = '/api/marketplace/shopee/taxonomia/categorias';
+const LIMITES_PATH = '/api/marketplace/shopee/taxonomia/limites';
+const TABELA_MEDIDAS_LISTA_PATH = '/api/marketplace/shopee/tabela-medidas/lista';
+const TABELA_MEDIDAS_DETALHE_PATH = '/api/marketplace/shopee/tabela-medidas/detalhe';
+
+/**
+ * A query string from named parameters, each value percent-encoded and an
+ * `undefined` one OMITTED — never sent as `key=` or `key=undefined`, which the
+ * routes would read as a present-but-invalid id (a 400) instead of an absent one.
+ */
+function consulta(params: Readonly<Record<string, string | number | undefined>>): string {
+  const pares: string[] = [];
+  for (const [chave, valor] of Object.entries(params)) {
+    if (valor === undefined) continue;
+    pares.push(`${chave}=${encodeURIComponent(String(valor))}`);
+  }
+  return pares.join('&');
+}
 
 /**
  * Log a body the operator will never see, capped so a whole HTML document
@@ -301,9 +383,10 @@ function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
  * Our JSON envelope's `error` and `code` when the backend sent one, the status
  * fallback otherwise. A label refusal's `error` IS its `mensagem` (truth:
  * `apps/shopee/lib/shopee/etiqueta/respostaEtiqueta.ts`); its `shopeeCode`, when
- * a string, is carried on the error WITHOUT touching the message, and every
- * other key of that body (`motivo`, `nfe`, `tentarApos`) is tolerated and
- * ignored here.
+ * a string, is carried on the error WITHOUT touching the message — and so is
+ * the `SHOPEE_HTTP_ERROR` body's `kind` (step 18: the rate-limit copy reads
+ * it). Every other key of a body (`motivo`, `nfe`, `tentarApos`,
+ * `upstreamStatus`, `sizeChartId`) is tolerated and ignored here.
  */
 function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpError {
   let parsed: unknown = null;
@@ -325,15 +408,20 @@ function erroHttp(path: string, res: Response, text: string): ShopeeClientHttpEr
     errBody?.error ?? shopeeHttpFallbackMessage(res.status),
     res.status,
     errBody?.code ?? null,
-    codigoShopeeDoCorpo(parsed),
+    textoDoCorpo(parsed, 'shopeeCode'),
+    textoDoCorpo(parsed, 'kind'),
   );
 }
 
-/** A non-empty string `shopeeCode` off an error body, else `null` — nothing is coerced. */
-function codigoShopeeDoCorpo(parsed: unknown): string | null {
-  if (parsed === null || typeof parsed !== 'object' || !('shopeeCode' in parsed)) return null;
-  const { shopeeCode } = parsed;
-  return typeof shopeeCode === 'string' && shopeeCode.length > 0 ? shopeeCode : null;
+/**
+ * A non-empty string at `chave` on an error body, else `null` — nothing is
+ * coerced (a number, a boolean, `''` all read as absent). The ONE reader for
+ * both `shopeeCode` and `kind`.
+ */
+function textoDoCorpo(parsed: unknown, chave: 'shopeeCode' | 'kind'): string | null {
+  if (parsed === null || typeof parsed !== 'object' || !(chave in parsed)) return null;
+  const valor: unknown = (parsed as Record<string, unknown>)[chave];
+  return typeof valor === 'string' && valor.length > 0 ? valor : null;
 }
 
 /** A 2xx JSON body read against its schema, or the one error each failure earns. */
@@ -635,6 +723,41 @@ export function createShopeeClient(config: {
       ),
     reclamacaoAcao: (input) =>
       call(RECLAMACAO_ACAO_PATH, shopeeReclamacaoAcaoRespostaSchema, corpoDaReclamacao(input)),
+    // The four step-18 reads: GETs, no body (W18 — only a call WITH a body is a
+    // POST), every parameter percent-encoded, each body parsed against its
+    // schema by the shared `call()`.
+    categorias: (input) =>
+      call(
+        `${CATEGORIAS_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId ?? undefined,
+        })}`,
+        respostaCategoriasShopeeSchema,
+      ),
+    limites: (input) =>
+      call(
+        `${LIMITES_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+        })}`,
+        respostaLimitesShopeeSchema,
+      ),
+    tabelaMedidasLista: (input) =>
+      call(
+        `${TABELA_MEDIDAS_LISTA_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          categoryId: input.categoryId,
+        })}`,
+        listaTabelasMedidasDtoSchema,
+      ),
+    tabelaMedidasDetalhe: (input) =>
+      call(
+        `${TABELA_MEDIDAS_DETALHE_PATH}?${consulta({
+          integracaoId: input.integracaoId,
+          sizeChartId: input.sizeChartId,
+        })}`,
+        detalheTabelaMedidasDtoSchema,
+      ),
   };
 }
 

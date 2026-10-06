@@ -1,16 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PROBLEMA_TABELA_SHOPEE,
+  TIPO_CELULA_TABELA_SHOPEE,
+  detalheTabelaMedidasDtoSchema as detalheCompartilhadoSchema,
+  listaTabelasMedidasDtoSchema as listaCompartilhadaSchema,
+  projetarTabelaShopee,
+  tabelaMedidasLinhaDtoSchema as linhaCompartilhadaSchema,
+  tabelaShopeeProjetadaSchema,
+  type DetalheTabelaShopeeEntrada,
+} from '@delfrance/schemas';
+
+import {
   ACAO_RECLAMACAO_SHOPEE,
   SOLUCAO_DEVOLUCAO_SHOPEE,
   acaoReclamacaoShopeeSchema,
+  categoriaNoDtoSchema,
+  detalheTabelaMedidasDtoSchema,
+  listaTabelasMedidasDtoSchema,
   oauthStartResponseSchema,
+  respostaCategoriasShopeeSchema,
+  respostaLimitesShopeeSchema,
   shopeeContaStatusSchema,
   shopeeEtiquetaPendenteSchema,
   shopeeLojaSchema,
   shopeeReclamacaoAcaoRespostaSchema,
   shopeeReclamacaoEstadoSchema,
   solucaoDevolucaoShopeeSchema,
+  tabelaMedidasLinhaDtoSchema,
 } from './wire';
 
 /**
@@ -919,5 +936,304 @@ describe('the acao answer', () => {
     );
     const { ok: _ok, ...semOk } = RESPOSTA;
     expect(shopeeReclamacaoAcaoRespostaSchema.safeParse(semOk).success).toBe(false);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Size charts (#1526, step 18)
+ * ------------------------------------------------------------------------- */
+
+/** One category row exactly as `taxonomia/dto.ts`'s `projetarCategoria` builds it. */
+const CATEGORIA = { categoryId: 100087, name: 'Camisetas', originalName: 'T-shirts', isLeaf: true };
+const RAIZ = { categoryId: 100017, name: 'Moda Feminina', originalName: null, isLeaf: false };
+
+describe('the categorias answer', () => {
+  it('parses the ROOTS answer and the NODE answer — the control', () => {
+    expect(respostaCategoriasShopeeSchema.parse({ raizes: [RAIZ], no: null })).toEqual({
+      raizes: [RAIZ],
+      no: null,
+    });
+    const no = { ...CATEGORIA, parentId: 100017, pathFromRoot: [RAIZ, CATEGORIA], children: [] };
+    expect(respostaCategoriasShopeeSchema.parse({ raizes: null, no })).toEqual({
+      raizes: null,
+      no,
+    });
+  });
+
+  it('`parentId: 0` (a root) is a value, never an absence', () => {
+    const no = { ...RAIZ, parentId: 0, pathFromRoot: [RAIZ], children: [CATEGORIA] };
+    expect(categoriaNoDtoSchema.parse(no).parentId).toBe(0);
+  });
+
+  it('⭐ a body with NEITHER half is refused — an empty picker would look like a tree with nothing in it', () => {
+    expect(respostaCategoriasShopeeSchema.safeParse({ raizes: null, no: null }).success).toBe(
+      false,
+    );
+  });
+
+  it('NEAR-MISS: an EMPTY roots list is still an answer', () => {
+    expect(respostaCategoriasShopeeSchema.safeParse({ raizes: [], no: null }).success).toBe(true);
+  });
+
+  it('rule 3: a quoted category id is OUR serialisation bug — refused, never folded', () => {
+    expect(
+      respostaCategoriasShopeeSchema.safeParse({
+        raizes: [{ ...RAIZ, categoryId: '100017' }],
+        no: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rule 1: an unknown key is stripped, never fatal', () => {
+    const r = respostaCategoriasShopeeSchema.parse({
+      raizes: [{ ...RAIZ, novo: 1 }],
+      no: null,
+      extra: true,
+    });
+    expect(r).toEqual({ raizes: [RAIZ], no: null });
+  });
+});
+
+describe('the limites answer — only the size-chart slice', () => {
+  /** A whole `taxonomia/limites` 200, other bands included, as the route answers it. */
+  const LIMITES = {
+    scope: 'category',
+    categoryId: 100087,
+    limites: {
+      priceLimit: { min: 1, max: 100_000 },
+      dtsLimit: { daysToShipLimit: { min: -1, max: 30 }, nonPreOrderDaysToShip: 2 },
+      weightLimit: { weightMandatory: true },
+      sizeChartLimit: {
+        sizeChartMandatory: true,
+        supportImageSizeChart: false,
+        supportTemplateSizeChart: null,
+      },
+    },
+    gtinLimit: null,
+    supportsPreOrder: true,
+  };
+
+  it('keeps the size-chart flags — three-valued — and strips every other band', () => {
+    expect(respostaLimitesShopeeSchema.parse(LIMITES)).toEqual({
+      scope: 'category',
+      categoryId: 100087,
+      limites: {
+        sizeChartLimit: {
+          sizeChartMandatory: true,
+          supportImageSizeChart: false,
+          supportTemplateSizeChart: null,
+        },
+      },
+    });
+  });
+
+  it('a band this browser never reads cannot cost the screen — even a malformed one', () => {
+    const r = respostaLimitesShopeeSchema.safeParse({
+      ...LIMITES,
+      limites: { ...LIMITES.limites, priceLimit: 'quebrado' },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('`sizeChartLimit: null` (Shopee sent none) parses; a shop-wide answer has `categoryId: null`', () => {
+    const r = respostaLimitesShopeeSchema.parse({
+      scope: 'shop',
+      categoryId: null,
+      limites: { sizeChartLimit: null },
+    });
+    expect(r.limites.sizeChartLimit).toBeNull();
+    expect(r.categoryId).toBeNull();
+  });
+
+  it.each([
+    ['a missing sizeChartLimit (rule 2)', { scope: 'category', categoryId: 1, limites: {} }],
+    [
+      'a quoted boolean',
+      {
+        scope: 'category',
+        categoryId: 1,
+        limites: {
+          sizeChartLimit: {
+            sizeChartMandatory: 'true',
+            supportImageSizeChart: null,
+            supportTemplateSizeChart: null,
+          },
+        },
+      },
+    ],
+  ])('NEAR-MISS: %s is refused', (_nome, corpo) => {
+    expect(respostaLimitesShopeeSchema.safeParse(corpo).success).toBe(false);
+  });
+});
+
+describe('the tabela-medidas lista answer', () => {
+  const LISTA = {
+    leaf: true,
+    categoryId: 100087,
+    tabelas: [
+      { sizeChartId: 700024641, sizeChartName: 'Tabela Básica', legivel: true },
+      { sizeChartId: 700024613, sizeChartName: null, legivel: false },
+    ],
+    totalCount: 3,
+    truncado: false,
+    removidas: 1,
+    idsIlegiveis: 0,
+  };
+
+  it('⭐ ONE declaration: the browser’s lista/detalhe schemas ARE `@delfrance/schemas`’ — the objects the apps/shopee routes build against', () => {
+    expect(listaTabelasMedidasDtoSchema).toBe(listaCompartilhadaSchema);
+    expect(tabelaMedidasLinhaDtoSchema).toBe(linhaCompartilhadaSchema);
+    expect(detalheTabelaMedidasDtoSchema).toBe(detalheCompartilhadoSchema);
+  });
+
+  it('parses a leaf answer and a non-leaf one — the control', () => {
+    expect(listaTabelasMedidasDtoSchema.parse(LISTA)).toEqual(LISTA);
+    const naoFolha = {
+      leaf: false,
+      categoryId: 100017,
+      tabelas: [],
+      totalCount: null,
+      truncado: false,
+      removidas: 0,
+      idsIlegiveis: 0,
+    };
+    expect(listaTabelasMedidasDtoSchema.parse(naoFolha)).toEqual(naoFolha);
+  });
+
+  it.each([
+    ['truncado', undefined],
+    ['removidas', undefined],
+    ['tabelas', undefined],
+  ])('rule 2: a missing `%s` is refused — never read as "complete" / "none"', (campo, valor) => {
+    expect(listaTabelasMedidasDtoSchema.safeParse({ ...LISTA, [campo]: valor }).success).toBe(
+      false,
+    );
+  });
+
+  it('rule 3: a quoted sizeChartId is refused', () => {
+    const corpo = { ...LISTA, tabelas: [{ ...LISTA.tabelas[0], sizeChartId: '700024641' }] };
+    expect(listaTabelasMedidasDtoSchema.safeParse(corpo).success).toBe(false);
+  });
+});
+
+/**
+ * Shopee's own `get_size_chart_detail` page sample (`testtestt`, 3×3, id
+ * 700024639) — the `response` payload, verbatim. Inline because `apps/web`
+ * cannot reach `apps/shopee`'s `__wire__` corpus.
+ */
+const DETALHE_DOC: DetalheTabelaShopeeEntrada = {
+  size_chart_id: 700024639,
+  size_chart_name: 'testtestt',
+  size_chart_table: {
+    column_list: [
+      {
+        measurement: {
+          display_name: 'test single input number',
+          input_type: 'Input Single Number',
+          unit: 'cm',
+        },
+        measurement_value_list: [1, 2, 3].map((value) => ({
+          max_value: null,
+          min_value: null,
+          option: null,
+          value,
+        })),
+      },
+      {
+        measurement: {
+          display_name: 'susu_input_range_number_with_special_unit_kg',
+          input_type: 'Input Range Number',
+          unit: 'kg',
+        },
+        measurement_value_list: [
+          [12, 13],
+          [13, 14],
+          [14, 16],
+        ].map(([min_value, max_value]) => ({
+          max_value: max_value ?? null,
+          min_value: min_value ?? null,
+          option: null,
+          value: null,
+        })),
+      },
+      {
+        measurement: {
+          display_name: 'regional 001 dropdowm',
+          input_type: 'Single Dropdown',
+          unit: 'cm',
+        },
+        measurement_value_list: ['01s', '01m', '01l'].map((option) => ({
+          max_value: null,
+          min_value: null,
+          option,
+          value: null,
+        })),
+      },
+    ],
+  },
+};
+
+describe('the tabela-medidas detalhe answer — ONE schema for the chart', () => {
+  it('⭐ the inner table IS `@delfrance/schemas`’ schema — no third declaration of the projector output', () => {
+    expect(detalheTabelaMedidasDtoSchema.shape.tabela).toBe(tabelaShopeeProjetadaSchema);
+  });
+
+  it('⭐ RT7 (server half): the real projector’s output, through JSON, parses back EQUAL — 3×3, no problems', () => {
+    const tabela = projetarTabelaShopee(700024639, DETALHE_DOC);
+
+    const lido = detalheTabelaMedidasDtoSchema.parse(JSON.parse(JSON.stringify({ tabela })));
+
+    expect(lido).toEqual({ tabela });
+    expect(lido.tabela.sizeChartId).toBe(700024639);
+    expect(lido.tabela.problemas).toEqual([]);
+    expect(lido.tabela.linhas).toHaveLength(3);
+    expect(lido.tabela.linhas?.[0]?.map((c) => c.tipo)).toEqual([
+      TIPO_CELULA_TABELA_SHOPEE.numero,
+      TIPO_CELULA_TABELA_SHOPEE.faixa,
+      TIPO_CELULA_TABELA_SHOPEE.opcao,
+    ]);
+  });
+
+  it('the doc sample asked under a LIST id reads exactly one `id-divergente` — Shopee’s two samples show different charts', () => {
+    const { problemas } = detalheTabelaMedidasDtoSchema.parse({
+      tabela: projetarTabelaShopee(700024641, DETALHE_DOC),
+    }).tabela;
+
+    expect(problemas.map((p) => p.codigo)).toEqual([PROBLEMA_TABELA_SHOPEE.idDivergente]);
+  });
+
+  it('R-b: a NEWER backend’s unknown `tipo` / `codigo` still parses (rendered generically)', () => {
+    const tabela = projetarTabelaShopee(700024639, DETALHE_DOC);
+    const novo = {
+      ...tabela,
+      colunas: tabela.colunas.map((c) => ({
+        ...c,
+        celulas: c.celulas.map((cel) => ({ ...cel, tipo: 'tipo-novo' })),
+      })),
+      problemas: [
+        {
+          codigo: 'problema-novo',
+          coluna: null,
+          linha: null,
+          inputType: null,
+          comprimentos: null,
+          pedido: null,
+          recebido: null,
+        },
+      ],
+    };
+    expect(detalheTabelaMedidasDtoSchema.safeParse({ tabela: novo }).success).toBe(true);
+  });
+
+  it('NEAR-MISS: a problem missing one of its seven keys is refused; so is a body with no `tabela`', () => {
+    const tabela = projetarTabelaShopee(700024641, DETALHE_DOC);
+    const [problema] = tabela.problemas;
+    expect(problema).toBeDefined();
+    const { recebido: _recebido, ...semRecebido } = problema ?? { recebido: null };
+    expect(
+      detalheTabelaMedidasDtoSchema.safeParse({ tabela: { ...tabela, problemas: [semRecebido] } })
+        .success,
+    ).toBe(false);
+    expect(detalheTabelaMedidasDtoSchema.safeParse(tabela).success).toBe(false);
   });
 });

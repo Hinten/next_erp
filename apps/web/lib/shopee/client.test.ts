@@ -1,6 +1,8 @@
 import { FirebaseError } from 'firebase/app';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { projetarTabelaShopee } from '@delfrance/schemas';
+
 import {
   ShopeeClientHttpError,
   ShopeeClientNetworkError,
@@ -1302,5 +1304,248 @@ describe('W18 regression — only a call WITH a body is a POST', () => {
       Authorization: 'Bearer token',
       Accept: 'application/json',
     });
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * Size charts (#1526, step 18) — four GETs for the `/medidas` Shopee tab
+ * ------------------------------------------------------------------------- */
+
+const RAIZES = {
+  raizes: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+  no: null,
+};
+const LIMITES = {
+  scope: 'category',
+  categoryId: 100087,
+  limites: {
+    sizeChartLimit: {
+      sizeChartMandatory: null,
+      supportImageSizeChart: null,
+      supportTemplateSizeChart: true,
+    },
+  },
+};
+const LISTA_TABELAS = {
+  leaf: true,
+  categoryId: 400055,
+  tabelas: [{ sizeChartId: 700024641, sizeChartName: 'Tabela Básica', legivel: true }],
+  totalCount: 1,
+  truncado: false,
+  removidas: 0,
+  idsIlegiveis: 0,
+};
+/** A real projection (one numeric column, one row), so the body is what the route builds. */
+const TABELA = projetarTabelaShopee(700024641, {
+  size_chart_id: 700024641,
+  size_chart_name: 'Tabela Básica',
+  size_chart_table: {
+    column_list: [
+      {
+        measurement: { display_name: 'Busto', input_type: 'Input Single Number', unit: 'cm' },
+        measurement_value_list: [{ option: null, value: 90, min_value: null, max_value: null }],
+      },
+    ],
+  },
+});
+
+describe('size charts — the four GETs', () => {
+  it.each([
+    [
+      'categorias (roots)',
+      (c: ReturnType<typeof client>) =>
+        c.categorias({ integracaoId: 'int/1 2&x', categoryId: null }),
+      RAIZES,
+      '/api/marketplace/shopee/taxonomia/categorias?integracaoId=int%2F1%202%26x',
+    ],
+    [
+      'categorias (one node)',
+      (c: ReturnType<typeof client>) =>
+        c.categorias({ integracaoId: 'int/1 2&x', categoryId: 100087 }),
+      RAIZES,
+      '/api/marketplace/shopee/taxonomia/categorias?integracaoId=int%2F1%202%26x&categoryId=100087',
+    ],
+    [
+      'limites',
+      (c: ReturnType<typeof client>) =>
+        c.limites({ integracaoId: 'int/1 2&x', categoryId: 100087 }),
+      LIMITES,
+      '/api/marketplace/shopee/taxonomia/limites?integracaoId=int%2F1%202%26x&categoryId=100087',
+    ],
+    [
+      'tabelaMedidasLista',
+      (c: ReturnType<typeof client>) =>
+        c.tabelaMedidasLista({ integracaoId: 'int/1 2&x', categoryId: 400055 }),
+      LISTA_TABELAS,
+      '/api/marketplace/shopee/tabela-medidas/lista?integracaoId=int%2F1%202%26x&categoryId=400055',
+    ],
+    [
+      'tabelaMedidasDetalhe',
+      (c: ReturnType<typeof client>) =>
+        c.tabelaMedidasDetalhe({ integracaoId: 'int/1 2&x', sizeChartId: 700024641 }),
+      { tabela: TABELA },
+      '/api/marketplace/shopee/tabela-medidas/detalhe?integracaoId=int%2F1%202%26x&sizeChartId=700024641',
+    ],
+  ] as const)(
+    '⭐ %s: the exact path + query, a GET, no body, no Content-Type, the body parsed',
+    async (_nome, chamar, resposta, caminho) => {
+      const { c, pedidos } = gravador(JSON.stringify(resposta));
+
+      await expect(chamar(c)).resolves.toEqual(resposta);
+
+      expect(pedidos).toHaveLength(1);
+      expect(pedidos[0]?.url).toBe(`http://localhost:3009${caminho}`);
+      expect(pedidos[0]?.init?.method).toBe('GET');
+      expect(pedidos[0]?.init).not.toHaveProperty('body');
+      expect(pedidos[0]?.init?.headers).toEqual({
+        Authorization: 'Bearer token',
+        Accept: 'application/json',
+      });
+    },
+  );
+
+  it('⚠️ NEAR-MISS: `categoryId: 0` is NOT the roots — it is SENT (the route refuses it), never dropped like `null`', async () => {
+    const { c, pedidos } = gravador(JSON.stringify(RAIZES));
+
+    await c.categorias({ integracaoId: 'int-1', categoryId: 0 });
+
+    expect(pedidos[0]?.url).toContain('?integracaoId=int-1&categoryId=0');
+  });
+
+  it('⭐ a 2xx list WITHOUT `truncado` is a RespostaInvalida naming it — never "the list is complete"', async () => {
+    const { truncado: _t, ...semTruncado } = LISTA_TABELAS;
+    const { c } = gravador(JSON.stringify(semTruncado));
+
+    const err = await c
+      .tabelaMedidasLista({ integracaoId: 'int-1', categoryId: 400055 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+    expect((err as ShopeeClientRespostaInvalidaError).campos).toContain('truncado');
+  });
+
+  it('the stale-template 404 carries its code and sentence; the extra `sizeChartId` is tolerated', async () => {
+    const { c } = gravador(
+      JSON.stringify({
+        error:
+          'A tabela de medidas 700024641 não existe mais nesta loja da Shopee — escolha outra.',
+        code: 'SHOPEE_TABELA_MEDIDAS_INEXISTENTE',
+        sizeChartId: 700024641,
+      }),
+      404,
+    );
+
+    const err = (await c
+      .tabelaMedidasDetalhe({ integracaoId: 'int-1', sizeChartId: 700024641 })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err).toBeInstanceOf(ShopeeClientHttpError);
+    expect(err.status).toBe(404);
+    expect(err.code).toBe('SHOPEE_TABELA_MEDIDAS_INEXISTENTE');
+    expect(err.message).toContain('escolha outra');
+    expect(err.kind).toBeNull();
+  });
+
+  it('⭐ the client retries NOTHING — a 503 and a 502 each cost exactly one request', async () => {
+    for (const status of [503, 502]) {
+      const { c, fetchImpl } = gravador(JSON.stringify({ error: 'x', code: 'X' }), status);
+
+      await expect(c.limites({ integracaoId: 'int-1', categoryId: 1 })).rejects.toBeInstanceOf(
+        ShopeeClientHttpError,
+      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+describe('categorias — `isLeaf` is read STRICTLY (the leaf gate is the backend’s)', () => {
+  const NO = {
+    categoryId: 100017,
+    name: 'Moda',
+    originalName: null,
+    isLeaf: false,
+    parentId: 0,
+    pathFromRoot: [{ categoryId: 100017, name: 'Moda', originalName: null, isLeaf: false }],
+    children: [{ categoryId: 100087, name: 'Camisetas', originalName: null, isLeaf: true }],
+  };
+
+  it('EQUAL: a real boolean parses, on a root row, on the node and on a child', async () => {
+    const { c } = gravador(JSON.stringify({ raizes: null, no: NO }));
+
+    const r = await c.categorias({ integracaoId: 'int-1', categoryId: 100017 });
+
+    expect(r.no?.isLeaf).toBe(false);
+    expect(r.no?.children[0]?.isLeaf).toBe(true);
+  });
+
+  it.each([
+    ['the string "true"', 'true'],
+    ['the number 1', 1],
+    ['null', null],
+  ])(
+    'NEAR-MISS: %s as `isLeaf` is a RespostaInvalida ("faça o deploy") — never read as "not a leaf"',
+    async (_n, isLeaf) => {
+      const corpos = [
+        { raizes: [{ ...RAIZES.raizes[0], isLeaf }], no: null },
+        { raizes: null, no: { ...NO, isLeaf } },
+        { raizes: null, no: { ...NO, children: [{ ...NO.children[0], isLeaf }] } },
+      ];
+      for (const corpo of corpos) {
+        const { c } = gravador(JSON.stringify(corpo));
+        const err = await c
+          .categorias({ integracaoId: 'int-1', categoryId: null })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ShopeeClientRespostaInvalidaError);
+      }
+    },
+  );
+});
+
+describe('`kind` on ShopeeClientHttpError (R-c)', () => {
+  const CORPO_502 = {
+    error: 'Shopee: error_busy',
+    code: 'SHOPEE_HTTP_ERROR',
+    upstreamStatus: 200,
+    shopeeCode: 'error_busy',
+  };
+
+  it('⭐ M68: the 502 body’s `kind` rides on the error, beside `shopeeCode`, the message untouched', async () => {
+    const { c } = gravador(JSON.stringify({ ...CORPO_502, kind: 'burst' }), 502);
+
+    const err = (await c
+      .tabelaMedidasLista({ integracaoId: 'int-1', categoryId: 400055 })
+      .catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.kind).toBe('burst');
+    expect(err.shopeeCode).toBe('error_busy');
+    expect(err.code).toBe('SHOPEE_HTTP_ERROR');
+    expect(err.message).toBe('Shopee: error_busy');
+  });
+
+  it('a kind this build never heard of is carried verbatim — a FREE string', async () => {
+    const { c } = gravador(JSON.stringify({ ...CORPO_502, kind: 'kind-novo' }), 502);
+
+    const err = (await c.conta('int-1').catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.kind).toBe('kind-novo');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['empty', ''],
+    ['a number', 42],
+    ['null', null],
+  ])('NEAR-MISS: a `kind` that is %s reads as null, never coerced', async (_n, kind) => {
+    const { c } = gravador(JSON.stringify({ ...CORPO_502, kind }), 502);
+
+    const err = (await c.conta('int-1').catch((e: unknown) => e)) as ShopeeClientHttpError;
+
+    expect(err.kind).toBeNull();
+    expect(err.shopeeCode).toBe('error_busy');
+  });
+
+  it('the constructor defaults `kind` to null — the RespostaInvalida subclass included', () => {
+    expect(new ShopeeClientHttpError('m', 500, null).kind).toBeNull();
+    expect(new ShopeeClientRespostaInvalidaError('m', 200, []).kind).toBeNull();
   });
 });

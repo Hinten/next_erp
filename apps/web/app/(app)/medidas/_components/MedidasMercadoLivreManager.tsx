@@ -65,9 +65,10 @@ interface EditorTarget {
  * full-screen editor.
  *
  * Guias live on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map,
- * which also holds other contas' keys and the legacy app's Shopee entries from
- * the migrated corpus — every write here merges only this conta's key, so none
- * of the siblings are clobbered.
+ * which also holds other contas' keys — every write here merges only this
+ * conta's key, so none of the siblings are clobbered. The Shopee entries live
+ * on the SIBLING field `tabelasMedidasShopee` (the Shopee tab's, step 18), which
+ * a merge of this map never touches.
  *
  * ⚠️ Unsent guias are PERSISTED as drafts (`id: null`) rather than held in React
  * state. A 75-row × 10-column grid is far too much work to lose to a reload,
@@ -175,11 +176,14 @@ export function MedidasMercadoLivreManager({
    * Persist one guia into this conta's list without contacting ML.
    *
    * ⚠️ The array is rebuilt from the LIVE snapshot, not from whatever the editor
-   * opened with: the Flutter app and the sync backend write the same key, and a
-   * `merge()` replaces the array wholesale. If the stored list changed shape
-   * under us we refuse rather than clobber — the client SDK has no
-   * `lastUpdateTime` precondition, so surfacing the conflict is the only tier
-   * available (root `CLAUDE.md` rule 7 / ADR 0011).
+   * opened with: another tab or operator and the sync backend write the same
+   * key (there is no Flutter writer — root `CLAUDE.md` rule 8), and a `merge()`
+   * replaces the array wholesale. If the stored list changed shape under us we
+   * refuse rather than clobber — the client SDK has no `lastUpdateTime`
+   * precondition, so surfacing the conflict is the only tier available (root
+   * `CLAUDE.md` rule 7 / ADR 0011). ⚠️ The compare reads the snapshot OUTSIDE
+   * any transaction, so a write landing between it and the `merge()` is still
+   * overwritten: it narrows the race, it is not a rule-7 guard (#1778).
    */
   async function saveChart(
     integracaoId: string,
@@ -263,9 +267,9 @@ export function MedidasMercadoLivreManager({
       setBusyChart(`${integracaoId}#${String(index)}`);
       try {
         const stored = mlSizeChartsForConta(chartsMap, integracaoId);
-        // An index is not an identity: the Flutter app or a completed sync may
-        // have inserted or reordered guias since this list rendered, and
-        // deleting position N blindly would remove somebody else's guia.
+        // An index is not an identity: another operator's save or a completed
+        // sync may have inserted or reordered guias since this list rendered,
+        // and deleting position N blindly would remove somebody else's guia.
         if (!sameChart(stored[index], chart)) throw new SizeChartConflictError();
         await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
           tabelasDeMedidasMercadoLivre: {
