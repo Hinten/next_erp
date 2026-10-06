@@ -41,13 +41,15 @@
  * handler's own answer instead (an unknown instant would otherwise be refused on
  * every run).
  *
- * ⚠️ **In practice only the MIGRATED corpus has that instant** (review 2, S1-1).
- * The legacy app stamped `data_autorizacao`; this ERP's NF-e app writes it as
- * `null` and never fills it on approval. So every NF-e emitted after the
- * cutover is uploaded at once, even one approved seconds ago: what covers that
- * early upload is Shopee's "not valid yet" answer (case 5) and the handler's
- * SERPRO re-enqueue — under `--live` recorded and printed as `adiado` /
- * `aguardando-serpro`, never enqueued — and the operator re-runs later.
+ * The migrated corpus has that instant (the legacy app stamped
+ * `data_autorizacao`), and since #1743 so does every NF-e this ERP's NF-e app
+ * authorizes: the approval write stamps the protocol's `dhRecbto` with the
+ * proc (review 2, S1-1 found the gap). An NF-e without one — approved before
+ * that deploy, or with no readable `dhRecbto` — is uploaded at once, even one
+ * approved seconds ago: what covers that early upload is Shopee's "not valid
+ * yet" answer (case 5) and the handler's SERPRO re-enqueue — under `--live`
+ * recorded and printed as `adiado` / `aguardando-serpro`, never enqueued — and
+ * the operator re-runs later.
  *
  * ## The slot
  *
@@ -499,11 +501,11 @@ async function resolverSlot(db: Firestore, pedidoId: string, nfeId: string | nul
  *
  * ⚠️ An unknown instant is not "now" here. `atrasoSerproS` reads it as the FULL
  * wait, which is right for a queue — it waits once, then sends — but a refusal
- * keyed on that answer would refuse the same slot on EVERY run, for ever. And
- * the unknown instant is the COMMON case, not the corner: only the legacy app
- * ever wrote `data_autorizacao` (from the protocol's receipt time), while this
- * ERP's NF-e app writes it as `null` and never fills it — so the migrated corpus
- * carries the instant and every NF-e emitted after the cutover does not. The
+ * keyed on that answer would refuse the same slot on EVERY run, for ever. Both
+ * writers stamp `data_autorizacao` from the protocol's receipt time — the
+ * legacy app for the migrated corpus, and this ERP's NF-e app since #1743 — so
+ * the unknown instant is a note approved before that deploy, or one with no
+ * readable `dhRecbto`. The
  * `--live` refusal, and the dry run's "`--live` would refuse" note, therefore
  * need a known instant; without one the line's wait prints `—`, the handler
  * answers as it would from the queue, and an upload inside the SERPRO window

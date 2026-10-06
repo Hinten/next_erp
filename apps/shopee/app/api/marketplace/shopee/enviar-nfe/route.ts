@@ -70,10 +70,12 @@
  * Shopee checks the note against the federal record, which lags SEFAZ by
  * minutes. A re-drive of a note whose authorization instant is RECORDED and
  * seconds old is held for what is left of the window (`atrasoSerproS`); an
- * older one is dispatched now. ⚠️ Only the migrated corpus records it: the
- * legacy app wrote `data_autorizacao`, while this ERP's NF-e app writes `null`
- * and never fills it (review 2, S1-1), so every post-cutover note is an UNKNOWN
- * instant. An unknown instant (null, absent or unreadable) is dispatched now,
+ * older one is dispatched now. The migrated corpus records it (the legacy app
+ * wrote `data_autorizacao`), and since #1743 so does every note this ERP's
+ * NF-e app authorizes: the approval write stamps the protocol's `dhRecbto`
+ * with the proc (review 2, S1-1 found the gap). A note without one — approved
+ * before that deploy, or with no readable `dhRecbto` — is an UNKNOWN instant.
+ * An unknown instant (null, absent or unreadable) is dispatched now,
  * and never refused: the helper would read it as "just authorized" and hold
  * every re-drive of it six minutes. An early upload of a fresh note is covered
  * by the handler instead — Shopee's case 5 ("not yet valid") becomes the #5

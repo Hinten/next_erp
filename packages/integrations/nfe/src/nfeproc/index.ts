@@ -15,6 +15,8 @@
 import type { TProtNFe } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
 
+export { extrairDataAutorizacao } from './dataAutorizacao';
+
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
 /**

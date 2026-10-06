@@ -46,11 +46,12 @@
  * cancelled note is never chosen over its aprovada replacement, whatever its
  * dates say.
  *
- * ⚠️ The date ranks only the MIGRATED corpus (review 2, S1-1): the legacy app
- * stamped `data_autorizacao`, while this ERP's NF-e app writes it as `null` and
- * never fills it on approval. Every NF-e emitted after the cutover therefore
- * counts as "the oldest", so between two of them the rule is, in practice, the
- * lowest document id — still total, just not "the latest authorization".
+ * The date is stamped by both writers: the legacy app for the migrated corpus,
+ * and this ERP's NF-e app since #1743 (the protocol's `dhRecbto`, with the
+ * proc; review 2, S1-1 found the gap). An NF-e without it — approved before
+ * that deploy, or with no readable `dhRecbto` — counts as "the oldest", so
+ * between two of those the rule is the lowest document id — still total, just
+ * not "the latest authorization".
  *
  * An eligible document whose proc is ILLEGIBLE (no readable `tpNF`/`finNFe`)
  * is kept on purpose: the slot rule cannot answer `xml-invalido`, and the
@@ -229,9 +230,9 @@ function motivoDeFicarDeFora(raw: Record<string, unknown>): MotivoSemNfeParaEnvi
  *
  * Eligible = the LEVEL predicate says ready AND the proc is not a legible
  * non-sale note (an illegible one stays eligible — the handler answers it).
- * Several ⇒ latest `data_autorizacao` in ms, tie ⇒ lowest id — and since only
- * the migrated corpus carries that date (a post-cutover NF-e stores `null`, the
- * oldest), two post-cutover notes fall to the lowest id. None ⇒ the furthest
+ * Several ⇒ latest `data_autorizacao` in ms, tie ⇒ lowest id — and a document
+ * without that date (`null`, the oldest) falls to the lowest id among its
+ * peers. None ⇒ the furthest
  * miss (see {@link PROFUNDIDADE_DA_FALTA}), `sem-nfe-aprovada` when nothing got
  * past "aprovada".
  */

@@ -7,6 +7,7 @@ import {
   classifyCStat,
   type consultarLote,
   type consultarSituacaoNFe,
+  extrairDataAutorizacao,
   extrairTotaisNFe,
   isEstadoFinalNFe,
   nextConsultaDelayMs,
@@ -17,7 +18,7 @@ import {
   type SefazOutcome,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
-import { nowMicros } from '@delfrance/core/datetime';
+import { nowMicros, type MillisSinceEpoch } from '@delfrance/core/datetime';
 import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
@@ -196,11 +197,16 @@ export function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch 
  * `xml_assinado` stays, or it succeeds and `xml_nfe_proc` carries the XML.
  * `null` (not `FieldValue.delete()`) because the nfev4 schema requires the
  * field to be present (`.nullable()` without `.optional()`).
+ *
+ * Every authorization path builds its persist extras here, so this is also the
+ * one writer of what is derived from the proc: `totais` (#1491) and
+ * `data_autorizacao` (#1743).
  */
 export function swapAnchorForProc(nfeProcXml: string): {
   xml_nfe_proc: string;
   xml_assinado: null;
   totais?: NFeTotais;
+  data_autorizacao?: MillisSinceEpoch;
 } {
   // `totais` rides this same write on purpose (#1491): it is a pure function of
   // the very bytes being persisted, so there is no window in which the XML and
@@ -214,7 +220,17 @@ export function swapAnchorForProc(nfeProcXml: string): {
   // refuse to publish a rate while any exist — that consumer is NOT written
   // yet, so today the absence is simply preserved rather than acted on.
   const totais = extrairTotaisNFe(nfeProcXml);
-  return { xml_nfe_proc: nfeProcXml, xml_assinado: null, ...(totais != null ? { totais } : {}) };
+  // `data_autorizacao` (#1743) follows the same rule for the same reasons: the
+  // protocol's own `dhRecbto`, read from these bytes in ms (the schema's unit),
+  // and OMITTED when it does not read as an absolute instant. Never the server
+  // clock: the authorization instant is SEFAZ's, not ours.
+  const dataAutorizacao = extrairDataAutorizacao(nfeProcXml);
+  return {
+    xml_nfe_proc: nfeProcXml,
+    xml_assinado: null,
+    ...(totais != null ? { totais } : {}),
+    ...(dataAutorizacao != null ? { data_autorizacao: dataAutorizacao } : {}),
+  };
 }
 
 /**
@@ -283,10 +299,11 @@ export function buildProcForAuthorizedOutcome(params: {
  * anyway; this copy is just for the NFCell.
  *
  * `extras` lets the caller stamp other fields in the same write —
- * currently used for `xml_nfe_proc` on cStat=100 (autorizada), a
+ * currently used for `xml_nfe_proc` on cStat=100 (autorizada, with the
+ * `totais` and `data_autorizacao` `swapAnchorForProc` derives from it), a
  * recovered 539's `chave` (`extrasDaTrocaDeChave`) and the paced
- * `proximaConsultaEm`. Kept generic so future fields (e.g.
- * `data_autorizacao`, `nProt`) can ride along without another method.
+ * `proximaConsultaEm`. Kept generic so future fields (e.g. `nProt`) can
+ * ride along without another method.
  *
  * `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
  * patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the

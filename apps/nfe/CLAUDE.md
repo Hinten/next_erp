@@ -15,7 +15,10 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `xml_nfe_proc` sets `xml_assinado: null` in the **same** patch
    (`swapAnchorForProc` in `lib/nfe/orchestrator/audit.ts`) — the
    `nfeProc` embeds the signed XML, so the anchor is replaced, never
-   lost. Never clear `xml_assinado` any other way.
+   lost. Never clear `xml_assinado` any other way. That same patch carries
+   what is derived from the proc's own bytes: `totais` (#1491) and
+   `data_autorizacao`, the protocol's `dhRecbto` in ms (#1743). Each one is
+   omitted, never `null`, when it cannot be read.
 2. **No UI code.** Same shape as `apps/integrations`. The placeholder
    `page.tsx` exists only because Next requires a root route.
 3. **Auth is Bearer `idToken` from Firebase Auth — every route, no

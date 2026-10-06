@@ -167,6 +167,7 @@ export {
   buildNFeProcSafe,
   compareDigest,
   extractDigestValue,
+  extrairDataAutorizacao,
   normalizeDigVal,
   type DigestComparison,
 } from './nfeproc';
