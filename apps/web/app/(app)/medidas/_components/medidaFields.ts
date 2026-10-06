@@ -30,3 +30,19 @@ export const medidaFieldOverrides: Record<string, FieldConfig> = {
     hint: 'Se suportado pelo marketplace, é enviada junto à descrição do produto.',
   },
 };
+
+/**
+ * A copied tabela starts with fresh marketplace bindings and owner-scoped media.
+ * Photos must be uploaded after saving the new owner; ordinary fields stay copied.
+ */
+export function transformCopiedMedidas(
+  source: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    ...source,
+    tabelasDeMedidasMercadoLivre: null,
+    tabelasMedidasShopee: null,
+    fotos: null,
+    fotosArquivosIds: null,
+  };
+}

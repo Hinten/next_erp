@@ -30,7 +30,7 @@ import { warmRoutes } from './helpers/warmup';
 /**
  * End-to-end coverage for the `/medidas` (tabela de medidas / moda) TableView
  * + ObjectView flow, driven by `tabelaDeMedidasSchema`. Seeds 7 mock tabelas
- * plus one carrying non-empty marketplace maps (Mercado Livre + Shopee), then
+ * plus one carrying marketplace maps and a photo reference, then
  * exercises listing, Nome filtering, sorting, create/edit/delete, the
  * `nome`-required validation, the unsaved-changes guard and URL persistence.
  *
@@ -221,5 +221,45 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     expect(data?.descricao).toBe('editado-mkt');
     expect(data?.tabelasDeMedidasMercadoLivre).toEqual(mkt.mercadoLivre);
     expect(data?.tabelasMedidasShopee).toEqual(mkt.shopee);
+  });
+  test('copies ordinary fields without sharing marketplace bindings or photo ownership', async ({
+    page,
+  }) => {
+    const copiedName = `${prefix}-copia-mkt`;
+    const source = await getTabMediByName(mkt.nome);
+    expect(source).not.toBeNull();
+    expect(source?.fotos).toHaveLength(1);
+    expect(source?.fotosArquivosIds).toHaveLength(1);
+
+    await page.goto('/medidas');
+    await applyTextFilter(page, 'Nome', mkt.nome);
+    const sourceRow = page.getByRole('row', { name: new RegExp(mkt.nome) });
+    await expect(sourceRow).toBeVisible();
+    await sourceRow.getByRole('checkbox').check();
+    await page.getByRole('link', { name: 'Copiar', exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get('copyFrom') === mkt.id);
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(mkt.nome);
+    await fillField(page, 'Nome', copiedName);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/medidas\/[^/]+$/.test(url.pathname) && url.pathname !== '/medidas/novo',
+      { timeout: 15_000 },
+    );
+    expect(page.url().split('/').pop()).not.toBe(mkt.id);
+
+    await expect.poll(() => docExistsByName('tabMedi', copiedName)).toBe(true);
+    const copied = await getTabMediByName(copiedName);
+    expect(copied?.codigo).toBe(source?.codigo);
+    expect(copied?.descricao).toBe(source?.descricao);
+    expect(copied?.fotos).toBeNull();
+    expect(copied?.fotosArquivosIds).toBeNull();
+    expect(copied?.tabelasDeMedidasMercadoLivre).toBeNull();
+    expect(copied?.tabelasMedidasShopee).toBeNull();
+
+    const unchanged = await getTabMediByName(mkt.nome);
+    expect(unchanged?.fotos).toEqual(source?.fotos);
+    expect(unchanged?.fotosArquivosIds).toEqual(source?.fotosArquivosIds);
+    expect(unchanged?.tabelasDeMedidasMercadoLivre).toEqual(mkt.mercadoLivre);
+    expect(unchanged?.tabelasMedidasShopee).toEqual(mkt.shopee);
   });
 });
