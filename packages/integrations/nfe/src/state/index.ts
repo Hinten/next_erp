@@ -114,7 +114,15 @@ export type CStatCategory =
   | 'cancelada'
   /** 102 — número inutilizado. */
   | 'inutilizada'
-  /** 110, 301, 302 — denegada (stored at SEFAZ but unusable). */
+  /**
+   * 110, 301, 302 — denegada: stored at SEFAZ, número consumed. Since NT
+   * 2024.001 (produção 2024-09-16) mod 55 has NO denial, so a denial can only
+   * describe an NF-e denied before that date (a consSit of a legacy chave).
+   * 302 is ALSO today's live rejection code ("Rejeição: Irregularidade fiscal
+   * do destinatário"), and wherever our own protNFe carries it this category is
+   * handled exactly like a rejection (`rejeitada`, `done-rejected`,
+   * `aplicar-protocolo`) — which is why the mapping is left as it is.
+   */
   | 'denegada'
   /** 103 — lote received async; we got an `nRec`, must poll. */
   | 'lote-recebido'
@@ -187,6 +195,9 @@ export function classifyCStat(cStat: string): CStatCategory {
   // 101 (already in STATUS_BLOQUEADORES).
   if (cStat === '101' || cStat === '151') return 'cancelada';
   if (cStat === '102') return 'inutilizada';
+  // Historical denial codes (see the category). The codes NT 2024.001 turned
+  // into rejections and that never named a denial here — 303, 307, and the
+  // emitente's 781 — fall through to plain 'rejeitada'.
   if (cStat === '110' || cStat === '301' || cStat === '302') return 'denegada';
   if (cStat === '103') return 'lote-recebido';
   if (cStat === '104') return 'lote-processado';
@@ -417,11 +428,21 @@ export function applyOutcome(
 
 /**
  * SEFAZ `cStat` values that mark an NFe as terminal or in-flight at SEFAZ
- * and must NOT be re-emitted. Mirror of Flutter's
- * `NotaFiscalEletronica.statusBloqueadores` in
- * `.old/packages/pedido_nfe/lib/src/models.dart:280-291`. Sealing this
- * list keeps `podeGerar` consistent between the two ports during the
- * migration.
+ * and must NOT be re-emitted. Ported from Flutter's
+ * `NotaFiscalEletronica.statusBloqueadores`
+ * (`.old/packages/pedido_nfe/lib/src/models.dart:280-291`).
+ *
+ * ⚠️ The denial and cadastro-irregularity codes (110, 301, 302, 303, 307,
+ * 781) are absent ON PURPOSE (#1733). Since NT 2024.001 (produção 2024-09-16,
+ * Ajuste SINIEF 43/23) SEFAZ no longer denies a mod-55 NF-e: 302/303/307 are
+ * rejections and the emitente's irregularity is 781, so the número is free and
+ * a pedido refused with one of them must stay re-emittable once the cadastro is
+ * regularized — with the SAME número, as the NT intends. Blocking them would
+ * strand that pedido for good. Only an NF-e denied before that date still holds
+ * its número, and a resend over it is answered with a duplicidade (205/539)
+ * whose recovery consults by chave instead of resending — a legacy-only edge,
+ * older than the cutover, not worth a blocking code. Pinned by
+ * `test/state/state.test.ts`.
  */
 export const STATUS_BLOQUEADORES = new Set<string>([
   '100', // Autorizado o uso da NF-e

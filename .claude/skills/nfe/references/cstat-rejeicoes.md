@@ -26,16 +26,34 @@ passou a ter 15 **ou** 17 dígitos (mesma NT).
 | 107 | Serviço em Operação | Service up |
 | 108 / 109 | Serviço paralisado (momentâneo / sem previsão) | Consider contingency |
 
-## Denial (NF-e is stored, but unusable)
+## Denial — abolished for mod 55 since 2024-09-16 (NT 2024.001)
 
-| cStat | Meaning |
-|---|---|
-| 110 | Uso Denegado |
-| 301 | Denegada — irregularidade fiscal do emitente |
-| 302 | Denegada — irregularidade fiscal do destinatário |
+⚠️ **No NF-e (modelo 55) can be denied any more.** NT 2024.001 (produção
+16/09/2024, v1.20 §2.5.2.1) "elimina o processo de denegação também para a NF-e
+(modelo 55), substituindo por processo de rejeição", implementing CONFAZ Ajuste
+SINIEF 43/23 (which revoked the denegação ground, inciso II of the Ajuste SINIEF
+07/05 cláusula sétima, from 2024-08-01). Source vendored at
+`sources/nt/2024/NT2024_001_v1_20.pdf`.
 
-A denegada NF-e is recorded by SEFAZ; the operation cannot proceed. Do not
-resend the same number — it is consumed.
+| cStat | Before 2024-09-16 | Since (NT 2024.001) |
+|---|---|---|
+| 110 | Uso Denegado | not produced for mod 55 |
+| 301 | Uso Denegado: irregularidade fiscal do emitente (RV 1C17-40) | RV **deleted** (§2.3.2) — an irregular emitente is now **781** |
+| 302 | Uso Denegado: irregularidade fiscal do destinatário (RV 5E17-40) | **Rejeição** — same code |
+| 303 | Uso Denegado: destinatário não habilitado a operar na UF (RV 5E17-60) | **Rejeição** — same code |
+| 307 | Uso Denegado: emitente bloqueado pela UF de destino, consumidor final (RV 1C17-50) | **Rejeição** — same code |
+| 781 | (NFC-e only) | **Rejeição: Emissor não habilitado** — RV 1C17-38 extended to mod 55 (§2.2.7) |
+
+So today 302/303/307/781 are **ordinary rejections**: the NF-e is not stored and
+the número is free — regularize the cadastro and resend with the **same
+número/série**, exactly what the NT intends. Never treat them as blocking: a doc
+refused with one of them must stay re-emittable (`STATUS_BLOQUEADORES` leaves
+them out on purpose, pinned by `test/state/state.test.ts` — see #1733).
+
+A denial (110/301/302 inside a `protNFe`) can now only describe an NF-e denied
+**before 2024-09-16** — a legacy chave, seen through `consSitNFe`, or a 205 /
+539 on a resend of such a número. THAT NF-e is recorded at SEFAZ and its número
+**is** consumed: never resend it.
 
 ## Duplicidade — the recovery-critical codes
 
@@ -45,7 +63,7 @@ constantly after communication failures. **They are recoverable, not fatal.**
 | cStat | Meaning | Marker in `xMotivo` |
 |---|---|---|
 | 204 | Duplicidade de NF-e | `[nRec:999999999999999]` |
-| 205 | NF-e denegada na base da SEFAZ | `[nRec:...]` |
+| 205 | NF-e denegada na base da SEFAZ (only a pre-2024-09-16 denial — see "Denial" above) | `[nRec:...]` |
 | 218 | NF-e já está cancelada na base da SEFAZ | `[nRec:...]` |
 | 539 | Duplicidade de NF-e com diferença na Chave de Acesso | `[chNFe:44digits][nRec:...]` |
 | 635 | NF-e com mesmo número/série já transmitida, aguardando processamento | — |
@@ -67,7 +85,8 @@ On 204 / 205 / 218 / 539:
      adopt that protocol, mark the NF-e authorized. The earlier "failure" was
      just a lost response.
    - `cStat=101`/cancelada → mark cancelada.
-   - denegada → mark denegada.
+   - denegada (110/301/302 — necessarily a pre-2024-09-16 denial, see
+     "Denial") → terminal: that número is consumed, never resend it.
 3. For **539**, the key SEFAZ holds differs in `cNF`/DV — query with the
    `chNFe` from `xMotivo`, not the locally computed one.
 4. Note (NT 2018.005): if the resent NF-e's `DigestValue` matches the stored
@@ -291,8 +310,11 @@ homologação use um recebedor pessoa física.
 
 ## Resend rule of thumb
 
-- **Rejected** (not 100/150, not duplicidade, not denegada) → NF-e was *not*
-  stored → fix and resend, **same número/série**.
+- **Rejected** (not 100/150, not duplicidade) → NF-e was *not* stored → fix
+  and resend, **same número/série**. Since NT 2024.001 that includes the
+  cadastro irregularities 302/303/307/781 (formerly denials).
+- **Denegada** (110/301/302 in a `protNFe`) → only an NF-e denied before
+  2024-09-16 → stored, número consumed → never resend it.
 - **Duplicidade** → NF-e *may be* stored → `consSitNFe`, never blind-resend.
 - **Authorized but response lost** → `consSitNFe` recovers the protocol.
 - **Normal-emission NF-e pendente de retorno** that you give up on → it needs a

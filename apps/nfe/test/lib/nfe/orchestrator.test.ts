@@ -2260,6 +2260,46 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
     expect(genCall?.cNF).toBe('00000001');
   });
 
+  // #1733: since NT 2024.001 (produção 2024-09-16) mod 55 has no denial — a
+  // cadastro irregularity (302/303/307, and the emitente's 781) is a REJECTION,
+  // the número is free, and the operator resends with the SAME número once the
+  // cadastro is regularized. A doc refused with one of them must therefore take
+  // the ordinary rejeitada path, never the bloqueada skip.
+  it.each(['302', '303', '307', '781'])(
+    'a rejeitada for a cadastro irregularity (cStat=%s) regenerates with the SAME número/série/cNF and re-sends',
+    async (cStat) => {
+      const events: string[] = [];
+      const { fs, writes, docs } = fakeFirestore({
+        events,
+        nfeConfig: { numeracao_atual: 100, serie: 1, idLote: 20, ambiente: '2' },
+      });
+      docs['pedidos/PED-1/nfev4/s1'] = {
+        numeracao: 7,
+        serie: 3,
+        tpEmis: 1,
+        estado: ESTADO_NFE.rejeitada,
+        chave: CHAVE,
+        cStat,
+        xMotivo: 'Rejeicao: Irregularidade fiscal do destinatario',
+      };
+      vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+      const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(result.reused).toBe(false);
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
+      const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+      expect(nfeWrite?.data.numeracao).toBe(7);
+      expect(nfeWrite?.data.serie).toBe(3);
+      expect(nfeWrite?.data.estado).toBe(ESTADO_NFE.enviando);
+      // Same cNF (CHAVE offsets [35,43)) → the same chave SEFAZ refused.
+      expect(vi.mocked(generateNFe).mock.calls[0]?.[0]?.cNF).toBe('00000001');
+      const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+      expect(cfgWrite?.data.numeracao_atual).toBe(100); // no new número
+      expect(cfgWrite?.data.idLote).toBe(21); // a fresh lote
+    },
+  );
+
   it('draws a fresh cNF when the existing nfev4 is a placeholder with chave=null', async () => {
     // A crashed `enviando` placeholder has no chave yet, so there's
     // nothing to preserve — the orchestrator should fall back to the

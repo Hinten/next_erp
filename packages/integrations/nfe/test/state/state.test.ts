@@ -5,6 +5,7 @@ import {
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  isBloqueada,
   isCStat,
   isEstadoFinalNFe,
   CSTAT_EPEC_DUPLICIDADE,
@@ -131,6 +132,31 @@ describe('cStatToEstado', () => {
   });
   it('a 4-digit cStat (1115) → rejeitada (#512 width pin)', () => {
     expect(cStatToEstado('1115')).toBe(ESTADO_NFE.rejeitada);
+  });
+});
+
+// #1733. NT 2024.001 (produção 2024-09-16, Ajuste SINIEF 43/23 — vendored at
+// `.claude/skills/nfe/references/sources/nt/2024/NT2024_001_v1_20.pdf`) removed
+// denial for mod 55: 302 (RV 5E17-40), 303 (5E17-60) and 307 (1C17-50) became
+// rejections, and the emitente's irregularity is now 781 (1C17-38). The número
+// is free, so a doc refused with one of them must stay re-emittable once the
+// cadastro is regularized. Adding any of them to STATUS_BLOQUEADORES — #1733's
+// proposed fix — would strand that pedido for good. 110 and 301 are left
+// unpinned: SEFAZ no longer produces them for mod 55, so they can only describe
+// an NF-e denied before that date, and blocking them would be harmless.
+describe('STATUS_BLOQUEADORES — a cadastro irregularity is a rejection since NT 2024.001', () => {
+  it.each(['302', '303', '307', '781'])(
+    'cStat %s → rejeitada and NOT bloqueada: the pedido stays re-emittable',
+    (cStat) => {
+      expect(cStatToEstado(cStat)).toBe(ESTADO_NFE.rejeitada);
+      expect(isBloqueada(cStat)).toBe(false);
+    },
+  );
+
+  // Near-miss: the list is not empty — an authorized NF-e and a received lote
+  // still block a re-emit.
+  it.each(['100', '103'])('cStat %s stays bloqueada', (cStat) => {
+    expect(isBloqueada(cStat)).toBe(true);
   });
 });
 

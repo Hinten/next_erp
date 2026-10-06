@@ -274,7 +274,10 @@ export type RecuperacaoConsSit =
  *  - denegada → `resolvida` for `protocolo-ausente` (it lands as rejeitada,
  *    same as every other consSit path — pinned since #513); `sem-resolucao`
  *    for the other motivos, since a denegada número is consumed
- *    (cstat-rejeicoes.md, "Denial").
+ *    (cstat-rejeicoes.md, "Denial"). Since NT 2024.001 (produção 2024-09-16)
+ *    mod 55 has no denial, so a consSit can only answer one for an NF-e denied
+ *    before that date — and THAT número is held, which is why a duplicidade,
+ *    a 106 or a 635 meeting it must not free the pedido (#1733).
  *  - 217 (NF-e não consta na base) → `resolvida` (rejeitada: the número is
  *    free) for `protocolo-ausente` and `lote-nao-localizado`;
  *    `sem-resolucao` for `duplicidade` — 539 is facultative, so the número
