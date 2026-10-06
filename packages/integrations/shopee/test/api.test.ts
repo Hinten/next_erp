@@ -56,6 +56,7 @@ import {
   type ShopeeModelRequest,
   type ShopeePartnerConfig,
   type ShopeeStandardiseTierRequest,
+  type ShopeeUpdateItemRequest,
   type ShopeeUpdatePriceEntry,
   type ShopeeUpdateStockEntry,
   type UploadImageParams,
@@ -147,6 +148,16 @@ import {
   assertOfferReturnParams,
   assertReturnListParams,
 } from '../src/devolucoes';
+import {
+  SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
+  SHOPEE_GET_SIZE_CHART_LIST_PATH,
+  SHOPEE_SIZE_CHART_LIST_MAX_PAGE_SIZE,
+  type ShopeeSizeChartInfoRequest,
+  assertSizeChartDetailParams,
+  assertSizeChartInfoRequest,
+  assertSizeChartListParams,
+  lerPaginaDeTabelasDeMedidas,
+} from '../src/tabelasDeMedidas';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -599,6 +610,43 @@ const RECOMMEND_BODY = {
   response: { category_id: [100017, 100018] },
 };
 
+/**
+ * Os dois corpos das leituras de tabela de medidas (passo 18) usados pelo
+ * TRANSPORTE. ⚠️ Variantes feitas à mão — NÃO são evidência: as amostras da doc
+ * estão em `apps/shopee/lib/shopee/fixtures/__wire__/get_size_chart_*.doc*.json`
+ * e são lidas do arquivo pelo `types.test.ts`. Ids = os da amostra da doc.
+ */
+const SIZE_CHART_LIST_BODY = {
+  request_id: 'req-tabelas',
+  error: '',
+  message: '',
+  warning: '',
+  response: {
+    next_cursor: 'cursor-da-pagina-2',
+    size_chart_list: [{ size_chart_id: 700024641 }, { size_chart_id: 700024613 }],
+    total_count: 3,
+  },
+};
+
+const SIZE_CHART_DETAIL_BODY = {
+  request_id: 'req-tabela',
+  error: '',
+  message: '',
+  warning: '',
+  response: {
+    size_chart_id: 700024641,
+    size_chart_name: 'Camisetas',
+    size_chart_table: {
+      column_list: [
+        {
+          measurement: { display_name: 'Tamanho', input_type: 'Single Dropdown', unit: 'cm' },
+          measurement_value_list: [{ option: 'P', value: null, min_value: null, max_value: null }],
+        },
+      ],
+    },
+  },
+};
+
 const CHAVES_COMUNS = ['access_token', 'partner_id', 'shop_id', 'sign', 'timestamp'] as const;
 
 interface OpTaxonomia {
@@ -658,6 +706,30 @@ const OPS_TAXONOMIA: readonly OpTaxonomia[] = [
     path: '/api/v2/product/category_recommend',
     chaves: [...CHAVES_COMUNS, 'item_name'],
     chamar: (c) => c.categoryRecommend({ itemName: 'Vestido longo' }),
+  },
+  // ⚠️ Passo 18: as duas leituras de tabela de medidas são GET com query (o
+  // `method: 2` das páginas) e NÃO mandam `language` (M34). Na página 1 a chave
+  // `cursor` NÃO vai — `undefined` é descartado pelo `signedQuery`.
+  {
+    nome: 'getSizeChartList (página 1)',
+    corpo: SIZE_CHART_LIST_BODY,
+    path: '/api/v2/product/get_size_chart_list',
+    chaves: [...CHAVES_COMUNS, 'category_id', 'page_size'],
+    chamar: (c) => c.getSizeChartList({ categoryId: 400055, pageSize: 50 }),
+  },
+  {
+    nome: 'getSizeChartList (com cursor)',
+    corpo: SIZE_CHART_LIST_BODY,
+    path: '/api/v2/product/get_size_chart_list',
+    chaves: [...CHAVES_COMUNS, 'category_id', 'cursor', 'page_size'],
+    chamar: (c) => c.getSizeChartList({ categoryId: 400055, pageSize: 50, cursor: '1683255510' }),
+  },
+  {
+    nome: 'getSizeChartDetail',
+    corpo: SIZE_CHART_DETAIL_BODY,
+    path: '/api/v2/product/get_size_chart_detail',
+    chaves: [...CHAVES_COMUNS, 'size_chart_id'],
+    chamar: (c) => c.getSizeChartDetail({ sizeChartId: 700024641 }),
   },
 ];
 
@@ -8147,5 +8219,491 @@ describe('as devoluções (passo 17)', () => {
     expect(FONTE_API.indexOf('getReturnList: async')).toBeGreaterThan(
       FONTE_API.indexOf('searchPackageList: async'),
     );
+  });
+});
+
+/* ------------------------- the size charts (step 18) ---------------------- */
+
+/** Um corpo de `__wire__` (as amostras da doc), lido do ARQUIVO — nunca copiado para cá. */
+function corpoDoFio(arquivo: string): unknown {
+  return JSON.parse(
+    readFileSync(
+      new URL(`../../../../apps/shopee/lib/shopee/fixtures/__wire__/${arquivo}`, import.meta.url),
+      'utf8',
+    ),
+  );
+}
+
+/** A página de lista com outro `next_cursor` (e o resto igual). */
+function corpoDaListaCom(nextCursor: unknown): Record<string, unknown> {
+  return {
+    ...SIZE_CHART_LIST_BODY,
+    response: { ...SIZE_CHART_LIST_BODY.response, next_cursor: nextCursor },
+  };
+}
+
+describe('as tabelas de medidas (passo 18)', () => {
+  it('A1 — os VALORES na query: os ids como os seus dígitos, o caminho sem espaço e sem `%20`, GET sem corpo', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) =>
+      jsonResponse(
+        String(input).includes(SHOPEE_GET_SIZE_CHART_DETAIL_PATH)
+          ? SIZE_CHART_DETAIL_BODY
+          : SIZE_CHART_LIST_BODY,
+      ),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+    await client.getSizeChartList({ categoryId: 400055, pageSize: 50 });
+    await client.getSizeChartDetail({ sizeChartId: 700024641 });
+
+    const lista = new URL(String(fetchMock.mock.calls[0]![0]));
+    const detalhe = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(lista.searchParams.get('category_id')).toBe('400055');
+    expect(lista.searchParams.get('page_size')).toBe('50');
+    expect(lista.searchParams.has('cursor')).toBe(false);
+    expect(detalhe.searchParams.get('size_chart_id')).toBe('700024641');
+    // M35 — o nome do MÓDULO tem um espaço final; o caminho do fio, não.
+    expect(lista.pathname).toBe(SHOPEE_GET_SIZE_CHART_LIST_PATH);
+    expect(detalhe.pathname).toBe(SHOPEE_GET_SIZE_CHART_DETAIL_PATH);
+    for (const [rawUrl, init] of fetchMock.mock.calls) {
+      const cru = String(rawUrl);
+      expect(cru.slice(0, cru.indexOf('?'))).not.toMatch(/\s|%20/);
+      // M36 — GET, nunca o POST com corpo do texto antigo da issue.
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      expect(new URL(cru).searchParams.has('language')).toBe(false);
+    }
+  });
+
+  it('A2 + RT4 (metade do pacote) — o `next_cursor` da página N vira o `cursor` da N+1 BYTE A BYTE, inclusive um cursor com espaços, `+`, `/` e `=`', async () => {
+    const cursorEsquisito = ' a+b/c= 1 ';
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(corpoDaListaCom(cursorEsquisito)))
+      .mockResolvedValueOnce(jsonResponse(corpoDaListaCom('')));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const pagina1 = lerPaginaDeTabelasDeMedidas(
+      await client.getSizeChartList({ categoryId: 400055, pageSize: 50 }),
+    );
+    expect(pagina1.continuacao).toStrictEqual({ estado: 'seguinte', cursor: cursorEsquisito });
+    if (pagina1.continuacao.estado !== 'seguinte') throw new Error('inalcançável');
+
+    const pagina2 = lerPaginaDeTabelasDeMedidas(
+      await client.getSizeChartList({
+        categoryId: 400055,
+        pageSize: 50,
+        cursor: pagina1.continuacao.cursor,
+      }),
+    );
+    // M29 — nenhum trim no caminho de volta.
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('cursor')).toBe(
+      cursorEsquisito,
+    );
+    expect(pagina2.continuacao).toStrictEqual({ estado: 'fim' });
+  });
+
+  it('A3 + M38 — cada recusa sai ANTES da rede E antes do token: `fetch` e `getAccessToken` NUNCA são chamados', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(SIZE_CHART_LIST_BODY),
+    );
+    const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+    const client = createShopeeClient(shopConfig(fetchMock, getAccessToken));
+    const base = { categoryId: 400055, pageSize: 50 } as const;
+
+    const listasRuins: readonly Record<string, unknown>[] = [
+      { ...base, categoryId: 0 },
+      { ...base, categoryId: -1 },
+      { ...base, categoryId: 1.5 },
+      { ...base, categoryId: Number.NaN },
+      { ...base, categoryId: 2 ** 53 },
+      { ...base, pageSize: 0 },
+      // M33 — "Max=50": nem 51, nem o 100 de outras listas.
+      { ...base, pageSize: SHOPEE_SIZE_CHART_LIST_MAX_PAGE_SIZE + 1 },
+      { ...base, pageSize: 100 },
+      { ...base, pageSize: 1.5 },
+      // M28 — `''` recomeçaria da página 1.
+      { ...base, cursor: '' },
+    ];
+    for (const ruim of listasRuins) {
+      await expect(
+        client.getSizeChartList(ruim as unknown as Parameters<ShopeeClient['getSizeChartList']>[0]),
+        JSON.stringify(ruim),
+      ).rejects.toBeInstanceOf(ShopeeConfigError);
+    }
+    for (const sizeChartId of [0, -1, 1.5, Number.NaN, 2 ** 53]) {
+      await expect(
+        client.getSizeChartDetail({ sizeChartId }),
+        String(sizeChartId),
+      ).rejects.toBeInstanceOf(ShopeeConfigError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getAccessToken).not.toHaveBeenCalled();
+
+    // As bordas aceitas — e um cursor de ESPAÇOS, que não é a sentinela.
+    await expect(client.getSizeChartList({ ...base, pageSize: 1 })).resolves.toBeDefined();
+    await expect(client.getSizeChartList({ ...base, pageSize: 50 })).resolves.toBeDefined();
+    await expect(client.getSizeChartList({ ...base, cursor: ' ' })).resolves.toBeDefined();
+    expect(new URL(String(fetchMock.mock.calls[2]![0])).searchParams.get('cursor')).toBe(' ');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(getAccessToken).toHaveBeenCalledTimes(3);
+  });
+
+  it('A4 — a superfície pública: as duas operações SÓ no cliente da LOJA (M37), e o módulo sai pelo index', () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(SIZE_CHART_LIST_BODY),
+    );
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+    const partner = pacote.createShopeePartnerClient(partnerConfig(fetchMock));
+
+    for (const nome of ['getSizeChartList', 'getSizeChartDetail'] as const) {
+      expect(typeof client[nome], nome).toBe('function');
+      expect(nome in partner, nome).toBe(false);
+    }
+    expect(pacote.SHOPEE_GET_SIZE_CHART_LIST_PATH).toBe(SHOPEE_GET_SIZE_CHART_LIST_PATH);
+    expect(pacote.SHOPEE_GET_SIZE_CHART_DETAIL_PATH).toBe(SHOPEE_GET_SIZE_CHART_DETAIL_PATH);
+    expect(pacote.SHOPEE_SIZE_CHART_LIST_MAX_PAGE_SIZE).toBe(50);
+    expect(pacote.assertSizeChartListParams).toBe(assertSizeChartListParams);
+    expect(pacote.assertSizeChartDetailParams).toBe(assertSizeChartDetailParams);
+    expect(pacote.lerPaginaDeTabelasDeMedidas).toBe(lerPaginaDeTabelasDeMedidas);
+    expect(typeof pacote.shopeeSizeChartListSchema.parse).toBe('function');
+    expect(typeof pacote.shopeeSizeChartDetailSchema.parse).toBe('function');
+  });
+
+  it('A5 — as duas leituras DESEMBRULHAM `response`: linhas, `total_count`, `next_cursor`, o nome e as colunas chegam; o envelope não', async () => {
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(SIZE_CHART_LIST_BODY))
+      .mockResolvedValueOnce(jsonResponse(SIZE_CHART_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const pagina = await client.getSizeChartList({ categoryId: 400055, pageSize: 50 });
+    expect(pagina.size_chart_list).toStrictEqual([
+      { size_chart_id: 700024641 },
+      { size_chart_id: 700024613 },
+    ]);
+    expect(pagina.total_count).toBe(3);
+    expect(pagina.next_cursor).toBe('cursor-da-pagina-2');
+    expect('response' in pagina).toBe(false);
+
+    const detalhe = await client.getSizeChartDetail({ sizeChartId: 700024641 });
+    expect(detalhe.size_chart_id).toBe(700024641);
+    expect(detalhe.size_chart_name).toBe('Camisetas');
+    expect(detalhe.size_chart_table?.column_list?.[0]?.measurement?.input_type).toBe(
+      'Single Dropdown',
+    );
+    expect('response' in detalhe).toBe(false);
+    expect('error' in detalhe).toBe(false);
+  });
+
+  it('A7 — a recusa da doc chega como `ShopeeApiError` com o código e a FRASE verbatim; as duas frases dividem UM código (o quase-igual que o classificador da app separa pela frase)', async () => {
+    const casos = [
+      {
+        arquivo: 'get_size_chart_detail.doc-id-inexistente.json',
+        frase: 'Size chart id not exist in this shop',
+        chamar: (c: ShopeeClient) => c.getSizeChartDetail({ sizeChartId: 700024641 }),
+      },
+      {
+        arquivo: 'get_size_chart_list.doc-categoria-invalida.json',
+        frase: 'Category id is invalid',
+        chamar: (c: ShopeeClient) => c.getSizeChartList({ categoryId: 400055, pageSize: 50 }),
+      },
+    ];
+    const codigos = new Set<string>();
+    for (const { arquivo, frase, chamar } of casos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse(corpoDoFio(arquivo)),
+      );
+      const erro = await erroDe(chamar(createShopeeClient(shopConfig(fetchMock))));
+      expect(erro, arquivo).toBeInstanceOf(ShopeeApiError);
+      expect(erro, arquivo).not.toBeInstanceOf(ShopeeReauthRequiredError);
+      expect(erro, arquivo).not.toBeInstanceOf(ShopeeRateLimitError);
+      const api = erro as ShopeeApiError;
+      // O código VERBATIM, com o prefixo de módulo — e `kind: other`.
+      expect(api.code, arquivo).toBe('product.error_param');
+      expect(api.kind, arquivo).toBe(SHOPEE_ERROR_KIND.other);
+      expect(api.providerMessage, arquivo).toBe(frase);
+      // Sem nova tentativa: uma chamada só.
+      expect(fetchMock, arquivo).toHaveBeenCalledTimes(1);
+      codigos.add(api.code);
+    }
+    // ⚠️ O MESMO código para as duas frases: um braço só por código leria uma
+    // categoria recusada como uma tabela que sumiu.
+    expect(codigos.size).toBe(1);
+  });
+
+  it('T6/M41 — um `next_cursor` NÚMERO inseguro FALHA a página (`ShopeeSchemaError`), nunca vira dígitos arredondados', async () => {
+    // ⚠️ Escrito como texto JSON: um literal JS já chegaria arredondado.
+    const corpoBruto = JSON.stringify(corpoDaListaCom('__CURSOR__')).replace(
+      '"__CURSOR__"',
+      '9007199254740993',
+    );
+    const fetchMock = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(corpoBruto, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).getSizeChartList({
+        categoryId: 400055,
+        pageSize: 50,
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+
+    // O vizinho SEGURO lê os seus dígitos.
+    const ok = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(corpoDaListaCom(1683255510)),
+    );
+    const pagina = await createShopeeClient(shopConfig(ok)).getSizeChartList({
+      categoryId: 400055,
+      pageSize: 50,
+    });
+    expect(pagina.next_cursor).toBe('1683255510');
+  });
+
+  it('FONTE — cada bloco: guarda ANTES do token, UM `shopeeCall`, GET, desembrulha `res.response`, sem laço, sem trim, sem tolerância de envelope; os membros vêm DEPOIS do categoryRecommend', () => {
+    const blocos: readonly (readonly [string, string, string, string])[] = [
+      [
+        'getSizeChartList: async',
+        'assertSizeChartListParams(p)',
+        'SHOPEE_GET_SIZE_CHART_LIST_PATH',
+        'shopeeSizeChartListSchema',
+      ],
+      [
+        'getSizeChartDetail: async',
+        'assertSizeChartDetailParams(p)',
+        'SHOPEE_GET_SIZE_CHART_DETAIL_PATH',
+        'shopeeSizeChartDetailSchema',
+      ],
+    ];
+    for (const [marcador, guarda, caminho, schema] of blocos) {
+      const bloco = blocoDoMetodo(marcador);
+      expect(bloco.indexOf(guarda), marcador).toBeGreaterThan(-1);
+      expect(bloco.indexOf(guarda), marcador).toBeLessThan(bloco.indexOf('signedCall()'));
+      expect(bloco.split('shopeeCall(').length - 1, marcador).toBe(1);
+      expect(bloco, marcador).toContain("method: 'GET'");
+      expect(bloco, marcador).toContain(caminho);
+      expect(bloco, marcador).toContain(schema);
+      expect(bloco, marcador).toContain('surface: SHOPEE_SURFACE.business');
+      expect(bloco, marcador).toContain('return res.response;');
+      for (const proibido of [
+        '.trim(',
+        'language',
+        'emptyErrorAliases',
+        'payloadNoErro',
+        'avisoEmLista',
+        'erroAusenteEhSucesso',
+        'for (',
+        'while',
+        'catch',
+        '.then(',
+      ]) {
+        expect(bloco, `${marcador} ${proibido}`).not.toContain(proibido);
+      }
+    }
+    // O LUGAR: logo depois do `categoryRecommend`, antes das leituras de item —
+    // nos DOIS lados (a interface e a implementação).
+    const recomendacao = FONTE_API.indexOf('categoryRecommend: async');
+    const lista = FONTE_API.indexOf('getSizeChartList: async');
+    expect(lista).toBeGreaterThan(recomendacao);
+    expect(lista).toBeLessThan(FONTE_API.indexOf('getItemList: async'));
+    expect(FONTE_API.indexOf('getSizeChartList(p: GetSizeChartListParams)')).toBeGreaterThan(
+      FONTE_API.indexOf('categoryRecommend(p: CategoryRecommendParams)'),
+    );
+    // NÃO no cliente de parceiro: a interface dele termina antes de `export interface ShopeeClient`.
+    expect(FONTE_API.indexOf('getSizeChartList(p: GetSizeChartListParams)')).toBeGreaterThan(
+      FONTE_API.indexOf('export interface ShopeeClient {'),
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        o ANEXO da tabela de medidas — `size_chart_info` (passo 18, PR 5)    */
+/* -------------------------------------------------------------------------- */
+
+/** Id de AMOSTRA da própria doc da Shopee — nunca de uma loja real. */
+const TABELA_DOC = 700024641;
+/** Um `image_id` inventado, no formato que `upload_image` devolve. */
+const IMAGEM_TABELA = 'br-11134207-teste-tabela';
+
+/** Os dois corpos de escrita, com o bloco — o MESMO bloco nos dois (create E update). */
+function corposComTabela(info: ShopeeSizeChartInfoRequest): {
+  readonly criar: ShopeeAddItemRequest;
+  readonly atualizar: ShopeeUpdateItemRequest;
+} {
+  return {
+    criar: corpoAddItem({ size_chart_info: info }),
+    atualizar: { item_id: ITEM_ID, item_name: 'Camiseta de teste', size_chart_info: info },
+  };
+}
+
+describe('o anexo da tabela de medidas — `size_chart_info` (passo 18)', () => {
+  it('B1 — create E update levam o bloco VERBATIM: o modelo como NÚMERO JSON, a imagem como texto; sem bloco, sem chave', async () => {
+    const casos: readonly (readonly [ShopeeSizeChartInfoRequest, string])[] = [
+      [{ size_chart_id: TABELA_DOC }, `"size_chart_info":{"size_chart_id":${String(TABELA_DOC)}}`],
+      [{ size_chart: IMAGEM_TABELA }, `"size_chart_info":{"size_chart":"${IMAGEM_TABELA}"}`],
+    ];
+    for (const [info, trecho] of casos) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+      const client = createShopeeClient(shopConfig(fetchMock));
+      const { criar, atualizar } = corposComTabela(info);
+      await client.addItem(criar);
+      await client.updateItem(atualizar);
+
+      const [[urlAdd, initAdd], [urlUpd, initUpd]] = fetchMock.mock.calls as unknown as [
+        [string, RequestInit],
+        [string, RequestInit],
+      ];
+      expect(new URL(String(urlAdd)).pathname).toBe(SHOPEE_ADD_ITEM_PATH);
+      expect(new URL(String(urlUpd)).pathname).toBe(SHOPEE_UPDATE_ITEM_PATH);
+      for (const init of [initAdd, initUpd]) {
+        // ⚠️ O TEXTO cru: `"700024641"` (string) e `700024641` (número) dão o
+        // mesmo `toEqual` depois de um `JSON.parse` com coerção — o fio não.
+        expect(String(init.body), trecho).toContain(trecho);
+        expect(JSON.parse(String(init.body)).size_chart_info).toStrictEqual(info);
+      }
+    }
+
+    // QUASE-PAR: um corpo SEM o bloco não ganha a chave — nem `0`, nem `''`,
+    // nem `{}` (os sentinelas de REMOÇÃO da Shopee).
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    await client.addItem(corpoAddItem());
+    await client.updateItem({ item_id: ITEM_ID, item_name: 'Camiseta de teste' });
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(String(init?.body)).not.toContain('size_chart');
+    }
+  });
+
+  it('B2 + M79 + M-A9 + M-A10 — cada recusa sai ANTES da rede E do token, no create E no update; a mensagem nomeia o CAMPO e nunca ecoa o valor', async () => {
+    const ruins: readonly (readonly [string, unknown])[] = [
+      // M79 — `0` é o sentinela de REMOÇÃO do modelo.
+      ['size_chart_id 0', { size_chart_id: 0 }],
+      ['size_chart_id negativo', { size_chart_id: -TABELA_DOC }],
+      ['size_chart_id fracionário', { size_chart_id: 1.5 }],
+      ['size_chart_id NaN', { size_chart_id: Number.NaN }],
+      ['size_chart_id inseguro', { size_chart_id: 2 ** 53 }],
+      ['size_chart_id em TEXTO', { size_chart_id: String(TABELA_DOC) }],
+      ['size_chart_id null', { size_chart_id: null }],
+      // M-A10 — `''` é o sentinela de REMOÇÃO da imagem; em branco, idem.
+      ['size_chart vazio', { size_chart: '' }],
+      ['size_chart em branco', { size_chart: '   ' }],
+      ['size_chart número', { size_chart: 7654321 }],
+      ['size_chart null', { size_chart: null }],
+      ['size_chart_id negativo, outro valor', { size_chart_id: -7654321 }],
+      // M-A9 — as DUAS chaves: a Shopee guardaria só o modelo.
+      ['as duas chaves', { size_chart_id: TABELA_DOC, size_chart: IMAGEM_TABELA }],
+      ['nenhuma chave', {}],
+      ['o bloco null', null],
+      ['o bloco texto', 'size_chart'],
+      ['o bloco lista', [TABELA_DOC]],
+    ];
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const getAccessToken = vi.fn(() => Promise.resolve('access-inventado'));
+    const client = createShopeeClient(shopConfig(fetchMock, getAccessToken));
+
+    for (const [rotulo, info] of ruins) {
+      const { criar, atualizar } = corposComTabela(info as ShopeeSizeChartInfoRequest);
+      for (const [lado, chamada] of [
+        ['add', () => client.addItem(criar)],
+        ['update', () => client.updateItem(atualizar)],
+      ] as const) {
+        const erro = await erroDe(chamada());
+        expect(erro, `${lado} ${rotulo}`).toBeInstanceOf(ShopeeConfigError);
+        const mensagem = (erro as Error).message;
+        expect(mensagem, `${lado} ${rotulo}`).toContain('size_chart');
+        // Nunca um VALOR — nem o id, nem o image_id.
+        expect(mensagem, `${lado} ${rotulo}`).not.toContain(String(TABELA_DOC));
+        expect(mensagem, `${lado} ${rotulo}`).not.toContain(IMAGEM_TABELA);
+        expect(mensagem, `${lado} ${rotulo}`).not.toContain('7654321');
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getAccessToken).not.toHaveBeenCalled();
+
+    // PAR: as bordas aceitas — o menor id, o maior seguro, um image_id de 1 caractere.
+    for (const info of [
+      { size_chart_id: 1 },
+      { size_chart_id: Number.MAX_SAFE_INTEGER },
+      { size_chart: 'x' },
+    ] satisfies readonly ShopeeSizeChartInfoRequest[]) {
+      const { criar, atualizar } = corposComTabela(info);
+      await client.addItem(criar);
+      await client.updateItem(atualizar);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it('B3 — contado sobre valores DEFINIDOS: uma chave `undefined` some no fio e o bloco segue com UMA; e só o bloco já é um update válido', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    // `exactOptionalPropertyTypes` está desligado: `size_chart: undefined` compila,
+    // e `JSON.stringify` o descarta — o que sai é `{"size_chart_id":N}`.
+    await client.addItem(
+      corpoAddItem({ size_chart_info: { size_chart_id: TABELA_DOC, size_chart: undefined } }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)).size_chart_info).toStrictEqual({
+      size_chart_id: TABELA_DOC,
+    });
+
+    // ⚠️ `item_id` + o bloco: anexar uma tabela a um anúncio É uma mudança, e a
+    // guarda de "corpo só com item_id" não pode recusá-la.
+    await client.updateItem({ item_id: ITEM_ID, size_chart_info: { size_chart_id: TABELA_DOC } });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body))).toStrictEqual({
+      item_id: ITEM_ID,
+      size_chart_info: { size_chart_id: TABELA_DOC },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('B4 — o TIPO já recusa as duas chaves e nenhuma (`@ts-expect-error`), e o guarda recusa as mesmas em tempo de execução', () => {
+    type Info = ShopeeSizeChartInfoRequest;
+    // @ts-expect-error — as DUAS chaves: o `?: never` de cada braço é o que barra.
+    const duas: Info = { size_chart_id: 1, size_chart: 'x' };
+    // @ts-expect-error — NENHUMA chave: cada braço exige a sua.
+    const nenhuma: Info = {};
+    const criar: ShopeeAddItemRequest = corpoAddItem({
+      // @ts-expect-error — o mesmo nos corpos de escrita: create…
+      size_chart_info: { size_chart_id: 1, size_chart: 'x' },
+    });
+    const atualizar: ShopeeUpdateItemRequest = {
+      item_id: ITEM_ID,
+      // @ts-expect-error — …e update.
+      size_chart_info: {},
+    };
+
+    // As MESMAS formas, que um chamador JS (ou um cast) ainda consegue montar.
+    for (const info of [duas, nenhuma, criar.size_chart_info, atualizar.size_chart_info]) {
+      expect(() => {
+        assertSizeChartInfoRequest(info as ShopeeSizeChartInfoRequest);
+      }).toThrow(ShopeeConfigError);
+    }
+    // Cada recusa diz a SUA causa: um bloco vazio pede para OMITIR a chave (não
+    // "image_id vazio"), e as duas chaves dizem que só o modelo ficaria.
+    expect(() => {
+      assertSizeChartInfoRequest(nenhuma);
+    }).toThrow(/omita a chave/);
+    expect(() => {
+      assertSizeChartInfoRequest(duas);
+    }).toThrow(/nunca as duas/);
+    // PAR: cada braço sozinho passa.
+    expect(() => {
+      assertSizeChartInfoRequest({ size_chart_id: TABELA_DOC });
+    }).not.toThrow();
+    expect(() => {
+      assertSizeChartInfoRequest({ size_chart: IMAGEM_TABELA });
+    }).not.toThrow();
+  });
+
+  it('B5 — o tipo e o guarda saem pela porta pública do pacote, e as duas guardas de escrita o chamam', () => {
+    expect(pacote.assertSizeChartInfoRequest).toBe(assertSizeChartInfoRequest);
+    for (const guarda of ['function assertAddItemParams(', 'function assertUpdateItemParams(']) {
+      const inicio = FONTE_API.indexOf(guarda);
+      const fim = FONTE_API.indexOf('\n}\n', inicio);
+      expect(inicio, guarda).toBeGreaterThan(-1);
+      expect(FONTE_API.slice(inicio, fim), guarda).toContain(
+        'assertSizeChartInfoRequest(req.size_chart_info)',
+      );
+    }
   });
 });

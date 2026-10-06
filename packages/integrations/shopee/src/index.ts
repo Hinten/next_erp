@@ -66,10 +66,20 @@
  * "Returns (step 17)" — the only schemas here that STRIP (buyer data).
  * `test/devolucoes.test.ts` pins this module at this door.
  *
- * ⚠️ These nine re-exports are WILDCARD, so every step-11 addition — the twelve
+ * ⚠️ Step 18 (size charts, #1526) added one more NEW MODULE, with its own line
+ * below: `tabelasDeMedidas.ts` — the two `v2.product.get_size_chart_*` paths,
+ * request shapes and guards (`0` refused for every id: it is the add/update
+ * DETACH sentinel), the page-size bound, the drained-cursor sentinel and
+ * `lerPaginaDeTabelasDeMedidas`, the one reader of a list page with its
+ * three-valued continuation. The operations are `api.ts`'s and the response
+ * schemas `types.ts`'s section "Size charts (step 18)"; the chart's projection
+ * is NOT here — it is `projetarTabelaShopee` in `@delfrance/schemas`.
+ * `test/tabelasDeMedidas.test.ts` pins this module at this door.
+ *
+ * ⚠️ These ten re-exports are WILDCARD, so every step-11 addition — the twelve
  * operations, their wire-shaped request interfaces, the response schemas and the
  * wire bounds — reaches `@delfrance/integrations-shopee` with no line to add
- * here. A NEW MODULE would need one; a new export inside these nine does not,
+ * here. A NEW MODULE would need one; a new export inside these ten does not,
  * and a test in `test/api.test.ts` pins the twelve operation names so a rename
  * cannot silently drop one from the public surface.
  */
@@ -83,3 +93,4 @@ export * from './api';
 export * from './arquivo';
 export * from './logistica';
 export * from './devolucoes';
+export * from './tabelasDeMedidas';

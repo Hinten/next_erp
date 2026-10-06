@@ -6,17 +6,18 @@ attempts, the push receiver, the sweeps — lives in `apps/shopee`.
 
 What ships here:
 
-| Module          | Holds                                                                                      |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| `sign.ts`       | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
-| `hosts.ts`      | The production and sandbox API + consent hosts, and the env-override resolver              |
-| `oauth.ts`      | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
-| `api.ts`        | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
-| `types.ts`      | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
-| `errors.ts`     | The typed error hierarchy and the classification of Shopee's `error` code strings          |
-| `logistica.ts`  | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
-| `arquivo.ts`    | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
-| `devolucoes.ts` | The returns ops' paths, request shapes, guards, wire constants, solution reader (17)       |
+| Module                | Holds                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| `sign.ts`             | The three HMAC-SHA256 base strings (public / shop / merchant) and the signed query builder |
+| `hosts.ts`            | The production and sandbox API + consent hosts, and the env-override resolver              |
+| `oauth.ts`            | The consent URL (Format A), `exchangeCode`, `refreshAccessToken`, `expiresAtFrom`          |
+| `api.ts`              | Two typed clients — partner-scoped (public-signed) and shop-scoped                         |
+| `types.ts`            | The `{ error, message, warning, request_id }` envelope and one Zod schema per operation    |
+| `errors.ts`           | The typed error hierarchy and the classification of Shopee's `error` code strings          |
+| `logistica.ts`        | The label and package-search ops' paths, request shapes, guards, wire constants (15/15b)   |
+| `arquivo.ts`          | The downloaded-file shape and the byte sniff of a shipping label (step 15)                 |
+| `devolucoes.ts`       | The returns ops' paths, request shapes, guards, wire constants, solution reader (17)       |
+| `tabelasDeMedidas.ts` | Size-chart reads: paths, shapes, guards, constants, page reader; attach union + guard (18) |
 
 ## Label operations (step 15)
 
@@ -129,6 +130,53 @@ schemas in `types.ts`.
   (`dispute`, `cancel_dispute`, `upload_proof`, `convert_image`, `query_proof`,
   `get_return_dispute_reason`) is deliberately not built: both dispute writes
   REQUIRE an operator email whose source is undecided.
+
+## Size charts (step 18)
+
+Two `v2.product.*` READS on the SHOP client: `getSizeChartList` — ONE page of
+a category's TEMPLATE size-chart ids (ids only, no names) — and
+`getSizeChartDetail` — one template's column-oriented table and its name. Their
+paths, request shapes, guards and wire constants live in
+`tabelasDeMedidas.ts`, beside `lerPaginaDeTabelasDeMedidas`, the one reader of
+a list page; their response schemas in `types.ts`. Templates are authored in
+Seller Centre — there is no authoring API. The attach (`size_chart_info` on
+`add_item` / `update_item`) is not one of these reads, but its write half lives
+in the same module (last bullet).
+
+- **Both are `GET` with a query string** (the pages' `method: 2`; the issue's
+  POST body was a doc-reader misreading), send **no `language`** (the Product
+  pages have none), unwrap `response`, and carry no trailing space in the path
+  (the list page's module listing name has one; the wire path does not).
+- **The continuation is THREE-valued**: `fim` (`next_cursor === ''`),
+  `seguinte` (the cursor, VERBATIM — never trimmed) and `sem-cursor`
+  (`next_cursor` absent or `null` — not a proof of exhaustion, register 249).
+  `total_count` is never a terminator. **It does NOT auto-page**: `cursor` is
+  ABSENT on page 1, `''` is refused, and the caller loops. A JSON-number cursor
+  reads as its digits; an unsafe one fails the page rather than being rounded.
+- **`0` is refused for every id** — `size_chart_id: 0` is the add/update
+  DETACH sentinel. The list row reads `"700024641"` ≡ `700024641`; `0`,
+  negatives, fractions, unsafe integers and non-numeric strings make THAT row a
+  `null` (counted as `linhasIlegiveis`), never the page. The row reader and the
+  detail guard refuse the same values, so a listed id can always be detailed.
+  Every guard runs BEFORE the access token is asked for and names the field,
+  never a value.
+- **The detail is tolerant per column and per cell** with `null` sentinels that
+  keep their position; `input_type` is a RAW string (three documented
+  spellings, a fourth must not cost the chart). The projection into rows and
+  problems is `projetarTabelaShopee` in `@delfrance/schemas`, never here.
+- **A stale id and a refused category share ONE code**:
+  `ShopeeApiError { code: 'product.error_param', kind: 'other' }` with
+  `providerMessage` "Size chart id not exist in this shop" (detail) or
+  "Category id is invalid" (list). Tell them apart by the sentence, never by
+  the code alone and never by `.message`; the classifier is the app's.
+- **The attach is a one-key union**, `ShopeeSizeChartInfoRequest` =
+  `{ size_chart_id }` (a template) | `{ size_chart }` (an `upload_image` id),
+  each arm `?: never` on the other key, so "both" and "neither" do not compile.
+  `assertSizeChartInfoRequest` enforces the same at runtime — counted over
+  DEFINED values, `size_chart_id` a positive safe integer, `size_chart` a
+  non-blank string — and `assertAddItemParams` / `assertUpdateItemParams` call it
+  before the token. It refuses both DETACH sentinels (`0`, `''`): nothing in this
+  package ever sends a detach, so a caller with no match OMITS the key.
 
 ## What it deliberately is not
 

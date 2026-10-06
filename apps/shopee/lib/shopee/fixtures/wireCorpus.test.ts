@@ -2,23 +2,30 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  SHOPEE_ERROR_KIND,
   SHOPEE_GET_AVAILABLE_SOLUTIONS_PATH,
   SHOPEE_GET_RETURN_DETAIL_PATH,
   SHOPEE_GET_RETURN_LIST_PATH,
+  SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
+  SHOPEE_GET_SIZE_CHART_LIST_PATH,
   SHOPEE_RETURN_ACCEPT_OFFER_PATH,
   SHOPEE_RETURN_CONFIRM_PATH,
   SHOPEE_RETURN_OFFER_PATH,
   SHOPEE_RETURN_SOLUTION,
+  ShopeeApiError,
   type ShopeeClient,
   createShopeeClient,
+  lerPaginaDeTabelasDeMedidas,
   resolveShopeeHosts,
   shopeeEscrowDetailSchema,
   shopeeOrderDetailSchema,
   shopeeReturnAvailableSolutionsSchema,
   shopeeReturnWriteSchema,
   shopeeSearchPackageListSchema,
+  shopeeSizeChartDetailSchema,
+  shopeeSizeChartListSchema,
 } from '@delfrance/integrations-shopee';
-import { ehReturnSnShopee } from '@delfrance/schemas';
+import { SHOPEE_SIZE_CHART_INPUT_TYPE, ehReturnSnShopee } from '@delfrance/schemas';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -37,12 +44,18 @@ import {
   FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
   FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO,
   FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE,
+  FIXTURE_SIZE_CHART_DETAIL_DOC,
+  FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+  FIXTURE_SIZE_CHART_LIST_DOC,
+  FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
   WIRE_DIR,
   lerBuscaDePacotes,
+  lerDetalheDeTabelaDeMedidas,
   lerDevolucaoDetalhe,
   lerEscrowDetalhe,
   lerFixture,
   lerListaDeDevolucoes,
+  lerListaDeTabelasDeMedidas,
   lerPedidoDetalhe,
   listarFixtures,
 } from './wireCorpus';
@@ -57,14 +70,24 @@ const CORPOS_DEVOLUCAO = [
   FIXTURE_RETURN_OFFER_DOC,
 ] as const;
 
+/** The four size-chart bodies (step 18), in the inventory's order. */
+const CORPOS_TABELA_DE_MEDIDAS = [
+  FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+  FIXTURE_SIZE_CHART_DETAIL_DOC,
+  FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
+  FIXTURE_SIZE_CHART_LIST_DOC,
+] as const;
+
 describe('o inventário do corpus', () => {
   it('é exatamente o conjunto de corpos que este passo promoveu', () => {
     // ⚠️ Conjunto EXATO, não um piso: "nunca adicione um arquivo à mão" só vale
     // se adicionar um quebrar algo. O escrow do pedido de sandbox CHEGOU
     // (2026-09-10), e este teste, os loaders e a tabela do README mudaram no
     // MESMO commit — que é a revisão que uma fixture nova precisa ter. O passo
-    // 15b fez o mesmo com os quatro corpos de `search_package_list`, e o 17 com
-    // os seis das devoluções.
+    // 15b fez o mesmo com os quatro corpos de `search_package_list`, o 17 com
+    // os seis das devoluções e o 18 com os quatro das tabelas de medidas.
+    // ⚠️ `get_size_chart_detail.doc-id-inexistente` ordena ANTES de
+    // `get_size_chart_detail.doc`: `-` (0x2D) < `.` (0x2E).
     expect(listarFixtures()).toEqual([
       FIXTURE_RETURN_ACCEPT_OFFER_DOC,
       FIXTURE_RETURN_CONFIRM_DOC,
@@ -76,6 +99,10 @@ describe('o inventário do corpus', () => {
       FIXTURE_ORDER_DETAIL_QTY2_SG,
       FIXTURE_RETURN_DETAIL_DOC,
       FIXTURE_RETURN_LIST_DOC,
+      FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+      FIXTURE_SIZE_CHART_DETAIL_DOC,
+      FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
+      FIXTURE_SIZE_CHART_LIST_DOC,
       FIXTURE_RETURN_OFFER_DOC,
       FIXTURE_SEARCH_PACKAGE_LIST_DOC,
       FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_DA_LOJA,
@@ -96,7 +123,12 @@ describe('o inventário do corpus', () => {
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_CANAIS_TURBO);
     expect(readme).toContain(FIXTURE_SEARCH_PACKAGE_LIST_SG_INVOICE_PENDING_TRUE);
     for (const file of CORPOS_DEVOLUCAO) expect(readme, file).toContain(`\`${file}\``);
+    for (const file of CORPOS_TABELA_DE_MEDIDAS) expect(readme, file).toContain(`\`${file}\``);
     expect(readme).toContain('unverified for BR');
+    // A contagem da prosa anda com o inventário: um corpo novo sem a frase
+    // corrigida deixaria o README mentindo sobre o próprio diretório.
+    expect(listarFixtures()).toHaveLength(19);
+    expect(readme).toContain('Nineteen bodies today');
     // ⚠️ E a âncora do sentido inverso: o slot vazio ACABOU, então a frase que o
     // anunciava não pode sobreviver ao corpo que o preencheu.
     expect(readme).not.toContain('pending from Lucas');
@@ -867,6 +899,306 @@ describe('as devoluções pelo CLIENTE do pacote, com o corpo commitado no fio',
       // como VALOR — é o instrumento do registro 231.
       expect(resposta).toEqual(parse(lerFixture(file)));
       expect((resposta as { error: unknown }).error).toBe(ERRO_DA_PAGINA[file]);
+    },
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/*     As tabelas de medidas (passo 18, #1526): os quatro exemplos da doc     */
+/* -------------------------------------------------------------------------- */
+
+/** O corpo CRU de uma página de tabela de medidas, para o que o schema esconde. */
+type TabelaCrua = Record<string, unknown>;
+
+function lerTabelaCrua(file: string): TabelaCrua {
+  return lerFixture(file) as unknown as TabelaCrua;
+}
+
+/** Os dois exemplos de ERRO, cada um com a frase que a SUA página imprime. */
+const FRASE_DO_ERRO = {
+  [FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA]: 'Category id is invalid',
+  [FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE]: 'Size chart id not exist in this shop',
+} as const;
+
+/** Uma célula do detalhe já parseada: as quatro chaves, `null` onde o exemplo não preenche. */
+function celula(preenchida: {
+  option?: string;
+  value?: number;
+  min_value?: number;
+  max_value?: number;
+}): Record<string, unknown> {
+  return { option: null, value: null, min_value: null, max_value: null, ...preenchida };
+}
+
+describe('as tabelas de medidas — os quatro corpos crus (exemplos da doc, ❌ não verificados para o BR)', () => {
+  it('cobre os quatro corpos do passo 18, um de cada', () => {
+    // Âncora anti-vacuidade dos `it.each` abaixo: cada um percorre uma METADE.
+    expect(
+      [
+        FIXTURE_SIZE_CHART_LIST_DOC,
+        FIXTURE_SIZE_CHART_DETAIL_DOC,
+        ...Object.keys(FRASE_DO_ERRO),
+      ].sort(),
+    ).toEqual([...CORPOS_TABELA_DE_MEDIDAS].sort());
+  });
+
+  it.each([FIXTURE_SIZE_CHART_LIST_DOC, FIXTURE_SIZE_CHART_DETAIL_DOC])(
+    '%s: as chaves da PÁGINA menos `request_id`, com `error`/`message`/`warning` vazios',
+    (file) => {
+      // ⚠️ Ao contrário das devoluções, o sucesso destas páginas é `''`: nenhum
+      // alias de erro vazio é preciso aqui.
+      const cru = lerTabelaCrua(file);
+      expect(Object.keys(cru).sort()).toEqual(['error', 'message', 'response', 'warning']);
+      expect(cru.error).toBe('');
+      expect(cru.message).toBe('');
+      expect(cru.warning).toBe('');
+    },
+  );
+
+  it.each([
+    FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
+    FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+  ] as const)(
+    '%s: o exemplo de ERRO é só `{error, message}` — sem `response`, sem `request_id`',
+    (file) => {
+      const cru = lerTabelaCrua(file);
+      expect(Object.keys(cru).sort()).toEqual(['error', 'message']);
+      expect(cru.error).toBe('product.error_param');
+      expect(cru.message).toBe(FRASE_DO_ERRO[file]);
+    },
+  );
+
+  it('⚠️ UM código, DUAS frases — só a frase separa a tabela velha da categoria recusada (registro 258)', () => {
+    const inexistente = lerTabelaCrua(FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE);
+    const categoria = lerTabelaCrua(FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA);
+    // IGUAL: o código não distingue nada…
+    expect(inexistente.error).toBe(categoria.error);
+    // …QUASE-IGUAL: a frase é a única diferença entre os dois corpos.
+    expect(inexistente.message).not.toBe(categoria.message);
+  });
+
+  it('a lista traz ids e `total_count` como NÚMEROS JSON — a tabela da página diz `string` (registro 248)', () => {
+    const resposta = lerTabelaCrua(FIXTURE_SIZE_CHART_LIST_DOC).response as {
+      size_chart_list: Record<string, unknown>[];
+      total_count: unknown;
+      next_cursor: unknown;
+    };
+    expect(resposta.size_chart_list.map((linha) => typeof linha.size_chart_id)).toEqual([
+      'number',
+      'number',
+      'number',
+    ]);
+    expect(typeof resposta.total_count).toBe('number');
+    // A página drenada responde `""`; um `null` ou a chave ausente é o registro 249.
+    expect(resposta.next_cursor).toBe('');
+    // E a linha é SÓ o id: a lista não traz nome nenhum — o nome custa um detalhe.
+    for (const linha of resposta.size_chart_list) {
+      expect(Object.keys(linha)).toEqual(['size_chart_id']);
+    }
+  });
+
+  it('o detalhe: cada célula traz as QUATRO chaves, nulas exceto as que o `input_type` da coluna nomeia', () => {
+    // ⚠️ É o que a regra "tipo primeiro" do projetor lê. Um exemplo que obedece
+    // não é garantia — o fio zera numéricos ausentes em outras páginas (registro
+    // 254) —, e por isso o projetor nunca lê a chave que o tipo não nomeia.
+    const chavesDoTipo: Readonly<Record<string, readonly string[]>> = {
+      [SHOPEE_SIZE_CHART_INPUT_TYPE.numero]: ['value'],
+      [SHOPEE_SIZE_CHART_INPUT_TYPE.faixa]: ['max_value', 'min_value'],
+      [SHOPEE_SIZE_CHART_INPUT_TYPE.opcao]: ['option'],
+    };
+    const resposta = lerTabelaCrua(FIXTURE_SIZE_CHART_DETAIL_DOC).response as {
+      size_chart_table: {
+        column_list: {
+          measurement: { input_type: string };
+          measurement_value_list: Record<string, unknown>[];
+        }[];
+      };
+    };
+    const colunas = resposta.size_chart_table.column_list;
+    expect(colunas).toHaveLength(3);
+    for (const coluna of colunas) {
+      const esperadas = chavesDoTipo[coluna.measurement.input_type];
+      expect(esperadas, coluna.measurement.input_type).toBeDefined();
+      expect(coluna.measurement_value_list).toHaveLength(3);
+      for (const c of coluna.measurement_value_list) {
+        expect(Object.keys(c).sort()).toEqual(['max_value', 'min_value', 'option', 'value']);
+        expect(Object.keys(c).filter((k) => c[k] !== null)).toEqual(esperadas);
+      }
+    }
+  });
+});
+
+describe('as tabelas de medidas pelo schema do pacote', () => {
+  it('a lista parseia INTEIRA — nenhuma linha virou a sentinela `null`', () => {
+    const pagina = lerListaDeTabelasDeMedidas(FIXTURE_SIZE_CHART_LIST_DOC);
+    expect(pagina.size_chart_list).toEqual([
+      { size_chart_id: 700024641 },
+      { size_chart_id: 700024613 },
+      { size_chart_id: 700024605 },
+    ]);
+    expect(pagina.total_count).toBe(3);
+    expect(pagina.next_cursor).toBe('');
+  });
+
+  it('o leitor de página do pacote a lê como a ÚLTIMA página: `fim`, três ids, nenhuma ilegível', () => {
+    expect(
+      lerPaginaDeTabelasDeMedidas(lerListaDeTabelasDeMedidas(FIXTURE_SIZE_CHART_LIST_DOC)),
+    ).toEqual({
+      ids: [700024641, 700024613, 700024605],
+      linhasIlegiveis: 0,
+      total: 3,
+      continuacao: { estado: 'fim' },
+    });
+  });
+
+  it('o detalhe parseia INTEIRO — 3 colunas × 3 células, nenhuma sentinela `null`, os três tipos da página', () => {
+    const detalhe = lerDetalheDeTabelaDeMedidas(FIXTURE_SIZE_CHART_DETAIL_DOC);
+    expect(detalhe.size_chart_id).toBe(700024639);
+    expect(detalhe.size_chart_name).toBe('testtestt');
+    const colunas = detalhe.size_chart_table?.column_list ?? [];
+    expect(colunas.filter((coluna) => coluna === null)).toEqual([]);
+    // ⚠️ As três grafias do corpus SÃO as do constante único — um "conserto" na
+    // grafia de `SHOPEE_SIZE_CHART_INPUT_TYPE` cai aqui, contra a evidência.
+    // E `unit: 'cm'` está também na coluna de LISTA (o "01s cm" do registro).
+    expect(colunas.map((coluna) => coluna?.measurement)).toEqual([
+      {
+        display_name: 'test single input number',
+        input_type: SHOPEE_SIZE_CHART_INPUT_TYPE.numero,
+        unit: 'cm',
+      },
+      {
+        display_name: 'susu_input_range_number_with_special_unit_kg',
+        input_type: SHOPEE_SIZE_CHART_INPUT_TYPE.faixa,
+        unit: 'kg',
+      },
+      {
+        display_name: 'regional 001 dropdowm',
+        input_type: SHOPEE_SIZE_CHART_INPUT_TYPE.opcao,
+        unit: 'cm',
+      },
+    ]);
+    expect(colunas.map((coluna) => coluna?.measurement_value_list)).toEqual([
+      [celula({ value: 1 }), celula({ value: 2 }), celula({ value: 3 })],
+      [
+        celula({ min_value: 12, max_value: 13 }),
+        celula({ min_value: 13, max_value: 14 }),
+        celula({ min_value: 14, max_value: 16 }),
+      ],
+      [celula({ option: '01s' }), celula({ option: '01m' }), celula({ option: '01l' })],
+    ]);
+  });
+
+  it('⚠️ os dois exemplos são tabelas DIFERENTES: o eco do detalhe não é id nenhum da lista', () => {
+    // Nunca junte dois corpos por id: um id da lista pedido a ESTE detalhe é um
+    // id que o eco contradiz — o `id-divergente` do projetor, não um 3×3 limpo.
+    const ids = lerPaginaDeTabelasDeMedidas(
+      lerListaDeTabelasDeMedidas(FIXTURE_SIZE_CHART_LIST_DOC),
+    ).ids;
+    const eco = lerDetalheDeTabelaDeMedidas(FIXTURE_SIZE_CHART_DETAIL_DOC).size_chart_id;
+    expect(eco).toBe(700024639);
+    expect(ids).not.toContain(eco);
+    // QUASE-IGUAL: o primeiro id da lista é o eco + 2 — vizinho não é o mesmo id.
+    expect(ids[0]).toBe(700024639 + 2);
+  });
+
+  it.each([
+    [FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA, shopeeSizeChartListSchema],
+    [FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE, shopeeSizeChartDetailSchema],
+  ] as const)(
+    '%s NÃO parseia pelo schema da operação — falta só `response`; leia-o com `lerFixture`',
+    (file, schema) => {
+      const resultado = schema.safeParse(lerFixture(file));
+      expect(resultado.success).toBe(false);
+      expect(resultado.error!.issues.map((i) => i.path.join('.'))).toEqual(['response']);
+    },
+  );
+
+  it('os loaders LANÇAM num corpo de erro — nunca devolvem uma página vazia', () => {
+    expect(() =>
+      lerListaDeTabelasDeMedidas(FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA),
+    ).toThrow();
+    expect(() =>
+      lerDetalheDeTabelaDeMedidas(FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE),
+    ).toThrow();
+  });
+});
+
+/**
+ * Um cliente REAL do pacote cujo `fetch` responde o TEXTO do arquivo commitado,
+ * registrando o método e o caminho de cada chamada.
+ */
+function clienteDaTabelaDeMedidas(file: string): {
+  readonly client: ShopeeClient;
+  readonly chamadas: { readonly metodo: string | undefined; readonly caminho: string }[];
+} {
+  const texto = readFileSync(join(WIRE_DIR, file), 'utf8');
+  const chamadas: { metodo: string | undefined; caminho: string }[] = [];
+  const transporte = vi.fn<typeof globalThis.fetch>((entrada, init) => {
+    const url =
+      typeof entrada === 'string' ? entrada : entrada instanceof URL ? entrada.href : entrada.url;
+    chamadas.push({ metodo: init?.method, caminho: new URL(url).pathname });
+    return Promise.resolve(
+      new Response(texto, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+  });
+  const client = createShopeeClient({
+    partnerId: 1000001,
+    partnerKey: 'chave-de-teste-nao-e-credencial',
+    hosts: resolveShopeeHosts({ sandbox: true }),
+    fetch: transporte,
+    shopId: 987654,
+    getAccessToken: () => Promise.resolve('access-inventado'),
+  });
+  return { client, chamadas };
+}
+
+describe('as tabelas de medidas pelo CLIENTE do pacote, com o corpo commitado no fio', () => {
+  it.each([
+    [
+      FIXTURE_SIZE_CHART_LIST_DOC,
+      SHOPEE_GET_SIZE_CHART_LIST_PATH,
+      (c: ShopeeClient): Promise<unknown> =>
+        c.getSizeChartList({ categoryId: 400055, pageSize: 50 }),
+      (): unknown => lerListaDeTabelasDeMedidas(FIXTURE_SIZE_CHART_LIST_DOC),
+    ],
+    [
+      FIXTURE_SIZE_CHART_DETAIL_DOC,
+      SHOPEE_GET_SIZE_CHART_DETAIL_PATH,
+      (c: ShopeeClient): Promise<unknown> => c.getSizeChartDetail({ sizeChartId: 700024639 }),
+      (): unknown => lerDetalheDeTabelaDeMedidas(FIXTURE_SIZE_CHART_DETAIL_DOC),
+    ],
+  ] as const)(
+    '%s RESOLVE num GET, e o que o cliente devolve é o que o loader devolve',
+    async (file, caminho, chamar, carregar) => {
+      // É o contrato do loader: o PAYLOAD, como a operação o devolve — então um
+      // cliente falso pode repassá-lo sem tirar nem pôr.
+      const { client, chamadas } = clienteDaTabelaDeMedidas(file);
+      await expect(chamar(client)).resolves.toEqual(carregar());
+      expect(chamadas).toEqual([{ metodo: 'GET', caminho }]);
+    },
+  );
+
+  it.each([
+    [
+      FIXTURE_SIZE_CHART_LIST_DOC_CATEGORIA_INVALIDA,
+      (c: ShopeeClient): Promise<unknown> =>
+        c.getSizeChartList({ categoryId: 400055, pageSize: 50 }),
+    ],
+    [
+      FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE,
+      (c: ShopeeClient): Promise<unknown> => c.getSizeChartDetail({ sizeChartId: 700024641 }),
+    ],
+  ] as const)(
+    '%s REJEITA com o `ShopeeApiError` que o classificador lê: o código, `kind: other` e a frase VERBATIM',
+    async (file, chamar) => {
+      const { client } = clienteDaTabelaDeMedidas(file);
+      const promessa = chamar(client);
+      await expect(promessa).rejects.toBeInstanceOf(ShopeeApiError);
+      await expect(promessa).rejects.toMatchObject({
+        code: 'product.error_param',
+        kind: SHOPEE_ERROR_KIND.other,
+        providerMessage: FRASE_DO_ERRO[file],
+      });
     },
   );
 });
