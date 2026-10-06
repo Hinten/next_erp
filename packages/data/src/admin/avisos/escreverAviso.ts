@@ -44,6 +44,9 @@ export interface PlanoAviso extends ChaveAvisoInput {
   relogioEvento?: number | null;
 }
 
+/** Metadata for a clocked resolve, including a complete seed if its row is absent. */
+export type ResolverAvisoOpts = Omit<PlanoAviso, 'relogioEvento'> & { relogioEvento: number };
+
 export interface EscreverAvisoDeps {
   /** `(by) => FieldValue.increment(by)` — supplied by the caller, see above. */
   increment: (by: number) => unknown;
@@ -261,7 +264,7 @@ export async function escreverAviso(
  * every run — which both makes the caller's `resolvidos` counter report
  * closures that never happened AND pushes the stamp forward faster than
  * `sweepAvisosResolvidos`'s 90-day cutoff can ever reach it, so the row never
- * ages out. An already-resolved row is therefore a no-op answering `false`.
+ * ages out. An already-resolved row therefore answers `false`.
  *
  * Never a plain `merge`: an admin `merge` is an UPSERT and would happily
  * resurrect a document the retention sweep already deleted, as a ghost carrying
@@ -279,6 +282,12 @@ export async function escreverAviso(
  * provider's clock passes it, in the same unit its raise passes to
  * {@link escreverAviso}:
  *
+ *  - A missing row is atomically created already resolved, with the supplied
+ *    metadata and clock. This answers `false`: no open row was closed. The
+ *    complete row suppresses older raises and ages out under the existing
+ *    90-day retention sweep. An ALREADY_EXISTS collision re-reads the winner.
+ *    The metadata is only used for creation; it never replaces an existing
+ *    row's fields. Its dedup identity must match `chave` before any write.
  *  - stored `relogioEvento` non-null and `>=` the given one ⇒ the resolve is
  *    stale: no write, `false`. EQUAL is stale too, exactly as `escreverAviso`
  *    drops an equal raise.
@@ -306,21 +315,26 @@ export async function escreverAviso(
  *    re-read, re-decide every rule above against the winner's row, write again —
  *    bounded by `escreverAviso`'s own `MAX_TENTATIVAS_PRECONDICAO`. A winner at
  *    an equal or newer clock makes the retry stale (`false`, nothing written);
- *    an older one is overwritten and stamped. A writer that keeps winning past
- *    the bound gets `false`, never a spin. `NOT_FOUND` (swept between read and
- *    write) is `false` on any path.
+ *    an older one is overwritten and stamped. Exhausting the three attempts
+ *    throws, so a delivery whose newer clock never landed can be retried.
+ *    `NOT_FOUND` also loops: the next read can recreate a complete resolved row.
  *
  * Omitted ⇒ exactly the behaviour above minus the clock rules: the periodic
  * resolvers carry no clock, a stored one is left untouched, and a lost
- * precondition is `false` on the first attempt.
+ * precondition or a missing row is `false` on the first attempt.
  */
 export async function resolverAviso(
   db: Firestore,
   chave: string,
   motivo: string,
   deps: Pick<EscreverAvisoDeps, 'agoraUs'>,
-  opts?: { relogioEvento?: number },
+  opts?: ResolverAvisoOpts,
 ): Promise<boolean> {
+  if (opts !== undefined && chaveDeAviso(opts) !== chave) {
+    throw new RangeError(
+      `resolverAviso(${chave}): the supplied metadata has a different dedup key`,
+    );
+  }
   const ref = avisoCollection.docRef(db, {}, chave);
   const relogioEvento = opts?.relogioEvento;
 
@@ -328,7 +342,25 @@ export async function resolverAviso(
     // Every decision below is derived from THIS attempt's read — rule 7: a retry
     // that re-applies what the losing attempt decided is the lost update again.
     const snap = await ref.get();
-    if (!snap.exists) return false;
+    if (!snap.exists) {
+      if (opts === undefined) return false;
+      const novo = avisoCollection.parse({
+        ...camposInformados(opts),
+        criadoEm: deps.agoraUs,
+        atualizadoEm: deps.agoraUs,
+        ocorrencias: 1,
+        resolvidoEm: deps.agoraUs,
+        resolucaoMotivo: motivo,
+      });
+      try {
+        await ref.create(novo);
+        // Recording a closed observation is not an open-to-resolved transition.
+        return false;
+      } catch (err) {
+        if (!isAlreadyExists(err)) throw err;
+        continue;
+      }
+    }
 
     const armazenado = avisoCollection.parseRead(snap.data(), `avisos/${chave}`);
 
@@ -347,7 +379,7 @@ export async function resolverAviso(
         });
         return false;
       } catch (err) {
-        if (isNotFound(err)) return false;
+        if (isNotFound(err)) continue;
         if (!isFailedPrecondition(err)) throw err;
         // The winner may be an OLDER raise that just reopened the row: re-read
         // and re-decide (the docblock's last bullet). Only reachable with a clock.
@@ -374,8 +406,10 @@ export async function resolverAviso(
       await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
       return true;
     } catch (err) {
-      // Swept between our read and our write: there is nothing left to close.
-      if (isNotFound(err)) return false;
+      if (isNotFound(err)) {
+        if (relogioEvento === undefined) return false;
+        continue;
+      }
       if (!isFailedPrecondition(err)) throw err;
       // Clock-less: someone else resolved the row; their write stands and this
       // call closed nothing. With a clock the winner may be an OLDER raise that
@@ -384,9 +418,10 @@ export async function resolverAviso(
     }
   }
 
-  // A writer that kept winning every attempt: report no transition rather than
-  // spin. The row holds whatever the last winner wrote.
-  return false;
+  if (relogioEvento === undefined) return false;
+  throw new Error(
+    `resolverAviso(${chave}): ${String(MAX_TENTATIVAS_PRECONDICAO)} attempts exhausted — persistent write contention on one aviso; the event clock was not stored.`,
+  );
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   avisoNaoLido,
+  avisoSchema,
   chaveDeAviso,
   entradaDeLeitura,
   type Aviso,
@@ -13,6 +14,7 @@ import {
   escreverAviso,
   resolverAviso,
   type PlanoAviso,
+  type ResolverAvisoOpts,
 } from './escreverAviso';
 
 const AGORA_US = 1_760_000_000_000_000;
@@ -40,14 +42,17 @@ function makeDb(seed: Record<string, Stored> = {}) {
   let relogio = 100;
   /** Simulates another writer landing between our `get` and our `update`. */
   let aoLer: ((path: string) => void) | null = null;
+  let aoCriar: (() => Promise<unknown>) | null = null;
 
   const docRef = (path: string) => ({
     path,
-    create: (data: Record<string, unknown>) => {
-      if (store[path]) return Promise.reject(grpc(6, 'ALREADY_EXISTS'));
+    create: async (data: Record<string, unknown>) => {
+      const interferencia = aoCriar;
+      aoCriar = null;
+      await interferencia?.();
+      if (store[path]) throw grpc(6, 'ALREADY_EXISTS');
       relogio += 1;
       store[path] = { data, updateTime: relogio };
-      return Promise.resolve();
     },
     get: () => {
       aoLer?.(path);
@@ -65,7 +70,19 @@ function makeDb(seed: Record<string, Stored> = {}) {
         return Promise.reject(grpc(9, 'FAILED_PRECONDITION'));
       }
       relogio += 1;
-      store[path] = { data: { ...atual.data, ...patch }, updateTime: relogio };
+      const aplicado: Record<string, unknown> = { ...patch };
+      for (const [campo, valor] of Object.entries(patch)) {
+        if (
+          valor !== null &&
+          typeof valor === 'object' &&
+          '__increment' in valor &&
+          typeof valor.__increment === 'number'
+        ) {
+          const anterior = atual.data[campo];
+          aplicado[campo] = (typeof anterior === 'number' ? anterior : 0) + valor.__increment;
+        }
+      }
+      store[path] = { data: { ...atual.data, ...aplicado }, updateTime: relogio };
       return Promise.resolve();
     },
     set: (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
@@ -86,6 +103,10 @@ function makeDb(seed: Record<string, Stored> = {}) {
   return {
     db: db as unknown as Firestore,
     store,
+    /** Land a competing write after a missing read, before the next create. */
+    interferirNaProximaCriacao(acao: () => Promise<unknown>) {
+      aoCriar = acao;
+    },
     /** Register a one-shot concurrent write that fires on the next `get`. */
     interferirNaProximaLeitura(mutacao: Partial<Record<string, unknown>>) {
       aoLer = (path) => {
@@ -138,7 +159,7 @@ describe('escreverAviso — the repeat, which must NOT re-alert', () => {
 
     expect(out.resultado).toBe('repetido');
     expect(Object.keys(store)).toEqual([PATH]);
-    expect(store[PATH]?.data.ocorrencias).toEqual({ __increment: 1 });
+    expect(store[PATH]?.data.ocorrencias).toBe(2);
   });
 
   it('keeps the ORIGINAL criadoEm so a read aviso stays read', async () => {
@@ -380,6 +401,189 @@ describe('resolverAviso', () => {
   });
 });
 
+describe('resolverAviso — first resolved observation (#1771)', () => {
+  const OPTS: ResolverAvisoOpts = { ...PLANO, relogioEvento: 3_000 };
+
+  it('creates a complete resolved row without a transition, unread notice or escalation', async () => {
+    const { db, store } = makeDb();
+    const escalar = vi.fn();
+    const resolucaoDeps = { agoraUs: AGORA_US, escalar };
+    await expect(
+      resolverAviso(db, CHAVE, 'closed', resolucaoDeps, {
+        ...OPTS,
+        severidade: SEVERIDADE_AVISO.critico,
+      }),
+    ).resolves.toBe(false);
+
+    const row = avisoSchema.parse(store[PATH]?.data);
+    expect(row).toMatchObject({
+      tipo: PLANO.tipo,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: null,
+      params: PLANO.params,
+      motivo: null,
+      prazo: null,
+      urlInterna: null,
+      criadoEm: AGORA_US,
+      atualizadoEm: AGORA_US,
+      resolvidoEm: AGORA_US,
+      resolucaoMotivo: 'closed',
+      relogioEvento: 3_000,
+      ocorrencias: 1,
+    });
+    expect(avisoNaoLido(row, CHAVE, null, 'operator')).toBe(false);
+    expect(escalar).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched identity before writing', async () => {
+    const { db, store } = makeDb();
+    await expect(
+      resolverAviso(db, CHAVE, 'closed', deps, { ...OPTS, conta: 'another-account' }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(store).toEqual({});
+  });
+
+  it.each([true, false])('converges when the older raise runs first: %s', async (raiseFirst) => {
+    const { db, store } = makeDb();
+    const raise = () => escreverAviso(db, { ...PLANO, relogioEvento: 2_000 }, deps);
+    if (raiseFirst) await raise();
+    await expect(
+      resolverAviso(db, CHAVE, 'closed', { agoraUs: AGORA_US + 10 }, OPTS),
+    ).resolves.toBe(raiseFirst);
+    if (!raiseFirst) expect((await raise()).resultado).toBe('ignorado');
+    expect(avisoSchema.parse(store[PATH]?.data)).toMatchObject({
+      resolvidoEm: AGORA_US + 10,
+      relogioEvento: 3_000,
+      ocorrencias: 1,
+    });
+  });
+
+  it('drops equal and older first raises, but a one-tick-newer raise reopens and alerts', async () => {
+    const { db, store } = makeDb();
+    await resolverAviso(db, CHAVE, 'closed', deps, OPTS);
+    const closed = avisoSchema.parse(store[PATH]?.data);
+    for (const relogioEvento of [2_999, 3_000]) {
+      expect(
+        (await escreverAviso(db, { ...PLANO, relogioEvento }, { ...deps, agoraUs: AGORA_US + 10 }))
+          .resultado,
+      ).toBe('ignorado');
+      expect(store[PATH]?.data).toEqual(closed);
+    }
+
+    const out = await escreverAviso(
+      db,
+      { ...PLANO, relogioEvento: 3_001 },
+      { ...deps, agoraUs: AGORA_US + 30 },
+    );
+    expect(out.resultado).toBe('reaberto');
+    const reopened = avisoSchema.parse(store[PATH]?.data);
+    expect(reopened).toMatchObject({
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+      criadoEm: AGORA_US + 30,
+      relogioEvento: 3_001,
+      ocorrencias: 2,
+    });
+    expect(
+      avisoNaoLido(
+        reopened,
+        CHAVE,
+        { ultimaVisualizacaoUs: AGORA_US, lidos: [entradaDeLeitura(CHAVE, closed.criadoEm)] },
+        'operator',
+      ),
+    ).toBe(true);
+  });
+
+  it('replay preserves the resolution, and newer clocks do not replace existing metadata', async () => {
+    const { db, store } = makeDb();
+    await resolverAviso(db, CHAVE, 'first-reason', deps, OPTS);
+    const before = avisoSchema.parse(store[PATH]?.data);
+    const changed: ResolverAvisoOpts = {
+      ...OPTS,
+      severidade: SEVERIDADE_AVISO.critico,
+      params: { loja: 'replacement' },
+      motivo: 'replacement',
+    };
+    await expect(
+      resolverAviso(db, CHAVE, 'another-reason', { agoraUs: AGORA_US + 10 }, changed),
+    ).resolves.toBe(false);
+    expect(store[PATH]?.data).toEqual(before);
+    await expect(
+      resolverAviso(
+        db,
+        CHAVE,
+        'another-reason',
+        { agoraUs: AGORA_US + 20 },
+        {
+          ...changed,
+          relogioEvento: 3_001,
+        },
+      ),
+    ).resolves.toBe(false);
+    expect(store[PATH]?.data).toEqual({ ...before, relogioEvento: 3_001 });
+  });
+
+  it.each([2_000, 3_001])(
+    're-decides after a competing raise at clock %s creates the row',
+    async (clock) => {
+      const fake = makeDb();
+      fake.interferirNaProximaCriacao(() =>
+        escreverAviso(
+          fake.db,
+          { ...PLANO, params: { loja: 'winning-raise' }, relogioEvento: clock },
+          { ...deps, agoraUs: AGORA_US + 5 },
+        ),
+      );
+      await expect(
+        resolverAviso(fake.db, CHAVE, 'closed', { agoraUs: AGORA_US + 10 }, OPTS),
+      ).resolves.toBe(clock < OPTS.relogioEvento);
+      expect(avisoSchema.parse(fake.store[PATH]?.data)).toMatchObject({
+        params: { loja: 'winning-raise' },
+        relogioEvento: Math.max(clock, OPTS.relogioEvento),
+        resolvidoEm: clock < OPTS.relogioEvento ? AGORA_US + 10 : null,
+        ocorrencias: 1,
+      });
+    },
+  );
+
+  it.each([2_000, 3_001])(
+    'a competing resolve at clock %s keeps its resolution and the greatest clock',
+    async (clock) => {
+      const fake = makeDb();
+      fake.interferirNaProximaCriacao(() =>
+        resolverAviso(
+          fake.db,
+          CHAVE,
+          'first-reason',
+          { agoraUs: AGORA_US + 5 },
+          {
+            ...OPTS,
+            relogioEvento: clock,
+          },
+        ),
+      );
+      await expect(
+        resolverAviso(fake.db, CHAVE, 'later-reason', { agoraUs: AGORA_US + 10 }, OPTS),
+      ).resolves.toBe(false);
+      expect(avisoSchema.parse(fake.store[PATH]?.data)).toMatchObject({
+        criadoEm: AGORA_US + 5,
+        resolvidoEm: AGORA_US + 5,
+        resolucaoMotivo: 'first-reason',
+        relogioEvento: Math.max(clock, OPTS.relogioEvento),
+        ocorrencias: 1,
+      });
+    },
+  );
+
+  it('propagates a creation transport failure', async () => {
+    const fake = makeDb();
+    const failure = grpc(14, 'UNAVAILABLE');
+    fake.interferirNaProximaCriacao(() => Promise.reject(failure));
+    await expect(resolverAviso(fake.db, CHAVE, 'closed', deps, OPTS)).rejects.toBe(failure);
+    expect(fake.store).toEqual({});
+  });
+});
+
 describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', () => {
   // Two deliveries of one provider event can commit in one order and run their
   // aviso effect in the other. The precondition orders the WRITES, not the
@@ -405,7 +609,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
         CHAVE_DEVOLUCAO,
         'ACCEPTED',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 1_000 },
+        { ...DEVOLUCAO, relogioEvento: 1_000 },
       ),
     ).resolves.toBe(false);
     expect(store[PATH_DEVOLUCAO]?.data.resolvidoEm).toBeNull();
@@ -423,7 +627,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
         CHAVE_DEVOLUCAO,
         'ACCEPTED',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 2_000 },
+        { ...DEVOLUCAO, relogioEvento: 2_000 },
       ),
     ).resolves.toBe(false);
     expect(store[PATH_DEVOLUCAO]?.data.resolvidoEm).toBeNull();
@@ -439,7 +643,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
         CHAVE_DEVOLUCAO,
         'ACCEPTED',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 2_001 },
+        { ...DEVOLUCAO, relogioEvento: 2_001 },
       ),
     ).resolves.toBe(true);
     expect(store[PATH_DEVOLUCAO]?.data).toMatchObject({
@@ -460,7 +664,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
       CHAVE_DEVOLUCAO,
       'ACCEPTED',
       { agoraUs: AGORA_US + 10 },
-      { relogioEvento: 3_000 },
+      { ...DEVOLUCAO, relogioEvento: 3_000 },
     );
 
     const tardio = await escreverAviso(
@@ -492,7 +696,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
         CHAVE_DEVOLUCAO,
         'CLOSED',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 1 },
+        { ...DEVOLUCAO, relogioEvento: 1 },
       ),
     ).resolves.toBe(true);
     expect(store[PATH_DEVOLUCAO]?.data.relogioEvento).toBe(1);
@@ -507,7 +711,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
       CHAVE_DEVOLUCAO,
       'ACCEPTED',
       { agoraUs: AGORA_US + 10 },
-      { relogioEvento: 3_000 },
+      { ...DEVOLUCAO, relogioEvento: 3_000 },
     );
 
     await expect(
@@ -516,7 +720,7 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
         CHAVE_DEVOLUCAO,
         'CLOSED',
         { agoraUs: AGORA_US + 99 },
-        { relogioEvento: 4_000 },
+        { ...DEVOLUCAO, relogioEvento: 4_000 },
       ),
     ).resolves.toBe(false);
     expect(store[PATH_DEVOLUCAO]?.data).toMatchObject({
@@ -544,13 +748,19 @@ describe('resolverAviso — the event clock (rule 7 tier 2, Shopee step 17)', ()
       CHAVE_DEVOLUCAO,
       'ACCEPTED',
       { agoraUs: AGORA_US + 10 },
-      { relogioEvento: 3_000 },
+      { ...DEVOLUCAO, relogioEvento: 3_000 },
     );
     const antes = store[PATH_DEVOLUCAO]?.data;
 
     for (const relogioEvento of [3_000, 2_500]) {
       await expect(
-        resolverAviso(db, CHAVE_DEVOLUCAO, 'CLOSED', { agoraUs: AGORA_US + 99 }, { relogioEvento }),
+        resolverAviso(
+          db,
+          CHAVE_DEVOLUCAO,
+          'CLOSED',
+          { agoraUs: AGORA_US + 99 },
+          { ...DEVOLUCAO, relogioEvento },
+        ),
       ).resolves.toBe(false);
     }
     expect(store[PATH_DEVOLUCAO]?.data).toEqual(antes);
@@ -649,7 +859,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
         CHAVE_DEVOLUCAO,
         'sem-pendencia-do-vendedor',
         { agoraUs: AGORA_US + 1 },
-        { relogioEvento: 2_000 },
+        { ...DEVOLUCAO, relogioEvento: 2_000 },
       );
     }
     return fake;
@@ -675,7 +885,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
         CHAVE_DEVOLUCAO,
         'devolucao-encerrada',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 4_000 },
+        { ...DEVOLUCAO, relogioEvento: 4_000 },
       ),
     ).resolves.toBe(true);
 
@@ -705,7 +915,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
         CHAVE_DEVOLUCAO,
         'devolucao-encerrada',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 4_000 },
+        { ...DEVOLUCAO, relogioEvento: 4_000 },
       ),
     ).resolves.toBe(true);
 
@@ -732,7 +942,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
         CHAVE_DEVOLUCAO,
         'devolucao-encerrada',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 4_000 },
+        { ...DEVOLUCAO, relogioEvento: 4_000 },
       ),
     ).resolves.toBe(false);
 
@@ -758,7 +968,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
         CHAVE_DEVOLUCAO,
         'devolucao-encerrada',
         { agoraUs: AGORA_US + 10 },
-        { relogioEvento: 4_000 },
+        { ...DEVOLUCAO, relogioEvento: 4_000 },
       ),
     ).resolves.toBe(false);
 
@@ -792,7 +1002,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
             CHAVE_DEVOLUCAO,
             'CLOSED',
             { agoraUs: AGORA_US + 5 },
-            { relogioEvento: outro },
+            { ...DEVOLUCAO, relogioEvento: outro },
           ),
       );
       await expect(
@@ -801,7 +1011,7 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
           CHAVE_DEVOLUCAO,
           'devolucao-encerrada',
           { agoraUs: AGORA_US + 10 },
-          { relogioEvento: 4_000 },
+          { ...DEVOLUCAO, relogioEvento: 4_000 },
         ),
       ).resolves.toBe(false);
 
@@ -818,9 +1028,9 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
 
   // A writer that touches the row ahead of EVERY update: each attempt re-reads a
   // decision that still says "write", and loses again. Without the bound this
-  // spins forever; with it the call gives up with `false` after the third try.
+  // spins forever; after the third loss it throws so the delivery can retry.
   it.each(RAMOS)(
-    'is bounded on $ramo: a writer that keeps winning ⇒ false after three attempts, no spin',
+    'is bounded on $ramo: a writer that keeps winning throws after three attempts',
     async ({ jaResolvido }) => {
       const { db, store } = await semear(jaResolvido);
       const antes = store[PATH_DEVOLUCAO]?.data;
@@ -839,9 +1049,9 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
           CHAVE_DEVOLUCAO,
           'devolucao-encerrada',
           { agoraUs: AGORA_US + 10 },
-          { relogioEvento: 4_000 },
+          { ...DEVOLUCAO, relogioEvento: 4_000 },
         ),
-      ).resolves.toBe(false);
+      ).rejects.toThrow('3 attempts exhausted');
 
       expect(corrida.contagem).toEqual({ leituras: 3, updates: 3, interferencias: 3 });
       expect(store[PATH_DEVOLUCAO]?.data).toEqual(antes);
@@ -870,8 +1080,22 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
     });
   });
 
+  it('WITHOUT a clock, deletion between read and update still returns false without creating a row', async () => {
+    const { db, store } = await semear(false);
+    const corrida = comEscritorEntreLeituraEUpdate(
+      db,
+      () => true,
+      () => Promise.resolve(Reflect.deleteProperty(store, PATH_DEVOLUCAO)),
+    );
+    await expect(
+      resolverAviso(corrida.db, CHAVE_DEVOLUCAO, 'closed', { agoraUs: AGORA_US + 10 }),
+    ).resolves.toBe(false);
+    expect(corrida.contagem).toEqual({ leituras: 1, updates: 1, interferencias: 1 });
+    expect(store[PATH_DEVOLUCAO]).toBeUndefined();
+  });
+
   it.each(RAMOS)(
-    'NOT_FOUND on $ramo is still false at once, and resurrects no ghost',
+    'NOT_FOUND on $ramo retries and records a complete resolved row',
     async ({ jaResolvido }) => {
       const { db, store } = await semear(jaResolvido);
 
@@ -887,13 +1111,18 @@ describe('resolverAviso — a lost precondition WITH a clock is re-decided, not 
           CHAVE_DEVOLUCAO,
           'devolucao-encerrada',
           { agoraUs: AGORA_US + 10 },
-          { relogioEvento: 4_000 },
+          { ...DEVOLUCAO, relogioEvento: 4_000 },
         ),
       ).resolves.toBe(false);
 
-      // Not a lost race to re-decide: nothing is left to close, so no re-read.
-      expect(corrida.contagem).toEqual({ leituras: 1, updates: 1, interferencias: 1 });
-      expect(store[PATH_DEVOLUCAO]).toBeUndefined();
+      expect(corrida.contagem).toEqual({ leituras: 2, updates: 1, interferencias: 1 });
+      expect(avisoSchema.parse(store[PATH_DEVOLUCAO]?.data)).toMatchObject({
+        tipo: DEVOLUCAO.tipo,
+        ocorrencias: 1,
+        resolvidoEm: AGORA_US + 10,
+        resolucaoMotivo: 'devolucao-encerrada',
+        relogioEvento: 4_000,
+      });
     },
   );
 });
