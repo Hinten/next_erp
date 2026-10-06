@@ -286,7 +286,7 @@ is recorded here rather than papered over:
 - **`cargoClaims`** has no far-future guard either (condition 3). Its fence is
   the ownership/phase/cursor re-check on every checkpoint.
 
-Adding the far-future guard to both is a follow-up, not part of #1677.
+Adding the far-future guard to both is tracked in #1802, not part of #1677.
 
 A lease that cannot meet these is not a lease this repo uses; a race between two
 Firestore writes is never a reason for one.
