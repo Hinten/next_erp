@@ -4,6 +4,7 @@ import {
   type LeituraParam,
   lerCategoryIdObrigatorio,
   lerCategoryIdOpcional,
+  lerIdPositivoObrigatorio,
   lerIntegracaoId,
   lerInteiro,
   lerTextoObrigatorio,
@@ -77,6 +78,96 @@ describe('lerCategoryIdObrigatorio', () => {
       'categoryId deve ser um inteiro positivo.',
     );
   });
+});
+
+describe('lerIdPositivoObrigatorio — sizeChartId (passo 18, tabela-medidas/detalhe)', () => {
+  const ler = (raw: string | null) =>
+    lerIdPositivoObrigatorio(query({ sizeChartId: raw }), 'sizeChartId');
+
+  it.each([
+    ['700024641', 700_024_641], // o id do sample da própria página da Shopee
+    ['1', 1],
+    ['9007199254740991', Number.MAX_SAFE_INTEGER],
+  ])('aceita %j', (raw, esperado) => {
+    expect(valorDe(ler(raw))).toBe(esperado);
+  });
+
+  // M57: cada linha é um valor que um leitor frouxo transformaria num id
+  // VÁLIDO de outra tabela (ou no sentinela de DESANEXAR) e assinaria uma
+  // chamada perfeitamente boa para ele.
+  it.each([
+    ['0', 'sizeChartId deve ser um inteiro positivo.'], // o sentinela de add/update_item
+    ['00', 'sizeChartId deve ser um inteiro positivo.'],
+    ['9007199254740992', 'sizeChartId deve ser um inteiro positivo.'], // 2^53
+    ['9007199254740993', 'sizeChartId deve ser um inteiro positivo.'], // Number → …992
+    ['1e5', 'sizeChartId deve conter apenas dígitos.'], // Number → 100000
+    [' 7', 'sizeChartId deve conter apenas dígitos.'], // Number → 7
+    ['7 ', 'sizeChartId deve conter apenas dígitos.'],
+    ['700024641\n', 'sizeChartId deve conter apenas dígitos.'],
+    ['-1', 'sizeChartId deve conter apenas dígitos.'],
+    ['+1', 'sizeChartId deve conter apenas dígitos.'],
+    ['1.5', 'sizeChartId deve conter apenas dígitos.'],
+    ['0x10', 'sizeChartId deve conter apenas dígitos.'],
+    ['700024641.0', 'sizeChartId deve conter apenas dígitos.'], // o wireInt dobraria este
+    ['   ', 'sizeChartId deve conter apenas dígitos.'],
+  ])('recusa %j com a mensagem em pt-BR', (raw, mensagem) => {
+    expect(erroDe(ler(raw))).toBe(mensagem);
+  });
+
+  // R2-F8: zeros à ESQUERDA — decidido e fixado. Só dígitos, então `007` É o
+  // número 7 em decimal (`Number` não lê octal em texto): nenhum id DIFERENTE é
+  // inventado, ao contrário das linhas acima, onde o leitor frouxo leria um
+  // número que o texto não escreve. Aceito, portanto — a mesma regra do
+  // categoryId. O PAR: '007' ≡ '7'; os QUASE: '0070' é 70, '700' é 700, e
+  // '00' continua o sentinela recusado.
+  it.each([
+    ['007', 7],
+    ['7', 7],
+    ['0070', 70],
+    ['700', 700],
+    ['0700024641', 700_024_641],
+  ])('zeros à esquerda: %j ⇒ %i (o mesmo número, nunca outro)', (raw, esperado) => {
+    expect(valorDe(ler(raw))).toBe(esperado);
+  });
+
+  it('QUASE: zeros à esquerda não salvam o sentinela — "000" ainda é 0, recusado', () => {
+    expect(erroDe(ler('000'))).toBe('sizeChartId deve ser um inteiro positivo.');
+  });
+
+  it('nunca apara: um valor com cara de cursor é recusado como veio, não reescrito', () => {
+    // O PAR: o mesmo id, sem e com borda em branco. O `next_cursor` da lista
+    // é texto opaco que pode ter espaço nas bordas (registro 250) e é ecoado
+    // VERBATIM pelo walk; aparar aqui seria o único lugar do caminho em que um
+    // valor muda antes de ser validado.
+    expect(valorDe(ler('700024641'))).toBe(700_024_641);
+    expect(erroDe(ler(' 700024641 '))).toBe('sizeChartId deve conter apenas dígitos.');
+    expect(erroDe(ler(' a+b/c= 1 '))).toBe('sizeChartId deve conter apenas dígitos.');
+  });
+
+  it.each([
+    ['ausente', null],
+    ['enviado vazio', ''],
+  ])('cobra o parâmetro quando ele está %s, com o NOME que a rota passou', (_caso, raw) => {
+    expect(erroDe(ler(raw))).toBe('sizeChartId é obrigatório.');
+  });
+
+  it('lê só o parâmetro nomeado — QUASE-IGUAL: um categoryId válido ao lado não serve', () => {
+    const params = query({ categoryId: '100182', sizeChartId: null });
+    expect(erroDe(lerIdPositivoObrigatorio(params, 'sizeChartId'))).toBe(
+      'sizeChartId é obrigatório.',
+    );
+    expect(valorDe(lerIdPositivoObrigatorio(params, 'categoryId'))).toBe(100182);
+  });
+
+  it.each([null, '', '100182', '0', '1e5', ' 100182', '9007199254740993'])(
+    'lerCategoryIdObrigatorio é ESTA regra com o nome categoryId (%j) — uma cópia, não duas',
+    (raw) => {
+      const params = query({ categoryId: raw });
+      expect(lerCategoryIdObrigatorio(params)).toEqual(
+        lerIdPositivoObrigatorio(params, 'categoryId'),
+      );
+    },
+  );
 });
 
 describe('lerCategoryIdOpcional', () => {
