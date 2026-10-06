@@ -72,6 +72,17 @@ describe('relogioDaClaimUs — the ONE conversion, in MICROSECONDS', () => {
     expect(relogioDaClaimUs(claim({ last_updated: null }))).toBe(DATE_CREATED_US);
     expect(relogioDaClaimUs(claim({ last_updated: null, date_created: 'not-a-date' }))).toBeNull();
   });
+
+  it('a PRESENT but malformed `last_updated` is no clock — `date_created` is not consulted', () => {
+    // `last_updated ?? date_created` falls back only on null/absent, matching
+    // the conversa's expression; the delivery is then dropped against any
+    // stored watermark, the conservative reading.
+    expect(relogioDaClaimUs(claim({ last_updated: 'not-a-date' }))).toBeNull();
+    expect(
+      preverIncidenteClaim(armazenado({ status: 'opened' }), mapear({ last_updated: 'not-a-date' }))
+        .acao,
+    ).toBe('ignorado-obsoleto');
+  });
 });
 
 /* -------------------------------- create ---------------------------------- */

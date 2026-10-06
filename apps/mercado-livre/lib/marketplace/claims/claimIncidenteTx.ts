@@ -32,7 +32,13 @@
  *    milliseconds in every sample, so one change fanned out over three topics,
  *    or two changes inside one second, share a stamp — and ML does not always
  *    move `last_updated` at all (the conversa gate's `>=` exists for that). A
- *    strict `>` could never converge on the second change;
+ *    strict `>` could never converge on the second change. ⚠️ The accepted
+ *    residual: two snapshots that share a stamp but differ in content cannot be
+ *    ordered at all, so if ML closes a claim WITHOUT moving `last_updated`, a
+ *    stale `opened` snapshot carrying that same stamp and landing last still
+ *    reopens it. Refusing equal stamps instead would strand the close itself;
+ *    telling the two apart needs a second ordering signal the claim does not
+ *    carry. The conversa's `>=` gate has the identical residual;
  *  - NEWER ⇒ write, and the watermark ALWAYS advances: the content patch when it
  *    differs, `{ relogioProvedorUs, ultimaModificacao }` alone when it does not
  *    (`relogio-avancado`) — which files no history row, because
@@ -44,10 +50,14 @@
  *    new as anything legacy wrote; two first deliveries racing an absent stamp
  *    are ordered by this transaction (the loser re-reads the winner's stamp).
  *    The first delivery per claim stamps it — no backfill;
- *  - an incoming clock that is `null` (neither stamp parses — `date_created` is
- *    required on the wire, so this is near-impossible) cannot be ordered: it is
- *    dropped against a stored watermark and applied, without stamping one, when
- *    none is stored. Not a throw — a deterministic throw is a retry poison-pill.
+ *  - an incoming clock that is `null` cannot be ordered: it is dropped against
+ *    a stored watermark and applied, without stamping one, when none is stored.
+ *    Not a throw — a deterministic throw is a retry poison-pill. It is `null`
+ *    when `last_updated` is PRESENT but malformed (`last_updated ?? date_created`
+ *    falls back only on a null/absent one, the conversa's own expression, so a
+ *    valid `date_created` is not consulted then), or when `last_updated` is
+ *    absent and `date_created` does not parse. Both are ML-side anomalies never
+ *    seen in practice, and dropping is the conservative reading of either.
  *
  * ⚠️ **`ultimaModificacao` is NOT the guard, and must never become it.** The
  * web editor stamps WALL-CLOCK µs there on every operator save
