@@ -294,7 +294,8 @@ widened `item_status` enum is a field's value set, not a rule input. So
 
 **Out of scope, on purpose**, so nobody reads a gap as a bug: publishing,
 updating or pausing a listing (step 11), pushing stock (12) or price (13), size
-charts (18 — `size_chart` is a URL, read and ignored), creating a kit ON Shopee
-(19), and `integracoesComProduto` / any Shopee link trigger, which is why
-`/produtos` shows no Shopee badge yet. Per-option and description images are a
+charts (18 — the pick lives on `tabMedi`; the read-back `size_chart` URL is only
+publish's diagnostic echo, never round-tripped onto the produto), creating a kit
+ON Shopee (19), and `integracoesComProduto` / any Shopee link trigger — step 11
+added that trigger, and `/produtos` has shown the Shopee badge since. Per-option and description images are a
 recorded gap at Mercado Livre parity.

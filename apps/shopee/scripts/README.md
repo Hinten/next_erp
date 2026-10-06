@@ -976,7 +976,7 @@ at the top).
 
 ### 12.3 What to read in the output
 
-Thirteen blocks, in order. The whole rendering is an **allow-list** — named
+Fourteen blocks, in order. The whole rendering is an **allow-list** — named
 fields only, never a raw payload — so it is safe to paste into an issue. Keep it
 that way if you extend it.
 
@@ -989,12 +989,27 @@ that way if you extend it.
 | `item_name` / `descrição` / `condition` / `weight` / `dimension` / `brand` / `item_sku / gtin_code` / `pre_order` / `imagens` | the body's scalar fields. The description is **counted, never rendered** (`«REDIGIDA — N caractere(s)»`), and `imagens` is a COUNT: the URLs and the `image_id`s are omitted deliberately.                                                                               |
 | `### attribute_list (N)`                                                                                                      | per attribute the id, how many values and whether it is mandatory — then `obrigatórios SEM valor` as NAMES, which is exactly the `atributo-obrigatorio` refusal spelled out.                                                                                             |
 | `### tax_info`                                                                                                                | `bloco … ENVIADO inteiro` or `omitido (<motivo>)`, the `chaves` line always, then one `chave valor` line per field. ⚠️ **The VALUES are printed here** — unlike `importar:anuncio`, which prints keys only. A CFOP or a CSOSN is a catalogue code, not a seller's datum. |
+| `### size_chart_info`                                                                                                         | what goes out: `size_chart_id N` (the template id IS printed), `size_chart — a PRIMEIRA foto da tabela` (never its `image_id`), `NADA — … RECUSADA` or `— omitido (<motivo>; foto: …)`; then `fonte`, the `tabMedi` counts and `size_chart_limit` as ADVICE. See below.  |
 | `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us".                                                                        |
 | `### tiers (N)`                                                                                                               | per grupo the `variation_id` and the group, then each option with `foto=sim\|não` and `(ocupada por modelo sem filho)` where a live model holds a position nothing of ours binds.                                                                                        |
 | `### modelos (acao=…, profundidade mudou=…)`                                                                                  | `init` / `update` / `nenhuma`, the new models' `tier_index`, sku, price and stock, the re-listed ones, the skus to update, the `modelos sem filho` that are KEPT, and any `vínculos desaparecidos`.                                                                      |
 | `### fotos e sequência`                                                                                                       | five counts plus one line per failure (`arquivoId — motivo`, **never** the message or the URL), and which re-list door is planned.                                                                                                                                       |
 | `### passos que o --live executaria (N)`                                                                                      | the plan's own step list, numbered. It is READ from the plan, never re-listed by the renderer, so it cannot start lying about what the publisher does.                                                                                                                   |
 | `### problemas: NENHUM — este produto é publicável`                                                                           | the line you are looking for. Otherwise `### problemas (N) — NADA seria enviado` and one line per problema (campo · motivo · mensagem) — a non-empty list means **nothing** would be sent, not that part of it would.                                                    |
+
+**`### size_chart_info` (step 18)** is read off the BUILT `add_item` body, never
+re-derived from the decision, so a key the mapper stops sending disappears from
+the printout by itself. `enviado` is the template the tabela picked for this
+conta and the listing's category, else the tabela's FIRST photo, else nothing —
+and `omitido` is not an error: it says why no template (the `fonte` line's
+`sem modelo: <motivo>`) and, after `foto:`, why no photo either. The one refusing
+state is `NADA — a foto da tabela não subiu e a publicação é RECUSADA`: a `⛔`
+line carries the problema's sentence, a line saying `--live` would answer 422 on
+`size_chart_info` before any listing write follows, and the same problema is
+listed under `### problemas`. The `⚠️` lines are advice and never refuse: a category that
+declares the chart MANDATORY with nothing to send, a template sent to a category
+that says it takes none (it goes anyway; Shopee decides), and the first photo
+WITHHELD under `support_image_size_chart=false`.
 
 ### 12.4 The live run
 
@@ -1011,9 +1026,16 @@ The live printout is shorter and different on purpose: `item_id` / `vínculo` /
 `sequência`, then the **read-back** (`estadoAnuncio`, `item_status`, `deboost`)
 or `DEGRADOU — a segunda escrita de vínculo NÃO aconteceu` when the confirmation
 read refused, `relistagem` naming which door worked, `tax_info` (`enviado` or
-`omitido (<motivo>)`), the violation aviso, the count of calls spent on Shopee,
-and the modelos / fotos counters. Everything there comes from what Shopee
-ANSWERED — the status is never echoed back from the request.
+`omitido (<motivo>)`), `size_chart_info` (step 18 —
+`enviado <id> · lido de volta <id>`, with `DIVERGE` when the read-back's id
+differs from the one sent and `—` when the read-back degraded; for the photo,
+`foto lida de volta: sim|não`, never the URL;
+else `omitido (<motivo>)`), the violation aviso, the count of calls spent on
+Shopee, and the modelos / fotos counters. Everything there comes from what Shopee
+ANSWERED — the status is never echoed back from the request. ⚠️ That
+`size_chart_info` echo is the instrument for register 262 (is a JSON-number
+`size_chart_id` accepted on write?) — read it on the first BR publish with a
+matched template.
 
 **The exit codes.** `0` on any DRY RUN that reached a PLAN, **including a blocked
 one**: a `problema` is an answer, and reading them is what the dry run is for.
@@ -1037,8 +1059,19 @@ fix can create listings for produtos previously unpublishable.
 
 ### 12.5 Caveats you should expect to see (none of these is a bug)
 
-- **THE DRY RUN UPLOADS ITS PICTURES.** Said again because it surprises
-  everyone: the body needs real `image_id`s. Paid once, cached on the arquivo.
+- **THE DRY RUN UPLOADS ITS PICTURES** — and the tabela de medidas' FIRST photo
+  when no template matched (step 18: `size_chart` is an `image_id` too). Said
+  again because it surprises everyone: the body needs real `image_id`s. Paid
+  once, cached on the arquivo.
+- **`ShopeePublishRejectedError (fotos)` with one `size_chart_info` problema**
+  under `--live` (step 18): the tabela's first photo did not upload, and the
+  publish is REFUSED rather than sent without the chart. No listing and no link
+  were written — it is thrown before the link read; the pictures the photo pass
+  uploaded stay cached on their arquivos, as on every run. The headline says
+  "Publicação recusada pela Shopee em fotos" only when Shopee refused the
+  upload; a failed download or a skipped file reads "Publicação interrompida em
+  fotos" and the problema says to try again. The dry run shows the same state as
+  `NADA — … RECUSADA`.
 - **`tax_info` omitted with `motivo=sem-operacao`** on a produto whose conta has
   no `operacaoOuterRef`, or whose operação has no rule matching the produto. The
   block is whole or absent — there is no partial `tax_info`.
