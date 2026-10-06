@@ -779,6 +779,57 @@ export {
   type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
 
+// Shopee size charts (step 18, #1526): the stored entry, its read slice and THE
+// selection rule publish and `/medidas` both call (#1369 — one copy).
+export {
+  entradaTabelaShopeeSchema,
+  MOTIVO_ENTRADA_SHOPEE_ILEGIVEL,
+  ESTADO_LISTA_SHOPEE,
+  MOTIVO_SEM_TABELA_SHOPEE,
+  lerEntradasShopeeDaConta,
+  indiceDaEntradaShopee,
+  resolverEntradaShopee,
+  type EntradaTabelaShopee,
+  type MotivoEntradaShopeeIlegivel,
+  type EstadoListaShopee,
+  type LinhaEntradaShopee,
+  type LeituraEntradasShopee,
+  type MotivoSemTabelaShopee,
+  type ResolucaoEntradaShopee,
+} from './tabelaDeMedidasShopee';
+
+// …and the ONE projection of a `get_size_chart_detail` answer, parsed by the
+// `apps/shopee` route test and by `apps/web` alike (never mirrored).
+export {
+  SHOPEE_SIZE_CHART_INPUT_TYPE,
+  TIPO_CELULA_TABELA_SHOPEE,
+  PROBLEMA_TABELA_SHOPEE,
+  celulaTabelaShopeeSchema,
+  colunaTabelaShopeeSchema,
+  problemaTabelaShopeeSchema,
+  tabelaShopeeProjetadaSchema,
+  projetarTabelaShopee,
+  ecoDivergenteTabelaShopee,
+  type CelulaTabelaShopee,
+  type ColunaTabelaShopee,
+  type ProblemaTabelaShopee,
+  type TabelaShopeeProjetada,
+  type CelulaTabelaShopeeEntrada,
+  type ColunaTabelaShopeeEntrada,
+  type DetalheTabelaShopeeEntrada,
+} from './tabelaDeMedidasShopeeProjecao';
+
+// …and the two size-chart ROUTE envelopes, declared once: the `apps/shopee`
+// routes build their 200s against them and `apps/web` parses with them.
+export {
+  tabelaMedidasLinhaDtoSchema,
+  listaTabelasMedidasDtoSchema,
+  detalheTabelaMedidasDtoSchema,
+  type TabelaMedidasLinhaDto,
+  type ListaTabelasMedidasDto,
+  type DetalheTabelaMedidasDto,
+} from './tabelaDeMedidasShopeeDto';
+
 export {
   listaDePrecos,
   listaDePrecosSchema,
