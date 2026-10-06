@@ -31,7 +31,8 @@ export interface CopyableNotificationConfig {
   readonly title: string;
   readonly message: string;
   readonly color?: MantineColor;
-  readonly autoClose?: number;
+  /** Milliseconds, or `false` for a toast that stays until dismissed (hover still pauses). */
+  readonly autoClose?: number | false;
   /**
    * In-app navigation rendered below the message. Structurally the same as
    * `NotificationLink` in `@/lib/nfe/errors`, so a `NotificationShape` flows

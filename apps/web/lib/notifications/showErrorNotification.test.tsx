@@ -118,6 +118,17 @@ describe('showErrorNotification', () => {
     expect(updateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ id, autoClose: 8000 }));
   });
 
+  it('autoClose: false is a sticky toast — and hovering out never re-arms a timer', () => {
+    showErrorNotification({ title: 'Erro', message: 'msg', autoClose: false });
+    const arg = showSpy.mock.calls[0]![0]!;
+    expect(arg.autoClose).toBe(false);
+    render(<MantineTestProvider>{arg.message as React.ReactNode}</MantineTestProvider>);
+    const text = screen.getByText('msg');
+    fireEvent.mouseEnter(text);
+    fireEvent.mouseLeave(text);
+    expect(updateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ autoClose: false }));
+  });
+
   it('respects custom color and autoClose', () => {
     showErrorNotification({ title: 't', message: 'm', color: 'orange', autoClose: 3000 });
     const arg = showSpy.mock.calls[0]![0]!;
