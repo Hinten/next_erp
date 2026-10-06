@@ -250,6 +250,15 @@ async function adicionarNaConta(contaId: string, entrada: EntradaTabelaShopee) {
   });
 }
 
+/** A same-origin link to the list — the layout's "Voltar à lista" is outside the page. */
+function linkParaALista(): HTMLAnchorElement {
+  const a = document.createElement('a');
+  a.href = '/medidas';
+  a.textContent = 'Voltar à lista';
+  document.body.appendChild(a);
+  return a;
+}
+
 const commits = () => h.occ.txLog.filter((e) => e.phase === 'commit').length;
 const shopeeGuardado = () => h.docs.get(PATH)!.tabelasMedidasShopee as Record<string, unknown>;
 
@@ -318,6 +327,80 @@ describe('/medidas/[id] — a staged Shopee pick is written by the tabela’s sa
       JSON.stringify(orig.slice(1)),
     );
     expect(JSON.stringify(h.docs.get(PATH)).includes('_pendingDelete')).toBe(false);
+  });
+
+  it('a staged removal UNDONE leaves the form clean: leaving asks nothing (the e2e "undone removal" case)', async () => {
+    semear(corpus());
+    renderPage();
+    await abrirAbaShopee();
+    const linha = await screen.findByTestId(`shopee-medida-entrada-${CONTA}-0`);
+    await act(async () => {
+      fireEvent.click(within(linha).getByRole('button', { name: 'Remover' }));
+    });
+    await act(async () => {
+      fireEvent.click(within(linha).getByRole('button', { name: 'Desfazer' }));
+    });
+    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await act(async () => {
+        fireEvent.click(linkParaALista());
+      });
+      expect(confirmar).not.toHaveBeenCalled();
+    } finally {
+      confirmar.mockRestore();
+    }
+  });
+
+  it('opening the Shopee tab and touching nothing leaves the form clean', async () => {
+    semear(corpus());
+    renderPage();
+    await abrirAbaShopee();
+    await screen.findByTestId(`shopee-medida-entrada-${CONTA}-0`);
+    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await act(async () => {
+        fireEvent.click(linkParaALista());
+      });
+      expect(confirmar).not.toHaveBeenCalled();
+    } finally {
+      confirmar.mockRestore();
+    }
+  });
+
+  it('an UNRELATED edit reverted (Descrição) leaves the form clean — the transient `mercadoLivre` anchor has a null default', async () => {
+    semear(corpus());
+    renderPage();
+    await screen.findByLabelText('Descrição');
+    await editarDescricao('nova');
+    await editarDescricao('antiga');
+    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await act(async () => {
+        fireEvent.click(linkParaALista());
+      });
+      expect(confirmar).not.toHaveBeenCalled();
+    } finally {
+      confirmar.mockRestore();
+    }
+  });
+
+  it('NEAR-MISS: a staged removal NOT undone arms the unsaved-changes prompt', async () => {
+    semear(corpus());
+    renderPage();
+    await abrirAbaShopee();
+    const linha = await screen.findByTestId(`shopee-medida-entrada-${CONTA}-0`);
+    await act(async () => {
+      fireEvent.click(within(linha).getByRole('button', { name: 'Remover' }));
+    });
+    const confirmar = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await act(async () => {
+        fireEvent.click(linkParaALista());
+      });
+      expect(confirmar).toHaveBeenCalledTimes(1);
+    } finally {
+      confirmar.mockRestore();
+    }
   });
 
   it('an UNRELATED edit never writes the Shopee map (or the ML map): both stay byte-identical', async () => {
