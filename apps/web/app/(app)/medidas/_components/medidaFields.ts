@@ -31,7 +31,10 @@ export const medidaFieldOverrides: Record<string, FieldConfig> = {
   },
 };
 
-/** A copied tabela owns fresh marketplace bindings; ordinary fields stay copied. */
+/**
+ * A copied tabela starts with fresh marketplace bindings and owner-scoped media.
+ * Photos must be uploaded after saving the new owner; ordinary fields stay copied.
+ */
 export function transformCopiedMedidas(
   source: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
@@ -39,5 +42,7 @@ export function transformCopiedMedidas(
     ...source,
     tabelasDeMedidasMercadoLivre: null,
     tabelasMedidasShopee: null,
+    fotos: null,
+    fotosArquivosIds: null,
   };
 }

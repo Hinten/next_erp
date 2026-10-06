@@ -321,6 +321,8 @@ export async function seedMedidaComMarketplace(prefix: string): Promise<{
 }> {
   const id = `${prefix}-mkt`;
   const nome = `${prefix}-mkt`;
+  // Reference-only fixture; no Storage bytes or arquivo anchor are created.
+  const photoId = `${id}_source-photo`;
   const mercadoLivre = {
     'conta-ml-1': {
       tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
@@ -329,17 +331,20 @@ export async function seedMedidaComMarketplace(prefix: string): Promise<{
   const shopee = {
     'conta-shopee-1': [{ categoryId: 11012, size_chart_id: 700024639, name: 'Camisetas' }],
   };
-  await db().collection('tabMedi').doc(id).set({
-    nome,
-    codigo: 'MKT-001',
-    descricao: null,
-    fotosArquivosIds: null,
-    fotos: null,
-    tabelasDeMedidasMercadoLivre: mercadoLivre,
-    tabelasMedidasShopee: shopee,
-    dataCadastro: Date.now(),
-    ultimaModificacao: null,
-  });
+  await db()
+    .collection('tabMedi')
+    .doc(id)
+    .set({
+      nome,
+      codigo: 'MKT-001',
+      descricao: null,
+      fotosArquivosIds: [photoId],
+      fotos: [{ arquivoOuterRef: `arquivos/${photoId}` }],
+      tabelasDeMedidasMercadoLivre: mercadoLivre,
+      tabelasMedidasShopee: shopee,
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
   return { id, nome, mercadoLivre, shopee };
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { transformCopiedMedidas } from './medidaFields';
 
 describe('transformCopiedMedidas', () => {
-  it('clears both marketplace maps while preserving ordinary fields, photos and legacy data', () => {
+  it('clears marketplace bindings and owned photos while preserving ordinary fields and legacy data', () => {
     const fotos = [{ arquivoOuterRef: 'arquivos/foto-1', legacyCaption: 'Medidas' }];
     const mercadoLivre = { conta: { tabelas: [{ id: 'ML-1' }] } };
     const shopee = { loja: [{ size_chart_id: 42 }] };
@@ -23,9 +23,12 @@ describe('transformCopiedMedidas', () => {
       ...source,
       tabelasDeMedidasMercadoLivre: null,
       tabelasMedidasShopee: null,
+      fotos: null,
+      fotosArquivosIds: null,
     });
     expect(copied).not.toBe(source);
-    expect(copied.fotos).toBe(fotos);
+    expect(source.fotos).toBe(fotos);
+    expect(source.fotosArquivosIds).toEqual(['foto-1']);
     expect(source.tabelasDeMedidasMercadoLivre).toBe(mercadoLivre);
     expect(source.tabelasMedidasShopee).toBe(shopee);
   });
@@ -34,7 +37,8 @@ describe('transformCopiedMedidas', () => {
     {},
     { tabelasDeMedidasMercadoLivre: null, tabelasMedidasShopee: null },
     { tabelasDeMedidasMercadoLivre: {}, tabelasMedidasShopee: {} },
-  ])('writes explicit nulls for absent or empty bindings: %j', (bindings) => {
+    { fotos: [], fotosArquivosIds: [] },
+  ])('writes explicit nulls for absent or empty bindings and media: %j', (bindings) => {
     const source = { nome: 'Tabela', fotos: null, ...bindings };
     const before = structuredClone(source);
 
@@ -42,6 +46,8 @@ describe('transformCopiedMedidas', () => {
       ...source,
       tabelasDeMedidasMercadoLivre: null,
       tabelasMedidasShopee: null,
+      fotos: null,
+      fotosArquivosIds: null,
     });
     expect(source).toEqual(before);
   });
