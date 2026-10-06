@@ -12,6 +12,7 @@ import {
   type MlSizeChart,
   TIPO_VARIACAO,
   mlSizeChartsForConta,
+  mlSizeChartSchema,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -23,8 +24,12 @@ import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
-import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
+import {
+  SizeChartConflictError,
+  SizeChartSyncUnconfirmedError,
+} from '@/lib/mercado-livre/chartConflict';
 import { sameChart } from '@/lib/mercado-livre/chartRows';
+import { saveChartTransaction, type SavedChart } from '@/lib/mercado-livre/chartPersistence';
 import {
   SIZE_CHART_MOTIVOS,
   type SizeChartGateInput,
@@ -57,6 +62,8 @@ interface EditorTarget {
   integracaoId: string;
   chart: MlSizeChart | null;
   chartIndex: number | null;
+  /** A prior send failed without an acknowledged remote version. */
+  syncUnconfirmed: boolean;
 }
 
 /**
@@ -64,11 +71,11 @@ interface EditorTarget {
  * listing the guias de tamanho stored for this tabela, each opening the
  * full-screen editor.
  *
- * Guias live on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map,
- * which also holds other contas' keys — every write here merges only this
- * conta's key, so none of the siblings are clobbered. The Shopee entries live
- * on the SIBLING field `tabelasMedidasShopee` (the Shopee tab's, step 18), which
- * a merge of this map never touches.
+ * Guias live on the tabMedi doc's `tabelasDeMedidasMercadoLivre[<conta>]` map.
+ * Local saves update only this conta's chart list in a guarded transaction,
+ * preserving the other contas and legacy fields from the migrated corpus.
+ * Shopee entries live on the SIBLING field `tabelasMedidasShopee`, which the
+ * transaction never touches.
  *
  * ⚠️ Unsent guias are PERSISTED as drafts (`id: null`) rather than held in React
  * state. A 75-row × 10-column grid is far too much work to lose to a reload,
@@ -158,82 +165,112 @@ export function MedidasMercadoLivreManager({
    * `'<contaId>#<index>'` while that guia's delete/verify call is in flight —
    * it says which row shows the spinner.
    *
-   * ⚠️ The DISABLING it drives is deliberately global, not per row. Every one of
-   * these operations rewrites the conta's whole `tabelas` array from the live
-   * snapshot, so two running at once would race: the second read would miss the
-   * first's write and clobber it. One at a time is the guard.
+   * The controls serialize operations in this tab. This is a UI lock only;
+   * chart saves separately use a transaction to guard against other writers.
+   * Draft deletion needs its own staged, guarded flow (follow-up to #1778).
    */
   const [busyChart, setBusyChart] = useState<string | null>(null);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const sessionRef = useRef(0);
 
-  function openEditor(next: Omit<EditorTarget, 'session'>): void {
+  function openEditor(next: Omit<EditorTarget, 'session' | 'syncUnconfirmed'>): void {
     sessionRef.current += 1;
-    setTarget({ ...next, session: sessionRef.current });
+    setTarget({ ...next, session: sessionRef.current, syncUnconfirmed: false });
   }
 
-  /**
-   * Persist one guia into this conta's list without contacting ML.
-   *
-   * ⚠️ The array is rebuilt from the LIVE snapshot, not from whatever the editor
-   * opened with: another tab or operator and the sync backend write the same
-   * key (there is no Flutter writer — root `CLAUDE.md` rule 8), and a `merge()`
-   * replaces the array wholesale. If the stored list changed shape under us we
-   * refuse rather than clobber — the client SDK has no `lastUpdateTime`
-   * precondition, so surfacing the conflict is the only tier available (root
-   * `CLAUDE.md` rule 7 / ADR 0011). ⚠️ The compare reads the snapshot OUTSIDE
-   * any transaction, so a write landing between it and the `merge()` is still
-   * overwritten: it narrows the race, it is not a rule-7 guard (#1778).
-   */
+  /** Advance only this editor session, after its own confirmed write. */
+  function acceptChart(editor: EditorTarget, saved: SavedChart, confirmedSync = false): void {
+    setTarget((previous) =>
+      previous?.session === editor.session
+        ? {
+            ...previous,
+            chartIndex: saved.index,
+            chart: saved.chart,
+            syncUnconfirmed: confirmedSync ? false : previous.syncUnconfirmed,
+          }
+        : previous,
+    );
+  }
+
+  function markSyncUnconfirmed(editor: EditorTarget): void {
+    setTarget((previous) =>
+      previous?.session === editor.session ? { ...previous, syncUnconfirmed: true } : previous,
+    );
+  }
+
+  /** Persist immediately, with the opened chart guarded inside the transaction. */
   async function saveChart(
-    integracaoId: string,
+    editor: EditorTarget,
     chart: MlSizeChart,
     chartIndex: number | null,
-    original: MlSizeChart | null,
-  ): Promise<{ tabelas: MlSizeChart[]; index: number }> {
-    const stored = mlSizeChartsForConta(chartsMap, integracaoId);
-    // An index is not an identity — verify the slot still holds the guia this
-    // editor opened, or a concurrent insert/reorder would overwrite another one.
-    if (chartIndex != null && !(original != null && sameChart(stored[chartIndex], original))) {
-      throw new SizeChartConflictError();
+  ): Promise<SavedChart> {
+    try {
+      const saved = await saveChartTransaction({
+        db,
+        tabMediId,
+        integracaoId: editor.integracaoId,
+        chart,
+        chartIndex,
+        original: editor.chart,
+      });
+      acceptChart(editor, saved);
+      return saved;
+    } catch (err) {
+      if (!(err instanceof SizeChartConflictError)) throw err;
+      if (editor.syncUnconfirmed) throw new SizeChartSyncUnconfirmedError();
+      throw err;
     }
-    const tabelas =
-      chartIndex == null
-        ? [...stored, chart]
-        : stored.map((c, i) => (i === chartIndex ? chart : c));
-    const index = chartIndex ?? tabelas.length - 1;
-    await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
-      tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas } },
-      ultimaModificacao: Date.now(),
-    });
-    // ⚠️ A brand-new guia now EXISTS at `index`. Binding the open editor to it
-    // is what stops a second "Enviar" (after ML rejected part of the chart, when
-    // the modal deliberately stays open) from appending a duplicate instead of
-    // replacing what was just written.
-    if (chartIndex == null) {
-      setTarget((prev) => (prev == null ? prev : { ...prev, chartIndex: index, chart }));
-    }
-    return { tabelas, index };
   }
 
-  /**
-   * Persist, then send this conta's whole list to ML.
-   *
-   * The whole list, not just the edited guia: the backend diffs each chart
-   * against the stored doc and skips the untouched ones, so submitting only one
-   * would make the others look deleted. Saving first means a rejected send
-   * still leaves the operator's typing on the doc.
-   */
+  /** Persist first, then send the committed whole list once, outside the transaction. */
   async function sendChart(
     ready: MercadoLivreClient,
-    integracaoId: string,
+    editor: EditorTarget,
     chart: MlSizeChart,
     chartIndex: number | null,
-    original: MlSizeChart | null,
-  ): Promise<{ validationErrors: MercadoLivreChartValidationError[]; chartIndex: number }> {
-    const { tabelas, index } = await saveChart(integracaoId, chart, chartIndex, original);
-    const result = await ready.sizeChartSync({ integracaoId, tabMediId, tabelas });
-    return { validationErrors: result.validationErrors, chartIndex: index };
+  ): Promise<{
+    validationErrors: MercadoLivreChartValidationError[];
+    chartIndex: number;
+    chart: MlSizeChart;
+  }> {
+    const saved = await saveChart(editor, chart, chartIndex);
+    let result: Awaited<ReturnType<MercadoLivreClient['sizeChartSync']>>;
+    try {
+      result = await ready.sizeChartSync({
+        integracaoId: editor.integracaoId,
+        tabMediId,
+        tabelas: saved.tabelas,
+      });
+    } catch (err) {
+      if (
+        !(
+          err instanceof MercadoLivreClientHttpError ||
+          err instanceof MercadoLivreClientNetworkError
+        )
+      ) {
+        throw err;
+      }
+      markSyncUnconfirmed(editor);
+      throw err;
+    }
+    const parsed = mlSizeChartSchema.safeParse(result.tabelas[saved.index]);
+    if (
+      !parsed.success ||
+      parsed.data.nome !== saved.chart.nome ||
+      parsed.data.domain_id !== saved.chart.domain_id ||
+      (saved.chart.id != null && saved.chart.id !== '' && parsed.data.id !== saved.chart.id)
+    ) {
+      markSyncUnconfirmed(editor);
+      throw new SizeChartSyncUnconfirmedError();
+    }
+    // Partial success can assign chart/row ids while the modal stays open.
+    // Only this acknowledged response advances the baseline; live snapshots do not.
+    acceptChart(editor, { ...saved, chart: parsed.data }, true);
+    return {
+      validationErrors: result.validationErrors,
+      chartIndex: saved.index,
+      chart: parsed.data,
+    };
   }
 
   /**
@@ -518,8 +555,8 @@ export function MedidasMercadoLivreManager({
               <Group>
                 {/* Belongs to no row, so the lock can only ever be held elsewhere —
                     and this control stays ungated on it anyway: it only opens the
-                    editor, which rebuilds the conta's array from the live snapshot
-                    when it saves. `enviada` is inert here; only Verificar reads it. */}
+                    editor, which rebuilds the conta's array from its transaction
+                    read when it saves. `enviada` is inert here; only Verificar reads it. */}
                 <SizeChartActionButton
                   size="xs"
                   variant="light"
@@ -570,11 +607,9 @@ export function MedidasMercadoLivreManager({
           grupos={grupos}
           canWrite={canWrite}
           onSaveDraft={async (chart, chartIndex) => {
-            await saveChart(target.integracaoId, chart, chartIndex, target.chart);
+            await saveChart(target, chart, chartIndex);
           }}
-          onSend={(chart, chartIndex) =>
-            sendChart(client, target.integracaoId, chart, chartIndex, target.chart)
-          }
+          onSend={(chart, chartIndex) => sendChart(client, target, chart, chartIndex)}
           onDuplicate={(copy) => {
             // The copy is a NEW guia: no index, so it appends on save.
             openEditor({ integracaoId: target.integracaoId, chart: copy, chartIndex: null });

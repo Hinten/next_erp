@@ -1,8 +1,21 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { FormProvider, useForm } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
+import type { ComponentProps } from 'react';
+import { deferred } from '@delfrance/data/testing';
+import type { MlSizeChart } from '@delfrance/schemas';
+import {
+  MercadoLivreClientNetworkError,
+  MercadoLivreClientHttpError,
+  type MercadoLivreClient,
+} from '@/lib/mercado-livre/client';
+import type { SaveChartInput, SavedChart } from '@/lib/mercado-livre/chartPersistence';
+import {
+  SizeChartConflictError,
+  SizeChartSyncUnconfirmedError,
+} from '@/lib/mercado-livre/chartConflict';
 
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { SIZE_CHART_MOTIVOS } from '@/lib/mercado-livre/sizeChartDisabled';
@@ -19,6 +32,8 @@ import { SIZE_CHART_MOTIVOS } from '@/lib/mercado-livre/sizeChartDisabled';
  * wiring, not on state the module already covers.
  */
 
+type EditorProps = ComponentProps<typeof import('./SizeChartEditorModal').SizeChartEditorModal>;
+
 const h = vi.hoisted(() => ({
   canRead: true,
   canWrite: true,
@@ -27,6 +42,9 @@ const h = vi.hoisted(() => ({
   contas: [] as unknown[],
   grupos: [] as unknown[],
   charts: {} as Record<string, unknown>,
+  editor: null as EditorProps | null,
+  save: vi.fn<(input: SaveChartInput) => Promise<SavedChart>>(),
+  sync: vi.fn<MercadoLivreClient['sizeChartSync']>(),
 }));
 
 const CONTA = { id: 'conta-1', path: 'integracao/conta-1', data: { nome: 'Loja Teste' } };
@@ -49,6 +67,10 @@ vi.mock('@/lib/data/grupoDeVariacoesCollection', () => ({
 }));
 vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
   tabelaDeMedidasCollection: { docRef: () => ({ __doc: 'tabMedi' }), merge: vi.fn() },
+}));
+
+vi.mock('@/lib/mercado-livre/chartPersistence', () => ({
+  saveChartTransaction: (input: SaveChartInput) => h.save(input),
 }));
 
 // Pass the tagged ref straight through — the constraints are inert here.
@@ -90,11 +112,16 @@ vi.mock('@/lib/mercado-livre/client', async (importOriginal) => ({
   // `describeChartError` narrows on the real error classes (rule 6), so the
   // module is kept whole and only the hook is replaced.
   ...(await importOriginal<typeof import('@/lib/mercado-livre/client')>()),
-  useMercadoLivreClient: () => (h.hasClient ? { sizeChartSync: vi.fn() } : null),
+  useMercadoLivreClient: () => (h.hasClient ? { sizeChartSync: h.sync } : null),
 }));
 
-// The editor is a separate surface with its own suite; keep it out of the graph.
-vi.mock('./SizeChartEditorModal', () => ({ SizeChartEditorModal: () => null }));
+// Probe the manager callbacks; the real modal owns its own input/error tests.
+vi.mock('./SizeChartEditorModal', () => ({
+  SizeChartEditorModal: (props: EditorProps) => {
+    h.editor = props;
+    return <input aria-label="Draft cell" defaultValue="01" />;
+  },
+}));
 
 const { MedidasMercadoLivreManager } = await import('./MedidasMercadoLivreManager');
 
@@ -118,11 +145,13 @@ function show(disabled = false) {
       </FormProvider>
     );
   }
-  render(
+  const tree = () => (
     <MantineTestProvider>
       <Host />
-    </MantineTestProvider>,
+    </MantineTestProvider>
   );
+  const rendered = render(tree());
+  return { refresh: () => rendered.rerender(tree()) };
 }
 
 const guia = (index = 0) => screen.getByTestId(`ml-guia-conta-1-${String(index)}`);
@@ -161,6 +190,19 @@ beforeEach(() => {
   h.contas = [CONTA];
   h.grupos = [GRUPO];
   h.charts = { 'conta-1': { tabelas: [GUIA_EM_EXCLUSAO] } };
+  h.editor = null;
+  h.save.mockReset();
+  h.sync.mockReset();
+  h.save.mockImplementation((input) =>
+    Promise.resolve({
+      tabelas: [input.chart],
+      index: input.chartIndex ?? 0,
+      chart: input.chart,
+    }),
+  );
+  h.sync.mockImplementation((input) =>
+    Promise.resolve({ tabelas: input.tabelas, validationErrors: [], updated: false }),
+  );
 });
 
 describe('MedidasMercadoLivreManager — why a control is off', () => {
@@ -260,5 +302,200 @@ describe('MedidasMercadoLivreManager — why a control is off', () => {
     show();
 
     expect(screen.getByText(/Requer permissão de leitura/)).not.toBeNull();
+  });
+});
+
+describe('MedidasMercadoLivreManager — guarded persistence', () => {
+  const edited: MlSizeChart = { ...GUIA_ENVIADA, nome: 'Editada' };
+
+  function openExisting() {
+    const view = show();
+    fireEvent.click(botao('Editar', guia()));
+    expect(h.editor).not.toBeNull();
+    return view;
+  }
+
+  it('saves a draft through the guarded port and advances its confirmed baseline', async () => {
+    openExisting();
+    await act(async () => {
+      await h.editor!.onSaveDraft(edited, 0);
+    });
+    expect(h.save).toHaveBeenCalledWith(
+      expect.objectContaining({ original: GUIA_EM_EXCLUSAO, chart: edited, chartIndex: 0 }),
+    );
+    expect(h.editor?.chart).toEqual(edited);
+    expect(h.sync).not.toHaveBeenCalled();
+  });
+
+  it('preserves input and never calls Mercado Livre when the local transaction reports a conflict', async () => {
+    openExisting();
+    const input = screen.getByLabelText('Draft cell');
+    fireEvent.change(input, { target: { value: '90,5' } });
+    h.save.mockRejectedValue(new SizeChartConflictError());
+
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBeInstanceOf(SizeChartConflictError);
+    });
+
+    expect(h.sync).not.toHaveBeenCalled();
+    expect(h.editor?.chart).toEqual(GUIA_EM_EXCLUSAO);
+    expect(screen.getByLabelText('Draft cell')).toBe(input);
+    expect((input as HTMLInputElement).value).toBe('90,5');
+  });
+
+  it('waits for the transaction result and sends its committed whole list exactly once', async () => {
+    openExisting();
+    const pending = deferred<SavedChart>();
+    const other = { ...GUIA_ENVIADA, id: 'OTHER', nome: 'Outra guia' };
+    h.save.mockReturnValue(pending.promise);
+    const send = h.editor!.onSend(edited, 0);
+    expect(h.sync).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pending.resolve({ tabelas: [edited, other], index: 0, chart: edited });
+      await send;
+    });
+
+    expect(h.sync).toHaveBeenCalledTimes(1);
+    expect(h.sync).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      tabMediId: 'tab-1',
+      tabelas: [edited, other],
+    });
+  });
+
+  it('adopts partial-sync ids without remounting or appending the new guide again', async () => {
+    const view = show();
+    fireEvent.click(botao('Nova guia'));
+    const input = screen.getByLabelText('Draft cell');
+    fireEvent.change(input, { target: { value: '90,5' } });
+    const draft: MlSizeChart = { id: null, nome: 'Nova guia', rows: [{ id: null }] };
+    const canonical: MlSizeChart = {
+      ...draft,
+      id: 'NEW-CHART',
+      rows: [{ id: 'NEW-CHART:1' }],
+    };
+    const errors = [
+      {
+        chartIndex: 1,
+        code: 'required_row_attribute_not_found',
+        message: 'Missing size',
+        rowIndex: 0,
+        attributeIds: ['SIZE'],
+        rowMainValue: null,
+      },
+    ];
+    h.save.mockResolvedValueOnce({ tabelas: [GUIA_ENVIADA, draft], index: 1, chart: draft });
+    h.sync.mockResolvedValueOnce({
+      tabelas: [GUIA_ENVIADA, canonical],
+      validationErrors: errors,
+      updated: true,
+    });
+
+    await act(async () => {
+      expect(await h.editor!.onSend(draft, null)).toEqual({
+        validationErrors: errors,
+        chartIndex: 1,
+        chart: canonical,
+      });
+    });
+
+    expect(h.editor?.chartIndex).toBe(1);
+    expect(h.editor?.chart).toEqual(canonical);
+    expect(screen.getByLabelText('Draft cell')).toBe(input);
+    expect((input as HTMLInputElement).value).toBe('90,5');
+
+    // A live snapshot is a contender, not permission to advance the open baseline.
+    h.charts = { 'conta-1': { tabelas: [{ ...canonical, nome: 'Mudança remota' }] } };
+    view.refresh();
+    const corrected = { ...canonical, nome: 'Corrigida' };
+    h.save.mockResolvedValueOnce({
+      tabelas: [GUIA_ENVIADA, corrected],
+      index: 1,
+      chart: corrected,
+    });
+    await act(async () => {
+      await h.editor!.onSend(corrected, h.editor!.chartIndex);
+    });
+    expect(h.save.mock.calls[1]?.[0]).toMatchObject({
+      chartIndex: 1,
+      original: canonical,
+      chart: corrected,
+    });
+  });
+
+  it.each([
+    { tabelas: [] },
+    { tabelas: [{ id: 42 }] },
+    { tabelas: [{}] },
+    { tabelas: [{ ...edited, id: 'OTHER-CHART' }] },
+    { tabelas: [{ ...edited, nome: 'Outra guia' }] },
+    { tabelas: [{ ...edited, domain_id: 'MLB-PANTS' }] },
+  ])('keeps the last local baseline after an unreadable sync response: %j', async (response) => {
+    openExisting();
+    h.sync.mockResolvedValue({ ...response, validationErrors: [], updated: true });
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBeInstanceOf(SizeChartConflictError);
+    });
+    expect(h.editor?.chart).toEqual(edited);
+    expect(h.editor?.chartIndex).toBe(0);
+  });
+
+  it('keeps the saved draft baseline when the sync request fails', async () => {
+    openExisting();
+    const failure = new MercadoLivreClientNetworkError(
+      'Failed to fetch',
+      new TypeError('Network disconnected'),
+    );
+    h.sync.mockRejectedValue(failure);
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBe(failure);
+    });
+    expect(h.editor?.chart).toEqual(edited);
+    expect(h.sync).toHaveBeenCalledTimes(1);
+  });
+
+  it('explains an unconfirmed send when persisted partial row ids make the retry conflict', async () => {
+    openExisting();
+    const input = screen.getByLabelText('Draft cell');
+    fireEvent.change(input, { target: { value: '90,5' } });
+    const draft = { ...edited, rows: [{ id: 'MLB-CHART-1:1' }, { id: null }] };
+    const partial = {
+      ...draft,
+      rows: [{ id: 'MLB-CHART-1:1' }, { id: 'MLB-CHART-1:2' }],
+    };
+    const failure = new MercadoLivreClientHttpError('Unavailable', 503, null);
+    h.sync.mockImplementationOnce(() => {
+      h.charts = { 'conta-1': { tabelas: [partial] } };
+      return Promise.reject(failure);
+    });
+
+    await act(async () => {
+      await expect(h.editor!.onSend(draft, 0)).rejects.toBe(failure);
+    });
+    expect(h.editor?.chart).toEqual(draft);
+    h.save.mockRejectedValueOnce(new SizeChartConflictError());
+    await act(async () => {
+      await expect(h.editor!.onSend(draft, 0)).rejects.toBeInstanceOf(
+        SizeChartSyncUnconfirmedError,
+      );
+    });
+    expect(h.sync).toHaveBeenCalledTimes(1);
+    expect(h.editor?.chart).toEqual(draft);
+    expect(screen.getByLabelText('Draft cell')).toBe(input);
+    expect((input as HTMLInputElement).value).toBe('90,5');
+  });
+
+  it('still retries a failed send when the saved chart did not change', async () => {
+    openExisting();
+    const failure = new MercadoLivreClientHttpError('Rate limit', 429, null);
+    h.sync.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBe(failure);
+    });
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).resolves.toMatchObject({ chart: edited });
+    });
+    expect(h.sync).toHaveBeenCalledTimes(2);
   });
 });

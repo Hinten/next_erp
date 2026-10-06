@@ -153,6 +153,8 @@ const INVENTARIO = {
     'Two sites, both re-reading inside. `:464` (`runTransaction<TxOutcome>` — no paren after the identifier) reads the NF-e + the config and decides the lote stamp on them; `:714` reads the config and `Promise.all`s a `tx.get` over every NF-e in the lote before writing any of them.',
   'apps/web/lib/nfe/nfeConfigPort.ts':
     'Class A BY CONSTRUCTION: the port hands `nextFor(current)` the `tx.get` snapshot, so the caller cannot compute its patch anywhere else. `nextFor` throws to abort on a detected conflict (tier 3 — the browser SDK has no precondition). #1005.',
+  'apps/web/lib/mercado-livre/chartPersistence.ts':
+    'Class B / tier 3 (#1778): assertChartUnchanged compares the entire opened chart against the same slot from tx.get on EVERY attempt. Missing/reordered/modified charts raise SizeChartConflictError, including same-ID row edits. Appends and untouched siblings are re-derived from that fresh list. FieldPath updates only the account tabelas and the ms stamp; malformed account entries and a missing parent refuse the write. Provider calls and editor baseline updates occur only after the transaction resolves. Tests: chartPersistence.test.ts (OccEngine interleavings).',
   'apps/web/lib/mercado-livre/listingPort.ts':
     'Same port shape — the patch builder runs on the `tx.get` snapshot inside the callback.',
   'apps/web/lib/fiscal/simplesConfigPort.ts':
