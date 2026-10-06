@@ -6,6 +6,26 @@
  * package's `http-provider/errors.ts`.
  */
 
+/**
+ * Wire `code`s the `apps/melhor-envio` routes put in their `{ error, code }`
+ * envelope and this client reads back. ONE literal for both sides: the server
+ * imports these from this browser-safe subpath, so the two cannot drift. (The
+ * older `ME_REAUTH` / `ME_LABEL_TERMINAL` predate this and are still written
+ * out on each side.)
+ */
+/** `504` — Melhor Envio itself did not answer in time (`MelhorEnvioTimeoutError`, #1679). */
+export const FREIGHT_CODIGO_ME_TIMEOUT = 'ME_TIMEOUT';
+/**
+ * `423` — another `comprar` for the same pedido is still running (#1677).
+ *
+ * ⚠️ RESERVED, not yet emitted: nothing answers it until the `comprar`
+ * in-flight claim lands (#1677), and until the browser arm for it lands too a
+ * 423 reads as a plain `FreightServerError` carrying the route's message. It is
+ * declared here, ahead of both, so the server and client changes can each build
+ * on this one literal independently.
+ */
+export const FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO = 'ME_COMPRA_EM_ANDAMENTO';
+
 /** Base — every HTTP-originated freight error is at least this. */
 export class FreightHttpError extends Error {
   public readonly status: number;
@@ -134,11 +154,15 @@ export class FreightNetworkError extends Error {
  * (`origem: 'gateway'`) — read as a 504 no route of ours wrote when the caller
  * can see the status, and in a cross-origin browser (where that 504 carries no
  * CORS headers) as a network failure after the request had been in flight past
- * `LIMIAR_FALHA_TARDIA_MS`.
+ * `LIMIAR_FALHA_TARDIA_MS` — or the route answered that MELHOR ENVIO stopped
+ * answering it (`origem: 'provedor'`, a `504 { code: 'ME_TIMEOUT' }`, #1679),
+ * which on a buy can mean the label was paid all the same.
  *
- * ⚠️ Either way the server may still be running it — no route observes a
- * client abort, and Cloud Run keeps processing after its own 504. So the
- * message says so, and nothing in this repo re-sends automatically on it.
+ * ⚠️ Either way something may still be running it — for `'prazo'`/`'gateway'`
+ * the server (no route observes a client abort, and Cloud Run keeps processing
+ * after its own 504); for `'provedor'` Melhor Envio itself, which never learns
+ * the route stopped waiting. So the message says so, and nothing in this repo
+ * re-sends automatically on it.
  *
  * ⚠️ A SUBCLASS of `FreightNetworkError`, never a sibling: every freight catch
  * site narrows on `FreightHttpError` / `FreightNetworkError` (or on
@@ -148,15 +172,19 @@ export class FreightNetworkError extends Error {
  * `FreightTimeoutError` arm BEFORE its `FreightNetworkError` arm.
  */
 export class FreightTimeoutError extends FreightNetworkError {
-  public readonly origem: 'prazo' | 'gateway';
-  /** The deadline that expired; `null` for a gateway 504 (the platform's clock, not ours). */
+  public readonly origem: 'prazo' | 'gateway' | 'provedor';
+  /**
+   * The deadline that expired: ours for `'prazo'`, the route's per-call Melhor
+   * Envio deadline for `'provedor'` (when it sent one), `null` for a gateway 504
+   * (the platform's clock, which nobody reports).
+   */
   public readonly timeoutMs: number | null;
   /** The client method that timed out (`'comprar'`, `'conta'`, …). */
   public readonly operacao: string;
   constructor(
     message: string,
     detalhes: {
-      readonly origem: 'prazo' | 'gateway';
+      readonly origem: 'prazo' | 'gateway' | 'provedor';
       readonly timeoutMs: number | null;
       readonly operacao: string;
     },

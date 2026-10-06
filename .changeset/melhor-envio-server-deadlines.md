@@ -1,0 +1,8 @@
+---
+"@delfrance/integrations-freight-br": minor
+"@delfrance/melhor-envio-app": patch
+---
+
+Every server-side Melhor Envio call now has a deadline (#1679, the F4-c item of the #1094 program). `createMelhorEnvioApi` and the `/oauth/token` POST used to fetch with no signal, so a Melhor Envio that accepted the connection and never answered held the route until undici's own 300 s limits — per call, and `comprar` chains up to seven. Each `MelhorEnvioApi` method now runs under its `PRAZO_ME_MS` budget (reads 10–20 s, the cart insert 30 s, `checkout` 60 s, `generate` 45 s; the token POST `PRAZO_ME_TOKEN_MS` = 20 s), with the body read inside the window, and `DURACAO_MAXIMA_COMPRAR_MS` (200 s) bounds a whole buy.
+
+A timed-out call throws the new `MelhorEnvioTimeoutError` (a subclass of `MelhorEnvioNetworkError`, carrying `operacao` and `timeoutMs`) with copy that never claims more than is known — only the cart insert may say nothing was paid; a `checkout` timeout says the label may be paid. Any other transport failure in the API client is now `MelhorEnvioNetworkError` with its `cause`, instead of the bare `MelhorEnvioError` base. The `apps/melhor-envio` routes answer a timeout as `504 { code: 'ME_TIMEOUT', operacao, timeoutMs }`, and the browser `FreightHttpClient` maps exactly that coded 504 to `FreightTimeoutError` with the new `origem: 'provedor'`, so the buy modal's existing "outcome unknown" handling covers it. The wire code `FREIGHT_CODIGO_ME_TIMEOUT` is exported from `./http-client` as the one literal both sides share, beside `FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO`, which is reserved for the `comprar` in-flight claim (#1677) and not yet emitted by any route.

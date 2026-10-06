@@ -4,10 +4,14 @@
  * (`.old/.../melhor_envio/lib/src/api/api.dart`).
  *
  * Platform-neutral and fetch-based; **runs server-side only** in
- * `apps/integrations` (it touches `client_secret`). The browser never
+ * `apps/melhor-envio` (it touches `client_secret`). The browser never
  * imports this module.
  */
-import { MelhorEnvioHttpError, MelhorEnvioNetworkError, MelhorEnvioSchemaError } from './errors';
+import { abrirPrazo } from '@delfrance/core/wire';
+
+import { MelhorEnvioHttpError, MelhorEnvioSchemaError } from './errors';
+import { PRAZO_ME_TOKEN_MS } from './prazos';
+import { erroDeTransporteMe } from './transporte';
 import { type TokenResponse, tokenErrorSchema, tokenResponseSchema } from './types';
 
 export const MELHOR_ENVIO_HOSTS = {
@@ -84,7 +88,13 @@ async function postToken(
   body: Record<string, string>,
 ): Promise<TokenResponse> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  // ⚠️ A cut here can lose a rotation Melhor Envio already made (Passport
+  // rotates the refresh token on every grant). That fails CLOSED: the next
+  // refresh is rejected and the account asks to be reconnected — no money is
+  // at stake on this endpoint, so a bounded wait beats an unbounded one.
+  const prazo = abrirPrazo(PRAZO_ME_TOKEN_MS);
   let res: Response;
+  let text: string;
   try {
     res = await fetchImpl(`${config.baseUrl}/oauth/token`, {
       method: 'POST',
@@ -94,18 +104,17 @@ async function postToken(
       },
       // URLSearchParams sets Content-Type: application/x-www-form-urlencoded.
       body: new URLSearchParams(body),
+      signal: prazo.signal,
     });
+    // Inside the window and the mapping, like `api.ts`: a stall mid-body is a
+    // timeout too, and a raw DOMException would escape `isMelhorEnvioError`.
+    text = await res.text();
   } catch (err) {
-    // A dedicated class, not the bare base: the base is ALSO what an unmapped
-    // failure looks like, so callers could not tell a dead network from an
-    // unrecognised error.
-    throw new MelhorEnvioNetworkError(
-      `Falha de rede ao chamar Melhor Envio /oauth/token: ${err instanceof Error ? err.message : 'fetch failed'}`,
-      err,
-    );
+    throw erroDeTransporteMe(err, prazo, 'token', PRAZO_ME_TOKEN_MS, 'POST /oauth/token');
+  } finally {
+    prazo.liberar();
   }
 
-  const text = await res.text();
   let parsed: unknown = null;
   if (text.length > 0) {
     try {

@@ -5,6 +5,7 @@ import {
   MelhorEnvioNetworkError,
   MelhorEnvioReauthRequiredError,
   MelhorEnvioSchemaError,
+  MelhorEnvioTimeoutError,
   type Order,
 } from '@delfrance/integrations-freight-br';
 
@@ -319,6 +320,9 @@ describe('processMelhorEnvioNotification', () => {
   it('keeps network, throttling, server, schema, config and remote-state failures hot', async () => {
     const errors = [
       new MelhorEnvioNetworkError('offline'),
+      // #1679: a `getOrder` that outlived its deadline is transient — the task
+      // retries it, exactly like a dead network.
+      new MelhorEnvioTimeoutError('lento', { operacao: 'getOrder', timeoutMs: 10_000 }),
       new MelhorEnvioHttpError('throttled', 429, {}),
       new MelhorEnvioHttpError('server', 503, {}),
       new MelhorEnvioSchemaError('invalid 200', []),

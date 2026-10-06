@@ -6,6 +6,7 @@ import {
   MelhorEnvioNetworkError,
   MelhorEnvioReauthRequiredError,
   MelhorEnvioSchemaError,
+  MelhorEnvioTimeoutError,
 } from '@delfrance/integrations-freight-br';
 
 import {
@@ -166,6 +167,9 @@ describe('GET /api/oauth/melhor-envio/callback', () => {
     ['me_recusou', () => new MelhorEnvioHttpError('Melhor Envio /oauth/token: HTTP 401', 401, {})],
     ['resposta_invalida', () => new MelhorEnvioSchemaError('formato inesperado', [])],
     ['rede', () => new MelhorEnvioNetworkError('fetch falhou')],
+    // #1679: a token POST that outlived PRAZO_ME_TOKEN_MS is a network failure
+    // too — the subclass must land in the SAME arm, not fall to `exchange`.
+    ['rede', () => new MelhorEnvioTimeoutError('lento', { operacao: 'token', timeoutMs: 20_000 })],
     // Matched by the guard (the base class) but deliberately unmapped.
     ['exchange', () => new MelhorEnvioError('algo novo')],
   ])('when the exchange fails with %s', (reason, makeError) => {
