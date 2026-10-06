@@ -18,12 +18,14 @@ import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection'
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
+import { prepararTabelasShopeeParaSalvar } from '@/lib/shopee/tabelasMedidasForm';
 import {
-  MEDIDA_EXCLUDED_FIELDS,
+  MEDIDA_EXCLUDED_FIELDS_EDITAR,
   MEDIDA_SECTIONS,
   medidaFieldOverrides,
 } from '../_components/medidaFields';
 import { MedidasMercadoLivreManager } from '../_components/MedidasMercadoLivreManager';
+import { MedidasShopeeManager } from '../_components/MedidasShopeeManager';
 
 /**
  * Edit-only schema: the aggregate plus the `mercadoLivre` UI anchor — a
@@ -35,7 +37,7 @@ const tabelaDeMedidasEditarSchema = tabelaDeMedidasSchema.extend({
   mercadoLivre: z.null().default(null),
 });
 
-const MEDIDA_SECTIONS_EDITAR = [...MEDIDA_SECTIONS, 'Mercado Livre'];
+const MEDIDA_SECTIONS_EDITAR = [...MEDIDA_SECTIONS, 'Mercado Livre', 'Shopee'];
 const MEDIDA_TRANSIENT_FIELDS_EDITAR = ['mercadoLivre'];
 
 export default function TabelaDeMedidasPage() {
@@ -68,11 +70,30 @@ export default function TabelaDeMedidasPage() {
         recordId={params.id}
         sections={MEDIDA_SECTIONS_EDITAR}
         transientFields={MEDIDA_TRANSIENT_FIELDS_EDITAR}
-        // Marketplace maps stay out of the form; the partial-save patch never
-        // touches them, so integration-authored ML/Shopee charts are preserved.
-        excludedFields={MEDIDA_EXCLUDED_FIELDS}
+        // The ML map stays out of the form (the ML tab writes it itself), so the
+        // partial-save patch never touches it. The Shopee map is IN the form
+        // here: its tab stages picks and this save writes them (below).
+        excludedFields={MEDIDA_EXCLUDED_FIELDS_EDITAR}
         fields={{
           ...medidaFieldOverrides,
+          tabelasMedidasShopee: {
+            label: 'Shopee',
+            section: 'Shopee',
+            // Staged, never immediate (web rule 7): the tab marks a removal and
+            // this drops it, per conta, only when the tabela is saved. The
+            // save's `tx.update` replaces the whole map, and #1757's baseline
+            // guard raises the conflict modal if the stored map changed since
+            // load — no transaction of its own (root rule 7, tier 3).
+            prepareForSave: prepararTabelasShopeeParaSalvar,
+            renderInput: (p) => (
+              <MedidasShopeeManager
+                db={db}
+                value={p.value}
+                onChange={p.onChange}
+                disabled={p.disabled}
+              />
+            ),
+          },
           mercadoLivre: {
             label: 'Mercado Livre',
             section: 'Mercado Livre',
