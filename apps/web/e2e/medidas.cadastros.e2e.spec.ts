@@ -255,5 +255,4 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     expect(unchanged?.tabelasDeMedidasMercadoLivre).toEqual(mkt.mercadoLivre);
     expect(unchanged?.tabelasMedidasShopee).toEqual(mkt.shopee);
   });
-
 });
