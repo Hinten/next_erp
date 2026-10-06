@@ -6,16 +6,23 @@ import {
   shopeeLogisticsChannelSchema,
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE, varianteFakePath } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  fotoSchema,
+  lerEntradasShopeeDaConta,
+  varianteFakePath,
+  type Foto,
+} from '@delfrance/schemas';
 
 import type { AtributosProjetados } from '../taxonomia/dto';
 import type { LimitesDeItemDto, LimitesDeItemLidos } from '../taxonomia/limites';
 import { RELIST_PRIMEIRO, ESPERA_APOS_ADD_ITEM_MS } from './constantesAnuncio';
-import { MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
-import type {
-  ResolvedorDeImagensShopee,
-  ResultadoFotosPublicacao,
-  ResumoFotosPublicacao,
+import { MOTIVO_PROBLEMA_PUBLICACAO, MOTIVO_PUBLICACAO_BLOQUEADA } from './errosPublicacao';
+import {
+  MOTIVO_FOTO_PUBLICACAO,
+  type ResolvedorDeImagensShopee,
+  type ResultadoFotosPublicacao,
+  type ResumoFotosPublicacao,
 } from './fotosPublicacao';
 import type { LinkDeVariacao } from './linkAnuncio';
 import type { LinkListagemLido, ProdutoParaPublicar } from './montagemAnuncio';
@@ -24,11 +31,16 @@ import {
   type ContextoPublicacao,
   type FotosResolvidas,
   type PassoPublicacao,
+  fotoDaTabelaRecusadaPelaShopee,
   legDeModelosNecessario,
   passosDoLegDeModelos,
   planejarPublicacao,
   primeiroFilhoDoItem,
 } from './planoPublicacao';
+import {
+  MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA,
+  MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA,
+} from './problemasPublicacao';
 import { MOTIVO_TAX_INFO_OMITIDO } from './taxInfoPublicacao';
 import type {
   FilhoParaPublicar,
@@ -213,7 +225,13 @@ const PASSAGEM_DO_ITEM: ResultadoFotosPublicacao = {
 };
 
 function fotos(parcial: Partial<FotosResolvidas> = {}): FotosResolvidas {
-  return { item: PASSAGEM_DO_ITEM, imagensDeOpcao: null, resumo: RESUMO, ...parcial };
+  return {
+    item: PASSAGEM_DO_ITEM,
+    imagensDeOpcao: null,
+    tabelaDeMedidas: null,
+    resumo: RESUMO,
+    ...parcial,
+  };
 }
 
 function contexto(parcial: Partial<ContextoPublicacao> = {}): ContextoPublicacao {
@@ -233,6 +251,7 @@ function contexto(parcial: Partial<ContextoPublicacao> = {}): ContextoPublicacao
     marca: { brandId: 1234, nome: 'Delfrance' },
     canais: [canal()],
     imposto: { imposto: null, motivo: null },
+    tabelaDeMedidas: { tipo: 'produto-sem-tabela' },
     resolvedorDeImagens: resolvedorProibido(),
     ehAtualizacao: false,
     statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.normal,
@@ -750,5 +769,189 @@ describe('planejarPublicacao — o vocabulário de bloqueio', () => {
     for (const problema of plano.problemas) expect(conhecidos.has(problema.motivo)).toBe(true);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*              (9) a tabela de medidas — passo 18 (#1526), A.1                */
+/* -------------------------------------------------------------------------- */
+
+describe('planejarPublicacao — size_chart_info (passo 18)', () => {
+  /** Shopee's own doc-sample template id — never a real shop's. */
+  const MODELO = 700_024_641;
+  const FOTO: Foto = fotoSchema.parse({ arquivoOuterRef: 'arquivos/arq-tabela-1' });
+  const URL_SENTINELA = 'https://sentinela.invalido/tabela.jpg';
+
+  function lida(
+    entradas: readonly unknown[],
+    primeiraFoto: Foto | null = FOTO,
+  ): ContextoPublicacao['tabelaDeMedidas'] {
+    return {
+      tipo: 'lida',
+      tabMediId: 'tab-1',
+      leitura: lerEntradasShopeeDaConta({ [INTEGRACAO]: entradas }, INTEGRACAO),
+      primeiraFoto,
+    };
+  }
+
+  const MANDATORIA = limites({
+    sizeChartLimit: {
+      sizeChartMandatory: true,
+      supportImageSizeChart: true,
+      supportTemplateSizeChart: true,
+    },
+  });
+
+  it('S9/M74: obrigatória e nada a enviar ⇒ avisoObrigatoria, e o plano NÃO bloqueia', () => {
+    const plano = planejarPublicacao(
+      contexto({ limites: MANDATORIA, tabelaDeMedidas: lida([], null) }),
+      fotos(),
+    );
+
+    expect(plano.problemas).toEqual([]);
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+    expect(tipos(plano.passos)).toEqual(['fotos', 'add_item', 'leitura-de-volta']);
+    expect(plano.item.tabelaDeMedidas.avisoObrigatoria).toBe(true);
+  });
+
+  it('o modelo que casa vai no add_item, e o plano é PURO — o resolvedor nunca é chamado', () => {
+    const plano = planejarPublicacao(
+      contexto({
+        tabelaDeMedidas: lida([{ categoryId: CATEGORIA_FOLHA, size_chart_id: MODELO, name: 'X' }]),
+      }),
+      fotos(),
+    );
+    expect(plano.item.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+  });
+
+  it('A.1.4: a foto foi a fonte e SUBIU ⇒ o corpo leva { size_chart } e o plano segue', () => {
+    const plano = planejarPublicacao(
+      contexto({ tabelaDeMedidas: lida([]) }),
+      fotos({ tabelaDeMedidas: { imageId: 'img-tabela-1', falha: null } }),
+    );
+    expect(plano.item.criar.size_chart_info).toEqual({ size_chart: 'img-tabela-1' });
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+    expect(tipos(plano.passos)).toEqual(['fotos', 'add_item', 'leitura-de-volta']);
+  });
+
+  it('⛔ M-A7: a foto da tabela NÃO subiu ⇒ RECUSA em size_chart_info (nunca em image), e o plano para nas fotos', () => {
+    const plano = planejarPublicacao(
+      contexto({ tabelaDeMedidas: lida([]) }),
+      fotos({
+        tabelaDeMedidas: {
+          imageId: null,
+          falha: {
+            arquivoId: 'arq-tabela-1',
+            motivo: MOTIVO_FOTO_PUBLICACAO.uploadRecusado,
+            mensagem: `upload recusado para ${URL_SENTINELA}`,
+          },
+        },
+      }),
+    );
+
+    expect(plano.recusaTabelaDeMedidas).toMatchObject({
+      campo: 'size_chart_info',
+      motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+    });
+    // O motivo FECHADO da falha, nunca a sua prosa (que pode levar uma URL).
+    expect(plano.recusaTabelaDeMedidas?.mensagem).toContain(MOTIVO_FOTO_PUBLICACAO.uploadRecusado);
+    expect(plano.recusaTabelaDeMedidas?.mensagem).not.toContain(URL_SENTINELA);
+    expect(plano.recusaTabelaDeMedidas?.mensagem).toContain('/medidas');
+    // A SHOPEE recusou o upload ⇒ a frase da recusa dela (a do validador).
+    expect(plano.recusaTabelaDeMedidas?.mensagem).toBe(
+      `${MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA} (envio da foto: upload-recusado, tabela tab-1)`,
+    );
+    // Não é um bloqueio: o vocabulário pré-escrita não tem esse motivo.
+    expect(plano.problemas).toEqual([]);
+    expect(tipos(plano.passos)).toEqual(['fotos']);
+    expect('size_chart_info' in plano.item.criar).toBe(false);
+    // As fotos do ITEM continuam limpas: a falha é da tabela.
+    expect(plano.falhasDeFoto).toEqual([]);
+  });
+
+  it('⛔ falha FECHADA: a foto era a fonte e a passada nem rodou ⇒ recusa também', () => {
+    const plano = planejarPublicacao(contexto({ tabelaDeMedidas: lida([]) }), fotos());
+    expect(plano.recusaTabelaDeMedidas?.motivo).toBe(
+      MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+    );
+    expect(tipos(plano.passos)).toEqual(['fotos']);
+    // Ninguém viu foto nenhuma ⇒ nunca "recusada pela Shopee".
+    expect(plano.recusaTabelaDeMedidas?.mensagem).toBe(
+      `${MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA} (envio da foto: nenhum image_id voltou, tabela tab-1)`,
+    );
+  });
+
+  it('⛔ QUASE-PAR da recusa: uma foto que a Shopee NUNCA viu (rede, download, arquivo) ⇒ "não foi possível enviar — tente de novo", nunca "recusada pela Shopee"', () => {
+    const naoDaShopee = Object.values(MOTIVO_FOTO_PUBLICACAO).filter(
+      (m) => m !== MOTIVO_FOTO_PUBLICACAO.uploadRecusado,
+    );
+    // Todos os motivos do resolvedor menos UM — um motivo novo cai aqui sozinho.
+    expect(naoDaShopee.length).toBeGreaterThan(0);
+    for (const motivo of naoDaShopee) {
+      const plano = planejarPublicacao(
+        contexto({ tabelaDeMedidas: lida([]) }),
+        fotos({
+          tabelaDeMedidas: {
+            imageId: null,
+            falha: { arquivoId: 'arq-tabela-1', motivo, mensagem: 'mecanismo' },
+          },
+        }),
+      );
+      // A RECUSA continua (Q1c, A.1.4): só a frase muda.
+      expect(plano.recusaTabelaDeMedidas, motivo).toMatchObject({
+        campo: 'size_chart_info',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+      });
+      expect(plano.recusaTabelaDeMedidas?.mensagem, motivo).toBe(
+        `${MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA} (envio da foto: ${motivo}, tabela tab-1)`,
+      );
+      expect(plano.recusaTabelaDeMedidas?.mensagem, motivo).not.toContain('Shopee');
+      expect(tipos(plano.passos), motivo).toEqual(['fotos']);
+    }
+  });
+
+  it('fotoDaTabelaRecusadaPelaShopee — SÓ upload-recusado é veredito da Shopee', () => {
+    for (const motivo of Object.values(MOTIVO_FOTO_PUBLICACAO)) {
+      expect(
+        fotoDaTabelaRecusadaPelaShopee({
+          imageId: null,
+          falha: { arquivoId: 'arq-tabela-1', motivo, mensagem: 'mecanismo' },
+        }),
+        motivo,
+      ).toBe(motivo === MOTIVO_FOTO_PUBLICACAO.uploadRecusado);
+    }
+    expect(fotoDaTabelaRecusadaPelaShopee({ imageId: null, falha: null })).toBe(false);
+    expect(fotoDaTabelaRecusadaPelaShopee(null)).toBe(false);
+  });
+
+  it('⚠️ NEAR-MISS: o modelo casou ⇒ um image_id nulo da passada não recusa nada', () => {
+    const plano = planejarPublicacao(
+      contexto({
+        tabelaDeMedidas: lida([{ categoryId: CATEGORIA_FOLHA, size_chart_id: MODELO, name: 'X' }]),
+      }),
+      fotos({ tabelaDeMedidas: { imageId: null, falha: null } }),
+    );
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+    expect(plano.item.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+  });
+
+  it('⚠️ NEAR-MISS: a categoria recusa foto (suportaFoto false) ⇒ nada enviado e nada recusado', () => {
+    const plano = planejarPublicacao(
+      contexto({
+        tabelaDeMedidas: lida([]),
+        limites: limites({
+          sizeChartLimit: {
+            sizeChartMandatory: null,
+            supportImageSizeChart: false,
+            supportTemplateSizeChart: null,
+          },
+        }),
+      }),
+      fotos(),
+    );
+    expect(plano.recusaTabelaDeMedidas).toBeNull();
+    expect(plano.item.tabelaDeMedidas.fotoOmitida).toBe('categoria-sem-foto');
+    expect('size_chart_info' in plano.item.criar).toBe(false);
   });
 });

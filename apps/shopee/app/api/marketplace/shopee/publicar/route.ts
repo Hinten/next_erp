@@ -151,6 +151,16 @@ export async function POST(req: Request): Promise<NextResponse> {
       },
       avisoShopee: res.avisoShopee,
       taxInfoOmitido: res.taxInfoOmitido,
+      // Step 18: by NAME as well. The read-back echo (`lidaDeVolta`,
+      // `fotoLidaDeVolta`) is a diagnostic for the log and the CLI, not an
+      // answer the operator acts on, so it stays out of this body.
+      tabelaDeMedidas: {
+        sizeChartId: res.tabelaDeMedidas.sizeChartId,
+        fonte: res.tabelaDeMedidas.fonte,
+        motivo: res.tabelaDeMedidas.motivo,
+        fotoOmitida: res.tabelaDeMedidas.fotoOmitida,
+        avisoObrigatoria: res.tabelaDeMedidas.avisoObrigatoria,
+      },
     });
   } catch (err) {
     if (isShopeeError(err)) return shopeeErrorResponse(err);

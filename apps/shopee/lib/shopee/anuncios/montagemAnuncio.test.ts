@@ -4,17 +4,28 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { SHOPEE_ITEM_IMAGE_MAX, SHOPEE_ITEM_STATUS_WRITABLE } from '@delfrance/integrations-shopee';
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import {
+  ESTADO_ANUNCIO_SHOPEE,
+  fotoSchema,
+  lerEntradasShopeeDaConta,
+  type Foto,
+} from '@delfrance/schemas';
 
 import type { AtributoDto, AtributosProjetados } from '../taxonomia/dto';
 import type { LimitesDeItemDto, LimitesDeItemLidos } from '../taxonomia/limites';
+import { FakeDb, asDb } from '../testing/fakeDb';
 import { MOTIVO_PUBLICACAO_BLOQUEADA, type ProblemaPublicacao } from './errosPublicacao';
+import {
+  type LeituraTabelaDeMedidasShopee,
+  lerTabelaMedidasDoProduto,
+} from './lerTabelaMedidasDoProduto';
 import {
   type ArgsMontarAnuncio,
   type LinkListagemLido,
   type LogisticaParaMontar,
   type ProdutoParaPublicar,
   atributosParaPublicar,
+  categoriaDoAnuncio,
   condicaoDoProduto,
   dimensaoParaPublicar,
   kitNativoDoAnuncio,
@@ -22,7 +33,9 @@ import {
   pesoParaPublicar,
   preOrderParaPublicar,
   quantidadeParaPublicarShopee,
+  sizeChartInfoParaPublicar,
 } from './montagemAnuncio';
+import { MOTIVO_TABELA_MEDIDAS_OMITIDA } from './tabelaMedidasPublicacao';
 
 /* -------------------------------------------------------------------------- */
 /*                                  fixtures                                  */
@@ -144,6 +157,9 @@ function args(over: Partial<ArgsMontarAnuncio> = {}): ArgsMontarAnuncio {
     estoqueDoPrimeiroFilho: null,
     ownDisponivel: 7,
     disponivelByProdutoId: {},
+    // Step 18: no tabela by default, so every step-11 case keeps its body.
+    tabelaDeMedidas: { tipo: 'produto-sem-tabela' },
+    imagemTabelaDeMedidas: null,
     ...over,
   };
 }
@@ -187,11 +203,15 @@ describe('montarAnuncio — o corpo de add_item', () => {
     expect('location_id' in (montado.criar.seller_stock?.[0] ?? {})).toBe(false);
   });
 
-  it('nenhum dos campos que o passo 11 nunca envia aparece no corpo', () => {
+  it('nenhum dos campos que a publicação nunca envia aparece no corpo', () => {
     const montado = montarAnuncio(args());
+    // ⚠️ `size_chart_info` SAIU desta lista no passo 18 (ele é enviado quando
+    // casa — ver o bloco do passo 18 abaixo). `size_chart` ENTROU: a imagem da
+    // tabela vai DENTRO de `size_chart_info`, nunca como chave de topo — no topo
+    // ela é o lado de LEITURA (uma URL) e um round trip a enviaria de volta.
     const proibidos = [
       'wholesale',
-      'size_chart_info',
+      'size_chart',
       'scheduled_publish_time',
       'video_upload_id',
       'promotion_images',
@@ -1282,5 +1302,287 @@ describe('montarAnuncio — o preço do item é lido por precoDaTabela', () => {
     );
     expect(motivos(montado.problemas)).not.toContain('sem-preco');
     expect(montado.criar.original_price).toBe(0.01);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            (14) size_chart_info — passo 18 (#1526), §2.7 + A.1              */
+/* -------------------------------------------------------------------------- */
+
+describe('montarAnuncio — size_chart_info (passo 18)', () => {
+  const CONTA = 'int-1';
+  /** Shopee's own doc-sample template id — never a real shop's. */
+  const MODELO = 700_024_641;
+  const OUTRA_CATEGORIA = CATEGORIA_FOLHA + 1;
+  const IMAGEM = 'img-tabela-1';
+  const FOTO: Foto = fotoSchema.parse({ arquivoOuterRef: 'arquivos/arq-tabela-1' });
+
+  /**
+   * The tabela as `lerTabelaMedidasDoProduto` hands it over — THIS conta's list
+   * through the REAL schemas read slice (a round trip, never a hand-built
+   * `linhas`), plus the first photo.
+   */
+  function lida(campo: unknown, primeiraFoto: Foto | null = null): LeituraTabelaDeMedidasShopee {
+    return {
+      tipo: 'lida',
+      tabMediId: 'tab-1',
+      leitura: lerEntradasShopeeDaConta(campo, CONTA),
+      primeiraFoto,
+    };
+  }
+
+  function entrada(categoryId: number, sizeChartId: number, name = 'Camisetas') {
+    return { categoryId, size_chart_id: sizeChartId, name };
+  }
+
+  /** A republish: the stored link (category {@link CATEGORIA_FOLHA}) and an update body. */
+  function republicar(over: Partial<ArgsMontarAnuncio> = {}) {
+    return montarAnuncio(args({ link: link(), ehAtualizacao: true, ...over }));
+  }
+
+  it('PAR: uma entrada para a categoria ⇒ create E update levam { size_chart_id } — um NÚMERO JSON (M69)', () => {
+    const montado = republicar({
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(CATEGORIA_FOLHA, MODELO)] }),
+    });
+
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(montado.atualizar?.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(JSON.stringify(montado.atualizar)).toContain(
+      `"size_chart_info":{"size_chart_id":${String(MODELO)}}`,
+    );
+    expect(montado.tabelaDeMedidas).toMatchObject({
+      fonte: { tipo: 'modelo', sizeChartId: MODELO },
+      sizeChartId: MODELO,
+      motivo: null,
+      tabMediId: 'tab-1',
+    });
+  });
+
+  it('⚠️ NEAR-MISS: nada casa ⇒ a CHAVE fica AUSENTE nos dois corpos — nunca size_chart_id: 0 (M70)', () => {
+    for (const tabela of [
+      { tipo: 'produto-sem-tabela' } as const,
+      { tipo: 'tabela-inexistente', tabMediId: 'tab-x' } as const,
+      { tipo: 'tabela-inexistente', tabMediId: null } as const,
+      lida({}),
+      lida({ [CONTA]: [entrada(OUTRA_CATEGORIA, MODELO)] }),
+      // id ±1 do modelo, mesma categoria errada: o seletor é por CATEGORIA.
+      lida({ [CONTA]: [entrada(CATEGORIA_FOLHA - 1, MODELO + 1)] }),
+    ]) {
+      const montado = republicar({ tabelaDeMedidas: tabela });
+      expect('size_chart_info' in montado.criar).toBe(false);
+      expect('size_chart_info' in (montado.atualizar ?? {})).toBe(false);
+      expect(JSON.stringify(montado.atualizar)).not.toContain('size_chart');
+      expect(montado.problemas).toEqual([]);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: o MESMO name em outra categoria não casa — o name é o da categoria, não a identidade', () => {
+    const montado = republicar({
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(OUTRA_CATEGORIA, MODELO, 'Camisetas')] }),
+    });
+    expect('size_chart_info' in montado.criar).toBe(false);
+    expect(montado.tabelaDeMedidas.motivo).toBe(MOTIVO_TABELA_MEDIDAS_OMITIDA.categoriaSemEntrada);
+  });
+
+  it('⛔ NEAR-MISS (M72, M-A11): link na categoria 200 + corpo da rota 100 + entrada só para 100 ⇒ NÃO anexa', () => {
+    const LINK_CAT = 200_017;
+    const ROTA_CAT = 100_017;
+    const naoCasa = montarAnuncio(
+      args({
+        link: link({ category_id: LINK_CAT }),
+        categoryId: ROTA_CAT,
+        ehAtualizacao: true,
+        tabelaDeMedidas: lida({ [CONTA]: [entrada(ROTA_CAT, MODELO)] }),
+      }),
+    );
+    expect(naoCasa.criar.category_id).toBe(LINK_CAT);
+    expect('size_chart_info' in naoCasa.criar).toBe(false);
+    expect('size_chart_info' in (naoCasa.atualizar ?? {})).toBe(false);
+
+    // PAR: a entrada da categoria do LINK é a que vale.
+    const casa = montarAnuncio(
+      args({
+        link: link({ category_id: LINK_CAT }),
+        categoryId: ROTA_CAT,
+        ehAtualizacao: true,
+        tabelaDeMedidas: lida({ [CONTA]: [entrada(LINK_CAT, MODELO)] }),
+      }),
+    );
+    expect(casa.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(casa.atualizar?.size_chart_info).toEqual({ size_chart_id: MODELO });
+  });
+
+  it('categoriaDoAnuncio — o link vence, null cai para a escolha do operador', () => {
+    expect(categoriaDoAnuncio({ category_id: 200 }, 100)).toBe(200);
+    expect(categoriaDoAnuncio({ category_id: null }, 100)).toBe(100);
+    expect(categoriaDoAnuncio(null, 100)).toBe(100);
+    expect(categoriaDoAnuncio(null, null)).toBeNull();
+  });
+
+  it('⛔ a resolução de categoria é UMA: um só `?.category_id ??` no mapeador, nenhum no publicador nem no plano (M-A11)', () => {
+    const pasta = fileURLToPath(new URL('.', import.meta.url));
+    const mapeador = readFileSync(`${pasta}montagemAnuncio.ts`, { encoding: 'utf8' });
+    const publicador = readFileSync(`${pasta}publicarAnuncio.ts`, { encoding: 'utf8' });
+    const plano = readFileSync(`${pasta}planoPublicacao.ts`, { encoding: 'utf8' });
+    // A forma de CÓDIGO da cascata (com o encadeamento opcional) — um comentário
+    // que a cita sem `?.` não conta.
+    const cascata = /\?\.category_id \?\?/g;
+
+    expect(mapeador.match(/export function categoriaDoAnuncio\(/g)).toHaveLength(1);
+    expect(mapeador.match(cascata)).toHaveLength(1);
+    expect(mapeador).toContain('categoriaDoAnuncio(link, args.categoryId)');
+    // O preparar E a passada da foto da tabela chamam a MESMA função.
+    expect(publicador.match(cascata)).toBeNull();
+    expect(publicador).toContain('categoriaDoAnuncio(link, entrada.categoryId ?? null)');
+    expect(publicador).toContain('categoriaDoAnuncio(contexto.link, contexto.categoryId)');
+    expect(plano.match(cascata)).toBeNull();
+  });
+
+  it('RT8: um tabMedi CRU — outra conta com null por chave + categoria duplicada nesta conta — lido pelo LEITOR REAL ⇒ a PRIMEIRA entrada, nos dois corpos', async () => {
+    // O documento como o corpus o guarda, e a leitura que a publicação faz dele
+    // (`lerTabelaMedidasDoProduto` sobre o dublê de Firestore) — nunca uma
+    // `LeituraTabelaDeMedidasShopee` montada à mão.
+    const db = new FakeDb();
+    db.seed('tabMedi/tab-1', {
+      nome: 'Camisetas',
+      tabelasMedidasShopee: {
+        'int-2': null,
+        [CONTA]: [entrada(CATEGORIA_FOLHA, MODELO), entrada(CATEGORIA_FOLHA, MODELO + 1)],
+      },
+      tabelasDeMedidasMercadoLivre: 'lixo-do-corpus',
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-tabela-1' }],
+    });
+    const tabelaDeMedidas = await lerTabelaMedidasDoProduto(
+      asDb(db),
+      'documents/tabMedi/tab-1',
+      CONTA,
+    );
+    expect(tabelaDeMedidas.tipo).toBe('lida');
+
+    const montado = republicar({ tabelaDeMedidas, imagemTabelaDeMedidas: IMAGEM });
+    expect(montado.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(montado.atualizar?.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(montado.tabelaDeMedidas).toMatchObject({ tabMediId: 'tab-1', entradasNestaConta: 2 });
+
+    // …e um anúncio de OUTRA categoria não leva o MODELO em nenhum dos dois —
+    // vai a primeira foto da tabela (o image_id já enviado), nunca um id de modelo.
+    const outro = republicar({
+      link: link({ category_id: OUTRA_CATEGORIA }),
+      tabelaDeMedidas,
+      imagemTabelaDeMedidas: IMAGEM,
+    });
+    expect(outro.criar.size_chart_info).toEqual({ size_chart: IMAGEM });
+    expect(outro.atualizar?.size_chart_info).toEqual({ size_chart: IMAGEM });
+
+    // QUASE-PAR: a mesma tabela lida para a OUTRA conta (a do `null`) não tem modelo.
+    const daOutraConta = await lerTabelaMedidasDoProduto(
+      asDb(db),
+      'documents/tabMedi/tab-1',
+      'int-2',
+    );
+    const semModelo = republicar({ tabelaDeMedidas: daOutraConta });
+    expect(semModelo.tabelaDeMedidas.sizeChartId).toBeNull();
+    expect(JSON.stringify(semModelo.atualizar)).not.toContain(String(MODELO));
+  });
+
+  it('M-A1: o MODELO vence a foto — com foto e image_id à mão, o corpo leva SÓ size_chart_id', () => {
+    const montado = republicar({
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(CATEGORIA_FOLHA, MODELO)] }, FOTO),
+      imagemTabelaDeMedidas: IMAGEM,
+    });
+    expect(montado.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(montado.atualizar?.size_chart_info).toEqual({ size_chart_id: MODELO });
+    expect(JSON.stringify(montado.criar)).not.toContain(IMAGEM);
+  });
+
+  it('A.1.5: sem modelo e com a foto enviada ⇒ create E update levam { size_chart: image_id }', () => {
+    const montado = republicar({
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(OUTRA_CATEGORIA, MODELO)] }, FOTO),
+      imagemTabelaDeMedidas: IMAGEM,
+    });
+    expect(montado.problemas).toEqual([]);
+    expect(montado.criar.size_chart_info).toEqual({ size_chart: IMAGEM });
+    expect(montado.atualizar?.size_chart_info).toEqual({ size_chart: IMAGEM });
+    // A imagem vai DENTRO do bloco, nunca como `size_chart` de topo (o lado de leitura).
+    expect('size_chart' in montado.criar).toBe(false);
+    expect('size_chart' in (montado.atualizar ?? {})).toBe(false);
+    expect(montado.tabelaDeMedidas.fonte).toEqual({ tipo: 'foto', foto: FOTO });
+    expect(montado.tabelaDeMedidas.motivo).toBe(MOTIVO_TABELA_MEDIDAS_OMITIDA.categoriaSemEntrada);
+  });
+
+  it('⚠️ NEAR-MISS: a foto era a fonte e NENHUM image_id chegou ⇒ chave ausente, e o mapeador NÃO recusa (é o plano)', () => {
+    const montado = republicar({
+      tabelaDeMedidas: lida({}, FOTO),
+      imagemTabelaDeMedidas: null,
+    });
+    expect('size_chart_info' in montado.criar).toBe(false);
+    expect('size_chart_info' in (montado.atualizar ?? {})).toBe(false);
+    expect(montado.problemas).toEqual([]);
+    expect(montado.tabelaDeMedidas.fonte.tipo).toBe('foto');
+  });
+
+  it('⚠️ NEAR-MISS: um image_id sem a foto ser a fonte é IGNORADO — nada casou e não há foto', () => {
+    const montado = republicar({ tabelaDeMedidas: lida({}), imagemTabelaDeMedidas: IMAGEM });
+    expect('size_chart_info' in montado.criar).toBe(false);
+    expect(montado.tabelaDeMedidas.fotoOmitida).toBe('sem-fotos');
+  });
+
+  it('M74: obrigatória e nada a enviar ⇒ avisoObrigatoria, e NENHUM problema — nunca bloqueia', () => {
+    const montado = republicar({
+      limites: limites({
+        sizeChartLimit: {
+          sizeChartMandatory: true,
+          supportImageSizeChart: true,
+          supportTemplateSizeChart: true,
+        },
+      }),
+      tabelaDeMedidas: lida({}),
+    });
+    expect(montado.problemas).toEqual([]);
+    expect(montado.tabelaDeMedidas.avisoObrigatoria).toBe(true);
+    expect('size_chart_info' in montado.criar).toBe(false);
+  });
+
+  it('L7: suportaModelo === false com uma entrada que casa AINDA anexa o modelo', () => {
+    const montado = republicar({
+      limites: limites({
+        sizeChartLimit: {
+          sizeChartMandatory: null,
+          supportImageSizeChart: null,
+          supportTemplateSizeChart: false,
+        },
+      }),
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(CATEGORIA_FOLHA, MODELO)] }),
+    });
+    expect(montado.criar.size_chart_info).toEqual({ size_chart_id: MODELO });
+  });
+
+  it('um plano BLOQUEADO (categoria-invalida) ainda relata o diagnóstico da tabela', () => {
+    const montado = republicar({
+      veredictoFolha: 'nao-folha',
+      tabelaDeMedidas: lida({ [CONTA]: [entrada(CATEGORIA_FOLHA, MODELO)] }),
+    });
+    expect(motivos(montado.problemas)).toContain(MOTIVO_PUBLICACAO_BLOQUEADA.categoriaInvalida);
+    expect(montado.tabelaDeMedidas.sizeChartId).toBe(MODELO);
+  });
+
+  it('sizeChartInfoParaPublicar — exatamente UMA chave, ou nenhuma', () => {
+    const base = montarAnuncio(args()).tabelaDeMedidas;
+    expect(
+      sizeChartInfoParaPublicar(
+        { ...base, fonte: { tipo: 'modelo', sizeChartId: MODELO }, sizeChartId: MODELO },
+        IMAGEM,
+      ),
+    ).toEqual({ size_chart_id: MODELO });
+    expect(
+      sizeChartInfoParaPublicar({ ...base, fonte: { tipo: 'foto', foto: FOTO } }, IMAGEM),
+    ).toEqual({
+      size_chart: IMAGEM,
+    });
+    expect(
+      sizeChartInfoParaPublicar({ ...base, fonte: { tipo: 'foto', foto: FOTO } }, null),
+    ).toBeNull();
+    expect(sizeChartInfoParaPublicar({ ...base, fonte: { tipo: 'nenhuma' } }, IMAGEM)).toBeNull();
   });
 });

@@ -225,6 +225,18 @@ function resultadoDouble(): ResultadoPublicacao {
     relistagem: null,
     avisoResolvido: false,
     leituraDeVolta: true,
+    tabelaDeMedidas: {
+      // Shopee's own doc-sample template id — never a real shop's.
+      sizeChartId: 700024641,
+      fonte: 'modelo',
+      motivo: null,
+      fotoOmitida: null,
+      avisoObrigatoria: false,
+      // O eco da releitura é DIAGNÓSTICO (log + CLI) e fica FORA do corpo.
+      lidaDeVolta: 700024641,
+      fotoLidaDeVolta: true,
+      inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
+    },
     chamadasShopee: 5,
     // Um campo que a onda seguinte poderia acrescentar ao resultado.
     inventadoPelaOndaSeguinte: 'NÃO PODE VAZAR',
@@ -431,6 +443,7 @@ describe('o 200', () => {
       'itemId',
       'itemStatus',
       'modelos',
+      'tabelaDeMedidas',
       'taxInfoOmitido',
     ]);
     expect(corpo).toEqual({
@@ -441,7 +454,31 @@ describe('o 200', () => {
       fotos: { reutilizadas: 1, enviadas: 2, falhas: 0 },
       avisoShopee: 'aviso da shopee',
       taxInfoOmitido: null,
+      tabelaDeMedidas: {
+        sizeChartId: 700024641,
+        fonte: 'modelo',
+        motivo: null,
+        fotoOmitida: null,
+        avisoObrigatoria: false,
+      },
     });
+  });
+
+  it('⛔ passo 18: `tabelaDeMedidas` também é por NOME — o eco da releitura e um campo novo ficam fora', async () => {
+    h.publicar.mockResolvedValue(resultadoDouble());
+
+    const texto = await (await POST(req(corpoValido(), AUTORIZADO))).text();
+    const corpo = JSON.parse(texto) as { tabelaDeMedidas: Record<string, unknown> };
+
+    expect(Object.keys(corpo.tabelaDeMedidas).sort()).toEqual([
+      'avisoObrigatoria',
+      'fonte',
+      'fotoOmitida',
+      'motivo',
+      'sizeChartId',
+    ]);
+    expect(texto).not.toContain('lidaDeVolta');
+    expect(texto).not.toContain('NÃO PODE VAZAR');
   });
 
   it('nem os sub-objetos vazam: `modelos` e `fotos` também são por nome', async () => {

@@ -4,17 +4,36 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  SHOPEE_ADD_ITEM_PATH,
+  SHOPEE_SURFACE,
+  SHOPEE_UPDATE_ITEM_PATH,
   ShopeeApiError,
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  createShopeeClient,
+  resolveShopeeHosts,
+  shopeeErrorFromEnvelope,
 } from '@delfrance/integrations-shopee';
 
+import { FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE, lerFixture } from '../fixtures/wireCorpus';
+import {
+  FRASE_TABELA_MEDIDAS_INEXISTENTE,
+  MOTIVO_RECUSA_TABELA_MEDIDAS,
+  classificarRecusaTabelaMedidas,
+} from '../tabelaMedidas/recusaTabelaMedidas';
 import { FRASE_TAX_INFO_INCOMPLETO } from './constantesAnuncio';
-import type { MotivoProblemaPublicacao } from './errosPublicacao';
-import { problemaDeErroShopee, problemasDeErroShopee } from './problemasPublicacao';
+import { MOTIVO_PROBLEMA_PUBLICACAO, type MotivoProblemaPublicacao } from './errosPublicacao';
+import {
+  FRASE_TABELA_MEDIDAS_FOTO_RECUSADA,
+  MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA,
+  MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA,
+  MENSAGEM_TABELA_MEDIDAS_RECUSADA,
+  problemaDeErroShopee,
+  problemasDeErroShopee,
+} from './problemasPublicacao';
 
 /* ---------------------------------- fixtures ------------------------------ */
 
@@ -34,6 +53,8 @@ interface Linha {
   readonly message: string;
   readonly campo: string | null;
   readonly motivo: MotivoProblemaPublicacao;
+  /** The expected `mensagem` when the row carries OUR sentence; absent ⇒ Shopee's prose. */
+  readonly mensagem?: string;
 }
 
 const TABELA: readonly Linha[] = [
@@ -85,6 +106,16 @@ const TABELA: readonly Linha[] = [
     message: 'at least one image is required',
     campo: 'image',
     motivo: 'sem-fotos',
+  },
+  {
+    // ⚠️ The TEMPLATE row is not here: it is decided over the ERROR (the routes'
+    // classifier), and this table drives the code+sentence form — see (1b).
+    rotulo: 'tabela de medidas — o validador de IMAGEM recusou a foto (passo 18)',
+    code: 'product.error_busi',
+    message: 'Upload failed, please upload a more standard size chart image.',
+    campo: 'size_chart_info',
+    motivo: 'tabela-de-medidas-foto-recusada',
+    mensagem: MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA,
   },
   {
     rotulo: 'preço',
@@ -219,11 +250,11 @@ describe('problemaDeErroShopee — a tabela de famílias', () => {
     expect(problemaDeErroShopee(linha.code, linha.message)).toEqual({
       campo: linha.campo,
       motivo: linha.motivo,
-      mensagem: linha.message,
+      mensagem: linha.mensagem ?? linha.message,
     });
   });
 
-  it('a tabela exercita os dezoito campos do desenho, mais a linha sem campo', () => {
+  it('a tabela exercita os dezenove campos do desenho, mais a linha sem campo', () => {
     const campos = new Set(TABELA.map((l) => l.campo));
     expect(campos.has(null)).toBe(true);
     const nomeados = [...campos].filter((c): c is string => c !== null).sort();
@@ -243,10 +274,363 @@ describe('problemaDeErroShopee — a tabela de famílias', () => {
       'pre_order',
       'seller_stock',
       'shop',
+      'size_chart_info',
       'standardise_tier_variation',
       'tax_info',
       'weight',
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*            (1b) a tabela de medidas — `size_chart_info` (passo 18)          */
+/* -------------------------------------------------------------------------- */
+
+/** O erro que o transporte REALMENTE monta para um envelope de recusa. */
+function doEnvelope(error: string, message: string, path: string): ShopeeApiError {
+  return shopeeErrorFromEnvelope(
+    { error, message, request_id: null, warning: null },
+    { path, httpStatus: 200, surface: SHOPEE_SURFACE.business },
+  );
+}
+
+/** A frase do validador de IMAGEM, como as duas páginas de escrita a listam. */
+const FRASE_DO_VALIDADOR = 'Upload failed, please upload a more standard size chart image.';
+
+describe('tabela de medidas (passo 18)', () => {
+  const fraseDoFio = (() => {
+    const corpo = lerFixture(FIXTURE_SIZE_CHART_DETAIL_DOC_ID_INEXISTENTE);
+    if (
+      typeof corpo !== 'object' ||
+      corpo === null ||
+      Array.isArray(corpo) ||
+      typeof corpo.message !== 'string'
+    ) {
+      throw new Error('a fixture da recusa não tem `message`');
+    }
+    return corpo.message;
+  })();
+
+  it('M73 — PAR: a frase COMMITADA da Shopee, pelo construtor real do erro, em add_item E update_item ⇒ size_chart_info com a NOSSA frase, nunca desconhecido', () => {
+    for (const path of [SHOPEE_ADD_ITEM_PATH, SHOPEE_UPDATE_ITEM_PATH]) {
+      const problemas = problemasDeErroShopee(doEnvelope('product.error_param', fraseDoFio, path));
+      expect(problemas, path).toStrictEqual([
+        {
+          campo: 'size_chart_info',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
+          mensagem: MENSAGEM_TABELA_MEDIDAS_RECUSADA,
+        },
+      ]);
+      // O inglês da Shopee (e o nosso prefixo técnico) NÃO chega ao operador:
+      // ele não diz o que fazer — a frase nossa diz.
+      expect(problemas[0]?.mensagem, path).not.toContain('Size chart');
+      expect(problemas[0]?.mensagem, path).not.toContain('respondeu');
+    }
+  });
+
+  it('a frase do modelo velho é a do Q4 do Lucas — pt-BR, e manda escolher outra em /medidas', () => {
+    expect(MENSAGEM_TABELA_MEDIDAS_RECUSADA).toBe(
+      'tabela de medidas recusada pela Shopee — escolha outra em /medidas',
+    );
+  });
+
+  it('⛔ UMA regra (#1369): o que as ROTAS chamam de modelo inexistente é o que a publicação chama — nos DOIS sentidos', () => {
+    // As rotas decidem com `classificarRecusaTabelaMedidas` (código `error_param`
+    // + a frase CRUA da Shopee, dobrada). A publicação tinha uma segunda grafia
+    // (trecho EXATO de `err.message`, qualquer código) que discordava dela.
+    const casos: readonly {
+      readonly rotulo: string;
+      readonly code: string;
+      readonly message: string;
+      readonly tabela: boolean;
+      /** Where a NON-template case lands instead — default: `desconhecido`. */
+      readonly senao?: { readonly campo: string | null; readonly motivo: MotivoProblemaPublicacao };
+    }[] = [
+      // PAR — a rota diz "inexistente", e agora a publicação também.
+      { rotulo: 'a frase do fio', code: 'product.error_param', message: fraseDoFio, tabela: true },
+      {
+        rotulo: 'minúscula',
+        code: 'product.error_param',
+        message: 'size chart id not exist in this shop',
+        tabela: true,
+      },
+      {
+        rotulo: 'com o prefixo "Wrong parameters, detail:"',
+        code: 'product.error_param',
+        message: 'Wrong parameters, detail: size chart id not exist in this shop.',
+        tabela: true,
+      },
+      { rotulo: 'o código nu', code: 'error_param', message: fraseDoFio, tabela: true },
+      // PAR — a frase do modelo AO LADO da frase de uma linha ANTERIOR da tabela:
+      // a rota diz "inexistente", e nenhuma frase rouba o erro antes (a linha do
+      // modelo é a PRIMEIRA).
+      {
+        rotulo: 'junto de "Image not exist." (linha imagens)',
+        code: 'product.error_param',
+        message: `Image not exist. ${fraseDoFio}`,
+        tabela: true,
+      },
+      {
+        rotulo: 'junto de "Invalid logistic info" (linha logística)',
+        code: 'product.error_param',
+        message: `Invalid logistic info; ${fraseDoFio}`,
+        tabela: true,
+      },
+      // QUASE-PAR — a rota diz "não é isso", e agora a publicação também.
+      {
+        // …e a linha anterior volta a valer: a frase de imagens decide.
+        rotulo: 'as duas frases sob error_data',
+        code: 'product.error_data',
+        message: `Image not exist. ${fraseDoFio}`,
+        tabela: false,
+        senao: { campo: 'image', motivo: 'sem-fotos' },
+      },
+      {
+        rotulo: 'a mesma frase sob error_data',
+        code: 'product.error_data',
+        message: fraseDoFio,
+        tabela: false,
+      },
+      {
+        rotulo: 'dois segmentos de módulo',
+        code: 'x.product.error_param',
+        message: fraseDoFio,
+        tabela: false,
+      },
+      {
+        rotulo: 'a frase encurtada',
+        code: 'product.error_param',
+        message: 'Size chart not exist',
+        tabela: false,
+      },
+      {
+        // A OUTRA recusa que o classificador conhece — nunca um modelo velho.
+        rotulo: 'a recusa da CATEGORIA',
+        code: 'product.error_param',
+        message: 'Category id is invalid',
+        tabela: false,
+      },
+    ];
+    for (const caso of casos) {
+      const err = doEnvelope(caso.code, caso.message, SHOPEE_ADD_ITEM_PATH);
+      const daRota =
+        classificarRecusaTabelaMedidas(err) === MOTIVO_RECUSA_TABELA_MEDIDAS.tabelaInexistente;
+      const [problema] = problemasDeErroShopee(err);
+      const daPublicacao = problema?.motivo === MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada;
+      expect(daRota, caso.rotulo).toBe(caso.tabela);
+      expect(daPublicacao, caso.rotulo).toBe(caso.tabela);
+      if (caso.tabela) {
+        expect(problema, caso.rotulo).toStrictEqual({
+          campo: 'size_chart_info',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
+          mensagem: MENSAGEM_TABELA_MEDIDAS_RECUSADA,
+        });
+      } else {
+        expect(problema, caso.rotulo).toMatchObject(
+          caso.senao ?? { campo: null, motivo: 'desconhecido' },
+        );
+      }
+    }
+  });
+
+  it('⚠️ QUASE-PAR: a frase só em `err.message` (providerMessage null) NÃO é modelo velho — a regra lê a frase da SHOPEE', () => {
+    const err = new ShopeeApiError(
+      `Shopee ${SHOPEE_ADD_ITEM_PATH} respondeu product.error_param (HTTP 200) — ${fraseDoFio}`,
+      { code: 'product.error_param', kind: 'other', httpStatus: 200, path: SHOPEE_ADD_ITEM_PATH },
+    );
+    expect(err.providerMessage).toBeNull();
+    expect(classificarRecusaTabelaMedidas(err)).toBeNull();
+    expect(problemasDeErroShopee(err)).toEqual([
+      expect.objectContaining({ campo: null, motivo: 'desconhecido' }),
+    ]);
+  });
+
+  it('a forma de TEXTO (código + frase) nunca decide o modelo velho — ela não tem o erro que a regra lê', () => {
+    expect(problemaDeErroShopee('product.error_param', fraseDoFio)).toEqual({
+      campo: null,
+      motivo: 'desconhecido',
+      mensagem: fraseDoFio,
+    });
+  });
+
+  it('⛔ pelo CAMINHO REAL: o erro que `addItem`/`updateItem` do pacote LANÇAM (fetch → envelope → erro) cai nas duas linhas novas', async () => {
+    // Ids de fixture e a chave inventada — nunca credenciais. O transporte é o
+    // `shopeeCall` de verdade: só o `fetch` é dublê.
+    function cliente(envelope: { readonly error: string; readonly message: string }) {
+      return createShopeeClient({
+        partnerId: 1000001,
+        partnerKey: 'chave-de-teste-nao-e-credencial',
+        hosts: resolveShopeeHosts({ sandbox: true }),
+        shopId: 987654,
+        getAccessToken: () => Promise.resolve('access-inventado'),
+        now: () => 1_767_000_000_000,
+        fetch: () =>
+          Promise.resolve(
+            new Response(JSON.stringify({ request_id: 'req-1', warning: null, ...envelope }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          ),
+      });
+    }
+    const criar = {
+      item_name: 'Camiseta básica de algodão',
+      description: 'Camiseta básica de algodão, corte reto, tamanhos P a GG.',
+      original_price: 39.9,
+      weight: 0.3,
+      category_id: 100017,
+      image: { image_id_list: ['img-1'] },
+      logistic_info: [{ logistic_id: 90003, enabled: true }],
+    };
+    const casos = [
+      {
+        envelope: { error: 'product.error_param', message: fraseDoFio },
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada,
+        info: { size_chart_id: 700024641 },
+      },
+      {
+        envelope: { error: 'product.error_busi', message: FRASE_DO_VALIDADOR },
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+        info: { size_chart: 'img-tabela-1' },
+      },
+    ] as const;
+
+    for (const caso of casos) {
+      const erros = [
+        await cliente(caso.envelope)
+          .addItem({ ...criar, size_chart_info: caso.info })
+          .catch((e: unknown) => e),
+        await cliente(caso.envelope)
+          .updateItem({ item_id: 2500139861, size_chart_info: caso.info })
+          .catch((e: unknown) => e),
+      ];
+      for (const erro of erros) {
+        expect(erro).toBeInstanceOf(ShopeeApiError);
+        const api = erro as ShopeeApiError;
+        // O que o classificador lê (`err.message`) é a frase COMPOSTA do pacote —
+        // e ela carrega a da Shopee verbatim, depois do caminho e do código.
+        expect(api.message).toContain(` — ${caso.envelope.message}`);
+        expect(api.providerMessage).toBe(caso.envelope.message);
+        expect(problemasDeErroShopee(api), api.path).toEqual([
+          expect.objectContaining({ campo: 'size_chart_info', motivo: caso.motivo }),
+        ]);
+        // ⚠️ UMA regra: o classificador das ROTAS concorda sobre o MESMO erro —
+        // modelo velho para a primeira, "não é isso" para a foto.
+        expect(
+          classificarRecusaTabelaMedidas(api) === MOTIVO_RECUSA_TABELA_MEDIDAS.tabelaInexistente,
+        ).toBe(caso.motivo === MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasRecusada);
+        // ⚠️ PAR da foto (uma linha de FRASE): ler `providerMessage` daria a MESMA
+        // família — o prefixo composto (caminho + código) não contém a frase.
+        if (caso.motivo === MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada) {
+          expect(problemaDeErroShopee(api.code, api.providerMessage ?? '').motivo).toBe(
+            caso.motivo,
+          );
+        }
+      }
+    }
+
+    // ⚠️ QUASE-PAR: a mesma recusa SEM a frase da Shopee não vira tabela — o
+    // casamento vem da prosa dela, nunca do nosso prefixo `Shopee <path> respondeu`.
+    const semFrase = await cliente({ error: 'product.error_param', message: '' })
+      .updateItem({ item_id: 2500139861, size_chart_info: { size_chart_id: 700024641 } })
+      .catch((e: unknown) => e);
+    expect(semFrase).toBeInstanceOf(ShopeeApiError);
+    expect(problemasDeErroShopee(semFrase)).toEqual([
+      expect.objectContaining({ campo: null, motivo: 'desconhecido' }),
+    ]);
+  });
+
+  it('M-A6/M-A7 — a recusa do VALIDADOR da foto vai para size_chart_info com a NOSSA frase — nunca para `image`/`sem-fotos`', () => {
+    for (const path of [SHOPEE_ADD_ITEM_PATH, SHOPEE_UPDATE_ITEM_PATH]) {
+      const problemas = problemasDeErroShopee(
+        doEnvelope('product.error_busi', FRASE_DO_VALIDADOR, path),
+      );
+      expect(problemas, path).toStrictEqual([
+        {
+          campo: 'size_chart_info',
+          motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+          mensagem: MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA,
+        },
+      ]);
+    }
+    // A frase da Shopee ("Upload failed") NÃO chega: ela leria como falha das fotos do anúncio.
+    expect(MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA).not.toContain('Upload failed');
+    expect(MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA).toBe(
+      'foto da tabela de medidas recusada pela Shopee — troque a primeira foto da tabela ou escolha um modelo em /medidas',
+    );
+  });
+
+  it('⛔ QUASE-PARES da foto: sem "size chart", ou com o "Please" maiúsculo, NÃO é a família', () => {
+    for (const quase of [
+      'Upload failed, please upload a more standard image.',
+      'Please upload a more standard size chart image',
+      'Upload failed',
+    ]) {
+      expect(problemaDeErroShopee('product.error_busi', quase).motivo, quase).toBe('desconhecido');
+    }
+  });
+
+  it('a frase da foto é um trecho EXATO da sentença documentada, e o modelo é o CLASSIFICADOR das rotas (nenhuma agulha aqui)', () => {
+    expect(FRASE_TABELA_MEDIDAS_FOTO_RECUSADA).toBe(
+      'please upload a more standard size chart image',
+    );
+    expect(FRASE_DO_VALIDADOR).toContain(FRASE_TABELA_MEDIDAS_FOTO_RECUSADA);
+    expect(fraseDoFio).toContain(FRASE_TABELA_MEDIDAS_INEXISTENTE);
+
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./problemasPublicacao.ts', import.meta.url)),
+      'utf8',
+    );
+    // A regra é IMPORTADA, inteira — e a agulha nem a frase moram aqui, então
+    // não há segunda grafia que possa divergir da rota.
+    expect(fonte).toMatch(
+      /import \{\s*MOTIVO_RECUSA_TABELA_MEDIDAS,\s*classificarRecusaTabelaMedidas,?\s*\} from '\.\.\/tabelaMedidas\/recusaTabelaMedidas';/,
+    );
+    expect(fonte).not.toContain('FRASE_TABELA_MEDIDAS_INEXISTENTE');
+    expect(fonte).not.toContain('Size chart id not exist');
+  });
+
+  it('o MODELO é a PRIMEIRA linha da tabela (nenhuma frase o alcança antes); a FOTO fica logo depois de `imagens`', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./problemasPublicacao.ts', import.meta.url)),
+      'utf8',
+    );
+    const inicio = fonte.indexOf('const FAMILIAS: readonly FamiliaProblema[] = [');
+    const primeiraLinha = fonte.indexOf('rotulo: ', inicio);
+    const imagens = fonte.indexOf("rotulo: 'imagens'");
+    const modelo = fonte.indexOf("rotulo: 'tabela-de-medidas'");
+    const foto = fonte.indexOf("rotulo: 'tabela-de-medidas-foto'");
+    const preco = fonte.indexOf("rotulo: 'preco'");
+    expect(inicio).toBeGreaterThan(-1);
+    expect(imagens).toBeGreaterThan(-1);
+    // A regra das rotas decide ANTES de qualquer linha de frase.
+    expect(modelo).toBe(primeiraLinha);
+    expect(imagens).toBeLessThan(foto);
+    expect(foto).toBeLessThan(preco);
+    const entreImagensEFoto = fonte.slice(imagens + 1, foto);
+    expect(entreImagensEFoto).not.toContain('rotulo: ');
+  });
+
+  it('as mensagens FIXAS valem só para as DUAS linhas da tabela de medidas — toda outra linha segue com a prosa da Shopee', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./problemasPublicacao.ts', import.meta.url)),
+      'utf8',
+    );
+    expect((fonte.match(/^\s+mensagem: MENSAGEM_\w+/gm) ?? []).map((l) => l.trim())).toEqual([
+      'mensagem: MENSAGEM_TABELA_MEDIDAS_RECUSADA',
+      'mensagem: MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA',
+    ]);
+    // QUASE-PAR: a linha vizinha (`imagens`) entrega a prosa da Shopee, verbatim.
+    expect(problemaDeErroShopee('error_image_num_min', 'at least one image').mensagem).toBe(
+      'at least one image',
+    );
+  });
+
+  it('a frase de uma foto que NÃO chegou à Shopee não a culpa — e manda tentar de novo primeiro', () => {
+    expect(MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA).toBe(
+      'não foi possível enviar a foto da tabela de medidas — tente de novo; se repetir, troque a primeira foto ou escolha um modelo em /medidas',
+    );
+    expect(MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA).not.toContain('Shopee');
   });
 });
 

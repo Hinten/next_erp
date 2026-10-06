@@ -36,7 +36,7 @@ import {
   type ShopeeLogisticsChannel,
 } from '@delfrance/integrations-shopee';
 
-import { ESTADO_ANUNCIO_SHOPEE } from '@delfrance/schemas';
+import { ESTADO_ANUNCIO_SHOPEE, fotoSchema } from '@delfrance/schemas';
 
 import type { AtributosProjetados } from '../taxonomia/dto';
 import { naoDocId } from './corpoPublicacao';
@@ -64,6 +64,7 @@ import {
   type ContextoDoEnsaio,
 } from './publicarAnuncioCli';
 import type { ResultadoPublicacao } from './publicarAnuncio';
+import type { ResultadoTabelaDeMedidasShopee } from './tabelaMedidasPublicacao';
 import { MOTIVO_TAX_INFO_OMITIDO } from './taxInfoPublicacao';
 
 /* -------------------------------------------------------------------------- */
@@ -89,6 +90,8 @@ const LINK_DOC_ID = 'link-1';
 const ITEM_ID = 2500139861;
 const MODEL_ID = 2000458802;
 const CATEGORIA_ID = 100017;
+/** Shopee's own doc-sample template id — never a real shop's. */
+const MODELO_TABELA = 700024641;
 
 /**
  * Each sentinel sits where the value it stands for REALLY lives in a plan, so
@@ -235,7 +238,28 @@ function corpoCriar(): ShopeeAddItemRequest {
     seller_stock: [{ stock: 0 }],
     pre_order: { is_pre_order: false },
     tax_info: { ...TAX_INFO },
+    size_chart_info: { size_chart_id: MODELO_TABELA },
     description_type: 'normal',
+  };
+}
+
+/** The item mapper's size-chart decision for {@link corpoCriar}: a template matched. */
+function decisaoDaTabela(
+  over: Partial<ResultadoTabelaDeMedidasShopee> = {},
+): ResultadoTabelaDeMedidasShopee {
+  return {
+    fonte: { tipo: 'modelo', sizeChartId: MODELO_TABELA },
+    sizeChartId: MODELO_TABELA,
+    motivo: null,
+    tabMediId: 'tab-1',
+    entradasNestaConta: 3,
+    ilegiveis: 1,
+    obrigatoria: true,
+    suportaModelo: true,
+    suportaFoto: null,
+    fotoOmitida: null,
+    avisoObrigatoria: false,
+    ...over,
   };
 }
 
@@ -250,7 +274,7 @@ function plano(over: Partial<PlanoPublicacao> = {}): PlanoPublicacao {
     temFilhos: true,
     statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.normal,
     statusInicial: SHOPEE_ITEM_STATUS_WRITABLE.unlist,
-    item: { criar, atualizar: null, problemas: [] },
+    item: { criar, atualizar: null, problemas: [], tabelaDeMedidas: decisaoDaTabela() },
     tiers: [
       {
         grupoId: 'grupo-cor',
@@ -320,6 +344,7 @@ function plano(over: Partial<PlanoPublicacao> = {}): PlanoPublicacao {
         descartadasPeloLimite: 0,
       },
       imagensDeOpcao: null,
+      tabelaDeMedidas: null,
       resumo: {
         consideradas: 3,
         reutilizadas: 1,
@@ -348,6 +373,7 @@ function plano(over: Partial<PlanoPublicacao> = {}): PlanoPublicacao {
       { tipo: 'leitura-de-volta' },
     ],
     problemas: [],
+    recusaTabelaDeMedidas: null,
   };
   return { ...base, ...over };
 }
@@ -389,6 +415,15 @@ function resultado(over: Partial<ResultadoPublicacao> = {}): ResultadoPublicacao
     relistagem: 'unlist',
     avisoResolvido: true,
     leituraDeVolta: true,
+    tabelaDeMedidas: {
+      sizeChartId: MODELO_TABELA,
+      fonte: 'modelo',
+      motivo: null,
+      fotoOmitida: null,
+      avisoObrigatoria: false,
+      lidaDeVolta: MODELO_TABELA,
+      fotoLidaDeVolta: true,
+    },
     chamadasShopee: 7,
   };
   return { ...base, ...over };
@@ -659,6 +694,7 @@ describe('renderizarPlano — a lista permitida do design-P2 §10.3', () => {
         'sequencia',
         'statusInicial',
         'statusPedido',
+        'tabelaDeMedidas',
         'taxInfo',
         'tiers',
         'veredictoFolha',
@@ -779,6 +815,7 @@ describe('tax_info imprime CHAVES e VALORES (C34)', () => {
         criar: { ...corpoCriar(), tax_info: undefined },
         atualizar: null,
         problemas: [],
+        tabelaDeMedidas: decisaoDaTabela(),
       },
       taxInfoOmitido: MOTIVO_TAX_INFO_OMITIDO.semOperacao,
     });
@@ -796,6 +833,172 @@ describe('tax_info imprime CHAVES e VALORES (C34)', () => {
       omitido: MOTIVO_TAX_INFO_OMITIDO.semOperacao,
       campos: [],
     });
+  });
+});
+
+/* ========================================================================== */
+/*  4b · size_chart_info — passo 18 (#1526)                                    */
+/* ========================================================================== */
+
+describe('size_chart_info (passo 18)', () => {
+  const SENTINELA_IMAGE_ID_TABELA = 'SENTINELA-IMAGE-ID-DA-FOTO-DA-TABELA';
+  const FOTO_DA_TABELA = fotoSchema.parse({ arquivoOuterRef: 'arquivos/arq-tabela-1' });
+
+  function secao(p: PlanoPublicacao): string {
+    const texto = renderizarPlano(p, contexto()).join('\n');
+    return texto.slice(texto.indexOf('### size_chart_info'), texto.indexOf('### logistic_info'));
+  }
+
+  function semTabela(decisao: Partial<ResultadoTabelaDeMedidasShopee>): PlanoPublicacao {
+    const { size_chart_info: _fora, ...criar } = corpoCriar();
+    return plano({
+      item: {
+        criar,
+        atualizar: null,
+        problemas: [],
+        tabelaDeMedidas: decisaoDaTabela({
+          fonte: { tipo: 'nenhuma' },
+          sizeChartId: null,
+          motivo: 'categoria-sem-entrada',
+          ...decisao,
+        }),
+      },
+    });
+  }
+
+  it('o MODELO sai com o id (não é PII) e a contagem de entradas desta conta', () => {
+    const s = secao(plano());
+    expect(s).toContain(`size_chart_id ${String(MODELO_TABELA)}`);
+    expect(s).toContain('tab-1  3 entrada(s) nesta conta · 1 ilegível(is)');
+    expect(s).toContain('obrigatória=sim  modelo=sim  foto=—');
+    expect(s).not.toContain('⚠️');
+    expect(resumoDaPublicacao(plano(), contexto()).tabelaDeMedidas.enviado).toBe('size_chart_id');
+  });
+
+  it('⛔ a FOTO sai como "a primeira foto da tabela" — o image_id NUNCA, nem no texto nem no --json', () => {
+    const comFoto = plano({
+      item: {
+        criar: { ...corpoCriar(), size_chart_info: { size_chart: SENTINELA_IMAGE_ID_TABELA } },
+        atualizar: null,
+        problemas: [],
+        tabelaDeMedidas: decisaoDaTabela({
+          fonte: { tipo: 'foto', foto: FOTO_DA_TABELA },
+          sizeChartId: null,
+          motivo: 'conta-sem-entradas',
+        }),
+      },
+    });
+    const texto = renderizarPlano(comFoto, contexto()).join('\n');
+    const json = JSON.stringify(resumoDaPublicacao(comFoto, contexto()));
+
+    expect(JSON.stringify(comFoto.item.criar)).toContain(SENTINELA_IMAGE_ID_TABELA);
+    expect(texto).toContain('size_chart — a PRIMEIRA foto da tabela');
+    expect(texto).not.toContain(SENTINELA_IMAGE_ID_TABELA);
+    expect(json).not.toContain(SENTINELA_IMAGE_ID_TABELA);
+    expect(json).not.toContain('arq-tabela-1');
+    expect(resumoDaPublicacao(comFoto, contexto()).tabelaDeMedidas.enviado).toBe('size_chart');
+  });
+
+  it('omitido NOMEIA o motivo; obrigatória e nada enviado ⇒ o aviso (S9) — e nada é bloqueado', () => {
+    const s = secao(
+      semTabela({ fotoOmitida: 'sem-fotos', avisoObrigatoria: true, obrigatoria: true }),
+    );
+    expect(s).toContain('— omitido (categoria-sem-entrada; foto: sem-fotos)');
+    expect(s).toContain('⚠️ a categoria declara tabela OBRIGATÓRIA');
+    expect(renderizarPlano(semTabela({ avisoObrigatoria: true }), contexto()).join('\n')).toContain(
+      'problemas: NENHUM',
+    );
+  });
+
+  it('⚠️ NEAR-MISS: obrigatória mas um modelo FOI enviado ⇒ nenhum aviso', () => {
+    expect(secao(plano())).not.toContain('OBRIGATÓRIA');
+  });
+
+  it('o bloco de limites ausente é dito ausente — nunca "não"', () => {
+    const s = secao(semTabela({ obrigatoria: null, suportaModelo: null, suportaFoto: null }));
+    expect(s).toContain('size_chart_limit ........ — (bloco ausente)');
+  });
+
+  it('a categoria que recusa foto e o modelo enviado contra support_template false ganham cada um a sua linha', () => {
+    expect(secao(semTabela({ fotoOmitida: 'categoria-sem-foto', suportaFoto: false }))).toContain(
+      'support_image_size_chart=false',
+    );
+    expect(
+      secao(
+        plano({
+          item: { ...plano().item, tabelaDeMedidas: decisaoDaTabela({ suportaModelo: false }) },
+        }),
+      ),
+    ).toContain('support_template_size_chart=false');
+  });
+
+  it('⛔ a foto que não subiu é RECUSA: problemas (1), NADA seria enviado — nunca "publicável"', () => {
+    const recusado = plano({
+      ...semTabela({ fonte: { tipo: 'foto', foto: FOTO_DA_TABELA } }),
+      passos: [{ tipo: 'fotos', enviadas: 0, reutilizadas: 0 }],
+      recusaTabelaDeMedidas: {
+        campo: 'size_chart_info',
+        motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+        mensagem: 'foto da tabela de medidas recusada pela Shopee (envio da foto: upload-recusado)',
+      },
+    });
+    const texto = renderizarPlano(recusado, contexto()).join('\n');
+
+    expect(texto).toContain('enviado ................. NADA');
+    expect(texto).toContain('⛔ foto da tabela de medidas recusada');
+    expect(texto).toContain('### problemas (1) — NADA seria enviado');
+    expect(texto).toContain(MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada);
+    expect(texto).not.toContain('problemas: NENHUM');
+  });
+
+  it('o --live diz o que foi enviado e o que a releitura ECOOU — DIVERGE quando não bate', () => {
+    const linha = (t: Partial<ResultadoPublicacao['tabelaDeMedidas']>): string =>
+      renderizarResultado(resultado({ tabelaDeMedidas: { ...resultado().tabelaDeMedidas, ...t } }))
+        .join('\n')
+        .split('\n')
+        .find((l) => l.includes('size_chart_info')) ?? '';
+
+    expect(linha({})).toBe(
+      `  size_chart_info ......... enviado ${String(MODELO_TABELA)} · lido de volta ${String(MODELO_TABELA)}`,
+    );
+    // ⚠️ NEAR-MISS: um 0 de zero-fill é DADO — e diverge do que foi enviado.
+    expect(linha({ lidaDeVolta: 0 })).toContain('lido de volta 0  DIVERGE');
+    expect(linha({ lidaDeVolta: MODELO_TABELA + 1 })).toContain('DIVERGE');
+    // Releitura degradada: "—", nunca uma divergência inventada.
+    expect(linha({ lidaDeVolta: null })).toContain('lido de volta —');
+    expect(linha({ lidaDeVolta: null })).not.toContain('DIVERGE');
+    expect(
+      linha({ fonte: 'foto', sizeChartId: null, motivo: 'conta-sem-entradas', lidaDeVolta: null }),
+    ).toContain('enviada a primeira foto da tabela · foto lida de volta: sim');
+    expect(
+      linha({
+        fonte: 'nenhuma',
+        sizeChartId: null,
+        motivo: 'produto-sem-tabela',
+        lidaDeVolta: null,
+      }),
+    ).toContain('omitido (produto-sem-tabela)');
+  });
+
+  it('o resumo do --live leva a tabela por NOME — sete campos, nenhum a mais', () => {
+    const res = resultado({
+      // Um campo que a onda seguinte poderia acrescentar — o resumo não o copia.
+      tabelaDeMedidas: {
+        ...resultado().tabelaDeMedidas,
+        inventado: 'NÃO PODE VAZAR',
+      } as unknown as ResultadoPublicacao['tabelaDeMedidas'],
+    });
+    const resumo = resumoDoResultado(res);
+    expect(Object.keys(resumo.tabelaDeMedidas).sort()).toEqual([
+      'avisoObrigatoria',
+      'fonte',
+      'fotoLidaDeVolta',
+      'fotoOmitida',
+      'lidaDeVolta',
+      'motivo',
+      'sizeChartId',
+    ]);
+    expect(JSON.stringify(resumo)).not.toContain('NÃO PODE VAZAR');
   });
 });
 
@@ -924,6 +1127,38 @@ describe('descreverErroPublicacao', () => {
     // ⚠️ NEAR-MISS do bloqueio: aqui um anúncio PODE já existir.
     expect(texto).not.toContain('a recusa é anterior');
     expect(texto).toContain('Escritas ANTERIORES podem ter acontecido');
+    expect(linhas[1]).toBe(
+      'Publicação recusada pela Shopee em init_tier_variation (product.error_param)',
+    );
+  });
+
+  it('a foto da tabela (passo 18): sem código não há "()" — e a que a Shopee NUNCA viu não é "recusada pela Shopee"', () => {
+    const recusa = (recusadaPelaShopee: boolean) =>
+      descreverErroPublicacao(
+        new ShopeePublishRejectedError({
+          etapa: ETAPA_PUBLICACAO.fotos,
+          shopeeCode: '',
+          produtoId: PRODUTO_ID,
+          itemId: null,
+          problemas: [
+            {
+              campo: 'size_chart_info',
+              motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+              mensagem: 'mecanismo',
+            },
+          ],
+          recusadaPelaShopee,
+        }),
+      );
+
+    // PAR: a Shopee recusou o upload — a linha diz isso, sem parênteses vazios.
+    expect(recusa(true)[1]).toBe('Publicação recusada pela Shopee em fotos');
+    // QUASE-PAR: a foto nunca chegou à Shopee — ninguém a culpa.
+    expect(recusa(false)[1]).toBe('Publicação interrompida em fotos');
+    for (const linhas of [recusa(true), recusa(false)]) {
+      expect(linhas.join('\n')).not.toContain('()');
+    }
+    expect(recusa(false).join('\n')).not.toContain('pela Shopee');
   });
 
   it('um erro da Shopee sai por CLASSE + code/path, sem corpo nenhum', () => {
