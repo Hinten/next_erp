@@ -13,6 +13,7 @@ import {
   MEDIDA_EXCLUDED_FIELDS,
   MEDIDA_SECTIONS,
   medidaFieldOverrides,
+  transformCopiedMedidas,
 } from '../_components/medidaFields';
 
 export default function NovaTabelaDeMedidasPage() {
@@ -35,6 +36,7 @@ export default function NovaTabelaDeMedidasPage() {
         db={db}
         currentUserUid={user?.uid ?? ''}
         sections={MEDIDA_SECTIONS}
+        transformCopiedValues={transformCopiedMedidas}
         // The marketplace size-chart maps are authored by the marketplace
         // integrations, not this form; excluding them keeps them out of the
         // editor while the dirty-field-patch save leaves them untouched.

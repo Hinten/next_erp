@@ -222,4 +222,38 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     expect(data?.tabelasDeMedidasMercadoLivre).toEqual(mkt.mercadoLivre);
     expect(data?.tabelasMedidasShopee).toEqual(mkt.shopee);
   });
+  test('copies ordinary fields without sharing marketplace bindings', async ({ page }) => {
+    const copiedName = `${prefix}-copia-mkt`;
+    const source = await getTabMediByName(mkt.nome);
+    expect(source).not.toBeNull();
+
+    await page.goto('/medidas');
+    await applyTextFilter(page, 'Nome', mkt.nome);
+    const sourceRow = page.getByRole('row', { name: new RegExp(mkt.nome) });
+    await expect(sourceRow).toBeVisible();
+    await sourceRow.getByRole('checkbox').check();
+    await page.getByRole('button', { name: 'Copiar', exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get('copyFrom') === mkt.id);
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(mkt.nome);
+    await fillField(page, 'Nome', copiedName);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/medidas\/[^/]+$/.test(url.pathname) && url.pathname !== '/medidas/novo',
+      { timeout: 15_000 },
+    );
+    expect(page.url().split('/').pop()).not.toBe(mkt.id);
+
+    await expect.poll(() => docExistsByName('tabMedi', copiedName)).toBe(true);
+    const copied = await getTabMediByName(copiedName);
+    expect(copied?.codigo).toBe(source?.codigo);
+    expect(copied?.descricao).toBe(source?.descricao);
+    expect(copied?.fotos).toEqual(source?.fotos);
+    expect(copied?.tabelasDeMedidasMercadoLivre).toBeNull();
+    expect(copied?.tabelasMedidasShopee).toBeNull();
+
+    const unchanged = await getTabMediByName(mkt.nome);
+    expect(unchanged?.tabelasDeMedidasMercadoLivre).toEqual(mkt.mercadoLivre);
+    expect(unchanged?.tabelasMedidasShopee).toEqual(mkt.shopee);
+  });
+
 });

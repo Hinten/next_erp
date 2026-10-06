@@ -30,3 +30,14 @@ export const medidaFieldOverrides: Record<string, FieldConfig> = {
     hint: 'Se suportado pelo marketplace, é enviada junto à descrição do produto.',
   },
 };
+
+/** A copied tabela owns fresh marketplace bindings; ordinary fields stay copied. */
+export function transformCopiedMedidas(
+  source: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    ...source,
+    tabelasDeMedidasMercadoLivre: null,
+    tabelasMedidasShopee: null,
+  };
+}
