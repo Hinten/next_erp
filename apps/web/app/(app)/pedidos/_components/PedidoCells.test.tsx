@@ -51,7 +51,8 @@ const {
             ie?: string | null;
           }
         | string
-        | null;
+        | null
+        | undefined;
       isLoading: boolean;
       // Read by NFCell's `OrientacaoRejeicaoCliente`; absent = no error.
       isError?: boolean;
@@ -918,6 +919,73 @@ describe('ClienteCell — static cached read', () => {
       />,
     );
     expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+
+  it.each([
+    ['missing', null, false, 'Cadastro não encontrado'],
+    ['failed', null, true, 'Cliente indisponível'],
+    ['failed with cached data', { nome: 'Old name' }, true, 'Cliente indisponível'],
+  ])('%s customer is neither anonymous nor a link', (_case, data, isError, label) => {
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
+    queryState.current = { data, isLoading: false, isError };
+    wrap(
+      <ClienteCell
+        pedido={{ clientePedidoOuterRef: 'documents/clientes/abc' } as unknown as Pedido}
+      />,
+    );
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.queryByText('Anônimo')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it.each([null, '', '   '])('a present customer with blank nome %j keeps its link', (nome) => {
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
+    queryState.current = { data: { nome }, isLoading: false };
+    wrap(
+      <ClienteCell
+        pedido={{ clientePedidoOuterRef: 'documents/clientes/abc' } as unknown as Pedido}
+      />,
+    );
+    expect(screen.getByRole('link', { name: '(sem nome)' }).getAttribute('href')).toBe(
+      '/clientes/abc',
+    );
+  });
+
+  it('rejects a nested clientes reference even with a cached name', () => {
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'a/b/clientes/abc',
+      parent: { id: 'clientes' },
+    });
+    queryState.current = { data: { nome: 'Old name' }, isLoading: false };
+    wrap(
+      <ClienteCell pedido={{ clientePedidoOuterRef: 'a/b/clientes/abc' } as unknown as Pedido} />,
+    );
+    expect(screen.getByText('Cliente não reconhecido')).toBeTruthy();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('keeps a query waiting for the row batch pending before the read starts', () => {
+    dereferenceMock.mockReturnValue({
+      id: 'abc',
+      path: 'clientes/abc',
+      parent: { id: 'clientes' },
+    });
+    queryState.current = { data: undefined, isLoading: false };
+    const { container } = wrap(
+      <ClienteCell pedido={{ clientePedidoOuterRef: 'clientes/abc' } as unknown as Pedido} />,
+    );
+    expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+    expect(screen.queryByText('Cadastro não encontrado')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });
 

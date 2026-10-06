@@ -6,6 +6,7 @@ import { buildQuery, limit, whereOp } from '@delfrance/data';
 import { idFromRef } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 
 /**
  * The cliente behind a conversa's `usarioOuterRef` (legacy `conversa.dart:85-130`
@@ -56,16 +57,18 @@ export function useClienteLink(
   clienteOuterRef: string | null | undefined,
   usarioOuterRef: string | null | undefined,
 ): ClienteLink {
-  const clienteId = clienteOuterRef ? idFromRef(clienteOuterRef) : null;
-  const candidates = clienteId ? null : clienteUserRefCandidates(usarioOuterRef);
-  const enabled = clienteId != null || candidates !== null;
+  const db = getFirebaseFirestore();
+  const clienteRef = refDeClienteOuNull(db, clienteOuterRef);
+  const clienteId = clienteRef?.id ?? null;
+  const invalidDirectRef = clienteOuterRef != null && clienteRef == null;
+  const candidates = clienteOuterRef != null ? null : clienteUserRefCandidates(usarioOuterRef);
+  const enabled = !invalidDirectRef && (clienteId != null || candidates !== null);
 
   const { data, isFetching, isError } = useQuery({
     queryKey: ['clienteLink', clienteId ?? usarioOuterRef ?? null],
     enabled,
     staleTime: 60_000,
     queryFn: async (): Promise<{ clienteId: string; nome: string } | null> => {
-      const db = getFirebaseFirestore();
       const pickNome = (raw: unknown): string =>
         typeof raw === 'string' && raw.trim() !== '' ? raw : '(sem nome)';
 
@@ -88,6 +91,8 @@ export function useClienteLink(
     },
   });
 
+  // A malformed direct link is unavailable, even if this legacy key has cached data.
+  if (invalidDirectRef) return { status: 'error' };
   if (!enabled) return { status: 'no-user' };
   // A query FAILURE (permissions/network) must NOT read as 'not-found' — that
   // would offer "Criar cliente" and risk a duplicate. Surface it as 'error'.

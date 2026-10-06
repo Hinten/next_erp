@@ -28,7 +28,7 @@ vi.mock('@/lib/data/dereferenceOuterRef', () => ({
   // `refDeClienteOuNull`) reads to decide whether the ref points into `clientes`.
   dereferenceOuterRef: (_db: unknown, ref: unknown) =>
     typeof ref === 'string' && ref.length > 0
-      ? { path: ref, parent: { id: ref.split('/').at(-2) } }
+      ? { path: ref, id: ref.split('/').at(-1), parent: { id: ref.split('/').at(-2) } }
       : null,
 }));
 

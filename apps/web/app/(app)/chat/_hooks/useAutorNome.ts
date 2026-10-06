@@ -2,10 +2,10 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getDoc } from 'firebase/firestore';
-import { idFromRef } from '@delfrance/schemas';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 
 /**
  * Resolve a message author's display name from their `usuarios` doc — one cached
@@ -18,18 +18,19 @@ export function useAutorNome(
   userId: string | null | undefined,
   clienteRef?: string | null,
 ): string {
-  const clienteId = clienteRef ? idFromRef(clienteRef) : null;
+  const db = getFirebaseFirestore();
+  const clienteId = refDeClienteOuNull(db, clienteRef)?.id ?? null;
   const { data } = useQuery({
     queryKey: ['chatAutorNome', clienteId ? `cliente:${clienteId}` : (userId ?? null)],
     enabled: !!clienteId || !!userId,
     staleTime: 5 * 60 * 1000,
     queryFn: async (): Promise<string> => {
       if (clienteId) {
-        const snap = await getDoc(clienteCollection.docRef(getFirebaseFirestore(), {}, clienteId));
+        const snap = await getDoc(clienteCollection.docRef(db, {}, clienteId));
         return snap.data()?.nome || 'Cliente';
       }
       if (!userId) return 'Anônimo';
-      const snap = await getDoc(usuarioCollection.docRef(getFirebaseFirestore(), {}, userId));
+      const snap = await getDoc(usuarioCollection.docRef(db, {}, userId));
       const nome = snap.data()?.nome;
       return typeof nome === 'string' && nome.trim() !== '' ? nome : 'Anônimo';
     },

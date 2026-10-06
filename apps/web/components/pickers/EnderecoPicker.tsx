@@ -8,6 +8,7 @@ import { PERM } from '@delfrance/auth';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { refDeClienteOuNull } from '@/lib/data/readClienteByRef';
 import { usePermission } from '@/lib/auth';
 import { EnderecoFormModal } from './EnderecoFormModal';
 
@@ -91,11 +92,11 @@ export function EnderecoPicker({
   disabled,
   error,
 }: EnderecoPickerProps) {
-  const clienteRef = useMemo(() => dereferenceOuterRef(db, clienteOuterRef), [db, clienteOuterRef]);
+  const clienteRef = useMemo(() => refDeClienteOuNull(db, clienteOuterRef), [db, clienteOuterRef]);
   const current = useEnderecoFromRef(db, value);
   const queryClient = useQueryClient();
   const { allowed: canWrite } = usePermission(PERM.endereco.write);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalClienteRef, setModalClienteRef] = useState<typeof clienteRef>(null);
 
   const list = useQuery({
     queryKey: ['enderecoPicker', clienteRef?.path ?? null],
@@ -108,12 +109,12 @@ export function EnderecoPicker({
   });
 
   const rows = useMemo(() => {
-    const fromList = list.data ?? [];
+    const fromList = clienteRef ? (list.data ?? []) : [];
     if (current.path && current.endereco && !fromList.some((r) => r.path === current.path)) {
       return [{ path: current.path, data: current.endereco }, ...fromList];
     }
     return fromList;
-  }, [list.data, current.path, current.endereco]);
+  }, [clienteRef, list.data, current.path, current.endereco]);
 
   return (
     <Stack gap={2}>
@@ -132,17 +133,23 @@ export function EnderecoPicker({
         error={error}
       />
       {!disabled && canWrite && clienteRef && (
-        <Anchor component="button" type="button" size="xs" onClick={() => setModalOpen(true)}>
+        <Anchor
+          component="button"
+          type="button"
+          size="xs"
+          onClick={() => setModalClienteRef(clienteRef)}
+        >
           + Novo endereço
         </Anchor>
       )}
       {clienteRef && (
         <EnderecoFormModal
-          opened={modalOpen}
-          onClose={() => setModalOpen(false)}
+          key={clienteRef.path}
+          opened={modalClienteRef === clienteRef}
+          onClose={() => setModalClienteRef(null)}
           clienteId={clienteRef.id}
           onSaved={(newId) => {
-            setModalOpen(false);
+            setModalClienteRef(null);
             // Select the just-created endereço immediately. `useEnderecoFromRef`
             // resolves it as the out-of-list "current" value even before the
             // list query refetches; invalidating the list folds it in too.

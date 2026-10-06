@@ -6,6 +6,7 @@ import type { ColumnFilterValue } from '@delfrance/ui';
 
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { clienteCollection } from '@/lib/data/clienteCollection';
+import { ANONIMO_LABEL } from '@/lib/clientes/clienteDisplay';
 
 /**
  * Cliente column filter for the Pedidos TableView, in two modes.
@@ -34,11 +35,8 @@ const RECENCY_ORDER = [
   { field: 'timestamp', direction: 'desc' as const },
 ];
 
-/**
- * The word for a pedido with no cliente ref. `ClienteCell` renders this for a
- * null ref (it imports it), so the cell and this filter's chip cannot drift.
- */
-export const ANONIMO_LABEL = 'Anônimo';
+// Keep the existing export while sharing the display helper's null-ref label.
+export { ANONIMO_LABEL };
 
 type ClienteFilterMode = 'cliente' | 'anonimo';
 
