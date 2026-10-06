@@ -9,9 +9,12 @@
  * `apps/*` and none is possible, so a browser surface that needs a backend shape
  * has exactly two options — share it, or write it twice. The field names here
  * are IDENTICAL to that module's, which is the whole point: a drift then shows
- * up in a diff instead of at runtime. The two later blocks name their own
- * twins the same way — the label's `etiqueta/pendenteEtiqueta.ts`, and the
- * returns' `devolucoes/estadoDevolucao.ts` (step 17).
+ * up in a diff instead of at runtime. The later blocks name their own twins
+ * the same way — the label's `etiqueta/pendenteEtiqueta.ts`, the returns'
+ * `devolucoes/estadoDevolucao.ts` (step 17), and the category / band answers of
+ * `taxonomia/dto.ts` (read by step 18's size-chart tab). The size-chart
+ * envelopes themselves are the exception: IMPORTED from `@delfrance/schemas`,
+ * never mirrored.
  *
  * ⚠️ This header must not describe what the OTHER copy does beyond naming it.
  * A comment asserting the behaviour of a file the compiler cannot see is the
@@ -409,3 +412,125 @@ export const shopeeReclamacaoAcaoRespostaSchema = z.object({
   atualizacao: z.enum(['enfileirada', 'nao-enfileirada']).optional().catch(undefined),
 });
 export type ShopeeReclamacaoAcaoResposta = z.infer<typeof shopeeReclamacaoAcaoRespostaSchema>;
+
+/* ---------------------------------------------------------------------------
+ * Size charts (#1526, step 18) — the category tree and the item bands the
+ * `/medidas` Shopee tab reads (`GET …/taxonomia/{categorias,limites}`, step 10's
+ * routes), and the two size-chart reads (`GET …/tabela-medidas/{lista,detalhe}`)
+ * ------------------------------------------------------------------------- */
+
+// ⚠️ The same KNOWN duplication as the rest of this file, with two sources:
+// `apps/shopee/lib/shopee/taxonomia/dto.ts` (`categoriaResumoDtoSchema`,
+// `categoriaNoDtoSchema`) and `taxonomia/limites.ts` (`limitesDeItemDtoSchema`'s
+// `sizeChartLimit`) — step 10's answers, older than this tab. The NAMES below
+// are identical to those, so a rename shows up in a diff. This block owns what
+// the BROWSER accepts, nothing more.
+//
+// ⚠️ The two SIZE-CHART envelopes (`lista`, `detalhe`, with the projected chart
+// inside) are deliberately NOT mirrored: they are IMPORTED from
+// `@delfrance/schemas` — the package both apps can reach — so the route and this
+// browser parse the same bytes with the same schema objects. A hand-copied twin
+// beside a comment saying it matches is exactly the drift #1369 shipped.
+//
+// How this file's three rules land here:
+// - every number is OURS (rule 3): the ids were read through the package's
+//   tolerant wire readers before the backend projected them, so a string here is
+//   our serialisation bug and is loud — strict `z.number().int()`, never
+//   `wireInt()`;
+// - every field is required (rule 2): each route answers all of them on every
+//   200, and no deployed backend predates the size-chart routes (an older
+//   backend answers them with a 404, which is an HTTP error, never a parse);
+// - unknown keys are stripped (rule 1), and the limites answer declares ONLY the
+//   slice this browser reads — every other band of that body is dropped here, so
+//   a change to one of them can never cost this screen.
+
+/** One category as a picker row. `name` / `originalName` are Shopee's display / original names. */
+export const categoriaResumoDtoSchema = z.object({
+  categoryId: z.number().int(),
+  name: z.string().nullable(),
+  originalName: z.string().nullable(),
+  /** The backend's three-valued leaf gate, folded: only `folha` is `true`. */
+  isLeaf: z.boolean(),
+});
+export type CategoriaResumoDto = z.infer<typeof categoriaResumoDtoSchema>;
+
+/** One focused node: the row, its parent, its ancestors (root FIRST) and its direct children. */
+export const categoriaNoDtoSchema = categoriaResumoDtoSchema.extend({
+  /** `0` marks a root — a real value, never an absence. */
+  parentId: z.number().int(),
+  pathFromRoot: z.array(categoriaResumoDtoSchema),
+  children: z.array(categoriaResumoDtoSchema),
+});
+export type CategoriaNoDto = z.infer<typeof categoriaNoDtoSchema>;
+
+/**
+ * The body of `GET …/taxonomia/categorias?integracaoId=[&categoryId=]`: the
+ * ROOTS when no id was asked (`no: null`), ONE node when one was
+ * (`raizes: null`). An id the tree does not hold is a 404
+ * (`SHOPEE_CATEGORIA_DESCONHECIDA`), never a 200.
+ *
+ * ⚠️ A body with NEITHER half answers no question at all — the browser would
+ * render an empty picker that looks like a tree with no categories. It is
+ * refused, so the operator reads a contract breach instead of a blank list.
+ */
+export const respostaCategoriasShopeeSchema = z
+  .object({
+    raizes: z.array(categoriaResumoDtoSchema).nullable(),
+    no: categoriaNoDtoSchema.nullable(),
+  })
+  .refine((r) => r.raizes !== null || r.no !== null, {
+    message: 'a resposta de categorias não trouxe nem as raízes nem o nó pedido',
+    path: ['no'],
+  });
+export type RespostaCategoriasShopee = z.infer<typeof respostaCategoriasShopeeSchema>;
+
+/**
+ * The body of `GET …/taxonomia/limites?integracaoId=&categoryId=`, cut to the
+ * slice the size-chart tab reads: `size_chart_limit` (announcements 1010/1404).
+ *
+ * ⚠️ ADVICE, never a gate (reconcile L7): none of these three booleans may
+ * disable a pick. Each is three-valued — `null` is "Shopee did not say", which
+ * is NOT `false` — and the whole block is `null` when Shopee sent none.
+ */
+export const respostaLimitesShopeeSchema = z.object({
+  /** `'shop'` or `'category'` — a free string (rule 1's spirit: the browser only shows it). */
+  scope: z.string(),
+  categoryId: z.number().int().nullable(),
+  limites: z.object({
+    sizeChartLimit: z
+      .object({
+        sizeChartMandatory: z.boolean().nullable(),
+        supportImageSizeChart: z.boolean().nullable(),
+        supportTemplateSizeChart: z.boolean().nullable(),
+      })
+      .nullable(),
+  }),
+});
+export type RespostaLimitesShopee = z.infer<typeof respostaLimitesShopeeSchema>;
+
+/**
+ * The bodies of `GET …/tabela-medidas/lista?integracaoId=&categoryId=` and
+ * `GET …/tabela-medidas/detalhe?integracaoId=&sizeChartId=` — NOT declared here.
+ *
+ * They are the SAME schema objects the `apps/shopee` routes build their 200s
+ * against, from `@delfrance/schemas` (`tabelaDeMedidasShopeeDto.ts`), so a
+ * renamed or added key is a compile error on both sides of the deploy instead
+ * of a `ShopeeClientRespostaInvalidaError` here. Re-exported under their own
+ * names so every browser import of this file stays as it was.
+ *
+ * - `lista`: `leaf: false` is a non-leaf category (`tabelas: []`, Shopee never
+ *   asked); `totalCount` is the FIRST page's, a diagnostic; `truncado` means
+ *   the backend stopped before Shopee said the list was over; `removidas` and
+ *   `idsIlegiveis` are counts the browser shows, never rows.
+ * - `detalhe`: the chart projected ONCE, on the backend, by
+ *   `projetarTabelaShopee`; the browser renders it and never re-projects it. A
+ *   template Shopee no longer has is a 404 (`SHOPEE_TABELA_MEDIDAS_INEXISTENTE`).
+ */
+export {
+  detalheTabelaMedidasDtoSchema,
+  listaTabelasMedidasDtoSchema,
+  tabelaMedidasLinhaDtoSchema,
+  type DetalheTabelaMedidasDto,
+  type ListaTabelasMedidasDto,
+  type TabelaMedidasLinhaDto,
+} from '@delfrance/schemas';

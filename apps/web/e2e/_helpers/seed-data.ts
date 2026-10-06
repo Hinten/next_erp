@@ -309,9 +309,11 @@ export async function seedMedidas(prefix: string, n: number): Promise<void> {
 /**
  * Seed exactly one `tabMedi` doc (`<prefix>-mkt`) carrying NON-empty
  * marketplace maps — a Mercado Livre chart (keyed by ML conta id) and a Shopee
- * size-chart reference (keyed by Shopee conta id). These are authored by the
- * marketplace integrations, excluded from the CRUD form, and must survive an
- * edit untouched; the returned maps let the spec assert byte-equality.
+ * size-chart reference (keyed by Shopee conta id). The ML map is written by its
+ * own tab and never enters the form; the Shopee map IS a form field now (the
+ * edit page's Shopee tab, staged and saved with the tabela), but editing any
+ * other field must not dirty it — both must survive such an edit untouched; the
+ * returned maps let the spec assert byte-equality.
  */
 export async function seedMedidaComMarketplace(prefix: string): Promise<{
   id: string;
@@ -348,6 +350,93 @@ export async function getTabMediByName(nome: string): Promise<Record<string, unk
   const snap = await db().collection('tabMedi').where('nome', '==', nome).limit(1).get();
   const data = snap.docs[0]?.data();
   return data ? (data as Record<string, unknown>) : null;
+}
+
+/** Full data of the `tabMedi` doc `id`, or null (an Admin read — strongly consistent). */
+export async function getTabMediById(id: string): Promise<Record<string, unknown> | null> {
+  const data = (await db().collection('tabMedi').doc(id).get()).data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * The Shopee conta key `seedMedidaShopee` stores BESIDE the run's own conta. No
+ * `integracao` doc carries it — it stands for a conta deleted after its pick,
+ * which the medidas editor shows as one muted line and must keep verbatim.
+ */
+export const CONTA_SHOPEE_IRMA = 'conta-shopee-irma';
+
+/**
+ * The two marketplace maps of `seedMedidaShopee`'s first doc — exported so the
+ * spec asserts against the SAME values the seed wrote, never a second copy.
+ *
+ * `tabelasMedidasShopee` is the legacy corpus shape (`{ categoryId,
+ * size_chart_id, name }`, `name` = the CATEGORY's label at pick time). The run's
+ * conta holds two picks for ONE category, so the second is the one the selection
+ * rule ignores (first match wins); the sibling key holds one pick of its own.
+ * The chart ids are Shopee's own published doc-sample ids, never a real shop's.
+ */
+export function mapasMedidaShopee(integracaoId: string): {
+  shopee: Record<string, Array<{ categoryId: number; size_chart_id: number; name: string }>>;
+  mercadoLivre: Record<string, unknown>;
+} {
+  return {
+    shopee: {
+      [integracaoId]: [
+        { categoryId: 100087, size_chart_id: 700024639, name: 'Camisetas' },
+        { categoryId: 100087, size_chart_id: 700024641, name: '(Cópia) Camisetas' },
+      ],
+      [CONTA_SHOPEE_IRMA]: [{ categoryId: 400055, size_chart_id: 700024613, name: 'Calças' }],
+    },
+    mercadoLivre: {
+      'conta-ml-1': {
+        tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
+      },
+    },
+  };
+}
+
+/**
+ * Seed the two `tabMedi` docs the medidas editor's **Shopee** tab spec drives,
+ * for the Shopee conta `integracaoId` (seeded by `seedShopeeFixtures`):
+ *
+ *  - `comMapa` — {@link mapasMedidaShopee}: this conta's two picks, the sibling
+ *    key's pick and a Mercado Livre map, so a save can be checked for touching
+ *    only this conta's list;
+ *  - `semMapa` — `tabelasMedidasShopee: null`, the state of every tabela nobody
+ *    has picked a Shopee chart for yet.
+ *
+ * The id IS the `nome`, so the prefix sweep removes both.
+ */
+export async function seedMedidaShopee(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ comMapa: string; semMapa: string }> {
+  const comMapa = `${prefix}-shopee`;
+  const semMapa = `${prefix}-shopee-vazia`;
+  const { shopee, mercadoLivre } = mapasMedidaShopee(integracaoId);
+  const base = {
+    codigo: null,
+    descricao: null,
+    fotosArquivosIds: null,
+    fotos: null,
+    dataCadastro: Date.now(),
+    ultimaModificacao: null,
+  };
+  const batch = db().batch();
+  batch.set(db().collection('tabMedi').doc(comMapa), {
+    ...base,
+    nome: comMapa,
+    tabelasDeMedidasMercadoLivre: mercadoLivre,
+    tabelasMedidasShopee: shopee,
+  });
+  batch.set(db().collection('tabMedi').doc(semMapa), {
+    ...base,
+    nome: semMapa,
+    tabelasDeMedidasMercadoLivre: null,
+    tabelasMedidasShopee: null,
+  });
+  await batch.commit();
+  return { comMapa, semMapa };
 }
 
 /**

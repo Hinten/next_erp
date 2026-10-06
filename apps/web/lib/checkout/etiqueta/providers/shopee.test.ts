@@ -126,6 +126,10 @@ function fakeClient(passos: Passo[]) {
     etiqueta,
     reclamacaoEstado: vi.fn(),
     reclamacaoAcao: vi.fn(),
+    categorias: vi.fn(),
+    limites: vi.fn(),
+    tabelaMedidasLista: vi.fn(),
+    tabelaMedidasDetalhe: vi.fn(),
   };
   return { client, etiqueta };
 }
@@ -664,6 +668,10 @@ describe('shopeeProvider — the budget contract (Q2-F2, Q2-F5)', () => {
         etiqueta,
         reclamacaoEstado: vi.fn(),
         reclamacaoAcao: vi.fn(),
+        categorias: vi.fn(),
+        limites: vi.fn(),
+        tabelaMedidasLista: vi.fn(),
+        tabelaMedidasDetalhe: vi.fn(),
       };
       const escolherEnvio = vi.fn(async () => {
         await new Promise((resolve) => setTimeout(resolve, DIALOGO_MS));
