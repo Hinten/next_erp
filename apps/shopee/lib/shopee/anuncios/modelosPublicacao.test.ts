@@ -201,7 +201,13 @@ const PASSAGEM: ResultadoFotosPublicacao = {
   descartadasPeloLimite: 0,
 };
 
-const FOTOS: FotosResolvidas = { item: PASSAGEM, imagensDeOpcao: null, resumo: RESUMO };
+const FOTOS: FotosResolvidas = {
+  item: PASSAGEM,
+  imagensDeOpcao: null,
+  // Step 18: no size-chart photo was due (the contexto names no tabela).
+  tabelaDeMedidas: null,
+  resumo: RESUMO,
+};
 
 function resolvedorProibido(): ResolvedorDeImagensShopee {
   return {
@@ -233,6 +239,8 @@ function contexto(parcial: Partial<ContextoPublicacao> = {}): ContextoPublicacao
     marca: { brandId: 1234, nome: 'Delfrance' },
     canais: [canal()],
     imposto: { imposto: null, motivo: null },
+    // Step 18: no tabela, so the item mapper attaches no size chart.
+    tabelaDeMedidas: { tipo: 'produto-sem-tabela' },
     resolvedorDeImagens: resolvedorProibido(),
     ehAtualizacao: false,
     statusPedido: SHOPEE_ITEM_STATUS_WRITABLE.normal,

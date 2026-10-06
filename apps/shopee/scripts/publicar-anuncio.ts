@@ -263,7 +263,8 @@ async function main(): Promise<void> {
       return;
     }
     log(
-      plano.problemas.length === 0
+      // A refused tabela photo stops the publish exactly like a problema does.
+      plano.problemas.length === 0 && plano.recusaTabelaDeMedidas === null
         ? '== DRY-RUN — nenhum anúncio foi criado e nenhum vínculo foi gravado =='
         : '== DRY-RUN — o publicador RECUSA este produto ==',
     );

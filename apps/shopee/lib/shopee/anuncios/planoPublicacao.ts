@@ -40,6 +40,19 @@
  * against the FRESH reading before it sends anything. That is why
  * {@link PlanoPublicacao.modelosEntrada} exists: the applier re-runs the pure
  * pair from the same inputs rather than sending the plan's view.
+ *
+ * ## ⚠️ The size-chart photo is resolved before the plan too (step 18)
+ *
+ * The same inversion, for the same reason: `size_chart_info.size_chart` is an
+ * `image_id`, so the tabela's first photo is uploaded by the I/O half
+ * (`resolverFotosDaPublicacao`, {@link FotosResolvidas.tabelaDeMedidas}) and
+ * the plan only READS the outcome. When the decision says `foto` and no id
+ * arrived, the plan carries {@link PlanoPublicacao.recusaTabelaDeMedidas} and
+ * stops at the photo step: Lucas's Q1c makes that a REFUSAL of the publish
+ * (422 on `size_chart_info`), never a listing published without its chart.
+ * It is NOT one of {@link PlanoPublicacao.problemas}: its motivo,
+ * `tabela-de-medidas-foto-recusada`, is wire-only (an upload is a Shopee call),
+ * and a pre-write refusal may carry only the blocked vocabulary.
  */
 import {
   type ShopeeItemStatusWritable,
@@ -54,15 +67,24 @@ import { ESPERA_APOS_ADD_ITEM_MS, RELIST_PRIMEIRO } from './constantesAnuncio';
 import {
   type ProblemaDeBloqueio,
   type ProblemaPublicacao,
+  limitarMensagemProblema,
+  MOTIVO_PROBLEMA_PUBLICACAO,
   MOTIVO_PUBLICACAO_BLOQUEADA,
 } from './errosPublicacao';
-import type {
-  FalhaDeFotoPublicacao,
-  ResolvedorDeImagensShopee,
-  ResultadoFotosPublicacao,
-  ResumoFotosPublicacao,
+import {
+  type FalhaDeFotoPublicacao,
+  type ResolvedorDeImagensShopee,
+  type ResultadoFotosPublicacao,
+  type ResumoFotosPublicacao,
+  MOTIVO_FOTO_PUBLICACAO,
 } from './fotosPublicacao';
 import type { ResultadoLeituraImposto } from './lerImpostoDoProduto';
+import type { LeituraTabelaDeMedidasShopee } from './lerTabelaMedidasDoProduto';
+import {
+  MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA,
+  MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA,
+} from './problemasPublicacao';
+import { FONTE_TABELA_MEDIDAS } from './tabelaMedidasPublicacao';
 import type { LinkDeVariacao } from './linkAnuncio';
 import { type ResultadoLogistica, construirLogistica } from './logisticaPublicacao';
 import {
@@ -125,7 +147,16 @@ export interface ContextoPublicacao {
   /** `get_channel_list`, UNCACHED, one call per publish. */
   readonly canais: readonly ShopeeLogisticsChannel[];
   readonly imposto: ResultadoLeituraImposto;
-  /** ONE resolver per publish — the item pass and the option pass share its memo. */
+  /**
+   * The produto's tabela de medidas, read for THIS conta (step 18) — REQUIRED.
+   * The plan only passes it to `montarAnuncio`; the photo pass reads it too, to
+   * decide whether the tabela's first photo has to be uploaded.
+   */
+  readonly tabelaDeMedidas: LeituraTabelaDeMedidasShopee;
+  /**
+   * ONE resolver per publish — the item pass, the option pass and the
+   * size-chart photo pass share its memo.
+   */
   readonly resolvedorDeImagens: ResolvedorDeImagensShopee;
   readonly ehAtualizacao: boolean;
   /** The status the OPERATOR asked for. See {@link PlanoPublicacao.statusInicial}. */
@@ -156,8 +187,28 @@ export interface FotosResolvidas {
   /** The ITEM pass: `imageIds` in render ORDER, never re-sorted. */
   readonly item: ResultadoFotosPublicacao;
   readonly imagensDeOpcao: ReadonlyMap<string, string> | null;
+  /**
+   * The size-chart photo pass (step 18) — `null` when no photo was due: a
+   * template matched, the tabela has no photo, the category refuses photos, or
+   * there is no tabela at all.
+   */
+  readonly tabelaDeMedidas: FotoDaTabelaDeMedidas | null;
   /** The running totals across every `resolver()` call of this publish. */
   readonly resumo: ResumoFotosPublicacao;
+}
+
+/**
+ * The ONE upload of the tabela's first photo (`resolver([foto], { cap: 1 })`).
+ *
+ * ⚠️ Its failure is the size chart's, never the listing's: it is NOT in the
+ * item pass's `falhas` (`imagens` stays clean), and the plan turns it into
+ * {@link PlanoPublicacao.recusaTabelaDeMedidas}.
+ */
+export interface FotoDaTabelaDeMedidas {
+  /** `size_chart_info.size_chart`'s value; `null` ⇔ the upload failed. */
+  readonly imageId: string | null;
+  /** What the resolver reported for that photo, when it failed. */
+  readonly falha: FalhaDeFotoPublicacao | null;
 }
 
 /**
@@ -256,6 +307,14 @@ export interface PlanoPublicacao {
    * `temProblemaDeBloqueio`.
    */
   readonly problemas: readonly ProblemaDeBloqueio[];
+  /**
+   * Non-null ⇔ the size-chart decision said `foto` and no `image_id` came back
+   * (step 18, Q1c). The applier REFUSES the publish with it — a
+   * `ShopeePublishRejectedError` at etapa `fotos`, before any listing write —
+   * and `passos` stops at the photo step. Motivo
+   * `tabela-de-medidas-foto-recusada`, campo `size_chart_info`, never `image`.
+   */
+  readonly recusaTabelaDeMedidas: ProblemaPublicacao | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -291,6 +350,63 @@ function bloqueiosDe(problemas: readonly ProblemaPublicacao[]): readonly Problem
     });
   }
   return bloqueios;
+}
+
+/**
+ * Did SHOPEE refuse the tabela's photo — its `upload_image` answered a content
+ * refusal — as opposed to a failure Shopee never saw (step 18)?
+ *
+ * ⚠️ The ONE answer to that question, read by {@link recusaDaFotoDaTabela} (which
+ * sentence the problema carries) and by the applier (whether the 422's headline
+ * may say "recusada pela Shopee"): two readings of the resolver's motivo would
+ * be how the headline and the problema start telling different stories.
+ *
+ * Only `upload-recusado` is Shopee's verdict. A failed download (`http`, which
+ * a network `TypeError` maps to), a 3xx, a type, size, host or scheme the
+ * publisher skips, a missing arquivo or url, an upload answered WITHOUT an id
+ * (`sem-image-id`), and a pass that never ran (`null`) are not.
+ */
+export function fotoDaTabelaRecusadaPelaShopee(foto: FotoDaTabelaDeMedidas | null): boolean {
+  return foto?.falha?.motivo === MOTIVO_FOTO_PUBLICACAO.uploadRecusado;
+}
+
+/**
+ * The size-chart photo refusal (step 18, Q1c), or `null`.
+ *
+ * Decided off the item mapper's OWN decision, never off whether the photo pass
+ * ran: `fonte === 'foto'` with no `image_id` refuses whatever the reason — a
+ * failed upload (its closed `motivo` is named, never its prose, which can carry
+ * a URL) or a pass that never happened. Failing closed is the point: the other
+ * reading publishes a listing without the chart the operator's tabela names.
+ *
+ * The SENTENCE follows who failed ({@link fotoDaTabelaRecusadaPelaShopee}): a
+ * photo Shopee refused gets the validator row's own sentence
+ * (`problemasPublicacao.ts`), so a refused upload and a refused image chart tell
+ * the operator the same fix; anything Shopee never saw says it could not be
+ * sent and to try again first — "recusada pela Shopee — troque a foto" for a
+ * network blip would send the operator to fix a photo that is fine.
+ *
+ * Read by the applier (which throws it) and by the dry run (which prints it),
+ * both through {@link PlanoPublicacao.recusaTabelaDeMedidas} — one derivation.
+ */
+function recusaDaFotoDaTabela(
+  item: ItemMontado,
+  foto: FotoDaTabelaDeMedidas | null,
+): ProblemaPublicacao | null {
+  const decisao = item.tabelaDeMedidas;
+  if (decisao.fonte.tipo !== FONTE_TABELA_MEDIDAS.foto) return null;
+  if (foto !== null && foto.imageId !== null) return null;
+  const falha = foto?.falha ?? null;
+  const causa = falha === null ? 'nenhum image_id voltou' : falha.motivo;
+  const tabela = decisao.tabMediId === null ? '' : `, tabela ${decisao.tabMediId}`;
+  const frase = fotoDaTabelaRecusadaPelaShopee(foto)
+    ? MENSAGEM_TABELA_MEDIDAS_FOTO_RECUSADA
+    : MENSAGEM_TABELA_MEDIDAS_FOTO_NAO_ENVIADA;
+  return {
+    campo: 'size_chart_info',
+    motivo: MOTIVO_PROBLEMA_PUBLICACAO.tabelaDeMedidasFotoRecusada,
+    mensagem: limitarMensagemProblema(`${frase} (envio da foto: ${causa}${tabela})`),
+  };
 }
 
 /**
@@ -377,7 +493,8 @@ export function passosDoLegDeModelos(
  * It never throws and it never writes. A plan whose `problemas` is non-empty is
  * a BLOCKED plan: its `passos` carries the photo step ALONE — the only thing
  * that already ran — and the applier raises `ShopeePublishBlockedError` before
- * the first Shopee write.
+ * the first Shopee write. A plan whose size-chart photo did not upload
+ * ({@link PlanoPublicacao.recusaTabelaDeMedidas}) stops at that same step.
  *
  * ⚠️ The refusals are the UNION of the item mapper's and the tier mapper's, in
  * that order. The channel builder's are NOT concatenated again: `montarAnuncio`
@@ -431,7 +548,12 @@ export function planejarPublicacao(
     estoqueDoPrimeiroFilho: primeiro?.estoque ?? null,
     ownDisponivel: contexto.ownDisponivel,
     disponivelByProdutoId: contexto.disponivelByProdutoId,
+    // Pass-through only: the decision is `montarAnuncio`'s, on the category it
+    // resolves — the photo pass decided through the SAME two functions.
+    tabelaDeMedidas: contexto.tabelaDeMedidas,
+    imagemTabelaDeMedidas: fotos.tabelaDeMedidas?.imageId ?? null,
   });
+  const recusaTabelaDeMedidas = recusaDaFotoDaTabela(item, fotos.tabelaDeMedidas);
 
   // ⚠️ The RESOLVED leaf category, read off the body the item mapper built —
   // never re-deriving `link.category_id ?? contexto.categoryId` here. Two copies
@@ -476,8 +598,10 @@ export function planejarPublicacao(
       ? ORDEM_RELISTAGEM
       : null;
 
+  // A refused size-chart photo stops the plan where a blocked one stops: the
+  // pictures already ran, and nothing else will.
   const passos =
-    problemas.length > 0
+    problemas.length > 0 || recusaTabelaDeMedidas !== null
       ? [passoFotos]
       : [
           passoFotos,
@@ -515,6 +639,7 @@ export function planejarPublicacao(
     relistagem,
     passos,
     problemas,
+    recusaTabelaDeMedidas,
   };
 }
 

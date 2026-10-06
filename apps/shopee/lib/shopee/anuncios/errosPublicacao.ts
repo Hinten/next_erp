@@ -44,9 +44,10 @@
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
  *   before writing. 22 members.
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 22 plus the three only a WIRE rejection can produce. A problema is a
- *   field-level observation, and after the first Shopee call there are causes no
- *   pre-write check could have seen.
+ *   those 22 plus the five only a WIRE rejection can produce (step 18 added the
+ *   two size-chart refusals on `size_chart_info`). A problema is a field-level
+ *   observation, and after the first Shopee call there are causes no pre-write
+ *   check could have seen.
  * - {@link ETAPA_PUBLICACAO} — where in the `aplicar` sequence a rejection
  *   landed. Not a reason at all; the answer to "what exists on the channel now".
  *
@@ -194,11 +195,12 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
 
 /**
  * Everything a `problemas[]` entry may carry: every pre-write refusal, plus the
- * three only a WIRE rejection can produce.
+ * five only a WIRE rejection (or, for the size-chart photo, a failed upload of
+ * it) can produce.
  *
  * The same superset relationship `MOTIVO_FALHA_JOB` has to
  * `MOTIVO_IMPORT_BLOQUEADO` on the import side, and for the same reason: a
- * {@link ShopeePublishBlockedError} may never carry one of the extra three,
+ * {@link ShopeePublishBlockedError} may never carry one of the extra five,
  * because none of them is a decision reached by READING the produto.
  */
 export type MotivoProblemaPublicacao =
@@ -215,6 +217,22 @@ export type MotivoProblemaPublicacao =
    */
   | 'imposto-recusado'
   /**
+   * Shopee did not accept the `size_chart_info.size_chart_id` we SENT (step 18):
+   * the template was deleted in Seller Centre, or is not one this listing's
+   * category takes. The pick is the operator's, so the publish is refused (a
+   * 422 on `size_chart_info`, no retry without the key) and the fix is a
+   * re-pick in `/medidas`. ⚠️ It never falls back to the tabela's photo.
+   */
+  | 'tabela-de-medidas-recusada'
+  /**
+   * The tabela's first photo, sent as an IMAGE chart
+   * (`size_chart_info.size_chart`), was refused — by Shopee's size-chart image
+   * validator (announcement 1337), or because its own `upload_image` failed.
+   * Refuses the publish like a stale template (Lucas's Q1c): a 422 on
+   * `size_chart_info`, never on `image`, and no retry without the chart.
+   */
+  | 'tabela-de-medidas-foto-recusada'
+  /**
    * A refusal the classifier could not attribute to any request field. The
    * entry's `campo` is `null` and its `mensagem` carries Shopee's own prose —
    * the one place provider text is allowed, because dropping it would leave the
@@ -227,6 +245,8 @@ export const MOTIVO_PROBLEMA_PUBLICACAO = {
   ...MOTIVO_PUBLICACAO_BLOQUEADA,
   bloqueadoPorPromocao: 'bloqueado-por-promocao',
   impostoRecusado: 'imposto-recusado',
+  tabelaDeMedidasRecusada: 'tabela-de-medidas-recusada',
+  tabelaDeMedidasFotoRecusada: 'tabela-de-medidas-foto-recusada',
   desconhecido: 'desconhecido',
 } as const satisfies Record<string, MotivoProblemaPublicacao>;
 
@@ -375,10 +395,41 @@ export const ETAPA_PUBLICACAO = {
 } as const satisfies Record<string, EtapaPublicacao>;
 
 /**
+ * The headline's first clause — WHO refused, WHERE, and with which code.
+ *
+ * - Shopee refused, with a code ⇒ `Publicação recusada pela Shopee em <etapa> (<code>)`.
+ * - Shopee refused, no code (a re-list `failed_reason` that names none, an
+ *   `upload_image` refusal whose code the resolver keeps only as its closed
+ *   motivo) ⇒ the same clause WITHOUT the parentheses — never an empty `()`.
+ * - The publisher stopped before Shopee could judge ⇒
+ *   `Publicação interrompida em <etapa>`: no "pela Shopee" (step 18's photo
+ *   that never uploaded; the problema says what happened and what to do).
+ *
+ * Exported for the CLI's line, so the two renderings cannot disagree on who
+ * refused.
+ */
+export function cabecalhoDaRecusa(
+  etapa: EtapaPublicacao,
+  shopeeCode: string,
+  recusadaPelaShopee: boolean,
+): string {
+  const codigo = shopeeCode === '' ? '' : ` (${shopeeCode})`;
+  return recusadaPelaShopee
+    ? `Publicação recusada pela Shopee em ${etapa}${codigo}`
+    : `Publicação interrompida em ${etapa}${codigo}`;
+}
+
+/**
  * Shopee refused a call, and the refusal was classified onto request fields.
  *
  * ⚠️ Writes may already have landed — that is the whole difference from
  * {@link ShopeePublishBlockedError}, and why {@link etapa} is not optional.
+ *
+ * ⚠️ ONE producer is not a Shopee answer: step 18's size-chart photo that never
+ * uploaded is refused HERE too (etapa `fotos`, before any listing write — a
+ * Blocked error may not carry its motivo), with
+ * {@link ShopeePublishRejectedError.recusadaPelaShopee} `false` when Shopee never
+ * saw the photo.
  */
 export class ShopeePublishRejectedError extends ShopeeError {
   readonly etapa: EtapaPublicacao;
@@ -402,6 +453,14 @@ export class ShopeePublishRejectedError extends ShopeeError {
    * reader expects a mechanism.
    */
   readonly problemas: readonly ProblemaPublicacao[];
+  /**
+   * `false` ONLY for step 18's size-chart photo that never reached Shopee's
+   * judgement — a failed download (a network blip included), a file the
+   * publisher skips, a missing arquivo. The publish is still refused (Lucas's
+   * Q1c, etapa `fotos`), but the headline must not say Shopee refused it:
+   * Shopee never saw the photo. Every other producer is a Shopee answer.
+   */
+  readonly recusadaPelaShopee: boolean;
 
   constructor(init: {
     readonly etapa: EtapaPublicacao;
@@ -409,14 +468,18 @@ export class ShopeePublishRejectedError extends ShopeeError {
     readonly produtoId: string;
     readonly itemId: number | null;
     readonly problemas: readonly ProblemaPublicacao[];
+    /** Default `true` — see {@link ShopeePublishRejectedError.recusadaPelaShopee}. */
+    readonly recusadaPelaShopee?: boolean;
   }) {
     const total = init.problemas.length;
     const alvo = init.itemId === null ? '' : ` (item ${String(init.itemId)})`;
+    const recusadaPelaShopee = init.recusadaPelaShopee ?? true;
     super(
-      `Publicação recusada pela Shopee em ${init.etapa} (${init.shopeeCode}) ` +
+      `${cabecalhoDaRecusa(init.etapa, init.shopeeCode, recusadaPelaShopee)} ` +
         `no produto ${init.produtoId}${alvo}: ${String(total)} problema${total === 1 ? '' : 's'}`,
     );
     this.name = 'ShopeePublishRejectedError';
+    this.recusadaPelaShopee = recusadaPelaShopee;
     this.etapa = init.etapa;
     this.shopeeCode = init.shopeeCode;
     this.produtoId = init.produtoId;
