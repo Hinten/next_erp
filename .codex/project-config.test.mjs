@@ -131,6 +131,10 @@ describe('Codex security parity', () => {
     );
     doesNotMatch(permissions, /^\s*extends\s*=/m);
     doesNotMatch(permissions, /":root"\s*=/);
+    // A project profile must never constrain an entire Windows drive or UNC
+    // share. Workspace rules stay relative so every new worktree is writable.
+    doesNotMatch(permissions, /["'][A-Za-z]:[\\/]*["']\s*(?:=|\])/);
+    doesNotMatch(permissions, /["'](?:\\\\|\/\/)[^"']+["']\s*(?:=|\])/);
     match(permissions, /":minimal"\s*=\s*"read"/);
     match(permissions, /\[permissions\.next-erp\.network\]\s*enabled\s*=\s*false/);
   });
