@@ -9,7 +9,7 @@ import { z } from 'zod';
  * picks, one per Shopee category, in the legacy corpus shape
  * `{ categoryId, size_chart_id, name }` (`TabelaDeMedidasShopee`,
  * `.old/…/tabelaMedidas/lib/src/models.dart:809-835`). The base
- * `tabelaDeMedidasSchema` keeps the field loose (`unknown[] | null` per key) on
+ * `tabelaDeMedidasSchema` keeps the field loose (`z.unknown()` per key) on
  * purpose; this module is what every reader goes through.
  *
  * ⚠️ ONE selection rule (#1369). `resolverEntradaShopee` is what publish
