@@ -93,11 +93,34 @@ export function lerIntegracaoId(params: URLSearchParams): LeituraParam<string> {
   return lerTextoObrigatorio(params, 'integracaoId');
 }
 
+/**
+ * Any REQUIRED positive provider id, named by the caller — the one exported
+ * door onto {@link idPositivo}.
+ *
+ * Absent or sent empty ⇒ `${nome} é obrigatório.`; anything else goes through
+ * `idPositivo`'s two messages, so every id parameter in this app refuses with
+ * the same three sentences and no route re-types them.
+ *
+ * ⚠️ NOT trimmed, exactly like `categoryId` (see the header). That matters
+ * twice for `sizeChartId` (step 18, `tabela-medidas/detalhe`): `0` is the
+ * DETACH sentinel of `add_item`/`update_item`, never a template, so it must be
+ * refused rather than read; and a value that only LOOKS like an id — `' 7'`,
+ * `'1e5'`, an opaque cursor someone pasted into the wrong field — is refused
+ * as sent, never rewritten into a different id that would sign a valid call
+ * for somebody else's chart.
+ */
+export function lerIdPositivoObrigatorio(
+  params: URLSearchParams,
+  nome: string,
+): LeituraParam<number> {
+  const raw = bruto(params, nome);
+  if (raw === null) return erro(`${nome} é obrigatório.`);
+  return idPositivo(nome, raw);
+}
+
 /** `categoryId`, required — the leaf-gated routes cannot run without one. */
 export function lerCategoryIdObrigatorio(params: URLSearchParams): LeituraParam<number> {
-  const raw = bruto(params, 'categoryId');
-  if (raw === null) return erro('categoryId é obrigatório.');
-  return idPositivo('categoryId', raw);
+  return lerIdPositivoObrigatorio(params, 'categoryId');
 }
 
 /**
