@@ -232,7 +232,7 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     const sourceRow = page.getByRole('row', { name: new RegExp(mkt.nome) });
     await expect(sourceRow).toBeVisible();
     await sourceRow.getByRole('checkbox').check();
-    await page.getByRole('button', { name: 'Copiar', exact: true }).click();
+    await page.getByRole('link', { name: 'Copiar', exact: true }).click();
     await page.waitForURL((url) => url.searchParams.get('copyFrom') === mkt.id);
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(mkt.nome);
     await fillField(page, 'Nome', copiedName);
