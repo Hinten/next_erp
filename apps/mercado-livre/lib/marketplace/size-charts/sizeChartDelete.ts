@@ -82,8 +82,8 @@ async function readStored(
 
 /**
  * Deep-merge this integração's key only, so other contas' charts and the
- * Flutter-authored `tabelasMedidasShopee` survive untouched — the same write
- * shape `syncSizeCharts` uses.
+ * `/medidas` Shopee tab's `tabelasMedidasShopee` survive untouched — the same
+ * write shape `syncSizeCharts` uses.
  */
 async function persist(
   db: Firestore,

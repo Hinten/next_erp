@@ -240,6 +240,8 @@ a page of the 3-day queue irreversibly.
   two avisos. See **Auto-arrange** under Labels.
 - `lib/shopee/devolucoes/` + `app/api/marketplace/shopee/reclamacao/` — step
   17's returns. See **Returns**.
+- `lib/shopee/tabelaMedidas/` + `app/api/marketplace/shopee/tabela-medidas/` —
+  step 18's two size-chart reads. See **Size charts**.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -436,11 +438,11 @@ a page of the 3-day queue irreversibly.
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
-  **93** suites in this app name (91 drive it), and since step 8 it has a
+  **95** suites in this app name (93 drive it), and since step 8 it has a
   suite of its OWN. ⚠️ Re-derive the number, never increment it:
   `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
   step 8, 34 after step 9, 57 after step 12, 73 after step 13, 81 after step 14,
-  84 after step 15, 87 after step 15b, 93 after step 17 — the two `*.tasks.test.ts` suites it counts name the double in a
+  84 after step 15, 87 after step 15b, 93 after step 17, 95 after step 18 — the two `*.tasks.test.ts` suites it counts name the double in a
   docblock only).
   Step 9 extended the double ADDITIVELY: an
   `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
@@ -1416,6 +1418,10 @@ The first WRITER of a listing. Reasoning: `anuncios/README.md`.
   rejection is a `problema` on the field that fixes it. Both vocabularies
   PERSIST.
 - `item_status` comes from the READ-BACK, never the request.
+- `size_chart_info` (step 18) rides create AND update: the tabela's template for
+  the listing's resolved category (`categoriaDoAnuncio`), else its FIRST photo,
+  else nothing — never the `0`/`''` detach. A refusal is a 422 on
+  `size_chart_info`, never retried without it.
 
 ## Stock sync (`lib/shopee/estoque/`, step 12)
 
@@ -1568,6 +1574,35 @@ incidente per `return_sn` at `shopee-devolucao-<return_sn>` on
   seller deadline; `relogioEvento = relogioProvedorUs + min(revisao, 999 999)`.
 - Deploy: `apps/functions` → `apps/shopee` App Hosting → `apps/web` → this
   codebase's functions.
+
+## Size charts (`lib/shopee/tabelaMedidas/`, step 18)
+
+READ + RECORD here — templates are authored in Seller Centre; publish SENDS
+the pick (see **Publish**). Depth and register rows 248–269:
+`tabelaMedidas/README.md`.
+
+- Two Shop-signed GETs behind `tabela-medidas/{lista,detalhe}`
+  (`PERM.integracao.read`), UNCACHED (`no-store`): a template made a minute ago
+  must appear. Paging stops on `next_cursor === ''`, an absent or repeated
+  cursor, or the 2-page cap; the cursor is echoed verbatim and never crosses
+  our HTTP boundary.
+- A detail echoing ANOTHER id lists its row unnamed (`legivel: false`) — the
+  projector's own rule, `ecoDivergenteTabelaShopee`. Both envelopes live in
+  `@delfrance/schemas`, imported by the routes AND the web.
+- The stored entry is the corpus shape `{ categoryId, size_chart_id, name }`
+  per conta; `name` is the CATEGORY's label. Which entry a listing gets is ONE
+  function in `@delfrance/schemas` (`resolverEntradaShopee`), read by publish
+  and by `/medidas` — never a second copy (#1369). The base schema types each
+  conta's value `unknown`: never tighten it (one odd value would block every
+  save of the tabela).
+- This app never writes `tabMedi`: the browser stages the pick in the tabela's
+  own save.
+- Both refusals are `product.error_param`; the sentence on `providerMessage`
+  decides: a stale id → 404 `SHOPEE_TABELA_MEDIDAS_INEXISTENTE`, "Category id
+  is invalid" → 404 `SHOPEE_TABELA_MEDIDAS_CATEGORIA_INVALIDA`. Publish's
+  stale-template refusal calls the SAME classifier.
+- `size_chart_limit` is advice, never a gate — but an explicit
+  `support_image_size_chart: false` withholds publish's photo fallback.
 
 ## Rules specific to this app
 

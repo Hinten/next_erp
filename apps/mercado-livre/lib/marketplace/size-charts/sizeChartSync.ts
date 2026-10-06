@@ -572,7 +572,7 @@ export async function syncSizeCharts(
   let updated = false;
 
   // Deep merge writes ONLY this integração's key — other contas' charts and
-  // `tabelasMedidasShopee` (Flutter-authored) survive untouched.
+  // `tabelasMedidasShopee` (the `/medidas` Shopee tab's) survive untouched.
   const persistProgress = async (): Promise<void> => {
     if (!updated) return;
     await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
