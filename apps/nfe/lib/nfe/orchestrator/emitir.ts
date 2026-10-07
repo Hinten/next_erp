@@ -79,7 +79,7 @@ import {
   swapAnchorForProc,
 } from './audit';
 import { assertNotaBuildable, buildGeneratorInput } from './generator-input';
-import { enviarEpecParaNota, transmitirPosEpec } from './epec';
+import { enviarEpecParaNota, epecPendenteDeConciliacao, transmitirPosEpec } from './epec';
 import { noopTaskScheduler, type TaskScheduler } from '../tasks';
 
 /**
@@ -504,7 +504,9 @@ export async function runAllocateGenerateSignTx(
     // Bloqueada NFes (cStat in STATUS_BLOQUEADORES) short-circuit —
     // covers both the normal pre-check AND the race where another emit
     // wrote the doc between attempts of this transaction.
-    if (existing && isBloqueada(existing.cStat)) {
+    // An EPEC an earlier, DIFFERENT send holds this número/chave for (#1675,
+    // fresh bytes + 485/573): never re-sent — manual conciliation only.
+    if (existing && (isBloqueada(existing.cStat) || epecPendenteDeConciliacao(existing))) {
       safeLog(
         'debug',
         `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
@@ -796,7 +798,7 @@ export async function runChunkAllocateTx(
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
       }
-      if (existing && isBloqueada(existing.cStat)) {
+      if (existing && (isBloqueada(existing.cStat) || epecPendenteDeConciliacao(existing))) {
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
       }

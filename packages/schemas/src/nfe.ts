@@ -76,17 +76,19 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 }
 
 /**
- * `true` when a DANFE can be printed for this NF-e NOW, as an authorized
- * document: an `aprovada` one, or an EPEC-approved (`'p'`) one that holds its
- * EPEC protocol (`xml_epec_proc` — the plain-paper DANFE prints the EPEC
- * protocolo box from it). ⚠️ An EPEC registered by an earlier send of the same
- * bytes whose reply was lost (#1675 — the Ambiente Nacional answered 485/573 to
- * the resend) is `'p'` WITHOUT that protocol: apps/nfe's DANFE route refuses it
- * (422) until the pós-EPEC transmission authorizes the NF-e. Shared so the
- * browser and the server agree on which `'p'` doc is printable. Pure.
+ * `true` when this NF-e counts as authorized for printing its DANFE: an
+ * `aprovada` one, or an EPEC-approved (`'p'`) one that holds its EPEC protocol
+ * (`xml_epec_proc` — the plain-paper DANFE prints the EPEC protocolo box from
+ * it). ⚠️ An EPEC registered by an earlier send of the same bytes whose reply
+ * was lost (#1675 — the Ambiente Nacional answered 485/573 to the resend) is
+ * `'p'` WITHOUT that protocol, and apps/nfe's DANFE route refuses it (422) until
+ * the pós-EPEC transmission authorizes the NF-e. That `'p'` rule is the one
+ * the browser and `danfe.ts` share. Pure.
  *
- * A `cancelada` NF-e still prints (with its CANCELADO overlay) wherever a
- * caller allows it; this predicate answers "authorized and printable" only.
+ * Not covered: an `aprovada` whose proc stitch was refused (a digest mismatch
+ * keeps it WITHOUT `xml_nfe_proc`) — the DANFE route refuses it too; that case
+ * predates #1675 and is decided by the route alone. A `cancelada` NF-e still
+ * prints (with its CANCELADO overlay) wherever a caller allows it.
  */
 export function nfeImprimivel(
   nota: Pick<NotaFiscalEletronica, 'estado' | 'xml_epec_proc'>,

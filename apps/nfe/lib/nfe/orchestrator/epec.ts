@@ -77,6 +77,26 @@ export const EPEC_A_CONCILIAR =
   'EPEC pendente (Portal Nacional da NF-e: Consultar EPEC pendente de conciliação)';
 
 /**
+ * True for an EPEC NF-e whose número/chave an EPEC with OTHER data already holds
+ * (#1675): `error` after a FRESH send answered 485/573 ({@link disposicaoDoEpec}).
+ * The emit never sends it again — a regenerate keeps the chave within the month
+ * and earns the same 573, and a lost reply on such a resend would turn into a
+ * false "already registered" (stored bytes + 573 → `'p'` over bytes the EPEC on
+ * record does not describe). It needs manual conciliation (NT 2014.001 §4.3).
+ * Pure.
+ */
+export function epecPendenteDeConciliacao(
+  nota: Pick<NotaFiscalEletronica, 'estado' | 'cStat' | 'tpEmis'>,
+): boolean {
+  return (
+    nota.estado === ESTADO_NFE.error &&
+    Number(nota.tpEmis) === 4 &&
+    nota.cStat != null &&
+    EPEC_JA_REGISTRADO.has(nota.cStat)
+  );
+}
+
+/**
  * What one EPEC evento reply makes of its NF-e (#1675). Pure.
  *
  *  - 135/136 → `'p'` (epecAprovado) + the archival `xml_epec_proc`.
@@ -94,7 +114,8 @@ export const EPEC_A_CONCILIAR =
  *    with {@link EPEC_A_CONCILIAR}: these bytes were never sent, so the EPEC on
  *    record describes OTHER data — 573 is keyed on the chave, and a regenerate
  *    keeps the chave within the month. A `rejeitada` would only invite the
- *    same regenerate → 573 again; the operator has to conciliate it.
+ *    same regenerate → 573 again; the operator has to conciliate it, and the
+ *    emit never re-sends it ({@link epecPendenteDeConciliacao}).
  *  - anything else → `rejeitada`.
  */
 export function disposicaoDoEpec(
@@ -214,6 +235,7 @@ export async function enviarEpecParaNota(args: {
     // fill-only, on a live 'p' doc of this chave that has none.
     if (registrado && res.procEventoNFe) {
       const curado = await completarProtocoloEpec(fs, nfeRef, chave, {
+        signedXml,
         xml_epec_proc: res.procEventoNFe,
         cStat,
         xMotivo,

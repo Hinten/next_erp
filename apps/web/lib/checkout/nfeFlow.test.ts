@@ -125,9 +125,19 @@ describe('ensureNfeAprovada', () => {
     });
   });
 
-  it('#1675 — an emit answered EPEC-approved WITHOUT a recovered protocol prints nothing: a yellow notice instead', async () => {
-    // Nothing printable before the emit, nor after it (the doc has no proc).
+  it('#1675 — an EPEC already registered WITHOUT its protocol: no emit at all, a yellow notice instead', async () => {
     getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(client.emitir).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('#1675 — an emit that ANSWERS EPEC-approved without a recovered protocol prints nothing: a yellow notice instead', async () => {
+    // Nothing before the emit; after it, the doc the emit wrote has no proc.
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, null)] });
     client.emitir.mockResolvedValue(
       emitResult({
         estado: ESTADO_NFE.epecAprovado,

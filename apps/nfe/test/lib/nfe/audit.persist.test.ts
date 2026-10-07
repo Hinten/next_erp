@@ -734,6 +734,7 @@ describe('gravarAncoraDoLote re-checks every premise 4a decided on (#1675 review
 
 describe('completarProtocoloEpec — fill-only heal of a superseded EPEC run’s protocol (#1675)', () => {
   const REGISTRO = {
+    signedXml: '<NFe>…B1…</NFe>',
     xml_epec_proc: '<procEventoNFe>…</procEventoNFe>',
     cStat: '135',
     xMotivo: 'Evento registrado e vinculado a NF-e',
@@ -742,6 +743,7 @@ describe('completarProtocoloEpec — fill-only heal of a superseded EPEC run’s
   const SEM_PROTOCOLO = {
     estado: ESTADO_NFE.epecAprovado,
     chave: 'CHAVE-EPEC',
+    xml_assinado: '<NFe>…B1…</NFe>',
     cStat: '573',
     xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado…',
     xml_epec_proc: null,
@@ -778,6 +780,11 @@ describe('completarProtocoloEpec — fill-only heal of a superseded EPEC run’s
   it.each([
     ['a protocol already there', { ...SEM_PROTOCOLO, xml_epec_proc: '<outro/>' }],
     ['another chave', { ...SEM_PROTOCOLO, chave: 'OUTRA' }],
+    // a regenerate keeps the chave within the month — the proc describes OTHER bytes
+    [
+      'the same chave over OTHER signed bytes',
+      { ...SEM_PROTOCOLO, xml_assinado: '<NFe>…B2…</NFe>' },
+    ],
     ['no longer p', { ...SEM_PROTOCOLO, estado: ESTADO_NFE.aprovada }],
   ])('%s → nothing written, null', async (_label, vivo) => {
     const { fs, txSet } = fakeFs(vivo);

@@ -1,7 +1,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { renderDanfe, renderDanfeEpec, renderDanfeZpl } from '@delfrance/integrations-nfe/danfe';
-import { ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
+import { ESTADO_NFE, nfeImprimivel, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 
@@ -50,9 +50,12 @@ export async function danfeArtifactService(
   }
   const nota = snap.data() as NotaFiscalEletronica;
 
-  // EPEC: no procNFe yet — render from the signed NF-e + the EPEC proc.
+  // EPEC: no procNFe yet — render from the signed NF-e + the EPEC proc. Which
+  // 'p' doc is printable is `nfeImprimivel`, the rule apps/web shares (#1675):
+  // an EPEC our earlier send registered but whose protocol was never recovered
+  // has no `xml_epec_proc`.
   if (nota.estado === ESTADO_NFE.epecAprovado) {
-    if (!nota.xml_assinado || !nota.xml_epec_proc) {
+    if (!nfeImprimivel(nota) || !nota.xml_assinado || !nota.xml_epec_proc) {
       throw new NFeDanfeError(
         `pedido '${pedidoId}' nfe '${nfeId}': EPEC aprovado sem xml_assinado/xml_epec_proc ` +
           'persistidos — não é possível gerar a DANFE.',

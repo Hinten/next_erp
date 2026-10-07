@@ -179,9 +179,9 @@ export async function verificarEnviNfeMsgs(
 
     // An EPEC-approved doc is never consulted here (#1675): a consSit goes to
     // the HOME SEFAZ, which answers 217 until the Ambiente Nacional shares the
-    // EPEC with it (and for good if the EPEC's protocol was never recovered),
-    // and a 217 would write `rejeitada` over a registered EPEC — whose next
-    // emit regenerates over the bytes it summarises. Its recovery path is the
+    // EPEC with it (then 124 "EPEC Autorizado", which this table does not read
+    // as authorized either), and a 217 would write `rejeitada` over a registered
+    // EPEC — whose next emit regenerates over the bytes it summarises. Its recovery path is the
     // pós-EPEC transmission (an emit, or the sweep once contingency is off).
     if (nota.estado === ESTADO_NFE.epecAprovado) {
       results.push({

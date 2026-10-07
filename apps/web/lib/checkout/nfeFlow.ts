@@ -32,7 +32,27 @@ export async function resolveAprovadaNfe(
   db: Firestore,
   pedidoId: string,
 ): Promise<{ nfeId: string; chave: string } | null> {
+  return (await lerNfesDoPedido(db, pedidoId)).imprimivel;
+}
+
+/**
+ * One read of the pedido's nfev4 docs: the latest printable one, and whether an
+ * EPEC-approved doc WITHOUT its protocol is there (#1675 — registered by an
+ * earlier send, protocol not recovered: nothing to print, and nothing an emit
+ * may usefully do, since its full NF-e is transmitted after the outage).
+ */
+async function lerNfesDoPedido(
+  db: Firestore,
+  pedidoId: string,
+): Promise<{
+  imprimivel: { nfeId: string; chave: string } | null;
+  epecSemProtocolo: boolean;
+}> {
   const snap = await getDocs(nfeCollection.ref(db, { pedidoId }));
+  const epecSemProtocolo = snap.docs.some((d) => {
+    const n = d.data();
+    return n.estado === ESTADO_NFE.epecAprovado && !nfeImprimivel(n);
+  });
   const authorized = snap.docs
     .filter((d) => {
       const n = d.data();
@@ -40,10 +60,21 @@ export async function resolveAprovadaNfe(
     })
     .sort((a, b) => (b.data().ultima_modificacao ?? 0) - (a.data().ultima_modificacao ?? 0));
   const first = authorized[0];
-  if (first === undefined) return null;
-  const chave = first.data().chave;
-  return chave != null ? { nfeId: first.id, chave } : null;
+  const chave = first?.data().chave ?? null;
+  return {
+    imprimivel: first !== undefined && chave != null ? { nfeId: first.id, chave } : null,
+    epecSemProtocolo,
+  };
 }
+
+/** What the checkout tells the operator about an EPEC whose protocol was never recovered. */
+const EPEC_SEM_PROTOCOLO: NotificationShape = {
+  title: 'EPEC já registrado — protocolo não recuperado',
+  message:
+    'A DANFE desta NF-e só sai após a transmissão da NF-e completa, quando a SEFAZ ' +
+    'normalizar (automática quando a contingência for desligada).',
+  color: 'yellow',
+};
 
 export type EnsureNfeResult =
   | { ok: true; nfeId: string; chave: string; reused: boolean }
@@ -74,8 +105,14 @@ export async function ensureNfeAprovada(
   client: NFeHttpClient,
   pedidoId: string,
 ): Promise<EnsureNfeResult> {
-  const existing = await resolveAprovadaNfe(db, pedidoId);
-  if (existing !== null) return { ok: true, ...existing, reused: true };
+  const lidas = await lerNfesDoPedido(db, pedidoId);
+  if (lidas.imprimivel !== null) return { ok: true, ...lidas.imprimivel, reused: true };
+  // An EPEC registered without its protocol (#1675): an emit would only try the
+  // pós-EPEC transmission (or, in EPEC mode, the down home SEFAZ) — say why the
+  // DANFE is not available instead.
+  if (lidas.epecSemProtocolo) {
+    return { ok: false, pending: false, notification: EPEC_SEM_PROTOCOLO };
+  }
 
   try {
     const result = await client.emitir(pedidoId);

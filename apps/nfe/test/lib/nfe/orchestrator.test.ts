@@ -969,6 +969,57 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     },
   );
 
+  it('near-miss: a superseded run answered 573 itself carries NO registered protocol — the heal never writes a rejection’s proc', async () => {
+    const S4 = 'pedidos/PED-1/nfev4/s4';
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs[S4] = ancoraEpec();
+    vi.mocked(enviarEpec)
+      .mockImplementationOnce(async () => {
+        docs[S4]!.proximaConsultaEm = nowMicros() - 1;
+        await emitirPedido(fs, fakeRuntime(), 'PED-1');
+        // epecResult carries a procEventoNFe for ANY cStat — a 573's must not land.
+        return epecResult('573') as never;
+      })
+      .mockResolvedValueOnce(epecResult('573') as never);
+
+    const primeiro = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(primeiro).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: true });
+    expect(docs[S4]).toMatchObject({ estado: ESTADO_NFE.epecAprovado, xml_epec_proc: null });
+  });
+
+  it('#1675 — a FRESH 485/573 error is never re-sent: a re-emit answers the doc as is, no evento, no regenerate (manual conciliation)', async () => {
+    const { fs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('573') as never);
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(1);
+    vi.mocked(generateNFe).mockClear();
+
+    const again = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(again).toMatchObject({ estado: ESTADO_NFE.error, cStat: '573', reused: true });
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: a FRESH 656 error (not an EPEC conciliation) is still re-emittable', async () => {
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = {
+      ...ancoraEpec(),
+      estado: ESTADO_NFE.error,
+      cStat: '656',
+      xMotivo: 'Rejeicao: Consumo Indevido',
+    };
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('135') as never);
+
+    const r = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: false });
+  });
+
   it('near-miss: STORED bytes answered any OTHER rejection (142 — EPEC blocked) → rejeitada, as before', async () => {
     const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
     docs['pedidos/PED-1/nfev4/s4'] = ancoraEpec();

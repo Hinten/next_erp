@@ -166,6 +166,21 @@ describe('notificationForNFeResult', () => {
     },
   );
 
+  it('estado=error from THIS run (a fresh EPEC 573 to conciliate, a 656) → red with its cStat, never the gray fallback (#1675)', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        estado: ESTADO_NFE.error,
+        cStat: '573',
+        xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado…',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('NF-e com erro');
+    expect(n.message).toContain('cStat=573');
+    expect(n.message).not.toContain('nenhum novo envio');
+  });
+
   it('reused=true on an error doc another run wrote → red with its cStat, NOT "já emitida" (#1675)', () => {
     const n = notificationForNFeResult(
       emitResult({

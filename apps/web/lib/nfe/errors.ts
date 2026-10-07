@@ -229,11 +229,15 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
       color: 'blue',
     };
   }
-  // Another run's error (e.g. a 656) — say what it is, never "já emitida".
-  if (result.reused && result.estado === ESTADO_NFE.error) {
+  // An error — this run's (a 656, a fresh EPEC 485/573 to conciliate, #1675)
+  // or another run's that a reused result reports: red, never "já emitida" nor
+  // the gray fallback. The route answers 422 only for `rejeitada`.
+  if (result.estado === ESTADO_NFE.error) {
     return {
       title: 'NF-e com erro',
-      message: `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito.`,
+      message:
+        `cStat=${result.cStat}: ${result.xMotivo}` +
+        (result.reused ? ' — nenhum novo envio foi feito.' : ''),
       color: 'red',
     };
   }
