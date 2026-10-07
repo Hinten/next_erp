@@ -118,6 +118,9 @@ export interface SizeChartEditorModalProps {
    * Without it "Enviar" would only fail after the round trip.
    */
   canWrite: boolean;
+  recoveryRequired?: boolean;
+  recoveryChartId?: string;
+  onRecoveryChartId?: (value: string) => void;
   /** Persist the guia on the tabMedi doc without contacting ML. */
   onSaveDraft: (chart: MlSizeChart, chartIndex: number | null) => Promise<void>;
   /** Send this conta's guias to ML; resolves with the problems ML reported. */
@@ -160,6 +163,9 @@ export function SizeChartEditorModal({
   chartIndex,
   grupos,
   canWrite,
+  recoveryRequired,
+  recoveryChartId,
+  onRecoveryChartId,
   onSaveDraft,
   onSend,
   onDuplicate,
@@ -732,6 +738,14 @@ export function SizeChartEditorModal({
         exactly how this failed in CI.
       */}
       <Stack gap="md" data-testid="ml-size-chart-editor">
+        {recoveryRequired && !sent && (
+          <TextInput
+            label="ID da guia criada no Mercado Livre"
+            description="Use somente para recuperar uma criação sem confirmação. O conteúdo e a conta serão verificados antes de continuar."
+            value={recoveryChartId ?? ''}
+            onChange={(event) => onRecoveryChartId?.(event.currentTarget.value)}
+          />
+        )}
         <TextInput
           label="Nome da guia"
           description={`Como a guia aparece no Mercado Livre (até ${String(CHART_NAME_MAX)} caracteres, apenas letras, números e espaços).`}

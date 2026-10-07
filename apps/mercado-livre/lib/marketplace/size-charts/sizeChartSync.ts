@@ -1,45 +1,33 @@
 /**
- * Size-chart CRUD sync (Step 5b / M2) — ports the legacy "Enviar Tabela de
- * Medidas ao Mercado Livre" flow (`medidasCadastro.dart
- * enviarTabelaMercadoLivre` + the payload builders in tabelaMedidas
- * models.dart) to a per-integração server operation:
- *
- *  - a chart with no ML `id` → `POST /catalog/charts` (create);
- *  - an existing chart → PUT the name when it changed, then per-row diffs
- *    (index-based vs the STORED doc, the role of the legacy `instance.old`
- *    snapshot): changed row with an ML id → PUT row, without → POST row;
- *  - every response is a FULL chart — `applyChartResponse` writes back the
- *    chart id, `main_attribute_id` and the per-INDEX `rows[].id` (legacy
- *    `updateFromMercadoLivreResponse`);
- *  - ML chart-validation errors (`{error: 'chart_validation_error',
- *    errors: [{code, message}]}`) do NOT abort: they're collected, the chart
- *    keeps its previous state (a rejected rename reverts the nome), remaining
- *    rows of that chart are skipped and the flow continues — exactly the
- *    legacy behavior so one bad chart never blocks the others;
- *  - the write-back merges ONLY `tabelasDeMedidasMercadoLivre.<integracaoId>`
- *    (Firestore deep merge), preserving other contas' entries and the Shopee
- *    map the legacy app authored, which the migrated corpus carries and this
- *    repo models nowhere.
+ * One immediately saved chart/version, diffed against Mercado Livre. The
+ * operation journal serializes sends and retains every remote receipt; a
+ * transaction guards only the target chart when progress is written back.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   type MercadoLivreApi,
   MercadoLivreHttpError,
+  MercadoLivreNetworkError,
+  MercadoLivreValidationError,
   type MlSizeChartApi,
 } from '@delfrance/integrations-mercado-livre';
 import { localizarDecimal } from '@delfrance/core/decimal';
+import { valuesEqual } from '@delfrance/core';
+import { wireInt } from '@delfrance/core/wire';
 import type { MlAttributeWire, MlSizeChart, MlSizeChartRow } from '@delfrance/schemas';
-import { mlSizeChartWriteSchema, mlSizeChartsForConta } from '@delfrance/schemas';
+import { mlSizeChartSyncRequestSchema } from '@delfrance/schemas';
 import { z } from 'zod';
-import { tabelaDeMedidasCollection } from '@delfrance/data/admin/collections';
-
-/** The tabMedi doc referenced by the sync does not exist. */
-export class TabelaDeMedidasNotFoundError extends Error {
-  constructor(tabMediId: string) {
-    super(`Tabela de medidas ${tabMediId} não encontrada.`);
-    this.name = 'TabelaDeMedidasNotFoundError';
-  }
-}
+import type { MlChartOperation } from '@delfrance/data/admin/collections';
+import {
+  acquireOperation,
+  checkpointOperation,
+  operationContext,
+  operationCharts,
+  chartConflict,
+  chartUnconfirmed,
+  SizeChartOperationError,
+} from './sizeChartOperation';
+export { TabelaDeMedidasNotFoundError } from './sizeChartOperation';
 
 /**
  * The `cell` ML attaches to a row-level validation error — the whole reason the
@@ -80,6 +68,9 @@ export interface ChartValidationError {
 }
 
 export interface SyncSizeChartsResult {
+  operationId: string;
+  chartIndex: number;
+  status: MlChartOperation['status'];
   /** The charts after the sync (ML ids written back). */
   tabelas: MlSizeChart[];
   /** Collected ML validation errors (empty = everything sent cleanly). */
@@ -284,137 +275,6 @@ function responseRowSize(respRow: { attributes?: unknown }): MlAttributeWire | n
   return null;
 }
 
-/**
- * Legacy `updateFromMercadoLivreResponse`: the API echoes the FULL chart —
- * write back the chart id, `main_attribute_id` and each row's ML id BY INDEX
- * (extra local rows keep their state).
- *
- * Beyond legacy, each row also caches ML's computed `SIZE` as `sizeCalculado`
- * — the value the listing's variation has to match, and for a footwear chart
- * the only place it exists. See the field's doc on `mlSizeChartRowSchema` for
- * why it is kept out of `attributes`.
- */
-export function applyChartResponse(chart: MlSizeChart, response: MlSizeChartApi): MlSizeChart {
-  const responseRows = response.rows ?? [];
-  const rows = (chart.rows ?? []).map((row, index) => {
-    const respRow = responseRows[index];
-    if (!respRow) return row;
-    const withId = respRow.id == null ? row : { ...row, id: String(respRow.id) };
-    const size = responseRowSize(respRow);
-    return size == null ? withId : { ...withId, sizeCalculado: size };
-  });
-  return {
-    ...chart,
-    id: String(response.id),
-    ...(response.main_attribute_id != null
-      ? { main_attribute_id: response.main_attribute_id }
-      : {}),
-    rows,
-  };
-}
-
-/* ------------------------------ diff helpers ----------------------------- */
-
-/** Structural equality on plain JSON data (legacy `DeepCollectionEquality`). */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
-  }
-  if (a && b && typeof a === 'object' && typeof b === 'object') {
-    const ka = Object.keys(a as Record<string, unknown>);
-    const kb = Object.keys(b as Record<string, unknown>);
-    return (
-      ka.length === kb.length &&
-      ka.every((k) =>
-        deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
-      )
-    );
-  }
-  return false;
-}
-
-/**
- * Drop null/undefined object keys recursively — the legacy diff compared
- * `toJson()` on BOTH sides, and every optional attribute key is
- * `includeIfNull: false`, so `{value_id: null}` and an absent `value_id` are
- * the SAME row. Without this, a UI that emits explicit nulls (this repo's
- * form convention) would see every Flutter-stored row as "changed" and
- * re-PUT the whole chart on every sync.
- */
-export function stripNullsDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripNullsDeep);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v == null) continue;
-      out[k] = stripNullsDeep(v);
-    }
-    return out;
-  }
-  return value;
-}
-
-/**
- * Every `value_name` put through the SAME separator fold `seedRows` applies.
- *
- * ⚠️ This is a DIFF-ONLY fold — the value that goes on the wire is untouched.
- * The editor localises a stored `'10.5'` to `'10,5'` on load (pt-BR is what the
- * operator types and reads), which without this makes every row of every legacy
- * guia differ from its stored copy: opening a chart and pressing "Enviar" would
- * fire one `PUT` per row, N HTTP calls and N fresh chances for ML to reject a
- * row that was fine. A separator is a spelling, not a change.
- *
- * ⚠️ **`localizarDecimal`, NOT a parse to a number.** Folding to `Number` would
- * neutralise every spelling difference a number has, not just the separator —
- * equating `'90,5'` with `'90,50'` and `'01'` with `'1'`. ML echoes a
- * measurement back **verbatim** on the anúncio, which is precisely why the grid
- * keeps plain `TextInput`s instead of `DecimalInput`; a numeric fold here
- * reintroduces that erasure one layer down. And the loss is worse than "not
- * sent to ML": `persistProgress` opens with `if (!updated) return`, so when the
- * folded row is the only change the edit reaches neither ML **nor** Firestore,
- * behind a 200. Using the editor's own transform makes this fold neutralise
- * exactly what `seedRows` did and nothing else.
- *
- * `measureStruct` already reads both separators as the same number, so the two
- * rows really are equivalent to ML; the name converges to the comma the next
- * time the row is edited for a reason.
- */
-function canonicalMeasureNames(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalMeasureNames);
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === 'value_name' && typeof v === 'string') {
-        out[k] = localizarDecimal(v);
-        continue;
-      }
-      out[k] = canonicalMeasureNames(v);
-    }
-    return out;
-  }
-  return value;
-}
-
-/**
- * The row as the diff sees it. `sizeCalculado` is dropped: it is an ERP-only
- * cache written BY this sync from ML's own response, so a UI that round-trips
- * a row without it would otherwise look "changed" on every round and re-PUT
- * the entire chart.
- */
-function rowDiffShape(row: MlSizeChartRow): unknown {
-  const copy: Record<string, unknown> = { ...row };
-  delete copy.sizeCalculado;
-  return canonicalMeasureNames(stripNullsDeep(copy));
-}
-
-/** Legacy row diff: id-less rows are ALWAYS "changed" (never yet on ML). */
-function rowNeedsSend(row: MlSizeChartRow, storedRow: MlSizeChartRow | null): boolean {
-  if (row.id == null || row.id === '') return true;
-  if (storedRow == null) return true;
-  return !deepEqual(rowDiffShape(row), rowDiffShape(storedRow));
-}
-
 /* ------------------------------ orchestrator ----------------------------- */
 
 /** ML chart-validation body: `{error, errors: [{code, message, cell?}]}`. */
@@ -538,126 +398,338 @@ export interface SizeChartSyncDeps {
   integracaoId: string;
 }
 
-const editedTabelasSchema = z.array(mlSizeChartWriteSchema);
+const responseAttributesSchema = z.array(
+  z
+    .object({
+      id: z.string(),
+      values: z.array(
+        z
+          .object({
+            id: z.union([z.string(), z.number()]).nullable().optional(),
+            name: z.string().nullable().optional(),
+          })
+          .passthrough(),
+      ),
+    })
+    .passthrough(),
+);
 
-/**
- * Sync the EDITED chart list of one integração against ML and persist the
- * result on the tabMedi doc. `editedTabelas` is what the UI submits (the
- * desired state); the STORED doc plays the legacy `instance.old` role for
- * the name/row diffs.
- */
+/** Compare ONLY desired writable attributes; computed SIZE and ERP joins are not writes. */
+export function remoteRowMatches(
+  chart: MlSizeChart,
+  row: MlSizeChartRow,
+  remote: { attributes?: unknown },
+): boolean {
+  const desired = responseAttributesSchema.parse(chartRowPayload(chart, row).attributes);
+  const parsed = responseAttributesSchema.safeParse(remote.attributes);
+  if (!parsed.success) return desired.length === 0;
+  return desired.every((attribute) => {
+    const current = parsed.data.find((a) => a.id === attribute.id);
+    return (
+      current != null &&
+      attribute.values.length === current.values.length &&
+      attribute.values.every((value, index) => {
+        const other = current.values[index]!;
+        // ML can fill the display name for an id-only picker. Its ID is the value.
+        if (value.id != null && String(value.id) !== String(other.id)) return false;
+        const spelling = (name: string) => {
+          const space = name.lastIndexOf(' ');
+          return space < 0
+            ? localizarDecimal(name)
+            : `${localizarDecimal(name.slice(0, space))}${name.slice(space)}`;
+        };
+        return (
+          value.name == null ||
+          (other.name != null && spelling(value.name) === spelling(other.name))
+        );
+      })
+    );
+  });
+}
+
+function sameRowId(a: unknown, b: unknown): boolean {
+  if (a == null || b == null) return false;
+  const first = String(a);
+  const second = String(b);
+  return first.includes(':') && second.includes(':')
+    ? first === second
+    : first.split(':').pop() === second.split(':').pop();
+}
+
+/** Created rows join by their immutable main value, never response array position. */
+export function reconcileChartResponse(chart: MlSizeChart, response: MlSizeChartApi): MlSizeChart {
+  const rows = (chart.rows ?? []).map((row) => {
+    const matching = (response.rows ?? []).filter((remote) => {
+      if (row.id) return sameRowId(row.id, remote.id);
+      const main = (row.attributes ?? []).find((a) => a.id === chart.main_attribute_id);
+      if (!main) return false;
+      const attributes = responseAttributesSchema.safeParse(remote.attributes);
+      if (!attributes.success) return false;
+      const values = attributes.data.find((a) => a.id === main.id)?.values ?? [];
+      const desired = responseAttributesSchema.parse([chartAttributeToMercadoLivre(main)])[0]!
+        .values;
+      return (
+        desired.length === values.length &&
+        desired.every((v, i) =>
+          v.id != null ? String(v.id) === String(values[i]!.id) : v.name === values[i]!.name,
+        )
+      );
+    });
+    if (matching.length !== 1 || matching[0]!.id == null) throw chartUnconfirmed();
+    const remote = matching[0]!;
+    if (String(remote.id).includes(':') && !String(remote.id).startsWith(`${response.id}:`))
+      throw chartUnconfirmed();
+    const id = String(remote.id).includes(':') ? String(remote.id) : `${response.id}:${remote.id}`;
+    const computed = responseRowSize(remote);
+    return { ...row, id, ...(computed ? { sizeCalculado: computed } : {}) };
+  });
+  return {
+    ...chart,
+    id: String(response.id),
+    rows,
+    main_attribute_id: response.main_attribute_id ?? chart.main_attribute_id ?? null,
+  };
+}
+
+function assertRemoteChart(chart: MlSizeChart, response: MlSizeChartApi): void {
+  if (chart.id && String(response.id) !== chart.id) throw chartUnconfirmed();
+  if (response.site_id != null && response.site_id !== chartSiteId(chart)) throw chartUnconfirmed();
+}
+
+/** One guarded saved chart; local desired content is NEVER the remote diff baseline. */
 export async function syncSizeCharts(
   deps: SizeChartSyncDeps,
   tabMediId: string,
-  editedTabelasInput: unknown,
+  input: unknown,
 ): Promise<SyncSizeChartsResult> {
-  const { db, api, integracaoId } = deps;
-  const editedTabelas = editedTabelasSchema.parse(editedTabelasInput);
-
-  const snap = await tabelaDeMedidasCollection.docRef(db, {}, tabMediId).get();
-  if (!snap.exists) throw new TabelaDeMedidasNotFoundError(tabMediId);
-  const doc = tabelaDeMedidasCollection.parseRead(
-    snap.data(),
-    tabelaDeMedidasCollection.docPath({}, tabMediId),
-  );
-  const stored = mlSizeChartsForConta(doc.tabelasDeMedidasMercadoLivre ?? null, integracaoId);
-
-  const validationErrors: ChartValidationError[] = [];
-  // `working` starts as the submitted list and is updated IN PLACE after every
-  // successful ML call — so a hard mid-sync error (429/5xx/network) can still
-  // persist every chart/row id obtained so far. Losing a created chart's id
-  // orphans it on ML and every retry then dies on `chart_name_unavailable`
-  // (the orphan owns the name) — a hole the legacy flow shared, closed here.
-  const working: MlSizeChart[] = [...editedTabelas];
-  let updated = false;
-
-  // Deep merge writes ONLY this integração's key — other contas' charts and
-  // `tabelasMedidasShopee` (the `/medidas` Shopee tab's) survive untouched.
-  const persistProgress = async (): Promise<void> => {
-    if (!updated) return;
-    await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
-      tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas: working } },
-      ultimaModificacao: Date.now(),
-    });
+  const request = mlSizeChartSyncRequestSchema.parse(input);
+  const ctx = operationContext(deps.db, tabMediId, deps.integracaoId);
+  let op = await acquireOperation(ctx, request.operationId, request.chartIndex, request.chart);
+  const result = async (): Promise<SyncSizeChartsResult> => {
+    const tabelas = await operationCharts(ctx);
+    if (!valuesEqual(tabelas[op.chartIndex], op.projected)) throw chartConflict();
+    return {
+      operationId: op.id,
+      chartIndex: op.chartIndex,
+      status: op.status,
+      tabelas,
+      validationErrors: op.validationErrors,
+      updated: op.updated,
+    };
   };
+  if (op.status === 'completed' || op.status === 'validation') return result();
+  if (op.status === 'conflict') throw chartConflict();
+
+  async function receipt(response: MlSizeChartApi, created = false): Promise<void> {
+    assertRemoteChart(op.projected, response);
+    // Record the provider's receipt before interpretation or local write-back.
+    // Even an incomplete 2xx response now retains the returned chart/row IDs.
+    op = await checkpointOperation(
+      ctx,
+      op,
+      { baseline: response as Record<string, unknown> },
+      true,
+    );
+    if (op.status === 'conflict') throw chartConflict();
+    // Existing id-less rows not yet posted must remain drafts. A create response
+    // maps all rows, whereas an update maps only known IDs and the posted row.
+    const chart = {
+      ...op.projected,
+      main_attribute_id: response.main_attribute_id ?? op.projected.main_attribute_id ?? null,
+    };
+    const selected = (chart.rows ?? []).filter(
+      (row, index) => created || !!row.id || index === op.pending?.rowIndex,
+    );
+    const reconciled = reconcileChartResponse({ ...chart, rows: selected }, response);
+    let cursor = 0;
+    const rows = (chart.rows ?? []).map((row, index) =>
+      created || !!row.id || index === op.pending?.rowIndex ? reconciled.rows![cursor++]! : row,
+    );
+    const confirmed = { ...reconciled, rows };
+    if (
+      created &&
+      (!(confirmed.rows ?? []).every((row) =>
+        remoteRowMatches(confirmed, row, response.rows!.find((r) => sameRowId(r.id, row.id))!),
+      ) ||
+        response.names?.[chartSiteId(chart)] !== chart.nome)
+    )
+      throw chartUnconfirmed();
+    if (op.pending?.kind === 'rename' && response.names?.[chartSiteId(chart)] !== chart.nome)
+      throw chartUnconfirmed();
+    if (op.pending?.kind === 'row') {
+      const row = confirmed.rows![op.pending.rowIndex!]!;
+      const remote = response.rows!.find((r) => sameRowId(r.id, row.id));
+      if (!remote || !remoteRowMatches(confirmed, row, remote)) throw chartUnconfirmed();
+    }
+    op = await checkpointOperation(
+      ctx,
+      op,
+      {
+        projected: confirmed,
+        baseline: response as Record<string, unknown>,
+        pending: null,
+        updated: true,
+      },
+      true,
+    );
+    if (op.status === 'conflict') throw chartConflict();
+  }
 
   try {
-    for (let chartIndex = 0; chartIndex < working.length; chartIndex += 1) {
-      let chart = working[chartIndex]!;
-
-      if (chart.id == null || chart.id === '') {
-        // ---- Create ------------------------------------------------------
-        try {
-          const response = await api.createSizeChart(chartCreatePayload(chart));
-          chart = applyChartResponse(chart, response);
-          working[chartIndex] = chart;
-          updated = true;
-        } catch (err) {
-          const errors = chartValidationErrors(err, chartIndex, chart);
-          if (errors === null) throw err;
-          validationErrors.push(...errors);
-        }
-        continue;
-      }
-
-      // ---- Update: name first, then per-row diffs (legacy order) ---------
-      const chartId = chart.id;
-      const storedChart = stored.find((c) => c.id === chartId) ?? null;
-      let chartFailed = false;
-
-      if (storedChart == null || storedChart.nome !== chart.nome) {
-        try {
-          const response = await api.updateSizeChartName(chartId, {
-            [chartSiteId(chart)]: chart.nome ?? '',
+    // A pending step means the previous process may have died AFTER ML accepted
+    // it. Never blindly replay a creation, including a failed receipt commit.
+    if (op.pending != null) {
+      if (op.pending.kind === 'create') {
+        const knownId = op.baseline?.id;
+        const recoveryId =
+          request.recoveryChartId ??
+          (typeof knownId === 'string' || typeof knownId === 'number' ? String(knownId) : null);
+        if (!recoveryId) throw chartUnconfirmed();
+        const remote = await deps.api.getSizeChart(recoveryId);
+        const me = await deps.api.getMe();
+        if (
+          wireInt().safeParse(remote.seller_id).data !== me.id ||
+          remote.names?.[chartSiteId(op.projected)] !== op.projected.nome ||
+          remote.domain_id !== op.projected.domain_id?.split('-').slice(1).join('-') ||
+          (remote.rows ?? []).length !== (op.projected.rows ?? []).length ||
+          (op.projected.tipo != null && remote.measure_type !== op.projected.tipo) ||
+          !remoteRowMatches(
+            op.projected,
+            { id: null, attributes: op.projected.attributes },
+            { attributes: remote.attributes },
+          )
+        )
+          throw chartUnconfirmed();
+        const recovered = reconcileChartResponse(
+          { ...op.projected, main_attribute_id: remote.main_attribute_id },
+          remote,
+        );
+        if (
+          !(recovered.rows ?? []).every((row) =>
+            remoteRowMatches(recovered, row, remote.rows!.find((r) => sameRowId(r.id, row.id))!),
+          )
+        )
+          throw chartUnconfirmed();
+        await receipt(remote, true);
+      } else {
+        const remote = await deps.api.getSizeChart(op.projected.id!);
+        assertRemoteChart(op.projected, remote);
+        if (op.pending.kind === 'row' && !op.projected.rows?.[op.pending.rowIndex!]?.id) {
+          // Unknown row POST: a unique main-value match can recover its ID.
+          await receipt(remote);
+        } else {
+          op = await checkpointOperation(ctx, op, {
+            pending: null,
+            baseline: remote as Record<string, unknown>,
           });
-          chart = applyChartResponse(chart, response);
-          working[chartIndex] = chart;
-          updated = true;
-        } catch (err) {
-          const errors = chartValidationErrors(err, chartIndex, chart);
-          if (errors === null) throw err;
-          validationErrors.push(...errors);
-          // Legacy: a rejected rename reverts to the stored nome and the
-          // chart's remaining changes are skipped this round.
-          if (storedChart?.nome != null) chart = { ...chart, nome: storedChart.nome };
-          working[chartIndex] = chart;
-          chartFailed = true;
-        }
-      }
-
-      if (!chartFailed) {
-        const rows = chart.rows ?? [];
-        const storedRows = storedChart?.rows ?? [];
-        for (let index = 0; index < rows.length; index += 1) {
-          const row = chart.rows![index]!;
-          const storedRow = storedRows[index] ?? null;
-          if (!rowNeedsSend(row, storedRow)) continue;
-
-          try {
-            const response =
-              row.id != null && row.id !== ''
-                ? await api.updateSizeChartRow(chartId, row.id, chartRowPayload(chart, row))
-                : await api.addSizeChartRow(chartId, chartRowPayload(chart, row));
-            chart = applyChartResponse(chart, response);
-            working[chartIndex] = chart;
-            updated = true;
-          } catch (err) {
-            const errors = chartValidationErrors(err, chartIndex, chart, index);
-            if (errors === null) throw err;
-            validationErrors.push(...errors);
-            break; // legacy: stop this chart's rows, continue with the next chart
-          }
         }
       }
     }
+
+    if (op.projected.id) {
+      await checkpointOperation(ctx, op, {});
+      const remote = await deps.api.getSizeChart(op.projected.id);
+      assertRemoteChart(op.projected, remote);
+      op = await checkpointOperation(ctx, op, { baseline: remote as Record<string, unknown> });
+    }
+
+    async function send(
+      kind: 'create' | 'rename' | 'row',
+      rowIndex: number | null,
+      call: () => Promise<MlSizeChartApi>,
+    ) {
+      op = await checkpointOperation(ctx, op, { pending: { kind, rowIndex } });
+      // A transaction may itself have waited past the I/O budget. Do not
+      // initiate a remote mutation based on a guard from before that wait.
+      if (Date.now() >= ctx.deadlineMs || op.leaseUntilMs <= Date.now()) {
+        op = await checkpointOperation(ctx, op, { pending: null }, false, true);
+        throw new SizeChartOperationError(
+          'CHART_BUSY',
+          'O envio atingiu o limite de tempo. Tente novamente para retomar.',
+        );
+      }
+      try {
+        const response = await call();
+        await receipt(response, kind === 'create');
+      } catch (err) {
+        const errors = chartValidationErrors(
+          err,
+          op.chartIndex,
+          op.projected,
+          rowIndex ?? undefined,
+        );
+        if (errors == null) {
+          // A deterministic 4xx rejected the request. Network/5xx/invalid 2xx
+          // leave the journal pending because their remote outcome is unknown.
+          if (err instanceof MercadoLivreHttpError && err.status >= 400 && err.status < 500) {
+            op = await checkpointOperation(ctx, op, { pending: null });
+          }
+          throw err;
+        }
+        op = await checkpointOperation(
+          ctx,
+          op,
+          { pending: null, validationErrors: errors, status: 'validation' },
+          false,
+          true,
+        );
+      }
+    }
+
+    if (!op.projected.id) {
+      await send('create', null, () => deps.api.createSizeChart(chartCreatePayload(op.projected)));
+    } else {
+      const remote = op.baseline as MlSizeChartApi;
+      if (remote.names?.[chartSiteId(op.projected)] !== op.projected.nome) {
+        await send('rename', null, () =>
+          deps.api.updateSizeChartName(op.projected.id!, {
+            [chartSiteId(op.projected)]: op.projected.nome ?? '',
+          }),
+        );
+      }
+      for (
+        let index = 0;
+        index < (op.projected.rows ?? []).length && op.status === 'pending';
+        index++
+      ) {
+        const row = op.projected.rows![index]!;
+        const baseline = op.baseline as MlSizeChartApi;
+        const remoteRow = (baseline.rows ?? []).find((r) => sameRowId(r.id, row.id));
+        if (row.id && remoteRow && remoteRowMatches(op.projected, row, remoteRow)) continue;
+        if (row.id && !remoteRow) throw chartConflict();
+        await send('row', index, () =>
+          row.id
+            ? deps.api.updateSizeChartRow(
+                op.projected.id!,
+                row.id,
+                chartRowPayload(op.projected, row),
+              )
+            : deps.api.addSizeChartRow(op.projected.id!, chartRowPayload(op.projected, row)),
+        );
+      }
+    }
+    if (op.status === 'pending')
+      op = await checkpointOperation(ctx, op, { status: 'completed' }, false, true);
+    return result();
   } catch (err) {
-    // A hard error (429/5xx/network) aborts the sync, but the ids already
-    // obtained MUST land on the doc first — otherwise a created chart is
-    // orphaned on ML and every retry dies on `chart_name_unavailable`.
-    await persistProgress();
+    if (
+      !(
+        err instanceof MercadoLivreHttpError ||
+        err instanceof MercadoLivreNetworkError ||
+        err instanceof MercadoLivreValidationError ||
+        err instanceof SizeChartOperationError
+      )
+    )
+      throw err;
+    // Always release the worker, but retain an uncertain creation's reservation.
+    if (op.owner === ctx.owner)
+      op = await checkpointOperation(
+        ctx,
+        op,
+        { status: op.pending ? 'unconfirmed' : 'pending' },
+        false,
+        true,
+      );
     throw err;
   }
-
-  await persistProgress();
-  return { tabelas: working, validationErrors, updated };
 }

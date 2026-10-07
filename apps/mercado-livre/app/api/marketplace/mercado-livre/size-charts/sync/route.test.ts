@@ -10,6 +10,12 @@ const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),
   resolveChannelContext: vi.fn(),
   syncSizeCharts: vi.fn(),
+  currentOperation: vi.fn(),
+}));
+
+vi.mock('@/lib/marketplace/size-charts/sizeChartOperation', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/marketplace/size-charts/sizeChartOperation')>()),
+  currentOperation: h.currentOperation,
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -31,7 +37,7 @@ vi.mock('@/lib/marketplace/size-charts/sizeChartSync', async (importActual) => {
   return { ...actual, syncSizeCharts: h.syncSizeCharts };
 });
 
-const { POST } = await import('./route');
+const { POST, GET } = await import('./route');
 
 function req(body: unknown): Request {
   return new Request('http://localhost:3006/api/marketplace/mercado-livre/size-charts/sync', {
@@ -41,7 +47,13 @@ function req(body: unknown): Request {
   });
 }
 
-const VALID = { integracaoId: 'int-1', tabMediId: 'tm-1', tabelas: [] };
+const VALID = {
+  integracaoId: 'int-1',
+  tabMediId: 'tm-1',
+  operationId: '11111111-1111-4111-8111-111111111111',
+  chartIndex: 0,
+  chart: { nome: 'Chart', domain_id: 'MLB-PANTS' },
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -56,9 +68,35 @@ beforeEach(() => {
     resolveChannelContext: h.resolveChannelContext,
   });
   h.syncSizeCharts.mockResolvedValue({ tabelas: [], validationErrors: [], updated: false });
+  h.currentOperation.mockResolvedValue(null);
 });
 
 describe('POST /api/marketplace/mercado-livre/size-charts/sync', () => {
+  it('returns only recovery fields through the permission-gated status endpoint', async () => {
+    h.currentOperation.mockResolvedValue({
+      kind: 'sync',
+      id: VALID.operationId,
+      chartIndex: 0,
+      desired: VALID.chart,
+      projected: { ...VALID.chart, id: '501' },
+      status: 'unconfirmed',
+      baseline: { privateReceipt: 'hidden' },
+      owner: 'hidden',
+    });
+    const response = await GET(
+      new Request('http://localhost/api/size-charts/sync?integracaoId=int-1&tabMediId=tm-1'),
+    );
+    expect(await response.json()).toEqual({
+      operation: {
+        operationId: VALID.operationId,
+        chartIndex: 0,
+        chart: VALID.chart,
+        projected: { ...VALID.chart, id: '501' },
+        status: 'unconfirmed',
+      },
+    });
+    expect((await GET(new Request('http://localhost/api/size-charts/sync'))).status).toBe(400);
+  });
   it('runs the sync and returns its result (validation errors are DATA, 200)', async () => {
     h.syncSizeCharts.mockResolvedValue({
       tabelas: [{ id: '1', nome: 'x', domain_id: 'MLB-PANTS' }],
@@ -74,12 +112,12 @@ describe('POST /api/marketplace/mercado-livre/size-charts/sync', () => {
     const [deps, tabMediId, tabelas] = h.syncSizeCharts.mock.calls[0]!;
     expect(deps).toMatchObject({ integracaoId: 'int-1' });
     expect(tabMediId).toBe('tm-1');
-    expect(tabelas).toEqual([]);
+    expect(tabelas).toEqual({ operationId: VALID.operationId, chartIndex: 0, chart: VALID.chart });
   });
 
   it('400s on missing fields, invalid JSON and non-object bodies', async () => {
     expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
-    expect((await POST(req({ ...VALID, tabelas: 'not-an-array' }))).status).toBe(400);
+    expect((await POST(req({ ...VALID, chart: 'not-a-chart' }))).status).toBe(400);
     expect((await POST(req('{nope'))).status).toBe(400);
     // Legal JSON that isn't an object must 400, not crash to a 500.
     expect((await POST(req('null'))).status).toBe(400);

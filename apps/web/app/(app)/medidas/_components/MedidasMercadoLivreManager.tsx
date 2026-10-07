@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
 import { Alert, Anchor, Badge, Card, Group, Loader, Stack, Text } from '@mantine/core';
+import { valuesEqual } from '@delfrance/core';
 import { notifications } from '@mantine/notifications';
 import { useFormContext, type FieldValues } from 'react-hook-form';
 import { PERM } from '@delfrance/auth';
@@ -161,6 +162,7 @@ export function MedidasMercadoLivreManager({
   );
 
   const [target, setTarget] = useState<EditorTarget | null>(null);
+  const [recoveryChartId, setRecoveryChartId] = useState('');
   /**
    * `'<contaId>#<index>'` while that guia's delete/verify call is in flight —
    * it says which row shows the spinner.
@@ -174,6 +176,7 @@ export function MedidasMercadoLivreManager({
   const sessionRef = useRef(0);
 
   function openEditor(next: Omit<EditorTarget, 'session' | 'syncUnconfirmed'>): void {
+    setRecoveryChartId('');
     sessionRef.current += 1;
     setTarget({ ...next, session: sessionRef.current, syncUnconfirmed: false });
   }
@@ -222,7 +225,7 @@ export function MedidasMercadoLivreManager({
     }
   }
 
-  /** Persist first, then send the committed whole list once, outside the transaction. */
+  /** Persist immediately, then send only this committed target outside the transaction. */
   async function sendChart(
     ready: MercadoLivreClient,
     editor: EditorTarget,
@@ -233,13 +236,50 @@ export function MedidasMercadoLivreManager({
     chartIndex: number;
     chart: MlSizeChart;
   }> {
-    const saved = await saveChart(editor, chart, chartIndex);
+    let saved: SavedChart | null = editor.syncUnconfirmed
+      ? null
+      : await saveChart(editor, chart, chartIndex);
+    let operationId = crypto.randomUUID();
+    let desired = chart;
+    // Retrying after a lost response must discover the durable receipt BEFORE
+    // saving a stale grid over its confirmed IDs. A normal send persists first,
+    // including when the status endpoint is unreachable.
+    let pending: Awaited<ReturnType<MercadoLivreClient['sizeChartSyncStatus']>>['operation'];
+    try {
+      pending = (await ready.sizeChartSyncStatus({ integracaoId: editor.integracaoId, tabMediId }))
+        .operation;
+    } catch (err) {
+      if (
+        !(
+          err instanceof MercadoLivreClientHttpError ||
+          err instanceof MercadoLivreClientNetworkError
+        )
+      )
+        throw err;
+      markSyncUnconfirmed(editor);
+      throw err;
+    }
+    const sameTarget = pending != null && pending.chartIndex === (saved?.index ?? chartIndex);
+    if (
+      pending != null &&
+      sameTarget &&
+      (valuesEqual(chart, pending.chart) || valuesEqual(chart, pending.projected))
+    ) {
+      operationId = pending.operationId;
+      desired = pending.chart;
+      saved = { index: pending.chartIndex, chart: pending.projected, tabelas: [] };
+    } else if (saved == null) {
+      saved = await saveChart(editor, chart, chartIndex);
+    }
     let result: Awaited<ReturnType<MercadoLivreClient['sizeChartSync']>>;
     try {
       result = await ready.sizeChartSync({
         integracaoId: editor.integracaoId,
         tabMediId,
-        tabelas: saved.tabelas,
+        operationId,
+        chartIndex: saved.index,
+        chart: desired,
+        recoveryChartId: recoveryChartId || null,
       });
     } catch (err) {
       if (
@@ -253,11 +293,19 @@ export function MedidasMercadoLivreManager({
       markSyncUnconfirmed(editor);
       throw err;
     }
+    if (
+      result.operationId !== operationId ||
+      result.chartIndex !== saved.index ||
+      (result.status !== 'completed' && result.status !== 'validation')
+    ) {
+      markSyncUnconfirmed(editor);
+      throw new SizeChartSyncUnconfirmedError();
+    }
     const parsed = mlSizeChartSchema.safeParse(result.tabelas[saved.index]);
     if (
       !parsed.success ||
-      parsed.data.nome !== saved.chart.nome ||
-      parsed.data.domain_id !== saved.chart.domain_id ||
+      parsed.data.nome !== desired.nome ||
+      parsed.data.domain_id !== desired.domain_id ||
       (saved.chart.id != null && saved.chart.id !== '' && parsed.data.id !== saved.chart.id)
     ) {
       markSyncUnconfirmed(editor);
@@ -606,6 +654,9 @@ export function MedidasMercadoLivreManager({
           chartIndex={target.chartIndex}
           grupos={grupos}
           canWrite={canWrite}
+          recoveryRequired={target.syncUnconfirmed}
+          recoveryChartId={recoveryChartId}
+          onRecoveryChartId={setRecoveryChartId}
           onSaveDraft={async (chart, chartIndex) => {
             await saveChart(target, chart, chartIndex);
           }}
@@ -641,7 +692,7 @@ function describeChartError(
     return {
       color: 'red',
       message:
-        err.status === 409
+        err.status === 409 && err.code === 'ML_REAUTH_REQUIRED'
           ? 'Conta Mercado Livre não conectada — reconecte em Canais de venda.'
           : err.message,
     };

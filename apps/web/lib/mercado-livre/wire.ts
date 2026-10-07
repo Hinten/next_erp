@@ -42,6 +42,7 @@
  * ourselves.
  */
 import { z } from 'zod';
+import { mlSizeChartSchema } from '@delfrance/schemas';
 
 import { wireInt, wireNumber } from '@delfrance/core/wire';
 
@@ -997,12 +998,27 @@ export const chartValidationErrorSchema = z.object({
 export type MercadoLivreChartValidationError = z.infer<typeof chartValidationErrorSchema>;
 
 export const syncChartsResultSchema = z.object({
+  operationId: z.string(),
+  chartIndex: z.number().int().nonnegative(),
+  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed']),
   /** The charts after the sync (ML ids written back where accepted). */
   tabelas: tabelasSchema,
   validationErrors: z.array(chartValidationErrorSchema),
   updated: z.boolean(),
 });
 export type MercadoLivreSyncChartsResult = z.infer<typeof syncChartsResultSchema>;
+export const chartSyncStatusSchema = z.object({
+  operation: z
+    .object({
+      operationId: z.string(),
+      chartIndex: z.number().int().nonnegative(),
+      chart: mlSizeChartSchema,
+      projected: mlSizeChartSchema,
+      status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed']),
+    })
+    .nullable(),
+});
+export type MercadoLivreChartSyncStatus = z.infer<typeof chartSyncStatusSchema>;
 
 /** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
 export const chartDeleteResultSchema = z.object({

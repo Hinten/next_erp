@@ -778,6 +778,10 @@ export {
   type SizeChartMiss,
   type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
+export {
+  mlSizeChartSyncRequestSchema,
+  type MlSizeChartSyncRequest,
+} from './tabelaDeMedidasMercadoLivre';
 
 // Shopee size charts (step 18, #1526): the stored entry, its read slice and THE
 // selection rule publish and `/medidas` both call (#1369 — one copy).

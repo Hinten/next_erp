@@ -45,6 +45,7 @@ const h = vi.hoisted(() => ({
   editor: null as EditorProps | null,
   save: vi.fn<(input: SaveChartInput) => Promise<SavedChart>>(),
   sync: vi.fn<MercadoLivreClient['sizeChartSync']>(),
+  syncStatus: vi.fn<MercadoLivreClient['sizeChartSyncStatus']>(),
 }));
 
 const CONTA = { id: 'conta-1', path: 'integracao/conta-1', data: { nome: 'Loja Teste' } };
@@ -112,7 +113,8 @@ vi.mock('@/lib/mercado-livre/client', async (importOriginal) => ({
   // `describeChartError` narrows on the real error classes (rule 6), so the
   // module is kept whole and only the hook is replaced.
   ...(await importOriginal<typeof import('@/lib/mercado-livre/client')>()),
-  useMercadoLivreClient: () => (h.hasClient ? { sizeChartSync: h.sync } : null),
+  useMercadoLivreClient: () =>
+    h.hasClient ? { sizeChartSync: h.sync, sizeChartSyncStatus: h.syncStatus } : null,
 }));
 
 // Probe the manager callbacks; the real modal owns its own input/error tests.
@@ -193,6 +195,8 @@ beforeEach(() => {
   h.editor = null;
   h.save.mockReset();
   h.sync.mockReset();
+  h.syncStatus.mockReset();
+  h.syncStatus.mockResolvedValue({ operation: null });
   h.save.mockImplementation((input) =>
     Promise.resolve({
       tabelas: [input.chart],
@@ -201,7 +205,16 @@ beforeEach(() => {
     }),
   );
   h.sync.mockImplementation((input) =>
-    Promise.resolve({ tabelas: input.tabelas, validationErrors: [], updated: false }),
+    Promise.resolve({
+      operationId: input.operationId,
+      chartIndex: input.chartIndex,
+      status: 'completed',
+      tabelas: Array.from({ length: input.chartIndex + 1 }, (_, i) =>
+        i === input.chartIndex ? input.chart : {},
+      ),
+      validationErrors: [],
+      updated: false,
+    }),
   );
 });
 
@@ -343,7 +356,7 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
     expect((input as HTMLInputElement).value).toBe('90,5');
   });
 
-  it('waits for the transaction result and sends its committed whole list exactly once', async () => {
+  it('waits for the transaction result and sends only the committed target exactly once', async () => {
     openExisting();
     const pending = deferred<SavedChart>();
     const other = { ...GUIA_ENVIADA, id: 'OTHER', nome: 'Outra guia' };
@@ -360,7 +373,10 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
     expect(h.sync).toHaveBeenCalledWith({
       integracaoId: 'conta-1',
       tabMediId: 'tab-1',
-      tabelas: [edited, other],
+      chart: edited,
+      chartIndex: 0,
+      operationId: expect.any(String),
+      recoveryChartId: null,
     });
   });
 
@@ -386,11 +402,16 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
       },
     ];
     h.save.mockResolvedValueOnce({ tabelas: [GUIA_ENVIADA, draft], index: 1, chart: draft });
-    h.sync.mockResolvedValueOnce({
-      tabelas: [GUIA_ENVIADA, canonical],
-      validationErrors: errors,
-      updated: true,
-    });
+    h.sync.mockImplementationOnce((input) =>
+      Promise.resolve({
+        operationId: input.operationId,
+        chartIndex: 1,
+        status: 'validation',
+        tabelas: [GUIA_ENVIADA, canonical],
+        validationErrors: errors,
+        updated: true,
+      }),
+    );
 
     await act(async () => {
       expect(await h.editor!.onSend(draft, null)).toEqual({
@@ -433,7 +454,16 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
     { tabelas: [{ ...edited, domain_id: 'MLB-PANTS' }] },
   ])('keeps the last local baseline after an unreadable sync response: %j', async (response) => {
     openExisting();
-    h.sync.mockResolvedValue({ ...response, validationErrors: [], updated: true });
+    h.sync.mockImplementation((input) =>
+      Promise.resolve({
+        ...response,
+        operationId: input.operationId,
+        chartIndex: input.chartIndex,
+        status: 'completed',
+        validationErrors: [],
+        updated: true,
+      }),
+    );
     await act(async () => {
       await expect(h.editor!.onSend(edited, 0)).rejects.toBeInstanceOf(SizeChartConflictError);
     });
@@ -497,5 +527,46 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
       await expect(h.editor!.onSend(edited, 0)).resolves.toMatchObject({ chart: edited });
     });
     expect(h.sync).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists the draft before a failed recovery-status lookup', async () => {
+    openExisting();
+    const failure = new MercadoLivreClientNetworkError('Offline', new TypeError('Offline'));
+    h.syncStatus.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBe(failure);
+    });
+    expect(h.save).toHaveBeenCalledTimes(1);
+    expect(h.editor?.chart).toEqual(edited);
+    expect(h.sync).not.toHaveBeenCalled();
+  });
+
+  it('recovers partial IDs with the original operation instead of saving a stale retry', async () => {
+    openExisting();
+    const chart = { ...edited, rows: [{ id: 'MLB-CHART-1:1' }, { id: null }] };
+    const projected = { ...chart, rows: [{ id: 'MLB-CHART-1:1' }, { id: 'MLB-CHART-1:2' }] };
+    const failure = new MercadoLivreClientNetworkError('Offline', new TypeError('Offline'));
+    h.sync.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(h.editor!.onSend(chart, 0)).rejects.toBe(failure);
+    });
+    const id = h.sync.mock.calls[0]![0].operationId;
+    h.syncStatus.mockResolvedValueOnce({
+      operation: { operationId: id, chartIndex: 0, chart, projected, status: 'unconfirmed' },
+    });
+    h.sync.mockResolvedValueOnce({
+      operationId: id,
+      chartIndex: 0,
+      status: 'completed',
+      tabelas: [projected],
+      validationErrors: [],
+      updated: true,
+    });
+    await act(async () => {
+      await expect(h.editor!.onSend(chart, 0)).resolves.toMatchObject({ chart: projected });
+    });
+    expect(h.save).toHaveBeenCalledTimes(1);
+    expect(h.sync.mock.calls[1]![0]).toMatchObject({ operationId: id, chart });
+    expect(h.editor?.chart).toEqual(projected);
   });
 });
