@@ -5,6 +5,7 @@ import {
   idFromRef,
   pedidoSchema,
   toOuterRef,
+  type DfeReferenciadoItem,
   type ItemDoPedido,
   type Pedido,
 } from '@delfrance/schemas';
@@ -142,10 +143,37 @@ function itensDaDevolucao(
     const refs = referenciarItensDaDevolucao(doBucket, notasDeOrigem.get(originKey) ?? []);
     doBucket.forEach((item, i) => {
       const key = item.produtoUid && item.produtoUid !== '' ? item.produtoUid : NONE_KEY;
-      (itens[key] ??= []).push({ ...item, dfeReferenciado: refs[i] ?? null });
+      (itens[key] ??= []).push(itemDaDevolucao(item, refs[i] ?? null));
     });
   }
   return itens;
+}
+
+/**
+ * One devolução line from the origin line it returns — the ONE place both
+ * builders turn a cloned sale line into an entrada line. Two fields describe
+ * the ORIGIN's nota rather than this one, so neither survives the clone:
+ *
+ *  - `dfeReferenciado` becomes `ref`, the origin line this item returns (#1683).
+ *  - `imposto` becomes `null`. A stamped imposto WINS at emission over the
+ *    devolução operação (`camposProdutoFiscal`: the item's `cfop` first, the
+ *    operação's only as a fallback), so a sale line's 5102 would ride into a
+ *    finNFe=4 entrada and SEFAZ refuses it — cStat 327 (MOC Anexo I, I08-140:
+ *    a devolução accepts only devolução CFOPs), with no screen on which the
+ *    operator could change an item's CFOP. `null` sends the line through the
+ *    resolver cascade under the DEVOLUÇÃO operação instead: its produto /
+ *    categoria imposto for that operação, its regras, its own default.
+ *
+ * ⚠️ Today this is a no-op on every document: no writer in this repo stamps an
+ * item imposto (the pedido form, Mercado Livre and Shopee all write `null`, and
+ * the NF-e cascade resolves in memory only), and no legacy Flutter writer ever
+ * did — none in its 2,672 commits. It guards the day something persists the
+ * resolved imposto onto the pedido. Legacy precedent: the Flutter check-in
+ * devolução dropped it too (`.old/lib/despacho/pages/checkin.dart:596-604`),
+ * while its troca and integral flows copied it verbatim.
+ */
+function itemDaDevolucao(item: ItemDoPedido, ref: DfeReferenciadoItem | null): ItemDoPedido {
+  return { ...item, dfeReferenciado: ref, imposto: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +183,8 @@ function itensDaDevolucao(
 /**
  * Build the entrada devolução pedido doc (sans id/numero) from a saída's
  * `itensDevolvidos` — its items are {@link itensDaDevolucao}, each referencing
- * its origin NF-e's line, and `chNFeReferenciadas` stays null (rule 1010).
+ * its origin NF-e's line and carrying no `imposto` ({@link itemDaDevolucao}),
+ * and `chNFeReferenciadas` stays null (rule 1010).
  * `ehSaida: false`, `estado: 'pago'`; the cliente/endereço/lista/vendedor/
  * integração refs are copied from the saída; money caches come from
  * `derivePedidoTotals` exactly like the form resolver (`valorCobrado` = the
@@ -521,7 +550,8 @@ export const DEVOLUCAO_INTEGRAL_STRIP_KEYS = [
  * `dfeReferenciado` is replaced by the reference to the line it returns in the
  * origin's approved NF-e ({@link referenciarItensDaDevolucao}, #1683) — the
  * clone's own value is whatever the ORIGIN item referenced, never this — and
- * `chNFeReferenciadas` stays null (rule 1010).
+ * its `imposto` is cleared ({@link itemDaDevolucao}); `chNFeReferenciadas`
+ * stays null (rule 1010).
  *
  * Deliberate divergence-safe cleanup beyond the strip keys: the clone also
  * nulls `entradasRelacionadas` / `saidasRelacionadas` / `itensDevolvidos` /
@@ -574,8 +604,9 @@ export async function buildDevolucaoIntegralSeed(
 }
 
 /**
- * `itens` with every line's `dfeReferenciado` replaced by its reference in the
- * origin's notas. The lines of all produtos are matched TOGETHER, in the
+ * `itens` with every line made a devolução line ({@link itemDaDevolucao}): its
+ * `dfeReferenciado` replaced by its reference in the origin's notas, its
+ * `imposto` cleared. The lines of all produtos are matched TOGETHER, in the
  * pedido's line order, because the origin numbered its dets across produtos.
  */
 function comReferencias(
@@ -592,7 +623,7 @@ function comReferencias(
   const out: Record<string, ItemDoPedido[]> = {};
   for (const [key, lista] of Object.entries(itens)) out[key] = [...lista];
   linhas.forEach(({ key, posicao, item }, i) => {
-    out[key]![posicao] = { ...item, dfeReferenciado: refs[i] ?? null };
+    out[key]![posicao] = itemDaDevolucao(item, refs[i] ?? null);
   });
   return out;
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { pedidoSchema, type ItemDoPedido, type Pedido } from '@delfrance/schemas';
+import {
+  itemDoPedidoSchema,
+  pedidoSchema,
+  type ItemDoPedido,
+  type Pedido,
+} from '@delfrance/schemas';
 import { createFakeDevolucaoPort } from './fakePort';
 import { PedidoConflictError } from './usecases';
 import { PEDIDO_COUNTER_PATH } from './numero';
@@ -26,6 +31,32 @@ const NOW = 1_700_000_000_000_000; // the fake port's default µs clock
 
 const item = (produtoUid: string | null, quantidade: number, precoDeVenda = 10): ItemDoPedido =>
   ({ produtoUid, quantidade, precoDeVenda }) as unknown as ItemDoPedido;
+
+/**
+ * A sale line as a writer that persisted the resolved imposto would store it:
+ * SAÍDA CFOPs, which win over the operação's at emission. No writer stamps one
+ * today (see `itemDaDevolucao`); these pin that one cannot reach a devolução.
+ * Fully parsed, so a whole-line `toEqual` also catches a clone that drops more
+ * than the imposto.
+ */
+const IMPOSTO_DA_VENDA = {
+  origem: '0',
+  cfop: '5102',
+  cfopInterestadual: '6102',
+  NCM: '61091000',
+  unidade: 'UN',
+} as const;
+const linhaDaVenda = (produtoUid: string, quantidade: number, precoDeVenda: number): ItemDoPedido =>
+  itemDoPedidoSchema.parse({
+    produtoUid,
+    quantidade,
+    precoDeVenda,
+    sku: `SKU-${produtoUid}`,
+    nomeDeVenda: `Camiseta ${produtoUid}`,
+    descontoUnitario: 1,
+    custo: 12,
+    imposto: IMPOSTO_DA_VENDA,
+  });
 
 /** Resolved saída form values, as the PedidoForm resolver would hand them over. */
 const saidaValues = (over: Record<string, unknown> = {}): Pedido =>
@@ -346,6 +377,27 @@ describe('buildDevolucaoPedido', () => {
     expect(doc.chNFeReferenciadas).toBeNull();
     expect(doc.operacaoPedidoOuterRef).toBeNull();
   });
+
+  it("clears every cloned line's stamped imposto — its saída CFOP would beat the devolução operação's (cStat 327)", () => {
+    const { port } = createFakeDevolucaoPort();
+    const daOrigem = linhaDaVenda('p1', 1, 50);
+    const avulsa = linhaDaVenda('p3', 1, 20);
+    const doc = buildDevolucaoPedido(port, {
+      saida: saidaValues(),
+      itensDevolvidos: { o1: { p1: [daOrigem] }, NONE: { p3: [avulsa] } },
+      operacaoOuterRef: 'documents/operacao/opDev',
+      notasDeOrigem: SEM_NOTAS,
+      saidasRelacionadas: ['o1'],
+    });
+    const itens = doc.itens as Record<string, ItemDoPedido[]>;
+    // Only the imposto goes (the reference has its own tests above): the rest
+    // of the line is the returned goods and survives verbatim.
+    expect(itens.p1).toEqual([{ ...daOrigem, imposto: null, dfeReferenciado: null }]);
+    expect(itens.p3).toEqual([{ ...avulsa, imposto: null, dfeReferenciado: null }]);
+    // Cleared on a copy: `criarSaidaComDevolucao` writes this same
+    // `itensDevolvidos` onto the saída in the same transaction.
+    expect(daOrigem.imposto).toEqual(IMPOSTO_DA_VENDA);
+  });
 });
 
 describe('criarSaidaComDevolucao', () => {
@@ -660,6 +712,27 @@ describe('buildDevolucaoIntegralSeed', () => {
     expect(values.numero).toBeNull();
     expect(operacao).toMatchObject({ id: 'opDev', fiscalCapable: true });
     expect(originNumero).toBe('VEN-000010');
+  });
+
+  it("clears every cloned line's stamped imposto, keeping the rest of the line", async () => {
+    const linhas = [linhaDaVenda('p1', 3, 25), linhaDaVenda('p1', 1, 25)];
+    const outra = linhaDaVenda('p2', 2, 40);
+    const { port } = createFakeDevolucaoPort({
+      docs: {
+        'pedidos/o1': { ...origin, itens: { p1: linhas, p2: [outra] }, itensIds: ['p1', 'p2'] },
+        'integracao/i1': { operacaoDevolucaoOuterRef: 'documents/operacao/opDev' },
+        'operacao/opDev': OPERACAO_DEVOLUCAO,
+      },
+    });
+    const { values } = await buildDevolucaoIntegralSeed(port, {
+      originId: 'o1',
+      usuarioRef: 'documents/usuarios/u9',
+    });
+    // The origin has no approved NF-e here, so the reference is null as well.
+    expect(values.itens).toEqual({
+      p1: linhas.map((l) => ({ ...l, imposto: null, dfeReferenciado: null })),
+      p2: [{ ...outra, imposto: null, dfeReferenciado: null }],
+    });
   });
 
   it('throws PedidoConflictError when the origin no longer exists', async () => {
