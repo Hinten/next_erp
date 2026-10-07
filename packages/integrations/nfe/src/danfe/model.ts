@@ -93,6 +93,13 @@ export interface DanfeIde {
   readonly xJust: string | null;
   /** Referenced NF-e chaves (`ide.NFref[].refNFe`) — shown in infCpl. */
   readonly refNFes: ReadonlyArray<string>;
+  /**
+   * Chaves referenced PER ITEM (`det[].DFeReferenciado.chaveAcesso`, NT 2025.002
+   * Grupo VC), distinct, in det order — shown in infCpl too. Since VC02-14 a
+   * devolução carries its origin ONLY here (#1683): reading `NFref` alone would
+   * print a devolução's DANFE without the nota it returns.
+   */
+  readonly refDFes: ReadonlyArray<string>;
 }
 
 /** One item row (det → prod + the extracted ICMS/IPI columns). */
@@ -348,6 +355,13 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       dhCont: ide.dhCont ?? null,
       xJust: ide.xJust ?? null,
       refNFes: (ide.NFref ?? []).map((r) => r.refNFe).filter((c): c is string => Boolean(c)),
+      refDFes: [
+        ...new Set(
+          (infNFe.det ?? [])
+            .map((d) => d.DFeReferenciado?.chaveAcesso)
+            .filter((c): c is string => Boolean(c)),
+        ),
+      ],
     },
     emit: {
       nome: emit.xNome,

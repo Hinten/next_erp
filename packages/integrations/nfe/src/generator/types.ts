@@ -90,8 +90,9 @@ export interface GeneratorItem {
   /**
    * `det/DFeReferenciado` (NT 2025.002 Grupo VC) — the item of ANOTHER NF-e this
    * line refers to. The caller has already judged the document rules
-   * (`violacoesDoDocumento` in `@delfrance/schemas`: RTC on, no `NFref`, one
-   * chave, `nItem` present…); the generator only emits it, re-checking just the
+   * (`violacoesDoDocumento` in `@delfrance/schemas`: no `NFref`, one chave,
+   * `nItem` present, RTC on except on a devolução — where it is mandatory on
+   * every item, #1683); the generator only emits it, re-checking just the
    * shapes the XSD would refuse. Absent ⇒ byte-identical det.
    */
   readonly dfeReferenciado?: { readonly chaveAcesso: string; readonly nItem?: number };
@@ -262,9 +263,15 @@ export interface GeneratorInput {
   readonly cNF?: string;
   /**
    * Chaves de acesso (44 characters each) of the NF-es this document references,
-   * emitted as `ide.NFref[].refNFe`. Required for devolução (finNFe=4) and
-   * complementar (finNFe=2) notes so SEFAZ links them to the original. Sourced
-   * from `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
+   * emitted as `ide.NFref[].refNFe`. Required for a complementar (finNFe=2) and
+   * some notas de crédito so SEFAZ links them to the original. Sourced from
+   * `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
+   *
+   * ⚠️ NOT for a devolução (finNFe=4) any more: NT 2025.002 VC02-14 (cStat 321)
+   * demands its reference PER ITEM ({@link GeneratorItem.dfeReferenciado}) and
+   * VC02-05 (1010) refuses both together — measured at SEFAZ-SP homologação with
+   * and without the Reforma Tributária (#1683). The generator does not police
+   * that; the caller's document rules do.
    */
   readonly chNFeReferenciadas?: readonly string[];
   /**

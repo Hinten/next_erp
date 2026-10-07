@@ -16,6 +16,12 @@ import {
   type PedidoEnderecoCopyPlan,
 } from './enderecoCopy';
 import type { PedidoDataPort, PedidoDevolucaoDataPort, PedidoWriteOp } from './port';
+import {
+  lerNotasDeOrigem,
+  referenciarItensDaDevolucao,
+  referenciasPendentes as contarReferenciasPendentes,
+  type NotaDeOrigem,
+} from './referenciaDevolucao';
 import { PedidoConflictError, buildIncidenteOp, remotelyChangedFields } from './usecases';
 import { PEDIDO_COUNTER_PATH, mintNumeros, operacaoNumeroPrefix } from './numero';
 
@@ -104,41 +110,42 @@ export async function resolveDevolucaoOperacao(
 }
 
 // ---------------------------------------------------------------------------
-// NF-e chaves referenciadas
+// The origin references — per ITEM since NT 2025.002 VC02-14 (#1683)
 // ---------------------------------------------------------------------------
 
 /**
- * Collect the approved NF-e chaves of the origin pedidos, for the devolução's
- * `chNFeReferenciadas`. `'first'` takes the first approved doc with a
- * NON-EMPTY chave per origin (the legacy #488 troca flow — a null-chave first
- * doc must not silently drop the origin's reference); `'all'` takes every
- * approved chave (the legacy #551 integral pre-seed). Null/empty chaves are
- * skipped; an origin with no approved NF-e contributes nothing. The per-origin
- * reads run concurrently; the result preserves the `originIds` order.
+ * A devolução references its origin NF-e per item (`det/DFeReferenciado`),
+ * never per nota: VC02-14 (cStat 321) demands the item reference, and VC02-05
+ * (1010) refuses a nota carrying both, so the builders below set each item's
+ * `dfeReferenciado` and leave `chNFeReferenciadas` null. The matching itself —
+ * which origin line each item returns — is `referenciaDevolucao.ts`.
  *
- * `listNFesAprovadas` carries no orderBy (Firestore result order is undefined),
- * so the docs are sorted here by `ultima_modificacao` desc — "first" then
- * deterministically means the LATEST approved NF-e, matching the app's other
- * latest-NF-e pickers.
+ * The devolução's items, re-keyed by produtoUid across ALL outer
+ * `itensDevolvidos` buckets (the `'NONE'` avulso bucket included — the legacy
+ * flow iterated every origin), keeping only `quantidade > 0` and the item
+ * order, each carrying the reference to its OWN origin's NF-e. The reference is
+ * resolved per bucket BEFORE the re-key, because the bucket key is the only
+ * link back to the origin: two origins returning the same produto end up in one
+ * list, and each item keeps its own chave. An avulso item (no origin) and an
+ * origin without an approved NF-e get `null` — never the reference the item was
+ * cloned with, which points at whatever the ORIGIN item referenced.
  */
-export async function collectChNFeReferenciadas(
-  port: PedidoDevolucaoDataPort,
-  originIds: ReadonlyArray<string>,
-  perOrigin: 'first' | 'all',
-): Promise<string[]> {
-  const modificacaoDe = (nfe: Record<string, unknown>): number =>
-    typeof nfe.ultima_modificacao === 'number' ? nfe.ultima_modificacao : Number.NEGATIVE_INFINITY;
-  const perOriginChaves = await Promise.all(
-    originIds.map(async (originId) => {
-      const nfes = await port.listNFesAprovadas(originId);
-      const chaves = [...nfes]
-        .sort((a, b) => modificacaoDe(b) - modificacaoDe(a))
-        .map((nfe) => nfe.chave)
-        .filter((chave): chave is string => typeof chave === 'string' && chave !== '');
-      return perOrigin === 'first' ? chaves.slice(0, 1) : chaves;
-    }),
-  );
-  return perOriginChaves.flat();
+function itensDaDevolucao(
+  itensDevolvidos: ItensDevolvidos,
+  notasDeOrigem: ReadonlyMap<string, readonly NotaDeOrigem[]>,
+): Record<string, ItemDoPedido[]> {
+  const itens: Record<string, ItemDoPedido[]> = {};
+  for (const [originKey, porProduto] of Object.entries(itensDevolvidos)) {
+    const doBucket = Object.values(porProduto)
+      .flat()
+      .filter((item) => item.quantidade > 0);
+    const refs = referenciarItensDaDevolucao(doBucket, notasDeOrigem.get(originKey) ?? []);
+    doBucket.forEach((item, i) => {
+      const key = item.produtoUid && item.produtoUid !== '' ? item.produtoUid : NONE_KEY;
+      (itens[key] ??= []).push({ ...item, dfeReferenciado: refs[i] ?? null });
+    });
+  }
+  return itens;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,9 +154,8 @@ export async function collectChNFeReferenciadas(
 
 /**
  * Build the entrada devolução pedido doc (sans id/numero) from a saída's
- * `itensDevolvidos`: items re-keyed by produtoUid across ALL outer buckets
- * (including the `'NONE'` avulso bucket — the legacy flow iterated every
- * origin), keeping only items with `quantidade > 0` and preserving item order.
+ * `itensDevolvidos` — its items are {@link itensDaDevolucao}, each referencing
+ * its origin NF-e's line, and `chNFeReferenciadas` stays null (rule 1010).
  * `ehSaida: false`, `estado: 'pago'`; the cliente/endereço/lista/vendedor/
  * integração refs are copied from the saída; money caches come from
  * `derivePedidoTotals` exactly like the form resolver (`valorCobrado` = the
@@ -164,20 +170,11 @@ export function buildDevolucaoPedido(
     saida: Pedido;
     itensDevolvidos: ItensDevolvidos;
     operacaoOuterRef: string | null;
-    chNFeReferenciadas: ReadonlyArray<string>;
+    notasDeOrigem: ReadonlyMap<string, readonly NotaDeOrigem[]>;
     saidasRelacionadas: ReadonlyArray<string>;
   },
 ): Record<string, unknown> {
-  const itens: Record<string, ItemDoPedido[]> = {};
-  for (const porProduto of Object.values(args.itensDevolvidos)) {
-    for (const lista of Object.values(porProduto)) {
-      for (const item of lista) {
-        if (!(item.quantidade > 0)) continue;
-        const key = item.produtoUid && item.produtoUid !== '' ? item.produtoUid : NONE_KEY;
-        (itens[key] ??= []).push(item);
-      }
-    }
-  }
+  const itens = itensDaDevolucao(args.itensDevolvidos, args.notasDeOrigem);
 
   const totals = derivePedidoTotals({
     itens: Object.values(itens).flat(),
@@ -198,7 +195,7 @@ export function buildDevolucaoPedido(
     enderecoFiscalOuterRef: args.saida.enderecoFiscalOuterRef ?? null,
     listaDePrecosOuterRef: args.saida.listaDePrecosOuterRef ?? null,
     operacaoPedidoOuterRef: args.operacaoOuterRef,
-    chNFeReferenciadas: args.chNFeReferenciadas.length > 0 ? [...args.chNFeReferenciadas] : null,
+    chNFeReferenciadas: null,
     saidasRelacionadas: [...args.saidasRelacionadas],
     valorCobrado: totals.valorCobrado,
     timestamp: now,
@@ -220,8 +217,14 @@ export interface DevolucaoSavePrepared {
   /** Any read origin already links an entrada (a previous devolução exists). */
   temOutraDevolucao: boolean;
   operacao: DevolucaoOperacaoInfo;
-  /** First approved chave per origin (legacy #488). */
-  chNFeReferenciadas: string[];
+  /** Per origin id, its approved NF-es (latest first) — what each item references (#1683). */
+  notasDeOrigem: ReadonlyMap<string, readonly NotaDeOrigem[]>;
+  /**
+   * How many of the devolução's items would lack a complete reference (chave +
+   * origin `nItem`) — its NF-e would be refused, so the "emitir NF-e?" dialog
+   * is skipped with a warning instead.
+   */
+  referenciasPendentes: number;
 }
 
 /**
@@ -248,13 +251,16 @@ export async function prepareDevolucaoSave(
   // `''` is excluded like `'NONE'` (matching `novosOriginsDeTroca`): an empty
   // key would reach `getPedido('')` and throw an invalid doc-ref error.
   const originIds = Object.keys(itensDevolvidos).filter((k) => k !== NONE_KEY && k !== '');
-  // Independent reads — the baselines, the chaves and the operação never feed
-  // each other, so run them all concurrently.
-  const [origins, chNFeReferenciadas, operacao] = await Promise.all([
+  // Independent reads — the baselines, the origin NF-es and the operação never
+  // feed each other, so run them all concurrently.
+  const [origins, notasDeOrigem, operacao] = await Promise.all([
     Promise.all(originIds.map((originId) => port.getPedido(originId))),
-    collectChNFeReferenciadas(port, originIds, 'first'),
+    lerNotasDeOrigem(port, originIds),
     resolveDevolucaoOperacao(port, { integracaoOuterRef: values.integracaoPedidoOuterRef }),
   ]);
+  const referenciasPendentes = contarReferenciasPendentes(
+    Object.values(itensDaDevolucao(itensDevolvidos, notasDeOrigem)).flat(),
+  );
 
   const originBaselines = new Map<string, Record<string, unknown>>();
   let temOutraDevolucao = false;
@@ -266,7 +272,14 @@ export async function prepareDevolucaoSave(
       temOutraDevolucao = true;
     }
   });
-  return { originIds, originBaselines, temOutraDevolucao, operacao, chNFeReferenciadas };
+  return {
+    originIds,
+    originBaselines,
+    temOutraDevolucao,
+    operacao,
+    notasDeOrigem,
+    referenciasPendentes,
+  };
 }
 
 /**
@@ -307,7 +320,7 @@ export async function criarSaidaComDevolucao(
     saida: values,
     itensDevolvidos: values.itensDevolvidos ?? {},
     operacaoOuterRef: prepared.operacao.outerRef,
-    chNFeReferenciadas: prepared.chNFeReferenciadas,
+    notasDeOrigem: prepared.notasDeOrigem,
     saidasRelacionadas: prepared.originIds,
   });
   const prefixes = [
@@ -503,8 +516,12 @@ export const DEVOLUCAO_INTEGRAL_STRIP_KEYS = [
  * pedido cloned with the {@link DEVOLUCAO_INTEGRAL_STRIP_KEYS} removed and
  * re-parsed so defaults refill (`estado` has no schema default, so it is reset
  * to `'iniciado'` explicitly — the entrada restarts the flow), `ehSaida: false`,
- * the devolução operação resolved from the origin's integração, ALL approved
- * chaves referenced, and the current user as vendedor. Items are copied as-is.
+ * the devolução operação resolved from the origin's integração and the current
+ * user as vendedor. Items are copied as-is, except that each one's
+ * `dfeReferenciado` is replaced by the reference to the line it returns in the
+ * origin's approved NF-e ({@link referenciarItensDaDevolucao}, #1683) — the
+ * clone's own value is whatever the ORIGIN item referenced, never this — and
+ * `chNFeReferenciadas` stays null (rule 1010).
  *
  * Deliberate divergence-safe cleanup beyond the strip keys: the clone also
  * nulls `entradasRelacionadas` / `saidasRelacionadas` / `itensDevolvidos` /
@@ -529,27 +546,55 @@ export async function buildDevolucaoIntegralSeed(
   const clone: Record<string, unknown> = { ...origin };
   for (const key of DEVOLUCAO_INTEGRAL_STRIP_KEYS) delete clone[key];
 
-  // Independent reads — run the operação resolution and the chave collection
+  // Independent reads — run the operação resolution and the origin NF-es
   // concurrently.
-  const [operacao, chaves] = await Promise.all([
+  const [operacao, notasDeOrigem] = await Promise.all([
     resolveDevolucaoOperacao(port, { integracaoOuterRef: origin.integracaoPedidoOuterRef }),
-    collectChNFeReferenciadas(port, [args.originId], 'all'),
+    lerNotasDeOrigem(port, [args.originId]),
   ]);
 
-  const values = pedidoSchema.parse({
+  const parsed = pedidoSchema.parse({
     ...clone,
     ehSaida: false,
     estado: 'iniciado',
     operacaoPedidoOuterRef: operacao.outerRef,
-    chNFeReferenciadas: chaves.length > 0 ? chaves : null,
+    chNFeReferenciadas: null,
     vendedorPedidoOuterRef: args.usuarioRef,
     entradasRelacionadas: null,
     saidasRelacionadas: null,
     itensDevolvidos: null,
     numero: null,
-  }) as Record<string, unknown>;
+  });
+  const values = {
+    ...parsed,
+    itens: comReferencias(parsed.itens, notasDeOrigem.get(args.originId) ?? []),
+  } as Record<string, unknown>;
 
   return { values, operacao, originNumero };
+}
+
+/**
+ * `itens` with every line's `dfeReferenciado` replaced by its reference in the
+ * origin's notas. The lines of all produtos are matched TOGETHER, in the
+ * pedido's line order, because the origin numbered its dets across produtos.
+ */
+function comReferencias(
+  itens: Record<string, ItemDoPedido[]>,
+  notas: readonly NotaDeOrigem[],
+): Record<string, ItemDoPedido[]> {
+  const linhas = Object.entries(itens).flatMap(([key, lista]) =>
+    lista.map((item, posicao) => ({ key, posicao, item })),
+  );
+  const refs = referenciarItensDaDevolucao(
+    linhas.map((l) => l.item),
+    notas,
+  );
+  const out: Record<string, ItemDoPedido[]> = {};
+  for (const [key, lista] of Object.entries(itens)) out[key] = [...lista];
+  linhas.forEach(({ key, posicao, item }, i) => {
+    out[key]![posicao] = { ...item, dfeReferenciado: refs[i] ?? null };
+  });
+  return out;
 }
 
 /**

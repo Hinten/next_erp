@@ -25,6 +25,7 @@ import {
   PedidoConflictError,
   PedidoEnderecoOrigemAusenteError,
   PedidoNothingChangedError,
+  referenciasPendentes,
   savePedido,
   type PedidoEnderecoCopyPlan,
 } from '@delfrance/data/pedido';
@@ -137,6 +138,11 @@ export function EditarPedidoView() {
     preSave: Record<string, unknown>,
   ) {
     if (direcao !== 'entrada') return;
+    // The items as SAVED: the patch's when they were edited, else the stored ones.
+    const itens = ('itens' in patch ? patch.itens : preSave.itens) as
+      | Record<string, Pedido['itens'][string]>
+      | null
+      | undefined;
     await promptEmitirEntrada({
       pedidoId: params.id,
       estado: 'estado' in patch ? patch.estado : preSave.estado,
@@ -144,6 +150,13 @@ export function EditarPedidoView() {
         'operacaoPedidoOuterRef' in patch
           ? patch.operacaoPedidoOuterRef
           : preSave.operacaoPedidoOuterRef,
+      // A devolução (finNFe 4) still missing item references would be refused
+      // by SEFAZ (VC02-14) — the hook warns instead of offering the emission.
+      referenciasPendentes: referenciasPendentes(
+        Object.values(itens ?? {})
+          .flat()
+          .filter((item) => item != null && typeof item === 'object'),
+      ),
     });
   }
 

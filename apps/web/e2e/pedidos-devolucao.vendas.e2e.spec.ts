@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
+import { dvChaveAcesso } from '@delfrance/schemas';
 import {
   cleanupByFieldPrefix,
   cleanupDevolucoesLinkedTo,
@@ -38,14 +39,35 @@ import { warmRoutes } from './helpers/warmup';
  * `ehSaida`, the entrada create/edit round-trip, tab visibility, the NF filter
  * composing with the direction slice, and the saída-only action gating.
  */
+
+/** A 44-character chave: `base43` plus its mod-11 check digit. */
+function chaveValida(base43: string): string {
+  const dv = dvChaveAcesso(base43);
+  if (dv === null) throw new Error('chaveValida: not a chave shape');
+  return `${base43}${dv}`;
+}
+
+/** A minimal authorized `<nfeProc>` whose dets carry `cProds`, in order (nItem 1, 2…). */
+function procDoOrigem(cProds: readonly string[]): string {
+  const dets = cProds
+    .map(
+      (cProd, i) =>
+        `<det nItem="${i + 1}"><prod><cProd>${cProd}</cProd><xProd>Produto</xProd>` +
+        `<uCom>UN</uCom><qCom>2.0000</qCom><vUnCom>10.0000000000</vUnCom></prod></det>`,
+    )
+    .join('');
+  return `<nfeProc versao="4.00"><NFe><infNFe Id="NFe" versao="4.00">${dets}</infNFe></NFe></nfeProc>`;
+}
+
 test.describe.serial('Pedidos e2e — Devolução', () => {
   const prefix = e2ePrefix('peddev');
   const pedidoId = `${prefix}-001`;
   const originId = `${prefix}-orig`;
   const originNumero = `${prefix}-ORIG`;
-  // Deterministic 44-digit chave of the origin's APROVADA NF-e — the #488
-  // devolução must copy it into `chNFeReferenciadas`.
-  const originChave = '4'.repeat(44);
+  // A valid chave (check digit included) of the origin's APROVADA NF-e — the
+  // #488 devolução references it PER ITEM (VC02-14, #1683), and an invalid one
+  // is never referenced.
+  const originChave = chaveValida('4'.repeat(43));
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
   let produtoId: string;
   let entradaOp: { id: string; nome: string };
@@ -95,13 +117,18 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
       .set(pedidoBody({ estado: 'pago', numero: originNumero }));
 
     // #488/#551 fixtures: an entrada devolução operação (fiscal, finNFe 4),
-    // an APROVADA NF-e on the paid origin (its chave rides the devolução's
-    // `chNFeReferenciadas`), and the integração wired to that operação via
-    // `operacaoDevolucaoOuterRef` so the resolution is deterministic on the
-    // shared staging project (no fallback to whatever default entrada
-    // operação other suites seeded).
+    // an APROVADA NF-e on the paid origin whose proc XML carries the origin
+    // item as its SECOND det (so the reference's nItem provably comes from the
+    // XML, not from the item's position), and the integração wired to that
+    // operação via `operacaoDevolucaoOuterRef` so the resolution is
+    // deterministic on the shared staging project (no fallback to whatever
+    // default entrada operação other suites seeded).
     entradaOp = await seedOperacaoEntrada(prefix, 'opdev');
-    await seedNfeForPedido(originId, `${originId}-nfe`, { estado: 'a', chave: originChave });
+    await seedNfeForPedido(originId, `${originId}-nfe`, {
+      estado: 'a',
+      chave: originChave,
+      xmlNfeProc: procDoOrigem(['OUTRO-PRODUTO', fixtures.produtoSku]),
+    });
     await linkIntegracaoOperacaoDevolucao(fixtures.integracaoPath.split('/')[1]!, entradaOp.id);
 
     await warmRoutes(browser, ['/pedidos', '/pedidos/novo', '/pedidos/entradas/novo']);
@@ -298,14 +325,23 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
     const dev = devolucoes.docs.find((d) => d.id === devolucaoId)!.data();
     expect(dev.ehSaida).toBe(false);
     expect(dev.estado).toBe('pago');
-    expect(dev.chNFeReferenciadas).toEqual([originChave]);
+    // Per item, never per nota (VC02-14 + 1010, #1683): the returned item
+    // references the origin's SECOND det, read from the seeded proc XML.
+    expect(dev.chNFeReferenciadas).toBeNull();
     expect(dev.saidasRelacionadas).toEqual([originId]);
     // Numero minted from the devolução operação's nome prefix.
     const entradaPrefix = entradaOp.nome.slice(0, 3).toUpperCase();
     expect(String(dev.numero)).toMatch(new RegExp(`^${entradaPrefix}-\\d{6}$`));
     // Items cloned from the committed return rows (full sold qty of the produto).
-    const devItens = dev.itens as Record<string, Array<{ quantidade?: number }>>;
+    const devItens = dev.itens as Record<
+      string,
+      Array<{ quantidade?: number; dfeReferenciado?: unknown }>
+    >;
     expect(devItens[produtoId]?.[0]?.quantidade).toBe(2);
+    expect(devItens[produtoId]?.[0]?.dfeReferenciado).toEqual({
+      chaveAcesso: originChave,
+      nItem: 2,
+    });
 
     // The origin gained the devolução link…
     await expect
@@ -380,6 +416,13 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
       entradaOp.nome,
       { timeout: 15_000 },
     );
+    // …and the item already references its line in the origin NF-e — the
+    // SECOND det of the seeded proc XML (VC02-14, #1683).
+    await page.getByRole('tab', { name: /^Fiscal/ }).click();
+    await expect(page.getByLabel('Chave referenciada do item 1')).toHaveValue(originChave, {
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel('Item da nota original para o item 1')).toHaveValue('2');
     // NO save — keeps runtime + staging writes low (#488 covers the commit).
   });
 });

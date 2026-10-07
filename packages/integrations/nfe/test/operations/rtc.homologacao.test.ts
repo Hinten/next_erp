@@ -37,6 +37,10 @@
  * #330 part 3 read the NT. Same posture as the first: advisory on PR/push,
  * fatal on `workflow_dispatch`.
  *
+ * **Devolução (#1683)** — a 2-line origin saída, then two devoluções that
+ * reference it: by NFref alone with the RTC OFF (pinned at 321 — VC02-14 does
+ * not skip non-RTC notas) and per item with the RTC on (100).
+ *
  * **serie lane**: this test runs on **serie=4** (`SEFAZ_HOM_RTC_SERIE`) — full
  * lane registry in `../helpers/homologacao-seed.ts`. SEFAZ keys persistence on
  * serie, so it never collides with the other live suites at the (CNPJ, serie,
@@ -95,11 +99,16 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
-/** Sign, send (indSinc=1) and resolve one fixture; returns SEFAZ's verdict. */
+/**
+ * Sign, send (indSinc=1) and resolve one fixture; returns SEFAZ's verdict and
+ * the chave, so a later case can reference the nota (#1683). The chave embeds
+ * the emitente CNPJ: it may reach the public log only through `logSefaz` /
+ * `descreverSefaz`, which mask it.
+ */
 async function emitir(
   fixture: ReturnType<typeof buildHomologacaoFixture>,
   rotulo: string,
-): Promise<{ cStat: string; xMotivo: string }> {
+): Promise<{ cStat: string; xMotivo: string; chave: string }> {
   const out = generateNFe(fixture);
   const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
   const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
@@ -117,7 +126,7 @@ async function emitir(
   const cStat = prot?.infProt.cStat ?? ret.cStat;
   const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
   logSefaz(`${rotulo} protNFe`, { cStat, xMotivo });
-  return { cStat, xMotivo };
+  return { cStat, xMotivo, chave: out.chave };
 }
 
 /** Build the typed SefazCall context for one operation URL (tpAmb=2). */
@@ -220,6 +229,98 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
     expect(
       cStat,
       `SEFAZ rejected the nota de débito 05 — ${descreverSefaz('rtc-debito05 protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+  }, 180_000);
+});
+
+/**
+ * Devolução references (NT 2025.002 v1.51 VC02-14, cStat 321, #1683) — pinned
+ * from what a one-time probe measured on 2026-10-07 (run 37629331453): NFref
+ * alone draws 321 WITH OR WITHOUT the Reforma Tributária, and item references
+ * are authorized (100). The RTC-OFF item-reference shape — the one this ERP
+ * emits for a filial without the RTC — runs end to end, FATAL, in
+ * `apps/nfe`'s orchestrator suite; these pin the two edges around it.
+ *
+ * Every devolução here is interstate (RJ destinatário, CFOP 2202): 1.202 sits
+ * on the old B25-70 exemption list, so an NFref-only devolução carrying it
+ * could pass for the wrong reason, and the 321 pin would stop meaning anything.
+ */
+describeOrSkip('SEFAZ-SP homologação — devolução references per item (VC02-14, #1683)', () => {
+  let nNF = 0;
+  let chaveOrigem: string | undefined;
+
+  beforeAll(() => {
+    if (!hasFullCreds) {
+      throw new Error(
+        'Live devolução test requires real credentials. Missing one of: ' +
+          'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, NFE_TEST_IE. ' +
+          'Refusing to skip a fiscal live lane silently.',
+      );
+    }
+    nNF = seedNNF();
+  });
+
+  /** A devolução of line 1 of the origin, referenced at note or item level. */
+  function devolucao(rtc: boolean, referencia: 'nota' | 'item') {
+    return buildHomologacaoFixture({
+      numeracao: nNF++,
+      serie: SEFAZ_HOM_RTC_SERIE,
+      cnpj: TEST_CERT!.cnpj,
+      ie: TEST_IE!,
+      devolucao: true,
+      ...(rtc ? { imposto: impostoCsosn102ComRtc(), emitRtc: true } : {}),
+      itens: [
+        {
+          cProd: 'SKU-A',
+          vUnCom: 1500,
+          ...(referencia === 'item'
+            ? { dfeReferenciado: { chaveAcesso: chaveOrigem!, nItem: 1 } }
+            : {}),
+        },
+      ],
+      ...(referencia === 'nota' ? { chNFeReferenciadas: [chaveOrigem!] } : {}),
+    });
+  }
+
+  it('emits the 2-line origin saída the devoluções reference (cStat=100)', async () => {
+    const { cStat, xMotivo, chave } = await emitir(
+      buildHomologacaoFixture({
+        numeracao: nNF++,
+        serie: SEFAZ_HOM_RTC_SERIE,
+        cnpj: TEST_CERT!.cnpj,
+        ie: TEST_IE!,
+        itens: [
+          { cProd: 'SKU-A', vUnCom: 1500 },
+          { cProd: 'SKU-B', vUnCom: 700 },
+        ],
+      }),
+      'devolucao-origem',
+    );
+    expect(
+      cStat,
+      `SEFAZ rejected the origin saída — ${descreverSefaz('devolucao-origem protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+    chaveOrigem = chave;
+  }, 180_000);
+
+  it('refuses a devolução referencing by NFref alone even WITHOUT the Reforma Tributária (cStat=321)', async () => {
+    expect(chaveOrigem, 'the origin saída was not authorized').toBeDefined();
+    const { cStat, xMotivo } = await emitir(devolucao(false, 'nota'), 'devolucao-nfref');
+    // If this turns 100, SEFAZ relaxed VC02-14 for non-RTC notas: the ERP's
+    // unconditional rule (`violacoesDaReferenciaDaDevolucao`) is then stricter
+    // than SEFAZ — still safe, but worth re-reading the NT.
+    expect(
+      cStat,
+      `SEFAZ no longer refuses an NFref-only devolução — ${descreverSefaz('devolucao-nfref protNFe', { cStat, xMotivo })}`,
+    ).toBe('321');
+  }, 180_000);
+
+  it('authorizes a devolução referencing the origin per item, with the Reforma Tributária (cStat=100)', async () => {
+    expect(chaveOrigem, 'the origin saída was not authorized').toBeDefined();
+    const { cStat, xMotivo } = await emitir(devolucao(true, 'item'), 'devolucao-item-rtc');
+    expect(
+      cStat,
+      `SEFAZ rejected the item-referenced devolução — ${descreverSefaz('devolucao-item-rtc protNFe', { cStat, xMotivo })}`,
     ).toBe('100');
   }, 180_000);
 });

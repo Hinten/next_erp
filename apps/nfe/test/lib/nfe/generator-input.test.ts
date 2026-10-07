@@ -1305,6 +1305,57 @@ describe('assertNotaBuildable — the document rules (#330)', () => {
 });
 
 /**
+ * The devolução's mandatory item references (VC02-14, cStat 321, #1683) reach
+ * the emission pre-flight — refused before a número is consumed, with or
+ * without the Reforma Tributária, exactly as SEFAZ-SP homologação answered.
+ */
+describe('assertNotaBuildable — devolução references per item (VC02-14, #1683)', () => {
+  const CHAVE = '35260514200166000187550010000000071000000011';
+  const DEVOLUCAO = { ...OP, cfop: '1202', cfopInterestadual: '2202', tipo: 0, finNFe: 4 };
+
+  it.each([true, false])('refuses a devolução referencing by NFref alone (emitRtc=%s)', (rtc) => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(
+          bundleWith(DEVOLUCAO, { chNFeReferenciadas: [CHAVE] }),
+          [item({})],
+          rtc,
+        ),
+      ),
+    ).toBe(
+      "pedido 'PED-TEST': Na devolução, cada item deve referenciar o item da nota de origem (aba Fiscal → Referência por item). A referência só pela chave da nota não é mais aceita. (SEFAZ 321)",
+    );
+  });
+
+  it('passes a devolução whose every item is referenced — WITHOUT the Reforma Tributária', () => {
+    expect(
+      assertNotaBuildable(
+        bundleWith(DEVOLUCAO),
+        [item({ dfeReferenciado: { chaveAcesso: CHAVE, nItem: 3 } })],
+        false,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('names the unreferenced line of a partly referenced devolução', () => {
+    expect(
+      orchestratorMessage(() =>
+        assertNotaBuildable(
+          bundleWith(DEVOLUCAO),
+          [
+            item({ dfeReferenciado: { chaveAcesso: CHAVE, nItem: 1 } }),
+            item({ produtoUid: 'prod-2', itemIndex: 1, sku: 'SKU-2', dfeReferenciado: null }),
+          ],
+          false,
+        ),
+      ),
+    ).toContain(
+      'Item 2: Este item da devolução está sem a referência ao item da nota de origem. (SEFAZ 321)',
+    );
+  });
+});
+
+/**
  * The coupling that matters to SEFAZ (732/733, 772): the orchestrator's CFOP
  * and the generator's idDest come from ONE destination, and `<entrega>` rides
  * exactly when that destination is a separate delivery address. Run through the

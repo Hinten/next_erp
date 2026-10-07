@@ -64,7 +64,6 @@ export {
   PEDIDO_PATH,
   buildDevolucaoIntegralSeed,
   buildDevolucaoPedido,
-  collectChNFeReferenciadas,
   criarEntradaDevolucaoIntegral,
   criarSaidaComDevolucao,
   novosOriginsDeTroca,
@@ -75,6 +74,16 @@ export {
   type DevolucaoOperacaoInfo,
   type DevolucaoSavePrepared,
 } from './devolucao';
+export {
+  lerNotasDeOrigem,
+  notasDeOrigemDe,
+  preencherReferenciasPendentes,
+  referenciaCompleta,
+  referenciarItensDaDevolucao,
+  referenciasPendentes,
+  type ItemParaReferenciar,
+  type NotaDeOrigem,
+} from './referenciaDevolucao';
 export {
   DUPLICAR_PEDIDO_STRIP_KEYS,
   FRETE_QUOTE_RESET_KEYS,

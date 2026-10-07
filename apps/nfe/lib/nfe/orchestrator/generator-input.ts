@@ -494,9 +494,11 @@ export function buildGeneratorInput(
     }
   }
 
-  // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
-  // stores chaves in `chNFeReferenciadas` (CHAVE_NFE_REGEX-validated on the FiscalTab);
-  // buildIde re-validates each and throws on a malformed one.
+  // Note-level referenced NF-es (complementar, nota de crédito…) → ide.NFref[].refNFe.
+  // The pedido stores chaves in `chNFeReferenciadas` (CHAVE_NFE_REGEX-validated on the
+  // FiscalTab); buildIde re-validates each and throws on a malformed one. ⚠️ NOT a
+  // devolução's: since VC02-14 it references per item (`det/DFeReferenciado`, #1683),
+  // and the document rules above refuse an NFref-only devolução before this runs.
   const chNFeReferenciadas = chNFeReferenciadasDe(bundle);
 
   const transpOpts = buildTranspFromFrete(bundle.frete);
