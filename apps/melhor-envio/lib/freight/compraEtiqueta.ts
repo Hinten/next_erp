@@ -62,6 +62,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { DocumentReference, DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
+import type { EstadoFrete } from '@delfrance/schemas';
 import {
   COMPRA_ETIQUETA_DOC_ID,
   compraEtiquetaCollection,
@@ -72,6 +73,8 @@ import {
   MelhorEnvioNetworkError,
   MelhorEnvioTimeoutError,
 } from '@delfrance/integrations-freight-br';
+
+import { estadoAoAncorarNovaEtiqueta, resolverEstadoFinalCompraEtiqueta } from './estadoEtiqueta';
 
 /**
  * How long a claim lives: the 300 s App Hosting request ceiling plus 60 s — so a
@@ -212,6 +215,14 @@ function ancoraDe(data: unknown): string | null {
   return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
+/** Raw nested state, without full-parsing a possibly legacy pedido. */
+function estadoDe(data: unknown): unknown {
+  if (data === null || typeof data !== 'object') return undefined;
+  const frete = (data as { freteInicial?: unknown }).freteInicial;
+  if (frete === null || typeof frete !== 'object') return undefined;
+  return (frete as { estado?: unknown }).estado;
+}
+
 function refs(
   db: Firestore,
   pedidoId: string,
@@ -298,7 +309,12 @@ export async function adquirirCompraEtiqueta(
  * still be null (or already this id: an OCC retry, or a resume) — so a run that
  * lost its claim stops here, before `checkout` spends anything.
  *
- * A dotted `update`, never a `set`: every sibling under `freteInicial` stays.
+ * A new anchor resets states belonging to the previous shipment: canceled
+ * becomes `iniciado` until purchase finalization; the other provider states become
+ * `aguardandoPostagem`. Each reset keeps the previous stock effect.
+ * The reset survives a checkout failure; rolling it back could lose a webhook.
+ * An idempotent same-label anchor above returns without reopening that label.
+ * Dotted updates preserve all other siblings under `freteInicial`.
  */
 export async function ancorarEtiqueta(
   db: Firestore,
@@ -320,7 +336,11 @@ export async function ancorarEtiqueta(
     if (atual !== null) {
       throw new CompraEtiquetaAncoraMudouError(posse.pedidoId, printLabelId, atual);
     }
-    tx.update(pedido, { 'freteInicial.printLabelId': printLabelId });
+    const estado = estadoAoAncorarNovaEtiqueta(estadoDe(pedidoSnap.data()));
+    tx.update(pedido, {
+      'freteInicial.printLabelId': printLabelId,
+      ...(estado !== null ? { 'freteInicial.estado': estado } : {}),
+    });
   });
 }
 
@@ -363,17 +383,18 @@ export async function garantirPosseCompraEtiqueta(
   }
 }
 
+export type ResultadoFinalizarCompraEtiqueta =
+  | { readonly kind: 'vinculada'; readonly estado: EstadoFrete }
+  | { readonly kind: 'desvinculada' };
+
 /**
- * FINALIZE — class C (the tracking comes from Melhor Envio). Writes the final
- * estado / codRastreio / agency only while the pedido is STILL anchored on this
- * label — a frete changed mid-buy is not overwritten — and deletes the claim in
- * the same commit when it is still ours.
+ * FINALIZE — class C (provider status and tracking come from Melhor Envio).
+ * Re-derives the state from the transaction's pedido while it is STILL anchored
+ * on this label, preserving terminal states and posted progress. Deletes the
+ * claim in the same commit when it is still ours.
  *
- * @returns whether the pedido was written. `false` means the label was BOUGHT
- *   but the pedido no longer points at it (the frete was re-pointed, cleared or
- *   the pedido deleted mid-buy) — a PAID label nothing references, which the
- *   route must report loudly instead of answering success, or the operator buys
- *   again and pays twice.
+ * A `desvinculada` result means a bought label the pedido no longer points at.
+ * The route must report it loudly rather than invite another purchase.
  */
 export async function finalizarCompraEtiqueta(
   db: Firestore,
@@ -382,26 +403,28 @@ export async function finalizarCompraEtiqueta(
     readonly printLabelId: string;
     readonly tracking: string | null;
     readonly agency: number | null;
+    readonly providerStatus: string | null;
   },
-): Promise<boolean> {
+): Promise<ResultadoFinalizarCompraEtiqueta> {
   const { claim, pedido } = refs(db, posse.pedidoId);
   return db.runTransaction(async (tx) => {
     const [claimSnap, pedidoSnap] = await tx.getAll(claim, pedido);
-    const ancorado =
-      pedidoSnap?.exists === true && ancoraDe(pedidoSnap.data()) === resultado.printLabelId;
-    // No logging in here: the callback re-runs on every OCC attempt. The route
-    // reports a `false` once, after the commit.
-    if (ancorado) {
+    let finalizacao: ResultadoFinalizarCompraEtiqueta = { kind: 'desvinculada' };
+    // No logging here: each OCC retry must recompute and return its own state.
+    if (pedidoSnap?.exists && ancoraDe(pedidoSnap.data()) === resultado.printLabelId) {
+      const estadoAtual = estadoDe(pedidoSnap.data());
+      const estado = resolverEstadoFinalCompraEtiqueta(estadoAtual, resultado.providerStatus);
       tx.update(pedido, {
-        'freteInicial.estado': 'aguardandoPostagem',
+        ...(estadoAtual !== estado ? { 'freteInicial.estado': estado } : {}),
         'freteInicial.codRastreio': resultado.tracking,
         ...(resultado.agency !== null
           ? { 'freteInicial.externalOptionData.agency': resultado.agency }
           : {}),
       });
+      finalizacao = { kind: 'vinculada', estado };
     }
     if (claimSnap && donoDe(dadosDe(claimSnap)) === posse.dono) tx.delete(claim);
-    return ancorado;
+    return finalizacao;
   });
 }
 

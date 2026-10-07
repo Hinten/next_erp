@@ -34,14 +34,15 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   // these providers' documentation, and a `'nao'` here would be the unverified
   // claim #815 undid.
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
-  [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
-  // ⚠️ Shopee is the near-miss of the line above, and the ONLY tipo on the
-  // other side of it: its Phase 0 survey answered this capability `'sim'`, so
-  // the honest reason is that WE have not built the channel — not that nobody
-  // has looked. It flips to supported when `implementado` does.
+  // ⚠️ Shopee and Loja Integrada are the near-miss of the lines above, and the
+  // only tipos on the other side of them: their Phase 0 surveys answered this
+  // capability `'sim'`, so the honest reason is that WE have not built the
+  // channel — not that nobody has looked. Each flips to supported when its
+  // `implementado` does.
   [INTEGRACAO_TIPO.shopee, 'canal-nao-implementado'],
+  [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-implementado'],
 ];
 
 describe('resolvePricePushProvider', () => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deferred } from '@delfrance/data/testing';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import {
   MelhorEnvioError,
   MelhorEnvioHttpError,
@@ -299,6 +300,83 @@ describe('ancorarEtiqueta', () => {
   });
 });
 
+describe('fresh-label state boundary (#1801)', () => {
+  it('normalizes inherited postado with a new anchor atomically, preserving siblings', async () => {
+    semearPedido({
+      estado: ESTADO_FRETE.postado,
+      codRastreio: 'old-tracking',
+      externalOptionData: { id: 3, agency: 195 },
+    });
+    semearClaim('eu', T0 + 60_000);
+    const commitsAntes = fake.occ.txLog.filter((e) => e.phase === 'commit').length;
+    await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+    expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
+      printLabelId: 'lbl-1',
+      estado: ESTADO_FRETE.aguardandoPostagem,
+      codRastreio: 'old-tracking',
+      externalOptionData: { id: 3, agency: 195 },
+    });
+    expect(fake.occ.txLog.filter((e) => e.phase === 'commit').length).toBe(commitsAntes + 1);
+  });
+
+  it.each([
+    ESTADO_FRETE.postado,
+    ESTADO_FRETE.entregue,
+    ESTADO_FRETE.cancelado,
+    ESTADO_FRETE.suspenso,
+    ESTADO_FRETE.falhaNaEntrega,
+  ])('idempotent anchoring never resets the same label in %s', async (estado) => {
+    semearPedido({ printLabelId: 'lbl-1', estado });
+    semearClaim('eu', T0 + 60_000);
+    await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+    expect(fake.dados(PEDIDO)?.freteInicial).toEqual({ printLabelId: 'lbl-1', estado });
+  });
+
+  it.each([ESTADO_FRETE.empacotado, ESTADO_FRETE.emSeparacao, ESTADO_FRETE.iniciado])(
+    'a new anchor preserves other state %s',
+    async (estado) => {
+      semearPedido({ estado });
+      semearClaim('eu', T0 + 60_000);
+      await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+      expect(fake.dados(PEDIDO)?.freteInicial).toEqual({ printLabelId: 'lbl-1', estado });
+    },
+  );
+
+  it.each([
+    [ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.cancelado, ESTADO_FRETE.iniciado],
+    [ESTADO_FRETE.suspenso, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.falhaNaEntrega, ESTADO_FRETE.aguardandoPostagem],
+  ])('a new anchor resets previous-shipment %s to %s atomically', async (estado, esperado) => {
+    semearPedido({ estado, codRastreio: 'old-tracking', externalOptionData: { id: 3 } });
+    semearClaim('eu', T0 + 60_000);
+    const commitsAntes = fake.occ.txLog.filter((e) => e.phase === 'commit').length;
+    await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+    expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
+      printLabelId: 'lbl-1',
+      estado: esperado,
+      codRastreio: 'old-tracking',
+      externalOptionData: { id: 3 },
+    });
+    expect(fake.occ.txLog.filter((e) => e.phase === 'commit').length).toBe(commitsAntes + 1);
+  });
+
+  it.each(['lost-owner', 'different-label'])(
+    'refuses %s without resetting an inherited postado',
+    async (motivo) => {
+      semearPedido({
+        estado: ESTADO_FRETE.postado,
+        ...(motivo === 'different-label' ? { printLabelId: 'lbl-outro' } : {}),
+      });
+      semearClaim(motivo === 'lost-owner' ? 'outro' : 'eu', T0 + 60_000);
+      await expect(ancorarEtiqueta(db(), posse('eu'), 'lbl-1')).rejects.toBeInstanceOf(
+        motivo === 'lost-owner' ? CompraEtiquetaPossePerdidaError : CompraEtiquetaAncoraMudouError,
+      );
+      expect(fake.dados(PEDIDO)?.freteInicial).toMatchObject({ estado: ESTADO_FRETE.postado });
+    },
+  );
+});
+
 describe('garantirPosseCompraEtiqueta (the fence)', () => {
   beforeEach(() => {
     semearPedido({ printLabelId: 'lbl-1' });
@@ -361,14 +439,22 @@ describe('garantirPosseCompraEtiqueta (the fence)', () => {
 });
 
 describe('finalizarCompraEtiqueta', () => {
-  const RESULTADO = { printLabelId: 'lbl-1', tracking: 'ME1BR', agency: null };
+  const RESULTADO = {
+    printLabelId: 'lbl-1',
+    tracking: 'ME1BR',
+    agency: null,
+    providerStatus: null,
+  };
 
   it('anchored + ours → the final pedido write AND the claim delete, in one commit', async () => {
     semearPedido({ printLabelId: 'lbl-1', externalOptionData: { id: 3 } });
     semearClaim('eu', T0 + 60_000);
     const commitsAntes = fake.occ.txLog.filter((e) => e.phase === 'commit').length;
 
-    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toBe(true);
+    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toEqual({
+      kind: 'vinculada',
+      estado: ESTADO_FRETE.aguardandoPostagem,
+    });
 
     expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
       printLabelId: 'lbl-1',
@@ -392,19 +478,81 @@ describe('finalizarCompraEtiqueta', () => {
   it("anchored but the claim is someone else's → the pedido write only, their claim stays", async () => {
     semearPedido({ printLabelId: 'lbl-1' });
     semearClaim('outro', T0 + 60_000);
-    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toBe(true);
+    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toEqual({
+      kind: 'vinculada',
+      estado: ESTADO_FRETE.aguardandoPostagem,
+    });
     expect(fake.dados(CLAIM)?.dono).toBe('outro');
   });
 
   it('the anchor moved mid-buy → the pedido is NOT overwritten; our claim is still freed', async () => {
     semearPedido({ printLabelId: 'lbl-novo', estado: 'aguardandoCompra' });
     semearClaim('eu', T0 + 60_000);
-    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toBe(false);
+    expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toEqual({
+      kind: 'desvinculada',
+    });
     expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
       printLabelId: 'lbl-novo',
       estado: 'aguardandoCompra',
     });
     expect(fake.dados(CLAIM)).toBeUndefined();
+  });
+});
+
+describe('finalization state guards (#1801)', () => {
+  const RESULTADO = {
+    printLabelId: 'lbl-1',
+    tracking: 'ME1BR',
+    agency: 195,
+    providerStatus: 'released',
+  };
+
+  it.each([ESTADO_FRETE.postado, ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado])(
+    'preserves %s while still writing tracking and agency and freeing our claim',
+    async (estado) => {
+      semearPedido({ printLabelId: 'lbl-1', estado, externalOptionData: { id: 3 } });
+      semearClaim('eu', T0 + 60_000);
+      expect(await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO)).toEqual({
+        kind: 'vinculada',
+        estado,
+      });
+      expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
+        printLabelId: 'lbl-1',
+        estado,
+        codRastreio: 'ME1BR',
+        externalOptionData: { id: 3, agency: 195 },
+      });
+      expect(fake.dados(CLAIM)).toBeUndefined();
+    },
+  );
+
+  it('omits an unchanged estado from the committed patch', async () => {
+    semearPedido({ printLabelId: 'lbl-1', estado: ESTADO_FRETE.postado });
+    semearClaim('eu', T0 + 60_000);
+    const patches: Record<string, unknown>[] = [];
+    fake.occ.beforeCommit = ({ writes }) => {
+      for (const write of writes) {
+        if (write.path === PEDIDO && write.kind === 'update') patches.push(write.data);
+      }
+    };
+    await finalizarCompraEtiqueta(db(), posse('eu'), RESULTADO);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toEqual({
+      'freteInicial.codRastreio': 'ME1BR',
+      'freteInicial.externalOptionData.agency': 195,
+    });
+  });
+
+  it('returns the current provider state for an anchored label', async () => {
+    semearPedido({ printLabelId: 'lbl-1' });
+    semearClaim('eu', T0 + 60_000);
+    expect(
+      await finalizarCompraEtiqueta(db(), posse('eu'), {
+        ...RESULTADO,
+        providerStatus: 'posted',
+      }),
+    ).toEqual({ kind: 'vinculada', estado: ESTADO_FRETE.postado });
+    expect(fake.dados(PEDIDO)?.freteInicial).toMatchObject({ estado: ESTADO_FRETE.postado });
   });
 });
 
