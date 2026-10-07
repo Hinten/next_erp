@@ -16,4 +16,4 @@ live in the gitignored `.private/` folder, which is copied into every worktree.
 | Initiative | Plan | Status |
 |---|---|---|
 | Shopee marketplace integration | [`shopee/shopee-marketplace-integration.md`](shopee/shopee-marketplace-integration.md) | Phases 0–2 done (2026-09-03); issues not opened yet |
-| Loja Integrada marketplace integration | [`loja-integrada/loja-integrada-marketplace-integration.md`](loja-integrada/loja-integrada-marketplace-integration.md) | Phases 0–2 done (2026-10-07); tracker and step issues opened with the plan PR |
+| Loja Integrada marketplace integration | [`loja-integrada/loja-integrada-marketplace-integration.md`](loja-integrada/loja-integrada-marketplace-integration.md) | Phases 0–2 done (2026-10-07); plan PR #1811, tracker #1812, step issues #1813–#1830 |

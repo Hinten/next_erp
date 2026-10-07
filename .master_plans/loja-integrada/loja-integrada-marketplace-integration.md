@@ -1,6 +1,6 @@
 # Loja Integrada: master plan for the marketplace integration
 
-Date: 2026-10-07 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: opened together with this plan's PR (D14) — one tracker issue plus one issue per step.
+Date: 2026-10-07 · Method: `marketplace-integration` skill, Phases 0–2 · Tracker: **#1812**, opened together with this plan's PR #1811 (D14), with one issue per step (§4.25).
 Evidence: the official OpenAPI 3.1 spec, served at `https://api-docs.lojaintegrada.com.br/openapi/API-Loja-Integrada.json` ("API Loja Integrada", `info.version` v2, server `https://api.awsli.com.br`, 76 paths / 108 operations, no login needed; read with `li-doc.mjs` from the evidence folder; provenance in §1.0). Also used: the help center (`ajuda.lojaintegrada.com.br`), 4 doc surveys (A auth/inbound · B orders/fulfilment · C catalogue/stock/price · D web/secondary), one old-vs-current spec diff, 27 adversarial per-field verdicts, 8 focused gap answers, a re-verification run on 2026-10-07 after the store owner reported the legacy integration working (§1.3), and the legacy surveys (kept private, see §3).
 Citation conventions:
 - `spec <METHOD> <path>`: an operation.
@@ -1198,28 +1198,28 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 
 ### 4.25 Execution order to reach cutover parity (stacked draft PRs; each step's Phase-3 plan approved first, D15)
 
-1. **PR 0:** this master plan + evidence, opened together with the tracker and the step issues (D14).
+1. **PR 0:** this master plan + evidence (#1811), opened together with the tracker #1812 and the step issues (D14).
 2. **Step 0:** P1–P6, including the **IP-binding gate** (Lucas, read-only curl). An "IP-bound" answer stops the plan for a replan. The Personal Tokens generated here are also the §0 fallback.
-3. **Step 1a:** caps row + registry test flips.
-4. **Step 1:** package (PR a); app scaffold + connect + guard change (PR b).
-5. **Steps 2 + 2b:**
+3. **Step 1a** (#1813): caps row + registry test flips.
+4. **Step 1** (#1814): package (PR a); app scaffold + connect + guard change (PR b).
+5. **Steps 2 + 2b** (#1829, #1815):
    - PR a: credential/context/aviso/parking + **the CI lane** + the step-21 conta CRUD and credential form.
    - PR b: logger/valves/canary/probe CLI.
 
    ⇒ **Probe round 1** (Lucas, read-only, under the Personal Token, each capture recording its credential type): §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24 are settled, and redacted captures are committed as fixtures.
-6. **Step 3:** poller + pipeline + queues (+ tasks emulator config).
-7. **Step 20:** int_frete sync + mapa helper (step 5's freight mapping depends on it).
-8. **Steps 5 + 6:** order/payment import (PR a: ids, mappers, fixtures; PR b: wiring). The estado table is frozen only after the §1.2 item 14 probe.
-9. **Step 15:** label routing + checkout re-check + `FREIGHT_TIPO_CAPS`.
-10. **Step 7:** status write-back (valve OFF).
-11. **Step 10:** categories/brands/grades reads + typed linker data (+ the web linker), typing `arakene_variation_id` on the `shopeeLinkVariacoes.ts` precedent.
-12. **Step 9:** product import + link + the link-doc anchor trigger (+ the web import screen).
-13. **Step 12:** stock (valve OFF) (+ the estoque row action).
-14. **Step 13:** price (valve OFF) (+ the preço row action).
-15. **Step 11:** publish/edit/pause (valve OFF) (+ the produto LI tab and the anuncioStatus row action).
-16. **Step 4:** webhook receiver + registration route (registration only at the window).
-17. **Step 22:** deploy isolation, guard rosters, flip `implementado`.
-18. **The window** (§5), with the legacy app OFF.
+6. **Step 3** (#1830): poller + pipeline + queues (+ tasks emulator config).
+7. **Step 20** (#1826): int_frete sync + mapa helper (step 5's freight mapping depends on it).
+8. **Steps 5 + 6** (#1817, #1818): order/payment import (PR a: ids, mappers, fixtures; PR b: wiring). The estado table is frozen only after the §1.2 item 14 probe.
+9. **Step 15** (#1825): label routing + checkout re-check + `FREIGHT_TIPO_CAPS`.
+10. **Step 7** (#1819): status write-back (valve OFF).
+11. **Step 10** (#1821): categories/brands/grades reads + typed linker data (+ the web linker), typing `arakene_variation_id` on the `shopeeLinkVariacoes.ts` precedent.
+12. **Step 9** (#1820): product import + link + the link-doc anchor trigger (+ the web import screen).
+13. **Step 12** (#1823): stock (valve OFF) (+ the estoque row action).
+14. **Step 13** (#1824): price (valve OFF) (+ the preço row action).
+15. **Step 11** (#1822): publish/edit/pause (valve OFF) (+ the produto LI tab and the anuncioStatus row action).
+16. **Step 4** (#1816): webhook receiver + registration route (registration only at the window).
+17. **Step 22** (#1828): deploy isolation, guard rosters, flip `implementado`.
+18. **The window** (§5), with the legacy app OFF. Step 21 (#1827) ships piecewise with steps 2, 9, 10, 11, 12, 13 and 15.
 
 ### 4.26 LI write inventory (every write → valve → dry-run → read-back)
 
@@ -1320,7 +1320,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [x] Every step names its indexes, ruleset regeneration and env vars (§4.iii).
 - [x] The CI lane lands with the first emulator test (step 2).
 - [ ] This plan approved by Lucas (PR review).
-- [ ] Tracker + per-step issues opened together with this plan's PR (D14).
+- [x] Tracker #1812 + per-step issues #1813–#1830 opened together with this plan's PR #1811 (D14).
 - [ ] The §0 legacy-credential risk acknowledged by Lucas (his call, outside this repo; the recommended Personal Tokens generated).
 - [ ] A probe Personal Token per store available to Lucas (P1).
 - [ ] The Step-0 IP-binding gate answered "not bound" (P6).
