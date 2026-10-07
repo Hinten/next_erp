@@ -271,6 +271,7 @@ const aprovadaConcorrente: GuardedPersistResult = {
   cStatAtual: '100',
   xMotivoAtual: 'Autorizado o uso da NF-e',
   nRecAtual: null,
+  chaveAtual: null,
 };
 
 /**

@@ -25,7 +25,7 @@ import {
   type TpEmis,
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
-import { nowMicros } from '@delfrance/core/datetime';
+import { nowMicros, type MicrosSinceEpoch } from '@delfrance/core/datetime';
 import {
   bloqueioNFeAtivo,
   CONTINGENCIA_MODO,
@@ -69,10 +69,13 @@ import {
   buildEnviNFeMsgFromLote,
   buildProcForAuthorizedOutcome,
   enviNfeCollection,
+  envioEmCurso,
+  envioEmCursoAte,
   existingToEmitResult,
+  gravarAncoraDoLote,
   outcomeFromConsReci,
-  persistPatch,
   persistPatchUnlessFinal,
+  recusaToEmitResult,
   swapAnchorForProc,
 } from './audit';
 import { assertNotaBuildable, buildGeneratorInput } from './generator-input';
@@ -343,6 +346,10 @@ export interface BatchMemberPrep {
  * so the regenerated chave matches the one already persisted on the
  * existing nfev4 doc — required by the SEFAZ retry contract and the
  * anti-loss anchor (`apps/nfe/CLAUDE.md` rule 1).
+ *
+ * `envioEmCursoAte` is the send reservation (#1675, `envioEmCurso`) the doc
+ * carries as `proximaConsultaEm`: every caller writes this doc right before
+ * its SEFAZ call, so it stamps one. Omitted, the field defaults to `null`.
  */
 export function buildNfeDocWrite(
   bundle: PedidoBundle,
@@ -355,6 +362,7 @@ export function buildNfeDocWrite(
   cNF?: string,
   contingencia?: EmissionPrep['contingencia'],
   emitRtc?: boolean,
+  envioEmCursoAteUs?: MicrosSinceEpoch,
 ): { chave: string; signedXml: string; docData: Record<string, unknown> } {
   const input = buildGeneratorInput(
     bundle,
@@ -387,6 +395,7 @@ export function buildNfeDocWrite(
       xml_assinado: signedXml,
       nRec: null,
       retries: 0,
+      proximaConsultaEm: envioEmCursoAteUs ?? null,
       cStat: null,
       xMotivo: null,
       data_emissao: now,
@@ -421,6 +430,13 @@ export function buildNfeDocWrite(
  * persisted doc comes back `reused` (the web dialog's "Em processamento") with
  * no SEFAZ call and no regeneration — and only the backstop sweep's
  * `consSitNFe(chave)` ever recovers it.
+ *
+ * ⚠️ While a send is IN FLIGHT the doc has this exact shape too — the claim
+ * persisted the anchor and the SOAP call has not answered yet. Both emit paths
+ * therefore check {@link envioEmCurso} BEFORE this predicate (#1675): a doc
+ * under a live send reservation is reported `reused` with no retransmit, and
+ * only an EXPIRED reservation (a crashed run, a lost reply) makes it a crash
+ * window again.
  */
 function isCrashWindowAnchor(
   existing: NotaFiscalEletronica | null,
@@ -436,12 +452,17 @@ function isCrashWindowAnchor(
 }
 
 /**
- * The ONLY fields a crash-window retransmit merges onto the doc: lote
- * bookkeeping — never XML/chave fields, so the #128 anchor survives verbatim.
+ * The ONLY fields a claim merges onto an existing doc it does not regenerate:
+ * lote bookkeeping — never XML/chave fields, so the #128 anchor survives
+ * verbatim. `envioEmCursoAteUs`, when given, is the send reservation (#1675):
+ * a crash-window retransmit stamps it because its SOAP call follows; a batch
+ * reuse member stamped in 4a does not — its bytes are generated in 4b, which
+ * may still fail, and a failed member must stay re-emittable at once.
  */
-function loteStampMerge(idLote: number) {
+function loteStampMerge(idLote: number, envioEmCursoAteUs?: MicrosSinceEpoch) {
   return nfev4Collection.parseMerge({
     idLote: String(idLote),
+    ...(envioEmCursoAteUs != null ? { proximaConsultaEm: envioEmCursoAteUs } : {}),
     ultima_modificacao: new Date().toISOString(),
   });
 }
@@ -452,7 +473,13 @@ function loteStampMerge(idLote: number) {
  * All counter advances and XML persistence happen in ONE Firestore
  * transaction so a crash mid-flight can never strand a consumed numeração
  * without a matching nfev4 doc. The SEFAZ SOAP call happens AFTER the tx
- * commits. The batch path uses `runChunkAllocateGenerateSignTx` instead.
+ * commits. The batch path uses `runChunkAllocateTx` instead.
+ *
+ * It is also the run's CLAIM (#1675): the doc it writes carries this run's
+ * `idLote` — the token every later write of the run is owned by — and the send
+ * reservation (`proximaConsultaEm`, {@link envioEmCurso}), so a second emit
+ * during the SOAP call is answered with the in-flight doc instead of
+ * retransmitting over it.
  */
 export async function runAllocateGenerateSignTx(
   fs: Firestore,
@@ -506,6 +533,22 @@ export async function runAllocateGenerateSignTx(
       return { skip: true, existing };
     }
 
+    // A send is in progress on this doc (#1675) — another emit claimed it and
+    // its SOAP call has not answered, or a paced retry is pending. During the
+    // call the doc looks exactly like a #396 crash-window anchor, so without
+    // this the branch below would RETRANSMIT over the live run. Decided on
+    // this transaction's snapshot; the reservation expires on its own, after
+    // which a crashed run's anchor is retransmitted as before.
+    const agora = nowMicros();
+    if (existing && envioEmCurso(existing, agora)) {
+      safeLog(
+        'debug',
+        `[nfe/orchestrator] pedido '${pedidoId}' has a send in progress (idLote ` +
+          `${String(existing.idLote)}) — skipping re-emit, reporting the in-flight doc`,
+      );
+      return { skip: true, existing };
+    }
+
     safeLog(
       'debug',
       `[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
@@ -534,7 +577,7 @@ export async function runAllocateGenerateSignTx(
         nfeConfigRef,
         nfeConfigCollection.parse({ ...cfg, idLote, timestamp: new Date().toISOString() }),
       );
-      tx.set(nfeRef, loteStampMerge(idLote), { merge: true });
+      tx.set(nfeRef, loteStampMerge(idLote, envioEmCursoAte(agora)), { merge: true });
       return {
         skip: false,
         chave: existing.chave,
@@ -574,6 +617,7 @@ export async function runAllocateGenerateSignTx(
       reuseCNF,
       prep.contingencia,
       prep.emitRtc,
+      envioEmCursoAte(agora),
     );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
@@ -698,8 +742,10 @@ export function buildPlaceholderNfeDoc(
  *      `proxima_numeracao_batch_transaction` technique) — skip/reuse burn
  *      no slot, so no `inutNFe` gap;
  *   4. advance the counter once and write a placeholder doc per FRESH
- *      pedido (anti-loss anchor). Reuse pedidos keep their existing doc
- *      until the out-of-tx step overwrites it with the regenerated NF-e.
+ *      pedido (anti-loss anchor). Reuse pedidos keep their existing doc,
+ *      stamped with this chunk's idLote (#1675), until 4b's idLote-guarded
+ *      write (`gravarAncoraDoLote`) replaces it with the regenerated NF-e.
+ *      A doc under a live send reservation (`envioEmCurso`) is a skip.
  *
  * A chunk-level throw (missing/invalid NFeConfig) propagates to the
  * caller, which cascades it to every pedido when its class is known
@@ -726,8 +772,15 @@ export async function runChunkAllocateTx(
       data: Record<string, unknown>;
     }> = [];
     // Crash-window (#396) docs get the shared idLote stamped in THIS tx —
-    // atomic with the counter advance, mirroring the single-pedido path.
+    // atomic with the counter advance, mirroring the single-pedido path — with
+    // the send reservation (#1675): no 4b write follows for them.
     const storedStamps: FirebaseFirestore.DocumentReference[] = [];
+    // Reuse (regenerate) members get the shared idLote too, but NO reservation
+    // (#1675): 4b's anchor write is guarded on this idLote, so a single emit
+    // that claims the doc between 4a and 4b wins; and a member whose 4b
+    // generate/sign fails must stay re-emittable at once.
+    const reuseStamps: FirebaseFirestore.DocumentReference[] = [];
+    const agora = nowMicros();
     // Fresh pedidos take contiguous nNFs off `numeracao_atual`; skip/reuse
     // pedidos consume none (Flutter `pedidosSemNota` parity).
     let freshCount = 0;
@@ -757,6 +810,13 @@ export async function runChunkAllocateTx(
         (existing.estado === ESTADO_NFE.enviando ||
           existing.estado === ESTADO_NFE.aguardandoResposta)
       ) {
+        members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
+        continue;
+      }
+      // A send is in progress on this doc (#1675, see runAllocateGenerateSignTx)
+      // — never ride it in this lote: reported with its live state, no número
+      // consumed, no stamp.
+      if (existing && envioEmCurso(existing, agora)) {
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
       }
@@ -793,7 +853,9 @@ export async function runChunkAllocateTx(
       const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1 + freshCount;
       const serie = reuse ? existing.serie : cfg.serie;
       const existingChave = reuse ? existing.chave : null;
-      if (!reuse) {
+      if (reuse) {
+        reuseStamps.push(sp.prep.nfeRef);
+      } else {
         freshCount += 1;
         // Anchor the consumed numeração now; the generated + signed NF-e
         // overwrites this placeholder outside the tx.
@@ -832,7 +894,10 @@ export async function runChunkAllocateTx(
       }),
     );
     for (const p of placeholders) tx.set(p.ref, p.data);
-    for (const ref of storedStamps) tx.set(ref, loteStampMerge(idLote), { merge: true });
+    for (const ref of storedStamps) {
+      tx.set(ref, loteStampMerge(idLote, envioEmCursoAte(agora)), { merge: true });
+    }
+    for (const ref of reuseStamps) tx.set(ref, loteStampMerge(idLote), { merge: true });
 
     return { members, idLote };
   });
@@ -875,9 +940,16 @@ export async function runChunkAllocateTx(
  * one, so a doc a concurrent emit re-stamped, or one that went final, is
  * reported `reused` with its live state instead.
  *
+ * Since #1675 EVERY write here is under that guard — the main outcome too
+ * (proc swap and a recovered 539's chave swap in the same write): the idLote
+ * is this run's claim token, so a run that outlived its send reservation while
+ * another emit retransmitted the doc never overwrites that run's doc, and a
+ * refused degraded-async 103 enqueues nothing.
+ *
  * `origem 'pos-epec'` keeps today's handling byte for byte: the reply's
  * protNFe is applied as before, and a duplicidade's consSit is read by the
- * plain state machine (a pós-EPEC follow-up).
+ * plain state machine (a pós-EPEC follow-up, #1730). Its writes are owned by
+ * the idLote `transmitirPosEpec`'s claim stamped (#1675).
  */
 export async function applyAutorizadoOutcome(args: {
   fs: Firestore;
@@ -1084,21 +1156,30 @@ export async function applyAutorizadoOutcome(args: {
     chave,
   });
 
-  // A recovered 539's chave swap rides this same merge — atomic with the
-  // outcome, never a separate write landing first (#1654 §2d). Still the plain
-  // persist: nothing here can refuse it (follow-up). A proc and a swap never
-  // meet: a swap forces `chaveMatches: false`.
-  await persistPatch(
+  // A recovered 539's chave swap rides this same write — atomic with the
+  // outcome, never a separate write landing first (#1654 §2d). A proc and a
+  // swap never meet: a swap forces `chaveMatches: false`. The write is owned by
+  // THIS run's idLote (#1675): a run a newer claim superseded mid-SOAP — its
+  // reservation expired and another emit retransmitted — reports the live doc
+  // instead of overwriting it, and swaps nothing.
+  const resultado = await persistirGuardadoPeloLote({
+    fs,
     nfeRef,
+    pedidoId: bundle.pedidoId,
+    chave: finalChave,
     patch,
-    nfeProcXml != null
-      ? swapAnchorForProc(nfeProcXml)
-      : extrasDaTrocaDeChave(finalChave === chave ? undefined : finalChave),
-  );
+    extras:
+      nfeProcXml != null
+        ? swapAnchorForProc(nfeProcXml)
+        : extrasDaTrocaDeChave(finalChave === chave ? undefined : finalChave),
+    idLote,
+  });
+  if (resultado.reused) return resultado;
 
   // Degraded async: SEFAZ replied 103 to a (nominally sync) single-pedido send.
   // The doc is now aguardandoResposta with a receipt — hand off to the async
-  // reconciler exactly like the batch path (the in-request poll is gone).
+  // reconciler exactly like the batch path (the in-request poll is gone). Only
+  // when THIS run's write landed: a refused one left the doc to its owner.
   if (patch.estado === ESTADO_NFE.aguardandoResposta && patch.nRec) {
     await scheduler.enqueueConsulta({
       filialId: bundle.filialId,
@@ -1109,16 +1190,7 @@ export async function applyAutorizadoOutcome(args: {
     });
   }
 
-  return {
-    nfeId: nfeRef.id,
-    pedidoId: bundle.pedidoId,
-    estado: patch.estado,
-    chave: finalChave,
-    nRec: patch.nRec,
-    cStat: patch.cStat,
-    xMotivo: patch.xMotivo,
-    reused: false,
-  };
+  return resultado;
 }
 
 /**
@@ -1177,8 +1249,9 @@ export async function emitirPedido(
     }
     safeLog(
       'debug',
-      `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
-        `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
+      `[nfe/orchestrator] pedido '${pedidoId}' has an NFe that must not be re-sent ` +
+        `(estado=${captured.existing.estado}, cStat=${captured.existing.cStat}) — ` +
+        'returning persisted state without re-emission',
     );
     return existingToEmitResult(pedidoId, prep.nfeRef.id, captured.existing);
   }
@@ -1197,6 +1270,7 @@ export async function emitirPedido(
       nfeRef: prep.nfeRef,
       chave,
       signedXml,
+      idLote,
     });
   }
 
@@ -1281,8 +1355,9 @@ export interface BatchEmitResult {
  *    reports are lost — true of every site below as well;
  *  - 4b (generate/sign): the chunk's healthy fresh members are already
  *    persisted as unsent #396 anchors (chave + `xml_assinado`, `enviando`,
- *    no `nRec`), so a re-emit retransmits their stored bytes, and otherwise
- *    the backstop sweep's `consSitNFe` recovers them;
+ *    no `nRec`) under their send reservation (#1675), so once it expires a
+ *    re-emit retransmits their stored bytes, and otherwise the backstop
+ *    sweep's `consSitNFe` recovers them;
  *  - after the send (4d/4e/EPEC): each member's reply is audited before that
  *    member is persisted, so a member whose write threw is still its
  *    persist-before-send anchor, which the sweep (or a re-emit) recovers — the
@@ -1532,20 +1607,25 @@ export function patchForLoteSemRecibo(
 }
 
 /**
- * Persist one emit-path disposition that carries no receipt, under THIS lote's
- * guard (`persistPatchUnlessFinal` with `expectedIdLote`), and report it.
- * During the SOAP round-trip the doc looks like a crash-window anchor, so a
- * concurrent re-emit may have retransmitted it in ANOTHER lote, or it went
- * final; the guard re-derives both from `tx.get` and skips the write (rule 7),
- * and the result is the doc's live truth instead — as `reused: true`, the
- * `existingToEmitResult` precedent: that state was written by ANOTHER run, so
- * apps/web's `classifyEmitResult` must never count, say, a concurrent emit's
- * `aprovada` as THIS run's success. A missing doc throws (`NFeDocAusenteError`,
- * an `NFeOrchestratorError`) and nothing is written.
+ * Persist one emit-path write that answers this run's SEFAZ round-trip, under
+ * THIS lote's guard (`persistPatchUnlessFinal` with `expectedIdLote`), and
+ * report it. The idLote is the run's claim token (#1675): during the SOAP call
+ * the doc carries the run's send reservation, but a run that outlives it — or
+ * one whose doc went final — may find the doc re-stamped by another lote that
+ * retransmitted it. The guard re-derives both from `tx.get` and skips the write
+ * (root `CLAUDE.md` rule 7), and the result is the doc's live truth instead —
+ * as `reused: true` (`recusaToEmitResult`, the `existingToEmitResult`
+ * precedent): that state was written by ANOTHER run, so apps/web's
+ * `classifyEmitResult` must never count, say, a concurrent emit's `aprovada` as
+ * THIS run's success. A missing doc throws (`NFeDocAusenteError`, an
+ * `NFeOrchestratorError`) and nothing is written.
  *
- * Callers: {@link persistirDisposicaoSemRecibo} (#512, #1654 §1) and the
- * anchor / blocking-terminal dispositions of `applyAutorizadoOutcome`'s inline
- * recovery by chave (#1654 §1). `patch` never carries a receipt (`nRec` null).
+ * Callers: every write of `applyAutorizadoOutcome` — the main outcome (proc
+ * swap / recovered 539 swap in `extras`, #1675) and the anchor /
+ * blocking-terminal dispositions of its inline recovery by chave (#1654 §1) —
+ * {@link persistirDisposicaoSemRecibo} (#512, #1654 §1) and each member of a
+ * chunk's async 103 hand-off (#1675). `chave` is the one this run ends with (a
+ * recovered 539's included); the reported `nRec` is the patch's own.
  */
 async function persistirGuardadoPeloLote(a: {
   readonly fs: Firestore;
@@ -1566,7 +1646,7 @@ async function persistirGuardadoPeloLote(a: {
       pedidoId,
       estado: patch.estado,
       chave,
-      nRec: null,
+      nRec: patch.nRec,
       cStat: patch.cStat,
       xMotivo: patch.xMotivo,
       reused: false,
@@ -1577,16 +1657,7 @@ async function persistirGuardadoPeloLote(a: {
     `[nfe/orchestrator] lote ${idLote}: ${nfeRef.path} changed mid-flight ` +
       `(estado=${r.estadoAtual}) — reply not persisted, reporting the live doc`,
   );
-  return {
-    nfeId: nfeRef.id,
-    pedidoId,
-    estado: r.estadoAtual,
-    chave,
-    nRec: r.nRecAtual,
-    cStat: r.cStatAtual ?? '',
-    xMotivo: r.xMotivoAtual ?? '',
-    reused: true,
-  };
+  return recusaToEmitResult(pedidoId, nfeRef.id, chave, r);
 }
 
 /**
@@ -1732,15 +1803,15 @@ export async function processChunk(
   //     persisted as #396 anchors. The chave + signed XML are persisted (full doc overwrite)
   //     BEFORE autorizarLote, so the anti-loss anchor is complete before
   //     any SOAP send. Signing here (not in the tx) keeps RSA work out of
-  //     the transaction.
-  const toSend: Array<{
-    prep: EmissionPrep;
-    pedidoId: string;
-    chave: string;
-    signedXml: string;
-  }> = [];
+  //     the transaction. The write is guarded on this chunk's idLote and
+  //     carries the send reservation (#1675, `gravarAncoraDoLote`): a single
+  //     emit that claimed the doc since 4a has already generated (and sent)
+  //     its OWN chave for this nNF, so the member is dropped from the lote and
+  //     reported with the live doc — one chave per número, ever.
+  type Ancorado = { prep: EmissionPrep; pedidoId: string; chave: string; signedXml: string };
+  const toSend: Ancorado[] = [];
   const signed = await Promise.allSettled(
-    fresh.map(async (f) => {
+    fresh.map(async (f): Promise<Ancorado | { readonly recusado: EmitResult }> => {
       const reuseCNF = f.existingChave ? extractCNFFromChave(f.existingChave) : undefined;
       const { chave, signedXml, docData } = buildNfeDocWrite(
         f.prep.bundle,
@@ -1753,14 +1824,25 @@ export async function processChunk(
         reuseCNF,
         f.prep.contingencia,
         f.prep.emitRtc,
+        envioEmCursoAte(nowMicros()),
       );
-      await f.prep.nfeRef.set(docData);
+      const gravado = await gravarAncoraDoLote(fs, f.prep.nfeRef, docData, sharedIdLote);
+      if (!gravado.written) {
+        safeLog(
+          'debug',
+          `[nfe/orchestrator] lote ${sharedIdLote}: ${f.prep.nfeRef.path} claimed by another ` +
+            `emit since the allocation (estado=${gravado.estadoAtual}) — member dropped from the lote`,
+        );
+        return { recusado: recusaToEmitResult(f.pedidoId, f.prep.nfeRef.id, chave, gravado) };
+      }
       return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };
     }),
   );
   signed.forEach((s, i) => {
     if (s.status === 'rejected') {
       txResults.push(toEmitError(fresh[i]!.pedidoId, s.reason));
+    } else if ('recusado' in s.value) {
+      txResults.push(s.value.recusado);
     } else {
       toSend.push(s.value);
     }
@@ -1786,6 +1868,7 @@ export async function processChunk(
           nfeRef: s.prep.nfeRef,
           chave: s.chave,
           signedXml: s.signedXml,
+          idLote: sharedIdLote,
         }),
       ),
     );
@@ -1867,35 +1950,45 @@ export async function processChunk(
       return txResults;
     }
     // Persist aguardandoResposta + nRec + proximaConsultaEm on each doc
-    // (persistPatch seeds proximaConsultaEm from tMed), then enqueue one task.
-    const outcome = outcomeFromRetEnviNFe(retEnvi);
-    await Promise.all(
+    // (buildPersistData seeds proximaConsultaEm from tMed, which also releases
+    // the send reservation), then enqueue one task. Each member's write is
+    // owned by this chunk's idLote (#1675): a member another lote re-stamped
+    // mid-SOAP reports its live doc instead. Per-member isolation, as in
+    // persistLoteSemRecibo: one failed write of a known class fails only its
+    // pedido; any other class fails the batch (`toEmitError`).
+    const patch = applyOutcome(
+      { estado: ESTADO_NFE.enviando, retries: 0 },
+      outcomeFromRetEnviNFe(retEnvi),
+    );
+    const gravados = await Promise.allSettled(
       toSend.map((s) =>
-        persistPatch(
-          s.prep.nfeRef,
-          applyOutcome({ estado: ESTADO_NFE.enviando, retries: 0 }, outcome),
-        ),
+        persistirGuardadoPeloLote({
+          fs,
+          nfeRef: s.prep.nfeRef,
+          pedidoId: s.pedidoId,
+          chave: s.chave,
+          patch,
+          idLote: sharedIdLote,
+        }),
       ),
     );
-    await scheduler.enqueueConsulta({
-      filialId,
-      nRec,
-      tpEmis: chunkTpEmis,
-      attempt: 0,
-      scheduleAtMs: Date.now() + nextConsultaDelayMs(0, tMed),
-    });
-    for (const s of toSend) {
-      txResults.push({
-        nfeId: s.prep.nfeRef.id,
-        pedidoId: s.pedidoId,
-        estado: ESTADO_NFE.aguardandoResposta,
-        chave: s.chave,
+    // One task reconciles the whole receipt — only when at least one member
+    // is in flight on it under THIS lote; a refused member belongs to its
+    // owner, and the receipt reconcile skips a doc whose nRec differs.
+    if (gravados.some((g) => g.status === 'fulfilled' && !g.value.reused)) {
+      await scheduler.enqueueConsulta({
+        filialId,
         nRec,
-        cStat: retEnvi.cStat,
-        xMotivo: retEnvi.xMotivo,
-        reused: false,
+        tpEmis: chunkTpEmis,
+        attempt: 0,
+        scheduleAtMs: Date.now() + nextConsultaDelayMs(0, tMed),
       });
     }
+    gravados.forEach((g, i) => {
+      txResults.push(
+        g.status === 'fulfilled' ? g.value : toEmitError(toSend[i]!.pedidoId, g.reason),
+      );
+    });
     return txResults;
   } else {
     // Sync (single-NFe) chunk — retEnvi.protNFe is the singular protocol.

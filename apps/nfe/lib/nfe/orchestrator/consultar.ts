@@ -1,4 +1,4 @@
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 
 import { nowMicros } from '@delfrance/core/datetime';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
@@ -37,6 +37,7 @@ import {
   buildEnviNFeMsgFromConsulta,
   buildProcForAuthorizedOutcome,
   enviNfeCollection,
+  envioEmCurso,
   existingToEmitResult,
   findLatestEnviNFeMsgWithNRec,
   outcomeFromConsReci,
@@ -102,6 +103,14 @@ export interface ConsultaChaveResult {
  * swap rides that same write (#1654 §2d), so a refused write swaps nothing and
  * `chaveFinal` stays the doc's own chave.
  *
+ * That write is also owned by the caller's READ (#1675): `updateTimeLido` is
+ * the doc's `updateTime` as read, and the write is refused when the doc changed
+ * since (`expectedUpdateTime` — an emit claimed it and is sending, or the
+ * owner's outcome landed) or while a send claimed before the read is still in
+ * progress (`refuseWhileReserved`). A consult decided on a stale read must never
+ * write `rejeitada` over a live send: the next emit would regenerate over the
+ * bytes SEFAZ may be authorizing.
+ *
  * NOT gated on `isEstadoFinalNFe` — callers own that guard (they decide
  * whether to skip or report).
  *
@@ -120,6 +129,8 @@ export async function consultarChavePersistida(params: {
   pedidoId: string;
   nfeRef: FirebaseFirestore.DocumentReference;
   nota: NotaFiscalEletronica;
+  /** The doc's `updateTime` as the caller read `nota` — the write is owned by that read (#1675). */
+  updateTimeLido: Timestamp;
   chave: string;
   consReciCache?: Map<string, TRetConsReciNFe>;
 }): Promise<ConsultaChaveResult> {
@@ -371,7 +382,8 @@ export async function consultarChavePersistida(params: {
   // TOCTOU guard: `applyOutcome`'s anti-regression defense ran against the
   // estado read BEFORE the SEFAZ round-trip — a doc that became final
   // (e.g. cancelada) mid-call must not be blindly merged over, and a refused
-  // write swaps no chave either.
+  // write swaps no chave either. Owned by the caller's read (#1675): a doc
+  // changed since — an emit claimed it — or under a live send is left alone.
   const persisted = await persistPatchUnlessFinal(
     fs,
     nfeRef,
@@ -381,6 +393,7 @@ export async function consultarChavePersistida(params: {
       : troca != null || pacing != null
         ? { ...troca, ...pacing }
         : undefined,
+    { expectedUpdateTime: params.updateTimeLido, refuseWhileReserved: true },
   );
   // The doc's chave after this call: the recovered one only if the write
   // that carries the swap landed.
@@ -437,7 +450,11 @@ export async function consultarPedido(
   const chosen = slotsSnap.docs
     // Admin reads bypass the converter — parse each doc so a legacy ISO
     // `ultima_modificacao` is coerced to ms (else the numeric sort below → NaN).
-    .map((d) => ({ id: d.id, nota: nfev4Collection.parseRead(d.data(), d.ref.path) }))
+    .map((d) => ({
+      id: d.id,
+      nota: nfev4Collection.parseRead(d.data(), d.ref.path),
+      updateTime: d.updateTime,
+    }))
     .filter((c) => c.nota.chave)
     // `ultima_modificacao` is ms since epoch → numeric compare (newest first).
     .sort((a, b) => (b.nota.ultima_modificacao ?? 0) - (a.nota.ultima_modificacao ?? 0))[0];
@@ -464,6 +481,18 @@ export async function consultarPedido(
     return existingToEmitResult(pedidoId, nfeRef.id, nota);
   }
 
+  // A send is in progress on the doc (#1675) — a consult now would double up on
+  // a live SOAP call (or a paced retry), and its write would be refused anyway:
+  // report the doc as it is, with no SEFAZ call.
+  if (envioEmCurso(nota, nowMicros())) {
+    safeLog(
+      'debug',
+      `[nfe/orchestrator] pedido '${pedidoId}' nfev4 '${chosen.id}' has a send in progress ` +
+        '— returning persisted state without a SEFAZ call',
+    );
+    return existingToEmitResult(pedidoId, nfeRef.id, nota);
+  }
+
   const { patch, chaveFinal, nRecUsado } = await consultarChavePersistida({
     fs,
     rt,
@@ -471,6 +500,7 @@ export async function consultarPedido(
     pedidoId,
     nfeRef,
     nota,
+    updateTimeLido: chosen.updateTime,
     chave,
   });
 

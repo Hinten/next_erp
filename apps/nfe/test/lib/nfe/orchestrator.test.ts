@@ -54,7 +54,7 @@ import {
   type NFeConfig,
   type Pagamento,
 } from '@delfrance/schemas';
-import { dateToMicros } from '@delfrance/core/datetime';
+import { dateToMicros, nowMicros } from '@delfrance/core/datetime';
 
 import {
   CONSUMO_INDEVIDO_ESPERA_MS,
@@ -1017,9 +1017,12 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
   // #1654 §1 — pós-EPEC passes origem 'pos-epec', so none of the sync path's
   // new dispositions reach it and its handling stays byte-identical. The three
   // pins below are TODAY's results, including two a later pós-EPEC follow-up
-  // is expected to change (a lote-level refusal and a foreign protNFe are
-  // applied as before): they move with that follow-up, never with this one.
-  it('pós-EPEC keeps today’s handling of a lote-level 108 without infRec — the plain persist, no #512 disposition (#1654 pin)', async () => {
+  // (#1730) is expected to change (a lote-level refusal and a foreign protNFe
+  // are applied as before): they move with that follow-up, never with this one.
+  // ⚠️ #1675 changed only the WRITE PRIMITIVE here, deliberately: the
+  // transmission now claims the doc first, and its outcome is owned by the
+  // claim's idLote (a guarded write inside a transaction), never a plain merge.
+  it('pós-EPEC keeps today’s handling of a lote-level 108 without infRec — no #512 disposition, but the write is owned by the claim (#1654 pin, #1675)', async () => {
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
     docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
@@ -1043,10 +1046,13 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
       reused: false,
     });
     const merges = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4' && w.merge === true);
-    expect(merges).toHaveLength(1);
-    expect(merges[0]!.data).toMatchObject({ estado: ESTADO_NFE.enviando, cStat: '108' });
-    // The plain `persistPatch`, outside every transaction — not the guarded one.
-    expect(dentroDeTransacao(janelas, writes.indexOf(merges[0]!))).toBe(false);
+    // The claim (idLote + send reservation), then the outcome.
+    expect(merges).toHaveLength(2);
+    expect(merges[0]!.data).toMatchObject({ idLote: '1' });
+    expect(merges[1]!.data).toMatchObject({ estado: ESTADO_NFE.enviando, cStat: '108' });
+    // #1675 — both inside a transaction: the outcome is owned by the claim's idLote.
+    expect(dentroDeTransacao(janelas, writes.indexOf(merges[0]!))).toBe(true);
+    expect(dentroDeTransacao(janelas, writes.indexOf(merges[1]!))).toBe(true);
     expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
   });
 
@@ -1098,6 +1104,117 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
       NFeOrchestratorError,
     );
     expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+  });
+
+  /** A sync reply authorizing OUR chave — the pós-EPEC transmission's happy path. */
+  const RET_ENVI_100_SYNC_EPEC = {
+    tpAmb: '2' as const,
+    verAplic: 'SP_NFE_PL009_V4',
+    cStat: '104',
+    xMotivo: 'Lote processado',
+    cUF: '35' as const,
+    dhRecbto: '2026-06-12T09:00:00-03:00',
+    versao: '4.00' as const,
+    protNFe: {
+      versao: '4.00' as const,
+      infProt: {
+        tpAmb: '2' as const,
+        verAplic: 'SP_NFE_PL_008i2',
+        chNFe: CHAVE,
+        dhRecbto: '2026-06-12T09:00:00-03:00',
+        nProt: '135200000000790',
+        cStat: '100',
+        xMotivo: 'Autorizado o uso da NF-e',
+      },
+    },
+  };
+
+  // ---------------------------------------------------------------------------
+  // #1675 — one live run per doc, on the EPEC paths too
+  // ---------------------------------------------------------------------------
+
+  it('#1675 — a second emit during a LIVE enviarEpec is answered with the in-flight doc: ONE evento at the AN', async () => {
+    const { fs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    let segundo: Awaited<ReturnType<typeof emitirPedido>> | undefined;
+    vi.mocked(enviarEpec).mockImplementationOnce(async () => {
+      segundo = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+      return epecResult('135') as never;
+    });
+
+    const primeiro = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(1);
+    expect(segundo).toMatchObject({ estado: ESTADO_NFE.enviando, chave: CHAVE, reused: true });
+    expect(primeiro).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: false });
+  });
+
+  it('#1675 — the pós-EPEC transmission CLAIMS the doc: a second emit mid-transmission gets it back, ONE autorizarLote', async () => {
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
+    let segundo: Awaited<ReturnType<typeof emitirPedido>> | undefined;
+    let durante: Record<string, unknown> | undefined;
+    vi.mocked(autorizarLote).mockImplementationOnce(async () => {
+      durante = { ...docs['pedidos/PED-1/nfev4/s4']! };
+      segundo = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+      return RET_ENVI_100_SYNC_EPEC;
+    });
+
+    const primeiro = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    // The claim: the transmission's idLote + a live reservation, the anchor intact.
+    const idLote = vi.mocked(autorizarLote).mock.calls[0]![1].idLote;
+    expect(durante).toMatchObject({
+      estado: ESTADO_NFE.epecAprovado,
+      idLote,
+      xml_assinado: EPEC_SIGNED_NFE,
+    });
+    expect(durante!.proximaConsultaEm as number).toBeGreaterThan(nowMicros());
+    expect(segundo).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: true });
+    expect(primeiro).toMatchObject({ estado: ESTADO_NFE.aprovada, reused: false });
+    // The outcome released the reservation.
+    expect(docs['pedidos/PED-1/nfev4/s4']!.proximaConsultaEm).toBeNull();
+  });
+
+  it('#1675 — a pós-EPEC 468 from a transmission a newer claim superseded is refused: the live claim is left untouched', async () => {
+    const S4 = 'pedidos/PED-1/nfev4/s4';
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs[S4] = epecPendingDoc();
+    let soltarSegunda!: (v: unknown) => void;
+    let segundaNoSoap!: () => void;
+    const segundaChegou = new Promise<void>((resolve) => {
+      segundaNoSoap = resolve;
+    });
+    let segunda!: Promise<Awaited<ReturnType<typeof emitirPedido>>>;
+    let vivo: Record<string, unknown> | undefined;
+    vi.mocked(autorizarLote)
+      .mockImplementationOnce(async () => {
+        // The first transmission outlives its reservation; a second one claims
+        // the doc and is mid-SOAP when the first one's 468 arrives.
+        docs[S4]!.proximaConsultaEm = nowMicros() - 1;
+        segunda = emitirPedido(fs, fakeRuntime(), 'PED-1');
+        await segundaChegou;
+        vivo = { ...docs[S4]! };
+        return RET_ENVI_468;
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            soltarSegunda = resolve;
+            segundaNoSoap();
+          }) as never,
+      );
+
+    const primeira = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(primeira).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: true });
+    // Byte-identical: the superseded 468 neither counted a retry nor released the claim.
+    expect(docs[S4]).toEqual(vivo);
+    expect(vivo!.proximaConsultaEm as number).toBeGreaterThan(nowMicros());
+
+    soltarSegunda(RET_ENVI_100_SYNC_EPEC);
+    expect(await segunda).toMatchObject({ estado: ESTADO_NFE.aprovada, reused: false });
   });
 });
 
@@ -3865,7 +3982,7 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
     },
   );
 
-  it('a #396 crash-window NF-e (STORED bytes) refused lote-level 225 stays an anchor — a follow-up emit retransmits the SAME bytes, never regenerates', async () => {
+  it('a #396 crash-window NF-e (STORED bytes) refused lote-level 225 stays an anchor — a re-emit waits its pacing (#1675), then retransmits the SAME bytes, never regenerates', async () => {
     const r = await emitir(
       retEnviSemRecibo('225', 'Rejeicao: Falha no Schema XML do lote de NFe'),
       seedAncora,
@@ -3888,9 +4005,20 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
     expectGravacaoGuardada(r);
     expectSemConsultaSemTarefa(r.enfileirados);
 
-    // The operator re-emits: the anchor retransmits the bytes an earlier send
-    // may already have had authorized — no regenerate, no re-sign.
+    // #1675 — the anchor is paced (`proximaConsultaEm`), and an operator
+    // re-emit inside that pacing is answered with the anchor, no SEFAZ call.
     vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+    const cedo = await emitirPedido(r.fs, fakeRuntime(), 'PED-1');
+    expect(cedo).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      cStat: '225',
+      reused: true,
+    });
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+
+    // Once due, the re-emit retransmits the bytes an earlier send may already
+    // have had authorized — no regenerate, no re-sign.
+    (r.docs[NFE] as Record<string, unknown>).proximaConsultaEm = nowMicros() - 60_000_000;
     const again = await emitirPedido(r.fs, fakeRuntime(), 'PED-1');
 
     expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
@@ -4183,8 +4311,11 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
     });
   });
 
+  // ⚠️ #1675 deliberately moved ONE thing in these pins: the merge is no longer
+  // the plain persist but the lote-guarded one (owned by the run's idLote, in
+  // its own transaction). Its key set — what is written — is unchanged.
   describe('pins — what §1 must leave untouched', () => {
-    it('103 + infRec (degraded async): aguardandoResposta + receipt, ONE enqueue, the plain persist with today’s key set', async () => {
+    it('103 + infRec (degraded async): aguardandoResposta + receipt, ONE enqueue, today’s key set — owned by the lote (#1675)', async () => {
       const r = await emitir(RET_ENVI_103 as never);
 
       expect(r.result).toMatchObject({
@@ -4209,12 +4340,11 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
         'ultima_modificacao',
         'xMotivo',
       ]);
-      expect(r.janelas).toHaveLength(1);
-      expect(dentroDeTransacao(r.janelas, r.writes.indexOf(r.merges[0]!))).toBe(false);
+      expectGravacaoGuardada(r);
       expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
     });
 
-    it('104 + our protNFe 100: aprovada + proc in ONE plain merge with today’s key set', async () => {
+    it('104 + our protNFe 100: aprovada + proc in ONE merge with today’s key set — owned by the lote (#1675)', async () => {
       const r = await emitir(RET_ENVI_100_SYNC as never);
 
       expect(r.result).toMatchObject({ estado: ESTADO_NFE.aprovada, cStat: '100', reused: false });
@@ -4231,9 +4361,176 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
         'xml_assinado',
         'xml_nfe_proc',
       ]);
-      expect(r.janelas).toHaveLength(1);
-      expect(dentroDeTransacao(r.janelas, r.writes.indexOf(r.merges[0]!))).toBe(false);
+      expectGravacaoGuardada(r);
       expectSemConsultaSemTarefa(r.enfileirados);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1675 — an overlapping emit can neither retransmit over a live run nor
+// overwrite its outcome. The fake's `runTransaction` has no OCC, so a re-entry
+// from inside the SOAP mock IS the interleaving: the outer claim has committed
+// before `autorizarLote` runs. The concurrent-claim race itself is
+// `envio-em-curso.occ.test.ts`.
+// ---------------------------------------------------------------------------
+
+describe('overlapping emits (#1675) — one live run per nfev4 doc', () => {
+  const NFE = 'pedidos/PED-1/nfev4/s1';
+  const ARMAZENADO = `<NFe xmlns="${NFE_NS}"><infNFe>…ARMAZENADO…</infNFe></NFe>`;
+
+  /** A persist-before-send anchor whose send never answered (a #396 crash window, unless reserved). */
+  function ancora(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      numeracao: 12,
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.enviando,
+      chave: CHAVE,
+      xml_assinado: ARMAZENADO,
+      idLote: '7',
+      nRec: null,
+      retries: 0,
+      cStat: null,
+      xMotivo: null,
+      ...over,
+    };
+  }
+
+  /** Our sync reply with a protNFe REJECTION for our chave — a final verdict, not a disposition. */
+  const RET_225_NOSSO = {
+    ...RET_ENVI_100_SYNC,
+    protNFe: {
+      ...RET_ENVI_100_SYNC.protNFe,
+      infProt: {
+        ...RET_ENVI_100_SYNC.protNFe.infProt,
+        cStat: '225',
+        xMotivo: 'Rejeicao: Falha no Schema XML da NFe',
+      },
+    },
+  } as const;
+
+  it('a second emit while the first is mid-SOAP answers the in-flight doc — ONE autorizarLote, idLote advanced once', async () => {
+    const { fs, docs } = fakeFirestore({ events: [] });
+    let segundo: Awaited<ReturnType<typeof emitirPedido>> | undefined;
+    vi.mocked(autorizarLote).mockImplementationOnce(async () => {
+      segundo = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+      return RET_ENVI_100_SYNC;
+    });
+
+    const primeiro = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    expect(segundo).toMatchObject({ estado: ESTADO_NFE.enviando, chave: CHAVE, reused: true });
+    expect(primeiro).toMatchObject({ estado: ESTADO_NFE.aprovada, reused: false });
+    expect((docs['filiais/F-1/nfeconfig/default'] as { idLote: number }).idLote).toBe(1);
+  });
+
+  it('the claim stamps the send reservation — µs, ENVIO_EM_CURSO_MS ahead — and the run’s own outcome releases it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T12:00:00.000Z'));
+    try {
+      const { fs, docs } = fakeFirestore({ events: [] });
+      let durante: unknown;
+      vi.mocked(autorizarLote).mockImplementationOnce(async () => {
+        durante = docs[NFE]!.proximaConsultaEm;
+        return RET_ENVI_100_SYNC;
+      });
+
+      await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(durante).toBe(Date.parse('2026-10-07T12:00:00.000Z') * 1000 + 360_000_000);
+      expect(durante as number).toBeGreaterThan(1e15);
+      expect(docs[NFE]!.proximaConsultaEm).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a crash-window anchor under a LIVE reservation is answered as is — no SOAP, no write at all', async () => {
+    const { fs, docs, writes } = fakeFirestore({ events: [] });
+    docs[NFE] = ancora({ proximaConsultaEm: nowMicros() + 60_000_000 });
+
+    const r = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(r).toMatchObject({ estado: ESTADO_NFE.enviando, chave: CHAVE, reused: true });
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  it('near-miss: under an EXPIRED µs reservation the anchor is a crash window again — its STORED bytes are retransmitted', async () => {
+    const { fs, docs } = fakeFirestore({ events: [] });
+    docs[NFE] = ancora({ proximaConsultaEm: nowMicros() - 60_000_000 });
+    vi.mocked(autorizarLote).mockResolvedValueOnce(RET_ENVI_103);
+
+    const r = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(autorizarLote).mock.calls[0]![1].NFe).toEqual([ARMAZENADO]);
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ estado: ESTADO_NFE.aguardandoResposta, reused: false });
+  });
+
+  /**
+   * Run 1 retransmits an anchor and outlives its reservation; run 2 claims the
+   * doc and is mid-SOAP (held open) when run 1's late reply arrives.
+   */
+  async function sobreposicao(respostaDaPrimeira: unknown) {
+    const { fs, docs } = fakeFirestore({ events: [] });
+    docs[NFE] = ancora({ proximaConsultaEm: null });
+    const { scheduler, enfileirados } = schedulerGravador();
+    let soltarSegunda!: (v: unknown) => void;
+    let segundaNoSoap!: () => void;
+    const segundaChegou = new Promise<void>((resolve) => {
+      segundaNoSoap = resolve;
+    });
+    let segunda!: Promise<Awaited<ReturnType<typeof emitirPedido>>>;
+    let vivo: Record<string, unknown> | undefined;
+    vi.mocked(autorizarLote)
+      .mockImplementationOnce(async () => {
+        docs[NFE]!.proximaConsultaEm = nowMicros() - 1;
+        segunda = emitirPedido(fs, fakeRuntime(), 'PED-1', scheduler);
+        await segundaChegou;
+        vivo = { ...docs[NFE]! };
+        return respostaDaPrimeira as never;
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            soltarSegunda = resolve;
+            segundaNoSoap();
+          }) as never,
+      );
+
+    const primeira = await emitirPedido(fs, fakeRuntime(), 'PED-1', scheduler);
+    return { docs, primeira, vivo: vivo!, enfileirados, soltarSegunda, segunda: () => segunda };
+  }
+
+  it('a run superseded mid-SOAP never overwrites the newer claim — its late 225 is refused, the live doc reported', async () => {
+    const r = await sobreposicao(RET_225_NOSSO);
+
+    // Run 2's claim is live: its idLote, its reservation, still enviando.
+    expect(r.vivo).toMatchObject({ estado: ESTADO_NFE.enviando, idLote: '2', nRec: null });
+    expect(r.vivo.proximaConsultaEm as number).toBeGreaterThan(nowMicros());
+    // Run 1 reports that live doc and wrote NOTHING over it.
+    expect(r.primeira).toMatchObject({ estado: ESTADO_NFE.enviando, chave: CHAVE, reused: true });
+    expect(r.docs[NFE]).toEqual(r.vivo);
+
+    // Run 2's own outcome then lands, owned by its idLote.
+    r.soltarSegunda(RET_ENVI_100_SYNC);
+    expect(await r.segunda()).toMatchObject({ estado: ESTADO_NFE.aprovada, reused: false });
+    expect(r.docs[NFE]).toMatchObject({ estado: ESTADO_NFE.aprovada, xml_assinado: null });
+  });
+
+  it('a superseded degraded-async 103 is refused too — its receipt is not written and NOTHING is enqueued', async () => {
+    const r = await sobreposicao(RET_ENVI_103);
+
+    expect(r.primeira).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+    expect(r.docs[NFE]).toEqual(r.vivo);
+    expect(r.docs[NFE]!.nRec).toBeNull();
+    expect(r.enfileirados).toEqual([]);
+
+    r.soltarSegunda(RET_ENVI_100_SYNC);
+    await r.segunda();
   });
 });

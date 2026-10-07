@@ -67,6 +67,7 @@ import {
   RECONCILE_SWEEP_GRACE_MS,
 } from '@delfrance/integrations-nfe';
 import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import { Timestamp } from 'firebase-admin/firestore';
 
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -137,6 +138,10 @@ function fakeFirestore(
 ) {
   const docs: Record<string, Record<string, unknown> | null> = { ...seed };
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
+  // Every write bumps the doc's version, reported as the snapshot's
+  // `updateTime` — what a write owned by an earlier read compares (#1675).
+  const versoes: Record<string, number> = {};
+  const updateTime = (path: string) => Timestamp.fromMillis(1 + (versoes[path] ?? 0));
 
   function ref(path: string): Record<string, unknown> {
     const segments = path.split('/');
@@ -151,12 +156,18 @@ function fakeFirestore(
       },
       async get() {
         const data = docs[path];
-        return { exists: data != null, id: segments[segments.length - 1]!, data: () => data };
+        return {
+          exists: data != null,
+          id: segments[segments.length - 1]!,
+          data: () => data,
+          updateTime: updateTime(path),
+        };
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
         assertSignedXmlNeverLost(path, data, opt?.merge);
         writes.push({ path, data, merge: opt?.merge });
         docs[path] = opt?.merge ? { ...(docs[path] ?? {}), ...data } : data;
+        versoes[path] = (versoes[path] ?? 0) + 1;
       },
     };
   }
@@ -187,6 +198,7 @@ function fakeFirestore(
             ref: ref(k),
             data: () => v,
             exists: true,
+            updateTime: updateTime(k),
           }));
         return { docs: items, size: items.length, empty: items.length === 0 };
       },
@@ -1511,5 +1523,79 @@ describe('POST /api/nfe/processar-pendentes — a 539 recovered by the legacy co
       chave: OUTRA,
       xml_assinado: '<NFe>…signed…</NFe>',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1675 — the sweep never consults over a live send, and its consult's write is
+// owned by the scan's read.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/nfe/processar-pendentes — a send in progress (#1675)', () => {
+  beforeEach(() => {
+    vi.mocked(consultarSituacaoNFe).mockImplementation(async (_call, body) =>
+      autorizadaPara(body.chave),
+    );
+  });
+
+  it('a claimed anchor is not consulted while its send reservation is live — not even with {"timeoutMs":60000}; one whose reservation passed is', async () => {
+    const reservado = {
+      ...anchorDoc(61, Date.now() - 2 * MINUTE_MS),
+      proximaConsultaEm: nowMicros() + 4 * MINUTE_MS * 1000,
+    };
+    const expirado = {
+      ...anchorDoc(62, Date.now() - 2 * MINUTE_MS),
+      proximaConsultaEm: nowMicros() - 1,
+    };
+    const { fs, writes } = fakeFirestore({ [pathDe(61)]: reservado, [pathDe(62)]: expirado });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req('{"timeoutMs":60000}'));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 2, recovered: 1, stillPending: 1, errors: [] });
+    expect(consultedChaves()).toEqual([chaveDe(62)]);
+    expect(writes.some((w) => w.path === pathDe(61))).toBe(false);
+  });
+
+  it('an emit that claims the doc while its consult is in flight wins — the consult’s write is refused, nothing swapped, counted pending', async () => {
+    const ancora = anchorDoc(63, Date.now() - 10 * MINUTE_MS);
+    const { fs, docs } = fakeFirestore({ [pathDe(63)]: ancora });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockImplementationOnce(async (_call, body) => {
+      // The operator re-emits mid-consult: the claim re-stamps the doc.
+      await (
+        fs as unknown as { doc: (p: string) => { set: (d: unknown, o: unknown) => Promise<void> } }
+      )
+        .doc(pathDe(63))
+        .set(
+          { idLote: '9', proximaConsultaEm: nowMicros() + 6 * MINUTE_MS * 1000 },
+          { merge: true },
+        );
+      return autorizadaPara(body.chave);
+    });
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+    expect(docs[pathDe(63)]).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      idLote: '9',
+      xml_assinado: ancora.xml_assinado,
+    });
+  });
+
+  it('near-miss: a doc nobody touched during its consult is written as before', async () => {
+    const { fs, docs } = fakeFirestore({
+      [pathDe(64)]: anchorDoc(64, Date.now() - 10 * MINUTE_MS),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 1, recovered: 1, stillPending: 0, errors: [] });
+    expect(docs[pathDe(64)]).toMatchObject({ estado: ESTADO_NFE.aprovada, xml_assinado: null });
   });
 });

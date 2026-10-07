@@ -792,9 +792,10 @@ describe('emitirPedidosLote — single filial happy path', () => {
       // #512 regression pin for the nRec path: exactly ONE merge write per doc
       // (the full-overwrite doc writes before the send are not merges),
       // carrying exactly this key set (captured on the pre-#512 code), plus the
-      // single enqueue asserted above — and that merge lands OUTSIDE every
-      // transaction, i.e. it is still the plain unguarded `persistPatch`, not
-      // #512's `persistPatchUnlessFinal`.
+      // single enqueue asserted above. ⚠️ DELIBERATELY rewritten by #1675: that
+      // merge used to land outside every transaction (the plain unguarded
+      // `persistPatch`); it is now owned by the chunk's idLote, so it lands
+      // INSIDE its own transaction (`persistPatchUnlessFinal`). Same keys.
       const merges = writes.filter((x) => x.path === `pedidos/${pedidoId}/nfev4/s1` && x.merge);
       expect(merges).toHaveLength(1);
       expect(Object.keys(merges[0]!.data).sort()).toEqual([
@@ -807,11 +808,12 @@ describe('emitirPedidosLote — single filial happy path', () => {
         'xMotivo',
       ]);
       const at = writes.indexOf(merges[0]!);
-      expect(txWindows.some(([start, end]) => at >= start && at < end)).toBe(false);
+      expect(txWindows.some(([start, end]) => at >= start && at < end)).toBe(true);
     }
-    // Near-miss guard for the pin above: the allocation tx IS seen, and its
-    // placeholder writes fall inside its window.
-    expect(txWindows).toHaveLength(1);
+    // The windows: the allocation tx (4a, its placeholder writes inside), one
+    // guarded anchor write per member (4b, #1675) and one guarded hand-off
+    // write per member (#1675).
+    expect(txWindows).toHaveLength(1 + 3 + 3);
     expect(txWindows[0]![1]).toBeGreaterThan(txWindows[0]![0]);
   });
 });
@@ -2876,7 +2878,7 @@ describe('#512 — async lote reply without nRec', () => {
       expectNoConsultNoEnqueue(enqueued);
     });
 
-    it('656: the anchor’s 1 h pacing binds only the sweep — an immediate operator re-emit retransmits its STORED bytes and gets a receipt', async () => {
+    it('656: the anchor’s 1 h pacing binds the emit too (#1675) — an immediate re-emit is answered with the anchor, and only after the hour are its STORED bytes retransmitted', async () => {
       const { fs, docs } = seedMixedChunk();
       autorizarLoteAsyncSemRecibo('656', 'Rejeicao: Consumo Indevido');
       const { scheduler, enqueued } = recordingScheduler();
@@ -2904,9 +2906,12 @@ describe('#512 — async lote reply without nRec', () => {
       );
       expect(enqueued).toEqual([]);
 
-      // The operator re-emits right away: the emit path does NOT wait out the
-      // anchor's `proximaConsultaEm` (that gates the sweep's consult only), so
-      // the stored bytes go out again at once.
+      // ⚠️ DELIBERATELY flipped by #1675 (this pin used to assert the stored
+      // bytes went out again at once). The operator re-emits right away: the
+      // anchor's `proximaConsultaEm` is inside the consumo-indevido hour, so
+      // it is answered with the anchor and NOT retransmitted — a call inside
+      // the window would only earn another 656. The error member, which carries
+      // no pacing, regenerates under its OWN número and is sent alone.
       autorizarLoteAsync('RECIBO-2');
       const again = await emitirPedidosLote(
         fs as never,
@@ -2916,28 +2921,40 @@ describe('#512 — async lote reply without nRec', () => {
       );
 
       expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
-      const segundo = vi.mocked(autorizarLote).mock.calls[1]![1];
-      expect(segundo.idLote).toBe('2');
-      expect(segundo.NFe).toContain(STORED_XML);
-      // The anchor was never regenerated — in either run.
-      expect(vi.mocked(generateNFe).mock.calls.some((c) => c[0]?.numeracao === 7)).toBe(false);
-      expect(docs[nfePath('PED-CRASH')]).toMatchObject({
-        estado: ESTADO_NFE.aguardandoResposta,
-        nRec: 'RECIBO-2',
-        idLote: '2',
-        xml_assinado: STORED_XML,
-      });
+      expect(vi.mocked(autorizarLote).mock.calls[1]![1].NFe).toHaveLength(1);
+      expect(vi.mocked(autorizarLote).mock.calls[1]![1].NFe).not.toContain(STORED_XML);
       expect(again.results.find((r) => r.pedidoId === 'PED-CRASH')).toMatchObject({
         estado: ESTADO_NFE.aguardandoResposta,
-        nRec: 'RECIBO-2',
-        reused: false,
+        cStat: '656',
+        nRec: null,
+        reused: true,
       });
-      // The error member regenerated under its OWN número — no second nNF.
+      expect(docs[nfePath('PED-CRASH')]).toMatchObject({ idLote: '1', nRec: null, cStat: '656' });
       expect(
         (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
       ).toBe(1);
-      expect(enqueued).toHaveLength(1);
-      expect(enqueued[0]).toMatchObject({ filialId: 'F-1', nRec: 'RECIBO-2', attempt: 0 });
+
+      // Once the hour has passed, the next re-emit retransmits the STORED bytes —
+      // never regenerated, in any run.
+      (docs[nfePath('PED-CRASH')] as Record<string, unknown>).proximaConsultaEm =
+        Date.now() * 1000 - 60_000_000;
+      autorizarLoteAsync('RECIBO-3');
+      const depois = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-CRASH'], scheduler);
+
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(autorizarLote).mock.calls[2]![1].NFe).toEqual([STORED_XML]);
+      expect(vi.mocked(generateNFe).mock.calls.some((c) => c[0]?.numeracao === 7)).toBe(false);
+      expect(docs[nfePath('PED-CRASH')]).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'RECIBO-3',
+        idLote: '3',
+        xml_assinado: STORED_XML,
+      });
+      expect(depois.results[0]).toMatchObject({
+        estado: ESTADO_NFE.aguardandoResposta,
+        nRec: 'RECIBO-3',
+        reused: false,
+      });
     });
 
     it('a member that went FINAL mid-flight (aprovada + proc) is not overwritten — its result is aprovada, reused (never this run’s success)', async () => {
@@ -3338,7 +3355,7 @@ describe('#1654 §3 — toEmitError reports only known failure classes', () => {
     expect(enqueued).toEqual([]);
   });
 
-  it('an unknown class at generate/sign (4b) aborts before the send — the healthy members are already #396 anchors, which a re-emit retransmits', async () => {
+  it('an unknown class at generate/sign (4b) aborts before the send — the healthy members are already #396 anchors, which a re-emit retransmits once their send reservation expires', async () => {
     const { fs, docs } = fakeFirestore({
       events: [],
       pedidos: [
@@ -3365,20 +3382,32 @@ describe('#1654 §3 — toEmitError reports only known failure classes', () => {
     expect(enqueued).toEqual([]);
     // … but the allocation committed three números, and 4b had already
     // persisted each healthy member's full anchor: chave + signed bytes, still
-    // enviando, no nRec — a #396 crash-window doc that was never sent.
+    // enviando, no nRec — a #396 crash-window doc that was never sent — under
+    // the send reservation 4b stamps (#1675).
     expect(numeracaoAtual(docs)).toBe(3);
     const bytes = ['PED-1', 'PED-2'].map((pedidoId) => {
       const doc = docs[nfePath(pedidoId)] as Record<string, unknown>;
       expect(doc).toMatchObject({ estado: ESTADO_NFE.enviando, nRec: null });
       expect(typeof doc.chave).toBe('string');
       expect(typeof doc.xml_assinado).toBe('string');
+      expect(doc.proximaConsultaEm as number).toBeGreaterThan(Date.now() * 1000);
       return doc.xml_assinado as string;
     });
-    // The buggy member keeps its placeholder: its número, no chave.
-    expect(docs[nfePath('PED-BUG')]).toMatchObject({ numeracao: 2, chave: null });
+    // The buggy member keeps its placeholder: its número, no chave — and no
+    // reservation, so nothing holds its re-emit.
+    expect(docs[nfePath('PED-BUG')]).toMatchObject({
+      numeracao: 2,
+      chave: null,
+      proximaConsultaEm: null,
+    });
 
-    // Bug fixed: a re-emit retransmits the anchors' STORED bytes (no
-    // regenerate, no new número) and generates only the placeholder's NF-e.
+    // Bug fixed and deployed — longer than the reservation, which has expired:
+    // a re-emit retransmits the anchors' STORED bytes (no regenerate, no new
+    // número) and generates only the placeholder's NF-e.
+    for (const pedidoId of ['PED-1', 'PED-2']) {
+      (docs[nfePath(pedidoId)] as Record<string, unknown>).proximaConsultaEm =
+        Date.now() * 1000 - 60_000_000;
+    }
     vi.mocked(generateNFe).mockImplementation(gerar);
     vi.mocked(generateNFe).mockClear();
     const out = await emitirPedidosLote(
@@ -3639,5 +3668,300 @@ describe('#1654 §3 — toEmitError reports only known failure classes', () => {
       vi.unstubAllEnvs();
       await deleteApp(app);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1675 — the batch path: one live run per doc, one chave per número
+// ---------------------------------------------------------------------------
+
+describe('#1675 — overlapping emits on the batch path', () => {
+  const nfePath = (pedidoId: string) => `pedidos/${pedidoId}/nfev4/s1`;
+  const ARMAZENADO =
+    `<NFe><infNFe Id="NFe${fakeChave(7, 9)}">…stored…</infNFe>` +
+    '<Signature><SignedInfo><Reference><DigestValue>D==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+
+  /** A #396 anchor whose send never answered (no reservation unless given one). */
+  function ancora(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.enviando,
+      chave: fakeChave(7, 9),
+      idLote: '5',
+      cStat: null,
+      xMotivo: null,
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: ARMAZENADO,
+      ...over,
+    };
+  }
+
+  /** The chave a signed fake NF-e carries (`<signed><NFe id="…"/></signed>`). */
+  function chaveDe(xml: string): string {
+    const m = /id="([0-9]{44})"|NFe([0-9]{44})/.exec(xml);
+    return (m?.[1] ?? m?.[2])!;
+  }
+
+  /** A reply per call: a SYNC protNFe 100 for a one-NF-e lote, a 103 + receipt otherwise. */
+  function responderPorLote(nRec = 'RECIBO-1'): void {
+    vi.mocked(autorizarLote).mockImplementation(async (_call, args) => {
+      if (args.NFe.length === 1) {
+        const chave = chaveDe(args.NFe[0]!);
+        return {
+          versao: '4.00',
+          tpAmb: '2',
+          verAplic: 'TEST',
+          cStat: '104',
+          xMotivo: 'Lote processado',
+          cUF: '35',
+          dhRecbto: new Date().toISOString(),
+          protNFe: {
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'TEST',
+              chNFe: chave,
+              dhRecbto: new Date().toISOString(),
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              nProt: `135${chave.slice(0, 12)}`,
+              digVal: 'fake-digval',
+            },
+          },
+        } as never;
+      }
+      return {
+        versao: '4.00',
+        tpAmb: '2',
+        verAplic: 'TEST',
+        cStat: '103',
+        xMotivo: 'Lote recebido com sucesso',
+        cUF: '35',
+        dhRecbto: new Date().toISOString(),
+        infRec: { nRec, tMed: '1' },
+      } as never;
+    });
+  }
+
+  it('a single emit during the chunk’s SOAP call is answered with the in-flight member — fresh (4b reservation) and stored (4a reservation): ONE autorizarLote', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-CRASH', filialId: 'F-1', existingNFe: ancora() },
+      ],
+    });
+    responderPorLote();
+    let fresh: unknown;
+    let crash: unknown;
+    const resposta = vi.mocked(autorizarLote).getMockImplementation()!;
+    vi.mocked(autorizarLote).mockImplementationOnce(async (call, args) => {
+      fresh = await emitirPedido(fs as never, fakeRuntime(), 'PED-FRESH');
+      crash = await emitirPedido(fs as never, fakeRuntime(), 'PED-CRASH');
+      return resposta(call, args);
+    });
+
+    await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-CRASH']);
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    expect(fresh).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+    expect(crash).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+  });
+
+  it('a member under a LIVE reservation is skipped in 4a — not in the lote, its doc untouched, reported in flight', async () => {
+    const reservado = ancora({ proximaConsultaEm: Date.now() * 1000 + 60_000_000 });
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-LIVE', filialId: 'F-1', existingNFe: reservado },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-LIVE', 'PED-2']);
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(autorizarLote).mock.calls[0]![1].NFe).not.toContain(ARMAZENADO);
+    expect(docs[nfePath('PED-LIVE')]).toEqual(reservado);
+    expect(out.results.find((r) => r.pedidoId === 'PED-LIVE')).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      reused: true,
+    });
+  });
+
+  /**
+   * Runs `antes4b` right after the chunk's allocation transaction (4a) — the
+   * window in which a concurrent single emit can claim a member's doc.
+   */
+  function entre4aE4b(fs: { runTransaction: unknown }, antes4b: () => Promise<void>): void {
+    const alvo = fs as { runTransaction: <T>(fn: (tx: unknown) => Promise<T>) => Promise<T> };
+    const original = alvo.runTransaction;
+    let primeira = true;
+    alvo.runTransaction = async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
+      const r = await original(fn);
+      if (primeira) {
+        primeira = false;
+        await antes4b();
+      }
+      return r;
+    };
+  }
+
+  it('a single emit that claims a FRESH placeholder between 4a and 4b wins — the lote drops it: ONE chave for that número, sent once', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+    let unica: unknown;
+    entre4aE4b(fs, async () => {
+      unica = await emitirPedido(fs as never, fakeRuntime(), 'PED-1');
+    });
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    const chaveDaUnica = (docs[nfePath('PED-1')] as { chave: string }).chave;
+    expect(unica).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      chave: chaveDaUnica,
+      reused: false,
+    });
+    expect(docs[nfePath('PED-1')]).toMatchObject({ estado: ESTADO_NFE.aprovada, idLote: '2' });
+    // Two SOAP calls: the single emit's, then the lote — WITHOUT PED-1.
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
+    const enviados = vi.mocked(autorizarLote).mock.calls.flatMap((c) => c[1].NFe.map(chaveDe));
+    expect(enviados.filter((c) => c.slice(25, 34) === chaveDaUnica.slice(25, 34))).toEqual([
+      chaveDaUnica,
+    ]);
+    expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      chave: chaveDaUnica,
+      reused: true,
+    });
+    expect(out.results.find((r) => r.pedidoId === 'PED-2')).toMatchObject({
+      estado: ESTADO_NFE.aprovada,
+      reused: false,
+    });
+  });
+
+  it('the same for a REUSE (rejeitada) member, stamped with the chunk’s idLote in 4a — the batch never overwrites the single emit’s doc', async () => {
+    const rejeitada = {
+      ...ancora(),
+      estado: ESTADO_NFE.rejeitada,
+      cStat: '225',
+      xMotivo: 'Rejeicao: Falha no Schema XML da NFe',
+      idLote: '0',
+    };
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1', existingNFe: rejeitada },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+    let carimbo: unknown;
+    entre4aE4b(fs, async () => {
+      carimbo = (docs[nfePath('PED-1')] as { idLote: unknown }).idLote;
+      await emitirPedido(fs as never, fakeRuntime(), 'PED-1');
+    });
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    expect(carimbo).toBe('1'); // the 4a stamp 4b is guarded on
+    expect(docs[nfePath('PED-1')]).toMatchObject({ estado: ESTADO_NFE.aprovada, idLote: '2' });
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(autorizarLote).mock.calls[1]![1].NFe).toHaveLength(1);
+    expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({ reused: true });
+  });
+
+  it('near-miss: a REUSE member whose 4b generate fails carries NO reservation — a fix-and-resend is not held', async () => {
+    const rejeitada = {
+      ...ancora(),
+      estado: ESTADO_NFE.rejeitada,
+      cStat: '225',
+      idLote: '0',
+    };
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1', existingNFe: rejeitada, failGenerate: true },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({
+      errorCode: 'NFeGeneratorError',
+    });
+    const doc = docs[nfePath('PED-1')] as Record<string, unknown>;
+    expect(doc).toMatchObject({ estado: ESTADO_NFE.rejeitada, idLote: '1' });
+    expect(doc.proximaConsultaEm ?? null).toBeNull();
+  });
+
+  it('the async hand-off is owned by the lote: a member another lote re-stamped mid-SOAP is reported live, and the ONE task still goes out for the rest', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote('RECIBO-1');
+    const resposta = vi.mocked(autorizarLote).getMockImplementation()!;
+    vi.mocked(autorizarLote).mockImplementationOnce(async (call, args) => {
+      docs[nfePath('PED-2')] = { ...docs[nfePath('PED-2')]!, idLote: '99' };
+      return resposta(call, args);
+    });
+    const { scheduler, enqueued } = recordingScheduler();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2'], scheduler);
+
+    expect(docs[nfePath('PED-1')]).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      nRec: 'RECIBO-1',
+    });
+    expect(docs[nfePath('PED-2')]).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      idLote: '99',
+      nRec: null,
+    });
+    expect(out.results.find((r) => r.pedidoId === 'PED-2')).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      reused: true,
+    });
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('near-miss: when EVERY member was re-stamped, nothing is enqueued', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote('RECIBO-1');
+    const resposta = vi.mocked(autorizarLote).getMockImplementation()!;
+    vi.mocked(autorizarLote).mockImplementationOnce(async (call, args) => {
+      for (const p of ['PED-1', 'PED-2']) docs[nfePath(p)] = { ...docs[nfePath(p)]!, idLote: '99' };
+      return resposta(call, args);
+    });
+    const { scheduler, enqueued } = recordingScheduler();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2'], scheduler);
+
+    expect(enqueued).toEqual([]);
+    expect(out.results.every((r) => 'reused' in r && r.reused)).toBe(true);
   });
 });

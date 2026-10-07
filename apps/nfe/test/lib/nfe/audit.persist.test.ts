@@ -25,10 +25,17 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 import type { NFeStatePatch } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
+import { Timestamp } from 'firebase-admin/firestore';
+
 import {
+  ENVIO_EM_CURSO_MS,
+  envioEmCurso,
+  envioEmCursoAte,
+  gravarAncoraDoLote,
   type PersistGuard,
   persistPatch,
   persistPatchUnlessFinal,
+  reivindicarEnvio,
   swapAnchorForProc,
 } from '../../../lib/nfe/orchestrator/audit';
 import { NFeDocAusenteError, NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
@@ -48,13 +55,19 @@ function patchOf(over: Partial<NFeStatePatch> = {}): NFeStatePatch {
   };
 }
 
-/** Fake Firestore exposing only the `runTransaction` seam the guard uses. */
-function fakeFs(doc: Record<string, unknown> | null): {
+/**
+ * Fake Firestore exposing only the `runTransaction` seam the guard uses.
+ * `updateTime` is the snapshot's, as `tx.get` reports it (#1675).
+ */
+function fakeFs(
+  doc: Record<string, unknown> | null,
+  updateTime?: Timestamp,
+): {
   fs: never;
   txGet: ReturnType<typeof vi.fn>;
   txSet: ReturnType<typeof vi.fn>;
 } {
-  const txGet = vi.fn(async () => ({ exists: doc != null, data: () => doc }));
+  const txGet = vi.fn(async () => ({ exists: doc != null, data: () => doc, updateTime }));
   const txSet = vi.fn();
   const fs = {
     runTransaction: (fn: (tx: unknown) => Promise<unknown>) => fn({ get: txGet, set: txSet }),
@@ -78,6 +91,7 @@ describe('persistPatchUnlessFinal', () => {
       cStatAtual: '101',
       xMotivoAtual: 'Cancelamento de NF-e homologado',
       nRecAtual: null,
+      chaveAtual: null,
     });
     expect(txSet).not.toHaveBeenCalled();
   });
@@ -213,6 +227,7 @@ describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
       cStatAtual: '103',
       xMotivoAtual: 'Lote recebido com sucesso',
       nRecAtual: 'OUTRO',
+      chaveAtual: null,
     });
     expect(txSet).not.toHaveBeenCalled();
   });
@@ -260,6 +275,7 @@ describe('persistPatchUnlessFinal with a PersistGuard (#512)', () => {
       cStatAtual: '100',
       xMotivoAtual: 'Autorizado o uso da NF-e',
       nRecAtual: null,
+      chaveAtual: null,
     });
     expect(txSet).not.toHaveBeenCalled();
   });
@@ -362,6 +378,7 @@ describe('persistPatchUnlessFinal with a #513 PersistGuard (receipt + retries + 
           cStatAtual: vivo.cStat,
           xMotivoAtual: vivo.xMotivo,
           nRecAtual: vivo.nRec,
+          chaveAtual: null,
         },
       );
       expect(falha.txSet).not.toHaveBeenCalled();
@@ -427,5 +444,230 @@ describe('persistPatchUnlessFinal with a #513 PersistGuard (receipt + retries + 
     await expect(p).rejects.toMatchObject({ path: 'pedidos/PED-1/nfev4/s1' });
     await expect(p).rejects.toThrow(/pedidos\/PED-1\/nfev4\/s1 .*recibo REC-1/);
     expect(txSet).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1675 — the send reservation and the writes it owns
+// ---------------------------------------------------------------------------
+
+const AGORA = 1_780_000_000_000_000; // µs
+const FUTURO = AGORA + 1_000_000;
+const PASSADO = AGORA - 1_000_000;
+
+describe('envioEmCurso (#1675)', () => {
+  it.each([
+    [ESTADO_NFE.enviando, null, FUTURO, true],
+    [ESTADO_NFE.aguardandoResposta, null, FUTURO, true],
+    [ESTADO_NFE.epecAprovado, null, FUTURO, true],
+    // a receipt: the in-flight gate owns the doc, never the reservation
+    [ESTADO_NFE.enviando, 'REC-1', FUTURO, false],
+    [ESTADO_NFE.aguardandoResposta, 'REC-1', FUTURO, false],
+    // not in flight / not 'p'
+    [ESTADO_NFE.rejeitada, null, FUTURO, false],
+    [ESTADO_NFE.error, null, FUTURO, false],
+    [ESTADO_NFE.aprovada, null, FUTURO, false],
+    // no reservation, an expired one, the boundary
+    [ESTADO_NFE.enviando, null, null, false],
+    [ESTADO_NFE.enviando, null, PASSADO, false],
+    [ESTADO_NFE.enviando, null, AGORA, false],
+  ] as const)(
+    'estado %s · nRec %s · proximaConsultaEm %s → %s',
+    (estado, nRec, proxima, esperado) => {
+      expect(envioEmCurso({ estado, nRec, proximaConsultaEm: proxima }, AGORA)).toBe(esperado);
+    },
+  );
+
+  it('reads the stored value through coerceToMicros — a ms-shaped FUTURE value is still a live reservation', () => {
+    const futuroEmMs = (AGORA + 60_000_000) / 1000;
+    expect(
+      envioEmCurso(
+        { estado: ESTADO_NFE.enviando, nRec: null, proximaConsultaEm: futuroEmMs },
+        AGORA,
+      ),
+    ).toBe(true);
+  });
+
+  it('the reservation a claim stamps is ENVIO_EM_CURSO_MS ahead, in µs', () => {
+    expect(ENVIO_EM_CURSO_MS).toBe(360_000);
+    expect(envioEmCursoAte(AGORA)).toBe(AGORA + 360_000_000);
+  });
+});
+
+describe('PersistGuard.expectedUpdateTime / refuseWhileReserved (#1675)', () => {
+  const LIDO = Timestamp.fromMillis(1_000);
+
+  it('the doc unchanged since the read → writes', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.aguardandoResposta }, LIDO);
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, patchOf(), undefined, {
+      expectedUpdateTime: Timestamp.fromMillis(1_000),
+    });
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('the doc written since the read (an emit claimed it) → NO write, the live doc reported', async () => {
+    const { fs, txSet } = fakeFs(
+      { estado: ESTADO_NFE.enviando, idLote: '8', chave: 'CHAVE-VIVA' },
+      Timestamp.fromMillis(2_000),
+    );
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, patchOf(), undefined, {
+      expectedUpdateTime: LIDO,
+    });
+
+    expect(r).toEqual({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: 'CHAVE-VIVA',
+    });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a send in progress on the doc → NO write, even though nothing changed since the read', async () => {
+    const vivo = {
+      estado: ESTADO_NFE.enviando,
+      nRec: null,
+      proximaConsultaEm: Date.now() * 1000 + 60_000_000,
+    };
+    const { fs, txSet } = fakeFs(vivo, LIDO);
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, patchOf(), undefined, {
+      expectedUpdateTime: LIDO,
+      refuseWhileReserved: true,
+    });
+
+    expect(r).toMatchObject({ written: false, estadoAtual: ESTADO_NFE.enviando });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: an EXPIRED reservation does not refuse the write', async () => {
+    const vivo = {
+      estado: ESTADO_NFE.enviando,
+      nRec: null,
+      proximaConsultaEm: Date.now() * 1000 - 60_000_000,
+    };
+    const { fs, txSet } = fakeFs(vivo, LIDO);
+
+    const r = await persistPatchUnlessFinal(fs, NFE_REF, patchOf(), undefined, {
+      expectedUpdateTime: LIDO,
+      refuseWhileReserved: true,
+    });
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('gravarAncoraDoLote — batch 4b’s idLote-guarded anchor write (#1675)', () => {
+  const DOC_DATA = { estado: ESTADO_NFE.enviando, chave: 'CHAVE-DO-LOTE', idLote: '12' };
+
+  it('the doc still stamped with this lote → the full doc is written (no merge)', async () => {
+    const { fs, txSet } = fakeFs({ estado: ESTADO_NFE.enviando, idLote: '12', chave: null });
+
+    const r = await gravarAncoraDoLote(fs, NFE_REF, DOC_DATA, 12);
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+    expect(txSet.mock.calls[0]).toEqual([NFE_REF, DOC_DATA]);
+  });
+
+  it.each([
+    [
+      'another lote claimed it',
+      { estado: ESTADO_NFE.enviando, idLote: '13', chave: 'CHAVE-OUTRA' },
+    ],
+    ['a stored null idLote', { estado: ESTADO_NFE.enviando, idLote: null, chave: null }],
+    [
+      'the doc went final (same idLote)',
+      { estado: ESTADO_NFE.aprovada, idLote: '12', chave: 'CHAVE-OUTRA' },
+    ],
+  ])('%s → NO write, the live doc reported', async (_label, vivo) => {
+    const { fs, txSet } = fakeFs(vivo);
+
+    const r = await gravarAncoraDoLote(fs, NFE_REF, DOC_DATA, 12);
+
+    expect(r).toMatchObject({ written: false, estadoAtual: vivo.estado, chaveAtual: vivo.chave });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a missing doc → NFeDocAusenteError, nothing written', async () => {
+    const { fs, txSet } = fakeFs(null);
+
+    await expect(gravarAncoraDoLote(fs, NFE_REF, DOC_DATA, 12)).rejects.toBeInstanceOf(
+      NFeDocAusenteError,
+    );
+    expect(txSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('reivindicarEnvio — the pós-EPEC claim (#1675)', () => {
+  const EPEC = {
+    estado: ESTADO_NFE.epecAprovado,
+    chave: 'CHAVE-EPEC',
+    xml_assinado: '<NFe/>',
+    nRec: null,
+    idLote: '3',
+    proximaConsultaEm: null,
+  };
+
+  it('a free EPEC-approved doc → stamps the idLote + a live reservation, returns the claimed snapshot', async () => {
+    const { fs, txSet } = fakeFs(EPEC);
+    const antes = Date.now() * 1000;
+
+    const r = await reivindicarEnvio(fs, NFE_REF, 9);
+
+    expect(r.claimed).toBe(true);
+    expect(r.nota).toMatchObject({ chave: 'CHAVE-EPEC', xml_assinado: '<NFe/>', idLote: '9' });
+    expect(txSet).toHaveBeenCalledTimes(1);
+    const [ref, data, opts] = txSet.mock.calls[0]! as [unknown, Record<string, number>, unknown];
+    expect(ref).toBe(NFE_REF);
+    expect(opts).toEqual({ merge: true });
+    expect(data).toMatchObject({ idLote: '9' });
+    expect(data.proximaConsultaEm).toBeGreaterThanOrEqual(antes + ENVIO_EM_CURSO_MS * 1000);
+    // The claim writes ONLY lote bookkeeping — never the anchor or the estado.
+    expect(Object.keys(data).sort()).toEqual(['idLote', 'proximaConsultaEm', 'ultima_modificacao']);
+  });
+
+  it.each([
+    [
+      'a transmission already in progress',
+      { ...EPEC, proximaConsultaEm: Date.now() * 1000 + 60_000_000 },
+    ],
+    ['no longer EPEC-approved', { ...EPEC, estado: ESTADO_NFE.aprovada }],
+  ])('%s → NOT claimed, nothing written, the live doc returned', async (_label, vivo) => {
+    const { fs, txSet } = fakeFs(vivo);
+
+    const r = await reivindicarEnvio(fs, NFE_REF, 9);
+
+    expect(r).toEqual({ claimed: false, nota: vivo });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: an EXPIRED reservation is claimed', async () => {
+    const { fs, txSet } = fakeFs({ ...EPEC, proximaConsultaEm: Date.now() * 1000 - 60_000_000 });
+
+    const r = await reivindicarEnvio(fs, NFE_REF, 9);
+
+    expect(r.claimed).toBe(true);
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+
+  it('an EPEC-approved doc without its signed XML cannot be transmitted → throws, nothing written', async () => {
+    const { fs, txSet } = fakeFs({ ...EPEC, xml_assinado: null });
+
+    await expect(reivindicarEnvio(fs, NFE_REF, 9)).rejects.toBeInstanceOf(NFeOrchestratorError);
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('a missing doc → NFeDocAusenteError', async () => {
+    const { fs } = fakeFs(null);
+
+    await expect(reivindicarEnvio(fs, NFE_REF, 9)).rejects.toBeInstanceOf(NFeDocAusenteError);
   });
 });

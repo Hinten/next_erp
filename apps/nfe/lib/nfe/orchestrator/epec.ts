@@ -18,7 +18,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
+import { enviNfeMsgCollection } from '@delfrance/data/admin/collections';
 import {
   CSTAT_EPEC_NAO_SINCRONIZADO,
   EPEC_EVENT_REGISTRADO,
@@ -35,13 +35,26 @@ import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
 import type { EmitResult } from './bundle';
 import { applyAutorizadoOutcome } from './emitir';
-import { buildEnviNFeMsgFromLote, enviNfeCollection, persistPatch } from './audit';
+import {
+  buildEnviNFeMsgFromLote,
+  enviNfeCollection,
+  existingToEmitResult,
+  persistPatchUnlessFinal,
+  recusaToEmitResult,
+  reivindicarEnvio,
+} from './audit';
 import { sefazCallFor } from './sefaz-call';
 
 /**
  * Send the EPEC evento for a just-signed contingency NF-e and persist the
  * outcome on its nfev4 doc. Called by the emit cycle in place of
  * `autorizarLote` when the filial's modo is `'epec'`.
+ *
+ * `idLote` is the claim token the emit's allocation transaction stamped on the
+ * doc (with the send reservation, #1675): the outcome write is owned by it, so
+ * an EPEC run that a newer claim superseded mid-call never overwrites that
+ * claim's doc — it reports the live doc as `reused` instead. Its evento reply
+ * stays in the enviNfe audit entry written first.
  */
 export async function enviarEpecParaNota(args: {
   fs: Firestore;
@@ -51,8 +64,9 @@ export async function enviarEpecParaNota(args: {
   nfeRef: FirebaseFirestore.DocumentReference;
   chave: string;
   signedXml: string;
+  idLote: number;
 }): Promise<EmitResult> {
-  const { fs, rt, filialId, pedidoId, nfeRef, chave, signedXml } = args;
+  const { fs, rt, filialId, pedidoId, nfeRef, chave, signedXml, idLote } = args;
 
   const input = extractEpecInputFromNFe(signedXml, { tpAmb: rt.tpAmb });
   const anTarget = rt.an();
@@ -90,23 +104,31 @@ export async function enviarEpecParaNota(args: {
 
   // 135/136 = registrado (legacy parity — 136's linkage happens when the
   // full NF-e lands at the home SEFAZ). Anything else — including 485,
-  // duplicidade de EPEC — is a rejection in v1 (auto-recovery is #81).
-  await nfeRef.set(
-    nfev4Collection.parseMerge({
-      estado: registrado ? ESTADO_NFE.epecAprovado : ESTADO_NFE.rejeitada,
+  // duplicidade de EPEC — is a rejection in v1. Written through
+  // `buildPersistData`, which also releases the send reservation, and owned by
+  // this run's idLote (#1675).
+  const estado = registrado ? ESTADO_NFE.epecAprovado : ESTADO_NFE.rejeitada;
+  const gravado = await persistPatchUnlessFinal(
+    fs,
+    nfeRef,
+    {
+      estado,
       cStat,
       xMotivo,
       retries: 0,
-      ...(registrado && res.procEventoNFe ? { xml_epec_proc: res.procEventoNFe } : {}),
-      ultima_modificacao: now(),
-    }),
-    { merge: true },
+      nRec: null,
+      action: registrado ? 'done-authorized' : 'done-rejected',
+      tMed: null,
+    },
+    registrado && res.procEventoNFe ? { xml_epec_proc: res.procEventoNFe } : undefined,
+    { expectedIdLote: String(idLote) },
   );
+  if (!gravado.written) return recusaToEmitResult(pedidoId, nfeRef.id, chave, gravado);
 
   return {
     nfeId: nfeRef.id,
     pedidoId,
-    estado: registrado ? ESTADO_NFE.epecAprovado : ESTADO_NFE.rejeitada,
+    estado,
     chave,
     nRec: null,
     cStat,
@@ -122,6 +144,14 @@ export async function enviarEpecParaNota(args: {
  * single-NFe sync lote, then applies the standard outcome machine:
  * 100/150 → aprovada + `xml_nfe_proc`; 468 (EPEC não sincronizado no
  * destino) keeps `'p'` and backs off; duplicidade recovers via consulta.
+ *
+ * It CLAIMS the doc first (#1675, `reivindicarEnvio`): the fresh idLote and the
+ * send reservation are stamped on it in a transaction that re-reads it, so an
+ * operator emit and the backstop sweep can never both transmit it — a refused
+ * claim (no longer `'p'`, or a transmission already in progress) is answered
+ * with the live doc as `reused`, with no SOAP call. Every outcome write below
+ * is owned by that idLote. The `nota` argument is only a pre-read for the
+ * early checks; the claimed snapshot is what gets sent.
  */
 export async function transmitirPosEpec(args: {
   fs: Firestore;
@@ -131,14 +161,14 @@ export async function transmitirPosEpec(args: {
   nfeRef: FirebaseFirestore.DocumentReference;
   nota: NotaFiscalEletronica;
 }): Promise<EmitResult> {
-  const { fs, rt, filialId, pedidoId, nfeRef, nota } = args;
-  if (nota.estado !== ESTADO_NFE.epecAprovado) {
+  const { fs, rt, filialId, pedidoId, nfeRef } = args;
+  if (args.nota.estado !== ESTADO_NFE.epecAprovado) {
     throw new NFeOrchestratorError(
-      `pedido '${pedidoId}' nfe '${nfeRef.id}': estado='${nota.estado}' — ` +
+      `pedido '${pedidoId}' nfe '${nfeRef.id}': estado='${args.nota.estado}' — ` +
         'transmissão pós-EPEC exige estado epecAprovado.',
     );
   }
-  if (!nota.chave || !nota.xml_assinado) {
+  if (!args.nota.chave || !args.nota.xml_assinado) {
     throw new NFeOrchestratorError(
       `pedido '${pedidoId}' nfe '${nfeRef.id}': EPEC aprovado sem chave/xml_assinado ` +
         'persistidos — não é possível transmitir a NF-e completa.',
@@ -146,13 +176,20 @@ export async function transmitirPosEpec(args: {
   }
 
   // Fresh lote per attempt (the emission invariant), allocated transactionally
-  // via the library's contention-hardened counter adapter.
+  // via the library's contention-hardened counter adapter. A refused claim
+  // wastes it, which is harmless: an idLote only has to be unique.
   const idLote = await nextIdLote(nfeConfigStoreFromFirestore(fs), filialId);
+  const claim = await reivindicarEnvio(fs, nfeRef, idLote);
+  if (!claim.claimed) {
+    return existingToEmitResult(pedidoId, nfeRef.id, claim.nota);
+  }
+  const nota = claim.nota;
+  const { chave, xml_assinado: signedXml } = nota;
   // tpEmis=4 authorizes at the HOME SEFAZ (sefaz-call routes 4 → normal).
   const call: SefazCall = sefazCallFor(rt, 4, 'NfeAutorizacao');
   const retEnvi = await autorizarLote(call, {
     idLote: String(idLote),
-    NFe: [nota.xml_assinado],
+    NFe: [signedXml],
   });
 
   // 468 — the home SEFAZ hasn't received the EPEC from the AN yet. Keep
@@ -164,44 +201,54 @@ export async function transmitirPosEpec(args: {
     // round-trip too, or the 468 retries vanish from the EnviNFeMsg history.
     await enviNfeCollection(fs, filialId).add(
       buildEnviNFeMsgFromLote({
-        chave: nota.chave,
+        chave,
         idLote,
         tpEmis: 4,
-        signedXml: nota.xml_assinado,
+        signedXml,
         retEnvi,
         indSinc: '1',
       }),
     );
-    await persistPatch(nfeRef, {
-      estado: ESTADO_NFE.epecAprovado,
-      cStat: protCStat,
-      xMotivo: retEnvi.protNFe?.infProt.xMotivo ?? retEnvi.xMotivo,
-      retries: (nota.retries ?? 0) + 1,
-      nRec: null,
-      action: 'backoff',
-      tMed: null,
-    });
+    const xMotivo = retEnvi.protNFe?.infProt.xMotivo ?? retEnvi.xMotivo;
+    // Owned by this transmission's idLote (#1675); also releases the claim.
+    const gravado = await persistPatchUnlessFinal(
+      fs,
+      nfeRef,
+      {
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: protCStat,
+        xMotivo,
+        retries: (nota.retries ?? 0) + 1,
+        nRec: null,
+        action: 'backoff',
+        tMed: null,
+      },
+      undefined,
+      { expectedIdLote: String(idLote) },
+    );
+    if (!gravado.written) return recusaToEmitResult(pedidoId, nfeRef.id, chave, gravado);
     return {
       nfeId: nfeRef.id,
       pedidoId,
       estado: ESTADO_NFE.epecAprovado,
-      chave: nota.chave,
+      chave,
       nRec: null,
       cStat: protCStat,
-      xMotivo: retEnvi.protNFe?.infProt.xMotivo ?? retEnvi.xMotivo,
+      xMotivo,
       reused: false,
     };
   }
 
   // Everything else (100/150, rejections, duplicidade recovery, nfeProc
-  // assembly + audit log) is the standard emission outcome flow.
+  // assembly + audit log) is the standard emission outcome flow — its writes
+  // owned by this transmission's idLote.
   return applyAutorizadoOutcome({
     fs,
     rt,
     bundle: { pedidoId, filialId },
     nfeRef,
-    chave: nota.chave,
-    signedXml: nota.xml_assinado,
+    chave,
+    signedXml,
     idLote,
     tpEmis: 4,
     retEnvi,

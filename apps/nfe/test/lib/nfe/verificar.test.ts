@@ -97,10 +97,12 @@ interface SeededNota {
   ultima_modificacao?: number;
   xml_assinado?: string | null;
   proximaConsultaEm?: number | null;
+  nRec?: string | null;
+  idLote?: string | null;
 }
 
 /** Seed `nfev4Collection.groupQuery(fs).where('chave','==',x).get()`. */
-function seedNfev4(notas: SeededNota[]): void {
+function seedNfev4(notas: SeededNota[], updateTime?: unknown): void {
   vi.mocked(nfev4Collection.groupQuery).mockReturnValue({
     where: (_field: string, _op: string, chave: unknown) => ({
       get: async () => ({
@@ -109,6 +111,7 @@ function seedNfev4(notas: SeededNota[]): void {
           .map((n) => {
             const pedidoId = n.pedidoId ?? 'PED-1';
             return {
+              updateTime,
               ref: {
                 path: `pedidos/${pedidoId}/nfev4/s1`,
                 parent: { parent: { id: pedidoId } },
@@ -493,6 +496,7 @@ describe('verificarEnviNfeMsgs', () => {
         chave: CHAVE_A,
         estado: ESTADO_NFE.aguardandoResposta,
         cStat: '103',
+        nRec: '351000000000123',
         proximaConsultaEm: futureMicros,
       },
     ]);
@@ -517,6 +521,49 @@ describe('verificarEnviNfeMsgs', () => {
     expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
     expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
     expect(vi.mocked(buildEnviNFeMsgFromConsulta)).not.toHaveBeenCalled();
+  });
+
+  it.each([ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])(
+    "a doc with NO receipt under a future proximaConsultaEm (%s) has a send in progress (#1675) → 'sem-mudanca' naming the send, NO SEFAZ call, NO writes",
+    async (estado) => {
+      const futureMicros = (Date.now() + 5 * 60_000) * 1000;
+      seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+      seedNfev4([{ chave: CHAVE_A, estado, idLote: '7', proximaConsultaEm: futureMicros }]);
+
+      const r = await verificarEnviNfeMsgs(...baseArgs, {
+        filialId: FILIAL,
+        enviNfeMsgIds: ['msg-1'],
+      });
+
+      expect(r.results[0]).toMatchObject({
+        chave: CHAVE_A,
+        status: 'sem-mudanca',
+        estadoNovo: estado,
+        xMotivo: `envio em curso ou nova tentativa agendada até ${new Date(
+          futureMicros / 1000,
+        ).toISOString()}`,
+      });
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('the consult’s write is owned by the read (#1675): the guard carries the snapshot’s updateTime and refuses while a send is in progress', async () => {
+    const lido = { isEqual: () => true, toMillis: () => 1 };
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+    seedNfev4([{ chave: CHAVE_A, estado: ESTADO_NFE.aguardandoResposta }], lido);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(
+      consSitRet('100', { protCStat: '100' }) as never,
+    );
+
+    await verificarEnviNfeMsgs(...baseArgs, { filialId: FILIAL, enviNfeMsgIds: ['msg-1'] });
+
+    expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistPatchUnlessFinal).mock.calls[0]![4]).toEqual({
+      expectedUpdateTime: lido,
+      refuseWhileReserved: true,
+    });
   });
 
   it.each([

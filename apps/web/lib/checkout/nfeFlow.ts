@@ -58,13 +58,15 @@ export type EnsureNfeResult =
 
 /**
  * Ensure the pedido has a printable NF-e: reuse an existing aprovada/EPEC doc, or
- * emit one. The server dedups a SEQUENTIAL repeat (an existing bloqueada NF-e →
- * `reused:true`), so this reproduces the legacy "aprovada OR bloqueada → don't
- * re-emit". ⚠️ It does NOT dedup a repeat that overlaps a still-running emission
- * (#1675) — which is why a timeout below is `pending`, never an error. A pending
- * estado is NOT an error — the async reconciler finishes it; the operator
- * reprints from the Outros Checkouts panel. Errors narrow to the typed NF-e
- * classes (per the no-generic-catch rule); anything unexpected rethrows.
+ * emit one. The server dedups a repeat: a SEQUENTIAL one gets the existing
+ * bloqueada NF-e back (`reused:true`), so this reproduces the legacy "aprovada OR
+ * bloqueada → don't re-emit"; one that overlaps a still-running emission gets the
+ * in-flight doc back (#1675 — `reused:true`, estado enviando → `pending` below),
+ * with no second send. A timeout below is `pending` too, never an error: the
+ * emission may still be running. A pending estado is NOT an error — the async
+ * reconciler finishes it; the operator reprints from the Outros Checkouts panel.
+ * Errors narrow to the typed NF-e classes (per the no-generic-catch rule);
+ * anything unexpected rethrows.
  */
 export async function ensureNfeAprovada(
   db: Firestore,
