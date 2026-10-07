@@ -3,7 +3,7 @@
 import { FieldPath, runTransaction, type Firestore } from 'firebase/firestore';
 import { valuesEqual } from '@delfrance/core';
 import { mlSizeChartsForContaSchema, type MlSizeChart } from '@delfrance/schemas';
-import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
+import { tabelaDeMedidasCollection } from '../data/tabelaDeMedidasCollection';
 import { SizeChartConflictError } from './chartConflict';
 
 export interface SaveChartInput {

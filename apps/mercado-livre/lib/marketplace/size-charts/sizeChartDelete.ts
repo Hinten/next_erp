@@ -15,11 +15,9 @@
  *    `INACTIVE`, means it is really gone and the entry is dropped locally.
  *    `ACTIVE` means it is still linked and the operator has to unlink first.
  *
- * ⚠️ Both rebuild the chart array from a FRESH read of the doc, keyed by ML
- * chart id — never from anything the caller passed. The sync backend and a
- * second operator's editor write the same map, and a full-array merge built from
- * stale client state would silently drop whatever they added (root CLAUDE.md
- * rule 7).
+ * Both reserve the account through the sync journal, guard the entire target
+ * chart, and rebuild siblings inside the receipt transaction. A fresh read
+ * followed by an unguarded array merge would still lose a concurrent edit.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
@@ -32,6 +30,16 @@ import { mlSizeChartsForConta } from '@delfrance/schemas';
 import { tabelaDeMedidasCollection } from '@delfrance/data/admin/collections';
 
 import { TabelaDeMedidasNotFoundError } from './sizeChartSync';
+import { randomUUID } from 'node:crypto';
+import {
+  acquireOperation,
+  checkpointOperation,
+  currentOperation,
+  operationCharts,
+  operationContext,
+  SizeChartOperationError,
+  chartConflict,
+} from './sizeChartOperation';
 
 /** The chart id referenced by a delete/verify call is not on this tabMedi. */
 export class SizeChartNotFoundError extends Error {
@@ -81,20 +89,31 @@ async function readStored(
 }
 
 /**
- * Deep-merge this integração's key only, so other contas' charts and the
- * `/medidas` Shopee tab's `tabelasMedidasShopee` survive untouched — the same
- * write shape `syncSizeCharts` uses.
+ * Admit a deletion/verification under the same reservation as sends.
  */
-async function persist(
-  db: Firestore,
-  integracaoId: string,
+async function beginDeletion(
+  deps: SizeChartDeleteDeps,
   tabMediId: string,
-  tabelas: MlSizeChart[],
-): Promise<void> {
-  await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
-    tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas } },
-    ultimaModificacao: Date.now(),
-  });
+  chartId: string,
+  kind: 'delete' | 'verify',
+) {
+  const list = await readStored(deps.db, deps.integracaoId, tabMediId);
+  const index = list.findIndex((chart) => chart.id === chartId);
+  if (index < 0) throw new SizeChartNotFoundError(chartId);
+  const ctx = operationContext(deps.db, tabMediId, deps.integracaoId);
+  const previous = await currentOperation(deps.db, tabMediId, deps.integracaoId);
+  const resume =
+    previous?.kind === kind &&
+    previous.desired.id === chartId &&
+    (previous.status === 'pending' || previous.status === 'unconfirmed');
+  const op = await acquireOperation(
+    ctx,
+    resume ? previous.id : randomUUID(),
+    index,
+    resume ? previous.desired : list[index]!,
+    kind,
+  );
+  return { ctx, op };
 }
 
 /**
@@ -111,20 +130,38 @@ export async function requestSizeChartDeletion(
   chartId: string,
   now: number = Date.now(),
 ): Promise<RequestDeletionResult> {
-  const { db, api, integracaoId } = deps;
+  const { api } = deps;
 
-  const before = await readStored(db, integracaoId, tabMediId);
-  if (!before.some((c) => c.id === chartId)) throw new SizeChartNotFoundError(chartId);
-
-  const response = await api.deleteSizeChart(chartId);
-
-  // Re-read: the ML round trip is a window in which another writer may have
-  // landed (a concurrent operator, a redelivered task, the sync sweep).
-  const after = await readStored(db, integracaoId, tabMediId);
-  const tabelas = after.map((c) => (c.id === chartId ? { ...c, exclusaoSolicitadaEm: now } : c));
-  await persist(db, integracaoId, tabMediId, tabelas);
-
-  return { requested: true, message: response.message ?? null, tabelas };
+  const { ctx, op: acquired } = await beginDeletion(deps, tabMediId, chartId, 'delete');
+  let op = await checkpointOperation(ctx, acquired, {
+    pending: { kind: 'delete', rowIndex: null },
+  });
+  try {
+    const response = await api.deleteSizeChart(chartId);
+    op = await checkpointOperation(
+      ctx,
+      op,
+      {
+        pending: null,
+        projected: { ...op.projected, exclusaoSolicitadaEm: now },
+        status: 'completed',
+      },
+      true,
+      true,
+    );
+    if (op.status === 'conflict') throw chartConflict();
+    return {
+      requested: true,
+      message: response.message ?? null,
+      tabelas: await operationCharts(ctx),
+    };
+  } catch (err) {
+    if (!(err instanceof MercadoLivreHttpError || err instanceof SizeChartOperationError))
+      throw err;
+    if (op.status !== 'conflict')
+      await checkpointOperation(ctx, op, { pending: null }, false, true);
+    throw err;
+  }
 }
 
 /**
@@ -138,25 +175,23 @@ export async function verifySizeChartDeletion(
   tabMediId: string,
   chartId: string,
 ): Promise<VerifyDeletionResult> {
-  const { db, api, integracaoId } = deps;
-
-  const before = await readStored(db, integracaoId, tabMediId);
-  if (!before.some((c) => c.id === chartId)) throw new SizeChartNotFoundError(chartId);
+  const { api } = deps;
+  const { ctx, op } = await beginDeletion(deps, tabMediId, chartId, 'verify');
+  await checkpointOperation(ctx, op, {});
 
   let chart: MlSizeChartApi | null = null;
   try {
     chart = await api.getSizeChart(chartId);
   } catch (err) {
-    if (!(err instanceof MercadoLivreHttpError) || err.status !== 404) throw err;
+    if (!(err instanceof MercadoLivreHttpError) || err.status !== 404) {
+      if (err instanceof MercadoLivreHttpError) await checkpointOperation(ctx, op, {}, false, true);
+      throw err;
+    }
   }
 
   const chartStatus = chart?.chart_status ?? null;
   const removed = chart === null || chartStatus === 'INACTIVE';
-  if (!removed) return { removed: false, chartStatus, tabelas: before };
-
-  const after = await readStored(db, integracaoId, tabMediId);
-  const tabelas = after.filter((c) => c.id !== chartId);
-  await persist(db, integracaoId, tabMediId, tabelas);
-
-  return { removed: true, chartStatus, tabelas };
+  const finished = await checkpointOperation(ctx, op, { status: 'completed' }, true, true, removed);
+  if (finished.status === 'conflict') throw chartConflict();
+  return { removed, chartStatus, tabelas: await operationCharts(ctx) };
 }

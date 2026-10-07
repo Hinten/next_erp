@@ -762,7 +762,7 @@ export interface MercadoLivreClient {
     attributes?: Array<Record<string, unknown>>;
   }): Promise<MercadoLivreChartSpecs>;
   /**
-   * Send the tabMedi's edited chart list for one account to ML and persist
+   * Send one committed chart/version for one account to ML and persist
    * the ids (PERM.integracao.write). ML chart-validation problems come back
    * as `validationErrors` on the 200 body (partial success is DATA); only
    * infrastructure failures throw.
@@ -770,8 +770,23 @@ export interface MercadoLivreClient {
   sizeChartSync(input: {
     integracaoId: string;
     tabMediId: string;
-    tabelas: unknown[];
+    operationId: string;
+    chartIndex: number;
+    chart: import('@delfrance/schemas').MlSizeChart;
+    recoveryChartId?: string | null;
   }): Promise<MercadoLivreSyncChartsResult>;
+  sizeChartSyncStatus(input: {
+    integracaoId: string;
+    tabMediId: string;
+  }): Promise<import('./wire').MercadoLivreChartSyncStatus>;
+  sizeChartRecover(input: {
+    integracaoId: string;
+    tabMediId: string;
+    operationId: string;
+    expectedChart: import('@delfrance/schemas').MlSizeChart | null;
+    recoveryChartId: string | null;
+    confirmNoCreation: boolean;
+  }): Promise<import('./wire').MercadoLivreChartRecoveryResult>;
   /**
    * Ask a model to read the tabela's photos and fill the grid
    * (PERM.integracao.write).
@@ -1268,6 +1283,17 @@ export function createMercadoLivreClient(config: {
       }),
     sizeChartSync: (input) =>
       call('/api/marketplace/mercado-livre/size-charts/sync', wire.syncChartsResultSchema, input),
+    sizeChartSyncStatus: ({ integracaoId, tabMediId }) =>
+      call(
+        `/api/marketplace/mercado-livre/size-charts/sync?integracaoId=${encodeURIComponent(integracaoId)}&tabMediId=${encodeURIComponent(tabMediId)}`,
+        wire.chartSyncStatusSchema,
+      ),
+    sizeChartRecover: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/size-charts/recuperar',
+        wire.chartRecoveryResultSchema,
+        input,
+      ),
     sizeChartExcluir: (input) =>
       call(
         '/api/marketplace/mercado-livre/size-charts/excluir',
