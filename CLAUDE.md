@@ -261,14 +261,14 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>` — **six packages, all
+breaking it fails nothing) · `integrations/<channel>` — **seven packages, all
 implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
-shopee. ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+shopee, loja-integrada (read client only so far). ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
 amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
 only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
-**Four of the five stay deleted**; `shopee` was **re-created** as a real
-fetch-only package (the Shopee master plan, step 1) — it declares no
-`MarketplaceChannel` and has no plugin registry, only Shopee's wire protocol.
+**Three of the five stay deleted**; `shopee` and `loja-integrada` were **re-created** as
+real fetch-only packages — they declare no `MarketplaceChannel` and have no
+plugin registry, only the provider's wire protocol.
 **That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in

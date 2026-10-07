@@ -208,7 +208,7 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
 12. **`GET /v1/pedido/{numero}` vs the webhook's internal `id`.** **Moot.** The design never feeds the webhook `id` to REST, and there is no internal id of our own stores to probe with before the window. Nothing depends on the answer.
 13. **`meta.next` form and the trailing slash.**
     - **Known from the working legacy:** `meta.next` is an `/api/v1/...` URI, while spec paths are `/v1/...`. Design: rebuild each next request from `meta.next`'s query string against the operation's own `/v1` path (e.g. `/v1/pedido/search`); never follow the URI verbatim.
-    - **READ-ONLY:** whether the trailing slash matters. The legacy sends `/pedido/search/`; the spec path has none. The probe tries both forms and records the status codes.
+    - **READ-ONLY:** whether the trailing slash matters. The legacy sends `/pedido/search/`; the spec path has none. Step 1 sends the slash form (the spec's own curl example and the legacy's live calls) and never follows a redirect, so a wrong form shows as a visible 3xx instead of doubling the calls. The probe tries both forms and records the status codes.
 14. **Situação 1020 (`pagamento_devolvido_sem_retorno`).**
     - **Sources:** its id and flags come only from the legacy enum. The spec's `GET /v1/situacao` example has 15 rows and omits it, and the tag lists the codigo without an id.
     - **What LI says:** help 924633 treats it as cancelled, with the item not returned to stock, and e-mails the buyer. Step 5 maps it as refunded, per the help center.
@@ -224,7 +224,7 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
 20. **The `/v1/produto_estoque/{produto_id}` path id is the produto id, not the estoque row id** (the example `id` ≠ path). READ-ONLY with a child id.
 21. **Duplicate-SKU error shape.** The legacy-observed response is a `400` with an "integridade" message **[legacy-observed, unverified]**. WRITE-ONLY. Defence: a tolerant match (400 + "integridade"), then `GET /v1/produto?sku=` and adopt.
 22. **Payment method codes for pix and card on our stores.** READ-ONLY. Run `GET /v1/pagamento` on each store, plus one real pix order `GET /v1/pedido/{numero}` (redacted), before step 6 merges. The spec catalogue has no pix gateway, and `pagamento_tipo` appears only as `creditCard`.
-23. **Does `/v1` accept an unknown `x-correlation-id` request header?** (It is documented only for Enviali.) READ-ONLY, in the first probe. If any rejection is seen, the header is dropped on `/v1`.
+23. **Does `/v1` accept an unknown `x-correlation-id` request header?** (It is documented only for Enviali.) READ-ONLY, in the first probe. If any rejection is seen, the header is dropped on `/v1`. Until then the step-1 validating GET sends no such header: a gateway that refused it with a 403 would make a valid new token read as refused.
 24. **`GET /v1/produto` filters and `removido`.**
     - **Declared vs prose:** the declared parameters are only `sku`, `ativo`, `data_modificacao__gte` and `data_modificacao__lte`. `removido`, `data_criacao` and the `__lt`/`__gt` operators appear only in prose. There is no `tipo` or `pai` filter.
     - **Default listing:** the unfiltered list examples include `removido: true` rows, so the default listing may include trashed products ⇒ **always pass `removido` explicitly**.
@@ -449,7 +449,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 3. If any `*Meta`, PERM, validator whitelist, enum, cascade or new admin-only collection changed: **both** rulesets regenerated (`gen:rules` **and** `gen:rules:e2e`) plus both snapshots refreshed. Agents never deploy rules; the deploy is a window step.
 4. New env vars appear in the root `.env.example` **and** the app's `apphosting.yaml` (and the functions env) **in the step that introduces them**.
 5. The CI lane runs the new tests. `ci-loja-integrada.yml` lands in step 2, the first step with emulator tests, because a lane that skips runs the tests nowhere.
-6. New `runTransaction` sites are classified in `firestore-transaction-inventory.test.js`, and new HTTP clients are registered in `http-client-timeout-ceiling.test.js`.
+6. New `runTransaction` sites are classified in `firestore-transaction-inventory.test.js`, and a new HTTP client that exports a `{ curto, longo }` timeout constant is registered in `http-client-timeout-ceiling.test.js`. A GET-only client with one budget (step 1) has no row.
 7. Anything that must run against production data or infrastructure is surfaced as a §5 item. It is never done by the agent and never left as a TODO.
 
 ### Step 0: Prerequisites (P1–P6). Human, not code
@@ -479,63 +479,68 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Timing:** first, because every later gate reads this row.
 - **Does NOT:** touch `FREIGHT_TIPO_CAPS` (step 15) or create any app.
 
-### Step 1: `packages/integrations/loja-integrada` + `apps/loja-integrada` scaffold + connect
+### Step 1: `packages/integrations/loja-integrada` + `apps/loja-integrada` scaffold
 
 - **Gate:** `auth: 'api-key'`, `pkce: 'nao'`. **Trigger:** HTTP. **Docs:** `spec info`, help 931152.
-- **Package** `@delfrance/integrations-loja-integrada` is fetch-only: no Firestore and no `process.env`; its deps are `@delfrance/core` + zod.
+- **Two stacked PRs** (the approved step plan, 2026-10-07):
+  - **PR a:** the package, the guard change and the package docs.
+  - **PR b:** the bare app scaffold, plus the rosters and counts that become false once a tenth Next app exists.
+- **Package** `@delfrance/integrations-loja-integrada` is fetch-only and **GET-only**: no Firestore, no `process.env`, no logging; its deps are `@delfrance/core` + zod. It has no `build` script.
   - **`client.ts`:**
-    - Base URL `https://api.awsli.com.br` (the spec's server and the working legacy client's base URL, §1.0); header `Authorization: Basic <token>` (format from Step 0).
-    - The token is passed as a **function** and never stored.
-    - `x-correlation-id: <uuid>` on every call, returned to the caller for logging. Whether `/v1` accepts it is an **assumption checked by the first probe** (§1.2 item 23); the header is dropped on `/v1` if it is rejected.
-    - **Per-call timeouts**, registered with `http-client-timeout-ceiling.test.js`.
+    - Base URL `https://api.awsli.com.br` is a constant, not an option: LI has no sandbox, and a fixed origin rules out a class of misconfiguration (the spec's server and the working legacy client's base URL, §1.0).
+    - Header `Authorization: Basic <token>`: the raw token, not base64, not `Bearer`, never in the URL.
+    - The token is passed as a **function**, called on every request, and never stored. It must be visible ASCII; anything else throws `LiConfigError` before a request is made.
+    - The credential also carries an opaque, non-secret `ref` label. The package echoes it on every result and error so step 2's parking guard can tell which credential got a 401.
+    - There is **no write method and no body parameter**: every request is a GET by construction (D4).
+    - `x-correlation-id: <uuid>` is sent on every call by default, and returned to the caller for logging. Whether `/v1` accepts it is an **assumption checked by the first probe** (§1.2 item 23). **The validating GET sends no such header until that is settled**, and the header is dropped on `/v1` if it is rejected.
+    - **Redirects are never followed.** A 3xx is an error, so the token cannot be carried to another host.
+    - **One per-call deadline, `PRAZO_LI_MS`, in the package** (`prazos.ts`), in the Melhor Envio shape. There is **no row** in `http-client-timeout-ceiling.test.js`: that table is for clients with a `{ curto, longo }` pair, and a GET-only client has no `longo`. The test that "the calls in one request fit under the ceiling" arrives with the first route in step 2.
     - An `onChamada` observer hook, so the app logs without the package reading env.
   - **`errors.ts`:** a typed hierarchy. 5xx (including any non-standard 52x) is transient.
-    - `LiHttpError` (status, redacted excerpt).
+    - `LiConfigError`: a bad token, `ref`, path or page cap, raised before any request.
+    - `LiHttpError` (status, `transitorio`). **No error carries any part of the response body**, so there is no excerpt. The step-2b logger already gets the scrubbed body through `onChamada`, and its allow-list redaction fails closed; an excerpt kept on the error would bypass it.
     - `LiThrottleError`: 429; `escopo: 'loja' | 'aplicacao' | 'ip' | 'desconhecido'` from 633/533/133 found anywhere in the body; `retryAfterS` when the header exists.
     - `LiAuthError`: 401/403, the parking signal.
     - `LiNotFoundError` (404).
-    - `LiConflictError`: 409, e.g. "Slug already in use.".
-    - `LiIntegridadeError`: 400 + "integridade".
-    - `LiSchemaError`, `LiNetworkError`.
-  - **`paginacao.ts`:** Tastypie offset paging driven by `meta.next`.
-    - It **rebuilds** each next request from `meta.next`'s query string against the operation's own `/v1` path, and never follows the `/api/v1/...` URI verbatim (§1.2 item 13).
-    - The trailing-slash form comes from the probe.
-    - It stops on `next === null`, has a hard page cap, and reads `meta.limit` back.
-    - It never assumes response ordering.
-  - **`wire.ts`:**
-    - Tolerant money/quantity: `string | number` → number.
-    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00). The reverse formatter for cursors emits exactly the documented `AAAA-MM-DDTHH:MM:SS`: seconds-truncated, no fraction, no offset.
-    - Webhook `Z`/offset dates are parsed by their own offset.
-  - **`types.ts`:** Zod schemas written from the spec EXAMPLES with `.passthrough()`, because the generated schemas omit `pai`/`grades`/`variacoes`/`filhos`. They cover:
-    - pedido search row and pedido detail. Detail covers **both `itens[].produto` shapes**: a URI string, and the `{id_externo, resource_uri: '…?id_externo=1'}` object.
-    - situação and situação histórico.
-    - produto list/detail, produto_estoque, produto_preco, produto_imagem.
-    - categoria, marca, grades, envio, pagamento (method catalogue).
-  - **`api.ts`:** typed operations. A **read-only client type** (GET operations only) is what the probe CLI receives; the write client is used only behind the valves. `GET /v1/produto` listings always pass `removido` explicitly (§1.2 item 24).
-- **App** `apps/loja-integrada` (`@delfrance/loja-integrada-app`, Next 16.2.6, API-only, `:3010`):
-  - `app/api/health`.
-  - `proxy.ts`: CORS for `/api/marketplace/*` only (`ALLOWED_ADMIN_ORIGINS`); `verifyCaller` copied per #1431.
-  - `apphosting.yaml` (`minInstances: 0`) and `CLAUDE.md`.
-- **Connect** is credential capture, not OAuth:
-  - `PUT /api/marketplace/loja-integrada/conta/[id]/credencial` (`PERM.integracao.write`, body `{token, expiraEm}`).
-  - It runs a **validating GET** (`GET /v1/categoria?limit=1`) with the candidate token.
-  - Only on 2xx does it write `integracao/{id}/credenciaisLojaIntegrada/current` (schema from step 2). A 401/403 answers 422 "token recusado".
-  - The token is never echoed, logged or put in a URL. `DELETE` takes the conta id only.
-- **Guard change:** `packages/config-eslint/rules/removed-plugin-contracts.test.js` drops `loja-integrada` from the must-not-exist list and gains an LI shape assertion: no `MarketplaceChannel` declared, re-exported or registered (the Shopee precedent). The prose in ADR 0015, root `CLAUDE.md` and `packages/integrations/README.md` that says the LI scaffold "stays deleted" is updated in the same commit.
-- **Firestore:** the credential doc only (its schema lands in step 2; step 1's route ships in the same stacked PR series). **Indexes:** none. **Rulesets:** see step 2. **Env:** `ALLOWED_ADMIN_ORIGINS`, `LOJA_INTEGRADA_TASKS_REGION` (blank until the functions codebase exists), in `.env.example` + `apphosting.yaml`.
-- **Seam:** `verifyCaller`, `lerRespostaJson`.
-- **Rule 7:** **tier 0**. There is one writer (an operator saving a token), and last-write-wins is correct.
-- **Dry-run/valve:** none; the only LI call is a GET.
-- **Verification:** package unit tests against redacted spec-example fixtures. They cover:
-  - paging, including `/api/v1` next-links rebuilt against `/v1` from their query string;
-  - both `produto` item shapes;
-  - decimal strings;
-  - naive dates across a 2018 DST boundary, and the cursor formatter (no fraction, no offset);
-  - 429 bodies carrying each code, and none.
+    - `LiSchemaError`, `LiPaginacaoError`, `LiNetworkError`, `LiTimeoutError`.
+    - **Deferred to the first write steps (11, 12):** `LiConflictError` (409, e.g. "Slug already in use.") and `LiIntegridadeError` (400 + "integridade").
+  - **`paginacao.ts`:** Tastypie offset paging driven by `meta.next`, with caller cancellation.
+    - It **rebuilds** each next request from `meta.next`'s query string against the caller's own `/v1` path, and never follows the `/api/v1/...` URI verbatim (§1.2 item 13).
+    - It stops on `next === null`, reads `meta.limit` back, and never assumes response ordering.
+    - It throws at the page cap instead of silently truncating, and throws if the offset does not advance.
+  - **`types.ts`:** only the paging envelope and `categoria` (`liMetaSchema`, `liEnvelopeSchema`, `liCategoriaSchema`), written from the spec examples with `.passthrough()`. Numbers use `wireInt()` / `wireNumber()` from `@delfrance/core/wire`; there is no per-channel copy.
+  - **`api.ts`:** `validarPersonalToken`, the validating GET (see Connect below).
+  - **Deferred to the first consumer.** Probe round 1 runs after step 2b and before step 3, so schemas written now from spec examples would be rewritten against the captures.
+    - Resource schemas: pedido search row and detail, including **both `itens[].produto` shapes** (steps 3 and 5); situação and histórico (5); pagamento (6); produto list/detail (9); marca and grades (10); imagem (11); estoque (12); preço (13); envio (5, 7 and 20).
+    - **Naive São Paulo dates** → µs epoch (`dataLiParaMicros`, tz-aware, not a fixed −03:00) and the cursor formatter, which emits exactly the documented `AAAA-MM-DDTHH:MM:SS` (seconds-truncated, no fraction, no offset). They land in step 3 as two generic helpers in `@delfrance/core/datetime`, not in this package.
+    - Webhook `Z`/offset dates are parsed by their own offset (step 4).
+- **App** `apps/loja-integrada` (`@delfrance/loja-integrada-app`, Next 16.2.6, API-only, `:3010`) is a **bare scaffold** in PR b:
+  - `app/api/health`, `apphosting.yaml` (`minInstances: 0`) and `CLAUDE.md`.
+  - No `proxy.ts`, no `verifyCaller` and no `lib/firebase/admin.ts` yet. They move to step 2 PR a with the connect route.
+  - The same PR fixes the rosters and count text the app makes false: the Next-app and pin counts in root `CLAUDE.md`, `KNOWN_APPHOSTING_APPS` and `KNOWN_NEXT_APPS`, `SERVER_PATHS` in `no-ambient-timezone`, and the `pnpm-workspace.yaml` comments. They are **struck from step 22**.
+- **Connect** is credential capture, not OAuth. **Step 1 ships the validator; the route moves to step 2 PR a (#1829):**
+  - **Step 1:** `validarPersonalToken` runs `GET /v1/categoria/?limit=1` (the slash form) with a candidate token and returns a four-way verdict: `aceito`, `recusado`, `invalido` (the token is malformed and was never sent) or `inconclusivo`. It is fully unit-tested.
+  - **Step 2:** `PUT /api/marketplace/loja-integrada/conta/[id]/credencial` (`PERM.integracao.write`, body `{token, expiraEm}`) calls it unchanged and maps the verdict to the HTTP response. Only on `aceito` does it write `integracao/{id}/credenciaisLojaIntegrada/current`; a `recusado` answers 422 "token recusado". The token is never echoed, logged or put in a URL. `DELETE` takes the conta id only.
+  - **Why it moved:**
+    - The route writes the credential doc, whose schema, Admin handle and store belong to step 2, and its `save` must also clear `reconexaoPendente` in the same write.
+    - Its only caller is the credential form (step 2 PR a, with step 21's conta CRUD).
+    - `cors-proxy-covers-routes.test.js` fails any `proxy.ts` with no route under its matcher, so the proxy must land with its first `/api/marketplace` route.
+    - Step 2 edits `integracao.ts` anyway, and that file is on the nfe-live path list. A step-1 schema there would fire a real SEFAZ homologação run twice instead of once.
+- **Guard change (PR a):** `packages/config-eslint/rules/removed-plugin-contracts.test.js` drops `loja-integrada` from the must-not-exist list and gains an LI shape assertion: no `MarketplaceChannel` declared, re-exported or registered (the Shopee precedent). It moves to PR a because that guard checks that the package file does **not** exist, so PR a's own `CI test` would otherwise go red, and a stacked PR b cannot fix PR a's head. `integration-response-numbers-tolerant.test.js` also gains the package's `src/` and a non-vacuity anchor. The prose that says the LI scaffold "stays deleted" (ADR 0015, root `CLAUDE.md`, `packages/integrations/README.md`, the integration-authoring guide) is updated in the same PR, and the provider list in the root `README.md` gains Loja Integrada.
+- **Firestore:** none. **Indexes:** none. **Rulesets:** none. **Env:** none. `ALLOWED_ADMIN_ORIGINS` lands in step 2 with `proxy.ts`, and `LOJA_INTEGRADA_TASKS_REGION` in step 3, its first reader (§4.iii item 4).
+- **Seam:** `lerRespostaJson`, `abrirPrazo`, `wireInt` / `wireNumber` (all `@delfrance/core/wire`).
+- **Rule 7:** not applicable; step 1 writes nothing.
+- **Dry-run/valve:** none; the only LI call is a GET, and the client has no write method.
+- **Verification:** package unit tests with a mocked `fetch` against redacted spec-example fixtures. They cover:
+  - paging, including `/api/v1` next-links rebuilt against `/v1` from their query string, a non-advancing offset, the page cap and caller cancellation;
+  - 429 bodies carrying each code, and none;
+  - the token character check, and that no error or event carries the token or a body excerpt;
+  - that a redirect is not followed;
+  - each validator verdict.
 
-  The live validating GET is first exercised by Lucas with the probe token.
+  The live validating GET is first exercised by Lucas with the probe token, after step 2 ships the credential form.
 - **Timing:** after Step 0's gate. The package is the only place LI is called from.
-- **Does NOT:** OAuth, refresh, oauth-state or PKCE; the `chave_api + aplicacao` mode; query-string credentials; reuse the legacy client's key.
+- **Does NOT:** OAuth, refresh, oauth-state or PKCE; the `chave_api + aplicacao` mode; query-string credentials; reuse the legacy client's key; the connect route, proxy, credential schema or store (step 2); any LI write method; retry, backoff or pacing; a CI lane (step 2).
 
 ### Step 2: Credential store + context + read cache + expiry aviso + 401 parking (+ the CI lane)
 
@@ -545,6 +550,10 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - The `integracao.ts` docstring already says LI's static key must be introduced "directly in admin-only storage".
   - LI needs fields the generic store has no place for: an operator-entered expiry, the webhook secret pair, and the parking state.
   - The store is **deny-all** to clients, with no ML-style client grant (#829), and it is modelled on `credenciaisWhatsapp`.
+- **Connect route and app plumbing (moved from step 1):**
+  - The `PUT`/`DELETE` credential route (step 1 lists its contract), calling `validarPersonalToken` unchanged.
+  - `proxy.ts`: CORS for `/api/marketplace/*` only (`ALLOWED_ADMIN_ORIGINS`); `verifyCaller` copied per #1431; `lib/firebase/admin.ts`.
+  - **Rule 7 for the route:** tier 0. There is one writer (an operator saving a token), and last-write-wins is correct. The save also clears `reconexaoPendente` in the same write.
 - **Firestore:**
   - **`integracao/{id}/credenciaisLojaIntegrada/current`** is strict and admin-only, outside `ALL_DOMAINS`. Fields:
     - `personalToken`.
@@ -556,7 +565,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - **New avisos:** `TIPO_AVISO` gains `lojaIntegradaTokenExpirando` and `lojaIntegradaReconexaoPendente`, plus `ROTAS_AVISO.canalLojaIntegrada`.
   - **Indexes:** none; doc reads by id only. The expiry sweep enumerates contas through the existing `integracao (tipo ASC, ativo ASC)`.
   - **Rulesets:** regenerate both, plus both snapshots (cascade, new admin-only collection, new `TIPO_AVISO` values).
-  - **Env:** none new.
+  - **Env:** `ALLOWED_ADMIN_ORIGINS`, in `.env.example` + `apphosting.yaml`, because `proxy.ts` is its only reader.
 - **Seam:**
   - **`core/contexto.ts`:** `loadLojaIntegradaContext(integracaoId)` reads the `integracao` doc through `createCachedDocReader` (15-min TTL). The **credential read is uncached**: it carries the parking state, and one read per task is cheap at D12 volume. `ativo === false` ⇒ `LiContaInativaError`, and the conta stops importing, stock and price.
 - **Expiry (one threshold):**
@@ -575,7 +584,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
   - A 401 from a stale fingerprint parks nothing, while one from the current fingerprint does.
   - A parked conta's step-7 task is deferred and re-driven after a save.
   - A parked conta's intake task returns without retry.
-- **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form so Lucas can enter the probe token.
+- **Timing:** before any LI-calling flow, which all read the context and can trigger a park. It lands with step 21's conta CRUD and credential form so Lucas can enter the probe token; the connect route and its only caller therefore land together.
 - **Does NOT:** renew the token (no API exists); cache the credential; store the expiry on the `integracao` doc.
 
 ### Step 2b: Structured logger + write valves + canary allow-list + dry-run diff + read-only probe CLI
@@ -1147,12 +1156,12 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - `firebase.loja-integrada.deploy.json`: functions block only, codebase `loja-integrada`, predeploy preflight + `prepare-deploy.mjs`, no firestore/storage keys. It is inert until a human runs it.
   - The `tools/deploy-env/preflight.mjs` row.
 - **Guard rosters:**
-  - `apphosting-next-pinned` (`KNOWN_APPHOSTING_APPS`, `KNOWN_NEXT_APPS`).
+  - `apphosting-next-pinned` (`KNOWN_APPHOSTING_APPS`) and `next-firestore-external` (`KNOWN_NEXT_APPS`) were done in step 1 PR b, with the app.
   - `runtime-deps-pinned` (the functions `package.json` with exact `firebase-admin`/`firebase-functions`).
   - `tasks-invoker-inventory`.
   - `functions-region-supplied` (`REGION_COMMANDS`, `KNOWN_BUILDERS`).
-  - `http-client-timeout-ceiling`, `integration-response-numbers-tolerant`, `firestore-transaction-inventory` (final check).
-- **Docs and layout:** root `CLAUDE.md` layout lines (":3000–:3010", the app bullet) and `apps/loja-integrada/functions/DEPLOY.md` (IAM: enqueuer + invoker for both the App Hosting and the functions runtime identities).
+  - `firestore-transaction-inventory` (final check). `integration-response-numbers-tolerant` was extended in step 1 PR a; `http-client-timeout-ceiling` has no row for the package-only client.
+- **Docs and layout:** `apps/loja-integrada/functions/DEPLOY.md` (IAM: enqueuer + invoker for both the App Hosting and the functions runtime identities). The root `CLAUDE.md` layout lines (":3000–:3010", the app bullet) and the app counts landed with the app in step 1 PR b.
 - **Flip `implementado: true`** once every `'sim'` that is built has its web provider (`registriesAlinhadas`), and `enviarNfe` is documented as dropped by decision.
 - **Verification:** all guard suites green; `registriesAlinhadas` green with `implementado: true`.
 - **Timing:** last code step, before the window.
@@ -1218,9 +1227,9 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 1. **PR 0:** this master plan + evidence (#1811), opened together with the tracker #1812 and the step issues (D14).
 2. **Step 0:** P1–P6. The IP-binding gate and the token format were settled live on 2026-10-07, when the legacy moved to Personal Tokens. What remains is a probe token for the new integration (D16) and the `GET /v1/situacao` probe.
 3. **Step 1a** (#1813): caps row + registry test flips.
-4. **Step 1** (#1814): package (PR a); app scaffold + connect + guard change (PR b).
+4. **Step 1** (#1814): package + guard change + package docs (PR a); bare app scaffold + rosters and counts (PR b).
 5. **Steps 2 + 2b** (#1829, #1815):
-   - PR a: credential/context/aviso/parking + **the CI lane** + the step-21 conta CRUD and credential form.
+   - PR a: credential/context/aviso/parking + the connect route, `proxy.ts`, `verifyCaller` and Admin init (moved from step 1) + **the CI lane** + the step-21 conta CRUD and credential form.
    - PR b: logger/valves/canary/probe CLI.
 
    ⇒ **Probe round 1** (Lucas, read-only, under the Personal Token, each capture recording its credential type): §1.2 items 3 (read part, if a pending order exists), 10, 11, 13, 14, 16 (read part), 18, 19, 20, 22, 23 and 24 are settled, and redacted captures are committed as fixtures.

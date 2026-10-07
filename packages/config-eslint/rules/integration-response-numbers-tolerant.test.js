@@ -107,6 +107,7 @@ const PATHSPECS = [
   ':(glob)packages/integrations/mercado-pago/src/**/*.ts',
   ':(glob)packages/integrations/freight-br/src/**/*.ts',
   ':(glob)packages/integrations/shopee/src/**/*.ts',
+  ':(glob)packages/integrations/loja-integrada/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -183,6 +184,9 @@ const ALLOWED_STRICT = {
   // so there is nothing there for which strictness would be the right direction.
   // ⚠️ Step 11 kept that true: its `Shopee*Request` bodies are plain TypeScript
   // interfaces in `api.ts`, so a Zod one would need an entry here to stay strict.
+  // No `loja-integrada` entry either, for the same reason: GET-only, response
+  // shapes only. Its first write step brings its first request body — and, if
+  // that body is a Zod schema, its first entry here.
 };
 
 /**
@@ -243,6 +247,20 @@ const KNOWN_TOLERANT_LINES = {
     'expire_in: wireInt(),',
     'shop_id: wireInt(),',
     'auth_time: wireInt(),',
+  ],
+  // Loja Integrada. ⚠️ Same reason as Shopee: no `ALLOWED_STRICT` entry, because
+  // the package declares response shapes only (it is GET-only, so there is no
+  // request body to keep strict), and the staleness test therefore has nothing
+  // to say about it. These three lines are what keep a mistyped
+  // `loja-integrada` pathspec from leaving the "no bare z.number()" assertion
+  // running over an empty set. ⚠️ The pathspec reaches EVERY file under `src/`,
+  // not only `types.ts` — the package keeps Zod numbers out of the rest
+  // (`maxPaginas` and the `meta.next` offset are checked with
+  // `Number.isSafeInteger`), so any hit elsewhere is a real offender.
+  'packages/integrations/loja-integrada/src/types.ts': [
+    'limit: wireInt(),',
+    'offset: wireInt(),',
+    'id: wireInt(),',
   ],
 };
 

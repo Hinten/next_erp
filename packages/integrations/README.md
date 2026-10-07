@@ -4,14 +4,15 @@ Platform-neutral integration libraries: fetch-only, no Firestore, no Admin SDK. 
 is its own workspace package (`@delfrance/integrations-<channel>`), paired with an app
 under `apps/` that holds the stateful half.
 
-| Package              | Paired app           | Holds                                                                                                |
-| -------------------- | -------------------- | ---------------------------------------------------------------------------------------------------- |
-| `nfe`                | `apps/nfe`           | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)     |
-| `mercado-livre`      | `apps/mercado-livre` | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers       |
-| `mercado-pago`       | `apps/mercado-pago`  | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                          |
-| `whatsapp-cloud-api` | `apps/whatsapp`      | Typed Graph client + webhook envelope schemas                                                        |
-| `freight-br`         | `apps/melhor-envio`  | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                     |
-| `shopee`             | `apps/shopee`        | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas |
+| Package              | Paired app            | Holds                                                                                                |
+| -------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `nfe`                | `apps/nfe`            | NF-e 4.00 generation, XML signing, SEFAZ transport, DANFE. XSD→TS types are generated (ADR 0004)     |
+| `mercado-livre`      | `apps/mercado-livre`  | OAuth, the 62-operation REST client, Zod wire schemas, the error taxonomy, pure ML↔ERP mappers       |
+| `mercado-pago`       | `apps/mercado-pago`   | OAuth, the REST client, response schemas, the `mpPaymentToPagamento` mapper                          |
+| `whatsapp-cloud-api` | `apps/whatsapp`       | Typed Graph client + webhook envelope schemas                                                        |
+| `freight-br`         | `apps/melhor-envio`   | Melhor Envio: OAuth, quote, cart→checkout, label print, tracking                                     |
+| `shopee`             | `apps/shopee`         | Shopee Open Platform: the HMAC request signature, hosts, consent URL + token endpoints, wire schemas |
+| `loja-integrada`     | `apps/loja-integrada` | Loja Integrada REST v1: Personal Token header, GET client, Tastypie paging, typed errors             |
 
 ## ⚠️ These are libraries, not plugins
 
@@ -30,12 +31,12 @@ deleted on the way:
   `amazon-sp-api`, `facebook`, `loja-integrada`) with no importer anywhere; they were
   deleted with it. What a marketplace supports is now declared in
   `MARKETPLACE_TIPO_CAPS` (`@delfrance/schemas`).
-  ⚠️ **Four of those five stay deleted; `shopee` came back as a REAL package.** It is
-  the row in the table above — a fetch-only library describing Shopee's wire protocol,
-  with no `MarketplaceChannel`, no plugin registration and no Firestore. That is the
-  ADR-0015 shape, and the opposite of the scaffold that was deleted.
-  `removed-plugin-contracts.test.js` asserts the absence of the other four and the
-  SHAPE of this one.
+  ⚠️ **Three of those five stay deleted; `shopee` and `loja-integrada` came back as
+  REAL packages.** They are the rows in the table above — fetch-only libraries
+  describing the provider's wire protocol, with no `MarketplaceChannel`, no plugin
+  registration and no Firestore. That is the ADR-0015 shape, and the opposite of the
+  scaffold that was deleted. `removed-plugin-contracts.test.js` asserts the absence of
+  the other three and the SHAPE of these two.
 - **`PaymentGateway`** (#1429) — all three members threw, `registerPayment` had one
   caller (its own unit test), and the one live consumer was a permanently disabled
   button. Its `webhook` had already shipped OUTSIDE the contract, in
