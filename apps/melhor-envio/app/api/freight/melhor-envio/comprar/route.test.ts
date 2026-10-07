@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PERM } from '@delfrance/auth';
 import {
   MelhorEnvioReauthRequiredError,
+  MelhorEnvioTimeoutError,
   MelhorEnvioValidationError,
 } from '@delfrance/integrations-freight-br';
 
@@ -194,5 +195,29 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
     h.addToCart.mockRejectedValue(new MelhorEnvioValidationError('inválido', { to: ['x'] }, {}));
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(422);
+  });
+
+  it('a checkout timeout answers a CODED 504 ME_TIMEOUT — anchor written, estado untouched (#1679)', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    h.checkout.mockRejectedValue(
+      new MelhorEnvioTimeoutError('O Melhor Envio não respondeu em 60 s ao pagar a etiqueta…', {
+        operacao: 'checkout',
+        timeoutMs: 60_000,
+      }),
+    );
+    const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
+
+    expect(res.status).toBe(504);
+    expect(await res.json()).toEqual({
+      error: 'O Melhor Envio não respondeu em 60 s ao pagar a etiqueta…',
+      code: 'ME_TIMEOUT',
+      operacao: 'checkout',
+      timeoutMs: 60_000,
+    });
+    // The anchor landed BEFORE the paid step, so a sequential re-buy resumes on
+    // this label; the final estado/codRastreio write never ran.
+    expect(h.pedidoUpdate).toHaveBeenCalledTimes(1);
+    expect(h.pedidoUpdate).toHaveBeenCalledWith({ 'freteInicial.printLabelId': 'new-label' });
+    expect(h.generate).not.toHaveBeenCalled();
   });
 });

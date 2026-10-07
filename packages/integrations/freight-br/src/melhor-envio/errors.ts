@@ -1,8 +1,9 @@
 /**
  * Typed errors for the Melhor Envio core. Callers branch on
- * `err instanceof <X>` (CLAUDE.md rule 6) — the apps/integrations route
+ * `err instanceof <X>` (CLAUDE.md rule 6) — the `apps/melhor-envio` route
  * layer maps these to HTTP status codes (e.g. ReauthRequired → 409).
  */
+import type { OperacaoMelhorEnvio } from './prazos';
 
 /** Base — every ME-originated failure is at least this. */
 export class MelhorEnvioError extends Error {
@@ -121,6 +122,36 @@ export class MelhorEnvioNetworkError extends MelhorEnvioError {
   ) {
     super(message);
     this.name = 'MelhorEnvioNetworkError';
+  }
+}
+
+/**
+ * A call to Melhor Envio outlived its deadline (`PRAZO_ME_MS` /
+ * `PRAZO_ME_TOKEN_MS`, #1679) and we stopped waiting.
+ *
+ * ⚠️ The OUTCOME IS UNKNOWN: aborting our side does not stop Melhor Envio from
+ * processing the request. On `checkout` that means the label may be paid; the
+ * message says so, and the route layer answers `504 { code: 'ME_TIMEOUT' }` so
+ * the browser can tell it apart from the platform's own gateway 504.
+ *
+ * ⚠️ A SUBCLASS of `MelhorEnvioNetworkError`, never a sibling: the OAuth
+ * callback classifies a network failure as `'rede'`, and the notification
+ * pipeline retries anything it does not recognise as terminal — a timeout must
+ * land in both of those buckets without either caller changing.
+ */
+export class MelhorEnvioTimeoutError extends MelhorEnvioNetworkError {
+  /** The `MelhorEnvioApi` method that timed out, or `'token'` for `/oauth/token`. */
+  public readonly operacao: OperacaoMelhorEnvio | 'token';
+  public readonly timeoutMs: number;
+  constructor(
+    message: string,
+    detalhes: { readonly operacao: OperacaoMelhorEnvio | 'token'; readonly timeoutMs: number },
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'MelhorEnvioTimeoutError';
+    this.operacao = detalhes.operacao;
+    this.timeoutMs = detalhes.timeoutMs;
   }
 }
 

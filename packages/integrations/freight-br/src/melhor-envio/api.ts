@@ -9,16 +9,16 @@
  * (it runs `getOrRefreshAccessToken` upstream), so a 60s-skew refresh is
  * transparent. A 401 bubbles as `MelhorEnvioHttpError` for the caller to
  * decide on.
+ *
+ * Every call is bounded by its `PRAZO_ME_MS` deadline (#1679): a stall throws
+ * `MelhorEnvioTimeoutError`, any other transport failure `MelhorEnvioNetworkError`.
  */
 import { ensureCartAgency } from './agency';
-import { camposInvalidos } from '@delfrance/core/wire';
+import { abrirPrazo, camposInvalidos } from '@delfrance/core/wire';
 
-import {
-  MelhorEnvioError,
-  MelhorEnvioHttpError,
-  MelhorEnvioSchemaError,
-  MelhorEnvioValidationError,
-} from './errors';
+import { MelhorEnvioHttpError, MelhorEnvioSchemaError, MelhorEnvioValidationError } from './errors';
+import { type OperacaoMelhorEnvio, PRAZO_ME_MS } from './prazos';
+import { erroDeTransporteMe } from './transporte';
 import {
   type Agency,
   type Balance,
@@ -92,11 +92,14 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
 
   async function request<T>(
+    operacao: OperacaoMelhorEnvio,
     method: 'GET' | 'POST',
     path: string,
     schema: z.ZodType<T>,
     body?: unknown,
   ): Promise<T> {
+    // Outside the deadline: the token refresh has its own (`PRAZO_ME_TOKEN_MS`),
+    // and this window measures the ME call, not the token lifecycle.
     const token = await config.getAccessToken();
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -109,16 +112,27 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       init.body = JSON.stringify(body);
     }
 
+    const timeoutMs = PRAZO_ME_MS[operacao];
+    const prazo = abrirPrazo(timeoutMs);
+    init.signal = prazo.signal;
+
+    // ⚠️ The body read is INSIDE the window and the mapping: Melhor Envio
+    // sending its headers and then stalling would otherwise hang past the
+    // deadline, and a mid-body abort would escape as a raw DOMException that no
+    // `isMelhorEnvioError` guard recognises (an unhandled 500).
     let res: Response;
+    let text: string;
     try {
       res = await fetchImpl(`${config.baseUrl}${path}`, init);
+      text = await res.text();
     } catch (err) {
-      throw new MelhorEnvioError(
-        `Falha de rede ao chamar Melhor Envio ${method} ${path}: ${err instanceof Error ? err.message : 'fetch failed'}`,
-      );
+      throw erroDeTransporteMe(err, prazo, operacao, timeoutMs, `${method} ${path}`);
+    } finally {
+      // Always: the timer is not `unref`'d, so a forgotten one holds the
+      // process's event loop for the whole window.
+      prazo.liberar();
     }
 
-    const text = await res.text();
     let parsed: unknown = null;
     if (text.length > 0) {
       try {
@@ -184,6 +198,7 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
 
   const listServices = (): Promise<ShipmentService[]> =>
     request<ShipmentService[]>(
+      'listServices',
       'GET',
       '/api/v2/me/shipment/services',
       shipmentServicesResponseSchema,
@@ -202,6 +217,7 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
     if (params.city != null) q.set('city', params.city);
     if (params.company != null) q.set('company', String(params.company));
     return request<Agency[]>(
+      'listAgencies',
       'GET',
       `/api/v2/me/shipment/agencies?${q.toString()}`,
       agenciesResponseSchema,
@@ -211,35 +227,38 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
   return {
     calculate: (req) =>
       request<CalculateResponse>(
+        'calculate',
         'POST',
         '/api/v2/me/shipment/calculate',
         calculateResponseSchema,
         req,
       ),
-    getMe: () => request<Me>('GET', '/api/v2/me', meSchema),
-    getBalance: () => request<Balance>('GET', '/api/v2/me/balance', balanceSchema),
+    getMe: () => request<Me>('getMe', 'GET', '/api/v2/me', meSchema),
+    getBalance: () => request<Balance>('getBalance', 'GET', '/api/v2/me/balance', balanceSchema),
     listServices,
     listAgencies,
     addToCart: async (req) => {
+      // The agency lookups run under their OWN deadlines; `addToCart`'s covers
+      // only the cart POST.
       const withAgency = await ensureCartAgency({ listServices, listAgencies }, req);
-      return request<CartItem>('POST', '/api/v2/me/cart', cartItemSchema, withAgency);
+      return request<CartItem>('addToCart', 'POST', '/api/v2/me/cart', cartItemSchema, withAgency);
     },
     getOrder: (id) =>
-      request<Order>('GET', `/api/v2/me/orders/${encodeURIComponent(id)}`, orderSchema),
+      request<Order>('getOrder', 'GET', `/api/v2/me/orders/${encodeURIComponent(id)}`, orderSchema),
     checkout: (orderIds) =>
-      request<unknown>('POST', '/api/v2/me/shipment/checkout', opaqueResponseSchema, {
+      request<unknown>('checkout', 'POST', '/api/v2/me/shipment/checkout', opaqueResponseSchema, {
         orders: [...orderIds],
       }),
     generate: (orderIds) =>
-      request<unknown>('POST', '/api/v2/me/shipment/generate', opaqueResponseSchema, {
+      request<unknown>('generate', 'POST', '/api/v2/me/shipment/generate', opaqueResponseSchema, {
         orders: [...orderIds],
       }),
     print: (orderIds) =>
-      request<PrintResponse>('POST', '/api/v2/me/shipment/print', printResponseSchema, {
+      request<PrintResponse>('print', 'POST', '/api/v2/me/shipment/print', printResponseSchema, {
         orders: [...orderIds],
       }),
     tracking: (orderIds) =>
-      request<unknown>('POST', '/api/v2/me/shipment/tracking', opaqueResponseSchema, {
+      request<unknown>('tracking', 'POST', '/api/v2/me/shipment/tracking', opaqueResponseSchema, {
         orders: [...orderIds],
       }),
   };

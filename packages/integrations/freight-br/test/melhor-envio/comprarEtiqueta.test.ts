@@ -5,7 +5,10 @@ import type {
   ComprarEtiquetaApi,
   ComprarEtiquetaStep,
 } from '../../src/melhor-envio/comprarEtiqueta';
-import { MelhorEnvioLabelTerminalError } from '../../src/melhor-envio/errors';
+import {
+  MelhorEnvioLabelTerminalError,
+  MelhorEnvioTimeoutError,
+} from '../../src/melhor-envio/errors';
 import type { Order } from '../../src/melhor-envio/types';
 
 /** A fake order; pass the lifecycle timestamps the test cares about. */
@@ -126,6 +129,53 @@ describe('comprarEtiqueta', () => {
 
     await expect(promise).rejects.toBeInstanceOf(MelhorEnvioLabelTerminalError);
     await expect(promise).rejects.toHaveProperty('reason', 'canceled');
+    expect(api.checkout).not.toHaveBeenCalled();
+    expect(api.addToCart).not.toHaveBeenCalled();
+  });
+
+  it('a cart-insert timeout writes NO anchor — the next buy starts fresh, nothing was paid (#1679)', async () => {
+    const timeout = new MelhorEnvioTimeoutError('cart', {
+      operacao: 'addToCart',
+      timeoutMs: 30_000,
+    });
+    const api = makeApi({
+      addToCart: vi.fn(async () => {
+        log.push('addToCart');
+        throw timeout;
+      }),
+    });
+    const d = deps(api, null);
+
+    await expect(comprarEtiqueta(d)).rejects.toBe(timeout);
+    expect(d.persistPrintLabelId).not.toHaveBeenCalled();
+    expect(api.checkout).not.toHaveBeenCalled();
+    expect(log).toEqual(['addToCart']);
+  });
+
+  it('a checkout timeout lands AFTER the anchor, so a sequential re-buy resumes (#1679)', async () => {
+    const timeout = new MelhorEnvioTimeoutError('pay', { operacao: 'checkout', timeoutMs: 60_000 });
+    const api = makeApi({
+      checkout: vi.fn(async () => {
+        log.push('checkout');
+        throw timeout;
+      }),
+    });
+    const d = deps(api, null);
+
+    await expect(comprarEtiqueta(d)).rejects.toBe(timeout);
+    expect(d.persistPrintLabelId).toHaveBeenCalledWith('new-label');
+    expect(log).toEqual(['addToCart', 'persist', 'checkout']);
+    expect(api.generate).not.toHaveBeenCalled();
+  });
+
+  it('the paired resume: a label ME reports as paid is never checked out again', async () => {
+    const api = makeApi({
+      getOrder: vi
+        .fn()
+        .mockResolvedValueOnce(order({ paid_at: '2026-10-06 10:00:00', generated_at: null }))
+        .mockResolvedValueOnce(order()),
+    });
+    await comprarEtiqueta(deps(api, 'new-label'));
     expect(api.checkout).not.toHaveBeenCalled();
     expect(api.addToCart).not.toHaveBeenCalled();
   });

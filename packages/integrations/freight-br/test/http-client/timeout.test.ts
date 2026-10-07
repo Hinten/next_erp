@@ -260,10 +260,12 @@ describe('FreightHttpClient deadlines (#1094)', () => {
       expect(err).toBeInstanceOf(FreightTimeoutError);
     });
 
-    it('with OUR coded envelope stays a route answer (FreightServerError)', async () => {
+    it('with OUR coded envelope (any other code) stays a route answer (FreightServerError)', async () => {
+      // ⚠️ This used to use `ME_TIMEOUT` — #1679 made that ONE code a timeout
+      // (below). Every other coded 504 must still read as the route's answer.
       const fetchMock = vi.fn(
         async () =>
-          new Response(JSON.stringify({ error: 'ME demorou', code: 'ME_TIMEOUT' }), {
+          new Response(JSON.stringify({ error: 'Algo demorou', code: 'OUTRO_TIMEOUT' }), {
             status: 504,
           }),
       );
@@ -272,7 +274,61 @@ describe('FreightHttpClient deadlines (#1094)', () => {
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(FreightServerError);
       expect(err).not.toBeInstanceOf(FreightTimeoutError);
-      expect((err as Error).message).toBe('ME demorou');
+      expect((err as Error).message).toBe('Algo demorou');
+    });
+
+    it('`ME_TIMEOUT` is Melhor Envio stalling → FreightTimeoutError(provedor), the route copy kept (#1679)', async () => {
+      // A checkout that Melhor Envio never answered may have PAID — the same
+      // "outcome unknown" every caller's timeout arm already handles.
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: 'O Melhor Envio não respondeu em 60 s ao pagar a etiqueta…',
+              code: 'ME_TIMEOUT',
+              operacao: 'checkout',
+              timeoutMs: 60_000,
+            }),
+            { status: 504 },
+          ),
+      );
+      const err = await client(fetchMock)
+        .comprar('int-1', 'ped-1', { service: 3 })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FreightTimeoutError);
+      const t = err as FreightTimeoutError;
+      expect(t.origem).toBe('provedor');
+      expect(t.timeoutMs).toBe(60_000);
+      expect(t.operacao).toBe('comprar');
+      expect(t.message).toBe('O Melhor Envio não respondeu em 60 s ao pagar a etiqueta…');
+    });
+
+    it('`ME_TIMEOUT` with a non-numeric timeoutMs and no message still maps, with a null budget', async () => {
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 'ME_TIMEOUT', timeoutMs: 'muito' }), {
+            status: 504,
+          }),
+      );
+      const err = await client(fetchMock)
+        .conta('int-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FreightTimeoutError);
+      expect((err as FreightTimeoutError).timeoutMs).toBeNull();
+      expect((err as Error).message).toBe(
+        'O serviço de frete não respondeu a tempo. Tente novamente.',
+      );
+    });
+
+    it('near-miss: `ME_TIMEOUT` on a status other than 504 is not a timeout', async () => {
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: 'x', code: 'ME_TIMEOUT' }), { status: 502 }),
+      );
+      const err = await client(fetchMock)
+        .conta('int-1')
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(FreightServerError);
     });
 
     it('a 502 is untouched (still FreightServerError)', async () => {

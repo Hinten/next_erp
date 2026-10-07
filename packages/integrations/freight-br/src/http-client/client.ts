@@ -28,6 +28,7 @@ import {
 import type { CalculateRequest, CalculateResponse, CartInsertRequest } from '../melhor-envio/types';
 
 import {
+  FREIGHT_CODIGO_ME_TIMEOUT,
   FreightAuthError,
   FreightSchemaError,
   FreightBadRequestError,
@@ -339,6 +340,23 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
         throw new FreightTimeoutError(
           mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], null),
           { origem: 'gateway', timeoutMs: null, operacao },
+        );
+      }
+      // The ROUTE telling us Melhor Envio stopped answering (#1679). Same class
+      // as our own deadline because it means the same thing to the operator —
+      // the outcome is unknown (a `checkout` may have paid) — so every caller's
+      // timeout arm (no re-click, no query retry) applies without a new branch.
+      // The route's message is kept: it names the step that stalled.
+      const envelope = envelopeDeErro(parsed);
+      if (res.status === 504 && envelope?.code === FREIGHT_CODIGO_ME_TIMEOUT) {
+        const corpo = parsed as { timeoutMs?: unknown };
+        const timeoutMs =
+          typeof corpo.timeoutMs === 'number' && Number.isFinite(corpo.timeoutMs)
+            ? corpo.timeoutMs
+            : null;
+        throw new FreightTimeoutError(
+          envelope.error ?? mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], null),
+          { origem: 'provedor', timeoutMs, operacao },
         );
       }
       throw errorFromResponse(res.status, parsed);

@@ -17,6 +17,8 @@ export {
 } from './client';
 
 export {
+  FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO,
+  FREIGHT_CODIGO_ME_TIMEOUT,
   FreightAuthError,
   FreightBadRequestError,
   FreightHttpError,

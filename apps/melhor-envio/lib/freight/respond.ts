@@ -11,8 +11,10 @@ import {
   MelhorEnvioHttpError,
   MelhorEnvioLabelTerminalError,
   MelhorEnvioReauthRequiredError,
+  MelhorEnvioTimeoutError,
   MelhorEnvioValidationError,
 } from '@delfrance/integrations-freight-br';
+import { FREIGHT_CODIGO_ME_TIMEOUT } from '@delfrance/integrations-freight-br/http-client';
 
 import { MelhorEnvioConfigError, MelhorEnvioContaNotConfiguredError } from './melhorEnvio';
 
@@ -54,6 +56,30 @@ export function melhorEnvioErrorResponse(err: KnownError): NextResponse {
     // Upstream ME failure that isn't validation/reauth — surface as a bad
     // gateway so the client can distinguish it from its own 4xx.
     return NextResponse.json({ error: err.message }, { status: 502 });
+  }
+  if (err instanceof MelhorEnvioTimeoutError) {
+    // #1679: Melhor Envio stopped answering one call and we stopped waiting —
+    // the outcome is UNKNOWN (a `checkout` may have paid). A 504 WITH our coded
+    // envelope, the ML `AI_TIMEOUT` precedent: the browser client reads a coded
+    // 504 as a route answer, never as the platform's gateway giving up
+    // (`ehTempoEsgotadoNoGateway`), and maps this code to its timeout class.
+    // Before the base arm below — it is a `MelhorEnvioError` too.
+    //
+    // Logged: on `checkout` the money outcome is unknown, and without this line
+    // the 504 in the request log would be the only server-side trace of it.
+    console.warn('[melhor-envio] Melhor Envio não respondeu a tempo', {
+      operacao: err.operacao,
+      timeoutMs: err.timeoutMs,
+    });
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: FREIGHT_CODIGO_ME_TIMEOUT,
+        operacao: err.operacao,
+        timeoutMs: err.timeoutMs,
+      },
+      { status: 504 },
+    );
   }
   // Base MelhorEnvioError (e.g. a network failure reaching ME).
   return NextResponse.json({ error: err.message }, { status: 502 });

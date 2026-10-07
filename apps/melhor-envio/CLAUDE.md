@@ -21,6 +21,15 @@ deploys to its own Firebase App Hosting backend.
   enqueue-first notification pipeline. See `functions/DEPLOY.md`.
 - `lib/freight/*` — `loadMelhorEnvioContext`, the Firestore token store, the
   signed-state HMAC, and the error→HTTP mapper.
+  ⚠️ **Every Melhor Envio call is bounded (#1679)** — `PRAZO_ME_MS` in the
+  freight-br package; a stall is `MelhorEnvioTimeoutError`, answered
+  `504 { code: 'ME_TIMEOUT', operacao, timeoutMs }` (CODED, so the browser never
+  mistakes it for the platform's gateway 504). On `comprar` the step matters: a
+  cart-insert timeout leaves no anchor (nothing paid, the next buy starts fresh);
+  a `checkout`/`generate` timeout lands AFTER `freteInicial.printLabelId`, so the
+  money outcome is unknown and a sequential re-buy resumes from the anchor.
+  `lib/freight/prazos.test.ts` holds `DURACAO_MAXIMA_COMPRAR_MS` + 30 s under the
+  SMALLEST `timeoutSeconds` in `apphosting*.yaml` (300 s when unpinned).
 - `lib/freight/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth
   primitives in `@delfrance/data/admin/oauth-state`. `state.ts` re-exports the signed
   state (`FreightStateError` is an alias of the shared `OauthStateError`);
