@@ -1102,7 +1102,11 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
   - An adopt-vs-create test (legacy doc adopted, no duplicate).
   - Mapa append idempotence (same id twice ⇒ one entry; a different code with the same id ⇒ no new entry).
   - Out-of-order trigger events.
-- **Web** (with step 21): the "Mapeamento do Frete" editor (target integration + Melhor Envio service per row) and the "Horário de Corte" editor, on the existing `/logistica` surfaces. Import routes only melhorEnvios, motoboy and retiradaNaLoja targets (step 5); fob and outros remain selectable for label-time routing, and at import they raise the step-5 aviso without failing.
+- **Web** (with step 21):
+  - **The "Mapeamento do Frete" editor is NEW work.** Each row maps one LI shipping method to a target integration plus, for Melhor Envio, a service. No mapa editor exists in `apps/web` today: `apps/web/app/(app)/logistica/_components/slices.ts` deliberately excludes `mapa` from every screen.
+  - **The "Horário de Corte" editor reuses** the existing `apps/web/app/(app)/logistica/_components/HorarioCorteEditor.tsx`.
+  - **Placement is open (§7 q8).** The legacy kept both as tabs of the LI conta screen.
+  - **Targets:** import routes only melhorEnvios, motoboy and retiradaNaLoja targets (step 5). fob and outros remain selectable for label-time routing; at import they raise the step-5 aviso without failing.
 - **Timing:** before step 5, which reads the doc and calls the helper.
 - **Does NOT:** register anything at LI.
 
@@ -1362,6 +1366,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 5. **Stock reservation:** should LI orders awaiting payment hold ERP stock (then the stock push adds LI's `quantidade_reservada`, model A), or should LI alone reserve them (model B)? This decides step 12's quantity. Note that LI's own help articles disagree on whether Pedido Efetuado reserves (§1.2 item 3).
 6. **Multi-envio orders:** do the stores ever split one order into several shipments? If never, the first `envios[]` entry plus an aviso is enough.
 7. **Kit staleness:** a component sold on another channel reaches an LI kit's quantity only at the daily reconcile (≤ ~24 h). Acceptable, or should the step-12 plan cost a scoped propagation for LI-linked kits?
+8. **Where the freight-mapping editor lives** (step 20/21). Option one is a "Mapeamento do Frete" tab plus a "Horário de Corte" tab on the LI conta screen `/canais/loja-integrada/[id]`, as in the legacy. Option two is a `/logistica/loja-integrada` page beside the other freight editors. The default is the conta screen (legacy parity: the operator maps methods where the conta is configured).
 
 ---
 
