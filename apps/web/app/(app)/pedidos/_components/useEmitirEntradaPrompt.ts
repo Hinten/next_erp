@@ -9,7 +9,8 @@
  */
 import type { ReactNode } from 'react';
 import { FirebaseError } from 'firebase/app';
-import { idFromRef } from '@delfrance/schemas';
+import { notifications } from '@mantine/notifications';
+import { FIN_NFE_OPERACAO, idFromRef } from '@delfrance/schemas';
 import type { DevolucaoOperacaoInfo } from '@delfrance/data/pedido';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
@@ -30,6 +31,13 @@ export interface EmitirEntradaPromptArgs {
    * no-NFe probe is skipped — the entrada was created milliseconds ago.
    */
   operacao?: DevolucaoOperacaoInfo;
+  /**
+   * Items saved without a complete reference to their origin NF-e line
+   * (`referenciasPendentes`, #1683). On a DEVOLUÇÃO (finNFe 4) any of them
+   * means SEFAZ refuses the NF-e (VC02-14, 321), so the prompt is replaced by
+   * a warning pointing at the Fiscal tab. Ignored for any other finalidade.
+   */
+  referenciasPendentes?: number;
 }
 
 export interface UseEmitirEntradaPromptResult {
@@ -39,29 +47,41 @@ export interface UseEmitirEntradaPromptResult {
   element: ReactNode;
 }
 
+/** Whether the prompt applies, and whether the entrada is a devolução (finNFe 4). */
+interface Elegibilidade {
+  readonly elegivel: boolean;
+  readonly devolucao: boolean;
+}
+
+const NAO_ELEGIVEL: Elegibilidade = { elegivel: false, devolucao: false };
+
 /**
  * Eligibility. With a pre-resolved `operacao` (#551 integral):
- * `operacao.fiscalCapable`, no reads. Otherwise (plain entrada / edit page),
- * one-shot reads: the pedido has no `nfev4` doc yet AND its operação exists
- * and is fiscal (`ehFiscal !== false`). A `FirebaseError` on either read skips
- * the prompt silently.
+ * `operacao.fiscalCapable`, no reads — and `fiscalCapable` already means
+ * finNFe 4. Otherwise (plain entrada / edit page), one-shot reads: the pedido
+ * has no `nfev4` doc yet AND its operação exists and is fiscal
+ * (`ehFiscal !== false`). A `FirebaseError` on either read skips the prompt
+ * silently.
  */
-async function isElegivel(args: EmitirEntradaPromptArgs): Promise<boolean> {
-  if (args.operacao) return args.operacao.fiscalCapable;
+async function elegibilidade(args: EmitirEntradaPromptArgs): Promise<Elegibilidade> {
+  if (args.operacao) {
+    return { elegivel: args.operacao.fiscalCapable, devolucao: args.operacao.fiscalCapable };
+  }
   try {
     const port = createClientPedidoPort(getFirebaseFirestore());
-    if (await port.hasNFe(args.pedidoId)) return false;
+    if (await port.hasNFe(args.pedidoId)) return NAO_ELEGIVEL;
     const operacaoId =
       typeof args.operacaoOuterRef === 'string' && args.operacaoOuterRef !== ''
         ? idFromRef(args.operacaoOuterRef)
         : '';
-    if (operacaoId === '') return false;
+    if (operacaoId === '') return NAO_ELEGIVEL;
     const operacao = await port.getOperacao(operacaoId);
     // Laxer than the integral path's fiscalCapable: a plain compra entrada
     // doesn't require finNFe 4 — any fiscal operação may emit its NF-e.
-    return operacao !== null && operacao.ehFiscal !== false;
+    if (operacao === null || operacao.ehFiscal === false) return NAO_ELEGIVEL;
+    return { elegivel: true, devolucao: operacao.finNFe === FIN_NFE_OPERACAO.devolucao };
   } catch (err) {
-    if (err instanceof FirebaseError) return false;
+    if (err instanceof FirebaseError) return NAO_ELEGIVEL;
     throw err;
   }
 }
@@ -72,7 +92,21 @@ export function useEmitirEntradaPrompt(): UseEmitirEntradaPromptResult {
 
   async function promptEmitirEntrada(args: EmitirEntradaPromptArgs): Promise<void> {
     if (args.estado !== 'pago') return;
-    if (!(await isElegivel(args))) return;
+    const { elegivel, devolucao } = await elegibilidade(args);
+    if (!elegivel) return;
+
+    const pendentes = args.referenciasPendentes ?? 0;
+    if (devolucao && pendentes > 0) {
+      notifications.show({
+        color: 'yellow',
+        autoClose: 10_000,
+        message:
+          `${pendentes} ${pendentes === 1 ? 'item está' : 'itens estão'} sem a referência ao item ` +
+          'da NF-e de origem — a SEFAZ recusaria a NF-e desta devolução. Complete na aba Fiscal ' +
+          '("Preencher a partir das NF-e de origem") e emita por lá.',
+      });
+      return;
+    }
 
     const emitir = await confirm({
       title: 'Emitir NF-e',

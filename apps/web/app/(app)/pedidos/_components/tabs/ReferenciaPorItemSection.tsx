@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -11,11 +11,14 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import type { UseFormReturn } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import {
   chaveAcessoValida,
   descreverViolacaoDocumento,
+  FIN_NFE_OPERACAO,
   naOrdemDoPedido,
   nomeDoItem,
   REGRA_DOCUMENTO,
@@ -24,8 +27,15 @@ import {
   type Pedido,
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import {
+  lerNotasDeOrigem,
+  preencherReferenciasPendentes,
+  referenciaCompleta,
+} from '@delfrance/data/pedido';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
+import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import { linhaViraItem } from '../regroupItens';
 import type { FlatItem, PedidoFormState } from '../types';
 
@@ -48,6 +58,13 @@ export interface ReferenciaPorItemSectionProps {
  * blocks the save (the page model). The filial's Reforma Tributária switch is
  * not on this screen, so that one policy is stated, not evaluated, here — the
  * emission refuses it with its own message.
+ *
+ * On a DEVOLUÇÃO every item must carry its reference (VC02-14, cStat 321,
+ * #1683), with or without the Reforma Tributária. The devolução seeds fill
+ * them from the origin's authorized XML; "Preencher a partir das NF-e de
+ * origem" re-runs that same matching (`preencherReferenciasPendentes`) over the
+ * origins in `saidasRelacionadas` for whatever is still incomplete — an edited
+ * line, a legacy devolução not yet emitted, an origin whose XML arrived late.
  */
 export function ReferenciaPorItemSection({
   form,
@@ -122,6 +139,58 @@ export function ReferenciaPorItemSection({
     }
   };
 
+  // The origins a devolução returns from — the troca and integral saves write
+  // them; a devolução typed by hand has none, and fills its references by hand.
+  const saidasRelacionadas = form.watch('saidasRelacionadas');
+  const origens = useMemo(
+    () =>
+      (saidasRelacionadas ?? []).filter((id): id is string => typeof id === 'string' && id !== ''),
+    [saidasRelacionadas],
+  );
+  const ehDevolucao = operacaoDoc?.data.finNFe === FIN_NFE_OPERACAO.devolucao;
+  const pendentes = linhas.filter(({ item }) => !referenciaCompleta(item.dfeReferenciado)).length;
+  const [preenchendo, setPreenchendo] = useState(false);
+
+  const preencherDasOrigens = async () => {
+    setPreenchendo(true);
+    try {
+      const notas = await lerNotasDeOrigem(createClientPedidoPort(db), origens);
+      const novas = preencherReferenciasPendentes(
+        linhas.map(({ item }) => item),
+        notas,
+      );
+      let completas = 0;
+      linhas.forEach(({ item, index }, i) => {
+        const atual = item.dfeReferenciado ?? null;
+        const nova = novas[i] ?? null;
+        if (referenciaCompleta(atual) || nova === null) return;
+        if (referenciaCompleta(nova)) completas += 1;
+        if (nova.chaveAcesso !== atual?.chaveAcesso || nova.nItem !== atual?.nItem) {
+          setRef(index, nova);
+        }
+      });
+      const restantes = pendentes - completas;
+      notifications.show({
+        color: restantes === 0 ? 'green' : 'yellow',
+        message:
+          restantes === 0
+            ? `${completas} ${completas === 1 ? 'referência preenchida' : 'referências preenchidas'} a partir das NF-e de origem.`
+            : `${completas} preenchida(s); ${restantes} item(ns) não foram encontrados com segurança nas NF-e de origem — informe a chave e o item à mão.`,
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        showErrorNotification({
+          title: 'Não foi possível ler as NF-e de origem',
+          message: err.message,
+        });
+      } else {
+        throw err;
+      }
+    } finally {
+      setPreenchendo(false);
+    }
+  };
+
   const erroPageModel = (form.formState.errors as Record<string, { message?: string } | undefined>)
     .dfeReferenciado?.message;
 
@@ -129,19 +198,39 @@ export function ReferenciaPorItemSection({
     <Stack gap="xs">
       <Group justify="space-between" align="center">
         <Text fw={500}>Referência por item (DF-e referenciado)</Text>
-        <Button
-          type="button"
-          size="xs"
-          variant="light"
-          onClick={aplicarATodos}
-          disabled={disabled || !primeiraChave}
-        >
-          Aplicar a mesma chave a todos
-        </Button>
+        <Group gap="xs">
+          {ehDevolucao && (
+            <Button
+              type="button"
+              size="xs"
+              variant="light"
+              onClick={() => void preencherDasOrigens()}
+              loading={preenchendo}
+              disabled={disabled || origens.length === 0 || pendentes === 0}
+              title={
+                origens.length === 0
+                  ? 'Esta devolução não está ligada a um pedido de origem — informe a chave e o item à mão.'
+                  : undefined
+              }
+            >
+              Preencher a partir das NF-e de origem
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="xs"
+            variant="light"
+            onClick={aplicarATodos}
+            disabled={disabled || !primeiraChave}
+          >
+            Aplicar a mesma chave a todos
+          </Button>
+        </Group>
       </Group>
       <Text size="sm" c="dimmed">
-        Para notas de crédito/débito e devoluções da Reforma Tributária: o item da nota original a
-        que cada item se refere. Só é emitida com a Reforma Tributária ativa na filial.
+        O item da nota original a que cada item se refere. Obrigatório em toda devolução, com ou sem
+        a Reforma Tributária; nas notas de crédito/débito, só é emitido com a Reforma Tributária
+        ativa na filial.
       </Text>
       {linhas.length === 0 && (
         <Text size="sm" c="dimmed">

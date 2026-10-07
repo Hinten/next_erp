@@ -2557,13 +2557,19 @@ export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
  * Seed one `nfev4` doc under an EXISTING pedido — the same wire body
  * `seedPedidoWithNFe` writes (that helper couples the NF-e to its own pedido
  * seed), so a spec can attach an NF-e at any estado/chave/numeração to an
- * already-seeded pedido (e.g. an APROVADA NF-e whose chave the devolução flows
- * must carry into `chNFeReferenciadas`).
+ * already-seeded pedido (e.g. an APROVADA NF-e whose `<det>` lines the
+ * devolução flows reference per item, #1683 — pass `xmlNfeProc` for those).
  */
 export async function seedNfeForPedido(
   pedidoId: string,
   nfeId: string,
-  opts: { estado: string; chave?: string | null; numeracao?: number },
+  opts: {
+    estado: string;
+    chave?: string | null;
+    numeracao?: number;
+    /** The authorized `<nfeProc>` — what a devolução reads the origin's dets from. */
+    xmlNfeProc?: string | null;
+  },
 ): Promise<void> {
   const now = Date.now();
   await db()
@@ -2579,7 +2585,7 @@ export async function seedNfeForPedido(
       chave: opts.chave ?? null,
       idLote: null,
       infNFe: null,
-      xml_nfe_proc: null,
+      xml_nfe_proc: opts.xmlNfeProc ?? null,
       xml_epec_proc: null,
       xml_assinado: null,
       nRec: null,

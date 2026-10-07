@@ -18,6 +18,7 @@ import {
   PedidoConflictError,
   PedidoEnderecoOrigemAusenteError,
   prepareDevolucaoSave,
+  referenciasPendentes,
   registrarIncidenteDeDevolucaoIntegral,
   type DevolucaoSavePrepared,
   type PedidoDevolucaoDataPort,
@@ -218,6 +219,8 @@ function useCreatePedidoSubmit(direcao: Direcao) {
         pedidoId: id,
         estado: values.estado,
         operacaoOuterRef: values.operacaoPedidoOuterRef,
+        // A manual devolução (finNFe 4) is asked for its item references too.
+        referenciasPendentes: referenciasPendentes(Object.values(values.itens ?? {}).flat()),
       });
     }
     router.replace(cfg.editarPath(id));
@@ -458,6 +461,8 @@ function NovaEntradaDevolucaoIntegral({ originId }: { originId: string }) {
       operacaoOuterRef: values.operacaoPedidoOuterRef,
       // Pre-resolved: eligibility = fiscalCapable (finNFe 4), no NF-e probe.
       operacao: seed.operacao,
+      // The SAVED items — the operator may have filled or cleared references.
+      referenciasPendentes: referenciasPendentes(Object.values(values.itens ?? {}).flat()),
     });
     router.replace(cfg.editarPath(created.entradaId));
   }
