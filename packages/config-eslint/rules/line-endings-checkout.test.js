@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { normalizeLineEndings } from '../../../tools/normalize-line-endings.mjs';
+import { normalizeLineEndings } from '../normalize-line-endings.mjs';
 import { REPO_ROOT } from './lib/repo-scan.js';
 
 const repos = [];
@@ -122,5 +122,25 @@ describe('repository line endings on a Windows-style checkout', () => {
     for (const file of XSD_FILES) expect(readFileSync(join(root, file))).toEqual(files[file]);
     expect(git('ls-files', '--stage', '-z')).toBe(indexBefore);
     expect(normalizeLineEndings(root, { env }).normalized).toEqual([]);
+  });
+
+  it('the relocated CLI repairs the repository root even from a nested working directory', () => {
+    const { root, env, git } = makeRepo();
+    const scriptPath = 'packages/config-eslint/normalize-line-endings.mjs';
+    const script = join(root, scriptPath);
+    mkdirSync(dirname(script), { recursive: true });
+    copyFileSync(join(REPO_ROOT, scriptPath), script);
+    writeFileSync(join(root, SOURCE), 'export const value = 2;\r\n');
+    const indexBefore = git('ls-files', '--stage', '-z');
+
+    const output = execFileSync(process.execPath, [script], {
+      cwd: dirname(join(root, SOURCE)),
+      env,
+      encoding: 'utf8',
+    });
+
+    expect(output).toBe('Normalized 1 tracked files to LF; skipped 0.\n');
+    expect(readFileSync(join(root, SOURCE), 'utf8')).toBe('export const value = 2;\n');
+    expect(git('ls-files', '--stage', '-z')).toBe(indexBefore);
   });
 });

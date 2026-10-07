@@ -35,7 +35,7 @@ pnpm dev
   Windows' `core.autocrlf=true` to match Prettier and EditorConfig; binary files
   and the vendored CRLF Consulta Cadastro XSDs retain their original bytes.
 - After updating an existing Windows checkout, run
-  `node tools/normalize-line-endings.mjs`, then `pnpm format:check`. The repair
+  `node packages/config-eslint/normalize-line-endings.mjs`, then `pnpm format:check`. The repair
   replaces only CRLF bytes in tracked files already stored as LF and governed
   by `eol=lf`. It preserves local edits and the index, skips symlinks and
   credential files, and never touches untracked files. Adding Git attributes

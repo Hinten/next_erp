@@ -1,6 +1,7 @@
 # Match Prettier and EditorConfig on every platform, even when Git for Windows
 # has core.autocrlf=true. Auto detection leaves binary files unchanged.
-# Existing checkouts need a one-time repair: node tools/normalize-line-endings.mjs
+# Existing checkouts need a one-time repair:
+# node packages/config-eslint/normalize-line-endings.mjs
 * text=auto eol=lf
 
 # These vendored NF-e schemas are already committed with CRLF. Preserve their

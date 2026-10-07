@@ -5,7 +5,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..');
+const REPO_ROOT = resolve(dirname(SCRIPT_PATH), '..', '..');
 
 function isCredentialFile(file) {
   const name = basename(file);

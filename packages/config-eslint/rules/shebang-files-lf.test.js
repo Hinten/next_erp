@@ -141,7 +141,7 @@ describe('shebang files check out with LF', () => {
         'adding the attribute alone does not rewrite an existing checkout, so the',
         'bug survives until you do.',
         '',
-        '  node tools/normalize-line-endings.mjs',
+        '  node packages/config-eslint/normalize-line-endings.mjs',
         '',
         'The repair changes only CRLF bytes in tracked LF-backed text files,',
         'preserving edits and leaving the index untouched. `git add --renormalize`',
