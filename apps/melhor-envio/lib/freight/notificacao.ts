@@ -6,12 +6,10 @@ import { createHash } from 'node:crypto';
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import {
-  ESTADO_FRETE,
   notificationResilienceFields,
   parseRef,
   toOuterRefOrNull,
 } from '@delfrance/schemas';
-import type { EstadoFrete } from '@delfrance/schemas';
 import {
   notificacaoMelhorEnvioCollection,
   pedidoCollection,
@@ -31,6 +29,7 @@ import {
   type Order,
 } from '@delfrance/integrations-freight-br';
 
+import { ehEstadoFreteTerminal, meStatusToEstadoFrete } from './estadoEtiqueta';
 import { MelhorEnvioContaNotConfiguredError, MelhorEnvioConfigError } from './melhorEnvioErrors';
 
 /** Deployed task function name and auto-provisioned queue name. */
@@ -166,36 +165,6 @@ function notificationKey(payload: MelhorEnvioNotificationPayload): string {
 export function notificationDocId(payload: MelhorEnvioNotificationPayload): string {
   return `me-${createHash('sha256').update(notificationKey(payload)).digest('hex')}`;
 }
-
-/** ME order status → the legacy `EstadoFrete` mapping. */
-export function meStatusToEstadoFrete(status: string | null | undefined): EstadoFrete | null {
-  switch (status) {
-    case 'delivered':
-      return ESTADO_FRETE.entregue;
-    case 'released':
-      return null;
-    case 'posted':
-    case 'received':
-      return ESTADO_FRETE.postado;
-    case 'canceled':
-    case 'cancelled':
-      return ESTADO_FRETE.cancelado;
-    case 'suspended':
-    case 'paused':
-      return ESTADO_FRETE.suspenso;
-    case 'undelivered':
-      return ESTADO_FRETE.falhaNaEntrega;
-    case null:
-    case undefined:
-    default:
-      return null;
-  }
-}
-
-const TERMINAL_ESTADOS: ReadonlySet<EstadoFrete> = new Set([
-  ESTADO_FRETE.entregue,
-  ESTADO_FRETE.cancelado,
-]);
 
 export interface PedidoMatch {
   id: string;
@@ -455,7 +424,7 @@ export async function processMelhorEnvioNotification(
   const target = meStatusToEstadoFrete(providerStatusEfetivo);
   if (!target) throw new MelhorEnvioRemoteStateUnavailableError(providerStatusEfetivo);
 
-  const isTerminal = frete.estado != null && TERMINAL_ESTADOS.has(frete.estado as EstadoFrete);
+  const isTerminal = ehEstadoFreteTerminal(frete.estado);
   const patch: Record<string, unknown> = {};
   if (!isTerminal && frete.estado !== target) patch['freteInicial.estado'] = target;
   const tracking = asString(currentLabel.order.tracking) ?? payload.tracking;

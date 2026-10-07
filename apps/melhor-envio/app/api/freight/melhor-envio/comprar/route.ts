@@ -168,14 +168,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     // later re-buy/reprint sees it. Auto-resolved agencies (payload without
     // one) don't reach here — only an explicit client-set value is recorded.
     const agency = (cartPayload as { agency?: unknown }).agency;
-    const vinculada = await finalizarCompraEtiqueta(db, posse, {
+    const finalizacao = await finalizarCompraEtiqueta(db, posse, {
       printLabelId: result.printLabelId,
       tracking: result.tracking,
+      providerStatus: result.order.status ?? null,
       agency: typeof agency === 'number' ? agency : null,
     });
     finalizado = true;
 
-    if (!vinculada) {
+    if (finalizacao.kind === 'desvinculada') {
       // PAID, and the pedido does not point at it: never answer success, or the
       // operator buys again and pays twice while this label is linked to nothing.
       console.error('[melhor-envio/comprar] etiqueta paga sem vínculo com o pedido', {
@@ -189,7 +190,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       printLabelId: result.printLabelId,
       printUrl: result.printUrl,
       tracking: result.tracking,
-      estado: 'aguardandoPostagem',
+      estado: finalizacao.estado,
     });
   } catch (err) {
     if (
