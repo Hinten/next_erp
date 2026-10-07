@@ -261,7 +261,10 @@ may not be indexed yet), read through one recovery table
 protocol was merely missing or the receipt not found — for a duplicidade it is
 terminal (539 is facultative, the número may be held under another chave), for
 635 it means "still queued" — and a denegada is applied only for a missing
-protocol; 103/105/107/108/109/113/114 (or a cStat that is not TStat-shaped) say
+protocol (since NT 2024.001, produção 2024-09-16, mod 55 has no denial: a
+consSit denial is a pre-2024-09-16 record whose número is held, while a doc
+refused today with 302/303/307/781 is a plain rejection and stays re-emittable —
+never add those to `STATUS_BLOQUEADORES`, #1733); 103/105/107/108/109/113/114 (or a cStat that is not TStat-shaped) say
 nothing and wait; a lote-level 656 or a refused receipt query is terminal
 (656 = consumo indevido is never retried — re-querying it risks a SEFAZ ban).
 **Every round that leaves a doc in flight advances its `retries` by exactly

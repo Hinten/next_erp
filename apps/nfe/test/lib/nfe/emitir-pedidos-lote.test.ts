@@ -1076,6 +1076,52 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(freshGenCall?.[0].cNF).toBeUndefined();
   });
 
+  it('#1733: a member refused for a cadastro irregularity (302 — a rejection since NT 2024.001) rides the lote with its SAME número', async () => {
+    // Since NT 2024.001 (produção 2024-09-16) mod 55 has no denial: 302 is a
+    // rejection, the número is free, and the regularized pedido is resent with
+    // the same número — never skipped as bloqueada.
+    const events: string[] = [];
+    const irregular = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.rejeitada,
+      chave: '35260514200166000187550010000000007100000009',
+      idLote: '3',
+      cStat: '302',
+      xMotivo: 'Rejeicao: Irregularidade fiscal do destinatario',
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: '<signed/>',
+    };
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-302', filialId: 'F-1', existingNFe: irregular },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-302']);
+
+    const reemitida = out.results.find((r) => r.pedidoId === 'PED-302')!;
+    expect('reused' in reemitida ? reemitida.reused : null).toBe(false);
+    expect(nnfOf(reemitida)).toBe('000000007');
+    // Both members rode the one lote.
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
+    expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
+    // Regenerated with the cNF of its chave, so the chave is the one refused.
+    const genCall = vi.mocked(generateNFe).mock.calls.find((c) => c[0]?.numeracao === 7);
+    expect(genCall?.[0].cNF).toBe(irregular.chave.slice(35, 43));
+    // Only PED-FRESH takes a new número: 0 → 1.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+  });
+
   it('#396: a crash-window member rides the lote with its STORED bytes — no regenerate', async () => {
     const events: string[] = [];
     const STORED_XML =
