@@ -35,6 +35,13 @@ import type { PedidoDevolucaoDataPort } from './port';
  * claimed at most once, which is also what keeps VC02-20 (1072: the same chave
  * and `nItem` twice) from ever firing on a seeded devolução.
  *
+ * ⚠️ TWO passes, never one: every item whose price matches a free line of its
+ * product claims it FIRST, and only then do the rest take the free lines in line
+ * order. In a single pass an earlier line whose price matches nothing would take
+ * the lowest free line — the very line a LATER item matches exactly — and push
+ * that item onto the wrong one (det 1 @ 10 + det 2 @ 20, devolução 15 then 10 →
+ * the 10 referenced det 2). Nothing downstream would notice.
+ *
  * A line that cannot be placed keeps the chave with `nItem: null`, never a
  * guessed number: SEFAZ does not check that a referenced `nItem` exists in the
  * referenced nota, so a wrong one would be authorized silently, while a null
@@ -110,14 +117,22 @@ function codigosDoItem(item: ItemParaReferenciar): string[] {
 const chaveDaLinha = (chave: string, nItem: number): string => `${chave}#${nItem}`;
 
 /**
- * The origin line `item` returns within ONE nota, or `null` when the nota does
- * not carry its product or every line of it is already claimed.
+ * Which free lines a pass may take: only those at the item's OWN price (pass
+ * 1), or any of its product (pass 2, line order). See the module header.
+ */
+type Passada = 'mesmoPreco' | 'ordemDasLinhas';
+
+/**
+ * The origin line `item` returns within ONE nota under `passada`, or `null` when
+ * the nota does not carry its product, every line of it is already claimed, or
+ * (pass 1) none of the free ones has the item's price.
  */
 function linhaNaNota(
   item: ItemParaReferenciar,
   itensDaNota: readonly ItemDoProc[],
   chave: string,
   reivindicadas: ReadonlySet<string>,
+  passada: Passada,
 ): number | null {
   // The FIRST code with any line in the nota decides the product — a gtin must
   // not reach another line merely because the sku's lines are all taken.
@@ -127,37 +142,80 @@ function linhaNaNota(
     const livres = doProduto.filter((d) => !reivindicadas.has(chaveDaLinha(chave, d.nItem)));
     if (livres.length === 0) return null;
     const noPreco = livres.filter((d) => mesmoPrecoEmReais(d.vUnCom, item.precoDeVenda));
+    if (passada === 'mesmoPreco' && noPreco.length === 0) return null;
     const candidatas = noPreco.length > 0 ? noPreco : livres;
     return Math.min(...candidatas.map((d) => d.nItem));
   }
   return null;
 }
 
-/** The reference for one item over an origin's notas (latest first), claiming the line. */
-function referenciaNasNotas(
+/** The line `item` claims over its notas (latest first) under `passada`, or `null`. */
+function linhaNasNotas(
   item: ItemParaReferenciar,
   notas: readonly NotaDeOrigem[],
   reivindicadas: Set<string>,
+  passada: Passada,
 ): DfeReferenciadoItem | null {
-  const [maisRecente] = notas;
-  if (maisRecente === undefined) return null;
   for (const nota of notas) {
     // An unreadable nota MAY be the one carrying this product: matching an
     // older nota past it would be a guess, so the item stays unplaced.
     if (nota.itens === null) break;
-    const nItem = linhaNaNota(item, nota.itens, nota.chave, reivindicadas);
+    const nItem = linhaNaNota(item, nota.itens, nota.chave, reivindicadas, passada);
     if (nItem !== null) {
       reivindicadas.add(chaveDaLinha(nota.chave, nItem));
       return { chaveAcesso: nota.chave, nItem };
     }
   }
-  return { chaveAcesso: maisRecente.chave, nItem: null };
+  return null;
+}
+
+/** One item to place, the (non-empty, latest-first) notas it may reference, and its slot in `out`. */
+interface ItemAColocar {
+  readonly item: ItemParaReferenciar;
+  readonly notas: readonly NotaDeOrigem[];
+  readonly indice: number;
+}
+
+/**
+ * Place `aColocar` — already in the pedido's line order — in the module
+ * header's TWO passes, writing each reference into `out[indice]` and claiming
+ * its line in `reivindicadas`. An item neither pass places keeps its latest
+ * nota's chave with `nItem: null`.
+ */
+function colocarEmDuasPassadas(
+  aColocar: readonly ItemAColocar[],
+  reivindicadas: Set<string>,
+  out: Array<DfeReferenciadoItem | null>,
+): void {
+  const pendentes: ItemAColocar[] = [];
+  for (const a of aColocar) {
+    const ref = linhaNasNotas(a.item, a.notas, reivindicadas, 'mesmoPreco');
+    if (ref !== null) out[a.indice] = ref;
+    else pendentes.push(a);
+  }
+  for (const a of pendentes) {
+    out[a.indice] = linhaNasNotas(a.item, a.notas, reivindicadas, 'ordemDasLinhas') ?? {
+      chaveAcesso: a.notas[0]!.chave,
+      nItem: null,
+    };
+  }
+}
+
+/** `itens` with their input index, in the pedido's line order (`naOrdemDoPedido`). */
+function emOrdemDasLinhas<T extends ItemParaReferenciar>(
+  itens: readonly T[],
+): Array<{ item: T; indice: number }> {
+  return naOrdemDoPedido(
+    itens.map((item, indice) => ({ item, indice })),
+    ({ item }) => item.ordem,
+  );
 }
 
 /**
  * The `dfeReferenciado` of each devolução item returned from ONE origin pedido,
  * aligned with `itens` (the input order). Lines are claimed in the pedido's
- * line order (`naOrdemDoPedido`), so "the k-th line" means the k-th by `ordem`.
+ * line order (`naOrdemDoPedido`), so "the k-th line" means the k-th by `ordem`
+ * — after every exact-price match has been placed (the two passes above).
  * No approved NF-e → every entry is `null`.
  */
 export function referenciarItensDaDevolucao(
@@ -165,13 +223,12 @@ export function referenciarItensDaDevolucao(
   notas: readonly NotaDeOrigem[],
 ): Array<DfeReferenciadoItem | null> {
   const out: Array<DfeReferenciadoItem | null> = itens.map(() => null);
-  const reivindicadas = new Set<string>();
-  const emOrdem = naOrdemDoPedido(
-    itens.map((item, indice) => ({ item, indice })),
-    ({ item }) => item.ordem,
+  if (notas.length === 0) return out;
+  colocarEmDuasPassadas(
+    emOrdemDasLinhas(itens).map(({ item, indice }) => ({ item, notas, indice })),
+    new Set<string>(),
+    out,
   );
-  for (const { item, indice } of emOrdem)
-    out[indice] = referenciaNasNotas(item, notas, reivindicadas);
   return out;
 }
 
@@ -216,23 +273,24 @@ export function preencherReferenciasPendentes(
   }
   const origens = [...notasPorOrigem.values()].filter((notas) => notas.length > 0);
   const out = itens.map((item) => item.dfeReferenciado ?? null);
-  const emOrdem = naOrdemDoPedido(
-    itens.map((item, indice) => ({ item, indice })),
-    ({ item }) => item.ordem,
-  );
-  for (const { item, indice } of emOrdem) {
+  // First decide WHERE each pending item may look (claiming nothing), then
+  // place them all together in the module header's two passes.
+  const aColocar: ItemAColocar[] = [];
+  for (const { item, indice } of emOrdemDasLinhas(itens)) {
     const atual = item.dfeReferenciado ?? null;
     if (referenciaCompleta(atual)) continue;
 
     if (atual != null && atual.chaveAcesso !== '') {
       const nota = origens.flat().find((n) => n.chave === atual.chaveAcesso);
-      if (nota !== undefined) out[indice] = referenciaNasNotas(item, [nota], reivindicadas);
+      if (nota !== undefined) aColocar.push({ item, notas: [nota], indice });
       continue;
     }
 
     const comProduto = origens.filter((notas) =>
       notas.some(
-        (n) => n.itens !== null && linhaNaNota(item, n.itens, n.chave, new Set()) !== null,
+        (n) =>
+          n.itens !== null &&
+          linhaNaNota(item, n.itens, n.chave, new Set(), 'ordemDasLinhas') !== null,
       ),
     );
     const [unica] = comProduto;
@@ -242,10 +300,11 @@ export function preencherReferenciasPendentes(
       (notas) => notas !== unica && notas.some((n) => n.itens === null),
     );
     if (comProduto.length === 1 && unica !== undefined && !outraIlegivel) {
-      out[indice] = referenciaNasNotas(item, unica, reivindicadas);
+      aColocar.push({ item, notas: unica, indice });
     } else if (comProduto.length === 0 && origens.length === 1) {
-      out[indice] = referenciaNasNotas(item, origens[0]!, reivindicadas);
+      aColocar.push({ item, notas: origens[0]!, indice });
     }
   }
+  colocarEmDuasPassadas(aColocar, reivindicadas, out);
   return out;
 }
