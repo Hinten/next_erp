@@ -493,9 +493,11 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // we emit through whichever carrier the `int_frete` mapa routes it to. Enviali
     // (LI's optional paid freight service) is not used.
     etiqueta: 'emit',
-    // INBOUND only: envios[].objeto read on GET /v1/pedido/{pedido_id}. The
-    // OUTBOUND write-back (PUT /v1/pedido_envio/{pedido_envio_id},
-    // PUT /v1/situacao/pedido/{pedido_id}) has no caps field.
+    // INBOUND only: envios[].objeto read on GET /v1/pedido/{pedido_id}.
+    // ⚠️ 'pull' does NOT mean "nothing to send": with etiqueta 'emit' the tracking
+    // code is OURS, and master-plan step 7 writes it back
+    // (PUT /v1/pedido_envio/{pedido_envio_id}, then PUT /v1/situacao/pedido/{pedido_id})
+    // — an outbound flow this caps type has no field for.
     rastreio: 'pull',
     // POST/PUT /v1/integration/pedido/nf (spec tag Nota Fiscal). A provider FACT;
     // the plan deliberately does not build it (decision D8).
