@@ -951,6 +951,9 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     expect(procWrite?.data.xml_nfe_proc).toContain('<nfeProc ');
     // #128 — the proc write also retires the anchor the pós-EPEC resend used.
     expect(procWrite?.data.xml_assinado).toBeNull();
+    // #1743 — `p → a` stamps the HOME authorization's instant (protNFe
+    // dhRecbto 11:00-03:00), never the EPEC registration's.
+    expect(procWrite?.data.data_autorizacao).toBe(Date.UTC(2026, 4, 20, 14, 0, 0));
   });
 
   it('pós-EPEC transmits the stored bytes even when the LIVE imposto no longer builds (#506)', async () => {
@@ -2919,6 +2922,8 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     // there is no window where neither field holds it.
     expect(finalWrite?.merge).toBe(true);
     expect(finalWrite?.data.xml_assinado).toBeNull();
+    // #1743 — the same write stamps the protocol's dhRecbto (11:00-03:00), in ms.
+    expect(finalWrite?.data.data_autorizacao).toBe(Date.UTC(2026, 4, 20, 14, 0, 0));
   });
 
   it('builds xml_nfe_proc when cStat=100 is reached via consReci recovery (204 → 100)', async () => {
@@ -3631,6 +3636,8 @@ describe('emitirPedido — #396 crash-window stored bytes + digest guard', () =>
     // The proc embeds the ORIGINAL stored bytes (the ones SEFAZ authorized).
     expect(procWrite?.data.xml_nfe_proc).toContain('…original…');
     expect(procWrite?.data.xml_assinado).toBeNull(); // anchor swapped for the proc (#128)
+    // #1743 — the consSit protocol's dhRecbto (10:30-03:00), in ms.
+    expect(procWrite?.data.data_autorizacao).toBe(Date.UTC(2026, 4, 20, 13, 30, 0));
   });
 
   it('204 → recovery with digest MISMATCH persists aprovada WITHOUT proc, keeping xml_assinado', async () => {
@@ -3655,6 +3662,12 @@ describe('emitirPedido — #396 crash-window stored bytes + digest guard', () =>
       (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.xml_assinado === null,
     );
     expect(clearing).toHaveLength(0);
+    // #1743 — no proc, no stamp: `data_autorizacao` is derived from the proc
+    // alone, so an aprovada doc without one keeps it unset (as Flutter did).
+    const stamping = writes.filter(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.data_autorizacao != null,
+    );
+    expect(stamping).toHaveLength(0);
   });
 
   it('direct sync 100 with digVal present but NO local DigestValue still builds the proc (unknown never blocks)', async () => {
@@ -4168,6 +4181,8 @@ describe('emitirPedido — sync reply without our protNFe and without infRec (#1
       expect(r.merges).toHaveLength(1);
       expect(Object.keys(r.merges[0]!.data).sort()).toEqual([
         'cStat',
+        // #1743 — derived from the proc in the same merge (its protocol's dhRecbto).
+        'data_autorizacao',
         'estado',
         'proximaConsultaEm',
         'retries',

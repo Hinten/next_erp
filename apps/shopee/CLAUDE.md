@@ -228,8 +228,9 @@ a page of the 3-day queue irreversibly.
 - `app/api/marketplace/shopee/enviar-nfe/route.ts` — the NF-e re-drive,
   `PERM.pedido.write` (the only Shopee route not on `integracao.*`): strict
   `{ pedidoId, nfeId? }`, enqueue only, 202; 409 `SHOPEE_NFE_NAO_ELEGIVEL`,
-  404, 503 on the valve; a delay only for a KNOWN `data_autorizacao` — only
-  the migrated corpus has one; this ERP's NF-e store `null`, so a fresh one
+  404, 503 on the valve; a delay only for a KNOWN `data_autorizacao` — the
+  migrated corpus has one, and since #1743 so does every note `apps/nfe`
+  authorizes (the protocol's `dhRecbto`, stamped with the proc); an unknown one
   uploads at once and Shopee's case 5 (the #5 re-enqueue) covers it. The
   ladder is `nfe/reenvioNfe.ts`, shared with the label route.
 - `lib/shopee/etiqueta/` + `app/api/marketplace/shopee/etiqueta/route.ts` —

@@ -29,6 +29,7 @@ import {
   type PersistGuard,
   persistPatch,
   persistPatchUnlessFinal,
+  swapAnchorForProc,
 } from '../../../lib/nfe/orchestrator/audit';
 import { NFeDocAusenteError, NFeOrchestratorError } from '../../../lib/nfe/orchestrator/errors';
 
@@ -150,6 +151,27 @@ describe('persistPatchUnlessFinal', () => {
     const { ultima_modificacao: _p, ...plainRest } = plainData;
     expect(guardedRest).toEqual(plainRest);
     expect(plainSet.mock.calls[0]![1]).toEqual({ merge: true });
+  });
+
+  it("carries the proc's data_autorizacao (ms) into the merge, and leaves the key out when absent (#1743)", async () => {
+    const proc = (infProt: string) =>
+      `<nfeProc><NFe><infNFe/></NFe><protNFe><infProt>${infProt}</infProt></protNFe></nfeProc>`;
+
+    const comData = fakeFs({ estado: ESTADO_NFE.aguardandoResposta, cStat: '103' });
+    await persistPatchUnlessFinal(
+      comData.fs,
+      NFE_REF,
+      patchOf(),
+      swapAnchorForProc(proc('<dhRecbto>2026-05-20T10:30:00-03:00</dhRecbto>')),
+    );
+    const escrito = comData.txSet.mock.calls[0]![1] as Record<string, unknown>;
+    expect(escrito.data_autorizacao).toBe(Date.UTC(2026, 4, 20, 13, 30, 0));
+
+    // A merge without the key keeps whatever the doc stores; `null` would blank it.
+    const semData = fakeFs({ estado: ESTADO_NFE.aguardandoResposta, cStat: '103' });
+    await persistPatchUnlessFinal(semData.fs, NFE_REF, patchOf(), swapAnchorForProc(proc('')));
+    const escritoSem = semData.txSet.mock.calls[0]![1] as Record<string, unknown>;
+    expect('data_autorizacao' in escritoSem).toBe(false);
   });
 });
 

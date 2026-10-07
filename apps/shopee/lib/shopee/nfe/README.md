@@ -838,12 +838,14 @@ This folder writes three things, and each one names its race tier.
   option entirely. The function reads a `null` or non-finite instant as the
   full window (the safe default for a caller that waits once), but a re-drive
   keyed on that answer would wait, or refuse, on every run, so an unknown
-  instant waits nothing there. ⚠️ Unknown is the post-cutover NORM, not the
-  corner (review 2, S1-1): only the legacy app wrote `data_autorizacao`, and
-  this ERP's NF-e app writes it as `null` and never fills it. The remainder
-  therefore applies to the migrated corpus; a re-drive of a fresh
-  post-cutover note uploads at once, and Shopee's case 5 plus the
-  `[600, 1800, 3600]` ladder below is what covers it.
+  instant waits nothing there. The instant is known for the migrated corpus
+  (the legacy app wrote it) and, since #1743, for every note this ERP's NF-e
+  app authorizes: the approval write stamps the protocol's `dhRecbto` in ms,
+  in the same patch as the proc. It stays unknown only for a note approved
+  before that deploy, or one whose proc carries no readable `dhRecbto` (this
+  review found the gap as S1-1, review 2). A re-drive of such a note uploads
+  at once, and Shopee's case 5 plus the `[600, 1800, 3600]` ladder below is
+  what covers it.
 - **`[600, 1800, 3600]`.** Shopee's case 5 ("not valid, or less than five
   minutes old") is a DELAYED SELF re-enqueue that spends no queue attempt,
   since waiting for SERPRO is not a transport failure. It escalates because
@@ -889,9 +891,10 @@ re-drive, both starting from a pedido, both picking the slot with
   index). A document is eligible when the LEVEL predicate says ready and its
   proc is not a legible non-sale note. Several eligible ⇒ the latest
   `data_autorizacao` wins (read in ms through the tolerant reader), and a tie
-  goes to the lowest id. Only the migrated corpus carries that date: a
-  post-cutover NF-e stores `null`, which counts as the oldest, so between two
-  of those the lowest id decides. None ⇒ the reason of the document that got
+  goes to the lowest id. The migrated corpus carries that date, and so does
+  every note this ERP's NF-e app authorizes since #1743. A document without it
+  (approved before that deploy, or a proc with no readable `dhRecbto`) counts
+  as the oldest, so between two of those the lowest id decides. None ⇒ the reason of the document that got
   FURTHEST (`nfe-nao-e-de-venda` over `tpamb-homologacao` over
   `xml-ausente`), else `sem-nfe-aprovada`. A cancelled slot is `nao-aprovada`
   to the predicate, so it is never chosen over its replacement.
@@ -904,9 +907,10 @@ re-drive, both starting from a pedido, both picking the slot with
   never calls Shopee. Since step 15 that ladder is `reenvioNfe.ts`, which the
   label route also runs, for a caller with `PERM.pedido.write`, when Shopee
   holds a package for its invoice. The delay is the SERPRO remainder only when
-  `data_autorizacao` is KNOWN, which only the migrated corpus is; an unknown
-  instant (every post-cutover NF-e stores `null`) never holds a re-drive, and
-  an early upload of a fresh one is Shopee's case 5, the #5 re-enqueue. It
+  `data_autorizacao` is KNOWN, as it is for the migrated corpus and, since
+  #1743, for every note this ERP's NF-e app authorizes; an unknown instant
+  (`null`, absent or unreadable) never holds a re-drive, and an early upload
+  of such a note is Shopee's case 5, the #5 re-enqueue. It
   answers 202 (with `enfileirado`, the two ids and `atrasoSegundos`) for EVERY
   eligible document. Even when Shopee already holds
   our key, the task's pre-read answers `ja-enviado`, and it closes any open
