@@ -4,6 +4,7 @@ import {
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
   estadoNFeSchema,
+  nfeImprimivel,
   nfeMeta,
   nfeSchema,
 } from './nfe';
@@ -169,5 +170,23 @@ describe('nfeMeta', () => {
     const entry = pedidoMeta.cascade?.find((c) => c.path === nfeMeta.collectionPath);
     expect(entry).toBeDefined();
     expect(entry?.onDelete).toBe('cascade');
+  });
+});
+
+describe('nfeImprimivel (#1675)', () => {
+  const PROC = '<procEventoNFe>…EPEC…</procEventoNFe>';
+
+  it.each([
+    [ESTADO_NFE.aprovada, null, true],
+    [ESTADO_NFE.epecAprovado, PROC, true],
+    // an EPEC registered by an earlier send whose protocol was never recovered
+    [ESTADO_NFE.epecAprovado, null, false],
+    // the proc alone never makes a doc printable
+    [ESTADO_NFE.enviando, PROC, false],
+    [ESTADO_NFE.rejeitada, PROC, false],
+    [ESTADO_NFE.cancelada, null, false],
+    [ESTADO_NFE.error, null, false],
+  ] as const)('estado %s · xml_epec_proc %s → %s', (estado, xml_epec_proc, esperado) => {
+    expect(nfeImprimivel({ estado, xml_epec_proc })).toBe(esperado);
   });
 });

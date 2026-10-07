@@ -504,6 +504,20 @@ writes were last-writer-wins. Now:
 - **The pós-EPEC claim.** `transmitirPosEpec` stamps its fresh idLote + the
   reservation through `reivindicarEnvio` before sending; an operator emit and the
   sweep can no longer both transmit one `'p'` doc.
+- **A duplicate EPEC (`disposicaoDoEpec`, epec.ts).** 485 (duplicidade de
+  numeração do EPEC, NT 2014.001 rule 3P12-10) and 573 (duplicidade de evento,
+  3P15-10) mean an EPEC is ALREADY registered. On a #396 anchor's STORED bytes it
+  is ours — an earlier send whose reply was lost — so the doc becomes `'p'`
+  WITHOUT `xml_epec_proc` (SEFAZ's cStat kept, the reason appended), never
+  `rejeitada`: a `rejeitada` regenerates over the bytes the EPEC summarises and
+  the pós-EPEC transmission then answers 467 (an orphaned EPEC). Its DANFE waits
+  for the pós-EPEC authorization (`nfeImprimivel` in `@delfrance/schemas`, which
+  apps/web and the DANFE route agree on); recovering the protocol itself is
+  #314. On FRESH bytes the EPEC on record describes other data — `error`, naming
+  the manual conciliation. A superseded run's registered (135/136) reply fills in
+  that protocol, fill-only (`completarProtocoloEpec`). The manual verify and the
+  `consultarPedido` CLI never consult a `'p'` doc: the home SEFAZ answers 217
+  until the Ambiente Nacional shares the EPEC.
 ⚠️ Cross-slot overlaps (a re-emit after a contingency-mode switch lands in
 another `s1`/`s4`/`s6`/`s7` slot) are a separate follow-up (#1806), and so is the
 sweep consulting an in-flight EPEC anchor at the home SEFAZ (#1807). Deploy the App

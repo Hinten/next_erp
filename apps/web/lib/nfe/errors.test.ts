@@ -131,6 +131,18 @@ describe('notificationForNFeResult', () => {
     expect(n.message).toContain('Aguarde alguns minutos');
   });
 
+  it.each(['485', '573'])(
+    'estado=epecAprovado + cStat %s (already registered, protocol not recovered — #1675) → yellow, the DANFE waits for the transmission',
+    (cStat) => {
+      const n = notificationForNFeResult(
+        emitResult({ estado: ESTADO_NFE.epecAprovado, cStat, xMotivo: 'Duplicidade', nRec: null }),
+      );
+      expect(n.color).toBe('yellow');
+      expect(n.title).toBe('EPEC já registrado — protocolo não recuperado');
+      expect(n.message).toContain('DANFE só sai após a transmissão');
+    },
+  );
+
   it('reused=true on an aprovada doc → yellow "já emitida" toast (dedup skip), overrides the estado branch', () => {
     const n = notificationForNFeResult(emitResult({ reused: true }));
     expect(n.color).toBe('yellow');

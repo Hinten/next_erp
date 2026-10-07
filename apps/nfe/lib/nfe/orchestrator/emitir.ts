@@ -1271,6 +1271,7 @@ export async function emitirPedido(
       chave,
       signedXml,
       idLote,
+      storedBytes: captured.storedBytes,
     });
   }
 
@@ -1854,6 +1855,10 @@ export async function processChunk(
   // stamped the shared idLote inside the allocation tx).
   toSend.push(...storedMembers);
   if (toSend.length === 0) return txResults;
+  // nfev4 paths of the #396 crash-window members — sent with their STORED
+  // bytes, so a refusal is not conclusive for them (4d and 4e), and an EPEC
+  // 485/573 means "already registered" (#1675, disposicaoDoEpec).
+  const storedPaths: ReadonlySet<string> = new Set(storedMembers.map((m) => m.prep.nfeRef.path));
 
   // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente
   // Nacional (one evento per envEvento in v1). Failures of a known class
@@ -1870,6 +1875,7 @@ export async function processChunk(
           chave: s.chave,
           signedXml: s.signedXml,
           idLote: sharedIdLote,
+          storedBytes: storedPaths.has(s.prep.nfeRef.path),
         }),
       ),
     );
@@ -1901,10 +1907,6 @@ export async function processChunk(
       `idLote=${sharedIdLote} count=${toSend.length} indSinc=${indSinc} ` +
       `retCStat=${retEnvi.cStat}`,
   );
-  // nfev4 paths of the #396 crash-window members — sent with their STORED
-  // bytes, so a refusal of this lote is not conclusive for them (4d and 4e).
-  const storedPaths: ReadonlySet<string> = new Set(storedMembers.map((m) => m.prep.nfeRef.path));
-
   // 4d. Async chunk (indSinc='0'): SEFAZ returns cStat=103 + nRec. Hand off
   //     IMMEDIATELY — audit the send, persist each doc aguardandoResposta with
   //     nRec + proximaConsultaEm (seeded by SEFAZ's tMed), enqueue ONE Cloud

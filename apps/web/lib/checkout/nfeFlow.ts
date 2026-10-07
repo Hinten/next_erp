@@ -1,5 +1,5 @@
 import { getDocs, type Firestore } from 'firebase/firestore';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, nfeImprimivel } from '@delfrance/schemas';
 import {
   NFeHttpError,
   NFeNetworkError,
@@ -23,7 +23,11 @@ import type { printJob } from '../print-agent/printJob';
  * approval needs no re-fetch.
  */
 
-/** The latest printable (aprovada / EPEC-aprovada) NF-e of a pedido, or null. */
+/**
+ * The latest printable NF-e of a pedido (`nfeImprimivel` — aprovada, or
+ * EPEC-aprovada WITH its EPEC protocol), or null. An EPEC whose protocol was
+ * never recovered (#1675) is not printable: apps/nfe refuses its DANFE.
+ */
 export async function resolveAprovadaNfe(
   db: Firestore,
   pedidoId: string,
@@ -32,10 +36,7 @@ export async function resolveAprovadaNfe(
   const authorized = snap.docs
     .filter((d) => {
       const n = d.data();
-      return (
-        (n.estado === ESTADO_NFE.aprovada || n.estado === ESTADO_NFE.epecAprovado) &&
-        n.chave != null
-      );
+      return nfeImprimivel(n) && n.chave != null;
     })
     .sort((a, b) => (b.data().ultima_modificacao ?? 0) - (a.data().ultima_modificacao ?? 0));
   const first = authorized[0];
@@ -78,8 +79,17 @@ export async function ensureNfeAprovada(
 
   try {
     const result = await client.emitir(pedidoId);
-    if (result.estado === ESTADO_NFE.aprovada || result.estado === ESTADO_NFE.epecAprovado) {
+    if (result.estado === ESTADO_NFE.aprovada) {
       return { ok: true, nfeId: result.nfeId, chave: result.chave, reused: result.reused ?? false };
+    }
+    if (result.estado === ESTADO_NFE.epecAprovado) {
+      // Printable only with its EPEC protocol, which the result does not carry:
+      // re-read the doc. An EPEC our earlier send registered but whose protocol
+      // was never recovered (#1675) cannot print yet — say so instead of
+      // sending the operator to a DANFE the server refuses.
+      const imprimivel = await resolveAprovadaNfe(db, pedidoId);
+      if (imprimivel !== null) return { ok: true, ...imprimivel, reused: result.reused ?? false };
+      return { ok: false, pending: false, notification: notificationForNFeResult(result) };
     }
     if (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta) {
       return { ok: false, pending: true };

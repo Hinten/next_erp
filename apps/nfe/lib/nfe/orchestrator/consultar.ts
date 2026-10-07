@@ -496,6 +496,13 @@ export async function consultarPedido(
     return existingToEmitResult(pedidoId, nfeRef.id, nota);
   }
 
+  // An EPEC-approved doc is never consulted (#1675): the home SEFAZ answers 217
+  // until the Ambiente Nacional shares the EPEC, and a 217 would write
+  // `rejeitada` over a registered EPEC. Its recovery is the pós-EPEC transmission.
+  if (nota.estado === ESTADO_NFE.epecAprovado) {
+    return existingToEmitResult(pedidoId, nfeRef.id, nota);
+  }
+
   // A send is in progress on the doc (#1675) — a consult now would double up on
   // a live SOAP call (or a paced retry), and its write would be refused anyway:
   // report the doc as it is, with no SEFAZ call.

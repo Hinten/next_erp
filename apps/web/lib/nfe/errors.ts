@@ -285,6 +285,17 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
     };
   }
   if (result.estado === ESTADO_NFE.epecAprovado) {
+    // 485/573 on a resend of the same bytes (#1675): the EPEC was registered by
+    // an earlier send whose reply was lost — no protocol to print a DANFE from.
+    if (result.cStat === '485' || result.cStat === '573') {
+      return {
+        title: 'EPEC já registrado — protocolo não recuperado',
+        message:
+          `cStat=${result.cStat}: ${result.xMotivo} — a DANFE só sai após a transmissão da ` +
+          'NF-e completa, quando a SEFAZ normalizar.',
+        color: 'yellow',
+      };
+    }
     // 468 — the pós-EPEC transmission ran but the home SEFAZ hasn't pulled
     // the EPEC from the Ambiente Nacional yet. The doc stays 'p'; the
     // operator just waits a few minutes and emits again.

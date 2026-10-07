@@ -41,7 +41,7 @@ import {
   isEstadoFinalNFe,
   type TRetConsReciNFe,
 } from '@delfrance/integrations-nfe';
-import type { EstadoNFe } from '@delfrance/schemas';
+import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
@@ -172,6 +172,27 @@ export async function verificarEnviNfeMsgs(
         estadoNovo: nota.estado,
         cStat: nota.cStat,
         xMotivo: nota.xMotivo,
+        error: null,
+      });
+      continue;
+    }
+
+    // An EPEC-approved doc is never consulted here (#1675): a consSit goes to
+    // the HOME SEFAZ, which answers 217 until the Ambiente Nacional shares the
+    // EPEC with it (and for good if the EPEC's protocol was never recovered),
+    // and a 217 would write `rejeitada` over a registered EPEC — whose next
+    // emit regenerates over the bytes it summarises. Its recovery path is the
+    // pós-EPEC transmission (an emit, or the sweep once contingency is off).
+    if (nota.estado === ESTADO_NFE.epecAprovado) {
+      results.push({
+        chave,
+        status: 'sem-mudanca',
+        estadoAnterior: nota.estado,
+        estadoNovo: nota.estado,
+        cStat: nota.cStat,
+        xMotivo:
+          'EPEC registrado — aguardando a transmissão da NF-e completa (pós-EPEC); ' +
+          'nenhuma consulta feita',
         error: null,
       });
       continue;

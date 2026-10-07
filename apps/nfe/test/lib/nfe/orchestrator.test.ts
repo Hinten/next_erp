@@ -56,6 +56,7 @@ import {
 } from '@delfrance/schemas';
 import { dateToMicros, nowMicros } from '@delfrance/core/datetime';
 
+import { EPEC_A_CONCILIAR, EPEC_JA_REGISTRADO_SUFIXO } from '../../../lib/nfe/orchestrator/epec';
 import {
   CONSUMO_INDEVIDO_ESPERA_MS,
   consultarPedido,
@@ -906,20 +907,104 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     expect(finalWrite.data.xml_epec_proc).toContain('procEventoNFe');
   });
 
-  it('cStat 485 (duplicidade de EPEC) → rejeitada, no xml_epec_proc (auto-recovery is #81)', async () => {
-    const events: string[] = [];
-    const { fs, writes } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
-    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
-    vi.mocked(enviarEpec).mockResolvedValue(epecResult('485') as never);
+  it.each(['485', '573'])(
+    'FRESH bytes answered %s (an EPEC with OTHER data already holds the número/chave) → error naming the conciliation, never rejeitada, no xml_epec_proc (#1675)',
+    async (cStat) => {
+      const events: string[] = [];
+      const { fs, writes } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+      vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+      vi.mocked(enviarEpec).mockResolvedValue(epecResult(cStat) as never);
+
+      const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(result).toMatchObject({ estado: ESTADO_NFE.error, cStat, reused: false });
+      expect(result.xMotivo).toContain(EPEC_A_CONCILIAR);
+      const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
+      const finalWrite = docWrites[docWrites.length - 1]!;
+      expect(finalWrite.data.estado).toBe(ESTADO_NFE.error);
+      expect(finalWrite.data).not.toHaveProperty('xml_epec_proc');
+    },
+  );
+
+  /** A #396 EPEC anchor: tpEmis 4, the STORED signed bytes, its evento reply lost. */
+  function ancoraEpec(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      numeracao: 1,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.enviando,
+      chave: CHAVE,
+      idLote: '7',
+      xml_assinado: EPEC_SIGNED_NFE,
+      xml_epec_proc: null,
+      nRec: null,
+      retries: 0,
+      cStat: null,
+      xMotivo: null,
+      proximaConsultaEm: null,
+      ...over,
+    };
+  }
+
+  it.each(['485', '573'])(
+    'STORED bytes answered %s → the EPEC is ALREADY registered: estado p WITHOUT xml_epec_proc, SEFAZ’s cStat kept + the explanation (#1675)',
+    async (cStat) => {
+      const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+      docs['pedidos/PED-1/nfev4/s4'] = ancoraEpec();
+      vi.mocked(enviarEpec).mockResolvedValue(epecResult(cStat) as never);
+
+      const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      // The stored bytes went out again — never regenerated.
+      expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ estado: ESTADO_NFE.epecAprovado, cStat, reused: false });
+      expect(result.xMotivo).toContain(EPEC_JA_REGISTRADO_SUFIXO);
+      expect(docs['pedidos/PED-1/nfev4/s4']).toMatchObject({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat,
+        xml_epec_proc: null,
+        xml_assinado: EPEC_SIGNED_NFE,
+        proximaConsultaEm: null,
+      });
+    },
+  );
+
+  it('near-miss: STORED bytes answered any OTHER rejection (142 — EPEC blocked) → rejeitada, as before', async () => {
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = ancoraEpec();
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('142') as never);
 
     const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
 
-    expect(result.estado).toBe(ESTADO_NFE.rejeitada);
-    expect(result.cStat).toBe('485');
-    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
-    const finalWrite = docWrites[docWrites.length - 1]!;
-    expect(finalWrite.data.estado).toBe(ESTADO_NFE.rejeitada);
-    expect(finalWrite.data).not.toHaveProperty('xml_epec_proc');
+    expect(result).toMatchObject({ estado: ESTADO_NFE.rejeitada, cStat: '142' });
+  });
+
+  it('#1675 — a superseded run’s 135 is refused, then its protocol fills in the 573 the newer run wrote: the doc ends p WITH the proc', async () => {
+    const S4 = 'pedidos/PED-1/nfev4/s4';
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    docs[S4] = ancoraEpec();
+    vi.mocked(enviarEpec)
+      .mockImplementationOnce(async () => {
+        // Run 1 outlives its reservation; run 2 resends the stored bytes and
+        // gets 573 (the EPEC run 1 is registering) before run 1's 135 lands.
+        docs[S4]!.proximaConsultaEm = nowMicros() - 1;
+        const segundo = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+        expect(segundo).toMatchObject({ estado: ESTADO_NFE.epecAprovado, cStat: '573' });
+        return epecResult('135') as never;
+      })
+      .mockResolvedValueOnce(epecResult('573') as never);
+
+    const primeiro = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(primeiro).toMatchObject({ estado: ESTADO_NFE.epecAprovado, cStat: '135', reused: true });
+    expect(docs[S4]).toMatchObject({
+      estado: ESTADO_NFE.epecAprovado,
+      cStat: '135',
+      xml_epec_proc: '<procEventoNFe>…EPEC…</procEventoNFe>',
+      // Still owned by run 2's claim — the heal touches nothing else.
+      idLote: '2',
+    });
+    expect(docs[S4]!.xMotivo).not.toContain(EPEC_JA_REGISTRADO_SUFIXO);
   });
 
   it('emit on an EPEC-approved doc → pós-EPEC: stored xml_assinado, SAME chave, home SEFAZ, fresh idLote', async () => {
@@ -2664,14 +2749,16 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
   it('routes the consulta of an EPEC doc (s4) to the HOME SEFAZ — tpEmis 4 authorizes at home', async () => {
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({ events });
+    // In flight (a pós-EPEC transmission answered 103): an EPEC-APPROVED doc is
+    // never consulted (#1675 — see the test below).
     docs['pedidos/PED-1/nfev4/s4'] = {
       numeracao: 9,
       serie: 1,
       tpEmis: 4,
-      estado: ESTADO_NFE.epecAprovado,
+      estado: ESTADO_NFE.aguardandoResposta,
       chave: CHAVE,
-      cStat: '136',
-      xMotivo: 'Evento registrado',
+      cStat: '103',
+      xMotivo: 'Lote recebido com sucesso',
       nRec: null,
       retries: 0,
       ultima_modificacao: '2026-06-11T09:00:00.000Z',
@@ -2685,6 +2772,31 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
       expect.objectContaining({ url: 'https://example/sefaz/cons' }),
       { chave: CHAVE },
     );
+  });
+
+  it('#1675 — an EPEC-APPROVED doc is never consulted: the home SEFAZ answers 217 until the AN shares the EPEC, and a 217 would free a número the EPEC holds', async () => {
+    const events: string[] = [];
+    const { fs, docs, writes } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s4'] = {
+      numeracao: 9,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.epecAprovado,
+      chave: CHAVE,
+      cStat: '573',
+      xMotivo: 'Rejeicao: Duplicidade de Evento',
+      nRec: null,
+      retries: 0,
+      xml_epec_proc: null,
+      ultima_modificacao: '2026-06-11T09:00:00.000Z',
+    };
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_217);
+
+    const result = await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result).toMatchObject({ nfeId: 's4', estado: ESTADO_NFE.epecAprovado, reused: true });
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
   });
 
   it('uses consultarLote when an EnviNFeMsg with nRec exists for the chave', async () => {

@@ -31,6 +31,7 @@ import {
   ENVIO_EM_CURSO_MS,
   envioEmCurso,
   envioEmCursoAte,
+  completarProtocoloEpec,
   gravarAncoraDoLote,
   type PersistGuard,
   persistPatch,
@@ -728,5 +729,60 @@ describe('gravarAncoraDoLote re-checks every premise 4a decided on (#1675 review
 
     expect(r).toEqual({ written: true });
     expect(txSet).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('completarProtocoloEpec — fill-only heal of a superseded EPEC run’s protocol (#1675)', () => {
+  const REGISTRO = {
+    xml_epec_proc: '<procEventoNFe>…</procEventoNFe>',
+    cStat: '135',
+    xMotivo: 'Evento registrado e vinculado a NF-e',
+    cStatsJaRegistrado: new Set(['485', '573']),
+  };
+  const SEM_PROTOCOLO = {
+    estado: ESTADO_NFE.epecAprovado,
+    chave: 'CHAVE-EPEC',
+    cStat: '573',
+    xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado…',
+    xml_epec_proc: null,
+    idLote: '9',
+  };
+
+  it('a p doc of this chave without its protocol → the proc + the registered cStat/xMotivo, nothing else', async () => {
+    const { fs, txSet } = fakeFs(SEM_PROTOCOLO);
+
+    const r = await completarProtocoloEpec(fs, NFE_REF, 'CHAVE-EPEC', REGISTRO);
+
+    expect(r).toMatchObject({ estado: ESTADO_NFE.epecAprovado, cStat: '135', idLote: '9' });
+    expect(txSet).toHaveBeenCalledTimes(1);
+    const [, data, opts] = txSet.mock.calls[0]! as [unknown, Record<string, unknown>, unknown];
+    expect(opts).toEqual({ merge: true });
+    expect(Object.keys(data).sort()).toEqual([
+      'cStat',
+      'ultima_modificacao',
+      'xMotivo',
+      'xml_epec_proc',
+    ]);
+  });
+
+  it('a later cStat (a pós-EPEC 468) is kept — only the proc is filled in', async () => {
+    const { fs, txSet } = fakeFs({ ...SEM_PROTOCOLO, cStat: '468' });
+
+    const r = await completarProtocoloEpec(fs, NFE_REF, 'CHAVE-EPEC', REGISTRO);
+
+    expect(r).toMatchObject({ cStat: '468' });
+    const [, data] = txSet.mock.calls[0]! as [unknown, Record<string, unknown>];
+    expect(Object.keys(data).sort()).toEqual(['ultima_modificacao', 'xml_epec_proc']);
+  });
+
+  it.each([
+    ['a protocol already there', { ...SEM_PROTOCOLO, xml_epec_proc: '<outro/>' }],
+    ['another chave', { ...SEM_PROTOCOLO, chave: 'OUTRA' }],
+    ['no longer p', { ...SEM_PROTOCOLO, estado: ESTADO_NFE.aprovada }],
+  ])('%s → nothing written, null', async (_label, vivo) => {
+    const { fs, txSet } = fakeFs(vivo);
+
+    expect(await completarProtocoloEpec(fs, NFE_REF, 'CHAVE-EPEC', REGISTRO)).toBeNull();
+    expect(txSet).not.toHaveBeenCalled();
   });
 });

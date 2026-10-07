@@ -76,6 +76,26 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 }
 
 /**
+ * `true` when a DANFE can be printed for this NF-e NOW, as an authorized
+ * document: an `aprovada` one, or an EPEC-approved (`'p'`) one that holds its
+ * EPEC protocol (`xml_epec_proc` — the plain-paper DANFE prints the EPEC
+ * protocolo box from it). ⚠️ An EPEC registered by an earlier send of the same
+ * bytes whose reply was lost (#1675 — the Ambiente Nacional answered 485/573 to
+ * the resend) is `'p'` WITHOUT that protocol: apps/nfe's DANFE route refuses it
+ * (422) until the pós-EPEC transmission authorizes the NF-e. Shared so the
+ * browser and the server agree on which `'p'` doc is printable. Pure.
+ *
+ * A `cancelada` NF-e still prints (with its CANCELADO overlay) wherever a
+ * caller allows it; this predicate answers "authorized and printable" only.
+ */
+export function nfeImprimivel(
+  nota: Pick<NotaFiscalEletronica, 'estado' | 'xml_epec_proc'>,
+): boolean {
+  if (nota.estado === ESTADO_NFE.aprovada) return true;
+  return nota.estado === ESTADO_NFE.epecAprovado && nota.xml_epec_proc != null;
+}
+
+/**
  * NF-e chave de acesso: 44 characters, of which positions 6–17 may be
  * alphanumeric. Shared source for every place that validates a chave string
  * (pedido `chNFeReferenciadas`, UI inputs, the generator's NFref guard).

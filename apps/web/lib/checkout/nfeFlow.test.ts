@@ -37,6 +37,16 @@ const nfeDoc = (id: string, estado: string, chave: string | null, mod: number) =
   data: () => ({ estado, chave, ultima_modificacao: mod }),
 });
 const setDocs = (docs: unknown[]) => getDocsMock.mockResolvedValue({ docs });
+/** An EPEC-approved doc — with its EPEC protocol, or without (#1675: registered, not recovered). */
+const epecDoc = (id: string, chave: string, mod: number, proc: string | null) => ({
+  id,
+  data: () => ({
+    estado: ESTADO_NFE.epecAprovado,
+    chave,
+    ultima_modificacao: mod,
+    xml_epec_proc: proc,
+  }),
+});
 const emitResult = (over: Record<string, unknown>) => ({
   nfeId: 'nfe-1',
   pedidoId: 'p1',
@@ -57,6 +67,13 @@ describe('resolveAprovadaNfe', () => {
     ]);
     expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'new', chave: 'A-NEW' });
   });
+  it('#1675 — an EPEC doc is printable only WITH its protocol', async () => {
+    setDocs([epecDoc('sem', 'E-SEM', 20, null)]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
+    setDocs([epecDoc('com', 'E-COM', 20, '<procEventoNFe/>')]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'com', chave: 'E-COM' });
+  });
+
   it('returns null with no authorized doc / no chave', async () => {
     setDocs([nfeDoc('a', ESTADO_NFE.aprovada, null, 1)]);
     expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
@@ -103,6 +120,34 @@ describe('ensureNfeAprovada', () => {
     expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
       ok: true,
       nfeId: 'nfe-1',
+      chave: 'CHV',
+      reused: false,
+    });
+  });
+
+  it('#1675 — an emit answered EPEC-approved WITHOUT a recovered protocol prints nothing: a yellow notice instead', async () => {
+    // Nothing printable before the emit, nor after it (the doc has no proc).
+    getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    client.emitir.mockResolvedValue(
+      emitResult({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '573',
+        xMotivo: 'Duplicidade de Evento',
+      }),
+    );
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('near-miss: an emit answered EPEC-approved whose doc HOLDS its protocol is ok to print', async () => {
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, '<procEventoNFe/>')] });
+    client.emitir.mockResolvedValue(emitResult({ estado: ESTADO_NFE.epecAprovado, cStat: '135' }));
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: true,
+      nfeId: 's4',
       chave: 'CHV',
       reused: false,
     });
