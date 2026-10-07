@@ -99,13 +99,14 @@ export async function GET(req: Request): Promise<NextResponse> {
   const op = await currentOperation(getAdminFirestore(), tabMediId, integracaoId);
   return NextResponse.json({
     operation:
-      op?.kind === 'sync'
+      op != null && op.status !== 'abandoned'
         ? {
             operationId: op.id,
             chartIndex: op.chartIndex,
             chart: op.desired,
             projected: op.projected,
             status: op.status,
+            kind: op.kind,
           }
         : null,
   });

@@ -50,10 +50,24 @@ is reconciled against a fresh chart read and must have one unique main-value
 match. A pending chart creation uses a receipt's known ID, or the operator's
 `recoveryChartId`; account ownership, chart identity and content are verified.
 When there is no unique confirmed result, keep the operation reserved and show
-`CHART_UNCONFIRMED`. Do not clear the journal to bypass this condition. A conflict
-receipt that requires manual reconciliation stays available in the Admin-only
-operation document; review its remote IDs against the newer local draft before
-changing that reservation.
+`CHART_UNCONFIRMED`.
+
+The editor's **Recuperar envio anterior** action calls `POST size-charts/recuperar`
+with the old operation ID. Recovery acquires the same reservation after the
+previous worker's safe lease window. It never performs an ML mutation or replays
+the older desired content. A fresh GET clears an uncertain rename/row PUT; new
+local edits survive. A confirmed creation binds only provider IDs/computed SIZE
+into a reviewed current draft, with immutable chart/row identities checked and
+the full current draft rechecked inside the receipt transaction. Ambiguous IDs,
+changed identities and competing writers reject the recovery.
+
+For a POST with no recoverable chart/row, the operator must explicitly check
+**Verifiquei no Mercado Livre que nenhuma guia ou linha foi criada** before
+releasing the reservation. This is a deliberate human recovery decision, not an
+automatic retry. A known accepted receipt cannot be dismissed with that flag.
+The old operation becomes `abandoned`, retains its remote receipt and cannot be
+replayed; a later send uses a new operation ID. No hand-edit of Firestore is
+needed to unblock the account.
 
 `sizeChartSend.test.ts` exercises the real HTTP adapter with captured calls;
 `sizeChartOperation.firestore.test.ts` tests real emulator contention. The joined

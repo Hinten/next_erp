@@ -779,6 +779,14 @@ export interface MercadoLivreClient {
     integracaoId: string;
     tabMediId: string;
   }): Promise<import('./wire').MercadoLivreChartSyncStatus>;
+  sizeChartRecover(input: {
+    integracaoId: string;
+    tabMediId: string;
+    operationId: string;
+    expectedChart: import('@delfrance/schemas').MlSizeChart | null;
+    recoveryChartId: string | null;
+    confirmNoCreation: boolean;
+  }): Promise<import('./wire').MercadoLivreChartRecoveryResult>;
   /**
    * Ask a model to read the tabela's photos and fill the grid
    * (PERM.integracao.write).
@@ -1279,6 +1287,12 @@ export function createMercadoLivreClient(config: {
       call(
         `/api/marketplace/mercado-livre/size-charts/sync?integracaoId=${encodeURIComponent(integracaoId)}&tabMediId=${encodeURIComponent(tabMediId)}`,
         wire.chartSyncStatusSchema,
+      ),
+    sizeChartRecover: (input) =>
+      call(
+        '/api/marketplace/mercado-livre/size-charts/recuperar',
+        wire.chartRecoveryResultSchema,
+        input,
       ),
     sizeChartExcluir: (input) =>
       call(

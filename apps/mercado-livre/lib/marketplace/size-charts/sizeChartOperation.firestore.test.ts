@@ -5,7 +5,8 @@ import {
   tabelaDeMedidasCollection,
 } from '@delfrance/data/admin/collections';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { acquireOperation, operationContext } from './sizeChartOperation';
+import { acquireOperation, checkpointOperation, operationContext } from './sizeChartOperation';
+import { recoverSizeChart } from './sizeChartRecovery';
 import { CHART, chartHarness } from './testing/chartHarness';
 import { syncSizeCharts } from './sizeChartSync';
 import { deferred } from '@delfrance/data/testing';
@@ -13,6 +14,42 @@ import { deferred } from '@delfrance/data/testing';
 describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)(
   'chart operation contention (real Firestore)',
   () => {
+    it('lets only one concurrent recovery clear an uncertain creation reservation', async () => {
+      const db = getAdminFirestore();
+      const id = randomUUID();
+      const operationId = randomUUID();
+      const draft = { ...CHART, id: null, rows: CHART.rows!.map((row) => ({ ...row, id: null })) };
+      const ref = tabelaDeMedidasCollection.docRef(db, {}, id);
+      await ref.set({ tabelasDeMedidasMercadoLivre: { account: { tabelas: [draft] } } });
+      try {
+        const ctx = operationContext(db, id, 'account');
+        const op = await acquireOperation(ctx, operationId, 0, draft);
+        await checkpointOperation(
+          ctx,
+          op,
+          { pending: { kind: 'create', rowIndex: null }, status: 'unconfirmed' },
+          false,
+          true,
+        );
+        const h = chartHarness(draft);
+        const outcomes = await Promise.allSettled(
+          [1, 2].map(() =>
+            recoverSizeChart({ db, api: h.api, integracaoId: 'account' }, id, {
+              operationId,
+              confirmNoCreation: true,
+            }),
+          ),
+        );
+        expect(outcomes.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+        expect(outcomes.filter((result) => result.status === 'rejected')).toHaveLength(1);
+        const control = await mlChartSyncCollection.docRef(db, { tabMediId: id }, 'account').get();
+        expect(control.exists).toBe(true);
+        expect(control.data()!.activeId).toBeNull();
+        expect(h.calls).toHaveLength(0);
+      } finally {
+        await db.recursiveDelete(ref);
+      }
+    });
     it('admits exactly one of two simultaneous sends through the real account reservation', async () => {
       const db = getAdminFirestore();
       const id = randomUUID();

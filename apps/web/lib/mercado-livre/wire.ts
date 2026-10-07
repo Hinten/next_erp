@@ -1000,7 +1000,7 @@ export type MercadoLivreChartValidationError = z.infer<typeof chartValidationErr
 export const syncChartsResultSchema = z.object({
   operationId: z.string(),
   chartIndex: z.number().int().nonnegative(),
-  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed']),
+  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed', 'abandoned']),
   /** The charts after the sync (ML ids written back where accepted). */
   tabelas: tabelasSchema,
   validationErrors: z.array(chartValidationErrorSchema),
@@ -1014,11 +1014,25 @@ export const chartSyncStatusSchema = z.object({
       chartIndex: z.number().int().nonnegative(),
       chart: mlSizeChartSchema,
       projected: mlSizeChartSchema,
-      status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed']),
+      status: z.enum([
+        'pending',
+        'completed',
+        'validation',
+        'conflict',
+        'unconfirmed',
+        'abandoned',
+      ]),
+      kind: z.enum(['sync', 'delete', 'verify']).nullable().optional(),
     })
     .nullable(),
 });
 export type MercadoLivreChartSyncStatus = z.infer<typeof chartSyncStatusSchema>;
+export const chartRecoveryResultSchema = z.object({
+  released: z.literal(true),
+  chartIndex: z.number().int().nonnegative(),
+  chart: mlSizeChartSchema.nullable(),
+});
+export type MercadoLivreChartRecoveryResult = z.infer<typeof chartRecoveryResultSchema>;
 
 /** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
 export const chartDeleteResultSchema = z.object({

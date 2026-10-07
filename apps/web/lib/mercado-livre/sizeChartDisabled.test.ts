@@ -203,6 +203,7 @@ const EDITOR_ACTIONS: SizeChartEditorAction[] = [
   'cancelar',
   'salvarRascunho',
   'enviar',
+  'recuperar',
 ];
 
 function editorInput(over: Partial<SizeChartEditorGateInput> = {}): SizeChartEditorGateInput {
@@ -226,7 +227,7 @@ const CAP = 'O Mercado Livre aceita no máximo 75 tamanhos por guia.';
 function everyEditorInput(): SizeChartEditorGateInput[] {
   const out: SizeChartEditorGateInput[] = [];
   for (const canWrite of [false, true]) {
-    for (const busy of [null, 'draft', 'send'] as const) {
+    for (const busy of [null, 'draft', 'send', 'recover'] as const) {
       for (const aiBusy of [false, true]) {
         for (const aiFillable of [false, true]) {
           for (const hasNome of [false, true]) {
@@ -256,8 +257,8 @@ function everyEditorInput(): SizeChartEditorGateInput[] {
 
 describe('sizeChartEditorGate', () => {
   it('sweeps every legal input', () => {
-    expect(everyEditorInput()).toHaveLength(384);
-    expect(new Set(everyEditorInput().map((i) => JSON.stringify(i))).size).toBe(384);
+    expect(everyEditorInput()).toHaveLength(512);
+    expect(new Set(everyEditorInput().map((i) => JSON.stringify(i))).size).toBe(512);
   });
 
   it('leaves every control open when nothing blocks it', () => {
@@ -301,6 +302,9 @@ describe('sizeChartEditorGate', () => {
     expect(sizeChartEditorGate('cancelar', editorInput({ busy: 'send' })).motivo).toMatch(
       /enviando/i,
     );
+    expect(sizeChartEditorGate('cancelar', editorInput({ busy: 'recover' })).motivo).toMatch(
+      /recuperando/i,
+    );
   });
 
   // A draft is a local Firestore write; only the two calls that reach Mercado
@@ -309,6 +313,7 @@ describe('sizeChartEditorGate', () => {
     const noWrite = editorInput({ canWrite: false });
     expect(sizeChartEditorGate('preencherIa', noWrite).motivo).toBe(SIZE_CHART_MOTIVOS.semEscrita);
     expect(sizeChartEditorGate('enviar', noWrite).motivo).toBe(SIZE_CHART_MOTIVOS.semEscrita);
+    expect(sizeChartEditorGate('recuperar', noWrite).motivo).toBe(SIZE_CHART_MOTIVOS.semEscrita);
     expect(sizeChartEditorGate('cancelar', noWrite).disabled).toBe(false);
     expect(sizeChartEditorGate('salvarRascunho', noWrite).disabled).toBe(false);
   });

@@ -22,7 +22,7 @@ export const mlChartOperationSchema = z.object({
       rowIndex: z.number().int().nonnegative().nullable(),
     })
     .nullable(),
-  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed']),
+  status: z.enum(['pending', 'completed', 'validation', 'conflict', 'unconfirmed', 'abandoned']),
   validationErrors: z.array(
     z.object({
       chartIndex: z.number(),

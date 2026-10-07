@@ -107,6 +107,7 @@ export async function acquireOperation(
     let op: MlChartOperation;
     if (opSnap.exists) {
       op = mlChartOperationCollection.parse(opSnap.data());
+      if (op.status === 'abandoned') throw chartConflict();
       if (op.kind !== kind || op.chartIndex !== chartIndex || !valuesEqual(op.desired, desired))
         throw chartConflict();
       if (op.owner && op.leaseUntilMs > Date.now()) {
@@ -227,4 +228,80 @@ export async function currentOperation(
   const state = mlChartSyncCollection.parse(control.data());
   const snap = await refs(ctx, state.activeId ?? state.lastId).operation.get();
   return snap.exists ? mlChartOperationCollection.parse(snap.data()) : null;
+}
+
+/** Recovery owns the reservation but never requires reverting newer draft content. */
+export async function acquireRecovery(
+  ctx: OperationContext,
+  id: string,
+): Promise<MlChartOperation> {
+  const ref = refs(ctx, id);
+  return ctx.db.runTransaction(async (tx) => {
+    const control = await tx.get(ref.control);
+    const snapshot = await tx.get(ref.operation);
+    if (!control.exists || !snapshot.exists) throw chartConflict();
+    const state = mlChartSyncCollection.parse(control.data());
+    const op = mlChartOperationCollection.parse(snapshot.data());
+    if (state.activeId !== id) throw chartConflict();
+    if (op.owner && op.leaseUntilMs > Date.now()) {
+      throw new SizeChartOperationError(
+        'CHART_BUSY',
+        'O envio anterior ainda está em andamento. Aguarde antes de recuperar.',
+      );
+    }
+    const owned = { ...op, owner: ctx.owner, leaseUntilMs: Date.now() + CHART_LEASE_MS };
+    tx.set(ref.operation, mlChartOperationCollection.parse(owned));
+    return owned;
+  });
+}
+
+/**
+ * Recovery's CAS checks the owner, active operation and reviewed current draft
+ * inside every retry. The projection callback is pure and can add ONLY provider
+ * identity/cache fields; desired name/measurements remain the tx-fresh draft's.
+ */
+export async function finishRecovery(
+  ctx: OperationContext,
+  op: MlChartOperation,
+  baseline: MlChartOperation['baseline'],
+  expected: MlSizeChart | null,
+  project?: (current: MlSizeChart) => MlSizeChart,
+): Promise<MlSizeChart | null> {
+  const ref = refs(ctx, op.id);
+  return ctx.db.runTransaction(async (tx) => {
+    const control = await tx.get(ref.control);
+    const snapshot = await tx.get(ref.operation);
+    const parent = await tx.get(ref.parent);
+    const state = mlChartSyncCollection.parse(control.data());
+    const fresh = mlChartOperationCollection.parse(snapshot.data());
+    if (state.activeId !== op.id || fresh.owner !== ctx.owner || fresh.leaseUntilMs <= Date.now())
+      throw chartConflict();
+    const list = parent.exists ? charts(parent.data(), ctx.integracaoId) : [];
+    let current = list[fresh.chartIndex] ?? null;
+    if (project != null) {
+      if (current == null || expected == null || !valuesEqual(current, expected))
+        throw chartConflict();
+      current = project(current);
+      tx.update(
+        ref.parent,
+        new FieldPath('tabelasDeMedidasMercadoLivre', ctx.integracaoId, 'tabelas'),
+        list.map((chart, index) => (index === fresh.chartIndex ? current : chart)),
+        'ultimaModificacao',
+        Date.now(),
+      );
+    }
+    tx.set(
+      ref.operation,
+      mlChartOperationCollection.parse({
+        ...fresh,
+        baseline,
+        pending: null,
+        status: 'abandoned',
+        owner: null,
+        leaseUntilMs: 0,
+      }),
+    );
+    tx.set(ref.control, { activeId: null, lastId: op.id });
+    return current;
+  });
 }

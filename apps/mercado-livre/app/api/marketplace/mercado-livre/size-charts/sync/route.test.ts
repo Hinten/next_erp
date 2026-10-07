@@ -93,6 +93,7 @@ describe('POST /api/marketplace/mercado-livre/size-charts/sync', () => {
         chart: VALID.chart,
         projected: { ...VALID.chart, id: '501' },
         status: 'unconfirmed',
+        kind: 'sync',
       },
     });
     expect((await GET(new Request('http://localhost/api/size-charts/sync'))).status).toBe(400);

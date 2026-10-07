@@ -447,7 +447,7 @@ export function remoteRowMatches(
   });
 }
 
-function sameRowId(a: unknown, b: unknown): boolean {
+export function sameRowId(a: unknown, b: unknown): boolean {
   if (a == null || b == null) return false;
   const first = String(a);
   const second = String(b);
@@ -457,24 +457,31 @@ function sameRowId(a: unknown, b: unknown): boolean {
 }
 
 /** Created rows join by their immutable main value, never response array position. */
+export function matchingResponseRows(
+  chart: MlSizeChart,
+  row: MlSizeChartRow,
+  response: MlSizeChartApi,
+) {
+  return (response.rows ?? []).filter((remote) => {
+    if (row.id) return sameRowId(row.id, remote.id);
+    const main = (row.attributes ?? []).find((a) => a.id === chart.main_attribute_id);
+    if (!main) return false;
+    const attributes = responseAttributesSchema.safeParse(remote.attributes);
+    if (!attributes.success) throw chartUnconfirmed();
+    const values = attributes.data.find((a) => a.id === main.id)?.values ?? [];
+    const desired = responseAttributesSchema.parse([chartAttributeToMercadoLivre(main)])[0]!.values;
+    return (
+      desired.length === values.length &&
+      desired.every((v, i) =>
+        v.id != null ? String(v.id) === String(values[i]!.id) : v.name === values[i]!.name,
+      )
+    );
+  });
+}
+
 export function reconcileChartResponse(chart: MlSizeChart, response: MlSizeChartApi): MlSizeChart {
   const rows = (chart.rows ?? []).map((row) => {
-    const matching = (response.rows ?? []).filter((remote) => {
-      if (row.id) return sameRowId(row.id, remote.id);
-      const main = (row.attributes ?? []).find((a) => a.id === chart.main_attribute_id);
-      if (!main) return false;
-      const attributes = responseAttributesSchema.safeParse(remote.attributes);
-      if (!attributes.success) return false;
-      const values = attributes.data.find((a) => a.id === main.id)?.values ?? [];
-      const desired = responseAttributesSchema.parse([chartAttributeToMercadoLivre(main)])[0]!
-        .values;
-      return (
-        desired.length === values.length &&
-        desired.every((v, i) =>
-          v.id != null ? String(v.id) === String(values[i]!.id) : v.name === values[i]!.name,
-        )
-      );
-    });
+    const matching = matchingResponseRows(chart, row, response);
     if (matching.length !== 1 || matching[0]!.id == null) throw chartUnconfirmed();
     const remote = matching[0]!;
     if (String(remote.id).includes(':') && !String(remote.id).startsWith(`${response.id}:`))

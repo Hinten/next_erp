@@ -262,6 +262,7 @@ export function MedidasMercadoLivreManager({
     const sameTarget = pending != null && pending.chartIndex === (saved?.index ?? chartIndex);
     if (
       pending != null &&
+      (pending.kind ?? 'sync') === 'sync' &&
       sameTarget &&
       (valuesEqual(chart, pending.chart) || valuesEqual(chart, pending.projected))
     ) {
@@ -319,6 +320,42 @@ export function MedidasMercadoLivreManager({
       chartIndex: saved.index,
       chart: parsed.data,
     };
+  }
+
+  async function recoverChart(editor: EditorTarget, confirmNoCreation: boolean) {
+    if (!client) throw new SizeChartSyncUnconfirmedError();
+    const pending = (
+      await client.sizeChartSyncStatus({ integracaoId: editor.integracaoId, tabMediId })
+    ).operation;
+    if (
+      !pending ||
+      pending.status === 'completed' ||
+      pending.status === 'validation' ||
+      pending.status === 'abandoned'
+    ) {
+      setTarget((previous) =>
+        previous?.session === editor.session ? { ...previous, syncUnconfirmed: false } : previous,
+      );
+      return { chart: null, chartIndex: editor.chartIndex ?? 0 };
+    }
+    const result = await client.sizeChartRecover({
+      integracaoId: editor.integracaoId,
+      tabMediId,
+      operationId: pending.operationId,
+      expectedChart: pending.chartIndex === editor.chartIndex ? editor.chart : null,
+      recoveryChartId: recoveryChartId || null,
+      confirmNoCreation,
+    });
+    if (result.chart != null) {
+      if (result.chartIndex !== editor.chartIndex) throw new SizeChartSyncUnconfirmedError();
+      acceptChart(editor, { index: result.chartIndex, chart: result.chart, tabelas: [] }, true);
+    } else {
+      setTarget((previous) =>
+        previous?.session === editor.session ? { ...previous, syncUnconfirmed: false } : previous,
+      );
+    }
+    setRecoveryChartId('');
+    return result;
   }
 
   /**
@@ -657,6 +694,7 @@ export function MedidasMercadoLivreManager({
           recoveryRequired={target.syncUnconfirmed}
           recoveryChartId={recoveryChartId}
           onRecoveryChartId={setRecoveryChartId}
+          onRecover={(confirmNoCreation) => recoverChart(target, confirmNoCreation)}
           onSaveDraft={async (chart, chartIndex) => {
             await saveChart(target, chart, chartIndex);
           }}

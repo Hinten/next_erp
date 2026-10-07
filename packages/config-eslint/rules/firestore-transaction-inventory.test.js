@@ -127,7 +127,7 @@ const PATHSPECS = [
  */
 const INVENTARIO = {
   'apps/mercado-livre/lib/marketplace/size-charts/sizeChartOperation.ts':
-    'B/C (#1799): acquire re-reads the account control, operation and parent. Every checkpoint rechecks owner and the entire projected target against tx.get on each OCC attempt, rebuilds siblings from that read, and records provider receipts even when local write-back loses. Pending POSTs retain their reservation; all lease/deadline clocks are ms. No network I/O inside callbacks. Tests: sizeChartSend.test.ts and sizeChartOperation.firestore.test.ts.',
+    'B/C (#1799): acquire re-reads the account control, operation and parent. Every checkpoint rechecks owner and the entire projected target against tx.get on each OCC attempt, rebuilds siblings from that read, and records provider receipts even when local write-back loses. Recovery acquires the active operation after its ms lease and rechecks owner/control plus the reviewed current draft before pure ID/cache projection; remote GET and operator-confirmed non-creation happen outside the callback. Pending POSTs retain their reservation until recovery; abandoned IDs cannot replay. No network I/O inside callbacks. Tests: sizeChartSend.test.ts, sizeChartRecovery.test.ts and sizeChartOperation.firestore.test.ts.',
   'packages/data/src/testing/memoryFirestore.ts':
     'Test adapter only: maps Admin and client FieldPath updates onto the shared OccEngine, with buffered snapshot reads and OCC retries. Tests of the real save/sync ports use it; not a shipped transaction.',
   'apps/whatsapp/lib/whatsapp/contatos.ts':

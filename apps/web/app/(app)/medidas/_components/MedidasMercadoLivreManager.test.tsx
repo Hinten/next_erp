@@ -46,6 +46,7 @@ const h = vi.hoisted(() => ({
   save: vi.fn<(input: SaveChartInput) => Promise<SavedChart>>(),
   sync: vi.fn<MercadoLivreClient['sizeChartSync']>(),
   syncStatus: vi.fn<MercadoLivreClient['sizeChartSyncStatus']>(),
+  recover: vi.fn<MercadoLivreClient['sizeChartRecover']>(),
 }));
 
 const CONTA = { id: 'conta-1', path: 'integracao/conta-1', data: { nome: 'Loja Teste' } };
@@ -114,7 +115,9 @@ vi.mock('@/lib/mercado-livre/client', async (importOriginal) => ({
   // module is kept whole and only the hook is replaced.
   ...(await importOriginal<typeof import('@/lib/mercado-livre/client')>()),
   useMercadoLivreClient: () =>
-    h.hasClient ? { sizeChartSync: h.sync, sizeChartSyncStatus: h.syncStatus } : null,
+    h.hasClient
+      ? { sizeChartSync: h.sync, sizeChartSyncStatus: h.syncStatus, sizeChartRecover: h.recover }
+      : null,
 }));
 
 // Probe the manager callbacks; the real modal owns its own input/error tests.
@@ -196,6 +199,8 @@ beforeEach(() => {
   h.save.mockReset();
   h.sync.mockReset();
   h.syncStatus.mockReset();
+  h.recover.mockReset();
+  h.recover.mockResolvedValue({ released: true, chart: null, chartIndex: 0 });
   h.syncStatus.mockResolvedValue({ operation: null });
   h.save.mockImplementation((input) =>
     Promise.resolve({
@@ -568,5 +573,43 @@ describe('MedidasMercadoLivreManager — guarded persistence', () => {
     expect(h.save).toHaveBeenCalledTimes(1);
     expect(h.sync.mock.calls[1]![0]).toMatchObject({ operationId: id, chart });
     expect(h.editor?.chart).toEqual(projected);
+  });
+
+  it('releases an uncertain attempt through the product without resending or losing typed input', async () => {
+    openExisting();
+    const input = screen.getByLabelText('Draft cell');
+    fireEvent.change(input, { target: { value: '99,5' } });
+    const failure = new MercadoLivreClientHttpError('Unavailable', 503, null);
+    h.sync.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(h.editor!.onSend(edited, 0)).rejects.toBe(failure);
+    });
+    const id = h.sync.mock.calls[0]![0].operationId;
+    h.syncStatus.mockResolvedValueOnce({
+      operation: {
+        operationId: id,
+        chartIndex: 0,
+        chart: GUIA_ENVIADA,
+        projected: GUIA_ENVIADA,
+        status: 'unconfirmed',
+        kind: 'sync',
+      },
+    });
+    await act(async () => {
+      await h.editor!.onRecover!(true);
+    });
+    expect(h.recover).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      tabMediId: 'tab-1',
+      operationId: id,
+      expectedChart: edited,
+      recoveryChartId: null,
+      confirmNoCreation: true,
+    });
+    expect(h.sync).toHaveBeenCalledTimes(1);
+    expect(h.save).toHaveBeenCalledTimes(1);
+    expect(h.editor?.recoveryRequired).toBe(false);
+    expect(screen.getByLabelText('Draft cell')).toBe(input);
+    expect((input as HTMLInputElement).value).toBe('99,5');
   });
 });
