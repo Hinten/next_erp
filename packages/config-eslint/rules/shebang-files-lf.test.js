@@ -26,10 +26,8 @@ import { REPO_ROOT, gitCheckAttr, gitLsFilesZ } from './lib/repo-scan.js';
  * run while CI ran them green. `core.autocrlf=true` is what makes the two
  * platforms disagree, and `.gitattributes` is the only thing that overrides it.
  *
- * WHY A GUARD AND NOT JUST THE RULES. `.gitattributes` is a per-path allowlist;
- * a new shebang file simply is not covered by it, and nothing says so. This test
- * derives the set from the repo — first two bytes of every tracked file — so the
- * rules cannot fall behind the files.
+ * The repository-wide LF default protects new paths too. This guard derives
+ * shebang files from the repo so a future exception cannot silently break them.
  */
 
 let shebangCache = null;
@@ -104,10 +102,11 @@ describe('shebang files check out with LF', () => {
     // A tracked directory symlink is neither opened nor mistaken for file data.
     expect(found).not.toContain('.agents/skills');
 
-    // The attribute reader must distinguish, or assertion 1 is vacuous too.
+    // Ordinary source files inherit the same repository-wide LF default.
     const attrs = eolAttrs(['.github/scripts/e2e-affected.mjs', 'package.json']);
     expect(attrs['.github/scripts/e2e-affected.mjs']).toBe('lf');
-    expect(attrs['package.json']).toBe('unspecified');
+    expect(attrs['package.json']).toBe('lf');
+    expect(gitCheckAttr('diff', ['package.json'])['package.json']).toBe('unspecified');
   });
 
   // ------------------------------------------------------------------
@@ -142,18 +141,11 @@ describe('shebang files check out with LF', () => {
         'adding the attribute alone does not rewrite an existing checkout, so the',
         'bug survives until you do.',
         '',
-        '  per file:    rm <f> && git checkout -- <f>',
-        '  whole tree:  git rm --cached -r . && git reset --hard',
+        '  node tools/normalize-line-endings.mjs',
         '',
-        '⚠️ Two things that look like they would work and do not, both measured:',
-        '`git add --renormalize .` re-applies the clean filter into the INDEX only',
-        'and never touches the disk (and is a strict no-op here, since the blobs',
-        'are already LF). `git rm --cached <f> && git checkout -- <f>` cannot work',
-        'in either order: `checkout` reads FROM the index, which `rm --cached` just',
-        'emptied, so it fails with "pathspec did not match any file(s) known to',
-        'git". A bare `git reset --hard` is not dependable either — it rewrites the',
-        'file only when git currently considers it modified, which after the',
-        'attribute lands it may not.',
+        'The repair changes only CRLF bytes in tracked LF-backed text files,',
+        'preserving edits and leaving the index untouched. `git add --renormalize`',
+        'changes the INDEX only; it does not repair an existing working copy.',
       ].join('\n'),
     ).toEqual([]);
   });

@@ -1,16 +1,24 @@
+# Match Prettier and EditorConfig on every platform, even when Git for Windows
+# has core.autocrlf=true. Auto detection leaves binary files unchanged.
+# Existing checkouts need a one-time repair: node tools/normalize-line-endings.mjs
+* text=auto eol=lf
+
+# These vendored NF-e schemas are already committed with CRLF. Preserve their
+# original bytes instead of rewriting generated/provider-owned artifacts.
+packages/integrations/nfe/generated/conscad/consCad_v2.00.xsd -text !eol
+packages/integrations/nfe/generated/conscad/leiauteConsultaCadastro_v2.00.xsd -text !eol
+
 # Husky hooks must check out with LF: Git for Windows cannot spawn a CRLF,
 # shebang-less hook ("cannot spawn .husky/pre-commit: Exec format error"),
 # which silently breaks every commit. The index already stores them as LF —
 # this rule stops the autocrlf smudge from re-corrupting working copies on
-# checkout/merge. Scoped to .husky/ on purpose; broader rules (e.g. *.sh)
-# would re-flag unrelated files across existing working trees.
+# checkout/merge. These explicit rules also protect execution-critical paths
+# whose contents might not be classified as text by Git's automatic detection.
 .husky/** text eol=lf
 
 # Same hazard, same narrow scoping: CI shell scripts run under `bash` on the
 # Linux runner (safe — the index is LF) but are also meant to be runnable
-# locally, which on Windows means the autocrlf smudge hands bash a CRLF file
-# and every line ends in $'\r'. This path is new, so no existing working tree
-# gets re-flagged.
+# locally, where CRLF would make every line end in $'\r'.
 .github/scripts/*.sh text eol=lf
 
 # Third instance of the same hazard — different mechanism, far quieter symptom.
@@ -46,8 +54,8 @@ packages/integrations/nfe/scripts/*.mjs text eol=lf
 # local red that looks like someone else's broken file, and a re-promote that
 # reports every fixture as changed.
 #
-# Scoped to the generated corpus only; this path is new, so no existing working
-# tree gets re-flagged.
+# The explicit text rule preserves LF even if a new wire body fails automatic
+# text detection.
 apps/mercado-livre/lib/marketplace/fixtures/__wire__/** text eol=lf
 
 # Fifth instance: the docs reader committed beside the Shopee master plan starts

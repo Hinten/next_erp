@@ -31,6 +31,16 @@ pnpm dev
 
 ## Code style
 
+- Text files use LF on every platform. `.gitattributes` overrides Git for
+  Windows' `core.autocrlf=true` to match Prettier and EditorConfig; binary files
+  and the vendored CRLF Consulta Cadastro XSDs retain their original bytes.
+- After updating an existing Windows checkout, run
+  `node tools/normalize-line-endings.mjs`, then `pnpm format:check`. The repair
+  replaces only CRLF bytes in tracked files already stored as LF and governed
+  by `eol=lf`. It preserves local edits and the index, skips symlinks and
+  credential files, and never touches untracked files. Adding Git attributes
+  alone does not rewrite files already on disk; `git add --renormalize` only
+  updates the index. No global Git configuration change is needed.
 - TypeScript strict — no `any`, no `as` casts without comment, no `// @ts-ignore`.
 - React 19. **`apps/web` is client-first** (per ADR-0002): default to `'use client'`. Server Components, Server Actions, route handlers, and middleware are exceptions that need PR justification.
 - Forms: react-hook-form + Zod via `@hookform/resolvers/zod`.
