@@ -28,8 +28,12 @@ import {
 import type { CalculateRequest, CalculateResponse, CartInsertRequest } from '../melhor-envio/types';
 
 import {
+  FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO,
+  FREIGHT_CODIGO_ETIQUETA_DESVINCULADA,
   FREIGHT_CODIGO_ME_TIMEOUT,
   FreightAuthError,
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
   FreightSchemaError,
   FreightBadRequestError,
   type FreightHttpError,
@@ -239,8 +243,35 @@ function messageOf(body: unknown, fallback: string): string {
   return envelopeDeErro(body)?.error ?? fallback;
 }
 
+/** A finite number field of a non-2xx body, else `null`. */
+function numeroDe(body: unknown, campo: string): number | null {
+  if (body === null || typeof body !== 'object') return null;
+  const v = (body as Record<string, unknown>)[campo];
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** A non-empty string field of a non-2xx body, else `null`. */
+function textoDe(body: unknown, campo: string): string | null {
+  if (body === null || typeof body !== 'object') return null;
+  const v = (body as Record<string, unknown>)[campo];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
 function errorFromResponse(status: number, body: unknown): FreightHttpError {
   const message = messageOf(body, `HTTP ${status}`);
+  const code = envelopeDeErro(body)?.code;
+  // The comprar claim's two typed answers (#1677) — keyed on status AND code,
+  // so any other 423/412 stays a plain `FreightServerError` with its message.
+  if (status === 423 && code === FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO) {
+    return new FreightCompraEmAndamentoError(message, numeroDe(body, 'leaseExpiraEmMs'), body);
+  }
+  if (status === 412 && code === FREIGHT_CODIGO_ETIQUETA_DESVINCULADA) {
+    return new FreightEtiquetaDesvinculadaError(
+      message,
+      { printLabelId: textoDe(body, 'printLabelId'), printUrl: textoDe(body, 'printUrl') },
+      body,
+    );
+  }
   if (status === 400) return new FreightBadRequestError(message, body);
   if (status === 401 || status === 403) return new FreightAuthError(message, status, body);
   if (status === 404) return new FreightNotFoundError(message, body);
@@ -349,14 +380,9 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
       // The route's message is kept: it names the step that stalled.
       const envelope = envelopeDeErro(parsed);
       if (res.status === 504 && envelope?.code === FREIGHT_CODIGO_ME_TIMEOUT) {
-        const corpo = parsed as { timeoutMs?: unknown };
-        const timeoutMs =
-          typeof corpo.timeoutMs === 'number' && Number.isFinite(corpo.timeoutMs)
-            ? corpo.timeoutMs
-            : null;
         throw new FreightTimeoutError(
           envelope.error ?? mensagemDeTempoEsgotado(FREIGHT_NIVEL_POR_OPERACAO[operacao], null),
-          { origem: 'provedor', timeoutMs, operacao },
+          { origem: 'provedor', timeoutMs: numeroDe(parsed, 'timeoutMs'), operacao },
         );
       }
       throw errorFromResponse(res.status, parsed);

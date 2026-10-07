@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import {
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
   FreightServerError,
   FreightTimeoutError,
 } from '@delfrance/integrations-freight-br/http-client';
@@ -101,6 +103,88 @@ describe('EtiquetaComprarModal — a failed buy (#1094)', () => {
     await comprarEtiqueta();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(showErrorNotification).not.toHaveBeenCalled();
+  });
+
+  it('the route saying MELHOR ENVIO stopped answering a paid step (origem provedor) is the same timeout', async () => {
+    comprar.mockRejectedValue(
+      new FreightTimeoutError('O Melhor Envio não respondeu em 60 s ao pagar a etiqueta…', {
+        origem: 'provedor',
+        timeoutMs: 60_000,
+        operacao: 'comprar',
+      }),
+    );
+    const { onClose } = renderModal();
+    await comprarEtiqueta();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(showCopyableNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'yellow', title: 'Tempo esgotado ao comprar etiqueta' }),
+    );
+    expect(showErrorNotification).not.toHaveBeenCalled();
+  });
+
+  it('another buy of this pedido in progress (423, #1677) closes with a yellow notice — no re-click', async () => {
+    const emAndamento = new FreightCompraEmAndamentoError(
+      'Outra compra de etiqueta para este pedido está em andamento… Aguarde cerca de 5 min.',
+      1_780_000_360_000,
+      null,
+    );
+    comprar.mockRejectedValue(emAndamento);
+    const { onClose } = renderModal();
+    await comprarEtiqueta();
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(showCopyableNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        title: 'Compra de etiqueta em andamento',
+        message: emAndamento.message,
+      }),
+    );
+    expect(showErrorNotification).not.toHaveBeenCalled();
+    expect(comprar).toHaveBeenCalledTimes(1);
+  });
+
+  it('a label PAID but not linked to the pedido (#1677) closes with a long red notice naming it', async () => {
+    const desvinculada = new FreightEtiquetaDesvinculadaError(
+      'A etiqueta L1 foi comprada e PAGA no Melhor Envio, mas…',
+      { printLabelId: 'L1', printUrl: 'https://sandbox.melhorenvio.com.br/imprimir/L1' },
+      null,
+    );
+    comprar.mockRejectedValue(desvinculada);
+    const { onClose } = renderModal();
+    await comprarEtiqueta();
+
+    // The modal MUST close: the pedido carries no anchor any more, so one more
+    // click on "Comprar" would start a fresh buy and pay a second label.
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(showCopyableNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        title: 'Etiqueta paga, mas não vinculada ao pedido',
+        message: desvinculada.message,
+        autoClose: false,
+      }),
+    );
+    expect(showErrorNotification).not.toHaveBeenCalled();
+    expect(comprar).toHaveBeenCalledTimes(1);
+  });
+
+  it('the frete changed before checkout (any other 412) closes too — this cart was built from the OLD frete', async () => {
+    const freteMudou = new FreightServerError(
+      'O frete do pedido mudou durante a compra… Nada foi pago nesta tentativa.',
+      412,
+      { code: 'ME_FRETE_ALTERADO' },
+    );
+    comprar.mockRejectedValue(freteMudou);
+    const { onClose } = renderModal();
+    await comprarEtiqueta();
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(showCopyableNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'yellow', title: 'O frete do pedido mudou' }),
+    );
+    expect(showErrorNotification).not.toHaveBeenCalled();
+    expect(comprar).toHaveBeenCalledTimes(1);
   });
 
   it('near-miss: any other failure stays a red "Falha" and the modal stays open to retry', async () => {

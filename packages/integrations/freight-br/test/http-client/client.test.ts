@@ -4,6 +4,9 @@ import { mockFetch } from '../_helpers/mockFetch';
 import { createFreightHttpClient } from '../../src/http-client/client';
 import {
   FreightAuthError,
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
+  FreightHttpError,
   FreightLabelTerminalError,
   FreightNetworkError,
   FreightNotFoundError,
@@ -123,6 +126,79 @@ describe('FreightHttpClient error mapping', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(FreightLabelTerminalError);
     expect((err as FreightLabelTerminalError).reason).toBe('canceled');
+  });
+
+  describe("the comprar claim's typed answers (#1677)", () => {
+    async function comprarCom(status: number, body: unknown): Promise<unknown> {
+      const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status }));
+      return client(fetchMock)
+        .comprar('int-1', 'ped-1', { service: 3 })
+        .catch((e: unknown) => e);
+    }
+
+    it('423 ME_COMPRA_EM_ANDAMENTO → FreightCompraEmAndamentoError, still a FreightHttpError', async () => {
+      const err = await comprarCom(423, {
+        error: 'Outra compra … está em andamento.',
+        code: 'ME_COMPRA_EM_ANDAMENTO',
+        leaseExpiraEmMs: 1_780_000_360_000,
+      });
+      expect(err).toBeInstanceOf(FreightCompraEmAndamentoError);
+      // ⚠️ A subclass: every caller narrowing on the base keeps working.
+      expect(err).toBeInstanceOf(FreightHttpError);
+      const e = err as FreightCompraEmAndamentoError;
+      expect(e.status).toBe(423);
+      expect(e.leaseExpiraEmMs).toBe(1_780_000_360_000);
+      expect(e.message).toBe('Outra compra … está em andamento.');
+    });
+
+    it('a 423 whose lease is not a finite number keeps the class, with a null lease', async () => {
+      const err = await comprarCom(423, {
+        error: 'x',
+        code: 'ME_COMPRA_EM_ANDAMENTO',
+        leaseExpiraEmMs: 'logo',
+      });
+      expect((err as FreightCompraEmAndamentoError).leaseExpiraEmMs).toBeNull();
+    });
+
+    it('near-miss: a 423 without the code stays a plain FreightServerError', async () => {
+      const err = await comprarCom(423, { error: 'locked' });
+      expect(err).toBeInstanceOf(FreightServerError);
+      expect(err).not.toBeInstanceOf(FreightCompraEmAndamentoError);
+    });
+
+    it('412 ME_ETIQUETA_DESVINCULADA → FreightEtiquetaDesvinculadaError naming the paid label', async () => {
+      const err = await comprarCom(412, {
+        error: 'A etiqueta L1 foi comprada e PAGA…',
+        code: 'ME_ETIQUETA_DESVINCULADA',
+        printLabelId: 'L1',
+        printUrl: 'https://sandbox.melhorenvio.com.br/imprimir/L1',
+      });
+      expect(err).toBeInstanceOf(FreightEtiquetaDesvinculadaError);
+      expect(err).toBeInstanceOf(FreightHttpError);
+      expect(err).toMatchObject({
+        status: 412,
+        printLabelId: 'L1',
+        printUrl: 'https://sandbox.melhorenvio.com.br/imprimir/L1',
+      });
+    });
+
+    it('near-miss: any other 412 (the frete moved BEFORE checkout) stays a FreightServerError', async () => {
+      const err = await comprarCom(412, { error: 'frete mudou', code: 'ME_FRETE_ALTERADO' });
+      expect(err).toBeInstanceOf(FreightServerError);
+      expect(err).not.toBeInstanceOf(FreightEtiquetaDesvinculadaError);
+    });
+
+    it('near-miss: the in-progress code on another status is NOT the in-progress class', async () => {
+      const err = await comprarCom(503, { error: 'x', code: 'ME_COMPRA_EM_ANDAMENTO' });
+      expect(err).toBeInstanceOf(FreightServerError);
+      expect(err).not.toBeInstanceOf(FreightCompraEmAndamentoError);
+    });
+
+    it('near-miss: the unlinked-label code on another status is NOT the unlinked class', async () => {
+      const err = await comprarCom(503, { error: 'x', code: 'ME_ETIQUETA_DESVINCULADA' });
+      expect(err).toBeInstanceOf(FreightServerError);
+      expect(err).not.toBeInstanceOf(FreightEtiquetaDesvinculadaError);
+    });
   });
 });
 

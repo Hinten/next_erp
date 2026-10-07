@@ -102,6 +102,53 @@ export class FreightLabelTerminalError extends FreightHttpError {
   }
 }
 
+/**
+ * `423 { code: 'ME_COMPRA_EM_ANDAMENTO', leaseExpiraEmMs }` — another `comprar`
+ * for the same pedido holds the server's in-flight claim (#1677): it is still
+ * running, or a paid step of it failed without Melhor Envio's confirmation and
+ * the claim is held until it expires. The message is the route's own pt-BR copy
+ * (it already says how long to wait).
+ *
+ * ⚠️ A SUBCLASS of `FreightHttpError`, like `FreightSchemaError`: every caller
+ * that narrows on the base keeps working, and one that wants to treat it as
+ * "do not re-click" narrows on this class first.
+ */
+export class FreightCompraEmAndamentoError extends FreightHttpError {
+  /** When the holding claim expires (ms epoch), or `null` when the route did not say. */
+  public readonly leaseExpiraEmMs: number | null;
+  constructor(message: string, leaseExpiraEmMs: number | null, body: unknown) {
+    super(message, 423, body);
+    this.name = 'FreightCompraEmAndamentoError';
+    this.leaseExpiraEmMs = leaseExpiraEmMs;
+  }
+}
+
+/** `412` — a label was PAID but the pedido no longer points at it (#1677). */
+export const FREIGHT_CODIGO_ETIQUETA_DESVINCULADA = 'ME_ETIQUETA_DESVINCULADA';
+
+/**
+ * `412 { code: 'ME_ETIQUETA_DESVINCULADA', printLabelId, printUrl }` — the buy
+ * went through and the label is PAID, but the pedido's frete was re-pointed,
+ * cleared or deleted while it ran, so nothing references it. The one buy
+ * failure where a second click is guaranteed to pay twice: the pedido carries
+ * no anchor any more, so the next buy starts fresh. A caller should not leave
+ * a "Comprar" armed right next to it (the buy modal closes).
+ */
+export class FreightEtiquetaDesvinculadaError extends FreightHttpError {
+  public readonly printLabelId: string | null;
+  public readonly printUrl: string | null;
+  constructor(
+    message: string,
+    etiqueta: { readonly printLabelId: string | null; readonly printUrl: string | null },
+    body: unknown,
+  ) {
+    super(message, 412, body);
+    this.name = 'FreightEtiquetaDesvinculadaError';
+    this.printLabelId = etiqueta.printLabelId;
+    this.printUrl = etiqueta.printUrl;
+  }
+}
+
 /** 5xx — internal `apps/melhor-envio` failure. */
 export class FreightServerError extends FreightHttpError {
   constructor(message: string, status: number, body: unknown) {

@@ -21,6 +21,9 @@ import { formatReais } from '@delfrance/core/money';
 import type { Pedido } from '@delfrance/schemas';
 import {
   type Agency,
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
+  FreightHttpError,
   FreightTimeoutError,
   withCartAgency,
 } from '@delfrance/integrations-freight-br/http-client';
@@ -188,16 +191,47 @@ export function EtiquetaComprarModal({
       );
       setResult({ printUrl: r.printUrl, tracking: r.tracking });
     } catch (err) {
-      // ⚠️ A timed-out buy (our 360 s deadline, or the platform's 504) may still
-      // be running on the server, and nothing stops a concurrent second buy from
-      // PAYING for a second label (#1677). So it is not a red "Falha" with
-      // Comprar re-enabled: a yellow check-first notice, and the modal closes —
-      // no button left to re-click; reopening re-resolves the cart from the
-      // pedido, after the operator has checked it (#1094; the server-side claim
-      // that makes a concurrent buy impossible is #1677).
-      if (err instanceof FreightTimeoutError) {
+      // ⚠️ These outcomes are NOT a red "Falha" with Comprar re-armed — the
+      // modal closes, so there is no button left to re-click. Reopening it
+      // re-resolves the cart from the pedido; the cart query cached for THIS
+      // opening (and, in the checkout, the frozen `pedido`) may be stale:
+      //  - a timeout — our 360 s deadline, the platform's 504, or the route
+      //    saying Melhor Envio stopped answering a paid step (#1094/#1679): the
+      //    outcome is unknown, check first;
+      //  - another buy of this pedido holds the server's claim (#1677, a 423):
+      //    re-clicking only gets the same answer until it ends;
+      //  - the label was PAID but the pedido no longer points at it (#1677,
+      //    `ME_ETIQUETA_DESVINCULADA`): the next buy would start fresh and pay
+      //    AGAIN, so this one is red, stays until dismissed, and names the label;
+      //  - any other 412 — the frete changed before checkout (`ME_FRETE_ALTERADO`,
+      //    nothing paid): this opening's cart was built from the OLD frete, and
+      //    re-clicking would fresh-buy the old service. Only the claim answers
+      //    412 on `comprar`.
+      if (err instanceof FreightTimeoutError || err instanceof FreightCompraEmAndamentoError) {
         showCopyableNotification({
-          title: 'Tempo esgotado ao comprar etiqueta',
+          title:
+            err instanceof FreightCompraEmAndamentoError
+              ? 'Compra de etiqueta em andamento'
+              : 'Tempo esgotado ao comprar etiqueta',
+          message: err.message,
+          color: 'yellow',
+        });
+        handleClose();
+        return;
+      }
+      if (err instanceof FreightEtiquetaDesvinculadaError) {
+        showCopyableNotification({
+          title: 'Etiqueta paga, mas não vinculada ao pedido',
+          message: err.message,
+          color: 'red',
+          autoClose: false,
+        });
+        handleClose();
+        return;
+      }
+      if (err instanceof FreightHttpError && err.status === 412) {
+        showCopyableNotification({
+          title: 'O frete do pedido mudou',
           message: err.message,
           color: 'yellow',
         });

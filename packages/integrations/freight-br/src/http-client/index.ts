@@ -18,9 +18,12 @@ export {
 
 export {
   FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO,
+  FREIGHT_CODIGO_ETIQUETA_DESVINCULADA,
   FREIGHT_CODIGO_ME_TIMEOUT,
   FreightAuthError,
   FreightBadRequestError,
+  FreightCompraEmAndamentoError,
+  FreightEtiquetaDesvinculadaError,
   FreightHttpError,
   FreightLabelTerminalError,
   FreightNetworkError,
