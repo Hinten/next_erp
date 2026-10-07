@@ -27,13 +27,17 @@
  *    pedido-not-found skip. Network errors still propagate (transient → retry).
  *
  * Upsert discipline (legacy-faithful):
- *  - INCIDENTE: create writes the full doc; an EXISTING doc gets ONLY
- *    `{ ultimaModificacao, resolucao }` merged (:1886-1891 — protects operator
- *    edits in the IncidentesTab; `resolucao` is re-derived each run with the
- *    FIXED tipo table, riding a field legacy already overwrote — #364), and
- *    each of the two only when NON-NULL: legacy's `copyWith` null-coalesced
- *    (`x ?? this.x`), so a still-open claim (null resolution on the wire)
- *    never wiped a stored resolução. `timestamp` is NEVER rewritten on update.
+ *  - INCIDENTE: create writes the full doc; an EXISTING doc gets ONLY the
+ *    importer-owned keys merged — `resolucao` (:1886-1891; re-derived each run
+ *    with the FIXED tipo table, riding a field legacy already overwrote —
+ *    #364), the claim state `claimStatus`/`claimStage`/`entregue` (#1322) and
+ *    `ultimaModificacao` — each only when NON-NULL: legacy's `copyWith`
+ *    null-coalesced (`x ?? this.x`), so a still-open claim (null resolution on
+ *    the wire) never wiped a stored resolução. Operator edits in the
+ *    IncidentesTab are never touched; `timestamp` is NEVER rewritten on update.
+ *    ⚠️ Since #1772 the write is ONE transaction gated on the claim's provider
+ *    clock (`relogioProvedorUs`, µs) — an older snapshot writes nothing, so it
+ *    can no longer reopen a closed claim. See `claimIncidenteTx.ts`.
  *  - CONVERSA: create writes the full doc (estadoConversa fills from the
  *    schema default, naoRespondido); an EXISTING doc merges the mapped fields
  *    only when the stored `ultima_modificacao` is null or older than the
@@ -64,7 +68,6 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import {
   conversaCollection,
-  incidenteCollection,
   mensagemCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
@@ -81,9 +84,10 @@ import {
   buildAttachmentMensagem,
   buildClaimMessageMensagem,
   buildConversaFromClaim,
-  buildIncidenteFromClaim,
   buildReasonMensagem,
+  mapearIncidenteClaim,
 } from './claimMapping';
+import { salvarIncidenteClaim, type AcaoIncidenteClaim } from './claimIncidenteTx';
 import { claimActionability, type ClaimActionability } from './claimActionability';
 import { vincularClienteMercadoLivre } from './claimCliente';
 import { corToEtiquetaArgb } from '@delfrance/core/cor';
@@ -126,6 +130,8 @@ export interface ClaimImportResult {
     | null;
   /** What the seller can still do, for the caller's log line. */
   acao?: ClaimActionability;
+  /** What this delivery did to the incidente (#1772) — absent on every skip before it. */
+  incidente?: AcaoIncidenteClaim;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -333,45 +339,23 @@ export async function importClaimMercadoLivre(
   }
 
   /* ------------------------- (h) incidente upsert (µs) ----------------------- */
+  // ⚠️ ONE transaction, gated on the claim's PROVIDER clock (#1772; root
+  // CLAUDE.md rule 7, tier 2) — `claimIncidenteTx.ts` owns the decision and
+  // documents it. This used to be a bare get → merge with no clock, so an OLDER
+  // snapshot landing last REOPENED a closed claim and re-blocked the pedido.
+  // What the update writes is unchanged (`mapearIncidenteClaim`): the
+  // null-coalesced claim state + resolução, never operator turf.
   const incidenteId = makeIncidenteIdClaim(integracaoId, claim.resource_id, claim.id);
-  const incidenteFields = buildIncidenteFromClaim(claim, reason, nowUs);
-  const incidenteSnap = await incidenteCollection.docRef(db, { pedidoId }, incidenteId).get();
-  if (incidenteSnap.exists) {
-    // Legacy copyWith(ultimaModificacao, resolucao) on the EXISTING doc
-    // (:1886-1891) — every other field (timestamp included) is operator turf.
-    // Dart's generated copyWith NULL-COALESCES (`x ?? this.x`), so a null
-    // incoming value KEPT the stored one: a still-open claim (resolution null
-    // on the wire — every new-message webhook) must not wipe an
-    // operator-entered resolução, and a null `last_updated` must not regress
-    // `ultimaModificacao` to the date_created fallback.
-    // ⚠️ The claim STATE must ride every update, not just the create (#1322).
-    // These three are ML's own facts — nothing else writes them — and the
-    // pedido's dispute overlay reads `claimStatus` with priority over
-    // `resolucao`. Left out of this patch (as they were on the first pass) the
-    // stored value stays `'opened'` for the life of the incidente: the claim
-    // closes on ML, the `claims_actions` delivery merges only the resolução,
-    // and despacho / NF-e / finalizar stay refused FOREVER on a settled order.
-    // `classificarIncidenteBloqueante`'s `resolucao == null` fallback cannot
-    // rescue it, because `claimStatus` is not null.
-    //
-    // Merged only when NON-NULL, matching the null-coalescing discipline the
-    // rest of this patch documents: a value we could not parse must keep the
-    // last one ML gave us rather than blanking a good reading. `status` and
-    // `stage` are a closed vocabulary, so this is the rare path, not the norm.
-    const patch = {
-      ...(claim.last_updated != null
-        ? { ultimaModificacao: incidenteFields.ultimaModificacao }
-        : {}),
-      ...(incidenteFields.resolucao != null ? { resolucao: incidenteFields.resolucao } : {}),
-      ...(incidenteFields.claimStatus != null ? { claimStatus: incidenteFields.claimStatus } : {}),
-      ...(incidenteFields.claimStage != null ? { claimStage: incidenteFields.claimStage } : {}),
-      ...(incidenteFields.entregue != null ? { entregue: incidenteFields.entregue } : {}),
-    };
-    if (Object.keys(patch).length > 0) {
-      await incidenteCollection.merge(db, { pedidoId }, incidenteId, patch);
-    }
-  } else {
-    await incidenteCollection.set(db, { pedidoId }, incidenteId, incidenteFields);
+  const mapeado = mapearIncidenteClaim(claim, reason, nowUs);
+  const incidente = await salvarIncidenteClaim(db, { pedidoId, incidenteId, mapeado });
+  if (incidente.acao === 'ignorado-obsoleto') {
+    // Outside the callback on purpose: an OCC retry re-runs that, not this.
+    console.warn('[mercado-livre] claim: incidente mais antigo ignorado', {
+      claimId,
+      incidenteId,
+      armazenado: incidente.relogioArmazenadoUs,
+      entrante: mapeado.relogioProvedorUs,
+    });
   }
 
   /* -------------------------- (i) conversa upsert (ms) ----------------------- */
@@ -391,6 +375,7 @@ export async function importClaimMercadoLivre(
       conversaId: null,
       skipped: 'sem-conversa-acionavel',
       acao,
+      incidente: incidente.acao,
     };
   }
 
@@ -551,5 +536,5 @@ export async function importClaimMercadoLivre(
     carimbos.length > 0 ? Math.max(...carimbos) : null,
   );
 
-  return { pedidoId, incidenteId, conversaId, skipped: null, acao };
+  return { pedidoId, incidenteId, conversaId, skipped: null, acao, incidente: incidente.acao };
 }

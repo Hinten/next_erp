@@ -58,6 +58,8 @@ import {
   TIPO_RESOLUCAO,
   toOuterRef,
   type Resolucao,
+  type StageClaim,
+  type StatusClaim,
   type TipoIncidente,
   stageClaimSchema,
   statusClaimSchema,
@@ -240,6 +242,38 @@ export function buildResolucao(resolution: MlClaim['resolution']): Resolucao | n
 }
 
 /**
+ * ML's own facts about the claim — the incidente fields the importer OWNS,
+ * each `null` when ML did not tell us. One derivation, shared by the create
+ * document and the update content, so the two can never disagree.
+ */
+interface EstadoDaClaim {
+  resolucao: Resolucao | null;
+  claimStatus: StatusClaim | null;
+  claimStage: StageClaim | null;
+  entregue: boolean | null;
+}
+
+function estadoDaClaim(claim: MlClaim): EstadoDaClaim {
+  return {
+    resolucao: buildResolucao(claim.resolution),
+    // Structured claim state (#1322). These used to exist ONLY inside the
+    // incidente's `comentarios` string, where nothing can query them — so the
+    // pedido could not tell an open mediation from a closed one without a human
+    // reading the sentence. `statusClaimSchema`/`stageClaimSchema` are the
+    // parse gate; an unrecognised value stores null rather than failing the
+    // whole import, because a claim ML labelled with a stage we do not know
+    // still has an incidente worth writing.
+    claimStatus: statusClaimSchema.safeParse(claim.status).data ?? null,
+    claimStage: stageClaimSchema.safeParse(claim.stage).data ?? null,
+    // ML's own "was it already delivered?" — the input that decides whether
+    // this blocks DISPATCH or blocks CONSOLIDATION. Deliberately not derived
+    // from our frete estado, which lags and, on a marketplace-owned frete, may
+    // never report at all.
+    entregue: typeof claim.fulfilled === 'boolean' ? claim.fulfilled : null,
+  };
+}
+
+/**
  * `Claims.toIncidente` (models.dart:3906-3921). All datetimes MICROSECONDS;
  * `nowUs` is only the fallback for an unparseable wire datetime (legacy would
  * have crashed in `DateTime.parse` long before this point).
@@ -251,6 +285,7 @@ export function buildIncidenteFromClaim(
 ): Record<string, unknown> {
   const statusDisplay = displayOf(STATUS_DISPLAY, claim.status);
   const stageDisplay = displayOf(STAGE_DISPLAY, claim.stage);
+  const estado = estadoDaClaim(claim);
   return {
     origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
     tipo: tipoIncidenteFromClaimType(claim.type),
@@ -267,21 +302,95 @@ export function buildIncidenteFromClaim(
     timestamp: coerceToMicros(claim.date_created) ?? nowUs,
     ultimaModificacao: coerceToMicros(claim.last_updated ?? claim.date_created) ?? nowUs,
     externalId: String(claim.id),
-    resolucao: buildResolucao(claim.resolution),
-    // Structured claim state (#1322). These used to exist ONLY inside the
-    // `comentarios` string above, where nothing can query them — so the pedido
-    // could not tell an open mediation from a closed one without a human
-    // reading the sentence. `statusClaimSchema`/`stageClaimSchema` are the
-    // parse gate; an unrecognised value stores null rather than failing the
-    // whole import, because a claim ML labelled with a stage we do not know
-    // still has an incidente worth writing.
-    claimStatus: statusClaimSchema.safeParse(claim.status).data ?? null,
-    claimStage: stageClaimSchema.safeParse(claim.stage).data ?? null,
-    // ML's own "was it already delivered?" — the input that decides whether
-    // this blocks DISPATCH or blocks CONSOLIDATION. Deliberately not derived
-    // from our frete estado, which lags and, on a marketplace-owned frete, may
-    // never report at all.
-    entregue: typeof claim.fulfilled === 'boolean' ? claim.fulfilled : null,
+    resolucao: estado.resolucao,
+    claimStatus: estado.claimStatus,
+    claimStage: estado.claimStage,
+    entregue: estado.entregue,
+  };
+}
+
+/**
+ * The claim's PROVIDER clock in MICROSECONDS — the incidente watermark
+ * `relogioProvedorUs` (#1772). The ONE place it is converted.
+ *
+ * ML sends `last_updated` as an ISO-8601 string with an offset
+ * (`2022-08-24T16:10:26.000-04:00`), so `coerceToMicros` takes its STRING
+ * branch, `parseIsoToMicros` — offset-aware and full precision. Its NUMBER
+ * branch classifies by magnitude, which is the trap step 17 had to avoid for
+ * Shopee's seconds; it cannot be reached from here.
+ *
+ * Same fallback as the conversa's watermark (`ultimaModificacaoIntegracao`,
+ * which is the same instant in MILLISECONDS on another document — the two are
+ * never compared): one claim, one clock definition. `date_created` is ≤ every
+ * `last_updated` of the same claim, so a clockless delivery can only ever read
+ * as older, never as newer.
+ *
+ * ⚠️ NEVER falls back to `nowUs`: a wall-clock watermark would outrank every
+ * later ML stamp and freeze the incidente. `null` means "this delivery cannot
+ * be ordered", and `claimIncidenteTx.ts` decides what that means.
+ */
+export function relogioDaClaimUs(claim: MlClaim): number | null {
+  return coerceToMicros(claim.last_updated ?? claim.date_created);
+}
+
+/**
+ * The importer-owned content of an EXISTING incidente — only the keys whose
+ * incoming value is NON-NULL.
+ *
+ * Legacy's generated `copyWith` NULL-COALESCED (`x ?? this.x`), so a null
+ * incoming value KEPT the stored one: a still-open claim (resolution null on
+ * the wire — every new-message webhook) must not wipe a stored resolução, and a
+ * status or stage we could not parse must keep the last one ML gave us rather
+ * than blank a good reading.
+ *
+ * ⚠️ The claim STATE must ride every update, not just the create (#1322).
+ * These are ML's own facts — nothing else writes them — and the pedido's
+ * dispute overlay reads `claimStatus` with priority over `resolucao`. Left out
+ * of the update (as they were on the first pass), the stored value stays
+ * `'opened'` for the life of the incidente and despacho / NF-e / finalizar stay
+ * refused FOREVER on a settled order.
+ */
+export interface ConteudoIncidenteClaim {
+  resolucao?: Resolucao;
+  claimStatus?: StatusClaim;
+  claimStage?: StageClaim;
+  entregue?: boolean;
+}
+
+/** Everything `claimIncidenteTx.ts` needs to decide and write ONE delivery. */
+export interface IncidenteClaimMapeado {
+  /** The full CREATE document — {@link buildIncidenteFromClaim}. */
+  documento: Record<string, unknown>;
+  /** The null-coalesced importer-owned UPDATE content. */
+  conteudo: ConteudoIncidenteClaim;
+  /**
+   * `ultimaModificacao` for an UPDATE (display only, never read back), or
+   * `null` to leave the stored one alone: a null `last_updated` must not
+   * regress it to the `date_created` fallback.
+   */
+  ultimaModificacaoUs: number | null;
+  /** The watermark — {@link relogioDaClaimUs}. */
+  relogioProvedorUs: number | null;
+}
+
+/** One claim → the incidente write's inputs. Pure; the orchestrator threads `nowUs`. */
+export function mapearIncidenteClaim(
+  claim: MlClaim,
+  reason: MlClaimReason | undefined,
+  nowUs: number,
+): IncidenteClaimMapeado {
+  const estado = estadoDaClaim(claim);
+  const conteudo: ConteudoIncidenteClaim = {};
+  if (estado.resolucao != null) conteudo.resolucao = estado.resolucao;
+  if (estado.claimStatus != null) conteudo.claimStatus = estado.claimStatus;
+  if (estado.claimStage != null) conteudo.claimStage = estado.claimStage;
+  if (estado.entregue != null) conteudo.entregue = estado.entregue;
+  return {
+    documento: buildIncidenteFromClaim(claim, reason, nowUs),
+    conteudo,
+    ultimaModificacaoUs:
+      claim.last_updated != null ? (coerceToMicros(claim.last_updated) ?? nowUs) : null,
+    relogioProvedorUs: relogioDaClaimUs(claim),
   };
 }
 

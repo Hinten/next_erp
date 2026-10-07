@@ -69,6 +69,7 @@ interface FakeRef {
 interface FakeTx {
   get: (ref: FakeRef) => Promise<{ exists: boolean; id: string; data: () => DocData | undefined }>;
   set: (ref: FakeRef, data: DocData, opts?: { merge?: boolean }) => void;
+  create: (ref: FakeRef, data: DocData) => void;
 }
 
 class FakeDb {
@@ -159,6 +160,11 @@ class FakeDb {
           ref.id,
           opts?.merge ? { ...(ref.__col.get(ref.id) ?? {}), ...data } : { ...data },
         );
+      },
+      // `tx.create` refuses an existing doc, like Firestore's ALREADY_EXISTS.
+      create: (ref: FakeRef, data: DocData) => {
+        if (ref.__col.has(ref.id)) throw new Error(`ALREADY_EXISTS: ${ref.id}`);
+        ref.__col.set(ref.id, { ...data });
       },
     });
   }
@@ -390,6 +396,7 @@ describe('importClaimMercadoLivre — happy create path', () => {
         podeResponder: true,
         acaoMensagem: 'send_message_to_complainant',
       }),
+      incidente: 'criado',
     });
 
     // Incidente — MICROSECONDS.
@@ -402,6 +409,8 @@ describe('importClaimMercadoLivre — happy create path', () => {
       timestamp: DATE_CREATED_MS * 1000,
       ultimaModificacao: LAST_UPDATED_MS * 1000,
       externalId: String(CLAIM_ID),
+      // The provider watermark (#1772) — the same instant as `ultimaModificacao`.
+      relogioProvedorUs: LAST_UPDATED_MS * 1000,
     });
     expect(incidente.resolucao).toMatchObject({ tipo: TIPO_RESOLUCAO.itemDevolvido });
 
@@ -593,7 +602,7 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     expect(incidente.ultimaModificacao).toBe(LAST_UPDATED_MS * 1000); // still refreshed
   });
 
-  it('a null last_updated never regresses a stored ultimaModificacao (empty patch → no merge)', async () => {
+  it('a null last_updated never regresses a stored ultimaModificacao', async () => {
     const db = new FakeDb();
     seedPedido(db);
     seedOrderMl(db);
@@ -612,6 +621,70 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     const incidente = db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)!;
     expect(incidente.ultimaModificacao).toBe(999_999_999_999_999);
     expect(incidente.resolucao).toBeNull();
+  });
+
+  it('⚠️ an OLDER claim snapshot can no longer REOPEN a closed incidente (#1772)', async () => {
+    // The bug: the update was a bare get → merge with no clock, so a worker
+    // holding an older `opened` snapshot that landed AFTER the `closed` one
+    // wrote `claimStatus: 'opened'` back — and the bloqueio trigger re-blocked
+    // despacho / NF-e / finalizar on a pedido ML had already settled.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    const fechado = {
+      timestamp: 111,
+      ultimaModificacao: (LAST_UPDATED_MS + 60_000) * 1000,
+      relogioProvedorUs: (LAST_UPDATED_MS + 60_000) * 1000, // NEWER than the wire
+      claimStatus: 'closed',
+      claimStage: 'none',
+      entregue: true,
+      resolucao: null,
+    };
+    db.seed(INCIDENTES_PATH, INCIDENTE_ID, fechado);
+    const api = makeApi({
+      getClaim: vi.fn(async () => makeClaim({ status: 'opened', stage: 'claim' })),
+    });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.incidente).toBe('ignorado-obsoleto');
+    // ZERO writes — the very object we seeded is still the stored one.
+    expect(db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)).toBe(fechado);
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre] claim: incidente mais antigo ignorado',
+      expect.objectContaining({
+        incidenteId: INCIDENTE_ID,
+        armazenado: (LAST_UPDATED_MS + 60_000) * 1000,
+        entrante: LAST_UPDATED_MS * 1000,
+      }),
+    );
+  });
+
+  it('a REPLAY of the same snapshot writes nothing to the incidente', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    await importClaimMercadoLivre(deps(db, makeApi()), CLAIM_ID);
+    const depoisDaPrimeira = db.docs(INCIDENTES_PATH).get(INCIDENTE_ID);
+
+    const result = await importClaimMercadoLivre(deps(db, makeApi()), CLAIM_ID);
+
+    expect(result.incidente).toBe('ignorado-sem-mudanca');
+    expect(db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)).toBe(depoisDaPrimeira);
+  });
+
+  it('runs the incidente write inside a TRANSACTION', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    // No send action ⇒ no conversa transaction — the one left is the incidente's.
+    const api = makeApi({ getClaim: vi.fn(async () => claimComAcoes([])) });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBe('sem-conversa-acionavel');
+    expect(result.incidente).toBe('criado');
+    expect(db.transacoes).toBe(1);
   });
 
   it('a STALE stored conversa (newer provider watermark) skips the merge AND the reason mensagem; claim messages still overwrite', async () => {
@@ -851,6 +924,7 @@ describe('importClaimMercadoLivre — pedido resolution routes', () => {
       conversaId: makeConversaIdClaim(CONTA_ID, 777, CLAIM_ID),
       skipped: null,
       acao: expect.objectContaining({ podeResponder: true }),
+      incidente: 'criado',
     });
   });
 

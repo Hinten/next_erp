@@ -266,6 +266,11 @@ The per-surface notes below stay the authority on behaviour.
   `last_updated` when the actions drain away — inside the gate a dead thread would
   keep an open composer. `estadoConversa` is operator triage state and is never
   touched by any of it.
+  ⚠️ **The incidente write is watermarked too (#1772)** — `claimIncidenteTx.ts`, one
+  transaction on `relogioProvedorUs` (µs, the field Shopee's returns already use).
+  It used to be a bare get → merge, so an OLDER snapshot landing last reopened a
+  closed claim and re-blocked despacho / NF-e / finalizar. Never gate it on
+  `ultimaModificacao`: operators stamp wall-clock µs there.
   ⚠️ **Identity is a CLIENTE** (#768). `claimUsuario.ts` — which minted a sem-auth
   `usuarios` doc per ML buyer — is deleted; `usuarios` is now only for people who can
   log in. The pedido already names the cliente, so `claimCliente.ts` does exactly one
