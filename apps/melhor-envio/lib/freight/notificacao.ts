@@ -5,11 +5,7 @@
 import { createHash } from 'node:crypto';
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { z } from 'zod';
-import {
-  notificationResilienceFields,
-  parseRef,
-  toOuterRefOrNull,
-} from '@delfrance/schemas';
+import { notificationResilienceFields, parseRef, toOuterRefOrNull } from '@delfrance/schemas';
 import {
   notificacaoMelhorEnvioCollection,
   pedidoCollection,
