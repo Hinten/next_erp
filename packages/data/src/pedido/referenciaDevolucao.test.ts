@@ -178,6 +178,21 @@ describe('referenciarItensDaDevolucao', () => {
     ]);
   });
 
+  it('NEAR-MISS: an EARLIER edited-price line never takes the slot a LATER exact-price line matches (two passes)', () => {
+    // Det 1 @ 10, det 2 @ 20. The devolução lists an edited 15 FIRST, then a 10.
+    // One greedy pass would hand det 1 to the 15 and push the 10 onto det 2.
+    const notas = [
+      nota(CH1, [
+        { cProd: 'A', vUnCom: 10 },
+        { cProd: 'A', vUnCom: 20 },
+      ]),
+    ];
+    expect(referenciarItensDaDevolucao([linha('A', 15, 1), linha('A', 10, 2)], notas)).toEqual([
+      ref(CH1, 2),
+      ref(CH1, 1),
+    ]);
+  });
+
   it('claims each origin line at most once — a surplus line keeps the chave with nItem null (never 1072)', () => {
     const notas = [nota(CH1, [{ cProd: 'A' }])];
     expect(referenciarItensDaDevolucao([linha('A', 10, 1), linha('A', 10, 2)], notas)).toEqual([
@@ -241,6 +256,21 @@ describe('preencherReferenciasPendentes (the Fiscal tab button)', () => {
       { ...linha('A', 10, 2), dfeReferenciado: null },
     ];
     expect(preencherReferenciasPendentes(itens, notas)).toEqual([ref(CH1, 1), ref(CH1, 2)]);
+  });
+
+  it('NEAR-MISS: the button places exact-price lines first too — an edited line never takes their slot', () => {
+    const notas = porOrigem({
+      o1: [
+        nota(CH1, [
+          { cProd: 'A', vUnCom: 10 },
+          { cProd: 'A', vUnCom: 20 },
+        ]),
+      ],
+    });
+    expect(preencherReferenciasPendentes([linha('A', 15, 1), linha('A', 10, 2)], notas)).toEqual([
+      ref(CH1, 2),
+      ref(CH1, 1),
+    ]);
   });
 
   it('fills from the ONE origin whose notas carry the product', () => {
