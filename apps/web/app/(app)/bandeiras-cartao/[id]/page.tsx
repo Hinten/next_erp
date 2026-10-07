@@ -16,6 +16,7 @@ export default function BandeiraCartaoPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pagamento.write);
+  const { allowed: canDelete } = usePermission(PERM.pagamento.delete);
   const db = getFirebaseFirestore();
 
   async function handleDelete(id: string) {
@@ -42,7 +43,7 @@ export default function BandeiraCartaoPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/bandeiras-cartao')}
       />

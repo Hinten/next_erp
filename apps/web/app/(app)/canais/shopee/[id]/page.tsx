@@ -19,6 +19,7 @@ export default function ContaShopeePage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
+  const { allowed: canDelete } = usePermission(PERM.integracao.delete);
   const db = getFirebaseFirestore();
 
   async function handleDelete(id: string) {
@@ -57,7 +58,7 @@ export default function ContaShopeePage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/canais/shopee')}
       />

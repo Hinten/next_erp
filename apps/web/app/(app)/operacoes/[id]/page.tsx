@@ -25,6 +25,7 @@ export default function OperacaoPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.fiscal.write);
+  const { allowed: canDelete } = usePermission(PERM.fiscal.delete);
   const db = getFirebaseFirestore();
 
   const fields = useMemo<Record<string, FieldConfig>>(
@@ -70,7 +71,7 @@ export default function OperacaoPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         deleteConfirmMessage="A operação e suas regras de imposto serão excluídas permanentemente."
         onSaved={() => router.replace('/operacoes')}
