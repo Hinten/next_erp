@@ -333,11 +333,14 @@ silently drops. Pinned twice: a load-time assert in `functions/src/index.ts`
 pre-existing stuck docs, and transmits approved EPECs once the filial leaves
 contingency. It covers both `nfev4` lotes and `cartacorrecao` records, and is
 gated per-doc by `proximaConsultaEm`, so it never consults ahead of a task's
-schedule. An `nfev4` doc with no `proximaConsultaEm` (the persist-before-send
-anchor, #512's `enviando` dispositions, imported legacy docs) waits
-`DEFAULT_STUCK_TIMEOUT_MS` from its last write instead, which keeps the sweep
-off a send still in flight (#1653); a `cartacorrecao` record with none is due at
-once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its four
+schedule — nor over a send in progress: every emit claim stamps the
+persist-before-send anchor with its send reservation (#1675, see "Overlapping
+emits" below), so the sweep waits it out whatever `timeoutMs` the manual route
+was given (that knob was an overlap vector). An `nfev4` doc with no
+`proximaConsultaEm` (the chave-less batch placeholder, #512's `enviando`
+dispositions — whose outcome write released the reservation —, imported legacy
+docs) waits `DEFAULT_STUCK_TIMEOUT_MS` from its last write instead (#1653); a
+`cartacorrecao` record with none is due at once. No `gcloud scheduler` job to wire — it deploys with the codebase. Its four
 per-item catches follow rule 6 through ONE table (`orchestrator/falhas.ts`,
 `descreverFalhaConhecida`, #1654): a failure of a known class — the NF-e and
 orchestrator classes, `ZodError`, the Cloud Tasks enqueue's
@@ -407,12 +410,14 @@ else — a protNFe for another chave included — is a blocking terminal
 (`terminalBloqueante`: 104 inside a 104 reply, else 103). OUR protNFe carrying
 a duplicidade (204/205/218/635) or a 106 reads its consSit through the same
 table — our 204 inside a 104 + consSit 217 is a blocking `error` 104, never
-`rejeitada`. Those three are written under the same lote guard. The pós-EPEC transmission
-(`origem 'pos-epec'`) keeps its old handling byte for byte (follow-up). ⚠️ The
-anchors this leaves are recovered by the sweep's consult-by-chave branch for
-docs without an `nRec`, which is still uncounted, unguarded and blind to the
-recovery table — a 204/635 anchor whose consSit later answers 217 turns
-`rejeitada` there (follow-up).
+`rejeitada`. Those three — and, since #1675, every other write of the run — are
+written under the same lote guard. The pós-EPEC transmission
+(`origem 'pos-epec'`) keeps its old handling byte for byte (follow-up, #1730),
+its writes owned by its claim's idLote (#1675). ⚠️ The anchors this leaves are
+recovered by the sweep's consult-by-chave branch for docs without an `nRec`,
+which is still uncounted and blind to the recovery table — a 204/635 anchor
+whose consSit later answers 217 turns `rejeitada` there (follow-up, #1717). Its
+write is guarded by the scan's read since #1675 (see below).
 
 **A batch member's failure is reported only for a known class (#1654 §3).**
 `emitirPedidosLote` files a member's failure as an `EmitError` through
@@ -441,7 +446,7 @@ app's own pre-send 503, recognised by its body `error: 'NF-e runtime not
 ready'` (`isRuntimeNotReadyBeforeSend`, `apps/web/lib/nfe/withNFeRetry.ts`),
 never by `NFeRuntimeNotReadyError` alone: the client maps every 503 to that
 class, Cloud Run's own mid-request one included. An emit re-POST is a no-op
-only for a bloqueada or `nRec`-in-flight pedido, and
+only for a bloqueada, `nRec`-in-flight or still-being-sent pedido (#1675), and
 `runChunkAllocateTx` / `runAllocateGenerateSignTx` REGENERATE and RE-SEND every
 `rejeitada`/`error` one, so a retried lote re-sent whatever the lost attempt had
 just seen refused. A transient 5xx on emit now reaches the operator, who
@@ -449,6 +454,61 @@ re-clicks — the lote dialog calls the outcome of any failure but a 400/401/403
 or that 503 unknown, and points at the NF column first. ⚠️ **Deploy apps/web no later than apps/nfe**: an older web re-POSTs
 the new 500 up to three times, each re-POST re-sending the members the previous
 attempt left `rejeitada`/`error`.
+
+**Overlapping emits (#1675).** One live run per nfev4 doc. While an emit's SOAP
+call is in flight its anchor (`enviando`, chave + `xml_assinado`, no `nRec`) is
+indistinguishable from a #396 crash-window doc, so a second emit — a re-click, a
+second tab, the reprint path's 30 s deadline, the sweep racing an operator —
+used to retransmit the stored bytes over the live run, and both runs' outcome
+writes were last-writer-wins. Now:
+- **The send reservation.** Every claim that is about to call SEFAZ stamps
+  `proximaConsultaEm` at `now + ENVIO_EM_CURSO_MS` (360 s = App Hosting's 300 s
+  ceiling + 60 s; pinned by `http-client-timeout-ceiling.test.js`) on the doc it
+  sends: the single path's allocation transaction (fresh, regenerated, or a
+  crash-window retransmit), batch 4a for stored-bytes members, batch 4b's anchor
+  write, and the pós-EPEC claim. `envioEmCurso` (audit.ts) reads it — µs only,
+  never against the ms `ultima_modificacao` — on a doc with no `nRec` that is
+  `enviando`, `aguardandoResposta` or `'p'`. A hit is answered with the doc as
+  is (`reused: true`, HTTP 200; apps/web says "NF-e em processamento"), with no
+  SOAP call and no número consumed. The run's own outcome write releases it
+  (`buildPersistData` always rewrites the field); a thrown SOAP/transport error
+  releases nothing — the reservation expires, after which a crashed run's anchor
+  is a crash window again and a re-emit retransmits it (the MOC's
+  pendente-de-retorno caution: SEFAZ may still be processing). The same gate
+  holds a re-emit of a paced no-receipt `aguardandoResposta` anchor until it is
+  due — about 2 min, one hour after a 656 (the consumo-indevido wait).
+- **The idLote is the claim token.** Every write an emit run makes in answer to
+  its SEFAZ round-trip — the main sync outcome (proc swap and a recovered 539's
+  chave swap included), the async 103 hand-off, the EPEC event, the pós-EPEC
+  468 — goes through `persistPatchUnlessFinal` with `expectedIdLote`: a run that
+  outlived its reservation while another emit claimed the doc reports the live
+  doc as `reused` and writes (and enqueues) nothing. `requireInFlight` is
+  deliberately not added: an authoritative 100 still lands over a stale
+  `rejeitada`.
+- **Consult writes are owned by their read.** `consultarChavePersistida` (the
+  manual verify and the `consultarPedido` CLI) and the sweep's no-nRec consult
+  decide on a doc read BEFORE their SOAP call, so they write with
+  `expectedUpdateTime` (the snapshot's `updateTime` as read) +
+  `refuseWhileReserved`: a doc written since, or under a live send, is left
+  alone. Without it a verify that read the doc just before an emit claimed it
+  wrote 217 → `rejeitada` over the live send, and the next emit regenerated.
+- **One chave per número on the batch path.** Between the chunk transaction
+  (4a, placeholder or reuse member stamped with the chunk's idLote — reuse
+  members WITHOUT a reservation, so a failed generate never holds a
+  fix-and-resend) and 4b's anchor write, a single emit may claim the doc and
+  send its own chave for that nNF, or a consult may write a blocking terminal
+  (same idLote). 4b writes through `gravarAncoraDoLote`, a transaction that
+  re-checks every premise 4a decided on (idLote, not final, no blocking cStat,
+  no receipt in flight, no live reservation): a refused member is dropped from
+  the lote and reported with the live doc.
+- **The pós-EPEC claim.** `transmitirPosEpec` stamps its fresh idLote + the
+  reservation through `reivindicarEnvio` before sending; an operator emit and the
+  sweep can no longer both transmit one `'p'` doc.
+⚠️ Cross-slot overlaps (a re-emit after a contingency-mode switch lands in
+another `s1`/`s4`/`s6`/`s7` slot) are a separate follow-up (#1806), and so is the
+sweep consulting an in-flight EPEC anchor at the home SEFAZ (#1807). Deploy the App
+Hosting backend and `functions:nfe` in the SAME window: an old sweep transmits
+a `'p'` doc without claiming it.
 
 `POST /api/nfe/processar-pendentes` still exists, but only as a **manual/ops
 trigger** for that same core (`lib/nfe/handlers/runProcessarPendentes.ts`),

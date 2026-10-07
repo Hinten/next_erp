@@ -282,6 +282,15 @@ export const nfeSchema = z.object({
    * whose `proximaConsultaEm` is in the future. Cleared to `null` on any
    * terminal outcome. Microseconds since epoch (the project datetime
    * standard — see `@delfrance/core/datetime`).
+   *
+   * ALSO "send in progress until" (#1675): every emit claim that is about to
+   * call SEFAZ stamps it `ENVIO_EM_CURSO_MS` ahead on the doc it sends (the
+   * persist-before-send anchor, a retransmitted crash-window anchor, a batch
+   * member's 4b anchor, a pós-EPEC transmission), and the run's own outcome
+   * write releases it. On a doc with no `nRec` that is in flight or
+   * EPEC-approved, a future value means NOBODY else may send it — an emit is
+   * answered with the in-flight doc — nor write it from a consult
+   * (`envioEmCurso` in `apps/nfe`).
    */
   proximaConsultaEm: microsSinceEpoch().nullable().default(null),
 

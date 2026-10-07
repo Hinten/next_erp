@@ -62,12 +62,15 @@ export interface EmitResult {
   /**
    * `true` when the dedup branch short-circuited because an existing
    * nfev4 doc was already in a `STATUS_BLOQUEADORES` cStat — no fresh
-   * SEFAZ call was made. Also `true` for a no-receipt disposition — a #512
-   * lote member, or a sync reply and its inline consult's anchor / terminal
-   * (#1654 §1) — that was NOT persisted because the doc went final or was
-   * re-stamped by another lote mid-flight: the result is that doc's live
-   * state, written by another run. `false` for every other path (fresh
-   * emission or rejeitada-retry that did re-call SEFAZ).
+   * SEFAZ call was made — or because a send is already in progress on the
+   * doc (#1675, `envioEmCurso`: another emit's SOAP call has not answered,
+   * or a paced retry is pending; a pós-EPEC claim refused the same way).
+   * Also `true` for ANY write of this run's SEFAZ round-trip that was NOT
+   * persisted because the doc went final or was re-stamped by another lote
+   * mid-flight (#512, #1654 §1, #1675 — the main outcome, the async hand-off,
+   * the EPEC event, batch 4b's anchor): the result is that doc's live state,
+   * written by another run. `false` for every other path (fresh emission or
+   * rejeitada-retry that did re-call SEFAZ).
    */
   readonly reused: boolean;
 }

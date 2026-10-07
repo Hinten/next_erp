@@ -73,13 +73,20 @@ const LINHAS = [
  * from the server: a lease that expires while the request that holds it can
  * still be running lets a SECOND request take over a non-idempotent operation
  * the first is still performing — for the comprar claim, paying for a second
- * label. So the lease must outlive the platform's own 504 plus the margin.
+ * label; for the NF-e send reservation (#1675), retransmitting a lote over a
+ * live SOAP call. So the lease must outlive the platform's own 504 plus the
+ * margin.
  */
 const LEASES = [
   {
     arquivo: 'apps/melhor-envio/lib/freight/compraEtiqueta.ts',
     constante: 'COMPRA_ETIQUETA_LEASE_MS',
     backend: 'apps/melhor-envio',
+  },
+  {
+    arquivo: 'apps/nfe/lib/nfe/orchestrator/audit.ts',
+    constante: 'ENVIO_EM_CURSO_MS',
+    backend: 'apps/nfe',
   },
 ];
 
@@ -220,7 +227,7 @@ describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', ()
   });
 
   it.each(LEASES)(
-    '$constante (server lease) ≥ the $backend ceiling + margin (#1677)',
+    '$constante (server lease) ≥ the $backend ceiling + margin (#1677, #1675)',
     ({ arquivo, constante, backend }) => {
       const leaseMs = lerEscalarMs(readFileSync(resolve(REPO_ROOT, arquivo), 'utf8'), constante);
       const { tetoS } = tetoDoBackendS(backend);
@@ -228,7 +235,8 @@ describe('HTTP client `longo` budgets outlast their backend ceiling (#1094)', ()
         leaseMs,
         `${constante} (${String(leaseMs)} ms) must be ≥ ${backend}'s ceiling (${String(tetoS)} s) + ` +
           `${String(MARGEM_MS)} ms — otherwise the lease expires while its own request can still be ` +
-          'running, and a second request takes over a purchase that is still in progress.',
+          'running, and a second request takes over a non-idempotent operation (a label purchase, ' +
+          'an NF-e send) that is still in progress.',
       ).toBeGreaterThanOrEqual(tetoS * 1000 + MARGEM_MS);
     },
   );

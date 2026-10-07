@@ -131,12 +131,59 @@ describe('notificationForNFeResult', () => {
     expect(n.message).toContain('Aguarde alguns minutos');
   });
 
-  it('reused=true → yellow "já emitida" toast (dedup skip), overrides estado branch', () => {
+  it('reused=true on an aprovada doc → yellow "já emitida" toast (dedup skip), overrides the estado branch', () => {
     const n = notificationForNFeResult(emitResult({ reused: true }));
     expect(n.color).toBe('yellow');
     expect(n.title).toBe('NFe já emitida');
     expect(n.message).toContain('pulada');
     expect(n.message).toContain('100');
+  });
+
+  // #1675 — `reused` now also means "a send is in progress on this doc", so the
+  // estado decides the copy: "já emitida" would tell the operator a NF-e exists
+  // when the first send has not even answered.
+  it.each([ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])(
+    'reused=true on an in-flight doc (%s) → blue "em processamento", NOT "já emitida" (#1675)',
+    (estado) => {
+      const n = notificationForNFeResult(
+        emitResult({ reused: true, estado, cStat: '', xMotivo: '', nRec: null }),
+      );
+      expect(n.color).toBe('blue');
+      expect(n.title).toBe('NF-e em processamento');
+      expect(n.message).toContain('nenhum novo envio foi feito');
+    },
+  );
+
+  it('reused=true on an error doc another run wrote → red with its cStat, NOT "já emitida" (#1675)', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        reused: true,
+        estado: ESTADO_NFE.error,
+        cStat: '656',
+        xMotivo: 'Rejeicao: Consumo Indevido',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('red');
+    expect(n.message).toContain('cStat=656');
+    expect(n.message).toContain('nenhum novo envio foi feito');
+  });
+
+  it('reused=true on an EPEC-approved doc → the EPEC arms (its transmission is still pending), NOT "já emitida" (#1675)', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        reused: true,
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '135',
+        xMotivo: 'Evento registrado',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('teal');
+    expect(n.title).toBe('EPEC registrado');
+    // …and never the arms that tell the operator to emit again.
+    expect(n.message).toContain('nenhum novo envio foi feito');
+    expect(n.message).not.toContain('emita novamente');
   });
 });
 

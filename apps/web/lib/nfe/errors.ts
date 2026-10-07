@@ -210,10 +210,49 @@ export function orientacaoRejeicaoNFe(
  * Includes a defensive default for any unexpected estado.
  */
 export function notificationForNFeResult(result: NFeEmitResult): NotificationShape {
-  // `reused: true` means the dedup branch short-circuited: the pedido
-  // already had an nfev4 doc in a bloqueada cStat (100/101/102/...).
-  // Show a distinct yellow toast so the user knows their click was
-  // a no-op rather than a fresh authorization.
+  // `reused: true` means the server sent nothing for this click and reports the
+  // doc's live state: a doc in a bloqueada cStat (100/101/102/...), a send
+  // already in progress (#1675), or a reply refused because another run owns
+  // the doc. The estado says which.
+  //
+  // In flight: another emit of this NF-e is mid-SOAP, or a paced retry is
+  // pending (up to 6 min, one hour after a 656) — never "já emitida".
+  if (
+    result.reused &&
+    (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta)
+  ) {
+    return {
+      title: 'NF-e em processamento',
+      message:
+        'Outro envio desta NF-e está em andamento ou aguardando nova tentativa — nenhum novo ' +
+        'envio foi feito. Confira a coluna NF antes de emitir de novo.',
+      color: 'blue',
+    };
+  }
+  // Another run's error (e.g. a 656) — say what it is, never "já emitida".
+  if (result.reused && result.estado === ESTADO_NFE.error) {
+    return {
+      title: 'NF-e com erro',
+      message: `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito.`,
+      color: 'red',
+    };
+  }
+  // An EPEC-approved doc this click did not transmit: its full NF-e is being
+  // transmitted right now by another emit or the sweep, or waits for the
+  // contingência to be switched off — never "já emitida", and never the arms
+  // below, which tell the operator to emit again.
+  if (result.reused && result.estado === ESTADO_NFE.epecAprovado) {
+    return {
+      title: 'EPEC registrado',
+      message:
+        `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito: a transmissão ` +
+        'da NF-e completa já está em andamento, ou é feita automaticamente quando a ' +
+        'contingência for desligada.',
+      color: 'teal',
+    };
+  }
+  // A bloqueada short-circuit: a distinct yellow toast so the user knows the
+  // click was a no-op rather than a fresh authorization.
   if (result.reused) {
     return {
       title: 'NFe já emitida',

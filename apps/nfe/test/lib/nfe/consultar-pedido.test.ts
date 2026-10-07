@@ -66,6 +66,9 @@ import { consultarPedido } from '../../../lib/nfe/orchestrator/consultar';
 const CHAVE = '35260614200166000187550010000000091400000010';
 const PEDIDO = 'PED-1';
 
+/** The slot's `updateTime` as the scan reads it — what the guarded write must carry (#1675). */
+const LIDO = { isEqual: () => true, toMillis: () => 1 };
+
 /** Seed the pedido's nfev4 slot scan (`nfev4Collection.ref(...).get()`) with one doc. */
 function seedSlot(over: Record<string, unknown> = {}): void {
   const data = {
@@ -82,7 +85,14 @@ function seedSlot(over: Record<string, unknown> = {}): void {
   };
   vi.mocked(nfev4Collection.ref).mockReturnValue({
     get: async () => ({
-      docs: [{ id: 's1', ref: { path: `pedidos/${PEDIDO}/nfev4/s1` }, data: () => data }],
+      docs: [
+        {
+          id: 's1',
+          ref: { path: `pedidos/${PEDIDO}/nfev4/s1` },
+          updateTime: LIDO,
+          data: () => data,
+        },
+      ],
     }),
   } as never);
   vi.mocked(nfev4Collection.docRef).mockReturnValue({
@@ -189,6 +199,7 @@ describe('consultarPedido — post-refactor sanity', () => {
       cStatAtual: '101',
       xMotivoAtual: 'Cancelamento de NF-e homologado',
       nRecAtual: null,
+      chaveAtual: null,
     });
 
     const r = await consultarPedido({} as never, {} as never, PEDIDO);
@@ -197,7 +208,76 @@ describe('consultarPedido — post-refactor sanity', () => {
       estado: ESTADO_NFE.cancelada,
       cStat: '101',
       xMotivo: 'Cancelamento de NF-e homologado',
-      reused: false,
+      // #1675 — deliberately flipped from `false`: nothing was written, so the
+      // reported state is another run's, never this consult's outcome.
+      reused: true,
+    });
+  });
+});
+
+describe('consultarPedido — a send in progress (#1675)', () => {
+  it.each([ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])(
+    'a %s doc with no receipt under a future reservation → returned as is, reused, NO SEFAZ call, NO write',
+    async (estado) => {
+      seedSlot({ estado, idLote: '7', proximaConsultaEm: (Date.now() + 60_000) * 1000 });
+
+      const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+      expect(r).toMatchObject({ estado, reused: true });
+      expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+      expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+      expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a REFUSED write reports the live doc as reused — a state another run wrote, not this consult’s', async () => {
+    seedSlot();
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValue({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: CHAVE,
+    });
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    // The live doc's truth only: no cStat/xMotivo of its own yet, never this
+    // consult's 217.
+    expect(r).toMatchObject({ estado: ESTADO_NFE.enviando, cStat: '', xMotivo: '', reused: true });
+  });
+
+  it('a REFUSED write reports the live doc’s chave (another run regenerated it), not the one this call read', async () => {
+    seedSlot();
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+    const CHAVE_VIVA = `${CHAVE.slice(0, 43)}${CHAVE.endsWith('9') ? '0' : '9'}`;
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValue({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: CHAVE_VIVA,
+    });
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    expect(r).toMatchObject({ chave: CHAVE_VIVA, reused: true });
+  });
+
+  it('near-miss: an EXPIRED reservation is consulted, and the write is owned by the read (updateTime + no live send)', async () => {
+    seedSlot({ idLote: '7', proximaConsultaEm: (Date.now() - 60_000) * 1000 });
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', '100') as never);
+
+    await consultarPedido({} as never, {} as never, PEDIDO);
+
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistPatchUnlessFinal)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistPatchUnlessFinal).mock.calls[0]![4]).toEqual({
+      expectedUpdateTime: LIDO,
+      refuseWhileReserved: true,
     });
   });
 });
@@ -283,6 +363,7 @@ describe('consultarPedido — a recovered 539 swaps the chave only in the guarde
       cStatAtual: '101',
       xMotivoAtual: 'Cancelamento de NF-e homologado',
       nRecAtual: 'REC-1',
+      chaveAtual: null,
     });
 
     const r = await consultarPedido({} as never, {} as never, PEDIDO);
@@ -294,7 +375,9 @@ describe('consultarPedido — a recovered 539 swaps the chave only in the guarde
       estado: ESTADO_NFE.cancelada,
       cStat: '101',
       chave: CHAVE,
-      reused: false,
+      // #1675 — deliberately flipped from `false`: the refused write reports a
+      // state another run wrote.
+      reused: true,
     });
   });
 });

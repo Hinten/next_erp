@@ -260,10 +260,11 @@ export interface MaybeStuckNFe {
  * is at least `timeoutMs` old (the bound is inclusive).
  *
  * The backstop sweep (`runProcessarPendentes` in `apps/nfe`) applies it only to
- * docs with no `proximaConsultaEm` of their own — the persist-before-send
- * anchor, the chave-less batch placeholder, #512's `enviando` dispositions and
- * imported legacy docs — and recovers the ones that come back true. A paced
- * doc is judged by its `proximaConsultaEm` instead.
+ * docs with no `proximaConsultaEm` of their own — the chave-less batch
+ * placeholder, #512's `enviando` dispositions and imported legacy docs — and
+ * recovers the ones that come back true. A paced doc is judged by its
+ * `proximaConsultaEm` instead, and so, since #1675, is the persist-before-send
+ * anchor: every emit claim stamps it with its send reservation.
  *
  * SEFAZ commits to 95% of lotes within 3 minutes; the 5-minute default is a
  * small safety margin past that. Being longer than the 60 s SOAP timeout, it

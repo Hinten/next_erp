@@ -27,11 +27,13 @@
  *     `nSeqEvento`; a re-sent `inutilizar` of an already-homologada range
  *     returns cStat 563, which `inutilizar.ts` surfaces as a rejection (unlike
  *     `cancelar`'s 573); and an emit re-POST is a no-op only for a pedido
- *     that is bloqueada or in flight on a receipt (`nRec`) — a #396 anchor is
- *     retransmitted with its stored bytes, and a `rejeitada`/`error` one is
- *     REGENERATED and RE-SENT (`runAllocateGenerateSignTx`,
- *     `runChunkAllocateTx` in apps/nfe), so a re-POST after a lost response
- *     re-sends whatever the first request had just seen refused (#1654 §3).
+ *     that is bloqueada, in flight on a receipt (`nRec`), or still being sent
+ *     — a re-POST that overlaps the first run gets the in-flight doc back
+ *     (#1675, the server's send reservation). Once the first run has
+ *     ANSWERED, a `rejeitada`/`error` one is REGENERATED and RE-SENT
+ *     (`runAllocateGenerateSignTx`, `runChunkAllocateTx` in apps/nfe), so a
+ *     re-POST after a lost response re-sends whatever the first request had
+ *     just seen refused (#1654 §3).
  *     `emitir-lote` also answers 500 for a failure of an unknown class (a bug)
  *     by design. So a post-send network/5xx must never auto-retry these — only
  *     the 503 apps/nfe answers before any SEFAZ contact, recognised by its

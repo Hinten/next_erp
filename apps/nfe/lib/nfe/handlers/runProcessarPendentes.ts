@@ -38,7 +38,7 @@ import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '../filial-cert';
 import {
   buildProcForAuthorizedOutcome,
-  persistPatch,
+  persistPatchUnlessFinal,
   swapAnchorForProc,
 } from '../orchestrator/audit';
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
@@ -89,13 +89,15 @@ interface PendingDoc {
 
 /**
  * Backstop due-gate: a doc is due iff its `proximaConsultaEm` (µs epoch) has
- * passed. A doc with none — the persist-before-send anchor, the chave-less
- * batch placeholder, #512's `enviando` dispositions, imported legacy docs —
- * waits the stuck timeout instead: `isStuckEnviando` judges its stored
- * `ultima_modificacao` against `timeoutMs`, which keeps the sweep off a send
- * still in flight (#1653). Respecting `proximaConsultaEm` is what keeps the
- * sweep from consulting a lote the Cloud Task is already pacing — the
- * consumo-indevido guard (#77).
+ * passed. Respecting it is what keeps the sweep from consulting a lote the
+ * Cloud Task is already pacing — the consumo-indevido guard (#77) — and, since
+ * #1675, from consulting a doc whose send is still in progress: every emit
+ * claim stamps the persist-before-send anchor with its send reservation
+ * (`envioEmCurso`), so the sweep waits it out whatever `timeoutMs` the manual
+ * route was given. A doc with none — the chave-less batch placeholder, #512's
+ * `enviando` dispositions (their outcome write released the reservation),
+ * imported legacy docs — waits the stuck timeout instead: `isStuckEnviando`
+ * judges its stored `ultima_modificacao` against `timeoutMs` (#1653).
  */
 function isDue(data: PendingDoc, now: Date, timeoutMs: number): boolean {
   if (data.proximaConsultaEm != null) {
@@ -262,8 +264,10 @@ export async function runProcessarPendentes(args: {
           nfeRef: doc.ref,
           nota: doc.data() as NotaFiscalEletronica,
         });
-        if (result.estado === ESTADO_NFE.epecAprovado) {
-          stillPending++; // 468 — EPEC not yet synced at the home SEFAZ
+        // `reused`: the claim was refused (#1675) — another transmission owns
+        // the doc, so this run transmitted nothing and recovered nothing.
+        if (result.reused || result.estado === ESTADO_NFE.epecAprovado) {
+          stillPending++; // 468 (EPEC not yet synced at the home SEFAZ), or a refused claim
         } else {
           recovered++;
         }
@@ -350,18 +354,23 @@ export async function runProcessarPendentes(args: {
         logTag: 'nfe/processar-pendentes',
         chave: data.chave,
       });
-      // persistPatch (not an inline merge) so its nRec preservation applies
-      // here too: a consSit outcome carries no receipt, and overwriting the
-      // nRec saved on cStat=103 with null would orphan the lote-poll trail.
-      // A recovered 539's chave swap rides this same merge (#1654 §2d) —
-      // atomic with the outcome, though this plain persist still cannot be
-      // refused (follow-up). A proc and a swap never meet.
-      await persistPatch(
+      // The shared persist (not an inline merge) so its nRec preservation
+      // applies here too: a consSit outcome carries no receipt, and overwriting
+      // the nRec saved on cStat=103 with null would orphan the lote-poll trail.
+      // A recovered 539's chave swap rides this same write (#1654 §2d) — atomic
+      // with the outcome. A proc and a swap never meet. Owned by THIS scan's
+      // read (#1675): the outcome was decided on the doc as scanned, so a doc
+      // written since (an emit claimed it and is sending, its owner's outcome
+      // landed) or under a live send is left alone — and swaps nothing.
+      const gravado = await persistPatchUnlessFinal(
+        fs,
         doc.ref,
         patch,
         nfeProcXml != null ? swapAnchorForProc(nfeProcXml) : extrasDaTrocaDeChave(chaveOverride),
+        { expectedUpdateTime: doc.updateTime, refuseWhileReserved: true },
       );
-      recovered++;
+      if (gravado.written) recovered++;
+      else stillPending++;
     } catch (e) {
       // Rule 6: only a known failure class is recorded; a bug aborts the run.
       const falha = descreverFalhaConhecida(e);

@@ -69,8 +69,11 @@ export const nfeEmitResultSchema = z.object({
   cStat: z.string(),
   xMotivo: z.string(),
   /**
-   * `true` when the server short-circuited because an existing nfev4 doc was
-   * already in a `STATUS_BLOQUEADORES` cStat.
+   * `true` when the server did NOT send this NF-e and reports the doc's live
+   * state instead: an existing nfev4 doc already in a `STATUS_BLOQUEADORES`
+   * cStat, a doc with a send already in progress (#1675 — another emit's SOAP
+   * call has not answered, or a paced retry is pending), or a reply the server
+   * refused to write because another run re-stamped the doc mid-flight.
    *
    * ⚠️ `.optional()` because the doc block says so in as many words —
    * "absent, for backward compat with older route responses". That is a
