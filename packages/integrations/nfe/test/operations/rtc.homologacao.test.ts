@@ -95,11 +95,16 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
-/** Sign, send (indSinc=1) and resolve one fixture; returns SEFAZ's verdict. */
+/**
+ * Sign, send (indSinc=1) and resolve one fixture; returns SEFAZ's verdict and
+ * the chave, so a later case can reference the nota (#1683). The chave embeds
+ * the emitente CNPJ: it may reach the public log only through `logSefaz` /
+ * `descreverSefaz`, which mask it.
+ */
 async function emitir(
   fixture: ReturnType<typeof buildHomologacaoFixture>,
   rotulo: string,
-): Promise<{ cStat: string; xMotivo: string }> {
+): Promise<{ cStat: string; xMotivo: string; chave: string }> {
   const out = generateNFe(fixture);
   const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
   const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
@@ -117,7 +122,7 @@ async function emitir(
   const cStat = prot?.infProt.cStat ?? ret.cStat;
   const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
   logSefaz(`${rotulo} protNFe`, { cStat, xMotivo });
-  return { cStat, xMotivo };
+  return { cStat, xMotivo, chave: out.chave };
 }
 
 /** Build the typed SefazCall context for one operation URL (tpAmb=2). */
@@ -222,4 +227,104 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
       `SEFAZ rejected the nota de débito 05 — ${descreverSefaz('rtc-debito05 protNFe', { cStat, xMotivo })}`,
     ).toBe('100');
   }, 180_000);
+});
+
+/**
+ * ⚠️ PROBE — NOT FOR MERGE AS WRITTEN (#1683). It RECORDS SEFAZ's verdict on
+ * five devolução shapes and asserts none of them: the point is to learn the
+ * answer, and an assertion would have to guess it. The permanent cases that
+ * replace it assert one exact cStat each.
+ *
+ * NT 2025.002 v1.51 VC02-14 (cStat 321) demands item-level references on a
+ * devolução, but an NT footnote limits the RTC validations to documents that
+ * carry IBS/CBS/IS. Which reading SEFAZ-SP applies decides how a devolução
+ * WITHOUT the Reforma Tributária must reference its origin:
+ *
+ *   P4 — RTC on,  NFref only            → 321 proves v1.51 is live here (control)
+ *   P1 — RTC off, NFref only            → 321: VC02-14 ignores RTC; 100: RTC-gated
+ *   P2 — RTC off, DFeReferenciado only  → 100: item refs work without RTC
+ *   P3 — RTC on,  DFeReferenciado only  → the target shape
+ *   P5 — RTC on,  2 lines, 1 referenced → 321: judged per item; 100: per nota
+ *
+ * Every devolução is interstate (RJ destinatário, CFOP 2202): 1.202 is on the
+ * old B25-70 exemption list, so it could pass for the wrong reason.
+ */
+describeOrSkip('SEFAZ-SP homologação — devolução reference PROBE (#1683, records only)', () => {
+  let nNF = 0;
+  let chaveOrigem: string | undefined;
+
+  beforeAll(() => {
+    if (!hasFullCreds) {
+      throw new Error(
+        'Live devolução probe requires real credentials. Missing one of: ' +
+          'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, NFE_TEST_IE. ' +
+          'Refusing to skip a fiscal live lane silently.',
+      );
+    }
+    nNF = seedNNF();
+  });
+
+  it('A — emits the 2-line origin saída the devoluções reference (cStat=100)', async () => {
+    const { cStat, xMotivo, chave } = await emitir(
+      buildHomologacaoFixture({
+        numeracao: nNF++,
+        serie: SEFAZ_HOM_RTC_SERIE,
+        cnpj: TEST_CERT!.cnpj,
+        ie: TEST_IE!,
+        itens: [
+          { cProd: 'SKU-A', vUnCom: 1500 },
+          { cProd: 'SKU-B', vUnCom: 700 },
+        ],
+      }),
+      'probe-A',
+    );
+    expect(
+      cStat,
+      `SEFAZ rejected the origin saída — ${descreverSefaz('probe-A protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+    chaveOrigem = chave;
+  }, 180_000);
+
+  const PROBES = [
+    { id: 'P4', rtc: true, referencia: 'nota' },
+    { id: 'P1', rtc: false, referencia: 'nota' },
+    { id: 'P2', rtc: false, referencia: 'item' },
+    { id: 'P3', rtc: true, referencia: 'item' },
+    { id: 'P5', rtc: true, referencia: 'parcial' },
+  ] as const;
+
+  for (const probe of PROBES) {
+    it(`${probe.id} — devolução, RTC ${probe.rtc ? 'on' : 'off'}, reference: ${probe.referencia} (records the cStat)`, async () => {
+      expect(chaveOrigem, 'the origin saída (case A) was not authorized').toBeDefined();
+      const ref = { chaveAcesso: chaveOrigem!, nItem: 1 };
+      const itens =
+        probe.referencia === 'parcial'
+          ? [
+              { cProd: 'SKU-A', vUnCom: 1500, dfeReferenciado: ref },
+              { cProd: 'SKU-B', vUnCom: 700 },
+            ]
+          : [
+              {
+                cProd: 'SKU-A',
+                vUnCom: 1500,
+                ...(probe.referencia === 'item' ? { dfeReferenciado: ref } : {}),
+              },
+            ];
+      const { cStat, xMotivo } = await emitir(
+        buildHomologacaoFixture({
+          numeracao: nNF++,
+          serie: SEFAZ_HOM_RTC_SERIE,
+          cnpj: TEST_CERT!.cnpj,
+          ie: TEST_IE!,
+          devolucao: true,
+          ...(probe.rtc ? { imposto: impostoCsosn102ComRtc(), emitRtc: true } : {}),
+          itens,
+          ...(probe.referencia === 'nota' ? { chNFeReferenciadas: [chaveOrigem!] } : {}),
+        }),
+        `probe-${probe.id}`,
+      );
+      // RECORDED, deliberately not asserted — see the block's header.
+      logSefaz(`#1683 PROBE RESULT ${probe.id}`, { cStat, xMotivo });
+    }, 180_000);
+  }
 });

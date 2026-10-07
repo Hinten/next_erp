@@ -2,7 +2,9 @@
  * Shared `GeneratorInput` fixture for the live homologação suites
  * (`emission.homologacao.test.ts`, `svc.homologacao.test.ts`).
  *
- * Single-item CSOSN 102 NF-e. **Stress-tested free-text fields**:
+ * Single-item CSOSN 102 NF-e by default; `itens` adds lines and `devolucao`
+ * turns it into the entrada a devolução pedido emits (#1683). **Stress-tested
+ * free-text fields**:
  * marketplaces frequently ship fiscally-dirty data into address / razão
  * social / complemento fields (accents, `@#%$[]{}` etc.) — the fixture
  * intentionally seeds those shapes so every live round-trip proves the
@@ -19,10 +21,12 @@ import {
   buildTotalXml,
   buildTranspXml,
   aggregateTotals,
+  fmtMoney,
   type AjusteIbsCbsItem,
   type Imposto,
 } from '../../src/tribute';
 import {
+  FIN_NFE_OPERACAO,
   IND_INTERMED_OPERACAO,
   IND_PRES_OPERACAO,
   MODO_GRUPOS_IMPOSTO,
@@ -123,47 +127,104 @@ export interface HomologacaoFixtureOpts {
    * cClassTrib, #330) — handed to BOTH builders, as apps/nfe does.
    */
   readonly ajuste?: AjusteIbsCbsItem;
+  /**
+   * The det lines, one quantity each (#1683). Default: ONE line, `SKU-A` at
+   * R$ 1.500,00 — byte-identical to the fixture before this option existed.
+   */
+  readonly itens?: ReadonlyArray<HomologacaoItem>;
+  /** `ide/NFref/refNFe` — a note-level reference (#1683's NFref-only probes). */
+  readonly chNFeReferenciadas?: readonly string[];
+  /**
+   * A devolução de venda (#1683): an ENTRADA (`tipo 0`, finNFe 4) the seller
+   * issues for goods its own customer sent back — the shape `apps/nfe` emits
+   * for a devolução pedido. tPag 90 / vPag 0 (a devolução carries no payment —
+   * `apps/nfe` defaults an empty pagamento list to exactly this), no `<cobr>`,
+   * no intermediador.
+   *
+   * ⚠️ The destinatário moves to RJ, so idDest=2 and the item CFOP defaults to
+   * the interstate **2202** — never 1202: 1.202 sits on the old MOC B25-70
+   * exemption list (NT 2013.005), so a devolução carrying it says nothing about
+   * whether SEFAZ demands a reference at all, and a probe would read
+   * "accepted" for the wrong reason.
+   */
+  readonly devolucao?: boolean;
 }
 
-/** Build a complete single-item `GeneratorInput` against homologação. */
+/** One det line of the fixture (#1683). */
+export interface HomologacaoItem {
+  readonly cProd: string;
+  readonly xProd?: string;
+  /** Unit price; the line is always quantity 1, so it is also `vProd`. */
+  readonly vUnCom: number;
+  /** Default `5102`, or `2202` on a {@link HomologacaoFixtureOpts.devolucao}. */
+  readonly cfop?: string;
+  /** `det/DFeReferenciado` — the origin item this line refers to. */
+  readonly dfeReferenciado?: { readonly chaveAcesso: string; readonly nItem?: number };
+}
+
+/** The fiscal address the devolução preset moves the destinatário to (idDest=2). */
+const ENDERECO_DEST_RJ = {
+  logradouro: 'Rua do Ouvidor',
+  numero: '50',
+  bairro: 'Centro',
+  complemento: null,
+  cep: '20040030',
+  codigoMunicipio: '3304557',
+  cidade: 'Rio de Janeiro',
+  estado: UF_SIGLA.RJ,
+} as const;
+
+/** Build a complete `GeneratorInput` against homologação (one line unless `itens` says otherwise). */
 export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): GeneratorInput {
   const imposto = opts.imposto ?? impostoCsosn102();
   const emitRtc = opts.emitRtc === true;
   const grupos = opts.grupos ?? MODO_GRUPOS_IMPOSTO.completo;
   const ajuste = opts.ajuste;
-  const item = {
-    nItem: 1,
+  const devolucao = opts.devolucao === true;
+  const linhas: ReadonlyArray<HomologacaoItem> = opts.itens ?? [
     // xProd flows through sanitizeNFeText — accents + restricted chars
     // here exercise the per-item sanitization path.
-    cProd: 'SKU-A',
+    { cProd: 'SKU-A', xProd: 'Mercadoria com acentuação — ÁÉÍÓÚ@#$%', vUnCom: 1500 },
+  ];
+  const itens = linhas.map((linha, i) => ({
+    nItem: i + 1,
+    cProd: linha.cProd,
     cEAN: 'SEM GTIN',
-    xProd: 'Mercadoria com acentuação — ÁÉÍÓÚ@#$%',
+    xProd: linha.xProd ?? `Mercadoria ${linha.cProd}`,
     NCM: '61099000',
-    CFOP: '5102',
+    CFOP: linha.cfop ?? (devolucao ? '2202' : '5102'),
     uCom: 'UN',
     qCom: 1,
-    vUnCom: 1500,
-    vProd: 1500,
+    vUnCom: linha.vUnCom,
+    vProd: linha.vUnCom,
     cEANTrib: 'SEM GTIN',
     uTrib: 'UN',
     qTrib: 1,
-    vUnTrib: 1500,
+    vUnTrib: linha.vUnCom,
     // qTrib matches the det's qCom/qTrib above: it is the per-unit PIS/COFINS
     // qBCProd, so the default (null PIS/COFINS) fixture's XML is unchanged.
     impostoXml: buildImpostoXml(
       imposto,
-      { vProd: 1500, qTrib: 1 },
+      { vProd: linha.vUnCom, qTrib: 1 },
       { emitRtc, grupos, ...(ajuste != null ? { ajuste } : {}) },
     ),
-  } as const;
+    ...(linha.dfeReferenciado != null ? { dfeReferenciado: linha.dfeReferenciado } : {}),
+  }));
+  // Every line is quantity 1 with no discount, freight or ST, so the note's
+  // vNF — the amount the payment and the duplicata must match — is Σ vUnCom.
+  const vTotal = linhas.reduce((soma, linha) => soma + linha.vUnCom, 0);
 
   const totals = aggregateTotals(
-    [{ item: { vProd: 1500, qTrib: 1 }, imposto, ...(ajuste != null ? { ajuste } : {}) }],
+    linhas.map((linha) => ({
+      item: { vProd: linha.vUnCom, qTrib: 1 },
+      imposto,
+      ...(ajuste != null ? { ajuste } : {}),
+    })),
     {},
     { emitRtc, grupos },
   );
 
-  return {
+  const fixture: GeneratorInput = {
     ambiente: 'homologacao',
     numeracao: opts.numeracao,
     serie: opts.serie,
@@ -319,7 +380,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       timestamp: null,
       ultimaModificacao: null,
     },
-    itens: [item],
+    itens,
     totalXml: buildTotalXml(totals),
     // Exercise the optional <transporta> block (carrier disclosure).
     // modFrete='0' = CIF (frete contratado pelo Remetente) — the
@@ -341,7 +402,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     pagXml: buildPagXml([
       {
         tPag: '17',
-        vPag: 1500,
+        vPag: vTotal,
         // SEFAZ rejects PIX with cStat=391 when the <card> block is
         // absent; tpIntegra='2' (standalone — the marketplace / PSP
         // is the acquirer, not an integrated POS) plus the PSP CNPJ
@@ -370,11 +431,11 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     cobr: {
       fat: {
         nFat: 'FAT-HOMOLOG-001',
-        vOrig: '1500.00',
+        vOrig: fmtMoney('vOrig', vTotal),
         vDesc: '0.00',
-        vLiq: '1500.00',
+        vLiq: fmtMoney('vLiq', vTotal),
       },
-      dup: [{ nDup: '001', dVenc: isoDatePlusDays(30), vDup: '1500.00' }],
+      dup: [{ nDup: '001', dVenc: isoDatePlusDays(30), vDup: fmtMoney('vDup', vTotal) }],
     },
     // <infAdic.infCpl> — fiscal complementary text shown on the
     // DANFE. Marketplaces typically inject order ID + buyer name
@@ -384,5 +445,28 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
         'Pedido marketplace #ML-HOMOLOG-001 — comprador: CLIENTE HOMOLOGACAO. ' +
         'Mercadoria sem valor fiscal — emitida em ambiente de homologacao.',
     },
+    ...(opts.chNFeReferenciadas != null ? { chNFeReferenciadas: opts.chNFeReferenciadas } : {}),
+  };
+  if (!devolucao) return fixture;
+
+  // The devolução preset — see {@link HomologacaoFixtureOpts.devolucao}.
+  // `infIntermed` and `cobr` are dropped by destructuring, never set to
+  // undefined: the generator reads presence.
+  const { infIntermed: _infIntermed, cobr: _cobr, ...semPagamento } = fixture;
+  return {
+    ...semPagamento,
+    operacao: {
+      ...fixture.operacao,
+      nome: 'Devolucao',
+      naturezaDaOperacao: 'Devolucao de venda',
+      tipo: 0,
+      finNFe: FIN_NFE_OPERACAO.devolucao,
+      indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
+      cfop: '1202',
+      cfopInterestadual: '2202',
+      ...opts.operacao,
+    },
+    enderecoDest: { ...fixture.enderecoDest, ...ENDERECO_DEST_RJ },
+    pagXml: buildPagXml([{ tPag: '90', vPag: 0 }]),
   };
 }
