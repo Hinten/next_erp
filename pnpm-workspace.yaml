@@ -31,14 +31,14 @@ catalog:
   firebase-functions: 7.3.2
   google-auth-library: ^10.6.2
   jsdom: ^29.1.1
-  # ⚠️ Exact, and COPIED as a literal into the 9 apps/*/package.json that have an
+  # ⚠️ Exact, and COPIED as a literal into the 10 apps/*/package.json that have an
   # apphosting.yaml — the App Hosting Next buildpack cannot read pnpm-lock.yaml and
   # blocks the deploy on the raw string `catalog:`. ⚠️ `packages/ui`'s devDependency is
   # now the SOLE remaining `catalog:` consumer (apps/webchat was the other, deleted with
   # the webchat widget): literalise that ONE spec and `cleanupUnusedCatalogs: true`
-  # deletes this line on the next install, leaving the 9 app pins with nothing to agree
+  # deletes this line on the next install, leaving the 10 app pins with nothing to agree
   # with. Guarded by packages/config-eslint/rules/apphosting-next-pinned.test.js.
-  # A bump = 10 edits. Keep this comment on its own lines: the guard reads the catalog
+  # A bump = 11 edits. Keep this comment on its own lines: the guard reads the catalog
   # with a line-anchored regex, which a trailing `# …` would break.
   next: 16.2.6
   node-forge: ^1.4.0
