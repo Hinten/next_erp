@@ -82,6 +82,20 @@ describe('danfe/model edge cases', () => {
     const REF = '35260514200166000187550010000000061000000010';
     const xml = PROCNFE_FIXTURE.replace('</ide>', `<NFref><refNFe>${REF}</refNFe></NFref></ide>`);
     expect(parseProcNFe(xml).ide.refNFes).toContain(REF);
+    expect(parseProcNFe(xml).ide.refDFes).toEqual([]);
+  });
+
+  it('maps the per-item DFeReferenciado chaves into ide.refDFes — distinct (#1683)', () => {
+    const REF = '35260514200166000187550010000000061000000010';
+    const ref = (nItem: number) =>
+      `<DFeReferenciado><chaveAcesso>${REF}</chaveAcesso><nItem>${nItem}</nItem></DFeReferenciado></det>`;
+    // Every det of the fixture references the same nota, by a different line.
+    let n = 0;
+    const xml = PROCNFE_FIXTURE.replace(/<\/det>/g, () => ref(++n));
+    expect(n).toBeGreaterThan(0);
+    const model = parseProcNFe(xml);
+    expect(model.ide.refDFes).toEqual([REF]);
+    expect(model.ide.refNFes).toEqual([]);
   });
 
   it('unescapes XML-escaped characters in text fields', () => {

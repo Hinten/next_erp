@@ -105,8 +105,10 @@ export const ESTADO_PEDIDO = {
 /**
  * `det/DFeReferenciado` for one item (NT 2025.002 Grupo VC): the item of ANOTHER
  * NF-e this line refers to — its chave and, usually, its `nItem` (1–990).
- * Required per item on some notas de crédito/débito and, once the NT's VC02-14
- * applies, on a devolução; mutually exclusive with the note-level
+ * Required per item on some notas de crédito/débito and on EVERY item of a
+ * devolução (VC02-14, cStat 321 — with or without the Reforma Tributária, as
+ * SEFAZ-SP answered in #1683; the devolução seeds fill it from the origin's
+ * authorized XML); mutually exclusive with the note-level
  * `chNFeReferenciadas` (`NFref`, rule 1010).
  *
  * The SHAPE is stored loosely, like `chNFeReferenciadas` (a string): the chave

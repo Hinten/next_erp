@@ -37,6 +37,10 @@
  * #330 part 3 read the NT. Same posture as the first: advisory on PR/push,
  * fatal on `workflow_dispatch`.
  *
+ * **Devolução (#1683)** — a 2-line origin saída, then two devoluções that
+ * reference it: by NFref alone with the RTC OFF (pinned at 321 — VC02-14 does
+ * not skip non-RTC notas) and per item with the RTC on (100).
+ *
  * **serie lane**: this test runs on **serie=4** (`SEFAZ_HOM_RTC_SERIE`) — full
  * lane registry in `../helpers/homologacao-seed.ts`. SEFAZ keys persistence on
  * serie, so it never collides with the other live suites at the (CNPJ, serie,
@@ -230,33 +234,25 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
 });
 
 /**
- * ⚠️ PROBE — NOT FOR MERGE AS WRITTEN (#1683). It RECORDS SEFAZ's verdict on
- * five devolução shapes and asserts none of them: the point is to learn the
- * answer, and an assertion would have to guess it. The permanent cases that
- * replace it assert one exact cStat each.
+ * Devolução references (NT 2025.002 v1.51 VC02-14, cStat 321, #1683) — pinned
+ * from what a one-time probe measured on 2026-10-07 (run 37629331453): NFref
+ * alone draws 321 WITH OR WITHOUT the Reforma Tributária, and item references
+ * are authorized (100). The RTC-OFF item-reference shape — the one this ERP
+ * emits for a filial without the RTC — runs end to end, FATAL, in
+ * `apps/nfe`'s orchestrator suite; these pin the two edges around it.
  *
- * NT 2025.002 v1.51 VC02-14 (cStat 321) demands item-level references on a
- * devolução, but an NT footnote limits the RTC validations to documents that
- * carry IBS/CBS/IS. Which reading SEFAZ-SP applies decides how a devolução
- * WITHOUT the Reforma Tributária must reference its origin:
- *
- *   P4 — RTC on,  NFref only            → 321 proves v1.51 is live here (control)
- *   P1 — RTC off, NFref only            → 321: VC02-14 ignores RTC; 100: RTC-gated
- *   P2 — RTC off, DFeReferenciado only  → 100: item refs work without RTC
- *   P3 — RTC on,  DFeReferenciado only  → the target shape
- *   P5 — RTC on,  2 lines, 1 referenced → 321: judged per item; 100: per nota
- *
- * Every devolução is interstate (RJ destinatário, CFOP 2202): 1.202 is on the
- * old B25-70 exemption list, so it could pass for the wrong reason.
+ * Every devolução here is interstate (RJ destinatário, CFOP 2202): 1.202 sits
+ * on the old B25-70 exemption list, so an NFref-only devolução carrying it
+ * could pass for the wrong reason, and the 321 pin would stop meaning anything.
  */
-describeOrSkip('SEFAZ-SP homologação — devolução reference PROBE (#1683, records only)', () => {
+describeOrSkip('SEFAZ-SP homologação — devolução references per item (VC02-14, #1683)', () => {
   let nNF = 0;
   let chaveOrigem: string | undefined;
 
   beforeAll(() => {
     if (!hasFullCreds) {
       throw new Error(
-        'Live devolução probe requires real credentials. Missing one of: ' +
+        'Live devolução test requires real credentials. Missing one of: ' +
           'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, NFE_TEST_IE. ' +
           'Refusing to skip a fiscal live lane silently.',
       );
@@ -264,7 +260,29 @@ describeOrSkip('SEFAZ-SP homologação — devolução reference PROBE (#1683, r
     nNF = seedNNF();
   });
 
-  it('A — emits the 2-line origin saída the devoluções reference (cStat=100)', async () => {
+  /** A devolução of line 1 of the origin, referenced at note or item level. */
+  function devolucao(rtc: boolean, referencia: 'nota' | 'item') {
+    return buildHomologacaoFixture({
+      numeracao: nNF++,
+      serie: SEFAZ_HOM_RTC_SERIE,
+      cnpj: TEST_CERT!.cnpj,
+      ie: TEST_IE!,
+      devolucao: true,
+      ...(rtc ? { imposto: impostoCsosn102ComRtc(), emitRtc: true } : {}),
+      itens: [
+        {
+          cProd: 'SKU-A',
+          vUnCom: 1500,
+          ...(referencia === 'item'
+            ? { dfeReferenciado: { chaveAcesso: chaveOrigem!, nItem: 1 } }
+            : {}),
+        },
+      ],
+      ...(referencia === 'nota' ? { chNFeReferenciadas: [chaveOrigem!] } : {}),
+    });
+  }
+
+  it('emits the 2-line origin saída the devoluções reference (cStat=100)', async () => {
     const { cStat, xMotivo, chave } = await emitir(
       buildHomologacaoFixture({
         numeracao: nNF++,
@@ -276,55 +294,33 @@ describeOrSkip('SEFAZ-SP homologação — devolução reference PROBE (#1683, r
           { cProd: 'SKU-B', vUnCom: 700 },
         ],
       }),
-      'probe-A',
+      'devolucao-origem',
     );
     expect(
       cStat,
-      `SEFAZ rejected the origin saída — ${descreverSefaz('probe-A protNFe', { cStat, xMotivo })}`,
+      `SEFAZ rejected the origin saída — ${descreverSefaz('devolucao-origem protNFe', { cStat, xMotivo })}`,
     ).toBe('100');
     chaveOrigem = chave;
   }, 180_000);
 
-  const PROBES = [
-    { id: 'P4', rtc: true, referencia: 'nota' },
-    { id: 'P1', rtc: false, referencia: 'nota' },
-    { id: 'P2', rtc: false, referencia: 'item' },
-    { id: 'P3', rtc: true, referencia: 'item' },
-    { id: 'P5', rtc: true, referencia: 'parcial' },
-  ] as const;
+  it('refuses a devolução referencing by NFref alone even WITHOUT the Reforma Tributária (cStat=321)', async () => {
+    expect(chaveOrigem, 'the origin saída was not authorized').toBeDefined();
+    const { cStat, xMotivo } = await emitir(devolucao(false, 'nota'), 'devolucao-nfref');
+    // If this turns 100, SEFAZ relaxed VC02-14 for non-RTC notas: the ERP's
+    // unconditional rule (`violacoesDaReferenciaDaDevolucao`) is then stricter
+    // than SEFAZ — still safe, but worth re-reading the NT.
+    expect(
+      cStat,
+      `SEFAZ no longer refuses an NFref-only devolução — ${descreverSefaz('devolucao-nfref protNFe', { cStat, xMotivo })}`,
+    ).toBe('321');
+  }, 180_000);
 
-  for (const probe of PROBES) {
-    it(`${probe.id} — devolução, RTC ${probe.rtc ? 'on' : 'off'}, reference: ${probe.referencia} (records the cStat)`, async () => {
-      expect(chaveOrigem, 'the origin saída (case A) was not authorized').toBeDefined();
-      const ref = { chaveAcesso: chaveOrigem!, nItem: 1 };
-      const itens =
-        probe.referencia === 'parcial'
-          ? [
-              { cProd: 'SKU-A', vUnCom: 1500, dfeReferenciado: ref },
-              { cProd: 'SKU-B', vUnCom: 700 },
-            ]
-          : [
-              {
-                cProd: 'SKU-A',
-                vUnCom: 1500,
-                ...(probe.referencia === 'item' ? { dfeReferenciado: ref } : {}),
-              },
-            ];
-      const { cStat, xMotivo } = await emitir(
-        buildHomologacaoFixture({
-          numeracao: nNF++,
-          serie: SEFAZ_HOM_RTC_SERIE,
-          cnpj: TEST_CERT!.cnpj,
-          ie: TEST_IE!,
-          devolucao: true,
-          ...(probe.rtc ? { imposto: impostoCsosn102ComRtc(), emitRtc: true } : {}),
-          itens,
-          ...(probe.referencia === 'nota' ? { chNFeReferenciadas: [chaveOrigem!] } : {}),
-        }),
-        `probe-${probe.id}`,
-      );
-      // RECORDED, deliberately not asserted — see the block's header.
-      logSefaz(`#1683 PROBE RESULT ${probe.id}`, { cStat, xMotivo });
-    }, 180_000);
-  }
+  it('authorizes a devolução referencing the origin per item, with the Reforma Tributária (cStat=100)', async () => {
+    expect(chaveOrigem, 'the origin saída was not authorized').toBeDefined();
+    const { cStat, xMotivo } = await emitir(devolucao(true, 'item'), 'devolucao-item-rtc');
+    expect(
+      cStat,
+      `SEFAZ rejected the item-referenced devolução — ${descreverSefaz('devolucao-item-rtc protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
+  }, 180_000);
 });

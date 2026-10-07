@@ -57,6 +57,7 @@ import {
   emitirPedidosLote,
   inutilizarNumeracao,
 } from '../../../lib/nfe/orchestrator';
+import { notasDeOrigemDe, referenciarItensDaDevolucao } from '@delfrance/data/pedido';
 import { reconcileByRecibo } from '../../../lib/nfe/orchestrator/reconcile';
 import { resolveFilialRuntime } from '../../../lib/nfe/filial-cert';
 import {
@@ -115,6 +116,11 @@ const PEDCCE = `${FIXTURE_PREFIX}-PED-CCE`;
 // proves both the canonical-ref fix and SEFAZ accepting idDest=2 + <entrega>.
 const PEDENTREGA = `${FIXTURE_PREFIX}-PED-ENTREGA`;
 const ENDERECO_ENTREGA_ID = `${FIXTURE_PREFIX}-end-entrega`;
+// #1683 — a 2-line sale and the devolução that returns it, referencing the
+// origin PER ITEM (det/DFeReferenciado) with the Reforma Tributária OFF.
+const PEDORIGEM = `${FIXTURE_PREFIX}-PED-ORIGEM`;
+const PEDDEVOL = `${FIXTURE_PREFIX}-PED-DEVOL`;
+const OPERACAO_DEVOL_ID = `${FIXTURE_PREFIX}-op-devol`;
 
 // 10 fresh pedidos consumed by the parallel-batch test. Named with a
 // distinct `PP` infix so the cleanup loop can pick them apart from the
@@ -261,6 +267,43 @@ function operacaoDoc(): Record<string, unknown> {
     configuracaoPISST: null,
     infCpl: null,
     timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * The devolução de venda operação (#1683): an ENTRADA (tipo 0, finNFe 4) the
+ * filial issues for goods its own customer sent back. CFOP 1202 — intra-state,
+ * like the cliente's SP fiscal address.
+ */
+function operacaoDevolucaoDoc(): Record<string, unknown> {
+  return {
+    ...operacaoDoc(),
+    nome: 'Devolucao de venda (CI)',
+    naturezaDaOperacao: 'Devolucao de venda',
+    tipo: 0,
+    padrao: false,
+    finNFe: 4,
+    cfop: '1202',
+    cfopInterestadual: '2202',
+  };
+}
+
+/** One line of the #1683 origin/devolução pedidos (imposto stamped). */
+function itemDevolucaoCi(
+  sku: string,
+  precoDeVenda: number,
+  ordem: number,
+  cfop: '5102' | '1202',
+): Record<string, unknown> {
+  return {
+    ordem,
+    sku,
+    gtin: null,
+    nomeDeVenda: `Produto ${sku}`,
+    precoDeVenda,
+    descontoUnitario: null,
+    quantidade: 1,
+    imposto: { ...impostoCsosn102(), cfop, cfopInterestadual: cfop === '5102' ? '6102' : '2202' },
   };
 }
 
@@ -412,6 +455,21 @@ async function seedFixtures(
     });
   await fs.doc(`pedidos/${PEDENTREGA}/pagamentos/pag-01`).set(pagamentoDoc(119));
 
+  // #1683 — the 2-line origin sale (its devolução is written by the test, once
+  // the origin's proc XML exists to reference) and the devolução operação.
+  await fs.collection('operacao').doc(OPERACAO_DEVOL_ID).set(operacaoDevolucaoDoc());
+  await fs
+    .collection('pedidos')
+    .doc(PEDORIGEM)
+    .set({
+      ...pedidoDoc(PEDORIGEM, 80),
+      itens: {
+        'P-ORIG-A': [itemDevolucaoCi('SKU-ORIG-A', 50, 1, '5102')],
+        'P-ORIG-B': [itemDevolucaoCi('SKU-ORIG-B', 30, 2, '5102')],
+      },
+    });
+  await fs.doc(`pedidos/${PEDORIGEM}/pagamentos/pag-01`).set(pagamentoDoc(80));
+
   // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
   // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
   // not gated by the resolver cascade (which the prior test already
@@ -452,11 +510,14 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
     PEDCANCEL,
     PEDCCE,
     PEDENTREGA,
+    PEDORIGEM,
+    PEDDEVOL,
     ...PARALLEL_PEDIDO_IDS,
   ]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamentos']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regras']);
+  await fs.doc(`operacao/${OPERACAO_DEVOL_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ENTREGA_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}`).delete();
@@ -809,4 +870,60 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     expect(persisted.map((r) => r.nSeqEvento)).toEqual([1, 2]);
     expect(persisted.every((r) => r.estado === ESTADO_ENVI_NFE_MSG.concluido)).toBe(true);
   }, 120_000);
+
+  it('a devolução referencing its origin PER ITEM, with the Reforma Tributária OFF → cStat=100 (VC02-14, #1683)', async () => {
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // 1. The origin sale — two lines, SKU-ORIG-A then SKU-ORIG-B.
+    const origem = await emitirPedido(fs, rt, PEDORIGEM);
+    assertNotConsumoIndevido(origem, 'devolucao/emit-PEDORIGEM');
+    expect(origem.cStat).toBe('100');
+
+    // 2. Each returned line's reference, read from the origin's STORED proc
+    //    by the same matcher the devolução seeds run. The devolução lists the
+    //    lines in REVERSE order, so nItem 2 then 1 proves the number comes
+    //    from the XML, never from the line's position.
+    const origemNfe = (await fs.doc(`pedidos/${PEDORIGEM}/nfev4/s1`).get()).data() ?? {};
+    const linhas = [
+      { sku: 'SKU-ORIG-B', gtin: null, produtoUid: 'P-ORIG-B', precoDeVenda: 30, ordem: 1 },
+      { sku: 'SKU-ORIG-A', gtin: null, produtoUid: 'P-ORIG-A', precoDeVenda: 50, ordem: 2 },
+    ];
+    const refs = referenciarItensDaDevolucao(linhas, notasDeOrigemDe([origemNfe]));
+    expect(refs.map((r) => r?.nItem)).toEqual([2, 1]);
+    // Compared as a boolean: a failing `toBe(chave)` would print the chave —
+    // and the emitente CNPJ inside it — into a PUBLIC Actions log.
+    expect(refs.every((r) => r?.chaveAcesso === origem.chave)).toBe(true);
+
+    // 3. The devolução — an entrada, finNFe 4, no pagamento (tPag 90), no
+    //    note-level reference, filial WITHOUT the Reforma Tributária.
+    await fs
+      .collection('pedidos')
+      .doc(PEDDEVOL)
+      .set({
+        ...pedidoDoc(PEDDEVOL, 80),
+        ehSaida: false,
+        operacaoPedidoOuterRef: `operacao/${OPERACAO_DEVOL_ID}`,
+        chNFeReferenciadas: null,
+        saidasRelacionadas: [PEDORIGEM],
+        itens: {
+          'P-ORIG-B': [
+            { ...itemDevolucaoCi('SKU-ORIG-B', 30, 1, '1202'), dfeReferenciado: refs[0] },
+          ],
+          'P-ORIG-A': [
+            { ...itemDevolucaoCi('SKU-ORIG-A', 50, 2, '1202'), dfeReferenciado: refs[1] },
+          ],
+        },
+      });
+    const devolucao = await emitirPedido(fs, rt, PEDDEVOL);
+    assertNotConsumoIndevido(devolucao, 'devolucao/emit-PEDDEVOL');
+    expect(devolucao.cStat).toBe('100');
+    expect(devolucao.estado).toBe(ESTADO_NFE.aprovada);
+
+    // 4. The authorized XML references per item only — never NFref (1010).
+    const xml =
+      ((await fs.doc(`pedidos/${PEDDEVOL}/nfev4/s1`).get()).data()?.xml_nfe_proc as string) ?? '';
+    expect(xml.includes('<finNFe>4</finNFe>')).toBe(true);
+    expect(xml.includes('<NFref>')).toBe(false);
+    expect(xml.match(/<DFeReferenciado>/g)?.length ?? 0).toBe(2);
+  }, 180_000);
 });

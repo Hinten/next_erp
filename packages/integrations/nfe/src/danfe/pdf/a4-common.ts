@@ -44,7 +44,9 @@ export function contingencyNote(model: DanfeModel): string | null {
 /**
  * Compose the INFORMAÇÕES COMPLEMENTARES text: the contingency note (when the
  * NF-e was emitted with tpEmis ≠ 1), the contribuinte's `infCpl`, then the
- * referenced NF-e chaves (`NFref. {chave}`), mirroring the legacy layout.
+ * referenced NF-e chaves (`NFref. {chave}`), mirroring the legacy layout, and
+ * the chaves referenced per item (`DF-e ref. {chave}` — where a devolução's
+ * origin lives since VC02-14, #1683; the legacy app never emitted them).
  * `infAdFisco` does NOT belong here — it goes to RESERVADO AO FISCO.
  */
 export function composeInfoComplementares(model: DanfeModel): string {
@@ -53,6 +55,9 @@ export function composeInfoComplementares(model: DanfeModel): string {
   if (contingency) parts.push(contingency);
   if (model.infAdic.infCpl) parts.push(model.infAdic.infCpl);
   for (const chave of model.ide.refNFes) parts.push(`NFref. ${chave}`);
+  for (const chave of model.ide.refDFes) {
+    if (!model.ide.refNFes.includes(chave)) parts.push(`DF-e ref. ${chave}`);
+  }
   return parts.join(' ');
 }
 

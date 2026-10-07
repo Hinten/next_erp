@@ -307,7 +307,7 @@ pré-voo do `apps/nfe` recusa antes de consumir número:
 | 1010 | VC02-05 | `NFref` (por nota) E referência por item juntos |
 | 1042 | VC02-07 | referência por item em nota de crédito (exceto `tpNFCredito` 06) |
 | 1038 | VC02-10 | falta referência por item em `tpNFDebito` 03/04 ou `tpNFCredito` 06 |
-| 321 | VC02-14 | devolução sem referência **por item** — e **proíbe `refNFe`** na devolução (v1.51: produção **05/10/2026**; a lista de CFOPs de exceção da v1.40 **saiu**) → #1683 |
+| 321 | VC02-14 | devolução sem referência **por item** — e **proíbe `refNFe`** na devolução (v1.51: produção **05/10/2026**; a lista de CFOPs de exceção da v1.40 **saiu**). **Medido (#1683)**: vale COM e SEM a Reforma Tributária, e é julgada **por item** (`[nItem: N]`) |
 | 1072 | VC02-20 | mesma chave + nItem em dois itens |
 | 1130 | VC02-30 | mais de uma chave referenciada (exceto `tpNFDebito` 03, `tpNFDebito` 07 — v1.51 — e devolução) |
 | 1193 | VC02-40 | devolução: emitentes diferentes entre os itens (aviso — NFA) |
@@ -316,7 +316,39 @@ pré-voo do `apps/nfe` recusa antes de consumir número:
 | 1048 | VC03-20 | `nItem` ausente (exceto `tpNFDebito` 03) |
 
 Política deste repo: referência por item só com a Reforma Tributária ligada na
-filial (`emitirReformaTributaria`), como todo o resto da NT 2025.002.
+filial (`emitirReformaTributaria`), como todo o resto da NT 2025.002 — **exceto
+na devolução** (finNFe 4), onde ela é OBRIGATÓRIA em todo item, com ou sem a
+Reforma Tributária.
+
+⭐ **Devolução — o que a SEFAZ-SP homologação respondeu (#1683, run
+37629331453, 2026-10-07)**, devoluções de entrada interestaduais (CFOP 2202 —
+NUNCA 1202 numa sonda: o 1.202 está na lista de exceção da antiga B25-70 e
+passaria pelo motivo errado):
+
+| Forma | RTC | cStat |
+|---|---|---|
+| só `NFref` | ligada | 321 |
+| só `NFref` | **desligada** | **321** — a nota de rodapé "RV só com IBS/CBS" NÃO isenta a VC02-14 |
+| só `DFeReferenciado` | **desligada** | **100** — referência por item sem RTC é aceita |
+| só `DFeReferenciado` | ligada | 100 |
+| 2 itens, só o 1º referenciado | ligada | 321 `[nItem: 2]` — julgada por item |
+
+⚠️ Em produção, em 07/10/2026, o app legado (sem `DFeReferenciado`) ainda tinha
+devoluções só com `NFref` autorizadas: a produção da SEFAZ-SP estava atrás da
+homologação. Não conte com isso.
+
+**Como o repo cumpre**: `nItem` é uma POSIÇÃO fixada na emissão (este app numera
+por `naOrdemDoPedido`; o legado, por uma ordenação instável, com `cProd = sku ??
+gtin ?? produtoUid` cortado em 60), então só o XML autorizado diz qual é.
+`lerItensDoProc` (`@delfrance/schemas`, regex, tudo-ou-nada) lê os `<det>` do
+`xml_nfe_proc` da origem, e `referenciarItensDaDevolucao`
+(`@delfrance/data/pedido`) acha a linha de cada item devolvido: `cProd` por
+prioridade (sku, gtin, produtoUid), o preço escolhe entre linhas do mesmo
+produto, e depois a ORDEM DAS LINHAS; cada linha é reivindicada uma vez (nunca
+1072). O que não se acha fica com a chave e `nItem: null` — nunca um número
+chutado, porque a SEFAZ não confere se o `nItem` referenciado existe. Os dois
+fluxos de devolução (troca #488, integral #551) já gravam as referências; a aba
+Fiscal tem "Preencher a partir das NF-e de origem" para o resto.
 
 ## Grupo BB — Compras Governamentais
 
@@ -552,8 +584,9 @@ falha contra o pacote anterior (verificado):
   débito 06 (PIS/COFINS em 2026 e IPI **permitidos**, não exigidos — o débito
   06 continua só IBS/CBS); VC02-30 isenta o débito 07; VC02-14 (devolução)
   passou a exigir referência **por item**, sem a lista de CFOPs de exceção, e
-  vai à produção em **05/10/2026** (#1683). Crédito 02 e 05 seguem recusados
-  pelos mesmos motivos da v1.40.
+  vai à produção em **05/10/2026** — com ou sem a Reforma Tributária, como a
+  homologação confirmou (#1683, ver "Referência por item" acima). Crédito 02 e
+  05 seguem recusados pelos mesmos motivos da v1.40.
 
 ## Anexos do NT 2025.002
 
