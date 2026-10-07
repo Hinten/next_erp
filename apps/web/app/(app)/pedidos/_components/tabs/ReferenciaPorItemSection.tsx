@@ -169,13 +169,28 @@ export function ReferenciaPorItemSection({
           setRef(index, nova);
         }
       });
+      // A devolução saved before #1683 still carries the note-level chaves:
+      // beside item references they are rule 1010's refusal, and VC02-14
+      // forbids them on a devolução anyway — so they go with the fill.
+      const notaLevel = (chNFeReferenciadas ?? []).filter((c): c is string => !!c);
+      const algumaReferencia = linhas.some(
+        ({ item }, i) => (novas[i] ?? item.dfeReferenciado) != null,
+      );
+      const limpouNFref = notaLevel.length > 0 && algumaReferencia;
+      if (limpouNFref) {
+        form.setValue('chNFeReferenciadas', null, { shouldDirty: true, shouldValidate: true });
+      }
       const restantes = pendentes - completas;
+      const sufixo = limpouNFref
+        ? ' As chaves referenciadas por nota foram removidas — na devolução a referência é só por item.'
+        : '';
       notifications.show({
         color: restantes === 0 ? 'green' : 'yellow',
         message:
-          restantes === 0
+          (restantes === 0
             ? `${completas} ${completas === 1 ? 'referência preenchida' : 'referências preenchidas'} a partir das NF-e de origem.`
-            : `${completas} preenchida(s); ${restantes} item(ns) não foram encontrados com segurança nas NF-e de origem — informe a chave e o item à mão.`,
+            : `${completas} preenchida(s); ${restantes} item(ns) não foram encontrados com segurança nas NF-e de origem — informe a chave e o item à mão.`) +
+          sufixo,
       });
     } catch (err) {
       if (err instanceof FirebaseError) {
@@ -209,7 +224,7 @@ export function ReferenciaPorItemSection({
               disabled={disabled || origens.length === 0 || pendentes === 0}
               title={
                 origens.length === 0
-                  ? 'Esta devolução não está ligada a um pedido de origem — informe a chave e o item à mão.'
+                  ? 'Esta devolução ainda não está ligada a um pedido de origem (o vínculo é gravado ao salvar a devolução) — salve e use o botão, ou informe a chave e o item à mão.'
                   : undefined
               }
             >

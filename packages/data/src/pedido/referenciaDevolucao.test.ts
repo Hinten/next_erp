@@ -204,6 +204,16 @@ describe('referenciarItensDaDevolucao', () => {
   });
 });
 
+describe('referenciarItensDaDevolucao — an unreadable nota is never skipped past', () => {
+  it('the LATEST nota unreadable: an older nota carrying the product is not taken — chave of the latest, nItem null', () => {
+    const notas = notasDeOrigemDe([
+      nfeAprovadaFake(CH1, [{ cProd: 'A' }], 1),
+      nfeAprovadaFake(CH2, null, 2),
+    ]);
+    expect(referenciarItensDaDevolucao([linha('A')], notas)).toEqual([ref(CH2, null)]);
+  });
+});
+
 describe('referenciasPendentes', () => {
   it('counts every item without a chave AND an nItem', () => {
     expect(
@@ -247,6 +257,14 @@ describe('preencherReferenciasPendentes (the Fiscal tab button)', () => {
   it('leaves the item as it was when TWO origins carry the product — never a guess between two notas', () => {
     const notas = porOrigem({
       o1: [nota(CH1, [{ cProd: 'A' }])],
+      o2: [nota(CH2, [{ cProd: 'A' }])],
+    });
+    expect(preencherReferenciasPendentes([linha('A')], notas)).toEqual([null]);
+  });
+
+  it('NEAR-MISS: another origin whose nota is UNREADABLE makes a single readable hit ambiguous — left as it was', () => {
+    const notas = porOrigem({
+      o1: [nota(CH1, null)],
       o2: [nota(CH2, [{ cProd: 'A' }])],
     });
     expect(preencherReferenciasPendentes([linha('A')], notas)).toEqual([null]);

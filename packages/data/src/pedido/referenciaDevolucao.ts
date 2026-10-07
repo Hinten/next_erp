@@ -142,7 +142,9 @@ function referenciaNasNotas(
   const [maisRecente] = notas;
   if (maisRecente === undefined) return null;
   for (const nota of notas) {
-    if (nota.itens === null) continue;
+    // An unreadable nota MAY be the one carrying this product: matching an
+    // older nota past it would be a guess, so the item stays unplaced.
+    if (nota.itens === null) break;
     const nItem = linhaNaNota(item, nota.itens, nota.chave, reivindicadas);
     if (nItem !== null) {
       reivindicadas.add(chaveDaLinha(nota.chave, nItem));
@@ -194,10 +196,11 @@ export function referenciasPendentes(
  * The devolução's items are no longer tied to an origin (they are keyed by
  * produto), so the origin is inferred:
  *  - a partial reference (chave typed, `nItem` missing) looks only at that nota;
- *  - otherwise the origins whose notas carry the item's product; exactly one →
- *    match there; none and a single origin with notas → its latest chave with
- *    `nItem: null`; anything else (several origins) is left as it was — the
- *    operator decides, never a guess between two customers' notas.
+ *  - otherwise the origins whose notas carry the item's product; exactly one —
+ *    and no OTHER origin with a nota it cannot read, which might be the real
+ *    one → match there; none and a single origin with notas → its latest chave
+ *    with `nItem: null`; anything else (several origins, an unreadable rival) is
+ *    left as it was — the operator decides, never a guess between two notas.
  */
 export function preencherReferenciasPendentes(
   itens: ReadonlyArray<
@@ -233,7 +236,12 @@ export function preencherReferenciasPendentes(
       ),
     );
     const [unica] = comProduto;
-    if (comProduto.length === 1 && unica !== undefined) {
+    // An origin whose nota cannot be read MAY be where this item came from, so
+    // a single readable hit elsewhere is not "the one origin" — leave it.
+    const outraIlegivel = origens.some(
+      (notas) => notas !== unica && notas.some((n) => n.itens === null),
+    );
+    if (comProduto.length === 1 && unica !== undefined && !outraIlegivel) {
       out[indice] = referenciaNasNotas(item, unica, reivindicadas);
     } else if (comProduto.length === 0 && origens.length === 1) {
       out[indice] = referenciaNasNotas(item, origens[0]!, reivindicadas);

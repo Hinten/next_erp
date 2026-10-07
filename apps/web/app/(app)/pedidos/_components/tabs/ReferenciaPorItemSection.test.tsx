@@ -54,14 +54,16 @@ let formRef: UseFormReturn<PedidoFormState, unknown, Pedido>;
 function Host({
   itens,
   saidasRelacionadas = null,
+  chNFeReferenciadas = null,
 }: {
   itens: FlatItem[];
   saidasRelacionadas?: string[] | null;
+  chNFeReferenciadas?: string[] | null;
 }) {
   const form = useForm<PedidoFormState, unknown, Pedido>({
     defaultValues: {
       _itensFlat: itens,
-      chNFeReferenciadas: null,
+      chNFeReferenciadas,
       operacaoPedidoOuterRef: null,
       saidasRelacionadas,
     },
@@ -283,6 +285,26 @@ describe('ReferenciaPorItemSection — devolução (VC02-14, #1683)', () => {
       }),
     );
     expect(formRef.getValues('_itensFlat.1.dfeReferenciado')).toEqual({
+      chaveAcesso: CHAVE,
+      nItem: 1,
+    });
+  });
+
+  it('clears the note-level chaves a devolução saved before #1683 still carries (1010 beside item refs)', async () => {
+    mocks.operacao = DEVOLUCAO;
+    mocks.nfesPorPedido = {
+      o1: [{ chave: CHAVE, ultima_modificacao: 1, xml_nfe_proc: procCom(['SKU-A']) }],
+    };
+    render(
+      <Host
+        saidasRelacionadas={['o1']}
+        chNFeReferenciadas={[CHAVE]}
+        itens={[linha('a', 'Camiseta', { sku: 'SKU-A' })]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Preencher a partir das NF-e de origem' }));
+    await waitFor(() => expect(formRef.getValues('chNFeReferenciadas')).toBeNull());
+    expect(formRef.getValues('_itensFlat.0.dfeReferenciado')).toEqual({
       chaveAcesso: CHAVE,
       nItem: 1,
     });
