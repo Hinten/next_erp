@@ -62,7 +62,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { DocumentReference, DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
-import { ESTADO_FRETE, type EstadoFrete } from '@delfrance/schemas';
+import type { EstadoFrete } from '@delfrance/schemas';
 import {
   COMPRA_ETIQUETA_DOC_ID,
   compraEtiquetaCollection,
@@ -74,7 +74,7 @@ import {
   MelhorEnvioTimeoutError,
 } from '@delfrance/integrations-freight-br';
 
-import { resolverEstadoFinalCompraEtiqueta } from './estadoEtiqueta';
+import { estadoAoAncorarNovaEtiqueta, resolverEstadoFinalCompraEtiqueta } from './estadoEtiqueta';
 
 /**
  * How long a claim lives: the 300 s App Hosting request ceiling plus 60 s — so a
@@ -309,9 +309,11 @@ export async function adquirirCompraEtiqueta(
  * still be null (or already this id: an OCC retry, or a resume) — so a run that
  * lost its claim stops here, before `checkout` spends anything.
  *
- * A new anchor also normalizes an inherited `postado` to `aguardandoPostagem`:
- * the old state had no label, so any later `postado` belongs to this new one.
+ * A new anchor resets states belonging to the previous shipment: canceled
+ * becomes `iniciado` until purchase finalization; the other provider states become
+ * `aguardandoPostagem`. Each reset keeps the previous stock effect.
  * The reset survives a checkout failure; rolling it back could lose a webhook.
+ * An idempotent same-label anchor above returns without reopening that label.
  * Dotted updates preserve all other siblings under `freteInicial`.
  */
 export async function ancorarEtiqueta(
@@ -334,11 +336,10 @@ export async function ancorarEtiqueta(
     if (atual !== null) {
       throw new CompraEtiquetaAncoraMudouError(posse.pedidoId, printLabelId, atual);
     }
+    const estado = estadoAoAncorarNovaEtiqueta(estadoDe(pedidoSnap.data()));
     tx.update(pedido, {
       'freteInicial.printLabelId': printLabelId,
-      ...(estadoDe(pedidoSnap.data()) === ESTADO_FRETE.postado
-        ? { 'freteInicial.estado': ESTADO_FRETE.aguardandoPostagem }
-        : {}),
+      ...(estado !== null ? { 'freteInicial.estado': estado } : {}),
     });
   });
 }

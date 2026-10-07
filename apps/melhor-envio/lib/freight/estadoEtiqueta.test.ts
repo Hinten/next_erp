@@ -3,6 +3,7 @@ import { efeitoEstoquePedido, ESTADO_FRETE, ESTADO_PEDIDO } from '@delfrance/sch
 
 import {
   ehEstadoFreteTerminal,
+  estadoAoAncorarNovaEtiqueta,
   meStatusToEstadoFrete,
   resolverEstadoFinalCompraEtiqueta,
 } from './estadoEtiqueta';
@@ -98,6 +99,53 @@ describe('resolverEstadoFinalCompraEtiqueta', () => {
     expect(meStatusToEstadoFrete('POSTED')).toBeNull();
     expect(meStatusToEstadoFrete(' posted ')).toBeNull();
     expect(meStatusToEstadoFrete(undefined)).toBeNull();
+  });
+});
+
+describe('estadoAoAncorarNovaEtiqueta', () => {
+  it.each([
+    [ESTADO_FRETE.postado, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.cancelado, ESTADO_FRETE.iniciado],
+    [ESTADO_FRETE.suspenso, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.falhaNaEntrega, ESTADO_FRETE.aguardandoPostagem],
+  ])('resets previous-shipment %s to %s', (estado, esperado) => {
+    expect(estadoAoAncorarNovaEtiqueta(estado)).toBe(esperado);
+  });
+
+  it.each([
+    [ESTADO_FRETE.empacotado],
+    [ESTADO_FRETE.emSeparacao],
+    [ESTADO_FRETE.iniciado],
+    [null],
+    [undefined],
+    ['legacy-unknown'],
+    [{}],
+    [[]],
+  ])('preserves other or unreadable state %j', (estado) => {
+    expect(estadoAoAncorarNovaEtiqueta(estado)).toBeNull();
+  });
+
+  it.each([
+    ESTADO_FRETE.postado,
+    ESTADO_FRETE.entregue,
+    ESTADO_FRETE.cancelado,
+    ESTADO_FRETE.suspenso,
+    ESTADO_FRETE.falhaNaEntrega,
+  ])('keeps the stock effect while anchoring over %s, even before checkout', (estado) => {
+    const reset = estadoAoAncorarNovaEtiqueta(estado);
+    for (const jaMovimentado of [false, true]) {
+      const input = {
+        estado: ESTADO_PEDIDO.pago,
+        ehSaida: true,
+        movimentaEstoque: true,
+        movimentaIndisponivelEstoque: true,
+        jaMovimentado,
+      };
+      expect(efeitoEstoquePedido({ ...input, estadoFrete: reset })).toEqual(
+        efeitoEstoquePedido({ ...input, estadoFrete: estado }),
+      );
+    }
   });
 });
 

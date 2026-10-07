@@ -36,11 +36,33 @@ export function ehEstadoFreteTerminal(
 }
 
 /**
+ * Reset provider states belonging to an earlier shipment when installing a
+ * NEW anchor. Null means the stored state does not need a reset.
+ *
+ * A canceled shipment has not necessarily moved stock: `iniciado` keeps that
+ * effect until purchase finalization succeeds. The other provider states and their reset
+ * already have the same physical-stock effect.
+ */
+export function estadoAoAncorarNovaEtiqueta(estadoAtual: unknown): EstadoFrete | null {
+  switch (estadoAtual) {
+    case ESTADO_FRETE.cancelado:
+      return ESTADO_FRETE.iniciado;
+    case ESTADO_FRETE.postado:
+    case ESTADO_FRETE.entregue:
+    case ESTADO_FRETE.suspenso:
+    case ESTADO_FRETE.falhaNaEntrega:
+      return ESTADO_FRETE.aguardandoPostagem;
+    default:
+      return null;
+  }
+}
+
+/**
  * Select the purchase's final state from its transaction-fresh pedido.
  *
- * A fresh anchor normalizes an inherited `postado` before checkout (#1801).
- * Any `postado` seen here therefore belongs to the anchored label, including
- * a webhook that arrived after the final provider fetch.
+ * A fresh anchor resets states belonging to the previous shipment (#1801).
+ * Any posted or terminal state seen here therefore belongs to the anchored
+ * label, including a webhook that arrived after the final provider fetch.
  */
 export function resolverEstadoFinalCompraEtiqueta(
   estadoAtual: unknown,

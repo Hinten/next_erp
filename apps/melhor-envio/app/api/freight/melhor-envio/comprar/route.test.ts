@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timestamp } from 'firebase-admin/firestore';
 import { PERM } from '@delfrance/auth';
 import { deferred } from '@delfrance/data/testing';
 import { ESTADO_FRETE } from '@delfrance/schemas';
@@ -15,6 +16,7 @@ import {
   COMPRA_ETIQUETA_LEASE_MS,
 } from '@/lib/freight/compraEtiqueta';
 import { MelhorEnvioContaNotConfiguredError } from '@/lib/freight/melhorEnvioErrors';
+import { processMelhorEnvioNotification } from '@/lib/freight/notificacao';
 import { FirestoreFake } from '@/lib/freight/testing/fakeFirestore';
 
 // The route runs the REAL comprarEtiqueta pipeline and the REAL claim
@@ -262,6 +264,97 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
       expect(h.getOrder).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      [ESTADO_FRETE.cancelado, ESTADO_FRETE.iniciado],
+      [ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+      [ESTADO_FRETE.suspenso, ESTADO_FRETE.aguardandoPostagem],
+      [ESTADO_FRETE.falhaNaEntrega, ESTADO_FRETE.aguardandoPostagem],
+    ])(
+      'a new label over inherited %s starts at %s and accepts posted/delivered webhooks',
+      async (anterior, inicial) => {
+        fake.semear(PEDIDO, {
+          freteInicial: {
+            printLabelId: null,
+            estado: anterior,
+            integracaoFreteOuterRef: 'documents/int_frete/int-1',
+          },
+        });
+        h.checkout.mockImplementation(async () => {
+          expect(frete()).toMatchObject({ printLabelId: 'new-label', estado: inicial });
+          return {};
+        });
+        h.getOrder.mockResolvedValue({ id: 'new-label', status: 'released', tracking: 'ME123BR' });
+        const res = await comprar();
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          printLabelId: 'new-label',
+          estado: ESTADO_FRETE.aguardandoPostagem,
+        });
+        expect(frete()?.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+        expect(fake.dados(CLAIM)).toBeUndefined();
+
+        // Drive the real notification processor after the real buy pipeline.
+        // Its injected write port uses OCC so every change is a committed write.
+        for (const [status, esperado] of [
+          ['posted', ESTADO_FRETE.postado],
+          ['delivered', ESTADO_FRETE.entregue],
+        ]) {
+          const outcome = await processMelhorEnvioNotification(
+            fake.comoFirestore(),
+            { labelId: 'new-label', event: null, providerStatus: status, tracking: null },
+            {
+              findPedidoByLabel: async (_db, labelId) => {
+                const data = fake.dados(PEDIDO);
+                return data && frete()?.printLabelId === labelId
+                  ? { id: 'ped-1', data, updateTime: Timestamp.fromMillis(T0) }
+                  : null;
+              },
+              loadCurrentLabel: async (_db, _intFreteId, labelId) => ({
+                id: labelId,
+                status,
+                tracking: 'ME123BR',
+              }),
+              updatePedido: async (_db, pedido, patch) => {
+                const ref = fake.ref(`pedidos/${pedido.id}`);
+                await fake.runTransaction(async (tx) => {
+                  await tx.get(ref);
+                  tx.update(ref, patch);
+                });
+              },
+            },
+          );
+          expect(outcome).toMatchObject({ kind: 'applied', estado: esperado });
+          expect(frete()?.estado).toBe(esperado);
+        }
+        expect(h.addToCart).toHaveBeenCalledTimes(1);
+        expect(h.checkout).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['rejected', 'timeout'])(
+      'a canceled-shipment checkout %s leaves the new unpaid label initiated',
+      async (falha) => {
+        fake.semear(PEDIDO, { freteInicial: { estado: ESTADO_FRETE.cancelado } });
+        h.checkout.mockRejectedValue(
+          falha === 'timeout'
+            ? new MelhorEnvioTimeoutError('x', { operacao: 'checkout', timeoutMs: 60_000 })
+            : new MelhorEnvioValidationError('x', {}, {}),
+        );
+        const res = await comprar();
+        expect(res.status).toBe(falha === 'timeout' ? 504 : 422);
+        expect(frete()).toEqual({ printLabelId: 'new-label', estado: ESTADO_FRETE.iniciado });
+        if (falha === 'timeout') {
+          expect(fake.dados(CLAIM)).toMatchObject({
+            leaseExpiraEmMs: T0 + COMPRA_ETIQUETA_LEASE_MS,
+          });
+        } else {
+          expect(fake.dados(CLAIM)).toBeUndefined();
+        }
+        expect(h.generate).not.toHaveBeenCalled();
+        expect(h.getOrder).not.toHaveBeenCalled();
+      },
+    );
+
     it.each(['posted', 'received', 'delivered'])(
       'a fresh buy uses the final provider status %s',
       async (status) => {
@@ -319,18 +412,20 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
     });
 
     it.each([
-      [null, ESTADO_FRETE.postado],
-      [null, ESTADO_FRETE.entregue],
-      ['existing-label', ESTADO_FRETE.postado],
-      ['existing-label', ESTADO_FRETE.entregue],
+      [null, ESTADO_FRETE.postado, ESTADO_FRETE.postado],
+      [null, ESTADO_FRETE.entregue, ESTADO_FRETE.postado],
+      ['existing-label', ESTADO_FRETE.postado, ESTADO_FRETE.aguardandoPostagem],
+      ['existing-label', ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+      [null, ESTADO_FRETE.postado, ESTADO_FRETE.cancelado],
+      [null, ESTADO_FRETE.entregue, ESTADO_FRETE.entregue],
     ])(
-      'retries finalization after label %s advances to %s following the provider fetch',
-      async (anchor, estado) => {
+      'retries label %s advanced to %s from inherited %s after the provider fetch',
+      async (anchor, estado, anterior) => {
         const labelId = anchor ?? 'new-label';
         fake.semear(PEDIDO, {
           freteInicial: {
             printLabelId: anchor,
-            estado: anchor === null ? ESTADO_FRETE.postado : ESTADO_FRETE.aguardandoPostagem,
+            estado: anterior,
           },
         });
         h.getOrder.mockResolvedValue({

@@ -319,7 +319,13 @@ describe('fresh-label state boundary (#1801)', () => {
     expect(fake.occ.txLog.filter((e) => e.phase === 'commit').length).toBe(commitsAntes + 1);
   });
 
-  it.each([ESTADO_FRETE.postado, ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado])(
+  it.each([
+    ESTADO_FRETE.postado,
+    ESTADO_FRETE.entregue,
+    ESTADO_FRETE.cancelado,
+    ESTADO_FRETE.suspenso,
+    ESTADO_FRETE.falhaNaEntrega,
+  ])(
     'idempotent anchoring never resets the same label in %s',
     async (estado) => {
       semearPedido({ printLabelId: 'lbl-1', estado });
@@ -329,7 +335,7 @@ describe('fresh-label state boundary (#1801)', () => {
     },
   );
 
-  it.each([ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado, ESTADO_FRETE.empacotado])(
+  it.each([ESTADO_FRETE.empacotado, ESTADO_FRETE.emSeparacao, ESTADO_FRETE.iniciado])(
     'a new anchor preserves other state %s',
     async (estado) => {
       semearPedido({ estado });
@@ -338,6 +344,25 @@ describe('fresh-label state boundary (#1801)', () => {
       expect(fake.dados(PEDIDO)?.freteInicial).toEqual({ printLabelId: 'lbl-1', estado });
     },
   );
+
+  it.each([
+    [ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.cancelado, ESTADO_FRETE.iniciado],
+    [ESTADO_FRETE.suspenso, ESTADO_FRETE.aguardandoPostagem],
+    [ESTADO_FRETE.falhaNaEntrega, ESTADO_FRETE.aguardandoPostagem],
+  ])('a new anchor resets previous-shipment %s to %s atomically', async (estado, esperado) => {
+    semearPedido({ estado, codRastreio: 'old-tracking', externalOptionData: { id: 3 } });
+    semearClaim('eu', T0 + 60_000);
+    const commitsAntes = fake.occ.txLog.filter((e) => e.phase === 'commit').length;
+    await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+    expect(fake.dados(PEDIDO)?.freteInicial).toEqual({
+      printLabelId: 'lbl-1',
+      estado: esperado,
+      codRastreio: 'old-tracking',
+      externalOptionData: { id: 3 },
+    });
+    expect(fake.occ.txLog.filter((e) => e.phase === 'commit').length).toBe(commitsAntes + 1);
+  });
 
   it.each(['lost-owner', 'different-label'])(
     'refuses %s without resetting an inherited postado',
