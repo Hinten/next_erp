@@ -1,5 +1,5 @@
-import { getDocs, type Firestore } from 'firebase/firestore';
-import { ESTADO_NFE, nfeImprimivel } from '@delfrance/schemas';
+import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
+import { CONTINGENCIA_MODO, ESTADO_NFE, nfeImprimivel } from '@delfrance/schemas';
 import {
   NFeHttpError,
   NFeNetworkError,
@@ -7,6 +7,7 @@ import {
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 import { nfeCollection } from '../data/nfeCollection';
+import { NFE_CONFIG_DOC_ID, nfeConfigCollection } from '../data/nfeConfigCollection';
 import { carregadorContextoRejeicao } from '../nfe/contextoRejeicao';
 import {
   notificationForNFeErrorComContexto,
@@ -36,23 +37,23 @@ export async function resolveAprovadaNfe(
 }
 
 /**
- * One read of the pedido's nfev4 docs: the latest printable one, and whether an
- * EPEC-approved doc WITHOUT its protocol is there (#1675 — registered by an
- * earlier send, protocol not recovered: nothing to print, and nothing an emit
- * may usefully do, since its full NF-e is transmitted after the outage).
+ * One read of the pedido's nfev4 docs: the latest printable one, and the
+ * EPEC-approved doc WITHOUT its protocol when there is one (#1675 — registered
+ * by an earlier send, protocol not recovered: nothing to print until its full
+ * NF-e is transmitted), with the filial it was emitted for.
  */
 async function lerNfesDoPedido(
   db: Firestore,
   pedidoId: string,
 ): Promise<{
   imprimivel: { nfeId: string; chave: string } | null;
-  epecSemProtocolo: boolean;
+  epecSemProtocolo: { readonly filialId: string | null } | null;
 }> {
   const snap = await getDocs(nfeCollection.ref(db, { pedidoId }));
-  const epecSemProtocolo = snap.docs.some((d) => {
-    const n = d.data();
-    return n.estado === ESTADO_NFE.epecAprovado && !nfeImprimivel(n);
-  });
+  const semProtocolo = snap.docs
+    .map((d) => d.data())
+    .find((n) => n.estado === ESTADO_NFE.epecAprovado && !nfeImprimivel(n));
+  const epecSemProtocolo = semProtocolo ? { filialId: semProtocolo.filialId ?? null } : null;
   const authorized = snap.docs
     .filter((d) => {
       const n = d.data();
@@ -67,14 +68,31 @@ async function lerNfesDoPedido(
   };
 }
 
-/** What the checkout tells the operator about an EPEC whose protocol was never recovered. */
+/**
+ * What the checkout tells the operator about an EPEC whose protocol was never
+ * recovered while the filial is still in EPEC contingency (#1675).
+ */
 const EPEC_SEM_PROTOCOLO: NotificationShape = {
   title: 'EPEC já registrado — protocolo não recuperado',
   message:
-    'A DANFE desta NF-e só sai após a transmissão da NF-e completa, quando a SEFAZ ' +
-    'normalizar (automática quando a contingência for desligada).',
+    'A DANFE desta NF-e só sai após a transmissão da NF-e completa à SEFAZ autorizadora. ' +
+    'Quando ela normalizar, desligue a contingência e reimprima: a NF-e completa é ' +
+    'transmitida nesse momento.',
   color: 'yellow',
 };
+
+/**
+ * True when the filial is still in EPEC contingency — the home SEFAZ is
+ * (believed) down, so an emit would only try the pós-EPEC transmission against
+ * it. The same gate the backstop sweep uses before transmitting a `'p'` doc. A
+ * filial or config we cannot read is not in EPEC mode: the emit then decides,
+ * and the server is the one that knows.
+ */
+async function emContingenciaEpec(db: Firestore, filialId: string | null): Promise<boolean> {
+  if (filialId == null) return false;
+  const cfg = await getDoc(nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID));
+  return cfg.exists() && cfg.data().contingencia_modo === CONTINGENCIA_MODO.epec;
+}
 
 export type EnsureNfeResult =
   | { ok: true; nfeId: string; chave: string; reused: boolean }
@@ -107,10 +125,15 @@ export async function ensureNfeAprovada(
 ): Promise<EnsureNfeResult> {
   const lidas = await lerNfesDoPedido(db, pedidoId);
   if (lidas.imprimivel !== null) return { ok: true, ...lidas.imprimivel, reused: true };
-  // An EPEC registered without its protocol (#1675): an emit would only try the
-  // pós-EPEC transmission (or, in EPEC mode, the down home SEFAZ) — say why the
-  // DANFE is not available instead.
-  if (lidas.epecSemProtocolo) {
+  // An EPEC registered without its protocol (#1675). With the contingency
+  // still on, the emit would only try the pós-EPEC transmission against the
+  // down home SEFAZ — say why the DANFE is not available instead. With it off,
+  // the emit below IS that transmission: the home SEFAZ answers 100/150 and the
+  // NF-e becomes printable now, not at the sweep's next business-hours tick.
+  if (
+    lidas.epecSemProtocolo !== null &&
+    (await emContingenciaEpec(db, lidas.epecSemProtocolo.filialId))
+  ) {
     return { ok: false, pending: false, notification: EPEC_SEM_PROTOCOLO };
   }
 
