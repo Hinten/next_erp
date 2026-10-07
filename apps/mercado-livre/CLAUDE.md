@@ -261,10 +261,16 @@ The per-surface notes below stay the authority on behaviour.
   `players[role=respondent].available_actions` still holds a `send_message_to_*` —
   `claimActionability.ts`. A thread nobody can reply on is #817 with extra steps.
   ⚠️ It closes, it never deletes: a claim that stops being answerable keeps every
-  message it ever had and gains `respostaBloqueada` + `atendido`. That close runs
-  OUTSIDE the `ultima_modificacao` freshness gate, because ML does not reliably bump
-  `last_updated` when the actions drain away — inside the gate a dead thread would
-  keep an open composer. `estadoConversa` is operator triage state and is never
+  message it ever had and gains `respostaBloqueada` + `atendido`. The close — and
+  the REOPEN, when a send action comes back — ride the ordinary conversa update:
+  ONE transaction gated on the provider watermark `ultimaModificacaoIntegracao`
+  (ms, `claim.last_updated` and nothing else). The gate is `>=`, because ML does not
+  reliably bump `last_updated` when the actions drain away, so an equal snapshot
+  must still apply; a strictly older one is refused in BOTH directions. ⚠️ Never
+  gate it on `ultima_modificacao` again: operators write that on every rename and
+  etiqueta change, so an edited conversa looked permanently newer than the wire —
+  and the out-of-band close that used to sit outside that gate could only ever
+  close, never reopen. `estadoConversa` is operator triage state and is never
   touched by any of it.
   ⚠️ **The incidente write is watermarked too (#1772)** — `claimIncidenteTx.ts`, one
   transaction on `relogioProvedorUs` (µs, the field Shopee's returns already use).

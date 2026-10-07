@@ -40,10 +40,12 @@
  *    can no longer reopen a closed claim. See `claimIncidenteTx.ts`.
  *  - CONVERSA: create writes the full doc (estadoConversa fills from the
  *    schema default, naoRespondido); an EXISTING doc merges the mapped fields
- *    only when the stored `ultima_modificacao` is null or older than the
- *    incoming one, WITHOUT `estadoConversa` (operator triage state,
- *    :1908-1923) and WITHOUT `data_cadastro`, via `parseMerge` (a full parse
- *    would let schema defaults clobber stored fields).
+ *    inside ONE transaction unless the incoming provider watermark
+ *    `ultimaModificacaoIntegracao` is strictly older than the stored one
+ *    (`>=` applies — see the transaction below), WITHOUT `estadoConversa`
+ *    (operator triage state, :1908-1923) and WITHOUT `data_cadastro`, via
+ *    `parseMerge` (a full parse would let schema defaults clobber stored
+ *    fields).
  *  - MENSAGENS: the reason mensagem is written only when the conversa was
  *    created/updated (:1925-1937), at the RAW reason id; every claim message
  *    is a `set` (overwrite) at its deterministic id — legacy `forceAdd`
