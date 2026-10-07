@@ -40,6 +40,7 @@ export default function CategoriaPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.categoria.write);
+  const { allowed: canDelete } = usePermission(PERM.categoria.delete);
   const db = getFirebaseFirestore();
   const parentBreadcrumbRef = useRef<string | null>(null);
   /** True only when deriveOnSave produced a different `nomeCompleto`. */
@@ -147,7 +148,7 @@ export default function CategoriaPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/categorias')}
       />

@@ -23,6 +23,7 @@ export default function ClientePage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.cliente.write);
+  const { allowed: canDelete } = usePermission(PERM.cliente.delete);
   const db = getFirebaseFirestore();
   const filialId = useDefaultFilialId();
 
@@ -76,7 +77,7 @@ export default function ClientePage() {
           saveLabel="Salvar alterações"
           canEdit={canWrite}
           readOnly={!canWrite}
-          canDelete={canWrite}
+          canDelete={canDelete}
           onDelete={handleDelete}
           onSaved={() => router.replace('/clientes')}
         />

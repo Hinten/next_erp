@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OccEngine, type OccTransaction } from '@delfrance/data/testing';
+import { PERM } from '@delfrance/auth';
 import {
   INTEGRACAO_TIPO,
   tabelaDeMedidasSchema,
@@ -39,6 +40,7 @@ const h = vi.hoisted(() => ({
   contas: [] as unknown[],
   escolha: null as unknown,
   toasts: [] as string[],
+  permissions: 0n,
 }));
 
 /** The converter's read: the parsed doc, or the raw one when the parse fails (`parseSoftRead`). */
@@ -93,7 +95,10 @@ vi.mock('@delfrance/data/hooks', async (importActual) => ({
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { uid: 'u1' } }),
-  usePermission: () => ({ allowed: true, loading: false }),
+  usePermission: (requiredBit: bigint) => ({
+    allowed: (h.permissions & requiredBit) === requiredBit,
+    loading: false,
+  }),
 }));
 
 vi.mock('@/lib/shopee/client', async (importActual) => ({
@@ -263,6 +268,7 @@ const commits = () => h.occ.txLog.filter((e) => e.phase === 'commit').length;
 const shopeeGuardado = () => h.docs.get(PATH)!.tabelasMedidasShopee as Record<string, unknown>;
 
 beforeEach(() => {
+  h.permissions = PERM.produto.write | PERM.produto.delete | PERM.integracao.read;
   h.docs.clear();
   h.patches.length = 0;
   h.toasts.length = 0;
@@ -277,6 +283,37 @@ beforeEach(() => {
         kind === 'update' ? { ...prev, ...structuredClone(data) } : structuredClone(data),
       );
     },
+  });
+});
+
+describe('/medidas/[id] — editing and deletion require independent permissions', () => {
+  it('allows editing and saving without exposing deletion when only write is granted', async () => {
+    h.permissions = PERM.produto.write;
+    semear(corpus());
+    renderPage();
+
+    expect((await screen.findByLabelText('Descrição')).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Salvar alterações' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Salvar e continuar' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Excluir' })).toBeNull();
+  });
+
+  it('exposes deletion when write and delete are both granted', async () => {
+    semear(corpus());
+    renderPage();
+
+    expect(await screen.findByRole('button', { name: 'Excluir' })).toBeTruthy();
+  });
+
+  it('exposes deletion with read-only fields and no save actions when only delete is granted', async () => {
+    h.permissions = PERM.produto.delete;
+    semear(corpus());
+    renderPage();
+
+    expect((await screen.findByLabelText('Descrição')).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Excluir' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Salvar alterações' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Salvar e continuar' })).toBeNull();
   });
 });
 

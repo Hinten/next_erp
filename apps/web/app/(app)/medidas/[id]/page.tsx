@@ -45,6 +45,7 @@ export default function TabelaDeMedidasPage() {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.produto.write);
+  const { allowed: canDelete } = usePermission(PERM.produto.delete);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
 
@@ -139,7 +140,7 @@ export default function TabelaDeMedidasPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        canDelete={canWrite}
+        canDelete={canDelete}
         onDelete={handleDelete}
         onSaved={() => router.replace('/medidas')}
       />
