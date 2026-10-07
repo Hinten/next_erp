@@ -16,13 +16,13 @@
 /** `504` — Melhor Envio itself did not answer in time (`MelhorEnvioTimeoutError`, #1679). */
 export const FREIGHT_CODIGO_ME_TIMEOUT = 'ME_TIMEOUT';
 /**
- * `423` — another `comprar` for the same pedido is still running (#1677).
+ * `423` — another `comprar` for the same pedido holds the in-flight claim
+ * (#1677): it is still running, or a paid step of it failed without
+ * confirmation and the claim is held until it expires.
  *
- * ⚠️ RESERVED, not yet emitted: nothing answers it until the `comprar`
- * in-flight claim lands (#1677), and until the browser arm for it lands too a
- * 423 reads as a plain `FreightServerError` carrying the route's message. It is
- * declared here, ahead of both, so the server and client changes can each build
- * on this one literal independently.
+ * Emitted by the `comprar` route's claim. Until this client grows a typed arm
+ * for it, a 423 reads as a plain `FreightServerError` carrying the route's own
+ * message — which is why it is a 423 and never a 409 (see `errorFromResponse`).
  */
 export const FREIGHT_CODIGO_COMPRA_EM_ANDAMENTO = 'ME_COMPRA_EM_ANDAMENTO';
 

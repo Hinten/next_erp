@@ -64,6 +64,12 @@ export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreColl
 export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
 export { importacaoShopeeCollection } from './importacaoShopeeCollection';
 export { pedidoCollection } from './pedidoCollection';
+export {
+  COMPRA_ETIQUETA_DOC_ID,
+  compraEtiquetaCollection,
+  compraEtiquetaSchema,
+  type CompraEtiqueta,
+} from './compraEtiquetaCollection';
 export { operacaoCollection } from './operacaoCollection';
 export {
   impostoCategoriaCollection,

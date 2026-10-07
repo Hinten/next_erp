@@ -193,6 +193,7 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       `Melhor Envio ${method} ${path}: HTTP ${res.status}${detail}`,
       res.status,
       parsed,
+      operacao,
     );
   }
 
