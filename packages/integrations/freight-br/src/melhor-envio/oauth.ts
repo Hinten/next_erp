@@ -148,7 +148,7 @@ async function postToken(
       errBody.data.error ??
       `HTTP ${res.status}`)
     : `HTTP ${res.status}`;
-  throw new MelhorEnvioHttpError(`Melhor Envio /oauth/token: ${msg}`, res.status, parsed);
+  throw new MelhorEnvioHttpError(`Melhor Envio /oauth/token: ${msg}`, res.status, parsed, 'token');
 }
 
 /** Exchange the authorization `code` for the first token pair. */

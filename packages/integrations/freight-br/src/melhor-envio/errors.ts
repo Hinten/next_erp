@@ -14,17 +14,37 @@ export class MelhorEnvioError extends Error {
 }
 
 /**
+ * Which Melhor Envio call a transport-level error came from: a `MelhorEnvioApi`
+ * method, `'token'` for `POST /oauth/token`, or `null` when the thrower did not
+ * say (an error built outside this package's transports).
+ *
+ * It exists because one API call can make TWO requests — `request()` asks
+ * `getAccessToken()` first, which may refresh the token — and a caller deciding
+ * whether a PAID step's money moved must not mistake a failed token refresh
+ * (nothing was sent to `checkout`) for a failed checkout (#1677).
+ */
+export type OrigemChamadaMelhorEnvio = OperacaoMelhorEnvio | 'token' | null;
+
+/**
  * A non-2xx HTTP response from the ME API (other than the specialized
  * cases below). Carries the raw status + parsed/raw body for diagnostics.
  */
 export class MelhorEnvioHttpError extends MelhorEnvioError {
   public readonly status: number;
   public readonly body: unknown;
-  constructor(message: string, status: number, body: unknown) {
+  /** Which call answered it — see {@link OrigemChamadaMelhorEnvio}. */
+  public readonly operacao: OrigemChamadaMelhorEnvio;
+  constructor(
+    message: string,
+    status: number,
+    body: unknown,
+    operacao: OrigemChamadaMelhorEnvio = null,
+  ) {
     super(message);
     this.name = 'MelhorEnvioHttpError';
     this.status = status;
     this.body = body;
+    this.operacao = operacao;
   }
 }
 
@@ -116,12 +136,16 @@ export class MelhorEnvioSchemaError extends MelhorEnvioError {
  * unrecognised failure. Mirrors `FreightNetworkError` in `../http-client/errors`.
  */
 export class MelhorEnvioNetworkError extends MelhorEnvioError {
+  /** Which call failed — see {@link OrigemChamadaMelhorEnvio}. */
+  public readonly operacao: OrigemChamadaMelhorEnvio;
   constructor(
     message: string,
     override readonly cause?: unknown,
+    operacao: OrigemChamadaMelhorEnvio = null,
   ) {
     super(message);
     this.name = 'MelhorEnvioNetworkError';
+    this.operacao = operacao;
   }
 }
 
@@ -140,17 +164,16 @@ export class MelhorEnvioNetworkError extends MelhorEnvioError {
  * land in both of those buckets without either caller changing.
  */
 export class MelhorEnvioTimeoutError extends MelhorEnvioNetworkError {
-  /** The `MelhorEnvioApi` method that timed out, or `'token'` for `/oauth/token`. */
-  public readonly operacao: OperacaoMelhorEnvio | 'token';
+  /** The `MelhorEnvioApi` method that timed out, or `'token'` for `/oauth/token` — never `null`. */
+  declare public readonly operacao: OperacaoMelhorEnvio | 'token';
   public readonly timeoutMs: number;
   constructor(
     message: string,
     detalhes: { readonly operacao: OperacaoMelhorEnvio | 'token'; readonly timeoutMs: number },
     cause?: unknown,
   ) {
-    super(message, cause);
+    super(message, cause, detalhes.operacao);
     this.name = 'MelhorEnvioTimeoutError';
-    this.operacao = detalhes.operacao;
     this.timeoutMs = detalhes.timeoutMs;
   }
 }

@@ -426,19 +426,27 @@ export async function liberarCompraEtiqueta(
  * route keeps the claim until it expires (nobody re-buys over a payment Melhor
  * Envio may still be settling) and tells the operator to check, not to retry.
  *
- *  - a timeout OF THAT STEP — a token-refresh timeout inside it
- *    (`operacao: 'token'`) sent nothing, so it is NOT uncertain;
- *  - any other transport failure — the request may have left before the
- *    connection dropped (conservative: a token-refresh network error is
- *    indistinguishable here and is treated the same, which can only over-hold);
+ *  - a timeout OF THAT STEP;
+ *  - any other transport failure of it — the request may have left before the
+ *    connection dropped;
  *  - a GATEWAY-class status from Melhor Envio's edge (502/503/504, Cloudflare's
  *    52x) — the edge answered, the origin may still be processing. A plain 500
  *    or a 4xx is the origin answering, so it is not.
+ *
+ * ⚠️ NOT when the failure came from the TOKEN refresh inside the step
+ * (`operacao: 'token'`): `request()` asks `getAccessToken()` before the paid
+ * call's own request, and a refresh that timed out, dropped or got a gateway
+ * status sent nothing to `checkout`/`generate`. Holding the claim and telling
+ * the operator "o pagamento pode ter sido concluído" there would be false (PR
+ * review of #1677). An error that does not say where it came from
+ * (`operacao: null`) is treated as the step's own — the conservative reading,
+ * which can only over-hold.
  */
 export function ehDesfechoPagoIncerto(err: unknown, etapa: EtapaPagaCompraEtiqueta): boolean {
   if (err instanceof MelhorEnvioTimeoutError) return err.operacao === etapa;
-  if (err instanceof MelhorEnvioNetworkError) return true;
+  if (err instanceof MelhorEnvioNetworkError) return err.operacao !== 'token';
   if (err instanceof MelhorEnvioHttpError) {
+    if (err.operacao === 'token') return false;
     return err.status === 502 || err.status === 503 || err.status === 504 || err.status >= 520;
   }
   return false;

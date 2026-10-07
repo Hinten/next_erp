@@ -447,6 +447,29 @@ describe('ehDesfechoPagoIncerto — is the money outcome of a paid step unknown?
       new MelhorEnvioTimeoutError('x', { operacao: 'token', timeoutMs: 20_000 }),
       false,
     ],
+    // Tagged with the call that failed (PR review of #1677): a TOKEN refresh
+    // inside the step sent nothing to checkout, whatever the failure shape.
+    ['a 502 tagged as the checkout call', new MelhorEnvioHttpError('x', 502, {}, 'checkout'), true],
+    [
+      'a 502 from /oauth/token inside the step',
+      new MelhorEnvioHttpError('x', 502, {}, 'token'),
+      false,
+    ],
+    [
+      'a 504 from /oauth/token inside the step',
+      new MelhorEnvioHttpError('x', 504, {}, 'token'),
+      false,
+    ],
+    [
+      'a connection drop of the checkout call',
+      new MelhorEnvioNetworkError('reset', null, 'checkout'),
+      true,
+    ],
+    [
+      'a connection drop of /oauth/token inside the step',
+      new MelhorEnvioNetworkError('reset', null, 'token'),
+      false,
+    ],
     ['the bare base error', new MelhorEnvioError('x'), false],
     ['a non-ME error', new RangeError('bug'), false],
   ])('checkout + %s → %s', (_nome, err, esperado) => {

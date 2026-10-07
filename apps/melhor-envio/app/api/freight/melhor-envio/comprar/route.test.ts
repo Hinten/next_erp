@@ -403,6 +403,14 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
         504,
       ],
       [
+        'a 502 from /oauth/token while checkout was refreshing its token (nothing was sent to checkout)',
+        () =>
+          h.checkout.mockRejectedValue(
+            new MelhorEnvioHttpError('Melhor Envio /oauth/token: HTTP 502', 502, {}, 'token'),
+          ),
+        502,
+      ],
+      [
         'a 422 at checkout (ME answered)',
         () => h.checkout.mockRejectedValue(new MelhorEnvioValidationError('x', {}, {})),
         422,

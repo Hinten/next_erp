@@ -347,6 +347,40 @@ describe('Melhor Envio server transport deadlines (#1679)', () => {
     expect((err as Error).message).toContain('POST /api/v2/me/shipment/checkout');
   });
 
+  it('every transport error names the call that failed — so a paid step can tell its own failure from the token refresh (#1677)', async () => {
+    const http = await api(vi.fn(async () => new Response('{}', { status: 502 })))
+      .checkout(['lbl-1'])
+      .catch((e: unknown) => e);
+    expect(http).toBeInstanceOf(MelhorEnvioHttpError);
+    expect((http as MelhorEnvioHttpError).operacao).toBe('checkout');
+
+    const rede = await api(
+      vi.fn(async () => {
+        throw new TypeError('reset');
+      }),
+    )
+      .generate(['lbl-1'])
+      .catch((e: unknown) => e);
+    expect((rede as MelhorEnvioNetworkError).operacao).toBe('generate');
+
+    const tokenHttp = await refreshAccessToken(
+      oauthConfig(vi.fn(async () => new Response('{}', { status: 503 }))),
+      'r',
+    ).catch((e: unknown) => e);
+    expect(tokenHttp).toBeInstanceOf(MelhorEnvioHttpError);
+    expect((tokenHttp as MelhorEnvioHttpError).operacao).toBe('token');
+
+    const tokenRede = await refreshAccessToken(
+      oauthConfig(
+        vi.fn(async () => {
+          throw new TypeError('reset');
+        }),
+      ),
+      'r',
+    ).catch((e: unknown) => e);
+    expect((tokenRede as MelhorEnvioNetworkError).operacao).toBe('token');
+  });
+
   it('a connection dropped mid-body is a MelhorEnvioNetworkError, not a timeout', async () => {
     const fetchMock = vi.fn(async () => {
       const corpo = new ReadableStream<Uint8Array>({

@@ -36,5 +36,6 @@ export function erroDeTransporteMe(
   return new MelhorEnvioNetworkError(
     `Falha de rede ao chamar Melhor Envio ${rota}: ${err instanceof Error ? err.message : 'fetch failed'}`,
     err,
+    operacao,
   );
 }
