@@ -527,7 +527,12 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({
         data: [
           rowFromNFe(
-            makeNFe(ESTADO_NFE.epecAprovado, { tpEmis: 4, chave: '3'.repeat(44), cStat: '136' }),
+            makeNFe(ESTADO_NFE.epecAprovado, {
+              tpEmis: 4,
+              chave: '3'.repeat(44),
+              cStat: '136',
+              xml_epec_proc: '<procEventoNFe>…EPEC…</procEventoNFe>',
+            }),
           ),
         ],
       });
@@ -537,6 +542,25 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(screen.getByRole('button', { name: /imprimir danfe/i })).toBeTruthy();
       expect(screen.queryByRole('button', { name: /cancelar nf-e/i })).toBeNull();
       expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
+    });
+
+    it('#1675 — an EPEC registered by an earlier send whose protocol was never recovered offers NO DANFE (the server would refuse it)', async () => {
+      setSnap({
+        data: [
+          rowFromNFe(
+            makeNFe(ESTADO_NFE.epecAprovado, {
+              tpEmis: 4,
+              chave: '3'.repeat(44),
+              cStat: '573',
+              xml_epec_proc: null,
+            }),
+          ),
+        ],
+      });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      await screen.findByText('Estado:');
+      expect(screen.queryByRole('button', { name: /imprimir danfe/i })).toBeNull();
     });
   });
 

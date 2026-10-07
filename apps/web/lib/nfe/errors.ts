@@ -229,11 +229,15 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
       color: 'blue',
     };
   }
-  // Another run's error (e.g. a 656) — say what it is, never "já emitida".
-  if (result.reused && result.estado === ESTADO_NFE.error) {
+  // An error — this run's (a 656, a fresh EPEC 485/573 to conciliate, #1675)
+  // or another run's that a reused result reports: red, never "já emitida" nor
+  // the gray fallback. The route answers 422 only for `rejeitada`.
+  if (result.estado === ESTADO_NFE.error) {
     return {
       title: 'NF-e com erro',
-      message: `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito.`,
+      message:
+        `cStat=${result.cStat}: ${result.xMotivo}` +
+        (result.reused ? ' — nenhum novo envio foi feito.' : ''),
       color: 'red',
     };
   }
@@ -285,6 +289,17 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
     };
   }
   if (result.estado === ESTADO_NFE.epecAprovado) {
+    // 485/573 on a resend of the same bytes (#1675): the EPEC was registered by
+    // an earlier send whose reply was lost — no protocol to print a DANFE from.
+    if (result.cStat === '485' || result.cStat === '573') {
+      return {
+        title: 'EPEC já registrado — protocolo não recuperado',
+        message:
+          `cStat=${result.cStat}: ${result.xMotivo} — a DANFE só sai após a transmissão da ` +
+          'NF-e completa, quando a SEFAZ normalizar.',
+        color: 'yellow',
+      };
+    }
     // 468 — the pós-EPEC transmission ran but the home SEFAZ hasn't pulled
     // the EPEC from the Ambiente Nacional yet. The doc stays 'p'; the
     // operator just waits a few minutes and emits again.

@@ -943,6 +943,7 @@ export {
   ESTADO_NFE_LABELS,
   ESTADOS_FINAIS_NFE,
   isEstadoFinalNFe,
+  nfeImprimivel,
   CHAVE_NFE_REGEX,
   nfeTotaisSchema,
   nfeTotaisRtcSchema,

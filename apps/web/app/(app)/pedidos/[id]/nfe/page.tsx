@@ -28,6 +28,7 @@ import {
   ESTADO_NFE_LABELS,
   type EstadoNFe,
   type Integracao,
+  nfeImprimivel,
   type Pedido,
 } from '@delfrance/schemas';
 
@@ -142,12 +143,14 @@ function PedidoNfeContent() {
                   EPEC aprovado — aguardando a transmissão da NF-e completa à SEFAZ (automática
                   quando a contingência for desligada). Cancelamento e carta de correção ficam
                   disponíveis após a autorização.
+                  {nfe.xml_epec_proc == null &&
+                    ' O EPEC foi registrado por um envio anterior desta mesma NF-e, mas o ' +
+                      'protocolo não foi recuperado: a DANFE sai após a transmissão da NF-e ' +
+                      'completa.'}
                 </Text>
               )}
 
-              {(estado === ESTADO_NFE.aprovada ||
-                estado === ESTADO_NFE.cancelada ||
-                estado === ESTADO_NFE.epecAprovado) && (
+              {(nfeImprimivel(nfe) || estado === ESTADO_NFE.cancelada) && (
                 <Group gap="xs">
                   <DanfeMenu pedidoId={pedidoId} nfeId={row.id} />
                 </Group>

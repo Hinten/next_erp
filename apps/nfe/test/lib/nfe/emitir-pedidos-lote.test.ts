@@ -1898,6 +1898,90 @@ describe('emitirPedidosLote — contingência EPEC', () => {
     expect(docs['pedidos/PED-1/nfev4/s1']).toBeUndefined();
   });
 
+  it('#1675 — one chunk: a STORED-bytes member answered 573 is p (already registered), a FRESH member answered 485 is error — never rejeitada', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-CRASH', filialId: 'F-1' },
+      ],
+      nfeConfigByFilial: { 'F-1': EPEC_NFE_CONFIG },
+      extraDocs: {
+        // A #396 EPEC anchor: its evento reply was lost, no reservation left.
+        'pedidos/PED-CRASH/nfev4/s4': {
+          numeracao: 9,
+          serie: 1,
+          tpEmis: 4,
+          estado: ESTADO_NFE.enviando,
+          chave: EPEC_CHAVE,
+          idLote: '3',
+          cStat: null,
+          xMotivo: null,
+          nRec: null,
+          retries: 0,
+          xml_assinado: EPEC_SIGNED_NFE,
+          xml_epec_proc: null,
+          proximaConsultaEm: null,
+        },
+      },
+    });
+    vi.mocked(signNFe).mockImplementation(() => EPEC_SIGNED_NFE);
+    // The fresh members go out first, the stored ones after them (toSend order).
+    vi.mocked(enviarEpec)
+      .mockResolvedValueOnce(epecResult('485') as never)
+      .mockResolvedValueOnce(epecResult('573') as never);
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-CRASH']);
+
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(2);
+    expect(out.results.find((r) => r.pedidoId === 'PED-FRESH')).toMatchObject({
+      estado: ESTADO_NFE.error,
+      cStat: '485',
+    });
+    expect(out.results.find((r) => r.pedidoId === 'PED-CRASH')).toMatchObject({
+      estado: ESTADO_NFE.epecAprovado,
+      cStat: '573',
+    });
+    expect(docs['pedidos/PED-CRASH/nfev4/s4']).toMatchObject({
+      estado: ESTADO_NFE.epecAprovado,
+      xml_epec_proc: null,
+      xml_assinado: EPEC_SIGNED_NFE,
+    });
+    expect(docs['pedidos/PED-FRESH/nfev4/s4']).toMatchObject({ estado: ESTADO_NFE.error });
+  });
+
+  it('#1675 — a member whose FRESH 485/573 left it pending conciliation is skipped in 4a: no evento, no número, reported as is', async () => {
+    const pendente = {
+      numeracao: 9,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.error,
+      chave: EPEC_CHAVE,
+      idLote: '3',
+      cStat: '573',
+      xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado para esta numeração/chave…',
+      nRec: null,
+      retries: 0,
+      xml_assinado: EPEC_SIGNED_NFE,
+      xml_epec_proc: null,
+      proximaConsultaEm: null,
+    };
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [{ pedidoId: 'PED-1', filialId: 'F-1' }],
+      nfeConfigByFilial: { 'F-1': EPEC_NFE_CONFIG },
+      extraDocs: { 'pedidos/PED-1/nfev4/s4': pendente },
+    });
+    vi.mocked(signNFe).mockImplementation(() => EPEC_SIGNED_NFE);
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1']);
+
+    expect(vi.mocked(enviarEpec)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(docs['pedidos/PED-1/nfev4/s4']).toEqual(pendente);
+    expect(out.results[0]).toMatchObject({ estado: ESTADO_NFE.error, cStat: '573', reused: true });
+  });
+
   it('skips an already EPEC-approved pedido (reports it; the transmission belongs to the poller)', async () => {
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({

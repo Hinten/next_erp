@@ -10,11 +10,16 @@ import {
 import { ID_DEST, IND_IE_DEST } from '../nfe/destinatarioNFe';
 import type { CarregarContextoRejeicao, ContextoRejeicaoNFe } from '../nfe/errors';
 
-const { getDocsMock, loaderMock, carregadorMock } = vi.hoisted(() => {
+const { getDocsMock, getDocMock, loaderMock, carregadorMock } = vi.hoisted(() => {
   const loaderMock = vi.fn<CarregarContextoRejeicao>();
-  return { getDocsMock: vi.fn(), loaderMock, carregadorMock: vi.fn((_db: unknown) => loaderMock) };
+  return {
+    getDocsMock: vi.fn(),
+    getDocMock: vi.fn(),
+    loaderMock,
+    carregadorMock: vi.fn((_db: unknown) => loaderMock),
+  };
 });
-vi.mock('firebase/firestore', () => ({ getDocs: getDocsMock }));
+vi.mock('firebase/firestore', () => ({ getDocs: getDocsMock, getDoc: getDocMock }));
 // The Firestore-backed rejection-context loader (#852) — its own reads are
 // pinned in `contextoRejeicao.test.ts`; here only the wiring matters.
 vi.mock('../nfe/contextoRejeicao', () => ({ carregadorContextoRejeicao: carregadorMock }));
@@ -37,6 +42,22 @@ const nfeDoc = (id: string, estado: string, chave: string | null, mod: number) =
   data: () => ({ estado, chave, ultima_modificacao: mod }),
 });
 const setDocs = (docs: unknown[]) => getDocsMock.mockResolvedValue({ docs });
+/** An EPEC-approved doc — with its EPEC protocol, or without (#1675: registered, not recovered). */
+const epecDoc = (id: string, chave: string, mod: number, proc: string | null) => ({
+  id,
+  data: () => ({
+    estado: ESTADO_NFE.epecAprovado,
+    chave,
+    ultima_modificacao: mod,
+    xml_epec_proc: proc,
+    filialId: 'F-1',
+  }),
+});
+/** The filial's nfeconfig as `getDoc` returns it. */
+const configDaFilial = (contingencia_modo: string) => ({
+  exists: () => true,
+  data: () => ({ contingencia_modo }),
+});
 const emitResult = (over: Record<string, unknown>) => ({
   nfeId: 'nfe-1',
   pedidoId: 'p1',
@@ -57,6 +78,13 @@ describe('resolveAprovadaNfe', () => {
     ]);
     expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'new', chave: 'A-NEW' });
   });
+  it('#1675 — an EPEC doc is printable only WITH its protocol', async () => {
+    setDocs([epecDoc('sem', 'E-SEM', 20, null)]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
+    setDocs([epecDoc('com', 'E-COM', 20, '<procEventoNFe/>')]);
+    expect(await resolveAprovadaNfe(db, 'p1')).toEqual({ nfeId: 'com', chave: 'E-COM' });
+  });
+
   it('returns null with no authorized doc / no chave', async () => {
     setDocs([nfeDoc('a', ESTADO_NFE.aprovada, null, 1)]);
     expect(await resolveAprovadaNfe(db, 'p1')).toBeNull();
@@ -81,6 +109,7 @@ describe('ensureNfeAprovada', () => {
   let client: { emitir: ReturnType<typeof vi.fn>; danfe: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     getDocsMock.mockReset();
+    getDocMock.mockReset();
     loaderMock.mockReset();
     carregadorMock.mockClear();
     client = { emitir: vi.fn(), danfe: vi.fn() };
@@ -103,6 +132,60 @@ describe('ensureNfeAprovada', () => {
     expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
       ok: true,
       nfeId: 'nfe-1',
+      chave: 'CHV',
+      reused: false,
+    });
+  });
+
+  it('#1675 — an EPEC registered WITHOUT its protocol while the filial is still in EPEC mode: no emit (the home SEFAZ is down), a yellow notice instead', async () => {
+    getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    getDocMock.mockResolvedValue(configDaFilial('epec'));
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(client.emitir).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('near-miss: with the contingency OFF the emit IS the pós-EPEC transmission — it is called, and its aprovada prints', async () => {
+    getDocsMock.mockResolvedValue({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    getDocMock.mockResolvedValue(configDaFilial('none'));
+    client.emitir.mockResolvedValue(
+      emitResult({ nfeId: 's4', estado: ESTADO_NFE.aprovada, reused: false }),
+    );
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: true,
+      nfeId: 's4',
+      chave: 'CHV',
+      reused: false,
+    });
+    expect(client.emitir).toHaveBeenCalledTimes(1);
+  });
+
+  it('#1675 — an emit that ANSWERS EPEC-approved without a recovered protocol prints nothing: a yellow notice instead', async () => {
+    // Nothing before the emit; after it, the doc the emit wrote has no proc.
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, null)] });
+    client.emitir.mockResolvedValue(
+      emitResult({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '573',
+        xMotivo: 'Duplicidade de Evento',
+      }),
+    );
+    const r = await ensureNfeAprovada(db, asClient(client), 'p1');
+    expect(r.ok).toBe(false);
+    if (!r.ok && !r.pending) expect(r.notification.color).toBe('yellow');
+  });
+
+  it('near-miss: an emit answered EPEC-approved whose doc HOLDS its protocol is ok to print', async () => {
+    getDocsMock
+      .mockResolvedValueOnce({ docs: [] })
+      .mockResolvedValueOnce({ docs: [epecDoc('s4', 'CHV', 5, '<procEventoNFe/>')] });
+    client.emitir.mockResolvedValue(emitResult({ estado: ESTADO_NFE.epecAprovado, cStat: '135' }));
+    expect(await ensureNfeAprovada(db, asClient(client), 'p1')).toEqual({
+      ok: true,
+      nfeId: 's4',
       chave: 'CHV',
       reused: false,
     });

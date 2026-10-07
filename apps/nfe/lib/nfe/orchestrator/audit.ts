@@ -718,6 +718,64 @@ export async function gravarAncoraDoLote(
   });
 }
 
+/**
+ * Fill in the EPEC protocol a superseded EPEC run received (#1675) — fill-only.
+ * A run whose registered (135/136) reply lost the idLote race to a newer claim
+ * holds the `procEventoNFe` the newer run could not recover: its resend of the
+ * same bytes was answered 485/573 and left the doc `'p'` WITHOUT
+ * `xml_epec_proc`. Writing it back unblocks the DANFE.
+ *
+ * Class A (root `CLAUDE.md` rule 7): decided on the `tx.get` snapshot only —
+ * written ONLY while the doc is still `'p'`, carries this chave, still holds the
+ * very signed bytes this run sent (`xml_assinado === signedXml` — a regenerate
+ * keeps the chave within the month, so the chave alone cannot tell whose EPEC
+ * the proc describes) and has no `xml_epec_proc`; then `xml_epec_proc` is set, plus the registered cStat /
+ * xMotivo when the stored ones are the 485/573 "already registered" answer
+ * (`cStatsJaRegistrado`) — any other stored cStat (a later pós-EPEC 468) is
+ * left as it is. Touches nothing else: neither the idLote nor a reservation.
+ * Returns the doc as written, or `null` when nothing was (missing, another
+ * estado or chave, or a protocol already there).
+ */
+export async function completarProtocoloEpec(
+  fs: Firestore,
+  nfeRef: FirebaseFirestore.DocumentReference,
+  chave: string,
+  registro: {
+    /** The signed bytes this run sent — the ones its protocol describes. */
+    readonly signedXml: string;
+    readonly xml_epec_proc: string;
+    readonly cStat: string;
+    readonly xMotivo: string;
+    readonly cStatsJaRegistrado: ReadonlySet<string>;
+  },
+): Promise<NotaFiscalEletronica | null> {
+  return await fs.runTransaction(async (tx): Promise<NotaFiscalEletronica | null> => {
+    const snap = await tx.get(nfeRef);
+    if (!snap.exists) return null;
+    const atual = nfev4Collection.parseRead(snap.data(), nfeRef.path);
+    if (
+      atual.estado !== ESTADO_NFE.epecAprovado ||
+      atual.chave !== chave ||
+      atual.xml_assinado !== registro.signedXml ||
+      atual.xml_epec_proc != null
+    ) {
+      return null;
+    }
+    const trocaStatus = atual.cStat != null && registro.cStatsJaRegistrado.has(atual.cStat);
+    const patch = {
+      xml_epec_proc: registro.xml_epec_proc,
+      ...(trocaStatus ? { cStat: registro.cStat, xMotivo: registro.xMotivo } : {}),
+      ultima_modificacao: new Date().toISOString(),
+    };
+    tx.set(nfeRef, nfev4Collection.parseMerge(patch), { merge: true });
+    return {
+      ...atual,
+      xml_epec_proc: registro.xml_epec_proc,
+      ...(trocaStatus ? { cStat: registro.cStat, xMotivo: registro.xMotivo } : {}),
+    };
+  });
+}
+
 /** Outcome of {@link reivindicarEnvio}: the claimed doc, or the live one a claim was refused on. */
 export type ReivindicacaoDeEnvio =
   | {

@@ -31,6 +31,7 @@ import {
   bloqueioDespachoAtivo,
   bloqueioFinalizarAtivo,
   freightCapsFor,
+  nfeImprimivel,
   pedidoTotal,
 } from '@delfrance/schemas';
 import { microsToMillis } from '@delfrance/core/datetime';
@@ -156,12 +157,14 @@ export function NFCell({
   const isAprovada = latest.estado === ESTADO_NFE.aprovada;
   // A DANFE can be printed for an authorized NF-e, a cancelada one (it
   // retains its procNFe and prints with a CANCELADO overlay) and an
-  // EPEC-approved one (plain-paper DANFE with the EPEC protocolo box) — same
-  // set the per-NF-e screen + the danfeArtifactService allow.
+  // EPEC-approved one that holds its EPEC protocol (plain-paper DANFE with the
+  // EPEC protocolo box) — same set the per-NF-e screen + the
+  // danfeArtifactService allow. An EPEC registered by an earlier send whose
+  // protocol was never recovered (#1675) has none, and apps/nfe refuses its
+  // DANFE until the pós-EPEC transmission; the menu only renders with the live
+  // `doc` anyway.
   const canPrintDanfe =
-    isAprovada ||
-    latest.estado === ESTADO_NFE.cancelada ||
-    latest.estado === ESTADO_NFE.epecAprovado;
+    isAprovada || latest.estado === ESTADO_NFE.cancelada || (doc != null && nfeImprimivel(doc));
   // The XML download reads straight from the nfev4 doc (no HTTP round-trip),
   // so it's available whenever any XML has been persisted — authorized,
   // EPEC, or the signed pre-transmission anchor.

@@ -549,6 +549,27 @@ describe('verificarEnviNfeMsgs', () => {
     },
   );
 
+  it('an EPEC-APPROVED doc is never consulted (#1675) — a home-SEFAZ 217 would free a número the EPEC holds', async () => {
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+    seedNfev4([{ chave: CHAVE_A, estado: ESTADO_NFE.epecAprovado, cStat: '573' }]);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+
+    const r = await verificarEnviNfeMsgs(...baseArgs, {
+      filialId: FILIAL,
+      enviNfeMsgIds: ['msg-1'],
+    });
+
+    expect(r.results[0]).toMatchObject({
+      chave: CHAVE_A,
+      status: 'sem-mudanca',
+      estadoNovo: ESTADO_NFE.epecAprovado,
+      error: null,
+    });
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
+  });
+
   it('a REFUSED write (#1675 — the doc changed during the consult) is reported as nothing written, never "atualizada"', async () => {
     seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
     seedNfev4([{ chave: CHAVE_A, estado: ESTADO_NFE.aguardandoResposta }]);

@@ -131,6 +131,18 @@ describe('notificationForNFeResult', () => {
     expect(n.message).toContain('Aguarde alguns minutos');
   });
 
+  it.each(['485', '573'])(
+    'estado=epecAprovado + cStat %s (already registered, protocol not recovered — #1675) → yellow, the DANFE waits for the transmission',
+    (cStat) => {
+      const n = notificationForNFeResult(
+        emitResult({ estado: ESTADO_NFE.epecAprovado, cStat, xMotivo: 'Duplicidade', nRec: null }),
+      );
+      expect(n.color).toBe('yellow');
+      expect(n.title).toBe('EPEC já registrado — protocolo não recuperado');
+      expect(n.message).toContain('DANFE só sai após a transmissão');
+    },
+  );
+
   it('reused=true on an aprovada doc → yellow "já emitida" toast (dedup skip), overrides the estado branch', () => {
     const n = notificationForNFeResult(emitResult({ reused: true }));
     expect(n.color).toBe('yellow');
@@ -153,6 +165,21 @@ describe('notificationForNFeResult', () => {
       expect(n.message).toContain('nenhum novo envio foi feito');
     },
   );
+
+  it('estado=error from THIS run (a fresh EPEC 573 to conciliate, a 656) → red with its cStat, never the gray fallback (#1675)', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        estado: ESTADO_NFE.error,
+        cStat: '573',
+        xMotivo: 'Rejeicao: Duplicidade de Evento | EPEC já registrado…',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('NF-e com erro');
+    expect(n.message).toContain('cStat=573');
+    expect(n.message).not.toContain('nenhum novo envio');
+  });
 
   it('reused=true on an error doc another run wrote → red with its cStat, NOT "já emitida" (#1675)', () => {
     const n = notificationForNFeResult(

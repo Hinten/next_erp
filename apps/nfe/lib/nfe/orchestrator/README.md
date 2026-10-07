@@ -12,12 +12,12 @@ holds under normal operation — read it before touching any code under
 `orchestrator/` that persists an nfev4 doc, but don't assume the invariant
 holds for every doc already in Firestore.
 
-| estado                                          | `xml_assinado`                                                                                                  | `xml_nfe_proc`                                                 |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `enviando` / `aguardandoResposta` / `rejeitada` | signed `<NFe>`                                                                                                  | `null`                                                         |
-| `'p'` (epecAprovado)                            | signed `<NFe>` (pós-EPEC resend reads it)                                                                       | `null` (`xml_epec_proc` holds the EPEC evento's procEventoNFe) |
-| `aprovada`                                      | `null`                                                                                                          | `<nfeProc>` (embeds the signed NFe)                            |
-| `cancelada` / `numeracaoInutilizada` / `error`  | whatever the doc carried when it reached that estado — cancelamento/inutilização/error never touch these fields | same                                                           |
+| estado                                          | `xml_assinado`                                                                                                  | `xml_nfe_proc`                                                                                                                                               |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enviando` / `aguardandoResposta` / `rejeitada` | signed `<NFe>`                                                                                                  | `null`                                                                                                                                                       |
+| `'p'` (epecAprovado)                            | signed `<NFe>` (pós-EPEC resend reads it)                                                                       | `null` (`xml_epec_proc` holds the EPEC evento's procEventoNFe — `null` when an earlier send registered the EPEC and its protocol was never recovered, #1675) |
+| `aprovada`                                      | `null`                                                                                                          | `<nfeProc>` (embeds the signed NFe)                                                                                                                          |
+| `cancelada` / `numeracaoInutilizada` / `error`  | whatever the doc carried when it reached that estado — cancelamento/inutilização/error never touch these fields | same                                                                                                                                                         |
 
 The swap from row 1 to row 3 happens in exactly one place —
 `buildProcForAuthorizedOutcome` (the digest-safe `<nfeProc>` guard, #396) plus

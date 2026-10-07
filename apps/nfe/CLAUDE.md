@@ -504,6 +504,31 @@ writes were last-writer-wins. Now:
 - **The pós-EPEC claim.** `transmitirPosEpec` stamps its fresh idLote + the
   reservation through `reivindicarEnvio` before sending; an operator emit and the
   sweep can no longer both transmit one `'p'` doc.
+- **A duplicate EPEC (`disposicaoDoEpec`, epec.ts).** 485 (duplicidade de
+  numeração do EPEC, NT 2014.001 rule 3P12-10) and 573 (duplicidade de evento,
+  3P15-10) mean an EPEC is ALREADY registered. On a #396 anchor's STORED bytes it
+  is ours — an earlier send whose reply was lost — so the doc becomes `'p'`
+  WITHOUT `xml_epec_proc` (SEFAZ's cStat kept, the reason appended), never
+  `rejeitada`: a `rejeitada` regenerates over the bytes the EPEC summarises and
+  the pós-EPEC transmission then answers 467 (an orphaned EPEC). Its DANFE waits
+  for the pós-EPEC authorization (`nfeImprimivel` in `@delfrance/schemas` — the
+  rule for which `'p'` doc prints, shared by apps/web and `danfe.ts`);
+  recovering the protocol itself is #314. On FRESH bytes the EPEC on record
+  describes other data — `error`, naming the manual conciliation, and never
+  re-sent by an emit (`epecPendenteDeConciliacao`: both claim transactions skip
+  it like a bloqueada). A superseded run's registered (135/136) reply fills in
+  that protocol, fill-only and only onto the very bytes it describes
+  (`completarProtocoloEpec`). The manual verify and the `consultarPedido` CLI
+  never consult a `'p'` doc: the home SEFAZ answers 217 until the Ambiente
+  Nacional shares the EPEC (then 124, which this app does not read as
+  authorized either). Residuals: a 485 is keyed on the número, so after a
+  cross-month regenerate (new chave) a stored-bytes 485 may belong to the old
+  chave — the pós-EPEC transmission then answers 468/467 (#1730 bounds that
+  loop); and when the superseded run's 135 lands while the newer run is still
+  mid-call, the heal finds no `'p'` yet and the protocol stays only in the
+  enviNfe audit row. An in-flight `tpEmis=4` anchor that never became `'p'` is
+  still consulted at the home SEFAZ by the sweep, the manual verify and the CLI
+  (#1807).
 ⚠️ Cross-slot overlaps (a re-emit after a contingency-mode switch lands in
 another `s1`/`s4`/`s6`/`s7` slot) are a separate follow-up (#1806), and so is the
 sweep consulting an in-flight EPEC anchor at the home SEFAZ (#1807). Deploy the App
