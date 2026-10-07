@@ -572,9 +572,12 @@ describe('verificarEnviNfeMsgs', () => {
       status: 'sem-mudanca',
       estadoAnterior: ESTADO_NFE.aguardandoResposta,
       estadoNovo: ESTADO_NFE.enviando,
+      // The live anchor has no cStat — never this consult's 217.
+      cStat: null,
       error: null,
     });
     expect(r.results[0]!.xMotivo).toContain('nada gravado');
+    expect(r.results[0]!.xMotivo).not.toContain('217');
   });
 
   it('the consult’s write is owned by the read (#1675): the guard carries the snapshot’s updateTime and refuses while a send is in progress', async () => {

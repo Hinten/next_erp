@@ -405,15 +405,22 @@ export async function consultarChavePersistida(params: {
     { expectedUpdateTime: params.updateTimeLido, refuseWhileReserved: true },
   );
   // The doc's chave after this call: the recovered one only if the write
-  // that carries the swap landed.
-  const chaveFinal = persisted.written ? (recovered539.chaveOverride ?? chave) : chave;
+  // that carries the swap landed; on a refusal, the live doc's own.
+  const chaveFinal = persisted.written
+    ? (recovered539.chaveOverride ?? chave)
+    : (persisted.chaveAtual ?? chave);
   if (!persisted.written) {
-    // Nothing was written — report the doc's live truth, not the stale patch.
+    // Nothing was written — report the doc's live truth, never a field of the
+    // stale patch: a doc an emit claimed and is sending has NO cStat yet (a
+    // fresh anchor), and falling back to this consult's answer (a 217, say)
+    // would claim SEFAZ does not have an NF-e that is being sent (#1675).
+    // `recusaToEmitResult`'s convention. This call's own answers were already
+    // `registrar`ed above, so a 656 still reaches `consumoIndevido`.
     patch = {
       ...patch,
       estado: persisted.estadoAtual,
-      cStat: persisted.cStatAtual ?? patch.cStat,
-      xMotivo: persisted.xMotivoAtual ?? patch.xMotivo,
+      cStat: persisted.cStatAtual ?? '',
+      xMotivo: persisted.xMotivoAtual ?? '',
       retries: 0,
       action: 'done-terminal',
       tMed: null,

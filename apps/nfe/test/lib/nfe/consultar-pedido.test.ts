@@ -244,7 +244,27 @@ describe('consultarPedido — a send in progress (#1675)', () => {
 
     const r = await consultarPedido({} as never, {} as never, PEDIDO);
 
-    expect(r).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+    // The live doc's truth only: no cStat/xMotivo of its own yet, never this
+    // consult's 217.
+    expect(r).toMatchObject({ estado: ESTADO_NFE.enviando, cStat: '', xMotivo: '', reused: true });
+  });
+
+  it('a REFUSED write reports the live doc’s chave (another run regenerated it), not the one this call read', async () => {
+    seedSlot();
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+    const CHAVE_VIVA = `${CHAVE.slice(0, 43)}${CHAVE.endsWith('9') ? '0' : '9'}`;
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValue({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: CHAVE_VIVA,
+    });
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    expect(r).toMatchObject({ chave: CHAVE_VIVA, reused: true });
   });
 
   it('near-miss: an EXPIRED reservation is consulted, and the write is owned by the read (updateTime + no live send)', async () => {

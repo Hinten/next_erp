@@ -227,10 +227,12 @@ export async function verificarEnviNfeMsgs(
               status: 'sem-mudanca',
               estadoAnterior: nota.estado,
               estadoNovo: patch.estado,
-              cStat: patch.cStat,
+              // The live doc's own — none on an anchor an emit is sending.
+              cStat: patch.cStat || null,
               xMotivo:
                 'nada gravado — outro processo alterou este documento durante a consulta ' +
-                `(estado atual ${patch.estado}, cStat ${patch.cStat}: ${patch.xMotivo})`,
+                `(estado atual ${patch.estado}` +
+                (patch.cStat ? `, cStat ${patch.cStat}: ${patch.xMotivo})` : ')'),
               error: null,
             }
           : {
