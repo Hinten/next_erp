@@ -243,3 +243,15 @@ Verdicts: confirmed = the conclusion stands; corrected = the conclusion stands i
 ### Documentation provenance
 
 The spec in use is LI's own documentation. It is served from the LI-owned subdomain api-docs.lojaintegrada.com.br, with LI response headers, and it is linked from help articles 12500189 and 5360466 (12500189 calls it the official link). The spec file was last modified on 2026-09-29, and its sha256 is byte-identical to the copy the agents worked from. Its server, https://api.awsli.com.br, is the base URL the working legacy client uses today. An older, discontinued API document hosted on Apiary (titled "Versão descontinuada") also exists; it is used only as a historical reference (for example the stock formula) and never as the primary source. The spec's own info links to the help articles are crossed (they point at each other's topics), so cite the help articles by number from this record, not through those links. The spec is also partly loose: generated schemas omit grades, pai, variacoes and filhos, and several examples contain typos, so types are written from the examples and must be verified on a test store.
+## Live evidence after the legacy moved to Personal Tokens (2026-10-07)
+
+Later the same day, the store owner switched the live legacy integration of both stores from the `chave_api` + `aplicacao` combination to Personal Tokens. The token is sent as `Authorization: Basic <token>`, raw and alone. The legacy's order import, its stock, price and tracking/situação writes, and its web screens all run on the tokens. That settles, live:
+
+| Open item (master plan §1.2) | Result |
+|---|---|
+| 7: is the Personal Token IP-bound? | **No.** Calls succeed from dynamic cloud egress and from operators' browsers on arbitrary networks. |
+| 8: Personal Token wire format | **Raw token after `Basic `**, with no base64 and no user:pass, as help 931152 documents. |
+| Write endpoints accept the Personal Token | **Yes**, for the stock, price, `pedido_envio` and situação PUTs, with the payloads the legacy sends. |
+| Browsers sending `Authorization` cross-origin | Works in the operators' browsers. A credential-free Chromium 152 check gave the same answer. The new integration calls LI only from its server, so this does not matter to it. |
+
+What stays open: partial-vs-full PUT semantics, the reservation math, how to clear a promotion, the buyer e-mail on a situação PUT, webhook registration with a Personal Token, and the 429 bucket and body. The legacy's writes use its own payloads, so they do not settle these (§1.2 items 1–4, 6, 15–17).

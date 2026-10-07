@@ -15,12 +15,13 @@ Citation conventions:
 ## 0. Executive summary
 
 - **No official Loja Integrada MCP exists.** The MCP registry, a web search and the help center all came up empty. None is needed: the spec is a public JSON document, and `li-doc.mjs` prints its operations, tags and info block as plain text. It should be promoted into the skill as the Phase-3 reference tool, as `shopee-doc.mjs` was.
-- **Legacy credential: a risk to the LIVE system until the cutover. It is outside this repo and owned by Lucas, not by an agent.**
-  - **Fact:** the legacy integration authenticates with the `chave_api` + `aplicacao` combination and works today (owner check, 2026-10-07).
-  - **Risk:** LI announced that old-model application keys are refused from **05/10/2026** (help 931152). The re-verification found that the legacy key is most likely such an old-model key: current partner keys are IP-bound, and the legacy's origins are not fixed. LI could therefore refuse it at any time.
-  - **Recommendation (Lucas's call, outside this repo):** generate each store's Personal Token now. Step 0 needs it anyway, for the read-only probes and the IP-binding gate (P1, P6). Having it in hand means a sudden refusal can be answered quickly.
-  - **The new integration never reuses the legacy key.** It authenticates with the Personal Token only (D3).
-  - **Effect on this plan:** none on the design. If a refusal stops the legacy order import before the cutover, the poll look-back seeded in the window covers the gap (§5 item 7).
+- **Legacy credential: resolved on 2026-10-07.**
+  - **What happened:** LI announced that old-model application keys are refused from **05/10/2026** (help 931152), and the legacy key was most likely one of them. On 2026-10-07 the store owner moved the live legacy integration to **Personal Tokens on both stores**. They are sent as `Authorization: Basic <token>` with the raw token, and the legacy's order import, stock, price and tracking writes, and its web screens all run on them. The old-key risk is gone.
+  - **Consequences for this plan:**
+    - The new integration uses **its own** tokens, never the legacy's (D16).
+    - The legacy's tokens are revoked once the legacy app is switched off (§5 item 10).
+    - The token format and the absence of an IP binding are now settled live (§1.2 items 7–8, §1.3).
+  - **Operational duty, outside this repo:** the legacy's tokens expire three months after generation, in early January 2027, unless the owner renews them in the painel. Renewing restarts the 3 months from the click.
 - **The five architecture answers** (§1.1):
   1. Webhooks are *authenticated* by a static Bearer secret we choose, not signed. The receiver fails closed.
   2. Push exists but is unreliable and undocumented. The 5-minute poll is the guaranteed path; the order webhook only speeds it up.
@@ -30,7 +31,7 @@ Citation conventions:
 - **Lifetime (D2):** Lucas plans to replace Loja Integrada with his own storefront in 2027. Until then the integration must be guaranteed. ⇒ **Parity, lean, robustness over features.** Nothing goes beyond the four daily flows (order import, stock, price, publish/edit/import-link) unless it fixes correctness. For that reason this revision drops the stale-pending re-check and the `pedido.marketplace` status echo that an earlier draft had added.
 - **Credential (D3):** one Personal Token per store, sent as `Authorization: Basic <token>`.
   - The owner generates it. It expires every 3 months and is renewed in the painel; renewal keeps the same token.
-  - No partner key is requested. That is a design choice: partner keys are IP-bound, and LI does not process partner-key requests from store owners (help 5360466). ⇒ no IP allow-list ⇒ **no static egress**. One read-only gate confirms this before the poller is built (§1.2 item 7, Step 0).
+  - No partner key is requested. That is a design choice: partner keys are IP-bound, and LI does not process partner-key requests from store owners (help 5360466). ⇒ no IP allow-list ⇒ **no static egress**. The live legacy already runs on Personal Tokens from dynamic cloud egress and from operators' browsers, so they are **not IP-bound** (§1.2 item 7). The connect route's validating GET re-confirms this under the new tokens.
   - The ERP stores an expiry date the operator types in, raises one aviso 30 days ahead, and parks the conta ("reconexão pendente") on a 401/403.
   - The token lives in an admin-only credential store.
 - **Testing without a demo store (D4):** there is no sandbox, and a demo store costs money ⇒ **no live write before the cutover.**
@@ -68,7 +69,8 @@ This is the proposed `MARKETPLACE_TIPO_CAPS[INTEGRACAO_TIPO.lojaIntegrada]` in `
   // Static header credential; no OAuth, token or refresh endpoint anywhere (spec info §Autenticação;
   // components.securitySchemes: both apiKey/header Authorization; no per-operation override in 108 ops).
   // Two unmixable modes: `Basic <Personal Token>` — store-owner generated, expires every 3 months,
-  // renewed by hand in the painel (help 931152) — THE MODE WE USE (D3); `chave_api <k> aplicacao <k>`
+  // renewed by hand in the painel (help 931152) — THE MODE WE USE (D3; live on both stores since 2026-10-07, §1.3);
+  // `chave_api <k> aplicacao <k>`
   // — the integrator combination, IP-bound for current integrator keys (help 5360466) — not used.
   auth: 'api-key',
   pkce: 'nao',                        // no authorize/token endpoint exists (spec scan: 0 oauth/pkce hits)
@@ -198,8 +200,8 @@ A few facts are already **live-proven by the working legacy, under the `chave_ap
 4. **Webhook registration with a Personal Token.** WRITE-ONLY, because registration is a write. Settled at the window (§5). A refusal costs latency only, because the poll is the guaranteed path.
 5. *(Withdrawn: product-hook triggers are moot, because the product webhook is not used.)*
 6. **429 body, `Retry-After`, fixed vs sliding window, and which bucket a Personal Token consumes.** These are observable only when throttled, and we never provoke throttling on purpose. Defence: the classifier keys on HTTP 429 and searches any body for `533|633|133`; the logger records the first real occurrence verbatim (redacted).
-7. **GATE: is the Personal Token IP-bound?** READ-ONLY. Lucas runs the same `GET /v1/categoria?limit=1` from three networks he controls: his workstation, a phone hotspot, and Google Cloud Shell (a Google-hosted egress like the deployed functions'). It records status codes only and saves no body. This happens in **Step 0, before any code**. **If any network gets 401/403 while another gets 2xx, stop and replan**, because static egress (VPC connector + Cloud NAT) comes back and D3's premise fails. The poller (step 3), the receiver (step 4) and every write step are built only after this answer is "not bound".
-8. **Personal Token wire format** (raw token after `Basic ` vs base64). READ-ONLY. Settled in the Step-0 probe and again by the connect route's validating GET.
+7. **GATE: is the Personal Token IP-bound? Settled live on 2026-10-07: no.** The legacy integration runs on Personal Tokens from dynamic cloud egress (no static IP) and from operators' browsers on arbitrary networks, and all its calls succeed **[live-proven, Personal Token]**. D3's "no static egress" premise holds. The new integration's first validating GET (step 1) re-confirms it under the new tokens from the new runtime. An unexpected 401/403 there, while another network gets 2xx, still stops the plan for a replan.
+8. **Personal Token wire format: settled live on 2026-10-07.** The token goes raw after `Basic `, with no base64 and no user:pass, exactly as help 931152 documents. Both stores' legacy integrations run this way **[live-proven, Personal Token]**.
 9. **401 vs 403, and the body of a bad or expired token.** READ-ONLY. One GET with a deliberately wrong token (Step 0).
 10. **Max `limit`** on `/v1/produto`, `/v1/produto_estoque`, `/v1/{produto_preco}`, `/v1/categoria` and `/v1/grades`, plus the max number of ids per `GET /v1/produto_preco/set/{produto_id}` (semicolon-separated). Also `GET /v1/pedido/search`: its documented max of 50 is **documentation-only** until `meta.limit` is read back, because the legacy has only ever used 20 live. READ-ONLY: request 50/100/500/1000 and read `meta.limit` back. The client never assumes the requested limit was honoured.
 11. **Timezone of naive REST dates**, `since_atualizado` inclusivity at second resolution, and whether `offset` is honoured. READ-ONLY. The timezone is inferred as America/Sao_Paulo, because webhook `21:09Z` matches nested `18:09-03:00`. The poller sends `since_atualizado` in the documented `AAAA-MM-DDTHH:MM:SS` form only: seconds, no fraction, no offset. The probe uses that exact form.
@@ -240,7 +242,7 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
 - **Order key = `numero`** (gap 1). Every `resource_uri` is `/api/v1/pedido/<numero>`, and `GET /v1/pedido/{pedido_id}` has no top-level `id` at all. `spec GET /v1/pedido_dce/{pedido_id}` says outright "o valor informado na URL é o número do pedido" (its tag only says "através do número do pedido"). NF `sale_number` is "o número do pedido". The working legacy fetches order detail by numero live. The one verdict that said "key on the LI id" had confused it with the SHIPMENT id: `PUT /v1/pedido_envio/{id}` takes `envios[i].id` ("Não utilize o ID do pedido nesta chamada").
 - **`filhos` is documented in examples only** (spec GET /v1/produto, spec GET /v1/produto/{produto_id}, POST/PUT examples), not in the list-item schema. The importer discovers families through it. Children as list rows is a probe (§1.2 item 19).
 - **`boleto_url` / `pix_code` appear in the spec only on the `PUT /v1/pedido/{pedido_id}` echo.** They are optional, never required.
-- **The 05/10/2026 discontinuation** (help 931152, modified 2026-09-22) reads as: the store's own credential is now the Personal Token, and the "chave de aplicação" now identifies only integrators/partner apps (help 5360466). D3 picks the Personal Token. The risk this announcement poses to the live legacy integration is the §0 risk note; it is outside this repo.
+- **The 05/10/2026 discontinuation** (help 931152, modified 2026-09-22) reads as: the store's own credential is now the Personal Token, and the "chave de aplicação" now identifies only integrators/partner apps (help 5360466). D3 picks the Personal Token. The live legacy integration moved to Personal Tokens on 2026-10-07, so the announcement no longer threatens it (§0).
 - **Freight model:** `etiqueta: 'emit'`. `FREIGHT_TIPO_CAPS.lojaIntegrada` (`marketplaceOwned: true`, `labelMode: 'fetch'`) is a placeholder that contradicts the evidence; it changes in step 15.
 - **`forma_envio` key mismatch** (`code` on GET, `codigo` on the webhook). This reinforces "re-fetch, never map the body"; the `int_frete.mapa` key is built from the GET shape.
 - **Stock arithmetic** is not settled by the docs (gap 5). It is decided in the step-12 plan.
@@ -251,7 +253,7 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
 **Re-verification after the owner's report (2026-10-07).** The store owner reported that the legacy LI integration is working. Six independent re-verifiers then re-checked the architecture facts against the spec, the help center and the legacy code.
 - **Documentation provenance** was confirmed (§1.0).
 - **Live-proven, under the `chave_api` + `aplicacao` combination:** `GET /v1/pedido/search` with `since_atualizado` and `meta.next` paging, and `GET /v1/pedido/{numero}`, i.e. numero keying and the detail field set the import reads. These are labelled **[live-proven, legacy credential]**.
-- **Spec/code evidence only:** everything else. That covers every write (situação, `pedido_envio`, stock, price, produto, images), webhooks, and all Personal Token behaviour. Where the legacy code makes such calls, that is code evidence, not live proof.
+- **Spec/code evidence only, at the time of that re-verification:** everything else. That covered every write (situação, `pedido_envio`, stock, price, produto, images), webhooks, and all Personal Token behaviour. Part of it is superseded by the Personal Token record below.
 - **Probes record their credential type** (step 2b), so live evidence under one credential is never mistaken for the other.
 - **Corrections it produced, applied in this revision:**
   - the legacy-credential risk note (§0);
@@ -264,18 +266,27 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
   - freight resolution (steps 5, 15);
   - the restored corpus field name `arakene_variation_id` (§3, step 10).
 
+**Live-proven under the Personal Token (2026-10-07).** The same day, the store owner moved the live legacy integration to Personal Tokens on both stores. These facts are now labelled **[live-proven, Personal Token]**:
+- **Credential format:** `Authorization: Basic <token>` with the raw token, alone, with no `chave_api` or `aplicacao` (§1.2 item 8).
+- **No IP binding:** calls succeed from dynamic cloud egress and from operators' browsers (§1.2 item 7).
+- **Reads the legacy makes:** order search with `since_atualizado` and order detail by numero, the situação history, and the catalogue reads behind its web screens (produto, categoria, marca, grades).
+- **Writes the legacy makes are accepted:** the stock PUT, the price PUT, the tracking PUT (`pedido_envio`) and the situação PUT.
+- **Browsers:** the operators' browsers send the `Authorization` header cross-origin. This does not matter to the new integration, which calls LI only from its server.
+
+What this does **not** settle: the legacy's writes use its own payloads, so partial-vs-full PUT semantics, the reservation math, how to clear a promotion, the buyer e-mail on a situação PUT, webhook registration, and the 429 bucket and body stay open as listed in §1.2 (items 1–4, 6, 15–17). None of this is evidence about the new code. Its own end-to-end proof is still the window's canaries and intake smoke (§5 items 8–9).
+
 ---
 
 ## 2. Prerequisites and decisions
 
 | # | Prerequisite (human) | What it unblocks | Why it is load-bearing |
 |---|---|---|---|
-| P1 | **A Personal Token per store, generated by the store OWNER** (Configurações > Chave para API > Personal token; paid plan; at most 5 active; shown once; help 931152). Recommended: one token for read-only probes now and a separate one for production at the window, so each can be revoked independently. Generating it now is also the §0 recommendation. | The Step-0 gate, read-only probes (§1.2), the connect route's validating GET, production. | Only the owner can generate it; Administrador/Membro cannot. |
+| P1 | **A Personal Token per store for the NEW integration, generated by the store OWNER** (Configurações > Chave para API > Personal token; paid plan; at most 5 active; shown once; help 931152). These are separate from the tokens the live legacy has used since 2026-10-07 (D16). Recommended: one token for read-only probes now and a separate one for production at the window, so each can be revoked independently. | The Step-0 gate, read-only probes (§1.2), the connect route's validating GET, production. | Only the owner can generate it; Administrador/Membro cannot. |
 | P2 | **The token's expiry date entered in the ERP together with the token.** The token expires every 3 months (help 931152). The operator copies the expiry date shown in the painel; the ERP never computes it. | The expiry aviso (step 2). | No API exposes the expiry, so the ERP otherwise learns of an expired token only from a 401. Renewal keeps the SAME token and restarts 3 months from the click. A token that is not renewed is revoked and cannot be recovered. |
-| P3 | **The legacy-credential risk (§0): Lucas's call, outside this repo.** Recommended: generate each store's Personal Token now (the same tokens P1 needs). | A quick answer if LI refuses the legacy key before the cutover. | The legacy key is most likely an old-model application key, which LI announced it refuses from 05/10/2026. This repo never touches the live system or reuses that key. |
+| P3 | **Legacy credential: resolved on 2026-10-07** (§0). The live legacy runs on its own Personal Tokens. The remaining duty, outside this repo, is for the owner to renew those tokens before they expire (early January 2027) if the legacy is still running then. | Keeps the live system up until the cutover. | A token that is not renewed is revoked and cannot be recovered. This repo never touches the live system or reuses the legacy's tokens (D16). |
 | P4 | **No demo store** ⇒ no live write before the cutover (D4). | The valve/dry-run/canary/read-back design. | Every write flow's first real write happens in the window. |
 | P5 | **Webhook registration at window time** (a write). | Step 4's accelerator. | Registering earlier would point a production store at a non-production URL. |
-| P6 | **The IP-binding answer** (§1.2 item 7, Step 0). | Steps 3, 4 and every write step. | D3's "no static egress" depends on it. |
+| P6 | **The IP-binding answer: settled live on 2026-10-07, not bound** (§1.2 item 7). The new integration's first validating GET re-confirms it. | Steps 3, 4 and every write step. | D3's "no static egress" depends on it. |
 
 ### 2.1 Decisions taken by Lucas on 2026-10-07 (binding)
 
@@ -296,6 +307,7 @@ A completeness critic then reconciled the verdicts. Each contradiction was settl
 | D13 | **Intake:** webhook + poll. The 5-minute poll (durable per-conta cursor) is the guaranteed path; the order webhook is an accelerator registered at the cutover. Both feed ONE notification pipeline, and the task ALWAYS re-fetches `GET /v1/pedido/{numero}`. Never drop a hook on `situacao_alterada=false`. The receiver fails CLOSED (per-conta secret in the credential store; constant-time Bearer compare; unset ⇒ 503; mismatch ⇒ 401), and the conta is identified by the URL path, never the body. | Steps 3–4. |
 | D14 | **Issues:** one tracker + one issue per step, opened when this plan's PR is approved. Migration-window issues (§5) need a **separate** yes. | — |
 | D15 | **Execution:** ask before each build. Every step gets a Phase-3 step plan that Lucas approves before code is written; stacked draft PRs. | §4.25. |
+| D16 | **Separate tokens** (decided 2026-10-07, after the legacy moved to Personal Tokens). The new integration uses its own Personal Token per store, generated for it, and never the legacy's. The legacy's tokens are revoked after the legacy app is switched off. | P1; step 1's connect route; §5 items 1 and 10. |
 
 **Orchestrator calls (vetoable, one line each):**
 - **Size-chart parity:** the chart's text is appended to `descricao_completa` between stable markers, so a re-publish is idempotent, and the chart's first photo is sent as the last image (step 11).
@@ -443,13 +455,14 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 ### Step 0: Prerequisites (P1–P6). Human, not code
 
 - **Outcome:**
-  - A probe Personal Token for each store, held by Lucas. It is never committed and never pasted into chat. Generating the tokens now also answers the §0 recommendation: they are the quick fallback if LI refuses the legacy key before the cutover (Lucas's call, outside this repo).
-  - The §0 legacy-credential risk acknowledged by Lucas. Nothing in this repo acts on the live system.
+  - A probe Personal Token per store **for the new integration** (D16), separate from the legacy's, held by Lucas. It is never committed and never pasted into chat.
+  - The legacy credential is resolved: since 2026-10-07 the live legacy runs on its own Personal Tokens (§0).
   - This plan approved.
-  - **The read-only IP-binding gate** (§1.2 items 7–9): from his workstation, a phone hotspot and Google Cloud Shell, Lucas runs
+  - **The IP-binding gate and the token format were answered live** on 2026-10-07 (§1.2 items 7–8): not bound, and raw after `Basic `. An optional quick re-check under the new probe token is one read-only call:
     `read -s LI_TOKEN; curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Basic $LI_TOKEN" 'https://api.awsli.com.br/v1/categoria?limit=1'`
-    and the same with a deliberately wrong token. He records only the status codes, noting that they ran under the Personal Token. If base64 vs raw is ambiguous, he tries both.
-- **Timing:** P6 gates steps 3, 4 and every write step. If the answer is "IP-bound", the plan stops and is replanned.
+    The same call with a deliberately wrong token shows the 401/403 shape (§1.2 item 9). Only status codes are recorded.
+  - The read-only `GET /v1/situacao` probe (§1.2 item 14) before step 5's estado table is frozen.
+- **Timing:** P6 is answered. If a later check under the new tokens ever shows an IP binding, the plan stops and is replanned.
 
 ### Step 1a: Caps row
 
@@ -1199,7 +1212,7 @@ An earlier draft had a daily stale-pending re-check here. It is dropped under D2
 ### 4.25 Execution order to reach cutover parity (stacked draft PRs; each step's Phase-3 plan approved first, D15)
 
 1. **PR 0:** this master plan + evidence (#1811), opened together with the tracker #1812 and the step issues (D14).
-2. **Step 0:** P1–P6, including the **IP-binding gate** (Lucas, read-only curl). An "IP-bound" answer stops the plan for a replan. The Personal Tokens generated here are also the §0 fallback.
+2. **Step 0:** P1–P6. The IP-binding gate and the token format were settled live on 2026-10-07, when the legacy moved to Personal Tokens. What remains is a probe token for the new integration (D16) and the `GET /v1/situacao` probe.
 3. **Step 1a** (#1813): caps row + registry test flips.
 4. **Step 1** (#1814): package (PR a); app scaffold + connect + guard change (PR b).
 5. **Steps 2 + 2b** (#1829, #1815):
@@ -1248,7 +1261,7 @@ The connect route's `GET /v1/categoria?limit=1` is not a write. No other LI writ
 Each item below becomes an issue **only after Lucas says yes to opening it**. That is a separate yes from approving this plan's PR (D14 covers only the tracker and the step issues). Each issue is labelled `needs-migration-window` + `task:ops-deploy` and linked from **#1208**, in ADR 0013 phase order. Agents never run any of these.
 
 1. **Production Personal Tokens + expiry entered in production.**
-   - **Phase:** generated in ADR 0013 Phase 0 (the owner, in each store's painel; tokens generated earlier under the §0 recommendation may serve, subject to P1's probe/production separation); entered in Phase 3 after the `apps/loja-integrada` backend is live.
+   - **Phase:** generated in ADR 0013 Phase 0, by the owner in each store's painel. These are **new tokens for the new integration** (D16), never the legacy's. They are entered in Phase 3, after the `apps/loja-integrada` backend is live.
    - **Action:** the owner generates the token. A person with `PERM.integracao.write` saves token + painel-shown expiry through `/canais/loja-integrada` (which calls `PUT …/conta/[id]/credencial`).
    - **Verify:** the status route shows `configurado: true` and the right `diasParaExpirar`; the validating GET is logged 2xx.
    - **Why the timing:** tokens are per store and owner-only, the 3-month clock starts at generation, and the production project only exists at the window.
@@ -1256,7 +1269,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Phase:** Phase 2, right after the Firestore import and before Phase 3 traffic.
    - **Action:** a one-shot `tools/migrations` script (written in step 2's PR, following that package's contract) applies `FieldValue.delete()` to that field on every `integracao` doc with `tipo == 3`, in dry-run first, then for real.
    - **Verify:** a census query returns 0 tipo-3 docs carrying the field.
-   - **Why the timing:** the new code never reads it, and the credential lives in the admin-only store. The legacy app reads the legacy project, not the migrated copy, so nothing in the new project needs it.
+   - **Why the timing:** the new code never reads it, and the credential lives in the admin-only store. The legacy app reads the legacy project, not the migrated copy, so nothing in the new project needs it. Since 2026-10-07 that field carries the legacy's Personal Token, so the migrated copy holds a live credential until item 10 revokes it.
 3. **Valves: `dry-run` first, then `on`, only after the legacy app is OFF.**
    - **Phase:** Phase 4.
    - **Action:** per flow, set `LOJA_INTEGRADA_MODO_<FLUXO>=dry-run` in the functions env + App Hosting env and redeploy/rollout; review a day of dry-run diffs in Cloud Logging. Then set the canary list (item 8), then `on`, then clear the canary list.
@@ -1287,7 +1300,7 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Why:** an import fires no triggers. A gap is invisible to stock and price discovery, which is a silent outage.
 7. **Seed the poll cursor by look-back.**
    - **Phase:** Phase 3 step 1 (set before the functions deploy).
-   - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin. If LI refuses the legacy key before the cutover (§0 risk note), the legacy import stops at that point, and this look-back covers the gap the same way.
+   - **Action:** read the newest legacy `integracao/{contaId}/pedManager` `lastTimeStamp` per conta (from the export or the legacy console). Set `LOJA_INTEGRADA_POLL_LOOKBACK_H` = hours since the **older** of the two, + 24 h margin. If the legacy import stops early for any reason, for example an unrenewed legacy token (§0), this look-back covers the gap the same way.
    - **Verify:** the first poll run logs a `since_atualizado` at or before that timestamp, and every LI order in the painel since then has a pedido.
    - **Why:** the look-back is idempotent by the deterministic ids, and it runs after the legacy app is off so no later legacy write supersedes it.
 8. **First live writes, one flow at a time, on canaries.**
@@ -1303,7 +1316,12 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
    - **Phase:** Phase 4.
    - **Action:** watch one real LI order flow poll → task → pedido (and webhook → task once item 4 is done).
    - **Verify:** the pedido id equals the deterministic digest, items are linked, the payment is mapped, and `freteInicial` is routed.
-   - **Why:** fixtures cannot prove the live read path under the Personal Token; the legacy's live proof ran under the other credential combination.
+   - **Why:** fixtures cannot prove the NEW code's live read path. The legacy's live use of Personal Tokens (§1.3) proves the endpoints and the credential, not this code.
+10. **Revoke the legacy app's Personal Tokens.**
+   - **Phase:** Phase 4, after the legacy app is switched off **and** after the new integration's first calls succeed with its own tokens (item 1).
+   - **Action:** the owner opens each store's painel (Configurações > Chave para API) and uses **Remover** on the legacy's tokens only, identified by the label they were created with. The new integration's tokens stay.
+   - **Verify:** the new integration's next poll still answers 2xx, and nothing else in the operation depends on the removed tokens.
+   - **Why the timing:** removing them earlier stops the live legacy while it is still the sole writer of the LI store. Keeping them after the window leaves a live credential in the legacy project and in the migrated copy of the legacy credential field (item 2). Revocation makes both inert.
 
 ---
 
@@ -1315,15 +1333,15 @@ Each item below becomes an issue **only after Lucas says yes to opening it**. Th
 - [x] `estoque.protocolo` decided: `'por-anuncio'` (one PUT per child), not `'feed-assincrono'`, so no submission record is needed.
 - [x] `assinaWebhook: 'sim'` with its LI meaning written in the row, and the receiver fails closed (step 4).
 - [x] Legacy checked: `produtolojaintegrada` (mixed doc ids), `categorialojaintegrada`, `pedManager`, `EnviosLojaIntegrada`, `linksVariacoesli` (`arakene_variation_id`), `statusProdutosMarketplace` and the three deterministic ids constrain the port. **No order mirror exists** and none is invented (§3).
-- [x] Decisions D1–D15 recorded; vetoable orchestrator calls listed, including 1019 in the D7 guard (§2.1).
+- [x] Decisions D1–D16 recorded; vetoable orchestrator calls listed, including 1019 in the D7 guard (§2.1).
 - [x] Every LI write has a valve, a canary, a dry-run and a read-back or a stated substitute (§4.26).
 - [x] Every step names its indexes, ruleset regeneration and env vars (§4.iii).
 - [x] The CI lane lands with the first emulator test (step 2).
 - [ ] This plan approved by Lucas (PR review).
 - [x] Tracker #1812 + per-step issues #1813–#1830 opened together with this plan's PR #1811 (D14).
-- [ ] The §0 legacy-credential risk acknowledged by Lucas (his call, outside this repo; the recommended Personal Tokens generated).
-- [ ] A probe Personal Token per store available to Lucas (P1).
-- [ ] The Step-0 IP-binding gate answered "not bound" (P6).
+- [x] The §0 legacy credential is resolved: the live legacy has run on Personal Tokens on both stores since 2026-10-07.
+- [ ] A probe Personal Token per store for the NEW integration, separate from the legacy's (P1, D16).
+- [x] The IP-binding gate answered "not bound" (P6): settled live on 2026-10-07 (§1.2 item 7).
 - [ ] The read-only `GET /v1/situacao` probe (1020's id and flags, §1.2 item 14) done before step 5's estado table is frozen.
 
 ---
