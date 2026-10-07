@@ -1538,6 +1538,9 @@ describe('POST /api/nfe/processar-pendentes — a send in progress (#1675)', () 
     );
   });
 
+  // Pins the COMPOSITION, not a sweep change: `isDue` already honoured a future
+  // `proximaConsultaEm`; what is new is that every emit claim now stamps one, so
+  // the operator's `timeoutMs` knob no longer reaches a send in flight.
   it('a claimed anchor is not consulted while its send reservation is live — not even with {"timeoutMs":60000}; one whose reservation passed is', async () => {
     const reservado = {
       ...anchorDoc(61, Date.now() - 2 * MINUTE_MS),
@@ -1582,6 +1585,42 @@ describe('POST /api/nfe/processar-pendentes — a send in progress (#1675)', () 
     expect(docs[pathDe(63)]).toMatchObject({
       estado: ESTADO_NFE.enviando,
       idLote: '9',
+      xml_assinado: ancora.xml_assinado,
+    });
+  });
+
+  it('a doc its OWNER wrote during the consult (no reservation involved) is not written either — the read owns the write', async () => {
+    const ancora = anchorDoc(65, Date.now() - 10 * MINUTE_MS);
+    const { fs, docs } = fakeFirestore({ [pathDe(65)]: ancora });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockImplementationOnce(async (_call, body) => {
+      // The run that sent it outlived its reservation; its late 103 lands now —
+      // same idLote, a receipt, no reservation: only the read's updateTime knows.
+      await (
+        fs as unknown as {
+          doc: (p: string) => { set: (d: unknown, o: unknown) => Promise<void> };
+        }
+      )
+        .doc(pathDe(65))
+        .set(
+          {
+            estado: ESTADO_NFE.aguardandoResposta,
+            cStat: '103',
+            nRec: 'RECIBO-DO-DONO',
+            proximaConsultaEm: null,
+          },
+          { merge: true },
+        );
+      return autorizadaPara(body.chave);
+    });
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ scanned: 1, recovered: 0, stillPending: 1, errors: [] });
+    expect(docs[pathDe(65)]).toMatchObject({
+      estado: ESTADO_NFE.aguardandoResposta,
+      nRec: 'RECIBO-DO-DONO',
       xml_assinado: ancora.xml_assinado,
     });
   });

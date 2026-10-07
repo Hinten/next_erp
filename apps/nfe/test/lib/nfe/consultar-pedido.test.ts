@@ -208,7 +208,9 @@ describe('consultarPedido — post-refactor sanity', () => {
       estado: ESTADO_NFE.cancelada,
       cStat: '101',
       xMotivo: 'Cancelamento de NF-e homologado',
-      reused: false,
+      // #1675 — deliberately flipped from `false`: nothing was written, so the
+      // reported state is another run's, never this consult's outcome.
+      reused: true,
     });
   });
 });
@@ -227,6 +229,23 @@ describe('consultarPedido — a send in progress (#1675)', () => {
       expect(vi.mocked(persistPatchUnlessFinal)).not.toHaveBeenCalled();
     },
   );
+
+  it('a REFUSED write reports the live doc as reused — a state another run wrote, not this consult’s', async () => {
+    seedSlot();
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValue({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: CHAVE,
+    });
+
+    const r = await consultarPedido({} as never, {} as never, PEDIDO);
+
+    expect(r).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+  });
 
   it('near-miss: an EXPIRED reservation is consulted, and the write is owned by the read (updateTime + no live send)', async () => {
     seedSlot({ idLote: '7', proximaConsultaEm: (Date.now() - 60_000) * 1000 });
@@ -336,7 +355,9 @@ describe('consultarPedido — a recovered 539 swaps the chave only in the guarde
       estado: ESTADO_NFE.cancelada,
       cStat: '101',
       chave: CHAVE,
-      reused: false,
+      // #1675 — deliberately flipped from `false`: the refused write reports a
+      // state another run wrote.
+      reused: true,
     });
   });
 });

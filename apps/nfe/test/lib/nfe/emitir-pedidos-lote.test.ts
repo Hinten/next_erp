@@ -3883,6 +3883,67 @@ describe('#1675 — overlapping emits on the batch path', () => {
     expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({ reused: true });
   });
 
+  it('a consult that writes a BLOCKING terminal between 4a and 4b (same idLote) keeps the member out of the lote', async () => {
+    const rejeitada = {
+      ...ancora(),
+      estado: ESTADO_NFE.rejeitada,
+      cStat: '225',
+      xMotivo: 'Rejeicao: Falha no Schema XML da NFe',
+      idLote: '0',
+    };
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1', existingNFe: rejeitada },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+    entre4aE4b(fs, async () => {
+      // e.g. "Verificar novamente" read it after 4a: same idLote, blocking cStat.
+      docs[nfePath('PED-1')] = {
+        ...docs[nfePath('PED-1')]!,
+        estado: ESTADO_NFE.error,
+        cStat: '103',
+        xMotivo: 'cStat 217: … — verificar manualmente',
+      };
+    });
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(1);
+    const enviados = vi.mocked(autorizarLote).mock.calls[0]![1].NFe.map(chaveDe);
+    expect(enviados.some((c) => c.slice(25, 34) === '000000007')).toBe(false);
+    expect(docs[nfePath('PED-1')]).toMatchObject({ estado: ESTADO_NFE.error, cStat: '103' });
+    expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({
+      estado: ESTADO_NFE.error,
+      reused: true,
+    });
+  });
+
+  it('a 4b refusal on a doc that still has NO chave never reports this run’s unsent chave', async () => {
+    const { fs, docs } = fakeFirestore({
+      events: [],
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+    });
+    responderPorLote();
+    entre4aE4b(fs, async () => {
+      // Another chunk's 4a stamped PED-1's placeholder with its own lote.
+      docs[nfePath('PED-1')] = { ...docs[nfePath('PED-1')]!, idLote: '99' };
+    });
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    expect(out.results.find((r) => r.pedidoId === 'PED-1')).toMatchObject({
+      estado: ESTADO_NFE.enviando,
+      chave: '',
+      reused: true,
+    });
+  });
+
   it('near-miss: a REUSE member whose 4b generate fails carries NO reservation — a fix-and-resend is not held', async () => {
     const rejeitada = {
       ...ancora(),

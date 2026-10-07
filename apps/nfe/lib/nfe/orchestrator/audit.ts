@@ -9,6 +9,7 @@ import {
   type consultarSituacaoNFe,
   extrairDataAutorizacao,
   extrairTotaisNFe,
+  isBloqueada,
   isEstadoFinalNFe,
   nextConsultaDelayMs,
   outcomeFromInfProt,
@@ -214,8 +215,10 @@ export async function findLatestEnviNFeMsgWithNRec(
 
 /**
  * Project a persisted `NotaFiscalEletronica` onto the route's `EmitResult`
- * shape — used by the dedup branch when an existing bloqueada nfe makes
- * a re-emission unnecessary.
+ * shape (`reused: true`) — used whenever the emit sends nothing and reports the
+ * doc as it is: an existing bloqueada nfe, one in flight on a receipt, one with
+ * a send in progress (#1675), a pós-EPEC claim refused, a final doc the
+ * `consultarPedido` CLI skips.
  */
 export function existingToEmitResult(
   pedidoId: string,
@@ -239,7 +242,9 @@ export function existingToEmitResult(
  * doc's live truth, as `reused: true` (the {@link existingToEmitResult}
  * precedent): that state was written by ANOTHER run, so apps/web must never
  * count, say, a concurrent emit's `aprovada` as this run's success. `chave` is
- * the one this run held, reported only when the live doc carries none.
+ * reported only when the live doc carries none: the chave this run SENT (a
+ * refused outcome write — those bytes did reach SEFAZ), or `''` when this run's
+ * chave was never persisted nor sent (a refused batch 4b anchor).
  */
 export function recusaToEmitResult(
   pedidoId: string,
@@ -669,11 +674,17 @@ export async function persistPatchUnlessFinal(
  * the same doc (its own idLote, its own chave for the same nNF, already sent);
  * a plain overwrite would then persist and send a SECOND chave for that número.
  *
- * Class A (root `CLAUDE.md` rule 7): everything is decided on the `tx.get`
- * snapshot. Refused — nothing written — when the doc is final or carries
- * another `idLote`; the caller drops the member from the lote and reports the
- * live doc. A missing doc throws `NFeDocAusenteError` (4a anchored every
- * member, so a merge would only mint a partial doc).
+ * Class A (root `CLAUDE.md` rule 7): 4a decided to (re)generate this member on
+ * its own snapshot, and every premise of that decision is re-derived here from
+ * the `tx.get` snapshot — not just the lote stamp. Refused, nothing written,
+ * when the doc is final, carries another `idLote`, carries a
+ * `STATUS_BLOQUEADORES` cStat (a consult between 4a and 4b wrote a blocking
+ * terminal — the número may be held under another chave), is in flight on a
+ * receipt (`nRec`), or is under a live send reservation (`envioEmCurso`). None
+ * of those changes the idLote, so the stamp alone would let the regenerated
+ * anchor overwrite them and the chunk send it. The caller drops the member from
+ * the lote and reports the live doc. A missing doc throws `NFeDocAusenteError`
+ * (4a anchored every member, so a merge would only mint a partial doc).
  */
 export async function gravarAncoraDoLote(
   fs: Firestore,
@@ -690,9 +701,15 @@ export async function gravarAncoraDoLote(
       );
     }
     const current = nfev4Collection.parseRead(snap.data(), nfeRef.path);
+    const emVooComRecibo =
+      current.nRec != null &&
+      (current.estado === ESTADO_NFE.enviando || current.estado === ESTADO_NFE.aguardandoResposta);
     if (
       isEstadoFinalNFe(current.estado) ||
-      !guardHolds({ expectedIdLote: String(idLote) }, current, snap.updateTime)
+      !guardHolds({ expectedIdLote: String(idLote) }, current, snap.updateTime) ||
+      isBloqueada(current.cStat) ||
+      emVooComRecibo ||
+      envioEmCurso(current, nowMicros())
     ) {
       return recusa(current);
     }

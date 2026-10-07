@@ -264,8 +264,10 @@ export async function runProcessarPendentes(args: {
           nfeRef: doc.ref,
           nota: doc.data() as NotaFiscalEletronica,
         });
-        if (result.estado === ESTADO_NFE.epecAprovado) {
-          stillPending++; // 468 — EPEC not yet synced at the home SEFAZ
+        // `reused`: the claim was refused (#1675) — another transmission owns
+        // the doc, so this run transmitted nothing and recovered nothing.
+        if (result.reused || result.estado === ESTADO_NFE.epecAprovado) {
+          stillPending++; // 468 (EPEC not yet synced at the home SEFAZ), or a refused claim
         } else {
           recovered++;
         }

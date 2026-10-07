@@ -237,10 +237,23 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
       color: 'red',
     };
   }
+  // An EPEC-approved doc this click did not transmit: its full NF-e is being
+  // transmitted right now by another emit or the sweep, or waits for the
+  // contingência to be switched off — never "já emitida", and never the arms
+  // below, which tell the operator to emit again.
+  if (result.reused && result.estado === ESTADO_NFE.epecAprovado) {
+    return {
+      title: 'EPEC registrado',
+      message:
+        `cStat=${result.cStat}: ${result.xMotivo} — nenhum novo envio foi feito: a transmissão ` +
+        'da NF-e completa já está em andamento, ou é feita automaticamente quando a ' +
+        'contingência for desligada.',
+      color: 'teal',
+    };
+  }
   // A bloqueada short-circuit: a distinct yellow toast so the user knows the
-  // click was a no-op rather than a fresh authorization. An EPEC-approved doc
-  // falls through to the EPEC arms below — its transmission is still pending.
-  if (result.reused && result.estado !== ESTADO_NFE.epecAprovado) {
+  // click was a no-op rather than a fresh authorization.
+  if (result.reused) {
     return {
       title: 'NFe já emitida',
       message:

@@ -671,3 +671,62 @@ describe('reivindicarEnvio — the pós-EPEC claim (#1675)', () => {
     await expect(reivindicarEnvio(fs, NFE_REF, 9)).rejects.toBeInstanceOf(NFeDocAusenteError);
   });
 });
+
+describe('gravarAncoraDoLote re-checks every premise 4a decided on (#1675 review)', () => {
+  const DOC_DATA = { estado: ESTADO_NFE.enviando, chave: 'CHAVE-DO-LOTE', idLote: '12' };
+
+  it.each([
+    [
+      'a consult between 4a and 4b wrote a BLOCKING terminal (same idLote)',
+      { estado: ESTADO_NFE.error, idLote: '12', cStat: '103', nRec: null, chave: 'CHAVE-VELHA' },
+    ],
+    [
+      'it went in flight on a receipt (same idLote)',
+      {
+        estado: ESTADO_NFE.aguardandoResposta,
+        idLote: '12',
+        cStat: '105',
+        nRec: 'REC-9',
+        chave: 'CHAVE-VELHA',
+      },
+    ],
+    [
+      'a send reservation is live on it (same idLote)',
+      {
+        estado: ESTADO_NFE.aguardandoResposta,
+        idLote: '12',
+        cStat: '225',
+        nRec: null,
+        chave: 'CHAVE-VELHA',
+        proximaConsultaEm: Date.now() * 1000 + 60_000_000,
+      },
+    ],
+  ])('%s → NO write, the live doc reported', async (_label, vivo) => {
+    const { fs, txSet } = fakeFs(vivo);
+
+    const r = await gravarAncoraDoLote(fs, NFE_REF, DOC_DATA, 12);
+
+    expect(r).toMatchObject({
+      written: false,
+      estadoAtual: vivo.estado,
+      chaveAtual: 'CHAVE-VELHA',
+    });
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('near-miss: a REUSE member still rejeitada with a non-blocking cStat (and no receipt, no reservation) is written', async () => {
+    const { fs, txSet } = fakeFs({
+      estado: ESTADO_NFE.rejeitada,
+      idLote: '12',
+      cStat: '225',
+      nRec: null,
+      chave: 'CHAVE-VELHA',
+      proximaConsultaEm: null,
+    });
+
+    const r = await gravarAncoraDoLote(fs, NFE_REF, DOC_DATA, 12);
+
+    expect(r).toEqual({ written: true });
+    expect(txSet).toHaveBeenCalledTimes(1);
+  });
+});

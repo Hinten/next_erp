@@ -206,7 +206,7 @@ export async function verificarEnviNfeMsgs(
     const pedidoId = chosen.ref.parent.parent?.id ?? chosen.ref.path;
 
     try {
-      const { patch, consumoIndevido } = await consultarChavePersistida({
+      const { patch, consumoIndevido, recusado } = await consultarChavePersistida({
         fs,
         rt,
         filialId,
@@ -217,15 +217,32 @@ export async function verificarEnviNfeMsgs(
         chave,
         consReciCache,
       });
-      results.push({
-        chave,
-        status: patch.estado !== nota.estado ? 'atualizada' : 'sem-mudanca',
-        estadoAnterior: nota.estado,
-        estadoNovo: patch.estado,
-        cStat: patch.cStat,
-        xMotivo: patch.xMotivo,
-        error: null,
-      });
+      results.push(
+        recusado
+          ? {
+              // #1675 — nothing was written: another run changed the doc during
+              // the consult (or a send is in progress). Report its live state
+              // without claiming this verify updated anything.
+              chave,
+              status: 'sem-mudanca',
+              estadoAnterior: nota.estado,
+              estadoNovo: patch.estado,
+              cStat: patch.cStat,
+              xMotivo:
+                'nada gravado — outro processo alterou este documento durante a consulta ' +
+                `(estado atual ${patch.estado}, cStat ${patch.cStat}: ${patch.xMotivo})`,
+              error: null,
+            }
+          : {
+              chave,
+              status: patch.estado !== nota.estado ? 'atualizada' : 'sem-mudanca',
+              estadoAnterior: nota.estado,
+              estadoNovo: patch.estado,
+              cStat: patch.cStat,
+              xMotivo: patch.xMotivo,
+              error: null,
+            },
+      );
       // 656 surfaces as an answer (not a thrown error) in this codebase —
       // abort the rest of the run. The flag, not `patch.cStat`: a 656 on the
       // receipt is persisted as a blocking terminal (cStat 103/104, #1654).

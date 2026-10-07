@@ -64,6 +64,14 @@ export interface ConsultaChaveResult {
    * it is a blocking terminal (103/104).
    */
   readonly consumoIndevido: boolean;
+  /**
+   * True when the guarded write was REFUSED (#1675): the doc went final, changed
+   * since the caller's read, or is under a live send — so nothing was written
+   * and `patch` reports the doc's LIVE state, set by another run. `false` when
+   * the outcome was written, and when there was deliberately nothing to write
+   * (a stored `rejeitada` left alone).
+   */
+  readonly recusado: boolean;
 }
 
 /**
@@ -330,6 +338,7 @@ export async function consultarChavePersistida(params: {
       chaveFinal: chave,
       nRecUsado: msgWithNRec?.nRec ?? null,
       consumoIndevido,
+      recusado: false,
     };
   }
 
@@ -412,7 +421,13 @@ export async function consultarChavePersistida(params: {
   }
 
   registrar(patch.cStat);
-  return { patch, chaveFinal, nRecUsado: msgWithNRec?.nRec ?? null, consumoIndevido };
+  return {
+    patch,
+    chaveFinal,
+    nRecUsado: msgWithNRec?.nRec ?? null,
+    consumoIndevido,
+    recusado: !persisted.written,
+  };
 }
 
 /**
@@ -493,7 +508,7 @@ export async function consultarPedido(
     return existingToEmitResult(pedidoId, nfeRef.id, nota);
   }
 
-  const { patch, chaveFinal, nRecUsado } = await consultarChavePersistida({
+  const { patch, chaveFinal, nRecUsado, recusado } = await consultarChavePersistida({
     fs,
     rt,
     filialId: bundle.filialId,
@@ -512,6 +527,7 @@ export async function consultarPedido(
     nRec: patch.nRec ?? nRecUsado ?? nota.nRec,
     cStat: patch.cStat,
     xMotivo: patch.xMotivo,
-    reused: false,
+    // A refused write (#1675) reports a state another run wrote, not this call's.
+    reused: recusado,
   };
 }

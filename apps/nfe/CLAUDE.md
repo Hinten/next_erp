@@ -496,9 +496,11 @@ writes were last-writer-wins. Now:
   (4a, placeholder or reuse member stamped with the chunk's idLote — reuse
   members WITHOUT a reservation, so a failed generate never holds a
   fix-and-resend) and 4b's anchor write, a single emit may claim the doc and
-  send its own chave for that nNF. 4b writes through `gravarAncoraDoLote`, an
-  idLote-guarded transaction: a refused member is dropped from the lote and
-  reported with the live doc.
+  send its own chave for that nNF, or a consult may write a blocking terminal
+  (same idLote). 4b writes through `gravarAncoraDoLote`, a transaction that
+  re-checks every premise 4a decided on (idLote, not final, no blocking cStat,
+  no receipt in flight, no live reservation): a refused member is dropped from
+  the lote and reported with the live doc.
 - **The pós-EPEC claim.** `transmitirPosEpec` stamps its fresh idLote + the
   reservation through `reivindicarEnvio` before sending; an operator emit and the
   sweep can no longer both transmit one `'p'` doc.

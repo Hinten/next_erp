@@ -181,6 +181,9 @@ describe('notificationForNFeResult', () => {
     );
     expect(n.color).toBe('teal');
     expect(n.title).toBe('EPEC registrado');
+    // …and never the arms that tell the operator to emit again.
+    expect(n.message).toContain('nenhum novo envio foi feito');
+    expect(n.message).not.toContain('emita novamente');
   });
 });
 

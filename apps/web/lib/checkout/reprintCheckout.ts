@@ -199,8 +199,9 @@ export async function reprintCheckoutDanfe(args: {
     // dedups a repeat — a SEQUENTIAL one gets the existing NF-e back `reused:
     // true`, and one that overlaps an emission still inside its SOAP call gets the
     // in-flight doc back (#1675, the server's send reservation), so a re-click
-    // after this stage's 30 s — shorter than an emission can take — never sends a
-    // second lote.)
+    // after this stage's 30 s — shorter than an emission can take — sends no
+    // second lote while that reservation is live (6 min; after it a crashed
+    // run's anchor is retransmitted, by design).)
     const outcome = await printDanfeForCheckout(
       nfeClient,
       pedidoId,

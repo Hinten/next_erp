@@ -1833,7 +1833,8 @@ export async function processChunk(
           `[nfe/orchestrator] lote ${sharedIdLote}: ${f.prep.nfeRef.path} claimed by another ` +
             `emit since the allocation (estado=${gravado.estadoAtual}) — member dropped from the lote`,
         );
-        return { recusado: recusaToEmitResult(f.pedidoId, f.prep.nfeRef.id, chave, gravado) };
+        // This run's chave was never persisted nor sent — report the live one only.
+        return { recusado: recusaToEmitResult(f.pedidoId, f.prep.nfeRef.id, '', gravado) };
       }
       return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };
     }),

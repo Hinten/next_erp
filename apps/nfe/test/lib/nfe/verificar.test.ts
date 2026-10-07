@@ -549,6 +549,34 @@ describe('verificarEnviNfeMsgs', () => {
     },
   );
 
+  it('a REFUSED write (#1675 — the doc changed during the consult) is reported as nothing written, never "atualizada"', async () => {
+    seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });
+    seedNfev4([{ chave: CHAVE_A, estado: ESTADO_NFE.aguardandoResposta }]);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('217') as never);
+    vi.mocked(persistPatchUnlessFinal).mockResolvedValueOnce({
+      written: false,
+      estadoAtual: ESTADO_NFE.enviando,
+      cStatAtual: null,
+      xMotivoAtual: null,
+      nRecAtual: null,
+      chaveAtual: CHAVE_A,
+    });
+
+    const r = await verificarEnviNfeMsgs(...baseArgs, {
+      filialId: FILIAL,
+      enviNfeMsgIds: ['msg-1'],
+    });
+
+    expect(r.results[0]).toMatchObject({
+      chave: CHAVE_A,
+      status: 'sem-mudanca',
+      estadoAnterior: ESTADO_NFE.aguardandoResposta,
+      estadoNovo: ESTADO_NFE.enviando,
+      error: null,
+    });
+    expect(r.results[0]!.xMotivo).toContain('nada gravado');
+  });
+
   it('the consult’s write is owned by the read (#1675): the guard carries the snapshot’s updateTime and refuses while a send is in progress', async () => {
     const lido = { isEqual: () => true, toMillis: () => 1 };
     seedMsgs({ 'msg-1': { targetsChnfe: [CHAVE_A] } });

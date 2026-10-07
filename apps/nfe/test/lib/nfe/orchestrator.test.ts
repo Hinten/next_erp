@@ -1149,6 +1149,46 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     expect(primeiro).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: false });
   });
 
+  it('#1675 — an EPEC evento reply from a run a newer claim superseded is refused: the live claim is left byte-identical', async () => {
+    const S4 = 'pedidos/PED-1/nfev4/s4';
+    const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    let soltarSegunda!: (v: unknown) => void;
+    let segundaNoEvento!: () => void;
+    const segundaChegou = new Promise<void>((resolve) => {
+      segundaNoEvento = resolve;
+    });
+    let segunda!: Promise<Awaited<ReturnType<typeof emitirPedido>>>;
+    let vivo: Record<string, unknown> | undefined;
+    vi.mocked(enviarEpec)
+      .mockImplementationOnce(async () => {
+        // The first EPEC send outlives its reservation; a second emit claims
+        // the anchor and is mid-evento when the first one's 135 arrives.
+        docs[S4]!.proximaConsultaEm = nowMicros() - 1;
+        segunda = emitirPedido(fs, fakeRuntime(), 'PED-1');
+        await segundaChegou;
+        vivo = { ...docs[S4]! };
+        return epecResult('135') as never;
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            soltarSegunda = resolve;
+            segundaNoEvento();
+          }) as never,
+      );
+
+    const primeira = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(primeira).toMatchObject({ estado: ESTADO_NFE.enviando, reused: true });
+    expect(vivo).toMatchObject({ estado: ESTADO_NFE.enviando, idLote: '2' });
+    expect(docs[S4]).toEqual(vivo);
+
+    soltarSegunda(epecResult('135'));
+    expect(await segunda).toMatchObject({ estado: ESTADO_NFE.epecAprovado, reused: false });
+    expect(docs[S4]).toMatchObject({ estado: ESTADO_NFE.epecAprovado, proximaConsultaEm: null });
+  });
+
   it('#1675 — the pós-EPEC transmission CLAIMS the doc: a second emit mid-transmission gets it back, ONE autorizarLote', async () => {
     const { fs, docs } = fakeFirestore({ events: [], nfeConfig: EPEC_CONFIG });
     docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
