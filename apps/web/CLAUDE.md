@@ -30,7 +30,7 @@ app/
     produtos/             Phase 3
     pedidos/              Phase 3
     pagamentos/           Phase 3
-    nfe/                  Phase 5 (UI; emission server-side in apps/integrations)
+    nfe/                  exportar/ + comunicacoes/ only — no /nfe index (a pedido's NF-e is the /pedidos NF column); emission lives in apps/nfe
     chat/                 Phase 4 — THE unified inbox (all channels)
     whatsapp/             redirect stubs → /chat (inbox unified there)
     canais/               Phase 5

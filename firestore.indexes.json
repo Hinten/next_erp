@@ -862,20 +862,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "chNFeReferenciadas",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "numero",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
           "fieldPath": "estado",
           "order": "ASCENDING"
         }
@@ -1061,24 +1047,6 @@
         },
         {
           "fieldPath": "dtImpressao",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "chNFeReferenciadas",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "numero",
           "order": "DESCENDING"
         }
       ]
@@ -2109,24 +2077,6 @@
         },
         {
           "fieldPath": "numero",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "chNFeReferenciadas",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "timestamp",
           "order": "DESCENDING"
         }
       ]
