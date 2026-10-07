@@ -591,7 +591,7 @@ The template (`references/master-plan-template.md`) has steps 1–21. The LI num
 - **Dry-run:** build the exact payload, perform the read-only GET of LI's current state, and log `{payload, atual, diff}` per field. It writes nothing to LI **and nothing to the "sent" stamps in Firestore**, so turning `on` later still sends.
 - **Read-back** after every real write: GET the resource, compare the fields written, and log `deriva` with both values. Persistent drift is left to the daily reconcile (steps 12–13).
 - **Restore snapshot:** for catalogue writes, the pre-write GET body is logged at INFO level before the PUT. Rollback = re-PUT that body, by a person.
-- **Probe CLI** `scripts/sondar.ts` (`pnpm --filter @delfrance/loja-integrada-app sondar -- --conta <id> GET /v1/...`):
+- **Probe CLI** `scripts/sondar.ts` (`pnpm --filter @delfrance/loja-integrada-app sondar --conta <id> GET /v1/...`):
   - It receives the read-only client type, so a non-GET cannot compile.
   - It reads the token from env (`.env.local` only) and never prints it. Output is redacted JSON.
   - Every capture records the credential type it ran under (`credencial: 'personal-token'`) beside the request line.
