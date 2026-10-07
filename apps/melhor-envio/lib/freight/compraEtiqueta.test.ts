@@ -325,15 +325,12 @@ describe('fresh-label state boundary (#1801)', () => {
     ESTADO_FRETE.cancelado,
     ESTADO_FRETE.suspenso,
     ESTADO_FRETE.falhaNaEntrega,
-  ])(
-    'idempotent anchoring never resets the same label in %s',
-    async (estado) => {
-      semearPedido({ printLabelId: 'lbl-1', estado });
-      semearClaim('eu', T0 + 60_000);
-      await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
-      expect(fake.dados(PEDIDO)?.freteInicial).toEqual({ printLabelId: 'lbl-1', estado });
-    },
-  );
+  ])('idempotent anchoring never resets the same label in %s', async (estado) => {
+    semearPedido({ printLabelId: 'lbl-1', estado });
+    semearClaim('eu', T0 + 60_000);
+    await ancorarEtiqueta(db(), posse('eu'), 'lbl-1');
+    expect(fake.dados(PEDIDO)?.freteInicial).toEqual({ printLabelId: 'lbl-1', estado });
+  });
 
   it.each([ESTADO_FRETE.empacotado, ESTADO_FRETE.emSeparacao, ESTADO_FRETE.iniciado])(
     'a new anchor preserves other state %s',

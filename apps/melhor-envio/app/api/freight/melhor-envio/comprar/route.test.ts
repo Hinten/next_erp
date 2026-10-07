@@ -298,7 +298,7 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
         for (const [status, esperado] of [
           ['posted', ESTADO_FRETE.postado],
           ['delivered', ESTADO_FRETE.entregue],
-        ]) {
+        ] as const) {
           const outcome = await processMelhorEnvioNotification(
             fake.comoFirestore(),
             { labelId: 'new-label', event: null, providerStatus: status, tracking: null },
