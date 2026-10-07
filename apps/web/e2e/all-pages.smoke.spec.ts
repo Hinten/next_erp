@@ -21,7 +21,6 @@ const STATIC_ROUTES: string[] = [
   '/operacoes',
   '/motivos-incidente',
   '/bandeiras-cartao',
-  '/nfe',
   '/nfe/exportar',
   '/produtos',
   '/produtos/novo',

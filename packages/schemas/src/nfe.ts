@@ -219,8 +219,9 @@ export type NFeTotais = z.infer<typeof nfeTotaisSchema>;
 
 /**
  * NotaFiscalEletronica — documento fiscal eletrônico. Subcoleção de Pedido
- * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Read-only na
- * UI Next; emissão fica no `apps/integrations`/Cloud Functions (Phase 5).
+ * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Quem escreve
+ * é o `apps/nfe` (emissão, assinatura, retorno da SEFAZ) e as suas Cloud
+ * Functions; o `apps/web` só lê.
  * Mirrors `NotaFiscalEletronica` em `.old/packages/pedido_nfe/lib/src/models.dart`.
  */
 export const nfeSchema = z.object({
