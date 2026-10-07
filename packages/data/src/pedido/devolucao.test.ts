@@ -6,12 +6,13 @@ import { PEDIDO_COUNTER_PATH } from './numero';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import { DUPLICAR_PEDIDO_STRIP_KEYS } from './duplicar';
 import { planejarCopiasDeEndereco } from './enderecoCopy';
+import { chaveFake, nfeAprovadaFake } from './procNFeFake';
+import { notasDeOrigemDe, type NotaDeOrigem } from './referenciaDevolucao';
 import {
   DEVOLUCAO_INTEGRAL_STRIP_KEYS,
   PEDIDO_PATH,
   buildDevolucaoIntegralSeed,
   buildDevolucaoPedido,
-  collectChNFeReferenciadas,
   criarEntradaDevolucaoIntegral,
   criarSaidaComDevolucao,
   novosOriginsDeTroca,
@@ -184,61 +185,43 @@ describe('resolveDevolucaoOperacao', () => {
   });
 });
 
-describe('collectChNFeReferenciadas', () => {
-  const nfes = {
-    o1: [{ chave: 'CH1' }, { chave: 'CH2' }],
-    o2: [{ chave: null }, { chave: 'CH3' }],
-    o3: [],
-  };
+describe('prepareDevolucaoSave — the origin references (#1683)', () => {
+  const CH1 = chaveFake(1);
+  const CH2 = chaveFake(2);
 
-  it("'first' takes the first NON-EMPTY chave per origin", async () => {
-    const { port } = createFakeDevolucaoPort({ nfesAprovadasByPedido: nfes });
-    // o2's FIRST doc has a null chave → its second doc still contributes the
-    // origin's reference; o3 has no approved NF-e and contributes nothing.
-    expect(await collectChNFeReferenciadas(port, ['o1', 'o2', 'o3'], 'first')).toEqual([
-      'CH1',
-      'CH3',
-    ]);
-  });
-
-  it('preserves the originIds order across origins', async () => {
-    const { port } = createFakeDevolucaoPort({ nfesAprovadasByPedido: nfes });
-    expect(await collectChNFeReferenciadas(port, ['o2', 'o1'], 'first')).toEqual(['CH3', 'CH1']);
-    expect(await collectChNFeReferenciadas(port, ['o2', 'o1'], 'all')).toEqual([
-      'CH3',
-      'CH1',
-      'CH2',
-    ]);
-  });
-
-  it("'all' takes every approved chave, skipping null/empty ones", async () => {
-    const { port } = createFakeDevolucaoPort({ nfesAprovadasByPedido: nfes });
-    expect(await collectChNFeReferenciadas(port, ['o1', 'o2'], 'all')).toEqual([
-      'CH1',
-      'CH2',
-      'CH3',
-    ]);
-  });
-
-  it("'first' means the LATEST approved NF-e — sorted by ultima_modificacao desc, not query order", async () => {
-    // The query carries no orderBy, so the raw list order is undefined: the
-    // older doc arrives first here, but the newer chave must win. Docs without
-    // the field sort last.
+  it('reads every origin NF-e (latest first) and counts the items left without a complete reference', async () => {
     const { port } = createFakeDevolucaoPort({
+      docs: { 'pedidos/o1': {}, 'pedidos/o2': {} },
       nfesAprovadasByPedido: {
-        o1: [
-          { chave: 'OLD', ultima_modificacao: 1_000 },
-          { chave: 'NEW', ultima_modificacao: 2_000 },
-          { chave: 'NO-STAMP' },
-        ],
+        o1: [nfeAprovadaFake(CH1, [{ cProd: 'p1', vUnCom: 50 }])],
+        // o2's nota has no XML (a legacy aprovada) → its item keeps nItem null.
+        o2: [nfeAprovadaFake(CH2, null)],
       },
     });
-    expect(await collectChNFeReferenciadas(port, ['o1'], 'first')).toEqual(['NEW']);
-    expect(await collectChNFeReferenciadas(port, ['o1'], 'all')).toEqual([
-      'NEW',
-      'OLD',
-      'NO-STAMP',
-    ]);
+    const prepared = await prepareDevolucaoSave(port, {
+      values: saidaValues({
+        itensDevolvidos: {
+          o1: { p1: [item('p1', 1, 50)] },
+          o2: { p2: [item('p2', 1, 30)] },
+          NONE: { p3: [item('p3', 1, 20)] },
+        },
+      }),
+    });
+    expect(prepared?.notasDeOrigem.get('o1')?.map((n) => n.chave)).toEqual([CH1]);
+    expect(prepared?.notasDeOrigem.has('NONE')).toBe(false);
+    // o2 (no XML) and the avulso p3 (no origin) — o1's item is complete.
+    expect(prepared?.referenciasPendentes).toBe(2);
+  });
+
+  it('zero pending when every returned item matched its origin line', async () => {
+    const { port } = createFakeDevolucaoPort({
+      docs: { 'pedidos/o1': {} },
+      nfesAprovadasByPedido: { o1: [nfeAprovadaFake(CH1, [{ cProd: 'p1', vUnCom: 50 }])] },
+    });
+    const prepared = await prepareDevolucaoSave(port, {
+      values: saidaValues({ itensDevolvidos: { o1: { p1: [item('p1', 1, 50)] } } }),
+    });
+    expect(prepared?.referenciasPendentes).toBe(0);
   });
 });
 
@@ -255,6 +238,8 @@ describe('fake port hasNFe', () => {
 });
 
 describe('buildDevolucaoPedido', () => {
+  const SEM_NOTAS: ReadonlyMap<string, readonly NotaDeOrigem[]> = new Map();
+
   it('re-keys items by produtoUid across all buckets (incl. NONE), dropping qty <= 0', () => {
     const { port } = createFakeDevolucaoPort();
     const doc = buildDevolucaoPedido(port, {
@@ -265,7 +250,7 @@ describe('buildDevolucaoPedido', () => {
         NONE: { p3: [item('p3', 1, 20)], NONE: [item(null, 1, 5)] },
       },
       operacaoOuterRef: 'documents/operacao/opDev',
-      chNFeReferenciadas: [],
+      notasDeOrigem: SEM_NOTAS,
       saidasRelacionadas: ['o1', 'o2'],
     });
     const itens = doc.itens as Record<string, ItemDoPedido[]>;
@@ -284,7 +269,7 @@ describe('buildDevolucaoPedido', () => {
       saida: saidaValues({ integracaoPedidoOuterRef: 'documents/integracao/i1' }),
       itensDevolvidos: { o1: { p1: [item('p1', 2, 50)] } },
       operacaoOuterRef: 'documents/operacao/opDev',
-      chNFeReferenciadas: ['CH1'],
+      notasDeOrigem: SEM_NOTAS,
       saidasRelacionadas: ['o1'],
     });
     expect(doc.ehSaida).toBe(false);
@@ -295,7 +280,6 @@ describe('buildDevolucaoPedido', () => {
     expect(doc.vendedorPedidoOuterRef).toBe('documents/usuarios/u1');
     expect(doc.integracaoPedidoOuterRef).toBe('documents/integracao/i1');
     expect(doc.operacaoPedidoOuterRef).toBe('documents/operacao/opDev');
-    expect(doc.chNFeReferenciadas).toEqual(['CH1']);
     expect(doc.saidasRelacionadas).toEqual(['o1']);
     expect(doc.valorCobrado).toBe(100); // (50 − 0) × 2, the derived total
     expect(doc.timestamp).toBe(NOW);
@@ -305,15 +289,60 @@ describe('buildDevolucaoPedido', () => {
     expect(doc.freteInicial).toBeNull();
   });
 
-  it('stores chNFeReferenciadas as null when the collected list is empty', () => {
+  it('references each item to ITS origin line, per item, never per nota (VC02-14, #1683)', () => {
+    const CH1 = chaveFake(1);
+    const CH2 = chaveFake(2);
+    const { port } = createFakeDevolucaoPort();
+    // The same produto p1 returned from TWO origins: after the re-key both
+    // lines share one list, and each must still point at its own nota.
+    const herdada = { chaveAcesso: chaveFake(9), nItem: 4 };
+    const doc = buildDevolucaoPedido(port, {
+      saida: saidaValues(),
+      itensDevolvidos: {
+        o1: { p1: [{ ...item('p1', 1, 50), dfeReferenciado: herdada }] },
+        o2: { p1: [item('p1', 2, 50)], p2: [item('p2', 1, 30)] },
+        NONE: { p3: [{ ...item('p3', 1, 20), dfeReferenciado: herdada }] },
+      },
+      operacaoOuterRef: null,
+      notasDeOrigem: new Map([
+        ['o1', notasDeOrigemDe([nfeAprovadaFake(CH1, [{ cProd: 'p1', vUnCom: 50 }])])],
+        [
+          'o2',
+          notasDeOrigemDe([
+            nfeAprovadaFake(CH2, [
+              { cProd: 'p2', vUnCom: 30 },
+              { cProd: 'p1', vUnCom: 50 },
+            ]),
+          ]),
+        ],
+      ]),
+      saidasRelacionadas: ['o1', 'o2'],
+    });
+    const itens = doc.itens as Record<string, ItemDoPedido[]>;
+    expect(itens.p1?.map((i) => i.dfeReferenciado)).toEqual([
+      { chaveAcesso: CH1, nItem: 1 },
+      { chaveAcesso: CH2, nItem: 2 },
+    ]);
+    expect(itens.p2?.[0]?.dfeReferenciado).toEqual({ chaveAcesso: CH2, nItem: 1 });
+    // The avulso item has no origin: the reference it was cloned with is dropped.
+    expect(itens.p3?.[0]?.dfeReferenciado).toBeNull();
+    // Note level stays empty — 1010 refuses NFref beside item references.
+    expect(doc.chNFeReferenciadas).toBeNull();
+  });
+
+  it('an origin without an approved NF-e drops the inherited reference too, and NFref stays null', () => {
     const { port } = createFakeDevolucaoPort();
     const doc = buildDevolucaoPedido(port, {
       saida: saidaValues(),
-      itensDevolvidos: { o1: { p1: [item('p1', 1, 50)] } },
+      itensDevolvidos: {
+        o1: { p1: [{ ...item('p1', 1, 50), dfeReferenciado: { chaveAcesso: 'X', nItem: 1 } }] },
+      },
       operacaoOuterRef: null,
-      chNFeReferenciadas: [],
+      notasDeOrigem: SEM_NOTAS,
       saidasRelacionadas: ['o1'],
     });
+    const itens = doc.itens as Record<string, ItemDoPedido[]>;
+    expect(itens.p1?.[0]?.dfeReferenciado).toBeNull();
     expect(doc.chNFeReferenciadas).toBeNull();
     expect(doc.operacaoPedidoOuterRef).toBeNull();
   });
@@ -579,7 +608,9 @@ describe('buildDevolucaoIntegralSeed', () => {
         'integracao/i1': { operacaoDevolucaoOuterRef: 'documents/operacao/opDev' },
         'operacao/opDev': OPERACAO_DEVOLUCAO,
       },
-      nfesAprovadasByPedido: { o1: [{ chave: 'CH1' }, { chave: 'CH2' }] },
+      nfesAprovadasByPedido: {
+        o1: [nfeAprovadaFake(chaveFake(2), [{ cProd: 'X' }, { cProd: 'p1', vUnCom: 25 }])],
+      },
     });
   }
 
@@ -605,7 +636,7 @@ describe('buildDevolucaoIntegralSeed', () => {
     expect(values.chNFePagamentoAntecipado).toBeNull();
   });
 
-  it('seeds an entrada with the origin items, ALL approved chaves + the resolved operação', async () => {
+  it('seeds an entrada with the origin items, each referencing its origin line, + the resolved operação', async () => {
     const { port } = setup();
     const { values, operacao, originNumero } = await buildDevolucaoIntegralSeed(port, {
       originId: 'o1',
@@ -613,11 +644,14 @@ describe('buildDevolucaoIntegralSeed', () => {
     });
     expect(values.ehSaida).toBe(false);
     expect(values.vendedorPedidoOuterRef).toBe('documents/usuarios/u9');
-    expect(values.chNFeReferenciadas).toEqual(['CH1', 'CH2']);
+    // Per item, never per nota (VC02-14 + 1010, #1683): the det nItem comes
+    // from the origin's XML (p1 is its SECOND line), not from the item's position.
+    expect(values.chNFeReferenciadas).toBeNull();
     expect(values.operacaoPedidoOuterRef).toBe('documents/operacao/opDev');
     expect(values.clientePedidoOuterRef).toBe('documents/clientes/c1');
     const itens = values.itens as Record<string, ItemDoPedido[]>;
     expect(itens.p1?.map((i) => [i.quantidade, i.precoDeVenda])).toEqual([[3, 25]]);
+    expect(itens.p1?.[0]?.dfeReferenciado).toEqual({ chaveAcesso: chaveFake(2), nItem: 2 });
     // Deliberate cleanup: no origin links / stock snapshot / numero on the seed.
     expect(values.entradasRelacionadas).toBeNull();
     expect(values.saidasRelacionadas).toBeNull();

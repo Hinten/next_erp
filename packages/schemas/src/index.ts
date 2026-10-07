@@ -967,6 +967,8 @@ export {
   type NfeUploadTransition,
 } from './nfeEnvioCanal';
 
+export { lerItensDoProc, type ItemDoProc } from './nfeProc';
+
 export {
   nfeConfig,
   nfeConfigSchema,

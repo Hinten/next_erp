@@ -13,7 +13,8 @@
  * silent rather than guessing.
  *
  * Coverage (#330):
- *  - Grupo VC — the item-level reference (`det/DFeReferenciado`);
+ *  - Grupo VC — the item-level reference (`det/DFeReferenciado`), including
+ *    the devolução's mandatory one (VC02-14, #1683);
  *  - Grupo B — the finalidade crédito/débito (finNFe 5/6) and its tipo
  *    (B25-110/120, B25.1, B25.2), and the `NFref` a nota de crédito needs
  *    (B25-30/40/50/60/65, B25-100);
@@ -61,7 +62,10 @@ export type SeveridadeViolacao = (typeof SEVERIDADE_VIOLACAO)[keyof typeof SEVER
 
 export const REGRA_DOCUMENTO = {
   // ── Grupo VC — item-level references ────────────────────────────────────
-  /** Policy: item references ride only with the Reforma Tributária on (NT 2025.002). */
+  /**
+   * Policy: item references ride only with the Reforma Tributária on — except on a
+   * devolução, which SEFAZ authorizes without it and requires them on (VC02-14, #1683).
+   */
   refItemSemReformaTributaria: 'refItemSemReformaTributaria',
   /** The referenced chave is not a 44-character chave with a valid check digit. */
   refItemChaveInvalida: 'refItemChaveInvalida',
@@ -87,6 +91,10 @@ export const REGRA_DOCUMENTO = {
   devolucaoEmitentesDiferentes: 'devolucaoEmitentesDiferentes',
   /** 1194 (VC02-50) — devolução de saída: the referenced emitente is not the destinatário. */
   devolucaoEmitenteNaoEhDestinatario: 'devolucaoEmitenteNaoEhDestinatario',
+  /** 321 (VC02-14) — a devolução referencing NO item (note-level `NFref` alone is refused). */
+  devolucaoSemReferenciaPorItem: 'devolucaoSemReferenciaPorItem',
+  /** 321 (VC02-14) — a devolução item without a reference while others have one. */
+  devolucaoItemSemReferencia: 'devolucaoItemSemReferencia',
 
   // ── Grupo B — finalidade crédito/débito and its tipo ────────────────────
   /** 1161 (B25-110) — a nota de crédito must be an entrada. */
@@ -237,6 +245,17 @@ export const REGRAS_DOCUMENTO = {
     severidade: SEVERIDADE_VIOLACAO.aviso,
     texto:
       'Na devolução de saída, o emitente da nota referenciada deve ser o destinatário desta nota.',
+  },
+  devolucaoSemReferenciaPorItem: {
+    cStat: '321',
+    severidade: B,
+    texto:
+      'Na devolução, cada item deve referenciar o item da nota de origem (aba Fiscal → Referência por item). A referência só pela chave da nota não é mais aceita.',
+  },
+  devolucaoItemSemReferencia: {
+    cStat: '321',
+    severidade: B,
+    texto: 'Este item da devolução está sem a referência ao item da nota de origem.',
   },
   creditoNaoEhEntrada: {
     cStat: '1161',
@@ -529,6 +548,7 @@ export function violacoesDoDocumento(e: EntradaRegrasDocumento): ViolacaoDocumen
     ...violacoesDaNotaDeAjuste(e),
     ...violacoesDoCClassTrib(e),
     ...violacoesDaNFrefDoCredito(e),
+    ...violacoesDaReferenciaDaDevolucao(e),
     ...violacoesDaReferenciaPorItem(e),
     ...violacoesDoPagamentoAntecipado(e),
     ...violacoesDoIsufEmit(e),
@@ -684,6 +704,30 @@ function violacoesDaNFrefDoCredito(e: EntradaRegrasDocumento): ViolacaoDocumento
   return out;
 }
 
+/**
+ * VC02-14 (cStat 321, NT 2025.002 v1.51, produção 05/10/2026) — a devolução
+ * references its origin PER ITEM (`det/DFeReferenciado`); Observação 1 forbids
+ * the note-level `refNFe`. With every item referenced and an `NFref` beside
+ * them, it is 1010's to refuse (VC02-05), so this needs no third rule.
+ *
+ * ⚠️ NOT gated on the Reforma Tributária, and NOT a warning — both MEASURED, not
+ * read (#1683, SEFAZ-SP homologação, run 37629331453, 2026-10-07). An NT
+ * footnote limits the RTC validations to documents carrying IBS/CBS/IS, yet a
+ * devolução WITHOUT them and with `NFref` alone drew 321, and one referencing
+ * only line 1 of two drew 321 `[nItem: 2]`. The same run authorized (100) a
+ * devolução without the RTC that referenced by item, which is why
+ * `refItemSemReformaTributaria` exempts finNFe 4.
+ */
+function violacoesDaReferenciaDaDevolucao(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
+  if (e.finNFe !== FIN_NFE_OPERACAO.devolucao) return [];
+  const semRef = e.itens.filter((item) => item.dfeReferenciado == null);
+  if (semRef.length === 0) return [];
+  if (semRef.length === e.itens.length) {
+    return [violacao(REGRA_DOCUMENTO.devolucaoSemReferenciaPorItem, null)];
+  }
+  return semRef.map((item) => violacao(REGRA_DOCUMENTO.devolucaoItemSemReferencia, item.nItem));
+}
+
 /** Grupo VC — the item-level reference (`det/DFeReferenciado`). */
 function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocumento[] {
   const out: ViolacaoDocumento[] = [];
@@ -709,7 +753,12 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
   }
   if (comRef.length === 0) return out;
 
-  if (!e.emitRtc) out.push(violacao(REGRA_DOCUMENTO.refItemSemReformaTributaria, null));
+  // A devolução is exempt: SEFAZ authorizes its item references without the RTC
+  // and demands them regardless (see `violacoesDaReferenciaDaDevolucao`).
+  const devolucao = e.finNFe === FIN_NFE_OPERACAO.devolucao;
+  if (!e.emitRtc && !devolucao) {
+    out.push(violacao(REGRA_DOCUMENTO.refItemSemReformaTributaria, null));
+  }
   if (e.chNFeReferenciadas.length > 0) out.push(violacao(REGRA_DOCUMENTO.refItemComRefNota, null));
   // VC02-07 — except crédito 06, which references the returned items (VC02-10).
   if (e.finNFe === FIN_NFE_OPERACAO.credito && !retornoParcial) {
@@ -739,7 +788,6 @@ function violacoesDaReferenciaPorItem(e: EntradaRegrasDocumento): ViolacaoDocume
     vistos.add(chave);
   }
 
-  const devolucao = e.finNFe === FIN_NFE_OPERACAO.devolucao;
   // VC02-30 exceptions: devolução, débito 03 (one nota per unprocessed
   // document) and — since v1.51 — débito 07 (perda em estoque).
   const perdaEstoque = e.tpNFDebito === TP_NF_DEBITO.perdaEstoque;

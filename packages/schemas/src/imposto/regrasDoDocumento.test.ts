@@ -205,6 +205,101 @@ describe('violacoesDoDocumento — item references (Grupo VC)', () => {
   });
 });
 
+/**
+ * VC02-14 (cStat 321) — every one of these verdicts is a SEFAZ-SP homologação
+ * answer measured on 2026-10-07 (#1683, run 37629331453), not a reading of the
+ * NT: NFref alone → 321 with AND without the RTC; item references without the
+ * RTC → 100; one line of two referenced → 321 `[nItem: 2]`.
+ */
+describe('violacoesDoDocumento — devolução references per item (VC02-14)', () => {
+  const DEVOLUCAO = { finNFe: 4, tpNF: '0' as const };
+
+  it.each([true, false])(
+    'NFref alone is refused as ONE document-level 321, whatever the RTC (emitRtc=%s)',
+    (emitRtc) => {
+      const v = violacoesDoDocumento({
+        ...BASE,
+        ...DEVOLUCAO,
+        emitRtc,
+        chNFeReferenciadas: [CHAVE_A],
+        itens: [
+          { nItem: 1, dfeReferenciado: null },
+          { nItem: 2, dfeReferenciado: null },
+        ],
+      });
+      expect(v).toEqual([
+        {
+          regra: REGRA_DOCUMENTO.devolucaoSemReferenciaPorItem,
+          cStat: '321',
+          severidade: SEVERIDADE_VIOLACAO.bloqueia,
+          nItem: null,
+        },
+      ]);
+      expect(bloqueiaEmissao(v)).toBe(true);
+    },
+  );
+
+  it('a devolução with no reference at all is refused the same way', () => {
+    expect(regras({ ...DEVOLUCAO, itens: [{ nItem: 1, dfeReferenciado: null }] })).toEqual([
+      REGRA_DOCUMENTO.devolucaoSemReferenciaPorItem,
+    ]);
+  });
+
+  it('every item referenced is clean — and WITHOUT the Reforma Tributária too (SEFAZ answered 100)', () => {
+    for (const emitRtc of [true, false]) {
+      expect(
+        regras({
+          ...DEVOLUCAO,
+          emitRtc,
+          itens: [
+            { nItem: 1, dfeReferenciado: ref(CHAVE_A, 2) },
+            { nItem: 2, dfeReferenciado: ref(CHAVE_A, 1) },
+          ],
+        }),
+      ).toEqual([]);
+    }
+  });
+
+  it('NEAR-MISS: the RTC exemption is the devolução’s alone — a finNFe 1 nota with item references and RTC off is still refused', () => {
+    expect(
+      regras({ finNFe: 1, emitRtc: false, itens: [{ nItem: 1, dfeReferenciado: ref(CHAVE_A) }] }),
+    ).toEqual([REGRA_DOCUMENTO.refItemSemReformaTributaria]);
+  });
+
+  it('judged PER ITEM: the unreferenced line of a partly referenced devolução blocks, by its nItem', () => {
+    const v = violacoesDoDocumento({
+      ...BASE,
+      ...DEVOLUCAO,
+      itens: [
+        { nItem: 1, dfeReferenciado: ref(CHAVE_A, 1) },
+        { nItem: 2, dfeReferenciado: null },
+      ],
+    });
+    expect(v.map((x) => [x.regra, x.nItem, x.severidade])).toEqual([
+      [REGRA_DOCUMENTO.devolucaoItemSemReferencia, 2, SEVERIDADE_VIOLACAO.bloqueia],
+    ]);
+    expect(descreverViolacaoDocumento(v[0]!)).toBe(
+      'Item 2: Este item da devolução está sem a referência ao item da nota de origem. (SEFAZ 321)',
+    );
+  });
+
+  it('every item referenced AND an NFref beside them is 1010’s to refuse, not 321', () => {
+    expect(
+      regras({
+        ...DEVOLUCAO,
+        chNFeReferenciadas: [CHAVE_A],
+        itens: [{ nItem: 1, dfeReferenciado: ref(CHAVE_A, 1) }],
+      }),
+    ).toEqual([REGRA_DOCUMENTO.refItemComRefNota]);
+  });
+
+  it('NEAR-MISS: a nota that is not a devolução is never asked for item references', () => {
+    for (const finNFe of [1, 2, 3]) {
+      expect(regras({ finNFe, itens: [{ nItem: 1, dfeReferenciado: null }] })).toEqual([]);
+    }
+  });
+});
+
 describe('descreverViolacaoDocumento', () => {
   it('names the item and the SEFAZ code when there is one', () => {
     const [v] = violacoesDoDocumento({
