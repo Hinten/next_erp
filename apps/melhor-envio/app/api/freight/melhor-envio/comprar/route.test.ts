@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Timestamp } from 'firebase-admin/firestore';
 import { PERM } from '@delfrance/auth';
 import { deferred } from '@delfrance/data/testing';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import {
   MelhorEnvioHttpError,
   MelhorEnvioNetworkError,
@@ -14,6 +16,7 @@ import {
   COMPRA_ETIQUETA_LEASE_MS,
 } from '@/lib/freight/compraEtiqueta';
 import { MelhorEnvioContaNotConfiguredError } from '@/lib/freight/melhorEnvioErrors';
+import { processMelhorEnvioNotification } from '@/lib/freight/notificacao';
 import { FirestoreFake } from '@/lib/freight/testing/fakeFirestore';
 
 // The route runs the REAL comprarEtiqueta pipeline and the REAL claim
@@ -216,6 +219,328 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
     h.addToCart.mockRejectedValue(new MelhorEnvioValidationError('inválido', { to: ['x'] }, {}));
     const res = await comprar();
     expect(res.status).toBe(422);
+  });
+
+  describe('shipment progress (#1801)', () => {
+    it.each([ESTADO_FRETE.postado, ESTADO_FRETE.entregue, ESTADO_FRETE.cancelado])(
+      'a stale buy resumes the anchored label without regressing %s',
+      async (estado) => {
+        fake.semear(PEDIDO, { freteInicial: { printLabelId: 'existing-label', estado } });
+        h.getOrder.mockResolvedValue({
+          id: 'existing-label',
+          status: 'released',
+          paid_at: '2026-06-17 09:00:00',
+          generated_at: '2026-06-17 09:01:00',
+          tracking: 'ME123BR',
+        });
+        const res = await comprar({ ...VALID_BODY, printLabelId: null });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ printLabelId: 'existing-label', estado });
+        expect(frete()?.estado).toBe(estado);
+        expect(h.addToCart).not.toHaveBeenCalled();
+        expect(h.checkout).not.toHaveBeenCalled();
+        expect(h.generate).not.toHaveBeenCalled();
+        expect(h.getOrder).toHaveBeenCalledTimes(2);
+        expect(fake.dados(CLAIM)).toBeUndefined();
+      },
+    );
+
+    it('a fresh buy resets inherited postado at the anchor and awaits posting', async () => {
+      fake.semear(PEDIDO, {
+        freteInicial: { printLabelId: null, estado: ESTADO_FRETE.postado },
+      });
+      h.checkout.mockImplementation(async () => {
+        expect(frete()).toMatchObject({
+          printLabelId: 'new-label',
+          estado: ESTADO_FRETE.aguardandoPostagem,
+        });
+        return {};
+      });
+      h.getOrder.mockResolvedValue({ id: 'new-label', status: 'released', tracking: 'ME123BR' });
+      const res = await comprar();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ estado: ESTADO_FRETE.aguardandoPostagem });
+      expect(frete()?.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+      expect(h.getOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [ESTADO_FRETE.cancelado, ESTADO_FRETE.iniciado],
+      [ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+      [ESTADO_FRETE.suspenso, ESTADO_FRETE.aguardandoPostagem],
+      [ESTADO_FRETE.falhaNaEntrega, ESTADO_FRETE.aguardandoPostagem],
+    ])(
+      'a new label over inherited %s starts at %s and accepts posted/delivered webhooks',
+      async (anterior, inicial) => {
+        fake.semear(PEDIDO, {
+          freteInicial: {
+            printLabelId: null,
+            estado: anterior,
+            integracaoFreteOuterRef: 'documents/int_frete/int-1',
+          },
+        });
+        h.checkout.mockImplementation(async () => {
+          expect(frete()).toMatchObject({ printLabelId: 'new-label', estado: inicial });
+          return {};
+        });
+        h.getOrder.mockResolvedValue({ id: 'new-label', status: 'released', tracking: 'ME123BR' });
+        const res = await comprar();
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          printLabelId: 'new-label',
+          estado: ESTADO_FRETE.aguardandoPostagem,
+        });
+        expect(frete()?.estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+        expect(fake.dados(CLAIM)).toBeUndefined();
+
+        // Drive the real notification processor after the real buy pipeline.
+        // Its injected write port uses OCC so every change is a committed write.
+        for (const [status, esperado] of [
+          ['posted', ESTADO_FRETE.postado],
+          ['delivered', ESTADO_FRETE.entregue],
+        ] as const) {
+          const outcome = await processMelhorEnvioNotification(
+            fake.comoFirestore(),
+            { labelId: 'new-label', event: null, providerStatus: status, tracking: null },
+            {
+              findPedidoByLabel: async (_db, labelId) => {
+                const data = fake.dados(PEDIDO);
+                return data && frete()?.printLabelId === labelId
+                  ? { id: 'ped-1', data, updateTime: Timestamp.fromMillis(T0) }
+                  : null;
+              },
+              loadCurrentLabel: async (_db, _intFreteId, labelId) => ({
+                id: labelId,
+                status,
+                tracking: 'ME123BR',
+              }),
+              updatePedido: async (_db, pedido, patch) => {
+                const ref = fake.ref(`pedidos/${pedido.id}`);
+                await fake.runTransaction(async (tx) => {
+                  await tx.get(ref);
+                  tx.update(ref, patch);
+                });
+              },
+            },
+          );
+          expect(outcome).toMatchObject({ kind: 'applied', estado: esperado });
+          expect(frete()?.estado).toBe(esperado);
+        }
+        expect(h.addToCart).toHaveBeenCalledTimes(1);
+        expect(h.checkout).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['rejected', 'timeout'])(
+      'a canceled-shipment checkout %s leaves the new unpaid label initiated',
+      async (falha) => {
+        fake.semear(PEDIDO, { freteInicial: { estado: ESTADO_FRETE.cancelado } });
+        h.checkout.mockRejectedValue(
+          falha === 'timeout'
+            ? new MelhorEnvioTimeoutError('x', { operacao: 'checkout', timeoutMs: 60_000 })
+            : new MelhorEnvioValidationError('x', {}, {}),
+        );
+        const res = await comprar();
+        expect(res.status).toBe(falha === 'timeout' ? 504 : 422);
+        expect(frete()).toEqual({ printLabelId: 'new-label', estado: ESTADO_FRETE.iniciado });
+        if (falha === 'timeout') {
+          expect(fake.dados(CLAIM)).toMatchObject({
+            leaseExpiraEmMs: T0 + COMPRA_ETIQUETA_LEASE_MS,
+          });
+        } else {
+          expect(fake.dados(CLAIM)).toBeUndefined();
+        }
+        expect(h.generate).not.toHaveBeenCalled();
+        expect(h.getOrder).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['posted', 'received', 'delivered'])(
+      'a fresh buy uses the final provider status %s',
+      async (status) => {
+        h.getOrder.mockResolvedValue({ id: 'new-label', status, tracking: 'ME123BR' });
+        const esperado = status === 'delivered' ? ESTADO_FRETE.entregue : ESTADO_FRETE.postado;
+        const res = await comprar();
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ estado: esperado });
+        expect(frete()?.estado).toBe(esperado);
+        expect(h.getOrder).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['rejected', 'timeout'])(
+      'a checkout %s preserves the normalized anchor and the existing claim policy',
+      async (falha) => {
+        fake.semear(PEDIDO, { freteInicial: { estado: ESTADO_FRETE.postado } });
+        h.checkout.mockRejectedValue(
+          falha === 'timeout'
+            ? new MelhorEnvioTimeoutError('x', { operacao: 'checkout', timeoutMs: 60_000 })
+            : new MelhorEnvioValidationError('x', {}, {}),
+        );
+        const res = await comprar();
+        expect(res.status).toBe(falha === 'timeout' ? 504 : 422);
+        expect(frete()).toEqual({
+          printLabelId: 'new-label',
+          estado: ESTADO_FRETE.aguardandoPostagem,
+        });
+        if (falha === 'timeout') {
+          expect(fake.dados(CLAIM)).toMatchObject({
+            leaseExpiraEmMs: T0 + COMPRA_ETIQUETA_LEASE_MS,
+          });
+          expect(await res.json()).toMatchObject({ code: 'ME_TIMEOUT' });
+        } else {
+          expect(fake.dados(CLAIM)).toBeUndefined();
+        }
+        expect(h.generate).not.toHaveBeenCalled();
+        expect(h.getOrder).not.toHaveBeenCalled();
+      },
+    );
+
+    it('never rolls a webhook state back when checkout fails after normalization', async () => {
+      fake.semear(PEDIDO, { freteInicial: { estado: ESTADO_FRETE.postado } });
+      h.checkout.mockImplementation(async () => {
+        await fake.runTransaction(async (tx) => {
+          await tx.get(fake.ref(PEDIDO));
+          tx.update(fake.ref(PEDIDO), { 'freteInicial.estado': ESTADO_FRETE.postado });
+        });
+        throw new MelhorEnvioTimeoutError('x', { operacao: 'checkout', timeoutMs: 60_000 });
+      });
+      const res = await comprar();
+      expect(res.status).toBe(504);
+      expect(frete()).toEqual({ printLabelId: 'new-label', estado: ESTADO_FRETE.postado });
+      expect(fake.dados(CLAIM)).toBeDefined();
+    });
+
+    it.each([
+      [null, ESTADO_FRETE.postado, ESTADO_FRETE.postado],
+      [null, ESTADO_FRETE.entregue, ESTADO_FRETE.postado],
+      ['existing-label', ESTADO_FRETE.postado, ESTADO_FRETE.aguardandoPostagem],
+      ['existing-label', ESTADO_FRETE.entregue, ESTADO_FRETE.aguardandoPostagem],
+      [null, ESTADO_FRETE.postado, ESTADO_FRETE.cancelado],
+      [null, ESTADO_FRETE.entregue, ESTADO_FRETE.entregue],
+    ])(
+      'retries label %s advanced to %s from inherited %s after the provider fetch',
+      async (anchor, estado, anterior) => {
+        const labelId = anchor ?? 'new-label';
+        fake.semear(PEDIDO, {
+          freteInicial: {
+            printLabelId: anchor,
+            estado: anterior,
+          },
+        });
+        h.getOrder.mockResolvedValue({
+          id: labelId,
+          status: 'released',
+          paid_at: '2026-06-17 09:00:00',
+          generated_at: '2026-06-17 09:01:00',
+          tracking: 'ME123BR',
+        });
+        const chegou = deferred();
+        const libera = deferred();
+        let travou = false;
+        fake.occ.beforeCommit = async ({ writes }) => {
+          if (
+            !travou &&
+            writes.some(
+              (w) =>
+                w.path === PEDIDO && w.kind === 'update' && 'freteInicial.codRastreio' in w.data,
+            )
+          ) {
+            travou = true;
+            chegou.resolve();
+            await libera.promise;
+          }
+        };
+        const compra = comprar();
+        await chegou.promise;
+        // The final provider fetch is complete; the concurrent write bumps the
+        // OCC version. Seeding here would make this retry assertion vacuous.
+        expect(h.getOrder).toHaveBeenCalledTimes(anchor === null ? 1 : 2);
+        await fake.runTransaction(async (tx) => {
+          await tx.get(fake.ref(PEDIDO));
+          tx.update(fake.ref(PEDIDO), { 'freteInicial.estado': estado });
+        });
+        libera.resolve();
+        const res = await compra;
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ printLabelId: labelId, estado });
+        expect(frete()?.estado).toBe(estado);
+        expect(fake.occ.txLog.some((e) => e.phase === 'abort' && e.conflictPath === PEDIDO)).toBe(
+          true,
+        );
+        expect(h.addToCart).toHaveBeenCalledTimes(anchor === null ? 1 : 0);
+        expect(h.checkout).toHaveBeenCalledTimes(anchor === null ? 1 : 0);
+        expect(h.generate).toHaveBeenCalledTimes(anchor === null ? 1 : 0);
+        expect(fake.dados(CLAIM)).toBeUndefined();
+      },
+    );
+
+    it.each(['changed', 'cleared', 'deleted'])(
+      'retries finalization and returns 412 when the anchor is %s before commit',
+      async (mudanca) => {
+        fake.semear(PEDIDO, {
+          freteInicial: { printLabelId: 'existing-label', estado: ESTADO_FRETE.aguardandoPostagem },
+        });
+        h.getOrder.mockResolvedValue({
+          id: 'existing-label',
+          status: 'released',
+          paid_at: '2026-06-17 09:00:00',
+          generated_at: '2026-06-17 09:01:00',
+          tracking: 'ME123BR',
+        });
+        const chegou = deferred();
+        const libera = deferred();
+        let travou = false;
+        fake.occ.beforeCommit = async ({ writes }) => {
+          if (
+            !travou &&
+            writes.some(
+              (w) =>
+                w.path === PEDIDO && w.kind === 'update' && 'freteInicial.codRastreio' in w.data,
+            )
+          ) {
+            travou = true;
+            chegou.resolve();
+            await libera.promise;
+          }
+        };
+        const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const compra = comprar();
+        await chegou.promise;
+        await fake.runTransaction(async (tx) => {
+          await tx.get(fake.ref(PEDIDO));
+          if (mudanca === 'deleted') {
+            tx.delete(fake.ref(PEDIDO));
+          } else {
+            tx.update(fake.ref(PEDIDO), {
+              'freteInicial.printLabelId': mudanca === 'cleared' ? null : 'winner-label',
+              'freteInicial.estado': ESTADO_FRETE.entregue,
+            });
+          }
+        });
+        libera.resolve();
+        const res = await compra;
+        expect(res.status).toBe(412);
+        expect(await res.json()).toMatchObject({
+          code: 'ME_ETIQUETA_DESVINCULADA',
+          printLabelId: 'existing-label',
+          printUrl: 'https://sandbox.melhorenvio.com.br/imprimir/abc',
+        });
+        if (mudanca === 'deleted') {
+          expect(fake.dados(PEDIDO)).toBeUndefined();
+        } else {
+          expect(frete()).toEqual({
+            printLabelId: mudanca === 'cleared' ? null : 'winner-label',
+            estado: ESTADO_FRETE.entregue,
+          });
+        }
+        expect(fake.occ.txLog.some((e) => e.phase === 'abort' && e.conflictPath === PEDIDO)).toBe(
+          true,
+        );
+        expect(fake.dados(CLAIM)).toBeUndefined();
+        expect(log).toHaveBeenCalledTimes(1);
+      },
+    );
   });
 
   describe('two requests for the same pedido (#1677)', () => {

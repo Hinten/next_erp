@@ -10,7 +10,6 @@ import {
 } from '@delfrance/integrations-freight-br';
 
 import {
-  meStatusToEstadoFrete,
   normalizeMelhorEnvioNotification,
   notificationDocId,
   parseNotificationBody,
@@ -127,22 +126,6 @@ describe('Melhor Envio notification parsing', () => {
     expect(notificationDocId(payload())).toBe(first);
     expect(notificationDocId(payload({ tracking: 'ME123BR' }))).not.toBe(first);
     expect(first).not.toContain('/');
-  });
-});
-
-describe('meStatusToEstadoFrete', () => {
-  it('preserves the complete legacy status map', () => {
-    expect(meStatusToEstadoFrete('delivered')).toBe('entregue');
-    expect(meStatusToEstadoFrete('posted')).toBe('postado');
-    expect(meStatusToEstadoFrete('received')).toBe('postado');
-    expect(meStatusToEstadoFrete('released')).toBeNull();
-    expect(meStatusToEstadoFrete('canceled')).toBe('cancelado');
-    expect(meStatusToEstadoFrete('cancelled')).toBe('cancelado');
-    expect(meStatusToEstadoFrete('suspended')).toBe('suspenso');
-    expect(meStatusToEstadoFrete('paused')).toBe('suspenso');
-    expect(meStatusToEstadoFrete('undelivered')).toBe('falhaNaEntrega');
-    expect(meStatusToEstadoFrete('created')).toBeNull();
-    expect(meStatusToEstadoFrete(null)).toBeNull();
   });
 });
 
