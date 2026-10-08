@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { foldFamilyStatus } from './upFamilyStatus';
+import { foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
 
 /**
  * The fold is the whole reason a family member's status is not written straight
@@ -228,5 +228,27 @@ describe('foldFamilyStatus — ML moderations follow the winner', () => {
     const enviavelSemMotivo = { status: 'paused', subStatus: ['out_of_stock'], moderacoes: [] };
     expect(foldFamilyStatus([moderadoNaoEnviavel, enviavelSemMotivo])).toEqual(enviavelSemMotivo);
     expect(foldFamilyStatus([enviavelSemMotivo, moderadoNaoEnviavel])).toEqual(enviavelSemMotivo);
+  });
+});
+
+describe('foldFamilyCategoria (#847)', () => {
+  it('must come out EQUAL: unanimous known values, with never-observed members not blocking', () => {
+    expect(foldFamilyCategoria(['MLB1', null, 'MLB1'])).toBe('MLB1');
+    expect(foldFamilyCategoria(['MLB1'])).toBe('MLB1');
+    // The first observed member settles a family nobody has observed yet.
+    expect(foldFamilyCategoria([null, 'MLB7', null])).toBe('MLB7');
+  });
+
+  it('must stay DISTINCT: disagreeing members leave the parent alone, whatever the order', () => {
+    expect(foldFamilyCategoria(['MLB1', 'MLB2'])).toBeNull();
+    expect(foldFamilyCategoria(['MLB2', null, 'MLB1'])).toBeNull();
+    // Near-misses: a prefix and a case fold are different ML categories.
+    expect(foldFamilyCategoria(['MLB1', 'MLB12'])).toBeNull();
+    expect(foldFamilyCategoria(['MLB1', 'mlb1'])).toBeNull();
+  });
+
+  it('nothing known → null (keep the stored value)', () => {
+    expect(foldFamilyCategoria([])).toBeNull();
+    expect(foldFamilyCategoria([null, null])).toBeNull();
   });
 });

@@ -519,6 +519,23 @@ export const produtoMercadoLivreLinkSchema = z
 
     site_id: z.string().default('MLB'),
     title: z.string().min(1),
+    /**
+     * ML's category for this listing (`MLB…`).
+     *
+     * ⚠️ CREATE-ONLY on the wire: `buildItemPayload` sends it only on the
+     * `POST /items` that creates the listing, never on an update. So before the
+     * first publish it is the operator's choice, and from then on it is ML's:
+     * Mercado Livre recategorizes listings on its own (automatic
+     * recategorization, splits of its category tree) and reports it only as an
+     * ordinary `items` notification (#847). Every writer after the create
+     * therefore stores ML's own value — publish (ML's echo), the importer, the
+     * `items` sync and "Reverificar anúncio", the last two fill-only. A
+     * published listing's stored value is what the size-chart binding and a new
+     * UP member's `POST /items` read; an operator edit there reaches ML nowhere.
+     *
+     * Under User Products this is the FAMILY's category, folded from its
+     * members' own `category_id` by unanimity — see the member schema below.
+     */
     category_id: z.string().nullable().default(null),
     condition: z.enum(['new', 'used']).default('new'),
     listing_type_id: z.string().nullable().default(null),
@@ -646,6 +663,21 @@ export const variacaoMercadoLivreLinkSchema = z
      * never as "send zero".
      */
     userProductId: z.string().nullable().default(null),
+    /**
+     * ML's `category_id` for THIS member's item, as last observed (#847).
+     *
+     * Under User Products each member is its own item, and Mercado Livre can
+     * recategorize items on its own. The FAMILY's category — on the parent link,
+     * where the size-chart binding and every new member's `POST /items` read it
+     * — is folded from these by unanimity (`foldFamilyCategoria`), so one
+     * member's reading never speaks for the family alone.
+     *
+     * Written fill-only by the surfaces that read the member's item (the `items`
+     * sync, "Reverificar anúncio", the status change): a reading that omitted
+     * the field never nulls a stored one. Null on every member link written
+     * before #847, which the fold reads as "not learned", never as a vote.
+     */
+    category_id: z.string().nullable().default(null),
     /**
      * Does THIS member's ML item carry the parent-sku custom characteristic
      * (`ML_ATTR_SKU_PAI_NOME`)? #1400.

@@ -456,7 +456,7 @@ matters:
 
 | Topic | Disposition | Handler |
 |---|---|---|
-| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
+| `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) + ML's category (#847) |
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
@@ -476,6 +476,21 @@ a `user_product_seller` publishes, it silently skipped the entire future catalog
 (#1087). ML's own migration **tags** are now the only reason to defer, and each
 deferral reports its own `ItemsSyncOutcome` so a skip is never again mistakable for
 a sync. Do not reintroduce a link-only guard here.
+
+⚠️ **A recategorization is NOT its own topic either — it arrives on `items` (#847).**
+Mercado Livre moves listings between categories on its own ("recategorização
+automática" for items published via API, since 29/10/2025, plus splits of its category
+tree) and says so only through an ordinary `items` delivery with no field naming what
+changed. `category_id` is **create-only** on our wire (`itemPayload.ts`), so a stale
+stored value never reverts ML's change — it misleads every READER instead: the
+size-chart binding on publish (which can block it), a new UP member's `POST /items`,
+the editor's attribute grid. So `itemsStatusSync` and `reverificarAnuncio` write ML's
+`category_id` onto the link, fill-only (an omitted field never nulls a stored one). On
+a User-Products FAMILY each member's category is recorded on its own link and the
+parent takes `foldFamilyCategoria` — **unanimity, never "latest member wins"**, inside
+the same transaction as the status fold: members are delivered concurrently, and a
+last-writer rule would flip the parent on every delivery while they disagree. The
+category moves on its own evidence, even when the status fold cannot conclude.
 
 ⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
 `moderations` notification topic (checked against its topic list); a policy pause

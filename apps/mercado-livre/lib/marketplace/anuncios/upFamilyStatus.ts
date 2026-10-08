@@ -159,6 +159,41 @@ export function foldFamilyStatus(members: readonly FoldableMember[]): FoldedFami
 }
 
 /**
+ * The ML category the family's PARENT link should carry (#847), or `null` for
+ * "leave the stored one alone".
+ *
+ * Mercado Livre recategorizes listings on its own (automatic recategorization,
+ * and splits of its category tree), and under User Products each member is its
+ * own item with its own `category_id`. The parent link carries ONE category —
+ * the value the size-chart binding and every new member's `POST /items` read —
+ * so the family's answer has to be folded, exactly like its status.
+ *
+ * ⚠️ UNANIMITY, never "the latest member wins". The members of one family are
+ * delivered concurrently and in no particular order, so a last-writer rule would
+ * flip the parent between two categories on every delivery while the members
+ * disagree — and the #847 aviso trigger reads every flip as a recategorization.
+ * Members that disagree therefore leave the stored value standing.
+ *
+ * `null` entries are members whose category was never learned (every member
+ * link written before #847 carries none). They do not block, so the FIRST
+ * observed member settles a family nobody has observed yet — the same "member 0
+ * stands for the family" convention publish already uses for the parent's
+ * category.
+ *
+ * Exact string comparison, on purpose: ML category ids are case-sensitive
+ * opaque keys (`MLB1` and `MLB12` are unrelated; `mlb1` is not an ML id).
+ */
+export function foldFamilyCategoria(valores: readonly (string | null)[]): string | null {
+  let escolhida: string | null = null;
+  for (const valor of valores) {
+    if (valor == null) continue;
+    if (escolhida == null) escolhida = valor;
+    else if (valor !== escolhida) return null;
+  }
+  return escolhida;
+}
+
+/**
  * Whether `desafiante` should displace `atual` among members of the SAME rank.
  * Two rungs, tried in order; the first is the one that can cost money.
  *

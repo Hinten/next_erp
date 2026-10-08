@@ -27,6 +27,16 @@
  *    stores its REASON/REMEDY as `moderacoes`. Without it the operator saw a
  *    listing go `pausado` with no reason anywhere in the ERP, while ML had one
  *    the whole time. See `fetchModeracoes` below.
+ *  - SYNCS ML's CATEGORY (#847): Mercado Livre recategorizes listings on its own
+ *    — "recategorização automática" for items published via API, and splits of
+ *    its category tree — and tells us only through an ordinary `items` delivery,
+ *    with no field saying what changed. `category_id` is CREATE-ONLY on our wire
+ *    (`itemPayload.ts`), so a stale stored value never reverts ML's change; it
+ *    misleads everything that READS it instead (the size-chart binding on
+ *    publish, a new UP member's `POST /items`, the editor's attribute grid). So
+ *    ML's value is always written, fill-only: a response that omits the field
+ *    never nulls a stored one. Whether the change needs an operator is decided
+ *    downstream, off the committed link write — not here.
  *
  * ⚠️ There is NO `moderations` notification topic — checked against ML's own
  * topic list. A moderation arrives as an ordinary `items` delivery, which is why
@@ -112,7 +122,7 @@ import { loadMercadoLivreContext } from '../core/mercadoLivre';
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
 import { refMatchesIntegracao } from '../core/linkRefs';
 import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
-import { foldFamilyStatus } from './upFamilyStatus';
+import { foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from '../importacao/importMigration';
 import { clearFalha } from '../core/publishFalhas';
 import { consultarModeracoes, moderacoesArmazenadas, moderacoesIguais } from './moderacoes';
@@ -276,6 +286,8 @@ export async function syncItemStatus(
       // The family's parent link deliberately gets none — a User Product
       // describes a product at VARIATION level, so the members carry them.
       item.user_product_id ?? null,
+      // #847: the member's own category; the parent's is FOLDED from these.
+      item.category_id ?? null,
     );
 
   if (link.member?.via === 'familia') return await foldMembro(link.member);
@@ -339,6 +351,7 @@ export async function syncItemStatus(
     // link would let one number be written for the whole family (#1142).
     itemStockLivesOnChildren(item) ? null : (item.user_product_id ?? null),
     await fetchModeracoes(api, itemId, item),
+    item.category_id ?? null,
   );
 }
 
@@ -369,6 +382,8 @@ async function applyResolvedStatus(
   subStatus: string[] | null,
   userProductId: string | null,
   moderacoes: MlModeracao[],
+  /** ML's `category_id` for this listing (#847); `null` = the response omitted it. */
+  categoryId: string | null,
 ): Promise<ItemsSyncOutcome> {
   const estado = estadoFromMlStatus(status, subStatus);
 
@@ -408,15 +423,42 @@ async function applyResolvedStatus(
   // Convergent, unlike a naive "moderations present ⇒ changed": this is false as
   // soon as the stored value matches what ML just said, moderated or not.
   const moderacoesChanged = !moderacoesIguais(moderacoes, moderacoesArmazenadas(link.data));
+  // #847: ML recategorized the listing. A change in its own right — a
+  // recategorization moves nothing else on the item, so it would otherwise
+  // short-circuit on `unchanged` below and the stored category would stay stale
+  // forever. Fill-only, like `userProductId`: an omitted field never nulls a
+  // stored one. Exact comparison: ML category ids are opaque, case-sensitive keys.
+  //
+  // Rule 7: no transaction, deliberately. Every writer of this field writes ML's
+  // OWN value (this sync, `reverificarAnuncio`, publish's echo, the importer),
+  // so concurrent writers converge on ML's state. The residual is the one the
+  // status fields above already carry: a delivery that fetched BEFORE a
+  // recategorization and commits AFTER a fresher one regresses the field until
+  // the next `items` delivery — and every price/stock `PUT /items` fires one.
+  const currentCategoryId =
+    typeof link.data.category_id === 'string' ? link.data.category_id : null;
+  const categoriaChanged = categoryId != null && categoryId !== currentCategoryId;
   const linkChanged =
     estadoChanged ||
     status !== currentStatus ||
     !stringArraysEqual(subStatus, currentSubStatus) ||
     userProductIdChanged ||
     errorsToClear ||
-    moderacoesChanged;
+    moderacoesChanged ||
+    categoriaChanged;
 
   if (!linkChanged) return 'unchanged';
+
+  if (categoriaChanged) {
+    // `warn`, not `info`: a recategorization can change the listing's commission,
+    // and it is the one trace of ML's change if nothing else reacts to it.
+    console.warn('[mercado-livre] items: categoria do anúncio alterada pelo ML', {
+      integracaoId,
+      itemId,
+      de: currentCategoryId,
+      para: categoryId,
+    });
+  }
 
   const applied = await applyItemStatusToLink(
     db,
@@ -437,6 +479,7 @@ async function applyResolvedStatus(
       extra: {
         ...(errorsToClear ? clearFalha() : {}),
         ...(userProductIdChanged ? { userProductId } : {}),
+        ...(categoriaChanged ? { category_id: categoryId } : {}),
         moderacoes,
       },
     },
@@ -492,6 +535,15 @@ export interface ObservedMember {
   moderacoes: MlModeracao[] | null;
   /** This member's `user_product_id` (#706), fill-only; `null` = not learned. */
   userProductId: string | null;
+  /**
+   * This member's ML `category_id` (#847), fill-only; `null` = not learned.
+   *
+   * Required rather than optional so every caller has to decide: the parent's
+   * category is FOLDED from these (`foldFamilyCategoria`), and a caller that did
+   * not read the item must say `null` rather than let a default stand in for a
+   * reading it never made.
+   */
+  categoryId: string | null;
 }
 
 /** What the family's parent link carries AFTER a fold ran (or would not run). */
@@ -561,6 +613,11 @@ export async function applyMemberStatusAndFold(
    * here.
    */
   userProductId: string | null = null,
+  /**
+   * The notified member's ML `category_id` (#847), or `null` for a caller with
+   * no fresh reading of it — the stock sender again. Fill-only, same discipline.
+   */
+  categoryId: string | null = null,
 ): Promise<ItemsSyncOutcome> {
   const { produtoId, linkDocId, memberProdutoId, memberDocId, pmlOuterRef } = target;
   const resultado = await applyFamilyStatusAndFold(
@@ -575,6 +632,7 @@ export async function applyMemberStatusAndFold(
         subStatus: observed.subStatus,
         moderacoes,
         userProductId,
+        categoryId,
       },
     ],
   );
@@ -665,6 +723,11 @@ export async function applyFamilyStatusAndFold(
       subStatus: string[] | null;
       moderacoes: MlModeracao[];
     }> = [];
+    // #847: each foldable member's category — the fresh reading when the caller
+    // has one, otherwise what is stored on its own link. Same "read from the
+    // transaction's own view" rule as the status fold, and for the same reason:
+    // members of one family are delivered concurrently.
+    const categorias: Array<string | null> = [];
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
       const chave = chaveMembro(d.ref.parent?.parent?.id ?? '', d.id);
@@ -676,6 +739,9 @@ export async function applyFamilyStatusAndFold(
       // can ever arrive for something that was never published, the family could
       // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
       if (!observado && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
+      categorias.push(
+        observado?.categoryId ?? (typeof raw.category_id === 'string' ? raw.category_id : null),
+      );
       foldable.push(
         observado
           ? {
@@ -709,10 +775,29 @@ export async function applyFamilyStatusAndFold(
         subStatus: observado.subStatus,
         moderacoes: observado.moderacoes ?? [],
       });
+      categorias.push(observado.categoryId);
     }
 
     const memberChanged = escritas.length > 0;
     const folded = foldFamilyStatus(foldable);
+
+    // #847: the family's category moves on its OWN evidence, independently of
+    // whether the status fold concludes — a recategorization says nothing about
+    // liveness, so "every observed member closed, one never observed" must not
+    // hold a category ML has already changed hostage. Unanimity, never "latest
+    // wins": see `foldFamilyCategoria`.
+    const categoriaPai = foldFamilyCategoria(categorias);
+    const categoriaAtual = typeof parent.category_id === 'string' ? parent.category_id : null;
+    const categoriaPaiMuda = categoriaPai != null && categoriaPai !== categoriaAtual;
+    if (categoriaPaiMuda) {
+      console.warn('[mercado-livre] items: categoria da família alterada pelo ML', {
+        integracaoId,
+        produtoId: target.produtoId,
+        linkDocId: target.linkDocId,
+        de: categoriaAtual,
+        para: categoriaPai,
+      });
+    }
 
     // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
     const estado = folded ? estadoFromMlStatus(folded.status, folded.subStatus) : null;
@@ -751,8 +836,15 @@ export async function applyFamilyStatusAndFold(
       // conclude — or whose summary already matched — would otherwise take this
       // early return with the stale `errors`/`causas` intact, which is the one
       // thing that button exists to prevent.
-      if (errorsToClear) {
-        tx.update(parentRef, { ...clearFalha(), ultimaModificacao: Date.now() });
+      //
+      // #847: the category rides the same write — it is the family's own
+      // evidence, decided above independently of the status fold.
+      if (errorsToClear || categoriaPaiMuda) {
+        tx.update(parentRef, {
+          ...(errorsToClear ? clearFalha() : {}),
+          ...(categoriaPaiMuda ? { category_id: categoriaPai } : {}),
+          ultimaModificacao: Date.now(),
+        });
       }
       // Either the members do not support a conclusion (every observed one closed,
       // some never observed — see `foldFamilyStatus`), or the summary already
@@ -766,8 +858,14 @@ export async function applyFamilyStatusAndFold(
       // `'unchanged'` while writing is the ambiguity this vocabulary was split up
       // to remove. It is inert for the webhook: without `limparFalhaSempre` the
       // flag still requires `folded != null`, which this branch excludes.
+      // A moved category IS a change to the family's summary, so it reports as
+      // one even though `estado`/`status` stayed put (and are reported as such).
       return {
-        outcome: memberChanged || errorsToClear ? 'synced-member' : 'unchanged',
+        outcome: categoriaPaiMuda
+          ? 'synced-family'
+          : memberChanged || errorsToClear
+            ? 'synced-member'
+            : 'unchanged',
         estado: currentEstado,
         status: currentStatus,
         subStatus: currentSubStatus,
@@ -785,6 +883,7 @@ export async function applyFamilyStatusAndFold(
       // member whose status this parent is reporting, never a union. Omitted
       // entirely when the caller never read `/moderations` (see above).
       ...(leuModeracoes ? { moderacoes: folded.moderacoes } : {}),
+      ...(categoriaPaiMuda ? { category_id: categoriaPai } : {}),
     });
 
     return {
@@ -825,12 +924,19 @@ function patchDoMembro(
   const moderacoesMudaram =
     observado.moderacoes != null &&
     !moderacoesIguais(observado.moderacoes, moderacoesArmazenadas(raw));
+  // #847: fill-only for the same reason as `userProductId` — a caller with no
+  // reading (the stock sender) must never erase the member's stored category,
+  // which is what the parent's category is folded from.
+  const categoriaMudou =
+    observado.categoryId != null &&
+    observado.categoryId !== (typeof raw.category_id === 'string' ? raw.category_id : null);
 
   const mudou =
     observado.status !== statusArmazenado ||
     !stringArraysEqual(observado.subStatus, subStatusArmazenado) ||
     userProductIdMudou ||
-    moderacoesMudaram;
+    moderacoesMudaram ||
+    categoriaMudou;
   if (!mudou) return null;
 
   return {
@@ -838,6 +944,7 @@ function patchDoMembro(
     sub_status: observado.subStatus,
     ...(observado.moderacoes != null ? { moderacoes: observado.moderacoes } : {}),
     ...(observado.userProductId != null ? { userProductId: observado.userProductId } : {}),
+    ...(observado.categoryId != null ? { category_id: observado.categoryId } : {}),
   };
 }
 
