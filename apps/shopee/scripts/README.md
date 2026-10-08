@@ -17,6 +17,7 @@ runs them, from this worktree, against the project the environment points at.
 | `enviar-nfe.ts`          | uploads the approved NF-e of up to 50 pedidos (step 14)            | only with `--live`        |
 | `etiqueta.ts`            | downloads the label of ONE pedido, arranging it first (step 15)    | only with `--live`        |
 | `importar-devolucao.ts`  | rehearses the import of ONE return (step 17) — dry run ONLY        | never — there is no live  |
+| `reverificar-anuncio.ts` | re-reads ONE listing, how a Seller-Centre delete is learned (19)   | the READING — no modes    |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -1839,3 +1840,84 @@ breaking an importer invariant.
   without changing anything the incidente stores.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — it signs a real Shopee
   call with a real conta's token.
+
+---
+
+## `reverificar:anuncio` — confirming that a listing is gone (step 19)
+
+**No Shopee push reports a SELLER delete**, and the stock and price senders
+never write `estadoAnuncio`. So after a "converter em kit nativo" (L8) the OLD
+ordinary listing keeps selling — and keeps receiving stock and price from steps
+12/13 — until Lucas deletes it in Seller Centre, and the ERP learns of that
+deletion only when somebody re-verifies that listing. This command is the
+`reverificar-anuncio` route from a terminal: the same function
+(`reverificarAnuncioShopee`), the same body (`integracaoId`, `produtoId`,
+`linkDocId?`), the same single clock read. It adds no logic; its pure half is
+`lib/shopee/anuncios/reverificarAnuncioCli.ts`.
+
+### 18.1 Environment
+
+Same `.env.local` as every other script here, and the same variables as §1. The
+preamble prints, on stderr and BEFORE anything is read: `projeto`, `database`,
+the RAW `SHOPEE_SANDBOX`, the integração, the produto and the vínculo, then the
+resolved Shopee environment and the shop id. A conta with no `shop_id` stops
+the run, saying so.
+
+### 18.2 The only mode
+
+```bash
+pnpm --filter @delfrance/shopee-app reverificar:anuncio --integracao <integracaoId> --produto <produtoId> --link <linkDocId>
+```
+
+| flag                   | meaning                                                                                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>`    | **required** — the integração DOCUMENT id                                                                                                                                                   |
+| `--produto <id>`       | **required** — the produto that owns the `prodshopee` link                                                                                                                                  |
+| `--link <docId>`       | the link to re-verify. Without it the LIVE listing is picked (`resolverLinkVivoPorProduto`): the active native kit, else a listing neither removed nor superseded, else the lexically first |
+| `--dry-run` / `--live` | ⚠️ **REFUSED**, with the reason: the command only READS Shopee and writes the reading                                                                                                       |
+| `--project <id>`       | sets `FIREBASE_PROJECT_ID` before the admin app opens                                                                                                                                       |
+| `--json`               | the same REDACTED summary as one parseable document on stdout; the preamble and every library line go to stderr                                                                             |
+| `--help`, `-h`         | prints the usage and exits `0`, ahead of every validation and before the first `await import(`                                                                                              |
+
+**What it calls.** Shopee: `get_item_base_info`, `get_model_list` (only when the
+listing has models) and the best-effort `get_item_violation_info` — reads only;
+nothing is ever sent TO Shopee. **What it writes** is the reading: the link's
+`item_status`/`estadoAnuncio`/`deboost`/`condition`/`violations`, the model
+marks of THIS listing only (the sync is per listing — the other listing's rows
+under the same children are never touched), the violation aviso's resolution,
+and — on a link whose `kitNativo` is `true`, read `removido` — the kit's
+`shopeeKitReceitaDivergente` aviso, re-evaluated through the one shared
+decision (`sem-kit-ativo` when no kit of the produto still sells, `kit-recriado`
+when the deleted kit was the old one of a recriar and the new one matches the
+ERP). An identical reading writes nothing on the link, so a re-run is safe.
+
+### 18.3 The runbook: deleting an old listing
+
+1. Delete the old listing (or the old native kit) in Seller Centre.
+2. Run the command with `--link` naming THAT link's doc id (the dispatcher's
+   refusals and the kit aviso name it).
+3. Read `estadoAnuncio`: `removido` (Shopee answers `SELLER_DELETE`, or the item
+   is gone) means the ERP now knows — steps 12/13 skip the link as
+   `anuncio-removido`, and the link doc stays for the orders that name it.
+
+### 18.4 What to read in the output
+
+| line               | what it tells you                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `ação`             | `atualizado`, `ignorado-sem-mudanca` or `removido` (the item no longer exists at all)                         |
+| `vínculo`          | the link that was actually re-verified — check it is the one you meant when you omitted `--link`              |
+| `estadoAnuncio`    | the fold; `removido` adds a closing paragraph on what changes for steps 12/13                                 |
+| `item_status`      | Shopee's raw status; `— (nada foi lido)` on the not-found arm, which never invents one                        |
+| `violações`        | a COUNT — the rows carry provider prose and never reach the terminal (the route returns them to the operator) |
+| `modelos`          | total on Shopee · refreshed · newly marked absent — this listing's rows only                                  |
+| `aviso de receita` | the native-kit recipe decision: not applicable, resolved, still OPEN, or no kit left (`sem-kit-ativo`)        |
+
+| code | when                                                                                                 |
+| ---- | ---------------------------------------------------------------------------------------------------- |
+| `0`  | any reading — `removido` included, which is the answer this command most often exists to get         |
+| `1`  | no link of this conta for the produto (the route's 404), or a link never published (the route's 409) |
+| `1`  | a bad command line (`--dry-run`/`--live` included); prints THIS command's usage                      |
+| `1`  | a conta with no `shop_id`, or any throw — described by CLASS plus Shopee's `code`/`path`             |
+
+**Never run by an agent** (root `CLAUDE.md` rule 8) — it signs a real Shopee
+call with a real conta's token and writes what it reads.

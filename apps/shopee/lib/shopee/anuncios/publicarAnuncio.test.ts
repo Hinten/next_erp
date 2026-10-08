@@ -623,6 +623,72 @@ describe('prepararPublicacao — a leitura', () => {
   });
 });
 
+describe('prepararPublicacao — o vínculo e as linhas de variação (passo 19)', () => {
+  it('M185: produto NÃO-kit com o anúncio REMOVIDO ordenando primeiro ao lado de um vivo ⇒ listagem-removida no removido, exatamente como no main', async () => {
+    // L10(3)/L10-R1: o resolvedor da PUBLICAÇÃO continua léxico em todo PR. Um
+    // resolvedor por degraus aqui planejaria o vínculo VIVO e publicaria num
+    // anúncio que o main nunca tocaria — a mudança que o Lucas vetou.
+    const db = new FakeDb();
+    semearCatalogo(db);
+    db.seed(`produtos/${PAI}/prodshopee/link-a`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta básica branca',
+      item_id: ITEM_ID,
+      category_id: CATEGORIA,
+      brand_id: 0,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido,
+    });
+    db.seed(`produtos/${PAI}/prodshopee/link-b`, {
+      contaProdutoShopeeOuterRef: REF_CONTA,
+      item_name: 'Camiseta básica branca',
+      item_id: ITEM_ID + 1,
+      category_id: CATEGORIA,
+      brand_id: 0,
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    });
+
+    const { contexto, plano } = await planejar(db, clienteFake());
+
+    expect(contexto.linkDocId).toBe('link-a');
+    expect(plano.problemas.map((p) => p.motivo)).toContain(
+      MOTIVO_PUBLICACAO_BLOQUEADA.listagemRemovida,
+    );
+  });
+
+  it('as linhas de variação lidas são SÓ as do vínculo resolvido — a de outra listagem do mesmo filho fica de fora', async () => {
+    // R-12(e): um filho pode carregar as linhas de DUAS listagens (o kit nativo
+    // ao lado do anúncio comum que ele substituiu, L8). Planejar o update deste
+    // anúncio com o `model_id` da OUTRA listagem mandaria o id errado.
+    const db = new FakeDb();
+    semearCatalogo(db);
+    semearFilho(db);
+    semearLink(db);
+    db.seed(`produtos/${FILHO}/variashopee/v-deste`, {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: `documents/${CAMINHO_LINK}`,
+      model_id: MODEL_A,
+      tier_index: [0],
+      model_status: SHOPEE_MODEL_STATUS.normal,
+    });
+    db.seed(`produtos/${FILHO}/variashopee/v-do-kit`, {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+      produtoShopeeOuterRef: `documents/produtos/${PAI}/prodshopee/link-kit`,
+      model_id: 2000458820,
+      tier_index: [0],
+      model_status: SHOPEE_MODEL_STATUS.normal,
+    });
+
+    const contexto = await prepararPublicacao(
+      deps(db, clienteFake()),
+      entrada(),
+      resolvedorQueRecusa(),
+    );
+
+    expect(contexto?.linkDocId).toBe(LINK_PAI);
+    expect(contexto?.linksDeVariacao.map((l) => l.linkDocId)).toEqual(['v-deste']);
+  });
+});
+
 describe('prepararPublicacao — as duas recusas de produto', () => {
   it('um produto FILHO é recusado antes de qualquer leitura de foto ou de canal', async () => {
     const db = new FakeDb();

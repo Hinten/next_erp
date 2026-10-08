@@ -19,7 +19,7 @@
  *
  * ## Outcomes
  *
- * 200 with the nine result keys, built BY NAME · 400 for a bad body ·
+ * 200 with the ten result keys, built BY NAME · 400 for a bad body ·
  * 404 {@link CODIGO_ANUNCIO_SEM_VINCULO} when this conta holds no `prodshopee`
  * for the produto (a `linkDocId` belonging to another conta resolves the same
  * way — the conta filter runs first, so an id can only narrow within what this
@@ -110,6 +110,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     // objects to. The rows are `shopeeViolacaoSchema`-parsed and carry only the
     // eight modelled keys, so there is no unenumerated field to leak; the two
     // prose leaves are for an authenticated operator's eyes and never for a log.
+    //
+    // `avisoReceitaKit` (step 19) is the native-kit recipe aviso DECISION this
+    // run reached — `aberto` / `resolvido` / `nada`, or `null` when it did not
+    // run — an enum token and nothing else: L8 makes this route how a
+    // Seller-Centre deletion of an old kit is learned, and the operator must see
+    // whether that closed the "kit on Shopee with the old recipe" aviso.
     return NextResponse.json({
       acao: res.acao,
       estadoAnuncio: res.estadoAnuncio,
@@ -126,6 +132,7 @@ export async function POST(req: Request): Promise<NextResponse> {
               ausentes: res.modelos.ausentes,
             },
       avisoResolvido: res.avisoResolvido,
+      avisoReceitaKit: res.avisoReceitaKit,
       chamadasShopee: res.chamadasShopee,
     });
   } catch (err) {

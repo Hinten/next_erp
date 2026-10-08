@@ -32,6 +32,16 @@
  *    back to that re-stamp. Never a full `set`: it would erase step 13's
  *    `preco*` and the model sync's `modeloAusenteEm`/`model_status`.
  *
+ * ## (4) The superseded pointer (PR 6, L8)
+ *
+ * {@link carimbarSubstituicao} — the ONE writer of `substituidoPorLinkDocId` +
+ * `substituidoEm`, reached from exactly two places (`recriarKit.ts`): the
+ * converter's second step (the ordinary listing the new kit replaced) and a
+ * recriar whose `delete_item` did not take (the old native kit is still live).
+ * A flat `merge` of the two scalars — re-running it re-writes the same
+ * pointer. It changes ONLY which link a PUBLISH addresses: steps 12/13 keep
+ * serving a superseded listing, because it may still be selling (R-12).
+ *
  * ## The stamp is the CALLER's decision
  *
  * `receitaKitConferida` is `chaveReceitaKitErp` of the child's ERP recipe, and
@@ -408,4 +418,37 @@ async function recarimbar(
     });
   }
   return escrito;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                   (4) the superseded pointer (PR 6, L8)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Mark the OLD link `linkDocId` of produto `produtoId` SUPERSEDED by the link
+ * `substituidoPorLinkDocId` — the ONE writer of the pair (`shopeeLink.ts`'s
+ * inventory). Called by the converter (the ordinary listing the new kit
+ * replaced) and by a recriar whose delete did not take (the old native kit).
+ *
+ * A flat `merge` of exactly the two scalars, nothing else: the estado, the
+ * status and the rows of the old link stay as they are, because the listing
+ * may still be selling — "superseded" is NOT "removed" (L8). Re-running it
+ * re-writes the same pointer (rule 7 tier 0: the value is a function of the
+ * run's own facts, never of a read).
+ */
+export async function carimbarSubstituicao(
+  db: DepsDeVinculoKit['db'],
+  produtoId: string,
+  linkDocId: string,
+  a: {
+    /** The link that replaced it (the new native kit's). */
+    readonly substituidoPorLinkDocId: string;
+    /** MILLISECONDS — `deps.nowMs` of the run. */
+    readonly substituidoEm: number;
+  },
+): Promise<void> {
+  await produtoShopeeLinkCollection.merge(db, { produtoId }, linkDocId, {
+    substituidoPorLinkDocId: a.substituidoPorLinkDocId,
+    substituidoEm: a.substituidoEm,
+  });
 }

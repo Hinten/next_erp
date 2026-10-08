@@ -340,6 +340,21 @@ export const TIPO_AVISO_LABELS = {
  *    resolve. A child whose read-back folds DISTINCT keeps a `null` (or its
  *    old) stamp, so that same decision OPENS the aviso naming it. An uncertain
  *    create (`incerto`) writes nothing at all, this decision included.
+ *  - **Writer — the recriar, the converter, the re-verify and the listing
+ *    pushes** (`apps/shopee`, `kits/recriarKit.ts`, `anuncios/reverificarAnuncio.ts`
+ *    and `anuncios/pushAnuncio.ts`): the recriar and the converter call
+ *    `reavaliarAvisoDeReceitaKit` ONCE for (conta, kit) as their last step, motivo
+ *    `kit-recriado` — a recriar whose delete did not take leaves the old kit
+ *    superseded and still selling, so its rows keep the aviso OPEN. The
+ *    re-verify (the `reverificar-anuncio` route and the `reverificar:anuncio`
+ *    CLI) and the code 16/27 push handlers call it after any write whose
+ *    resulting `estadoAnuncio` is `removido` on a link whose `kitNativo` is
+ *    `true` — through ONE shared gate, `reavaliarAvisoDeKitRemovido` — with
+ *    motivo `kit-recriado`: the decision answers `sem-kit-ativo` by itself when
+ *    no kit of the produto still sells, and `kit-recriado` only when the deleted
+ *    kit was the superseded old one and the new kit folds equal. An ordinary
+ *    listing never reaches it. No Shopee push reports a SELLER delete, so the
+ *    operator's re-verify is how a Seller-Centre deletion closes this aviso.
  */
 export const tipoAvisoSchema = z
   .enum([

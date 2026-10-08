@@ -42,10 +42,11 @@
  * ## The three vocabularies, and why there are three
  *
  * - {@link MOTIVO_PUBLICACAO_BLOQUEADA} — what the publisher may REFUSE with
- *   before writing. 41 members: step 11's 22 plus the nineteen native-kit
- *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5).
+ *   before writing. 42 members: step 11's 22, the nineteen native-kit
+ *   refusals of step 19's kit core (`kits/planoKit.ts`, PR 5) and the recriar's
+ *   safety net `recriacao-sem-diferenca` (`kits/recriarKit.ts`, PR 6).
  * - {@link MOTIVO_PROBLEMA_PUBLICACAO} — what a `problemas[]` entry may carry:
- *   those 41 plus the twelve only a WIRE rejection can produce (step 18 added the
+ *   those 42 plus the twelve only a WIRE rejection can produce (step 18 added the
  *   two size-chart refusals on `size_chart_info`; step 19 the seven native-kit
  *   refusals, whose ONE producer is `kits/recusaKit.ts`). A problema is a
  *   field-level observation, and after the first Shopee call there are causes no
@@ -207,7 +208,17 @@ export type MotivoPublicacaoBloqueada =
   /** Two or more LIVE native-kit links of the produto in this conta (native links only, L10(3)). */
   | 'vinculos-ambiguos'
   /** The link was superseded by a native kit (L8): publish no longer targets it. */
-  | 'vinculo-substituido';
+  | 'vinculo-substituido'
+  /*
+   * ---- Step 19 (#1527), PR 6: the recriar's safety net (R-m). ----
+   * Produced ONLY by `kits/recriarKit.ts`, spelled there through this constant.
+   */
+  /**
+   * `--recriar` named a LIVE kit whose shape and recipe already equal the ERP's
+   * (and whose main is the one named, if any): there is nothing to recreate, so
+   * nothing is deleted for nothing. Zero Shopee writes.
+   */
+  | 'recriacao-sem-diferenca';
 
 /**
  * The closed set, for iteration and for a route's own validation.
@@ -256,6 +267,7 @@ export const MOTIVO_PUBLICACAO_BLOQUEADA = {
   buscaDeKitIncompleta: 'busca-de-kit-incompleta',
   vinculosAmbiguos: 'vinculos-ambiguos',
   vinculoSubstituido: 'vinculo-substituido',
+  recriacaoSemDiferenca: 'recriacao-sem-diferenca',
 } as const satisfies Record<string, MotivoPublicacaoBloqueada>;
 
 /**
