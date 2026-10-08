@@ -12,15 +12,17 @@ const avisos = vi.hoisted(() => ({
     resultado: 'criado' as const,
   })),
   resolverAviso: vi.fn(
-    async (_db: unknown, _chave: string, _motivo: string, _deps: unknown) => true,
+    async (_db: unknown, _chave: string, _motivo: string, _deps: unknown, _opts?: unknown) => true,
   ),
 }));
 vi.mock('@delfrance/data/admin/avisos', () => avisos);
 
 const {
   MOTIVO_RESOLUCAO_CATEGORIA,
+  MOTIVOS_SEM_REVISAO,
   avisarCategoriaAlterada,
   chaveAnuncioCategoriaAlterada,
+  registrarMesmaComissao,
   resolverAvisoCategoria,
 } = await import('./avisoCategoria');
 
@@ -115,6 +117,41 @@ describe('avisarCategoriaAlterada — the plano', () => {
       categoriaErpId: 'MLB1',
       categoriaMlId: 'MLB2',
     });
+  });
+});
+
+describe('registrarMesmaComissao — recorded closed, never forgotten (#1843 review)', () => {
+  it('seeds/closes the SAME row with the full plano, so the next move can read what it tracked', async () => {
+    const mesmas = { ...EVENTO, comissoes: { erpPct: 16, mlPct: 16 } };
+    await registrarMesmaComissao(db, mesmas, { nowMs: NOW_MS });
+
+    expect(avisos.escreverAviso).not.toHaveBeenCalled();
+    const [onde, chave, motivo, escrita, opts] = avisos.resolverAviso.mock.calls[0]!;
+    expect(onde).toBe(db);
+    expect(chave).toBe(chaveAnuncioCategoriaAlterada(ALVO));
+    expect(motivo).toBe('mesma-comissao');
+    expect(escrita).toEqual({ agoraUs: NOW_MS * 1000 });
+    // The shared resolver seeds a MISSING row only with metadata AND a clock.
+    // The clock is our own observation time (ms); `params.categoriaErpId` is
+    // the memory the next move reads.
+    expect(opts).toMatchObject({
+      relogioEvento: NOW_MS,
+      params: expect.objectContaining({
+        categoriaErpId: 'MLB1',
+        comissaoCategoriaErpPct: 16,
+        comissaoCategoriaMlPct: 16,
+      }),
+    });
+    // `resolverAviso` refuses metadata whose dedup key differs from `chave`.
+    expect(chaveDeAviso(opts as Parameters<typeof chaveDeAviso>[0])).toBe(chave);
+  });
+
+  it('only the closes that involved NO review keep tracking', () => {
+    expect([...MOTIVOS_SEM_REVISAO].sort()).toEqual([
+      'anuncio-desvinculado',
+      'anuncio-encerrado',
+      'mesma-comissao',
+    ]);
   });
 });
 

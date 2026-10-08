@@ -47,10 +47,13 @@ import { getCategoriaCached } from '../categorias/mlMetadataCache';
 import { buildCategoriaChain, criarCadeiaCategoria } from '../importacao/importCategoria';
 import {
   type AlvoAvisoCategoria,
+  type EventoCategoriaAlterada,
+  MOTIVOS_SEM_REVISAO,
   MOTIVO_RESOLUCAO_CATEGORIA,
   type MotivoResolucaoCategoria,
   avisarCategoriaAlterada,
   chaveAnuncioCategoriaAlterada,
+  registrarMesmaComissao,
   resolverAvisoCategoria,
 } from './avisoCategoria';
 
@@ -157,6 +160,14 @@ export interface EntradaDecisaoCategoria {
   readonly erpId: string | null;
   /** Whether this link's aviso is open right now. */
   readonly avisoAberto: boolean;
+  /**
+   * The ERP category a CLOSED row still tracks as stale — its
+   * `params.categoriaErpId` when it was closed WITHOUT anyone reviewing it
+   * (`MOTIVOS_SEM_REVISAO`: same commission, listing ended, link deleted) —
+   * else `null`. It is the only memory that `A` was ever this listing's
+   * category once ML has moved it twice: see {@link decidirAvisoCategoria}.
+   */
+  readonly erpRastreadoSemRevisao: string | null;
 }
 
 export type DecisaoAvisoCategoria =
@@ -180,18 +191,20 @@ export type DecisaoAvisoCategoria =
  * | the link no longer holds `nova`                 | nothing — a newer event owns it |
  * | ERP category = `nova` (aligned, or ML moved back) | resolve `alinhada` if open |
  * | the produto has no ERP category                 | nothing                     |
- * | ERP category = `anterior`, or an aviso is open  | raise / refresh             |
+ * | ERP category = `anterior`, an aviso is open, or ERP = the category a closed-unreviewed row tracks | raise / refresh |
  * | anything else (a curated, non-ML ERP category)  | nothing                     |
  *
- * ⚠️ The NARROW raise is deliberate: only an ERP category equal to the one ML
- * just left is DEMONSTRABLY stale. A curated category is the operator's own
- * choice, and raising on every recategorization would leave rows nothing can
- * close (there is no dismiss button). The "aviso already open" half lets a
- * SECOND move refresh the row's params instead of leaving them describing a
- * category the listing has since left.
+ * ⚠️ The NARROW raise is deliberate: only an ERP category this LISTING was in is
+ * DEMONSTRABLY stale. A curated category is the operator's own choice, and
+ * raising on every recategorization would leave rows nothing can close (there
+ * is no dismiss button). The other two halves carry that evidence across a
+ * SECOND move, when `anterior` no longer names the ERP category: an open row
+ * refreshes its params, and a row closed WITHOUT review (`mesma-comissao` on
+ * `A → B`, then `B → D` at a different commission — #1843 review) raises again.
+ * A row the operator closed (`alinhada`, `erpAlterada`) tracks nothing.
  */
 export function decidirAvisoCategoria(entrada: EntradaDecisaoCategoria): DecisaoAvisoCategoria {
-  const { anterior, nova, mlAtual, erpId, avisoAberto } = entrada;
+  const { anterior, nova, mlAtual, erpId, avisoAberto, erpRastreadoSemRevisao } = entrada;
   if (mlAtual !== nova) return { acao: 'nada', razao: 'ml-mudou-de-novo' };
   if (erpId === nova) {
     return avisoAberto
@@ -199,7 +212,7 @@ export function decidirAvisoCategoria(entrada: EntradaDecisaoCategoria): Decisao
       : { acao: 'nada', razao: 'ja-alinhada' };
   }
   if (erpId == null) return { acao: 'nada', razao: 'produto-sem-categoria' };
-  if (erpId === anterior || avisoAberto) {
+  if (erpId === anterior || avisoAberto || erpId === erpRastreadoSemRevisao) {
     return { acao: 'avisar', categoriaErpId: erpId, categoriaMlId: nova };
   }
   return { acao: 'nada', razao: 'categoria-erp-nao-segue-ml' };
@@ -286,8 +299,10 @@ export type ResultadoCategoriaAnuncio =
  *     preview for both categories. Enrichment is BEST-EFFORT: an ML failure of
  *     any kind degrades to ids only, because losing the aviso to a decoration
  *     would be the worse outcome. Firestore failures still throw (retried);
- *  4. same commission on both sides ⇒ nothing to reprice: no aviso (and an open
- *     one closes as `mesma-comissao`);
+ *  4. same commission on both sides ⇒ nothing to reprice: no aviso is RAISED,
+ *     but the row is RECORDED closed as `mesma-comissao` (seeded when absent) —
+ *     the ERP category is still stale, and a later move at a different
+ *     commission must still find that out;
  *  5. write the aviso;
  *  6. RE-READ the produto. If its ERP category moved while steps 1–5 ran, the
  *     produto trigger may have looked for this row before it existed — so
@@ -328,6 +343,7 @@ export async function aplicarPlanoCategoriaDoLink(
     mlAtual: typeof linkAtual.category_id === 'string' ? linkAtual.category_id : null,
     erpId: erpIdDoSnapshot(produtoSnap),
     avisoAberto: aviso != null && aviso.resolvidoEm == null,
+    erpRastreadoSemRevisao: erpRastreadoSemRevisaoDe(aviso),
   });
 
   if (decisao.acao === 'nada') return { acao: 'nada', razao: decisao.razao };
@@ -337,32 +353,26 @@ export async function aplicarPlanoCategoriaDoLink(
   }
 
   const extra = await enriquecer(db, deps, plano.integracaoId, linkAtual, decisao);
+  const evento: EventoCategoriaAlterada = {
+    ...alvo,
+    anuncio: plano.anuncio,
+    categoriaErpId: decisao.categoriaErpId,
+    categoriaErpNome: extra.erpNome,
+    categoriaMlId: decisao.categoriaMlId,
+    categoriaMlNome: extra.mlNome,
+    comissoes: extra.comissoes,
+  };
 
   if (extra.comissoes && comissoesIguais(extra.comissoes)) {
-    // Nothing to reprice: the ERP category's formulas already carry ML's
-    // commission. An open row from an earlier move closes; none is raised.
-    const transicao = await resolverAvisoCategoria(
-      db,
-      alvo,
-      MOTIVO_RESOLUCAO_CATEGORIA.mesmaComissao,
-      deps,
-    );
+    // Nothing to reprice NOW: the ERP category's formulas already carry ML's
+    // commission. But the ERP category is still stale and unreviewed, so the
+    // row is RECORDED closed rather than skipped — a later move at a different
+    // commission must still raise (see `registrarMesmaComissao`).
+    const transicao = await registrarMesmaComissao(db, evento, deps);
     return { acao: 'resolvido', motivo: MOTIVO_RESOLUCAO_CATEGORIA.mesmaComissao, transicao };
   }
 
-  const { resultado } = await avisarCategoriaAlterada(
-    db,
-    {
-      ...alvo,
-      anuncio: plano.anuncio,
-      categoriaErpId: decisao.categoriaErpId,
-      categoriaErpNome: extra.erpNome,
-      categoriaMlId: decisao.categoriaMlId,
-      categoriaMlNome: extra.mlNome,
-      comissoes: extra.comissoes,
-    },
-    deps,
-  );
+  const { resultado } = await avisarCategoriaAlterada(db, evento, deps);
 
   // Step 6 — see the docblock. One read, only on the (rare) raise path.
   const erpDepois = erpIdDoSnapshot(await produtoCollection.docRef(db, {}, link.produtoId).get());
@@ -410,6 +420,25 @@ export async function resolverAvisosDoProduto(
     }
   }
   return resolvidos;
+}
+
+/**
+ * The ERP category a CLOSED row still marks stale for its listing, or `null`.
+ * Only a close that involved no review counts ({@link MOTIVOS_SEM_REVISAO});
+ * an open row is `avisoAberto`'s business, not this one's.
+ */
+function erpRastreadoSemRevisaoDe(aviso: Record<string, unknown> | null): string | null {
+  if (aviso == null || aviso.resolvidoEm == null) return null;
+  if (
+    typeof aviso.resolucaoMotivo !== 'string' ||
+    !MOTIVOS_SEM_REVISAO.has(aviso.resolucaoMotivo)
+  ) {
+    return null;
+  }
+  const params = aviso.params;
+  if (params == null || typeof params !== 'object') return null;
+  const id = (params as Record<string, unknown>).categoriaErpId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 function erpIdDoSnapshot(snap: { exists: boolean; data(): unknown }): string | null {

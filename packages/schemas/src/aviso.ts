@@ -297,7 +297,14 @@ export const TIPO_AVISO_LABELS = {
  *    categories after ML's, so that is the case where the commission lever is
  *    demonstrably stale. A curated, non-ML ERP category raises nothing. Not
  *    raised either when ML's own `percentage_fee` is identical for both
- *    categories at the listing's price and type — nothing to reprice.
+ *    categories at the listing's price and type — nothing to reprice — but
+ *    then the row is still RECORDED, closed as `mesma-comissao`, because the
+ *    ERP category is still stale: a closed row that no one reviewed
+ *    (`mesma-comissao`, `anuncio-encerrado`, `anuncio-desvinculado`) keeps
+ *    its `params.categoriaErpId` tracked, so a LATER move at a different
+ *    commission raises even though `anterior` no longer names it. That memory
+ *    lasts as long as the row: `sweepAvisosResolvidos` deletes it 90 days
+ *    after the close.
  *  - **Machine resolvers** (this docblock's own rule, above), each a
  *    TRANSITION: the produto's ERP category becomes the listing's current ML
  *    category (`categoria-erp-alinhada` — the operator aligned it, or ML moved
@@ -318,9 +325,12 @@ export const TIPO_AVISO_LABELS = {
  *    resolvable), `comissaoCategoriaErpPct` + `comissaoCategoriaMlPct` (NUMBERS,
  *    only when ML answered both — a fee preview, never a promise).
  *  - **Severity `atencao`**: nothing is down — the listing sells — but every
- *    sale may be priced on the wrong commission. No `relogioEvento`: ML sends no
- *    clock for a recategorization, and every decision is re-derived from the
- *    CURRENT link and produto, so replays converge without one.
+ *    sale may be priced on the wrong commission. The RAISE carries no
+ *    `relogioEvento`: ML sends no clock for a recategorization, and every
+ *    decision is re-derived from the CURRENT link and produto, so replays
+ *    converge without one. Only the `mesma-comissao` record passes one — our
+ *    own observation time, in ms — because the shared resolver seeds a
+ *    missing row only with a clock; a clockless raise is never blocked by it.
  */
 export const tipoAvisoSchema = z
   .enum([

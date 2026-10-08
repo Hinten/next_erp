@@ -12,6 +12,7 @@ import {
 const aviso = vi.hoisted(() => ({
   avisar: vi.fn(async () => ({ chave: 'k', resultado: 'criado' })),
   resolver: vi.fn(async () => true),
+  registrar: vi.fn(async () => false),
 }));
 vi.mock('./avisoCategoria', async (importOriginal) => {
   const real = await importOriginal<typeof import('./avisoCategoria')>();
@@ -19,6 +20,7 @@ vi.mock('./avisoCategoria', async (importOriginal) => {
     ...real,
     avisarCategoriaAlterada: aviso.avisar,
     resolverAvisoCategoria: aviso.resolver,
+    registrarMesmaComissao: aviso.registrar,
   };
 });
 // The module-level metadata cache would leak categories between tests.
@@ -131,14 +133,14 @@ type ApiFake = CategoriaAnuncioApi & {
 };
 
 function apiFake(
-  pct: { MLB1?: number; MLB2?: number } = { MLB1: 16, MLB2: 11.5 },
+  pct: Partial<Record<string, number>> = { MLB1: 16, MLB2: 11.5 },
   over: Partial<Record<'getCategory' | 'getListingPrices', ReturnType<typeof vi.fn>>> = {},
 ): ApiFake {
   return {
     getCategory: over.getCategory ?? vi.fn(async () => CATEGORIA_NOVA),
     getListingPrices:
       over.getListingPrices ??
-      vi.fn(async (input: { categoryId: 'MLB1' | 'MLB2' }) => ({
+      vi.fn(async (input: { categoryId: string }) => ({
         sale_fee_amount: 10,
         sale_fee_details: { percentage_fee: pct[input.categoryId] ?? null },
       })),
@@ -172,6 +174,14 @@ function seedMundo(
 
 const avisoAbertoEm = (db: FakeDb) =>
   db.seed(`avisos/${chaveAnuncioCategoriaAlterada(ALVO)}`, { resolvidoEm: null });
+
+/** A row CLOSED with `motivo`, which tracked the ERP category `erp`. */
+const avisoFechadoEm = (db: FakeDb, motivo: string, erp = 'MLB1') =>
+  db.seed(`avisos/${chaveAnuncioCategoriaAlterada(ALVO)}`, {
+    resolvidoEm: 1_700_000_000_000_000,
+    resolucaoMotivo: motivo,
+    params: { anuncio: 'MLB777', categoriaErpId: erp, categoriaMlId: 'MLB2' },
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -263,6 +273,7 @@ describe('decidirAvisoCategoria — the rule table, row by row', () => {
     mlAtual: 'MLB2',
     erpId: 'MLB1',
     avisoAberto: false,
+    erpRastreadoSemRevisao: null,
   };
 
   it('row 1 — the link no longer holds `nova`: a newer event owns it', () => {
@@ -320,6 +331,41 @@ describe('decidirAvisoCategoria — the rule table, row by row', () => {
   it('near-misses on the narrow raise: a prefix or a case fold of `anterior` is NOT it', () => {
     expect(decidirAvisoCategoria({ ...base, erpId: 'MLB12' }).acao).toBe('nada');
     expect(decidirAvisoCategoria({ ...base, erpId: 'mlb1' }).acao).toBe('nada');
+  });
+
+  // #1843 review: ERP = A; ML moves A → B at the SAME commission (recorded, not
+  // raised); later B → D at a different one. `anterior` is now B, so only the
+  // closed row can say A was ever this listing's category.
+  const segundaMudanca = {
+    ...base,
+    anterior: 'MLB2',
+    nova: 'MLB3',
+    mlAtual: 'MLB3',
+    erpId: 'MLB1',
+  };
+
+  it('row 4 — TWO moves: a row closed without review still tracks the stale ERP category', () => {
+    expect(decidirAvisoCategoria({ ...segundaMudanca, erpRastreadoSemRevisao: 'MLB1' })).toEqual({
+      acao: 'avisar',
+      categoriaErpId: 'MLB1',
+      categoriaMlId: 'MLB3',
+    });
+  });
+
+  it('…the same two moves with NO memory raise nothing — the reviewer’s exact input', () => {
+    expect(decidirAvisoCategoria(segundaMudanca)).toEqual({
+      acao: 'nada',
+      razao: 'categoria-erp-nao-segue-ml',
+    });
+  });
+
+  it('…and a memory of a DIFFERENT (or near-miss) ERP category tracks nothing', () => {
+    expect(decidirAvisoCategoria({ ...segundaMudanca, erpRastreadoSemRevisao: 'MLB9' }).acao).toBe(
+      'nada',
+    );
+    expect(decidirAvisoCategoria({ ...segundaMudanca, erpRastreadoSemRevisao: 'MLB12' }).acao).toBe(
+      'nada',
+    );
   });
 });
 
@@ -424,7 +470,10 @@ describe('aplicarPlanoCategoriaDoLink — the raise', () => {
     expect(db.docs.get('categorias/MLB2')).toEqual({ nome: 'curada pelo ERP' });
   });
 
-  it('the same commission on both sides → no aviso: nothing to reprice', async () => {
+  it('the same commission on both sides → nothing RAISED, but the move is RECORDED', async () => {
+    // Not a plain resolve: with no row yet, a resolve writes nothing, and the
+    // next move would no longer know MLB1 was this listing's category (#1843
+    // review). The record carries the ERP category it tracks.
     const db = new FakeDb();
     seedMundo(db);
 
@@ -436,13 +485,75 @@ describe('aplicarPlanoCategoriaDoLink — the raise', () => {
     );
 
     expect(aviso.avisar).not.toHaveBeenCalled();
-    expect(aviso.resolver).toHaveBeenCalledWith(
+    expect(aviso.resolver).not.toHaveBeenCalled();
+    expect(aviso.registrar).toHaveBeenCalledWith(
       db,
-      ALVO,
-      MOTIVO_RESOLUCAO_CATEGORIA.mesmaComissao,
-      expect.anything(),
+      expect.objectContaining({
+        ...ALVO,
+        categoriaErpId: 'MLB1',
+        categoriaMlId: 'MLB2',
+        comissoes: { erpPct: 16, mlPct: 16 },
+      }),
+      expect.objectContaining({ nowMs: 1_760_000_000_000 }),
     );
     expect(out).toMatchObject({ acao: 'resolvido', motivo: 'mesma-comissao' });
+  });
+
+  it('#1843 review — a SECOND move after a same-commission record raises', async () => {
+    // ERP still MLB1; the first move MLB1 → MLB2 was recorded `mesma-comissao`;
+    // now MLB2 → MLB3 at a different commission.
+    const db = new FakeDb();
+    seedMundo(db, { link: { category_id: 'MLB3' } });
+    avisoFechadoEm(db, MOTIVO_RESOLUCAO_CATEGORIA.mesmaComissao);
+
+    const out = await aplicarPlanoCategoriaDoLink(
+      asDb(db),
+      { produtoId: PRODUTO, linkDocId: LINK },
+      { ...PLANO, anterior: 'MLB2', nova: 'MLB3' },
+      deps(apiFake({ MLB1: 16, MLB3: 13 })),
+    );
+
+    expect(out).toMatchObject({ acao: 'avisado' });
+    expect(aviso.avisar).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        categoriaErpId: 'MLB1',
+        categoriaMlId: 'MLB3',
+        comissoes: { erpPct: 16, mlPct: 13 },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('a listing that ENDED and was relisted keeps its memory too', async () => {
+    const db = new FakeDb();
+    seedMundo(db, { link: { category_id: 'MLB3' } });
+    avisoFechadoEm(db, MOTIVO_RESOLUCAO_CATEGORIA.encerrado);
+
+    await aplicarPlanoCategoriaDoLink(
+      asDb(db),
+      { produtoId: PRODUTO, linkDocId: LINK },
+      { ...PLANO, anterior: 'MLB2', nova: 'MLB3' },
+      deps(apiFake({ MLB1: 16, MLB3: 13 })),
+    );
+
+    expect(aviso.avisar).toHaveBeenCalled();
+  });
+
+  it('near-miss: a row the OPERATOR closed tracks nothing, even on the same ERP category', async () => {
+    const db = new FakeDb();
+    seedMundo(db, { link: { category_id: 'MLB3' } });
+    avisoFechadoEm(db, MOTIVO_RESOLUCAO_CATEGORIA.erpAlterada);
+
+    const out = await aplicarPlanoCategoriaDoLink(
+      asDb(db),
+      { produtoId: PRODUTO, linkDocId: LINK },
+      { ...PLANO, anterior: 'MLB2', nova: 'MLB3' },
+      deps(),
+    );
+
+    expect(out).toEqual({ acao: 'nada', razao: 'categoria-erp-nao-segue-ml' });
+    expect(aviso.avisar).not.toHaveBeenCalled();
   });
 
   it('ONE fee unknown still raises — unknown is not "the same"', async () => {

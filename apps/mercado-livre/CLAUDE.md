@@ -1110,7 +1110,11 @@ Logic: `lib/marketplace/anuncios/categoriaAnuncio.ts`; producer:
 - ⚠️ **Raised NARROWLY**: only when the produto's ERP category is still the one ML
   just LEFT, and not when ML's `percentage_fee` is identical for both categories. A
   curated ERP category raises nothing — there is no dismiss button, so a broad raise
-  would leave rows nothing could close.
+  would leave rows nothing could close. ⚠️ "Not raised" is not "forgotten": a
+  same-commission move is RECORDED as a row closed `mesma-comissao`, and a row closed
+  without review (`mesma-comissao`, `anuncio-encerrado`) keeps tracking its ERP
+  category — otherwise `A → B` (same fee) then `B → D` (different fee) raised
+  nothing, since `anterior` no longer names `A`.
 - **Closes itself** when the operator changes the produto's ERP category (the produto
   trigger), when ML moves the listing back, or when the listing stops being live.
   The producer re-reads the produto after writing, so it and the produto trigger
