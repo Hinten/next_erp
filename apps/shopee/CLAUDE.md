@@ -1392,8 +1392,11 @@ maintained from the conta screen (step 21) and re-validated at publish (step 11)
 suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
 while a failure of the TREE read surfaces. Limits failures surface too — a
 FAILURE never degrades to `limites: null`, because step 11 must not publish
-against hardcoded numbers. The only `limites: null` in the layer is the kit
-route's non-leaf short-circuit, which pairs it with `leaf: false`.
+against hardcoded numbers. The kit route holds the layer's only two `limites:
+null`: the non-leaf short-circuit (`leaf: false`), and a host that does not
+serve `get_kit_item_limit` — step 19's gateway 404
+(`ShopeeOperacaoNaoServidaError`), cached as the VALUE `indisponivel` and
+answered 200 with `indisponivel: true`.
 
 `limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
 the primitive has no prefix scan. ⚠️ **Correction (step 3):** an earlier revision

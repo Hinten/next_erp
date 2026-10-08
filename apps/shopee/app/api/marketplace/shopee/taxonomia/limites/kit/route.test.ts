@@ -2,8 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { PERM } from '@delfrance/auth';
 import { READ_CACHE_DISABLED_ENV, __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { ShopeeNetworkError } from '@delfrance/integrations-shopee';
+import {
+  SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
+  SHOPEE_SURFACE,
+  ShopeeNetworkError,
+  ShopeeOperacaoNaoServidaError,
+  createShopeeClient,
+  resolveShopeeHosts,
+  shopeeErrorFromEnvelope,
+} from '@delfrance/integrations-shopee';
 
+import { lerFixture } from '@/lib/shopee/fixtures/wireCorpus';
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
 import { __setShopeeTaxonomiaClockForTests } from '@/lib/shopee/taxonomia/cache';
 import { limitesDeKitDtoSchema } from '@/lib/shopee/taxonomia/limites';
@@ -32,12 +41,16 @@ const { GET } = await import('./route');
 const READER = { uid: 'u1', permissions: PERM.integracao.read.toString() };
 const AUTORIZADO = { authorization: 'Bearer t' };
 
-const corpoSchema = z.object({
-  leaf: z.boolean().nullable(),
-  scope: z.enum(['shop', 'category']),
-  categoryId: z.number().int().nullable(),
-  limites: limitesDeKitDtoSchema.nullable(),
-});
+const corpoSchema = z
+  .object({
+    leaf: z.boolean().nullable(),
+    scope: z.enum(['shop', 'category']),
+    categoryId: z.number().int().nullable(),
+    // `null` only on the non-leaf short-circuit — the kit read was never made.
+    indisponivel: z.boolean().nullable(),
+    limites: limitesDeKitDtoSchema.nullable(),
+  })
+  .strict();
 
 function categoria(category_id: number, parent_category_id: number, has_children: boolean) {
   return {
@@ -165,6 +178,7 @@ describe('o kit tem os SEUS limites', () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
     const body = (await res.json()) as { limites: Record<string, unknown> };
 
+    expect(body).toHaveProperty('indisponivel', false);
     expect(body.limites.componentCountLimitOfSingleModel).toEqual({ min: 2, max: 10 });
     // ⚠️ O boolean PRÓPRIO de Shopee, não o `supportsPreOrder` derivado do
     // sentinela na rota de item: a banda é positiva e o campo mesmo assim false.
@@ -185,6 +199,8 @@ describe('a trava de folha — aqui ela vale, ao contrário das bandas de item',
     expect(res.status).toBe(200);
     expect(body).toMatchObject({ leaf: false, scope: 'category', categoryId: 100100 });
     expect(body).toHaveProperty('limites', null);
+    // `null`, not `false`: nothing was asked, so nothing is claimed about the host.
+    expect(body).toHaveProperty('indisponivel', null);
     expect(h.getKitItemLimit).not.toHaveBeenCalled();
     expect(() => corpoSchema.parse(body)).not.toThrow();
   });
@@ -222,5 +238,122 @@ describe('os erros', () => {
   it('deixa um erro alheio subir (regra 6)', async () => {
     h.getKitItemLimit.mockRejectedValue(new TypeError('bug nosso'));
     await expect(GET(req({ integracaoId: 'int-1' }, AUTORIZADO))).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('o host que NÃO serve get_kit_item_limit (passo 19) — 200 com `indisponivel`', () => {
+  /** The package's own envelope builder, so the class is the one production sees. */
+  function doEnvelope(
+    corpo: { error: string; message: string | null; request_id: string | null },
+    httpStatus: number,
+  ) {
+    return shopeeErrorFromEnvelope(
+      { ...corpo, warning: null },
+      { path: SHOPEE_GET_KIT_ITEM_LIMIT_PATH, httpStatus, surface: SHOPEE_SURFACE.business },
+    );
+  }
+
+  it('M72 — o 404 do gateway responde 200 `{ leaf, indisponivel: true, limites: null }`, nunca 502', async () => {
+    const gateway = doEnvelope({ error: 'error_not_found', message: null, request_id: null }, 404);
+    expect(gateway).toBeInstanceOf(ShopeeOperacaoNaoServidaError);
+    h.getKitItemLimit.mockRejectedValue(gateway);
+
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      leaf: true,
+      scope: 'category',
+      categoryId: 100182,
+      indisponivel: true,
+      limites: null,
+    });
+    expect(() => corpoSchema.parse(body)).not.toThrow();
+  });
+
+  it('⛔ QUASE-PAR: o error_not_found de NEGÓCIO (mensagem + request_id) continua 502', async () => {
+    h.getKitItemLimit.mockRejectedValue(
+      doEnvelope({ error: 'error_not_found', message: 'not found', request_id: 'r-1' }, 404),
+    );
+
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ code: 'SHOPEE_HTTP_ERROR', shopeeCode: 'error_not_found' });
+    expect(body).not.toHaveProperty('indisponivel');
+  });
+});
+
+describe('IDA E VOLTA — o corpo COMMITADO do gateway pelo cliente REAL até a rota', () => {
+  /**
+   * `get_kit_item_limit.sg-http404.json` is the probe's bare body
+   * (`{"error":"error_not_found"}`); the file carries no status, so the test
+   * serves it with the 404 its name says. Only `fetch` is a double — the
+   * signer, `shopeeCall`, the envelope builder, the cache and the route are real.
+   */
+  const FIXTURE_GATEWAY = 'get_kit_item_limit.sg-http404.json';
+
+  function ctxComClienteReal(status: number) {
+    const chamadas: string[] = [];
+    const corpo = JSON.stringify(lerFixture(FIXTURE_GATEWAY));
+    return {
+      chamadas,
+      ctx: {
+        ...ctxDouble(),
+        createShopClient: () =>
+          createShopeeClient({
+            partnerId: 1000001,
+            partnerKey: 'chave-de-teste-nao-e-credencial',
+            hosts: resolveShopeeHosts({ sandbox: true }),
+            shopId: 987654,
+            getAccessToken: () => Promise.resolve('access-inventado'),
+            fetch: (entrada) => {
+              const url =
+                typeof entrada === 'string'
+                  ? entrada
+                  : entrada instanceof URL
+                    ? entrada.href
+                    : entrada.url;
+              chamadas.push(new URL(url).pathname);
+              return Promise.resolve(
+                new Response(corpo, { status, headers: { 'content-type': 'application/json' } }),
+              );
+            },
+          }),
+      },
+    };
+  }
+
+  it('o corpo em HTTP 404 ⇒ 200 `indisponivel: true`, e a segunda chamada sai do cache', async () => {
+    const { chamadas, ctx } = ctxComClienteReal(404);
+    h.loadCtx.mockResolvedValue(ctx);
+
+    const primeira = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
+    const segunda = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
+
+    for (const res of [primeira, segunda]) {
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        leaf: null,
+        scope: 'shop',
+        categoryId: null,
+        indisponivel: true,
+        limites: null,
+      });
+    }
+    expect(chamadas).toEqual([SHOPEE_GET_KIT_ITEM_LIMIT_PATH]);
+  });
+
+  it('⛔ QUASE-PAR: o MESMO corpo em HTTP 200 é uma falha comum ⇒ 502, e não fica no cache', async () => {
+    const { chamadas, ctx } = ctxComClienteReal(200);
+    h.loadCtx.mockResolvedValue(ctx);
+
+    const primeira = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
+    const segunda = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
+
+    expect(primeira.status).toBe(502);
+    expect(segunda.status).toBe(502);
+    expect(chamadas).toHaveLength(2);
   });
 });

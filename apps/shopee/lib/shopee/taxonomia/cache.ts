@@ -51,6 +51,7 @@ import {
   type ShopeeClient,
   type ShopeeItemLimitRead,
   type ShopeeKitItemLimit,
+  ShopeeOperacaoNaoServidaError,
   type ShopeeVariations,
   normalizeApiPath,
 } from '@delfrance/integrations-shopee';
@@ -174,8 +175,34 @@ const limitesItemCache = createReadCache<readonly [string, number | null], Shope
   ...opcoesComuns,
 });
 
-/** The KIT bands, which are their own numbers and never the item's. */
-const limitesKitCache = createReadCache<readonly [string, number | null], ShopeeKitItemLimit>({
+/**
+ * What {@link lerLimitesKitCached} answers: the kit bands Shopee SERVED, or the
+ * fact that this host does not serve `get_kit_item_limit` at all.
+ *
+ * ⚠️ `indisponivel` is a VALUE, never a failure and never a `null` band. It is
+ * the gateway's measured 404 (`ShopeeOperacaoNaoServidaError`: the SG sandbox
+ * answers the bare `{"error":"error_not_found"}` for this path, and so does a
+ * made-up path) — a fact about the HOST, stable for the whole TTL, so it is
+ * cached like any answer. A caller that reads it publishes WITHOUT a local band
+ * and lets Shopee's own refusal speak (`kits/recusaKit.ts`); it never falls
+ * back to hardcoded numbers.
+ */
+export type LimitesKitLidos =
+  | { readonly estado: 'servido'; readonly limites: ShopeeKitItemLimit }
+  | { readonly estado: 'indisponivel' };
+
+/** The ONE `indisponivel` value — shared by reference, like every cached answer. */
+const LIMITES_KIT_INDISPONIVEIS: LimitesKitLidos = { estado: 'indisponivel' };
+
+/**
+ * The KIT bands, which are their own numbers and never the item's.
+ *
+ * ⚠️ It holds {@link LimitesKitLidos}, not the raw band: an `indisponivel` is an
+ * OBJECT, so the primitive's default `isNegative` (`value == null`) never files
+ * it under the shorter negative TTL — the host does not start serving the path
+ * between two reads.
+ */
+const limitesKitCache = createReadCache<readonly [string, number | null], LimitesKitLidos>({
   name: 'shopee:taxonomia-limites-kit',
   maxEntries: 100,
   ...opcoesComuns,
@@ -273,14 +300,31 @@ export function lerLimitesItemCached(
   );
 }
 
-/** The KIT bands. A separate cache because it is a separate provider read. */
+/**
+ * The KIT bands. A separate cache because it is a separate provider read.
+ *
+ * ⚠️ The loader catches ONE class, `ShopeeOperacaoNaoServidaError`, and turns
+ * it into the cached VALUE `indisponivel` (step 19, O-3). Every other error is
+ * rethrown, and the primitive never caches a rejection, so a transient failure
+ * is re-read on the next call instead of poisoning the key for the TTL. ⚠️ The
+ * class EXTENDS `ShopeeApiError` with the same `code` and `kind`: a ladder that
+ * narrowed the base first would swallow it, and one that caught the base here
+ * would read a business `error_not_found` (which carries a `message` and a
+ * `request_id`) or a transient as "not served" for fifteen minutes.
+ */
 export function lerLimitesKitCached(
   ctx: ShopeeTaxonomiaCtx,
   categoryId: number | null,
-): Promise<ShopeeKitItemLimit> {
-  return limitesKitCache.get([ctx.integracaoId, categoryId], () =>
-    ctx.client.getKitItemLimit(categoryId === null ? {} : { categoryId }),
-  );
+): Promise<LimitesKitLidos> {
+  return limitesKitCache.get([ctx.integracaoId, categoryId], async () => {
+    try {
+      const limites = await ctx.client.getKitItemLimit(categoryId === null ? {} : { categoryId });
+      return { estado: 'servido', limites };
+    } catch (err) {
+      if (err instanceof ShopeeOperacaoNaoServidaError) return LIMITES_KIT_INDISPONIVEIS;
+      throw err;
+    }
+  });
 }
 
 /** The standardised variation tree of a leaf category. */

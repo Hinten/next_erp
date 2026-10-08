@@ -323,6 +323,109 @@ export const CORPOS_KIT_LEITURA = [
   FIXTURE_MODEL_LIST_SG_KIT,
 ] as const;
 
+/*
+ * The kit WRITE set (step 19, PR 4) — the write and refusal bodies, plus the two
+ * read-backs that say what a write actually did. ⚠️ `update_kit_item`'s three
+ * success bodies are byte-identical bare envelopes ON PURPOSE: the 200 says
+ * nothing about what was applied (P2-c), and only the read-back does.
+ */
+
+/**
+ * The ids that only probe #2's family kit carries — beside
+ * {@link IDS_DO_KIT_NO_CORPUS}, whose kit and first-model ids it shares.
+ */
+export const IDS_DA_FAMILIA_NO_CORPUS = {
+  /** The family kit's second model, `tier_index: [1]` — the one `update_price` changed. */
+  segundoModeloDoKit: 2000458823,
+  /** The APPENDED model, `tier_index: [2]` (`update_kit_item` with `model_id: 0`). */
+  modeloAnexado: 2000458822,
+  /** Component A's model on each kit model, keyed by `component_model_name`. */
+  modelosDoComponenteA: { 'White,02': 2000458821, 'White,04': 2000458824, 'White,08': 2000458825 },
+} as const;
+
+/** Probe #2's fixture clock, SECONDS (2026-10-07T00:00:00Z). Same caveat as {@link RELOGIO_SONDA_KIT_1_S}. */
+export const RELOGIO_SONDA_KIT_2_S = 1_791_331_200;
+
+/** `add_kit_item` that took — `{item_id}` under `response`. */
+export const FIXTURE_ADD_KIT_ITEM_SG = 'add_kit_item.sg.json';
+/**
+ * The first create: `product.error_busi` "… Error 1040: Too many connections …" —
+ * a Shopee-side TRANSIENT under the same code as `update_stock`'s permanent kit
+ * refusal. The identical retry is {@link FIXTURE_ADD_KIT_ITEM_SG}.
+ */
+export const FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS =
+  'add_kit_item.sg-too-many-connections.json';
+/** An empty body — `product.error_param` "virtual sku setting is empty". */
+export const FIXTURE_ADD_KIT_ITEM_SG_CORPO_VAZIO = 'add_kit_item.sg-corpo-vazio.json';
+/**
+ * Probe #2: a main component on BOTH models — `product.error_busi` "… mupltiple
+ * main sku …" (Shopee's spelling). ⚠️ The `itemId:ModelId` pair it names is a
+ * reconstruction; nothing may assert on it.
+ */
+export const FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS = 'add_kit_item.sg-dois-principais.json';
+/** `update_kit_item` without `item_id` — `"error": "."` + "product is not found". */
+export const FIXTURE_UPDATE_KIT_ITEM_SG_SEM_ITEM_ID = 'update_kit_item.sg-sem-item-id.json';
+/** Probe #2: ONE model, no tier list — the bare 200 (the omitted model was kept). */
+export const FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL = 'update_kit_item.sg-parcial.json';
+/** Probe #2: `model_id: 0` + the whole tier list — the bare 200 (the model was appended). */
+export const FIXTURE_UPDATE_KIT_ITEM_SG_ANEXAR = 'update_kit_item.sg-anexar.json';
+/** Probe #2: a QUANTITY change — the same bare 200, and Shopee IGNORED it. */
+export const FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA =
+  'update_kit_item.sg-quantidade-ignorada.json';
+/**
+ * The family kit read back after {@link FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA}:
+ * three models (the third appended), every component quantity still `1`.
+ */
+export const FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA =
+  'get_kit_item_info.sg-quantidade-ignorada.json';
+/** Valid ids — `product.error_server` "… generate kit image toggle closed." */
+export const FIXTURE_GENERATE_KIT_IMAGE_SG_TOGGLE_FECHADO =
+  'generate_kit_image.sg-toggle-fechado.json';
+/** The page's own `component_item_id` keys — "ItemId is required". */
+export const FIXTURE_GENERATE_KIT_IMAGE_SG_CHAVES_DO_DOC =
+  'generate_kit_image.sg-chaves-do-doc.json';
+/** A component without `model_id` — "ModelId is required". */
+export const FIXTURE_GENERATE_KIT_IMAGE_SG_SEM_MODEL_ID = 'generate_kit_image.sg-sem-model-id.json';
+/** ONE component — "value must contain between 2 and 9 items". */
+export const FIXTURE_GENERATE_KIT_IMAGE_SG_UM_COMPONENTE =
+  'generate_kit_image.sg-um-componente.json';
+/**
+ * `update_stock` on a kit — `product.error_busi` "Invalid product setting. Please
+ * verify." WITH a `failure_list` row for the kit model, plus a sandbox-only
+ * `debug_message`.
+ */
+export const FIXTURE_UPDATE_STOCK_SG_KIT = 'update_stock.sg-kit.json';
+/** `delete_item` on a kit — `response: {}`. Its read-back is {@link FIXTURE_ITEM_BASE_INFO_SG_KIT_APAGADO}. */
+export const FIXTURE_DELETE_ITEM_SG_KIT = 'delete_item.sg-kit.json';
+/** `get_item_base_info` of the deleted kit — `SELLER_DELETE`, still `tag.kit: true`. */
+export const FIXTURE_ITEM_BASE_INFO_SG_KIT_APAGADO = 'get_item_base_info.sg-kit-apagado.json';
+/** Probe #2: `update_price` on a kit model — accepted (P2-d). */
+export const FIXTURE_UPDATE_PRICE_SG_KIT = 'update_price.sg-kit.json';
+/** Probe #2: `unlist_item` on a kit — accepted (P2-e). */
+export const FIXTURE_UNLIST_ITEM_SG_KIT = 'unlist_item.sg-kit.json';
+
+/** The kit WRITE set (step 19, PR 4), sorted. */
+export const CORPOS_KIT_ESCRITA = [
+  FIXTURE_ADD_KIT_ITEM_SG_CORPO_VAZIO,
+  FIXTURE_ADD_KIT_ITEM_SG_DOIS_PRINCIPAIS,
+  FIXTURE_ADD_KIT_ITEM_SG_TOO_MANY_CONNECTIONS,
+  FIXTURE_ADD_KIT_ITEM_SG,
+  FIXTURE_DELETE_ITEM_SG_KIT,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_CHAVES_DO_DOC,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_SEM_MODEL_ID,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_TOGGLE_FECHADO,
+  FIXTURE_GENERATE_KIT_IMAGE_SG_UM_COMPONENTE,
+  FIXTURE_ITEM_BASE_INFO_SG_KIT_APAGADO,
+  FIXTURE_KIT_ITEM_INFO_SG_QUANTIDADE_IGNORADA,
+  FIXTURE_UNLIST_ITEM_SG_KIT,
+  FIXTURE_UPDATE_KIT_ITEM_SG_ANEXAR,
+  FIXTURE_UPDATE_KIT_ITEM_SG_PARCIAL,
+  FIXTURE_UPDATE_KIT_ITEM_SG_QUANTIDADE_IGNORADA,
+  FIXTURE_UPDATE_KIT_ITEM_SG_SEM_ITEM_ID,
+  FIXTURE_UPDATE_PRICE_SG_KIT,
+  FIXTURE_UPDATE_STOCK_SG_KIT,
+] as const;
+
 /** Every committed body, sorted. Excludes the README and any dotfile. */
 export function listarFixtures(): string[] {
   if (!existsSync(WIRE_DIR)) return [];

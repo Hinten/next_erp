@@ -19,6 +19,13 @@
  * module: step 11 composes a publish payload from these numbers, and a caller
  * that receives `null` either stops (a 502 with extra steps) or falls back to
  * hardcoded numbers — which is the failure this whole module exists to prevent.
+ *
+ * ⚠️ **The ONE non-failure absence is the kit's `indisponivel`** (step 19): the
+ * gateway does not route `get_kit_item_limit` on this host
+ * (`ShopeeOperacaoNaoServidaError`, cached as a value by `cache.ts`). That is
+ * not a degraded read — it is a typed outcome, {@link LimitesDeKitLidos}, that a
+ * caller must branch on: it publishes the kit with NO local band and lets
+ * Shopee's own refusal name the field. Still never a hardcoded number.
  */
 import { z } from 'zod';
 import type {
@@ -116,6 +123,16 @@ export const limitesDeKitDtoSchema = z.object({
   componentCountLimitOfSingleModel: faixaDtoSchema.nullable(),
 });
 export type LimitesDeKitDto = z.infer<typeof limitesDeKitDtoSchema>;
+
+/**
+ * What {@link lerLimitesDeKit} answers: the projected kit bands, or the typed
+ * `indisponivel` — the host does not serve `get_kit_item_limit` (see the module
+ * docblock). Never `null`, and never thrown: the gateway's 404 is a fact the
+ * caller decides on, not a failure it has to catch.
+ */
+export type LimitesDeKitLidos =
+  | { readonly estado: 'servido'; readonly limites: LimitesDeKitDto }
+  | { readonly estado: 'indisponivel' };
 
 /** What {@link lerLimitesDeItem} answers: the bands, the merged GTIN rule, the flag. */
 export interface LimitesDeItemLidos {
@@ -322,10 +339,19 @@ export async function lerLimitesDeItem(
   };
 }
 
-/** The KIT bands. A different call, a different schema, different numbers. */
+/**
+ * The KIT bands. A different call, a different schema, different numbers.
+ *
+ * `indisponivel` passes through as its own outcome — never projected into a band
+ * of `null`s (which a reader would take for "Shopee answered and set no limit"),
+ * and never rethrown (the cache already decided it is a value). Every real
+ * failure still surfaces from {@link lerLimitesKitCached}.
+ */
 export async function lerLimitesDeKit(
   ctx: ShopeeTaxonomiaCtx,
   categoryId: number | null,
-): Promise<LimitesDeKitDto> {
-  return projetarLimitesDeKit(await lerLimitesKitCached(ctx, categoryId));
+): Promise<LimitesDeKitLidos> {
+  const lidos = await lerLimitesKitCached(ctx, categoryId);
+  if (lidos.estado === 'indisponivel') return { estado: 'indisponivel' };
+  return { estado: 'servido', limites: projetarLimitesDeKit(lidos.limites) };
 }

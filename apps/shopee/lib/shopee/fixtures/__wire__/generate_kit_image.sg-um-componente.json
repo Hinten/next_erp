@@ -1,0 +1,4 @@
+{
+  "error": "product.error_unknown",
+  "message": "parameter invalid : invalid GenerateKitImageRequest.ComponentList: value must contain between 2 and 9 items, inclusive"
+}

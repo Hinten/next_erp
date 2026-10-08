@@ -1,0 +1,5 @@
+{
+  "error": "product.error_param",
+  "message": "parameter invalid : virtual sku setting is empty",
+  "warning": ""
+}
