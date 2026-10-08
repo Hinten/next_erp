@@ -6,6 +6,7 @@ import {
   SEVERIDADE_AVISO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
+  avisoReceitaKitShopee,
   avisoSchema,
   pendenciaReclamacaoSchema,
 } from '@delfrance/schemas';
@@ -257,5 +258,95 @@ describe('the producer planos as stored', () => {
 
     expect(comoArmazenado(PLANO_DESPACHO_MANUAL).severidade).toBe(SEVERIDADE_AVISO.critico);
     expect(comoArmazenado(PLANO_ETIQUETA).params).toEqual({ pedido: ORDER_SN });
+  });
+});
+
+/**
+ * The native-kit recipe tipo of Shopee step 19 (#1527). Its ONE definition
+ * (`avisoReceitaKitShopee`) sits in `@delfrance/schemas`, so — unlike the
+ * dispatch planos above — the writer's own builder is rendered here, not a
+ * copied literal.
+ *
+ * ⚠️ M30: the order of the advice is the safety property. A #1450 repoint of the
+ * map flips the ERP fingerprint while Shopee's recipe is unchanged, and
+ * `--recriar` deletes a LIVE listing — so the sentence must say "republish
+ * FIRST", and its recriar must name the link (`--link {vinculo} --recriar`),
+ * never a bare `--recriar`.
+ */
+describe('MENSAGENS_POR_TIPO.shopeeKitReceitaDivergente', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.shopeeKitReceitaDivergente];
+  const KIT = 'k1';
+  const ITEM_ID = 2500139870;
+  const VINCULO = 'l-kit-1';
+
+  const corpoEsperado = (kit: string, anuncio: string, vinculo: string, variacoes: string) =>
+    `A composição das variações ${variacoes} do kit ${kit} mudou no ERP, mas o kit ` +
+    `${anuncio} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
+    'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
+    '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+    `Senão, recrie o kit (publicar:anuncio --link ${vinculo} --recriar) ou volte a composição ao que ` +
+    'está na Shopee.';
+
+  it('renders the sentence verbatim with every param', () => {
+    expect(
+      mensagem.corpo({ kit: KIT, anuncio: String(ITEM_ID), vinculo: VINCULO, variacoes: 'c1, c2' }),
+    ).toBe(corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'));
+  });
+
+  it('M30 — tells the operator to republish FIRST, before any recriar', () => {
+    const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
+    expect(corpo).toContain('Republique o kit primeiro');
+    expect(corpo).toContain('este aviso se resolve sozinho');
+    expect(corpo.indexOf('Republique o kit primeiro')).toBeLessThan(corpo.indexOf('recrie o kit'));
+  });
+
+  it('M30 — the recriar names its link: `--link {vinculo} --recriar`, never a bare `--recriar`', () => {
+    const corpo = mensagem.corpo({ kit: KIT, anuncio: '1', vinculo: VINCULO, variacoes: 'c1' });
+    expect(corpo).toContain(`publicar:anuncio --link ${VINCULO} --recriar`);
+    // Every `--recriar` in the sentence is the one the link precedes.
+    const ocorrencias = [...corpo.matchAll(/--recriar/g)];
+    expect(ocorrencias).toHaveLength(1);
+    expect(corpo).not.toMatch(/publicar:anuncio --recriar/);
+  });
+
+  it('renders `{}` with the placeholder in every slot, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(corpoEsperado('—', '—', '—', '—'));
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders what the ONE builder writes, each param in its slot (writer → reader)', () => {
+    const plano = avisoReceitaKitShopee({
+      integracaoId: 'int-1',
+      kitProdutoId: KIT,
+      itemId: ITEM_ID,
+      linkDocId: VINCULO,
+      variacoesDivergentes: ['c2', 'c1'],
+    });
+    const aviso = comoArmazenado(plano);
+    expect(aviso.tipo).toBe(TIPO_AVISO.shopeeKitReceitaDivergente);
+    expect(aviso.urlInterna).toEqual({ rota: `/produtos/${KIT}`, campo: 'componentesKit' });
+    expect(mensagem.corpo(aviso.params)).toBe(
+      corpoEsperado(KIT, String(ITEM_ID), VINCULO, 'c1, c2'),
+    );
+  });
+
+  it('renders the builder’s `—` for an unknown item and link without a dangling flag value', () => {
+    const plano = avisoReceitaKitShopee({
+      integracaoId: 'int-1',
+      kitProdutoId: KIT,
+      itemId: null,
+      linkDocId: null,
+      variacoesDivergentes: ['c1'],
+    });
+    const corpo = mensagem.corpo(comoArmazenado(plano).params);
+    expect(corpo).toBe(corpoEsperado(KIT, '—', '—', 'c1'));
+    expect(corpo).not.toContain('undefined');
+    expect(corpo).not.toContain('null');
+  });
+
+  it('is titled like its label and carries no runbook — the publish route/CLI is the fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.shopeeKitReceitaDivergente);
+    expect(mensagem.runbook).toBeUndefined();
   });
 });

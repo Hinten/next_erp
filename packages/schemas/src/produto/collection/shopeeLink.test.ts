@@ -12,6 +12,9 @@ import {
   shopeeViolacaoSchema,
   shopeeViolationReasonWireSchema,
   podeMoverAnuncioShopee,
+  ehVinculoSubstituido,
+  ehKitNativoAtivo,
+  ehKitNativoQueAindaVende,
   type EstadoAnuncioShopee,
   type MotivoAnuncioNaoMovivel,
 } from './shopeeLink';
@@ -1060,5 +1063,206 @@ describe('os dez campos preco* do passo 13', () => {
     );
     // A regra de leitura do modelo: comparada no MESMO doc, zero escritas de limpeza.
     expect(FONTE).toContain('`precoRecusaEm >= (precoEnviadoEm ?? 0)`');
+  });
+});
+
+// ===========================================================================
+// Passo 19 (#1527) — kits nativos: o par SUBSTITUÍDO, a impressão digital da
+// receita e os dois predicados
+// ===========================================================================
+
+describe('os três campos do passo 19', () => {
+  const LINK_ANTIGO = {
+    contaProdutoShopeeOuterRef: CONTA_REF,
+    item_name: 'Kit Bandejas',
+    item_id: 2500139870,
+    item_status: 'NORMAL',
+  };
+  const FILHO_ANTIGO = {
+    contaVariacaoShopeeOuterRef: CONTA_REF,
+    produtoShopeeOuterRef: 'documents/produtos/k1/prodshopee/l1',
+    model_id: 2000458820,
+  };
+
+  it('PAR: um link anterior ao passo 19 faz parse e cada campo AUSENTE entra null', () => {
+    const item = produtoShopeeLinkSchema.parse(LINK_ANTIGO) as Record<string, unknown>;
+    for (const campo of ['substituidoPorLinkDocId', 'substituidoEm']) {
+      expect(item).toHaveProperty(campo);
+      expect(item[campo]).toBeNull();
+    }
+    const modelo = variacaoShopeeLinkSchema.parse(FILHO_ANTIGO) as Record<string, unknown>;
+    expect(modelo).toHaveProperty('receitaKitConferida');
+    expect(modelo.receitaKitConferida).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: um valor PRESENTE sobrevive inalterado; o carimbo é ms INTEIRO', () => {
+    const item = produtoShopeeLinkSchema.parse({
+      ...LINK_ANTIGO,
+      substituidoPorLinkDocId: 'l2',
+      substituidoEm: 1_759_800_000_000,
+    });
+    expect(item.substituidoPorLinkDocId).toBe('l2');
+    expect(item.substituidoEm).toBe(1_759_800_000_000);
+    expect(produtoShopeeLinkSchema.safeParse({ ...LINK_ANTIGO, substituidoEm: 1.5 }).success).toBe(
+      false,
+    );
+    const modelo = variacaoShopeeLinkSchema.parse({
+      ...FILHO_ANTIGO,
+      receitaKitConferida: '[["c1",2]]',
+    });
+    expect(modelo.receitaKitConferida).toBe('[["c1",2]]');
+  });
+
+  it('o MODELO não declara o par substituído, nem o ITEM a impressão digital', () => {
+    // O par é do link do ANÚNCIO (publish escolhe o anúncio); a impressão digital
+    // é por MODELO de kit (a receita é por filho). Trocados, um parse de cada
+    // modelo passaria a carregar campos que nada escreve ali.
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('substituidoPorLinkDocId');
+    expect(variacaoShopeeLinkSchema.shape).not.toHaveProperty('substituidoEm');
+    expect(produtoShopeeLinkSchema.shape).not.toHaveProperty('receitaKitConferida');
+  });
+});
+
+describe('ehVinculoSubstituido', () => {
+  it('só uma string NÃO vazia marca o link como substituído', () => {
+    expect(ehVinculoSubstituido({ substituidoPorLinkDocId: 'l2' })).toBe(true);
+    // ⛔ NEAR-MISS: nada disso esconde um link vivo do publish.
+    for (const v of [null, undefined, '', 0, 1, true, {}]) {
+      expect(ehVinculoSubstituido({ substituidoPorLinkDocId: v }), String(v)).toBe(false);
+    }
+    expect(ehVinculoSubstituido({})).toBe(false);
+  });
+});
+
+describe('ehKitNativoAtivo — O predicado do link nativo vivo (M25)', () => {
+  const ATIVO = {
+    kitNativo: true,
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    substituidoPorLinkDocId: null,
+    item_id: 2500139870,
+  } as const;
+
+  it('PAR: um kit nativo ativo, endereçável e não substituído É ativo', () => {
+    expect(ehKitNativoAtivo(ATIVO)).toBe(true);
+    // Um estado que não é `removido` não importa aqui — pausado continua vivo.
+    for (const estado of [
+      ESTADO_ANUNCIO_SHOPEE.pausado,
+      ESTADO_ANUNCIO_SHOPEE.banido,
+      ESTADO_ANUNCIO_SHOPEE.emRevisao,
+      ESTADO_ANUNCIO_SHOPEE.desconhecido,
+      null,
+      undefined,
+    ]) {
+      expect(ehKitNativoAtivo({ ...ATIVO, estadoAnuncio: estado }), String(estado)).toBe(true);
+    }
+  });
+
+  it('⛔ NEAR-MISS 1: REMOVIDO não é ativo', () => {
+    expect(ehKitNativoAtivo({ ...ATIVO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido })).toBe(
+      false,
+    );
+  });
+
+  it('⛔ NEAR-MISS 2: SUBSTITUÍDO não é ativo', () => {
+    expect(ehKitNativoAtivo({ ...ATIVO, substituidoPorLinkDocId: 'l2' })).toBe(false);
+  });
+
+  it('⛔ NEAR-MISS 3 e 4: item_id null ou 0 não é ativo (sob o L9 não existe link nativo sem item)', () => {
+    expect(ehKitNativoAtivo({ ...ATIVO, item_id: null })).toBe(false);
+    expect(ehKitNativoAtivo({ ...ATIVO, item_id: 0 })).toBe(false);
+    for (const itemId of [undefined, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '2500139870']) {
+      expect(ehKitNativoAtivo({ ...ATIVO, item_id: itemId }), String(itemId)).toBe(false);
+    }
+  });
+
+  it('⛔ NEAR-MISS: kitNativo null ou false (um anúncio COMUM) nunca é kit nativo', () => {
+    for (const kitNativo of [null, false, undefined, 'true', 1]) {
+      expect(ehKitNativoAtivo({ ...ATIVO, kitNativo }), String(kitNativo)).toBe(false);
+    }
+  });
+});
+
+describe('ehKitNativoQueAindaVende — o filtro de linhas do aviso (M178)', () => {
+  const ATIVO = {
+    kitNativo: true,
+    estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+    substituidoPorLinkDocId: null,
+    item_id: 2500139870,
+  } as const;
+  const SUBSTITUIDO = { ...ATIVO, substituidoPorLinkDocId: 'l-novo' };
+
+  type Caso = {
+    nome: string;
+    link: Parameters<typeof ehKitNativoQueAindaVende>[0];
+    esperado: boolean;
+  };
+  const TABELA: Caso[] = [
+    { nome: 'ativo', link: ATIVO, esperado: true },
+    { nome: 'substituído + vivo (ativo)', link: SUBSTITUIDO, esperado: true },
+    {
+      nome: 'substituído + pausado',
+      link: { ...SUBSTITUIDO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.pausado },
+      esperado: true,
+    },
+    {
+      nome: 'substituído + em revisão',
+      link: { ...SUBSTITUIDO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.emRevisao },
+      esperado: true,
+    },
+    {
+      nome: 'substituído + estado null',
+      link: { ...SUBSTITUIDO, estadoAnuncio: null },
+      esperado: true,
+    },
+    {
+      nome: 'substituído + removido',
+      link: { ...SUBSTITUIDO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+      esperado: false,
+    },
+    {
+      nome: 'substituído + banido',
+      link: { ...SUBSTITUIDO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.banido },
+      esperado: false,
+    },
+    { nome: 'substituído + item_id 0', link: { ...SUBSTITUIDO, item_id: 0 }, esperado: false },
+    {
+      nome: 'substituído + item_id null',
+      link: { ...SUBSTITUIDO, item_id: null },
+      esperado: false,
+    },
+    {
+      nome: 'substituído + kitNativo false',
+      link: { ...SUBSTITUIDO, kitNativo: false },
+      esperado: false,
+    },
+    {
+      nome: 'substituído + kitNativo null',
+      link: { ...SUBSTITUIDO, kitNativo: null },
+      esperado: false,
+    },
+    {
+      nome: 'NÃO substituído + removido',
+      link: { ...ATIVO, estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.removido },
+      esperado: false,
+    },
+    {
+      nome: 'NÃO substituído + kitNativo false',
+      link: { ...ATIVO, kitNativo: false },
+      esperado: false,
+    },
+  ];
+
+  it.each(TABELA)('$nome ⇒ $esperado', ({ link, esperado }) => {
+    expect(ehKitNativoQueAindaVende(link)).toBe(esperado);
+  });
+
+  it('a diferença entre os dois predicados é EXATAMENTE o substituído que ainda vende', () => {
+    // Um substituído vivo vende a composição ANTIGA (um recriar cujo delete não
+    // pegou): conta para o aviso, nunca para o publish.
+    expect(ehKitNativoAtivo(SUBSTITUIDO)).toBe(false);
+    expect(ehKitNativoQueAindaVende(SUBSTITUIDO)).toBe(true);
+    for (const { link } of TABELA) {
+      if (ehKitNativoAtivo(link)) expect(ehKitNativoQueAindaVende(link)).toBe(true);
+    }
   });
 });

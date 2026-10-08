@@ -269,9 +269,12 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // v2.product.update_size_chart no longer exists (survey C §6).
     tabelaDeMedidas: 'sim',
     // Native kit SKU: add_kit_item mints an item_id whose category/attributes/brand
-    // sync from a main component; no stock field anywhere in the kit APIs
-    // (derived). 1 tier, ≤9 kit variations, 2–10 components each
-    // (get_kit_item_limit), composition frozen after create. survey C §7.
+    // sync from a main component; no stock field anywhere in the kit APIs —
+    // stock is DERIVED (min ⌊stock/qty⌋ over every component, measured SG) and a
+    // stock write to the kit is refused. 1 tier, ≤ 9 kit models; ONE main per
+    // kit; component band per category when get_kit_item_limit is served (not on
+    // the sandbox host); composition frozen (a quantity change is silently
+    // ignored). survey C §7; step 19 (#1527).
     kitVirtual: 'sim',
     // unlist_item {unlist:false} re-lists (guide 221 §6) — but its own error list
     // carries `error_set_normal_unlisted_item`. Step 11 MEASURED it live on the SG
@@ -311,7 +314,8 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     //   warehouse            — sem-multi-armazem, refused PREFIXED on the wire as
     //     `warehouse.error_not_in_whitelist`.                                  (P3)
     // ⚠️ An SG sandbox answer is evidence about the API, never about BR: the
-    //    promotion regime, kits and multi-warehouse are not rehearsable there.
+    //    promotion regime and multi-warehouse are not rehearsable there. Kits ARE
+    //    rehearsable on the SG sandbox (probe 2026-10-06/07, step 19).
     // `implementado` stays `false` until step 22.
     estoque: {
       suporte: 'sim',

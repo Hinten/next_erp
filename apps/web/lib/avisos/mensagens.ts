@@ -171,6 +171,21 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
       `${frasePendencia(params.pendencia)}. Sem resposta até o prazo, o canal decide sozinho — ` +
       'em geral a favor do comprador. Abra a aba Incidentes do pedido.',
   },
+  // Sem `runbook`: o conserto é a rota/CLI de publicação hoje (um botão no passo
+  // 21). ⚠️ "Republique PRIMEIRO" é a ação segura: um reapontamento do mapa (#1450)
+  // muda a impressão digital da receita sem mudar a receita na Shopee, e o
+  // `--recriar` exclui um anúncio que está vendendo. Por isso a frase nomeia o
+  // `--link` do vínculo — um `--recriar` sem ele não diz qual kit trocar.
+  [TIPO_AVISO.shopeeKitReceitaDivergente]: {
+    titulo: 'Kit da Shopee com composição antiga',
+    corpo: (params) =>
+      `A composição das variações ${p(params, 'variacoes')} do kit ${p(params, 'kit')} mudou no ERP, mas o kit ` +
+      `${p(params, 'anuncio')} na Shopee continua com a receita antiga — a Shopee não permite alterar componentes ` +
+      'nem quantidades de um kit, então o estoque que ela calcula pode estar errado. Republique o kit primeiro ' +
+      '(publicar:anuncio sem opções): se a composição na Shopee já for a mesma, este aviso se resolve sozinho. ' +
+      `Senão, recrie o kit (publicar:anuncio --link ${p(params, 'vinculo')} --recriar) ou volte a composição ao que ` +
+      'está na Shopee.',
+  },
 };
 
 /**

@@ -1397,3 +1397,10 @@ export * from './shared/inicio';
 // parser, the reclamação routes and the web mount all read it. Not a collection,
 // so no `registry.ts` entry; outside `pedido/`, so no NF-e live run.
 export { RETURN_SN_SHOPEE_MAX, ehReturnSnShopee } from './devolucaoShopee';
+
+// The ONE Shopee native-kit recipe module (step 19, #1527): ERP componentesKit ⇄
+// Shopee component_list, THE recipe fold, the bounds and the L4 aviso decision —
+// the kit arms, step 9's import, the recipe trigger and the web all call it
+// (#1369). Not a collection, so no `registry.ts` entry. A star export on purpose:
+// the fold-inventory scan greps raw text, so a listed barrel would need a row.
+export * from './receitaKitShopee';

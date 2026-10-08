@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  camposDeKitDoMembroUnico,
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
+  ehKitVirtualEfetivo,
   CAMPOS_ESPELHADOS_COM_COMPARADOR,
   espelhoArmazenadoDoMembro,
   espelhoDoMembroUnico,
@@ -295,6 +297,70 @@ describe('montarMembroUnico', () => {
       componentesKit: null,
       precos: null,
     });
+  });
+});
+
+/**
+ * `ehKitVirtualEfetivo` — the ONE "virtual kit" predicate (Shopee step 19, #1527).
+ *
+ * ⚠️ The near-miss that matters is `ehKitVirtual: true` beside a NON-kit: a
+ * predicate that dropped the `ehKit` conjunct would read that stored doc as a
+ * virtual kit and ask a channel to build a kit with no recipe. So the whole
+ * truth table is pinned, strict on both sides (a legacy `null`, an absent key
+ * or a stray string is "not virtual").
+ */
+describe('ehKitVirtualEfetivo — ehKit AND ehKitVirtual, both strictly true', () => {
+  const valores: readonly unknown[] = [true, false, null, undefined, 'true', 1];
+
+  it('is true for exactly one cell of the table', () => {
+    for (const ehKit of valores) {
+      for (const ehKitVirtual of valores) {
+        const esperado = ehKit === true && ehKitVirtual === true;
+        expect(
+          ehKitVirtualEfetivo({ ehKit, ehKitVirtual }),
+          `${String(ehKit)}×${String(ehKitVirtual)}`,
+        ).toBe(esperado);
+      }
+    }
+  });
+
+  it('a virtual flag on a NON-kit is not a virtual kit', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: false, ehKitVirtual: true })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: null, ehKitVirtual: true })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKitVirtual: true })).toBe(false);
+  });
+
+  it('a kit without the virtual flag is not virtual', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: false })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: null })).toBe(false);
+    expect(ehKitVirtualEfetivo({ ehKit: true })).toBe(false);
+  });
+
+  it('a kit with the virtual flag is virtual', () => {
+    expect(ehKitVirtualEfetivo({ ehKit: true, ehKitVirtual: true })).toBe(true);
+  });
+
+  // The member mirror is a caller: the child never inherits a virtual flag its
+  // parent's kit state does not back.
+  it('the member mirror applies it (behaviour unchanged)', () => {
+    expect(camposDeKitDoMembroUnico({ ehKit: false, ehKitVirtual: true })).toMatchObject({
+      ehKit: false,
+      ehKitVirtual: false,
+    });
+    expect(
+      camposDeKitDoMembroUnico({
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: { c1: { quantidade: 1 } },
+      }),
+    ).toMatchObject({ ehKit: true, ehKitVirtual: true });
+    expect(
+      camposDeKitDoMembroUnico({
+        ehKit: true,
+        ehKitVirtual: false,
+        componentesKit: { c1: { quantidade: 1 } },
+      }),
+    ).toMatchObject({ ehKit: true, ehKitVirtual: false });
   });
 });
 
