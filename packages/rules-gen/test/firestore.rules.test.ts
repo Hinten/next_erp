@@ -1040,15 +1040,21 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
 
     it('does NOT relax the sibling credential stores, even for a superuser', async () => {
-      // The legacy-grant exception is ML-token-only: `credenciais` and
-      // `credenciaisWhatsapp` hold live refresh tokens with no legacy client
-      // grant to preserve, so they must stay unregistered and default-denied.
+      // The legacy-grant exception is ML-token-only: `credenciais`,
+      // `credenciaisWhatsapp` and `credenciaisLojaIntegrada` hold live tokens
+      // with no legacy client grant to preserve, so they must stay unregistered
+      // and default-denied.
       await seed('integracao/i-ml/credenciais/c1', { access_token: 'a', refresh_token: 'r' });
       await seed('integracao/i-wa/credenciaisWhatsapp/c1', { permanent_token: 'p' });
+      await seed('integracao/i-li/credenciaisLojaIntegrada/current', { personalToken: 't' });
       const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
       await assertFails(getDoc(doc(su, 'integracao/i-ml/credenciais/c1')));
       await assertFails(getDoc(doc(su, 'integracao/i-wa/credenciaisWhatsapp/c1')));
+      await assertFails(getDoc(doc(su, 'integracao/i-li/credenciaisLojaIntegrada/current')));
       await assertFails(setDoc(doc(su, 'integracao/i-ml/credenciais/c2'), { x: 1 }));
+      await assertFails(
+        setDoc(doc(su, 'integracao/i-li/credenciaisLojaIntegrada/current'), { x: 1 }),
+      );
     });
   });
 

@@ -46,6 +46,7 @@ export const CANAL_AVISO_LABELS = {
   mercadoPago: 'Mercado Pago',
   whatsapp: 'WhatsApp',
   melhorEnvio: 'Melhor Envio',
+  lojaIntegrada: 'Loja Integrada',
   nfe: 'NF-e',
   estoque: 'Estoque',
   sistema: 'Sistema',
@@ -62,6 +63,7 @@ export const canalAvisoSchema = z
     'mercadoPago',
     'whatsapp',
     'melhorEnvio',
+    'lojaIntegrada',
     'nfe',
     'estoque',
     'sistema',
@@ -76,6 +78,7 @@ export const CANAL_AVISO = {
   mercadoPago: 'mercadoPago',
   whatsapp: 'whatsapp',
   melhorEnvio: 'melhorEnvio',
+  lojaIntegrada: 'lojaIntegrada',
   nfe: 'nfe',
   estoque: 'estoque',
   sistema: 'sistema',
@@ -95,6 +98,8 @@ export const TIPO_AVISO_LABELS = {
   despachoAutomaticoPendente: 'Despacho automático pendente',
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
   reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
+  lojaIntegradaTokenExpirando: 'Token da Loja Integrada expirando',
+  lojaIntegradaReconexaoPendente: 'Token da Loja Integrada recusado',
 } as const;
 
 /**
@@ -277,6 +282,58 @@ export const TIPO_AVISO_LABELS = {
  *    change — `escreverAviso` drops an EQUAL clock — and the resolve passes the
  *    same value to `resolverAviso`, so a late, older resolve cannot close a
  *    newer row. ⚠️ Per-return µs: never compare it with another tipo's.
+ *
+ * ---
+ *
+ * **`lojaIntegradaTokenExpirando`** (Loja Integrada step 2, #1829 — producers in
+ * `apps/loja-integrada/lib/lojaIntegrada/avisos/avisos.ts`) — the conta's
+ * Personal Token nears the expiry date the operator copied from the Loja
+ * Integrada painel. The token lasts three months unless the store owner renews
+ * it there, and an unrenewed token is revoked for good.
+ *
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })` — deliberately **no
+ *    `janela` and no `entidade`**: a new expiry date must refresh the SAME row,
+ *    never mint a second one (the Shopee authorization-expiry rule).
+ *  - **Severity `atencao`**, canal `lojaIntegrada`. In-app only.
+ *  - **`params` are exactly `loja`** (the conta name), **`dias`** (a NUMBER:
+ *    `0` on the last day, negative once the date has passed) **and `expiraEm`**
+ *    (`YYYY-MM-DD`, the São Paulo civil date). A repeat replaces them, which is
+ *    how `dias` stays current.
+ *  - **`prazo`** = the stored expiry in µs — the date copied from the painel,
+ *    never computed.
+ *  - **`relogioEvento`: none.** Clockless, like the Shopee expiry sweep: the
+ *    event is time passing, which no document write records.
+ *  - **Raised for every Loja Integrada conta holding a token, active or not**:
+ *    deactivating a conta in the ERP does not stop the token's clock.
+ *  - **Machine resolvers** (this docblock's own rule, above): a validated save
+ *    or renewal whose new date is more than 30 days away; the removal of the
+ *    token (`credencial-removida`); the daily sweep when more than 30 days
+ *    remain or the conta holds no token (`credencial-removida`), and when the
+ *    conta no longer exists as a Loja Integrada conta (`conta-removida`).
+ *
+ * ---
+ *
+ * **`lojaIntegradaReconexaoPendente`** (Loja Integrada step 2, #1829 — the same
+ * module) — Loja Integrada refused the stored token (HTTP 401 or 403) and the
+ * conta was PARKED: its flows stop until a valid token is saved.
+ *
+ *  - **Channel-specific, never `canalSemCredencial`**: the remedy differs (only
+ *    the store owner can generate or renew the token, in the painel) and so does
+ *    the consequence the sentence must state (order intake stops) — the
+ *    `shopeeDesautorizado` choice.
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId })`.
+ *  - **Severity `critico`**, canal `lojaIntegrada`, raised WITHOUT escalation:
+ *    in-app only.
+ *  - **`params` are exactly `loja` and `status`** (`401` | `403`).
+ *  - **`relogioEvento`** = the commit time of the credential document, in µs
+ *    (its `updateTime`, or the write's `writeTime`). Commit times on one
+ *    document rise strictly, so a late raise from a park that lost to a newer
+ *    save is dropped with no wall clock involved. ⚠️ Per-document µs: never
+ *    compare it with another tipo's.
+ *  - **Machine resolvers**: a validated save or renewal, and the removal of the
+ *    token, each clocked by its own write; the daily sweep when the conta is not
+ *    parked (clocked) or holds no token (clockless, `credencial-removida`), and
+ *    when the conta no longer exists (clockless, `conta-removida`).
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -293,6 +350,8 @@ export const tipoAvisoSchema = z
     'despachoAutomaticoPendente',
     'etiquetaComPrazo',
     'reclamacaoAguardandoVendedor',
+    'lojaIntegradaTokenExpirando',
+    'lojaIntegradaReconexaoPendente',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -312,6 +371,8 @@ export const TIPO_AVISO = {
   despachoAutomaticoPendente: 'despachoAutomaticoPendente',
   etiquetaComPrazo: 'etiquetaComPrazo',
   reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
+  lojaIntegradaTokenExpirando: 'lojaIntegradaTokenExpirando',
+  lojaIntegradaReconexaoPendente: 'lojaIntegradaReconexaoPendente',
 } as const satisfies Record<string, TipoAviso>;
 
 /**
@@ -379,6 +440,10 @@ export const ROTAS_AVISO = {
   canalWhatsapp: {
     padrao: '/canais/whatsapp/[id]',
     build: (integracaoId: string) => `/canais/whatsapp/${integracaoId}`,
+  },
+  canalLojaIntegrada: {
+    padrao: '/canais/loja-integrada/[id]',
+    build: (integracaoId: string) => `/canais/loja-integrada/${integracaoId}`,
   },
   // ⚠️ `/pedidos/[id]` is NOT navigable — it is a bare directory holding
   // `editar/` and `nfe/`, with no page of its own. The whole app links to

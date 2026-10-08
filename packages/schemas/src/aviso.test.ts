@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANAL_AVISO,
+  CANAL_AVISO_LABELS,
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
@@ -8,6 +10,7 @@ import {
   avisoNaoLido,
   avisoSchema,
   avisosLeituraSchema,
+  canalAvisoSchema,
   chaveDeAviso,
   entradaDeLeitura,
   marcarTodosComoLidos,
@@ -87,6 +90,52 @@ describe('TIPO_AVISO_LABELS', () => {
   it('labels the return tipo without a provider name — it is channel-neutral', () => {
     expect(TIPO_AVISO.reclamacaoAguardandoVendedor).toBe('reclamacaoAguardandoVendedor');
     expect(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor).toBe('Reclamação aguardando o vendedor');
+  });
+
+  it('names and labels the two Loja Integrada tipos (step 2)', () => {
+    // Channel-SPECIFIC on purpose, unlike the three above: the remedy (only the
+    // store owner can generate or renew the token, in the painel) is the
+    // channel's own — the `shopeeDesautorizado` choice, not `canalSemCredencial`.
+    expect(TIPO_AVISO.lojaIntegradaTokenExpirando).toBe('lojaIntegradaTokenExpirando');
+    expect(TIPO_AVISO.lojaIntegradaReconexaoPendente).toBe('lojaIntegradaReconexaoPendente');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaTokenExpirando).toBe('Token da Loja Integrada expirando');
+    expect(TIPO_AVISO_LABELS.lojaIntegradaReconexaoPendente).toBe(
+      'Token da Loja Integrada recusado',
+    );
+  });
+});
+
+describe('CANAL_AVISO', () => {
+  it('keeps the named-member constant and the labels in step with the enum', () => {
+    // `escreverAviso` full-parses on create, so a canal the enum lacks is a
+    // write that throws — and a label the map lacks typechecks everywhere.
+    expect(Object.keys(CANAL_AVISO).sort()).toEqual([...canalAvisoSchema.options].sort());
+    for (const [nome, valor] of Object.entries(CANAL_AVISO)) expect(valor, nome).toBe(nome);
+    expect(Object.keys(CANAL_AVISO_LABELS).sort()).toEqual([...canalAvisoSchema.options].sort());
+  });
+
+  it('carries Loja Integrada, spelled exactly — near-miss spellings stay refused', () => {
+    expect(CANAL_AVISO.lojaIntegrada).toBe('lojaIntegrada');
+    expect(CANAL_AVISO_LABELS.lojaIntegrada).toBe('Loja Integrada');
+    for (const quase of ['loja-integrada', 'lojaintegrada', 'LojaIntegrada', 'loja_integrada']) {
+      expect(canalAvisoSchema.safeParse(quase).success, quase).toBe(false);
+    }
+  });
+
+  it('parses a Loja Integrada plano as stored, keeping canal, route and severity', () => {
+    const parsed = umAviso({
+      tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,
+      severidade: SEVERIDADE_AVISO.critico,
+      canal: CANAL_AVISO.lojaIntegrada,
+      params: { loja: 'Conta A', status: 401 },
+      urlInterna: { rota: ROTAS_AVISO.canalLojaIntegrada.build('int-1'), campo: null },
+      relogioEvento: 1_800_000_000_123_456,
+    });
+    expect(parsed.canal).toBe('lojaIntegrada');
+    expect(parsed.severidade).toBe('critico');
+    expect(parsed.params).toEqual({ loja: 'Conta A', status: 401 });
+    expect(parsed.urlInterna?.rota).toBe('/canais/loja-integrada/int-1');
+    expect(parsed.relogioEvento).toBe(1_800_000_000_123_456);
   });
 });
 
@@ -332,6 +381,35 @@ describe('chaveDeAviso — the return tipo (Shopee step 17)', () => {
   });
 });
 
+describe('chaveDeAviso — the two Loja Integrada tipos (step 2)', () => {
+  // ONE row per CONTA for each tipo: the producers (save, renewal, park, sweep)
+  // and the resolvers recompute the key from the integração id alone, so a key
+  // they could not recompute would be a row nothing ever closes.
+  const expiracao = (conta: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaTokenExpirando, conta });
+  const reconexao = (conta: string) =>
+    chaveDeAviso({ tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente, conta });
+
+  it('keys each tipo on the conta alone — no janela, so a new expiry date reuses the row', () => {
+    expect(expiracao('int-1')).toBe('lojaIntegradaTokenExpirando:int-1');
+    expect(reconexao('int-1')).toBe('lojaIntegradaReconexaoPendente:int-1');
+    expect(expiracao('int-1')).toBe(
+      chaveDeAviso({
+        tipo: TIPO_AVISO.lojaIntegradaTokenExpirando,
+        conta: 'int-1',
+        entidade: null,
+        janela: null,
+      }),
+    );
+  });
+
+  it('separates two contas, and the two tipos of one conta', () => {
+    expect(expiracao('int-1')).not.toBe(expiracao('int-2'));
+    expect(reconexao('int-1')).not.toBe(reconexao('int-2'));
+    expect(expiracao('int-1')).not.toBe(reconexao('int-1'));
+  });
+});
+
 describe('avisoNaoLido', () => {
   const semLeitura: AvisosLeitura = avisosLeituraSchema.parse({});
 
@@ -478,6 +556,14 @@ describe('ROTAS_AVISO', () => {
 
   it('builds a concrete Shopee conta route', () => {
     expect(ROTAS_AVISO.canalShopee.build('abc')).toBe('/canais/shopee/abc');
+  });
+
+  it('builds a concrete Loja Integrada conta route', () => {
+    expect(ROTAS_AVISO.canalLojaIntegrada.padrao).toBe('/canais/loja-integrada/[id]');
+    expect(ROTAS_AVISO.canalLojaIntegrada.build('abc')).toBe('/canais/loja-integrada/abc');
+    expect(rotaInternaSegura(ROTAS_AVISO.canalLojaIntegrada.build('abc'))).toBe(
+      '/canais/loja-integrada/abc',
+    );
   });
 
   it('lands a dispatch aviso on the checkout, with the pedido id as `?pedido=`', () => {
