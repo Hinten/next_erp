@@ -10,7 +10,27 @@ import {
   seedCredencial,
 } from '../testing/fixtures';
 import { fingerprintDoToken } from './credencial';
-import { contaComOMesmoToken, lerContaLojaIntegrada, listarContasLojaIntegrada } from './contas';
+import {
+  contaComOMesmoToken,
+  lerContaLojaIntegrada,
+  listarContasLojaIntegrada,
+  naoEhIdDeConta,
+} from './contas';
+
+describe('naoEhIdDeConta', () => {
+  it('an auto-id passes', () => {
+    expect(naoEhIdDeConta('aB3dE5gH7jK9mN1pQ2rS')).toBe(false);
+    expect(naoEhIdDeConta('conta-li_1')).toBe(false);
+  });
+
+  it.each(['', '.', '..', 'a/b', 'integracao/x', 'a.b', '../x'])('refuses %j', (id) => {
+    expect(naoEhIdDeConta(id)).toBe(true);
+  });
+
+  it('refuses a non-string', () => {
+    for (const v of [undefined, null, 1, {}]) expect(naoEhIdDeConta(v)).toBe(true);
+  });
+});
 
 describe('lerContaLojaIntegrada (uncached)', () => {
   it('a tipo-3 conta, active or not', async () => {

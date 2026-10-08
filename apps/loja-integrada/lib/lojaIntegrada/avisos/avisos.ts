@@ -44,6 +44,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { dataCivilNoFuso, millisToMicros } from '@delfrance/core/datetime';
 import { type ResultadoAviso, escreverAviso, resolverAviso } from '@delfrance/data/admin/avisos';
+import { isTransientGrpcError } from '@delfrance/data/admin/grpcErrors';
 import {
   CANAL_AVISO,
   FUSO_FISCAL,
@@ -288,5 +289,112 @@ export function resolverReconexaoPendente(
     params: { loja: relogio.lojaNome },
     urlInterna: urlInterna(integracaoId),
     relogioEvento: relogio.relogioUs,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*            The avisos a ROUTE syncs after its credential write              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the avisos step of a route did. `sincronizado: false` means a TRANSIENT
+ * Firestore failure stopped it (logged); the credential write had already
+ * landed, and the daily expiry sweep (`conta/expiracaoSweep.ts`, scheduled from
+ * step 3) re-syncs both rows from the stored credential. Until then the next
+ * save, renewal or removal does.
+ */
+export interface AvisosAposEscrita {
+  /** `true` only when this write closed an open "token recusado" row. */
+  readonly reconexaoResolvida: boolean;
+  readonly sincronizado: boolean;
+}
+
+/**
+ * The aviso step runs AFTER the credential write committed, so a transient
+ * Firestore failure here must not turn a saved token into a 500: the operator
+ * would read "nothing was saved", retry with a now-stale version and get a 409
+ * for a save that worked. Only a TRANSIENT gRPC status is contained
+ * (`isTransientGrpcError`: 4, 8, 10, 13, 14) — a deterministic one, the
+ * aviso writer's own contention error and any bug still throw, loudly.
+ */
+async function semDerrubarAEscrita(
+  integracaoId: string,
+  deps: AvisoDepsLi,
+  passo: () => Promise<boolean>,
+): Promise<AvisosAposEscrita> {
+  try {
+    return { reconexaoResolvida: await passo(), sincronizado: true };
+  } catch (err) {
+    if (!isTransientGrpcError(err)) throw err;
+    deps.logger?.warn(
+      '[loja-integrada/avisos] falha transitória ao sincronizar os avisos após gravar a credencial',
+      { integracaoId, code: (err as { code: number }).code },
+    );
+    return { reconexaoResolvida: false, sincronizado: false };
+  }
+}
+
+/** A credential write that left a VALIDATED token behind: a save or a renewal. */
+export interface EscritaValidadaLi {
+  readonly integracaoId: string;
+  readonly lojaNome: string;
+  /** ms — the expiry just stored. */
+  readonly tokenExpiraEmMs: number;
+  /** µs — the write's commit time: the reconexão aviso's clock. */
+  readonly versaoUs: number;
+}
+
+/**
+ * After a save or a renewal: the token was validated just now, so
+ *
+ *  - the reconexão aviso is RESOLVED, clocked by the write's commit time — a
+ *    late raise from an older park is then dropped by `escreverAviso`;
+ *  - the expiry aviso goes through the ONE threshold decision
+ *    ({@link sincronizarAvisoDeExpiracao}): raised with fresh params at or
+ *    below 30 days, resolved above.
+ */
+export function sincronizarAvisosAposValidacao(
+  db: Firestore,
+  e: EscritaValidadaLi,
+  deps: AvisoDepsLi,
+): Promise<AvisosAposEscrita> {
+  return semDerrubarAEscrita(e.integracaoId, deps, async () => {
+    const fechou = await resolverReconexaoPendente(
+      db,
+      e.integracaoId,
+      MOTIVO_AVISO_LI.tokenValidado,
+      deps,
+      { relogioUs: e.versaoUs, lojaNome: e.lojaNome },
+    );
+    await sincronizarAvisoDeExpiracao(
+      db,
+      { integracaoId: e.integracaoId, lojaNome: e.lojaNome, tokenExpiraEmMs: e.tokenExpiraEmMs },
+      MOTIVO_AVISO_LI.tokenValidado,
+      deps,
+    );
+    return fechou;
+  });
+}
+
+/**
+ * After a removal: no token, so nothing to warn about. The reconexão aviso is
+ * resolved CLOCKED by the delete's commit time (a park that raced the removal
+ * cannot reopen it), the expiry aviso clockless — both as `credencial-removida`.
+ */
+export function resolverAvisosAposRemocao(
+  db: Firestore,
+  e: { readonly integracaoId: string; readonly lojaNome: string; readonly versaoUs: number },
+  deps: AvisoDepsLi,
+): Promise<AvisosAposEscrita> {
+  return semDerrubarAEscrita(e.integracaoId, deps, async () => {
+    const fechou = await resolverReconexaoPendente(
+      db,
+      e.integracaoId,
+      MOTIVO_AVISO_LI.credencialRemovida,
+      deps,
+      { relogioUs: e.versaoUs, lojaNome: e.lojaNome },
+    );
+    await resolverExpiracaoToken(db, e.integracaoId, MOTIVO_AVISO_LI.credencialRemovida, deps);
+    return fechou;
   });
 }

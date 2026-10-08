@@ -44,6 +44,8 @@ describe('lib/lojaIntegrada layout', () => {
       expect.arrayContaining([
         'avisos/avisos.ts',
         'conta/expiracaoSweep.ts',
+        'conta/status.ts',
+        'conta/validade.ts',
         'core/credentialStore.ts',
         'core/estacionamento.ts',
         'core/contexto.ts',

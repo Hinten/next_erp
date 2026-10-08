@@ -14,8 +14,8 @@ runConfig:
   # reasoning of the other channel backends: it does not apply here.
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
-# No `timeoutSeconds` — the platform default is what the later timeout-ceiling
-# test compares against.
+# No `timeoutSeconds` — the platform default is what
+# `lib/lojaIntegrada/prazos.test.ts` compares the credential routes against.
 #
 # No `runConfig.vpcAccess` — this channel needs no static egress IP (master plan
 # D3).

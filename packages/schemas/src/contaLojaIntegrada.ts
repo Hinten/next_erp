@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { dataCivilNoFuso, somarDiasCivis } from '@delfrance/core/datetime';
+import { FUSO_FISCAL } from './simplesNacional/competencia';
 
 /* -------------------------------------------------------------------------- */
 /*          Loja Integrada conta: the wire contract of apps/loja-integrada    */
@@ -13,6 +15,10 @@ import { z } from 'zod';
  *
  * Pure and total: no clock, no network, no Firestore. Every function takes the
  * instant it reasons about as a parameter.
+ *
+ * It holds: the expiry arithmetic and the accepted date window, the error
+ * `code`s, the request bodies of the two `PUT`s, and every answer shape (the
+ * status projection, the write answer, the removal answer, the error envelope).
  *
  * ⚠️ A NEW file on purpose, not a block inside `integracao.ts`: that file sits on
  * the NF-e live lane's path list, so every push touching it would cost a SEFAZ
@@ -36,6 +42,39 @@ export const LIMIAR_AVISO_TOKEN_LI_DIAS = 30;
  * a renewal on the last day of a month must not be refused.
  */
 export const VALIDADE_TOKEN_LI_MAX_DIAS = 120;
+
+/** The civil-date window an expiry date must fall in, both ends inclusive. */
+export interface JanelaDeValidadeTokenLi {
+  /** Today in São Paulo, `YYYY-MM-DD` — the earliest date accepted. */
+  readonly desde: string;
+  /** Today + {@link VALIDADE_TOKEN_LI_MAX_DIAS}, `YYYY-MM-DD` — the latest one. */
+  readonly ate: string;
+}
+
+/**
+ * The expiry dates a save or a renewal accepts at instant `agoraMs`: from today
+ * to today + {@link VALIDADE_TOKEN_LI_MAX_DIAS}, as São Paulo CIVIL dates.
+ *
+ * ONE rule for both surfaces: the routes refuse a date outside it (422), and the
+ * panel's date picker offers exactly it, so the picker can never offer a date
+ * the route refuses.
+ *
+ * ⚠️ Civil dates in {@link FUSO_FISCAL}, never UTC: at 23:30 in São Paulo it is
+ * already tomorrow in UTC, and a UTC "today" would refuse the operator's today.
+ *
+ * Both bounds are `YYYY-MM-DD` with a four-digit year, so they compare as
+ * strings in calendar order.
+ */
+export function janelaDeValidadeTokenLi(agoraMs: number): JanelaDeValidadeTokenLi {
+  const desde = dataCivilNoFuso(agoraMs, FUSO_FISCAL);
+  const ate = somarDiasCivis(desde, VALIDADE_TOKEN_LI_MAX_DIAS);
+  // Unreachable for any real clock: `desde` is a well-formed date, and adding
+  // 120 days leaves Temporal's range only past the year 275 760.
+  if (ate === null) {
+    throw new RangeError(`janelaDeValidadeTokenLi: data fora do intervalo (${desde})`);
+  }
+  return { desde, ate };
+}
 
 /**
  * Whole days until the token's stated expiry.
@@ -164,3 +203,82 @@ export const respostaCredencialLojaIntegradaSchema = statusContaLojaIntegradaSch
   reconexaoResolvida: z.boolean(),
 });
 export type RespostaCredencialLojaIntegrada = z.infer<typeof respostaCredencialLojaIntegradaSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                               Request bodies                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The longest Personal Token a save accepts, after trimming. The real length is
+ * not documented anywhere we could read; this only bounds the body.
+ */
+export const MAX_TOKEN_LI = 1024;
+
+/** The version a write carries: the `versaoCredencialUs` the panel last read. */
+const versaoCredencialSchema = z.number().int().nonnegative();
+
+/**
+ * `PUT /api/marketplace/loja-integrada/conta/[id]/credencial` — validate a
+ * Personal Token against Loja Integrada and store it.
+ *
+ * - `token` is trimmed at BOTH ends here, once (a paste often carries a trailing
+ *   line break), and never anywhere else. Whitespace INSIDE it is kept: the
+ *   package refuses it before any request, and the route answers that as a
+ *   malformed token rather than guessing what was meant.
+ * - `expiraEm` is the date the operator copied from the painel. Only its type is
+ *   checked here: a bad or out-of-window date is a 422 from the route, so the
+ *   panel can show it on the date field instead of as a malformed request.
+ * - `versaoEsperada` is `null` when the panel saw no stored token, otherwise the
+ *   `versaoCredencialUs` it last read. A mismatch is a 409, before any call.
+ *
+ * Strict: an unknown key is a 400.
+ */
+export const corpoSalvarCredencialLiSchema = z.strictObject({
+  token: z.string().trim().min(1).max(MAX_TOKEN_LI),
+  expiraEm: z.string(),
+  versaoEsperada: versaoCredencialSchema.nullable(),
+});
+export type CorpoSalvarCredencialLi = z.input<typeof corpoSalvarCredencialLiSchema>;
+
+/**
+ * `PUT /api/marketplace/loja-integrada/conta/[id]/credencial/validade` — the
+ * token was renewed in the painel (renewal keeps the SAME token, which is never
+ * shown again), so the stored one is re-validated and only its expiry changes.
+ * There is always a stored token to renew, so the version is never `null`.
+ */
+export const corpoRenovarValidadeLiSchema = z.strictObject({
+  expiraEm: z.string(),
+  versaoEsperada: versaoCredencialSchema,
+});
+export type CorpoRenovarValidadeLi = z.input<typeof corpoRenovarValidadeLiSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                         Other answers of the routes                         */
+/* -------------------------------------------------------------------------- */
+
+/** What `DELETE …/conta/[id]/credencial` answers. It is idempotent. */
+export const respostaRemocaoCredencialLiSchema = z.object({ ok: z.literal(true) });
+export type RespostaRemocaoCredencialLi = z.infer<typeof respostaRemocaoCredencialLiSchema>;
+
+/**
+ * Every non-2xx body of the conta routes: the repo's `{ error, code, issues? }`
+ * envelope, plus two fields only the validation outcomes carry.
+ *
+ * - `issues` — field PATHS only, never a value;
+ * - `status` — the HTTP status Loja Integrada answered, on a refused or
+ *   inconclusive validation (`null` when there was none);
+ * - `correlationId` — the validation call's id, to find it in the logs.
+ *
+ * `code` is a plain string rather than {@link CODIGO_ERRO_LI}'s union: a code a
+ * newer backend adds must still parse in an older browser.
+ *
+ * ⚠️ No envelope ever carries the token, its fingerprint or a response body.
+ */
+export const erroContaLojaIntegradaSchema = z.object({
+  error: z.string(),
+  code: z.string(),
+  issues: z.array(z.string()).nullable().optional(),
+  status: z.number().int().nullable().optional(),
+  correlationId: z.string().nullable().optional(),
+});
+export type ErroContaLojaIntegrada = z.infer<typeof erroContaLojaIntegradaSchema>;

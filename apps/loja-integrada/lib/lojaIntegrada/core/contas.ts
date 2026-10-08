@@ -23,6 +23,23 @@ import { lerCredencial } from './credentialStore';
 import { LiCredencialInvalidaError } from './erros';
 
 /**
+ * Is this value unusable as a conta (document) id? Empty, or carrying a `/`
+ * (it would address another path) or a `.` (Firestore reserves `.` and `..`).
+ *
+ * A route checks it FIRST, before any read: `.doc(id)` validates the path
+ * itself and throws outside every narrow `catch`, so a malformed id would be a
+ * 500 — or, with a separator, a read of a document the caller never named. A
+ * real conta id is an auto-id, so refusing every `.` costs nothing.
+ *
+ * ⚠️ Copied, not imported: `apps/*` have no dependency edge to each other
+ * (`apps/shopee`'s `naoDocId` is the same rule). Nothing here asserts what any
+ * other copy does.
+ */
+export function naoEhIdDeConta(id: unknown): boolean {
+  return typeof id !== 'string' || id === '' || id.includes('/') || id.includes('.');
+}
+
+/**
  * The conta document, read uncached, when it exists AND is a Loja Integrada
  * conta; `null` otherwise (the routes answer both with one 404). `ativo` is not
  * checked: a parked or inactive conta must stay fixable.

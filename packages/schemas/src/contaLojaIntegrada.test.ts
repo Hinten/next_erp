@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   CODIGO_ERRO_LI,
   LIMIAR_AVISO_TOKEN_LI_DIAS,
+  MAX_TOKEN_LI,
   SITUACAO_VALIDADE_TOKEN_LI,
   VALIDADE_TOKEN_LI_MAX_DIAS,
+  corpoRenovarValidadeLiSchema,
+  corpoSalvarCredencialLiSchema,
   diasParaExpirarLi,
+  erroContaLojaIntegradaSchema,
+  janelaDeValidadeTokenLi,
   respostaCredencialLojaIntegradaSchema,
+  respostaRemocaoCredencialLiSchema,
   situacaoValidadeTokenLi,
   statusContaLojaIntegradaSchema,
 } from './contaLojaIntegrada';
@@ -111,6 +117,128 @@ describe('statusContaLojaIntegradaSchema', () => {
   });
 });
 
+describe('janelaDeValidadeTokenLi', () => {
+  it('today (São Paulo) to today + 120 days, both civil dates', () => {
+    expect(janelaDeValidadeTokenLi(MEIO_DIA_SP)).toEqual({
+      desde: '2026-10-08',
+      ate: '2027-02-05',
+    });
+  });
+
+  it('near-miss: 23:30 in São Paulo is already tomorrow in UTC, and today is still São Paulo’s', () => {
+    // 2026-10-09T02:30Z — the 9th in UTC, still the 8th in São Paulo.
+    const tardeSp = Date.UTC(2026, 9, 9, 2, 30, 0);
+    expect(new Date(tardeSp).toISOString().slice(0, 10)).toBe('2026-10-09');
+    expect(janelaDeValidadeTokenLi(tardeSp).desde).toBe('2026-10-08');
+    // One hour later São Paulo reaches midnight, and the window moves.
+    expect(janelaDeValidadeTokenLi(tardeSp + 60 * 60 * 1000).desde).toBe('2026-10-09');
+  });
+
+  it('crosses a leap day by the calendar', () => {
+    // 2027-11-01 + 120 days = 2028-02-29.
+    const r = janelaDeValidadeTokenLi(Date.UTC(2027, 10, 1, 15, 0, 0));
+    expect(r).toEqual({ desde: '2027-11-01', ate: '2028-02-29' });
+  });
+});
+
+describe('corpoSalvarCredencialLiSchema', () => {
+  const corpo = { token: 'abc', expiraEm: '2026-12-31', versaoEsperada: null };
+
+  it('trims the token at both ends — and only there', () => {
+    expect(corpoSalvarCredencialLiSchema.parse({ ...corpo, token: '  abc\n' }).token).toBe('abc');
+    // Near-miss: an inner space is kept; the package refuses it as malformed.
+    expect(corpoSalvarCredencialLiSchema.parse({ ...corpo, token: 'a bc' }).token).toBe('a bc');
+  });
+
+  it('refuses an empty or blank token, and one past MAX_TOKEN_LI', () => {
+    expect(corpoSalvarCredencialLiSchema.safeParse({ ...corpo, token: '' }).success).toBe(false);
+    expect(corpoSalvarCredencialLiSchema.safeParse({ ...corpo, token: ' \n\t' }).success).toBe(
+      false,
+    );
+    expect(
+      corpoSalvarCredencialLiSchema.safeParse({ ...corpo, token: 'x'.repeat(MAX_TOKEN_LI) })
+        .success,
+    ).toBe(true);
+    expect(
+      corpoSalvarCredencialLiSchema.safeParse({ ...corpo, token: 'x'.repeat(MAX_TOKEN_LI + 1) })
+        .success,
+    ).toBe(false);
+  });
+
+  it('versaoEsperada: null or a non-negative integer; never negative, fractional or absent', () => {
+    expect(corpoSalvarCredencialLiSchema.safeParse(corpo).success).toBe(true);
+    expect(
+      corpoSalvarCredencialLiSchema.safeParse({ ...corpo, versaoEsperada: 1_790_000_000_123_456 })
+        .success,
+    ).toBe(true);
+    for (const v of [-1, 1.5, '1', undefined]) {
+      expect(
+        corpoSalvarCredencialLiSchema.safeParse({ ...corpo, versaoEsperada: v }).success,
+        String(v),
+      ).toBe(false);
+    }
+  });
+
+  it('is strict, and leaves the date to the route (any string passes here)', () => {
+    expect(corpoSalvarCredencialLiSchema.safeParse({ ...corpo, extra: 1 }).success).toBe(false);
+    expect(corpoSalvarCredencialLiSchema.safeParse({ ...corpo, expiraEm: '31/12' }).success).toBe(
+      true,
+    );
+  });
+});
+
+describe('corpoRenovarValidadeLiSchema', () => {
+  it('requires a version — there is always a stored token to renew', () => {
+    expect(
+      corpoRenovarValidadeLiSchema.safeParse({ expiraEm: '2026-12-31', versaoEsperada: 7 }).success,
+    ).toBe(true);
+    expect(
+      corpoRenovarValidadeLiSchema.safeParse({ expiraEm: '2026-12-31', versaoEsperada: null })
+        .success,
+    ).toBe(false);
+  });
+
+  it('is strict: a token in a renewal body is refused, never ignored', () => {
+    expect(
+      corpoRenovarValidadeLiSchema.safeParse({
+        expiraEm: '2026-12-31',
+        versaoEsperada: 7,
+        token: 'abc',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('the other answers', () => {
+  it('the removal answer is exactly { ok: true }', () => {
+    expect(respostaRemocaoCredencialLiSchema.parse({ ok: true })).toEqual({ ok: true });
+    expect(respostaRemocaoCredencialLiSchema.safeParse({ ok: false }).success).toBe(false);
+  });
+
+  it('the error envelope parses the bare and the validation shapes, and an unknown code', () => {
+    expect(erroContaLojaIntegradaSchema.parse({ error: 'x', code: 'LI_X' })).toEqual({
+      error: 'x',
+      code: 'LI_X',
+    });
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'recusado',
+        code: CODIGO_ERRO_LI.tokenRecusado,
+        status: 401,
+        correlationId: 'c-1',
+      }),
+    ).toMatchObject({ status: 401, correlationId: 'c-1' });
+    expect(
+      erroContaLojaIntegradaSchema.parse({
+        error: 'x',
+        code: CODIGO_ERRO_LI.corpoInvalido,
+        issues: ['token'],
+      }).issues,
+    ).toEqual(['token']);
+    expect(erroContaLojaIntegradaSchema.safeParse({ error: 'x' }).success).toBe(false);
+  });
+});
+
 describe('CODIGO_ERRO_LI', () => {
   it('every code is unique and LI_-prefixed', () => {
     const codigos = Object.values(CODIGO_ERRO_LI);
@@ -123,6 +251,11 @@ describe('barrel', () => {
   it('exports the contract, and no collection meta for it', () => {
     expect(barrel.statusContaLojaIntegradaSchema).toBe(statusContaLojaIntegradaSchema);
     expect(barrel.diasParaExpirarLi).toBe(diasParaExpirarLi);
+    expect(barrel.janelaDeValidadeTokenLi).toBe(janelaDeValidadeTokenLi);
+    expect(barrel.corpoSalvarCredencialLiSchema).toBe(corpoSalvarCredencialLiSchema);
+    expect(barrel.corpoRenovarValidadeLiSchema).toBe(corpoRenovarValidadeLiSchema);
+    expect(barrel.erroContaLojaIntegradaSchema).toBe(erroContaLojaIntegradaSchema);
+    expect(barrel.respostaRemocaoCredencialLiSchema).toBe(respostaRemocaoCredencialLiSchema);
     expect(Object.keys(barrel).some((k) => /^contaLojaIntegrada(Meta)?$/.test(k))).toBe(false);
   });
 });

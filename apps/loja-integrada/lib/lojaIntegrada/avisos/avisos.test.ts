@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { chaveDeAviso, TIPO_AVISO } from '@delfrance/schemas';
 
-import { FakeDb, asDb, increment } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc, increment } from '../testing/fakeDb';
 import { AGORA_MS, DIA_MS, caminhoAviso } from '../testing/fixtures';
 import {
   MOTIVO_AVISO_LI,
@@ -20,9 +20,11 @@ import {
   prazoUsDe,
   relogioDoDocumentoUs,
   resolverAvisoDeContaRemovida,
+  resolverAvisosAposRemocao,
   resolverExpiracaoToken,
   resolverReconexaoPendente,
   sincronizarAvisoDeExpiracao,
+  sincronizarAvisosAposValidacao,
 } from './avisos';
 
 const ID = 'conta-li-1';
@@ -210,12 +212,107 @@ describe('the reconexão aviso clock (commit time, µs)', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*          The avisos a route syncs AFTER its credential write landed          */
+/* -------------------------------------------------------------------------- */
+
+describe('sincronizarAvisosAposValidacao', () => {
+  const escrita = {
+    integracaoId: ID,
+    lojaNome: 'Loja',
+    tokenExpiraEmMs: EXPIRA_20_DIAS,
+    versaoUs: 9_000,
+  };
+
+  it('resolves the reconexão row at the write clock and raises the expiry row at ≤ 30 days', async () => {
+    const db = new FakeDb();
+    await avisarReconexaoPendente(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', status: 401, relogioUs: 1_000 },
+      deps,
+    );
+    const r = await sincronizarAvisosAposValidacao(asDb(db), escrita, deps);
+    expect(r).toEqual({ reconexaoResolvida: true, sincronizado: true });
+    expect(db.ler(caminhoAviso(chaveReconexao(ID)))).toMatchObject({
+      resolucaoMotivo: 'token-validado',
+      relogioEvento: 9_000,
+    });
+    expect(db.ler(caminhoAviso(chaveExpiracao(ID)))).toMatchObject({
+      resolvidoEm: null,
+      params: { loja: 'Loja', dias: 20, expiraEm: '2027-02-04' },
+    });
+  });
+
+  it('a TRANSIENT gRPC failure is contained and reported; the warn names the conta, nothing else', async () => {
+    const db = new FakeDb();
+    db.falharLeitura(caminhoAviso(chaveReconexao(ID)), grpc(14, 'UNAVAILABLE'));
+    const avisosLog: unknown[][] = [];
+    const r = await sincronizarAvisosAposValidacao(asDb(db), escrita, {
+      ...deps,
+      logger: { warn: (...a: unknown[]) => avisosLog.push(a) },
+    });
+    expect(r).toEqual({ reconexaoResolvida: false, sincronizado: false });
+    expect(avisosLog).toHaveLength(1);
+    expect(avisosLog[0]?.[1]).toEqual({ integracaoId: ID, code: 14 });
+  });
+
+  it('near-miss: a deterministic gRPC failure, and a bug, still throw', async () => {
+    const db = new FakeDb();
+    db.falharLeitura(caminhoAviso(chaveReconexao(ID)), grpc(7, 'PERMISSION_DENIED'));
+    await expect(sincronizarAvisosAposValidacao(asDb(db), escrita, deps)).rejects.toMatchObject({
+      code: 7,
+    });
+    db.falharLeitura(caminhoAviso(chaveReconexao(ID)), new TypeError('bug'));
+    await expect(sincronizarAvisosAposValidacao(asDb(db), escrita, deps)).rejects.toBeInstanceOf(
+      TypeError,
+    );
+  });
+});
+
+describe('resolverAvisosAposRemocao', () => {
+  it('resolves both rows as credencial-removida, the reconexão one at the delete clock', async () => {
+    const db = new FakeDb();
+    await avisarReconexaoPendente(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', status: 403, relogioUs: 1_000 },
+      deps,
+    );
+    await avisarExpiracaoToken(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', tokenExpiraEmMs: EXPIRA_20_DIAS },
+      deps,
+    );
+    const r = await resolverAvisosAposRemocao(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', versaoUs: 2_000 },
+      deps,
+    );
+    expect(r).toEqual({ reconexaoResolvida: true, sincronizado: true });
+    expect(db.ler(caminhoAviso(chaveReconexao(ID)))).toMatchObject({
+      resolucaoMotivo: 'credencial-removida',
+      relogioEvento: 2_000,
+    });
+    expect(db.ler(caminhoAviso(chaveExpiracao(ID)))).toMatchObject({
+      resolucaoMotivo: 'credencial-removida',
+    });
+    // A late raise from a park OLDER than the removal stays resolved.
+    const tarde = await avisarReconexaoPendente(
+      asDb(db),
+      { integracaoId: ID, lojaNome: 'Loja', status: 401, relogioUs: 1_500 },
+      deps,
+    );
+    expect(tarde.resultado).toBe('ignorado');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*            The µs promise, counted as raw source text                       */
 /* -------------------------------------------------------------------------- */
 
 const RAIZ_LIB = fileURLToPath(new URL('..', import.meta.url));
+/** The routes: they receive µs from the store and hand it on, never convert. */
+const RAIZ_ROTAS = fileURLToPath(new URL('../../../app', import.meta.url));
 
-/** Every non-test `.ts` under `lib/lojaIntegrada`, outside `testing/`. */
+/** Every non-test `.ts` under `dir`, outside `testing/`. */
 function fontes(dir: string): string[] {
   const saida: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -234,12 +331,14 @@ function contar(texto: string, agulha: string): number {
 }
 
 describe('⚠️ the µs boundary: exactly two ms → µs calls and one Timestamp → µs read', () => {
-  const arquivos = fontes(RAIZ_LIB);
+  const rotas = fontes(RAIZ_ROTAS);
+  const arquivos = [...fontes(RAIZ_LIB), ...rotas];
   const avisos = fileURLToPath(new URL('./avisos.ts', import.meta.url));
 
-  it('the scan found the lib', () => {
+  it('the scan found the lib and the conta routes', () => {
     expect(arquivos.length).toBeGreaterThan(5);
     expect(arquivos).toContain(avisos);
+    expect(rotas.filter((r) => r.includes('conta'))).toHaveLength(3);
   });
 
   it('this module calls the ms → µs converter exactly twice (agoraUsDe, prazoUsDe)', () => {

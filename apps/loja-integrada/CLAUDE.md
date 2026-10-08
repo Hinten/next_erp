@@ -23,6 +23,17 @@ be listed in the literal `Access-Control-Allow-Methods` in `proxy.ts`. The route
 the conta uncached and require only `tipo === 3`, so a parked or inactive conta can
 still be fixed. Only the context loader refuses those.
 
+- The wire contract (bodies, answers, error codes, the accepted date window
+  `janelaDeValidadeTokenLi`) is `packages/schemas/src/contaLojaIntegrada.ts`, shared with
+  the web panel. Never redefine a shape here.
+- Each `PUT` makes exactly ONE `validarPersonalToken(` call (`prazos.test.ts` counts it
+  and pins `PRAZO_LI_MS` under the App Hosting ceiling). Every refusal that needs no call
+  (id, body, date, conta, version, wrong-store, token-inside-ref) comes before it.
+- Only that call sits in the abort `try`, narrowed by identity: `err === req.signal.reason`
+  → 499. A save re-reads the conta after writing and undoes the write on a 404.
+- The aviso step runs after the write landed: a TRANSIENT gRPC failure there is logged and
+  the answer stays 200 (`semDerrubarAEscrita` in `avisos/avisos.ts`); anything else throws.
+
 ## Store and writes
 
 - The token lives in `integracao/{id}/credenciaisLojaIntegrada/current`: strict schema,
