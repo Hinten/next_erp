@@ -220,10 +220,16 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   [TIPO_AVISO.lojaIntegradaReconexaoPendente]: {
     titulo: 'Token da Loja Integrada recusado',
-    corpo: (params) =>
-      `A Loja Integrada recusou o token da loja ${p(params, 'loja')}${
-        params.status === undefined ? '' : ` (HTTP ${p(params, 'status')})`
-      }. A importação fica parada até salvar um token válido.`,
+    corpo: (params) => {
+      // `p()` decides what "missing" means (absent OR ''), so the clause and the
+      // placeholder can never disagree: a missing status drops the whole clause.
+      const status = p(params, 'status', '');
+      return (
+        `A Loja Integrada recusou o token da loja ${p(params, 'loja')}` +
+        `${status === '' ? '' : ` (HTTP ${status})`}. ` +
+        'A importação fica parada até salvar um token válido.'
+      );
+    },
     // O remédio está FORA do app: só o proprietário da loja gera ou renova o token.
     runbook:
       'Peça ao proprietário da loja que gere um novo token ou renove o atual no painel da Loja ' +

@@ -14,11 +14,14 @@ import type { CollectionMetadata } from './types';
 export const CREDENCIAL_LOJA_INTEGRADA_DOC_ID = 'current';
 
 /**
- * The longest `reconexaoPendente.refCredencial` accepted. Mirrors
+ * The longest `reconexaoPendente.refCredencial` accepted. Meant to equal
  * `MAX_REF_CREDENCIAL` in `@delfrance/integrations-loja-integrada` (the
- * package's `client.ts`), which refuses a longer `ref` on every request; this
- * package has no dependency edge to that one, so the value is copied and pinned
- * by `credenciaisLojaIntegrada.test.ts`.
+ * package's `client.ts`), which refuses a longer `ref` on every request.
+ * ⚠️ This is a COPY, and nothing in this package compares the two: there is no
+ * dependency edge between them, so `credenciaisLojaIntegrada.test.ts` pins only
+ * the literal 64 here. The cross-check belongs in `apps/loja-integrada`, the
+ * first workspace that depends on both packages (step 2, PR b). Until it lands,
+ * changing either value means changing the other by hand.
  */
 const MAX_REF_CREDENCIAL = 64;
 

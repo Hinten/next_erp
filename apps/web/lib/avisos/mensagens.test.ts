@@ -370,6 +370,12 @@ describe('MENSAGENS_POR_TIPO.lojaIntegradaReconexaoPendente', () => {
     expect(corpo).not.toContain('undefined');
   });
 
+  it('treats an empty status like a missing one: no "(HTTP —)" clause', () => {
+    expect(mensagem.corpo({ loja: 'Conta A', status: '' })).toBe(
+      `A Loja Integrada recusou o token da loja Conta A. ${PARADA}`,
+    );
+  });
+
   it('renders the producer plano as stored', () => {
     const aviso = comoArmazenado({
       tipo: TIPO_AVISO.lojaIntegradaReconexaoPendente,

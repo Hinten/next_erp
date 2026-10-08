@@ -132,8 +132,9 @@ describe('credenciaisLojaIntegradaSchema', () => {
     });
 
     it('accepts a 64-character ref, refuses 65 and the empty ref', () => {
-      // 64 is the package's `MAX_REF_CREDENCIAL`: a longer ref is refused on
-      // every request, so a stored one could never be matched.
+      // 64 is meant to be the package's `MAX_REF_CREDENCIAL` (a longer ref is
+      // refused on every request, so a stored one could never be matched). This
+      // pins the literal only; nothing here compares it with the package's value.
       expect(
         aceita({
           ...PRIMEIRO_SAVE,
