@@ -669,8 +669,9 @@ export const variacaoMercadoLivreLinkSchema = z
      * Under User Products each member is its own item, and Mercado Livre can
      * recategorize items on its own. The FAMILY's category — on the parent link,
      * where the size-chart binding and every new member's `POST /items` read it
-     * — is folded from these by unanimity (`foldFamilyCategoria`), so one
-     * member's reading never speaks for the family alone.
+     * — is folded from these by unanimity of the LIVE members
+     * (`foldFamilyCategoria`), so one member's reading never speaks for the
+     * family alone, and an ended member's stale value never vetoes the rest.
      *
      * Written fill-only by the surfaces that read the member's item (the `items`
      * sync, "Reverificar anúncio", the status change): a reading that omitted

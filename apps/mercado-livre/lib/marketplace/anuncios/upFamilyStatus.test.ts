@@ -232,23 +232,63 @@ describe('foldFamilyStatus — ML moderations follow the winner', () => {
 });
 
 describe('foldFamilyCategoria (#847)', () => {
-  it('must come out EQUAL: unanimous known values, with never-observed members not blocking', () => {
-    expect(foldFamilyCategoria(['MLB1', null, 'MLB1'])).toBe('MLB1');
-    expect(foldFamilyCategoria(['MLB1'])).toBe('MLB1');
+  /** A LIVE member's vote — the common case. */
+  const vivo = (categoria: string | null) => ({ categoria, status: 'active', subStatus: null });
+
+  it('must come out EQUAL: unanimous known values, with never-learned members not blocking', () => {
+    expect(foldFamilyCategoria([vivo('MLB1'), vivo(null), vivo('MLB1')])).toBe('MLB1');
+    expect(foldFamilyCategoria([vivo('MLB1')])).toBe('MLB1');
     // The first observed member settles a family nobody has observed yet.
-    expect(foldFamilyCategoria([null, 'MLB7', null])).toBe('MLB7');
+    expect(foldFamilyCategoria([vivo(null), vivo('MLB7'), vivo(null)])).toBe('MLB7');
   });
 
-  it('must stay DISTINCT: disagreeing members leave the parent alone, whatever the order', () => {
-    expect(foldFamilyCategoria(['MLB1', 'MLB2'])).toBeNull();
-    expect(foldFamilyCategoria(['MLB2', null, 'MLB1'])).toBeNull();
+  it('must stay DISTINCT: disagreeing LIVE members leave the parent alone, whatever the order', () => {
+    expect(foldFamilyCategoria([vivo('MLB1'), vivo('MLB2')])).toBeNull();
+    expect(foldFamilyCategoria([vivo('MLB2'), vivo(null), vivo('MLB1')])).toBeNull();
     // Near-misses: a prefix and a case fold are different ML categories.
-    expect(foldFamilyCategoria(['MLB1', 'MLB12'])).toBeNull();
-    expect(foldFamilyCategoria(['MLB1', 'mlb1'])).toBeNull();
+    expect(foldFamilyCategoria([vivo('MLB1'), vivo('MLB12')])).toBeNull();
+    expect(foldFamilyCategoria([vivo('MLB1'), vivo('mlb1')])).toBeNull();
   });
 
   it('nothing known → null (keep the stored value)', () => {
     expect(foldFamilyCategoria([])).toBeNull();
-    expect(foldFamilyCategoria([null, null])).toBeNull();
+    expect(foldFamilyCategoria([vivo(null), vivo(null)])).toBeNull();
+  });
+
+  it('#1842 review — an ENDED member keeps its stale category but never vetoes the live ones', () => {
+    // ML need not recategorize an item that no longer sells, so a closed member
+    // can sit on the old category forever; under unanimity it would freeze the
+    // parent on it.
+    const fechado = { categoria: 'MLB1', status: 'closed', subStatus: null };
+    expect(foldFamilyCategoria([fechado, vivo('MLB2'), vivo('MLB2')])).toBe('MLB2');
+    // Removed by moderation is the same terminal rung as `closed`.
+    const removido = { categoria: 'MLB1', status: 'under_review', subStatus: ['forbidden'] };
+    expect(foldFamilyCategoria([removido, vivo('MLB2')])).toBe('MLB2');
+  });
+
+  it('…but a PAUSED or under-review member is still live, and still vetoes', () => {
+    expect(
+      foldFamilyCategoria([{ categoria: 'MLB1', status: 'paused', subStatus: null }, vivo('MLB2')]),
+    ).toBeNull();
+    expect(
+      foldFamilyCategoria([
+        { categoria: 'MLB1', status: 'under_review', subStatus: [] },
+        vivo('MLB2'),
+      ]),
+    ).toBeNull();
+  });
+
+  it('a NEVER-observed member is unknown, not dead — it still votes', () => {
+    expect(
+      foldFamilyCategoria([{ categoria: 'MLB1', status: null, subStatus: null }, vivo('MLB2')]),
+    ).toBeNull();
+  });
+
+  it('EVERY voter ended → fall back to all of them, under the same unanimity', () => {
+    const fechado = (categoria: string) => ({ categoria, status: 'closed', subStatus: null });
+    expect(foldFamilyCategoria([fechado('MLB2'), fechado('MLB2')])).toBe('MLB2');
+    expect(foldFamilyCategoria([fechado('MLB1'), fechado('MLB2')])).toBeNull();
+    // A live member whose category was never learned does not count as a voter.
+    expect(foldFamilyCategoria([fechado('MLB2'), vivo(null)])).toBe('MLB2');
   });
 });

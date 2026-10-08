@@ -122,7 +122,7 @@ import { loadMercadoLivreContext } from '../core/mercadoLivre';
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
 import { refMatchesIntegracao } from '../core/linkRefs';
 import { familyMemberQuery, resolveUpFamilyByMemberItemId } from './upMemberLink';
-import { foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
+import { type VotoCategoria, foldFamilyCategoria, foldFamilyStatus } from './upFamilyStatus';
 import type { UptinSourceLink } from '../importacao/importMigration';
 import { clearFalha } from '../core/publishFalhas';
 import { consultarModeracoes, moderacoesArmazenadas, moderacoesIguais } from './moderacoes';
@@ -727,7 +727,7 @@ export async function applyFamilyStatusAndFold(
     // has one, otherwise what is stored on its own link. Same "read from the
     // transaction's own view" rule as the status fold, and for the same reason:
     // members of one family are delivered concurrently.
-    const categorias: Array<string | null> = [];
+    const categorias: VotoCategoria[] = [];
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
       const chave = chaveMembro(d.ref.parent?.parent?.id ?? '', d.id);
@@ -739,29 +739,33 @@ export async function applyFamilyStatusAndFold(
       // can ever arrive for something that was never published, the family could
       // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
       if (!observado && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
-      categorias.push(
-        observado?.categoryId ?? (typeof raw.category_id === 'string' ? raw.category_id : null),
-      );
-      foldable.push(
-        observado
-          ? {
-              status: observado.status,
-              subStatus: observado.subStatus,
-              // A caller that never read `/moderations` contributes what is
-              // STORED on the member, exactly like a sibling below — so the fold
-              // stays a statement about disk rather than a guess.
-              moderacoes: observado.moderacoes ?? moderacoesArmazenadas(raw),
-            }
-          : {
-              status: typeof raw.status === 'string' ? raw.status : null,
-              subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
-              // ⚠️ The siblings' moderations come from what is STORED on each
-              // member link — never a fetch. That is what keeps the fold free:
-              // one notification reads one moderation, and the family's answer
-              // is assembled from values already on disk.
-              moderacoes: moderacoesArmazenadas(raw),
-            },
-      );
+      const membro = observado
+        ? {
+            status: observado.status,
+            subStatus: observado.subStatus,
+            // A caller that never read `/moderations` contributes what is
+            // STORED on the member, exactly like a sibling below — so the fold
+            // stays a statement about disk rather than a guess.
+            moderacoes: observado.moderacoes ?? moderacoesArmazenadas(raw),
+          }
+        : {
+            status: typeof raw.status === 'string' ? raw.status : null,
+            subStatus: Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null,
+            // ⚠️ The siblings' moderations come from what is STORED on each
+            // member link — never a fetch. That is what keeps the fold free:
+            // one notification reads one moderation, and the family's answer
+            // is assembled from values already on disk.
+            moderacoes: moderacoesArmazenadas(raw),
+          };
+      foldable.push(membro);
+      // The member's liveness rides with its category vote: an ENDED member's
+      // last-known category must not veto its live siblings (`foldFamilyCategoria`).
+      categorias.push({
+        categoria:
+          observado?.categoryId ?? (typeof raw.category_id === 'string' ? raw.category_id : null),
+        status: membro.status,
+        subStatus: membro.subStatus,
+      });
       const patch = observado ? patchDoMembro(observado, raw) : null;
       if (patch) escritas.push({ ref: d.ref, patch });
     }
@@ -775,7 +779,11 @@ export async function applyFamilyStatusAndFold(
         subStatus: observado.subStatus,
         moderacoes: observado.moderacoes ?? [],
       });
-      categorias.push(observado.categoryId);
+      categorias.push({
+        categoria: observado.categoryId,
+        status: observado.status,
+        subStatus: observado.subStatus,
+      });
     }
 
     const memberChanged = escritas.length > 0;

@@ -2034,6 +2034,54 @@ describe('syncItemStatus — the category of a User-Products family (#847)', () 
     expect(categoriaDoPai(db)).toBe('MLB2');
   });
 
+  it('#1842 review — a CLOSED sibling stuck on the old category does not freeze the parent', async () => {
+    // The closed member was learned in MLB1 (e.g. by "Reverificar anúncio") and
+    // ML need not recategorize an item that no longer sells, so it may never be
+    // re-observed. Under unanimity its vote would veto every later move.
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', status: 'closed', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(out).toBe('synced-family');
+    expect(categoriaDoPai(db)).toBe('MLB2');
+    // The ended member's own record is left as it was last observed.
+    expect(db.docData(memberVarPath('childB'), 'v-childB')).toMatchObject({ category_id: 'MLB1' });
+  });
+
+  it('…while a PAUSED sibling on the old category is still live, and still vetoes', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA', categoria: 'MLB1' },
+        { itemId: MEMBER_B, child: 'childB', status: 'paused', categoria: 'MLB1' },
+      ],
+      { category_id: 'MLB1' },
+    );
+
+    await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'active', category_id: 'MLB2' }),
+    );
+
+    expect(categoriaDoPai(db)).toBe('MLB1');
+  });
+
   it('the category moves even when the STATUS fold cannot conclude', async () => {
     // One member closed, the sibling never observed: the status fold declines to
     // conclude. That says nothing about the category, which must not be held

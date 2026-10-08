@@ -491,6 +491,10 @@ parent takes `foldFamilyCategoria` — **unanimity, never "latest member wins"**
 the same transaction as the status fold: members are delivered concurrently, and a
 last-writer rule would flip the parent on every delivery while they disagree. The
 category moves on its own evidence, even when the status fold cannot conclude.
+⚠️ **Only LIVE members vote** (the status ladder's terminal rung — `closed` or removed
+by moderation — is excluded, falling back to all when every member ended): ML need not
+recategorize an item that no longer sells, so an ended member's last-known category
+would otherwise veto every later move and freeze the parent on a stale value.
 
 ⚠️ **A moderation is NOT its own topic — it arrives on `items`.** ML publishes no
 `moderations` notification topic (checked against its topic list); a policy pause
