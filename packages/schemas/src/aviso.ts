@@ -95,6 +95,7 @@ export const TIPO_AVISO_LABELS = {
   despachoAutomaticoPendente: 'Despacho automático pendente',
   etiquetaComPrazo: 'Etiqueta com prazo de impressão',
   reclamacaoAguardandoVendedor: 'Reclamação aguardando o vendedor',
+  anuncioCategoriaAlterada: 'Categoria do anúncio alterada',
 } as const;
 
 /**
@@ -277,6 +278,49 @@ export const TIPO_AVISO_LABELS = {
  *    change — `escreverAviso` drops an EQUAL clock — and the resolve passes the
  *    same value to `resolverAviso`, so a late, older resolve cannot close a
  *    newer row. ⚠️ Per-return µs: never compare it with another tipo's.
+ *
+ * ---
+ *
+ * **`anuncioCategoriaAlterada`** (#847 — producer
+ * `apps/mercado-livre/lib/marketplace/anuncios/categoriaAnuncio.ts`, run by the
+ * ML functions trigger `onAnuncioCategoriaAlterada`) — Mercado Livre moved a
+ * listing to another category on its own (automatic recategorization, or a split
+ * of its category tree), while the produto's ERP category still names the OLD
+ * one. The ERP category is what selects the price list's formulas
+ * (`formulasPorCategoria` — commission, frete) and the NF-e tax rules, and it is
+ * never moved automatically, so only an operator can decide.
+ *
+ *  - **Name is CHANNEL-NEUTRAL**, for the `estoqueAcimaDoDisponivel` reason
+ *    above; `canal` says which marketplace did it.
+ *  - **Raised NARROWLY**: only when the produto's ERP category is
+ *    `categorias/<the ML category the listing just left>` — the import names ERP
+ *    categories after ML's, so that is the case where the commission lever is
+ *    demonstrably stale. A curated, non-ML ERP category raises nothing. Not
+ *    raised either when ML's own `percentage_fee` is identical for both
+ *    categories at the listing's price and type — nothing to reprice.
+ *  - **Machine resolvers** (this docblock's own rule, above), each a
+ *    TRANSITION: the produto's ERP category becomes the listing's current ML
+ *    category (`categoria-erp-alinhada` — the operator aligned it, or ML moved
+ *    the listing back); the ERP category changed to anything else
+ *    (`categoria-erp-alterada` — an operator reviewed it and chose); the fees
+ *    turned out identical on a later move (`mesma-comissao`); the listing
+ *    stopped being live (`anuncio-encerrado`) or its link was deleted
+ *    (`anuncio-desvinculado`). ⚠️ Residual: an operator who deliberately keeps
+ *    the old category while the commission differs leaves the row open — there
+ *    is no dismiss button (see `avisoMeta.serverOwned`).
+ *  - **Key**: `chaveDeAviso({ tipo, conta: integracaoId, entidade: produtoId,
+ *    janela: linkDocId })` — ONE row per LISTING LINK. A produto can carry two
+ *    listings on one conta, each its own occurrence; the link id rides in its
+ *    own segment (not concatenated into `entidade`), so the fold of one id can
+ *    never shift a boundary into the other.
+ *  - **`params`**: `anuncio` (the ML listing id), `categoriaErpId` +
+ *    `categoriaMlId` (always), `categoriaErpNome` + `categoriaMlNome` (when
+ *    resolvable), `comissaoCategoriaErpPct` + `comissaoCategoriaMlPct` (NUMBERS,
+ *    only when ML answered both — a fee preview, never a promise).
+ *  - **Severity `atencao`**: nothing is down — the listing sells — but every
+ *    sale may be priced on the wrong commission. No `relogioEvento`: ML sends no
+ *    clock for a recategorization, and every decision is re-derived from the
+ *    CURRENT link and produto, so replays converge without one.
  */
 export const tipoAvisoSchema = z
   .enum([
@@ -293,6 +337,7 @@ export const tipoAvisoSchema = z
     'despachoAutomaticoPendente',
     'etiquetaComPrazo',
     'reclamacaoAguardandoVendedor',
+    'anuncioCategoriaAlterada',
   ])
   .meta({ labels: TIPO_AVISO_LABELS });
 export type TipoAviso = z.infer<typeof tipoAvisoSchema>;
@@ -312,6 +357,7 @@ export const TIPO_AVISO = {
   despachoAutomaticoPendente: 'despachoAutomaticoPendente',
   etiquetaComPrazo: 'etiquetaComPrazo',
   reclamacaoAguardandoVendedor: 'reclamacaoAguardandoVendedor',
+  anuncioCategoriaAlterada: 'anuncioCategoriaAlterada',
 } as const satisfies Record<string, TipoAviso>;
 
 /**

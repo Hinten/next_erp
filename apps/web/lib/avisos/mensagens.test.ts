@@ -242,6 +242,78 @@ describe('MENSAGENS_POR_TIPO.reclamacaoAguardandoVendedor', () => {
   });
 });
 
+/**
+ * #847 — the producer is `apps/mercado-livre/lib/marketplace/anuncios/avisoCategoria.ts`.
+ * Same rule as the Shopee planos above: no dependency edge reaches it from here, so
+ * the plano is a LITERAL, and the producer's own test pins the same params.
+ */
+describe('MENSAGENS_POR_TIPO.anuncioCategoriaAlterada', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.anuncioCategoriaAlterada];
+  const RESTO =
+    ' Confira se a nova categoria tem fórmulas e impostos configurados (sem fórmulas, valem ' +
+    'as padrão da lista), troque a categoria do produto e das variações, e recalcule o ' +
+    'preço. O aviso se encerra quando a categoria do produto for alterada.';
+  const COMPLETO = {
+    anuncio: 'MLB4567',
+    categoriaErpId: 'MLB1',
+    categoriaErpNome: 'Roupas > Camisetas',
+    categoriaMlId: 'MLB2',
+    categoriaMlNome: 'Roupas > Camisetas e Regatas',
+    comissaoCategoriaErpPct: 16,
+    comissaoCategoriaMlPct: 11.5,
+  };
+
+  it('renders the sentence verbatim with every param, the commission in pt-BR', () => {
+    expect(mensagem.corpo(COMPLETO)).toBe(
+      'O Mercado Livre moveu o anúncio MLB4567 para a categoria Roupas > Camisetas e Regatas ' +
+        '(MLB2), mas o produto continua na categoria Roupas > Camisetas (MLB1) — é ela que ' +
+        'escolhe as fórmulas de preço (comissão, frete) e as regras de imposto da NF-e. ' +
+        `Comissão estimada pelo Mercado Livre: 16% → 11,5%.${RESTO}`,
+    );
+  });
+
+  it('ids only: no names, no fees — the bare ids, and NO commission sentence', () => {
+    expect(
+      mensagem.corpo({ anuncio: 'MLB4567', categoriaErpId: 'MLB1', categoriaMlId: 'MLB2' }),
+    ).toBe(
+      'O Mercado Livre moveu o anúncio MLB4567 para a categoria MLB2, mas o produto continua ' +
+        'na categoria MLB1 — é ela que escolhe as fórmulas de preço (comissão, frete) e as ' +
+        `regras de imposto da NF-e.${RESTO}`,
+    );
+  });
+
+  it('ONE fee alone, or a fee stored as text, renders no commission sentence', () => {
+    const base = { anuncio: 'MLB4567', categoriaErpId: 'MLB1', categoriaMlId: 'MLB2' };
+    expect(mensagem.corpo({ ...base, comissaoCategoriaErpPct: 16 })).not.toContain('Comissão');
+    expect(
+      mensagem.corpo({ ...base, comissaoCategoriaErpPct: '16', comissaoCategoriaMlPct: 11 }),
+    ).not.toContain('Comissão');
+  });
+
+  it('renders `{}` with placeholders, never "undefined"', () => {
+    const texto = mensagem.corpo({});
+    expect(texto).not.toContain('undefined');
+    expect(texto).toContain('o anúncio — para a categoria —');
+  });
+
+  it('the producer plano parses as stored, pointing at the produto', () => {
+    const aviso = comoArmazenado({
+      tipo: TIPO_AVISO.anuncioCategoriaAlterada,
+      severidade: SEVERIDADE_AVISO.atencao,
+      canal: CANAL_AVISO.mercadoLivre,
+      params: COMPLETO,
+      urlInterna: { rota: ROTAS_AVISO.produto.build('prod-1'), campo: null },
+    });
+    expect(aviso.params).toEqual(COMPLETO);
+    expect(aviso.urlInterna?.rota).toBe('/produtos/prod-1');
+  });
+
+  it('is titled like its label and carries no runbook — the produto is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.anuncioCategoriaAlterada);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
 describe('the producer planos as stored', () => {
   it('parse, keeping the checkout route and the class severity', () => {
     // A plano the schema rejected would never reach the bell at all; one it
