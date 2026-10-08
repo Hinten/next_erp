@@ -11,6 +11,7 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
+import { ContaLojaIntegradaPanel } from '../_components/ContaLojaIntegradaPanel';
 import {
   lojaIntegradaExcludedFields,
   lojaIntegradaFields,
@@ -43,9 +44,12 @@ export default function ContaLojaIntegradaPage() {
         </Group>
       </Group>
 
-      {/* Slot for the credential panel (PR c). It goes HERE, above the form and
-          always visible, with `key={params.id}` so a param-only A->B navigation
-          remounts its per-conta state. */}
+      {/* The credential panel sits ABOVE the form and is always visible, so the
+          expiry and "token recusado" avisos' deep link lands on it. key: a
+          param-only A->B navigation must remount it — its state is per-conta (a
+          typed token, a picked date, the last write's message), and Next reuses
+          the component across a param change. */}
+      <ContaLojaIntegradaPanel key={params.id} integracaoId={params.id} />
 
       <ObjectView
         schema={integracaoSchema}
