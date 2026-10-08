@@ -1118,6 +1118,34 @@ Reasoning: `lib/marketplace/anuncios/README.md`. The rules a change must keep:
   support CRT 3. A kit is ONE `single` SKU. `origin_type` is derived from the
   resolved CFOP, never guessed. No operação on the conta ⇒ zero calls.
 
+### ML recategorized a listing: the `anuncioCategoriaAlterada` aviso (#847)
+
+Mercado Livre moves listings between categories on its own, and the produto's ERP
+category — named after ML's by the importer (`categorias/<MLB id>`) — is what picks
+the price list's formulas (`formulasPorCategoria`: commission, frete) and the NF-e
+taxes. It is **never moved automatically**; an aviso asks a human instead.
+Logic: `lib/marketplace/anuncios/categoriaAnuncio.ts`; producer:
+`avisoCategoria.ts`; triggers: `functions/src/on{Anuncio,Produto}CategoriaAlterada.ts`.
+
+- ⚠️ **Decided on the committed LINK write, not inside the `items` sync.** Four
+  writers store ML's category on the link (the `items` sync, "Reverificar anúncio",
+  publish's echo, a re-import) and whichever runs first absorbs the change — a check
+  inside one of them misses every change another stored.
+- ⚠️ **Raised NARROWLY**: only when the produto's ERP category is still the one ML
+  just LEFT, and not when ML's `percentage_fee` is identical for both categories. A
+  curated ERP category raises nothing — there is no dismiss button, so a broad raise
+  would leave rows nothing could close. ⚠️ "Not raised" is not "forgotten": a
+  same-commission move is RECORDED as a row closed `mesma-comissao`, and a row closed
+  without review (`mesma-comissao`, `anuncio-encerrado`) keeps tracking its ERP
+  category — otherwise `A → B` (same fee) then `B → D` (different fee) raised
+  nothing, since `anterior` no longer names `A`.
+- **Closes itself** when the operator changes the produto's ERP category (the produto
+  trigger), when ML moves the listing back, or when the listing stops being live.
+  The producer re-reads the produto after writing, so it and the produto trigger
+  converge without a transaction. Enrichment (names, the new category's chain
+  created in `categorias`, the fee preview) is best-effort: an ML failure degrades
+  to ids, never loses the aviso.
+
 ## Env
 
 See the repo-root `.env.example` (Mercado Livre section; the OAuth client SECRET and
