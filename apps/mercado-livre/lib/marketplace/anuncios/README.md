@@ -60,8 +60,41 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   User-Products links).
 - `variacoesFantasma.ts` — phantom-variation self-heal for old-model bulk stock
   writes. Publish-domain concept; its only consumer is `estoque/estoqueSend.ts`.
-- `integracoesComProduto.ts` — server-owned maintenance of
-  `produtos.integracoesComProduto`, the anchor pre-filter both sweeps open with.
-  Tier 0 — the write is a commutative `arrayRemove`.
+- `integracoesComProduto.ts` — Mercado Livre's BINDING of the server-owned
+  `produtos.integracoesComProduto` denorm, the anchor pre-filter both sweeps
+  open with. Since #1519 the channel-neutral writers and their reasoning live in
+  `@delfrance/data/admin/produtos` (Shopee's link trigger shares them); what
+  stays here is ML-shaped — the two link subcollections, the survivor queries
+  and the variação fallback. ⚠️ The tier follows where a writer's EVIDENCE came
+  from, not which way it moves the array (root `CLAUDE.md` rule 7):
+  - `adicionarConta` — the link triggers' ADD, **tier 0**: an `arrayUnion`
+    whose evidence is the event itself; a later close fires its own event.
+  - `removerContaSeOrfa` — the triggers' REMOVE, **tier 1**: a transaction
+    that re-reads the surviving links (`sobrevivem(tx)`) and removes only when
+    none still counts for the conta.
+  - `adicionarContaSeViva` — **#1200**, the monthly link audit's heal, **tier
+    1**: a READ-derived add (the walk saw the link minutes earlier), so it
+    re-reads the produto's PARENT links (`sobrevivemLinksDoProduto`) inside the
+    transaction and adds only while a live one survives. A plain `arrayUnion`
+    landing after a close would be a PERMANENT false positive — the close's
+    event already ran, and nothing revisits a closed link.
+- `linksNaoEnumerados.ts` — **#1200**, the **link-side walk** shared by the
+  price job's reconciliation (`preco/precoReconciliacao.ts`) and the monthly
+  stock audit (`estoque/auditoriaNaoEnumerados.ts`). It asks the LINKS "which
+  produto owns you?" over the conta's `produtoMercadoLivre` collection group,
+  keeps only live listings (`linkHasLiveListing` — the same predicate the
+  denorm trigger runs), and classifies each owning produto against the sweeps'
+  two anchor terms (`classificarLinkNaoEnumerado` → four `NAO_ENUMERADO_*`
+  codes, or `null`). Also `reclassificarProdutoNaoEnumerado`, the one-produto
+  re-read the audit runs before resolving an aviso. ⚠️ The classifier IS both
+  sweeps' anchor predicate re-derived, with an EXACT `paiId === null` — the
+  binding describes in `estoque/bulkEstoquePlan.test.ts` and
+  `preco/precoPlan.test.ts` pin it to each query. ⚠️ The codes are persisted
+  wire strings (`EnvioPrecoSkip.code`) — never rename one. ⚠️ Load-bearing by
+  PATH: `preco/precoMotivos.test.ts` scans this file for those codes and throws
+  `ENOENT` if it moves. Rides the COLLECTION_GROUP index
+  `produtoMercadoLivre(contaOuterRef, __name__)`; every query is classic, so it
+  all runs in the emulator. `pageLimit` is required and must be an integer ≥ 1
+  — a 0 would read as a drained, COMPLETE walk.
 - `listaDePrecosCache.ts` — despite the name, **not** pricing: its only importer
   is `publish.ts`, which reads it to name the list in a blocked-price message.

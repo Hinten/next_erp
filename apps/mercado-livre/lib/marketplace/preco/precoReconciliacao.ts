@@ -3,31 +3,31 @@
  * account-wide job that reports what the plan could not have enumerated.
  *
  * `precoPlan.fetchPrecoPage` asks PRODUTOS "do you carry this conta?"; this asks
- * the LINKS "which produto owns you?" — the unit the legacy enumerated
- * (`ProdutoMercadoLivre.documents.contaOuterRef__isEqualTo(conta)`,
- * `.old/lib/canaisDeVenda/mercadoLivre/pages/table.dart:41-43`). Anything the
- * anchor terms cannot express surfaces here: a produto whose
- * `integracoesComProduto` denorm drifted (#804 class 2) and a link sitting on a
- * variation child (class 3). Class 1 is gone — `precoPlan` no longer gates on
- * `publicado`.
+ * the LINKS "which produto owns you?". The walk itself — the group query, the
+ * `linkHasLiveListing` noise guard, the masked parent read and the classifier —
+ * lives in `anuncios/linksNaoEnumerados.ts` since #1200, because the stock
+ * sweep's S1 carries the SAME two anchor terms and its monthly audit walks the
+ * same links. Read that module's doc for what is found and why it is correct;
+ * this file keeps only what is PRICE-shaped: the flag, the page-size tunable, the
+ * page cap, and the job-facing types `precoSync` consumes.
  *
- * ---- It is the INVERSE of the denorm trigger, and that is what makes it
- * correct rather than heuristic. `onProdutoMercadoLivreLinkChanged` runs
- * `linkHasLiveListing` over a link and writes the verdict onto that link's own
- * produto; this runs the SAME predicate over the SAME links and reports every
- * place the trigger's output disagrees with its input.
- *
- * ---- REPORT-ONLY, and the two classes differ in what the operator can do:
- *  - **class 2** is repairable from the UI — the produtos-table push reads
- *    anchors BY KEY (`fetchPrecoFamiliasByIds`) and carries none of the anchor
- *    terms, so the drifted produto sends fine from there;
+ * ---- REPORT-ONLY, and the classes differ in what happens to them:
+ *  - **class 2** (the produto's `integracoesComProduto` lost the conta) is now
+ *    HEALED monthly by `estoque/auditoriaNaoEnumerados.ts`, which re-adds the
+ *    conta to the produto — one array, so that fixes this job's anchor query as
+ *    much as the stock sweep's. This phase still reports it, because drift
+ *    arising between two audits is real until the next one runs, and the
+ *    produtos-table push stays the immediate remedy: it reads anchors BY KEY
+ *    (`fetchPrecoFamiliasByIds`) and carries none of the anchor terms, so the
+ *    drifted produto sends fine from there;
  *  - **class 3 has NO send surface anywhere in the repo.** `precoManual`
  *    resolves a selection to `paiId ?? produtoId` and then refuses a row whose
  *    `paiId` is set (`FAMILIA_NAO_ENCONTRADA`), and `readFamilia` only ever
  *    reads `produtoMercadoLivre` UNDER the anchor. The stock stack anchors the
  *    same way. So a class-3 row is a request to repair the DATA (the link
  *    belongs on the family parent), not a button to press — the pt-BR wording
- *    in `precoMotivos.MENSAGEM_POR_MOTIVO` says exactly that.
+ *    in `precoMotivos.MENSAGEM_POR_MOTIVO` says exactly that, and the stock
+ *    audit raises it as an aviso.
  *
  * Building drafts for class 3 instead was considered and deliberately deferred:
  * `draft.produtoId` is both the price source and the writeback's subcollection
@@ -39,20 +39,16 @@
  * belongs with the same change on the stock sweep.
  *
  * ---- Index ledger: `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)`,
- * **COLLECTION_GROUP**. The declared COLLECTION-scope twin serves
- * `readFamilia` and `sobrevivemLinksDoProduto` and cannot serve a group query.
- * The parent produtos are read with a batch key read (`getAll` + `fieldMask`),
- * which needs no index and runs in the emulator.
+ * **COLLECTION_GROUP** — see `linksNaoEnumerados.ts`, which owns the query.
  */
-import { FieldPath, type Firestore } from 'firebase-admin/firestore';
-import { linkHasLiveListing } from '@delfrance/schemas';
-import {
-  produtoCollection,
-  produtoMercadoLivreLinkCollection,
-} from '@delfrance/data/admin/collections';
+import type { Firestore } from 'firebase-admin/firestore';
 
 import { envFlag, envInt } from '../estoque/bulkEstoquePlan';
-import { contaRefForms } from '../anuncios/integracoesComProduto';
+import { fetchLinksNaoEnumeradosPage } from '../anuncios/linksNaoEnumerados';
+
+// The classifier moved with the walk; re-exported so this module's API — and
+// its suite, which pins the classifier's cases — is unchanged by the move.
+export { classificarLinkNaoEnumerado } from '../anuncios/linksNaoEnumerados';
 
 /* ------------------------------ configuration ----------------------------- */
 
@@ -106,7 +102,7 @@ export interface PrecoLinkNaoEnumerado {
   produtoId: string;
   /** The ML item id off the link's `id` field. */
   itemId: string | null;
-  /** An `EnvioPrecoSkip.code` — one of the `NAO_ENUMERADO_*` values below. */
+  /** An `EnvioPrecoSkip.code` — one of `CODIGO_NAO_ENUMERADO`'s values. */
   code: string;
 }
 
@@ -142,150 +138,16 @@ export type FetchPrecoReconPage = (
   args: FetchPrecoReconPageArgs,
 ) => Promise<PrecoReconPage>;
 
-export const fetchPrecoReconPage: FetchPrecoReconPage = async (db, args) => {
-  const pageLimit = args.pageLimit ?? precoReconPageLimit();
-  const afterLinkPath = args.afterLinkPath ?? null;
-
-  let linksQuery = produtoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('contaOuterRef', 'in', contaRefForms(args.integracaoId))
-    // `id` + `estado` are exactly what `linkHasLiveListing` reads and what the
-    // skip row reports. Everything else is dead weight — a link doc carries
-    // `descricao` at up to 50 000 chars plus an `attributes` array, and
-    // Enterprise bills what is scanned.
-    .select('id', 'estado')
-    .orderBy(FieldPath.documentId())
-    .limit(pageLimit);
-  if (afterLinkPath != null) linksQuery = linksQuery.startAfter(linkRefDoCursor(db, afterLinkPath));
-  const linksSnap = await linksQuery.get();
-
-  // Only the links that name something still sellable. A produto can carry
-  // several listings on one conta, so this is a list, not a map.
-  const vivos: { produtoId: string; itemId: string | null }[] = [];
-  for (const doc of linksSnap.docs) {
-    const raw = doc.data() as Record<string, unknown>;
-    // ⚠️ THE noise guard, and the reason this report is readable at all. A link
-    // with no item id was never published and one at `estado 'c'` is closed —
-    // `linkHasLiveListing` is false for both, which is exactly why
-    // `onProdutoMercadoLivreLinkChanged` dropped the conta from
-    // `integracoesComProduto`. Reporting them would emit a row for every
-    // listing the seller has ever closed: the healthy steady state rendered as
-    // drift, burying the real findings under it. This is also the ONLY use of
-    // the stored ML status here — a classification, never a query predicate.
-    if (!linkHasLiveListing(raw)) continue;
-    // A link always sits two levels under a produto; a null grandparent means a
-    // path this collection group should not have matched.
-    const produtoId = doc.ref.parent.parent?.id ?? null;
-    if (produtoId == null) continue;
-    vivos.push({ produtoId, itemId: nonEmptyString(raw.id) });
-  }
-
-  const naoEnumerados: PrecoLinkNaoEnumerado[] = [];
-  if (vivos.length > 0) {
-    const produtoIds = [...new Set(vivos.map((v) => v.produtoId))];
-    const snaps = await db.getAll(...produtoIds.map((id) => produtoCollection.docRef(db, {}, id)), {
-      fieldMask: ['paiId', 'integracoesComProduto'],
-    });
-    const porId = new Map(snaps.map((snap) => [snap.id, snap]));
-
-    for (const vivo of vivos) {
-      const snap = porId.get(vivo.produtoId);
-      const code = classificarLinkNaoEnumerado(
-        snap?.exists === true ? ((snap.data() ?? {}) as Record<string, unknown>) : null,
-        args.integracaoId,
-      );
-      if (code != null) naoEnumerados.push({ ...vivo, code });
-    }
-  }
-
-  const full = linksSnap.docs.length === pageLimit;
-  const lastPath = linksSnap.docs[linksSnap.docs.length - 1]?.ref.path ?? null;
-  return {
-    naoEnumerados,
-    inspecionados: vivos.length,
-    nextAfterLinkPath: full ? lastPath : null,
-  };
-};
-
 /**
- * Why the anchor pass could not have enumerated a live link's produto — or
- * `null` when it could have, which is the healthy case and reports nothing.
- *
- * ⚠️ This IS `fetchPrecoPage`'s anchor predicate, re-derived. If that query
- * gains or loses a term this must move with it, or the report starts naming
- * rows the plan did see (noise) or missing rows it did not (the very silence
- * #1072 exists to end). `precoReconciliacao.test.ts` pins the pair.
+ * The price binding of the shared walk: the one thing it adds is the env
+ * default for the page size, which the shared module deliberately does not read.
+ * The returned page is the shared one — a structural superset of
+ * {@link PrecoReconPage} (it also carries `lidos`/`produtosLidos`/`limpos`), so nothing
+ * `precoSync` reads changed.
  */
-export function classificarLinkNaoEnumerado(
-  produto: Record<string, unknown> | null,
-  integracaoId: string,
-): string | null {
-  // The link outlived its produto — `onProdutoDeleted`'s cascade should have
-  // taken it, so this is a real orphan rather than a coverage gap.
-  if (produto == null) return 'NAO_ENUMERADO_PRODUTO_AUSENTE';
-  // ⚠️ EXACT, not the repo's usual `nonEmptyString` soft coercion, because the
-  // query term is an exact equality: `where('paiId', '==', null)` matches a
-  // stored null and NOTHING else — not `''`, and not a document missing the
-  // field, since Firestore does not index an absent field and it therefore
-  // satisfies no equality at all. Coercing here would call such a produto
-  // "enumerable" while the plan never selected it: a live anúncio reported by
-  // nobody, on a `completed` job — the exact silence #1072 exists to end,
-  // reintroduced inside the code written to detect it.
-  //
-  // `produto.ts:215` records that both writers always write `paiId` explicitly,
-  // so the absent-field arm should be unreachable; the empty string is the
-  // reachable one (the schema is `z.string().nullable()`, with no `.min(1)`,
-  // and the legacy corpus is not bound by it at all — rule 8). Both are
-  // reported rather than assumed away: over-include when in doubt, per
-  // `integracoesComProduto.ts`'s failure asymmetry.
-  if (produto.paiId !== null) {
-    // A real parent id — the link sits on a variation CHILD, and every anchor
-    // term is written for family parents (#804 class 3). No surface in the repo
-    // can send to it.
-    if (nonEmptyString(produto.paiId) != null) return 'NAO_ENUMERADO_LINK_EM_VARIACAO';
-    // Neither null nor a usable id: a malformed cadastro rather than a child.
-    // Kept a separate code because the remedy differs — this one is "set
-    // `paiId` to null on the family parent", not "re-point the anúncio".
-    return 'NAO_ENUMERADO_PAI_ID_INVALIDO';
-  }
-  // The denorm no longer names a conta this produto is still linked to (#804
-  // class 2). `integracoesComProduto.ts` calls this exact state a SILENT stock
-  // + price outage — and until now it was one on the price side too.
-  const contas = Array.isArray(produto.integracoesComProduto)
-    ? produto.integracoesComProduto.filter((c): c is string => typeof c === 'string')
-    : [];
-  if (!contas.includes(integracaoId)) return 'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO';
-  return null;
-}
-
-/** A non-empty string, or null — the soft coercion `precoPlan` uses on raw docs. */
-function nonEmptyString(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
-
-/**
- * The stored cursor path as a `DocumentReference`, through the collection
- * HANDLE rather than a raw `db.doc()` (which the `no-inline-admin-collection`
- * rule bans, and rightly: the handle is the one place that knows this path
- * shape).
- *
- * Unlike everything else in this module, a bad value here THROWS rather than
- * degrading. The cursor is machine-written — it only ever comes from
- * `doc.ref.path` on this very query — so a shape that does not parse is
- * corruption, not an operating condition, and the two graceful options are both
- * worse: ignoring it restarts the walk from the beginning on every dispatch (a
- * loop), and concluding early truncates the report silently. Throwing rides the
- * job's existing retry-then-persist-failure path, which says so out loud.
- */
-function linkRefDoCursor(db: Firestore, path: string) {
-  // `produtos/<produtoId>/produtoMercadoLivre/<linkId>`
-  const parts = path.split('/');
-  const produtoId = parts.length === 4 ? parts[1] : undefined;
-  const linkId = parts.length === 4 ? parts[3] : undefined;
-  if (produtoId == null || produtoId === '' || linkId == null || linkId === '') {
-    throw new Error(
-      `[mercado-livre] cursor de reconciliação de preços inválido: ${JSON.stringify(path)}`,
-    );
-  }
-  return produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkId);
-}
+export const fetchPrecoReconPage: FetchPrecoReconPage = (db, args) =>
+  fetchLinksNaoEnumeradosPage(db, {
+    integracaoId: args.integracaoId,
+    afterLinkPath: args.afterLinkPath ?? null,
+    pageLimit: args.pageLimit ?? precoReconPageLimit(),
+  });

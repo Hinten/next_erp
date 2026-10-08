@@ -173,6 +173,16 @@ Sweep flags default **OFF**. Turn on only what a phase needs:
 ⚠️ `MERCADO_LIVRE_STOCK_SYNC_ENABLED` gates the sweeps **and** the send task. With it off,
 the live-test path for stock is the synchronous `/enviar-estoque` route.
 
+⚠️ It also runs the monthly link audit (§5.6), and that is a **precondition** on turning it
+on in any project: the COLLECTION_GROUP index on `produtoMercadoLivre` over
+`contaOuterRef ASC, __name__ ASC` must read **READY** first. The audit's walk rides it, and
+on Enterprise a missing index does not fail — it full-scans and bills the bytes
+(`functions/DEPLOY.md`, "The monthly link audit"). Check it with:
+
+```bash
+gcloud firestore indexes composite list --project <project-id> --database default
+```
+
 ### 1.3 IAM
 
 - [ ] App Hosting runtime SA has `roles/cloudtasks.enqueuer` **and**
@@ -448,6 +458,52 @@ closed: the other two classes remain, and turning the
 `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` escape hatch on brings the third back.
 Run the step regardless; the answer is what decides whether the remaining exclusions
 are safe.
+
+### 5.6 — The monthly link audit heals one produto and raises one aviso (#1200)
+
+**Staging only.** The audit is Firestore-only — no ML call, so no test-user slot — but it
+needs `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` on the **functions** codebase and the index in
+§1.2 READY. ⚠️ That same flag also starts the stock sweeps against every active conta in
+the project: run this where only test-user contas are active.
+
+**Seed** (by hand, on the test conta, using the seller's real listings from §4 so that the
+sweep which follows a heal sends to something that exists):
+
+1. **One class-2 produto** — a family parent (`paiId: null`) holding a live
+   `produtoMercadoLivre` link on the conta (an item id, `estado` not `'c'`). Then remove
+   the conta's id from **the produto's** `integracoesComProduto`. ⚠️ Edit the produto, and
+   touch the link no further: a link write that changes whether it counts fires
+   `onProdutoMercadoLivreLinkChanged`, whose add would heal the produto before the audit
+   ever sees it.
+2. **One class-3 link** — on a different family, a live `produtoMercadoLivre` link on the
+   conta placed under a variation **child** (a produto whose `paiId` is the parent's id).
+
+**Force-run the Scheduler job** — in the Cloud Scheduler console, _Force run_ on the job
+firebase-tools created for `sweepMercadoLivreAnunciosNaoEnumerados` (in
+`MERCADO_LIVRE_TASKS_REGION`, us-east1 on staging), or:
+
+```bash
+gcloud scheduler jobs list --location=<tasks-region> --project <staging-project-id>
+gcloud scheduler jobs run <that job> --location=<tasks-region> --project <staging-project-id>
+```
+
+Then read the summary line (`[mercado-livre] auditoria de anúncios não enumerados`) in the
+function's log. The counts below assume the conta had no other drift before the seed;
+anything extra is a real finding, record it.
+
+| Check                                                                                                                                       | Result |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Run 1: `completas` equals `contas`, `naoAuditadas` is empty, `errorCount: 0`                                                                |        |
+| Run 1: `porSituacao` counts 1 `NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO` and 1 `NAO_ENUMERADO_LINK_EM_VARIACAO`                                  |        |
+| Run 1: `curados: 1`, and `amostraCurados` names `<conta>/<class-2 produto>`                                                                 |        |
+| Run 1: the class-2 produto's `integracoesComProduto` holds the conta again                                                                  |        |
+| Run 1: `avisos.criado: 1`, and NO aviso exists for the healed produto                                                                       |        |
+| Run 1: aviso `anuncioForaDaSincronizacao:<conta>:<child produto>`, `params.situacao: 'link-em-variacao'`, route `/produtos/<child produto>` |        |
+| Run 1: the bell shows it, with the produto route                                                                                            |        |
+| Fix the child link — delete it from the child (re-pointing the listing at the family parent is the real remedy)                             |        |
+| Run 2: `resolvidos: 1`, `curados: 0`, `avisos.criado: 0`                                                                                    |        |
+| Run 2: the aviso has `resolvidoEm` set and `resolucaoMotivo: 'nao-encontrado-na-auditoria'`                                                 |        |
+| The summary line of both runs, pasted here (it is what the #948 step attributes the audit's cost from)                                      |        |
 
 ---
 

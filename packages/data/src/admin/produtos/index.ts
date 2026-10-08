@@ -19,6 +19,7 @@ export {
 } from './resolveProdutoPorSku';
 export {
   adicionarConta,
+  adicionarContaSeViva,
   contaIdFromRef,
   contaRefForms,
   planLinkChange,

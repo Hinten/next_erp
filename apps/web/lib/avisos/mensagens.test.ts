@@ -4,17 +4,21 @@ import {
   PENDENCIA_RECLAMACAO,
   ROTAS_AVISO,
   SEVERIDADE_AVISO,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   TIPO_AVISO,
   TIPO_AVISO_LABELS,
   avisoSchema,
   pendenciaReclamacaoSchema,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  type SituacaoAnuncioForaDaSincronizacao,
 } from '@delfrance/schemas';
 import { MENSAGENS_POR_TIPO } from './mensagens';
 
 /**
  * The two dispatch tipos of Shopee step 15b (#1744), rendered with the params
  * their producer writes (`apps/shopee/lib/shopee/avisos/despachoAutomatico.ts`),
- * and the return tipo of step 17 (#1525) further down.
+ * the return tipo of step 17 (#1525) further down, and the Mercado Livre
+ * link-audit tipo (#1200) after it.
  *
  * `rotas.test.ts` already proves every row renders `{}` without "undefined".
  * This file pins the sentences verbatim and renders the producers' planos
@@ -238,6 +242,151 @@ describe('MENSAGENS_POR_TIPO.reclamacaoAguardandoVendedor', () => {
 
   it('is titled like its label and carries no runbook — the panel is the in-app fix', () => {
     expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.reclamacaoAguardandoVendedor);
+    expect(mensagem.runbook).toBeUndefined();
+  });
+});
+
+/**
+ * The link-audit tipo of #1200, rendered with the params its producer writes
+ * (`apps/mercado-livre/lib/marketplace/estoque/auditoriaNaoEnumerados.ts`):
+ * exactly `{ situacao, anuncio, anuncios }`, `situacao` a CODE and `anuncios` a
+ * NUMBER. Same reason for the literals as above — `apps/web` has no dependency
+ * edge to `apps/mercado-livre`.
+ */
+describe('MENSAGENS_POR_TIPO.anuncioForaDaSincronizacao', () => {
+  const mensagem = MENSAGENS_POR_TIPO[TIPO_AVISO.anuncioForaDaSincronizacao];
+  const ITEM_ID = 'MLB1234567890';
+  const PRODUTO_ID = 'produto-123';
+  const INTEGRACAO_ID = 'integracao-ml-1';
+  const INICIO = 'está ativo no canal, mas não recebe estoque nem preço automaticamente: ';
+  const FRASES: Record<SituacaoAnuncioForaDaSincronizacao, string> = {
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao]:
+      'ele está vinculado a uma variação, e não ao produto pai — refaça o vínculo no produto pai',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.paiIdInvalido]:
+      'o cadastro do produto tem um vínculo de produto pai inválido — corrija o cadastro do ' +
+      'produto',
+    [SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente]:
+      'ele aponta para um produto que não existe mais — encerre o anúncio no canal ou peça a ' +
+      'remoção do vínculo órfão',
+  };
+  const corpoCom = (situacao: string | number | undefined, anuncios: string | number = 1) =>
+    mensagem.corpo({
+      anuncio: ITEM_ID,
+      anuncios,
+      ...(situacao === undefined ? {} : { situacao }),
+    });
+
+  it('renders every situação code as its own phrase, in its slot', () => {
+    // Every member of the closed set has a pinned phrase — a code added to the
+    // schema without one fails here, not as a blank slot in the bell.
+    expect(Object.keys(FRASES).sort()).toEqual(
+      [...situacaoAnuncioForaDaSincronizacaoSchema.options].sort(),
+    );
+    for (const [codigo, frase] of Object.entries(FRASES)) {
+      expect(corpoCom(codigo), codigo).toBe(`O anúncio ${ITEM_ID} ${INICIO}${frase}.`);
+    }
+  });
+
+  it('never names a channel — the tipo is channel-neutral', () => {
+    for (const codigo of situacaoAnuncioForaDaSincronizacaoSchema.options) {
+      expect(corpoCom(codigo, 3), codigo).not.toMatch(/mercado ?livre/i);
+    }
+  });
+
+  it('falls back on an unknown, absent or inherited code — never "undefined"', () => {
+    // The healed class (no aviso, so no phrase), the walk's own code that the
+    // producer maps FROM, a near-miss spelling, a number, nothing at all, and a
+    // key every object inherits.
+    for (const situacao of [
+      'conta-fora-do-produto',
+      'NAO_ENUMERADO_LINK_EM_VARIACAO',
+      'link_em_variacao',
+      '',
+      0,
+      undefined,
+      'toString',
+      '__proto__',
+    ]) {
+      const corpo = corpoCom(situacao);
+      expect(corpo, String(situacao)).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}confira o vínculo do anúncio.`,
+      );
+      expect(corpo, String(situacao)).not.toContain('undefined');
+    }
+  });
+
+  it('renders `{}` with the placeholder and the fallback, never "undefined"', () => {
+    const corpo = mensagem.corpo({});
+    expect(corpo).toBe(`O anúncio — ${INICIO}confira o vínculo do anúncio.`);
+    expect(corpo).not.toContain('undefined');
+  });
+
+  it('renders an empty item id (a link that names none) as the placeholder', () => {
+    expect(
+      mensagem.corpo({
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        anuncio: '',
+        anuncios: 1,
+      }),
+    ).toMatch(/^O anúncio — está ativo no canal/);
+  });
+
+  it('adds the count sentence only when the produto has MORE than one such anúncio', () => {
+    const codigo = SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao;
+    const base = `O anúncio ${ITEM_ID} ${INICIO}${FRASES[codigo]}.`;
+    expect(corpoCom(codigo, 1)).toBe(base);
+    expect(corpoCom(codigo, 2)).toBe(`${base} Este produto tem 2 anúncios nessa situação.`);
+    expect(corpoCom(codigo, 3)).toBe(`${base} Este produto tem 3 anúncios nessa situação.`);
+    // The producer writes a NUMBER; a string count is not parsed into a guess,
+    // and a zero or absent count adds nothing.
+    expect(corpoCom(codigo, '3')).toBe(base);
+    expect(corpoCom(codigo, 0)).toBe(base);
+    expect(mensagem.corpo({ situacao: codigo, anuncio: ITEM_ID }), 'sem `anuncios`').toBe(base);
+  });
+
+  it('renders both producer route shapes as stored, the code in `motivo` too', () => {
+    // `produto-ausente` lands on the CONTA's channel page — a produto that no
+    // longer exists has no page to open; every other situação lands on the produto.
+    const planos = [
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.linkEmVariacao,
+        rota: ROTAS_AVISO.produto.build(PRODUTO_ID),
+        esperada: `/produtos/${PRODUTO_ID}`,
+      },
+      {
+        situacao: SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO.produtoAusente,
+        rota: ROTAS_AVISO.canalMercadoLivre.build(INTEGRACAO_ID),
+        esperada: `/canais/mercado-livre/${INTEGRACAO_ID}`,
+      },
+    ];
+    for (const { situacao, rota, esperada } of planos) {
+      const params = { situacao, anuncio: ITEM_ID, anuncios: 3 };
+      const aviso = comoArmazenado({
+        tipo: TIPO_AVISO.anuncioForaDaSincronizacao,
+        severidade: SEVERIDADE_AVISO.atencao,
+        canal: CANAL_AVISO.mercadoLivre,
+        params,
+        motivo: situacao,
+        urlInterna: { rota, campo: null },
+      });
+      expect(aviso.tipo, situacao).toBe(TIPO_AVISO.anuncioForaDaSincronizacao);
+      expect(aviso.severidade, situacao).toBe(SEVERIDADE_AVISO.atencao);
+      expect(aviso.canal, situacao).toBe(CANAL_AVISO.mercadoLivre);
+      expect(aviso.params, situacao).toEqual(params);
+      expect(aviso.motivo, situacao).toBe(situacao);
+      expect(aviso.urlInterna?.rota, situacao).toBe(esperada);
+      // A periodic observation by one scheduled writer: no provider clock, no deadline.
+      expect(aviso.relogioEvento, situacao).toBeNull();
+      expect(aviso.prazo, situacao).toBeNull();
+      expect(mensagem.corpo(aviso.params), situacao).toBe(
+        `O anúncio ${ITEM_ID} ${INICIO}${FRASES[situacao]}. ` +
+          'Este produto tem 3 anúncios nessa situação.',
+      );
+    }
+  });
+
+  it('is titled like its label and carries no runbook — the cadastro is the in-app fix', () => {
+    expect(mensagem.titulo).toBe(TIPO_AVISO_LABELS.anuncioForaDaSincronizacao);
     expect(mensagem.runbook).toBeUndefined();
   });
 });

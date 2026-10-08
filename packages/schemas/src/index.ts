@@ -1379,6 +1379,8 @@ export {
   ROTAS_AVISO,
   pendenciaReclamacaoSchema,
   PENDENCIA_RECLAMACAO,
+  situacaoAnuncioForaDaSincronizacaoSchema,
+  SITUACAO_ANUNCIO_FORA_DA_SINCRONIZACAO,
   chaveDeAviso,
   avisoNaoLido,
   entradaDeLeitura,
@@ -1394,6 +1396,7 @@ export {
   type ChaveAvisoInput,
   type RotaAvisoKey,
   type PendenciaReclamacao,
+  type SituacaoAnuncioForaDaSincronizacao,
 } from './aviso';
 export * from './shared/inicio';
 

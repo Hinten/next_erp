@@ -28,6 +28,8 @@
  * The channel-neutral half — the conta-ref folds, the payload-only plan, the
  * `arrayUnion` add and the guarded remove — moved to
  * `@delfrance/data/admin/produtos`, where Shopee's link trigger reaches it too.
+ * The guarded READ-derived add the monthly link audit heals with (#1200) lives
+ * there as well; only its binding to this channel's survivor query is here.
  * ⚠️ **The reasoning moved with it**: the failure asymmetry (a false positive
  * costs one skipped sweep row, a false negative is a silent stock + price
  * outage — when in doubt, over-include), the race discipline of the two writes,
@@ -52,6 +54,7 @@ import {
 // surface (notifications, cache, pipelines, reconcile) in behind two predicates.
 import {
   adicionarConta as adicionarContaCore,
+  adicionarContaSeViva as adicionarContaSeVivaCore,
   contaIdFromRef,
   contaRefForms,
   planLinkChange as planLinkChangeCore,
@@ -214,6 +217,41 @@ export function removerContaSeOrfa(
   sobrevivem: (tx: FirebaseFirestore.Transaction) => Promise<boolean>,
 ): Promise<boolean> {
   return removerContaSeOrfaCore(db, produtoId, integracaoId, sobrevivem, SENTINELAS);
+}
+
+/**
+ * Add a conta to the produto's array only while a transactional re-read proves
+ * a live PARENT link still holds it — the promoted tier-1 READ-DERIVED add,
+ * bound to this app's `FieldValue` and to {@link sobrevivemLinksDoProduto}.
+ *
+ * The caller is the monthly link audit (`estoque/auditoriaNaoEnumerados.ts`,
+ * #1200), whose evidence is a walk page read earlier — so the core header's
+ * reasoning applies: the tier-0 {@link adicionarConta} could land after the
+ * link closed and leave a false positive nothing ever revisits.
+ *
+ * ⚠️ The survivor reader is bound HERE, not taken as a parameter like
+ * {@link removerContaSeOrfa}'s, because the audit's heal is about a PARENT link
+ * by construction: it walks the `produtoMercadoLivre` collection group and
+ * heals only an anchor (`paiId === null`). So the guard is the same
+ * collection-scope query that guards the trigger's remove, riding the declared
+ * `produtoMercadoLivre(contaOuterRef)` index — two index seeks, no new index.
+ * The `variacaoMercadoLivre` links are deliberately not consulted: they live
+ * on variation CHILDREN and feed those children's own arrays (through
+ * {@link sobrevivemVariacoesDoProduto}), which S1's `paiId == null` never
+ * reads — so they are no evidence that THIS anchor belongs in the sweep.
+ */
+export function adicionarContaSeViva(
+  db: Firestore,
+  produtoId: string,
+  integracaoId: string,
+): Promise<boolean> {
+  return adicionarContaSeVivaCore(
+    db,
+    produtoId,
+    integracaoId,
+    sobrevivemLinksDoProduto(db, produtoId, integracaoId),
+    SENTINELAS,
+  );
 }
 
 /**

@@ -1,6 +1,6 @@
 /* eslint-disable no-console, no-restricted-syntax, no-restricted-imports -- standalone staging CLI: mirrors THE query verbatim; defineAdminCollection handles have no pipeline surface and the app's admin singleton needs Next env */
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, getFirestore } from 'firebase-admin/firestore';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 
 // ⚠️ BLOCKING pre-merge gate for Step 10 PR C — run MANUALLY against staging
@@ -160,6 +160,48 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     it with the worst-case force-all `changedSinceMs = -1` (every anchor
 //     survives S4): same bounded page, so it is cheap, and it shows the plan
 //     when the computed filter selects nothing away.
+//  6. The #1200 monthly LINK AUDIT's two CLASSIC queries — the precondition the
+//     master flag now carries (`sweepMercadoLivreAnunciosNaoEnumerados`, 02:30
+//     on the 1st). Both are read-only here; nothing is seeded for them.
+//     (a) The walk (`fetchLinksNaoEnumeradosPage`,
+//         lib/marketplace/anuncios/linksNaoEnumerados.ts — shared with the price
+//         job's report since #1191): a `produtoMercadoLivre` COLLECTION GROUP
+//         query, `contaOuterRef in [both ref forms]`, `select('id','estado')`,
+//         `orderBy(documentId)`, `limit`, and — the page that matters — a
+//         `startAfter(<DocumentReference>)` keyset, because a group's
+//         `__name__` is the full path. It must ride the COLLECTION_GROUP entry
+//         `produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` (#1191),
+//         BOUNDED on `contaOuterRef`, with no residual Filter (the cursor read
+//         residually re-reads every earlier page: the walk turns quadratic) and
+//         no Sort node (the index did not deliver key order, so every page sorts
+//         the conta's whole link set). Page 2's cursor is page 1's FIRST link
+//         when page 1 holds two — the SHAPE is what this proves, and that choice
+//         guarantees page 2 a row — else a reference just below it.
+//     (b) The avisos key range (`listarFaixaDeChaves`,
+//         lib/marketplace/estoque/auditoriaNaoEnumerados.ts):
+//         `orderBy(documentId).startAt('anuncioForaDaSincronizacao:<conta>:')
+//         .endBefore('…;')`, `select('resolvidoEm','params','canal')` — a BOUNDED key
+//         scan, never a walk of the collection.
+//     Each is also EXECUTED plainly first, as a correctness probe the emulator
+//     lane cannot give against Enterprise: page 2 must resume exactly after its
+//     cursor, and every aviso id returned must carry the conta's prefix.
+//     ⚠️ ENTERPRISE REFUSES CLASSIC EXPLAIN — `3 INVALID_ARGUMENT: Explain
+//     options are not supported in RunQuery API for Enterprise edition` (the
+//     same wall `apps/functions/scripts/check-delete-cost.mjs` and
+//     `check-text-search-index.mjs` record). So each query's classic
+//     `explain({ analyze: true })` is tried first and judged on
+//     `indexesUsed` when a database accepts it; on the refusal, the PIPELINE
+//     TRANSLATION of the same predicate is explained instead, labeled PROXY and
+//     judged with the access-node heuristics below. Read what that proves
+//     precisely: a proxy that rides no node on the CG entry means the index is
+//     not READY in this project — index readiness does not depend on the API —
+//     so it FAILS; a proxy PASS proves the index is READY and serves the
+//     predicate, NOT the classic query's own plan. Confirm that one in Query
+//     Insights (the `produtoMercadoLivre` collection-group row after the first
+//     audit run) or `firestore.googleapis.com/api/billable_read_units`.
+//     ⚠️ Cost: before the CG entry is READY, every execution here full-scans
+//     the `produtoMercadoLivre` group until its `limit`-th match — billed, like
+//     everything in this script. CHECK_AUDITORIA=0 skips the whole section.
 //
 // ---- ACCESS-NODE heuristics (calibrated on the REAL staging plan text of
 // gate run 2, 2026-07-28 — the explain format is not machine-stable, so the
@@ -241,13 +283,19 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // probe family even when discovery finds real linked anchors; seeding
 // always relocates the depósito probe — and, unless overridden, spike (a)
 // — to the seeded family. CHECK_ANCHOR_AB=0 skips the anchor-predicate A/B spike (5. above).
+// CHECK_AUDITORIA=0 skips the #1200 link-audit section (6. above); it runs by
+// default, because it is the master flag's precondition. Run it the same way —
+// a HUMAN, against STAGING, never an agent and never against production.
 // Targets the named `default` database (Enterprise — never `(default)`),
 // overridable via FIREBASE_DATABASE_ID.
 //
 // ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
 // apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
-// shape change there must be reflected here or the proof goes stale.
+// shape change there must be reflected here or the proof goes stale. Section 6
+// mirrors two more the same way: `fetchLinksNaoEnumeradosPage`
+// (anuncios/linksNaoEnumerados.ts) and `listarFaixaDeChaves` + `chaveDeAviso`'s
+// segment fold (estoque/auditoriaNaoEnumerados.ts, packages/schemas/src/aviso.ts).
 // ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
 // stamps the kit's own estoque doc, so `maxComp` was removed rather than being
 // forgotten here. The sales signal is likewise gone — the `pedidos` sold-ids
@@ -264,6 +312,10 @@ const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimit
 // question it answered is closed (shape A is permanent), so it stays only as a
 // record. `CHECK_ANCHOR_AB=1` still runs it; re-declare an index first.
 const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '0') !== '0';
+// The #1200 link-audit section (header 6.) — ON by default: it is the master
+// flag's precondition. Its executions return at most CHECK_PAGE_LIMIT rows each;
+// what that does NOT bound (the scan, before the CG entry is READY) is in 6.
+const runAuditoria = (process.env.CHECK_AUDITORIA ?? '1') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
 // `windowOverlapSec()` (20) — bulkEstoquePlan.ts defaults, janelaDoSweep('daily').
@@ -1614,6 +1666,370 @@ try {
       '\n=== fetchStockFamilies page 2 (daily, WORST CASE changedSinceMs = -1 — not shipped) ===',
     );
     await explainDailyPage2('worst case: force-all, every anchor survives S4', -1);
+  }
+
+  /* ---------- #1200 link audit: CG walk page 2 + avisos key range (6.) --------- */
+
+  // Mirrors `contaRefForms` (packages/data/src/admin/produtos/integracoesComProduto.ts):
+  // the walk's `in` carries BOTH stored forms of the conta ref.
+  const contaRefForms = [`documents/integracao/${integracaoId}`, `integracao/${integracaoId}`];
+
+  /** THE walk, verbatim from `fetchLinksNaoEnumeradosPage` (keep-in-sync note in the header). */
+  const walkQuery = () =>
+    db
+      .collectionGroup('produtoMercadoLivre')
+      .where('contaOuterRef', 'in', contaRefForms)
+      .select('id', 'estado')
+      .orderBy(FieldPath.documentId())
+      .limit(pageLimit);
+
+  /**
+   * The walk's PIPELINE translation — what Enterprise will explain (header 6.).
+   * `equalAny` is the classic `in`; the keyset is `__name__ > <ref>`, which is
+   * what `startAfter(<ref>)` means under `orderBy(documentId)`.
+   */
+  const walkPipeline = (cursorRef) =>
+    db
+      .pipeline()
+      .collectionGroup('produtoMercadoLivre')
+      .where(
+        pipelines.and(
+          pipelines.field('contaOuterRef').equalAny(contaRefForms),
+          pipelines.greaterThan(pipelines.field('__name__'), pipelines.constant(cursorRef)),
+        ),
+      )
+      .sort(pipelines.ascending(pipelines.field('__name__')))
+      .limit(pageLimit)
+      .select('id', 'estado');
+
+  // Mirrors `chaveDeAviso`'s per-segment fold (packages/schemas/src/aviso.ts): the
+  // identity for a Firestore auto-id, but a conta id carrying `/` `.` `:` … would
+  // otherwise be probed under a prefix the producer never writes.
+  const segmentoChave = (valor) =>
+    String(valor)
+      .replace(/[/\\.#[\]:]/g, '_')
+      .replace(/\s+/g, '_')
+      .trim();
+  // Mirrors TIPO_AVISO.anuncioForaDaSincronizacao (packages/schemas).
+  const TIPO_AVISO_AUDITORIA = 'anuncioForaDaSincronizacao';
+  const prefixoAvisos = `${TIPO_AVISO_AUDITORIA}:${segmentoChave(integracaoId)}`;
+
+  /** THE avisos read, verbatim from `listarFaixaDeChaves` — `[inicio, fim)` by key. */
+  const avisosQuery = (inicio, fim) =>
+    db
+      .collection('avisos')
+      .select('resolvidoEm', 'params', 'canal')
+      .orderBy(FieldPath.documentId())
+      .startAt(inicio)
+      .endBefore(fim)
+      .limit(pageLimit);
+
+  /** Its pipeline translation — the same half-open key range. */
+  const avisosPipeline = (inicio, fim) =>
+    db
+      .pipeline()
+      .collection('avisos')
+      .where(
+        pipelines.and(
+          pipelines
+            .field('__name__')
+            .greaterThanOrEqual(pipelines.constant(db.collection('avisos').doc(inicio))),
+          pipelines
+            .field('__name__')
+            .lessThan(pipelines.constant(db.collection('avisos').doc(fim))),
+        ),
+      )
+      .sort(pipelines.ascending(pipelines.field('__name__')))
+      .limit(pageLimit)
+      .select('resolvidoEm', 'params', 'canal');
+
+  const ENTERPRISE_EXPLAIN_RE = /not supported in RunQuery API for Enterprise/i;
+
+  /**
+   * Classic explain-analyze, or why it could not run. Enterprise's refusal
+   * (header 6.) is `{ recusado }` and NOT a failure — it says something about the
+   * API, nothing about the index. Any other gRPC error IS one: on a Standard
+   * database a missing composite is `9 FAILED_PRECONDITION`, the classic
+   * "requires an index".
+   */
+  async function explainClassico(label, query) {
+    try {
+      const { metrics } = await query.explain({ analyze: true });
+      return { metrics, recusado: null };
+    } catch (err) {
+      if (!isGrpcCodedError(err)) throw err;
+      if (err.code === 3 && ENTERPRISE_EXPLAIN_RE.test(err.message)) {
+        console.log(`NOTE  ${label}: classic explain refused by Enterprise — explaining the PROXY`);
+        return { metrics: null, recusado: err.message };
+      }
+      fail(`${label}: classic explain failed — ${err.message}`);
+      return { metrics: null, recusado: null };
+    }
+  }
+
+  /** The classic verdict, when a database accepts classic explain at all. */
+  function julgarClassico(label, metrics, aceita) {
+    const usados = metrics.planSummary?.indexesUsed ?? [];
+    const stats = metrics.executionStats ?? {};
+    console.log(`  indexesUsed: ${JSON.stringify(usados)}`);
+    console.log(
+      `  resultsReturned: ${stats.resultsReturned}  readOperations: ${stats.readOperations}`,
+    );
+    console.log(`  debugStats: ${JSON.stringify(stats.debugStats ?? {})}`);
+    if (usados.length > 0 && aceita(usados)) {
+      console.log(`PASS  ${label} (classic plan)`);
+      return;
+    }
+    fail(`${label}: the classic plan does not ride the expected index — read indexesUsed above`);
+  }
+
+  /** Every distinct `• <Node>` name in a plan — what the reader should scan for. */
+  const nomesDeNos = (planText) => [
+    ...new Set([...planText.matchAll(/•\s+(\w+)/g)].map((m) => m[1])),
+  ];
+
+  /**
+   * A `Sort` NODE — the access path did not deliver key order, so the stage sorts
+   * everything the scan produced before `limit` can cut it. Matched on the bare
+   * name (`• Sort`), so a streaming merge of sorted ranges (`• SortedMerge`-style,
+   * which an `in` over two values may legitimately need) does not count.
+   */
+  const temSortResidual = (planText) => /•\s+(?:Sort|TopN|TopK)\b/.test(planText);
+
+  /** One proxy explain-analyze; `null` when it returned no plan (0 rows carry none). */
+  async function explainProxy(label, build) {
+    const snap = await build().execute({
+      explainOptions: { mode: 'analyze', outputFormat: 'text' },
+    });
+    const proxyPlan = snap.explainStats?.text ?? '';
+    console.log(`rows returned: ${snap.results.length} (${label})`);
+    console.log(`\n----- FULL PLAN (PROXY — pipeline translation, ${label}) -----\n`);
+    console.log(proxyPlan);
+    return proxyPlan.trim() === '' ? null : proxyPlan;
+  }
+
+  if (!runAuditoria) {
+    console.log('\n=== #1200 link audit queries — SKIPPED (CHECK_AUDITORIA=0) ===');
+  } else {
+    /* ---- (a) the walk: page 1 for a real cursor, then page 2 ---- */
+
+    console.log('\n=== #1200 link audit (a): produtoMercadoLivre CG walk, page 2 ===');
+    const pagina1 = await walkQuery().get();
+    console.log(
+      `page 1 (classic, executed): ${pagina1.docs.length} link(s) of conta ${integracaoId}`,
+    );
+    const primeiro = pagina1.docs[0] ?? null;
+    let cursorRef = null;
+    let esperadoNaPagina2 = null;
+    if (pagina1.docs.length >= 2) {
+      // A REAL page-1 reference — its FIRST, not its last: the keyset SHAPE is
+      // what this proves, and resuming after the first guarantees page 2 a row
+      // (zero rows carry no explainStats). Page 2 must open on page 1's second.
+      cursorRef = primeiro.ref;
+      esperadoNaPagina2 = pagina1.docs[1].ref.path;
+    } else if (primeiro != null) {
+      // One link only (the seeded probe family, typically). A cursor just BELOW
+      // it: the owning produto id minus its last character is a strict prefix,
+      // and a prefix sorts first segment by segment — so every link of that
+      // produto, the first one included, lies after it. Same keyset shape.
+      const produtoId = primeiro.ref.parent.parent?.id ?? '';
+      if (produtoId.length > 1) {
+        cursorRef = db
+          .collection('produtos')
+          .doc(produtoId.slice(0, -1))
+          .collection('produtoMercadoLivre')
+          .doc(primeiro.id);
+        esperadoNaPagina2 = primeiro.ref.path;
+      }
+    }
+
+    if (cursorRef == null) {
+      fail(
+        `audit walk: conta ${integracaoId} has no usable produtoMercadoLivre link — page 2 ` +
+          'cannot return a row, so nothing is proven. Point CHECK_INTEGRACAO_ID at a conta ' +
+          'with anúncios, or run with CHECK_SEED=1',
+      );
+    } else {
+      console.log(`page 2 cursor: ${cursorRef.path}`);
+      // Correctness probe — the CLASSIC query, executed: `startAfter(<DocumentReference>)`
+      // on a group must resume exactly after the cursor, not from the top.
+      const pagina2 = await walkQuery().startAfter(cursorRef).get();
+      const abriuEm = pagina2.docs[0]?.ref.path ?? null;
+      if (abriuEm === esperadoNaPagina2) {
+        console.log(`PASS  audit walk: classic page 2 resumes right after the cursor (${abriuEm})`);
+      } else {
+        fail(
+          `audit walk: classic page 2 opened on ${JSON.stringify(abriuEm)}, expected ` +
+            `${esperadoNaPagina2} — startAfter(<DocumentReference>) did not resume after the cursor`,
+        );
+      }
+
+      const labelWalk = 'audit walk page 2 (CG contaOuterRef in + keyset)';
+      console.log(`\n--- ${labelWalk}: classic explain ---`);
+      const classico = await explainClassico(labelWalk, walkQuery().startAfter(cursorRef));
+      if (classico.metrics != null) {
+        julgarClassico(labelWalk, classico.metrics, (usados) =>
+          usados.some(
+            (u) =>
+              /group/i.test(String(u.query_scope ?? '')) &&
+              /^\(contaOuterRef ASC, __name__ ASC\)$/.test(String(u.properties ?? '')),
+          ),
+        );
+      } else if (classico.recusado != null) {
+        const proxyPlan = await explainProxy(labelWalk, () => walkPipeline(cursorRef));
+        if (proxyPlan == null) {
+          fail(`${labelWalk}: the PROXY returned no plan (0 rows) — nothing proven`);
+        } else {
+          const nodes = parseAccessNodes(proxyPlan);
+          console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
+          // A COLLECTION GROUP scan has no parent partition to excuse it: an
+          // identifier-less node here is the whole group, every conta's links.
+          failIdentifierlessScans(`${labelWalk} PROXY`, nodes);
+          checkTarget({
+            label: `${labelWalk} PROXY: COLLECTION_GROUP produtoMercadoLivre(contaOuterRef, __name__)`,
+            nodes,
+            plan: proxyPlan,
+            // `__name__` prints as `__key__` in this dialect (header 5.'s RESULT).
+            indexRe: /^\*\*\/produtoMercadoLivre \(contaOuterRef ASC, __(?:name|key)__ ASC\)/,
+            fallbackRe: /produtoMercadoLivre \(/,
+            predicateRe: /\$contaOuterRef/,
+            pendingDeploy:
+              'no access node rides the COLLECTION_GROUP produtoMercadoLivre(contaOuterRef ' +
+              'ASC, __name__ ASC) entry. It is declared since #1191; if it is not READY in ' +
+              'this project, deploy firestore.indexes.json BEFORE the master flag goes on — ' +
+              'until then every page of the audit (and of the price report) full-scans the group',
+            boundOf: (n) => {
+              if (n.boundedLines.some((l) => l.includes('integracao/'))) {
+                return `contaOuterRef value bound on ${n.identifier}`;
+              }
+              if (n.filter != null && /contaOuterRef/.test(n.filter)) {
+                return `contaOuterRef push-down on ${n.identifier}`;
+              }
+              return null;
+            },
+          });
+          if (predicateInResidualFilters(proxyPlan, /\$contaOuterRef/)) {
+            fail(`${labelWalk} PROXY: contaOuterRef ALSO served by a residual Filter node`);
+          }
+          if (predicateInResidualFilters(proxyPlan, /\$__(?:name|key)__/)) {
+            fail(
+              `${labelWalk} PROXY: the keyset cursor is a RESIDUAL Filter — page N re-reads ` +
+                'every earlier page of the conta, and the walk turns quadratic',
+            );
+          }
+          if (temSortResidual(proxyPlan)) {
+            fail(
+              `${labelWalk} PROXY: a Sort node — the index did not deliver __name__ order, so ` +
+                "every page sorts the conta's whole link set before the limit",
+            );
+          }
+          console.log(
+            'NOTE  PROXY verdicts prove the CG entry is READY and serves this predicate — ' +
+              "NOT the classic query's own plan. Confirm that one in Query Insights after the " +
+              'first audit run (header 6.)',
+          );
+        }
+      }
+    }
+
+    /* ---- (b) the avisos key range ---- */
+
+    console.log('\n=== #1200 link audit (b): avisos key range ===');
+    const inicioFaixa = `${prefixoAvisos}:`;
+    const fimFaixa = `${prefixoAvisos};`;
+    console.log(`range: [${inicioFaixa}, ${fimFaixa})`);
+    // Correctness probe — the CLASSIC read, executed: the half-open range must
+    // hold this conta's rows and nothing else (not `c10`'s, not the `…;` id).
+    const faixa = await avisosQuery(inicioFaixa, fimFaixa).get();
+    const vazadas = faixa.docs.map((d) => d.id).filter((id) => !id.startsWith(inicioFaixa));
+    if (vazadas.length > 0) {
+      fail(`avisos key range leaked ${vazadas.length} foreign id(s): ${JSON.stringify(vazadas)}`);
+    } else if (faixa.docs.length === 0) {
+      // Not a PASS: an empty range cannot leak, so it proves nothing about the
+      // bounds. Expected before the audit's first run on this conta.
+      console.log(
+        `NOTE  avisos key range: 0 rows — conta ${integracaoId} has no ${TIPO_AVISO_AUDITORIA} ` +
+          'row yet, so the leak probe proves nothing until one exists',
+      );
+    } else {
+      console.log(
+        `PASS  avisos key range: ${faixa.docs.length} row(s), every id under ${inicioFaixa}`,
+      );
+    }
+
+    const labelAvisos = 'avisos key range (orderBy documentId, startAt/endBefore)';
+    console.log(`\n--- ${labelAvisos}: classic explain ---`);
+    const classicoAvisos = await explainClassico(labelAvisos, avisosQuery(inicioFaixa, fimFaixa));
+    if (classicoAvisos.metrics != null) {
+      // A pure key-order read rides the primary key and no declared composite.
+      julgarClassico(labelAvisos, classicoAvisos.metrics, (usados) =>
+        usados.every((u) => /^\(__name__ ASC\)$/.test(String(u.properties ?? ''))),
+      );
+    } else if (classicoAvisos.recusado != null) {
+      // Zero rows carry no plan, and before the audit's first run this conta has
+      // no `anuncioForaDaSincronizacao` row at all. Widened retry, labeled: the
+      // same half-open shape over a range known to hold one real aviso id.
+      let proxyPlan = await explainProxy(labelAvisos, () => avisosPipeline(inicioFaixa, fimFaixa));
+      let inicioJulgado = inicioFaixa;
+      if (proxyPlan == null) {
+        const algum = await db
+          .collection('avisos')
+          .orderBy(FieldPath.documentId())
+          .select()
+          .limit(1)
+          .get();
+        const id = algum.docs[0]?.id ?? null;
+        if (id != null) {
+          console.log(
+            `0 rows in the producer's range → widened range [${id}, ${id};) — same stage ` +
+              'shape, so the plan proof is unaffected',
+          );
+          inicioJulgado = id;
+          proxyPlan = await explainProxy('widened range', () => avisosPipeline(id, `${id};`));
+        }
+      }
+      if (proxyPlan == null) {
+        fail(
+          `${labelAvisos}: the PROXY returned no plan (no aviso to range over at all) — ` +
+            'nothing proven',
+        );
+      } else {
+        const nodes = parseAccessNodes(proxyPlan);
+        console.log(`  plan nodes: ${nomesDeNos(proxyPlan).join(', ')}`);
+        // ⚠️ NOT `failIdentifierlessScans`: the primary key is no declared index,
+        // so a key-range access node may legitimately carry no `index:` line.
+        // What must hold is a BOUND on the key — the range, not the collection.
+        const doAvisos = nodes.filter((n) =>
+          /avisos/.test(`${n.identifier ?? ''} ${n.kind ?? ''}`),
+        );
+        for (const n of uniqueNodes(doAvisos)) printNode(n);
+        const limitado = doAvisos.find((n) => n.boundedLines.length > 0) ?? null;
+        if (doAvisos.length === 0) {
+          fail(`${labelAvisos} PROXY: no access node on avisos — read the plan above`);
+        } else if (limitado == null) {
+          fail(
+            `${labelAvisos} PROXY: the avisos scan carries NO key bound — the range is read ` +
+              'as a walk of the whole collection',
+          );
+        } else {
+          const contemInicio = limitado.boundedLines.some((l) => l.includes(inicioJulgado));
+          console.log(
+            `PASS  ${labelAvisos} PROXY: bounded key scan on ` +
+              `${limitado.identifier ?? `(no identifier${limitado.kind ? `, kind ${limitado.kind}` : ''})`}` +
+              (contemInicio ? ' — the range start is printed in its bound' : ''),
+          );
+        }
+        if (predicateInResidualFilters(proxyPlan, /\$__(?:name|key)__/)) {
+          fail(`${labelAvisos} PROXY: the key range is a RESIDUAL Filter — rows read, then cut`);
+        }
+        if (temSortResidual(proxyPlan)) {
+          fail(`${labelAvisos} PROXY: a Sort node on a key-ordered read`);
+        }
+        console.log(
+          'NOTE  PROXY verdict — the classic read itself is confirmed in Query Insights (header 6.)',
+        );
+      }
+    }
   }
 } finally {
   // The seed must NEVER outlive the run — delete it even when a check failed

@@ -404,8 +404,9 @@ Two suites, deliberately separated by filename:
   functions' region MUST match — a mismatch is the silent drop `mlTasks.ts` warns about,
   and it is what this test detects. Both are `MERCADO_LIVRE_TASKS_REGION` (inlined into
   the bundle), which is deliberately NOT `FUNCTIONS_REGION`: Cloud Tasks and Cloud
-  Scheduler do not exist in every region, so where they are absent the eleven queue/schedule
-  functions live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
+  Scheduler do not exist in every region, so where they are absent the thirteen queue/schedule
+  functions (5 `onTaskDispatched` + 8 `onSchedule`, counted from `functions/src/index.ts`)
+  live one region away from the four Firestore triggers. See `functions/DEPLOY.md`. It uses a seller with no integração so the path needs no ML API call, no
   token and no real secret, and executes only classic queries (the Pipelines API does not
   run in the emulator; `bulkEstoquePlan.ts` is bundled but never executed on this path).
 
@@ -440,6 +441,45 @@ solely on kits named directly on a pedido line.
 `apps/docs` → **ADR 0014, "Kit stock propagation and the tiered stock sweep"**,
 carries the full arithmetic, the tier table, the `min(anterior, atual)` guard and
 the rejected alternatives. Check any change in this area against it.
+
+⚠️ **The monthly link audit is NOT a fourth tier — it sends nothing (#1200).**
+All three tiers enumerate through the same two anchor terms (S1: `paiId == null`
+AND `integracoesComProduto array-contains <conta>`), and a live anúncio whose
+produto falls outside them is a candidate on none of them and leaves no skip row:
+the array lost the conta (#804 class 2 — a lost trigger event; the cutover import
+fires no triggers at all), or the link sits on a variation child (class 3).
+`sweepMercadoLivreAnunciosNaoEnumerados` (02:30 on the 1st,
+`estoque/auditoriaNaoEnumerados.ts`) walks each active conta's LINKS through
+`anuncios/linksNaoEnumerados.ts` — the walk the price job's reconciliation already
+ran, now shared — HEALS class 2 with the tier-1 `adicionarContaSeViva` so the
+03:00 force-all enumerates the family again, and raises one
+`anuncioForaDaSincronizacao` aviso per produto for what needs a human, resolved
+only by a later COMPLETE walk plus a fresh re-read. Firestore-only: no ML call, no
+ML secret, gated by the master flag alone — never by `..._RECONCILIACAO_ENABLED`,
+which is an ML-quota valve. ⚠️ The force-all is a force-all for ENUMERATION only:
+`deveEnviarFamiliaCore` still skips a family with no net ERP movement since
+`lastReconciliacaoAtUs`, so what a heal actually gets re-sent, and the documented
+gaps, are in `functions/DEPLOY.md` → "The monthly link audit". Do not "fix" class 2
+by widening S1 — the two-term shape is the measured economical one (#431/#890) —
+and keep the audit's classifier and S1 together: `bulkEstoquePlan.test.ts`
+evaluates the S1 `where` actually recorded against it, so a term added to either
+reds there.
+
+⚠️ **Wherever `MERCADO_LIVRE_STOCK_SYNC_ENABLED` is on, the COLLECTION_GROUP index
+`produtoMercadoLivre(contaOuterRef ASC, __name__ ASC)` must be READY.** The audit's
+walk rides it, and on Enterprise a missing index does not fail — it full-scans the
+collection group and bills the bytes, every month. It needs no new deploy: #1191
+declared it (`de225899e`, merged 2026-08-20) in the same commit as the
+`produtos(paiId, integracoesComProduto, __name__)` anchor composite, so any index
+deploy from a later tree carries both — but verify READY rather than assume it.
+
+⚠️ **`buildSendTasks`' `'conta-fora-do-produto'` rung is BY-IDS-ONLY.** S1
+filters that same field server-side, in the execution that projects it, so no
+sweep row can reach the rung; it fires only on the manual push
+(`fetchStockFamiliesByIds` carries no anchor terms), and there it names one of
+three states — trigger lag right after a publish, every link of the conta closed or
+never published, or denorm drift (the state the audit heals). Keep both it and its
+S6 projection: dropping the projection alone silently disables the check.
 
 ## Status
 

@@ -19,9 +19,12 @@ if (!region) {
  * ⚠️ **Cloud Tasks and Cloud Scheduler do not exist in `us-east5`.** Neither
  * service lists it (Cloud Tasks locations / Cloud Scheduler locations both stop
  * at `us-east4` in the eastern US), so deploying the codebase wholesale into the
- * ML backend's region fails all eleven queue/schedule functions at once while
+ * ML backend's region fails all thirteen queue/schedule functions at once while
  * the four Firestore triggers deploy cleanly — the exact signature seen on the
  * first ML functions deploy. They are pinned to `us-east1`, which offers both.
+ * (Thirteen = five `onTaskDispatched` queues + eight `onSchedule`s, counted from
+ * `index.ts`'s exports — re-derive it there rather than incrementing this; the
+ * figure had already drifted to "eleven" while the codebase held twelve.)
  *
  * ⚠️ This is also what the ENQUEUER must target. `mlTasks.ts` on the App Hosting
  * backend builds a region-qualified queue name from `MERCADO_LIVRE_TASKS_REGION`;
@@ -65,7 +68,8 @@ setGlobalOptions({
   //   - `processMercadoLivreMassImport` (Step 8 / #621) — processMassImport.ts
   //   - `processMercadoLivreNotification` (Step 9 order import) — processNotification.ts
   //   - `importMercadoLivreOrders` (Step 9 PR 4 / #360) — index.ts
-  //   - `sendMercadoLivreStock` + the two stock sweeps (Step 10) — sendStock.ts / sweepStock.ts
+  //   - `sendMercadoLivreStock` + the three stock sweep tiers (Step 10 + the monthly
+  //     reconciliation) — sendStock.ts / sweepStock.ts (`sweepScheduleOptions`)
   //   - `processMercadoLivrePriceSync` (Step 11 PR-C) — processPriceSync.ts
   //   - `processMercadoLivreNfeUpload` (Step 12 / #739) — processNfeUpload.ts
   //   - `reprocessMercadoLivreNotifications` (the failures-store reprocess sweep) — index.ts (#778)
@@ -73,13 +77,22 @@ setGlobalOptions({
   //     ⚠️ The ONLY function where CLIENT_ID is not just for the token refresh:
   //     it is also the `app_id` query param `GET /missed_feeds` requires, so
   //     unbinding it here leaves the backstop inert rather than merely slower.
+  //   - `sweepMercadoLivrePedidosTravados` (the weekly stuck-pedido release) — index.ts
   // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
   // on its own options rather than here, so a function with no ML API call never
-  // gets the secrets bound. The two Firestore triggers are exactly that case and
-  // deliberately bind NONE:
+  // gets the secrets bound. These are exactly that case and deliberately bind NONE:
   //   - `onNfeAprovada` (Step 12 / #739) — only decides + enqueues.
   //   - `onIntegracaoMercadoLivreChanged` (#782) — pure Firestore: mirrors the ML
   //     conta onto its Mercado Envios `int_frete` doc, never calls the ML API.
+  //   - `onProdutoMercadoLivreLinkChanged` / `onVariacaoMercadoLivreLinkChanged`
+  //     (#920) — pure Firestore: derive `integracoesComProduto` from the links.
+  //   - `sweepMercadoLivreAnunciosNaoEnumerados` (#1200) — the monthly link audit,
+  //     sweepStock.ts. ⚠️ The one SCHEDULE here, and the one that sits beside
+  //     three sweeps that DO bind the secrets through `sweepScheduleOptions`: it
+  //     declares its own options literal precisely so it cannot inherit them.
+  //     Pure Firestore — it heals the array and writes avisos, and a healed
+  //     family reaches ML through the 03:00 force-all, never through this
+  //     function. `index.test.ts` asserts its endpoint names no ML secret.
   // They are why this stays per-function despite the duplication: a codebase-wide
   // bind here would hand the ML app credentials to a function that must not carry
   // them.
